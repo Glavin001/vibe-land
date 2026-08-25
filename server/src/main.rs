@@ -1,6 +1,13 @@
+mod app_config;
+mod city;
+#[cfg(all(test, feature = "destruction"))]
+mod city_bench;
 mod demo_world;
+mod heartbeat;
 mod lag_comp;
 mod movement;
+#[cfg(feature = "physx-gpu")]
+mod physx_runtime;
 mod protocol;
 mod voxel_world;
 
@@ -10,41 +17,43 @@ use std::{
     net::SocketAddr,
     path::PathBuf,
     sync::{
-        atomic::{AtomicU32, Ordering},
+        atomic::{AtomicU32, AtomicU64, Ordering},
         Arc, RwLock as StdRwLock,
     },
     time::{Duration, Instant},
 };
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use axum::{
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},
         Path, Query, State,
     },
+    http::StatusCode,
     response::IntoResponse,
-    routing::get,
-    Router,
+    routing::{get, post},
+    Json, Router,
 };
 use bytes::BufMut;
 use futures_util::{sink::SinkExt, stream::StreamExt, FutureExt};
 use sha2::{Digest, Sha256};
-use tokio::io::AsyncReadExt;
 use tokio::sync::{mpsc, RwLock as AsyncRwLock};
 use tracing::{error, info, warn};
 use vibe_land_shared::constants::{
     DEFAULT_BATTERY_HEIGHT_M, DEFAULT_BATTERY_RADIUS_M, DYNAMIC_BODY_AOI_EXIT_RADIUS_M,
     DYNAMIC_BODY_AOI_RADIUS_M, DYNAMIC_BODY_IMPULSE, FLAG_MELEEING, HITSCAN_MAX_DISTANCE_M,
     MAX_PENDING_INPUTS, MELEE_COOLDOWN_MS, MELEE_DAMAGE, MELEE_ENERGY_COST,
+    PLAYER_INPUT_CATCHUP_THRESHOLD,
     MELEE_FLAG_DURATION_TICKS, MELEE_HALF_CONE_COS, MELEE_HIT_RECOVERY_MS, MELEE_RANGE_M,
     OUT_OF_BOUNDS_Y_M, PLAYER_AOI_RADIUS_M, PLAYER_EYE_HEIGHT_M, RIFLE_BODY_DAMAGE,
-    RIFLE_FIRE_INTERVAL_MS, RIFLE_HEAD_DAMAGE, RIFLE_SHOT_ENERGY_COST, SIM_HZ,
-    SNAPSHOT_HZ_MULTIPLAYER, SPAWN_PROTECTION_MS, VEHICLE_AOI_RADIUS_M,
-    VEHICLE_INPUT_CATCHUP_THRESHOLD,
+    RIFLE_FIRE_INTERVAL_MS, RIFLE_HEAD_DAMAGE, RIFLE_SHOT_ENERGY_COST, SHAPE_SPHERE, SIM_HZ,
+    SPAWN_PROTECTION_MS, VEHICLE_AOI_RADIUS_M, VEHICLE_INPUT_CATCHUP_THRESHOLD,
+    VEHICLE_INTERACT_RADIUS_M,
 };
 use wtransport::{error::SendDatagramError, Connection, Endpoint, Identity, ServerConfig};
 
 use crate::{
+    app_config::PhysicsRuntimeConfig,
     demo_world::seed_world_for_match,
     lag_comp::{HistoricalCapsule, HistoricalDynamicBody, HitZone, LagCompHistory},
     movement::{MoveConfig, PhysicsArena, PlayerDamageOutcome},
@@ -54,14 +63,15 @@ use crate::{
         make_net_battery_state, make_net_dynamic_body_state, make_net_player_state,
         make_net_shot_fired, meters_to_mm, mm_to_meters, BatterySyncPacket, ClientPacket,
         DamageEventPacket, FireCmd, InputCmd, LocalPlayerEnergyPacket, MeleeCmd, NetBatteryState,
-        ServerPacket, ShotResultPacket, SnapshotPacket, WelcomePacket, BTN_RELOAD, HIT_ZONE_BODY,
-        HIT_ZONE_HEAD, HIT_ZONE_NONE, PKT_BATTERY_SYNC, PKT_LOCAL_PLAYER_ENERGY, PKT_PING,
-        PKT_SNAPSHOT, PKT_SNAPSHOT_V2, SHOT_RESOLUTION_BLOCKED_BY_WORLD, SHOT_RESOLUTION_DYNAMIC,
-        SHOT_RESOLUTION_MISS, SHOT_RESOLUTION_PLAYER,
+        ServerPacket, ShotResultPacket, SnapshotPacket, WelcomePacket, BTN_JUMP, BTN_RELOAD,
+        HIT_ZONE_BODY,
+        HIT_ZONE_HEAD, HIT_ZONE_NONE, PKT_BATTERY_SYNC, PKT_CITY_CHUNKS, PKT_CITY_DEBRIS,
+        PKT_LOCAL_PLAYER_ENERGY, PKT_PING, PKT_SNAPSHOT, PKT_SNAPSHOT_V2,
+        SHOT_RESOLUTION_BLOCKED_BY_WORLD, SHOT_RESOLUTION_DYNAMIC, SHOT_RESOLUTION_MISS,
+        SHOT_RESOLUTION_PLAYER,
     },
     voxel_world::VoxelWorld,
 };
-const SNAPSHOT_HZ: u16 = SNAPSHOT_HZ_MULTIPLAYER;
 const CHUNK_RADIUS_ON_JOIN: i32 = 4;
 const SERVER_PING_INTERVAL_TICKS: u32 = SIM_HZ as u32;
 const MAX_LAG_COMP_MS: u32 = 250;
@@ -69,7 +79,20 @@ const MAX_CLIENT_FIRE_FUTURE_MS: u32 = 50;
 const RESPAWN_DELAY_MS: u32 = 3_000;
 const NEARBY_PLAYER_RADIUS_M: f32 = 12.0;
 const ROLLING_METRIC_SAMPLES: usize = 180;
-const PLAYER_OUTBOUND_QUEUE_CAPACITY: usize = 64;
+/// Per-player outbound queue depth.
+///
+/// Raised from 64 after topology messages were measured being dropped on a
+/// full queue during a collapse: a burst of reliable city state plus a phone's
+/// drain rate filled 64 slots in a tick. The queue is the only buffer between
+/// a 60 Hz producer and a client's link, and overflowing it costs correctness
+/// for city state, not just latency.
+const PLAYER_OUTBOUND_QUEUE_CAPACITY: usize = 256;
+/// A session that opens a stream and then says nothing holds a task and a QUIC
+/// stream open; drop it rather than letting it accumulate.
+const CLIENT_HELLO_TIMEOUT: Duration = Duration::from_secs(10);
+const MAX_CLIENT_HELLO_BYTES: usize = 4096;
+/// Client uplink packets are inputs and commands -- tens of bytes, not frames.
+const MAX_CLIENT_STREAM_PACKET_BYTES: usize = 8192;
 const PLAYER_HANDLE_REUSE_COOLDOWN_TICKS: u32 = SIM_HZ as u32 * 10;
 const PLAYER_ROSTER_SYNC_INTERVAL_TICKS: u32 = SIM_HZ as u32 * 2;
 const COLD_VEHICLE_REFRESH_TICKS: u32 = SIM_HZ as u32 / 2;
@@ -85,7 +108,7 @@ const SNAPSHOT_DYNAMIC_BODY_STATE_BYTES: usize = 43;
 const SNAPSHOT_VEHICLE_STATE_BYTES: usize = 50;
 const STRICT_SNAPSHOT_RESERVED_VEHICLES: usize = 2;
 const SNAPSHOT_V2_HEADER_BYTES: usize = 23;
-const SNAPSHOT_V2_SELF_PLAYER_BYTES: usize = 12;
+const SNAPSHOT_V2_SELF_PLAYER_BYTES: usize = 33;
 const SNAPSHOT_V2_REMOTE_PLAYER_BYTES: usize = 19;
 const SNAPSHOT_V2_DYNAMIC_SPHERE_BYTES: usize = 20;
 const SNAPSHOT_V2_DYNAMIC_BOX_BYTES: usize = 28;
@@ -205,6 +228,229 @@ struct MatchTimingStats {
     dynamics_ms: RollingSamples,
     hitscan_ms: RollingSamples,
     snapshot_ms: RollingSamples,
+}
+
+/// Destructible-city telemetry, surfaced to the in-page debug overlay so the
+/// sim cost and the render cost can be told apart while playing.
+#[derive(serde::Serialize, Clone, Default)]
+struct CityStatsSnapshot {
+    structures: u32,
+    /// Which city wire this match speaks. On the panel beside the client's own
+    /// view of it: a mismatch is invisible in play -- the client discards the
+    /// other wire's pose records by design -- and it silently stops the city
+    /// being destroyed on screen while the server keeps fracturing.
+    wire_version: u8,
+    /// Wire v3 governor internals -- the knobs the F9 panel cannot show.
+    /// Zero/1.0 on v2 matches.
+    v3_span_ticks: u32,
+    v3_rate_scale: f32,
+    v3_ema_mbps: f32,
+    v3_epoch: u8,
+    v3_span_encode_ms: f32,
+    /// Intra-window (since last publish) per-tick aggregates: what happened
+    /// WITHIN this second, not just the tick that coincided with publish.
+    window_step_ms: city::WindowSummary,
+    window_ingest_ms: city::WindowSummary,
+    window_span_encode_ms: city::WindowSummary,
+    window_awake: city::WindowSummary,
+    /// min/avg/p95/max per span timer over every tick since the last publish.
+    ///
+    /// Prefer these to the single-sample fields above. The publish fires every
+    /// 60 ticks and the bond scan every 30, so the instantaneous sample is
+    /// harmonically locked to the expensive tick -- it is a biased estimator of
+    /// per-tick cost, not a neutral one.
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    phase_windows: std::collections::BTreeMap<String, city::WindowSummary>,
+    chunk_bodies: u32,
+    awake_bodies: u32,
+    broken_bonds: u32,
+    /// Whole 60 Hz city step in ms, not codec time alone.
+    ///
+    /// The parent of `begin_ms`, `solve_ms`, `end_ms`, `readback_ms_host`,
+    /// `settle_ms` and `ingest_ms`. Those do not account for all of it: the
+    /// post-fracture push re-apply, topology drain and baseline emit are
+    /// untimed, and show up as the difference. Treat `step_ms` minus the
+    /// children as real unattributed cost, not as rounding.
+    step_ms: f32,
+    /// Host wall time of the whole native destruction tick.
+    ///
+    /// A PARENT of `begin_ms`, `solve_ms`, `end_ms`, `readback_ms`, `events_ms`
+    /// and `filters_ms` -- it brackets beginTick through endTick, so it must
+    /// never be added to them. It is also a wall-clock span rather than a sum
+    /// of those parts, and measures ~20% above them: per-slot dispatch and the
+    /// topology-diff decision live in the gap.
+    stress_solve_ms: f32,
+    /// Sub-phases of the native tick, all children of `stress_solve_ms`.
+    /// `solve_ms` is the CUDA/parallel solveTick ALONE -- `begin_ms` and
+    /// `end_ms` carry the injection and fracture walks that used to be folded
+    /// into it.
+    solve_ms: f32,
+    /// Native-side GPU readback. Distinct from `readback_ms_host`, which is the
+    /// host stage outside the native tick; they are not the same measurement.
+    readback_ms: f32,
+    events_ms: f32,
+    /// beginTick / solveTick / endTick, split apart: reporting them as one
+    /// "stress solve" number hid that the injection walk costs more than the
+    /// GPU solve.
+    ///
+    /// `begin_ms` is NOT serial. It is dispatched across the stress executor
+    /// by default (`VIBE_CITY_SNAPSHOT_BEGIN`, on unless set to 0); only the
+    /// wakeUp apply inside it runs serially, and that is a handful of bodies
+    /// even during a collapse. `end_ms` IS still serial. The older "serial
+    /// beginTick" wording here outlived the change and sent at least one
+    /// investigation after a parallelisation that had already happened.
+    begin_ms: f32,
+    end_ms: f32,
+    /// Host-side stages. Without these the overlay shows a large "city step"
+    /// with only the Blast phases beneath it, and the majority of the cost is
+    /// invisible: at 10k bodies the Blast phases are 6.4 ms of a 23.5 ms step.
+    readback_ms_host: f32,
+    settle_ms: f32,
+    ingest_ms: f32,
+    /// Host wall time of the whole native destruction tick, FFI hop included.
+    /// A parent of the Blast phases and measurably larger than their sum.
+    tick_ffi_ms: f32,
+    /// Event drain (broken bonds, migrations, island events) and the
+    /// destruction-stats FFI readback: two stages that were measured all along
+    /// and never published, so `step_ms` minus its children over-reported the
+    /// unattributed remainder.
+    drain_ms: f32,
+    stats_ffi_ms: f32,
+    /// `backend.post_step` in full -- the parent of the destruction phases,
+    /// measured by the host rather than summed from them.
+    post_step_ms: f32,
+    /// Broadcasting this tick's reliable and v3 packets to every viewer. Scales
+    /// with packets x players and clones each packet per viewer.
+    fan_out_ms: f32,
+    /// Clients re-bootstrapped after a reliable city packet was dropped on a
+    /// full outbound queue. MUST stay 0 in normal play: every repair means a
+    /// player briefly saw a city that had stopped being destroyed.
+    city_desync_repairs: u64,
+    /// The 1 Hz stats publish (JSON, per-player packets, registry writes,
+    /// telemetry line). Lands entirely on one tick, so it shows up as a spike
+    /// in the tick window rather than in any average.
+    publish_ms: f32,
+    /// The 30 Hz stream encode: shared record build, then per-client interest
+    /// and datagram packing.
+    ///
+    /// NOT part of `step_ms`. This is a separate pass at half the rate, so
+    /// these two must never be added to the `step_ms` sub-phases -- doing so
+    /// double-counts across two different tick rates.
+    encode_shared_ms: f32,
+    client_datagrams_ms: f32,
+    /// Structures whose stress solve is running on the GPU, so a silent
+    /// fallback to the CPU solver is visible rather than merely slower.
+    gpu_stress_structures: u32,
+    /// Per-tick GPU solve time. The adapter's own counter is cumulative since
+    /// the destructible was created; the bridge reports the delta, so this
+    /// belongs on the same scale as every other ms field here.
+    gpu_stress_solve_ms: f32,
+    filters_ms: f32,
+    /// The three phases that used to sit untimed inside `stress_solve_ms`,
+    /// visible only as the gap between it and the sum of its children. The
+    /// CCD walk and the support-load resolve are both O(live bodies) EVERY
+    /// tick -- the CCD walk runs before the quiet-skip gate, which is why the
+    /// gap was present at idle with nothing happening.
+    ccd_ms: f32,
+    support_loads_ms: f32,
+    /// Contact pairs the support resolve consumed. `support_loads_ms` scales
+    /// with this, so a ms comparison across runs without it is meaningless.
+    support_pair_loads: u32,
+    shape_readback_ms: f32,
+    /// The adapter's own per-phase timers, deltaed to per-tick. These
+    /// decompose the phases the bridge times from OUTSIDE the adapter:
+    /// `begin_ms` ~= contact_processing + gravity, `solve_ms` ~= stress_solve_cpu
+    /// + gpu_stress_solve, `end_ms` ~= fracture_topology + mapping_validation.
+    /// They were computed every tick and discarded, which left 2-3.5 ms inside
+    /// the largest phase in the tick unaccounted for.
+    blast_contact_processing_ms: f32,
+    blast_gravity_ms: f32,
+    blast_stress_solve_cpu_ms: f32,
+    blast_fracture_topology_ms: f32,
+    blast_mapping_validation_ms: f32,
+    blast_sleeping_actors_skipped: u64,
+    /// The last two untimed blocks inside the `stress_solve_ms` bracket:
+    /// per-slot dispatch (live-slot gather + telemetry read + topology
+    /// compare) and the 1-in-30 bond-utilisation scan. With these, the bracket
+    /// minus its children is genuinely zero rather than "small enough to round
+    /// to 0.00 at two decimals".
+    slot_dispatch_ms: f32,
+    bond_sample_ms: f32,
+    /// Slot-ticks where topology was unchanged and the event diff was skipped.
+    /// `events_ms`/`filters_ms` are `0.0` on exactly these ticks, and without
+    /// this counter a working skip and a broken measurement are
+    /// indistinguishable from the value alone.
+    quiet_slot_ticks: u64,
+    sleeping_bodies: u32,
+    /// Bonds over their own elastic limit in the last solve. Fracture only
+    /// runs when this is non-zero, so a persistent 0 while shooting means the
+    /// load never reached the bonds -- not that the material held.
+    overstressed_bonds: u32,
+    /// Worst stress / elastic-limit ratio across bonds (1.0 = at the limit).
+    bond_utilisation_max: f32,
+    bonds_above_half_utilisation: u32,
+    packets_per_sec: u64,
+    records_per_sec: u64,
+    bytes_per_sec: u64,
+    topo_seq: u32,
+    baseline_id: u16,
+    min_body_y: f32,
+    /// PhysX engine-asleep -> awake transitions for DYNAMIC bodies. Frozen
+    /// bodies are kinematic and are skipped before this is reached, so this is
+    /// NOT a count of freezes being undone -- see `unfreeze_flips` for that.
+    /// The two count different populations and must not be combined.
+    resettled_wakes: u64,
+    /// PERMANENTLY ZERO: nothing in the tree increments this. Kept published
+    /// only so removing it is a deliberate wire change rather than a silent
+    /// one -- but it is not evidence of anything, and must not be cited as
+    /// "no settles were deferred".
+    settle_deferred_penetrating: u64,
+    unmapped_body_skips: u32,
+    duplicate_body_records: u64,
+    /// Contact islands the PhysX solver saw, and how many it skipped as
+    /// settled. PhysX sleeps per island, never per body, so this is the only
+    /// field that distinguishes a merged city-block pile -- which can only
+    /// sleep or wake as a whole -- from the same body count spread over
+    /// thousands of independent islands.
+    solver_island_count: u32,
+    solver_islands_skipped: u32,
+    /// Settled debris held kinematic, out of the rigid-body solver, and the
+    /// transitions that produced it. Sustained flips with no new damage is
+    /// the signature of a freeze policy fighting the engine.
+    frozen_bodies: u32,
+    freeze_flips: u64,
+    unfreeze_flips: u64,
+    /// Frozen bodies released because dynamic debris struck them -- the
+    /// engine's own contact reports driving the wake. Rises during collapses
+    /// onto old rubble; flat at rest.
+    contact_wakes: u64,
+    /// Sleep/wake edges this tick. `awake_bodies` is a level and cannot say
+    /// whether a pile is failing to settle or being repeatedly re-woken.
+    chunk_sleep_events: u64,
+    chunk_wake_events: u64,
+    /// Awake bodies that have completed their pose-quiet window -- i.e. have
+    /// not left a 2 cm shell for `pose_ticks`. Counted whenever pose freezing
+    /// OR the census is on (`freeze.rs`), and pose freezing is ON by default,
+    /// so this is a live number in normal play. (It was previously documented
+    /// as census-only, which is wrong.)
+    ///
+    /// Read it as "completed the window but was NOT admitted" -- a body that
+    /// passes the window is emitted as a freeze candidate in the same branch,
+    /// so anything still counted here was refused: squeezed, unsupported, or
+    /// over the per-tick batch. It is NOT "bodies sitting still that nobody
+    /// tried to freeze". Note the window is scaled by the per-body unfreeze
+    /// backoff, so a churned body needs far longer than `pose_ticks` to
+    /// appear here at all.
+    pose_quiet_awake_bodies: u32,
+    /// ZERO UNLESS `VIBE_CITY_POSE_CENSUS=1`. Hard-gated on the census flag in
+    /// `freeze.rs`, which defaults off, so a `0` here is the switch, not a
+    /// measurement -- do not read it as "no floating rubble".
+    unsupported_resting_bodies: u32,
+    backstop_releases: u64,
+    /// Must stay zero. Non-zero means a frozen body reached a serial-issuing
+    /// path and aliased onto the structure's support actor.
+    frozen_serial_blocks: u64,
+    degraded: bool,
 }
 
 #[derive(serde::Serialize, Clone, Default)]
@@ -522,6 +768,36 @@ struct PlayerStatsSnapshot {
 struct MatchStatsSnapshot {
     id: String,
     scenario_tag: String,
+    /// When this binary was built and when this process started, so a
+    /// screenshot can be told apart from a stale one. Reading a metric off a
+    /// server that predates the change being tested has wasted real time in
+    /// this project more than once.
+    server_build: String,
+    server_started: String,
+    physics_backend: String,
+    physics_gpu_required: bool,
+    physics_gpu_active: bool,
+    physics_gpu_warning_count: u32,
+    physics_contact_pairs: u32,
+    physics_active_dynamic_bodies: u32,
+    physics_last_step_ms: f32,
+    /// Step phases. `simulate` only dispatches under GPU dynamics, so
+    /// `fetch` carries GPU compute plus the result readback.
+    physics_simulate_ms: f32,
+    physics_fetch_ms: f32,
+    /// The split inside `fetch`, only under `VIBE_PHYSX_PROFILE_FETCH=1`:
+    /// blocked-on-GPU versus result copy. A large `gpu_wait` is dead time the
+    /// tick could be spending on encode.
+    physics_gpu_wait_ms: f32,
+    physics_fetch_copy_ms: f32,
+    /// The part of `dynamics_ms` that is NOT the step. `physics_last_step_ms`
+    /// covers only `world.step()`; these three cover the FFI readbacks after
+    /// it, the player refresh, and the vehicle control loop before it, which
+    /// together were the unexplained difference between the two.
+    physics_readback_ms: f32,
+    physics_refresh_players_ms: f32,
+    physics_vehicle_control_ms: f32,
+    physics_controller_ms: f32,
     server_tick: u32,
     player_count: usize,
     dynamic_body_count: usize,
@@ -532,6 +808,8 @@ struct MatchStatsSnapshot {
     timings: MatchTimingSnapshot,
     network: MatchNetworkSnapshot,
     players: Vec<PlayerStatsSnapshot>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    city: Option<CityStatsSnapshot>,
 }
 
 #[derive(serde::Serialize, Clone, Default)]
@@ -557,8 +835,36 @@ struct AppState {
     wt_base_url: String,
     strict_snapshot_datagrams: bool,
     respawn_delay_ms: u32,
+    physics: PhysicsRuntimeConfig,
     stats_tx: Arc<tokio::sync::watch::Sender<GlobalStatsSnapshot>>,
     stats_registry: Arc<StdRwLock<HashMap<String, MatchStatsSnapshot>>>,
+    /// Per-body freeze-machine states, refreshed at the stats cadence, for
+    /// the body-color debug overlay. Cheap to keep warm (one small Vec per
+    /// match per second); only serialized when the endpoint is hit.
+    body_states_registry: Arc<StdRwLock<HashMap<String, Vec<(u32, u8, u32, i32)>>>>,
+    /// Match ids awaiting a city reset. The HTTP handler cannot touch the
+    /// simulation directly -- the match loop owns it -- so the request is left
+    /// here and consumed on the next tick, between steps where rebuilding the
+    /// scene is safe.
+    reset_requests: Arc<StdRwLock<HashSet<String>>>,
+    /// Inbound-UDP reachability evidence.
+    ///
+    /// A box cannot test its own reachability from inside: a bind succeeding
+    /// says the socket exists, not that anything on the internet can send to
+    /// it, and hairpinning a probe back through the host's own NAT fails on
+    /// plenty of hosts that forward player traffic perfectly well. So instead
+    /// of probing, this records what actually happened.
+    ///
+    /// `session_configs_served` counts clients that asked where to connect --
+    /// each one is a browser about to open QUIC. `wt_attempts` counts
+    /// connection attempts that reached the socket. A gap between them is the
+    /// signature of a black-holed UDP path, and it is the only evidence that
+    /// distinguishes that from "nobody has tried yet".
+    wt_attempts: Arc<AtomicU64>,
+    session_configs_served: AtomicU64,
+    /// Milliseconds since process start at the first `/session-config`, or 0.
+    first_session_config_ms: AtomicU64,
+    started: std::time::Instant,
 }
 
 #[derive(Clone)]
@@ -591,6 +897,16 @@ struct SessionConfig {
     sim_hz: u16,
     snapshot_hz: u16,
     interpolation_delay_ms: u16,
+    protocol_version: u16,
+    physics_backend: u8,
+    client_movement_mode: u8,
+    city_world: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    city_manifest_hash: Option<String>,
+    /// Reliable-channel byte layout this match speaks. The client decodes
+    /// against this rather than assuming, so a v2 client and a v3 match fail
+    /// loudly at the handshake instead of throwing mid-stream.
+    city_wire_version: u8,
 }
 
 struct PlayerConnection {
@@ -616,6 +932,8 @@ struct PlayerRuntime {
     transport: ClientTransport,
     tx: mpsc::Sender<Vec<u8>>,
     pending_inputs: VecDeque<InputCmd>,
+    /// Inputs dropped to stay current. Non-zero means the loop is behind.
+    inputs_skipped_for_catchup: u64,
     last_applied_input: InputCmd,
     last_received_input_seq: Option<u16>,
     last_ack_input_seq: u16,
@@ -692,25 +1010,60 @@ struct MatchState {
     void_kills: u64,
     strict_snapshot_datagrams: bool,
     respawn_delay_ms: u32,
+    physics: PhysicsRuntimeConfig,
     last_logged_datagram_fallbacks: u64,
     last_logged_dropped_outbound_packets: u64,
     stats_registry: Arc<StdRwLock<HashMap<String, MatchStatsSnapshot>>>,
+    /// Per-body freeze-machine states, refreshed at the stats cadence, for
+    /// the body-color debug overlay. Cheap to keep warm (one small Vec per
+    /// match per second); only serialized when the endpoint is hit.
+    body_states_registry: Arc<StdRwLock<HashMap<String, Vec<(u32, u8, u32, i32)>>>>,
     next_player_handle: u16,
     reusable_player_handles: VecDeque<(u32, u8)>,
     free_player_handles: VecDeque<u8>,
     player_handles: HashMap<u32, u8>,
     dynamic_body_handles: HashMap<u32, DynamicBodyMetaRuntime>,
     vehicle_handles: HashMap<u32, u8>,
+    city: Option<city::CityRuntime>,
+    reset_requests: Arc<StdRwLock<HashSet<String>>>,
+    /// Players whose city ledger is known to be holed by a dropped reliable
+    /// packet, awaiting a re-bootstrap once their queue drains.
+    city_desync_players: HashSet<u32>,
+    city_desync_repairs: u64,
+    /// Last tick's packet fan-out cost, and the last 1 Hz publish block's cost.
+    /// Both were untimed while being O(packets x players) and "serialize the
+    /// world to JSON, then write a file, on the tick thread" respectively.
+    /// `last_publish_ms` is necessarily one second stale in the snapshot it
+    /// appears in -- it measures the block that builds that snapshot.
+    last_fan_out_ms: f32,
+    last_publish_ms: f32,
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     load_repo_env();
 
+    // `from_default_env()` with RUST_LOG unset builds an EMPTY filter, which
+    // discards everything -- not even ERROR survives. A container image does
+    // not set RUST_LOG, so every rented box has been running with the log
+    // stream silently switched off, and diagnosing one meant inferring from
+    // the absence of output that was never going to appear. Default to `info`
+    // and let RUST_LOG override it as usual.
     tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
         .init();
     install_panic_hook();
+    let physics = PhysicsRuntimeConfig::from_env()?;
+    if physics.backend == vibe_netcode::physics_backend::PhysicsBackendKind::PhysxGpu {
+        drop(
+            PhysicsArena::new(MoveConfig::default(), physics.backend)
+                .context("PhysX GPU startup validation failed")?,
+        );
+        info!("validated PhysX GPU and CUDA scene initialization");
+    }
     #[cfg(debug_assertions)]
     warn!(
         "running a debug server build; authoritative player/KCC performance numbers are not representative, use `cargo run --release -p web-fps-server` for perf validation"
@@ -727,8 +1080,12 @@ async fn main() -> Result<()> {
         (Some(cert_path), Some(key_path)) => {
             let identity = Identity::load_pemfiles(&cert_path, &key_path).await?;
             info!(%cert_path, "WebTransport: loaded CA-signed certificate");
-            // Empty hash signals the client to skip certificate pinning
-            (identity, String::new())
+            // Still publish the leaf SHA-256 so browsers that do not trust the
+            // issuing CA (agent webviews, local tunnels) can pin via
+            // serverCertificateHashes. Trusted CA clients ignore the pin.
+            let cert_der = identity.certificate_chain().as_slice()[0].der().to_vec();
+            let cert_hash_hex = hex::encode(Sha256::digest(&cert_der));
+            (identity, cert_hash_hex)
         }
         _ => {
             let identity = Identity::self_signed(["localhost", "127.0.0.1", "::1"])?;
@@ -752,6 +1109,11 @@ async fn main() -> Result<()> {
         .ok()
         .map(|value| !matches!(value.as_str(), "0" | "false" | "FALSE" | "no" | "off"))
         .unwrap_or(true);
+    anyhow::ensure!(
+        physics.backend != vibe_netcode::physics_backend::PhysicsBackendKind::PhysxGpu
+            || strict_snapshot_datagrams,
+        "PhysX GPU sessions require WT_STRICT_SNAPSHOT_DATAGRAMS=1 for the V2 60 Hz stream"
+    );
     let respawn_delay_ms = parse_respawn_delay_ms(
         std::env::var("VIBE_SERVER_RESPAWN_DELAY_MS")
             .ok()
@@ -761,11 +1123,20 @@ async fn main() -> Result<()> {
     info!(%wt_base_url, cert_hash = %cert_hash_hex, "WebTransport identity ready");
     info!(
         strict_snapshot_datagrams,
-        respawn_delay_ms, "WebTransport snapshot transport policy loaded"
+        respawn_delay_ms,
+        physics_backend = physics.backend.name(),
+        snapshot_hz = physics.snapshot_hz(),
+        "server runtime policy loaded"
     );
 
     let (stats_tx, _stats_rx) = tokio::sync::watch::channel(GlobalStatsSnapshot::default());
     let stats_tx = Arc::new(stats_tx);
+
+    // Declared before the state so /healthz and the accept loop share one
+    // counter: a second Arc would leave health reporting a number nobody
+    // increments, which is the same class of silent-wrong this whole change
+    // exists to remove.
+    let wt_attempts = Arc::new(AtomicU64::new(0));
 
     let state = SharedAppState {
         inner: Arc::new(AppState {
@@ -780,10 +1151,19 @@ async fn main() -> Result<()> {
             wt_base_url,
             strict_snapshot_datagrams,
             respawn_delay_ms,
+            physics,
             stats_tx,
             stats_registry: Arc::new(StdRwLock::new(HashMap::new())),
+            body_states_registry: Arc::new(StdRwLock::new(HashMap::new())),
+            reset_requests: Arc::new(StdRwLock::new(HashSet::new())),
+            wt_attempts: wt_attempts.clone(),
+            session_configs_served: AtomicU64::new(0),
+            first_session_config_ms: AtomicU64::new(0),
+            started: std::time::Instant::now(),
         }),
     };
+    // Taken before the router consumes `state`.
+    let watchdog_state = state.inner.clone();
 
     // Start WebTransport server
     let wt_config = ServerConfig::builder()
@@ -795,9 +1175,31 @@ async fn main() -> Result<()> {
 
     {
         let app_inner = state.inner.clone();
+        let attempts = wt_attempts.clone();
         tokio::spawn(async move {
+            // Counts every QUIC connection attempt that actually reached this
+            // socket. This is the one number that separates the two failures
+            // that look identical from a browser -- both present as
+            // QUIC_NETWORK_IDLE_TIMEOUT with no packets back:
+            //
+            //   attempts stay 0  -> the datagrams never arrive. The listener
+            //                       is bound (a bind failure is fatal well
+            //                       before this point), so the loss is
+            //                       upstream: host port forwarding, or a
+            //                       missing UDP mapping.
+            //   attempts climb   -> packets arrive and the handshake itself
+            //                       is failing. Look at the certificate.
+            //
+            // Diagnosing this by staring at logs that were never emitted cost
+            // real time and two wrong conclusions.
             loop {
                 let incoming = wt_endpoint.accept().await;
+                let seen = attempts.fetch_add(1, Ordering::Relaxed) + 1;
+                info!(
+                    remote = %incoming.remote_address(),
+                    attempts = seen,
+                    "WT connection attempt reached the listener"
+                );
                 let app = app_inner.clone();
                 tokio::spawn(async move {
                     let request = match incoming.await {
@@ -827,9 +1229,14 @@ async fn main() -> Result<()> {
         });
     }
 
+    let heartbeat_state = state.inner.clone();
     let app = Router::new()
-        .route("/healthz", get(|| async { "ok" }))
+        .route("/healthz", get(health_handler))
         .route("/session-config", get(session_config_handler))
+        .route("/city-manifest/:hash", get(city_manifest_handler))
+        .route("/match-stats/:match_id", get(match_stats_handler))
+        .route("/match-stats/:match_id/bodies", get(match_body_states_handler))
+        .route("/city-reset/:match_id", post(city_reset_handler))
         .route("/ws/stats", get(ws_stats_handler))
         .route("/ws/:match_id", get(ws_handler))
         .layer(tower_http::cors::CorsLayer::permissive())
@@ -840,12 +1247,414 @@ async fn main() -> Result<()> {
         .parse()?;
     info!(%addr, "starting web fps server");
     let listener = tokio::net::TcpListener::bind(addr).await?;
+
+    // The standalone web listener: the same API plus the built client, over
+    // TLS. It exists because a browser will not open a WebTransport session
+    // from an insecure context, and `http://<public-ip>` is not one -- only
+    // localhost is exempt. Serving the page over HTTPS from the box makes the
+    // context secure and puts /session-config same-origin, so no CORS and no
+    // mixed content either.
+    //
+    // Plain HTTP on BIND_ADDR stays exactly as it was: the Docker HEALTHCHECK,
+    // the dev-server proxy and the fleet all still use it.
+    // Never `?`: a certificate problem must not take down a game server that is
+    // otherwise healthy. The listener reports and stays down instead.
+    // Actively prove the advertised endpoint is reachable, before anyone is
+    // billed for a box that cannot serve players.
+    //
+    // Blocking only matters when the result can end the process. In `warn`
+    // mode nothing is decided by it, so waiting would just delay serving --
+    // and by a full timeout precisely on the hosts that do not hairpin, which
+    // is the common case for someone running this on a laptop.
+    {
+        let url = watchdog_state.wt_base_url.clone();
+        let hash = watchdog_state.cert_hash_hex.clone();
+        let counter = wt_attempts.clone();
+        if std::env::var("UDP_VERIFY").as_deref() == Ok("fatal") {
+            verify_public_udp_or_exit(&url, &hash, &counter).await;
+        } else {
+            tokio::spawn(async move { verify_public_udp_or_exit(&url, &hash, &counter).await });
+        }
+    }
+
+    spawn_udp_reachability_watchdog(watchdog_state.clone());
+
+    if let Err(error) = spawn_web_listener(app.clone()).await {
+        error!(%error, "web listener failed to start; continuing without it");
+    }
+
+    // Both listeners are up, so the first beat can truthfully claim the server
+    // is reachable -- that beat is what promotes this box to READY.
+    match heartbeat::HeartbeatConfig::from_env() {
+        Some(config) => heartbeat::spawn(heartbeat_state, config),
+        None => info!("heartbeat disabled: CONTROL_PLANE_URL/SERVER_DO_ID/HEARTBEAT_TOKEN not set"),
+    }
+
     axum::serve(listener, app).await?;
     Ok(())
 }
 
+/// Serves the built client and the API over TLS, for a box someone runs by hand.
+///
+/// Skipped unless a certificate is configured: without `WT_CERT_PEM`/`WT_KEY_PEM`
+/// there is nothing to serve HTTPS with. In the container the entrypoint always
+/// mints one, so this is always on there; under a bare `cargo run` it stays off
+/// and nothing changes.
+///
+/// `VIBE_WEB_DIR` is the built client. If it is absent the listener still comes
+/// up and serves the API -- useful for a server-only image -- it just has no
+/// page to hand out.
+/// Prove at boot that the address we are about to advertise actually reaches
+/// this process, and refuse to run if it does not.
+///
+/// The failure this exists for: a host accepts the UDP port mapping, forwards
+/// nothing, and the box looks perfect from every angle a machine can check --
+/// it boots, heartbeats, serves /city, answers /healthz "ok" -- while every
+/// player times out. It bills by the hour the whole time. Nothing short of a
+/// human opening a browser noticed, which is the thing worth removing.
+///
+/// The probe opens a real WebTransport connection to our *own public*
+/// endpoint, pinning the certificate hash we just generated the way a browser
+/// would. It deliberately asks for a path the session handler rejects, so a
+/// successful probe cannot create a phantom player.
+///
+/// Reachability is judged on whether the packets arrived, not on whether the
+/// handshake finished: `wt_attempts` moving means a QUIC Initial reached the
+/// listener, which is the property under test. A handshake that then fails for
+/// its own reasons still proves the path.
+///
+/// The caveat, stated because it decides the default: this traverses the
+/// host's NAT back to itself. A host that forwards player traffic correctly
+/// can still fail to hairpin, so a failed probe is not proof of a bad box.
+/// That is why `UDP_VERIFY` defaults to `warn` -- loud, and visible in the
+/// logs, without destroying working hosts on a signal that has known false
+/// negatives. Set `UDP_VERIFY=fatal` once a host is known to hairpin, and a
+/// bad box kills itself at boot instead of billing quietly.
+async fn verify_public_udp_or_exit(public_url: &str, cert_hash_hex: &str, attempts: &AtomicU64) {
+    let mode = std::env::var("UDP_VERIFY").unwrap_or_else(|_| "warn".to_string());
+    if mode == "off" {
+        return;
+    }
+    let timeout_ms: u64 = std::env::var("UDP_VERIFY_TIMEOUT_MS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(12_000);
+
+    let before = attempts.load(Ordering::Relaxed);
+    let result = tokio::time::timeout(
+        std::time::Duration::from_millis(timeout_ms),
+        probe_public_udp(public_url, cert_hash_hex),
+    )
+    .await;
+    // Give the server side a moment to register the attempt it just saw.
+    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    let arrived = attempts.load(Ordering::Relaxed) > before;
+
+    match (&result, arrived) {
+        // Either signal is sufficient: the handshake completing, or packets
+        // simply showing up at the listener.
+        (Ok(Ok(())), _) | (_, true) => {
+            info!(
+                endpoint = %public_url,
+                handshake = result.as_ref().map(|r| r.is_ok()).unwrap_or(false),
+                "UDP reachability verified: the advertised endpoint reaches this process"
+            );
+        }
+        _ => {
+            let (detail, network_evidence) = match &result {
+                Ok(Err(ProbeFailure::NoResponse(detail))) => (detail.clone(), true),
+                Ok(Err(ProbeFailure::Local(detail))) => (detail.clone(), false),
+                Err(_) => (format!("timed out after {timeout_ms}ms"), true),
+                Ok(Ok(())) => unreachable!("handled above"),
+            };
+            if !network_evidence {
+                warn!(
+                    endpoint = %public_url,
+                    detail = %detail,
+                    "UDP reachability probe could not run. This says nothing about the host -- \
+                     the probe never reached the network -- so it is not treated as a failure \
+                     even under UDP_VERIFY=fatal."
+                );
+                return;
+            }
+            if mode == "fatal" {
+                error!(
+                    endpoint = %public_url,
+                    detail = %detail,
+                    "UDP UNREACHABLE: nothing sent to the advertised endpoint came back to \
+                     this process. Players would load the page and then time out on the QUIC \
+                     handshake. The listener is bound -- a bind failure is fatal earlier -- so \
+                     this host is not forwarding the UDP port. A port mapping cannot be added \
+                     to a running instance, so exiting to have this box replaced."
+                );
+                std::process::exit(78); // EX_CONFIG, same as a missing mapping
+            }
+            warn!(
+                endpoint = %public_url,
+                detail = %detail,
+                "could not verify UDP reachability. This host may simply not route traffic \
+                 back to itself (NAT hairpin), which is common and harmless -- but it is also \
+                 what a host that forwards nothing looks like. If players cannot connect, this \
+                 is why. Set UDP_VERIFY=fatal to refuse to run unverified."
+            );
+        }
+    }
+}
+
+/// One WebTransport connection to our own public address, pinning our own
+/// certificate hash exactly as a browser does.
+async fn probe_public_udp(public_url: &str, cert_hash_hex: &str) -> Result<(), ProbeFailure> {
+    let mut digest = [0u8; 32];
+    let bytes = (0..cert_hash_hex.len().min(64))
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&cert_hash_hex[i..i + 2], 16))
+        .collect::<Result<Vec<u8>, _>>()
+        .map_err(|error| ProbeFailure::Local(format!("certificate hash is not hex: {error}")))?;
+    if bytes.len() != 32 {
+        return Err(ProbeFailure::Local(format!(
+            "certificate hash is {} bytes, expected 32",
+            bytes.len()
+        )));
+    }
+    digest.copy_from_slice(&bytes);
+
+    // Bind the probe socket in the same address family as the target. The
+    // default is a dual-stack v6 bind, which fails outright with "Address
+    // family not supported" on an IPv4-only host -- and that error arrives
+    // looking exactly like unreachability. Running this caught it; a host
+    // without IPv6 would otherwise have been declared dead and destroyed.
+    let target_is_v4 = public_url
+        .trim_start_matches("https://")
+        .trim_start_matches('[')
+        .split(':')
+        .next()
+        .map(|host| host.parse::<std::net::Ipv4Addr>().is_ok())
+        .unwrap_or(false);
+    let bind: SocketAddr = if target_is_v4 {
+        (std::net::Ipv4Addr::UNSPECIFIED, 0).into()
+    } else {
+        (std::net::Ipv6Addr::UNSPECIFIED, 0).into()
+    };
+
+    let config = wtransport::ClientConfig::builder()
+        .with_bind_address(bind)
+        .with_server_certificate_hashes([wtransport::tls::Sha256Digest::new(digest)])
+        .build();
+    let endpoint = wtransport::Endpoint::client(config)
+        .map_err(|error| ProbeFailure::Local(format!("could not open a probe socket: {error}")))?;
+    // A path the session handler rejects: this must never become a player.
+    let url = format!("{}/__reachability-probe", public_url.trim_end_matches('/'));
+    match endpoint.connect(&url).await {
+        Ok(_) => Ok(()),
+        Err(error) => Err(ProbeFailure::NoResponse(format!("{error}"))),
+    }
+}
+
+/// Why a probe did not succeed.
+///
+/// The distinction is the whole safety of this feature. `NoResponse` means the
+/// probe was sent and nothing came back, which is evidence about the network.
+/// `Local` means the probe never left the building -- a socket we could not
+/// open, a hash we could not parse -- which is evidence about *us* and says
+/// nothing about the host. Only the former may ever be fatal; treating a local
+/// error as unreachability would destroy working boxes, which is exactly what
+/// the first version of this did on an IPv4-only host.
+enum ProbeFailure {
+    Local(String),
+    NoResponse(String),
+}
+
+impl std::fmt::Display for ProbeFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Local(detail) | Self::NoResponse(detail) => write!(f, "{detail}"),
+        }
+    }
+}
+
+/// Notice a box whose UDP path is black-holed, and stop pretending it is
+/// healthy.
+///
+/// Binding the socket is fatal on failure, so a running server always has a
+/// listening socket -- which is exactly why this failure was invisible. The
+/// box boots, heartbeats, serves its page, answers /healthz with "ok", and is
+/// handed players who then cannot connect. Two hosts did this before anyone
+/// worked out the datagrams were being dropped upstream.
+///
+/// There is no way to test inbound reachability from inside the box. A probe
+/// to our own public address has to hairpin back through the host's NAT,
+/// which fails on plenty of hosts that carry player traffic perfectly well --
+/// so a failed probe would condemn good boxes. Instead this waits for the one
+/// piece of evidence that is unambiguous: a client fetched /session-config,
+/// so a browser was told where to open QUIC and is trying right now. If no
+/// connection attempt reaches the socket within the grace window after that,
+/// the packets are not arriving.
+///
+/// On an orchestrated box, exiting is the useful response: the port mapping
+/// cannot be changed on a running instance, so the box can never serve
+/// players and the fleet should replace it. `UDP_WATCHDOG=fatal` selects
+/// that; the entrypoint turns it on where a replacement is automatic, and it
+/// stays off by default so a `docker run` on a laptop is not killed while its
+/// owner is still opening a browser tab.
+fn spawn_udp_reachability_watchdog(state: Arc<AppState>) {
+    let mode = std::env::var("UDP_WATCHDOG").unwrap_or_else(|_| "warn".to_string());
+    if mode == "off" {
+        return;
+    }
+    let fatal = mode == "fatal";
+    let grace_ms: u64 = std::env::var("UDP_WATCHDOG_GRACE_MS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(45_000);
+
+    tokio::spawn(async move {
+        let mut reported = false;
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+
+            let attempts = state.wt_attempts.load(Ordering::Relaxed);
+            if attempts > 0 {
+                // Reachability is proven for the life of the process; a later
+                // quiet spell is just nobody playing.
+                return;
+            }
+            let first = state.first_session_config_ms.load(Ordering::Relaxed);
+            if first == 0 {
+                continue; // nobody has asked where to connect yet
+            }
+            let waited = state.started.elapsed().as_millis() as u64 - first;
+            if waited < grace_ms {
+                continue;
+            }
+
+            let served = state.session_configs_served.load(Ordering::Relaxed);
+            if !reported {
+                error!(
+                    session_configs_served = served,
+                    wt_connection_attempts = 0,
+                    waited_ms = waited,
+                    wt_base_url = %state.wt_base_url,
+                    "UDP appears unreachable: clients were told where to connect but not one \
+                     QUIC packet has reached this socket. The listener is bound (a bind failure \
+                     is fatal at startup), so the datagrams are being dropped upstream -- the \
+                     host is not forwarding this UDP port."
+                );
+                reported = true;
+            }
+            if fatal {
+                error!(
+                    "UDP_WATCHDOG=fatal: exiting so this box is replaced. A port mapping \
+                     cannot be added to a running instance, so this one can never serve players."
+                );
+                // 78 = EX_CONFIG, the same code the entrypoint uses for a
+                // missing port mapping. Both mean "this host cannot do the
+                // job", which is what the orchestrator acts on.
+                std::process::exit(78);
+            }
+        }
+    });
+}
+
+async fn spawn_web_listener(app: Router) -> anyhow::Result<()> {
+    let Some(bind) = std::env::var("WEB_BIND_ADDR")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+    else {
+        return Ok(());
+    };
+    let (Some(cert_path), Some(key_path)) = (
+        std::env::var("WT_CERT_PEM").ok(),
+        std::env::var("WT_KEY_PEM").ok(),
+    ) else {
+        info!("WEB_BIND_ADDR set but no WT_CERT_PEM/WT_KEY_PEM; web listener disabled");
+        return Ok(());
+    };
+
+    let addr: SocketAddr = bind.parse()?;
+
+    // rustls panics -- does not return an error -- when no process-level crypto
+    // provider is installed, and axum-server does not install one. wtransport
+    // sets its own up internally, which is not the same thing. Installing ring
+    // here is idempotent by intent: a second call returns Err, which is the
+    // "someone already did it" case and not a failure.
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
+    let tls = axum_server::tls_rustls::RustlsConfig::from_pem_file(&cert_path, &key_path).await?;
+
+    let web_dir =
+        std::env::var("VIBE_WEB_DIR").unwrap_or_else(|_| "/opt/vibe-land/web".to_string());
+    let app = match std::path::Path::new(&web_dir).join("index.html") {
+        // A single-page app: unknown paths are client routes such as /city, so
+        // they must fall back to index.html rather than 404.
+        index if index.is_file() => {
+            info!(%web_dir, %addr, "serving the client over https");
+            app.fallback_service(
+                tower_http::services::ServeDir::new(&web_dir)
+                    .fallback(tower_http::services::ServeFile::new(index)),
+            )
+        }
+        _ => {
+            info!(%web_dir, %addr, "no client bundle; https listener serves the api only");
+            app
+        }
+    };
+
+    tokio::spawn(async move {
+        if let Err(error) = axum_server::bind_rustls(addr, tls)
+            .serve(app.into_make_service())
+            .await
+        {
+            error!(%error, "web listener stopped");
+        }
+    });
+    Ok(())
+}
+
+#[derive(serde::Serialize)]
+struct HealthResponse {
+    status: &'static str,
+    physics_backend: &'static str,
+    physics_gpu_required: bool,
+    sim_hz: u16,
+    snapshot_hz: u16,
+    /// Load, so a container smoke test and the Docker HEALTHCHECK can tell
+    /// "listening" apart from "listening and actually running matches".
+    active_matches: u32,
+    players: u32,
+    /// Whether any QUIC connection attempt has ever reached the UDP socket.
+    /// False is not a fault on its own -- it also means "no client has tried
+    /// yet" -- but false while `session_configs_served` climbs is a box that
+    /// cannot serve players, which used to be indistinguishable from a
+    /// healthy one.
+    udp_verified: bool,
+    wt_connection_attempts: u64,
+    session_configs_served: u64,
+}
+
+async fn health_handler(State(state): State<SharedAppState>) -> Json<HealthResponse> {
+    let (active_matches, players) = heartbeat::fleet_stats(&state.inner).await;
+    Json(HealthResponse {
+        status: "ok",
+        physics_backend: state.inner.physics.backend.name(),
+        physics_gpu_required: state.inner.physics.capabilities.gpu_required,
+        sim_hz: state.inner.physics.sim_hz(),
+        snapshot_hz: state.inner.physics.snapshot_hz(),
+        active_matches,
+        players,
+        udp_verified: state.inner.wt_attempts.load(Ordering::Relaxed) > 0,
+        wt_connection_attempts: state.inner.wt_attempts.load(Ordering::Relaxed),
+        session_configs_served: state.inner.session_configs_served.load(Ordering::Relaxed),
+    })
+}
+
 fn load_repo_env() {
     let repo_env = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.env");
+    // The path is baked in at compile time, so on a deployed box it points at
+    // the *builder's* checkout and will never exist. Returning quietly keeps
+    // container logs free of a warning that looks like a misconfiguration.
+    if !repo_env.exists() {
+        return;
+    }
     match dotenvy::from_path(&repo_env) {
         Ok(()) => info!(path = %repo_env.display(), "loaded repo .env"),
         Err(err) => warn!(path = %repo_env.display(), error = %err, "failed to load repo .env"),
@@ -856,15 +1665,156 @@ async fn session_config_handler(
     Query(query): Query<SessionConfigQuery>,
     State(state): State<SharedAppState>,
 ) -> impl IntoResponse {
+    // Each of these is a browser being told where to open QUIC. Recording the
+    // first one starts the clock the reachability watchdog measures against.
+    state
+        .inner
+        .session_configs_served
+        .fetch_add(1, Ordering::Relaxed);
+    let _ = state.inner.first_session_config_ms.compare_exchange(
+        0,
+        state.inner.started.elapsed().as_millis() as u64,
+        Ordering::Relaxed,
+        Ordering::Relaxed,
+    );
+    let config_match_id = query.match_id.clone();
+    let city_world = city::is_city_match(&query.match_id);
+    let city_manifest_hash = if city_world {
+        city::manifest_asset().map(|(hash, _, _)| hash.clone())
+    } else {
+        None
+    };
     let config = SessionConfig {
         url: format!("{}/game", state.inner.wt_base_url),
         server_certificate_hash_hex: state.inner.cert_hash_hex.clone(),
         match_id: query.match_id,
-        sim_hz: SIM_HZ,
-        snapshot_hz: SNAPSHOT_HZ,
-        interpolation_delay_ms: (1000 / SNAPSHOT_HZ) * 2,
+        sim_hz: state.inner.physics.sim_hz(),
+        snapshot_hz: state.inner.physics.snapshot_hz(),
+        interpolation_delay_ms: state.inner.physics.interpolation_delay_ms(),
+        protocol_version: vibe_land_shared::constants::PROTOCOL_VERSION,
+        physics_backend: state.inner.physics.backend.wire_id(),
+        client_movement_mode: state.inner.physics.client_movement_mode(),
+        city_world: city_world && city_manifest_hash.is_some(),
+        city_manifest_hash,
+        city_wire_version: city::city_wire_version(&config_match_id),
     };
     axum::Json(config)
+}
+
+/// Content-addressed city manifest: gzip-encoded canonical JSON, immutable.
+/// Per-match telemetry for the in-page debug overlay: sim tick cost, body
+/// counts, and city stream volume, so client-side and server-side slowness can
+/// be told apart while playing.
+async fn match_stats_handler(
+    Path(match_id): Path<String>,
+    State(state): State<SharedAppState>,
+) -> impl IntoResponse {
+    let snapshot = state
+        .inner
+        .stats_registry
+        .read()
+        .expect("stats registry poisoned")
+        .get(&match_id)
+        .cloned();
+    match snapshot {
+        Some(stats) => (StatusCode::OK, Json(stats)).into_response(),
+        None => (StatusCode::NOT_FOUND, "unknown match").into_response(),
+    }
+}
+
+async fn match_body_states_handler(
+    Path(match_id): Path<String>,
+    State(state): State<SharedAppState>,
+) -> impl IntoResponse {
+    // Per-body freeze-machine states for the debug overlay: pairs of
+    // [packed body entity, state], state = 0 awake, 1 awake-quiet
+    // (admission pending), 2 asleep, 3 frozen, 4 foreign-blocked.
+    let states = state
+        .inner
+        .body_states_registry
+        .read()
+        .expect("body states registry poisoned")
+        .get(&match_id)
+        .cloned();
+    match states {
+        Some(states) => (StatusCode::OK, Json(states)).into_response(),
+        None => (StatusCode::NOT_FOUND, "unknown match").into_response(),
+    }
+}
+
+/// Request an undamaged city for this match. Applied by the match loop on its
+/// next tick, so this returns "accepted", not "done".
+/// When this binary was built, from its own file mtime -- no build script or
+/// codegen needed, and it cannot drift from the artefact actually running.
+fn server_build_stamp() -> String {
+    static STAMP: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    STAMP
+        .get_or_init(|| {
+            std::env::current_exe()
+                .and_then(|path| std::fs::metadata(path))
+                .and_then(|meta| meta.modified())
+                .map(format_stamp)
+                .unwrap_or_else(|_| "unknown".to_string())
+        })
+        .clone()
+}
+
+/// When this process started. Distinct from the build stamp: a restart on an
+/// unchanged binary resets the world without changing the code.
+fn server_started_stamp() -> String {
+    static STAMP: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    STAMP
+        .get_or_init(|| format_stamp(std::time::SystemTime::now()))
+        .clone()
+}
+
+/// `HH:MM:SS` in UTC. Enough to spot a stale artefact in a screenshot; a full
+/// date would not fit the overlay and is never the question being asked.
+fn format_stamp(time: std::time::SystemTime) -> String {
+    let secs = time
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let day = secs % 86_400;
+    format!("{:02}:{:02}:{:02}", day / 3600, (day % 3600) / 60, day % 60)
+}
+
+async fn city_reset_handler(
+    Path(match_id): Path<String>,
+    State(state): State<SharedAppState>,
+) -> impl IntoResponse {
+    if !city::is_city_match(&match_id) {
+        return (StatusCode::BAD_REQUEST, "not a city match").into_response();
+    }
+    state
+        .inner
+        .reset_requests
+        .write()
+        .expect("reset requests poisoned")
+        .insert(match_id.clone());
+    info!(%match_id, "city reset requested");
+    (StatusCode::ACCEPTED, "reset queued").into_response()
+}
+
+async fn city_manifest_handler(
+    axum::extract::Path(hash): axum::extract::Path<String>,
+) -> axum::response::Response {
+    use axum::http::{header, StatusCode};
+    use axum::response::IntoResponse;
+    match city::manifest_asset() {
+        Some((expected_hash, _, gzipped)) if *expected_hash == hash => (
+            StatusCode::OK,
+            [
+                (header::CONTENT_TYPE, "application/json"),
+                (header::CONTENT_ENCODING, "gzip"),
+                (header::CACHE_CONTROL, "public, max-age=31536000, immutable"),
+            ],
+            gzipped.clone(),
+        )
+            .into_response(),
+        Some(_) => (StatusCode::NOT_FOUND, "unknown manifest hash").into_response(),
+        None => (StatusCode::NOT_FOUND, "city manifest unavailable").into_response(),
+    }
 }
 
 async fn ws_stats_handler(
@@ -897,15 +1847,42 @@ async fn handle_wt_session(app: Arc<AppState>, connection: Connection) -> Result
     // Accept the client's first bidi stream which carries the framed ClientHello
     let (mut send_stream, mut recv_stream) = connection.accept_bi().await?;
 
-    // Read all bytes from the stream (client closes its write side after sending ClientHello)
-    let mut raw = Vec::new();
-    recv_stream.read_to_end(&mut raw).await?;
-
-    // Strip 4-byte LE length prefix from frameReliablePacket
-    anyhow::ensure!(raw.len() >= 4, "ClientHello too short");
-    let payload_len = u32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]) as usize;
-    anyhow::ensure!(raw.len() >= 4 + payload_len, "ClientHello truncated");
-    let hello = decode_client_hello(&raw[4..4 + payload_len])?;
+    // Read exactly the framed ClientHello rather than reading to end-of-stream.
+    //
+    // Reading to end waits for the client's FIN, which makes the handshake
+    // depend on every browser's WebTransport implementation delivering that
+    // promptly. When one does not, this blocks forever: no Welcome is sent, no
+    // error is raised, and the player sits on "Connecting..." with nothing in
+    // the log to explain it. The frame is length-prefixed, so the exact size is
+    // known up front and there is no reason to wait for a close.
+    let payload = tokio::time::timeout(CLIENT_HELLO_TIMEOUT, async {
+        let mut length = [0u8; 4];
+        recv_stream.read_exact(&mut length).await?;
+        let payload_len = u32::from_le_bytes(length) as usize;
+        anyhow::ensure!(
+            payload_len > 0 && payload_len <= MAX_CLIENT_HELLO_BYTES,
+            "ClientHello length out of range: {payload_len}"
+        );
+        let mut payload = vec![0u8; payload_len];
+        recv_stream.read_exact(&mut payload).await?;
+        Ok::<_, anyhow::Error>(payload)
+    })
+    .await
+    .context("timed out waiting for ClientHello")??;
+    let hello = decode_client_hello(&payload)?;
+    if app.physics.backend == vibe_netcode::physics_backend::PhysicsBackendKind::PhysxGpu {
+        anyhow::ensure!(
+            hello.protocol_version >= vibe_land_shared::constants::PROTOCOL_VERSION,
+            "PhysX GPU sessions require protocol version {}",
+            vibe_land_shared::constants::PROTOCOL_VERSION
+        );
+        anyhow::ensure!(
+            hello.movement_capabilities
+                & vibe_land_shared::constants::CLIENT_MOVEMENT_CAP_THIN_AUTHORITATIVE
+                != 0,
+            "client does not support thin authoritative movement"
+        );
+    }
 
     let player_id = app.next_player_id.fetch_add(1, Ordering::Relaxed);
     let handle = get_or_create_match(app.clone(), hello.match_id.clone()).await;
@@ -1032,7 +2009,55 @@ async fn handle_wt_session(app: Arc<AppState>, connection: Connection) -> Result
         info!(player_id, "WT reader task exited");
     });
 
+    // Second inbound path: the same control stream the ClientHello arrived on,
+    // carrying length-prefixed client packets.
+    //
+    // Safari can receive WebTransport datagrams but cannot send them
+    // (`datagrams.writable` is undefined), which used to demote those sessions
+    // all the way to WebSocket -- surrendering UDP in both directions to work
+    // around a limit that only affects the client's tiny uplink. Reading input
+    // here lets the expensive server-to-client stream stay on datagrams.
+    let tx_stream = handle.tx.clone();
+    let stream_telemetry = handle.telemetry.clone();
+    let stream_reader = tokio::spawn(async move {
+        loop {
+            let mut length = [0u8; 4];
+            if recv_stream.read_exact(&mut length).await.is_err() {
+                break; // clean close, or the peer never used this path
+            }
+            let payload_len = u32::from_le_bytes(length) as usize;
+            if payload_len == 0 || payload_len > MAX_CLIENT_STREAM_PACKET_BYTES {
+                warn!(player_id, payload_len, "closing WT uplink: implausible frame length");
+                break;
+            }
+            let mut payload = vec![0u8; payload_len];
+            if recv_stream.read_exact(&mut payload).await.is_err() {
+                break;
+            }
+            stream_telemetry.observe_inbound(payload.len());
+            match decode_client_datagram(&payload) {
+                Ok(dgram) => {
+                    let packet = client_datagram_to_packet(dgram);
+                    if tx_stream
+                        .send(MatchEvent::Packet { player_id, packet })
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+                Err(err) => {
+                    stream_telemetry.observe_malformed_packet();
+                    warn!(player_id, error = ?err, "dropping malformed WT stream packet");
+                }
+            }
+        }
+        info!(player_id, "WT stream uplink reader exited");
+    });
+
+    // The datagram reader owns disconnect: it is the path every client has, and
+    // the stream reader ending simply means this client never needed it.
     let _ = tokio::join!(writer, reader);
+    stream_reader.abort();
     Ok(())
 }
 
@@ -1166,11 +2191,15 @@ async fn run_match_loop(
     mut rx: mpsc::UnboundedReceiver<MatchEvent>,
     strict_snapshot_datagrams: bool,
     respawn_delay_ms: u32,
+    physics: PhysicsRuntimeConfig,
     stats_tx: Arc<tokio::sync::watch::Sender<GlobalStatsSnapshot>>,
     telemetry: Arc<MatchIoTelemetry>,
     stats_registry: Arc<StdRwLock<HashMap<String, MatchStatsSnapshot>>>,
+    body_states_registry: Arc<StdRwLock<HashMap<String, Vec<(u32, u8, u32, i32)>>>>,
+    reset_requests: Arc<StdRwLock<HashSet<String>>>,
 ) {
-    let mut arena = PhysicsArena::new(MoveConfig::default());
+    let mut arena = PhysicsArena::new(MoveConfig::default(), physics.backend)
+        .expect("selected authoritative physics backend should initialize");
     let world = VoxelWorld::new();
     seed_world_for_match(&mut arena, &match_id).expect("world document should instantiate");
     let dynamic_body_handles = arena
@@ -1178,10 +2207,12 @@ async fn run_match_loop(
         .into_iter()
         .enumerate()
         .map(|(index, (id, _, _, half_extents, _, _, shape_type))| {
+            let handle = u16::try_from(index + 1)
+                .expect("snapshot V2 supports at most 65,535 dynamic bodies per match");
             (
                 id,
                 DynamicBodyMetaRuntime {
-                    handle: (index as u16).saturating_add(1),
+                    handle,
                     shape_type,
                     half_extents_m: half_extents,
                 },
@@ -1192,8 +2223,45 @@ async fn run_match_loop(
         .snapshot_vehicles()
         .into_iter()
         .enumerate()
-        .map(|(index, state)| (state.id, (index as u8).saturating_add(1)))
+        .map(|(index, state)| {
+            (
+                state.id,
+                u8::try_from(index + 1)
+                    .expect("snapshot V2 supports at most 255 vehicles per match"),
+            )
+        })
         .collect();
+
+    let city = if city::is_city_match(&match_id) {
+        #[cfg(feature = "destruction")]
+        let world = arena.physx_world_mut();
+        #[cfg(not(feature = "destruction"))]
+        let world = None;
+        match city::CityRuntime::open(SIM_HZ as u32, world) {
+            Ok(mut runtime) => {
+                // Fixed for the life of the match: the version is announced in
+                // the session config, so every client that joins has already
+                // agreed to this layout.
+                runtime.set_wire_version(city::city_wire_version(&match_id));
+                info!(
+                    %match_id,
+                    structures = runtime.manifest.structures.len(),
+                    chunks = runtime.manifest.total_chunks(),
+                    bonds = runtime.manifest.total_bonds(),
+                    physx = runtime.is_physx(),
+                    city_wire = runtime.wire_version(),
+                    "destructible city initialized"
+                );
+                Some(runtime)
+            }
+            Err(error) => {
+                warn!(%match_id, %error, "destructible city unavailable for this match");
+                None
+            }
+        }
+    } else {
+        None
+    };
 
     let mut state = MatchState {
         id: match_id,
@@ -1212,15 +2280,23 @@ async fn run_match_loop(
         void_kills: 0,
         strict_snapshot_datagrams,
         respawn_delay_ms,
+        physics,
         last_logged_datagram_fallbacks: 0,
         last_logged_dropped_outbound_packets: 0,
         stats_registry,
+        body_states_registry,
+        reset_requests,
+        city_desync_players: HashSet::new(),
+        city_desync_repairs: 0,
+        last_fan_out_ms: 0.0,
+        last_publish_ms: 0.0,
         next_player_handle: 1,
         reusable_player_handles: VecDeque::new(),
         free_player_handles: VecDeque::new(),
         player_handles: HashMap::new(),
         dynamic_body_handles,
         vehicle_handles,
+        city,
     };
 
     let mut tick = tokio::time::interval(Duration::from_secs_f64(1.0 / SIM_HZ as f64));
@@ -1244,7 +2320,10 @@ async fn run_match_loop(
             .write()
             .expect("stats registry poisoned");
         registry.remove(&state.id);
-        let _ = state.stats_tx.send(global_stats_from_registry(&registry));
+        let _ = state.stats_tx.send(global_stats_from_registry(
+            &registry,
+            state.physics.snapshot_hz(),
+        ));
     }
 }
 
@@ -1256,52 +2335,67 @@ fn spawn_match_loop(
     telemetry: Arc<MatchIoTelemetry>,
 ) {
     info!(%match_id, "spawning match loop");
-    tokio::spawn(async move {
-        let outcome = std::panic::AssertUnwindSafe(run_match_loop(
-            match_id.clone(),
-            rx,
-            app.strict_snapshot_datagrams,
-            app.respawn_delay_ms,
-            app.stats_tx.clone(),
-            telemetry,
-            app.stats_registry.clone(),
-        ))
-        .catch_unwind()
-        .await;
+    std::thread::Builder::new()
+        .name(format!("match-{match_id}"))
+        .spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("match runtime should initialize");
+            runtime.block_on(async move {
+                let outcome = std::panic::AssertUnwindSafe(run_match_loop(
+                    match_id.clone(),
+                    rx,
+                    app.strict_snapshot_datagrams,
+                    app.respawn_delay_ms,
+                    app.physics,
+                    app.stats_tx.clone(),
+                    telemetry,
+                    app.stats_registry.clone(),
+                    app.body_states_registry.clone(),
+                    app.reset_requests.clone(),
+                ))
+                .catch_unwind()
+                .await;
 
-        match outcome {
-            Ok(()) => {
-                warn!(%match_id, "match loop exited");
-            }
-            Err(payload) => {
-                error!(
-                    %match_id,
-                    panic = %describe_panic_payload(&payload),
-                    "match loop panicked"
-                );
-            }
-        }
+                match outcome {
+                    Ok(()) => {
+                        warn!(%match_id, "match loop exited");
+                    }
+                    Err(payload) => {
+                        error!(
+                            %match_id,
+                            panic = %describe_panic_payload(&payload),
+                            "match loop panicked"
+                        );
+                    }
+                }
 
-        let removed = {
-            let mut matches = app.matches.write().await;
-            matches
-                .get(&match_id)
-                .map(|existing| existing.tx.same_channel(&handle.tx))
-                .unwrap_or(false)
-                .then(|| matches.remove(&match_id))
-                .flatten()
-                .is_some()
-        };
-        if removed {
-            warn!(%match_id, "removed dead match handle after match loop termination");
-        }
+                let removed = {
+                    let mut matches = app.matches.write().await;
+                    matches
+                        .get(&match_id)
+                        .map(|existing| existing.tx.same_channel(&handle.tx))
+                        .unwrap_or(false)
+                        .then(|| matches.remove(&match_id))
+                        .flatten()
+                        .is_some()
+                };
+                if removed {
+                    warn!(%match_id, "removed dead match handle after match loop termination");
+                }
 
-        {
-            let mut registry = app.stats_registry.write().expect("stats registry poisoned");
-            registry.remove(&match_id);
-            let _ = app.stats_tx.send(global_stats_from_registry(&registry));
-        }
-    });
+                {
+                    let mut registry = app.stats_registry.write().expect("stats registry poisoned");
+                    registry.remove(&match_id);
+                    let _ = app.stats_tx.send(global_stats_from_registry(
+                        &registry,
+                        app.physics.snapshot_hz(),
+                    ));
+                }
+            });
+        })
+        .expect("match simulation thread should start");
 }
 
 impl MatchState {
@@ -1310,7 +2404,7 @@ impl MatchState {
     }
 
     fn resolve_vehicle_runtime_id(&self, wire_vehicle_id: u32) -> Option<u32> {
-        if self.arena.vehicles.contains_key(&wire_vehicle_id) {
+        if self.arena.vehicle_exists(wire_vehicle_id) {
             return Some(wire_vehicle_id);
         }
         let handle = u8::try_from(wire_vehicle_id).ok()?;
@@ -1421,6 +2515,7 @@ impl MatchState {
                         transport: conn.transport,
                         tx: conn.tx.clone(),
                         pending_inputs: VecDeque::new(),
+                        inputs_skipped_for_catchup: 0,
                         last_applied_input: InputCmd::default(),
                         last_received_input_seq: None,
                         last_ack_input_seq: 0,
@@ -1461,14 +2556,46 @@ impl MatchState {
                 let server_time_us = (self.server_tick as u64) * (1_000_000 / SIM_HZ as u64);
                 let welcome = ServerPacket::Welcome(WelcomePacket {
                     player_id: conn.player_id,
+                    protocol_version: vibe_land_shared::constants::PROTOCOL_VERSION,
+                    physics_backend: self.physics.backend.wire_id(),
+                    client_movement_mode: self.physics.client_movement_mode(),
                     sim_hz: SIM_HZ,
-                    snapshot_hz: SNAPSHOT_HZ,
+                    snapshot_hz: self.physics.snapshot_hz(),
                     server_time_us,
-                    interpolation_delay_ms: (1000 / SNAPSHOT_HZ) * 2,
+                    interpolation_delay_ms: self.physics.interpolation_delay_ms(),
                 });
                 let _ = try_queue_packet(&conn.tx, encode_server_packet(&welcome), &self.io);
                 self.send_initial_metadata(&conn.tx);
                 self.queue_roster_sync();
+
+                if let Some(city) = self.city.as_mut() {
+                    city.add_client(u64::from(conn.player_id));
+                    // Manifest first: it describes the geometry every later city
+                    // packet refers to, so a client cannot use bootstrap without it.
+                    if let Some((_, _, gzipped)) = city::manifest_asset() {
+                        let mut packet = Vec::with_capacity(gzipped.len() + 1);
+                        packet.push(vibe_land_shared::constants::PKT_CITY_MANIFEST);
+                        packet.extend_from_slice(gzipped);
+                        let _ = try_queue_packet(&conn.tx, packet, &self.io);
+                    }
+                    // A bootstrap dropped here is the worst case of all: the
+                    // client never had a ledger, so it never sees a sequence
+                    // gap either -- it renders the intact manifest forever and
+                    // reports nothing wrong. Enrol it for repair instead.
+                    let mut delivered =
+                        try_queue_packet(&conn.tx, city.bootstrap(self.server_tick), &self.io);
+                    if let Some(lanes) = city.full_lane_map() {
+                        delivered = try_queue_packet(&conn.tx, lanes, &self.io) && delivered;
+                    }
+                    if !delivered {
+                        warn!(
+                            match_id = %self.id,
+                            player_id = conn.player_id,
+                            "city bootstrap dropped at join; scheduling repair"
+                        );
+                        self.city_desync_players.insert(conn.player_id);
+                    }
+                }
 
                 if let Some((pos, _, _, _, _, _)) = self.arena.snapshot_player(conn.player_id) {
                     for key in self.world.visible_chunks_around(pos, CHUNK_RADIUS_ON_JOIN) {
@@ -1483,6 +2610,9 @@ impl MatchState {
                 }
             }
             MatchEvent::Disconnect { player_id } => {
+                if let Some(city) = self.city.as_mut() {
+                    city.remove_client(u64::from(player_id));
+                }
                 let disconnect_runtime = self.players.get(&player_id).map(|runtime| {
                     (
                         runtime.transport.as_str().to_string(),
@@ -1542,12 +2672,7 @@ impl MatchState {
                 let Some(runtime) = self.players.get_mut(&player_id) else {
                     return;
                 };
-                let is_dead = self
-                    .arena
-                    .players
-                    .get(&player_id)
-                    .map(|state| state.dead)
-                    .unwrap_or(false);
+                let is_dead = self.arena.player_is_dead(player_id);
                 match packet {
                     ClientPacket::InputBundle(cmds) => {
                         // Track inter-arrival timing for jitter measurement
@@ -1627,9 +2752,33 @@ impl MatchState {
                             if let Some(vehicle_id) =
                                 self.resolve_vehicle_runtime_id(cmd.vehicle_id)
                             {
-                                self.arena.enter_vehicle(player_id, vehicle_id);
-                                if self.arena.vehicle_of_player.get(&player_id) == Some(&vehicle_id)
-                                {
+                                let can_enter = self
+                                    .arena
+                                    .player_state(player_id)
+                                    .and_then(|player| {
+                                        self.arena
+                                            .snapshot_vehicles()
+                                            .into_iter()
+                                            .find(|vehicle| vehicle.id == vehicle_id)
+                                            .map(|vehicle| {
+                                                let dx = player.position.x as f32
+                                                    - mm_to_meters(vehicle.px_mm);
+                                                let dy = player.position.y as f32
+                                                    - mm_to_meters(vehicle.py_mm);
+                                                let dz = player.position.z as f32
+                                                    - mm_to_meters(vehicle.pz_mm);
+                                                (vehicle.driver_id == 0
+                                                    || vehicle.driver_id == player_id)
+                                                    && dx * dx + dy * dy + dz * dz
+                                                        <= VEHICLE_INTERACT_RADIUS_M
+                                                            * VEHICLE_INTERACT_RADIUS_M
+                                            })
+                                    })
+                                    .unwrap_or(false);
+                                if can_enter {
+                                    self.arena.enter_vehicle(player_id, vehicle_id);
+                                }
+                                if self.arena.player_vehicle_id(player_id) == Some(vehicle_id) {
                                     if let Some(runtime) = self.players.get_mut(&player_id) {
                                         clear_runtime_inputs_for_vehicle_entry(runtime);
                                     }
@@ -1637,9 +2786,15 @@ impl MatchState {
                             }
                         }
                     }
-                    ClientPacket::VehicleExit(_cmd) => {
+                    ClientPacket::VehicleExit(cmd) => {
                         if !is_dead {
-                            self.arena.exit_vehicle(player_id);
+                            if self.resolve_vehicle_runtime_id(cmd.vehicle_id).is_some_and(
+                                |vehicle_id| {
+                                    self.arena.player_vehicle_id(player_id) == Some(vehicle_id)
+                                },
+                            ) {
+                                self.arena.exit_vehicle(player_id);
+                            }
                         }
                     }
                     ClientPacket::DebugStats {
@@ -1649,6 +2804,29 @@ impl MatchState {
                         runtime.client_correction_m = correction_m;
                         runtime.client_physics_ms = physics_ms;
                         runtime.client_debug_seen = true;
+                    }
+                    ClientPacket::CityNack { bodies } => {
+                        if let Some(city) = self.city.as_mut() {
+                            city.restate_bodies(&bodies);
+                        }
+                    }
+                    ClientPacket::CityResyncRequest { last_topo_seq } => {
+                        if let Some(city) = self.city.as_mut() {
+                            info!(
+                                match_id = %self.id,
+                                player_id,
+                                last_topo_seq,
+                                "city topology resync requested; sending bootstrap"
+                            );
+                            let bootstrap = city.bootstrap(self.server_tick);
+                            let _ = try_queue_packet(&runtime.tx, bootstrap, &self.io);
+                            if let Some(lanes) = city.full_lane_map() {
+                                let _ = try_queue_packet(&runtime.tx, lanes, &self.io);
+                            }
+                            // The datagram-side half of a resync: every lane
+                            // restates absolutely over the coming spans.
+                            city.begin_join_restate();
+                        }
                     }
                 }
             }
@@ -1694,22 +2872,16 @@ impl MatchState {
         let mut player_centers = Vec::with_capacity(ids.len());
         let mut on_foot_energy_drains = Vec::with_capacity(ids.len());
         for player_id in ids.iter().copied() {
-            if self.arena.vehicle_of_player.contains_key(&player_id) {
+            if self.arena.is_player_in_vehicle(player_id) {
                 players_in_vehicles += 1.0;
             }
-            if self
-                .arena
-                .players
-                .get(&player_id)
-                .is_some_and(|state| state.dead)
-            {
+            if self.arena.player_is_dead(player_id) {
                 dead_players_skipped += 1.0;
             }
             let (previous_input, was_on_ground) = self
                 .arena
-                .players
-                .get(&player_id)
-                .map(|state| (state.last_input.clone(), state.on_ground))
+                .player_state(player_id)
+                .map(|state| (state.last_input, state.on_ground))
                 .unwrap_or_default();
             let input = self
                 .players
@@ -1721,7 +2893,7 @@ impl MatchState {
                     // steering/throttle for hundreds of milliseconds.
                     take_input_for_tick_with_vehicle_catchup(
                         runtime,
-                        self.arena.vehicle_of_player.contains_key(&player_id),
+                        self.arena.is_player_in_vehicle(player_id),
                     )
                 })
                 .unwrap_or_default();
@@ -1883,12 +3055,7 @@ impl MatchState {
         self.timings.dynamics_ms.record(dynamics_ms);
         self.timings.vehicle_ms.record(vehicle_ms);
 
-        let alive_player_ids: Vec<u32> = self
-            .arena
-            .players
-            .iter()
-            .filter_map(|(&player_id, state)| (!state.dead).then_some(player_id))
-            .collect();
+        let alive_player_ids = self.arena.alive_player_ids();
         for &player_id in &alive_player_ids {
             let gained_energy: f32 = self
                 .arena
@@ -1897,9 +3064,7 @@ impl MatchState {
                 .map(|(_, energy)| energy)
                 .sum();
             if gained_energy > 0.0 {
-                if let Some(state) = self.arena.players.get_mut(&player_id) {
-                    state.energy += gained_energy;
-                }
+                let _ = self.arena.add_player_energy(player_id, gained_energy);
             }
         }
         for (player_id, previous_input, input, was_on_ground) in on_foot_energy_drains {
@@ -1917,6 +3082,8 @@ impl MatchState {
             self.kill_player_with_cause(player_id, server_time_ms, DeathCause::EnergyDepletion);
         }
 
+        self.route_city_shots();
+
         let hitscan_started = Instant::now();
         self.process_hitscan(server_time_ms);
         self.timings
@@ -1926,7 +3093,9 @@ impl MatchState {
 
         self.sync_reliable_world_state();
 
-        if self.server_tick % (SIM_HZ as u32 / SNAPSHOT_HZ as u32) == 0 {
+        self.tick_city(dt);
+
+        if self.server_tick % (SIM_HZ as u32 / self.physics.snapshot_hz() as u32) == 0 {
             self.broadcast_snapshot();
         }
 
@@ -1935,13 +3104,352 @@ impl MatchState {
         }
 
         if self.server_tick % SERVER_PING_INTERVAL_TICKS == 0 {
+            let publish_started = Instant::now();
             self.send_server_latency_pings();
             self.publish_stats();
+            self.log_city_telemetry();
+            self.last_publish_ms = publish_started.elapsed().as_secs_f32() * 1000.0;
         }
 
         self.timings
             .total_ms
             .record(tick_started.elapsed().as_secs_f32() * 1000.0);
+    }
+
+    /// Re-bootstrap clients whose ledger we know is holed.
+    ///
+    /// The same repair the client asks for when it spots a sequence gap, driven
+    /// from the server instead -- because the gap it would spot is not
+    /// guaranteed to exist. A client that loses topology from the very first
+    /// message never sees a discontinuity at all: it holds an intact city,
+    /// reports zero gaps, and waits forever. The server is the only party that
+    /// knows a drop happened, so it is the party that has to fix it.
+    ///
+    /// Deferred until the client's queue has drained, since re-sending into a
+    /// full queue is what caused the hole in the first place.
+    fn repair_city_desyncs(&mut self) {
+        if self.city_desync_players.is_empty() {
+            return;
+        }
+        // Enough headroom for bootstrap + lane map plus the tick's ordinary
+        // traffic; a queue that is merely no longer full will overflow again.
+        const REPAIR_HEADROOM: usize = PLAYER_OUTBOUND_QUEUE_CAPACITY / 2;
+        let ready: Vec<u32> = self
+            .city_desync_players
+            .iter()
+            .copied()
+            .filter(|player_id| {
+                self.players
+                    .get(player_id)
+                    .is_none_or(|runtime| runtime.tx.capacity() >= REPAIR_HEADROOM)
+            })
+            .collect();
+        for player_id in ready {
+            self.city_desync_players.remove(&player_id);
+            let Some(runtime) = self.players.get(&player_id) else {
+                // Gone; nothing to repair.
+                continue;
+            };
+            let Some(city) = self.city.as_mut() else {
+                continue;
+            };
+            let bootstrap = city.bootstrap(self.server_tick);
+            let lanes = city.full_lane_map();
+            // The datagram half: every lane restates absolutely over the
+            // coming spans, so poses match the freshly-bootstrapped ledger.
+            city.begin_join_restate();
+            let queued = try_queue_packet(&runtime.tx, bootstrap, &self.io)
+                && lanes.is_none_or(|lanes| try_queue_packet(&runtime.tx, lanes, &self.io));
+            if queued {
+                self.city_desync_repairs += 1;
+                info!(
+                    match_id = %self.id,
+                    player_id,
+                    "city ledger repaired: bootstrap re-sent after a dropped reliable packet"
+                );
+            } else {
+                // Still congested -- try again next tick rather than leaving
+                // the client holed.
+                self.city_desync_players.insert(player_id);
+            }
+        }
+    }
+
+    /// Route queued hitscan shots into city destruction before
+    /// `process_hitscan` drains them (players/vehicles still take the same
+    /// hitscan resolution afterwards).
+    fn route_city_shots(&mut self) {
+        if self.city.is_none() {
+            return;
+        }
+        let shots: Vec<(glam::Vec3, glam::Vec3)> = self
+            .queued_shots
+            .iter()
+            .filter_map(|queued| {
+                let state = self.arena.player_state(queued.player_id)?;
+                if state.dead {
+                    return None;
+                }
+                Some((
+                    glam::Vec3::new(
+                        state.position.x as f32,
+                        state.position.y as f32 + PLAYER_EYE_HEIGHT_M,
+                        state.position.z as f32,
+                    ),
+                    glam::Vec3::from_array(queued.cmd.dir),
+                ))
+            })
+            .collect();
+        let shot_count = shots.len();
+        let mut city = self.city.take().expect("checked above");
+        let broken_before = city.stats().broken_bonds;
+        let mut hits = 0u32;
+        for (origin, direction) in shots {
+            #[cfg(feature = "destruction")]
+            let world = self.arena.physx_world_mut();
+            #[cfg(not(feature = "destruction"))]
+            let world = None;
+            if city.apply_shot_ray(origin, direction, world) {
+                hits += 1;
+            }
+        }
+        if shot_count > 0 {
+            tracing::info!(
+                match_id = %self.id,
+                shots = shot_count,
+                hits,
+                broken_bonds_before = broken_before,
+                "city shot routing"
+            );
+        }
+        self.city = Some(city);
+    }
+
+    /// Camera used for per-client interest: player eye + aim direction, using
+    /// the same yaw/pitch convention as the client's aimDirectionFromAngles.
+    fn city_camera_for_player(&self, player_id: u32) -> Option<vibe_land_destruction::types::Camera> {
+        let state = self.arena.player_state(player_id)?;
+        let yaw = state.last_input.yaw;
+        let pitch = state.last_input.pitch;
+        let cos_pitch = pitch.cos();
+        Some(vibe_land_destruction::types::Camera {
+            eye: glam::Vec3::new(
+                state.position.x as f32,
+                state.position.y as f32 + PLAYER_EYE_HEIGHT_M,
+                state.position.z as f32,
+            ),
+            direction: glam::Vec3::new(
+                yaw.sin() * cos_pitch,
+                pitch.sin(),
+                yaw.cos() * cos_pitch,
+            ),
+            fov_degrees: 80.0,
+        })
+    }
+
+    fn tick_city(&mut self, dt: f32) {
+        let Some(send_interval) = self.city.as_ref().map(|city| city.send_interval_ticks())
+        else {
+            return;
+        };
+        let send_due = self.server_tick % send_interval == 0 && !self.players.is_empty();
+        // Cameras are precomputed so the arena borrow ends before the city
+        // runtime is borrowed mutably.
+        let cameras: Vec<(u32, vibe_land_destruction::types::Camera)> = if send_due {
+            self.players
+                .keys()
+                .filter_map(|&id| self.city_camera_for_player(id).map(|camera| (id, camera)))
+                .collect()
+        } else {
+            Vec::new()
+        };
+
+        let mut city = self.city.take().expect("checked above");
+        #[cfg(feature = "destruction")]
+        let world = self.arena.physx_world_mut();
+        #[cfg(not(feature = "destruction"))]
+        let world = None;
+        // Between steps is the only safe point to rebuild: the scene is not
+        // mid-simulate, and the bootstrap we send afterwards describes the
+        // city the very next step will advance.
+        let reset_requested = self
+            .reset_requests
+            .write()
+            .expect("reset requests poisoned")
+            .remove(&self.id);
+        if reset_requested {
+            match city.reset(SIM_HZ as u32, world) {
+                Ok(()) => {
+                    // The client ledger still describes the demolished city and
+                    // no incremental topology event can say "start over", so
+                    // every client needs a fresh bootstrap.
+                    let bootstrap = city.bootstrap(self.server_tick);
+                    // Wire v3: the rebuilt encoder restarts lane ids and its
+                    // epoch, so a bootstrap alone leaves every client holding
+                    // a lane map for a world that no longer exists. Send the
+                    // new map beside it and restate every body, exactly as
+                    // join and resync do.
+                    let lanes = city.full_lane_map();
+                    city.begin_join_restate();
+                    for runtime in self.players.values() {
+                        let _ =
+                            try_queue_packet(&runtime.tx, bootstrap.clone(), &self.io);
+                        if let Some(lanes) = lanes.clone() {
+                            let _ = try_queue_packet(&runtime.tx, lanes, &self.io);
+                        }
+                    }
+                    tracing::info!(
+                        match_id = %self.id,
+                        players = self.players.len(),
+                        "city reset; re-bootstrapped clients"
+                    );
+                }
+                Err(error) => {
+                    tracing::error!(match_id = %self.id, %error, "city reset failed");
+                }
+            }
+        }
+        #[cfg(feature = "destruction")]
+        let world = self.arena.physx_world_mut();
+        #[cfg(not(feature = "destruction"))]
+        let world = None;
+        let broken_before = city.stats().broken_bonds;
+        let awake_before = city.stats().awake_chunk_bodies;
+        // 60 Hz: destruction step + reliable topology/baseline broadcast
+        // (byte-identical for every client — encode once, clone the buffer).
+        let city_step_started = std::time::Instant::now();
+        let reliable = city.step(self.server_tick, dt, [0.0, -9.81, 0.0], world);
+        let city_step_wall_ms = city_step_started.elapsed().as_secs_f32() * 1000.0;
+        city.record_tick_sample(city_step_wall_ms);
+        let v3_datagrams = city.take_v3_datagrams();
+        let broken_after = city.stats().broken_bonds;
+        let awake_after = city.stats().awake_chunk_bodies;
+        if broken_after > broken_before || awake_after > awake_before {
+            tracing::info!(
+                match_id = %self.id,
+                tick = self.server_tick,
+                broken_bonds_before = broken_before,
+                broken_bonds_after = broken_after,
+                delta_broken = broken_after.saturating_sub(broken_before),
+                awake_before,
+                awake_after,
+                "city stress fracture (queueContact → broken bonds)"
+            );
+        }
+        let fan_out_started = std::time::Instant::now();
+        // A dropped topology message is NOT a lost frame -- it is a permanent
+        // hole in the client's world model. The ledger is a delta stream, so a
+        // client that misses one renders a city that stops being destroyed and
+        // never recovers on its own (observed live: server at topo_seq 951 and
+        // 1,980 broken bonds while the client's ledger read zero). The drop is
+        // detectable exactly when it happens, so record who it happened to and
+        // repair them authoritatively below.
+        let mut desynced: Vec<u32> = Vec::new();
+        for packet in &reliable {
+            for (player_id, runtime) in self.players.iter() {
+                if !try_queue_packet(&runtime.tx, packet.clone(), &self.io)
+                    && !desynced.contains(player_id)
+                {
+                    desynced.push(*player_id);
+                }
+            }
+        }
+        // Wire v3: span-based, encode-once pose datagrams -- the same bytes go
+        // to every client, so nobody can be starved by a per-client ranking
+        // (measured leaving moving bodies 40+ s stale on v2, and shown on
+        // video displaying a different scene than the simulation).
+        for packet in &v3_datagrams {
+            for runtime in self.players.values() {
+                let _ = try_queue_packet(&runtime.tx, packet.clone(), &self.io);
+            }
+        }
+        self.last_fan_out_ms = fan_out_started.elapsed().as_secs_f32() * 1000.0;
+        for player_id in desynced {
+            if self.city_desync_players.insert(player_id) {
+                warn!(
+                    match_id = %self.id,
+                    player_id,
+                    "city ledger desynced: reliable packet dropped on a full client queue"
+                );
+            }
+        }
+        self.repair_city_desyncs();
+        // Chunk stream cadence (wire v2 only): shared encode once, per-client
+        // interest + ceiling selection, own datagram sequence space per client.
+        let v2_pose_stream = v3_datagrams.is_empty()
+            && city.wire_version() != vibe_land_destruction::wire::CITY_WIRE_V3;
+        if send_due && v2_pose_stream {
+            // Timed because it was the single largest unmeasured cost: at 10k
+            // bodies the tick was 44 ms while the city step and physx step
+            // together accounted for only 26 ms. encode_shared walks every
+            // active body, and client_datagrams walks all of its records again
+            // PER CLIENT doing interest tests -- so this scales with bodies
+            // times players, and nothing reported it.
+            let encode_started = std::time::Instant::now();
+            let shared = city.encode_shared(self.server_tick);
+            let shared_ms = encode_started.elapsed().as_secs_f32() * 1000.0;
+            let datagrams_started = std::time::Instant::now();
+            if !shared.records.is_empty() {
+                for (player_id, camera) in cameras {
+                    let packets = city.client_datagrams(u64::from(player_id), camera, &shared);
+                    if let Some(runtime) = self.players.get(&player_id) {
+                        for packet in packets {
+                            let _ = try_queue_packet(&runtime.tx, packet, &self.io);
+                        }
+                    }
+                }
+            }
+            city.record_encode_timings(
+                shared_ms,
+                datagrams_started.elapsed().as_secs_f32() * 1000.0,
+            );
+        }
+        self.city = Some(city);
+    }
+
+    /// 1 Hz destructible-city telemetry: stream volume, encode cost, and the
+    /// live/awake body split. Silent on non-city matches.
+    fn log_city_telemetry(&mut self) {
+        let players = self.players.len();
+        let Some(city) = self.city.as_mut() else {
+            return;
+        };
+        let (records, bytes, packets) = city.take_stream_counters();
+        let stats = city.stats();
+        let encoder = city.encoder_stats();
+        if bytes == 0 && stats.chunk_bodies == 0 {
+            return;
+        }
+        info!(
+            match_id = %self.id,
+            players,
+            chunk_bodies = stats.chunk_bodies,
+            awake_bodies = stats.awake_chunk_bodies,
+            encoder_awake = encoder.awake_bodies,
+            broken_bonds = stats.broken_bonds,
+            packets_per_sec = packets,
+            records_per_sec = records,
+            kbytes_per_sec = bytes / 1024,
+            mbps = (bytes as f32 * 8.0 / 1_000_000.0),
+            encode_ms = city.last_encode_ms,
+            topo_seq = encoder.topo_seq,
+            baseline_id = encoder.baseline_id,
+            // Non-zero means two island bodies claimed the same network id;
+            // the encoder drops the duplicate rather than failing the match.
+            duplicate_body_records = encoder.duplicate_body_records,
+            min_body_y = stats.min_body_y,
+            settle_deferred = stats.settle_deferred_penetrating,
+            unmapped_body_skips = stats.unmapped_body_skips,
+            resettled_wakes = stats.resettled_wakes,
+            solve_ms = stats.solve_ms,
+            readback_ms = stats.readback_ms,
+            events_ms = stats.events_ms,
+            filters_ms = stats.filters_ms,
+            sleeping_bodies = stats.sleeping_chunk_bodies,
+            overstressed_bonds = stats.overstressed_bonds,
+            bond_utilisation_max = stats.bond_utilisation_max,
+            "city stream"
+        );
     }
 
     fn send_server_latency_pings(&mut self) {
@@ -2052,14 +3560,45 @@ impl MatchState {
                 (0, 0, 0, 0)
             };
 
+        let (dynamic_body_count, vehicle_count, battery_count) = self.arena.counts();
+        let physics_health = self.arena.health();
+        let city_window = self
+            .city
+            .as_mut()
+            .map(|city| city.tick_window.drain())
+            .unwrap_or_default();
+        // Drained in the same pass, so the phase windows cover exactly the
+        // same ticks as window_step_ms rather than a shifted window.
+        let phase_windows = self
+            .city
+            .as_mut()
+            .map(|city| city.tick_window.phases.drain())
+            .unwrap_or_default();
         let match_stats = MatchStatsSnapshot {
             id: self.id.clone(),
             scenario_tag: self.id.clone(),
+            server_build: server_build_stamp(),
+            server_started: server_started_stamp(),
+            physics_backend: self.physics.backend.name().to_string(),
+            physics_gpu_required: self.physics.capabilities.gpu_required,
+            physics_gpu_active: physics_health.gpu_active,
+            physics_gpu_warning_count: physics_health.gpu_warning_count,
+            physics_contact_pairs: physics_health.contact_pairs,
+            physics_active_dynamic_bodies: physics_health.active_dynamic_bodies,
+            physics_last_step_ms: physics_health.last_step_ms,
+            physics_simulate_ms: physics_health.last_simulate_ms,
+            physics_fetch_ms: physics_health.last_fetch_ms,
+            physics_gpu_wait_ms: physics_health.last_gpu_wait_ms,
+            physics_fetch_copy_ms: physics_health.last_fetch_copy_ms,
+            physics_readback_ms: physics_health.last_readback_ms,
+            physics_refresh_players_ms: physics_health.last_refresh_players_ms,
+            physics_vehicle_control_ms: physics_health.last_vehicle_control_ms,
+            physics_controller_ms: physics_health.last_controller_ms,
             server_tick: self.server_tick,
             player_count: self.players.len(),
-            dynamic_body_count: self.arena.dynamic.dynamic_bodies.len(),
-            vehicle_count: self.arena.vehicles.len(),
-            battery_count: self.arena.batteries.len(),
+            dynamic_body_count,
+            vehicle_count,
+            battery_count,
             chunk_count: self.world.chunks.len(),
             load: MatchLoadSnapshot {
                 nearby_radius_m: NEARBY_PLAYER_RADIUS_M,
@@ -2196,16 +3735,160 @@ impl MatchState {
                 dead_players_skipped: self.snapshot_stats.dead_players_skipped.snapshot(),
             },
             players: player_snapshots,
+            city: self.city.as_ref().map(|city| {
+                let stats = city.stats();
+                let city_window = city_window.clone();
+                let encoder = city.encoder_stats();
+                let (records, bytes, packets) = city.last_stream_counters();
+                let encode_timings = city.last_encode_timings();
+                CityStatsSnapshot {
+                    structures: stats.structures,
+                    wire_version: city.wire_version(),
+                    v3_span_ticks: city.governor_snapshot().0,
+                    v3_rate_scale: city.governor_snapshot().1,
+                    v3_ema_mbps: city.governor_snapshot().2,
+                    v3_epoch: city.governor_snapshot().3,
+                    v3_span_encode_ms: city.governor_snapshot().4,
+                    window_step_ms: city_window.0.clone(),
+                    window_ingest_ms: city_window.1.clone(),
+                    window_span_encode_ms: city_window.2.clone(),
+                    window_awake: city_window.3.clone(),
+                    phase_windows: phase_windows.clone(),
+                    chunk_bodies: stats.chunk_bodies,
+                    awake_bodies: stats.awake_chunk_bodies,
+                    broken_bonds: stats.broken_bonds,
+                    step_ms: city.last_encode_ms,
+                    stress_solve_ms: stats.stress_solve_ms,
+                    solve_ms: stats.solve_ms,
+                    readback_ms: stats.readback_ms,
+                    events_ms: stats.events_ms,
+                    begin_ms: stats.begin_ms,
+                    end_ms: stats.end_ms,
+                    readback_ms_host: stats.readback_ms_host,
+                    settle_ms: stats.settle_ms,
+                    ingest_ms: stats.ingest_ms,
+                    tick_ffi_ms: stats.tick_ffi_ms,
+                    drain_ms: stats.drain_ms,
+                    stats_ffi_ms: stats.stats_ffi_ms,
+                    post_step_ms: stats.post_step_ms,
+                    fan_out_ms: self.last_fan_out_ms,
+                    city_desync_repairs: self.city_desync_repairs,
+                    publish_ms: self.last_publish_ms,
+                    encode_shared_ms: encode_timings.0,
+                    client_datagrams_ms: encode_timings.1,
+                    gpu_stress_structures: stats.gpu_stress_structures,
+                    gpu_stress_solve_ms: stats.gpu_stress_solve_ms,
+                    filters_ms: stats.filters_ms,
+                    ccd_ms: stats.ccd_ms,
+                    support_loads_ms: stats.support_loads_ms,
+                    support_pair_loads: stats.support_pair_loads,
+                    shape_readback_ms: stats.shape_readback_ms,
+                    blast_contact_processing_ms: stats.blast_contact_processing_ms,
+                    blast_gravity_ms: stats.blast_gravity_ms,
+                    blast_stress_solve_cpu_ms: stats.blast_stress_solve_cpu_ms,
+                    blast_fracture_topology_ms: stats.blast_fracture_topology_ms,
+                    blast_mapping_validation_ms: stats.blast_mapping_validation_ms,
+                    blast_sleeping_actors_skipped: stats.blast_sleeping_actors_skipped,
+                    slot_dispatch_ms: stats.slot_dispatch_ms,
+                    bond_sample_ms: stats.bond_sample_ms,
+                    quiet_slot_ticks: stats.quiet_slot_ticks,
+                    sleeping_bodies: stats.sleeping_chunk_bodies,
+                    overstressed_bonds: stats.overstressed_bonds,
+                    bond_utilisation_max: stats.bond_utilisation_max,
+                    bonds_above_half_utilisation: stats.bonds_above_half_utilisation,
+                    packets_per_sec: packets,
+                    records_per_sec: records,
+                    bytes_per_sec: bytes,
+                    topo_seq: encoder.topo_seq,
+                    baseline_id: encoder.baseline_id,
+                    min_body_y: stats.min_body_y,
+                    resettled_wakes: stats.resettled_wakes,
+                    settle_deferred_penetrating: stats.settle_deferred_penetrating,
+                    unmapped_body_skips: stats.unmapped_body_skips,
+                    duplicate_body_records: encoder.duplicate_body_records,
+                    solver_island_count: stats.solver_island_count,
+                    solver_islands_skipped: stats.solver_islands_skipped,
+                    frozen_bodies: stats.frozen_chunk_bodies,
+                    freeze_flips: stats.freeze_flips,
+                    unfreeze_flips: stats.unfreeze_flips,
+                    contact_wakes: stats.contact_wakes,
+                    chunk_sleep_events: stats.chunk_sleep_events,
+                    chunk_wake_events: stats.chunk_wake_events,
+                    pose_quiet_awake_bodies: stats.pose_quiet_awake_bodies,
+                    unsupported_resting_bodies: stats.unsupported_resting_bodies,
+                    backstop_releases: stats.backstop_releases,
+                    frozen_serial_blocks: stats.frozen_serial_blocks,
+                    degraded: city.is_degraded(),
+                }
+            }),
         };
 
-        let global = {
-            let mut registry = self
-                .stats_registry
-                .write()
-                .expect("stats registry poisoned");
-            registry.insert(self.id.clone(), match_stats.clone());
-            global_stats_from_registry(&registry)
-        };
+        // Everything that follows -- JSON serialization, a packet clone per
+        // player, the registry writes, and a blocking telemetry file write --
+        // used to run inline on the tick thread once a second. It is the one
+        // block whose cost is unrelated to the simulation and lands entirely
+        // on a single tick, which is what a 182.9 ms outlier looks like from
+        // the outside. The tick thread now only CAPTURES (a struct build and
+        // a compact per-body state Vec) and hands the rest to a blocking
+        // task; nothing here feeds the next tick, so lateness is harmless.
+        let body_states = self
+            .city
+            .as_ref()
+            .map(|city| (self.id.clone(), city.debug_body_states()));
+        let player_txs: Vec<_> = self
+            .players
+            .values()
+            .map(|runtime| runtime.tx.clone())
+            .collect();
+        let io = Arc::clone(&self.io);
+        let stats_registry = Arc::clone(&self.stats_registry);
+        let body_states_registry = Arc::clone(&self.body_states_registry);
+        let stats_tx = Arc::clone(&self.stats_tx);
+        let match_id = self.id.clone();
+        let server_tick = self.server_tick;
+        let snapshot_hz = self.physics.snapshot_hz();
+        let published = match_stats.clone();
+        tokio::task::spawn_blocking(move || {
+            // Same snapshot the HTTP endpoint serves, pushed to the players it
+            // describes. Reliable rather than datagram: it is ~1 Hz and being
+            // truncated by an MTU would make it unparseable.
+            if !player_txs.is_empty() {
+                match serde_json::to_vec(&published) {
+                    Ok(json) => {
+                        let mut packet = Vec::with_capacity(json.len() + 1);
+                        packet.push(vibe_land_shared::constants::PKT_MATCH_STATS);
+                        packet.extend_from_slice(&json);
+                        for tx in &player_txs {
+                            let _ = try_queue_packet(tx, packet.clone(), &io);
+                        }
+                    }
+                    Err(err) => {
+                        warn!(match_id = %match_id, error = ?err, "match stats serialize failed")
+                    }
+                }
+            }
+
+            // Persistent server-side telemetry: the exact snapshot players see,
+            // appended as JSONL so any session can be analyzed retroactively --
+            // bodies vs tick cost, governor behaviour, encoder spikes -- without
+            // anyone screenshotting a panel. Enabled by VIBE_CITY_TELEMETRY=path.
+            write_city_telemetry(server_tick, &published);
+
+            let global = {
+                let mut registry = stats_registry.write().expect("stats registry poisoned");
+                registry.insert(match_id.clone(), published);
+                global_stats_from_registry(&registry, snapshot_hz)
+            };
+            if let Some((id, states)) = body_states {
+                // Per-body freeze states for the body-color debug overlay,
+                // refreshed at the same cadence as the stats snapshot.
+                body_states_registry
+                    .write()
+                    .expect("body states registry poisoned")
+                    .insert(id, states);
+            }
+            let _ = stats_tx.send(global);
+        });
 
         let datagram_fallbacks = self.io.datagram_fallbacks.load(Ordering::Relaxed);
         if datagram_fallbacks > self.last_logged_datagram_fallbacks {
@@ -2294,6 +3977,9 @@ impl MatchState {
                 dead_players_skipped_p95 = match_stats.network.dead_players_skipped.p95,
                 vehicle_ms_avg = match_stats.timings.vehicle_ms.avg,
                 dynamics_ms_avg = match_stats.timings.dynamics_ms.avg,
+                physx_simulate_ms = match_stats.physics_simulate_ms,
+                physx_fetch_ms = match_stats.physics_fetch_ms,
+                physx_controller_ms = match_stats.physics_controller_ms,
                 hitscan_ms_avg = match_stats.timings.hitscan_ms.avg,
                 snapshot_ms_avg = match_stats.timings.snapshot_ms.avg,
                 snapshot_ms_p95 = match_stats.timings.snapshot_ms.p95,
@@ -2304,8 +3990,6 @@ impl MatchState {
                 "match health"
             );
         }
-
-        let _ = self.stats_tx.send(global);
     }
 
     fn process_respawns(&mut self, server_time_ms: u32) {
@@ -2371,7 +4055,7 @@ impl MatchState {
 
     fn kill_player_with_cause(&mut self, player_id: u32, server_time_ms: u32, cause: DeathCause) {
         let battery_drop = if matches!(cause, DeathCause::HpDamage | DeathCause::VehicleCollision) {
-            self.arena.players.get(&player_id).and_then(|state| {
+            self.arena.player_state(player_id).and_then(|state| {
                 if !state.dead && state.energy > 0.0 {
                     Some((state.position, state.energy))
                 } else {
@@ -2396,9 +4080,7 @@ impl MatchState {
                 DEFAULT_BATTERY_HEIGHT_M,
             );
         }
-        if let Some(state) = self.arena.players.get_mut(&player_id) {
-            state.energy = 0.0;
-        }
+        let _ = self.arena.add_player_energy(player_id, -f32::MAX);
         if let Some(runtime) = self.players.get_mut(&player_id) {
             runtime.respawn_at_ms = Some(server_time_ms.saturating_add(self.respawn_delay_ms));
             runtime.pending_inputs.clear();
@@ -2573,20 +4255,17 @@ impl MatchState {
                 continue;
             }
 
-            let Some(shooter_state) = self.arena.players.get(&queued.player_id) else {
+            let Some(shooter_state) = self.arena.player_state(queued.player_id) else {
                 continue;
             };
-            if shooter_state.dead || self.arena.vehicle_of_player.contains_key(&queued.player_id) {
+            if shooter_state.dead || self.arena.is_player_in_vehicle(queued.player_id) {
                 continue;
             }
 
-            let mut shooter_depleted = false;
-            if let Some(shooter_state) = self.arena.players.get_mut(&queued.player_id) {
-                shooter_state.energy = (shooter_state.energy - RIFLE_SHOT_ENERGY_COST).max(0.0);
-                if shooter_state.energy <= 0.0 {
-                    shooter_depleted = true;
-                }
-            }
+            let shooter_depleted = self
+                .arena
+                .add_player_energy(queued.player_id, -RIFLE_SHOT_ENERGY_COST)
+                .is_some_and(|energy| energy <= 0.0);
             if shooter_depleted {
                 self.kill_player_with_cause(
                     queued.player_id,
@@ -2683,21 +4362,11 @@ impl MatchState {
             };
 
             let result = if let Some(hit) = player_hit {
-                let prev_hp = self
-                    .arena
-                    .players
-                    .get(&hit.victim_id)
-                    .map(|s| s.hp)
-                    .unwrap_or(0);
+                let prev_hp = self.arena.player_hp(hit.victim_id);
                 let damage_outcome = self
                     .arena
                     .apply_player_damage(hit.victim_id, rifle_damage(hit.zone));
-                let new_hp = self
-                    .arena
-                    .players
-                    .get(&hit.victim_id)
-                    .map(|s| s.hp)
-                    .unwrap_or(0);
+                let new_hp = self.arena.player_hp(hit.victim_id);
                 let applied_damage = prev_hp.saturating_sub(new_hp);
                 if matches!(
                     damage_outcome,
@@ -2864,7 +4533,7 @@ impl MatchState {
                 continue;
             }
 
-            if self.arena.vehicle_of_player.contains_key(&queued.player_id) {
+            if self.arena.is_player_in_vehicle(queued.player_id) {
                 continue;
             }
             let Some((attacker_pos, _, _, _, attacker_hp, attacker_flags)) =
@@ -2876,13 +4545,10 @@ impl MatchState {
                 continue;
             }
 
-            let mut depleted = false;
-            if let Some(attacker_state) = self.arena.players.get_mut(&queued.player_id) {
-                attacker_state.energy = (attacker_state.energy - MELEE_ENERGY_COST).max(0.0);
-                if attacker_state.energy <= 0.0 {
-                    depleted = true;
-                }
-            }
+            let depleted = self
+                .arena
+                .add_player_energy(queued.player_id, -MELEE_ENERGY_COST)
+                .is_some_and(|energy| energy <= 0.0);
             if depleted {
                 self.kill_player_with_cause(
                     queued.player_id,
@@ -2913,13 +4579,12 @@ impl MatchState {
                 let mut best: Option<(u32, f32)> = None;
                 let victim_ids: Vec<u32> = self
                     .arena
-                    .players
-                    .keys()
-                    .copied()
+                    .player_ids()
+                    .into_iter()
                     .filter(|id| *id != queued.player_id)
                     .collect();
                 for victim_id in victim_ids {
-                    if self.arena.vehicle_of_player.contains_key(&victim_id) {
+                    if self.arena.is_player_in_vehicle(victim_id) {
                         continue;
                     }
                     let Some((victim_pos, _, _, _, victim_hp, victim_flags)) =
@@ -2948,25 +4613,29 @@ impl MatchState {
                         }
                     }
                     let dist = dist_sq.sqrt();
+                    if dist > 1e-4 {
+                        let direction = [dx / dist, dy / dist, dz / dist];
+                        let blocked_by_static = self
+                            .arena
+                            .cast_static_world_ray(eye, direction, dist, Some(queued.player_id))
+                            .is_some_and(|toi| toi < dist - 0.1);
+                        let blocked_by_dynamic = self
+                            .arena
+                            .cast_dynamic_body_ray(eye, direction, dist, Some(queued.player_id))
+                            .is_some_and(|(_, toi, _)| toi < dist - 0.1);
+                        if blocked_by_static || blocked_by_dynamic {
+                            continue;
+                        }
+                    }
                     if best.map(|(_, d)| dist < d).unwrap_or(true) {
                         best = Some((victim_id, dist));
                     }
                 }
 
                 if let Some((victim_id, _)) = best {
-                    let prev_hp = self
-                        .arena
-                        .players
-                        .get(&victim_id)
-                        .map(|s| s.hp)
-                        .unwrap_or(0);
+                    let prev_hp = self.arena.player_hp(victim_id);
                     let damage_outcome = self.arena.apply_player_damage(victim_id, MELEE_DAMAGE);
-                    let new_hp = self
-                        .arena
-                        .players
-                        .get(&victim_id)
-                        .map(|s| s.hp)
-                        .unwrap_or(0);
+                    let new_hp = self.arena.player_hp(victim_id);
                     let applied_damage = prev_hp.saturating_sub(new_hp);
                     if matches!(
                         damage_outcome,
@@ -3174,6 +4843,43 @@ impl MatchState {
             let mut budget_remaining =
                 STRICT_SNAPSHOT_DATAGRAM_TARGET_BYTES.saturating_sub(SNAPSHOT_V2_HEADER_BYTES);
 
+            let support_state = self.arena.player_support(recipient_id);
+            let support_dynamic_id = support_state
+                .filter(|support| !support.is_vehicle)
+                .map(|support| support.entity_id);
+            let support_vehicle_id = support_state
+                .filter(|support| support.is_vehicle)
+                .map(|support| support.entity_id);
+            let support = support_state.and_then(|support| {
+                let handle = if support.is_vehicle {
+                    self.vehicle_handles
+                        .get(&support.entity_id)
+                        .map(|handle| 0x8000 | u16::from(*handle))
+                } else {
+                    self.dynamic_body_handles
+                        .get(&support.entity_id)
+                        .map(|entry| entry.handle)
+                }?;
+                Some((
+                    handle,
+                    support.local_position.map(|value| {
+                        (value * 400.0)
+                            .round()
+                            .clamp(i16::MIN as f32, i16::MAX as f32) as i16
+                    }),
+                    support.velocity.map(|value| {
+                        (value * 100.0)
+                            .round()
+                            .clamp(i16::MIN as f32, i16::MAX as f32) as i16
+                    }),
+                    support.angular_velocity.map(|value| {
+                        (value * 1000.0)
+                            .round()
+                            .clamp(i16::MIN as f32, i16::MAX as f32) as i16
+                    }),
+                    support.flags,
+                ))
+            });
             let self_state = protocol::SelfPlayerStateV2 {
                 vx_cms: local_player_state.vx_cms,
                 vy_cms: local_player_state.vy_cms,
@@ -3182,23 +4888,52 @@ impl MatchState {
                 pitch_i16: local_player_state.pitch_i16,
                 hp: local_player_state.hp,
                 flags: (local_player_state.flags & 0xff) as u8,
+                support_handle: support.map_or(0, |value| value.0),
+                support_local_q2_5mm: support.map_or([0; 3], |value| value.1),
+                support_velocity_cms: support.map_or([0; 3], |value| value.2),
+                support_angular_velocity_mrads: support.map_or([0; 3], |value| value.3),
+                support_flags: support.map_or(0, |value| value.4),
             };
             budget_remaining = budget_remaining.saturating_sub(SNAPSHOT_V2_SELF_PLAYER_BYTES);
 
-            let reserved_vehicle_budget = vehicle_states
+            let mut reserved_vehicle_ids: HashSet<u32> = vehicle_states
                 .iter()
                 .filter(|(_, _, state)| state.driver_id == recipient_id)
                 .take(STRICT_SNAPSHOT_RESERVED_VEHICLES)
-                .count()
+                .map(|(vehicle_id, _, _)| *vehicle_id)
+                .collect();
+            if let Some(vehicle_id) = support_vehicle_id {
+                reserved_vehicle_ids.insert(vehicle_id);
+            }
+            let reserved_vehicle_budget = reserved_vehicle_ids
+                .len()
                 .saturating_mul(SNAPSHOT_V2_VEHICLE_BYTES);
             budget_remaining = budget_remaining.saturating_sub(reserved_vehicle_budget);
+            let reserved_support_dynamic_bytes = support_dynamic_id
+                .and_then(|body_id| self.dynamic_body_handles.get(&body_id))
+                .map(|meta| {
+                    if meta.shape_type == SHAPE_SPHERE {
+                        SNAPSHOT_V2_DYNAMIC_SPHERE_BYTES
+                    } else {
+                        SNAPSHOT_V2_DYNAMIC_BOX_BYTES
+                    }
+                })
+                .unwrap_or(0);
+            budget_remaining = budget_remaining.saturating_sub(reserved_support_dynamic_bytes);
 
             let mut remote_player_states = Vec::new();
-            for (player_id, pos, state) in player_states.iter().filter(|(player_id, pos, _)| {
-                *player_id != recipient_id
-                    && distance_sq(*pos, *recipient_pos)
-                        <= PLAYER_AOI_RADIUS_M * PLAYER_AOI_RADIUS_M
-            }) {
+            let mut remote_player_candidates: Vec<_> = player_states
+                .iter()
+                .filter(|(player_id, pos, _)| {
+                    *player_id != recipient_id
+                        && distance_sq(*pos, *recipient_pos)
+                            <= PLAYER_AOI_RADIUS_M * PLAYER_AOI_RADIUS_M
+                })
+                .collect();
+            remote_player_candidates.sort_by(|a, b| {
+                distance_sq(a.1, *recipient_pos).total_cmp(&distance_sq(b.1, *recipient_pos))
+            });
+            for (player_id, pos, state) in remote_player_candidates {
                 let Some(handle) = self.player_handles.get(player_id).copied() else {
                     continue;
                 };
@@ -3225,10 +4960,9 @@ impl MatchState {
             }
 
             let mut selected_vehicle_states = Vec::new();
-            let mut reserved_vehicle_ids = HashSet::new();
             for (vehicle_id, pos, state) in vehicle_states
                 .iter()
-                .filter(|(_, _, state)| state.driver_id == recipient_id)
+                .filter(|(vehicle_id, _, _)| reserved_vehicle_ids.contains(vehicle_id))
             {
                 let Some(handle) = self.vehicle_handles.get(vehicle_id).copied() else {
                     continue;
@@ -3260,14 +4994,12 @@ impl MatchState {
                     wy_mrads: state.wy_mrads,
                     wz_mrads: state.wz_mrads,
                 });
-                reserved_vehicle_ids.insert(*vehicle_id);
                 runtime
                     .last_sent_vehicle_tick
                     .insert(*vehicle_id, self.server_tick);
             }
 
             let mut vehicle_hot = Vec::new();
-            let mut vehicle_cold = Vec::new();
             for (vehicle_id, pos, state) in vehicle_states.iter().filter(|(_, pos, state)| {
                 state.driver_id == recipient_id
                     || distance_sq(*pos, *recipient_pos)
@@ -3318,23 +5050,18 @@ impl MatchState {
                         state.wy_mrads as f32 / 1000.0,
                         state.wz_mrads as f32 / 1000.0,
                     ]) > HOT_ANGULAR_SPEED_THRESHOLD_RADPS * HOT_ANGULAR_SPEED_THRESHOLD_RADPS
-                    || runtime
-                        .last_sent_vehicle_tick
-                        .get(vehicle_id)
-                        .map(|last| {
-                            self.server_tick.saturating_sub(*last) >= COLD_VEHICLE_REFRESH_TICKS
-                        })
-                        .unwrap_or(true);
+                    || periodic_refresh_due(
+                        runtime.last_sent_vehicle_tick.get(vehicle_id).copied(),
+                        self.server_tick,
+                        COLD_VEHICLE_REFRESH_TICKS,
+                    );
                 if hot {
                     vehicle_hot.push((*vehicle_id, distance_sq(*pos, *recipient_pos), record));
-                } else {
-                    vehicle_cold.push((*vehicle_id, distance_sq(*pos, *recipient_pos), record));
                 }
             }
             vehicle_hot.sort_by(|a, b| a.1.total_cmp(&b.1));
-            vehicle_cold.sort_by(|a, b| a.1.total_cmp(&b.1));
 
-            for (vehicle_id, _, record) in vehicle_hot.into_iter().chain(vehicle_cold.into_iter()) {
+            for (vehicle_id, _, record) in vehicle_hot {
                 if budget_remaining < SNAPSHOT_V2_VEHICLE_BYTES {
                     break;
                 }
@@ -3376,15 +5103,13 @@ impl MatchState {
                         state.wy_mrads as f32 / 1000.0,
                         state.wz_mrads as f32 / 1000.0,
                     ]) > HOT_ANGULAR_SPEED_THRESHOLD_RADPS * HOT_ANGULAR_SPEED_THRESHOLD_RADPS;
-                let needs_refresh = runtime
-                    .last_sent_dynamic_tick
-                    .get(body_id)
-                    .map(|last| {
-                        self.server_tick.saturating_sub(*last) >= COLD_DYNAMIC_REFRESH_TICKS
-                    })
-                    .unwrap_or(true);
+                let needs_refresh = periodic_refresh_due(
+                    runtime.last_sent_dynamic_tick.get(body_id).copied(),
+                    self.server_tick,
+                    COLD_DYNAMIC_REFRESH_TICKS,
+                );
 
-                if meta.shape_type == 1 {
+                if meta.shape_type == SHAPE_SPHERE {
                     let record = protocol::DynamicSphereStateV2 {
                         handle: meta.handle,
                         dx_q2_5mm: dx,
@@ -3397,12 +5122,13 @@ impl MatchState {
                         wy_mrads: state.wy_mrads,
                         wz_mrads: state.wz_mrads,
                     };
-                    if moving
+                    if support_dynamic_id == Some(*body_id)
+                        || moving
                         || dist_sq <= HOT_DYNAMIC_NEAR_RADIUS_M * HOT_DYNAMIC_NEAR_RADIUS_M
                         || needs_refresh
                     {
                         dynamic_hot.push((*body_id, dist_sq, DynamicBodySelection::Sphere(record)));
-                    } else {
+                    } else if needs_refresh {
                         dynamic_cold.push((
                             *body_id,
                             dist_sq,
@@ -3426,12 +5152,13 @@ impl MatchState {
                         wy_mrads: state.wy_mrads,
                         wz_mrads: state.wz_mrads,
                     };
-                    if moving
+                    if support_dynamic_id == Some(*body_id)
+                        || moving
                         || dist_sq <= HOT_DYNAMIC_NEAR_RADIUS_M * HOT_DYNAMIC_NEAR_RADIUS_M
                         || needs_refresh
                     {
                         dynamic_hot.push((*body_id, dist_sq, DynamicBodySelection::Box(record)));
-                    } else {
+                    } else if needs_refresh {
                         dynamic_cold.push((*body_id, dist_sq, DynamicBodySelection::Box(record)));
                     }
                 }
@@ -3442,6 +5169,10 @@ impl MatchState {
             runtime.visible_dynamic_bodies = all_visible_dynamic_bodies;
             dynamic_hot.sort_by(|a, b| a.1.total_cmp(&b.1));
             dynamic_cold.sort_by(|a, b| a.1.total_cmp(&b.1));
+            if let Some(support_body_id) = support_dynamic_id {
+                dynamic_hot.sort_by_key(|(body_id, _, _)| *body_id != support_body_id);
+                dynamic_cold.sort_by_key(|(body_id, _, _)| *body_id != support_body_id);
+            }
 
             let mut sphere_states = Vec::new();
             let mut box_states = Vec::new();
@@ -3450,7 +5181,8 @@ impl MatchState {
                     DynamicBodySelection::Sphere(_) => SNAPSHOT_V2_DYNAMIC_SPHERE_BYTES,
                     DynamicBodySelection::Box(_) => SNAPSHOT_V2_DYNAMIC_BOX_BYTES,
                 };
-                if budget_remaining < record_size {
+                let reserved_support = support_dynamic_id == Some(body_id);
+                if !reserved_support && budget_remaining < record_size {
                     continue;
                 }
                 match selection {
@@ -3460,7 +5192,9 @@ impl MatchState {
                 runtime
                     .last_sent_dynamic_tick
                     .insert(body_id, self.server_tick);
-                budget_remaining = budget_remaining.saturating_sub(record_size);
+                if !reserved_support {
+                    budget_remaining = budget_remaining.saturating_sub(record_size);
+                }
             }
 
             let packet = ServerPacket::SnapshotV2(protocol::SnapshotV2Packet {
@@ -3500,7 +5234,40 @@ impl MatchState {
     }
 }
 
+/// Edge-triggered buttons: a press must survive a backlog collapse, because
+/// skipping the frame it arrived on would swallow the action entirely.
+/// Movement and hold-style buttons are level-triggered, so the newest frame
+/// already carries the correct state and OR-ing them would fabricate input.
+const LATCHED_BUTTONS: u16 = BTN_JUMP | BTN_RELOAD;
+
 fn take_input_for_tick(runtime: &mut PlayerRuntime) -> InputCmd {
+    // Stay current instead of draining a backlog.
+    //
+    // Clients send at a fixed 60 Hz. If the match loop falls behind (a heavy
+    // city collapse pushed it to ~30-45 Hz), popping one frame per tick
+    // consumes fewer than arrive, so the queue grows until it saturates at
+    // MAX_PENDING_INPUTS = 120 — two seconds of input. Steady state is then
+    // the server applying two-second-old movement and *yaw*, which feels like
+    // walking in a direction you were facing a moment ago rather than like
+    // lag. Vehicles already collapsed their backlog; on foot did not.
+    //
+    // Whatever else degrades, the player's own body should track their input,
+    // so jump to the newest frame and keep only the latched presses from the
+    // ones skipped.
+    if runtime.pending_inputs.len() >= PLAYER_INPUT_CATCHUP_THRESHOLD {
+        if let Some(mut newest) = runtime.pending_inputs.pop_back() {
+            let mut latched = 0u16;
+            for skipped in runtime.pending_inputs.iter() {
+                latched |= skipped.buttons & LATCHED_BUTTONS;
+            }
+            runtime.inputs_skipped_for_catchup += runtime.pending_inputs.len() as u64;
+            runtime.pending_inputs.clear();
+            newest.buttons |= latched;
+            runtime.last_ack_input_seq = newest.seq;
+            runtime.last_applied_input = newest.clone();
+            return newest;
+        }
+    }
     if let Some(input) = runtime.pending_inputs.pop_front() {
         runtime.last_ack_input_seq = input.seq;
         runtime.last_applied_input = input.clone();
@@ -3594,30 +5361,7 @@ fn compute_density_metrics(positions: &[[f32; 3]]) -> (f32, u32) {
 }
 
 fn awake_dynamic_body_counts(arena: &PhysicsArena, player_centers: &[[f32; 3]]) -> (u32, u32) {
-    let near_radius_sq = HOT_DYNAMIC_NEAR_RADIUS_M * HOT_DYNAMIC_NEAR_RADIUS_M;
-    let mut awake_total = 0u32;
-    let mut awake_near_players = 0u32;
-
-    for dynamic_body in arena.dynamic.dynamic_bodies.values() {
-        let Some(rb) = arena.dynamic.sim.rigid_bodies.get(dynamic_body.body_handle) else {
-            continue;
-        };
-        if rb.is_sleeping() {
-            continue;
-        }
-        awake_total += 1;
-
-        let pos = rb.translation();
-        let body_center = [pos.x, pos.y, pos.z];
-        if player_centers
-            .iter()
-            .any(|player_center| distance_sq(body_center, *player_center) <= near_radius_sq)
-        {
-            awake_near_players += 1;
-        }
-    }
-
-    (awake_total, awake_near_players)
+    arena.awake_dynamic_body_counts(player_centers, HOT_DYNAMIC_NEAR_RADIUS_M)
 }
 
 fn distance_sq(a: [f32; 3], b: [f32; 3]) -> f32 {
@@ -3645,6 +5389,12 @@ fn quantize_relative_vec_q2_5mm(origin: [f32; 3], target: [f32; 3]) -> Option<(i
 
 fn speed_sq3(v: [f32; 3]) -> f32 {
     v[0] * v[0] + v[1] * v[1] + v[2] * v[2]
+}
+
+fn periodic_refresh_due(last_sent_tick: Option<u32>, current_tick: u32, interval: u32) -> bool {
+    last_sent_tick
+        .map(|last| current_tick.saturating_sub(last) >= interval)
+        .unwrap_or(true)
 }
 
 fn dynamic_body_within_aoi(was_visible: bool, body_pos: [f32; 3], recipient_pos: [f32; 3]) -> bool {
@@ -3686,8 +5436,41 @@ fn is_snapshot_packet_kind(kind: u8) -> bool {
     kind == PKT_SNAPSHOT || kind == PKT_SNAPSHOT_V2
 }
 
+/// Append one telemetry line: `{"ts_ms":..,"tick":..,"stats":{...}}`.
+/// File is opened (truncated) on first write per process, so one file = one
+/// world lifetime, matching "restart is the reset".
+fn write_city_telemetry(tick: u32, stats: &MatchStatsSnapshot) {
+    use std::io::Write as _;
+    static SINK: std::sync::OnceLock<
+        Option<std::sync::Mutex<std::io::BufWriter<std::fs::File>>>,
+    > = std::sync::OnceLock::new();
+    let sink = SINK.get_or_init(|| {
+        let path = std::env::var("VIBE_CITY_TELEMETRY").ok()?;
+        let file = std::fs::File::create(&path)
+            .map_err(|error| {
+                warn!(path = %path, ?error, "city telemetry sink failed to open");
+                error
+            })
+            .ok()?;
+        Some(std::sync::Mutex::new(std::io::BufWriter::new(file)))
+    });
+    let Some(sink) = sink else { return };
+    let Ok(json) = serde_json::to_string(stats) else { return };
+    let ts_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    if let Ok(mut writer) = sink.lock() {
+        let _ = writeln!(writer, "{{\"ts_ms\":{ts_ms},\"tick\":{tick},\"stats\":{json}}}");
+        let _ = writer.flush();
+    }
+}
+
 fn wants_unreliable_delivery(kind: u8) -> bool {
-    is_snapshot_packet_kind(kind) || kind == PKT_PING
+    is_snapshot_packet_kind(kind)
+        || kind == PKT_PING
+        || kind == PKT_CITY_CHUNKS
+        || kind == vibe_land_shared::constants::PKT_CITY_DEBRIS
 }
 
 fn strict_snapshot_drop_cause_from_send_error(err: &SendDatagramError) -> StrictSnapshotDropCause {
@@ -3721,7 +5504,16 @@ fn try_queue_packet(
     telemetry: &MatchIoTelemetry,
 ) -> bool {
     let is_snapshot = packet.first().copied().is_some_and(is_snapshot_packet_kind);
-    let is_droppable = is_snapshot || packet.first().copied().is_some_and(|kind| kind == PKT_PING);
+    // Droppable = the receiver recovers on its own. Pose streams do: v2 chunk
+    // records are re-sent every tick, and v3 debris spans heal through the nack
+    // loop and lane restatement (they ride unreliable datagrams by design
+    // anyway). City TOPOLOGY does not -- it is a delta stream over the client's
+    // ledger, so a hole in it is permanent. Under congestion the queue must
+    // therefore shed poses, never state.
+    let is_droppable = is_snapshot
+        || packet.first().copied().is_some_and(|kind| {
+            kind == PKT_PING || kind == PKT_CITY_CHUNKS || kind == PKT_CITY_DEBRIS
+        });
     match tx.try_send(packet) {
         Ok(()) => true,
         Err(tokio::sync::mpsc::error::TrySendError::Full(packet)) => {
@@ -3762,13 +5554,14 @@ fn describe_panic_payload(payload: &Box<dyn std::any::Any + Send>) -> String {
 
 fn global_stats_from_registry(
     registry: &HashMap<String, MatchStatsSnapshot>,
+    snapshot_hz: u16,
 ) -> GlobalStatsSnapshot {
     let mut matches: Vec<_> = registry.values().cloned().collect();
     matches.sort_by(|a, b| a.id.cmp(&b.id));
     GlobalStatsSnapshot {
         server_build_profile: server_build_profile().to_string(),
         sim_hz: SIM_HZ,
-        snapshot_hz: SNAPSHOT_HZ,
+        snapshot_hz,
         matches,
     }
 }
@@ -3801,7 +5594,7 @@ mod tests {
     use super::{
         classify_outbound_delivery, clear_runtime_inputs_for_vehicle_entry,
         compute_density_metrics, dynamic_body_within_aoi, enqueue_inputs, is_snapshot_packet_kind,
-        parse_respawn_delay_ms, rifle_damage, server_build_profile,
+        parse_respawn_delay_ms, periodic_refresh_due, rifle_damage, server_build_profile,
         strict_snapshot_drop_cause_from_send_error, take_input_for_tick,
         take_input_for_tick_with_vehicle_catchup, try_queue_packet, HitZone, InputCmd,
         MatchIoTelemetry, OutboundDelivery, PlayerRuntime, StrictSnapshotDropCause, BTN_RELOAD,
@@ -3820,6 +5613,7 @@ mod tests {
             transport: super::ClientTransport::WebSocket,
             tx,
             pending_inputs: VecDeque::new(),
+            inputs_skipped_for_catchup: 0,
             last_applied_input: InputCmd::default(),
             last_received_input_seq: None,
             last_ack_input_seq: 0,
@@ -4101,7 +5895,10 @@ mod tests {
             },
         );
 
-        let global = super::global_stats_from_registry(&registry);
+        let global = super::global_stats_from_registry(
+            &registry,
+            vibe_land_shared::constants::SNAPSHOT_HZ_MULTIPLAYER,
+        );
         let ids: Vec<_> = global
             .matches
             .into_iter()
@@ -4132,5 +5929,12 @@ mod tests {
             [super::DYNAMIC_BODY_AOI_RADIUS_M + 0.1, 0.0, 0.0],
             [0.0, 0.0, 0.0],
         ));
+    }
+
+    #[test]
+    fn unchanged_state_recovers_after_periodic_refresh_window() {
+        assert!(!periodic_refresh_due(Some(100), 159, 60));
+        assert!(periodic_refresh_due(Some(100), 160, 60));
+        assert!(periodic_refresh_due(None, 1, 60));
     }
 }

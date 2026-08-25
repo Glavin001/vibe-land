@@ -1,0 +1,27 @@
+[package]
+name = "vibe-land-destruction"
+version = "0.1.0"
+edition = "2021"
+description = "Destructible mini-city: scene assembly, manifest, and the streaming codec core"
+publish = false
+
+[dependencies]
+glam = "0.27"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+# Pinned exactly: it compresses the v3 debris wire against a shipped static
+# dictionary, so compressor drift is a wire change.
+zstd = "=0.13.3"
+vibe-netcode = { path = "../netcode" }
+
+[features]
+default = []
+# Native PhysX-backed runtime (CityDestruction). Gated so the crate core stays
+# pure Rust and CI-safe on machines without PhysX/CUDA.
+physx = ["dep:vibe-land-physx-bridge", "vibe-land-physx-bridge/destruction"]
+
+[dependencies.vibe-land-physx-bridge]
+path = "../physx-bridge"
+optional = true
+features = ["destruction"]

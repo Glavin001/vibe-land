@@ -1,9 +1,16 @@
 import { StatsGl } from '@react-three/drei';
-import { Canvas } from '@react-three/fiber';
-import { Suspense, type ReactNode } from 'react';
+import { Canvas, useThree } from '@react-three/fiber';
+import { Suspense, useEffect, type ReactNode } from 'react';
 import type { GameMode } from '../app/gameMode';
+import {
+  antialiasEnabled,
+  flatToneMapping,
+  maxDpr,
+  onRenderQualityChange,
+} from '../app/renderQuality';
 import { isTouchDevice } from '../device';
 import type { InputBindings } from '../input/bindings';
+import { FrameClock } from './FrameClock';
 import { GameWorld } from './GameWorld';
 import type { InputFamilyMode, InputSample } from '../input/types';
 import type { WorldDocument } from '../world/worldDocument';
@@ -47,6 +54,26 @@ type GameSceneProps = {
 
 type GameWorldDebugFrame = React.ComponentProps<typeof GameWorld>['onDebugFrame'];
 
+/**
+ * Applies dpr changes from the quality tier to the live renderer.
+ *
+ * Lives inside the Canvas because setDpr comes from the R3F store. Unlike
+ * antialias/tonemapping, pixel ratio is a plain resize -- flipping the tier
+ * mid-game moves the fps immediately, which is the whole point of the toggle
+ * as a measurement instrument.
+ */
+function DprController(): null {
+  const setDpr = useThree((state) => state.setDpr);
+  useEffect(
+    () =>
+      onRenderQualityChange(() => {
+        setDpr(Math.min(window.devicePixelRatio, maxDpr()));
+      }),
+    [setDpr],
+  );
+  return null;
+}
+
 export function GameScene({
   mode,
   onWelcome,
@@ -86,6 +113,14 @@ export function GameScene({
     <Canvas
       style={{ width: '100%', height: '100%', touchAction: 'none' }}
       shadows
+      // Pixel budget and context flags come from the quality tier. dpr is the
+      // multiplier on every fill cost in the scene: R3F's default of 2 on a 3x
+      // phone renders ~2.3 MP. antialias and flat (tonemapping) are
+      // context-creation-time -- read once here, a tier change applies them on
+      // the next reload; DprController below handles dpr live.
+      dpr={[1, maxDpr()]}
+      flat={flatToneMapping()}
+      gl={{ antialias: antialiasEnabled(), powerPreference: 'high-performance' }}
       camera={{ fov: 75, near: 0.1, far: 200, position: [0, 5, 10] }}
       data-testid="game-canvas"
       onPointerDown={(e) => {
@@ -93,6 +128,8 @@ export function GameScene({
         (e.target as HTMLCanvasElement).requestPointerLock();
       }}
     >
+      <DprController />
+      <FrameClock />
       <Suspense fallback={null}>
         {showRenderStats && (
           <StatsGl

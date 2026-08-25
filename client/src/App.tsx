@@ -1,7 +1,13 @@
-import { useState, useCallback, useEffect, useMemo, useRef, type CSSProperties, type ReactNode } from 'react';
+import { useState, useCallback, useEffect, useMemo, useRef, type CSSProperties, type ReactNode, useSyncExternalStore } from 'react';
 import { gameModeLabel, isPracticeMode, type GameMode } from './app/gameMode';
+import {
+  getActiveSession,
+  getConnectPhase,
+  getTransportNote,
+  subscribeConnectPhase,
+} from './app/connectPhase';
 import { isTouchDevice } from './device';
-import { buildMatchHref, resolveRequestedMatchId } from './app/matchId';
+import { buildMatchHref, defaultMatchIdForPath, isCityMatchId, resolveRequestedMatchId } from './app/matchId';
 import type { PlayBenchmarkPageState, PlayWorkerResult } from './benchmark/contracts';
 import {
   DEFAULT_INPUT_BINDINGS,
@@ -39,6 +45,8 @@ import { DEFAULT_WORLD_DOCUMENT, type WorldDocument } from './world/worldDocumen
 import { CalibrationOverlay } from './calibration/CalibrationOverlay';
 import { FirstRunPrompt } from './calibration/FirstRunPrompt';
 import { CALIBRATION_WORLD_DOCUMENT } from './calibration/calibrationWorld';
+import { CITY_WORLD_DOCUMENT } from './world/cityWorld';
+import { CityStatsOverlay } from './city/CityStatsOverlay';
 import {
   getInputSettings,
   hasStoredInputSettings,
@@ -71,6 +79,8 @@ type AppProps = {
   sessionKey?: number;
   hideTopNav?: boolean;
   hideStatusBanner?: boolean;
+  /** Default match id when none is in the query (e.g. 'city-default' for /city). */
+  matchFallback?: string;
 };
 
 type BenchmarkConfig = {
@@ -139,10 +149,14 @@ export function App({
   sessionKey = 0,
   hideTopNav = false,
   hideStatusBanner = false,
+  matchFallback,
 }: AppProps) {
   const practiceMode = isPracticeMode(mode);
   const modeLabel = gameModeLabel(mode);
-  const multiplayerMatchId = resolveRequestedMatchId(window.location.search);
+  const multiplayerMatchId = resolveRequestedMatchId(
+    window.location.search,
+    matchFallback ?? defaultMatchIdForPath(window.location.pathname),
+  );
   const benchmarkConfig = useMemo<BenchmarkConfig | null>(() => {
     if (practiceMode) {
       return null;
@@ -220,6 +234,11 @@ export function App({
   const { displayState: controlHintsState, updateInputFrame, isDesktop } = useControlHints();
   const { controller: damageFeedbackController, renderState: damageOverlayState } = useDamageFeedback();
   const touchMode = isTouchDevice();
+  // Which step of joining we are on, so a stalled connect names the step it
+  // stalled on instead of just saying "Connecting..." forever.
+  const connectPhase = useSyncExternalStore(subscribeConnectPhase, getConnectPhase, getConnectPhase);
+  const transportNote = useSyncExternalStore(subscribeConnectPhase, getTransportNote, getTransportNote);
+  const activeSession = useSyncExternalStore(subscribeConnectPhase, getActiveSession, getActiveSession);
   const renderStatsParentRef = useRef<HTMLDivElement>(null);
 
   const getGameCanvas = useCallback(
@@ -257,7 +276,16 @@ export function App({
       : worldDocument,
     [benchmarkConfig, worldDocument],
   );
-  const effectiveWorldDocument = calibrationOpen ? CALIBRATION_WORLD_DOCUMENT : benchmarkWorldDocument;
+  // A city match runs on the server's flat world, not the Demo World. The
+  // document drives client prediction as well as rendering, so using the
+  // default here desynced movement from the server and buried the towers in
+  // terrain the server does not simulate.
+  const cityWorld = !practiceMode && isCityMatchId(multiplayerMatchId);
+  const effectiveWorldDocument = calibrationOpen
+    ? CALIBRATION_WORLD_DOCUMENT
+    : cityWorld
+      ? CITY_WORLD_DOCUMENT
+      : benchmarkWorldDocument;
 
   // E2E bridge: keep App-level state in sync for snapshot reads.
   useEffect(() => {
@@ -880,6 +908,8 @@ export function App({
           className="pointer-events-none absolute left-2 top-2 z-5 rounded bg-[rgba(0,0,0,0.6)] px-3 py-1 text-sm"
         >
           {status}
+          {connectPhase ? ` — ${connectPhase}` : ''}
+          {transportNote ? <div className="text-amber-300">{transportNote}</div> : null}
         </div>
       )}
       {!hideTopNav && (
@@ -1093,6 +1123,15 @@ export function App({
         visible={connected}
       />
       <MeleeHUD visible={connected} />
+      {cityWorld && connected && (
+        <CityStatsOverlay
+          matchId={activeSession?.matchId ?? multiplayerMatchId}
+          statsBaseUrl={activeSession ? activeSession.statsBaseUrl : ''}
+          getCityStats={() => window.__VIBE_E2E__?.snapshot().city ?? null}
+          transport={displayStats.transport}
+          pingMs={displayStats.pingMs}
+        />
+      )}
       <DebugOverlay
         stats={displayStats}
         visible={debugVisible}

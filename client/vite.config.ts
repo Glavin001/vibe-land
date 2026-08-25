@@ -38,15 +38,45 @@ export default defineConfig(({ mode }) => {
         '/session-config': {
           target: `http://${serverHost}:${serverPort}`,
         },
+        '/city-manifest': {
+          target: `http://${serverHost}:${serverPort}`,
+        },
+        '/match-stats': {
+          target: `http://${serverHost}:${serverPort}`,
+        },
+        // Every server route needs an entry here or the dev server answers it
+        // with the SPA fallback -- a 200 full of HTML, which reads as a
+        // successful request right up until something tries to use the body.
+        '/city-reset': {
+          target: `http://${serverHost}:${serverPort}`,
+        },
+        // Local control plane (`wrangler dev`), proxied so the page can reach
+        // it same-origin. The dev server runs HTTPS whenever WebTransport certs
+        // are configured, and a browser blocks an https page from fetching an
+        // http control plane as mixed content. In production both are HTTPS and
+        // no proxy is involved.
+        '/cp': {
+          target: `http://127.0.0.1:${env.CONTROL_PLANE_PORT || 9001}`,
+          rewrite: (path: string) => path.replace(/^\/cp/, ''),
+        },
       },
+    },
+    define: {
+      // Build stamp so a stale page is visible in a screenshot. The client is
+      // hot-reloaded independently of the server, so "which code is running"
+      // has two answers and both need to be on screen.
+      __CLIENT_BUILD__: JSON.stringify(
+        new Date().toISOString().slice(11, 19),
+      ),
     },
     optimizeDeps: {
       exclude: ['vibe-land-shared'],
     },
     test: {
-      // Only run unit tests inside src/ — keeps Playwright E2E specs (e2e/)
-      // out of vitest. E2E tests run separately via `npm run e2e`.
-      include: ['src/**/*.test.ts'],
+      // Unit tests inside src/ plus the netlab analyzer (Node-only, so it
+      // lives outside src/ and is never bundled). Keeps Playwright E2E specs
+      // (e2e/) out of vitest — those run separately via `npm run e2e`.
+      include: ['src/**/*.test.ts', 'netlab/**/*.test.ts'],
       // WASM physics tests run thousands of simulation steps and need extra
       // headroom, especially on slow CI runners or with debug WASM builds.
       testTimeout: 120_000,

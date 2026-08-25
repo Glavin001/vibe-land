@@ -3,9 +3,23 @@ name = "web-fps-server"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+default = []
+physx-gpu = ["dep:vibe-land-physx-bridge", "vibe-land-physx-bridge/gpu"]
+destruction = ["physx-gpu", "vibe-land-physx-bridge/destruction", "vibe-land-destruction/physx"]
+# The CUDA stress solver. Without this the build silently falls back to the CPU
+# solver -- correct, but it only shows up as a "CPU" label in the stats overlay,
+# so it is easy to ship a build that quietly gave up the GPU path.
+cuda-stress = ["destruction", "vibe-land-physx-bridge/cuda-stress"]
+
 [dependencies]
 vibe-netcode = { path = "../netcode", features = ["simd-stable"] }
 vibe-land-shared = { path = "../shared", features = ["simd-stable"] }
+vibe-land-destruction = { path = "../destruction" }
+destruction-codec = { path = "../research/destruction-codec" }
+flate2 = "1"
+glam = "0.27"
+vibe-land-physx-bridge = { path = "../physx-bridge", optional = true }
 anyhow = "1"
 dotenvy = "0.15"
 axum = { version = "0.7", features = ["macros", "ws"] }
@@ -18,9 +32,24 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
 tokio = { version = "1", features = ["full"] }
-tower-http = { version = "0.6", features = ["cors"] }
+tower-http = { version = "0.6", features = ["cors", "fs"] }
+# TLS for the standalone web listener. WebTransport needs a secure context, so
+# the page that opens it has to be served over HTTPS -- see WEB_BIND_ADDR in
+# main.rs. rustls/ring are already in the tree via wtransport.
+axum-server = { version = "0.7", features = ["tls-rustls"] }
+# Only to install the process-level crypto provider; see main.rs. ring is
+# what wtransport already pulls in, so this adds no new crypto stack.
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 futures-util = "0.3"
 reqwest = { version = "0.12", features = ["json"] }
 wtransport = { version = "0.7", features = ["self-signed"] }
+
+# Offline trace recorder for the destruction codec. Needs the real GPU sim, so
+# it only builds with the destruction feature rather than breaking a CI build
+# that has no PhysX.
+[[bin]]
+name = "record-city-trace"
+path = "src/bin/record_city_trace.rs"
+required-features = ["destruction"]

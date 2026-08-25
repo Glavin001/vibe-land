@@ -41,6 +41,50 @@ pub const PKT_BATTERY_SYNC: u8 = 116;
 pub const PKT_SHOT_FIRED: u8 = 117;
 pub const PKT_DAMAGE_EVENT: u8 = 118;
 
+// ── Destructible city streams (destruction/src/wire.rs defines the layouts) ──
+pub const PKT_CITY_RESYNC_REQUEST: u8 = 9;
+pub const PKT_CITY_CHUNKS: u8 = 119;
+pub const PKT_CITY_TOPOLOGY: u8 = 120;
+pub const PKT_CITY_BASELINE: u8 = 121;
+pub const PKT_CITY_BOOTSTRAP: u8 = 122;
+/// The city manifest itself, gzipped, pushed on join.
+///
+/// Clients used to fetch this over HTTP from the game server. That works only
+/// when the page and the server share an origin: a rented GPU box serves plain
+/// HTTP on a random port, which an HTTPS page may not fetch, and its
+/// WebTransport certificate is self-signed so an HTTPS fetch is refused too.
+/// Sending it down the session that is already open sidesteps all of it.
+pub const PKT_CITY_MANIFEST: u8 = 123;
+/// Per-match server telemetry as JSON, pushed roughly once a second.
+///
+/// The overlay used to poll `/match-stats` over HTTP, which a browser cannot
+/// reach on a rented box for the same reason it cannot fetch the manifest.
+/// Sent on the session so the numbers describe the server actually being
+/// played on, rather than whichever one the page happens to share an origin
+/// with.
+pub const PKT_MATCH_STATS: u8 = 124;
+
+/// Wire-v3 debris pose packet: self-healing datagram stream from the live
+/// debris codec. Broadcast, loss-tolerant, dictionary-compressed.
+pub const PKT_CITY_DEBRIS: u8 = 125;
+/// Client -> server: bodies whose chains a lost packet poisoned; the server
+/// restates exactly these. The loss-heal cost scales with actual loss.
+pub const PKT_CITY_NACK: u8 = 126;
+// Chunk kinematic stream rate (sim ticks between sends: SIM_HZ / this).
+pub const CITY_CHUNK_STREAM_HZ: u16 = 30;
+pub const CITY_BASELINE_INTERVAL_MS: u16 = 1000;
+// Per-client byte ceiling per 30 Hz send (~2.5 Mbps); a cap, never a fill target.
+pub const CITY_CLIENT_CEILING_BYTES_PER_SEND: u16 = 10400;
+
+// ── Protocol/runtime capabilities ───────────────
+pub const PROTOCOL_VERSION: u16 = 3;
+pub const PHYSICS_BACKEND_RAPIER: u8 = 0;
+pub const PHYSICS_BACKEND_PHYSX_GPU: u8 = 1;
+pub const CLIENT_MOVEMENT_FULL_PREDICTION: u8 = 0;
+pub const CLIENT_MOVEMENT_THIN_AUTHORITATIVE: u8 = 1;
+pub const CLIENT_MOVEMENT_CAP_FULL_PREDICTION: u8 = 1 << 0;
+pub const CLIENT_MOVEMENT_CAP_THIN_AUTHORITATIVE: u8 = 1 << 1;
+
 // ── Weapon types ────────────────────────────────
 pub const WEAPON_HITSCAN: u8 = 1;
 pub const WEAPON_ROCKET: u8 = 2;
@@ -57,6 +101,9 @@ pub const BLOCK_REMOVE: u8 = 2;
 // ── Shape types ─────────────────────────────────
 pub const SHAPE_BOX: u8 = 0;
 pub const SHAPE_SPHERE: u8 = 1;
+
+// ── Vehicle interaction ─────────────────────────
+pub const VEHICLE_INTERACT_RADIUS_M: f32 = 4.0;
 
 // ── Area-of-interest (AOI) radii ────────────────
 // The server uses these to decide which players, dynamic bodies, and vehicles
@@ -75,6 +122,10 @@ pub const SNAPSHOT_HZ_MULTIPLAYER: u16 = 30;
 pub const SNAPSHOT_HZ_LOCAL: u16 = SIM_HZ;
 pub const MAX_PENDING_INPUTS: usize = 120;
 pub const VEHICLE_INPUT_CATCHUP_THRESHOLD: usize = 4;
+/// On-foot backlog depth that triggers a jump to the newest input. Small on
+/// purpose: the point is to track the player's current intent, not to replay
+/// a queue. MAX_PENDING_INPUTS remains the hard cap for pathological cases.
+pub const PLAYER_INPUT_CATCHUP_THRESHOLD: usize = 3;
 pub const RIFLE_FIRE_INTERVAL_MS: u32 = 100;
 pub const RIFLE_BODY_DAMAGE: u8 = 14;
 pub const RIFLE_HEAD_DAMAGE: u8 = 16;

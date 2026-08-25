@@ -9,10 +9,14 @@ import { GodModePage } from './pages/GodMode';
 import { GalleryPage } from './pages/Gallery';
 import { SharedPracticePage } from './pages/SharedPractice';
 import { RagdollLabPage } from './pages/RagdollLab';
+import { MoqDemoPage } from './pages/MoqDemo';
+import { BodiesTransportLabPage } from './pages/BodiesTransportLab';
 
 // E2E bridge: always-on read-only introspection for Playwright tests.
 // Importing the module installs window.__VIBE_E2E__ immediately.
 import './e2eBridge';
+// Agent drive: mutating look/move/shoot surface for browser agents.
+import './agentDrive';
 
 const root = createRoot(document.getElementById('root')!);
 
@@ -47,7 +51,7 @@ switch (route.kind) {
     root.render(<LoadTestPage />);
     break;
   case 'game':
-    root.render(<App mode={route.mode} />);
+    root.render(<App mode={route.mode} matchFallback={route.matchFallback} />);
     break;
   case 'sharedPractice':
     root.render(<SharedPracticePage id={route.id} />);
@@ -60,6 +64,12 @@ switch (route.kind) {
     break;
   case 'ragdollLab':
     root.render(<RagdollLabPage />);
+    break;
+  case 'moqDemo':
+    root.render(<MoqDemoPage />);
+    break;
+  case 'bodiesLab':
+    root.render(<BodiesTransportLabPage />);
     break;
   case 'launcher':
   default:

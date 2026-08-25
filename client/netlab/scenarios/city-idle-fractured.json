@@ -1,0 +1,33 @@
+{
+  "name": "city-idle-fractured",
+  "description": "city-idle on the authored fractured pack: 5 materials, ductile frame (band 10), brittle facade (band 1.2), 4x stronger frame, at full authored strength.",
+  "symptom": [
+    "jitter",
+    "freeze",
+    "bandwidth",
+    "teleporting"
+  ],
+  "path": "/city?portal=true",
+  "matchId": "city-idle-fractured-{iter}",
+  "durationMs": 45000,
+  "join": "auto",
+  "serverEnv": {
+    "VIBE_PHYSICS_BACKEND": "physx_gpu",
+    "WT_STRICT_SNAPSHOT_DATAGRAMS": "1",
+    "VIBE_CITY_SCENE": "fractured-highrise-10f.json",
+    "VIBE_CITY_GRID": "2",
+    "VIBE_CITY_STRESS_LIMIT_SCALE": "1.0"
+  },
+  "clients": [
+    {
+      "role": "observer",
+      "drive": [
+        {
+          "at": 3000,
+          "cmd": "faceCity"
+        }
+      ]
+    }
+  ],
+  "iterations": 1
+}

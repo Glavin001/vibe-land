@@ -12,6 +12,7 @@
 
 import type { DebugStats } from './ui/DebugOverlay';
 import { DEFAULT_STATS } from './ui/DebugOverlay';
+import { renderStats } from './city/renderStats';
 
 export interface GameE2ESnapshot {
   // Identity
@@ -44,6 +45,15 @@ export interface GameE2ESnapshot {
   cameraYaw: number;
   cameraPitch: number;
 
+  // Thin-authoritative movement diagnostics
+  movementTelemetry: {
+    renderedPosition: [number, number, number];
+    authoritativePosition: [number, number, number];
+    presentationOffset: [number, number, number];
+    authoritativeVelocity: [number, number, number];
+    frameDeltaMs: number;
+  };
+
   // Vehicle
   drivenVehicleId: number | null;
   nearestVehicleId: number | null;
@@ -74,12 +84,96 @@ export interface GameE2ESnapshot {
     shotsFired: number;
     lastShotOutcome: string;
     snapshotsPerSec: number;
+    serverTick: number;
+    datagramSnapshotsReceived: number;
+    reliableSnapshotsReceived: number;
+    lastSnapshotGapMs: number;
+    interpolationDelayMs: number;
+    jitterMs: number;
+    snapshotGapP95Ms: number;
+    snapshotGapMaxMs: number;
+    playerCorrectionMagnitude: number;
+    playerCorrectionPeak5sM: number;
   };
+
+  // Destructible city (null outside city-* matches)
+  city: CityE2EStats | null;
+}
+
+export interface CityE2EStats {
+  wireVersion: number;
+  chunksTotal: number;
+  chunksAwake: number;
+  chunksSettled: number;
+  brokenBonds: number;
+  liveIslands: number;
+  topoSeqGaps: number;
+  datagramsReceived: number;
+  bytesPerSecond: number;
+  manifestHash: string;
+  /** False when the chunk mesh failed to build — the city is streaming but invisible. */
+  rendered: boolean;
+  /** Lowest chunk centroid, in metres. The city ground is a flat plane at y=0. */
+  minChunkY: number;
+  /** Chunks whose centroid has sunk below the ground plane. */
+  chunksBelowGround: number;
+  /**
+   * Milliseconds this layer spent recomposing chunk transforms, p95.
+   *
+   * Distinct from `frame p95`, which is a requestAnimationFrame delta and so
+   * is quantised by vsync -- a 17 ms frame and a 33 ms frame both report 33 ms
+   * at 30 fps, which makes real improvements invisible. This measures only the
+   * work this layer does, so it can be optimised against.
+   */
+  chunkUpdateP95Ms: number;
+  /** Chunks whose owning body vanished from the ledger. Must be 0. */
+  orphanedChunks: number;
+  /**
+   * Chunks DRAWN somewhere other than where the ledger says they are.
+   *
+   * The only counter that can see a mis-composed chunk: triangle counts, draw
+   * calls, awake bodies and topology gaps are all unchanged when geometry is
+   * merely in the wrong place. Requires the netlab recorder to be running,
+   * which owns the per-slot last-drawn positions; 0 when it is not.
+   */
+  staleDrawnChunks: number;
+  /// Ledger rebuilds this session, and settles refused for a frame mismatch.
+  bootstraps: number;
+  settleRejects: number;
+  valveApplies: number;
+  valveTicksAhead: number;
+  /** Cumulative chunks orphaned by a retire, including transient windows. */
+  orphanedByRetire: number;
+  /**
+   * Provenance of the lowest chunk, when it is genuinely sunk.
+   *
+   * Counting sunk chunks says a fault exists; this says which one and what it
+   * was composed from, so the body pose and the local offset can be told
+   * apart without guessing which of the two is wrong.
+   */
+  deepest?: {
+    slot: number;
+    structure: number;
+    node: number;
+    worldY: number;
+    islandSerial: number | null;
+    bodyPos: [number, number, number] | null;
+    bodyMembers: number;
+    localOffset: [number, number, number];
+  } | null;
 }
 
 export interface VibeE2EBridge {
   version: number;
   snapshot(): GameE2ESnapshot;
+  /**
+   * Last frame's CPU breakdown (see city/renderStats).
+   *
+   * Separate from `snapshot()` so a harness can poll it every frame without
+   * paying for the whole snapshot, and so perf work can be measured from a
+   * script instead of read off a screenshot.
+   */
+  frameProfile(): Record<string, number>;
 }
 
 // ---------------------------------------------------------------------------
@@ -97,11 +191,24 @@ const refs = {
   cameraPosition: [0, 0, 0] as [number, number, number],
   cameraYaw: 0,
   cameraPitch: 0,
+  movementTelemetry: {
+    renderedPosition: [0, 0, 0],
+    authoritativePosition: [0, 0, 0],
+    presentationOffset: [0, 0, 0],
+    authoritativeVelocity: [0, 0, 0],
+    frameDeltaMs: 0,
+  } as GameE2ESnapshot['movementTelemetry'],
   drivenVehicleId: null as number | null,
   nearestVehicleId: null as number | null,
   remotePlayers: [] as Array<{ id: number; position: [number, number, number] }>,
   statsSnapshot: { ...DEFAULT_STATS } as DebugStats,
+  city: null as CityE2EStats | null,
 };
+
+/** Update destructible-city stats. Called by CityChunksLayer (throttled). */
+export function updateCityE2E(stats: CityE2EStats | null): void {
+  refs.city = stats;
+}
 
 /** Update bridge refs. Called by App component on state changes. */
 export function updateE2EBridgeAppState(state: {
@@ -127,6 +234,7 @@ export function updateE2EBridgeFrameState(state: {
   cameraPosition: [number, number, number];
   cameraYaw: number;
   cameraPitch: number;
+  movementTelemetry: GameE2ESnapshot['movementTelemetry'];
   drivenVehicleId: number | null;
   nearestVehicleId: number | null;
   remotePlayers: Array<{ id: number; position: [number, number, number] }>;
@@ -135,6 +243,7 @@ export function updateE2EBridgeFrameState(state: {
   refs.cameraPosition = state.cameraPosition;
   refs.cameraYaw = state.cameraYaw;
   refs.cameraPitch = state.cameraPitch;
+  refs.movementTelemetry = state.movementTelemetry;
   refs.drivenVehicleId = state.drivenVehicleId;
   refs.nearestVehicleId = state.nearestVehicleId;
   refs.remotePlayers = state.remotePlayers;
@@ -162,6 +271,13 @@ function buildSnapshot(): GameE2ESnapshot {
     cameraPosition: [...refs.cameraPosition],
     cameraYaw: refs.cameraYaw,
     cameraPitch: refs.cameraPitch,
+    movementTelemetry: {
+      renderedPosition: [...refs.movementTelemetry.renderedPosition],
+      authoritativePosition: [...refs.movementTelemetry.authoritativePosition],
+      presentationOffset: [...refs.movementTelemetry.presentationOffset],
+      authoritativeVelocity: [...refs.movementTelemetry.authoritativeVelocity],
+      frameDeltaMs: refs.movementTelemetry.frameDeltaMs,
+    },
     drivenVehicleId: refs.drivenVehicleId,
     nearestVehicleId: refs.nearestVehicleId,
     remotePlayers: refs.remotePlayers.map((rp) => ({
@@ -185,7 +301,18 @@ function buildSnapshot(): GameE2ESnapshot {
       shotsFired: s.shotsFired,
       lastShotOutcome: s.lastShotOutcome,
       snapshotsPerSec: s.snapshotsPerSec,
+      serverTick: s.serverTick,
+      datagramSnapshotsReceived: s.datagramSnapshotsReceived,
+      reliableSnapshotsReceived: s.reliableSnapshotsReceived,
+      lastSnapshotGapMs: s.lastSnapshotGapMs,
+      interpolationDelayMs: s.interpolationDelayMs,
+      jitterMs: s.jitterMs,
+      snapshotGapP95Ms: s.snapshotGapP95Ms,
+      snapshotGapMaxMs: s.snapshotGapMaxMs,
+      playerCorrectionMagnitude: s.playerCorrectionMagnitude,
+      playerCorrectionPeak5sM: s.playerCorrectionPeak5sM,
     },
+    city: refs.city ? { ...refs.city } : null,
   };
 }
 
@@ -202,6 +329,7 @@ declare global {
 const bridge: VibeE2EBridge = {
   version: 1,
   snapshot: buildSnapshot,
+  frameProfile: () => ({ ...renderStats }),
 };
 
 // Always install — not gated behind a flag

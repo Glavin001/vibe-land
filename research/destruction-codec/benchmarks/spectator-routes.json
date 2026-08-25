@@ -1,0 +1,10 @@
+[
+  {"name": "stationary-close", "kind": "stationary_near", "fov_degrees": 60.0},
+  {"name": "new-projectile-chase", "kind": "projectile_chase", "fov_degrees": 60.0},
+  {"name": "full-orbit", "kind": "orbit", "fov_degrees": 55.0},
+  {"name": "distant-skyline", "kind": "distant_skyline", "fov_degrees": 45.0},
+  {"name": "fast-boundary-crossing", "kind": "boundary_flythrough", "fov_degrees": 70.0},
+  {"name": "abrupt-late-join", "kind": "teleport", "fov_degrees": 60.0},
+  {"name": "hotspot-switch", "kind": "hotspot_to_hotspot", "fov_degrees": 60.0},
+  {"name": "seeded-free-flight", "kind": "seeded_random", "fov_degrees": 65.0}
+]

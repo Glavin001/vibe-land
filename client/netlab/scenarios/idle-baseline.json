@@ -1,0 +1,18 @@
+{
+  "name": "idle-baseline",
+  "description": "Stand still for 60s. A/A noise floor: every gate must pass here.",
+  "symptom": [],
+  "path": "/play?portal=true",
+  "matchId": "netlab-idle-{iter}",
+  "durationMs": 60000,
+  "join": "auto",
+  "clients": [
+    {
+      "role": "mover",
+      "drive": [
+        { "at": 2000, "cmd": "faceCity" }
+      ]
+    }
+  ],
+  "iterations": 1
+}

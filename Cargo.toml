@@ -1,5 +1,12 @@
 [workspace]
-members = ["netcode", "shared", "server"]
+members = [
+    "destruction",
+    "netcode",
+    "physx-bridge",
+    "shared",
+    "server",
+    "research/destruction-codec",
+]
 resolver = "2"
 
 [profile.release]

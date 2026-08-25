@@ -2,13 +2,15 @@ import type { GameMode } from './gameMode';
 
 export type AppRoute =
   | { kind: 'launcher' }
-  | { kind: 'game'; mode: GameMode }
+  | { kind: 'game'; mode: GameMode; matchFallback?: string }
   | { kind: 'sharedPractice'; id: string }
   | { kind: 'stats' }
   | { kind: 'loadtest' }
   | { kind: 'builder'; page: 'world'; publishedId?: string }
   | { kind: 'gallery' }
-  | { kind: 'ragdollLab' };
+  | { kind: 'ragdollLab' }
+  | { kind: 'moqDemo' }
+  | { kind: 'bodiesLab' };
 
 function normalizePathname(pathname: string): string {
   if (!pathname || pathname === '/') {
@@ -39,6 +41,11 @@ export function resolveAppRoute(pathname: string, search?: string): AppRoute {
       return { kind: 'launcher' };
     case '/play':
       return { kind: 'game', mode: 'multiplayer' };
+    case '/city':
+      // Destructible mini-city: same multiplayer game shell, but the default
+      // match id carries the `city` prefix that makes the server build the
+      // destructible city for the match.
+      return { kind: 'game', mode: 'multiplayer', matchFallback: 'city-default' };
     case '/practice':
       return { kind: 'game', mode: 'practice' };
     case '/stats':
@@ -52,6 +59,10 @@ export function resolveAppRoute(pathname: string, search?: string): AppRoute {
       return { kind: 'gallery' };
     case '/ragdoll-lab':
       return { kind: 'ragdollLab' };
+    case '/moq':
+      return { kind: 'moqDemo' };
+    case '/bodies':
+      return { kind: 'bodiesLab' };
     default:
       return { kind: 'launcher' };
   }

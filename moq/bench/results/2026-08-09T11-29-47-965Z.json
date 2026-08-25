@@ -1,0 +1,417 @@
+{
+  "startedAt": "2026-08-09T11:29:48.387Z",
+  "relay": "https://draft-16.cloudflare.mediaoverquic.com",
+  "host": {
+    "platform": "linux",
+    "arch": "x64",
+    "node": "v22.23.2",
+    "chrome": "151.0.7922.108"
+  },
+  "config": {
+    "warmupMs": 2000,
+    "durationMs": 10000,
+    "quick": false,
+    "transport": "datagram",
+    "datagramPayloadBytes": 900,
+    "rampTargetsMbps": [
+      15,
+      20,
+      30,
+      40,
+      60
+    ],
+    "viewerCounts": [
+      2,
+      4,
+      8,
+      16
+    ]
+  },
+  "cases": [
+    {
+      "id": "datagram-throughput-15mbps-1v",
+      "transport": "datagram",
+      "tracks": 4,
+      "hz": 520.8333333333334,
+      "payloadBytes": 900,
+      "viewers": [
+        {
+          "status": "completed",
+          "error": null,
+          "logs": [
+            "info: MoQ session established",
+            "info: subscribed to vibe-land/bench/datagram-throughput-15mbps-1v-1786274988388/benchmark-0 (alias 0)",
+            "info: subscribed to vibe-land/bench/datagram-throughput-15mbps-1v-1786274988388/benchmark-1 (alias 2)",
+            "info: subscribed to vibe-land/bench/datagram-throughput-15mbps-1v-1786274988388/benchmark-2 (alias 4)",
+            "info: subscribed to vibe-land/bench/datagram-throughput-15mbps-1v-1786274988388/benchmark-3 (alias 6)",
+            "closed: benchmark complete"
+          ],
+          "maxDatagramSize": 1024,
+          "result": {
+            "durationMs": 10000.100000023842,
+            "objects": 20674,
+            "bytes": 18606600,
+            "objectsPerSecond": 2067.379326201809,
+            "megabitsPerSecond": 14.885131148653025,
+            "gaps": 155,
+            "outOfOrder": 0,
+            "malformed": 0,
+            "latencyMs": {
+              "p50": 2.502,
+              "p95": 2.917,
+              "p99": 5.363,
+              "max": 22.154,
+              "samples": 20674
+            },
+            "tracks": {
+              "benchmark-0": {
+                "objects": 5167,
+                "bytes": 4650300,
+                "gaps": 40,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 6665,
+                "latencySeen": 5167
+              },
+              "benchmark-1": {
+                "objects": 5165,
+                "bytes": 4648500,
+                "gaps": 42,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 6665,
+                "latencySeen": 5165
+              },
+              "benchmark-2": {
+                "objects": 5170,
+                "bytes": 4653000,
+                "gaps": 37,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 6665,
+                "latencySeen": 5170
+              },
+              "benchmark-3": {
+                "objects": 5172,
+                "bytes": 4654800,
+                "gaps": 36,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 6665,
+                "latencySeen": 5172
+              }
+            }
+          }
+        }
+      ],
+      "warmupMs": 2000,
+      "durationMs": 10000,
+      "namespace": "vibe-land/bench/datagram-throughput-15mbps-1v-1786274988388",
+      "startedAt": "2026-08-09T11:29:48.389Z",
+      "finishedAt": "2026-08-09T11:30:01.239Z",
+      "requestedMbps": 15.000000000000002,
+      "requestedAggregateEgressMbps": 15.000000000000002,
+      "publisherMbps": 15.001800000000001,
+      "meanViewerMbps": 14.885131148653025,
+      "minViewerMbps": 14.885131148653025,
+      "aggregateViewerMbps": 14.885131148653025,
+      "minDeliveryRatio": 0.9923420765768682,
+      "maxLossPercent": 0.7657923423131763,
+      "maxP99LatencyMs": 5.363,
+      "malformedObjects": 0,
+      "sequenceReordering": 155,
+      "pageErrors": [],
+      "publisherErrors": [],
+      "publisherLogTail": [
+        "2026-08-09T11:29:48.526885Z DEBUG moq_transport::control: MoQT control message direction=\"recv\" msg_type=\"REQUEST_OK\" request_id=0",
+        "2026-08-09T11:29:49.152207Z DEBUG moq_transport::control: MoQT control message direction=\"recv\" msg_type=\"SUBSCRIBE\" subscribe_id=1 namespace=/vibe-land/bench/datagram-throughput-15mbps-1v-1786274988388 track_name=benchmark-0",
+        "2026-08-09T11:29:49.152256Z DEBUG moq_transport::tracks: track cache hit (active) namespace=/vibe-land/bench/datagram-throughput-15mbps-1v-1786274988388 track=benchmark-0",
+        "2026-08-09T11:29:49.152275Z DEBUG moq_transport::control: MoQT control message direction=\"sent\" msg_type=\"SUBSCRIBE_OK\" subscribe_id=1 track_alias=1",
+        "2026-08-09T11:29:49.152293Z DEBUG moq_transport::session::subscribed: [PUBLISHER] serve_datagrams: starting",
+        "2026-08-09T11:29:49.173964Z DEBUG moq_transport::control: MoQT control message direction=\"recv\" msg_type=\"SUBSCRIBE\" subscribe_id=3 namespace=/vibe-land/bench/datagram-throughput-15mbps-1v-1786274988388 track_name=benchmark-1",
+        "2026-08-09T11:29:49.174000Z DEBUG moq_transport::tracks: track cache hit (active) namespace=/vibe-land/bench/datagram-throughput-15mbps-1v-1786274988388 track=benchmark-1",
+        "2026-08-09T11:29:49.174009Z DEBUG moq_transport::control: MoQT control message direction=\"sent\" msg_type=\"SUBSCRIBE_OK\" subscribe_id=3 track_alias=3",
+        "2026-08-09T11:29:49.174022Z DEBUG moq_transport::session::subscribed: [PUBLISHER] serve_datagrams: starting",
+        "2026-08-09T11:29:49.193454Z DEBUG moq_transport::control: MoQT control message direction=\"recv\" msg_type=\"SUBSCRIBE\" subscribe_id=5 namespace=/vibe-land/bench/datagram-throughput-15mbps-1v-1786274988388 track_name=benchmark-2",
+        "2026-08-09T11:29:49.193474Z DEBUG moq_transport::tracks: track cache hit (active) namespace=/vibe-land/bench/datagram-throughput-15mbps-1v-1786274988388 track=benchmark-2",
+        "2026-08-09T11:29:49.193481Z DEBUG moq_transport::control: MoQT control message direction=\"sent\" msg_type=\"SUBSCRIBE_OK\" subscribe_id=5 track_alias=5",
+        "2026-08-09T11:29:49.193490Z DEBUG moq_transport::session::subscribed: [PUBLISHER] serve_datagrams: starting",
+        "2026-08-09T11:29:49.214610Z DEBUG moq_transport::control: MoQT control message direction=\"recv\" msg_type=\"SUBSCRIBE\" subscribe_id=7 namespace=/vibe-land/bench/datagram-throughput-15mbps-1v-1786274988388 track_name=benchmark-3",
+        "2026-08-09T11:29:49.214630Z DEBUG moq_transport::tracks: track cache hit (active) namespace=/vibe-land/bench/datagram-throughput-15mbps-1v-1786274988388 track=benchmark-3",
+        "2026-08-09T11:29:49.214637Z DEBUG moq_transport::control: MoQT control message direction=\"sent\" msg_type=\"SUBSCRIBE_OK\" subscribe_id=7 track_alias=7",
+        "2026-08-09T11:29:49.214646Z DEBUG moq_transport::session::subscribed: [PUBLISHER] serve_datagrams: starting",
+        "2026-08-09T11:29:49.416439Z  INFO vibe_moq_publisher: benchmark-0 521.0/s 468.9 kB/s  |  benchmark-1 521.0/s 468.9 kB/s  |  benchmark-2 522.0/s 469.8 kB/s  |  benchmark-3 521.0/s 468.9 kB/s total_kb_per_second=\"1876.5\"",
+        "2026-08-09T11:29:50.415960Z  INFO vibe_moq_publisher: benchmark-0 521.0/s 468.9 kB/s  |  benchmark-1 521.0/s 468.9 kB/s  |  benchmark-2 520.0/s 468.0 kB/s  |  benchmark-3 521.0/s 468.9 kB/s total_kb_per_second=\"1874.7\"",
+        "2026-08-09T11:29:51.416412Z  INFO vibe_moq_publisher: benchmark-0 521.0/s 468.9 kB/s  |  benchmark-1 521.0/s 468.9 kB/s  |  benchmark-2 521.0/s 468.9 kB/s  |  benchmark-3 521.0/s 468.9 kB/s total_kb_per_second=\"1875.6\"",
+        "2026-08-09T11:29:52.416014Z  INFO vibe_moq_publisher: benchmark-0 521.0/s 468.9 kB/s  |  benchmark-1 521.0/s 468.9 kB/s  |  benchmark-2 521.0/s 468.9 kB/s  |  benchmark-3 521.0/s 468.9 kB/s total_kb_per_second=\"1875.6\"",
+        "2026-08-09T11:29:53.416051Z  INFO vibe_moq_publisher: benchmark-0 521.0/s 468.9 kB/s  |  benchmark-1 520.0/s 468.0 kB/s  |  benchmark-2 521.0/s 468.9 kB/s  |  benchmark-3 521.0/s 468.9 kB/s total_kb_per_second=\"1874.7\"",
+        "2026-08-09T11:29:54.416668Z  INFO vibe_moq_publisher: benchmark-0 520.0/s 468.0 kB/s  |  benchmark-1 522.0/s 469.8 kB/s  |  benchmark-2 521.0/s 468.9 kB/s  |  benchmark-3 521.0/s 468.9 kB/s total_kb_per_second=\"1875.6\"",
+        "2026-08-09T11:29:55.416593Z  INFO vibe_moq_publisher: benchmark-0 522.0/s 469.8 kB/s  |  benchmark-1 520.0/s 468.0 kB/s  |  benchmark-2 521.0/s 468.9 kB/s  |  benchmark-3 520.0/s 468.0 kB/s total_kb_per_second=\"1874.7\"",
+        "2026-08-09T11:29:56.416190Z  INFO vibe_moq_publisher: benchmark-0 520.0/s 468.0 kB/s  |  benchmark-1 521.0/s 468.9 kB/s  |  benchmark-2 520.0/s 468.0 kB/s  |  benchmark-3 521.0/s 468.9 kB/s total_kb_per_second=\"1873.8\"",
+        "2026-08-09T11:29:57.416742Z  INFO vibe_moq_publisher: benchmark-0 521.0/s 468.9 kB/s  |  benchmark-1 521.0/s 468.9 kB/s  |  benchmark-2 522.0/s 469.8 kB/s  |  benchmark-3 522.0/s 469.8 kB/s total_kb_per_second=\"1877.4\"",
+        "2026-08-09T11:29:58.416333Z  INFO vibe_moq_publisher: benchmark-0 521.0/s 468.9 kB/s  |  benchmark-1 521.0/s 468.9 kB/s  |  benchmark-2 520.0/s 468.0 kB/s  |  benchmark-3 520.0/s 468.0 kB/s total_kb_per_second=\"1873.8\"",
+        "2026-08-09T11:29:59.415927Z  INFO vibe_moq_publisher: benchmark-0 521.0/s 468.9 kB/s  |  benchmark-1 521.0/s 468.9 kB/s  |  benchmark-2 521.0/s 468.9 kB/s  |  benchmark-3 521.0/s 468.9 kB/s total_kb_per_second=\"1875.6\"",
+        "2026-08-09T11:30:00.416143Z  INFO vibe_moq_publisher: benchmark-0 520.0/s 468.0 kB/s  |  benchmark-1 521.0/s 468.9 kB/s  |  benchmark-2 521.0/s 468.9 kB/s  |  benchmark-3 521.0/s 468.9 kB/s total_kb_per_second=\"1874.7\"",
+        ""
+      ],
+      "pass": true
+    },
+    {
+      "id": "datagram-throughput-20mbps-1v",
+      "transport": "datagram",
+      "tracks": 4,
+      "hz": 694.4444444444445,
+      "payloadBytes": 900,
+      "viewers": [
+        {
+          "status": "completed",
+          "error": null,
+          "logs": [
+            "info: MoQ session established",
+            "info: subscribed to vibe-land/bench/datagram-throughput-20mbps-1v-1786275001743/benchmark-0 (alias 0)",
+            "info: subscribed to vibe-land/bench/datagram-throughput-20mbps-1v-1786275001743/benchmark-1 (alias 2)",
+            "info: subscribed to vibe-land/bench/datagram-throughput-20mbps-1v-1786275001743/benchmark-2 (alias 4)",
+            "info: subscribed to vibe-land/bench/datagram-throughput-20mbps-1v-1786275001743/benchmark-3 (alias 6)",
+            "closed: benchmark complete"
+          ],
+          "maxDatagramSize": 1024,
+          "result": {
+            "durationMs": 10000.099999904633,
+            "objects": 26652,
+            "bytes": 23986800,
+            "objectsPerSecond": 2665.173348291934,
+            "megabitsPerSecond": 19.18924810770193,
+            "gaps": 1124,
+            "outOfOrder": 0,
+            "malformed": 0,
+            "latencyMs": {
+              "p50": 2.49925,
+              "p95": 3.552,
+              "p99": 7.46925,
+              "max": 26.447,
+              "samples": 26652
+            },
+            "tracks": {
+              "benchmark-0": {
+                "objects": 6659,
+                "bytes": 5993100,
+                "gaps": 285,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 8835,
+                "latencySeen": 6659
+              },
+              "benchmark-1": {
+                "objects": 6657,
+                "bytes": 5991300,
+                "gaps": 287,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 8835,
+                "latencySeen": 6657
+              },
+              "benchmark-2": {
+                "objects": 6674,
+                "bytes": 6006600,
+                "gaps": 270,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 8835,
+                "latencySeen": 6674
+              },
+              "benchmark-3": {
+                "objects": 6662,
+                "bytes": 5995800,
+                "gaps": 282,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 8835,
+                "latencySeen": 6662
+              }
+            }
+          }
+        }
+      ],
+      "warmupMs": 2000,
+      "durationMs": 10000,
+      "namespace": "vibe-land/bench/datagram-throughput-20mbps-1v-1786275001743",
+      "startedAt": "2026-08-09T11:30:01.745Z",
+      "finishedAt": "2026-08-09T11:30:14.519Z",
+      "requestedMbps": 20,
+      "requestedAggregateEgressMbps": 20,
+      "publisherMbps": 20.0004,
+      "meanViewerMbps": 19.18924810770193,
+      "minViewerMbps": 19.18924810770193,
+      "aggregateViewerMbps": 19.18924810770193,
+      "minDeliveryRatio": 0.9594624053850964,
+      "maxLossPercent": 4.053759461490358,
+      "maxP99LatencyMs": 7.46925,
+      "malformedObjects": 0,
+      "sequenceReordering": 1124,
+      "pageErrors": [],
+      "publisherErrors": [],
+      "publisherLogTail": [
+        "2026-08-09T11:30:01.820564Z DEBUG moq_transport::control: MoQT control message direction=\"recv\" msg_type=\"REQUEST_OK\" request_id=0",
+        "2026-08-09T11:30:02.427021Z DEBUG moq_transport::control: MoQT control message direction=\"recv\" msg_type=\"SUBSCRIBE\" subscribe_id=1 namespace=/vibe-land/bench/datagram-throughput-20mbps-1v-1786275001743 track_name=benchmark-0",
+        "2026-08-09T11:30:02.427067Z DEBUG moq_transport::tracks: track cache hit (active) namespace=/vibe-land/bench/datagram-throughput-20mbps-1v-1786275001743 track=benchmark-0",
+        "2026-08-09T11:30:02.427085Z DEBUG moq_transport::control: MoQT control message direction=\"sent\" msg_type=\"SUBSCRIBE_OK\" subscribe_id=1 track_alias=1",
+        "2026-08-09T11:30:02.427108Z DEBUG moq_transport::session::subscribed: [PUBLISHER] serve_datagrams: starting",
+        "2026-08-09T11:30:02.451975Z DEBUG moq_transport::control: MoQT control message direction=\"recv\" msg_type=\"SUBSCRIBE\" subscribe_id=3 namespace=/vibe-land/bench/datagram-throughput-20mbps-1v-1786275001743 track_name=benchmark-1",
+        "2026-08-09T11:30:02.452009Z DEBUG moq_transport::tracks: track cache hit (active) namespace=/vibe-land/bench/datagram-throughput-20mbps-1v-1786275001743 track=benchmark-1",
+        "2026-08-09T11:30:02.452034Z DEBUG moq_transport::control: MoQT control message direction=\"sent\" msg_type=\"SUBSCRIBE_OK\" subscribe_id=3 track_alias=3",
+        "2026-08-09T11:30:02.452045Z DEBUG moq_transport::session::subscribed: [PUBLISHER] serve_datagrams: starting",
+        "2026-08-09T11:30:02.471171Z DEBUG moq_transport::control: MoQT control message direction=\"recv\" msg_type=\"SUBSCRIBE\" subscribe_id=5 namespace=/vibe-land/bench/datagram-throughput-20mbps-1v-1786275001743 track_name=benchmark-2",
+        "2026-08-09T11:30:02.471206Z DEBUG moq_transport::tracks: track cache hit (active) namespace=/vibe-land/bench/datagram-throughput-20mbps-1v-1786275001743 track=benchmark-2",
+        "2026-08-09T11:30:02.471233Z DEBUG moq_transport::control: MoQT control message direction=\"sent\" msg_type=\"SUBSCRIBE_OK\" subscribe_id=5 track_alias=5",
+        "2026-08-09T11:30:02.471248Z DEBUG moq_transport::session::subscribed: [PUBLISHER] serve_datagrams: starting",
+        "2026-08-09T11:30:02.497785Z DEBUG moq_transport::control: MoQT control message direction=\"recv\" msg_type=\"SUBSCRIBE\" subscribe_id=7 namespace=/vibe-land/bench/datagram-throughput-20mbps-1v-1786275001743 track_name=benchmark-3",
+        "2026-08-09T11:30:02.497817Z DEBUG moq_transport::tracks: track cache hit (active) namespace=/vibe-land/bench/datagram-throughput-20mbps-1v-1786275001743 track=benchmark-3",
+        "2026-08-09T11:30:02.497826Z DEBUG moq_transport::control: MoQT control message direction=\"sent\" msg_type=\"SUBSCRIBE_OK\" subscribe_id=7 track_alias=7",
+        "2026-08-09T11:30:02.497837Z DEBUG moq_transport::session::subscribed: [PUBLISHER] serve_datagrams: starting",
+        "2026-08-09T11:30:02.774369Z  INFO vibe_moq_publisher: benchmark-0 695.0/s 625.5 kB/s  |  benchmark-1 695.0/s 625.5 kB/s  |  benchmark-2 695.0/s 625.5 kB/s  |  benchmark-3 695.0/s 625.5 kB/s total_kb_per_second=\"2502.0\"",
+        "2026-08-09T11:30:03.774212Z  INFO vibe_moq_publisher: benchmark-0 695.0/s 625.5 kB/s  |  benchmark-1 695.0/s 625.5 kB/s  |  benchmark-2 695.0/s 625.5 kB/s  |  benchmark-3 695.0/s 625.5 kB/s total_kb_per_second=\"2502.0\"",
+        "2026-08-09T11:30:04.774394Z  INFO vibe_moq_publisher: benchmark-0 693.0/s 623.7 kB/s  |  benchmark-1 694.0/s 624.6 kB/s  |  benchmark-2 694.0/s 624.6 kB/s  |  benchmark-3 693.0/s 623.7 kB/s total_kb_per_second=\"2496.6\"",
+        "2026-08-09T11:30:05.774565Z  INFO vibe_moq_publisher: benchmark-0 695.0/s 625.5 kB/s  |  benchmark-1 694.0/s 624.6 kB/s  |  benchmark-2 694.0/s 624.6 kB/s  |  benchmark-3 695.0/s 625.5 kB/s total_kb_per_second=\"2500.2\"",
+        "2026-08-09T11:30:06.774004Z  INFO vibe_moq_publisher: benchmark-0 694.0/s 624.6 kB/s  |  benchmark-1 695.0/s 625.5 kB/s  |  benchmark-2 695.0/s 625.5 kB/s  |  benchmark-3 694.0/s 624.6 kB/s total_kb_per_second=\"2500.2\"",
+        "2026-08-09T11:30:07.774106Z  INFO vibe_moq_publisher: benchmark-0 695.0/s 625.5 kB/s  |  benchmark-1 694.0/s 624.6 kB/s  |  benchmark-2 694.0/s 624.6 kB/s  |  benchmark-3 695.0/s 625.5 kB/s total_kb_per_second=\"2500.2\"",
+        "2026-08-09T11:30:08.773766Z  INFO vibe_moq_publisher: benchmark-0 695.0/s 625.5 kB/s  |  benchmark-1 694.0/s 624.6 kB/s  |  benchmark-2 695.0/s 625.5 kB/s  |  benchmark-3 694.0/s 624.6 kB/s total_kb_per_second=\"2500.2\"",
+        "2026-08-09T11:30:09.774252Z  INFO vibe_moq_publisher: benchmark-0 694.0/s 624.6 kB/s  |  benchmark-1 695.0/s 625.5 kB/s  |  benchmark-2 694.0/s 624.6 kB/s  |  benchmark-3 695.0/s 625.5 kB/s total_kb_per_second=\"2500.2\"",
+        "2026-08-09T11:30:10.774387Z  INFO vibe_moq_publisher: benchmark-0 695.0/s 625.5 kB/s  |  benchmark-1 694.0/s 624.6 kB/s  |  benchmark-2 695.0/s 625.5 kB/s  |  benchmark-3 694.0/s 624.6 kB/s total_kb_per_second=\"2500.2\"",
+        "2026-08-09T11:30:11.773875Z  INFO vibe_moq_publisher: benchmark-0 693.0/s 623.7 kB/s  |  benchmark-1 695.0/s 625.5 kB/s  |  benchmark-2 694.0/s 624.6 kB/s  |  benchmark-3 694.0/s 624.6 kB/s total_kb_per_second=\"2498.4\"",
+        "2026-08-09T11:30:12.774290Z  INFO vibe_moq_publisher: benchmark-0 695.0/s 625.5 kB/s  |  benchmark-1 695.0/s 625.5 kB/s  |  benchmark-2 695.0/s 625.5 kB/s  |  benchmark-3 696.0/s 626.4 kB/s total_kb_per_second=\"2502.9\"",
+        "2026-08-09T11:30:13.774046Z  INFO vibe_moq_publisher: benchmark-0 694.0/s 624.6 kB/s  |  benchmark-1 694.0/s 624.6 kB/s  |  benchmark-2 694.0/s 624.6 kB/s  |  benchmark-3 693.0/s 623.7 kB/s total_kb_per_second=\"2497.5\"",
+        ""
+      ],
+      "pass": true
+    },
+    {
+      "id": "datagram-throughput-30mbps-1v",
+      "transport": "datagram",
+      "tracks": 4,
+      "hz": 1041.6666666666667,
+      "payloadBytes": 900,
+      "viewers": [
+        {
+          "status": "completed",
+          "error": null,
+          "logs": [
+            "info: MoQ session established",
+            "info: subscribed to vibe-land/bench/datagram-throughput-30mbps-1v-1786275015021/benchmark-0 (alias 0)",
+            "info: subscribed to vibe-land/bench/datagram-throughput-30mbps-1v-1786275015021/benchmark-1 (alias 2)",
+            "info: subscribed to vibe-land/bench/datagram-throughput-30mbps-1v-1786275015021/benchmark-2 (alias 4)",
+            "info: subscribed to vibe-land/bench/datagram-throughput-30mbps-1v-1786275015021/benchmark-3 (alias 6)",
+            "closed: benchmark complete"
+          ],
+          "maxDatagramSize": 1024,
+          "result": {
+            "durationMs": 10000.100000023842,
+            "objects": 38327,
+            "bytes": 34494300,
+            "objectsPerSecond": 3832.6616733741284,
+            "megabitsPerSecond": 27.595164048293725,
+            "gaps": 3343,
+            "outOfOrder": 0,
+            "malformed": 0,
+            "latencyMs": {
+              "p50": 2.657,
+              "p95": 3.09,
+              "p99": 5.151,
+              "max": 19.059,
+              "samples": 38327
+            },
+            "tracks": {
+              "benchmark-0": {
+                "objects": 9592,
+                "bytes": 8632800,
+                "gaps": 826,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 13263,
+                "latencySeen": 9592
+              },
+              "benchmark-1": {
+                "objects": 9591,
+                "bytes": 8631900,
+                "gaps": 826,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 13262,
+                "latencySeen": 9591
+              },
+              "benchmark-2": {
+                "objects": 9570,
+                "bytes": 8613000,
+                "gaps": 848,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 13263,
+                "latencySeen": 9570
+              },
+              "benchmark-3": {
+                "objects": 9574,
+                "bytes": 8616600,
+                "gaps": 843,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 13262,
+                "latencySeen": 9574
+              }
+            }
+          }
+        }
+      ],
+      "warmupMs": 2000,
+      "durationMs": 10000,
+      "namespace": "vibe-land/bench/datagram-throughput-30mbps-1v-1786275015021",
+      "startedAt": "2026-08-09T11:30:15.024Z",
+      "finishedAt": "2026-08-09T11:30:27.811Z",
+      "requestedMbps": 30.000000000000004,
+      "requestedAggregateEgressMbps": 30.000000000000004,
+      "publisherMbps": 30.002400000000005,
+      "meanViewerMbps": 27.595164048293725,
+      "minViewerMbps": 27.595164048293725,
+      "aggregateViewerMbps": 27.595164048293725,
+      "minDeliveryRatio": 0.9198388016097907,
+      "maxLossPercent": 8.01611983902093,
+      "maxP99LatencyMs": 5.151,
+      "malformedObjects": 0,
+      "sequenceReordering": 3343,
+      "pageErrors": [],
+      "publisherErrors": [],
+      "publisherLogTail": [
+        "2026-08-09T11:30:15.104421Z DEBUG moq_transport::control: MoQT control message direction=\"recv\" msg_type=\"REQUEST_OK\" request_id=0",
+        "2026-08-09T11:30:15.718822Z DEBUG moq_transport::control: MoQT control message direction=\"recv\" msg_type=\"SUBSCRIBE\" subscribe_id=1 namespace=/vibe-land/bench/datagram-throughput-30mbps-1v-1786275015021 track_name=benchmark-0",
+        "2026-08-09T11:30:15.718870Z DEBUG moq_transport::tracks: track cache hit (active) namespace=/vibe-land/bench/datagram-throughput-30mbps-1v-1786275015021 track=benchmark-0",
+        "2026-08-09T11:30:15.718882Z DEBUG moq_transport::control: MoQT control message direction=\"sent\" msg_type=\"SUBSCRIBE_OK\" subscribe_id=1 track_alias=1",
+        "2026-08-09T11:30:15.718899Z DEBUG moq_transport::session::subscribed: [PUBLISHER] serve_datagrams: starting",
+        "2026-08-09T11:30:15.742237Z DEBUG moq_transport::control: MoQT control message direction=\"recv\" msg_type=\"SUBSCRIBE\" subscribe_id=3 namespace=/vibe-land/bench/datagram-throughput-30mbps-1v-1786275015021 track_name=benchmark-1",
+        "2026-08-09T11:30:15.742274Z DEBUG moq_transport::tracks: track cache hit (active) namespace=/vibe-land/bench/datagram-throughput-30mbps-1v-1786275015021 track=benchmark-1",
+        "2026-08-09T11:30:15.742284Z DEBUG moq_transport::control: MoQT control message direction=\"sent\" msg_type=\"SUBSCRIBE_OK\" subscribe_id=3 track_alias=3",
+        "2026-08-09T11:30:15.742297Z DEBUG moq_transport::session::subscribed: [PUBLISHER] serve_datagrams: starting",
+        "2026-08-09T11:30:15.762614Z DEBUG moq_transport::control: MoQT control message direction=\"recv\" msg_type=\"SUBSCRIBE\" subscribe_id=5 namespace=/vibe-land/bench/datagram-throughput-30mbps-1v-1786275015021 track_name=benchmark-2",
+        "2026-08-09T11:30:15.762651Z DEBUG moq_transport::tracks: track cache hit (active) namespace=/vibe-land/bench/datagram-throughput-30mbps-1v-1786275015021 track=benchmark-2",
+        "2026-08-09T11:30:15.762660Z DEBUG moq_transport::control: MoQT control message direction=\"sent\" msg_type=\"SUBSCRIBE_OK\" subscribe_id=5 track_alias=5",
+        "2026-08-09T11:30:15.762672Z DEBUG moq_transport::session::subscribed: [PUBLISHER] serve_datagrams: starting",
+        "2026-08-09T11:30:15.784292Z DEBUG moq_transport::control: MoQT control message direction=\"recv\" msg_type=\"SUBSCRIBE\" subscribe_id=7 namespace=/vibe-land/bench/datagram-throughput-30mbps-1v-1786275015021 track_name=benchmark-3",
+        "2026-08-09T11:30:15.784329Z DEBUG moq_transport::tracks: track cache hit (active) namespace=/vibe-land/bench/datagram-throughput-30mbps-1v-1786275015021 track=benchmark-3",
+        "2026-08-09T11:30:15.784339Z DEBUG moq_transport::control: MoQT control message direction=\"sent\" msg_type=\"SUBSCRIBE_OK\" subscribe_id=7 track_alias=7",
+        "2026-08-09T11:30:15.784351Z DEBUG moq_transport::session::subscribed: [PUBLISHER] serve_datagrams: starting",
+        "2026-08-09T11:30:16.053067Z  INFO vibe_moq_publisher: benchmark-0 1042.0/s 937.8 kB/s  |  benchmark-1 1042.0/s 937.8 kB/s  |  benchmark-2 1043.0/s 938.7 kB/s  |  benchmark-3 1043.0/s 938.7 kB/s total_kb_per_second=\"3753.0\"",
+        "2026-08-09T11:30:17.053026Z  INFO vibe_moq_publisher: benchmark-0 1042.0/s 937.8 kB/s  |  benchmark-1 1042.0/s 937.8 kB/s  |  benchmark-2 1041.0/s 936.9 kB/s  |  benchmark-3 1041.0/s 936.9 kB/s total_kb_per_second=\"3749.4\"",
+        "2026-08-09T11:30:18.053248Z  INFO vibe_moq_publisher: benchmark-0 1041.0/s 936.9 kB/s  |  benchmark-1 1042.0/s 937.8 kB/s  |  benchmark-2 1042.0/s 937.8 kB/s  |  benchmark-3 1042.0/s 937.8 kB/s total_kb_per_second=\"3750.3\"",
+        "2026-08-09T11:30:19.053777Z  INFO vibe_moq_publisher: benchmark-0 1042.0/s 937.8 kB/s  |  benchmark-1 1042.0/s 937.8 kB/s  |  benchmark-2 1041.0/s 936.9 kB/s  |  benchmark-3 1042.0/s 937.8 kB/s total_kb_per_second=\"3750.3\"",
+        "2026-08-09T11:30:20.053001Z  INFO vibe_moq_publisher: benchmark-0 1042.0/s 937.8 kB/s  |  benchmark-1 1041.0/s 936.9 kB/s  |  benchmark-2 1042.0/s 937.8 kB/s  |  benchmark-3 1041.0/s 936.9 kB/s total_kb_per_second=\"3749.4\"",
+        "2026-08-09T11:30:21.052997Z  INFO vibe_moq_publisher: benchmark-0 1042.0/s 937.8 kB/s  |  benchmark-1 1042.0/s 937.8 kB/s  |  benchmark-2 1042.0/s 937.8 kB/s  |  benchmark-3 1042.0/s 937.8 kB/s total_kb_per_second=\"3751.2\"",
+        "2026-08-09T11:30:22.053293Z  INFO vibe_moq_publisher: benchmark-0 1041.0/s 936.9 kB/s  |  benchmark-1 1042.0/s 937.8 kB/s  |  benchmark-2 1042.0/s 937.8 kB/s  |  benchmark-3 1042.0/s 937.8 kB/s total_kb_per_second=\"3750.3\"",
+        "2026-08-09T11:30:23.053365Z  INFO vibe_moq_publisher: benchmark-0 1041.0/s 936.9 kB/s  |  benchmark-1 1041.0/s 936.9 kB/s  |  benchmark-2 1040.0/s 936.0 kB/s  |  benchmark-3 1041.0/s 936.9 kB/s total_kb_per_second=\"3746.7\"",
+        "2026-08-09T11:30:24.053605Z  INFO vibe_moq_publisher: benchmark-0 1043.0/s 938.7 kB/s  |  benchmark-1 1042.0/s 937.8 kB/s  |  benchmark-2 1043.0/s 938.7 kB/s  |  benchmark-3 1042.0/s 937.8 kB/s total_kb_per_second=\"3753.0\"",
+        "2026-08-09T11:30:25.053367Z  INFO vibe_moq_publisher: benchmark-0 1042.0/s 937.8 kB/s  |  benchmark-1 1042.0/s 937.8 kB/s  |  benchmark-2 1042.0/s 937.8 kB/s  |  benchmark-3 1042.0/s 937.8 kB/s total_kb_per_second=\"3751.2\"",
+        "2026-08-09T11:30:26.053956Z  INFO vibe_moq_publisher: benchmark-0 1041.0/s 936.9 kB/s  |  benchmark-1 1040.0/s 936.0 kB/s  |  benchmark-2 1040.0/s 936.0 kB/s  |  benchmark-3 1040.0/s 936.0 kB/s total_kb_per_second=\"3744.9\"",
+        "2026-08-09T11:30:27.053364Z  INFO vibe_moq_publisher: benchmark-0 1042.0/s 937.8 kB/s  |  benchmark-1 1043.0/s 938.7 kB/s  |  benchmark-2 1043.0/s 938.7 kB/s  |  benchmark-3 1043.0/s 938.7 kB/s total_kb_per_second=\"3753.9\"",
+        ""
+      ],
+      "pass": false
+    }
+  ],
+  "finishedAt": "2026-08-09T11:30:28.313Z"
+}

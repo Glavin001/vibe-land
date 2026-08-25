@@ -36,6 +36,15 @@ export interface GameE2ESnapshot {
   cameraYaw: number;
   cameraPitch: number;
 
+  // Thin-authoritative movement diagnostics
+  movementTelemetry: {
+    renderedPosition: [number, number, number];
+    authoritativePosition: [number, number, number];
+    presentationOffset: [number, number, number];
+    authoritativeVelocity: [number, number, number];
+    frameDeltaMs: number;
+  };
+
   // Vehicle
   drivenVehicleId: number | null;
   nearestVehicleId: number | null;
@@ -66,7 +75,43 @@ export interface GameE2ESnapshot {
     shotsFired: number;
     lastShotOutcome: string;
     snapshotsPerSec: number;
+    serverTick: number;
+    datagramSnapshotsReceived: number;
+    reliableSnapshotsReceived: number;
+    lastSnapshotGapMs: number;
+    interpolationDelayMs: number;
+    jitterMs: number;
+    snapshotGapP95Ms: number;
+    snapshotGapMaxMs: number;
+    playerCorrectionMagnitude: number;
+    playerCorrectionPeak5sM: number;
   };
+
+  /** Destructible-city stats; null outside `city-*` matches. */
+  city: CityE2EStats | null;
+}
+
+export interface CityE2EStats {
+  chunksTotal: number;
+  chunksAwake: number;
+  chunksSettled: number;
+  brokenBonds: number;
+  liveIslands: number;
+  topoSeqGaps: number;
+  datagramsReceived: number;
+  bytesPerSecond: number;
+  manifestHash: string;
+  /** False when the chunk mesh failed to build — streaming but invisible. */
+  rendered: boolean;
+  /** Lowest chunk centroid, in metres. The city ground is a flat plane at y=0. */
+  minChunkY: number;
+  /** Chunks whose centroid has sunk below the ground plane. */
+  chunksBelowGround: number;
+  /** Chunks whose owning body vanished from the ledger. Must be 0. */
+  orphanedChunks: number;
+  staleDrawnChunks: number;
+  /** Cumulative chunks orphaned by a retire, including transient windows. */
+  orphanedByRetire: number;
 }
 
 export interface VibeE2EBridge {

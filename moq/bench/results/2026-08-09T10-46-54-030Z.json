@@ -1,0 +1,329 @@
+{
+  "startedAt": "2026-08-09T10:46:54.512Z",
+  "relay": "https://draft-16.cloudflare.mediaoverquic.com",
+  "host": {
+    "platform": "linux",
+    "arch": "x64",
+    "node": "v22.23.2",
+    "chrome": "151.0.7922.108"
+  },
+  "config": {
+    "warmupMs": 2000,
+    "durationMs": 8000,
+    "quick": false,
+    "rampTargetsMbps": [
+      5
+    ],
+    "viewerCounts": [
+      32,
+      64
+    ]
+  },
+  "cases": [
+    {
+      "id": "throughput-5mbps-1v",
+      "tracks": 4,
+      "hz": 20,
+      "payloadBytes": 7813,
+      "viewers": [
+        {
+          "status": "error",
+          "error": "The stream was aborted by the remote server",
+          "logs": [
+            "info: MoQ session established",
+            "closed: Connection lost."
+          ],
+          "result": null
+        }
+      ],
+      "warmupMs": 2000,
+      "durationMs": 8000,
+      "namespace": "vibe-land/bench/throughput-5mbps-1v-1786272414512",
+      "startedAt": "2026-08-09T10:46:54.514Z",
+      "finishedAt": "2026-08-09T10:46:55.176Z",
+      "requestedMbps": 5.00032,
+      "requestedAggregateEgressMbps": 5.00032,
+      "publisherMbps": null,
+      "meanViewerMbps": 0,
+      "minViewerMbps": 0,
+      "aggregateViewerMbps": 0,
+      "minDeliveryRatio": 0,
+      "maxP99LatencyMs": null,
+      "malformedObjects": 0,
+      "sequenceReordering": 0,
+      "pageErrors": [
+        "viewer 0: session closed: Connection lost."
+      ],
+      "publisherErrors": [
+        "2026-08-09T10:46:54.548743Z  WARN moq_transport::session::reader: [READER] decode: stream ended while waiting for data (have=0 bytes, need=1)",
+        "Error: session error"
+      ],
+      "publisherLogTail": [
+        "2026-08-09T10:46:54.522740Z  INFO moq_native_ietf::quic: UDP socket bound bind=[::]:0 local=[::]:59086 dual_stack=true",
+        "2026-08-09T10:46:54.522894Z  INFO vibe_moq_publisher: connecting to relay url=https://<relay>/<token>",
+        "2026-08-09T10:46:54.541839Z  INFO vibe_moq_publisher: session established connection_id=\"e44e451f9e9782bbb4ec8935d62f1842\"",
+        "2026-08-09T10:46:54.541865Z  INFO vibe_moq_publisher: starting world simulation seed=1786272414 namespace=vibe-land/bench/throughput-5mbps-1v-1786272414512",
+        "2026-08-09T10:46:54.541876Z  INFO vibe_moq_publisher: publishing track track=benchmark-0 hz=20.0 priority=0",
+        "2026-08-09T10:46:54.541888Z  INFO vibe_moq_publisher: publishing track track=benchmark-1 hz=20.0 priority=1",
+        "2026-08-09T10:46:54.541894Z  INFO vibe_moq_publisher: publishing track track=benchmark-2 hz=20.0 priority=2",
+        "2026-08-09T10:46:54.541904Z  INFO vibe_moq_publisher: publishing track track=benchmark-3 hz=20.0 priority=3",
+        "2026-08-09T10:46:54.548743Z  WARN moq_transport::session::reader: [READER] decode: stream ended while waiting for data (have=0 bytes, need=1)",
+        "Error: session error",
+        "",
+        "Caused by:",
+        "    0: decode error: fill buffer",
+        "    1: fill buffer",
+        ""
+      ],
+      "pass": false
+    },
+    {
+      "id": "throughput-5mbps-32v",
+      "tracks": 4,
+      "hz": 20,
+      "payloadBytes": 7813,
+      "viewers": [
+        {
+          "status": "error",
+          "error": "Connection lost.",
+          "logs": [],
+          "result": null
+        },
+        {
+          "status": "error",
+          "error": "Connection lost.",
+          "logs": [],
+          "result": null
+        },
+        {
+          "status": "error",
+          "error": "Connection lost.",
+          "logs": [],
+          "result": null
+        },
+        {
+          "status": "error",
+          "error": "Connection lost.",
+          "logs": [],
+          "result": null
+        },
+        {
+          "status": "error",
+          "error": "Connection lost.",
+          "logs": [],
+          "result": null
+        },
+        {
+          "status": "error",
+          "error": "Connection lost.",
+          "logs": [],
+          "result": null
+        },
+        {
+          "status": "error",
+          "error": "Connection lost.",
+          "logs": [],
+          "result": null
+        },
+        {
+          "status": "error",
+          "error": "Connection lost.",
+          "logs": [],
+          "result": null
+        },
+        {
+          "status": "error",
+          "error": "Connection lost.",
+          "logs": [],
+          "result": null
+        },
+        {
+          "status": "error",
+          "error": "Connection lost.",
+          "logs": [],
+          "result": null
+        },
+        {
+          "status": "error",
+          "error": "Connection lost.",
+          "logs": [],
+          "result": null
+        },
+        {
+          "status": "error",
+          "error": "Connection lost.",
+          "logs": [],
+          "result": null
+        },
+        {
+          "status": "error",
+          "error": "Connection lost.",
+          "logs": [],
+          "result": null
+        },
+        {
+          "status": "error",
+          "error": "Connection lost.",
+          "logs": [],
+          "result": null
+        },
+        {
+          "status": "error",
+          "error": "Connection lost.",
+          "logs": [],
+          "result": null
+        },
+        {
+          "status": "error",
+          "error": "Connection lost.",
+          "logs": [],
+          "result": null
+        },
+        {
+          "status": "error",
+          "error": "Connection lost.",
+          "logs": [],
+          "result": null
+        },
+        {
+          "status": "error",
+          "error": "Connection lost.",
+          "logs": [],
+          "result": null
+        },
+        {
+          "status": "error",
+          "error": "Connection lost.",
+          "logs": [],
+          "result": null
+        },
+        {
+          "status": "error",
+          "error": "Connection lost.",
+          "logs": [],
+          "result": null
+        },
+        {
+          "status": "error",
+          "error": "Connection lost.",
+          "logs": [],
+          "result": null
+        },
+        {
+          "status": "error",
+          "error": "Connection lost.",
+          "logs": [],
+          "result": null
+        },
+        {
+          "status": "error",
+          "error": "Connection lost.",
+          "logs": [],
+          "result": null
+        },
+        {
+          "status": "error",
+          "error": "Connection lost.",
+          "logs": [],
+          "result": null
+        },
+        {
+          "status": "error",
+          "error": "The stream was aborted by the remote server",
+          "logs": [
+            "info: MoQ session established",
+            "closed: Connection lost."
+          ],
+          "result": null
+        },
+        {
+          "status": "error",
+          "error": "Connection lost.",
+          "logs": [],
+          "result": null
+        },
+        {
+          "status": "error",
+          "error": "Connection lost.",
+          "logs": [],
+          "result": null
+        },
+        {
+          "status": "error",
+          "error": "Connection lost.",
+          "logs": [],
+          "result": null
+        },
+        {
+          "status": "error",
+          "error": "Connection lost.",
+          "logs": [],
+          "result": null
+        },
+        {
+          "status": "error",
+          "error": "Connection lost.",
+          "logs": [],
+          "result": null
+        },
+        {
+          "status": "error",
+          "error": "Connection lost.",
+          "logs": [],
+          "result": null
+        },
+        {
+          "status": "error",
+          "error": "The stream was aborted by the remote server",
+          "logs": [
+            "info: MoQ session established",
+            "closed: Connection lost."
+          ],
+          "result": null
+        }
+      ],
+      "warmupMs": 2000,
+      "durationMs": 8000,
+      "namespace": "vibe-land/bench/throughput-5mbps-32v-1786272415677",
+      "startedAt": "2026-08-09T10:46:55.679Z",
+      "finishedAt": "2026-08-09T10:46:56.877Z",
+      "requestedMbps": 5.00032,
+      "requestedAggregateEgressMbps": 160.01024,
+      "publisherMbps": null,
+      "meanViewerMbps": 0,
+      "minViewerMbps": 0,
+      "aggregateViewerMbps": 0,
+      "minDeliveryRatio": 0,
+      "maxP99LatencyMs": null,
+      "malformedObjects": 0,
+      "sequenceReordering": 0,
+      "pageErrors": [
+        "viewer 24: session closed: Connection lost.",
+        "viewer 31: session closed: Connection lost."
+      ],
+      "publisherErrors": [
+        "Error: session error"
+      ],
+      "publisherLogTail": [
+        "2026-08-09T10:46:55.686400Z  INFO moq_native_ietf::quic: UDP socket bound bind=[::]:0 local=[::]:52130 dual_stack=true",
+        "2026-08-09T10:46:55.686503Z  INFO vibe_moq_publisher: connecting to relay url=https://<relay>/<token>",
+        "2026-08-09T10:46:55.705890Z  INFO vibe_moq_publisher: session established connection_id=\"2866979f00acf2be9c26f24600af2704\"",
+        "2026-08-09T10:46:55.705901Z  INFO vibe_moq_publisher: starting world simulation seed=1786272415 namespace=vibe-land/bench/throughput-5mbps-32v-1786272415677",
+        "2026-08-09T10:46:55.705910Z  INFO vibe_moq_publisher: publishing track track=benchmark-0 hz=20.0 priority=0",
+        "2026-08-09T10:46:55.705919Z  INFO vibe_moq_publisher: publishing track track=benchmark-1 hz=20.0 priority=1",
+        "2026-08-09T10:46:55.705924Z  INFO vibe_moq_publisher: publishing track track=benchmark-2 hz=20.0 priority=2",
+        "2026-08-09T10:46:55.705929Z  INFO vibe_moq_publisher: publishing track track=benchmark-3 hz=20.0 priority=3",
+        "Error: session error",
+        "",
+        "Caused by:",
+        "    0: webtransport error: session error: webtransport error: closed: code=3 reason=scope resolution failed",
+        "    1: session error: webtransport error: closed: code=3 reason=scope resolution failed",
+        "    2: webtransport error: closed: code=3 reason=scope resolution failed",
+        "    3: closed: code=3 reason=scope resolution failed",
+        ""
+      ],
+      "pass": false
+    }
+  ],
+  "finishedAt": "2026-08-09T10:46:57.377Z"
+}

@@ -1,6 +1,10 @@
+import { CITY_WIRE_VERSION } from '../city/wire';
 import { GameSocket } from './gameSocket';
 import { NetDebugTelemetry, type LocalShotTelemetry } from './debugTelemetry';
-import { WebTransportGameClient } from './webTransportClient';
+import { WebTransportGameClient, type SessionConfigResponse } from './webTransportClient';
+import { setTransportNote } from '../app/connectPhase';
+import { PacketImpairment } from '../loadtest/networkModel';
+import { resolveNetlabImpairment } from '../netlab/impairment';
 import {
   DynamicBodyInterpolator,
   PlayerInterpolator,
@@ -36,6 +40,8 @@ import {
   type ShotFiredPacket,
   type VehicleStateMeters,
   FLAG_IN_VEHICLE,
+  CLIENT_MOVEMENT_THIN_AUTHORITATIVE,
+  PHYSICS_BACKEND_RAPIER,
 } from './protocol';
 
 export type RemotePlayer = {
@@ -58,6 +64,8 @@ export type NetcodeClientConfig = {
   onDamageEvent?: (packet: DamageEventPacket) => void;
   onShotFired?: (packet: ShotFiredPacket) => void;
   onPacket?: (packet: ServerPacket) => void;
+  /** Raw city destruction packets (kinds 119-122). WebTransport only. */
+  onCityPacket?: (bytes: Uint8Array) => void;
 };
 
 /**
@@ -96,6 +104,20 @@ export class NetcodeClient {
   localPlayerHp = 100;
   localPlayerEnergy = 0;
   localPlayerFlags = 0;
+  protocolVersion = 1;
+  physicsBackend = PHYSICS_BACKEND_RAPIER;
+  clientMovementMode = 0;
+  localSupport: {
+    handle: number;
+    localPosition: [number, number, number];
+    velocity: [number, number, number];
+    angularVelocity: [number, number, number];
+    flags: number;
+  } | null = null;
+
+  get usesThinAuthoritativeMovement(): boolean {
+    return this.clientMovementMode === CLIENT_MOVEMENT_THIN_AUTHORITATIVE;
+  }
 
   private pushVehicleSample(
     vehicleId: number,
@@ -129,6 +151,44 @@ export class NetcodeClient {
 
   private socket: GameSocket | null = null;
   private wtClient: WebTransportGameClient | null = null;
+
+  // Netlab in-process impairment (null unless ?netlab=1&impair=<profile>).
+  private inboundImpairment: PacketImpairment<{
+    packet: ServerPacket;
+    source: 'wt-datagram' | 'wt-reliable' | 'websocket';
+  }> | null = null;
+  private outboundImpairment: PacketImpairment<InputCmd[]> | null = null;
+  private cityImpairment: PacketImpairment<Uint8Array> | null = null;
+
+  sendCityResync(bytes: Uint8Array): void {
+    if (this.wtClient) {
+      this.wtClient.sendCityResync(bytes);
+    } else {
+      this.socket?.sendRaw(bytes);
+    }
+  }
+
+  citySessionConfig(): {
+    cityWorld: boolean;
+    manifestHash?: string;
+    baseUrl: string;
+    wireVersion: number;
+  } {
+    const config = this.wtClient?.sessionConfig;
+    return {
+      cityWorld: Boolean(config?.city_world && config?.city_manifest_hash),
+      manifestHash: config?.city_manifest_hash,
+      // A server that predates the field speaks v2; that is the only version
+      // it could have meant.
+      wireVersion: config?.city_wire_version ?? CITY_WIRE_VERSION,
+      // Page-relative: the manifest is served over the game server's HTTP
+      // port, which is not the WebTransport port in `config.url`, so that URL
+      // cannot be used to derive it. In dev the Vite proxy resolves this; on a
+      // rented box the manifest is not reachable from the browser at all
+      // (self-signed origin), and the city client degrades with a warning.
+      baseUrl: '',
+    };
+  }
   private config: NetcodeClientConfig;
   private closedByClient = false;
 
@@ -151,12 +211,54 @@ export class NetcodeClient {
     this.serverClock = new ServerClockEstimator();
     this.vehicleInterpolator = new VehicleInterpolator();
     this.dynamicBodyInterpolator = new DynamicBodyInterpolator();
+
+    const impair = resolveNetlabImpairment(
+      typeof window !== 'undefined' ? window.location.search : '',
+    );
+    if (impair) {
+      // Distinct seeds per direction/stream so loss patterns are independent,
+      // the way they are on a real link.
+      this.inboundImpairment = new PacketImpairment(impair.link, impair.seed, (delivery) =>
+        this.handlePacket(delivery.packet, delivery.source),
+      );
+      this.outboundImpairment = new PacketImpairment(impair.link, impair.seed + 1, (cmds) =>
+        this.sendInputsNow(cmds),
+      );
+      this.cityImpairment = new PacketImpairment(impair.link, impair.seed + 2, (bytes) =>
+        this.config.onCityPacket?.(bytes),
+      );
+      console.info('[netlab] in-process impairment active', impair);
+    }
+  }
+
+  /**
+   * Feed a packet that arrived over the real network, routing through the
+   * netlab impairment when one is active. Local/direct sources bypass this.
+   */
+  private deliverNetworkPacket(
+    packet: ServerPacket,
+    source: 'wt-datagram' | 'wt-reliable' | 'websocket',
+  ): void {
+    if (this.inboundImpairment) {
+      this.inboundImpairment.enqueue({ packet, source });
+      return;
+    }
+    this.handlePacket(packet, source);
+  }
+
+  private deliverCityPacket(bytes: Uint8Array): void {
+    if (this.cityImpairment) {
+      this.cityImpairment.enqueue(bytes);
+      return;
+    }
+    this.config.onCityPacket?.(bytes);
   }
 
   connect(wsUrl: string): void {
     this.closedByClient = false;
     this.socket = new GameSocket({
-      onPacket: (packet: ServerPacket) => this.handlePacket(packet, 'websocket'),
+      onPacket: (packet: ServerPacket) => this.deliverNetworkPacket(packet, 'websocket'),
+      onCityPacket: (bytes) => this.deliverCityPacket(bytes),
       onClose: (event) => {
         this.notifyDisconnect(
           `websocket closed (code=${event.code}${event.reason ? `, reason=${event.reason}` : ''})`,
@@ -173,10 +275,27 @@ export class NetcodeClient {
   /**
    * Try WebTransport first; fall back to WebSocket on failure or if unsupported.
    */
-  async connectWithFallback(matchId: string, wsUrl: string, sessionConfigEndpoint?: string): Promise<void> {
+  /**
+   * Connect over WebTransport. WebSocket is opt-in, not a fallback.
+   *
+   * The two transports are not interchangeable for this game: WebTransport
+   * carries poses on unreliable datagrams, WebSocket on an ordered reliable
+   * stream. Falling back silently means the player is on a different wire from
+   * the one the game is designed and measured against -- and it hides the real
+   * failure, which is that QUIC could not connect. `?transport=ws` opts in
+   * explicitly for debugging.
+   */
+  async connectWithFallback(
+    matchId: string,
+    wsUrl: string,
+    sessionConfigEndpoint?: string,
+    options: { sessionConfig?: SessionConfigResponse; allowWsFallback?: boolean } = {},
+  ): Promise<void> {
     this.closedByClient = false;
     const hasWebTransport = typeof window !== 'undefined' && 'WebTransport' in window;
-    console.info('[netcode] connectWithFallback', { matchId, wsUrl, browserSupportsWT: hasWebTransport });
+    // Default DENY: only an explicit opt-in reaches the WebSocket path.
+    const allowWs = options.allowWsFallback === true;
+    console.info('[netcode] connect', { matchId, browserSupportsWT: hasWebTransport, allowWs });
 
     if (hasWebTransport) {
       console.info('[netcode] attempting WebTransport (QUIC/UDP)...');
@@ -184,18 +303,45 @@ export class NetcodeClient {
         const wt = await WebTransportGameClient.connect({
           matchId,
           sessionConfigEndpoint,
-          onReliablePacket: (packet) => this.handlePacket(packet as ServerPacket, 'wt-reliable'),
-          onDatagramPacket: (packet) => this.handlePacket(packet as ServerPacket, 'wt-datagram'),
+          sessionConfig: options.sessionConfig,
+          onReliablePacket: (packet) => this.deliverNetworkPacket(packet as ServerPacket, 'wt-reliable'),
+          onDatagramPacket: (packet) => this.deliverNetworkPacket(packet as ServerPacket, 'wt-datagram'),
+          onCityPacket: (bytes) => this.deliverCityPacket(bytes),
           onClose: (reason) => { this.notifyDisconnect(describeDisconnectReason('webtransport', reason)); },
         });
         this.wtClient = wt;
+        setTransportNote(null);
         console.info('[netcode] ✓ connected via WebTransport (QUIC/UDP)', wt.sessionConfig.url);
         return;
       } catch (err) {
-        console.warn('[netcode] WebTransport failed — falling back to WebSocket', err);
+        if (!allowWs) {
+          // Rethrow rather than fail twice: the fallback targets the same
+          // untrusted-certificate origin and would only mask the real cause.
+          // The note is set first so the player sees the reason instead of
+          // being bounced silently back to the join screen.
+          setTransportNote(
+            'Could not reach the server (' +
+              (err instanceof Error ? `${err.name}: ${err.message}` : String(err)) +
+              ')',
+          );
+          console.error('[netcode] WebTransport failed and WebSocket fallback is unavailable', err);
+          throw err;
+        }
+        setTransportNote(
+          'WebTransport unavailable (' +
+            (err instanceof Error ? `${err.name}: ${err.message}` : String(err)) +
+            ') — using WebSocket (?transport=ws)',
+        );
+        console.warn('[netcode] WebTransport failed — WebSocket opted in via ?transport=ws', err);
       }
     } else {
-      console.info('[netcode] WebTransport not supported in this browser — using WebSocket');
+      console.info('[netcode] WebTransport not supported in this browser');
+      if (!allowWs) {
+        setTransportNote(
+          'This game requires WebTransport, which this browser does not support.',
+        );
+        throw new Error('This game requires WebTransport, which this browser does not support');
+      }
     }
 
     console.info('[netcode] connecting via WebSocket (TCP):', wsUrl);
@@ -211,6 +357,9 @@ export class NetcodeClient {
 
   disconnect(): void {
     this.closedByClient = true;
+    this.inboundImpairment?.dispose();
+    this.outboundImpairment?.dispose();
+    this.cityImpairment?.dispose();
     this.wtClient?.close();
     this.wtClient = null;
     this.socket?.disconnect();
@@ -225,6 +374,14 @@ export class NetcodeClient {
   }
 
   sendInputs(cmds: InputCmd[]): void {
+    if (this.outboundImpairment && cmds.length > 0) {
+      this.outboundImpairment.enqueue(cmds);
+      return;
+    }
+    this.sendInputsNow(cmds);
+  }
+
+  private sendInputsNow(cmds: InputCmd[]): void {
     if (this.wtClient) {
       if (cmds.length > 0) this.wtClient.sendInputBundle(cmds);
     } else {
@@ -296,6 +453,10 @@ export class NetcodeClient {
     } else {
       this.socket?.sendVehicleExit(vehicleId);
     }
+  }
+
+  getLocalDrivenVehicleId(): number | null {
+    return this.localDrivenVehicleId;
   }
 
   private applyPlayerRoster(packet: PlayerRosterPacket): void {
@@ -388,6 +549,27 @@ export class NetcodeClient {
     };
     this.localPlayerHp = localState.hp;
     this.localPlayerFlags = localState.flags;
+    this.localSupport = packet.selfState.supportHandle
+      ? {
+          handle: packet.selfState.supportHandle,
+          localPosition: packet.selfState.supportLocalPosition ?? [0, 0, 0],
+          velocity: packet.selfState.supportVelocity ?? [0, 0, 0],
+          angularVelocity: packet.selfState.supportAngularVelocity ?? [0, 0, 0],
+          flags: packet.selfState.supportFlags ?? 0,
+        }
+      : null;
+    if (this.usesThinAuthoritativeMovement) {
+      const meters = netStateToMeters(localState);
+      this.interpolator.push(this.playerId, {
+        serverTimeUs: packet.serverTimeUs,
+        position: meters.position,
+        velocity: meters.velocity,
+        yaw: meters.yaw,
+        pitch: meters.pitch,
+        hp: meters.hp,
+        flags: localState.flags,
+      });
+    }
     const localPlayerInVehicle = (localState.flags & FLAG_IN_VEHICLE) !== 0;
     if (!localPlayerInVehicle) {
       this.localDrivenVehicleId = null;
@@ -649,6 +831,9 @@ export class NetcodeClient {
     switch (packet.type) {
       case 'welcome':
         this.playerId = packet.playerId;
+        this.protocolVersion = packet.protocolVersion;
+        this.physicsBackend = packet.physicsBackend;
+        this.clientMovementMode = packet.clientMovementMode;
         this.baselineInterpolationDelayMs = packet.interpolationDelayMs;
         this.minRemoteInterpolationDelayMs =
           (1000 / Math.max(packet.snapshotHz, 1)) * NetcodeClient.REMOTE_PLAYER_BUFFER_RATIO;
@@ -739,6 +924,18 @@ export class NetcodeClient {
             this.localPlayerHp = ps.hp;
             this.localPlayerFlags = ps.flags;
             localPlayerState = ps;
+            if (this.usesThinAuthoritativeMovement) {
+              const m = netStateToMeters(ps);
+              this.interpolator.push(ps.id, {
+                serverTimeUs: packet.serverTimeUs,
+                position: m.position,
+                velocity: m.velocity,
+                yaw: m.yaw,
+                pitch: m.pitch,
+                hp: m.hp,
+                flags: ps.flags,
+              });
+            }
           } else {
             const m = netStateToMeters(ps);
             this.interpolator.push(ps.id, {
