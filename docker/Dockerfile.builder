@@ -164,6 +164,27 @@ RUN mkdir -p "$VIBE_CACHE"
 # Running as root against a tree git did not create.
 RUN git config --global --add safe.directory '*'
 
+# Pre-create /root/.ssh so Vast's `--ssh` launch mode can write a key that sshd
+# will actually read.
+#
+# Without this, a box rented with --ssh comes up refusing every login:
+#
+#   Authentication refused: bad ownership or modes for file /root/.ssh/authorized_keys
+#   Failed publickey for root from <your ip> ... ED25519 SHA256:<your key>
+#
+# The key IS delivered and IS the right key -- sshd just will not read a file
+# whose modes fail StrictModes. Vast's own base image ships this directory
+# already moded correctly and appends to the existing file, which is why the
+# problem appears only on a custom image. Creating the file here with 600 means
+# an append preserves it.
+#
+# Costs nothing on a box that never uses SSH: an empty file and a directory.
+RUN mkdir -p /root/.ssh \
+ && touch /root/.ssh/authorized_keys \
+ && chown -R root:root /root/.ssh \
+ && chmod 700 /root /root/.ssh \
+ && chmod 600 /root/.ssh/authorized_keys
+
 RUN { echo "node=$(node --version)"; \
       echo "npm=$(npm --version)"; \
       echo "rust=$(rustc --version | cut -d' ' -f2)"; \

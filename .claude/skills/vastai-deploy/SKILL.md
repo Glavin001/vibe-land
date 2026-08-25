@@ -211,6 +211,35 @@ CI.
 
 ## Facts worth not re-deriving
 
+- **A custom image needs `/root/.ssh` pre-created, or `--ssh` boxes refuse every
+  login.** sshd's StrictModes will not read an `authorized_keys` whose modes are
+  wrong, and the error names the file, not the cause:
+
+  ```
+  Authentication refused: bad ownership or modes for file /root/.ssh/authorized_keys
+  Failed publickey for root from <ip> ... ED25519 SHA256:<your key>
+  ```
+
+  The key is delivered and correct — `vastai attach ssh` will say "already
+  associated" — so this looks like a key problem and is not one. Vast's own base
+  image ships the directory correctly moded and appends; a custom image that
+  never creates it gets a file sshd rejects. `docker/Dockerfile.builder` now
+  creates it with 700/600. **You cannot diagnose this from the client side**:
+  `vastai logs <id>` is where the sshd line appears.
+
+- **`vastai execute` refuses to run on a *running* instance** ("Execute command
+  only avail on stopped instances"), so it is useless for live debugging. To run
+  something on a box you cannot SSH into, use
+  `vastai update instance <id> --image <same image> --onstart <file>` followed by
+  `vastai recycle instance <id>`. `--image` is required even when unchanged.
+  Onstart output goes to `/root/onstart.log` **inside** the container, not to
+  `vastai logs`.
+
+- **`Error: remote port forwarding failed for listen port <n>`** repeating in the
+  logs is Vast's *proxy* SSH tunnel failing to bind on its side. It does not
+  affect the `--direct` route, and a `recycle` usually clears it.
+
+
 - **`RUST_LOG` unset produces an empty filter — no output at all, not even
   `ERROR`.** The image sets `RUST_LOG=info`; override to `debug` when needed.
 - The `[destruction] CUDA stress solver active` line is a raw `println` and
