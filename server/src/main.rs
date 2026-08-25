@@ -253,6 +253,14 @@ struct CityStatsSnapshot {
     window_ingest_ms: city::WindowSummary,
     window_span_encode_ms: city::WindowSummary,
     window_awake: city::WindowSummary,
+    /// min/avg/p95/max per span timer over every tick since the last publish.
+    ///
+    /// Prefer these to the single-sample fields above. The publish fires every
+    /// 60 ticks and the bond scan every 30, so the instantaneous sample is
+    /// harmonically locked to the expensive tick -- it is a biased estimator of
+    /// per-tick cost, not a neutral one.
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    phase_windows: std::collections::BTreeMap<String, city::WindowSummary>,
     chunk_bodies: u32,
     awake_bodies: u32,
     broken_bonds: u32,
@@ -274,16 +282,23 @@ struct CityStatsSnapshot {
     stress_solve_ms: f32,
     /// Sub-phases of the native tick, all children of `stress_solve_ms`.
     /// `solve_ms` is the CUDA/parallel solveTick ALONE -- `begin_ms` and
-    /// `end_ms` carry the serial injection and fracture walks that used to be
-    /// folded into it.
+    /// `end_ms` carry the injection and fracture walks that used to be folded
+    /// into it.
     solve_ms: f32,
     /// Native-side GPU readback. Distinct from `readback_ms_host`, which is the
     /// host stage outside the native tick; they are not the same measurement.
     readback_ms: f32,
     events_ms: f32,
-    /// Serial beginTick / parallel-CUDA solveTick / serial endTick, split
-    /// apart: reporting them as one "stress solve" number hid that the serial
-    /// injection walk costs more than the GPU solve.
+    /// beginTick / solveTick / endTick, split apart: reporting them as one
+    /// "stress solve" number hid that the injection walk costs more than the
+    /// GPU solve.
+    ///
+    /// `begin_ms` is NOT serial. It is dispatched across the stress executor
+    /// by default (`VIBE_CITY_SNAPSHOT_BEGIN`, on unless set to 0); only the
+    /// wakeUp apply inside it runs serially, and that is a handful of bodies
+    /// even during a collapse. `end_ms` IS still serial. The older "serial
+    /// beginTick" wording here outlived the change and sent at least one
+    /// investigation after a parallelisation that had already happened.
     begin_ms: f32,
     end_ms: f32,
     /// Host-side stages. Without these the overlay shows a large "city step"
@@ -331,6 +346,41 @@ struct CityStatsSnapshot {
     /// belongs on the same scale as every other ms field here.
     gpu_stress_solve_ms: f32,
     filters_ms: f32,
+    /// The three phases that used to sit untimed inside `stress_solve_ms`,
+    /// visible only as the gap between it and the sum of its children. The
+    /// CCD walk and the support-load resolve are both O(live bodies) EVERY
+    /// tick -- the CCD walk runs before the quiet-skip gate, which is why the
+    /// gap was present at idle with nothing happening.
+    ccd_ms: f32,
+    support_loads_ms: f32,
+    /// Contact pairs the support resolve consumed. `support_loads_ms` scales
+    /// with this, so a ms comparison across runs without it is meaningless.
+    support_pair_loads: u32,
+    shape_readback_ms: f32,
+    /// The adapter's own per-phase timers, deltaed to per-tick. These
+    /// decompose the phases the bridge times from OUTSIDE the adapter:
+    /// `begin_ms` ~= contact_processing + gravity, `solve_ms` ~= stress_solve_cpu
+    /// + gpu_stress_solve, `end_ms` ~= fracture_topology + mapping_validation.
+    /// They were computed every tick and discarded, which left 2-3.5 ms inside
+    /// the largest phase in the tick unaccounted for.
+    blast_contact_processing_ms: f32,
+    blast_gravity_ms: f32,
+    blast_stress_solve_cpu_ms: f32,
+    blast_fracture_topology_ms: f32,
+    blast_mapping_validation_ms: f32,
+    blast_sleeping_actors_skipped: u64,
+    /// The last two untimed blocks inside the `stress_solve_ms` bracket:
+    /// per-slot dispatch (live-slot gather + telemetry read + topology
+    /// compare) and the 1-in-30 bond-utilisation scan. With these, the bracket
+    /// minus its children is genuinely zero rather than "small enough to round
+    /// to 0.00 at two decimals".
+    slot_dispatch_ms: f32,
+    bond_sample_ms: f32,
+    /// Slot-ticks where topology was unchanged and the event diff was skipped.
+    /// `events_ms`/`filters_ms` are `0.0` on exactly these ticks, and without
+    /// this counter a working skip and a broken measurement are
+    /// indistinguishable from the value alone.
+    quiet_slot_ticks: u64,
     sleeping_bodies: u32,
     /// Bonds over their own elastic limit in the last solve. Fracture only
     /// runs when this is non-zero, so a persistent 0 while shooting means the
@@ -345,7 +395,15 @@ struct CityStatsSnapshot {
     topo_seq: u32,
     baseline_id: u16,
     min_body_y: f32,
+    /// PhysX engine-asleep -> awake transitions for DYNAMIC bodies. Frozen
+    /// bodies are kinematic and are skipped before this is reached, so this is
+    /// NOT a count of freezes being undone -- see `unfreeze_flips` for that.
+    /// The two count different populations and must not be combined.
     resettled_wakes: u64,
+    /// PERMANENTLY ZERO: nothing in the tree increments this. Kept published
+    /// only so removing it is a deliberate wire change rather than a silent
+    /// one -- but it is not evidence of anything, and must not be cited as
+    /// "no settles were deferred".
     settle_deferred_penetrating: u64,
     unmapped_body_skips: u32,
     duplicate_body_records: u64,
@@ -370,10 +428,23 @@ struct CityStatsSnapshot {
     /// whether a pile is failing to settle or being repeatedly re-woken.
     chunk_sleep_events: u64,
     chunk_wake_events: u64,
-    /// Awake bodies that have not left a 2 cm shell in a second: the
-    /// population a pose-based freeze could retire. Only counted under
-    /// VIBE_CITY_POSE_CENSUS.
+    /// Awake bodies that have completed their pose-quiet window -- i.e. have
+    /// not left a 2 cm shell for `pose_ticks`. Counted whenever pose freezing
+    /// OR the census is on (`freeze.rs`), and pose freezing is ON by default,
+    /// so this is a live number in normal play. (It was previously documented
+    /// as census-only, which is wrong.)
+    ///
+    /// Read it as "completed the window but was NOT admitted" -- a body that
+    /// passes the window is emitted as a freeze candidate in the same branch,
+    /// so anything still counted here was refused: squeezed, unsupported, or
+    /// over the per-tick batch. It is NOT "bodies sitting still that nobody
+    /// tried to freeze". Note the window is scaled by the per-body unfreeze
+    /// backoff, so a churned body needs far longer than `pose_ticks` to
+    /// appear here at all.
     pose_quiet_awake_bodies: u32,
+    /// ZERO UNLESS `VIBE_CITY_POSE_CENSUS=1`. Hard-gated on the census flag in
+    /// `freeze.rs`, which defaults off, so a `0` here is the switch, not a
+    /// measurement -- do not read it as "no floating rubble".
     unsupported_resting_bodies: u32,
     backstop_releases: u64,
     /// Must stay zero. Non-zero means a frozen body reached a serial-issuing
@@ -719,6 +790,13 @@ struct MatchStatsSnapshot {
     /// tick could be spending on encode.
     physics_gpu_wait_ms: f32,
     physics_fetch_copy_ms: f32,
+    /// The part of `dynamics_ms` that is NOT the step. `physics_last_step_ms`
+    /// covers only `world.step()`; these three cover the FFI readbacks after
+    /// it, the player refresh, and the vehicle control loop before it, which
+    /// together were the unexplained difference between the two.
+    physics_readback_ms: f32,
+    physics_refresh_players_ms: f32,
+    physics_vehicle_control_ms: f32,
     physics_controller_ms: f32,
     server_tick: u32,
     player_count: usize,
@@ -3054,6 +3132,13 @@ impl MatchState {
             .as_mut()
             .map(|city| city.tick_window.drain())
             .unwrap_or_default();
+        // Drained in the same pass, so the phase windows cover exactly the
+        // same ticks as window_step_ms rather than a shifted window.
+        let phase_windows = self
+            .city
+            .as_mut()
+            .map(|city| city.tick_window.phases.drain())
+            .unwrap_or_default();
         let match_stats = MatchStatsSnapshot {
             id: self.id.clone(),
             scenario_tag: self.id.clone(),
@@ -3070,6 +3155,9 @@ impl MatchState {
             physics_fetch_ms: physics_health.last_fetch_ms,
             physics_gpu_wait_ms: physics_health.last_gpu_wait_ms,
             physics_fetch_copy_ms: physics_health.last_fetch_copy_ms,
+            physics_readback_ms: physics_health.last_readback_ms,
+            physics_refresh_players_ms: physics_health.last_refresh_players_ms,
+            physics_vehicle_control_ms: physics_health.last_vehicle_control_ms,
             physics_controller_ms: physics_health.last_controller_ms,
             server_tick: self.server_tick,
             player_count: self.players.len(),
@@ -3230,6 +3318,7 @@ impl MatchState {
                     window_ingest_ms: city_window.1.clone(),
                     window_span_encode_ms: city_window.2.clone(),
                     window_awake: city_window.3.clone(),
+                    phase_windows: phase_windows.clone(),
                     chunk_bodies: stats.chunk_bodies,
                     awake_bodies: stats.awake_chunk_bodies,
                     broken_bonds: stats.broken_bonds,
@@ -3255,6 +3344,19 @@ impl MatchState {
                     gpu_stress_structures: stats.gpu_stress_structures,
                     gpu_stress_solve_ms: stats.gpu_stress_solve_ms,
                     filters_ms: stats.filters_ms,
+                    ccd_ms: stats.ccd_ms,
+                    support_loads_ms: stats.support_loads_ms,
+                    support_pair_loads: stats.support_pair_loads,
+                    shape_readback_ms: stats.shape_readback_ms,
+                    blast_contact_processing_ms: stats.blast_contact_processing_ms,
+                    blast_gravity_ms: stats.blast_gravity_ms,
+                    blast_stress_solve_cpu_ms: stats.blast_stress_solve_cpu_ms,
+                    blast_fracture_topology_ms: stats.blast_fracture_topology_ms,
+                    blast_mapping_validation_ms: stats.blast_mapping_validation_ms,
+                    blast_sleeping_actors_skipped: stats.blast_sleeping_actors_skipped,
+                    slot_dispatch_ms: stats.slot_dispatch_ms,
+                    bond_sample_ms: stats.bond_sample_ms,
+                    quiet_slot_ticks: stats.quiet_slot_ticks,
                     sleeping_bodies: stats.sleeping_chunk_bodies,
                     overstressed_bonds: stats.overstressed_bonds,
                     bond_utilisation_max: stats.bond_utilisation_max,

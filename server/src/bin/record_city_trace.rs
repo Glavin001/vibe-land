@@ -1123,13 +1123,43 @@ fn main() -> Result<()> {
 
         if tick_index % (args.hz * 5) == 0 {
             let stats = destruction.stats();
+            // The children are printed beside the parent so the UNATTRIBUTED
+            // remainder is visible per sample rather than inferred later.
+            // `stress_solve_ms` is a wall-clock bracket around the whole native
+            // tick, so it is a PARENT of these and must never be summed with
+            // them -- the gap below is the parent minus the sum, which is the
+            // number that matters.
+            let attributed = stats.begin_ms
+                + stats.solve_ms
+                + stats.end_ms
+                + stats.readback_ms
+                + stats.events_ms
+                + stats.filters_ms
+                + stats.ccd_ms
+                + stats.support_loads_ms
+                + stats.shape_readback_ms;
             println!(
-                "tick {:>6}  bodies {:>6}  awake {:>6}  broken {:>7}  solve {:.2} ms",
+                "tick {:>6}  bodies {:>6}  awake {:>6}  broken {:>7}  solve {:.2} ms  \
+                 | begin {:.2} solve {:.2} end {:.2} readback {:.2} events {:.2} \
+                 filters {:.2} ccd {:.2} support {:.2} shape {:.2} \
+                 => gap {:.2} ms  quiet {}  pairs {}",
                 tick_index,
                 stats.chunk_bodies,
                 stats.awake_chunk_bodies,
                 stats.broken_bonds,
-                stats.stress_solve_ms
+                stats.stress_solve_ms,
+                stats.begin_ms,
+                stats.solve_ms,
+                stats.end_ms,
+                stats.readback_ms,
+                stats.events_ms,
+                stats.filters_ms,
+                stats.ccd_ms,
+                stats.support_loads_ms,
+                stats.shape_readback_ms,
+                stats.stress_solve_ms - attributed,
+                stats.quiet_slot_ticks,
+                stats.support_pair_loads,
             );
         }
     }

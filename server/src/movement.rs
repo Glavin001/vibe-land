@@ -60,6 +60,13 @@ pub struct PhysicsHealth {
     /// window would buy anything.
     pub last_gpu_wait_ms: f32,
     pub last_fetch_copy_ms: f32,
+    /// The rest of what `dynamics_ms` brackets, which is NOT the step:
+    /// the three FFI readbacks after it, the player refresh, and the vehicle
+    /// control loop before it. `dynamics_ms - last_step_ms` used to be a real
+    /// cost with no name attached to it.
+    pub last_readback_ms: f32,
+    pub last_refresh_players_ms: f32,
+    pub last_vehicle_control_ms: f32,
 }
 
 enum PhysicsBackend {

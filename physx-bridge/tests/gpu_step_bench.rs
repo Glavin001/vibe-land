@@ -76,7 +76,13 @@ fn percentile(values: &mut [f32], p: f32) -> f32 {
 #[test]
 #[ignore = "benchmark: needs a GPU and burns a core when profiling"]
 fn gpu_step_cost_by_body_count() {
-    let profiling = std::env::var("VIBE_PHYSX_PROFILE_FETCH").is_ok();
+    // Value-checked, matching the bridge. `is_ok()` here reported
+    // profile_fetch=true for VIBE_PHYSX_PROFILE_FETCH=0 -- the same
+    // presence-vs-value bug the bridge itself had, in the one line whose job
+    // is to tell you which mode you are measuring.
+    let profiling = std::env::var("VIBE_PHYSX_PROFILE_FETCH")
+        .map(|value| value != "0")
+        .unwrap_or(false);
     println!(
         "\nprofile_fetch={} (set VIBE_PHYSX_PROFILE_FETCH=1 to split wait from copy)",
         profiling
