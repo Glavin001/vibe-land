@@ -26,7 +26,7 @@ use destruction_codec::mask::MaskConfig as LiveMaskConfig;
 use destruction_codec::trace::{ActorState as LiveActorState, Pose as LivePose};
 use vibe_land_destruction::encoder::BodySnapshotInput;
 use vibe_netcode::destruction_backend::DestructionTickOutput;
-use vibe_netcode::destruction_backend::{DestructionBackend, DestructionStats, StressSolverSettings};
+use vibe_netcode::destruction_backend::{DestructionBackend, DestructionStats};
 
 #[cfg(feature = "destruction")]
 use vibe_land_destruction::runtime::CityDestruction;

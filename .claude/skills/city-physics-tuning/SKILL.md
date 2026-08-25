@@ -37,6 +37,10 @@ all pass while the building falls over on its own.
 | `VIBE_CITY_SHOT_BLAST_RADIUS` | 0.4 | damage **width** -- sharpness |
 | `VIBE_CITY_SHOT_STRESS_IMPULSE` | 4.0e5 | damage **depth** -- bite |
 | `VIBE_CITY_DEBRIS_LINEAR_DAMPING` | 0.0 | air drag; leave at 0 |
+| `VIBE_CITY_CONTACT_WAKE_RATIO` | 4.0 | releases a frozen body on contact. **See "why the city never settles"** |
+| `VIBE_CITY_FREEZE` | 1 | retire settled debris to kinematic |
+| `VIBE_CITY_SLEEP_THRESHOLD` | 0.05 | mass-normalised KE (0.5*v^2) below which a chunk may sleep |
+| `VIBE_CITY_GPU_STRESS` | 1 | CUDA stress solver (needs the `cuda-stress` feature) |
 
 ## Traps, each of which has cost real time
 
@@ -86,7 +90,47 @@ Flattening that table (putting every bond on material 0) does not just rescale
 strength -- it erases the skeleton/facade distinction that makes a collapse look
 like a building rather than dissolving cubes.
 
+## Why the city never settles (diagnosed 2026-08-25)
+
+**Contact wakes mistake being buried for being hit.**
+
+`contact_wake_ratio` compares a contact impulse against "a striker resting under
+gravity", which is `m*g*dt` -- *one body's* worth. A chunk inside a pile carries
+the accumulated weight of everything above it, so a body under five others takes
+~5x `m*g*dt` while perfectly still, scores ratio 5, exceeds the threshold of 4,
+and is released from freeze. Every tick, forever. The test cannot tell "something
+hit me" from "I am buried", and buried is the normal state of rubble.
+
+Measured on the demolished-tower bench, freeze on, production terrain:
+
+```
+VIBE_CITY_CONTACT_WAKE_RATIO=4 (default)  ->  280 awake non-kinematic bodies
+VIBE_CITY_CONTACT_WAKE_RATIO=0            ->    1
+```
+
+The awake bodies are **not moving**: p50 0.033 m/s, roughly 90x under the sleep
+threshold. They are eligible to settle and are being actively released.
+
+That rules out an entire family of plausible-sounding explanations, all of which
+were tried and all of which were wrong:
+
+- **not** the sleep threshold -- every jittering body is already far under it
+- **not** solver iterations -- `physx-bridge/tests/stack_settling.rs` settles
+  10,416 concrete boxes to *exactly* 0.0000 m/s at PhysX's default 4/1, and the
+  sweep from 4/1 to 32/8 is completely flat
+- **not** gravity, stacking, pile depth or body count -- same test, same result
+  at 20 m/s^2 all the way to city scale
+
+`VIBE_CITY_CONTACT_WAKE_RATIO=0` settles the city today, at the cost of genuine
+impacts no longer waking frozen debris. The real fix is to compare against the
+load a body actually bears at rest, so depth in a stack is not read as an impact;
+raising the ratio only moves the depth at which it misfires.
+
 ## Diagnosing by symptom
+
+**Debris jitters and never sleeps or freezes.** Diagnosed above -- contact
+wakes. Confirm with `VIBE_CITY_CONTACT_WAKE_RATIO=0`; if that settles it, this
+is the same bug and not a new one.
 
 **City self-destructs at rest.** Strength too low for the load. Raise
 `STRESS_LIMIT_SCALE`. Verify the material table is not flattened -- check the

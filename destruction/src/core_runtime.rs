@@ -17,7 +17,6 @@
 
 use std::path::Path;
 
-use blast_stress_solver::backend::PhysicsBackend;
 use blast_stress_solver::backends::PhysXWorld;
 use blast_stress_solver::ids::{IdLayout, DEFAULT_LAYOUT, SUPPORT_ISLAND_SERIAL};
 use blast_stress_solver::pipeline::{
