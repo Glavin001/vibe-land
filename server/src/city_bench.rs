@@ -292,6 +292,30 @@ fn demolished_tower_comes_to_rest() {
 
     // Motion bound: with no input for 20 s, nothing should still be moving at
     // a speed that implies active simulation rather than residual creep.
+    //
+    // MEASURED RUN-TO-RUN SPREAD (2026-08-25, identical config, 5 runs):
+    //
+    //   peak speed   0.23  0.24  0.38  0.50  1.40   m/s
+    //   awake         62    90   101   165   118
+    //   bodies       297   383   315   383   350
+    //
+    // A 6x spread in peak speed and 2.7x in awake count, because PhysX GPU is
+    // not bit-reproducible and the scripted shots therefore collapse a
+    // different amount of building each run. The pile being measured is a
+    // different pile every time.
+    //
+    // Consequences, both load-bearing:
+    //
+    //  - A SINGLE RUN CANNOT SUPPORT A CONCLUSION HERE. Any A/B whose effect is
+    //    smaller than this band is unmeasured, not measured-as-small.
+    //  - This 1.0 m/s bound sits inside the band, so it fires intermittently on
+    //    unchanged code. It is a flake, not a gate, until either the
+    //    reproduction is made deterministic (fix the pile, stop shooting it) or
+    //    the assertion moves to a percentile over repeated runs.
+    //
+    // The "pile is oscillating at 1.4 m/s" report that motivated investigating
+    // oscillation was the top sample of this distribution, not a distinct
+    // phenomenon.
     let resting_speed = stats.max_body_speed;
     println!("peak speed now {resting_speed:.2} m/s");
 
