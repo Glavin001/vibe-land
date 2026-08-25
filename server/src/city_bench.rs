@@ -2263,12 +2263,38 @@ fn a_city_at_rest_does_not_destroy_itself_on_the_core_path() {
     city.add_client(1);
 
     // Ten seconds of gravity and nothing else.
+    //
+    // The curve matters as much as the total. A structure that is genuinely
+    // overloaded sheds bonds steadily for the whole ten seconds; one that is
+    // merely landing badly sheds them in the first few ticks and then goes
+    // quiet. Those two have completely different fixes, and the total alone
+    // cannot tell them apart -- so the breaks are reported per tick window.
     let mut tick = 0u32;
-    for _ in 0..600 {
+    let mut curve: Vec<(u32, u32)> = Vec::new();
+    let mut last = 0u32;
+    for step in 0..600u32 {
         world.step().expect("step");
         let _ = city.step(tick, DT, gravity(), Some(&mut world));
         tick += 1;
+        let now = city.stats().broken_bonds;
+        if step < 10 || step % 60 == 0 || now != last {
+            if now != last || step % 60 == 0 {
+                curve.push((step, now - last));
+            }
+        }
+        last = now;
     }
+    eprintln!("[at rest] breaks per window (tick, new breaks):");
+    let mut shown = 0;
+    for (t, n) in &curve {
+        if *n > 0 && shown < 24 {
+            eprintln!("    tick {t:>4}  +{n}");
+            shown += 1;
+        }
+    }
+    let first_second: u32 = curve.iter().filter(|(t, _)| *t < 60).map(|(_, n)| n).sum();
+    let rest: u32 = curve.iter().filter(|(t, _)| *t >= 60).map(|(_, n)| n).sum();
+    eprintln!("[at rest] first second {first_second}, remaining nine {rest}");
 
     let stats = city.stats();
     assert_eq!(
