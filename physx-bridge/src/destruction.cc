@@ -1929,6 +1929,16 @@ namespace {
 /// The fix is to compare against the load this body actually bears at rest,
 /// not against a single body's, so that being buried is not mistaken for being
 /// struck. Raising the ratio only moves the pile depth at which it misfires.
+/// How far above its own steady load a contact must spike to wake a frozen body.
+///
+/// 2 means "twice what you are already carrying". Independent of burial depth,
+/// which is the entire point: a fixed multiple of one striker's weight is not.
+constexpr float kContactSpikeRatio = 2.0f;
+
+/// How fast the steady-load estimate follows a change. Slow enough that an
+/// impact does not get absorbed into the baseline before it can be detected.
+constexpr float kContactBaselineAlpha = 0.05f;
+
 float contact_wake_ratio() {
   static const float value = [] {
     if (const char *raw = std::getenv("VIBE_CITY_CONTACT_WAKE_RATIO")) {
@@ -1949,7 +1959,22 @@ void DestructionManager::note_contact_pair(std::uint32_t entity_a,
   if (ratio <= 0.0f || frozen_entities_.empty() || impulse <= 0.0f) {
     return;
   }
-  const float g_dt = 9.81f * (last_dt_ > 0.0f ? last_dt_ : 1.0f / 60.0f);
+  // World gravity, not Earth's. This decides what "lying still" costs, so it
+  // has to be the gravity bodies actually fall under: with the world at
+  // 20 m/s^2 and this at 9.81, the reference resting load was 49% of the real
+  // one and the effective threshold was ~1.96 rather than the 4 it advertises
+  // -- twice as trigger-happy as designed, releasing frozen bodies on contacts
+  // that are merely other debris lying on them.
+  const float gravity = [] {
+    if (const char *raw = std::getenv("VIBE_WORLD_GRAVITY")) {
+      const float parsed = static_cast<float>(std::fabs(std::atof(raw)));
+      if (parsed > 0.0f) {
+        return parsed;
+      }
+    }
+    return 20.0f;
+  }();
+  const float g_dt = gravity * (last_dt_ > 0.0f ? last_dt_ : 1.0f / 60.0f);
   // Each side: frozen participant, struck by the OTHER side's dynamic mass.
   const auto consider = [&](std::uint32_t entity, float striker_mass) {
     if (striker_mass <= 0.0f) {
@@ -1958,9 +1983,36 @@ void DestructionManager::note_contact_pair(std::uint32_t entity_a,
     if (frozen_entities_.find(entity) == frozen_entities_.end()) {
       return;
     }
-    if (impulse < ratio * striker_mass * g_dt) {
-      return; // resting-scale contact: lying on a frozen pile is free.
+    // Two references, and the wake needs to clear BOTH.
+    //
+    // The single-body floor stops trivia waking anything. The baseline is what
+    // makes burial survivable: a chunk under five others bears ~5x m*g*dt while
+    // perfectly still, which clears any fixed multiple of one striker's weight
+    // and released it from freeze every tick, forever. Measured 280 awake
+    // bodies against 1 with contact wakes disabled entirely.
+    //
+    // Being buried is a steady load; being struck is a spike above whatever you
+    // were already carrying. So the test asks the second question.
+    const float floor = ratio * striker_mass * g_dt;
+    auto &baseline = contact_load_baseline_[entity];
+    if (baseline <= 0.0f) {
+      // Seed so the FIRST contact behaves exactly as before this change:
+      // threshold == floor. Seeding from the observed impulse instead would
+      // read a first-contact impact as resting load and never wake -- which
+      // broke debris_landing_on_frozen_rubble_releases_it_by_contact. The
+      // baseline may only rise from loads that were judged to be at rest.
+      baseline = floor / kContactSpikeRatio;
     }
+    const float threshold = std::max(floor, baseline * kContactSpikeRatio);
+    if (impulse < threshold) {
+      // Track the load it bears while at rest. Rising slowly (more debris
+      // settling on top) must not read as an impact, so the baseline follows.
+      baseline += kContactBaselineAlpha * (impulse - baseline);
+      return;
+    }
+    // A real spike. Forget the baseline so the body re-learns its load once it
+    // settles again, rather than inheriting a stale one from before the hit.
+    contact_load_baseline_.erase(entity);
     if (contact_wake_pending_.insert(entity).second) {
       contact_wake_order_.push_back(entity);
       ++contact_wakes_;

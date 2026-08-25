@@ -374,6 +374,13 @@ private:
   std::unordered_set<std::uint32_t> frozen_entities_;
   /// Contact-struck frozen bodies awaiting the per-tick drain (deduped).
   std::unordered_set<std::uint32_t> contact_wake_pending_;
+  /// Steady contact load each frozen body bears, per entity.
+  ///
+  /// A buried chunk carries the accumulated weight of the pile above it, which
+  /// is large but *constant*. An impact is a transient spike. Comparing against
+  /// a single striker's weight cannot tell those apart; comparing against what
+  /// this body has actually been bearing can.
+  std::unordered_map<std::uint32_t, float> contact_load_baseline_;
   std::vector<std::uint32_t> contact_wake_order_;
   /// Fixed step from the last destruction_tick, for the resting-load ratio.
   float last_dt_ = 1.0f / 60.0f;
