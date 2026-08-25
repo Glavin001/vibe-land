@@ -492,6 +492,11 @@ pub struct DestructionStats {
     pub support_promotions: u64,
     /// Freeze/unfreeze calls refused for naming a rooted body. Must stay 0.
     pub rooted_guard_blocks: u64,
+    /// Re-sleep writes issued because a kinematic flip woke the flipped
+    /// body's contact island as collateral. Counts writes, not confirmed
+    /// wakes. Non-zero is normal and means the repair is running; see
+    /// `freeze_island_resleep` in destruction.cc.
+    pub island_resleep_writes: u64,
     /// Ground-anchored kinematic fragments currently standing.
     pub rooted_chunk_bodies: u32,
     /// Weight-bearing dependency edges currently held by the bridge.
@@ -1470,6 +1475,8 @@ mod ffi {
         /// Freeze/unfreeze calls that named a rooted body and were refused.
         /// Must stay zero.
         rooted_guard_blocks: u64,
+        /// Re-sleep writes issued after a kinematic flip woke its island.
+        island_resleep_writes: u64,
         /// Ground-anchored kinematic fragments currently standing.
         rooted_chunk_bodies: u32,
         /// Weight-bearing dependency edges currently held.
@@ -2019,6 +2026,7 @@ impl From<ffi::FfiDestructionStats> for DestructionStats {
             contact_wakes: value.contact_wakes,
             support_promotions: value.support_promotions,
             rooted_guard_blocks: value.rooted_guard_blocks,
+            island_resleep_writes: value.island_resleep_writes,
             rooted_chunk_bodies: value.rooted_chunk_bodies,
             support_edges: value.support_edges,
             frozen_serial_blocks: value.frozen_serial_blocks,

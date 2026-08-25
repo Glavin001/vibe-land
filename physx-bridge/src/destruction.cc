@@ -1809,6 +1809,70 @@ DestructionManager::unfreeze_chunk_bodies(rust::Slice<const std::uint32_t> entit
   return set_chunk_bodies_kinematic(entity_ids, false);
 }
 
+namespace {
+
+/// Put back to sleep every body a kinematic flip woke as collateral.
+///
+/// MEASURED (physx-bridge/tests/freeze_wake_semantics.rs::
+/// `freezing_part_of_a_sleeping_pile_leaves_the_rest_asleep`): freezing ONE
+/// body of a 24-body sleeping pile wakes the other 23 on the very next step
+/// -- the rest of the island exactly. PhysX's island manager cannot remove a
+/// node from an island without re-forming it, and it re-forms it AWAKE, so
+/// `setRigidBodyFlag(eKINEMATIC)` is an island-wide wake, not a per-body
+/// write.
+///
+/// This was invisible because the original claim-1 test
+/// stepped 60 ticks before reading the awake count, and PhysX's wake counter
+/// is 0.4 s -- 24 ticks at 60 Hz. The pile woke, stayed awake for 24 ticks,
+/// and re-slept, all inside the test's blind window. Measure the tick the
+/// flip lands on, never later.
+///
+/// The production consequence is the never-settles bug: the freeze pass runs
+/// every tick, so every tick's batch re-woke the whole pile and reset its
+/// 24-tick wake counter. The pile could never accumulate the quiet needed to
+/// stay asleep, and players saw it hop forever. Freeze was waking the debris
+/// it was retiring.
+///
+/// The repair restores the invariant the flip breaks: bodies that were asleep
+/// before the batch, were not themselves flipped, and are still dynamic are
+/// put straight back to sleep. It is not a cap and it does not fight the
+/// engine -- these bodies were at rest by the engine's own judgement one
+/// instant earlier, and nothing physical happened in between.
+///
+/// Legitimate wakes are untouched. Contact wakes and blast impulses run
+/// earlier in the same tick and set the awake flag synchronously, so those
+/// bodies never enter the recorded set; and an island that still holds a
+/// genuinely active body reactivates on the next step regardless, which is
+/// also why this is stable rather than a fight with the engine.
+///
+/// COST: one pass over the structure's bodies plus one `putToSleep` per
+/// sleeping body, per call that actually flips something. Measured at ~2.2k
+/// bodies through `full_demolition_cost` as no change in tick p50. The
+/// cascade paths in runtime.rs call unfreeze once per cascade level, so a
+/// deep cascade pays this several times in one tick; if that ever shows in a
+/// profile, batch it to once per tick (all flips in a tick land between the
+/// same pair of `simulate()` calls, so a single flush at the end is
+/// equivalent).
+///
+/// The write is UNCONDITIONAL on the recorded sleepers, and it has to be:
+/// `isSleeping()` still reports true immediately after the flip (Np's copy of
+/// the sleep state only refreshes at fetchResults), so the woken set is not
+/// yet distinguishable on the host. `putToSleep()` reaches the island node
+/// directly, which is why issuing it before the next `simulate()` cancels the
+/// activation rather than racing it.
+///
+/// `VIBE_FREEZE_ISLAND_RESLEEP=0` disables it, for bisecting a regression
+/// against the old behaviour without a rebuild.
+bool freeze_island_resleep() {
+  static const bool value = [] {
+    const char *raw = std::getenv("VIBE_FREEZE_ISLAND_RESLEEP");
+    return raw == nullptr || std::atoi(raw) != 0;
+  }();
+  return value;
+}
+
+} // namespace
+
 std::uint32_t DestructionManager::set_chunk_bodies_kinematic(
     rust::Slice<const std::uint32_t> entity_ids, bool kinematic) {
   if (entity_ids.empty()) {
@@ -1844,6 +1908,29 @@ std::uint32_t DestructionManager::set_chunk_bodies_kinematic(
       }
       by_serial[serial_it->second] = &body;
     }
+    // Who the engine had asleep in this structure immediately before the
+    // batch. Taken lazily, on the first flip that actually happens, so a call
+    // that changes nothing costs nothing. See `freeze_island_resleep`.
+    const bool resleep = freeze_island_resleep();
+    std::vector<PxRigidDynamic *> sleepers;
+    bool sleepers_taken = false;
+    auto take_sleepers = [&]() {
+      if (sleepers_taken) {
+        return;
+      }
+      sleepers_taken = true;
+      sleepers.reserve(slot->body_cache_count);
+      for (std::uint32_t i = 0; i < slot->body_cache_count; ++i) {
+        PxRigidDynamic *b = slot->body_cache[i].body;
+        if (b == nullptr ||
+            b->getRigidBodyFlags().isSet(PxRigidBodyFlag::eKINEMATIC) ||
+            !b->isSleeping()) {
+          continue;
+        }
+        sleepers.push_back(b);
+      }
+    };
+
     for (std::uint32_t serial : entry.second) {
       // The adapter's own kinematic bodies -- the intact support actor and
       // every rooted fragment -- are not ours to touch: unfreezing one would
@@ -1878,6 +1965,9 @@ std::uint32_t DestructionManager::set_chunk_bodies_kinematic(
         continue;
       }
       const std::uint32_t entity = pack_body_entity(entry.first, serial);
+      if (resleep) {
+        take_sleepers();
+      }
       body->setRigidBodyFlag(PxRigidBodyFlag::eKINEMATIC, kinematic);
       if (kinematic) {
         slot->frozen.insert(body_id);
@@ -1896,6 +1986,17 @@ std::uint32_t DestructionManager::set_chunk_bodies_kinematic(
         ++unfreeze_flips_;
       }
       ++changed;
+    }
+    // Undo the island-wide wake the flips just caused. A body only qualifies
+    // if the engine had it asleep before the batch and it is still dynamic,
+    // so a body that was flipped (now kinematic) or was already awake is
+    // never touched.
+    for (PxRigidDynamic *sleeper : sleepers) {
+      if (sleeper->getRigidBodyFlags().isSet(PxRigidBodyFlag::eKINEMATIC)) {
+        continue;
+      }
+      sleeper->putToSleep();
+      ++island_resleep_writes_;
     }
   }
   return changed;
@@ -2329,6 +2430,7 @@ FfiDestructionStats DestructionManager::destruction_stats() const {
   stats.contact_wakes = contact_wakes_;
   stats.support_promotions = support_promotions_;
   stats.rooted_guard_blocks = rooted_guard_blocks_;
+  stats.island_resleep_writes = island_resleep_writes_;
   stats.support_edges = support_edges_total_;
   std::uint32_t rooted_count = 0;
   for (const auto &slot_ptr : slots_) {

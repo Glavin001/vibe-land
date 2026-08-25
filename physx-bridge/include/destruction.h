@@ -324,6 +324,12 @@ private:
   /// Freeze/unfreeze calls that named a ROOTED body and were refused.
   /// Releasing a stump would drop a standing building; must stay zero.
   std::uint64_t rooted_guard_blocks_ = 0;
+  /// Re-sleep WRITES issued after a kinematic flip woke the flipped body's
+  /// contact island as collateral. Counts writes, not confirmed wakes: the
+  /// woken set is not observable on the host until the next fetchResults, so
+  /// the repair writes to every body the engine had asleep before the batch.
+  /// See `freeze_island_resleep` in destruction.cc.
+  std::uint64_t island_resleep_writes_ = 0;
 
   /// The weight-bearing dependency store: who is holding each body up,
   /// according to the engine's own contact reports.

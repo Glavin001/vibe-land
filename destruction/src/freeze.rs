@@ -22,6 +22,30 @@
 //! is what lets the network layer treat a freeze exactly like the settle it
 //! already handles.
 //!
+//! # The flip is an island-wide wake, and it has to be undone
+//!
+//! `setRigidBodyFlag(eKINEMATIC)` is not a per-body write. PhysX's island
+//! manager cannot remove a node from a contact island without re-forming the
+//! island, and it re-forms it AWAKE. Measured in
+//! `physx-bridge/tests/freeze_wake_semantics.rs`: freezing ONE body of a
+//! 24-body sleeping pile wakes the other 23 on the very next step.
+//!
+//! That is the never-settles bug in one sentence. This pass runs every tick,
+//! so every batch re-woke the whole pile and reset its wake counter; the pile
+//! could never accumulate the 24 quiet ticks PhysX needs to stay asleep, and
+//! players saw it hop forever. Freeze was waking the debris it was retiring.
+//!
+//! It hid for so long because PhysX's wake counter is 0.4 s -- 24 ticks at
+//! 60 Hz -- and the test that claimed "a flip does not wake the island"
+//! stepped 60 ticks before reading. The wake happened and expired inside the
+//! blind window. **Measure sleep state on the tick the write lands on, never
+//! later.**
+//!
+//! The repair lives in the bridge (`freeze_island_resleep` in
+//! `physx-bridge/src/destruction.cc`): bodies the engine had asleep
+//! immediately before a batch, and which were not themselves flipped, are put
+//! straight back to sleep. Nothing physical happened to them in between.
+//!
 //! # Why not per-body sleep
 //!
 //! `runtime.rs` documents the closed line: forcing one body of an *active*

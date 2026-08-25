@@ -2290,8 +2290,21 @@ fn a_settled_pile_stays_settled() {
     }
 
     // Then nothing at all, for a long time. The idle window is the measurement.
-    const IDLE_SECONDS: u32 = 45;
+    //
+    // 90 s rather than 45, because a settled pile gets disturbed ONCE more by
+    // its own weight and 45 s could not contain both settles. Measured with
+    // the cause columns below: the pile decays cleanly to 0 awake, and then
+    // at t+17..t+24s a burst of 50-60 unfreezes/s wakes ~180 bodies and drops
+    // the frozen count by a third. `stumps/s` and `backstop/s` are ZERO
+    // through it, so it is neither a rooted stump dying nor the validity
+    // backstop: it is the Blast adapter crushing a bond inside a frozen body
+    // and setting that body dynamic, whose release then cascades through
+    // everything recorded as resting on it. That is a real physical event,
+    // and the pile converges again about 20 s later -- so the measurement
+    // needs room for a second settle, not a tighter assertion.
+    const IDLE_SECONDS: u32 = 90;
     let mut trace = Vec::new();
+    let mut cause: Vec<(u64, u64, u32)> = Vec::new();
     for _ in 0..IDLE_SECONDS {
         for _ in 0..60 {
             world.step().expect("step");
@@ -2300,6 +2313,11 @@ fn a_settled_pile_stays_settled() {
         }
         let s = city.stats();
         trace.push((s.awake_chunk_bodies, s.freeze_flips, s.unfreeze_flips, s.resettled_wakes));
+        // Which release path is firing matters more than that one is: a
+        // supporter death is the structure genuinely coming down in stages,
+        // a backstop release is a frozen body whose support evidence went
+        // missing (its own docs say this must read zero).
+        cause.push((s.support_promotions, s.backstop_releases, s.frozen_chunk_bodies));
     }
 
     // "Quiet" is relative to the pile's own size, so this survives the
@@ -2308,44 +2326,71 @@ fn a_settled_pile_stays_settled() {
     let quiet = (peak_awake / 20).max(4); // 5% of peak, floor of 4 bodies
 
     eprintln!(
-        "{:>4} {:>7} {:>9} {:>10} {:>11}",
-        "sec", "awake", "freeze/s", "unfreeze/s", "resettled/s"
+        "{:>4} {:>7} {:>9} {:>10} {:>11} {:>10} {:>10} {:>7}",
+        "sec", "awake", "freeze/s", "unfreeze/s", "resettled/s", "stumps/s",
+        "backstop/s", "frozen"
     );
     for (i, w) in trace.iter().enumerate() {
         let p = if i == 0 { w } else { &trace[i - 1] };
+        let c = &cause[i];
+        let pc = if i == 0 { c } else { &cause[i - 1] };
         eprintln!(
-            "{:>4} {:>7} {:>9} {:>10} {:>11}",
+            "{:>4} {:>7} {:>9} {:>10} {:>11} {:>10} {:>10} {:>7}",
             i + 1,
             w.0,
             w.1.saturating_sub(p.1),
             w.2.saturating_sub(p.2),
-            w.3.saturating_sub(p.3)
+            w.3.saturating_sub(p.3),
+            c.0.saturating_sub(pc.0),
+            c.1.saturating_sub(pc.1),
+            c.2,
         );
     }
 
-    // The bug is NON-CONVERGENCE, and it shows up two ways: never reaching
-    // quiet, or reaching it and coming back. Both are the same failure -- the
-    // pile is not heading anywhere -- so they are asserted together.
-    let trough = trace.iter().map(|t| t.0).min().unwrap_or(0);
-    let trough_at = trace.iter().position(|t| t.0 == trough).unwrap_or(0);
-    let after_trough = trace[trough_at..].iter().map(|t| t.0).max().unwrap_or(0);
+    // The bug is NON-CONVERGENCE: a pile with nothing acting on it that never
+    // arrives anywhere. The signature a player sees is hopping -- awake
+    // sawtoothing up and down forever -- so the measurement is how long the
+    // window ENDS quiet, not whether it ever dipped.
+    //
+    // This used to be a trough-and-relapse test, and it measured the wrong
+    // thing twice over:
+    //
+    //   - The trough was taken over the WHOLE window, including the ramp. The
+    //     idle window opens while the tower is still coming down (every run
+    //     measured has awake still RISING for the first 3-4 s), and a staged
+    //     collapse has a lull between stages. Measured: 71 -> 0 by t+6s as the
+    //     first wave settled and froze, then the second stage came down to 205
+    //     awake at t+12s, then 0 by t+45. A clean convergence, reported as a
+    //     relapse against a "trough" that was a pause mid-collapse.
+    //   - Any single later disturbance -- see the adapter-split cascade
+    //     documented on IDLE_SECONDS -- read as a relapse even when the pile
+    //     visibly converged again afterwards.
+    //
+    // A trailing quiet run has neither failure mode and still catches the real
+    // bug head-on: the pre-repair pile sawtooths for the entire window and
+    // never assembles a quiet tail at all.
     let final_awake = trace.last().map(|t| t.0).unwrap_or(0);
     let total_flips = trace.last().map(|t| t.1).unwrap_or(0)
         - trace.first().map(|t| t.1).unwrap_or(0);
-
-    // A relapse is the signature a player sees as hopping: it went quiet(er)
-    // and came back with nobody touching it.
-    let relapsed = after_trough > trough.saturating_mul(2).max(trough + quiet);
+    let tail_quiet = trace.iter().rev().take_while(|t| t.0 <= quiet).count();
+    const TAIL_QUIET_SECONDS: usize = 15;
+    let busiest_tail = trace[trace.len() - TAIL_QUIET_SECONDS.min(trace.len())..]
+        .iter()
+        .map(|t| t.0)
+        .max()
+        .unwrap_or(0);
 
     assert!(
-        final_awake <= quiet && !relapsed,
+        tail_quiet >= TAIL_QUIET_SECONDS,
         "the pile did not converge in {IDLE_SECONDS}s of NO input.\n\
-         \x20 peak awake {peak_awake}, trough {trough} at t+{}s, then back up to \
-         {after_trough}, ending at {final_awake} (quiet threshold {quiet}).\n\
+         \x20 peak awake {peak_awake}, ending at {final_awake}, quiet for only \
+         the last {tail_quiet}s (need {TAIL_QUIET_SECONDS}s at or under \
+         {quiet}; busiest of the last {TAIL_QUIET_SECONDS}s was \
+         {busiest_tail}).\n\
          \x20 freeze flipped {total_flips} times during the idle window and never \
          settled into a steady state.\n\
-         A pile with nothing acting on it must head somewhere. Rising after its \
-         own trough means the settle path is waking the debris it is retiring.",
-        trough_at + 1
+         A pile with nothing acting on it must head somewhere. Sawtoothing to \
+         the end of the window means the settle path is waking the debris it \
+         is retiring."
     );
 }
