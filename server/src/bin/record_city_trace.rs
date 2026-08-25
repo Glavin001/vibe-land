@@ -1598,17 +1598,37 @@ fn adaptive_shot(world: &mut World, tick: u32) -> Option<(Vec3, Vec3)> {
     if candidates.is_empty() {
         return None;
     }
-    // Stable order so the run is reproducible; PhysX hands bodies back in an
-    // order that shifts as actors are recycled.
-    candidates.sort_by(|a, b| {
-        (b.y, b.x, b.z)
-            .partial_cmp(&(a.y, a.x, a.z))
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-    // A large stride keeps consecutive shots on different buildings, which is
-    // what actually topples a city rather than boring through one wall.
-    let stride = 7919usize;
-    let target = candidates[(tick as usize).wrapping_mul(stride) % candidates.len()];
+    // Spread fire across BUILDINGS, not across a height-sorted list.
+    //
+    // Sorting by height and striding looks like it spreads, and does not: the
+    // tallest structure stays the tallest until it is gone, so it keeps winning
+    // the top slots and the barrage drills one tower. The video showed this
+    // immediately -- one shredded building and a city standing around it --
+    // while the body and bond counts looked like a city-wide collapse.
+    //
+    // Bucketing by horizontal cell gives one entry per standing structure, and
+    // rotating through the cells puts consecutive shots on different buildings.
+    const CELL_M: f32 = 24.0;
+    let mut by_cell: std::collections::BTreeMap<(i32, i32), Vec3> =
+        std::collections::BTreeMap::new();
+    for c in &candidates {
+        let key = ((c.x / CELL_M).floor() as i32, (c.z / CELL_M).floor() as i32);
+        by_cell
+            .entry(key)
+            .and_modify(|best| {
+                if c.y > best.y {
+                    *best = *c;
+                }
+            })
+            .or_insert(*c);
+    }
+    if by_cell.is_empty() {
+        return None;
+    }
+    let cells: Vec<Vec3> = by_cell.into_values().collect();
+    // Odd stride against the cell count so the rotation visits every building
+    // before repeating, and stays deterministic.
+    let target = cells[(tick as usize / 4) % cells.len()];
     // Fire from the camera side, level with the target so the ray reaches it
     // instead of clipping the facade below.
     let origin = target + Vec3::new(0.0, 0.0, 45.0);
