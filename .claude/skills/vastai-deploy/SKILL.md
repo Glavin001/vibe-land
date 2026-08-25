@@ -166,13 +166,14 @@ vastai create instance <offer_id> \
   --image ghcr.io/glavin001/vibe-land-builder:cuda12.8-physx-ovphysx-5.5.1 \
   --disk 80 --ssh --direct \
   --env '-p 4001:4001 -p 4443:4443 -p 4433:4433/udp' \
-  --onstart-cmd 'vibe-autostart <branch>'
+  --onstart-cmd 'vibe-autostart --downtown <branch>'
 
 vastai show instance <id> --raw | jq -r '.public_ipaddr, .ports["22/tcp"][0].HostPort'
 ssh -p <22 external> root@<ip>
 ```
 
-**`--onstart-cmd 'vibe-autostart <branch>'` makes the box build itself at boot**,
+**`--onstart-cmd 'vibe-autostart [--downtown] <branch>'` makes the box build
+itself at boot**,
 so it is ready — cloned, compiled, server running — before you connect. It is
 the only hook available: `--ssh` replaces the image's ENTRYPOINT, so nothing in
 the image can start work on its own. It returns immediately and works in the
@@ -185,6 +186,16 @@ way. On the box: `cat /root/.vibe-boot-state` (building | ready | failed) and
 
 **Read the SSH port from the API, not from memory** — `vastai recycle` remaps
 host ports, which is why a working command can start refusing connections.
+
+Options pass through to `vibe-up`, so the scene is chosen at instance creation
+rather than by SSHing in afterwards. `--downtown` is `fractured-downtown.json`
+— 24,105 chunks, the scene that actually stresses a small GPU; the default is a
+much smaller high-rise.
+
+**Confirmed working**: instance 48633720 (RTX A2000) was created with this
+onstart and reached a playable city with no commands typed. Vast does run
+`--onstart-cmd` in `--ssh --direct` mode — the container log carries
+`[vibe-autostart] started in the background`.
 
 Omit `--onstart-cmd` for a box that only builds when you ask it to.
 

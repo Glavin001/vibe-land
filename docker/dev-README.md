@@ -36,11 +36,29 @@ server, and prints the URL to open. Re-running skips whatever is already done.
 
 ```bash
 vibe-up my-branch      # a branch, tag or commit
-vibe-up --downtown     # the big scene: 27 buildings, 24,105 chunks
+vibe-up --downtown     # the big scene
 vibe-up --rebuild      # force a rebuild
 vibe-up --status
 vibe-up --stop
 ```
+
+### Scenes
+
+| Scene | Chunks | How |
+| --- | --- | --- |
+| `fractured-highrise-10f.json` | small — the default | *(nothing)* |
+| `fractured-district.json` | 15,918 | `--scene fractured-district.json` |
+| `fractured-downtown.json` | **24,105** | `--downtown` |
+
+The downtown is the one that stresses a small GPU: 27 buildings, 131x153 m, 84 m
+at the tallest, ~31,714 t, with ~12 m streets — so a toppling tower reaches its
+neighbours and the city can be collapsed onto itself.
+
+`fractured-district.json` deliberately spaces buildings by what they can reach
+when they fall, so it **cannot** be knocked over into itself. That spacing exists
+for a reason — PhysX sleeps per contact island, and merged rubble fields settle
+as one — which makes the district the safer pack and the wrong one for watching
+a city come down.
 
 **Restart is the reset.** Destructibles are created in the PhysX scene at
 startup and the bridge has no teardown for them, so the only way to get an

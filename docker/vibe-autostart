@@ -13,9 +13,14 @@
 # person connecting are already paid for. Spending them on the cold build is
 # free; leaving them idle is not.
 #
-#   vibe-autostart               # default branch
-#   vibe-autostart my-branch     # a branch, tag or commit
+#   vibe-autostart                          # default branch, small scene
+#   vibe-autostart my-branch                # a branch, tag or commit
+#   vibe-autostart --downtown my-branch     # the big scene: 24,105 chunks
+#   vibe-autostart --scene X.json my-branch # a specific scene
 #   VIBE_AUTOSTART_RUN=0 vibe-autostart my-branch   # build, do not start
+#
+# Options are passed straight through to vibe-up, so the scene a box boots on
+# is chosen once at instance creation rather than by SSHing in afterwards.
 #
 # Returns immediately. The work runs detached, so a slow build cannot wedge
 # Vast's boot sequence or delay sshd. Progress:
@@ -27,7 +32,17 @@
 # told what is happening rather than finding a busy box and no explanation.
 set -euo pipefail
 
-REF="${1:-}"
+# Split options from the ref: anything starting with `-` belongs to vibe-up.
+UP_ARGS=()
+REF=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --scene) UP_ARGS+=("$1" "$2"); shift 2 ;;
+    -*) UP_ARGS+=("$1"); shift ;;
+    *) REF="$1"; shift ;;
+  esac
+done
+
 STATE=/root/.vibe-boot-state
 LOG=/root/vibe-boot.log
 
@@ -43,7 +58,7 @@ fi
 echo "building" > "$STATE"
 
 {
-  echo "[vibe-autostart] $(date -u +%FT%TZ) starting${REF:+ on ref $REF}"
+  echo "[vibe-autostart] $(date -u +%FT%TZ) starting${REF:+ on ref $REF}${UP_ARGS[*]:+ with ${UP_ARGS[*]}}"
   # The build is the slow part and the part that fails, so its output is the
   # log. vibe-up is idempotent and does the clone, both builds, the cert, the
   # address detection and the launch.
@@ -55,7 +70,7 @@ echo "building" > "$STATE"
       && cargo build --release -p web-fps-server --features cuda-stress \
       && ( cd client && npm ci --no-audit --no-fund && npm run build )
   else
-    vibe-up ${REF:+"$REF"}
+    vibe-up ${UP_ARGS[@]+"${UP_ARGS[@]}"} ${REF:+"$REF"}
   fi
 } >> "$LOG" 2>&1 \
   && { echo "ready" > "$STATE"; echo "[vibe-autostart] ready" >> "$LOG"; } \
