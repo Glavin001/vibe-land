@@ -130,8 +130,14 @@ echo "== 7. run-city-server.sh remote mode =="
 # prove the script exports them correctly without needing a GPU.
 inc 'mkdir -p /root/vibe-land/target/release && printf "#!/usr/bin/env bash\necho \"starting web fps server\"\nenv | grep -E \"^(BIND_ADDR|WEB_BIND_ADDR|WT_BIND_ADDR|WT_PUBLIC_URL|VIBE_WEB_DIR)=\" | sort\nsleep 1\n" > /root/vibe-land/target/release/web-fps-server && chmod +x /root/vibe-land/target/release/web-fps-server' \
   || fail "could not stage the stub binary"
-inc 'cd /root/vibe-land && VIBE_PUBLIC_IP=203.0.113.9 VIBE_UDP_PORT=51745 VIBE_CITY_LOG=/tmp/rc.log ./scripts/run-city-server.sh >/dev/null 2>&1; sleep 2' \
-  || fail "remote mode would not start"
+# Keep the output. Discarding stderr from the thing under test made the first
+# real failure here undiagnosable: all it said was that the log did not exist.
+start_out="$(inc 'cd /root/vibe-land && VIBE_PUBLIC_IP=203.0.113.9 VIBE_UDP_PORT=51745 VIBE_CITY_LOG=/tmp/rc.log ./scripts/run-city-server.sh 2>&1; sleep 2' || true)"
+inc 'test -f /tmp/rc.log' || fail "remote mode never wrote its log, so the server was never launched.
+run-city-server.sh said:
+$start_out
+binary: $(inc 'ls -l /root/vibe-land/target/release/web-fps-server 2>&1' || true)
+target: $(inc 'ls -ld /root/vibe-land/target 2>&1' || true)"
 env_out="$(inc 'cat /tmp/rc.log')"
 for expect in \
   'BIND_ADDR=0.0.0.0:4001' \
