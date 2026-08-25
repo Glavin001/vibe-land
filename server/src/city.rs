@@ -624,7 +624,7 @@ pub struct WindowSummary {
 ///
 /// Windowing removes it -- p95 and max also surface the spikes a single sample
 /// can only catch by luck.
-pub const PHASE_NAMES: [&str; 16] = [
+pub const PHASE_NAMES: [&str; 19] = [
     "stress_solve_ms",
     "begin_ms",
     "solve_ms",
@@ -641,6 +641,19 @@ pub const PHASE_NAMES: [&str; 16] = [
     "blast_contact_processing_ms",
     "blast_gravity_ms",
     "blast_stress_solve_cpu_ms",
+    // The topology phases. end_ms was the largest phase mid-collapse (9.8 ms at
+    // 7k awake) and had no p95 at all, because these two were collected and
+    // never windowed -- so the spikiest thing in the tick was the one thing
+    // only ever seen as a 1 Hz point sample.
+    //
+    // These two OVERLAP and must not be summed. validateMappings() is called
+    // from fracture()'s return statement, and fractureTopologyMilliseconds
+    // brackets the whole fracture() call, so mapping validation is counted
+    // inside fracture topology AND again on its own. The _excl_ series below is
+    // the part of fracture() that is not mapping validation.
+    "blast_fracture_topology_ms",
+    "blast_mapping_validation_ms",
+    "blast_fracture_topology_excl_validation_ms",
 ];
 
 #[derive(Default)]
@@ -1429,6 +1442,16 @@ impl CityRuntime {
             stats.blast_contact_processing_ms,
             stats.blast_gravity_ms,
             stats.blast_stress_solve_cpu_ms,
+            stats.blast_fracture_topology_ms,
+            stats.blast_mapping_validation_ms,
+            // Traced, not assumed: validateMappings() has three callers --
+            // initialisation, the crush-drain path, and fracture()'s return.
+            // Crush is inert (no material sets crushCapPressure > 0), so in
+            // production the validation delta comes only from fracture() and is
+            // always contained by the fracture delta. The clamp is defensive:
+            // if crush is ever enabled, the crush-drain caller would make this
+            // go negative rather than merely wrong.
+            (stats.blast_fracture_topology_ms - stats.blast_mapping_validation_ms).max(0.0),
         ]);
         if let Some(live) = &self.live {
             self.tick_window
