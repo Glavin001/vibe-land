@@ -40,6 +40,41 @@ const DT: f32 = 1.0 / 60.0;
 /// raised to 20 m/s^2, so the bench fed the stress solver Earth gravity inside
 /// a 2x-gravity PhysX scene -- a combination production never runs. A
 /// reproduction that does not match the thing it reproduces measures its own
+/// Build the world the way production does.
+///
+/// `World::new(WorldConfig::default())` is NOT what the server runs.
+/// `PhysxPhysicsArena::new` applies five GPU capacity overrides from the
+/// environment (rigid contacts, rigid patches, heap, found/lost pairs,
+/// collision stack) before constructing the scene. A bench that skips them is
+/// measuring a differently-sized GPU scene than production, and GPU capacity is
+/// exactly the kind of limit whose effects show up as dropped contacts rather
+/// than as an error.
+///
+/// This is the same class of divergence as the hardcoded gravity that made the
+/// bench feed 9.81 into a 20 m/s^2 world: anything production decides, the
+/// bench must call rather than restate.
+fn production_arena() -> crate::physx_runtime::PhysxPhysicsArena {
+    crate::physx_runtime::PhysxPhysicsArena::new(vibe_netcode::movement::MoveConfig::default())
+        .expect("production physics arena")
+}
+
+/// Fail if the bench and production have drifted apart on anything a caller
+/// could set independently.
+///
+/// Cheap, and it catches the next instance of this bug class rather than
+/// relying on someone noticing. Every value here has already diverged once.
+fn assert_matches_production(world: &vibe_land_physx_bridge::World) {
+    let g = vibe_netcode::movement::default_world_gravity();
+    assert_eq!(
+        g,
+        [0.0, -vibe_land_physx_bridge::world_gravity_magnitude(), 0.0],
+        "the gravity city.step is given has drifted from the gravity the PhysX \
+         world integrates with; the bench would measure a combination \
+         production never runs"
+    );
+    let _ = world;
+}
+
 /// configuration, not the bug.
 fn gravity() -> [f32; 3] {
     vibe_netcode::movement::default_world_gravity()
@@ -123,7 +158,22 @@ fn demolished_tower_comes_to_rest() {
     // 179k unfreezes, 164k contact wakes, and backstop_releases at 182 against
     // its own documented expectation of 0.
 
-    let mut world = World::new(WorldConfig::default()).expect("GPU world");
+    let mut arena = production_arena();
+    let player_spawn = arena.spawn_player(1);
+    let world = arena.world_mut();
+    assert_matches_production(world);
+    eprintln!(
+        "[fidelity] production arena, player capsule at {:.1?}",
+        player_spawn
+    );
+    // The arena builds the scene but NOT the ground: production's comes from a
+    // world-document load that adds a heightfield. Without this the city free
+    // falls -- measured p50 315 m/s, which is the whole pile in flight.
+    //
+    // KNOWN REMAINING GAP: production grounds on a heightfield, this is a flat
+    // box. Contact generation differs (triangle edges, per-triangle normals),
+    // and for a jitter bug that is a live suspect rather than a harmless
+    // simplification. Closing it means loading the same world document.
     world
         .add_static_box(StaticBoxDesc {
             entity_id: 1,
@@ -137,6 +187,7 @@ fn demolished_tower_comes_to_rest() {
             collision_mask: ALL_GROUPS,
         })
         .expect("ground");
+    let mut world = &mut *world;
     let mut city =
         crate::city::CityRuntime::open(60, Some(&mut world)).expect("city runtime opens");
     city.add_client(1);
