@@ -34,6 +34,18 @@ Use the **arena facade**, not `PhysxPhysicsArena` directly -- the facade is what
 from the gravity the PhysX world integrates with. Extend it whenever a new
 value could diverge; it is far cheaper than noticing.
 
+## A fourth: pile size determines island structure
+
+The bench pile (~300-400 bodies) may fragment into several PhysX contact islands
+where production (2,500-9,500 bodies) is one giant island. Since PhysX sleeps
+islands ATOMICALLY, island structure is the entire mechanism for anything about
+settling -- so a settling result from the bench does not transfer.
+
+Demonstrated: `a_settled_pile_stays_settled` PASSED with freeze disabled, while
+the live server with freeze disabled sat at 2,268 awake bodies, flat, for 12
+seconds of idle. Same configuration, opposite conclusions. Verify island
+structure before trusting any settling result from a small pile.
+
 ## The three that were actually found
 
 Recorded because each looked harmless and none was.

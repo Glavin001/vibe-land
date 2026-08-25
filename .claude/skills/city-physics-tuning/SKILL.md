@@ -90,7 +90,42 @@ Flattening that table (putting every bond on material 0) does not just rescale
 strength -- it erases the skeleton/facade distinction that makes a collapse look
 like a building rather than dissolving cubes.
 
-## Why the city never settles (diagnosed 2026-08-25)
+## Why the city never settles: SOLVED (2026-08-25)
+
+**`setRigidBodyFlag(eKINEMATIC, true)` re-forms the contact island, and PhysX
+re-forms it AWAKE.** Freezing one body of a 24-body sleeping pile leaves the
+other 23 awake on the very next step -- exactly the rest of the island. The
+freeze pass runs every tick, so every batch re-woke the pile it was retiring and
+reset its wake counter. The pile could never accumulate the quiet PhysX needs.
+
+Fixed by `freeze_island_resleep` in physx-bridge/src/destruction.cc: bodies the
+engine had asleep immediately before a flip batch, and which were not themselves
+flipped, are put straight back to sleep before the next `simulate()`. Bisect with
+`VIBE_FREEZE_ISLAND_RESLEEP=0`.
+
+Result, live: frozen went 0% -> 80%, awake 8,158 -> ~1,480 and STABLE (min 1474,
+max 1491 across 60 samples) where it used to sawtooth 0<->290.
+
+### Two traps that made this take four attempts
+
+**The existing test was measuring 60 ticks too late.** PhysX's wake counter is
+0.4 s = 24 ticks. `freezing_part_of_a_sleeping_pile_leaves_the_rest_asleep`
+stepped 60 ticks before reading, so the island woke at t+1 and was asleep again
+by t+25, entirely inside the blind window. The cascade happened on every run and
+the test passed anyway.
+
+**`isSleeping()` reports stale immediately after the write.** Np's copy of the
+sleep state only refreshes at `fetchResults`, so measuring at the flip shows zero
+wakes. You must measure across one `simulate()`.
+
+### Still open
+
+A settled pile disturbs itself once more around t+17..24 s (~180 bodies, frozen
+count drops a third) with `stumps/s` and `backstop/s` both 0. Inferred to be the
+adapter releasing a frozen body when a bond inside it crushes. Self-healing in
+~20 s.
+
+## Superseded analysis, kept because the eliminations are still valid
 
 **Contact wakes mistake being buried for being hit.**
 
@@ -152,6 +187,20 @@ column load), so redistributed load never reaches the threshold. Progressive
 collapse needs elastic lowered **on its own**, keeping fatal -- which is not what
 `STRESS_LIMIT_SCALE` does. Elastic must stay above at-rest stress or the city
 eats itself slowly.
+
+## Timing visibility
+
+`physics_gpu_wait_ms` and `physics_fetch_copy_ms` read 0 unless
+**`VIBE_PHYSX_PROFILE_FETCH=1`** is set. The mechanism exists but is opt-in:
+`fetchResults(true)` blocks and reports both costs as one, so the profiling path
+polls with `fetchResults(false)` to separate "waiting on the GPU" from "the call
+that copies results back". Polling burns a core, which is why it is off by
+default -- and why it is a diagnostic mode, not something to leave on.
+
+Measured at idle (0 awake bodies): fetch 0.31 ms = 0.246 gpu wait + 0.064 copy.
+The loaded split (~1,500 awake) has not been captured yet and is the number that
+matters, because `physics_simulate_ms` is ~0.01 ms against `physics_fetch_ms` of
+7.8 ms at that load -- PhysX is not computing, it is transferring.
 
 ## Performance
 
