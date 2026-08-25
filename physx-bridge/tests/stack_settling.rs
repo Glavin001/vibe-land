@@ -205,3 +205,41 @@ fn sweep_solver_iterations_for_the_knee() {
     std::env::remove_var("VIBE_PHYSX_POSITION_ITERS");
     std::env::remove_var("VIBE_PHYSX_VELOCITY_ITERS");
 }
+
+/// Does the contract hold at city scale?
+///
+/// `/city` runs ~10,000 chunk bodies, so a result at 1,000 says little about
+/// the case that actually matters. These are pyramid layer counts chosen to
+/// land near 2k / 5k / 8k / 10k bodies; the tallest is ~53 m, comparable to the
+/// district pack's 84 m.
+///
+/// Asserted rather than merely measured: if a plain box pile stops settling
+/// somewhere between 1k and 10k, that is the explanation for the city and it
+/// should fail loudly here. If it settles all the way to 10k, the city's
+/// awake-body problem is definitively on the destruction path and not in
+/// rigid-body contact at all.
+#[test]
+#[ignore = "measurement: needs a GPU, runs several large piles"]
+fn piles_settle_at_city_scale() {
+    // 18 -> 2109, 24 -> 4900, 28 -> 7714, 31 -> 10416
+    let mut failures = Vec::new();
+    eprintln!("layers  bodies  asleep%   max_speed   min_y     ms/step");
+    for layers in [18u32, 24, 28, 31] {
+        let o = settle(layers, 10);
+        eprintln!(
+            "{layers:>6} {:>7} {:>7.0}% {:>10.4} {:>8.3} {:>10.2}",
+            o.bodies, o.asleep_pct, o.max_speed, o.min_y, o.step_ms
+        );
+        if o.asleep_pct < 90.0 || o.max_speed >= 0.05 {
+            failures.push(format!(
+                "{} bodies: {:.0}% asleep, residual {:.4} m/s",
+                o.bodies, o.asleep_pct, o.max_speed
+            ));
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "piles stopped settling as they grew, so contact solving IS the floor \
+         after all and the scale threshold is between these sizes: {failures:#?}"
+    );
+}
