@@ -35,6 +35,8 @@ jobs:
     permissions:
       contents: read
       packages: write
+    outputs:
+      image: ${{ steps.meta.outputs.image }}
     steps:
       - uses: actions/checkout@v4
 
@@ -110,3 +112,34 @@ jobs:
             echo "a different toolchain, set the repository variable"
             echo "\`BUILDER_IMAGE_TAG\` to that tag instead."
           } >> "$GITHUB_STEP_SUMMARY"
+
+  # The build-time RUN assertions in Dockerfile.builder prove the pieces exist.
+  # This proves the image is usable as a rented dev box, which is a different
+  # question -- most importantly that a real sshd will accept a login, which no
+  # build-time check can establish and which broke the first box a human tried.
+  verify:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@v4
+
+      # The image is ~19 GB and a standard runner has ~14 GB free.
+      - name: Reclaim disk space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: true
+          large-packages: true
+          docker-images: false
+          swap-storage: true
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Smoke the dev image
+        run: ./scripts/smoke-dev-image.sh "${{ needs.build.outputs.image }}"

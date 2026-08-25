@@ -151,8 +151,13 @@ RUN rustup target add wasm32-unknown-unknown \
 # No source and no build caches are baked in. Source is cloned at load by
 # `vibe-clone`; build caches live at $VIBE_CACHE, which is where you mount a
 # Vast volume so they survive the instance.
+# openssl is the CLI, not libssl-dev's headers: run-city-server.sh's remote mode
+# mints the WebTransport certificate with it, so without the binary `vibe-up`
+# dies on a rented box. It happens to be present transitively today, which is
+# exactly the kind of thing that silently stops being true.
 RUN apt-get update && apt-get install -y --no-install-recommends \
       jq ripgrep tmux vim less rsync openssh-client procps htop bash-completion \
+      openssl \
  && rm -rf /var/lib/apt/lists/*
 
 COPY docker/vibe-clone /usr/local/bin/vibe-clone
@@ -209,6 +214,7 @@ RUN command -v node >/dev/null \
  && command -v wasm-pack >/dev/null \
  && command -v vibe-clone >/dev/null \
  && command -v vibe-up >/dev/null \
+ && command -v openssl >/dev/null \
  && test -f /root/README.md \
  && test -f /etc/profile.d/zz-vibe-land.sh \
  && rustup target list --installed | grep -qx wasm32-unknown-unknown

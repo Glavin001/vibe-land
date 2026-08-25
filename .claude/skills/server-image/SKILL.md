@@ -27,11 +27,26 @@ evicts itself. It uses `type=registry,ref=...:buildcache,mode=max` on GHCR
 instead. Keep the expensive layers (PhysX, ~15 min) above anything you add —
 everything appended after them is then free to change.
 
+## Two smoke scripts, two products
+
+| Script | Image | Needs a GPU | What it is really asking |
+| --- | --- | --- | --- |
+| `scripts/smoke-image.sh [--cpu]` | server | optional | would this survive a real host: libraries resolved, bundle complete, entrypoint sane |
+| `scripts/smoke-dev-image.sh` | builder | no | could a person SSH in and get somewhere |
+
+`smoke-dev-image.sh` **starts a real sshd inside the image and logs into it.**
+That case exists because no build-time assertion can catch what broke the first
+rented dev box: sshd's StrictModes refuses an `authorized_keys` whose modes are
+wrong and reports it as a *key* problem, while the key is correct and attached.
+It also covers the PID-1 port detection, `vibe-clone` cache survival across a
+re-clone, and every listener variable and certificate property of
+`run-city-server.sh`'s remote mode — all against a stub binary, so no GPU.
+
 ## CI is the normal path
 
 | Workflow | Trigger | Publishes |
 | --- | --- | --- |
-| `.github/workflows/builder-image.yml` | `docker/Dockerfile.builder` changes, or dispatch | `vibe-land-builder:cuda12.8-physx-ovphysx-5.5.1` |
+| `.github/workflows/builder-image.yml` | `docker/Dockerfile.builder` or `docker/vibe-*` changes, or dispatch | `vibe-land-builder:cuda12.8-physx-ovphysx-5.5.1`, then runs `smoke-dev-image.sh` |
 | `.github/workflows/server-image.yml` | any push (branches-ignore main), dispatch, or `workflow_call` | `vibe-land-server:sha-<12>` |
 | `.github/workflows/deploy.yml` | push to `main` | calls `server-image.yml`, then the Worker |
 
