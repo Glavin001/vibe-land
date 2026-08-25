@@ -211,6 +211,9 @@ pub struct DestructionStats {
     pub overstressed_bonds: u32,
     pub contacts_processed: u32,
     pub contacts_dropped: u32,
+    pub contacts_queued: u64,
+    pub solver_islands_skipped_accum: u64,
+    pub solver_islands_total_accum: u64,
     /// Worst stress / elastic-limit ratio across bonds; 1.0 = at the limit.
     pub bond_utilisation_max: f32,
     pub bonds_above_half_utilisation: u32,
@@ -304,6 +307,11 @@ pub struct DestructionStats {
     pub blast_stress_solve_cpu_ms: f32,
     pub blast_fracture_topology_ms: f32,
     pub blast_mapping_validation_ms: f32,
+    pub blast_fracture_generate_ms: f32,
+    pub blast_fracture_prep_ms: f32,
+    pub blast_fracture_apply_ms: f32,
+    pub blast_fracture_scene_ms: f32,
+    pub blast_fracture_rebuild_ms: f32,
     pub blast_sleeping_actors_skipped: u64,
     /// The last two untimed blocks inside the `stress_solve_ms` bracket:
     /// per-slot dispatch (live-slot gather + telemetry read + topology

@@ -88,6 +88,12 @@ pub struct PhysxPhysicsArena {
     next_dynamic_id: u32,
     next_battery_id: u32,
     material_field: Option<TerrainMaterialField>,
+    /// The GPU buffer capacities this scene was created with. Published beside
+    /// the high-water marks so utilisation reads as a ratio: with no caps on
+    /// body or bond count, overrunning one of these is a real failure mode, and
+    /// "1.9M contacts" means nothing without the ceiling next to it.
+    gpu_max_rigid_contacts: u32,
+    gpu_max_rigid_patches: u32,
     contact_events: Vec<bridge::ContactEvent>,
     cached_body_snapshots: Vec<bridge::BodySnapshot>,
     cached_vehicle_snapshots: Vec<bridge::VehicleSnapshot>,
@@ -144,6 +150,8 @@ impl PhysxPhysicsArena {
             cached_body_snapshots: Vec::new(),
             cached_vehicle_snapshots: Vec::new(),
             snapshots_valid: false,
+            gpu_max_rigid_contacts: world_config.gpu_max_rigid_contacts,
+            gpu_max_rigid_patches: world_config.gpu_max_rigid_patches,
             last_readback_ms: 0.0,
             last_refresh_players_ms: 0.0,
             last_vehicle_control_ms: 0.0,
@@ -1052,6 +1060,14 @@ impl PhysxPhysicsArena {
             last_readback_ms: self.last_readback_ms,
             last_refresh_players_ms: self.last_refresh_players_ms,
             last_vehicle_control_ms: self.last_vehicle_control_ms,
+            // Computed in C++ and carried all the way to WorldStats, then
+            // dropped here: health() copied 9 of 16 fields. These two are the
+            // only warning that a GPU buffer is about to overrun, which is the
+            // failure mode a no-caps simulation actually has.
+            gpu_rigid_contact_high_water: stats.gpu_rigid_contact_high_water,
+            gpu_rigid_patch_high_water: stats.gpu_rigid_patch_high_water,
+            gpu_max_rigid_contacts: self.gpu_max_rigid_contacts,
+            gpu_max_rigid_patches: self.gpu_max_rigid_patches,
         }
     }
 

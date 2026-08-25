@@ -368,6 +368,18 @@ struct CityStatsSnapshot {
     blast_stress_solve_cpu_ms: f32,
     blast_fracture_topology_ms: f32,
     blast_mapping_validation_ms: f32,
+    /// Inside blast_fracture_topology_ms, which is the largest phase in the
+    /// tick during a collapse and had never been opened up. Children of it,
+    /// never summed with it: generate (solver call) / prep (sort, limit, node
+    /// snapshot, parent motion) / apply (solver island split) / scene (event
+    /// sort + applySplit under the write lock) / rebuild (rebuildLookupTables,
+    /// three whole-population hash maps). Remainder is topology minus these
+    /// five minus mapping validation.
+    blast_fracture_generate_ms: f32,
+    blast_fracture_prep_ms: f32,
+    blast_fracture_apply_ms: f32,
+    blast_fracture_scene_ms: f32,
+    blast_fracture_rebuild_ms: f32,
     blast_sleeping_actors_skipped: u64,
     /// The last two untimed blocks inside the `stress_solve_ms` bracket:
     /// per-slot dispatch (live-slot gather + telemetry read + topology
@@ -381,6 +393,20 @@ struct CityStatsSnapshot {
     /// this counter a working skip and a broken measurement are
     /// indistinguishable from the value alone.
     quiet_slot_ticks: u64,
+    /// Contacts routed into the stress solver, cumulative. Routing happens per
+    /// contact POINT and twice per point (once per shape), so
+    /// `contacts_queued / (2 * support_pair_loads)` is the points-per-manifold
+    /// factor. Both of these were assigned all the way through the netcode
+    /// struct and then dropped here, so the pipeline could not be sized at all.
+    contacts_queued: u64,
+    contacts_processed: u32,
+    contacts_dropped: u32,
+    /// Running totals of the island partition. `solver_islands_skipped` beside
+    /// them is a gauge of the LAST tick, and a bond break zeroes it by design,
+    /// so it reads 0 through a whole demolition while skipping works. Difference
+    /// these two across samples for the real rate.
+    solver_islands_skipped_accum: u64,
+    solver_islands_total_accum: u64,
     sleeping_bodies: u32,
     /// Bonds over their own elastic limit in the last solve. Fracture only
     /// runs when this is non-zero, so a persistent 0 while shooting means the
@@ -779,6 +805,14 @@ struct MatchStatsSnapshot {
     physics_gpu_active: bool,
     physics_gpu_warning_count: u32,
     physics_contact_pairs: u32,
+    /// PhysX's high-water marks for the two fixed-capacity GPU buffers, with
+    /// their configured ceilings. Overrunning one degrades hard and is the
+    /// failure mode a no-caps simulation actually has; these were computed in
+    /// C++, carried to WorldStats, and then dropped by health().
+    physics_gpu_rigid_contact_high_water: u32,
+    physics_gpu_rigid_patch_high_water: u32,
+    physics_gpu_max_rigid_contacts: u32,
+    physics_gpu_max_rigid_patches: u32,
     physics_active_dynamic_bodies: u32,
     physics_last_step_ms: f32,
     /// Step phases. `simulate` only dispatches under GPU dynamics, so
@@ -3589,6 +3623,10 @@ impl MatchState {
             physics_gpu_active: physics_health.gpu_active,
             physics_gpu_warning_count: physics_health.gpu_warning_count,
             physics_contact_pairs: physics_health.contact_pairs,
+            physics_gpu_rigid_contact_high_water: physics_health.gpu_rigid_contact_high_water,
+            physics_gpu_rigid_patch_high_water: physics_health.gpu_rigid_patch_high_water,
+            physics_gpu_max_rigid_contacts: physics_health.gpu_max_rigid_contacts,
+            physics_gpu_max_rigid_patches: physics_health.gpu_max_rigid_patches,
             physics_active_dynamic_bodies: physics_health.active_dynamic_bodies,
             physics_last_step_ms: physics_health.last_step_ms,
             physics_simulate_ms: physics_health.last_simulate_ms,
@@ -3793,10 +3831,20 @@ impl MatchState {
                     blast_stress_solve_cpu_ms: stats.blast_stress_solve_cpu_ms,
                     blast_fracture_topology_ms: stats.blast_fracture_topology_ms,
                     blast_mapping_validation_ms: stats.blast_mapping_validation_ms,
+                    blast_fracture_generate_ms: stats.blast_fracture_generate_ms,
+                    blast_fracture_prep_ms: stats.blast_fracture_prep_ms,
+                    blast_fracture_apply_ms: stats.blast_fracture_apply_ms,
+                    blast_fracture_scene_ms: stats.blast_fracture_scene_ms,
+                    blast_fracture_rebuild_ms: stats.blast_fracture_rebuild_ms,
                     blast_sleeping_actors_skipped: stats.blast_sleeping_actors_skipped,
                     slot_dispatch_ms: stats.slot_dispatch_ms,
                     bond_sample_ms: stats.bond_sample_ms,
                     quiet_slot_ticks: stats.quiet_slot_ticks,
+                    contacts_queued: stats.contacts_queued,
+                    contacts_processed: stats.contacts_processed,
+                    contacts_dropped: stats.contacts_dropped,
+                    solver_islands_skipped_accum: stats.solver_islands_skipped_accum,
+                    solver_islands_total_accum: stats.solver_islands_total_accum,
                     sleeping_bodies: stats.sleeping_chunk_bodies,
                     overstressed_bonds: stats.overstressed_bonds,
                     bond_utilisation_max: stats.bond_utilisation_max,

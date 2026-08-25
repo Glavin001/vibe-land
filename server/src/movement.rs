@@ -67,6 +67,13 @@ pub struct PhysicsHealth {
     pub last_readback_ms: f32,
     pub last_refresh_players_ms: f32,
     pub last_vehicle_control_ms: f32,
+    /// PhysX's own high-water marks for the two GPU buffers that have a fixed
+    /// capacity, with those capacities beside them. Exceeding one degrades
+    /// hard, and nothing was reporting them.
+    pub gpu_rigid_contact_high_water: u32,
+    pub gpu_rigid_patch_high_water: u32,
+    pub gpu_max_rigid_contacts: u32,
+    pub gpu_max_rigid_patches: u32,
 }
 
 enum PhysicsBackend {

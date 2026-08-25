@@ -312,6 +312,11 @@ struct DestructionManager::Slot {
   double last_stress_solve_cpu_ms = 0.0;
   double last_fracture_topology_ms = 0.0;
   double last_mapping_validation_ms = 0.0;
+  double last_fracture_generate_ms = 0.0;
+  double last_fracture_prep_ms = 0.0;
+  double last_fracture_apply_ms = 0.0;
+  double last_fracture_scene_ms = 0.0;
+  double last_fracture_rebuild_ms = 0.0;
 };
 
 DestructionManager::DestructionManager(PxPhysics &physics, PxScene &scene,
@@ -1437,6 +1442,12 @@ void DestructionManager::destruction_tick(float dt, FfiVec3 gravity) {
     // shape and every bond only to conclude that nothing changed. Skip it.
     dispatch_phase = clock::now();
     const ExtStressPhysXTelemetry &telemetry = slot.dest->getTelemetry();
+    // Accumulated here, per tick, and deliberately above the quiet-skip
+    // `continue` below: a settled slot is exactly the case the skip is for, so
+    // dropping its islands would bias the rate toward the ticks that skipped
+    // nothing. See the accumulator declarations for why the gauge alone lies.
+    solver_islands_skipped_accum_ += telemetry.solverIslandsSkipped;
+    solver_islands_total_accum_ += telemetry.solverIslandCount;
     // bodiesRecycled is in the set because a PURE-CRUSH tick erases bodies
     // without splitting, creating or migrating anything -- a rooted fragment
     // (or a dynamic body) could vanish on a tick this gate skipped, its
@@ -2588,6 +2599,24 @@ FfiDestructionStats DestructionManager::destruction_stats() const {
     stats.blast_mapping_validation_ms += phase_delta(
         telemetry.mappingValidationMilliseconds,
         slot_ptr->last_mapping_validation_ms);
+    // The interior of fracture topology. Children of it, and NOT summable with
+    // it -- mapping validation is in there too, so the unattributed remainder
+    // is topology - (these five) - validation.
+    stats.blast_fracture_generate_ms += phase_delta(
+        telemetry.fractureGenerateMilliseconds,
+        slot_ptr->last_fracture_generate_ms);
+    stats.blast_fracture_prep_ms += phase_delta(
+        telemetry.fracturePrepMilliseconds,
+        slot_ptr->last_fracture_prep_ms);
+    stats.blast_fracture_apply_ms += phase_delta(
+        telemetry.fractureApplyMilliseconds,
+        slot_ptr->last_fracture_apply_ms);
+    stats.blast_fracture_scene_ms += phase_delta(
+        telemetry.fractureSceneMilliseconds,
+        slot_ptr->last_fracture_scene_ms);
+    stats.blast_fracture_rebuild_ms += phase_delta(
+        telemetry.fractureRebuildMilliseconds,
+        slot_ptr->last_fracture_rebuild_ms);
     stats.blast_sleeping_actors_skipped += telemetry.sleepingActorsSkipped;
     // The quantity that actually decides whether anything fractures this tick:
     // endTick() only runs fracture when it is non-zero. Without it in the
@@ -2596,6 +2625,11 @@ FfiDestructionStats DestructionManager::destruction_stats() const {
     stats.overstressed_bonds += telemetry.overstressedBondCount;
     stats.contacts_processed += telemetry.contactsProcessed;
     stats.contacts_dropped += telemetry.contactsDropped;
+    // Queued vs processed sizes the contact pipeline. Contacts are routed per
+    // contact POINT and twice per point (once per shape), so
+    // contacts_queued / (2 * support_pair_loads) is the points-per-manifold
+    // factor -- the number that decides what per-manifold aggregation is worth.
+    stats.contacts_queued += telemetry.contactsQueued;
     // The granularity PhysX actually sleeps at. A merged rubble field is one
     // island of thousands of bodies: it can only sleep as a whole, and any one
     // member waking wakes all of it. Body counts alone read identically
@@ -2604,6 +2638,8 @@ FfiDestructionStats DestructionManager::destruction_stats() const {
     stats.solver_islands_skipped += telemetry.solverIslandsSkipped;
     stats.sleeping_actors_skipped += telemetry.sleepingActorsSkipped;
   }
+  stats.solver_islands_skipped_accum = solver_islands_skipped_accum_;
+  stats.solver_islands_total_accum = solver_islands_total_accum_;
   stats.bond_utilisation_max = last_bond_utilisation_max_;
   stats.bonds_above_half_utilisation = last_bonds_above_half_utilisation_;
   return stats;

@@ -284,6 +284,13 @@ private:
   std::uint32_t bond_sample_counter_ = 0;
   /// Slot-ticks where topology was unchanged and the event diff was skipped.
   std::uint64_t quiet_slot_ticks_ = 0;
+  /// Running totals of the per-tick island partition, so a rate can be had by
+  /// differencing two samples. `solver_islands_skipped` is a GAUGE of the last
+  /// tick and a bond break zeroes it by design, so it reads 0 through an entire
+  /// demolition even while skipping works -- it cannot judge anything on its
+  /// own. These accumulate every tick instead of being sampled at publish.
+  std::uint64_t solver_islands_skipped_accum_ = 0;
+  std::uint64_t solver_islands_total_accum_ = 0;
   std::uint64_t serial_wraps_ = 0;
   /// Wake requests exceeding a slot's wake buffer. Non-zero means a contacted
   /// sleeping body was left asleep for a tick.

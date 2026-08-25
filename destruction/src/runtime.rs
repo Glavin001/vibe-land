@@ -780,6 +780,11 @@ impl CityDestruction {
             self.stats.blast_stress_solve_cpu_ms = bridge_stats.blast_stress_solve_cpu_ms;
             self.stats.blast_fracture_topology_ms = bridge_stats.blast_fracture_topology_ms;
             self.stats.blast_mapping_validation_ms = bridge_stats.blast_mapping_validation_ms;
+            self.stats.blast_fracture_generate_ms = bridge_stats.blast_fracture_generate_ms;
+            self.stats.blast_fracture_prep_ms = bridge_stats.blast_fracture_prep_ms;
+            self.stats.blast_fracture_apply_ms = bridge_stats.blast_fracture_apply_ms;
+            self.stats.blast_fracture_scene_ms = bridge_stats.blast_fracture_scene_ms;
+            self.stats.blast_fracture_rebuild_ms = bridge_stats.blast_fracture_rebuild_ms;
             self.stats.blast_sleeping_actors_skipped = bridge_stats.blast_sleeping_actors_skipped;
             self.stats.slot_dispatch_ms = bridge_stats.slot_dispatch_ms;
             self.stats.bond_sample_ms = bridge_stats.bond_sample_ms;
@@ -789,6 +794,9 @@ impl CityDestruction {
             self.stats.overstressed_bonds = bridge_stats.overstressed_bonds;
             self.stats.contacts_processed = bridge_stats.contacts_processed;
             self.stats.contacts_dropped = bridge_stats.contacts_dropped;
+            self.stats.contacts_queued = bridge_stats.contacts_queued;
+            self.stats.solver_islands_skipped_accum = bridge_stats.solver_islands_skipped_accum;
+            self.stats.solver_islands_total_accum = bridge_stats.solver_islands_total_accum;
             self.stats.bond_utilisation_max = bridge_stats.bond_utilisation_max;
             self.stats.bonds_above_half_utilisation = bridge_stats.bonds_above_half_utilisation;
             self.stats.solver_island_count = bridge_stats.solver_island_count;

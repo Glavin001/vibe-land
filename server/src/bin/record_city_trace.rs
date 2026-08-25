@@ -888,6 +888,11 @@ fn main() -> Result<()> {
     let trace_edge_ids: std::collections::HashSet<u64> =
         topology.edges.iter().map(|edge| edge.global_id).collect();
     let mut dropped_world_bonds = 0u64;
+    // Anchors for the cumulative counters, so each printed line is a rate over
+    // the interval since the previous line rather than a lifetime total.
+    let mut last_contacts_queued = 0u64;
+    let mut last_islands_skipped = 0u64;
+    let mut last_islands_total = 0u64;
     let mut broken_total = 0u64;
     let mut migrations_total = 0u64;
     let mut mismatch_ticks = 0u64;
@@ -1170,6 +1175,60 @@ fn main() -> Result<()> {
                 stats.quiet_slot_ticks,
                 stats.support_pair_loads,
             );
+            // Second line: the things that decide what the demolition work is
+            // worth. `topo` splits end_ms into fracture-minus-validation and
+            // validation, which overlap in the raw counters. `pts/pair` is the
+            // contact-pipeline inflation factor -- contacts are routed per
+            // point and twice per point, so the divisor is 2 * pairs. `skip` is
+            // differenced from running totals, because the gauge beside it is
+            // zeroed by any bond break and reads 0 all through a collapse.
+            // contacts_queued is cumulative and sampled every `interval` ticks,
+            // while support_pair_loads is the CURRENT tick's pair count. The
+            // interval has to be divided out or the ratio is ~300x too big --
+            // which is exactly how it read the first time.
+            let interval = (args.hz * 5).max(1) as f64;
+            let pts_per_pair = if stats.support_pair_loads > 0 {
+                ((stats.contacts_queued - last_contacts_queued) as f64 / interval)
+                    / (2.0 * stats.support_pair_loads as f64)
+            } else {
+                0.0
+            };
+            let skipped = stats.solver_islands_skipped_accum - last_islands_skipped;
+            let islands = stats.solver_islands_total_accum - last_islands_total;
+            println!(
+                "            topo {:.2} (frac {:.2} + valid {:.2})                   pts/pair {:.2}  islands skipped {}/{} ({:.0}%)",
+                stats.blast_fracture_topology_ms,
+                stats.blast_fracture_topology_ms - stats.blast_mapping_validation_ms,
+                stats.blast_mapping_validation_ms,
+                pts_per_pair,
+                skipped,
+                islands,
+                if islands > 0 { 100.0 * skipped as f64 / islands as f64 } else { 0.0 },
+            );
+            // The interior of the topology phase. Remainder is what none of the
+            // five named children account for.
+            let named = stats.blast_fracture_generate_ms
+                + stats.blast_fracture_prep_ms
+                + stats.blast_fracture_apply_ms
+                + stats.blast_fracture_scene_ms
+                + stats.blast_fracture_rebuild_ms
+                + stats.blast_mapping_validation_ms;
+            if stats.blast_fracture_topology_ms > 0.01 {
+                println!(
+                    "            fracture: gen {:.2} prep {:.2} apply {:.2} scene {:.2} \
+                     rebuild {:.2} valid {:.2} | rest {:.2}",
+                    stats.blast_fracture_generate_ms,
+                    stats.blast_fracture_prep_ms,
+                    stats.blast_fracture_apply_ms,
+                    stats.blast_fracture_scene_ms,
+                    stats.blast_fracture_rebuild_ms,
+                    stats.blast_mapping_validation_ms,
+                    stats.blast_fracture_topology_ms - named,
+                );
+            }
+            last_contacts_queued = stats.contacts_queued;
+            last_islands_skipped = stats.solver_islands_skipped_accum;
+            last_islands_total = stats.solver_islands_total_accum;
         }
     }
 
