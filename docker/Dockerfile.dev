@@ -47,8 +47,22 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
  && rm -rf /var/lib/apt/lists/* \
  && node --version && npm --version
 
+# wasm-pack from the prebuilt-binary installer, NOT `cargo install`.
+#
+# `cargo install wasm-pack --locked` fails against this image's pinned Rust:
+#
+#   error: failed to compile `wasm-pack v0.15.0`
+#   Caused by: rustc 1.90.0 is not supported by the following package:
+#     cargo-platform@0.3.3 requires rustc 1.91
+#
+# `--locked` does not help -- the constraint is a dependency's rust-version, not
+# the lockfile. Bumping the toolchain to satisfy a dev tool would change what
+# the server compiles with, which is a deliberate pin (Dockerfile.builder:25).
+# The installer downloads a release binary and cares about neither. This is
+# what docker/Dockerfile's web stage already does.
 RUN rustup target add wasm32-unknown-unknown \
- && cargo install wasm-pack --locked
+ && curl -sSf https://rustwasm.github.io/wasm-pack/installer/init.sh | sh \
+ && wasm-pack --version
 
 # --- warm the caches ---------------------------------------------------------
 # Source is cloned here only to produce the caches, then deleted. WARM_REF picks
@@ -81,9 +95,10 @@ RUN if [ "${WARM_BUILD}" = "1" ]; then \
       mkdir -p /opt/vibe-warm; \
     fi
 
-# `cargo install` and the build above leave ~/.cargo/registry populated. That
-# lives outside the repo, so it needs no special handling and survives on its
-# own -- it is the single biggest saving here.
+# The warm build above leaves ~/.cargo/registry and ~/.cargo/git populated.
+# Those live outside the repo, so they need no special handling and survive the
+# checkout being deleted -- between them and target/ they are the single biggest
+# saving in this image.
 
 # --- the clone helper --------------------------------------------------------
 COPY docker/vibe-clone /usr/local/bin/vibe-clone
