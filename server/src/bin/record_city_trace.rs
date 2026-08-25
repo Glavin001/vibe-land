@@ -890,6 +890,8 @@ fn main() -> Result<()> {
     let mut dropped_world_bonds = 0u64;
     // Anchors for the cumulative counters, so each printed line is a rate over
     // the interval since the previous line rather than a lifetime total.
+    let mut physx_step_ms_sum = 0.0f64;
+    let mut physx_step_samples = 0u32;
     let mut last_contacts_queued = 0u64;
     let mut last_islands_skipped = 0u64;
     let mut last_islands_total = 0u64;
@@ -919,7 +921,15 @@ fn main() -> Result<()> {
         }
 
         let sim_started = std::time::Instant::now();
+        let physx_started = std::time::Instant::now();
         world.step().map_err(|error| anyhow::anyhow!("{error}"))?;
+        // Wall time around the PhysX step. onContact runs INSIDE fetchResults,
+        // so per-manifold work there lands here and in nothing the city-step
+        // phases report -- which is why it was previously invisible to this
+        // harness. With VIBE_PHYSX_PROFILE_FETCH=1 the fetch splits further
+        // into gpu_wait vs the call that runs the callbacks.
+        physx_step_ms_sum += physx_started.elapsed().as_secs_f64() * 1000.0;
+        physx_step_samples += 1;
         let output = destruction
             .post_step(&mut world, dt, GRAVITY)
             .map_err(|error| anyhow::anyhow!("{error}"))?;
@@ -1226,6 +1236,23 @@ fn main() -> Result<()> {
                     stats.blast_fracture_topology_ms - named,
                 );
             }
+            if physx_step_samples > 0 {
+                let w = world.stats().ok();
+                println!(
+                    "            physx step {:.2} ms avg over {} ticks{}",
+                    physx_step_ms_sum / physx_step_samples as f64,
+                    physx_step_samples,
+                    w.map(|w| format!(
+                        "  (last: gpu_wait {:.2} fetch_copy {:.2}, contacts hw {})",
+                        w.last_gpu_wait_ms,
+                        w.last_fetch_copy_ms,
+                        w.gpu_rigid_contact_high_water
+                    ))
+                    .unwrap_or_default(),
+                );
+            }
+            physx_step_ms_sum = 0.0;
+            physx_step_samples = 0;
             last_contacts_queued = stats.contacts_queued;
             last_islands_skipped = stats.solver_islands_skipped_accum;
             last_islands_total = stats.solver_islands_total_accum;

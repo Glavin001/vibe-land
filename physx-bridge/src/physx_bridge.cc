@@ -120,6 +120,16 @@ void tag_actor(PxActor &actor, std::uint32_t entity_id) {
       reinterpret_cast<void *>(static_cast<std::uintptr_t>(entity_id) + 1);
 }
 
+/// A/B for the onContact common-subexpression work. Value-checked: a presence
+/// check here would make `=0` mean "on", which has already bitten this tree.
+bool contact_cse_enabled() {
+  static const bool enabled = [] {
+    const char *value = std::getenv("VIBE_PHYSX_CONTACT_CSE");
+    return value == nullptr || std::string(value) != "0";
+  }();
+  return enabled;
+}
+
 bool contact_persists_enabled() {
   static const bool enabled = [] {
     const char *value = std::getenv("VIBE_PHYSX_CONTACT_PERSISTS");
@@ -446,9 +456,32 @@ public:
       if (contact_count == 0) {
         continue;
       }
-      std::vector<PxContactPairPoint> points(contact_count);
+      // Reused across pairs and ticks. This was a fresh heap allocation per
+      // reported manifold, and a settled city reports thousands of resting
+      // manifolds every tick -- all of it inside fetchResults(), which is what
+      // physics_fetch_copy_ms actually measures.
+      //
+      // VIBE_PHYSX_CONTACT_CSE=0 restores the old shape: allocate per manifold
+      // and resolve the owning slot per contact POINT.
+      if (!contact_cse_enabled()) {
+        contact_points_ = std::vector<physx::PxContactPairPoint>();
+      }
+      contact_points_.resize(contact_count);
       const PxU32 extracted =
-          pair.extractContacts(points.data(), contact_count);
+          pair.extractContacts(contact_points_.data(), contact_count);
+      const std::vector<PxContactPairPoint> &points = contact_points_;
+#ifdef VIBE_LAND_DESTRUCTION
+      // Once per shape per manifold, not once per shape per POINT. Every point
+      // in a manifold shares the same two shapes, so the hash lookup and the
+      // linear slot scan behind them were repeated for every point after the
+      // first -- 2.06-3.64 points per manifold measured on downtown.
+      DestructionManager::ContactTarget target0;
+      DestructionManager::ContactTarget target1;
+      if (destruction_ && contact_cse_enabled()) {
+        target0 = destruction_->resolve_contact_target(pair.shapes[0]);
+        target1 = destruction_->resolve_contact_target(pair.shapes[1]);
+      }
+#endif
       PxVec3 total_impulse(0.0f);
       PxVec3 weighted_point(0.0f);
       float total_magnitude = 0.0f;
@@ -487,10 +520,21 @@ public:
           // body struck by a moving one, deliberate damage goes through
           // wake_bodies_near, and a fracture wakes the bodies it creates. The
           // queued load still reaches the solver either way.
-          destruction_->route_contact_shape(pair.shapes[0], position, impulse,
-                                            /*wake=*/false);
-          destruction_->route_contact_shape(pair.shapes[1], position, neg,
-                                            /*wake=*/false);
+          if (contact_cse_enabled()) {
+            if (target0) {
+              destruction_->queue_contact_at(target0, position, impulse,
+                                             /*wake=*/false);
+            }
+            if (target1) {
+              destruction_->queue_contact_at(target1, position, neg,
+                                             /*wake=*/false);
+            }
+          } else {
+            destruction_->route_contact_shape(pair.shapes[0], position, impulse,
+                                              /*wake=*/false);
+            destruction_->route_contact_shape(pair.shapes[1], position, neg,
+                                              /*wake=*/false);
+          }
         }
 #endif
       }
@@ -1499,6 +1543,11 @@ private:
   PxControllerManager *controller_manager_ = nullptr;
   std::unordered_map<std::uint32_t, Record> records_;
   std::vector<FfiContactEvent> contact_events_;
+  /// Scratch for extractContacts, reused across manifolds and ticks. onContact
+  /// runs inside fetchResults() on the simulation thread, one manifold at a
+  /// time, so a single buffer is safe -- and a per-manifold heap allocation
+  /// here lands squarely in what physics_fetch_copy_ms measures.
+  std::vector<physx::PxContactPairPoint> contact_points_;
   std::unordered_set<PxRigidDynamic *> pushed_actors_this_move_;
   PxVec3 pending_player_velocity_{0.0f};
   float contact_report_threshold_ = 50.0f;

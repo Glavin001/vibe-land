@@ -126,6 +126,26 @@ public:
                                         float push_impulse);
 
   /// Route a PhysX contact pair into the owning destructible(s).
+  /// Opaque to callers: they receive a ContactTarget from
+  /// resolve_contact_target and hand it straight back to queue_contact_at.
+  struct Slot;
+
+  /// A contact's destination, resolved once per shape per manifold.
+  ///
+  /// Every point in a PhysX manifold belongs to the same pair of shapes, so
+  /// resolving the owner per POINT -- which is what route_contact_shape does --
+  /// repeats a hash lookup and a linear slot scan for every point after the
+  /// first. Measured 2.06-3.64 points per manifold on downtown, so most of
+  /// that work was redundant.
+  struct ContactTarget {
+    Slot *slot = nullptr;
+    physx::PxShape *shape = nullptr;
+    explicit operator bool() const { return slot != nullptr; }
+  };
+  ContactTarget resolve_contact_target(physx::PxShape *shape);
+  void queue_contact_at(const ContactTarget &target, FfiVec3 position,
+                        FfiVec3 impulse, bool wake);
+
   void route_contact_shape(physx::PxShape *shape, FfiVec3 position,
                            FfiVec3 impulse, bool wake);
 
@@ -238,8 +258,6 @@ public:
   bool validate_destruction_mappings() const;
 
 private:
-  struct Slot;
-
   Slot *find_slot(std::uint32_t structure_id);
   const Slot *find_slot(std::uint32_t structure_id) const;
   /// Shared body of freeze_chunk_bodies / unfreeze_chunk_bodies.

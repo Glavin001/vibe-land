@@ -1510,25 +1510,40 @@ void DestructionManager::destruction_tick(float dt, FfiVec3 gravity) {
   last_stress_solve_ms_ = ms_since(started);
 }
 
-void DestructionManager::route_contact_shape(PxShape *shape, FfiVec3 position,
-                                             FfiVec3 impulse, bool wake) {
+DestructionManager::ContactTarget
+DestructionManager::resolve_contact_target(PxShape *shape) {
   if (shape == nullptr) {
-    return;
+    return {};
   }
   auto it = shape_owners_.find(shape);
   if (it == shape_owners_.end()) {
-    return;
+    return {};
   }
   Slot *slot = find_slot(it->second.first);
   if (slot == nullptr || slot->dest == nullptr) {
-    return;
+    return {};
   }
+  return ContactTarget{slot, shape};
+}
+
+void DestructionManager::queue_contact_at(const ContactTarget &target,
+                                          FfiVec3 position, FfiVec3 impulse,
+                                          bool wake) {
   ExtStressPhysXContact contact;
-  contact.shape = shape;
+  contact.shape = target.shape;
   contact.worldPosition = to_px(position);
   contact.worldImpulse = to_px(impulse);
   contact.wake = wake;
-  slot->dest->queueContact(contact);
+  target.slot->dest->queueContact(contact);
+}
+
+void DestructionManager::route_contact_shape(PxShape *shape, FfiVec3 position,
+                                             FfiVec3 impulse, bool wake) {
+  const ContactTarget target = resolve_contact_target(shape);
+  if (!target) {
+    return;
+  }
+  queue_contact_at(target, position, impulse, wake);
 }
 
 void DestructionManager::queue_chunk_damage(std::uint32_t structure_id,
