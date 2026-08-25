@@ -214,6 +214,8 @@ pub struct DestructionStats {
     pub contacts_queued: u64,
     pub solver_islands_skipped_accum: u64,
     pub solver_islands_total_accum: u64,
+    pub ccd_tracked_bodies: u32,
+    pub identity_stamped_bodies: u32,
     /// Worst stress / elastic-limit ratio across bonds; 1.0 = at the limit.
     pub bond_utilisation_max: f32,
     pub bonds_above_half_utilisation: u32,

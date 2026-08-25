@@ -505,6 +505,8 @@ pub struct DestructionStats {
     pub contacts_queued: u64,
     pub solver_islands_skipped_accum: u64,
     pub solver_islands_total_accum: u64,
+    pub ccd_tracked_bodies: u32,
+    pub identity_stamped_bodies: u32,
     pub sleeping_chunk_bodies: u32,
     /// Structures currently solved on the GPU. Zero while the CUDA solver is
     /// compiled in means every graph fell below the bond crossover, or CUDA
@@ -1510,6 +1512,8 @@ mod ffi {
         contacts_queued: u64,
         solver_islands_skipped_accum: u64,
         solver_islands_total_accum: u64,
+        ccd_tracked_bodies: u32,
+        identity_stamped_bodies: u32,
         sleeping_chunk_bodies: u32,
         repeated_body_snapshots: u64,
         gpu_stress_structures: u32,
@@ -2098,6 +2102,8 @@ impl From<ffi::FfiDestructionStats> for DestructionStats {
             contacts_queued: value.contacts_queued,
             solver_islands_skipped_accum: value.solver_islands_skipped_accum,
             solver_islands_total_accum: value.solver_islands_total_accum,
+            ccd_tracked_bodies: value.ccd_tracked_bodies,
+            identity_stamped_bodies: value.identity_stamped_bodies,
             sleeping_chunk_bodies: value.sleeping_chunk_bodies,
             repeated_body_snapshots: value.repeated_body_snapshots,
             gpu_stress_structures: value.gpu_stress_structures,

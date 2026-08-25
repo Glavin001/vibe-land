@@ -407,6 +407,13 @@ struct CityStatsSnapshot {
     /// these two across samples for the real rate.
     solver_islands_skipped_accum: u64,
     solver_islands_total_accum: u64,
+    /// Live entries in the two per-body bookkeeping containers. Both are keyed
+    /// by (structure_id, bodyId) and erased on retire, so they must track live
+    /// bodies. Pointer-keyed and unpruned they grew without bound, and a
+    /// recycled actor inherited the dead body's CCD state -- meaning the new
+    /// body never got speculative CCD and could tunnel.
+    ccd_tracked_bodies: u32,
+    identity_stamped_bodies: u32,
     sleeping_bodies: u32,
     /// Bonds over their own elastic limit in the last solve. Fracture only
     /// runs when this is non-zero, so a persistent 0 while shooting means the
@@ -3845,6 +3852,8 @@ impl MatchState {
                     contacts_dropped: stats.contacts_dropped,
                     solver_islands_skipped_accum: stats.solver_islands_skipped_accum,
                     solver_islands_total_accum: stats.solver_islands_total_accum,
+                    ccd_tracked_bodies: stats.ccd_tracked_bodies,
+                    identity_stamped_bodies: stats.identity_stamped_bodies,
                     sleeping_bodies: stats.sleeping_chunk_bodies,
                     overstressed_bonds: stats.overstressed_bonds,
                     bond_utilisation_max: stats.bond_utilisation_max,

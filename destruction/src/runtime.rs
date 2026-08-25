@@ -797,6 +797,8 @@ impl CityDestruction {
             self.stats.contacts_queued = bridge_stats.contacts_queued;
             self.stats.solver_islands_skipped_accum = bridge_stats.solver_islands_skipped_accum;
             self.stats.solver_islands_total_accum = bridge_stats.solver_islands_total_accum;
+            self.stats.ccd_tracked_bodies = bridge_stats.ccd_tracked_bodies;
+            self.stats.identity_stamped_bodies = bridge_stats.identity_stamped_bodies;
             self.stats.bond_utilisation_max = bridge_stats.bond_utilisation_max;
             self.stats.bonds_above_half_utilisation = bridge_stats.bonds_above_half_utilisation;
             self.stats.solver_island_count = bridge_stats.solver_island_count;

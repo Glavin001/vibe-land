@@ -292,7 +292,14 @@ private:
 
   /// Last entity id stamped onto each body / shape. Re-stamping identical
   /// data wakes a sleeping PhysX actor, so only changes are written.
-  std::unordered_map<const physx::PxRigidDynamic *, std::uint32_t> body_entity_stamp_;
+  /// Keyed by (structure_id, bodyId), never by PxRigidDynamic*.
+  ///
+  /// The adapter recycles actors, so a pointer can outlive the body it
+  /// belonged to and come back pointing at a different one -- the same hazard
+  /// the `frozen` set documents. Pointer-keyed, a recycled address inherited
+  /// the dead body's entity stamp, and the "identity unchanged" test below
+  /// then skipped tag_actor() for a body that had never been tagged.
+  std::unordered_map<std::uint64_t, std::uint32_t> body_entity_stamp_;
   std::unordered_map<const physx::PxShape *, std::uint32_t> shape_entity_stamp_;
 
   /// Bond-utilisation sampling cadence. The scan walks every bond of every
@@ -326,7 +333,12 @@ private:
       emitted_entities_;
   /// Bodies with speculative CCD enabled. Applied once per body, outside the
   /// event diff, so a body that turns dynamic on a quiet tick cannot miss it.
-  std::unordered_set<physx::PxRigidDynamic *> ccd_enabled_;
+  /// Keyed by (structure_id, bodyId), never by PxRigidDynamic*. Same recycling
+  /// hazard as body_entity_stamp_, and a worse failure: pointer-keyed, a
+  /// recycled address made insert().second false, so the NEW body silently
+  /// never received eENABLE_SPECULATIVE_CCD or its depenetration cap -- exactly
+  /// the tunnelling this block exists to prevent. Erased on retire.
+  std::unordered_set<std::uint64_t> ccd_enabled_;
   /// Times getBodySnapshots returned one bodyId more than once in a tick.
   /// Mutable because refresh_snapshots is const; this is pure observation.
   mutable std::uint64_t repeated_body_snapshots_ = 0;

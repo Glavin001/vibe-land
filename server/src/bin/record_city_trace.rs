@@ -1277,6 +1277,43 @@ fn main() -> Result<()> {
         }
     }
 
+    // Bounded-growth check on the two per-body bookkeeping containers.
+    //
+    // Read what this does and does not cover. It asserts they stay proportional
+    // to live bodies. It does NOT reproduce the recycled-actor bug that
+    // motivated rekeying them: measured both ways, identity_stamped equals live
+    // bodies exactly whether or not the retire path prunes, because retirement
+    // is rare with crush disabled and the containers are keyed per body either
+    // way. VIBE_CITY_PRUNE_BODY_BOOKKEEPING=0 does not make this fire.
+    //
+    // The real hazard -- a recycled PxRigidDynamic* making insert().second
+    // false so a brand new body silently never receives speculative CCD -- is
+    // addressed by keying on (structure_id, bodyId) rather than the pointer,
+    // which is the pattern the frozen set already documents. That is correct by
+    // construction and is still UNTESTED here; provoking it needs a workload
+    // that retires and recycles actors heavily, which this scene does not.
+    {
+        let s = destruction.stats();
+        let live = s.chunk_bodies;
+        println!(
+            "  ccd tracked {} / identity stamped {} against {} live bodies",
+            s.ccd_tracked_bodies, s.identity_stamped_bodies, live
+        );
+        // Allowance, not equality: a body retired this tick may not have been
+        // swept yet. Unbounded growth is what this catches, and before the fix
+        // these ran to the cumulative total of every body ever created.
+        let ceiling = live.saturating_mul(2).max(64);
+        anyhow::ensure!(
+            s.ccd_tracked_bodies <= ceiling && s.identity_stamped_bodies <= ceiling,
+            "per-body bookkeeping is unbounded: ccd {} / stamp {} against {} live \
+             (ceiling {}).",
+            s.ccd_tracked_bodies,
+            s.identity_stamped_bodies,
+            live,
+            ceiling
+        );
+    }
+
     if dropped_world_bonds > 0 {
         println!(
             "  note: {dropped_world_bonds} broken bonds were world anchors (not chunk-chunk edges); \

@@ -764,11 +764,12 @@ void DestructionManager::register_filters(Slot &slot) {
     // stayed asleep, ~850 wake events a second, debris visibly juddering as it
     // was repeatedly frozen and released, and the match loop paying to
     // simulate, snapshot and encode all of it.
-    auto stamped = body_entity_stamp_.find(body.body);
+    const std::uint64_t identity_key = support_key(slot.structure_id, body.bodyId);
+    auto stamped = body_entity_stamp_.find(identity_key);
     if (stamped != body_entity_stamp_.end() && stamped->second == entity) {
       continue;
     }
-    body_entity_stamp_[body.body] = entity;
+    body_entity_stamp_[identity_key] = entity;
     tag_actor(*body.body, entity);
     if (!body.kinematic) {
       // Contact reports are what let a falling chunk damage what it lands on:
@@ -981,6 +982,19 @@ void DestructionManager::collect_events(Slot &slot) {
     // Its supporter entries (and any it was a dependent of) die with it.
     support_store_.erase(support_key(slot.structure_id, id));
     slot.body_to_serial.erase(id);
+    // These two were pointer-keyed and pruned nowhere, so they leaked an entry
+    // per retired body AND let a recycled actor inherit a dead body's state.
+    // VIBE_CITY_PRUNE_BODY_BOOKKEEPING=0 restores the un-pruned behaviour, so
+    // the bounded-growth tripwire in record-city-trace can be shown to fire.
+    // A tripwire that has never been observed failing is not a tripwire.
+    static const bool prune = [] {
+      const char *raw = std::getenv("VIBE_CITY_PRUNE_BODY_BOOKKEEPING");
+      return raw == nullptr || std::string(raw) != "0";
+    }();
+    if (prune) {
+      ccd_enabled_.erase(support_key(slot.structure_id, id));
+      body_entity_stamp_.erase(support_key(slot.structure_id, id));
+    }
   }
 
   const auto &shapes = slot.shape_cache;
@@ -1414,7 +1428,7 @@ void DestructionManager::destruction_tick(float dt, FfiVec3 gravity) {
       if (body.body == nullptr || body.kinematic) {
         continue;
       }
-      if (ccd_enabled_.insert(body.body).second) {
+      if (ccd_enabled_.insert(support_key(slot.structure_id, body.bodyId)).second) {
         if (speculative_ccd_enabled()) {
           body.body->setRigidBodyFlag(
               physx::PxRigidBodyFlag::eENABLE_SPECULATIVE_CCD, true);
@@ -2663,6 +2677,12 @@ FfiDestructionStats DestructionManager::destruction_stats() const {
     stats.solver_islands_skipped += telemetry.solverIslandsSkipped;
     stats.sleeping_actors_skipped += telemetry.sleepingActorsSkipped;
   }
+  // Bounded-growth tripwire. Both are keyed by (structure_id, bodyId) and
+  // erased on retire; pointer-keyed and never pruned, they grew without limit
+  // and let a recycled actor inherit a dead body's CCD state.
+  stats.ccd_tracked_bodies = static_cast<std::uint32_t>(ccd_enabled_.size());
+  stats.identity_stamped_bodies =
+      static_cast<std::uint32_t>(body_entity_stamp_.size());
   stats.solver_islands_skipped_accum = solver_islands_skipped_accum_;
   stats.solver_islands_total_accum = solver_islands_total_accum_;
   stats.bond_utilisation_max = last_bond_utilisation_max_;
