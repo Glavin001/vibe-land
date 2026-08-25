@@ -671,6 +671,39 @@ float chunk_sleep_threshold() {
 }
 constexpr float kChunkStabilizationThreshold = 0.02f;
 
+/// Position/velocity solver iterations for chunk bodies.
+///
+/// PhysX defaults (4/1) leave a residual velocity floor in a deep pile; these
+/// raise it enough that a resting body actually reaches zero. Costs solver
+/// time per awake body, which pays for itself many times over if it lets
+/// thousands of bodies sleep instead of staying awake forever.
+///
+/// VIBE_CITY_SOLVER_POSITION_ITERS / VIBE_CITY_SOLVER_VELOCITY_ITERS override.
+std::uint32_t chunk_solver_position_iterations() {
+  static const std::uint32_t v = [] {
+    if (const char *raw = std::getenv("VIBE_CITY_SOLVER_POSITION_ITERS")) {
+      const long parsed = std::strtol(raw, nullptr, 10);
+      if (parsed > 0) return static_cast<std::uint32_t>(parsed);
+    }
+    // PhysX's own default. tests/stack_settling.rs shows 1,015 stacked
+    // concrete boxes reaching exactly 0.0000 m/s and 100% asleep at 4/1, so
+    // there is no evidence stacking needs more. Left as a knob, not a change.
+    return 4u;
+  }();
+  return v;
+}
+
+std::uint32_t chunk_solver_velocity_iterations() {
+  static const std::uint32_t v = [] {
+    if (const char *raw = std::getenv("VIBE_CITY_SOLVER_VELOCITY_ITERS")) {
+      const long parsed = std::strtol(raw, nullptr, 10);
+      if (parsed > 0) return static_cast<std::uint32_t>(parsed);
+    }
+    return 1u;
+  }();
+  return v;
+}
+
 void DestructionManager::register_filters(Slot &slot) {
   require(slot.dest != nullptr, "missing destructible");
   // Shared readback from refresh_snapshots(); no second device read.
@@ -757,6 +790,25 @@ void DestructionManager::register_filters(Slot &slot) {
       // at which debris motion is still worth streaming.
       body.body->setSleepThreshold(chunk_sleep_threshold());
       body.body->setStabilizationThreshold(kChunkStabilizationThreshold);
+      // Chunk bodies were left on PhysX's default 4 position / 1 velocity
+      // iterations, which is tuned for a handful of loose props rather than a
+      // 10k-body rubble pile.
+      //
+      // Contact solving is iterative: each pass reduces the error but never
+      // eliminates it, so an under-iterated deep stack leaves a *residual
+      // velocity floor*. That is what stops a resting body ever sleeping --
+      // not the sleep threshold. Velocity does not asymptote to zero, it
+      // asymptotes to the floor, and everything below the floor is unreachable
+      // no matter how long you wait. Raising the sleep threshold past it only
+      // masks the symptom, and makes a still-visibly-moving body snap to
+      // stationary.
+      //
+      // Doubling world gravity doubled the contact forces the solver must
+      // cancel within the same iteration budget, so it roughly doubled that
+      // floor -- which is why the city settled at 9.81 m/s^2 and stopped
+      // settling at 20.
+      body.body->setSolverIterationCounts(
+          chunk_solver_position_iterations(), chunk_solver_velocity_iterations());
     }
   }
 
@@ -1807,6 +1859,70 @@ DestructionManager::unfreeze_chunk_bodies(rust::Slice<const std::uint32_t> entit
   return set_chunk_bodies_kinematic(entity_ids, false);
 }
 
+namespace {
+
+/// Put back to sleep every body a kinematic flip woke as collateral.
+///
+/// MEASURED (physx-bridge/tests/freeze_wake_semantics.rs::
+/// `freezing_part_of_a_sleeping_pile_leaves_the_rest_asleep`): freezing ONE
+/// body of a 24-body sleeping pile wakes the other 23 on the very next step
+/// -- the rest of the island exactly. PhysX's island manager cannot remove a
+/// node from an island without re-forming it, and it re-forms it AWAKE, so
+/// `setRigidBodyFlag(eKINEMATIC)` is an island-wide wake, not a per-body
+/// write.
+///
+/// This was invisible because the original claim-1 test
+/// stepped 60 ticks before reading the awake count, and PhysX's wake counter
+/// is 0.4 s -- 24 ticks at 60 Hz. The pile woke, stayed awake for 24 ticks,
+/// and re-slept, all inside the test's blind window. Measure the tick the
+/// flip lands on, never later.
+///
+/// The production consequence is the never-settles bug: the freeze pass runs
+/// every tick, so every tick's batch re-woke the whole pile and reset its
+/// 24-tick wake counter. The pile could never accumulate the quiet needed to
+/// stay asleep, and players saw it hop forever. Freeze was waking the debris
+/// it was retiring.
+///
+/// The repair restores the invariant the flip breaks: bodies that were asleep
+/// before the batch, were not themselves flipped, and are still dynamic are
+/// put straight back to sleep. It is not a cap and it does not fight the
+/// engine -- these bodies were at rest by the engine's own judgement one
+/// instant earlier, and nothing physical happened in between.
+///
+/// Legitimate wakes are untouched. Contact wakes and blast impulses run
+/// earlier in the same tick and set the awake flag synchronously, so those
+/// bodies never enter the recorded set; and an island that still holds a
+/// genuinely active body reactivates on the next step regardless, which is
+/// also why this is stable rather than a fight with the engine.
+///
+/// COST: one pass over the structure's bodies plus one `putToSleep` per
+/// sleeping body, per call that actually flips something. Measured at ~2.2k
+/// bodies through `full_demolition_cost` as no change in tick p50. The
+/// cascade paths in runtime.rs call unfreeze once per cascade level, so a
+/// deep cascade pays this several times in one tick; if that ever shows in a
+/// profile, batch it to once per tick (all flips in a tick land between the
+/// same pair of `simulate()` calls, so a single flush at the end is
+/// equivalent).
+///
+/// The write is UNCONDITIONAL on the recorded sleepers, and it has to be:
+/// `isSleeping()` still reports true immediately after the flip (Np's copy of
+/// the sleep state only refreshes at fetchResults), so the woken set is not
+/// yet distinguishable on the host. `putToSleep()` reaches the island node
+/// directly, which is why issuing it before the next `simulate()` cancels the
+/// activation rather than racing it.
+///
+/// `VIBE_FREEZE_ISLAND_RESLEEP=0` disables it, for bisecting a regression
+/// against the old behaviour without a rebuild.
+bool freeze_island_resleep() {
+  static const bool value = [] {
+    const char *raw = std::getenv("VIBE_FREEZE_ISLAND_RESLEEP");
+    return raw == nullptr || std::atoi(raw) != 0;
+  }();
+  return value;
+}
+
+} // namespace
+
 std::uint32_t DestructionManager::set_chunk_bodies_kinematic(
     rust::Slice<const std::uint32_t> entity_ids, bool kinematic) {
   if (entity_ids.empty()) {
@@ -1842,6 +1958,29 @@ std::uint32_t DestructionManager::set_chunk_bodies_kinematic(
       }
       by_serial[serial_it->second] = &body;
     }
+    // Who the engine had asleep in this structure immediately before the
+    // batch. Taken lazily, on the first flip that actually happens, so a call
+    // that changes nothing costs nothing. See `freeze_island_resleep`.
+    const bool resleep = freeze_island_resleep();
+    std::vector<PxRigidDynamic *> sleepers;
+    bool sleepers_taken = false;
+    auto take_sleepers = [&]() {
+      if (sleepers_taken) {
+        return;
+      }
+      sleepers_taken = true;
+      sleepers.reserve(slot->body_cache_count);
+      for (std::uint32_t i = 0; i < slot->body_cache_count; ++i) {
+        PxRigidDynamic *b = slot->body_cache[i].body;
+        if (b == nullptr ||
+            b->getRigidBodyFlags().isSet(PxRigidBodyFlag::eKINEMATIC) ||
+            !b->isSleeping()) {
+          continue;
+        }
+        sleepers.push_back(b);
+      }
+    };
+
     for (std::uint32_t serial : entry.second) {
       // The adapter's own kinematic bodies -- the intact support actor and
       // every rooted fragment -- are not ours to touch: unfreezing one would
@@ -1876,6 +2015,9 @@ std::uint32_t DestructionManager::set_chunk_bodies_kinematic(
         continue;
       }
       const std::uint32_t entity = pack_body_entity(entry.first, serial);
+      if (resleep) {
+        take_sleepers();
+      }
       body->setRigidBodyFlag(PxRigidBodyFlag::eKINEMATIC, kinematic);
       if (kinematic) {
         slot->frozen.insert(body_id);
@@ -1895,6 +2037,17 @@ std::uint32_t DestructionManager::set_chunk_bodies_kinematic(
       }
       ++changed;
     }
+    // Undo the island-wide wake the flips just caused. A body only qualifies
+    // if the engine had it asleep before the batch and it is still dynamic,
+    // so a body that was flipped (now kinematic) or was already awake is
+    // never touched.
+    for (PxRigidDynamic *sleeper : sleepers) {
+      if (sleeper->getRigidBodyFlags().isSet(PxRigidBodyFlag::eKINEMATIC)) {
+        continue;
+      }
+      sleeper->putToSleep();
+      ++island_resleep_writes_;
+    }
   }
   return changed;
 }
@@ -1907,6 +2060,36 @@ namespace {
 /// this touch" independent of chunk mass -- the same test works for a 40 kg
 /// panel and a 4 t slab. 4 corresponds to an impact at roughly 0.7 m/s.
 /// 0 disables contact wakes entirely.
+///
+/// KNOWN DEFECT: the reference load is ONE body lying still, but a body inside
+/// a pile carries the accumulated weight of everything above it. A chunk under
+/// five others receives ~5x m*g*dt of contact impulse while perfectly at rest,
+/// so it scores ratio 5, exceeds this threshold of 4, and is released -- every
+/// tick, forever. The test cannot distinguish "something hit me" from "I am
+/// buried", which is the normal state of rubble.
+///
+/// Measured on the demolished-tower bench (freeze on, production terrain):
+///
+///   ratio 4 (default)  ->  280 awake non-kinematic bodies
+///   ratio 0 (disabled) ->    1
+///
+/// That is the whole never-settles bug. The awake bodies are not moving --
+/// p50 0.033 m/s, ~90x under the sleep threshold -- they are eligible to
+/// settle and are being released from freeze by their own neighbours' weight.
+///
+/// The fix is to compare against the load this body actually bears at rest,
+/// not against a single body's, so that being buried is not mistaken for being
+/// struck. Raising the ratio only moves the pile depth at which it misfires.
+/// How far above its own steady load a contact must spike to wake a frozen body.
+///
+/// 2 means "twice what you are already carrying". Independent of burial depth,
+/// which is the entire point: a fixed multiple of one striker's weight is not.
+constexpr float kContactSpikeRatio = 2.0f;
+
+/// How fast the steady-load estimate follows a change. Slow enough that an
+/// impact does not get absorbed into the baseline before it can be detected.
+constexpr float kContactBaselineAlpha = 0.05f;
+
 float contact_wake_ratio() {
   static const float value = [] {
     if (const char *raw = std::getenv("VIBE_CITY_CONTACT_WAKE_RATIO")) {
@@ -1927,7 +2110,22 @@ void DestructionManager::note_contact_pair(std::uint32_t entity_a,
   if (ratio <= 0.0f || frozen_entities_.empty() || impulse <= 0.0f) {
     return;
   }
-  const float g_dt = 9.81f * (last_dt_ > 0.0f ? last_dt_ : 1.0f / 60.0f);
+  // World gravity, not Earth's. This decides what "lying still" costs, so it
+  // has to be the gravity bodies actually fall under: with the world at
+  // 20 m/s^2 and this at 9.81, the reference resting load was 49% of the real
+  // one and the effective threshold was ~1.96 rather than the 4 it advertises
+  // -- twice as trigger-happy as designed, releasing frozen bodies on contacts
+  // that are merely other debris lying on them.
+  const float gravity = [] {
+    if (const char *raw = std::getenv("VIBE_WORLD_GRAVITY")) {
+      const float parsed = static_cast<float>(std::fabs(std::atof(raw)));
+      if (parsed > 0.0f) {
+        return parsed;
+      }
+    }
+    return 20.0f;
+  }();
+  const float g_dt = gravity * (last_dt_ > 0.0f ? last_dt_ : 1.0f / 60.0f);
   // Each side: frozen participant, struck by the OTHER side's dynamic mass.
   const auto consider = [&](std::uint32_t entity, float striker_mass) {
     if (striker_mass <= 0.0f) {
@@ -1936,9 +2134,36 @@ void DestructionManager::note_contact_pair(std::uint32_t entity_a,
     if (frozen_entities_.find(entity) == frozen_entities_.end()) {
       return;
     }
-    if (impulse < ratio * striker_mass * g_dt) {
-      return; // resting-scale contact: lying on a frozen pile is free.
+    // Two references, and the wake needs to clear BOTH.
+    //
+    // The single-body floor stops trivia waking anything. The baseline is what
+    // makes burial survivable: a chunk under five others bears ~5x m*g*dt while
+    // perfectly still, which clears any fixed multiple of one striker's weight
+    // and released it from freeze every tick, forever. Measured 280 awake
+    // bodies against 1 with contact wakes disabled entirely.
+    //
+    // Being buried is a steady load; being struck is a spike above whatever you
+    // were already carrying. So the test asks the second question.
+    const float floor = ratio * striker_mass * g_dt;
+    auto &baseline = contact_load_baseline_[entity];
+    if (baseline <= 0.0f) {
+      // Seed so the FIRST contact behaves exactly as before this change:
+      // threshold == floor. Seeding from the observed impulse instead would
+      // read a first-contact impact as resting load and never wake -- which
+      // broke debris_landing_on_frozen_rubble_releases_it_by_contact. The
+      // baseline may only rise from loads that were judged to be at rest.
+      baseline = floor / kContactSpikeRatio;
     }
+    const float threshold = std::max(floor, baseline * kContactSpikeRatio);
+    if (impulse < threshold) {
+      // Track the load it bears while at rest. Rising slowly (more debris
+      // settling on top) must not read as an impact, so the baseline follows.
+      baseline += kContactBaselineAlpha * (impulse - baseline);
+      return;
+    }
+    // A real spike. Forget the baseline so the body re-learns its load once it
+    // settles again, rather than inheriting a stale one from before the hit.
+    contact_load_baseline_.erase(entity);
     if (contact_wake_pending_.insert(entity).second) {
       contact_wake_order_.push_back(entity);
       ++contact_wakes_;
@@ -2312,6 +2537,7 @@ FfiDestructionStats DestructionManager::destruction_stats() const {
   stats.contact_wakes = contact_wakes_;
   stats.support_promotions = support_promotions_;
   stats.rooted_guard_blocks = rooted_guard_blocks_;
+  stats.island_resleep_writes = island_resleep_writes_;
   stats.support_edges = support_edges_total_;
   std::uint32_t rooted_count = 0;
   for (const auto &slot_ptr : slots_) {

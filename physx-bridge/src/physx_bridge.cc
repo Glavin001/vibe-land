@@ -128,6 +128,28 @@ bool contact_persists_enabled() {
   return enabled;
 }
 
+
+/// Solver iteration counts for dynamic bodies.
+///
+/// VIBE_PHYSX_POSITION_ITERS / VIBE_PHYSX_VELOCITY_ITERS. Defaults match
+/// PhysX's own (4/1) so behaviour is unchanged unless asked; the stack-settling
+/// test sweeps them to locate the knee.
+std::uint32_t dynamic_solver_position_iterations() {
+  if (const char *raw = std::getenv("VIBE_PHYSX_POSITION_ITERS")) {
+    const long parsed = std::strtol(raw, nullptr, 10);
+    if (parsed > 0) return static_cast<std::uint32_t>(parsed);
+  }
+  return 4u;
+}
+
+std::uint32_t dynamic_solver_velocity_iterations() {
+  if (const char *raw = std::getenv("VIBE_PHYSX_VELOCITY_ITERS")) {
+    const long parsed = std::strtol(raw, nullptr, 10);
+    if (parsed > 0) return static_cast<std::uint32_t>(parsed);
+  }
+  return 1u;
+}
+
 PxFilterFlags simulation_filter(PxFilterObjectAttributes attributes0,
                                 PxFilterData filter0,
                                 PxFilterObjectAttributes attributes1,
@@ -1427,6 +1449,15 @@ private:
         actor->setAngularDamping(0.5f);
       }
       actor->setContactReportThreshold(contact_report_threshold_);
+      // Solver iterations govern how completely stacked contacts are resolved.
+      // PhysX's default 4 position / 1 velocity is tuned for a few loose props;
+      // a deep pile leaves a residual velocity floor that no sleep threshold
+      // can reach, because contact solving is iterative and never exact.
+      //
+      // Read per call rather than cached, so a test can sweep the value within
+      // one process. Body creation is not a hot path.
+      actor->setSolverIterationCounts(dynamic_solver_position_iterations(),
+                                      dynamic_solver_velocity_iterations());
       tag_actor(*actor, entity_id);
       scene_->addActor(*actor);
       records_.emplace(entity_id,
@@ -1450,6 +1481,17 @@ private:
     return output;
   }
 
+public:
+  // --- Bring-your-own-world hand-off ---------------------------------------
+  // Lend the scene so the blast-stress-solver core can attach a backend to it
+  // instead of standing up a second scene. Players, vehicles and the
+  // destructible city all have to live in one scene.
+  std::uintptr_t scene_ptr() const { return reinterpret_cast<std::uintptr_t>(scene_); }
+  std::uintptr_t physics_ptr() const {
+    return reinterpret_cast<std::uintptr_t>(runtime_ ? &runtime_->physics() : nullptr);
+  }
+
+private:
   std::shared_ptr<SharedPhysxRuntime> runtime_;
   PxDefaultCpuDispatcher *dispatcher_ = nullptr;
   PxScene *scene_ = nullptr;
@@ -1651,6 +1693,10 @@ FfiDestructionStats World::destruction_stats() const {
 bool World::validate_destruction_mappings() const {
   return impl_->validate_destruction_mappings();
 }
+
+std::uintptr_t World::scene_ptr() const { return impl_->scene_ptr(); }
+
+std::uintptr_t World::physics_ptr() const { return impl_->physics_ptr(); }
 
 std::unique_ptr<World> new_world(const FfiWorldConfig &config) {
   return std::make_unique<World>(config);

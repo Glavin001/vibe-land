@@ -20,6 +20,16 @@ default = []
 # Native PhysX-backed runtime (CityDestruction). Gated so the crate core stays
 # pure Rust and CI-safe on machines without PhysX/CUDA.
 physx = ["dep:vibe-land-physx-bridge", "vibe-land-physx-bridge/destruction"]
+# Drive destruction through the standardized blast-stress-solver core instead of
+# the bespoke ExtStressPhysXDestructible path. Both can be built at once so the
+# two can be A/B'd against the same scene before the old path is retired.
+blast-core = ["physx", "dep:blast-stress-solver"]
+
+[dependencies.blast-stress-solver]
+path = "/root/workspace/blast-stress-solver-2/blast/blast-stress-solver-rs"
+optional = true
+default-features = false
+features = ["physx", "scenarios"]
 
 [dependencies.vibe-land-physx-bridge]
 path = "../physx-bridge"

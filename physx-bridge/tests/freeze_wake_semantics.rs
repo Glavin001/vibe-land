@@ -8,6 +8,12 @@
 //!    If it does, freezing a settled pile a batch at a time would wake the
 //!    pile it is trying to retire -- the exact 6,065-body cascade the campaign
 //!    exists to stop, caused by the fix rather than by a shot.
+//!    PhysX does cascade: it cannot take a node out of an island without
+//!    re-forming the island, and it re-forms it AWAKE. The bridge cancels
+//!    that (`freeze_island_resleep`), and claim 1 is what holds the repair.
+//!    MEASURE SLEEP STATE ON THE TICK THE WRITE LANDS ON. The wake counter is
+//!    0.4 s -- 24 ticks -- so anything read later sees the pile after it has
+//!    re-slept and reports success no matter what happened.
 //! 2. A frozen body must keep its collider, or debris and players fall
 //!    through settled rubble.
 //! 3. A frozen body must keep its island serial across the round trip. The
@@ -195,6 +201,32 @@ fn freezing_part_of_a_sleeping_pile_leaves_the_rest_asleep() {
     let frozen = world.freeze_chunk_bodies(&pile[..1]).expect("freeze");
     assert_eq!(frozen, 1, "one body should have changed state");
 
+    // MEASURE ON THE TICK THE FLIP LANDS ON.
+    //
+    // This assertion used to live only after the 60-tick loop below, and that
+    // made the whole test a false negative: PhysX's wake counter is 0.4 s --
+    // 24 ticks at 60 Hz -- so an island the flip woke was awake at t+1 and
+    // asleep again by t+25, entirely inside the blind window. The pile WAS
+    // cascading; the test simply never looked while it showed. That is how a
+    // green claim 1 coexisted with a live never-settles bug caused by exactly
+    // the cascade it claims to rule out.
+    //
+    // The cascade is real and it is PhysX's: the island manager cannot take a
+    // node out of an island without re-forming the island, and it re-forms it
+    // awake. Measured before the repair: freezing 1 body of a 24-body sleeping
+    // pile put the other 23 back to work for exactly 24 ticks. The repair is
+    // in destruction.cc (`freeze_island_resleep`), and this is the assertion
+    // that holds it.
+    tick(&mut world);
+    let stats = world.destruction_stats().expect("stats");
+    assert_eq!(
+        stats.awake_chunk_bodies, 0,
+        "freezing one body woke {} others on the very next step -- the flip \
+         cascaded through the contact island. Do not relax this into a later \
+         tick: the wake counter expires in 24 and hides it.",
+        stats.awake_chunk_bodies
+    );
+
     for _ in 0..60 {
         tick(&mut world);
     }
@@ -204,6 +236,12 @@ fn freezing_part_of_a_sleeping_pile_leaves_the_rest_asleep() {
         "freezing one body woke {} others -- the flip cascades through the \
          contact island, so freezing must be island-coherent",
         stats.awake_chunk_bodies
+    );
+    assert!(
+        stats.island_resleep_writes > 0,
+        "the repair never ran, so this test proved nothing: either it was \
+         switched off (VIBE_FREEZE_ISLAND_RESLEEP=0) or the fixture stopped \
+         producing a sleeping pile to freeze out of"
     );
     assert_eq!(stats.frozen_chunk_bodies, 1);
     assert_eq!(

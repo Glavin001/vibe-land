@@ -108,6 +108,17 @@ public:
   FfiDestructionStats destruction_stats() const;
   bool validate_destruction_mappings() const;
 
+  // --- Bring-your-own-world hand-off ---------------------------------------
+  // Lend the underlying PhysX objects so the standardized blast-stress-solver
+  // core can attach a backend to THIS scene rather than creating a second one.
+  // Players, vehicles and the destructible city must share one scene, so the
+  // library has to borrow rather than own.
+  //
+  // Returned as opaque integers because cxx cannot express a raw PxScene*.
+  // The pointers stay valid for the lifetime of this World.
+  std::uintptr_t scene_ptr() const;
+  std::uintptr_t physics_ptr() const;
+
 private:
   class Impl;
   std::unique_ptr<Impl> impl_;

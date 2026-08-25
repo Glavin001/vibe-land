@@ -11,6 +11,11 @@ destruction = ["physx-gpu", "vibe-land-physx-bridge/destruction", "vibe-land-des
 # solver -- correct, but it only shows up as a "CPU" label in the stats overlay,
 # so it is easy to ship a build that quietly gave up the GPU path.
 cuda-stress = ["destruction", "vibe-land-physx-bridge/cuda-stress"]
+# Drive /city through the standardized blast-stress-solver core rather than the
+# bespoke ExtStressPhysXDestructible path. Both can be built at once and the
+# backend is chosen at runtime by VIBE_CITY_BLAST_CORE=1, so the two can be A/B'd
+# against the same scene before the old path is retired.
+blast-core = ["destruction", "vibe-land-destruction/blast-core"]
 
 [dependencies]
 vibe-netcode = { path = "../netcode", features = ["simd-stable"] }

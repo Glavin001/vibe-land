@@ -140,6 +140,12 @@ fn main() {
     ] {
         println!("cargo:rustc-link-lib=static={library}");
     }
+    // PhysX also dlopens libPhysXGpu_64.so at CUDA-context creation, and a
+    // dlopen ignores the link search path. Without an rpath the GPU scene fails
+    // to construct and the bridge reports "no GPU" -- which reads as missing
+    // hardware rather than a missing runtime path, and silently downgrades
+    // every GPU test to a skip.
+    println!("cargo:rustc-link-arg=-Wl,-rpath,{}", lib.display());
     println!("cargo:rustc-link-lib=dylib=PhysXGpu_64");
     println!("cargo:rustc-link-lib=dylib=cuda");
     // The .cu uses both the runtime API and the driver API (cuCtxPushCurrent).
@@ -182,6 +188,17 @@ fn compile_cuda_stress(blast: &std::path::Path) {
         source.is_file(),
         "cuda-stress feature enabled but the CUDA solver source is missing: {}",
         source.display()
+    );
+    // The .cu was the one Blast source missing from the rerun-if-changed list
+    // above, so editing only the CUDA solver left the previous nvcc object in
+    // place and the next run silently measured the old kernels. That cost one
+    // confidently-wrong "0 islands skipped".
+    println!("cargo:rerun-if-changed={}", source.display());
+    println!(
+        "cargo:rerun-if-changed={}",
+        blast
+            .join("include/extensions/stressgpu/NvBlastExtStressGpu.h")
+            .display()
     );
 
     // The 4090 is sm_89. Overridable because this is the one flag that has to
