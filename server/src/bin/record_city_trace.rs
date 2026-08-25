@@ -81,6 +81,13 @@ struct Args {
     /// it was authored from.
     targets: u32,
     output: PathBuf,
+    /// Compact per-tick phase metrics, one CSV row per tick.
+    ///
+    /// Deliberately separate from `output`, which is the wire/codec trace and
+    /// runs to gigabytes on a downtown-scale run -- large enough to fill the
+    /// disk, which is how this was learned. This stream is ~40 numbers a tick
+    /// and is what the benchmark campaign reads.
+    metrics_out: Option<PathBuf>,
     /// Directory to dump the exact client-bound bytes (manifest.json,
     /// packets.jsonl, state-header.bin) so the REAL client can be replayed
     /// over them offline -- see client/tools/replay-city-client.mts. This is
@@ -116,6 +123,7 @@ impl Args {
         let mut shots = 48u32;
         let mut targets = 0u32;
         let mut output = PathBuf::from("city.towertrace");
+        let mut metrics_out: Option<PathBuf> = None;
         let mut packets_out = None;
         let mut packets_wire = 3u32;
         let mut packets_span_ms = 100u32;
@@ -139,6 +147,7 @@ impl Args {
                 "--shots" => shots = value()?.parse()?,
                 "--targets" => targets = value()?.parse()?,
                 "--output" => output = PathBuf::from(value()?),
+                "--metrics-out" => metrics_out = Some(PathBuf::from(value()?)),
                 "--packets-out" => packets_out = Some(PathBuf::from(value()?)),
                 "--packets-wire" => packets_wire = value()?.parse()?,
                 "--packets-span-ms" => packets_span_ms = value()?.parse()?,
@@ -175,6 +184,7 @@ impl Args {
             shots,
             targets,
             output,
+            metrics_out,
             packets_out,
             packets_wire,
             packets_span_ms,
@@ -890,6 +900,23 @@ fn main() -> Result<()> {
     let mut dropped_world_bonds = 0u64;
     // Anchors for the cumulative counters, so each printed line is a rate over
     // the interval since the previous line rather than a lifetime total.
+    let mut metrics_writer = match args.metrics_out.as_ref() {
+        Some(path) => {
+            let mut w = std::io::BufWriter::new(std::fs::File::create(path)?);
+            use std::io::Write as _;
+            writeln!(
+                w,
+                "tick,bodies,awake,frozen,sleeping,bonds,stress_solve,begin,solve,end,\
+                 readback,events,filters,ccd,support,shape,slot,bond_sample,gpu_solve,\
+                 contact_proc,gravity,cpu_solve,frac_topo,frac_valid,frac_gen,frac_prep,\
+                 frac_apply,frac_scene,frac_rebuild,physx_step,gpu_wait,fetch_copy,pairs,\
+                 contacts_q,islands_skip,islands_tot,quiet,freeze,unfreeze,contact_wakes,\
+                 min_y,pose_quiet,overstressed"
+            )?;
+            Some(w)
+        }
+        None => None,
+    };
     let mut physx_step_ms_sum = 0.0f64;
     let mut physx_step_samples = 0u32;
     let mut last_contacts_queued = 0u64;
@@ -946,12 +973,42 @@ fn main() -> Result<()> {
         // phases report -- which is why it was previously invisible to this
         // harness. With VIBE_PHYSX_PROFILE_FETCH=1 the fetch splits further
         // into gpu_wait vs the call that runs the callbacks.
-        physx_step_ms_sum += physx_started.elapsed().as_secs_f64() * 1000.0;
+        let physx_tick_ms = physx_started.elapsed().as_secs_f64() * 1000.0;
+        physx_step_ms_sum += physx_tick_ms;
         physx_step_samples += 1;
         let output = destruction
             .post_step(&mut world, dt, GRAVITY)
             .map_err(|error| anyhow::anyhow!("{error}"))?;
         let sim_ms = sim_started.elapsed().as_secs_f32() * 1000.0;
+
+        if let Some(w) = metrics_writer.as_mut() {
+            use std::io::Write as _;
+            let s = destruction.stats();
+            let ws = world.stats().ok();
+            writeln!(
+                w,
+                "{},{},{},{},{},{},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},\
+                 {:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},\
+                 {:.4},{:.4},{:.4},{:.4},{:.4},{},{},{},{},{},{},{},{},{:.4},{},{}",
+                tick_index, s.chunk_bodies, s.awake_chunk_bodies, s.frozen_chunk_bodies,
+                s.sleeping_chunk_bodies, s.broken_bonds,
+                s.stress_solve_ms, s.begin_ms, s.solve_ms, s.end_ms, s.readback_ms,
+                s.events_ms, s.filters_ms, s.ccd_ms, s.support_loads_ms,
+                s.shape_readback_ms, s.slot_dispatch_ms, s.bond_sample_ms,
+                s.gpu_stress_solve_ms, s.blast_contact_processing_ms, s.blast_gravity_ms,
+                s.blast_stress_solve_cpu_ms, s.blast_fracture_topology_ms,
+                s.blast_mapping_validation_ms, s.blast_fracture_generate_ms,
+                s.blast_fracture_prep_ms, s.blast_fracture_apply_ms,
+                s.blast_fracture_scene_ms, s.blast_fracture_rebuild_ms,
+                physx_tick_ms,
+                ws.as_ref().map(|w| w.last_gpu_wait_ms).unwrap_or(0.0),
+                ws.as_ref().map(|w| w.last_fetch_copy_ms).unwrap_or(0.0),
+                s.support_pair_loads, s.contacts_queued,
+                s.solver_islands_skipped_accum, s.solver_islands_total_accum,
+                s.quiet_slot_ticks, s.freeze_flips, s.unfreeze_flips, s.contact_wakes,
+                s.min_body_y, s.pose_quiet_awake_bodies, s.overstressed_bonds
+            )?;
+        }
 
         let enc_started = std::time::Instant::now();
         if v2_tap.is_some() || v3_tap.is_some() {
