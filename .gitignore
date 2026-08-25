@@ -21,3 +21,6 @@ dist/
 control-plane/.wrangler/
 control-plane/.dev.vars
 client/tools/profiles/
+destruction/assets/scenes/fractured-downtown-pool*.json
+destruction/assets/scenes/fractured-downtown-floor*.json
+client/tools/profiles/
