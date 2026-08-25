@@ -169,6 +169,49 @@ fn demolished_tower_comes_to_rest() {
         ));
     }
 
+    // The speed *distribution*, not just the max.
+    //
+    // `max_body_speed` is dominated by a handful of outliers -- this trace
+    // shows 6-20 m/s bodies, which is something being thrown, not jitter. The
+    // jitter that is visible while playing lives in the bulk: a large mass of
+    // bodies at tenths of a m/s, each individually too slow to notice and
+    // collectively never sleeping. A max cannot see it, so it is measured
+    // directly here.
+    if let Ok(snaps) = world.chunk_body_snapshots() {
+        let mut speeds: Vec<f32> = snaps
+            .iter()
+            .filter(|b| !b.sleeping && !b.kinematic)
+            .map(|b| {
+                let v = &b.linear_velocity;
+                (v.x * v.x + v.y * v.y + v.z * v.z).sqrt()
+            })
+            .collect();
+        speeds.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let pct = |q: f32| -> f32 {
+            if speeds.is_empty() {
+                return 0.0;
+            }
+            speeds[((speeds.len() - 1) as f32 * q) as usize]
+        };
+        println!("\n=== awake-body speed distribution after 20 s idle ===");
+        println!("awake (non-kinematic) {}", speeds.len());
+        println!(
+            "p10 {:.4}  p50 {:.4}  p90 {:.4}  p99 {:.4}  max {:.4}  (m/s)",
+            pct(0.10),
+            pct(0.50),
+            pct(0.90),
+            pct(0.99),
+            speeds.last().copied().unwrap_or(0.0)
+        );
+        let jitter = speeds.iter().filter(|v| **v > 0.001 && **v < 0.5).count();
+        println!(
+            "in the jitter band (0.001-0.5 m/s): {} of {} ({:.0}%)",
+            jitter,
+            speeds.len(),
+            100.0 * jitter as f32 / speeds.len().max(1) as f32
+        );
+    }
+
     let stats = city.stats();
     let bodies = stats.chunk_bodies.max(1);
     let asleep_pct = 100.0 * stats.sleeping_chunk_bodies as f32 / bodies as f32;
