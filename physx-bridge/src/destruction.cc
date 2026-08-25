@@ -638,12 +638,40 @@ constexpr float kChunkSleepThreshold = 0.05f;
 /// chunk may sleep. This declares when a body counts as at rest; it does not
 /// alter any trajectory, which is why it is a legitimate knob where a velocity
 /// clamp was not.
+/// The threshold must scale with gravity, because PhysX's sleep test is
+/// mass-normalised kinetic energy (0.5 * v^2) and a *resting* body still
+/// carries one tick of gravitational velocity when that test runs.
+///
+/// At 9.81 m/s^2 that is 9.81/60 = 0.1635 m/s -> KE/m = 0.0134, comfortably
+/// under the authored 0.05. At 20 m/s^2 it is 0.3333 m/s -> KE/m = 0.0556,
+/// which is *above* 0.05 -- so once world gravity was raised to match the
+/// player, no chunk in the city could ever satisfy the sleep test again. A
+/// server left idle for three hours still had 3,564 bodies awake and 71
+/// asleep, with 185k freeze flips of churn behind it.
+///
+/// Deriving it keeps the same safety margin the authored constant had
+/// (0.05 / 0.0134 = 3.74x the per-tick gravity energy) at any gravity.
+/// VIBE_CITY_SLEEP_THRESHOLD still overrides.
 float chunk_sleep_threshold() {
   static const float value = [] {
     if (const char *raw = std::getenv("VIBE_CITY_SLEEP_THRESHOLD")) {
       return static_cast<float>(std::atof(raw));
     }
-    return kChunkSleepThreshold;
+    float gravity = 20.0f;
+    if (const char *raw = std::getenv("VIBE_WORLD_GRAVITY")) {
+      const float parsed = static_cast<float>(std::fabs(std::atof(raw)));
+      if (parsed > 0.0f) {
+        gravity = parsed;
+      }
+    }
+    constexpr float kTickSeconds = 1.0f / 60.0f;
+    constexpr float kMarginOverPerTickGravity = 3.74f;
+    const float per_tick = gravity * kTickSeconds;
+    const float derived = kMarginOverPerTickGravity * 0.5f * per_tick * per_tick;
+    // Never go below the authored floor: at low gravity the derived value
+    // shrinks, and 0.05 is the measured point at which debris at the top of a
+    // ballistic arc still cannot be mistaken for at rest.
+    return derived > kChunkSleepThreshold ? derived : kChunkSleepThreshold;
   }();
   return value;
 }
