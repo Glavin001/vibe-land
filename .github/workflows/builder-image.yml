@@ -149,4 +149,8 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Smoke the dev image
-        run: ./scripts/smoke-dev-image.sh "${{ needs.build.outputs.image }}"
+        # --ref is the commit being built, not the default branch. vibe-clone
+        # defaults to the default branch, so without this the smoke test
+        # exercises whatever is on main rather than the change that produced
+        # this image -- green while proving nothing.
+        run: ./scripts/smoke-dev-image.sh --ref "${{ github.sha }}" "${{ needs.build.outputs.image }}"

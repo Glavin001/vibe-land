@@ -6,7 +6,14 @@
 # runs a server in it, they SSH in and build. So the assertions are about
 # whether a person who logs in can actually get anywhere.
 #
-#   ./scripts/smoke-dev-image.sh ghcr.io/glavin001/vibe-land-builder:<tag>
+#   ./scripts/smoke-dev-image.sh [--ref <commit>] ghcr.io/glavin001/vibe-land-builder:<tag>
+#
+# --ref is the commit to clone and exercise. It matters more than it looks:
+# `vibe-clone` with no argument takes the DEFAULT BRANCH, so without this the
+# script tests whatever is on main rather than the commit that built the image
+# -- passing while proving nothing about the change under test. CI passes
+# github.sha. It surfaced the first time case 7 ran, because the remote mode it
+# asserts on did not exist on main yet.
 #
 # No GPU required. Everything here runs on a plain CI runner.
 #
@@ -21,9 +28,23 @@
 # that, and it cost an hour of a rented box to find by hand.
 set -euo pipefail
 
-IMAGE="${1:?usage: smoke-dev-image.sh <image[:tag]>}"
+REF=""
+IMAGE=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --ref) REF="$2"; shift 2 ;;
+    *) IMAGE="$1"; shift ;;
+  esac
+done
+: "${IMAGE:?usage: smoke-dev-image.sh [--ref <commit>] <image[:tag]>}"
 NAME="vibe-dev-smoke-$$"
 REPO_URL="${SMOKE_REPO_URL:-https://github.com/Glavin001/vibe-land}"
+if [[ -n "$REF" ]]; then
+  echo "exercising ref: $REF"
+else
+  echo "WARNING: no --ref given; cloning the default branch, which does not"
+  echo "         necessarily contain the change that built this image." >&2
+fi
 
 pass() { echo "  ok   $*"; }
 fail() { echo "  FAIL $*" >&2; docker logs "$NAME" 2>&1 | tail -30 || true; exit 1; }
@@ -111,7 +132,7 @@ web="$(inc 'tr "\0" "\n" < /proc/1/environ | sed -n "s/^VAST_TCP_PORT_4443=//p" 
 pass "external ports read from PID 1 (51745 udp, 51918 web)"
 
 echo "== 6. vibe-clone =="
-inc "VIBE_REPO_URL=$REPO_URL vibe-clone >/dev/null 2>&1" || fail "vibe-clone failed"
+inc "VIBE_REPO_URL=$REPO_URL vibe-clone $REF >/dev/null 2>&1" || fail "vibe-clone failed"
 inc 'test -L /root/vibe-land/target' || fail "target/ is not a symlink into the cache"
 inc 'readlink /root/vibe-land/target | grep -q /opt/vibe-cache' || fail "target/ does not point at \$VIBE_CACHE"
 inc 'test -L "${CARGO_HOME:-/root/.cargo}/registry"' || fail "the cargo registry is not linked into the cache"
@@ -120,11 +141,15 @@ pass "clone with target/ and the cargo registry linked into /opt/vibe-cache"
 # The cache surviving a re-clone is the whole point of linking rather than
 # copying: a box switching branches must not pay a cold build again.
 inc 'touch /opt/vibe-cache/target/MARKER && rm -rf /root/vibe-land' || fail "could not stage the re-clone"
-inc "VIBE_REPO_URL=$REPO_URL vibe-clone >/dev/null 2>&1" || fail "second vibe-clone failed"
+inc "VIBE_REPO_URL=$REPO_URL vibe-clone $REF >/dev/null 2>&1" || fail "second vibe-clone failed"
 inc 'test -f /root/vibe-land/target/MARKER' || fail "the build cache did not survive a re-clone"
 pass "the cache survives deleting and re-cloning the checkout"
 
 echo "== 7. run-city-server.sh remote mode =="
+inc 'test -x /root/vibe-land/scripts/run-city-server.sh' \
+  || fail "the cloned ref has no scripts/run-city-server.sh.
+Pass --ref <commit> for a ref that has it; without one this clones the default
+branch, which is what made this case fail the first time it ran."
 # Five variables that are right on a laptop and wrong on a rented box. Each one
 # fails late and looks like a different problem; a stub binary is enough to
 # prove the script exports them correctly without needing a GPU.
