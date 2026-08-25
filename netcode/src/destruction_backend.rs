@@ -356,6 +356,14 @@ pub struct DestructionStats {
     /// Freeze/unfreeze calls refused for naming a rooted body. Releasing a
     /// stump would drop a standing building; must stay zero.
     pub rooted_guard_blocks: u64,
+    /// Re-sleep writes issued because a kinematic flip woke the flipped
+    /// body's contact island as collateral -- PhysX re-forms an island AWAKE
+    /// when a node leaves it, so every freeze batch would otherwise wake the
+    /// pile it is retiring. Counts writes, not confirmed wakes. Rises with
+    /// freeze activity and falls to zero with it; a flat zero WHILE
+    /// freeze_flips climbs means the repair is switched off
+    /// (VIBE_FREEZE_ISLAND_RESLEEP=0) and the pile will not settle.
+    pub island_resleep_writes: u64,
     /// Ground-anchored kinematic fragments currently standing.
     pub rooted_chunk_bodies: u32,
     /// Weight-bearing dependency edges currently held by the bridge.

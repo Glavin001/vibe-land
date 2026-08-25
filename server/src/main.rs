@@ -3318,7 +3318,12 @@ impl MatchState {
         // 60 Hz: destruction step + reliable topology/baseline broadcast
         // (byte-identical for every client — encode once, clone the buffer).
         let city_step_started = std::time::Instant::now();
-        let reliable = city.step(self.server_tick, dt, [0.0, -9.81, 0.0], world);
+        let reliable = city.step(
+            self.server_tick,
+            dt,
+            vibe_netcode::movement::default_world_gravity(),
+            world,
+        );
         let city_step_wall_ms = city_step_started.elapsed().as_secs_f32() * 1000.0;
         city.record_tick_sample(city_step_wall_ms);
         let v3_datagrams = city.take_v3_datagrams();

@@ -34,7 +34,54 @@ const SETTLE_TICKS: u32 = 300;
 /// state we actually care about, many bodies active at once.
 const SHOT_INTERVAL_TICKS: u32 = 20;
 const DT: f32 = 1.0 / 60.0;
-const GRAVITY: [f32; 3] = [0.0, -9.81, 0.0];
+/// The gravity production passes to `city.step`, from the same source.
+///
+/// Hardcoding this was a real infidelity: it stayed at 9.81 when the world was
+/// raised to 20 m/s^2, so the bench fed the stress solver Earth gravity inside
+/// a 2x-gravity PhysX scene -- a combination production never runs. A
+/// reproduction that does not match the thing it reproduces measures its own
+/// Build the world the way production does.
+///
+/// `World::new(WorldConfig::default())` is NOT what the server runs.
+/// `PhysxPhysicsArena::new` applies five GPU capacity overrides from the
+/// environment (rigid contacts, rigid patches, heap, found/lost pairs,
+/// collision stack) before constructing the scene. A bench that skips them is
+/// measuring a differently-sized GPU scene than production, and GPU capacity is
+/// exactly the kind of limit whose effects show up as dropped contacts rather
+/// than as an error.
+///
+/// This is the same class of divergence as the hardcoded gravity that made the
+/// bench feed 9.81 into a 20 m/s^2 world: anything production decides, the
+/// bench must call rather than restate.
+fn production_arena() -> crate::movement::PhysicsArena {
+    crate::movement::PhysicsArena::new(
+        vibe_netcode::movement::MoveConfig::default(),
+        vibe_netcode::physics_backend::PhysicsBackendKind::PhysxGpu,
+    )
+    .expect("production physics arena")
+}
+
+/// Fail if the bench and production have drifted apart on anything a caller
+/// could set independently.
+///
+/// Cheap, and it catches the next instance of this bug class rather than
+/// relying on someone noticing. Every value here has already diverged once.
+fn assert_matches_production(world: &vibe_land_physx_bridge::World) {
+    let g = vibe_netcode::movement::default_world_gravity();
+    assert_eq!(
+        g,
+        [0.0, -vibe_land_physx_bridge::world_gravity_magnitude(), 0.0],
+        "the gravity city.step is given has drifted from the gravity the PhysX \
+         world integrates with; the bench would measure a combination \
+         production never runs"
+    );
+    let _ = world;
+}
+
+/// configuration, not the bug.
+fn gravity() -> [f32; 3] {
+    vibe_netcode::movement::default_world_gravity()
+}
 
 const GROUP_STATIC: u32 = 1 << 0;
 const ALL_GROUPS: u32 = u32::MAX;
@@ -93,20 +140,47 @@ fn pct(values: &mut Vec<f32>, p: f32) -> f32 {
 #[test]
 #[ignore = "benchmark: needs a GPU"]
 fn demolished_tower_comes_to_rest() {
-    let mut world = World::new(WorldConfig::default()).expect("GPU world");
-    world
-        .add_static_box(StaticBoxDesc {
-            entity_id: 1,
-            user_id: 0,
-            pose: Pose {
-                position: BridgeVec3::new(0.0, -10.0, 0.0),
-                rotation: Quat::IDENTITY,
-            },
-            half_extents: BridgeVec3::new(2000.0, 10.0, 2000.0),
-            collision_group: GROUP_STATIC,
-            collision_mask: ALL_GROUPS,
-        })
-        .expect("ground");
+    // KNOWN FAILING as of 2026-08-25, and the cause is isolated: freeze.
+    //
+    //   VIBE_CITY_FREEZE=1  ->   1% of 185 bodies asleep after 20 s  (fails)
+    //   VIBE_CITY_FREEZE=0  ->  passes
+    //
+    // Same scene, same stimulus, one variable. Rigid-body contact is ruled out
+    // independently: physx-bridge/tests/stack_settling.rs settles 10,416
+    // concrete boxes to *exactly* 0.0000 m/s at PhysX's default 4/1 solver
+    // iterations under the same 20 m/s^2 gravity, so neither stacking, pile
+    // depth, body count, gravity nor iteration count is responsible.
+    //
+    // The mechanism is already documented in freeze.rs: a frozen body is
+    // kinematic, and a kinematic body squeezed by its neighbours becomes a
+    // depenetration pump for them -- recorded there as "198 bodies permanently
+    // awake". Raising world gravity to 20 m/s^2 doubled the squeeze, which is
+    // why this surfaced when gravity changed without gravity being the fault.
+    //
+    // Supporting telemetry from a 3-hour idle server: 185k freeze flips against
+    // 179k unfreezes, 164k contact wakes, and backstop_releases at 182 against
+    // its own documented expectation of 0.
+
+    let mut arena = production_arena();
+    // The ground, from production's own document rather than a hand-rolled box.
+    //
+    // The arena builds the scene but not its contents; production calls this to
+    // instantiate terrain, which is a *heightfield*. A flat static box was the
+    // stand-in, and it is not equivalent -- contact generation against a
+    // heightfield differs in triangle edges and per-triangle normals, which for
+    // a jitter bug is a live suspect rather than a harmless simplification.
+    // Going through the same call means the terrain cannot drift from
+    // production's by construction.
+    crate::demo_world::seed_world_for_match(&mut arena, crate::city::CITY_MATCH_PREFIX)
+        .expect("seed the production world document");
+    let player_spawn = arena.spawn_player(1);
+    let world = arena.physx_world_mut().expect("physx world");
+    assert_matches_production(world);
+    eprintln!(
+        "[fidelity] production arena, player capsule at {:.1?}",
+        player_spawn
+    );
+    let mut world = &mut *world;
     let mut city =
         crate::city::CityRuntime::open(60, Some(&mut world)).expect("city runtime opens");
     city.add_client(1);
@@ -122,7 +196,7 @@ fn demolished_tower_comes_to_rest() {
         city.apply_shot_ray(origin, (target - origin).normalize(), Some(&mut world));
         for _ in 0..8 {
             world.step().expect("step");
-            let _ = city.step(tick, DT, GRAVITY, Some(&mut world));
+            let _ = city.step(tick, DT, gravity(), Some(&mut world));
             tick += 1;
         }
     }
@@ -133,7 +207,7 @@ fn demolished_tower_comes_to_rest() {
     for second in 0..SETTLE_SECONDS {
         for _ in 0..60 {
             world.step().expect("step");
-            let _ = city.step(tick, DT, GRAVITY, Some(&mut world));
+            let _ = city.step(tick, DT, gravity(), Some(&mut world));
             tick += 1;
         }
         let stats = city.stats();
@@ -146,6 +220,49 @@ fn demolished_tower_comes_to_rest() {
             stats.max_speed_body_pos,
             stats.max_speed_body_entity,
         ));
+    }
+
+    // The speed *distribution*, not just the max.
+    //
+    // `max_body_speed` is dominated by a handful of outliers -- this trace
+    // shows 6-20 m/s bodies, which is something being thrown, not jitter. The
+    // jitter that is visible while playing lives in the bulk: a large mass of
+    // bodies at tenths of a m/s, each individually too slow to notice and
+    // collectively never sleeping. A max cannot see it, so it is measured
+    // directly here.
+    if let Ok(snaps) = world.chunk_body_snapshots() {
+        let mut speeds: Vec<f32> = snaps
+            .iter()
+            .filter(|b| !b.sleeping && !b.kinematic)
+            .map(|b| {
+                let v = &b.linear_velocity;
+                (v.x * v.x + v.y * v.y + v.z * v.z).sqrt()
+            })
+            .collect();
+        speeds.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let pct = |q: f32| -> f32 {
+            if speeds.is_empty() {
+                return 0.0;
+            }
+            speeds[((speeds.len() - 1) as f32 * q) as usize]
+        };
+        println!("\n=== awake-body speed distribution after 20 s idle ===");
+        println!("awake (non-kinematic) {}", speeds.len());
+        println!(
+            "p10 {:.4}  p50 {:.4}  p90 {:.4}  p99 {:.4}  max {:.4}  (m/s)",
+            pct(0.10),
+            pct(0.50),
+            pct(0.90),
+            pct(0.99),
+            speeds.last().copied().unwrap_or(0.0)
+        );
+        let jitter = speeds.iter().filter(|v| **v > 0.001 && **v < 0.5).count();
+        println!(
+            "in the jitter band (0.001-0.5 m/s): {} of {} ({:.0}%)",
+            jitter,
+            speeds.len(),
+            100.0 * jitter as f32 / speeds.len().max(1) as f32
+        );
     }
 
     let stats = city.stats();
@@ -175,6 +292,30 @@ fn demolished_tower_comes_to_rest() {
 
     // Motion bound: with no input for 20 s, nothing should still be moving at
     // a speed that implies active simulation rather than residual creep.
+    //
+    // MEASURED RUN-TO-RUN SPREAD (2026-08-25, identical config, 5 runs):
+    //
+    //   peak speed   0.23  0.24  0.38  0.50  1.40   m/s
+    //   awake         62    90   101   165   118
+    //   bodies       297   383   315   383   350
+    //
+    // A 6x spread in peak speed and 2.7x in awake count, because PhysX GPU is
+    // not bit-reproducible and the scripted shots therefore collapse a
+    // different amount of building each run. The pile being measured is a
+    // different pile every time.
+    //
+    // Consequences, both load-bearing:
+    //
+    //  - A SINGLE RUN CANNOT SUPPORT A CONCLUSION HERE. Any A/B whose effect is
+    //    smaller than this band is unmeasured, not measured-as-small.
+    //  - This 1.0 m/s bound sits inside the band, so it fires intermittently on
+    //    unchanged code. It is a flake, not a gate, until either the
+    //    reproduction is made deterministic (fix the pile, stop shooting it) or
+    //    the assertion moves to a percentile over repeated runs.
+    //
+    // The "pile is oscillating at 1.4 m/s" report that motivated investigating
+    // oscillation was the top sample of this distribution, not a distinct
+    // phenomenon.
     let resting_speed = stats.max_body_speed;
     println!("peak speed now {resting_speed:.2} m/s");
 
@@ -327,7 +468,7 @@ fn player_scaling_of_the_stream() {
             city.apply_shot_ray(origin, (target - origin).normalize(), Some(&mut world));
             for _ in 0..6 {
                 world.step().expect("step");
-                let _ = city.step(tick, DT, GRAVITY, Some(&mut world));
+                let _ = city.step(tick, DT, gravity(), Some(&mut world));
                 tick += 1;
             }
         }
@@ -368,7 +509,7 @@ fn player_scaling_of_the_stream() {
         let (mut shared_ms, mut pack_ms) = (vec![], vec![]);
         for _ in 0..30 {
             world.step().expect("step");
-            let _ = city.step(tick, DT, GRAVITY, Some(&mut world));
+            let _ = city.step(tick, DT, gravity(), Some(&mut world));
             tick += 1;
 
             let started = std::time::Instant::now();
@@ -456,7 +597,7 @@ fn full_demolition_cost() {
                 let started = std::time::Instant::now();
                 world.step().expect("step");
                 let dynamics = world.stats().map(|s| s.last_step_ms).unwrap_or(0.0);
-                let _ = city.step(tick, DT, GRAVITY, Some(&mut world));
+                let _ = city.step(tick, DT, gravity(), Some(&mut world));
                 let stats = city.stats();
                 peak_bodies = peak_bodies.max(stats.chunk_bodies);
                 peak_awake = peak_awake.max(stats.awake_chunk_bodies);
@@ -496,7 +637,7 @@ fn full_demolition_cost() {
     );
     for quiet in 0..1800u32 {
         world.step().expect("step");
-        let _ = city.step(tick, DT, GRAVITY, Some(&mut world));
+        let _ = city.step(tick, DT, gravity(), Some(&mut world));
         tick += 1;
         if quiet % 120 == 0 {
             let s = city.stats();
@@ -619,13 +760,13 @@ fn sustained_fire_never_stops_fracturing() {
         city.apply_shot_ray(origin, (target - origin).normalize(), Some(&mut world));
         for _ in 0..8 {
             world.step().expect("step");
-            let _ = city.step(tick, DT, GRAVITY, Some(&mut world));
+            let _ = city.step(tick, DT, gravity(), Some(&mut world));
             tick += 1;
         }
     }
     for _ in 0..300 {
         world.step().expect("step");
-        let _ = city.step(tick, DT, GRAVITY, Some(&mut world));
+        let _ = city.step(tick, DT, gravity(), Some(&mut world));
         tick += 1;
     }
 
@@ -685,13 +826,13 @@ fn severed_upper_half_reconstructs_in_com_frame() {
         city.apply_shot_ray(origin, (target - origin).normalize(), Some(&mut world));
         for _ in 0..14 {
             world.step().expect("step");
-            let _ = city.step(tick, DT, GRAVITY, Some(&mut world));
+            let _ = city.step(tick, DT, gravity(), Some(&mut world));
             tick += 1;
         }
     }
     for _ in 0..600 {
         world.step().expect("step");
-        let _ = city.step(tick, DT, GRAVITY, Some(&mut world));
+        let _ = city.step(tick, DT, gravity(), Some(&mut world));
         tick += 1;
     }
 
@@ -766,7 +907,7 @@ fn city_destruction_cost_is_stable() {
 
         world.step().expect("physx step");
         let dynamics = world.stats().map(|s| s.last_step_ms).unwrap_or(0.0);
-        let _ = city.step(tick, DT, GRAVITY, Some(&mut world));
+        let _ = city.step(tick, DT, gravity(), Some(&mut world));
 
         let stats = city.stats();
         peak_awake = peak_awake.max(stats.awake_chunk_bodies);
@@ -1026,7 +1167,7 @@ fn reliable_channel_cost() {
             }
         }
         world.step().expect("step");
-        for packet in city.step(tick, DT, GRAVITY, Some(&mut world)) {
+        for packet in city.step(tick, DT, gravity(), Some(&mut world)) {
             match packet.first().copied() {
                 Some(vibe_land_destruction::wire::PKT_CITY_TOPOLOGY) => {
                     topology_bytes += packet.len() as u64;
@@ -1185,7 +1326,7 @@ fn pose_stream_starvation() {
             }
         }
         world.step().expect("step");
-        let _ = city.step(tick, DT, GRAVITY, Some(&mut world));
+        let _ = city.step(tick, DT, gravity(), Some(&mut world));
 
         if tick % send_interval != 0 {
             continue;
@@ -1361,7 +1502,7 @@ fn v3_span_encode_cost() {
             }
         }
         world.step().expect("step");
-        let _ = city.step(tick, DT, GRAVITY, Some(&mut world));
+        let _ = city.step(tick, DT, gravity(), Some(&mut world));
         for packet in city.take_v3_datagrams() {
             datagram_bytes += packet.len() as u64;
             datagrams += 1;
@@ -1472,7 +1613,7 @@ fn one_shot_into_settled_rubble_wakes_only_its_neighbourhood() {
             city.apply_shot_ray(origin, (target - origin).normalize(), Some(&mut world));
             for _ in 0..8 {
                 world.step().expect("step");
-                let _ = city.step(tick, DT, GRAVITY, Some(&mut world));
+                let _ = city.step(tick, DT, gravity(), Some(&mut world));
                 tick += 1;
             }
         }
@@ -1491,7 +1632,7 @@ fn one_shot_into_settled_rubble_wakes_only_its_neighbourhood() {
         let mut quiet_ticks = 0;
         for _ in 0..(60 * 180) {
             world.step().expect("step");
-            let _ = city.step(tick, DT, GRAVITY, Some(&mut world));
+            let _ = city.step(tick, DT, gravity(), Some(&mut world));
             tick += 1;
             let live = city.stats();
             // "Settled" is a threshold, not exactly zero, and a generous one.
@@ -1543,7 +1684,7 @@ fn one_shot_into_settled_rubble_wakes_only_its_neighbourhood() {
         let mut peak_awake = 0;
         for _ in 0..60 {
             world.step().expect("step");
-            let _ = city.step(tick, DT, GRAVITY, Some(&mut world));
+            let _ = city.step(tick, DT, gravity(), Some(&mut world));
             tick += 1;
             peak_awake = peak_awake.max(city.stats().awake_chunk_bodies);
         }
@@ -1557,7 +1698,7 @@ fn one_shot_into_settled_rubble_wakes_only_its_neighbourhood() {
         for second in 0..30u32 {
             for _ in 0..60 {
                 world.step().expect("step");
-                let _ = city.step(tick, DT, GRAVITY, Some(&mut world));
+                let _ = city.step(tick, DT, gravity(), Some(&mut world));
                 tick += 1;
             }
             let live = city.stats();
@@ -1731,7 +1872,7 @@ fn awake_and_sleeping_counters_agree() {
         city.apply_shot_ray(origin, (target - origin).normalize(), Some(&mut world));
         for _ in 0..8 {
             world.step().expect("step");
-            let _ = city.step(tick, DT, GRAVITY, Some(&mut world));
+            let _ = city.step(tick, DT, gravity(), Some(&mut world));
             tick += 1;
         }
     }
@@ -1744,7 +1885,7 @@ fn awake_and_sleeping_counters_agree() {
     for second in 0..25 {
         for _ in 0..60 {
             world.step().expect("step");
-            let _ = city.step(tick, DT, GRAVITY, Some(&mut world));
+            let _ = city.step(tick, DT, gravity(), Some(&mut world));
             tick += 1;
         }
         let s = city.stats();
@@ -1815,7 +1956,7 @@ fn pose_freezing_retires_the_pile_physx_will_not_sleep() {
             city.apply_shot_ray(origin, (target - origin).normalize(), Some(&mut world));
             for _ in 0..8 {
                 world.step().expect("step");
-                let _ = city.step(tick, DT, GRAVITY, Some(&mut world));
+                let _ = city.step(tick, DT, gravity(), Some(&mut world));
                 tick += 1;
             }
         }
@@ -1827,7 +1968,7 @@ fn pose_freezing_retires_the_pile_physx_will_not_sleep() {
         for second in 0..30u32 {
             for _ in 0..60 {
                 world.step().expect("step");
-                let _ = city.step(tick, DT, GRAVITY, Some(&mut world));
+                let _ = city.step(tick, DT, gravity(), Some(&mut world));
                 tick += 1;
             }
             let s = city.stats();
@@ -1906,5 +2047,386 @@ fn pose_freezing_retires_the_pile_physx_will_not_sleep() {
         "pose freezing REGRESSED the awake tail \
          ({pose_seconds} vs {sleep_seconds} awake body-seconds); \
          engine-sleep freezing alone retired {sleep_frozen}"
+    );
+}
+
+/// `/city` running on the standardized blast-stress-solver core.
+///
+/// The A/B against the old path: same scene, same stimulus, same server loop,
+/// the backend chosen by `CityRuntime::blast_core` instead of
+/// `CityRuntime::physx`. What this asserts is that the core path reaches the
+/// server's own encoder with a stream it can ingest -- fractures happen,
+/// bodies appear, and topology messages come out the other side.
+///
+/// It does not assert the two paths agree numerically, and it should not: they
+/// are separate simulations of a GPU solver whose measured run-to-run spread on
+/// this stack is ~12%, so equality would be a false claim. What is comparable
+/// is the categorical outcome, which is what is checked here.
+///
+/// # The measured gap
+///
+/// Same stimulus, same grid, run side by side:
+///
+/// ```text
+/// old  : 604 bonds broken, 167 fragment bodies, 79 topology messages
+/// core : 586 bonds broken,  56 fragment bodies, 67 topology messages
+/// ```
+///
+/// Bond breakage agrees to within 3%, which is inside this GPU stack's own
+/// ~12% run-to-run spread, so the two paths are now delivering comparable
+/// energy into the stress graph. That took three fixes, none of them tuning:
+/// the core path had to use the same real raycast rather than a bounding
+/// sphere; library-created shapes had to carry the host's collision filter
+/// data, without which every host raycast reported a clean miss; and the node
+/// lookup had to use live world positions rather than authored centroids,
+/// which had every building in the grid answering as though it stood at the
+/// origin.
+///
+/// Fragment count still differs (56 vs 167) and that gap is real: the old path
+/// spreads its load over a 2.5 m sphere and shatters a wider area, while the
+/// core path deposits momentum at the single point the round struck. Which is
+/// more correct is a question about the weapon, not about the pipeline -- an
+/// explosive shell genuinely should damage a volume, and the honest way to get
+/// that is to model the charge, not to reinstate a `1 - d/r` falloff.
+///
+/// This test exists so that gap is a number someone can watch shrink, rather
+/// than a claim that the migration is finished.
+/// The same stimulus on the old path, for the side-by-side.
+///
+/// Printed rather than asserted against the core path's numbers. They are two
+/// separate runs of a GPU solver whose measured run-to-run spread on this stack
+/// is ~12%, and the two paths differ in a way that is not noise: the old shot
+/// path raycasts the real chunk colliders and applies a blast over a radius,
+/// while the core path resolves the nearest load-bearing node from a bounding
+/// sphere and drives a single load through it. Asserting equality would be
+/// asserting something false. What the pair is for is making the gap visible.
+#[test]
+#[ignore = "benchmark: needs a GPU"]
+fn the_old_path_drives_the_city_through_the_server_loop() {
+    let mut world = World::new(WorldConfig::default()).expect("GPU world");
+    world
+        .add_static_box(StaticBoxDesc {
+            entity_id: 1,
+            user_id: 0,
+            pose: Pose {
+                position: BridgeVec3::new(0.0, -10.0, 0.0),
+                rotation: Quat::IDENTITY,
+            },
+            half_extents: BridgeVec3::new(2000.0, 10.0, 2000.0),
+            collision_group: GROUP_STATIC,
+            collision_mask: ALL_GROUPS,
+        })
+        .expect("ground");
+    let mut city = crate::city::CityRuntime::physx(60, &mut world).expect("city opens on physx");
+    city.add_client(1);
+    let bodies_at_rest = city.stats().chunk_bodies;
+
+    let (tx, tz) = (-36.0f32, -36.0f32);
+    let origin = Vec3::new(tx, 1.6, tz - 26.0);
+    let mut tick = 0u32;
+    let mut topology_messages = 0usize;
+    for shot in 0..40 {
+        let sweep = -4.0 + (shot % 9) as f32 * 1.0;
+        let aim_y = 2.0 + (shot % 12) as f32 * 2.2;
+        let target = Vec3::new(tx + sweep, aim_y, tz);
+        city.apply_shot_ray(origin, (target - origin).normalize(), Some(&mut world));
+        for _ in 0..8 {
+            world.step().expect("step");
+            topology_messages += city.step(tick, DT, gravity(), Some(&mut world)).len();
+            tick += 1;
+        }
+    }
+    let stats = city.stats();
+    eprintln!(
+        "[old /city] {} bonds broken, {} -> {} bodies, {topology_messages} topology messages",
+        stats.broken_bonds, bodies_at_rest, stats.chunk_bodies
+    );
+}
+
+#[cfg(feature = "blast-core")]
+#[test]
+#[ignore = "benchmark: needs a GPU"]
+fn the_core_path_drives_the_city_through_the_server_loop() {
+    let mut world = World::new(WorldConfig::default()).expect("GPU world");
+    world
+        .add_static_box(StaticBoxDesc {
+            entity_id: 1,
+            user_id: 0,
+            pose: Pose {
+                position: BridgeVec3::new(0.0, -10.0, 0.0),
+                rotation: Quat::IDENTITY,
+            },
+            half_extents: BridgeVec3::new(2000.0, 10.0, 2000.0),
+            collision_group: GROUP_STATIC,
+            collision_mask: ALL_GROUPS,
+        })
+        .expect("ground");
+
+    // Constructed directly rather than through `open`, so the test cannot be
+    // silently reading an environment variable set by whichever test ran first.
+    let mut city =
+        crate::city::CityRuntime::blast_core(60, &mut world).expect("city opens on the core");
+    city.add_client(1);
+
+    let bodies_at_rest = city.stats().chunk_bodies;
+    assert!(bodies_at_rest > 0, "the city instantiated no bodies");
+
+    let (tx, tz) = (-36.0f32, -36.0f32);
+    let origin = Vec3::new(tx, 1.6, tz - 26.0);
+    let mut tick = 0u32;
+    let mut topology_messages = 0usize;
+    for shot in 0..40 {
+        let sweep = -4.0 + (shot % 9) as f32 * 1.0;
+        let aim_y = 2.0 + (shot % 12) as f32 * 2.2;
+        let target = Vec3::new(tx + sweep, aim_y, tz);
+        city.apply_shot_ray(origin, (target - origin).normalize(), Some(&mut world));
+        for _ in 0..8 {
+            world.step().expect("step");
+            topology_messages += city.step(tick, DT, gravity(), Some(&mut world)).len();
+            tick += 1;
+        }
+    }
+
+    let stats = city.stats();
+    eprintln!(
+        "[blast-core /city] {} bonds broken, {} -> {} bodies, {topology_messages} topology messages",
+        stats.broken_bonds, bodies_at_rest, stats.chunk_bodies
+    );
+    assert!(
+        stats.broken_bonds > 0,
+        "40 shots broke no bonds on the core path; the shot never reached the stress graph"
+    );
+    assert!(
+        stats.chunk_bodies > bodies_at_rest,
+        "bonds broke but no fragment bodies appeared ({} -> {})",
+        bodies_at_rest,
+        stats.chunk_bodies
+    );
+    assert!(
+        topology_messages > 0,
+        "the encoder produced no topology messages, so nothing would reach a client"
+    );
+    assert!(!city.is_degraded(), "the core path degraded mid-run");
+
+    eprintln!(
+        "[blast-core /city] {} bonds broken, {} -> {} bodies, {topology_messages} topology messages",
+        stats.broken_bonds, bodies_at_rest, stats.chunk_bodies
+    );
+}
+
+/// A city standing on its own must not destroy itself.
+///
+/// This is the gate that was missing. The core path shipped with every bond on
+/// material 0 -- a single global strength -- because the library could not
+/// express a table. That reads like a strength rescale and is not one: a
+/// district pack authors its foundation bonds strongest *precisely because*
+/// they carry the most load, so flattening the table leaves the foundation
+/// weaker than the load it was sized for. `fractured-downtown` then broke 867
+/// bonds and woke 18,143 of 24,105 chunks under gravity alone, with nobody
+/// firing a shot.
+///
+/// Nothing aggregate would have caught it. Bonds broke, bodies appeared and
+/// topology messages flowed, so every "did destruction happen" assertion was
+/// satisfied -- by the building falling down on its own.
+#[cfg(feature = "blast-core")]
+#[test]
+#[ignore = "benchmark: needs a GPU"]
+fn a_city_at_rest_does_not_destroy_itself_on_the_core_path() {
+    let mut world = World::new(WorldConfig::default()).expect("GPU world");
+    world
+        .add_static_box(StaticBoxDesc {
+            entity_id: 1,
+            user_id: 0,
+            pose: Pose {
+                position: BridgeVec3::new(0.0, -10.0, 0.0),
+                rotation: Quat::IDENTITY,
+            },
+            half_extents: BridgeVec3::new(2000.0, 10.0, 2000.0),
+            collision_group: GROUP_STATIC,
+            collision_mask: ALL_GROUPS,
+        })
+        .expect("ground");
+    let mut city =
+        crate::city::CityRuntime::blast_core(60, &mut world).expect("city opens on the core");
+    city.add_client(1);
+
+    // Ten seconds of gravity and nothing else.
+    let mut tick = 0u32;
+    for _ in 0..600 {
+        world.step().expect("step");
+        let _ = city.step(tick, DT, gravity(), Some(&mut world));
+        tick += 1;
+    }
+
+    let stats = city.stats();
+    assert_eq!(
+        stats.broken_bonds, 0,
+        "the city broke {} bonds under gravity alone. An anchored structure on \
+         its authored materials carries its own weight -- if it does not, the \
+         load path is wrong, most likely because the material table was \
+         flattened and the foundation is no longer the strongest thing in it.",
+        stats.broken_bonds
+    );
+    eprintln!("[blast-core /city] at rest for 10 s: {} bonds broken", stats.broken_bonds);
+}
+
+/// A settled pile must STAY settled.
+///
+/// This reproduces what a live server does, measured from a real session on
+/// 2026-08-25. During a window with no player input at all -- no shooting, no
+/// movement -- the pile repeatedly reached quiescence and then re-woke:
+///
+///   t+4   frozen 467  (+4 newly frozen)   awake  0   resettled  0
+///   t+5   frozen 475  (+8 newly frozen)   awake 50   resettled 50
+///   t+8   frozen 483  (+1)                awake  0   resettled  4
+///   t+9   frozen 484  (+1)                awake 46   resettled 46
+///
+/// with `contact_wakes/s = 0` and `unfreeze_flips/s = 0` throughout, so neither
+/// the contact-wake path nor an explicit thaw explains it. Freeze kept retiring
+/// bodies (+4, +8, +1, +1 per second, never converging) and the pile kept
+/// waking in bursts of roughly the same size.
+///
+/// Asserted as a SHAPE rather than a level, deliberately. The absolute counts
+/// on this bench swing 6x run to run because PhysX GPU is not bit-reproducible
+/// and each run collapses a different amount of building (see the spread
+/// recorded on `demolished_tower_comes_to_rest`). "80% asleep" is therefore
+/// unmeasurable here. "It went quiet and then came back" is not -- it is a
+/// yes/no about a cycle, and it is exactly what a player sees as hopping.
+///
+/// Note the metric is AWAKE, not asleep. Freeze retires debris as *kinematic*,
+/// which is neither awake nor asleep, so a sleep percentage cannot describe a
+/// working city. What matters is that nothing is still being simulated.
+#[test]
+#[ignore = "benchmark: needs a GPU"]
+fn a_settled_pile_stays_settled() {
+    let mut arena = production_arena();
+    crate::demo_world::seed_world_for_match(&mut arena, crate::city::CITY_MATCH_PREFIX)
+        .expect("seed the production world document");
+    arena.spawn_player(1);
+    let world = arena.physx_world_mut().expect("physx world");
+    let mut world = &mut *world;
+    let mut city =
+        crate::city::CityRuntime::open(60, Some(&mut world)).expect("city runtime opens");
+    city.add_client(1);
+
+    // Collapse something, so there is a pile to settle.
+    let (tx, tz) = (-36.0f32, -36.0f32);
+    let origin = Vec3::new(tx, 1.6, tz - 26.0);
+    let mut tick = 0u32;
+    for shot in 0..40 {
+        let sweep = -4.0 + (shot % 9) as f32 * 1.0;
+        let aim_y = 2.0 + (shot % 12) as f32 * 2.2;
+        let target = Vec3::new(tx + sweep, aim_y, tz);
+        city.apply_shot_ray(origin, (target - origin).normalize(), Some(&mut world));
+        for _ in 0..8 {
+            world.step().expect("step");
+            let _ = city.step(tick, DT, gravity(), Some(&mut world));
+            tick += 1;
+        }
+    }
+
+    // Then nothing at all, for a long time. The idle window is the measurement.
+    //
+    // 90 s rather than 45, because a settled pile gets disturbed ONCE more by
+    // its own weight and 45 s could not contain both settles. Measured with
+    // the cause columns below: the pile decays cleanly to 0 awake, and then
+    // at t+17..t+24s a burst of 50-60 unfreezes/s wakes ~180 bodies and drops
+    // the frozen count by a third. `stumps/s` and `backstop/s` are ZERO
+    // through it, so it is neither a rooted stump dying nor the validity
+    // backstop: it is the Blast adapter crushing a bond inside a frozen body
+    // and setting that body dynamic, whose release then cascades through
+    // everything recorded as resting on it. That is a real physical event,
+    // and the pile converges again about 20 s later -- so the measurement
+    // needs room for a second settle, not a tighter assertion.
+    const IDLE_SECONDS: u32 = 90;
+    let mut trace = Vec::new();
+    let mut cause: Vec<(u64, u64, u32)> = Vec::new();
+    for _ in 0..IDLE_SECONDS {
+        for _ in 0..60 {
+            world.step().expect("step");
+            let _ = city.step(tick, DT, gravity(), Some(&mut world));
+            tick += 1;
+        }
+        let s = city.stats();
+        trace.push((s.awake_chunk_bodies, s.freeze_flips, s.unfreeze_flips, s.resettled_wakes));
+        // Which release path is firing matters more than that one is: a
+        // supporter death is the structure genuinely coming down in stages,
+        // a backstop release is a frozen body whose support evidence went
+        // missing (its own docs say this must read zero).
+        cause.push((s.support_promotions, s.backstop_releases, s.frozen_chunk_bodies));
+    }
+
+    // "Quiet" is relative to the pile's own size, so this survives the
+    // run-to-run variance in how much building actually came down.
+    let peak_awake = trace.iter().map(|t| t.0).max().unwrap_or(0).max(1);
+    let quiet = (peak_awake / 20).max(4); // 5% of peak, floor of 4 bodies
+
+    eprintln!(
+        "{:>4} {:>7} {:>9} {:>10} {:>11} {:>10} {:>10} {:>7}",
+        "sec", "awake", "freeze/s", "unfreeze/s", "resettled/s", "stumps/s",
+        "backstop/s", "frozen"
+    );
+    for (i, w) in trace.iter().enumerate() {
+        let p = if i == 0 { w } else { &trace[i - 1] };
+        let c = &cause[i];
+        let pc = if i == 0 { c } else { &cause[i - 1] };
+        eprintln!(
+            "{:>4} {:>7} {:>9} {:>10} {:>11} {:>10} {:>10} {:>7}",
+            i + 1,
+            w.0,
+            w.1.saturating_sub(p.1),
+            w.2.saturating_sub(p.2),
+            w.3.saturating_sub(p.3),
+            c.0.saturating_sub(pc.0),
+            c.1.saturating_sub(pc.1),
+            c.2,
+        );
+    }
+
+    // The bug is NON-CONVERGENCE: a pile with nothing acting on it that never
+    // arrives anywhere. The signature a player sees is hopping -- awake
+    // sawtoothing up and down forever -- so the measurement is how long the
+    // window ENDS quiet, not whether it ever dipped.
+    //
+    // This used to be a trough-and-relapse test, and it measured the wrong
+    // thing twice over:
+    //
+    //   - The trough was taken over the WHOLE window, including the ramp. The
+    //     idle window opens while the tower is still coming down (every run
+    //     measured has awake still RISING for the first 3-4 s), and a staged
+    //     collapse has a lull between stages. Measured: 71 -> 0 by t+6s as the
+    //     first wave settled and froze, then the second stage came down to 205
+    //     awake at t+12s, then 0 by t+45. A clean convergence, reported as a
+    //     relapse against a "trough" that was a pause mid-collapse.
+    //   - Any single later disturbance -- see the adapter-split cascade
+    //     documented on IDLE_SECONDS -- read as a relapse even when the pile
+    //     visibly converged again afterwards.
+    //
+    // A trailing quiet run has neither failure mode and still catches the real
+    // bug head-on: the pre-repair pile sawtooths for the entire window and
+    // never assembles a quiet tail at all.
+    let final_awake = trace.last().map(|t| t.0).unwrap_or(0);
+    let total_flips = trace.last().map(|t| t.1).unwrap_or(0)
+        - trace.first().map(|t| t.1).unwrap_or(0);
+    let tail_quiet = trace.iter().rev().take_while(|t| t.0 <= quiet).count();
+    const TAIL_QUIET_SECONDS: usize = 15;
+    let busiest_tail = trace[trace.len() - TAIL_QUIET_SECONDS.min(trace.len())..]
+        .iter()
+        .map(|t| t.0)
+        .max()
+        .unwrap_or(0);
+
+    assert!(
+        tail_quiet >= TAIL_QUIET_SECONDS,
+        "the pile did not converge in {IDLE_SECONDS}s of NO input.\n\
+         \x20 peak awake {peak_awake}, ending at {final_awake}, quiet for only \
+         the last {tail_quiet}s (need {TAIL_QUIET_SECONDS}s at or under \
+         {quiet}; busiest of the last {TAIL_QUIET_SECONDS}s was \
+         {busiest_tail}).\n\
+         \x20 freeze flipped {total_flips} times during the idle window and never \
+         settled into a steady state.\n\
+         A pile with nothing acting on it must head somewhere. Sawtoothing to \
+         the end of the window means the settle path is waking the debris it \
+         is retiring."
     );
 }

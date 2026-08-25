@@ -804,6 +804,7 @@ impl CityDestruction {
             self.stats.contact_wakes = bridge_stats.contact_wakes;
             self.stats.support_promotions = bridge_stats.support_promotions;
             self.stats.rooted_guard_blocks = bridge_stats.rooted_guard_blocks;
+            self.stats.island_resleep_writes = bridge_stats.island_resleep_writes;
             self.stats.rooted_chunk_bodies = bridge_stats.rooted_chunk_bodies;
             self.stats.support_edges = bridge_stats.support_edges;
             self.stats.frozen_serial_blocks = bridge_stats.frozen_serial_blocks;

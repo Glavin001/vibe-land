@@ -36,4 +36,7 @@ pub mod variants;
 pub mod wire;
 
 #[cfg(feature = "physx")]
+#[cfg(feature = "blast-core")]
+pub mod core_runtime;
+
 pub mod runtime;
