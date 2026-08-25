@@ -5,7 +5,7 @@ use std::{env, path::PathBuf};
 const DEFAULT_PHYSX_ROOT: &str = "/root/PhysX/physx/install/linux-clang/PhysX";
 
 #[cfg(feature = "gpu")]
-const DEFAULT_BLAST_ROOT: &str = "/root/workspace/blast-stress-solver/blast";
+const DEFAULT_BLAST_ROOT: &str = "/root/workspace/blast-stress-solver-2/blast";
 
 #[cfg(feature = "gpu")]
 fn main() {
@@ -189,6 +189,20 @@ fn compile_cuda_stress(blast: &std::path::Path) {
         "cuda-stress feature enabled but the CUDA solver source is missing: {}",
         source.display()
     );
+
+    // Everything nvcc reads has to be in the rerun set. It was not, so editing
+    // only the CUDA solver left the previous object in place and the run
+    // measured the old kernel -- which produced one confidently-wrong "0
+    // islands skipped" result before anyone noticed the build had not happened.
+    // The arch list belongs here too: changing it changes the emitted SASS.
+    println!("cargo:rerun-if-env-changed=VIBE_CUDA_ARCH");
+    println!("cargo:rerun-if-changed={}", source.display());
+    for header in [
+        "include/extensions/stressgpu/NvBlastExtStressGpu.h",
+        "include/extensions/stress/NvBlastExtStressSolver.h",
+    ] {
+        println!("cargo:rerun-if-changed={}", blast.join(header).display());
+    }
 
     // Which GPUs the kernel is compiled for. The fleet rents whatever Vast has
     // capacity for, so this is a list, not a single card.
