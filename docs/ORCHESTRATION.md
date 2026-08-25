@@ -204,6 +204,38 @@ serving the image they booted with until their uptime cap retires them.
 | `BUILDER_IMAGE_TAG` | which toolchain image to compile against; optional, defaults to the tag `builder-image` publishes |
 | `CONTROL_PLANE_URL` | public Worker URL, injected into every instance |
 
+## The city a box serves
+
+`docker/entrypoint.sh` sets `VIBE_CITY_SCENE=fractured-downtown.json` and
+`VIBE_CITY_GRID=1`, so a deployed box serves the real city: 27 buildings,
+24,105 chunks, 131x153 m, ~12 m streets.
+
+**It did not always.** The entrypoint set no scene, so the server fell back to
+the compiled-in default in `server/src/city.rs` -- `high-rise-3f-local.json`, a
+three-floor block. A rented box reported 2,919 chunk bodies and 16 structures
+and looked completely healthy, because it was: it was healthily serving a toy.
+`scripts/smoke-image.sh` now asserts both that the downtown ships and that the
+entrypoint selects it.
+
+Override per box; both are read once at process start, so a change needs a
+fresh instance:
+
+```
+-e VIBE_CITY_SCENE=fractured-highrise-10f.json    # small, for a weak box
+-e VIBE_CITY_GRID=1                                # see below before raising
+```
+
+**Do not raise the grid on the downtown.** That pack is already a laid-out
+block spanning 289x273 m; the grid tiles whole districts and multiplies 24,105
+chunks by grid squared. Grid is for widening a *single-building* pack.
+
+| Scene | Chunks | Use |
+| --- | --- | --- |
+| `high-rise-3f-local.json` | ~180/building | local iteration only — the old accidental default |
+| `fractured-highrise-10f.json` | small | fast iteration on stress behaviour |
+| `fractured-district.json` | 15,918 | spaced so it **cannot** collapse onto itself |
+| `fractured-downtown.json` | **24,105** | the shipped default |
+
 ## Renting a box on Vast.ai
 
 Two products, two launch modes, and getting the mode wrong is the single most

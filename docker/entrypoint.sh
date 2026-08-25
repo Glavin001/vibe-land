@@ -108,6 +108,28 @@ export HEARTBEAT_PUBLIC_IP="$public_ip"
 export HEARTBEAT_UDP_PORT="$external_udp_port"
 export MATCHES_PER_BOX="${MATCHES_PER_BOX:-6}"
 
+# The city this box serves.
+#
+# WITHOUT THIS the server falls back to the compiled-in default in
+# server/src/city.rs:125, which is `high-rise-3f-local.json` -- a three-floor
+# block, the smallest pack in the repo at 186 KB against the downtown's 18 MB.
+# That default exists for local iteration, and it is the wrong thing to ship: a
+# rented GPU running a toy scene tells you nothing about whether the fleet can
+# carry a real city. A box deployed on it reported 2,919 chunk bodies and 16
+# structures and looked entirely healthy, which is exactly the problem.
+#
+# The downtown is the real thing: 27 buildings, 24,105 chunks, 131x153 m, 84 m
+# at the tallest, with ~12 m streets so a toppling tower reaches its neighbours
+# and the city can be collapsed onto itself.
+export VIBE_CITY_SCENE="${VIBE_CITY_SCENE:-fractured-downtown.json}"
+# Grid 1, deliberately. The downtown pack is ALREADY a laid-out block spanning
+# 289x273 m, so the grid tiles whole districts and multiplies 24,105 chunks by
+# grid^2. Raising it is how you accidentally ask a 3060 for 100k chunks.
+export VIBE_CITY_GRID="${VIBE_CITY_GRID:-1}"
+
+# Both are read once at process start, so changing either needs a fresh
+# instance -- Vast cannot change environment on a running one.
+
 # A bound UDP socket does not mean players can reach it. Some hosts accept the
 # port mapping and then never forward the datagrams, and the box looks entirely
 # healthy from the outside: it boots, heartbeats, serves /city, and answers

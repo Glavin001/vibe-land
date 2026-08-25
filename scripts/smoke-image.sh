@@ -54,10 +54,23 @@ missing="$(docker run --rm --entrypoint /bin/bash "$IMAGE" -c '
   ls /opt/vibe-land/lib/libcudart.so.* >/dev/null 2>&1 || echo "lib/libcudart.so.*"
   [[ -e /opt/vibe-land/lib-stubs/libcuda.so.1 ]] || echo "lib-stubs/libcuda.so.1"
   ls /opt/vibe-land/assets/scenes/*.json >/dev/null 2>&1 || echo "assets/scenes/*.json"
+  # By name, not just "some scene". A bundle carrying only the small local
+  # packs passes a glob and serves a toy city.
+  [[ -e /opt/vibe-land/assets/scenes/fractured-downtown.json ]] || echo "assets/scenes/fractured-downtown.json"
   [[ -e /opt/vibe-land/web/index.html ]] || echo "web/index.html"
 ')"
 [[ -z "$missing" ]] || fail "image is missing: $missing"
 pass "binary, PhysX GPU library, CUDA runtime, scenes and entrypoint all present"
+
+# The image shipped for weeks defaulting to high-rise-3f-local.json -- 2,919
+# chunk bodies where the downtown has 24,105 -- because the entrypoint set no
+# scene and server/src/city.rs's compiled-in default is the small local pack.
+# Nothing caught it: every box looked healthy, because it was.
+default_scene="$(docker run --rm --entrypoint /bin/bash "$IMAGE" -c \
+  'sed -n "s/.*VIBE_CITY_SCENE:-\\([^}\"]*\\).*/\\1/p" /opt/vibe-land/entrypoint.sh | head -1')"
+[[ "$default_scene" == "fractured-downtown.json" ]] \
+  || fail "the entrypoint's default scene is '${default_scene:-<unset>}', expected fractured-downtown.json"
+pass "the entrypoint defaults to the downtown ($default_scene), not a local test pack"
 
 echo "[smoke] 2. every shared library resolves"
 # libcuda.so.1 is the driver. It is deliberately absent from the image and
