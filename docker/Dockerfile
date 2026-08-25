@@ -53,20 +53,26 @@ FROM scratch AS prebuilt
 COPY dist/physx-server/ /out/
 
 # The web client, built into the image so a box someone rents is playable on its
-# own. Node rather than the toolchain image because this stage needs npm; the
-# wasm-pack installer fetches a prebuilt binary, which is far quicker than
-# `cargo install`.
-FROM node:22-bookworm AS web
-# clang, because the client's wasm pulls in zstd -- a C library built through
-# cc-rs. gcc cannot target wasm32, so cc-rs reaches for clang specifically and
-# fails with `failed to find tool "clang"` without it. This is what breaks the
-# Vercel build of the same bundle.
-RUN apt-get update && apt-get install -y --no-install-recommends clang \
- && rm -rf /var/lib/apt/lists/*
-RUN curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal \
-      --target wasm32-unknown-unknown
-ENV PATH=/root/.cargo/bin:$PATH
-RUN curl -sSf https://rustwasm.github.io/wasm-pack/installer/init.sh | sh
+# own.
+#
+# This used to be `FROM node:22-bookworm` plus its own rustup, wasm32 target and
+# wasm-pack, installed on every single build of this image. The toolchain image
+# now carries all four -- it needs Node anyway to double as a dev environment --
+# so this stage reuses a layer that is already pulled for the `build` stage
+# above instead of fetching a second base and reinstalling Rust.
+#
+# It also needs clang, which the toolchain image already has: the client's wasm
+# pulls in zstd, a C library built through cc-rs, and gcc cannot target wasm32,
+# so cc-rs reaches for clang specifically and fails with
+# `failed to find tool "clang"` without it. This is what breaks the Vercel build
+# of the same bundle.
+#
+# One consequence worth stating: the client is now compiled by the pinned Rust
+# 1.90.0 rather than whatever rustup called stable that day. `shared` and
+# `research/destruction-codec` are workspace members the server build already
+# compiles at that version, so this should be a no-op -- but it is a real change
+# and CI is what proves it.
+FROM ${BUILDER_IMAGE} AS web
 WORKDIR /src
 COPY . .
 # `build` runs gen:constants, wasm-pack and vite in turn -- the same sequence

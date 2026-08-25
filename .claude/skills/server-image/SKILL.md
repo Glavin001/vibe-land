@@ -9,12 +9,23 @@ Two images, deliberately split:
 
 | Image | Contents | Rebuilt |
 | --- | --- | --- |
-| `vibe-land-builder` | CUDA 12.8 + built PhysX 5 SDK + Blast checkout + Rust | only when `docker/Dockerfile.builder` changes |
+| `vibe-land-builder` | CUDA 12.8 + built PhysX 5 SDK + Blast checkout + Rust + Node 22/wasm-pack + `vibe-clone` | only when `docker/Dockerfile.builder` or `docker/vibe-clone` changes |
 | `vibe-land-server` | the game server, client bundle, scenes — on plain Ubuntu | every commit |
 
 The split exists because the toolchain (~19 GB) is cached across deploys while
 the runtime image (~657 MB) is rebuilt per commit. Image pull time is the
 dominant term in cold start, and a player waits through it.
+
+The builder feeds **both** compiling stages of `docker/Dockerfile` — `build` for
+the server and `web` for the client — and doubles as the rented dev box (see the
+`vastai-deploy` skill). That is why it carries Node: a third image existed for
+the dev case and was deleted, because it was this one plus four `RUN` lines.
+
+**The builder caches to a registry, not `type=gha`.** GitHub's Actions cache is
+capped at 10 GB per repo and this image is roughly twice that, so a gha cache
+evicts itself. It uses `type=registry,ref=...:buildcache,mode=max` on GHCR
+instead. Keep the expensive layers (PhysX, ~15 min) above anything you add —
+everything appended after them is then free to change.
 
 ## CI is the normal path
 
@@ -119,7 +130,13 @@ Each of these cost real time; none is obvious from the error.
 - **Never bundle `libcuda.so.1`** — that is the driver, injected by the NVIDIA
   container runtime, and a copy would shadow it.
 - **The client wasm needs `clang`.** `zstd` builds through `cc-rs`, gcc cannot
-  target wasm32, and `node:22-bookworm` does not ship clang.
+  target wasm32, and `node:22-bookworm` does not ship clang. The `web` stage is
+  now `FROM ${BUILDER_IMAGE}`, which has clang — but if it is ever moved back to
+  a Node base, clang has to come with it.
+- **The client compiles under the builder's pinned Rust 1.90.0**, not rustup
+  stable. `shared` and `research/destruction-codec` are workspace members the
+  server build already compiles at that version, so this is expected to be
+  inert — but a wasm crate that needs a newer rustc would fail here first.
 - **`.dockerignore` must not exclude `worlds/`** — `shared/src/world_document.rs`
   `include_str!`s it at compile time.
 - **rustls panics rather than erroring** when no process-level `CryptoProvider`

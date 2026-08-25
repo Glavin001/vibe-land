@@ -97,7 +97,7 @@ and the toolchain must not travel to production.
 
 | Image | Contents | Rebuilt |
 |---|---|---|
-| `vibe-land-builder` | CUDA 12.8 devel, PhysX 5, Blast, Rust (19 GB) | when `docker/Dockerfile.builder` changes, or on dispatch |
+| `vibe-land-builder` | CUDA 12.8 devel, PhysX 5, Blast, Rust, Node 22 + wasm-pack (~19 GB) | when `docker/Dockerfile.builder` or `docker/vibe-clone` changes, or on dispatch |
 | `vibe-land-server` | Ubuntu + the binary, `libPhysXGpu_64.so`, `libcudart`, scenes, the built client | every push that touches the server (689 MB) |
 
 The split is about caching, not compile time. Building PhysX is not the ordeal

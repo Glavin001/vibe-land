@@ -1,10 +1,21 @@
-# Toolchain image: CUDA, a built PhysX 5 SDK, and the Blast checkout.
+# Toolchain image: CUDA, a built PhysX 5 SDK, the Blast checkout, and the web
+# toolchain -- everything needed to build every part of this project.
+#
+# It serves three consumers, which is why it carries Node as well as clang:
+#   1. docker/Dockerfile stage `build`  -- compiles the server
+#   2. docker/Dockerfile stage `web`    -- builds the client and its wasm
+#   3. a rented GPU box used as a dev environment (`vibe-clone`, below)
+#
+# (3) is why the dev tooling and the clone helper are here rather than in a
+# fourth image. A separate dev image was tried and deleted: once the warm build
+# came out of it, it was this image plus four RUN lines, and (2) needed three of
+# those four anyway.
 #
 # Split from the runtime image not because PhysX is expensive to compile -- most
 # of what lands here is a ~350 MB packman download of the prebuilt
 # libPhysXGpu_64.so plus a short clang build of ~17 MB of static libs -- but
 # because it is cached across every deploy while the runtime image is rebuilt
-# per commit. It changes only when the SDK, the Blast fork, or Rust moves.
+# per commit. It changes only when the SDK, the Blast fork, Rust or Node moves.
 #
 # Build:
 #   docker buildx build -f docker/Dockerfile.builder \
@@ -102,3 +113,67 @@ RUN test -f "$PHYSX_ROOT/include/PxPhysicsAPI.h" \
  && ls "$CUDA_HOME"/lib64/libcudart.so.* >/dev/null \
  && grep -q '^blast_commit=[0-9a-f]\{40\}$' /opt/toolchain/sources.txt \
  && grep -q '^physx_commit=[0-9a-f]\{40\}$' /opt/toolchain/sources.txt
+
+# --- web toolchain -----------------------------------------------------------
+# Everything below is deliberately at the END of this file. The PhysX build
+# above is ~15 minutes; a change down here must not invalidate it.
+#
+# Node 22, not apt's. Ubuntu 24.04 ships nodejs 18.x, which is too old for the
+# client build -- ci.yml pins 22 -- and it fails deep inside vite rather than
+# with an honest version error.
+RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+ && apt-get install -y --no-install-recommends nodejs \
+ && rm -rf /var/lib/apt/lists/* \
+ && node --version && npm --version
+
+# wasm-pack from the prebuilt-binary installer, NOT `cargo install`.
+#
+# `cargo install wasm-pack --locked` fails against the Rust pinned above:
+#
+#   error: failed to compile `wasm-pack v0.15.0`
+#   Caused by: rustc 1.90.0 is not supported by the following package:
+#     cargo-platform@0.3.3 requires rustc 1.91
+#
+# `--locked` does not help -- the constraint is a dependency's rust-version, not
+# the lockfile. Bumping RUST_VERSION to satisfy a dev tool would change what the
+# server compiles with, which is a deliberate pin. The installer downloads a
+# release binary and cares about neither.
+RUN rustup target add wasm32-unknown-unknown \
+ && curl -sSf https://rustwasm.github.io/wasm-pack/installer/init.sh | sh \
+ && wasm-pack --version
+
+# --- dev environment ---------------------------------------------------------
+# For consumer (3): this image rented as a GPU workstation. `--ssh --direct` on
+# Vast injects SSH and does NOT run an ENTRYPOINT, which is the opposite of the
+# runtime image's `--args` mode -- getting that backwards is why no box in the
+# original investigation had a shell.
+#
+# No source and no build caches are baked in. Source is cloned at load by
+# `vibe-clone`; build caches live at $VIBE_CACHE, which is where you mount a
+# Vast volume so they survive the instance.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      jq ripgrep tmux vim less rsync openssh-client procps htop bash-completion \
+ && rm -rf /var/lib/apt/lists/*
+
+COPY docker/vibe-clone /usr/local/bin/vibe-clone
+RUN chmod +x /usr/local/bin/vibe-clone
+
+ENV VIBE_CACHE=/opt/vibe-cache
+RUN mkdir -p "$VIBE_CACHE"
+
+# Running as root against a tree git did not create.
+RUN git config --global --add safe.directory '*'
+
+RUN { echo "node=$(node --version)"; \
+      echo "npm=$(npm --version)"; \
+      echo "rust=$(rustc --version | cut -d' ' -f2)"; \
+      echo "wasm_pack=$(wasm-pack --version | cut -d' ' -f2)"; \
+    } >> /opt/toolchain/sources.txt \
+ && cat /opt/toolchain/sources.txt
+
+# Second assertion block, for the additions above.
+RUN command -v node >/dev/null \
+ && command -v npm >/dev/null \
+ && command -v wasm-pack >/dev/null \
+ && command -v vibe-clone >/dev/null \
+ && rustup target list --installed | grep -qx wasm32-unknown-unknown

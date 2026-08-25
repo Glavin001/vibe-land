@@ -10,6 +10,7 @@ on:
   push:
     paths:
       - 'docker/Dockerfile.builder'
+      - 'docker/vibe-clone'
       - '.github/workflows/builder-image.yml'
   workflow_dispatch:
     inputs:
@@ -67,6 +68,7 @@ jobs:
             echo "blast_ref=${{ inputs.blast_ref || 'feature/physx-gpu-destruction' }}"
             echo "tag=${tag}"
             echo "image=ghcr.io/${owner}/vibe-land-builder:${tag}"
+            echo "cache=ghcr.io/${owner}/vibe-land-builder:buildcache"
           } >> "$GITHUB_OUTPUT"
 
       - name: Build and push builder image
@@ -79,6 +81,17 @@ jobs:
           build-args: |
             PHYSX_REF=${{ steps.meta.outputs.physx_ref }}
             BLAST_REF=${{ steps.meta.outputs.blast_ref }}
+          # Registry cache, NOT type=gha. GitHub's Actions cache is capped at
+          # 10 GB per repository and this image is roughly twice that, so a gha
+          # cache would evict itself and be worse than none -- which is why this
+          # workflow previously had no cache at all, and why every run rebuilt
+          # the ~15-minute PhysX build from scratch even when the change was
+          # five lines at the bottom of the Dockerfile. Two runs did exactly
+          # that (235fd6e, 3eb946d: 17m02s and 16m03s to widen VIBE_CUDA_ARCH).
+          # GHCR has no such cap. The first run after this lands still pays full
+          # price -- there is nothing to restore from yet.
+          cache-from: type=registry,ref=${{ steps.meta.outputs.cache }}
+          cache-to: type=registry,ref=${{ steps.meta.outputs.cache }},mode=max
 
       - name: Report the tag to set
         run: |

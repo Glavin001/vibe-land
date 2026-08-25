@@ -141,23 +141,21 @@ after any debugging session.
 
 ## Developing on a Vast box
 
-A second image exists for this: `ghcr.io/glavin001/vibe-land-dev`. It is
-**exactly the builder image** — `ghcr.io/glavin001/vibe-land-builder`, the same
-one `docker/Dockerfile`'s `build` stage uses and therefore already proven to
-compile this project — plus Node 22, wasm-pack, the `wasm32-unknown-unknown`
-target, a few dev tools and `vibe-clone`.
+**Rent the toolchain image itself:** `ghcr.io/glavin001/vibe-land-builder`. It
+is the same image `docker/Dockerfile` compiles the server and the client with,
+so it is proven able to build this project by every server-image CI run. It also
+carries Node 22, wasm-pack, the `wasm32-unknown-unknown` target, a few dev tools
+and `vibe-clone`.
 
-The builder alone can build the *server* but not the *client*: the runtime image
-builds the client in a separate `node:22-bookworm` stage, so the toolchain image
-never needed Node. Those four additions are the whole difference. If the dev
-image is ever unavailable, `vibe-land-builder` plus ~2 minutes of `apt` and the
-wasm-pack installer gets you the same box.
+There is no separate dev image. One existed and was deleted: once its warm build
+came out, it was the builder plus four `RUN` lines — and the server image's
+`web` stage needed three of those four anyway.
 
-**Nothing is prebuilt.** An earlier version baked warm `target/` and
-`node_modules` trees. That cost ~10 GB, went stale on the next push, and caused
-every failure the image ever had. Persistence now comes from a **Vast volume
-mounted at `/opt/vibe-cache`**, which survives instance destruction and
-accumulates real builds instead of one stale snapshot.
+**Nothing is prebuilt.** An earlier attempt baked warm `target/` and
+`node_modules` trees into a layer. That cost ~10 GB, went stale on the next
+push, and caused every failure that image ever had. Persistence comes instead
+from a **Vast volume mounted at `/opt/vibe-cache`**, which survives instance
+destruction and accumulates real builds rather than one stale snapshot.
 
 **Launch mode is the opposite of production.** Use `--ssh --direct`, which
 injects SSH and does **not** run an ENTRYPOINT. `--args` (what the runtime image
@@ -165,7 +163,7 @@ uses) gives you a container as-is with no shell.
 
 ```bash
 vastai create instance <offer_id> \
-  --image ghcr.io/glavin001/vibe-land-dev:latest \
+  --image ghcr.io/glavin001/vibe-land-builder:cuda12.8-physx-ovphysx-5.5.1 \
   --disk 60 --ssh --direct \
   --env '-p 4001:4001 -p 4443:4443 -p 4433:4433/udp'
 
@@ -192,9 +190,9 @@ would last exactly one build, and it is the cheap cache anyway.
 goes stale. Mount a volume at `/opt/vibe-cache` and you pay it once per volume
 rather than once per box.
 
-**Disk: 60 GB.** The toolchain base alone is ~19 GB, and a release build of this
-workspace is not small. Check the `dev-image` workflow summary for the current
-size and rent at least double it.
+**Disk: 60 GB.** The image alone is ~19 GB, and a release build of this
+workspace is not small. Check the `builder-image` workflow summary and rent at
+least double.
 
 **Ports are still declared at creation** — you want 4001, 4443 and 4433/udp on a
 dev box too, or you cannot play what you build.
@@ -210,9 +208,6 @@ git config user.name "..." && git config user.email "..."
 **You still cannot build a Docker image here** — a Vast instance is a container
 without nesting privileges. Build the *project* on the box; build *images* in
 CI.
-
-Rebuild the dev image (`.github/workflows/dev-image.yml`) only when the
-toolchain, Node or the clone helper move.
 
 ## Facts worth not re-deriving
 

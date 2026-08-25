@@ -24,6 +24,8 @@ on:
       - 'destruction/**'
       - 'physx-bridge/**'
       - 'docker/**'
+      # vibe-clone ships in the toolchain image, not this one.
+      - '!docker/vibe-clone'
       - 'scripts/package-physx-server.sh'
       - 'scripts/smoke-image.sh'
       - '.github/workflows/server-image.yml'
