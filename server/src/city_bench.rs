@@ -2299,7 +2299,7 @@ fn a_settled_pile_stays_settled() {
             tick += 1;
         }
         let s = city.stats();
-        trace.push((s.awake_chunk_bodies, s.freeze_flips, s.contact_wakes, s.resettled_wakes));
+        trace.push((s.awake_chunk_bodies, s.freeze_flips, s.unfreeze_flips, s.resettled_wakes));
     }
 
     // "Quiet" is relative to the pile's own size, so this survives the
@@ -2309,7 +2309,7 @@ fn a_settled_pile_stays_settled() {
 
     eprintln!(
         "{:>4} {:>7} {:>9} {:>10} {:>11}",
-        "sec", "awake", "flips/s", "cwakes/s", "resettled/s"
+        "sec", "awake", "freeze/s", "unfreeze/s", "resettled/s"
     );
     for (i, w) in trace.iter().enumerate() {
         let p = if i == 0 { w } else { &trace[i - 1] };
