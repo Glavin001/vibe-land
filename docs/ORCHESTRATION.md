@@ -244,11 +244,15 @@ Worker vars, all in `control-plane/wrangler.jsonc`:
   than the failure: a box whose CUDA init quietly failed would serve a different
   snapshot rate and client movement mode while heartbeating healthy, and the
   fleet would keep paying for it.
-- **The first build has to wait for the toolchain.** `builder-image` and
-  `server-image` are triggered by the same push and run concurrently, so a
-  commit that changes both will build the server against a toolchain image that
-  does not exist yet. Re-run `server-image` once the builder lands. Only the
-  first one is affected; after that the toolchain is already published.
+- **`server-image` waits for the toolchain, and now does so by itself.**
+  `builder-image` and `server-image` are triggered by the same push and run
+  concurrently, so a commit that changes both would build the server against the
+  *previously* published toolchain. That is not theoretical: commit 1884281
+  moved Node into the builder, and `server-image` failed in 5m20s with
+  `npm: command not found` in the `web` stage while the correct builder was
+  still ten minutes out. `server-image.yml` now polls for a `builder-image` run
+  on the same commit and blocks until it succeeds — no run means the toolchain
+  did not change and the published tag is already right.
 
 ## Verified on a phone
 

@@ -63,6 +63,49 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # This workflow and builder-image.yml are triggered by the same push and
+      # run in PARALLEL. When a commit changes the toolchain, this job would
+      # otherwise pull the previously published builder tag and fail on whatever
+      # that commit added to it.
+      #
+      # That is not hypothetical: commit 1884281 moved Node into the toolchain
+      # image, and this job finished in 5m20s against the builder published
+      # before it, dying with `npm: command not found` in the `web` stage while
+      # the correct builder was still ten minutes from being pushed.
+      #
+      # So wait for it. No builder run on this commit means the toolchain did
+      # not change and the published tag is already correct.
+      - name: Wait for a builder-image run on this commit
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          api="$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/workflows/builder-image.yml/runs?head_sha=$GITHUB_SHA"
+          for attempt in $(seq 1 80); do
+            run="$(curl -sS -H "Authorization: Bearer $GH_TOKEN" "$api" \
+                   | jq -r '.workflow_runs[0] // empty | "\(.status) \(.conclusion) \(.html_url)"')"
+            if [ -z "$run" ]; then
+              echo "No builder-image run for this commit; the published tag is current."
+              exit 0
+            fi
+            set -- $run
+            status="$1"; conclusion="$2"; url="$3"
+            case "$status:$conclusion" in
+              completed:success)
+                echo "::notice::Toolchain rebuilt on this commit: $url"
+                exit 0 ;;
+              completed:*)
+                echo "::error::builder-image ${conclusion} on this commit ($url)."
+                echo "This image compiles against that toolchain, so building now would"
+                echo "either fail confusingly or silently use a stale one. Fix the"
+                echo "builder first, then re-run this."
+                exit 1 ;;
+            esac
+            echo "builder-image is ${status} (attempt ${attempt}/80); waiting 30s -- $url"
+            sleep 30
+          done
+          echo "::error::Timed out after 40 minutes waiting for builder-image."
+          exit 1
+
       # The builder image is ~15 GB; a standard runner has ~14 GB free.
       - name: Reclaim disk space
         uses: jlumbroso/free-disk-space@main
