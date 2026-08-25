@@ -1,9 +1,10 @@
-# Build the developer image: toolchain + warm build caches, no source.
+# Build the developer image: the builder toolchain plus Node and a workstation.
 #
 # Deliberately NOT triggered on every push. The image ships no application
-# source, so it only goes stale when the toolchain, Node, the dependency graph
-# or the clone helper move -- which is what the path filter below tracks. Adding
-# `server/**` here would rebuild a ~30 GB image on every commit for no benefit.
+# source and no build caches, so it only goes stale when the toolchain, Node or
+# the clone helper move -- which is what the path filter below tracks. It does
+# not depend on Cargo.lock or package-lock.json, because nothing here is
+# prebuilt from them.
 name: dev-image
 
 on:
@@ -12,21 +13,16 @@ on:
       - 'docker/Dockerfile.dev'
       - 'docker/vibe-clone'
       - '.github/workflows/dev-image.yml'
-      - 'Cargo.lock'
-      - 'client/package-lock.json'
   workflow_dispatch:
     inputs:
-      warm_ref:
-        description: Ref to warm the build caches against (must have the cuda-stress feature; defaults to the commit being built)
+      builder_image:
+        description: Override the toolchain base image
         required: false
-      warm_build:
-        description: Set 0 to ship without warm caches (much smaller, much slower on the box)
-        default: '1'
       tag:
         description: Tag for the resulting image
         default: latest
 
-# Two of these would race for the same tag and thrash the GHA cache.
+# Two of these would race for the same tag.
 concurrency:
   group: dev-image
   cancel-in-progress: false
@@ -40,10 +36,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # The 19 GB toolchain base plus a full release build needs far more than
-      # the ~14 GB a standard runner has free. If this image outgrows even a
-      # reclaimed runner, dispatch with warm_build=0 -- the image is still
-      # useful, it just pays the cold build on the box instead.
+      # The toolchain base is ~19 GB, which is more than the ~14 GB a standard
+      # runner has free before reclaiming.
       - name: Reclaim disk space
         uses: jlumbroso/free-disk-space@main
         with:
@@ -69,14 +63,7 @@ jobs:
           # (Glavin001), so this cannot be interpolated straight into a tag.
           owner="$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')"
           tag="${{ inputs.tag || 'latest' }}"
-          {
-            # The commit being built, not `main`: the warm build needs a ref
-            # that actually has the cuda-stress feature, and `main` does not
-            # until this work merges. A dispatch can still override it.
-            echo "warm_ref=${{ inputs.warm_ref || github.sha }}"
-            echo "warm_build=${{ inputs.warm_build || '1' }}"
-            echo "image=ghcr.io/${owner}/vibe-land-dev:${tag}"
-          } >> "$GITHUB_OUTPUT"
+          echo "image=ghcr.io/${owner}/vibe-land-dev:${tag}" >> "$GITHUB_OUTPUT"
 
       - name: Build and push dev image
         uses: docker/build-push-action@v6
@@ -87,11 +74,9 @@ jobs:
           tags: ${{ steps.meta.outputs.image }}
           build-args: |
             REPO_URL=${{ github.server_url }}/${{ github.repository }}
-            WARM_REF=${{ steps.meta.outputs.warm_ref }}
-            WARM_BUILD=${{ steps.meta.outputs.warm_build }}
-          # No cache-to: this image is large and rebuilt rarely, so exporting a
-          # full GHA cache costs more runner disk than it saves.
+            ${{ inputs.builder_image && format('BUILDER_IMAGE={0}', inputs.builder_image) || '' }}
           cache-from: type=gha
+          cache-to: type=gha,mode=min
 
       - name: Report what shipped
         run: |
@@ -112,5 +97,7 @@ jobs:
             echo "$manifest"
             echo '```'
             echo
-            echo "On the box: \`vibe-clone [ref]\`, then build."
+            echo "On the box: \`vibe-clone [ref]\`, then build. Nothing is prebuilt — the"
+            echo "first build is cold. Mount a Vast volume at \`/opt/vibe-cache\` to keep"
+            echo "\`target/\` and the cargo registry across instances."
           } >> "$GITHUB_STEP_SUMMARY"

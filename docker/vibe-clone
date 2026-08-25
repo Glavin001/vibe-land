@@ -1,26 +1,30 @@
 #!/usr/bin/env bash
-# Clone vibe-land onto a dev box and restore the image's warm build caches.
+# Clone vibe-land onto a dev box and wire up a persistent build cache.
 #
-# The dev image deliberately ships no source, so it does not go stale on every
-# push. What it does ship is the expensive half of a build -- the compiled
-# dependency graph in target/, the cxx and CUDA objects, and node_modules --
-# parked at /opt/vibe-warm. This puts them back over a fresh checkout.
+# The dev image ships no source and no prebuilt caches, so it does not go stale
+# on every push and does not carry a snapshot of somebody else's build. What it
+# does instead is keep the two expensive caches OUTSIDE the checkout, at
+# $VIBE_CACHE, and symlink them in: the crate target/ tree and the cargo
+# registry. That means:
 #
-# Moving a warmed target/ onto a different commit is safe: cargo fingerprints
-# every unit on the next build and rebuilds whatever genuinely differs. Worst
-# case it rebuilds everything, which is exactly what a cold box would do anyway.
+#   - switching refs, or deleting and re-cloning, keeps the build cache
+#   - mounting a Vast volume at $VIBE_CACHE keeps it across instances, so the
+#     cold build is paid once per volume rather than once per box
+#
+# Moving a cache between commits is safe: cargo fingerprints every unit on the
+# next build and rebuilds whatever genuinely differs. Worst case it rebuilds
+# everything, which is exactly what a cold box would do anyway.
 #
 #   vibe-clone                     # default branch
 #   vibe-clone my-branch           # a branch, tag or commit
 #   VIBE_REPO_URL=... vibe-clone   # a fork
 #
-# Idempotent: run it again to move the existing checkout to another ref without
-# losing the caches.
+# Idempotent: run it again to move the existing checkout to another ref.
 set -euo pipefail
 
 REPO_URL="${VIBE_REPO_URL:-https://github.com/Glavin001/vibe-land}"
 DEST="${VIBE_DEST:-/root/vibe-land}"
-WARM="${VIBE_WARM:-/opt/vibe-warm}"
+CACHE="${VIBE_CACHE:-/opt/vibe-cache}"
 REF="${1:-}"
 
 log() { echo "[vibe-clone] $*"; }
@@ -39,16 +43,34 @@ else
   [[ -n "$REF" ]] && git -C "$DEST" checkout "$REF"
 fi
 
-# Restore the caches. `mv` rather than copy: they are on the same filesystem, so
-# this is a rename, and doing it once means a second run does not pay again.
-if [[ -d "$WARM/target" && ! -d "$DEST/target" ]]; then
-  log "restoring warm target/ ($(du -sh "$WARM/target" 2>/dev/null | cut -f1))"
-  mv "$WARM/target" "$DEST/target"
-fi
-if [[ -d "$WARM/node_modules" && ! -d "$DEST/client/node_modules" ]]; then
-  log "restoring warm client/node_modules"
-  mv "$WARM/node_modules" "$DEST/client/node_modules"
-fi
+# Link the caches in. `-e` rather than `-d` so a dangling symlink from a
+# previous run (cache dir removed, volume unmounted) is replaced, not skipped.
+link_cache() {
+  local name="$1" path="$2"
+  mkdir -p "$CACHE/$name"
+  if [[ -L "$path" ]]; then
+    ln -sfn "$CACHE/$name" "$path"
+  elif [[ -d "$path" ]] && [[ -z "$(ls -A "$path")" ]]; then
+    rmdir "$path" && ln -s "$CACHE/$name" "$path"
+  elif [[ -e "$path" ]]; then
+    log "$path exists with contents and is not a symlink; leaving it alone"
+    return
+  else
+    mkdir -p "$(dirname "$path")"
+    ln -s "$CACHE/$name" "$path"
+  fi
+  log "$path -> $CACHE/$name ($(du -sh "$CACHE/$name" 2>/dev/null | cut -f1))"
+}
+link_cache target "$DEST/target"
+# The cargo registry lives outside the checkout already, so it survives a
+# re-clone on its own -- but not a new instance. Linking it into the cache is
+# what makes a mounted volume worth having.
+link_cache cargo-registry "${CARGO_HOME:-/root/.cargo}/registry"
+
+# client/node_modules is deliberately NOT linked. `npm ci` unlinks whatever is
+# at that path and creates a real directory, so the symlink would survive
+# exactly one build. It is also the cheap cache -- seconds, not the tens of
+# minutes target/ costs.
 
 git config --global --add safe.directory "$DEST" 2>/dev/null || true
 
@@ -56,10 +78,14 @@ cat <<EOF
 
 [vibe-clone] ready at $DEST
   commit:  $(git -C "$DEST" rev-parse --short HEAD) on $(git -C "$DEST" rev-parse --abbrev-ref HEAD)
+  cache:   $CACHE  (mount a Vast volume here to keep it across instances)
 
   build:   cd $DEST && cargo build --release -p web-fps-server --features cuda-stress
+  client:  cd $DEST/client && npm ci && npm run build:wasm
   run:     ./scripts/run-city-server.sh          # restart is the reset
-  client:  cd client && npm run dev
+
+  The first build is cold and slow -- nothing is prebuilt, by design. Every
+  build after it reuses $CACHE, including across re-clones and ref switches.
 
   To push, set credentials at runtime -- they are deliberately not in the image:
     git -C $DEST remote set-url origin https://<token>@github.com/Glavin001/vibe-land

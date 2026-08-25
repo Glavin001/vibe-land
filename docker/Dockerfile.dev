@@ -1,25 +1,33 @@
-# Developer image: the toolchain, plus warm build caches, minus the source.
+# Developer image: the build toolchain plus a workstation, minus the source.
 #
-# The runtime image (docker/Dockerfile) ships a compiled server and nothing to
-# compile with. This one is the opposite: everything needed to build the whole
-# project on a rented GPU box.
+# This is deliberately thin. It is `vibe-land-builder` -- the exact image
+# docker/Dockerfile's `build` stage uses, and therefore already proven able to
+# compile this project, since that is what every server-image CI run does -- with
+# four additions:
+#
+#   1. Node 22, 2. wasm-pack, 3. the wasm32 target, 4. a few dev tools.
+#
+# The builder can build the *server* but not the *client*: the runtime image
+# builds the client in a separate `node:22-bookworm` stage, so the toolchain
+# image never needed Node. On a dev box you want both.
 #
 # It exists because a Vast instance cannot build a Docker image -- it is itself
 # a container without nesting privileges -- so the only way to get a build
 # environment onto a rented GPU is to arrive as one.
 #
 # THE SOURCE IS NOT BAKED IN. It is cloned at load by `vibe-clone`, so this
-# image does not go stale every time someone pushes, and it only needs
-# rebuilding when the toolchain, Node, or the dependency graph moves.
+# image does not go stale every time someone pushes.
 #
-# What IS baked is the expensive part: the cargo registry, the compiled
-# dependency graph, the cxx/CUDA objects, and client/node_modules. A cold build
-# of this workspace compiles hundreds of crates, the cxx bridge, and the CUDA
-# stress kernel for eight architectures, then links against static PhysX. Baking
-# those means a fresh clone rebuilds only the crates that actually differ.
+# NO BUILD CACHES ARE BAKED IN EITHER, and that is a deliberate reversal. An
+# earlier version warmed target/ and node_modules at image build time. It cost
+# ~10 GB, went stale the moment anyone pushed, and was the direct cause of every
+# failure this image has had (a wasm-pack MSRV break and a wrong warm ref). The
+# durable answer is a Vast *volume* mounted at the cache path below: it survives
+# instance destruction and accumulates real builds instead of one stale
+# snapshot. See `vibe-clone` and the vastai-deploy skill.
 #
 # Build:  see .github/workflows/dev-image.yml
-# Run:    vastai create instance <id> --image <this> --disk 80 --ssh --direct
+# Run:    vastai create instance <id> --image <this> --disk 60 --ssh --direct
 #
 # NOTE ON LAUNCH MODE: this image is for `--ssh --direct`, which injects SSH and
 # does NOT run an ENTRYPOINT. That is the opposite of the runtime image, which
@@ -64,80 +72,40 @@ RUN rustup target add wasm32-unknown-unknown \
  && curl -sSf https://rustwasm.github.io/wasm-pack/installer/init.sh | sh \
  && wasm-pack --version
 
-# --- warm the caches ---------------------------------------------------------
-# Source is cloned here only to produce the caches, then deleted. WARM_REF picks
-# what to warm against; any reasonably recent commit gives a usable dependency
-# graph, because what is being cached is overwhelmingly third-party.
-#
-# NO CREDENTIALS ARE BAKED. Anonymous HTTPS clone, so this image is safe to
-# publish. Pushing from the box uses a token supplied at runtime -- see the end
-# of this file.
-ARG REPO_URL=https://github.com/Glavin001/vibe-land
-# WARM_REF must name a commit that HAS the `cuda-stress` feature -- see the
-# guard below. CI passes the commit it is building, which is always correct;
-# `main` is only right once this branch has merged.
-ARG WARM_REF=main
-ARG WARM_BUILD=1
-
-RUN if [ "${WARM_BUILD}" = "1" ]; then \
-      git clone "${REPO_URL}" /tmp/warm \
-      && cd /tmp/warm && git checkout "${WARM_REF}" \
-      && echo "warming against $(git rev-parse HEAD)" \
-      # An honest error instead of a confusing one. Building --features
-      # cuda-stress against a ref that predates the feature fails deep inside
-      # cargo with an unknown-feature error and exit 101, which reads like a
-      # compile failure. This is exactly how the first warm build died: the
-      # default WARM_REF was `main`, and the feature lives on a branch.
-      && { grep -q '^cuda-stress *=' server/Cargo.toml \
-           || { echo "WARM_REF=${WARM_REF} has no 'cuda-stress' feature in server/Cargo.toml."; \
-                echo "Pass a ref that does, or set WARM_BUILD=0."; exit 1; }; } \
-      && cargo build --release -p web-fps-server --features cuda-stress \
-      && (cd client && npm ci --no-audit --no-fund && npm run build:wasm) \
-      # Keep the caches, drop the source. `target/` and `node_modules/` are
-      # path-sensitive but not content-sensitive: cargo re-fingerprints on the
-      # next build and rebuilds only what genuinely changed, so a target tree
-      # warmed from a different commit is a speed-up, never a correctness risk.
-      && mkdir -p /opt/vibe-warm \
-      && mv /tmp/warm/target /opt/vibe-warm/target \
-      && mv /tmp/warm/client/node_modules /opt/vibe-warm/node_modules \
-      && rm -rf /tmp/warm; \
-    else \
-      echo "WARM_BUILD=0: shipping without warm caches"; \
-      mkdir -p /opt/vibe-warm; \
-    fi
-
-# The warm build above leaves ~/.cargo/registry and ~/.cargo/git populated.
-# Those live outside the repo, so they need no special handling and survive the
-# checkout being deleted -- between them and target/ they are the single biggest
-# saving in this image.
-
 # --- the clone helper --------------------------------------------------------
 COPY docker/vibe-clone /usr/local/bin/vibe-clone
 RUN chmod +x /usr/local/bin/vibe-clone
+
+# Where `vibe-clone` keeps target/ and node_modules so they survive re-cloning
+# and switching refs. Mount a Vast volume here to keep them across instances.
+ENV VIBE_CACHE=/opt/vibe-cache
+RUN mkdir -p "$VIBE_CACHE"
 
 # Running as root against a tree git did not create.
 RUN git config --global --add safe.directory '*'
 
 # --- provenance --------------------------------------------------------------
+ARG REPO_URL=https://github.com/Glavin001/vibe-land
 RUN mkdir -p /opt/vibe-land \
  && { \
       echo "image=dev"; \
       echo "repo_url=${REPO_URL}"; \
-      echo "warm_ref=${WARM_REF}"; \
-      echo "warm_build=${WARM_BUILD}"; \
       echo "node=$(node --version)"; \
+      echo "npm=$(npm --version)"; \
       echo "rust=$(rustc --version | cut -d' ' -f2)"; \
+      echo "wasm_pack=$(wasm-pack --version | cut -d' ' -f2)"; \
       cat /opt/toolchain/sources.txt 2>/dev/null || echo "toolchain_sources=unknown"; \
     } > /opt/vibe-land/dev-image.txt \
  && cat /opt/vibe-land/dev-image.txt
 
 # Fail here rather than on the box, where rent is already being paid.
 RUN command -v node >/dev/null \
+ && command -v npm >/dev/null \
  && command -v wasm-pack >/dev/null \
  && command -v vibe-clone >/dev/null \
+ && rustup target list --installed | grep -qx wasm32-unknown-unknown \
  && test -f "$PHYSX_ROOT/bin/linux.x86_64/release/libPhysXGpu_64.so" \
- && test -f "$CUDA_HOME/bin/nvcc" \
- && test -d /opt/vibe-warm
+ && test -f "$CUDA_HOME/bin/nvcc"
 
 WORKDIR /root
 

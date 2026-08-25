@@ -141,11 +141,23 @@ after any debugging session.
 
 ## Developing on a Vast box
 
-A second image exists for this: `ghcr.io/glavin001/vibe-land-dev`. It is the
-toolchain plus Node, wasm-pack and dev tooling, with **warm build caches but no
-source** — the cargo registry, the compiled dependency graph, the cxx/CUDA
-objects and `client/node_modules`. Source is cloned at load, so the image does
-not go stale on every push.
+A second image exists for this: `ghcr.io/glavin001/vibe-land-dev`. It is
+**exactly the builder image** — `ghcr.io/glavin001/vibe-land-builder`, the same
+one `docker/Dockerfile`'s `build` stage uses and therefore already proven to
+compile this project — plus Node 22, wasm-pack, the `wasm32-unknown-unknown`
+target, a few dev tools and `vibe-clone`.
+
+The builder alone can build the *server* but not the *client*: the runtime image
+builds the client in a separate `node:22-bookworm` stage, so the toolchain image
+never needed Node. Those four additions are the whole difference. If the dev
+image is ever unavailable, `vibe-land-builder` plus ~2 minutes of `apt` and the
+wasm-pack installer gets you the same box.
+
+**Nothing is prebuilt.** An earlier version baked warm `target/` and
+`node_modules` trees. That cost ~10 GB, went stale on the next push, and caused
+every failure the image ever had. Persistence now comes from a **Vast volume
+mounted at `/opt/vibe-cache`**, which survives instance destruction and
+accumulates real builds instead of one stale snapshot.
 
 **Launch mode is the opposite of production.** Use `--ssh --direct`, which
 injects SSH and does **not** run an ENTRYPOINT. `--args` (what the runtime image
@@ -154,7 +166,7 @@ uses) gives you a container as-is with no shell.
 ```bash
 vastai create instance <offer_id> \
   --image ghcr.io/glavin001/vibe-land-dev:latest \
-  --disk 80 --ssh --direct \
+  --disk 60 --ssh --direct \
   --env '-p 4001:4001 -p 4443:4443 -p 4433:4433/udp'
 
 vastai show instance <id> --raw | jq -r '.ssh_host, .ssh_port'
@@ -171,13 +183,18 @@ cargo build --release -p web-fps-server --features cuda-stress
 ./scripts/run-city-server.sh
 ```
 
-`vibe-clone` restores the warm caches over the fresh checkout. Moving a warmed
-`target/` onto a different commit is safe — cargo re-fingerprints and rebuilds
-only what genuinely differs.
+`vibe-clone` symlinks `target/` and the cargo registry into `/opt/vibe-cache`,
+so they survive switching refs and re-cloning. `client/node_modules` is
+deliberately not linked — `npm ci` unlinks whatever is at that path, so the link
+would last exactly one build, and it is the cheap cache anyway.
 
-**Disk: 80 GB, not 25.** The toolchain base alone is ~19 GB before the warm
-caches. Check the `dev-image` workflow summary for the current size and rent at
-least double it.
+**The first build is cold and slow.** That is the trade for an image that never
+goes stale. Mount a volume at `/opt/vibe-cache` and you pay it once per volume
+rather than once per box.
+
+**Disk: 60 GB.** The toolchain base alone is ~19 GB, and a release build of this
+workspace is not small. Check the `dev-image` workflow summary for the current
+size and rent at least double it.
 
 **Ports are still declared at creation** — you want 4001, 4443 and 4433/udp on a
 dev box too, or you cannot play what you build.
@@ -195,9 +212,7 @@ without nesting privileges. Build the *project* on the box; build *images* in
 CI.
 
 Rebuild the dev image (`.github/workflows/dev-image.yml`) only when the
-toolchain, Node, `Cargo.lock` or `client/package-lock.json` move. Dispatch with
-`warm_build=0` for a much smaller image that pays the cold build on the box
-instead.
+toolchain, Node or the clone helper move.
 
 ## Facts worth not re-deriving
 
