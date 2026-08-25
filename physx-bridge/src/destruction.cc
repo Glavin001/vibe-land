@@ -2101,6 +2101,30 @@ constexpr float kContactSpikeRatio = 2.0f;
 /// impact does not get absorbed into the baseline before it can be detected.
 constexpr float kContactBaselineAlpha = 0.05f;
 
+/// World gravity, not Earth's.
+///
+/// Both halves of the resting-load model compare an impulse against what a body
+/// weighs at rest, so both have to use the gravity bodies actually fall under.
+/// note_contact_pair was fixed to read this and resolve_support_loads was not,
+/// so with the world at 20 m/s^2 the support side's reference load was 49% of
+/// the real one -- one load model, two gravities, differing by 2x.
+///
+/// The direction matters: too small a reference makes the weight-bearing gate
+/// fire on half the load it should, which makes a body carrying weight look
+/// unsupported, and an unsupported body is one freeze refuses to retire.
+float world_gravity() {
+  static const float value = [] {
+    if (const char *raw = std::getenv("VIBE_WORLD_GRAVITY")) {
+      const float parsed = static_cast<float>(std::fabs(std::atof(raw)));
+      if (parsed > 0.0f) {
+        return parsed;
+      }
+    }
+    return 20.0f;
+  }();
+  return value;
+}
+
 float contact_wake_ratio() {
   static const float value = [] {
     if (const char *raw = std::getenv("VIBE_CITY_CONTACT_WAKE_RATIO")) {
@@ -2121,22 +2145,7 @@ void DestructionManager::note_contact_pair(std::uint32_t entity_a,
   if (ratio <= 0.0f || frozen_entities_.empty() || impulse <= 0.0f) {
     return;
   }
-  // World gravity, not Earth's. This decides what "lying still" costs, so it
-  // has to be the gravity bodies actually fall under: with the world at
-  // 20 m/s^2 and this at 9.81, the reference resting load was 49% of the real
-  // one and the effective threshold was ~1.96 rather than the 4 it advertises
-  // -- twice as trigger-happy as designed, releasing frozen bodies on contacts
-  // that are merely other debris lying on them.
-  const float gravity = [] {
-    if (const char *raw = std::getenv("VIBE_WORLD_GRAVITY")) {
-      const float parsed = static_cast<float>(std::fabs(std::atof(raw)));
-      if (parsed > 0.0f) {
-        return parsed;
-      }
-    }
-    return 20.0f;
-  }();
-  const float g_dt = gravity * (last_dt_ > 0.0f ? last_dt_ : 1.0f / 60.0f);
+  const float g_dt = world_gravity() * (last_dt_ > 0.0f ? last_dt_ : 1.0f / 60.0f);
   // Each side: frozen participant, struck by the OTHER side's dynamic mass.
   const auto consider = [&](std::uint32_t entity, float striker_mass) {
     if (striker_mass <= 0.0f) {
@@ -2260,7 +2269,8 @@ void DestructionManager::resolve_support_loads() {
     }
     return static_cast<std::uint64_t>(10);
   }();
-  const float g_dt = 9.81f * (last_dt_ > 0.0f ? last_dt_ : 1.0f / 60.0f);
+  // Was 9.81 while note_contact_pair used world gravity. See world_gravity().
+  const float g_dt = world_gravity() * (last_dt_ > 0.0f ? last_dt_ : 1.0f / 60.0f);
 
   // A/B switch for the lookup strategy. Same binary, same scene, same shot
   // plan -- the only way to compare these two honestly, because GPU
