@@ -1909,6 +1909,26 @@ namespace {
 /// this touch" independent of chunk mass -- the same test works for a 40 kg
 /// panel and a 4 t slab. 4 corresponds to an impact at roughly 0.7 m/s.
 /// 0 disables contact wakes entirely.
+///
+/// KNOWN DEFECT: the reference load is ONE body lying still, but a body inside
+/// a pile carries the accumulated weight of everything above it. A chunk under
+/// five others receives ~5x m*g*dt of contact impulse while perfectly at rest,
+/// so it scores ratio 5, exceeds this threshold of 4, and is released -- every
+/// tick, forever. The test cannot distinguish "something hit me" from "I am
+/// buried", which is the normal state of rubble.
+///
+/// Measured on the demolished-tower bench (freeze on, production terrain):
+///
+///   ratio 4 (default)  ->  280 awake non-kinematic bodies
+///   ratio 0 (disabled) ->    1
+///
+/// That is the whole never-settles bug. The awake bodies are not moving --
+/// p50 0.033 m/s, ~90x under the sleep threshold -- they are eligible to
+/// settle and are being released from freeze by their own neighbours' weight.
+///
+/// The fix is to compare against the load this body actually bears at rest,
+/// not against a single body's, so that being buried is not mistaken for being
+/// struck. Raising the ratio only moves the pile depth at which it misfires.
 float contact_wake_ratio() {
   static const float value = [] {
     if (const char *raw = std::getenv("VIBE_CITY_CONTACT_WAKE_RATIO")) {
