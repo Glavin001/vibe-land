@@ -93,6 +93,27 @@ fn pct(values: &mut Vec<f32>, p: f32) -> f32 {
 #[test]
 #[ignore = "benchmark: needs a GPU"]
 fn demolished_tower_comes_to_rest() {
+    // KNOWN FAILING as of 2026-08-25, and the cause is isolated: freeze.
+    //
+    //   VIBE_CITY_FREEZE=1  ->   1% of 185 bodies asleep after 20 s  (fails)
+    //   VIBE_CITY_FREEZE=0  ->  passes
+    //
+    // Same scene, same stimulus, one variable. Rigid-body contact is ruled out
+    // independently: physx-bridge/tests/stack_settling.rs settles 10,416
+    // concrete boxes to *exactly* 0.0000 m/s at PhysX's default 4/1 solver
+    // iterations under the same 20 m/s^2 gravity, so neither stacking, pile
+    // depth, body count, gravity nor iteration count is responsible.
+    //
+    // The mechanism is already documented in freeze.rs: a frozen body is
+    // kinematic, and a kinematic body squeezed by its neighbours becomes a
+    // depenetration pump for them -- recorded there as "198 bodies permanently
+    // awake". Raising world gravity to 20 m/s^2 doubled the squeeze, which is
+    // why this surfaced when gravity changed without gravity being the fault.
+    //
+    // Supporting telemetry from a 3-hour idle server: 185k freeze flips against
+    // 179k unfreezes, 164k contact wakes, and backstop_releases at 182 against
+    // its own documented expectation of 0.
+
     let mut world = World::new(WorldConfig::default()).expect("GPU world");
     world
         .add_static_box(StaticBoxDesc {
