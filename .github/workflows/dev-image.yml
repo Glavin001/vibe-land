@@ -17,8 +17,8 @@ on:
   workflow_dispatch:
     inputs:
       warm_ref:
-        description: Ref to warm the build caches against
-        default: main
+        description: Ref to warm the build caches against (must have the cuda-stress feature; defaults to the commit being built)
+        required: false
       warm_build:
         description: Set 0 to ship without warm caches (much smaller, much slower on the box)
         default: '1'
@@ -70,7 +70,10 @@ jobs:
           owner="$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')"
           tag="${{ inputs.tag || 'latest' }}"
           {
-            echo "warm_ref=${{ inputs.warm_ref || 'main' }}"
+            # The commit being built, not `main`: the warm build needs a ref
+            # that actually has the cuda-stress feature, and `main` does not
+            # until this work merges. A dispatch can still override it.
+            echo "warm_ref=${{ inputs.warm_ref || github.sha }}"
             echo "warm_build=${{ inputs.warm_build || '1' }}"
             echo "image=ghcr.io/${owner}/vibe-land-dev:${tag}"
           } >> "$GITHUB_OUTPUT"

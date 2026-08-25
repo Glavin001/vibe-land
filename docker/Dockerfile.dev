@@ -73,6 +73,9 @@ RUN rustup target add wasm32-unknown-unknown \
 # publish. Pushing from the box uses a token supplied at runtime -- see the end
 # of this file.
 ARG REPO_URL=https://github.com/Glavin001/vibe-land
+# WARM_REF must name a commit that HAS the `cuda-stress` feature -- see the
+# guard below. CI passes the commit it is building, which is always correct;
+# `main` is only right once this branch has merged.
 ARG WARM_REF=main
 ARG WARM_BUILD=1
 
@@ -80,6 +83,14 @@ RUN if [ "${WARM_BUILD}" = "1" ]; then \
       git clone "${REPO_URL}" /tmp/warm \
       && cd /tmp/warm && git checkout "${WARM_REF}" \
       && echo "warming against $(git rev-parse HEAD)" \
+      # An honest error instead of a confusing one. Building --features
+      # cuda-stress against a ref that predates the feature fails deep inside
+      # cargo with an unknown-feature error and exit 101, which reads like a
+      # compile failure. This is exactly how the first warm build died: the
+      # default WARM_REF was `main`, and the feature lives on a branch.
+      && { grep -q '^cuda-stress *=' server/Cargo.toml \
+           || { echo "WARM_REF=${WARM_REF} has no 'cuda-stress' feature in server/Cargo.toml."; \
+                echo "Pass a ref that does, or set WARM_BUILD=0."; exit 1; }; } \
       && cargo build --release -p web-fps-server --features cuda-stress \
       && (cd client && npm ci --no-audit --no-fund && npm run build:wasm) \
       # Keep the caches, drop the source. `target/` and `node_modules/` are
