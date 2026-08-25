@@ -434,6 +434,37 @@ pub struct DestructionStats {
     pub readback_ms: f32,
     pub events_ms: f32,
     pub filters_ms: f32,
+    /// Phases that used to be untimed inside the `stress_solve_ms` bracket and
+    /// so showed up only as the gap between it and the sum of its parts.
+    pub ccd_ms: f32,
+    pub support_loads_ms: f32,
+    /// Contact pairs resolve_support_loads consumed. `support_loads_ms` scales
+    /// with this, not with wall time, so normalise by it when comparing runs.
+    pub support_pair_loads: u32,
+    pub shape_readback_ms: f32,
+    /// The adapter's own per-phase timers, deltaed to per-tick. These
+    /// decompose the phases the bridge times from OUTSIDE the adapter:
+    /// `begin_ms` ~= contact_processing + gravity, `solve_ms` ~= stress_solve_cpu
+    /// + gpu_stress_solve, `end_ms` ~= fracture_topology + mapping_validation.
+    /// They were computed every tick and discarded, which left 2-3.5 ms inside
+    /// the largest phase in the tick unaccounted for.
+    pub blast_contact_processing_ms: f32,
+    pub blast_gravity_ms: f32,
+    pub blast_stress_solve_cpu_ms: f32,
+    pub blast_fracture_topology_ms: f32,
+    pub blast_mapping_validation_ms: f32,
+    pub blast_sleeping_actors_skipped: u64,
+    /// The last two untimed blocks inside the `stress_solve_ms` bracket:
+    /// per-slot dispatch (live-slot gather + telemetry read + topology
+    /// compare) and the 1-in-30 bond-utilisation scan. With these, the bracket
+    /// minus its children is genuinely zero rather than "small enough to round
+    /// to 0.00 at two decimals".
+    pub slot_dispatch_ms: f32,
+    pub bond_sample_ms: f32,
+    /// Slot-ticks where topology was unchanged and the event diff was skipped.
+    /// The one counter that says whether `events_ms`/`filters_ms: 0.0` means
+    /// "the quiet-skip fired" or "the measurement is broken".
+    pub quiet_slot_ticks: u64,
     pub sleeping_chunk_bodies: u32,
     /// Structures currently solved on the GPU. Zero while the CUDA solver is
     /// compiled in means every graph fell below the bond crossover, or CUDA
@@ -1393,6 +1424,23 @@ mod ffi {
         events_ms: f32,
         /// Filter/property stamping for new or migrated bodies and shapes.
         filters_ms: f32,
+        /// Per-body CCD/depenetration application walk, resolve_support_loads,
+        /// and the topology-changed shape readback. Previously untimed inside
+        /// the stress_solve_ms bracket.
+        ccd_ms: f32,
+        support_loads_ms: f32,
+        support_pair_loads: u32,
+        shape_readback_ms: f32,
+        blast_contact_processing_ms: f32,
+        blast_gravity_ms: f32,
+        blast_stress_solve_cpu_ms: f32,
+        blast_fracture_topology_ms: f32,
+        blast_mapping_validation_ms: f32,
+        blast_sleeping_actors_skipped: u64,
+        slot_dispatch_ms: f32,
+        bond_sample_ms: f32,
+        /// Slot-ticks where the topology diff was skipped as quiet.
+        quiet_slot_ticks: u64,
         sleeping_chunk_bodies: u32,
         repeated_body_snapshots: u64,
         gpu_stress_structures: u32,
@@ -1953,6 +2001,19 @@ impl From<ffi::FfiDestructionStats> for DestructionStats {
             readback_ms: value.readback_ms,
             events_ms: value.events_ms,
             filters_ms: value.filters_ms,
+            ccd_ms: value.ccd_ms,
+            support_loads_ms: value.support_loads_ms,
+            support_pair_loads: value.support_pair_loads,
+            shape_readback_ms: value.shape_readback_ms,
+            blast_contact_processing_ms: value.blast_contact_processing_ms,
+            blast_gravity_ms: value.blast_gravity_ms,
+            blast_stress_solve_cpu_ms: value.blast_stress_solve_cpu_ms,
+            blast_fracture_topology_ms: value.blast_fracture_topology_ms,
+            blast_mapping_validation_ms: value.blast_mapping_validation_ms,
+            blast_sleeping_actors_skipped: value.blast_sleeping_actors_skipped,
+            slot_dispatch_ms: value.slot_dispatch_ms,
+            bond_sample_ms: value.bond_sample_ms,
+            quiet_slot_ticks: value.quiet_slot_ticks,
             sleeping_chunk_bodies: value.sleeping_chunk_bodies,
             repeated_body_snapshots: value.repeated_body_snapshots,
             gpu_stress_structures: value.gpu_stress_structures,

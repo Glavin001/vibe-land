@@ -92,6 +92,13 @@ pub struct PhysxPhysicsArena {
     cached_body_snapshots: Vec<bridge::BodySnapshot>,
     cached_vehicle_snapshots: Vec<bridge::VehicleSnapshot>,
     snapshots_valid: bool,
+    /// Interior of the old single `dynamics_ms` bracket: the three FFI
+    /// readbacks after the step, the player refresh, and the vehicle control
+    /// loop before it. Without these, `dynamics_ms - physics_last_step_ms` was
+    /// a real cost with no name.
+    last_readback_ms: f32,
+    last_refresh_players_ms: f32,
+    last_vehicle_control_ms: f32,
 }
 
 impl PhysxPhysicsArena {
@@ -137,6 +144,9 @@ impl PhysxPhysicsArena {
             cached_body_snapshots: Vec::new(),
             cached_vehicle_snapshots: Vec::new(),
             snapshots_valid: false,
+            last_readback_ms: 0.0,
+            last_refresh_players_ms: 0.0,
+            last_vehicle_control_ms: 0.0,
         })
     }
 
@@ -618,6 +628,7 @@ impl PhysxPhysicsArena {
     }
 
     pub fn step_vehicles_and_dynamics(&mut self, _dt: f32) -> (f32, f32) {
+        let vehicles_started = std::time::Instant::now();
         for (&id, vehicle) in &self.vehicles {
             if vehicle.driver_id == 0 {
                 continue;
@@ -629,8 +640,15 @@ impl PhysxPhysicsArena {
                 .drive_vehicle(NS_VEHICLE | (id & ID_MASK), throttle, steer, brake)
                 .expect("PhysX vehicle control failed");
         }
+        self.last_vehicle_control_ms =
+            vehicles_started.elapsed().as_secs_f32() * 1000.0;
         let started = std::time::Instant::now();
         self.world.step().expect("PhysX GPU simulation step failed");
+        // `dynamics_ms` used to be ONE bracket around the step and everything
+        // below it, so three separate FFI readbacks and the player refresh were
+        // folded into a number labelled as the simulation step. Only the step
+        // is `physics_last_step_ms`; the difference was unattributed.
+        let after_step = std::time::Instant::now();
         self.contact_events = self
             .world
             .take_contact_events()
@@ -643,6 +661,9 @@ impl PhysxPhysicsArena {
             .world
             .vehicle_snapshots()
             .expect("PhysX vehicle readback failed");
+        let after_readback = std::time::Instant::now();
+        self.last_readback_ms =
+            after_readback.duration_since(after_step).as_secs_f32() * 1000.0;
         for body in &self.cached_body_snapshots {
             if body.entity_id & 0xf000_0000 != NS_BATTERY {
                 continue;
@@ -656,9 +677,16 @@ impl PhysxPhysicsArena {
             }
         }
         self.snapshots_valid = true;
+        let before_players = std::time::Instant::now();
         self.refresh_players();
+        self.last_refresh_players_ms =
+            before_players.elapsed().as_secs_f32() * 1000.0;
         let ms = started.elapsed().as_secs_f32() * 1000.0;
-        (0.0, ms)
+        // Returned as (vehicle_ms, dynamics_ms). The first was hardcoded 0.0
+        // and published as `vehicle_ms`, so the panel showed a real-looking
+        // zero for a cost nobody had measured. It is now the actual vehicle
+        // control cost, measured above the step.
+        (self.last_vehicle_control_ms, ms)
     }
 
     pub fn apply_vehicle_player_collisions(&mut self) -> Vec<u32> {
@@ -1021,6 +1049,9 @@ impl PhysxPhysicsArena {
             last_fetch_ms: stats.last_fetch_ms,
             last_gpu_wait_ms: stats.last_gpu_wait_ms,
             last_fetch_copy_ms: stats.last_fetch_copy_ms,
+            last_readback_ms: self.last_readback_ms,
+            last_refresh_players_ms: self.last_refresh_players_ms,
+            last_vehicle_control_ms: self.last_vehicle_control_ms,
         }
     }
 

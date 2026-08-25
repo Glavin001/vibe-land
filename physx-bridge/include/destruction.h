@@ -389,7 +389,9 @@ private:
   std::uint32_t total_broken_bonds_ = 0;
   float last_stress_solve_ms_ = 0.0f;
   /// Per-phase breakdown of destruction_tick.
-  /// Serial beginTick (contact/gravity injection) across all structures.
+  /// beginTick (contact/gravity injection) across all structures. Parallel
+  /// over slots by default (VIBE_CITY_SNAPSHOT_BEGIN); only the wakeUp apply
+  /// inside it is serial.
   float last_begin_ms_ = 0.0f;
   /// Parallel/CUDA solveTick only.
   float last_solve_ms_ = 0.0f;
@@ -398,6 +400,28 @@ private:
   float last_readback_ms_ = 0.0f;
   float last_events_ms_ = 0.0f;
   float last_filters_ms_ = 0.0f;
+  /// The three phases that used to sit inside the stress_solve_ms bracket
+  /// with no timer of their own, and so appeared only as the gap between the
+  /// native tick and the sum of its parts. Two of them are O(live bodies)
+  /// EVERY tick, including quiet ticks, which is why the gap was present at
+  /// idle too.
+  /// Per-body CCD/depenetration application walk.
+  float last_ccd_ms_ = 0.0f;
+  /// resolve_support_loads(): contact loads -> supporter edges.
+  float last_support_loads_ms_ = 0.0f;
+  /// Contact pairs that resolve fed on. This is what support_loads_ms tracks
+  /// -- comparing the ms alone across runs is meaningless, because damage (and
+  /// therefore contact count) is not reproducible run to run.
+  std::uint32_t last_support_pair_loads_ = 0;
+  /// refresh_shape_snapshots() on topology-changed slots.
+  float last_shape_readback_ms_ = 0.0f;
+  /// The live-slot gather plus the per-slot telemetry read and topology
+  /// compare -- the "per-slot dispatch" the field docs blamed the gap on.
+  float last_slot_dispatch_ms_ = 0.0f;
+  /// The 1-in-30 bond-utilisation scan. Zero on the other 29 ticks; a full
+  /// walk of every bond of every structure on the 30th, so it is a periodic
+  /// spike rather than a steady cost and must not be averaged away.
+  float last_bond_sample_ms_ = 0.0f;
   /// Worst bond utilisation (stress / that bond's own elastic limit) seen in
   /// the last solve, and how many bonds sat at half their limit or above.
   float last_bond_utilisation_max_ = 0.0f;

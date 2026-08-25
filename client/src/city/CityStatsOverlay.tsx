@@ -47,6 +47,17 @@ interface CityServerStats {
   solve_ms: number;
   begin_ms: number;
   end_ms: number;
+  /// Native-side phases that were plumbed all the way to /match-stats but had
+  /// no row here. Their absence is not harmless: reading `0.0` off a panel
+  /// that simply never showed them is how the unattributed-gap hunt started
+  /// down the wrong path. Optional -- older servers omit them.
+  readback_ms?: number;
+  events_ms?: number;
+  filters_ms?: number;
+  ccd_ms?: number;
+  support_loads_ms?: number;
+  shape_readback_ms?: number;
+  quiet_slot_ticks?: number;
   readback_ms_host: number;
   settle_ms: number;
   ingest_ms: number;
@@ -245,6 +256,23 @@ export function CityStatsOverlay({
   // watching continuously. Desktop keeps the full panel open.
   const [visible, setVisible] = useState(() => !isTouchDevice());
   const [resetState, setResetState] = useState<'idle' | 'sending' | 'sent' | 'failed'>('idle');
+  // Snapshot of the FULL /match-stats payload, saved to a file. The panel
+  // deliberately shows a curated subset -- every phase timer would not fit and
+  // would not be readable if it did -- but debugging a bottleneck needs all of
+  // it, from one instant, in a form that can be attached to a message.
+  //
+  // A file rather than the clipboard: the payload is ~8 KB of JSON, which is
+  // awkward to paste and trivial to truncate by accident, and a download
+  // survives the page being closed. It also sidesteps navigator.clipboard
+  // needing a secure context, which this page only has once a self-signed
+  // certificate has been accepted.
+  //
+  // Re-fetched on click rather than reusing the 1 Hz poll, so the file is the
+  // moment you pressed the button rather than up to a second stale.
+  const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved' | 'failed'>(
+    'idle',
+  );
+  const [savedName, setSavedName] = useState<string | null>(null);
   const [shadows, setShadows] = useState(shadowsEnabled);
   const [bodyColors, setBodyColors] = useState(false);
   // Poll per-body freeze states only while the toggle is on: no reason to
@@ -510,6 +538,71 @@ export function CityStatsOverlay({
         }}
         data-testid="city-stats-scroll"
       >
+
+      <div style={{ ...row, marginTop: 4, marginBottom: 2 }}>
+        <button
+          type="button"
+          disabled={saveState === 'saving'}
+          onClick={async () => {
+            setSaveState('saving');
+            try {
+              const response = await fetch(
+                `${statsBaseUrl ?? ''}/match-stats/${encodeURIComponent(matchId)}`,
+                { cache: 'no-store' },
+              );
+              if (!response.ok) throw new Error(`${response.status}`);
+              const snapshot = await response.json();
+              // Pretty-printed: this gets read by a human (or pasted into a
+              // tool) far more often than it gets parsed by a machine.
+              const text = JSON.stringify(snapshot, null, 2);
+              // Name has to be unique per click AND self-describing, because
+              // these arrive detached from the session that made them. The
+              // server tick identifies the simulation instant exactly -- two
+              // snapshots a second apart are different ticks -- and the
+              // wall-clock stamp orders them for a human. Colons are stripped
+              // because Windows and macOS both reject them in filenames.
+              const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+              const tick = snapshot?.server_tick ?? 'unknown';
+              const name = `match-stats-${matchId}-tick${tick}-${stamp}.json`;
+              const url = URL.createObjectURL(
+                new Blob([text], { type: 'application/json' }),
+              );
+              const link = document.createElement('a');
+              link.href = url;
+              link.download = name;
+              document.body.appendChild(link);
+              link.click();
+              document.body.removeChild(link);
+              // Revoked on a later turn of the loop: revoking synchronously
+              // races the download in some browsers and yields an empty file.
+              window.setTimeout(() => URL.revokeObjectURL(url), 10_000);
+              setSavedName(name);
+              setSaveState('saved');
+            } catch {
+              setSaveState('failed');
+            }
+            window.setTimeout(() => setSaveState('idle'), 4000);
+          }}
+          style={{ ...toggleButton, position: 'static', width: '100%' }}
+          data-testid="city-stats-download"
+          aria-label="Download the full stats snapshot as a JSON file"
+        >
+          {saveState === 'saving'
+            ? 'SAVING...'
+            : saveState === 'saved'
+              ? 'SNAPSHOT SAVED'
+              : saveState === 'failed'
+                ? 'SAVE FAILED'
+                : 'DOWNLOAD FULL STATS'}
+        </button>
+      </div>
+      {savedName && (
+        // The filename is the only way to tell the browser's download list
+        // which click produced which file, so show the last one.
+        <div style={{ ...row, opacity: 0.6, fontSize: 10, marginBottom: 2 }}>
+          <span style={{ wordBreak: 'break-all' }}>{savedName}</span>
+        </div>
+      )}
 
       <div style={{ ...row, marginTop: 4, marginBottom: 2 }}>
         <button
@@ -862,6 +955,23 @@ export function CityStatsOverlay({
       />
       <Stat label="blast solve" value={`${(city?.solve_ms ?? 0).toFixed(1)} ms`} />
       <Stat label="blast end" value={`${(city?.end_ms ?? 0).toFixed(1)} ms`} />
+      {/* The phases that used to be invisible. ccd + support loads are both
+          O(live bodies) every tick and run before the quiet-skip gate, so they
+          are paid even by a city with nothing happening in it. */}
+      <Stat label="ccd walk" value={`${(city?.ccd_ms ?? 0).toFixed(1)} ms`} warn={(city?.ccd_ms ?? 0) > 1} />
+      <Stat
+        label="support loads"
+        value={`${(city?.support_loads_ms ?? 0).toFixed(1)} ms`}
+        warn={(city?.support_loads_ms ?? 0) > 1}
+      />
+      <Stat label="native readback" value={`${(city?.readback_ms ?? 0).toFixed(1)} ms`} />
+      <Stat label="shape readback" value={`${(city?.shape_readback_ms ?? 0).toFixed(1)} ms`} />
+      {/* Both are 0.0 on a quiet slot-tick by design -- the topology diff is
+          skipped. `quiet ticks` beside them is what tells the two apart from a
+          broken measurement. */}
+      <Stat label="events" value={`${(city?.events_ms ?? 0).toFixed(2)} ms`} />
+      <Stat label="filters" value={`${(city?.filters_ms ?? 0).toFixed(2)} ms`} />
+      <Stat label="quiet slot-ticks" value={`${city?.quiet_slot_ticks ?? 0}`} />
       {/* Host bracket around the whole native tick: the parent of the three
           blast rows above, and measurably larger than their sum (per-slot
           dispatch and the topology-diff decision live in the gap). */}
