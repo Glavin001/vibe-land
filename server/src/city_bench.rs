@@ -2233,3 +2233,119 @@ fn a_city_at_rest_does_not_destroy_itself_on_the_core_path() {
     );
     eprintln!("[blast-core /city] at rest for 10 s: {} bonds broken", stats.broken_bonds);
 }
+
+/// A settled pile must STAY settled.
+///
+/// This reproduces what a live server does, measured from a real session on
+/// 2026-08-25. During a window with no player input at all -- no shooting, no
+/// movement -- the pile repeatedly reached quiescence and then re-woke:
+///
+///   t+4   frozen 467  (+4 newly frozen)   awake  0   resettled  0
+///   t+5   frozen 475  (+8 newly frozen)   awake 50   resettled 50
+///   t+8   frozen 483  (+1)                awake  0   resettled  4
+///   t+9   frozen 484  (+1)                awake 46   resettled 46
+///
+/// with `contact_wakes/s = 0` and `unfreeze_flips/s = 0` throughout, so neither
+/// the contact-wake path nor an explicit thaw explains it. Freeze kept retiring
+/// bodies (+4, +8, +1, +1 per second, never converging) and the pile kept
+/// waking in bursts of roughly the same size.
+///
+/// Asserted as a SHAPE rather than a level, deliberately. The absolute counts
+/// on this bench swing 6x run to run because PhysX GPU is not bit-reproducible
+/// and each run collapses a different amount of building (see the spread
+/// recorded on `demolished_tower_comes_to_rest`). "80% asleep" is therefore
+/// unmeasurable here. "It went quiet and then came back" is not -- it is a
+/// yes/no about a cycle, and it is exactly what a player sees as hopping.
+///
+/// Note the metric is AWAKE, not asleep. Freeze retires debris as *kinematic*,
+/// which is neither awake nor asleep, so a sleep percentage cannot describe a
+/// working city. What matters is that nothing is still being simulated.
+#[test]
+#[ignore = "benchmark: needs a GPU"]
+fn a_settled_pile_stays_settled() {
+    let mut arena = production_arena();
+    crate::demo_world::seed_world_for_match(&mut arena, crate::city::CITY_MATCH_PREFIX)
+        .expect("seed the production world document");
+    arena.spawn_player(1);
+    let world = arena.physx_world_mut().expect("physx world");
+    let mut world = &mut *world;
+    let mut city =
+        crate::city::CityRuntime::open(60, Some(&mut world)).expect("city runtime opens");
+    city.add_client(1);
+
+    // Collapse something, so there is a pile to settle.
+    let (tx, tz) = (-36.0f32, -36.0f32);
+    let origin = Vec3::new(tx, 1.6, tz - 26.0);
+    let mut tick = 0u32;
+    for shot in 0..40 {
+        let sweep = -4.0 + (shot % 9) as f32 * 1.0;
+        let aim_y = 2.0 + (shot % 12) as f32 * 2.2;
+        let target = Vec3::new(tx + sweep, aim_y, tz);
+        city.apply_shot_ray(origin, (target - origin).normalize(), Some(&mut world));
+        for _ in 0..8 {
+            world.step().expect("step");
+            let _ = city.step(tick, DT, gravity(), Some(&mut world));
+            tick += 1;
+        }
+    }
+
+    // Then nothing at all, for a long time. The idle window is the measurement.
+    const IDLE_SECONDS: u32 = 45;
+    let mut trace = Vec::new();
+    for _ in 0..IDLE_SECONDS {
+        for _ in 0..60 {
+            world.step().expect("step");
+            let _ = city.step(tick, DT, gravity(), Some(&mut world));
+            tick += 1;
+        }
+        let s = city.stats();
+        trace.push((s.awake_chunk_bodies, s.freeze_flips, s.contact_wakes, s.resettled_wakes));
+    }
+
+    // "Quiet" is relative to the pile's own size, so this survives the
+    // run-to-run variance in how much building actually came down.
+    let peak_awake = trace.iter().map(|t| t.0).max().unwrap_or(0).max(1);
+    let quiet = (peak_awake / 20).max(4); // 5% of peak, floor of 4 bodies
+
+    eprintln!(
+        "{:>4} {:>7} {:>9} {:>10} {:>11}",
+        "sec", "awake", "flips/s", "cwakes/s", "resettled/s"
+    );
+    for (i, w) in trace.iter().enumerate() {
+        let p = if i == 0 { w } else { &trace[i - 1] };
+        eprintln!(
+            "{:>4} {:>7} {:>9} {:>10} {:>11}",
+            i + 1,
+            w.0,
+            w.1.saturating_sub(p.1),
+            w.2.saturating_sub(p.2),
+            w.3.saturating_sub(p.3)
+        );
+    }
+
+    // The bug is NON-CONVERGENCE, and it shows up two ways: never reaching
+    // quiet, or reaching it and coming back. Both are the same failure -- the
+    // pile is not heading anywhere -- so they are asserted together.
+    let trough = trace.iter().map(|t| t.0).min().unwrap_or(0);
+    let trough_at = trace.iter().position(|t| t.0 == trough).unwrap_or(0);
+    let after_trough = trace[trough_at..].iter().map(|t| t.0).max().unwrap_or(0);
+    let final_awake = trace.last().map(|t| t.0).unwrap_or(0);
+    let total_flips = trace.last().map(|t| t.1).unwrap_or(0)
+        - trace.first().map(|t| t.1).unwrap_or(0);
+
+    // A relapse is the signature a player sees as hopping: it went quiet(er)
+    // and came back with nobody touching it.
+    let relapsed = after_trough > trough.saturating_mul(2).max(trough + quiet);
+
+    assert!(
+        final_awake <= quiet && !relapsed,
+        "the pile did not converge in {IDLE_SECONDS}s of NO input.\n\
+         \x20 peak awake {peak_awake}, trough {trough} at t+{}s, then back up to \
+         {after_trough}, ending at {final_awake} (quiet threshold {quiet}).\n\
+         \x20 freeze flipped {total_flips} times during the idle window and never \
+         settled into a steady state.\n\
+         A pile with nothing acting on it must head somewhere. Rising after its \
+         own trough means the settle path is waking the debris it is retiring.",
+        trough_at + 1
+    );
+}
