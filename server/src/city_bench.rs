@@ -34,7 +34,16 @@ const SETTLE_TICKS: u32 = 300;
 /// state we actually care about, many bodies active at once.
 const SHOT_INTERVAL_TICKS: u32 = 20;
 const DT: f32 = 1.0 / 60.0;
-const GRAVITY: [f32; 3] = [0.0, -9.81, 0.0];
+/// The gravity production passes to `city.step`, from the same source.
+///
+/// Hardcoding this was a real infidelity: it stayed at 9.81 when the world was
+/// raised to 20 m/s^2, so the bench fed the stress solver Earth gravity inside
+/// a 2x-gravity PhysX scene -- a combination production never runs. A
+/// reproduction that does not match the thing it reproduces measures its own
+/// configuration, not the bug.
+fn gravity() -> [f32; 3] {
+    vibe_netcode::movement::default_world_gravity()
+}
 
 const GROUP_STATIC: u32 = 1 << 0;
 const ALL_GROUPS: u32 = u32::MAX;
@@ -143,7 +152,7 @@ fn demolished_tower_comes_to_rest() {
         city.apply_shot_ray(origin, (target - origin).normalize(), Some(&mut world));
         for _ in 0..8 {
             world.step().expect("step");
-            let _ = city.step(tick, DT, GRAVITY, Some(&mut world));
+            let _ = city.step(tick, DT, gravity(), Some(&mut world));
             tick += 1;
         }
     }
@@ -154,7 +163,7 @@ fn demolished_tower_comes_to_rest() {
     for second in 0..SETTLE_SECONDS {
         for _ in 0..60 {
             world.step().expect("step");
-            let _ = city.step(tick, DT, GRAVITY, Some(&mut world));
+            let _ = city.step(tick, DT, gravity(), Some(&mut world));
             tick += 1;
         }
         let stats = city.stats();
@@ -389,7 +398,7 @@ fn player_scaling_of_the_stream() {
             city.apply_shot_ray(origin, (target - origin).normalize(), Some(&mut world));
             for _ in 0..6 {
                 world.step().expect("step");
-                let _ = city.step(tick, DT, GRAVITY, Some(&mut world));
+                let _ = city.step(tick, DT, gravity(), Some(&mut world));
                 tick += 1;
             }
         }
@@ -427,7 +436,7 @@ fn player_scaling_of_the_stream() {
         let (mut shared_ms, mut pack_ms) = (vec![], vec![]);
         for _ in 0..30 {
             world.step().expect("step");
-            let _ = city.step(tick, DT, GRAVITY, Some(&mut world));
+            let _ = city.step(tick, DT, gravity(), Some(&mut world));
             tick += 1;
 
             let started = std::time::Instant::now();
@@ -517,7 +526,7 @@ fn full_demolition_cost() {
                 let started = std::time::Instant::now();
                 world.step().expect("step");
                 let dynamics = world.stats().map(|s| s.last_step_ms).unwrap_or(0.0);
-                let _ = city.step(tick, DT, GRAVITY, Some(&mut world));
+                let _ = city.step(tick, DT, gravity(), Some(&mut world));
                 let stats = city.stats();
                 peak_bodies = peak_bodies.max(stats.chunk_bodies);
                 peak_awake = peak_awake.max(stats.awake_chunk_bodies);
@@ -554,7 +563,7 @@ fn full_demolition_cost() {
     println!("{:>6} {:>8} {:>8} {:>6} {:>10}", "sec", "bodies", "awake", "pct", "maxspeed");
     for quiet in 0..1800u32 {
         world.step().expect("step");
-        let _ = city.step(tick, DT, GRAVITY, Some(&mut world));
+        let _ = city.step(tick, DT, gravity(), Some(&mut world));
         tick += 1;
         if quiet % 120 == 0 {
             let s = city.stats();
@@ -677,13 +686,13 @@ fn sustained_fire_never_stops_fracturing() {
         city.apply_shot_ray(origin, (target - origin).normalize(), Some(&mut world));
         for _ in 0..8 {
             world.step().expect("step");
-            let _ = city.step(tick, DT, GRAVITY, Some(&mut world));
+            let _ = city.step(tick, DT, gravity(), Some(&mut world));
             tick += 1;
         }
     }
     for _ in 0..300 {
         world.step().expect("step");
-        let _ = city.step(tick, DT, GRAVITY, Some(&mut world));
+        let _ = city.step(tick, DT, gravity(), Some(&mut world));
         tick += 1;
     }
 
@@ -743,13 +752,13 @@ fn severed_upper_half_reconstructs_in_com_frame() {
         city.apply_shot_ray(origin, (target - origin).normalize(), Some(&mut world));
         for _ in 0..14 {
             world.step().expect("step");
-            let _ = city.step(tick, DT, GRAVITY, Some(&mut world));
+            let _ = city.step(tick, DT, gravity(), Some(&mut world));
             tick += 1;
         }
     }
     for _ in 0..600 {
         world.step().expect("step");
-        let _ = city.step(tick, DT, GRAVITY, Some(&mut world));
+        let _ = city.step(tick, DT, gravity(), Some(&mut world));
         tick += 1;
     }
 
@@ -824,7 +833,7 @@ fn city_destruction_cost_is_stable() {
 
         world.step().expect("physx step");
         let dynamics = world.stats().map(|s| s.last_step_ms).unwrap_or(0.0);
-        let _ = city.step(tick, DT, GRAVITY, Some(&mut world));
+        let _ = city.step(tick, DT, gravity(), Some(&mut world));
 
         let stats = city.stats();
         peak_awake = peak_awake.max(stats.awake_chunk_bodies);
@@ -1077,7 +1086,7 @@ fn reliable_channel_cost() {
             }
         }
         world.step().expect("step");
-        for packet in city.step(tick, DT, GRAVITY, Some(&mut world)) {
+        for packet in city.step(tick, DT, gravity(), Some(&mut world)) {
             match packet.first().copied() {
                 Some(vibe_land_destruction::wire::PKT_CITY_TOPOLOGY) => {
                     topology_bytes += packet.len() as u64;
@@ -1234,7 +1243,7 @@ fn pose_stream_starvation() {
             }
         }
         world.step().expect("step");
-        let _ = city.step(tick, DT, GRAVITY, Some(&mut world));
+        let _ = city.step(tick, DT, gravity(), Some(&mut world));
 
         if tick % send_interval != 0 {
             continue;
@@ -1409,7 +1418,7 @@ fn v3_span_encode_cost() {
             }
         }
         world.step().expect("step");
-        let _ = city.step(tick, DT, GRAVITY, Some(&mut world));
+        let _ = city.step(tick, DT, gravity(), Some(&mut world));
         for packet in city.take_v3_datagrams() {
             datagram_bytes += packet.len() as u64;
             datagrams += 1;
@@ -1520,7 +1529,7 @@ fn one_shot_into_settled_rubble_wakes_only_its_neighbourhood() {
             city.apply_shot_ray(origin, (target - origin).normalize(), Some(&mut world));
             for _ in 0..8 {
                 world.step().expect("step");
-                let _ = city.step(tick, DT, GRAVITY, Some(&mut world));
+                let _ = city.step(tick, DT, gravity(), Some(&mut world));
                 tick += 1;
             }
         }
@@ -1539,7 +1548,7 @@ fn one_shot_into_settled_rubble_wakes_only_its_neighbourhood() {
         let mut quiet_ticks = 0;
         for _ in 0..(60 * 180) {
             world.step().expect("step");
-            let _ = city.step(tick, DT, GRAVITY, Some(&mut world));
+            let _ = city.step(tick, DT, gravity(), Some(&mut world));
             tick += 1;
             let live = city.stats();
             // "Settled" is a threshold, not exactly zero, and a generous one.
@@ -1591,7 +1600,7 @@ fn one_shot_into_settled_rubble_wakes_only_its_neighbourhood() {
         let mut peak_awake = 0;
         for _ in 0..60 {
             world.step().expect("step");
-            let _ = city.step(tick, DT, GRAVITY, Some(&mut world));
+            let _ = city.step(tick, DT, gravity(), Some(&mut world));
             tick += 1;
             peak_awake = peak_awake.max(city.stats().awake_chunk_bodies);
         }
@@ -1605,7 +1614,7 @@ fn one_shot_into_settled_rubble_wakes_only_its_neighbourhood() {
         for second in 0..30u32 {
             for _ in 0..60 {
                 world.step().expect("step");
-                let _ = city.step(tick, DT, GRAVITY, Some(&mut world));
+                let _ = city.step(tick, DT, gravity(), Some(&mut world));
                 tick += 1;
             }
             let live = city.stats();
@@ -1774,7 +1783,7 @@ fn awake_and_sleeping_counters_agree() {
         city.apply_shot_ray(origin, (target - origin).normalize(), Some(&mut world));
         for _ in 0..8 {
             world.step().expect("step");
-            let _ = city.step(tick, DT, GRAVITY, Some(&mut world));
+            let _ = city.step(tick, DT, gravity(), Some(&mut world));
             tick += 1;
         }
     }
@@ -1787,7 +1796,7 @@ fn awake_and_sleeping_counters_agree() {
     for second in 0..25 {
         for _ in 0..60 {
             world.step().expect("step");
-            let _ = city.step(tick, DT, GRAVITY, Some(&mut world));
+            let _ = city.step(tick, DT, gravity(), Some(&mut world));
             tick += 1;
         }
         let s = city.stats();
@@ -1858,7 +1867,7 @@ fn pose_freezing_retires_the_pile_physx_will_not_sleep() {
             city.apply_shot_ray(origin, (target - origin).normalize(), Some(&mut world));
             for _ in 0..8 {
                 world.step().expect("step");
-                let _ = city.step(tick, DT, GRAVITY, Some(&mut world));
+                let _ = city.step(tick, DT, gravity(), Some(&mut world));
                 tick += 1;
             }
         }
@@ -1870,7 +1879,7 @@ fn pose_freezing_retires_the_pile_physx_will_not_sleep() {
         for second in 0..30u32 {
             for _ in 0..60 {
                 world.step().expect("step");
-                let _ = city.step(tick, DT, GRAVITY, Some(&mut world));
+                let _ = city.step(tick, DT, gravity(), Some(&mut world));
                 tick += 1;
             }
             let s = city.stats();
@@ -2019,7 +2028,7 @@ fn the_old_path_drives_the_city_through_the_server_loop() {
         city.apply_shot_ray(origin, (target - origin).normalize(), Some(&mut world));
         for _ in 0..8 {
             world.step().expect("step");
-            topology_messages += city.step(tick, DT, GRAVITY, Some(&mut world)).len();
+            topology_messages += city.step(tick, DT, gravity(), Some(&mut world)).len();
             tick += 1;
         }
     }
@@ -2069,7 +2078,7 @@ fn the_core_path_drives_the_city_through_the_server_loop() {
         city.apply_shot_ray(origin, (target - origin).normalize(), Some(&mut world));
         for _ in 0..8 {
             world.step().expect("step");
-            topology_messages += city.step(tick, DT, GRAVITY, Some(&mut world)).len();
+            topology_messages += city.step(tick, DT, gravity(), Some(&mut world)).len();
             tick += 1;
         }
     }
@@ -2141,7 +2150,7 @@ fn a_city_at_rest_does_not_destroy_itself_on_the_core_path() {
     let mut tick = 0u32;
     for _ in 0..600 {
         world.step().expect("step");
-        let _ = city.step(tick, DT, GRAVITY, Some(&mut world));
+        let _ = city.step(tick, DT, gravity(), Some(&mut world));
         tick += 1;
     }
 
