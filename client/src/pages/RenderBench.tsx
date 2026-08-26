@@ -11,9 +11,9 @@
 // It reuses the real policy modules -- chunkGeometry for shapes,
 // renderScheduling for cell partitioning and distance striding, renderStats for
 // the frame breakdown -- so what it measures is the shipping renderer, not a
-// model of it. The batch construction below mirrors CityChunksLayer's
-// `buildMesh`; it is deliberately a separate copy, because buildMesh is welded
-// to CityClient and the ledger, and neither exists here.
+// model of it. The batch construction below mirrors scene/cityChunkMesh.ts; it
+// is deliberately a separate copy, because that builder is welded to CityClient
+// and the ledger, and neither exists here.
 
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { useEffect, useMemo, useRef, useState } from 'react';
