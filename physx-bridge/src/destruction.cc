@@ -525,12 +525,6 @@ void DestructionManager::create_destructible(
   // be retired once the scenario gate shows escaped_bodies_parked at 0.
   desc.settings.enableSpeculativeCcd = speculative_ccd_enabled();
   desc.settings.maxDepenetrationVelocity = depenetration_velocity();
-  desc.settings.maxExcessVelocityChange = [] {
-    if (const char *raw = std::getenv("VIBE_CITY_MAX_EXCESS_DV")) {
-      return static_cast<float>(std::atof(raw));
-    }
-    return 20.0f;
-  }();
   // "pos,vel" -- PhysX per-body solver iterations, engine default 4,1.
   {
     std::uint32_t pos = 4, vel = 1;
