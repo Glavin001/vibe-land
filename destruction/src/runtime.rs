@@ -66,6 +66,18 @@ pub struct CityDestruction {
     tick: u64,
     stats: DestructionStats,
     degraded: bool,
+    /// Fracture-frame resimulation. 0 = off. Each pass rewinds motion and
+    /// re-runs simulate+tick when the previous tick split an island, so the
+    /// contact that caused the split resolves against the resulting pieces.
+    /// `VIBE_CITY_RESIM_PASSES` (default 0 while it is being validated).
+    resim_passes: u32,
+    last_split_count: u64,
+    resim_passes_run: u64,
+    resim_captures: u64,
+    resim_zero_captures: u64,
+    resim_not_needed: u64,
+    resim_errors: u64,
+    resim_last_error: Option<String>,
     /// Per-body rest state: the settle/wake edges the wire is built on, and
     /// (when enabled) the freeze decisions and spatial index over frozen
     /// rubble. Replaces the old `known_awake` map, which tracked only the
@@ -226,6 +238,17 @@ impl CityDestruction {
             settle_config: SettleConfig::validated(sim_hz),
             tick: 0,
             degraded: false,
+            resim_passes: std::env::var("VIBE_CITY_RESIM_PASSES")
+                .ok()
+                .and_then(|v| v.parse::<u32>().ok())
+                .unwrap_or(0),
+            last_split_count: 0,
+            resim_passes_run: 0,
+            resim_captures: 0,
+            resim_zero_captures: 0,
+            resim_not_needed: 0,
+            resim_errors: 0,
+            resim_last_error: None,
             freeze: FreezeTracker::new(FreezeConfig::from_env()),
             pending_wakes: Vec::new(),
         })
@@ -318,6 +341,56 @@ impl CityDestruction {
 
     /// Call after `World::step()`. Runs the Blast stress tick, drains events,
     /// applies settle policy, and returns the network-facing output.
+    /// Resim engagement counters: (captures taken, re-passes run).
+    ///
+    /// Exposed because a resim that silently never captures is indistinguishable
+    /// from one that works, except in the frame budget -- and that is the most
+    /// expensive possible way to be wrong.
+    /// Take the fracture-frame resimulation capture. MUST be called by the
+    /// host immediately before `World::step()`.
+    ///
+    /// It cannot live at the end of post_step, which is where it was first
+    /// put: by then the tick has drained `m_contacts` and cleared the
+    /// had-forces flag, so `needsResimulationSnapshot()` answers false on every
+    /// single tick and the whole mechanism silently does nothing. Measured that
+    /// way it reported 0 captures over 360 ticks while appearing to work.
+    pub fn pre_step(&mut self, world: &mut World) {
+        if self.resim_passes == 0 {
+            return;
+        }
+        match world.resim_needed() {
+            Ok(true) => match world.resim_capture() {
+                Ok(n) if n > 0 => self.resim_captures += 1,
+                Ok(_) => self.resim_zero_captures += 1,
+                Err(e) => {
+                    if self.resim_last_error.is_none() {
+                        self.resim_last_error = Some(format!("capture: {e}"));
+                    }
+                    self.resim_errors += 1;
+                }
+            },
+            Ok(false) => self.resim_not_needed += 1,
+            Err(e) => {
+                if self.resim_last_error.is_none() {
+                    self.resim_last_error = Some(format!("needed: {e}"));
+                }
+                self.resim_errors += 1;
+            }
+        }
+    }
+
+    pub fn resim_counters(&self) -> (u64, u64) {
+        (self.resim_captures, self.resim_passes_run)
+    }
+
+    pub fn resim_diagnosis(&self) -> String {
+        format!(
+            "captures={} zero={} not_needed={} errors={} first_error={:?}",
+            self.resim_captures, self.resim_zero_captures, self.resim_not_needed,
+            self.resim_errors, self.resim_last_error
+        )
+    }
+
     pub fn post_step(
         &mut self,
         world: &mut World,
@@ -338,6 +411,71 @@ impl CityDestruction {
         {
             self.degraded = true;
             return Err(CityDestructionError::Bridge(error.to_string()));
+        }
+
+        // Fracture-frame resimulation, following the library's own ordering in
+        // NvBlastExtStressPhysXResim: capture before simulate, and if the tick
+        // that followed fractured, rewind motion and re-run simulate+tick so
+        // contacts resolve against the pieces rather than the intact body.
+        //
+        // Without it a tower striking another resolves its contact against the
+        // whole rigid body; the split lands afterwards and the fragments are
+        // placed into a world where the impact is already over. That is why a
+        // building falling on a building reads softer than it should.
+        //
+        // Keyed on splits, not broken bonds: a bond can break without the
+        // island separating, and it is the separation that changes what the
+        // contact should have hit.
+        if self.resim_passes > 0 {
+            let mut passes = self.resim_passes;
+            while passes > 0 {
+                let splits = world.split_count().unwrap_or(self.last_split_count);
+                if splits <= self.last_split_count {
+                    break;
+                }
+                self.last_split_count = splits;
+                if !world.resim_restore().unwrap_or(false) {
+                    break; // no capture held -- nothing to rewind to
+                }
+                if world.step().is_err() {
+                    self.degraded = true;
+                    return Err(CityDestructionError::Bridge(
+                        "resim re-step failed".to_string(),
+                    ));
+                }
+                if let Err(error) =
+                    world.destruction_tick(dt, Vec3::new(gravity[0], gravity[1], gravity[2]))
+                {
+                    self.degraded = true;
+                    return Err(CityDestructionError::Bridge(error.to_string()));
+                }
+                self.resim_passes_run += 1;
+                passes -= 1;
+            }
+            self.last_split_count = world.split_count().unwrap_or(self.last_split_count);
+        }
+        if false {
+            match world.resim_needed() {
+                Ok(true) => match world.resim_capture() {
+                    Ok(n) if n > 0 => self.resim_captures += 1,
+                    Ok(_) => self.resim_zero_captures += 1,
+                    Err(e) => {
+                        // Loud once. Swallowing this is how resim spent a whole
+                        // measurement cycle looking like it worked.
+                        if self.resim_last_error.is_none() {
+                            self.resim_last_error = Some(format!("capture: {e}"));
+                        }
+                        self.resim_errors += 1;
+                    }
+                },
+                Ok(false) => self.resim_not_needed += 1,
+                Err(e) => {
+                    if self.resim_last_error.is_none() {
+                        self.resim_last_error = Some(format!("needed: {e}"));
+                    }
+                    self.resim_errors += 1;
+                }
+            }
         }
         let tick_ffi_ms = tick_ffi_started.elapsed().as_secs_f32() * 1000.0;
 

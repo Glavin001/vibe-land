@@ -1161,6 +1161,32 @@ impl World {
             .map_err(operation_error)
     }
 
+    /// Cumulative island splits. A tick fractured iff this increased across it.
+    #[cfg(feature = "destruction")]
+    pub fn split_count(&self) -> Result<u64, BridgeError> {
+        self.inner.split_count().map_err(operation_error)
+    }
+
+    /// True when a fracture-frame resimulation capture should be taken before
+    /// the next `step()`. See DestructionManager::resim_needed.
+    #[cfg(feature = "destruction")]
+    pub fn resim_needed(&self) -> Result<bool, BridgeError> {
+        self.inner.resim_needed().map_err(operation_error)
+    }
+
+    /// Capture motion state. Must run outside a step, in the Idle tick phase.
+    #[cfg(feature = "destruction")]
+    pub fn resim_capture(&mut self) -> Result<u32, BridgeError> {
+        self.inner.pin_mut().resim_capture().map_err(operation_error)
+    }
+
+    /// Rewind motion to the capture so the step can be re-run against the
+    /// already-split pieces. Topology, mass and shapes are kept.
+    #[cfg(feature = "destruction")]
+    pub fn resim_restore(&mut self) -> Result<bool, BridgeError> {
+        self.inner.pin_mut().resim_restore().map_err(operation_error)
+    }
+
     #[cfg(feature = "destruction")]
     pub fn validate_destruction_mappings(&self) -> Result<bool, BridgeError> {
         self.inner
@@ -1673,6 +1699,10 @@ mod ffi {
         fn take_support_rows(self: Pin<&mut World>) -> Result<Vec<FfiSupportRow>>;
         fn destruction_stats(self: &World) -> Result<FfiDestructionStats>;
         fn validate_destruction_mappings(self: &World) -> Result<bool>;
+        fn split_count(self: &World) -> Result<u64>;
+        fn resim_needed(self: &World) -> Result<bool>;
+        fn resim_capture(self: Pin<&mut World>) -> Result<u32>;
+        fn resim_restore(self: Pin<&mut World>) -> Result<bool>;
 
         /// Raw PhysX handles, so the blast-stress-solver core can attach a
         /// backend to this scene instead of creating a second one.

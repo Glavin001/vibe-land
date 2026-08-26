@@ -1324,6 +1324,44 @@ public:
 #endif
   }
 
+  std::uint64_t split_count() const {
+#ifdef VIBE_LAND_DESTRUCTION
+    return destruction_ != nullptr ? destruction_->split_count() : 0;
+#else
+    return 0;
+#endif
+  }
+
+  bool resim_needed() const {
+#ifdef VIBE_LAND_DESTRUCTION
+    return destruction_ != nullptr && destruction_->resim_needed();
+#else
+    return false;
+#endif
+  }
+
+  std::uint32_t resim_capture() {
+#ifdef VIBE_LAND_DESTRUCTION
+    require(destruction_ != nullptr, "destruction manager missing");
+    require(!step_in_flight_, "resim_capture must run outside a step");
+    return destruction_->resim_capture();
+#else
+    throw std::runtime_error(
+        "physx-bridge built without feature `destruction`");
+#endif
+  }
+
+  bool resim_restore() {
+#ifdef VIBE_LAND_DESTRUCTION
+    require(destruction_ != nullptr, "destruction manager missing");
+    require(!step_in_flight_, "resim_restore must run outside a step");
+    return destruction_->resim_restore();
+#else
+    throw std::runtime_error(
+        "physx-bridge built without feature `destruction`");
+#endif
+  }
+
   bool validate_destruction_mappings() const {
 #ifdef VIBE_LAND_DESTRUCTION
     require(destruction_ != nullptr, "destruction manager missing");
@@ -1742,6 +1780,11 @@ FfiDestructionStats World::destruction_stats() const {
 bool World::validate_destruction_mappings() const {
   return impl_->validate_destruction_mappings();
 }
+
+std::uint64_t World::split_count() const { return impl_->split_count(); }
+bool World::resim_needed() const { return impl_->resim_needed(); }
+std::uint32_t World::resim_capture() { return impl_->resim_capture(); }
+bool World::resim_restore() { return impl_->resim_restore(); }
 
 std::uintptr_t World::scene_ptr() const { return impl_->scene_ptr(); }
 

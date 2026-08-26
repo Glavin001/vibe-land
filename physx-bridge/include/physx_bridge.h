@@ -107,6 +107,10 @@ public:
   rust::Vec<FfiSupportRow> take_support_rows();
   FfiDestructionStats destruction_stats() const;
   bool validate_destruction_mappings() const;
+  std::uint64_t split_count() const;
+  bool resim_needed() const;
+  std::uint32_t resim_capture();
+  bool resim_restore();
 
   // --- Bring-your-own-world hand-off ---------------------------------------
   // Lend the underlying PhysX objects so the standardized blast-stress-solver

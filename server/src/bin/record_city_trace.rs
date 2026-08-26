@@ -966,6 +966,9 @@ fn main() -> Result<()> {
         }
 
         let sim_started = std::time::Instant::now();
+        // Resim capture belongs here -- before simulate, with last tick's
+        // contacts still queued -- not at the end of the destruction tick.
+        destruction.pre_step(&mut world);
         let physx_started = std::time::Instant::now();
         world.step().map_err(|error| anyhow::anyhow!("{error}"))?;
         // Wall time around the PhysX step. onContact runs INSIDE fetchResults,
@@ -1369,6 +1372,12 @@ fn main() -> Result<()> {
             live,
             ceiling
         );
+    }
+
+    {
+        let (caps, passes) = destruction.resim_counters();
+        println!("  resim: {caps} captures, {passes} re-passes");
+        println!("  resim diag: {}", destruction.resim_diagnosis());
     }
 
     if dropped_world_bonds > 0 {

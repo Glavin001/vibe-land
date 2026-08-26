@@ -257,6 +257,24 @@ public:
   FfiDestructionStats destruction_stats() const;
   bool validate_destruction_mappings() const;
 
+  /// Fracture-frame resimulation (Blast engine contract 2.8).
+  ///
+  /// Without it, a tower striking another resolves the contact against the
+  /// INTACT rigid body: the split happens afterwards, so the fragments are
+  /// placed into a world where the impact has already finished and they never
+  /// experience it. Capture before simulate; if the tick fractured, restore
+  /// motion and re-run the step so contacts resolve against the pieces.
+  ///
+  /// Restore rewinds motion state ONLY -- topology, masses, shapes and
+  /// kinematic flags survive. Both calls require the destructible to be in its
+  /// Idle tick phase and must run outside simulate/fetchResults.
+  /// Cumulative island splits across all slots. The resim protocol keys off
+  /// this: a tick fractured iff splits increased across it.
+  std::uint64_t split_count() const;
+  bool resim_needed() const;
+  std::uint32_t resim_capture();
+  bool resim_restore();
+
 private:
   Slot *find_slot(std::uint32_t structure_id);
   const Slot *find_slot(std::uint32_t structure_id) const;

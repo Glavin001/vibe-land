@@ -2690,6 +2690,52 @@ FfiDestructionStats DestructionManager::destruction_stats() const {
   return stats;
 }
 
+std::uint64_t DestructionManager::split_count() const {
+  std::uint64_t total = 0;
+  for (const auto &slot_ptr : slots_) {
+    if (!slot_ptr || slot_ptr->dest == nullptr) {
+      continue;
+    }
+    total += slot_ptr->dest->getTelemetry().splits;
+  }
+  return total;
+}
+
+bool DestructionManager::resim_needed() const {
+  for (const auto &slot_ptr : slots_) {
+    if (!slot_ptr || slot_ptr->dest == nullptr) {
+      continue;
+    }
+    if (slot_ptr->dest->needsResimulationSnapshot()) {
+      return true;
+    }
+  }
+  return false;
+}
+
+std::uint32_t DestructionManager::resim_capture() {
+  std::uint32_t captured = 0;
+  for (const auto &slot_ptr : slots_) {
+    if (!slot_ptr || slot_ptr->dest == nullptr) {
+      continue;
+    }
+    captured += slot_ptr->dest->captureResimulationSnapshot();
+  }
+  return captured;
+}
+
+bool DestructionManager::resim_restore() {
+  bool any = false;
+  for (const auto &slot_ptr : slots_) {
+    if (!slot_ptr || slot_ptr->dest == nullptr) {
+      continue;
+    }
+    // Full-scene restore: passing no active set rewinds every captured body.
+    any = slot_ptr->dest->restoreResimulationSnapshot() || any;
+  }
+  return any;
+}
+
 bool DestructionManager::validate_destruction_mappings() const {
   for (const auto &slot_ptr : slots_) {
     if (!slot_ptr || slot_ptr->dest == nullptr) {
