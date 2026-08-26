@@ -1444,7 +1444,16 @@ void DestructionManager::destruction_tick(float dt, FfiVec3 gravity) {
     // Applied on first sight, when the body is freshly created or split and
     // therefore awake, so it never rewrites properties on a sleeping actor.
     phase = clock::now();
-    for (std::uint32_t i = 0; i < slot.body_cache_count; ++i) {
+    // Retired by default: the library applies speculative CCD and the
+    // depenetration cap AT BODY CREATION since 04a874af, which provably covers
+    // the first step this walk always missed; gates and live play have shown
+    // escaped_bodies_parked = 0 ever since. VIBE_CITY_BRIDGE_CCD_WALK=1
+    // restores the walk as belt-and-braces.
+    static const bool bridge_ccd_walk = [] {
+      const char *raw = std::getenv("VIBE_CITY_BRIDGE_CCD_WALK");
+      return raw != nullptr && std::string(raw) == "1";
+    }();
+    for (std::uint32_t i = 0; bridge_ccd_walk && i < slot.body_cache_count; ++i) {
       const auto &body = slot.body_cache[i];
       if (body.body == nullptr || body.kinematic) {
         continue;
