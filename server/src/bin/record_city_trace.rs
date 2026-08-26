@@ -925,7 +925,7 @@ fn main() -> Result<()> {
                  contact_proc,gravity,cpu_solve,frac_topo,frac_valid,frac_gen,frac_prep,\
                  frac_apply,frac_scene,frac_rebuild,physx_step,gpu_wait,fetch_copy,pairs,\
                  contacts_q,islands_skip,islands_tot,quiet,freeze,unfreeze,contact_wakes,\
-                 min_y,pose_quiet,overstressed"
+                 min_y,pose_quiet,overstressed,patch_hw,escaped"
             )?;
             Some(w)
         }
@@ -1047,7 +1047,7 @@ fn main() -> Result<()> {
                 w,
                 "{},{},{},{},{},{},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},\
                  {:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},\
-                 {:.4},{:.4},{:.4},{:.4},{:.4},{},{},{},{},{},{},{},{},{:.4},{},{}",
+                 {:.4},{:.4},{:.4},{:.4},{:.4},{},{},{},{},{},{},{},{},{:.4},{},{},{},{}",
                 tick_index, s.chunk_bodies, s.awake_chunk_bodies, s.frozen_chunk_bodies,
                 s.sleeping_chunk_bodies, s.broken_bonds,
                 s.stress_solve_ms, s.begin_ms, s.solve_ms, s.end_ms, s.readback_ms,
@@ -1064,7 +1064,9 @@ fn main() -> Result<()> {
                 s.support_pair_loads, s.contacts_queued,
                 s.solver_islands_skipped_accum, s.solver_islands_total_accum,
                 s.quiet_slot_ticks, s.freeze_flips, s.unfreeze_flips, s.contact_wakes,
-                s.min_body_y, s.pose_quiet_awake_bodies, s.overstressed_bonds
+                s.min_body_y, s.pose_quiet_awake_bodies, s.overstressed_bonds,
+                ws.as_ref().map(|w| w.gpu_rigid_patch_high_water).unwrap_or(0),
+                s.escaped_bodies_parked
             )?;
         }
 

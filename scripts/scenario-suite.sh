@@ -143,6 +143,25 @@ checks = [
     ("T4 awake declined",      measured["t4_awake_end_over_peak"] <= g["t4_awake_end_over_peak_max"],
      f"end/peak {measured['t4_awake_end_over_peak']:.2f} vs <= {g['t4_awake_end_over_peak_max']:.2f}"),
 ]
+# T6: escape/buffer health, from the heaviest run. An escaped body falls
+# forever, its CCD envelope explodes the broadphase, and the patch buffer
+# overflow silently drops contacts -- measured live: min_body_y -19.6M m,
+# patches 547,670/524,288, gpu_wait 344 ms.
+import os
+patch_cap = int(os.environ.get("VIBE_PHYSX_GPU_MAX_RIGID_PATCHES", "2097152"))
+min_y = min(float(r["min_y"]) for r in t5rows + t3rows)
+patch_max = max(int(float(r.get("patch_hw", 0))) for r in t5rows)
+escaped = max(int(float(r.get("escaped", 0))) for r in t5rows + t3rows)
+# Containment, not perfection: tunnelling during heavy collapse is a real,
+# reproducible defect (7 escapes in this suite's own first armed run) tracked
+# separately. What the gate enforces is that an escapee is PARKED promptly --
+# a runaway (min_y in the kilometres) means the kill floor stopped working and
+# the CCD/broadphase poison spiral is back.
+checks.append(("T6 escapes contained", min_y > -1000.0 and escaped <= 20,
+               f"min_y {min_y:.1f} (>-1000), escaped-parked {escaped} (<=20)"))
+checks.append(("T6 patch buffer headroom", patch_max <= patch_cap * 0.9,
+               f"{patch_max} vs <= {int(patch_cap*0.9)} (overflow drops contacts)"))
+
 if measured["t5_p95_ms"] is not None:
     checks.append(("T5 perf p95 @3-6k awake", measured["t5_p95_ms"] <= g["t5_p95_ms_max"],
                    f"{measured['t5_p95_ms']} ms vs <= {g['t5_p95_ms_max']} ms"))

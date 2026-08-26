@@ -57,6 +57,20 @@ impl std::fmt::Display for CityDestructionError {
 
 impl std::error::Error for CityDestructionError {}
 
+/// Below this, a chunk body is treated as escaped and parked. Ground level is
+/// y=0; nothing legitimate lives below about -2 m (`min_body_y` on a healthy
+/// settled city reads ~-0.3). Generous margin so a deep rubble compaction
+/// never trips it.
+fn kill_floor_y() -> f32 {
+    static VALUE: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
+    *VALUE.get_or_init(|| {
+        std::env::var("VIBE_CITY_KILL_FLOOR_Y")
+            .ok()
+            .and_then(|v| v.parse::<f32>().ok())
+            .unwrap_or(-40.0)
+    })
+}
+
 pub struct CityDestruction {
     /// Awake-body encoder input, rebuilt once per tick inside `post_step`.
     encoder_input: Vec<BodySnapshotInput>,
@@ -669,6 +683,17 @@ impl CityDestruction {
         // and re-filtered it, all over data this loop already has in hand.
         let mut encoder_input: Vec<BodySnapshotInput> = Vec::with_capacity(snapshots.len());
         let mut max_angular = 0.0f32;
+        // Kill floor. A body that tunnels through the ground during a heavy
+        // collapse falls forever at 20 m/s^2; measured live, 24 escapees
+        // reached y = -19.6 MILLION metres at ~20 km/s. At that speed each
+        // one's speculative-CCD envelope sweeps hundreds of metres of
+        // broadphase per tick: the GPU patch buffer overflowed its 524k
+        // capacity (547,670 high-water, 2 GPU warnings), PhysX started
+        // dropping contacts, and gpu_wait hit 344 ms. Freezing an escapee the
+        // tick it crosses the floor parks it kinematic a few metres below
+        // ground, where it costs nothing and poisons nothing.
+        let kill_floor = kill_floor_y();
+        let mut escaped: Vec<u32> = Vec::new();
         for snap in snapshots.iter() {
             if snap.kinematic {
                 continue;
@@ -695,6 +720,9 @@ impl CityDestruction {
                     max_speed_entity = snap.entity_id;
                 }
                 max_angular = max_angular.max(angular);
+            }
+            if snap.position.y < kill_floor {
+                escaped.push(snap.entity_id);
             }
             if snap.position.y < min_body_y {
                 min_body_y = snap.position.y;
@@ -889,6 +917,24 @@ impl CityDestruction {
             self.stats.peak_body_angular_speed.max(max_angular);
         self.stats.drain_ms = drain_ms;
         self.stats.tick_ffi_ms = tick_ffi_ms;
+        if !escaped.is_empty() {
+            match world.freeze_chunk_bodies(&escaped) {
+                Ok(parked) => {
+                    self.stats.escaped_bodies_parked += u64::from(parked);
+                    // eprintln, not a logging crate: this crate carries no
+                    // logging dependency, and an escape is rare and serious
+                    // enough that stderr is the right loudness.
+                    eprintln!(
+                        "[destruction] KILL FLOOR: parked {} escaped bodies below y={}",
+                        escaped.len(),
+                        kill_floor
+                    );
+                }
+                Err(error) => {
+                    eprintln!("[destruction] kill floor freeze FAILED: {error}");
+                }
+            }
+        }
         self.stats.min_body_pos = min_pos;
         self.stats.min_body_vel = min_vel;
 

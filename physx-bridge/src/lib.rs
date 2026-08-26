@@ -125,7 +125,11 @@ impl Default for WorldConfig {
             contact_report_threshold: 50.0,
             gpu_max_partitions: 8,
             gpu_max_rigid_contacts: 2_097_152,
-            gpu_max_rigid_patches: 524_288,
+            // 4x the PhysX default. Measured overflowing at 547,670 during a
+            // two-tower collapse compounded by escaped-body CCD sweeps: the
+            // overflow drops contacts, which is the failure mode a no-caps
+            // simulation actually has. ~64 MB of GPU heap at this size.
+            gpu_max_rigid_patches: 2_097_152,
             gpu_heap_capacity: 268_435_456,
             gpu_found_lost_pairs_capacity: 1_048_576,
             gpu_found_lost_aggregate_pairs_capacity: 262_144,

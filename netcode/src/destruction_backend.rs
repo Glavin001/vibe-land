@@ -214,6 +214,9 @@ pub struct DestructionStats {
     pub contacts_queued: u64,
     pub solver_islands_skipped_accum: u64,
     pub solver_islands_total_accum: u64,
+    /// Bodies frozen by the kill floor after escaping below ground. Must stay
+    /// 0 in healthy play; every increment is a tunnelling event.
+    pub escaped_bodies_parked: u64,
     pub ccd_tracked_bodies: u32,
     pub identity_stamped_bodies: u32,
     /// Worst stress / elastic-limit ratio across bonds; 1.0 = at the limit.
