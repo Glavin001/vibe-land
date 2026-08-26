@@ -39,9 +39,15 @@ TRACE=./target/release/record-city-trace
 SCENE=destruction/assets/scenes/fractured-downtown.json
 OUT=/tmp/scenario-suite; mkdir -p "$OUT"
 
-players=$(curl -sk -m 3 https://127.0.0.1:8384/healthz 2>/dev/null | python3 -c "import json,sys;print(json.load(sys.stdin).get('players',0))" 2>/dev/null || echo 0)
-if [ "${players:-0}" -gt 0 ]; then
-  echo "REFUSING: server has $players player(s); GPU contention kills it."; exit 2
+# Refuse whenever a server PROCESS exists, not just when someone is playing.
+# An idle server still holds a 24k-chunk scene on the GPU, and running the
+# suite beside one is how the server was silently killed twice -- the third
+# near-miss was this very script being launched right after a restart.
+if pgrep -x web-fps-server >/dev/null 2>&1; then
+  players=$(curl -sk -m 3 https://127.0.0.1:8384/healthz 2>/dev/null | python3 -c "import json,sys;print(json.load(sys.stdin).get('players',0))" 2>/dev/null || echo "?")
+  echo "REFUSING: web-fps-server is running (players=$players). Stop it first:"
+  echo "  pgrep -x web-fps-server | while read p; do kill \$p; done"
+  exit 2
 fi
 
 export LD_LIBRARY_PATH="/root/PhysX/physx/install/linux-clang/PhysX/bin/linux.x86_64/release:${LD_LIBRARY_PATH:-}"
