@@ -39,39 +39,36 @@ import { snapshot } from '../helpers/toolkit';
 const ENABLED = process.env.E2E_CITY === '1';
 const SHOTS_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../texture-qa');
 
-/** Close enough that individual chunk seams are resolvable on the facade. */
-const FACADE_RANGE_M = 24;
-/** Far enough back to see a whole building and its neighbours' materials. */
-const BLOCK_RANGE_M = 55;
-/** Close enough to hit, far enough that the collapse stays in frame. */
-const BREAK_RANGE_M = 45;
+/**
+ * Which of the nearest buildings each shot uses.
+ *
+ * Ranked, not measured in metres. Spawn distance varies from run to run, so
+ * "the building standing about 55 m away" is sometimes the one in front and
+ * sometimes one four blocks back that photographs as a silhouette in the fog.
+ * A rank is the same subject either way.
+ */
+const FACADE_RANK = 0;
+const BLOCK_RANK = 2;
+const VICTIM_RANK = 0;
 
 /**
- * Face whichever structure already stands about `metres` away.
+ * Face the Nth-nearest building, and hand back where it is.
  *
- * Deliberately not "walk to a vantage and turn around": downtown is a dense
- * grid, the drive bridge has no teleport, and backing 70 m out of a block walks
- * straight into the neighbours and stops there -- which frames a wall at
- * point-blank range instead of the building it was aiming at. Choosing a
- * subject at the range wanted needs no movement at all.
+ * Deliberately no walking. Downtown is a 21 m grid with no gaps worth standing
+ * in and the drive bridge has no teleport, so every attempt to walk to a
+ * vantage ends up inside a building photographing an unlit interior.
  */
-async function faceStructureAtRange(
+async function faceNthNearest(
   page: Page,
   targets: Array<[number, number, number]>,
-  metres: number,
+  rank: number,
 ): Promise<[number, number, number]> {
   const here = (await snapshot(page)).position;
-  let best = targets[0];
-  let bestError = Infinity;
-  for (const target of targets) {
-    const error = Math.abs(Math.hypot(target[0] - here[0], target[2] - here[2]) - metres);
-    if (error < bestError) {
-      bestError = error;
-      best = target;
-    }
-  }
-  await aimAt(page, best);
-  return best;
+  const byDistance = [...targets].sort((a, b) =>
+    Math.hypot(a[0] - here[0], a[2] - here[2]) - Math.hypot(b[0] - here[0], b[2] - here[2]));
+  const target = byDistance[Math.min(rank, byDistance.length - 1)];
+  await aimAt(page, target);
+  return target;
 }
 
 test.use({ video: 'on', viewport: { width: 1600, height: 900 } });
@@ -124,19 +121,19 @@ test.describe('city concrete textures', () => {
     // building photographing an unlit interior. Choosing a subject already at
     // the range wanted keeps the camera wherever the spawn put it, which is
     // outside.
-    await faceStructureAtRange(page, targets, BLOCK_RANGE_M);
+    await faceNthNearest(page, targets, BLOCK_RANK);
     await page.waitForTimeout(1500);
     await page.screenshot({ path: path.join(SHOTS_DIR, '01-block.png') });
 
     // Framed by range rather than walked to: closing to touching distance puts
     // the player INSIDE the building, and an unlit interior photographs as a
     // black rectangle whatever is mapped onto it.
-    const near = await faceStructureAtRange(page, targets, FACADE_RANGE_M);
+    const near = await faceNthNearest(page, targets, FACADE_RANK);
     await aimAt(page, [near[0], near[1] * 0.55, near[2]]);
     await page.waitForTimeout(1200);
     await page.screenshot({ path: path.join(SHOTS_DIR, '02-facade.png') });
 
-    const victim = await faceStructureAtRange(page, targets, BREAK_RANGE_M);
+    const victim = await faceNthNearest(page, targets, VICTIM_RANK);
     const aim = await aimAt(page, victim);
     await page.waitForTimeout(1200);
     await page.screenshot({ path: path.join(SHOTS_DIR, '03-before.png') });
@@ -189,7 +186,7 @@ test.describe('city concrete textures', () => {
     await hideDomOverlays(page);
 
     const targets = await allStructureTargets(page, 0.5);
-    await faceStructureAtRange(page, targets, BLOCK_RANGE_M);
+    await faceNthNearest(page, targets, BLOCK_RANK);
     await page.waitForTimeout(1500);
     await page.screenshot({ path: path.join(SHOTS_DIR, '06-fast-tier.png') });
 

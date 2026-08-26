@@ -109,7 +109,11 @@ export function buildCityMaterial(): THREE.Material {
     // roughness 1 because the packed surface map now IS the roughness and three
     // multiplies the two. Any constant below 1 would scale every layer towards
     // gloss, which on concrete reads as wet.
-    ? new THREE.MeshStandardMaterial({ roughness: 1, metalness: 0.02 })
+    //
+    // metalness 0 because concrete is a dielectric. It was a token 0.05 back
+    // when nothing indirect could reflect off it; the sky environment map makes
+    // specular a term that is actually visible, so being right is now free.
+    ? new THREE.MeshStandardMaterial({ roughness: 1, metalness: 0 })
     : new THREE.MeshLambertMaterial();
   // Must happen here, on the object that was just constructed. Material.clone()
   // copies no function properties, so a cloned city material would silently

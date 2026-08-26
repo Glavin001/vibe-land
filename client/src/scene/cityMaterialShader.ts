@@ -276,12 +276,23 @@ float roughnessFactor = roughness * cityRoughness;
 /**
  * Replaces `<aomap_fragment>`.
  *
- * Only the indirect diffuse term, matching what three's own chunk does -- this
- * material has no clearcoat, sheen or environment map for the rest of it to
- * apply to.
+ * The specular branch is not optional any more. The city used to be lit by a
+ * flat ambient plus a hemisphere light, so indirect specular was nothing and
+ * occluding it was a no-op; `SkyEnvironment` now binds a PMREM of the sky as
+ * `scene.environment`, which defines USE_ENVMAP on this material and makes
+ * indirect specular a real term. Leaving it unoccluded lights the inside of
+ * every crevice with a clean sky reflection.
+ *
+ * Clearcoat and sheen are still skipped -- this material has neither.
  */
 const AO_FRAGMENT = `
 reflectedLight.indirectDiffuse *= cityOcclusion;
+
+#if defined( USE_ENVMAP ) && defined( STANDARD )
+  float cityDotNV = saturate( dot( geometryNormal, geometryViewDir ) );
+  reflectedLight.indirectSpecular *= computeSpecularOcclusion(
+    cityDotNV, cityOcclusion, material.roughness );
+#endif
 `;
 
 /**

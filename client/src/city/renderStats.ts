@@ -119,28 +119,68 @@ export function addDebugE2eMs(ms: number): void {
   renderStats.debugE2eMs += ms;
 }
 
+/**
+ * Per-frame render totals, accumulated across however many passes ran.
+ *
+ * A frame is no longer one `render()` call. With SSAO on -- the PRETTY default
+ * -- `AmbientOcclusion` takes the loop over and issues four: the scene into a
+ * target, then AO, blur and composite quads. three clears `info.render` at the
+ * top of every one of them, so whatever reads the counters afterwards sees the
+ * composite quad alone: the panel and `city-frame-profile` both reported 1 draw
+ * call and 2 triangles for a 41k-chunk city, and `glRenderMs` timed a
+ * fullscreen quad instead of the scene.
+ *
+ * `calls`/`triangles` take the PEAK across the frame's passes rather than the
+ * sum, which keeps them meaning what they have always meant: the scene pass.
+ * (Not the shadow pass -- three resets after that and before the main one, so
+ * it has never been counted here. Summing would have quietly folded it in and
+ * broken comparison with every number recorded before this.) `glRenderMs`
+ * takes the SUM, because every pass is real submit time the frame paid.
+ */
+let peakCalls = 0;
+let peakTriangles = 0;
+let renderMsThisFrame = 0;
+
 let patched = false;
 export function patchRendererTiming(gl: { render: (...args: never[]) => void }): void {
   if (patched) return;
   patched = true;
   const original = gl.render.bind(gl);
+  const info = (gl as { info?: { render: { calls: number; triangles: number } } }).info;
   (gl as { render: (...args: never[]) => void }).render = (...args: never[]) => {
     const started = performance.now();
     original(...args);
     const ended = performance.now();
-    renderStats.glRenderMs = ended - started;
-    // gl.render is the last thing R3F does in the frame, so this closes the
-    // CPU span without needing a separate end-of-frame subscriber.
+    renderMsThisFrame += ended - started;
+    if (info && info.render.calls > peakCalls) {
+      peakCalls = info.render.calls;
+      peakTriangles = info.render.triangles;
+    }
+    // The last render of a frame closes the CPU span, without needing a
+    // separate end-of-frame subscriber. Overwritten by each pass; the last one
+    // wins, which is what we want.
     renderStats.cpuFrameMs = ended - frameStartedAt;
   };
 }
 
+/**
+ * Publish the completed frame's totals and arm the next one.
+ *
+ * Called at the TOP of the city layer's frame callback, which runs before any
+ * rendering, so the accumulators still hold the previous frame.
+ */
 export function markFrameEndAndSample(info: {
   render: { calls: number; triangles: number };
   memory: { geometries: number; textures: number };
 }): void {
-  renderStats.drawCalls = info.render.calls;
-  renderStats.triangles = info.render.triangles;
+  // Falls back to the live counters when nothing patched the renderer, which is
+  // the case in tests and in RenderBench.
+  renderStats.drawCalls = peakCalls || info.render.calls;
+  renderStats.triangles = peakTriangles || info.render.triangles;
+  if (renderMsThisFrame > 0) renderStats.glRenderMs = renderMsThisFrame;
+  peakCalls = 0;
+  peakTriangles = 0;
+  renderMsThisFrame = 0;
   renderStats.geometries = info.memory.geometries;
   renderStats.textures = info.memory.textures;
 }
