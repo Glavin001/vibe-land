@@ -382,3 +382,73 @@ export async function resetCity(page: Page): Promise<void> {
   // The rebuild re-bootstraps the ledger; give the client a moment to draw it.
   await page.waitForTimeout(2000);
 }
+
+/** Extent of the city's chunks, for placing a capture camera around it. */
+export interface CityBounds {
+  centre: [number, number, number];
+  /** Horizontal half-diagonal, i.e. how far out "outside the city" starts. */
+  radiusM: number;
+  topM: number;
+}
+
+export async function cityBounds(page: Page): Promise<CityBounds> {
+  const { manifestHash } = await cityStats(page);
+  return page.evaluate(async (hash) => {
+    const response = await fetch(`/city-manifest/${hash}`);
+    if (!response.ok) throw new Error(`manifest fetch failed: ${response.status}`);
+    const manifest = await response.json();
+    let minX = Infinity; let maxX = -Infinity;
+    let minZ = Infinity; let maxZ = -Infinity;
+    let top = 0;
+    for (const structure of manifest.structures) {
+      for (const chunk of structure.chunks) {
+        const x = structure.worldPosition[0] + chunk.centroid[0];
+        const y = structure.worldPosition[1] + chunk.centroid[1];
+        const z = structure.worldPosition[2] + chunk.centroid[2];
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (z < minZ) minZ = z;
+        if (z > maxZ) maxZ = z;
+        if (y > top) top = y;
+      }
+    }
+    return {
+      centre: [(minX + maxX) / 2, 0, (minZ + maxZ) / 2] as [number, number, number],
+      radiusM: 0.5 * Math.hypot(maxX - minX, maxZ - minZ),
+      topM: top,
+    };
+  }, manifestHash);
+}
+
+/**
+ * Park the capture camera outside the city, looking back across it.
+ *
+ * The vantage is derived from the city's own extent rather than from the
+ * player, so it is identical in every run -- which is the only way two
+ * candidates for a perceptual knob can be compared at all.
+ */
+export async function parkOutside(
+  page: Page,
+  bounds: CityBounds,
+  options?: { standOffM?: number; heightM?: number; bearingRad?: number; aimFraction?: number },
+): Promise<void> {
+  const standOff = options?.standOffM ?? 70;
+  const height = options?.heightM ?? 26;
+  const bearing = options?.bearingRad ?? Math.PI * 0.25;
+  const aim = options?.aimFraction ?? 0.42;
+  const distance = bounds.radiusM + standOff;
+  await page.evaluate(
+    (pose) => (window as unknown as {
+      __VIBE_E2E__: { setCapturePose: (p: unknown) => void };
+    }).__VIBE_E2E__.setCapturePose(pose),
+    {
+      position: [
+        bounds.centre[0] + Math.sin(bearing) * distance,
+        height,
+        bounds.centre[2] + Math.cos(bearing) * distance,
+      ] as [number, number, number],
+      lookAt: [bounds.centre[0], bounds.topM * aim, bounds.centre[2]] as [number, number, number],
+    },
+  );
+  await page.waitForTimeout(400);
+}

@@ -18,6 +18,8 @@ import { useFrame, useThree } from '@react-three/fiber';
 import { useEffect, useMemo } from 'react';
 import * as THREE from 'three';
 
+import { lookTuning, subscribeLookTuning } from './lookTuning';
+
 import { DEFAULT_SUN_AZIMUTH_DEG, DEFAULT_SUN_ELEVATION_DEG, skyGradient, sunDirection } from './sunSky';
 
 const VERTEX_SHADER = /* glsl */ `
@@ -181,7 +183,11 @@ export function SkyEnvironment({
   }, [gl, scene, material, gradient, intensity]);
 
   useEffect(() => {
-    scene.environmentIntensity = Math.max(0, intensity);
+    const apply = () => {
+      scene.environmentIntensity = Math.max(0, intensity * lookTuning().envIntensity);
+    };
+    apply();
+    return subscribeLookTuning(apply);
   }, [scene, intensity]);
 
   // Keep the dome centred on the camera: a unit sphere that rides along is

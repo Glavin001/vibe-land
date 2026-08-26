@@ -14,6 +14,14 @@ import type { DebugStats } from './ui/DebugOverlay';
 import { DEFAULT_STATS } from './ui/DebugOverlay';
 import { renderStats } from './city/renderStats';
 import { acquireCityDiagnostics } from './city/cityDiagnostics';
+import {
+  setAmbientOcclusionEnabled,
+  setQualityTier,
+  setShadowsEnabled,
+} from './app/renderQuality';
+import { updateFogSettings } from './graphics/fogSettings';
+import { setLookTuning } from './graphics/lookTuning';
+import { setCapturePose } from './scene/captureCamera';
 
 /** Held while a spec has forced the diagnostic sweeps on. */
 let diagnosticsHold: (() => void) | null = null;
@@ -187,6 +195,43 @@ export interface VibeE2EBridge {
    * ask for them, or it reads whatever the last sweep left behind.
    */
   setDiagnostics(on: boolean): void;
+  /**
+   * Flip a render-quality knob from a harness.
+   *
+   * The panel's own buttons are the only other way in, and driving perf work
+   * through DOM clicks means the panel has to be open and hittable -- which it
+   * is not by default, and which puts a React re-render in the middle of a
+   * measurement. This exists so a cost comparison can toggle one feature at a
+   * time in ONE session with the camera parked, which is the only way the
+   * numbers are comparable: a reload re-rolls the spawn point, and at this fog
+   * density the difference between facing a wall and facing down a street
+   * dwarfs anything being measured.
+   */
+  setRenderQuality(next: { shadows?: boolean; ao?: boolean; tier?: 'fast' | 'pretty' }): void;
+  /**
+   * Retune the perceptual lighting knobs live.
+   *
+   * `fogIntensity` scales the fog density the AOI radius derives (1 = ship
+   * default, lower = see further); the rest go to `graphics/lookTuning`. All of
+   * them apply without a reload, which is the point -- see that module for why
+   * comparing them across rebuilds does not work.
+   */
+  setLook(next: {
+    fogIntensity?: number;
+    aoStrength?: number;
+    aoRadius?: number;
+    envIntensity?: number;
+  }): void;
+  /**
+   * Park the camera at a fixed pose, or `null` to hand it back to the player.
+   *
+   * Camera only -- the player does not move, so streaming and hitscan carry on
+   * from wherever they actually are. See `scene/captureCamera`.
+   */
+  setCapturePose(next: {
+    position: [number, number, number];
+    lookAt: [number, number, number];
+  } | null): void;
 }
 
 // ---------------------------------------------------------------------------
@@ -350,6 +395,19 @@ const bridge: VibeE2EBridge = {
       diagnosticsHold();
       diagnosticsHold = null;
     }
+  },
+  setRenderQuality: (next) => {
+    if (next.shadows !== undefined) setShadowsEnabled(next.shadows);
+    if (next.ao !== undefined) setAmbientOcclusionEnabled(next.ao);
+    if (next.tier !== undefined) setQualityTier(next.tier);
+  },
+  setCapturePose: (next) => setCapturePose(next),
+  setLook: (next) => {
+    if (next.fogIntensity !== undefined) {
+      const intensity = next.fogIntensity;
+      updateFogSettings((draft) => ({ ...draft, intensity }));
+    }
+    setLookTuning(next);
   },
 };
 

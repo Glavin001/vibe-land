@@ -23,6 +23,7 @@
 //     term only -- multiplied into sunlit concrete it just looks grimy.
 
 import { useFrame, useThree } from '@react-three/fiber';
+import { lookTuning, subscribeLookTuning } from './lookTuning';
 import { useEffect, useMemo } from 'react';
 import * as THREE from 'three';
 
@@ -210,12 +211,17 @@ type AmbientOcclusionProps = {
 };
 
 export function AmbientOcclusion({
-  radius = 1.2,
-  strength = 1.5,
+  radius,
+  strength,
   fadeStartM = 60,
   fadeEndM = 140,
 }: AmbientOcclusionProps) {
   const gl = useThree((state) => state.gl);
+  // Props win when given; otherwise the live store, so a tuning session can
+  // sweep these at a parked camera instead of rebuilding per candidate.
+  const tuning = lookTuning();
+  const activeRadius = radius ?? tuning.aoRadius;
+  const activeStrength = strength ?? tuning.aoStrength;
 
   const passes = useMemo(() => {
     const size = new THREE.Vector2();
@@ -229,7 +235,7 @@ export function AmbientOcclusion({
         uResolution: { value: new THREE.Vector2(1, 1) },
         uFullResolution: { value: new THREE.Vector2(1, 1) },
         uKernel: { value: buildKernel() },
-        uRadius: { value: radius },
+        uRadius: { value: activeRadius },
         uFadeStart: { value: fadeStartM },
         uFadeEnd: { value: fadeEndM },
       },
@@ -255,7 +261,7 @@ export function AmbientOcclusion({
       uniforms: {
         tDiffuse: { value: null },
         tAO: { value: null },
-        uPower: { value: strength },
+        uPower: { value: activeStrength },
       },
       vertexShader: FULLSCREEN_VERTEX,
       fragmentShader: COMPOSITE_FRAGMENT,
@@ -284,7 +290,7 @@ export function AmbientOcclusion({
       ao: null as THREE.WebGLRenderTarget | null,
       blur: null as THREE.WebGLRenderTarget | null,
     };
-  }, [radius, strength, fadeStartM, fadeEndM]);
+  }, [fadeStartM, fadeEndM]);
 
   useEffect(() => {
     return () => {
@@ -299,6 +305,22 @@ export function AmbientOcclusion({
       gl.setRenderTarget(null);
     };
   }, [passes, gl]);
+
+  // Strength and radius are plain uniforms, so they retune in place. Kept out
+  // of the memo above deliberately: rebuilding the passes for them would
+  // reallocate three render targets mid-sweep and measure the reallocation.
+  useEffect(() => {
+    const apply = () => {
+      const live = lookTuning();
+      // uRadius is the AO pass's sample kernel; uPower is the exponent the
+      // COMPOSITE pass applies. Different materials, and getting that wrong
+      // throws on every retune.
+      passes.aoMaterial.uniforms.uRadius.value = radius ?? live.aoRadius;
+      passes.compositeMaterial.uniforms.uPower.value = strength ?? live.aoStrength;
+    };
+    apply();
+    return subscribeLookTuning(apply);
+  }, [passes, radius, strength]);
 
   // Priority 1: R3F hands the render loop over to this callback.
   useFrame(({ gl: renderer, scene, camera }) => {

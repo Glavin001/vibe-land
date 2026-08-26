@@ -5,6 +5,7 @@ import { AmbientOcclusion } from '../graphics/AmbientOcclusion';
 import { SkyEnvironment } from '../graphics/SkyEnvironment';
 import { skyGradient } from '../graphics/sunSky';
 import { SunLight } from './SunLight';
+import { applyCapturePose } from './captureCamera';
 import { useFrame, useThree } from '@react-three/fiber';
 import * as THREE from 'three';
 import type { GameMode } from '../app/gameMode';
@@ -2343,6 +2344,10 @@ export function GameWorld({
       const lookZ = pos[2] + Math.cos(yaw) * Math.cos(pitch);
       camera.lookAt(lookX, lookY, lookZ);
     }
+
+    // Last, so it overrides both the chase and first-person paths. Nothing sets
+    // it unless a capture harness does.
+    applyCapturePose(camera);
 
     if (isDriving && drivenVehicleId != null) {
       const cameraMotionState = localVehicleCameraMotionStateRef.current;
