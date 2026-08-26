@@ -1011,15 +1011,31 @@ export class CityClient {
       ) {
         continue;
       }
-      state.lastPresented = {
-        position: [presented.position[0], presented.position[1], presented.position[2]],
-        rotation: [
-          presented.rotation[0],
-          presented.rotation[1],
-          presented.rotation[2],
-          presented.rotation[3],
-        ],
-      };
+      // Written in place. This used to build an object and two arrays per moved
+      // body per frame; during a collapse that is thousands of allocations a
+      // frame, and the resulting GC is exactly the kind of periodic stall that
+      // shows up as a dropped frame rather than as a higher average. Nothing
+      // holds a reference to `lastPresented` -- it is only compared, field by
+      // field, a few lines above -- so mutating it is safe.
+      if (previous) {
+        previous.position[0] = presented.position[0];
+        previous.position[1] = presented.position[1];
+        previous.position[2] = presented.position[2];
+        previous.rotation[0] = presented.rotation[0];
+        previous.rotation[1] = presented.rotation[1];
+        previous.rotation[2] = presented.rotation[2];
+        previous.rotation[3] = presented.rotation[3];
+      } else {
+        state.lastPresented = {
+          position: [presented.position[0], presented.position[1], presented.position[2]],
+          rotation: [
+            presented.rotation[0],
+            presented.rotation[1],
+            presented.rotation[2],
+            presented.rotation[3],
+          ],
+        };
+      }
       this.topology.updateBodyPose(key, presented.position, presented.rotation, 'presented');
       live.add(key);
     }

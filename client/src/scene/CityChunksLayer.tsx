@@ -617,6 +617,48 @@ export function CityChunksLayer({
           lastMigrateAnomaliesRef.current = { ...anomalies };
         }
       }
+      // Both consumers below want these, and both used to compute them
+      // independently -- so the city-wide stale-chunk sweep ran TWICE per
+      // telemetry tick, and the percentile twice with it.
+      const staleDrawnChunks = wantSweep && countStaleDrawnChunks
+        ? countStaleDrawnChunks(client, 0.5)
+        : 0;
+      const chunkUpdateP95Ms = percentile(updateSamplesRef.current, 0.95);
+      // Island statistics are derived from the sweep's positions, so without a
+      // sweep there is nothing to derive them from -- and computing them anyway
+      // walked every body and every chunk slot to read an empty array. One pass
+      // now, not two, and only when it can produce an answer.
+      let largestIslandSpanM = 0;
+      let largestIslandChunks = 0;
+      if (sweep) {
+        for (const body of client.topology.allBodies()) {
+          // Excludes the intact support body (serial 0), which is the whole
+          // un-fractured structure by definition.
+          if (body.islandSerial === 0 || body.chunkSlots.length === 0) continue;
+          if (body.chunkSlots.length > largestIslandChunks) {
+            largestIslandChunks = body.chunkSlots.length;
+          }
+          // What the player sees is SIZE, not chunk count: a 5-chunk island of
+          // bonded slabs is still a wall-sized panel. Span = longest edge of
+          // the island's world AABB.
+          let minX = Infinity, minY = Infinity, minZ = Infinity;
+          let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+          for (const slot of body.chunkSlots) {
+            const at = slot * 3;
+            const px = positions[at];
+            const py = positions[at + 1];
+            const pz = positions[at + 2];
+            if (px < minX) minX = px;
+            if (py < minY) minY = py;
+            if (pz < minZ) minZ = pz;
+            if (px > maxX) maxX = px;
+            if (py > maxY) maxY = py;
+            if (pz > maxZ) maxZ = pz;
+          }
+          const span = Math.max(maxX - minX, maxY - minY, maxZ - minZ);
+          if (span > largestIslandSpanM) largestIslandSpanM = span;
+        }
+      }
       recordCityStats({
         wireVersion: stats.wireVersion,
         chunksTotal: stats.chunksTotal,
@@ -627,56 +669,18 @@ export function CityChunksLayer({
         topoSeqGaps: stats.topoSeqGaps,
         bytesPerSecond: stats.bytesPerSecond,
         datagramsReceived: stats.datagramsReceived,
-        chunkUpdateP95Ms: percentile(updateSamplesRef.current, 0.95),
+        chunkUpdateP95Ms,
         orphanedChunks: stats.orphanedChunks,
         chunksBelowGround,
         minChunkY: Number.isFinite(minChunkY) ? minChunkY : 0,
         // 0.5 m: comfortably above quantisation and strided-motion lag, far
         // below a chunk left at its intact pose while its island has fallen.
-        staleDrawnChunks: wantSweep && countStaleDrawnChunks
-          ? countStaleDrawnChunks(client, 0.5)
-          : 0,
+        staleDrawnChunks,
         floatingSettledIslands: sweep
           ? countFloatingSettledIslands(client, positions, sweep.columns)
           : 0,
-        largestIslandSpanM: (() => {
-          // What the player sees is SIZE, not chunk count: a 5-chunk island of
-          // bonded slabs is still a wall-sized panel. Span = longest edge of
-          // the island's world AABB.
-          let span = 0;
-          for (const body of client.topology.allBodies()) {
-            if (body.islandSerial === 0 || body.chunkSlots.length === 0) continue;
-            let minX = Infinity, minY = Infinity, minZ = Infinity;
-            let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
-            for (const slot of body.chunkSlots) {
-              const at = slot * 3;
-              const px = positions[at];
-              const py = positions[at + 1];
-              const pz = positions[at + 2];
-              if (px < minX) minX = px;
-              if (py < minY) minY = py;
-              if (pz < minZ) minZ = pz;
-              if (px > maxX) maxX = px;
-              if (py > maxY) maxY = py;
-              if (pz > maxZ) maxZ = pz;
-            }
-            const s = Math.max(maxX - minX, maxY - minY, maxZ - minZ);
-            if (s > span) span = s;
-          }
-          return span;
-        })(),
-        largestIslandChunks: (() => {
-          // A building half that shots cannot break apart shows up here as a
-          // flat line: the biggest island never shrinks however much fire it
-          // takes. Excludes the intact support body (serial 0), which is the
-          // whole un-fractured structure by definition.
-          let largest = 0;
-          for (const body of client.topology.allBodies()) {
-            if (body.islandSerial === 0) continue;
-            if (body.chunkSlots.length > largest) largest = body.chunkSlots.length;
-          }
-          return largest;
-        })(),
+        largestIslandSpanM,
+        largestIslandChunks,
       });
       updateCityE2E({
         wireVersion: stats.wireVersion,
@@ -692,14 +696,12 @@ export function CityChunksLayer({
         rendered: stateRef.current != null,
         minChunkY: Number.isFinite(minChunkY) ? minChunkY : 0,
         chunksBelowGround,
-        chunkUpdateP95Ms: percentile(updateSamplesRef.current, 0.95),
+        chunkUpdateP95Ms,
         orphanedChunks: stats.orphanedChunks,
         orphanedByRetire: stats.orphanedByRetire,
         // Same probe as the netlab line above: the only signal that catches a
         // chunk drawn away from its ledger pose.
-        staleDrawnChunks: wantSweep && countStaleDrawnChunks
-          ? countStaleDrawnChunks(client, 0.5)
-          : 0,
+        staleDrawnChunks,
         bootstraps: stats.bootstraps,
         settleRejects: stats.settleRejects,
         valveApplies: stats.valveApplies,

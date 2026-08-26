@@ -375,7 +375,11 @@ export async function resetCity(page: Page): Promise<void> {
   const matchId = (await snapshot(page)).matchId;
   const response = await page.request.post(`/city-reset/${matchId}`, { failOnStatusCode: false });
   if (!response.ok()) throw new Error(`city-reset returned ${response.status()}`);
-  await waitForSnapshot(page, (s) => !!s.city && s.city.brokenBonds < before / 2, {
+  // An absolute floor, not a fraction of what was there. "Half of last time"
+  // let a run start from 3,376 already-broken bonds and call it reset, which
+  // makes two perf runs incomparable for a reason that has nothing to do with
+  // what they are measuring.
+  await waitForSnapshot(page, (s) => !!s.city && s.city.brokenBonds < 200, {
     timeout: 60_000,
     label: 'resetCity',
   });

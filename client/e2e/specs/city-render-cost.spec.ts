@@ -22,7 +22,11 @@ import { test } from '@playwright/test';
 import {
   aimAt,
   allStructureTargets,
+  cityBounds,
+  cityStats,
+  fireAt,
   openCity,
+  parkOutside,
   resetCity,
   waitForCityRendered,
   waitUntilStill,
@@ -99,6 +103,7 @@ test.describe('city render cost', () => {
     }
     await waitUntilStill(page);
     await aimAt(page, nearest);
+    await parkOutside(page, await cityBounds(page), { standOffM: 26, heightM: 8, aimFraction: 0.2 });
     await page.waitForTimeout(1500);
 
     const results: Array<[string, Awaited<ReturnType<typeof measure>>]> = [];
@@ -106,38 +111,93 @@ test.describe('city render cost', () => {
       results.push([label, await measure(page, FRAMES)]);
     };
     const set = async (next: { shadows?: boolean; ao?: boolean; tier?: 'fast' | 'pretty' }) => {
-      await page.evaluate(
-        (n) => (window as any).__VIBE_E2E__.setRenderQuality(n),
-        next,
-      );
+      await page.evaluate((n) => (window as any).__VIBE_E2E__.setRenderQuality(n), next);
       await page.waitForTimeout(1200);
+    };
+    // The debug panel is not free to have open: the city layer's 2 Hz telemetry
+    // block composes a world pose for every chunk, and it runs only while
+    // something is reading it. A measurement taken with the panel up is partly
+    // measuring the panel, which is exactly the trap the reported numbers fell
+    // into.
+    const diagnostics = async (on: boolean) => {
+      await page.evaluate((v) => (window as any).__VIBE_E2E__.setDiagnostics(v), on);
+      await page.waitForTimeout(600);
     };
 
     await set({ tier: 'pretty', ao: true, shadows: true });
-    await record('PRETTY  AO on   shadows on   (as shipped)');
-    await set({ ao: false });
-    await record('PRETTY  AO OFF  shadows on');
-    await set({ shadows: false });
-    await record('PRETTY  AO off  shadows OFF');
-    await set({ ao: true });
-    await record('PRETTY  AO on   shadows off');
-    await set({ ao: false, shadows: true, tier: 'fast' });
-    await record('FAST    AO off  shadows on');
-    await set({ shadows: false });
-    await record('FAST    AO off  shadows off');
+    await diagnostics(false);
+    await record('AT REST   everything on, no panel');
+    await diagnostics(true);
+    await record('AT REST   everything on, PANEL OPEN');
+    await diagnostics(false);
 
-    const budget = 1000 / 120;
+    // Now the case that actually matters. An idle city has nothing awake, so it
+    // measures the draw path and none of the per-frame update path -- which is
+    // what grows with a collapse and what the report was about.
+    // Aim LOW and keep firing: the update path only loads when a lot of mass is
+    // moving at once, and a hole punched mid-facade settles in under a second.
+    // Taking a tower off its feet keeps thousands of chunks awake for long
+    // enough to measure, which is the state the report came from.
+    await page.evaluate(() => (window as any).__VIBE_E2E__.setCapturePose(null));
+    const before = await cityStats(page);
+    const base: [number, number, number] = [nearest[0], nearest[1] * 0.18, nearest[2]];
+    await fireAt(page, base, 90, { intervalMs: 90 });
+    const after = await cityStats(page);
+    console.log(`[render cost] bonds broken ${before.brokenBonds} -> ${after.brokenBonds}, `
+      + `awake ${before.chunksAwake} -> ${after.chunksAwake}`);
+    await parkOutside(page, await cityBounds(page), { standOffM: 26, heightM: 8, aimFraction: 0.2 });
+    const awake = (await cityStats(page)).chunksAwake;
+
+    await record(`DEBRIS    everything on, no panel`);
+    await diagnostics(true);
+    await record('DEBRIS    everything on, PANEL OPEN');
+    await diagnostics(false);
+    await set({ ao: false });
+    await record('DEBRIS    AO off');
+    await set({ shadows: false });
+    await record('DEBRIS    AO off, shadows off');
+
+    // The 2 Hz telemetry block is O(chunks), not O(debris), so it is the one
+    // client cost that can be measured repeatably without reproducing an
+    // hours-long demolition. Sampled with the panel open, since that is what
+    // makes it run at all.
+    await diagnostics(true);
+    await page.waitForTimeout(2500);
+    const profile = await page.evaluate(async () => {
+      const bridge = (window as any).__VIBE_E2E__;
+      let telemetry = 0;
+      let sample = 0;
+      let city = 0;
+      // telemetryMs is deliberately not reset per frame, so the useful figure is
+      // the peak over a window that certainly contains a tick.
+      for (let i = 0; i < 240; i += 1) {
+        await new Promise((r) => requestAnimationFrame(() => r(null)));
+        const p = bridge.frameProfile();
+        if (p.telemetryMs > telemetry) telemetry = p.telemetryMs;
+        sample += p.sampleMs;
+        city += p.cityFrameMs;
+      }
+      return { telemetryMs: telemetry, sampleMs: sample / 240, cityFrameMs: city / 240 };
+    });
+    await diagnostics(false);
+    console.log(
+      `[render cost] 2 Hz telemetry block peak ${profile.telemetryMs.toFixed(2)} ms; `
+      + `sample ${profile.sampleMs.toFixed(2)} ms/frame; city ${profile.cityFrameMs.toFixed(2)} ms/frame`,
+    );
+
     const backing = await page.evaluate(() => {
       const canvas = document.querySelector('canvas');
       return canvas ? `${canvas.width}x${canvas.height}` : 'unknown';
     });
+    const budget = 1000 / 120;
     console.log(`\n[render cost] ${FRAMES} frames each, vsync off`);
     console.log(`[render cost] css ${WIDTH}x${HEIGHT} @ dpr ${DPR} -> backing store ${backing}`);
+    console.log(`[render cost] chunks awake during DEBRIS rows: ${awake}`);
     console.log(`[render cost] 120 fps budget = ${budget.toFixed(2)} ms\n`);
     for (const [label, r] of results) {
       const verdict = r.median <= budget ? 'under' : `${(r.median / budget).toFixed(2)}x over`;
       console.log(
-        `  ${label.padEnd(42)} ${r.median.toFixed(2)} ms median  `
+        `  ${label.padEnd(40)} ${r.median.toFixed(2)} ms median  `
         + `${r.p95.toFixed(2)} p95  ${r.fps.toFixed(0)} fps  [${verdict}]`,
       );
     }
