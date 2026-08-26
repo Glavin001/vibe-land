@@ -523,6 +523,11 @@ void DestructionManager::create_destructible(
   // step -- the bridge's own per-tick walk provably missed it (see the
   // kill-floor story). The walk below is now redundant belt-and-braces and can
   // be retired once the scenario gate shows escaped_bodies_parked at 0.
+  // VIBE_CITY_SKIP_STABLE_UNCONVERGED=0 restores the converged-only skip.
+  desc.settings.skipStableUnconverged = [] {
+    const char *raw = std::getenv("VIBE_CITY_SKIP_STABLE_UNCONVERGED");
+    return raw == nullptr || std::string(raw) != "0";
+  }();
   desc.settings.enableSpeculativeCcd = speculative_ccd_enabled();
   desc.settings.maxDepenetrationVelocity = depenetration_velocity();
   // "pos,vel" -- PhysX per-body solver iterations, engine default 4,1.
