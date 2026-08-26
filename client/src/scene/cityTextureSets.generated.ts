@@ -3,7 +3,7 @@
 // Layer index is the array layer in city-albedo.webp / city-surface.webp.
 // Walls come first, then floors; `cityTextures.ts` relies on that order.
 
-export type CityTextureRole = 'wall' | 'floor';
+export type CityTextureRole = 'wall' | 'floor' | 'ground';
 
 export interface CityTextureSet {
   slug: string;
@@ -23,6 +23,8 @@ export const CITY_TEXTURE_SETS: readonly CityTextureSet[] = [
   { slug: 'concrete_layers_02', role: 'wall', metresPerTile: 2.000, directional: true, meanLinear: [0.2074, 0.1966, 0.1769] },
   { slug: 'concrete_floor_worn_02', role: 'floor', metresPerTile: 2.000, directional: false, meanLinear: [0.2034, 0.1486, 0.0931] },
   { slug: 'concrete_floor_damaged_01', role: 'floor', metresPerTile: 5.000, directional: false, meanLinear: [0.0793, 0.0583, 0.0372] },
+  { slug: 'leafy_grass', role: 'ground', metresPerTile: 2.000, directional: false, meanLinear: [0.3199, 0.2360, 0.1062] },
+  { slug: 'brown_mud_leaves_01', role: 'ground', metresPerTile: 1.300, directional: false, meanLinear: [0.1388, 0.0996, 0.0376] },
 ];
 
 export const CITY_ALBEDO_PX = 1024;

@@ -77,6 +77,10 @@ SETS = [
     TextureSet("concrete_layers_02", "wall", directional=True),
     TextureSet("concrete_floor_worn_02", "floor"),
     TextureSet("concrete_floor_damaged_01", "floor"),
+    # Ground layers, after walls and floors: the terrain samples these, keyed
+    # by the splatmap plus a macro mask rather than by building id.
+    TextureSet("leafy_grass", "ground"),
+    TextureSet("brown_mud_leaves_01", "ground"),
 ]
 
 # Poly Haven's own map names. `arm` is the packed AO/Roughness/Metalness map, so
@@ -190,7 +194,7 @@ def main() -> int:
         "// Layer index is the array layer in city-albedo.webp / city-surface.webp.\n"
         "// Walls come first, then floors; `cityTextures.ts` relies on that order.\n"
         "\n"
-        "export type CityTextureRole = 'wall' | 'floor';\n"
+        "export type CityTextureRole = 'wall' | 'floor' | 'ground';\n"
         "\n"
         "export interface CityTextureSet {\n"
         "  slug: string;\n"

@@ -61,6 +61,8 @@ import {
   CITY_TEX_MEANS,
   CITY_TEX_METRES,
   CITY_TEX_ROTATION,
+  GROUND_LAYER_COUNT,
+  GROUND_LAYER_START,
   LAYER_CODE_RADIX,
   cityMacroNoise,
   cityTextures,
@@ -262,21 +264,12 @@ vCityAxisX = cityAxX / max( length( cityAxX ), 1e-8 );
 vCityAxisY = cityAxY / max( length( cityAxY ), 1e-8 );
 `;
 
-function fragmentPars(surface: boolean, hero: boolean): string {
-  return `
-uniform highp sampler2DArray cityAlbedo;
-uniform float cityTexMetres[ ${CITY_TEX_LAYERS} ];
-uniform float cityTexScale;
-uniform vec3 cityTone;
-varying vec3 vCityTexPos;
-flat varying float vCityLayer;
-${surface ? `
-uniform highp sampler2DArray citySurface;
-uniform float cityNormalScale;
-flat varying vec3 vCityAxisX;
-flat varying vec3 vCityAxisY;
-` : ''}
-${hero ? `
+/**
+ * The hero stack's GLSL, shared verbatim by the city material and the ground
+ * material -- one copy so the two cannot drift. Every function reads the same
+ * uniform objects, so one tuning retunes both surfaces.
+ */
+const HERO_UNIFORM_PARS = `
 uniform sampler2D cityMacroTex;
 uniform vec3 cityTexMean[ ${CITY_TEX_LAYERS} ];
 uniform float cityTexRot[ ${CITY_TEX_LAYERS} ];
@@ -299,6 +292,9 @@ uniform float cityMacroTemp;
 uniform float cityMacroMid;
 uniform float cityMacroSmall;
 
+`;
+
+const HERO_HELPERS = `
 vec4 cityHash4( vec2 p ) {
   return fract( sin( vec4(
     1.0 + dot( p, vec2( 37.0, 17.0 ) ),
@@ -438,6 +434,25 @@ float cityMacroField( vec2 metres ) {
   float c = texture( cityMacroTex, cityRot2( -0.43 ) * metres / ( cityMacroSize * 0.145 ) + vec2( 0.73, 0.29 ) ).r;
   return ( a + b * cityMacroMid + c * cityMacroSmall ) / max( 1.0 + cityMacroMid + cityMacroSmall, 1e-4 );
 }
+`;
+
+function fragmentPars(surface: boolean, hero: boolean): string {
+  return `
+uniform highp sampler2DArray cityAlbedo;
+uniform float cityTexMetres[ ${CITY_TEX_LAYERS} ];
+uniform float cityTexScale;
+uniform vec3 cityTone;
+varying vec3 vCityTexPos;
+flat varying float vCityLayer;
+${surface ? `
+uniform highp sampler2DArray citySurface;
+uniform float cityNormalScale;
+flat varying vec3 vCityAxisX;
+flat varying vec3 vCityAxisY;
+` : ''}
+${hero ? `
+${HERO_UNIFORM_PARS}
+${HERO_HELPERS}
 ` : ''}
 `;
 }
@@ -688,4 +703,238 @@ export function applyCityTriplanar(
     if (heroActive) return 'city-triplanar-hero-v2';
     return surface ? 'city-triplanar-pbr-v2' : 'city-triplanar-flat-v2';
   };
+}
+
+
+// ---------------------------------------------------------------------------
+// The ground: the same sheets, the same hero stack, one projection.
+// ---------------------------------------------------------------------------
+
+/**
+ * Extra knobs for the ground blend, live like everything else.
+ *
+ * `dirtPatch*` shape the macro-driven dirt mask: on the flat city world the
+ * splatmap is pure grass (the auto-splat keys on slope and height, and there
+ * is neither), so worn patches have to come from the macro field. Threshold
+ * and width are smoothstep edges over that field.
+ */
+const groundUniforms = {
+  groundDirtStart: { value: 0.56 },
+  groundDirtEnd: { value: 0.72 },
+};
+
+export function setGroundTuning(next: { dirtStart?: number; dirtEnd?: number }): void {
+  if (typeof next.dirtStart === 'number') groundUniforms.groundDirtStart.value = next.dirtStart;
+  if (typeof next.dirtEnd === 'number') groundUniforms.groundDirtEnd.value = next.dirtEnd;
+}
+
+const GROUND_VERTEX_PARS = `
+varying vec2 vGroundPos;
+varying vec4 vGroundW;
+attribute vec4 materialWeights;
+`;
+
+/** Terrain tile positions ARE world coordinates -- the builder writes them so. */
+const GROUND_VERTEX_BODY = `
+vGroundPos = position.xz;
+vGroundW = materialWeights;
+`;
+
+function groundFragmentPars(surface: boolean, hero: boolean): string {
+  return `
+uniform highp sampler2DArray cityAlbedo;
+uniform float cityTexMetres[ ${CITY_TEX_LAYERS} ];
+uniform float cityTexScale;
+uniform vec3 cityTone;
+uniform float groundDirtStart;
+uniform float groundDirtEnd;
+varying vec2 vGroundPos;
+varying vec4 vGroundW;
+${surface ? `
+uniform highp sampler2DArray citySurface;
+uniform float cityNormalScale;
+` : ''}
+${hero ? HERO_UNIFORM_PARS + HERO_HELPERS : ''}
+`;
+}
+
+/**
+ * Replaces `<map_fragment>` on the terrain.
+ *
+ * One projection (world XZ -- the heightfield is gentle, and stretching on
+ * the rare steep lip is cheaper than tripling every ground pixel's taps), two
+ * layers: grass, and a dirt/leaf-litter layer keyed by the splatmap's
+ * non-grass channels PLUS a macro-field mask, because the flat city world's
+ * auto-splat is pure grass. Each side of the blend is skipped entirely when
+ * its weight is pinned, so a typical pixel pays one layer's taps; the
+ * transition bands pay both, and they are exactly the places the money shows.
+ */
+function groundMapFragment(surface: boolean, hero: boolean): string {
+  const ga = GROUND_LAYER_START;
+  const gb = GROUND_LAYER_START + (GROUND_LAYER_COUNT > 1 ? 1 : 0);
+  const meanA = `cityTexMean[ ${ga} ]`;
+  const meanB = `cityTexMean[ ${gb} ]`;
+  return `
+vec2 groundDx = dFdx( vGroundPos );
+vec2 groundDy = dFdy( vGroundPos );
+float groundAM = cityTexMetres[ ${ga} ] * cityTexScale;
+float groundBM = cityTexMetres[ ${gb} ] * cityTexScale;
+${hero ? `
+float groundHexFade = 1.0 - smoothstep( cityHexFadeStart, cityHexFadeEnd, length( vViewPosition ) );
+// A second, larger read of the macro field drives WHERE the dirt lives; the
+// ordinary read still modulates tone within each material.
+float groundPatch = cityMacroField( vGroundPos * 0.31 );
+float groundDirt = clamp(
+  vGroundW.y + vGroundW.z + vGroundW.w
+  + smoothstep( groundDirtStart, groundDirtEnd, groundPatch ), 0.0, 1.0 );
+float groundMacro = cityMacroField( vGroundPos );
+
+CityPlane groundA = CityPlane( vec3( 0.0 ), vec2( 0.0 ), 0.0, 0.0 );
+CityPlane groundB = groundA;
+if ( groundDirt < 0.98 ) {
+  groundA = citySamplePlane( vGroundPos / groundAM, groundDx / groundAM, groundDy / groundAM,
+    float( ${ga} ), 1.0, ${meanA}, groundHexFade );
+}
+if ( groundDirt > 0.02 ) {
+  groundB = citySamplePlane( vGroundPos / groundBM, groundDx / groundBM, groundDy / groundBM,
+    float( ${gb} ), 1.0, ${meanB}, groundHexFade );
+}
+vec3 groundAlbedo = mix( groundA.albedo, groundB.albedo, groundDirt );
+float groundMacroSigned = groundMacro * 2.0 - 1.0;
+groundAlbedo *= exp2( groundMacroSigned * cityMacroAlbedo );
+groundAlbedo *= mix(
+  vec3( 1.0 - cityMacroTemp * 0.65, 1.0, 1.0 + cityMacroTemp ),
+  vec3( 1.0 + cityMacroTemp, 1.0, 1.0 - cityMacroTemp * 0.72 ),
+  groundMacro );
+diffuseColor.rgb *= cityTone * groundAlbedo;
+${surface ? `
+float groundRoughness = clamp(
+  mix( groundA.rough, groundB.rough, groundDirt )
+  + groundMacroSigned * cityMacroRough, 0.05, 1.0 );
+float groundOcclusion = mix( groundA.ao, groundB.ao, groundDirt );
+vec2 groundNxy = mix( groundA.nxy, groundB.nxy, groundDirt )
+  * cityNormalScale * max( 0.05, 1.0 + groundMacroSigned * cityMacroNormal );
+` : ''}
+` : `
+// Plain variant (hero off, or the albedo tier): one tap per needed layer.
+float groundDirt = clamp( vGroundW.y + vGroundW.z + vGroundW.w, 0.0, 1.0 );
+vec4 groundTapA = texture( cityAlbedo, vec3( vGroundPos / groundAM, float( ${ga} ) ) );
+vec4 groundTapB = texture( cityAlbedo, vec3( vGroundPos / groundBM, float( ${gb} ) ) );
+diffuseColor.rgb *= cityTone * mix( groundTapA.rgb, groundTapB.rgb, groundDirt );
+${surface ? `
+vec4 groundSurfA = texture( citySurface, vec3( vGroundPos / groundAM, float( ${ga} ) ) );
+vec4 groundSurfB = texture( citySurface, vec3( vGroundPos / groundBM, float( ${gb} ) ) );
+float groundRoughness = mix( groundSurfA.b, groundSurfB.b, groundDirt );
+float groundOcclusion = mix( groundSurfA.a, groundSurfB.a, groundDirt );
+vec2 groundNxy = ( mix( groundSurfA.rg, groundSurfB.rg, groundDirt ) * 2.0 - 1.0 ) * cityNormalScale;
+` : ''}
+`}
+`;
+}
+
+/**
+ * Replaces `<normal_fragment_maps>` on the terrain: perturb the vertex normal
+ * along the view-space images of world X and Z -- the axes the XZ projection
+ * ties the tangent space to. Exact on flat ground, a benign approximation on
+ * the mild slopes this heightfield actually has. The tangent-y sign matches
+ * the city's own floor (Y) plane, which shares these sheets.
+ */
+const GROUND_NORMAL_FRAGMENT = `
+vec3 groundTangent = normalize( ( viewMatrix * vec4( 1.0, 0.0, 0.0, 0.0 ) ).xyz );
+vec3 groundBitangent = normalize( ( viewMatrix * vec4( 0.0, 0.0, 1.0, 0.0 ) ).xyz );
+vec3 groundMapN = vec3( groundNxy, sqrt( max( 1.0 - dot( groundNxy, groundNxy ), 0.0 ) ) );
+normal = normalize(
+  groundTangent * groundMapN.x + groundBitangent * groundMapN.y + normal * groundMapN.z );
+`;
+
+const GROUND_ROUGHNESS_FRAGMENT = `
+float roughnessFactor = roughness * groundRoughness;
+`;
+
+const GROUND_AO_FRAGMENT = `
+reflectedLight.indirectDiffuse *= groundOcclusion;
+
+#if defined( USE_ENVMAP ) && defined( STANDARD )
+  float groundDotNV = saturate( dot( geometryNormal, geometryViewDir ) );
+  reflectedLight.indirectSpecular *= computeSpecularOcclusion(
+    groundDotNV, groundOcclusion, material.roughness );
+#endif
+`;
+
+/**
+ * Attach the grass/dirt injection to the terrain material.
+ *
+ * Same factory discipline as the city: never reachable via Material.clone().
+ * The slope-shade the terrain always had is preserved by the caller's own
+ * injection; this replaces the map/normal/roughness/ao chunks only.
+ */
+export function applyGroundTextures(
+  material: THREE.Material,
+  surface: boolean,
+  heroRequested: boolean,
+): void {
+  // Like the city: the hero stack's detail-aware and normal work needs the
+  // surface array, so the albedo tier keeps the plain path.
+  const hero = heroRequested && surface;
+  const textures = cityTextures();
+  uniforms.cityAlbedo.value = textures.albedo;
+  uniforms.citySurface.value = textures.surface;
+
+  const previous = material.onBeforeCompile;
+  material.onBeforeCompile = (shader, renderer) => {
+    previous?.call(material, shader, renderer);
+    shader.uniforms.cityAlbedo = uniforms.cityAlbedo;
+    shader.uniforms.cityTexMetres = uniforms.cityTexMetres;
+    shader.uniforms.cityTexScale = uniforms.cityTexScale;
+    shader.uniforms.cityTone = uniforms.cityTone;
+    shader.uniforms.groundDirtStart = groundUniforms.groundDirtStart;
+    shader.uniforms.groundDirtEnd = groundUniforms.groundDirtEnd;
+    if (surface) {
+      shader.uniforms.citySurface = uniforms.citySurface;
+      shader.uniforms.cityNormalScale = uniforms.cityNormalScale;
+    }
+    if (hero) {
+      uniforms.cityMacroTex.value = cityMacroNoise();
+      shader.uniforms.cityMacroTex = uniforms.cityMacroTex;
+      shader.uniforms.cityTexMean = uniforms.cityTexMean;
+      shader.uniforms.cityTexRot = uniforms.cityTexRot;
+      shader.uniforms.cityPatchTiles = uniforms.cityPatchTiles;
+      shader.uniforms.cityPhaseJitter = uniforms.cityPhaseJitter;
+      shader.uniforms.cityRotAmount = uniforms.cityRotAmount;
+      shader.uniforms.cityMirrorProb = uniforms.cityMirrorProb;
+      shader.uniforms.cityScaleJitter = uniforms.cityScaleJitter;
+      shader.uniforms.cityCellTint = uniforms.cityCellTint;
+      shader.uniforms.cityBlendExp = uniforms.cityBlendExp;
+      shader.uniforms.cityHeightBias = uniforms.cityHeightBias;
+      shader.uniforms.cityVariancePreserve = uniforms.cityVariancePreserve;
+      shader.uniforms.cityHexFadeStart = uniforms.cityHexFadeStart;
+      shader.uniforms.cityHexFadeEnd = uniforms.cityHexFadeEnd;
+      shader.uniforms.cityMacroSize = uniforms.cityMacroSize;
+      shader.uniforms.cityMacroAlbedo = uniforms.cityMacroAlbedo;
+      shader.uniforms.cityMacroRough = uniforms.cityMacroRough;
+      shader.uniforms.cityMacroNormal = uniforms.cityMacroNormal;
+      shader.uniforms.cityMacroTemp = uniforms.cityMacroTemp;
+      shader.uniforms.cityMacroMid = uniforms.cityMacroMid;
+      shader.uniforms.cityMacroSmall = uniforms.cityMacroSmall;
+    }
+
+    shader.vertexShader = GROUND_VERTEX_PARS + shader.vertexShader;
+    shader.vertexShader = shader.vertexShader.replace(
+      '#include <begin_vertex>',
+      '#include <begin_vertex>\n' + GROUND_VERTEX_BODY,
+    );
+    shader.fragmentShader = groundFragmentPars(surface, hero) + shader.fragmentShader;
+    shader.fragmentShader = shader.fragmentShader.replace(
+      '#include <map_fragment>',
+      groundMapFragment(surface, hero),
+    );
+    if (surface) {
+      shader.fragmentShader = shader.fragmentShader
+        .replace('#include <roughnessmap_fragment>', GROUND_ROUGHNESS_FRAGMENT)
+        .replace('#include <normal_fragment_maps>', GROUND_NORMAL_FRAGMENT)
+        .replace('#include <aomap_fragment>', GROUND_AO_FRAGMENT);
+    }
+  };
+  material.customProgramCacheKey = () =>
+    `ground-${surface ? 'pbr' : 'albedo'}-${hero ? 'hero' : 'plain'}-v1`;
 }

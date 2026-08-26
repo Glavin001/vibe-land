@@ -29,13 +29,18 @@ import {
 export const CITY_TEX_LAYERS = CITY_TEXTURE_SETS.length;
 
 /**
- * Walls occupy [0, WALL_LAYER_COUNT), floors the rest.
+ * Walls occupy [0, WALL_LAYER_COUNT), floors follow, ground layers last.
  *
- * Derived rather than hardcoded, but it does assume the generator kept walls
- * first -- which it documents and which `layerCodeForStructure` depends on.
+ * Derived from ROLES, not subtraction: floors used to be "everything after the
+ * walls", which was true right up until ground layers joined the sheet -- at
+ * which point the building hash would have started assigning terrain grass to
+ * building floors.
  */
 export const WALL_LAYER_COUNT = CITY_TEXTURE_SETS.filter((set) => set.role === 'wall').length;
-export const FLOOR_LAYER_COUNT = CITY_TEX_LAYERS - WALL_LAYER_COUNT;
+export const FLOOR_LAYER_COUNT = CITY_TEXTURE_SETS.filter((set) => set.role === 'floor').length;
+/** First ground layer's index, and how many follow. */
+export const GROUND_LAYER_START = CITY_TEXTURE_SETS.findIndex((set) => set.role === 'ground');
+export const GROUND_LAYER_COUNT = CITY_TEXTURE_SETS.filter((set) => set.role === 'ground').length;
 
 /**
  * Radix used to pack a wall layer and a floor layer into one float.
