@@ -42,6 +42,7 @@ import { shouldUpdateThisFrame, updateStrideForDistanceSq } from '../city/render
 import {
   cityPbrLighting,
   cityTextureDetail,
+  heroTilingEnabled,
   instanceShareThresholdSetting,
   onRenderQualityChange,
   shadowsEnabled,
@@ -368,7 +369,7 @@ export function CityChunksLayer({
         // new material rather than a uniform write. Compared against what was
         // last built rather than against the material's class, because the
         // texture detail is not visible from the material object at all.
-        const want = `${cityPbrLighting() ? 'pbr' : 'flat'}:${cityTextureDetail()}`;
+        const want = `${cityPbrLighting() ? 'pbr' : 'flat'}:${cityTextureDetail()}:${heroTilingEnabled() ? 'hero' : 'plain'}`;
         const replacement = current && want !== materialVariantRef.current
           ? buildCityMaterial()
           : null;
@@ -567,7 +568,7 @@ export function CityChunksLayer({
         // broken, or settled islands render as ghost buildings.
         const preWoken = wakeBrokenSlots(stateRef.current, client);
         if (preWoken > 0) console.info('[city] shell: woke pre-broken chunks', { preWoken });
-        materialVariantRef.current = `${cityPbrLighting() ? 'pbr' : 'flat'}:${cityTextureDetail()}`;
+        materialVariantRef.current = `${cityPbrLighting() ? 'pbr' : 'flat'}:${cityTextureDetail()}:${heroTilingEnabled() ? 'hero' : 'plain'}`;
         builtShareThresholdRef.current = instanceShareThresholdSetting();
         for (const { mesh } of stateRef.current.renderables) {
           group.add(mesh);

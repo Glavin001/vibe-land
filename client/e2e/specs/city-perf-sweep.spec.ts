@@ -77,7 +77,7 @@ test.describe('city perf sweep', () => {
       );
     }
 
-    expect(report.steps.length).toBe(14);
+    expect(report.steps.length).toBe(15);
     // The whole point of the last rework: a run that drifted mid-sweep must
     // say so rather than be reasoned from. On an idle test box it never should.
     expect(report.unstable, 'sweep flagged itself unstable on an idle box').toBe(false);

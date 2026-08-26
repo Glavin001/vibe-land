@@ -5,7 +5,17 @@ The city shades every chunk through ONE material, so per-building variety has to
 come from a texture array the shader indexes per instance rather than from
 per-building materials. This script produces the two array sheets that back it:
 
-  city-albedo.webp   1024 x (1024 * N)  RGB   -- Diffuse
+  city-albedo.webp   1024 x (1024 * N)  RGBA  -- RGB = Diffuse, A = height
+                                                 remapped to [128,255]: decode
+                                                 (a - 0.5) * 2. Height rides
+                                                 alpha for the anti-tiling
+                                                 stack's detail-aware blend,
+                                                 and sits in the top half of
+                                                 the range because the client
+                                                 decodes through a 2D canvas,
+                                                 which premultiplies -- at
+                                                 alpha 0.5 the RGB round-trip
+                                                 loses at most one code value.
   city-surface.webp   512 x  (512 * N)  RGBA  -- R,G = nor_gl.xy
                                                  B   = roughness (arm.G)
                                                  A   = ambient occlusion (arm.R)
@@ -51,6 +61,10 @@ class TextureSet:
     # 'wall' sets land on the X/Z triplanar projections, 'floor' sets on Y. The
     # split is what keeps slab tops and rubble from wearing wall grain.
     role: str
+    # Directional surfaces (formwork strata, plank lines) cannot survive the
+    # stochastic rotation -- a 90-degree variant turns horizontal pour lines
+    # vertical mid-wall. The shader scales its rotation by this per layer.
+    directional: bool = False
 
 
 # Order IS the array layer index, and walls must come first: the client derives
@@ -60,14 +74,14 @@ SETS = [
     TextureSet("cracked_concrete_wall", "wall"),
     TextureSet("worn_mossy_plasterwall", "wall"),
     TextureSet("cracked_concrete_02", "wall"),
-    TextureSet("concrete_layers_02", "wall"),
+    TextureSet("concrete_layers_02", "wall", directional=True),
     TextureSet("concrete_floor_worn_02", "floor"),
     TextureSet("concrete_floor_damaged_01", "floor"),
 ]
 
 # Poly Haven's own map names. `arm` is the packed AO/Roughness/Metalness map, so
 # one download covers two of our four output channels.
-MAPS = {"diffuse": "Diffuse", "normal": "nor_gl", "arm": "arm"}
+MAPS = {"diffuse": "Diffuse", "normal": "nor_gl", "arm": "arm", "height": "Displacement"}
 
 
 # Poly Haven's CDN 403s the default urllib agent.
@@ -121,9 +135,10 @@ def fit(image: Image.Image, size: int, mode: str) -> np.ndarray:
 
 def main() -> int:
     OUT_DIR.mkdir(parents=True, exist_ok=True)
-    albedo = np.zeros((ALBEDO_PX * len(SETS), ALBEDO_PX, 3), dtype=np.uint8)
+    albedo = np.zeros((ALBEDO_PX * len(SETS), ALBEDO_PX, 4), dtype=np.uint8)
     surface = np.zeros((SURFACE_PX * len(SETS), SURFACE_PX, 4), dtype=np.uint8)
     metres: list[float] = []
+    means: list[tuple[float, float, float]] = []
 
     for layer, entry in enumerate(SETS):
         print(f"[{layer}] {entry.slug} ({entry.role})")
@@ -131,7 +146,17 @@ def main() -> int:
         metres.append(tile_m)
 
         top = layer * ALBEDO_PX
-        albedo[top:top + ALBEDO_PX] = fit(images["diffuse"], ALBEDO_PX, "RGB")
+        diffuse = fit(images["diffuse"], ALBEDO_PX, "RGB")
+        albedo[top:top + ALBEDO_PX, :, :3] = diffuse
+        # Height into alpha, top-half remap -- see the header.
+        height = fit(images["height"], ALBEDO_PX, "L").astype(np.float32) / 255.0
+        albedo[top:top + ALBEDO_PX, :, 3] = np.clip(128 + height * 127, 128, 255).astype(np.uint8)
+        # Per-layer mean in LINEAR RGB, for variance-preserving blends: a
+        # stochastic blend loses contrast around the mean, and restoring it
+        # needs to know where the mean is.
+        srgb = diffuse.astype(np.float32) / 255.0
+        linear = np.where(srgb <= 0.04045, srgb / 12.92, ((srgb + 0.055) / 1.055) ** 2.4)
+        means.append(tuple(float(x) for x in linear.reshape(-1, 3).mean(axis=0)))
 
         normal = fit(images["normal"], SURFACE_PX, "RGB")
         arm = fit(images["arm"], SURFACE_PX, "RGB")
@@ -150,12 +175,14 @@ def main() -> int:
     # distance. The surface sheet does not -- webp's chroma handling smears
     # normal XY into each other, which reads as shimmering facets under a moving
     # light, so it stays lossless.
-    Image.fromarray(albedo, "RGB").save(albedo_path, "WEBP", quality=90, method=6)
+    Image.fromarray(albedo, "RGBA").save(albedo_path, "WEBP", quality=90, method=6)
     Image.fromarray(surface, "RGBA").save(surface_path, "WEBP", lossless=True, method=6)
 
     layers = "\n".join(
-        f"  {{ slug: '{e.slug}', role: '{e.role}', metresPerTile: {m:.3f} }},"
-        for e, m in zip(SETS, metres)
+        f"  {{ slug: '{e.slug}', role: '{e.role}', metresPerTile: {m:.3f}, "
+        f"directional: {'true' if e.directional else 'false'}, "
+        f"meanLinear: [{mean[0]:.4f}, {mean[1]:.4f}, {mean[2]:.4f}] }},"
+        for e, m, mean in zip(SETS, metres, means)
     )
     OUT_TS.write_text(
         "// GENERATED by client/scripts/build-city-textures.py -- do not edit.\n"
@@ -170,6 +197,10 @@ def main() -> int:
         "  role: CityTextureRole;\n"
         "  /** Real-world extent of one tile, from Poly Haven's own metadata. */\n"
         "  metresPerTile: number;\n"
+        "  /** Strata/plank surfaces that cannot survive stochastic rotation. */\n"
+        "  directional: boolean;\n"
+        "  /** Mean albedo in linear RGB, for variance-preserving blends. */\n"
+        "  meanLinear: [number, number, number];\n"
         "}\n"
         "\n"
         "export const CITY_TEXTURE_SETS: readonly CityTextureSet[] = [\n"

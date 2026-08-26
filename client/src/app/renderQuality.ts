@@ -24,6 +24,7 @@ const CITY_TEXTURES_KEY = 'vibe.render.cityTextures';
 const SKY_IBL_KEY = 'vibe.render.skyIbl';
 const SKY_DOME_KEY = 'vibe.render.skyDome';
 const DPR_CAP_KEY = 'vibe.render.dprCap';
+const HERO_TILING_KEY = 'vibe.render.heroTiling';
 const SHARE_THRESHOLD_KEY = 'vibe.render.instanceShare';
 const SHADOW_MAP_KEY = 'vibe.render.shadowMapSize';
 
@@ -84,6 +85,8 @@ export type RenderQualityState = {
   dprCap: number | null;
   /** Uses of one shard shape below which it stays in its cell's batch. */
   instanceShareThreshold: number;
+  /** The stochastic anti-tiling stack on the city's concrete (PRETTY only). */
+  heroTiling: boolean;
   /** Shadow-map edge in texels, or null to follow the tier (2048/1024). */
   shadowMapSize: number | null;
 };
@@ -177,6 +180,7 @@ let dprCap: number | null = readStored(DPR_CAP_KEY, (raw) => {
   const value = Number(raw);
   return Number.isFinite(value) && value > 0 ? value : null;
 });
+let heroTiling: boolean = readStored(HERO_TILING_KEY, (raw) => raw === '1') ?? true;
 // Session-only, deliberately. These two have no panel button -- the perf sweep
 // is their only writer -- and persisting them is how a user got PINNED to a
 // sweep's temporary value: the sweep wrote threshold 32 through this store, the
@@ -206,6 +210,7 @@ function notify(): void {
     dprCap,
     instanceShareThreshold,
     shadowMapSize,
+    heroTiling,
   };
   for (const listener of listeners) listener(state);
 }
@@ -289,6 +294,24 @@ export function setShadowMapSize(next: number | null): void {
   if (next === shadowMapSize) return;
   if (next !== null && (!Number.isFinite(next) || next < 256)) return;
   shadowMapSize = next;
+  notify();
+}
+
+/**
+ * The hex-stochastic + macro anti-tiling stack on the city's concrete.
+ *
+ * A shader VARIANT, not a uniform: off compiles the plain triplanar path, so
+ * the A/B (and the perf sweep's pricing of it) compares real programs, not a
+ * branch. PRETTY-only -- the stack needs the surface array.
+ */
+export function heroTilingEnabled(): boolean {
+  return heroTiling;
+}
+
+export function setHeroTilingEnabled(next: boolean): void {
+  if (next === heroTiling) return;
+  heroTiling = next;
+  store(HERO_TILING_KEY, next ? '1' : '0');
   notify();
 }
 
@@ -454,6 +477,7 @@ const PERSISTED_KEYS = [
   SKY_IBL_KEY,
   SKY_DOME_KEY,
   DPR_CAP_KEY,
+  HERO_TILING_KEY,
 ] as const;
 
 export function snapshotStoredRenderSettings(): Array<[string, string | null]> {

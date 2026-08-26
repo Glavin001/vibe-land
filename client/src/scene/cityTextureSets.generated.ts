@@ -10,15 +10,19 @@ export interface CityTextureSet {
   role: CityTextureRole;
   /** Real-world extent of one tile, from Poly Haven's own metadata. */
   metresPerTile: number;
+  /** Strata/plank surfaces that cannot survive stochastic rotation. */
+  directional: boolean;
+  /** Mean albedo in linear RGB, for variance-preserving blends. */
+  meanLinear: [number, number, number];
 }
 
 export const CITY_TEXTURE_SETS: readonly CityTextureSet[] = [
-  { slug: 'cracked_concrete_wall', role: 'wall', metresPerTile: 1.000 },
-  { slug: 'worn_mossy_plasterwall', role: 'wall', metresPerTile: 1.800 },
-  { slug: 'cracked_concrete_02', role: 'wall', metresPerTile: 2.230 },
-  { slug: 'concrete_layers_02', role: 'wall', metresPerTile: 2.000 },
-  { slug: 'concrete_floor_worn_02', role: 'floor', metresPerTile: 2.000 },
-  { slug: 'concrete_floor_damaged_01', role: 'floor', metresPerTile: 5.000 },
+  { slug: 'cracked_concrete_wall', role: 'wall', metresPerTile: 1.000, directional: false, meanLinear: [0.5137, 0.4443, 0.3474] },
+  { slug: 'worn_mossy_plasterwall', role: 'wall', metresPerTile: 1.800, directional: false, meanLinear: [0.2433, 0.2222, 0.1837] },
+  { slug: 'cracked_concrete_02', role: 'wall', metresPerTile: 2.230, directional: false, meanLinear: [0.1182, 0.0929, 0.0687] },
+  { slug: 'concrete_layers_02', role: 'wall', metresPerTile: 2.000, directional: true, meanLinear: [0.2074, 0.1966, 0.1769] },
+  { slug: 'concrete_floor_worn_02', role: 'floor', metresPerTile: 2.000, directional: false, meanLinear: [0.2034, 0.1486, 0.0931] },
+  { slug: 'concrete_floor_damaged_01', role: 'floor', metresPerTile: 5.000, directional: false, meanLinear: [0.0793, 0.0583, 0.0372] },
 ];
 
 export const CITY_ALBEDO_PX = 1024;

@@ -32,6 +32,7 @@ import { partitionSlotsByCell } from '../city/renderScheduling';
 import {
   cityPbrLighting,
   cityTextureDetail,
+  heroTilingEnabled,
   instanceShareThresholdSetting,
   shadowsEnabled,
 } from '../app/renderQuality';
@@ -138,7 +139,7 @@ export function buildCityMaterial(): THREE.Material {
   // Must happen here, on the object that was just constructed. Material.clone()
   // copies no function properties, so a cloned city material would silently
   // lose the injection and render untextured with no error anywhere.
-  applyCityTriplanar(material, pbr, cityTextureDetail());
+  applyCityTriplanar(material, pbr, cityTextureDetail(), heroTilingEnabled());
   return material;
 }
 

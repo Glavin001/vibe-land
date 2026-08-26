@@ -220,6 +220,8 @@ import {
   setAmbientOcclusionEnabled,
   setCityTextureDetail,
   setDprCap,
+  setHeroTilingEnabled,
+  heroTilingEnabled,
   setSkyDomeEnabled,
   setSkyIblEnabled,
   cityTextureDetail,
@@ -293,6 +295,7 @@ export function CityStatsOverlay({
   const [skyDome, setSkyDome] = useState(skyDomeEnabled);
   const [dprCap, setDpr] = useState<number | null>(dprCapOverride);
   const [sweepState, setSweepState] = useState<'idle' | 'running' | 'done' | 'failed'>('idle');
+  const [heroTiling, setHeroTiling] = useState(heroTilingEnabled);
   const [bodyColors, setBodyColors] = useState(false);
   // Poll per-body freeze states only while the toggle is on: no reason to
   // fetch thousands of pairs for a feature that is off.
@@ -725,6 +728,23 @@ export function CityStatsOverlay({
             : sweepState === 'done'
               ? 'PERF REPORT SAVED'
               : sweepState === 'failed' ? 'PERF SWEEP FAILED' : 'DOWNLOAD PERF REPORT'}
+        </button>
+      </div>
+
+      <div style={{ ...row, marginBottom: 2 }}>
+        <button
+          type="button"
+          onClick={() => {
+            const next = !heroTiling;
+            setHeroTilingEnabled(next);
+            setHeroTiling(next);
+          }}
+          style={{ ...toggleButton, position: 'static', width: '100%' }}
+          data-testid="city-hero-tiling-toggle"
+          aria-label="Toggle anti-tiling stack"
+          title="Hex-stochastic retiling + macro variation on the concrete. OFF shows the plain repeating projection for A/B"
+        >
+          {heroTiling ? 'TILING FIX: ON' : 'TILING FIX: OFF'}
         </button>
       </div>
 

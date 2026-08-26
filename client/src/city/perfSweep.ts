@@ -42,6 +42,8 @@ import {
   setInstanceShareThreshold,
   setQualityTier,
   setShadowMapSize,
+  setHeroTilingEnabled,
+  heroTilingEnabled,
   setShadowsEnabled,
   setSkyDomeEnabled,
   setSkyIblEnabled,
@@ -78,6 +80,7 @@ type Config = {
   shareThreshold: number;
   shadowMapSize: number | null;
   albedoAniso: number;
+  heroTiling: boolean;
 };
 
 function currentConfig(): Config {
@@ -92,6 +95,7 @@ function currentConfig(): Config {
     shareThreshold: instanceShareThresholdSetting(),
     shadowMapSize: shadowMapSizeOverride(),
     albedoAniso: cityTextureAnisotropy(),
+    heroTiling: heroTilingEnabled(),
   };
 }
 
@@ -106,6 +110,7 @@ function applyConfig(config: Config): void {
   setInstanceShareThreshold(config.shareThreshold);
   setShadowMapSize(config.shadowMapSize);
   setCityTextureAnisotropy(config.albedoAniso);
+  setHeroTilingEnabled(config.heroTiling);
 }
 
 /** Fields whose change means something big reallocates before steady state. */
@@ -275,6 +280,7 @@ export async function runPerfSweep(): Promise<PerfSweepReport> {
     await step('shadow map 1024', { shadowMapSize: 1024 });
     await step('sky IBL off', { skyIbl: false });
     await step('sky dome off', { skyDome: false });
+    await step('anti-tiling stack off', { heroTiling: false });
     await step('city textures: albedo only', { cityTextures: 'albedo' });
     await step('city textures: off', { cityTextures: 'off' });
     await step('albedo aniso 1', { albedoAniso: 1 });

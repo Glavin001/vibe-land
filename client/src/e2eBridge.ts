@@ -19,6 +19,7 @@ import {
   setQualityTier,
   setShadowsEnabled,
   setInstanceShareThreshold,
+  setHeroTilingEnabled,
 } from './app/renderQuality';
 import { updateFogSettings } from './graphics/fogSettings';
 import { setLookTuning } from './graphics/lookTuning';
@@ -214,6 +215,7 @@ export interface VibeE2EBridge {
     ao?: boolean;
     tier?: 'fast' | 'pretty';
     shareThreshold?: number;
+    heroTiling?: boolean;
   }): void;
   /**
    * Retune the perceptual lighting knobs live.
@@ -416,6 +418,7 @@ const bridge: VibeE2EBridge = {
     if (next.ao !== undefined) setAmbientOcclusionEnabled(next.ao);
     if (next.tier !== undefined) setQualityTier(next.tier);
     if (next.shareThreshold !== undefined) setInstanceShareThreshold(next.shareThreshold);
+    if (next.heroTiling !== undefined) setHeroTilingEnabled(next.heroTiling);
   },
   setCapturePose: (next) => setCapturePose(next),
   runPerfSweep: () => runPerfSweep(),

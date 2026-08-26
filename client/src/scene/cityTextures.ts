@@ -24,6 +24,7 @@ import {
   CITY_TEXTURE_SETS,
 } from './cityTextureSets.generated';
 
+
 /** Layers, in sheet order: walls first, then floors. */
 export const CITY_TEX_LAYERS = CITY_TEXTURE_SETS.length;
 
@@ -50,6 +51,20 @@ export const LAYER_CODE_RADIX = 16;
 /** Metres of world covered by one tile of each layer, for the shader's scale. */
 export const CITY_TEX_METRES: Float32Array = Float32Array.from(
   CITY_TEXTURE_SETS.map((set) => set.metresPerTile),
+);
+
+/** Per-layer mean albedo (linear RGB), for variance-preserving blends. */
+export const CITY_TEX_MEANS: Float32Array = Float32Array.from(
+  CITY_TEXTURE_SETS.flatMap((set) => set.meanLinear),
+);
+
+/**
+ * Per-layer rotation allowance for the stochastic retiling. 0 for directional
+ * surfaces: rotating formwork strata turns horizontal pour lines vertical
+ * mid-wall, which reads as broken, not varied.
+ */
+export const CITY_TEX_ROTATION: Float32Array = Float32Array.from(
+  CITY_TEXTURE_SETS.map((set) => (set.directional ? 0 : 1)),
 );
 
 export interface CityTextureArrays {
@@ -110,6 +125,68 @@ function buildArray(
   return texture;
 }
 
+/**
+ * Tileable value-noise for the macro variation field, generated at startup.
+ *
+ * The macro field is what breaks "this whole building is one material": a
+ * low-frequency world-space modulation of albedo, roughness and normal
+ * response. Three octave bands of this one texture, sampled at different
+ * scales and rotations, cost three taps of a 256^2 texture that lives in
+ * cache -- far cheaper than the ALU of computing the noise per fragment.
+ */
+export function cityMacroNoise(): THREE.DataTexture {
+  if (macroNoise) return macroNoise;
+  const size = 256;
+  const data = new Uint8Array(size * size * 4);
+  const fractOf = (x: number) => x - Math.floor(x);
+  const hash = (x: number, y: number, seed: number) =>
+    fractOf(Math.sin(x * 127.1 + y * 311.7 + seed * 74.7) * 43758.5453123);
+  const smooth = (t: number) => t * t * (3 - 2 * t);
+  const noise = (x: number, y: number, period: number, seed: number) => {
+    const ix = Math.floor(x);
+    const iy = Math.floor(y);
+    const wrap = (v: number) => ((v % period) + period) % period;
+    const a = hash(wrap(ix), wrap(iy), seed);
+    const b = hash(wrap(ix + 1), wrap(iy), seed);
+    const c = hash(wrap(ix), wrap(iy + 1), seed);
+    const d = hash(wrap(ix + 1), wrap(iy + 1), seed);
+    const ux = smooth(x - ix);
+    const uy = smooth(y - iy);
+    return (a + (b - a) * ux) + ((c + (d - c) * ux) - (a + (b - a) * ux)) * uy;
+  };
+  for (let y = 0; y < size; y += 1) {
+    for (let x = 0; x < size; x += 1) {
+      const u = x / size;
+      const v = y / size;
+      let sum = 0;
+      let amp = 0.5;
+      let norm = 0;
+      for (let octave = 0; octave < 4; octave += 1) {
+        const period = 3 << octave;
+        sum += amp * noise(u * period, v * period, period, 55.2 + octave * 17.31);
+        norm += amp;
+        amp *= 0.5;
+      }
+      const q = Math.round(Math.min(1, Math.max(0, sum / norm)) * 255);
+      const i = (y * size + x) * 4;
+      data[i] = q;
+      data[i + 1] = q;
+      data[i + 2] = q;
+      data[i + 3] = 255;
+    }
+  }
+  macroNoise = new THREE.DataTexture(data, size, size, THREE.RGBAFormat);
+  macroNoise.colorSpace = THREE.NoColorSpace;
+  macroNoise.wrapS = THREE.RepeatWrapping;
+  macroNoise.wrapT = THREE.RepeatWrapping;
+  macroNoise.generateMipmaps = true;
+  macroNoise.minFilter = THREE.LinearMipmapLinearFilter;
+  macroNoise.magFilter = THREE.LinearFilter;
+  macroNoise.needsUpdate = true;
+  return macroNoise;
+}
+
+let macroNoise: THREE.DataTexture | null = null;
 let arrays: CityTextureArrays | null = null;
 let loadStarted = false;
 
@@ -143,10 +220,12 @@ export function cityTextures(): CityTextureArrays {
   if (!arrays) {
     arrays = {
       // Mid grey at roughly the lightness the old flat chunks had, so a failed
-      // fetch degrades to today's look rather than to black.
+      // fetch degrades to today's look rather than to black. Alpha carries
+      // HEIGHT (top-half remapped; see the bake script), so the neutral fill is
+      // mid-height 191, not opaque 255.
       albedo: buildArray(
         CITY_ALBEDO_PX,
-        [158, 158, 158, 255],
+        [158, 158, 158, 191],
         THREE.SRGBColorSpace,
         4,
       ),
