@@ -25,6 +25,10 @@ const ENABLED = process.env.E2E_CITY === '1';
 
 test.use({
   viewport: { width: 1600, height: 900 },
+  // dpr 2, because the sweep's dpr steps are CAPS: at the Playwright default
+  // deviceScaleFactor of 1, min(devicePixelRatio, cap) is 1 whatever the cap,
+  // no resize ever happens, and the backing-store proof below cannot pass.
+  deviceScaleFactor: 2,
   // Without this the frame column is pinned at the refresh period and the whole
   // table reads as "everything costs 16.7 ms".
   launchOptions: { args: [...GPU_ARGS, '--disable-gpu-vsync', '--disable-frame-rate-limit'] },
@@ -51,12 +55,15 @@ test.describe('city perf sweep', () => {
       gpu: string;
       backingStore: string;
       gpuTimingAvailable: boolean;
+      unstable: boolean;
+      sentinel: { gpuMs: { median: number } };
       steps: Array<{
         label: string;
         gpuMs: { median: number };
         frameMs: { median: number };
         drawCalls: number;
         subDraws: number;
+        backingStore: string;
       }>;
     };
 
@@ -70,7 +77,13 @@ test.describe('city perf sweep', () => {
       );
     }
 
-    expect(report.steps.length).toBe(12);
+    expect(report.steps.length).toBe(14);
+    // The whole point of the last rework: a run that drifted mid-sweep must
+    // say so rather than be reasoned from. On an idle test box it never should.
+    expect(report.unstable, 'sweep flagged itself unstable on an idle box').toBe(false);
+    // And a dpr step must PROVE it resized, not assume it.
+    const dprStep = report.steps.find((s) => s.label === 'dpr cap 1.0');
+    expect(dprStep?.backingStore).not.toBe(report.steps[0].backingStore);
     expect(report.gpuTimingAvailable, 'no GPU timing — the sweep cannot answer what it is for')
       .toBe(true);
     for (const step of report.steps) {

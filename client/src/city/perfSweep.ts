@@ -1,38 +1,51 @@
 // One click, the whole per-feature cost matrix, measured where it matters.
 //
 // A GPU-bound frame can only be diagnosed on the machine that is slow. Every
-// number this project has recorded came from a box whose GPU renders the city
-// in ~2 ms at 4000x2300 -- six times the pixels for the same cost, which is a
-// machine that cannot reveal fill cost at all. Generalising from it is how a
-// change that multiplied per-pixel work got signed off as free.
+// number this project recorded before this tool came from a box whose GPU
+// renders the city in ~2 ms at 4000x2300 -- a machine that cannot reveal fill
+// cost at all. Generalising from it is how a change that multiplied per-pixel
+// work got signed off as free, and then how a draw-call trade got flipped the
+// wrong way for the machine that was actually struggling.
 //
 // So the sweep runs on the reporter's hardware: flip one feature, measure,
 // flip it back, next. It captures GPU time from the timer query alongside the
-// CPU breakdown, because those are the two that a frame budget is actually
-// made of and the panel could previously only show one.
+// CPU breakdown, because those are the two a frame budget is actually made of
+// and the panel could previously only show one.
 //
-// Deliberately sequential and deliberately slow (~20 s): each step discards a
-// warm-up window, because changing the texture detail recompiles the city
-// material and changing DPR reallocates every render target, and measuring
-// that instead of the steady state is the classic way to produce a table of
-// nonsense.
+// Trust is the design constraint, learned the hard way. The first M3 report
+// contained four rows of garbage: the dpr steps ran right after a
+// threshold-rebuild step, and restoring the threshold rebuilt the 41k-chunk
+// mesh INSIDE their 45-frame warm-up -- GPU read HIGHER at fewer pixels, and
+// the corruption was only recognisable because it was physically impossible.
+// Hence three rules below:
+//
+//   1. Warm-up is DERIVED from what changed between steps, never hand-annotated
+//      per call, so a reorder cannot silently measure a rebuild again.
+//   2. Every step records the canvas backing store, so "dpr applied" is a fact
+//      in the report rather than an assumption about it.
+//   3. The baseline is re-measured at the end (`sentinel`); if it no longer
+//      matches the start, the report flags itself unstable -- thermal
+//      throttling, a died stream, a background tab -- instead of being
+//      reasoned from.
 
 import { renderStats } from './renderStats';
+import { cityTextureAnisotropy, setCityTextureAnisotropy } from '../scene/cityTextures';
 import {
   ambientOcclusionPreferred,
   cityTextureDetail,
   dprCapOverride,
-  maxDpr,
+  instanceShareThresholdSetting,
   qualityTier,
   setAmbientOcclusionEnabled,
   setCityTextureDetail,
   setDprCap,
   setInstanceShareThreshold,
-  instanceShareThresholdSetting,
   setQualityTier,
+  setShadowMapSize,
   setShadowsEnabled,
   setSkyDomeEnabled,
   setSkyIblEnabled,
+  shadowMapSizeOverride,
   shadowsEnabled,
   skyDomeEnabled,
   skyIblEnabledSetting,
@@ -42,8 +55,15 @@ import {
 
 /** Frames per step, after the warm-up. ~1 s at 120 fps, ~2 s at 60. */
 const FRAMES = 120;
-/** Discarded first, while shaders recompile and targets reallocate. */
+/** Discarded first, while shaders recompile and uniforms settle. */
 const WARMUP_FRAMES = 45;
+/**
+ * Warm-up for steps that rebuild something big: the city mesh (threshold), the
+ * whole render-target set (dpr), the shadow map, or a texture re-upload
+ * (aniso). Applied automatically whenever those fields differ from the
+ * previously APPLIED config -- including when a step implicitly restores them.
+ */
+const REBUILD_WARMUP = 240;
 
 type Config = {
   tier: QualityTier;
@@ -54,6 +74,8 @@ type Config = {
   skyDome: boolean;
   dprCap: number | null;
   shareThreshold: number;
+  shadowMapSize: number | null;
+  albedoAniso: number;
 };
 
 function currentConfig(): Config {
@@ -66,6 +88,8 @@ function currentConfig(): Config {
     skyDome: skyDomeEnabled(),
     dprCap: dprCapOverride(),
     shareThreshold: instanceShareThresholdSetting(),
+    shadowMapSize: shadowMapSizeOverride(),
+    albedoAniso: cityTextureAnisotropy(),
   };
 }
 
@@ -78,6 +102,16 @@ function applyConfig(config: Config): void {
   setSkyDomeEnabled(config.skyDome);
   setDprCap(config.dprCap);
   setInstanceShareThreshold(config.shareThreshold);
+  setShadowMapSize(config.shadowMapSize);
+  setCityTextureAnisotropy(config.albedoAniso);
+}
+
+/** Fields whose change means something big reallocates before steady state. */
+function needsRebuildWarmup(previous: Config, next: Config): boolean {
+  return previous.shareThreshold !== next.shareThreshold
+    || previous.dprCap !== next.dprCap
+    || previous.shadowMapSize !== next.shadowMapSize
+    || previous.albedoAniso !== next.albedoAniso;
 }
 
 const nextFrame = () => new Promise<void>((resolve) => {
@@ -91,10 +125,15 @@ function stats(values: number[]): { median: number; p95: number; max: number } {
   return { median: at(0.5), p95: at(0.95), max: sorted[sorted.length - 1] };
 }
 
+function canvasBackingStore(): string {
+  const canvas = document.querySelector('canvas');
+  return canvas ? `${canvas.width}x${canvas.height}` : 'unknown';
+}
+
 export interface PerfSweepStep {
   label: string;
   config: Config;
-  /** rAF-to-rAF wall clock. Includes vsync idle, so it CANNOT exceed the refresh period. */
+  /** rAF-to-rAF wall clock. Includes vsync idle, so it CANNOT go below the refresh period. */
   frameMs: ReturnType<typeof stats>;
   /**
    * Real GPU execution, from EXT_disjoint_timer_query_webgl2. Zero where the
@@ -112,6 +151,11 @@ export interface PerfSweepStep {
    */
   subDraws: number;
   triangles: number;
+  /** Canvas backing store DURING this step -- the proof a dpr step applied. */
+  backingStore: string;
+  /** A hidden tab throttles rAF; a step measured hidden is garbage. */
+  documentHidden: boolean;
+  elapsedMs: number;
 }
 
 export interface PerfSweepReport {
@@ -121,11 +165,19 @@ export interface PerfSweepReport {
   backingStore: string;
   gpu: string;
   gpuTimingAvailable: boolean;
-  refreshHintHz: number;
+  /**
+   * Baseline re-measured after everything else. If this diverges from the
+   * first step the machine changed under the sweep -- throttling, a died
+   * stream, a backgrounded tab -- and the whole table should be distrusted,
+   * which is what `unstable` says.
+   */
+  sentinel: PerfSweepStep;
+  unstable: boolean;
   steps: PerfSweepStep[];
 }
 
-async function measureStep(label: string, warmupFrames = WARMUP_FRAMES): Promise<PerfSweepStep> {
+async function measureStep(label: string, warmupFrames: number): Promise<PerfSweepStep> {
+  const startedAt = performance.now();
   for (let i = 0; i < warmupFrames; i += 1) await nextFrame();
   const frames: number[] = [];
   const gpu: number[] = [];
@@ -134,6 +186,7 @@ async function measureStep(label: string, warmupFrames = WARMUP_FRAMES): Promise
   let cityFrame = 0;
   let drawCalls = 0;
   let triangles = 0;
+  let documentHidden = false;
   for (let i = 0; i < FRAMES; i += 1) {
     await nextFrame();
     frames.push(renderStats.frameTotalMs);
@@ -143,6 +196,7 @@ async function measureStep(label: string, warmupFrames = WARMUP_FRAMES): Promise
     cityFrame += renderStats.cityFrameMs;
     drawCalls = renderStats.drawCalls;
     triangles = renderStats.triangles;
+    if (document.hidden) documentHidden = true;
   }
   return {
     label,
@@ -155,59 +209,60 @@ async function measureStep(label: string, warmupFrames = WARMUP_FRAMES): Promise
     drawCalls,
     subDraws: renderStats.subDraws,
     triangles,
+    backingStore: canvasBackingStore(),
+    documentHidden,
+    elapsedMs: performance.now() - startedAt,
   };
 }
 
-function describeGpu(): { gpu: string; backingStore: string } {
-  const canvas = document.querySelector('canvas');
-  const backingStore = canvas ? `${canvas.width}x${canvas.height}` : 'unknown';
+function describeGpu(): string {
   try {
+    const canvas = document.querySelector('canvas');
     const context = canvas?.getContext('webgl2') as WebGL2RenderingContext | null;
     const info = context?.getExtension('WEBGL_debug_renderer_info');
-    const gpu = info && context
+    return info && context
       ? String(context.getParameter((info as { UNMASKED_RENDERER_WEBGL: number })
         .UNMASKED_RENDERER_WEBGL))
       : 'unknown';
-    return { gpu, backingStore };
   } catch {
-    // getContext on a canvas already owning a context returns it, but a browser
-    // that refuses the debug extension should not take the whole sweep down.
-    return { gpu: 'unknown', backingStore };
+    // A browser that refuses the debug extension should not take the sweep down.
+    return 'unknown';
   }
 }
 
 /**
- * Measure the current settings, then each expensive feature removed one at a
- * time, then a floor with all of them off. Restores what it found.
+ * Measure the current settings, each candidate change one at a time, a floor,
+ * and finally the baseline again. Restores what it found.
  *
- * One feature at a time rather than cumulatively: the question is what each
- * costs, and stacking them hides which one mattered.
+ * One change at a time rather than cumulatively: the question is what each
+ * costs, and stacking them hides which one mattered. Mesh-rebuilding steps run
+ * LAST so nothing measured after them can inherit a rebuild.
  */
 export async function runPerfSweep(): Promise<PerfSweepReport> {
   const original = currentConfig();
   const steps: PerfSweepStep[] = [];
-  const step = async (label: string, patch: Partial<Config>, warmupFrames?: number) => {
-    applyConfig({ ...original, ...patch });
-    steps.push(await measureStep(label, warmupFrames));
+  let applied = original;
+  const step = async (label: string, patch: Partial<Config>): Promise<PerfSweepStep> => {
+    const next: Config = { ...original, ...patch };
+    const warmup = needsRebuildWarmup(applied, next) ? REBUILD_WARMUP : WARMUP_FRAMES;
+    applyConfig(next);
+    applied = next;
+    const measured = await measureStep(label, warmup);
+    steps.push(measured);
+    return measured;
   };
-  // A threshold change rebuilds the whole 41k-chunk mesh on the next frame.
-  // Measuring the rebuild instead of the steady state is the classic way to
-  // produce a table of nonsense, so these wait considerably longer.
-  const REBUILD_WARMUP = 240;
 
+  let sentinel: PerfSweepStep;
   try {
     await step('as configured', {});
     await step('AO off', { ao: false });
     await step('shadows off', { shadows: false });
+    await step('shadow map 1024', { shadowMapSize: 1024 });
     await step('sky IBL off', { skyIbl: false });
     await step('sky dome off', { skyDome: false });
     await step('city textures: albedo only', { cityTextures: 'albedo' });
     await step('city textures: off', { cityTextures: 'off' });
-    // Rebuilds the city mesh, so these get longer to settle than the rest.
-    // Brackets the shipped default rather than repeating it: 8 is what this
-    // was before, 64 is the next step out, and the answer is machine-specific.
-    await step('instance threshold 8 (was default)', { shareThreshold: 8 }, REBUILD_WARMUP);
-    await step('instance threshold 64', { shareThreshold: 64 }, REBUILD_WARMUP);
+    await step('albedo aniso 1', { albedoAniso: 1 });
     await step('dpr cap 1.5', { dprCap: 1.5 });
     await step('dpr cap 1.0', { dprCap: 1 });
     await step('everything off (floor)', {
@@ -217,20 +272,32 @@ export async function runPerfSweep(): Promise<PerfSweepReport> {
       skyDome: false,
       cityTextures: 'off',
     });
+    // Mesh rebuilds, dead last: nothing after them but the sentinel, which is
+    // itself a rebuild back to the original threshold.
+    await step('instance threshold 4', { shareThreshold: 4 });
+    await step('instance threshold 32', { shareThreshold: 32 });
+    sentinel = await step('as configured (sentinel)', {});
+    steps.pop();
   } finally {
     applyConfig(original);
   }
 
-  const { gpu, backingStore } = describeGpu();
+  const first = steps[0];
+  const unstable = sentinel.gpuMs.median > 0 && first.gpuMs.median > 0
+    ? Math.abs(sentinel.gpuMs.median - first.gpuMs.median) / first.gpuMs.median > 0.2
+      || sentinel.documentHidden
+      || steps.some((s) => s.documentHidden)
+    : steps.some((s) => s.documentHidden);
+
   return {
     capturedAt: new Date().toISOString(),
     userAgent: navigator.userAgent,
     devicePixelRatio: window.devicePixelRatio,
-    backingStore,
-    gpu,
+    backingStore: canvasBackingStore(),
+    gpu: describeGpu(),
     gpuTimingAvailable: steps.some((s) => s.gpuMs.median > 0),
-    // What the tier would allow, for reading the dpr rows against.
-    refreshHintHz: Math.round(1000 / Math.max(0.001, steps[0]?.frameMs.median ?? 0)),
+    sentinel,
+    unstable,
     steps,
   };
 }
@@ -244,21 +311,34 @@ export function formatPerfSweep(report: PerfSweepReport): string {
     `backing store: ${report.backingStore} (dpr ${report.devicePixelRatio})`,
     `gpu timing: ${report.gpuTimingAvailable ? 'available' : 'UNAVAILABLE — gpu columns are 0'}`,
     `120 fps budget: ${budget.toFixed(2)} ms`,
+  ];
+  if (report.unstable) {
+    lines.push(
+      '',
+      '!! UNSTABLE: the end-of-run baseline no longer matches the start (or a',
+      '!! step ran in a hidden tab). The machine changed under the sweep --',
+      '!! thermal throttle, a died stream, a background tab. Re-run before',
+      '!! reasoning from any row.',
+    );
+  }
+  lines.push(
     '',
     'NOTE: frame ms is rAF-to-rAF and is clamped by vsync, so it can never read',
     'below the refresh period however much headroom there is. gpu ms is not',
     'clamped — that is the column that says whether 120 is reachable.',
     '',
-    'step                            frame med  frame p95   gpu med   gpu p95   cpu med  draws  subdraws',
-  ];
-  for (const step of report.steps) {
+    'step                            frame med  frame p95   gpu med   gpu p95   cpu med  draws  subdraws  backing',
+  );
+  const rows = [...report.steps, report.sentinel];
+  for (const step of rows) {
     lines.push(
       `${step.label.padEnd(30)} ${step.frameMs.median.toFixed(2).padStart(8)}  `
       + `${step.frameMs.p95.toFixed(2).padStart(9)}  `
       + `${step.gpuMs.median.toFixed(2).padStart(8)}  `
       + `${step.gpuMs.p95.toFixed(2).padStart(8)}  `
       + `${step.cpuMs.median.toFixed(2).padStart(8)}  ${String(step.drawCalls).padStart(5)}`
-      + `  ${String(step.subDraws).padStart(8)}`,
+      + `  ${String(step.subDraws).padStart(8)}`
+      + `  ${step.backingStore}${step.documentHidden ? '  HIDDEN' : ''}`,
     );
   }
   return lines.join('\n');

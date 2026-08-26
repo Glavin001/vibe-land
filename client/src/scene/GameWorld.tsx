@@ -4,6 +4,7 @@ import {
   useAmbientOcclusionEnabled,
   useQualityTier,
   useShadowsEnabled,
+  useShadowMapSizeOverride,
   useSkyDomeEnabled,
   useSkyIblEnabled,
 } from '../app/renderQuality';
@@ -1153,6 +1154,7 @@ export function GameWorld({
   const ambientOcclusionOn = useAmbientOcclusionEnabled();
   const skyDomeOn = useSkyDomeEnabled();
   const skyIblOn = useSkyIblEnabled();
+  const shadowMapTexels = useShadowMapSizeOverride();
   const weatherOn = qualityIsPretty;
   useWeatherAmbience(weather, windStrengthMps);
   const practiceMode = isPracticeMode(mode);
@@ -3211,7 +3213,7 @@ export function GameWorld({
         fogColor={resolvedFogColor}
         castShadow={shadowsOn}
         shadowHalfExtent={qualityIsPretty ? 48 : 60}
-        shadowMapSize={qualityIsPretty ? 2048 : 1024}
+        shadowMapSize={shadowMapTexels ?? (qualityIsPretty ? 2048 : 1024)}
       />
       <ambientLight intensity={0.12} color={0xfdf6eb} />
       {/*

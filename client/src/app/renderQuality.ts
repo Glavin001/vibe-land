@@ -25,24 +25,30 @@ const SKY_IBL_KEY = 'vibe.render.skyIbl';
 const SKY_DOME_KEY = 'vibe.render.skyDome';
 const DPR_CAP_KEY = 'vibe.render.dprCap';
 const SHARE_THRESHOLD_KEY = 'vibe.render.instanceShare';
+const SHADOW_MAP_KEY = 'vibe.render.shadowMapSize';
 
 /**
  * Uses of one shard shape below which it stays in its cell's batch.
  *
- * Was 8. Re-measured with GPU timing and the vsync clamp removed, on the pack
- * the city actually serves (778 shapes, 41,050 chunks). Raising it to 32 turns
- * 446 draw calls into 164 and 2,018 sub-draws into 6,578, and it wins at both
- * vantages -- 2.52 -> 2.16 ms looking in from outside, 3.20 -> 2.92 ms standing
- * inside the grid where none of the cell batches can cull. 64 goes further on
- * draws and back on frame time, so 32 is the knee.
+ * This number is a bet about the MACHINE, and it has now been measured going
+ * both ways. A city-wide instanced mesh trades N multi-draw sub-draws for one
+ * real draw call; a real draw is CPU submission, a sub-draw is GPU work, and
+ * which is dearer depends on the driver:
  *
- * The old 8 came from an fps reading on the same box, before there was any way
- * to see GPU time separately -- and a real draw is a CPU cost while a sub-draw
- * is a GPU one, so fps could not tell them apart. It matters more elsewhere:
- * on an M3 Max a draw call costs ~4.2 us of submission, so this is ~1.2 ms of
- * CPU that machine was spending and this one was not.
+ *   RTX 4090 / ANGLE Vulkan:  32 wins.  GPU 2.55 ms at 8 -> 0.55 ms at 32.
+ *   M3 Max   / ANGLE Metal:    8 wins.  GPU 4.53 ms at 8 -> 7.22 ms at 32,
+ *                                       11.72 ms at 64 -- Metal punishes
+ *                                       sub-draws hard, in the exact opposite
+ *                                       direction.
+ *
+ * 8, because the M3 is the constrained machine: on the 4090 either value is
+ * multiples under budget, on the M3 the difference is 2.7 ms of an 8.33 ms
+ * frame. This default has been flipped once already by measuring on the wrong
+ * hardware; do not change it again without a perf-sweep report from a machine
+ * that is actually near budget. Live-settable so `perfSweep` can price it
+ * wherever it runs.
  */
-export const DEFAULT_INSTANCE_SHARE_THRESHOLD = 32;
+export const DEFAULT_INSTANCE_SHARE_THRESHOLD = 8;
 
 export type QualityTier = 'fast' | 'pretty';
 
@@ -78,6 +84,8 @@ export type RenderQualityState = {
   dprCap: number | null;
   /** Uses of one shard shape below which it stays in its cell's batch. */
   instanceShareThreshold: number;
+  /** Shadow-map edge in texels, or null to follow the tier (2048/1024). */
+  shadowMapSize: number | null;
 };
 
 type Listener = (state: RenderQualityState) => void;
@@ -173,10 +181,22 @@ let instanceShareThreshold: number = readStored(SHARE_THRESHOLD_KEY, (raw) => {
   const value = Number(raw);
   return Number.isFinite(value) && value >= 1 ? value : null;
 }) ?? DEFAULT_INSTANCE_SHARE_THRESHOLD;
+let shadowMapSize: number | null = readStored(SHADOW_MAP_KEY, (raw) => {
+  const value = Number(raw);
+  return Number.isFinite(value) && value >= 256 ? value : null;
+});
 
 function notify(): void {
   const state: RenderQualityState = {
-    shadows, tier, ao, cityTextures, skyIbl, skyDome, dprCap, instanceShareThreshold,
+    shadows,
+    tier,
+    ao,
+    cityTextures,
+    skyIbl,
+    skyDome,
+    dprCap,
+    instanceShareThreshold,
+    shadowMapSize,
   };
   for (const listener of listeners) listener(state);
 }
@@ -242,6 +262,26 @@ export function setInstanceShareThreshold(next: number): void {
   if (!Number.isFinite(next) || next < 1 || next === instanceShareThreshold) return;
   instanceShareThreshold = next;
   store(SHARE_THRESHOLD_KEY, String(next));
+  notify();
+}
+
+/**
+ * Shadow-map edge override, or null for the tier default.
+ *
+ * Exists for the sweep: the M3 report showed shadows costing 2.3 ms of frame
+ * with GPU and CPU medians both flat -- the 2048^2 map re-rendering 41k mostly
+ * static chunks every frame. A 1024 step prices the cheap half of that trade
+ * before anyone designs shadow caching.
+ */
+export function shadowMapSizeOverride(): number | null {
+  return shadowMapSize;
+}
+
+export function setShadowMapSize(next: number | null): void {
+  if (next === shadowMapSize) return;
+  if (next !== null && (!Number.isFinite(next) || next < 256)) return;
+  shadowMapSize = next;
+  store(SHADOW_MAP_KEY, next === null ? '' : String(next));
   notify();
 }
 
@@ -417,6 +457,10 @@ export function useShadowsEnabled(): boolean {
 }
 
 /** React view of the effective SSAO flag (tier included). */
+export function useShadowMapSizeOverride(): number | null {
+  return useSyncExternalStore(subscribe, shadowMapSizeOverride, shadowMapSizeOverride);
+}
+
 export function useSkyDomeEnabled(): boolean {
   return useSyncExternalStore(subscribe, skyDomeEnabled, skyDomeEnabled);
 }

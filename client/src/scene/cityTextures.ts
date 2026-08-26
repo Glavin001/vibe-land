@@ -114,6 +114,27 @@ let arrays: CityTextureArrays | null = null;
 let loadStarted = false;
 
 /**
+ * Anisotropic filtering on the albedo array. Live, for the perf sweep.
+ *
+ * The M3 report's strongest anomaly: dropping the surface taps saved ~0 ms
+ * while dropping ALL city texturing saved 2.6 ms GPU -- so the cost is in the
+ * three albedo taps, and the one thing the albedo array has that the (cheap)
+ * surface array does not is anisotropy 4. This knob exists to test exactly
+ * that, on the machine where it costs something. Changing it re-uploads the
+ * array (needsUpdate), which is why the sweep gives the step a warm-up.
+ */
+export function cityTextureAnisotropy(): number {
+  return arrays?.albedo.anisotropy ?? 4;
+}
+
+export function setCityTextureAnisotropy(next: number): void {
+  if (!arrays || !Number.isFinite(next) || next < 1) return;
+  if (arrays.albedo.anisotropy === next) return;
+  arrays.albedo.anisotropy = next;
+  arrays.albedo.needsUpdate = true;
+}
+
+/**
  * The city's texture arrays, neutral until the sheets land.
  *
  * Safe to call before or after the load resolves, and safe to call every build.
