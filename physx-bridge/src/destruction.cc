@@ -2340,13 +2340,9 @@ void DestructionManager::resolve_support_loads() {
   // invisible except as the gap between the native tick and the sum of its
   // phases, and it was the dominant term in that gap (measured: ~0.6 ms of a
   // ~0.65 ms gap at 3k bodies, and it grows linearly with body count).
-  const auto body_row = [&](std::uint32_t structure_id,
-                            std::uint64_t body_id)
+  const auto body_row_in = [&](const Slot &slot_ref, std::uint64_t body_id)
       -> const ExtStressPhysXBodySnapshot * {
-    const Slot *slot = find_slot(structure_id);
-    if (slot == nullptr) {
-      return nullptr;
-    }
+    const Slot *slot = &slot_ref;
     const std::uint32_t count =
         std::min<std::uint32_t>(slot->body_cache_count,
                                 static_cast<std::uint32_t>(slot->body_cache.size()));
@@ -2410,9 +2406,12 @@ void DestructionManager::resolve_support_loads() {
       if (!side.is_chunk) {
         return out;
       }
+      // One slot resolution per side. body_row re-resolved the slot
+      // internally, making four linear scans per pair -- free at one
+      // structure, dominant at a multi-structure grid.
       const Slot *slot = find_slot(side.structure_id);
       const ExtStressPhysXBodySnapshot *row =
-          body_row(side.structure_id, side.body_id);
+          slot != nullptr ? body_row_in(*slot, side.body_id) : nullptr;
       if (slot == nullptr || row == nullptr) {
         return out; // body died this tick; retire/promote events cover it
       }
@@ -2425,7 +2424,9 @@ void DestructionManager::resolve_support_loads() {
       out.frozen = slot->frozen.count(side.body_id) != 0;
       out.rooted = slot->rooted.count(side.body_id) != 0;
       out.com_y = com_world_position(*row).y;
-      out.mass = row->body != nullptr ? row->body->getMass() : 0.0f;
+      // Cached at mass-recompute time by the library. The live getMass here
+      // was ~52k PhysX reads per tick at a 7.9k-awake peak.
+      out.mass = row->mass;
       out.serial = serial_it->second;
       return out;
     };
