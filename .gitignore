@@ -23,4 +23,5 @@ control-plane/.dev.vars
 client/tools/profiles/
 destruction/assets/scenes/fractured-downtown-pool*.json
 destruction/assets/scenes/fractured-downtown-floor*.json
+destruction/assets/scenes/fractured-downtown-all.json
 client/tools/profiles/
