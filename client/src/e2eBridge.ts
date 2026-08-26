@@ -18,6 +18,7 @@ import {
   setAmbientOcclusionEnabled,
   setQualityTier,
   setShadowsEnabled,
+  setInstanceShareThreshold,
 } from './app/renderQuality';
 import { updateFogSettings } from './graphics/fogSettings';
 import { setLookTuning } from './graphics/lookTuning';
@@ -208,7 +209,12 @@ export interface VibeE2EBridge {
    * density the difference between facing a wall and facing down a street
    * dwarfs anything being measured.
    */
-  setRenderQuality(next: { shadows?: boolean; ao?: boolean; tier?: 'fast' | 'pretty' }): void;
+  setRenderQuality(next: {
+    shadows?: boolean;
+    ao?: boolean;
+    tier?: 'fast' | 'pretty';
+    shareThreshold?: number;
+  }): void;
   /**
    * Retune the perceptual lighting knobs live.
    *
@@ -409,6 +415,7 @@ const bridge: VibeE2EBridge = {
     if (next.shadows !== undefined) setShadowsEnabled(next.shadows);
     if (next.ao !== undefined) setAmbientOcclusionEnabled(next.ao);
     if (next.tier !== undefined) setQualityTier(next.tier);
+    if (next.shareThreshold !== undefined) setInstanceShareThreshold(next.shareThreshold);
   },
   setCapturePose: (next) => setCapturePose(next),
   runPerfSweep: () => runPerfSweep(),

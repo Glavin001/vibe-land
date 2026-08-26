@@ -42,6 +42,7 @@ import { shouldUpdateThisFrame, updateStrideForDistanceSq } from '../city/render
 import {
   cityPbrLighting,
   cityTextureDetail,
+  instanceShareThresholdSetting,
   onRenderQualityChange,
   shadowsEnabled,
 } from '../app/renderQuality';
@@ -339,6 +340,8 @@ export function CityChunksLayer({
   const rebuildRequestedRef = useRef(false);
   /** Which shader variant the live city material was built for. */
   const materialVariantRef = useRef('');
+  /** Threshold the live city mesh was built with; see the rebuild below. */
+  const builtShareThresholdRef = useRef(-1);
 
   // Deliberately not awaited anywhere: the arrays exist from the first frame
   // filled with a neutral concrete grey, and the sheets write into them in
@@ -364,6 +367,12 @@ export function CityChunksLayer({
           ? buildCityMaterial()
           : null;
         if (replacement) materialVariantRef.current = want;
+        // The instancing threshold decides which shapes get a city-wide mesh,
+        // which is baked in at build time -- a live material swap cannot
+        // express it, so the mesh has to be rebuilt.
+        if (instanceShareThresholdSetting() !== builtShareThresholdRef.current) {
+          rebuildRequestedRef.current = true;
+        }
         for (const { mesh } of renderables) {
           mesh.castShadow = shadows;
           mesh.receiveShadow = shadows;
@@ -547,6 +556,7 @@ export function CityChunksLayer({
       try {
         stateRef.current = buildCityMesh(client);
         materialVariantRef.current = `${cityPbrLighting() ? 'pbr' : 'flat'}:${cityTextureDetail()}`;
+        builtShareThresholdRef.current = instanceShareThresholdSetting();
         for (const { mesh } of stateRef.current.renderables) {
           group.add(mesh);
         }

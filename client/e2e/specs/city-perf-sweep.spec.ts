@@ -51,7 +51,13 @@ test.describe('city perf sweep', () => {
       gpu: string;
       backingStore: string;
       gpuTimingAvailable: boolean;
-      steps: Array<{ label: string; gpuMs: { median: number }; frameMs: { median: number } }>;
+      steps: Array<{
+        label: string;
+        gpuMs: { median: number };
+        frameMs: { median: number };
+        drawCalls: number;
+        subDraws: number;
+      }>;
     };
 
     console.log(`\n[perf sweep] gpu: ${report.gpu}`);
@@ -59,11 +65,12 @@ test.describe('city perf sweep', () => {
     for (const step of report.steps) {
       console.log(
         `  ${step.label.padEnd(30)} frame ${step.frameMs.median.toFixed(2)} ms   `
-        + `gpu ${step.gpuMs.median.toFixed(2)} ms`,
+        + `gpu ${step.gpuMs.median.toFixed(2)} ms   `
+        + `${step.drawCalls} draws / ${step.subDraws} subdraws`,
       );
     }
 
-    expect(report.steps.length).toBe(10);
+    expect(report.steps.length).toBe(12);
     expect(report.gpuTimingAvailable, 'no GPU timing — the sweep cannot answer what it is for')
       .toBe(true);
     for (const step of report.steps) {

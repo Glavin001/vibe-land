@@ -27,6 +27,8 @@ import {
   setAmbientOcclusionEnabled,
   setCityTextureDetail,
   setDprCap,
+  setInstanceShareThreshold,
+  instanceShareThresholdSetting,
   setQualityTier,
   setShadowsEnabled,
   setSkyDomeEnabled,
@@ -51,6 +53,7 @@ type Config = {
   skyIbl: boolean;
   skyDome: boolean;
   dprCap: number | null;
+  shareThreshold: number;
 };
 
 function currentConfig(): Config {
@@ -62,6 +65,7 @@ function currentConfig(): Config {
     skyIbl: skyIblEnabledSetting(),
     skyDome: skyDomeEnabled(),
     dprCap: dprCapOverride(),
+    shareThreshold: instanceShareThresholdSetting(),
   };
 }
 
@@ -73,6 +77,7 @@ function applyConfig(config: Config): void {
   setSkyIblEnabled(config.skyIbl);
   setSkyDomeEnabled(config.skyDome);
   setDprCap(config.dprCap);
+  setInstanceShareThreshold(config.shareThreshold);
 }
 
 const nextFrame = () => new Promise<void>((resolve) => {
@@ -101,6 +106,11 @@ export interface PerfSweepStep {
   glSubmitMs: number;
   cityFrameMs: number;
   drawCalls: number;
+  /**
+   * Multi-draw sub-draws the city submits. The other half of the draw-call
+   * trade: raising the instancing threshold cuts `drawCalls` and raises this.
+   */
+  subDraws: number;
   triangles: number;
 }
 
@@ -115,8 +125,8 @@ export interface PerfSweepReport {
   steps: PerfSweepStep[];
 }
 
-async function measureStep(label: string): Promise<PerfSweepStep> {
-  for (let i = 0; i < WARMUP_FRAMES; i += 1) await nextFrame();
+async function measureStep(label: string, warmupFrames = WARMUP_FRAMES): Promise<PerfSweepStep> {
+  for (let i = 0; i < warmupFrames; i += 1) await nextFrame();
   const frames: number[] = [];
   const gpu: number[] = [];
   const cpu: number[] = [];
@@ -143,6 +153,7 @@ async function measureStep(label: string): Promise<PerfSweepStep> {
     glSubmitMs: glSubmit / FRAMES,
     cityFrameMs: cityFrame / FRAMES,
     drawCalls,
+    subDraws: renderStats.subDraws,
     triangles,
   };
 }
@@ -175,10 +186,14 @@ function describeGpu(): { gpu: string; backingStore: string } {
 export async function runPerfSweep(): Promise<PerfSweepReport> {
   const original = currentConfig();
   const steps: PerfSweepStep[] = [];
-  const step = async (label: string, patch: Partial<Config>) => {
+  const step = async (label: string, patch: Partial<Config>, warmupFrames?: number) => {
     applyConfig({ ...original, ...patch });
-    steps.push(await measureStep(label));
+    steps.push(await measureStep(label, warmupFrames));
   };
+  // A threshold change rebuilds the whole 41k-chunk mesh on the next frame.
+  // Measuring the rebuild instead of the steady state is the classic way to
+  // produce a table of nonsense, so these wait considerably longer.
+  const REBUILD_WARMUP = 240;
 
   try {
     await step('as configured', {});
@@ -188,6 +203,11 @@ export async function runPerfSweep(): Promise<PerfSweepReport> {
     await step('sky dome off', { skyDome: false });
     await step('city textures: albedo only', { cityTextures: 'albedo' });
     await step('city textures: off', { cityTextures: 'off' });
+    // Rebuilds the city mesh, so these get longer to settle than the rest.
+    // Brackets the shipped default rather than repeating it: 8 is what this
+    // was before, 64 is the next step out, and the answer is machine-specific.
+    await step('instance threshold 8 (was default)', { shareThreshold: 8 }, REBUILD_WARMUP);
+    await step('instance threshold 64', { shareThreshold: 64 }, REBUILD_WARMUP);
     await step('dpr cap 1.5', { dprCap: 1.5 });
     await step('dpr cap 1.0', { dprCap: 1 });
     await step('everything off (floor)', {
@@ -229,7 +249,7 @@ export function formatPerfSweep(report: PerfSweepReport): string {
     'below the refresh period however much headroom there is. gpu ms is not',
     'clamped — that is the column that says whether 120 is reachable.',
     '',
-    'step                            frame med  frame p95   gpu med   gpu p95   cpu med  draws',
+    'step                            frame med  frame p95   gpu med   gpu p95   cpu med  draws  subdraws',
   ];
   for (const step of report.steps) {
     lines.push(
@@ -237,7 +257,8 @@ export function formatPerfSweep(report: PerfSweepReport): string {
       + `${step.frameMs.p95.toFixed(2).padStart(9)}  `
       + `${step.gpuMs.median.toFixed(2).padStart(8)}  `
       + `${step.gpuMs.p95.toFixed(2).padStart(8)}  `
-      + `${step.cpuMs.median.toFixed(2).padStart(8)}  ${String(step.drawCalls).padStart(5)}`,
+      + `${step.cpuMs.median.toFixed(2).padStart(8)}  ${String(step.drawCalls).padStart(5)}`
+      + `  ${String(step.subDraws).padStart(8)}`,
     );
   }
   return lines.join('\n');

@@ -14,6 +14,8 @@
 // telemetry nested inside cityFrame, reported as "of which" rows.
 export const renderStats = {
   drawCalls: 0,
+  /** Multi-draw sub-draws the city submits per frame; set once at mesh build. */
+  subDraws: 0,
   triangles: 0,
   geometries: 0,
   textures: 0,

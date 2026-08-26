@@ -29,8 +29,14 @@ import * as THREE from 'three';
 import type { CityClient } from '../city/cityClient';
 import { buildBoxGeometry, buildHullGeometry, chunkShape } from '../city/chunkGeometry';
 import { partitionSlotsByCell } from '../city/renderScheduling';
-import { cityPbrLighting, cityTextureDetail, shadowsEnabled } from '../app/renderQuality';
+import {
+  cityPbrLighting,
+  cityTextureDetail,
+  instanceShareThresholdSetting,
+  shadowsEnabled,
+} from '../app/renderQuality';
 import { writeInstance, type CityRenderable } from './cityChunkWrite';
+import { renderStats } from '../city/renderStats';
 import { applyCityTriplanar } from './cityMaterialShader';
 import { attachInstanceAnchors, bakeRestAnchors } from './cityTexAnchor';
 import { layerCodeForBuilding } from './cityTextures';
@@ -42,16 +48,18 @@ const TMP_COLOR = new THREE.Color();
 /**
  * Uses of one shape below which it stays in its cell's batch.
  *
- * A city-wide instanced mesh trades N sub-draws for one REAL draw call, and a
- * real draw call is dearer than a sub-draw -- so the swap only pays above some
- * share, and below it also costs the frustum culling a cell-sized batch keeps.
+ * A city-wide instanced mesh trades N sub-draws for one REAL draw call. Which
+ * way that pays is a property of the MACHINE, not of the scene: a real draw is
+ * CPU submission, a sub-draw is GPU work, and fps -- the only instrument this
+ * had when the threshold was first chosen -- cannot tell those apart.
  *
- * 8 is measured rather than guessed, but only coarsely: at 33k chunks, raising
- * it to 32 cut draw calls 733 -> 124 and moved mean gl.render by 0.09 ms while
- * making the worst heading worse (2.95 -> 3.99 ms). Mean was within noise and
- * the worst case decided it. Worth re-deriving if the shape mix changes a lot.
+ * See `DEFAULT_INSTANCE_SHARE_THRESHOLD` in renderQuality for the current value
+ * and the measurement behind it. Live-settable, because the answer differs per
+ * machine and `perfSweep` prices it on whichever one is complaining.
  */
-export const MIN_SHARE_TO_INSTANCE = 8;
+function minShareToInstance(): number {
+  return instanceShareThresholdSetting();
+}
 
 export type CityMeshState = {
   /**
@@ -314,7 +322,7 @@ function groupHullShapes(shapeBySlot: ResolvedShapes['shapeBySlot'], count: numb
 
   const instancedKeys = new Set<string>();
   for (const [key, slots] of slotsOfHullKey) {
-    if (slots.length >= MIN_SHARE_TO_INSTANCE) instancedKeys.add(key);
+    if (slots.length >= minShareToInstance()) instancedKeys.add(key);
   }
   return { slotsOfHullKey, hullPointsOfKey, instancedKeys, keyOfSlot };
 }
@@ -652,9 +660,11 @@ export function buildCityMesh(client: CityClient): CityMeshState {
       : 1,
     // Sub-draws, not draw calls: this is the number frame time tracks.
     subDraws: sink.subDraws,
+    shareThreshold: minShareToInstance(),
     vertices: sink.totalVertices,
   });
 
+  renderStats.subDraws = sink.subDraws;
   return {
     renderables: sink.renderables,
     cellOfRenderable: Int32Array.from(sink.cellOfRenderable),
