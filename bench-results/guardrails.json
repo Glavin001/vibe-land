@@ -1,20 +1,20 @@
 {
- "t2_bonds_min": 182,
- "t2_bonds_max": 2920,
- "t2_bodies_max": 967,
+ "t2_bonds_min": 1070,
+ "t2_bonds_max": 17128,
+ "t2_bodies_max": 5912,
  "t3_height_retained_max": 0.55,
  "t3_spread_fraction_min": 0.1,
- "t4_retired_fraction_min": 0.548,
- "t4_awake_end_over_peak_max": 0.578,
- "t5_p95_ms_max": 72.6,
+ "t4_retired_fraction_min": 0.419,
+ "t4_awake_end_over_peak_max": 0.9,
+ "t5_p95_ms_max": 91.0,
  "calibrated_from": {
-  "t2_bonds": 730,
-  "t2_bodies": 215,
-  "t3_height_retained": 0.03878757357597351,
-  "t3_spread_fraction": 0.7460317611694336,
-  "t4_retired_fraction": 0.783,
-  "t4_awake_end_over_peak": 0.239,
-  "t5_p95_ms": 53.8,
-  "t5_bucket_ticks": 1307
+  "t2_bonds": 4282,
+  "t2_bodies": 1204,
+  "t3_height_retained": 0.0685991495847702,
+  "t3_spread_fraction": 0.9399267435073853,
+  "t4_retired_fraction": 0.599,
+  "t4_awake_end_over_peak": 0.554,
+  "t5_p95_ms": 67.4,
+  "t5_bucket_ticks": 118
  }
 }
