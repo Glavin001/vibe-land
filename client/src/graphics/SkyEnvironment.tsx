@@ -28,6 +28,22 @@ const VERTEX_SHADER = /* glsl */ `
   }
 `;
 
+// The two chunk includes at the end of main() are load-bearing. A raw
+// ShaderMaterial gets three's tone-mapping and output-encoding *helpers* in its
+// prefix (so including the `_pars_` chunks as well fails to compile with
+// "function already has a body") but not the steps that call them. Without
+// them the dome writes linear radiance straight into an sRGB canvas and renders
+// far too dark -- while the SSAO composite path, which does its own encode,
+// renders the same sky correctly. That two-brightnesses-for-one-sky mismatch is
+// how this was caught; the measured sky luminance of the two paths now agrees
+// to within 7%.
+//
+// The environment bake needs the opposite -- image-based lighting integrates
+// raw radiance, and a tone-mapped sky would feed the scene a dimmed, rolled-off
+// skylight. PMREMGenerator already renders with tone mapping off and into a
+// linear target, so both steps self-disable there; SKY_LINEAR_OUTPUT on the
+// bake copy makes that independent of three's internals rather than a
+// coincidence to be re-derived later.
 const FRAGMENT_SHADER = /* glsl */ `
   varying vec3 vDir;
   uniform vec3 uSunDir;
@@ -52,6 +68,10 @@ const FRAGMENT_SHADER = /* glsl */ `
     col += uSunColor * pow(s, 1400.0) * 26.0 * uSunDisc; // disc
     col += uSunColor * pow(s, 9.0) * 0.16;               // forward-scatter glow
     gl_FragColor = vec4(col, 1.0);
+    #ifndef SKY_LINEAR_OUTPUT
+      #include <tonemapping_fragment>
+      #include <colorspace_fragment>
+    #endif
   }
 `;
 
@@ -142,6 +162,7 @@ export function SkyEnvironment({
     // current sky values and the dome keeps its sun disc.
     const bakeMaterial = material.clone();
     bakeMaterial.uniforms.uSunDisc.value = 0;
+    bakeMaterial.defines = { SKY_LINEAR_OUTPUT: '' };
     bakeMaterial.depthTest = true;
     const bakeGeometry = new THREE.SphereGeometry(100, 32, 16);
     bakeScene.add(new THREE.Mesh(bakeGeometry, bakeMaterial));
