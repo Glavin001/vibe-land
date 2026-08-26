@@ -30,6 +30,7 @@ client/tools/profiles/
 # sheets under client/public/textures are committed, the sources are not.
 client/scripts/.cache/
 
-# Capture output from the city texture specs; evidence, not source.
+# Capture output from the city texture and lighting specs; evidence, not source.
 client/e2e/texture-qa/
 client/e2e/texture-tuning/
+client/e2e/look-tuning/
