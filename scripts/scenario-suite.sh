@@ -46,7 +46,11 @@ OUT=/tmp/scenario-suite; mkdir -p "$OUT"
 # Only THIS repo's server: vibe-land-2 runs its own on this box and is not
 # ours to stop -- refusing on any pgrep hit made the gate unrunnable.
 REPO="$(pwd -P)"
-for p in $(pgrep -x web-fps-server 2>/dev/null); do
+# -f, not -x: the server runs as web-fps-server-vl4 so that vibe-land-2's
+# run-city-server.sh stop_server (pkill -x web-fps-server) cannot kill it --
+# which it did, mid-session, at 21:10:37. The cwd check keeps the refusal
+# scoped to THIS repo's server either way.
+for p in $(pgrep -f "web-fps-server" 2>/dev/null); do
   if [ "$(readlink /proc/$p/cwd 2>/dev/null)" = "$REPO" ]; then
     echo "REFUSING: this repo's web-fps-server is running (pid $p). Stop it first:"
     echo "  kill $p"
