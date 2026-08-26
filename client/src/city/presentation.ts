@@ -301,13 +301,26 @@ export class PresentationTrack {
   }
 
   /** Samples the track at a fractional render tick. */
+  /**
+   * Whether the LAST `sample()` call took the settled fast-path.
+   *
+   * The contract callers lean on: when true, the returned state was the
+   * previous sample's state object, unchanged -- nothing about this track can
+   * move again until a new snapshot, revision or clock rollback arrives, all
+   * of which come through `push()`. `CityClient` uses that to drop the body
+   * from its per-frame walk entirely and re-admit it on the next record.
+   */
+  lastSampleSettled = false;
+
   sample(renderTickInput: number): PresentedState {
+    this.lastSampleSettled = false;
     if (this.snapshots.length === 0) {
       return defaultState();
     }
     const renderTick = Number.isFinite(renderTickInput) ? renderTickInput : 0;
     const targetTick = renderTick - this.config.interpolationDelayTicks;
     if (this.isSettled(renderTick, targetTick)) {
+      this.lastSampleSettled = true;
       // Advance the clock but reuse the state: the revision re-anchor below
       // reads `previous.renderTick`, so letting it go stale would mis-anchor
       // the next correction. Nothing else in the record can have moved.
@@ -491,7 +504,22 @@ export class PresentationTrack {
     if (previous.revision !== this.revision) return false;
     if (renderTick < previous.renderTick) return false;
     const last = this.snapshots[this.snapshots.length - 1];
-    if (last.class !== PresentationClass.Quiescent || targetTick <= last.tick) return false;
+    if (last.class === PresentationClass.Quiescent) {
+      if (targetTick <= last.tick) return false;
+    } else {
+      // Non-quiescent tracks freeze too: `extrapolate` clamps extraTicks at
+      // maxExtrapolationTicks for EVERY class, so once the target tick is past
+      // the window the raw state is constant in time. Requiring the PREVIOUS
+      // sample's target to also be past the window makes the fast-path exact
+      // rather than one-frame-early -- `previous.state` is then already the
+      // clamped pose, not the last still-decaying one. This is what lets the
+      // per-frame walk drop bodies whose records simply stopped, which is how
+      // every real body goes quiet (the wire never sends a Quiescent class;
+      // fully-settled bodies are deleted by the reliable settle instead).
+      const frozenAt = last.tick + this.config.maxExtrapolationTicks;
+      const previousTarget = previous.renderTick - this.config.interpolationDelayTicks;
+      if (targetTick < frozenAt || previousTarget < frozenAt) return false;
+    }
     return (
       this.correction.position[0] === 0
       && this.correction.position[1] === 0

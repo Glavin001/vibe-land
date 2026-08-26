@@ -181,6 +181,8 @@ let dprCap: number | null = readStored(DPR_CAP_KEY, (raw) => {
   return Number.isFinite(value) && value > 0 ? value : null;
 });
 let heroTiling: boolean = readStored(HERO_TILING_KEY, (raw) => raw === '1') ?? true;
+// Session-only, like the other sweep-priced knobs: no panel button writes it.
+let aoMsaaSamples = 4;
 // Session-only, deliberately. These two have no panel button -- the perf sweep
 // is their only writer -- and persisting them is how a user got PINNED to a
 // sweep's temporary value: the sweep wrote threshold 32 through this store, the
@@ -304,6 +306,34 @@ export function setShadowMapSize(next: number | null): void {
  * the A/B (and the perf sweep's pricing of it) compares real programs, not a
  * branch. PRETTY-only -- the stack needs the surface array.
  */
+/**
+ * MSAA sample count for the SSAO beauty target.
+ *
+ * This is where antialiasing LIVES when AO is on: the context's own MSAA was
+ * being allocated and discarded (nothing draws to the backbuffer but a quad),
+ * so it is disabled -- and without samples here the image has no AA at all.
+ * The multisampled beauty target resolves both color and depth into the
+ * textures the AO chain reads, so geometry edges arrive antialiased at the
+ * composite. Metal's tile memory makes 4x comparatively cheap, but that is a
+ * hypothesis about the M3 until its sweep prices the 'AO msaa off' step.
+ */
+export function aoMsaaSamplesSetting(): number {
+  return aoMsaaSamples;
+}
+
+if (typeof window !== 'undefined') {
+  // Dev/QA handle: the setter is session-only with no panel button, and the
+  // AA-visibility check needs to flip it from a harness.
+  (window as unknown as Record<string, unknown>).__VIBE_SET_AO_MSAA__ = (n: number) =>
+    setAoMsaaSamples(n);
+}
+
+export function setAoMsaaSamples(next: number): void {
+  if (!Number.isFinite(next) || next < 0 || next === aoMsaaSamples) return;
+  aoMsaaSamples = next;
+  notify();
+}
+
 export function heroTilingEnabled(): boolean {
   return heroTiling;
 }

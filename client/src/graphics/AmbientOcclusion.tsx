@@ -24,6 +24,7 @@
 
 import { useFrame, useThree } from '@react-three/fiber';
 import { lookTuning, subscribeLookTuning } from './lookTuning';
+import { aoMsaaSamplesSetting } from '../app/renderQuality';
 import { useEffect, useMemo } from 'react';
 import * as THREE from 'three';
 
@@ -51,11 +52,21 @@ export function buildKernel(size = KERNEL_SIZE): THREE.Vector3[] {
   return kernel;
 }
 
-function makeTarget(width: number, height: number, withDepth: boolean): THREE.WebGLRenderTarget {
+function makeTarget(
+  width: number,
+  height: number,
+  withDepth: boolean,
+  samples = 0,
+): THREE.WebGLRenderTarget {
+  // Samples on the BEAUTY target are the scene's antialiasing (see
+  // renderQuality.aoMsaaSamplesSetting) -- three resolves both color and depth
+  // into the attached textures, so the AO chain reads antialiased inputs. The
+  // half-res AO/blur targets stay single-sampled: they are quads.
   const target = new THREE.WebGLRenderTarget(width, height, {
     minFilter: THREE.LinearFilter,
     magFilter: THREE.LinearFilter,
     type: THREE.HalfFloatType,
+    samples,
   });
   if (withDepth) {
     const depth = new THREE.DepthTexture(width, height);
@@ -330,11 +341,17 @@ export function AmbientOcclusion({
     const halfWidth = Math.max(1, width >> 1);
     const halfHeight = Math.max(1, height >> 1);
 
-    if (!passes.beauty || passes.beauty.width !== width || passes.beauty.height !== height) {
+    const wantSamples = aoMsaaSamplesSetting();
+    if (
+      !passes.beauty
+      || passes.beauty.width !== width
+      || passes.beauty.height !== height
+      || passes.beauty.samples !== wantSamples
+    ) {
       passes.beauty?.dispose();
       passes.ao?.dispose();
       passes.blur?.dispose();
-      passes.beauty = makeTarget(width, height, true);
+      passes.beauty = makeTarget(width, height, true, wantSamples);
       passes.ao = makeTarget(halfWidth, halfHeight, false);
       passes.blur = makeTarget(halfWidth, halfHeight, false);
       passes.aoMaterial.uniforms.tDepth.value = passes.beauty.depthTexture;

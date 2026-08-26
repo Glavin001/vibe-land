@@ -42,6 +42,8 @@ import {
   setInstanceShareThreshold,
   setQualityTier,
   setShadowMapSize,
+  aoMsaaSamplesSetting,
+  setAoMsaaSamples,
   setHeroTilingEnabled,
   heroTilingEnabled,
   setShadowsEnabled,
@@ -81,6 +83,7 @@ type Config = {
   shadowMapSize: number | null;
   albedoAniso: number;
   heroTiling: boolean;
+  aoMsaa: number;
 };
 
 function currentConfig(): Config {
@@ -96,6 +99,7 @@ function currentConfig(): Config {
     shadowMapSize: shadowMapSizeOverride(),
     albedoAniso: cityTextureAnisotropy(),
     heroTiling: heroTilingEnabled(),
+    aoMsaa: aoMsaaSamplesSetting(),
   };
 }
 
@@ -111,6 +115,7 @@ function applyConfig(config: Config): void {
   setShadowMapSize(config.shadowMapSize);
   setCityTextureAnisotropy(config.albedoAniso);
   setHeroTilingEnabled(config.heroTiling);
+  setAoMsaaSamples(config.aoMsaa);
 }
 
 /** Fields whose change means something big reallocates before steady state. */
@@ -118,7 +123,9 @@ function needsRebuildWarmup(previous: Config, next: Config): boolean {
   return previous.shareThreshold !== next.shareThreshold
     || previous.dprCap !== next.dprCap
     || previous.shadowMapSize !== next.shadowMapSize
-    || previous.albedoAniso !== next.albedoAniso;
+    || previous.albedoAniso !== next.albedoAniso
+    // Changing the sample count reallocates the whole AO target set.
+    || previous.aoMsaa !== next.aoMsaa;
 }
 
 const nextFrame = () => new Promise<void>((resolve) => {
@@ -281,6 +288,7 @@ export async function runPerfSweep(): Promise<PerfSweepReport> {
     await step('sky IBL off', { skyIbl: false });
     await step('sky dome off', { skyDome: false });
     await step('anti-tiling stack off', { heroTiling: false });
+    await step('AO msaa off (no AA)', { aoMsaa: 0 });
     await step('city textures: albedo only', { cityTextures: 'albedo' });
     await step('city textures: off', { cityTextures: 'off' });
     await step('albedo aniso 1', { albedoAniso: 1 });

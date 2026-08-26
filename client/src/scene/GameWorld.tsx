@@ -3215,7 +3215,15 @@ export function GameWorld({
         shadowHalfExtent={qualityIsPretty ? 48 : 60}
         shadowMapSize={shadowMapTexels ?? (qualityIsPretty ? 2048 : 1024)}
       />
-      <ambientLight intensity={0.12} color={0xfdf6eb} />
+      {/*
+        On FAST the city is Lambert with no environment map, and a vertical
+        wall facing away from the sun gets only half the hemisphere (and the
+        dark ground half at that) -- measured 86 vs PRETTY's 121 mean luminance
+        on the same shaded face. The ambient floor is orientation-independent,
+        which is exactly what those faces are missing; PRETTY keeps the small
+        floor because its skylight comes from the environment map.
+      */}
+      <ambientLight intensity={qualityIsPretty ? 0.12 : 0.55} color={0xfdf6eb} />
       {/*
         The environment map only reaches Standard/Physical materials. FAST-tier
         city chunks shade as Lambert, so a hemisphere light stands in for the
@@ -3224,7 +3232,7 @@ export function GameWorld({
         under the IBL.
       */}
       <hemisphereLight
-        args={[skyLightGradient.zenith, skyLightGradient.ground, qualityIsPretty ? 0.25 : 1.0]}
+        args={[skyLightGradient.zenith, skyLightGradient.ground, qualityIsPretty ? 0.25 : 1.15]}
       />
       {ambientOcclusionOn && <AmbientOcclusion />}
       <WorldTerrain world={worldDocument} />
