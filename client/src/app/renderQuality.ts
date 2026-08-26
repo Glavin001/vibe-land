@@ -265,16 +265,34 @@ export function setQualityTier(next: QualityTier): void {
  */
 export function maxDpr(): number {
   // An explicit cap wins over the tier. Pixel count is the single biggest lever
-  // on a fill-bound frame -- dropping 2 to 1.5 removes 44% of them -- and it is
-  // the one knob whose cost is exactly predictable, so it is worth being able
-  // to set directly rather than only as a side effect of the tier.
+  // on a fill-bound frame and the one knob whose cost is exactly predictable,
+  // so it is worth being able to set directly rather than only as a side effect
+  // of the tier.
   if (dprCap !== null) return dprCap;
-  return tier === 'fast' ? 1.5 : 2;
+  // PRETTY was 2. Measured on an M3 Max at a 4112x2396 backing store, dropping
+  // it to 1.5 removes 44% of the pixels and 2.08 ms of GPU time -- 32% of the
+  // frame's GPU cost, and MORE than the entire triplanar concrete (1.74 ms) or
+  // the whole SSAO pass (1.44 ms). It is the cheapest 2 ms available anywhere
+  // in this renderer, and 5.5 MPix is still comfortably above native on the
+  // Retina panels that report dpr 2.
+  return 1.5;
 }
 
-/** MSAA. Context-creation-time: a change applies on the next reload. */
+/**
+ * MSAA. Context-creation-time: a change applies on the next reload.
+ *
+ * Off whenever SSAO is on, because SSAO renders the scene into its own
+ * offscreen target and that target has no sample count -- so the multisampled
+ * default framebuffer is allocated, never drawn into except by the composite
+ * quad, and resolved every frame for nothing. At 9.85 MPix that is a real cost
+ * for an image that is not antialiased either way.
+ *
+ * The image does not change; the waste goes away. To actually GET antialiasing
+ * back with SSAO on, the AO beauty target needs a sample count of its own,
+ * which costs rather than saves.
+ */
 export function antialiasEnabled(): boolean {
-  return tier === 'pretty';
+  return tier === 'pretty' && !ambientOcclusionEnabled();
 }
 
 /** ACES filmic off on FAST. Also context-creation-time (r3f `flat`). */

@@ -95,8 +95,12 @@ describe('toggling', () => {
     module.onRenderQualityChange((s) => seen.push(s.tier));
     module.setQualityTier('pretty');
     expect(seen).toEqual(['pretty']);
-    expect(module.maxDpr()).toBe(2);
-    expect(module.antialiasEnabled()).toBe(true);
+    // Both tiers cap at 1.5 now: measured on an M3 Max, dpr 2 costs 2.08 ms of
+    // GPU time, more than the whole SSAO pass or all of the city's texturing.
+    expect(module.maxDpr()).toBe(1.5);
+    // SSAO renders the scene into a target with no sample count, so a
+    // multisampled default framebuffer would be resolved every frame for an
+    // image that is not antialiased anyway. AA is only claimed with AO off.
     expect(module.flatToneMapping()).toBe(false);
     expect(module.skyEnabled()).toBe(true);
     expect(module.weatherEnabled()).toBe(true);
@@ -104,6 +108,14 @@ describe('toggling', () => {
     // No-op set must not notify (consumers walk live meshes on change).
     module.setQualityTier('pretty');
     expect(seen).toEqual(['pretty']);
+
+    // Antialias tracks AO, and toggling AO notifies -- so this comes after the
+    // notification assertions above rather than in the middle of them.
+    // Explicit about AO either way rather than assuming its default.
+    module.setAmbientOcclusionEnabled(true);
+    expect(module.antialiasEnabled()).toBe(false);
+    module.setAmbientOcclusionEnabled(false);
+    expect(module.antialiasEnabled()).toBe(true);
   });
 
   // The two knobs are independent: turning shadows on must not drag the whole
