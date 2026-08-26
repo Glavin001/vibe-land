@@ -38,13 +38,21 @@ type Look = { fogIntensity: number; aoStrength: number; envIntensity: number };
  * aoStrength is the exponent that decides whether contact shading reads as
  * shading or as an outline.
  */
+/**
+ * `fogIntensity` multiplies whatever `FOG_OPACITY_AT_AOI` currently derives, so
+ * these are relative to the SHIPPED default, not absolute. 2.40 is the exact
+ * ratio back to the pre-relaxation curve (0.99 opacity at the 80 m AOI vs
+ * 0.55), which is what makes `z-before` a true before rather than an impression of
+ * one -- the whole grid is captured in one session from one camera, so the only
+ * thing differing between any two frames is the values named in the label.
+ */
 const CANDIDATES: Array<[string, Look]> = [
-  ['a-shipped-fog1.00-ao1.50', { fogIntensity: 1.0, aoStrength: 1.5, envIntensity: 1 }],
-  ['b-fog0.55-ao1.50', { fogIntensity: 0.55, aoStrength: 1.5, envIntensity: 1 }],
-  ['c-fog0.55-ao0.90', { fogIntensity: 0.55, aoStrength: 0.9, envIntensity: 1 }],
-  ['d-fog0.40-ao0.90', { fogIntensity: 0.40, aoStrength: 0.9, envIntensity: 1 }],
-  ['e-fog0.40-ao0.60', { fogIntensity: 0.40, aoStrength: 0.6, envIntensity: 1 }],
-  ['f-fog0.40-ao0.90-env0.85', { fogIntensity: 0.40, aoStrength: 0.9, envIntensity: 0.85 }],
+  ['z-before-relaxation-fogx2.40-ao1.50', { fogIntensity: 2.402, aoStrength: 1.5, envIntensity: 1 }],
+  ['a-shipped-fogx1.00-ao0.90', { fogIntensity: 1.0, aoStrength: 0.9, envIntensity: 1 }],
+  ['b-fogx0.70-ao0.90', { fogIntensity: 0.70, aoStrength: 0.9, envIntensity: 1 }],
+  ['c-fogx0.40-ao0.90', { fogIntensity: 0.40, aoStrength: 0.9, envIntensity: 1 }],
+  ['d-fogx1.00-ao1.50', { fogIntensity: 1.0, aoStrength: 1.5, envIntensity: 1 }],
+  ['e-fogx1.00-ao0.60', { fogIntensity: 1.0, aoStrength: 0.6, envIntensity: 1 }],
 ];
 
 test.use({ viewport: { width: 1600, height: 900 } });
