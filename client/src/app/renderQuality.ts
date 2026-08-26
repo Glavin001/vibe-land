@@ -19,11 +19,11 @@ import { isTouchDevice } from '../device';
 
 const SHADOWS_KEY = 'vibe.render.shadows';
 const TIER_KEY = 'vibe.render.tier';
+const AO_KEY = 'vibe.render.ao';
 
 export type QualityTier = 'fast' | 'pretty';
 
-export type RenderQualityState = { shadows: boolean; tier: QualityTier };
-
+export type RenderQualityState = { shadows: boolean; tier: QualityTier; ao: boolean };
 
 type Listener = (state: RenderQualityState) => void;
 
@@ -35,6 +35,17 @@ function defaultShadows(): boolean {
 
 function defaultTier(): QualityTier {
   return isTouchDevice() ? 'fast' : 'pretty';
+}
+
+/**
+ * SSAO defaults to on wherever the PRETTY tier does. It is a real cost -- an
+ * extra full-screen scene pass plus two half-res passes -- so it stays tied to
+ * a device that already opted into paying for looks, and gets its own toggle
+ * for the same reason shadows do: it is the second-largest fill cost in the
+ * frame, and A/B-ing it needs to be one click.
+ */
+function defaultAo(): boolean {
+  return !isTouchDevice();
 }
 
 function readStoredShadows(): boolean | null {
@@ -61,18 +72,26 @@ function readStoredTier(): QualityTier | null {
   return null;
 }
 
-
+function readStoredAo(): boolean | null {
+  if (typeof localStorage === 'undefined') return null;
+  try {
+    const raw = localStorage.getItem(AO_KEY);
+    if (raw === '1') return true;
+    if (raw === '0') return false;
+  } catch {
+    // See readStoredShadows.
+  }
+  return null;
+}
 
 let shadows: boolean = readStoredShadows() ?? defaultShadows();
 let tier: QualityTier = readStoredTier() ?? defaultTier();
+let ao: boolean = readStoredAo() ?? defaultAo();
 
 function notify(): void {
-  const state: RenderQualityState = { shadows, tier };
+  const state: RenderQualityState = { shadows, tier, ao };
   for (const listener of listeners) listener(state);
 }
-
-
-
 
 export function shadowsEnabled(): boolean {
   return shadows;
@@ -83,6 +102,22 @@ export function setShadowsEnabled(next: boolean): void {
   shadows = next;
   try {
     localStorage?.setItem(SHADOWS_KEY, next ? '1' : '0');
+  } catch {
+    // Not fatal -- see readStoredShadows.
+  }
+  notify();
+}
+
+/** Player's SSAO preference. Gated by the tier at the call site. */
+export function ambientOcclusionPreferred(): boolean {
+  return ao;
+}
+
+export function setAmbientOcclusionEnabled(next: boolean): void {
+  if (next === ao) return;
+  ao = next;
+  try {
+    localStorage?.setItem(AO_KEY, next ? '1' : '0');
   } catch {
     // Not fatal -- see readStoredShadows.
   }
@@ -150,6 +185,24 @@ export function cityPbrLighting(): boolean {
   return tier === 'pretty';
 }
 
+/**
+ * Screen-space ambient occlusion. PRETTY only, and only if the player has not
+ * turned it off: it takes over the render loop with an offscreen scene pass.
+ */
+export function ambientOcclusionEnabled(): boolean {
+  return tier === 'pretty' && ao;
+}
+
+/**
+ * Sky image-based lighting. On at both tiers -- the prefiltered environment map
+ * is sampled like any other env map, which is cheaper than the extra
+ * hemisphere+ambient lights it replaces, and it is what stops flat geometry
+ * from reading as cardboard. Only the visible sky dome is tier-gated.
+ */
+export function skyIblEnabled(): boolean {
+  return true;
+}
+
 /** Subscribe to changes; returns an unsubscribe. */
 export function onRenderQualityChange(listener: Listener): () => void {
   listeners.add(listener);
@@ -175,4 +228,9 @@ export function useQualityTier(): QualityTier {
 /** React view of the shadows flag. */
 export function useShadowsEnabled(): boolean {
   return useSyncExternalStore(subscribe, shadowsEnabled, shadowsEnabled);
+}
+
+/** React view of the effective SSAO flag (tier included). */
+export function useAmbientOcclusionEnabled(): boolean {
+  return useSyncExternalStore(subscribe, ambientOcclusionEnabled, ambientOcclusionEnabled);
 }

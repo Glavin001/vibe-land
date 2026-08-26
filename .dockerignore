@@ -13,7 +13,9 @@ client/test-results
 control-plane/node_modules
 control-plane/.wrangler
 e2e/test-results
-worlds
+# Not excluded: vibe-land-shared include_str!()s worlds/trail.world.json, so
+# dropping this directory fails the build with a missing-file error rather
+# than a smaller context. 3.4 MB.
 moq
 infra/webtransport-demo
 spacetimedb-module

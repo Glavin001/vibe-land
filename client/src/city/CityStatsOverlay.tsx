@@ -215,6 +215,8 @@ function Stat({ label, value, warn }: { label: string; value: string; warn?: boo
 import { getMatchStats, subscribeMatchStats } from '../app/connectPhase';
 import { acquireCityDiagnostics } from './cityDiagnostics';
 import {
+  ambientOcclusionPreferred,
+  setAmbientOcclusionEnabled,
   setQualityTier,
   setShadowsEnabled,
   shadowsEnabled,
@@ -275,6 +277,7 @@ export function CityStatsOverlay({
   );
   const [savedName, setSavedName] = useState<string | null>(null);
   const [shadows, setShadows] = useState(shadowsEnabled);
+  const [ao, setAo] = useState(ambientOcclusionPreferred);
   const [bodyColors, setBodyColors] = useState(false);
   // Poll per-body freeze states only while the toggle is on: no reason to
   // fetch thousands of pairs for a feature that is off.
@@ -653,6 +656,23 @@ export function CityStatsOverlay({
         >
           {tier === 'fast' ? 'QUALITY: FAST' : 'QUALITY: PRETTY'}
           {tier !== mountTier ? ' (reload for AA)' : ''}
+        </button>
+      </div>
+
+      <div style={{ ...row, marginBottom: 2 }}>
+        <button
+          type="button"
+          onClick={() => {
+            const next = !ao;
+            setAmbientOcclusionEnabled(next);
+            setAo(next);
+          }}
+          style={{ ...toggleButton, position: 'static', width: '100%' }}
+          data-testid="city-ao-toggle"
+          aria-label="Toggle ambient occlusion"
+          title="SSAO: contact shadows in corners and under debris. PRETTY only; costs an offscreen scene pass"
+        >
+          {ao ? 'AO: ON' : 'AO: OFF'}
         </button>
       </div>
 

@@ -17,7 +17,7 @@ use std::{
     net::SocketAddr,
     path::PathBuf,
     sync::{
-        atomic::{AtomicU32, Ordering},
+        atomic::{AtomicU32, AtomicU64, Ordering},
         Arc, RwLock as StdRwLock,
     },
     time::{Duration, Instant},
@@ -847,6 +847,24 @@ struct AppState {
     /// here and consumed on the next tick, between steps where rebuilding the
     /// scene is safe.
     reset_requests: Arc<StdRwLock<HashSet<String>>>,
+    /// Inbound-UDP reachability evidence.
+    ///
+    /// A box cannot test its own reachability from inside: a bind succeeding
+    /// says the socket exists, not that anything on the internet can send to
+    /// it, and hairpinning a probe back through the host's own NAT fails on
+    /// plenty of hosts that forward player traffic perfectly well. So instead
+    /// of probing, this records what actually happened.
+    ///
+    /// `session_configs_served` counts clients that asked where to connect --
+    /// each one is a browser about to open QUIC. `wt_attempts` counts
+    /// connection attempts that reached the socket. A gap between them is the
+    /// signature of a black-holed UDP path, and it is the only evidence that
+    /// distinguishes that from "nobody has tried yet".
+    wt_attempts: Arc<AtomicU64>,
+    session_configs_served: AtomicU64,
+    /// Milliseconds since process start at the first `/session-config`, or 0.
+    first_session_config_ms: AtomicU64,
+    started: std::time::Instant,
 }
 
 #[derive(Clone)]
@@ -1025,8 +1043,17 @@ struct MatchState {
 async fn main() -> Result<()> {
     load_repo_env();
 
+    // `from_default_env()` with RUST_LOG unset builds an EMPTY filter, which
+    // discards everything -- not even ERROR survives. A container image does
+    // not set RUST_LOG, so every rented box has been running with the log
+    // stream silently switched off, and diagnosing one meant inferring from
+    // the absence of output that was never going to appear. Default to `info`
+    // and let RUST_LOG override it as usual.
     tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
         .init();
     install_panic_hook();
     let physics = PhysicsRuntimeConfig::from_env()?;
@@ -1105,6 +1132,12 @@ async fn main() -> Result<()> {
     let (stats_tx, _stats_rx) = tokio::sync::watch::channel(GlobalStatsSnapshot::default());
     let stats_tx = Arc::new(stats_tx);
 
+    // Declared before the state so /healthz and the accept loop share one
+    // counter: a second Arc would leave health reporting a number nobody
+    // increments, which is the same class of silent-wrong this whole change
+    // exists to remove.
+    let wt_attempts = Arc::new(AtomicU64::new(0));
+
     let state = SharedAppState {
         inner: Arc::new(AppState {
             matches: AsyncRwLock::new(HashMap::new()),
@@ -1123,8 +1156,14 @@ async fn main() -> Result<()> {
             stats_registry: Arc::new(StdRwLock::new(HashMap::new())),
             body_states_registry: Arc::new(StdRwLock::new(HashMap::new())),
             reset_requests: Arc::new(StdRwLock::new(HashSet::new())),
+            wt_attempts: wt_attempts.clone(),
+            session_configs_served: AtomicU64::new(0),
+            first_session_config_ms: AtomicU64::new(0),
+            started: std::time::Instant::now(),
         }),
     };
+    // Taken before the router consumes `state`.
+    let watchdog_state = state.inner.clone();
 
     // Start WebTransport server
     let wt_config = ServerConfig::builder()
@@ -1136,9 +1175,31 @@ async fn main() -> Result<()> {
 
     {
         let app_inner = state.inner.clone();
+        let attempts = wt_attempts.clone();
         tokio::spawn(async move {
+            // Counts every QUIC connection attempt that actually reached this
+            // socket. This is the one number that separates the two failures
+            // that look identical from a browser -- both present as
+            // QUIC_NETWORK_IDLE_TIMEOUT with no packets back:
+            //
+            //   attempts stay 0  -> the datagrams never arrive. The listener
+            //                       is bound (a bind failure is fatal well
+            //                       before this point), so the loss is
+            //                       upstream: host port forwarding, or a
+            //                       missing UDP mapping.
+            //   attempts climb   -> packets arrive and the handshake itself
+            //                       is failing. Look at the certificate.
+            //
+            // Diagnosing this by staring at logs that were never emitted cost
+            // real time and two wrong conclusions.
             loop {
                 let incoming = wt_endpoint.accept().await;
+                let seen = attempts.fetch_add(1, Ordering::Relaxed) + 1;
+                info!(
+                    remote = %incoming.remote_address(),
+                    attempts = seen,
+                    "WT connection attempt reached the listener"
+                );
                 let app = app_inner.clone();
                 tokio::spawn(async move {
                     let request = match incoming.await {
@@ -1187,6 +1248,41 @@ async fn main() -> Result<()> {
     info!(%addr, "starting web fps server");
     let listener = tokio::net::TcpListener::bind(addr).await?;
 
+    // The standalone web listener: the same API plus the built client, over
+    // TLS. It exists because a browser will not open a WebTransport session
+    // from an insecure context, and `http://<public-ip>` is not one -- only
+    // localhost is exempt. Serving the page over HTTPS from the box makes the
+    // context secure and puts /session-config same-origin, so no CORS and no
+    // mixed content either.
+    //
+    // Plain HTTP on BIND_ADDR stays exactly as it was: the Docker HEALTHCHECK,
+    // the dev-server proxy and the fleet all still use it.
+    // Never `?`: a certificate problem must not take down a game server that is
+    // otherwise healthy. The listener reports and stays down instead.
+    // Actively prove the advertised endpoint is reachable, before anyone is
+    // billed for a box that cannot serve players.
+    //
+    // Blocking only matters when the result can end the process. In `warn`
+    // mode nothing is decided by it, so waiting would just delay serving --
+    // and by a full timeout precisely on the hosts that do not hairpin, which
+    // is the common case for someone running this on a laptop.
+    {
+        let url = watchdog_state.wt_base_url.clone();
+        let hash = watchdog_state.cert_hash_hex.clone();
+        let counter = wt_attempts.clone();
+        if std::env::var("UDP_VERIFY").as_deref() == Ok("fatal") {
+            verify_public_udp_or_exit(&url, &hash, &counter).await;
+        } else {
+            tokio::spawn(async move { verify_public_udp_or_exit(&url, &hash, &counter).await });
+        }
+    }
+
+    spawn_udp_reachability_watchdog(watchdog_state.clone());
+
+    if let Err(error) = spawn_web_listener(app.clone()).await {
+        error!(%error, "web listener failed to start; continuing without it");
+    }
+
     // Both listeners are up, so the first beat can truthfully claim the server
     // is reachable -- that beat is what promotes this box to READY.
     match heartbeat::HeartbeatConfig::from_env() {
@@ -1195,6 +1291,322 @@ async fn main() -> Result<()> {
     }
 
     axum::serve(listener, app).await?;
+    Ok(())
+}
+
+/// Serves the built client and the API over TLS, for a box someone runs by hand.
+///
+/// Skipped unless a certificate is configured: without `WT_CERT_PEM`/`WT_KEY_PEM`
+/// there is nothing to serve HTTPS with. In the container the entrypoint always
+/// mints one, so this is always on there; under a bare `cargo run` it stays off
+/// and nothing changes.
+///
+/// `VIBE_WEB_DIR` is the built client. If it is absent the listener still comes
+/// up and serves the API -- useful for a server-only image -- it just has no
+/// page to hand out.
+/// Prove at boot that the address we are about to advertise actually reaches
+/// this process, and refuse to run if it does not.
+///
+/// The failure this exists for: a host accepts the UDP port mapping, forwards
+/// nothing, and the box looks perfect from every angle a machine can check --
+/// it boots, heartbeats, serves /city, answers /healthz "ok" -- while every
+/// player times out. It bills by the hour the whole time. Nothing short of a
+/// human opening a browser noticed, which is the thing worth removing.
+///
+/// The probe opens a real WebTransport connection to our *own public*
+/// endpoint, pinning the certificate hash we just generated the way a browser
+/// would. It deliberately asks for a path the session handler rejects, so a
+/// successful probe cannot create a phantom player.
+///
+/// Reachability is judged on whether the packets arrived, not on whether the
+/// handshake finished: `wt_attempts` moving means a QUIC Initial reached the
+/// listener, which is the property under test. A handshake that then fails for
+/// its own reasons still proves the path.
+///
+/// The caveat, stated because it decides the default: this traverses the
+/// host's NAT back to itself. A host that forwards player traffic correctly
+/// can still fail to hairpin, so a failed probe is not proof of a bad box.
+/// That is why `UDP_VERIFY` defaults to `warn` -- loud, and visible in the
+/// logs, without destroying working hosts on a signal that has known false
+/// negatives. Set `UDP_VERIFY=fatal` once a host is known to hairpin, and a
+/// bad box kills itself at boot instead of billing quietly.
+async fn verify_public_udp_or_exit(public_url: &str, cert_hash_hex: &str, attempts: &AtomicU64) {
+    let mode = std::env::var("UDP_VERIFY").unwrap_or_else(|_| "warn".to_string());
+    if mode == "off" {
+        return;
+    }
+    let timeout_ms: u64 = std::env::var("UDP_VERIFY_TIMEOUT_MS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(12_000);
+
+    let before = attempts.load(Ordering::Relaxed);
+    let result = tokio::time::timeout(
+        std::time::Duration::from_millis(timeout_ms),
+        probe_public_udp(public_url, cert_hash_hex),
+    )
+    .await;
+    // Give the server side a moment to register the attempt it just saw.
+    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    let arrived = attempts.load(Ordering::Relaxed) > before;
+
+    match (&result, arrived) {
+        // Either signal is sufficient: the handshake completing, or packets
+        // simply showing up at the listener.
+        (Ok(Ok(())), _) | (_, true) => {
+            info!(
+                endpoint = %public_url,
+                handshake = result.as_ref().map(|r| r.is_ok()).unwrap_or(false),
+                "UDP reachability verified: the advertised endpoint reaches this process"
+            );
+        }
+        _ => {
+            let (detail, network_evidence) = match &result {
+                Ok(Err(ProbeFailure::NoResponse(detail))) => (detail.clone(), true),
+                Ok(Err(ProbeFailure::Local(detail))) => (detail.clone(), false),
+                Err(_) => (format!("timed out after {timeout_ms}ms"), true),
+                Ok(Ok(())) => unreachable!("handled above"),
+            };
+            if !network_evidence {
+                warn!(
+                    endpoint = %public_url,
+                    detail = %detail,
+                    "UDP reachability probe could not run. This says nothing about the host -- \
+                     the probe never reached the network -- so it is not treated as a failure \
+                     even under UDP_VERIFY=fatal."
+                );
+                return;
+            }
+            if mode == "fatal" {
+                error!(
+                    endpoint = %public_url,
+                    detail = %detail,
+                    "UDP UNREACHABLE: nothing sent to the advertised endpoint came back to \
+                     this process. Players would load the page and then time out on the QUIC \
+                     handshake. The listener is bound -- a bind failure is fatal earlier -- so \
+                     this host is not forwarding the UDP port. A port mapping cannot be added \
+                     to a running instance, so exiting to have this box replaced."
+                );
+                std::process::exit(78); // EX_CONFIG, same as a missing mapping
+            }
+            warn!(
+                endpoint = %public_url,
+                detail = %detail,
+                "could not verify UDP reachability. This host may simply not route traffic \
+                 back to itself (NAT hairpin), which is common and harmless -- but it is also \
+                 what a host that forwards nothing looks like. If players cannot connect, this \
+                 is why. Set UDP_VERIFY=fatal to refuse to run unverified."
+            );
+        }
+    }
+}
+
+/// One WebTransport connection to our own public address, pinning our own
+/// certificate hash exactly as a browser does.
+async fn probe_public_udp(public_url: &str, cert_hash_hex: &str) -> Result<(), ProbeFailure> {
+    let mut digest = [0u8; 32];
+    let bytes = (0..cert_hash_hex.len().min(64))
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&cert_hash_hex[i..i + 2], 16))
+        .collect::<Result<Vec<u8>, _>>()
+        .map_err(|error| ProbeFailure::Local(format!("certificate hash is not hex: {error}")))?;
+    if bytes.len() != 32 {
+        return Err(ProbeFailure::Local(format!(
+            "certificate hash is {} bytes, expected 32",
+            bytes.len()
+        )));
+    }
+    digest.copy_from_slice(&bytes);
+
+    // Bind the probe socket in the same address family as the target. The
+    // default is a dual-stack v6 bind, which fails outright with "Address
+    // family not supported" on an IPv4-only host -- and that error arrives
+    // looking exactly like unreachability. Running this caught it; a host
+    // without IPv6 would otherwise have been declared dead and destroyed.
+    let target_is_v4 = public_url
+        .trim_start_matches("https://")
+        .trim_start_matches('[')
+        .split(':')
+        .next()
+        .map(|host| host.parse::<std::net::Ipv4Addr>().is_ok())
+        .unwrap_or(false);
+    let bind: SocketAddr = if target_is_v4 {
+        (std::net::Ipv4Addr::UNSPECIFIED, 0).into()
+    } else {
+        (std::net::Ipv6Addr::UNSPECIFIED, 0).into()
+    };
+
+    let config = wtransport::ClientConfig::builder()
+        .with_bind_address(bind)
+        .with_server_certificate_hashes([wtransport::tls::Sha256Digest::new(digest)])
+        .build();
+    let endpoint = wtransport::Endpoint::client(config)
+        .map_err(|error| ProbeFailure::Local(format!("could not open a probe socket: {error}")))?;
+    // A path the session handler rejects: this must never become a player.
+    let url = format!("{}/__reachability-probe", public_url.trim_end_matches('/'));
+    match endpoint.connect(&url).await {
+        Ok(_) => Ok(()),
+        Err(error) => Err(ProbeFailure::NoResponse(format!("{error}"))),
+    }
+}
+
+/// Why a probe did not succeed.
+///
+/// The distinction is the whole safety of this feature. `NoResponse` means the
+/// probe was sent and nothing came back, which is evidence about the network.
+/// `Local` means the probe never left the building -- a socket we could not
+/// open, a hash we could not parse -- which is evidence about *us* and says
+/// nothing about the host. Only the former may ever be fatal; treating a local
+/// error as unreachability would destroy working boxes, which is exactly what
+/// the first version of this did on an IPv4-only host.
+enum ProbeFailure {
+    Local(String),
+    NoResponse(String),
+}
+
+impl std::fmt::Display for ProbeFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Local(detail) | Self::NoResponse(detail) => write!(f, "{detail}"),
+        }
+    }
+}
+
+/// Notice a box whose UDP path is black-holed, and stop pretending it is
+/// healthy.
+///
+/// Binding the socket is fatal on failure, so a running server always has a
+/// listening socket -- which is exactly why this failure was invisible. The
+/// box boots, heartbeats, serves its page, answers /healthz with "ok", and is
+/// handed players who then cannot connect. Two hosts did this before anyone
+/// worked out the datagrams were being dropped upstream.
+///
+/// There is no way to test inbound reachability from inside the box. A probe
+/// to our own public address has to hairpin back through the host's NAT,
+/// which fails on plenty of hosts that carry player traffic perfectly well --
+/// so a failed probe would condemn good boxes. Instead this waits for the one
+/// piece of evidence that is unambiguous: a client fetched /session-config,
+/// so a browser was told where to open QUIC and is trying right now. If no
+/// connection attempt reaches the socket within the grace window after that,
+/// the packets are not arriving.
+///
+/// On an orchestrated box, exiting is the useful response: the port mapping
+/// cannot be changed on a running instance, so the box can never serve
+/// players and the fleet should replace it. `UDP_WATCHDOG=fatal` selects
+/// that; the entrypoint turns it on where a replacement is automatic, and it
+/// stays off by default so a `docker run` on a laptop is not killed while its
+/// owner is still opening a browser tab.
+fn spawn_udp_reachability_watchdog(state: Arc<AppState>) {
+    let mode = std::env::var("UDP_WATCHDOG").unwrap_or_else(|_| "warn".to_string());
+    if mode == "off" {
+        return;
+    }
+    let fatal = mode == "fatal";
+    let grace_ms: u64 = std::env::var("UDP_WATCHDOG_GRACE_MS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(45_000);
+
+    tokio::spawn(async move {
+        let mut reported = false;
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+
+            let attempts = state.wt_attempts.load(Ordering::Relaxed);
+            if attempts > 0 {
+                // Reachability is proven for the life of the process; a later
+                // quiet spell is just nobody playing.
+                return;
+            }
+            let first = state.first_session_config_ms.load(Ordering::Relaxed);
+            if first == 0 {
+                continue; // nobody has asked where to connect yet
+            }
+            let waited = state.started.elapsed().as_millis() as u64 - first;
+            if waited < grace_ms {
+                continue;
+            }
+
+            let served = state.session_configs_served.load(Ordering::Relaxed);
+            if !reported {
+                error!(
+                    session_configs_served = served,
+                    wt_connection_attempts = 0,
+                    waited_ms = waited,
+                    wt_base_url = %state.wt_base_url,
+                    "UDP appears unreachable: clients were told where to connect but not one \
+                     QUIC packet has reached this socket. The listener is bound (a bind failure \
+                     is fatal at startup), so the datagrams are being dropped upstream -- the \
+                     host is not forwarding this UDP port."
+                );
+                reported = true;
+            }
+            if fatal {
+                error!(
+                    "UDP_WATCHDOG=fatal: exiting so this box is replaced. A port mapping \
+                     cannot be added to a running instance, so this one can never serve players."
+                );
+                // 78 = EX_CONFIG, the same code the entrypoint uses for a
+                // missing port mapping. Both mean "this host cannot do the
+                // job", which is what the orchestrator acts on.
+                std::process::exit(78);
+            }
+        }
+    });
+}
+
+async fn spawn_web_listener(app: Router) -> anyhow::Result<()> {
+    let Some(bind) = std::env::var("WEB_BIND_ADDR")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+    else {
+        return Ok(());
+    };
+    let (Some(cert_path), Some(key_path)) = (
+        std::env::var("WT_CERT_PEM").ok(),
+        std::env::var("WT_KEY_PEM").ok(),
+    ) else {
+        info!("WEB_BIND_ADDR set but no WT_CERT_PEM/WT_KEY_PEM; web listener disabled");
+        return Ok(());
+    };
+
+    let addr: SocketAddr = bind.parse()?;
+
+    // rustls panics -- does not return an error -- when no process-level crypto
+    // provider is installed, and axum-server does not install one. wtransport
+    // sets its own up internally, which is not the same thing. Installing ring
+    // here is idempotent by intent: a second call returns Err, which is the
+    // "someone already did it" case and not a failure.
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
+    let tls = axum_server::tls_rustls::RustlsConfig::from_pem_file(&cert_path, &key_path).await?;
+
+    let web_dir =
+        std::env::var("VIBE_WEB_DIR").unwrap_or_else(|_| "/opt/vibe-land/web".to_string());
+    let app = match std::path::Path::new(&web_dir).join("index.html") {
+        // A single-page app: unknown paths are client routes such as /city, so
+        // they must fall back to index.html rather than 404.
+        index if index.is_file() => {
+            info!(%web_dir, %addr, "serving the client over https");
+            app.fallback_service(
+                tower_http::services::ServeDir::new(&web_dir)
+                    .fallback(tower_http::services::ServeFile::new(index)),
+            )
+        }
+        _ => {
+            info!(%web_dir, %addr, "no client bundle; https listener serves the api only");
+            app
+        }
+    };
+
+    tokio::spawn(async move {
+        if let Err(error) = axum_server::bind_rustls(addr, tls)
+            .serve(app.into_make_service())
+            .await
+        {
+            error!(%error, "web listener stopped");
+        }
+    });
     Ok(())
 }
 
@@ -1209,6 +1621,14 @@ struct HealthResponse {
     /// "listening" apart from "listening and actually running matches".
     active_matches: u32,
     players: u32,
+    /// Whether any QUIC connection attempt has ever reached the UDP socket.
+    /// False is not a fault on its own -- it also means "no client has tried
+    /// yet" -- but false while `session_configs_served` climbs is a box that
+    /// cannot serve players, which used to be indistinguishable from a
+    /// healthy one.
+    udp_verified: bool,
+    wt_connection_attempts: u64,
+    session_configs_served: u64,
 }
 
 async fn health_handler(State(state): State<SharedAppState>) -> Json<HealthResponse> {
@@ -1221,6 +1641,9 @@ async fn health_handler(State(state): State<SharedAppState>) -> Json<HealthRespo
         snapshot_hz: state.inner.physics.snapshot_hz(),
         active_matches,
         players,
+        udp_verified: state.inner.wt_attempts.load(Ordering::Relaxed) > 0,
+        wt_connection_attempts: state.inner.wt_attempts.load(Ordering::Relaxed),
+        session_configs_served: state.inner.session_configs_served.load(Ordering::Relaxed),
     })
 }
 
@@ -1242,6 +1665,18 @@ async fn session_config_handler(
     Query(query): Query<SessionConfigQuery>,
     State(state): State<SharedAppState>,
 ) -> impl IntoResponse {
+    // Each of these is a browser being told where to open QUIC. Recording the
+    // first one starts the clock the reachability watchdog measures against.
+    state
+        .inner
+        .session_configs_served
+        .fetch_add(1, Ordering::Relaxed);
+    let _ = state.inner.first_session_config_ms.compare_exchange(
+        0,
+        state.inner.started.elapsed().as_millis() as u64,
+        Ordering::Relaxed,
+        Ordering::Relaxed,
+    );
     let config_match_id = query.match_id.clone();
     let city_world = city::is_city_match(&query.match_id);
     let city_manifest_hash = if city_world {

@@ -105,14 +105,16 @@ fn city_world() -> WorldDocument {
     // fixed ring would drop players inside a tower.
     let ring = crate::city::spawn_ring_radius_m();
     world.spawn_areas = [[ring, 0.0], [-ring, 0.0], [0.0, ring], [0.0, -ring]]
-    .into_iter()
-    .enumerate()
-    .map(|(index, [x, z])| vibe_land_shared::world_document::SpawnArea {
-        id: index as u32 + 1,
-        position: [x, 0.5, z],
-        radius: 6.0,
-    })
-    .collect();
+        .into_iter()
+        .enumerate()
+        .map(
+            |(index, [x, z])| vibe_land_shared::world_document::SpawnArea {
+                id: index as u32 + 1,
+                position: [x, 0.5, z],
+                radius: 6.0,
+            },
+        )
+        .collect();
     world
 }
 

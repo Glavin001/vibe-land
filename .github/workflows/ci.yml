@@ -68,11 +68,17 @@ jobs:
         working-directory: client
         run: npm ci
 
+      # Delegates to client/package.json rather than repeating the wasm-pack
+      # invocations here. The two drifted apart once already: `build:wasm` grew
+      # a second package (research/destruction-codec -> wasm/debris-pkg) and
+      # this step did not, so the TypeScript check failed on a module that is
+      # generated, gitignored, and therefore never present in CI.
       - name: Build WASM
-        run: cd shared && wasm-pack build --target web --out-dir ../client/src/wasm/pkg
+        working-directory: client
+        run: npm run build:wasm
 
       - name: Verify WASM output
-        run: ls -la client/src/wasm/pkg/
+        run: ls -la client/src/wasm/pkg/ client/src/wasm/debris-pkg/
 
       - name: TypeScript check
         working-directory: client
@@ -156,8 +162,14 @@ jobs:
         working-directory: client
         run: npm ci
 
+      # Delegates to client/package.json rather than repeating the wasm-pack
+      # invocations here. The two drifted apart once already: `build:wasm` grew
+      # a second package (research/destruction-codec -> wasm/debris-pkg) and
+      # this step did not, so the TypeScript check failed on a module that is
+      # generated, gitignored, and therefore never present in CI.
       - name: Build WASM
-        run: cd shared && wasm-pack build --target web --out-dir ../client/src/wasm/pkg
+        working-directory: client
+        run: npm run build:wasm
 
       - name: Install Playwright browsers
         working-directory: client
