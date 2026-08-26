@@ -137,7 +137,8 @@ impl CityDestruction {
                             Vec3::new(half_extents[0], half_extents[1], half_extents[2]),
                             Vec::new(),
                         ),
-                        ChunkGeometry::ConvexHull { points, .. } => {
+                        ChunkGeometry::ConvexHull { .. } => {
+                            let points = manifest.hull_points(&chunk.geometry);
                             // Duplicate positions only -- authored point
                             // buffers often repeat corners per face, and the
                             // repeats are byte-identical. This is lossless;

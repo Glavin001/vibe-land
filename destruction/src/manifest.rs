@@ -255,6 +255,29 @@ impl DestructionManifest {
         }
     }
 
+    /// Hull points for a chunk, resolving a shape-library reference.
+    ///
+    /// EVERY consumer must go through this, not `ChunkGeometry::ConvexHull`'s
+    /// `points` directly. The manifest is not only the client's artifact: the
+    /// server builds its own PhysX destructible from the same document, and
+    /// reading the field raw got it an empty buffer for every library-backed
+    /// chunk -- "convex node requires points", the city silently unavailable
+    /// for the match, and nothing breakable in a destruction game.
+    pub fn hull_points<'a>(&'a self, geometry: &'a ChunkGeometry) -> &'a [f32] {
+        match geometry {
+            ChunkGeometry::Cuboid { .. } => &[],
+            ChunkGeometry::ConvexHull { points, shape_id } => {
+                if !points.is_empty() {
+                    return points;
+                }
+                shape_id
+                    .and_then(|id| self.shape_library.get(id as usize))
+                    .map(Vec::as_slice)
+                    .unwrap_or(&[])
+            }
+        }
+    }
+
     /// Canonical serialized bytes — the payload served over HTTP and the hash
     /// input. serde_json field order is declaration order, so this is stable
     /// for a fixed crate version.
@@ -429,6 +452,39 @@ mod tests {
         })
         .expect("serialize named hull");
         assert_eq!(named["shapeId"], 7, "shape id must reach the client camelCased");
+    }
+
+    /// A library-backed chunk must resolve to real points.
+    ///
+    /// The server builds its own PhysX destructible from this document, so a
+    /// consumer reading `points` raw gets an empty buffer and the city comes up
+    /// "unavailable for this match" -- a destruction game with nothing
+    /// breakable, and no error anywhere near the change that caused it.
+    #[test]
+    fn hull_points_resolve_through_the_shape_library() {
+        let mut manifest = DestructionManifest {
+            version: MANIFEST_VERSION,
+            structures: Vec::new(),
+            materials: Vec::new(),
+            shape_library: vec![vec![1.0, 2.0, 3.0]],
+        };
+        let referenced = ChunkGeometry::ConvexHull {
+            points: Vec::new(),
+            shape_id: Some(0),
+        };
+        assert_eq!(manifest.hull_points(&referenced), &[1.0, 2.0, 3.0]);
+
+        // Inline points still win, so packs without a library are untouched.
+        let inline = ChunkGeometry::ConvexHull {
+            points: vec![9.0, 9.0, 9.0],
+            shape_id: None,
+        };
+        assert_eq!(manifest.hull_points(&inline), &[9.0, 9.0, 9.0]);
+
+        // A dangling id resolves to nothing rather than panicking; the bridge
+        // reports "convex node requires points", which names the real problem.
+        manifest.shape_library.clear();
+        assert!(manifest.hull_points(&referenced).is_empty());
     }
 
     /// Every key the client can observe on a real manifest must be camelCase.
