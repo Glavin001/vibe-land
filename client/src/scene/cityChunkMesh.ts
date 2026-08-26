@@ -36,7 +36,7 @@ import {
   shadowsEnabled,
 } from '../app/renderQuality';
 import { writeInstance, type CityRenderable } from './cityChunkWrite';
-import { ShellBuilder } from './cityShell';
+import { ShellBuilder, retireShellRange } from './cityShell';
 import { renderStats } from '../city/renderStats';
 import { applyCityTriplanar } from './cityMaterialShader';
 import { attachInstanceAnchors, bakeRestAnchors } from './cityTexAnchor';
@@ -628,6 +628,53 @@ function buildSharedShapeMeshes(
     sink.instancedCount += 1;
     sink.subDraws += 1;
   }
+}
+
+/**
+ * Move one slot from its cell's static shell to its own instance.
+ *
+ * Idempotent, and a no-op for slots that never had a shell range (boxes,
+ * city-wide instanced shapes). Shared by the frame loop's first-movement wake
+ * and the post-build sweep below.
+ */
+export function wakeSlotFromShell(state: CityMeshState, slot: number): void {
+  if (state.wokenBySlot[slot]) return;
+  state.wokenBySlot[slot] = 1;
+  const renderable = state.renderables[state.meshOfSlot[slot]];
+  const instanceId = state.instanceIds[slot];
+  if (!renderable || renderable.kind !== 'batched' || instanceId < 0) return;
+  if (state.shellIndexCountBySlot[slot] <= 0) return;
+  retireShellRange(renderable.mesh, {
+    start: state.shellIndexStartBySlot[slot],
+    count: state.shellIndexCountBySlot[slot],
+  });
+  renderable.mesh.setVisibleAt(instanceId, true);
+}
+
+/**
+ * Wake every slot whose body has already left the intact structure.
+ *
+ * The shell bakes REST poses, but a build does not always happen against an
+ * intact city: a threshold or texture-detail change rebuilds mid-game, and a
+ * late joiner's first build happens against whatever the server has already
+ * demolished. Without this pass, every settled island's chunks would be drawn
+ * as the un-broken shell -- ghost buildings standing over their own rubble --
+ * until a repaint or bootstrap happened to mark their bodies dirty, which for
+ * a settled island is never. Found by a perf report whose mid-rubble rebuild
+ * rows drew a suspiciously intact city.
+ */
+export function wakeBrokenSlots(state: CityMeshState, client: CityClient): number {
+  const chunkBody = client.topology.chunkBody;
+  let woken = 0;
+  for (let slot = 0; slot < chunkBody.length; slot += 1) {
+    // Support serial 0 is the intact structure; everything else has broken off.
+    if ((chunkBody[slot] & 0x3f_ffff) === 0) continue;
+    if (!state.wokenBySlot[slot]) {
+      wakeSlotFromShell(state, slot);
+      woken += 1;
+    }
+  }
+  return woken;
 }
 
 export function buildCityMesh(client: CityClient): CityMeshState {

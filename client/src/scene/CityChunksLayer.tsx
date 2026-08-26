@@ -46,8 +46,13 @@ import {
   onRenderQualityChange,
   shadowsEnabled,
 } from '../app/renderQuality';
-import { buildCityMaterial, buildCityMesh, type CityMeshState } from './cityChunkMesh';
-import { retireShellRange } from './cityShell';
+import {
+  buildCityMaterial,
+  buildCityMesh,
+  wakeBrokenSlots,
+  wakeSlotFromShell,
+  type CityMeshState,
+} from './cityChunkMesh';
 import { loadCityTextures } from './cityTextures';
 import {
   setChunkTeleportProbe,
@@ -556,6 +561,12 @@ export function CityChunksLayer({
       // headless rather than retrying a throwing build every frame.
       try {
         stateRef.current = buildCityMesh(client);
+        // A build is not always against an intact city -- a mid-game rebuild
+        // (threshold, texture detail) or a late join happens over existing
+        // rubble, and the shell bakes rest poses. Wake everything already
+        // broken, or settled islands render as ghost buildings.
+        const preWoken = wakeBrokenSlots(stateRef.current, client);
+        if (preWoken > 0) console.info('[city] shell: woke pre-broken chunks', { preWoken });
         materialVariantRef.current = `${cityPbrLighting() ? 'pbr' : 'flat'}:${cityTextureDetail()}`;
         builtShareThresholdRef.current = instanceShareThresholdSetting();
         for (const { mesh } of stateRef.current.renderables) {
@@ -859,16 +870,7 @@ export function CityChunksLayer({
         // First real movement: the chunk leaves the static shell and its own
         // instance takes over, same frame, same pose. One-way -- see
         // cityShell.ts for why a settled chunk never merges back.
-        if (!state.wokenBySlot[slot] && !bodyIsSupport) {
-          state.wokenBySlot[slot] = 1;
-          if (renderable.kind === 'batched' && state.shellIndexCountBySlot[slot] > 0) {
-            retireShellRange(renderable.mesh, {
-              start: state.shellIndexStartBySlot[slot],
-              count: state.shellIndexCountBySlot[slot],
-            });
-            renderable.mesh.setVisibleAt(instanceId, true);
-          }
-        }
+        if (!bodyIsSupport) wakeSlotFromShell(state, slot);
         renderStats.instanceWrites += 1;
         writeInstance(
           renderable,
