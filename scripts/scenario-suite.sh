@@ -43,12 +43,16 @@ OUT=/tmp/scenario-suite; mkdir -p "$OUT"
 # An idle server still holds a 24k-chunk scene on the GPU, and running the
 # suite beside one is how the server was silently killed twice -- the third
 # near-miss was this very script being launched right after a restart.
-if pgrep -x web-fps-server >/dev/null 2>&1; then
-  players=$(curl -sk -m 3 https://127.0.0.1:8384/healthz 2>/dev/null | python3 -c "import json,sys;print(json.load(sys.stdin).get('players',0))" 2>/dev/null || echo "?")
-  echo "REFUSING: web-fps-server is running (players=$players). Stop it first:"
-  echo "  pgrep -x web-fps-server | while read p; do kill \$p; done"
-  exit 2
-fi
+# Only THIS repo's server: vibe-land-2 runs its own on this box and is not
+# ours to stop -- refusing on any pgrep hit made the gate unrunnable.
+REPO="$(pwd -P)"
+for p in $(pgrep -x web-fps-server 2>/dev/null); do
+  if [ "$(readlink /proc/$p/cwd 2>/dev/null)" = "$REPO" ]; then
+    echo "REFUSING: this repo's web-fps-server is running (pid $p). Stop it first:"
+    echo "  kill $p"
+    exit 2
+  fi
+done
 
 export LD_LIBRARY_PATH="/root/PhysX/physx/install/linux-clang/PhysX/bin/linux.x86_64/release:${LD_LIBRARY_PATH:-}"
 export VIBE_CITY_FREEZE=1 VIBE_CITY_VARIED_HEIGHTS=0 VIBE_CITY_SOLVER_ITERATIONS=32
