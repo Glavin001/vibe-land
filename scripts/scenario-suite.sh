@@ -51,6 +51,13 @@ REPO="$(pwd -P)"
 # which it did, mid-session, at 21:10:37. The cwd check keeps the refusal
 # scoped to THIS repo's server either way.
 for p in $(pgrep -f "web-fps-server" 2>/dev/null); do
+  # Match the EXECUTABLE, not the command line: a shell whose script merely
+  # mentions the server name (like the deploy block that follows a gate) made
+  # the suite refuse against itself, and the caller then shipped ungated.
+  case "$(readlink /proc/$p/exe 2>/dev/null)" in
+    *web-fps-server*) ;;
+    *) continue ;;
+  esac
   if [ "$(readlink /proc/$p/cwd 2>/dev/null)" = "$REPO" ]; then
     echo "REFUSING: this repo's web-fps-server is running (pid $p). Stop it first:"
     echo "  kill $p"
