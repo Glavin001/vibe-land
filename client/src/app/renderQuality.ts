@@ -177,14 +177,23 @@ let dprCap: number | null = readStored(DPR_CAP_KEY, (raw) => {
   const value = Number(raw);
   return Number.isFinite(value) && value > 0 ? value : null;
 });
-let instanceShareThreshold: number = readStored(SHARE_THRESHOLD_KEY, (raw) => {
-  const value = Number(raw);
-  return Number.isFinite(value) && value >= 1 ? value : null;
-}) ?? DEFAULT_INSTANCE_SHARE_THRESHOLD;
-let shadowMapSize: number | null = readStored(SHADOW_MAP_KEY, (raw) => {
-  const value = Number(raw);
-  return Number.isFinite(value) && value >= 256 ? value : null;
-});
+// Session-only, deliberately. These two have no panel button -- the perf sweep
+// is their only writer -- and persisting them is how a user got PINNED to a
+// sweep's temporary value: the sweep wrote threshold 32 through this store, the
+// default later changed to 8, and their browser kept serving the stale 32 with
+// nothing in the UI to say so. A measurement knob must never outlive the
+// session that measured with it.
+let instanceShareThreshold: number = DEFAULT_INSTANCE_SHARE_THRESHOLD;
+let shadowMapSize: number | null = null;
+
+// Purge what previous builds persisted; only the sweep ever wrote these keys,
+// so any stored value is contamination from it.
+try {
+  localStorage?.removeItem(SHARE_THRESHOLD_KEY);
+  localStorage?.removeItem(SHADOW_MAP_KEY);
+} catch {
+  // See readStoredShadows.
+}
 
 function notify(): void {
   const state: RenderQualityState = {
@@ -261,7 +270,6 @@ export function instanceShareThresholdSetting(): number {
 export function setInstanceShareThreshold(next: number): void {
   if (!Number.isFinite(next) || next < 1 || next === instanceShareThreshold) return;
   instanceShareThreshold = next;
-  store(SHARE_THRESHOLD_KEY, String(next));
   notify();
 }
 
@@ -281,7 +289,6 @@ export function setShadowMapSize(next: number | null): void {
   if (next === shadowMapSize) return;
   if (next !== null && (!Number.isFinite(next) || next < 256)) return;
   shadowMapSize = next;
-  store(SHADOW_MAP_KEY, next === null ? '' : String(next));
   notify();
 }
 
@@ -427,6 +434,45 @@ export function ambientOcclusionEnabled(): boolean {
  */
 export function skyIblEnabled(): boolean {
   return skyIbl;
+}
+
+/**
+ * The persisted keys, as raw storage entries, and the way to put them back.
+ *
+ * For the perf sweep. It drives every setting through the same setters the
+ * panel uses, and those PERSIST -- so without this, a sweep freezes whatever
+ * defaults were current into the reporter's localStorage, and no future
+ * default change ever reaches them. The sweep snapshots the raw entries before
+ * it starts and writes back exactly what was there -- including the absence of
+ * a key, which is what lets the user keep tracking defaults.
+ */
+const PERSISTED_KEYS = [
+  SHADOWS_KEY,
+  TIER_KEY,
+  AO_KEY,
+  CITY_TEXTURES_KEY,
+  SKY_IBL_KEY,
+  SKY_DOME_KEY,
+  DPR_CAP_KEY,
+] as const;
+
+export function snapshotStoredRenderSettings(): Array<[string, string | null]> {
+  try {
+    return PERSISTED_KEYS.map((key) => [key, localStorage?.getItem(key) ?? null]);
+  } catch {
+    return [];
+  }
+}
+
+export function restoreStoredRenderSettings(snapshot: Array<[string, string | null]>): void {
+  try {
+    for (const [key, value] of snapshot) {
+      if (value === null) localStorage?.removeItem(key);
+      else localStorage?.setItem(key, value);
+    }
+  } catch {
+    // See readStoredShadows.
+  }
 }
 
 /** Subscribe to changes; returns an unsubscribe. */

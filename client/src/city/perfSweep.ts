@@ -45,8 +45,10 @@ import {
   setShadowsEnabled,
   setSkyDomeEnabled,
   setSkyIblEnabled,
+  restoreStoredRenderSettings,
   shadowMapSizeOverride,
   shadowsEnabled,
+  snapshotStoredRenderSettings,
   skyDomeEnabled,
   skyIblEnabledSetting,
   type CityTextureDetail,
@@ -166,6 +168,13 @@ export interface PerfSweepReport {
   gpu: string;
   gpuTimingAvailable: boolean;
   /**
+   * Whether WEBGL_multi_draw is real here. Without it, every one of the city's
+   * "sub-draws" is a genuine draw call issued in a loop -- which would explain
+   * a per-sub-draw cost that scales with count and not with pixels, exactly
+   * the signature the M3 Metal reports show.
+   */
+  multiDrawSupported: boolean;
+  /**
    * Baseline re-measured after everything else. If this diverges from the
    * first step the machine changed under the sweep -- throttling, a died
    * stream, a backgrounded tab -- and the whole table should be distrusted,
@@ -215,18 +224,19 @@ async function measureStep(label: string, warmupFrames: number): Promise<PerfSwe
   };
 }
 
-function describeGpu(): string {
+function describeGpu(): { gpu: string; multiDrawSupported: boolean } {
   try {
     const canvas = document.querySelector('canvas');
     const context = canvas?.getContext('webgl2') as WebGL2RenderingContext | null;
     const info = context?.getExtension('WEBGL_debug_renderer_info');
-    return info && context
+    const gpu = info && context
       ? String(context.getParameter((info as { UNMASKED_RENDERER_WEBGL: number })
         .UNMASKED_RENDERER_WEBGL))
       : 'unknown';
+    return { gpu, multiDrawSupported: context?.getExtension('WEBGL_multi_draw') != null };
   } catch {
     // A browser that refuses the debug extension should not take the sweep down.
-    return 'unknown';
+    return { gpu: 'unknown', multiDrawSupported: false };
   }
 }
 
@@ -240,6 +250,11 @@ function describeGpu(): string {
  */
 export async function runPerfSweep(): Promise<PerfSweepReport> {
   const original = currentConfig();
+  // The setters persist, and a sweep must not: without this, running a sweep
+  // froze the then-current defaults into localStorage and no future default
+  // ever reached that browser again. Raw entries, restored verbatim --
+  // including absent keys staying absent.
+  const storedBefore = snapshotStoredRenderSettings();
   const steps: PerfSweepStep[] = [];
   let applied = original;
   const step = async (label: string, patch: Partial<Config>): Promise<PerfSweepStep> => {
@@ -280,22 +295,30 @@ export async function runPerfSweep(): Promise<PerfSweepReport> {
     steps.pop();
   } finally {
     applyConfig(original);
+    restoreStoredRenderSettings(storedBefore);
   }
 
   const first = steps[0];
-  const unstable = sentinel.gpuMs.median > 0 && first.gpuMs.median > 0
-    ? Math.abs(sentinel.gpuMs.median - first.gpuMs.median) / first.gpuMs.median > 0.2
-      || sentinel.documentHidden
-      || steps.some((s) => s.documentHidden)
-    : steps.some((s) => s.documentHidden);
+  // Drift needs BOTH a relative and an absolute bar. On a machine with huge
+  // headroom the medians are ~2 ms and wobble +/-20% as pure noise; a
+  // relative-only test flagged such a run unstable, which teaches people to
+  // ignore the flag -- worse than not having one. A machine actually
+  // throttling moves by milliseconds, not tenths.
+  const drift = Math.abs(sentinel.gpuMs.median - first.gpuMs.median);
+  const anyHidden = sentinel.documentHidden || steps.some((s) => s.documentHidden);
+  const unstable = anyHidden
+    || (sentinel.gpuMs.median > 0 && first.gpuMs.median > 0
+      && drift / first.gpuMs.median > 0.2 && drift > 1);
 
+  const { gpu, multiDrawSupported } = describeGpu();
   return {
     capturedAt: new Date().toISOString(),
     userAgent: navigator.userAgent,
     devicePixelRatio: window.devicePixelRatio,
     backingStore: canvasBackingStore(),
-    gpu: describeGpu(),
+    gpu,
     gpuTimingAvailable: steps.some((s) => s.gpuMs.median > 0),
+    multiDrawSupported,
     sentinel,
     unstable,
     steps,
@@ -310,6 +333,9 @@ export function formatPerfSweep(report: PerfSweepReport): string {
     `gpu: ${report.gpu}`,
     `backing store: ${report.backingStore} (dpr ${report.devicePixelRatio})`,
     `gpu timing: ${report.gpuTimingAvailable ? 'available' : 'UNAVAILABLE — gpu columns are 0'}`,
+    `multi-draw: ${report.multiDrawSupported
+      ? 'native'
+      : 'EMULATED — every sub-draw is a real draw call; low instance thresholds win here'}`,
     `120 fps budget: ${budget.toFixed(2)} ms`,
   ];
   if (report.unstable) {
