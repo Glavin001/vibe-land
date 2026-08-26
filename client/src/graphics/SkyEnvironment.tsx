@@ -89,6 +89,15 @@ type SkyEnvironmentProps = {
    * tier keeps the lighting and drops the dome.
    */
   showDome?: boolean;
+  /**
+   * Bake the sky into a PMREM and bind it as `scene.environment`.
+   *
+   * Separate from `showDome` because they cost completely different things: the
+   * dome is a shader over sky pixels, the environment is an extra cubemap tap
+   * and a chunk of IBL maths on EVERY Standard-material pixel in the scene. A
+   * frame that is fill-bound needs to be able to price them apart.
+   */
+  bindEnvironment?: boolean;
   /** Skylight multiplier; 0 disables IBL entirely. */
   intensity?: number;
 };
@@ -98,6 +107,7 @@ export function SkyEnvironment({
   sunElevationDeg = DEFAULT_SUN_ELEVATION_DEG,
   sunAzimuthDeg = DEFAULT_SUN_AZIMUTH_DEG,
   showDome = true,
+  bindEnvironment = true,
   intensity = 1,
 }: SkyEnvironmentProps) {
   const gl = useThree((state) => state.gl);
@@ -170,7 +180,7 @@ export function SkyEnvironment({
     bakeScene.add(new THREE.Mesh(bakeGeometry, bakeMaterial));
 
     const target = pmrem.fromScene(bakeScene, 0.02);
-    scene.environment = target.texture;
+    scene.environment = bindEnvironment ? target.texture : null;
     // R3F's <color attach="background"> still owns the background; only the
     // lighting is taken over here.
     return () => {
@@ -180,7 +190,7 @@ export function SkyEnvironment({
       bakeGeometry.dispose();
       bakeMaterial.dispose();
     };
-  }, [gl, scene, material, gradient, intensity]);
+  }, [gl, scene, material, gradient, intensity, bindEnvironment]);
 
   useEffect(() => {
     const apply = () => {

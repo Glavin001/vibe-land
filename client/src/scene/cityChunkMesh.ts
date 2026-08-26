@@ -29,7 +29,7 @@ import * as THREE from 'three';
 import type { CityClient } from '../city/cityClient';
 import { buildBoxGeometry, buildHullGeometry, chunkShape } from '../city/chunkGeometry';
 import { partitionSlotsByCell } from '../city/renderScheduling';
-import { cityPbrLighting, shadowsEnabled } from '../app/renderQuality';
+import { cityPbrLighting, cityTextureDetail, shadowsEnabled } from '../app/renderQuality';
 import { writeInstance, type CityRenderable } from './cityChunkWrite';
 import { applyCityTriplanar } from './cityMaterialShader';
 import { attachInstanceAnchors, bakeRestAnchors } from './cityTexAnchor';
@@ -118,7 +118,7 @@ export function buildCityMaterial(): THREE.Material {
   // Must happen here, on the object that was just constructed. Material.clone()
   // copies no function properties, so a cloned city material would silently
   // lose the injection and render untextured with no error anywhere.
-  applyCityTriplanar(material, pbr);
+  applyCityTriplanar(material, pbr, cityTextureDetail());
   return material;
 }
 

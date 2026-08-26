@@ -302,7 +302,18 @@ reflectedLight.indirectDiffuse *= cityOcclusion;
  * no function properties, so a cloned city material silently loses this and
  * renders untextured with no error anywhere.
  */
-export function applyCityTriplanar(material: THREE.Material, pbr: boolean): void {
+export function applyCityTriplanar(
+  material: THREE.Material,
+  pbr: boolean,
+  detail: 'full' | 'albedo' | 'off' = 'full',
+): void {
+  if (detail === 'off') {
+    // Nothing injected at all: the point of `off` is to not SAMPLE, so the
+    // material has to compile without the taps rather than multiply them away.
+    material.customProgramCacheKey = () => 'city-untextured-v1';
+    return;
+  }
+  const surface = pbr && detail === 'full';
   const textures = cityTextures();
   uniforms.cityAlbedo.value = textures.albedo;
   uniforms.citySurface.value = textures.surface;
@@ -312,26 +323,26 @@ export function applyCityTriplanar(material: THREE.Material, pbr: boolean): void
     shader.uniforms.cityTexMetres = uniforms.cityTexMetres;
     shader.uniforms.cityTexScale = uniforms.cityTexScale;
     shader.uniforms.cityTone = uniforms.cityTone;
-    if (pbr) {
+    if (surface) {
       shader.uniforms.citySurface = uniforms.citySurface;
       shader.uniforms.cityNormalScale = uniforms.cityNormalScale;
     }
 
-    shader.vertexShader = (VERTEX_PARS + (pbr ? VERTEX_PARS_PBR : '')) + shader.vertexShader;
+    shader.vertexShader = (VERTEX_PARS + (surface ? VERTEX_PARS_PBR : '')) + shader.vertexShader;
     // After <begin_vertex>: batchingMatrix and instanceMatrix are both already
     // in scope by then, and the anchor is identical in meshphysical and
     // meshlambert so one injection covers both tiers.
     shader.vertexShader = shader.vertexShader.replace(
       '#include <begin_vertex>',
-      '#include <begin_vertex>\n' + VERTEX_BODY + (pbr ? VERTEX_BODY_PBR : ''),
+      '#include <begin_vertex>\n' + VERTEX_BODY + (surface ? VERTEX_BODY_PBR : ''),
     );
 
-    shader.fragmentShader = fragmentPars(pbr) + shader.fragmentShader;
+    shader.fragmentShader = fragmentPars(surface) + shader.fragmentShader;
     shader.fragmentShader = shader.fragmentShader.replace(
       '#include <map_fragment>',
-      mapFragment(pbr),
+      mapFragment(surface),
     );
-    if (pbr) {
+    if (surface) {
       shader.fragmentShader = shader.fragmentShader
         .replace('#include <roughnessmap_fragment>', ROUGHNESS_FRAGMENT)
         .replace('#include <normal_fragment_maps>', NORMAL_FRAGMENT)
@@ -342,5 +353,5 @@ export function applyCityTriplanar(material: THREE.Material, pbr: boolean): void
   // A constant, because the default key is `onBeforeCompile.toString()` -- which
   // would stringify all of the above on every program lookup. Bump the version
   // when the injected GLSL changes, or a warm cache serves the old program.
-  material.customProgramCacheKey = () => (pbr ? 'city-triplanar-pbr-v1' : 'city-triplanar-flat-v1');
+  material.customProgramCacheKey = () => (surface ? 'city-triplanar-pbr-v1' : 'city-triplanar-flat-v1');
 }

@@ -32,6 +32,8 @@ export const renderStats = {
   /// Time inside WebGLRenderer.render itself -- includes BatchedMesh data-
   /// texture uploads, the suspect invisible to call/triangle counters.
   glRenderMs: 0,
+  /** Real GPU execution time, when the timer-query extension is available. */
+  gpuFrameMs: 0,
   /// Everything the frame runs before the city layer: GameWorld's callback
   /// (input, prediction, camera, entity sync) plus the small scene extras.
   /// Measured as a span rather than bracketed inside GameWorld because that
@@ -89,6 +91,11 @@ export function addDecodeMs(ms: number): void {
  * ascending and only a *positive* priority disables its automatic render).
  */
 export function markFrameStart(): void {
+  // Close the previous frame's GPU query before anything this frame submits, so
+  // one query covers exactly one frame's worth of work.
+  closeGpuFrame();
+  drainGpuQueries();
+  openGpuFrame();
   const now = performance.now();
   if (lastRafStamp > 0) {
     renderStats.frameTotalMs = now - lastRafStamp;
@@ -141,12 +148,82 @@ let peakCalls = 0;
 let peakTriangles = 0;
 let renderMsThisFrame = 0;
 
+// ---------------------------------------------------------------------------
+// GPU time
+//
+// Everything else here is CPU: `glRenderMs` is how long the render CALLS took
+// to return, which is submission, not execution. A frame can submit in 2 ms and
+// take 18 ms on the GPU, and from the CPU side that is indistinguishable from
+// sitting idle waiting for vsync -- both land in `offFrameMs`. That ambiguity
+// is not academic: it is exactly how a change that multiplied per-pixel work
+// got measured as free on a GPU fast enough to hide it.
+//
+// EXT_disjoint_timer_query_webgl2 gives the real number. The query brackets a
+// whole frame -- opened when the frame's CPU work starts, closed when the next
+// frame's does -- so it covers every pass, including the ones a post-process
+// chain adds behind three's back. Results land a few frames later, which is
+// why they are polled rather than awaited.
+// ---------------------------------------------------------------------------
+
+type TimerExt = {
+  TIME_ELAPSED_EXT: number;
+  GPU_DISJOINT_EXT: number;
+};
+
+let gl2: WebGL2RenderingContext | null = null;
+let timerExt: TimerExt | null = null;
+let openQuery: WebGLQuery | null = null;
+const pendingQueries: WebGLQuery[] = [];
+const freeQueries: WebGLQuery[] = [];
+
+function closeGpuFrame(): void {
+  if (!gl2 || !timerExt || !openQuery) return;
+  gl2.endQuery(timerExt.TIME_ELAPSED_EXT);
+  pendingQueries.push(openQuery);
+  openQuery = null;
+}
+
+function drainGpuQueries(): void {
+  if (!gl2 || !timerExt) return;
+  // A disjoint means the GPU was interrupted (clock change, context switch) and
+  // every in-flight result is garbage. Throw them all away rather than report a
+  // number that is wrong in an unknowable direction.
+  if (gl2.getParameter(timerExt.GPU_DISJOINT_EXT)) {
+    for (const query of pendingQueries) freeQueries.push(query);
+    pendingQueries.length = 0;
+    return;
+  }
+  while (pendingQueries.length > 0) {
+    const query = pendingQueries[0];
+    if (!gl2.getQueryParameter(query, gl2.QUERY_RESULT_AVAILABLE)) break;
+    pendingQueries.shift();
+    renderStats.gpuFrameMs = gl2.getQueryParameter(query, gl2.QUERY_RESULT) / 1e6;
+    freeQueries.push(query);
+  }
+}
+
+function openGpuFrame(): void {
+  if (!gl2 || !timerExt || openQuery) return;
+  // Cap the backlog: if results stop arriving, stop allocating queries.
+  if (pendingQueries.length > 8) return;
+  const query = freeQueries.pop() ?? gl2.createQuery();
+  if (!query) return;
+  gl2.beginQuery(timerExt.TIME_ELAPSED_EXT, query);
+  openQuery = query;
+}
+
 let patched = false;
 export function patchRendererTiming(gl: { render: (...args: never[]) => void }): void {
   if (patched) return;
   patched = true;
   const original = gl.render.bind(gl);
   const info = (gl as { info?: { render: { calls: number; triangles: number } } }).info;
+  const context = (gl as { getContext?: () => WebGLRenderingContext | WebGL2RenderingContext })
+    .getContext?.();
+  if (context && 'createQuery' in context) {
+    gl2 = context as WebGL2RenderingContext;
+    timerExt = gl2.getExtension('EXT_disjoint_timer_query_webgl2') as TimerExt | null;
+  }
   (gl as { render: (...args: never[]) => void }).render = (...args: never[]) => {
     const started = performance.now();
     original(...args);

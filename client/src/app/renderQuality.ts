@@ -20,10 +20,44 @@ import { isTouchDevice } from '../device';
 const SHADOWS_KEY = 'vibe.render.shadows';
 const TIER_KEY = 'vibe.render.tier';
 const AO_KEY = 'vibe.render.ao';
+const CITY_TEXTURES_KEY = 'vibe.render.cityTextures';
+const SKY_IBL_KEY = 'vibe.render.skyIbl';
+const SKY_DOME_KEY = 'vibe.render.skyDome';
+const DPR_CAP_KEY = 'vibe.render.dprCap';
 
 export type QualityTier = 'fast' | 'pretty';
 
-export type RenderQualityState = { shadows: boolean; tier: QualityTier; ao: boolean };
+/**
+ * How much of the city's surface shader to compile.
+ *
+ * `full` is 6 texture-array taps per pixel (3 albedo + 3 packed
+ * normal/roughness/AO, triplanar), `albedo` is 3, `off` compiles the taps out
+ * entirely. A switch, not a uniform, because the point of `off` is to not
+ * SAMPLE -- a uniform that multiplied the result by zero would still pay for
+ * the fetches, which is the cost being investigated.
+ */
+export type CityTextureDetail = 'full' | 'albedo' | 'off';
+
+export type RenderQualityState = {
+  shadows: boolean;
+  tier: QualityTier;
+  ao: boolean;
+  /**
+   * The per-pixel knobs, together in one store because they all have to notify
+   * the same listeners: the city rebuilds its material, the scene rebinds its
+   * environment, and the canvas resizes.
+   *
+   * Overrides, all defaulting to "whatever the tier says". They exist so a
+   * frame that is GPU-bound can be bisected feature by feature ON THE MACHINE
+   * THAT IS SLOW, which is the only place the answer lives -- a fast GPU
+   * reports every one of them as free.
+   */
+  cityTextures: CityTextureDetail;
+  skyIbl: boolean;
+  skyDome: boolean;
+  /** Hard cap on device pixel ratio, or null to follow the tier. */
+  dprCap: number | null;
+};
 
 type Listener = (state: RenderQualityState) => void;
 
@@ -84,13 +118,90 @@ function readStoredAo(): boolean | null {
   return null;
 }
 
+function readStored<T>(key: string, parse: (raw: string) => T | null): T | null {
+  if (typeof localStorage === 'undefined') return null;
+  try {
+    const raw = localStorage.getItem(key);
+    return raw === null ? null : parse(raw);
+  } catch {
+    // See readStoredShadows.
+    return null;
+  }
+}
+
+function store(key: string, value: string): void {
+  try {
+    localStorage?.setItem(key, value);
+  } catch {
+    // Not fatal -- see readStoredShadows.
+  }
+}
+
 let shadows: boolean = readStoredShadows() ?? defaultShadows();
 let tier: QualityTier = readStoredTier() ?? defaultTier();
 let ao: boolean = readStoredAo() ?? defaultAo();
+let cityTextures: CityTextureDetail = readStored(CITY_TEXTURES_KEY, (raw) =>
+  raw === 'full' || raw === 'albedo' || raw === 'off' ? raw : null) ?? 'full';
+let skyIbl: boolean = readStored(SKY_IBL_KEY, (raw) => raw === '1') ?? true;
+let skyDome: boolean = readStored(SKY_DOME_KEY, (raw) => raw === '1') ?? true;
+let dprCap: number | null = readStored(DPR_CAP_KEY, (raw) => {
+  const value = Number(raw);
+  return Number.isFinite(value) && value > 0 ? value : null;
+});
 
 function notify(): void {
-  const state: RenderQualityState = { shadows, tier, ao };
+  const state: RenderQualityState = {
+    shadows, tier, ao, cityTextures, skyIbl, skyDome, dprCap,
+  };
   for (const listener of listeners) listener(state);
+}
+
+/** How much of the city's surface shader to compile. FAST never gets the full set. */
+export function cityTextureDetail(): CityTextureDetail {
+  if (tier === 'fast' && cityTextures === 'full') return 'albedo';
+  return cityTextures;
+}
+
+export function setCityTextureDetail(next: CityTextureDetail): void {
+  if (next === cityTextures) return;
+  cityTextures = next;
+  store(CITY_TEXTURES_KEY, next);
+  notify();
+}
+
+/** Whether the sky is baked into an environment map and bound to the scene. */
+export function skyIblEnabledSetting(): boolean {
+  return skyIbl;
+}
+
+export function setSkyIblEnabled(next: boolean): void {
+  if (next === skyIbl) return;
+  skyIbl = next;
+  store(SKY_IBL_KEY, next ? '1' : '0');
+  notify();
+}
+
+/** Whether the sky DOME is drawn. Independent of the IBL bake above. */
+export function skyDomeEnabled(): boolean {
+  return skyDome && tier === 'pretty';
+}
+
+export function setSkyDomeEnabled(next: boolean): void {
+  if (next === skyDome) return;
+  skyDome = next;
+  store(SKY_DOME_KEY, next ? '1' : '0');
+  notify();
+}
+
+export function dprCapOverride(): number | null {
+  return dprCap;
+}
+
+export function setDprCap(next: number | null): void {
+  if (next === dprCap) return;
+  dprCap = next;
+  store(DPR_CAP_KEY, next === null ? '' : String(next));
+  notify();
 }
 
 export function shadowsEnabled(): boolean {
@@ -153,6 +264,11 @@ export function setQualityTier(next: QualityTier): void {
  * three's setPixelRatio, unlike antialias/tonemapping.
  */
 export function maxDpr(): number {
+  // An explicit cap wins over the tier. Pixel count is the single biggest lever
+  // on a fill-bound frame -- dropping 2 to 1.5 removes 44% of them -- and it is
+  // the one knob whose cost is exactly predictable, so it is worth being able
+  // to set directly rather than only as a side effect of the tier.
+  if (dprCap !== null) return dprCap;
   return tier === 'fast' ? 1.5 : 2;
 }
 
@@ -200,7 +316,7 @@ export function ambientOcclusionEnabled(): boolean {
  * from reading as cardboard. Only the visible sky dome is tier-gated.
  */
 export function skyIblEnabled(): boolean {
-  return true;
+  return skyIbl;
 }
 
 /** Subscribe to changes; returns an unsubscribe. */
@@ -231,6 +347,14 @@ export function useShadowsEnabled(): boolean {
 }
 
 /** React view of the effective SSAO flag (tier included). */
+export function useSkyDomeEnabled(): boolean {
+  return useSyncExternalStore(subscribe, skyDomeEnabled, skyDomeEnabled);
+}
+
+export function useSkyIblEnabled(): boolean {
+  return useSyncExternalStore(subscribe, skyIblEnabled, skyIblEnabled);
+}
+
 export function useAmbientOcclusionEnabled(): boolean {
   return useSyncExternalStore(subscribe, ambientOcclusionEnabled, ambientOcclusionEnabled);
 }

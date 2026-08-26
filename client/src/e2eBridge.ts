@@ -22,6 +22,7 @@ import {
 import { updateFogSettings } from './graphics/fogSettings';
 import { setLookTuning } from './graphics/lookTuning';
 import { setCapturePose } from './scene/captureCamera';
+import { runPerfSweep } from './city/perfSweep';
 
 /** Held while a spec has forced the diagnostic sweeps on. */
 let diagnosticsHold: (() => void) | null = null;
@@ -232,6 +233,14 @@ export interface VibeE2EBridge {
     position: [number, number, number];
     lookAt: [number, number, number];
   } | null): void;
+  /**
+   * Run the per-feature cost sweep and hand back the report.
+   *
+   * The same one the panel's button downloads -- exposed here so a spec can
+   * assert it still produces sane numbers, since a measurement harness that
+   * has silently broken is worse than none.
+   */
+  runPerfSweep(): Promise<unknown>;
 }
 
 // ---------------------------------------------------------------------------
@@ -402,6 +411,7 @@ const bridge: VibeE2EBridge = {
     if (next.tier !== undefined) setQualityTier(next.tier);
   },
   setCapturePose: (next) => setCapturePose(next),
+  runPerfSweep: () => runPerfSweep(),
   setLook: (next) => {
     if (next.fogIntensity !== undefined) {
       const intensity = next.fogIntensity;

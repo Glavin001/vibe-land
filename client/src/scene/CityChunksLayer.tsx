@@ -39,7 +39,12 @@ import * as THREE from 'three';
 import type { CityClient } from '../city/cityClient';
 import type { LedgerBody } from '../city/topology';
 import { shouldUpdateThisFrame, updateStrideForDistanceSq } from '../city/renderScheduling';
-import { cityPbrLighting, onRenderQualityChange, shadowsEnabled } from '../app/renderQuality';
+import {
+  cityPbrLighting,
+  cityTextureDetail,
+  onRenderQualityChange,
+  shadowsEnabled,
+} from '../app/renderQuality';
 import { buildCityMaterial, buildCityMesh, type CityMeshState } from './cityChunkMesh';
 import { loadCityTextures } from './cityTextures';
 import {
@@ -332,6 +337,8 @@ export function CityChunksLayer({
    * than here because that is where the scene group is in scope.
    */
   const rebuildRequestedRef = useRef(false);
+  /** Which shader variant the live city material was built for. */
+  const materialVariantRef = useRef('');
 
   // Deliberately not awaited anywhere: the arrays exist from the first frame
   // filled with a neutral concrete grey, and the sheets write into them in
@@ -348,9 +355,15 @@ export function CityChunksLayer({
       onRenderQualityChange(({ shadows }) => {
         const renderables = stateRef.current?.renderables ?? [];
         const current = renderables[0]?.mesh.material as THREE.Material | undefined;
-        const wantPbr = cityPbrLighting();
-        const havePbr = current instanceof THREE.MeshStandardMaterial;
-        const replacement = current && wantPbr !== havePbr ? buildCityMaterial() : null;
+        // Both of these change which SHADER the city compiles, so both need a
+        // new material rather than a uniform write. Compared against what was
+        // last built rather than against the material's class, because the
+        // texture detail is not visible from the material object at all.
+        const want = `${cityPbrLighting() ? 'pbr' : 'flat'}:${cityTextureDetail()}`;
+        const replacement = current && want !== materialVariantRef.current
+          ? buildCityMaterial()
+          : null;
+        if (replacement) materialVariantRef.current = want;
         for (const { mesh } of renderables) {
           mesh.castShadow = shadows;
           mesh.receiveShadow = shadows;
@@ -533,6 +546,7 @@ export function CityChunksLayer({
       // headless rather than retrying a throwing build every frame.
       try {
         stateRef.current = buildCityMesh(client);
+        materialVariantRef.current = `${cityPbrLighting() ? 'pbr' : 'flat'}:${cityTextureDetail()}`;
         for (const { mesh } of stateRef.current.renderables) {
           group.add(mesh);
         }

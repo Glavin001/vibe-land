@@ -1,6 +1,12 @@
 import { useRef, useEffect, useMemo, type MutableRefObject, type ReactNode, type RefObject } from 'react';
 
-import { useAmbientOcclusionEnabled, useQualityTier, useShadowsEnabled } from '../app/renderQuality';
+import {
+  useAmbientOcclusionEnabled,
+  useQualityTier,
+  useShadowsEnabled,
+  useSkyDomeEnabled,
+  useSkyIblEnabled,
+} from '../app/renderQuality';
 import { AmbientOcclusion } from '../graphics/AmbientOcclusion';
 import { SkyEnvironment } from '../graphics/SkyEnvironment';
 import { skyGradient } from '../graphics/sunSky';
@@ -1145,6 +1151,8 @@ export function GameWorld({
   const qualityIsPretty = useQualityTier() === 'pretty';
   const shadowsOn = useShadowsEnabled();
   const ambientOcclusionOn = useAmbientOcclusionEnabled();
+  const skyDomeOn = useSkyDomeEnabled();
+  const skyIblOn = useSkyIblEnabled();
   const weatherOn = qualityIsPretty;
   useWeatherAmbience(weather, windStrengthMps);
   const practiceMode = isPracticeMode(mode);
@@ -3195,7 +3203,8 @@ export function GameWorld({
       */}
       <SkyEnvironment
         fogColor={resolvedFogColor}
-        showDome={qualityIsPretty}
+        showDome={skyDomeOn}
+        bindEnvironment={skyIblOn}
         intensity={qualityIsPretty ? 1 : 0.85}
       />
       <SunLight

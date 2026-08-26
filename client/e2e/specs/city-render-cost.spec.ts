@@ -63,19 +63,33 @@ test.use({
 /** Median and p95 of the interval between presented frames, in ms. */
 async function measure(page: import('@playwright/test').Page, frames: number) {
   return page.evaluate(async (count) => {
+    const bridge = (window as any).__VIBE_E2E__;
     const deltas: number[] = [];
+    const gpu: number[] = [];
     let previous = performance.now();
     // Discard the first 30: toggling a feature recompiles materials and
     // reallocates render targets, and that lands in the first frames.
     for (let i = 0; i < count + 30; i += 1) {
       await new Promise((resolve) => requestAnimationFrame(() => resolve(null)));
       const now = performance.now();
-      if (i >= 30) deltas.push(now - previous);
+      if (i >= 30) {
+        deltas.push(now - previous);
+        const g = bridge.frameProfile().gpuFrameMs;
+        if (g > 0) gpu.push(g);
+      }
       previous = now;
     }
     deltas.sort((a, b) => a - b);
+    gpu.sort((a, b) => a - b);
     const at = (f: number) => deltas[Math.min(deltas.length - 1, Math.floor(deltas.length * f))];
-    return { median: at(0.5), p95: at(0.95), fps: 1000 / at(0.5) };
+    return {
+      median: at(0.5),
+      p95: at(0.95),
+      fps: 1000 / at(0.5),
+      // The number that decides whether a frame is GPU-bound, and the only one
+      // here that a faster CPU cannot move.
+      gpuMedian: gpu.length > 0 ? gpu[Math.floor(gpu.length / 2)] : 0,
+    };
   }, frames);
 }
 
@@ -168,6 +182,7 @@ test.describe('city render cost', () => {
       let telemetry = 0;
       let sample = 0;
       let city = 0;
+      let gpu = 0;
       // telemetryMs is deliberately not reset per frame, so the useful figure is
       // the peak over a window that certainly contains a tick.
       for (let i = 0; i < 240; i += 1) {
@@ -176,13 +191,20 @@ test.describe('city render cost', () => {
         if (p.telemetryMs > telemetry) telemetry = p.telemetryMs;
         sample += p.sampleMs;
         city += p.cityFrameMs;
+        gpu += p.gpuFrameMs ?? 0;
       }
-      return { telemetryMs: telemetry, sampleMs: sample / 240, cityFrameMs: city / 240 };
+      return {
+        telemetryMs: telemetry,
+        sampleMs: sample / 240,
+        cityFrameMs: city / 240,
+        gpuFrameMs: gpu / 240,
+      };
     });
     await diagnostics(false);
     console.log(
       `[render cost] 2 Hz telemetry block peak ${profile.telemetryMs.toFixed(2)} ms; `
-      + `sample ${profile.sampleMs.toFixed(2)} ms/frame; city ${profile.cityFrameMs.toFixed(2)} ms/frame`,
+      + `sample ${profile.sampleMs.toFixed(2)} ms/frame; city ${profile.cityFrameMs.toFixed(2)} ms/frame; `
+      + `GPU ${profile.gpuFrameMs > 0 ? profile.gpuFrameMs.toFixed(2) + ' ms/frame' : 'n/a'}`,
     );
 
     const backing = await page.evaluate(() => {
@@ -197,8 +219,10 @@ test.describe('city render cost', () => {
     for (const [label, r] of results) {
       const verdict = r.median <= budget ? 'under' : `${(r.median / budget).toFixed(2)}x over`;
       console.log(
-        `  ${label.padEnd(40)} ${r.median.toFixed(2)} ms median  `
-        + `${r.p95.toFixed(2)} p95  ${r.fps.toFixed(0)} fps  [${verdict}]`,
+        `  ${label.padEnd(40)} ${r.median.toFixed(2)} ms frame  `
+        + `${r.p95.toFixed(2)} p95  `
+        + `${r.gpuMedian > 0 ? r.gpuMedian.toFixed(2) + ' ms GPU' : '  n/a GPU'}  `
+        + `${r.fps.toFixed(0)} fps  [${verdict}]`,
       );
     }
     console.log('');
