@@ -518,6 +518,28 @@ void DestructionManager::create_destructible(
   // every fracture resync, so a structure migrates back to the CPU as its
   // graph shrinks. Upstream defaults to 4096 bonds, which is above our
   // 10-floor structures (3624), so they would all silently stay on CPU.
+  // Creation-time body protection and injection bounds. The library applies
+  // these at createBody, which is the only site covering a split child's FIRST
+  // step -- the bridge's own per-tick walk provably missed it (see the
+  // kill-floor story). The walk below is now redundant belt-and-braces and can
+  // be retired once the scenario gate shows escaped_bodies_parked at 0.
+  desc.settings.enableSpeculativeCcd = speculative_ccd_enabled();
+  desc.settings.maxDepenetrationVelocity = depenetration_velocity();
+  desc.settings.maxExcessVelocityChange = [] {
+    if (const char *raw = std::getenv("VIBE_CITY_MAX_EXCESS_DV")) {
+      return static_cast<float>(std::atof(raw));
+    }
+    return 20.0f;
+  }();
+  // "pos,vel" -- PhysX per-body solver iterations, engine default 4,1.
+  {
+    std::uint32_t pos = 4, vel = 1;
+    if (const char *raw = std::getenv("VIBE_CITY_BODY_ITERATIONS")) {
+      std::sscanf(raw, "%u,%u", &pos, &vel);
+    }
+    desc.settings.bodyPositionIterations = pos;
+    desc.settings.bodyVelocityIterations = vel;
+  }
   desc.settings.gpuStressSolver = gpu_stress_enabled();
   desc.settings.gpuStressMinimumBondCount = gpu_stress_min_bonds();
   // Converged stress means authored material strength is finally what decides
