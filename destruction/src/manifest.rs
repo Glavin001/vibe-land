@@ -7,6 +7,8 @@
 //! purely from fracture events; the kinematic stream only ever references
 //! body entities and this manifest.
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -32,6 +34,18 @@ pub struct DestructionManifest {
     /// re-fetch for no gain.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub materials: Vec<StressMaterialDef>,
+    /// Distinct shard hulls, stored once and referenced by `ChunkGeometry`.
+    ///
+    /// The pack already deduplicates these -- a bounded fracture-pattern count
+    /// means the same shard recurs -- but the manifest used to re-inline the
+    /// points into every chunk, so what players download did not benefit.
+    /// Downtown measured 19.7 MB with the pack at 14.2 MB for the same content.
+    ///
+    /// Skipped when empty for the same reason `materials` is: manifests are
+    /// content-addressed, so emitting an empty field would change the hash of
+    /// every existing scene and force a re-fetch for nothing.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub shape_library: Vec<Vec<f32>>,
 }
 
 /// One entry of the manifest's stress material table.
@@ -89,6 +103,9 @@ pub enum ChunkGeometry {
     Cuboid { half_extents: [f32; 3] },
     #[serde(rename_all = "camelCase")]
     ConvexHull {
+        /// Empty when `shape_id` names an entry of `shape_library`, which is
+        /// where the points then live. Inline for packs with no library.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
         points: Vec<f32>,
         /// Shape-library id from the pack, when the fracturer bounded its
         /// pattern count and named its shards.
@@ -198,10 +215,43 @@ impl DestructionManifest {
                     .collect()
             })
             .unwrap_or_default();
+        // Hoist every shard the pack named into a manifest-level library and
+        // drop the inline copy. Packs deduplicate these already; without this
+        // the manifest re-inlined them per chunk, so the thing players actually
+        // download saw none of the benefit.
+        //
+        // Keyed on the pack's own `shape_id`, not on the points: the fracturer
+        // named each shard as it cut it, and re-deriving identity by comparing
+        // geometry is exactly the sweep that authored ids exist to avoid.
+        let mut structures: Vec<StructureManifest> = structures;
+        let mut shape_library: Vec<Vec<f32>> = Vec::new();
+        let mut library_index: BTreeMap<u32, u32> = BTreeMap::new();
+        for structure in &mut structures {
+            for chunk in &mut structure.chunks {
+                let ChunkGeometry::ConvexHull { points, shape_id } = &mut chunk.geometry else {
+                    continue;
+                };
+                let Some(id) = shape_id.as_ref().copied() else { continue };
+                let slot = match library_index.get(&id) {
+                    Some(slot) => *slot,
+                    None => {
+                        let slot = shape_library.len() as u32;
+                        shape_library.push(std::mem::take(points));
+                        library_index.insert(id, slot);
+                        slot
+                    }
+                };
+                // Renumbered to the library's own indices: a pack's ids are
+                // dense per pack, and a city can stamp several packs.
+                *shape_id = Some(slot);
+                points.clear();
+            }
+        }
         Self {
             version: MANIFEST_VERSION,
             structures,
             materials,
+            shape_library,
         }
     }
 

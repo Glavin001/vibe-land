@@ -87,6 +87,14 @@ export interface ManifestStructure {
 export interface CityManifest {
   version: number;
   structures: ManifestStructure[];
+  /**
+   * Distinct shard hulls, stored once and referenced by `geometry.shapeId`.
+   *
+   * Present when the pack was authored with a bounded fracture-pattern count.
+   * `resolveShapeLibrary` folds it back into the chunks at parse time, so
+   * nothing downstream has to know it existed.
+   */
+  shapeLibrary?: number[][];
 }
 
 export interface LoadedCityManifest {
@@ -94,6 +102,42 @@ export interface LoadedCityManifest {
   hashHex: string;
   totalChunks: number;
   totalBonds: number;
+}
+
+/**
+ * Point every library-referencing chunk at the library's own array.
+ *
+ * Resolved once here rather than at every read, so `chunkShape` and everything
+ * downstream keep seeing an ordinary inline hull.
+ *
+ * The chunks SHARE the array rather than each getting a copy. That is the whole
+ * point: a thousand shards drawing shape 7 hold one points array between them,
+ * so the saving is memory as well as download. Nothing mutates chunk geometry
+ * after load -- `buildHullGeometry` only reads -- so the sharing is safe.
+ *
+ * A dangling reference throws. The alternative is a chunk silently drawn and
+ * collided as some other shard's shape, which is invisible until someone
+ * notices the wrong rubble.
+ */
+export function resolveShapeLibrary(manifest: CityManifest): void {
+  const library = manifest.shapeLibrary;
+  if (!library || library.length === 0) return;
+  for (const structure of manifest.structures) {
+    for (const chunk of structure.chunks) {
+      const geometry = chunk.geometry;
+      if (!isConvexHullGeometry(geometry)) continue;
+      const id = geometry.shapeId;
+      if (id === undefined) continue;
+      const points = library[id];
+      if (!points) {
+        throw new Error(
+          `city manifest chunk ${chunk.nodeIndex} references shape ${id}, `
+            + `library has ${library.length}`,
+        );
+      }
+      geometry.points = points;
+    }
+  }
 }
 
 async function sha256Hex(bytes: ArrayBuffer): Promise<string> {
@@ -151,6 +195,7 @@ async function parseCityManifest(
   if (manifest.version !== 1) {
     throw new Error(`unsupported city manifest version ${manifest.version}`);
   }
+  resolveShapeLibrary(manifest);
   let totalChunks = 0;
   let totalBonds = 0;
   for (const structure of manifest.structures) {
