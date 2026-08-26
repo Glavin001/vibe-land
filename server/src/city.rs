@@ -1236,6 +1236,15 @@ impl CityRuntime {
     }
 
     /// 60 Hz step: destruction tick + encoder ingest.
+    /// Take the fracture-frame resimulation capture, immediately before the
+    /// host steps PhysX. No-op unless VIBE_CITY_RESIM_PASSES > 0.
+    #[cfg(feature = "destruction")]
+    pub fn pre_step(&mut self, world: Option<&mut World>) {
+        if let (CityBackend::Physx(backend), Some(world)) = (&mut self.backend, world) {
+            backend.pre_step(world);
+        }
+    }
+
     pub fn step(
         &mut self,
         sim_tick: u32,

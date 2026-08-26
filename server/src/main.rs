@@ -3065,6 +3065,17 @@ impl MatchState {
             .dead_players_skipped
             .record(dead_players_skipped);
 
+        // Fracture-frame resimulation capture. Must be immediately before the
+        // step: taken any later, the destruction tick has already drained the
+        // contact queue and the capture is against the wrong frame.
+        #[cfg(feature = "destruction")]
+        {
+            let mut city = self.city.take();
+            if let Some(city_ref) = city.as_mut() {
+                city_ref.pre_step(self.arena.physx_world_mut());
+            }
+            self.city = city;
+        }
         let (vehicle_ms, dynamics_ms) = self.arena.step_vehicles_and_dynamics(dt);
         for player_id in self.arena.apply_vehicle_player_collisions() {
             self.kill_player_with_cause(player_id, server_time_ms, DeathCause::VehicleCollision);

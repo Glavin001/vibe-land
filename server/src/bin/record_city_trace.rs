@@ -88,6 +88,14 @@ struct Args {
     /// disk, which is how this was learned. This stream is ~40 numbers a tick
     /// and is what the benchmark campaign reads.
     metrics_out: Option<PathBuf>,
+    /// End-of-run scenario summary (JSON): collapse-shape metrics around the
+    /// primary shot target, freeze health, damage totals. What the scenario
+    /// suite asserts against -- "the building fell and toppled" as numbers.
+    summary_out: Option<PathBuf>,
+    /// After the first shot lands, aim every later shot at the same building
+    /// (raking upward). The scenario suite's collapse-shape test needs one
+    /// tower demolished deliberately, not fire spread across the city.
+    aim_lock: bool,
     /// Directory to dump the exact client-bound bytes (manifest.json,
     /// packets.jsonl, state-header.bin) so the REAL client can be replayed
     /// over them offline -- see client/tools/replay-city-client.mts. This is
@@ -124,6 +132,8 @@ impl Args {
         let mut targets = 0u32;
         let mut output = PathBuf::from("city.towertrace");
         let mut metrics_out: Option<PathBuf> = None;
+        let mut summary_out: Option<PathBuf> = None;
+        let mut aim_lock = false;
         let mut packets_out = None;
         let mut packets_wire = 3u32;
         let mut packets_span_ms = 100u32;
@@ -148,6 +158,8 @@ impl Args {
                 "--targets" => targets = value()?.parse()?,
                 "--output" => output = PathBuf::from(value()?),
                 "--metrics-out" => metrics_out = Some(PathBuf::from(value()?)),
+                "--summary-out" => summary_out = Some(PathBuf::from(value()?)),
+                "--aim-lock" => aim_lock = true,
                 "--packets-out" => packets_out = Some(PathBuf::from(value()?)),
                 "--packets-wire" => packets_wire = value()?.parse()?,
                 "--packets-span-ms" => packets_span_ms = value()?.parse()?,
@@ -185,6 +197,8 @@ impl Args {
             targets,
             output,
             metrics_out,
+            summary_out,
+            aim_lock,
             packets_out,
             packets_wire,
             packets_span_ms,
@@ -926,6 +940,14 @@ fn main() -> Result<()> {
     let mut migrations_total = 0u64;
     let mut mismatch_ticks = 0u64;
     let mut peak_bodies = 0usize;
+    // Collapse-shape metrics: standing height in the primary target's
+    // footprint before any shot, for the end-of-run comparison.
+    // Derived from where the FIRST shot actually lands, not from the manifest
+    // origin: with GRID=1 the whole downtown is ONE structure whose
+    // world_position is a street intersection, and calibrating against that
+    // produced a summary that measured nothing (target [0,0,0], 0 bonds).
+    let mut summary_target: Option<Vec3> = None;
+    let mut initial_height = 0.0f32;
     let mut next_shot = 0usize;
     let mut next_fire_tick = args.settle_ticks;
     let adaptive_aim = std::env::var("VIBE_TRACE_ADAPTIVE_AIM")
@@ -934,7 +956,19 @@ fn main() -> Result<()> {
 
     for tick_index in 0..total_ticks {
         if tick_index >= next_fire_tick && next_shot < shot_plan.len() {
-            let (origin, direction) = if adaptive_aim {
+            let locked: Option<(Vec3, Vec3)> = match (args.aim_lock, summary_target) {
+                (true, Some(t)) => {
+                    // Rake upward on the same building, firing level from +Z.
+                    let aim_y = (t.y + (next_shot % 8) as f32 * 2.0).max(1.5);
+                    let origin = Vec3::new(t.x, aim_y, t.z + 40.0);
+                    let target = Vec3::new(t.x, aim_y, t.z);
+                    Some((origin, (target - origin).normalize()))
+                }
+                _ => None,
+            };
+            let (origin, direction) = if let Some(shot) = locked {
+                shot
+            } else if adaptive_aim {
                 // Aim at structure that is still standing, chosen from the live
                 // body set, instead of replaying a fixed plan.
                 //
@@ -946,11 +980,32 @@ fn main() -> Result<()> {
                 // live server. That made every A/B here a measurement of the
                 // wrong regime.
                 adaptive_shot(&mut world, tick_index)
+                    .or_else(|| authored_shot(&manifest))
                     .unwrap_or_else(|| shot_plan[next_shot])
             } else {
                 shot_plan[next_shot]
             };
-            fire(&mut destruction, &mut world, origin, direction);
+            let hit = fire(&mut destruction, &mut world, origin, direction);
+            if summary_target.is_none() {
+                if let Some(hit) = hit {
+                    summary_target = Some(hit);
+                    // Authored standing height around the impact, from the
+                    // manifest's rest centroids. Body positions cannot give
+                    // this: an intact tower is ONE rooted body whose COM sits
+                    // at half height.
+                    for structure in manifest.structures.iter() {
+                        let base = Vec3::from_array(structure.world_position);
+                        for chunk in &structure.chunks {
+                            let world_pos = base + Vec3::from_array(chunk.centroid);
+                            let dx = world_pos.x - hit.x;
+                            let dz = world_pos.z - hit.z;
+                            if dx * dx + dz * dz <= 13.0 * 13.0 {
+                                initial_height = initial_height.max(world_pos.y);
+                            }
+                        }
+                    }
+                }
+            }
             next_shot += 1;
             // Ramp: interval shrinks linearly across the plan, floor at the
             // ramp minimum. With the ramp off this is the old fixed cadence.
@@ -1380,6 +1435,63 @@ fn main() -> Result<()> {
         println!("  resim diag: {}", destruction.resim_diagnosis());
     }
 
+    if let (Some(path), Some(target)) = (args.summary_out.as_ref(), summary_target) {
+        // Collapse shape, as numbers. "Pancaked in place" and "toppled/spread"
+        // separate cleanly here: a straight-down crumble leaves nearly all
+        // low-lying debris inside the target footprint (spread_fraction ~ 0),
+        // a topple pushes a real fraction into the surrounding ring.
+        let snapshots = world
+            .chunk_body_snapshots()
+            .map_err(|error| anyhow::anyhow!("{error}"))?;
+        let mut final_height = 0.0f32;
+        let mut center_pile = 0u32;
+        let mut ring_pile = 0u32;
+        for snap in snapshots {
+            let dx = snap.position.x - target.x;
+            let dz = snap.position.z - target.z;
+            let d2 = dx * dx + dz * dz;
+            if d2 <= 13.0 * 13.0 {
+                final_height = final_height.max(snap.position.y);
+                if snap.position.y < 8.0 {
+                    center_pile += 1;
+                }
+            } else if d2 <= 40.0 * 40.0 && snap.position.y < 8.0 {
+                ring_pile += 1;
+            }
+        }
+        let s = destruction.stats();
+        let spread = if center_pile + ring_pile > 0 {
+            ring_pile as f32 / (center_pile + ring_pile) as f32
+        } else {
+            0.0
+        };
+        let summary = serde_json::json!({
+            "target": [target.x, target.y, target.z],
+            "initial_height_m": initial_height,
+            "final_height_m": final_height,
+            "height_retained": if initial_height > 0.0 { final_height / initial_height } else { 1.0 },
+            "center_pile": center_pile,
+            "ring_pile": ring_pile,
+            "spread_fraction": spread,
+            "broken_bonds": s.broken_bonds,
+            "chunk_bodies": s.chunk_bodies,
+            "awake_bodies": s.awake_chunk_bodies,
+            "frozen_bodies": s.frozen_chunk_bodies,
+            "sleeping_bodies": s.sleeping_chunk_bodies,
+        });
+        std::fs::write(path, serde_json::to_string_pretty(&summary)?)?;
+        println!(
+            "  summary: height {:.1} -> {:.1} m (retained {:.0}%)  pile center {} ring {}              (spread {:.0}%)  -> {}",
+            initial_height,
+            final_height,
+            100.0 * final_height / initial_height.max(0.001),
+            center_pile,
+            ring_pile,
+            100.0 * spread,
+            path.display()
+        );
+    }
+
     if dropped_world_bonds > 0 {
         println!(
             "  note: {dropped_world_bonds} broken bonds were world anchors (not chunk-chunk edges); \
@@ -1532,6 +1644,48 @@ fn overview_cameras(extent: f32) -> [Camera; 4] {
 /// Shots that rake each building around a height band, cycling structures so a
 /// multi-building scene collapses broadly instead of felling one tower while
 /// the rest stand untouched.
+/// The structure the fixed shot plan fires at first. Factored out so the
+/// scenario summary measures the SAME building the shots were aimed at.
+fn primary_target(manifest: &DestructionManifest) -> Option<Vec3> {
+    let mut order: Vec<&_> = manifest.structures.iter().collect();
+    order.sort_by(|a, b| {
+        b.world_position[2]
+            .partial_cmp(&a.world_position[2])
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| {
+                a.world_position[0]
+                    .abs()
+                    .partial_cmp(&b.world_position[0].abs())
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+    });
+    order.first().map(|s| Vec3::from_array(s.world_position))
+}
+
+/// Deterministic shot at authored geometry, for when the adaptive targeter has
+/// no candidates: a pristine city is all ROOTED structure bodies, which are
+/// kinematic, and the body-snapshot API skips kinematic bodies -- so the very
+/// first shot of a run used to fall back to a plan aimed at the manifest
+/// origin, a street intersection, and miss the entire city.
+fn authored_shot(manifest: &DestructionManifest) -> Option<(Vec3, Vec3)> {
+    let mut best: Option<Vec3> = None;
+    for structure in &manifest.structures {
+        let base = Vec3::from_array(structure.world_position);
+        for chunk in &structure.chunks {
+            let world_pos = base + Vec3::from_array(chunk.centroid);
+            if best.map_or(true, |b| world_pos.y > b.y) {
+                best = Some(world_pos);
+            }
+        }
+    }
+    let top = best?;
+    // Base of the tallest tower, fired level from +Z so the ray cannot sail
+    // over the roofline.
+    let target = Vec3::new(top.x, 3.0, top.z);
+    let origin = Vec3::new(top.x, 3.0, top.z + 40.0);
+    Some((origin, (target - origin).normalize()))
+}
+
 fn build_shot_plan(manifest: &DestructionManifest, shots: u32, targets: u32) -> Vec<(Vec3, Vec3)> {
     let mut plan = Vec::with_capacity(shots as usize);
     if manifest.structures.is_empty() {
@@ -1644,7 +1798,12 @@ fn adaptive_shot(world: &mut World, tick: u32) -> Option<(Vec3, Vec3)> {
     Some((origin, (target - origin).normalize()))
 }
 
-fn fire(destruction: &mut CityDestruction, world: &mut World, origin: Vec3, direction: Vec3) {
+fn fire(
+    destruction: &mut CityDestruction,
+    world: &mut World,
+    origin: Vec3,
+    direction: Vec3,
+) -> Option<Vec3> {
     use vibe_land_physx_bridge::RaycastRequest;
     let hit = world
         .raycast(RaycastRequest {
@@ -1658,7 +1817,7 @@ fn fire(destruction: &mut CityDestruction, world: &mut World, origin: Vec3, dire
         .ok()
         .filter(|hit| hit.hit);
     let Some(hit) = hit else {
-        return;
+        return None;
     };
     let surface = Vec3::new(hit.position.x, hit.position.y, hit.position.z);
     let point = surface + direction * SHOT_BLAST_DEPTH_M;
@@ -1680,5 +1839,5 @@ fn fire(destruction: &mut CityDestruction, world: &mut World, origin: Vec3, dire
         SHOT_BLAST_RADIUS_M,
         SHOT_STRESS_IMPULSE,
         SHOT_PUSH_SPEED,
-    );
+    );    Some(surface)
 }

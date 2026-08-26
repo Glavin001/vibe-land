@@ -358,21 +358,19 @@ impl CityDestruction {
         if self.resim_passes == 0 {
             return;
         }
-        match world.resim_needed() {
-            Ok(true) => match world.resim_capture() {
-                Ok(n) if n > 0 => self.resim_captures += 1,
-                Ok(_) => self.resim_zero_captures += 1,
-                Err(e) => {
-                    if self.resim_last_error.is_none() {
-                        self.resim_last_error = Some(format!("capture: {e}"));
-                    }
-                    self.resim_errors += 1;
-                }
-            },
-            Ok(false) => self.resim_not_needed += 1,
+        // Capture EVERY frame, not only when needsResimulationSnapshot() asks.
+        //
+        // The library's own driver gates on that predicate only when
+        // ExtStressPhysXResimOptions::quietCaptureSkip is set, and it defaults
+        // to FALSE -- shouldCapture() returns true immediately. Gating on it
+        // produced 96 captures against 221 restores, so a restore could rewind
+        // to a capture several frames old instead of to the start of this one.
+        match world.resim_capture() {
+            Ok(n) if n > 0 => self.resim_captures += 1,
+            Ok(_) => self.resim_zero_captures += 1,
             Err(e) => {
                 if self.resim_last_error.is_none() {
-                    self.resim_last_error = Some(format!("needed: {e}"));
+                    self.resim_last_error = Some(format!("capture: {e}"));
                 }
                 self.resim_errors += 1;
             }

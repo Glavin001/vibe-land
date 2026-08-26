@@ -22,4 +22,5 @@ control-plane/.wrangler/
 control-plane/.dev.vars
 
 # Benchmark baselines are machine-specific; regenerate with scripts/bench-campaign.py
-bench-results/
+bench-results/*
+!bench-results/guardrails.json
