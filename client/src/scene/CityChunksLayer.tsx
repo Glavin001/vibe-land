@@ -47,6 +47,7 @@ import {
   shadowsEnabled,
 } from '../app/renderQuality';
 import { buildCityMaterial, buildCityMesh, type CityMeshState } from './cityChunkMesh';
+import { retireShellRange } from './cityShell';
 import { loadCityTextures } from './cityTextures';
 import {
   setChunkTeleportProbe,
@@ -839,6 +840,12 @@ export function CityChunksLayer({
       const probeCtx: ChunkWriteContext | undefined = recording
         ? { bodyKey: key, settling, bodySettled: body.settled, source: writeSource }
         : undefined;
+      // Support serial 0 is the intact structure: its chunks are AT rest by
+      // definition, so a write for them (repaint.all marks every body dirty,
+      // including this one) re-seats a pose that has not changed. Waking on it
+      // would dissolve the whole shell into per-chunk sub-draws for a frame
+      // where nothing moved -- the exact cost the shell exists to avoid.
+      const bodyIsSupport = (key & 0x3f_ffff) === 0;
       for (const slot of body.chunkSlots) {
         const instanceId = state.instanceIds[slot];
         if (instanceId < 0) {
@@ -849,6 +856,19 @@ export function CityChunksLayer({
           continue;
         }
         const mesh = renderable.mesh;
+        // First real movement: the chunk leaves the static shell and its own
+        // instance takes over, same frame, same pose. One-way -- see
+        // cityShell.ts for why a settled chunk never merges back.
+        if (!state.wokenBySlot[slot] && !bodyIsSupport) {
+          state.wokenBySlot[slot] = 1;
+          if (renderable.kind === 'batched' && state.shellIndexCountBySlot[slot] > 0) {
+            retireShellRange(renderable.mesh, {
+              start: state.shellIndexStartBySlot[slot],
+              count: state.shellIndexCountBySlot[slot],
+            });
+            renderable.mesh.setVisibleAt(instanceId, true);
+          }
+        }
         renderStats.instanceWrites += 1;
         writeInstance(
           renderable,

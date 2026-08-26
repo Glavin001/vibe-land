@@ -36,6 +36,7 @@ import {
   shadowsEnabled,
 } from '../app/renderQuality';
 import { writeInstance, type CityRenderable } from './cityChunkWrite';
+import { ShellBuilder } from './cityShell';
 import { renderStats } from '../city/renderStats';
 import { applyCityTriplanar } from './cityMaterialShader';
 import { attachInstanceAnchors, bakeRestAnchors } from './cityTexAnchor';
@@ -44,6 +45,7 @@ import { layerCodeForBuilding } from './cityTextures';
 const TMP_POSITION = new THREE.Vector3();
 const TMP_QUATERNION = new THREE.Quaternion();
 const TMP_COLOR = new THREE.Color();
+const IDENTITY_MATRIX = new THREE.Matrix4();
 
 /**
  * Uses of one shape below which it stays in its cell's batch.
@@ -101,6 +103,16 @@ export type CityMeshState = {
   belowStreakBySlot: Uint8Array;
   /** Bounding radius per chunk. */
   radii: Float32Array;
+  /**
+   * 1 once the slot's individual instance has taken over from the shell.
+   *
+   * Set for every slot outside a shell at build, so the wake test in the frame
+   * loop is one array read for the common case.
+   */
+  wokenBySlot: Uint8Array;
+  /** Slot -> [start,count] of its triangles inside its cell's shell, or -1. */
+  shellIndexStartBySlot: Int32Array;
+  shellIndexCountBySlot: Int32Array;
 };
 
 /**
@@ -350,6 +362,9 @@ type BuildSink = {
   instanceIds: Int32Array;
   hiddenBySlot: Uint8Array;
   belowStreakBySlot: Uint8Array;
+  wokenBySlot: Uint8Array;
+  shellIndexStartBySlot: Int32Array;
+  shellIndexCountBySlot: Int32Array;
   scales: Float32Array;
   anchors: Float32Array;
   baseColors: Float32Array;
@@ -358,10 +373,10 @@ type BuildSink = {
    * Vertices held by hull batches, against what they would hold if instances of
    * one shape still shared a copy.
    *
-   * They no longer can: each instance carries its own baked rest anchor. The
-   * ratio is the price of that, and it is worth watching because it is entirely
-   * pack-dependent -- 1.0 for a pack whose shards are all distinct, and bounded
-   * by MIN_SHARE_TO_INSTANCE for a pooled one.
+   * They no longer can: each instance carries its own baked rest anchor, and
+   * since the static shell landed each batch ALSO holds a merged rest-pose copy
+   * of every member -- so the ratio is roughly twice the per-instance figure.
+   * Watch it per pack; it is memory, not draws.
    */
   hullBatchVertices: number;
   hullBatchSharedVertices: number;
@@ -497,7 +512,15 @@ function buildCellHullBatch(
       .attributes.position.count;
   }
 
-  const mesh = new THREE.BatchedMesh(slots.length, vertexBudget, indexBudget, material);
+  // Budget doubles: the shell is a full second copy of every member. ~70k
+  // verts city-wide for the packs served today -- memory noise, and the trade
+  // buys the intact city back ~1,600 sub-draws (see cityShell.ts).
+  const mesh = new THREE.BatchedMesh(
+    slots.length + 1,
+    vertexBudget * 2,
+    indexBudget * 2,
+    material,
+  );
   mesh.castShadow = shadowsEnabled();
   mesh.receiveShadow = shadowsEnabled();
   // Per-instance culling walks every chunk to decide each one, which is the
@@ -511,20 +534,44 @@ function buildCellHullBatch(
 
   const meshIndex = sink.renderables.length;
   const renderable: CityRenderable = { kind: 'batched', mesh };
+
+  // Two passes so the shell can be the FIRST geometry in the batch, which pins
+  // its index range to absolute 0 -- the invariant `retireShellRange` needs.
+  const shell = new ShellBuilder();
   for (const slot of slots) {
     const geometry = prototypeOf(slot);
-    // Rewrite the prototype's anchor, then hand it over: addGeometry COPIES the
-    // vertex data into the batch's buffers, so the next instance of the same
-    // shape can reuse the same object with a different anchor.
+    // Rewrite the prototype's anchor in place: the shell COPIES, so one
+    // mutable prototype per shape serves every instance of it.
+    bakeRestAnchors(geometry, slot, sink.anchors, sink.scales);
+    const range = shell.append(geometry);
+    sink.shellIndexStartBySlot[slot] = range.start;
+    sink.shellIndexCountBySlot[slot] = range.count;
+    sink.wokenBySlot[slot] = 0;
+  }
+  const shellGeometryId = mesh.addGeometry(shell.build());
+  const shellInstanceId = mesh.addInstance(shellGeometryId);
+  mesh.setMatrixAt(shellInstanceId, IDENTITY_MATRIX);
+  mesh.setColorAt(shellInstanceId, TMP_COLOR.setRGB(1, 1, 1));
+
+  for (const slot of slots) {
+    const geometry = prototypeOf(slot);
+    // Re-baked unconditionally: prototypes are shared per shape, so after the
+    // shell pass a prototype holds whichever slot of its shape came LAST.
     bakeRestAnchors(geometry, slot, sink.anchors, sink.scales);
     const geometryId = mesh.addGeometry(geometry);
-    seatSlot(sink, client, renderable, meshIndex, slot, mesh.addInstance(geometryId), colour);
+    const instanceId = mesh.addInstance(geometryId);
+    seatSlot(sink, client, renderable, meshIndex, slot, instanceId, colour);
+    // Hidden until the chunk actually moves: a hidden instance is compacted
+    // out of the multi-draw entirely, so the intact cell costs ONE sub-draw.
+    mesh.setVisibleAt(instanceId, false);
   }
   mesh.computeBoundingSphere();
   sink.renderables.push(renderable);
   sink.cellOfRenderable.push(cell);
   sink.batchCount += 1;
-  sink.subDraws += slots.length;
+  // The shell. Wakes add live sub-draws at runtime; this counter is the
+  // intact-city figure.
+  sink.subDraws += 1;
 }
 
 /**
@@ -599,6 +646,11 @@ export function buildCityMesh(client: CityClient): CityMeshState {
     instanceIds: new Int32Array(count).fill(-1),
     hiddenBySlot: new Uint8Array(count),
     belowStreakBySlot: new Uint8Array(count),
+    // Every slot starts woken; buildCellHullBatch clears the flag for the
+    // slots it folds into a shell.
+    wokenBySlot: new Uint8Array(count).fill(1),
+    shellIndexStartBySlot: new Int32Array(count).fill(-1),
+    shellIndexCountBySlot: new Int32Array(count).fill(0),
     scales,
     anchors,
     baseColors: resolveTints(client, count),
@@ -675,5 +727,8 @@ export function buildCityMesh(client: CityClient): CityMeshState {
     hiddenBySlot: sink.hiddenBySlot,
     radii,
     belowStreakBySlot: sink.belowStreakBySlot,
+    wokenBySlot: sink.wokenBySlot,
+    shellIndexStartBySlot: sink.shellIndexStartBySlot,
+    shellIndexCountBySlot: sink.shellIndexCountBySlot,
   };
 }
