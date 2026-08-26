@@ -142,8 +142,17 @@ export function buildBoxGeometry(): THREE.BufferGeometry {
  * so both are normalised to the same shape rather than trusting them to match.
  *
  * Anything missing is synthesised: a sequential index for non-indexed
- * geometry, and zeroed UVs, which are unused by the untextured city material
- * but must still be present for the layouts to line up.
+ * geometry, and zeroed UVs. The UVs stay zeroed and stay unread -- the city is
+ * textured by projection from each chunk's rest pose rather than by UV, because
+ * a hull arrives as an unordered point cloud with no UVs to preserve and one
+ * geometry is shared by thousands of chunks. They exist only so the layouts
+ * line up.
+ *
+ * `cityAnchor` is the rest-pose position the projection is anchored to. It is
+ * created empty here and filled per instance by `bakeRestAnchors` on the
+ * batched path, or overwritten wholesale by an InstancedBufferAttribute of the
+ * same name on the instanced one. Either way every geometry entering a batch
+ * has to carry it, which is why it is minted here rather than at either use.
  */
 export function normalizeForBatching(geometry: THREE.BufferGeometry): THREE.BufferGeometry {
   if (!geometry.getAttribute('normal')) {
@@ -152,6 +161,12 @@ export function normalizeForBatching(geometry: THREE.BufferGeometry): THREE.Buff
   const vertexCount = geometry.getAttribute('position').count;
   if (!geometry.getAttribute('uv')) {
     geometry.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(vertexCount * 2), 2));
+  }
+  if (!geometry.getAttribute('cityAnchor')) {
+    geometry.setAttribute(
+      'cityAnchor',
+      new THREE.BufferAttribute(new Float32Array(vertexCount * 4), 4),
+    );
   }
   if (!geometry.getIndex()) {
     const index = new Uint32Array(vertexCount);

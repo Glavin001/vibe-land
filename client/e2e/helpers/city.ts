@@ -333,3 +333,52 @@ export async function sampleCity(
   }
   return samples;
 }
+
+/**
+ * Hide every DOM overlay, leaving only the WebGL canvas.
+ *
+ * Screenshots of the city are evidence about the RENDER, and the stats panel
+ * covers the left third while the controls card covers the bottom -- which is
+ * most of what a texture or lighting shot exists to show. Clicking the
+ * overlays' own collapse buttons is unreliable: they sit under the canvas and
+ * are not always hittable, and a click with no timeout waits for actionability
+ * forever, which reads as the spec hanging.
+ *
+ * Visibility rather than display, so nothing reflows and the canvas keeps its
+ * size -- a resize would change the aspect ratio between two shots meant to be
+ * compared.
+ */
+export async function hideDomOverlays(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    const canvas = document.querySelector('canvas');
+    if (!canvas) return;
+    const ancestors = new Set<Node>();
+    for (let node: Node | null = canvas; node; node = node.parentNode) ancestors.add(node);
+    document.querySelectorAll('body *').forEach((element) => {
+      if (ancestors.has(element) || canvas.contains(element)) return;
+      (element as HTMLElement).style.visibility = 'hidden';
+    });
+  });
+}
+
+/**
+ * Queue a server-side rebuild of the city, and wait for it to land.
+ *
+ * Specs that photograph or measure intact buildings need them intact, and the
+ * server keeps whatever the last run knocked down -- so a second run against a
+ * live server sees the first run's rubble. The reset is asynchronous (the
+ * handler only queues it), hence the wait on the bond count climbing back.
+ */
+export async function resetCity(page: Page): Promise<void> {
+  const before = (await cityStats(page)).brokenBonds;
+  if (before === 0) return;
+  const matchId = (await snapshot(page)).matchId;
+  const response = await page.request.post(`/city-reset/${matchId}`, { failOnStatusCode: false });
+  if (!response.ok()) throw new Error(`city-reset returned ${response.status()}`);
+  await waitForSnapshot(page, (s) => !!s.city && s.city.brokenBonds < before / 2, {
+    timeout: 60_000,
+    label: 'resetCity',
+  });
+  // The rebuild re-bootstraps the ledger; give the client a moment to draw it.
+  await page.waitForTimeout(2000);
+}

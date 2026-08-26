@@ -25,3 +25,11 @@ destruction/assets/scenes/fractured-downtown-pool*.json
 destruction/assets/scenes/fractured-downtown-floor*.json
 destruction/assets/scenes/fractured-downtown-all.json
 client/tools/profiles/
+
+# Cached Poly Haven downloads for scripts/build-city-textures.py; the baked
+# sheets under client/public/textures are committed, the sources are not.
+client/scripts/.cache/
+
+# Capture output from the city texture specs; evidence, not source.
+client/e2e/texture-qa/
+client/e2e/texture-tuning/

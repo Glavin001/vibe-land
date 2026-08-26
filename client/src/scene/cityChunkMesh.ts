@@ -31,6 +31,9 @@ import { buildBoxGeometry, buildHullGeometry, chunkShape } from '../city/chunkGe
 import { partitionSlotsByCell } from '../city/renderScheduling';
 import { cityPbrLighting, shadowsEnabled } from '../app/renderQuality';
 import { writeInstance, type CityRenderable } from './cityChunkWrite';
+import { applyCityTriplanar } from './cityMaterialShader';
+import { attachInstanceAnchors, bakeRestAnchors } from './cityTexAnchor';
+import { layerCodeForBuilding } from './cityTextures';
 
 const TMP_POSITION = new THREE.Vector3();
 const TMP_QUATERNION = new THREE.Quaternion();
@@ -101,13 +104,75 @@ export type CityMeshState = {
  * at all -- but on a fill-bound phone it is a large share of the frame.
  */
 export function buildCityMaterial(): THREE.Material {
-  return cityPbrLighting()
-    ? new THREE.MeshStandardMaterial({ roughness: 0.85, metalness: 0.05 })
+  const pbr = cityPbrLighting();
+  const material = pbr
+    // roughness 1 because the packed surface map now IS the roughness and three
+    // multiplies the two. Any constant below 1 would scale every layer towards
+    // gloss, which on concrete reads as wet.
+    ? new THREE.MeshStandardMaterial({ roughness: 1, metalness: 0.02 })
     : new THREE.MeshLambertMaterial();
+  // Must happen here, on the object that was just constructed. Material.clone()
+  // copies no function properties, so a cloned city material would silently
+  // lose the injection and render untextured with no error anywhere.
+  applyCityTriplanar(material, pbr);
+  return material;
 }
 
-function structureColor(structureId: number): THREE.Color {
-  return TMP_COLOR.setHSL(((structureId * 47) % 360) / 360, 0.35, 0.62);
+/**
+ * The base a chunk's instance colour starts from.
+ *
+ * Buildings used to be told apart by a per-structure hue; they are now told
+ * apart by which concrete they are made of, which the shader picks per BUILDING
+ * (see `resolveBuildingIds`). The colour channel is still written every frame,
+ * but only to carry the settled-darkening and the body-state debug palette --
+ * and those are MULTIPLIED over the texture (`<color_fragment>` runs after
+ * `<map_fragment>`), so the base has to be white or it tints every layer.
+ *
+ * Kept as a function rather than a constant because it hands back the shared
+ * scratch colour, exactly as the per-structure version did.
+ */
+function chunkBaseColor(): THREE.Color {
+  return TMP_COLOR.setRGB(1, 1, 1);
+}
+
+/**
+ * Slot -> the slot identifying the building it belongs to.
+ *
+ * A "building" is not a manifest concept. The downtown pack the city actually
+ * serves is ONE structure holding 41,050 chunks, so `structureId` names the
+ * whole skyline and is useless for telling one tower from the next -- keying
+ * concrete on it would give every building in the city the same material.
+ *
+ * What does separate them is bonds: the fracturer bonds chunks within a
+ * building and never between buildings, so a connected component of the bond
+ * graph IS a building. Measured on `fractured-downtown-all.json`: 27
+ * components, the largest with a 21 x 21 m footprint -- one tower.
+ *
+ * Union-find with path halving over the whole bond list, which is one pass the
+ * manifest parse already pays for elsewhere. Chunks with no bonds are their own
+ * component, which is correct: a lone slab is its own little piece of concrete.
+ */
+function resolveBuildingIds(client: CityClient, count: number): Int32Array {
+  const parent = new Int32Array(count);
+  for (let slot = 0; slot < count; slot += 1) parent[slot] = slot;
+  const find = (slot: number): number => {
+    let node = slot;
+    while (parent[node] !== node) {
+      parent[node] = parent[parent[node]];
+      node = parent[node];
+    }
+    return node;
+  };
+  for (const structure of client.manifest.manifest.structures) {
+    for (const bond of structure.bonds) {
+      const a = find(client.topology.slotOf(structure.structureId, bond.node0));
+      const b = find(client.topology.slotOf(structure.structureId, bond.node1));
+      if (a !== b) parent[a] = b;
+    }
+  }
+  // Flatten so the anchor pass is a plain array read rather than a walk.
+  for (let slot = 0; slot < count; slot += 1) parent[slot] = find(slot);
+  return parent;
 }
 
 type ResolvedShapes = {
@@ -126,6 +191,17 @@ type ResolvedShapes = {
    * the district -- splits.
    */
   localXZ: Float32Array;
+  /**
+   * Per slot: the chunk's rest-pose world position, plus its building's packed
+   * texture layers in `.w`.
+   *
+   * This is what the triplanar mapping projects from, and taking it from the
+   * REST pose rather than the live one is the whole reason a shard keeps its
+   * texture when it breaks off and tumbles.
+   */
+  anchors: Float32Array;
+  /** Distinct bonded components, i.e. how many buildings the concrete spans. */
+  buildingCount: number;
 };
 
 /**
@@ -137,10 +213,14 @@ type ResolvedShapes = {
  */
 function resolveShapes(client: CityClient, count: number): ResolvedShapes {
   const manifest = client.manifest.manifest;
+  const buildingOfSlot = resolveBuildingIds(client, count);
   const scales = new Float32Array(count * 3);
   const radii = new Float32Array(count);
   const shapeBySlot = new Array<ReturnType<typeof chunkShape>>(count);
   const localXZ = new Float32Array(count * 2);
+  const anchors = new Float32Array(count * 4);
+  const buildingCount = new Set(buildingOfSlot).size;
+  let rotatedStructures = 0;
 
   for (const structure of manifest.structures) {
     TMP_QUATERNION.set(
@@ -149,12 +229,22 @@ function resolveShapes(client: CityClient, count: number): ResolvedShapes {
       structure.worldRotation[2],
       structure.worldRotation[3],
     );
+    // The rest-space mapping has no rotation term: a vertex's texture
+    // coordinate is its anchor plus its unrotated local offset. Every pack ever
+    // authored stamps buildings with an identity rotation, but the manifest
+    // type permits otherwise, and a rotated building would silently texture as
+    // though it were axis-aligned rather than fail. Counted, not thrown.
+    if (Math.abs(TMP_QUATERNION.w) < 0.999_999) rotatedStructures += 1;
     for (const chunk of structure.chunks) {
       const slot = client.topology.slotOf(structure.structureId, chunk.nodeIndex);
       TMP_POSITION.set(chunk.centroid[0], chunk.centroid[1], chunk.centroid[2])
         .applyQuaternion(TMP_QUATERNION);
       localXZ[slot * 2] = TMP_POSITION.x;
       localXZ[slot * 2 + 1] = TMP_POSITION.z;
+      anchors[slot * 4] = structure.worldPosition[0] + TMP_POSITION.x;
+      anchors[slot * 4 + 1] = structure.worldPosition[1] + TMP_POSITION.y;
+      anchors[slot * 4 + 2] = structure.worldPosition[2] + TMP_POSITION.z;
+      anchors[slot * 4 + 3] = layerCodeForBuilding(buildingOfSlot[slot]);
 
       const shape = chunkShape(chunk);
       shapeBySlot[slot] = shape;
@@ -175,7 +265,13 @@ function resolveShapes(client: CityClient, count: number): ResolvedShapes {
         : 0.5 * Math.hypot(scales[slot * 3], scales[slot * 3 + 1], scales[slot * 3 + 2]);
     }
   }
-  return { shapeBySlot, scales, radii, localXZ };
+  if (rotatedStructures > 0) {
+    console.warn(
+      '[city] rest-space texturing assumes an unrotated structure',
+      { rotatedStructures },
+    );
+  }
+  return { shapeBySlot, scales, radii, localXZ, anchors, buildingCount };
 }
 
 type HullSharing = {
@@ -223,7 +319,7 @@ function groupHullShapes(shapeBySlot: ResolvedShapes['shapeBySlot'], count: numb
 function resolveTints(client: CityClient, count: number): Float32Array {
   const baseColors = new Float32Array(count * 3);
   for (const structure of client.manifest.manifest.structures) {
-    const tint = structureColor(structure.structureId);
+    const tint = chunkBaseColor();
     for (const chunk of structure.chunks) {
       const slot = client.topology.slotOf(structure.structureId, chunk.nodeIndex);
       baseColors[slot * 3] = tint.r;
@@ -243,8 +339,20 @@ type BuildSink = {
   hiddenBySlot: Uint8Array;
   belowStreakBySlot: Uint8Array;
   scales: Float32Array;
+  anchors: Float32Array;
   baseColors: Float32Array;
   totalVertices: number;
+  /**
+   * Vertices held by hull batches, against what they would hold if instances of
+   * one shape still shared a copy.
+   *
+   * They no longer can: each instance carries its own baked rest anchor. The
+   * ratio is the price of that, and it is worth watching because it is entirely
+   * pack-dependent -- 1.0 for a pack whose shards are all distinct, and bounded
+   * by MIN_SHARE_TO_INSTANCE for a pooled one.
+   */
+  hullBatchVertices: number;
+  hullBatchSharedVertices: number;
   batchCount: number;
   instancedCount: number;
   /**
@@ -290,6 +398,11 @@ function buildCellBoxes(
   colour: THREE.Color,
 ): void {
   if (slots.length === 0) return;
+  // A fresh unit cube per cell, and it has to stay that way: three's VAO cache
+  // is keyed on geometry id with no per-object dimension, so sharing one cube
+  // across cells would give every cell the same anchor buffer -- the last one
+  // written. Deduplicating it is the obvious future optimisation and it would
+  // silently texture the whole city as one block.
   const geometry = buildBoxGeometry();
   sink.totalVertices += geometry.attributes.position.count;
   const mesh = new THREE.InstancedMesh(geometry, material, slots.length);
@@ -307,6 +420,7 @@ function buildCellBoxes(
   for (let i = 0; i < slots.length; i += 1) {
     seatSlot(sink, client, renderable, meshIndex, slots[i], i, colour);
   }
+  attachInstanceAnchors(mesh, slots, sink.anchors, sink.scales);
   mesh.instanceMatrix.needsUpdate = true;
   if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
   // Seed the culling sphere rather than leaving it null for three to compute
@@ -331,24 +445,45 @@ function buildCellHullBatch(
   colour: THREE.Color,
 ): void {
   if (slots.length === 0) return;
-  const localHulls = new Map<string, THREE.BufferGeometry>();
-  for (const slot of slots) {
+  // One prototype per distinct shape in this cell, reused across every instance
+  // of it. The unit cube is minted lazily for the same reason it used to be
+  // added unconditionally: `chunkShape` falls back to a box for a malformed
+  // hull, and a slot sorted here on its shape kind still has to land somewhere.
+  const prototypes = new Map<string, THREE.BufferGeometry>();
+  let boxPrototype: THREE.BufferGeometry | null = null;
+  const prototypeOf = (slot: number): THREE.BufferGeometry => {
     const shape = shapeBySlot[slot];
-    if (shape.kind === 'hull' && !localHulls.has(shape.key)) {
-      localHulls.set(shape.key, buildHullGeometry(shape.points));
+    if (shape.kind !== 'hull') {
+      boxPrototype = boxPrototype ?? buildBoxGeometry();
+      return boxPrototype;
     }
-  }
-  // The unit cube still goes in: `chunkShape` falls back to a box for a
-  // malformed hull, and a slot sorted here on its shape kind must have
-  // somewhere to land if that fallback fires.
-  const boxGeometry = buildBoxGeometry();
-  let vertexBudget = boxGeometry.attributes.position.count;
-  let indexBudget = boxGeometry.index?.count ?? 0;
-  for (const geometry of localHulls.values()) {
+    let geometry = prototypes.get(shape.key);
+    if (!geometry) {
+      geometry = buildHullGeometry(shape.points);
+      prototypes.set(shape.key, geometry);
+    }
+    return geometry;
+  };
+
+  // Budgeted per INSTANCE rather than per shape. Each instance gets its own
+  // copy of the vertices because each carries its own baked rest anchor, which
+  // is what keeps the whole city on one material -- see cityTexAnchor.
+  let vertexBudget = 0;
+  let indexBudget = 0;
+  for (const slot of slots) {
+    const geometry = prototypeOf(slot);
     vertexBudget += geometry.attributes.position.count;
     indexBudget += geometry.index?.count ?? 0;
   }
   sink.totalVertices += vertexBudget;
+  sink.hullBatchVertices += vertexBudget;
+  for (const geometry of prototypes.values()) {
+    sink.hullBatchSharedVertices += geometry.attributes.position.count;
+  }
+  if (boxPrototype) {
+    sink.hullBatchSharedVertices += (boxPrototype as THREE.BufferGeometry)
+      .attributes.position.count;
+  }
 
   const mesh = new THREE.BatchedMesh(slots.length, vertexBudget, indexBudget, material);
   mesh.castShadow = shadowsEnabled();
@@ -362,19 +497,15 @@ function buildCellHullBatch(
   // intersects the frustum, which is why culling used to be off here.
   mesh.frustumCulled = true;
 
-  const boxGeometryId = mesh.addGeometry(boxGeometry);
-  const hullGeometryIds = new Map<string, number>();
-  for (const [key, geometry] of localHulls) {
-    hullGeometryIds.set(key, mesh.addGeometry(geometry));
-  }
-
   const meshIndex = sink.renderables.length;
   const renderable: CityRenderable = { kind: 'batched', mesh };
   for (const slot of slots) {
-    const shape = shapeBySlot[slot];
-    const geometryId = shape.kind === 'hull'
-      ? (hullGeometryIds.get(shape.key) ?? boxGeometryId)
-      : boxGeometryId;
+    const geometry = prototypeOf(slot);
+    // Rewrite the prototype's anchor, then hand it over: addGeometry COPIES the
+    // vertex data into the batch's buffers, so the next instance of the same
+    // shape can reuse the same object with a different anchor.
+    bakeRestAnchors(geometry, slot, sink.anchors, sink.scales);
+    const geometryId = mesh.addGeometry(geometry);
     seatSlot(sink, client, renderable, meshIndex, slot, mesh.addInstance(geometryId), colour);
   }
   mesh.computeBoundingSphere();
@@ -427,6 +558,7 @@ function buildSharedShapeMeshes(
         sink.baseColors[slot * 3 + 2],
       ));
     }
+    attachInstanceAnchors(mesh, slots, sink.anchors, sink.scales);
     mesh.instanceMatrix.needsUpdate = true;
     if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
     sink.renderables.push(renderable);
@@ -443,7 +575,8 @@ export function buildCityMesh(client: CityClient): CityMeshState {
   const manifest = client.manifest.manifest;
   const count = client.topology.chunkCount;
 
-  const { shapeBySlot, scales, radii, localXZ } = resolveShapes(client, count);
+  const { shapeBySlot, scales, radii, localXZ, anchors, buildingCount }
+    = resolveShapes(client, count);
   const sharing = groupHullShapes(shapeBySlot, count);
   const material = buildCityMaterial();
 
@@ -455,8 +588,11 @@ export function buildCityMesh(client: CityClient): CityMeshState {
     hiddenBySlot: new Uint8Array(count),
     belowStreakBySlot: new Uint8Array(count),
     scales,
+    anchors,
     baseColors: resolveTints(client, count),
     totalVertices: 0,
+    hullBatchVertices: 0,
+    hullBatchSharedVertices: 0,
     batchCount: 0,
     instancedCount: 0,
     subDraws: 0,
@@ -470,7 +606,7 @@ export function buildCityMesh(client: CityClient): CityMeshState {
     // Cells are cut inside a structure, so a grid of separate buildings still
     // gets at least one batch per building (each far smaller than a cell) and a
     // district pack gets one per city block.
-    const colour = structureColor(structure.structureId);
+    const colour = chunkBaseColor();
     for (const slots of partitionSlotsByCell(localXZ, structureSlots).values()) {
       // Cell ids run across structures, so two structures' cells never share a
       // stagger phase just because both were the third cell of their own pack.
@@ -495,12 +631,21 @@ export function buildCityMesh(client: CityClient): CityMeshState {
   console.info('[city] chunk meshes ready', {
     chunks: count,
     structures: manifest.structures.length,
+    // Bonded components, i.e. buildings -- what the concrete is keyed on. One
+    // structure can hold the whole skyline, so this is the number that matters.
+    buildings: buildingCount,
     instancedCells: sink.instancedCount,
     hullBatches: sink.batchCount,
     // Distinct shard shapes, and how many were shared widely enough to
     // instance. 7,160 shapes for 7,160 shards means nothing can be instanced.
     hullShapes: sharing.slotsOfHullKey.size,
     instancedHullShapes: sharing.instancedKeys.size,
+    // Vertices in hull batches, and the multiple over what shape-sharing would
+    // have cost. That multiple is the price of per-instance rest anchors.
+    hullBatchVertices: sink.hullBatchVertices,
+    hullBatchVertexRatio: sink.hullBatchSharedVertices > 0
+      ? Number((sink.hullBatchVertices / sink.hullBatchSharedVertices).toFixed(2))
+      : 1,
     // Sub-draws, not draw calls: this is the number frame time tracks.
     subDraws: sink.subDraws,
     vertices: sink.totalVertices,

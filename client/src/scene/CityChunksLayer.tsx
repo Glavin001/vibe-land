@@ -41,6 +41,7 @@ import type { LedgerBody } from '../city/topology';
 import { shouldUpdateThisFrame, updateStrideForDistanceSq } from '../city/renderScheduling';
 import { cityPbrLighting, onRenderQualityChange, shadowsEnabled } from '../app/renderQuality';
 import { buildCityMaterial, buildCityMesh, type CityMeshState } from './cityChunkMesh';
+import { loadCityTextures } from './cityTextures';
 import {
   setChunkTeleportProbe,
   writeInstance,
@@ -331,6 +332,12 @@ export function CityChunksLayer({
    * than here because that is where the scene group is in scope.
    */
   const rebuildRequestedRef = useRef(false);
+
+  // Deliberately not awaited anywhere: the arrays exist from the first frame
+  // filled with a neutral concrete grey, and the sheets write into them in
+  // place when they land. Blocking the city on 5 MB of texture would trade a
+  // visible delay for a cosmetic one.
+  useEffect(loadCityTextures, []);
 
   // Applied to the live meshes rather than forcing a rebuild: castShadow is a
   // plain flag on the batch, and the shared material is one object swapped in
