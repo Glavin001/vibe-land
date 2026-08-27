@@ -6,6 +6,11 @@
 #include "destruction.h"
 #endif
 
+#if defined(__x86_64__) || defined(_M_X64)
+#include <x86intrin.h>
+#define VIBE_HAVE_RDTSC 1
+#endif
+
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -128,6 +133,85 @@ bool contact_cse_enabled() {
     return value == nullptr || std::string(value) != "0";
   }();
   return enabled;
+}
+
+/// Cycle counter for probes that fire thousands of times per tick.
+///
+/// `steady_clock::now()` costs ~20-25 ns; `rdtsc` costs ~7. At cascade rates
+/// (6.5k contact callbacks/tick, two reads each) that is the difference
+/// between ~0.30 ms of measurement overhead and ~0.09 -- and the 0.30 was
+/// enough to swamp the very costs the sub-span probes were added to price.
+/// Cheap enough to time EVERY callback exactly instead of extrapolating from
+/// a 1-in-8 sample, which is the point: an exact small number beats a
+/// sampled large one.
+///
+/// Assumes an invariant TSC (every x86-64 CPU since Nehalem). The
+/// calibration below is checked against steady_clock at startup, and
+/// end_step cross-checks the result against a wall-clock bracket every tick,
+/// publishing `tsc_suspect` if they disagree — a clock this code trusts must
+/// be able to report its own failure.
+inline std::uint64_t cycle_now() {
+#ifdef VIBE_HAVE_RDTSC
+  return __rdtsc();
+#else
+  return static_cast<std::uint64_t>(
+      std::chrono::steady_clock::now().time_since_epoch().count());
+#endif
+}
+
+/// Milliseconds per cycle, calibrated once against steady_clock.
+double cycles_to_ms_factor() {
+  static const double factor = [] {
+#ifdef VIBE_HAVE_RDTSC
+    const auto wall_start = std::chrono::steady_clock::now();
+    const std::uint64_t cycle_start = cycle_now();
+    // 20 ms is long enough that scheduler noise is <1% and short enough to
+    // stay invisible in startup.
+    while (std::chrono::steady_clock::now() - wall_start <
+           std::chrono::milliseconds(20)) {
+    }
+    const std::uint64_t cycles = cycle_now() - cycle_start;
+    const double ms = std::chrono::duration<double, std::milli>(
+                          std::chrono::steady_clock::now() - wall_start)
+                          .count();
+    if (cycles == 0 || ms <= 0.0) {
+      return 0.0;
+    }
+    return ms / static_cast<double>(cycles);
+#else
+    // steady_clock fallback: cycle_now already returns its native ticks.
+    return std::chrono::duration<double, std::milli>(
+               std::chrono::steady_clock::duration(1))
+        .count();
+#endif
+  }();
+  return factor;
+}
+
+/// How often to measure PhysX's own simulation wall time by polling instead
+/// of blocking. 0 disables; N samples one tick in N.
+///
+/// The poll does not merely add overhead: it converts a blocking wait into a
+/// spin, so the sampled tick pays its whole sim_wall in burnt core, competing
+/// with PhysX's task threads and the Blast walks. Cost is therefore
+/// sim_wall / interval. Measured at interval 16 on a grid-2 bombardment:
+/// +0.29 ms/tick weighted, against 4.8 ms sim_wall at load — 4.8/16 = 0.30
+/// predicted, so the model is linear and trustworthy.
+///
+/// Default 64 = ~0.075 ms/tick, about one sample a second, which is dozens
+/// of samples per regime across any real session. That is the point of
+/// sampling rather than the old all-or-nothing PROFILE_FETCH (+0.91 ms and
+/// therefore off in production): the split is now cheap enough to leave ON
+/// while people play.
+unsigned gpu_sample_interval() {
+  static const unsigned interval = [] {
+    if (const char *raw = std::getenv("VIBE_PHYSX_GPU_SAMPLE_TICKS")) {
+      const long parsed = std::atol(raw);
+      return parsed < 0 ? 0u : static_cast<unsigned>(parsed);
+    }
+    return 64u;
+  }();
+  return interval;
 }
 
 /// A/B for the A1+A2 lookup elisions: note_pair_load reusing the manifold's
@@ -472,19 +556,19 @@ public:
 
   void onContact(const PxContactPairHeader &header,
                  const PxContactPair *pairs, PxU32 pair_count) override {
-    // Sampled self-timing: this callback runs INSIDE fetchResults, so its
-    // cost lands undifferentiated in physics_fetch_copy_ms — the conflation
-    // that fed a whole wrong optimization line. Timing every call would tax
-    // the thing measured (~0.3 ms at cascade rates), so 1 call in 8 is timed
-    // and scaled; the estimate is published as the contact_callback_ms span.
+    // EXACT self-timing: this callback runs INSIDE fetchResults, so its cost
+    // lands undifferentiated in the result-copy number — the conflation that
+    // fed a whole wrong optimization line. Every invocation is now timed with
+    // the cycle counter (~7 ns/read) rather than 1-in-8 with steady_clock
+    // (~25 ns), so the published figure is a measurement rather than an
+    // extrapolation, at ~0.09 ms/tick of overhead at cascade rates.
     ++contact_callback_calls_;
     ++contact_callbacks_this_step_;
-    const bool sample_this_call = (contact_callback_calls_ & 7u) == 0;
-    // Sub-attribution costs more than the parts it prices; opt-in only.
-    const bool sample_subspans = sample_this_call && profile_callback_enabled();
-    const auto callback_started = sample_this_call
-        ? std::chrono::steady_clock::now()
-        : std::chrono::steady_clock::time_point{};
+    const std::uint64_t callback_started = cycle_now();
+    // Sub-attribution costs more than the parts it prices; opt-in only, and
+    // still sampled when on.
+    const bool sample_subspans =
+        profile_callback_enabled() && (contact_callback_calls_ & 7u) == 0;
     const std::uint32_t entity_a = actor_entity_id(header.actors[0]);
     const std::uint32_t entity_b = actor_entity_id(header.actors[1]);
     for (PxU32 pair_index = 0; pair_index < pair_count; ++pair_index) {
@@ -659,14 +743,7 @@ public:
       }
 #endif
     }
-    if (sample_this_call) {
-      // x8: this call stands for itself and the seven unsampled ones.
-      contact_callback_ms_ +=
-          8.0 *
-          std::chrono::duration<double, std::milli>(
-              std::chrono::steady_clock::now() - callback_started)
-              .count();
-    }
+    contact_callback_cycles_ += cycle_now() - callback_started;
   }
 
   void add_static_box(const FfiStaticBoxDesc &desc) {
@@ -1022,16 +1099,39 @@ public:
     step_in_flight_ = true;
   }
 
-  /// Wait for the simulation and fetch its results.
+  /// Wait for the simulation and fetch its results, decomposed.
   ///
-  /// `VIBE_PHYSX_PROFILE_FETCH=1` polls instead of blocking, which separates
-  /// two costs that `fetchResults(true)` reports as one: time spent waiting on
-  /// the GPU, versus the cost of the call that actually copies results back.
-  /// Polling burns a core, so it is opt-in and off by default.
+  /// What the tick actually spends on rigid-body physics was, until now,
+  /// three costs reported as one. `fetchResults(true)` blocks until PhysX is
+  /// done AND copies the results back AND dispatches our contact callbacks,
+  /// so a single number covered: the simulation itself, PhysX's readback,
+  /// and our own host code. This splits all three:
+  ///
+  ///   sim_wall  — dispatch to results-ready. PhysX's own simulation wall
+  ///               time: GPU kernels plus whatever PhysX runs on its task
+  ///               threads concurrently. Deliberately NOT called "gpu" —
+  ///               from outside the SDK the two are not separable, and a
+  ///               release-config PhysX compiles its internal profile zones
+  ///               out, so there is no finer split available without
+  ///               rebuilding the SDK.
+  ///   fetch_call— the successful fetchResults call: PhysX's result copy
+  ///               plus our callbacks, which run inside it.
+  ///   callbacks — ours, timed exactly by cycle counter (see cycle_now).
+  ///   result_copy = fetch_call - callbacks: PhysX's readback alone.
+  ///
+  /// sim_wall needs polling, which burns a core, so it is SAMPLED (one tick
+  /// in `VIBE_PHYSX_GPU_SAMPLE_TICKS`, default 16 — about 0.06 ms/tick
+  /// amortised against 0.91 for polling every tick). `VIBE_PHYSX_PROFILE_
+  /// FETCH=1` still forces every tick, for traces that want it.
   void end_step() {
     require(step_in_flight_, "end_step called without begin_step");
+    contact_callback_cycles_ = 0;
     const auto fetch_start = std::chrono::steady_clock::now();
-    if (profile_fetch_) {
+    const unsigned interval = gpu_sample_interval();
+    const bool sample_sim_wall =
+        profile_fetch_ ||
+        (interval > 0 && (completed_steps_ % interval) == 0);
+    if (sample_sim_wall) {
       auto last_call_start = fetch_start;
       bool ready = false;
       while (!ready) {
@@ -1044,11 +1144,45 @@ public:
               .count();
       last_fetch_copy_ms_ =
           std::chrono::duration<float, std::milli>(end - last_call_start).count();
+      last_sim_wall_ms_ = last_gpu_wait_ms_;
+      last_fetch_call_ms_ = last_fetch_copy_ms_;
+      sim_wall_samples_ = 1;
     } else {
       const bool succeeded = scene_->fetchResults(true);
       require(succeeded, "PhysX fetchResults failed");
       last_gpu_wait_ms_ = 0.0f;
       last_fetch_copy_ms_ = 0.0f;
+      // Unsampled tick: the blocking call covers wait + copy + callbacks
+      // together, so only the callback share is separable here.
+      last_sim_wall_ms_ = 0.0f;
+      last_fetch_call_ms_ = 0.0f;
+      sim_wall_samples_ = 0;
+    }
+    const double callback_ms = static_cast<double>(contact_callback_cycles_) *
+                               cycles_to_ms_factor();
+    contact_callback_ms_ = callback_ms;
+    // The whole fetch, always measured: on unsampled ticks this is the only
+    // fetch number there is, and callbacks come out of it either way.
+    const double fetch_total_ms =
+        std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - fetch_start)
+            .count();
+    last_fetch_total_ms_ = static_cast<float>(fetch_total_ms);
+    // ONLY on a sampled tick. On a blocking tick the fetch covers wait AND
+    // copy, so subtracting callbacks from it yields "wait + copy", which
+    // under the name result_copy would reintroduce precisely the conflation
+    // this split exists to remove. Left at 0 and gated by sim_wall_sampled.
+    last_result_copy_ms_ =
+        sample_sim_wall
+            ? static_cast<float>(std::max(0.0, last_fetch_call_ms_ - callback_ms))
+            : 0.0f;
+    // A clock that cannot be checked is a clock that lies quietly. Our
+    // callbacks run inside the fetch, so their measured cost can never
+    // exceed it; a violation means the TSC calibration drifted (or the CPU
+    // migrated to a core with an unsynchronised counter) and every number
+    // derived from it is suspect.
+    if (callback_ms > fetch_total_ms * 1.05 + 0.05) {
+      ++tsc_suspect_ticks_;
     }
     const auto end = std::chrono::steady_clock::now();
     last_fetch_ms_ =
@@ -1198,7 +1332,19 @@ public:
     // Our callback share of fetchResults (sampled 1-in-8, x8 scaled) — the
     // split that separates "PhysX copying results" from "our contact
     // handlers", which used to be one indistinguishable fetch_copy number.
+    // Kept under its old name so existing traces and comparisons keep
+    // working, but it is no longer an estimate: every callback is timed.
     span("contact_callback_est_ms", contact_callback_ms_, 0);
+    // The rigid-body decomposition. sim_wall and fetch_call are 0 on
+    // unsampled ticks; sim_wall_sampled marks the ones that carry a number,
+    // so an average is taken over the right denominator rather than being
+    // diluted by the zeros.
+    span("sim_wall_ms", static_cast<double>(last_sim_wall_ms_), 0);
+    span("fetch_call_ms", static_cast<double>(last_fetch_call_ms_), 0);
+    span("sim_wall_sampled", static_cast<double>(sim_wall_samples_), 2);
+    span("result_copy_ms", static_cast<double>(last_result_copy_ms_), 0);
+    span("fetch_total_ms", static_cast<double>(last_fetch_total_ms_), 0);
+    span("tsc_suspect_ticks", static_cast<double>(tsc_suspect_ticks_), 2);
     span("cb_extract_ms", cb_extract_ms_, 0);
     span("cb_queue_ms", cb_queue_ms_, 0);
     span("cb_pair_load_ms", cb_pair_load_ms_, 0);
@@ -1729,6 +1875,25 @@ private:
   /// per-step contact counts.
   std::uint64_t contact_callback_calls_ = 0;
   double contact_callback_ms_ = 0.0;
+  /// Exact per-step callback cost in cycles, reset at the top of each fetch.
+  std::uint64_t contact_callback_cycles_ = 0;
+  /// PhysX's own simulation wall time and result-copy call, on sampled ticks
+  /// only (see gpu_sample_interval); 0 on unsampled ticks, with
+  /// sim_wall_samples_ saying which kind of tick this was so an average is
+  /// taken over the right denominator.
+  float last_sim_wall_ms_ = 0.0f;
+  float last_fetch_call_ms_ = 0.0f;
+  std::uint32_t sim_wall_samples_ = 0;
+  /// fetch minus our callbacks: PhysX copying results back, alone. Measured
+  /// every tick, because the callback side is now exact.
+  float last_result_copy_ms_ = 0.0f;
+  /// The whole fetch, every tick: wait + copy + callbacks on a blocking
+  /// tick, the same three on a sampled one. The denominator the parts are
+  /// checked against.
+  float last_fetch_total_ms_ = 0.0f;
+  /// Ticks where the callback total exceeded the fetch that contains it —
+  /// impossible unless the cycle counter is untrustworthy.
+  std::uint64_t tsc_suspect_ticks_ = 0;
   // A0 sub-attribution of the callback cost, same sampling and x8 scaling.
   // extract = resize+extractContacts; queue = the per-point loop (accumulate
   // + queue_contact_at); pair_load = note_pair_load; wake = note_contact_pair
