@@ -1044,6 +1044,12 @@ impl PhysxPhysicsArena {
         )
     }
 
+    /// Generic named spans stashed by the most recent stats read inside
+    /// [`Self::health`]; call AFTER health() for spans of the same read.
+    pub fn take_physics_spans(&self) -> Vec<vibe_land_physx_bridge::NamedSpan> {
+        self.world.take_world_spans()
+    }
+
     pub fn health(&self) -> PhysicsHealth {
         let stats = self.world.stats().expect("PhysX stats readback failed");
         PhysicsHealth {

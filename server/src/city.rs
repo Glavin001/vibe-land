@@ -1558,6 +1558,15 @@ impl CityRuntime {
         }
     }
 
+    /// This tick's generic bridge spans (see NamedSpan); empty off physx.
+    pub fn extra_spans(&self) -> Vec<vibe_land_destruction::types::NamedSpan> {
+        match &self.backend {
+            #[cfg(feature = "destruction")]
+            CityBackend::Physx(backend) => backend.extra_spans().to_vec(),
+            _ => Vec::new(),
+        }
+    }
+
     pub fn stats(&self) -> DestructionStats {
         match &self.backend {
             CityBackend::Synthetic(backend) => backend.stats(),

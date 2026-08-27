@@ -577,6 +577,19 @@ impl PhysicsArena {
         }
     }
 
+    /// Generic bridge spans stashed by the health() read; empty off physx.
+    #[cfg(feature = "physx-gpu")]
+    pub fn take_physics_spans(&self) -> Vec<vibe_land_physx_bridge::NamedSpan> {
+        match &self.backend {
+            PhysicsBackend::Rapier(_) => Vec::new(),
+            PhysicsBackend::Physx(arena) => arena.take_physics_spans(),
+        }
+    }
+    #[cfg(not(feature = "physx-gpu"))]
+    pub fn take_physics_spans(&self) -> Vec<vibe_land_destruction::types::NamedSpan> {
+        Vec::new()
+    }
+
     pub fn awake_dynamic_body_counts(
         &self,
         player_centers: &[[f32; 3]],

@@ -583,9 +583,37 @@ pub const fn gpu_support_compiled() -> bool {
     cfg!(feature = "gpu")
 }
 
+/// One generically-authored metric from the bridge — see `FfiNamedSpan`.
+/// Rides BESIDE the Copy stats structs (a Vec on them would break every Copy
+/// consumer), stashed per stats call and drained with `take_*_spans`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct NamedSpan {
+    pub name: String,
+    pub value: f64,
+    /// 0 = wall-clock ms, 1 = slot-summed ms (not comparable to wall
+    /// parents), 2 = plain count.
+    pub kind: u8,
+}
+
+#[cfg(feature = "gpu")]
+fn convert_spans(spans: Vec<ffi::FfiNamedSpan>) -> Vec<NamedSpan> {
+    spans
+        .into_iter()
+        .map(|span| NamedSpan {
+            name: span.name,
+            value: span.value,
+            kind: span.kind,
+        })
+        .collect()
+}
+
 pub struct World {
     #[cfg(feature = "gpu")]
     inner: cxx::UniquePtr<ffi::World>,
+    /// Spans from the most recent `destruction_stats()` / `stats()` calls.
+    /// RefCell because both stats methods take `&self`.
+    destruction_spans: std::cell::RefCell<Vec<NamedSpan>>,
+    world_spans: std::cell::RefCell<Vec<NamedSpan>>,
     #[cfg(not(feature = "gpu"))]
     _stub: (),
 }
@@ -602,13 +630,27 @@ impl World {
                     "native constructor returned a null world".into(),
                 ));
             }
-            Ok(Self { inner })
+            Ok(Self {
+                inner,
+                destruction_spans: std::cell::RefCell::new(Vec::new()),
+                world_spans: std::cell::RefCell::new(Vec::new()),
+            })
         }
         #[cfg(not(feature = "gpu"))]
         {
             let _ = config;
             Err(stub_unavailable())
         }
+    }
+
+    /// Spans stashed by the most recent `destruction_stats()` call; drained.
+    pub fn take_destruction_spans(&self) -> Vec<NamedSpan> {
+        std::mem::take(&mut self.destruction_spans.borrow_mut())
+    }
+
+    /// Spans stashed by the most recent `stats()` call; drained.
+    pub fn take_world_spans(&self) -> Vec<NamedSpan> {
+        std::mem::take(&mut self.world_spans.borrow_mut())
     }
 
     pub fn add_static_box(&mut self, desc: StaticBoxDesc) -> Result<(), BridgeError> {
@@ -931,7 +973,14 @@ impl World {
     pub fn stats(&self) -> Result<WorldStats, BridgeError> {
         #[cfg(feature = "gpu")]
         {
-            self.inner.stats().map(Into::into).map_err(operation_error)
+            self.inner
+                .stats()
+                .map(|mut ffi_stats| {
+                    *self.world_spans.borrow_mut() =
+                        convert_spans(std::mem::take(&mut ffi_stats.extra_spans));
+                    ffi_stats.into()
+                })
+                .map_err(operation_error)
         }
         #[cfg(not(feature = "gpu"))]
         {
@@ -1166,7 +1215,11 @@ impl World {
     pub fn destruction_stats(&self) -> Result<DestructionStats, BridgeError> {
         self.inner
             .destruction_stats()
-            .map(Into::into)
+            .map(|mut ffi_stats| {
+                *self.destruction_spans.borrow_mut() =
+                    convert_spans(std::mem::take(&mut ffi_stats.extra_spans));
+                ffi_stats.into()
+            })
             .map_err(operation_error)
     }
 
@@ -1383,6 +1436,7 @@ mod ffi {
     }
 
     struct FfiWorldStats {
+        extra_spans: Vec<FfiNamedSpan>,
         body_count: u32,
         player_count: u32,
         vehicle_count: u32,
@@ -1497,7 +1551,22 @@ mod ffi {
         flags: u32,
     }
 
+    /// One generically-authored metric flowing through stats with no
+    /// per-field plumbing. Adding a NEW timing used to thread through six
+    /// files (bridge header → fill → this bridge ×2 → runtime copy → netcode
+    /// struct → server publish) — which is exactly why coverage had holes.
+    /// With this channel a new C++ metric is one `span_add(...)` line and it
+    /// appears in match-stats, traces and debug reports automatically.
+    /// kind: 0 = wall-clock ms, 1 = slot-summed ms (NOT comparable to wall
+    /// parents), 2 = plain count.
+    struct FfiNamedSpan {
+        name: String,
+        value: f64,
+        kind: u8,
+    }
+
     struct FfiDestructionStats {
+        extra_spans: Vec<FfiNamedSpan>,
         overstressed_bonds: u32,
         contacts_processed: u32,
         contacts_dropped: u32,

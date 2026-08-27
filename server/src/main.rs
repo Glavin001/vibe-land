@@ -802,10 +802,22 @@ struct PlayerStatsSnapshot {
     has_debug_stats: bool,
 }
 
+/// One generically-authored bridge metric in the snapshot. `k`: 0 wall-clock
+/// ms, 1 slot-summed ms (NOT comparable to wall parents), 2 count.
+#[derive(serde::Serialize, Clone, Debug, Default)]
+struct SpanValue {
+    v: f64,
+    k: u8,
+}
+
 #[derive(serde::Serialize, Clone, Default)]
 struct MatchStatsSnapshot {
     id: String,
     scenario_tag: String,
+    /// Generic named spans from the bridges, namespaced "physics/" and
+    /// "destruction/". A new metric authored with one span_add call in C++
+    /// lands here (and in traces and debug reports) with no struct plumbing.
+    spans: std::collections::BTreeMap<String, SpanValue>,
     /// When this binary was built and when this process started, so a
     /// screenshot can be told apart from a stale one. Reading a metric off a
     /// server that predates the change being tested has wasted real time in
@@ -3703,6 +3715,21 @@ impl MatchState {
 
         let (dynamic_body_count, vehicle_count, battery_count) = self.arena.counts();
         let physics_health = self.arena.health();
+        let mut spans = std::collections::BTreeMap::new();
+        for span in self.arena.take_physics_spans() {
+            spans.insert(
+                format!("physics/{}", span.name),
+                SpanValue { v: span.value, k: span.kind },
+            );
+        }
+        if let Some(city) = self.city.as_ref() {
+            for span in city.extra_spans() {
+                spans.insert(
+                    format!("destruction/{}", span.name),
+                    SpanValue { v: span.value, k: span.kind },
+                );
+            }
+        }
         let city_window = self
             .city
             .as_mut()
@@ -3717,6 +3744,7 @@ impl MatchState {
             .unwrap_or_default();
         let match_stats = MatchStatsSnapshot {
             id: self.id.clone(),
+            spans,
             scenario_tag: self.id.clone(),
             server_build: server_build_stamp(),
             server_started: server_started_stamp(),

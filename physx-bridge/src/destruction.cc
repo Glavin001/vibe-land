@@ -9,6 +9,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <limits>
 #include <stdexcept>
 #include <string>
@@ -1400,6 +1401,8 @@ void DestructionManager::destruction_tick(float dt, FfiVec3 gravity) {
   if (dt > 0.0f) {
     last_dt_ = dt;
   }
+  // Fresh span slate per tick; same-name adds below accumulate.
+  extra_spans_.clear();
   const PxVec3 g = to_px(gravity);
   using clock = std::chrono::steady_clock;
   const auto ms_since = [](clock::time_point from) {
@@ -2949,6 +2952,19 @@ rust::Vec<FfiSupportRow> DestructionManager::take_support_rows() {
   return out;
 }
 
+void DestructionManager::span_add(const char *name, double value,
+                                  std::uint8_t kind) {
+  // Names are string LITERALS by convention (pointer compare is the fast
+  // path); a handful of spans per tick makes the linear scan free.
+  for (auto &entry : extra_spans_) {
+    if (entry.first == name || std::strcmp(entry.first, name) == 0) {
+      entry.second.first += value;
+      return;
+    }
+  }
+  extra_spans_.push_back({name, {value, kind}});
+}
+
 rust::Vec<std::uint32_t> DestructionManager::take_frozen_contact_wakes() {
   // The tick's accumulated pair loads are judged here, at the drain, so the
   // caller sees exactly one decision per body per tick.
@@ -2965,6 +2981,13 @@ rust::Vec<std::uint32_t> DestructionManager::take_frozen_contact_wakes() {
 
 FfiDestructionStats DestructionManager::destruction_stats() const {
   FfiDestructionStats stats{};
+  for (const auto &entry : extra_spans_) {
+    FfiNamedSpan span;
+    span.name = rust::String(entry.first);
+    span.value = entry.second.first;
+    span.kind = entry.second.second;
+    stats.extra_spans.push_back(std::move(span));
+  }
   stats.structures = static_cast<std::uint32_t>(slots_.size());
   stats.broken_bonds = total_broken_bonds_;
   stats.stress_solve_ms = last_stress_solve_ms_;

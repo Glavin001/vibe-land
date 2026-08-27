@@ -79,6 +79,9 @@ pub struct CityDestruction {
     settle_config: SettleConfig,
     tick: u64,
     stats: DestructionStats,
+    /// Generic named spans from the bridge (see FfiNamedSpan): ride beside
+    /// the Copy stats struct, refreshed each tick alongside it.
+    extra_spans: Vec<crate::types::NamedSpan>,
     degraded: bool,
     /// Fracture-frame resimulation. 0 = off. Each pass rewinds motion and
     /// re-runs simulate+tick when the previous tick split an island, so the
@@ -252,6 +255,7 @@ impl CityDestruction {
             settle: SettleTracker::default(),
             settle_config: SettleConfig::validated(sim_hz),
             tick: 0,
+            extra_spans: Vec::new(),
             degraded: false,
             resim_passes: std::env::var("VIBE_CITY_RESIM_PASSES")
                 .ok()
@@ -991,6 +995,15 @@ impl CityDestruction {
             // from the tracker's: the two are meant to agree, and reporting
             // the side that actually owns the PhysX flag is what makes a
             // disagreement visible rather than self-confirming.
+            self.extra_spans = world
+                .take_destruction_spans()
+                .into_iter()
+                .map(|span| crate::types::NamedSpan {
+                    name: span.name,
+                    value: span.value,
+                    kind: span.kind,
+                })
+                .collect();
             self.stats.frozen_chunk_bodies = bridge_stats.frozen_chunk_bodies;
             self.stats.frozen_aggregates = bridge_stats.frozen_aggregates;
             self.stats.frozen_aggregate_actors = bridge_stats.frozen_aggregate_actors;
@@ -1133,6 +1146,11 @@ impl CityDestruction {
         self.stats.post_step_ms = post_step_ms;
         self.stats.snapshot_ms = snapshot_ms;
         self.stats.ingest_ms = ingest_ms;
+    }
+
+    /// This tick's generic bridge spans (empty off the physx backend).
+    pub fn extra_spans(&self) -> &[crate::types::NamedSpan] {
+        &self.extra_spans
     }
 
     pub fn stats(&self) -> DestructionStats {

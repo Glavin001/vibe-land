@@ -13,6 +13,16 @@ pub const FLAG_JOINT_BREAK: u8 = 16;
 pub const FLAG_SLEEP_EVENT: u8 = 32;
 pub const FLAG_WAKE_EVENT: u8 = 64;
 
+/// One generically-authored bridge metric (mirror of the physx-bridge type,
+/// so consumers need no optional dependency). kind: 0 wall ms, 1 slot-summed
+/// ms, 2 count.
+#[derive(Clone, Debug, PartialEq)]
+pub struct NamedSpan {
+    pub name: String,
+    pub value: f64,
+    pub kind: u8,
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Pose {
     pub position: Vec3,

@@ -326,6 +326,14 @@ private:
   std::uint64_t frozen_agg_retired_ = 0;
   std::uint64_t frozen_agg_fallbacks_ = 0;
 
+  /// Generic named-span channel (see FfiNamedSpan in lib.rs): a new metric is
+  /// ONE span_add call — no header/struct/copy plumbing. Cleared at tick
+  /// entry; drained by destruction_stats(). kind: 0 wall ms, 1 slot-summed
+  /// ms, 2 count. Same-name adds within a tick accumulate.
+  void span_add(const char *name, double value, std::uint8_t kind);
+  std::vector<std::pair<const char *, std::pair<double, std::uint8_t>>>
+      extra_spans_;
+
   std::vector<std::unique_ptr<Slot>> slots_;
   std::unique_ptr<StressExecutor> stress_executor_;
   /// Live structures for the current tick; a member so the per-tick gather

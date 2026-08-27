@@ -444,6 +444,17 @@ public:
 
   void onContact(const PxContactPairHeader &header,
                  const PxContactPair *pairs, PxU32 pair_count) override {
+    // Sampled self-timing: this callback runs INSIDE fetchResults, so its
+    // cost lands undifferentiated in physics_fetch_copy_ms — the conflation
+    // that fed a whole wrong optimization line. Timing every call would tax
+    // the thing measured (~0.3 ms at cascade rates), so 1 call in 8 is timed
+    // and scaled; the estimate is published as the contact_callback_ms span.
+    ++contact_callback_calls_;
+    ++contact_callbacks_this_step_;
+    const bool sample_this_call = (contact_callback_calls_ & 7u) == 0;
+    const auto callback_started = sample_this_call
+        ? std::chrono::steady_clock::now()
+        : std::chrono::steady_clock::time_point{};
     const std::uint32_t entity_a = actor_entity_id(header.actors[0]);
     const std::uint32_t entity_b = actor_entity_id(header.actors[1]);
     for (PxU32 pair_index = 0; pair_index < pair_count; ++pair_index) {
@@ -579,6 +590,14 @@ public:
                                         total_magnitude);
       }
 #endif
+    }
+    if (sample_this_call) {
+      // x8: this call stands for itself and the seven unsampled ones.
+      contact_callback_ms_ +=
+          8.0 *
+          std::chrono::duration<double, std::milli>(
+              std::chrono::steady_clock::now() - callback_started)
+              .count();
     }
   }
 
@@ -915,6 +934,8 @@ public:
   /// returns immediately, so the caller can do CPU work before `end_step()`.
   void begin_step() {
     require(!step_in_flight_, "begin_step called twice without end_step");
+    contact_callback_ms_ = 0.0;
+    contact_callbacks_this_step_ = 0;
     step_start_ = std::chrono::steady_clock::now();
     controller_manager_->computeInteractions(kFixedTimestep);
     const auto after_controllers = std::chrono::steady_clock::now();
@@ -1091,24 +1112,44 @@ public:
       vehicles +=
           entry.second.kind == RecordKind::VehicleChassis ? 1U : 0U;
     }
-    return {
-        static_cast<std::uint32_t>(records_.size()) - players,
-        players,
-        vehicles,
-        statistics.nbActiveDynamicBodies,
-        statistics.nbActiveKinematicBodies,
-        statistics.nbDiscreteContactPairsWithContacts,
-        statistics.gpuDynamicsMemoryConfigStatistics.rigidContactCount,
-        statistics.gpuDynamicsMemoryConfigStatistics.rigidPatchCount,
-        last_step_ms_,
-        last_controller_ms_,
-        last_simulate_ms_,
-        last_fetch_ms_,
-        last_gpu_wait_ms_,
-        last_fetch_copy_ms_,
-        completed_steps_,
-        runtime_->warning_count(),
+    FfiWorldStats out{};
+    // Generic spans: one push_back per metric, no struct plumbing. See
+    // FfiNamedSpan in lib.rs for the kind codes.
+    const auto span = [&out](const char *name, double value,
+                             std::uint8_t kind) {
+      FfiNamedSpan entry;
+      entry.name = rust::String(name);
+      entry.value = value;
+      entry.kind = kind;
+      out.extra_spans.push_back(std::move(entry));
     };
+    // Our callback share of fetchResults (sampled 1-in-8, x8 scaled) — the
+    // split that separates "PhysX copying results" from "our contact
+    // handlers", which used to be one indistinguishable fetch_copy number.
+    span("contact_callback_est_ms", contact_callback_ms_, 0);
+    span("contact_callbacks", static_cast<double>(contact_callbacks_this_step_), 2);
+    // Broadphase membership churn: prices freeze/thaw flips directly.
+    span("bp_adds", static_cast<double>(statistics.getNbBroadPhaseAdds()), 2);
+    span("bp_removes", static_cast<double>(statistics.getNbBroadPhaseRemoves()), 2);
+    out.body_count = static_cast<std::uint32_t>(records_.size()) - players;
+    out.player_count = players;
+    out.vehicle_count = vehicles;
+    out.active_dynamic_bodies = statistics.nbActiveDynamicBodies;
+    out.active_kinematic_bodies = statistics.nbActiveKinematicBodies;
+    out.contact_pairs = statistics.nbDiscreteContactPairsWithContacts;
+    out.gpu_rigid_contact_high_water =
+        statistics.gpuDynamicsMemoryConfigStatistics.rigidContactCount;
+    out.gpu_rigid_patch_high_water =
+        statistics.gpuDynamicsMemoryConfigStatistics.rigidPatchCount;
+    out.last_step_ms = last_step_ms_;
+    out.last_controller_ms = last_controller_ms_;
+    out.last_simulate_ms = last_simulate_ms_;
+    out.last_fetch_ms = last_fetch_ms_;
+    out.last_gpu_wait_ms = last_gpu_wait_ms_;
+    out.last_fetch_copy_ms = last_fetch_copy_ms_;
+    out.completed_steps = completed_steps_;
+    out.gpu_warning_count = runtime_->warning_count();
+    return out;
   }
 
   rust::Vec<FfiContactEvent> take_contact_events() {
@@ -1598,6 +1639,14 @@ private:
   std::unordered_set<PxRigidDynamic *> pushed_actors_this_move_;
   PxVec3 pending_player_velocity_{0.0f};
   float contact_report_threshold_ = 50.0f;
+  /// Sampled onContact self-timing (1-in-8, x8 scaled) and call count; the
+  /// callbacks run inside fetchResults, so without this their cost is
+  /// indistinguishable from the result copy. Reset per step; published as
+  /// spans. calls_ stays monotonic so the sampling phase never aliases with
+  /// per-step contact counts.
+  std::uint64_t contact_callback_calls_ = 0;
+  double contact_callback_ms_ = 0.0;
+  std::uint64_t contact_callbacks_this_step_ = 0;
   float last_step_ms_ = 0.0f;
   float last_controller_ms_ = 0.0f;
   float last_simulate_ms_ = 0.0f;
