@@ -116,6 +116,29 @@ and the renderer is not the bottleneck. **Absolute budgets belong to the machine
 running it**, not to the code, which is why the spec reports rather than gates
 them.
 
+## THE FIDELITY FLOOR (owner rule, 2026-08-27 — supersedes any perf idea)
+
+**The stress solve is LOCKSTEP with the physics step, and must stay there.**
+Resim's contract: contact event → simulate the tick → if that tick's solve
+detects a fracture, REWIND and re-run the same tick with the fracture applied,
+so the body breaks as if pre-fractured. Fracture detection must happen inside
+the same tick as its contact — the rewind window IS the tick.
+
+Resim-enabled quality is the floor; performance comes after, never instead. An
+optimization is admissible ONLY if mathematically identical in simulation
+outcome — same contacts, same solve inputs, same fracture timing, same rewind
+semantics (equality up to the GPU's documented nondeterminism). This extends
+the "no caps/clamps/truncation" rule to SCHEDULING:
+
+- INADMISSIBLE: stress/fracture at reduced cadence (even dt-compensated),
+  result-offset pipelining of anything the simulation consumes, catch-up
+  steps that skip destruction bookkeeping, any tick-delay between a contact
+  and its fracture detection.
+- ADMISSIBLE: pipelining restricted to already-committed state (encode/
+  publish of tick N−1's finalized snapshot during tick N's gpu_wait),
+  cheaper onContact extraction, host-walk optimizations, anything provably
+  outcome-identical.
+
 ## Three more traps, learned 2026-08-27
 
 **7. A/B arms must simulate the same city.** Disabling contact reports
