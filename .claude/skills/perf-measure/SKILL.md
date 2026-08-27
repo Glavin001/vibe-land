@@ -159,6 +159,17 @@ the trace binary between arms. Run dirs embed the short git hash and meta.json
 carries the binary mtime, so this is now visible — check the run names match
 before trusting a verdict.
 
+**10. Build measurement binaries with `--features cuda-stress`, never
+`--features destruction`.** `destruction` compiles the CUDA stress solver OUT
+and falls back to the CPU CG solve, whose residual reads as real stress: an
+untouched city breaks ~30,000 bonds in 90 s where the GPU path breaks 0. An
+entire afternoon's bisect came back red on source that was green hours
+earlier, purely from this. `record-city-trace` now REFUSES to start without
+the feature, meta.json carries `cuda_stress`, and `verdict.py` refuses any arm
+containing a CPU-solver run — but the flag is still yours to get right when
+building by hand. The startup banner is the confirmation:
+`[destruction] CUDA stress solver active`.
+
 ## The measurement stack (2026-08-27)
 
 - Runs live in `bench-results/runs/<stamp>-<label>-<shortgit>/` with a
