@@ -1717,7 +1717,11 @@ DestructionManager::resolve_contact_target(PxShape *shape) {
   if (slot == nullptr || slot->dest == nullptr) {
     return {};
   }
-  return ContactTarget{slot, shape, it->second.first, it->second.second};
+  // One adapter-side hash per shape per manifold, in place of one per POINT
+  // inside queueContact (2.06-3.64 points/manifold measured on downtown).
+  const std::uint32_t blast_node = slot->dest->nodeForShape(shape);
+  return ContactTarget{slot, shape, it->second.first, it->second.second,
+                       blast_node};
 }
 
 void DestructionManager::queue_contact_at(const ContactTarget &target,
@@ -1725,6 +1729,7 @@ void DestructionManager::queue_contact_at(const ContactTarget &target,
                                           bool wake) {
   ExtStressPhysXContact contact;
   contact.shape = target.shape;
+  contact.nodeIndex = target.blast_node;
   contact.worldPosition = to_px(position);
   contact.worldImpulse = to_px(impulse);
   contact.wake = wake;

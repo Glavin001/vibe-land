@@ -147,6 +147,14 @@ public:
     /// resolved. Only meaningful when slot != nullptr.
     std::uint32_t structure_id = 0;
     std::uint32_t node_index = 0;
+    /// Blast's own node for this shape (nodeForShape), resolved once here so
+    /// queue_contact_at skips the per-POINT m_shapeToNode hash inside
+    /// queueContact. Deliberately NOT node_index above: that is the manager's
+    /// registration-time mapping, this is the adapter's live one — they agree
+    /// except possibly mid-fracture, and the adapter's answer is the one the
+    /// per-point lookup would have produced. UINT32_MAX falls back to the
+    /// original in-queue resolution, bit-for-bit.
+    std::uint32_t blast_node = 0xFFFFFFFFu;
     explicit operator bool() const { return slot != nullptr; }
   };
   ContactTarget resolve_contact_target(physx::PxShape *shape);
