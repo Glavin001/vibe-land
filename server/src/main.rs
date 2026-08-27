@@ -1169,6 +1169,9 @@ struct MatchState {
     /// real time under load, and the player's input stream must be consumed
     /// at the rate it was produced regardless.
     last_tick_instant: Option<Instant>,
+    /// Unspent 60 Hz input frames owed by the passage of real time. Carries
+    /// the fraction a rounded budget would discard.
+    input_credit: f32,
     /// Observer pipeline (VIBE_CITY_OBSERVER_PIPELINE=1): tick N's deferred
     /// city observer bundle, flushed inside tick N+1's GPU wait. None when
     /// the flag is off, on non-city matches, and on staging-error ticks.
@@ -2504,6 +2507,7 @@ async fn run_match_loop(
         last_fan_out_ms: 0.0,
         last_publish_ms: 0.0,
         last_tick_instant: None,
+        input_credit: 1.0,
         staged_city: None,
         last_observer_flush_ms: 0.0,
         next_player_handle: 1,
@@ -3090,14 +3094,26 @@ impl MatchState {
         // than wall-clock, because the budget is wall-clock / dt. The cap
         // bounds the cost of one slow tick (KCC is ~0.03 ms per frame, so 4
         // is ~0.12 ms) and stops a long stall from teleporting anyone.
-        let input_budget = self
-            .last_tick_instant
-            .map(|previous| {
-                let elapsed = tick_started.saturating_duration_since(previous).as_secs_f32();
-                (elapsed / dt).round().clamp(1.0, MAX_INPUT_FRAMES_PER_TICK as f32) as usize
-            })
-            .unwrap_or(1);
+        // Credit, not rounding. A 69 ms tick earns 4.13 frames; rounding to 4
+        // silently loses 0.13 every tick, which is a backlog growing at ~2
+        // frames/s -- measured live at pending_inputs 21 -> 89 over a minute
+        // and a half, i.e. the player's input arriving 1.5 s late. The
+        // fraction has to carry.
+        //
+        // Credit is capped so a long stall cannot bank unbounded movement and
+        // then spend it in one tick.
+        if let Some(previous) = self.last_tick_instant {
+            let elapsed = tick_started.saturating_duration_since(previous).as_secs_f32();
+            self.input_credit =
+                (self.input_credit + elapsed / dt).min(MAX_INPUT_FRAMES_PER_TICK as f32);
+        } else {
+            self.input_credit = 1.0;
+        }
         self.last_tick_instant = Some(tick_started);
+        let input_budget = (self.input_credit.floor() as usize).clamp(1, MAX_INPUT_FRAMES_PER_TICK);
+        // Spent by time passing, not by anyone consuming it: an idle player
+        // must not bank credit and sprint on reconnect.
+        self.input_credit = (self.input_credit - input_budget as f32).max(0.0);
         let server_time_ms = self.server_tick * (1000 / SIM_HZ as u32);
 
         self.process_respawns(server_time_ms);
@@ -3151,9 +3167,21 @@ impl MatchState {
             // correct there. On foot, every frame is displacement the client
             // has already predicted, so the tick drains as many as real time
             // says were produced.
-            let frames = if in_vehicle { 1 } else { input_budget };
             let mut applied: Vec<InputCmd> = Vec::new();
             if let Some(runtime) = self.players.get_mut(&player_id) {
+                // A backlog is time the server OWED this player and failed to
+                // simulate; draining it needs one frame beyond the real-time
+                // allowance, or the queue just sits at whatever depth it
+                // reached and the player stays permanently that far behind.
+                // Exactly one, so the fastest anyone can move is real time
+                // plus a frame per tick while they are actually behind.
+                let frames = if in_vehicle {
+                    1
+                } else if runtime.pending_inputs.len() > input_budget {
+                    (input_budget + 1).min(MAX_INPUT_FRAMES_PER_TICK)
+                } else {
+                    input_budget
+                };
                 for index in 0..frames {
                     // The first frame always applies: with an empty queue
                     // take_input_for_tick repeats the last applied input,

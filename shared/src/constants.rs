@@ -135,10 +135,13 @@ pub const PLAYER_INPUT_CATCHUP_THRESHOLD: usize = 3;
 /// Most 60 Hz input frames one tick may simulate for a player.
 ///
 /// The tick's real budget is wall-clock elapsed / dt, so a client cannot buy
-/// speed by sending faster; this only bounds the worst case. 4 frames = 66 ms
-/// of movement, enough to cover the ~48 ms ticks a heavy collapse produces,
-/// and ~0.12 ms of KCC work at the measured 0.03 ms per frame.
-pub const MAX_INPUT_FRAMES_PER_TICK: usize = 4;
+/// speed by sending faster; this only bounds the worst case.
+///
+/// 8 frames = 133 ms of movement, ~0.24 ms of KCC work at the measured 0.03
+/// ms per frame. Was 4, which live reports showed was under the requirement:
+/// a heavy collapse produced 69 ms ticks (4.13 frames) with a p95 of 87 ms
+/// (5.2), so the cap itself became the thing holding the backlog open.
+pub const MAX_INPUT_FRAMES_PER_TICK: usize = 8;
 pub const RIFLE_FIRE_INTERVAL_MS: u32 = 100;
 pub const RIFLE_BODY_DAMAGE: u8 = 14;
 pub const RIFLE_HEAD_DAMAGE: u8 = 16;
