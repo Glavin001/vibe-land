@@ -18,6 +18,7 @@
 
 namespace physx {
 class PxActor;
+class PxAggregate;
 class PxMaterial;
 class PxPhysics;
 class PxRigidDynamic;
@@ -299,6 +300,31 @@ private:
   bool chunk_contact_reports_ =
       std::getenv("VIBE_CITY_CHUNK_CONTACT_REPORTS") == nullptr
       || std::string(std::getenv("VIBE_CITY_CHUNK_CONTACT_REPORTS")) != "0";
+
+  /// P1b: spatial-cell PxAggregates holding FROZEN bodies, one broadphase
+  /// entry per cluster instead of one per body. Members remain real actors
+  /// with real shapes — contacts against dynamics, the contact-wake release
+  /// path, and geometry are unchanged; self-collision is off because members
+  /// are kinematic and mutually at rest, so PhysX generated no pairs among
+  /// them anyway. Occupancy is read live from PxAggregate (a body released
+  /// by the adapter while frozen leaves its aggregate automatically); only
+  /// the per-aggregate shape tally is shadowed, and compaction recomputes it.
+  void frozen_aggregate_insert(physx::PxRigidDynamic &body);
+  void frozen_aggregate_extract(physx::PxRigidDynamic &body);
+  physx::PxAggregate *frozen_aggregate_for(float x, float z, std::uint32_t shapes);
+  void frozen_aggregate_maybe_retire(physx::PxAggregate *aggregate);
+  void frozen_aggregates_release_all();
+
+  std::unordered_map<std::uint64_t, std::vector<physx::PxAggregate *>>
+      frozen_agg_cells_;
+  std::unordered_map<physx::PxAggregate *, std::uint32_t> frozen_agg_shapes_;
+  /// Empty aggregates parked for reuse; freeze churn is hundreds of flips a
+  /// second at the pile margins and create/release would thrash the GPU BP.
+  std::vector<physx::PxAggregate *> frozen_agg_pool_;
+  std::uint64_t frozen_agg_inserts_ = 0;
+  std::uint64_t frozen_agg_extracts_ = 0;
+  std::uint64_t frozen_agg_retired_ = 0;
+  std::uint64_t frozen_agg_fallbacks_ = 0;
 
   std::vector<std::unique_ptr<Slot>> slots_;
   std::unique_ptr<StressExecutor> stress_executor_;

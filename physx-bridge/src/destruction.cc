@@ -164,6 +164,42 @@ bool quiet_skip_enabled() {
   return enabled;
 }
 
+/// P1b: cluster frozen bodies into spatial-cell PxAggregates so 60% of the
+/// city holds a few dozen broadphase entries instead of fifteen thousand.
+/// Default on; VIBE_CITY_FREEZE_AGGREGATE=0 is the kill switch. Ceiling
+/// measured first (P1a): full scene removal recovered 2.3 ms/tick at only
+/// 1.7k frozen, and the live field carries ~15k.
+bool freeze_aggregate_enabled() {
+  static const bool enabled = [] {
+    const char *value = std::getenv("VIBE_CITY_FREEZE_AGGREGATE");
+    return value == nullptr || std::string(value) != "0";
+  }();
+  return enabled;
+}
+
+/// XZ cell edge for the frozen clusters, metres. ~2x the largest chunk reach
+/// so a pile spans few cells; piles are ground-level so Y does not partition.
+float freeze_aggregate_cell_m() {
+  static const float cell = [] {
+    if (const char *raw = std::getenv("VIBE_CITY_FREEZE_AGG_CELL_M")) {
+      const float parsed = static_cast<float>(std::atof(raw));
+      if (parsed > 0.5f) {
+        return parsed;
+      }
+    }
+    return 8.0f;
+  }();
+  return cell;
+}
+
+/// Per-aggregate capacity. 128 actors is the classic broadphase cluster cap;
+/// the shape bound exists because an island body carries one shape per chunk
+/// and the GPU sizes aggregate bounds work off shape counts.
+constexpr std::uint32_t kFrozenAggMaxActors = 128;
+constexpr std::uint32_t kFrozenAggMaxShapes = 1024;
+/// Parked-empty aggregates kept for reuse before releasing outright.
+constexpr std::size_t kFrozenAggPoolCap = 32;
+
 /// MEASUREMENT ONLY, default off: remove frozen bodies from the PxScene
 /// entirely instead of leaving them as kinematic actors holding broadphase
 /// entries. Exists to price the ceiling of any frozen-body population
@@ -366,6 +402,11 @@ DestructionManager::DestructionManager(PxPhysics &physics, PxScene &scene,
 DestructionManager::~DestructionManager() { clear_destructibles(); }
 
 void DestructionManager::clear_destructibles() {
+  // Frozen clusters first: extracting members back to standalone actors means
+  // the adapter's own release below sees exactly the topology it created.
+  // (PxActor::release would also auto-leave an aggregate, but the empty
+  // aggregates themselves are ours to release.)
+  frozen_aggregates_release_all();
   // Releasing a destructible releases the PhysX bodies, shapes and convex
   // meshes it created (under a scene write lock), so this leaves no orphaned
   // actors behind in the scene.
@@ -2008,7 +2049,141 @@ bool freeze_island_resleep() {
   return value;
 }
 
+/// XZ cell key for the frozen clusters. Y does not partition: piles are
+/// ground-level, and a vertical split would only spread one pile's bodies
+/// across more aggregates.
+std::uint64_t frozen_agg_cell_key(float x, float z, float cell) {
+  const auto qx = static_cast<std::int32_t>(std::floor(x / cell));
+  const auto qz = static_cast<std::int32_t>(std::floor(z / cell));
+  return (static_cast<std::uint64_t>(static_cast<std::uint32_t>(qx)) << 32)
+       | static_cast<std::uint64_t>(static_cast<std::uint32_t>(qz));
+}
+
 } // namespace
+
+physx::PxAggregate *DestructionManager::frozen_aggregate_for(
+    float x, float z, std::uint32_t shapes) {
+  auto &cell = frozen_agg_cells_[frozen_agg_cell_key(x, z, freeze_aggregate_cell_m())];
+  for (physx::PxAggregate *candidate : cell) {
+    if (candidate->getNbActors() < kFrozenAggMaxActors
+        && frozen_agg_shapes_[candidate] + shapes <= kFrozenAggMaxShapes) {
+      return candidate;
+    }
+  }
+  physx::PxAggregate *fresh = nullptr;
+  if (!frozen_agg_pool_.empty()) {
+    fresh = frozen_agg_pool_.back();
+    frozen_agg_pool_.pop_back();
+  } else {
+    // eKINEMATIC, self-collision off: members are kinematic and mutually at
+    // rest, so no internal pairs existed to lose — and the kinematic type
+    // hint lets the broadphase cull pairs BETWEEN neighbouring frozen
+    // clusters wholesale.
+    fresh = physics_.createAggregate(
+        kFrozenAggMaxActors, kFrozenAggMaxShapes,
+        physx::PxGetAggregateFilterHint(physx::PxAggregateType::eKINEMATIC, false));
+    if (fresh == nullptr) {
+      return nullptr;
+    }
+  }
+  scene_.addAggregate(*fresh);
+  frozen_agg_shapes_[fresh] = 0;
+  cell.push_back(fresh);
+  return fresh;
+}
+
+void DestructionManager::frozen_aggregate_insert(physx::PxRigidDynamic &body) {
+  if (body.getAggregate() != nullptr || body.getScene() == nullptr) {
+    return;
+  }
+  const std::uint32_t shapes = body.getNbShapes();
+  if (shapes > kFrozenAggMaxShapes) {
+    // A body bigger than a whole aggregate stays a standalone actor.
+    ++frozen_agg_fallbacks_;
+    return;
+  }
+  const physx::PxVec3 position = body.getGlobalPose().p;
+  physx::PxAggregate *aggregate =
+      frozen_aggregate_for(position.x, position.z, shapes);
+  if (aggregate == nullptr) {
+    ++frozen_agg_fallbacks_;
+    return;
+  }
+  scene_.removeActor(body);
+  if (!aggregate->addActor(body)) {
+    // Refused (capacity race with a body PhysX released this tick) — the
+    // body must not be left sceneless over it.
+    scene_.addActor(body);
+    ++frozen_agg_fallbacks_;
+    return;
+  }
+  frozen_agg_shapes_[aggregate] += shapes;
+  ++frozen_agg_inserts_;
+}
+
+void DestructionManager::frozen_aggregate_extract(physx::PxRigidDynamic &body) {
+  physx::PxAggregate *aggregate = body.getAggregate();
+  if (aggregate == nullptr) {
+    return;
+  }
+  const std::uint32_t shapes = body.getNbShapes();
+  // removeActor reinserts the actor into the aggregate's scene itself; adding
+  // it again here would double-insert.
+  aggregate->removeActor(body);
+  auto shadow = frozen_agg_shapes_.find(aggregate);
+  if (shadow != frozen_agg_shapes_.end()) {
+    shadow->second -= std::min(shadow->second, shapes);
+  }
+  ++frozen_agg_extracts_;
+  frozen_aggregate_maybe_retire(aggregate);
+}
+
+void DestructionManager::frozen_aggregate_maybe_retire(physx::PxAggregate *aggregate) {
+  // Lazy: only an EMPTY aggregate is retired. Merging a half-empty cluster's
+  // members into siblings would re-run broadphase insertion for every one of
+  // them at the churn rate of the pile margin — the thing this whole scheme
+  // exists to avoid. Half-empty aggregates refill from the same cell instead
+  // (frozen_aggregate_for prefers existing aggregates with headroom).
+  if (aggregate->getNbActors() != 0) {
+    return;
+  }
+  scene_.removeAggregate(*aggregate);
+  frozen_agg_shapes_.erase(aggregate);
+  for (auto &entry : frozen_agg_cells_) {
+    auto &list = entry.second;
+    list.erase(std::remove(list.begin(), list.end(), aggregate), list.end());
+  }
+  ++frozen_agg_retired_;
+  if (frozen_agg_pool_.size() < kFrozenAggPoolCap) {
+    frozen_agg_pool_.push_back(aggregate);
+  } else {
+    aggregate->release();
+  }
+}
+
+void DestructionManager::frozen_aggregates_release_all() {
+  for (auto &entry : frozen_agg_cells_) {
+    for (physx::PxAggregate *aggregate : entry.second) {
+      // Actors still inside go back to the scene; their owner (the adapter)
+      // releases them on its own terms.
+      std::vector<physx::PxActor *> actors(aggregate->getNbActors());
+      if (!actors.empty()) {
+        aggregate->getActors(actors.data(), static_cast<physx::PxU32>(actors.size()));
+        for (physx::PxActor *actor : actors) {
+          aggregate->removeActor(*actor);
+        }
+      }
+      scene_.removeAggregate(*aggregate);
+      aggregate->release();
+    }
+  }
+  frozen_agg_cells_.clear();
+  frozen_agg_shapes_.clear();
+  for (physx::PxAggregate *aggregate : frozen_agg_pool_) {
+    aggregate->release();
+  }
+  frozen_agg_pool_.clear();
+}
 
 std::uint32_t DestructionManager::set_chunk_bodies_kinematic(
     rust::Slice<const std::uint32_t> entity_ids, bool kinematic) {
@@ -2110,7 +2285,10 @@ std::uint32_t DestructionManager::set_chunk_bodies_kinematic(
         slot->frozen.insert(body_id);
         frozen_entities_.insert(entity);
         if (freeze_remove_from_scene() && body->getScene() != nullptr) {
+          // Measuring mode wins over clustering; the two are exclusive.
           scene_.removeActor(*body);
+        } else if (freeze_aggregate_enabled()) {
+          frozen_aggregate_insert(*body);
         }
         ++freeze_flips_;
       } else {
@@ -2118,6 +2296,10 @@ std::uint32_t DestructionManager::set_chunk_bodies_kinematic(
           // Back in the scene before the wake below — waking a sceneless
           // actor is undefined.
           scene_.addActor(*body);
+        } else if (freeze_aggregate_enabled()) {
+          // Also before the wake below: removeActor reinserts the body into
+          // the scene as a standalone actor, which the wake requires.
+          frozen_aggregate_extract(*body);
         }
         slot->frozen.erase(body_id);
         frozen_entities_.erase(entity);
@@ -2685,6 +2867,20 @@ FfiDestructionStats DestructionManager::destruction_stats() const {
   // Counted from the bridge's own set rather than from Rust's, so a
   // disagreement between the two is visible instead of silently papered over.
   stats.frozen_chunk_bodies = frozen;
+  {
+    // Few dozen aggregates at most; the live occupancy read keeps this
+    // honest against bodies PhysX released while frozen.
+    std::uint32_t aggregates = 0;
+    std::uint32_t aggregated_actors = 0;
+    for (const auto &cell : frozen_agg_cells_) {
+      for (const physx::PxAggregate *aggregate : cell.second) {
+        ++aggregates;
+        aggregated_actors += aggregate->getNbActors();
+      }
+    }
+    stats.frozen_aggregates = aggregates;
+    stats.frozen_aggregate_actors = aggregated_actors;
+  }
   stats.frozen_serial_blocks = frozen_serial_blocks_;
   stats.frozen_adapter_releases = frozen_adapter_releases_;
   stats.freeze_flips = freeze_flips_;

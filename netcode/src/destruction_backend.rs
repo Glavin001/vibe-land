@@ -351,6 +351,10 @@ pub struct DestructionStats {
     pub pose_quiet_awake_bodies: u32,
     /// Settled bodies currently held kinematic, out of the rigid-body solver.
     pub frozen_chunk_bodies: u32,
+    /// P1b clusters: PxAggregates holding frozen bodies, and the bodies in
+    /// them. `frozen_chunk_bodies - frozen_aggregate_actors` is standalone.
+    pub frozen_aggregates: u32,
+    pub frozen_aggregate_actors: u32,
     /// Cumulative freeze and wake transitions. A pile that has genuinely
     /// settled shows these flat; sustained churn with no new damage is the
     /// signature of a freeze policy fighting the engine.

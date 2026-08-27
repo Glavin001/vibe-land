@@ -992,6 +992,8 @@ impl CityDestruction {
             // the side that actually owns the PhysX flag is what makes a
             // disagreement visible rather than self-confirming.
             self.stats.frozen_chunk_bodies = bridge_stats.frozen_chunk_bodies;
+            self.stats.frozen_aggregates = bridge_stats.frozen_aggregates;
+            self.stats.frozen_aggregate_actors = bridge_stats.frozen_aggregate_actors;
             self.stats.freeze_flips = bridge_stats.freeze_flips;
             self.stats.unfreeze_flips = bridge_stats.unfreeze_flips;
             self.stats.contact_wakes = bridge_stats.contact_wakes;

@@ -528,6 +528,11 @@ pub struct DestructionStats {
     /// Bodies held kinematic to retire them from the solver, and the flip
     /// counts that produced that level.
     pub frozen_chunk_bodies: u32,
+    /// P1b clusters: PxAggregates currently holding frozen bodies, and how
+    /// many bodies they hold. frozen_chunk_bodies minus this is the
+    /// standalone remainder (fallbacks + measuring mode).
+    pub frozen_aggregates: u32,
+    pub frozen_aggregate_actors: u32,
     pub freeze_flips: u64,
     pub unfreeze_flips: u64,
     /// Frozen bodies released because dynamic debris struck them: the
@@ -1558,6 +1563,9 @@ mod ffi {
         sleeping_actors_skipped: u64,
         /// Bodies the bridge is holding kinematic, out of the solver.
         frozen_chunk_bodies: u32,
+        /// P1b: PxAggregates holding frozen bodies, and the bodies in them.
+        frozen_aggregates: u32,
+        frozen_aggregate_actors: u32,
         /// Must stay zero: a frozen body reaching a serial-issuing path would
         /// alias settled rubble onto the structure's support actor.
         frozen_serial_blocks: u64,
@@ -2146,6 +2154,8 @@ impl From<ffi::FfiDestructionStats> for DestructionStats {
             solver_islands_skipped: value.solver_islands_skipped,
             sleeping_actors_skipped: value.sleeping_actors_skipped,
             frozen_chunk_bodies: value.frozen_chunk_bodies,
+            frozen_aggregates: value.frozen_aggregates,
+            frozen_aggregate_actors: value.frozen_aggregate_actors,
             freeze_flips: value.freeze_flips,
             unfreeze_flips: value.unfreeze_flips,
             contact_wakes: value.contact_wakes,

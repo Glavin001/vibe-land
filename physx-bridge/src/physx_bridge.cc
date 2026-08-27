@@ -1403,6 +1403,15 @@ private:
     scene_desc.flags |= PxSceneFlag::eENABLE_STABILIZATION;
     scene_desc.broadPhaseType = PxBroadPhaseType::eGPU;
     scene_desc.gpuMaxNumPartitions = config.gpu_max_partitions;
+    // The frozen-body clusters (destruction.cc, VIBE_CITY_FREEZE_AGGREGATE)
+    // put thousands of actors into PxAggregates; awake debris raining onto a
+    // pile generates external-vs-aggregate pairs against these buffers, whose
+    // PhysX default is 1024 — overflow silently drops pairs, which reads as
+    // debris resting inside a frozen pile and the contact-wake path going
+    // deaf. Sized like the other GPU buffers: generous, and watched by the
+    // same containment gate.
+    scene_desc.gpuDynamicsConfig.foundLostAggregatePairsCapacity = 65536;
+    scene_desc.gpuDynamicsConfig.totalAggregatePairsCapacity = 65536;
     if (config.gpu_max_rigid_contacts != 0) {
       scene_desc.gpuDynamicsConfig.maxRigidContactCount =
           config.gpu_max_rigid_contacts;

@@ -452,6 +452,10 @@ struct CityStatsSnapshot {
     /// transitions that produced it. Sustained flips with no new damage is
     /// the signature of a freeze policy fighting the engine.
     frozen_bodies: u32,
+    /// P1b clusters: broadphase entries holding the frozen population, and
+    /// how many frozen bodies sit inside them (the rest are standalone).
+    frozen_aggregates: u32,
+    frozen_aggregate_actors: u32,
     freeze_flips: u64,
     unfreeze_flips: u64,
     /// Frozen bodies released because dynamic debris struck them -- the
@@ -3905,6 +3909,8 @@ impl MatchState {
                     solver_island_count: stats.solver_island_count,
                     solver_islands_skipped: stats.solver_islands_skipped,
                     frozen_bodies: stats.frozen_chunk_bodies,
+                    frozen_aggregates: stats.frozen_aggregates,
+                    frozen_aggregate_actors: stats.frozen_aggregate_actors,
                     freeze_flips: stats.freeze_flips,
                     unfreeze_flips: stats.unfreeze_flips,
                     contact_wakes: stats.contact_wakes,
