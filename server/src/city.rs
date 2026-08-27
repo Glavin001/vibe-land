@@ -178,6 +178,13 @@ pub fn is_city_match(match_id: &str) -> bool {
 /// changing what every other match gets.
 const CITY_V3_MATCH_PREFIX: &str = "cityv3";
 
+/// Cadence of the per-structure ledger-hash broadcast, in sim ticks (2 s at
+/// 60 Hz). 54 bytes per emission at GRID=2 — the cost is negligible; the
+/// cadence exists so a silently diverged client discovers it within seconds
+/// rather than never (`city_desync_repairs` was 0 while a client visibly
+/// desynced, because only server-side send drops were detectable).
+const TOPO_HASH_INTERVAL_TICKS: u32 = 120;
+
 /// Which city wire a match speaks.
 ///
 /// Per match rather than per process: a v3 rollout wants one match on the new
@@ -1380,8 +1387,20 @@ impl CityRuntime {
                 reliable.extend(baselines);
             }
         }
+        // Periodic ledger hashes: the client-side divergence detector. Rides
+        // the ordered reliable channel AFTER this tick's topology messages, so
+        // a gap-free client compares at exactly the seq the hashes describe.
+        if sim_tick % TOPO_HASH_INTERVAL_TICKS == 0 {
+            reliable.push(self.encoder.topology_hash_message());
+        }
         self.last_encode_ms = started.elapsed().as_secs_f32() * 1000.0;
         reliable
+    }
+
+    /// A bootstrap scoped to the named structures — the targeted repair a
+    /// topology-hash mismatch drives.
+    pub fn structure_bootstrap(&self, sim_tick: u32, structures: &[u32]) -> Vec<u8> {
+        self.encoder.structure_bootstrap_message(sim_tick, structures)
     }
 
     /// Wall time of the last 30 Hz stream encode, split into the shared record

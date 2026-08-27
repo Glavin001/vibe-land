@@ -2852,16 +2852,37 @@ impl MatchState {
                             city.restate_bodies(&bodies);
                         }
                     }
-                    ClientPacket::CityResyncRequest { last_topo_seq } => {
+                    ClientPacket::CityResyncRequest {
+                        last_topo_seq,
+                        structures,
+                    } => {
                         if let Some(city) = self.city.as_mut() {
-                            info!(
-                                match_id = %self.id,
-                                player_id,
-                                last_topo_seq,
-                                "city topology resync requested; sending bootstrap"
-                            );
-                            let bootstrap = city.bootstrap(self.server_tick);
-                            let _ = try_queue_packet(&runtime.tx, bootstrap, &self.io);
+                            if structures.is_empty() {
+                                info!(
+                                    match_id = %self.id,
+                                    player_id,
+                                    last_topo_seq,
+                                    "city topology resync requested; sending bootstrap"
+                                );
+                                let bootstrap = city.bootstrap(self.server_tick);
+                                let _ = try_queue_packet(&runtime.tx, bootstrap, &self.io);
+                            } else {
+                                // Hash mismatch named the structures — this is
+                                // the detector actually firing, so the repair
+                                // counter finally means what it says.
+                                info!(
+                                    match_id = %self.id,
+                                    player_id,
+                                    last_topo_seq,
+                                    ?structures,
+                                    "city ledger hash mismatch; sending structure bootstrap"
+                                );
+                                let bootstrap =
+                                    city.structure_bootstrap(self.server_tick, &structures);
+                                if try_queue_packet(&runtime.tx, bootstrap, &self.io) {
+                                    self.city_desync_repairs += 1;
+                                }
+                            }
                             if let Some(lanes) = city.full_lane_map() {
                                 let _ = try_queue_packet(&runtime.tx, lanes, &self.io);
                             }

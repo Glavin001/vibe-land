@@ -441,8 +441,17 @@ export function decodeBaseline(bytes: Uint8Array): BaselineMessage {
 }
 
 export function decodeBootstrap(bytes: Uint8Array): BootstrapMessage {
+  return decodeBootstrapKind(bytes, PKT_CITY_BOOTSTRAP);
+}
+
+/** Same payload as a full bootstrap; the kind scopes it to the structures it names. */
+export function decodeStructureBootstrap(bytes: Uint8Array): BootstrapMessage {
+  return decodeBootstrapKind(bytes, PKT_CITY_STRUCTURE_BOOTSTRAP);
+}
+
+function decodeBootstrapKind(bytes: Uint8Array, expectedKind: number): BootstrapMessage {
   const reader = new Reader(bytes);
-  expectHeader(reader, PKT_CITY_BOOTSTRAP);
+  expectHeader(reader, expectedKind);
   const simTick = reader.u32();
   const hashBytes = reader.bytes32(32);
   const manifestHashHex = Array.from(hashBytes, (b) => b.toString(16).padStart(2, '0')).join('');
@@ -492,12 +501,66 @@ export function decodeBootstrap(bytes: Uint8Array): BootstrapMessage {
   return { simTick, manifestHashHex, baselineId, topoSeq, structures, islands };
 }
 
-export function encodeCityResyncRequest(lastTopoSeq: number): Uint8Array {
-  const bytes = new Uint8Array(5);
+/**
+ * `structures` names the structures a hash mismatch implicated; the server
+ * replies with a bootstrap scoped to exactly those. Empty (the historical
+ * 5-byte packet, byte-identical) means full bootstrap.
+ */
+export function encodeCityResyncRequest(
+  lastTopoSeq: number,
+  structures: readonly number[] = [],
+): Uint8Array {
+  const bytes = new Uint8Array(structures.length === 0 ? 5 : 6 + structures.length * 4);
   const view = new DataView(bytes.buffer);
   view.setUint8(0, PKT_CITY_RESYNC_REQUEST);
   view.setUint32(1, lastTopoSeq >>> 0, true);
+  if (structures.length > 0) {
+    view.setUint8(5, structures.length);
+    structures.forEach((structureId, index) => {
+      view.setUint32(6 + index * 4, structureId >>> 0, true);
+    });
+  }
   return bytes;
+}
+
+export interface TopologyHashEntry {
+  structureId: number;
+  /** High 32 bits of the server's 64-bit hash (lane A), as unsigned. */
+  laneA: number;
+  /** Low 32 bits (lane B), as unsigned. */
+  laneB: number;
+}
+
+export interface TopologyHashMessage {
+  topoSeq: number;
+  hashes: TopologyHashEntry[];
+}
+
+/**
+ * `[kind][topo_seq u32][count u8]` then `[structure_id u32][hash u64]` each,
+ * little-endian. The u64 is read as two u32 lanes (low = B, high = A) so the
+ * comparison never touches BigInt.
+ */
+export function decodeTopologyHashes(bytes: Uint8Array): TopologyHashMessage {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  if (view.getUint8(0) !== PKT_CITY_TOPO_HASH) {
+    throw new Error(`unexpected packet kind ${view.getUint8(0)} (wanted ${PKT_CITY_TOPO_HASH})`);
+  }
+  const topoSeq = view.getUint32(1, true);
+  const count = view.getUint8(5);
+  if (bytes.byteLength < 6 + count * 12) {
+    throw new Error(`short topology hash packet: ${bytes.byteLength} bytes for ${count} entries`);
+  }
+  const hashes: TopologyHashEntry[] = [];
+  for (let i = 0; i < count; i++) {
+    const base = 6 + i * 12;
+    hashes.push({
+      structureId: view.getUint32(base, true),
+      laneB: view.getUint32(base + 4, true),
+      laneA: view.getUint32(base + 8, true),
+    });
+  }
+  return { topoSeq, hashes };
 }
 
 /**
@@ -515,12 +578,20 @@ export function isCityPacketKind(kind: number): boolean {
     kind === PKT_CITY_MANIFEST ||
     kind === PKT_MATCH_STATS ||
     kind === PKT_CITY_DEBRIS ||
-    kind === PKT_CITY_LANES
+    kind === PKT_CITY_LANES ||
+    kind === PKT_CITY_TOPO_HASH ||
+    kind === PKT_CITY_STRUCTURE_BOOTSTRAP
   );
 }
 
 /** Reliable lane -> body-entity assignments for the v3 debris stream. */
 export const PKT_CITY_LANES = 127;
+
+/** Periodic per-structure ledger hashes; the silent-divergence detector. */
+export const PKT_CITY_TOPO_HASH = 128;
+
+/** A bootstrap scoped to the structures it names — the targeted repair. */
+export const PKT_CITY_STRUCTURE_BOOTSTRAP = 129;
 
 export type DebrisHeader = {
   spanTick: number;
