@@ -3102,18 +3102,13 @@ impl MatchState {
         //
         // Credit is capped so a long stall cannot bank unbounded movement and
         // then spend it in one tick.
-        if let Some(previous) = self.last_tick_instant {
-            let elapsed = tick_started.saturating_duration_since(previous).as_secs_f32();
-            self.input_credit =
-                (self.input_credit + elapsed / dt).min(MAX_INPUT_FRAMES_PER_TICK as f32);
-        } else {
-            self.input_credit = 1.0;
-        }
+        let elapsed_since_last_tick = self
+            .last_tick_instant
+            .map(|previous| tick_started.saturating_duration_since(previous).as_secs_f32());
         self.last_tick_instant = Some(tick_started);
-        let input_budget = (self.input_credit.floor() as usize).clamp(1, MAX_INPUT_FRAMES_PER_TICK);
-        // Spent by time passing, not by anyone consuming it: an idle player
-        // must not bank credit and sprint on reconnect.
-        self.input_credit = (self.input_credit - input_budget as f32).max(0.0);
+        let (input_budget, remaining_credit) =
+            spend_input_credit(self.input_credit, elapsed_since_last_tick, dt);
+        self.input_credit = remaining_credit;
         let server_time_ms = self.server_tick * (1000 / SIM_HZ as u32);
 
         self.process_respawns(server_time_ms);
@@ -5810,6 +5805,26 @@ impl MatchState {
 /// already carries the correct state and OR-ing them would fabricate input.
 const LATCHED_BUTTONS: u16 = BTN_JUMP | BTN_RELOAD;
 
+/// How many 60 Hz input frames a tick may simulate, and the credit left over.
+///
+/// Split out of `tick` so the arithmetic is testable: the first version of it
+/// rounded, discarding the fraction every tick, and the resulting backlog
+/// only showed up in a live report as pending_inputs climbing to 89.
+///
+/// `elapsed` is None on the very first tick, which gets one frame.
+fn spend_input_credit(credit: f32, elapsed: Option<f32>, dt: f32) -> (usize, f32) {
+    let Some(elapsed) = elapsed else {
+        return (1, 0.0);
+    };
+    // Capped so a long stall (a GC pause, a scene rebuild) cannot bank
+    // unbounded movement and release it in a single tick.
+    let earned = (credit + elapsed / dt).min(MAX_INPUT_FRAMES_PER_TICK as f32);
+    let frames = (earned.floor() as usize).clamp(1, MAX_INPUT_FRAMES_PER_TICK);
+    // Spent by time passing, not by anyone consuming it: an idle player must
+    // not bank credit while away and sprint on their next input.
+    (frames, (earned - frames as f32).max(0.0))
+}
+
 fn take_input_for_tick(runtime: &mut PlayerRuntime) -> InputCmd {
     // Ordered, one frame at a time. The caller decides HOW MANY frames a tick
     // is allowed to consume (see input_budget_for_tick); this function never
@@ -6310,6 +6325,54 @@ mod tests {
 
         assert_eq!(applied.seq, 24);
         assert_ne!(applied.buttons & BTN_RELOAD, 0);
+    }
+
+    #[test]
+    fn a_60hz_tick_earns_exactly_one_frame() {
+        let dt = 1.0 / 60.0;
+        let (frames, credit) = super::spend_input_credit(0.0, Some(dt), dt);
+        assert_eq!(frames, 1);
+        assert!(credit.abs() < 1e-4, "no credit should accumulate at 60 Hz: {credit}");
+    }
+
+    #[test]
+    fn slow_ticks_consume_the_input_they_were_produced_at() {
+        // The live failure: a 69 ms tick earns 4.13 frames. Rounding applied 4
+        // and dropped 0.13 every tick, which is what grew pending_inputs to
+        // 89. Over many ticks the credit version must apply the full 4.13
+        // frames per tick on average, or the backlog returns.
+        let dt = 1.0 / 60.0;
+        let elapsed = 0.069_f32;
+        let mut credit = 0.0;
+        let mut applied = 0usize;
+        let ticks = 600;
+        for _ in 0..ticks {
+            let (frames, next) = super::spend_input_credit(credit, Some(elapsed), dt);
+            applied += frames;
+            credit = next;
+        }
+        let produced = (ticks as f32 * elapsed / dt).round() as usize;
+        let shortfall = produced.saturating_sub(applied);
+        assert!(
+            shortfall <= 1,
+            "applied {applied} of {produced} frames produced; shortfall {shortfall}"
+        );
+    }
+
+    #[test]
+    fn a_long_stall_cannot_bank_unbounded_movement() {
+        let dt = 1.0 / 60.0;
+        // Two seconds of stall = 120 frames' worth of real time.
+        let (frames, credit) = super::spend_input_credit(0.0, Some(2.0), dt);
+        assert_eq!(frames, super::MAX_INPUT_FRAMES_PER_TICK);
+        assert!(credit < 1.0, "credit must not carry a stall forward: {credit}");
+    }
+
+    #[test]
+    fn the_first_tick_takes_a_single_frame() {
+        let (frames, credit) = super::spend_input_credit(0.0, None, 1.0 / 60.0);
+        assert_eq!(frames, 1);
+        assert_eq!(credit, 0.0);
     }
 
     #[test]
