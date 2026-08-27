@@ -141,6 +141,12 @@ public:
   struct ContactTarget {
     Slot *slot = nullptr;
     physx::PxShape *shape = nullptr;
+    /// Owner coordinates from the same shape_owners_ hit that produced slot.
+    /// Carried so note_pair_load can skip re-running the identical lookup
+    /// chain (hash + linear slot scan) for a shape this manifold already
+    /// resolved. Only meaningful when slot != nullptr.
+    std::uint32_t structure_id = 0;
+    std::uint32_t node_index = 0;
     explicit operator bool() const { return slot != nullptr; }
   };
   ContactTarget resolve_contact_target(physx::PxShape *shape);
@@ -219,6 +225,16 @@ public:
   void note_pair_load(const physx::PxShape *shape_a, const physx::PxShape *shape_b,
                       const physx::PxActor *actor_a, const physx::PxActor *actor_b,
                       float sum_abs_impulse_y, float min_separation);
+  /// Same record, but reusing the manifold's already-resolved ContactTargets
+  /// so the chunk side skips shape_owners_.find + find_slot. A null target
+  /// falls back to the full per-shape resolution — resolve_contact_target
+  /// returns null in strictly more cases than "not a chunk" (e.g. a slot
+  /// whose destructible is gone), and those cases must keep their original
+  /// classification. Outcome-identical to the overload above by construction.
+  void note_pair_load(const ContactTarget &target_a, const ContactTarget &target_b,
+                      const physx::PxShape *shape_a, const physx::PxShape *shape_b,
+                      const physx::PxActor *actor_a, const physx::PxActor *actor_b,
+                      float sum_abs_impulse_y, float min_separation);
 
   /// Support-set drains: one FfiSupportSet per dependent whose supporter set
   /// changed this tick, indexing into the rows drain. Both are cleared
@@ -279,6 +295,11 @@ public:
 private:
   Slot *find_slot(std::uint32_t structure_id);
   const Slot *find_slot(std::uint32_t structure_id) const;
+  /// Full per-shape resolution for one side of a pair load — the shared body
+  /// of both note_pair_load entries; the resolved-target overload calls it
+  /// only for sides without a usable ContactTarget.
+  PendingPairSide resolve_pair_side(const physx::PxShape *shape,
+                                    const physx::PxActor *actor);
   /// Shared body of freeze_chunk_bodies / unfreeze_chunk_bodies.
   std::uint32_t set_chunk_bodies_kinematic(rust::Slice<const std::uint32_t> entity_ids,
                                            bool kinematic);

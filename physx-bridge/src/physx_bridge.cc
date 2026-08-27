@@ -590,9 +590,18 @@ public:
       // decides whether freezing is admissible at all.
       const auto pair_load_started = sub_now();
       if (destruction_ && sum_abs_impulse_y > 0.0f) {
-        destruction_->note_pair_load(pair.shapes[0], pair.shapes[1],
-                                     header.actors[0], header.actors[1],
-                                     sum_abs_impulse_y, min_separation);
+        if (contact_cse_enabled()) {
+          // A1: hand over the targets this manifold already resolved so the
+          // chunk sides skip the duplicate hash + linear slot scan.
+          destruction_->note_pair_load(target0, target1, pair.shapes[0],
+                                       pair.shapes[1], header.actors[0],
+                                       header.actors[1], sum_abs_impulse_y,
+                                       min_separation);
+        } else {
+          destruction_->note_pair_load(pair.shapes[0], pair.shapes[1],
+                                       header.actors[0], header.actors[1],
+                                       sum_abs_impulse_y, min_separation);
+        }
       }
       if (sample_this_call) {
         cb_pair_load_ms_ += 8.0 * sub_ms(pair_load_started);

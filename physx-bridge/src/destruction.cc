@@ -1717,7 +1717,7 @@ DestructionManager::resolve_contact_target(PxShape *shape) {
   if (slot == nullptr || slot->dest == nullptr) {
     return {};
   }
-  return ContactTarget{slot, shape};
+  return ContactTarget{slot, shape, it->second.first, it->second.second};
 }
 
 void DestructionManager::queue_contact_at(const ContactTarget &target,
@@ -2586,6 +2586,39 @@ void DestructionManager::resolve_frozen_contact_wakes() {
   contact_tick_striker_.clear();
 }
 
+DestructionManager::PendingPairSide
+DestructionManager::resolve_pair_side(const PxShape *shape,
+                                      const PxActor *actor) {
+  PendingPairSide side{};
+  const auto owner = shape_owners_.find(shape);
+  if (owner != shape_owners_.end()) {
+    side.is_chunk = true;
+    side.structure_id = owner->second.first;
+    side.node_index = owner->second.second;
+    // node -> body from the LAST topology registration: exactly the
+    // configuration the physics step (and therefore this contact) ran
+    // against. If fracture moves the node this tick, the impulse was
+    // still exchanged with the old body.
+    if (const Slot *slot = find_slot(side.structure_id)) {
+      const auto body = slot->node_to_body.find(side.node_index);
+      if (body != slot->node_to_body.end()) {
+        side.body_id = body->second;
+      } else {
+        side.is_chunk = false; // unmapped: treat as foreign, blocks freezing
+      }
+    } else {
+      side.is_chunk = false;
+    }
+    return side;
+  }
+  // Non-chunk. Static geometry is immutable and needs no events; anything
+  // else that can touch debris (players, vehicles, props) is movable and
+  // NOT event-observable, so it must block freezing.
+  side.is_static =
+      actor != nullptr && actor->is<physx::PxRigidStatic>() != nullptr;
+  return side;
+}
+
 void DestructionManager::note_pair_load(const PxShape *shape_a,
                                         const PxShape *shape_b,
                                         const PxActor *actor_a,
@@ -2595,40 +2628,53 @@ void DestructionManager::note_pair_load(const PxShape *shape_a,
   if (sum_abs_impulse_y <= 0.0f) {
     return;
   }
-  const auto resolve = [this](const PxShape *shape,
-                              const PxActor *actor) -> PendingPairSide {
-    PendingPairSide side{};
-    const auto owner = shape_owners_.find(shape);
-    if (owner != shape_owners_.end()) {
-      side.is_chunk = true;
-      side.structure_id = owner->second.first;
-      side.node_index = owner->second.second;
-      // node -> body from the LAST topology registration: exactly the
-      // configuration the physics step (and therefore this contact) ran
-      // against. If fracture moves the node this tick, the impulse was
-      // still exchanged with the old body.
-      if (const Slot *slot = find_slot(side.structure_id)) {
-        const auto body = slot->node_to_body.find(side.node_index);
-        if (body != slot->node_to_body.end()) {
-          side.body_id = body->second;
-        } else {
-          side.is_chunk = false; // unmapped: treat as foreign, blocks freezing
-        }
-      } else {
-        side.is_chunk = false;
-      }
-      return side;
+  PendingPairLoad load{};
+  load.a = resolve_pair_side(shape_a, actor_a);
+  load.b = resolve_pair_side(shape_b, actor_b);
+  if (!load.a.is_chunk && !load.b.is_chunk) {
+    return; // no debris involved; not our concern
+  }
+  load.sum_abs_impulse_y = sum_abs_impulse_y;
+  load.min_separation = min_separation;
+  pending_pair_loads_.push_back(load);
+}
+
+void DestructionManager::note_pair_load(const ContactTarget &target_a,
+                                        const ContactTarget &target_b,
+                                        const PxShape *shape_a,
+                                        const PxShape *shape_b,
+                                        const PxActor *actor_a,
+                                        const PxActor *actor_b,
+                                        float sum_abs_impulse_y,
+                                        float min_separation) {
+  if (sum_abs_impulse_y <= 0.0f) {
+    return;
+  }
+  // A non-null target already paid shape_owners_.find + find_slot in
+  // resolve_contact_target this manifold; reuse it. node_to_body still runs
+  // here — it is the one lookup the target does not carry, and it must read
+  // the same registration the original path reads.
+  const auto from_target = [this](const ContactTarget &target,
+                                  const PxShape *shape,
+                                  const PxActor *actor) -> PendingPairSide {
+    if (!target) {
+      return resolve_pair_side(shape, actor);
     }
-    // Non-chunk. Static geometry is immutable and needs no events; anything
-    // else that can touch debris (players, vehicles, props) is movable and
-    // NOT event-observable, so it must block freezing.
-    side.is_static =
-        actor != nullptr && actor->is<physx::PxRigidStatic>() != nullptr;
+    PendingPairSide side{};
+    side.is_chunk = true;
+    side.structure_id = target.structure_id;
+    side.node_index = target.node_index;
+    const auto body = target.slot->node_to_body.find(target.node_index);
+    if (body != target.slot->node_to_body.end()) {
+      side.body_id = body->second;
+    } else {
+      side.is_chunk = false; // unmapped: treat as foreign, blocks freezing
+    }
     return side;
   };
   PendingPairLoad load{};
-  load.a = resolve(shape_a, actor_a);
-  load.b = resolve(shape_b, actor_b);
+  load.a = from_target(target_a, shape_a, actor_a);
+  load.b = from_target(target_b, shape_b, actor_b);
   if (!load.a.is_chunk && !load.b.is_chunk) {
     return; // no debris involved; not our concern
   }
