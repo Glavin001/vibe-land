@@ -167,12 +167,28 @@ bool quiet_skip_enabled() {
 /// Per-body contact-report threshold as a multiple of the body's own resting
 /// weight (`ratio * m * g`), or 0 to keep the flat scene-wide value.
 ///
-/// Off by default: this is an experiment with a measurable payoff (~6 ms of
-/// report-path cost) and one real coupling -- freeze admission learns which
-/// body rests on which FROM these reports, so silencing resting pairs could
-/// starve support discovery. T4 (freeze health) in the scenario suite fails
-/// loudly in exactly that case. Staged: measure at 0.5 (self-weight pairs
-/// still report with 2x margin), then 2.0 (the real saving).
+/// MEASURED AND REFUTED (2026-08-27, scripts/contact-threshold-experiment.sh).
+/// Three arms, identical scripted input, suite green in all three:
+///
+///   unset   dsim  0.00 ms   floaters 2
+///   k=0.5   dsim +2.27 ms   floaters 2
+///   k=2     dsim -0.14 ms   floaters 5
+///
+/// Nothing to win. The premise came from a CONFOUNDED A/B: disabling reports
+/// wholesale (VIBE_CITY_CHUNK_CONTACT_REPORTS=0) looked like ~6 ms, but it
+/// also removes stress injection, so that run broke 21% fewer bonds and was
+/// simulating a materially different (less damaged) city. With the physics
+/// held fixed -- bond band 0.4-0.5% here -- the report path is not the cost.
+///
+/// The reason is in the scene filter's own comment: a SLEEPING pair generates
+/// no narrowphase at all, so a settled pile already costs nothing, and during
+/// a live collapse the contacts genuinely exceed any threshold, so nothing is
+/// suppressed. Raising thresholds only skips the callback for touches that
+/// were cheap either way -- and at k=2 it starts starving support discovery
+/// (floaters 2 -> 5), which is the coupling this was warned about.
+///
+/// Kept off-by-default and documented rather than deleted, so the next person
+/// who has this idea can read the numbers instead of re-running the week.
 float contact_report_mass_ratio() {
   static const float ratio = [] {
     if (const char *raw = std::getenv("VIBE_CITY_CONTACT_REPORT_MASS_RATIO")) {
