@@ -128,7 +128,16 @@ def do_run(a):
         os.remove(csv)
 
     summary = summarize(all_rows)
-    summary["meta"] = {"tag": a.tag, "trials": meta, "env": a.env or [],
+    # The FULL resolved child env, not just CLI overrides: the hardcoded
+    # block above (including PROFILE_FETCH=1, an observer-effect knob) shaped
+    # every past campaign number and was recorded nowhere. Plus build
+    # identity, for the same reason run dirs carry it.
+    resolved_env = {k: v for k, v in env.items()
+                    if k.startswith(("VIBE_", "BLAST_"))}
+    git = subprocess.run(["git", "describe", "--always", "--dirty"],
+                         capture_output=True, text=True).stdout.strip() or "unknown"
+    summary["meta"] = {"tag": a.tag, "trials": meta, "env_overrides": a.env or [],
+                       "resolved_env": resolved_env, "git": git,
                        "seconds": a.seconds, "shots": a.shots}
     path = RESULTS / f"{a.tag}.json"
     path.write_text(json.dumps(summary, indent=1))
