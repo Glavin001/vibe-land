@@ -811,7 +811,7 @@ export class CityClient {
   }
 
   private handleBaseline(message: BaselineMessage): void {
-    noteBaseline(message.baselineId);
+    noteBaseline(message.baselineId, message.simTick);
     let poses = this.baselineGenerations.get(message.baselineId);
     if (!poses) {
       poses = new Map();

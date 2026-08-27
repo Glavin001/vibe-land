@@ -836,6 +836,20 @@ struct SpanValue {
     k: u8,
 }
 
+const TICK_RING_CAP: usize = 300;
+
+/// One tick's headline numbers for the debug-report ring.
+#[derive(serde::Serialize, Clone, Debug, Default)]
+struct TickRingEntry {
+    t: u32,
+    total: f32,
+    dyn_ms: f32,
+    city: f32,
+    awake: u32,
+    frozen: u32,
+    flips: u64,
+}
+
 #[derive(serde::Serialize, Clone, Default)]
 struct MatchStatsSnapshot {
     id: String,
@@ -848,6 +862,12 @@ struct MatchStatsSnapshot {
     /// suite env gap survived three runs because nothing recorded what a run
     /// executed under. Constant per process; ~free at 1 Hz.
     fingerprint: Option<vibe_land_destruction::fingerprint::Fingerprint>,
+    /// Last ~300 ticks of headline numbers. Populated ONLY on the registry
+    /// copy (which the debug-report handler snapshots into server.json);
+    /// empty — and therefore absent from the JSON — on the copy pushed to
+    /// clients every second, which must stay lean.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    tick_ring: Vec<TickRingEntry>,
     /// When this binary was built and when this process started, so a
     /// screenshot can be told apart from a stale one. Reading a metric off a
     /// server that predates the change being tested has wasted real time in
@@ -1108,6 +1128,11 @@ struct MatchState {
     physics: PhysicsRuntimeConfig,
     last_logged_datagram_fallbacks: u64,
     last_logged_dropped_outbound_packets: u64,
+    /// Last ~300 ticks of headline numbers for debug-report forensics. The
+    /// 1 Hz snapshot cannot show spikes between report presses; this can.
+    /// Rides only the REGISTRY copy of the snapshot (the report handler's
+    /// source), never the packet pushed to clients.
+    tick_ring: std::collections::VecDeque<TickRingEntry>,
     stats_registry: Arc<StdRwLock<HashMap<String, MatchStatsSnapshot>>>,
     /// Per-body freeze-machine states, refreshed at the stats cadence, for
     /// the body-color debug overlay. Cheap to keep warm (one small Vec per
@@ -2436,6 +2461,7 @@ async fn run_match_loop(
         physics,
         last_logged_datagram_fallbacks: 0,
         last_logged_dropped_outbound_packets: 0,
+        tick_ring: std::collections::VecDeque::with_capacity(TICK_RING_CAP),
         stats_registry,
         body_states_registry,
         reset_requests,
@@ -3318,6 +3344,28 @@ impl MatchState {
         self.timings
             .tick_unattributed_ms
             .record((total_ms - attributed).max(0.0));
+        let city_stats = self.city.as_ref().map(|city| city.stats());
+        self.tick_ring.push_back(TickRingEntry {
+            t: self.server_tick,
+            total: total_ms,
+            dyn_ms: self.timings.dynamics_ms.last(),
+            city: city_total_ms,
+            awake: city_stats
+                .as_ref()
+                .map(|stats| stats.awake_chunk_bodies)
+                .unwrap_or(0),
+            frozen: city_stats
+                .as_ref()
+                .map(|stats| stats.frozen_chunk_bodies)
+                .unwrap_or(0),
+            flips: city_stats
+                .as_ref()
+                .map(|stats| stats.freeze_flips + stats.unfreeze_flips)
+                .unwrap_or(0),
+        });
+        while self.tick_ring.len() > TICK_RING_CAP {
+            self.tick_ring.pop_front();
+        }
     }
 
     /// Re-bootstrap clients whose ledger we know is holed.
@@ -3803,6 +3851,7 @@ impl MatchState {
         let match_stats = MatchStatsSnapshot {
             id: self.id.clone(),
             spans,
+            tick_ring: Vec::new(),
             fingerprint: Some(
                 FINGERPRINT
                     .get_or_init(vibe_land_destruction::fingerprint::capture)
@@ -4103,6 +4152,10 @@ impl MatchState {
         let server_tick = self.server_tick;
         let snapshot_hz = self.physics.snapshot_hz();
         let published = match_stats.clone();
+        // The registry copy carries the tick ring; the client-pushed copy
+        // does not (serde skips the empty vec), keeping the 1 Hz packet lean.
+        let mut registry_copy = match_stats.clone();
+        registry_copy.tick_ring = self.tick_ring.iter().cloned().collect();
         tokio::task::spawn_blocking(move || {
             // Same snapshot the HTTP endpoint serves, pushed to the players it
             // describes. Reliable rather than datagram: it is ~1 Hz and being
@@ -4131,7 +4184,7 @@ impl MatchState {
 
             let global = {
                 let mut registry = stats_registry.write().expect("stats registry poisoned");
-                registry.insert(match_id.clone(), published);
+                registry.insert(match_id.clone(), registry_copy);
                 global_stats_from_registry(&registry, snapshot_hz)
             };
             if let Some((id, states)) = body_states {

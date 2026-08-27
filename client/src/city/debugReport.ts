@@ -21,6 +21,9 @@ interface BaselineArrival {
   /** performance.now() at arrival, ms. */
   t: number;
   baselineId: number;
+  /** Server sim tick the baseline was cut at — correlates client rings to
+   * the server's own tick ring in the same report. */
+  simTick: number;
 }
 
 interface ClientEvent {
@@ -50,8 +53,8 @@ function push<T>(ring: T[], entry: T): void {
 }
 
 /** Called by cityClient on every PKT_CITY_BASELINE arrival. */
-export function noteBaseline(baselineId: number): void {
-  push(baselines, { t: performance.now(), baselineId });
+export function noteBaseline(baselineId: number, simTick: number): void {
+  push(baselines, { t: performance.now(), baselineId, simTick });
 }
 
 /** Ledger repairs, resync requests, hash mismatches — the agreement timeline. */
