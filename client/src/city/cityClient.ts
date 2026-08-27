@@ -97,6 +97,19 @@ const RESYNC_MIN_INTERVAL_MS = 3000;
 export class CityClient {
   readonly topology: CityTopology;
   private readonly bodies: Map<number, BodyStreamState> = new Map();
+  /**
+   * Bodies whose next sample might move something -- the per-frame walk.
+   *
+   * `samplePresentation` used to walk EVERY body every frame, and in a
+   * demolished city that is thousands of quiescent islands re-proving each
+   * frame that they have not moved: ~2.5 ms of the M3's frame in the
+   * post-demolition steady state. A body leaves this set when its track's
+   * sample takes the settled fast-path (see `PresentationTrack.lastSampleSettled`
+   * for why that is a proof, not a heuristic), and re-enters on exactly the
+   * events that can make it move again: a datagram record, or track creation.
+   * Settles and retires delete the body outright, which also removes it here.
+   */
+  private readonly kinetic = new Set<number>();
   private baselineId = 0;
   /**
    * Baseline poses per generation, newest last.
@@ -536,6 +549,7 @@ export class CityClient {
         const message = decodeBootstrap(bytes);
         this.topology.applyBootstrap(message);
         this.bodies.clear();
+        this.kinetic.clear();
         this.pendingRecords = [];
         // Drop every held topology message. A bootstrap is a complete state
         // snapshot, so anything queued before it is stale by construction --
@@ -621,6 +635,7 @@ export class CityClient {
           for (const settle of message.settled) {
             const key = bodyKey(settle.structureId, settle.islandId);
             this.bodies.delete(key);
+            this.kinetic.delete(key);
             // Dropping the track also drops its per-body staleness guard, so
             // without this a pre-settle datagram still in flight would look
             // new, overwrite the authoritative rest pose, and stick -- the
@@ -645,6 +660,7 @@ export class CityClient {
             for (const islandId of batch.retiredIslandIds) {
               const key = bodyKey(batch.structureId, islandId);
               this.bodies.delete(key);
+            this.kinetic.delete(key);
               this.settledAtTick.delete(key);
               const lane = this.entityToLane.get(key);
               if (lane !== undefined && this.laneToEntity.get(lane) === key) {
@@ -767,6 +783,7 @@ export class CityClient {
     }
     const state: BodyStreamState = { track, lastTick: 0, settledHint: false };
     this.bodies.set(key, state);
+    this.kinetic.add(key);
     return state;
   }
 
@@ -921,6 +938,10 @@ export class CityClient {
     if (!state) {
       state = this.createBodyState(record.bodyEntity);
     }
+    // A fresh record can revise the path even for a body that had settled out
+    // of the walk; re-admit it before the staleness check, since even a stale
+    // record costs one no-op sample and a missed fresh one costs a frozen chunk.
+    this.kinetic.add(record.bodyEntity);
     if (datagram.simTick <= state.lastTick) {
       return true; // stale reordered datagram — latest wins
     }
@@ -996,8 +1017,23 @@ export class CityClient {
     if (this.debris !== null) {
       return this.sampleDebris(renderTick, live);
     }
-    for (const [key, state] of this.bodies) {
+    // The kinetic set, not the bodies map: a body whose track has settled
+    // cannot move without an event that re-adds it, so re-sampling it every
+    // frame only re-proves that. Deleting the current entry during Set
+    // iteration is defined behaviour in JS.
+    for (const key of this.kinetic) {
+      const state = this.bodies.get(key);
+      if (!state) {
+        this.kinetic.delete(key);
+        continue;
+      }
       const presented = state.track.sample(renderTick);
+      if (state.track.lastSampleSettled) {
+        this.kinetic.delete(key);
+        // Settled means the returned state is the previous sample's object,
+        // so the epsilon comparison below would `continue` anyway -- skip it.
+        continue;
+      }
       const previous = state.lastPresented;
       if (
         previous
@@ -1011,15 +1047,31 @@ export class CityClient {
       ) {
         continue;
       }
-      state.lastPresented = {
-        position: [presented.position[0], presented.position[1], presented.position[2]],
-        rotation: [
-          presented.rotation[0],
-          presented.rotation[1],
-          presented.rotation[2],
-          presented.rotation[3],
-        ],
-      };
+      // Written in place. This used to build an object and two arrays per moved
+      // body per frame; during a collapse that is thousands of allocations a
+      // frame, and the resulting GC is exactly the kind of periodic stall that
+      // shows up as a dropped frame rather than as a higher average. Nothing
+      // holds a reference to `lastPresented` -- it is only compared, field by
+      // field, a few lines above -- so mutating it is safe.
+      if (previous) {
+        previous.position[0] = presented.position[0];
+        previous.position[1] = presented.position[1];
+        previous.position[2] = presented.position[2];
+        previous.rotation[0] = presented.rotation[0];
+        previous.rotation[1] = presented.rotation[1];
+        previous.rotation[2] = presented.rotation[2];
+        previous.rotation[3] = presented.rotation[3];
+      } else {
+        state.lastPresented = {
+          position: [presented.position[0], presented.position[1], presented.position[2]],
+          rotation: [
+            presented.rotation[0],
+            presented.rotation[1],
+            presented.rotation[2],
+            presented.rotation[3],
+          ],
+        };
+      }
       this.topology.updateBodyPose(key, presented.position, presented.rotation, 'presented');
       live.add(key);
     }

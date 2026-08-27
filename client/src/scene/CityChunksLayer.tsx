@@ -1,16 +1,36 @@
-// Batched rendering of the destructible city: one THREE.BatchedMesh whose
-// per-instance matrix = chunkWorldPose ∘ scale, composed from the streamed
-// island-body poses + the manifest ledger.
+// Batched rendering of the destructible city: per-instance matrix =
+// chunkWorldPose ∘ scale, composed from the streamed island-body poses + the
+// manifest ledger.
 //
 // Intact/settled chunks are written once and frozen; only chunks belonging to
 // live streaming bodies are recomposed each frame.
 //
-// BatchedMesh rather than InstancedMesh because fractured chunks each have
-// their own convex hull, and an InstancedMesh can only draw one shape. It
-// still costs a single draw call: distinct hulls are uploaded once and reused
-// by every instance that shares them, which matters because the city stamps
-// one building pack sixteen times. Box chunks all share a single unit-cube
-// entry and carry their extents in the instance matrix, exactly as before.
+// Each render cell produces up to two objects, split by what the chunk's shape
+// can share:
+//
+//   boxes -> one InstancedMesh. Every box is the same unit cube carrying its
+//            extents in the instance matrix, so the whole cell is ONE genuine
+//            instanced draw.
+//   hulls -> one BatchedMesh. Fracture shards each have their own convex hull
+//            and cannot be instanced; a batch is the only way to draw
+//            different shapes from one call.
+//
+// This used to be BatchedMesh for everything, on the reasoning that a batch is
+// "still a single draw call". That reasoning was wrong in the way that
+// mattered. three draws a BatchedMesh with WEBGL_multi_draw and emits one
+// sub-draw RANGE PER INSTANCE, so `info.render.calls` says 1 while the driver
+// executes thousands of ~12-triangle draws. Measured on the bench at 100k
+// chunks (tools/renderbench.mjs, /renderbench): 100,352 sub-draws, gl.render
+// 15.7 ms, 57 fps. Splitting the boxes out drops it to 30,184 sub-draws,
+// gl.render 4.2 ms, 149 fps -- for the same triangle count, at the same
+// resolution. The frame cost tracks sub-draws, not triangles and not fill.
+//
+// The split is worth it because of the real shape mix, which is not what the
+// old comment assumed. Downtown's manifest is 16,945 boxes against 7,160
+// hulls, and the hulls are 7,160 DISTINCT shapes -- zero reuse, so the "one
+// pack stamped sixteen times, dedupe turns thousands into hundreds" premise
+// does not hold. Boxes are the 70% that can be instanced; hulls are the 30%
+// that genuinely need the batch.
 
 import { useFrame } from '@react-three/fiber';
 import { useEffect, useRef } from 'react';
@@ -18,13 +38,29 @@ import * as THREE from 'three';
 
 import type { CityClient } from '../city/cityClient';
 import type { LedgerBody } from '../city/topology';
-import { buildBoxGeometry, buildHullGeometry, chunkShape } from '../city/chunkGeometry';
+import { shouldUpdateThisFrame, updateStrideForDistanceSq } from '../city/renderScheduling';
 import {
-  partitionSlotsByCell,
-  shouldUpdateThisFrame,
-  updateStrideForDistanceSq,
-} from '../city/renderScheduling';
-import { cityPbrLighting, onRenderQualityChange, shadowsEnabled } from '../app/renderQuality';
+  cityPbrLighting,
+  cityTextureDetail,
+  heroTilingEnabled,
+  instanceShareThresholdSetting,
+  onRenderQualityChange,
+  shadowsEnabled,
+} from '../app/renderQuality';
+import {
+  buildCityMaterial,
+  buildCityMesh,
+  wakeBrokenSlots,
+  wakeSlotFromShell,
+  type CityMeshState,
+} from './cityChunkMesh';
+import { loadCityTextures } from './cityTextures';
+import {
+  setChunkTeleportProbe,
+  writeInstance,
+  type ChunkWriteContext,
+  type CityRenderable,
+} from './cityChunkWrite';
 import { updateCityE2E } from '../e2eBridge';
 import { addCitySuspect, isRecording, recordCityEvent, recordCityStats } from '../netlab/recorder';
 import type { CityE2EStats } from '../e2eBridge';
@@ -35,58 +71,28 @@ import {
   bodyDebugStateCode,
 } from '../city/bodyDebugColors';
 import { frameStartTime, markFrameEndAndSample, renderStats } from '../city/renderStats';
+import { cityDiagnosticsWanted } from '../city/cityDiagnostics';
 
 const TMP_MATRIX = new THREE.Matrix4();
 const TMP_POSITION = new THREE.Vector3();
 const TMP_QUATERNION = new THREE.Quaternion();
 const TMP_SCALE = new THREE.Vector3();
 const TMP_COLOR = new THREE.Color();
+/** Stand-in when the diagnostic sweep is skipped; consumers read length 0. */
+const EMPTY_POSITIONS = new Float32Array(0);
+/**
+ * Scratch for one composed pose in the 2 Hz sweep (x,y,z, qx,qy,qz,qw).
+ *
+ * Its own, not the write path's: the sweep runs between frames and borrowing
+ * that buffer would let a diagnostic clobber a transform mid-write.
+ */
+const TMP_POSE = new Float32Array(7);
 
 /**
  * Centroid depth below the flat city ground (y=0) that counts as "sunk".
  * Generous: a big slab lying flat still has its centroid above -0.25 m.
  */
 const CHUNK_SUNK_Y_M = -0.25;
-
-type CityMeshState = {
-  /**
-   * One batch per render cell, not one for the whole city.
-   *
-   * three uploads a BatchedMesh's entire matrix texture whenever any instance
-   * in it moves -- textures have no partial-update path the way buffers do. A
-   * single city-wide batch therefore re-uploaded megabytes every frame because
-   * one chunk somewhere was falling. Splitting means a patch of city nobody has
-   * touched costs nothing.
-   *
-   * The split is spatial rather than per structure. Per structure looks
-   * equivalent while every pack is one building stamped across a grid, but a
-   * pack that is itself a laid-out district arrives as a *single* structure,
-   * and the whole city collapses back into one batch: no culling (a 289 m mesh
-   * always intersects the frustum) and no stagger (every body shares one phase,
-   * so the map freezes and jumps in lockstep). Cells hold regardless of how the
-   * pack is authored.
-   */
-  meshes: THREE.BatchedMesh[];
-  /** Slot -> index into `meshes`. */
-  meshOfSlot: Int32Array;
-  /**
-   * Slot -> instance id within its own mesh. BatchedMesh hands out its own
-   * ids, and nothing promises they match the topology slot.
-   */
-  instanceIds: Int32Array;
-  /** Per-slot render scale: box extents, or 1 for hulls (already metric). */
-  scales: Float32Array;
-  baseColors: Float32Array;
-  /** 1 = hidden via setVisibleAt (sunk below CHUNK_HIDE_Y_M). */
-  hiddenBySlot: Uint8Array;
-  /** Consecutive writes below the hide threshold; see CHUNK_HIDE_STREAK. */
-  belowStreakBySlot: Uint8Array;
-  /**
-   * Bounding radius per chunk, for growing a batch's sphere from the poses the
-   * write loop already computed instead of re-walking every instance.
-   */
-  radii: Float32Array;
-};
 
 /**
  * Keep a bounded window of update costs. Bounded because this runs every frame
@@ -108,287 +114,6 @@ function percentile(samples: number[], fraction: number): number {
 }
 
 /**
- * City chunks shade as PBR only on the PRETTY tier.
- *
- * The city is most of the screen's pixels, and MeshStandardMaterial evaluates
- * full PBR per pixel per light. Lambert is per-light diffuse only, and on flat
- * matte rubble (roughness 0.85, metalness 0.05) the difference is barely a
- * look at all -- but on a fill-bound phone it is a large share of the frame.
- */
-function buildCityMaterial(): THREE.Material {
-  return cityPbrLighting()
-    ? new THREE.MeshStandardMaterial({ roughness: 0.85, metalness: 0.05 })
-    : new THREE.MeshLambertMaterial();
-}
-
-function structureColor(structureId: number): THREE.Color {
-  return TMP_COLOR.setHSL(((structureId * 47) % 360) / 360, 0.35, 0.62);
-}
-
-function buildMesh(client: CityClient): CityMeshState {
-  const manifest = client.manifest.manifest;
-  const count = client.topology.chunkCount;
-
-  // Resolve every chunk's shape first: the BatchedMesh has to be sized with
-  // the total vertex and index budget up front, which is only knowable once
-  // the distinct hulls are known.
-  const scales = new Float32Array(count * 3);
-  const radii = new Float32Array(count);
-  const shapeBySlot = new Array<ReturnType<typeof chunkShape>>(count);
-  const hullGeometries = new Map<string, THREE.BufferGeometry>();
-  // Rest-pose XZ per slot, relative to its own structure's origin, used only to
-  // assign cells.
-  //
-  // Structure-relative rather than world so the cell grid is anchored to each
-  // pack instead of to the world origin. A 12 m building that happened to
-  // straddle a world cell boundary would otherwise shatter into four batches
-  // for no benefit, and which buildings did that would depend on where the grid
-  // dropped them. Anchored per structure, anything smaller than a cell is
-  // always exactly one batch, and only a pack genuinely bigger than a cell --
-  // the district -- splits.
-  //
-  // Chunks move, but cells are fixed at build time: a chunk keeps the batch it
-  // was authored into. Re-celling tumbling debris would mean moving instances
-  // between BatchedMeshes mid-flight, which costs a geometry re-add and defeats
-  // the purpose -- and rubble ends up near where it started anyway.
-  const localXZ = new Float32Array(count * 2);
-  for (const structure of manifest.structures) {
-    TMP_QUATERNION.set(
-      structure.worldRotation[0],
-      structure.worldRotation[1],
-      structure.worldRotation[2],
-      structure.worldRotation[3],
-    );
-    for (const chunk of structure.chunks) {
-      const slot = client.topology.slotOf(structure.structureId, chunk.nodeIndex);
-      TMP_POSITION.set(chunk.centroid[0], chunk.centroid[1], chunk.centroid[2]).applyQuaternion(
-        TMP_QUATERNION,
-      );
-      localXZ[slot * 2] = TMP_POSITION.x;
-      localXZ[slot * 2 + 1] = TMP_POSITION.z;
-      const shape = chunkShape(chunk);
-      shapeBySlot[slot] = shape;
-      if (shape.kind === 'hull') {
-        scales[slot * 3] = 1;
-        scales[slot * 3 + 1] = 1;
-        scales[slot * 3 + 2] = 1;
-        if (!hullGeometries.has(shape.key)) {
-          hullGeometries.set(shape.key, buildHullGeometry(shape.points));
-        }
-      } else {
-        scales[slot * 3] = shape.scale[0];
-        scales[slot * 3 + 1] = shape.scale[1];
-        scales[slot * 3 + 2] = shape.scale[2];
-      }
-      // The manifest's own bounding radius where it has one; otherwise the
-      // box half-diagonal, which bounds the drawn unit cube exactly.
-      radii[slot] = chunk.radius > 0
-        ? chunk.radius
-        : 0.5 * Math.hypot(scales[slot * 3], scales[slot * 3 + 1], scales[slot * 3 + 2]);
-    }
-  }
-
-  // One batch per render cell. Geometry is rebuilt per cell rather than shared,
-  // which costs some memory, but a shared city-wide batch made every frame
-  // upload the transforms of every chunk in the city -- see the note on
-  // CityMeshState.
-  const material = buildCityMaterial();
-  const meshes: THREE.BatchedMesh[] = [];
-  const meshOfSlot = new Int32Array(count).fill(-1);
-  const instanceIds = new Int32Array(count).fill(-1);
-  const baseColors = new Float32Array(count * 3);
-  const hiddenBySlot = new Uint8Array(count);
-  const belowStreak = new Uint8Array(count);
-  let totalVertices = 0;
-
-  for (const structure of manifest.structures) {
-    const structureSlots = structure.chunks.map((chunk) =>
-      client.topology.slotOf(structure.structureId, chunk.nodeIndex),
-    );
-    // Cells are cut inside a structure, so a grid of separate buildings still
-    // gets at least one batch per building (each is far smaller than a cell)
-    // and a district pack gets one per city block.
-    const color = structureColor(structure.structureId);
-    for (const slots of partitionSlotsByCell(localXZ, structureSlots).values()) {
-      // Only the hulls this cell actually uses.
-      const localHulls = new Map<string, THREE.BufferGeometry>();
-      for (const slot of slots) {
-        const shape = shapeBySlot[slot];
-        if (shape.kind === 'hull' && !localHulls.has(shape.key)) {
-          localHulls.set(shape.key, buildHullGeometry(shape.points));
-        }
-      }
-      const boxGeometry = buildBoxGeometry();
-      let vertexBudget = boxGeometry.attributes.position.count;
-      let indexBudget = boxGeometry.index?.count ?? 0;
-      for (const geometry of localHulls.values()) {
-        vertexBudget += geometry.attributes.position.count;
-        indexBudget += geometry.index?.count ?? 0;
-      }
-      totalVertices += vertexBudget;
-
-      const mesh = new THREE.BatchedMesh(slots.length, vertexBudget, indexBudget, material);
-      // Toggleable at runtime: the city is the bulk of the shadow map, and on a
-      // phone that second pass over 24k chunks is a candidate for the whole
-      // frame budget. See app/renderQuality.
-      mesh.castShadow = shadowsEnabled();
-      mesh.receiveShadow = shadowsEnabled();
-      // Per-instance culling walks every chunk to decide each one, which is the
-      // work we are trying to avoid.
-      mesh.perObjectFrustumCulled = false;
-      mesh.sortObjects = false;
-      // Whole-batch culling, on the other hand, is one sphere test that can drop
-      // a whole block. This is only worth anything because batches are cell
-      // sized: a single city-wide batch always intersects the frustum, which is
-      // why culling used to be turned off here.
-      mesh.frustumCulled = true;
-
-      const boxGeometryId = mesh.addGeometry(boxGeometry);
-      const hullGeometryIds = new Map<string, number>();
-      for (const [key, geometry] of localHulls) {
-        hullGeometryIds.set(key, mesh.addGeometry(geometry));
-      }
-
-      const meshIndex = meshes.length;
-      for (const slot of slots) {
-        const shape = shapeBySlot[slot];
-        const geometryId =
-          shape.kind === 'hull' ? (hullGeometryIds.get(shape.key) ?? boxGeometryId) : boxGeometryId;
-        meshOfSlot[slot] = meshIndex;
-        instanceIds[slot] = mesh.addInstance(geometryId);
-        baseColors[slot * 3] = color.r;
-        baseColors[slot * 3 + 1] = color.g;
-        baseColors[slot * 3 + 2] = color.b;
-        writeInstance(
-          mesh,
-          client,
-          slot,
-          client.topology.body(client.topology.bodyKeyOf(slot)),
-          scales,
-          instanceIds,
-          hiddenBySlot,
-          belowStreak,
-        );
-        mesh.setColorAt(instanceIds[slot], color);
-      }
-      // Seed the culling sphere now rather than leaving it null for three to
-      // compute lazily on the first frustum test. The write path only GROWS
-      // this sphere, so it needs a correct starting value to grow from -- and
-      // a batch culled against a sphere that never existed is a whole block of
-      // city missing.
-      mesh.computeBoundingSphere();
-      meshes.push(mesh);
-    }
-  }
-
-  console.info('[city] batched chunk meshes ready', {
-    chunks: count,
-    structures: manifest.structures.length,
-    batches: meshes.length,
-    vertices: totalVertices,
-  });
-  return {
-    meshes,
-    meshOfSlot,
-    instanceIds,
-    scales,
-    baseColors,
-    hiddenBySlot,
-    radii,
-    belowStreakBySlot: belowStreak,
-  };
-}
-
-/**
- * Depth below which a chunk cannot be poking through the flat y=0 ground no
- * matter its size or orientation, so drawing it is pure waste.
- *
- * Deliberately far below CHUNK_SUNK_Y_M (-0.25): that constant flags a chunk
- * as *suspicious* for the below-ground diagnostic, where a large slab's
- * centroid can legitimately sit slightly negative while its top face shows.
- * Hiding must be conservative the other way -- the largest authored chunks are
- * a few metres across, so at -4 m the whole body is underground. Tunnelled
- * chunks have been observed at -74 m, each still costing a draw.
- */
-const CHUNK_HIDE_Y_M = -4;
-
-/**
- * Consecutive writes a chunk must read below the threshold before it is hidden.
- *
- * Hiding is a cull for chunks that have genuinely escaped the world, and those
- * stay escaped -- so waiting costs nothing real. Acting on a SINGLE frame does
- * cost something: one bad pose blanks the geometry instantly, which is visible
- * as a hole opening in a building mid-fracture and closing again. And a chunk
- * hidden on a blip could stay hidden, because the hidden path used to skip its
- * matrix write entirely, so nothing corrected it once it stopped being drawn.
- */
-const CHUNK_HIDE_STREAK = 8;
-
-/// Scratch for one composed chunk pose (x,y,z, qx,qy,qz,qw). Module-level so
-/// the write path allocates nothing per chunk: the allocating compose built
-/// seven arrays and an object per chunk, which at thousands of dirty chunks a
-/// frame was the layer's largest source of garbage.
-const TMP_POSE = new Float32Array(7);
-/// `chunkTeleportProbe` wants a Vec3; only built while recording.
-const TMP_PROBE_POS: [number, number, number] = [0, 0, 0];
-
-function writeInstance(
-  mesh: THREE.BatchedMesh,
-  client: CityClient,
-  slot: number,
-  body: LedgerBody | undefined,
-  scales: Float32Array,
-  instanceIds: Int32Array,
-  hiddenBySlot?: Uint8Array,
-  belowStreakBySlot?: Uint8Array,
-  probeCtx?: ChunkWriteContext,
-): void {
-  const instanceId = instanceIds[slot];
-  if (instanceId < 0) {
-    return;
-  }
-  if (!client.topology.chunkWorldPoseInto(slot, body, TMP_POSE, 0)) {
-    // The ledger cannot resolve this chunk's body right now -- a migration
-    // naming an island whose promotion has not been applied yet, or a retire
-    // that outran its replacement. It has no known world pose, so the only
-    // correct thing to draw is what is already on screen. Writing the
-    // body-local offset instead would teleport it to near the world origin
-    // for as long as the gap lasts, which reads as a hole in the building.
-    renderStats.chunksUnresolved += 1;
-    return;
-  }
-  // Teleport probe: this is the last point every chunk transform passes
-  // through, so a jump seen here is a jump the player saw, whatever produced
-  // it upstream.
-  if (chunkTeleportProbe) {
-    TMP_PROBE_POS[0] = TMP_POSE[0];
-    TMP_PROBE_POS[1] = TMP_POSE[1];
-    TMP_PROBE_POS[2] = TMP_POSE[2];
-    chunkTeleportProbe(slot, TMP_PROBE_POS, probeCtx);
-  }
-  if (hiddenBySlot && belowStreakBySlot) {
-    const below = TMP_POSE[1] < CHUNK_HIDE_Y_M;
-    const streak = below ? Math.min(255, belowStreakBySlot[slot] + 1) : 0;
-    belowStreakBySlot[slot] = streak;
-    const hide = streak >= CHUNK_HIDE_STREAK;
-    if (hide !== (hiddenBySlot[slot] === 1)) {
-      mesh.setVisibleAt(instanceId, !hide);
-      hiddenBySlot[slot] = hide ? 1 : 0;
-      if (hide) renderStats.chunksHidden += 1;
-    }
-    // The matrix is written either way. Skipping it while hidden saved a
-    // compose and cost correctness: a chunk that settled while hidden kept
-    // whatever pose it had when it vanished, so un-hiding drew it in the
-    // wrong place -- or never, since a settled body stops being dirty.
-  }
-  TMP_POSITION.set(TMP_POSE[0], TMP_POSE[1], TMP_POSE[2]);
-  TMP_QUATERNION.set(TMP_POSE[3], TMP_POSE[4], TMP_POSE[5], TMP_POSE[6]);
-  TMP_SCALE.set(scales[slot * 3], scales[slot * 3 + 1], scales[slot * 3 + 2]);
-  TMP_MATRIX.compose(TMP_POSITION, TMP_QUATERNION, TMP_SCALE);
-  mesh.setMatrixAt(instanceId, TMP_MATRIX);
-}
-
-/**
  * Largest believable single-frame move for a chunk, in metres.
  *
  * Debris is speed-clamped server-side at 12 m/s; at 60 fps that is 0.2 m per
@@ -397,14 +122,6 @@ function writeInstance(
  */
 const CHUNK_TELEPORT_M = 1.5;
 
-/** Per-write context so a teleport event names its suspect, not just a slot. */
-interface ChunkWriteContext {
-  bodyKey: number;
-  settling: boolean;
-  bodySettled: boolean;
-  /** Ledger pose source at write time — splits decoder jumps from compose jumps. */
-  source?: string;
-}
 
 /**
  * Settled islands hovering in mid-air: lowest chunk well above ground with no
@@ -509,11 +226,6 @@ function sweepChunkPositions(client: CityClient): {
   return { positions, columns, minChunkY, deepestSlot, chunksBelowGround };
 }
 
-/** Set while recording; see `installChunkTeleportProbe`. */
-let chunkTeleportProbe:
-  | ((slot: number, position: readonly number[], ctx?: ChunkWriteContext) => void)
-  | null = null;
-
 /**
  * Slots whose last DRAWN position disagrees with the ledger by more than
  * `toleranceM`.
@@ -556,12 +268,12 @@ function installChunkTeleportProbe(chunkCount: number): () => void {
     }
     return stale;
   };
-  chunkTeleportProbe = (slot, position, ctx) => {
+  setChunkTeleportProbe((slot, position, ctx) => {
     const base = slot * 3;
     const px = previous[base];
     const nowMs = performance.now();
     // Teleport analysis needs the write's context; stale-detection only needs
-    // the position, so buildMesh's context-free initial writes still register.
+    // the position, so the builder's context-free initial writes still register.
     if (!Number.isNaN(px) && ctx) {
       const dx = position[0] - px;
       const dy = position[1] - previous[base + 1];
@@ -602,9 +314,9 @@ function installChunkTeleportProbe(chunkCount: number): () => void {
     previous[base + 1] = position[1];
     previous[base + 2] = position[2];
     lastWriteMs[slot] = nowMs;
-  };
+  });
   return () => {
-    chunkTeleportProbe = null;
+    setChunkTeleportProbe(null);
     countStaleDrawnChunks = null;
   };
 }
@@ -624,6 +336,25 @@ export function CityChunksLayer({
   const teleportProbeRef = useRef<(() => void) | null>(null);
   const buildFailedForRef = useRef<CityClient | null>(null);
   const updateSamplesRef = useRef<number[]>([]);
+  /**
+   * Set when a knob changed something that is baked in at build time.
+   *
+   * Shadows and the material swap apply to live objects, but the pattern pool
+   * decides which geometry every hull instance points at, and that is fixed
+   * when the mesh is built. The teardown happens in the frame callback rather
+   * than here because that is where the scene group is in scope.
+   */
+  const rebuildRequestedRef = useRef(false);
+  /** Which shader variant the live city material was built for. */
+  const materialVariantRef = useRef('');
+  /** Threshold the live city mesh was built with; see the rebuild below. */
+  const builtShareThresholdRef = useRef(-1);
+
+  // Deliberately not awaited anywhere: the arrays exist from the first frame
+  // filled with a neutral concrete grey, and the sheets write into them in
+  // place when they land. Blocking the city on 5 MB of texture would trade a
+  // visible delay for a cosmetic one.
+  useEffect(loadCityTextures, []);
 
   // Applied to the live meshes rather than forcing a rebuild: castShadow is a
   // plain flag on the batch, and the shared material is one object swapped in
@@ -632,12 +363,24 @@ export function CityChunksLayer({
   useEffect(
     () =>
       onRenderQualityChange(({ shadows }) => {
-        const meshes = stateRef.current?.meshes ?? [];
-        const current = meshes[0]?.material as THREE.Material | undefined;
-        const wantPbr = cityPbrLighting();
-        const havePbr = current instanceof THREE.MeshStandardMaterial;
-        const replacement = current && wantPbr !== havePbr ? buildCityMaterial() : null;
-        for (const mesh of meshes) {
+        const renderables = stateRef.current?.renderables ?? [];
+        const current = renderables[0]?.mesh.material as THREE.Material | undefined;
+        // Both of these change which SHADER the city compiles, so both need a
+        // new material rather than a uniform write. Compared against what was
+        // last built rather than against the material's class, because the
+        // texture detail is not visible from the material object at all.
+        const want = `${cityPbrLighting() ? 'pbr' : 'flat'}:${cityTextureDetail()}:${heroTilingEnabled() ? 'hero' : 'plain'}`;
+        const replacement = current && want !== materialVariantRef.current
+          ? buildCityMaterial()
+          : null;
+        if (replacement) materialVariantRef.current = want;
+        // The instancing threshold decides which shapes get a city-wide mesh,
+        // which is baked in at build time -- a live material swap cannot
+        // express it, so the mesh has to be rebuilt.
+        if (instanceShareThresholdSetting() !== builtShareThresholdRef.current) {
+          rebuildRequestedRef.current = true;
+        }
+        for (const { mesh } of renderables) {
           mesh.castShadow = shadows;
           mesh.receiveShadow = shadows;
           if (replacement) mesh.material = replacement;
@@ -666,20 +409,18 @@ export function CityChunksLayer({
       renderStats.cityFrameMs = performance.now() - cityFrameStartedAt;
       return;
     }
-    if (clientRef.current !== client) {
+    if (clientRef.current !== client || rebuildRequestedRef.current) {
+      rebuildRequestedRef.current = false;
       if (stateRef.current) {
-        for (const mesh of stateRef.current.meshes) {
+        for (const { mesh } of stateRef.current.renderables) {
           group.remove(mesh);
-        }
-        // BatchedMesh owns the matrix/colour data textures as well as the
-        // merged geometry; its own dispose is what releases them.
-        for (const mesh of stateRef.current.meshes) {
-          // BatchedMesh owns its matrix/colour data textures as well as the
-          // merged geometry; its own dispose is what releases them.
+          // Both classes own GPU state beyond the geometry -- a BatchedMesh its
+          // matrix/colour data textures, an InstancedMesh its instance buffers
+          // -- and their own dispose is what releases it.
           mesh.dispose();
           mesh.geometry.dispose();
         }
-        const shared = stateRef.current.meshes[0]?.material as THREE.Material | undefined;
+        const shared = stateRef.current.renderables[0]?.mesh.material as THREE.Material | undefined;
         shared?.dispose();
         stateRef.current = null;
       }
@@ -698,10 +439,11 @@ export function CityChunksLayer({
       const chunkBody = client.topology.chunkBody;
       for (let slot = 0; slot < chunkBody.length; slot += 1) {
         const instanceId = state.instanceIds[slot];
-        const mesh = state.meshes[state.meshOfSlot[slot]];
-        if (instanceId < 0 || !mesh) {
+        const renderable = state.renderables[state.meshOfSlot[slot]];
+        if (instanceId < 0 || !renderable) {
           continue;
         }
+        const mesh = renderable.mesh;
         const key = chunkBody[slot];
         // Support serial is 0: intact structure and rooted stumps both live
         // on the client-side support body.
@@ -770,7 +512,7 @@ export function CityChunksLayer({
          * Everything else compares the ledger with itself, which cannot see a
          * chunk that is drawn somewhere the ledger never put it -- and "drawn
          * in the wrong place for a frame" is precisely the reported artifact.
-         * This reads the instance matrices back out of the BatchedMesh.
+         * This reads the instance matrices back out of the drawn objects.
          */
         drawnVsLedger: (): { worst: number; slot: number; over: number } => {
           const meshState = stateRef.current;
@@ -781,10 +523,10 @@ export function CityChunksLayer({
           const count = client.topology.chunkCount;
           for (let slot = 0; slot < count; slot += 1) {
             const instanceId = meshState.instanceIds[slot];
-            const mesh = meshState.meshes[meshState.meshOfSlot[slot]];
-            if (instanceId < 0 || !mesh) continue;
+            const renderable = meshState.renderables[meshState.meshOfSlot[slot]];
+            if (instanceId < 0 || !renderable) continue;
             if (meshState.hiddenBySlot[slot] === 1) continue;
-            mesh.getMatrixAt(instanceId, TMP_MATRIX);
+            renderable.mesh.getMatrixAt(instanceId, TMP_MATRIX);
             const pose = client.topology.chunkWorldPose(slot).position;
             const dx = TMP_MATRIX.elements[12] - pose[0];
             const dy = TMP_MATRIX.elements[13] - pose[1];
@@ -819,8 +561,16 @@ export function CityChunksLayer({
       // remember the failure, keep publishing stats, and let the session run
       // headless rather than retrying a throwing build every frame.
       try {
-        stateRef.current = buildMesh(client);
-        for (const mesh of stateRef.current.meshes) {
+        stateRef.current = buildCityMesh(client);
+        // A build is not always against an intact city -- a mid-game rebuild
+        // (threshold, texture detail) or a late join happens over existing
+        // rubble, and the shell bakes rest poses. Wake everything already
+        // broken, or settled islands render as ghost buildings.
+        const preWoken = wakeBrokenSlots(stateRef.current, client);
+        if (preWoken > 0) console.info('[city] shell: woke pre-broken chunks', { preWoken });
+        materialVariantRef.current = `${cityPbrLighting() ? 'pbr' : 'flat'}:${cityTextureDetail()}:${heroTilingEnabled() ? 'hero' : 'plain'}`;
+        builtShareThresholdRef.current = instanceShareThresholdSetting();
+        for (const { mesh } of stateRef.current.renderables) {
           group.add(mesh);
         }
       } catch (error) {
@@ -849,9 +599,18 @@ export function CityChunksLayer({
       // penetration (the server world is a flat plane at y=0, so a chunk
       // centroid below it has sunk into the floor), the floating-island
       // columns, and the island-span AABBs.
-      const sweep = sweepChunkPositions(client);
-      const positions = sweep.positions;
-      const { minChunkY, chunksBelowGround, deepestSlot } = sweep;
+      // The sweep composes the world pose of every chunk -- 3.1 ms at
+      // downtown's 33,221 -- purely to derive the diagnostics below. It runs
+      // only while something is reading them: the panel on screen, the netlab
+      // recorder, or a spec that called `__VIBE_E2E__.setDiagnostics(true)`.
+      // Unconditionally it was a 3.1 ms spike twice a second for every player,
+      // including phones, where the panel is hidden by default.
+      const wantSweep = cityDiagnosticsWanted() || recording;
+      const sweep = wantSweep ? sweepChunkPositions(client) : null;
+      const positions = sweep ? sweep.positions : EMPTY_POSITIONS;
+      const minChunkY = sweep ? sweep.minChunkY : 0;
+      const chunksBelowGround = sweep ? sweep.chunksBelowGround : 0;
+      const deepestSlot = sweep ? sweep.deepestSlot : -1;
       // Name the offending chunk rather than only counting it. The server is
       // measured to hold every body at y >= 0, so a chunk drawn hundreds of
       // metres down is this client composing a body pose with a local offset
@@ -895,6 +654,48 @@ export function CityChunksLayer({
           lastMigrateAnomaliesRef.current = { ...anomalies };
         }
       }
+      // Both consumers below want these, and both used to compute them
+      // independently -- so the city-wide stale-chunk sweep ran TWICE per
+      // telemetry tick, and the percentile twice with it.
+      const staleDrawnChunks = wantSweep && countStaleDrawnChunks
+        ? countStaleDrawnChunks(client, 0.5)
+        : 0;
+      const chunkUpdateP95Ms = percentile(updateSamplesRef.current, 0.95);
+      // Island statistics are derived from the sweep's positions, so without a
+      // sweep there is nothing to derive them from -- and computing them anyway
+      // walked every body and every chunk slot to read an empty array. One pass
+      // now, not two, and only when it can produce an answer.
+      let largestIslandSpanM = 0;
+      let largestIslandChunks = 0;
+      if (sweep) {
+        for (const body of client.topology.allBodies()) {
+          // Excludes the intact support body (serial 0), which is the whole
+          // un-fractured structure by definition.
+          if (body.islandSerial === 0 || body.chunkSlots.length === 0) continue;
+          if (body.chunkSlots.length > largestIslandChunks) {
+            largestIslandChunks = body.chunkSlots.length;
+          }
+          // What the player sees is SIZE, not chunk count: a 5-chunk island of
+          // bonded slabs is still a wall-sized panel. Span = longest edge of
+          // the island's world AABB.
+          let minX = Infinity, minY = Infinity, minZ = Infinity;
+          let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+          for (const slot of body.chunkSlots) {
+            const at = slot * 3;
+            const px = positions[at];
+            const py = positions[at + 1];
+            const pz = positions[at + 2];
+            if (px < minX) minX = px;
+            if (py < minY) minY = py;
+            if (pz < minZ) minZ = pz;
+            if (px > maxX) maxX = px;
+            if (py > maxY) maxY = py;
+            if (pz > maxZ) maxZ = pz;
+          }
+          const span = Math.max(maxX - minX, maxY - minY, maxZ - minZ);
+          if (span > largestIslandSpanM) largestIslandSpanM = span;
+        }
+      }
       recordCityStats({
         wireVersion: stats.wireVersion,
         chunksTotal: stats.chunksTotal,
@@ -905,52 +706,18 @@ export function CityChunksLayer({
         topoSeqGaps: stats.topoSeqGaps,
         bytesPerSecond: stats.bytesPerSecond,
         datagramsReceived: stats.datagramsReceived,
-        chunkUpdateP95Ms: percentile(updateSamplesRef.current, 0.95),
+        chunkUpdateP95Ms,
         orphanedChunks: stats.orphanedChunks,
         chunksBelowGround,
         minChunkY: Number.isFinite(minChunkY) ? minChunkY : 0,
         // 0.5 m: comfortably above quantisation and strided-motion lag, far
         // below a chunk left at its intact pose while its island has fallen.
-        staleDrawnChunks: countStaleDrawnChunks ? countStaleDrawnChunks(client, 0.5) : 0,
-        floatingSettledIslands: countFloatingSettledIslands(client, positions, sweep.columns),
-        largestIslandSpanM: (() => {
-          // What the player sees is SIZE, not chunk count: a 5-chunk island of
-          // bonded slabs is still a wall-sized panel. Span = longest edge of
-          // the island's world AABB.
-          let span = 0;
-          for (const body of client.topology.allBodies()) {
-            if (body.islandSerial === 0 || body.chunkSlots.length === 0) continue;
-            let minX = Infinity, minY = Infinity, minZ = Infinity;
-            let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
-            for (const slot of body.chunkSlots) {
-              const at = slot * 3;
-              const px = positions[at];
-              const py = positions[at + 1];
-              const pz = positions[at + 2];
-              if (px < minX) minX = px;
-              if (py < minY) minY = py;
-              if (pz < minZ) minZ = pz;
-              if (px > maxX) maxX = px;
-              if (py > maxY) maxY = py;
-              if (pz > maxZ) maxZ = pz;
-            }
-            const s = Math.max(maxX - minX, maxY - minY, maxZ - minZ);
-            if (s > span) span = s;
-          }
-          return span;
-        })(),
-        largestIslandChunks: (() => {
-          // A building half that shots cannot break apart shows up here as a
-          // flat line: the biggest island never shrinks however much fire it
-          // takes. Excludes the intact support body (serial 0), which is the
-          // whole un-fractured structure by definition.
-          let largest = 0;
-          for (const body of client.topology.allBodies()) {
-            if (body.islandSerial === 0) continue;
-            if (body.chunkSlots.length > largest) largest = body.chunkSlots.length;
-          }
-          return largest;
-        })(),
+        staleDrawnChunks,
+        floatingSettledIslands: sweep
+          ? countFloatingSettledIslands(client, positions, sweep.columns)
+          : 0,
+        largestIslandSpanM,
+        largestIslandChunks,
       });
       updateCityE2E({
         wireVersion: stats.wireVersion,
@@ -966,12 +733,12 @@ export function CityChunksLayer({
         rendered: stateRef.current != null,
         minChunkY: Number.isFinite(minChunkY) ? minChunkY : 0,
         chunksBelowGround,
-        chunkUpdateP95Ms: percentile(updateSamplesRef.current, 0.95),
+        chunkUpdateP95Ms,
         orphanedChunks: stats.orphanedChunks,
         orphanedByRetire: stats.orphanedByRetire,
         // Same probe as the netlab line above: the only signal that catches a
         // chunk drawn away from its ledger pose.
-        staleDrawnChunks: countStaleDrawnChunks ? countStaleDrawnChunks(client, 0.5) : 0,
+        staleDrawnChunks,
         bootstraps: stats.bootstraps,
         settleRejects: stats.settleRejects,
         valveApplies: stats.valveApplies,
@@ -1044,19 +811,26 @@ export function CityChunksLayer({
         const dy = body.position[1] - camera.y;
         const dz = body.position[2] - camera.z;
         const stride = updateStrideForDistanceSq(dx * dx + dy * dy + dz * dz);
-        // Staggered by BATCH, not by body. A batch re-uploads its whole
-        // transform texture if any one instance in it changes, so bodies
-        // sharing a batch must defer together -- staggering them individually
-        // would put at least one write in every batch on every frame and save
+        // Staggered by CELL, not by body. An upload unit re-sends everything
+        // it holds when any one instance in it changes -- a batch its whole
+        // transform texture, an instanced mesh its whole matrix buffer -- so
+        // bodies sharing one must defer together. Staggering them individually
+        // would put at least one write in every unit on every frame and save
         // nothing at all.
         //
-        // The key is the batch itself rather than the structure it came from.
-        // Those coincide only while one structure means one building; a pack
-        // authored as a whole district is a single structure, and keying on it
-        // gave every body the same phase, so the entire map deferred and
-        // resumed together instead of spreading across the stride window.
-        const batch = state.meshOfSlot[body.chunkSlots[0]];
-        if (!shouldUpdateThisFrame(frame, batch < 0 ? 0 : batch, stride)) {
+        // The key is the cell rather than the renderable, because a cell now
+        // holds two objects (its boxes and its hulls) and a body's chunks can
+        // sit in both. Keying on the renderable gave those two different
+        // phases, which rewrote both on frames where neither used to move.
+        //
+        // And the cell rather than the structure it came from: those coincide
+        // only while one structure means one building; a pack authored as a
+        // whole district is a single structure, and keying on it gave every
+        // body the same phase, so the entire map deferred and resumed together
+        // instead of spreading across the stride window.
+        const renderableIndex = state.meshOfSlot[body.chunkSlots[0]];
+        const batch = renderableIndex < 0 ? 0 : state.cellOfRenderable[renderableIndex];
+        if (!shouldUpdateThisFrame(frame, batch, stride)) {
           continue;
         }
       }
@@ -1078,18 +852,29 @@ export function CityChunksLayer({
       const probeCtx: ChunkWriteContext | undefined = recording
         ? { bodyKey: key, settling, bodySettled: body.settled, source: writeSource }
         : undefined;
+      // Support serial 0 is the intact structure: its chunks are AT rest by
+      // definition, so a write for them (repaint.all marks every body dirty,
+      // including this one) re-seats a pose that has not changed. Waking on it
+      // would dissolve the whole shell into per-chunk sub-draws for a frame
+      // where nothing moved -- the exact cost the shell exists to avoid.
+      const bodyIsSupport = (key & 0x3f_ffff) === 0;
       for (const slot of body.chunkSlots) {
         const instanceId = state.instanceIds[slot];
         if (instanceId < 0) {
           continue;
         }
-        const mesh = state.meshes[state.meshOfSlot[slot]];
-        if (!mesh) {
+        const renderable = state.renderables[state.meshOfSlot[slot]];
+        if (!renderable) {
           continue;
         }
+        const mesh = renderable.mesh;
+        // First real movement: the chunk leaves the static shell and its own
+        // instance takes over, same frame, same pose. One-way -- see
+        // cityShell.ts for why a settled chunk never merges back.
+        if (!bodyIsSupport) wakeSlotFromShell(state, slot);
         renderStats.instanceWrites += 1;
         writeInstance(
-          mesh,
+          renderable,
           client,
           slot,
           body,
@@ -1117,8 +902,8 @@ export function CityChunksLayer({
             mesh.setColorAt(instanceId, TMP_COLOR);
           }
         }
+        touchedMeshes.add(state.meshOfSlot[slot]);
       }
-      touchedMeshes.add(state.meshOfSlot[body.chunkSlots[0]] ?? -1);
       if (!live.has(key)) {
         dirty.delete(key);
       }
@@ -1136,14 +921,28 @@ export function CityChunksLayer({
     const writeEndedAt = performance.now();
     renderStats.dirtyWriteMs = writeEndedAt - updateStartedAt;
     for (const index of touchedMeshes) {
-      state.meshes[index]?.computeBoundingSphere();
+      const renderable = state.renderables[index];
+      if (!renderable) continue;
+      if (renderable.kind === 'instanced') {
+        // A BatchedMesh writes into its own data textures and flags them
+        // itself; an InstancedMesh writes into plain buffer attributes and does
+        // not, so without this the cell's chunks freeze at their build pose.
+        renderable.mesh.instanceMatrix.needsUpdate = true;
+        if (renderable.mesh.instanceColor) renderable.mesh.instanceColor.needsUpdate = true;
+        // A pattern mesh is never sphere-tested (frustumCulled is off, because
+        // it spans the map), so recomputing its sphere is pure waste -- and the
+        // walk is city-wide, which made it the largest line in the frame until
+        // it was skipped.
+        if (!renderable.mesh.frustumCulled) continue;
+      }
+      renderable.mesh.computeBoundingSphere();
     }
     const sphereEndedAt = performance.now();
     renderStats.sphereMs = sphereEndedAt - writeEndedAt;
     recordUpdateMs(updateSamplesRef.current, sphereEndedAt - updateStartedAt);
     renderStats.cityFrameMs = sphereEndedAt - cityFrameStartedAt;
-    // No needsUpdate bookkeeping: BatchedMesh writes matrices and colours
-    // straight into its own data textures and flags them itself.
+    // Upload bookkeeping is done above, per touched object: BatchedMesh flags
+    // its own data textures, InstancedMesh has to be told.
   });
 
   return <group ref={groupRef} />;

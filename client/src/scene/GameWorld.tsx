@@ -1,7 +1,18 @@
 import { useRef, useEffect, useMemo, type MutableRefObject, type ReactNode, type RefObject } from 'react';
-import { Sky } from '@react-three/drei';
 
-import { useQualityTier } from '../app/renderQuality';
+import {
+  useAmbientOcclusionEnabled,
+  useQualityTier,
+  useShadowsEnabled,
+  useShadowMapSizeOverride,
+  useSkyDomeEnabled,
+  useSkyIblEnabled,
+} from '../app/renderQuality';
+import { AmbientOcclusion } from '../graphics/AmbientOcclusion';
+import { SkyEnvironment } from '../graphics/SkyEnvironment';
+import { skyGradient } from '../graphics/sunSky';
+import { SunLight } from './SunLight';
+import { applyCapturePose } from './captureCamera';
 import { useFrame, useThree } from '@react-three/fiber';
 import * as THREE from 'three';
 import type { GameMode } from '../app/gameMode';
@@ -1136,8 +1147,14 @@ export function GameWorld({
   sceneExtras,
 }: GameWorldProps) {
   const resolvedFogColor = fogColor ?? WEATHER_PRESETS[weather].fogColor;
+  const skyLightGradient = useMemo(() => skyGradient(resolvedFogColor), [resolvedFogColor]);
   const effectiveFogDensity = fogDensity * intensity;
   const qualityIsPretty = useQualityTier() === 'pretty';
+  const shadowsOn = useShadowsEnabled();
+  const ambientOcclusionOn = useAmbientOcclusionEnabled();
+  const skyDomeOn = useSkyDomeEnabled();
+  const skyIblOn = useSkyIblEnabled();
+  const shadowMapTexels = useShadowMapSizeOverride();
   const weatherOn = qualityIsPretty;
   useWeatherAmbience(weather, windStrengthMps);
   const practiceMode = isPracticeMode(mode);
@@ -2338,6 +2355,10 @@ export function GameWorld({
       camera.lookAt(lookX, lookY, lookZ);
     }
 
+    // Last, so it overrides both the chase and first-person paths. Nothing sets
+    // it unless a capture harness does.
+    applyCapturePose(camera);
+
     if (isDriving && drivenVehicleId != null) {
       const cameraMotionState = localVehicleCameraMotionStateRef.current;
       const currentCameraEuler = new THREE.Euler().setFromQuaternion(camera.quaternion, 'YXZ');
@@ -3171,37 +3192,49 @@ export function GameWorld({
           intensity={intensity}
         />
       )}
-      {qualityIsPretty && (
-        <Sky
-          distance={450000}
-          sunPosition={[120, 28, 40]}
-          turbidity={7}
-          rayleigh={2.2}
-          mieCoefficient={0.008}
-          mieDirectionalG={0.86}
-        />
-      )}
-      <ambientLight intensity={0.18} color={0xfdf6eb} />
-      <hemisphereLight args={[0xc3dcff, 0x7f6543, 1.05]} />
-      <directionalLight
-        castShadow
-        position={[48, 42, 18]}
-        intensity={2.4}
-        color={0xfff2d6}
-        shadow-mapSize-width={2048}
-        shadow-mapSize-height={2048}
-        shadow-camera-near={1}
-        shadow-camera-far={180}
-        shadow-camera-left={-90}
-        shadow-camera-right={90}
-        shadow-camera-top={90}
-        shadow-camera-bottom={-90}
-        shadow-bias={-0.00015}
-        shadow-normalBias={0.03}
+      {/*
+        Sky, skylight and sun all come from one description of the sky (see
+        `graphics/sunSky.ts`). The drei <Sky> dome that used to live here drew
+        its sun at [120, 28, 40] while the shadow light sat at [48, 42, 18] and
+        a blue fill light faked bounce from the opposite corner: three suns that
+        never agreed, over an `ambientLight` + `hemisphereLight` pair that lit
+        every surface in the world to the same value no matter which way it
+        faced. The environment map replaces that flat fill with real directional
+        skylight, so the remaining ambient is only a floor that keeps deep
+        interiors from going to pure black.
+      */}
+      <SkyEnvironment
+        fogColor={resolvedFogColor}
+        showDome={skyDomeOn}
+        bindEnvironment={skyIblOn}
+        intensity={qualityIsPretty ? 1 : 0.85}
       />
-      {qualityIsPretty && (
-        <directionalLight position={[-28, 20, -32]} intensity={0.55} color={0xa8c8ff} />
-      )}
+      <SunLight
+        fogColor={resolvedFogColor}
+        castShadow={shadowsOn}
+        shadowHalfExtent={qualityIsPretty ? 48 : 60}
+        shadowMapSize={shadowMapTexels ?? (qualityIsPretty ? 2048 : 1024)}
+      />
+      {/*
+        On FAST the city is Lambert with no environment map, and a vertical
+        wall facing away from the sun gets only half the hemisphere (and the
+        dark ground half at that) -- measured 86 vs PRETTY's 121 mean luminance
+        on the same shaded face. The ambient floor is orientation-independent,
+        which is exactly what those faces are missing; PRETTY keeps the small
+        floor because its skylight comes from the environment map.
+      */}
+      <ambientLight intensity={qualityIsPretty ? 0.12 : 0.55} color={0xfdf6eb} />
+      {/*
+        The environment map only reaches Standard/Physical materials. FAST-tier
+        city chunks shade as Lambert, so a hemisphere light stands in for the
+        skylight there -- tinted from the same gradient, so the two tiers differ
+        in fidelity rather than in colour. On PRETTY it stays as a small floor
+        under the IBL.
+      */}
+      <hemisphereLight
+        args={[skyLightGradient.zenith, skyLightGradient.ground, qualityIsPretty ? 0.25 : 1.15]}
+      />
+      {ambientOcclusionOn && <AmbientOcclusion />}
       <WorldTerrain world={worldDocument} />
       <WorldStaticProps world={worldDocument} />
       <Portals runtimeRef={runtimeRef} />

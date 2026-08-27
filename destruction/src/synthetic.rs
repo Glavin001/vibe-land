@@ -119,8 +119,11 @@ impl SyntheticDestruction {
                         ChunkGeometry::Cuboid { half_extents } => ChunkGeometryDef::Cuboid {
                             half_extents: *half_extents,
                         },
-                        ChunkGeometry::ConvexHull { points } => ChunkGeometryDef::ConvexHull {
-                            points: points
+                        // Through the manifest's resolver, not the raw field:
+                        // a library-backed chunk carries no points of its own.
+                        ChunkGeometry::ConvexHull { .. } => ChunkGeometryDef::ConvexHull {
+                            points: manifest
+                                .hull_points(&chunk.geometry)
                                 .chunks_exact(3)
                                 .map(|p| [p[0], p[1], p[2]])
                                 .collect(),

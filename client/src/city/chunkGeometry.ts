@@ -50,7 +50,17 @@ export function chunkShape(chunk: ManifestChunk): ChunkShape {
     if (Array.isArray(points) && points.length % 3 === 0 && points.length / 3 >= MIN_HULL_POINTS) {
       const typed = Float32Array.from(points);
       if (typed.every(Number.isFinite)) {
-        return { kind: 'hull', key: hullKey(typed), points: typed };
+        // Prefer the id the pack states over one derived from the points.
+        // Deriving identity means hashing every shard at load to rediscover
+        // what the fracturer already knew, and it makes shape equality depend
+        // on float rounding surviving a JSON round-trip. `hullKey` stays for
+        // packs authored without a shape library.
+        const id = geometry.shapeId;
+        return {
+          kind: 'hull',
+          key: id === undefined ? hullKey(typed) : `s${id}`,
+          points: typed,
+        };
       }
     }
   }
@@ -74,13 +84,32 @@ export function boxScale(chunk: ManifestChunk): [number, number, number] {
  * Rounded to a tenth of a millimetre so two shards that are the same shape
  * survive a float round-trip through JSON as one geometry, and joined with a
  * separator so `[1, 23]` and `[12, 3]` cannot collide.
+ *
+ * Canonical rather than literal: the distinct points, sorted. What is drawn is
+ * the CONVEX HULL of these points, and that depends only on the set -- so two
+ * arrays holding the same points in a different order, or with different
+ * duplicates, are the same solid and must share one geometry.
+ *
+ * Both cases are real and common in the packs:
+ *
+ * - `nodeColliders` reuses the render prism's positions, which repeat every
+ *   vertex three times so faces can carry flat normals. Measured on downtown:
+ *   exactly 3.00x redundancy on all 7,160 hulls, 18-54 stored points for a
+ *   6-18 point solid.
+ * - A wall's four faces bake their orientation into the points, and the +/-
+ *   facing pair differs only by the sign of the thickness axis -- the same set,
+ *   walked in a different order. Literal keying saw those as two shapes and
+ *   duplicated every one: 320 keys for 160 distinct solids at SHARD_PATTERNS=2.
  */
 export function hullKey(points: Float32Array): string {
-  let key = '';
-  for (let i = 0; i < points.length; i++) {
-    key += `${Math.round(points[i] * 1e4)},`;
+  const distinct = new Set<string>();
+  for (let i = 0; i + 2 < points.length; i += 3) {
+    distinct.add(
+      `${Math.round(points[i] * 1e4)},${Math.round(points[i + 1] * 1e4)},`
+      + `${Math.round(points[i + 2] * 1e4)}`,
+    );
   }
-  return key;
+  return [...distinct].sort().join(';');
 }
 
 /**
@@ -113,8 +142,17 @@ export function buildBoxGeometry(): THREE.BufferGeometry {
  * so both are normalised to the same shape rather than trusting them to match.
  *
  * Anything missing is synthesised: a sequential index for non-indexed
- * geometry, and zeroed UVs, which are unused by the untextured city material
- * but must still be present for the layouts to line up.
+ * geometry, and zeroed UVs. The UVs stay zeroed and stay unread -- the city is
+ * textured by projection from each chunk's rest pose rather than by UV, because
+ * a hull arrives as an unordered point cloud with no UVs to preserve and one
+ * geometry is shared by thousands of chunks. They exist only so the layouts
+ * line up.
+ *
+ * `cityAnchor` is the rest-pose position the projection is anchored to. It is
+ * created empty here and filled per instance by `bakeRestAnchors` on the
+ * batched path, or overwritten wholesale by an InstancedBufferAttribute of the
+ * same name on the instanced one. Either way every geometry entering a batch
+ * has to carry it, which is why it is minted here rather than at either use.
  */
 export function normalizeForBatching(geometry: THREE.BufferGeometry): THREE.BufferGeometry {
   if (!geometry.getAttribute('normal')) {
@@ -123,6 +161,12 @@ export function normalizeForBatching(geometry: THREE.BufferGeometry): THREE.Buff
   const vertexCount = geometry.getAttribute('position').count;
   if (!geometry.getAttribute('uv')) {
     geometry.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(vertexCount * 2), 2));
+  }
+  if (!geometry.getAttribute('cityAnchor')) {
+    geometry.setAttribute(
+      'cityAnchor',
+      new THREE.BufferAttribute(new Float32Array(vertexCount * 4), 4),
+    );
   }
   if (!geometry.getIndex()) {
     const index = new Uint32Array(vertexCount);

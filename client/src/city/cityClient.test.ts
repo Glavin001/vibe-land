@@ -571,3 +571,41 @@ describe('CityClient wire v3 settled-body guard', () => {
     expect(client.topology.body(key)!.position[0]).toBeCloseTo(7, 4);
   });
 });
+
+describe('CityClient kinetic set', () => {
+  // The per-frame walk drops bodies whose tracks have settled and re-admits
+  // them on new records. The hazard this pins: a body that settled OUT of the
+  // walk receives a fresh record and must resurface -- a miss is a chunk
+  // frozen at its old pose for the rest of the match.
+  it('stops sampling a settled body and resumes on a fresh record', () => {
+    const { client } = makeClient();
+    bootstrap(client);
+    promote(client, 1, 1, [1], [5, 1, 0]);
+    const key = bodyKey(0, 1);
+    const kinetic = (client as unknown as { kinetic: Set<number> }).kinetic;
+
+    // The test's promote() drives the topology directly, so the body's track
+    // (and kinetic membership) begins at its first record, as in the stream.
+    internals(client).handleChunks(datagram(20, key, [5, 1, 0], {
+      flags: 1, // RECORD_FLAG_SETTLED_HINT -- marks the snapshot Quiescent
+    }));
+    expect(kinetic.has(key)).toBe(true);
+    client.samplePresentation(performance.now());
+    for (let i = 0; i < 240 && kinetic.has(key); i += 1) {
+      client.samplePresentation(performance.now() + 10_000 + i * 16);
+    }
+    expect(kinetic.has(key)).toBe(false);
+
+    // Fresh record: re-admitted, and the new pose is actually presented.
+    internals(client).handleChunks(datagram(30, key, [9, 1, 0]));
+    expect(kinetic.has(key)).toBe(true);
+    let moved = false;
+    for (let i = 0; i < 240; i += 1) {
+      const live = client.samplePresentation(performance.now() + 20_000 + i * 16);
+      if (live.has(key)) moved = true;
+    }
+    expect(moved).toBe(true);
+    const pose = client.topology.body(key);
+    expect(pose?.position[0]).toBeCloseTo(9, 0);
+  });
+});

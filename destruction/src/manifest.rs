@@ -7,6 +7,8 @@
 //! purely from fracture events; the kinematic stream only ever references
 //! body entities and this manifest.
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -32,6 +34,18 @@ pub struct DestructionManifest {
     /// re-fetch for no gain.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub materials: Vec<StressMaterialDef>,
+    /// Distinct shard hulls, stored once and referenced by `ChunkGeometry`.
+    ///
+    /// The pack already deduplicates these -- a bounded fracture-pattern count
+    /// means the same shard recurs -- but the manifest used to re-inline the
+    /// points into every chunk, so what players download did not benefit.
+    /// Downtown measured 19.7 MB with the pack at 14.2 MB for the same content.
+    ///
+    /// Skipped when empty for the same reason `materials` is: manifests are
+    /// content-addressed, so emitting an empty field would change the hash of
+    /// every existing scene and force a re-fetch for nothing.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub shape_library: Vec<Vec<f32>>,
 }
 
 /// One entry of the manifest's stress material table.
@@ -88,7 +102,21 @@ pub enum ChunkGeometry {
     #[serde(rename_all = "camelCase")]
     Cuboid { half_extents: [f32; 3] },
     #[serde(rename_all = "camelCase")]
-    ConvexHull { points: Vec<f32> },
+    ConvexHull {
+        /// Empty when `shape_id` names an entry of `shape_library`, which is
+        /// where the points then live. Inline for packs with no library.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        points: Vec<f32>,
+        /// Shape-library id from the pack, when the fracturer bounded its
+        /// pattern count and named its shards.
+        ///
+        /// Carried through so the client can group instanceable shards by an
+        /// authored identity rather than hashing point arrays to rediscover it.
+        /// Skipped when absent so packs without a library hash exactly as they
+        /// did before this field existed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        shape_id: Option<u32>,
+    },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -137,9 +165,12 @@ impl DestructionManifest {
                                 SceneCollider::Cuboid { half_extents } => ChunkGeometry::Cuboid {
                                     half_extents: half_extents.to_array(),
                                 },
-                                SceneCollider::ConvexHull { points } => ChunkGeometry::ConvexHull {
-                                    points: points.clone(),
-                                },
+                                SceneCollider::ConvexHull { points, shape_id } => {
+                                    ChunkGeometry::ConvexHull {
+                                        points: points.clone(),
+                                        shape_id: *shape_id,
+                                    }
+                                }
                             },
                             radius: collider_bounding_radius(&pack.node_colliders[node_index]),
                             support: node.is_support(),
@@ -184,10 +215,66 @@ impl DestructionManifest {
                     .collect()
             })
             .unwrap_or_default();
+        // Hoist every shard the pack named into a manifest-level library and
+        // drop the inline copy. Packs deduplicate these already; without this
+        // the manifest re-inlined them per chunk, so the thing players actually
+        // download saw none of the benefit.
+        //
+        // Keyed on the pack's own `shape_id`, not on the points: the fracturer
+        // named each shard as it cut it, and re-deriving identity by comparing
+        // geometry is exactly the sweep that authored ids exist to avoid.
+        let mut structures: Vec<StructureManifest> = structures;
+        let mut shape_library: Vec<Vec<f32>> = Vec::new();
+        let mut library_index: BTreeMap<u32, u32> = BTreeMap::new();
+        for structure in &mut structures {
+            for chunk in &mut structure.chunks {
+                let ChunkGeometry::ConvexHull { points, shape_id } = &mut chunk.geometry else {
+                    continue;
+                };
+                let Some(id) = shape_id.as_ref().copied() else { continue };
+                let slot = match library_index.get(&id) {
+                    Some(slot) => *slot,
+                    None => {
+                        let slot = shape_library.len() as u32;
+                        shape_library.push(std::mem::take(points));
+                        library_index.insert(id, slot);
+                        slot
+                    }
+                };
+                // Renumbered to the library's own indices: a pack's ids are
+                // dense per pack, and a city can stamp several packs.
+                *shape_id = Some(slot);
+                points.clear();
+            }
+        }
         Self {
             version: MANIFEST_VERSION,
             structures,
             materials,
+            shape_library,
+        }
+    }
+
+    /// Hull points for a chunk, resolving a shape-library reference.
+    ///
+    /// EVERY consumer must go through this, not `ChunkGeometry::ConvexHull`'s
+    /// `points` directly. The manifest is not only the client's artifact: the
+    /// server builds its own PhysX destructible from the same document, and
+    /// reading the field raw got it an empty buffer for every library-backed
+    /// chunk -- "convex node requires points", the city silently unavailable
+    /// for the match, and nothing breakable in a destruction game.
+    pub fn hull_points<'a>(&'a self, geometry: &'a ChunkGeometry) -> &'a [f32] {
+        match geometry {
+            ChunkGeometry::Cuboid { .. } => &[],
+            ChunkGeometry::ConvexHull { points, shape_id } => {
+                if !points.is_empty() {
+                    return points;
+                }
+                shape_id
+                    .and_then(|id| self.shape_library.get(id as usize))
+                    .map(Vec::as_slice)
+                    .unwrap_or(&[])
+            }
         }
     }
 
@@ -348,10 +435,56 @@ mod tests {
 
         let hull = serde_json::to_value(ChunkGeometry::ConvexHull {
             points: vec![0.0, 1.0, 2.0],
+            shape_id: None,
         })
         .expect("serialize hull");
         assert_eq!(hull["kind"], "convexHull");
         assert_eq!(hull["points"], serde_json::json!([0.0, 1.0, 2.0]));
+        assert!(
+            hull.get("shapeId").is_none(),
+            "an absent shape id must not appear on the wire, or every pack \
+             without a shape library rehashes: {hull}"
+        );
+
+        let named = serde_json::to_value(ChunkGeometry::ConvexHull {
+            points: vec![0.0, 1.0, 2.0],
+            shape_id: Some(7),
+        })
+        .expect("serialize named hull");
+        assert_eq!(named["shapeId"], 7, "shape id must reach the client camelCased");
+    }
+
+    /// A library-backed chunk must resolve to real points.
+    ///
+    /// The server builds its own PhysX destructible from this document, so a
+    /// consumer reading `points` raw gets an empty buffer and the city comes up
+    /// "unavailable for this match" -- a destruction game with nothing
+    /// breakable, and no error anywhere near the change that caused it.
+    #[test]
+    fn hull_points_resolve_through_the_shape_library() {
+        let mut manifest = DestructionManifest {
+            version: MANIFEST_VERSION,
+            structures: Vec::new(),
+            materials: Vec::new(),
+            shape_library: vec![vec![1.0, 2.0, 3.0]],
+        };
+        let referenced = ChunkGeometry::ConvexHull {
+            points: Vec::new(),
+            shape_id: Some(0),
+        };
+        assert_eq!(manifest.hull_points(&referenced), &[1.0, 2.0, 3.0]);
+
+        // Inline points still win, so packs without a library are untouched.
+        let inline = ChunkGeometry::ConvexHull {
+            points: vec![9.0, 9.0, 9.0],
+            shape_id: None,
+        };
+        assert_eq!(manifest.hull_points(&inline), &[9.0, 9.0, 9.0]);
+
+        // A dangling id resolves to nothing rather than panicking; the bridge
+        // reports "convex node requires points", which names the real problem.
+        manifest.shape_library.clear();
+        assert!(manifest.hull_points(&referenced).is_empty());
     }
 
     /// Every key the client can observe on a real manifest must be camelCase.

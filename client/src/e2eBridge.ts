@@ -13,6 +13,33 @@
 import type { DebugStats } from './ui/DebugOverlay';
 import { DEFAULT_STATS } from './ui/DebugOverlay';
 import { renderStats } from './city/renderStats';
+import { acquireCityDiagnostics } from './city/cityDiagnostics';
+import {
+  ambientOcclusionPreferred,
+  cityTextureDetail,
+  dprCapOverride,
+  heroTilingEnabled,
+  instanceShareThresholdSetting,
+  qualityTier,
+  setAmbientOcclusionEnabled,
+  setQualityTier,
+  setShadowsEnabled,
+  setInstanceShareThreshold,
+  setHeroTilingEnabled,
+  shadowsEnabled,
+} from './app/renderQuality';
+import { updateFogSettings } from './graphics/fogSettings';
+import { setLookTuning } from './graphics/lookTuning';
+import { setCapturePose } from './scene/captureCamera';
+import {
+  formatPerfSweepMobile,
+  runPerfSweep,
+  type PerfSweepProfile,
+  type PerfSweepReport,
+} from './city/perfSweep';
+
+/** Held while a spec has forced the diagnostic sweeps on. */
+let diagnosticsHold: (() => void) | null = null;
 
 export interface GameE2ESnapshot {
   // Identity
@@ -174,6 +201,78 @@ export interface VibeE2EBridge {
    * script instead of read off a screenshot.
    */
   frameProfile(): Record<string, number>;
+  /**
+   * Force the per-chunk diagnostic sweeps on for this session.
+   *
+   * They are gated on the panel being visible, because they cost 3.1 ms at
+   * downtown's chunk count and a player never sees them. A spec that asserts on
+   * `minChunkY`, `chunksBelowGround`, `deepest` or `staleDrawnChunks` has to
+   * ask for them, or it reads whatever the last sweep left behind.
+   */
+  setDiagnostics(on: boolean): void;
+  /**
+   * Flip a render-quality knob from a harness.
+   *
+   * The panel's own buttons are the only other way in, and driving perf work
+   * through DOM clicks means the panel has to be open and hittable -- which it
+   * is not by default, and which puts a React re-render in the middle of a
+   * measurement. This exists so a cost comparison can toggle one feature at a
+   * time in ONE session with the camera parked, which is the only way the
+   * numbers are comparable: a reload re-rolls the spawn point, and at this fog
+   * density the difference between facing a wall and facing down a street
+   * dwarfs anything being measured.
+   */
+  setRenderQuality(next: {
+    shadows?: boolean;
+    ao?: boolean;
+    tier?: 'fast' | 'pretty';
+    shareThreshold?: number;
+    heroTiling?: boolean;
+  }): void;
+  /**
+   * Retune the perceptual lighting knobs live.
+   *
+   * `fogIntensity` scales the fog density the AOI radius derives (1 = ship
+   * default, lower = see further); the rest go to `graphics/lookTuning`. All of
+   * them apply without a reload, which is the point -- see that module for why
+   * comparing them across rebuilds does not work.
+   */
+  setLook(next: {
+    fogIntensity?: number;
+    aoStrength?: number;
+    aoRadius?: number;
+    envIntensity?: number;
+  }): void;
+  /**
+   * Park the camera at a fixed pose, or `null` to hand it back to the player.
+   *
+   * Camera only -- the player does not move, so streaming and hitscan carry on
+   * from wherever they actually are. See `scene/captureCamera`.
+   */
+  setCapturePose(next: {
+    position: [number, number, number];
+    lookAt: [number, number, number];
+  } | null): void;
+  /**
+   * Run the per-feature cost sweep and hand back the report.
+   *
+   * The same one the panel's button downloads -- exposed here so a spec can
+   * assert it still produces sane numbers, since a measurement harness that
+   * has silently broken is worse than none.
+   */
+  runPerfSweep(profile?: PerfSweepProfile): Promise<unknown>;
+
+  /** The phone-screen summary of a report, as an array of lines. */
+  formatPerfSweepMobile(report: unknown): string[];
+
+  /**
+   * Every render setting the sweep can touch.
+   *
+   * Exists so a spec can prove the sweep RESTORES what it found: leaving a
+   * device on a lower resolution would read as the sweep having improved
+   * performance, which is the most misleading failure this tool has.
+   */
+  renderSettings(): Record<string, unknown>;
 }
 
 // ---------------------------------------------------------------------------
@@ -330,6 +429,40 @@ const bridge: VibeE2EBridge = {
   version: 1,
   snapshot: buildSnapshot,
   frameProfile: () => ({ ...renderStats }),
+  setDiagnostics: (on: boolean) => {
+    if (on) {
+      if (!diagnosticsHold) diagnosticsHold = acquireCityDiagnostics();
+    } else if (diagnosticsHold) {
+      diagnosticsHold();
+      diagnosticsHold = null;
+    }
+  },
+  setRenderQuality: (next) => {
+    if (next.shadows !== undefined) setShadowsEnabled(next.shadows);
+    if (next.ao !== undefined) setAmbientOcclusionEnabled(next.ao);
+    if (next.tier !== undefined) setQualityTier(next.tier);
+    if (next.shareThreshold !== undefined) setInstanceShareThreshold(next.shareThreshold);
+    if (next.heroTiling !== undefined) setHeroTilingEnabled(next.heroTiling);
+  },
+  setCapturePose: (next) => setCapturePose(next),
+  runPerfSweep: (profile?: PerfSweepProfile) => runPerfSweep(profile),
+  formatPerfSweepMobile: (report: unknown) => formatPerfSweepMobile(report as PerfSweepReport),
+  renderSettings: () => ({
+    tier: qualityTier(),
+    ao: ambientOcclusionPreferred(),
+    shadows: shadowsEnabled(),
+    cityTextures: cityTextureDetail(),
+    dprCap: dprCapOverride(),
+    shareThreshold: instanceShareThresholdSetting(),
+    heroTiling: heroTilingEnabled(),
+  }),
+  setLook: (next) => {
+    if (next.fogIntensity !== undefined) {
+      const intensity = next.fogIntensity;
+      updateFogSettings((draft) => ({ ...draft, intensity }));
+    }
+    setLookTuning(next);
+  },
 };
 
 // Always install — not gated behind a flag

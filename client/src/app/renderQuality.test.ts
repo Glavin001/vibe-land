@@ -2,12 +2,18 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-async function loadFresh(opts: { touch: boolean; stored?: string | null; storedTier?: string }) {
+async function loadFresh(opts: {
+  touch: boolean;
+  stored?: string | null;
+  storedTier?: string;
+  storedAo?: string;
+}) {
   vi.resetModules();
   vi.doMock('../device', () => ({ isTouchDevice: () => opts.touch }));
   const store = new Map<string, string>();
   if (opts.stored != null) store.set('vibe.render.shadows', opts.stored);
   if (opts.storedTier != null) store.set('vibe.render.tier', opts.storedTier);
+  if (opts.storedAo != null) store.set('vibe.render.ao', opts.storedAo);
   vi.stubGlobal('localStorage', {
     getItem: (k: string) => store.get(k) ?? null,
     setItem: (k: string, v: string) => void store.set(k, v),
@@ -89,8 +95,12 @@ describe('toggling', () => {
     module.onRenderQualityChange((s) => seen.push(s.tier));
     module.setQualityTier('pretty');
     expect(seen).toEqual(['pretty']);
-    expect(module.maxDpr()).toBe(2);
-    expect(module.antialiasEnabled()).toBe(true);
+    // Both tiers cap at 1.5 now: measured on an M3 Max, dpr 2 costs 2.08 ms of
+    // GPU time, more than the whole SSAO pass or all of the city's texturing.
+    expect(module.maxDpr()).toBe(1.5);
+    // SSAO renders the scene into a target with no sample count, so a
+    // multisampled default framebuffer would be resolved every frame for an
+    // image that is not antialiased anyway. AA is only claimed with AO off.
     expect(module.flatToneMapping()).toBe(false);
     expect(module.skyEnabled()).toBe(true);
     expect(module.weatherEnabled()).toBe(true);
@@ -98,6 +108,14 @@ describe('toggling', () => {
     // No-op set must not notify (consumers walk live meshes on change).
     module.setQualityTier('pretty');
     expect(seen).toEqual(['pretty']);
+
+    // Antialias tracks AO, and toggling AO notifies -- so this comes after the
+    // notification assertions above rather than in the middle of them.
+    // Explicit about AO either way rather than assuming its default.
+    module.setAmbientOcclusionEnabled(true);
+    expect(module.antialiasEnabled()).toBe(false);
+    module.setAmbientOcclusionEnabled(false);
+    expect(module.antialiasEnabled()).toBe(true);
   });
 
   // The two knobs are independent: turning shadows on must not drag the whole
@@ -130,5 +148,42 @@ describe('toggling', () => {
     expect(module.shadowsEnabled()).toBe(false);
     expect(() => module.setShadowsEnabled(true)).not.toThrow();
     expect(module.shadowsEnabled()).toBe(true);
+  });
+});
+
+// Ambient occlusion. Effectively "PRETTY tier AND the player has not said no",
+// because it takes over the render loop with an offscreen scene pass -- the
+// one flag in this module that is a conjunction rather than a plain read.
+describe('ambient occlusion', () => {
+  it('defaults off on touch devices and on elsewhere', async () => {
+    expect((await loadFresh({ touch: true })).module.ambientOcclusionPreferred()).toBe(false);
+    expect((await loadFresh({ touch: false })).module.ambientOcclusionPreferred()).toBe(true);
+  });
+
+  it('needs both the PRETTY tier and the preference', async () => {
+    const { module } = await loadFresh({ touch: false });
+    expect(module.ambientOcclusionEnabled()).toBe(true);
+    // A phone that opts into PRETTY should still be able to keep the extra
+    // scene pass off.
+    module.setAmbientOcclusionEnabled(false);
+    expect(module.ambientOcclusionEnabled()).toBe(false);
+    module.setAmbientOcclusionEnabled(true);
+    module.setQualityTier('fast');
+    expect(module.ambientOcclusionPreferred()).toBe(true);
+    expect(module.ambientOcclusionEnabled()).toBe(false);
+  });
+
+  it('persists and notifies, and a stored choice beats the device default', async () => {
+    const { module, store } = await loadFresh({ touch: false });
+    const seen: boolean[] = [];
+    module.onRenderQualityChange((s) => seen.push(s.ao));
+    module.setAmbientOcclusionEnabled(false);
+    expect(store.get('vibe.render.ao')).toBe('0');
+    expect(seen).toEqual([false]);
+    module.setAmbientOcclusionEnabled(false);
+    expect(seen).toEqual([false]);
+
+    const stored = await loadFresh({ touch: true, storedAo: '1' });
+    expect(stored.module.ambientOcclusionPreferred()).toBe(true);
   });
 });

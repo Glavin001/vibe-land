@@ -13,6 +13,7 @@
 
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { BODY_DEBUG_STATES, setBodyDebugEnabled, setBodyDebugStates } from './bodyDebugColors';
+import { formatPerfSweep, formatPerfSweepMobile, runPerfSweep } from './perfSweep';
 import { renderStats } from './renderStats';
 import { isTouchDevice } from '../device';
 
@@ -213,7 +214,21 @@ function Stat({ label, value, warn }: { label: string; value: string; warn?: boo
 }
 
 import { getMatchStats, subscribeMatchStats } from '../app/connectPhase';
+import { acquireCityDiagnostics } from './cityDiagnostics';
 import {
+  ambientOcclusionPreferred,
+  setAmbientOcclusionEnabled,
+  setCityTextureDetail,
+  setDprCap,
+  setHeroTilingEnabled,
+  heroTilingEnabled,
+  setSkyDomeEnabled,
+  setSkyIblEnabled,
+  cityTextureDetail,
+  dprCapOverride,
+  skyDomeEnabled,
+  skyIblEnabledSetting,
+  type CityTextureDetail,
   setQualityTier,
   setShadowsEnabled,
   shadowsEnabled,
@@ -274,6 +289,17 @@ export function CityStatsOverlay({
   );
   const [savedName, setSavedName] = useState<string | null>(null);
   const [shadows, setShadows] = useState(shadowsEnabled);
+  const [ao, setAo] = useState(ambientOcclusionPreferred);
+  const [cityTex, setCityTex] = useState<CityTextureDetail>(cityTextureDetail);
+  const [skyIbl, setSkyIbl] = useState(skyIblEnabledSetting);
+  const [skyDome, setSkyDome] = useState(skyDomeEnabled);
+  const [dprCap, setDpr] = useState<number | null>(dprCapOverride);
+  const [sweepState, setSweepState] = useState<'idle' | 'running' | 'done' | 'failed'>('idle');
+  // The phone's sweep answers on screen instead of into a download: iOS has
+  // nowhere useful to put a .txt, and the way this actually gets back to
+  // whoever is tuning is a screenshot.
+  const [mobileReport, setMobileReport] = useState<string[] | null>(null);
+  const [heroTiling, setHeroTiling] = useState(heroTilingEnabled);
   const [bodyColors, setBodyColors] = useState(false);
   // Poll per-body freeze states only while the toggle is on: no reason to
   // fetch thousands of pairs for a feature that is off.
@@ -308,6 +334,10 @@ export function CityStatsOverlay({
   }, [bodyColors, matchId, statsBaseUrl]);
 
   const tier = useQualityTier();
+  // The per-chunk sweeps behind these rows cost 3.1 ms at 33k chunks, so they
+  // only run while the panel is actually on screen. Collapsed to the pill --
+  // and hidden by default on touch -- nobody is reading them.
+  useEffect(() => (visible ? acquireCityDiagnostics() : undefined), [visible]);
   // The tier the canvas was created with: antialias and tonemapping only apply
   // at context creation, so a mismatch means "reload to finish applying".
   const [mountTier] = useState(tier);
@@ -655,6 +685,218 @@ export function CityStatsOverlay({
         <button
           type="button"
           onClick={() => {
+            const next = !ao;
+            setAmbientOcclusionEnabled(next);
+            setAo(next);
+          }}
+          style={{ ...toggleButton, position: 'static', width: '100%' }}
+          data-testid="city-ao-toggle"
+          aria-label="Toggle ambient occlusion"
+          title="SSAO: contact shadows in corners and under debris. PRETTY only; costs an offscreen scene pass"
+        >
+          {ao ? 'AO: ON' : 'AO: OFF'}
+        </button>
+      </div>
+
+      {/*
+        One click for the whole matrix, because the reporter's machine is the
+        only one where the answer exists -- see city/perfSweep. Downloads both
+        a readable table and the raw JSON.
+      */}
+      <div style={{ ...row, marginBottom: 2 }}>
+        <button
+          type="button"
+          disabled={sweepState === 'running'}
+          onClick={() => {
+            setSweepState('running');
+            void runPerfSweep()
+              .then((report) => {
+                const body = `${formatPerfSweep(report)}\n\n${JSON.stringify(report, null, 2)}\n`;
+                const url = URL.createObjectURL(new Blob([body], { type: 'text/plain' }));
+                const link = document.createElement('a');
+                link.href = url;
+                link.download = `city-perf-${report.capturedAt.replace(/[:.]/g, '-')}.txt`;
+                link.click();
+                URL.revokeObjectURL(url);
+                setSweepState('done');
+              })
+              .catch(() => setSweepState('failed'));
+          }}
+          style={{ ...toggleButton, position: 'static', width: '100%' }}
+          data-testid="city-perf-sweep"
+          aria-label="Run the render cost sweep"
+          title="~25 s. Measures each costly feature on and off, with real GPU time, and downloads the report"
+        >
+          {sweepState === 'running'
+            ? 'MEASURING... (~25 s)'
+            : sweepState === 'done'
+              ? 'PERF REPORT SAVED'
+              : sweepState === 'failed' ? 'PERF SWEEP FAILED' : 'DOWNLOAD PERF REPORT'}
+        </button>
+      </div>
+
+      {/*
+        The same instrument, shaped for the machine that cannot use the other
+        one: shorter (a phone frame is 15x longer, so the desktop step counts
+        take minutes and iOS evicts a busy tab), ordered by what could
+        plausibly cost 50 ms there, and answering on screen.
+      */}
+      <div style={{ ...row, marginBottom: 2 }}>
+        <button
+          type="button"
+          disabled={sweepState === 'running'}
+          onClick={() => {
+            setSweepState('running');
+            setMobileReport(null);
+            void runPerfSweep('mobile')
+              .then((report) => {
+                setMobileReport(formatPerfSweepMobile(report));
+                setSweepState('done');
+              })
+              .catch(() => setSweepState('failed'));
+          }}
+          style={{ ...toggleButton, position: 'static', width: '100%' }}
+          data-testid="city-perf-sweep-mobile"
+          aria-label="Run the short mobile render cost sweep"
+          title="~40 s. Prices shadows, resolution and textures on THIS device and shows the answer on screen to screenshot"
+        >
+          {sweepState === 'running' ? 'MEASURING... (~40 s)' : 'MOBILE PERF BISECT'}
+        </button>
+      </div>
+
+      {mobileReport && (
+        /*
+          Deltas against the baseline, biggest saving first: the question a
+          phone report has to answer is "which switch buys the most", and a
+          column of absolutes makes the reader do that subtraction by eye on a
+          screen they are holding at arm's length.
+        */
+        <div
+          style={{
+            marginBottom: 4,
+            padding: 8,
+            border: '1px solid rgba(120, 220, 160, 0.5)',
+            borderRadius: 6,
+            background: 'rgba(8, 20, 12, 0.92)',
+            fontSize: 11,
+            lineHeight: 1.45,
+            whiteSpace: 'pre',
+            overflowX: 'auto',
+          }}
+          data-testid="city-perf-sweep-mobile-report"
+        >
+          {mobileReport.join('\n')}
+          <button
+            type="button"
+            onClick={() => setMobileReport(null)}
+            style={{ ...toggleButton, position: 'static', width: '100%', marginTop: 6 }}
+            aria-label="Dismiss the mobile perf report"
+          >
+            DISMISS
+          </button>
+        </div>
+      )}
+
+      <div style={{ ...row, marginBottom: 2 }}>
+        <button
+          type="button"
+          onClick={() => {
+            const next = !heroTiling;
+            setHeroTilingEnabled(next);
+            setHeroTiling(next);
+          }}
+          style={{ ...toggleButton, position: 'static', width: '100%' }}
+          data-testid="city-hero-tiling-toggle"
+          aria-label="Toggle anti-tiling stack"
+          title="Hex-stochastic retiling + macro variation on the concrete. OFF shows the plain repeating projection for A/B"
+        >
+          {heroTiling ? 'TILING FIX: ON' : 'TILING FIX: OFF'}
+        </button>
+      </div>
+
+      {/*
+        The per-pixel bisection row. A GPU-bound frame can only be diagnosed on
+        the machine that is slow -- a fast GPU reports all of these as free --
+        so each thing that was added to every pixel gets its own switch, and
+        PERF REPORT below captures the frame breakdown while they are flipped.
+      */}
+      <div style={{ ...row, marginBottom: 2 }}>
+        <button
+          type="button"
+          onClick={() => {
+            const next: CityTextureDetail = cityTex === 'full'
+              ? 'albedo'
+              : cityTex === 'albedo' ? 'off' : 'full';
+            setCityTextureDetail(next);
+            setCityTex(next);
+          }}
+          style={{ ...toggleButton, position: 'static', width: '100%' }}
+          data-testid="city-textures-toggle"
+          aria-label="Cycle city texture detail"
+          title="Triplanar concrete: FULL is 6 texture taps per city pixel, ALBEDO is 3, OFF compiles them out"
+        >
+          {`CITY TEX: ${cityTex.toUpperCase()}`}
+        </button>
+      </div>
+
+      <div style={{ ...row, marginBottom: 2 }}>
+        <button
+          type="button"
+          onClick={() => {
+            const next = !skyIbl;
+            setSkyIblEnabled(next);
+            setSkyIbl(next);
+          }}
+          style={{ ...toggleButton, position: 'static', width: '100%' }}
+          data-testid="city-sky-ibl-toggle"
+          aria-label="Toggle sky image-based lighting"
+          title="Sky environment map: a cubemap tap plus IBL maths on every Standard-material pixel"
+        >
+          {skyIbl ? 'SKY IBL: ON' : 'SKY IBL: OFF'}
+        </button>
+      </div>
+
+      <div style={{ ...row, marginBottom: 2 }}>
+        <button
+          type="button"
+          onClick={() => {
+            const next = !skyDome;
+            setSkyDomeEnabled(next);
+            setSkyDome(next);
+          }}
+          style={{ ...toggleButton, position: 'static', width: '100%' }}
+          data-testid="city-sky-dome-toggle"
+          aria-label="Toggle sky dome"
+          title="The visible sky shader. Separate from IBL: this one only costs sky pixels"
+        >
+          {skyDome ? 'SKY DOME: ON' : 'SKY DOME: OFF'}
+        </button>
+      </div>
+
+      <div style={{ ...row, marginBottom: 2 }}>
+        <button
+          type="button"
+          onClick={() => {
+            // Pixel count is the biggest single lever on a fill-bound frame and
+            // the only one whose cost is exactly predictable: 2 -> 1.5 removes
+            // 44% of them, 1.5 -> 1 removes another 56%.
+            const next = dprCap === null ? 1.5 : dprCap === 1.5 ? 1 : null;
+            setDprCap(next);
+            setDpr(next);
+          }}
+          style={{ ...toggleButton, position: 'static', width: '100%' }}
+          data-testid="city-dpr-toggle"
+          aria-label="Cycle device pixel ratio cap"
+          title="Caps the backing-store resolution. Everything per-pixel scales directly with this"
+        >
+          {`DPR CAP: ${dprCap === null ? 'TIER' : dprCap.toFixed(1)}`}
+        </button>
+      </div>
+
+      <div style={{ ...row, marginBottom: 2 }}>
+        <button
+          type="button"
+          onClick={() => {
             const next = !shadows;
             setShadowsEnabled(next);
             setShadows(next);
@@ -789,6 +1031,24 @@ export function CityStatsOverlay({
         value={`${renderStats.glRenderMs.toFixed(1)} ms`}
         warn={renderStats.glRenderMs > 12}
       />
+      {/*
+        The one number none of the others could stand in for. `gl.render` is how
+        long the render calls took to RETURN -- submission, not execution. A
+        frame that submits in 2 ms and takes 18 ms on the GPU is, from every
+        other counter here, indistinguishable from a frame that submits in 2 ms
+        and then sits waiting for vsync: both land in off-frame. Measured with
+        EXT_disjoint_timer_query_webgl2; shows "n/a" where the extension is not
+        exposed (Safari, and Chrome without it enabled).
+
+        If this is near the refresh period, the frame is GPU-bound and the
+        levers are pixels (dpr, resolution) and per-pixel work (SSAO passes,
+        triplanar taps, IBL) -- not anything on the CPU side above.
+      */}
+      <Stat
+        label="gpu frame"
+        value={renderStats.gpuFrameMs > 0 ? `${renderStats.gpuFrameMs.toFixed(1)} ms` : 'n/a'}
+        warn={renderStats.gpuFrameMs > 8}
+      />
       <Stat label="inst writes" value={`${renderStats.instanceWrites}`} />
       {/* The only thing that makes chunk geometry disappear. A hole opening
           in a building starts here, so it is on screen rather than inferred. */}
@@ -807,9 +1067,13 @@ export function CityStatsOverlay({
       <Stat label="frame total" value={`${renderStats.frameTotalMs.toFixed(1)} ms`} />
       {/*
         cpu frame is the number a worker offload can shrink: frame start
-        through the end of gl.render. frame total minus it is vsync idle plus
-        whatever ran between frames (decode, below) -- headroom, not work.
-        The phases below sum to cpu frame, with "of which" rows indented.
+        through the end of gl.render. The phases below sum to it, with "of
+        which" rows indented.
+
+        frame total minus cpu frame is NOT headroom, whatever this comment used
+        to claim. It is vsync idle, whatever ran between frames (decode, below)
+        AND the GPU still executing the frame that was just submitted. Those are
+        not separable from here, which is what "gpu frame" above is for.
       */}
       <Stat
         label="cpu frame"

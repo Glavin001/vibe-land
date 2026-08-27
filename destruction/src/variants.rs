@@ -142,7 +142,7 @@ pub fn make_building_variants(
 pub fn collider_bounding_radius(collider: &SceneCollider) -> f32 {
     let radius = match collider {
         SceneCollider::Cuboid { half_extents } => half_extents.length(),
-        SceneCollider::ConvexHull { points } => points
+        SceneCollider::ConvexHull { points, .. } => points
             .chunks_exact(3)
             .map(|p| (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt())
             .fold(0.0_f32, f32::max),

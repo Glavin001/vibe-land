@@ -7,6 +7,7 @@
     "gen:constants": "node ../scripts/gen-constants.mjs",
     "gen:demo-world": "node ../scripts/generate-demo-world.mjs",
     "ensure:wasm-pack": "command -v wasm-pack >/dev/null 2>&1 || cargo install wasm-pack --locked",
+    "textures:city": "python3 scripts/build-city-textures.py",
     "build:wasm": "npm run gen:constants && npm run ensure:wasm-pack && wasm-pack build ../shared --target web --out-dir ../client/src/wasm/pkg && wasm-pack build ../research/destruction-codec --target web --out-dir ../../client/src/wasm/debris-pkg --no-default-features",
     "predev": "npm run ensure:wasm-pack && npm run build:wasm",
     "dev": "vite",

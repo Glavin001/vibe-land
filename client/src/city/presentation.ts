@@ -135,6 +135,15 @@ export interface PresentationAnomaly {
 
 export type PresentationAnomalyListener = (anomaly: PresentationAnomaly) => void;
 
+/**
+ * Below this, a decaying correction is treated as finished.
+ *
+ * A tenth of a millimetre -- an order of magnitude under the client's own
+ * PRESENTATION_EPSILON_M (1e-4 m), at which point it already declines to
+ * redraw the chunk. Exists because critically-damped decay is asymptotic.
+ */
+const SETTLED_EPSILON = 1e-5;
+
 export class PresentationTrack {
   private readonly config: PresentationConfig;
   private readonly linearDamping: number;
@@ -292,12 +301,32 @@ export class PresentationTrack {
   }
 
   /** Samples the track at a fractional render tick. */
+  /**
+   * Whether the LAST `sample()` call took the settled fast-path.
+   *
+   * The contract callers lean on: when true, the returned state was the
+   * previous sample's state object, unchanged -- nothing about this track can
+   * move again until a new snapshot, revision or clock rollback arrives, all
+   * of which come through `push()`. `CityClient` uses that to drop the body
+   * from its per-frame walk entirely and re-admit it on the next record.
+   */
+  lastSampleSettled = false;
+
   sample(renderTickInput: number): PresentedState {
+    this.lastSampleSettled = false;
     if (this.snapshots.length === 0) {
       return defaultState();
     }
     const renderTick = Number.isFinite(renderTickInput) ? renderTickInput : 0;
     const targetTick = renderTick - this.config.interpolationDelayTicks;
+    if (this.isSettled(renderTick, targetTick)) {
+      this.lastSampleSettled = true;
+      // Advance the clock but reuse the state: the revision re-anchor below
+      // reads `previous.renderTick`, so letting it go stale would mis-anchor
+      // the next correction. Nothing else in the record can have moved.
+      this.previous!.renderTick = renderTick;
+      return this.previous!.state;
+    }
     const raw = this.rawState(targetTick);
 
     const elapsedSeconds = this.previous
@@ -436,6 +465,68 @@ export class PresentationTrack {
       this.correction.angularVelocity,
       omega,
       seconds,
+    );
+    // Critically-damped decay is asymptotic, so a correction never actually
+    // reaches zero -- it just gets very small and is carried forever. Collapse
+    // it once it is far below anything observable (a tenth of a millimetre is
+    // an order under the client's own PRESENTATION_EPSILON_M, at which point it
+    // already refuses to redraw). Without this, `isSettled` below can never be
+    // true and a resting body is re-interpolated every frame for the rest of
+    // the session.
+    if (
+      vLength(this.correction.position) < SETTLED_EPSILON
+      && vLength(this.correction.linearVelocity) < SETTLED_EPSILON
+      && vLength(this.correction.rotation) < SETTLED_EPSILON
+      && vLength(this.correction.angularVelocity) < SETTLED_EPSILON
+    ) {
+      this.correction = zeroCorrection();
+    }
+  }
+
+  /**
+   * Can `sample` only return what it returned last time?
+   *
+   * True when nothing can have changed: no new snapshot since the last sample
+   * (`revision`), no clock rollback, no correction still decaying, and a raw
+   * path that is provably constant -- the final snapshot is Quiescent and the
+   * target tick is past it, which `rawState`/`extrapolate` answer with that
+   * snapshot's pose regardless of how far past.
+   *
+   * This is the resting population, and it is most of the city: measured on
+   * downtown, 4,219 of 9,764 bodies asleep. Each was being interpolated,
+   * corrected, quaternion-normalised and allocated for, every frame, to arrive
+   * at the pose it already had -- `samplePresentation` cost 3.4-3.8 ms a frame,
+   * more than the entire renderer.
+   */
+  private isSettled(renderTick: number, targetTick: number): boolean {
+    const previous = this.previous;
+    if (!previous) return false;
+    if (previous.revision !== this.revision) return false;
+    if (renderTick < previous.renderTick) return false;
+    const last = this.snapshots[this.snapshots.length - 1];
+    if (last.class === PresentationClass.Quiescent) {
+      if (targetTick <= last.tick) return false;
+    } else {
+      // Non-quiescent tracks freeze too: `extrapolate` clamps extraTicks at
+      // maxExtrapolationTicks for EVERY class, so once the target tick is past
+      // the window the raw state is constant in time. Requiring the PREVIOUS
+      // sample's target to also be past the window makes the fast-path exact
+      // rather than one-frame-early -- `previous.state` is then already the
+      // clamped pose, not the last still-decaying one. This is what lets the
+      // per-frame walk drop bodies whose records simply stopped, which is how
+      // every real body goes quiet (the wire never sends a Quiescent class;
+      // fully-settled bodies are deleted by the reliable settle instead).
+      const frozenAt = last.tick + this.config.maxExtrapolationTicks;
+      const previousTarget = previous.renderTick - this.config.interpolationDelayTicks;
+      if (targetTick < frozenAt || previousTarget < frozenAt) return false;
+    }
+    return (
+      this.correction.position[0] === 0
+      && this.correction.position[1] === 0
+      && this.correction.position[2] === 0
+      && this.correction.rotation[0] === 0
+      && this.correction.rotation[1] === 0
+      && this.correction.rotation[2] === 0
     );
   }
 

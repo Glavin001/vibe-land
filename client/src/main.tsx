@@ -11,6 +11,7 @@ import { SharedPracticePage } from './pages/SharedPractice';
 import { RagdollLabPage } from './pages/RagdollLab';
 import { MoqDemoPage } from './pages/MoqDemo';
 import { BodiesTransportLabPage } from './pages/BodiesTransportLab';
+import { RenderBenchPage } from './pages/RenderBench';
 
 // E2E bridge: always-on read-only introspection for Playwright tests.
 // Importing the module installs window.__VIBE_E2E__ immediately.
@@ -70,6 +71,9 @@ switch (route.kind) {
     break;
   case 'bodiesLab':
     root.render(<BodiesTransportLabPage />);
+    break;
+  case 'renderBench':
+    root.render(<RenderBenchPage />);
     break;
   case 'launcher':
   default:
