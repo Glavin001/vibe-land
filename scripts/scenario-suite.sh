@@ -73,6 +73,14 @@ export VIBE_CITY_SHOT_BLAST_RADIUS="${VIBE_CITY_SHOT_BLAST_RADIUS:-0.7}"
 export VIBE_CITY_SHOT_STRESS_IMPULSE="${VIBE_CITY_SHOT_STRESS_IMPULSE:-4.0e7}"
 export VIBE_CITY_EXCESS_FORCES="${VIBE_CITY_EXCESS_FORCES:-1}"
 export VIBE_CITY_RESIM_PASSES="${VIBE_CITY_RESIM_PASSES:-0}"
+# Production default (see run-vl4-server.sh): the incremental device-topology
+# path diverges the GPU solver, and the LIBRARY's own default is incremental.
+# Without this a fresh shell gates the known-bad configuration — measured as
+# T2 "one shot pulverizes" (3949-6662 bonds vs a <=2028 band, on THREE builds
+# including the exact one these guardrails were calibrated from) and T4 awake
+# never declining. The calibration shell had it exported; the suite must not
+# depend on shell history.
+export BLAST_GPU_WHOLE_RESET_ON_TOPOLOGY="${BLAST_GPU_WHOLE_RESET_ON_TOPOLOGY:-1}"
 
 MODE="${1:-gate}"
 
