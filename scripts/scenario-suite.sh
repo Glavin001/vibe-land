@@ -82,6 +82,30 @@ export VIBE_CITY_RESIM_PASSES="${VIBE_CITY_RESIM_PASSES:-0}"
 # depend on shell history.
 export BLAST_GPU_WHOLE_RESET_ON_TOPOLOGY="${BLAST_GPU_WHOLE_RESET_ON_TOPOLOGY:-1}"
 
+# Fingerprint banner: what this run ACTUALLY executes under, and every
+# physics-relevant divergence from the production launch script. The
+# BLAST_GPU_WHOLE_RESET gap survived three full suite runs because nothing
+# made "this run's env != production's" visible; now it prints at start.
+echo "== suite env fingerprint =="
+echo "git: $(git describe --always --dirty 2>/dev/null || echo unknown)"
+env | grep -E '^(VIBE_|BLAST_)' | sort
+if [ -f scripts/run-vl4-server.sh ]; then
+  echo "-- divergence vs run-vl4-server.sh exports (physics-relevant only) --"
+  # SCENE and GRID are workload selectors the suite sets per-test via CLI
+  # args, not physics tuning — excluded so every run isn't noisy.
+  grep -oE '^export (VIBE_CITY|VIBE_WORLD|BLAST)_[A-Z_]+=[^ ]*' scripts/run-vl4-server.sh \
+    | grep -vE '_(SCENE|GRID)=' \
+    | sed 's/^export //' | while IFS='=' read -r key raw; do
+      # Strip ${K:-default} wrappers down to the default the script would use.
+      prod=$(echo "$raw" | sed -E 's/^\$\{[A-Z_]+:-(.*)\}$/\1/')
+      have=$(printenv "$key" || true)
+      if [ "$have" != "$prod" ]; then
+        echo "  DIVERGES: $key suite='${have:-<unset>}' production='$prod'"
+      fi
+    done
+  echo "-- end divergence check --"
+fi
+
 MODE="${1:-gate}"
 
 echo "== T2/T3 workloads (fixed aim, one tower) =="
