@@ -164,15 +164,20 @@ bool quiet_skip_enabled() {
   return enabled;
 }
 
-/// P1b: cluster frozen bodies into spatial-cell PxAggregates so 60% of the
-/// city holds a few dozen broadphase entries instead of fifteen thousand.
-/// Default on; VIBE_CITY_FREEZE_AGGREGATE=0 is the kill switch. Ceiling
-/// measured first (P1a): full scene removal recovered 2.3 ms/tick at only
-/// 1.7k frozen, and the live field carries ~15k.
+/// P1b: cluster frozen bodies into spatial-cell PxAggregates. OPT-IN
+/// (VIBE_CITY_FREEZE_AGGREGATE=1), because the matched-load A/B refuted the
+/// premise: in the settled tail (awake<500, frozen 1500-2000) aggregation
+/// MEASURED 3.9 ms SLOWER per tick than standalone actors (7.88 vs 4.03 ms
+/// medians over ~6k ticks, identical scripted input, fewer bonds broken on
+/// the slow side) — the aggregate machinery costs more than the broadphase
+/// entries it retires, at least at this occupancy and flip churn. The P1a
+/// ceiling (2.3 ms at 1.7k frozen for full REMOVAL) is real, but PxAggregate
+/// is not the mechanism that captures it. Kept behind the flag for future
+/// experiments (hysteresis, larger cells, higher occupancy).
 bool freeze_aggregate_enabled() {
   static const bool enabled = [] {
     const char *value = std::getenv("VIBE_CITY_FREEZE_AGGREGATE");
-    return value == nullptr || std::string(value) != "0";
+    return value != nullptr && std::string(value) == "1";
   }();
   return enabled;
 }
