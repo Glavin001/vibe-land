@@ -2425,52 +2425,99 @@ void DestructionManager::resolve_support_loads() {
   last_support_pair_loads_ =
       static_cast<std::uint32_t>(pending_pair_loads_.size());
   std::unordered_set<std::uint64_t> touched;
-  for (const PendingPairLoad &load : pending_pair_loads_) {
-    // Work out which side depends on which. Kinematic and non-chunk sides
-    // never depend on debris; between two dynamics the higher centre of
-    // mass depends on the lower (ties carry no information -- skip).
-    struct Resolved {
-      bool chunk = false;
-      bool kinematic = false;
-      bool frozen = false;
-      bool rooted = false;
-      float com_y = 0.0f;
-      float mass = 0.0f;
-      std::uint32_t serial = 0;
-      const PendingPairSide *side = nullptr;
-    };
-    const auto classify = [&](const PendingPairSide &side) -> Resolved {
-      Resolved out{};
-      out.side = &side;
-      if (!side.is_chunk) {
-        return out;
-      }
-      // One slot resolution per side. body_row re-resolved the slot
-      // internally, making four linear scans per pair -- free at one
-      // structure, dominant at a multi-structure grid.
-      const Slot *slot = find_slot(side.structure_id);
-      const ExtStressPhysXBodySnapshot *row =
-          slot != nullptr ? body_row_in(*slot, side.body_id) : nullptr;
-      if (slot == nullptr || row == nullptr) {
-        return out; // body died this tick; retire/promote events cover it
-      }
-      const auto serial_it = slot->body_to_serial.find(side.body_id);
-      if (serial_it == slot->body_to_serial.end()) {
-        return out;
-      }
-      out.chunk = true;
-      out.kinematic = row->kinematic;
-      out.frozen = slot->frozen.count(side.body_id) != 0;
-      out.rooted = slot->rooted.count(side.body_id) != 0;
-      out.com_y = com_world_position(*row).y;
-      // Cached at mass-recompute time by the library. The live getMass here
-      // was ~52k PhysX reads per tick at a 7.9k-awake peak.
-      out.mass = row->mass;
-      out.serial = serial_it->second;
+
+  // Work out which side depends on which. Kinematic and non-chunk sides
+  // never depend on debris; between two dynamics the higher centre of
+  // mass depends on the lower (ties carry no information -- skip).
+  struct Resolved {
+    bool chunk = false;
+    bool kinematic = false;
+    bool frozen = false;
+    bool rooted = false;
+    float com_y = 0.0f;
+    float mass = 0.0f;
+    std::uint32_t serial = 0;
+    const PendingPairSide *side = nullptr;
+  };
+  const auto classify = [&](const PendingPairSide &side) -> Resolved {
+    Resolved out{};
+    out.side = &side;
+    if (!side.is_chunk) {
       return out;
-    };
-    const Resolved a = classify(load.a);
-    const Resolved b = classify(load.b);
+    }
+    // One slot resolution per side. body_row re-resolved the slot
+    // internally, making four linear scans per pair -- free at one
+    // structure, dominant at a multi-structure grid.
+    const Slot *slot = find_slot(side.structure_id);
+    const ExtStressPhysXBodySnapshot *row =
+        slot != nullptr ? body_row_in(*slot, side.body_id) : nullptr;
+    if (slot == nullptr || row == nullptr) {
+      return out; // body died this tick; retire/promote events cover it
+    }
+    const auto serial_it = slot->body_to_serial.find(side.body_id);
+    if (serial_it == slot->body_to_serial.end()) {
+      return out;
+    }
+    out.chunk = true;
+    out.kinematic = row->kinematic;
+    out.frozen = slot->frozen.count(side.body_id) != 0;
+    out.rooted = slot->rooted.count(side.body_id) != 0;
+    out.com_y = com_world_position(*row).y;
+    // Cached at mass-recompute time by the library. The live getMass here
+    // was ~52k PhysX reads per tick at a 7.9k-awake peak.
+    out.mass = row->mass;
+    out.serial = serial_it->second;
+    return out;
+  };
+
+  // Pair -> (Resolved, Resolved) is pure lookups over state nothing mutates
+  // during this phase, so it fans out across the stress pool; the ingest
+  // below stays serial and walks the results in original pair order, so the
+  // supporter store is byte-identical to the single-threaded walk. This was
+  // 4.7-6.1 ms of serial wall per tick at 20k pairs, all of it here.
+  //
+  // The row_map A/B path builds its per-slot map lazily inside body_row_in,
+  // which is a shared-map write; warm every slot serially first so the
+  // parallel phase only ever reads it.
+  const std::size_t load_count = pending_pair_loads_.size();
+  std::vector<std::pair<Resolved, Resolved>> resolved(load_count);
+  const unsigned pool = stress_executor_ ? stress_executor_->parallelism() : 1;
+  // Below this the fan-out costs more than the walk; measured in the same
+  // band as the per-slot solve dispatch overhead.
+  constexpr std::size_t kParallelLoadFloor = 2048;
+  if (pool > 1 && load_count >= kParallelLoadFloor) {
+    if (use_row_map) {
+      for (const PendingPairLoad &load : pending_pair_loads_) {
+        for (const PendingPairSide *side : {&load.a, &load.b}) {
+          if (side->is_chunk) {
+            if (const Slot *slot = find_slot(side->structure_id)) {
+              (void)body_row_in(*slot, side->body_id);
+            }
+          }
+        }
+      }
+    }
+    const std::size_t strips = pool;
+    const std::size_t strip_len = (load_count + strips - 1) / strips;
+    stress_executor_->run(strips, [&](std::size_t strip) {
+      const std::size_t begin = strip * strip_len;
+      const std::size_t end = std::min(load_count, begin + strip_len);
+      for (std::size_t i = begin; i < end; ++i) {
+        resolved[i].first = classify(pending_pair_loads_[i].a);
+        resolved[i].second = classify(pending_pair_loads_[i].b);
+      }
+    });
+  } else {
+    for (std::size_t i = 0; i < load_count; ++i) {
+      resolved[i].first = classify(pending_pair_loads_[i].a);
+      resolved[i].second = classify(pending_pair_loads_[i].b);
+    }
+  }
+
+  for (std::size_t load_index = 0; load_index < load_count; ++load_index) {
+    const PendingPairLoad &load = pending_pair_loads_[load_index];
+    const Resolved &a = resolved[load_index].first;
+    const Resolved &b = resolved[load_index].second;
 
     const auto record = [&](const Resolved &dependent, const Resolved &supporter) {
       if (!dependent.chunk || dependent.kinematic) {
