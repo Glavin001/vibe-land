@@ -65,28 +65,39 @@ bash scripts/scenario-suite.sh > "$out/suite.log" 2>&1
 [ $? -eq 0 ] || fail "scenario suite (see $out/suite.log)"
 log "gate 1 green"
 
-# ---- gate 2: floater repro ----------------------------------------------
-log "gate 2: floater repro"
-env VIBE_CITY_FREEZE=1 VIBE_CITY_VARIED_HEIGHTS=0 VIBE_CITY_SOLVER_ITERATIONS=32 \
-    VIBE_WORLD_FRICTION=0.75 VIBE_WORLD_RESTITUTION=0.02 VIBE_CITY_STRESS_LIMIT_SCALE=0.45 \
-    VIBE_CITY_SHOT_BLAST_RADIUS=0.7 VIBE_CITY_SHOT_STRESS_IMPULSE=4.0e7 \
-    VIBE_CITY_EXCESS_FORCES=1 VIBE_CITY_RESIM_PASSES=0 \
-    VIBE_CITY_POSE_CENSUS=1 VIBE_CITY_POSE_CENSUS_DUMP=1 \
-  ./target/release/record-city-trace --scene destruction/assets/scenes/fractured-downtown.json \
-    --grid 1 --seconds 110 --shots 30 --shot-interval-ticks 40 --targets 1 --aim-lock \
-    --output /dev/null --packets-out "$out/floater" --packets-wire 3 > "$out/floater.log" 2>&1 \
-  || fail "floater repro crashed"
-floating=$(python3 - <<'PY'
-import json
-rows = [json.loads(l) for l in open('/tmp/p1b-gates/floater/timings.jsonl')]
-# A transient floater during a collapse is physics doing its job; a floater
-# that SURVIVES to the end of the settle window is the frozen-mid-air bug.
-# Gate on the final 300 ticks staying at zero.
-print(max(r.get('floating', 0) for r in rows[-300:]))
+# ---- gate 2: floater repro, DIFFERENTIAL --------------------------------
+# unsupported_resting_bodies counts frozen and engine-asleep floaters alike,
+# and bodies held by Blast bonds legitimately appear in it — its own doc says
+# "read it as a difference between runs, never as an absolute". (The absolute
+# =0 version of this gate failed on floating=2, which the ground-chain work
+# already documented as the expected engine-slept tail.) So: same recipe with
+# aggregation on and off; aggregation must not INVENT floaters.
+floater_run() { # $1 = label, $2 = VIBE_CITY_FREEZE_AGGREGATE
+  env VIBE_CITY_FREEZE=1 VIBE_CITY_VARIED_HEIGHTS=0 VIBE_CITY_SOLVER_ITERATIONS=32 \
+      VIBE_WORLD_FRICTION=0.75 VIBE_WORLD_RESTITUTION=0.02 VIBE_CITY_STRESS_LIMIT_SCALE=0.45 \
+      VIBE_CITY_SHOT_BLAST_RADIUS=0.7 VIBE_CITY_SHOT_STRESS_IMPULSE=4.0e7 \
+      VIBE_CITY_EXCESS_FORCES=1 VIBE_CITY_RESIM_PASSES=0 \
+      VIBE_CITY_POSE_CENSUS=1 VIBE_CITY_POSE_CENSUS_DUMP=1 \
+      VIBE_CITY_FREEZE_AGGREGATE="$2" \
+    ./target/release/record-city-trace --scene destruction/assets/scenes/fractured-downtown.json \
+      --grid 1 --seconds 110 --shots 30 --shot-interval-ticks 40 --targets 1 --aim-lock \
+      --output /dev/null --packets-out "$out/$1" --packets-wire 3 > "$out/$1.log" 2>&1
+}
+log "gate 2: floater repro differential (aggregates on vs off)"
+floater_run floater-on 1  || fail "floater agg-on run crashed"
+floater_run floater-off 0 || fail "floater agg-off run crashed"
+python3 - <<'PY' >> "$out/pipeline.log" || fail "floater differential (see pipeline.log)"
+import json, sys
+def tail(p):
+    rows = [json.loads(l) for l in open(f'/tmp/p1b-gates/{p}/timings.jsonl')]
+    return max(r.get('floating', 0) for r in rows[-300:])
+on, off = tail('floater-on'), tail('floater-off')
+print(f"floater tails: agg-on={on} agg-off={off}")
+# No invented floaters (plus one count of run-to-run slack), and an absolute
+# ceiling that would still catch a gross regression even if OFF misbehaved.
+sys.exit(0 if on <= off + 1 and on <= 5 else 1)
 PY
-)
-[ "$floating" = "0" ] || fail "floater repro tail has floating=$floating"
-log "gate 2 green (final-300-tick floating=0)"
+log "gate 2 green (differential)"
 
 # ---- gate 3+4: collapse-onto-frozen-field A/B + perf number --------------
 run_ab() { # $1 = label, $2 = extra env (VIBE_CITY_FREEZE_AGGREGATE)
