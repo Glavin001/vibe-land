@@ -164,6 +164,52 @@ bool quiet_skip_enabled() {
   return enabled;
 }
 
+/// Per-body contact-report threshold as a multiple of the body's own resting
+/// weight (`ratio * m * g`), or 0 to keep the flat scene-wide value.
+///
+/// Off by default: this is an experiment with a measurable payoff (~6 ms of
+/// report-path cost) and one real coupling -- freeze admission learns which
+/// body rests on which FROM these reports, so silencing resting pairs could
+/// starve support discovery. T4 (freeze health) in the scenario suite fails
+/// loudly in exactly that case. Staged: measure at 0.5 (self-weight pairs
+/// still report with 2x margin), then 2.0 (the real saving).
+float contact_report_mass_ratio() {
+  static const float ratio = [] {
+    if (const char *raw = std::getenv("VIBE_CITY_CONTACT_REPORT_MASS_RATIO")) {
+      const float parsed = static_cast<float>(std::atof(raw));
+      if (parsed > 0.0f) {
+        return parsed;
+      }
+    }
+    return 0.0f;
+  }();
+  return ratio;
+}
+
+/// The threshold a chunk body of this mass should carry. `flat` (the
+/// scene-wide value) is returned unchanged when the experiment is off, and is
+/// also the FLOOR when it is on: a featherweight shard must not end up with a
+/// threshold so low that it reports noise the flat value already suppressed.
+float chunk_contact_report_threshold(float mass, float flat) {
+  const float ratio = contact_report_mass_ratio();
+  if (ratio <= 0.0f || !(mass > 0.0f)) {
+    return flat;
+  }
+  // Duplicated rather than calling world_gravity(), which is defined in a
+  // later translation-unit-local namespace; kept in sync by reading the same
+  // env with the same default.
+  static const float gravity = [] {
+    if (const char *raw = std::getenv("VIBE_WORLD_GRAVITY")) {
+      const float parsed = static_cast<float>(std::fabs(std::atof(raw)));
+      if (parsed > 0.0f) {
+        return parsed;
+      }
+    }
+    return 20.0f;
+  }();
+  return std::max(flat, ratio * mass * gravity);
+}
+
 /// P1b: cluster frozen bodies into spatial-cell PxAggregates. OPT-IN
 /// (VIBE_CITY_FREEZE_AGGREGATE=1), because the matched-load A/B refuted the
 /// premise: in the settled tail (awake<500, frozen 1500-2000) aggregation
@@ -863,9 +909,28 @@ void DestructionManager::register_filters(Slot &slot) {
       // full contact data back to the host every tick, and a settled rubble
       // pile is nothing but persistent pairs. VIBE_CITY_CHUNK_CONTACT_REPORTS=0
       // disables them so the cost can be measured against the gameplay they buy.
+      //
+      // The flat threshold is decorative at city scale: at 20 m/s^2 a 10 t
+      // chunk RESTS at ~200 kN and even the lightest shard rests at ~800 N,
+      // so every touching awake pair clears 50 N by orders of magnitude and
+      // reports every tick. Measured cost of the whole report path: ~6 ms of
+      // the tick (4-10 by regime), by matched-bucket A/B against
+      // VIBE_CITY_CHUNK_CONTACT_REPORTS=0.
+      //
+      // A flat RAISE cannot fix it -- a light body's genuine strike (~12 kN)
+      // sits an order of magnitude BELOW a heavy body's resting load, so any
+      // single number silences small-body physics first. A threshold
+      // proportional to the body's own weight is scale-free: resting under
+      // your own weight is below it by construction at any size, and being
+      // struck above ~ratio*g/60 m/s (0.7 m/s at ratio 2) is above it. Same
+      // trick contact_wake_ratio() already uses for the wake test.
+      //
+      // Unset leaves the flat behaviour byte-for-byte, so this is an
+      // experiment that can be turned off without a rebuild.
       body.body->setContactReportThreshold(
-          chunk_contact_reports_ ? contact_report_threshold_
-                                 : std::numeric_limits<float>::max());
+          chunk_contact_reports_
+              ? chunk_contact_report_threshold(body.mass, contact_report_threshold_)
+              : std::numeric_limits<float>::max());
       // Let debris go to sleep.
       //
       // PhysX's default sleep threshold is tuned for gameplay objects that
