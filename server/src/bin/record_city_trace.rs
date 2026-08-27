@@ -161,6 +161,27 @@ impl Args {
                 "--summary-out" => summary_out = Some(PathBuf::from(value()?)),
                 "--aim-lock" => aim_lock = true,
                 "--packets-out" => packets_out = Some(PathBuf::from(value()?)),
+                // Run-dir convention: outputs land in
+                // bench-results/runs/<UTC>-<label>-<shortgit>/ so every run is
+                // uniquely addressed, self-describing (meta.json fingerprint),
+                // and discoverable by the comparison tooling without paths.
+                "--label" => {
+                    let label: String = value()?;
+                    let git = std::process::Command::new("git")
+                        .args(["rev-parse", "--short", "HEAD"])
+                        .output()
+                        .ok()
+                        .filter(|out| out.status.success())
+                        .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string())
+                        .unwrap_or_else(|| "nogit".into());
+                    let stamp = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_secs())
+                        .unwrap_or(0);
+                    packets_out = Some(PathBuf::from(format!(
+                        "bench-results/runs/{stamp}-{label}-{git}"
+                    )));
+                }
                 "--packets-wire" => packets_wire = value()?.parse()?,
                 "--packets-span-ms" => packets_span_ms = value()?.parse()?,
                 "--packets-budget-mbps" => packets_budget_mbps = value()?.parse()?,
@@ -880,12 +901,22 @@ fn main() -> Result<()> {
             dir.join("manifest.json"),
             serde_json::to_vec(&*manifest).context("manifest to JSON")?,
         )?;
+        // Fingerprinted: which build, under which resolved env, produced this
+        // run. A suite env gap once survived three full gate runs because no
+        // output could show "this run's env differs from production's" — the
+        // comparison tooling refuses to compare mismatched fingerprints.
         std::fs::write(
             dir.join("meta.json"),
-            format!(
-                "{{\"hz\":{},\"ticks\":{},\"wire\":{}}}",
-                args.hz, total_ticks, args.packets_wire
-            ),
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "hz": args.hz,
+                "ticks": total_ticks,
+                "wire": args.packets_wire,
+                "scene": args.scene,
+                "grid": args.grid,
+                "shots": args.shots,
+                "fingerprint": vibe_land_destruction::fingerprint::capture(),
+            }))
+            .context("meta to JSON")?,
         )?;
         // TWSTATE1 header (cameras + actor shapes) with the frame count the
         // replayer must match; it appends frame records and the terminator.
@@ -1039,10 +1070,20 @@ fn main() -> Result<()> {
             .map_err(|error| anyhow::anyhow!("{error}"))?;
         let sim_ms = sim_started.elapsed().as_secs_f32() * 1000.0;
 
+        // Bracketed as its own column: these FFI reads used to fall in the
+        // gap between `sim` and `enc`, counted by NEITHER — per-tick work
+        // with no home is exactly how attribution drifts.
+        let stats_started = std::time::Instant::now();
+        let tick_stats = destruction.stats();
+        let tick_spans = destruction.extra_spans().to_vec();
+        let world_stats = world.stats().ok();
+        let world_spans = world.take_world_spans();
+        let stats_ms = stats_started.elapsed().as_secs_f64() * 1000.0;
+
         if let Some(w) = metrics_writer.as_mut() {
             use std::io::Write as _;
-            let s = destruction.stats();
-            let ws = world.stats().ok();
+            let s = &tick_stats;
+            let ws = world_stats.as_ref();
             writeln!(
                 w,
                 "{},{},{},{},{},{},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},\
@@ -1059,13 +1100,13 @@ fn main() -> Result<()> {
                 s.blast_fracture_prep_ms, s.blast_fracture_apply_ms,
                 s.blast_fracture_scene_ms, s.blast_fracture_rebuild_ms,
                 physx_tick_ms,
-                ws.as_ref().map(|w| w.last_gpu_wait_ms).unwrap_or(0.0),
-                ws.as_ref().map(|w| w.last_fetch_copy_ms).unwrap_or(0.0),
+                ws.map(|w| w.last_gpu_wait_ms).unwrap_or(0.0),
+                ws.map(|w| w.last_fetch_copy_ms).unwrap_or(0.0),
                 s.support_pair_loads, s.contacts_queued,
                 s.solver_islands_skipped_accum, s.solver_islands_total_accum,
                 s.quiet_slot_ticks, s.freeze_flips, s.unfreeze_flips, s.contact_wakes,
                 s.min_body_y, s.pose_quiet_awake_bodies, s.overstressed_bonds,
-                ws.as_ref().map(|w| w.gpu_rigid_patch_high_water).unwrap_or(0),
+                ws.map(|w| w.gpu_rigid_patch_high_water).unwrap_or(0),
                 s.escaped_bodies_parked
             )?;
         }
@@ -1081,24 +1122,52 @@ fn main() -> Result<()> {
                 tap.server_tick(&manifest, tick_index, snapshots, &output)?;
             }
         }
+        // Evaluated BEFORE the writeln: the elapsed used to be computed
+        // inside the format args, so the stats read above was silently
+        // counted as encode time.
+        let enc_ms = enc_started.elapsed().as_secs_f32() * 1000.0;
         if let Some(log) = timings_log.as_mut() {
             use std::io::Write as _;
             // Awake count rides along with the timing, because sim ms against
             // awake bodies IS the acceptance curve -- a tick cost with no
             // population beside it cannot say whether a change made the
             // simulation cheaper or merely destroyed less. `frozen` separates
-            // "retired from the solver" from "never woke".
-            let tick_stats = destruction.stats();
+            // "retired from the solver" from "never woke". The wall phases
+            // let an A/B say WHERE a delta lives instead of only that one
+            // exists; `spans` carries every generically-authored metric.
+            let mut spans_json = String::new();
+            for span in tick_spans.iter() {
+                spans_json.push_str(&format!(
+                    ",\"{}\":{:.4}",
+                    span.name, span.value
+                ));
+            }
+            for span in world_spans.iter() {
+                spans_json.push_str(&format!(
+                    ",\"physx/{}\":{:.4}",
+                    span.name, span.value
+                ));
+            }
             writeln!(
                 log,
-                "{{\"t\":{tick_index},\"sim\":{sim_ms:.3},\"enc\":{:.3},\
-                 \"awake\":{},\"bodies\":{},\"frozen\":{},\"bonds\":{},\"floating\":{}}}",
-                enc_started.elapsed().as_secs_f32() * 1000.0,
+                "{{\"t\":{tick_index},\"sim\":{sim_ms:.3},\"enc\":{enc_ms:.3},\
+                 \"physx\":{physx_tick_ms:.3},\"stats\":{stats_ms:.3},\
+                 \"stress\":{:.3},\"solve\":{:.3},\"support\":{:.3},\
+                 \"settle\":{:.3},\"topo\":{:.3},\"gpu_wait\":{:.3},\"fetch_copy\":{:.3},\
+                 \"awake\":{},\"bodies\":{},\"frozen\":{},\"bonds\":{},\"floating\":{}{}}}",
+                tick_stats.stress_solve_ms,
+                tick_stats.solve_ms,
+                tick_stats.support_loads_ms,
+                tick_stats.settle_ms,
+                tick_stats.end_ms,
+                world_stats.as_ref().map(|w| w.last_gpu_wait_ms).unwrap_or(0.0),
+                world_stats.as_ref().map(|w| w.last_fetch_copy_ms).unwrap_or(0.0),
                 tick_stats.awake_chunk_bodies,
                 tick_stats.chunk_bodies,
                 tick_stats.frozen_chunk_bodies,
                 tick_stats.broken_bonds,
                 tick_stats.unsupported_resting_bodies,
+                spans_json,
             )?;
         }
 

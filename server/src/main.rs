@@ -818,6 +818,10 @@ struct MatchStatsSnapshot {
     /// "destruction/". A new metric authored with one span_add call in C++
     /// lands here (and in traces and debug reports) with no struct plumbing.
     spans: std::collections::BTreeMap<String, SpanValue>,
+    /// Env/build identity of THIS process, captured once at startup — the
+    /// suite env gap survived three runs because nothing recorded what a run
+    /// executed under. Constant per process; ~free at 1 Hz.
+    fingerprint: Option<vibe_land_destruction::fingerprint::Fingerprint>,
     /// When this binary was built and when this process started, so a
     /// screenshot can be told apart from a stale one. Reading a metric off a
     /// server that predates the change being tested has wasted real time in
@@ -3742,9 +3746,16 @@ impl MatchState {
             .as_mut()
             .map(|city| city.tick_window.phases.drain())
             .unwrap_or_default();
+        static FINGERPRINT: std::sync::OnceLock<vibe_land_destruction::fingerprint::Fingerprint> =
+            std::sync::OnceLock::new();
         let match_stats = MatchStatsSnapshot {
             id: self.id.clone(),
             spans,
+            fingerprint: Some(
+                FINGERPRINT
+                    .get_or_init(vibe_land_destruction::fingerprint::capture)
+                    .clone(),
+            ),
             scenario_tag: self.id.clone(),
             server_build: server_build_stamp(),
             server_started: server_started_stamp(),
