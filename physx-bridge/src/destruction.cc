@@ -1612,6 +1612,9 @@ void DestructionManager::destruction_tick(float dt, FfiVec3 gravity) {
   // captured during the physics step can be resolved into supporter edges.
   const auto support_phase = clock::now();
   resolve_support_loads();
+  // Judge this tick's accumulated frozen-body contact loads now that the
+  // contact stream is complete; the caller's drain then only reads.
+  resolve_frozen_contact_wakes();
   last_support_loads_ms_ = ms_since(support_phase);
 
   last_stress_solve_ms_ = ms_since(started);
@@ -2422,8 +2425,15 @@ void DestructionManager::note_contact_pair(std::uint32_t entity_a,
   if (ratio <= 0.0f || frozen_entities_.empty() || impulse <= 0.0f) {
     return;
   }
-  const float g_dt = world_gravity() * (last_dt_ > 0.0f ? last_dt_ : 1.0f / 60.0f);
-  // Each side: frozen participant, struck by the OTHER side's dynamic mass.
+  // Accumulate only. The judgement moved to the per-tick drain: a buried
+  // body's resting load arrives as SEVERAL pair impulses per tick — the big
+  // column above plus small side touches — and judging (and learning the
+  // baseline from) each pair alone let the small pairs drag the baseline
+  // down between big-pair arrivals, so the steady column load read as a 2x
+  // "spike" every tick. Freeze/thaw churn of tens of thousands of near-equal
+  // flips, and debris visibly bouncing red before it could stay blue, was
+  // this per-pair judgement. The body's load is the SUM over its pairs; only
+  // the sum can be compared against what it was carrying yesterday.
   const auto consider = [&](std::uint32_t entity, float striker_mass) {
     if (striker_mass <= 0.0f) {
       return; // struck by a static or kinematic: no resting load to compare.
@@ -2431,43 +2441,65 @@ void DestructionManager::note_contact_pair(std::uint32_t entity_a,
     if (frozen_entities_.find(entity) == frozen_entities_.end()) {
       return;
     }
+    contact_tick_load_[entity] += impulse;
+    auto &strongest = contact_tick_striker_[entity];
+    strongest = std::max(strongest, striker_mass);
+  };
+  consider(entity_a, mass_b);
+  consider(entity_b, mass_a);
+}
+
+/// Judge the tick's accumulated contact load per frozen body — see
+/// note_contact_pair for why this cannot happen per pair.
+void DestructionManager::resolve_frozen_contact_wakes() {
+  if (contact_tick_load_.empty()) {
+    return;
+  }
+  const float ratio = contact_wake_ratio();
+  const float g_dt = world_gravity() * (last_dt_ > 0.0f ? last_dt_ : 1.0f / 60.0f);
+  // Sorted so wake order does not depend on hash-map iteration.
+  std::vector<std::uint32_t> entities;
+  entities.reserve(contact_tick_load_.size());
+  for (const auto &entry : contact_tick_load_) {
+    entities.push_back(entry.first);
+  }
+  std::sort(entities.begin(), entities.end());
+  for (const std::uint32_t entity : entities) {
+    const float total = contact_tick_load_[entity];
     // Two references, and the wake needs to clear BOTH.
     //
-    // The single-body floor stops trivia waking anything. The baseline is what
-    // makes burial survivable: a chunk under five others bears ~5x m*g*dt while
-    // perfectly still, which clears any fixed multiple of one striker's weight
-    // and released it from freeze every tick, forever. Measured 280 awake
-    // bodies against 1 with contact wakes disabled entirely.
-    //
-    // Being buried is a steady load; being struck is a spike above whatever you
-    // were already carrying. So the test asks the second question.
-    const float floor = ratio * striker_mass * g_dt;
+    // The single-body floor stops trivia waking anything: it is the heaviest
+    // single striker's own resting weight, times the ratio — for a lone body
+    // landing on the pile this reduces exactly to the original test. The
+    // baseline is what makes burial survivable: being buried is a steady
+    // load; being struck is a spike above whatever you were already carrying.
+    const float floor = ratio * contact_tick_striker_[entity] * g_dt;
     auto &baseline = contact_load_baseline_[entity];
     if (baseline <= 0.0f) {
-      // Seed so the FIRST contact behaves exactly as before this change:
-      // threshold == floor. Seeding from the observed impulse instead would
-      // read a first-contact impact as resting load and never wake -- which
-      // broke debris_landing_on_frozen_rubble_releases_it_by_contact. The
-      // baseline may only rise from loads that were judged to be at rest.
+      // Seed so the FIRST tick behaves as the original test: threshold ==
+      // floor. Seeding from the observed load instead would read a
+      // first-contact impact as resting load and never wake — which broke
+      // debris_landing_on_frozen_rubble_releases_it_by_contact. The baseline
+      // may only rise from loads that were judged to be at rest.
       baseline = floor / kContactSpikeRatio;
     }
     const float threshold = std::max(floor, baseline * kContactSpikeRatio);
-    if (impulse < threshold) {
-      // Track the load it bears while at rest. Rising slowly (more debris
-      // settling on top) must not read as an impact, so the baseline follows.
-      baseline += kContactBaselineAlpha * (impulse - baseline);
-      return;
+    if (total < threshold) {
+      // The load it bears at rest. Rising slowly (more debris settling on
+      // top) must not read as an impact, so the baseline follows the SUM.
+      baseline += kContactBaselineAlpha * (total - baseline);
+      continue;
     }
-    // A real spike. Forget the baseline so the body re-learns its load once it
-    // settles again, rather than inheriting a stale one from before the hit.
+    // A real spike. Forget the baseline so the body re-learns its load once
+    // it settles again, rather than inheriting a stale one from the hit.
     contact_load_baseline_.erase(entity);
     if (contact_wake_pending_.insert(entity).second) {
       contact_wake_order_.push_back(entity);
       ++contact_wakes_;
     }
-  };
-  consider(entity_a, mass_b);
-  consider(entity_b, mass_a);
+  }
+  contact_tick_load_.clear();
+  contact_tick_striker_.clear();
 }
 
 void DestructionManager::note_pair_load(const PxShape *shape_a,
@@ -2837,6 +2869,9 @@ rust::Vec<FfiSupportRow> DestructionManager::take_support_rows() {
 }
 
 rust::Vec<std::uint32_t> DestructionManager::take_frozen_contact_wakes() {
+  // The tick's accumulated pair loads are judged here, at the drain, so the
+  // caller sees exactly one decision per body per tick.
+  resolve_frozen_contact_wakes();
   rust::Vec<std::uint32_t> out;
   out.reserve(contact_wake_order_.size());
   for (std::uint32_t entity : contact_wake_order_) {

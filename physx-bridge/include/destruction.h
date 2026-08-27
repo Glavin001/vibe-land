@@ -461,6 +461,11 @@ private:
   std::unordered_set<std::uint32_t> frozen_entities_;
   /// Contact-struck frozen bodies awaiting the per-tick drain (deduped).
   std::unordered_set<std::uint32_t> contact_wake_pending_;
+  /// Per-tick accumulated contact impulse and heaviest striker per frozen
+  /// body; judged once per tick in resolve_frozen_contact_wakes().
+  std::unordered_map<std::uint32_t, float> contact_tick_load_;
+  std::unordered_map<std::uint32_t, float> contact_tick_striker_;
+  void resolve_frozen_contact_wakes();
   /// Steady contact load each frozen body bears, per entity.
   ///
   /// A buried chunk carries the accumulated weight of the pile above it, which
