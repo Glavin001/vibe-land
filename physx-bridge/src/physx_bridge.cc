@@ -1387,13 +1387,23 @@ public:
     // Broadphase membership churn: prices freeze/thaw flips directly.
     span("bp_adds", static_cast<double>(statistics.getNbBroadPhaseAdds()), 2);
     span("bp_removes", static_cast<double>(statistics.getNbBroadPhaseRemoves()), 2);
-    // Pair found/lost volume from the GPU pipeline's own accounting — the
-    // pair-activity signal that IS populated under eGPU (the CPU-narrowphase
-    // pair counter is not, see contact_pairs below).
-    span("gpu_found_lost_pairs",
+    // CORRECTED 2026-08-27: this is a BUFFER HIGH-WATER from
+    // gpuDynamicsMemoryConfigStatistics — the largest found/lost buffer the
+    // GPU pipeline has needed since scene creation — NOT per-tick pair
+    // activity. It read exactly 19481 across an hour of live reports while
+    // being cited as an activity signal. Renamed so the name says what it
+    // measures; the per-tick pair churn signals are the two below.
+    span("gpu_found_lost_pairs_high_water",
          static_cast<double>(
              statistics.gpuDynamicsMemoryConfigStatistics.foundLostPairs),
          2);
+    // Per-frame broadphase pair churn from PxSimulationStatistics. Unlike the
+    // CPU narrowphase pair counter (absent under eGPU), these are filled by
+    // the BP stage. New+lost ≈ how much of the pair set is actually changing;
+    // a settled field re-reporting thousands of callbacks with near-zero
+    // churn here is the quiet-pair lever's whole justification, measured.
+    span("bp_new_pairs", static_cast<double>(statistics.nbNewPairs), 2);
+    span("bp_lost_pairs", static_cast<double>(statistics.nbLostPairs), 2);
     out.body_count = static_cast<std::uint32_t>(records_.size()) - players;
     out.player_count = players;
     out.vehicle_count = vehicles;

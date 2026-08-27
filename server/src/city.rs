@@ -642,7 +642,7 @@ pub struct WindowSummary {
 ///
 /// Windowing removes it -- p95 and max also surface the spikes a single sample
 /// can only catch by luck.
-pub const PHASE_NAMES: [&str; 19] = [
+pub const PHASE_NAMES: [&str; 25] = [
     "stress_solve_ms",
     "begin_ms",
     "solve_ms",
@@ -672,6 +672,19 @@ pub const PHASE_NAMES: [&str; 19] = [
     "blast_fracture_topology_ms",
     "blast_mapping_validation_ms",
     "blast_fracture_topology_excl_validation_ms",
+    // The fracture SUB-phases and settle. Added after a live report caught an
+    // 89 ms tick whose city side was 71 ms while the windowed phases
+    // accounted for only ~33 of it: the worst tick in the game was mostly
+    // unattributed, because these were published as 1 Hz point samples only —
+    // and a point sample of a spiky phase is the one thing that cannot see a
+    // spike. `window_ingest_ms` (already windowed) carried the other half at
+    // 32.75 ms max, which is what pointed here.
+    "blast_fracture_generate_ms",
+    "blast_fracture_prep_ms",
+    "blast_fracture_apply_ms",
+    "blast_fracture_scene_ms",
+    "blast_fracture_rebuild_ms",
+    "settle_ms",
 ];
 
 #[derive(Default)]
@@ -1638,6 +1651,12 @@ impl CityRuntime {
             // if crush is ever enabled, the crush-drain caller would make this
             // go negative rather than merely wrong.
             (stats.blast_fracture_topology_ms - stats.blast_mapping_validation_ms).max(0.0),
+            stats.blast_fracture_generate_ms,
+            stats.blast_fracture_prep_ms,
+            stats.blast_fracture_apply_ms,
+            stats.blast_fracture_scene_ms,
+            stats.blast_fracture_rebuild_ms,
+            stats.settle_ms,
         ]);
         if let Some(live) = &self.live {
             self.tick_window
