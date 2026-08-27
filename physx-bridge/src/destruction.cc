@@ -164,6 +164,23 @@ bool quiet_skip_enabled() {
   return enabled;
 }
 
+/// MEASUREMENT ONLY, default off: remove frozen bodies from the PxScene
+/// entirely instead of leaving them as kinematic actors holding broadphase
+/// entries. Exists to price the ceiling of any frozen-body population
+/// optimisation (P1a): run matched traces with and without it and the
+/// dynamics_ms delta is the most any clustering scheme could recover.
+///
+/// NEVER deploy with this set. A removed body has no contacts, so the
+/// contact-wake release path cannot fire and players fall through frozen
+/// piles — correctness is knowingly sacrificed for the measurement.
+bool freeze_remove_from_scene() {
+  static const bool enabled = [] {
+    const char *value = std::getenv("VIBE_CITY_FREEZE_REMOVE_FROM_SCENE");
+    return value != nullptr && std::string(value) == "1";
+  }();
+  return enabled;
+}
+
 #if defined(NVBLAST_ENABLE_CUDA_STRESS)
 /// Whether to request the CUDA stress solver (VIBE_CITY_GPU_STRESS=0 disables).
 ///
@@ -2092,8 +2109,16 @@ std::uint32_t DestructionManager::set_chunk_bodies_kinematic(
       if (kinematic) {
         slot->frozen.insert(body_id);
         frozen_entities_.insert(entity);
+        if (freeze_remove_from_scene() && body->getScene() != nullptr) {
+          scene_.removeActor(*body);
+        }
         ++freeze_flips_;
       } else {
+        if (freeze_remove_from_scene() && body->getScene() == nullptr) {
+          // Back in the scene before the wake below — waking a sceneless
+          // actor is undefined.
+          scene_.addActor(*body);
+        }
         slot->frozen.erase(body_id);
         frozen_entities_.erase(entity);
         // PhysX zeroes velocities across the dynamic transition, so the body
