@@ -102,6 +102,18 @@ def compare(arm_a: list[runs_mod.Run], arm_b: list[runs_mod.Run], key: str = "si
             "arms differ on physics env keys: " + ", ".join(sorted(diff_keys))
         )
 
+    # 1b. Solver guard: a run whose binary lacked `cuda-stress` measured the
+    #     CPU CG solve, whose residual reads as real stress — its city
+    #     destroys itself at rest (~30,000 bonds in 90 s vs 0). Such a run is
+    #     not a slower version of the same physics; it is different physics.
+    for arm_name, arm in (("A", arm_a), ("B", arm_b)):
+        for run in arm:
+            if run.cuda_stress() is False:
+                reasons.append(
+                    f"arm {arm_name} run {run.label} was built WITHOUT cuda-stress "
+                    "(CPU stress solver) — its physics is not the shipped physics"
+                )
+
     # 2. Same-city guard: final broken-bond totals inside the noise band.
     bonds_a = [run.final("bonds") for run in arm_a]
     bonds_b = [run.final("bonds") for run in arm_b]

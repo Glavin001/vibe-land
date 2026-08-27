@@ -23,9 +23,25 @@ pub struct Fingerprint {
     /// Every VIBE_* / BLAST_* variable present in the environment. Absent
     /// keys are genuinely unset (defaults applied), which is itself signal.
     pub env: BTreeMap<String, String>,
+    /// Was this binary built with the `cuda-stress` feature?
+    ///
+    /// The single most consequential build flag there is: without it the CUDA
+    /// stress solver is compiled out and the CPU CG solve runs, whose
+    /// residual reads as real stress and makes a city at rest destroy itself
+    /// (~30,000 bonds in 90 s vs 0). Nothing in a run's output said which
+    /// solver produced it, so a whole afternoon of self-consistent, red,
+    /// meaningless bisect arms looked like a physics regression. Set by the
+    /// caller — only the top-level crate can see its own features.
+    pub cuda_stress: bool,
 }
 
+/// Capture without build-feature knowledge (`cuda_stress` reported false).
+/// Prefer `capture_with_build` from a crate that can see the feature.
 pub fn capture() -> Fingerprint {
+    capture_with_build(false)
+}
+
+pub fn capture_with_build(cuda_stress: bool) -> Fingerprint {
     let env: BTreeMap<String, String> = std::env::vars()
         .filter(|(key, _)| key.starts_with("VIBE_") || key.starts_with("BLAST_"))
         .collect();
@@ -51,6 +67,7 @@ pub fn capture() -> Fingerprint {
         binary,
         binary_mtime_unix,
         env,
+        cuda_stress,
     }
 }
 

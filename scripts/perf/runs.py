@@ -45,6 +45,16 @@ class Run:
     def final(self, key: str, default=0):
         return self.rows[-1].get(key, default) if self.rows else default
 
+    def cuda_stress(self) -> bool | None:
+        """Did this run's binary carry the CUDA stress solver?
+
+        None for runs recorded before the field existed. False means the CPU
+        CG solver produced these numbers, whose residual reads as real stress
+        and destroys a city at rest — no such run is comparable to anything.
+        """
+        fingerprint = self.meta.get("fingerprint") or {}
+        return fingerprint.get("cuda_stress")
+
 
 def load(path: str) -> Run:
     meta_path = os.path.join(path, "meta.json")

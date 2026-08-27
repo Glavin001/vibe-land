@@ -3854,7 +3854,9 @@ impl MatchState {
             tick_ring: Vec::new(),
             fingerprint: Some(
                 FINGERPRINT
-                    .get_or_init(vibe_land_destruction::fingerprint::capture)
+                    .get_or_init(|| vibe_land_destruction::fingerprint::capture_with_build(
+                        cfg!(feature = "cuda-stress"),
+                    ))
                     .clone(),
             ),
             scenario_tag: self.id.clone(),

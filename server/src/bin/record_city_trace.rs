@@ -845,6 +845,31 @@ fn main() -> Result<()> {
     let mut destruction = CityDestruction::build(manifest.clone(), &mut world, settings, args.hz)
         .map_err(|error| anyhow::anyhow!("{error}"))?;
 
+    // A CPU-solver binary must never produce a measurement.
+    //
+    // `cargo build --features destruction` compiles the CUDA stress solver
+    // OUT and falls back to the CPU CG solve. That is not merely slower: the
+    // CPU solver's 8-32 iteration residual reads as real stress, so an
+    // untouched city tears itself apart (~30,000 bonds in 90 s at rest, vs 0
+    // on the GPU path). Every bisect arm of an entire afternoon came back
+    // red this way, on source that was green hours earlier -- the numbers
+    // were self-consistent and completely meaningless.
+    //
+    // The build that measures MUST be `--features cuda-stress`. This refuses
+    // rather than warns because a warning in a 200-second run's scrollback is
+    // exactly what got missed. VIBE_ALLOW_CPU_STRESS=1 for the rare case of
+    // deliberately profiling the CPU solver.
+    if !cfg!(feature = "cuda-stress")
+        && std::env::var("VIBE_ALLOW_CPU_STRESS").as_deref().unwrap_or("0") == "0"
+    {
+        anyhow::bail!(
+            "this binary was built WITHOUT the cuda-stress feature, so it runs the CPU \
+             stress solver, whose residual makes a city at rest destroy itself. Rebuild \
+             with: cargo build --release -p web-fps-server --features cuda-stress \
+             (set VIBE_ALLOW_CPU_STRESS=1 to override deliberately)"
+        );
+    }
+
     let dt = 1.0 / args.hz as f32;
     let total_ticks = (args.seconds * args.hz as f32).round() as u32;
     let extent = scene_extent(&manifest);
@@ -914,7 +939,7 @@ fn main() -> Result<()> {
                 "scene": args.scene,
                 "grid": args.grid,
                 "shots": args.shots,
-                "fingerprint": vibe_land_destruction::fingerprint::capture(),
+                "fingerprint": vibe_land_destruction::fingerprint::capture_with_build(cfg!(feature = "cuda-stress")),
             }))
             .context("meta to JSON")?,
         )?;
