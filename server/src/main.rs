@@ -43,7 +43,7 @@ use vibe_land_shared::constants::{
     DEFAULT_BATTERY_HEIGHT_M, DEFAULT_BATTERY_RADIUS_M, DYNAMIC_BODY_AOI_EXIT_RADIUS_M,
     DYNAMIC_BODY_AOI_RADIUS_M, DYNAMIC_BODY_IMPULSE, FLAG_MELEEING, HITSCAN_MAX_DISTANCE_M,
     MAX_PENDING_INPUTS, MELEE_COOLDOWN_MS, MELEE_DAMAGE, MELEE_ENERGY_COST,
-    PLAYER_INPUT_CATCHUP_THRESHOLD,
+    MAX_INPUT_FRAMES_PER_TICK,
     MELEE_FLAG_DURATION_TICKS, MELEE_HALF_CONE_COS, MELEE_HIT_RECOVERY_MS, MELEE_RANGE_M,
     OUT_OF_BOUNDS_Y_M, PLAYER_AOI_RADIUS_M, PLAYER_EYE_HEIGHT_M, RIFLE_BODY_DAMAGE,
     RIFLE_FIRE_INTERVAL_MS, RIFLE_HEAD_DAMAGE, RIFLE_SHOT_ENERGY_COST, SHAPE_SPHERE, SIM_HZ,
@@ -218,6 +218,11 @@ impl RollingSamples {
 struct MatchTimingStats {
     total_ms: RollingSamples,
     player_sim_ms: RollingSamples,
+    /// 60 Hz input frames simulated per tick, summed over players. Reads 1.0
+    /// per player at 60 Hz and rises as the tick slows — the direct evidence
+    /// that the player's input stream is being consumed at the rate it was
+    /// produced rather than dropped, which is what rubber-banding was.
+    input_frames_per_tick: RollingSamples,
     player_move_math_ms: RollingSamples,
     player_query_ctx_ms: RollingSamples,
     player_kcc_ms: RollingSamples,
@@ -515,6 +520,7 @@ struct CityStatsSnapshot {
 struct MatchTimingSnapshot {
     total_ms: SummaryStatsSnapshot,
     player_sim_ms: SummaryStatsSnapshot,
+    input_frames_per_tick: SummaryStatsSnapshot,
     player_move_math_ms: SummaryStatsSnapshot,
     player_query_ctx_ms: SummaryStatsSnapshot,
     player_kcc_ms: SummaryStatsSnapshot,
@@ -542,6 +548,7 @@ impl MatchTimingStats {
         MatchTimingSnapshot {
             total_ms: self.total_ms.snapshot(),
             player_sim_ms: self.player_sim_ms.snapshot(),
+            input_frames_per_tick: self.input_frames_per_tick.snapshot(),
             player_move_math_ms: self.player_move_math_ms.snapshot(),
             player_query_ctx_ms: self.player_query_ctx_ms.snapshot(),
             player_kcc_ms: self.player_kcc_ms.snapshot(),
@@ -1157,6 +1164,11 @@ struct MatchState {
     /// appears in -- it measures the block that builds that snapshot.
     last_fan_out_ms: f32,
     last_publish_ms: f32,
+    /// Wall clock at the previous tick. The input budget is derived from it:
+    /// the loop's MissedTickBehavior::Skip means simulated time falls behind
+    /// real time under load, and the player's input stream must be consumed
+    /// at the rate it was produced regardless.
+    last_tick_instant: Option<Instant>,
     /// Observer pipeline (VIBE_CITY_OBSERVER_PIPELINE=1): tick N's deferred
     /// city observer bundle, flushed inside tick N+1's GPU wait. None when
     /// the flag is off, on non-city matches, and on staging-error ticks.
@@ -2491,6 +2503,7 @@ async fn run_match_loop(
         city_desync_repairs: 0,
         last_fan_out_ms: 0.0,
         last_publish_ms: 0.0,
+        last_tick_instant: None,
         staged_city: None,
         last_observer_flush_ms: 0.0,
         next_player_handle: 1,
@@ -3062,6 +3075,29 @@ impl MatchState {
         self.server_tick += 1;
         self.reclaim_player_handles();
         let dt = 1.0 / SIM_HZ as f32;
+        // How many 60 Hz input frames this tick is entitled to consume.
+        //
+        // The loop is a fixed 60 Hz interval with MissedTickBehavior::Skip, so
+        // when a tick overruns its budget the missed ticks are dropped and
+        // simulated time falls behind the wall clock. Clients keep sending 60
+        // frames a second regardless, so the server must consume them at the
+        // rate they were PRODUCED, not at the rate it happens to be ticking —
+        // otherwise the player's body advances slower than their own client
+        // predicts and every reconcile yanks them backwards.
+        //
+        // Budgeting by real elapsed time is also what keeps this from being a
+        // speed exploit: a client that floods input still cannot move faster
+        // than wall-clock, because the budget is wall-clock / dt. The cap
+        // bounds the cost of one slow tick (KCC is ~0.03 ms per frame, so 4
+        // is ~0.12 ms) and stops a long stall from teleporting anyone.
+        let input_budget = self
+            .last_tick_instant
+            .map(|previous| {
+                let elapsed = tick_started.saturating_duration_since(previous).as_secs_f32();
+                (elapsed / dt).round().clamp(1.0, MAX_INPUT_FRAMES_PER_TICK as f32) as usize
+            })
+            .unwrap_or(1);
+        self.last_tick_instant = Some(tick_started);
         let server_time_ms = self.server_tick * (1000 / SIM_HZ as u32);
 
         self.process_respawns(server_time_ms);
@@ -3070,6 +3106,7 @@ impl MatchState {
         let ids: Vec<u32> = self.players.keys().copied().collect();
         let player_sim_started = Instant::now();
         let mut player_move_math_ms = 0.0f32;
+        let mut input_frames_applied = 0.0f32;
         let mut player_query_ctx_ms = 0.0f32;
         let mut player_kcc_ms = 0.0f32;
         let mut player_kcc_horizontal_ms = 0.0f32;
@@ -3107,22 +3144,58 @@ impl MatchState {
                 .player_state(player_id)
                 .map(|state| (state.last_input, state.on_ground))
                 .unwrap_or_default();
-            let input = self
-                .players
-                .get_mut(&player_id)
-                .map(|runtime| {
-                    // Vehicle controls are continuous state, not precious per-frame
-                    // history. Once the backlog grows unhealthy, catch the server up
-                    // to the newest useful control state instead of replaying stale
-                    // steering/throttle for hundreds of milliseconds.
-                    take_input_for_tick_with_vehicle_catchup(
-                        runtime,
-                        self.arena.is_player_in_vehicle(player_id),
-                    )
-                })
-                .unwrap_or_default();
-            on_foot_energy_drains.push((player_id, previous_input, input.clone(), was_on_ground));
-            if let Some(result) = self.arena.simulate_player_tick(player_id, &input, dt) {
+            let in_vehicle = self.arena.is_player_in_vehicle(player_id);
+            // Vehicle controls are continuous state, not precious per-frame
+            // history, and the vehicle is integrated by PhysX rather than by
+            // replaying frames — so one newest-wins control per tick stays
+            // correct there. On foot, every frame is displacement the client
+            // has already predicted, so the tick drains as many as real time
+            // says were produced.
+            let frames = if in_vehicle { 1 } else { input_budget };
+            let mut applied: Vec<InputCmd> = Vec::new();
+            if let Some(runtime) = self.players.get_mut(&player_id) {
+                for index in 0..frames {
+                    // The first frame always applies: with an empty queue
+                    // take_input_for_tick repeats the last applied input,
+                    // which is how a client that has gone quiet keeps its
+                    // held movement. Later frames require a real queued one,
+                    // or a quiet client would be moved twice.
+                    if index > 0 && runtime.pending_inputs.is_empty() {
+                        break;
+                    }
+                    applied.push(take_input_for_tick_with_vehicle_catchup(
+                        runtime, in_vehicle,
+                    ));
+                }
+            }
+            if applied.is_empty() {
+                applied.push(InputCmd::default());
+            }
+            input_frames_applied += applied.len() as f32;
+            // Each frame is simulated in order, with its own dt, and the
+            // energy drain and previous-input/on-ground pair are re-read
+            // between frames — the drain is per frame of movement, not per
+            // tick, and a jump landing inside the tick must be seen by the
+            // frame after it.
+            let mut frame_previous_input = previous_input;
+            let mut frame_was_on_ground = was_on_ground;
+            let mut last_result = None;
+            for frame in &applied {
+                on_foot_energy_drains.push((
+                    player_id,
+                    frame_previous_input,
+                    frame.clone(),
+                    frame_was_on_ground,
+                ));
+                last_result = self.arena.simulate_player_tick(player_id, frame, dt);
+                frame_previous_input = frame.clone();
+                frame_was_on_ground = self
+                    .arena
+                    .player_state(player_id)
+                    .map(|state| state.on_ground)
+                    .unwrap_or(frame_was_on_ground);
+            }
+            if let Some(result) = last_result {
                 player_move_math_ms += result.timings.move_math_ms;
                 player_query_ctx_ms += result.timings.query_ctx_ms;
                 player_kcc_ms += result.timings.kcc_query_ms;
@@ -3181,6 +3254,9 @@ impl MatchState {
         self.timings
             .player_sim_ms
             .record(player_sim_started.elapsed().as_secs_f32() * 1000.0);
+        self.timings
+            .input_frames_per_tick
+            .record(input_frames_applied);
         self.timings.player_move_math_ms.record(player_move_math_ms);
         self.timings.player_query_ctx_ms.record(player_query_ctx_ms);
         self.timings.player_kcc_ms.record(player_kcc_ms);
@@ -5707,33 +5783,28 @@ impl MatchState {
 const LATCHED_BUTTONS: u16 = BTN_JUMP | BTN_RELOAD;
 
 fn take_input_for_tick(runtime: &mut PlayerRuntime) -> InputCmd {
-    // Stay current instead of draining a backlog.
+    // Ordered, one frame at a time. The caller decides HOW MANY frames a tick
+    // is allowed to consume (see input_budget_for_tick); this function never
+    // skips one.
     //
-    // Clients send at a fixed 60 Hz. If the match loop falls behind (a heavy
-    // city collapse pushed it to ~30-45 Hz), popping one frame per tick
-    // consumes fewer than arrive, so the queue grows until it saturates at
-    // MAX_PENDING_INPUTS = 120 — two seconds of input. Steady state is then
-    // the server applying two-second-old movement and *yaw*, which feels like
-    // walking in a direction you were facing a moment ago rather than like
-    // lag. Vehicles already collapsed their backlog; on foot did not.
+    // It used to jump to the newest frame whenever three were pending,
+    // discarding the rest and acking the newest anyway. That is what made
+    // walking rubber-band. Clients send a fixed 60 Hz; under a city collapse
+    // the match loop runs at ~31 Hz; so the server applied ~31 frames a
+    // second and threw away ~29, while telling the client it had applied all
+    // of them. The client replays every unacked frame from the acked state,
+    // arrives ~half a step ahead of where the server actually put the player,
+    // exceeds the 0.15 m correction threshold, and gets pulled back — every
+    // tick, forever. Measured live: 60.3 input/s sent against a 31.2 Hz
+    // server, correction_m 0.19-0.32.
     //
-    // Whatever else degrades, the player's own body should track their input,
-    // so jump to the newest frame and keep only the latched presses from the
-    // ones skipped.
-    if runtime.pending_inputs.len() >= PLAYER_INPUT_CATCHUP_THRESHOLD {
-        if let Some(mut newest) = runtime.pending_inputs.pop_back() {
-            let mut latched = 0u16;
-            for skipped in runtime.pending_inputs.iter() {
-                latched |= skipped.buttons & LATCHED_BUTTONS;
-            }
-            runtime.inputs_skipped_for_catchup += runtime.pending_inputs.len() as u64;
-            runtime.pending_inputs.clear();
-            newest.buttons |= latched;
-            runtime.last_ack_input_seq = newest.seq;
-            runtime.last_applied_input = newest.clone();
-            return newest;
-        }
-    }
+    // Dropping frames also cannot be fixed by acking honestly: the server
+    // would then integrate only half the player's motion and they would walk
+    // at half speed. The frames have to be SIMULATED, which is what the
+    // budgeted loop in the caller does.
+    //
+    // `on_foot_backlog_keeps_ordered_processing` guards this and has been red
+    // since the skip was introduced.
     if let Some(input) = runtime.pending_inputs.pop_front() {
         runtime.last_ack_input_seq = input.seq;
         runtime.last_applied_input = input.clone();
