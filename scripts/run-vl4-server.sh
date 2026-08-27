@@ -32,7 +32,10 @@ export VIBE_CITY_RESIM_PASSES=0
 export VIBE_CITY_SOLVER_ITERATIONS=32
 export VIBE_WORLD_FRICTION=0.75
 export VIBE_WORLD_RESTITUTION=0.02
-export VIBE_PHYSX_PROFILE_FETCH=1
+# VIBE_PHYSX_PROFILE_FETCH deliberately NOT set: the fetch-split busy-poll
+# was measured at +0.91 ms/tick (n=2/arm, equivalence-guarded verdict, the
+# +0.85 attributed to the physx bracket where the spin lives). Production
+# gives up the live gpu_wait/fetch_copy split; traces keep the flag on.
 # DEFAULT ON: the incremental device-topology change (blast 5ed909d9) makes
 # the GRID=2 city tear itself apart at rest -- no players, no shots, 0 ->
 # 122,819 broken bonds in 90 s, bond utilisation 4,349-14,350x, step 22 -> 132
