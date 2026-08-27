@@ -130,6 +130,34 @@ bool contact_cse_enabled() {
   return enabled;
 }
 
+/// A/B for the A1+A2 lookup elisions: note_pair_load reusing the manifold's
+/// resolved targets, and queueContact taking a pre-resolved Blast node.
+/// ON by default; `=0` restores the original per-side / per-point lookups.
+///
+/// A runtime switch rather than two builds on purpose: one binary means the
+/// arms cannot differ by anything else, which is the failure mode that has
+/// wasted the most time on this tree.
+bool contact_fastpath_enabled() {
+  static const bool enabled = [] {
+    const char *value = std::getenv("VIBE_PHYSX_CONTACT_FASTPATH");
+    return value == nullptr || std::string(value) != "0";
+  }();
+  return enabled;
+}
+
+/// Sub-attribution of the callback cost (cb_extract/queue/pair_load/wake).
+/// OFF by default: four extra clock-read pairs per sampled callback measured
+/// +0.35 ms at 2-4k callbacks/tick and +0.80 at 4-8k -- larger than the
+/// costs they were added to find. Same lesson as the fetch-split busy-poll:
+/// a probe that changes the number is a diagnostic mode, not a metric.
+bool profile_callback_enabled() {
+  static const bool enabled = [] {
+    const char *value = std::getenv("VIBE_PHYSX_PROFILE_CALLBACK");
+    return value != nullptr && std::string(value) != "0";
+  }();
+  return enabled;
+}
+
 bool contact_persists_enabled() {
   static const bool enabled = [] {
     const char *value = std::getenv("VIBE_PHYSX_CONTACT_PERSISTS");
@@ -452,6 +480,8 @@ public:
     ++contact_callback_calls_;
     ++contact_callbacks_this_step_;
     const bool sample_this_call = (contact_callback_calls_ & 7u) == 0;
+    // Sub-attribution costs more than the parts it prices; opt-in only.
+    const bool sample_subspans = sample_this_call && profile_callback_enabled();
     const auto callback_started = sample_this_call
         ? std::chrono::steady_clock::now()
         : std::chrono::steady_clock::time_point{};
@@ -481,7 +511,7 @@ public:
       // so the ~9 ms callback cost decomposes BEFORE anything is optimized.
       // Same 1-in-8 gate as the outer probe; x8 scaling at publish.
       const auto sub_now = [&]() {
-        return sample_this_call ? std::chrono::steady_clock::now()
+        return sample_subspans ? std::chrono::steady_clock::now()
                                 : std::chrono::steady_clock::time_point{};
       };
       const auto sub_ms = [](std::chrono::steady_clock::time_point from) {
@@ -493,7 +523,7 @@ public:
       contact_points_.resize(contact_count);
       const PxU32 extracted =
           pair.extractContacts(contact_points_.data(), contact_count);
-      if (sample_this_call) {
+      if (sample_subspans) {
         // x8, same convention as the outer contact_callback_ms_ probe.
         cb_extract_ms_ += 8.0 * sub_ms(extract_started);
       }
@@ -567,7 +597,7 @@ public:
         }
 #endif
       }
-      if (sample_this_call) {
+      if (sample_subspans) {
         cb_queue_ms_ += 8.0 * sub_ms(points_started);
       }
       if (total_magnitude > 0.0f) {
@@ -590,7 +620,7 @@ public:
       // decides whether freezing is admissible at all.
       const auto pair_load_started = sub_now();
       if (destruction_ && sum_abs_impulse_y > 0.0f) {
-        if (contact_cse_enabled()) {
+        if (contact_cse_enabled() && contact_fastpath_enabled()) {
           // A1: hand over the targets this manifold already resolved so the
           // chunk sides skip the duplicate hash + linear slot scan.
           destruction_->note_pair_load(target0, target1, pair.shapes[0],
@@ -603,7 +633,7 @@ public:
                                        sum_abs_impulse_y, min_separation);
         }
       }
-      if (sample_this_call) {
+      if (sample_subspans) {
         cb_pair_load_ms_ += 8.0 * sub_ms(pair_load_started);
       }
       const auto wake_started = sub_now();
@@ -624,7 +654,7 @@ public:
                                         dynamic_mass(header.actors[1]),
                                         total_magnitude);
       }
-      if (sample_this_call) {
+      if (sample_subspans) {
         cb_wake_ms_ += 8.0 * sub_ms(wake_started);
       }
 #endif

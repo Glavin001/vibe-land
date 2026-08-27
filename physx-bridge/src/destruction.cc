@@ -1719,7 +1719,14 @@ DestructionManager::resolve_contact_target(PxShape *shape) {
   }
   // One adapter-side hash per shape per manifold, in place of one per POINT
   // inside queueContact (2.06-3.64 points/manifold measured on downtown).
-  const std::uint32_t blast_node = slot->dest->nodeForShape(shape);
+  // VIBE_PHYSX_CONTACT_FASTPATH=0 leaves it unresolved, and queueContact
+  // falls back to its own per-point lookup exactly as before.
+  static const bool fastpath = [] {
+    const char *value = std::getenv("VIBE_PHYSX_CONTACT_FASTPATH");
+    return value == nullptr || std::string(value) != "0";
+  }();
+  const std::uint32_t blast_node =
+      fastpath ? slot->dest->nodeForShape(shape) : 0xFFFFFFFFu;
   return ContactTarget{slot, shape, it->second.first, it->second.second,
                        blast_node};
 }
