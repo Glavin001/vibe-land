@@ -140,6 +140,32 @@ const nextFrame = () => new Promise<void>((resolve) => {
   requestAnimationFrame(() => resolve());
 });
 
+/**
+ * The shortest frame this page is actually being GIVEN, in ms.
+ *
+ * Not the panel's refresh rate and not `screen`: what matters is the rate at
+ * which THIS document is presented, which is lower than the display whenever
+ * something else is competing. Two tabs of this game open on a 120 Hz MacBook
+ * present at 60 each -- the GPU cost is unchanged and every frame median
+ * doubles, which reads exactly like a renderer that got twice as slow. That
+ * misreading has now been made three times in this project's history, twice by
+ * the assistant writing this, so the sweep measures it instead of assuming it.
+ *
+ * The minimum over the sample, not the median: a dropped frame lengthens a
+ * period but nothing shortens one below the true cadence.
+ */
+async function measurePresentPeriod(samples = 40): Promise<number> {
+  let previous = await new Promise<number>((r) => requestAnimationFrame(r));
+  let shortest = Infinity;
+  for (let i = 0; i < samples; i += 1) {
+    const now = await new Promise<number>((r) => requestAnimationFrame(r));
+    const delta = now - previous;
+    previous = now;
+    if (delta > 0.5) shortest = Math.min(shortest, delta);
+  }
+  return Number.isFinite(shortest) ? shortest : 0;
+}
+
 function stats(values: number[]): { median: number; p95: number; max: number } {
   if (values.length === 0) return { median: 0, p95: 0, max: 0 };
   const sorted = [...values].sort((a, b) => a - b);
@@ -183,6 +209,10 @@ export interface PerfSweepStep {
 export interface PerfSweepReport {
   /** Which step set ran. `mobile` is short and phone-ordered. */
   profile?: PerfSweepProfile;
+  /** Shortest frame this document was given, before the sweep touched anything. */
+  presentPeriodMs?: number;
+  /** Frame times are set by presentation cadence, not by our work. */
+  framePaced?: boolean;
   capturedAt: string;
   userAgent: string;
   devicePixelRatio: number;
@@ -287,6 +317,9 @@ export async function runPerfSweep(
   const mobile = profile === 'mobile';
   const sampleFrames = mobile ? MOBILE_FRAMES : FRAMES;
   const original = currentConfig();
+  // Before anything is touched, and with the scene rendering as the user left
+  // it -- the number this qualifies is every frame median below.
+  const presentPeriodMs = await measurePresentPeriod();
   // The setters persist, and a sweep must not: without this, running a sweep
   // froze the then-current defaults into localStorage and no future default
   // ever reached that browser again. Raw entries, restored verbatim --
@@ -333,7 +366,7 @@ export async function runPerfSweep(
       });
       sentinel = await step('as configured (sentinel)', {});
       steps.pop();
-      return finishReport(steps, sentinel, profile);
+      return finishReport(steps, sentinel, profile, presentPeriodMs);
     }
     await step('AO off', { ao: false });
     await step('shadows off', { shadows: false });
@@ -365,13 +398,14 @@ export async function runPerfSweep(
     restoreStoredRenderSettings(storedBefore);
   }
 
-  return finishReport(steps, sentinel, profile);
+  return finishReport(steps, sentinel, profile, presentPeriodMs);
 }
 
 function finishReport(
   steps: PerfSweepStep[],
   sentinel: PerfSweepStep,
   profile: PerfSweepProfile,
+  presentPeriodMs: number,
 ): PerfSweepReport {
   const first = steps[0];
   // Drift needs BOTH a relative and an absolute bar. On a machine with huge
@@ -380,21 +414,40 @@ function finishReport(
   // ignore the flag -- worse than not having one. A machine actually
   // throttling moves by milliseconds, not tenths.
   // Prefer GPU time; fall back to wall-clock frame time where the timer query
-  // does not exist at all -- which is every iOS browser, i.e. exactly the
-  // machines this flag matters most on, since a phone throttles under load and
-  // a desktop mostly does not. Frame time is the noisier signal, hence the
-  // wider relative bar.
+  // does not exist at all -- which is every iOS browser and every Safari, i.e.
+  // exactly the machines this flag matters most on, since a phone throttles
+  // under load and a desktop mostly does not. Frame time is the noisier
+  // signal, hence the wider relative bar.
   const useGpu = sentinel.gpuMs.median > 0 && first.gpuMs.median > 0;
   const before = useGpu ? first.gpuMs.median : first.frameMs.median;
   const after = useGpu ? sentinel.gpuMs.median : sentinel.frameMs.median;
+  const spread = useGpu
+    ? first.gpuMs.p95 - first.gpuMs.median
+    : first.frameMs.p95 - first.frameMs.median;
   const drift = Math.abs(after - before);
+  // The absolute bar is derived from the run's OWN jitter rather than fixed.
+  // It was 1 ms, picked when a fast box's medians were ~2 ms and its p95 sat
+  // half a millisecond above them; measure the same box a touch warmer and
+  // ordinary noise clears a fixed millisecond, which is how a constant chosen
+  // to stop false positives started producing them. Drift has to beat the
+  // spread the sweep already saw within a single step to mean anything.
+  const bar = Math.max(1, spread * 2);
   const anyHidden = sentinel.documentHidden || steps.some((s) => s.documentHidden);
   const unstable = anyHidden
-    || (before > 0 && drift / before > (useGpu ? 0.2 : 0.3) && drift > 1);
+    || (before > 0 && drift / before > (useGpu ? 0.2 : 0.3) && drift > bar);
 
   const { gpu, multiDrawSupported } = describeGpu();
   return {
     profile,
+    presentPeriodMs,
+    /**
+     * True when the frame column is pinned to the presentation cadence rather
+     * than to our work: the floor step -- everything off, the cheapest frame
+     * this renderer can produce -- still takes more than 1.5 present periods.
+     * At that point no row's frame time is telling you what a feature costs.
+     */
+    framePaced: presentPeriodMs > 0
+      && steps[steps.length - 1].frameMs.median > presentPeriodMs * 1.5,
     capturedAt: new Date().toISOString(),
     userAgent: navigator.userAgent,
     devicePixelRatio: window.devicePixelRatio,
@@ -420,7 +473,22 @@ export function formatPerfSweep(report: PerfSweepReport): string {
       ? 'native'
       : 'EMULATED — every sub-draw is a real draw call; low instance thresholds win here'}`,
     `120 fps budget: ${budget.toFixed(2)} ms`,
+    `presented at: ${report.presentPeriodMs
+      ? `${report.presentPeriodMs.toFixed(2)} ms (${(1000 / report.presentPeriodMs).toFixed(0)} fps)`
+      : 'not measured'}`,
   ];
+  if (report.framePaced) {
+    lines.push(
+      '',
+      '!! FRAME-PACED: with everything turned off this page still could not',
+      '!! present faster than the cadence above, so the frame columns measure',
+      '!! how often the browser presents this document -- NOT what any feature',
+      '!! costs. The usual cause is something else rendering: a second tab of',
+      '!! this game halves a 120 Hz MacBook to 60 with the GPU cost unchanged.',
+      '!! Close the others and re-run, or read the gpu column, which is not',
+      '!! paced and is the one that says whether 120 is reachable.',
+    );
+  }
   if (report.unstable) {
     lines.push(
       '',
@@ -483,6 +551,14 @@ export function formatPerfSweepMobile(report: PerfSweepReport): string[] {
     + ` | ${base.drawCalls} draws`,
   ];
   if (report.unstable) lines.push('!! UNSTABLE - rerun, machine drifted');
+  if (report.framePaced) {
+    lines.push(
+      '!! FRAME-PACED: even with everything off,',
+      '!! this page is only presented every'
+      + ` ${(report.presentPeriodMs ?? 0).toFixed(1)}ms.`,
+      '!! Close other tabs/windows and re-run.',
+    );
+  }
   lines.push('');
   const scored = report.steps.slice(1)
     .map((step) => ({ step, saved: base.frameMs.median - step.frameMs.median }))

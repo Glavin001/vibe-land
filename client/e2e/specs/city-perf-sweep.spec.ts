@@ -56,6 +56,8 @@ test.describe('city perf sweep', () => {
       backingStore: string;
       gpuTimingAvailable: boolean;
       unstable: boolean;
+      presentPeriodMs: number;
+      framePaced: boolean;
       sentinel: { gpuMs: { median: number } };
       steps: Array<{
         label: string;
@@ -86,6 +88,13 @@ test.describe('city perf sweep', () => {
     expect(dprStep?.backingStore).not.toBe(report.steps[0].backingStore);
     expect(report.gpuTimingAvailable, 'no GPU timing — the sweep cannot answer what it is for')
       .toBe(true);
+    // The cadence this page is actually presented at, which qualifies every
+    // frame median in the table. A 0 here silently un-qualifies them again.
+    console.log(`[perf sweep] presented every ${report.presentPeriodMs.toFixed(2)} ms`);
+    expect(report.presentPeriodMs, 'present period not measured').toBeGreaterThan(0);
+    // This box runs with vsync disabled, so it must NOT read as frame-paced --
+    // if it does, the check is firing on something other than pacing.
+    expect(report.framePaced, 'idle vsync-disabled box read as frame-paced').toBe(false);
     for (const step of report.steps) {
       expect(step.frameMs.median, `${step.label} did not measure`).toBeGreaterThan(0);
       expect(step.gpuMs.median, `${step.label} has no GPU time`).toBeGreaterThan(0);
