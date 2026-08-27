@@ -1131,6 +1131,13 @@ public:
     // Broadphase membership churn: prices freeze/thaw flips directly.
     span("bp_adds", static_cast<double>(statistics.getNbBroadPhaseAdds()), 2);
     span("bp_removes", static_cast<double>(statistics.getNbBroadPhaseRemoves()), 2);
+    // Pair found/lost volume from the GPU pipeline's own accounting — the
+    // pair-activity signal that IS populated under eGPU (the CPU-narrowphase
+    // pair counter is not, see contact_pairs below).
+    span("gpu_found_lost_pairs",
+         static_cast<double>(
+             statistics.gpuDynamicsMemoryConfigStatistics.foundLostPairs),
+         2);
     out.body_count = static_cast<std::uint32_t>(records_.size()) - players;
     out.player_count = players;
     out.vehicle_count = vehicles;

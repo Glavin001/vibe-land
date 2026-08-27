@@ -858,7 +858,14 @@ struct MatchStatsSnapshot {
     physics_gpu_required: bool,
     physics_gpu_active: bool,
     physics_gpu_warning_count: u32,
-    physics_contact_pairs: u32,
+    /// CPU-narrowphase pair count — NOT POPULATED under the GPU pipeline,
+    /// where it read a confident 0 through every capture (185k contacts in
+    /// flight, "0 pairs"). Absent under GPU rather than zero: a metric that
+    /// cannot be measured must not look like a measurement. GPU pair
+    /// activity lives in the spans (gpu_found_lost_pairs) and the contact
+    /// high-water fields.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    physics_contact_pairs: Option<u32>,
     /// PhysX's high-water marks for the two fixed-capacity GPU buffers, with
     /// their configured ceilings. Overrunning one degrades hard and is the
     /// failure mode a no-caps simulation actually has; these were computed in
@@ -3808,7 +3815,11 @@ impl MatchState {
             physics_gpu_required: self.physics.capabilities.gpu_required,
             physics_gpu_active: physics_health.gpu_active,
             physics_gpu_warning_count: physics_health.gpu_warning_count,
-            physics_contact_pairs: physics_health.contact_pairs,
+            physics_contact_pairs: if physics_health.gpu_active {
+                None
+            } else {
+                Some(physics_health.contact_pairs)
+            },
             physics_gpu_rigid_contact_high_water: physics_health.gpu_rigid_contact_high_water,
             physics_gpu_rigid_patch_high_water: physics_health.gpu_rigid_patch_high_water,
             physics_gpu_max_rigid_contacts: physics_health.gpu_max_rigid_contacts,
