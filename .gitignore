@@ -42,3 +42,4 @@ client/e2e/hero-ab/
 
 # One-button debug reports (client+server state per press); evidence, not source.
 debug-reports/
+scripts/perf/__pycache__/
