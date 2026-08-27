@@ -361,6 +361,17 @@ pub fn manifest_asset() -> Option<&'static (String, Arc<DestructionManifest>, Ve
         .as_ref()
 }
 
+/// One tick's deferred observer work (VIBE_CITY_OBSERVER_PIPELINE=1): the
+/// destruction output retained between step_stage() and flush_staged().
+/// Snapshots are NOT copied — the backend's capture buffer holds tick N's
+/// rows untouched until tick N+1's post_step, and the flush runs before that.
+pub struct StagedCityTick {
+    pub sim_tick: u32,
+    output: DestructionTickOutput,
+    post_step_ms: f32,
+    snapshot_ms: f32,
+}
+
 enum CityBackend {
     Synthetic(SyntheticDestruction),
     #[cfg(feature = "destruction")]
@@ -1394,6 +1405,153 @@ impl CityRuntime {
             reliable.push(self.encoder.topology_hash_message());
         }
         self.last_encode_ms = started.elapsed().as_secs_f32() * 1000.0;
+        reliable
+    }
+
+    /// Sim half of the observer pipeline (VIBE_CITY_OBSERVER_PIPELINE=1):
+    /// exactly step()'s simulation-side work — destruction tick, re-applied
+    /// pushes, snapshot capture — with every encoder/ledger byte deferred
+    /// into the returned ticket, which flush_staged() consumes next tick
+    /// inside the GPU wait. Only the Physx arm stages; the other backends
+    /// (and any error path) fall back to the combined step() so no tick ever
+    /// loses its baseline/hash cadence.
+    pub fn step_stage(
+        &mut self,
+        sim_tick: u32,
+        dt: f32,
+        gravity: [f32; 3],
+        #[cfg(feature = "destruction")] world: Option<&mut World>,
+        #[cfg(not(feature = "destruction"))] world: Option<()>,
+    ) -> (Vec<Vec<u8>>, Option<StagedCityTick>) {
+        #[cfg(feature = "destruction")]
+        {
+            // Staging needs BOTH a Physx backend and a world; anything else
+            // takes the combined path. Decided before the borrow so `world`
+            // survives into the fallback.
+            let stageable =
+                matches!(self.backend, CityBackend::Physx(_)) && world.is_some();
+            if !stageable {
+                return (self.step(sim_tick, dt, gravity, world), None);
+            }
+            let world = world.expect("checked by stageable");
+            if let CityBackend::Physx(backend) = &mut self.backend {
+                let started = std::time::Instant::now();
+                let pending_pushes = std::mem::take(&mut self.pending_pushes);
+                let post_step_started = std::time::Instant::now();
+                let post_step_result = backend.post_step(world, dt, gravity);
+                let post_step_ms =
+                    post_step_started.elapsed().as_secs_f32() * 1000.0;
+                match post_step_result {
+                    Ok(output) => {
+                        for (point, direction, radius, push) in pending_pushes {
+                            if let Err(error) = backend.apply_blast(
+                                world,
+                                point.to_array(),
+                                direction.to_array(),
+                                radius,
+                                0.0,
+                                push,
+                            ) {
+                                tracing::warn!(%error, "city post-fracture push failed");
+                            }
+                        }
+                        let snapshot_started = std::time::Instant::now();
+                        let snapshot_ms = match backend.body_snapshots(world) {
+                            Ok(_) => {
+                                snapshot_started.elapsed().as_secs_f32() * 1000.0
+                            }
+                            Err(error) => {
+                                tracing::error!(%error, "city body snapshot failed");
+                                self.last_encode_ms =
+                                    started.elapsed().as_secs_f32() * 1000.0;
+                                return (Vec::new(), None);
+                            }
+                        };
+                        self.last_encode_ms =
+                            started.elapsed().as_secs_f32() * 1000.0;
+                        return (
+                            Vec::new(),
+                            Some(StagedCityTick {
+                                sim_tick,
+                                output,
+                                post_step_ms,
+                                snapshot_ms,
+                            }),
+                        );
+                    }
+                    Err(error) => {
+                        tracing::error!(%error, "city physx post_step failed; topology frozen");
+                        self.last_encode_ms =
+                            started.elapsed().as_secs_f32() * 1000.0;
+                        return (Vec::new(), None);
+                    }
+                }
+            }
+            unreachable!("stageable implies a Physx backend")
+        }
+        #[cfg(not(feature = "destruction"))]
+        {
+            (self.step(sim_tick, dt, gravity, world), None)
+        }
+    }
+
+    /// Observer half: everything step() runs after the snapshot capture —
+    /// encoder ingest, topology/baseline/hash messages — in the same order,
+    /// one tick later, against the ticket's retained output and the
+    /// backend's still-untouched snapshot buffer. Makes no World calls by
+    /// construction: it takes none.
+    #[cfg(feature = "destruction")]
+    pub fn flush_staged(&mut self, staged: StagedCityTick) -> Vec<Vec<u8>> {
+        let started = std::time::Instant::now();
+        let mut reliable = Vec::new();
+        let sim_tick = staged.sim_tick;
+        if let CityBackend::Physx(backend) = &mut self.backend {
+            let output = staged.output;
+            let ingest_started = std::time::Instant::now();
+            match backend.staged_snapshots() {
+                Ok(snapshots) => {
+                    if self.live.is_some() {
+                        self.encoder.ingest_tick_topology_only(
+                            sim_tick,
+                            &snapshots,
+                            &output,
+                            &output.wakes,
+                        );
+                    } else {
+                        self.encoder.ingest_tick(
+                            sim_tick,
+                            &snapshots,
+                            &output,
+                            &output.wakes,
+                        );
+                    }
+                    if let Some(live) = self.live.as_mut() {
+                        live.ingest(&self.manifest, sim_tick, snapshots, &output);
+                    }
+                    reliable.extend(self.encoder.take_topology_messages());
+                }
+                Err(error) => {
+                    tracing::error!(%error, "city staged snapshot flush failed");
+                }
+            }
+            backend.record_host_timings(
+                staged.post_step_ms,
+                staged.snapshot_ms,
+                ingest_started.elapsed().as_secs_f32() * 1000.0,
+            );
+        }
+        if let Some(live) = self.live.as_mut() {
+            reliable.append(&mut live.staged_reliable);
+        }
+        if self.live.is_none() {
+            if let Some(baselines) = self.encoder.maybe_emit_baseline(sim_tick) {
+                reliable.extend(baselines);
+            }
+        }
+        if sim_tick % TOPO_HASH_INTERVAL_TICKS == 0 {
+            reliable.push(self.encoder.topology_hash_message());
+        }
+        self.last_encode_ms += started.elapsed().as_secs_f32() * 1000.0;
         reliable
     }
 

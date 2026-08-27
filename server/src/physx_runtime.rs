@@ -105,6 +105,10 @@ pub struct PhysxPhysicsArena {
     last_readback_ms: f32,
     last_refresh_players_ms: f32,
     last_vehicle_control_ms: f32,
+    /// Dispatch cost of the last begin_dynamics(), folded into dynamics_ms by
+    /// finish_dynamics() so the split-step path reports the same total the
+    /// combined step_vehicles_and_dynamics() does.
+    pending_begin_ms: f32,
 }
 
 impl PhysxPhysicsArena {
@@ -155,6 +159,7 @@ impl PhysxPhysicsArena {
             last_readback_ms: 0.0,
             last_refresh_players_ms: 0.0,
             last_vehicle_control_ms: 0.0,
+            pending_begin_ms: 0.0,
         })
     }
 
@@ -635,7 +640,7 @@ impl PhysxPhysicsArena {
         }
     }
 
-    pub fn step_vehicles_and_dynamics(&mut self, _dt: f32) -> (f32, f32) {
+    fn drive_vehicles(&mut self) {
         let vehicles_started = std::time::Instant::now();
         for (&id, vehicle) in &self.vehicles {
             if vehicle.driver_id == 0 {
@@ -650,6 +655,44 @@ impl PhysxPhysicsArena {
         }
         self.last_vehicle_control_ms =
             vehicles_started.elapsed().as_secs_f32() * 1000.0;
+    }
+
+    /// First half of the split step: scene writes (vehicle drive), then
+    /// dispatch the simulation without waiting on it. Pair with exactly one
+    /// finish_dynamics(); between the two the scene is mid-simulate and NO
+    /// PhysX call may be made — the window exists so the caller can run
+    /// scene-free observer work (the deferred city encode/send bundle) inside
+    /// the GPU wait instead of after it.
+    pub fn begin_dynamics(&mut self) {
+        self.drive_vehicles();
+        let started = std::time::Instant::now();
+        self.world
+            .begin_step()
+            .expect("PhysX GPU simulation begin_step failed");
+        self.pending_begin_ms = started.elapsed().as_secs_f32() * 1000.0;
+    }
+
+    /// Second half of the split step: wait/fetch, then the same readbacks and
+    /// player refresh the combined path runs. Returns (vehicle_ms,
+    /// dynamics_ms) shaped exactly like step_vehicles_and_dynamics — the
+    /// dispatch cost from begin_dynamics is folded in, and time the caller
+    /// spent between the halves is deliberately NOT (it belongs to whatever
+    /// the caller overlapped, which reports itself).
+    pub fn finish_dynamics(&mut self) -> (f32, f32) {
+        let started = std::time::Instant::now();
+        self.world
+            .end_step()
+            .expect("PhysX GPU simulation end_step failed");
+        let after_step = std::time::Instant::now();
+        self.post_step_readbacks(after_step);
+        let ms =
+            self.pending_begin_ms + started.elapsed().as_secs_f32() * 1000.0;
+        self.pending_begin_ms = 0.0;
+        (self.last_vehicle_control_ms, ms)
+    }
+
+    pub fn step_vehicles_and_dynamics(&mut self, _dt: f32) -> (f32, f32) {
+        self.drive_vehicles();
         let started = std::time::Instant::now();
         self.world.step().expect("PhysX GPU simulation step failed");
         // `dynamics_ms` used to be ONE bracket around the step and everything
@@ -657,6 +700,18 @@ impl PhysxPhysicsArena {
         // folded into a number labelled as the simulation step. Only the step
         // is `physics_last_step_ms`; the difference was unattributed.
         let after_step = std::time::Instant::now();
+        self.post_step_readbacks(after_step);
+        let ms = started.elapsed().as_secs_f32() * 1000.0;
+        // Returned as (vehicle_ms, dynamics_ms). The first was hardcoded 0.0
+        // and published as `vehicle_ms`, so the panel showed a real-looking
+        // zero for a cost nobody had measured. It is now the actual vehicle
+        // control cost, measured above the step.
+        (self.last_vehicle_control_ms, ms)
+    }
+
+    /// Everything the tick must read back once results are fetched — shared
+    /// verbatim by the combined and split step paths so they cannot drift.
+    fn post_step_readbacks(&mut self, after_step: std::time::Instant) {
         self.contact_events = self
             .world
             .take_contact_events()
@@ -689,12 +744,6 @@ impl PhysxPhysicsArena {
         self.refresh_players();
         self.last_refresh_players_ms =
             before_players.elapsed().as_secs_f32() * 1000.0;
-        let ms = started.elapsed().as_secs_f32() * 1000.0;
-        // Returned as (vehicle_ms, dynamics_ms). The first was hardcoded 0.0
-        // and published as `vehicle_ms`, so the panel showed a real-looking
-        // zero for a cost nobody had measured. It is now the actual vehicle
-        // control cost, measured above the step.
-        (self.last_vehicle_control_ms, ms)
     }
 
     pub fn apply_vehicle_player_collisions(&mut self) -> Vec<u32> {

@@ -1136,6 +1136,15 @@ impl CityDestruction {
         &self,
         _world: &World,
     ) -> Result<&[BodySnapshotInput], CityDestructionError> {
+        self.staged_snapshots()
+    }
+
+    /// The same captured buffer without the World witness: valid from the
+    /// `post_step` that filled it until the NEXT `post_step` overwrites it.
+    /// The observer-pipeline flush reads it inside that window, after the
+    /// world has already begun the next simulate — the data is tick N's
+    /// committed state either way.
+    pub fn staged_snapshots(&self) -> Result<&[BodySnapshotInput], CityDestructionError> {
         if self.degraded {
             return Err(CityDestructionError::Degraded);
         }

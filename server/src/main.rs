@@ -1157,6 +1157,14 @@ struct MatchState {
     /// appears in -- it measures the block that builds that snapshot.
     last_fan_out_ms: f32,
     last_publish_ms: f32,
+    /// Observer pipeline (VIBE_CITY_OBSERVER_PIPELINE=1): tick N's deferred
+    /// city observer bundle, flushed inside tick N+1's GPU wait. None when
+    /// the flag is off, on non-city matches, and on staging-error ticks.
+    staged_city: Option<city::StagedCityTick>,
+    /// Wall time of the last deferred-bundle flush. Runs between the split
+    /// step's halves, so neither dynamics_ms nor tick_city's bracket sees
+    /// it; folded into city_total_ms so the tick residual stays honest.
+    last_observer_flush_ms: f32,
 }
 
 #[tokio::main]
@@ -1767,6 +1775,20 @@ async fn health_handler(State(state): State<SharedAppState>) -> Json<HealthRespo
         udp_verified: state.inner.wt_attempts.load(Ordering::Relaxed) > 0,
         wt_connection_attempts: state.inner.wt_attempts.load(Ordering::Relaxed),
         session_configs_served: state.inner.session_configs_served.load(Ordering::Relaxed),
+    })
+}
+
+/// VIBE_CITY_OBSERVER_PIPELINE=1: run tick N's city observer bundle (encoder
+/// ingest → encode → sends) inside tick N+1's GPU wait via the split physics
+/// step. Simulation order is untouched — the deferral is observer-only, and
+/// the owner accepted the ≤1-tick shift in visual emission (2026-08-27).
+/// Default OFF until the gate battery is green.
+fn observer_pipeline_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| {
+        std::env::var("VIBE_CITY_OBSERVER_PIPELINE")
+            .map(|value| !value.is_empty() && value != "0")
+            .unwrap_or(false)
     })
 }
 
@@ -2469,6 +2491,8 @@ async fn run_match_loop(
         city_desync_repairs: 0,
         last_fan_out_ms: 0.0,
         last_publish_ms: 0.0,
+        staged_city: None,
+        last_observer_flush_ms: 0.0,
         next_player_handle: 1,
         reusable_player_handles: VecDeque::new(),
         free_player_handles: VecDeque::new(),
@@ -3235,7 +3259,19 @@ impl MatchState {
             }
             self.city = city;
         }
-        let (vehicle_ms, dynamics_ms) = self.arena.step_vehicles_and_dynamics(dt);
+        let (vehicle_ms, dynamics_ms) = if observer_pipeline_enabled()
+            && self.arena.supports_split_step()
+        {
+            // Split step: dispatch, then run last tick's deferred city
+            // observer bundle inside the GPU wait. The bundle takes no World;
+            // the scene is mid-simulate and any PhysX call here is illegal
+            // (gpu_warning_count is the runtime tripwire).
+            self.arena.begin_dynamics(dt);
+            self.flush_staged_city_observer();
+            self.arena.finish_dynamics()
+        } else {
+            self.arena.step_vehicles_and_dynamics(dt)
+        };
         for player_id in self.arena.apply_vehicle_player_collisions() {
             self.kill_player_with_cause(player_id, server_time_ms, DeathCause::VehicleCollision);
         }
@@ -3306,7 +3342,11 @@ impl MatchState {
 
         let city_started = Instant::now();
         self.tick_city(dt);
-        let city_total_ms = city_started.elapsed().as_secs_f32() * 1000.0;
+        // The deferred flush ran between the split step's halves, where
+        // neither dynamics_ms nor this bracket sees it; fold it in here so
+        // city work stays city-attributed and the residual stays honest.
+        let city_total_ms = city_started.elapsed().as_secs_f32() * 1000.0
+            + self.last_observer_flush_ms;
         self.timings.city_total_ms.record(city_total_ms);
 
         if self.server_tick % (SIM_HZ as u32 / self.physics.snapshot_hz() as u32) == 0 {
@@ -3499,6 +3539,99 @@ impl MatchState {
         })
     }
 
+    /// Flush tick N−1's staged city observer bundle (ingest → encode →
+    /// sends), scheduled inside the split step's GPU wait. Everything here is
+    /// the tail of tick_city, verbatim, run one tick later against the
+    /// staged output; it takes no World and must never touch PhysX — the
+    /// scene is mid-simulate.
+    fn flush_staged_city_observer(&mut self) {
+        self.last_observer_flush_ms = 0.0;
+        let Some(staged) = self.staged_city.take() else {
+            return;
+        };
+        #[cfg(not(feature = "destruction"))]
+        let _ = staged;
+        #[cfg(feature = "destruction")]
+        {
+            let started = Instant::now();
+            let staged_tick = staged.sim_tick;
+            let Some(send_interval) =
+                self.city.as_ref().map(|city| city.send_interval_ticks())
+            else {
+                return;
+            };
+            // Cadence keyed to the STAGED tick so the stream keeps the exact
+            // send pattern of the combined path, one tick later.
+            let send_due =
+                staged_tick % send_interval == 0 && !self.players.is_empty();
+            let cameras: Vec<(u32, vibe_land_destruction::types::Camera)> = if send_due {
+                self.players
+                    .keys()
+                    .filter_map(|&id| {
+                        self.city_camera_for_player(id).map(|camera| (id, camera))
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            let mut city = self.city.take().expect("checked above");
+            let reliable = city.flush_staged(staged);
+            let v3_datagrams = city.take_v3_datagrams();
+            let fan_out_started = std::time::Instant::now();
+            let mut desynced: Vec<u32> = Vec::new();
+            for packet in &reliable {
+                for (player_id, runtime) in self.players.iter() {
+                    if !try_queue_packet(&runtime.tx, packet.clone(), &self.io)
+                        && !desynced.contains(player_id)
+                    {
+                        desynced.push(*player_id);
+                    }
+                }
+            }
+            for packet in &v3_datagrams {
+                for runtime in self.players.values() {
+                    let _ = try_queue_packet(&runtime.tx, packet.clone(), &self.io);
+                }
+            }
+            self.last_fan_out_ms = fan_out_started.elapsed().as_secs_f32() * 1000.0;
+            for player_id in desynced {
+                if self.city_desync_players.insert(player_id) {
+                    warn!(
+                        match_id = %self.id,
+                        player_id,
+                        "city ledger desynced: reliable packet dropped on a full client queue"
+                    );
+                }
+            }
+            let v2_pose_stream = v3_datagrams.is_empty()
+                && city.wire_version() != vibe_land_destruction::wire::CITY_WIRE_V3;
+            if send_due && v2_pose_stream {
+                let encode_started = std::time::Instant::now();
+                let shared = city.encode_shared(staged_tick);
+                let shared_ms = encode_started.elapsed().as_secs_f32() * 1000.0;
+                let datagrams_started = std::time::Instant::now();
+                if !shared.records.is_empty() {
+                    for (player_id, camera) in cameras {
+                        let packets =
+                            city.client_datagrams(u64::from(player_id), camera, &shared);
+                        if let Some(runtime) = self.players.get(&player_id) {
+                            for packet in packets {
+                                let _ = try_queue_packet(&runtime.tx, packet, &self.io);
+                            }
+                        }
+                    }
+                }
+                city.record_encode_timings(
+                    shared_ms,
+                    datagrams_started.elapsed().as_secs_f32() * 1000.0,
+                );
+            }
+            self.city = Some(city);
+            self.repair_city_desyncs();
+            self.last_observer_flush_ms = started.elapsed().as_secs_f32() * 1000.0;
+        }
+    }
+
     fn tick_city(&mut self, dt: f32) {
         let Some(send_interval) = self.city.as_ref().map(|city| city.send_interval_ticks())
         else {
@@ -3570,15 +3703,33 @@ impl MatchState {
         // 60 Hz: destruction step + reliable topology/baseline broadcast
         // (byte-identical for every client — encode once, clone the buffer).
         let city_step_started = std::time::Instant::now();
-        let reliable = city.step(
-            self.server_tick,
-            dt,
-            vibe_netcode::movement::default_world_gravity(),
-            world,
-        );
+        let (reliable, staged) = if observer_pipeline_enabled() {
+            city.step_stage(
+                self.server_tick,
+                dt,
+                vibe_netcode::movement::default_world_gravity(),
+                world,
+            )
+        } else {
+            (
+                city.step(
+                    self.server_tick,
+                    dt,
+                    vibe_netcode::movement::default_world_gravity(),
+                    world,
+                ),
+                None,
+            )
+        };
         let city_step_wall_ms = city_step_started.elapsed().as_secs_f32() * 1000.0;
         city.record_tick_sample(city_step_wall_ms);
-        let v3_datagrams = city.take_v3_datagrams();
+        // A staged tick's datagrams do not exist yet — its live-lane ingest
+        // runs at flush, which drains them there.
+        let v3_datagrams = if staged.is_some() {
+            Vec::new()
+        } else {
+            city.take_v3_datagrams()
+        };
         let broken_after = city.stats().broken_bonds;
         let awake_after = city.stats().awake_chunk_bodies;
         if broken_after > broken_before || awake_after > awake_before {
@@ -3630,10 +3781,10 @@ impl MatchState {
                 );
             }
         }
-        self.repair_city_desyncs();
         // Chunk stream cadence (wire v2 only): shared encode once, per-client
         // interest + ceiling selection, own datagram sequence space per client.
-        let v2_pose_stream = v3_datagrams.is_empty()
+        let v2_pose_stream = staged.is_none()
+            && v3_datagrams.is_empty()
             && city.wire_version() != vibe_land_destruction::wire::CITY_WIRE_V3;
         if send_due && v2_pose_stream {
             // Timed because it was the single largest unmeasured cost: at 10k
@@ -3662,6 +3813,11 @@ impl MatchState {
             );
         }
         self.city = Some(city);
+        self.staged_city = staged;
+        // After the city is restored: repairs need `self.city` to build the
+        // bootstrap. Called while it was taken out, the else-continue dropped
+        // desynced players from the repair set without repairing them.
+        self.repair_city_desyncs();
     }
 
     /// 1 Hz destructible-city telemetry: stream volume, encode cost, and the

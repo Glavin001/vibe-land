@@ -402,6 +402,43 @@ impl PhysicsArena {
         }
     }
 
+    /// Split step, first half: scene writes then dispatch, returning while the
+    /// GPU simulates. `supports_split_step` reports whether the backend can do
+    /// it; only the PhysX GPU arena can, and a caller that gets `false` must
+    /// use `step_vehicles_and_dynamics` instead. Between the halves the scene
+    /// is mid-simulate and NO physics call is legal.
+    pub fn supports_split_step(&self) -> bool {
+        match &self.backend {
+            PhysicsBackend::Rapier(_) => false,
+            #[cfg(feature = "physx-gpu")]
+            PhysicsBackend::Physx(_) => true,
+        }
+    }
+
+    /// Panics on a backend without split support — call `supports_split_step`
+    /// first. A silent fallback here would leave the caller's deferred work
+    /// running outside any GPU wait, which is the whole point of the split.
+    pub fn begin_dynamics(&mut self, dt: f32) {
+        match &mut self.backend {
+            PhysicsBackend::Rapier(_) => {
+                let _ = dt;
+                panic!("begin_dynamics on a backend without split-step support")
+            }
+            #[cfg(feature = "physx-gpu")]
+            PhysicsBackend::Physx(arena) => arena.begin_dynamics(),
+        }
+    }
+
+    pub fn finish_dynamics(&mut self) -> (f32, f32) {
+        match &mut self.backend {
+            PhysicsBackend::Rapier(_) => {
+                panic!("finish_dynamics on a backend without split-step support")
+            }
+            #[cfg(feature = "physx-gpu")]
+            PhysicsBackend::Physx(arena) => arena.finish_dynamics(),
+        }
+    }
+
     #[cfg(test)]
     pub fn step_dynamics(&mut self, dt: f32) {
         match &mut self.backend {
