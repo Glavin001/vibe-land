@@ -198,18 +198,21 @@ double cycles_to_ms_factor() {
 /// +0.29 ms/tick weighted, against 4.8 ms sim_wall at load — 4.8/16 = 0.30
 /// predicted, so the model is linear and trustworthy.
 ///
-/// Default 64 = ~0.075 ms/tick, about one sample a second, which is dozens
-/// of samples per regime across any real session. That is the point of
-/// sampling rather than the old all-or-nothing PROFILE_FETCH (+0.91 ms and
-/// therefore off in production): the split is now cheap enough to leave ON
-/// while people play.
+/// Default 16 = ~0.29 ms/tick measured. Chosen over a cheaper 64 because
+/// the recent-sample ring must refill fast enough to describe the CURRENT
+/// regime: a cascade lasts seconds, and at 1-in-64 a 16-sample mean spans
+/// ~17 s, which would average the collapse together with the settle after
+/// it. At 1-in-16 the same ring covers ~4 s. Still far cheaper than the old
+/// all-or-nothing PROFILE_FETCH (+0.91 ms, and therefore off in
+/// production): the split is now cheap enough to leave ON while people
+/// play, which is the whole point.
 unsigned gpu_sample_interval() {
   static const unsigned interval = [] {
     if (const char *raw = std::getenv("VIBE_PHYSX_GPU_SAMPLE_TICKS")) {
       const long parsed = std::atol(raw);
       return parsed < 0 ? 0u : static_cast<unsigned>(parsed);
     }
-    return 64u;
+    return 16u;
   }();
   return interval;
 }
@@ -1147,6 +1150,23 @@ public:
       last_sim_wall_ms_ = last_gpu_wait_ms_;
       last_fetch_call_ms_ = last_fetch_copy_ms_;
       sim_wall_samples_ = 1;
+      // Also keep the last few samples. A per-tick value that is zero on 15
+      // ticks out of 16 is right for a trace, which buckets every tick and
+      // can filter — but a 1 Hz report snapshot almost never lands on a
+      // sampled tick, so it published zeros and the whole split was
+      // invisible in exactly the place it was built for. The ring is read
+      // -cadence independent: any observer, at any rate, sees the recent
+      // mean.
+      sim_wall_ring_[sim_wall_ring_head_] = last_gpu_wait_ms_;
+      result_copy_ring_[sim_wall_ring_head_] =
+          std::max(0.0f, last_fetch_copy_ms_ -
+                             static_cast<float>(
+                                 static_cast<double>(contact_callback_cycles_) *
+                                 cycles_to_ms_factor()));
+      sim_wall_ring_head_ = (sim_wall_ring_head_ + 1) % kSimWallRing;
+      if (sim_wall_ring_fill_ < kSimWallRing) {
+        ++sim_wall_ring_fill_;
+      }
     } else {
       const bool succeeded = scene_->fetchResults(true);
       require(succeeded, "PhysX fetchResults failed");
@@ -1344,6 +1364,20 @@ public:
     span("sim_wall_sampled", static_cast<double>(sim_wall_samples_), 2);
     span("result_copy_ms", static_cast<double>(last_result_copy_ms_), 0);
     span("fetch_total_ms", static_cast<double>(last_fetch_total_ms_), 0);
+    // Mean of the recent samples: what a 1 Hz report should read, since the
+    // instantaneous fields above are zero on every unsampled tick.
+    if (sim_wall_ring_fill_ > 0) {
+      double sim_sum = 0.0;
+      double copy_sum = 0.0;
+      for (std::size_t i = 0; i < sim_wall_ring_fill_; ++i) {
+        sim_sum += sim_wall_ring_[i];
+        copy_sum += result_copy_ring_[i];
+      }
+      const double n = static_cast<double>(sim_wall_ring_fill_);
+      span("sim_wall_recent_ms", sim_sum / n, 0);
+      span("result_copy_recent_ms", copy_sum / n, 0);
+      span("sim_wall_recent_n", n, 2);
+    }
     span("tsc_suspect_ticks", static_cast<double>(tsc_suspect_ticks_), 2);
     span("cb_extract_ms", cb_extract_ms_, 0);
     span("cb_queue_ms", cb_queue_ms_, 0);
@@ -1891,6 +1925,15 @@ private:
   /// tick, the same three on a sampled one. The denominator the parts are
   /// checked against.
   float last_fetch_total_ms_ = 0.0f;
+  /// The last few SAMPLED measurements, so a report at any cadence sees a
+  /// populated number. 16 samples is ~4 s at the default interval — long
+  /// enough to be stable, short enough to still describe the current regime
+  /// rather than averaging a cascade together with the settle after it.
+  static constexpr std::size_t kSimWallRing = 16;
+  float sim_wall_ring_[kSimWallRing] = {};
+  float result_copy_ring_[kSimWallRing] = {};
+  std::size_t sim_wall_ring_head_ = 0;
+  std::size_t sim_wall_ring_fill_ = 0;
   /// Ticks where the callback total exceeded the fetch that contains it —
   /// impossible unless the cycle counter is untrustworthy.
   std::uint64_t tsc_suspect_ticks_ = 0;
