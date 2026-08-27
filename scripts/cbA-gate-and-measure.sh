@@ -26,16 +26,16 @@ for _ in $(seq 1 30); do ps -eo args | grep -q "[w]eb-fps-server-vl4" || break; 
 export LD_LIBRARY_PATH="/root/PhysX/physx/install/linux-clang/PhysX/bin/linux.x86_64/release:${LD_LIBRARY_PATH:-}"
 
 log "gate 1: freeze_wake_semantics (CSE on)"
-cargo test -q -p physx-bridge --release --features cuda-stress --test freeze_wake_semantics > /tmp/cbA-fw-on.log 2>&1
+cargo test -q -p vibe-land-physx-bridge --release --features vibe-land-physx-bridge/cuda-stress --test freeze_wake_semantics > /tmp/cbA-fw-on.log 2>&1
 FW_ON=$?
 log "gate 2: freeze_wake_semantics (CSE off)"
-VIBE_PHYSX_CONTACT_CSE=0 cargo test -q -p physx-bridge --release --features cuda-stress --test freeze_wake_semantics > /tmp/cbA-fw-off.log 2>&1
+VIBE_PHYSX_CONTACT_CSE=0 cargo test -q -p vibe-land-physx-bridge --release --features vibe-land-physx-bridge/cuda-stress --test freeze_wake_semantics > /tmp/cbA-fw-off.log 2>&1
 FW_OFF=$?
 log "gate 3: destruction_smoke"
-cargo test -q -p physx-bridge --release --features cuda-stress --test destruction_smoke > /tmp/cbA-smoke.log 2>&1
+cargo test -q -p vibe-land-physx-bridge --release --features vibe-land-physx-bridge/cuda-stress --test destruction_smoke > /tmp/cbA-smoke.log 2>&1
 SMOKE=$?
 log "gate 4: timing_consistency"
-cargo test -q -p physx-bridge --release --features cuda-stress --test timing_consistency > /tmp/cbA-timing.log 2>&1
+cargo test -q -p vibe-land-physx-bridge --release --features vibe-land-physx-bridge/cuda-stress --test timing_consistency > /tmp/cbA-timing.log 2>&1
 TIMING=$?
 log "gate 5: scenario suite"
 bash scripts/scenario-suite.sh > /tmp/cbA-suite.log 2>&1
@@ -48,7 +48,8 @@ export BLAST_GPU_WHOLE_RESET_ON_TOPOLOGY=1 VIBE_CITY_FREEZE=1 VIBE_CITY_VARIED_H
   VIBE_CITY_SHOT_STRESS_IMPULSE=4.0e7 VIBE_CITY_EXCESS_FORCES=1 VIBE_CITY_RESIM_PASSES=0 \
   VIBE_PHYSX_PROFILE_FETCH=1 VIBE_CITY_POSE_CENSUS=1
 for repeat in a b; do
-  log "cbA12 run $repeat"
+  log "cbA12 run $repeat (A0 sub-spans ride along: the earlier decomposition
+       was recorded on a CPU-solver binary and is quarantined)"
   ./target/release/record-city-trace \
     --scene destruction/assets/scenes/fractured-downtown.json \
     --grid 2 --seconds 200 --shots 40 --shot-interval-ticks 40 --targets 2 \
