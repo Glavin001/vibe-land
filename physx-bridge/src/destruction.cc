@@ -2109,7 +2109,12 @@ void DestructionManager::frozen_aggregate_insert(physx::PxRigidDynamic &body) {
     ++frozen_agg_fallbacks_;
     return;
   }
-  scene_.removeActor(body);
+  // wakeOnLostTouch=false, and it matters: the body is not leaving the world,
+  // it is re-entering one aggregate away at the same pose. The default (true)
+  // refreshed the wake counter of everything the frozen body touched — the
+  // same island-wide wake the kinematic flip already fights — and measured as
+  // T4 awake-decline slipping from 0.09 to 0.11 across the gate band.
+  scene_.removeActor(body, /*wakeOnLostTouch=*/false);
   if (!aggregate->addActor(body)) {
     // Refused (capacity race with a body PhysX released this tick) — the
     // body must not be left sceneless over it.
@@ -2147,7 +2152,8 @@ void DestructionManager::frozen_aggregate_maybe_retire(physx::PxAggregate *aggre
   if (aggregate->getNbActors() != 0) {
     return;
   }
-  scene_.removeAggregate(*aggregate);
+  // Empty by the check above — no member pairs exist to lose, but say so.
+  scene_.removeAggregate(*aggregate, /*wakeOnLostTouch=*/false);
   frozen_agg_shapes_.erase(aggregate);
   for (auto &entry : frozen_agg_cells_) {
     auto &list = entry.second;
@@ -2173,7 +2179,7 @@ void DestructionManager::frozen_aggregates_release_all() {
           aggregate->removeActor(*actor);
         }
       }
-      scene_.removeAggregate(*aggregate);
+      scene_.removeAggregate(*aggregate, /*wakeOnLostTouch=*/false);
       aggregate->release();
     }
   }
