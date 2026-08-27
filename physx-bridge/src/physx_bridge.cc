@@ -477,9 +477,26 @@ public:
       if (!contact_cse_enabled()) {
         contact_points_ = std::vector<physx::PxContactPairPoint>();
       }
+      // A0 sub-attribution: on sampled calls, each sub-block below is timed
+      // so the ~9 ms callback cost decomposes BEFORE anything is optimized.
+      // Same 1-in-8 gate as the outer probe; x8 scaling at publish.
+      const auto sub_now = [&]() {
+        return sample_this_call ? std::chrono::steady_clock::now()
+                                : std::chrono::steady_clock::time_point{};
+      };
+      const auto sub_ms = [](std::chrono::steady_clock::time_point from) {
+        return std::chrono::duration<double, std::milli>(
+                   std::chrono::steady_clock::now() - from)
+            .count();
+      };
+      const auto extract_started = sub_now();
       contact_points_.resize(contact_count);
       const PxU32 extracted =
           pair.extractContacts(contact_points_.data(), contact_count);
+      if (sample_this_call) {
+        // x8, same convention as the outer contact_callback_ms_ probe.
+        cb_extract_ms_ += 8.0 * sub_ms(extract_started);
+      }
       const std::vector<PxContactPairPoint> &points = contact_points_;
 #ifdef VIBE_LAND_DESTRUCTION
       // Once per shape per manifold, not once per shape per POINT. Every point
@@ -498,6 +515,7 @@ public:
       float total_magnitude = 0.0f;
       float sum_abs_impulse_y = 0.0f;
       float min_separation = 1.0e6f;
+      const auto points_started = sub_now();
       for (PxU32 point_index = 0; point_index < extracted; ++point_index) {
         const PxContactPairPoint &point = points[point_index];
         if (point.separation < min_separation) {
@@ -549,6 +567,9 @@ public:
         }
 #endif
       }
+      if (sample_this_call) {
+        cb_queue_ms_ += 8.0 * sub_ms(points_started);
+      }
       if (total_magnitude > 0.0f) {
         weighted_point /= total_magnitude;
         contact_events_.push_back(
@@ -567,11 +588,16 @@ public:
       // for every reported debris pair, not just frozen ones -- the
       // dependency graph must exist BEFORE a body freezes, since it is what
       // decides whether freezing is admissible at all.
+      const auto pair_load_started = sub_now();
       if (destruction_ && sum_abs_impulse_y > 0.0f) {
         destruction_->note_pair_load(pair.shapes[0], pair.shapes[1],
                                      header.actors[0], header.actors[1],
                                      sum_abs_impulse_y, min_separation);
       }
+      if (sample_this_call) {
+        cb_pair_load_ms_ += 8.0 * sub_ms(pair_load_started);
+      }
+      const auto wake_started = sub_now();
       if (destruction_ && destruction_->has_frozen_bodies() &&
           total_magnitude > 0.0f) {
         const auto dynamic_mass = [](const PxActor *actor) -> float {
@@ -588,6 +614,9 @@ public:
                                         dynamic_mass(header.actors[0]),
                                         dynamic_mass(header.actors[1]),
                                         total_magnitude);
+      }
+      if (sample_this_call) {
+        cb_wake_ms_ += 8.0 * sub_ms(wake_started);
       }
 #endif
     }
@@ -935,6 +964,10 @@ public:
   void begin_step() {
     require(!step_in_flight_, "begin_step called twice without end_step");
     contact_callback_ms_ = 0.0;
+    cb_extract_ms_ = 0.0;
+    cb_queue_ms_ = 0.0;
+    cb_pair_load_ms_ = 0.0;
+    cb_wake_ms_ = 0.0;
     contact_callbacks_this_step_ = 0;
     step_start_ = std::chrono::steady_clock::now();
     controller_manager_->computeInteractions(kFixedTimestep);
@@ -1127,6 +1160,10 @@ public:
     // split that separates "PhysX copying results" from "our contact
     // handlers", which used to be one indistinguishable fetch_copy number.
     span("contact_callback_est_ms", contact_callback_ms_, 0);
+    span("cb_extract_ms", cb_extract_ms_, 0);
+    span("cb_queue_ms", cb_queue_ms_, 0);
+    span("cb_pair_load_ms", cb_pair_load_ms_, 0);
+    span("cb_wake_ms", cb_wake_ms_, 0);
     span("contact_callbacks", static_cast<double>(contact_callbacks_this_step_), 2);
     // Broadphase membership churn: prices freeze/thaw flips directly.
     span("bp_adds", static_cast<double>(statistics.getNbBroadPhaseAdds()), 2);
@@ -1653,6 +1690,15 @@ private:
   /// per-step contact counts.
   std::uint64_t contact_callback_calls_ = 0;
   double contact_callback_ms_ = 0.0;
+  // A0 sub-attribution of the callback cost, same sampling and x8 scaling.
+  // extract = resize+extractContacts; queue = the per-point loop (accumulate
+  // + queue_contact_at); pair_load = note_pair_load; wake = note_contact_pair
+  // + the dynamic_mass virtual reads. Residual vs contact_callback_est_ms is
+  // header decode + entity lookup + CSE resolve.
+  double cb_extract_ms_ = 0.0;
+  double cb_queue_ms_ = 0.0;
+  double cb_pair_load_ms_ = 0.0;
+  double cb_wake_ms_ = 0.0;
   std::uint64_t contact_callbacks_this_step_ = 0;
   float last_step_ms_ = 0.0f;
   float last_controller_ms_ = 0.0f;
