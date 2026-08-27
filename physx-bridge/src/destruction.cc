@@ -2482,9 +2482,11 @@ void DestructionManager::resolve_support_loads() {
   const std::size_t load_count = pending_pair_loads_.size();
   std::vector<std::pair<Resolved, Resolved>> resolved(load_count);
   const unsigned pool = stress_executor_ ? stress_executor_->parallelism() : 1;
-  // Below this the fan-out costs more than the walk; measured in the same
-  // band as the per-slot solve dispatch overhead.
-  constexpr std::size_t kParallelLoadFloor = 2048;
+  // Below this the fan-out costs more than the walk. Measured live, same
+  // session, same build: 16.7k pairs ran at 0.186 us/pair parallel (vs the
+  // pre-change serial 0.226), but 5.7k pairs ran at 0.337 us/pair -- WORSE
+  // than serial, all of it fan-out overhead. The crossover sits near 10k.
+  constexpr std::size_t kParallelLoadFloor = 10000;
   if (pool > 1 && load_count >= kParallelLoadFloor) {
     if (use_row_map) {
       for (const PendingPairLoad &load : pending_pair_loads_) {
