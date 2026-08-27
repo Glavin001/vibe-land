@@ -169,6 +169,12 @@ export interface CityE2EStats {
   settleRejects: number;
   valveApplies: number;
   valveTicksAhead: number;
+  /** Seq-aligned ledger-hash comparisons that ran (the desync detector). */
+  hashChecks: number;
+  /** Comparisons that found divergence. */
+  hashMismatches: number;
+  /** Targeted per-structure repairs applied instead of full bootstraps. */
+  structureRepairs: number;
   /** Cumulative chunks orphaned by a retire, including transient windows. */
   orphanedByRetire: number;
   /**

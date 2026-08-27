@@ -743,6 +743,9 @@ export function CityChunksLayer({
         settleRejects: stats.settleRejects,
         valveApplies: stats.valveApplies,
         valveTicksAhead: stats.valveTicksAhead,
+        hashChecks: stats.hashChecks,
+        hashMismatches: stats.hashMismatches,
+        structureRepairs: stats.structureRepairs,
         deepest,
       });
       renderStats.telemetryMs = performance.now() - telemetryStartedAt;
