@@ -116,6 +116,42 @@ and the renderer is not the bottleneck. **Absolute budgets belong to the machine
 running it**, not to the code, which is why the spec reports rather than gates
 them.
 
+## Three more traps, learned 2026-08-27
+
+**7. A/B arms must simulate the same city.** Disabling contact reports
+"saved ~6 ms" — but reports also feed stress injection, so the fast arm broke
+21% fewer bonds and was simulating a smaller city. Bucket-matching cannot
+rescue arms whose physics diverged. `scripts/perf/verdict.py` now REFUSES the
+comparison (bond band, physics-env fingerprint, regime overlap) — use it via
+`python3 -m scripts.perf.compare latest <labelA> <labelB> [-n 2]`; do not
+hand-roll verdicts.
+
+**8. Census/differential gates are differences, never absolutes.** The floater
+census counts frozen and engine-asleep alike and legitimately includes
+bond-held bodies; an absolute `=0` gate false-failed on the documented benign
+tail of 2–4. Gate ON THE DELTA between arms.
+
+**9. Do not rebuild during an experiment.** A cargo build mid-battery replaces
+the trace binary between arms. Run dirs embed the short git hash and meta.json
+carries the binary mtime, so this is now visible — check the run names match
+before trusting a verdict.
+
+## The measurement stack (2026-08-27)
+
+- Runs live in `bench-results/runs/<stamp>-<label>-<shortgit>/` with a
+  fingerprinted meta.json (env, git, binary). `record-city-trace --label X`
+  writes there; timings.jsonl carries per-tick wall phases + every generic
+  span.
+- New metrics are ONE `span_add(name, ms, kind)` call in the bridge (kind 0
+  wall / 1 slot-summed / 2 count) — they appear in /match-stats (`spans`),
+  traces, and debug reports automatically.
+- `tick_unattributed_ms` (server) is the bracket-gap tripwire; the
+  timing_consistency test asserts the bracket map in CI.
+- The registry copy of match-stats carries `tick_ring` (last 300 ticks) for
+  debug-report forensics; the client packet does not.
+- `physics_contact_pairs` is ABSENT (not 0) under the GPU pipeline; pair
+  activity = `spans.physics/gpu_found_lost_pairs` + contact high-waters.
+
 ## Before claiming a number
 
 1. Which sample — idle or loaded? Was the quiet-skip firing?
