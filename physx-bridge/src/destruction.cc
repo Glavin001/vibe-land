@@ -3047,6 +3047,8 @@ FfiDestructionStats DestructionManager::destruction_stats() const {
     }
   }
   stats.rooted_chunk_bodies = rooted_count;
+  float contact_slot_max = 0.0f;
+  float gravity_slot_max = 0.0f;
   for (const auto &slot_ptr : slots_) {
     if (!slot_ptr || slot_ptr->dest == nullptr) {
       continue;
@@ -3076,11 +3078,19 @@ FfiDestructionStats DestructionManager::destruction_stats() const {
       previous = total;
       return static_cast<float>(delta > 0.0 ? delta : 0.0);
     };
-    stats.blast_contact_processing_ms += phase_delta(
+    // Per-slot maxima ride the span channel beside the sums: slots run
+    // concurrently, so MAX-across-slots is the wall-time bound a summed
+    // field cannot provide (reading a sum as wall nearly bought a CUDA
+    // kernel for a ~0.5 ms cost).
+    const float contact_slot_ms = phase_delta(
         telemetry.contactProcessingMilliseconds,
         slot_ptr->last_contact_processing_ms);
-    stats.blast_gravity_ms +=
+    stats.blast_contact_processing_ms += contact_slot_ms;
+    contact_slot_max = std::max(contact_slot_max, contact_slot_ms);
+    const float gravity_slot_ms =
         phase_delta(telemetry.gravityMilliseconds, slot_ptr->last_gravity_ms);
+    stats.blast_gravity_ms += gravity_slot_ms;
+    gravity_slot_max = std::max(gravity_slot_max, gravity_slot_ms);
     stats.blast_stress_solve_cpu_ms += phase_delta(
         telemetry.stressSolveMilliseconds, slot_ptr->last_stress_solve_cpu_ms);
     stats.blast_fracture_topology_ms += phase_delta(
@@ -3138,6 +3148,19 @@ FfiDestructionStats DestructionManager::destruction_stats() const {
   stats.solver_islands_total_accum = solver_islands_total_accum_;
   stats.bond_utilisation_max = last_bond_utilisation_max_;
   stats.bonds_above_half_utilisation = last_bonds_above_half_utilisation_;
+  // Wall-time bounds for the two most-consulted slot-summed fields (kind 0:
+  // these ARE wall — slots run concurrently, so the slowest slot bounds the
+  // phase's wall share).
+  const auto push_span = [&stats](const char *name, double value,
+                                  std::uint8_t kind) {
+    FfiNamedSpan span;
+    span.name = rust::String(name);
+    span.value = value;
+    span.kind = kind;
+    stats.extra_spans.push_back(std::move(span));
+  };
+  push_span("blast_gravity_slotmax_ms", gravity_slot_max, 0);
+  push_span("blast_contact_processing_slotmax_ms", contact_slot_max, 0);
   return stats;
 }
 

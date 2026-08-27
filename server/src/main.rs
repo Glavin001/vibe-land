@@ -191,6 +191,12 @@ impl RollingSamples {
         }
     }
 
+    /// Most recent sample (0 when empty). Exists for the tick residual,
+    /// which must subtract this-tick values, not window aggregates.
+    fn last(&self) -> f32 {
+        self.values.back().copied().unwrap_or(0.0)
+    }
+
     fn snapshot(&self) -> SummaryStatsSnapshot {
         if self.values.is_empty() {
             return SummaryStatsSnapshot::default();
@@ -228,6 +234,15 @@ struct MatchTimingStats {
     dynamics_ms: RollingSamples,
     hitscan_ms: RollingSamples,
     snapshot_ms: RollingSamples,
+    /// Whole-tick city block (tick_city wall), so the residual below can
+    /// subtract ONE bracket instead of guessing which city children overlap.
+    city_total_ms: RollingSamples,
+    /// total − (every timed block). The tick contains genuinely untimed work
+    /// (respawns, spawn protection, batteries, melee, reliable-world sync,
+    /// roster, collisions) — this is where bracket gaps and double-counts
+    /// become a number instead of an invisible assumption. Client-side has
+    /// had this for its frame since day one; the server never did.
+    tick_unattributed_ms: RollingSamples,
 }
 
 /// Destructible-city telemetry, surfaced to the in-page debug overlay so the
@@ -357,12 +372,17 @@ struct CityStatsSnapshot {
     /// with this, so a ms comparison across runs without it is meaningless.
     support_pair_loads: u32,
     shape_readback_ms: f32,
-    /// The adapter's own per-phase timers, deltaed to per-tick. These
-    /// decompose the phases the bridge times from OUTSIDE the adapter:
-    /// `begin_ms` ~= contact_processing + gravity, `solve_ms` ~= stress_solve_cpu
-    /// + gpu_stress_solve, `end_ms` ~= fracture_topology + mapping_validation.
-    /// They were computed every tick and discarded, which left 2-3.5 ms inside
-    /// the largest phase in the tick unaccounted for.
+    /// The adapter's own per-phase timers, deltaed to per-tick — and
+    /// **SUMMED ACROSS EVERY LIVE SLOT**, while `begin_ms`/`solve_ms`/
+    /// `end_ms` are WALL-CLOCK around a loop whose slots run CONCURRENTLY on
+    /// the stress pool. A `blast_*` number can therefore legitimately exceed
+    /// its "parent" phase, and reading one as wall time nearly bought a CUDA
+    /// gravity kernel for what is ~0.5 ms of wall. The old doc here equated
+    /// them ("begin ≈ contact_processing + gravity") — that equation only
+    /// holds when a single slot is live. Rough decomposition intuition per
+    /// slot still applies: contact+gravity feed `begin`, stress_solve_cpu +
+    /// gpu_stress feed `solve`, topology+validation feed `end` — but compare
+    /// CPU-time sums with CPU-time sums, wall with wall, never across.
     blast_contact_processing_ms: f32,
     blast_gravity_ms: f32,
     blast_stress_solve_cpu_ms: f32,
@@ -511,6 +531,10 @@ struct MatchTimingSnapshot {
     dynamics_ms: SummaryStatsSnapshot,
     hitscan_ms: SummaryStatsSnapshot,
     snapshot_ms: SummaryStatsSnapshot,
+    city_total_ms: SummaryStatsSnapshot,
+    /// total − every timed block, per tick. Persistently large means a
+    /// bracket gap; persistently negative-before-clamp would mean overlap.
+    tick_unattributed_ms: SummaryStatsSnapshot,
 }
 
 impl MatchTimingStats {
@@ -534,6 +558,8 @@ impl MatchTimingStats {
             dynamics_ms: self.dynamics_ms.snapshot(),
             hitscan_ms: self.hitscan_ms.snapshot(),
             snapshot_ms: self.snapshot_ms.snapshot(),
+            city_total_ms: self.city_total_ms.snapshot(),
+            tick_unattributed_ms: self.tick_unattributed_ms.snapshot(),
         }
     }
 }
@@ -3245,7 +3271,10 @@ impl MatchState {
 
         self.sync_reliable_world_state();
 
+        let city_started = Instant::now();
         self.tick_city(dt);
+        let city_total_ms = city_started.elapsed().as_secs_f32() * 1000.0;
+        self.timings.city_total_ms.record(city_total_ms);
 
         if self.server_tick % (SIM_HZ as u32 / self.physics.snapshot_hz() as u32) == 0 {
             self.broadcast_snapshot();
@@ -3255,17 +3284,33 @@ impl MatchState {
             self.queue_roster_sync();
         }
 
+        let mut publish_tick_ms = 0.0f32;
         if self.server_tick % SERVER_PING_INTERVAL_TICKS == 0 {
             let publish_started = Instant::now();
             self.send_server_latency_pings();
             self.publish_stats();
             self.log_city_telemetry();
             self.last_publish_ms = publish_started.elapsed().as_secs_f32() * 1000.0;
+            publish_tick_ms = self.last_publish_ms;
         }
 
+        let total_ms = tick_started.elapsed().as_secs_f32() * 1000.0;
+        self.timings.total_ms.record(total_ms);
+        // The residual: what this tick spent that no bracket claims. The
+        // subtraction uses ONLY per-tick locals and top-level brackets (never
+        // a child of another bracket), so double-subtraction is impossible by
+        // construction. Negative would mean overlapping brackets — clamped
+        // visible at 0 but recorded raw in spirit via the warn path.
+        let attributed = self.timings.player_sim_ms.last()
+            + self.timings.vehicle_ms.last()
+            + self.timings.dynamics_ms.last()
+            + self.timings.hitscan_ms.last()
+            + city_total_ms
+            + self.timings.snapshot_ms.last()
+            + publish_tick_ms;
         self.timings
-            .total_ms
-            .record(tick_started.elapsed().as_secs_f32() * 1000.0);
+            .tick_unattributed_ms
+            .record((total_ms - attributed).max(0.0));
     }
 
     /// Re-bootstrap clients whose ledger we know is holed.
