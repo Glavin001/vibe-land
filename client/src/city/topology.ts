@@ -114,6 +114,17 @@ export class CityTopology {
   /** Set when a gap was detected; cleared by bootstrap. */
   needsResync = false;
   /**
+   * Structures whose ledger CONTENT is wrong at a known-good stream position —
+   * a migration named an island this client was never told about, or a settle
+   * pose disagreed with our membership. These repair with a structure-scoped
+   * bootstrap; only `needsResync` (a seq gap — the POSITION itself is lost)
+   * still demands the full rebuild. The distinction is what broke the
+   * 3.0-second full-bootstrap loop: every cascade fault used to escalate to a
+   * whole-world repaint, which read as the entire rubble field popping on the
+   * resync rate-limiter's exact cadence.
+   */
+  readonly resyncStructures = new Set<number>();
+  /**
    * Settles refused because their pose would have teleported the body.
    *
    * Must be 0. Each one is a body whose membership this client and the server
@@ -476,7 +487,9 @@ export class CityTopology {
         body.settled = true;
         if (drift > SETTLE_MAX_DRIFT_M) {
           this.settleFrameRejects += 1;
-          this.needsResync = true;
+          // Membership disagreement in ONE structure; the stream position is
+          // fine. Structure-scoped repair, not a world rebuild.
+          this.resyncStructures.add(settle.structureId);
         } else {
           body.position = vClone(settle.position);
           body.rotation = [...settle.rotation] as Quat;
@@ -747,9 +760,10 @@ export class CityTopology {
     if (!destination) {
       // The destination should have been promoted already. Without it there is
       // nowhere correct to put the chunk, and guessing is what produces
-      // chunks composed against the wrong frame.
+      // chunks composed against the wrong frame. One structure's content is
+      // wrong; the stream position is not — structure-scoped repair.
       this.migrateAnomalies.missingDestination += 1;
-      this.needsResync = true;
+      this.resyncStructures.add(structureId);
       return;
     }
     // An empty destination has no frame to leave, so `reoffsetBody` would fall
@@ -923,6 +937,7 @@ export class CityTopology {
     this.reset();
     this.lastTopoSeq = message.topoSeq;
     this.needsResync = false;
+    this.resyncStructures.clear();
     this.brokenBonds = 0;
     for (const structure of message.structures) {
       const bits = this.aliveBonds.get(structure.structureId);
@@ -960,6 +975,7 @@ export class CityTopology {
    */
   applyStructureBootstrap(message: BootstrapMessage): void {
     for (const structureMessage of message.structures) {
+      this.resyncStructures.delete(structureMessage.structureId);
       const manifestStructure = this.manifest.structures.find(
         (candidate) => candidate.structureId === structureMessage.structureId,
       );

@@ -678,7 +678,15 @@ export class CityClient {
           }
         }
         this.structureRepairs += 1;
-        this.repaintAll = true;
+        // Repaint ONLY the repaired structures — restating the whole world
+        // here would reintroduce the full-bootstrap pop this path exists to
+        // remove. The repaired structures' bodies (support included) cover
+        // exactly the slots the repair rewrote.
+        for (const body of this.topology.allBodies()) {
+          if (repaired.has(body.structureId)) {
+            this.repaintBodies.add(body.key);
+          }
+        }
         break;
       }
       default:
@@ -763,26 +771,39 @@ export class CityClient {
           }
           this.drainPending();
         }
-        // Checked independently of `applied`: a successful apply still sets
-        // this when a migration names an island the client does not have, and
-        // that chunk stays on the wrong body until a bootstrap replaces it.
+        // Checked independently of `applied`: a successful apply still flags
+        // faults when a migration names an island the client does not have,
+        // and that chunk stays on the wrong body until a repair replaces it.
+        //
+        // Two tiers, and the split is what broke the 3.0-second popping loop:
+        // a seq GAP costs the stream position and only the full bootstrap can
+        // recover it — but the cascade-time faults (missing migration
+        // destination, settle-frame reject) corrupt ONE structure's content
+        // at a position both sides still agree on. Those used to escalate to
+        // the full path too: every world rebuild repainted all 96k chunks,
+        // and with the faults recurring each collapse, the whole rubble field
+        // visibly snapped on the rate-limiter's exact 3.0 s cadence.
+        const nowMs = performance.now();
         if (this.topology.needsResync && !this.resyncRequested) {
-          // Rate limited. A resync is a FULL ledger rebuild: every body
-          // replaced, every lane reset, all 24k chunks repainted. The trigger
-          // is usually one chunk -- a migration naming an island this client
-          // has not been told about -- and during a heavy collapse those
-          // arrive in a stream: measured at 22 missing destinations in one
-          // building, and 65 bootstraps on a session panel. Rebuilding the
-          // world 65 times to re-home a handful of chunks trades a small
-          // wrongness for a large, repeated one.
-          //
-          // The bootstrap that does land repairs everything outstanding, so
-          // spacing them costs only the delay, not the repair.
-          const nowMs = performance.now();
           if (nowMs - this.lastResyncAtMs >= RESYNC_MIN_INTERVAL_MS) {
             this.lastResyncAtMs = nowMs;
             this.resyncRequested = true;
             this.sendResync(encodeCityResyncRequest(this.topology.lastSeq()));
+          } else {
+            this.resyncsSuppressed += 1;
+          }
+        } else if (this.topology.resyncStructures.size > 0 && !this.resyncRequested) {
+          // Same spacing as the full path: the repair covers every fault
+          // accumulated by send time, so waiting costs delay, not repair.
+          // The set stays populated until the structure bootstrap lands and
+          // clears it, so a lost request re-fires on the next interval.
+          if (nowMs - this.lastResyncAtMs >= RESYNC_MIN_INTERVAL_MS) {
+            this.lastResyncAtMs = nowMs;
+            this.sendResync(
+              encodeCityResyncRequest(this.topology.lastSeq(), [
+                ...this.topology.resyncStructures,
+              ]),
+            );
           } else {
             this.resyncsSuppressed += 1;
           }

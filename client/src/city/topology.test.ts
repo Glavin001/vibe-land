@@ -477,7 +477,7 @@ describe('CityTopology chunk migration', () => {
     expect(after.position[2]).toBeCloseTo(before.position[2], 5);
   });
 
-  it('asks for a resync rather than guessing at an unknown destination', () => {
+  it('asks for a STRUCTURE repair rather than guessing at an unknown destination', () => {
     const topology = new CityTopology(manifest());
     expect(topology.apply(promoteTwo(1))).toBe(true);
     topology.apply({
@@ -492,7 +492,10 @@ describe('CityTopology chunk migration', () => {
         },
       ],
     });
-    expect(topology.needsResync).toBe(true);
+    // The stream position is intact; only this structure's content is wrong.
+    // Escalating to needsResync here was the 3.0-second full-bootstrap loop.
+    expect(topology.needsResync).toBe(false);
+    expect([...topology.resyncStructures]).toEqual([0]);
   });
 });
 
@@ -864,9 +867,46 @@ describe('CityTopology settle cannot teleport a body', () => {
     expect(moved, 'the settle teleported the body').toBeLessThan(1e-3);
     // Still at rest -- the rest state is not in doubt, only the pose.
     expect(topology.body(bodyKey(0, 1))!.settled).toBe(true);
-    // And the real fault -- membership disagreement -- is escalated.
+    // And the real fault -- membership disagreement -- is escalated as a
+    // STRUCTURE repair, not a world rebuild: the stream position is intact.
     expect(topology.settleFrameRejects).toBe(1);
+    expect(topology.needsResync).toBe(false);
+    expect([...topology.resyncStructures]).toEqual([0]);
+  });
+
+  it('a missing migration destination asks for that structure, not the world', () => {
+    const topology = new CityTopology(manifest());
+    topology.apply(fractureMessage(1));
+    topology.apply({
+      topoSeq: 2,
+      simTick: 20,
+      batches: [
+        {
+          structureId: 0,
+          brokenBondIndices: [],
+          promotions: [],
+          retiredIslandIds: [],
+          migrations: [{ node: 1, fromIslandSerial: 0, toIslandSerial: 99 }],
+        },
+      ],
+      settled: [],
+      wakes: [],
+    });
+    expect(topology.needsResync).toBe(false);
+    expect([...topology.resyncStructures]).toEqual([0]);
+    // A seq GAP still demands the full path — the position itself is lost.
+    topology.apply({ topoSeq: 9, simTick: 30, batches: [], settled: [], wakes: [] });
     expect(topology.needsResync).toBe(true);
+    // And the structure repair clears its own flag when it lands.
+    topology.applyStructureBootstrap({
+      simTick: 40,
+      manifestHashHex: '00',
+      baselineId: 0,
+      topoSeq: 2,
+      structures: [{ structureId: 0, bondCount: 2, aliveBonds: new Uint8Array([0b01]) }],
+      islands: [],
+    });
+    expect(topology.resyncStructures.size).toBe(0);
   });
 
   /**
