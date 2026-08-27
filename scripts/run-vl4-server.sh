@@ -33,6 +33,12 @@ export VIBE_CITY_SOLVER_ITERATIONS=32
 export VIBE_WORLD_FRICTION=0.75
 export VIBE_WORLD_RESTITUTION=0.02
 export VIBE_PHYSX_PROFILE_FETCH=1
+# DEFAULT ON: the incremental device-topology change (blast 5ed909d9) makes
+# the GRID=2 city tear itself apart at rest -- no players, no shots, 0 ->
+# 122,819 broken bonds in 90 s, bond utilisation 4,349-14,350x, step 22 -> 132
+# ms. With this switch the same scene holds at 0 broken, 0 awake, utilisation
+# 1.0, 3.7 ms. Set to 0 only to reproduce the bug.
+export BLAST_GPU_WHOLE_RESET_ON_TOPOLOGY=${BLAST_GPU_WHOLE_RESET_ON_TOPOLOGY:-1}
 export RUST_LOG=info
 
 cd "$ROOT"
