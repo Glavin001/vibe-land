@@ -28,14 +28,24 @@ while true; do
 done
 log "server player-free; starting P1b gate battery"
 
-# ---- stop the live server (supervisor first, then server, by PID) --------
-sup=$(ps -eo pid,args | awk '/[r]un-vl4-server.sh/{print $1; exit}')
-srv=$(ps -eo pid,args | awk '/[w]eb-fps-server-vl4/{print $1; exit}')
-[ -n "$sup" ] && kill "$sup"
+# ---- stop the live server: every supervisor-shaped pid, then the server,
+# then WAIT until it is actually gone. The first version killed only the
+# first match, which was the bash -c wrapper — the real supervisor lived on
+# and respawned the server before the suite started, and the suite's own
+# refusal guard (correctly) aborted the run.
+for pid in $(ps -eo pid,args | awk '/[r]un-vl4-server.sh/{print $1}'); do
+  kill "$pid" 2>/dev/null || true
+done
 sleep 1
-[ -n "$srv" ] && kill "$srv"
-sleep 5
-log "live server stopped (sup=$sup srv=$srv)"
+for pid in $(ps -eo pid,args | awk '/[w]eb-fps-server-vl4/{print $1}'); do
+  kill "$pid" 2>/dev/null || true
+done
+for _ in $(seq 1 30); do
+  ps -eo args | grep -q "[w]eb-fps-server-vl4" || break
+  sleep 1
+done
+ps -eo args | grep -q "[w]eb-fps-server-vl4" && { log "server refused to die"; exit 1; }
+log "live server stopped and confirmed gone"
 
 export LD_LIBRARY_PATH="/root/PhysX/physx/install/linux-clang/PhysX/bin/linux.x86_64/release:${LD_LIBRARY_PATH:-}"
 export BLAST_GPU_WHOLE_RESET_ON_TOPOLOGY=1
