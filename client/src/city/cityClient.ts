@@ -42,6 +42,7 @@ import {
   PKT_CITY_TOPOLOGY,
 } from '../net/sharedConstants';
 import { isCitySuspect, isRecording, recordCityEvent } from '../netlab/recorder';
+import { noteBaseline, noteClientEvent } from './debugReport';
 import { addDecodeMs } from './renderStats';
 
 export interface CityClientStats {
@@ -600,6 +601,7 @@ export class CityClient {
         this.resyncRequested = false;
         this.bootstrapped = true;
         this.bootstrapCount += 1;
+        noteClientEvent('bootstrap', { topoSeq: message.topoSeq, simTick: message.simTick });
         this.repaintAll = true;
         this.repaintBodies.clear();
         // Bootstrap names the generation in flight. Recording it (empty) means
@@ -632,6 +634,7 @@ export class CityClient {
         }
         if (mismatched.length > 0) {
           this.hashMismatches += 1;
+          noteClientEvent('hashMismatch', { structures: mismatched, topoSeq: message.topoSeq });
           const nowMs = performance.now();
           if (nowMs - this.lastResyncAtMs >= RESYNC_MIN_INTERVAL_MS) {
             this.lastResyncAtMs = nowMs;
@@ -663,6 +666,10 @@ export class CityClient {
           break;
         }
         this.topology.applyStructureBootstrap(message);
+        noteClientEvent('structureRepair', {
+          topoSeq: message.topoSeq,
+          structures: message.structures.map((structure) => structure.structureId),
+        });
         const repaired = new Set(message.structures.map((structure) => structure.structureId));
         for (const key of [...this.bodies.keys()]) {
           if (repaired.has(bodyKeyParts(key).structureId)) {
@@ -783,6 +790,7 @@ export class CityClient {
   }
 
   private handleBaseline(message: BaselineMessage): void {
+    noteBaseline(message.baselineId);
     let poses = this.baselineGenerations.get(message.baselineId);
     if (!poses) {
       poses = new Map();

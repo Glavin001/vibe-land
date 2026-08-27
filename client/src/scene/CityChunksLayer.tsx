@@ -63,6 +63,7 @@ import {
 } from './cityChunkWrite';
 import { updateCityE2E } from '../e2eBridge';
 import { addCitySuspect, isRecording, recordCityEvent, recordCityStats } from '../netlab/recorder';
+import { noteTeleport } from '../city/debugReport';
 import type { CityE2EStats } from '../e2eBridge';
 import {
   bodyDebug,
@@ -289,6 +290,15 @@ function installChunkTeleportProbe(chunkCount: number): () => void {
       const anomalous = step > CHUNK_TELEPORT_M && step > explained;
       speedEst[slot] = 0.7 * speedEst[slot] + 0.3 * (step / gapSec);
       if (anomalous) {
+        // The debug-report ring is unconditional: SEND REPORT needs teleport
+        // timing from ordinary (non-recording) sessions, phones included.
+        noteTeleport({
+          slot,
+          stepM: step,
+          body: ctx.bodyKey,
+          source: ctx.source ?? 'unknown',
+          y: position[1],
+        });
         recordCityEvent('city_chunk_teleport', {
           slot,
           stepM: step,
@@ -334,6 +344,7 @@ export function CityChunksLayer({
   const frameCounterRef = useRef(0);
   const lastMigrateAnomaliesRef = useRef({ missingDestination: 0, emptyDestination: 0 });
   const teleportProbeRef = useRef<(() => void) | null>(null);
+  const recorderProbesRef = useRef(false);
   const buildFailedForRef = useRef<CityClient | null>(null);
   const updateSamplesRef = useRef<number[]>([]);
   /**
@@ -540,18 +551,23 @@ export function CityChunksLayer({
       };
     }
 
-    // Attach/detach the measurement probes as recording toggles, so a normal
-    // session pays one boolean compare per frame and nothing else.
+    // The teleport probe is now ALWAYS installed: SEND REPORT ships its ring
+    // from ordinary sessions, and the probe's cost is one compare and three
+    // stores per DIRTY chunk write (~1.4k/frame at worst — micrometers next
+    // to the sample pass). The recorder-only extras (pose-source tagging,
+    // adoption-jump events) stay gated on recording.
     const recording = isRecording();
-    if (recording && !teleportProbeRef.current) {
+    if (!teleportProbeRef.current) {
       teleportProbeRef.current = installChunkTeleportProbe(client.topology.chunkCount);
+    }
+    if (recording && !recorderProbesRef.current) {
+      recorderProbesRef.current = true;
       client.topology.watchPoseSources = true;
       client.topology.onAdoptionJump = (slot, stepM) => {
         recordCityEvent('city_adoption_jump', { slot, stepM });
       };
-    } else if (!recording && teleportProbeRef.current) {
-      teleportProbeRef.current();
-      teleportProbeRef.current = null;
+    } else if (!recording && recorderProbesRef.current) {
+      recorderProbesRef.current = false;
       client.topology.watchPoseSources = false;
       client.topology.onAdoptionJump = null;
     }

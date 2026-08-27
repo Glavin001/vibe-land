@@ -1281,6 +1281,9 @@ async fn main() -> Result<()> {
         .route("/session-config", get(session_config_handler))
         .route("/city-manifest/:hash", get(city_manifest_handler))
         .route("/match-stats/:match_id", get(match_stats_handler))
+        // Nested under /match-stats so the caddy proxy block that already
+        // forwards that prefix needs no change for phones to reach it.
+        .route("/match-stats/:match_id/report", post(debug_report_handler))
         .route("/match-stats/:match_id/bodies", get(match_body_states_handler))
         .route("/city-reset/:match_id", post(city_reset_handler))
         .route("/ws/stats", get(ws_stats_handler))
@@ -1751,6 +1754,61 @@ async fn session_config_handler(
 /// Per-match telemetry for the in-page debug overlay: sim tick cost, body
 /// counts, and city stream volume, so client-side and server-side slowness can
 /// be told apart while playing.
+/// One-button debug reports: the client posts everything IT can see, the
+/// server staples on its own live match-stats snapshot, and the pair lands in
+/// a uniquely-named folder under debug-reports/. "I sent a report" is then a
+/// complete bug report — no downloading JSON on a phone and forwarding it.
+async fn debug_report_handler(
+    Path(match_id): Path<String>,
+    State(state): State<SharedAppState>,
+    body: axum::body::Bytes,
+) -> impl IntoResponse {
+    let snapshot = state
+        .inner
+        .stats_registry
+        .read()
+        .expect("stats registry poisoned")
+        .get(&match_id)
+        .cloned();
+    let Some(stats) = snapshot else {
+        return (StatusCode::NOT_FOUND, "unknown match").into_response();
+    };
+    // Stored verbatim: the payload is the CLIENT's testimony, and rewriting
+    // testimony during intake is how evidence gets corrupted. Only shape is
+    // checked, so a garbage post cannot fill the disk with noise.
+    if serde_json::from_slice::<serde_json::Value>(&body).is_err() {
+        return (StatusCode::BAD_REQUEST, "payload is not JSON").into_response();
+    }
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs())
+        .unwrap_or(0);
+    let folder = format!("report-{stamp}-{match_id}-tick{}", stats.server_tick);
+    let dir = std::path::Path::new("debug-reports").join(&folder);
+    let server_json = match serde_json::to_vec_pretty(&stats) {
+        Ok(json) => json,
+        Err(error) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("stats serialize failed: {error}"),
+            )
+                .into_response();
+        }
+    };
+    let write = std::fs::create_dir_all(&dir)
+        .and_then(|()| std::fs::write(dir.join("client.json"), &body))
+        .and_then(|()| std::fs::write(dir.join("server.json"), &server_json));
+    if let Err(error) = write {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("report write failed: {error}"),
+        )
+            .into_response();
+    }
+    info!(%match_id, folder, bytes = body.len(), "debug report stored");
+    (StatusCode::OK, Json(serde_json::json!({ "folder": folder }))).into_response()
+}
+
 async fn match_stats_handler(
     Path(match_id): Path<String>,
     State(state): State<SharedAppState>,
