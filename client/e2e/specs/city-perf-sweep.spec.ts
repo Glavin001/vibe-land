@@ -96,3 +96,71 @@ test.describe('city perf sweep', () => {
       .toBeLessThan(asConfigured.gpuMs.median);
   });
 });
+
+/**
+ * The mobile profile, which exists precisely because it runs where the other
+ * one cannot -- and is therefore the version most likely to rot unseen. This
+ * box has a GPU timer and a fast GPU, so it cannot reproduce a phone; what it
+ * CAN prove is that the short profile completes, measures every step, restores
+ * what it touched, and that its screenshot-shaped summary is not a wall of
+ * zeros. Whether shadows cost 20 ms is a question only the phone can answer.
+ */
+test.describe('city perf sweep (mobile profile)', () => {
+  test.skip(!ENABLED, 'set E2E_CITY=1 with a city server running');
+  test.setTimeout(240_000);
+
+  test('runs the short profile and summarises it for a phone screen', async ({ page }) => {
+    await openCity(page);
+    await waitForCityRendered(page);
+    await page.waitForFunction(
+      () => (window as unknown as { __VIBE_CITY_TEX_READY__?: boolean })
+        .__VIBE_CITY_TEX_READY__ === true,
+      { timeout: 60_000 },
+    );
+    await resetCity(page);
+    await parkOutside(page, await cityBounds(page), { standOffM: 20, heightM: 6, aimFraction: 0.2 });
+
+    const before = await page.evaluate(
+      () => (window as any).__VIBE_E2E__.renderSettings?.() ?? null,
+    );
+
+    const { report, summary } = await page.evaluate(async () => {
+      const api = (window as any).__VIBE_E2E__;
+      const result = await api.runPerfSweep('mobile');
+      return { report: result, summary: api.formatPerfSweepMobile(result) as string[] };
+    }) as {
+      report: {
+        profile: string;
+        unstable: boolean;
+        steps: Array<{ label: string; frameMs: { median: number }; backingStore: string }>;
+      };
+      summary: string[];
+    };
+
+    console.log(`\n[mobile sweep]\n${summary.join('\n')}`);
+
+    expect(report.profile).toBe('mobile');
+    expect(report.steps.length).toBe(8);
+    expect(report.unstable, 'mobile sweep flagged itself unstable on an idle box').toBe(false);
+    for (const step of report.steps) {
+      expect(step.frameMs.median, `${step.label} did not measure`).toBeGreaterThan(0);
+    }
+    // The dpr steps must prove they resized, exactly as in the full sweep --
+    // a phone report whose resolution rows are silently no-ops is worse than
+    // no report, because it argues AGAINST the lever most likely to work.
+    const dpr = report.steps.find((s) => s.label === 'dpr cap 1.0');
+    expect(dpr?.backingStore).not.toBe(report.steps[0].backingStore);
+    // The summary is the entire deliverable on a phone: it has to carry the
+    // baseline, one line per lever, and real numbers.
+    expect(summary.join('\n')).toContain('baseline');
+    expect(summary.filter((line) => /-?\d+\.\d+ms/.test(line).valueOf()).length)
+      .toBeGreaterThanOrEqual(6);
+
+    // And it must put back what it found -- a sweep that leaves the phone on
+    // dpr 0.75 would look like the sweep "fixed" performance.
+    const after = await page.evaluate(
+      () => (window as any).__VIBE_E2E__.renderSettings?.() ?? null,
+    );
+    expect(after).toEqual(before);
+  });
+});

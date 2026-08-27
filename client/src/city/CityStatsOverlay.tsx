@@ -13,7 +13,7 @@
 
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { BODY_DEBUG_STATES, setBodyDebugEnabled, setBodyDebugStates } from './bodyDebugColors';
-import { formatPerfSweep, runPerfSweep } from './perfSweep';
+import { formatPerfSweep, formatPerfSweepMobile, runPerfSweep } from './perfSweep';
 import { renderStats } from './renderStats';
 import { isTouchDevice } from '../device';
 
@@ -295,6 +295,10 @@ export function CityStatsOverlay({
   const [skyDome, setSkyDome] = useState(skyDomeEnabled);
   const [dprCap, setDpr] = useState<number | null>(dprCapOverride);
   const [sweepState, setSweepState] = useState<'idle' | 'running' | 'done' | 'failed'>('idle');
+  // The phone's sweep answers on screen instead of into a download: iOS has
+  // nowhere useful to put a .txt, and the way this actually gets back to
+  // whoever is tuning is a screenshot.
+  const [mobileReport, setMobileReport] = useState<string[] | null>(null);
   const [heroTiling, setHeroTiling] = useState(heroTilingEnabled);
   const [bodyColors, setBodyColors] = useState(false);
   // Poll per-body freeze states only while the toggle is on: no reason to
@@ -730,6 +734,68 @@ export function CityStatsOverlay({
               : sweepState === 'failed' ? 'PERF SWEEP FAILED' : 'DOWNLOAD PERF REPORT'}
         </button>
       </div>
+
+      {/*
+        The same instrument, shaped for the machine that cannot use the other
+        one: shorter (a phone frame is 15x longer, so the desktop step counts
+        take minutes and iOS evicts a busy tab), ordered by what could
+        plausibly cost 50 ms there, and answering on screen.
+      */}
+      <div style={{ ...row, marginBottom: 2 }}>
+        <button
+          type="button"
+          disabled={sweepState === 'running'}
+          onClick={() => {
+            setSweepState('running');
+            setMobileReport(null);
+            void runPerfSweep('mobile')
+              .then((report) => {
+                setMobileReport(formatPerfSweepMobile(report));
+                setSweepState('done');
+              })
+              .catch(() => setSweepState('failed'));
+          }}
+          style={{ ...toggleButton, position: 'static', width: '100%' }}
+          data-testid="city-perf-sweep-mobile"
+          aria-label="Run the short mobile render cost sweep"
+          title="~40 s. Prices shadows, resolution and textures on THIS device and shows the answer on screen to screenshot"
+        >
+          {sweepState === 'running' ? 'MEASURING... (~40 s)' : 'MOBILE PERF BISECT'}
+        </button>
+      </div>
+
+      {mobileReport && (
+        /*
+          Deltas against the baseline, biggest saving first: the question a
+          phone report has to answer is "which switch buys the most", and a
+          column of absolutes makes the reader do that subtraction by eye on a
+          screen they are holding at arm's length.
+        */
+        <div
+          style={{
+            marginBottom: 4,
+            padding: 8,
+            border: '1px solid rgba(120, 220, 160, 0.5)',
+            borderRadius: 6,
+            background: 'rgba(8, 20, 12, 0.92)',
+            fontSize: 11,
+            lineHeight: 1.45,
+            whiteSpace: 'pre',
+            overflowX: 'auto',
+          }}
+          data-testid="city-perf-sweep-mobile-report"
+        >
+          {mobileReport.join('\n')}
+          <button
+            type="button"
+            onClick={() => setMobileReport(null)}
+            style={{ ...toggleButton, position: 'static', width: '100%', marginTop: 6 }}
+            aria-label="Dismiss the mobile perf report"
+          >
+            DISMISS
+          </button>
+        </div>
+      )}
 
       <div style={{ ...row, marginBottom: 2 }}>
         <button

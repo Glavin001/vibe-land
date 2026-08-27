@@ -15,16 +15,28 @@ import { DEFAULT_STATS } from './ui/DebugOverlay';
 import { renderStats } from './city/renderStats';
 import { acquireCityDiagnostics } from './city/cityDiagnostics';
 import {
+  ambientOcclusionPreferred,
+  cityTextureDetail,
+  dprCapOverride,
+  heroTilingEnabled,
+  instanceShareThresholdSetting,
+  qualityTier,
   setAmbientOcclusionEnabled,
   setQualityTier,
   setShadowsEnabled,
   setInstanceShareThreshold,
   setHeroTilingEnabled,
+  shadowsEnabled,
 } from './app/renderQuality';
 import { updateFogSettings } from './graphics/fogSettings';
 import { setLookTuning } from './graphics/lookTuning';
 import { setCapturePose } from './scene/captureCamera';
-import { runPerfSweep } from './city/perfSweep';
+import {
+  formatPerfSweepMobile,
+  runPerfSweep,
+  type PerfSweepProfile,
+  type PerfSweepReport,
+} from './city/perfSweep';
 
 /** Held while a spec has forced the diagnostic sweeps on. */
 let diagnosticsHold: (() => void) | null = null;
@@ -248,7 +260,19 @@ export interface VibeE2EBridge {
    * assert it still produces sane numbers, since a measurement harness that
    * has silently broken is worse than none.
    */
-  runPerfSweep(): Promise<unknown>;
+  runPerfSweep(profile?: PerfSweepProfile): Promise<unknown>;
+
+  /** The phone-screen summary of a report, as an array of lines. */
+  formatPerfSweepMobile(report: unknown): string[];
+
+  /**
+   * Every render setting the sweep can touch.
+   *
+   * Exists so a spec can prove the sweep RESTORES what it found: leaving a
+   * device on a lower resolution would read as the sweep having improved
+   * performance, which is the most misleading failure this tool has.
+   */
+  renderSettings(): Record<string, unknown>;
 }
 
 // ---------------------------------------------------------------------------
@@ -421,7 +445,17 @@ const bridge: VibeE2EBridge = {
     if (next.heroTiling !== undefined) setHeroTilingEnabled(next.heroTiling);
   },
   setCapturePose: (next) => setCapturePose(next),
-  runPerfSweep: () => runPerfSweep(),
+  runPerfSweep: (profile?: PerfSweepProfile) => runPerfSweep(profile),
+  formatPerfSweepMobile: (report: unknown) => formatPerfSweepMobile(report as PerfSweepReport),
+  renderSettings: () => ({
+    tier: qualityTier(),
+    ao: ambientOcclusionPreferred(),
+    shadows: shadowsEnabled(),
+    cityTextures: cityTextureDetail(),
+    dprCap: dprCapOverride(),
+    shareThreshold: instanceShareThresholdSetting(),
+    heroTiling: heroTilingEnabled(),
+  }),
   setLook: (next) => {
     if (next.fogIntensity !== undefined) {
       const intensity = next.fogIntensity;

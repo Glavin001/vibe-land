@@ -61,6 +61,14 @@ import {
 
 /** Frames per step, after the warm-up. ~1 s at 120 fps, ~2 s at 60. */
 const FRAMES = 120;
+/**
+ * Frames per step on a phone.
+ *
+ * Fewer, because a frame there can be 50 ms: 120 of them is six seconds per
+ * step, and iOS will throttle or evict a tab held busy that long. 60 frames
+ * still gives a median over ~2 s of rendering.
+ */
+const MOBILE_FRAMES = 60;
 /** Discarded first, while shaders recompile and uniforms settle. */
 const WARMUP_FRAMES = 45;
 /**
@@ -173,6 +181,8 @@ export interface PerfSweepStep {
 }
 
 export interface PerfSweepReport {
+  /** Which step set ran. `mobile` is short and phone-ordered. */
+  profile?: PerfSweepProfile;
   capturedAt: string;
   userAgent: string;
   devicePixelRatio: number;
@@ -197,7 +207,11 @@ export interface PerfSweepReport {
   steps: PerfSweepStep[];
 }
 
-async function measureStep(label: string, warmupFrames: number): Promise<PerfSweepStep> {
+async function measureStep(
+  label: string,
+  warmupFrames: number,
+  sampleFrames: number = FRAMES,
+): Promise<PerfSweepStep> {
   const startedAt = performance.now();
   for (let i = 0; i < warmupFrames; i += 1) await nextFrame();
   const frames: number[] = [];
@@ -208,7 +222,7 @@ async function measureStep(label: string, warmupFrames: number): Promise<PerfSwe
   let drawCalls = 0;
   let triangles = 0;
   let documentHidden = false;
-  for (let i = 0; i < FRAMES; i += 1) {
+  for (let i = 0; i < sampleFrames; i += 1) {
     await nextFrame();
     frames.push(renderStats.frameTotalMs);
     cpu.push(renderStats.cpuFrameMs);
@@ -225,8 +239,8 @@ async function measureStep(label: string, warmupFrames: number): Promise<PerfSwe
     frameMs: stats(frames),
     gpuMs: stats(gpu),
     cpuMs: stats(cpu),
-    glSubmitMs: glSubmit / FRAMES,
-    cityFrameMs: cityFrame / FRAMES,
+    glSubmitMs: glSubmit / sampleFrames,
+    cityFrameMs: cityFrame / sampleFrames,
     drawCalls,
     subDraws: renderStats.subDraws,
     triangles,
@@ -260,7 +274,18 @@ function describeGpu(): { gpu: string; multiDrawSupported: boolean } {
  * costs, and stacking them hides which one mattered. Mesh-rebuilding steps run
  * LAST so nothing measured after them can inherit a rebuild.
  */
-export async function runPerfSweep(): Promise<PerfSweepReport> {
+/**
+ * `full` prices every feature; `mobile` prices the few that could plausibly
+ * account for a 50 ms frame on a phone, in descending order of suspicion, and
+ * gets through them before iOS throttles a busy tab.
+ */
+export type PerfSweepProfile = 'full' | 'mobile';
+
+export async function runPerfSweep(
+  profile: PerfSweepProfile = 'full',
+): Promise<PerfSweepReport> {
+  const mobile = profile === 'mobile';
+  const sampleFrames = mobile ? MOBILE_FRAMES : FRAMES;
   const original = currentConfig();
   // The setters persist, and a sweep must not: without this, running a sweep
   // froze the then-current defaults into localStorage and no future default
@@ -271,10 +296,14 @@ export async function runPerfSweep(): Promise<PerfSweepReport> {
   let applied = original;
   const step = async (label: string, patch: Partial<Config>): Promise<PerfSweepStep> => {
     const next: Config = { ...original, ...patch };
-    const warmup = needsRebuildWarmup(applied, next) ? REBUILD_WARMUP : WARMUP_FRAMES;
+    let warmup = needsRebuildWarmup(applied, next) ? REBUILD_WARMUP : WARMUP_FRAMES;
+    // Warm-up is counted in FRAMES, and a phone's frames are ~15x longer than
+    // the 120 fps machine these counts were chosen on -- 240 of them is nearly
+    // a minute. Scaled down, but never below what a shader recompile needs.
+    if (mobile) warmup = Math.max(20, Math.round(warmup / 4));
     applyConfig(next);
     applied = next;
-    const measured = await measureStep(label, warmup);
+    const measured = await measureStep(label, warmup, sampleFrames);
     steps.push(measured);
     return measured;
   };
@@ -282,6 +311,30 @@ export async function runPerfSweep(): Promise<PerfSweepReport> {
   let sentinel: PerfSweepStep;
   try {
     await step('as configured', {});
+    if (mobile) {
+      // Ordered by suspicion for a fill-and-geometry-bound phone. Shadows
+      // first: a second full pass over 41k chunks is the largest single thing
+      // the FAST tier still does. Then pixels, then the two shading costs,
+      // then a floor that says how much of the frame is fixed cost no setting
+      // can reach.
+      await step('shadows off', { shadows: false });
+      await step('dpr cap 1.0', { dprCap: 1 });
+      await step('dpr cap 0.75', { dprCap: 0.75 });
+      await step('city textures: off', { cityTextures: 'off' });
+      await step('anti-tiling stack off', { heroTiling: false });
+      await step('shadows off + dpr 1.0', { shadows: false, dprCap: 1 });
+      await step('everything off (floor)', {
+        ao: false,
+        shadows: false,
+        skyIbl: false,
+        skyDome: false,
+        cityTextures: 'off',
+        dprCap: 1,
+      });
+      sentinel = await step('as configured (sentinel)', {});
+      steps.pop();
+      return finishReport(steps, sentinel, profile);
+    }
     await step('AO off', { ao: false });
     await step('shadows off', { shadows: false });
     await step('shadow map 1024', { shadowMapSize: 1024 });
@@ -312,20 +365,36 @@ export async function runPerfSweep(): Promise<PerfSweepReport> {
     restoreStoredRenderSettings(storedBefore);
   }
 
+  return finishReport(steps, sentinel, profile);
+}
+
+function finishReport(
+  steps: PerfSweepStep[],
+  sentinel: PerfSweepStep,
+  profile: PerfSweepProfile,
+): PerfSweepReport {
   const first = steps[0];
   // Drift needs BOTH a relative and an absolute bar. On a machine with huge
   // headroom the medians are ~2 ms and wobble +/-20% as pure noise; a
   // relative-only test flagged such a run unstable, which teaches people to
   // ignore the flag -- worse than not having one. A machine actually
   // throttling moves by milliseconds, not tenths.
-  const drift = Math.abs(sentinel.gpuMs.median - first.gpuMs.median);
+  // Prefer GPU time; fall back to wall-clock frame time where the timer query
+  // does not exist at all -- which is every iOS browser, i.e. exactly the
+  // machines this flag matters most on, since a phone throttles under load and
+  // a desktop mostly does not. Frame time is the noisier signal, hence the
+  // wider relative bar.
+  const useGpu = sentinel.gpuMs.median > 0 && first.gpuMs.median > 0;
+  const before = useGpu ? first.gpuMs.median : first.frameMs.median;
+  const after = useGpu ? sentinel.gpuMs.median : sentinel.frameMs.median;
+  const drift = Math.abs(after - before);
   const anyHidden = sentinel.documentHidden || steps.some((s) => s.documentHidden);
   const unstable = anyHidden
-    || (sentinel.gpuMs.median > 0 && first.gpuMs.median > 0
-      && drift / first.gpuMs.median > 0.2 && drift > 1);
+    || (before > 0 && drift / before > (useGpu ? 0.2 : 0.3) && drift > 1);
 
   const { gpu, multiDrawSupported } = describeGpu();
   return {
+    profile,
     capturedAt: new Date().toISOString(),
     userAgent: navigator.userAgent,
     devicePixelRatio: window.devicePixelRatio,
@@ -382,4 +451,56 @@ export function formatPerfSweep(report: PerfSweepReport): string {
     );
   }
   return lines.join('\n');
+}
+
+/**
+ * The phone-readable summary: what each thing costs, in fps and ms, sorted by
+ * saving.
+ *
+ * A phone cannot download a report anywhere useful and cannot show a 110-column
+ * table, so this is built to be SCREENSHOTTED: one line per lever, deltas
+ * against the baseline rather than absolutes to compare by eye, and fps
+ * alongside ms because fps is the number the user actually feels.
+ *
+ * The vsync caveat is load-bearing here. `frameMs` is rAF-to-rAF, so it cannot
+ * read below the refresh period -- once a step gets fast enough to hit the
+ * panel's cap, its true cost is hidden and every further saving reads as zero.
+ * Rows that are pinned to the refresh floor say so instead of claiming a
+ * suspiciously round win.
+ */
+export function formatPerfSweepMobile(report: PerfSweepReport): string[] {
+  const rows = [...report.steps, report.sentinel];
+  const base = report.steps[0];
+  const fps = (ms: number) => (ms > 0 ? 1000 / ms : 0);
+  // The fastest frame anything measured -- a lower bound on this display's
+  // refresh period. A step within 10% of it may be vsync-limited, not free.
+  const floor = Math.min(...rows.map((r) => r.frameMs.median));
+  const lines = [
+    `${report.gpu.slice(0, 34)}`,
+    `${report.backingStore} @ dpr ${report.devicePixelRatio}`
+    + `${report.gpuTimingAvailable ? '' : ' | no gpu timer'}`,
+    `baseline ${base.frameMs.median.toFixed(1)}ms = ${fps(base.frameMs.median).toFixed(0)}fps`
+    + ` | ${base.drawCalls} draws`,
+  ];
+  if (report.unstable) lines.push('!! UNSTABLE - rerun, machine drifted');
+  lines.push('');
+  const scored = report.steps.slice(1)
+    .map((step) => ({ step, saved: base.frameMs.median - step.frameMs.median }))
+    .sort((a, b) => b.saved - a.saved);
+  for (const { step, saved } of scored) {
+    const pinned = step.frameMs.median <= floor * 1.1 && saved > 0;
+    lines.push(
+      `${step.label.slice(0, 22).padEnd(23)}`
+      + `${saved >= 0 ? '-' : '+'}${Math.abs(saved).toFixed(1).padStart(5)}ms`
+      + ` ${fps(step.frameMs.median).toFixed(0).padStart(3)}fps${pinned ? ' *' : ''}`,
+    );
+  }
+  if (scored.some(({ step, saved }) => step.frameMs.median <= floor * 1.1 && saved > 0)) {
+    // Deliberately hedged: the floor is whatever the fastest step measured,
+    // which on a phone IS the refresh period but on a vsync-disabled test box
+    // is just the cheapest configuration. Claiming "vsync" in both cases would
+    // be wrong in one of them.
+    lines.push('', '* at the measured floor - true saving may be larger');
+  }
+  return lines;
 }
