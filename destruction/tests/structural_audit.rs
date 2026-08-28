@@ -208,10 +208,21 @@ fn audit(name: &str, secs: f32) -> Audit {
     }
 }
 
-/// A point on the outside at about a third of the height, aimed inward -- the
-/// same aim the shipping sim tests use, so "a hit" means what a player's hit
-/// means.
+/// A point on the outside at about a third of the height, aimed inward, chosen
+/// so the blast actually lands on breakable material.
+///
+/// The obvious version -- take the outermost chunk in a height band -- picked
+/// a FOUNDATION block for the walled city: fixed, unfracturable, and standing
+/// alone with exactly ONE chunk inside the blast radius. The audit duly
+/// reported that a rocket broke 7 bonds in a 170,000-bond city, and the
+/// honest-looking conclusion from that was "this thing is nearly
+/// indestructible". It was measuring a shot into an anchor.
+///
+/// So: skip supports and foundations, and among the outer candidates prefer
+/// the one with the most material around it. A destructibility check is only
+/// worth reading if the shot hits something destructible.
 fn facade_aim(pack: &ScenePack) -> ([f32; 3], [f32; 3]) {
+    const BLAST_R: f32 = 2.5;
     let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
     for node in &pack.nodes {
         let c = [node.centroid.x, node.centroid.y, node.centroid.z];
@@ -221,18 +232,42 @@ fn facade_aim(pack: &ScenePack) -> ([f32; 3], [f32; 3]) {
         }
     }
     let band = lo[1] + (hi[1] - lo[1]) * 0.33;
-    let mut best = None;
-    let mut best_x = f32::MIN;
-    for node in &pack.nodes {
-        if (node.centroid.y - band).abs() > (hi[1] - lo[1]) * 0.08 {
-            continue;
-        }
-        if node.centroid.x > best_x {
-            best_x = node.centroid.x;
-            best = Some(node.centroid);
-        }
+    let span = (hi[1] - lo[1]).max(1e-3);
+
+    let eligible: Vec<usize> = (0..pack.nodes.len())
+        .filter(|&i| {
+            let n = &pack.nodes[i];
+            !n.is_support()
+                && pack.node_role(i) != "foundation"
+                && (n.centroid.y - band).abs() <= span * 0.08
+        })
+        .collect();
+    if eligible.is_empty() {
+        let c = pack.nodes[0].centroid;
+        return ([c.x, c.y, c.z], [-1.0, 0.0, 0.0]);
     }
-    let c = best.unwrap_or_else(|| pack.nodes[0].centroid);
+
+    // The outer tenth by x, then the best-surrounded of those: far enough out
+    // to be a facade hit, dense enough to be a hit on the building.
+    let mut outer = eligible.clone();
+    outer.sort_by(|&a, &b| {
+        pack.nodes[b].centroid.x.total_cmp(&pack.nodes[a].centroid.x)
+    });
+    outer.truncate((outer.len() / 10).max(1));
+
+    let neighbours = |i: usize| {
+        let c = pack.nodes[i].centroid;
+        eligible
+            .iter()
+            .filter(|&&j| (pack.nodes[j].centroid - c).length_squared() < BLAST_R * BLAST_R)
+            .count()
+    };
+    let best = outer
+        .iter()
+        .copied()
+        .max_by_key(|&i| neighbours(i))
+        .unwrap_or(outer[0]);
+    let c = pack.nodes[best].centroid;
     ([c.x, c.y, c.z], [-1.0, 0.0, 0.0])
 }
 
