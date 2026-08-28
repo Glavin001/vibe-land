@@ -3110,6 +3110,7 @@ FfiDestructionStats DestructionManager::destruction_stats() const {
   std::uint64_t single_node_bodies = 0;
   std::uint64_t single_node_contacts = 0;
   std::uint64_t single_node_awake = 0;
+  std::uint64_t bondless_skipped = 0;
   for (const auto &slot_ptr : slots_) {
     if (!slot_ptr || slot_ptr->dest == nullptr) {
       continue;
@@ -3201,6 +3202,7 @@ FfiDestructionStats DestructionManager::destruction_stats() const {
     single_node_bodies += telemetry.singleNodeBodyCount;
     single_node_contacts += telemetry.singleNodeContacts;
     single_node_awake += telemetry.singleNodeAwakeBodies;
+    bondless_skipped += telemetry.bondlessContactsSkipped;
   }
 
   // Bounded-growth tripwire. Both are keyed by (structure_id, bodyId) and
@@ -3233,6 +3235,10 @@ FfiDestructionStats DestructionManager::destruction_stats() const {
   push_span("single_node_bodies", static_cast<double>(single_node_bodies), 2);
   push_span("single_node_contacts", static_cast<double>(single_node_contacts), 2);
   push_span("single_node_awake", static_cast<double>(single_node_awake), 2);
+  // Cumulative. single_node_contacts now reads 0 BECAUSE the skip works --
+  // dropped contacts never reach the loop that counts them -- so the volume
+  // being saved is only visible here.
+  push_span("bondless_contacts_skipped", static_cast<double>(bondless_skipped), 2);
   return stats;
 }
 
