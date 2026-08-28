@@ -1733,9 +1733,60 @@ void DestructionManager::destruction_tick(float dt, FfiVec3 gravity) {
   begin_ms += ms_since(phase);
 
   phase = clock::now();
-  stress_executor_->run(live_slots_.size(), [this](std::size_t index) {
-    require(live_slots_[index]->dest->solveTick(), "solveTick failed");
-  });
+  // Flat (slot x strip) fan-out.
+  //
+  // The old shape was one task per structure running the whole solveTick, so
+  // the fan-out was 4 wide on a 32-core box -- measured 2.2-3.1x concurrency
+  // while the bond-stress walk inside it, the largest single cost in the
+  // tick, ran serially per slot. Dispatching that walk from INSIDE those
+  // tasks does not work: re-entering the pool deadlocks it, and giving it a
+  // second pool measured ~2x WORSE at rest (mutex serialisation plus 2:1
+  // thread oversubscription).
+  //
+  // So hoist the walk out instead. Three top-level dispatches, no nesting,
+  // no second pool: CG solve per slot, then every slot's strips as ONE flat
+  // parallel-for, then the merge per slot. The middle dispatch is
+  // slots x 16 wide regardless of how many structures exist.
+  //
+  // Falls back to the monolithic path when any slot refuses the split
+  // (unconvergedExtraUpdates > 0 -- that retry loop re-runs solve AND bond
+  // stress together, so hoisting one out would change what it repeats).
+  static const bool flat_bond_stress = [] {
+    const char *raw = std::getenv("BLAST_BOND_STRESS_FLAT");
+    return raw != nullptr && std::string(raw) != "0";
+  }();
+  bool split_ok = flat_bond_stress && !live_slots_.empty();
+  if (split_ok) {
+    for (Slot *slot : live_slots_) {
+      if (!slot->dest->supportsSplitSolve()) {
+        split_ok = false;
+        break;
+      }
+    }
+  }
+  if (split_ok) {
+    stress_executor_->run(live_slots_.size(), [this](std::size_t index) {
+      require(live_slots_[index]->dest->solveTickBeginSplit(),
+              "solveTickBeginSplit failed");
+    });
+    const std::uint32_t strips =
+        live_slots_[0]->dest->bondStressStripCount();
+    const std::size_t total =
+        live_slots_.size() * static_cast<std::size_t>(strips);
+    stress_executor_->run(total, [this, strips](std::size_t flat) {
+      const std::size_t slot = flat / strips;
+      const std::uint32_t strip = static_cast<std::uint32_t>(flat % strips);
+      live_slots_[slot]->dest->bondStressStrip(strip);
+    });
+    stress_executor_->run(live_slots_.size(), [this](std::size_t index) {
+      require(live_slots_[index]->dest->solveTickFinishSplit(),
+              "solveTickFinishSplit failed");
+    });
+  } else {
+    stress_executor_->run(live_slots_.size(), [this](std::size_t index) {
+      require(live_slots_[index]->dest->solveTick(), "solveTick failed");
+    });
+  }
   solve_ms += ms_since(phase);
 
   // Sample how close bonds are to failing, between solve and fracture. This

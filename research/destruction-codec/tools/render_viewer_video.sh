@@ -17,11 +17,11 @@
 #   tools/render_viewer_video.sh TRACE OUT_DIR NAME [debris-tracks args...]
 # Examples:
 #   # far-tier A/B (coarse-only spectator), 4-pane grid:
-#   tools/render_viewer_video.sh /root/w9.towertrace target/vv far-all \
+#   tools/render_viewer_video.sh /root/w9.towertrace experiments/vv far-all \
 #     --splits PS2 --subscribes SS5 --render-viewer birds-eye \
 #     --far-flush-ms 2000 --coarse-max-stride 240 --coarse-step-exp 7
 #   # full-res solo tourist:
-#   tools/render_viewer_video.sh /root/w9.towertrace target/vv tour \
+#   tools/render_viewer_video.sh /root/w9.towertrace experiments/vv tour \
 #     --splits PS2 --subscribes SS2 --render-viewer roaming-tourist --render-solo
 #
 # Gotchas this script exists to remember:

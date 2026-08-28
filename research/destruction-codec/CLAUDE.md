@@ -233,5 +233,5 @@ anatomy, root-record continuity).
 - `docs/destruction-codec-*.md` — one per phase, each with its measurements
 - `codec-reports-archive/` — 460 archived JSON/CSV reports from cleared run dirs
 
-Disk: traces are 1.5–3 GB. `target/` run dirs are regenerable and get cleared; `codec-results/`
+Disk: traces are 1.5–3 GB. run dirs go under `experiments/` (never `target/`, which is cargo-only); `codec-results/`
 holds the reference trace everything is measured against — **do not delete it**.
