@@ -3107,6 +3107,8 @@ FfiDestructionStats DestructionManager::destruction_stats() const {
   stats.rooted_chunk_bodies = rooted_count;
   float contact_slot_max = 0.0f;
   float gravity_slot_max = 0.0f;
+  std::uint64_t single_node_bodies = 0;
+  std::uint64_t single_node_contacts = 0;
   for (const auto &slot_ptr : slots_) {
     if (!slot_ptr || slot_ptr->dest == nullptr) {
       continue;
@@ -3195,7 +3197,10 @@ FfiDestructionStats DestructionManager::destruction_stats() const {
     stats.solver_island_count += telemetry.solverIslandCount;
     stats.solver_islands_skipped += telemetry.solverIslandsSkipped;
     stats.sleeping_actors_skipped += telemetry.sleepingActorsSkipped;
+    single_node_bodies += telemetry.singleNodeBodyCount;
+    single_node_contacts += telemetry.singleNodeContacts;
   }
+
   // Bounded-growth tripwire. Both are keyed by (structure_id, bodyId) and
   // erased on retire; pointer-keyed and never pruned, they grew without limit
   // and let a recycled actor inherit a dead body's CCD state.
@@ -3219,6 +3224,12 @@ FfiDestructionStats DestructionManager::destruction_stats() const {
   };
   push_span("blast_gravity_slotmax_ms", gravity_slot_max, 0);
   push_span("blast_contact_processing_slotmax_ms", contact_slot_max, 0);
+  // A single-node body has no internal bonds, so nothing in it can break: the
+  // contacts routed into it, and its share of the solve, cannot change the
+  // simulation whatever they contain. Published to size that share before
+  // anything is built on it.
+  push_span("single_node_bodies", static_cast<double>(single_node_bodies), 2);
+  push_span("single_node_contacts", static_cast<double>(single_node_contacts), 2);
   return stats;
 }
 
