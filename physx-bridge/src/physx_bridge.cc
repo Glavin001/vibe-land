@@ -606,6 +606,20 @@ public:
       if (contact_count == 0) {
         continue;
       }
+      // Pair census. The question this answers: of the ~11.6k pairs a
+      // cascade tick reports, how many are a settled pile re-reporting the
+      // same standing load (PERSISTS) versus a genuinely new contact
+      // (FOUND)? That ratio decides whether "reduce pairs" is worth a
+      // structural change, and which change.
+      if (pair.events & PxPairFlag::eNOTIFY_THRESHOLD_FORCE_PERSISTS) {
+        ++cp_persists_;
+      } else if (pair.events & (PxPairFlag::eNOTIFY_THRESHOLD_FORCE_FOUND |
+                                PxPairFlag::eNOTIFY_TOUCH_FOUND)) {
+        ++cp_found_;
+      } else {
+        ++cp_other_;
+      }
+      cp_points_ += contact_count;
       // Reused across pairs and ticks. This was a fresh heap allocation per
       // reported manifold, and a settled city reports thousands of resting
       // manifolds every tick -- all of it inside fetchResults(), which is what
@@ -710,6 +724,29 @@ public:
       if (sample_subspans) {
         cb_queue_ms_ += 8.0 * sub_ms(points_started);
       }
+      // Which CONSUMER would miss this pair if it were not reported. The two
+      // want opposite things -- stress damage only cares about contacts hard
+      // enough to pass a bond's elastic limit, the supporter graph
+      // specifically needs the gentle resting ones -- so a single threshold
+      // cannot serve both, and this counts the overlap.
+      if (sum_abs_impulse_y > 0.0f) {
+        ++cp_supporter_relevant_;
+      }
+      // log2 histogram of the pair's total impulse. A histogram rather than a
+      // count against a fixed cut, because the useful question is "what would
+      // a threshold of X cost", and X is exactly what is not known yet.
+      if (total_magnitude > 0.0f) {
+        int bucket = 0;
+        float m = total_magnitude;
+        while (m >= 1.0f && bucket < kImpulseBuckets - 1) {
+          m *= 0.5f;
+          ++bucket;
+        }
+        ++cp_impulse_hist_[bucket];
+      } else {
+        ++cp_zero_impulse_;
+      }
+
       const auto events_started = sub_now();
       if (total_magnitude > 0.0f) {
         weighted_point /= total_magnitude;
@@ -1117,6 +1154,15 @@ public:
     cb_resolve_ms_ = 0.0;
     cb_entity_ms_ = 0.0;
     cb_events_ms_ = 0.0;
+    cp_found_ = 0;
+    cp_persists_ = 0;
+    cp_other_ = 0;
+    cp_points_ = 0;
+    cp_supporter_relevant_ = 0;
+    cp_zero_impulse_ = 0;
+    for (int i = 0; i < kImpulseBuckets; ++i) {
+      cp_impulse_hist_[i] = 0;
+    }
     contact_callbacks_this_step_ = 0;
     step_start_ = std::chrono::steady_clock::now();
     controller_manager_->computeInteractions(kFixedTimestep);
@@ -1455,6 +1501,26 @@ public:
     span("cb_resolve_ms", cb_resolve_ms_, 0);
     span("cb_entity_ms", cb_entity_ms_, 0);
     span("cb_events_ms", cb_events_ms_, 0);
+    span("cp_found", static_cast<double>(cp_found_), 0);
+    span("cp_persists", static_cast<double>(cp_persists_), 0);
+    span("cp_other", static_cast<double>(cp_other_), 0);
+    span("cp_points", static_cast<double>(cp_points_), 0);
+    span("cp_supporter_relevant", static_cast<double>(cp_supporter_relevant_), 0);
+    span("cp_zero_impulse", static_cast<double>(cp_zero_impulse_), 0);
+    // Fixed names rather than a built string: the span lambda takes a
+    // const char*, and a per-tick std::string allocation in the stats path
+    // is exactly the kind of cost that shows up later as a mystery.
+    static constexpr const char* kImpulseSpanNames[kImpulseBuckets] = {
+        "cp_imp_2e0",  "cp_imp_2e1",  "cp_imp_2e2",  "cp_imp_2e3",
+        "cp_imp_2e4",  "cp_imp_2e5",  "cp_imp_2e6",  "cp_imp_2e7",
+        "cp_imp_2e8",  "cp_imp_2e9",  "cp_imp_2e10", "cp_imp_2e11",
+        "cp_imp_2e12", "cp_imp_2e13", "cp_imp_2e14", "cp_imp_2e15",
+        "cp_imp_2e16", "cp_imp_2e17", "cp_imp_2e18", "cp_imp_2e19"};
+    for (int i = 0; i < kImpulseBuckets; ++i) {
+      if (cp_impulse_hist_[i] != 0) {
+        span(kImpulseSpanNames[i], static_cast<double>(cp_impulse_hist_[i]), 0);
+      }
+    }
     span("contact_callbacks", static_cast<double>(contact_callbacks_this_step_), 2);
     // Broadphase membership churn: prices freeze/thaw flips directly.
     span("bp_adds", static_cast<double>(statistics.getNbBroadPhaseAdds()), 2);
@@ -2054,6 +2120,15 @@ private:
   double cb_resolve_ms_ = 0.0;
   double cb_entity_ms_ = 0.0;
   double cb_events_ms_ = 0.0;
+  /// Per-tick pair census, reset alongside the callback timers.
+  static constexpr int kImpulseBuckets = 20;
+  std::uint64_t cp_found_ = 0;
+  std::uint64_t cp_persists_ = 0;
+  std::uint64_t cp_other_ = 0;
+  std::uint64_t cp_points_ = 0;
+  std::uint64_t cp_supporter_relevant_ = 0;
+  std::uint64_t cp_zero_impulse_ = 0;
+  std::uint64_t cp_impulse_hist_[kImpulseBuckets] = {};
   std::uint64_t contact_callbacks_this_step_ = 0;
   float last_step_ms_ = 0.0f;
   float last_controller_ms_ = 0.0f;

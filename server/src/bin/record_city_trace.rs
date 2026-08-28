@@ -1005,7 +1005,8 @@ fn main() -> Result<()> {
                  readback,events,filters,ccd,support,shape,slot,bond_sample,gpu_solve,\
                  contact_proc,gravity,cpu_solve,frac_topo,frac_valid,frac_gen,frac_prep,\
                  frac_apply,frac_scene,frac_rebuild,physx_step,gpu_wait,fetch_copy,\
-                 callback,fetch_total,fetch_resid,post_resid,step_resid,solve_resid,pairs,\
+                 callback,fetch_total,fetch_resid,post_resid,step_resid,solve_resid,\
+                 cp_found,cp_persists,cp_points,cp_supp,pairs,\
                  contacts_q,islands_skip,islands_tot,quiet,freeze,unfreeze,contact_wakes,\
                  min_y,pose_quiet,overstressed,patch_hw,escaped"
             )?;
@@ -1141,6 +1142,7 @@ fn main() -> Result<()> {
                  {:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},\
                  {:.4},{:.4},{:.4},{:.4},{:.4},\
                  {:.4},{:.4},{:.4},{:.4},{:.4},{:.4},\
+                 {:.0},{:.0},{:.0},{:.0},\
                  {},{},{},{},{},{},{},{},{:.4},{},{},{},{}",
                 tick_index, s.chunk_bodies, s.awake_chunk_bodies, s.frozen_chunk_bodies,
                 s.sleeping_chunk_bodies, s.broken_bonds,
@@ -1163,6 +1165,10 @@ fn main() -> Result<()> {
                 s.post_step_residual_ms,
                 0.0f32,
                 span_value(&tick_spans, "stress_solve_residual_ms"),
+                world_span_value(&world_spans, "cp_found"),
+                world_span_value(&world_spans, "cp_persists"),
+                world_span_value(&world_spans, "cp_points"),
+                world_span_value(&world_spans, "cp_supporter_relevant"),
                 s.support_pair_loads, s.contacts_queued,
                 s.solver_islands_skipped_accum, s.solver_islands_total_accum,
                 s.quiet_slot_ticks, s.freeze_flips, s.unfreeze_flips, s.contact_wakes,
