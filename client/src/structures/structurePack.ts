@@ -57,12 +57,28 @@ export interface ScenePack {
 }
 
 export async function loadScenePack(name: string): Promise<ScenePack> {
-  // `server.fs.allow: ['..']` in vite.config.ts already permits this, so the
-  // viewer reads the pack from destruction/assets/scenes with no plugin, no
-  // copy into public/, and no megabytes duplicated in the repo.
-  const url = `/@fs${SCENES_DIR}/${name}.json`;
+  // Dev reads the pack in place through vite's /@fs (`server.fs.allow: ['..']`),
+  // so no megabytes of JSON are duplicated into public/. A BUILT client has no
+  // dev server and no /@fs, and the SPA fallback answers that path with
+  // index.html and a 200 -- so the fetch succeeds, `response.ok` is true, and
+  // the failure only surfaces as a JSON parse error several lines later.
+  // Safari words that one "The string did not match the expected pattern",
+  // which says nothing about the missing file at all.
+  //
+  // The build copies the packs to /scenes instead (see vite.config.ts).
+  const url = import.meta.env.DEV ? `/@fs${SCENES_DIR}/${name}.json` : `/scenes/${name}.json`;
   const response = await fetch(url);
   if (!response.ok) throw new Error(`pack "${name}": ${response.status} ${response.statusText} from ${url}`);
+  // Guard the content type as well as the status, because the SPA fallback is
+  // the failure that actually happens and it is indistinguishable from success
+  // by status alone.
+  const contentType = response.headers.get('content-type') ?? '';
+  if (!contentType.includes('json')) {
+    throw new Error(
+      `pack "${name}": ${url} returned ${contentType || 'no content type'} rather than JSON `
+      + '— the pack is probably not present in this build',
+    );
+  }
   const pack = (await response.json()) as ScenePack;
   if (pack.version !== 2) throw new Error(`pack "${name}": expected version 2, got ${pack.version}`);
   return pack;

@@ -18,7 +18,32 @@ export default defineConfig(({ mode }) => {
     : undefined;
 
   return {
-    plugins: [tailwindcss(), react()],
+    plugins: [
+      tailwindcss(),
+      react(),
+      {
+        // The /structure viewer's packs, for a BUILT client.
+        //
+        // In dev they are served in place through /@fs. A build has neither,
+        // and the SPA fallback answers that path with index.html and a 200 --
+        // so the viewer appeared to work everywhere and failed only on the
+        // deployed QA page, as a JSON parse error that named no file.
+        name: 'copy-scene-packs',
+        apply: 'build' as const,
+        generateBundle(this: { emitFile: (f: unknown) => void }) {
+          const dir = path.resolve(process.cwd(), '../destruction/assets/scenes');
+          if (!fs.existsSync(dir)) return;
+          for (const file of fs.readdirSync(dir)) {
+            if (!file.endsWith('.json')) continue;
+            this.emitFile({
+              type: 'asset',
+              fileName: `scenes/${file}`,
+              source: fs.readFileSync(path.join(dir, file)),
+            });
+          }
+        },
+      },
+    ],
     envDir: '../',
     server: {
       port: Number(env.CLIENT_PORT) || 3001,
