@@ -489,9 +489,22 @@ DestructionManager::DestructionManager(PxPhysics &physics, PxScene &scene,
   // Nested use is safe here because the inner dispatch happens on a worker
   // already inside run(), and StressExecutor::run participates rather than
   // blocking on a separate pool.
+  // Default ON, earned: the order audit ran both paths per tick and compared
+  // the removal list element by element in merge order, the overstressed
+  // counts and the final latches -- 88.8M group checks at grid 1 plus 133.4M
+  // at grid 2, 0 mismatches. Measured -51.2% on hw_bond where the inner
+  // fan-out engages (single-structure scenes; outer count == 1).
+  //
+  // On multi-structure scenes the inner dispatch arrives NESTED, from inside
+  // a worker of the slot fan-out, and the executor runs nested calls inline
+  // -- its state is one generation deep, and the first nested dispatch
+  // overwrote the generation the outer call was waiting on and DEADLOCKED
+  // grid 2 (see tl_inside_stress_task). So at grid 2 this is currently a
+  // no-op, not a win; flattening the slot x strip fan-out is the follow-up
+  // that collects it there. BLAST_BOND_STRESS_PARALLEL=0 removes the hook.
   static bool parallel_for_enabled = [] {
     const char *raw = std::getenv("BLAST_BOND_STRESS_PARALLEL");
-    return raw != nullptr && std::string(raw) != "0";
+    return raw == nullptr || std::string(raw) != "0";
   }();
   if (parallel_for_enabled) {
     Nv::Blast::NvBlastExtStressSetParallelFor(
@@ -1479,12 +1492,23 @@ StressExecutor::~StressExecutor() {
   }
 }
 
+/// Set while a thread is executing tasks of an in-flight generation --
+/// workers and the participating caller alike. A nested run() from inside a
+/// task MUST NOT touch the pool: the state is one generation deep
+/// (task_/count_/next_/active_), so a nested dispatch overwrites the
+/// generation the outer call is still waiting on. That is not a slowdown,
+/// it is a deadlock -- grid 2 hung on the first nested use, and the hang was
+/// misread as a short timeout for a full session. Thread-local, so the check
+/// costs one TLS read on the run() entry path.
+static thread_local bool tl_inside_stress_task = false;
+
 void StressExecutor::drain() {
   for (;;) {
     const std::size_t index = next_.fetch_add(1, std::memory_order_relaxed);
     if (index >= count_) {
       return;
     }
+    tl_inside_stress_task = true;
     try {
       (*task_)(index);
     } catch (...) {
@@ -1493,6 +1517,7 @@ void StressExecutor::drain() {
         error_ = std::current_exception();
       }
     }
+    tl_inside_stress_task = false;
   }
 }
 
@@ -1501,8 +1526,10 @@ void StressExecutor::run(std::size_t count,
   if (count == 0) {
     return;
   }
-  // One item, or no helper threads: no point paying for a handoff.
-  if (threads_.empty() || count == 1) {
+  // One item, no helper threads, or NESTED (called from inside a task of an
+  // in-flight generation): run inline. The nested case is correctness, not
+  // tuning -- see tl_inside_stress_task.
+  if (threads_.empty() || count == 1 || tl_inside_stress_task) {
     for (std::size_t i = 0; i < count; ++i) {
       task(i);
     }
