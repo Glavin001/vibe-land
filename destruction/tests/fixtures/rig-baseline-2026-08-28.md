@@ -152,3 +152,41 @@ material around them, in every building independently. That is the same shape
 of finding as the slivers, one level up: the load path narrows at attachments.
 
 So the next lever is those attachments and the weapon, not the material table.
+
+---
+
+# Solver iterations change the answer, a lot
+
+Production runs `max_solver_iterations_per_frame = 8`. Raising it to 32 and
+re-running the same 40 seconds of gravity:
+
+| scene | 8 iterations | 32 iterations |
+|---|---:|---:|
+| parking-garage | 0 | **0** |
+| neighbourhood (tower + 2 houses) | 0 | **800** |
+| park-432 | 72 | **17,418** |
+| skyline (all seven) | 1,410 | **19,919** |
+
+More iterations means a solve closer to true equilibrium, so the larger number
+is the better estimate of what the structure is actually carrying. Which means
+most of these buildings are NOT stable; they look stable because the solve
+stops early and under-reports the load.
+
+The parking garage is the exception, and the only one of the set that is
+stable on its own terms.
+
+This is the same shape of problem as the settled-island skip, one level down:
+an optimisation that makes a structure look sound by not finishing the sum.
+It also explains skyline without needing the buildings to interact -- a bigger
+pack shares the same fixed iteration budget across more system, so it is
+under-converged by more, and the gap between 8 and 32 widens with size.
+
+Consequences worth stating plainly:
+
+  - Any at-rest verdict in this file taken at 8 iterations is an upper bound on
+    stability, not a measurement of it.
+  - "neighbourhood is stable at 40 s" -- which is what was deployed on the
+    strength of -- holds at 8 iterations and not at 32.
+  - Strengthening, not weakening, is the direction. That agrees with the
+    corrected hot-joint table above (maxima at or past 1.0) and disagrees with
+    everything measured before the settled-skip fix.
