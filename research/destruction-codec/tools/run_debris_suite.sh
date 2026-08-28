@@ -18,7 +18,7 @@ CODEC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TOWER_DIR="$CODEC_DIR/../physx-tower/tower-demo"
 CODEC="$CODEC_DIR/target/release/destruction-codec"
 TOWER="$TOWER_DIR/target/release/tower-demo"
-OUT_ROOT="${DEBRIS_SUITE_OUT:-$CODEC_DIR/target/debris-suite}"
+OUT_ROOT="${DEBRIS_SUITE_OUT:-$CODEC_DIR/experiments/debris-suite}"
 TRACE_DIR="${DEBRIS_SUITE_TRACES:-/root/debris-suite-traces}"
 
 # id|buildings|seed|shots|duration|shot_delay_max|regime

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-OUT="${1:-$ROOT/target/hierarchy-regression}"
+OUT="${1:-$ROOT/experiments/hierarchy-regression}"
 CARGO=(cargo)
 for candidate in "$HOME"/.rustup/toolchains/stable-*/bin/cargo; do
   if [[ -x "$candidate" ]]; then

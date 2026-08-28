@@ -11,7 +11,7 @@
 # Example:
 #   tools/render_island_comparison.sh \
 #     /root/workspace/codec-results/blast-one-building-60hz-30s/collapse.towertrace \
-#     target/vids 0.5 20 100
+#     experiments/vids 0.5 20 100
 #
 # THE GOTCHA THIS SCRIPT EXISTS TO REMEMBER: hold --flush-ms FIXED across
 # variants. The encode window is end-to-end latency, so a variant with a longer

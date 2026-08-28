@@ -39,7 +39,22 @@
 //!     cargo test -p vibe-land-destruction --features cuda-stress \
 //!       --test structural_audit --release -- --ignored --nocapture
 //!
-//! AUDIT_PACKS=name,name limits it; AUDIT_SECS sets the window (default 20).
+//! ## Why it runs to a verdict rather than for a fixed time
+//!
+//! Every earlier version watched for a fixed window and reported what it saw,
+//! which makes the answer a statement about the observer rather than the
+//! building. It also gets the answer WRONG, repeatedly and in the flattering
+//! direction: 432 Park broke 5 bonds in its first 45 seconds and 14,561 in the
+//! next 45, so every check at 10, 20 and 45 seconds called a delayed collapse
+//! stable. "Sound, as far as I watched" is not a property anyone wants.
+//!
+//! So the audit now runs until the structure settles the question itself. It
+//! is converged when nothing has broken AND the peak has held still for a
+//! sustained stretch; it is failing while either is still moving. If neither
+//! resolves inside the cap it says so, which is a real answer too -- a
+//! structure still arguing with gravity after five minutes is not stable.
+//!
+//! AUDIT_PACKS=name,name limits it; AUDIT_MAX_SECS caps the run (default 300).
 #![cfg(feature = "physx")]
 
 use std::collections::HashMap;
@@ -60,8 +75,22 @@ const DEFAULT_PACKS: &[&str] = &[
 ];
 
 /// Ticks between samples. Half a second: fine enough to see a runaway develop,
-/// coarse enough that a 20 s audit is 40 solver reports rather than 1200.
+/// coarse enough that a long audit is hundreds of solver reports, not thousands.
 const SAMPLE_EVERY: u32 = HZ / 2;
+
+/// Consecutive quiet samples before a structure is called converged: nothing
+/// breaking and the peak holding still, for twenty samples -- ten seconds.
+///
+/// Ten and not two because settling is not monotone. Buildings here go quiet
+/// for a few seconds mid-settle and then resume, and the walled city's last
+/// bond broke at 73 s after eight seconds of silence. A short window would
+/// have called that converged twice before it was.
+const QUIET_SAMPLES: u32 = 20;
+
+/// How still the peak has to be to count as quiet. Utilisation wanders by a
+/// per cent or so on a settled structure, which is the solver re-converging
+/// rather than the building moving.
+const PEAK_STEADY: f32 = 0.02;
 
 fn load(name: &str) -> ScenePack {
     let path: PathBuf =
@@ -82,8 +111,17 @@ struct BondHistory {
     mode: String,
 }
 
+/// How the run ended. The point of the audit is to produce one of these
+/// rather than a number of seconds someone has to interpret.
+enum Outcome {
+    /// Nothing broke and the peak held still, from this time onward.
+    Converged { at: f32, broke_total: u32 },
+    /// Still breaking, or the peak still moving, when the cap ran out.
+    Unresolved { capped_at: f32, broke_total: u32, last_break_at: Option<f32> },
+}
+
 struct Audit {
-    settled_at: Option<f32>,
+    outcome: Outcome,
     /// Peak utilisation averaged over the first and last thirds of the run.
     /// Two numbers instead of one because the DIRECTION is the diagnosis.
     early_peak: f32,
@@ -91,45 +129,52 @@ struct Audit {
     /// Bonds over limit, averaged over the last third: a stable count of real
     /// overloads rather than whatever the final frame happened to hold.
     late_over: f32,
-    broken_first_half: u32,
-    broken_second_half: u32,
     persistent: Vec<(String, BondHistory)>,
     class_load: Vec<(String, u32)>,
     shot_broke: u32,
     bonds: usize,
 }
 
-fn audit(name: &str, secs: f32) -> Audit {
+fn audit(name: &str, max_secs: f32) -> Audit {
     let pack = load(name);
     let mut rig = Rig::spin_up(&pack).expect("install");
 
-    let samples = (secs * HZ as f32 / SAMPLE_EVERY as f32) as u32;
+    let max_samples = (max_secs * HZ as f32 / SAMPLE_EVERY as f32) as u32;
+    let at = |sample: u32| sample as f32 * SAMPLE_EVERY as f32 / HZ as f32;
     let mut history: HashMap<u32, BondHistory> = HashMap::new();
     let mut peaks: Vec<f32> = Vec::new();
     let mut overs: Vec<f32> = Vec::new();
-    let mut broken_at_half = 0u32;
-    let mut settled_at = None;
-    let mut steady_run = 0u32;
-    let mut last_peak = 0.0f32;
 
-    for s in 0..samples {
+    let mut quiet = 0u32;
+    let mut last_peak = 0.0f32;
+    let mut last_broken = 0u32;
+    let mut last_break_at: Option<f32> = None;
+    let mut outcome = None;
+
+    for sample in 1..=max_samples {
         rig.run_ticks(SAMPLE_EVERY).expect("tick");
         let report = rig.stress_report();
         let peak = report.bonds.first().map(|b| b.utilisation).unwrap_or(0.0);
+        let broken = rig.broken_bonds();
         peaks.push(peak);
         overs.push(report.over_limit() as f32);
 
-        // Settled = peak utilisation within 1% for four consecutive samples
-        // (2 s). Measured on sound buildings: the garage holds this from 1.2 s.
-        if (peak - last_peak).abs() <= 0.01 * last_peak.max(1e-6) {
-            steady_run += 1;
-            if steady_run >= 4 && settled_at.is_none() {
-                settled_at = Some((s + 1) as f32 * SAMPLE_EVERY as f32 / HZ as f32);
-            }
+        // Quiet means BOTH: nothing broke this sample, and the peak held
+        // still. Either alone is not enough -- a structure can stop breaking
+        // while its load is still climbing toward the next failure, which is
+        // precisely how a delayed collapse looks from inside the lull.
+        let broke_now = broken > last_broken;
+        if broke_now {
+            last_break_at = Some(at(sample));
+        }
+        let peak_steady = (peak - last_peak).abs() <= PEAK_STEADY * last_peak.max(1e-6);
+        if !broke_now && peak_steady {
+            quiet += 1;
         } else {
-            steady_run = 0;
+            quiet = 0;
         }
         last_peak = peak;
+        last_broken = broken;
 
         for b in &report.bonds {
             let entry = history.entry(b.bond_index).or_insert_with(|| BondHistory {
@@ -154,10 +199,21 @@ fn audit(name: &str, secs: f32) -> Audit {
                 entry.mode = b.governing_mode().to_string();
             }
         }
-        if s + 1 == samples / 2 {
-            broken_at_half = rig.broken_bonds();
+
+        if quiet >= QUIET_SAMPLES {
+            outcome = Some(Outcome::Converged {
+                at: at(sample - QUIET_SAMPLES),
+                broke_total: broken,
+            });
+            break;
         }
     }
+    let outcome = outcome.unwrap_or(Outcome::Unresolved {
+        capped_at: max_secs,
+        broke_total: last_broken,
+        last_break_at,
+    });
+    let samples = peaks.len() as u32;
 
     let third = (samples / 3).max(1) as usize;
     let mean = |v: &[f32]| v.iter().sum::<f32>() / v.len().max(1) as f32;
@@ -189,18 +245,15 @@ fn audit(name: &str, secs: f32) -> Audit {
     class_load.sort_by(|a, b| b.1.cmp(&a.1));
 
     let before = rig.broken_bonds();
-    let broken_second_half = before.saturating_sub(broken_at_half);
     let (center, direction) = facade_aim(&pack);
     rig.shot(center, direction, ShotProfile::city()).expect("shot");
     rig.run_ticks(HZ * 2).expect("tick");
 
     Audit {
-        settled_at,
+        outcome,
         early_peak,
         late_peak,
         late_over,
-        broken_first_half: broken_at_half,
-        broken_second_half,
         persistent: persistent.into_iter().take(6).collect(),
         class_load: class_load.into_iter().take(4).collect(),
         shot_broke: rig.broken_bonds().saturating_sub(before),
@@ -214,57 +267,36 @@ fn audit_every_building() {
     let names: Vec<String> = std::env::var("AUDIT_PACKS")
         .map(|v| v.split(',').map(str::to_string).collect())
         .unwrap_or_else(|_| DEFAULT_PACKS.iter().map(|s| s.to_string()).collect());
-    let secs: f32 = std::env::var("AUDIT_SECS")
+    let max_secs: f32 = std::env::var("AUDIT_MAX_SECS")
         .ok()
         .and_then(|v| v.parse().ok())
-        .unwrap_or(20.0);
+        .unwrap_or(300.0);
 
+    let mut unresolved = Vec::new();
     for name in &names {
-        let a = audit(name, secs);
-        let trend = a.late_peak - a.early_peak;
-        // The verdict reads the DIRECTION, which is what a snapshot cannot see.
-        // A structure whose peak is falling is resolving itself even if it is
-        // still above 1; one whose peak is climbing is running away even if it
-        // is currently below.
-        // Breakage is the ground truth and outranks the stress trend, because
-        // a joint can ride above its elastic limit indefinitely without
-        // accumulating damage if it only does so in peaks. Petronas showed
-        // exactly that: peak climbing 0.98 -> 1.39 with two joints past yield
-        // and ZERO bonds broken in thirty seconds. An earlier version of this
-        // verdict called that "running away", which would have sent me to fix
-        // a building that is not breaking.
-        let broke = a.broken_first_half + a.broken_second_half;
-        let verdict = if broke == 0 && a.late_over < 0.5 {
-            "sound"
-        } else if broke == 0 {
-            "holding - joints ride above yield, but nothing is breaking"
-        } else if a.broken_second_half > a.broken_first_half.saturating_mul(2).max(50) {
-            "RUNNING AWAY - damage accelerating"
-        } else if a.broken_second_half * 2 < a.broken_first_half {
-            "SHEDDING - broke, then converged"
-        } else if trend > 0.1 {
-            "DEGRADING - breaking steadily, load still rising"
-        } else {
-            "DEGRADING - breaking steadily"
-        };
-        let settles = match a.settled_at {
-            Some(t) => format!("{t:.1}s"),
-            None => "never".into(),
-        };
-
-        println!("\n=== {name} ({} bonds, {secs:.0} s) ===", a.bonds);
-        println!("  {verdict}");
+        let a = audit(name, max_secs);
+        println!("\n=== {name} ({} bonds) ===", a.bonds);
+        match &a.outcome {
+            Outcome::Converged { at, broke_total } => {
+                println!("  STABLE - converged at {at:.0} s after breaking {broke_total} bonds");
+            }
+            Outcome::Unresolved { capped_at, broke_total, last_break_at } => {
+                unresolved.push(name.clone());
+                match last_break_at {
+                    Some(t) => println!(
+                        "  NOT STABLE - still unsettled at the {capped_at:.0} s cap; \
+                         {broke_total} bonds broken, most recently at {t:.0} s"
+                    ),
+                    None => println!(
+                        "  NOT STABLE - nothing has broken, but the peak was still \
+                         moving at the {capped_at:.0} s cap"
+                    ),
+                }
+            }
+        }
         println!(
-            "  settles {settles} | peak {:.2} -> {:.2} ({}{:.2}) | {:.1} joints past yield",
-            a.early_peak,
-            a.late_peak,
-            if trend >= 0.0 { "+" } else { "" },
-            trend,
-            a.late_over,
-        );
-        println!(
-            "  broken bonds: {} in the first half, {} in the second | test shot broke {}",
-            a.broken_first_half, a.broken_second_half, a.shot_broke,
+            "  peak {:.2} -> {:.2} | {:.1} joints past yield near the end | test shot broke {}",
+            a.early_peak, a.late_peak, a.late_over, a.shot_broke,
         );
         if !a.class_load.is_empty() {
             let classes: Vec<String> = a
@@ -286,5 +318,9 @@ fn audit_every_building() {
                 h.area,
             );
         }
+    }
+
+    if !unresolved.is_empty() {
+        println!("\nnot stable: {}", unresolved.join(", "));
     }
 }
