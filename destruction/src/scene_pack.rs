@@ -25,6 +25,15 @@ pub struct SceneNode {
     pub centroid: Vec3,
     pub mass: f32,
     pub volume: f32,
+    /// Index into `ScenePack::materials`, from `nodes[].m`.
+    ///
+    /// v2 assigns material per BOND, which is right for the solver: a joint has
+    /// a strength and a bond is a joint. It leaves a renderer with nothing,
+    /// because a chunk then has no material of its own and cannot be shaded by
+    /// what it is made of. This is the field v3 already defines for picking
+    /// crush properties, read here for the same per-chunk purpose. Omitted
+    /// means 0, which is what every existing pack means.
+    pub material: u32,
 }
 
 impl SceneNode {
@@ -77,6 +86,8 @@ pub struct ScenePack {
     /// clip is meant to shed long before the frame does -- and that difference
     /// is authored here rather than by distorting bond areas.
     pub materials: Vec<StressLimits>,
+    /// Parallel to `materials`. Empty for a pack that authored no appearance.
+    pub appearances: Vec<MaterialAppearance>,
     pub nodes: Vec<SceneNode>,
     pub bonds: Vec<SceneBond>,
     /// Visual box size per node (full extents), used for rendering.
@@ -146,12 +157,51 @@ struct LimitsJson {
     #[serde(default)]
     #[allow(dead_code)]
     name: Option<String>,
+    /// Appearance, all optional and all ignored by the solver.
+    #[serde(default)]
+    color: Option<String>,
+    #[serde(default)]
+    opacity: Option<f32>,
+    #[serde(default)]
+    texture_key: Option<String>,
+    #[serde(default)]
+    roughness: Option<f32>,
+    #[serde(default)]
+    metalness: Option<f32>,
     compression_elastic: f32,
     compression_fatal: f32,
     tension_elastic: f32,
     tension_fatal: f32,
     shear_elastic: f32,
     shear_fatal: f32,
+}
+
+/// How a material LOOKS. Advisory: no solver reads any of it.
+///
+/// Strength and appearance are kept apart deliberately -- `StressLimits` stays
+/// `Copy` and six floats wide, which is what the solver wants, while this rides
+/// alongside for the renderer. A pack without these fields is no less valid.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct MaterialAppearance {
+    pub name: Option<String>,
+    pub color: Option<String>,
+    /// Presence of this is what marks a material transparent.
+    pub opacity: Option<f32>,
+    pub texture_key: Option<String>,
+    pub roughness: Option<f32>,
+    pub metalness: Option<f32>,
+}
+
+impl MaterialAppearance {
+    /// True when nothing was authored, so the manifest can skip emitting it and
+    /// keep hashing exactly as it did before this existed.
+    pub fn is_empty(&self) -> bool {
+        self.color.is_none()
+            && self.opacity.is_none()
+            && self.texture_key.is_none()
+            && self.roughness.is_none()
+            && self.metalness.is_none()
+    }
 }
 
 #[derive(Deserialize)]
@@ -172,6 +222,9 @@ struct ScenarioNodeJson {
     centroid: Vec3Json,
     mass: f32,
     volume: f32,
+    /// The node's own material index. Omitted means 0.
+    #[serde(default, rename = "m")]
+    m: u32,
 }
 
 #[derive(Deserialize)]
@@ -240,6 +293,17 @@ fn limits_from(limits: &LimitsJson) -> StressLimits {
 /// A negative tension or shear limit means "same as compression". Resolved
 /// once, here, so every consumer downstream sees real numbers -- a sentinel
 /// that reached a log or an assertion would read as a nonsensical strength.
+fn appearance_from(json: &LimitsJson) -> MaterialAppearance {
+    MaterialAppearance {
+        name: json.name.clone(),
+        color: json.color.clone(),
+        opacity: json.opacity,
+        texture_key: json.texture_key.clone(),
+        roughness: json.roughness,
+        metalness: json.metalness,
+    }
+}
+
 fn resolve_inherited(limits: &StressLimits) -> StressLimits {
     let inherit = |value: f32, fallback: f32| if value < 0.0 { fallback } else { value };
     StressLimits {
@@ -354,6 +418,28 @@ pub fn parse_scene_pack(payload: &str) -> Result<ScenePack, ScenePackError> {
         validate_material(index, material)?;
     }
     let materials: Vec<StressLimits> = materials.iter().map(resolve_inherited).collect();
+    let appearances: Vec<MaterialAppearance> = match (pack.version, solver.as_ref()) {
+        (2, Some(solver)) => solver
+            .materials
+            .as_ref()
+            .map(|table| table.iter().map(appearance_from).collect())
+            .unwrap_or_default(),
+        _ => Vec::new(),
+    };
+
+    // A node's material index has to exist for the same reason a bond's does.
+    // v1 packs have no table to index, so any stray value there is not
+    // meaningful and is flattened rather than rejected.
+    let nodes_material_max = if pack.version >= 2 { materials.len() } else { 1 };
+    for (index, node) in scenario.nodes.iter().enumerate() {
+        let m = if pack.version >= 2 { node.m } else { 0 };
+        if m as usize >= nodes_material_max {
+            return Err(ScenePackError::Invalid(format!(
+                "node {index} references material {m}, table has {}",
+                materials.len()
+            )));
+        }
+    }
 
     let bonds: Vec<SceneBond> = scenario
         .bonds
@@ -391,6 +477,7 @@ pub fn parse_scene_pack(payload: &str) -> Result<ScenePack, ScenePackError> {
             authored_limits.map(|limits| resolve_inherited(&limits))
         },
         materials,
+        appearances,
         nodes: scenario
             .nodes
             .into_iter()
@@ -398,6 +485,7 @@ pub fn parse_scene_pack(payload: &str) -> Result<ScenePack, ScenePackError> {
                 centroid: node.centroid.into(),
                 mass: node.mass,
                 volume: node.volume,
+                material: if pack.version >= 2 { node.m } else { 0 },
             })
             .collect(),
         bonds,

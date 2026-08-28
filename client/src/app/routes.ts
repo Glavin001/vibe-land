@@ -11,7 +11,8 @@ export type AppRoute =
   | { kind: 'ragdollLab' }
   | { kind: 'moqDemo' }
   | { kind: 'bodiesLab' }
-  | { kind: 'renderBench' };
+  | { kind: 'renderBench' }
+  | { kind: 'structureViewer'; pack: string };
 
 function normalizePathname(pathname: string): string {
   if (!pathname || pathname === '/') {
@@ -49,6 +50,9 @@ export function resolveAppRoute(pathname: string, search?: string): AppRoute {
       return { kind: 'game', mode: 'multiplayer', matchFallback: 'city-default' };
     case '/practice':
       return { kind: 'game', mode: 'practice' };
+    case '/structure':
+      // Standalone viewer for an authored ScenePack. No server, no manifest.
+      return { kind: 'structureViewer', pack: params.get('pack') ?? 'algedra-tower' };
     case '/stats':
       return { kind: 'stats' };
     case '/loadtest':

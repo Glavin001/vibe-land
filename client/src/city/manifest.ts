@@ -65,6 +65,14 @@ export interface ManifestChunk {
   geometry: ChunkGeometryCuboid | ChunkGeometryConvexHull;
   radius: number;
   support: boolean;
+  /**
+   * Index into `CityManifest.materialAppearance` — the chunk's OWN material.
+   *
+   * Absent on every pack that does not author per-node material, which is all
+   * of them but the hand-authored structures; the server skips the field when
+   * it is 0 so those manifests keep their content hash.
+   */
+  material?: number;
 }
 
 export interface ManifestBond {
@@ -95,6 +103,25 @@ export interface CityManifest {
    * nothing downstream has to know it existed.
    */
   shapeLibrary?: number[][];
+  /**
+   * How each material looks, parallel to the solver's strength table.
+   *
+   * Advisory and usually absent: the city's own packs are all one concrete and
+   * get their variety from hashing a building id into the texture array. An
+   * authored structure says what its pieces are made of, which is what lets
+   * them be shaded as brick or steel or glass.
+   */
+  materialAppearance?: MaterialAppearance[];
+}
+
+/** Presence of `opacity` is what marks a material transparent. */
+export interface MaterialAppearance {
+  name?: string;
+  color?: string;
+  opacity?: number;
+  textureKey?: string;
+  roughness?: number;
+  metalness?: number;
 }
 
 export interface LoadedCityManifest {

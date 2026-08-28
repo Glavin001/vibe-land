@@ -12,19 +12,25 @@ export interface CityTextureSet {
   metresPerTile: number;
   /** Strata/plank surfaces that cannot survive stochastic rotation. */
   directional: boolean;
+  /** Authored material this layer depicts, for name-keyed lookup. */
+  materialKey: string | null;
   /** Mean albedo in linear RGB, for variance-preserving blends. */
   meanLinear: [number, number, number];
 }
 
 export const CITY_TEXTURE_SETS: readonly CityTextureSet[] = [
-  { slug: 'cracked_concrete_wall', role: 'wall', metresPerTile: 1.000, directional: false, meanLinear: [0.5137, 0.4443, 0.3474] },
-  { slug: 'worn_mossy_plasterwall', role: 'wall', metresPerTile: 1.800, directional: false, meanLinear: [0.2433, 0.2222, 0.1837] },
-  { slug: 'cracked_concrete_02', role: 'wall', metresPerTile: 2.230, directional: false, meanLinear: [0.1182, 0.0929, 0.0687] },
-  { slug: 'concrete_layers_02', role: 'wall', metresPerTile: 2.000, directional: true, meanLinear: [0.2074, 0.1966, 0.1769] },
-  { slug: 'concrete_floor_worn_02', role: 'floor', metresPerTile: 2.000, directional: false, meanLinear: [0.2034, 0.1486, 0.0931] },
-  { slug: 'concrete_floor_damaged_01', role: 'floor', metresPerTile: 5.000, directional: false, meanLinear: [0.0793, 0.0583, 0.0372] },
-  { slug: 'leafy_grass', role: 'ground', metresPerTile: 2.000, directional: false, meanLinear: [0.3199, 0.2360, 0.1062] },
-  { slug: 'brown_mud_leaves_01', role: 'ground', metresPerTile: 1.300, directional: false, meanLinear: [0.1388, 0.0996, 0.0376] },
+  { slug: 'cracked_concrete_wall', role: 'wall', metresPerTile: 1.000, directional: false, materialKey: 'concrete-wall', meanLinear: [0.5137, 0.4443, 0.3474] },
+  { slug: 'worn_mossy_plasterwall', role: 'wall', metresPerTile: 1.800, directional: false, materialKey: null, meanLinear: [0.2433, 0.2222, 0.1837] },
+  { slug: 'cracked_concrete_02', role: 'wall', metresPerTile: 2.230, directional: false, materialKey: null, meanLinear: [0.1182, 0.0929, 0.0687] },
+  { slug: 'concrete_layers_02', role: 'wall', metresPerTile: 2.000, directional: true, materialKey: null, meanLinear: [0.2074, 0.1966, 0.1769] },
+  { slug: 'red_brick_03', role: 'wall', metresPerTile: 1.000, directional: true, materialKey: 'brick', meanLinear: [0.1551, 0.0998, 0.0832] },
+  { slug: 'stone_wall_02', role: 'wall', metresPerTile: 2.000, directional: true, materialKey: 'stone', meanLinear: [0.1123, 0.0811, 0.0613] },
+  { slug: 'metal_plate', role: 'wall', metresPerTile: 0.500, directional: true, materialKey: 'metal', meanLinear: [0.0495, 0.0339, 0.0125] },
+  { slug: 'painted_plaster_wall', role: 'wall', metresPerTile: 2.000, directional: false, materialKey: 'white-concrete', meanLinear: [0.4073, 0.3661, 0.3509] },
+  { slug: 'concrete_floor_worn_02', role: 'floor', metresPerTile: 2.000, directional: false, materialKey: 'concrete-floor', meanLinear: [0.2034, 0.1486, 0.0931] },
+  { slug: 'concrete_floor_damaged_01', role: 'floor', metresPerTile: 5.000, directional: false, materialKey: null, meanLinear: [0.0793, 0.0583, 0.0372] },
+  { slug: 'leafy_grass', role: 'ground', metresPerTile: 2.000, directional: false, materialKey: null, meanLinear: [0.3199, 0.2360, 0.1062] },
+  { slug: 'brown_mud_leaves_01', role: 'ground', metresPerTile: 1.300, directional: false, materialKey: null, meanLinear: [0.1388, 0.0996, 0.0376] },
 ];
 
 export const CITY_ALBEDO_PX = 1024;

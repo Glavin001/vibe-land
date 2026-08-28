@@ -58,6 +58,7 @@ pub fn truncate_to_floors(
         // same building made of the same things, and bond material indices
         // are copied verbatim so they must keep resolving.
         materials: source.materials.clone(),
+        appearances: source.appearances.clone(),
         nodes: Vec::new(),
         bonds: Vec::new(),
         node_sizes: Vec::new(),
