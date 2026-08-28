@@ -579,8 +579,22 @@ public:
     // still sampled when on.
     const bool sample_subspans =
         profile_callback_enabled() && (contact_callback_calls_ & 7u) == 0;
+    // Hoisted to callback scope: the entity resolution below and the
+    // per-manifold target resolution further down were both OUTSIDE every
+    // timed block, which is why the first live breakdown left 42% of the
+    // callback cost unattributed -- more than any block it did name.
+    const auto sub_now = [&]() {
+      return sample_subspans ? cycle_now() : std::uint64_t{0};
+    };
+    const auto sub_ms = [](std::uint64_t from) {
+      return static_cast<double>(cycle_now() - from) * cycles_to_ms_factor();
+    };
+    const auto entity_started = sub_now();
     const std::uint32_t entity_a = actor_entity_id(header.actors[0]);
     const std::uint32_t entity_b = actor_entity_id(header.actors[1]);
+    if (sample_subspans) {
+      cb_entity_ms_ += 8.0 * sub_ms(entity_started);
+    }
     for (PxU32 pair_index = 0; pair_index < pair_count; ++pair_index) {
       const PxContactPair &pair = pairs[pair_index];
       if (pair.flags & (PxContactPairFlag::eREMOVED_SHAPE_0 |
@@ -610,12 +624,6 @@ public:
       // dark in exactly the reports that needed it. The cycle counter is
       // ~7 ns, putting the whole sub-attribution near 0.05 ms/tick, cheap
       // enough to leave on permanently.
-      const auto sub_now = [&]() {
-        return sample_subspans ? cycle_now() : std::uint64_t{0};
-      };
-      const auto sub_ms = [](std::uint64_t from) {
-        return static_cast<double>(cycle_now() - from) * cycles_to_ms_factor();
-      };
       const auto extract_started = sub_now();
       contact_points_.resize(contact_count);
       const PxU32 extracted =
@@ -632,9 +640,13 @@ public:
       // first -- 2.06-3.64 points per manifold measured on downtown.
       DestructionManager::ContactTarget target0;
       DestructionManager::ContactTarget target1;
+      const auto resolve_started = sub_now();
       if (destruction_ && contact_cse_enabled()) {
         target0 = destruction_->resolve_contact_target(pair.shapes[0]);
         target1 = destruction_->resolve_contact_target(pair.shapes[1]);
+      }
+      if (sample_subspans) {
+        cb_resolve_ms_ += 8.0 * sub_ms(resolve_started);
       }
 #endif
       PxVec3 total_impulse(0.0f);
@@ -697,11 +709,15 @@ public:
       if (sample_subspans) {
         cb_queue_ms_ += 8.0 * sub_ms(points_started);
       }
+      const auto events_started = sub_now();
       if (total_magnitude > 0.0f) {
         weighted_point /= total_magnitude;
         contact_events_.push_back(
             {entity_a, entity_b, from_px(total_impulse),
              from_px(weighted_point)});
+      }
+      if (sample_subspans) {
+        cb_events_ms_ += 8.0 * sub_ms(events_started);
       }
 #ifdef VIBE_LAND_DESTRUCTION
       // Frozen rubble struck by moving debris must respond. PhysX wakes a
@@ -1097,6 +1113,9 @@ public:
     cb_queue_ms_ = 0.0;
     cb_pair_load_ms_ = 0.0;
     cb_wake_ms_ = 0.0;
+    cb_resolve_ms_ = 0.0;
+    cb_entity_ms_ = 0.0;
+    cb_events_ms_ = 0.0;
     contact_callbacks_this_step_ = 0;
     step_start_ = std::chrono::steady_clock::now();
     controller_manager_->computeInteractions(kFixedTimestep);
@@ -1393,6 +1412,12 @@ public:
     span("cb_queue_ms", cb_queue_ms_, 0);
     span("cb_pair_load_ms", cb_pair_load_ms_, 0);
     span("cb_wake_ms", cb_wake_ms_, 0);
+    // Added after the first live breakdown left 42% of the callback cost in
+    // an unnamed residual. resolve/entity are the shape- and actor-id hash
+    // lookups; events is the per-manifold aggregate push.
+    span("cb_resolve_ms", cb_resolve_ms_, 0);
+    span("cb_entity_ms", cb_entity_ms_, 0);
+    span("cb_events_ms", cb_events_ms_, 0);
     span("contact_callbacks", static_cast<double>(contact_callbacks_this_step_), 2);
     // Broadphase membership churn: prices freeze/thaw flips directly.
     span("bp_adds", static_cast<double>(statistics.getNbBroadPhaseAdds()), 2);
@@ -1984,6 +2009,9 @@ private:
   double cb_queue_ms_ = 0.0;
   double cb_pair_load_ms_ = 0.0;
   double cb_wake_ms_ = 0.0;
+  double cb_resolve_ms_ = 0.0;
+  double cb_entity_ms_ = 0.0;
+  double cb_events_ms_ = 0.0;
   std::uint64_t contact_callbacks_this_step_ = 0;
   float last_step_ms_ = 0.0f;
   float last_controller_ms_ = 0.0f;
