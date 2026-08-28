@@ -1010,7 +1010,7 @@ fn main() -> Result<()> {
                  cb_queue,cb_events,cb_pairld,cb_wake,\
                  cp_found,cp_persists,cp_points,cp_supp,node_mm,node_ck,\
                  sup_calls,sup_kin,sup_fy,sup_exist,sup_new,sup_staged,sup_unch,sup_rows,\
-                 gpu_host_work,gpu_host_blocked,pairs,\
+                 gpu_host_work,gpu_host_blocked,st_init,st_err,st_copy,cb_census,cb_resize,pairs,\
                  contacts_q,islands_skip,islands_tot,quiet,freeze,unfreeze,contact_wakes,\
                  min_y,pose_quiet,overstressed,patch_hw,escaped"
             )?;
@@ -1163,7 +1163,7 @@ fn main() -> Result<()> {
                 // milliseconds and making them look quantised. Rust
                 // prints shortest-roundtrip for floats, which is what a
                 // CSV wants anyway.
-                "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
+                "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
                 tick_index, s.chunk_bodies, s.awake_chunk_bodies, s.frozen_chunk_bodies,
                 s.sleeping_chunk_bodies, s.broken_bonds,
                 s.stress_solve_ms, s.begin_ms, s.solve_ms, s.end_ms, s.readback_ms,
@@ -1218,6 +1218,11 @@ fn main() -> Result<()> {
                 span_value(&tick_spans, "sup_rows_staged"),
                 span_value(&tick_spans, "gpu_host_work_ms"),
                 span_value(&tick_spans, "gpu_host_blocked_ms"),
+                span_value(&tick_spans, "stress_initialize_ms"),
+                span_value(&tick_spans, "stress_calc_error_ms"),
+                span_value(&tick_spans, "stress_impulse_copy_ms"),
+                world_span_value(&world_spans, "cb_census_ms"),
+                world_span_value(&world_spans, "cb_resize_ms"),
                 s.support_pair_loads, s.contacts_queued,
                 s.solver_islands_skipped_accum, s.solver_islands_total_accum,
                 s.quiet_slot_ticks, s.freeze_flips, s.unfreeze_flips, s.contact_wakes,

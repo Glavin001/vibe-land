@@ -562,6 +562,9 @@ private:
   /// const stats walk: these are observation state, not scene state.
   mutable double gpu_host_work_ms_ = 0.0;
   mutable double gpu_host_blocked_ms_ = 0.0;
+  mutable double stress_initialize_ms_ = 0.0;
+  mutable double stress_impulse_copy_ms_ = 0.0;
+  mutable double stress_calc_error_ms_ = 0.0;
   /// Supporter-edge census. Where the ~13.8k pairs a tick actually go.
   std::uint64_t sup_record_calls_ = 0;
   std::uint64_t sup_reject_kinematic_ = 0;

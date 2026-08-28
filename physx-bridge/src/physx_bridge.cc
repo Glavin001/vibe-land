@@ -606,6 +606,7 @@ public:
       if (contact_count == 0) {
         continue;
       }
+      const auto census_started = sub_now();
       // Pair census. The question this answers: of the ~11.6k pairs a
       // cascade tick reports, how many are a settled pile re-reporting the
       // same standing load (PERSISTS) versus a genuinely new contact
@@ -620,6 +621,9 @@ public:
         ++cp_other_;
       }
       cp_points_ += contact_count;
+      if (sample_subspans) {
+        cb_census_ms_ += 8.0 * sub_ms(census_started);
+      }
       // Reused across pairs and ticks. This was a fresh heap allocation per
       // reported manifold, and a settled city reports thousands of resting
       // manifolds every tick -- all of it inside fetchResults(), which is what
@@ -639,8 +643,12 @@ public:
       // dark in exactly the reports that needed it. The cycle counter is
       // ~7 ns, putting the whole sub-attribution near 0.05 ms/tick, cheap
       // enough to leave on permanently.
-      const auto extract_started = sub_now();
+      const auto resize_started = sub_now();
       contact_points_.resize(contact_count);
+      if (sample_subspans) {
+        cb_resize_ms_ += 8.0 * sub_ms(resize_started);
+      }
+      const auto extract_started = sub_now();
       const PxU32 extracted =
           pair.extractContacts(contact_points_.data(), contact_count);
       if (sample_subspans) {
@@ -735,6 +743,7 @@ public:
       // log2 histogram of the pair's total impulse. A histogram rather than a
       // count against a fixed cut, because the useful question is "what would
       // a threshold of X cost", and X is exactly what is not known yet.
+      const auto hist_started = sub_now();
       if (total_magnitude > 0.0f) {
         int bucket = 0;
         float m = total_magnitude;
@@ -745,6 +754,9 @@ public:
         ++cp_impulse_hist_[bucket];
       } else {
         ++cp_zero_impulse_;
+      }
+      if (sample_subspans) {
+        cb_census_ms_ += 8.0 * sub_ms(hist_started);
       }
 
       const auto events_started = sub_now();
@@ -1164,6 +1176,8 @@ public:
     cb_resolve_ms_ = 0.0;
     cb_entity_ms_ = 0.0;
     cb_events_ms_ = 0.0;
+    cb_census_ms_ = 0.0;
+    cb_resize_ms_ = 0.0;
     cp_found_ = 0;
     cp_persists_ = 0;
     cp_other_ = 0;
@@ -1512,6 +1526,8 @@ public:
     span("cb_resolve_ms", cb_resolve_ms_, 0);
     span("cb_entity_ms", cb_entity_ms_, 0);
     span("cb_events_ms", cb_events_ms_, 0);
+    span("cb_census_ms", cb_census_ms_, 0);
+    span("cb_resize_ms", cb_resize_ms_, 0);
     span("cb_max_us",
          static_cast<double>(contact_callback_max_cycles_) *
              cycles_to_ms_factor() * 1000.0,
@@ -2135,6 +2151,11 @@ private:
   double cb_resolve_ms_ = 0.0;
   double cb_entity_ms_ = 0.0;
   double cb_events_ms_ = 0.0;
+  /// The blocks that were previously only visible as cb_tick's remainder:
+  /// the per-pair census and impulse histogram this file adds for
+  /// diagnostics, and the contact_points_ resize.
+  double cb_census_ms_ = 0.0;
+  double cb_resize_ms_ = 0.0;
   /// Per-tick pair census, reset alongside the callback timers.
   static constexpr int kImpulseBuckets = 20;
   /// Longest SINGLE callback this tick, in cycles. See the sum/max comment.

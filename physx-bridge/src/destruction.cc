@@ -419,6 +419,9 @@ struct DestructionManager::Slot {
   double last_gpu_stress_solve_ms = 0.0;
   double last_gpu_host_work_ms = 0.0;
   double last_gpu_host_blocked_ms = 0.0;
+  double last_stress_initialize_ms = 0.0;
+  double last_stress_impulse_copy_ms = 0.0;
+  double last_stress_calc_error_ms = 0.0;
   /// The adapter's OTHER five phase timers, cumulative for the same reason and
   /// deltaed the same way. These decompose the three phases the bridge times
   /// from outside: contact-processing + gravity are what `begin_ms` is made
@@ -3415,6 +3418,18 @@ FfiDestructionStats DestructionManager::destruction_stats() const {
     const double blocked_delta = blocked_total - slot_ptr->last_gpu_host_blocked_ms;
     slot_ptr->last_gpu_host_blocked_ms = blocked_total;
     gpu_host_blocked_ms_ += blocked_delta > 0.0 ? blocked_delta : 0.0;
+    const double copy_total = telemetry.stressImpulseCopyMilliseconds;
+    const double copy_delta = copy_total - slot_ptr->last_stress_impulse_copy_ms;
+    slot_ptr->last_stress_impulse_copy_ms = copy_total;
+    stress_impulse_copy_ms_ += copy_delta > 0.0 ? copy_delta : 0.0;
+    const double init_total = telemetry.stressInitializeMilliseconds;
+    const double init_delta = init_total - slot_ptr->last_stress_initialize_ms;
+    slot_ptr->last_stress_initialize_ms = init_total;
+    stress_initialize_ms_ += init_delta > 0.0 ? init_delta : 0.0;
+    const double err_total = telemetry.stressCalcErrorMilliseconds;
+    const double err_delta = err_total - slot_ptr->last_stress_calc_error_ms;
+    slot_ptr->last_stress_calc_error_ms = err_total;
+    stress_calc_error_ms_ += err_delta > 0.0 ? err_delta : 0.0;
     // Same delta-with-reset-guard treatment for the five phase timers the
     // adapter keeps alongside it. Summed across slots, like every other
     // per-structure figure here.
@@ -3547,11 +3562,17 @@ FfiDestructionStats DestructionManager::destruction_stats() const {
   push_span("sup_sets_staged", static_cast<double>(sup_sets_staged_), 2);
   push_span("sup_sets_unchanged", static_cast<double>(sup_sets_unchanged_), 2);
   push_span("sup_rows_staged", static_cast<double>(sup_rows_staged_), 2);
+  push_span("stress_impulse_copy_ms", stress_impulse_copy_ms_, 0);
+  push_span("stress_initialize_ms", stress_initialize_ms_, 0);
+  push_span("stress_calc_error_ms", stress_calc_error_ms_, 0);
   push_span("gpu_host_work_ms", gpu_host_work_ms_, 0);
   push_span("gpu_host_blocked_ms", gpu_host_blocked_ms_, 0);
   // Per-tick, not cumulative: zeroed once the observer has read them.
   gpu_host_work_ms_ = 0.0;
   gpu_host_blocked_ms_ = 0.0;
+  stress_initialize_ms_ = 0.0;
+  stress_impulse_copy_ms_ = 0.0;
+  stress_calc_error_ms_ = 0.0;
   push_span("stress_solve_residual_ms",
             static_cast<double>(last_stress_solve_residual_ms_), 0);
   return stats;

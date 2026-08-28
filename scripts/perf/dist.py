@@ -238,10 +238,15 @@ TREE = {
     "physx_step": ["physx_sim", "fetch_tick"],
     "fetch_tick": ["gpu_wait", "cb_tick", "fetch_copy"],
     "cb_tick": ["cb_entity", "cb_extract", "cb_resolve", "cb_queue",
-                "cb_events", "cb_pairld", "cb_wake"],
+                "cb_events", "cb_pairld", "cb_wake", "cb_census", "cb_resize"],
     "stress_solve": ["begin", "solve", "end", "readback", "events", "filters",
                      "ccd", "support", "shape", "slot", "bond_sample"],
-    "solve": ["gpu_solve", "gpu_host_work", "gpu_host_blocked"],
+    # gpu_solve is DEVICE time and runs concurrently with gpu_host_blocked --
+    # the host is blocked precisely because the kernel is executing. Listing it
+    # as a sibling double counts and shrinks the apparent remainder. It is
+    # annotated separately below instead.
+    "solve": ["gpu_host_work", "gpu_host_blocked", "st_init", "st_err",
+              "st_copy"],
 }
 
 
@@ -295,6 +300,11 @@ def tree(path, warmup, by):
 
         emit("TOTAL", totv, grand, 0)
         walk("TOTAL", totv, 1)
+        if "gpu_solve" in sel[0]:
+            g = Dist(col("gpu_solve")).row()
+            print(f"   [concurrent] gpu_solve device {g['mean']:.2f} ms mean, "
+                  f"p50 {g['p50']:.2f}, max {g['max']:.2f} -- overlaps "
+                  f"gpu_host_blocked, NOT a disjoint child of solve.")
         print("   %par = share of the row above it, by SUM. Quantiles do not "
               "decompose:\n   a parent's max and its children's maxes are "
               "different ticks. n>0 = ticks where the phase ran at all.")
