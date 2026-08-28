@@ -3418,6 +3418,8 @@ FfiDestructionStats DestructionManager::destruction_stats() const {
     const double blocked_delta = blocked_total - slot_ptr->last_gpu_host_blocked_ms;
     slot_ptr->last_gpu_host_blocked_ms = blocked_total;
     gpu_host_blocked_ms_ += blocked_delta > 0.0 ? blocked_delta : 0.0;
+    bondless_verify_checks_ = telemetry.bondlessVerifyChecks;
+    bondless_verify_mismatches_ = telemetry.bondlessVerifyMismatches;
     const double copy_total = telemetry.stressImpulseCopyMilliseconds;
     const double copy_delta = copy_total - slot_ptr->last_stress_impulse_copy_ms;
     slot_ptr->last_stress_impulse_copy_ms = copy_total;
@@ -3562,6 +3564,10 @@ FfiDestructionStats DestructionManager::destruction_stats() const {
   push_span("sup_sets_staged", static_cast<double>(sup_sets_staged_), 2);
   push_span("sup_sets_unchanged", static_cast<double>(sup_sets_unchanged_), 2);
   push_span("sup_rows_staged", static_cast<double>(sup_rows_staged_), 2);
+  push_span("bondless_verify_checks",
+            static_cast<double>(bondless_verify_checks_), 2);
+  push_span("bondless_verify_mismatches",
+            static_cast<double>(bondless_verify_mismatches_), 2);
   push_span("stress_impulse_copy_ms", stress_impulse_copy_ms_, 0);
   push_span("stress_initialize_ms", stress_initialize_ms_, 0);
   push_span("stress_calc_error_ms", stress_calc_error_ms_, 0);
