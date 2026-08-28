@@ -852,6 +852,30 @@ float chunk_sleep_threshold() {
 /// high threshold a body spends longer under it than PhysX's 0.4 s wake
 /// counter while still travelling. A body that has never touched static
 /// geometry is never assisted, so flight is untouched by construction.
+///
+/// REFUTED AT CITY SCALE, and it stays default-off for that reason rather
+/// than for the caution above. A/B on downtown, n=2 per arm, 90 s with the
+/// last 20 s quiet, mean awake bodies in the tail:
+///
+///   assist ON   3175
+///   assist OFF  2720      <- 17% FEWER awake without the assist
+///
+/// Every 10 s window from 40 s on has more awake bodies with it on, in both
+/// reps, and physx_step rose 3.5% with contact callbacks up 3.2%. It does
+/// not settle the city sooner; it settles it later.
+///
+/// The likely mechanism is the one this file already documents twice: a
+/// property write wakes the actor, and setSleepThreshold is a property
+/// write. The assist fires exactly when a body first touches ground -- the
+/// moment a pile is forming -- so each application re-opens the contact
+/// island it just joined, which is the same cascade freeze_island_resleep
+/// exists to prevent.
+///
+/// Note the small-scale test disagreed: physx-bridge/tests/settle_assist.rs
+/// measured -5.8% awake_body_ticks for the sleep threshold alone. It has no
+/// freeze machinery and no contact islands at pile scale, so it cannot see
+/// the wake cascade. It is not predictive for this knob, and a green run
+/// there is not evidence for shipping.
 bool settle_assist_enabled() {
   static const bool enabled = [] {
     const char *raw = std::getenv("VIBE_CITY_SETTLE_ASSIST");
