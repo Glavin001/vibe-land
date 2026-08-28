@@ -1006,7 +1006,8 @@ fn main() -> Result<()> {
                  contact_proc,gravity,cpu_solve,frac_topo,frac_valid,frac_gen,frac_prep,\
                  frac_apply,frac_scene,frac_rebuild,physx_step,gpu_wait,fetch_copy,\
                  callback,fetch_total,fetch_resid,post_resid,step_resid,solve_resid,\
-                 cp_found,cp_persists,cp_points,cp_supp,node_mm,node_ck,pairs,\
+                 cp_found,cp_persists,cp_points,cp_supp,node_mm,node_ck,\
+                 sup_calls,sup_kin,sup_fy,sup_exist,sup_new,sup_staged,sup_unch,sup_rows,pairs,\
                  contacts_q,islands_skip,islands_tot,quiet,freeze,unfreeze,contact_wakes,\
                  min_y,pose_quiet,overstressed,patch_hw,escaped"
             )?;
@@ -1143,6 +1144,7 @@ fn main() -> Result<()> {
                  {:.4},{:.4},{:.4},{:.4},{:.4},\
                  {:.4},{:.4},{:.4},{:.4},{:.4},{:.4},\
                  {:.0},{:.0},{:.0},{:.0},{:.0},{:.0},\
+                 {:.0},{:.0},{:.0},{:.0},{:.0},{:.0},{:.0},{:.0},\
                  {},{},{},{},{},{},{},{},{:.4},{},{},{},{}",
                 tick_index, s.chunk_bodies, s.awake_chunk_bodies, s.frozen_chunk_bodies,
                 s.sleeping_chunk_bodies, s.broken_bonds,
@@ -1171,6 +1173,14 @@ fn main() -> Result<()> {
                 world_span_value(&world_spans, "cp_supporter_relevant"),
                 span_value(&tick_spans, "node_cache_mismatches"),
                 span_value(&tick_spans, "node_cache_checks"),
+                span_value(&tick_spans, "sup_record_calls"),
+                span_value(&tick_spans, "sup_reject_kinematic"),
+                span_value(&tick_spans, "sup_reject_fy"),
+                span_value(&tick_spans, "sup_edge_existing"),
+                span_value(&tick_spans, "sup_edge_new"),
+                span_value(&tick_spans, "sup_sets_staged"),
+                span_value(&tick_spans, "sup_sets_unchanged"),
+                span_value(&tick_spans, "sup_rows_staged"),
                 s.support_pair_loads, s.contacts_queued,
                 s.solver_islands_skipped_accum, s.solver_islands_total_accum,
                 s.quiet_slot_ticks, s.freeze_flips, s.unfreeze_flips, s.contact_wakes,

@@ -491,6 +491,11 @@ private:
     /// Most negative separation across this body's contacts, last report.
     float min_separation = 0.0f;
     bool dirty = false;
+    /// Did the supporter SET actually change this tick, as opposed to being
+    /// merely touched? `dirty` is set on every report, so it answers "was
+    /// this body mentioned", not "is what we hold about it now different" --
+    /// measurement only for the moment, to size the difference.
+    bool set_changed = false;
     std::vector<SupporterRec> supporters;
   };
   /// Keyed by (structure_id << 48) | bodyId. bodyIds are per-structure
@@ -552,6 +557,15 @@ private:
   /// VIBE_PHYSX_NODE_CACHE_VERIFY; mismatches must be zero.
   std::uint64_t node_cache_mismatches_ = 0;
   std::uint64_t node_cache_checks_ = 0;
+  /// Supporter-edge census. Where the ~13.8k pairs a tick actually go.
+  std::uint64_t sup_record_calls_ = 0;
+  std::uint64_t sup_reject_kinematic_ = 0;
+  std::uint64_t sup_reject_fy_ = 0;
+  std::uint64_t sup_edge_existing_ = 0;
+  std::uint64_t sup_edge_new_ = 0;
+  std::uint64_t sup_sets_staged_ = 0;
+  std::uint64_t sup_sets_unchanged_ = 0;
+  std::uint64_t sup_rows_staged_ = 0;
   /// Per-phase breakdown of destruction_tick.
   /// beginTick (contact/gravity injection) across all structures. Parallel
   /// over slots by default (VIBE_CITY_SNAPSHOT_BEGIN); only the wakeUp apply

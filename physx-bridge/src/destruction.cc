@@ -3108,7 +3108,9 @@ void DestructionManager::resolve_support_loads() {
     const Resolved &b = resolved[load_index].second;
 
     const auto record = [&](const Resolved &dependent, const Resolved &supporter) {
+      ++sup_record_calls_;
       if (!dependent.chunk || dependent.kinematic) {
+        ++sup_reject_kinematic_;
         return; // kinematic bodies (frozen or rooted) depend on nothing
       }
       SupporterRec rec{};
@@ -3139,18 +3141,22 @@ void DestructionManager::resolve_support_loads() {
       entry.dirty = true;
       // Weight-bearing gate, scaled to the DEPENDENT's own resting load.
       if (load.sum_abs_impulse_y < fy_ratio * dependent.mass * g_dt) {
+        ++sup_reject_fy_;
         return;
       }
       for (SupporterRec &existing : entry.supporters) {
         if (existing.kind == rec.kind && existing.entity == rec.entity &&
             existing.node == rec.node) {
           existing.last_tick = tick_count_;
+          ++sup_edge_existing_;
           return;
         }
       }
       rec.last_tick = tick_count_;
       entry.supporters.push_back(rec);
       entry.dirty = true;
+      entry.set_changed = true;
+      ++sup_edge_new_;
     };
 
     if (a.chunk && b.chunk && !a.kinematic && !b.kinematic) {
@@ -3184,8 +3190,15 @@ void DestructionManager::resolve_support_loads() {
         entry.supporters.end());
     if (entry.supporters.size() != before) {
       entry.dirty = true;
+      entry.set_changed = true;
     }
     if (entry.dirty) {
+      ++sup_sets_staged_;
+      if (!entry.set_changed) {
+        ++sup_sets_unchanged_;
+      }
+      sup_rows_staged_ += entry.supporters.size();
+      entry.set_changed = false;
       FfiSupportSet set{};
       set.dependent_entity = entry.entity;
       set.last_report_tick = entry.last_report_tick;
@@ -3475,6 +3488,14 @@ FfiDestructionStats DestructionManager::destruction_stats() const {
   push_span("node_cache_mismatches",
             static_cast<double>(node_cache_mismatches_), 2);
   push_span("node_cache_checks", static_cast<double>(node_cache_checks_), 2);
+  push_span("sup_record_calls", static_cast<double>(sup_record_calls_), 2);
+  push_span("sup_reject_kinematic", static_cast<double>(sup_reject_kinematic_), 2);
+  push_span("sup_reject_fy", static_cast<double>(sup_reject_fy_), 2);
+  push_span("sup_edge_existing", static_cast<double>(sup_edge_existing_), 2);
+  push_span("sup_edge_new", static_cast<double>(sup_edge_new_), 2);
+  push_span("sup_sets_staged", static_cast<double>(sup_sets_staged_), 2);
+  push_span("sup_sets_unchanged", static_cast<double>(sup_sets_unchanged_), 2);
+  push_span("sup_rows_staged", static_cast<double>(sup_rows_staged_), 2);
   push_span("stress_solve_residual_ms",
             static_cast<double>(last_stress_solve_residual_ms_), 0);
   return stats;
