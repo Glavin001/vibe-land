@@ -3,6 +3,7 @@
 #include "vibe-land-physx-bridge/src/lib.rs.h"
 
 #include "NvBlastExtStressPhysX.h"
+#include "NvBlastExtStressSolver.h"
 #include "PxPhysicsAPI.h"
 
 #include <algorithm>
@@ -476,6 +477,33 @@ DestructionManager::DestructionManager(PxPhysics &physics, PxScene &scene,
     workers = std::min(workers, hardware);
   }
   stress_executor_ = std::make_unique<StressExecutor>(workers);
+
+  // Lend the pool to the stress library.
+  //
+  // updateBondStress is the largest named cost in the tick (9.9 ms at grid 2,
+  // ~7x the GPU kernel it post-processes) and is linear in TOTAL live bonds.
+  // The fan-out around solveTick is over STRUCTURES -- four of them, measured
+  // 2.21x concurrency -- so most of a 32-core box idles through it. The
+  // library owns no threads, so it takes ours.
+  //
+  // Nested use is safe here because the inner dispatch happens on a worker
+  // already inside run(), and StressExecutor::run participates rather than
+  // blocking on a separate pool.
+  static bool parallel_for_enabled = [] {
+    const char *raw = std::getenv("BLAST_BOND_STRESS_PARALLEL");
+    return raw != nullptr && std::string(raw) != "0";
+  }();
+  if (parallel_for_enabled) {
+    Nv::Blast::NvBlastExtStressSetParallelFor(
+        [](void *ctx, std::uint32_t count,
+           Nv::Blast::ExtStressParallelForBody body, void *bodyCtx) {
+          static_cast<StressExecutor *>(ctx)->run(
+              count, [body, bodyCtx](std::size_t index) {
+                body(bodyCtx, static_cast<std::uint32_t>(index));
+              });
+        },
+        stress_executor_.get());
+  }
 }
 
 DestructionManager::~DestructionManager() { clear_destructibles(); }
