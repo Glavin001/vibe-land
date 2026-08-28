@@ -422,6 +422,10 @@ struct DestructionManager::Slot {
   double last_stress_initialize_ms = 0.0;
   double last_stress_impulse_copy_ms = 0.0;
   double last_stress_graph_solve_ms = 0.0;
+  double last_hw_walk_in_ms = 0.0;
+  double last_hw_reset_ms = 0.0;
+  double last_hw_bond_stress_ms = 0.0;
+  double last_hw_node_stress_ms = 0.0;
   double last_stress_drain_ms = 0.0;
   double last_stress_calc_error_ms = 0.0;
   /// The adapter's OTHER five phase timers, cumulative for the same reason and
@@ -3422,6 +3426,30 @@ FfiDestructionStats DestructionManager::destruction_stats() const {
     gpu_host_blocked_ms_ += blocked_delta > 0.0 ? blocked_delta : 0.0;
     bondless_verify_checks_ = telemetry.bondlessVerifyChecks;
     bondless_verify_mismatches_ = telemetry.bondlessVerifyMismatches;
+    {
+      const double t = telemetry.stressHostWalkInMilliseconds;
+      const double d = t - slot_ptr->last_hw_walk_in_ms;
+      slot_ptr->last_hw_walk_in_ms = t;
+      hw_walk_in_ms_ += d > 0.0 ? d : 0.0;
+    }
+    {
+      const double t = telemetry.stressHostResetMilliseconds;
+      const double d = t - slot_ptr->last_hw_reset_ms;
+      slot_ptr->last_hw_reset_ms = t;
+      hw_reset_ms_ += d > 0.0 ? d : 0.0;
+    }
+    {
+      const double t = telemetry.stressHostBondStressMilliseconds;
+      const double d = t - slot_ptr->last_hw_bond_stress_ms;
+      slot_ptr->last_hw_bond_stress_ms = t;
+      hw_bond_stress_ms_ += d > 0.0 ? d : 0.0;
+    }
+    {
+      const double t = telemetry.stressHostNodeStressMilliseconds;
+      const double d = t - slot_ptr->last_hw_node_stress_ms;
+      slot_ptr->last_hw_node_stress_ms = t;
+      hw_node_stress_ms_ += d > 0.0 ? d : 0.0;
+    }
     const double gs_total = telemetry.stressGraphSolveMilliseconds;
     const double gs_delta = gs_total - slot_ptr->last_stress_graph_solve_ms;
     slot_ptr->last_stress_graph_solve_ms = gs_total;
@@ -3578,6 +3606,10 @@ FfiDestructionStats DestructionManager::destruction_stats() const {
             static_cast<double>(bondless_verify_checks_), 2);
   push_span("bondless_verify_mismatches",
             static_cast<double>(bondless_verify_mismatches_), 2);
+  push_span("hw_walk_in_ms", hw_walk_in_ms_, 0);
+  push_span("hw_reset_ms", hw_reset_ms_, 0);
+  push_span("hw_bond_stress_ms", hw_bond_stress_ms_, 0);
+  push_span("hw_node_stress_ms", hw_node_stress_ms_, 0);
   push_span("stress_graph_solve_ms", stress_graph_solve_ms_, 0);
   push_span("stress_drain_ms", stress_drain_ms_, 0);
   push_span("stress_impulse_copy_ms", stress_impulse_copy_ms_, 0);
@@ -3591,6 +3623,10 @@ FfiDestructionStats DestructionManager::destruction_stats() const {
   stress_initialize_ms_ = 0.0;
   stress_impulse_copy_ms_ = 0.0;
   stress_graph_solve_ms_ = 0.0;
+  hw_walk_in_ms_ = 0.0;
+  hw_reset_ms_ = 0.0;
+  hw_bond_stress_ms_ = 0.0;
+  hw_node_stress_ms_ = 0.0;
   stress_drain_ms_ = 0.0;
   stress_calc_error_ms_ = 0.0;
   push_span("stress_solve_residual_ms",

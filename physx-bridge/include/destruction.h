@@ -565,6 +565,10 @@ private:
   mutable double stress_initialize_ms_ = 0.0;
   mutable double stress_impulse_copy_ms_ = 0.0;
   mutable double stress_graph_solve_ms_ = 0.0;
+  mutable double hw_walk_in_ms_ = 0.0;
+  mutable double hw_reset_ms_ = 0.0;
+  mutable double hw_bond_stress_ms_ = 0.0;
+  mutable double hw_node_stress_ms_ = 0.0;
   mutable double stress_drain_ms_ = 0.0;
   mutable std::uint64_t bondless_verify_checks_ = 0;
   mutable std::uint64_t bondless_verify_mismatches_ = 0;

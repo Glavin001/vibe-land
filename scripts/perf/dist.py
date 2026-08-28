@@ -233,6 +233,19 @@ def ab(path_a, path_b, warmup, by):
 # blast phases like contact_proc/gravity/frac_* are NOT here because they are
 # nested INSIDE begin/solve/end, and listing them as siblings would double
 # count. They appear in the flat table instead.
+# Phases whose parent is WALL CLOCK of a parallel fan-out while their
+# children are SUMS across the concurrent slots.
+#
+# destruction.cc runs solveTick across live_slots_ on the stress pool and
+# brackets the whole fan-out; every adapter-side timer inside is accumulated
+# per slot and summed. Subtracting the sum from the wall is not a residual,
+# it is the concurrency factor -- which is how solve appeared to have 3.09 ms
+# (46%) unattributed for several rounds. There was never anything missing.
+#
+# For these, children are shown as a share of the SUM of children, and the
+# speedup is printed instead of an [unattributed] row.
+PARALLEL = {"solve"}
+
 TREE = {
     "TOTAL": ["physx_step", "stress_solve"],
     "physx_step": ["physx_sim", "fetch_tick"],
@@ -245,15 +258,9 @@ TREE = {
     # the host is blocked precisely because the kernel is executing. Listing it
     # as a sibling double counts and shrinks the apparent remainder. It is
     # annotated separately below instead.
-    # st_graph is NOT in this tree. It measures the graph-solve call and
-    # reports 14.64 ms inside a 6.66 ms parent -- 219.8%, which is impossible
-    # and means the span is wrong, not that solve is 14.64 ms. Most likely the
-    # adapter accumulates it on a different cadence than once per solveTick,
-    # or across the 4 structures without a matching denominator. The raw
-    # column is still emitted for debugging; it is kept out of the budget so
-    # a broken number cannot silently rewrite the shares.
-    "solve": ["gpu_host_work", "gpu_host_blocked", "st_init", "st_err",
-              "st_copy", "st_drain"],
+    "solve": ["st_init", "st_graph", "st_err", "st_drain"],
+    "st_graph": ["hw_in", "gpu_host_work", "gpu_host_blocked", "st_copy",
+                 "hw_reset", "hw_bond", "hw_node"],
 }
 
 
@@ -295,15 +302,27 @@ def tree(path, warmup, by):
             kids = TREE.get(node, [])
             present = [k for k in kids if k in sel[0]]
             acc = None
+            denom = vsum
+            if node in PARALLEL:
+                denom = sum(sum(col(k)) for k in present)
             for k in present:
                 kv = col(k)
-                emit(k, kv, vsum, depth)
+                emit(k, kv, denom, depth)
                 acc = kv if acc is None else [a + b for a, b in zip(acc, kv)]
                 if k in TREE:
                     walk(k, kv, depth + 1)
             if present and acc is not None:
-                resid = [a - b for a, b in zip(values, acc)]
-                emit("[unattributed]", resid, vsum, depth)
+                if node in PARALLEL:
+                    ssum = sum(acc)
+                    speedup = ssum / max(vsum, 1e-9)
+                    print(f"{'  ' * depth}[parallel over slots]      "
+                          f"children sum {ssum / len(values):8.2f} ms/tick vs "
+                          f"{vsum / len(values):.2f} ms wall -> {speedup:.2f}x "
+                          f"concurrency. Shares above are of the SUM, not the "
+                          f"wall; the difference is NOT unattributed time.")
+                else:
+                    resid = [a - b for a, b in zip(values, acc)]
+                    emit("[unattributed]", resid, vsum, depth)
 
         emit("TOTAL", totv, grand, 0)
         walk("TOTAL", totv, 1)
