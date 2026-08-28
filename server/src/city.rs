@@ -762,6 +762,10 @@ pub struct CityRuntime {
     pub manifest: Arc<DestructionManifest>,
     send_interval_ticks: u32,
     pub last_encode_ms: f32,
+    /// Post-fracture push re-apply: the blast pushes deferred from the
+    /// fracture that produced them, replayed after post_step. Previously part
+    /// of the `step_ms` unattributed remainder.
+    pub last_push_reapply_ms: f32,
     last_encode_shared_ms: f32,
     last_client_datagrams_ms: f32,
     structure_centers: Vec<(Vec3, f32)>,
@@ -820,6 +824,7 @@ impl CityRuntime {
             manifest,
             send_interval_ticks: config.send_interval_ticks,
             last_encode_ms: 0.0,
+            last_push_reapply_ms: 0.0,
             last_encode_shared_ms: 0.0,
             last_client_datagrams_ms: 0.0,
             structure_centers,
@@ -1456,6 +1461,11 @@ impl CityRuntime {
                     post_step_started.elapsed().as_secs_f32() * 1000.0;
                 match post_step_result {
                     Ok(output) => {
+                        // Named because `step_ms` minus its children was
+                        // running 1-3.6 ms and this loop was the documented
+                        // reason. An "unattributed" bucket that everyone knows
+                        // the contents of is just a span nobody added yet.
+                        let push_started = std::time::Instant::now();
                         for (point, direction, radius, push) in pending_pushes {
                             if let Err(error) = backend.apply_blast(
                                 world,
@@ -1468,6 +1478,8 @@ impl CityRuntime {
                                 tracing::warn!(%error, "city post-fracture push failed");
                             }
                         }
+                        self.last_push_reapply_ms =
+                            push_started.elapsed().as_secs_f32() * 1000.0;
                         let snapshot_started = std::time::Instant::now();
                         let snapshot_ms = match backend.body_snapshots(world) {
                             Ok(_) => {

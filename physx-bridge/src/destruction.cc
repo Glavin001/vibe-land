@@ -3394,7 +3394,17 @@ FfiDestructionStats DestructionManager::destruction_stats() const {
   // simulation whatever they contain. Published to size that share before
   // anything is built on it.
   push_span("single_node_bodies", static_cast<double>(single_node_bodies), 2);
-  push_span("single_node_contacts", static_cast<double>(single_node_contacts), 2);
+  // Only meaningful in the BLAST_SKIP_BONDLESS_CONTACTS=0 arm. With the skip
+  // on (the default) these contacts are dropped BEFORE the loop that counts
+  // them, so the counter is structurally pinned to zero -- and a pinned zero
+  // in a report reads as "measured, and it was none", which is the same
+  // failure F11 fixed for the PhysX split. Publish it only when it can carry
+  // information; `bondless_contacts_skipped` is the metric for the skip-on
+  // arm, and it is always published below.
+  if (bondless_skipped == 0) {
+    push_span("single_node_contacts",
+              static_cast<double>(single_node_contacts), 2);
+  }
   push_span("single_node_awake", static_cast<double>(single_node_awake), 2);
   push_span("ground_touch_latches", static_cast<double>(ground_touch_latches_), 2);
   push_span("settle_assist_applied", static_cast<double>(settle_assist_applied_), 2);

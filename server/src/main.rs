@@ -327,6 +327,9 @@ struct CityStatsSnapshot {
     readback_ms_host: f32,
     settle_ms: f32,
     ingest_ms: f32,
+    /// Post-fracture push re-apply, previously inside the `step_ms`
+    /// unattributed remainder. A child of `step_ms`, sibling of `post_step_ms`.
+    push_reapply_ms: f32,
     /// Host wall time of the whole native destruction tick, FFI hop included.
     /// A parent of the Blast phases and measurably larger than their sum.
     tick_ffi_ms: f32,
@@ -4313,6 +4316,7 @@ impl MatchState {
                     readback_ms_host: stats.readback_ms_host,
                     settle_ms: stats.settle_ms,
                     ingest_ms: stats.ingest_ms,
+                    push_reapply_ms: city.last_push_reapply_ms,
                     tick_ffi_ms: stats.tick_ffi_ms,
                     drain_ms: stats.drain_ms,
                     stats_ffi_ms: stats.stats_ffi_ms,
