@@ -20,6 +20,14 @@ default = []
 # Native PhysX-backed runtime (CityDestruction). Gated so the crate core stays
 # pure Rust and CI-safe on machines without PhysX/CUDA.
 physx = ["dep:vibe-land-physx-bridge", "vibe-land-physx-bridge/destruction"]
+# The CUDA stress solver -- the one the match server runs.
+#
+# Without this a test built with `physx` silently gets the CPU CG solve, whose
+# 8-iteration residual is reported as real stress: a city nobody touches breaks
+# thousands of bonds at rest where the GPU path breaks none. Every number
+# measured on that path is an artefact of the solver rather than a property of
+# the structure, and it is indistinguishable from a real regression.
+cuda-stress = ["physx", "vibe-land-physx-bridge/cuda-stress"]
 
 [dependencies.vibe-land-physx-bridge]
 path = "../physx-bridge"

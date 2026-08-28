@@ -69,11 +69,18 @@ type MaterialGroup = {
 
 function buildGroups(pack: ScenePack): MaterialGroup[] {
   const { nodes, nodeColliders, nodeSizes, nodeMaterials } = pack.scenario;
+  const library = pack.scenario.shapeLibrary ?? [];
   const table = pack.defaults?.solver?.materials ?? [];
   const byName = new Map<string, THREE.BufferGeometry[]>();
 
   for (let i = 0; i < nodes.length; i += 1) {
-    const collider = nodeColliders[i];
+    // Resolve a shape-library reference to the hull it names. Authored packs
+    // bound their fracture patterns, so most shards ARE references now -- and
+    // the ones that repeat most are exactly the ring segments a wall is made
+    // of, so skipping them makes whole walls silently vanish from a render.
+    const raw = nodeColliders[i];
+    const collider = raw.kind === 'shape' ? library[raw.shape] : raw;
+    if (!collider) continue;
     let geometry: THREE.BufferGeometry;
     if (collider.kind === 'cuboid') {
       const s = nodeSizes[i];
@@ -82,7 +89,7 @@ function buildGroups(pack: ScenePack): MaterialGroup[] {
     } else if (collider.kind === 'convex_hull') {
       geometry = buildHullGeometry(Float32Array.from(collider.points));
     } else {
-      continue; // shape-library packs are a city concern; authored packs carry hulls
+      continue;
     }
     const c = nodes[i].centroid;
     geometry.translate(c.x, c.y, c.z);
