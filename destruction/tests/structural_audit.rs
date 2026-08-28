@@ -254,16 +254,26 @@ fn audit_every_building() {
         // A structure whose peak is falling is resolving itself even if it is
         // still above 1; one whose peak is climbing is running away even if it
         // is currently below.
-        let verdict = if a.settled_at.is_some() && a.late_over < 0.5 {
+        // Breakage is the ground truth and outranks the stress trend, because
+        // a joint can ride above its elastic limit indefinitely without
+        // accumulating damage if it only does so in peaks. Petronas showed
+        // exactly that: peak climbing 0.98 -> 1.39 with two joints past yield
+        // and ZERO bonds broken in thirty seconds. An earlier version of this
+        // verdict called that "running away", which would have sent me to fix
+        // a building that is not breaking.
+        let broke = a.broken_first_half + a.broken_second_half;
+        let verdict = if broke == 0 && a.late_over < 0.5 {
             "sound"
-        } else if a.late_over < 0.5 {
-            "settling - nothing past yield, still moving"
-        } else if trend > 0.1 || a.broken_second_half > a.broken_first_half {
-            "RUNNING AWAY - load rising, damage accelerating"
-        } else if trend < -0.1 {
-            "SHEDDING - overloaded, but converging as it sheds"
+        } else if broke == 0 {
+            "holding - joints ride above yield, but nothing is breaking"
+        } else if a.broken_second_half > a.broken_first_half.saturating_mul(2).max(50) {
+            "RUNNING AWAY - damage accelerating"
+        } else if a.broken_second_half * 2 < a.broken_first_half {
+            "SHEDDING - broke, then converged"
+        } else if trend > 0.1 {
+            "DEGRADING - breaking steadily, load still rising"
         } else {
-            "OVERLOADED - stable, and stably past yield"
+            "DEGRADING - breaking steadily"
         };
         let settles = match a.settled_at {
             Some(t) => format!("{t:.1}s"),
