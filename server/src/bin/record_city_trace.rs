@@ -1004,8 +1004,9 @@ fn main() -> Result<()> {
                 "tick,bodies,awake,frozen,sleeping,bonds,stress_solve,begin,solve,end,\
                  readback,events,filters,ccd,support,shape,slot,bond_sample,gpu_solve,\
                  contact_proc,gravity,cpu_solve,frac_topo,frac_valid,frac_gen,frac_prep,\
-                 frac_apply,frac_scene,frac_rebuild,physx_step,gpu_wait,fetch_copy,\
+                 frac_apply,frac_scene,frac_rebuild,physx_step,physx_sim,gpu_wait,fetch_copy,\
                  callback,fetch_total,fetch_resid,post_resid,step_resid,solve_resid,\
+                 fetch_tick,cb_tick,\
                  cp_found,cp_persists,cp_points,cp_supp,node_mm,node_ck,\
                  sup_calls,sup_kin,sup_fy,sup_exist,sup_new,sup_staged,sup_unch,sup_rows,\
                  gpu_host_work,gpu_host_blocked,pairs,\
@@ -1142,8 +1143,8 @@ fn main() -> Result<()> {
                 w,
                 "{},{},{},{},{},{},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},\
                  {:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},\
-                 {:.4},{:.4},{:.4},{:.4},{:.4},\
                  {:.4},{:.4},{:.4},{:.4},{:.4},{:.4},\
+                 {:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},\
                  {:.0},{:.0},{:.0},{:.0},{:.0},{:.0},\
                  {:.0},{:.0},{:.0},{:.0},{:.0},{:.0},{:.0},{:.0},\
                  {:.4},{:.4},\
@@ -1159,6 +1160,9 @@ fn main() -> Result<()> {
                 s.blast_fracture_prep_ms, s.blast_fracture_apply_ms,
                 s.blast_fracture_scene_ms, s.blast_fracture_rebuild_ms,
                 physx_tick_ms,
+                // simulate vs fetch: the 542 ms spikes are NOT in fetch, and
+                // this column is what says whether they are in dispatch.
+                ws.map(|w| w.last_simulate_ms).unwrap_or(0.0),
                 ws.map(|w| w.last_gpu_wait_ms).unwrap_or(0.0),
                 ws.map(|w| w.last_fetch_copy_ms).unwrap_or(0.0),
                 // Same-window values, so `fetch_resid` is a real remainder
@@ -1169,6 +1173,12 @@ fn main() -> Result<()> {
                 s.post_step_residual_ms,
                 0.0f32,
                 span_value(&tick_spans, "stress_solve_residual_ms"),
+                // PER-TICK, not the 16-sample ring the columns above use. The
+                // ring is right for a 1 Hz report and useless for a spike: a
+                // 541 ms tick reported its neighbours' average and the
+                // decomposition silently stopped meaning anything.
+                world_span_value(&world_spans, "fetch_total_ms"),
+                world_span_value(&world_spans, "contact_callback_est_ms"),
                 world_span_value(&world_spans, "cp_found"),
                 world_span_value(&world_spans, "cp_persists"),
                 world_span_value(&world_spans, "cp_points"),
