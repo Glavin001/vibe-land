@@ -55,15 +55,36 @@ pub fn stress_settings(pack_materials: &[StressLimits]) -> StressSolverSettings 
     settings.materials = materials;
     // City towers have ~150–200 chunks; the synthetic default of 48
     // truncates island promotions mid-collapse.
-    // Stress-solve cost is the dominant term once a city is heavily
-    // fractured: measured 17.8 ms of a ~30 ms city step at ~6000 broken
-    // bonds. Iterations trade convergence for time, and graph reduction
-    // coarsens the solved graph. Both are overridable while tuning.
+    // Iterations are not a quality dial. Below convergence the solver reports
+    // a stress that is simply wrong, and wrong in the flattering direction --
+    // a structure looks sound because the sum stopped early.
+    //
+    // Measured on 432 Park (48,763 bonds), peak bond utilisation after three
+    // seconds of gravity:
+    //
+    //     4 iterations   0.89       32 iterations   2.98
+    //     8 iterations   1.14       64 iterations   2.99
+    //    16 iterations   2.62
+    //
+    // The answer converges at 32; 64 agrees to within 0.3%. At the old default
+    // of 8 that tower reported 1.14 against a true 2.98, understating what it
+    // carries by a factor of 2.6 -- which is why buildings kept looking stable
+    // while sitting at three times their limit.
+    //
+    // The cost is not the 3x it looks like, because iterations are only paid
+    // while a structure is MOVING. Ten seconds of the parking garage costs
+    // 1.48 s at 8 and 1.24 s at 32 -- flat, because it settles in 1.2 s and
+    // the settled-island skip then makes iteration count irrelevant. Petronas
+    // costs 1.8x more because it never settles, which is it telling us it is
+    // failing rather than the solver being slow.
+    //
+    // So: solve properly, and let settling -- not truncation -- be what makes
+    // it cheap.
     settings.max_solver_iterations_per_frame = std::env::var("VIBE_CITY_SOLVER_ITERATIONS")
         .ok()
         .and_then(|v| v.parse::<u32>().ok())
         .filter(|v| *v > 0)
-        .unwrap_or(8);
+        .unwrap_or(32);
     settings.graph_reduction_level = std::env::var("VIBE_CITY_GRAPH_REDUCTION")
         .ok()
         .and_then(|v| v.parse::<u32>().ok())

@@ -215,3 +215,44 @@ fn utilisation_per_tick() {
     }
     eprintln!();
 }
+
+/// How long a structure takes to reach a steady stress state from spawn.
+///
+/// The answer decides whether the settled state is worth precomputing: if a
+/// building needs seconds of simulation before its stresses are meaningful,
+/// every scene starts wrong and every freshly split island starts wrong again.
+#[test]
+#[ignore = "diagnostic"]
+fn time_to_settle() {
+    let name = std::env::var("STANDS_PACK").unwrap_or_else(|_| "rig-garage".into());
+    let pack = load(&name);
+    let mut rig = Rig::spin_up(&pack).expect("install");
+    let mut last = 0.0f32;
+    let mut steady_since: Option<u32> = None;
+    for tick in 1..=600u32 {
+        rig.run_ticks(1).expect("tick");
+        let peak = rig
+            .stress_report()
+            .bonds
+            .first()
+            .map(|b| b.utilisation)
+            .unwrap_or(0.0);
+        // Steady = within 1% of the previous tick for 30 consecutive ticks.
+        if (peak - last).abs() <= 0.01 * last.max(1e-6) {
+            if steady_since.is_none() {
+                steady_since = Some(tick);
+            } else if tick - steady_since.unwrap() >= 30 {
+                eprintln!(
+                    "[measure] {name}: steady at tick {} ({:.2} s), peak {peak:.2}",
+                    steady_since.unwrap(),
+                    steady_since.unwrap() as f32 / 60.0
+                );
+                return;
+            }
+        } else {
+            steady_since = None;
+        }
+        last = peak;
+    }
+    eprintln!("[measure] {name}: NOT steady within 600 ticks (10 s), peak {last:.2}");
+}
