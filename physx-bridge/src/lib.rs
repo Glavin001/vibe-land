@@ -1034,6 +1034,21 @@ impl World {
     /// copied ~760 KB out of C++ and then again into a Rust Vec, every tick.
     /// Valid until the next call.
     #[cfg(feature = "destruction")]
+    /// Per-bond stress for one structure, as of the last solve.
+    ///
+    /// The tick loop's own sampler reduces this to a max and a count, which
+    /// says whether anything is overloaded and nothing about where. This is
+    /// the readout that can answer where.
+    #[cfg(feature = "destruction")]
+    pub fn bond_stress_rows(
+        &self,
+        structure_id: u32,
+    ) -> Result<Vec<ffi::FfiBondStressRow>, BridgeError> {
+        self.inner
+            .bond_stress_rows(structure_id)
+            .map_err(operation_error)
+    }
+
     pub fn chunk_body_snapshots(&self) -> Result<&[ffi::FfiChunkBodySnapshot], BridgeError> {
         self.inner.chunk_body_snapshots().map_err(operation_error)
     }
@@ -1502,6 +1517,22 @@ mod ffi {
         supporter_node: u32,
     }
 
+    /// One bond's stress state, for locating what is actually overloaded.
+    #[derive(Clone, Copy, Debug)]
+    struct FfiBondStressRow {
+        bond_index: u32,
+        node0: u32,
+        node1: u32,
+        material: u32,
+        area: f32,
+        /// Stress over this bond's own material's ELASTIC limit. 1.0 is at the
+        /// limit; damage accrues above it and never below.
+        utilisation: f32,
+        compression: f32,
+        tension: f32,
+        shear: f32,
+    }
+
     unsafe extern "C++" {
         include!("physx_bridge.h");
 
@@ -1596,6 +1627,7 @@ mod ffi {
         fn take_frozen_contact_wakes(self: Pin<&mut World>) -> Result<Vec<u32>>;
         fn take_support_sets(self: Pin<&mut World>) -> Result<Vec<FfiSupportSet>>;
         fn take_support_rows(self: Pin<&mut World>) -> Result<Vec<FfiSupportRow>>;
+        fn bond_stress_rows(self: &World, structure_id: u32) -> Result<Vec<FfiBondStressRow>>;
         fn destruction_stats(self: &World) -> Result<FfiDestructionStats>;
         fn validate_destruction_mappings(self: &World) -> Result<bool>;
     }

@@ -170,3 +170,24 @@ fn the_whole_skyline_stands() {
         broken * 100.0
     );
 }
+
+/// Where a structure is loaded, rather than whether it is.
+///
+/// STANDS_PACK names the scene; BLAST_BEND_MAX_GAIN etc. put it in whatever
+/// situation is being investigated. Prints a card and asserts nothing: it is
+/// an instrument.
+#[test]
+#[ignore = "diagnostic"]
+fn stress_report() {
+    let name = std::env::var("STANDS_PACK").unwrap_or_else(|_| "rig-garage".into());
+    let secs: f32 = std::env::var("REPORT_SECS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(5.0);
+    let pack = load(&name);
+    let mut rig = Rig::spin_up(&pack).expect("install");
+    rig.run_secs(secs).expect("tick");
+    let report = rig.stress_report();
+    eprintln!("{}", report.card(&pack, &format!("{name} after {secs:.0} s of gravity")));
+    eprintln!("  broken so far: {}", rig.broken_bonds());
+}

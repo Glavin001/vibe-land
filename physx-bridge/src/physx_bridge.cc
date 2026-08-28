@@ -1247,6 +1247,13 @@ public:
         "physx-bridge built without feature `destruction`");
 #endif
   }
+  rust::Vec<FfiBondStressRow> bond_stress_rows(std::uint32_t structure_id) const {
+    if (!destruction_) {
+      return {};
+    }
+    return destruction_->bond_stress_rows(structure_id);
+  }
+
 
   FfiDestructionStats destruction_stats() const {
 #ifdef VIBE_LAND_DESTRUCTION
@@ -1642,6 +1649,11 @@ rust::Vec<FfiSupportSet> World::take_support_sets() {
 
 rust::Vec<FfiSupportRow> World::take_support_rows() {
   return impl_->take_support_rows();
+}
+
+rust::Vec<FfiBondStressRow> World::bond_stress_rows(
+    std::uint32_t structure_id) const {
+  return impl_->bond_stress_rows(structure_id);
 }
 
 FfiDestructionStats World::destruction_stats() const {

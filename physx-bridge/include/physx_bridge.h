@@ -32,6 +32,7 @@ struct FfiIslandBodyEvent;
 struct FfiChunkBodySnapshot;
 struct FfiSupportSet;
 struct FfiSupportRow;
+struct FfiBondStressRow;
 struct FfiDestructionStats;
 
 class World final {
@@ -105,6 +106,7 @@ public:
   /// Weight-bearing dependency updates (paired drains; consume together).
   rust::Vec<FfiSupportSet> take_support_sets();
   rust::Vec<FfiSupportRow> take_support_rows();
+  rust::Vec<FfiBondStressRow> bond_stress_rows(std::uint32_t structure_id) const;
   FfiDestructionStats destruction_stats() const;
   bool validate_destruction_mappings() const;
 

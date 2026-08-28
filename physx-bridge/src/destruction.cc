@@ -2253,6 +2253,47 @@ rust::Vec<FfiSupportSet> DestructionManager::take_support_sets() {
   return out;
 }
 
+rust::Vec<FfiBondStressRow> DestructionManager::bond_stress_rows(
+    std::uint32_t structure_id) const {
+  rust::Vec<FfiBondStressRow> out;
+  const Slot *slot = find_slot(structure_id);
+  if (slot == nullptr || slot->dest == nullptr) {
+    return out;
+  }
+  const std::uint32_t bond_count =
+      static_cast<std::uint32_t>(slot->bond_descs.size());
+  if (bond_count == 0) {
+    return out;
+  }
+  // Utilisation and the three stress modes are separate queries. Asking for
+  // utilisation rather than dividing the stresses by hand is deliberate: the
+  // solver divides by the limits of the bond's OWN material, and rediscovering
+  // which material that is on this side is how the two drift apart.
+  std::vector<float> utilisation(bond_count, 0.0f);
+  std::vector<float> compression(bond_count, 0.0f);
+  std::vector<float> tension(bond_count, 0.0f);
+  std::vector<float> shear(bond_count, 0.0f);
+  const std::uint32_t written =
+      slot->dest->getBondUtilisations(utilisation.data(), bond_count);
+  slot->dest->getBondStresses(compression.data(), tension.data(), shear.data(),
+                              bond_count);
+  out.reserve(written);
+  for (std::uint32_t i = 0; i < written; ++i) {
+    FfiBondStressRow row{};
+    row.bond_index = i;
+    row.node0 = slot->bond_descs[i].node0;
+    row.node1 = slot->bond_descs[i].node1;
+    row.material = slot->bond_descs[i].material;
+    row.area = slot->bond_descs[i].area;
+    row.utilisation = std::isfinite(utilisation[i]) ? utilisation[i] : 0.0f;
+    row.compression = std::isfinite(compression[i]) ? compression[i] : 0.0f;
+    row.tension = std::isfinite(tension[i]) ? tension[i] : 0.0f;
+    row.shear = std::isfinite(shear[i]) ? shear[i] : 0.0f;
+    out.push_back(row);
+  }
+  return out;
+}
+
 rust::Vec<FfiSupportRow> DestructionManager::take_support_rows() {
   rust::Vec<FfiSupportRow> out;
   out.reserve(staged_support_rows_.size());

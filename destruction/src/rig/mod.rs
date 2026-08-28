@@ -28,6 +28,7 @@
 //! "the failures are ordered"), never a level or a count. Exact stress
 //! assertions belong upstream in the deterministic solver tests.
 
+pub mod stress_report;
 pub mod surgery;
 pub mod trace;
 
@@ -46,6 +47,7 @@ use crate::membership::{ChunkIndex, Membership};
 use crate::runtime::{CityDestruction, CityDestructionError};
 use crate::scene_pack::ScenePack;
 
+pub use stress_report::{BondStress, StressReport};
 pub use surgery::{select_nodes, NodeSel};
 pub use trace::{Sample, StatsTrace};
 
@@ -287,6 +289,51 @@ impl Rig {
             shot.push_speed,
         )?;
         Ok(())
+    }
+
+    /// Per-bond stress from the last solve, joined to the pack's roles.
+    ///
+    /// This is the surgical instrument: it answers which joint is overloaded,
+    /// between which chunks, in which mode and at what height, rather than
+    /// whether anything anywhere is.
+    pub fn stress_report(&self) -> StressReport {
+        let rows = self.world.bond_stress_rows(0).unwrap_or_default();
+        let materials: Vec<u32> = rows.iter().map(|r| r.material).collect();
+        let bonds: Vec<BondStress> = rows
+            .iter()
+            .map(|r| {
+                let a = self.pack.nodes.get(r.node0 as usize).map(|n| n.centroid);
+                let b = self.pack.nodes.get(r.node1 as usize).map(|n| n.centroid);
+                BondStress {
+                    bond_index: r.bond_index,
+                    node0: r.node0,
+                    node1: r.node1,
+                    utilisation: r.utilisation,
+                    compression: r.compression,
+                    tension: r.tension,
+                    shear: r.shear,
+                    area: r.area,
+                    position: match (a, b) {
+                        (Some(a), Some(b)) => (a + b) * 0.5,
+                        _ => Vec3::ZERO,
+                    },
+                }
+            })
+            .collect();
+        let names: Vec<String> = self
+            .pack
+            .appearances
+            .iter()
+            .map(|a| a.name.clone().unwrap_or_default())
+            .collect();
+        StressReport::from_rows(&self.pack, &bonds, |bond_index| {
+            materials
+                .get(bond_index as usize)
+                .and_then(|m| names.get(*m as usize))
+                .filter(|n| !n.is_empty())
+                .cloned()
+                .unwrap_or_else(|| "unnamed".to_string())
+        })
     }
 
     pub fn broken_bonds(&self) -> u32 {
