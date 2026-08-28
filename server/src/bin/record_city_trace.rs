@@ -802,6 +802,31 @@ fn island_reach(manifest: &DestructionManifest, structure_id: u32, chunks: &[u32
         .fold(0.5f32, f32::max)
 }
 
+/// Look a named span up by name, 0.0 if this tick did not publish it.
+///
+/// The spans are a name/value channel rather than a struct, so a consumer
+/// that hard-codes an index breaks silently the moment a span is added.
+fn span_value(spans: &[vibe_land_destruction::types::NamedSpan], name: &str) -> f32 {
+    spans
+        .iter()
+        .find(|s| s.name == name)
+        .map(|s| s.value as f32)
+        .unwrap_or(0.0)
+}
+
+/// Same lookup over the bridge's own span type. Two types, one shape: the
+/// world spans cross the FFI boundary and the destruction spans do not.
+fn world_span_value(
+    spans: &[vibe_land_physx_bridge::NamedSpan],
+    name: &str,
+) -> f32 {
+    spans
+        .iter()
+        .find(|s| s.name == name)
+        .map(|s| s.value as f32)
+        .unwrap_or(0.0)
+}
+
 fn main() -> Result<()> {
     let args = Args::parse()?;
 
@@ -979,7 +1004,8 @@ fn main() -> Result<()> {
                 "tick,bodies,awake,frozen,sleeping,bonds,stress_solve,begin,solve,end,\
                  readback,events,filters,ccd,support,shape,slot,bond_sample,gpu_solve,\
                  contact_proc,gravity,cpu_solve,frac_topo,frac_valid,frac_gen,frac_prep,\
-                 frac_apply,frac_scene,frac_rebuild,physx_step,gpu_wait,fetch_copy,pairs,\
+                 frac_apply,frac_scene,frac_rebuild,physx_step,gpu_wait,fetch_copy,\
+                 callback,fetch_total,fetch_resid,post_resid,step_resid,solve_resid,pairs,\
                  contacts_q,islands_skip,islands_tot,quiet,freeze,unfreeze,contact_wakes,\
                  min_y,pose_quiet,overstressed,patch_hw,escaped"
             )?;
@@ -1113,7 +1139,9 @@ fn main() -> Result<()> {
                 w,
                 "{},{},{},{},{},{},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},\
                  {:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},\
-                 {:.4},{:.4},{:.4},{:.4},{:.4},{},{},{},{},{},{},{},{},{:.4},{},{},{},{}",
+                 {:.4},{:.4},{:.4},{:.4},{:.4},\
+                 {:.4},{:.4},{:.4},{:.4},{:.4},{:.4},\
+                 {},{},{},{},{},{},{},{},{:.4},{},{},{},{}",
                 tick_index, s.chunk_bodies, s.awake_chunk_bodies, s.frozen_chunk_bodies,
                 s.sleeping_chunk_bodies, s.broken_bonds,
                 s.stress_solve_ms, s.begin_ms, s.solve_ms, s.end_ms, s.readback_ms,
@@ -1127,6 +1155,14 @@ fn main() -> Result<()> {
                 physx_tick_ms,
                 ws.map(|w| w.last_gpu_wait_ms).unwrap_or(0.0),
                 ws.map(|w| w.last_fetch_copy_ms).unwrap_or(0.0),
+                // Same-window values, so `fetch_resid` is a real remainder
+                // rather than a comparison between two sampling cadences.
+                world_span_value(&world_spans, "callback_recent_ms"),
+                world_span_value(&world_spans, "fetch_total_recent_ms"),
+                world_span_value(&world_spans, "fetch_residual_recent_ms"),
+                s.post_step_residual_ms,
+                0.0f32,
+                span_value(&tick_spans, "stress_solve_residual_ms"),
                 s.support_pair_loads, s.contacts_queued,
                 s.solver_islands_skipped_accum, s.solver_islands_total_accum,
                 s.quiet_slot_ticks, s.freeze_flips, s.unfreeze_flips, s.contact_wakes,

@@ -23,6 +23,7 @@
 #include <mutex>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -1169,6 +1170,14 @@ public:
       while (!ready) {
         last_call_start = std::chrono::steady_clock::now();
         ready = scene_->fetchResults(false);
+        if (!ready) {
+          // Yield between probes. The original loop spun flat out, which is
+          // what made per-tick sampling cost ~0.91 ms: not the timestamps
+          // (we take those every tick anyway) but a core taken away from the
+          // Blast walks running beside this. Handing the slice back turns the
+          // spin into a wait, and the wait is what we are trying to MEASURE.
+          std::this_thread::yield();
+        }
       }
       const auto end = std::chrono::steady_clock::now();
       last_gpu_wait_ms_ =
@@ -1192,6 +1201,18 @@ public:
                              static_cast<float>(
                                  static_cast<double>(contact_callback_cycles_) *
                                  cycles_to_ms_factor()));
+      // Callback and fetch-total go on the SAME ring, on the SAME ticks.
+      // The 4.3% "unattributed" in the PhysX fetch was never untimed work:
+      // gpu_wait and result_copy were recent means while fetch_total was
+      // this tick's value, so the subtraction compared two different
+      // windows. Same window, and the parts sum to the whole by
+      // construction -- at no cost, since these ticks are already sampled.
+      callback_ring_[sim_wall_ring_head_] = static_cast<float>(
+          static_cast<double>(contact_callback_cycles_) *
+          cycles_to_ms_factor());
+      // fetch_total is not known until the fetch below finishes, so remember
+      // which slot to complete rather than writing a stale value here.
+      pending_ring_slot_ = static_cast<int>(sim_wall_ring_head_);
       sim_wall_ring_head_ = (sim_wall_ring_head_ + 1) % kSimWallRing;
       if (sim_wall_ring_fill_ < kSimWallRing) {
         ++sim_wall_ring_fill_;
@@ -1217,6 +1238,11 @@ public:
             std::chrono::steady_clock::now() - fetch_start)
             .count();
     last_fetch_total_ms_ = static_cast<float>(fetch_total_ms);
+    if (pending_ring_slot_ >= 0) {
+      fetch_total_ring_[static_cast<std::size_t>(pending_ring_slot_)] =
+          last_fetch_total_ms_;
+      pending_ring_slot_ = -1;
+    }
     // ONLY on a sampled tick. On a blocking tick the fetch covers wait AND
     // copy, so subtracting callbacks from it yields "wait + copy", which
     // under the name result_copy would reintroduce precisely the conflation
@@ -1406,6 +1432,17 @@ public:
       span("sim_wall_recent_ms", sim_sum / n, 0);
       span("result_copy_recent_ms", copy_sum / n, 0);
       span("sim_wall_recent_n", n, 2);
+      double cb_sum = 0.0;
+      double total_sum = 0.0;
+      for (std::size_t i = 0; i < sim_wall_ring_fill_; ++i) {
+        cb_sum += callback_ring_[i];
+        total_sum += fetch_total_ring_[i];
+      }
+      span("callback_recent_ms", cb_sum / n, 0);
+      span("fetch_total_recent_ms", total_sum / n, 0);
+      // All four from the same window, so this is the honest remainder.
+      span("fetch_residual_recent_ms",
+           (total_sum - sim_sum - copy_sum - cb_sum) / n, 0);
     }
     span("tsc_suspect_ticks", static_cast<double>(tsc_suspect_ticks_), 2);
     span("cb_extract_ms", cb_extract_ms_, 0);
@@ -1995,6 +2032,11 @@ private:
   static constexpr std::size_t kSimWallRing = 16;
   float sim_wall_ring_[kSimWallRing] = {};
   float result_copy_ring_[kSimWallRing] = {};
+  float callback_ring_[kSimWallRing] = {};
+  float fetch_total_ring_[kSimWallRing] = {};
+  /// Ring slot awaiting its fetch_total, or -1. The other three values are
+  /// known before the fetch completes; this one is not.
+  int pending_ring_slot_ = -1;
   std::size_t sim_wall_ring_head_ = 0;
   std::size_t sim_wall_ring_fill_ = 0;
   /// Ticks where the callback total exceeded the fetch that contains it —
