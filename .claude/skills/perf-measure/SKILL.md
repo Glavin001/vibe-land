@@ -5,6 +5,30 @@ description: Measure server tick performance without fooling yourself — which 
 
 # Measuring server performance
 
+## The one command
+
+```bash
+scripts/perf/profile.sh              # downtown grid 2: 87k chunks, 268k bonds
+scripts/perf/profile.sh --grid 1     # smaller scene
+scripts/perf/profile.sh --idle       # at rest, no shots
+scripts/perf/profile.sh --reuse X.csv    # re-analyse, no re-run
+scripts/perf/profile.sh --ab A.csv B.csv # matched-n comparison
+```
+
+It prints a hierarchical budget where the shares add up, plus the worst
+ticks fully decomposed. It refuses to run while the vl4 server is up,
+because that server holds a CUDA context and tracing beside it inflated the
+tail 60x. It sets the physics env to match run-vl4-server.sh, builds with
+`cuda-stress,blast-core`, and excludes ring warm-up. None of that is
+optional and none of it should have to be remembered.
+
+**`max` does not decompose.** A parent's worst tick and a child's worst tick
+are different ticks, so subtracting them describes no tick that ever ran.
+Percentages in that table come from SUMS, which do decompose; the quantiles
+beside them are shape. Columns marked `~` are sampled 1-in-16 or ring
+-smoothed -- fine for a 1 Hz report, wrong per-tick, and never valid as a
+per-unit denominator (`dist.py` raises rather than dividing by one).
+
 Every wrong performance conclusion in this project came from a measurement
 problem, not a reasoning problem. This is the procedure that avoids repeating
 them.
