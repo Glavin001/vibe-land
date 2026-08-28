@@ -110,3 +110,45 @@ fails on the parking garage with a single body still awake at 5 s. No bonds
 break (the invariant that matters holds), it settles in 1 s when run alone, and
 it passes with the bending flags off — so it is the bending change keeping one
 chunk marginally alive, not a structure coming apart.
+
+---
+
+# Re-measured with the solver actually solving
+
+Everything above, and every calibration decision taken from it, was measured
+through a solver that stopped re-solving a structure on its second tick. Those
+numbers were a property of the settled-island skip, not of the buildings. This
+is the same measurement after that was fixed, at 20 s so the readings have
+converged (checked against 5 s; only algedra moves, by one bond).
+
+| building | hottest joint class | max | mean | over limit |
+|---|---|---:|---:|---:|
+| parking-garage | parapet→slab | 0.98 | 0.16 | 0 |
+| algedra-tower | balcony→slab | 1.03 | 0.05 | 1 |
+| house-1story | wall→wall | 0.22 | 0.02 | 0 |
+| house-2story | glazing→wall | 0.20 | 0.04 | 0 |
+| villa-savoye | slab→wall | 0.94 | 0.12 | 0 |
+| park-432 | wall→wall | 1.18 | 0.10 | 6 |
+| petronas | slab→wall | 1.12 | 0.12 | 3 |
+
+## What this overturns
+
+The conclusion I had been working from -- that these buildings sit at a few
+percent of their materials' limits and are ten to twenty times too strong --
+is **wrong**. It came from reading frozen stresses.
+
+Measured properly, the hot joints in four of the seven are at or past 1.0
+standing still, and park-432 and petronas already carry a handful of bonds
+over the line. Globally weakening concrete, which is what "too strong" implied
+and what I was about to do, would have pushed those into self-destruction. The
+sliver cull is what is currently keeping the count at single digits.
+
+## What it points at instead
+
+Means of 0.02-0.16 against maxima near 1.0 is a stress-CONCENTRATION pattern,
+not a strength problem: a handful of attachment joints -- balcony to slab,
+parapet to slab, slab to wall -- carry an order of magnitude more than the
+material around them, in every building independently. That is the same shape
+of finding as the slivers, one level up: the load path narrows at attachments.
+
+So the next lever is those attachments and the weapon, not the material table.
