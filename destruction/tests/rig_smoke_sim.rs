@@ -191,3 +191,27 @@ fn stress_report() {
     eprintln!("{}", report.card(&pack, &format!("{name} after {secs:.0} s of gravity")));
     eprintln!("  broken so far: {}", rig.broken_bonds());
 }
+
+/// Utilisation tick by tick, for finding WHEN a structure stops being solved.
+#[test]
+#[ignore = "diagnostic"]
+fn utilisation_per_tick() {
+    let name = std::env::var("STANDS_PACK").unwrap_or_else(|_| "rig-garage".into());
+    let pack = load(&name);
+    let mut rig = Rig::spin_up(&pack).expect("install");
+    eprint!("[measure] {name} util_max by tick:");
+    for tick in 1..=20 {
+        rig.run_ticks(1).expect("tick");
+        // Straight from the solver, not from `stats()`: the tick loop's own
+        // bond sampler runs once every 30 ticks, so reading that here measures
+        // the sampler's cadence rather than the structure.
+        let peak = rig
+            .stress_report()
+            .bonds
+            .first()
+            .map(|b| b.utilisation)
+            .unwrap_or(0.0);
+        eprint!(" {tick}:{peak:.3}");
+    }
+    eprintln!();
+}
