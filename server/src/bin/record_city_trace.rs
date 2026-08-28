@@ -1006,7 +1006,8 @@ fn main() -> Result<()> {
                  contact_proc,gravity,cpu_solve,frac_topo,frac_valid,frac_gen,frac_prep,\
                  frac_apply,frac_scene,frac_rebuild,physx_step,physx_sim,gpu_wait,fetch_copy,\
                  callback,fetch_total,fetch_resid,post_resid,step_resid,solve_resid,\
-                 fetch_tick,cb_tick,\
+                 fetch_tick,cb_tick,cb_max_us,cb_entity,cb_extract,cb_resolve,\
+                 cb_queue,cb_events,cb_pairld,cb_wake,\
                  cp_found,cp_persists,cp_points,cp_supp,node_mm,node_ck,\
                  sup_calls,sup_kin,sup_fy,sup_exist,sup_new,sup_staged,sup_unch,sup_rows,\
                  gpu_host_work,gpu_host_blocked,pairs,\
@@ -1112,6 +1113,20 @@ fn main() -> Result<()> {
         destruction.pre_step(&mut world);
         let physx_started = std::time::Instant::now();
         world.step().map_err(|error| anyhow::anyhow!("{error}"))?;
+        // Drain contact events, exactly as physx_runtime::post_step_readbacks
+        // does every tick in the server. Without this the bridge's
+        // contact_events_ vector grows for the whole run -- ~12k events a
+        // tick, never released -- and each capacity doubling reallocates and
+        // copies the lot inside whichever contact callback triggered it.
+        //
+        // That produced a textbook artifact: single-callback stalls of 16, 32,
+        // 64, 130, 262 and 536 ms, each twice the last and half as frequent,
+        // which is amortised vector growth and nothing else. It was diagnosed
+        // as a large-scene physics spike for most of a session. The harness
+        // must do what the server does, or it measures the harness.
+        let _ = world
+            .take_contact_events()
+            .map_err(|error| anyhow::anyhow!("{error}"))?;
         // Wall time around the PhysX step. onContact runs INSIDE fetchResults,
         // so per-manifold work there lands here and in nothing the city-step
         // phases report -- which is why it was previously invisible to this
@@ -1147,7 +1162,7 @@ fn main() -> Result<()> {
                  {:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},\
                  {:.0},{:.0},{:.0},{:.0},{:.0},{:.0},\
                  {:.0},{:.0},{:.0},{:.0},{:.0},{:.0},{:.0},{:.0},\
-                 {:.4},{:.4},\
+                 {:.4},{:.4},{:.2},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},\
                  {},{},{},{},{},{},{},{},{:.4},{},{},{},{}",
                 tick_index, s.chunk_bodies, s.awake_chunk_bodies, s.frozen_chunk_bodies,
                 s.sleeping_chunk_bodies, s.broken_bonds,
@@ -1179,6 +1194,14 @@ fn main() -> Result<()> {
                 // decomposition silently stopped meaning anything.
                 world_span_value(&world_spans, "fetch_total_ms"),
                 world_span_value(&world_spans, "contact_callback_est_ms"),
+                world_span_value(&world_spans, "cb_max_us"),
+                world_span_value(&world_spans, "cb_entity_ms"),
+                world_span_value(&world_spans, "cb_extract_ms"),
+                world_span_value(&world_spans, "cb_resolve_ms"),
+                world_span_value(&world_spans, "cb_queue_ms"),
+                world_span_value(&world_spans, "cb_events_ms"),
+                world_span_value(&world_spans, "cb_pair_load_ms"),
+                world_span_value(&world_spans, "cb_wake_ms"),
                 world_span_value(&world_spans, "cp_found"),
                 world_span_value(&world_spans, "cp_persists"),
                 world_span_value(&world_spans, "cp_points"),

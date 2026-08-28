@@ -810,7 +810,17 @@ public:
       }
 #endif
     }
-    contact_callback_cycles_ += cycle_now() - callback_started;
+    // Sum AND max. 526 ms of callback in one tick is either 11,710 callbacks
+    // at 45 us each (systematic: the work got slower) or one callback that
+    // blocked for half a second (a stall: allocation, page fault, or the
+    // thread being descheduled -- rdtsc measures wall, so a preemption lands
+    // inside whichever callback was running). Those are opposite bugs and the
+    // sum cannot tell them apart.
+    const std::uint64_t callback_cycles = cycle_now() - callback_started;
+    contact_callback_cycles_ += callback_cycles;
+    if (callback_cycles > contact_callback_max_cycles_) {
+      contact_callback_max_cycles_ = callback_cycles;
+    }
   }
 
   void add_static_box(const FfiStaticBoxDesc &desc) {
@@ -1205,6 +1215,7 @@ public:
   void end_step() {
     require(step_in_flight_, "end_step called without begin_step");
     contact_callback_cycles_ = 0;
+    contact_callback_max_cycles_ = 0;
     const auto fetch_start = std::chrono::steady_clock::now();
     const unsigned interval = gpu_sample_interval();
     const bool sample_sim_wall =
@@ -1501,6 +1512,10 @@ public:
     span("cb_resolve_ms", cb_resolve_ms_, 0);
     span("cb_entity_ms", cb_entity_ms_, 0);
     span("cb_events_ms", cb_events_ms_, 0);
+    span("cb_max_us",
+         static_cast<double>(contact_callback_max_cycles_) *
+             cycles_to_ms_factor() * 1000.0,
+         0);
     span("cp_found", static_cast<double>(cp_found_), 0);
     span("cp_persists", static_cast<double>(cp_persists_), 0);
     span("cp_other", static_cast<double>(cp_other_), 0);
@@ -2122,6 +2137,8 @@ private:
   double cb_events_ms_ = 0.0;
   /// Per-tick pair census, reset alongside the callback timers.
   static constexpr int kImpulseBuckets = 20;
+  /// Longest SINGLE callback this tick, in cycles. See the sum/max comment.
+  std::uint64_t contact_callback_max_cycles_ = 0;
   std::uint64_t cp_found_ = 0;
   std::uint64_t cp_persists_ = 0;
   std::uint64_t cp_other_ = 0;
