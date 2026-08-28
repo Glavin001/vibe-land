@@ -502,20 +502,50 @@ DestructionManager::DestructionManager(PxPhysics &physics, PxScene &scene,
   // grid 2 (see tl_inside_stress_task). So at grid 2 this is currently a
   // no-op, not a win; flattening the slot x strip fan-out is the follow-up
   // that collects it there. BLAST_BOND_STRESS_PARALLEL=0 removes the hook.
+  // DEFAULT OFF at grid 2's cost, ON only where it was audited to pay.
+  //
+  // The second-pool design below is REFUTED. At rest -- identical scene state
+  // in both arms, no fracture divergence, n=3358/arm -- it is ~2x worse:
+  //
+  //     solve  6.31 ms ON vs 2.98 OFF     hw_bond 14.65 vs 9.34
+  //
+  // Two causes, both structural. The mutex converts slot parallelism into
+  // serialisation (slots queue for the pool instead of running concurrently),
+  // and a second pool of `workers` threads alongside the first oversubscribes
+  // the box roughly 2:1, so the two pools thrash rather than share.
+  //
+  // A loaded A/B appeared to show solve -24%; that was the workload, not the
+  // change -- the arms broke 25.2k vs 30.8k bonds, and normalising per live
+  // bond made the controls contradict each other (support +1.7%, i.e.
+  // comparable; gpu_solve -51.8%, which a CPU threading change cannot do).
+  // At-rest is the only clean control for this, and it says no.
+  //
+  // The fix is a FLAT fan-out -- one top-level dispatch over (slot x strip),
+  // no second pool, no mutex, no nesting -- which needs solveTick split into
+  // phases. Until then the hook stays available for the single-structure
+  // case, where it was measured -51.2% and audited over 222M checks.
   static bool parallel_for_enabled = [] {
     const char *raw = std::getenv("BLAST_BOND_STRESS_PARALLEL");
-    return raw == nullptr || std::string(raw) != "0";
+    return raw != nullptr && std::string(raw) != "0";
   }();
   if (parallel_for_enabled) {
+    // Dispatch to the BOND pool, not the slot pool. The walk runs inside a
+    // slot task, and re-entering that pool deadlocks it; a separate pool has
+    // its own generation state. The mutex is what makes concurrent slots
+    // legal on it -- StressExecutor drives one generation at a time, so the
+    // slots queue for the wide pool instead of each getting a slice of it.
+    bond_executor_ = std::make_unique<StressExecutor>(workers);
     Nv::Blast::NvBlastExtStressSetParallelFor(
         [](void *ctx, std::uint32_t count,
            Nv::Blast::ExtStressParallelForBody body, void *bodyCtx) {
-          static_cast<StressExecutor *>(ctx)->run(
+          auto *self = static_cast<DestructionManager *>(ctx);
+          std::lock_guard<std::mutex> lock(self->bond_dispatch_mutex_);
+          self->bond_executor_->run(
               count, [body, bodyCtx](std::size_t index) {
                 body(bodyCtx, static_cast<std::uint32_t>(index));
               });
         },
-        stress_executor_.get());
+        this);
   }
 }
 
@@ -1492,15 +1522,19 @@ StressExecutor::~StressExecutor() {
   }
 }
 
-/// Set while a thread is executing tasks of an in-flight generation --
-/// workers and the participating caller alike. A nested run() from inside a
-/// task MUST NOT touch the pool: the state is one generation deep
-/// (task_/count_/next_/active_), so a nested dispatch overwrites the
-/// generation the outer call is still waiting on. That is not a slowdown,
-/// it is a deadlock -- grid 2 hung on the first nested use, and the hang was
-/// misread as a short timeout for a full session. Thread-local, so the check
-/// costs one TLS read on the run() entry path.
-static thread_local bool tl_inside_stress_task = false;
+/// Which executor this thread is currently executing tasks for, if any.
+///
+/// Re-entering the SAME pool must not touch it: its state is one generation
+/// deep (task_/count_/next_/active_), so a nested dispatch overwrites the
+/// generation the outer call is still waiting on -- a deadlock, which grid 2
+/// hit on the first nested use and which was misread as a short timeout for
+/// a session.
+///
+/// A pointer rather than a bool because dispatching to a DIFFERENT pool from
+/// inside a task is safe and is the whole point of the bond executor: that
+/// pool has its own generation state, so there is nothing to clobber. The
+/// bool version conflated the two and forced every grid-2 bond walk inline.
+static thread_local const StressExecutor *tl_active_executor = nullptr;
 
 void StressExecutor::drain() {
   for (;;) {
@@ -1508,7 +1542,8 @@ void StressExecutor::drain() {
     if (index >= count_) {
       return;
     }
-    tl_inside_stress_task = true;
+    const StressExecutor *previous = tl_active_executor;
+    tl_active_executor = this;
     try {
       (*task_)(index);
     } catch (...) {
@@ -1517,7 +1552,7 @@ void StressExecutor::drain() {
         error_ = std::current_exception();
       }
     }
-    tl_inside_stress_task = false;
+    tl_active_executor = previous;
   }
 }
 
@@ -1526,10 +1561,10 @@ void StressExecutor::run(std::size_t count,
   if (count == 0) {
     return;
   }
-  // One item, no helper threads, or NESTED (called from inside a task of an
-  // in-flight generation): run inline. The nested case is correctness, not
-  // tuning -- see tl_inside_stress_task.
-  if (threads_.empty() || count == 1 || tl_inside_stress_task) {
+  // One item, no helper threads, or re-entering THIS pool from inside one of
+  // its own tasks: run inline. The last case is correctness, not tuning --
+  // see tl_active_executor.
+  if (threads_.empty() || count == 1 || tl_active_executor == this) {
     for (std::size_t i = 0; i < count; ++i) {
       task(i);
     }

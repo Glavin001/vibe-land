@@ -370,6 +370,19 @@ private:
 
   std::vector<std::unique_ptr<Slot>> slots_;
   std::unique_ptr<StressExecutor> stress_executor_;
+  /// Separate pool for the bond-stress strip walk.
+  ///
+  /// The walk is dispatched from INSIDE a slot-fan-out task, so it cannot use
+  /// stress_executor_ -- re-entering a pool from its own task deadlocks it
+  /// (see tl_active_executor). A second pool has its own generation state, so
+  /// the dispatch is legal; bond_dispatch_mutex_ serialises the slots' turns
+  /// on it, since StressExecutor::run drives one generation at a time.
+  ///
+  /// Slots therefore take turns on a wide pool rather than running 4-wide and
+  /// leaving ~26 cores idle: at grid 2 that trades 2.3x slot concurrency for
+  /// ~8x within each slot's walk.
+  std::unique_ptr<StressExecutor> bond_executor_;
+  std::mutex bond_dispatch_mutex_;
   /// Live structures for the current tick; a member so the per-tick gather
   /// does not reallocate, and so the parallel phase can index it.
   std::vector<Slot *> live_slots_;
