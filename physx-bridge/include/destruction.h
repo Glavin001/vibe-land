@@ -557,6 +557,11 @@ private:
   /// VIBE_PHYSX_NODE_CACHE_VERIFY; mismatches must be zero.
   std::uint64_t node_cache_mismatches_ = 0;
   std::uint64_t node_cache_checks_ = 0;
+  /// Per-tick host split of the GPU solve, summed across slots.
+  /// Mutable for the same reason last_gpu_stress_solve_ms is written from a
+  /// const stats walk: these are observation state, not scene state.
+  mutable double gpu_host_work_ms_ = 0.0;
+  mutable double gpu_host_blocked_ms_ = 0.0;
   /// Supporter-edge census. Where the ~13.8k pairs a tick actually go.
   std::uint64_t sup_record_calls_ = 0;
   std::uint64_t sup_reject_kinematic_ = 0;

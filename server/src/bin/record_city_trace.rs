@@ -1007,7 +1007,8 @@ fn main() -> Result<()> {
                  frac_apply,frac_scene,frac_rebuild,physx_step,gpu_wait,fetch_copy,\
                  callback,fetch_total,fetch_resid,post_resid,step_resid,solve_resid,\
                  cp_found,cp_persists,cp_points,cp_supp,node_mm,node_ck,\
-                 sup_calls,sup_kin,sup_fy,sup_exist,sup_new,sup_staged,sup_unch,sup_rows,pairs,\
+                 sup_calls,sup_kin,sup_fy,sup_exist,sup_new,sup_staged,sup_unch,sup_rows,\
+                 gpu_host_work,gpu_host_blocked,pairs,\
                  contacts_q,islands_skip,islands_tot,quiet,freeze,unfreeze,contact_wakes,\
                  min_y,pose_quiet,overstressed,patch_hw,escaped"
             )?;
@@ -1145,6 +1146,7 @@ fn main() -> Result<()> {
                  {:.4},{:.4},{:.4},{:.4},{:.4},{:.4},\
                  {:.0},{:.0},{:.0},{:.0},{:.0},{:.0},\
                  {:.0},{:.0},{:.0},{:.0},{:.0},{:.0},{:.0},{:.0},\
+                 {:.4},{:.4},\
                  {},{},{},{},{},{},{},{},{:.4},{},{},{},{}",
                 tick_index, s.chunk_bodies, s.awake_chunk_bodies, s.frozen_chunk_bodies,
                 s.sleeping_chunk_bodies, s.broken_bonds,
@@ -1181,6 +1183,8 @@ fn main() -> Result<()> {
                 span_value(&tick_spans, "sup_sets_staged"),
                 span_value(&tick_spans, "sup_sets_unchanged"),
                 span_value(&tick_spans, "sup_rows_staged"),
+                span_value(&tick_spans, "gpu_host_work_ms"),
+                span_value(&tick_spans, "gpu_host_blocked_ms"),
                 s.support_pair_loads, s.contacts_queued,
                 s.solver_islands_skipped_accum, s.solver_islands_total_accum,
                 s.quiet_slot_ticks, s.freeze_flips, s.unfreeze_flips, s.contact_wakes,

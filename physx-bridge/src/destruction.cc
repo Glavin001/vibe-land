@@ -417,6 +417,8 @@ struct DestructionManager::Slot {
   // reported alongside them read as a single 3,207 ms solve. Keep the previous
   // total here and report the delta.
   double last_gpu_stress_solve_ms = 0.0;
+  double last_gpu_host_work_ms = 0.0;
+  double last_gpu_host_blocked_ms = 0.0;
   /// The adapter's OTHER five phase timers, cumulative for the same reason and
   /// deltaed the same way. These decompose the three phases the bridge times
   /// from outside: contact-processing + gravity are what `begin_ms` is made
@@ -3402,6 +3404,17 @@ FfiDestructionStats DestructionManager::destruction_stats() const {
     const double gpu_delta = gpu_total - slot_ptr->last_gpu_stress_solve_ms;
     slot_ptr->last_gpu_stress_solve_ms = gpu_total;
     stats.gpu_stress_solve_ms += static_cast<float>(gpu_delta > 0.0 ? gpu_delta : 0.0);
+    // Same delta treatment for the host split. solve_ms minus the kernel ran
+    // 3.84 ms against a 1.24 ms kernel; these two say how much of that is
+    // reclaimable host work and how much is the host simply waiting.
+    const double work_total = telemetry.gpuStressHostWorkMilliseconds;
+    const double work_delta = work_total - slot_ptr->last_gpu_host_work_ms;
+    slot_ptr->last_gpu_host_work_ms = work_total;
+    gpu_host_work_ms_ += work_delta > 0.0 ? work_delta : 0.0;
+    const double blocked_total = telemetry.gpuStressHostBlockedMilliseconds;
+    const double blocked_delta = blocked_total - slot_ptr->last_gpu_host_blocked_ms;
+    slot_ptr->last_gpu_host_blocked_ms = blocked_total;
+    gpu_host_blocked_ms_ += blocked_delta > 0.0 ? blocked_delta : 0.0;
     // Same delta-with-reset-guard treatment for the five phase timers the
     // adapter keeps alongside it. Summed across slots, like every other
     // per-structure figure here.
@@ -3534,6 +3547,11 @@ FfiDestructionStats DestructionManager::destruction_stats() const {
   push_span("sup_sets_staged", static_cast<double>(sup_sets_staged_), 2);
   push_span("sup_sets_unchanged", static_cast<double>(sup_sets_unchanged_), 2);
   push_span("sup_rows_staged", static_cast<double>(sup_rows_staged_), 2);
+  push_span("gpu_host_work_ms", gpu_host_work_ms_, 0);
+  push_span("gpu_host_blocked_ms", gpu_host_blocked_ms_, 0);
+  // Per-tick, not cumulative: zeroed once the observer has read them.
+  gpu_host_work_ms_ = 0.0;
+  gpu_host_blocked_ms_ = 0.0;
   push_span("stress_solve_residual_ms",
             static_cast<double>(last_stress_solve_residual_ms_), 0);
   return stats;
