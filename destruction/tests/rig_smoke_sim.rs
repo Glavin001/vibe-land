@@ -150,11 +150,14 @@ fn the_parking_garage_settles() {
 #[test]
 #[ignore = "heavy: the full skyline scene"]
 fn the_whole_skyline_stands() {
-    let pack = load("skyline");
+    // STANDS_PACK names a different scene, for checking one the server is
+    // actually serving rather than the one this test was written against.
+    let name = std::env::var("STANDS_PACK").unwrap_or_else(|_| "skyline".into());
+    let pack = load(&name);
     let mut rig = Rig::spin_up(&pack).expect("install");
     rig.run_secs(10.0).expect("tick");
     eprintln!(
-        "[measure] skyline: {} chunks, {} bonds, {} broken after 10 s\n{}",
+        "[measure] {name}: {} chunks, {} bonds, {} broken after 10 s\n{}",
         pack.nodes.len(),
         pack.bonds.len(),
         rig.broken_bonds(),
