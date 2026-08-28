@@ -22,14 +22,21 @@ in the JSON but have no row in `client/src/city/CityStatsOverlay.tsx`. Reading
 the overlay instead of the JSON produced a wrong root-cause hypothesis that
 survived several rounds.
 
-Turn on the fetch split before any perf run:
+The fetch split is now published by default (F11). `physics_gpu_wait_ms` and
+`physics_fetch_copy_ms` are populated on every tick: on the 1-in-16 sampled
+ticks they are that tick's exact values, otherwise the recent-ring mean.
+Before F11 they were hard 0.0 on unsampled ticks, so a 1 Hz debug report
+essentially always showed `0.0` and PhysX looked opaque when it was only
+unpublished — if you are reading an older report, that is why.
 
-```
--e VIBE_PHYSX_PROFILE_FETCH=1
-```
+`VIBE_PHYSX_PROFILE_FETCH=1` still forces per-tick polling for traces that
+need every tick exact, at the cost of a burned core (see trap 1).
 
-Without it, `physics_fetch_ms` is one opaque number and the split between
-*waiting on the GPU* and *copying results back* is invisible.
+The callback breakdown (`cb_extract_ms`, `cb_pair_load_ms`, `cb_queue_ms`,
+`cb_wake_ms`) is also on by default since its timers moved to rdtsc
+(~0.05 ms/tick). `VIBE_PHYSX_PROFILE_CALLBACK=0` turns it off. This is the
+breakdown that matters most right now: measured 200 -> 5600 awake bodies,
+GPU sim wall grew 3.3x while contact callbacks grew 24x (0.4 -> 9.6 ms).
 
 ## The six traps
 
