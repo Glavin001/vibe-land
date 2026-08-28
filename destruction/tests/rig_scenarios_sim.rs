@@ -462,3 +462,56 @@ fn measure_rest_utilisation() {
         );
     }
 }
+
+// ── the original complaint, on the shipping building ────────────────────────
+
+/// Cut every column down one side of the REAL parking garage.
+///
+/// `a_garage_collapses_when_one_whole_side_is_cut` asks this of a purpose-built
+/// rig, which is the right place to iterate. This asks it of the building a
+/// player actually stands in, which is the thing that was reported: destroy
+/// every pillar except the far edge and the deck stays up as though nothing
+/// happened.
+#[test]
+#[ignore = "diagnostic on a shipping building"]
+fn the_real_garage_loses_one_side() {
+    let pack = load("parking-garage");
+    let columns = select_nodes(&pack, &NodeSel::role("column"));
+    assert!(!columns.is_empty(), "parking-garage has no columns tagged");
+
+    // Everything on the -X half, which is the "all the pillars on one side"
+    // of the report rather than a checkerboard.
+    let cut: Vec<u32> = columns
+        .iter()
+        .copied()
+        .filter(|&i| pack.nodes[i as usize].centroid.x < 0.0)
+        .collect();
+    let wounded = remove_nodes(&pack, &cut);
+    let overhang: Vec<u32> = select_nodes_where(&wounded, &NodeSel::role("slab"), |_, node| {
+        node.centroid.x < -2.0 && node.centroid.y > 1.0
+    });
+    assert!(!overhang.is_empty(), "no unsupported deck after the cut");
+
+    let mut rig = Rig::spin_up(&wounded).expect("install");
+    let mut drops = Vec::new();
+    for _ in 0..25 {
+        rig.run_secs(1.0).expect("tick");
+        drops.push((rig.secs(), rig.median_drop(&overhang)));
+    }
+    let report = rig.stress_report();
+    eprintln!(
+        "[measure] real garage, {} of {} columns cut from the -X side\n  \
+         overhang: {}\n  broken bonds {}, {} bonds over their limit",
+        cut.len(),
+        columns.len(),
+        drops
+            .iter()
+            .filter(|(t, _)| (*t as u32) % 5 == 0)
+            .map(|(t, d)| format!("{t:.0}s={d:.2}m"))
+            .collect::<Vec<_>>()
+            .join(" "),
+        rig.broken_bonds(),
+        report.over_limit(),
+    );
+    eprintln!("{}", report.card(&wounded, "real garage, one side cut"));
+}
