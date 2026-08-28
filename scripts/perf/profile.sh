@@ -32,6 +32,11 @@ while [ $# -gt 0 ]; do
     --seconds) SECONDS_RUN=$2; shift 2;;
     --shots) SHOTS=$2; shift 2;;
     --idle) SHOTS=0; shift;;
+    # Directional answers do not need 87k chunks and 55 s. --quick is grid 1
+    # for 25 s: ~40 s end to end against ~5 min for a grid-2 A/B set. Use it
+    # for "did that move at all", and the full run only for numbers you are
+    # going to quote.
+    --quick) GRID=1; SECONDS_RUN=25; SHOTS=15; WARMUP=300; shift;;
     --warmup) WARMUP=$2; shift 2;;
     --reuse) REUSE=$2; shift 2;;
     --ab) AB=1; shift;;
