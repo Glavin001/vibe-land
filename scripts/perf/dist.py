@@ -227,6 +227,79 @@ def ab(path_a, path_b, warmup, by):
                   f"{a99:>9.2f}{b99:>9.2f}{d99:>8.1f}%")
 
 
+# Parent -> children, verified against live data: stress_solve closes to
+# +0.001 ms against this child set, and physx_step to 0.00.
+#
+# blast phases like contact_proc/gravity/frac_* are NOT here because they are
+# nested INSIDE begin/solve/end, and listing them as siblings would double
+# count. They appear in the flat table instead.
+TREE = {
+    "TOTAL": ["physx_step", "stress_solve"],
+    "physx_step": ["physx_sim", "fetch_tick"],
+    "fetch_tick": ["gpu_wait", "cb_tick", "fetch_copy"],
+    "cb_tick": ["cb_entity", "cb_extract", "cb_resolve", "cb_queue",
+                "cb_events", "cb_pairld", "cb_wake"],
+    "stress_solve": ["begin", "solve", "end", "readback", "events", "filters",
+                     "ccd", "support", "shape", "slot", "bond_sample"],
+    "solve": ["gpu_solve", "gpu_host_work", "gpu_host_blocked"],
+}
+
+
+def tree(path, warmup, by):
+    """Hierarchical budget where the percentages actually add up.
+
+    Shares are computed from SUMS, never from quantiles. A p99 is the 99th
+    worst tick FOR THAT COLUMN, and different columns peak on different
+    ticks -- so a parent's max is not its children's maxes added, and
+    subtracting them to find 'what is missing' finds a number that describes
+    no tick that ever ran. Sums are the only statistic that decomposes, so
+    the % column is the honest one and the quantiles beside it are shape.
+    """
+    _, rows = load(path, warmup)
+    print(f"== {path}   {len(rows)} ticks analysed (warm-up tick <= {warmup} excluded)")
+    for label, sel in buckets(rows, by):
+        col = lambda c: [float(r[c]) for r in sel] if c in sel[0] else None
+        totv = [float(r["physx_step"]) + float(r["stress_solve"]) for r in sel]
+        grand = sum(totv)
+        print(f"\n-- bucket {by}={label}  ({len(sel)} ticks)")
+        print(f"{'phase':<26}{'mean':>8}{'%par':>7}{'%tot':>7}"
+              f"{'p50':>8}{'p95':>8}{'p99':>8}{'max':>8}{'n>0':>7}")
+
+        def emit(name, values, parent_sum, depth):
+            d = Dist(values).row()
+            if not d:
+                return
+            nz = sum(1 for v in values if v > 0)
+            pad = "  " * depth
+            mark = " ~" if name in DERIVED else ""
+            print(f"{pad + name + mark:<26}{d['mean']:>8.2f}"
+                  f"{100 * d['total'] / max(parent_sum, 1e-9):>6.1f}%"
+                  f"{100 * d['total'] / max(grand, 1e-9):>6.1f}%"
+                  f"{d['p50']:>8.2f}{d['p95']:>8.2f}{d['p99']:>8.2f}{d['max']:>8.2f}"
+                  f"{100.0 * nz / len(values):>6.0f}%")
+
+        def walk(node, values, depth):
+            vsum = sum(values)
+            kids = TREE.get(node, [])
+            present = [k for k in kids if k in sel[0]]
+            acc = None
+            for k in present:
+                kv = col(k)
+                emit(k, kv, vsum, depth)
+                acc = kv if acc is None else [a + b for a, b in zip(acc, kv)]
+                if k in TREE:
+                    walk(k, kv, depth + 1)
+            if present and acc is not None:
+                resid = [a - b for a, b in zip(values, acc)]
+                emit("[unattributed]", resid, vsum, depth)
+
+        emit("TOTAL", totv, grand, 0)
+        walk("TOTAL", totv, 1)
+        print("   %par = share of the row above it, by SUM. Quantiles do not "
+              "decompose:\n   a parent's max and its children's maxes are "
+              "different ticks. n>0 = ticks where the phase ran at all.")
+
+
 def main(argv):
     args = [a for a in argv[1:] if not a.startswith("--")]
     flags = {a.split("=")[0]: (a.split("=")[1] if "=" in a else True)
@@ -234,6 +307,10 @@ def main(argv):
     warmup = int(flags.get("--warmup", 600))
     by = flags.get("--by", "awake")
     spikes = int(flags.get("--spikes", 8))
+    if flags.get("--tree"):
+        for p in args:
+            tree(p, warmup, by)
+        return 0
     if flags.get("--ab") and len(args) >= 2:
         ab(args[0], args[1], warmup, by)
     else:

@@ -1156,14 +1156,14 @@ fn main() -> Result<()> {
             let ws = world_stats.as_ref();
             writeln!(
                 w,
-                "{},{},{},{},{},{},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},\
-                 {:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},\
-                 {:.4},{:.4},{:.4},{:.4},{:.4},{:.4},\
-                 {:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},\
-                 {:.0},{:.0},{:.0},{:.0},{:.0},{:.0},\
-                 {:.0},{:.0},{:.0},{:.0},{:.0},{:.0},{:.0},{:.0},\
-                 {:.4},{:.4},{:.2},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},\
-                 {},{},{},{},{},{},{},{},{:.4},{},{},{},{}",
+                // One spec per column, all plain {}. Hand-maintained precision specs
+                // drifted out of alignment with the column list three
+                // separate times -- printing a float with an integer
+                // spec, silently truncating cb_* sub-spans to whole
+                // milliseconds and making them look quantised. Rust
+                // prints shortest-roundtrip for floats, which is what a
+                // CSV wants anyway.
+                "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
                 tick_index, s.chunk_bodies, s.awake_chunk_bodies, s.frozen_chunk_bodies,
                 s.sleeping_chunk_bodies, s.broken_bonds,
                 s.stress_solve_ms, s.begin_ms, s.solve_ms, s.end_ms, s.readback_ms,
