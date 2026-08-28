@@ -15,12 +15,31 @@ RUNS_ROOT = os.path.join("bench-results", "runs")
 
 #: Env keys that change the SIMULATION, not just measurement detail. Two runs
 #: differing on any of these are different physics and must not be cost-compared.
-PHYSICS_ENV_PREFIXES = ("VIBE_CITY_", "VIBE_WORLD_", "BLAST_")
+#: VIBE_PHYSX_ was missing here, so every VIBE_PHYSX_* knob — including real
+#: ones like the GPU buffer capacities — slipped past the equivalence check.
+#: The contact-path A/Bs passed the guard by accident rather than by design.
+PHYSICS_ENV_PREFIXES = ("VIBE_CITY_", "VIBE_WORLD_", "BLAST_", "VIBE_PHYSX_")
 #: Measurement-only knobs excluded from the physics-equivalence check.
 MEASUREMENT_ONLY_KEYS = {
     "VIBE_PHYSX_PROFILE_FETCH",
+    "VIBE_PHYSX_PROFILE_CALLBACK",
+    "VIBE_PHYSX_GPU_SAMPLE_TICKS",
     "VIBE_CITY_POSE_CENSUS",
     "VIBE_CITY_POSE_CENSUS_DUMP",
+}
+#: Switches that select between implementations of the SAME behaviour.
+#:
+#: Distinct from measurement-only knobs: these do change what code runs, so
+#: they must be excluded from the env check for their own A/B to be possible
+#: at all — while every other guard (bond band, regime overlap, cuda_stress)
+#: still applies, which is what actually tests the identity claim. Adding a
+#: key here is asserting "these two paths produce the same simulation"; the
+#: bond band is what calls the bluff.
+IMPLEMENTATION_AB_KEYS = {
+    "VIBE_PHYSX_CONTACT_CSE",
+    "VIBE_PHYSX_CONTACT_FASTPATH",
+    "VIBE_PHYSX_CONTACT_PERSISTS",
+    "BLAST_CONTACTED_ACTOR_HOIST",
 }
 
 
@@ -39,7 +58,9 @@ class Run:
         return {
             key: value
             for key, value in env.items()
-            if key.startswith(PHYSICS_ENV_PREFIXES) and key not in MEASUREMENT_ONLY_KEYS
+            if key.startswith(PHYSICS_ENV_PREFIXES)
+            and key not in MEASUREMENT_ONLY_KEYS
+            and key not in IMPLEMENTATION_AB_KEYS
         }
 
     def final(self, key: str, default=0):
