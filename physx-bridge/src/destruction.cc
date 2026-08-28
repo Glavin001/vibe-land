@@ -421,6 +421,8 @@ struct DestructionManager::Slot {
   double last_gpu_host_blocked_ms = 0.0;
   double last_stress_initialize_ms = 0.0;
   double last_stress_impulse_copy_ms = 0.0;
+  double last_stress_graph_solve_ms = 0.0;
+  double last_stress_drain_ms = 0.0;
   double last_stress_calc_error_ms = 0.0;
   /// The adapter's OTHER five phase timers, cumulative for the same reason and
   /// deltaed the same way. These decompose the three phases the bridge times
@@ -3420,6 +3422,14 @@ FfiDestructionStats DestructionManager::destruction_stats() const {
     gpu_host_blocked_ms_ += blocked_delta > 0.0 ? blocked_delta : 0.0;
     bondless_verify_checks_ = telemetry.bondlessVerifyChecks;
     bondless_verify_mismatches_ = telemetry.bondlessVerifyMismatches;
+    const double gs_total = telemetry.stressGraphSolveMilliseconds;
+    const double gs_delta = gs_total - slot_ptr->last_stress_graph_solve_ms;
+    slot_ptr->last_stress_graph_solve_ms = gs_total;
+    stress_graph_solve_ms_ += gs_delta > 0.0 ? gs_delta : 0.0;
+    const double dr_total = telemetry.stressDrainMilliseconds;
+    const double dr_delta = dr_total - slot_ptr->last_stress_drain_ms;
+    slot_ptr->last_stress_drain_ms = dr_total;
+    stress_drain_ms_ += dr_delta > 0.0 ? dr_delta : 0.0;
     const double copy_total = telemetry.stressImpulseCopyMilliseconds;
     const double copy_delta = copy_total - slot_ptr->last_stress_impulse_copy_ms;
     slot_ptr->last_stress_impulse_copy_ms = copy_total;
@@ -3568,6 +3578,8 @@ FfiDestructionStats DestructionManager::destruction_stats() const {
             static_cast<double>(bondless_verify_checks_), 2);
   push_span("bondless_verify_mismatches",
             static_cast<double>(bondless_verify_mismatches_), 2);
+  push_span("stress_graph_solve_ms", stress_graph_solve_ms_, 0);
+  push_span("stress_drain_ms", stress_drain_ms_, 0);
   push_span("stress_impulse_copy_ms", stress_impulse_copy_ms_, 0);
   push_span("stress_initialize_ms", stress_initialize_ms_, 0);
   push_span("stress_calc_error_ms", stress_calc_error_ms_, 0);
@@ -3578,6 +3590,8 @@ FfiDestructionStats DestructionManager::destruction_stats() const {
   gpu_host_blocked_ms_ = 0.0;
   stress_initialize_ms_ = 0.0;
   stress_impulse_copy_ms_ = 0.0;
+  stress_graph_solve_ms_ = 0.0;
+  stress_drain_ms_ = 0.0;
   stress_calc_error_ms_ = 0.0;
   push_span("stress_solve_residual_ms",
             static_cast<double>(last_stress_solve_residual_ms_), 0);

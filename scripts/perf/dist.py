@@ -245,8 +245,15 @@ TREE = {
     # the host is blocked precisely because the kernel is executing. Listing it
     # as a sibling double counts and shrinks the apparent remainder. It is
     # annotated separately below instead.
+    # st_graph is NOT in this tree. It measures the graph-solve call and
+    # reports 14.64 ms inside a 6.66 ms parent -- 219.8%, which is impossible
+    # and means the span is wrong, not that solve is 14.64 ms. Most likely the
+    # adapter accumulates it on a different cadence than once per solveTick,
+    # or across the 4 structures without a matching denominator. The raw
+    # column is still emitted for debugging; it is kept out of the budget so
+    # a broken number cannot silently rewrite the shares.
     "solve": ["gpu_host_work", "gpu_host_blocked", "st_init", "st_err",
-              "st_copy"],
+              "st_copy", "st_drain"],
 }
 
 
