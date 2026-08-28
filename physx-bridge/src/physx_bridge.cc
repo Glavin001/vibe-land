@@ -274,10 +274,21 @@ bool contact_census_enabled() {
 /// the scene does not step between callback and drain, so actor reads see
 /// identical state. The drain preserves recorded order, so the sequences
 /// fed to every consumer are bit-identical to the inline path.
+/// Default ON. Measured (grid 1, matched ticks, n=1199/arm): physx_step
+/// -11.7%, and the same work costs less in the drain than inline -- 9.6 ms
+/// inline vs 1.6 capture + 5.3 drain -- because batch processing beats
+/// interleaving with PhysX's own callback machinery. Correctness case: ONE
+/// shared body for both paths (process_extracted_pair), drain in recorded
+/// order before any consumer runs, and the full gate battery green under
+/// the flag -- including freeze semantics, which fail if pair delivery
+/// breaks. Cross-run bit-identity is not measurable here (GPU
+/// nondeterminism), and cumulative contact counters swing 2-3x between
+/// identical-config runs, so counter deltas across arms are NOT evidence
+/// either way. VIBE_PHYSX_DEFER_CONTACTS=0 restores inline processing.
 bool defer_contacts_enabled() {
   static const bool enabled = [] {
     const char *value = std::getenv("VIBE_PHYSX_DEFER_CONTACTS");
-    return value != nullptr && std::string(value) != "0";
+    return value == nullptr || std::string(value) != "0";
   }();
   return enabled;
 }
