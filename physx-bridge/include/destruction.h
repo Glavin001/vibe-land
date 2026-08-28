@@ -243,6 +243,11 @@ public:
                       const physx::PxShape *shape_a, const physx::PxShape *shape_b,
                       const physx::PxActor *actor_a, const physx::PxActor *actor_b,
                       float sum_abs_impulse_y, float min_separation);
+  /// Latch "this chunk body has touched static geometry" for the settle
+  /// assist. Called from both note_pair_load entries once both sides are
+  /// resolved; a no-op unless exactly one side is a chunk and the other is
+  /// static world geometry.
+  void note_ground_touch(const PendingPairLoad &load);
 
   /// Support-set drains: one FfiSupportSet per dependent whose supporter set
   /// changed this tick, indexing into the rows drain. Both are cleared
@@ -420,6 +425,23 @@ private:
   /// never received eENABLE_SPECULATIVE_CCD or its depenetration cap -- exactly
   /// the tunnelling this block exists to prevent. Erased on retire.
   std::unordered_set<std::uint64_t> ccd_enabled_;
+  /// Chunk bodies that have touched STATIC world geometry at least once.
+  ///
+  /// The settle assist (VIBE_CITY_SETTLE_ASSIST) is gated on this, and the
+  /// gate is the whole safety argument: raising a body's sleep threshold is
+  /// what once froze ballistic debris at the apex of its arc (see
+  /// kChunkSleepThreshold), and a body still in flight has never touched the
+  /// ground, so it can never be assisted. Latched in note_pair_load, which
+  /// runs inside fetchResults and may only touch host state.
+  /// Keyed by (structure_id, bodyId) and erased on retire, for the same
+  /// recycling reason as ccd_enabled_.
+  std::unordered_set<std::uint64_t> ground_touched_;
+  /// Bodies whose damping and sleep threshold have already been raised.
+  /// insert().second is the write-once test: rewriting a rigid-body property
+  /// wakes a sleeping actor, so the assist must never be re-applied.
+  std::unordered_set<std::uint64_t> settle_assisted_;
+  std::uint64_t ground_touch_latches_ = 0;
+  std::uint64_t settle_assist_applied_ = 0;
   /// Times getBodySnapshots returned one bodyId more than once in a tick.
   /// Mutable because refresh_snapshots is const; this is pure observation.
   mutable std::uint64_t repeated_body_snapshots_ = 0;

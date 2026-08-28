@@ -821,6 +821,95 @@ float chunk_sleep_threshold() {
   }();
   return value;
 }
+/// Settle assist: after a small chunk has touched static ground once, raise
+/// its damping and sleep threshold so a rubble pile stops trading
+/// micro-contacts and actually goes to sleep.
+///
+/// This DOES alter trajectories, which is why it is off by default and judged
+/// on video rather than on counters alone. It is deliberately not a
+/// restitution change: world restitution is already 0.02 and the visible
+/// bouncing is the solver's residual velocity floor plus depenetration, not
+/// rebound.
+///
+/// MEASURED, and it corrected the design. On the settle_assist test's
+/// toppled wall (deterministic: three runs, identical totals), in
+/// awake-body-ticks -- the integral of awake count over the settle, which is
+/// exactly the cost every awake body imposes on sim, callbacks and solve:
+///
+///   off                          2730
+///   damping 1.0/2.0 only         3264   +20%  WORSE
+///   sleep threshold x4 only      2572   -5.8% better
+///   sleep x4 + damping 0.2/0.3   2627   -3.8% better
+///
+/// Damping made settling WORSE at every strength tried: a damped chunk creeps
+/// to a halt instead of tumbling to one, so it spends longer above the sleep
+/// threshold rather than less. The sleep threshold alone is the knob that
+/// works. Damping therefore defaults to ZERO -- the knobs remain so the
+/// finding can be re-tested, not because they are recommended.
+///
+/// The ground-touch gate is the safety argument. Raising a sleep threshold
+/// alone once froze debris in mid-air (see kChunkSleepThreshold above): at a
+/// high threshold a body spends longer under it than PhysX's 0.4 s wake
+/// counter while still travelling. A body that has never touched static
+/// geometry is never assisted, so flight is untouched by construction.
+bool settle_assist_enabled() {
+  static const bool enabled = [] {
+    const char *raw = std::getenv("VIBE_CITY_SETTLE_ASSIST");
+    return raw != nullptr && std::string(raw) != "0";
+  }();
+  return enabled;
+}
+
+/// Mass ceiling for "small debris", kilograms. Mass is the cheapest size
+/// proxy available per body -- it already rides the snapshot row -- and at a
+/// uniform 2400 kg/m^3 it is monotonic in volume. A 0.6 m cube is ~518 kg;
+/// the median chunk in downtown is ~10 t. The default cleanly separates
+/// loose debris from slabs, which must keep their exact settling behaviour.
+float assist_max_mass() {
+  static const float value = [] {
+    if (const char *raw = std::getenv("VIBE_CITY_ASSIST_MAX_MASS")) {
+      return static_cast<float>(std::atof(raw));
+    }
+    return 1500.0f;
+  }();
+  return value;
+}
+
+/// Zero by default: measured counterproductive (see settle_assist_enabled).
+float assist_linear_damping() {
+  static const float value = [] {
+    if (const char *raw = std::getenv("VIBE_CITY_ASSIST_LIN_DAMP")) {
+      return static_cast<float>(std::atof(raw));
+    }
+    return 0.0f;
+  }();
+  return value;
+}
+
+/// Zero by default: measured counterproductive (see settle_assist_enabled).
+float assist_angular_damping() {
+  static const float value = [] {
+    if (const char *raw = std::getenv("VIBE_CITY_ASSIST_ANG_DAMP")) {
+      return static_cast<float>(std::atof(raw));
+    }
+    return 0.0f;
+  }();
+  return value;
+}
+
+/// Multiplier on the base chunk sleep threshold for assisted bodies. The
+/// threshold is mass-normalised kinetic energy, so 4x is ~2x the speed at
+/// which a grounded body is called at rest.
+float assist_sleep_multiplier() {
+  static const float value = [] {
+    if (const char *raw = std::getenv("VIBE_CITY_ASSIST_SLEEP_MULT")) {
+      return static_cast<float>(std::atof(raw));
+    }
+    return 4.0f;
+  }();
+  return value;
+}
+
 constexpr float kChunkStabilizationThreshold = 0.02f;
 
 /// Position/velocity solver iterations for chunk bodies.
@@ -1160,6 +1249,12 @@ void DestructionManager::collect_events(Slot &slot) {
     if (prune) {
       ccd_enabled_.erase(support_key(slot.structure_id, id));
       body_entity_stamp_.erase(support_key(slot.structure_id, id));
+      // Same recycling hazard: an unpruned latch would make a NEW body born
+      // on a recycled id look like it had already landed, and the assist
+      // would fire on a body still in flight -- the one case the ground gate
+      // exists to prevent.
+      ground_touched_.erase(support_key(slot.structure_id, id));
+      settle_assisted_.erase(support_key(slot.structure_id, id));
     }
   }
 
@@ -1623,6 +1718,48 @@ void DestructionManager::destruction_tick(float dt, FfiVec3 gravity) {
         if (depen > 0.0f) {
           body.body->setMaxDepenetrationVelocity(depen);
         }
+      }
+    }
+    // Settle assist. Same shape as the CCD walk above: once per body, in the
+    // post-endTick window where scene writes are legal, keyed by
+    // (structure_id, bodyId) so a recycled actor cannot inherit the flag.
+    //
+    // Writing a rigid-body property wakes a sleeping actor, which is why
+    // every other property write in this file is gated on an identity
+    // change. Here the write happens on the tick the body first touched the
+    // ground, when it is awake by definition, and never again.
+    if (settle_assist_enabled()) {
+      const float max_mass = assist_max_mass();
+      const float sleep_threshold =
+          chunk_sleep_threshold() * assist_sleep_multiplier();
+      for (std::uint32_t i = 0; i < slot.body_cache_count; ++i) {
+        const auto &body = slot.body_cache[i];
+        if (body.body == nullptr || body.kinematic) {
+          continue;
+        }
+        if (body.mass > max_mass) {
+          continue; // slabs keep their exact settling behaviour
+        }
+        const std::uint64_t key = support_key(slot.structure_id, body.bodyId);
+        if (ground_touched_.find(key) == ground_touched_.end()) {
+          continue; // never landed: still in flight, or never existed
+        }
+        if (!settle_assisted_.insert(key).second) {
+          continue;
+        }
+        // Only write what actually changes. Every property write wakes the
+        // actor, so writing a zero damping that equals the body's existing
+        // value would cost a wake and buy nothing.
+        const float linear = assist_linear_damping();
+        const float angular = assist_angular_damping();
+        if (linear > 0.0f) {
+          body.body->setLinearDamping(linear);
+        }
+        if (angular > 0.0f) {
+          body.body->setAngularDamping(angular);
+        }
+        body.body->setSleepThreshold(sleep_threshold);
+        ++settle_assist_applied_;
       }
     }
     ccd_ms += ms_since(phase);
@@ -2631,6 +2768,28 @@ DestructionManager::resolve_pair_side(const PxShape *shape,
   return side;
 }
 
+void DestructionManager::note_ground_touch(const PendingPairLoad &load) {
+  if (!settle_assist_enabled()) {
+    return;
+  }
+  // Exactly one chunk against static world geometry. Chunk-on-chunk says
+  // nothing about having landed, and the is_static flag is already computed
+  // by resolve_pair_side for the support graph -- this rides along free.
+  const PendingPairSide *chunk = nullptr;
+  if (load.a.is_chunk && load.b.is_static) {
+    chunk = &load.a;
+  } else if (load.b.is_chunk && load.a.is_static) {
+    chunk = &load.b;
+  }
+  if (chunk == nullptr) {
+    return;
+  }
+  if (ground_touched_.insert(support_key(chunk->structure_id, chunk->body_id))
+          .second) {
+    ++ground_touch_latches_;
+  }
+}
+
 void DestructionManager::note_pair_load(const PxShape *shape_a,
                                         const PxShape *shape_b,
                                         const PxActor *actor_a,
@@ -2648,6 +2807,7 @@ void DestructionManager::note_pair_load(const PxShape *shape_a,
   }
   load.sum_abs_impulse_y = sum_abs_impulse_y;
   load.min_separation = min_separation;
+  note_ground_touch(load);
   pending_pair_loads_.push_back(load);
 }
 
@@ -2692,6 +2852,7 @@ void DestructionManager::note_pair_load(const ContactTarget &target_a,
   }
   load.sum_abs_impulse_y = sum_abs_impulse_y;
   load.min_separation = min_separation;
+  note_ground_touch(load);
   pending_pair_loads_.push_back(load);
 }
 
@@ -3235,6 +3396,8 @@ FfiDestructionStats DestructionManager::destruction_stats() const {
   push_span("single_node_bodies", static_cast<double>(single_node_bodies), 2);
   push_span("single_node_contacts", static_cast<double>(single_node_contacts), 2);
   push_span("single_node_awake", static_cast<double>(single_node_awake), 2);
+  push_span("ground_touch_latches", static_cast<double>(ground_touch_latches_), 2);
+  push_span("settle_assist_applied", static_cast<double>(settle_assist_applied_), 2);
   // Cumulative. single_node_contacts now reads 0 BECAUSE the skip works --
   // dropped contacts never reach the loop that counts them -- so the volume
   // being saved is only visible here.
