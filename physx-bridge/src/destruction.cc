@@ -3140,6 +3140,20 @@ void DestructionManager::resolve_support_loads() {
       touched.insert(key);
       entry.dirty = true;
       // Weight-bearing gate, scaled to the DEPENDENT's own resting load.
+      //
+      // 41.5% of record() calls end here (F18), which looks like an
+      // invitation to apply the same test back in the contact callback and
+      // never resolve those pairs at all. It is not, and the reason is
+      // everything above this line: a pair that fails this gate has ALREADY
+      // contributed entry.min_separation (which becomes penetration_m, and
+      // therefore decides freeze's squeeze test), refreshed
+      // last_report_tick (which the age-out below measures against), and
+      // marked the entry touched and dirty. Dropping sub-gate pairs earlier
+      // would change which bodies are eligible to freeze. That is a physics
+      // change wearing the costume of an optimization.
+      //
+      // The cost is also not where it looks: entry.entity needs
+      // dependent.serial, so classify() has to have run regardless.
       if (load.sum_abs_impulse_y < fy_ratio * dependent.mass * g_dt) {
         ++sup_reject_fy_;
         return;
