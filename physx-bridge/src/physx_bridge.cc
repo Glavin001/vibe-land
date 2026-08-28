@@ -237,10 +237,17 @@ bool contact_fastpath_enabled() {
 /// +0.35 ms at 2-4k callbacks/tick and +0.80 at 4-8k -- larger than the
 /// costs they were added to find. Same lesson as the fetch-split busy-poll:
 /// a probe that changes the number is a diagnostic mode, not a metric.
+/// Default ON since the sub-timers moved to rdtsc. The reasoning above still
+/// holds for a probe that costs ~0.19 ms/tick; it does not hold at ~0.05, and
+/// the cost this decomposes is now the largest growth term in the tick
+/// (callbacks went 0.4 -> 9.6 ms between 200 and 5600 awake bodies, while the
+/// GPU sim only tripled). Leaving the breakdown dark by default meant every
+/// report had to be followed by "now reproduce it with the flag on".
+/// `VIBE_PHYSX_PROFILE_CALLBACK=0` restores the unmeasured path.
 bool profile_callback_enabled() {
   static const bool enabled = [] {
     const char *value = std::getenv("VIBE_PHYSX_PROFILE_CALLBACK");
-    return value != nullptr && std::string(value) != "0";
+    return value == nullptr || std::string(value) != "0";
   }();
   return enabled;
 }
@@ -597,14 +604,17 @@ public:
       // A0 sub-attribution: on sampled calls, each sub-block below is timed
       // so the ~9 ms callback cost decomposes BEFORE anything is optimized.
       // Same 1-in-8 gate as the outer probe; x8 scaling at publish.
+      // rdtsc, not steady_clock: at cascade rates this fires ~950 times a tick
+      // across four sub-blocks, and at ~25 ns a read the clock was costing
+      // ~0.19 ms/tick -- which is why this was opt-in and therefore always
+      // dark in exactly the reports that needed it. The cycle counter is
+      // ~7 ns, putting the whole sub-attribution near 0.05 ms/tick, cheap
+      // enough to leave on permanently.
       const auto sub_now = [&]() {
-        return sample_subspans ? std::chrono::steady_clock::now()
-                                : std::chrono::steady_clock::time_point{};
+        return sample_subspans ? cycle_now() : std::uint64_t{0};
       };
-      const auto sub_ms = [](std::chrono::steady_clock::time_point from) {
-        return std::chrono::duration<double, std::milli>(
-                   std::chrono::steady_clock::now() - from)
-            .count();
+      const auto sub_ms = [](std::uint64_t from) {
+        return static_cast<double>(cycle_now() - from) * cycles_to_ms_factor();
       };
       const auto extract_started = sub_now();
       contact_points_.resize(contact_count);
@@ -1418,8 +1428,26 @@ public:
     out.last_controller_ms = last_controller_ms_;
     out.last_simulate_ms = last_simulate_ms_;
     out.last_fetch_ms = last_fetch_ms_;
+    // sim_wall is sampled 1 tick in 16, so on the other 15 these were
+    // published as 0.0 -- and a 1 Hz report snapshot almost never lands on a
+    // sampled tick. The headline PhysX split therefore read "0.0 gpu wait,
+    // 0.0 copy" in every debug report while the underlying measurement was
+    // sitting right there in the ring, which made PhysX look opaque when it
+    // was only unpublished. Fall back to the recent mean rather than a zero
+    // that reads as "measured, and it was free".
     out.last_gpu_wait_ms = last_gpu_wait_ms_;
     out.last_fetch_copy_ms = last_fetch_copy_ms_;
+    if (sim_wall_samples_ == 0 && sim_wall_ring_fill_ > 0) {
+      double sim_sum = 0.0;
+      double copy_sum = 0.0;
+      for (std::size_t i = 0; i < sim_wall_ring_fill_; ++i) {
+        sim_sum += sim_wall_ring_[i];
+        copy_sum += result_copy_ring_[i];
+      }
+      const double n = static_cast<double>(sim_wall_ring_fill_);
+      out.last_gpu_wait_ms = static_cast<float>(sim_sum / n);
+      out.last_fetch_copy_ms = static_cast<float>(copy_sum / n);
+    }
     out.completed_steps = completed_steps_;
     out.gpu_warning_count = runtime_->warning_count();
     return out;
