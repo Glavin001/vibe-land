@@ -548,6 +548,10 @@ private:
   float last_stress_solve_ms_ = 0.0f;
   /// Native tick wall time minus every phase that claims part of it.
   float last_stress_solve_residual_ms_ = 0.0f;
+  /// Cached-node-index audit. Only written under
+  /// VIBE_PHYSX_NODE_CACHE_VERIFY; mismatches must be zero.
+  std::uint64_t node_cache_mismatches_ = 0;
+  std::uint64_t node_cache_checks_ = 0;
   /// Per-phase breakdown of destruction_tick.
   /// beginTick (contact/gravity injection) across all structures. Parallel
   /// over slots by default (VIBE_CITY_SNAPSHOT_BEGIN); only the wakeUp apply

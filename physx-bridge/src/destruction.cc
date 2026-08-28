@@ -1879,8 +1879,49 @@ DestructionManager::resolve_contact_target(PxShape *shape) {
     const char *value = std::getenv("VIBE_PHYSX_CONTACT_FASTPATH");
     return value == nullptr || std::string(value) != "0";
   }();
-  const std::uint32_t blast_node =
-      fastpath ? slot->dest->nodeForShape(shape) : 0xFFFFFFFFu;
+  // The node index is ALREADY in the hit we just took: shape_owners_ stores
+  // (structure_id, nodeIndex), populated from the same shape snapshots the
+  // library builds m_shapeToNode from. nodeForShape() is a second hash over
+  // a second map keyed by the same PxShape* to recover a number already in
+  // hand -- two cache misses per shape, four per manifold, ~32k per tick.
+  //
+  // Measured before this change: cb_resolve_ms was 1.47-2.10 ms, as large as
+  // queueing the actual physics damage.
+  //
+  // Both maps are refreshed on the same cadence. register_filters (which
+  // writes shape_owners_) and the library's endTick (which writes
+  // m_shapeToNode) both run inside destruction_tick, and the quiet-skip that
+  // bypasses register_filters only fires when topology did NOT change --
+  // i.e. exactly when no shape's node could have moved. So during a
+  // callback the two agree by construction.
+  //
+  // "By construction" is an argument, not a measurement, so
+  // VIBE_PHYSX_NODE_CACHE_VERIFY=1 computes both and counts disagreements
+  // into node_cache_mismatches. VIBE_PHYSX_NODE_CACHE=0 restores the second
+  // lookup outright.
+  static const bool node_cache = [] {
+    const char *value = std::getenv("VIBE_PHYSX_NODE_CACHE");
+    return value == nullptr || std::string(value) != "0";
+  }();
+  static const bool node_cache_verify = [] {
+    const char *value = std::getenv("VIBE_PHYSX_NODE_CACHE_VERIFY");
+    return value != nullptr && std::string(value) != "0";
+  }();
+  std::uint32_t blast_node = 0xFFFFFFFFu;
+  if (fastpath) {
+    if (node_cache) {
+      blast_node = it->second.second;
+      if (node_cache_verify) {
+        const std::uint32_t authoritative = slot->dest->nodeForShape(shape);
+        if (authoritative != blast_node) {
+          ++node_cache_mismatches_;
+        }
+        ++node_cache_checks_;
+      }
+    } else {
+      blast_node = slot->dest->nodeForShape(shape);
+    }
+  }
   return ContactTarget{slot, shape, it->second.first, it->second.second,
                        blast_node};
 }
@@ -3429,6 +3470,11 @@ FfiDestructionStats DestructionManager::destruction_stats() const {
   // dropped contacts never reach the loop that counts them -- so the volume
   // being saved is only visible here.
   push_span("bondless_contacts_skipped", static_cast<double>(bondless_skipped), 2);
+  // Must stay 0. Non-zero means the cached node index disagreed with the
+  // library's map, i.e. a contact was routed to the wrong Blast node.
+  push_span("node_cache_mismatches",
+            static_cast<double>(node_cache_mismatches_), 2);
+  push_span("node_cache_checks", static_cast<double>(node_cache_checks_), 2);
   push_span("stress_solve_residual_ms",
             static_cast<double>(last_stress_solve_residual_ms_), 0);
   return stats;
