@@ -566,6 +566,8 @@ private:
   mutable double stress_impulse_copy_ms_ = 0.0;
   mutable double stress_graph_solve_ms_ = 0.0;
   mutable std::uint64_t bond_stress_skipped_ = 0;
+  mutable std::uint64_t bs_par_checks_ = 0;
+  mutable std::uint64_t bs_par_mismatches_ = 0;
   mutable double hw_walk_in_ms_ = 0.0;
   mutable double hw_reset_ms_ = 0.0;
   mutable double hw_bond_stress_ms_ = 0.0;

@@ -3485,6 +3485,12 @@ FfiDestructionStats DestructionManager::destruction_stats() const {
     bond_stress_skipped_ =
         std::max(bond_stress_skipped_,
                  static_cast<std::uint64_t>(telemetry.bondStressGroupsSkipped));
+    bs_par_checks_ =
+        std::max(bs_par_checks_,
+                 static_cast<std::uint64_t>(telemetry.bondStressParallelChecks));
+    bs_par_mismatches_ = std::max(
+        bs_par_mismatches_,
+        static_cast<std::uint64_t>(telemetry.bondStressParallelMismatches));
     const double gs_total = telemetry.stressGraphSolveMilliseconds;
     const double gs_delta = gs_total - slot_ptr->last_stress_graph_solve_ms;
     slot_ptr->last_stress_graph_solve_ms = gs_total;
@@ -3643,6 +3649,8 @@ FfiDestructionStats DestructionManager::destruction_stats() const {
             static_cast<double>(bondless_verify_mismatches_), 2);
   push_span("bond_stress_skipped",
             static_cast<double>(bond_stress_skipped_), 2);
+  push_span("bs_par_checks", static_cast<double>(bs_par_checks_), 2);
+  push_span("bs_par_mismatches", static_cast<double>(bs_par_mismatches_), 2);
   push_span("hw_walk_in_ms", hw_walk_in_ms_, 0);
   push_span("hw_reset_ms", hw_reset_ms_, 0);
   push_span("hw_bond_stress_ms", hw_bond_stress_ms_, 0);

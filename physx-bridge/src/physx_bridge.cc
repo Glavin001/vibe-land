@@ -253,6 +253,18 @@ bool profile_callback_enabled() {
   return enabled;
 }
 
+/// Pair census + impulse histogram, opt-in. These answered their questions
+/// (98.4% PERSISTS; pairs cluster at 128-1024 Ns, no low-force tail) and
+/// cost ~0.4 ms/tick at cascade. Off until someone asks the next question.
+/// The spans keep publishing zeros so trace columns stay stable.
+bool contact_census_enabled() {
+  static const bool enabled = [] {
+    const char *value = std::getenv("VIBE_PHYSX_CONTACT_CENSUS");
+    return value != nullptr && std::string(value) != "0";
+  }();
+  return enabled;
+}
+
 bool contact_persists_enabled() {
   static const bool enabled = [] {
     const char *value = std::getenv("VIBE_PHYSX_CONTACT_PERSISTS");
@@ -606,7 +618,9 @@ public:
       if (contact_count == 0) {
         continue;
       }
-      const auto census_started = sub_now();
+      const bool census = contact_census_enabled();
+      const auto census_started = census ? sub_now() : std::uint64_t{0};
+      if (census) {
       // Pair census. The question this answers: of the ~11.6k pairs a
       // cascade tick reports, how many are a settled pile re-reporting the
       // same standing load (PERSISTS) versus a genuinely new contact
@@ -623,6 +637,7 @@ public:
       cp_points_ += contact_count;
       if (sample_subspans) {
         cb_census_ms_ += 8.0 * sub_ms(census_started);
+      }
       }
       // Reused across pairs and ticks. This was a fresh heap allocation per
       // reported manifold, and a settled city reports thousands of resting
@@ -743,7 +758,8 @@ public:
       // log2 histogram of the pair's total impulse. A histogram rather than a
       // count against a fixed cut, because the useful question is "what would
       // a threshold of X cost", and X is exactly what is not known yet.
-      const auto hist_started = sub_now();
+      const auto hist_started = census ? sub_now() : std::uint64_t{0};
+      if (census) {
       if (total_magnitude > 0.0f) {
         int bucket = 0;
         float m = total_magnitude;
@@ -757,6 +773,7 @@ public:
       }
       if (sample_subspans) {
         cb_census_ms_ += 8.0 * sub_ms(hist_started);
+      }
       }
 
       const auto events_started = sub_now();
