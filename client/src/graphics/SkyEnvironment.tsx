@@ -22,10 +22,31 @@ import { lookTuning, subscribeLookTuning } from './lookTuning';
 
 import { DEFAULT_SUN_AZIMUTH_DEG, DEFAULT_SUN_ELEVATION_DEG, skyGradient, sunDirection } from './sunSky';
 
+// `vDir` is the view ray, derived from where the camera actually is rather than
+// from where the dome is. The distinction is the whole reason this is not
+// `normalize(position)`: an object-space direction is the correct view ray only
+// while the camera sits exactly at the dome's centre, and it never quite does.
+// The recentre below runs in a `useFrame` that r3f schedules BEFORE the one
+// that writes the camera -- children subscribe before parents and both are
+// priority 0 -- so the dome is always one frame behind. On a small sphere an
+// offset of `d` metres rotates the sampled sky by roughly `d` radians; at
+// walking speed that threw the sun disc, which is only about 1.8 degrees wide,
+// a couple of its own diameters every frame and snapped it back the instant the
+// player stood still. That was the reported "jittery sun".
+//
+// Taking the camera-to-surface vector instead makes the sky a pure function of
+// direction, so where the dome sits stops being able to affect it at all -- the
+// recentre becomes a coverage detail rather than a correctness requirement.
+// `cameraPosition` is a built-in uniform three injects into every
+// ShaderMaterial prefix; this is a ShaderMaterial, not a RawShaderMaterial, so
+// it is present. In the PMREM bake the generator never moves its camera, so
+// `cameraPosition` is the origin and this reduces to the untransformed vertex
+// position -- the baked environment map is byte-identical to before.
 const VERTEX_SHADER = /* glsl */ `
   varying vec3 vDir;
   void main() {
-    vDir = normalize(position);
+    vec4 worldPosition = modelMatrix * vec4(position, 1.0);
+    vDir = worldPosition.xyz - cameraPosition;
     gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
   }
 `;
@@ -118,8 +139,10 @@ export function SkyEnvironment({
       new THREE.ShaderMaterial({
         side: THREE.BackSide,
         depthWrite: false,
-        // The dome is a unit sphere parented to the camera position, so it must
-        // never occlude or be occluded -- it is a background, not geometry.
+        // The dome is a background, not geometry: it must never occlude or be
+        // occluded. (It is not "parented to the camera" in any sense that the
+        // shading depends on -- see VERTEX_SHADER. It is merely kept around the
+        // camera so that it covers the screen.)
         depthTest: false,
         fog: false,
         uniforms: {
@@ -200,9 +223,15 @@ export function SkyEnvironment({
     return subscribeLookTuning(apply);
   }, [scene, intensity]);
 
-  // Keep the dome centred on the camera: a unit sphere that rides along is
-  // always "infinitely far" without needing a radius that fights the 200 m far
-  // plane the rest of the scene is tuned for.
+  // Keep the dome around the camera. A sphere that rides along is always
+  // "infinitely far" without needing a radius that fights the 200 m far plane
+  // the rest of the scene is tuned for.
+  //
+  // This is a COVERAGE job only, which is why it is allowed to run a frame
+  // behind the camera write: the shading no longer reads the dome's position
+  // (see VERTEX_SHADER), so all a stale centre can cost is the dome failing to
+  // enclose the camera. It only has to be closer to the camera than the sphere
+  // is wide, which is what the radius is sized for.
   const domeRef = useMemo(() => ({ current: null as THREE.Mesh | null }), []);
   useFrame(({ camera }) => {
     const dome = domeRef.current;
