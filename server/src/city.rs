@@ -211,7 +211,7 @@ pub fn manifest_asset() -> Option<&'static (String, Arc<DestructionManifest>, Ve
         .get_or_init(|| match build_scene() {
             Ok(scene) => {
                 let manifest = DestructionManifest::from_city(&scene);
-                let json = manifest.to_json_bytes();
+                let json = manifest.to_bytes();
                 let mut encoder =
                     flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
                 use std::io::Write;

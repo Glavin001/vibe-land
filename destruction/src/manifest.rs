@@ -339,16 +339,27 @@ impl DestructionManifest {
         }
     }
 
-    /// Canonical serialized bytes — the payload served over HTTP and the hash
-    /// input. serde_json field order is declaration order, so this is stable
-    /// for a fixed crate version.
+    /// serde_json field order is declaration order, so this is stable for a
+    /// fixed crate version. Kept for tooling and tests; what a client is
+    /// actually served is `to_bytes`.
     pub fn to_json_bytes(&self) -> Vec<u8> {
         serde_json::to_vec(self).expect("manifest serialization cannot fail")
     }
 
+    /// Canonical serialized bytes: the payload served to clients and the hash
+    /// input.
+    ///
+    /// Binary, because a 47,000-chunk city is 62 MB of JSON and a browser has
+    /// to hold the bytes, a string of them, and the parsed object graph at once
+    /// to read it. See `manifest_binary` for the layout and for what that cost
+    /// on a phone.
+    pub fn to_bytes(&self) -> Vec<u8> {
+        crate::manifest_binary::encode(self)
+    }
+
     pub fn hash(&self) -> [u8; 32] {
         let mut hasher = Sha256::new();
-        hasher.update(self.to_json_bytes());
+        hasher.update(self.to_bytes());
         hasher.finalize().into()
     }
 
