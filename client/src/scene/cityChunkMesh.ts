@@ -42,7 +42,7 @@ import { renderStats } from '../city/renderStats';
 import { applyCityTriplanar } from './cityMaterialShader';
 import { attachInstanceAnchors, bakeRestAnchors } from './cityTexAnchor';
 import { layerCodeForBuilding, layerCodeForTextureKey } from './cityTextures';
-import type { MaterialAppearance } from '../city/manifest';
+import { bondEndpoints, type MaterialAppearance } from '../city/manifest';
 
 const TMP_POSITION = new THREE.Vector3();
 const TMP_QUATERNION = new THREE.Quaternion();
@@ -253,9 +253,12 @@ function resolveBuildingIds(client: CityClient, count: number): Int32Array {
     return node;
   };
   for (const structure of client.manifest.manifest.structures) {
-    for (const bond of structure.bonds) {
-      const a = find(client.topology.slotOf(structure.structureId, bond.node0));
-      const b = find(client.topology.slotOf(structure.structureId, bond.node1));
+    // Endpoints only: the union-find wants which chunks a bond joins, and a
+    // bond's centroid, normal and area are the solver's business.
+    const { node0, node1 } = bondEndpoints(structure);
+    for (let i = 0; i < node0.length; i += 1) {
+      const a = find(client.topology.slotOf(structure.structureId, node0[i]));
+      const b = find(client.topology.slotOf(structure.structureId, node1[i]));
       if (a !== b) parent[a] = b;
     }
   }

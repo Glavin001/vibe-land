@@ -96,7 +96,50 @@ export interface ManifestStructure {
   worldPosition: [number, number, number];
   worldRotation: [number, number, number, number];
   chunks: ManifestChunk[];
-  bonds: ManifestBond[];
+  /**
+   * Bonds as objects. Present only on the legacy JSON path.
+   *
+   * The client reads exactly two things from a bond -- which chunks it joins --
+   * and never its centroid, normal or area, all of which the solver needs and
+   * the renderer does not. A city of 190,000 bonds therefore spent tens of
+   * megabytes on objects holding two 3-vectors apiece that nothing ever
+   * touched. The binary path supplies the endpoints as typed arrays instead
+   * and leaves this undefined; read it through `bondEndpoints`.
+   */
+  bonds?: ManifestBond[];
+  bondCount?: number;
+  bondNode0?: Uint32Array;
+  bondNode1?: Uint32Array;
+}
+
+/** How many bonds a structure has, whichever path delivered it. */
+export function bondCountOf(structure: ManifestStructure): number {
+  return structure.bondCount ?? structure.bonds?.length ?? 0;
+}
+
+/**
+ * Bond endpoints as typed arrays.
+ *
+ * Free on the binary path, which already has them. Derived once and cached on
+ * the structure for the JSON path, so a caller does not have to know which it
+ * is holding.
+ */
+export function bondEndpoints(
+  structure: ManifestStructure,
+): { node0: Uint32Array; node1: Uint32Array } {
+  if (!structure.bondNode0 || !structure.bondNode1) {
+    const bonds = structure.bonds ?? [];
+    const node0 = new Uint32Array(bonds.length);
+    const node1 = new Uint32Array(bonds.length);
+    for (let i = 0; i < bonds.length; i += 1) {
+      node0[i] = bonds[i].node0;
+      node1[i] = bonds[i].node1;
+    }
+    structure.bondNode0 = node0;
+    structure.bondNode1 = node1;
+    structure.bondCount = bonds.length;
+  }
+  return { node0: structure.bondNode0, node1: structure.bondNode1 };
 }
 
 export interface CityManifest {
@@ -240,7 +283,7 @@ async function parseCityManifest(
   let totalBonds = 0;
   for (const structure of manifest.structures) {
     totalChunks += structure.chunks.length;
-    totalBonds += structure.bonds.length;
+    totalBonds += bondCountOf(structure);
   }
   return { manifest, hashHex, totalChunks, totalBonds };
 }

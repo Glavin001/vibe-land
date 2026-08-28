@@ -145,3 +145,21 @@ fn write_ts_fixture() {
         manifest.shape_library.len(),
     );
 }
+
+/// Dump a manifest in both formats, for weighing the decoders against each
+/// other. `MANIFEST_DUMP_PACK` names the pack; output goes to /tmp.
+#[test]
+#[ignore = "measurement tool"]
+fn dump_for_measurement() {
+    let name = std::env::var("MANIFEST_DUMP_PACK").unwrap_or_else(|_| "algedra-tower".into());
+    let manifest = manifest_for(&name);
+    std::fs::write("/tmp/manifest-measure.bin", manifest.to_bytes()).expect("bin");
+    std::fs::write("/tmp/manifest-measure.json", manifest.to_json_bytes()).expect("json");
+    eprintln!(
+        "[dump] {name}: binary {:.1} MB, json {:.1} MB, {} chunks, {} bonds",
+        manifest.to_bytes().len() as f64 / 1e6,
+        manifest.to_json_bytes().len() as f64 / 1e6,
+        manifest.total_chunks(),
+        manifest.total_bonds(),
+    );
+}

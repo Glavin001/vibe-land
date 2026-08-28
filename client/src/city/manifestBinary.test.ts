@@ -16,7 +16,7 @@ import path from 'path';
 import { describe, expect, it } from 'vitest';
 
 import { decodeBinaryManifest, looksBinary } from './manifestBinary';
-import { isConvexHullGeometry, isCuboidGeometry } from './manifest';
+import { bondCountOf, bondEndpoints, isConvexHullGeometry, isCuboidGeometry } from './manifest';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const bytes = readFileSync(path.join(here, '__fixtures__/manifest-rig-column.bin'));
@@ -37,11 +37,12 @@ describe('binary city manifest', () => {
     expect(manifest.structures).toHaveLength(1);
     const structure = manifest.structures[0];
     expect(structure.chunks).toHaveLength(6);
-    expect(structure.bonds).toHaveLength(10);
+    expect(bondCountOf(structure)).toBe(10);
     // Values printed by the fixture generator.
     expect(structure.chunks[0].centroid).toEqual([0, -0.5, 0]);
-    expect(structure.bonds[0].node0).toBe(1);
-    expect(structure.bonds[0].node1).toBe(2);
+    const { node0, node1 } = bondEndpoints(structure);
+    expect(node0[0]).toBe(1);
+    expect(node1[0]).toBe(2);
   });
 
   it('keeps every chunk field finite and self-consistent', () => {
@@ -68,13 +69,20 @@ describe('binary city manifest', () => {
 
   it('gives bonds endpoints that exist', () => {
     const structure = decodeBinaryManifest(buffer).structures[0];
-    for (const bond of structure.bonds) {
-      expect(bond.node0).toBeLessThan(structure.chunks.length);
-      expect(bond.node1).toBeLessThan(structure.chunks.length);
-      expect(bond.node0).not.toBe(bond.node1);
-      expect(bond.area).toBeGreaterThan(0);
-      expect(bond.normal.every(Number.isFinite)).toBe(true);
+    const { node0, node1 } = bondEndpoints(structure);
+    expect(node0).toHaveLength(bondCountOf(structure));
+    for (let i = 0; i < node0.length; i += 1) {
+      expect(node0[i]).toBeLessThan(structure.chunks.length);
+      expect(node1[i]).toBeLessThan(structure.chunks.length);
+      expect(node0[i]).not.toBe(node1[i]);
     }
+  });
+
+  it('does not build bond objects at all', () => {
+    // The saving is the point: a city of 190,000 bonds was spending tens of
+    // megabytes on objects carrying two 3-vectors nothing reads.
+    const structure = decodeBinaryManifest(buffer).structures[0];
+    expect(structure.bonds).toBeUndefined();
   });
 
   it('refuses a format it does not know', () => {

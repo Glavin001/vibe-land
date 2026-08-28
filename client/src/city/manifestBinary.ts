@@ -20,7 +20,6 @@
  */
 import type {
   CityManifest,
-  ManifestBond,
   ManifestChunk,
   ManifestStructure,
   MaterialAppearance,
@@ -175,31 +174,29 @@ function readStructure(cursor: Cursor): ManifestStructure {
     chunks[i] = chunk;
   }
 
-  const bondIndex = cursor.u32Array(bondCount);
-  const node0 = cursor.u32Array(bondCount);
-  const node1 = cursor.u32Array(bondCount);
-  const bondCentroid = cursor.f32Array(bondCount * 3);
-  const normal = cursor.f32Array(bondCount * 3);
-  const area = cursor.f32Array(bondCount);
-  cursor.u32Array(bondCount); // bond material: solver-side, unused by the client
-
-  const bonds: ManifestBond[] = new Array(bondCount);
-  for (let i = 0; i < bondCount; i += 1) {
-    bonds[i] = {
-      bondIndex: bondIndex[i],
-      node0: node0[i],
-      node1: node1[i],
-      centroid: vec3(bondCentroid, i),
-      normal: vec3(normal, i),
-      area: area[i],
-    };
-  }
+  // Bonds are NOT materialised as objects.
+  //
+  // The client reads exactly one thing from a bond -- which two chunks it
+  // joins -- and never its index, centroid, normal or area. Those belong to
+  // the solver, which is server-side. Building 190,000 objects to carry two
+  // 3-vectors nobody reads cost tens of megabytes on the device least able to
+  // spare them, so the endpoints are kept as views onto the buffer and the
+  // rest is skipped by advancing over it.
+  cursor.u32Array(bondCount); // bond index
+  const bondNode0 = cursor.u32Array(bondCount);
+  const bondNode1 = cursor.u32Array(bondCount);
+  cursor.f32Array(bondCount * 3); // centroid
+  cursor.f32Array(bondCount * 3); // normal
+  cursor.f32Array(bondCount); // area
+  cursor.u32Array(bondCount); // material
 
   return {
     structureId,
     worldPosition: [position[0], position[1], position[2]],
     worldRotation: [rotation[0], rotation[1], rotation[2], rotation[3]],
     chunks,
-    bonds,
+    bondCount,
+    bondNode0,
+    bondNode1,
   };
 }
