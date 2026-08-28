@@ -38,6 +38,11 @@ pub fn stress_settings(pack_materials: &[StressLimits]) -> StressSolverSettings 
                 tension_fatal_mpa: l.tension_fatal * scale,
                 shear_elastic_mpa: l.shear_elastic * scale,
                 shear_fatal_mpa: l.shear_fatal * scale,
+                // Deliberately NOT multiplied by the strength scale: modulus
+                // is stiffness, and scaling it would change how load is
+                // SHARED, not how much it takes to break -- a different and
+                // unwanted knob.
+                elastic_modulus_pa: l.elastic_modulus,
             })
             .collect()
     } else {
@@ -48,6 +53,7 @@ pub fn stress_settings(pack_materials: &[StressLimits]) -> StressSolverSettings 
             tension_fatal_mpa: 3e6 * scale,
             shear_elastic_mpa: 1.6e6 * scale,
             shear_fatal_mpa: 4e6 * scale,
+            elastic_modulus_pa: 30.0e9,
         }]
     };
     let _ = from_pack;

@@ -578,6 +578,7 @@ void DestructionManager::create_destructible(
     stress_materials[i].tensionFatalLimit = src.tension_fatal;
     stress_materials[i].shearElasticLimit = src.shear_elastic;
     stress_materials[i].shearFatalLimit = src.shear_fatal;
+    stress_materials[i].elasticModulusPa = src.elastic_modulus;
   }
   desc.stressMaterials = stress_materials.data();
   desc.stressMaterialCount = static_cast<std::uint32_t>(stress_materials.size());

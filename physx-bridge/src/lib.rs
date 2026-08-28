@@ -304,6 +304,10 @@ pub struct StressMaterialDesc {
     pub tension_fatal: f32,
     pub shear_elastic: f32,
     pub shear_fatal: f32,
+    /// Young's modulus, Pa. Stiffness rather than strength: what decides how
+    /// an over-connected structure shares load between parallel paths.
+    /// 0 = treat as the 30 GPa concrete reference.
+    pub elastic_modulus: f32,
 }
 
 #[derive(Clone, Debug)]
@@ -335,6 +339,7 @@ impl Default for DestructibleSettings {
                 tension_fatal: -1.0,
                 shear_elastic: -1.0,
                 shear_fatal: -1.0,
+                elastic_modulus: 0.0,
             }],
             maximum_bodies: 48,
             maximum_fractures_per_actor_per_tick: 8,
@@ -1337,6 +1342,7 @@ mod ffi {
         tension_fatal: f32,
         shear_elastic: f32,
         shear_fatal: f32,
+        elastic_modulus: f32,
     }
 
     struct FfiDestructibleSettings {
@@ -1907,6 +1913,7 @@ impl From<DestructibleSettings> for ffi::FfiDestructibleSettings {
                     tension_fatal: material.tension_fatal,
                     shear_elastic: material.shear_elastic,
                     shear_fatal: material.shear_fatal,
+                    elastic_modulus: material.elastic_modulus,
                 })
                 .collect(),
             maximum_bodies: value.maximum_bodies,

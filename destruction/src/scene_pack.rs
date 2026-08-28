@@ -18,6 +18,10 @@ pub struct StressLimits {
     pub tension_fatal: f32,
     pub shear_elastic: f32,
     pub shear_fatal: f32,
+    /// Young's modulus, Pa. Stiffness, not strength: what decides how an
+    /// over-connected structure SHARES load between parallel paths (k = EA/L).
+    /// 0 means the pack predates the field; the solver treats it as 30 GPa.
+    pub elastic_modulus: f32,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -196,6 +200,9 @@ struct LimitsJson {
     tension_fatal: f32,
     shear_elastic: f32,
     shear_fatal: f32,
+    /// Absent on packs authored before stiffness existed; 0 = solver default.
+    #[serde(default)]
+    elastic_modulus: f32,
 }
 
 /// How a material LOOKS. Advisory: no solver reads any of it.
@@ -303,6 +310,7 @@ const PLACEHOLDER_LIMITS: StressLimits = StressLimits {
     tension_fatal: 3.0e6,
     shear_elastic: 1.6e6,
     shear_fatal: 4.0e6,
+    elastic_modulus: 30.0e9,
 };
 
 fn limits_from(limits: &LimitsJson) -> StressLimits {
@@ -313,6 +321,7 @@ fn limits_from(limits: &LimitsJson) -> StressLimits {
         tension_fatal: limits.tension_fatal,
         shear_elastic: limits.shear_elastic,
         shear_fatal: limits.shear_fatal,
+        elastic_modulus: limits.elastic_modulus,
     }
 }
 
@@ -339,6 +348,7 @@ fn resolve_inherited(limits: &StressLimits) -> StressLimits {
         tension_fatal: inherit(limits.tension_fatal, limits.compression_fatal),
         shear_elastic: inherit(limits.shear_elastic, limits.compression_elastic),
         shear_fatal: inherit(limits.shear_fatal, limits.compression_fatal),
+        elastic_modulus: limits.elastic_modulus,
     }
 }
 

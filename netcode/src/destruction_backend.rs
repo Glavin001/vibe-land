@@ -20,6 +20,11 @@ pub struct StressMaterial {
     pub tension_fatal_mpa: f32,
     pub shear_elastic_mpa: f32,
     pub shear_fatal_mpa: f32,
+    /// Young's modulus, Pa. Stiffness rather than strength: what decides how
+    /// an over-connected structure shares load between parallel paths
+    /// (k = EA/L). 0 means unknown and is treated as 30 GPa concrete.
+    pub elastic_modulus_pa: f32,
+
 }
 
 impl Default for StressMaterial {
@@ -31,6 +36,7 @@ impl Default for StressMaterial {
             tension_fatal_mpa: -1.0,
             shear_elastic_mpa: -1.0,
             shear_fatal_mpa: -1.0,
+            elastic_modulus_pa: 0.0,
         }
     }
 }

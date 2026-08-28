@@ -98,6 +98,7 @@ impl CityDestruction {
                     tension_fatal: material.tension_fatal_mpa,
                     shear_elastic: material.shear_elastic_mpa,
                     shear_fatal: material.shear_fatal_mpa,
+                    elastic_modulus: material.elastic_modulus_pa,
                 })
                 .collect(),
             maximum_bodies: settings.maximum_bodies,
