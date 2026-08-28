@@ -159,7 +159,15 @@ export function SkyEnvironment({
     [],
   );
 
-  const geometry = useMemo(() => new THREE.SphereGeometry(1, 32, 16), []);
+  // Radius is pure coverage headroom: how far the camera may get ahead of the
+  // recentre below before it escapes the dome and the sky renders as a ball
+  // with clear colour around it. At radius 1 that budget was one metre per
+  // frame, which vehicles, respawns and the chase-cam reset all beat -- the
+  // reset explicitly tolerates a 12 m camera jump in a single frame. 32 m
+  // covers those with room to spare and is still far inside the 200 m far
+  // plane; depth is irrelevant here anyway, since the dome neither tests nor
+  // writes it.
+  const geometry = useMemo(() => new THREE.SphereGeometry(32, 32, 16), []);
 
   useEffect(() => {
     return () => {
