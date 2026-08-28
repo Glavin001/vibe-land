@@ -32,7 +32,7 @@ use std::path::{Path, PathBuf};
 
 use vibe_land_destruction::city_config::ShotProfile;
 use vibe_land_destruction::rig::surgery::rotated_and_raised;
-use vibe_land_destruction::rig::{Quiet, Rig, HZ};
+use vibe_land_destruction::rig::{HZ, Quiet, Rig, facade_aim};
 use vibe_land_destruction::scene_pack::{load_scene_pack_file, ScenePack};
 
 /// The city's own shot, so "a hit" here means what a player's hit means rather
@@ -109,39 +109,6 @@ fn every_structure_stands_under_its_own_weight() {
 }
 
 // ── 2. cladding comes off; the frame does not ───────────────────────────────
-
-/// A point on the outside of the structure, at about a third of its height —
-/// where a player standing in the street would actually hit it.
-fn facade_aim(pack: &ScenePack) -> ([f32; 3], [f32; 3]) {
-    let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
-    for node in &pack.nodes {
-        let c = [node.centroid.x, node.centroid.y, node.centroid.z];
-        for a in 0..3 {
-            lo[a] = lo[a].min(c[a]);
-            hi[a] = hi[a].max(c[a]);
-        }
-    }
-    let band = lo[1] + (hi[1] - lo[1]) * 0.33;
-
-    // Aim at an actual CHUNK on the +X side at about a third of the height,
-    // not at a point computed from the bounding box. The parking garage's +X
-    // face is its open ramp bay, so a geometric aim put the shot in mid-air and
-    // it broke nothing — which read as "the building is indestructible" when it
-    // meant "the test missed".
-    let mut best = None;
-    let mut best_x = f32::MIN;
-    for node in &pack.nodes {
-        if (node.centroid.y - band).abs() > (hi[1] - lo[1]) * 0.08 {
-            continue;
-        }
-        if node.centroid.x > best_x {
-            best_x = node.centroid.x;
-            best = Some(node.centroid);
-        }
-    }
-    let c = best.unwrap_or_else(|| pack.nodes[0].centroid);
-    ([c.x, c.y, c.z], [-1.0, 0.0, 0.0])
-}
 
 #[test]
 fn a_shot_damages_the_facade_without_starting_a_collapse() {

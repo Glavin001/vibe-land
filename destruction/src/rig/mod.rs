@@ -51,6 +51,70 @@ pub use stress_report::{BondStress, StressReport};
 pub use surgery::{select_nodes, NodeSel};
 pub use trace::{Sample, StatsTrace};
 
+/// A point on the outside of a structure at about a third of its height, aimed
+/// inward: where a player standing in the street would actually hit it.
+///
+/// This has now been got wrong twice, in the same direction both times, and
+/// each time the wrong answer looked like a fact about the building rather
+/// than about the test:
+///
+///   1. Aiming at a point computed from the BOUNDING BOX put the shot in mid
+///      air, because the parking garage's +X face is its open ramp bay. It
+///      broke nothing, which read as "the building is indestructible".
+///   2. Aiming at the outermost CHUNK picked a foundation block for the walled
+///      city -- fixed, unfracturable, alone, with one chunk inside the blast
+///      radius. It broke 7 bonds in a 170,000-bond city, which read the same
+///      way. With this aim the same shot breaks 503.
+///
+/// So the rule is: hit something that can break, with material around it.
+/// Skip supports and foundations, take the outer tenth by x, and among those
+/// prefer the chunk with the most neighbours inside a blast radius.
+///
+/// It lives here rather than in a test file because both the audit and the
+/// shipping sim gates need it, and when they each had a copy the fix landed in
+/// one of them.
+pub fn facade_aim(pack: &ScenePack) -> ([f32; 3], [f32; 3]) {
+    const BLAST_R: f32 = 2.5;
+    let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
+    for node in &pack.nodes {
+        let c = [node.centroid.x, node.centroid.y, node.centroid.z];
+        for a in 0..3 {
+            lo[a] = lo[a].min(c[a]);
+            hi[a] = hi[a].max(c[a]);
+        }
+    }
+    let band = lo[1] + (hi[1] - lo[1]) * 0.33;
+    let span = (hi[1] - lo[1]).max(1e-3);
+
+    let eligible: Vec<usize> = (0..pack.nodes.len())
+        .filter(|&i| {
+            let n = &pack.nodes[i];
+            !n.is_support()
+                && pack.node_role(i) != "foundation"
+                && (n.centroid.y - band).abs() <= span * 0.08
+        })
+        .collect();
+    if eligible.is_empty() {
+        let c = pack.nodes[0].centroid;
+        return ([c.x, c.y, c.z], [-1.0, 0.0, 0.0]);
+    }
+
+    let mut outer = eligible.clone();
+    outer.sort_by(|&a, &b| pack.nodes[b].centroid.x.total_cmp(&pack.nodes[a].centroid.x));
+    outer.truncate((outer.len() / 10).max(1));
+
+    let neighbours = |i: usize| {
+        let c = pack.nodes[i].centroid;
+        eligible
+            .iter()
+            .filter(|&&j| (pack.nodes[j].centroid - c).length_squared() < BLAST_R * BLAST_R)
+            .count()
+    };
+    let best = outer.iter().copied().max_by_key(|&i| neighbours(i)).unwrap_or(outer[0]);
+    let c = pack.nodes[best].centroid;
+    ([c.x, c.y, c.z], [-1.0, 0.0, 0.0])
+}
+
 pub const HZ: u32 = 60;
 pub const DT: f32 = 1.0 / HZ as f32;
 pub const GRAVITY: [f32; 3] = [0.0, -9.81, 0.0];
