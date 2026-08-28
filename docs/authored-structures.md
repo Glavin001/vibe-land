@@ -250,6 +250,53 @@ once by measuring on the wrong hardware, and Metal punishes sub-draws in the
 opposite direction from a 4090. It is live-settable so `perfSweep` can price it
 on the device that is actually near budget. Do not pick it from a workstation.
 
+## Minas Tirith, and what a walkable structure costs
+
+The other seven are buildings you look at and shoot. This one is a place you
+move through, which changes what the geometry has to satisfy.
+
+**It is sized against the player, not against what looks right.** From
+`netcode/src/movement.rs`: the capsule is 1.6 m tall and 0.7 m across, and
+**crouching does not shrink it** — there is no capsule resize anywhere, so
+1.6 m is the hard ceiling in every tunnel and doorway. Steps up to 0.55 m are
+climbed automatically but bots are configured at 0.35 m, so the road's steps
+are 0.25 m. A jump clears 1.05 m, so parapets are 1.2 m and you cannot hop off
+a rampart by accident.
+
+**Every opening is a gap between pieces.** A chunk's collider is its convex
+hull (`destruction/src/runtime.rs:134`), so an arch cut into a single piece is
+filled straight back in and the player walks into an invisible wall. Gates are
+jambs and a lintel; the road tunnels are the space between the rock above and
+the road below; doors are the gap between two piers.
+
+**Curves are faceted by hand.** The format has no rotation, and a cross-section
+is capped at ten vertices, so a ring is one convex quad per segment. Two rings
+meeting at a nominal radius must share a segmentation or they interpenetrate:
+a chord bows inside the arc it spans, and mismatched facets put one ring
+through the other. That was 280 collider overlaps on the first build. The same
+effect at a wider arc bows 3.2 m and drove the Hall of Kings' street face
+through its own side walls.
+
+**Stone cannot span.** Roofs were authored in stone and 1,707 of 3,613 roof
+chunks tore off under gravity alone: 0.3 m of stone over 7 m develops about
+3.1 MPa in bending against stone's 0.8 MPa tension limit. They are timber now,
+which is four times lighter, five times stronger in tension, and what actually
+roofed these buildings.
+
+### It does not yet stand
+
+`every_structure_stands_under_its_own_weight` fails for `minas-tirith`. The
+structure is sound statically — `verify.mjs` passes clean, nothing
+interpenetrates, every piece is grounded, and peak rest utilisation is 7.6% —
+but the solver sheds pieces that then cascade down the terraces, knocking more
+loose as they go. Left running in game it reached **31% of bonds broken after
+twenty minutes with nobody shooting it**.
+
+Bisected: building with no roofs at all only improves it from 0.98% to 0.60%
+over a five-second settle, so roofs are about 40% of it and the rest is the
+thin free-standing masonry itself. The initial shedding is the thing to fix —
+everything after it is consequence.
+
 ### Known gap
 
 The balcony bands read grey-concrete in game rather than the crisp white of the
