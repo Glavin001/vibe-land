@@ -424,3 +424,36 @@ describe('static registration', () => {
     expect(await stub.fleet()).toHaveLength(0);
   });
 });
+
+describe('operator-run boxes', () => {
+  it('never reaps a static box for being idle or expensive', async () => {
+    // These caps exist to stop paying for a rental. A box we did not rent
+    // costs nothing, and reaping it strands players: with nothing able to boot
+    // a replacement, /join has no server to offer and never will.
+    const vast = mockVast();
+    const stub = freshStub();
+    await stub.registerStatic('operator-box');
+    await stub.heartbeat(heartbeatBody('operator-box', { players: 0 }));
+
+    await ageBy(stub, 'idle_since', 60 * 60_000);
+    await ageBy(stub, 'boot_started_at', 24 * 3_600_000);
+    await tick(stub, 2);
+
+    expect(await phaseOf(stub)).toBe('READY');
+    expect(vast.deleteCalls()).toHaveLength(0);
+  });
+
+  it('still destroys a static box that stops heartbeating', async () => {
+    // Liveness is not cost: a silent box cannot serve anyone.
+    mockVast();
+    const stub = freshStub();
+    await stub.registerStatic('operator-box');
+    await stub.heartbeat(heartbeatBody('operator-box'));
+
+    await ageBy(stub, 'last_heartbeat_at', 91_000);
+    await tick(stub, 2);
+
+    expect(await phaseOf(stub)).toBe('DEAD');
+    expect((await stub.fleet())[0].deadReason).toBe('heartbeat_lost');
+  });
+});

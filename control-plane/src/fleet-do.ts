@@ -54,6 +54,7 @@ interface ServerRow extends Record<string, SqlStorageValue> {
   dead_reason: string | null;
   spent_prior_usd: number;
   pending_offer_id: number | null;
+  is_static: number;
 }
 
 export class FleetDO extends DurableObject<Env> {
@@ -86,9 +87,21 @@ export class FleetDO extends DurableObject<Env> {
           kill_reason       TEXT,
           dead_reason       TEXT,
           spent_prior_usd   REAL NOT NULL DEFAULT 0,
-          pending_offer_id  INTEGER
+          pending_offer_id  INTEGER,
+          -- A box we did not rent: an operator's machine or a dev box. Exempt
+          -- from the cost-based kills, since there is no bill to stop.
+          is_static         INTEGER NOT NULL DEFAULT 0
         )
       `);
+      // Durable Objects outlive deploys, so a table created by an earlier
+      // version will not gain columns from the statement above.
+      try {
+        this.ctx.storage.sql.exec(
+          'ALTER TABLE servers ADD COLUMN is_static INTEGER NOT NULL DEFAULT 0',
+        );
+      } catch {
+        /* already present */
+      }
     });
   }
 
@@ -365,6 +378,12 @@ export class FleetDO extends DurableObject<Env> {
       this.markForDelete(row, 'heartbeat_lost', { silentMs: now - since });
       return;
     }
+    // Idle shutdown and the spend caps exist to stop paying for a rental. A
+    // box we did not rent -- a dev machine, or one an operator runs -- costs
+    // nothing to leave running, and reaping it strands players: nothing can
+    // boot a replacement, so /join has no server to offer and never will.
+    // Heartbeat loss still applies: that is liveness, not cost.
+    if (row.is_static === 1) return;
     if (row.idle_since !== null && now - row.idle_since > config.idleShutdownMs) {
       this.markForDelete(row, 'idle', { idleMs: now - row.idle_since });
       return;
@@ -549,8 +568,8 @@ export class FleetDO extends DurableObject<Env> {
     const config = readConfig(this.env);
     if (!this.row(serverDoId)) {
       this.sql().exec(
-        `INSERT INTO servers (server_do_id, phase, created_at, boot_started_at, capacity)
-         VALUES (?, 'BOOTING', ?, ?, ?)`,
+        `INSERT INTO servers (server_do_id, phase, created_at, boot_started_at, capacity, is_static)
+         VALUES (?, 'BOOTING', ?, ?, ?, 1)`,
         serverDoId,
         now,
         now,
