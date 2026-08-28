@@ -1530,6 +1530,27 @@ DestructionManager::apply_destruction_explosion(FfiVec3 center, float radius,
   return affected;
 }
 
+/// Whether blast impulse scales with the face a chunk presents to it.
+///
+/// OFF by default, and that is an honesty statement rather than a preference.
+/// The flat model is demonstrably the wrong SHAPE -- there is no single value
+/// that both scratches a stone city and lets a timber house settle -- and
+/// scaling by intercepted area is what a pressure wave actually does. But
+/// sweeping the area-scaled version did not produce a value that satisfies the
+/// gates either, and the results were non-monotonic (2e8 passing where 1e8
+/// failed), which means the sweep was reading run-to-run variation rather than
+/// signal. A default should not be changed on that.
+///
+/// BLAST_SHOT_AREA_SCALED=1 turns it on for the work of settling it, which
+/// wants a deterministic shot harness rather than the whole-building gate.
+static bool shotAreaScaled() {
+  static const bool enabled = [] {
+    const char *raw = std::getenv("BLAST_SHOT_AREA_SCALED");
+    return raw != nullptr && raw[0] != '0';
+  }();
+  return enabled;
+}
+
 std::uint32_t DestructionManager::apply_destruction_blast(
     FfiVec3 center, FfiVec3 direction, float radius, float stress_impulse,
     float push_impulse) {
@@ -1593,7 +1614,38 @@ std::uint32_t DestructionManager::apply_destruction_blast(
       }
       if (stress_impulse > 0.0f) {
         const float falloff = 1.0f - (distance / radius);
-        const float stress_scale = falloff * falloff;
+        // Scaled by how much blast the chunk actually INTERCEPTS.
+        //
+        // Every shape in radius used to receive the same impulse regardless of
+        // its size, which is not how a blast loads anything: a pressure wave
+        // delivers force over area, so a big face catches more of it than a
+        // small one. A flat impulse instead loads a fortress block and a
+        // window panel identically, and since the block is also far stronger,
+        // no single number can serve both. Measured: at 8e7 a shot did not
+        // scratch a stone city; at 1.2e8 a timber house was still coming apart
+        // eight seconds later. There was no value in between that worked,
+        // which is the signature of a model with the wrong shape rather than
+        // the wrong constant.
+        //
+        // The projected area of the shape's bounds along the shot direction is
+        // that intercept. Normalising by one square metre keeps the tuning
+        // number meaning what it says: impulse per square metre of exposed
+        // face, at the centre of the blast.
+        //
+        // BLAST_SHOT_AREA_SCALED=0 restores the flat impulse for A/B.
+        float area_scale = 1.0f;
+        if (shotAreaScaled()) {
+          PxBounds3 bounds;
+          if (PxGeometryQuery::computeGeomBounds(
+                  bounds, shape.shape->getGeometry(), shape.worldPose)) {
+            const PxVec3 h = bounds.getExtents();  // half-extents
+            const float projected = 4.0f * (std::fabs(shot.x) * h.y * h.z
+                                          + std::fabs(shot.y) * h.x * h.z
+                                          + std::fabs(shot.z) * h.x * h.y);
+            if (projected > 0.0f) area_scale = projected;
+          }
+        }
+        const float stress_scale = falloff * falloff * area_scale;
         const PxVec3 stress = shot * (stress_impulse * stress_scale);
         if (slot.dest->queueContact(*shape.shape, c, stress)) {
           ++affected;
