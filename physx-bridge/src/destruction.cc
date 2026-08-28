@@ -3109,6 +3109,7 @@ FfiDestructionStats DestructionManager::destruction_stats() const {
   float gravity_slot_max = 0.0f;
   std::uint64_t single_node_bodies = 0;
   std::uint64_t single_node_contacts = 0;
+  std::uint64_t single_node_awake = 0;
   for (const auto &slot_ptr : slots_) {
     if (!slot_ptr || slot_ptr->dest == nullptr) {
       continue;
@@ -3199,6 +3200,7 @@ FfiDestructionStats DestructionManager::destruction_stats() const {
     stats.sleeping_actors_skipped += telemetry.sleepingActorsSkipped;
     single_node_bodies += telemetry.singleNodeBodyCount;
     single_node_contacts += telemetry.singleNodeContacts;
+    single_node_awake += telemetry.singleNodeAwakeBodies;
   }
 
   // Bounded-growth tripwire. Both are keyed by (structure_id, bodyId) and
@@ -3230,6 +3232,7 @@ FfiDestructionStats DestructionManager::destruction_stats() const {
   // anything is built on it.
   push_span("single_node_bodies", static_cast<double>(single_node_bodies), 2);
   push_span("single_node_contacts", static_cast<double>(single_node_contacts), 2);
+  push_span("single_node_awake", static_cast<double>(single_node_awake), 2);
   return stats;
 }
 

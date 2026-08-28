@@ -40,6 +40,7 @@ IMPLEMENTATION_AB_KEYS = {
     "VIBE_PHYSX_CONTACT_FASTPATH",
     "VIBE_PHYSX_CONTACT_PERSISTS",
     "BLAST_CONTACTED_ACTOR_HOIST",
+    "BLAST_SKIP_BONDLESS_CONTACTS",
 }
 
 
@@ -84,7 +85,16 @@ def load(path: str) -> Run:
     timings = os.path.join(path, "timings.jsonl")
     if os.path.exists(timings):
         with open(timings) as handle:
-            rows = [json.loads(line) for line in handle if line.strip()]
+            # A run killed mid-write leaves a truncated final line. Skipping
+            # it beats refusing the whole run: the alternative is losing an
+            # entire arm to one partial record.
+            for line in handle:
+                if not line.strip():
+                    continue
+                try:
+                    rows.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
     return Run(path=path, meta=meta, rows=rows)
 
 
