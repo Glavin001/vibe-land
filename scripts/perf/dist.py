@@ -248,7 +248,9 @@ PARALLEL = {"solve"}
 
 TREE = {
     "TOTAL": ["physx_step", "stress_solve"],
-    "physx_step": ["physx_sim", "fetch_tick"],
+    # cb_drain is the deferred-contact drain: runs inside end_step but after
+    # the fetch split is recorded, so it is a sibling of fetch, not a child.
+    "physx_step": ["physx_sim", "fetch_tick", "cb_drain"],
     "fetch_tick": ["gpu_wait", "cb_tick", "fetch_copy"],
     "cb_tick": ["cb_entity", "cb_extract", "cb_resolve", "cb_queue",
                 "cb_events", "cb_pairld", "cb_wake", "cb_census", "cb_resize"],

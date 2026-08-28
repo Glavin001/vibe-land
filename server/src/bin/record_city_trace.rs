@@ -1010,7 +1010,7 @@ fn main() -> Result<()> {
                  cb_queue,cb_events,cb_pairld,cb_wake,\
                  cp_found,cp_persists,cp_points,cp_supp,node_mm,node_ck,\
                  sup_calls,sup_kin,sup_fy,sup_exist,sup_new,sup_staged,sup_unch,sup_rows,\
-                 gpu_host_work,gpu_host_blocked,st_init,st_err,st_copy,st_graph,st_drain,hw_in,hw_reset,hw_bond,hw_node,bs_skip,bs_par_ck,bs_par_mm,cb_census,cb_resize,bl_ck,bl_mm,pairs,\
+                 gpu_host_work,gpu_host_blocked,st_init,st_err,st_copy,st_graph,st_drain,hw_in,hw_reset,hw_bond,hw_node,bs_skip,bs_par_ck,bs_par_mm,cb_drain,cb_census,cb_resize,bl_ck,bl_mm,pairs,\
                  contacts_q,islands_skip,islands_tot,quiet,freeze,unfreeze,contact_wakes,\
                  min_y,pose_quiet,overstressed,patch_hw,escaped"
             )?;
@@ -1163,7 +1163,7 @@ fn main() -> Result<()> {
                 // milliseconds and making them look quantised. Rust
                 // prints shortest-roundtrip for floats, which is what a
                 // CSV wants anyway.
-                "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
+                "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
                 tick_index, s.chunk_bodies, s.awake_chunk_bodies, s.frozen_chunk_bodies,
                 s.sleeping_chunk_bodies, s.broken_bonds,
                 s.stress_solve_ms, s.begin_ms, s.solve_ms, s.end_ms, s.readback_ms,
@@ -1230,6 +1230,7 @@ fn main() -> Result<()> {
                 span_value(&tick_spans, "bond_stress_skipped"),
                 span_value(&tick_spans, "bs_par_checks"),
                 span_value(&tick_spans, "bs_par_mismatches"),
+                world_span_value(&world_spans, "cb_drain_ms"),
                 world_span_value(&world_spans, "cb_census_ms"),
                 world_span_value(&world_spans, "cb_resize_ms"),
                 span_value(&tick_spans, "bondless_verify_checks"),

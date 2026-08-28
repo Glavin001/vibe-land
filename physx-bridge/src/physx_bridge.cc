@@ -265,6 +265,23 @@ bool contact_census_enabled() {
   return enabled;
 }
 
+/// Phase C: capture contact data inside the callback, process it after
+/// fetchResults returns. The callback runs on the host thread INSIDE
+/// fetchResults; moving the marshaling out (a) removes our code from the
+/// number labelled "PhysX" and (b) makes it parallelisable later. Timing-
+/// neutral for physics: every consumer (solver queue, supporter loads,
+/// frozen wakes) runs later in the same tick inside destruction_tick, and
+/// the scene does not step between callback and drain, so actor reads see
+/// identical state. The drain preserves recorded order, so the sequences
+/// fed to every consumer are bit-identical to the inline path.
+bool defer_contacts_enabled() {
+  static const bool enabled = [] {
+    const char *value = std::getenv("VIBE_PHYSX_DEFER_CONTACTS");
+    return value != nullptr && std::string(value) != "0";
+  }();
+  return enabled;
+}
+
 bool contact_persists_enabled() {
   static const bool enabled = [] {
     const char *value = std::getenv("VIBE_PHYSX_CONTACT_PERSISTS");
@@ -577,47 +594,24 @@ public:
   void onAdvance(const PxRigidBody *const *, const PxTransform *,
                  const PxU32) override {}
 
-  void onContact(const PxContactPairHeader &header,
-                 const PxContactPair *pairs, PxU32 pair_count) override {
-    // EXACT self-timing: this callback runs INSIDE fetchResults, so its cost
-    // lands undifferentiated in the result-copy number — the conflation that
-    // fed a whole wrong optimization line. Every invocation is now timed with
-    // the cycle counter (~7 ns/read) rather than 1-in-8 with steady_clock
-    // (~25 ns), so the published figure is a measurement rather than an
-    // extrapolation, at ~0.09 ms/tick of overhead at cascade rates.
-    ++contact_callback_calls_;
-    ++contact_callbacks_this_step_;
-    const std::uint64_t callback_started = cycle_now();
-    // Sub-attribution costs more than the parts it prices; opt-in only, and
-    // still sampled when on.
-    const bool sample_subspans =
-        profile_callback_enabled() && (contact_callback_calls_ & 7u) == 0;
-    // Hoisted to callback scope: the entity resolution below and the
-    // per-manifold target resolution further down were both OUTSIDE every
-    // timed block, which is why the first live breakdown left 42% of the
-    // callback cost unattributed -- more than any block it did name.
+
+  /// The per-pair processing, shared verbatim by the inline path (called
+  /// from inside the contact callback) and the deferred drain (called from
+  /// end_step after fetchResults returns). ONE body on purpose: two copies
+  /// of this logic would drift, and a drift here is a physics divergence.
+  void process_extracted_pair(PxActor *actor0, PxActor *actor1,
+                              PxShape *shape0, PxShape *shape1,
+                              std::uint32_t entity_a, std::uint32_t entity_b,
+                              bool ev_persists, bool ev_found,
+                              const physx::PxContactPairPoint *points,
+                              PxU32 extracted, PxU32 contact_count,
+                              bool sample_subspans) {
     const auto sub_now = [&]() {
       return sample_subspans ? cycle_now() : std::uint64_t{0};
     };
     const auto sub_ms = [](std::uint64_t from) {
       return static_cast<double>(cycle_now() - from) * cycles_to_ms_factor();
     };
-    const auto entity_started = sub_now();
-    const std::uint32_t entity_a = actor_entity_id(header.actors[0]);
-    const std::uint32_t entity_b = actor_entity_id(header.actors[1]);
-    if (sample_subspans) {
-      cb_entity_ms_ += 8.0 * sub_ms(entity_started);
-    }
-    for (PxU32 pair_index = 0; pair_index < pair_count; ++pair_index) {
-      const PxContactPair &pair = pairs[pair_index];
-      if (pair.flags & (PxContactPairFlag::eREMOVED_SHAPE_0 |
-                        PxContactPairFlag::eREMOVED_SHAPE_1)) {
-        continue;
-      }
-      const PxU32 contact_count = pair.contactCount;
-      if (contact_count == 0) {
-        continue;
-      }
       const bool census = contact_census_enabled();
       const auto census_started = census ? sub_now() : std::uint64_t{0};
       if (census) {
@@ -626,10 +620,9 @@ public:
       // same standing load (PERSISTS) versus a genuinely new contact
       // (FOUND)? That ratio decides whether "reduce pairs" is worth a
       // structural change, and which change.
-      if (pair.events & PxPairFlag::eNOTIFY_THRESHOLD_FORCE_PERSISTS) {
+      if (ev_persists) {
         ++cp_persists_;
-      } else if (pair.events & (PxPairFlag::eNOTIFY_THRESHOLD_FORCE_FOUND |
-                                PxPairFlag::eNOTIFY_TOUCH_FOUND)) {
+      } else if (ev_found) {
         ++cp_found_;
       } else {
         ++cp_other_;
@@ -639,38 +632,6 @@ public:
         cb_census_ms_ += 8.0 * sub_ms(census_started);
       }
       }
-      // Reused across pairs and ticks. This was a fresh heap allocation per
-      // reported manifold, and a settled city reports thousands of resting
-      // manifolds every tick -- all of it inside fetchResults(), which is what
-      // physics_fetch_copy_ms actually measures.
-      //
-      // VIBE_PHYSX_CONTACT_CSE=0 restores the old shape: allocate per manifold
-      // and resolve the owning slot per contact POINT.
-      if (!contact_cse_enabled()) {
-        contact_points_ = std::vector<physx::PxContactPairPoint>();
-      }
-      // A0 sub-attribution: on sampled calls, each sub-block below is timed
-      // so the ~9 ms callback cost decomposes BEFORE anything is optimized.
-      // Same 1-in-8 gate as the outer probe; x8 scaling at publish.
-      // rdtsc, not steady_clock: at cascade rates this fires ~950 times a tick
-      // across four sub-blocks, and at ~25 ns a read the clock was costing
-      // ~0.19 ms/tick -- which is why this was opt-in and therefore always
-      // dark in exactly the reports that needed it. The cycle counter is
-      // ~7 ns, putting the whole sub-attribution near 0.05 ms/tick, cheap
-      // enough to leave on permanently.
-      const auto resize_started = sub_now();
-      contact_points_.resize(contact_count);
-      if (sample_subspans) {
-        cb_resize_ms_ += 8.0 * sub_ms(resize_started);
-      }
-      const auto extract_started = sub_now();
-      const PxU32 extracted =
-          pair.extractContacts(contact_points_.data(), contact_count);
-      if (sample_subspans) {
-        // x8, same convention as the outer contact_callback_ms_ probe.
-        cb_extract_ms_ += 8.0 * sub_ms(extract_started);
-      }
-      const std::vector<PxContactPairPoint> &points = contact_points_;
 #ifdef VIBE_LAND_DESTRUCTION
       // Once per shape per manifold, not once per shape per POINT. Every point
       // in a manifold shares the same two shapes, so the hash lookup and the
@@ -680,8 +641,8 @@ public:
       DestructionManager::ContactTarget target1;
       const auto resolve_started = sub_now();
       if (destruction_ && contact_cse_enabled()) {
-        target0 = destruction_->resolve_contact_target(pair.shapes[0]);
-        target1 = destruction_->resolve_contact_target(pair.shapes[1]);
+        target0 = destruction_->resolve_contact_target(shape0);
+        target1 = destruction_->resolve_contact_target(shape1);
       }
       if (sample_subspans) {
         cb_resolve_ms_ += 8.0 * sub_ms(resolve_started);
@@ -736,9 +697,9 @@ public:
                                              /*wake=*/false);
             }
           } else {
-            destruction_->route_contact_shape(pair.shapes[0], position, impulse,
+            destruction_->route_contact_shape(shape0, position, impulse,
                                               /*wake=*/false);
-            destruction_->route_contact_shape(pair.shapes[1], position, neg,
+            destruction_->route_contact_shape(shape1, position, neg,
                                               /*wake=*/false);
           }
         }
@@ -803,13 +764,13 @@ public:
         if (contact_cse_enabled() && contact_fastpath_enabled()) {
           // A1: hand over the targets this manifold already resolved so the
           // chunk sides skip the duplicate hash + linear slot scan.
-          destruction_->note_pair_load(target0, target1, pair.shapes[0],
-                                       pair.shapes[1], header.actors[0],
-                                       header.actors[1], sum_abs_impulse_y,
+          destruction_->note_pair_load(target0, target1, shape0,
+                                       shape1, actor0,
+                                       actor1, sum_abs_impulse_y,
                                        min_separation);
         } else {
-          destruction_->note_pair_load(pair.shapes[0], pair.shapes[1],
-                                       header.actors[0], header.actors[1],
+          destruction_->note_pair_load(shape0, shape1,
+                                       actor0, actor1,
                                        sum_abs_impulse_y, min_separation);
         }
       }
@@ -830,14 +791,140 @@ public:
           return dynamic->getMass();
         };
         destruction_->note_contact_pair(entity_a, entity_b,
-                                        dynamic_mass(header.actors[0]),
-                                        dynamic_mass(header.actors[1]),
+                                        dynamic_mass(actor0),
+                                        dynamic_mass(actor1),
                                         total_magnitude);
       }
       if (sample_subspans) {
         cb_wake_ms_ += 8.0 * sub_ms(wake_started);
       }
 #endif
+  }
+
+  /// Process everything the callback captured, in recorded order.
+  void drain_deferred_contacts() {
+    if (deferred_pairs_.empty()) {
+      return;
+    }
+    const std::uint64_t drain_started = cycle_now();
+    for (const DeferredContactPair &rec : deferred_pairs_) {
+      ++contact_drain_records_;
+      const bool sample =
+          profile_callback_enabled() && (contact_drain_records_ & 7u) == 0;
+      process_extracted_pair(rec.actor0, rec.actor1, rec.shape0, rec.shape1,
+                             rec.entity_a, rec.entity_b, rec.ev_persists,
+                             rec.ev_found,
+                             deferred_points_.data() + rec.point_begin,
+                             rec.point_count, rec.reported_count, sample);
+    }
+    deferred_pairs_.clear();
+    deferred_points_.clear();
+    contact_drain_cycles_ += cycle_now() - drain_started;
+  }
+
+  void onContact(const PxContactPairHeader &header,
+                 const PxContactPair *pairs, PxU32 pair_count) override {
+    // EXACT self-timing: this callback runs INSIDE fetchResults, so its cost
+    // lands undifferentiated in the result-copy number — the conflation that
+    // fed a whole wrong optimization line. Every invocation is now timed with
+    // the cycle counter (~7 ns/read) rather than 1-in-8 with steady_clock
+    // (~25 ns), so the published figure is a measurement rather than an
+    // extrapolation, at ~0.09 ms/tick of overhead at cascade rates.
+    ++contact_callback_calls_;
+    ++contact_callbacks_this_step_;
+    const std::uint64_t callback_started = cycle_now();
+    // Sub-attribution costs more than the parts it prices; opt-in only, and
+    // still sampled when on.
+    const bool sample_subspans =
+        profile_callback_enabled() && (contact_callback_calls_ & 7u) == 0;
+    // Hoisted to callback scope: the entity resolution below and the
+    // per-manifold target resolution further down were both OUTSIDE every
+    // timed block, which is why the first live breakdown left 42% of the
+    // callback cost unattributed -- more than any block it did name.
+    const auto sub_now = [&]() {
+      return sample_subspans ? cycle_now() : std::uint64_t{0};
+    };
+    const auto sub_ms = [](std::uint64_t from) {
+      return static_cast<double>(cycle_now() - from) * cycles_to_ms_factor();
+    };
+    const auto entity_started = sub_now();
+    const std::uint32_t entity_a = actor_entity_id(header.actors[0]);
+    const std::uint32_t entity_b = actor_entity_id(header.actors[1]);
+    if (sample_subspans) {
+      cb_entity_ms_ += 8.0 * sub_ms(entity_started);
+    }
+    for (PxU32 pair_index = 0; pair_index < pair_count; ++pair_index) {
+      const PxContactPair &pair = pairs[pair_index];
+      if (pair.flags & (PxContactPairFlag::eREMOVED_SHAPE_0 |
+                        PxContactPairFlag::eREMOVED_SHAPE_1)) {
+        continue;
+      }
+      const PxU32 contact_count = pair.contactCount;
+      if (contact_count == 0) {
+        continue;
+      }
+      if (defer_contacts_enabled()) {
+        // Capture only: the contact stream is valid ONLY during this
+        // callback, so extraction cannot defer; everything else can and
+        // does. Indices, not pointers, into deferred_points_ -- it grows
+        // during capture.
+        const std::size_t base = deferred_points_.size();
+        deferred_points_.resize(base + contact_count);
+        const PxU32 extracted =
+            pair.extractContacts(deferred_points_.data() + base, contact_count);
+        deferred_points_.resize(base + extracted);
+        deferred_pairs_.push_back(
+            {header.actors[0], header.actors[1], pair.shapes[0],
+             pair.shapes[1], entity_a, entity_b,
+             static_cast<std::uint32_t>(base), extracted, contact_count,
+             static_cast<bool>(pair.events &
+                               PxPairFlag::eNOTIFY_THRESHOLD_FORCE_PERSISTS),
+             static_cast<bool>(pair.events &
+                               (PxPairFlag::eNOTIFY_THRESHOLD_FORCE_FOUND |
+                                PxPairFlag::eNOTIFY_TOUCH_FOUND))});
+        continue;
+      }
+      // Reused across pairs and ticks. This was a fresh heap allocation per
+      // reported manifold, and a settled city reports thousands of resting
+      // manifolds every tick -- all of it inside fetchResults(), which is what
+      // physics_fetch_copy_ms actually measures.
+      //
+      // VIBE_PHYSX_CONTACT_CSE=0 restores the old shape: allocate per manifold
+      // and resolve the owning slot per contact POINT.
+      if (!contact_cse_enabled()) {
+        contact_points_ = std::vector<physx::PxContactPairPoint>();
+      }
+      // A0 sub-attribution: on sampled calls, each sub-block below is timed
+      // so the ~9 ms callback cost decomposes BEFORE anything is optimized.
+      // Same 1-in-8 gate as the outer probe; x8 scaling at publish.
+      // rdtsc, not steady_clock: at cascade rates this fires ~950 times a tick
+      // across four sub-blocks, and at ~25 ns a read the clock was costing
+      // ~0.19 ms/tick -- which is why this was opt-in and therefore always
+      // dark in exactly the reports that needed it. The cycle counter is
+      // ~7 ns, putting the whole sub-attribution near 0.05 ms/tick, cheap
+      // enough to leave on permanently.
+      const auto resize_started = sub_now();
+      contact_points_.resize(contact_count);
+      if (sample_subspans) {
+        cb_resize_ms_ += 8.0 * sub_ms(resize_started);
+      }
+      const auto extract_started = sub_now();
+      const PxU32 extracted =
+          pair.extractContacts(contact_points_.data(), contact_count);
+      if (sample_subspans) {
+        // x8, same convention as the outer contact_callback_ms_ probe.
+        cb_extract_ms_ += 8.0 * sub_ms(extract_started);
+      }
+      process_extracted_pair(
+          header.actors[0], header.actors[1], pair.shapes[0], pair.shapes[1],
+          entity_a, entity_b,
+          static_cast<bool>(pair.events &
+                            PxPairFlag::eNOTIFY_THRESHOLD_FORCE_PERSISTS),
+          static_cast<bool>(pair.events &
+                            (PxPairFlag::eNOTIFY_THRESHOLD_FORCE_FOUND |
+                             PxPairFlag::eNOTIFY_TOUCH_FOUND)),
+          contact_points_.data(), extracted, contact_count, sample_subspans);
+
     }
     // Sum AND max. 526 ms of callback in one tick is either 11,710 callbacks
     // at 45 us each (systematic: the work got slower) or one callback that
@@ -1195,6 +1282,7 @@ public:
     cb_events_ms_ = 0.0;
     cb_census_ms_ = 0.0;
     cb_resize_ms_ = 0.0;
+    contact_drain_cycles_ = 0;
     cp_found_ = 0;
     cp_persists_ = 0;
     cp_other_ = 0;
@@ -1350,6 +1438,12 @@ public:
     const auto end = std::chrono::steady_clock::now();
     last_fetch_ms_ =
         std::chrono::duration<float, std::milli>(end - fetch_start).count();
+    // Deferred-contact drain: after the fetch split is recorded (so the
+    // capture-only callback cost stays inside fetch numbers and the drain
+    // appears as its own span), before destruction_tick consumes the queues.
+    if (defer_contacts_enabled()) {
+      drain_deferred_contacts();
+    }
     last_step_ms_ =
         std::chrono::duration<float, std::milli>(end - step_start_).count();
     step_in_flight_ = false;
@@ -1545,6 +1639,9 @@ public:
     span("cb_events_ms", cb_events_ms_, 0);
     span("cb_census_ms", cb_census_ms_, 0);
     span("cb_resize_ms", cb_resize_ms_, 0);
+    span("cb_drain_ms",
+         static_cast<double>(contact_drain_cycles_) * cycles_to_ms_factor(),
+         0);
     span("cb_max_us",
          static_cast<double>(contact_callback_max_cycles_) *
              cycles_to_ms_factor() * 1000.0,
@@ -2175,6 +2272,27 @@ private:
   double cb_resize_ms_ = 0.0;
   /// Per-tick pair census, reset alongside the callback timers.
   static constexpr int kImpulseBuckets = 20;
+  /// Deferred-contact capture (VIBE_PHYSX_DEFER_CONTACTS). Cleared every
+  /// drain; capacity retained. The contact_events_ unbounded-growth episode
+  /// is the cautionary tale for anything appended inside the callback.
+  struct DeferredContactPair {
+    PxActor *actor0;
+    PxActor *actor1;
+    PxShape *shape0;
+    PxShape *shape1;
+    std::uint32_t entity_a;
+    std::uint32_t entity_b;
+    std::uint32_t point_begin;
+    PxU32 point_count;
+    PxU32 reported_count;
+    bool ev_persists;
+    bool ev_found;
+  };
+  std::vector<DeferredContactPair> deferred_pairs_;
+  std::vector<physx::PxContactPairPoint> deferred_points_;
+  std::uint64_t contact_drain_cycles_ = 0;
+  std::uint64_t contact_drain_records_ = 0;
+
   /// Longest SINGLE callback this tick, in cycles. See the sum/max comment.
   std::uint64_t contact_callback_max_cycles_ = 0;
   std::uint64_t cp_found_ = 0;
