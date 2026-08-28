@@ -766,6 +766,9 @@ pub struct CityRuntime {
     /// fracture that produced them, replayed after post_step. Previously part
     /// of the `step_ms` unattributed remainder.
     pub last_push_reapply_ms: f32,
+    /// `step_ms` minus post_step, push re-apply and snapshot. Published so an
+    /// untimed block cannot hide in a subtraction nobody performs.
+    pub last_step_residual_ms: f32,
     last_encode_shared_ms: f32,
     last_client_datagrams_ms: f32,
     structure_centers: Vec<(Vec3, f32)>,
@@ -825,6 +828,7 @@ impl CityRuntime {
             send_interval_ticks: config.send_interval_ticks,
             last_encode_ms: 0.0,
             last_push_reapply_ms: 0.0,
+            last_step_residual_ms: 0.0,
             last_encode_shared_ms: 0.0,
             last_client_datagrams_ms: 0.0,
             structure_centers,
@@ -1494,6 +1498,12 @@ impl CityRuntime {
                         };
                         self.last_encode_ms =
                             started.elapsed().as_secs_f32() * 1000.0;
+                        // Same closure discipline as post_step_residual_ms:
+                        // what the step spent that none of its children claim.
+                        self.last_step_residual_ms = self.last_encode_ms
+                            - post_step_ms
+                            - self.last_push_reapply_ms
+                            - snapshot_ms;
                         return (
                             Vec::new(),
                             Some(StagedCityTick {

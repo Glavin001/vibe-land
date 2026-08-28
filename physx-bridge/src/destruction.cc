@@ -1839,6 +1839,23 @@ void DestructionManager::destruction_tick(float dt, FfiVec3 gravity) {
   last_support_loads_ms_ = ms_since(support_phase);
 
   last_stress_solve_ms_ = ms_since(started);
+  // What the native tick spent that none of its phases claim.
+  //
+  // Measured at +0.001 ms across five live reports: this level was ALREADY
+  // fully attributed, and the "2.8-4.2 ms native gap" it was thought to have
+  // was an artifact of summing an incomplete child set by hand -- ccd,
+  // shape_readback, slot_dispatch, support_loads and especially bond_sample
+  // were left out, and bond_sample alone was the whole apparent gap.
+  //
+  // Which is the argument for computing this HERE, next to the phases,
+  // instead of in an analysis script: the code knows the child set, and a
+  // hand-written sum will keep drifting from it every time a phase is added.
+  last_stress_solve_residual_ms_ =
+      last_stress_solve_ms_ -
+      (last_begin_ms_ + last_solve_ms_ + last_end_ms_ + last_readback_ms_ +
+       last_events_ms_ + last_filters_ms_ + last_ccd_ms_ +
+       last_shape_readback_ms_ + last_slot_dispatch_ms_ +
+       last_support_loads_ms_ + last_bond_sample_ms_);
 }
 
 DestructionManager::ContactTarget
@@ -3412,6 +3429,8 @@ FfiDestructionStats DestructionManager::destruction_stats() const {
   // dropped contacts never reach the loop that counts them -- so the volume
   // being saved is only visible here.
   push_span("bondless_contacts_skipped", static_cast<double>(bondless_skipped), 2);
+  push_span("stress_solve_residual_ms",
+            static_cast<double>(last_stress_solve_residual_ms_), 0);
   return stats;
 }
 

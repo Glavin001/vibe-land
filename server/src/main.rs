@@ -330,6 +330,8 @@ struct CityStatsSnapshot {
     /// Post-fracture push re-apply, previously inside the `step_ms`
     /// unattributed remainder. A child of `step_ms`, sibling of `post_step_ms`.
     push_reapply_ms: f32,
+    /// `step_ms` minus every child that claims part of it.
+    step_residual_ms: f32,
     /// Host wall time of the whole native destruction tick, FFI hop included.
     /// A parent of the Blast phases and measurably larger than their sum.
     tick_ffi_ms: f32,
@@ -338,6 +340,14 @@ struct CityStatsSnapshot {
     /// and never published, so `step_ms` minus its children over-reported the
     /// unattributed remainder.
     drain_ms: f32,
+    /// Supporter ingest and freeze cascades: the bulk of what used to be the
+    /// post_step remainder.
+    support_ingest_ms: f32,
+    cascade_ms: f32,
+    /// Wall time of Runtime::post_step and what none of its children claim.
+    /// Published so the accounting can be checked rather than believed.
+    post_step_total_ms: f32,
+    post_step_residual_ms: f32,
     stats_ffi_ms: f32,
     /// `backend.post_step` in full -- the parent of the destruction phases,
     /// measured by the host rather than summed from them.
@@ -4317,8 +4327,13 @@ impl MatchState {
                     settle_ms: stats.settle_ms,
                     ingest_ms: stats.ingest_ms,
                     push_reapply_ms: city.last_push_reapply_ms,
+                    step_residual_ms: city.last_step_residual_ms,
                     tick_ffi_ms: stats.tick_ffi_ms,
                     drain_ms: stats.drain_ms,
+                    support_ingest_ms: stats.support_ingest_ms,
+                    cascade_ms: stats.cascade_ms,
+                    post_step_total_ms: stats.post_step_total_ms,
+                    post_step_residual_ms: stats.post_step_residual_ms,
                     stats_ffi_ms: stats.stats_ffi_ms,
                     post_step_ms: stats.post_step_ms,
                     fan_out_ms: self.last_fan_out_ms,

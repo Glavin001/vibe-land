@@ -278,6 +278,21 @@ pub struct DestructionStats {
     pub stats_ffi_ms: f32,
     /// The three FFI event drains plus batch assembly.
     pub drain_ms: f32,
+    /// Supporter-set ingest from the engine's contact reports (an FFI readback
+    /// of every changed set) and the freeze cascades that contact wakes and
+    /// supporter deaths trigger. Both sat untimed between `drain_ms` and
+    /// `readback_ms_host`, and were the bulk of the post_step remainder.
+    pub support_ingest_ms: f32,
+    pub cascade_ms: f32,
+    /// Wall time of the whole of `Runtime::post_step`, and what is left of it
+    /// after every child above is subtracted.
+    ///
+    /// Published so the accounting is falsifiable rather than asserted: any
+    /// future untimed block shows up here as a number instead of hiding in a
+    /// subtraction nobody performs. `city_step_residual_ms` is the same idea
+    /// one level up. Both are gated by `timing_closure` in the test suite.
+    pub post_step_total_ms: f32,
+    pub post_step_residual_ms: f32,
     /// The destruction_tick FFI call itself (all C++ phases inside it).
     pub tick_ffi_ms: f32,
     pub snapshot_ms: f32,

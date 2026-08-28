@@ -419,6 +419,7 @@ impl CityDestruction {
         }
         self.tick += 1;
         let tick = self.tick;
+        let post_step_total_started = std::time::Instant::now();
         // Host wall time of the native tick, including the FFI hop and the
         // per-slot dispatch the native counters cannot see. `stress_solve_ms`
         // is the manager's own bracket inside it; the gap between them is real.
@@ -602,6 +603,7 @@ impl CityDestruction {
         let drain_ms = drain_started.elapsed().as_secs_f32() * 1000.0;
         let mut wakes: Vec<(u32, u32)> = std::mem::take(&mut self.pending_wakes);
 
+        let support_ingest_started = std::time::Instant::now();
         // Supporter-set updates from the engine's contact reports: who is
         // holding each body up, refreshed for every body whose set changed
         // during the physics step that just ran.
@@ -626,6 +628,10 @@ impl CityDestruction {
             }
         }
 
+        let support_ingest_ms =
+            support_ingest_started.elapsed().as_secs_f32() * 1000.0;
+
+        let cascade_started = std::time::Instant::now();
         // Contact wakes: frozen bodies that dynamic debris struck during the
         // physics step that just ran. This is the engine's own collision
         // detection driving the release -- the equivalent, for frozen rubble,
@@ -645,6 +651,8 @@ impl CityDestruction {
         if !supporter_deaths.is_empty() {
             self.cascade_release(world, supporter_deaths, &mut wakes, tick);
         }
+
+        let cascade_ms = cascade_started.elapsed().as_secs_f32() * 1000.0;
 
         let readback_started = std::time::Instant::now();
         let snapshots = world
@@ -922,6 +930,8 @@ impl CityDestruction {
             self.stats.peak_body_angular_speed.max(max_angular);
         self.stats.drain_ms = drain_ms;
         self.stats.tick_ffi_ms = tick_ffi_ms;
+        self.stats.support_ingest_ms = support_ingest_ms;
+        self.stats.cascade_ms = cascade_ms;
         if !escaped.is_empty() {
             match world.freeze_chunk_bodies(&escaped) {
                 Ok(parked) => {
@@ -1018,6 +1028,23 @@ impl CityDestruction {
             self.stats.frozen_serial_blocks = bridge_stats.frozen_serial_blocks;
             self.stats.frozen_adapter_releases = bridge_stats.frozen_adapter_releases;
         }
+
+        // Closure check, published rather than asserted. Every child of
+        // post_step is subtracted from its own wall time; what is left is the
+        // work still carrying no span. Keeping this as a NUMBER is the point:
+        // the previous remainder was ~2.9 ms that only existed if someone
+        // thought to do the subtraction by hand, and for a long time nobody
+        // did. `timing_closure` in the test suite gates it.
+        self.stats.post_step_total_ms =
+            post_step_total_started.elapsed().as_secs_f32() * 1000.0;
+        self.stats.post_step_residual_ms = self.stats.post_step_total_ms
+            - (self.stats.tick_ffi_ms
+                + self.stats.drain_ms
+                + self.stats.support_ingest_ms
+                + self.stats.cascade_ms
+                + self.stats.readback_ms_host
+                + self.stats.settle_ms
+                + self.stats.stats_ffi_ms);
 
         wakes.sort_unstable();
         wakes.dedup();

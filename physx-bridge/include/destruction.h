@@ -546,6 +546,8 @@ private:
 
   std::uint32_t total_broken_bonds_ = 0;
   float last_stress_solve_ms_ = 0.0f;
+  /// Native tick wall time minus every phase that claims part of it.
+  float last_stress_solve_residual_ms_ = 0.0f;
   /// Per-phase breakdown of destruction_tick.
   /// beginTick (contact/gravity injection) across all structures. Parallel
   /// over slots by default (VIBE_CITY_SNAPSHOT_BEGIN); only the wakeUp apply

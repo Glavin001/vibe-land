@@ -2430,3 +2430,130 @@ fn a_settled_pile_stays_settled() {
          is retiring."
     );
 }
+
+/// Every millisecond of the city step is claimed by a named span.
+///
+/// This exists because "what is the tick spending time on" was, for a long
+/// time, only answerable to about 75%. The gaps were not mysterious -- each
+/// one was a block of real work that simply had no timer on it, and the
+/// CityStatsSnapshot doc even NAMED the contents of two of them. What made
+/// them persist is that a gap only exists if someone does the subtraction by
+/// hand, and between reports nobody did.
+///
+/// So the residuals are published as numbers now, and this test is what keeps
+/// them honest: it fails when new untimed work appears, at the commit that
+/// introduces it rather than three optimization rounds later when a report
+/// looks wrong.
+///
+/// Asserted as a FRACTION of the parent, not an absolute millisecond budget:
+/// this runs on whatever GPU the box has, and an absolute bound would either
+/// be vacuous on a fast card or flaky on a slow one. The shape -- "the parts
+/// account for the whole" -- is hardware-independent.
+///
+/// Deliberately driven with real demolition rather than an at-rest city: the
+/// quiet-skip path leaves most phases at zero, where any residual rule passes
+/// trivially and proves nothing.
+#[test]
+#[ignore = "benchmark: needs a GPU"]
+fn timing_closure_leaves_under_one_percent_unattributed() {
+    let mut world = World::new(WorldConfig::default()).expect("GPU world");
+    world
+        .add_static_box(StaticBoxDesc {
+            entity_id: 1,
+            user_id: 0,
+            pose: Pose {
+                position: BridgeVec3::new(0.0, -10.0, 0.0),
+                rotation: Quat::IDENTITY,
+            },
+            half_extents: BridgeVec3::new(2000.0, 10.0, 2000.0),
+            collision_group: GROUP_STATIC,
+            collision_mask: ALL_GROUPS,
+        })
+        .expect("ground");
+    // `open`, and the demolition bench's tower coordinates: this needs a real
+    // scene with real structures, or every phase reads zero and the closure
+    // assertion below passes without measuring anything.
+    let mut city =
+        crate::city::CityRuntime::open(60, Some(&mut world)).expect("city runtime opens");
+    city.add_client(1);
+
+    let mut worst_step = 0.0f32;
+    let mut worst_post_step = 0.0f32;
+    let mut total_step = 0.0f64;
+    let mut total_step_residual = 0.0f64;
+    let mut total_post = 0.0f64;
+    let mut total_post_residual = 0.0f64;
+    let mut sampled = 0u32;
+
+    let mut tick = 0u32;
+    for step_index in 0..2400 {
+        // Keep breaking things: the residuals that matter live on the
+        // fracture path, not the quiet one.
+        if step_index % 10 == 5 {
+            let (tx, tz) = (-12.0f32, -12.0f32);
+            let aim_y = 2.0 + (step_index % 12) as f32 * 2.4;
+            let origin = Vec3::new(tx, 1.6, tz - 26.0);
+            let target =
+                Vec3::new(tx + -4.0 + (step_index % 9) as f32, aim_y, tz);
+            city.apply_shot_ray(
+                origin,
+                (target - origin).normalize(),
+                Some(&mut world),
+            );
+        }
+        world.step().expect("step");
+        let _ = city.step(tick, DT, gravity(), Some(&mut world));
+        tick += 1;
+
+        let stats = city.stats();
+        // Only ticks that actually did work can say anything about closure.
+        if stats.post_step_total_ms < 0.2 {
+            continue;
+        }
+        sampled += 1;
+        total_post += f64::from(stats.post_step_total_ms);
+        total_post_residual += f64::from(stats.post_step_residual_ms.abs());
+        worst_post_step =
+            worst_post_step.max(stats.post_step_residual_ms.abs() / stats.post_step_total_ms);
+
+        let step_ms = city.last_encode_ms;
+        if step_ms >= 0.2 {
+            total_step += f64::from(step_ms);
+            total_step_residual += f64::from(city.last_step_residual_ms.abs());
+            worst_step = worst_step.max(city.last_step_residual_ms.abs() / step_ms);
+        }
+    }
+
+    assert!(
+        sampled > 100,
+        "only {sampled} ticks did enough work to judge closure; the bench is \
+         not exercising the fracture path and this test would pass vacuously"
+    );
+
+    let post_fraction = total_post_residual / total_post.max(1.0e-9);
+    let step_fraction = total_step_residual / total_step.max(1.0e-9);
+    eprintln!(
+        "[timing closure] post_step unattributed {:.2}% (worst tick {:.1}%), \
+         step unattributed {:.2}% (worst tick {:.1}%), over {sampled} ticks",
+        100.0 * post_fraction,
+        100.0 * f64::from(worst_post_step),
+        100.0 * step_fraction,
+        100.0 * f64::from(worst_step),
+    );
+
+    assert!(
+        post_fraction < 0.01,
+        "post_step has {:.2}% unattributed time. Some block inside \
+         Runtime::post_step has no span on it. Find it and name it rather \
+         than widening this bound -- the bound is the only thing that makes \
+         the published breakdown mean anything.",
+        100.0 * post_fraction
+    );
+    assert!(
+        step_fraction < 0.01,
+        "the city step has {:.2}% unattributed time, outside post_step. Look \
+         at CityRuntime::step_stage: something between the timers is doing \
+         real work.",
+        100.0 * step_fraction
+    );
+}
