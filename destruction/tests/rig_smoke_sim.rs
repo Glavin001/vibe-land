@@ -136,3 +136,34 @@ fn the_parking_garage_settles() {
     assert!(settle.rested(), "did not settle in 20 s");
     assert_eq!(rig.broken_bonds(), 0, "bonds broke at rest");
 }
+
+/// The whole city, standing.
+///
+/// `authored_structures_sim` proves each building stands alone; this is the
+/// scene the server actually serves — all seven at once, 56,595 chunks — and
+/// the question it answers is the one that matters before a deploy: does the
+/// city hold itself up, or does it quietly eat itself while nobody is
+/// connected.
+///
+/// Ignored by default because it is minutes of GPU and the per-structure tests
+/// cover the same ground more cheaply.
+#[test]
+#[ignore = "heavy: the full skyline scene"]
+fn the_whole_skyline_stands() {
+    let pack = load("skyline");
+    let mut rig = Rig::spin_up(&pack).expect("install");
+    rig.run_secs(10.0).expect("tick");
+    eprintln!(
+        "[measure] skyline: {} chunks, {} bonds, {} broken after 10 s\n{}",
+        pack.nodes.len(),
+        pack.bonds.len(),
+        rig.broken_bonds(),
+        rig.trace().report()
+    );
+    let broken = rig.broken_fraction();
+    assert!(
+        broken < 0.005,
+        "the city broke {:.2}% of its own bonds standing still",
+        broken * 100.0
+    );
+}
