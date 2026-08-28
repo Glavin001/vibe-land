@@ -131,3 +131,68 @@ pub fn stress_settings(pack_materials: &[StressLimits]) -> StressSolverSettings 
         .unwrap_or(true);
     settings
 }
+
+/// What one shot does to a structure.
+///
+/// The match server, the trace recorder and the structural rig all fire "a
+/// shot", and until this existed each carried its own copy of the numbers --
+/// so a test could assert a building survived a hit that the server no longer
+/// fired. The profile is the weapon; the three callers only choose where to
+/// point it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ShotProfile {
+    /// Blast stress contact magnitude, N-s. This is what breaks bonds: it is
+    /// queued as a contact impulse, the same channel a real collision uses.
+    pub stress_impulse: f32,
+    /// Rigid-body push on debris, as a velocity change in m/s at the centre,
+    /// falling off quadratically.
+    pub push_speed: f32,
+    pub blast_radius_m: f32,
+    /// Slightly larger than the stress radius so post-fracture debris near the
+    /// crater still gets the shove after kinematic -> dynamic promotion.
+    pub push_radius_m: f32,
+    /// How far past the raycast surface point to seat the blast centre, so the
+    /// radius covers material instead of straddling the face.
+    pub blast_depth_m: f32,
+    /// Hitscan range for city damage.
+    pub max_distance_m: f32,
+}
+
+impl ShotProfile {
+    pub const DEFAULT_STRESS_IMPULSE: f32 = 1.2e7;
+    pub const DEFAULT_PUSH_SPEED: f32 = 12.0;
+
+    /// The city's shot, including its env overrides.
+    pub fn city() -> Self {
+        let env_f32 = |name: &str, fallback: f32| {
+            std::env::var(name)
+                .ok()
+                .and_then(|value| value.parse::<f32>().ok())
+                .filter(|value| *value > 0.0)
+                .unwrap_or(fallback)
+        };
+        Self {
+            // Kept below the old "nuke the whole tower" 5e9 / 8e7 band so a hit
+            // opens a local crater instead of shredding every bond in radius.
+            stress_impulse: env_f32(
+                "VIBE_CITY_SHOT_STRESS_IMPULSE",
+                Self::DEFAULT_STRESS_IMPULSE,
+            ),
+            // A velocity change rather than an impulse: an impulse divides by
+            // mass, so a blast tuned to nudge a 5 t slab handed a 5 kg fragment
+            // 4000 m/s. A bounded kick speed is a property of the weapon;
+            // everything past it is unmodified physics.
+            push_speed: env_f32("VIBE_CITY_SHOT_PUSH_SPEED", Self::DEFAULT_PUSH_SPEED),
+            blast_radius_m: 2.5,
+            push_radius_m: 4.0,
+            blast_depth_m: 0.5,
+            max_distance_m: 400.0,
+        }
+    }
+}
+
+impl Default for ShotProfile {
+    fn default() -> Self {
+        Self::city()
+    }
+}

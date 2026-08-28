@@ -24,7 +24,7 @@
 //! stream, and a codec measured against it is measured against a reachable
 //! target rather than an internal state no client ever sees.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -41,10 +41,11 @@ use destruction_codec::trace::{
 };
 use glam::{Quat, Vec3};
 use vibe_land_destruction::city::{build_city_scene, CitySceneDesc};
-use vibe_land_destruction::city_config::stress_settings;
+use vibe_land_destruction::city_config::{stress_settings, ShotProfile};
 use vibe_land_destruction::encoder::{BodySnapshotInput, ChunkStreamEncoder, EncoderConfig};
 use vibe_land_destruction::ids;
 use vibe_land_destruction::manifest::{ChunkGeometry, DestructionManifest};
+use vibe_land_destruction::membership::{ChunkIndex, Membership};
 use vibe_land_destruction::runtime::CityDestruction;
 use vibe_land_destruction::scene_pack::load_scene_pack_file;
 use vibe_land_destruction::wire::{encode_debris_datagram, DebrisCompressor};
@@ -56,16 +57,13 @@ const GROUP_STATIC: u32 = 1 << 0;
 const ALL_GROUPS: u32 = u32::MAX;
 const GRAVITY: [f32; 3] = [0.0, -9.81, 0.0];
 
-/// Matches the match server's shot energy so fracture looks like play, not like
-/// a synthetic impulse tuned to make the codec look good.
-const SHOT_STRESS_IMPULSE: f32 = 1.2e7;
-const SHOT_PUSH_SPEED: f32 = 12.0;
-const SHOT_BLAST_RADIUS_M: f32 = 2.5;
-const SHOT_BLAST_DEPTH_M: f32 = 0.5;
-/// Wider than the blast radius, matching the match server's deferred push
-/// pass (server/src/city.rs SHOT_PUSH_RADIUS_M): a shot moves more rubble
-/// than it stresses, so the wake has to cover the wider of the two.
-const SHOT_PUSH_RADIUS_M: f32 = 4.0;
+/// The match server's own shot, so fracture in a recording looks like play
+/// rather than like a synthetic impulse tuned to make the codec look good.
+/// Shared rather than copied: these numbers drifting is how a recording stops
+/// being evidence about the game.
+fn shot_profile() -> ShotProfile {
+    ShotProfile::city()
+}
 
 struct Args {
     scene: PathBuf,
@@ -318,105 +316,6 @@ fn build_chunk_table(manifest: &DestructionManifest) -> ChunkTable {
     table.edges.sort_unstable_by_key(|edge| edge.global_id);
     table.edges.dedup_by_key(|edge| edge.global_id);
     table
-}
-
-/// Which island body owns each chunk, and each body's centre of mass.
-///
-/// This mirrors the client ledger exactly (`client/src/city/topology.ts`),
-/// because the poses written to the trace have to be the poses a client can
-/// rebuild. Membership moves on promotions and migrations; the centre of mass
-/// is recomputed only for bodies whose membership actually changed.
-struct Membership {
-    /// Dense chunk index -> owning body entity.
-    body_of: Vec<u32>,
-    /// Body entity -> dense chunk indices.
-    members: HashMap<u32, BTreeSet<u32>>,
-    /// Body entity -> centre of mass in structure-rest coordinates.
-    com: HashMap<u32, Vec3>,
-}
-
-impl Membership {
-    fn new(table: &ChunkTable) -> Self {
-        let mut body_of = vec![0u32; table.actors.len()];
-        let mut members: HashMap<u32, BTreeSet<u32>> = HashMap::new();
-        for index in 0..table.actors.len() as u32 {
-            // Everything starts on its structure's intact support body, which
-            // is serial 0 by convention and the only body that exists before
-            // the first fracture.
-            let body =
-                ids::body_entity(table.structure[index as usize], ids::SUPPORT_ISLAND_SERIAL);
-            body_of[index as usize] = body;
-            members.entry(body).or_default().insert(index);
-        }
-        let mut this = Self {
-            body_of,
-            members,
-            com: HashMap::new(),
-        };
-        let bodies: Vec<u32> = this.members.keys().copied().collect();
-        for body in bodies {
-            this.recompute_com(body, table);
-        }
-        this
-    }
-
-    fn recompute_com(&mut self, body: u32, table: &ChunkTable) {
-        let Some(set) = self.members.get(&body) else {
-            self.com.remove(&body);
-            return;
-        };
-        if set.is_empty() {
-            self.com.remove(&body);
-            return;
-        }
-        let mut sum = Vec3::ZERO;
-        let mut weight_total = 0.0f32;
-        for &index in set {
-            // Support anchors carry zero mass; the client weights them 1 so a
-            // body made only of anchors still has a defined frame.
-            let mass = table.mass[index as usize];
-            let weight = if mass > 0.0 { mass } else { 1.0 };
-            sum += table.rest[index as usize] * weight;
-            weight_total += weight;
-        }
-        if weight_total > 0.0 {
-            self.com.insert(body, sum / weight_total);
-        } else {
-            self.com.remove(&body);
-        }
-    }
-
-    fn move_chunk(&mut self, index: u32, to: u32) -> Option<u32> {
-        let from = self.body_of[index as usize];
-        if from == to {
-            return None;
-        }
-        if let Some(set) = self.members.get_mut(&from) {
-            set.remove(&index);
-        }
-        self.members.entry(to).or_default().insert(index);
-        self.body_of[index as usize] = to;
-        Some(from)
-    }
-
-    /// Body-local offset for a chunk.
-    ///
-    /// The intact support body is the one exception to the centre-of-mass
-    /// frame: it is created at the structure transform with every shape at its
-    /// authored local pose, so its offsets are the rest centroids themselves.
-    /// `reoffsetBody` in the client skips the support serial for the same
-    /// reason.
-    fn local_offset(&self, index: u32, table: &ChunkTable) -> Vec3 {
-        let body = self.body_of[index as usize];
-        let rest = table.rest[index as usize];
-        if ids::body_entity_parts(body).1 == ids::SUPPORT_ISLAND_SERIAL {
-            return rest;
-        }
-        match self.com.get(&body) {
-            Some(com) => rest - *com,
-            None => rest,
-        }
-    }
 }
 
 /// Appends every client-bound packet as JSONL `{tick, chan, hex}`.
@@ -820,7 +719,9 @@ fn main() -> Result<()> {
         TraceWriter::create_with_topology(&args.output, &header, &table.actors, &topology)
             .context("open trace for writing")?;
 
-    let mut membership = Membership::new(&table);
+    // Dense indices match `table`: both walk manifest structures then chunks.
+    let chunk_index = ChunkIndex::from_manifest(&manifest);
+    let mut membership = Membership::new(&chunk_index);
     // The view path: dump client-bound bytes; `replay-city-client.mts` turns
     // them into what the shipping client displays.
     let mut v2_tap = None;
@@ -956,34 +857,12 @@ fn main() -> Result<()> {
         // tick must be composed against its NEW body's frame, or it draws one
         // centre-of-mass height off for exactly one frame.
         let mut broken_edges: Vec<u64> = Vec::new();
-        let mut touched: BTreeSet<u32> = BTreeSet::new();
+        membership.apply_tick(&output, &chunk_index);
         for batch in &output.batches {
             for &bond in &batch.broken_bond_ids {
                 broken_edges.push(bond as u64);
             }
-            for promotion in &batch.promoted_islands {
-                let body = ids::body_entity(promotion.structure_id, promotion.island_id);
-                for &chunk in &promotion.chunks {
-                    let Some(&index) = table.by_global.get(&chunk) else {
-                        continue;
-                    };
-                    if let Some(from) = membership.move_chunk(index, body) {
-                        touched.insert(from);
-                    }
-                    touched.insert(body);
-                }
-            }
-            for migration in &batch.migrations {
-                let Some(&index) = table.by_global.get(&migration.chunk_id) else {
-                    continue;
-                };
-                let to = ids::body_entity(batch.structure_id, migration.to_island_id);
-                if let Some(from) = membership.move_chunk(index, to) {
-                    touched.insert(from);
-                }
-                touched.insert(to);
-                migrations_total += 1;
-            }
+            migrations_total += batch.migrations.len() as u64;
         }
         broken_edges.retain(|edge| {
             let known = trace_edge_ids.contains(edge);
@@ -998,10 +877,6 @@ fn main() -> Result<()> {
         // ascending edges, and breaking a bond is idempotent anyway.
         broken_edges.dedup();
         broken_total += broken_edges.len() as u64;
-        for body in &touched {
-            membership.recompute_com(*body, &table);
-        }
-
         let snapshots = world
             .chunk_body_snapshots()
             .map_err(|error| anyhow::anyhow!("{error}"))?;
@@ -1015,11 +890,11 @@ fn main() -> Result<()> {
         // our ledger disagrees, membership has drifted and every pose composed
         // against that body's frame is wrong -- count it rather than writing a
         // trace that silently encodes the drift.
-        for (entity, members) in &membership.members {
+        for (entity, members) in membership.iter_bodies() {
             if members.is_empty() {
                 continue;
             }
-            if let Some(snapshot) = by_entity.get(entity) {
+            if let Some(snapshot) = by_entity.get(&entity) {
                 if snapshot.node_count as usize != members.len() {
                     mismatch_ticks += 1;
                     break;
@@ -1029,8 +904,8 @@ fn main() -> Result<()> {
 
         let mut states = Vec::with_capacity(table.actors.len());
         for index in 0..table.actors.len() as u32 {
-            let body = membership.body_of[index as usize];
-            let local = membership.local_offset(index, &table);
+            let body = membership.body_of(index);
+            let local = membership.local_offset(index, &chunk_index);
             let state = match by_entity.get(&body) {
                 Some(snapshot) => {
                     let rotation = Quat::from_xyzw(
@@ -1286,7 +1161,7 @@ fn bits_for(count: usize) -> u32 {
 /// later recomputes membership from the bond graph, so the two cannot drift.
 fn compute_roots(membership: &Membership, table: &ChunkTable) -> Vec<u32> {
     let mut roots = vec![0u32; table.actors.len()];
-    for (_, members) in &membership.members {
+    for (_, members) in membership.iter_bodies() {
         let Some(&root) = members.iter().next() else {
             continue;
         };
@@ -1385,7 +1260,8 @@ fn fire(destruction: &mut CityDestruction, world: &mut World, origin: Vec3, dire
         return;
     };
     let surface = Vec3::new(hit.position.x, hit.position.y, hit.position.z);
-    let point = surface + direction * SHOT_BLAST_DEPTH_M;
+    let shot = shot_profile();
+    let point = surface + direction * shot.blast_depth_m;
     // Release frozen rubble around the impact first, exactly as the match
     // server's apply_shot_ray does.
     //
@@ -1396,13 +1272,13 @@ fn fire(destruction: &mut CityDestruction, world: &mut World, origin: Vec3, dire
     // damage flatlined at 763 broken bonds from t+30 s while the unfrozen
     // control went on to 2,112. The wider push radius is used so every body
     // the push will reach is dynamic before it arrives.
-    let _ = destruction.wake_around(world, point.to_array(), SHOT_PUSH_RADIUS_M);
+    let _ = destruction.wake_around(world, point.to_array(), shot.push_radius_m);
     let _ = destruction.apply_blast(
         world,
         point.to_array(),
         direction.to_array(),
-        SHOT_BLAST_RADIUS_M,
-        SHOT_STRESS_IMPULSE,
-        SHOT_PUSH_SPEED,
+        shot.blast_radius_m,
+        shot.stress_impulse,
+        shot.push_speed,
     );
 }

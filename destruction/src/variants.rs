@@ -63,6 +63,8 @@ pub fn truncate_to_floors(
         bonds: Vec::new(),
         node_sizes: Vec::new(),
         node_colliders: Vec::new(),
+        node_types: Vec::new(),
+        node_pieces: Vec::new(),
     };
 
     let mut minimum_y = source.nodes[0].centroid.y;
@@ -86,6 +88,14 @@ pub fn truncate_to_floors(
             result
                 .node_colliders
                 .push(source.node_colliders[node_index].clone());
+            // Roles are parallel to nodes, so they truncate with them or they
+            // stop meaning anything. Absent stays absent.
+            if let Some(role) = source.node_types.get(node_index) {
+                result.node_types.push(role.clone());
+            }
+            if let Some(&piece) = source.node_pieces.get(node_index) {
+                result.node_pieces.push(piece);
+            }
         }
     }
     for bond in &source.bonds {

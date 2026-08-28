@@ -16,6 +16,12 @@
 //! thing — PhysX plus the Blast stress solver, the same path the match server
 //! takes — and assert on what comes out.
 //!
+//! The world setup, tick loop and pack surgery live in `destruction::rig`,
+//! shared with the scenario suite and the trace recorder, so all three drive
+//! the structures through one path. The assertions below are unchanged from
+//! when this file built its own world: that is what makes them a check on the
+//! harness as well as on the buildings.
+//!
 //! Gated on the `physx` feature, so an ordinary `cargo test` on a machine
 //! without PhysX/CUDA still builds and runs the rest of the suite:
 //!
@@ -23,30 +29,17 @@
 #![cfg(feature = "physx")]
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
-use vibe_land_destruction::city::{BuildingInstance, CityScene, CitySceneDesc};
-use vibe_land_destruction::variants::BuildingVariant;
-use vibe_land_destruction::city_config::stress_settings;
-use vibe_land_destruction::manifest::DestructionManifest;
-use vibe_land_destruction::runtime::CityDestruction;
-use glam::Vec3 as PackVec3;
-use vibe_land_destruction::scene_pack::{load_scene_pack_file, SceneCollider, ScenePack};
-use vibe_land_physx_bridge::{
-    Pose, Quat as BridgeQuat, StaticBoxDesc, Vec3 as BridgeVec3, World, WorldConfig,
-};
+use vibe_land_destruction::city_config::ShotProfile;
+use vibe_land_destruction::rig::surgery::rotated_and_raised;
+use vibe_land_destruction::rig::{Rig, HZ};
+use vibe_land_destruction::scene_pack::{load_scene_pack_file, ScenePack};
 
-const HZ: u32 = 60;
-const DT: f32 = 1.0 / HZ as f32;
-const GRAVITY: [f32; 3] = [0.0, -9.81, 0.0];
-const GROUP_STATIC: u32 = 1 << 0;
-
-/// Matches the match server's own shot energy (`physx_shot_stress_impulse`), so
-/// "a hit" here means what a player's hit means rather than a number chosen to
-/// make the test pass.
-const SHOT_STRESS: f32 = 1.2e7;
-const SHOT_PUSH: f32 = 12.0;
-const SHOT_RADIUS: f32 = 2.5;
+/// The city's own shot, so "a hit" here means what a player's hit means rather
+/// than a number chosen to make the test pass.
+fn shot_profile() -> ShotProfile {
+    ShotProfile::city()
+}
 
 fn pack_path(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("assets/scenes/{name}.json"))
@@ -56,55 +49,8 @@ fn load(name: &str) -> ScenePack {
     load_scene_pack_file(&pack_path(name)).unwrap_or_else(|e| panic!("load {name}: {e:?}"))
 }
 
-/// A world with a ground plane, the pack installed, and nothing else.
-fn spin_up(pack: &ScenePack) -> (World, CityDestruction) {
-    // The scene is assembled directly rather than through `build_city_scene`,
-    // which runs the floor-variant machinery and rejects any pack without a
-    // support node. The drop test deliberately has none — a pinned foundation
-    // would hold the building in the air — so it cannot go through that path.
-    let height = pack
-        .nodes
-        .iter()
-        .zip(&pack.node_sizes)
-        .map(|(n, s)| n.centroid.y + s.y * 0.5)
-        .fold(f32::MIN, f32::max);
-    let scene = CityScene {
-        desc: CitySceneDesc { grid: 1, pitch_m: 0.0, varied_heights: false },
-        variants: vec![BuildingVariant { pack: pack.clone(), floors: 1, height }],
-        instances: vec![BuildingInstance {
-            structure_id: 0,
-            variant_index: 0,
-            offset: PackVec3::ZERO,
-        }],
-    };
-    let manifest = Arc::new(DestructionManifest::from_city(&scene));
-
-    let mut world = World::new(WorldConfig::default()).expect("PhysX world");
-    world
-        .add_static_box(StaticBoxDesc {
-            entity_id: 1,
-            user_id: 0,
-            pose: Pose {
-                position: BridgeVec3::new(0.0, -10.0, 0.0),
-                rotation: BridgeQuat::IDENTITY,
-            },
-            half_extents: BridgeVec3::new(2000.0, 10.0, 2000.0),
-            collision_group: GROUP_STATIC,
-            collision_mask: u32::MAX,
-        })
-        .expect("ground plane");
-
-    let destruction =
-        CityDestruction::build(manifest, &mut world, stress_settings(&pack.materials), HZ)
-            .expect("install destructible");
-    (world, destruction)
-}
-
-fn run(world: &mut World, destruction: &mut CityDestruction, ticks: u32) {
-    for _ in 0..ticks {
-        world.step().expect("physx step");
-        destruction.post_step(world, DT, GRAVITY).expect("destruction tick");
-    }
+fn spin_up(pack: &ScenePack) -> Rig {
+    Rig::spin_up(pack).expect("install destructible")
 }
 
 /// Every structure, so a regression in one is not hidden by another passing.
@@ -120,12 +66,12 @@ fn every_structure_stands_under_its_own_weight() {
     for name in ALL {
         let pack = load(name);
         let bonds: usize = pack.bonds.len();
-        let (mut world, mut destruction) = spin_up(&pack);
+        let mut rig = spin_up(&pack);
 
         // Five seconds is well past the point where a structure that is going
         // to settle has settled, and well short of nothing happening at all.
-        run(&mut world, &mut destruction, HZ * 5);
-        let stats = destruction.stats();
+        rig.run_ticks(HZ * 5).expect("tick");
+        let stats = rig.destruction.stats();
 
         // A handful of bonds letting go as the solver finds equilibrium is
         // normal; a structure coming apart is not. One in two hundred is far
@@ -189,24 +135,22 @@ fn facade_aim(pack: &ScenePack) -> ([f32; 3], [f32; 3]) {
 fn a_shot_damages_the_facade_without_starting_a_collapse() {
     for name in ALL {
         let pack = load(name);
-        let (mut world, mut destruction) = spin_up(&pack);
-        run(&mut world, &mut destruction, HZ * 2);
-        let before = destruction.stats().broken_bonds;
+        let mut rig = spin_up(&pack);
+        rig.run_ticks(HZ * 2).expect("tick");
+        let before = rig.destruction.stats().broken_bonds;
 
         let (center, direction) = facade_aim(&pack);
-        destruction
-            .apply_blast(&mut world, center, direction, SHOT_RADIUS, SHOT_STRESS, SHOT_PUSH)
-            .expect("shot");
+        rig.shot(center, direction, shot_profile()).expect("shot");
 
         // The burst: everything the hit itself takes out.
-        run(&mut world, &mut destruction, HZ);
-        let burst = destruction.stats().broken_bonds.saturating_sub(before);
+        rig.run_ticks(HZ).expect("tick");
+        let burst = rig.destruction.stats().broken_bonds.saturating_sub(before);
         // The aftermath: what the building does about it. Eight seconds,
         // for the same reason the drop test needs fifteen — debris off a hit
         // takes a while to stop moving, and cutting it short cannot tell a
         // settling pile from a spreading failure.
-        run(&mut world, &mut destruction, HZ * 8);
-        let end = destruction.stats();
+        rig.run_ticks(HZ * 8).expect("tick");
+        let end = rig.destruction.stats();
         let after = end.broken_bonds.saturating_sub(before);
         let cascade = after.saturating_sub(burst);
 
@@ -244,19 +188,23 @@ fn the_frame_needs_a_bigger_hit_than_the_cladding() {
     let pack = load(name);
 
     let measure = |stress: f32, push: f32| {
-        let (mut world, mut destruction) = spin_up(&pack);
-        run(&mut world, &mut destruction, HZ * 2);
-        let before = destruction.stats().broken_bonds;
+        let mut rig = spin_up(&pack);
+        rig.run_ticks(HZ * 2).expect("tick");
+        let before = rig.destruction.stats().broken_bonds;
         let (center, direction) = facade_aim(&pack);
-        destruction
-            .apply_blast(&mut world, center, direction, SHOT_RADIUS, stress, push)
-            .expect("blast");
-        run(&mut world, &mut destruction, HZ * 3);
-        destruction.stats().broken_bonds.saturating_sub(before)
+        let profile = ShotProfile {
+            stress_impulse: stress,
+            push_speed: push,
+            ..shot_profile()
+        };
+        rig.shot(center, direction, profile).expect("blast");
+        rig.run_ticks(HZ * 3).expect("tick");
+        rig.destruction.stats().broken_bonds.saturating_sub(before)
     };
 
-    let shot = measure(SHOT_STRESS, SHOT_PUSH);
-    let heavy = measure(SHOT_STRESS * 40.0, SHOT_PUSH * 4.0);
+    let base = shot_profile();
+    let shot = measure(base.stress_impulse, base.push_speed);
+    let heavy = measure(base.stress_impulse * 40.0, base.push_speed * 4.0);
 
     assert!(
         heavy > shot,
@@ -267,56 +215,14 @@ fn the_frame_needs_a_bigger_hit_than_the_cladding() {
 
 // ── 3. a building that falls comes apart ────────────────────────────────────
 
-/// Roll the whole structure onto its side and lift it off the ground.
+/// Rolling a structure onto its side and lifting it off the ground is the
+/// cheapest honest way to ask "what happens when it comes down": toppling one
+/// properly means shooting out a support and waiting tens of seconds, while
+/// dropping it flat applies the same kind of load — a whole building's weight
+/// arriving at the ground at once — in a second and a half.
 ///
-/// This is the cheapest honest way to ask "what happens when it comes down".
-/// Toppling one properly means shooting out a support and waiting, which takes
-/// tens of seconds of sim and depends on where you aim; dropping it flat
-/// applies the same kind of load — a whole building's weight arriving at the
-/// ground at once — in a second and a half, and is deterministic.
-///
-/// A quarter turn is exact for this format: it maps an axis-aligned box to an
-/// axis-aligned box, so cuboid colliders stay cuboids and only their extents
-/// swap. Supports lose their pinning, because a pinned foundation would hold
-/// the whole thing in the air.
-fn rotated_and_raised(pack: &ScenePack, height: f32) -> ScenePack {
-    let rot = |v: PackVec3| PackVec3::new(-v.y, v.x, v.z);
-    let mut out = pack.clone();
-
-    for (i, node) in out.nodes.iter_mut().enumerate() {
-        let c = rot(node.centroid);
-        node.centroid = PackVec3::new(c.x, c.y + height, c.z);
-        if node.mass == 0.0 {
-            // Freed, so the building falls instead of hanging from its own
-            // footings. Density is the concrete the foundations are anyway.
-            node.mass = node.volume * 2400.0;
-        }
-        let _ = i;
-    }
-    for size in &mut out.node_sizes {
-        *size = PackVec3::new(size.y, size.x, size.z);
-    }
-    for collider in &mut out.node_colliders {
-        match collider {
-            SceneCollider::Cuboid { half_extents } => {
-                *half_extents = PackVec3::new(half_extents.y, half_extents.x, half_extents.z);
-            }
-            SceneCollider::ConvexHull { points, .. } => {
-                for p in points.chunks_exact_mut(3) {
-                    let (x, y) = (p[0], p[1]);
-                    p[0] = -y;
-                    p[1] = x;
-                }
-            }
-        }
-    }
-    for bond in &mut out.bonds {
-        let c = rot(bond.centroid);
-        bond.centroid = PackVec3::new(c.x, c.y + height, c.z);
-        bond.normal = rot(bond.normal);
-    }
-    out
-}
+/// `rig::surgery::rotated_and_raised` does the transform; see it for why a
+/// quarter turn is the only exact one.
 
 #[test]
 fn a_dropped_building_breaks_up_instead_of_landing_in_one_piece() {
@@ -341,7 +247,7 @@ fn a_dropped_building_breaks_up_instead_of_landing_in_one_piece() {
         let pack = rotated_and_raised(&upright, 18.0);
         let bonds = pack.bonds.len();
         let chunks = pack.nodes.len();
-        let (mut world, mut destruction) = spin_up(&pack);
+        let mut rig = spin_up(&pack);
 
         // Fall, land, and come apart. Fifteen seconds, not five: a concrete
         // building this size is still actively breaking up at six. Measured on
@@ -353,8 +259,8 @@ fn a_dropped_building_breaks_up_instead_of_landing_in_one_piece() {
         // the tower — 3.2% of bonds gone at 2 s, 8.2% at 6 s, 26.3% at 14 s,
         // then flat. Stopping at six reads a collapse in progress as a
         // building that survived.
-        run(&mut world, &mut destruction, HZ * 15);
-        let stats = destruction.stats();
+        rig.run_ticks(HZ * 15).expect("tick");
+        let stats = rig.destruction.stats();
 
         // The building has to come apart. A fifth of its bonds is a lot of
         // damage and still far short of total disintegration.

@@ -37,6 +37,7 @@ use vibe_land_destruction::ids;
 #[cfg(feature = "destruction")]
 use vibe_land_destruction::runtime::CityDestruction;
 #[cfg(feature = "destruction")]
+use vibe_land_destruction::city_config::ShotProfile;
 use vibe_land_destruction::runtime::GROUP_CHUNK;
 #[cfg(feature = "destruction")]
 use vibe_land_physx_bridge::{RaycastRequest, Vec3 as BridgeVec3, World};
@@ -44,44 +45,13 @@ use vibe_land_physx_bridge::{RaycastRequest, Vec3 as BridgeVec3, World};
 pub const CITY_MATCH_PREFIX: &str = "city";
 /// Impulse handed to the synthetic backend per rifle hit.
 const SYNTHETIC_SHOT_IMPULSE: f32 = 400.0;
-/// Blast stress contact magnitude for PhysX hitscan (breaks bonds locally).
-/// Override with VIBE_CITY_SHOT_STRESS_IMPULSE.
-fn physx_shot_stress_impulse() -> f32 {
-    std::env::var("VIBE_CITY_SHOT_STRESS_IMPULSE")
-        .ok()
-        .and_then(|value| value.parse::<f32>().ok())
-        .filter(|value| *value > 0.0)
-        // Keep this below the old "nuke the whole tower" 5e9 / 8e7 band so a
-        // hit opens a local crater instead of shredding every bond in radius.
-        .unwrap_or(1.2e7)
+/// What a shot does, including its env overrides. Defined once in
+/// `city_config` because the trace recorder and the structural rig fire the
+/// same weapon -- three copies of these numbers meant a test could assert a
+/// building survived a hit the server no longer fired.
+fn shot() -> ShotProfile {
+    ShotProfile::city()
 }
-/// Rigid-body push on dynamic debris after / during a hit (rocket feel), as a
-/// velocity change in m/s at the blast centre, falling off quadratically.
-/// Override with VIBE_CITY_SHOT_PUSH_SPEED.
-///
-/// This replaced an impulse (VIBE_CITY_SHOT_PUSH_IMPULSE, 4.0e5 N-s). An
-/// impulse divides by mass, so a blast tuned to nudge a 5 t slab handed a 5 kg
-/// fragment 4000 m/s -- and a global 12 m/s velocity clamp then existed to hide
-/// that, which also forbade ordinary debris from free-falling faster than
-/// 12 m/s. A bounded kick speed is a property of the weapon; everything past it
-/// is unmodified physics, with speculative CCD (not clamps) keeping fast bodies
-/// from tunnelling.
-fn physx_shot_push_impulse() -> f32 {
-    std::env::var("VIBE_CITY_SHOT_PUSH_SPEED")
-        .ok()
-        .and_then(|value| value.parse::<f32>().ok())
-        .filter(|value| *value > 0.0)
-        .unwrap_or(12.0)
-}
-const SHOT_BLAST_RADIUS_M: f32 = 2.5;
-/// Slightly larger than the stress radius so post-fracture debris near the
-/// crater still gets the PhysX shove after kinematic → dynamic promotion.
-const SHOT_PUSH_RADIUS_M: f32 = 4.0;
-/// How far past the raycast surface point to seat the blast centre, so the
-/// radius covers material instead of straddling the face.
-const SHOT_BLAST_DEPTH_M: f32 = 0.5;
-/// Hitscan range for city damage.
-const SHOT_MAX_DISTANCE_M: f32 = 400.0;
 
 pub fn is_city_match(match_id: &str) -> bool {
     match_id.starts_with(CITY_MATCH_PREFIX)
@@ -874,7 +844,7 @@ impl CityRuntime {
                 };
                 let affected = backend.apply_explosion(
                     point.to_array(),
-                    SHOT_BLAST_RADIUS_M,
+                    shot().blast_radius_m,
                     SYNTHETIC_SHOT_IMPULSE,
                 );
                 tracing::debug!(
@@ -903,7 +873,7 @@ impl CityRuntime {
                     .raycast(RaycastRequest {
                         origin: BridgeVec3::new(origin.x, origin.y, origin.z),
                         direction: BridgeVec3::new(direction.x, direction.y, direction.z),
-                        max_distance: SHOT_MAX_DISTANCE_M,
+                        max_distance: shot().max_distance_m,
                         collision_mask: GROUP_CHUNK,
                         ignore_entity_id: 0,
                         has_ignore_entity: false,
@@ -922,11 +892,12 @@ impl CityRuntime {
                 // Seat the blast just inside the surface so the radius covers
                 // material rather than straddling the face.
                 let surface = Vec3::new(hit.position.x, hit.position.y, hit.position.z);
-                let point = surface + direction * SHOT_BLAST_DEPTH_M;
+                let shot = shot();
+                let point = surface + direction * shot.blast_depth_m;
                 let structure_id = ids::body_entity_parts(hit.entity_id).0;
 
-                let stress = physx_shot_stress_impulse();
-                let push = physx_shot_push_impulse();
+                let stress = shot.stress_impulse;
+                let push = shot.push_speed;
 
                 // Release frozen rubble around the impact BEFORE the blast.
                 //
@@ -939,7 +910,7 @@ impl CityRuntime {
                 // reaches keeps the cost of a shot proportional to the shot.
                 // The wider push radius is used so every body that will be
                 // pushed is dynamic by the time the push arrives.
-                match backend.wake_around(world, point.to_array(), SHOT_PUSH_RADIUS_M) {
+                match backend.wake_around(world, point.to_array(), shot.push_radius_m) {
                     Ok(0) => {}
                     Ok(woken) => tracing::debug!(woken, "city shot woke frozen rubble"),
                     Err(error) => tracing::warn!(%error, "city spatial wake failed"),
@@ -949,7 +920,7 @@ impl CityRuntime {
                     world,
                     point.to_array(),
                     direction.to_array(),
-                    SHOT_BLAST_RADIUS_M,
+                    shot.blast_radius_m,
                     stress,
                     push,
                 ) {
@@ -959,7 +930,7 @@ impl CityRuntime {
                             // new dynamic islands (first pass often only stresses
                             // still-kinematic support bodies).
                             self.pending_pushes
-                                .push((point, direction, SHOT_PUSH_RADIUS_M, push));
+                                .push((point, direction, shot.push_radius_m, push));
                         }
                         tracing::debug!(
                             structure_id,

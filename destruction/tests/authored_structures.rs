@@ -200,3 +200,57 @@ fn authored_packs_carry_material_and_appearance() {
         "expected several chunk materials, got {distinct:?}"
     );
 }
+
+/// Roles reach Rust.
+///
+/// Every authored pack ships `nodeTypes` — "column", "slab", "foundation" —
+/// and for a long time the parser silently dropped them, which meant a
+/// scenario could only pick chunks out of a building by guessing at geometry.
+/// Which element carries a building is a fact about how it was built; the
+/// exporter is the only thing that knows it, and this is the field it says it
+/// in.
+#[test]
+fn authored_packs_carry_structural_roles() {
+    for name in AUTHORED {
+        let pack = load_scene_pack_file(&pack_path(name))
+            .unwrap_or_else(|e| panic!("load {name}: {e:?}"));
+        assert_eq!(
+            pack.node_types.len(),
+            pack.nodes.len(),
+            "{name}: roles must be parallel to nodes or selecting by role is a lie"
+        );
+        assert_eq!(pack.node_pieces.len(), pack.nodes.len(), "{name}: pieces");
+        let distinct: std::collections::BTreeSet<&str> =
+            pack.node_types.iter().map(String::as_str).collect();
+        assert!(
+            distinct.len() >= 3,
+            "{name}: only {distinct:?} — a building made of one kind of thing cannot be \
+             load-tested by role"
+        );
+        // A structure has to have something holding it up, by name as well as
+        // by zero mass.
+        assert!(
+            pack.node_types.iter().any(|role| role == "foundation"),
+            "{name}: no chunk claims to be a foundation"
+        );
+    }
+}
+
+/// A pack that authors no roles still loads.
+///
+/// `fractured-tower` predates `nodeTypes` and is the only shipped pack without
+/// them, which makes it the one that pins this: roles are additive, and absent
+/// means absent rather than malformed.
+#[test]
+fn packs_without_roles_still_load() {
+    for name in ["fractured-tower"] {
+        let path = pack_path(name);
+        if !path.exists() {
+            continue;
+        }
+        let pack =
+            load_scene_pack_file(&path).unwrap_or_else(|e| panic!("load {name}: {e:?}"));
+        assert!(pack.node_types.is_empty(), "{name}: unexpected roles");
+        assert_eq!(pack.node_role(0), "", "{name}: absent role must read empty");
+    }
+}

@@ -93,11 +93,33 @@ pub struct ScenePack {
     /// Visual box size per node (full extents), used for rendering.
     pub node_sizes: Vec<Vec3>,
     pub node_colliders: Vec<SceneCollider>,
+    /// What each chunk IS structurally -- "column", "slab", "foundation",
+    /// "glazing". Authored, not inferred: which element carries a building is a
+    /// property of how it was built, and the exporter is the only thing that
+    /// knows it. Empty for a pack that authored none.
+    ///
+    /// Parsed for the scenario rig, which has to be able to say "cut every
+    /// column on this side" without reverse-engineering roles from geometry.
+    /// Deliberately NOT carried into `DestructionManifest`: the manifest is
+    /// content-addressed, so a new field there would invalidate every cached
+    /// copy of every pack for data no client needs.
+    pub node_types: Vec<String>,
+    /// Which authored piece each chunk was fractured from. Chunks sharing a
+    /// value were one column, one slab, one pane before the fracturer ran --
+    /// which is how a test asks "is this piece still intact".
+    pub node_pieces: Vec<u32>,
 }
 
 impl ScenePack {
     pub fn support_node_count(&self) -> usize {
         self.nodes.iter().filter(|node| node.is_support()).count()
+    }
+
+    /// The structural role of node `index`, or `""` when the pack authored no
+    /// roles. Empty rather than `Option` so callers can compare without
+    /// unwrapping; no real role is the empty string.
+    pub fn node_role(&self, index: usize) -> &str {
+        self.node_types.get(index).map_or("", String::as_str)
     }
 }
 
@@ -215,6 +237,10 @@ struct ScenarioJson {
     /// bounded pattern count, where every shard carries its own points.
     #[serde(default)]
     shape_library: Vec<NodeColliderJson>,
+    #[serde(default)]
+    node_types: Vec<String>,
+    #[serde(default)]
+    node_pieces: Vec<u32>,
 }
 
 #[derive(Deserialize)]
@@ -339,7 +365,7 @@ pub fn parse_scene_pack(payload: &str) -> Result<ScenePack, ScenePackError> {
     if pack.version != 1 && pack.version != 2 {
         return Err(ScenePackError::UnsupportedVersion(pack.version));
     }
-    let scenario = pack.scenario;
+    let mut scenario = pack.scenario;
     if scenario.nodes.len() != scenario.node_sizes.len() {
         return Err(ScenePackError::CountMismatch(format!(
             "scene pack node/size count mismatch: {} nodes vs {} sizes",
@@ -441,6 +467,21 @@ pub fn parse_scene_pack(payload: &str) -> Result<ScenePack, ScenePackError> {
         }
     }
 
+    // Roles are optional, but a partial list is worse than none: a rig that
+    // selects "every column" off a truncated array silently tests the wrong
+    // chunks. Present means parallel.
+    for (label, len) in [
+        ("nodeTypes", scenario.node_types.len()),
+        ("nodePieces", scenario.node_pieces.len()),
+    ] {
+        if len != 0 && len != scenario.nodes.len() {
+            return Err(ScenePackError::CountMismatch(format!(
+                "{label} has {len} entries but the pack has {} nodes",
+                scenario.nodes.len()
+            )));
+        }
+    }
+
     let bonds: Vec<SceneBond> = scenario
         .bonds
         .iter()
@@ -466,9 +507,14 @@ pub fn parse_scene_pack(payload: &str) -> Result<ScenePack, ScenePackError> {
         })
         .collect::<Result<_, _>>()?;
 
+    let node_types = std::mem::take(&mut scenario.node_types);
+    let node_pieces = std::mem::take(&mut scenario.node_pieces);
+
     Ok(ScenePack {
         title: pack.title,
         version: pack.version,
+        node_types,
+        node_pieces,
         // v2 authors its limits in the table; keep field one exposed here so
         // callers that only want "the" limits still get a sensible answer.
         stress_limits: if pack.version >= 2 {

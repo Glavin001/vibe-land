@@ -125,6 +125,48 @@ pub fn pitch_for_pack(pack: &ScenePack, minimum: f32) -> f32 {
     (pack_footprint_m(pack) + STREET_WIDTH_M).max(minimum)
 }
 
+/// Tallest visual point of a pack: the top of its highest chunk, not its
+/// highest centroid.
+pub fn pack_height_m(pack: &ScenePack) -> f32 {
+    pack.nodes
+        .iter()
+        .zip(&pack.node_sizes)
+        .map(|(node, size)| node.centroid.y + size.y * 0.5)
+        .fold(f32::MIN, f32::max)
+}
+
+/// One building, as authored, at the origin.
+///
+/// `build_city_scene` runs the floor-variant ladder, and truncation rejects any
+/// pack that ends up without a support node. That is right for a city — a
+/// building floating over the street is a bug — but it is a requirement of
+/// *varying* a pack, not of simulating one, and it makes the two cases where a
+/// structure legitimately has no anchor unbuildable: a dropped building, and a
+/// rig deliberately cut free of its foundations.
+///
+/// So the support requirement lives with the variant ladder and this is the
+/// path for a single unvaried structure. Callers that want the ladder still get
+/// it; nobody has to hand-assemble a `CityScene` to avoid it.
+pub fn single_building_scene(pack: &ScenePack) -> CityScene {
+    CityScene {
+        desc: CitySceneDesc {
+            grid: 1,
+            pitch_m: 0.0,
+            varied_heights: false,
+        },
+        variants: vec![BuildingVariant {
+            pack: pack.clone(),
+            floors: 1,
+            height: pack_height_m(pack),
+        }],
+        instances: vec![BuildingInstance {
+            structure_id: 0,
+            variant_index: 0,
+            offset: Vec3::ZERO,
+        }],
+    }
+}
+
 pub fn build_city_scene(
     source: &ScenePack,
     desc: CitySceneDesc,

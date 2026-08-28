@@ -24,6 +24,7 @@ pub mod freeze;
 pub mod ids;
 pub mod interest;
 pub mod manifest;
+pub mod membership;
 pub mod packet;
 pub mod quant;
 pub mod scene_pack;
@@ -37,3 +38,6 @@ pub mod wire;
 
 #[cfg(feature = "physx")]
 pub mod runtime;
+
+#[cfg(feature = "physx")]
+pub mod rig;
