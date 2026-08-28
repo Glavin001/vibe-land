@@ -32,7 +32,7 @@ use std::path::{Path, PathBuf};
 
 use vibe_land_destruction::city_config::ShotProfile;
 use vibe_land_destruction::rig::surgery::rotated_and_raised;
-use vibe_land_destruction::rig::{Rig, HZ};
+use vibe_land_destruction::rig::{Quiet, Rig, HZ};
 use vibe_land_destruction::scene_pack::{load_scene_pack_file, ScenePack};
 
 /// The city's own shot, so "a hit" here means what a player's hit means rather
@@ -54,8 +54,8 @@ fn spin_up(pack: &ScenePack) -> Rig {
 }
 
 /// Every structure, so a regression in one is not hidden by another passing.
-const ALL: [&str; 7] = [
-    "algedra-tower", "house-1story", "house-2story", "villa-savoye",
+const ALL: [&str; 8] = [
+    "algedra-tower", "house-1story", "house-2story", "villa-savoye", "minas-tirith",
     "park-432", "parking-garage", "petronas",
 ];
 
@@ -68,9 +68,21 @@ fn every_structure_stands_under_its_own_weight() {
         let bonds: usize = pack.bonds.len();
         let mut rig = spin_up(&pack);
 
-        // Five seconds is well past the point where a structure that is going
-        // to settle has settled, and well short of nothing happening at all.
-        rig.run_ticks(HZ * 5).expect("tick");
+        // How long settling takes depends on how far anything shed can fall.
+        // Five seconds is ample for a house and was ample for every tower here,
+        // but Minas Tirith stands 112 m and a chunk let go at the Citadel needs
+        // 4.8 s just to reach the ground, then rolls down seven terraces — a
+        // flat budget reported a city that was settling perfectly well as one
+        // that "never came to rest". Scaled by free-fall time from the top, so
+        // the shorter structures are unaffected.
+        let top = pack
+            .nodes
+            .iter()
+            .map(|n| n.centroid.y)
+            .fold(f32::MIN, f32::max)
+            .max(0.0);
+        let budget = 5.0 + 2.0 * (2.0 * top / 9.81).sqrt();
+        let settle = rig.settle_until(Quiet::default(), budget).expect("tick");
         let stats = rig.destruction.stats();
 
         // A handful of bonds letting go as the solver finds equilibrium is
@@ -84,8 +96,8 @@ fn every_structure_stands_under_its_own_weight() {
             stats.broken_bonds, broken_fraction * 100.0,
         );
         assert!(
-            stats.awake_chunk_bodies == 0,
-            "{name}: {} bodies still moving after 5 s — it never came to rest",
+            settle.rested(),
+            "{name}: {} bodies still moving after {budget:.0} s — it never came to rest",
             stats.awake_chunk_bodies,
         );
         assert!(

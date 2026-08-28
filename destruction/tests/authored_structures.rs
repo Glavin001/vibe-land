@@ -19,7 +19,7 @@ use vibe_land_destruction::city::{build_city_scene, CitySceneDesc};
 use vibe_land_destruction::manifest::DestructionManifest;
 use vibe_land_destruction::scene_pack::{load_scene_pack_file, ScenePack, SceneCollider};
 
-const AUTHORED: [&str; 3] = ["algedra-tower", "house-1story", "house-2story"];
+const AUTHORED: [&str; 4] = ["algedra-tower", "house-1story", "house-2story", "minas-tirith"];
 
 fn pack_path(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("assets/scenes/{name}.json"))

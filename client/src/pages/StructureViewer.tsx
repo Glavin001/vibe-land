@@ -20,7 +20,9 @@
  * city needs, and one draw call covers a few thousand chunks.
  */
 import { Canvas, useThree } from '@react-three/fiber';
-import { useEffect, useMemo, useState } from 'react';
+import { OrbitControls } from '@react-three/drei';
+import type { OrbitControls as OrbitControlsImpl } from 'three-stdlib';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 
@@ -212,8 +214,44 @@ function Structure({ pack }: { pack: ScenePack }) {
   );
 }
 
+/**
+ * Orbit, pan and zoom, with the screenshot tool still in charge when it asks.
+ *
+ * `setCamera` moves the camera directly, which OrbitControls would undo on its
+ * next update because it drives position from its own target. So the bridge
+ * hands the controls the new target too, and the preset poses stay exact.
+ *
+ * Limits are derived from the structure rather than fixed: framing a 10 m house
+ * and a 240 m city wants very different zoom ranges, and a min distance that
+ * suits one puts the camera inside the other.
+ */
+function Controls({ bounds, controlsRef }: {
+  bounds: { radiusM: number; topM: number };
+  controlsRef: React.MutableRefObject<OrbitControlsImpl | null>;
+}) {
+  return (
+    <OrbitControls
+      ref={controlsRef}
+      makeDefault
+      target={[0, bounds.topM * 0.35, 0]}
+      enableDamping
+      dampingFactor={0.08}
+      // Touch: one finger orbits, two pinch to zoom and pan — the drei default,
+      // and what a phone user will try first.
+      minDistance={Math.max(2, bounds.radiusM * 0.15)}
+      maxDistance={bounds.radiusM * 8}
+      // Stop just short of the horizon so you cannot orbit under the ground
+      // plane and end up looking at the underside of the terrain shell.
+      maxPolarAngle={Math.PI / 2 - 0.02}
+    />
+  );
+}
+
 /** Exposes camera control to the screenshot tool. */
-function ViewerBridge({ pack }: { pack: ScenePack }) {
+function ViewerBridge({ pack, controlsRef }: {
+  pack: ScenePack;
+  controlsRef: React.MutableRefObject<OrbitControlsImpl | null>;
+}) {
   const camera = useThree((s) => s.camera);
   useEffect(() => {
     const bounds = packBounds(pack);
@@ -230,15 +268,23 @@ function ViewerBridge({ pack }: { pack: ScenePack }) {
         camera.position.set(...position);
         camera.lookAt(new THREE.Vector3(...target));
         camera.updateMatrixWorld(true);
+        // Hand the same target to the controls, or their next update snaps the
+        // camera back to wherever they were last pointing.
+        const controls = controlsRef.current;
+        if (controls) {
+          controls.target.set(...target);
+          controls.update();
+        }
       },
     };
     return () => { delete window.__VIBE_STRUCTURE__; };
-  }, [camera, pack]);
+  }, [camera, pack, controlsRef]);
   return null;
 }
 
 export default function StructureViewerPage({ pack: packName }: { pack: string }) {
   const [pack, setPack] = useState<ScenePack | null>(null);
+  const controlsRef = useRef<OrbitControlsImpl | null>(null);
   const [error, setError] = useState<string | null>(null);
   const fogColor = resolveFogColor(getFogSettings());
 
@@ -296,7 +342,8 @@ export default function StructureViewerPage({ pack: packName }: { pack: string }
           <meshStandardMaterial color="#5d6350" roughness={1} metalness={0} />
         </mesh>
         {pack && <Structure pack={pack} />}
-        {pack && <ViewerBridge pack={pack} />}
+        {bounds && <Controls bounds={bounds} controlsRef={controlsRef} />}
+        {pack && <ViewerBridge pack={pack} controlsRef={controlsRef} />}
       </Canvas>
     </div>
   );
