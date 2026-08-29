@@ -17,6 +17,15 @@ use crate::manifest::DestructionManifest;
 use crate::types::Pose;
 use crate::wire::{BootstrapIsland, BootstrapMessage, BootstrapStructure};
 
+/// FNV-1a 32-bit, run as two independently-seeded lanes to make a 64-bit
+/// structure hash. Lane A is the standard FNV offset basis; lane B is an
+/// arbitrary distinct seed. Chosen over one 64-bit hash because the client
+/// computes the same function in JS, where u64 means BigInt and BigInt means
+/// paying for it every comparison.
+const FNV_PRIME: u32 = 16_777_619;
+const FNV_SEED_A: u32 = 0x811c_9dc5;
+const FNV_SEED_B: u32 = 0xdead_beef;
+
 #[derive(Clone, Debug)]
 pub struct LedgerIsland {
     /// Node indices within the structure, ascending.
@@ -78,6 +87,62 @@ impl CityLedger {
 
     pub fn island(&self, structure_id: u32, serial: u32) -> Option<&LedgerIsland> {
         self.structures.get(&structure_id)?.islands.get(&serial)
+    }
+
+    /// One hash per structure over what the reliable stream is supposed to
+    /// have replicated: the alive-bond bitmap and every dynamic island's
+    /// membership (serial + ascending node list). Poses and velocities are
+    /// deliberately absent -- they ride the datagram stream and heal on their
+    /// own; membership and bonds only heal through a bootstrap.
+    ///
+    /// This exists because `city_desync_repairs` sat at zero while a client
+    /// was visibly desynced: the server can only see the drops it makes
+    /// itself, so silent client-side divergence needs the server to publish
+    /// what the ledger SHOULD hash to. The client computes the same function
+    /// over its own ledger (`structureHashes` in `client/src/city/topology.ts`
+    /// -- the two must change together; `hash_vector_is_pinned` pins the
+    /// shared test vector).
+    ///
+    /// Two independent 32-bit FNV-1a lanes packed as (laneA << 32) | laneB.
+    /// JS has no cheap u64, so the client compares two u32 reads instead of
+    /// paying BigInt on a 2 Hz path.
+    pub fn structure_hashes(&self) -> Vec<(u32, u64)> {
+        let mut ids: Vec<u32> = self.structures.keys().copied().collect();
+        ids.sort_unstable();
+        ids.into_iter()
+            .map(|structure_id| {
+                let structure = &self.structures[&structure_id];
+                let mut lane_a = FNV_SEED_A;
+                let mut lane_b = FNV_SEED_B;
+                let mut feed = |byte: u8| {
+                    lane_a = (lane_a ^ u32::from(byte)).wrapping_mul(FNV_PRIME);
+                    lane_b = (lane_b ^ u32::from(byte)).wrapping_mul(FNV_PRIME);
+                };
+                for &byte in &structure.alive_bonds {
+                    feed(byte);
+                }
+                let mut serials: Vec<u32> = structure.islands.keys().copied().collect();
+                serials.sort_unstable();
+                for serial in serials {
+                    let island = &structure.islands[&serial];
+                    for byte in serial.to_le_bytes() {
+                        feed(byte);
+                    }
+                    for byte in (island.nodes.len() as u32).to_le_bytes() {
+                        feed(byte);
+                    }
+                    // `nodes` is kept ascending by every mutation path; hash
+                    // order must not depend on mutation history.
+                    debug_assert!(island.nodes.windows(2).all(|w| w[0] < w[1]));
+                    for &node in &island.nodes {
+                        for byte in node.to_le_bytes() {
+                            feed(byte);
+                        }
+                    }
+                }
+                (structure_id, (u64::from(lane_a) << 32) | u64::from(lane_b))
+            })
+            .collect()
     }
 
     pub fn apply_batch(&mut self, batch: &FractureBatch) {
@@ -251,8 +316,27 @@ impl CityLedger {
         topo_seq: u32,
         live_motion: &dyn Fn(u32, u32) -> Option<(Pose, Vec3, Vec3)>,
     ) -> BootstrapMessage {
+        self.bootstrap_filtered(sim_tick, manifest_hash, baseline_id, topo_seq, live_motion, None)
+    }
+
+    /// A bootstrap covering only the named structures — the targeted repair a
+    /// hash mismatch drives. `None` means every structure (the full bootstrap).
+    /// The message shape is identical; the wire kind differs so the client
+    /// knows to rebuild the named structures instead of resetting the world.
+    pub fn bootstrap_filtered(
+        &self,
+        sim_tick: u32,
+        manifest_hash: [u8; 32],
+        baseline_id: u16,
+        topo_seq: u32,
+        live_motion: &dyn Fn(u32, u32) -> Option<(Pose, Vec3, Vec3)>,
+        only: Option<&[u32]>,
+    ) -> BootstrapMessage {
         let mut structure_ids: Vec<u32> = self.structures.keys().copied().collect();
         structure_ids.sort_unstable();
+        if let Some(only) = only {
+            structure_ids.retain(|id| only.contains(id));
+        }
         let mut structures = Vec::new();
         let mut islands = Vec::new();
         for structure_id in structure_ids {
@@ -454,6 +538,44 @@ mod tests {
 
         ledger.apply_wake(0, 1);
         assert!(!ledger.island(0, 1).expect("island").settled);
+    }
+
+    /// The cross-language hash vector. The client computes the same function
+    /// in `client/src/city/topology.ts` (`structureHashes`), whose test pins
+    /// these exact lane values over the same state -- if either side's
+    /// hashing changes, both tests fail together and both sides must move.
+    #[test]
+    fn hash_vector_is_pinned() {
+        let manifest = manifest();
+        let mut ledger = CityLedger::from_manifest(&manifest);
+        // Intact: alive bitmap 0b11, no islands.
+        assert_eq!(ledger.structure_hashes(), vec![(0, 0x060c_5eb2_7783_8d84)]);
+        ledger.apply_batch(&FractureBatch {
+            structure_id: 0,
+            broken_bond_ids: vec![ids::bond_id(0, 1)],
+            promoted_islands: vec![IslandPromotion {
+                structure_id: 0,
+                island_id: 1,
+                chunks: vec![ids::chunk_id(0, 2)],
+                ..Default::default()
+            }],
+            ..Default::default()
+        });
+        // Bond 1 broken (bitmap 0b01), island serial 1 holding node 2.
+        assert_eq!(ledger.structure_hashes(), vec![(0, 0xb97e_54fe_e243_a378)]);
+    }
+
+    #[test]
+    fn filtered_bootstrap_scopes_to_named_structures() {
+        let manifest = manifest();
+        let ledger = CityLedger::from_manifest(&manifest);
+        let all = ledger.bootstrap_filtered(10, [1; 32], 0, 5, &|_, _| None, None);
+        assert_eq!(all.structures.len(), 1);
+        let none = ledger.bootstrap_filtered(10, [1; 32], 0, 5, &|_, _| None, Some(&[7]));
+        assert!(none.structures.is_empty(), "unknown id must select nothing");
+        let scoped = ledger.bootstrap_filtered(10, [1; 32], 0, 5, &|_, _| None, Some(&[0]));
+        assert_eq!(scoped.structures.len(), 1);
+        assert_eq!(scoped.topo_seq, 5);
     }
 
     #[test]

@@ -477,7 +477,7 @@ describe('CityTopology chunk migration', () => {
     expect(after.position[2]).toBeCloseTo(before.position[2], 5);
   });
 
-  it('asks for a resync rather than guessing at an unknown destination', () => {
+  it('asks for a STRUCTURE repair rather than guessing at an unknown destination', () => {
     const topology = new CityTopology(manifest());
     expect(topology.apply(promoteTwo(1))).toBe(true);
     topology.apply({
@@ -492,7 +492,10 @@ describe('CityTopology chunk migration', () => {
         },
       ],
     });
-    expect(topology.needsResync).toBe(true);
+    // The stream position is intact; only this structure's content is wrong.
+    // Escalating to needsResync here was the 3.0-second full-bootstrap loop.
+    expect(topology.needsResync).toBe(false);
+    expect([...topology.resyncStructures]).toEqual([0]);
   });
 });
 
@@ -864,8 +867,103 @@ describe('CityTopology settle cannot teleport a body', () => {
     expect(moved, 'the settle teleported the body').toBeLessThan(1e-3);
     // Still at rest -- the rest state is not in doubt, only the pose.
     expect(topology.body(bodyKey(0, 1))!.settled).toBe(true);
-    // And the real fault -- membership disagreement -- is escalated.
+    // And the real fault -- membership disagreement -- is escalated as a
+    // STRUCTURE repair, not a world rebuild: the stream position is intact.
     expect(topology.settleFrameRejects).toBe(1);
+    expect(topology.needsResync).toBe(false);
+    expect([...topology.resyncStructures]).toEqual([0]);
+  });
+
+  it('a missing migration destination asks for that structure, not the world', () => {
+    const topology = new CityTopology(manifest());
+    topology.apply(fractureMessage(1));
+    topology.apply({
+      topoSeq: 2,
+      simTick: 20,
+      batches: [
+        {
+          structureId: 0,
+          brokenBondIndices: [],
+          promotions: [],
+          retiredIslandIds: [],
+          migrations: [{ node: 1, fromIslandSerial: 0, toIslandSerial: 99 }],
+        },
+      ],
+      settled: [],
+      wakes: [],
+    });
+    expect(topology.needsResync).toBe(false);
+    expect([...topology.resyncStructures]).toEqual([0]);
+    // A seq GAP still demands the full path — the position itself is lost.
+    topology.apply({ topoSeq: 9, simTick: 30, batches: [], settled: [], wakes: [] });
     expect(topology.needsResync).toBe(true);
+    // And the structure repair clears its own flag when it lands.
+    topology.applyStructureBootstrap({
+      simTick: 40,
+      manifestHashHex: '00',
+      baselineId: 0,
+      topoSeq: 2,
+      structures: [{ structureId: 0, bondCount: 2, aliveBonds: new Uint8Array([0b01]) }],
+      islands: [],
+    });
+    expect(topology.resyncStructures.size).toBe(0);
+  });
+
+  /**
+   * The cross-language hash vector. The server computes the same function in
+   * destruction/src/topology.rs (`structure_hashes`), whose
+   * `hash_vector_is_pinned` test pins these exact lane values over the same
+   * state — if either side's hashing changes, both tests fail together.
+   */
+  it('structure hashes match the pinned server vector', () => {
+    const topology = new CityTopology(manifest());
+    const intact = topology.structureHashes().get(0)!;
+    expect(intact.laneA >>> 0).toBe(0x060c5eb2);
+    expect(intact.laneB >>> 0).toBe(0x77838d84);
+
+    topology.apply(fractureMessage(1));
+    const broken = topology.structureHashes().get(0)!;
+    expect(broken.laneA >>> 0).toBe(0xb97e54fe);
+    expect(broken.laneB >>> 0).toBe(0xe243a378);
+  });
+
+  it('a structure bootstrap repairs a diverged ledger without touching the stream position', () => {
+    const topology = new CityTopology(manifest());
+    // Diverge: the client missed the fracture entirely (bitmap intact, no
+    // island) but believes it is at the same seq — the silent case.
+    topology.apply({ topoSeq: 1, simTick: 5, batches: [], settled: [], wakes: [] });
+    const before = topology.structureHashes().get(0)!;
+    expect(before.laneA >>> 0).not.toBe(0xb97e54fe);
+
+    topology.applyStructureBootstrap({
+      simTick: 10,
+      manifestHashHex: '00',
+      baselineId: 0,
+      topoSeq: 1,
+      structures: [{ structureId: 0, bondCount: 2, aliveBonds: new Uint8Array([0b01]) }],
+      islands: [
+        {
+          structureId: 0,
+          islandId: 1,
+          nodes: [2],
+          position: [10, 2.5, 0],
+          rotation: [0, 0, 0, 1],
+          linearVelocity: [0, 0, 0],
+          angularVelocity: [0, 0, 0],
+          settled: false,
+        },
+      ],
+    });
+
+    const after = topology.structureHashes().get(0)!;
+    expect(after.laneA >>> 0).toBe(0xb97e54fe);
+    expect(after.laneB >>> 0).toBe(0xe243a378);
+    expect(topology.lastSeq()).toBe(1);
+    expect(topology.brokenBonds).toBe(1);
+    // The repaired chunk is composed against the repaired island's frame.
+    const body = topology.body(bodyKey(0, 1))!;
+    expect(body.chunkSlots).toEqual([topology.slotOf(0, 2)]);
+    // Chunks the island does not claim went back to the support body.
+    expect(topology.body(bodyKey(0, 0))!.chunkSlots).toContain(topology.slotOf(0, 1));
   });
 });

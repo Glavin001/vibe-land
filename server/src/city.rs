@@ -28,16 +28,13 @@ use vibe_land_destruction::synthetic::SyntheticDestruction;
 use vibe_land_destruction::types::Camera;
 use vibe_land_destruction::wire::{encode_debris_datagram, DebrisCompressor};
 use vibe_netcode::destruction_backend::DestructionTickOutput;
-use vibe_netcode::destruction_backend::{
-    DestructionBackend, DestructionStats, StressSolverSettings,
-};
+use vibe_netcode::destruction_backend::{DestructionBackend, DestructionStats};
 
 #[cfg(feature = "destruction")]
 use vibe_land_destruction::ids;
 #[cfg(feature = "destruction")]
 use vibe_land_destruction::runtime::CityDestruction;
 #[cfg(feature = "destruction")]
-use vibe_land_destruction::city_config::ShotProfile;
 use vibe_land_destruction::runtime::GROUP_CHUNK;
 #[cfg(feature = "destruction")]
 use vibe_land_physx_bridge::{RaycastRequest, Vec3 as BridgeVec3, World};
@@ -45,13 +42,111 @@ use vibe_land_physx_bridge::{RaycastRequest, Vec3 as BridgeVec3, World};
 pub const CITY_MATCH_PREFIX: &str = "city";
 /// Impulse handed to the synthetic backend per rifle hit.
 const SYNTHETIC_SHOT_IMPULSE: f32 = 400.0;
-/// What a shot does, including its env overrides. Defined once in
-/// `city_config` because the trace recorder and the structural rig fire the
-/// same weapon -- three copies of these numbers meant a test could assert a
-/// building survived a hit the server no longer fired.
-fn shot() -> ShotProfile {
-    ShotProfile::city()
+/// Blast stress contact magnitude for PhysX hitscan (breaks bonds locally).
+/// Override with VIBE_CITY_SHOT_STRESS_IMPULSE.
+fn physx_shot_stress_impulse() -> f32 {
+    vibe_land_destruction::city_config::ShotProfile::city().stress_impulse
 }
+/// Rigid-body push on dynamic debris after / during a hit (rocket feel), as a
+/// velocity change in m/s at the blast centre, falling off quadratically.
+/// Override with VIBE_CITY_SHOT_PUSH_SPEED.
+///
+/// This replaced an impulse (VIBE_CITY_SHOT_PUSH_IMPULSE, 4.0e5 N-s). An
+/// impulse divides by mass, so a blast tuned to nudge a 5 t slab handed a 5 kg
+/// fragment 4000 m/s -- and a global 12 m/s velocity clamp then existed to hide
+/// that, which also forbade ordinary debris from free-falling faster than
+/// 12 m/s. A bounded kick speed is a property of the weapon; everything past it
+/// is unmodified physics, with speculative CCD (not clamps) keeping fast bodies
+/// from tunnelling.
+fn physx_shot_push_impulse() -> f32 {
+    vibe_land_destruction::city_config::ShotProfile::city().push_speed
+}
+/// How far from the raycast surface point a chunk may be and still be the one
+/// that was hit.
+///
+/// This is a lookup tolerance, not a blast radius: it exists because the node
+/// is a support-graph vertex at a chunk's centroid, so the nearest one to a
+/// surface point is up to about half a chunk away. Anything beyond that means
+/// the ray hit something that is not a live destructible chunk.
+#[cfg(feature = "blast-core")]
+const CITY_HIT_NODE_RADIUS_M: f32 = 3.0;
+
+/// Momentum one round deposits where it strikes, in N-s.
+///
+/// Stated as momentum because that is what a projectile actually delivers, and
+/// the solver converts it to a force over the tick. It replaces an opaque
+/// `1.2e7` "stress impulse" spread over a 2.5 m sphere with a `1 - d/r`
+/// falloff, a `0.85 * shot + 0.15 * radial` direction blend and a 0.5 m
+/// push of the impact point inside the surface -- none of which were derived
+/// from anything, and whose own comment admitted the magnitude was picked "so a
+/// hit opens a local crater instead of shredding every bond in radius".
+///
+/// The default is emphatically not a rifle bullet: 4 g at 900 m/s is 3.6 N-s,
+/// which against reinforced concrete does approximately nothing -- correctly.
+/// A round that levels buildings is a game-design choice, and the point of
+/// expressing it this way is that the choice is visible and physical. 3.0e5 N-s
+/// is ordnance scale: a 300 kg mass at 1 km/s, or equivalently a 30 kg shell at
+/// 10 km/s. That is a statement someone can argue with, unlike "1.2e7".
+///
+/// Calibrated, not guessed. Swept against the old path on the same scene and
+/// the same 40 shots:
+///
+/// ```text
+///   3e4 N-s ->   23 bonds,  0 fragments
+///   3e5 N-s ->  586 bonds, 56 fragments      <- old path: 604 bonds
+///   3e6 N-s -> 1294 bonds, 281 fragments
+/// ```
+///
+/// Override with VIBE_CITY_ROUND_MOMENTUM_NS.
+#[cfg(feature = "blast-core")]
+fn city_round_momentum_ns() -> f32 {
+    std::env::var("VIBE_CITY_ROUND_MOMENTUM_NS")
+        .ok()
+        .and_then(|value| value.parse::<f32>().ok())
+        .filter(|value| *value > 0.0)
+        .unwrap_or(3.0e5)
+}
+
+/// Radius of the stress load a single round deposits.
+///
+/// Bullet-scale, not shell-scale. This was 2.5 m, which is an artillery
+/// footprint: a single burst removed most of a building because every round
+/// drove load into every bond within a 5 m diameter. A rifle round against
+/// concrete spalls a crater measured in centimetres, and the weapon here is
+/// full-auto, so the destruction budget wants to come from *many* small
+/// precise hits rather than one enormous one.
+///
+/// Override with VIBE_CITY_SHOT_BLAST_RADIUS.
+fn shot_blast_radius_m() -> f32 {
+    vibe_land_destruction::city_config::ShotProfile::city().blast_radius_m
+}
+
+/// Radius of the rigid-body shove on already-loose debris. Slightly wider than
+/// the stress radius so fragments right at the crater still get pushed.
+///
+/// Override with VIBE_CITY_SHOT_PUSH_RADIUS.
+fn shot_push_radius_m() -> f32 {
+    vibe_land_destruction::city_config::ShotProfile::city().push_radius_m
+}
+
+/// How far past the surface to seat the blast centre.
+///
+/// Scaled to the radius rather than fixed. The old 0.5 m was half the old
+/// radius; against a 0.4 m radius it would bury the entire load inside the
+/// slab and never touch the face that was actually hit.
+fn shot_blast_depth_m() -> f32 {
+    shot_blast_radius_m() * 0.4
+}
+
+const SHOT_BLAST_RADIUS_M: f32 = 2.5;
+/// Slightly larger than the stress radius so post-fracture debris near the
+/// crater still gets the PhysX shove after kinematic → dynamic promotion.
+const SHOT_PUSH_RADIUS_M: f32 = 4.0;
+/// How far past the raycast surface point to seat the blast centre, so the
+/// radius covers material instead of straddling the face.
+const SHOT_BLAST_DEPTH_M: f32 = 0.5;
+/// Hitscan range for city damage.
+const SHOT_MAX_DISTANCE_M: f32 = 400.0;
 
 pub fn is_city_match(match_id: &str) -> bool {
     match_id.starts_with(CITY_MATCH_PREFIX)
@@ -61,6 +156,13 @@ pub fn is_city_match(match_id: &str) -> bool {
 /// default, so a new codec can be exercised against real clients without
 /// changing what every other match gets.
 const CITY_V3_MATCH_PREFIX: &str = "cityv3";
+
+/// Cadence of the per-structure ledger-hash broadcast, in sim ticks (2 s at
+/// 60 Hz). 54 bytes per emission at GRID=2 — the cost is negligible; the
+/// cadence exists so a silently diverged client discovers it within seconds
+/// rather than never (`city_desync_repairs` was 0 while a client visibly
+/// desynced, because only server-side send drops were detectable).
+const TOPO_HASH_INTERVAL_TICKS: u32 = 120;
 
 /// Which city wire a match speaks.
 ///
@@ -76,6 +178,17 @@ pub fn city_wire_version(match_id: &str) -> u8 {
         .and_then(|value| value.parse::<u8>().ok())
         .filter(|version| vibe_land_destruction::wire::is_supported_city_wire_version(*version))
         .unwrap_or(vibe_land_destruction::wire::CITY_WIRE_VERSION)
+}
+
+
+/// Drive /city through the standardized blast-stress-solver core.
+///
+/// Off by default: the old path stays authoritative until the two have been
+/// compared against the same scene. Deliberately not inferred from anything --
+/// an A/B is only worth running if you can be certain which side you got.
+#[cfg(feature = "blast-core")]
+fn prefer_blast_core() -> bool {
+    std::env::var("VIBE_CITY_BLAST_CORE").is_ok_and(|v| v == "1")
 }
 
 fn prefer_synthetic() -> bool {
@@ -211,7 +324,7 @@ pub fn manifest_asset() -> Option<&'static (String, Arc<DestructionManifest>, Ve
         .get_or_init(|| match build_scene() {
             Ok(scene) => {
                 let manifest = DestructionManifest::from_city(&scene);
-                let json = manifest.to_bytes();
+                let json = manifest.to_json_bytes();
                 let mut encoder =
                     flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
                 use std::io::Write;
@@ -227,10 +340,29 @@ pub fn manifest_asset() -> Option<&'static (String, Arc<DestructionManifest>, Ve
         .as_ref()
 }
 
+/// One tick's deferred observer work (VIBE_CITY_OBSERVER_PIPELINE=1): the
+/// destruction output retained between step_stage() and flush_staged().
+/// Snapshots are NOT copied — the backend's capture buffer holds tick N's
+/// rows untouched until tick N+1's post_step, and the flush runs before that.
+pub struct StagedCityTick {
+    pub sim_tick: u32,
+    output: DestructionTickOutput,
+    post_step_ms: f32,
+    snapshot_ms: f32,
+}
+
 enum CityBackend {
     Synthetic(SyntheticDestruction),
     #[cfg(feature = "destruction")]
     Physx(CityDestruction),
+    /// The standardized blast-stress-solver core, attached to the game's own
+    /// PxScene. Selected by `VIBE_CITY_BLAST_CORE=1`.
+    ///
+    /// Lives beside `Physx` rather than replacing it so the two can be run
+    /// against the same scene and compared before anything is deleted. The old
+    /// path stays the default until that comparison is green.
+    #[cfg(feature = "blast-core")]
+    Core(vibe_land_destruction::core_runtime::CoreCityDestruction),
 }
 
 /// The wire-v3 pose stream: the live debris codec fed beside the v2 encoder.
@@ -278,7 +410,7 @@ impl V3Live {
         let encoder = LiveEncoder::new(LiveEncoderConfig {
             dt: 1.0 / sim_hz as f32,
             gravity: {
-                let g = vibe_land_destruction::city_config::CITY_GRAVITY;
+                let g = vibe_netcode::movement::default_world_gravity();
                 glam::Vec3::new(g[0], g[1], g[2])
             },
             // The same fidelity contract every offline number was measured
@@ -489,7 +621,7 @@ pub struct WindowSummary {
 ///
 /// Windowing removes it -- p95 and max also surface the spikes a single sample
 /// can only catch by luck.
-pub const PHASE_NAMES: [&str; 16] = [
+pub const PHASE_NAMES: [&str; 25] = [
     "stress_solve_ms",
     "begin_ms",
     "solve_ms",
@@ -506,6 +638,32 @@ pub const PHASE_NAMES: [&str; 16] = [
     "blast_contact_processing_ms",
     "blast_gravity_ms",
     "blast_stress_solve_cpu_ms",
+    // The topology phases. end_ms was the largest phase mid-collapse (9.8 ms at
+    // 7k awake) and had no p95 at all, because these two were collected and
+    // never windowed -- so the spikiest thing in the tick was the one thing
+    // only ever seen as a 1 Hz point sample.
+    //
+    // These two OVERLAP and must not be summed. validateMappings() is called
+    // from fracture()'s return statement, and fractureTopologyMilliseconds
+    // brackets the whole fracture() call, so mapping validation is counted
+    // inside fracture topology AND again on its own. The _excl_ series below is
+    // the part of fracture() that is not mapping validation.
+    "blast_fracture_topology_ms",
+    "blast_mapping_validation_ms",
+    "blast_fracture_topology_excl_validation_ms",
+    // The fracture SUB-phases and settle. Added after a live report caught an
+    // 89 ms tick whose city side was 71 ms while the windowed phases
+    // accounted for only ~33 of it: the worst tick in the game was mostly
+    // unattributed, because these were published as 1 Hz point samples only —
+    // and a point sample of a spiky phase is the one thing that cannot see a
+    // spike. `window_ingest_ms` (already windowed) carried the other half at
+    // 32.75 ms max, which is what pointed here.
+    "blast_fracture_generate_ms",
+    "blast_fracture_prep_ms",
+    "blast_fracture_apply_ms",
+    "blast_fracture_scene_ms",
+    "blast_fracture_rebuild_ms",
+    "settle_ms",
 ];
 
 #[derive(Default)]
@@ -583,6 +741,13 @@ pub struct CityRuntime {
     pub manifest: Arc<DestructionManifest>,
     send_interval_ticks: u32,
     pub last_encode_ms: f32,
+    /// Post-fracture push re-apply: the blast pushes deferred from the
+    /// fracture that produced them, replayed after post_step. Previously part
+    /// of the `step_ms` unattributed remainder.
+    pub last_push_reapply_ms: f32,
+    /// `step_ms` minus post_step, push re-apply and snapshot. Published so an
+    /// untimed block cannot hide in a subtraction nobody performs.
+    pub last_step_residual_ms: f32,
     last_encode_shared_ms: f32,
     last_client_datagrams_ms: f32,
     structure_centers: Vec<(Vec3, f32)>,
@@ -641,6 +806,8 @@ impl CityRuntime {
             manifest,
             send_interval_ticks: config.send_interval_ticks,
             last_encode_ms: 0.0,
+            last_push_reapply_ms: 0.0,
+            last_step_residual_ms: 0.0,
             last_encode_shared_ms: 0.0,
             last_client_datagrams_ms: 0.0,
             structure_centers,
@@ -687,6 +854,78 @@ impl CityRuntime {
         ))
     }
 
+    /// The same city, driven by the standardized core instead.
+    ///
+    /// Attaches to the world the game already owns -- players, vehicles and the
+    /// city share one PxScene -- and never steps it; the server's own loop
+    /// still does.
+    #[cfg(feature = "blast-core")]
+    pub fn blast_core(sim_hz: u32, world: &mut World) -> anyhow::Result<Self> {
+        use vibe_land_destruction::core_runtime::CoreCityDestruction;
+        let (_, manifest, _) = manifest_asset()
+            .context("city scene asset unavailable (destruction/assets/scenes)")?;
+        let manifest = manifest.clone();
+        // Read from the same place `build_scene` does, and with the same grid
+        // and height options, so the simulation and the manifest the client is
+        // handed describe the same city.
+        let scene = build_scene().context("building the city scene for the core path")?;
+        let settings =
+            vibe_land_destruction::city_config::stress_settings(&scene_stress_materials());
+        let path = asset_path();
+        let grid = scene.desc.grid;
+        let varied_heights = scene.desc.varied_heights;
+        let scene_ptr = world
+            .scene_ptr()
+            .map_err(|error| anyhow::anyhow!("host PhysX scene pointer unavailable: {error}"))?;
+        let physics = world
+            .physics_ptr()
+            .map_err(|error| anyhow::anyhow!("host PhysX physics pointer unavailable: {error}"))?;
+        // SAFETY: both pointers come from the World borrowed here, and the
+        // caller keeps that World alive for at least as long as the backend.
+        let backend = unsafe {
+            CoreCityDestruction::attach_city(
+                scene_ptr,
+                physics,
+                &path,
+                vibe_netcode::movement::default_world_gravity(),
+                grid,
+                varied_heights,
+                // The host's own chunk group and mask, so its raycasts and its
+                // collision filtering see library shapes exactly as they see
+                // the ones the old path created.
+                GROUP_CHUNK,
+                crate::physx_runtime::ALL_GROUPS,
+                // Same knob the old path reads, so the two are configured
+                // identically and a comparison between them is meaningful.
+                vibe_land_destruction::city_config::stress_limit_scale(),
+                // Every remaining knob read from the same place the old path
+                // reads it. A backend comparison is only meaningful if the two
+                // are configured identically, and solver iterations in
+                // particular are physics: below convergence the solver reports
+                // residual as stress, and residual breaks bonds.
+                settings.max_solver_iterations_per_frame,
+                settings.apply_excess_forces,
+                settings.excess_force_scale,
+            )
+        }
+        .map_err(|error| anyhow::anyhow!("{error}"))?;
+        tracing::info!(
+            scene = %scene_file(),
+            gpu = backend.gpu_active(),
+            structures = backend.structure_count(),
+            expected = scene.instances.len(),
+            "city on blast core"
+        );
+        anyhow::ensure!(
+            backend.structure_count() == scene.instances.len(),
+            "core built {} structures but the manifest describes {}; the client \
+             would be handed a city that does not exist",
+            backend.structure_count(),
+            scene.instances.len()
+        );
+        Ok(Self::from_parts(CityBackend::Core(backend), manifest, sim_hz))
+    }
+
     /// Prefer PhysX when the feature is on and a world is supplied, unless
     /// `VIBE_CITY_SYNTHETIC=1`.
     pub fn open(
@@ -698,6 +937,13 @@ impl CityRuntime {
         {
             if !prefer_synthetic() {
                 if let Some(world) = world {
+                    #[cfg(feature = "blast-core")]
+                    if prefer_blast_core() {
+                        // Opt-in, and it fails rather than falling back: a
+                        // silent fall-through to the old path would make an A/B
+                        // measure the same code twice and agree with itself.
+                        return Self::blast_core(sim_hz, world);
+                    }
                     return Self::physx(sim_hz, world);
                 }
             }
@@ -773,6 +1019,8 @@ impl CityRuntime {
             CityBackend::Synthetic(_) => false,
             #[cfg(feature = "destruction")]
             CityBackend::Physx(_) => true,
+            #[cfg(feature = "blast-core")]
+            CityBackend::Core(_) => true,
         }
     }
 
@@ -841,13 +1089,61 @@ impl CityRuntime {
         };
 
         match &mut self.backend {
+            #[cfg(feature = "blast-core")]
+            CityBackend::Core(backend) => {
+                // The same real raycast the old path uses, for the same reason:
+                // a bounding sphere puts the impact several metres off the
+                // facade in open air, so shots that visually hit do nothing and
+                // shots that visually miss damage the building.
+                let hit = world
+                    .as_ref()
+                    .and_then(|world| {
+                        world
+                            .raycast(RaycastRequest {
+                                origin: BridgeVec3::new(origin.x, origin.y, origin.z),
+                                direction: BridgeVec3::new(direction.x, direction.y, direction.z),
+                                max_distance: SHOT_MAX_DISTANCE_M,
+                                collision_mask: GROUP_CHUNK,
+                                ignore_entity_id: 0,
+                                has_ignore_entity: false,
+                            })
+                            .ok()
+                    })
+                    .filter(|hit| hit.hit);
+                let Some(hit) = hit else {
+                    return false;
+                };
+                let at = [hit.position.x, hit.position.y, hit.position.z];
+
+                // Resolved from the surface point rather than seated inside it.
+                // The old path pushed the impact 0.5 m through the face so a
+                // sphere would "cover material"; with no sphere there is
+                // nothing to cover, and the surface is where the round hit.
+                //
+                // Bounded so a ray that grazes past everything is a miss rather
+                // than a hit on whichever chunk is least far away.
+                let Some((structure_id, node)) =
+                    backend.nearest_node_within(at, CITY_HIT_NODE_RADIUS_M)
+                else {
+                    return false;
+                };
+                backend.deposit_momentum(
+                    structure_id,
+                    node,
+                    at,
+                    direction.to_array(),
+                    city_round_momentum_ns(),
+                    1.0 / 60.0,
+                );
+                true
+            }
             CityBackend::Synthetic(backend) => {
                 let Some((distance, point, structure_index)) = sphere_hit() else {
                     return false;
                 };
                 let affected = backend.apply_explosion(
                     point.to_array(),
-                    shot().blast_radius_m,
+                    shot_blast_radius_m(),
                     SYNTHETIC_SHOT_IMPULSE,
                 );
                 tracing::debug!(
@@ -876,7 +1172,7 @@ impl CityRuntime {
                     .raycast(RaycastRequest {
                         origin: BridgeVec3::new(origin.x, origin.y, origin.z),
                         direction: BridgeVec3::new(direction.x, direction.y, direction.z),
-                        max_distance: shot().max_distance_m,
+                        max_distance: SHOT_MAX_DISTANCE_M,
                         collision_mask: GROUP_CHUNK,
                         ignore_entity_id: 0,
                         has_ignore_entity: false,
@@ -895,12 +1191,11 @@ impl CityRuntime {
                 // Seat the blast just inside the surface so the radius covers
                 // material rather than straddling the face.
                 let surface = Vec3::new(hit.position.x, hit.position.y, hit.position.z);
-                let shot = shot();
-                let point = surface + direction * shot.blast_depth_m;
+                let point = surface + direction * shot_blast_depth_m();
                 let structure_id = ids::body_entity_parts(hit.entity_id).0;
 
-                let stress = shot.stress_impulse;
-                let push = shot.push_speed;
+                let stress = physx_shot_stress_impulse();
+                let push = physx_shot_push_impulse();
 
                 // Release frozen rubble around the impact BEFORE the blast.
                 //
@@ -913,7 +1208,7 @@ impl CityRuntime {
                 // reaches keeps the cost of a shot proportional to the shot.
                 // The wider push radius is used so every body that will be
                 // pushed is dynamic by the time the push arrives.
-                match backend.wake_around(world, point.to_array(), shot.push_radius_m) {
+                match backend.wake_around(world, point.to_array(), shot_push_radius_m()) {
                     Ok(0) => {}
                     Ok(woken) => tracing::debug!(woken, "city shot woke frozen rubble"),
                     Err(error) => tracing::warn!(%error, "city spatial wake failed"),
@@ -923,7 +1218,7 @@ impl CityRuntime {
                     world,
                     point.to_array(),
                     direction.to_array(),
-                    shot.blast_radius_m,
+                    shot_blast_radius_m(),
                     stress,
                     push,
                 ) {
@@ -932,8 +1227,12 @@ impl CityRuntime {
                             // Re-apply push after this tick's bond breaks promote
                             // new dynamic islands (first pass often only stresses
                             // still-kinematic support bodies).
-                            self.pending_pushes
-                                .push((point, direction, shot.push_radius_m, push));
+                            self.pending_pushes.push((
+                                point,
+                                direction,
+                                shot_push_radius_m(),
+                                push,
+                            ));
                         }
                         tracing::debug!(
                             structure_id,
@@ -956,6 +1255,15 @@ impl CityRuntime {
     }
 
     /// 60 Hz step: destruction tick + encoder ingest.
+    /// Take the fracture-frame resimulation capture, immediately before the
+    /// host steps PhysX. No-op unless VIBE_CITY_RESIM_PASSES > 0.
+    #[cfg(feature = "destruction")]
+    pub fn pre_step(&mut self, world: Option<&mut World>) {
+        if let (CityBackend::Physx(backend), Some(world)) = (&mut self.backend, world) {
+            backend.pre_step(world);
+        }
+    }
+
     pub fn step(
         &mut self,
         sim_tick: u32,
@@ -968,6 +1276,33 @@ impl CityRuntime {
         let mut reliable = Vec::new();
         let pending_pushes = std::mem::take(&mut self.pending_pushes);
         match &mut self.backend {
+            #[cfg(feature = "blast-core")]
+            CityBackend::Core(backend) => {
+                // The whole point of the migration: the pipeline emits the
+                // topology output natively, so this arm only feeds it onward.
+                // The Physx arm below reconstructs the same thing by diffing
+                // PhysX snapshots.
+                let post_step_started = std::time::Instant::now();
+                let (_, output, overflow) = backend.post_step_output(dt);
+                let post_step_ms = post_step_started.elapsed().as_secs_f32() * 1000.0;
+                if overflow.islands > 0 || overflow.chunks > 0 {
+                    // Dropped, never truncated: truncating aliases a new island
+                    // onto a live one and the client draws two chunk sets with
+                    // one pose. Loud, because it means lost events.
+                    tracing::error!(
+                        islands = overflow.islands,
+                        chunks = overflow.chunks,
+                        "city ids exceeded the wire fields; events dropped"
+                    );
+                }
+                let snapshots = backend.body_snapshots();
+                self.encoder.ingest_tick(sim_tick, &snapshots, &output, &output.wakes);
+                if let Some(live) = self.live.as_mut() {
+                    live.ingest(&self.manifest, sim_tick, &snapshots, &output);
+                }
+                reliable.extend(self.encoder.take_topology_messages());
+                let _ = post_step_ms;
+            }
             CityBackend::Synthetic(backend) => match backend.tick_after_fetch(dt, gravity) {
                 Ok(output) => {
                     let snapshots = backend.body_snapshots();
@@ -1064,8 +1399,180 @@ impl CityRuntime {
                 reliable.extend(baselines);
             }
         }
+        // Periodic ledger hashes: the client-side divergence detector. Rides
+        // the ordered reliable channel AFTER this tick's topology messages, so
+        // a gap-free client compares at exactly the seq the hashes describe.
+        if sim_tick % TOPO_HASH_INTERVAL_TICKS == 0 {
+            reliable.push(self.encoder.topology_hash_message());
+        }
         self.last_encode_ms = started.elapsed().as_secs_f32() * 1000.0;
         reliable
+    }
+
+    /// Sim half of the observer pipeline (VIBE_CITY_OBSERVER_PIPELINE=1):
+    /// exactly step()'s simulation-side work — destruction tick, re-applied
+    /// pushes, snapshot capture — with every encoder/ledger byte deferred
+    /// into the returned ticket, which flush_staged() consumes next tick
+    /// inside the GPU wait. Only the Physx arm stages; the other backends
+    /// (and any error path) fall back to the combined step() so no tick ever
+    /// loses its baseline/hash cadence.
+    pub fn step_stage(
+        &mut self,
+        sim_tick: u32,
+        dt: f32,
+        gravity: [f32; 3],
+        #[cfg(feature = "destruction")] world: Option<&mut World>,
+        #[cfg(not(feature = "destruction"))] world: Option<()>,
+    ) -> (Vec<Vec<u8>>, Option<StagedCityTick>) {
+        #[cfg(feature = "destruction")]
+        {
+            // Staging needs BOTH a Physx backend and a world; anything else
+            // takes the combined path. Decided before the borrow so `world`
+            // survives into the fallback.
+            let stageable =
+                matches!(self.backend, CityBackend::Physx(_)) && world.is_some();
+            if !stageable {
+                return (self.step(sim_tick, dt, gravity, world), None);
+            }
+            let world = world.expect("checked by stageable");
+            if let CityBackend::Physx(backend) = &mut self.backend {
+                let started = std::time::Instant::now();
+                let pending_pushes = std::mem::take(&mut self.pending_pushes);
+                let post_step_started = std::time::Instant::now();
+                let post_step_result = backend.post_step(world, dt, gravity);
+                let post_step_ms =
+                    post_step_started.elapsed().as_secs_f32() * 1000.0;
+                match post_step_result {
+                    Ok(output) => {
+                        // Named because `step_ms` minus its children was
+                        // running 1-3.6 ms and this loop was the documented
+                        // reason. An "unattributed" bucket that everyone knows
+                        // the contents of is just a span nobody added yet.
+                        let push_started = std::time::Instant::now();
+                        for (point, direction, radius, push) in pending_pushes {
+                            if let Err(error) = backend.apply_blast(
+                                world,
+                                point.to_array(),
+                                direction.to_array(),
+                                radius,
+                                0.0,
+                                push,
+                            ) {
+                                tracing::warn!(%error, "city post-fracture push failed");
+                            }
+                        }
+                        self.last_push_reapply_ms =
+                            push_started.elapsed().as_secs_f32() * 1000.0;
+                        let snapshot_started = std::time::Instant::now();
+                        let snapshot_ms = match backend.body_snapshots(world) {
+                            Ok(_) => {
+                                snapshot_started.elapsed().as_secs_f32() * 1000.0
+                            }
+                            Err(error) => {
+                                tracing::error!(%error, "city body snapshot failed");
+                                self.last_encode_ms =
+                                    started.elapsed().as_secs_f32() * 1000.0;
+                                return (Vec::new(), None);
+                            }
+                        };
+                        self.last_encode_ms =
+                            started.elapsed().as_secs_f32() * 1000.0;
+                        // Same closure discipline as post_step_residual_ms:
+                        // what the step spent that none of its children claim.
+                        self.last_step_residual_ms = self.last_encode_ms
+                            - post_step_ms
+                            - self.last_push_reapply_ms
+                            - snapshot_ms;
+                        return (
+                            Vec::new(),
+                            Some(StagedCityTick {
+                                sim_tick,
+                                output,
+                                post_step_ms,
+                                snapshot_ms,
+                            }),
+                        );
+                    }
+                    Err(error) => {
+                        tracing::error!(%error, "city physx post_step failed; topology frozen");
+                        self.last_encode_ms =
+                            started.elapsed().as_secs_f32() * 1000.0;
+                        return (Vec::new(), None);
+                    }
+                }
+            }
+            unreachable!("stageable implies a Physx backend")
+        }
+        #[cfg(not(feature = "destruction"))]
+        {
+            (self.step(sim_tick, dt, gravity, world), None)
+        }
+    }
+
+    /// Observer half: everything step() runs after the snapshot capture —
+    /// encoder ingest, topology/baseline/hash messages — in the same order,
+    /// one tick later, against the ticket's retained output and the
+    /// backend's still-untouched snapshot buffer. Makes no World calls by
+    /// construction: it takes none.
+    #[cfg(feature = "destruction")]
+    pub fn flush_staged(&mut self, staged: StagedCityTick) -> Vec<Vec<u8>> {
+        let started = std::time::Instant::now();
+        let mut reliable = Vec::new();
+        let sim_tick = staged.sim_tick;
+        if let CityBackend::Physx(backend) = &mut self.backend {
+            let output = staged.output;
+            let ingest_started = std::time::Instant::now();
+            match backend.staged_snapshots() {
+                Ok(snapshots) => {
+                    if self.live.is_some() {
+                        self.encoder.ingest_tick_topology_only(
+                            sim_tick,
+                            &snapshots,
+                            &output,
+                            &output.wakes,
+                        );
+                    } else {
+                        self.encoder.ingest_tick(
+                            sim_tick,
+                            &snapshots,
+                            &output,
+                            &output.wakes,
+                        );
+                    }
+                    if let Some(live) = self.live.as_mut() {
+                        live.ingest(&self.manifest, sim_tick, snapshots, &output);
+                    }
+                    reliable.extend(self.encoder.take_topology_messages());
+                }
+                Err(error) => {
+                    tracing::error!(%error, "city staged snapshot flush failed");
+                }
+            }
+            backend.record_host_timings(
+                staged.post_step_ms,
+                staged.snapshot_ms,
+                ingest_started.elapsed().as_secs_f32() * 1000.0,
+            );
+        }
+        if let Some(live) = self.live.as_mut() {
+            reliable.append(&mut live.staged_reliable);
+        }
+        if self.live.is_none() {
+            if let Some(baselines) = self.encoder.maybe_emit_baseline(sim_tick) {
+                reliable.extend(baselines);
+            }
+        }
+        if sim_tick % TOPO_HASH_INTERVAL_TICKS == 0 {
+            reliable.push(self.encoder.topology_hash_message());
+        }
+        self.last_encode_ms += started.elapsed().as_secs_f32() * 1000.0;
+        reliable
+    }
+
+    /// A bootstrap scoped to the named structures — the targeted repair a
+    /// topology-hash mismatch drives.
+    pub fn structure_bootstrap(&self, sim_tick: u32, structures: &[u32]) -> Vec<u8> {
+        self.encoder.structure_bootstrap_message(sim_tick, structures)
     }
 
     /// Wall time of the last 30 Hz stream encode, split into the shared record
@@ -1135,6 +1642,22 @@ impl CityRuntime {
             stats.blast_contact_processing_ms,
             stats.blast_gravity_ms,
             stats.blast_stress_solve_cpu_ms,
+            stats.blast_fracture_topology_ms,
+            stats.blast_mapping_validation_ms,
+            // Traced, not assumed: validateMappings() has three callers --
+            // initialisation, the crush-drain path, and fracture()'s return.
+            // Crush is inert (no material sets crushCapPressure > 0), so in
+            // production the validation delta comes only from fracture() and is
+            // always contained by the fracture delta. The clamp is defensive:
+            // if crush is ever enabled, the crush-drain caller would make this
+            // go negative rather than merely wrong.
+            (stats.blast_fracture_topology_ms - stats.blast_mapping_validation_ms).max(0.0),
+            stats.blast_fracture_generate_ms,
+            stats.blast_fracture_prep_ms,
+            stats.blast_fracture_apply_ms,
+            stats.blast_fracture_scene_ms,
+            stats.blast_fracture_rebuild_ms,
+            stats.settle_ms,
         ]);
         if let Some(live) = &self.live {
             self.tick_window
@@ -1206,6 +1729,19 @@ impl CityRuntime {
             CityBackend::Synthetic(_) => Vec::new(),
             #[cfg(feature = "destruction")]
             CityBackend::Physx(backend) => backend.debug_body_states(),
+            // Freeze has not been absorbed into the core yet, so there are no
+            // per-body freeze states to show. Empty rather than invented.
+            #[cfg(feature = "blast-core")]
+            CityBackend::Core(_) => Vec::new(),
+        }
+    }
+
+    /// This tick's generic bridge spans (see NamedSpan); empty off physx.
+    pub fn extra_spans(&self) -> Vec<vibe_land_destruction::types::NamedSpan> {
+        match &self.backend {
+            #[cfg(feature = "destruction")]
+            CityBackend::Physx(backend) => backend.extra_spans().to_vec(),
+            _ => Vec::new(),
         }
     }
 
@@ -1214,6 +1750,21 @@ impl CityRuntime {
             CityBackend::Synthetic(backend) => backend.stats(),
             #[cfg(feature = "destruction")]
             CityBackend::Physx(backend) => backend.stats(),
+            #[cfg(feature = "blast-core")]
+            CityBackend::Core(backend) => {
+                // Only the fields the core actually measures. The rest stay at
+                // their defaults rather than being filled with plausible
+                // numbers: this struct's own contract is that a stat which
+                // cannot be produced is worse than no stat, because it is a
+                // confident wrong answer.
+                let totals = backend.totals();
+                DestructionStats {
+                    chunk_bodies: backend.body_count() as u32,
+                    broken_bonds: totals.fractures as u32,
+                    structures: 1,
+                    ..DestructionStats::default()
+                }
+            }
         }
     }
 
@@ -1253,6 +1804,10 @@ impl CityRuntime {
             CityBackend::Synthetic(_) => false,
             #[cfg(feature = "destruction")]
             CityBackend::Physx(backend) => backend.degraded(),
+            // The core path has no degraded mode: attach either succeeds or the
+            // backend is never constructed.
+            #[cfg(feature = "blast-core")]
+            CityBackend::Core(_) => false,
         }
     }
 }

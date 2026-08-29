@@ -82,18 +82,54 @@ pub struct WorldConfig {
     pub gpu_collision_stack_size: u32,
 }
 
+/// Read an f32 from the environment, falling back to `default`.
+fn env_f32(name: &str, default: f32) -> f32 {
+    std::env::var(name)
+        .ok()
+        .and_then(|v| v.parse::<f32>().ok())
+        .filter(|v| v.is_finite())
+        .unwrap_or(default)
+}
+
+/// World gravity magnitude, m/s^2. Default 20.0.
+///
+/// One world, one gravity. The player already falls at 20 m/s^2 -- roughly 2x
+/// Earth, and near-exactly the Source engine's `sv_gravity 800` (800 in/s^2 =
+/// 20.32 m/s^2) that Half-Life, Counter-Strike and Team Fortress ship. Raising
+/// gravity for jump feel is standard practice; applying it to only part of the
+/// world is not. Source applies `sv_gravity` to players, props and ragdolls
+/// alike.
+///
+/// This scene previously ran the player at 20 and every rigid body at 9.81, so
+/// the player was the only reference frame the eye had and all debris read as
+/// falling in slow motion: an 84 m drop took 4.1 s instead of 2.9 s.
+///
+/// Override with VIBE_WORLD_GRAVITY (a positive magnitude).
+pub fn world_gravity_magnitude() -> f32 {
+    env_f32("VIBE_WORLD_GRAVITY", 20.0).abs()
+}
+
 impl Default for WorldConfig {
     fn default() -> Self {
         Self {
-            gravity: Vec3::new(0.0, -9.81, 0.0),
+            gravity: Vec3::new(0.0, -world_gravity_magnitude(), 0.0),
             cpu_threads: 4,
-            static_friction: 0.5,
-            dynamic_friction: 0.5,
-            restitution: 0.1,
+            // Contact response, which is where debris should actually lose
+            // energy -- on impact, not while falling through empty air.
+            // Concrete on concrete is roughly 0.6-0.8 friction and barely
+            // rebounds. Overridable so the feel can be dialled without a
+            // rebuild: VIBE_WORLD_FRICTION, VIBE_WORLD_RESTITUTION.
+            static_friction: env_f32("VIBE_WORLD_FRICTION", 0.5),
+            dynamic_friction: env_f32("VIBE_WORLD_FRICTION", 0.5),
+            restitution: env_f32("VIBE_WORLD_RESTITUTION", 0.1),
             contact_report_threshold: 50.0,
             gpu_max_partitions: 8,
             gpu_max_rigid_contacts: 2_097_152,
-            gpu_max_rigid_patches: 524_288,
+            // 4x the PhysX default. Measured overflowing at 547,670 during a
+            // two-tower collapse compounded by escaped-body CCD sweeps: the
+            // overflow drops contacts, which is the failure mode a no-caps
+            // simulation actually has. ~64 MB of GPU heap at this size.
+            gpu_max_rigid_patches: 2_097_152,
             gpu_heap_capacity: 268_435_456,
             gpu_found_lost_pairs_capacity: 1_048_576,
             gpu_found_lost_aggregate_pairs_capacity: 262_144,
@@ -458,6 +494,11 @@ pub struct DestructionStats {
     pub blast_stress_solve_cpu_ms: f32,
     pub blast_fracture_topology_ms: f32,
     pub blast_mapping_validation_ms: f32,
+    pub blast_fracture_generate_ms: f32,
+    pub blast_fracture_prep_ms: f32,
+    pub blast_fracture_apply_ms: f32,
+    pub blast_fracture_scene_ms: f32,
+    pub blast_fracture_rebuild_ms: f32,
     pub blast_sleeping_actors_skipped: u64,
     /// The last two untimed blocks inside the `stress_solve_ms` bracket:
     /// per-slot dispatch (live-slot gather + telemetry read + topology
@@ -470,6 +511,11 @@ pub struct DestructionStats {
     /// The one counter that says whether `events_ms`/`filters_ms: 0.0` means
     /// "the quiet-skip fired" or "the measurement is broken".
     pub quiet_slot_ticks: u64,
+    pub contacts_queued: u64,
+    pub solver_islands_skipped_accum: u64,
+    pub solver_islands_total_accum: u64,
+    pub ccd_tracked_bodies: u32,
+    pub identity_stamped_bodies: u32,
     pub sleeping_chunk_bodies: u32,
     /// Structures currently solved on the GPU. Zero while the CUDA solver is
     /// compiled in means every graph fell below the bond crossover, or CUDA
@@ -487,6 +533,11 @@ pub struct DestructionStats {
     /// Bodies held kinematic to retire them from the solver, and the flip
     /// counts that produced that level.
     pub frozen_chunk_bodies: u32,
+    /// P1b clusters: PxAggregates currently holding frozen bodies, and how
+    /// many bodies they hold. frozen_chunk_bodies minus this is the
+    /// standalone remainder (fallbacks + measuring mode).
+    pub frozen_aggregates: u32,
+    pub frozen_aggregate_actors: u32,
     pub freeze_flips: u64,
     pub unfreeze_flips: u64,
     /// Frozen bodies released because dynamic debris struck them: the
@@ -496,6 +547,11 @@ pub struct DestructionStats {
     pub support_promotions: u64,
     /// Freeze/unfreeze calls refused for naming a rooted body. Must stay 0.
     pub rooted_guard_blocks: u64,
+    /// Re-sleep writes issued because a kinematic flip woke the flipped
+    /// body's contact island as collateral. Counts writes, not confirmed
+    /// wakes. Non-zero is normal and means the repair is running; see
+    /// `freeze_island_resleep` in destruction.cc.
+    pub island_resleep_writes: u64,
     /// Ground-anchored kinematic fragments currently standing.
     pub rooted_chunk_bodies: u32,
     /// Weight-bearing dependency edges currently held by the bridge.
@@ -532,9 +588,37 @@ pub const fn gpu_support_compiled() -> bool {
     cfg!(feature = "gpu")
 }
 
+/// One generically-authored metric from the bridge — see `FfiNamedSpan`.
+/// Rides BESIDE the Copy stats structs (a Vec on them would break every Copy
+/// consumer), stashed per stats call and drained with `take_*_spans`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct NamedSpan {
+    pub name: String,
+    pub value: f64,
+    /// 0 = wall-clock ms, 1 = slot-summed ms (not comparable to wall
+    /// parents), 2 = plain count.
+    pub kind: u8,
+}
+
+#[cfg(feature = "gpu")]
+fn convert_spans(spans: Vec<ffi::FfiNamedSpan>) -> Vec<NamedSpan> {
+    spans
+        .into_iter()
+        .map(|span| NamedSpan {
+            name: span.name,
+            value: span.value,
+            kind: span.kind,
+        })
+        .collect()
+}
+
 pub struct World {
     #[cfg(feature = "gpu")]
     inner: cxx::UniquePtr<ffi::World>,
+    /// Spans from the most recent `destruction_stats()` / `stats()` calls.
+    /// RefCell because both stats methods take `&self`.
+    destruction_spans: std::cell::RefCell<Vec<NamedSpan>>,
+    world_spans: std::cell::RefCell<Vec<NamedSpan>>,
     #[cfg(not(feature = "gpu"))]
     _stub: (),
 }
@@ -551,13 +635,27 @@ impl World {
                     "native constructor returned a null world".into(),
                 ));
             }
-            Ok(Self { inner })
+            Ok(Self {
+                inner,
+                destruction_spans: std::cell::RefCell::new(Vec::new()),
+                world_spans: std::cell::RefCell::new(Vec::new()),
+            })
         }
         #[cfg(not(feature = "gpu"))]
         {
             let _ = config;
             Err(stub_unavailable())
         }
+    }
+
+    /// Spans stashed by the most recent `destruction_stats()` call; drained.
+    pub fn take_destruction_spans(&self) -> Vec<NamedSpan> {
+        std::mem::take(&mut self.destruction_spans.borrow_mut())
+    }
+
+    /// Spans stashed by the most recent `stats()` call; drained.
+    pub fn take_world_spans(&self) -> Vec<NamedSpan> {
+        std::mem::take(&mut self.world_spans.borrow_mut())
     }
 
     pub fn add_static_box(&mut self, desc: StaticBoxDesc) -> Result<(), BridgeError> {
@@ -880,7 +978,14 @@ impl World {
     pub fn stats(&self) -> Result<WorldStats, BridgeError> {
         #[cfg(feature = "gpu")]
         {
-            self.inner.stats().map(Into::into).map_err(operation_error)
+            self.inner
+                .stats()
+                .map(|mut ffi_stats| {
+                    *self.world_spans.borrow_mut() =
+                        convert_spans(std::mem::take(&mut ffi_stats.extra_spans));
+                    ffi_stats.into()
+                })
+                .map_err(operation_error)
         }
         #[cfg(not(feature = "gpu"))]
         {
@@ -1130,8 +1235,38 @@ impl World {
     pub fn destruction_stats(&self) -> Result<DestructionStats, BridgeError> {
         self.inner
             .destruction_stats()
-            .map(Into::into)
+            .map(|mut ffi_stats| {
+                *self.destruction_spans.borrow_mut() =
+                    convert_spans(std::mem::take(&mut ffi_stats.extra_spans));
+                ffi_stats.into()
+            })
             .map_err(operation_error)
+    }
+
+    /// Cumulative island splits. A tick fractured iff this increased across it.
+    #[cfg(feature = "destruction")]
+    pub fn split_count(&self) -> Result<u64, BridgeError> {
+        self.inner.split_count().map_err(operation_error)
+    }
+
+    /// True when a fracture-frame resimulation capture should be taken before
+    /// the next `step()`. See DestructionManager::resim_needed.
+    #[cfg(feature = "destruction")]
+    pub fn resim_needed(&self) -> Result<bool, BridgeError> {
+        self.inner.resim_needed().map_err(operation_error)
+    }
+
+    /// Capture motion state. Must run outside a step, in the Idle tick phase.
+    #[cfg(feature = "destruction")]
+    pub fn resim_capture(&mut self) -> Result<u32, BridgeError> {
+        self.inner.pin_mut().resim_capture().map_err(operation_error)
+    }
+
+    /// Rewind motion to the capture so the step can be re-run against the
+    /// already-split pieces. Topology, mass and shapes are kept.
+    #[cfg(feature = "destruction")]
+    pub fn resim_restore(&mut self) -> Result<bool, BridgeError> {
+        self.inner.pin_mut().resim_restore().map_err(operation_error)
     }
 
     #[cfg(feature = "destruction")]
@@ -1139,6 +1274,22 @@ impl World {
         self.inner
             .validate_destruction_mappings()
             .map_err(operation_error)
+    }
+
+    /// Raw `PxScene*` as an integer, for handing this scene to another
+    /// subsystem.
+    ///
+    /// The destructible city, players and vehicles all have to live in one
+    /// scene, so the blast-stress-solver core attaches to this rather than
+    /// standing up a second world. The pointer is valid for the lifetime of
+    /// this `World`.
+    pub fn scene_ptr(&self) -> Result<usize, BridgeError> {
+        self.inner.scene_ptr().map_err(operation_error)
+    }
+
+    /// Raw `PxPhysics*` as an integer. See [`scene_ptr`](Self::scene_ptr).
+    pub fn physics_ptr(&self) -> Result<usize, BridgeError> {
+        self.inner.physics_ptr().map_err(operation_error)
     }
 }
 
@@ -1305,6 +1456,7 @@ mod ffi {
     }
 
     struct FfiWorldStats {
+        extra_spans: Vec<FfiNamedSpan>,
         body_count: u32,
         player_count: u32,
         vehicle_count: u32,
@@ -1420,7 +1572,22 @@ mod ffi {
         flags: u32,
     }
 
+    /// One generically-authored metric flowing through stats with no
+    /// per-field plumbing. Adding a NEW timing used to thread through six
+    /// files (bridge header → fill → this bridge ×2 → runtime copy → netcode
+    /// struct → server publish) — which is exactly why coverage had holes.
+    /// With this channel a new C++ metric is one `span_add(...)` line and it
+    /// appears in match-stats, traces and debug reports automatically.
+    /// kind: 0 = wall-clock ms, 1 = slot-summed ms (NOT comparable to wall
+    /// parents), 2 = plain count.
+    struct FfiNamedSpan {
+        name: String,
+        value: f64,
+        kind: u8,
+    }
+
     struct FfiDestructionStats {
+        extra_spans: Vec<FfiNamedSpan>,
         overstressed_bonds: u32,
         contacts_processed: u32,
         contacts_dropped: u32,
@@ -1457,11 +1624,21 @@ mod ffi {
         blast_stress_solve_cpu_ms: f32,
         blast_fracture_topology_ms: f32,
         blast_mapping_validation_ms: f32,
+        blast_fracture_generate_ms: f32,
+        blast_fracture_prep_ms: f32,
+        blast_fracture_apply_ms: f32,
+        blast_fracture_scene_ms: f32,
+        blast_fracture_rebuild_ms: f32,
         blast_sleeping_actors_skipped: u64,
         slot_dispatch_ms: f32,
         bond_sample_ms: f32,
         /// Slot-ticks where the topology diff was skipped as quiet.
         quiet_slot_ticks: u64,
+        contacts_queued: u64,
+        solver_islands_skipped_accum: u64,
+        solver_islands_total_accum: u64,
+        ccd_tracked_bodies: u32,
+        identity_stamped_bodies: u32,
         sleeping_chunk_bodies: u32,
         repeated_body_snapshots: u64,
         gpu_stress_structures: u32,
@@ -1476,6 +1653,9 @@ mod ffi {
         sleeping_actors_skipped: u64,
         /// Bodies the bridge is holding kinematic, out of the solver.
         frozen_chunk_bodies: u32,
+        /// P1b: PxAggregates holding frozen bodies, and the bodies in them.
+        frozen_aggregates: u32,
+        frozen_aggregate_actors: u32,
         /// Must stay zero: a frozen body reaching a serial-issuing path would
         /// alias settled rubble onto the structure's support actor.
         frozen_serial_blocks: u64,
@@ -1491,6 +1671,8 @@ mod ffi {
         /// Freeze/unfreeze calls that named a rooted body and were refused.
         /// Must stay zero.
         rooted_guard_blocks: u64,
+        /// Re-sleep writes issued after a kinematic flip woke its island.
+        island_resleep_writes: u64,
         /// Ground-anchored kinematic fragments currently standing.
         rooted_chunk_bodies: u32,
         /// Weight-bearing dependency edges currently held.
@@ -1636,6 +1818,15 @@ mod ffi {
         fn bond_stress_rows(self: &World, structure_id: u32) -> Result<Vec<FfiBondStressRow>>;
         fn destruction_stats(self: &World) -> Result<FfiDestructionStats>;
         fn validate_destruction_mappings(self: &World) -> Result<bool>;
+        fn split_count(self: &World) -> Result<u64>;
+        fn resim_needed(self: &World) -> Result<bool>;
+        fn resim_capture(self: Pin<&mut World>) -> Result<u32>;
+        fn resim_restore(self: Pin<&mut World>) -> Result<bool>;
+
+        /// Raw PhysX handles, so the blast-stress-solver core can attach a
+        /// backend to this scene instead of creating a second one.
+        fn scene_ptr(self: &World) -> Result<usize>;
+        fn physics_ptr(self: &World) -> Result<usize>;
     }
 }
 
@@ -2049,10 +2240,20 @@ impl From<ffi::FfiDestructionStats> for DestructionStats {
             blast_stress_solve_cpu_ms: value.blast_stress_solve_cpu_ms,
             blast_fracture_topology_ms: value.blast_fracture_topology_ms,
             blast_mapping_validation_ms: value.blast_mapping_validation_ms,
+            blast_fracture_generate_ms: value.blast_fracture_generate_ms,
+            blast_fracture_prep_ms: value.blast_fracture_prep_ms,
+            blast_fracture_apply_ms: value.blast_fracture_apply_ms,
+            blast_fracture_scene_ms: value.blast_fracture_scene_ms,
+            blast_fracture_rebuild_ms: value.blast_fracture_rebuild_ms,
             blast_sleeping_actors_skipped: value.blast_sleeping_actors_skipped,
             slot_dispatch_ms: value.slot_dispatch_ms,
             bond_sample_ms: value.bond_sample_ms,
             quiet_slot_ticks: value.quiet_slot_ticks,
+            contacts_queued: value.contacts_queued,
+            solver_islands_skipped_accum: value.solver_islands_skipped_accum,
+            solver_islands_total_accum: value.solver_islands_total_accum,
+            ccd_tracked_bodies: value.ccd_tracked_bodies,
+            identity_stamped_bodies: value.identity_stamped_bodies,
             sleeping_chunk_bodies: value.sleeping_chunk_bodies,
             repeated_body_snapshots: value.repeated_body_snapshots,
             gpu_stress_structures: value.gpu_stress_structures,
@@ -2061,11 +2262,14 @@ impl From<ffi::FfiDestructionStats> for DestructionStats {
             solver_islands_skipped: value.solver_islands_skipped,
             sleeping_actors_skipped: value.sleeping_actors_skipped,
             frozen_chunk_bodies: value.frozen_chunk_bodies,
+            frozen_aggregates: value.frozen_aggregates,
+            frozen_aggregate_actors: value.frozen_aggregate_actors,
             freeze_flips: value.freeze_flips,
             unfreeze_flips: value.unfreeze_flips,
             contact_wakes: value.contact_wakes,
             support_promotions: value.support_promotions,
             rooted_guard_blocks: value.rooted_guard_blocks,
+            island_resleep_writes: value.island_resleep_writes,
             rooted_chunk_bodies: value.rooted_chunk_bodies,
             support_edges: value.support_edges,
             frozen_serial_blocks: value.frozen_serial_blocks,

@@ -18,6 +18,7 @@
 
 namespace physx {
 class PxActor;
+class PxAggregate;
 class PxMaterial;
 class PxPhysics;
 class PxRigidDynamic;
@@ -82,9 +83,17 @@ private:
   const std::function<void(std::size_t)> *task_ = nullptr;
   std::size_t count_ = 0;
   std::atomic<std::size_t> next_{0};
-  std::size_t active_ = 0;
-  std::uint64_t generation_ = 0;
-  bool stop_ = false;
+  // Atomic so the barrier costs an atomic op rather than a lock. The old
+  // shape took the mutex twice per worker per dispatch -- once to wait on
+  // start_, once to decrement active_ -- which is ~62 serialised acquisitions
+  // for 31 workers and measured ~1.009 ms per dispatch. A good pool barrier
+  // is 5-20 us.
+  std::atomic<unsigned> active_{0};
+  std::atomic<std::uint64_t> generation_{0};
+  std::atomic<bool> stop_{false};
+  /// Set only while the caller is actually parked, so workers can skip the
+  /// notify (and its lock) on the overwhelmingly common path.
+  std::atomic<bool> caller_parked_{false};
   std::exception_ptr error_;
 };
 
@@ -127,6 +136,40 @@ public:
                                         float push_impulse);
 
   /// Route a PhysX contact pair into the owning destructible(s).
+  /// Opaque to callers: they receive a ContactTarget from
+  /// resolve_contact_target and hand it straight back to queue_contact_at.
+  struct Slot;
+
+  /// A contact's destination, resolved once per shape per manifold.
+  ///
+  /// Every point in a PhysX manifold belongs to the same pair of shapes, so
+  /// resolving the owner per POINT -- which is what route_contact_shape does --
+  /// repeats a hash lookup and a linear slot scan for every point after the
+  /// first. Measured 2.06-3.64 points per manifold on downtown, so most of
+  /// that work was redundant.
+  struct ContactTarget {
+    Slot *slot = nullptr;
+    physx::PxShape *shape = nullptr;
+    /// Owner coordinates from the same shape_owners_ hit that produced slot.
+    /// Carried so note_pair_load can skip re-running the identical lookup
+    /// chain (hash + linear slot scan) for a shape this manifold already
+    /// resolved. Only meaningful when slot != nullptr.
+    std::uint32_t structure_id = 0;
+    std::uint32_t node_index = 0;
+    /// Blast's own node for this shape (nodeForShape), resolved once here so
+    /// queue_contact_at skips the per-POINT m_shapeToNode hash inside
+    /// queueContact. Deliberately NOT node_index above: that is the manager's
+    /// registration-time mapping, this is the adapter's live one — they agree
+    /// except possibly mid-fracture, and the adapter's answer is the one the
+    /// per-point lookup would have produced. UINT32_MAX falls back to the
+    /// original in-queue resolution, bit-for-bit.
+    std::uint32_t blast_node = 0xFFFFFFFFu;
+    explicit operator bool() const { return slot != nullptr; }
+  };
+  ContactTarget resolve_contact_target(physx::PxShape *shape);
+  void queue_contact_at(const ContactTarget &target, FfiVec3 position,
+                        FfiVec3 impulse, bool wake);
+
   void route_contact_shape(physx::PxShape *shape, FfiVec3 position,
                            FfiVec3 impulse, bool wake);
 
@@ -199,6 +242,21 @@ public:
   void note_pair_load(const physx::PxShape *shape_a, const physx::PxShape *shape_b,
                       const physx::PxActor *actor_a, const physx::PxActor *actor_b,
                       float sum_abs_impulse_y, float min_separation);
+  /// Same record, but reusing the manifold's already-resolved ContactTargets
+  /// so the chunk side skips shape_owners_.find + find_slot. A null target
+  /// falls back to the full per-shape resolution — resolve_contact_target
+  /// returns null in strictly more cases than "not a chunk" (e.g. a slot
+  /// whose destructible is gone), and those cases must keep their original
+  /// classification. Outcome-identical to the overload above by construction.
+  void note_pair_load(const ContactTarget &target_a, const ContactTarget &target_b,
+                      const physx::PxShape *shape_a, const physx::PxShape *shape_b,
+                      const physx::PxActor *actor_a, const physx::PxActor *actor_b,
+                      float sum_abs_impulse_y, float min_separation);
+  /// Latch "this chunk body has touched static geometry" for the settle
+  /// assist. Called from both note_pair_load entries once both sides are
+  /// resolved; a no-op unless exactly one side is a chunk and the other is
+  /// static world geometry.
+  void note_ground_touch(const PendingPairLoad &load);
 
   /// Support-set drains: one FfiSupportSet per dependent whose supporter set
   /// changed this tick, indexing into the rows drain. Both are cleared
@@ -250,11 +308,32 @@ public:
   FfiDestructionStats destruction_stats() const;
   bool validate_destruction_mappings() const;
 
-private:
-  struct Slot;
+  /// Fracture-frame resimulation (Blast engine contract 2.8).
+  ///
+  /// Without it, a tower striking another resolves the contact against the
+  /// INTACT rigid body: the split happens afterwards, so the fragments are
+  /// placed into a world where the impact has already finished and they never
+  /// experience it. Capture before simulate; if the tick fractured, restore
+  /// motion and re-run the step so contacts resolve against the pieces.
+  ///
+  /// Restore rewinds motion state ONLY -- topology, masses, shapes and
+  /// kinematic flags survive. Both calls require the destructible to be in its
+  /// Idle tick phase and must run outside simulate/fetchResults.
+  /// Cumulative island splits across all slots. The resim protocol keys off
+  /// this: a tick fractured iff splits increased across it.
+  std::uint64_t split_count() const;
+  bool resim_needed() const;
+  std::uint32_t resim_capture();
+  bool resim_restore();
 
+private:
   Slot *find_slot(std::uint32_t structure_id);
   const Slot *find_slot(std::uint32_t structure_id) const;
+  /// Full per-shape resolution for one side of a pair load — the shared body
+  /// of both note_pair_load entries; the resolved-target overload calls it
+  /// only for sides without a usable ContactTarget.
+  PendingPairSide resolve_pair_side(const physx::PxShape *shape,
+                                    const physx::PxActor *actor);
   /// Shared body of freeze_chunk_bodies / unfreeze_chunk_bodies.
   std::uint32_t set_chunk_bodies_kinematic(rust::Slice<const std::uint32_t> entity_ids,
                                            bool kinematic);
@@ -277,8 +356,54 @@ private:
       std::getenv("VIBE_CITY_CHUNK_CONTACT_REPORTS") == nullptr
       || std::string(std::getenv("VIBE_CITY_CHUNK_CONTACT_REPORTS")) != "0";
 
+  /// P1b: spatial-cell PxAggregates holding FROZEN bodies, one broadphase
+  /// entry per cluster instead of one per body. Members remain real actors
+  /// with real shapes — contacts against dynamics, the contact-wake release
+  /// path, and geometry are unchanged; self-collision is off because members
+  /// are kinematic and mutually at rest, so PhysX generated no pairs among
+  /// them anyway. Occupancy is read live from PxAggregate (a body released
+  /// by the adapter while frozen leaves its aggregate automatically); only
+  /// the per-aggregate shape tally is shadowed, and compaction recomputes it.
+  void frozen_aggregate_insert(physx::PxRigidDynamic &body);
+  void frozen_aggregate_extract(physx::PxRigidDynamic &body);
+  physx::PxAggregate *frozen_aggregate_for(float x, float z, std::uint32_t shapes);
+  void frozen_aggregate_maybe_retire(physx::PxAggregate *aggregate);
+  void frozen_aggregates_release_all();
+
+  std::unordered_map<std::uint64_t, std::vector<physx::PxAggregate *>>
+      frozen_agg_cells_;
+  std::unordered_map<physx::PxAggregate *, std::uint32_t> frozen_agg_shapes_;
+  /// Empty aggregates parked for reuse; freeze churn is hundreds of flips a
+  /// second at the pile margins and create/release would thrash the GPU BP.
+  std::vector<physx::PxAggregate *> frozen_agg_pool_;
+  std::uint64_t frozen_agg_inserts_ = 0;
+  std::uint64_t frozen_agg_extracts_ = 0;
+  std::uint64_t frozen_agg_retired_ = 0;
+  std::uint64_t frozen_agg_fallbacks_ = 0;
+
+  /// Generic named-span channel (see FfiNamedSpan in lib.rs): a new metric is
+  /// ONE span_add call — no header/struct/copy plumbing. Cleared at tick
+  /// entry; drained by destruction_stats(). kind: 0 wall ms, 1 slot-summed
+  /// ms, 2 count. Same-name adds within a tick accumulate.
+  void span_add(const char *name, double value, std::uint8_t kind);
+  std::vector<std::pair<const char *, std::pair<double, std::uint8_t>>>
+      extra_spans_;
+
   std::vector<std::unique_ptr<Slot>> slots_;
   std::unique_ptr<StressExecutor> stress_executor_;
+  /// Separate pool for the bond-stress strip walk.
+  ///
+  /// The walk is dispatched from INSIDE a slot-fan-out task, so it cannot use
+  /// stress_executor_ -- re-entering a pool from its own task deadlocks it
+  /// (see tl_active_executor). A second pool has its own generation state, so
+  /// the dispatch is legal; bond_dispatch_mutex_ serialises the slots' turns
+  /// on it, since StressExecutor::run drives one generation at a time.
+  ///
+  /// Slots therefore take turns on a wide pool rather than running 4-wide and
+  /// leaving ~26 cores idle: at grid 2 that trades 2.3x slot concurrency for
+  /// ~8x within each slot's walk.
+  std::unique_ptr<StressExecutor> bond_executor_;
+  std::mutex bond_dispatch_mutex_;
   /// Live structures for the current tick; a member so the per-tick gather
   /// does not reallocate, and so the parallel phase can index it.
   std::vector<Slot *> live_slots_;
@@ -287,7 +412,14 @@ private:
 
   /// Last entity id stamped onto each body / shape. Re-stamping identical
   /// data wakes a sleeping PhysX actor, so only changes are written.
-  std::unordered_map<const physx::PxRigidDynamic *, std::uint32_t> body_entity_stamp_;
+  /// Keyed by (structure_id, bodyId), never by PxRigidDynamic*.
+  ///
+  /// The adapter recycles actors, so a pointer can outlive the body it
+  /// belonged to and come back pointing at a different one -- the same hazard
+  /// the `frozen` set documents. Pointer-keyed, a recycled address inherited
+  /// the dead body's entity stamp, and the "identity unchanged" test below
+  /// then skipped tag_actor() for a body that had never been tagged.
+  std::unordered_map<std::uint64_t, std::uint32_t> body_entity_stamp_;
   std::unordered_map<const physx::PxShape *, std::uint32_t> shape_entity_stamp_;
 
   /// Bond-utilisation sampling cadence. The scan walks every bond of every
@@ -297,6 +429,13 @@ private:
   std::uint32_t bond_sample_counter_ = 0;
   /// Slot-ticks where topology was unchanged and the event diff was skipped.
   std::uint64_t quiet_slot_ticks_ = 0;
+  /// Running totals of the per-tick island partition, so a rate can be had by
+  /// differencing two samples. `solver_islands_skipped` is a GAUGE of the last
+  /// tick and a bond break zeroes it by design, so it reads 0 through an entire
+  /// demolition even while skipping works -- it cannot judge anything on its
+  /// own. These accumulate every tick instead of being sampled at publish.
+  std::uint64_t solver_islands_skipped_accum_ = 0;
+  std::uint64_t solver_islands_total_accum_ = 0;
   std::uint64_t serial_wraps_ = 0;
   /// Wake requests exceeding a slot's wake buffer. Non-zero means a contacted
   /// sleeping body was left asleep for a tick.
@@ -314,7 +453,29 @@ private:
       emitted_entities_;
   /// Bodies with speculative CCD enabled. Applied once per body, outside the
   /// event diff, so a body that turns dynamic on a quiet tick cannot miss it.
-  std::unordered_set<physx::PxRigidDynamic *> ccd_enabled_;
+  /// Keyed by (structure_id, bodyId), never by PxRigidDynamic*. Same recycling
+  /// hazard as body_entity_stamp_, and a worse failure: pointer-keyed, a
+  /// recycled address made insert().second false, so the NEW body silently
+  /// never received eENABLE_SPECULATIVE_CCD or its depenetration cap -- exactly
+  /// the tunnelling this block exists to prevent. Erased on retire.
+  std::unordered_set<std::uint64_t> ccd_enabled_;
+  /// Chunk bodies that have touched STATIC world geometry at least once.
+  ///
+  /// The settle assist (VIBE_CITY_SETTLE_ASSIST) is gated on this, and the
+  /// gate is the whole safety argument: raising a body's sleep threshold is
+  /// what once froze ballistic debris at the apex of its arc (see
+  /// kChunkSleepThreshold), and a body still in flight has never touched the
+  /// ground, so it can never be assisted. Latched in note_pair_load, which
+  /// runs inside fetchResults and may only touch host state.
+  /// Keyed by (structure_id, bodyId) and erased on retire, for the same
+  /// recycling reason as ccd_enabled_.
+  std::unordered_set<std::uint64_t> ground_touched_;
+  /// Bodies whose damping and sleep threshold have already been raised.
+  /// insert().second is the write-once test: rewriting a rigid-body property
+  /// wakes a sleeping actor, so the assist must never be re-applied.
+  std::unordered_set<std::uint64_t> settle_assisted_;
+  std::uint64_t ground_touch_latches_ = 0;
+  std::uint64_t settle_assist_applied_ = 0;
   /// Times getBodySnapshots returned one bodyId more than once in a tick.
   /// Mutable because refresh_snapshots is const; this is pure observation.
   mutable std::uint64_t repeated_body_snapshots_ = 0;
@@ -337,6 +498,12 @@ private:
   /// Freeze/unfreeze calls that named a ROOTED body and were refused.
   /// Releasing a stump would drop a standing building; must stay zero.
   std::uint64_t rooted_guard_blocks_ = 0;
+  /// Re-sleep WRITES issued after a kinematic flip woke the flipped body's
+  /// contact island as collateral. Counts writes, not confirmed wakes: the
+  /// woken set is not observable on the host until the next fetchResults, so
+  /// the repair writes to every body the engine had asleep before the batch.
+  /// See `freeze_island_resleep` in destruction.cc.
+  std::uint64_t island_resleep_writes_ = 0;
 
   /// The weight-bearing dependency store: who is holding each body up,
   /// according to the engine's own contact reports.
@@ -358,6 +525,11 @@ private:
     /// Most negative separation across this body's contacts, last report.
     float min_separation = 0.0f;
     bool dirty = false;
+    /// Did the supporter SET actually change this tick, as opposed to being
+    /// merely touched? `dirty` is set on every report, so it answers "was
+    /// this body mentioned", not "is what we hold about it now different" --
+    /// measurement only for the moment, to size the difference.
+    bool set_changed = false;
     std::vector<SupporterRec> supporters;
   };
   /// Keyed by (structure_id << 48) | bodyId. bodyIds are per-structure
@@ -387,6 +559,18 @@ private:
   std::unordered_set<std::uint32_t> frozen_entities_;
   /// Contact-struck frozen bodies awaiting the per-tick drain (deduped).
   std::unordered_set<std::uint32_t> contact_wake_pending_;
+  /// Per-tick accumulated contact impulse and heaviest striker per frozen
+  /// body; judged once per tick in resolve_frozen_contact_wakes().
+  std::unordered_map<std::uint32_t, float> contact_tick_load_;
+  std::unordered_map<std::uint32_t, float> contact_tick_striker_;
+  void resolve_frozen_contact_wakes();
+  /// Steady contact load each frozen body bears, per entity.
+  ///
+  /// A buried chunk carries the accumulated weight of the pile above it, which
+  /// is large but *constant*. An impact is a transient spike. Comparing against
+  /// a single striker's weight cannot tell those apart; comparing against what
+  /// this body has actually been bearing can.
+  std::unordered_map<std::uint32_t, float> contact_load_baseline_;
   std::vector<std::uint32_t> contact_wake_order_;
   /// Fixed step from the last destruction_tick, for the resting-load ratio.
   float last_dt_ = 1.0f / 60.0f;
@@ -401,6 +585,42 @@ private:
 
   std::uint32_t total_broken_bonds_ = 0;
   float last_stress_solve_ms_ = 0.0f;
+  /// Native tick wall time minus every phase that claims part of it.
+  float last_stress_solve_residual_ms_ = 0.0f;
+  /// Cached-node-index audit. Only written under
+  /// VIBE_PHYSX_NODE_CACHE_VERIFY; mismatches must be zero.
+  std::uint64_t node_cache_mismatches_ = 0;
+  std::uint64_t node_cache_checks_ = 0;
+  /// Per-tick host split of the GPU solve, summed across slots.
+  /// Mutable for the same reason last_gpu_stress_solve_ms is written from a
+  /// const stats walk: these are observation state, not scene state.
+  mutable double gpu_host_work_ms_ = 0.0;
+  mutable double gpu_host_blocked_ms_ = 0.0;
+  mutable double stress_initialize_ms_ = 0.0;
+  mutable double stress_impulse_copy_ms_ = 0.0;
+  mutable double stress_graph_solve_ms_ = 0.0;
+  mutable std::uint64_t bond_stress_skipped_ = 0;
+  mutable std::uint64_t bs_gpu_skipped_ = 0;
+  mutable std::uint64_t bs_gpu_runs_ = 0;
+  mutable std::uint64_t bs_par_checks_ = 0;
+  mutable std::uint64_t bs_par_mismatches_ = 0;
+  mutable double hw_walk_in_ms_ = 0.0;
+  mutable double hw_reset_ms_ = 0.0;
+  mutable double hw_bond_stress_ms_ = 0.0;
+  mutable double hw_node_stress_ms_ = 0.0;
+  mutable double stress_drain_ms_ = 0.0;
+  mutable std::uint64_t bondless_verify_checks_ = 0;
+  mutable std::uint64_t bondless_verify_mismatches_ = 0;
+  mutable double stress_calc_error_ms_ = 0.0;
+  /// Supporter-edge census. Where the ~13.8k pairs a tick actually go.
+  std::uint64_t sup_record_calls_ = 0;
+  std::uint64_t sup_reject_kinematic_ = 0;
+  std::uint64_t sup_reject_fy_ = 0;
+  std::uint64_t sup_edge_existing_ = 0;
+  std::uint64_t sup_edge_new_ = 0;
+  std::uint64_t sup_sets_staged_ = 0;
+  std::uint64_t sup_sets_unchanged_ = 0;
+  std::uint64_t sup_rows_staged_ = 0;
   /// Per-phase breakdown of destruction_tick.
   /// beginTick (contact/gravity injection) across all structures. Parallel
   /// over slots by default (VIBE_CITY_SNAPSHOT_BEGIN); only the wakeUp apply

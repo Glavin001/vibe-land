@@ -6,6 +6,11 @@
 #include "destruction.h"
 #endif
 
+#if defined(__x86_64__) || defined(_M_X64)
+#include <x86intrin.h>
+#define VIBE_HAVE_RDTSC 1
+#endif
+
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -18,6 +23,7 @@
 #include <mutex>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -120,12 +126,201 @@ void tag_actor(PxActor &actor, std::uint32_t entity_id) {
       reinterpret_cast<void *>(static_cast<std::uintptr_t>(entity_id) + 1);
 }
 
+/// A/B for the onContact common-subexpression work. Value-checked: a presence
+/// check here would make `=0` mean "on", which has already bitten this tree.
+bool contact_cse_enabled() {
+  static const bool enabled = [] {
+    const char *value = std::getenv("VIBE_PHYSX_CONTACT_CSE");
+    return value == nullptr || std::string(value) != "0";
+  }();
+  return enabled;
+}
+
+/// Cycle counter for probes that fire thousands of times per tick.
+///
+/// `steady_clock::now()` costs ~20-25 ns; `rdtsc` costs ~7. At cascade rates
+/// (6.5k contact callbacks/tick, two reads each) that is the difference
+/// between ~0.30 ms of measurement overhead and ~0.09 -- and the 0.30 was
+/// enough to swamp the very costs the sub-span probes were added to price.
+/// Cheap enough to time EVERY callback exactly instead of extrapolating from
+/// a 1-in-8 sample, which is the point: an exact small number beats a
+/// sampled large one.
+///
+/// Assumes an invariant TSC (every x86-64 CPU since Nehalem). The
+/// calibration below is checked against steady_clock at startup, and
+/// end_step cross-checks the result against a wall-clock bracket every tick,
+/// publishing `tsc_suspect` if they disagree — a clock this code trusts must
+/// be able to report its own failure.
+inline std::uint64_t cycle_now() {
+#ifdef VIBE_HAVE_RDTSC
+  return __rdtsc();
+#else
+  return static_cast<std::uint64_t>(
+      std::chrono::steady_clock::now().time_since_epoch().count());
+#endif
+}
+
+/// Milliseconds per cycle, calibrated once against steady_clock.
+double cycles_to_ms_factor() {
+  static const double factor = [] {
+#ifdef VIBE_HAVE_RDTSC
+    const auto wall_start = std::chrono::steady_clock::now();
+    const std::uint64_t cycle_start = cycle_now();
+    // 20 ms is long enough that scheduler noise is <1% and short enough to
+    // stay invisible in startup.
+    while (std::chrono::steady_clock::now() - wall_start <
+           std::chrono::milliseconds(20)) {
+    }
+    const std::uint64_t cycles = cycle_now() - cycle_start;
+    const double ms = std::chrono::duration<double, std::milli>(
+                          std::chrono::steady_clock::now() - wall_start)
+                          .count();
+    if (cycles == 0 || ms <= 0.0) {
+      return 0.0;
+    }
+    return ms / static_cast<double>(cycles);
+#else
+    // steady_clock fallback: cycle_now already returns its native ticks.
+    return std::chrono::duration<double, std::milli>(
+               std::chrono::steady_clock::duration(1))
+        .count();
+#endif
+  }();
+  return factor;
+}
+
+/// How often to measure PhysX's own simulation wall time by polling instead
+/// of blocking. 0 disables; N samples one tick in N.
+///
+/// The poll does not merely add overhead: it converts a blocking wait into a
+/// spin, so the sampled tick pays its whole sim_wall in burnt core, competing
+/// with PhysX's task threads and the Blast walks. Cost is therefore
+/// sim_wall / interval. Measured at interval 16 on a grid-2 bombardment:
+/// +0.29 ms/tick weighted, against 4.8 ms sim_wall at load — 4.8/16 = 0.30
+/// predicted, so the model is linear and trustworthy.
+///
+/// Default 16 = ~0.29 ms/tick measured. Chosen over a cheaper 64 because
+/// the recent-sample ring must refill fast enough to describe the CURRENT
+/// regime: a cascade lasts seconds, and at 1-in-64 a 16-sample mean spans
+/// ~17 s, which would average the collapse together with the settle after
+/// it. At 1-in-16 the same ring covers ~4 s. Still far cheaper than the old
+/// all-or-nothing PROFILE_FETCH (+0.91 ms, and therefore off in
+/// production): the split is now cheap enough to leave ON while people
+/// play, which is the whole point.
+unsigned gpu_sample_interval() {
+  static const unsigned interval = [] {
+    if (const char *raw = std::getenv("VIBE_PHYSX_GPU_SAMPLE_TICKS")) {
+      const long parsed = std::atol(raw);
+      return parsed < 0 ? 0u : static_cast<unsigned>(parsed);
+    }
+    return 16u;
+  }();
+  return interval;
+}
+
+/// A/B for the A1+A2 lookup elisions: note_pair_load reusing the manifold's
+/// resolved targets, and queueContact taking a pre-resolved Blast node.
+/// ON by default; `=0` restores the original per-side / per-point lookups.
+///
+/// A runtime switch rather than two builds on purpose: one binary means the
+/// arms cannot differ by anything else, which is the failure mode that has
+/// wasted the most time on this tree.
+bool contact_fastpath_enabled() {
+  static const bool enabled = [] {
+    const char *value = std::getenv("VIBE_PHYSX_CONTACT_FASTPATH");
+    return value == nullptr || std::string(value) != "0";
+  }();
+  return enabled;
+}
+
+/// Sub-attribution of the callback cost (cb_extract/queue/pair_load/wake).
+/// OFF by default: four extra clock-read pairs per sampled callback measured
+/// +0.35 ms at 2-4k callbacks/tick and +0.80 at 4-8k -- larger than the
+/// costs they were added to find. Same lesson as the fetch-split busy-poll:
+/// a probe that changes the number is a diagnostic mode, not a metric.
+/// Default ON since the sub-timers moved to rdtsc. The reasoning above still
+/// holds for a probe that costs ~0.19 ms/tick; it does not hold at ~0.05, and
+/// the cost this decomposes is now the largest growth term in the tick
+/// (callbacks went 0.4 -> 9.6 ms between 200 and 5600 awake bodies, while the
+/// GPU sim only tripled). Leaving the breakdown dark by default meant every
+/// report had to be followed by "now reproduce it with the flag on".
+/// `VIBE_PHYSX_PROFILE_CALLBACK=0` restores the unmeasured path.
+bool profile_callback_enabled() {
+  static const bool enabled = [] {
+    const char *value = std::getenv("VIBE_PHYSX_PROFILE_CALLBACK");
+    return value == nullptr || std::string(value) != "0";
+  }();
+  return enabled;
+}
+
+/// Pair census + impulse histogram, opt-in. These answered their questions
+/// (98.4% PERSISTS; pairs cluster at 128-1024 Ns, no low-force tail) and
+/// cost ~0.4 ms/tick at cascade. Off until someone asks the next question.
+/// The spans keep publishing zeros so trace columns stay stable.
+bool contact_census_enabled() {
+  static const bool enabled = [] {
+    const char *value = std::getenv("VIBE_PHYSX_CONTACT_CENSUS");
+    return value != nullptr && std::string(value) != "0";
+  }();
+  return enabled;
+}
+
+/// Phase C: capture contact data inside the callback, process it after
+/// fetchResults returns. The callback runs on the host thread INSIDE
+/// fetchResults; moving the marshaling out (a) removes our code from the
+/// number labelled "PhysX" and (b) makes it parallelisable later. Timing-
+/// neutral for physics: every consumer (solver queue, supporter loads,
+/// frozen wakes) runs later in the same tick inside destruction_tick, and
+/// the scene does not step between callback and drain, so actor reads see
+/// identical state. The drain preserves recorded order, so the sequences
+/// fed to every consumer are bit-identical to the inline path.
+/// Default ON. Measured (grid 1, matched ticks, n=1199/arm): physx_step
+/// -11.7%, and the same work costs less in the drain than inline -- 9.6 ms
+/// inline vs 1.6 capture + 5.3 drain -- because batch processing beats
+/// interleaving with PhysX's own callback machinery. Correctness case: ONE
+/// shared body for both paths (process_extracted_pair), drain in recorded
+/// order before any consumer runs, and the full gate battery green under
+/// the flag -- including freeze semantics, which fail if pair delivery
+/// breaks. Cross-run bit-identity is not measurable here (GPU
+/// nondeterminism), and cumulative contact counters swing 2-3x between
+/// identical-config runs, so counter deltas across arms are NOT evidence
+/// either way. VIBE_PHYSX_DEFER_CONTACTS=0 restores inline processing.
+bool defer_contacts_enabled() {
+  static const bool enabled = [] {
+    const char *value = std::getenv("VIBE_PHYSX_DEFER_CONTACTS");
+    return value == nullptr || std::string(value) != "0";
+  }();
+  return enabled;
+}
+
 bool contact_persists_enabled() {
   static const bool enabled = [] {
     const char *value = std::getenv("VIBE_PHYSX_CONTACT_PERSISTS");
     return value == nullptr || std::string(value) != "0";
   }();
   return enabled;
+}
+
+
+/// Solver iteration counts for dynamic bodies.
+///
+/// VIBE_PHYSX_POSITION_ITERS / VIBE_PHYSX_VELOCITY_ITERS. Defaults match
+/// PhysX's own (4/1) so behaviour is unchanged unless asked; the stack-settling
+/// test sweeps them to locate the knee.
+std::uint32_t dynamic_solver_position_iterations() {
+  if (const char *raw = std::getenv("VIBE_PHYSX_POSITION_ITERS")) {
+    const long parsed = std::strtol(raw, nullptr, 10);
+    if (parsed > 0) return static_cast<std::uint32_t>(parsed);
+  }
+  return 4u;
+}
+
+std::uint32_t dynamic_solver_velocity_iterations() {
+  if (const char *raw = std::getenv("VIBE_PHYSX_VELOCITY_ITERS")) {
+    const long parsed = std::strtol(raw, nullptr, 10);
+    if (parsed > 0) return static_cast<std::uint32_t>(parsed);
+  }
+  return 1u;
 }
 
 PxFilterFlags simulation_filter(PxFilterObjectAttributes attributes0,
@@ -410,28 +605,66 @@ public:
   void onAdvance(const PxRigidBody *const *, const PxTransform *,
                  const PxU32) override {}
 
-  void onContact(const PxContactPairHeader &header,
-                 const PxContactPair *pairs, PxU32 pair_count) override {
-    const std::uint32_t entity_a = actor_entity_id(header.actors[0]);
-    const std::uint32_t entity_b = actor_entity_id(header.actors[1]);
-    for (PxU32 pair_index = 0; pair_index < pair_count; ++pair_index) {
-      const PxContactPair &pair = pairs[pair_index];
-      if (pair.flags & (PxContactPairFlag::eREMOVED_SHAPE_0 |
-                        PxContactPairFlag::eREMOVED_SHAPE_1)) {
-        continue;
+
+  /// The per-pair processing, shared verbatim by the inline path (called
+  /// from inside the contact callback) and the deferred drain (called from
+  /// end_step after fetchResults returns). ONE body on purpose: two copies
+  /// of this logic would drift, and a drift here is a physics divergence.
+  void process_extracted_pair(PxActor *actor0, PxActor *actor1,
+                              PxShape *shape0, PxShape *shape1,
+                              std::uint32_t entity_a, std::uint32_t entity_b,
+                              bool ev_persists, bool ev_found,
+                              const physx::PxContactPairPoint *points,
+                              PxU32 extracted, PxU32 contact_count,
+                              bool sample_subspans) {
+    const auto sub_now = [&]() {
+      return sample_subspans ? cycle_now() : std::uint64_t{0};
+    };
+    const auto sub_ms = [](std::uint64_t from) {
+      return static_cast<double>(cycle_now() - from) * cycles_to_ms_factor();
+    };
+      const bool census = contact_census_enabled();
+      const auto census_started = census ? sub_now() : std::uint64_t{0};
+      if (census) {
+      // Pair census. The question this answers: of the ~11.6k pairs a
+      // cascade tick reports, how many are a settled pile re-reporting the
+      // same standing load (PERSISTS) versus a genuinely new contact
+      // (FOUND)? That ratio decides whether "reduce pairs" is worth a
+      // structural change, and which change.
+      if (ev_persists) {
+        ++cp_persists_;
+      } else if (ev_found) {
+        ++cp_found_;
+      } else {
+        ++cp_other_;
       }
-      const PxU32 contact_count = pair.contactCount;
-      if (contact_count == 0) {
-        continue;
+      cp_points_ += contact_count;
+      if (sample_subspans) {
+        cb_census_ms_ += 8.0 * sub_ms(census_started);
       }
-      std::vector<PxContactPairPoint> points(contact_count);
-      const PxU32 extracted =
-          pair.extractContacts(points.data(), contact_count);
+      }
+#ifdef VIBE_LAND_DESTRUCTION
+      // Once per shape per manifold, not once per shape per POINT. Every point
+      // in a manifold shares the same two shapes, so the hash lookup and the
+      // linear slot scan behind them were repeated for every point after the
+      // first -- 2.06-3.64 points per manifold measured on downtown.
+      DestructionManager::ContactTarget target0;
+      DestructionManager::ContactTarget target1;
+      const auto resolve_started = sub_now();
+      if (destruction_ && contact_cse_enabled()) {
+        target0 = destruction_->resolve_contact_target(shape0);
+        target1 = destruction_->resolve_contact_target(shape1);
+      }
+      if (sample_subspans) {
+        cb_resolve_ms_ += 8.0 * sub_ms(resolve_started);
+      }
+#endif
       PxVec3 total_impulse(0.0f);
       PxVec3 weighted_point(0.0f);
       float total_magnitude = 0.0f;
       float sum_abs_impulse_y = 0.0f;
       float min_separation = 1.0e6f;
+      const auto points_started = sub_now();
       for (PxU32 point_index = 0; point_index < extracted; ++point_index) {
         const PxContactPairPoint &point = points[point_index];
         if (point.separation < min_separation) {
@@ -465,18 +698,65 @@ public:
           // body struck by a moving one, deliberate damage goes through
           // wake_bodies_near, and a fracture wakes the bodies it creates. The
           // queued load still reaches the solver either way.
-          destruction_->route_contact_shape(pair.shapes[0], position, impulse,
-                                            /*wake=*/false);
-          destruction_->route_contact_shape(pair.shapes[1], position, neg,
-                                            /*wake=*/false);
+          if (contact_cse_enabled()) {
+            if (target0) {
+              destruction_->queue_contact_at(target0, position, impulse,
+                                             /*wake=*/false);
+            }
+            if (target1) {
+              destruction_->queue_contact_at(target1, position, neg,
+                                             /*wake=*/false);
+            }
+          } else {
+            destruction_->route_contact_shape(shape0, position, impulse,
+                                              /*wake=*/false);
+            destruction_->route_contact_shape(shape1, position, neg,
+                                              /*wake=*/false);
+          }
         }
 #endif
       }
+      if (sample_subspans) {
+        cb_queue_ms_ += 8.0 * sub_ms(points_started);
+      }
+      // Which CONSUMER would miss this pair if it were not reported. The two
+      // want opposite things -- stress damage only cares about contacts hard
+      // enough to pass a bond's elastic limit, the supporter graph
+      // specifically needs the gentle resting ones -- so a single threshold
+      // cannot serve both, and this counts the overlap.
+      if (sum_abs_impulse_y > 0.0f) {
+        ++cp_supporter_relevant_;
+      }
+      // log2 histogram of the pair's total impulse. A histogram rather than a
+      // count against a fixed cut, because the useful question is "what would
+      // a threshold of X cost", and X is exactly what is not known yet.
+      const auto hist_started = census ? sub_now() : std::uint64_t{0};
+      if (census) {
+      if (total_magnitude > 0.0f) {
+        int bucket = 0;
+        float m = total_magnitude;
+        while (m >= 1.0f && bucket < kImpulseBuckets - 1) {
+          m *= 0.5f;
+          ++bucket;
+        }
+        ++cp_impulse_hist_[bucket];
+      } else {
+        ++cp_zero_impulse_;
+      }
+      if (sample_subspans) {
+        cb_census_ms_ += 8.0 * sub_ms(hist_started);
+      }
+      }
+
+      const auto events_started = sub_now();
       if (total_magnitude > 0.0f) {
         weighted_point /= total_magnitude;
         contact_events_.push_back(
             {entity_a, entity_b, from_px(total_impulse),
              from_px(weighted_point)});
+      }
+      if (sample_subspans) {
+        cb_events_ms_ += 8.0 * sub_ms(events_started);
       }
 #ifdef VIBE_LAND_DESTRUCTION
       // Frozen rubble struck by moving debris must respond. PhysX wakes a
@@ -490,11 +770,25 @@ public:
       // for every reported debris pair, not just frozen ones -- the
       // dependency graph must exist BEFORE a body freezes, since it is what
       // decides whether freezing is admissible at all.
+      const auto pair_load_started = sub_now();
       if (destruction_ && sum_abs_impulse_y > 0.0f) {
-        destruction_->note_pair_load(pair.shapes[0], pair.shapes[1],
-                                     header.actors[0], header.actors[1],
-                                     sum_abs_impulse_y, min_separation);
+        if (contact_cse_enabled() && contact_fastpath_enabled()) {
+          // A1: hand over the targets this manifold already resolved so the
+          // chunk sides skip the duplicate hash + linear slot scan.
+          destruction_->note_pair_load(target0, target1, shape0,
+                                       shape1, actor0,
+                                       actor1, sum_abs_impulse_y,
+                                       min_separation);
+        } else {
+          destruction_->note_pair_load(shape0, shape1,
+                                       actor0, actor1,
+                                       sum_abs_impulse_y, min_separation);
+        }
       }
+      if (sample_subspans) {
+        cb_pair_load_ms_ += 8.0 * sub_ms(pair_load_started);
+      }
+      const auto wake_started = sub_now();
       if (destruction_ && destruction_->has_frozen_bodies() &&
           total_magnitude > 0.0f) {
         const auto dynamic_mass = [](const PxActor *actor) -> float {
@@ -508,11 +802,151 @@ public:
           return dynamic->getMass();
         };
         destruction_->note_contact_pair(entity_a, entity_b,
-                                        dynamic_mass(header.actors[0]),
-                                        dynamic_mass(header.actors[1]),
+                                        dynamic_mass(actor0),
+                                        dynamic_mass(actor1),
                                         total_magnitude);
       }
+      if (sample_subspans) {
+        cb_wake_ms_ += 8.0 * sub_ms(wake_started);
+      }
 #endif
+  }
+
+  /// Process everything the callback captured, in recorded order.
+  void drain_deferred_contacts() {
+    if (deferred_pairs_.empty()) {
+      return;
+    }
+    const std::uint64_t drain_started = cycle_now();
+    for (const DeferredContactPair &rec : deferred_pairs_) {
+      ++contact_drain_records_;
+      const bool sample =
+          profile_callback_enabled() && (contact_drain_records_ & 7u) == 0;
+      process_extracted_pair(rec.actor0, rec.actor1, rec.shape0, rec.shape1,
+                             rec.entity_a, rec.entity_b, rec.ev_persists,
+                             rec.ev_found,
+                             deferred_points_.data() + rec.point_begin,
+                             rec.point_count, rec.reported_count, sample);
+    }
+    deferred_pairs_.clear();
+    deferred_points_.clear();
+    contact_drain_cycles_ += cycle_now() - drain_started;
+  }
+
+  void onContact(const PxContactPairHeader &header,
+                 const PxContactPair *pairs, PxU32 pair_count) override {
+    // EXACT self-timing: this callback runs INSIDE fetchResults, so its cost
+    // lands undifferentiated in the result-copy number — the conflation that
+    // fed a whole wrong optimization line. Every invocation is now timed with
+    // the cycle counter (~7 ns/read) rather than 1-in-8 with steady_clock
+    // (~25 ns), so the published figure is a measurement rather than an
+    // extrapolation, at ~0.09 ms/tick of overhead at cascade rates.
+    ++contact_callback_calls_;
+    ++contact_callbacks_this_step_;
+    const std::uint64_t callback_started = cycle_now();
+    // Sub-attribution costs more than the parts it prices; opt-in only, and
+    // still sampled when on.
+    const bool sample_subspans =
+        profile_callback_enabled() && (contact_callback_calls_ & 7u) == 0;
+    // Hoisted to callback scope: the entity resolution below and the
+    // per-manifold target resolution further down were both OUTSIDE every
+    // timed block, which is why the first live breakdown left 42% of the
+    // callback cost unattributed -- more than any block it did name.
+    const auto sub_now = [&]() {
+      return sample_subspans ? cycle_now() : std::uint64_t{0};
+    };
+    const auto sub_ms = [](std::uint64_t from) {
+      return static_cast<double>(cycle_now() - from) * cycles_to_ms_factor();
+    };
+    const auto entity_started = sub_now();
+    const std::uint32_t entity_a = actor_entity_id(header.actors[0]);
+    const std::uint32_t entity_b = actor_entity_id(header.actors[1]);
+    if (sample_subspans) {
+      cb_entity_ms_ += 8.0 * sub_ms(entity_started);
+    }
+    for (PxU32 pair_index = 0; pair_index < pair_count; ++pair_index) {
+      const PxContactPair &pair = pairs[pair_index];
+      if (pair.flags & (PxContactPairFlag::eREMOVED_SHAPE_0 |
+                        PxContactPairFlag::eREMOVED_SHAPE_1)) {
+        continue;
+      }
+      const PxU32 contact_count = pair.contactCount;
+      if (contact_count == 0) {
+        continue;
+      }
+      if (defer_contacts_enabled()) {
+        // Capture only: the contact stream is valid ONLY during this
+        // callback, so extraction cannot defer; everything else can and
+        // does. Indices, not pointers, into deferred_points_ -- it grows
+        // during capture.
+        const std::size_t base = deferred_points_.size();
+        deferred_points_.resize(base + contact_count);
+        const PxU32 extracted =
+            pair.extractContacts(deferred_points_.data() + base, contact_count);
+        deferred_points_.resize(base + extracted);
+        deferred_pairs_.push_back(
+            {header.actors[0], header.actors[1], pair.shapes[0],
+             pair.shapes[1], entity_a, entity_b,
+             static_cast<std::uint32_t>(base), extracted, contact_count,
+             static_cast<bool>(pair.events &
+                               PxPairFlag::eNOTIFY_THRESHOLD_FORCE_PERSISTS),
+             static_cast<bool>(pair.events &
+                               (PxPairFlag::eNOTIFY_THRESHOLD_FORCE_FOUND |
+                                PxPairFlag::eNOTIFY_TOUCH_FOUND))});
+        continue;
+      }
+      // Reused across pairs and ticks. This was a fresh heap allocation per
+      // reported manifold, and a settled city reports thousands of resting
+      // manifolds every tick -- all of it inside fetchResults(), which is what
+      // physics_fetch_copy_ms actually measures.
+      //
+      // VIBE_PHYSX_CONTACT_CSE=0 restores the old shape: allocate per manifold
+      // and resolve the owning slot per contact POINT.
+      if (!contact_cse_enabled()) {
+        contact_points_ = std::vector<physx::PxContactPairPoint>();
+      }
+      // A0 sub-attribution: on sampled calls, each sub-block below is timed
+      // so the ~9 ms callback cost decomposes BEFORE anything is optimized.
+      // Same 1-in-8 gate as the outer probe; x8 scaling at publish.
+      // rdtsc, not steady_clock: at cascade rates this fires ~950 times a tick
+      // across four sub-blocks, and at ~25 ns a read the clock was costing
+      // ~0.19 ms/tick -- which is why this was opt-in and therefore always
+      // dark in exactly the reports that needed it. The cycle counter is
+      // ~7 ns, putting the whole sub-attribution near 0.05 ms/tick, cheap
+      // enough to leave on permanently.
+      const auto resize_started = sub_now();
+      contact_points_.resize(contact_count);
+      if (sample_subspans) {
+        cb_resize_ms_ += 8.0 * sub_ms(resize_started);
+      }
+      const auto extract_started = sub_now();
+      const PxU32 extracted =
+          pair.extractContacts(contact_points_.data(), contact_count);
+      if (sample_subspans) {
+        // x8, same convention as the outer contact_callback_ms_ probe.
+        cb_extract_ms_ += 8.0 * sub_ms(extract_started);
+      }
+      process_extracted_pair(
+          header.actors[0], header.actors[1], pair.shapes[0], pair.shapes[1],
+          entity_a, entity_b,
+          static_cast<bool>(pair.events &
+                            PxPairFlag::eNOTIFY_THRESHOLD_FORCE_PERSISTS),
+          static_cast<bool>(pair.events &
+                            (PxPairFlag::eNOTIFY_THRESHOLD_FORCE_FOUND |
+                             PxPairFlag::eNOTIFY_TOUCH_FOUND)),
+          contact_points_.data(), extracted, contact_count, sample_subspans);
+
+    }
+    // Sum AND max. 526 ms of callback in one tick is either 11,710 callbacks
+    // at 45 us each (systematic: the work got slower) or one callback that
+    // blocked for half a second (a stall: allocation, page fault, or the
+    // thread being descheduled -- rdtsc measures wall, so a preemption lands
+    // inside whichever callback was running). Those are opposite bugs and the
+    // sum cannot tell them apart.
+    const std::uint64_t callback_cycles = cycle_now() - callback_started;
+    contact_callback_cycles_ += callback_cycles;
+    if (callback_cycles > contact_callback_max_cycles_) {
+      contact_callback_max_cycles_ = callback_cycles;
     }
   }
 
@@ -849,6 +1283,27 @@ public:
   /// returns immediately, so the caller can do CPU work before `end_step()`.
   void begin_step() {
     require(!step_in_flight_, "begin_step called twice without end_step");
+    contact_callback_ms_ = 0.0;
+    cb_extract_ms_ = 0.0;
+    cb_queue_ms_ = 0.0;
+    cb_pair_load_ms_ = 0.0;
+    cb_wake_ms_ = 0.0;
+    cb_resolve_ms_ = 0.0;
+    cb_entity_ms_ = 0.0;
+    cb_events_ms_ = 0.0;
+    cb_census_ms_ = 0.0;
+    cb_resize_ms_ = 0.0;
+    contact_drain_cycles_ = 0;
+    cp_found_ = 0;
+    cp_persists_ = 0;
+    cp_other_ = 0;
+    cp_points_ = 0;
+    cp_supporter_relevant_ = 0;
+    cp_zero_impulse_ = 0;
+    for (int i = 0; i < kImpulseBuckets; ++i) {
+      cp_impulse_hist_[i] = 0;
+    }
+    contact_callbacks_this_step_ = 0;
     step_start_ = std::chrono::steady_clock::now();
     controller_manager_->computeInteractions(kFixedTimestep);
     const auto after_controllers = std::chrono::steady_clock::now();
@@ -863,21 +1318,53 @@ public:
     step_in_flight_ = true;
   }
 
-  /// Wait for the simulation and fetch its results.
+  /// Wait for the simulation and fetch its results, decomposed.
   ///
-  /// `VIBE_PHYSX_PROFILE_FETCH=1` polls instead of blocking, which separates
-  /// two costs that `fetchResults(true)` reports as one: time spent waiting on
-  /// the GPU, versus the cost of the call that actually copies results back.
-  /// Polling burns a core, so it is opt-in and off by default.
+  /// What the tick actually spends on rigid-body physics was, until now,
+  /// three costs reported as one. `fetchResults(true)` blocks until PhysX is
+  /// done AND copies the results back AND dispatches our contact callbacks,
+  /// so a single number covered: the simulation itself, PhysX's readback,
+  /// and our own host code. This splits all three:
+  ///
+  ///   sim_wall  — dispatch to results-ready. PhysX's own simulation wall
+  ///               time: GPU kernels plus whatever PhysX runs on its task
+  ///               threads concurrently. Deliberately NOT called "gpu" —
+  ///               from outside the SDK the two are not separable, and a
+  ///               release-config PhysX compiles its internal profile zones
+  ///               out, so there is no finer split available without
+  ///               rebuilding the SDK.
+  ///   fetch_call— the successful fetchResults call: PhysX's result copy
+  ///               plus our callbacks, which run inside it.
+  ///   callbacks — ours, timed exactly by cycle counter (see cycle_now).
+  ///   result_copy = fetch_call - callbacks: PhysX's readback alone.
+  ///
+  /// sim_wall needs polling, which burns a core, so it is SAMPLED (one tick
+  /// in `VIBE_PHYSX_GPU_SAMPLE_TICKS`, default 16 — about 0.06 ms/tick
+  /// amortised against 0.91 for polling every tick). `VIBE_PHYSX_PROFILE_
+  /// FETCH=1` still forces every tick, for traces that want it.
   void end_step() {
     require(step_in_flight_, "end_step called without begin_step");
+    contact_callback_cycles_ = 0;
+    contact_callback_max_cycles_ = 0;
     const auto fetch_start = std::chrono::steady_clock::now();
-    if (profile_fetch_) {
+    const unsigned interval = gpu_sample_interval();
+    const bool sample_sim_wall =
+        profile_fetch_ ||
+        (interval > 0 && (completed_steps_ % interval) == 0);
+    if (sample_sim_wall) {
       auto last_call_start = fetch_start;
       bool ready = false;
       while (!ready) {
         last_call_start = std::chrono::steady_clock::now();
         ready = scene_->fetchResults(false);
+        if (!ready) {
+          // Yield between probes. The original loop spun flat out, which is
+          // what made per-tick sampling cost ~0.91 ms: not the timestamps
+          // (we take those every tick anyway) but a core taken away from the
+          // Blast walks running beside this. Handing the slice back turns the
+          // spin into a wait, and the wait is what we are trying to MEASURE.
+          std::this_thread::yield();
+        }
       }
       const auto end = std::chrono::steady_clock::now();
       last_gpu_wait_ms_ =
@@ -885,15 +1372,89 @@ public:
               .count();
       last_fetch_copy_ms_ =
           std::chrono::duration<float, std::milli>(end - last_call_start).count();
+      last_sim_wall_ms_ = last_gpu_wait_ms_;
+      last_fetch_call_ms_ = last_fetch_copy_ms_;
+      sim_wall_samples_ = 1;
+      // Also keep the last few samples. A per-tick value that is zero on 15
+      // ticks out of 16 is right for a trace, which buckets every tick and
+      // can filter — but a 1 Hz report snapshot almost never lands on a
+      // sampled tick, so it published zeros and the whole split was
+      // invisible in exactly the place it was built for. The ring is read
+      // -cadence independent: any observer, at any rate, sees the recent
+      // mean.
+      sim_wall_ring_[sim_wall_ring_head_] = last_gpu_wait_ms_;
+      result_copy_ring_[sim_wall_ring_head_] =
+          std::max(0.0f, last_fetch_copy_ms_ -
+                             static_cast<float>(
+                                 static_cast<double>(contact_callback_cycles_) *
+                                 cycles_to_ms_factor()));
+      // Callback and fetch-total go on the SAME ring, on the SAME ticks.
+      // The 4.3% "unattributed" in the PhysX fetch was never untimed work:
+      // gpu_wait and result_copy were recent means while fetch_total was
+      // this tick's value, so the subtraction compared two different
+      // windows. Same window, and the parts sum to the whole by
+      // construction -- at no cost, since these ticks are already sampled.
+      callback_ring_[sim_wall_ring_head_] = static_cast<float>(
+          static_cast<double>(contact_callback_cycles_) *
+          cycles_to_ms_factor());
+      // fetch_total is not known until the fetch below finishes, so remember
+      // which slot to complete rather than writing a stale value here.
+      pending_ring_slot_ = static_cast<int>(sim_wall_ring_head_);
+      sim_wall_ring_head_ = (sim_wall_ring_head_ + 1) % kSimWallRing;
+      if (sim_wall_ring_fill_ < kSimWallRing) {
+        ++sim_wall_ring_fill_;
+      }
     } else {
       const bool succeeded = scene_->fetchResults(true);
       require(succeeded, "PhysX fetchResults failed");
       last_gpu_wait_ms_ = 0.0f;
       last_fetch_copy_ms_ = 0.0f;
+      // Unsampled tick: the blocking call covers wait + copy + callbacks
+      // together, so only the callback share is separable here.
+      last_sim_wall_ms_ = 0.0f;
+      last_fetch_call_ms_ = 0.0f;
+      sim_wall_samples_ = 0;
+    }
+    const double callback_ms = static_cast<double>(contact_callback_cycles_) *
+                               cycles_to_ms_factor();
+    contact_callback_ms_ = callback_ms;
+    // The whole fetch, always measured: on unsampled ticks this is the only
+    // fetch number there is, and callbacks come out of it either way.
+    const double fetch_total_ms =
+        std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - fetch_start)
+            .count();
+    last_fetch_total_ms_ = static_cast<float>(fetch_total_ms);
+    if (pending_ring_slot_ >= 0) {
+      fetch_total_ring_[static_cast<std::size_t>(pending_ring_slot_)] =
+          last_fetch_total_ms_;
+      pending_ring_slot_ = -1;
+    }
+    // ONLY on a sampled tick. On a blocking tick the fetch covers wait AND
+    // copy, so subtracting callbacks from it yields "wait + copy", which
+    // under the name result_copy would reintroduce precisely the conflation
+    // this split exists to remove. Left at 0 and gated by sim_wall_sampled.
+    last_result_copy_ms_ =
+        sample_sim_wall
+            ? static_cast<float>(std::max(0.0, last_fetch_call_ms_ - callback_ms))
+            : 0.0f;
+    // A clock that cannot be checked is a clock that lies quietly. Our
+    // callbacks run inside the fetch, so their measured cost can never
+    // exceed it; a violation means the TSC calibration drifted (or the CPU
+    // migrated to a core with an unsynchronised counter) and every number
+    // derived from it is suspect.
+    if (callback_ms > fetch_total_ms * 1.05 + 0.05) {
+      ++tsc_suspect_ticks_;
     }
     const auto end = std::chrono::steady_clock::now();
     last_fetch_ms_ =
         std::chrono::duration<float, std::milli>(end - fetch_start).count();
+    // Deferred-contact drain: after the fetch split is recorded (so the
+    // capture-only callback cost stays inside fetch numbers and the drain
+    // appears as its own span), before destruction_tick consumes the queues.
+    if (defer_contacts_enabled()) {
+      drain_deferred_contacts();
+    }
     last_step_ms_ =
         std::chrono::duration<float, std::milli>(end - step_start_).count();
     step_in_flight_ = false;
@@ -1025,24 +1586,155 @@ public:
       vehicles +=
           entry.second.kind == RecordKind::VehicleChassis ? 1U : 0U;
     }
-    return {
-        static_cast<std::uint32_t>(records_.size()) - players,
-        players,
-        vehicles,
-        statistics.nbActiveDynamicBodies,
-        statistics.nbActiveKinematicBodies,
-        statistics.nbDiscreteContactPairsWithContacts,
-        statistics.gpuDynamicsMemoryConfigStatistics.rigidContactCount,
-        statistics.gpuDynamicsMemoryConfigStatistics.rigidPatchCount,
-        last_step_ms_,
-        last_controller_ms_,
-        last_simulate_ms_,
-        last_fetch_ms_,
-        last_gpu_wait_ms_,
-        last_fetch_copy_ms_,
-        completed_steps_,
-        runtime_->warning_count(),
+    FfiWorldStats out{};
+    // Generic spans: one push_back per metric, no struct plumbing. See
+    // FfiNamedSpan in lib.rs for the kind codes.
+    const auto span = [&out](const char *name, double value,
+                             std::uint8_t kind) {
+      FfiNamedSpan entry;
+      entry.name = rust::String(name);
+      entry.value = value;
+      entry.kind = kind;
+      out.extra_spans.push_back(std::move(entry));
     };
+    // Our callback share of fetchResults (sampled 1-in-8, x8 scaled) — the
+    // split that separates "PhysX copying results" from "our contact
+    // handlers", which used to be one indistinguishable fetch_copy number.
+    // Kept under its old name so existing traces and comparisons keep
+    // working, but it is no longer an estimate: every callback is timed.
+    span("contact_callback_est_ms", contact_callback_ms_, 0);
+    // The rigid-body decomposition. sim_wall and fetch_call are 0 on
+    // unsampled ticks; sim_wall_sampled marks the ones that carry a number,
+    // so an average is taken over the right denominator rather than being
+    // diluted by the zeros.
+    span("sim_wall_ms", static_cast<double>(last_sim_wall_ms_), 0);
+    span("fetch_call_ms", static_cast<double>(last_fetch_call_ms_), 0);
+    span("sim_wall_sampled", static_cast<double>(sim_wall_samples_), 2);
+    span("result_copy_ms", static_cast<double>(last_result_copy_ms_), 0);
+    span("fetch_total_ms", static_cast<double>(last_fetch_total_ms_), 0);
+    // Mean of the recent samples: what a 1 Hz report should read, since the
+    // instantaneous fields above are zero on every unsampled tick.
+    if (sim_wall_ring_fill_ > 0) {
+      double sim_sum = 0.0;
+      double copy_sum = 0.0;
+      for (std::size_t i = 0; i < sim_wall_ring_fill_; ++i) {
+        sim_sum += sim_wall_ring_[i];
+        copy_sum += result_copy_ring_[i];
+      }
+      const double n = static_cast<double>(sim_wall_ring_fill_);
+      span("sim_wall_recent_ms", sim_sum / n, 0);
+      span("result_copy_recent_ms", copy_sum / n, 0);
+      span("sim_wall_recent_n", n, 2);
+      double cb_sum = 0.0;
+      double total_sum = 0.0;
+      for (std::size_t i = 0; i < sim_wall_ring_fill_; ++i) {
+        cb_sum += callback_ring_[i];
+        total_sum += fetch_total_ring_[i];
+      }
+      span("callback_recent_ms", cb_sum / n, 0);
+      span("fetch_total_recent_ms", total_sum / n, 0);
+      // All four from the same window, so this is the honest remainder.
+      span("fetch_residual_recent_ms",
+           (total_sum - sim_sum - copy_sum - cb_sum) / n, 0);
+    }
+    span("tsc_suspect_ticks", static_cast<double>(tsc_suspect_ticks_), 2);
+    span("cb_extract_ms", cb_extract_ms_, 0);
+    span("cb_queue_ms", cb_queue_ms_, 0);
+    span("cb_pair_load_ms", cb_pair_load_ms_, 0);
+    span("cb_wake_ms", cb_wake_ms_, 0);
+    // Added after the first live breakdown left 42% of the callback cost in
+    // an unnamed residual. resolve/entity are the shape- and actor-id hash
+    // lookups; events is the per-manifold aggregate push.
+    span("cb_resolve_ms", cb_resolve_ms_, 0);
+    span("cb_entity_ms", cb_entity_ms_, 0);
+    span("cb_events_ms", cb_events_ms_, 0);
+    span("cb_census_ms", cb_census_ms_, 0);
+    span("cb_resize_ms", cb_resize_ms_, 0);
+    span("cb_drain_ms",
+         static_cast<double>(contact_drain_cycles_) * cycles_to_ms_factor(),
+         0);
+    span("cb_max_us",
+         static_cast<double>(contact_callback_max_cycles_) *
+             cycles_to_ms_factor() * 1000.0,
+         0);
+    span("cp_found", static_cast<double>(cp_found_), 0);
+    span("cp_persists", static_cast<double>(cp_persists_), 0);
+    span("cp_other", static_cast<double>(cp_other_), 0);
+    span("cp_points", static_cast<double>(cp_points_), 0);
+    span("cp_supporter_relevant", static_cast<double>(cp_supporter_relevant_), 0);
+    span("cp_zero_impulse", static_cast<double>(cp_zero_impulse_), 0);
+    // Fixed names rather than a built string: the span lambda takes a
+    // const char*, and a per-tick std::string allocation in the stats path
+    // is exactly the kind of cost that shows up later as a mystery.
+    static constexpr const char* kImpulseSpanNames[kImpulseBuckets] = {
+        "cp_imp_2e0",  "cp_imp_2e1",  "cp_imp_2e2",  "cp_imp_2e3",
+        "cp_imp_2e4",  "cp_imp_2e5",  "cp_imp_2e6",  "cp_imp_2e7",
+        "cp_imp_2e8",  "cp_imp_2e9",  "cp_imp_2e10", "cp_imp_2e11",
+        "cp_imp_2e12", "cp_imp_2e13", "cp_imp_2e14", "cp_imp_2e15",
+        "cp_imp_2e16", "cp_imp_2e17", "cp_imp_2e18", "cp_imp_2e19"};
+    for (int i = 0; i < kImpulseBuckets; ++i) {
+      if (cp_impulse_hist_[i] != 0) {
+        span(kImpulseSpanNames[i], static_cast<double>(cp_impulse_hist_[i]), 0);
+      }
+    }
+    span("contact_callbacks", static_cast<double>(contact_callbacks_this_step_), 2);
+    // Broadphase membership churn: prices freeze/thaw flips directly.
+    span("bp_adds", static_cast<double>(statistics.getNbBroadPhaseAdds()), 2);
+    span("bp_removes", static_cast<double>(statistics.getNbBroadPhaseRemoves()), 2);
+    // CORRECTED 2026-08-27: this is a BUFFER HIGH-WATER from
+    // gpuDynamicsMemoryConfigStatistics — the largest found/lost buffer the
+    // GPU pipeline has needed since scene creation — NOT per-tick pair
+    // activity. It read exactly 19481 across an hour of live reports while
+    // being cited as an activity signal. Renamed so the name says what it
+    // measures; the per-tick pair churn signals are the two below.
+    span("gpu_found_lost_pairs_high_water",
+         static_cast<double>(
+             statistics.gpuDynamicsMemoryConfigStatistics.foundLostPairs),
+         2);
+    // Per-frame broadphase pair churn from PxSimulationStatistics. Unlike the
+    // CPU narrowphase pair counter (absent under eGPU), these are filled by
+    // the BP stage. New+lost ≈ how much of the pair set is actually changing;
+    // a settled field re-reporting thousands of callbacks with near-zero
+    // churn here is the quiet-pair lever's whole justification, measured.
+    span("bp_new_pairs", static_cast<double>(statistics.nbNewPairs), 2);
+    span("bp_lost_pairs", static_cast<double>(statistics.nbLostPairs), 2);
+    out.body_count = static_cast<std::uint32_t>(records_.size()) - players;
+    out.player_count = players;
+    out.vehicle_count = vehicles;
+    out.active_dynamic_bodies = statistics.nbActiveDynamicBodies;
+    out.active_kinematic_bodies = statistics.nbActiveKinematicBodies;
+    out.contact_pairs = statistics.nbDiscreteContactPairsWithContacts;
+    out.gpu_rigid_contact_high_water =
+        statistics.gpuDynamicsMemoryConfigStatistics.rigidContactCount;
+    out.gpu_rigid_patch_high_water =
+        statistics.gpuDynamicsMemoryConfigStatistics.rigidPatchCount;
+    out.last_step_ms = last_step_ms_;
+    out.last_controller_ms = last_controller_ms_;
+    out.last_simulate_ms = last_simulate_ms_;
+    out.last_fetch_ms = last_fetch_ms_;
+    // sim_wall is sampled 1 tick in 16, so on the other 15 these were
+    // published as 0.0 -- and a 1 Hz report snapshot almost never lands on a
+    // sampled tick. The headline PhysX split therefore read "0.0 gpu wait,
+    // 0.0 copy" in every debug report while the underlying measurement was
+    // sitting right there in the ring, which made PhysX look opaque when it
+    // was only unpublished. Fall back to the recent mean rather than a zero
+    // that reads as "measured, and it was free".
+    out.last_gpu_wait_ms = last_gpu_wait_ms_;
+    out.last_fetch_copy_ms = last_fetch_copy_ms_;
+    if (sim_wall_samples_ == 0 && sim_wall_ring_fill_ > 0) {
+      double sim_sum = 0.0;
+      double copy_sum = 0.0;
+      for (std::size_t i = 0; i < sim_wall_ring_fill_; ++i) {
+        sim_sum += sim_wall_ring_[i];
+        copy_sum += result_copy_ring_[i];
+      }
+      const double n = static_cast<double>(sim_wall_ring_fill_);
+      out.last_gpu_wait_ms = static_cast<float>(sim_sum / n);
+      out.last_fetch_copy_ms = static_cast<float>(copy_sum / n);
+    }
+    out.completed_steps = completed_steps_;
+    out.gpu_warning_count = runtime_->warning_count();
+    return out;
   }
 
   rust::Vec<FfiContactEvent> take_contact_events() {
@@ -1265,6 +1957,44 @@ public:
 #endif
   }
 
+  std::uint64_t split_count() const {
+#ifdef VIBE_LAND_DESTRUCTION
+    return destruction_ != nullptr ? destruction_->split_count() : 0;
+#else
+    return 0;
+#endif
+  }
+
+  bool resim_needed() const {
+#ifdef VIBE_LAND_DESTRUCTION
+    return destruction_ != nullptr && destruction_->resim_needed();
+#else
+    return false;
+#endif
+  }
+
+  std::uint32_t resim_capture() {
+#ifdef VIBE_LAND_DESTRUCTION
+    require(destruction_ != nullptr, "destruction manager missing");
+    require(!step_in_flight_, "resim_capture must run outside a step");
+    return destruction_->resim_capture();
+#else
+    throw std::runtime_error(
+        "physx-bridge built without feature `destruction`");
+#endif
+  }
+
+  bool resim_restore() {
+#ifdef VIBE_LAND_DESTRUCTION
+    require(destruction_ != nullptr, "destruction manager missing");
+    require(!step_in_flight_, "resim_restore must run outside a step");
+    return destruction_->resim_restore();
+#else
+    throw std::runtime_error(
+        "physx-bridge built without feature `destruction`");
+#endif
+  }
+
   bool validate_destruction_mappings() const {
 #ifdef VIBE_LAND_DESTRUCTION
     require(destruction_ != nullptr, "destruction manager missing");
@@ -1306,6 +2036,15 @@ private:
     scene_desc.flags |= PxSceneFlag::eENABLE_STABILIZATION;
     scene_desc.broadPhaseType = PxBroadPhaseType::eGPU;
     scene_desc.gpuMaxNumPartitions = config.gpu_max_partitions;
+    // The frozen-body clusters (destruction.cc, VIBE_CITY_FREEZE_AGGREGATE)
+    // put thousands of actors into PxAggregates; awake debris raining onto a
+    // pile generates external-vs-aggregate pairs against these buffers, whose
+    // PhysX default is 1024 — overflow silently drops pairs, which reads as
+    // debris resting inside a frozen pile and the contact-wake path going
+    // deaf. Sized like the other GPU buffers: generous, and watched by the
+    // same containment gate.
+    scene_desc.gpuDynamicsConfig.foundLostAggregatePairsCapacity = 65536;
+    scene_desc.gpuDynamicsConfig.totalAggregatePairsCapacity = 65536;
     if (config.gpu_max_rigid_contacts != 0) {
       scene_desc.gpuDynamicsConfig.maxRigidContactCount =
           config.gpu_max_rigid_contacts;
@@ -1434,6 +2173,15 @@ private:
         actor->setAngularDamping(0.5f);
       }
       actor->setContactReportThreshold(contact_report_threshold_);
+      // Solver iterations govern how completely stacked contacts are resolved.
+      // PhysX's default 4 position / 1 velocity is tuned for a few loose props;
+      // a deep pile leaves a residual velocity floor that no sleep threshold
+      // can reach, because contact solving is iterative and never exact.
+      //
+      // Read per call rather than cached, so a test can sweep the value within
+      // one process. Body creation is not a hot path.
+      actor->setSolverIterationCounts(dynamic_solver_position_iterations(),
+                                      dynamic_solver_velocity_iterations());
       tag_actor(*actor, entity_id);
       scene_->addActor(*actor);
       records_.emplace(entity_id,
@@ -1457,6 +2205,17 @@ private:
     return output;
   }
 
+public:
+  // --- Bring-your-own-world hand-off ---------------------------------------
+  // Lend the scene so the blast-stress-solver core can attach a backend to it
+  // instead of standing up a second scene. Players, vehicles and the
+  // destructible city all have to live in one scene.
+  std::uintptr_t scene_ptr() const { return reinterpret_cast<std::uintptr_t>(scene_); }
+  std::uintptr_t physics_ptr() const {
+    return reinterpret_cast<std::uintptr_t>(runtime_ ? &runtime_->physics() : nullptr);
+  }
+
+private:
   std::shared_ptr<SharedPhysxRuntime> runtime_;
   PxDefaultCpuDispatcher *dispatcher_ = nullptr;
   PxScene *scene_ = nullptr;
@@ -1464,9 +2223,104 @@ private:
   PxControllerManager *controller_manager_ = nullptr;
   std::unordered_map<std::uint32_t, Record> records_;
   std::vector<FfiContactEvent> contact_events_;
+  /// Scratch for extractContacts, reused across manifolds and ticks. onContact
+  /// runs inside fetchResults() on the simulation thread, one manifold at a
+  /// time, so a single buffer is safe -- and a per-manifold heap allocation
+  /// here lands squarely in what physics_fetch_copy_ms measures.
+  std::vector<physx::PxContactPairPoint> contact_points_;
   std::unordered_set<PxRigidDynamic *> pushed_actors_this_move_;
   PxVec3 pending_player_velocity_{0.0f};
   float contact_report_threshold_ = 50.0f;
+  /// Sampled onContact self-timing (1-in-8, x8 scaled) and call count; the
+  /// callbacks run inside fetchResults, so without this their cost is
+  /// indistinguishable from the result copy. Reset per step; published as
+  /// spans. calls_ stays monotonic so the sampling phase never aliases with
+  /// per-step contact counts.
+  std::uint64_t contact_callback_calls_ = 0;
+  double contact_callback_ms_ = 0.0;
+  /// Exact per-step callback cost in cycles, reset at the top of each fetch.
+  std::uint64_t contact_callback_cycles_ = 0;
+  /// PhysX's own simulation wall time and result-copy call, on sampled ticks
+  /// only (see gpu_sample_interval); 0 on unsampled ticks, with
+  /// sim_wall_samples_ saying which kind of tick this was so an average is
+  /// taken over the right denominator.
+  float last_sim_wall_ms_ = 0.0f;
+  float last_fetch_call_ms_ = 0.0f;
+  std::uint32_t sim_wall_samples_ = 0;
+  /// fetch minus our callbacks: PhysX copying results back, alone. Measured
+  /// every tick, because the callback side is now exact.
+  float last_result_copy_ms_ = 0.0f;
+  /// The whole fetch, every tick: wait + copy + callbacks on a blocking
+  /// tick, the same three on a sampled one. The denominator the parts are
+  /// checked against.
+  float last_fetch_total_ms_ = 0.0f;
+  /// The last few SAMPLED measurements, so a report at any cadence sees a
+  /// populated number. 16 samples is ~4 s at the default interval — long
+  /// enough to be stable, short enough to still describe the current regime
+  /// rather than averaging a cascade together with the settle after it.
+  static constexpr std::size_t kSimWallRing = 16;
+  float sim_wall_ring_[kSimWallRing] = {};
+  float result_copy_ring_[kSimWallRing] = {};
+  float callback_ring_[kSimWallRing] = {};
+  float fetch_total_ring_[kSimWallRing] = {};
+  /// Ring slot awaiting its fetch_total, or -1. The other three values are
+  /// known before the fetch completes; this one is not.
+  int pending_ring_slot_ = -1;
+  std::size_t sim_wall_ring_head_ = 0;
+  std::size_t sim_wall_ring_fill_ = 0;
+  /// Ticks where the callback total exceeded the fetch that contains it —
+  /// impossible unless the cycle counter is untrustworthy.
+  std::uint64_t tsc_suspect_ticks_ = 0;
+  // A0 sub-attribution of the callback cost, same sampling and x8 scaling.
+  // extract = resize+extractContacts; queue = the per-point loop (accumulate
+  // + queue_contact_at); pair_load = note_pair_load; wake = note_contact_pair
+  // + the dynamic_mass virtual reads. Residual vs contact_callback_est_ms is
+  // header decode + entity lookup + CSE resolve.
+  double cb_extract_ms_ = 0.0;
+  double cb_queue_ms_ = 0.0;
+  double cb_pair_load_ms_ = 0.0;
+  double cb_wake_ms_ = 0.0;
+  double cb_resolve_ms_ = 0.0;
+  double cb_entity_ms_ = 0.0;
+  double cb_events_ms_ = 0.0;
+  /// The blocks that were previously only visible as cb_tick's remainder:
+  /// the per-pair census and impulse histogram this file adds for
+  /// diagnostics, and the contact_points_ resize.
+  double cb_census_ms_ = 0.0;
+  double cb_resize_ms_ = 0.0;
+  /// Per-tick pair census, reset alongside the callback timers.
+  static constexpr int kImpulseBuckets = 20;
+  /// Deferred-contact capture (VIBE_PHYSX_DEFER_CONTACTS). Cleared every
+  /// drain; capacity retained. The contact_events_ unbounded-growth episode
+  /// is the cautionary tale for anything appended inside the callback.
+  struct DeferredContactPair {
+    PxActor *actor0;
+    PxActor *actor1;
+    PxShape *shape0;
+    PxShape *shape1;
+    std::uint32_t entity_a;
+    std::uint32_t entity_b;
+    std::uint32_t point_begin;
+    PxU32 point_count;
+    PxU32 reported_count;
+    bool ev_persists;
+    bool ev_found;
+  };
+  std::vector<DeferredContactPair> deferred_pairs_;
+  std::vector<physx::PxContactPairPoint> deferred_points_;
+  std::uint64_t contact_drain_cycles_ = 0;
+  std::uint64_t contact_drain_records_ = 0;
+
+  /// Longest SINGLE callback this tick, in cycles. See the sum/max comment.
+  std::uint64_t contact_callback_max_cycles_ = 0;
+  std::uint64_t cp_found_ = 0;
+  std::uint64_t cp_persists_ = 0;
+  std::uint64_t cp_other_ = 0;
+  std::uint64_t cp_points_ = 0;
+  std::uint64_t cp_supporter_relevant_ = 0;
+  std::uint64_t cp_zero_impulse_ = 0;
+  std::uint64_t cp_impulse_hist_[kImpulseBuckets] = {};
+  std::uint64_t contact_callbacks_this_step_ = 0;
   float last_step_ms_ = 0.0f;
   float last_controller_ms_ = 0.0f;
   float last_simulate_ms_ = 0.0f;
@@ -1663,6 +2517,15 @@ FfiDestructionStats World::destruction_stats() const {
 bool World::validate_destruction_mappings() const {
   return impl_->validate_destruction_mappings();
 }
+
+std::uint64_t World::split_count() const { return impl_->split_count(); }
+bool World::resim_needed() const { return impl_->resim_needed(); }
+std::uint32_t World::resim_capture() { return impl_->resim_capture(); }
+bool World::resim_restore() { return impl_->resim_restore(); }
+
+std::uintptr_t World::scene_ptr() const { return impl_->scene_ptr(); }
+
+std::uintptr_t World::physics_ptr() const { return impl_->physics_ptr(); }
 
 std::unique_ptr<World> new_world(const FfiWorldConfig &config) {
   return std::make_unique<World>(config);

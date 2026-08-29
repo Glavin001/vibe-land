@@ -22,6 +22,30 @@
 //! is what lets the network layer treat a freeze exactly like the settle it
 //! already handles.
 //!
+//! # The flip is an island-wide wake, and it has to be undone
+//!
+//! `setRigidBodyFlag(eKINEMATIC)` is not a per-body write. PhysX's island
+//! manager cannot remove a node from a contact island without re-forming the
+//! island, and it re-forms it AWAKE. Measured in
+//! `physx-bridge/tests/freeze_wake_semantics.rs`: freezing ONE body of a
+//! 24-body sleeping pile wakes the other 23 on the very next step.
+//!
+//! That is the never-settles bug in one sentence. This pass runs every tick,
+//! so every batch re-woke the whole pile and reset its wake counter; the pile
+//! could never accumulate the 24 quiet ticks PhysX needs to stay asleep, and
+//! players saw it hop forever. Freeze was waking the debris it was retiring.
+//!
+//! It hid for so long because PhysX's wake counter is 0.4 s -- 24 ticks at
+//! 60 Hz -- and the test that claimed "a flip does not wake the island"
+//! stepped 60 ticks before reading. The wake happened and expired inside the
+//! blind window. **Measure sleep state on the tick the write lands on, never
+//! later.**
+//!
+//! The repair lives in the bridge (`freeze_island_resleep` in
+//! `physx-bridge/src/destruction.cc`): bodies the engine had asleep
+//! immediately before a batch, and which were not themselves flipped, are put
+//! straight back to sleep. Nothing physical happened to them in between.
+//!
 //! # Why not per-body sleep
 //!
 //! `runtime.rs` documents the closed line: forcing one body of an *active*
@@ -156,6 +180,16 @@ pub struct FreezeConfig {
     pub wake_above_m: f32,
     /// Spatial-hash cell edge, metres.
     pub cell_m: f32,
+    /// Allow ROOTED structure to serve as freeze support. Off by default:
+    /// a piece that lands on a still-standing building and freezes there is
+    /// a kinematic shelf at altitude, and when that building later falls its
+    /// debris collides with the shelf and reads as propped up in mid-air
+    /// (reproduced: after a full tower collapse to 2.2 m, frozen floaters
+    /// persisted at y = 10-33 m indefinitely). With this off, such pieces
+    /// simply stay under engine sleep -- they wake by contact like any body
+    /// -- and freezing is reserved for what it was built for: mass rubble
+    /// whose support chain reaches the GROUND through other frozen debris.
+    pub freeze_on_rooted: bool,
     /// Only freeze bodies whose every supporter is event-observable:
     /// the ground (immutable), a rooted stump (topology-evented), or another
     /// frozen body (we own its lifecycle). A supporter that is dynamic
@@ -208,6 +242,7 @@ impl Default for FreezeConfig {
             shell_m: 0.02,
             census: false,
             census_interval_ticks: 60,
+            freeze_on_rooted: false,
             wake_radius_scale: 1.0,
             wake_above_m: 2.0,
             cell_m: 4.0,
@@ -248,6 +283,7 @@ impl FreezeConfig {
             pose_ticks: number("VIBE_CITY_FREEZE_POSE_TICKS", defaults.pose_ticks),
             shell_m: number("VIBE_CITY_FREEZE_SHELL_M", defaults.shell_m),
             census: flag("VIBE_CITY_POSE_CENSUS", defaults.census),
+            freeze_on_rooted: flag("VIBE_CITY_FREEZE_ON_ROOTED", defaults.freeze_on_rooted),
             census_interval_ticks: number(
                 "VIBE_CITY_POSE_CENSUS_TICKS",
                 defaults.census_interval_ticks,
@@ -852,7 +888,11 @@ impl FreezeTracker {
             Supporter::World => true,
             Supporter::Foreign => false,
             Supporter::Rooted { entity, node } => {
-                self.rooted_live.contains(entity)
+                // Ground-chain rule: rooted support does not admit a freeze
+                // (nor sustain one at release checks) unless explicitly
+                // enabled. See FreezeConfig::freeze_on_rooted.
+                self.config.freeze_on_rooted
+                    && self.rooted_live.contains(entity)
                     && !self.dead_rooted_nodes.contains(&(*entity, *node))
             }
             Supporter::Body { entity } => {
@@ -1136,8 +1176,12 @@ impl FreezeTracker {
         for (index, (_, pos, _)) in resting.iter().enumerate() {
             grid.entry(cell_index(*pos, cell)).or_default().push(index);
         }
+        // Gated dump: one line per floater so a reproduction can say WHERE
+        // the unsupported bodies sit, not just how many there are. The census
+        // is itself sampled, so this stays quiet enough to leave on in traces.
+        let dump = std::env::var("VIBE_CITY_POSE_CENSUS_DUMP").as_deref() == Ok("1");
         let mut floating = 0;
-        for (index, (_, pos, reach)) in resting.iter().enumerate() {
+        for (index, (entity, pos, reach)) in resting.iter().enumerate() {
             let bottom = pos[1] - reach;
             if bottom <= self.config.ground_epsilon_m {
                 continue;
@@ -1177,6 +1221,21 @@ impl FreezeTracker {
             }
             if !supported {
                 floating += 1;
+                if dump {
+                    let phase = self
+                        .bodies
+                        .get(entity)
+                        .map(|body| match body.phase {
+                            Phase::Frozen => "frozen",
+                            Phase::Sleeping { .. } => "sleeping",
+                            _ => "other",
+                        })
+                        .unwrap_or("gone");
+                    eprintln!(
+                        "[freeze-census] floater entity={} phase={} pos=({:.1},{:.1},{:.1}) reach={:.1}",
+                        entity, phase, pos[0], pos[1], pos[2], reach
+                    );
+                }
             }
         }
         floating
@@ -1588,8 +1647,36 @@ mod dependency_tests {
             after_ticks: 1,
             batch: 10_000,
             unsupported_sweep_ticks: 0, // backstop off: events must carry it all
+            // These tests exercise the ROOTED release semantics (node death,
+            // stump promotion), which only apply when rooted support is
+            // allowed to admit freezes at all.
+            freeze_on_rooted: true,
             ..FreezeConfig::default()
         }
+    }
+
+    /// The default rule: rooted structure does not admit a freeze. A piece
+    /// resting on a still-standing building stays engine-slept (wakeable by
+    /// plain contact) instead of becoming a kinematic shelf that props up
+    /// the building's own collapse later.
+    #[test]
+    fn rooted_support_does_not_admit_a_freeze_by_default() {
+        let mut cfg = config();
+        cfg.freeze_on_rooted = false;
+        let mut tracker = FreezeTracker::new(cfg);
+        let stump = 900;
+        tracker.ingest_support(
+            1,
+            vec![Supporter::Rooted { entity: stump, node: 7 }],
+            0.0,
+        );
+        // Well above the ground epsilon: only the rooted edge could admit it.
+        let plan = tracker.plan_freeze_batch(&[candidate(1, 12.0)]);
+        assert!(plan.is_empty(), "rooted-only support must not freeze: {plan:?}");
+
+        // Grounded rubble is unaffected by the rule.
+        let plan = tracker.plan_freeze_batch(&[candidate(2, 0.4)]);
+        assert_eq!(plan.len(), 1, "ground-resting rubble must still freeze");
     }
 
     fn candidate(entity: u32, y: f32) -> FreezeCandidate {

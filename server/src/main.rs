@@ -43,7 +43,7 @@ use vibe_land_shared::constants::{
     DEFAULT_BATTERY_HEIGHT_M, DEFAULT_BATTERY_RADIUS_M, DYNAMIC_BODY_AOI_EXIT_RADIUS_M,
     DYNAMIC_BODY_AOI_RADIUS_M, DYNAMIC_BODY_IMPULSE, FLAG_MELEEING, HITSCAN_MAX_DISTANCE_M,
     MAX_PENDING_INPUTS, MELEE_COOLDOWN_MS, MELEE_DAMAGE, MELEE_ENERGY_COST,
-    PLAYER_INPUT_CATCHUP_THRESHOLD,
+    MAX_INPUT_FRAMES_PER_TICK,
     MELEE_FLAG_DURATION_TICKS, MELEE_HALF_CONE_COS, MELEE_HIT_RECOVERY_MS, MELEE_RANGE_M,
     OUT_OF_BOUNDS_Y_M, PLAYER_AOI_RADIUS_M, PLAYER_EYE_HEIGHT_M, RIFLE_BODY_DAMAGE,
     RIFLE_FIRE_INTERVAL_MS, RIFLE_HEAD_DAMAGE, RIFLE_SHOT_ENERGY_COST, SHAPE_SPHERE, SIM_HZ,
@@ -191,6 +191,12 @@ impl RollingSamples {
         }
     }
 
+    /// Most recent sample (0 when empty). Exists for the tick residual,
+    /// which must subtract this-tick values, not window aggregates.
+    fn last(&self) -> f32 {
+        self.values.back().copied().unwrap_or(0.0)
+    }
+
     fn snapshot(&self) -> SummaryStatsSnapshot {
         if self.values.is_empty() {
             return SummaryStatsSnapshot::default();
@@ -212,6 +218,11 @@ impl RollingSamples {
 struct MatchTimingStats {
     total_ms: RollingSamples,
     player_sim_ms: RollingSamples,
+    /// 60 Hz input frames simulated per tick, summed over players. Reads 1.0
+    /// per player at 60 Hz and rises as the tick slows — the direct evidence
+    /// that the player's input stream is being consumed at the rate it was
+    /// produced rather than dropped, which is what rubber-banding was.
+    input_frames_per_tick: RollingSamples,
     player_move_math_ms: RollingSamples,
     player_query_ctx_ms: RollingSamples,
     player_kcc_ms: RollingSamples,
@@ -228,6 +239,15 @@ struct MatchTimingStats {
     dynamics_ms: RollingSamples,
     hitscan_ms: RollingSamples,
     snapshot_ms: RollingSamples,
+    /// Whole-tick city block (tick_city wall), so the residual below can
+    /// subtract ONE bracket instead of guessing which city children overlap.
+    city_total_ms: RollingSamples,
+    /// total − (every timed block). The tick contains genuinely untimed work
+    /// (respawns, spawn protection, batteries, melee, reliable-world sync,
+    /// roster, collisions) — this is where bracket gaps and double-counts
+    /// become a number instead of an invisible assumption. Client-side has
+    /// had this for its frame since day one; the server never did.
+    tick_unattributed_ms: RollingSamples,
 }
 
 /// Destructible-city telemetry, surfaced to the in-page debug overlay so the
@@ -307,6 +327,11 @@ struct CityStatsSnapshot {
     readback_ms_host: f32,
     settle_ms: f32,
     ingest_ms: f32,
+    /// Post-fracture push re-apply, previously inside the `step_ms`
+    /// unattributed remainder. A child of `step_ms`, sibling of `post_step_ms`.
+    push_reapply_ms: f32,
+    /// `step_ms` minus every child that claims part of it.
+    step_residual_ms: f32,
     /// Host wall time of the whole native destruction tick, FFI hop included.
     /// A parent of the Blast phases and measurably larger than their sum.
     tick_ffi_ms: f32,
@@ -315,6 +340,14 @@ struct CityStatsSnapshot {
     /// and never published, so `step_ms` minus its children over-reported the
     /// unattributed remainder.
     drain_ms: f32,
+    /// Supporter ingest and freeze cascades: the bulk of what used to be the
+    /// post_step remainder.
+    support_ingest_ms: f32,
+    cascade_ms: f32,
+    /// Wall time of Runtime::post_step and what none of its children claim.
+    /// Published so the accounting can be checked rather than believed.
+    post_step_total_ms: f32,
+    post_step_residual_ms: f32,
     stats_ffi_ms: f32,
     /// `backend.post_step` in full -- the parent of the destruction phases,
     /// measured by the host rather than summed from them.
@@ -357,17 +390,34 @@ struct CityStatsSnapshot {
     /// with this, so a ms comparison across runs without it is meaningless.
     support_pair_loads: u32,
     shape_readback_ms: f32,
-    /// The adapter's own per-phase timers, deltaed to per-tick. These
-    /// decompose the phases the bridge times from OUTSIDE the adapter:
-    /// `begin_ms` ~= contact_processing + gravity, `solve_ms` ~= stress_solve_cpu
-    /// + gpu_stress_solve, `end_ms` ~= fracture_topology + mapping_validation.
-    /// They were computed every tick and discarded, which left 2-3.5 ms inside
-    /// the largest phase in the tick unaccounted for.
+    /// The adapter's own per-phase timers, deltaed to per-tick — and
+    /// **SUMMED ACROSS EVERY LIVE SLOT**, while `begin_ms`/`solve_ms`/
+    /// `end_ms` are WALL-CLOCK around a loop whose slots run CONCURRENTLY on
+    /// the stress pool. A `blast_*` number can therefore legitimately exceed
+    /// its "parent" phase, and reading one as wall time nearly bought a CUDA
+    /// gravity kernel for what is ~0.5 ms of wall. The old doc here equated
+    /// them ("begin ≈ contact_processing + gravity") — that equation only
+    /// holds when a single slot is live. Rough decomposition intuition per
+    /// slot still applies: contact+gravity feed `begin`, stress_solve_cpu +
+    /// gpu_stress feed `solve`, topology+validation feed `end` — but compare
+    /// CPU-time sums with CPU-time sums, wall with wall, never across.
     blast_contact_processing_ms: f32,
     blast_gravity_ms: f32,
     blast_stress_solve_cpu_ms: f32,
     blast_fracture_topology_ms: f32,
     blast_mapping_validation_ms: f32,
+    /// Inside blast_fracture_topology_ms, which is the largest phase in the
+    /// tick during a collapse and had never been opened up. Children of it,
+    /// never summed with it: generate (solver call) / prep (sort, limit, node
+    /// snapshot, parent motion) / apply (solver island split) / scene (event
+    /// sort + applySplit under the write lock) / rebuild (rebuildLookupTables,
+    /// three whole-population hash maps). Remainder is topology minus these
+    /// five minus mapping validation.
+    blast_fracture_generate_ms: f32,
+    blast_fracture_prep_ms: f32,
+    blast_fracture_apply_ms: f32,
+    blast_fracture_scene_ms: f32,
+    blast_fracture_rebuild_ms: f32,
     blast_sleeping_actors_skipped: u64,
     /// The last two untimed blocks inside the `stress_solve_ms` bracket:
     /// per-slot dispatch (live-slot gather + telemetry read + topology
@@ -381,6 +431,28 @@ struct CityStatsSnapshot {
     /// this counter a working skip and a broken measurement are
     /// indistinguishable from the value alone.
     quiet_slot_ticks: u64,
+    /// Contacts routed into the stress solver, cumulative. Routing happens per
+    /// contact POINT and twice per point (once per shape), so
+    /// `contacts_queued / (2 * support_pair_loads)` is the points-per-manifold
+    /// factor. Both of these were assigned all the way through the netcode
+    /// struct and then dropped here, so the pipeline could not be sized at all.
+    contacts_queued: u64,
+    contacts_processed: u32,
+    contacts_dropped: u32,
+    /// Running totals of the island partition. `solver_islands_skipped` beside
+    /// them is a gauge of the LAST tick, and a bond break zeroes it by design,
+    /// so it reads 0 through a whole demolition while skipping works. Difference
+    /// these two across samples for the real rate.
+    solver_islands_skipped_accum: u64,
+    solver_islands_total_accum: u64,
+    escaped_bodies_parked: u64,
+    /// Live entries in the two per-body bookkeeping containers. Both are keyed
+    /// by (structure_id, bodyId) and erased on retire, so they must track live
+    /// bodies. Pointer-keyed and unpruned they grew without bound, and a
+    /// recycled actor inherited the dead body's CCD state -- meaning the new
+    /// body never got speculative CCD and could tunnel.
+    ccd_tracked_bodies: u32,
+    identity_stamped_bodies: u32,
     sleeping_bodies: u32,
     /// Bonds over their own elastic limit in the last solve. Fracture only
     /// runs when this is non-zero, so a persistent 0 while shooting means the
@@ -418,6 +490,10 @@ struct CityStatsSnapshot {
     /// transitions that produced it. Sustained flips with no new damage is
     /// the signature of a freeze policy fighting the engine.
     frozen_bodies: u32,
+    /// P1b clusters: broadphase entries holding the frozen population, and
+    /// how many frozen bodies sit inside them (the rest are standalone).
+    frozen_aggregates: u32,
+    frozen_aggregate_actors: u32,
     freeze_flips: u64,
     unfreeze_flips: u64,
     /// Frozen bodies released because dynamic debris struck them -- the
@@ -457,6 +533,7 @@ struct CityStatsSnapshot {
 struct MatchTimingSnapshot {
     total_ms: SummaryStatsSnapshot,
     player_sim_ms: SummaryStatsSnapshot,
+    input_frames_per_tick: SummaryStatsSnapshot,
     player_move_math_ms: SummaryStatsSnapshot,
     player_query_ctx_ms: SummaryStatsSnapshot,
     player_kcc_ms: SummaryStatsSnapshot,
@@ -473,6 +550,10 @@ struct MatchTimingSnapshot {
     dynamics_ms: SummaryStatsSnapshot,
     hitscan_ms: SummaryStatsSnapshot,
     snapshot_ms: SummaryStatsSnapshot,
+    city_total_ms: SummaryStatsSnapshot,
+    /// total − every timed block, per tick. Persistently large means a
+    /// bracket gap; persistently negative-before-clamp would mean overlap.
+    tick_unattributed_ms: SummaryStatsSnapshot,
 }
 
 impl MatchTimingStats {
@@ -480,6 +561,7 @@ impl MatchTimingStats {
         MatchTimingSnapshot {
             total_ms: self.total_ms.snapshot(),
             player_sim_ms: self.player_sim_ms.snapshot(),
+            input_frames_per_tick: self.input_frames_per_tick.snapshot(),
             player_move_math_ms: self.player_move_math_ms.snapshot(),
             player_query_ctx_ms: self.player_query_ctx_ms.snapshot(),
             player_kcc_ms: self.player_kcc_ms.snapshot(),
@@ -496,6 +578,8 @@ impl MatchTimingStats {
             dynamics_ms: self.dynamics_ms.snapshot(),
             hitscan_ms: self.hitscan_ms.snapshot(),
             snapshot_ms: self.snapshot_ms.snapshot(),
+            city_total_ms: self.city_total_ms.snapshot(),
+            tick_unattributed_ms: self.tick_unattributed_ms.snapshot(),
         }
     }
 }
@@ -764,10 +848,46 @@ struct PlayerStatsSnapshot {
     has_debug_stats: bool,
 }
 
+/// One generically-authored bridge metric in the snapshot. `k`: 0 wall-clock
+/// ms, 1 slot-summed ms (NOT comparable to wall parents), 2 count.
+#[derive(serde::Serialize, Clone, Debug, Default)]
+struct SpanValue {
+    v: f64,
+    k: u8,
+}
+
+const TICK_RING_CAP: usize = 300;
+
+/// One tick's headline numbers for the debug-report ring.
+#[derive(serde::Serialize, Clone, Debug, Default)]
+struct TickRingEntry {
+    t: u32,
+    total: f32,
+    dyn_ms: f32,
+    city: f32,
+    awake: u32,
+    frozen: u32,
+    flips: u64,
+}
+
 #[derive(serde::Serialize, Clone, Default)]
 struct MatchStatsSnapshot {
     id: String,
     scenario_tag: String,
+    /// Generic named spans from the bridges, namespaced "physics/" and
+    /// "destruction/". A new metric authored with one span_add call in C++
+    /// lands here (and in traces and debug reports) with no struct plumbing.
+    spans: std::collections::BTreeMap<String, SpanValue>,
+    /// Env/build identity of THIS process, captured once at startup — the
+    /// suite env gap survived three runs because nothing recorded what a run
+    /// executed under. Constant per process; ~free at 1 Hz.
+    fingerprint: Option<vibe_land_destruction::fingerprint::Fingerprint>,
+    /// Last ~300 ticks of headline numbers. Populated ONLY on the registry
+    /// copy (which the debug-report handler snapshots into server.json);
+    /// empty — and therefore absent from the JSON — on the copy pushed to
+    /// clients every second, which must stay lean.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    tick_ring: Vec<TickRingEntry>,
     /// When this binary was built and when this process started, so a
     /// screenshot can be told apart from a stale one. Reading a metric off a
     /// server that predates the change being tested has wasted real time in
@@ -778,7 +898,22 @@ struct MatchStatsSnapshot {
     physics_gpu_required: bool,
     physics_gpu_active: bool,
     physics_gpu_warning_count: u32,
-    physics_contact_pairs: u32,
+    /// CPU-narrowphase pair count — NOT POPULATED under the GPU pipeline,
+    /// where it read a confident 0 through every capture (185k contacts in
+    /// flight, "0 pairs"). Absent under GPU rather than zero: a metric that
+    /// cannot be measured must not look like a measurement. GPU pair
+    /// activity lives in the spans (gpu_found_lost_pairs) and the contact
+    /// high-water fields.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    physics_contact_pairs: Option<u32>,
+    /// PhysX's high-water marks for the two fixed-capacity GPU buffers, with
+    /// their configured ceilings. Overrunning one degrades hard and is the
+    /// failure mode a no-caps simulation actually has; these were computed in
+    /// C++, carried to WorldStats, and then dropped by health().
+    physics_gpu_rigid_contact_high_water: u32,
+    physics_gpu_rigid_patch_high_water: u32,
+    physics_gpu_max_rigid_contacts: u32,
+    physics_gpu_max_rigid_patches: u32,
     physics_active_dynamic_bodies: u32,
     physics_last_step_ms: f32,
     /// Step phases. `simulate` only dispatches under GPU dynamics, so
@@ -1013,6 +1148,11 @@ struct MatchState {
     physics: PhysicsRuntimeConfig,
     last_logged_datagram_fallbacks: u64,
     last_logged_dropped_outbound_packets: u64,
+    /// Last ~300 ticks of headline numbers for debug-report forensics. The
+    /// 1 Hz snapshot cannot show spikes between report presses; this can.
+    /// Rides only the REGISTRY copy of the snapshot (the report handler's
+    /// source), never the packet pushed to clients.
+    tick_ring: std::collections::VecDeque<TickRingEntry>,
     stats_registry: Arc<StdRwLock<HashMap<String, MatchStatsSnapshot>>>,
     /// Per-body freeze-machine states, refreshed at the stats cadence, for
     /// the body-color debug overlay. Cheap to keep warm (one small Vec per
@@ -1037,6 +1177,22 @@ struct MatchState {
     /// appears in -- it measures the block that builds that snapshot.
     last_fan_out_ms: f32,
     last_publish_ms: f32,
+    /// Wall clock at the previous tick. The input budget is derived from it:
+    /// the loop's MissedTickBehavior::Skip means simulated time falls behind
+    /// real time under load, and the player's input stream must be consumed
+    /// at the rate it was produced regardless.
+    last_tick_instant: Option<Instant>,
+    /// Unspent 60 Hz input frames owed by the passage of real time. Carries
+    /// the fraction a rounded budget would discard.
+    input_credit: f32,
+    /// Observer pipeline (VIBE_CITY_OBSERVER_PIPELINE=1): tick N's deferred
+    /// city observer bundle, flushed inside tick N+1's GPU wait. None when
+    /// the flag is off, on non-city matches, and on staging-error ticks.
+    staged_city: Option<city::StagedCityTick>,
+    /// Wall time of the last deferred-bundle flush. Runs between the split
+    /// step's halves, so neither dynamics_ms nor tick_city's bracket sees
+    /// it; folded into city_total_ms so the tick residual stays honest.
+    last_observer_flush_ms: f32,
 }
 
 #[tokio::main]
@@ -1235,6 +1391,9 @@ async fn main() -> Result<()> {
         .route("/session-config", get(session_config_handler))
         .route("/city-manifest/:hash", get(city_manifest_handler))
         .route("/match-stats/:match_id", get(match_stats_handler))
+        // Nested under /match-stats so the caddy proxy block that already
+        // forwards that prefix needs no change for phones to reach it.
+        .route("/match-stats/:match_id/report", post(debug_report_handler))
         .route("/match-stats/:match_id/bodies", get(match_body_states_handler))
         .route("/city-reset/:match_id", post(city_reset_handler))
         .route("/ws/stats", get(ws_stats_handler))
@@ -1647,6 +1806,20 @@ async fn health_handler(State(state): State<SharedAppState>) -> Json<HealthRespo
     })
 }
 
+/// VIBE_CITY_OBSERVER_PIPELINE=1: run tick N's city observer bundle (encoder
+/// ingest → encode → sends) inside tick N+1's GPU wait via the split physics
+/// step. Simulation order is untouched — the deferral is observer-only, and
+/// the owner accepted the ≤1-tick shift in visual emission (2026-08-27).
+/// Default OFF until the gate battery is green.
+fn observer_pipeline_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| {
+        std::env::var("VIBE_CITY_OBSERVER_PIPELINE")
+            .map(|value| !value.is_empty() && value != "0")
+            .unwrap_or(false)
+    })
+}
+
 fn load_repo_env() {
     let repo_env = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.env");
     // The path is baked in at compile time, so on a deployed box it points at
@@ -1705,6 +1878,61 @@ async fn session_config_handler(
 /// Per-match telemetry for the in-page debug overlay: sim tick cost, body
 /// counts, and city stream volume, so client-side and server-side slowness can
 /// be told apart while playing.
+/// One-button debug reports: the client posts everything IT can see, the
+/// server staples on its own live match-stats snapshot, and the pair lands in
+/// a uniquely-named folder under debug-reports/. "I sent a report" is then a
+/// complete bug report — no downloading JSON on a phone and forwarding it.
+async fn debug_report_handler(
+    Path(match_id): Path<String>,
+    State(state): State<SharedAppState>,
+    body: axum::body::Bytes,
+) -> impl IntoResponse {
+    let snapshot = state
+        .inner
+        .stats_registry
+        .read()
+        .expect("stats registry poisoned")
+        .get(&match_id)
+        .cloned();
+    let Some(stats) = snapshot else {
+        return (StatusCode::NOT_FOUND, "unknown match").into_response();
+    };
+    // Stored verbatim: the payload is the CLIENT's testimony, and rewriting
+    // testimony during intake is how evidence gets corrupted. Only shape is
+    // checked, so a garbage post cannot fill the disk with noise.
+    if serde_json::from_slice::<serde_json::Value>(&body).is_err() {
+        return (StatusCode::BAD_REQUEST, "payload is not JSON").into_response();
+    }
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs())
+        .unwrap_or(0);
+    let folder = format!("report-{stamp}-{match_id}-tick{}", stats.server_tick);
+    let dir = std::path::Path::new("debug-reports").join(&folder);
+    let server_json = match serde_json::to_vec_pretty(&stats) {
+        Ok(json) => json,
+        Err(error) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("stats serialize failed: {error}"),
+            )
+                .into_response();
+        }
+    };
+    let write = std::fs::create_dir_all(&dir)
+        .and_then(|()| std::fs::write(dir.join("client.json"), &body))
+        .and_then(|()| std::fs::write(dir.join("server.json"), &server_json));
+    if let Err(error) = write {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("report write failed: {error}"),
+        )
+            .into_response();
+    }
+    info!(%match_id, folder, bytes = body.len(), "debug report stored");
+    (StatusCode::OK, Json(serde_json::json!({ "folder": folder }))).into_response()
+}
+
 async fn match_stats_handler(
     Path(match_id): Path<String>,
     State(state): State<SharedAppState>,
@@ -2283,6 +2511,7 @@ async fn run_match_loop(
         physics,
         last_logged_datagram_fallbacks: 0,
         last_logged_dropped_outbound_packets: 0,
+        tick_ring: std::collections::VecDeque::with_capacity(TICK_RING_CAP),
         stats_registry,
         body_states_registry,
         reset_requests,
@@ -2290,6 +2519,10 @@ async fn run_match_loop(
         city_desync_repairs: 0,
         last_fan_out_ms: 0.0,
         last_publish_ms: 0.0,
+        last_tick_instant: None,
+        input_credit: 1.0,
+        staged_city: None,
+        last_observer_flush_ms: 0.0,
         next_player_handle: 1,
         reusable_player_handles: VecDeque::new(),
         free_player_handles: VecDeque::new(),
@@ -2810,16 +3043,37 @@ impl MatchState {
                             city.restate_bodies(&bodies);
                         }
                     }
-                    ClientPacket::CityResyncRequest { last_topo_seq } => {
+                    ClientPacket::CityResyncRequest {
+                        last_topo_seq,
+                        structures,
+                    } => {
                         if let Some(city) = self.city.as_mut() {
-                            info!(
-                                match_id = %self.id,
-                                player_id,
-                                last_topo_seq,
-                                "city topology resync requested; sending bootstrap"
-                            );
-                            let bootstrap = city.bootstrap(self.server_tick);
-                            let _ = try_queue_packet(&runtime.tx, bootstrap, &self.io);
+                            if structures.is_empty() {
+                                info!(
+                                    match_id = %self.id,
+                                    player_id,
+                                    last_topo_seq,
+                                    "city topology resync requested; sending bootstrap"
+                                );
+                                let bootstrap = city.bootstrap(self.server_tick);
+                                let _ = try_queue_packet(&runtime.tx, bootstrap, &self.io);
+                            } else {
+                                // Hash mismatch named the structures — this is
+                                // the detector actually firing, so the repair
+                                // counter finally means what it says.
+                                info!(
+                                    match_id = %self.id,
+                                    player_id,
+                                    last_topo_seq,
+                                    ?structures,
+                                    "city ledger hash mismatch; sending structure bootstrap"
+                                );
+                                let bootstrap =
+                                    city.structure_bootstrap(self.server_tick, &structures);
+                                if try_queue_packet(&runtime.tx, bootstrap, &self.io) {
+                                    self.city_desync_repairs += 1;
+                                }
+                            }
                             if let Some(lanes) = city.full_lane_map() {
                                 let _ = try_queue_packet(&runtime.tx, lanes, &self.io);
                             }
@@ -2838,6 +3092,36 @@ impl MatchState {
         self.server_tick += 1;
         self.reclaim_player_handles();
         let dt = 1.0 / SIM_HZ as f32;
+        // How many 60 Hz input frames this tick is entitled to consume.
+        //
+        // The loop is a fixed 60 Hz interval with MissedTickBehavior::Skip, so
+        // when a tick overruns its budget the missed ticks are dropped and
+        // simulated time falls behind the wall clock. Clients keep sending 60
+        // frames a second regardless, so the server must consume them at the
+        // rate they were PRODUCED, not at the rate it happens to be ticking —
+        // otherwise the player's body advances slower than their own client
+        // predicts and every reconcile yanks them backwards.
+        //
+        // Budgeting by real elapsed time is also what keeps this from being a
+        // speed exploit: a client that floods input still cannot move faster
+        // than wall-clock, because the budget is wall-clock / dt. The cap
+        // bounds the cost of one slow tick (KCC is ~0.03 ms per frame, so 4
+        // is ~0.12 ms) and stops a long stall from teleporting anyone.
+        // Credit, not rounding. A 69 ms tick earns 4.13 frames; rounding to 4
+        // silently loses 0.13 every tick, which is a backlog growing at ~2
+        // frames/s -- measured live at pending_inputs 21 -> 89 over a minute
+        // and a half, i.e. the player's input arriving 1.5 s late. The
+        // fraction has to carry.
+        //
+        // Credit is capped so a long stall cannot bank unbounded movement and
+        // then spend it in one tick.
+        let elapsed_since_last_tick = self
+            .last_tick_instant
+            .map(|previous| tick_started.saturating_duration_since(previous).as_secs_f32());
+        self.last_tick_instant = Some(tick_started);
+        let (input_budget, remaining_credit) =
+            spend_input_credit(self.input_credit, elapsed_since_last_tick, dt);
+        self.input_credit = remaining_credit;
         let server_time_ms = self.server_tick * (1000 / SIM_HZ as u32);
 
         self.process_respawns(server_time_ms);
@@ -2846,6 +3130,7 @@ impl MatchState {
         let ids: Vec<u32> = self.players.keys().copied().collect();
         let player_sim_started = Instant::now();
         let mut player_move_math_ms = 0.0f32;
+        let mut input_frames_applied = 0.0f32;
         let mut player_query_ctx_ms = 0.0f32;
         let mut player_kcc_ms = 0.0f32;
         let mut player_kcc_horizontal_ms = 0.0f32;
@@ -2883,22 +3168,70 @@ impl MatchState {
                 .player_state(player_id)
                 .map(|state| (state.last_input, state.on_ground))
                 .unwrap_or_default();
-            let input = self
-                .players
-                .get_mut(&player_id)
-                .map(|runtime| {
-                    // Vehicle controls are continuous state, not precious per-frame
-                    // history. Once the backlog grows unhealthy, catch the server up
-                    // to the newest useful control state instead of replaying stale
-                    // steering/throttle for hundreds of milliseconds.
-                    take_input_for_tick_with_vehicle_catchup(
-                        runtime,
-                        self.arena.is_player_in_vehicle(player_id),
-                    )
-                })
-                .unwrap_or_default();
-            on_foot_energy_drains.push((player_id, previous_input, input.clone(), was_on_ground));
-            if let Some(result) = self.arena.simulate_player_tick(player_id, &input, dt) {
+            let in_vehicle = self.arena.is_player_in_vehicle(player_id);
+            // Vehicle controls are continuous state, not precious per-frame
+            // history, and the vehicle is integrated by PhysX rather than by
+            // replaying frames — so one newest-wins control per tick stays
+            // correct there. On foot, every frame is displacement the client
+            // has already predicted, so the tick drains as many as real time
+            // says were produced.
+            let mut applied: Vec<InputCmd> = Vec::new();
+            if let Some(runtime) = self.players.get_mut(&player_id) {
+                // A backlog is time the server OWED this player and failed to
+                // simulate; draining it needs one frame beyond the real-time
+                // allowance, or the queue just sits at whatever depth it
+                // reached and the player stays permanently that far behind.
+                // Exactly one, so the fastest anyone can move is real time
+                // plus a frame per tick while they are actually behind.
+                let frames = if in_vehicle {
+                    1
+                } else if runtime.pending_inputs.len() > input_budget {
+                    (input_budget + 1).min(MAX_INPUT_FRAMES_PER_TICK)
+                } else {
+                    input_budget
+                };
+                for index in 0..frames {
+                    // The first frame always applies: with an empty queue
+                    // take_input_for_tick repeats the last applied input,
+                    // which is how a client that has gone quiet keeps its
+                    // held movement. Later frames require a real queued one,
+                    // or a quiet client would be moved twice.
+                    if index > 0 && runtime.pending_inputs.is_empty() {
+                        break;
+                    }
+                    applied.push(take_input_for_tick_with_vehicle_catchup(
+                        runtime, in_vehicle,
+                    ));
+                }
+            }
+            if applied.is_empty() {
+                applied.push(InputCmd::default());
+            }
+            input_frames_applied += applied.len() as f32;
+            // Each frame is simulated in order, with its own dt, and the
+            // energy drain and previous-input/on-ground pair are re-read
+            // between frames — the drain is per frame of movement, not per
+            // tick, and a jump landing inside the tick must be seen by the
+            // frame after it.
+            let mut frame_previous_input = previous_input;
+            let mut frame_was_on_ground = was_on_ground;
+            let mut last_result = None;
+            for frame in &applied {
+                on_foot_energy_drains.push((
+                    player_id,
+                    frame_previous_input,
+                    frame.clone(),
+                    frame_was_on_ground,
+                ));
+                last_result = self.arena.simulate_player_tick(player_id, frame, dt);
+                frame_previous_input = frame.clone();
+                frame_was_on_ground = self
+                    .arena
+                    .player_state(player_id)
+                    .map(|state| state.on_ground)
+                    .unwrap_or(frame_was_on_ground);
+            }
+            if let Some(result) = last_result {
                 player_move_math_ms += result.timings.move_math_ms;
                 player_query_ctx_ms += result.timings.query_ctx_ms;
                 player_kcc_ms += result.timings.kcc_query_ms;
@@ -2957,6 +3290,9 @@ impl MatchState {
         self.timings
             .player_sim_ms
             .record(player_sim_started.elapsed().as_secs_f32() * 1000.0);
+        self.timings
+            .input_frames_per_tick
+            .record(input_frames_applied);
         self.timings.player_move_math_ms.record(player_move_math_ms);
         self.timings.player_query_ctx_ms.record(player_query_ctx_ms);
         self.timings.player_kcc_ms.record(player_kcc_ms);
@@ -3024,7 +3360,30 @@ impl MatchState {
             .dead_players_skipped
             .record(dead_players_skipped);
 
-        let (vehicle_ms, dynamics_ms) = self.arena.step_vehicles_and_dynamics(dt);
+        // Fracture-frame resimulation capture. Must be immediately before the
+        // step: taken any later, the destruction tick has already drained the
+        // contact queue and the capture is against the wrong frame.
+        #[cfg(feature = "destruction")]
+        {
+            let mut city = self.city.take();
+            if let Some(city_ref) = city.as_mut() {
+                city_ref.pre_step(self.arena.physx_world_mut());
+            }
+            self.city = city;
+        }
+        let (vehicle_ms, dynamics_ms) = if observer_pipeline_enabled()
+            && self.arena.supports_split_step()
+        {
+            // Split step: dispatch, then run last tick's deferred city
+            // observer bundle inside the GPU wait. The bundle takes no World;
+            // the scene is mid-simulate and any PhysX call here is illegal
+            // (gpu_warning_count is the runtime tripwire).
+            self.arena.begin_dynamics(dt);
+            self.flush_staged_city_observer();
+            self.arena.finish_dynamics()
+        } else {
+            self.arena.step_vehicles_and_dynamics(dt)
+        };
         for player_id in self.arena.apply_vehicle_player_collisions() {
             self.kill_player_with_cause(player_id, server_time_ms, DeathCause::VehicleCollision);
         }
@@ -3093,7 +3452,14 @@ impl MatchState {
 
         self.sync_reliable_world_state();
 
+        let city_started = Instant::now();
         self.tick_city(dt);
+        // The deferred flush ran between the split step's halves, where
+        // neither dynamics_ms nor this bracket sees it; fold it in here so
+        // city work stays city-attributed and the residual stays honest.
+        let city_total_ms = city_started.elapsed().as_secs_f32() * 1000.0
+            + self.last_observer_flush_ms;
+        self.timings.city_total_ms.record(city_total_ms);
 
         if self.server_tick % (SIM_HZ as u32 / self.physics.snapshot_hz() as u32) == 0 {
             self.broadcast_snapshot();
@@ -3103,17 +3469,55 @@ impl MatchState {
             self.queue_roster_sync();
         }
 
+        let mut publish_tick_ms = 0.0f32;
         if self.server_tick % SERVER_PING_INTERVAL_TICKS == 0 {
             let publish_started = Instant::now();
             self.send_server_latency_pings();
             self.publish_stats();
             self.log_city_telemetry();
             self.last_publish_ms = publish_started.elapsed().as_secs_f32() * 1000.0;
+            publish_tick_ms = self.last_publish_ms;
         }
 
+        let total_ms = tick_started.elapsed().as_secs_f32() * 1000.0;
+        self.timings.total_ms.record(total_ms);
+        // The residual: what this tick spent that no bracket claims. The
+        // subtraction uses ONLY per-tick locals and top-level brackets (never
+        // a child of another bracket), so double-subtraction is impossible by
+        // construction. Negative would mean overlapping brackets — clamped
+        // visible at 0 but recorded raw in spirit via the warn path.
+        let attributed = self.timings.player_sim_ms.last()
+            + self.timings.vehicle_ms.last()
+            + self.timings.dynamics_ms.last()
+            + self.timings.hitscan_ms.last()
+            + city_total_ms
+            + self.timings.snapshot_ms.last()
+            + publish_tick_ms;
         self.timings
-            .total_ms
-            .record(tick_started.elapsed().as_secs_f32() * 1000.0);
+            .tick_unattributed_ms
+            .record((total_ms - attributed).max(0.0));
+        let city_stats = self.city.as_ref().map(|city| city.stats());
+        self.tick_ring.push_back(TickRingEntry {
+            t: self.server_tick,
+            total: total_ms,
+            dyn_ms: self.timings.dynamics_ms.last(),
+            city: city_total_ms,
+            awake: city_stats
+                .as_ref()
+                .map(|stats| stats.awake_chunk_bodies)
+                .unwrap_or(0),
+            frozen: city_stats
+                .as_ref()
+                .map(|stats| stats.frozen_chunk_bodies)
+                .unwrap_or(0),
+            flips: city_stats
+                .as_ref()
+                .map(|stats| stats.freeze_flips + stats.unfreeze_flips)
+                .unwrap_or(0),
+        });
+        while self.tick_ring.len() > TICK_RING_CAP {
+            self.tick_ring.pop_front();
+        }
     }
 
     /// Re-bootstrap clients whose ledger we know is holed.
@@ -3247,6 +3651,99 @@ impl MatchState {
         })
     }
 
+    /// Flush tick N−1's staged city observer bundle (ingest → encode →
+    /// sends), scheduled inside the split step's GPU wait. Everything here is
+    /// the tail of tick_city, verbatim, run one tick later against the
+    /// staged output; it takes no World and must never touch PhysX — the
+    /// scene is mid-simulate.
+    fn flush_staged_city_observer(&mut self) {
+        self.last_observer_flush_ms = 0.0;
+        let Some(staged) = self.staged_city.take() else {
+            return;
+        };
+        #[cfg(not(feature = "destruction"))]
+        let _ = staged;
+        #[cfg(feature = "destruction")]
+        {
+            let started = Instant::now();
+            let staged_tick = staged.sim_tick;
+            let Some(send_interval) =
+                self.city.as_ref().map(|city| city.send_interval_ticks())
+            else {
+                return;
+            };
+            // Cadence keyed to the STAGED tick so the stream keeps the exact
+            // send pattern of the combined path, one tick later.
+            let send_due =
+                staged_tick % send_interval == 0 && !self.players.is_empty();
+            let cameras: Vec<(u32, vibe_land_destruction::types::Camera)> = if send_due {
+                self.players
+                    .keys()
+                    .filter_map(|&id| {
+                        self.city_camera_for_player(id).map(|camera| (id, camera))
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            let mut city = self.city.take().expect("checked above");
+            let reliable = city.flush_staged(staged);
+            let v3_datagrams = city.take_v3_datagrams();
+            let fan_out_started = std::time::Instant::now();
+            let mut desynced: Vec<u32> = Vec::new();
+            for packet in &reliable {
+                for (player_id, runtime) in self.players.iter() {
+                    if !try_queue_packet(&runtime.tx, packet.clone(), &self.io)
+                        && !desynced.contains(player_id)
+                    {
+                        desynced.push(*player_id);
+                    }
+                }
+            }
+            for packet in &v3_datagrams {
+                for runtime in self.players.values() {
+                    let _ = try_queue_packet(&runtime.tx, packet.clone(), &self.io);
+                }
+            }
+            self.last_fan_out_ms = fan_out_started.elapsed().as_secs_f32() * 1000.0;
+            for player_id in desynced {
+                if self.city_desync_players.insert(player_id) {
+                    warn!(
+                        match_id = %self.id,
+                        player_id,
+                        "city ledger desynced: reliable packet dropped on a full client queue"
+                    );
+                }
+            }
+            let v2_pose_stream = v3_datagrams.is_empty()
+                && city.wire_version() != vibe_land_destruction::wire::CITY_WIRE_V3;
+            if send_due && v2_pose_stream {
+                let encode_started = std::time::Instant::now();
+                let shared = city.encode_shared(staged_tick);
+                let shared_ms = encode_started.elapsed().as_secs_f32() * 1000.0;
+                let datagrams_started = std::time::Instant::now();
+                if !shared.records.is_empty() {
+                    for (player_id, camera) in cameras {
+                        let packets =
+                            city.client_datagrams(u64::from(player_id), camera, &shared);
+                        if let Some(runtime) = self.players.get(&player_id) {
+                            for packet in packets {
+                                let _ = try_queue_packet(&runtime.tx, packet, &self.io);
+                            }
+                        }
+                    }
+                }
+                city.record_encode_timings(
+                    shared_ms,
+                    datagrams_started.elapsed().as_secs_f32() * 1000.0,
+                );
+            }
+            self.city = Some(city);
+            self.repair_city_desyncs();
+            self.last_observer_flush_ms = started.elapsed().as_secs_f32() * 1000.0;
+        }
+    }
+
     fn tick_city(&mut self, dt: f32) {
         let Some(send_interval) = self.city.as_ref().map(|city| city.send_interval_ticks())
         else {
@@ -3318,15 +3815,33 @@ impl MatchState {
         // 60 Hz: destruction step + reliable topology/baseline broadcast
         // (byte-identical for every client — encode once, clone the buffer).
         let city_step_started = std::time::Instant::now();
-        let reliable = city.step(
-            self.server_tick,
-            dt,
-            vibe_land_destruction::city_config::CITY_GRAVITY,
-            world,
-        );
+        let (reliable, staged) = if observer_pipeline_enabled() {
+            city.step_stage(
+                self.server_tick,
+                dt,
+                vibe_netcode::movement::default_world_gravity(),
+                world,
+            )
+        } else {
+            (
+                city.step(
+                    self.server_tick,
+                    dt,
+                    vibe_netcode::movement::default_world_gravity(),
+                    world,
+                ),
+                None,
+            )
+        };
         let city_step_wall_ms = city_step_started.elapsed().as_secs_f32() * 1000.0;
         city.record_tick_sample(city_step_wall_ms);
-        let v3_datagrams = city.take_v3_datagrams();
+        // A staged tick's datagrams do not exist yet — its live-lane ingest
+        // runs at flush, which drains them there.
+        let v3_datagrams = if staged.is_some() {
+            Vec::new()
+        } else {
+            city.take_v3_datagrams()
+        };
         let broken_after = city.stats().broken_bonds;
         let awake_after = city.stats().awake_chunk_bodies;
         if broken_after > broken_before || awake_after > awake_before {
@@ -3378,10 +3893,10 @@ impl MatchState {
                 );
             }
         }
-        self.repair_city_desyncs();
         // Chunk stream cadence (wire v2 only): shared encode once, per-client
         // interest + ceiling selection, own datagram sequence space per client.
-        let v2_pose_stream = v3_datagrams.is_empty()
+        let v2_pose_stream = staged.is_none()
+            && v3_datagrams.is_empty()
             && city.wire_version() != vibe_land_destruction::wire::CITY_WIRE_V3;
         if send_due && v2_pose_stream {
             // Timed because it was the single largest unmeasured cost: at 10k
@@ -3410,6 +3925,11 @@ impl MatchState {
             );
         }
         self.city = Some(city);
+        self.staged_city = staged;
+        // After the city is restored: repairs need `self.city` to build the
+        // bootstrap. Called while it was taken out, the else-continue dropped
+        // desynced players from the repair set without repairing them.
+        self.repair_city_desyncs();
     }
 
     /// 1 Hz destructible-city telemetry: stream volume, encode cost, and the
@@ -3567,6 +4087,21 @@ impl MatchState {
 
         let (dynamic_body_count, vehicle_count, battery_count) = self.arena.counts();
         let physics_health = self.arena.health();
+        let mut spans = std::collections::BTreeMap::new();
+        for span in self.arena.take_physics_spans() {
+            spans.insert(
+                format!("physics/{}", span.name),
+                SpanValue { v: span.value, k: span.kind },
+            );
+        }
+        if let Some(city) = self.city.as_ref() {
+            for span in city.extra_spans() {
+                spans.insert(
+                    format!("destruction/{}", span.name),
+                    SpanValue { v: span.value, k: span.kind },
+                );
+            }
+        }
         let city_window = self
             .city
             .as_mut()
@@ -3579,8 +4114,19 @@ impl MatchState {
             .as_mut()
             .map(|city| city.tick_window.phases.drain())
             .unwrap_or_default();
+        static FINGERPRINT: std::sync::OnceLock<vibe_land_destruction::fingerprint::Fingerprint> =
+            std::sync::OnceLock::new();
         let match_stats = MatchStatsSnapshot {
             id: self.id.clone(),
+            spans,
+            tick_ring: Vec::new(),
+            fingerprint: Some(
+                FINGERPRINT
+                    .get_or_init(|| vibe_land_destruction::fingerprint::capture_with_build(
+                        cfg!(feature = "cuda-stress"),
+                    ))
+                    .clone(),
+            ),
             scenario_tag: self.id.clone(),
             server_build: server_build_stamp(),
             server_started: server_started_stamp(),
@@ -3588,7 +4134,15 @@ impl MatchState {
             physics_gpu_required: self.physics.capabilities.gpu_required,
             physics_gpu_active: physics_health.gpu_active,
             physics_gpu_warning_count: physics_health.gpu_warning_count,
-            physics_contact_pairs: physics_health.contact_pairs,
+            physics_contact_pairs: if physics_health.gpu_active {
+                None
+            } else {
+                Some(physics_health.contact_pairs)
+            },
+            physics_gpu_rigid_contact_high_water: physics_health.gpu_rigid_contact_high_water,
+            physics_gpu_rigid_patch_high_water: physics_health.gpu_rigid_patch_high_water,
+            physics_gpu_max_rigid_contacts: physics_health.gpu_max_rigid_contacts,
+            physics_gpu_max_rigid_patches: physics_health.gpu_max_rigid_patches,
             physics_active_dynamic_bodies: physics_health.active_dynamic_bodies,
             physics_last_step_ms: physics_health.last_step_ms,
             physics_simulate_ms: physics_health.last_simulate_ms,
@@ -3772,8 +4326,14 @@ impl MatchState {
                     readback_ms_host: stats.readback_ms_host,
                     settle_ms: stats.settle_ms,
                     ingest_ms: stats.ingest_ms,
+                    push_reapply_ms: city.last_push_reapply_ms,
+                    step_residual_ms: city.last_step_residual_ms,
                     tick_ffi_ms: stats.tick_ffi_ms,
                     drain_ms: stats.drain_ms,
+                    support_ingest_ms: stats.support_ingest_ms,
+                    cascade_ms: stats.cascade_ms,
+                    post_step_total_ms: stats.post_step_total_ms,
+                    post_step_residual_ms: stats.post_step_residual_ms,
                     stats_ffi_ms: stats.stats_ffi_ms,
                     post_step_ms: stats.post_step_ms,
                     fan_out_ms: self.last_fan_out_ms,
@@ -3793,10 +4353,23 @@ impl MatchState {
                     blast_stress_solve_cpu_ms: stats.blast_stress_solve_cpu_ms,
                     blast_fracture_topology_ms: stats.blast_fracture_topology_ms,
                     blast_mapping_validation_ms: stats.blast_mapping_validation_ms,
+                    blast_fracture_generate_ms: stats.blast_fracture_generate_ms,
+                    blast_fracture_prep_ms: stats.blast_fracture_prep_ms,
+                    blast_fracture_apply_ms: stats.blast_fracture_apply_ms,
+                    blast_fracture_scene_ms: stats.blast_fracture_scene_ms,
+                    blast_fracture_rebuild_ms: stats.blast_fracture_rebuild_ms,
                     blast_sleeping_actors_skipped: stats.blast_sleeping_actors_skipped,
                     slot_dispatch_ms: stats.slot_dispatch_ms,
                     bond_sample_ms: stats.bond_sample_ms,
                     quiet_slot_ticks: stats.quiet_slot_ticks,
+                    contacts_queued: stats.contacts_queued,
+                    contacts_processed: stats.contacts_processed,
+                    contacts_dropped: stats.contacts_dropped,
+                    solver_islands_skipped_accum: stats.solver_islands_skipped_accum,
+                    solver_islands_total_accum: stats.solver_islands_total_accum,
+                    escaped_bodies_parked: stats.escaped_bodies_parked,
+                    ccd_tracked_bodies: stats.ccd_tracked_bodies,
+                    identity_stamped_bodies: stats.identity_stamped_bodies,
                     sleeping_bodies: stats.sleeping_chunk_bodies,
                     overstressed_bonds: stats.overstressed_bonds,
                     bond_utilisation_max: stats.bond_utilisation_max,
@@ -3814,6 +4387,8 @@ impl MatchState {
                     solver_island_count: stats.solver_island_count,
                     solver_islands_skipped: stats.solver_islands_skipped,
                     frozen_bodies: stats.frozen_chunk_bodies,
+                    frozen_aggregates: stats.frozen_aggregates,
+                    frozen_aggregate_actors: stats.frozen_aggregate_actors,
                     freeze_flips: stats.freeze_flips,
                     unfreeze_flips: stats.unfreeze_flips,
                     contact_wakes: stats.contact_wakes,
@@ -3853,6 +4428,10 @@ impl MatchState {
         let server_tick = self.server_tick;
         let snapshot_hz = self.physics.snapshot_hz();
         let published = match_stats.clone();
+        // The registry copy carries the tick ring; the client-pushed copy
+        // does not (serde skips the empty vec), keeping the 1 Hz packet lean.
+        let mut registry_copy = match_stats.clone();
+        registry_copy.tick_ring = self.tick_ring.iter().cloned().collect();
         tokio::task::spawn_blocking(move || {
             // Same snapshot the HTTP endpoint serves, pushed to the players it
             // describes. Reliable rather than datagram: it is ~1 Hz and being
@@ -3881,7 +4460,7 @@ impl MatchState {
 
             let global = {
                 let mut registry = stats_registry.write().expect("stats registry poisoned");
-                registry.insert(match_id.clone(), published);
+                registry.insert(match_id.clone(), registry_copy);
                 global_stats_from_registry(&registry, snapshot_hz)
             };
             if let Some((id, states)) = body_states {
@@ -5245,34 +5824,49 @@ impl MatchState {
 /// already carries the correct state and OR-ing them would fabricate input.
 const LATCHED_BUTTONS: u16 = BTN_JUMP | BTN_RELOAD;
 
+/// How many 60 Hz input frames a tick may simulate, and the credit left over.
+///
+/// Split out of `tick` so the arithmetic is testable: the first version of it
+/// rounded, discarding the fraction every tick, and the resulting backlog
+/// only showed up in a live report as pending_inputs climbing to 89.
+///
+/// `elapsed` is None on the very first tick, which gets one frame.
+fn spend_input_credit(credit: f32, elapsed: Option<f32>, dt: f32) -> (usize, f32) {
+    let Some(elapsed) = elapsed else {
+        return (1, 0.0);
+    };
+    // Capped so a long stall (a GC pause, a scene rebuild) cannot bank
+    // unbounded movement and release it in a single tick.
+    let earned = (credit + elapsed / dt).min(MAX_INPUT_FRAMES_PER_TICK as f32);
+    let frames = (earned.floor() as usize).clamp(1, MAX_INPUT_FRAMES_PER_TICK);
+    // Spent by time passing, not by anyone consuming it: an idle player must
+    // not bank credit while away and sprint on their next input.
+    (frames, (earned - frames as f32).max(0.0))
+}
+
 fn take_input_for_tick(runtime: &mut PlayerRuntime) -> InputCmd {
-    // Stay current instead of draining a backlog.
+    // Ordered, one frame at a time. The caller decides HOW MANY frames a tick
+    // is allowed to consume (see input_budget_for_tick); this function never
+    // skips one.
     //
-    // Clients send at a fixed 60 Hz. If the match loop falls behind (a heavy
-    // city collapse pushed it to ~30-45 Hz), popping one frame per tick
-    // consumes fewer than arrive, so the queue grows until it saturates at
-    // MAX_PENDING_INPUTS = 120 — two seconds of input. Steady state is then
-    // the server applying two-second-old movement and *yaw*, which feels like
-    // walking in a direction you were facing a moment ago rather than like
-    // lag. Vehicles already collapsed their backlog; on foot did not.
+    // It used to jump to the newest frame whenever three were pending,
+    // discarding the rest and acking the newest anyway. That is what made
+    // walking rubber-band. Clients send a fixed 60 Hz; under a city collapse
+    // the match loop runs at ~31 Hz; so the server applied ~31 frames a
+    // second and threw away ~29, while telling the client it had applied all
+    // of them. The client replays every unacked frame from the acked state,
+    // arrives ~half a step ahead of where the server actually put the player,
+    // exceeds the 0.15 m correction threshold, and gets pulled back — every
+    // tick, forever. Measured live: 60.3 input/s sent against a 31.2 Hz
+    // server, correction_m 0.19-0.32.
     //
-    // Whatever else degrades, the player's own body should track their input,
-    // so jump to the newest frame and keep only the latched presses from the
-    // ones skipped.
-    if runtime.pending_inputs.len() >= PLAYER_INPUT_CATCHUP_THRESHOLD {
-        if let Some(mut newest) = runtime.pending_inputs.pop_back() {
-            let mut latched = 0u16;
-            for skipped in runtime.pending_inputs.iter() {
-                latched |= skipped.buttons & LATCHED_BUTTONS;
-            }
-            runtime.inputs_skipped_for_catchup += runtime.pending_inputs.len() as u64;
-            runtime.pending_inputs.clear();
-            newest.buttons |= latched;
-            runtime.last_ack_input_seq = newest.seq;
-            runtime.last_applied_input = newest.clone();
-            return newest;
-        }
-    }
+    // Dropping frames also cannot be fixed by acking honestly: the server
+    // would then integrate only half the player's motion and they would walk
+    // at half speed. The frames have to be SIMULATED, which is what the
+    // budgeted loop in the caller does.
+    //
+    // `on_foot_backlog_keeps_ordered_processing` guards this and has been red
+    // since the skip was introduced.
     if let Some(input) = runtime.pending_inputs.pop_front() {
         runtime.last_ack_input_seq = input.seq;
         runtime.last_applied_input = input.clone();
@@ -5750,6 +6344,54 @@ mod tests {
 
         assert_eq!(applied.seq, 24);
         assert_ne!(applied.buttons & BTN_RELOAD, 0);
+    }
+
+    #[test]
+    fn a_60hz_tick_earns_exactly_one_frame() {
+        let dt = 1.0 / 60.0;
+        let (frames, credit) = super::spend_input_credit(0.0, Some(dt), dt);
+        assert_eq!(frames, 1);
+        assert!(credit.abs() < 1e-4, "no credit should accumulate at 60 Hz: {credit}");
+    }
+
+    #[test]
+    fn slow_ticks_consume_the_input_they_were_produced_at() {
+        // The live failure: a 69 ms tick earns 4.13 frames. Rounding applied 4
+        // and dropped 0.13 every tick, which is what grew pending_inputs to
+        // 89. Over many ticks the credit version must apply the full 4.13
+        // frames per tick on average, or the backlog returns.
+        let dt = 1.0 / 60.0;
+        let elapsed = 0.069_f32;
+        let mut credit = 0.0;
+        let mut applied = 0usize;
+        let ticks = 600;
+        for _ in 0..ticks {
+            let (frames, next) = super::spend_input_credit(credit, Some(elapsed), dt);
+            applied += frames;
+            credit = next;
+        }
+        let produced = (ticks as f32 * elapsed / dt).round() as usize;
+        let shortfall = produced.saturating_sub(applied);
+        assert!(
+            shortfall <= 1,
+            "applied {applied} of {produced} frames produced; shortfall {shortfall}"
+        );
+    }
+
+    #[test]
+    fn a_long_stall_cannot_bank_unbounded_movement() {
+        let dt = 1.0 / 60.0;
+        // Two seconds of stall = 120 frames' worth of real time.
+        let (frames, credit) = super::spend_input_credit(0.0, Some(2.0), dt);
+        assert_eq!(frames, super::MAX_INPUT_FRAMES_PER_TICK);
+        assert!(credit < 1.0, "credit must not carry a stall forward: {credit}");
+    }
+
+    #[test]
+    fn the_first_tick_takes_a_single_frame() {
+        let (frames, credit) = super::spend_input_credit(0.0, None, 1.0 / 60.0);
+        assert_eq!(frames, 1);
+        assert_eq!(credit, 0.0);
     }
 
     #[test]

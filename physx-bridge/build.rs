@@ -5,6 +5,13 @@ use std::{env, path::PathBuf};
 const DEFAULT_PHYSX_ROOT: &str = "/root/PhysX/physx/install/linux-clang/PhysX";
 
 #[cfg(feature = "gpu")]
+/// This branch pairs with the `blast-stress-solver` checkout, not `-2`.
+///
+/// Upstream defaults to `-2`, which is where the other line of work lives, and
+/// merging it in silently repointed this build at a tree that does not have
+/// the solver changes this branch depends on -- it failed on a missing
+/// `elasticModulusPa`, which is the giveaway that it was compiling against the
+/// wrong Blast. Overridable by BLAST_ROOT either way.
 const DEFAULT_BLAST_ROOT: &str = "/root/workspace/blast-stress-solver/blast";
 
 #[cfg(feature = "gpu")]
@@ -140,6 +147,12 @@ fn main() {
     ] {
         println!("cargo:rustc-link-lib=static={library}");
     }
+    // PhysX also dlopens libPhysXGpu_64.so at CUDA-context creation, and a
+    // dlopen ignores the link search path. Without an rpath the GPU scene fails
+    // to construct and the bridge reports "no GPU" -- which reads as missing
+    // hardware rather than a missing runtime path, and silently downgrades
+    // every GPU test to a skip.
+    println!("cargo:rustc-link-arg=-Wl,-rpath,{}", lib.display());
     println!("cargo:rustc-link-lib=dylib=PhysXGpu_64");
     println!("cargo:rustc-link-lib=dylib=cuda");
     // The .cu uses both the runtime API and the driver API (cuCtxPushCurrent).
@@ -183,6 +196,23 @@ fn compile_cuda_stress(blast: &std::path::Path) {
         "cuda-stress feature enabled but the CUDA solver source is missing: {}",
         source.display()
     );
+
+    // Everything nvcc reads has to be in the rerun set. It was not, so editing
+    // only the CUDA solver left the previous object in place and the run
+    // measured the old kernel -- which produced one confidently-wrong "0
+    // islands skipped" result before anyone noticed the build had not happened.
+    // The arch list belongs here too: changing it changes the emitted SASS.
+    println!("cargo:rerun-if-env-changed=VIBE_CUDA_ARCH");
+    println!("cargo:rerun-if-changed={}", source.display());
+    for header in [
+        "include/extensions/stressgpu/NvBlastExtStressGpu.h",
+        "include/extensions/stress/NvBlastExtStressSolver.h",
+        // The stress equation itself now lives in a header shared with the
+        // host walk. Editing it changes the kernel, so it belongs here too.
+        "include/extensions/stress/NvBlastExtStressFormula.h",
+    ] {
+        println!("cargo:rerun-if-changed={}", blast.join(header).display());
+    }
 
     // Which GPUs the kernel is compiled for. The fleet rents whatever Vast has
     // capacity for, so this is a list, not a single card.

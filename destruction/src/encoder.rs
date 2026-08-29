@@ -847,6 +847,38 @@ impl ChunkStreamEncoder {
             &live_motion,
         ))
     }
+
+    /// A bootstrap covering only the named structures — the repair a
+    /// [`Self::topology_hash_message`] mismatch drives.
+    pub fn structure_bootstrap_message(&self, sim_tick: u32, structures: &[u32]) -> Vec<u8> {
+        let bodies = &self.bodies;
+        let live_motion = move |structure_id: u32, serial: u32| {
+            bodies
+                .get(&ids::body_entity(structure_id, serial))
+                .map(|track| {
+                    (
+                        track.state.pose,
+                        track.state.linear_velocity,
+                        track.state.angular_velocity,
+                    )
+                })
+        };
+        crate::wire::encode_structure_bootstrap(&self.ledger.bootstrap_filtered(
+            sim_tick,
+            self.manifest_hash,
+            self.baseline_id,
+            self.topo_seq,
+            &live_motion,
+            Some(structures),
+        ))
+    }
+
+    /// Per-structure ledger hashes at the current topo_seq, for periodic
+    /// broadcast. The client only compares when its own seq matches, so the
+    /// message is meaningful regardless of stream position.
+    pub fn topology_hash_message(&self) -> Vec<u8> {
+        crate::wire::encode_topology_hashes(self.topo_seq, &self.ledger.structure_hashes())
+    }
 }
 
 #[cfg(test)]

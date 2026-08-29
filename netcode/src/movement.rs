@@ -44,6 +44,31 @@ impl Default for MoveConfig {
     }
 }
 
+/// The world's gravity vector, in m/s^2, taken from the same constant the
+/// player falls by.
+///
+/// One world, one gravity. The player runs at 20 m/s^2 -- roughly 2x Earth,
+/// and almost exactly the Source engine's `sv_gravity 800` (800 in/s^2 =
+/// 20.32 m/s^2) that Half-Life, Counter-Strike and Team Fortress all ship.
+/// That is a deliberate, conventional choice: with `jump_speed` 6.5 it gives a
+/// 1.06 m jump with 0.65 s of airtime, where real gravity would stretch the
+/// same jump to 0.93 s of committed, un-steerable arc.
+///
+/// What is *not* conventional is applying it to only some of the world. Source
+/// applies `sv_gravity` to players, props and ragdolls alike; a barrel in
+/// Half-Life 2 falls at 20.3 m/s^2 too. Running the player at 20 and debris at
+/// 9.81 leaves the player as the only reference frame the eye has, and
+/// everything else reads as falling in slow motion -- an 84 m drop takes 2.9 s
+/// at the player's gravity and 4.1 s at Earth's.
+pub fn world_gravity(cfg: &MoveConfig) -> [f32; 3] {
+    [0.0, -(cfg.gravity as f32), 0.0]
+}
+
+/// The default world gravity, for call sites with no config to hand.
+pub fn default_world_gravity() -> [f32; 3] {
+    world_gravity(&MoveConfig::default())
+}
+
 /// Apply ground friction to horizontal velocity.
 pub fn apply_horizontal_friction(velocity: &mut Vec3d, friction: f64, dt: f64, on_ground: bool) {
     if !on_ground {

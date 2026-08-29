@@ -20,6 +20,7 @@ pub mod city;
 pub mod city_config;
 pub mod classify;
 pub mod encoder;
+pub mod fingerprint;
 pub mod freeze;
 pub mod ids;
 pub mod interest;
@@ -37,6 +38,14 @@ pub mod types;
 pub mod variants;
 pub mod wire;
 
+#[cfg(feature = "physx")]
+#[cfg(feature = "blast-core")]
+pub mod core_runtime;
+
+// Gated, because runtime.rs is the PhysX-backed path and imports the bridge
+// unconditionally. The merge inserted core_runtime above this and took the
+// cfg with it, which only shows up in a build WITHOUT the feature -- i.e. the
+// pure-Rust CI-safe one this gate exists to protect.
 #[cfg(feature = "physx")]
 pub mod runtime;
 

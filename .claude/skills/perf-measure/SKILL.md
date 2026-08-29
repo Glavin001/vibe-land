@@ -5,6 +5,30 @@ description: Measure server tick performance without fooling yourself — which 
 
 # Measuring server performance
 
+## The one command
+
+```bash
+scripts/perf/profile.sh              # downtown grid 2: 87k chunks, 268k bonds
+scripts/perf/profile.sh --grid 1     # smaller scene
+scripts/perf/profile.sh --idle       # at rest, no shots
+scripts/perf/profile.sh --reuse X.csv    # re-analyse, no re-run
+scripts/perf/profile.sh --ab A.csv B.csv # matched-n comparison
+```
+
+It prints a hierarchical budget where the shares add up, plus the worst
+ticks fully decomposed. It refuses to run while the vl4 server is up,
+because that server holds a CUDA context and tracing beside it inflated the
+tail 60x. It sets the physics env to match run-vl4-server.sh, builds with
+`cuda-stress,blast-core`, and excludes ring warm-up. None of that is
+optional and none of it should have to be remembered.
+
+**`max` does not decompose.** A parent's worst tick and a child's worst tick
+are different ticks, so subtracting them describes no tick that ever ran.
+Percentages in that table come from SUMS, which do decompose; the quantiles
+beside them are shape. Columns marked `~` are sampled 1-in-16 or ring
+-smoothed -- fine for a 1 Hz report, wrong per-tick, and never valid as a
+per-unit denominator (`dist.py` raises rather than dividing by one).
+
 Every wrong performance conclusion in this project came from a measurement
 problem, not a reasoning problem. This is the procedure that avoids repeating
 them.
@@ -22,14 +46,21 @@ in the JSON but have no row in `client/src/city/CityStatsOverlay.tsx`. Reading
 the overlay instead of the JSON produced a wrong root-cause hypothesis that
 survived several rounds.
 
-Turn on the fetch split before any perf run:
+The fetch split is now published by default (F11). `physics_gpu_wait_ms` and
+`physics_fetch_copy_ms` are populated on every tick: on the 1-in-16 sampled
+ticks they are that tick's exact values, otherwise the recent-ring mean.
+Before F11 they were hard 0.0 on unsampled ticks, so a 1 Hz debug report
+essentially always showed `0.0` and PhysX looked opaque when it was only
+unpublished — if you are reading an older report, that is why.
 
-```
--e VIBE_PHYSX_PROFILE_FETCH=1
-```
+`VIBE_PHYSX_PROFILE_FETCH=1` still forces per-tick polling for traces that
+need every tick exact, at the cost of a burned core (see trap 1).
 
-Without it, `physics_fetch_ms` is one opaque number and the split between
-*waiting on the GPU* and *copying results back* is invisible.
+The callback breakdown (`cb_extract_ms`, `cb_pair_load_ms`, `cb_queue_ms`,
+`cb_wake_ms`) is also on by default since its timers moved to rdtsc
+(~0.05 ms/tick). `VIBE_PHYSX_PROFILE_CALLBACK=0` turns it off. This is the
+breakdown that matters most right now: measured 200 -> 5600 awake bodies,
+GPU sim wall grew 3.3x while contact callbacks grew 24x (0.4 -> 9.6 ms).
 
 ## The six traps
 
@@ -115,6 +146,76 @@ structural invariants — the phases account for the frame (`unattributedMs < 6`
 and the renderer is not the bottleneck. **Absolute budgets belong to the machine
 running it**, not to the code, which is why the spec reports rather than gates
 them.
+
+## THE FIDELITY FLOOR (owner rule, 2026-08-27 — supersedes any perf idea)
+
+**The stress solve is LOCKSTEP with the physics step, and must stay there.**
+Resim's contract: contact event → simulate the tick → if that tick's solve
+detects a fracture, REWIND and re-run the same tick with the fracture applied,
+so the body breaks as if pre-fractured. Fracture detection must happen inside
+the same tick as its contact — the rewind window IS the tick.
+
+Resim-enabled quality is the floor; performance comes after, never instead. An
+optimization is admissible ONLY if mathematically identical in simulation
+outcome — same contacts, same solve inputs, same fracture timing, same rewind
+semantics (equality up to the GPU's documented nondeterminism). This extends
+the "no caps/clamps/truncation" rule to SCHEDULING:
+
+- INADMISSIBLE: stress/fracture at reduced cadence (even dt-compensated),
+  result-offset pipelining of anything the simulation consumes, catch-up
+  steps that skip destruction bookkeeping, any tick-delay between a contact
+  and its fracture detection.
+- ADMISSIBLE: pipelining restricted to already-committed state (encode/
+  publish of tick N−1's finalized snapshot during tick N's gpu_wait),
+  cheaper onContact extraction, host-walk optimizations, anything provably
+  outcome-identical.
+
+## Three more traps, learned 2026-08-27
+
+**7. A/B arms must simulate the same city.** Disabling contact reports
+"saved ~6 ms" — but reports also feed stress injection, so the fast arm broke
+21% fewer bonds and was simulating a smaller city. Bucket-matching cannot
+rescue arms whose physics diverged. `scripts/perf/verdict.py` now REFUSES the
+comparison (bond band, physics-env fingerprint, regime overlap) — use it via
+`python3 -m scripts.perf.compare latest <labelA> <labelB> [-n 2]`; do not
+hand-roll verdicts.
+
+**8. Census/differential gates are differences, never absolutes.** The floater
+census counts frozen and engine-asleep alike and legitimately includes
+bond-held bodies; an absolute `=0` gate false-failed on the documented benign
+tail of 2–4. Gate ON THE DELTA between arms.
+
+**9. Do not rebuild during an experiment.** A cargo build mid-battery replaces
+the trace binary between arms. Run dirs embed the short git hash and meta.json
+carries the binary mtime, so this is now visible — check the run names match
+before trusting a verdict.
+
+**10. Build measurement binaries with `--features cuda-stress`, never
+`--features destruction`.** `destruction` compiles the CUDA stress solver OUT
+and falls back to the CPU CG solve, whose residual reads as real stress: an
+untouched city breaks ~30,000 bonds in 90 s where the GPU path breaks 0. An
+entire afternoon's bisect came back red on source that was green hours
+earlier, purely from this. `record-city-trace` now REFUSES to start without
+the feature, meta.json carries `cuda_stress`, and `verdict.py` refuses any arm
+containing a CPU-solver run — but the flag is still yours to get right when
+building by hand. The startup banner is the confirmation:
+`[destruction] CUDA stress solver active`.
+
+## The measurement stack (2026-08-27)
+
+- Runs live in `bench-results/runs/<stamp>-<label>-<shortgit>/` with a
+  fingerprinted meta.json (env, git, binary). `record-city-trace --label X`
+  writes there; timings.jsonl carries per-tick wall phases + every generic
+  span.
+- New metrics are ONE `span_add(name, ms, kind)` call in the bridge (kind 0
+  wall / 1 slot-summed / 2 count) — they appear in /match-stats (`spans`),
+  traces, and debug reports automatically.
+- `tick_unattributed_ms` (server) is the bracket-gap tripwire; the
+  timing_consistency test asserts the bracket map in CI.
+- The registry copy of match-stats carries `tick_ring` (last 300 ticks) for
+  debug-report forensics; the client packet does not.
+- `physics_contact_pairs` is ABSENT (not 0) under the GPU pipeline; pair
+  activity = `spans.physics/gpu_found_lost_pairs` + contact high-waters.
 
 ## Before claiming a number
 

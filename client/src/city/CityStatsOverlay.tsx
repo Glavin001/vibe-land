@@ -215,6 +215,7 @@ function Stat({ label, value, warn }: { label: string; value: string; warn?: boo
 
 import { getMatchStats, subscribeMatchStats } from '../app/connectPhase';
 import { acquireCityDiagnostics } from './cityDiagnostics';
+import { sendDebugReport } from './debugReport';
 import {
   ambientOcclusionPreferred,
   setAmbientOcclusionEnabled,
@@ -284,6 +285,8 @@ export function CityStatsOverlay({
   //
   // Re-fetched on click rather than reusing the 1 Hz poll, so the file is the
   // moment you pressed the button rather than up to a second stale.
+  const [sendState, setSendState] = useState<'idle' | 'sending' | 'sent' | 'failed'>('idle');
+  const [sentFolder, setSentFolder] = useState<string | null>(null);
   const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved' | 'failed'>(
     'idle',
   );
@@ -631,6 +634,45 @@ export function CityStatsOverlay({
         // which click produced which file, so show the last one.
         <div style={{ ...row, opacity: 0.6, fontSize: 10, marginBottom: 2 }}>
           <span style={{ wordBreak: 'break-all' }}>{savedName}</span>
+        </div>
+      )}
+
+      <div style={{ ...row, marginTop: 4, marginBottom: 2 }}>
+        <button
+          type="button"
+          disabled={sendState === 'sending'}
+          onClick={async () => {
+            setSendState('sending');
+            try {
+              // Everything client-side — bridge snapshot, frame profile, and
+              // the event rings — posted to the server, which stores it next
+              // to its own live stats under debug-reports/. One press replaces
+              // download-then-forward, which a phone makes miserable.
+              const folder = await sendDebugReport(matchId);
+              setSentFolder(folder);
+              setSendState('sent');
+            } catch {
+              setSendState('failed');
+            }
+            window.setTimeout(() => setSendState('idle'), 4000);
+          }}
+          style={{ ...toggleButton, position: 'static', width: '100%' }}
+          data-testid="city-stats-send-report"
+          aria-label="Send a debug report (client and server state) to the server"
+        >
+          {sendState === 'sending'
+            ? 'SENDING...'
+            : sendState === 'sent'
+              ? 'REPORT SENT'
+              : sendState === 'failed'
+                ? 'SEND FAILED'
+                : 'SEND REPORT'}
+        </button>
+      </div>
+      {sentFolder && (
+        // Named so "the report I just sent" is unambiguous in a conversation.
+        <div style={{ ...row, opacity: 0.6, fontSize: 10, marginBottom: 2 }}>
+          <span style={{ wordBreak: 'break-all' }}>{sentFolder}</span>
         </div>
       )}
 

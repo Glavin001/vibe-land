@@ -52,9 +52,20 @@ export function presentationConfig60Hz(): PresentationConfig {
   return {
     interpolationDelayTicks: 6,
     maxExtrapolationTicks: 8,
-    correctionSeconds: 0.1,
+    // 0.25, not 0.1: a body outside the ranked interest set is served about
+    // one record per second, so its accumulated extrapolation error arrives
+    // as ONE correction per second — and a 0.1 s glide of that size reads as
+    // the body being punted upward on a 1 Hz metronome (reported live, phone
+    // session, settling debris). 0.25 s turns the same correction into a
+    // drift the eye forgives; near bodies get corrections every record, far
+    // smaller, and are unaffected in practice.
+    correctionSeconds: 0.25,
     dt: 1 / 60,
-    gravity: [0, -9.81, 0],
+    // The world falls at 20 m/s^2 (matched to the player; see
+    // VIBE_WORLD_GRAVITY) — 9.81 predates that change, and extrapolating
+    // ballistic debris at half its real gravity is what made starved tracks
+    // sag behind truth and need the upward correction in the first place.
+    gravity: [0, -20.0, 0],
     snapDistanceMeters: 5,
   };
 }

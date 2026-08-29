@@ -28,6 +28,18 @@ physx = ["dep:vibe-land-physx-bridge", "vibe-land-physx-bridge/destruction"]
 # measured on that path is an artefact of the solver rather than a property of
 # the structure, and it is indistinguishable from a real regression.
 cuda-stress = ["physx", "vibe-land-physx-bridge/cuda-stress"]
+# Drive destruction through the standardized blast-stress-solver core instead of
+# the bespoke ExtStressPhysXDestructible path. Both can be built at once so the
+# two can be A/B'd against the same scene before the old path is retired.
+blast-core = ["physx", "dep:blast-stress-solver"]
+
+[dependencies.blast-stress-solver]
+# Same checkout as BLAST_ROOT in physx-bridge/build.rs: mixing two
+# solver trees in one binary is not a thing anyone wants to debug.
+path = "/root/workspace/blast-stress-solver/blast/blast-stress-solver-rs"
+optional = true
+default-features = false
+features = ["physx", "scenarios"]
 
 [dependencies.vibe-land-physx-bridge]
 path = "../physx-bridge"

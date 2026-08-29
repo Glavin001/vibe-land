@@ -120,7 +120,11 @@ pub fn facade_aim(pack: &ScenePack) -> ([f32; 3], [f32; 3]) {
 pub const HZ: u32 = 60;
 pub const DT: f32 = 1.0 / HZ as f32;
 /// Re-exported so rig users get the production value by construction.
-pub use crate::city_config::CITY_GRAVITY as GRAVITY;
+///
+/// A function, not a constant, because production reads it from the movement
+/// config and a constant here could drift from it -- which it did, sitting at
+/// -9.81 while the world ran at -20.
+pub use crate::city_config::city_gravity;
 const GROUP_STATIC: u32 = 1 << 0;
 
 /// When a rig counts as "at rest".
@@ -241,10 +245,11 @@ impl Rig {
     /// One tick of the production loop, with the ledger and trace kept current.
     pub fn step(&mut self) -> Result<(), CityDestructionError> {
         self.world.step().expect("physx step");
+        let g = city_gravity();
         let gravity = [
-            GRAVITY[0] * self.gravity_scale,
-            GRAVITY[1] * self.gravity_scale,
-            GRAVITY[2] * self.gravity_scale,
+            g[0] * self.gravity_scale,
+            g[1] * self.gravity_scale,
+            g[2] * self.gravity_scale,
         ];
         let output = self.destruction.post_step(&mut self.world, DT, gravity)?;
         // Before poses are read: a chunk promoted this tick belongs to its new

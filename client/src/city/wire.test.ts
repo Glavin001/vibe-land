@@ -8,6 +8,7 @@ import {
   RecordMode,
   decodeChunksDatagram,
   decodeQuat32,
+  decodeTopologyHashes,
   encodeCityResyncRequest,
   isCityPacketKind,
 } from './wire';
@@ -61,9 +62,33 @@ describe('city wire decoder', () => {
     expect(Array.from(bytes)).toEqual([9, 0x04, 0x03, 0x02, 0x01]);
   });
 
+  it('encodes a targeted resync request with its structure list', () => {
+    const bytes = encodeCityResyncRequest(7, [3, 1]);
+    // The 5-byte prefix is byte-identical to the legacy packet, which is what
+    // lets an old server treat it as a full-resync request.
+    expect(Array.from(bytes)).toEqual([
+      9, 7, 0, 0, 0, 2, 3, 0, 0, 0, 1, 0, 0, 0,
+    ]);
+  });
+
+  it('decodes topology hashes against the pinned server encoding', () => {
+    // encode_topology_hashes(5, [(0, 0xb97e54fee243a378)]) in wire.rs — the
+    // Rust test pins the same bytes.
+    const bytes = new Uint8Array([
+      128, 5, 0, 0, 0, 1, 0, 0, 0, 0, 0x78, 0xa3, 0x43, 0xe2, 0xfe, 0x54, 0x7e, 0xb9,
+    ]);
+    const message = decodeTopologyHashes(bytes);
+    expect(message.topoSeq).toBe(5);
+    expect(message.hashes).toEqual([
+      { structureId: 0, laneA: 0xb97e54fe, laneB: 0xe243a378 },
+    ]);
+  });
+
   it('classifies city packet kinds', () => {
     expect(isCityPacketKind(119)).toBe(true);
     expect(isCityPacketKind(122)).toBe(true);
     expect(isCityPacketKind(112)).toBe(false);
+    expect(isCityPacketKind(128)).toBe(true);
+    expect(isCityPacketKind(129)).toBe(true);
   });
 });

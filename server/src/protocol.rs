@@ -29,9 +29,13 @@ pub enum ClientPacket {
         physics_ms: f32,
     },
     /// City topology stream gap detected client-side; server replies with a
-    /// fresh PKT_CITY_BOOTSTRAP.
+    /// fresh PKT_CITY_BOOTSTRAP. When `structures` is non-empty the client
+    /// detected a per-structure hash mismatch and the server replies with a
+    /// PKT_CITY_STRUCTURE_BOOTSTRAP scoped to exactly those (empty = full,
+    /// which is also what a pre-hash client's short packet decodes to).
     CityResyncRequest {
         last_topo_seq: u32,
+        structures: Vec<u32>,
     },
     /// Bodies whose v3 chains a lost datagram poisoned; restate exactly these.
     CityNack {
@@ -72,6 +76,7 @@ pub enum ClientDatagram {
     },
     CityResyncRequest {
         last_topo_seq: u32,
+        structures: Vec<u32>,
     },
     /// Bodies whose v3 chains a lost datagram poisoned; restate exactly these.
     CityNack {
@@ -354,8 +359,10 @@ pub fn decode_client_datagram(bytes: &[u8]) -> Result<ClientDatagram> {
         }
         PKT_CITY_RESYNC_REQUEST => {
             ensure!(buf.remaining() >= 4, "short city resync datagram");
+            let last_topo_seq = buf.get_u32_le();
             ClientDatagram::CityResyncRequest {
-                last_topo_seq: buf.get_u32_le(),
+                last_topo_seq,
+                structures: decode_resync_structures(&mut buf)?,
             }
         }
         PKT_CITY_NACK => {
@@ -371,6 +378,19 @@ pub fn decode_client_datagram(bytes: &[u8]) -> Result<ClientDatagram> {
 }
 
 /// Convert a [`ClientDatagram`] (WebTransport) to a [`ClientPacket`] (match event).
+/// Optional tail of a resync request: `[count u8][structure_id u32]*`.
+/// A packet that ends after `last_topo_seq` (every client that predates the
+/// topology-hash detector) decodes as an empty list, meaning full bootstrap.
+fn decode_resync_structures(buf: &mut impl Buf) -> Result<Vec<u32>> {
+    if buf.remaining() == 0 {
+        return Ok(Vec::new());
+    }
+    let count = usize::from(buf.get_u8());
+    ensure!(count <= 64, "oversized resync structure list");
+    ensure!(buf.remaining() >= count * 4, "short resync structure list");
+    Ok((0..count).map(|_| buf.get_u32_le()).collect())
+}
+
 pub fn client_datagram_to_packet(d: ClientDatagram) -> ClientPacket {
     match d {
         ClientDatagram::InputBundle(frames) => ClientPacket::InputBundle(frames),
@@ -388,9 +408,13 @@ pub fn client_datagram_to_packet(d: ClientDatagram) -> ClientPacket {
             physics_ms,
         },
         ClientDatagram::CityNack { bodies } => ClientPacket::CityNack { bodies },
-        ClientDatagram::CityResyncRequest { last_topo_seq } => {
-            ClientPacket::CityResyncRequest { last_topo_seq }
-        }
+        ClientDatagram::CityResyncRequest {
+            last_topo_seq,
+            structures,
+        } => ClientPacket::CityResyncRequest {
+            last_topo_seq,
+            structures,
+        },
     }
 }
 
@@ -772,8 +796,10 @@ pub fn decode_client_packet(bytes: &[u8]) -> Result<ClientPacket> {
         }
         PKT_CITY_RESYNC_REQUEST => {
             ensure!(buf.remaining() >= 4, "short city resync packet");
+            let last_topo_seq = buf.get_u32_le();
             ClientPacket::CityResyncRequest {
-                last_topo_seq: buf.get_u32_le(),
+                last_topo_seq,
+                structures: decode_resync_structures(&mut buf)?,
             }
         }
         PKT_CITY_NACK => {
@@ -979,6 +1005,35 @@ pub fn encode_server_packet(packet: &ServerPacket) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The 5-byte packet every pre-hash client sends must keep meaning "full
+    /// bootstrap", and the extended form must carry its structure list.
+    #[test]
+    fn resync_request_decodes_legacy_and_targeted_forms() {
+        let legacy = [9u8, 7, 0, 0, 0];
+        match decode_client_packet(&legacy).expect("legacy resync") {
+            ClientPacket::CityResyncRequest {
+                last_topo_seq,
+                structures,
+            } => {
+                assert_eq!(last_topo_seq, 7);
+                assert!(structures.is_empty());
+            }
+            other => panic!("wrong packet: {other:?}"),
+        }
+        // Pinned against encodeCityResyncRequest(7, [3, 1]) in wire.test.ts.
+        let targeted = [9u8, 7, 0, 0, 0, 2, 3, 0, 0, 0, 1, 0, 0, 0];
+        match decode_client_packet(&targeted).expect("targeted resync") {
+            ClientPacket::CityResyncRequest {
+                last_topo_seq,
+                structures,
+            } => {
+                assert_eq!(last_topo_seq, 7);
+                assert_eq!(structures, vec![3, 1]);
+            }
+            other => panic!("wrong packet: {other:?}"),
+        }
+    }
 
     #[test]
     fn decode_client_packet_preserves_full_input_bundle() {

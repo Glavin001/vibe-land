@@ -125,7 +125,23 @@ pub const VEHICLE_INPUT_CATCHUP_THRESHOLD: usize = 4;
 /// On-foot backlog depth that triggers a jump to the newest input. Small on
 /// purpose: the point is to track the player's current intent, not to replay
 /// a queue. MAX_PENDING_INPUTS remains the hard cap for pathological cases.
+///
+/// UNUSED since the rubber-band fix: on foot the server now DRAINS the
+/// backlog (simulating each frame) instead of skipping to the newest, so
+/// there is no depth at which frames get discarded. Kept only so the vehicle
+/// path's threshold has an obvious sibling; see MAX_INPUT_FRAMES_PER_TICK.
+#[deprecated(note = "on-foot input is drained, not skipped; see MAX_INPUT_FRAMES_PER_TICK")]
 pub const PLAYER_INPUT_CATCHUP_THRESHOLD: usize = 3;
+/// Most 60 Hz input frames one tick may simulate for a player.
+///
+/// The tick's real budget is wall-clock elapsed / dt, so a client cannot buy
+/// speed by sending faster; this only bounds the worst case.
+///
+/// 8 frames = 133 ms of movement, ~0.24 ms of KCC work at the measured 0.03
+/// ms per frame. Was 4, which live reports showed was under the requirement:
+/// a heavy collapse produced 69 ms ticks (4.13 frames) with a p95 of 87 ms
+/// (5.2), so the cap itself became the thing holding the backlog open.
+pub const MAX_INPUT_FRAMES_PER_TICK: usize = 8;
 pub const RIFLE_FIRE_INTERVAL_MS: u32 = 100;
 pub const RIFLE_BODY_DAMAGE: u8 = 14;
 pub const RIFLE_HEAD_DAMAGE: u8 = 16;

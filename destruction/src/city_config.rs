@@ -10,6 +10,47 @@ use crate::scene_pack::StressLimits;
 /// directly -- the trace recorder -- gets the same tuning the match server
 /// uses instead of a second copy that drifts. `pack_materials` is the scene
 /// pack's own material table; empty falls back to reference concrete.
+/// The sensitivity dial on authored stress limits; 1.0 means "the concrete the
+/// pack claims to be made of".
+///
+/// Read from one place so every backend is configured identically -- the core
+/// path and the old path have to agree on this or a comparison between them is
+/// measuring the dial rather than the pipeline.
+pub fn stress_limit_scale() -> f32 {
+    std::env::var("VIBE_CITY_STRESS_LIMIT_SCALE")
+        .ok()
+        .and_then(|value| value.parse::<f32>().ok())
+        .filter(|value| *value > 0.0)
+        .unwrap_or(1.0)
+}
+
+/// Debris velocity damping, per second.
+///
+/// Zero by default, and that is the physical answer: damping is air drag on a
+/// body moving through empty space, and a concrete slab the size of a washing
+/// machine does not meaningfully feel it. The shipped 0.25 capped debris
+/// terminal velocity at 39 m/s and slowed every fall by roughly 20% -- a
+/// velocity sink with no source, standing in for the energy loss that should
+/// happen when the slab actually *hits* something.
+///
+/// Energy loss on impact is restitution and friction on the contact material,
+/// not damping. See `VIBE_WORLD_RESTITUTION` / `VIBE_WORLD_FRICTION`.
+///
+/// Override with VIBE_CITY_DEBRIS_LINEAR_DAMPING / _ANGULAR_DAMPING.
+pub fn debris_damping() -> (f32, f32) {
+    let read = |name: &str| {
+        std::env::var(name)
+            .ok()
+            .and_then(|v| v.parse::<f32>().ok())
+            .filter(|v| *v >= 0.0)
+            .unwrap_or(0.0)
+    };
+    (
+        read("VIBE_CITY_DEBRIS_LINEAR_DAMPING"),
+        read("VIBE_CITY_DEBRIS_ANGULAR_DAMPING"),
+    )
+}
+
 pub fn stress_settings(pack_materials: &[StressLimits]) -> StressSolverSettings {
     // ExtStressPhysX takes absolute stress limits (Pa-scale). The synthetic
     // defaults (0.008/0.01) are for the unitless Rapier path before
@@ -18,11 +59,7 @@ pub fn stress_settings(pack_materials: &[StressLimits]) -> StressSolverSettings 
     // back to the reference concrete numbers. VIBE_CITY_STRESS_LIMIT_SCALE
     // stays available as a sensitivity dial; 1.0 means "the concrete the
     // pack claims to be made of".
-    let scale = std::env::var("VIBE_CITY_STRESS_LIMIT_SCALE")
-        .ok()
-        .and_then(|value| value.parse::<f32>().ok())
-        .filter(|value| *value > 0.0)
-        .unwrap_or(1.0);
+    let scale = stress_limit_scale();
     let from_pack = !pack_materials.is_empty();
     // The whole table scales together. Scaling only the first entry would
     // silently change the RATIO between frame, slab and cladding -- the
@@ -128,6 +165,9 @@ pub fn stress_settings(pack_materials: &[StressLimits]) -> StressSolverSettings 
     // stalled large fractures; the per-tick cost it guarded against is now
     // covered by the parallel + CUDA solve.
     settings.maximum_fractures_per_actor_per_tick = 0;
+    let (linear, angular) = debris_damping();
+    settings.linear_damping = linear;
+    settings.angular_damping = angular;
     // Excess forces off by default. The adapter's excess-force path applies
     // an UNBOUNDED impulse and torque at split time
     // (NvBlastExtStressPhysX.cpp:1914, addTorque(..., eIMPULSE)): the
@@ -161,14 +201,15 @@ pub fn stress_settings(pack_materials: &[StressLimits]) -> StressSolverSettings 
 
 /// Gravity the destructible city runs under, m/s^2.
 ///
-/// One definition, imported by the server, the rig, the benches and the trace
-/// recorder, because it was four copies of the same literal and a structural
-/// test measured against the wrong one is worse than no test. Note the game is
-/// NOT uniformly this: the player and vehicle arena runs at -20 (roughly twice
-/// Earth, for feel), while the city's destruction physics runs at -9.81. Both
-/// are deliberate and they are different numbers for different systems; this
-/// is the one buildings actually stand in.
-pub const CITY_GRAVITY: [f32; 3] = [0.0, -9.81, 0.0];
+/// Delegates to the movement config rather than restating a number, which is
+/// the whole point: this was a hardcoded -9.81 and the world had been raised to
+/// -20. Everything structural measured against it was measured at half the load
+/// production applies. Anything production decides, this must CALL rather than
+/// copy -- the same rule the bench learned when it fed 9.81 into a 20 m/s^2
+/// PhysX scene, a combination that never runs.
+pub fn city_gravity() -> [f32; 3] {
+    vibe_netcode::movement::default_world_gravity()
+}
 
 /// What one shot does to a structure.
 ///
@@ -197,10 +238,37 @@ pub struct ShotProfile {
 }
 
 impl ShotProfile {
+    /// Matched to the 2.5 m radius below, and to the AUTHORED buildings.
+    ///
+    /// Upstream retuned this to 4.0e5 against a 0.4 m radius, calibrated on the
+    /// fractured-* scenes. Measured against the authored packs those values do
+    /// nothing at all -- a shot at a timber house facade broke zero bonds, and
+    /// so did every combination tried between them. Those scenes are fractured
+    /// far finer, so a 0.4 m sphere still contains chunks; an authored house
+    /// wall is a handful of half-metre pieces and the same sphere reaches
+    /// almost nothing.
+    ///
+    /// The tuning therefore belongs to the CONTENT, not to the weapon, which
+    /// is an argument for it living in this profile rather than as constants
+    /// in the server. Set VIBE_CITY_SHOT_STRESS_IMPULSE=4.0e5 and
+    /// VIBE_CITY_SHOT_BLAST_RADIUS=0.4 to get upstream's values back for the
+    /// fractured-* scenes.
     pub const DEFAULT_STRESS_IMPULSE: f32 = 1.2e7;
     pub const DEFAULT_PUSH_SPEED: f32 = 12.0;
 
     /// The city's shot, including its env overrides.
+    ///
+    /// Retuned from artillery to rifle scale, which is what the weapon
+    /// actually is. 2.5 m of blast radius is an artillery footprint -- a single
+    /// burst removed most of a building because every round drove load into
+    /// every bond within a five-metre diameter. A rifle round against concrete
+    /// spalls a crater measured in centimetres, and this gun is full-auto, so
+    /// the destruction budget should come from many small precise hits rather
+    /// than one enormous one.
+    ///
+    /// The stress impulse falls with it: at 0.4 m the old 1.2e7 would
+    /// concentrate roughly forty times the load density into the bonds it does
+    /// reach.
     pub fn city() -> Self {
         let env_f32 = |name: &str, fallback: f32| {
             std::env::var(name)
@@ -210,8 +278,6 @@ impl ShotProfile {
                 .unwrap_or(fallback)
         };
         Self {
-            // Kept below the old "nuke the whole tower" 5e9 / 8e7 band so a hit
-            // opens a local crater instead of shredding every bond in radius.
             stress_impulse: env_f32(
                 "VIBE_CITY_SHOT_STRESS_IMPULSE",
                 Self::DEFAULT_STRESS_IMPULSE,
@@ -221,9 +287,17 @@ impl ShotProfile {
             // 4000 m/s. A bounded kick speed is a property of the weapon;
             // everything past it is unmodified physics.
             push_speed: env_f32("VIBE_CITY_SHOT_PUSH_SPEED", Self::DEFAULT_PUSH_SPEED),
-            blast_radius_m: 2.5,
-            push_radius_m: 4.0,
-            blast_depth_m: 0.5,
+            blast_radius_m: env_f32("VIBE_CITY_SHOT_BLAST_RADIUS", 2.5),
+            push_radius_m: env_f32("VIBE_CITY_SHOT_PUSH_RADIUS", 4.0),
+            // Derived from the radius rather than fixed, which is what the
+            // server does: seat the centre a fraction of the radius past the
+            // surface so the blast covers material instead of straddling the
+            // face. Fixed at 0.5 against a 0.4 m radius it would sit entirely
+            // behind the crater it is supposed to make.
+            blast_depth_m: env_f32(
+                "VIBE_CITY_SHOT_BLAST_DEPTH",
+                env_f32("VIBE_CITY_SHOT_BLAST_RADIUS", 2.5) * 0.2,
+            ),
             max_distance_m: 400.0,
         }
     }

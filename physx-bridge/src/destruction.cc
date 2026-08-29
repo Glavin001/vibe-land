@@ -3,12 +3,14 @@
 #include "vibe-land-physx-bridge/src/lib.rs.h"
 
 #include "NvBlastExtStressPhysX.h"
+#include "NvBlastExtStressSolver.h"
 #include "PxPhysicsAPI.h"
 
 #include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <limits>
 #include <stdexcept>
 #include <string>
@@ -164,6 +166,126 @@ bool quiet_skip_enabled() {
   return enabled;
 }
 
+/// Per-body contact-report threshold as a multiple of the body's own resting
+/// weight (`ratio * m * g`), or 0 to keep the flat scene-wide value.
+///
+/// MEASURED AND REFUTED (2026-08-27, scripts/contact-threshold-experiment.sh).
+/// Three arms, identical scripted input, suite green in all three:
+///
+///   unset   dsim  0.00 ms   floaters 2
+///   k=0.5   dsim +2.27 ms   floaters 2
+///   k=2     dsim -0.14 ms   floaters 5
+///
+/// Nothing to win. The premise came from a CONFOUNDED A/B: disabling reports
+/// wholesale (VIBE_CITY_CHUNK_CONTACT_REPORTS=0) looked like ~6 ms, but it
+/// also removes stress injection, so that run broke 21% fewer bonds and was
+/// simulating a materially different (less damaged) city. With the physics
+/// held fixed -- bond band 0.4-0.5% here -- the report path is not the cost.
+///
+/// The reason is in the scene filter's own comment: a SLEEPING pair generates
+/// no narrowphase at all, so a settled pile already costs nothing, and during
+/// a live collapse the contacts genuinely exceed any threshold, so nothing is
+/// suppressed. Raising thresholds only skips the callback for touches that
+/// were cheap either way -- and at k=2 it starts starving support discovery
+/// (floaters 2 -> 5), which is the coupling this was warned about.
+///
+/// Kept off-by-default and documented rather than deleted, so the next person
+/// who has this idea can read the numbers instead of re-running the week.
+float contact_report_mass_ratio() {
+  static const float ratio = [] {
+    if (const char *raw = std::getenv("VIBE_CITY_CONTACT_REPORT_MASS_RATIO")) {
+      const float parsed = static_cast<float>(std::atof(raw));
+      if (parsed > 0.0f) {
+        return parsed;
+      }
+    }
+    return 0.0f;
+  }();
+  return ratio;
+}
+
+/// The threshold a chunk body of this mass should carry. `flat` (the
+/// scene-wide value) is returned unchanged when the experiment is off, and is
+/// also the FLOOR when it is on: a featherweight shard must not end up with a
+/// threshold so low that it reports noise the flat value already suppressed.
+float chunk_contact_report_threshold(float mass, float flat) {
+  const float ratio = contact_report_mass_ratio();
+  if (ratio <= 0.0f || !(mass > 0.0f)) {
+    return flat;
+  }
+  // Duplicated rather than calling world_gravity(), which is defined in a
+  // later translation-unit-local namespace; kept in sync by reading the same
+  // env with the same default.
+  static const float gravity = [] {
+    if (const char *raw = std::getenv("VIBE_WORLD_GRAVITY")) {
+      const float parsed = static_cast<float>(std::fabs(std::atof(raw)));
+      if (parsed > 0.0f) {
+        return parsed;
+      }
+    }
+    return 20.0f;
+  }();
+  return std::max(flat, ratio * mass * gravity);
+}
+
+/// P1b: cluster frozen bodies into spatial-cell PxAggregates. OPT-IN
+/// (VIBE_CITY_FREEZE_AGGREGATE=1), because the matched-load A/B refuted the
+/// premise: in the settled tail (awake<500, frozen 1500-2000) aggregation
+/// MEASURED 3.9 ms SLOWER per tick than standalone actors (7.88 vs 4.03 ms
+/// medians over ~6k ticks, identical scripted input, fewer bonds broken on
+/// the slow side) — the aggregate machinery costs more than the broadphase
+/// entries it retires, at least at this occupancy and flip churn. The P1a
+/// ceiling (2.3 ms at 1.7k frozen for full REMOVAL) is real, but PxAggregate
+/// is not the mechanism that captures it. Kept behind the flag for future
+/// experiments (hysteresis, larger cells, higher occupancy).
+bool freeze_aggregate_enabled() {
+  static const bool enabled = [] {
+    const char *value = std::getenv("VIBE_CITY_FREEZE_AGGREGATE");
+    return value != nullptr && std::string(value) == "1";
+  }();
+  return enabled;
+}
+
+/// XZ cell edge for the frozen clusters, metres. ~2x the largest chunk reach
+/// so a pile spans few cells; piles are ground-level so Y does not partition.
+float freeze_aggregate_cell_m() {
+  static const float cell = [] {
+    if (const char *raw = std::getenv("VIBE_CITY_FREEZE_AGG_CELL_M")) {
+      const float parsed = static_cast<float>(std::atof(raw));
+      if (parsed > 0.5f) {
+        return parsed;
+      }
+    }
+    return 8.0f;
+  }();
+  return cell;
+}
+
+/// Per-aggregate capacity. 128 actors is the classic broadphase cluster cap;
+/// the shape bound exists because an island body carries one shape per chunk
+/// and the GPU sizes aggregate bounds work off shape counts.
+constexpr std::uint32_t kFrozenAggMaxActors = 128;
+constexpr std::uint32_t kFrozenAggMaxShapes = 1024;
+/// Parked-empty aggregates kept for reuse before releasing outright.
+constexpr std::size_t kFrozenAggPoolCap = 32;
+
+/// MEASUREMENT ONLY, default off: remove frozen bodies from the PxScene
+/// entirely instead of leaving them as kinematic actors holding broadphase
+/// entries. Exists to price the ceiling of any frozen-body population
+/// optimisation (P1a): run matched traces with and without it and the
+/// dynamics_ms delta is the most any clustering scheme could recover.
+///
+/// NEVER deploy with this set. A removed body has no contacts, so the
+/// contact-wake release path cannot fire and players fall through frozen
+/// piles — correctness is knowingly sacrificed for the measurement.
+bool freeze_remove_from_scene() {
+  static const bool enabled = [] {
+    const char *value = std::getenv("VIBE_CITY_FREEZE_REMOVE_FROM_SCENE");
+    return value != nullptr && std::string(value) == "1";
+  }();
+  return enabled;
+}
+
 #if defined(NVBLAST_ENABLE_CUDA_STRESS)
 /// Whether to request the CUDA stress solver (VIBE_CITY_GPU_STRESS=0 disables).
 ///
@@ -296,6 +418,23 @@ struct DestructionManager::Slot {
   // reported alongside them read as a single 3,207 ms solve. Keep the previous
   // total here and report the delta.
   double last_gpu_stress_solve_ms = 0.0;
+  double last_gpu_host_work_ms = 0.0;
+  double last_gpu_host_blocked_ms = 0.0;
+  double last_stress_initialize_ms = 0.0;
+  double last_stress_impulse_copy_ms = 0.0;
+  double last_stress_graph_solve_ms = 0.0;
+  double last_hw_walk_in_ms = 0.0;
+  double last_hw_reset_ms = 0.0;
+  double last_hw_bond_stress_ms = 0.0;
+  // Cumulative per solver; carried per slot so the span can accumulate
+  // DELTAS and report a true cross-slot total. max() across slots would take
+  // the skip count from one structure and the launch count from another, and
+  // the two would not be addable.
+  std::uint64_t last_bs_gpu_skipped = 0;
+  std::uint64_t last_bs_gpu_runs = 0;
+  double last_hw_node_stress_ms = 0.0;
+  double last_stress_drain_ms = 0.0;
+  double last_stress_calc_error_ms = 0.0;
   /// The adapter's OTHER five phase timers, cumulative for the same reason and
   /// deltaed the same way. These decompose the three phases the bridge times
   /// from outside: contact-processing + gravity are what `begin_ms` is made
@@ -312,6 +451,11 @@ struct DestructionManager::Slot {
   double last_stress_solve_cpu_ms = 0.0;
   double last_fracture_topology_ms = 0.0;
   double last_mapping_validation_ms = 0.0;
+  double last_fracture_generate_ms = 0.0;
+  double last_fracture_prep_ms = 0.0;
+  double last_fracture_apply_ms = 0.0;
+  double last_fracture_scene_ms = 0.0;
+  double last_fracture_rebuild_ms = 0.0;
 };
 
 DestructionManager::DestructionManager(PxPhysics &physics, PxScene &scene,
@@ -339,11 +483,86 @@ DestructionManager::DestructionManager(PxPhysics &physics, PxScene &scene,
     workers = std::min(workers, hardware);
   }
   stress_executor_ = std::make_unique<StressExecutor>(workers);
+
+  // Lend the pool to the stress library.
+  //
+  // updateBondStress is the largest named cost in the tick (9.9 ms at grid 2,
+  // ~7x the GPU kernel it post-processes) and is linear in TOTAL live bonds.
+  // The fan-out around solveTick is over STRUCTURES -- four of them, measured
+  // 2.21x concurrency -- so most of a 32-core box idles through it. The
+  // library owns no threads, so it takes ours.
+  //
+  // Nested use is safe here because the inner dispatch happens on a worker
+  // already inside run(), and StressExecutor::run participates rather than
+  // blocking on a separate pool.
+  // Default ON, earned: the order audit ran both paths per tick and compared
+  // the removal list element by element in merge order, the overstressed
+  // counts and the final latches -- 88.8M group checks at grid 1 plus 133.4M
+  // at grid 2, 0 mismatches. Measured -51.2% on hw_bond where the inner
+  // fan-out engages (single-structure scenes; outer count == 1).
+  //
+  // On multi-structure scenes the inner dispatch arrives NESTED, from inside
+  // a worker of the slot fan-out, and the executor runs nested calls inline
+  // -- its state is one generation deep, and the first nested dispatch
+  // overwrote the generation the outer call was waiting on and DEADLOCKED
+  // grid 2 (see tl_inside_stress_task). So at grid 2 this is currently a
+  // no-op, not a win; flattening the slot x strip fan-out is the follow-up
+  // that collects it there. BLAST_BOND_STRESS_PARALLEL=0 removes the hook.
+  // DEFAULT OFF at grid 2's cost, ON only where it was audited to pay.
+  //
+  // The second-pool design below is REFUTED. At rest -- identical scene state
+  // in both arms, no fracture divergence, n=3358/arm -- it is ~2x worse:
+  //
+  //     solve  6.31 ms ON vs 2.98 OFF     hw_bond 14.65 vs 9.34
+  //
+  // Two causes, both structural. The mutex converts slot parallelism into
+  // serialisation (slots queue for the pool instead of running concurrently),
+  // and a second pool of `workers` threads alongside the first oversubscribes
+  // the box roughly 2:1, so the two pools thrash rather than share.
+  //
+  // A loaded A/B appeared to show solve -24%; that was the workload, not the
+  // change -- the arms broke 25.2k vs 30.8k bonds, and normalising per live
+  // bond made the controls contradict each other (support +1.7%, i.e.
+  // comparable; gpu_solve -51.8%, which a CPU threading change cannot do).
+  // At-rest is the only clean control for this, and it says no.
+  //
+  // The fix is a FLAT fan-out -- one top-level dispatch over (slot x strip),
+  // no second pool, no mutex, no nesting -- which needs solveTick split into
+  // phases. Until then the hook stays available for the single-structure
+  // case, where it was measured -51.2% and audited over 222M checks.
+  static bool parallel_for_enabled = [] {
+    const char *raw = std::getenv("BLAST_BOND_STRESS_PARALLEL");
+    return raw != nullptr && std::string(raw) != "0";
+  }();
+  if (parallel_for_enabled) {
+    // Dispatch to the BOND pool, not the slot pool. The walk runs inside a
+    // slot task, and re-entering that pool deadlocks it; a separate pool has
+    // its own generation state. The mutex is what makes concurrent slots
+    // legal on it -- StressExecutor drives one generation at a time, so the
+    // slots queue for the wide pool instead of each getting a slice of it.
+    bond_executor_ = std::make_unique<StressExecutor>(workers);
+    Nv::Blast::NvBlastExtStressSetParallelFor(
+        [](void *ctx, std::uint32_t count,
+           Nv::Blast::ExtStressParallelForBody body, void *bodyCtx) {
+          auto *self = static_cast<DestructionManager *>(ctx);
+          std::lock_guard<std::mutex> lock(self->bond_dispatch_mutex_);
+          self->bond_executor_->run(
+              count, [body, bodyCtx](std::size_t index) {
+                body(bodyCtx, static_cast<std::uint32_t>(index));
+              });
+        },
+        this);
+  }
 }
 
 DestructionManager::~DestructionManager() { clear_destructibles(); }
 
 void DestructionManager::clear_destructibles() {
+  // Frozen clusters first: extracting members back to standalone actors means
+  // the adapter's own release below sees exactly the topology it created.
+  // (PxActor::release would also auto-leave an aggregate, but the empty
+  // aggregates themselves are ours to release.)
+  frozen_aggregates_release_all();
   // Releasing a destructible releases the PhysX bodies, shapes and convex
   // meshes it created (under a scene write lock), so this leaves no orphaned
   // actors behind in the scene.
@@ -513,6 +732,27 @@ void DestructionManager::create_destructible(
   // every fracture resync, so a structure migrates back to the CPU as its
   // graph shrinks. Upstream defaults to 4096 bonds, which is above our
   // 10-floor structures (3624), so they would all silently stay on CPU.
+  // Creation-time body protection and injection bounds. The library applies
+  // these at createBody, which is the only site covering a split child's FIRST
+  // step -- the bridge's own per-tick walk provably missed it (see the
+  // kill-floor story). The walk below is now redundant belt-and-braces and can
+  // be retired once the scenario gate shows escaped_bodies_parked at 0.
+  // VIBE_CITY_SKIP_STABLE_UNCONVERGED=0 restores the converged-only skip.
+  desc.settings.skipStableUnconverged = [] {
+    const char *raw = std::getenv("VIBE_CITY_SKIP_STABLE_UNCONVERGED");
+    return raw == nullptr || std::string(raw) != "0";
+  }();
+  desc.settings.enableSpeculativeCcd = speculative_ccd_enabled();
+  desc.settings.maxDepenetrationVelocity = depenetration_velocity();
+  // "pos,vel" -- PhysX per-body solver iterations, engine default 4,1.
+  {
+    std::uint32_t pos = 4, vel = 1;
+    if (const char *raw = std::getenv("VIBE_CITY_BODY_ITERATIONS")) {
+      std::sscanf(raw, "%u,%u", &pos, &vel);
+    }
+    desc.settings.bodyPositionIterations = pos;
+    desc.settings.bodyVelocityIterations = vel;
+  }
   desc.settings.gpuStressSolver = gpu_stress_enabled();
   desc.settings.gpuStressMinimumBondCount = gpu_stress_min_bonds();
   // Converged stress means authored material strength is finally what decides
@@ -670,7 +910,153 @@ float chunk_sleep_threshold() {
   }();
   return value;
 }
+/// Settle assist: after a small chunk has touched static ground once, raise
+/// its damping and sleep threshold so a rubble pile stops trading
+/// micro-contacts and actually goes to sleep.
+///
+/// This DOES alter trajectories, which is why it is off by default and judged
+/// on video rather than on counters alone. It is deliberately not a
+/// restitution change: world restitution is already 0.02 and the visible
+/// bouncing is the solver's residual velocity floor plus depenetration, not
+/// rebound.
+///
+/// MEASURED, and it corrected the design. On the settle_assist test's
+/// toppled wall (deterministic: three runs, identical totals), in
+/// awake-body-ticks -- the integral of awake count over the settle, which is
+/// exactly the cost every awake body imposes on sim, callbacks and solve:
+///
+///   off                          2730
+///   damping 1.0/2.0 only         3264   +20%  WORSE
+///   sleep threshold x4 only      2572   -5.8% better
+///   sleep x4 + damping 0.2/0.3   2627   -3.8% better
+///
+/// Damping made settling WORSE at every strength tried: a damped chunk creeps
+/// to a halt instead of tumbling to one, so it spends longer above the sleep
+/// threshold rather than less. The sleep threshold alone is the knob that
+/// works. Damping therefore defaults to ZERO -- the knobs remain so the
+/// finding can be re-tested, not because they are recommended.
+///
+/// The ground-touch gate is the safety argument. Raising a sleep threshold
+/// alone once froze debris in mid-air (see kChunkSleepThreshold above): at a
+/// high threshold a body spends longer under it than PhysX's 0.4 s wake
+/// counter while still travelling. A body that has never touched static
+/// geometry is never assisted, so flight is untouched by construction.
+///
+/// REFUTED AT CITY SCALE, and it stays default-off for that reason rather
+/// than for the caution above. A/B on downtown, n=2 per arm, 90 s with the
+/// last 20 s quiet, mean awake bodies in the tail:
+///
+///   assist ON   3175
+///   assist OFF  2720      <- 17% FEWER awake without the assist
+///
+/// Every 10 s window from 40 s on has more awake bodies with it on, in both
+/// reps, and physx_step rose 3.5% with contact callbacks up 3.2%. It does
+/// not settle the city sooner; it settles it later.
+///
+/// The likely mechanism is the one this file already documents twice: a
+/// property write wakes the actor, and setSleepThreshold is a property
+/// write. The assist fires exactly when a body first touches ground -- the
+/// moment a pile is forming -- so each application re-opens the contact
+/// island it just joined, which is the same cascade freeze_island_resleep
+/// exists to prevent.
+///
+/// Note the small-scale test disagreed: physx-bridge/tests/settle_assist.rs
+/// measured -5.8% awake_body_ticks for the sleep threshold alone. It has no
+/// freeze machinery and no contact islands at pile scale, so it cannot see
+/// the wake cascade. It is not predictive for this knob, and a green run
+/// there is not evidence for shipping.
+bool settle_assist_enabled() {
+  static const bool enabled = [] {
+    const char *raw = std::getenv("VIBE_CITY_SETTLE_ASSIST");
+    return raw != nullptr && std::string(raw) != "0";
+  }();
+  return enabled;
+}
+
+/// Mass ceiling for "small debris", kilograms. Mass is the cheapest size
+/// proxy available per body -- it already rides the snapshot row -- and at a
+/// uniform 2400 kg/m^3 it is monotonic in volume. A 0.6 m cube is ~518 kg;
+/// the median chunk in downtown is ~10 t. The default cleanly separates
+/// loose debris from slabs, which must keep their exact settling behaviour.
+float assist_max_mass() {
+  static const float value = [] {
+    if (const char *raw = std::getenv("VIBE_CITY_ASSIST_MAX_MASS")) {
+      return static_cast<float>(std::atof(raw));
+    }
+    return 1500.0f;
+  }();
+  return value;
+}
+
+/// Zero by default: measured counterproductive (see settle_assist_enabled).
+float assist_linear_damping() {
+  static const float value = [] {
+    if (const char *raw = std::getenv("VIBE_CITY_ASSIST_LIN_DAMP")) {
+      return static_cast<float>(std::atof(raw));
+    }
+    return 0.0f;
+  }();
+  return value;
+}
+
+/// Zero by default: measured counterproductive (see settle_assist_enabled).
+float assist_angular_damping() {
+  static const float value = [] {
+    if (const char *raw = std::getenv("VIBE_CITY_ASSIST_ANG_DAMP")) {
+      return static_cast<float>(std::atof(raw));
+    }
+    return 0.0f;
+  }();
+  return value;
+}
+
+/// Multiplier on the base chunk sleep threshold for assisted bodies. The
+/// threshold is mass-normalised kinetic energy, so 4x is ~2x the speed at
+/// which a grounded body is called at rest.
+float assist_sleep_multiplier() {
+  static const float value = [] {
+    if (const char *raw = std::getenv("VIBE_CITY_ASSIST_SLEEP_MULT")) {
+      return static_cast<float>(std::atof(raw));
+    }
+    return 4.0f;
+  }();
+  return value;
+}
+
 constexpr float kChunkStabilizationThreshold = 0.02f;
+
+/// Position/velocity solver iterations for chunk bodies.
+///
+/// PhysX defaults (4/1) leave a residual velocity floor in a deep pile; these
+/// raise it enough that a resting body actually reaches zero. Costs solver
+/// time per awake body, which pays for itself many times over if it lets
+/// thousands of bodies sleep instead of staying awake forever.
+///
+/// VIBE_CITY_SOLVER_POSITION_ITERS / VIBE_CITY_SOLVER_VELOCITY_ITERS override.
+std::uint32_t chunk_solver_position_iterations() {
+  static const std::uint32_t v = [] {
+    if (const char *raw = std::getenv("VIBE_CITY_SOLVER_POSITION_ITERS")) {
+      const long parsed = std::strtol(raw, nullptr, 10);
+      if (parsed > 0) return static_cast<std::uint32_t>(parsed);
+    }
+    // PhysX's own default. tests/stack_settling.rs shows 1,015 stacked
+    // concrete boxes reaching exactly 0.0000 m/s and 100% asleep at 4/1, so
+    // there is no evidence stacking needs more. Left as a knob, not a change.
+    return 4u;
+  }();
+  return v;
+}
+
+std::uint32_t chunk_solver_velocity_iterations() {
+  static const std::uint32_t v = [] {
+    if (const char *raw = std::getenv("VIBE_CITY_SOLVER_VELOCITY_ITERS")) {
+      const long parsed = std::strtol(raw, nullptr, 10);
+      if (parsed > 0) return static_cast<std::uint32_t>(parsed);
+    }
+    return 1u;
+  }();
+  return v;
+}
 
 void DestructionManager::register_filters(Slot &slot) {
   require(slot.dest != nullptr, "missing destructible");
@@ -727,11 +1113,12 @@ void DestructionManager::register_filters(Slot &slot) {
     // stayed asleep, ~850 wake events a second, debris visibly juddering as it
     // was repeatedly frozen and released, and the match loop paying to
     // simulate, snapshot and encode all of it.
-    auto stamped = body_entity_stamp_.find(body.body);
+    const std::uint64_t identity_key = support_key(slot.structure_id, body.bodyId);
+    auto stamped = body_entity_stamp_.find(identity_key);
     if (stamped != body_entity_stamp_.end() && stamped->second == entity) {
       continue;
     }
-    body_entity_stamp_[body.body] = entity;
+    body_entity_stamp_[identity_key] = entity;
     tag_actor(*body.body, entity);
     if (!body.kinematic) {
       // Contact reports are what let a falling chunk damage what it lands on:
@@ -741,9 +1128,28 @@ void DestructionManager::register_filters(Slot &slot) {
       // full contact data back to the host every tick, and a settled rubble
       // pile is nothing but persistent pairs. VIBE_CITY_CHUNK_CONTACT_REPORTS=0
       // disables them so the cost can be measured against the gameplay they buy.
+      //
+      // The flat threshold is decorative at city scale: at 20 m/s^2 a 10 t
+      // chunk RESTS at ~200 kN and even the lightest shard rests at ~800 N,
+      // so every touching awake pair clears 50 N by orders of magnitude and
+      // reports every tick. Measured cost of the whole report path: ~6 ms of
+      // the tick (4-10 by regime), by matched-bucket A/B against
+      // VIBE_CITY_CHUNK_CONTACT_REPORTS=0.
+      //
+      // A flat RAISE cannot fix it -- a light body's genuine strike (~12 kN)
+      // sits an order of magnitude BELOW a heavy body's resting load, so any
+      // single number silences small-body physics first. A threshold
+      // proportional to the body's own weight is scale-free: resting under
+      // your own weight is below it by construction at any size, and being
+      // struck above ~ratio*g/60 m/s (0.7 m/s at ratio 2) is above it. Same
+      // trick contact_wake_ratio() already uses for the wake test.
+      //
+      // Unset leaves the flat behaviour byte-for-byte, so this is an
+      // experiment that can be turned off without a rebuild.
       body.body->setContactReportThreshold(
-          chunk_contact_reports_ ? contact_report_threshold_
-                                 : std::numeric_limits<float>::max());
+          chunk_contact_reports_
+              ? chunk_contact_report_threshold(body.mass, contact_report_threshold_)
+              : std::numeric_limits<float>::max());
       // Let debris go to sleep.
       //
       // PhysX's default sleep threshold is tuned for gameplay objects that
@@ -758,6 +1164,25 @@ void DestructionManager::register_filters(Slot &slot) {
       // at which debris motion is still worth streaming.
       body.body->setSleepThreshold(chunk_sleep_threshold());
       body.body->setStabilizationThreshold(kChunkStabilizationThreshold);
+      // Chunk bodies were left on PhysX's default 4 position / 1 velocity
+      // iterations, which is tuned for a handful of loose props rather than a
+      // 10k-body rubble pile.
+      //
+      // Contact solving is iterative: each pass reduces the error but never
+      // eliminates it, so an under-iterated deep stack leaves a *residual
+      // velocity floor*. That is what stops a resting body ever sleeping --
+      // not the sleep threshold. Velocity does not asymptote to zero, it
+      // asymptotes to the floor, and everything below the floor is unreachable
+      // no matter how long you wait. Raising the sleep threshold past it only
+      // masks the symptom, and makes a still-visibly-moving body snap to
+      // stationary.
+      //
+      // Doubling world gravity doubled the contact forces the solver must
+      // cancel within the same iteration budget, so it roughly doubled that
+      // floor -- which is why the city settled at 9.81 m/s^2 and stopped
+      // settling at 20.
+      body.body->setSolverIterationCounts(
+          chunk_solver_position_iterations(), chunk_solver_velocity_iterations());
     }
   }
 
@@ -925,6 +1350,25 @@ void DestructionManager::collect_events(Slot &slot) {
     // Its supporter entries (and any it was a dependent of) die with it.
     support_store_.erase(support_key(slot.structure_id, id));
     slot.body_to_serial.erase(id);
+    // These two were pointer-keyed and pruned nowhere, so they leaked an entry
+    // per retired body AND let a recycled actor inherit a dead body's state.
+    // VIBE_CITY_PRUNE_BODY_BOOKKEEPING=0 restores the un-pruned behaviour, so
+    // the bounded-growth tripwire in record-city-trace can be shown to fire.
+    // A tripwire that has never been observed failing is not a tripwire.
+    static const bool prune = [] {
+      const char *raw = std::getenv("VIBE_CITY_PRUNE_BODY_BOOKKEEPING");
+      return raw == nullptr || std::string(raw) != "0";
+    }();
+    if (prune) {
+      ccd_enabled_.erase(support_key(slot.structure_id, id));
+      body_entity_stamp_.erase(support_key(slot.structure_id, id));
+      // Same recycling hazard: an unpruned latch would make a NEW body born
+      // on a recycled id look like it had already landed, and the assist
+      // would fire on a body still in flight -- the one case the ground gate
+      // exists to prevent.
+      ground_touched_.erase(support_key(slot.structure_id, id));
+      settle_assisted_.erase(support_key(slot.structure_id, id));
+    }
   }
 
   const auto &shapes = slot.shape_cache;
@@ -1043,6 +1487,10 @@ void DestructionManager::refresh_shape_snapshots(Slot &slot) const {
   }
 }
 
+/// How long a worker spins before parking. Dispatches arrive every tick, so
+/// this is sized to cover the inter-dispatch gap, not a whole task.
+static constexpr int kBarrierSpins = 4000;
+
 StressExecutor::StressExecutor(unsigned workers) {
   // `workers` counts total parallelism; the calling thread is one of them.
   const unsigned extra = workers > 1 ? workers - 1 : 0;
@@ -1051,20 +1499,34 @@ StressExecutor::StressExecutor(unsigned workers) {
     threads_.emplace_back([this] {
       std::uint64_t seen = 0;
       for (;;) {
-        {
-          std::unique_lock<std::mutex> lock(mutex_);
-          start_.wait(lock, [this, seen] { return stop_ || generation_ != seen; });
-          if (stop_) {
-            return;
-          }
-          seen = generation_;
+        // Spin briefly, then park. Dispatches arrive every tick, so the spin
+        // almost always covers the gap and the wait costs no lock at all.
+        std::uint64_t generation = generation_.load(std::memory_order_acquire);
+        for (int spin = 0; spin < kBarrierSpins && generation == seen
+                           && !stop_.load(std::memory_order_acquire);
+             ++spin) {
+#if defined(__x86_64__) || defined(__i386__)
+          __builtin_ia32_pause();
+#endif
+          generation = generation_.load(std::memory_order_acquire);
         }
+        if (generation == seen && !stop_.load(std::memory_order_acquire)) {
+          std::unique_lock<std::mutex> lock(mutex_);
+          start_.wait(lock, [this, seen] {
+            return stop_.load(std::memory_order_acquire)
+                   || generation_.load(std::memory_order_acquire) != seen;
+          });
+          generation = generation_.load(std::memory_order_acquire);
+        }
+        if (stop_.load(std::memory_order_acquire)) {
+          return;
+        }
+        seen = generation;
         drain();
-        {
+        if (active_.fetch_sub(1, std::memory_order_acq_rel) == 1
+            && caller_parked_.load(std::memory_order_acquire)) {
           std::lock_guard<std::mutex> lock(mutex_);
-          if (--active_ == 0) {
-            done_.notify_one();
-          }
+          done_.notify_one();
         }
       }
     });
@@ -1074,8 +1536,8 @@ StressExecutor::StressExecutor(unsigned workers) {
 StressExecutor::~StressExecutor() {
   {
     std::lock_guard<std::mutex> lock(mutex_);
-    stop_ = true;
-    ++generation_;
+    stop_.store(true, std::memory_order_release);
+    generation_.fetch_add(1, std::memory_order_acq_rel);
   }
   start_.notify_all();
   for (auto &thread : threads_) {
@@ -1085,12 +1547,28 @@ StressExecutor::~StressExecutor() {
   }
 }
 
+/// Which executor this thread is currently executing tasks for, if any.
+///
+/// Re-entering the SAME pool must not touch it: its state is one generation
+/// deep (task_/count_/next_/active_), so a nested dispatch overwrites the
+/// generation the outer call is still waiting on -- a deadlock, which grid 2
+/// hit on the first nested use and which was misread as a short timeout for
+/// a session.
+///
+/// A pointer rather than a bool because dispatching to a DIFFERENT pool from
+/// inside a task is safe and is the whole point of the bond executor: that
+/// pool has its own generation state, so there is nothing to clobber. The
+/// bool version conflated the two and forced every grid-2 bond walk inline.
+static thread_local const StressExecutor *tl_active_executor = nullptr;
+
 void StressExecutor::drain() {
   for (;;) {
     const std::size_t index = next_.fetch_add(1, std::memory_order_relaxed);
     if (index >= count_) {
       return;
     }
+    const StressExecutor *previous = tl_active_executor;
+    tl_active_executor = this;
     try {
       (*task_)(index);
     } catch (...) {
@@ -1099,6 +1577,7 @@ void StressExecutor::drain() {
         error_ = std::current_exception();
       }
     }
+    tl_active_executor = previous;
   }
 }
 
@@ -1107,30 +1586,50 @@ void StressExecutor::run(std::size_t count,
   if (count == 0) {
     return;
   }
-  // One item, or no helper threads: no point paying for a handoff.
-  if (threads_.empty() || count == 1) {
+  // One item, no helper threads, or re-entering THIS pool from inside one of
+  // its own tasks: run inline. The last case is correctness, not tuning --
+  // see tl_active_executor.
+  if (threads_.empty() || count == 1 || tl_active_executor == this) {
     for (std::size_t i = 0; i < count; ++i) {
       task(i);
     }
     return;
   }
 
+  task_ = &task;
+  count_ = count;
+  next_.store(0, std::memory_order_relaxed);
+  active_.store(static_cast<unsigned>(threads_.size()), std::memory_order_relaxed);
+  error_ = nullptr;
+  caller_parked_.store(false, std::memory_order_relaxed);
+  // Release: everything above must be visible to a worker that sees the new
+  // generation. Spinning workers pick it up here without any lock.
+  generation_.fetch_add(1, std::memory_order_acq_rel);
   {
+    // Only for workers that already gave up spinning and parked. Cheap when
+    // nobody is waiting, and it must be under the mutex or a parked worker
+    // can miss the wakeup.
     std::lock_guard<std::mutex> lock(mutex_);
-    task_ = &task;
-    count_ = count;
-    next_.store(0, std::memory_order_relaxed);
-    active_ = threads_.size();
-    error_ = nullptr;
-    ++generation_;
   }
   start_.notify_all();
 
   // The caller works too rather than idling while the pool runs.
   drain();
 
-  std::unique_lock<std::mutex> lock(mutex_);
-  done_.wait(lock, [this] { return active_ == 0; });
+  // Same shape on the join: spin, then park.
+  for (int spin = 0; spin < kBarrierSpins
+                     && active_.load(std::memory_order_acquire) != 0;
+       ++spin) {
+#if defined(__x86_64__) || defined(__i386__)
+    __builtin_ia32_pause();
+#endif
+  }
+  if (active_.load(std::memory_order_acquire) != 0) {
+    caller_parked_.store(true, std::memory_order_release);
+    std::unique_lock<std::mutex> lock(mutex_);
+    done_.wait(lock, [this] { return active_.load(std::memory_order_acquire) == 0; });
+    caller_parked_.store(false, std::memory_order_release);
+  }
   task_ = nullptr;
   if (error_) {
     std::exception_ptr error = error_;
@@ -1165,6 +1664,8 @@ void DestructionManager::destruction_tick(float dt, FfiVec3 gravity) {
   if (dt > 0.0f) {
     last_dt_ = dt;
   }
+  // Fresh span slate per tick; same-name adds below accumulate.
+  extra_spans_.clear();
   const PxVec3 g = to_px(gravity);
   using clock = std::chrono::steady_clock;
   const auto ms_since = [](clock::time_point from) {
@@ -1275,9 +1776,60 @@ void DestructionManager::destruction_tick(float dt, FfiVec3 gravity) {
   begin_ms += ms_since(phase);
 
   phase = clock::now();
-  stress_executor_->run(live_slots_.size(), [this](std::size_t index) {
-    require(live_slots_[index]->dest->solveTick(), "solveTick failed");
-  });
+  // Flat (slot x strip) fan-out.
+  //
+  // The old shape was one task per structure running the whole solveTick, so
+  // the fan-out was 4 wide on a 32-core box -- measured 2.2-3.1x concurrency
+  // while the bond-stress walk inside it, the largest single cost in the
+  // tick, ran serially per slot. Dispatching that walk from INSIDE those
+  // tasks does not work: re-entering the pool deadlocks it, and giving it a
+  // second pool measured ~2x WORSE at rest (mutex serialisation plus 2:1
+  // thread oversubscription).
+  //
+  // So hoist the walk out instead. Three top-level dispatches, no nesting,
+  // no second pool: CG solve per slot, then every slot's strips as ONE flat
+  // parallel-for, then the merge per slot. The middle dispatch is
+  // slots x 16 wide regardless of how many structures exist.
+  //
+  // Falls back to the monolithic path when any slot refuses the split
+  // (unconvergedExtraUpdates > 0 -- that retry loop re-runs solve AND bond
+  // stress together, so hoisting one out would change what it repeats).
+  static const bool flat_bond_stress = [] {
+    const char *raw = std::getenv("BLAST_BOND_STRESS_FLAT");
+    return raw != nullptr && std::string(raw) != "0";
+  }();
+  bool split_ok = flat_bond_stress && !live_slots_.empty();
+  if (split_ok) {
+    for (Slot *slot : live_slots_) {
+      if (!slot->dest->supportsSplitSolve()) {
+        split_ok = false;
+        break;
+      }
+    }
+  }
+  if (split_ok) {
+    stress_executor_->run(live_slots_.size(), [this](std::size_t index) {
+      require(live_slots_[index]->dest->solveTickBeginSplit(),
+              "solveTickBeginSplit failed");
+    });
+    const std::uint32_t strips =
+        live_slots_[0]->dest->bondStressStripCount();
+    const std::size_t total =
+        live_slots_.size() * static_cast<std::size_t>(strips);
+    stress_executor_->run(total, [this, strips](std::size_t flat) {
+      const std::size_t slot = flat / strips;
+      const std::uint32_t strip = static_cast<std::uint32_t>(flat % strips);
+      live_slots_[slot]->dest->bondStressStrip(strip);
+    });
+    stress_executor_->run(live_slots_.size(), [this](std::size_t index) {
+      require(live_slots_[index]->dest->solveTickFinishSplit(),
+              "solveTickFinishSplit failed");
+    });
+  } else {
+    stress_executor_->run(live_slots_.size(), [this](std::size_t index) {
+      require(live_slots_[index]->dest->solveTick(), "solveTick failed");
+    });
+  }
   solve_ms += ms_since(phase);
 
   // Sample how close bonds are to failing, between solve and fracture. This
@@ -1353,12 +1905,21 @@ void DestructionManager::destruction_tick(float dt, FfiVec3 gravity) {
     // Applied on first sight, when the body is freshly created or split and
     // therefore awake, so it never rewrites properties on a sleeping actor.
     phase = clock::now();
-    for (std::uint32_t i = 0; i < slot.body_cache_count; ++i) {
+    // Retired by default: the library applies speculative CCD and the
+    // depenetration cap AT BODY CREATION since 04a874af, which provably covers
+    // the first step this walk always missed; gates and live play have shown
+    // escaped_bodies_parked = 0 ever since. VIBE_CITY_BRIDGE_CCD_WALK=1
+    // restores the walk as belt-and-braces.
+    static const bool bridge_ccd_walk = [] {
+      const char *raw = std::getenv("VIBE_CITY_BRIDGE_CCD_WALK");
+      return raw != nullptr && std::string(raw) == "1";
+    }();
+    for (std::uint32_t i = 0; bridge_ccd_walk && i < slot.body_cache_count; ++i) {
       const auto &body = slot.body_cache[i];
       if (body.body == nullptr || body.kinematic) {
         continue;
       }
-      if (ccd_enabled_.insert(body.body).second) {
+      if (ccd_enabled_.insert(support_key(slot.structure_id, body.bodyId)).second) {
         if (speculative_ccd_enabled()) {
           body.body->setRigidBodyFlag(
               physx::PxRigidBodyFlag::eENABLE_SPECULATIVE_CCD, true);
@@ -1378,6 +1939,48 @@ void DestructionManager::destruction_tick(float dt, FfiVec3 gravity) {
         }
       }
     }
+    // Settle assist. Same shape as the CCD walk above: once per body, in the
+    // post-endTick window where scene writes are legal, keyed by
+    // (structure_id, bodyId) so a recycled actor cannot inherit the flag.
+    //
+    // Writing a rigid-body property wakes a sleeping actor, which is why
+    // every other property write in this file is gated on an identity
+    // change. Here the write happens on the tick the body first touched the
+    // ground, when it is awake by definition, and never again.
+    if (settle_assist_enabled()) {
+      const float max_mass = assist_max_mass();
+      const float sleep_threshold =
+          chunk_sleep_threshold() * assist_sleep_multiplier();
+      for (std::uint32_t i = 0; i < slot.body_cache_count; ++i) {
+        const auto &body = slot.body_cache[i];
+        if (body.body == nullptr || body.kinematic) {
+          continue;
+        }
+        if (body.mass > max_mass) {
+          continue; // slabs keep their exact settling behaviour
+        }
+        const std::uint64_t key = support_key(slot.structure_id, body.bodyId);
+        if (ground_touched_.find(key) == ground_touched_.end()) {
+          continue; // never landed: still in flight, or never existed
+        }
+        if (!settle_assisted_.insert(key).second) {
+          continue;
+        }
+        // Only write what actually changes. Every property write wakes the
+        // actor, so writing a zero damping that equals the body's existing
+        // value would cost a wake and buy nothing.
+        const float linear = assist_linear_damping();
+        const float angular = assist_angular_damping();
+        if (linear > 0.0f) {
+          body.body->setLinearDamping(linear);
+        }
+        if (angular > 0.0f) {
+          body.body->setAngularDamping(angular);
+        }
+        body.body->setSleepThreshold(sleep_threshold);
+        ++settle_assist_applied_;
+      }
+    }
     ccd_ms += ms_since(phase);
 
     // Topology can only change inside endTick, and only when bonds were
@@ -1386,6 +1989,12 @@ void DestructionManager::destruction_tick(float dt, FfiVec3 gravity) {
     // shape and every bond only to conclude that nothing changed. Skip it.
     dispatch_phase = clock::now();
     const ExtStressPhysXTelemetry &telemetry = slot.dest->getTelemetry();
+    // Accumulated here, per tick, and deliberately above the quiet-skip
+    // `continue` below: a settled slot is exactly the case the skip is for, so
+    // dropping its islands would bias the rate toward the ticks that skipped
+    // nothing. See the accumulator declarations for why the gauge alone lies.
+    solver_islands_skipped_accum_ += telemetry.solverIslandsSkipped;
+    solver_islands_total_accum_ += telemetry.solverIslandCount;
     // bodiesRecycled is in the set because a PURE-CRUSH tick erases bodies
     // without splitting, creating or migrating anything -- a rooted fragment
     // (or a dynamic body) could vanish on a tick this gate skipped, its
@@ -1443,30 +2052,118 @@ void DestructionManager::destruction_tick(float dt, FfiVec3 gravity) {
   // captured during the physics step can be resolved into supporter edges.
   const auto support_phase = clock::now();
   resolve_support_loads();
+  // Judge this tick's accumulated frozen-body contact loads now that the
+  // contact stream is complete; the caller's drain then only reads.
+  resolve_frozen_contact_wakes();
   last_support_loads_ms_ = ms_since(support_phase);
 
   last_stress_solve_ms_ = ms_since(started);
+  // What the native tick spent that none of its phases claim.
+  //
+  // Measured at +0.001 ms across five live reports: this level was ALREADY
+  // fully attributed, and the "2.8-4.2 ms native gap" it was thought to have
+  // was an artifact of summing an incomplete child set by hand -- ccd,
+  // shape_readback, slot_dispatch, support_loads and especially bond_sample
+  // were left out, and bond_sample alone was the whole apparent gap.
+  //
+  // Which is the argument for computing this HERE, next to the phases,
+  // instead of in an analysis script: the code knows the child set, and a
+  // hand-written sum will keep drifting from it every time a phase is added.
+  last_stress_solve_residual_ms_ =
+      last_stress_solve_ms_ -
+      (last_begin_ms_ + last_solve_ms_ + last_end_ms_ + last_readback_ms_ +
+       last_events_ms_ + last_filters_ms_ + last_ccd_ms_ +
+       last_shape_readback_ms_ + last_slot_dispatch_ms_ +
+       last_support_loads_ms_ + last_bond_sample_ms_);
+}
+
+DestructionManager::ContactTarget
+DestructionManager::resolve_contact_target(PxShape *shape) {
+  if (shape == nullptr) {
+    return {};
+  }
+  auto it = shape_owners_.find(shape);
+  if (it == shape_owners_.end()) {
+    return {};
+  }
+  Slot *slot = find_slot(it->second.first);
+  if (slot == nullptr || slot->dest == nullptr) {
+    return {};
+  }
+  // One adapter-side hash per shape per manifold, in place of one per POINT
+  // inside queueContact (2.06-3.64 points/manifold measured on downtown).
+  // VIBE_PHYSX_CONTACT_FASTPATH=0 leaves it unresolved, and queueContact
+  // falls back to its own per-point lookup exactly as before.
+  static const bool fastpath = [] {
+    const char *value = std::getenv("VIBE_PHYSX_CONTACT_FASTPATH");
+    return value == nullptr || std::string(value) != "0";
+  }();
+  // The node index is ALREADY in the hit we just took: shape_owners_ stores
+  // (structure_id, nodeIndex), populated from the same shape snapshots the
+  // library builds m_shapeToNode from. nodeForShape() is a second hash over
+  // a second map keyed by the same PxShape* to recover a number already in
+  // hand -- two cache misses per shape, four per manifold, ~32k per tick.
+  //
+  // Measured before this change: cb_resolve_ms was 1.47-2.10 ms, as large as
+  // queueing the actual physics damage.
+  //
+  // Both maps are refreshed on the same cadence. register_filters (which
+  // writes shape_owners_) and the library's endTick (which writes
+  // m_shapeToNode) both run inside destruction_tick, and the quiet-skip that
+  // bypasses register_filters only fires when topology did NOT change --
+  // i.e. exactly when no shape's node could have moved. So during a
+  // callback the two agree by construction.
+  //
+  // "By construction" is an argument, not a measurement, so
+  // VIBE_PHYSX_NODE_CACHE_VERIFY=1 computes both and counts disagreements
+  // into node_cache_mismatches. VIBE_PHYSX_NODE_CACHE=0 restores the second
+  // lookup outright.
+  static const bool node_cache = [] {
+    const char *value = std::getenv("VIBE_PHYSX_NODE_CACHE");
+    return value == nullptr || std::string(value) != "0";
+  }();
+  static const bool node_cache_verify = [] {
+    const char *value = std::getenv("VIBE_PHYSX_NODE_CACHE_VERIFY");
+    return value != nullptr && std::string(value) != "0";
+  }();
+  std::uint32_t blast_node = 0xFFFFFFFFu;
+  if (fastpath) {
+    if (node_cache) {
+      blast_node = it->second.second;
+      if (node_cache_verify) {
+        const std::uint32_t authoritative = slot->dest->nodeForShape(shape);
+        if (authoritative != blast_node) {
+          ++node_cache_mismatches_;
+        }
+        ++node_cache_checks_;
+      }
+    } else {
+      blast_node = slot->dest->nodeForShape(shape);
+    }
+  }
+  return ContactTarget{slot, shape, it->second.first, it->second.second,
+                       blast_node};
+}
+
+void DestructionManager::queue_contact_at(const ContactTarget &target,
+                                          FfiVec3 position, FfiVec3 impulse,
+                                          bool wake) {
+  ExtStressPhysXContact contact;
+  contact.shape = target.shape;
+  contact.nodeIndex = target.blast_node;
+  contact.worldPosition = to_px(position);
+  contact.worldImpulse = to_px(impulse);
+  contact.wake = wake;
+  target.slot->dest->queueContact(contact);
 }
 
 void DestructionManager::route_contact_shape(PxShape *shape, FfiVec3 position,
                                              FfiVec3 impulse, bool wake) {
-  if (shape == nullptr) {
+  const ContactTarget target = resolve_contact_target(shape);
+  if (!target) {
     return;
   }
-  auto it = shape_owners_.find(shape);
-  if (it == shape_owners_.end()) {
-    return;
-  }
-  Slot *slot = find_slot(it->second.first);
-  if (slot == nullptr || slot->dest == nullptr) {
-    return;
-  }
-  ExtStressPhysXContact contact;
-  contact.shape = shape;
-  contact.worldPosition = to_px(position);
-  contact.worldImpulse = to_px(impulse);
-  contact.wake = wake;
-  slot->dest->queueContact(contact);
+  queue_contact_at(target, position, impulse, wake);
 }
 
 void DestructionManager::queue_chunk_damage(std::uint32_t structure_id,
@@ -1860,6 +2557,210 @@ DestructionManager::unfreeze_chunk_bodies(rust::Slice<const std::uint32_t> entit
   return set_chunk_bodies_kinematic(entity_ids, false);
 }
 
+namespace {
+
+/// Put back to sleep every body a kinematic flip woke as collateral.
+///
+/// MEASURED (physx-bridge/tests/freeze_wake_semantics.rs::
+/// `freezing_part_of_a_sleeping_pile_leaves_the_rest_asleep`): freezing ONE
+/// body of a 24-body sleeping pile wakes the other 23 on the very next step
+/// -- the rest of the island exactly. PhysX's island manager cannot remove a
+/// node from an island without re-forming it, and it re-forms it AWAKE, so
+/// `setRigidBodyFlag(eKINEMATIC)` is an island-wide wake, not a per-body
+/// write.
+///
+/// This was invisible because the original claim-1 test
+/// stepped 60 ticks before reading the awake count, and PhysX's wake counter
+/// is 0.4 s -- 24 ticks at 60 Hz. The pile woke, stayed awake for 24 ticks,
+/// and re-slept, all inside the test's blind window. Measure the tick the
+/// flip lands on, never later.
+///
+/// The production consequence is the never-settles bug: the freeze pass runs
+/// every tick, so every tick's batch re-woke the whole pile and reset its
+/// 24-tick wake counter. The pile could never accumulate the quiet needed to
+/// stay asleep, and players saw it hop forever. Freeze was waking the debris
+/// it was retiring.
+///
+/// The repair restores the invariant the flip breaks: bodies that were asleep
+/// before the batch, were not themselves flipped, and are still dynamic are
+/// put straight back to sleep. It is not a cap and it does not fight the
+/// engine -- these bodies were at rest by the engine's own judgement one
+/// instant earlier, and nothing physical happened in between.
+///
+/// Legitimate wakes are untouched. Contact wakes and blast impulses run
+/// earlier in the same tick and set the awake flag synchronously, so those
+/// bodies never enter the recorded set; and an island that still holds a
+/// genuinely active body reactivates on the next step regardless, which is
+/// also why this is stable rather than a fight with the engine.
+///
+/// COST: one pass over the structure's bodies plus one `putToSleep` per
+/// sleeping body, per call that actually flips something. Measured at ~2.2k
+/// bodies through `full_demolition_cost` as no change in tick p50. The
+/// cascade paths in runtime.rs call unfreeze once per cascade level, so a
+/// deep cascade pays this several times in one tick; if that ever shows in a
+/// profile, batch it to once per tick (all flips in a tick land between the
+/// same pair of `simulate()` calls, so a single flush at the end is
+/// equivalent).
+///
+/// The write is UNCONDITIONAL on the recorded sleepers, and it has to be:
+/// `isSleeping()` still reports true immediately after the flip (Np's copy of
+/// the sleep state only refreshes at fetchResults), so the woken set is not
+/// yet distinguishable on the host. `putToSleep()` reaches the island node
+/// directly, which is why issuing it before the next `simulate()` cancels the
+/// activation rather than racing it.
+///
+/// `VIBE_FREEZE_ISLAND_RESLEEP=0` disables it, for bisecting a regression
+/// against the old behaviour without a rebuild.
+bool freeze_island_resleep() {
+  static const bool value = [] {
+    const char *raw = std::getenv("VIBE_FREEZE_ISLAND_RESLEEP");
+    return raw == nullptr || std::atoi(raw) != 0;
+  }();
+  return value;
+}
+
+/// XZ cell key for the frozen clusters. Y does not partition: piles are
+/// ground-level, and a vertical split would only spread one pile's bodies
+/// across more aggregates.
+std::uint64_t frozen_agg_cell_key(float x, float z, float cell) {
+  const auto qx = static_cast<std::int32_t>(std::floor(x / cell));
+  const auto qz = static_cast<std::int32_t>(std::floor(z / cell));
+  return (static_cast<std::uint64_t>(static_cast<std::uint32_t>(qx)) << 32)
+       | static_cast<std::uint64_t>(static_cast<std::uint32_t>(qz));
+}
+
+} // namespace
+
+physx::PxAggregate *DestructionManager::frozen_aggregate_for(
+    float x, float z, std::uint32_t shapes) {
+  auto &cell = frozen_agg_cells_[frozen_agg_cell_key(x, z, freeze_aggregate_cell_m())];
+  for (physx::PxAggregate *candidate : cell) {
+    if (candidate->getNbActors() < kFrozenAggMaxActors
+        && frozen_agg_shapes_[candidate] + shapes <= kFrozenAggMaxShapes) {
+      return candidate;
+    }
+  }
+  physx::PxAggregate *fresh = nullptr;
+  if (!frozen_agg_pool_.empty()) {
+    fresh = frozen_agg_pool_.back();
+    frozen_agg_pool_.pop_back();
+  } else {
+    // eKINEMATIC, self-collision off: members are kinematic and mutually at
+    // rest, so no internal pairs existed to lose — and the kinematic type
+    // hint lets the broadphase cull pairs BETWEEN neighbouring frozen
+    // clusters wholesale.
+    fresh = physics_.createAggregate(
+        kFrozenAggMaxActors, kFrozenAggMaxShapes,
+        physx::PxGetAggregateFilterHint(physx::PxAggregateType::eKINEMATIC, false));
+    if (fresh == nullptr) {
+      return nullptr;
+    }
+  }
+  scene_.addAggregate(*fresh);
+  frozen_agg_shapes_[fresh] = 0;
+  cell.push_back(fresh);
+  return fresh;
+}
+
+void DestructionManager::frozen_aggregate_insert(physx::PxRigidDynamic &body) {
+  if (body.getAggregate() != nullptr || body.getScene() == nullptr) {
+    return;
+  }
+  const std::uint32_t shapes = body.getNbShapes();
+  if (shapes > kFrozenAggMaxShapes) {
+    // A body bigger than a whole aggregate stays a standalone actor.
+    ++frozen_agg_fallbacks_;
+    return;
+  }
+  const physx::PxVec3 position = body.getGlobalPose().p;
+  physx::PxAggregate *aggregate =
+      frozen_aggregate_for(position.x, position.z, shapes);
+  if (aggregate == nullptr) {
+    ++frozen_agg_fallbacks_;
+    return;
+  }
+  // wakeOnLostTouch=false, and it matters: the body is not leaving the world,
+  // it is re-entering one aggregate away at the same pose. The default (true)
+  // refreshed the wake counter of everything the frozen body touched — the
+  // same island-wide wake the kinematic flip already fights — and measured as
+  // T4 awake-decline slipping from 0.09 to 0.11 across the gate band.
+  scene_.removeActor(body, /*wakeOnLostTouch=*/false);
+  if (!aggregate->addActor(body)) {
+    // Refused (capacity race with a body PhysX released this tick) — the
+    // body must not be left sceneless over it.
+    scene_.addActor(body);
+    ++frozen_agg_fallbacks_;
+    return;
+  }
+  frozen_agg_shapes_[aggregate] += shapes;
+  ++frozen_agg_inserts_;
+}
+
+void DestructionManager::frozen_aggregate_extract(physx::PxRigidDynamic &body) {
+  physx::PxAggregate *aggregate = body.getAggregate();
+  if (aggregate == nullptr) {
+    return;
+  }
+  const std::uint32_t shapes = body.getNbShapes();
+  // removeActor reinserts the actor into the aggregate's scene itself; adding
+  // it again here would double-insert.
+  aggregate->removeActor(body);
+  auto shadow = frozen_agg_shapes_.find(aggregate);
+  if (shadow != frozen_agg_shapes_.end()) {
+    shadow->second -= std::min(shadow->second, shapes);
+  }
+  ++frozen_agg_extracts_;
+  frozen_aggregate_maybe_retire(aggregate);
+}
+
+void DestructionManager::frozen_aggregate_maybe_retire(physx::PxAggregate *aggregate) {
+  // Lazy: only an EMPTY aggregate is retired. Merging a half-empty cluster's
+  // members into siblings would re-run broadphase insertion for every one of
+  // them at the churn rate of the pile margin — the thing this whole scheme
+  // exists to avoid. Half-empty aggregates refill from the same cell instead
+  // (frozen_aggregate_for prefers existing aggregates with headroom).
+  if (aggregate->getNbActors() != 0) {
+    return;
+  }
+  // Empty by the check above — no member pairs exist to lose, but say so.
+  scene_.removeAggregate(*aggregate, /*wakeOnLostTouch=*/false);
+  frozen_agg_shapes_.erase(aggregate);
+  for (auto &entry : frozen_agg_cells_) {
+    auto &list = entry.second;
+    list.erase(std::remove(list.begin(), list.end(), aggregate), list.end());
+  }
+  ++frozen_agg_retired_;
+  if (frozen_agg_pool_.size() < kFrozenAggPoolCap) {
+    frozen_agg_pool_.push_back(aggregate);
+  } else {
+    aggregate->release();
+  }
+}
+
+void DestructionManager::frozen_aggregates_release_all() {
+  for (auto &entry : frozen_agg_cells_) {
+    for (physx::PxAggregate *aggregate : entry.second) {
+      // Actors still inside go back to the scene; their owner (the adapter)
+      // releases them on its own terms.
+      std::vector<physx::PxActor *> actors(aggregate->getNbActors());
+      if (!actors.empty()) {
+        aggregate->getActors(actors.data(), static_cast<physx::PxU32>(actors.size()));
+        for (physx::PxActor *actor : actors) {
+          aggregate->removeActor(*actor);
+        }
+      }
+      scene_.removeAggregate(*aggregate, /*wakeOnLostTouch=*/false);
+      aggregate->release();
+    }
+  }
+  frozen_agg_cells_.clear();
+  frozen_agg_shapes_.clear();
+  for (physx::PxAggregate *aggregate : frozen_agg_pool_) {
+    aggregate->release();
+  }
+  frozen_agg_pool_.clear();
+}
+
 std::uint32_t DestructionManager::set_chunk_bodies_kinematic(
     rust::Slice<const std::uint32_t> entity_ids, bool kinematic) {
   if (entity_ids.empty()) {
@@ -1895,6 +2796,29 @@ std::uint32_t DestructionManager::set_chunk_bodies_kinematic(
       }
       by_serial[serial_it->second] = &body;
     }
+    // Who the engine had asleep in this structure immediately before the
+    // batch. Taken lazily, on the first flip that actually happens, so a call
+    // that changes nothing costs nothing. See `freeze_island_resleep`.
+    const bool resleep = freeze_island_resleep();
+    std::vector<PxRigidDynamic *> sleepers;
+    bool sleepers_taken = false;
+    auto take_sleepers = [&]() {
+      if (sleepers_taken) {
+        return;
+      }
+      sleepers_taken = true;
+      sleepers.reserve(slot->body_cache_count);
+      for (std::uint32_t i = 0; i < slot->body_cache_count; ++i) {
+        PxRigidDynamic *b = slot->body_cache[i].body;
+        if (b == nullptr ||
+            b->getRigidBodyFlags().isSet(PxRigidBodyFlag::eKINEMATIC) ||
+            !b->isSleeping()) {
+          continue;
+        }
+        sleepers.push_back(b);
+      }
+    };
+
     for (std::uint32_t serial : entry.second) {
       // The adapter's own kinematic bodies -- the intact support actor and
       // every rooted fragment -- are not ours to touch: unfreezing one would
@@ -1929,12 +2853,30 @@ std::uint32_t DestructionManager::set_chunk_bodies_kinematic(
         continue;
       }
       const std::uint32_t entity = pack_body_entity(entry.first, serial);
+      if (resleep) {
+        take_sleepers();
+      }
       body->setRigidBodyFlag(PxRigidBodyFlag::eKINEMATIC, kinematic);
       if (kinematic) {
         slot->frozen.insert(body_id);
         frozen_entities_.insert(entity);
+        if (freeze_remove_from_scene() && body->getScene() != nullptr) {
+          // Measuring mode wins over clustering; the two are exclusive.
+          scene_.removeActor(*body);
+        } else if (freeze_aggregate_enabled()) {
+          frozen_aggregate_insert(*body);
+        }
         ++freeze_flips_;
       } else {
+        if (freeze_remove_from_scene() && body->getScene() == nullptr) {
+          // Back in the scene before the wake below — waking a sceneless
+          // actor is undefined.
+          scene_.addActor(*body);
+        } else if (freeze_aggregate_enabled()) {
+          // Also before the wake below: removeActor reinserts the body into
+          // the scene as a standalone actor, which the wake requires.
+          frozen_aggregate_extract(*body);
+        }
         slot->frozen.erase(body_id);
         frozen_entities_.erase(entity);
         // PhysX zeroes velocities across the dynamic transition, so the body
@@ -1948,6 +2890,17 @@ std::uint32_t DestructionManager::set_chunk_bodies_kinematic(
       }
       ++changed;
     }
+    // Undo the island-wide wake the flips just caused. A body only qualifies
+    // if the engine had it asleep before the batch and it is still dynamic,
+    // so a body that was flipped (now kinematic) or was already awake is
+    // never touched.
+    for (PxRigidDynamic *sleeper : sleepers) {
+      if (sleeper->getRigidBodyFlags().isSet(PxRigidBodyFlag::eKINEMATIC)) {
+        continue;
+      }
+      sleeper->putToSleep();
+      ++island_resleep_writes_;
+    }
   }
   return changed;
 }
@@ -1960,6 +2913,60 @@ namespace {
 /// this touch" independent of chunk mass -- the same test works for a 40 kg
 /// panel and a 4 t slab. 4 corresponds to an impact at roughly 0.7 m/s.
 /// 0 disables contact wakes entirely.
+///
+/// KNOWN DEFECT: the reference load is ONE body lying still, but a body inside
+/// a pile carries the accumulated weight of everything above it. A chunk under
+/// five others receives ~5x m*g*dt of contact impulse while perfectly at rest,
+/// so it scores ratio 5, exceeds this threshold of 4, and is released -- every
+/// tick, forever. The test cannot distinguish "something hit me" from "I am
+/// buried", which is the normal state of rubble.
+///
+/// Measured on the demolished-tower bench (freeze on, production terrain):
+///
+///   ratio 4 (default)  ->  280 awake non-kinematic bodies
+///   ratio 0 (disabled) ->    1
+///
+/// That is the whole never-settles bug. The awake bodies are not moving --
+/// p50 0.033 m/s, ~90x under the sleep threshold -- they are eligible to
+/// settle and are being released from freeze by their own neighbours' weight.
+///
+/// The fix is to compare against the load this body actually bears at rest,
+/// not against a single body's, so that being buried is not mistaken for being
+/// struck. Raising the ratio only moves the pile depth at which it misfires.
+/// How far above its own steady load a contact must spike to wake a frozen body.
+///
+/// 2 means "twice what you are already carrying". Independent of burial depth,
+/// which is the entire point: a fixed multiple of one striker's weight is not.
+constexpr float kContactSpikeRatio = 2.0f;
+
+/// How fast the steady-load estimate follows a change. Slow enough that an
+/// impact does not get absorbed into the baseline before it can be detected.
+constexpr float kContactBaselineAlpha = 0.05f;
+
+/// World gravity, not Earth's.
+///
+/// Both halves of the resting-load model compare an impulse against what a body
+/// weighs at rest, so both have to use the gravity bodies actually fall under.
+/// note_contact_pair was fixed to read this and resolve_support_loads was not,
+/// so with the world at 20 m/s^2 the support side's reference load was 49% of
+/// the real one -- one load model, two gravities, differing by 2x.
+///
+/// The direction matters: too small a reference makes the weight-bearing gate
+/// fire on half the load it should, which makes a body carrying weight look
+/// unsupported, and an unsupported body is one freeze refuses to retire.
+float world_gravity() {
+  static const float value = [] {
+    if (const char *raw = std::getenv("VIBE_WORLD_GRAVITY")) {
+      const float parsed = static_cast<float>(std::fabs(std::atof(raw)));
+      if (parsed > 0.0f) {
+        return parsed;
+      }
+    }
+    return 20.0f;
+  }();
+  return value;
+}
+
 float contact_wake_ratio() {
   static const float value = [] {
     if (const char *raw = std::getenv("VIBE_CITY_CONTACT_WAKE_RATIO")) {
@@ -1980,8 +2987,15 @@ void DestructionManager::note_contact_pair(std::uint32_t entity_a,
   if (ratio <= 0.0f || frozen_entities_.empty() || impulse <= 0.0f) {
     return;
   }
-  const float g_dt = 9.81f * (last_dt_ > 0.0f ? last_dt_ : 1.0f / 60.0f);
-  // Each side: frozen participant, struck by the OTHER side's dynamic mass.
+  // Accumulate only. The judgement moved to the per-tick drain: a buried
+  // body's resting load arrives as SEVERAL pair impulses per tick — the big
+  // column above plus small side touches — and judging (and learning the
+  // baseline from) each pair alone let the small pairs drag the baseline
+  // down between big-pair arrivals, so the steady column load read as a 2x
+  // "spike" every tick. Freeze/thaw churn of tens of thousands of near-equal
+  // flips, and debris visibly bouncing red before it could stay blue, was
+  // this per-pair judgement. The body's load is the SUM over its pairs; only
+  // the sum can be compared against what it was carrying yesterday.
   const auto consider = [&](std::uint32_t entity, float striker_mass) {
     if (striker_mass <= 0.0f) {
       return; // struck by a static or kinematic: no resting load to compare.
@@ -1989,16 +3003,120 @@ void DestructionManager::note_contact_pair(std::uint32_t entity_a,
     if (frozen_entities_.find(entity) == frozen_entities_.end()) {
       return;
     }
-    if (impulse < ratio * striker_mass * g_dt) {
-      return; // resting-scale contact: lying on a frozen pile is free.
+    contact_tick_load_[entity] += impulse;
+    auto &strongest = contact_tick_striker_[entity];
+    strongest = std::max(strongest, striker_mass);
+  };
+  consider(entity_a, mass_b);
+  consider(entity_b, mass_a);
+}
+
+/// Judge the tick's accumulated contact load per frozen body — see
+/// note_contact_pair for why this cannot happen per pair.
+void DestructionManager::resolve_frozen_contact_wakes() {
+  if (contact_tick_load_.empty()) {
+    return;
+  }
+  const float ratio = contact_wake_ratio();
+  const float g_dt = world_gravity() * (last_dt_ > 0.0f ? last_dt_ : 1.0f / 60.0f);
+  // Sorted so wake order does not depend on hash-map iteration.
+  std::vector<std::uint32_t> entities;
+  entities.reserve(contact_tick_load_.size());
+  for (const auto &entry : contact_tick_load_) {
+    entities.push_back(entry.first);
+  }
+  std::sort(entities.begin(), entities.end());
+  for (const std::uint32_t entity : entities) {
+    const float total = contact_tick_load_[entity];
+    // Two references, and the wake needs to clear BOTH.
+    //
+    // The single-body floor stops trivia waking anything: it is the heaviest
+    // single striker's own resting weight, times the ratio — for a lone body
+    // landing on the pile this reduces exactly to the original test. The
+    // baseline is what makes burial survivable: being buried is a steady
+    // load; being struck is a spike above whatever you were already carrying.
+    const float floor = ratio * contact_tick_striker_[entity] * g_dt;
+    auto &baseline = contact_load_baseline_[entity];
+    if (baseline <= 0.0f) {
+      // Seed so the FIRST tick behaves as the original test: threshold ==
+      // floor. Seeding from the observed load instead would read a
+      // first-contact impact as resting load and never wake — which broke
+      // debris_landing_on_frozen_rubble_releases_it_by_contact. The baseline
+      // may only rise from loads that were judged to be at rest.
+      baseline = floor / kContactSpikeRatio;
     }
+    const float threshold = std::max(floor, baseline * kContactSpikeRatio);
+    if (total < threshold) {
+      // The load it bears at rest. Rising slowly (more debris settling on
+      // top) must not read as an impact, so the baseline follows the SUM.
+      baseline += kContactBaselineAlpha * (total - baseline);
+      continue;
+    }
+    // A real spike. Forget the baseline so the body re-learns its load once
+    // it settles again, rather than inheriting a stale one from the hit.
+    contact_load_baseline_.erase(entity);
     if (contact_wake_pending_.insert(entity).second) {
       contact_wake_order_.push_back(entity);
       ++contact_wakes_;
     }
-  };
-  consider(entity_a, mass_b);
-  consider(entity_b, mass_a);
+  }
+  contact_tick_load_.clear();
+  contact_tick_striker_.clear();
+}
+
+DestructionManager::PendingPairSide
+DestructionManager::resolve_pair_side(const PxShape *shape,
+                                      const PxActor *actor) {
+  PendingPairSide side{};
+  const auto owner = shape_owners_.find(shape);
+  if (owner != shape_owners_.end()) {
+    side.is_chunk = true;
+    side.structure_id = owner->second.first;
+    side.node_index = owner->second.second;
+    // node -> body from the LAST topology registration: exactly the
+    // configuration the physics step (and therefore this contact) ran
+    // against. If fracture moves the node this tick, the impulse was
+    // still exchanged with the old body.
+    if (const Slot *slot = find_slot(side.structure_id)) {
+      const auto body = slot->node_to_body.find(side.node_index);
+      if (body != slot->node_to_body.end()) {
+        side.body_id = body->second;
+      } else {
+        side.is_chunk = false; // unmapped: treat as foreign, blocks freezing
+      }
+    } else {
+      side.is_chunk = false;
+    }
+    return side;
+  }
+  // Non-chunk. Static geometry is immutable and needs no events; anything
+  // else that can touch debris (players, vehicles, props) is movable and
+  // NOT event-observable, so it must block freezing.
+  side.is_static =
+      actor != nullptr && actor->is<physx::PxRigidStatic>() != nullptr;
+  return side;
+}
+
+void DestructionManager::note_ground_touch(const PendingPairLoad &load) {
+  if (!settle_assist_enabled()) {
+    return;
+  }
+  // Exactly one chunk against static world geometry. Chunk-on-chunk says
+  // nothing about having landed, and the is_static flag is already computed
+  // by resolve_pair_side for the support graph -- this rides along free.
+  const PendingPairSide *chunk = nullptr;
+  if (load.a.is_chunk && load.b.is_static) {
+    chunk = &load.a;
+  } else if (load.b.is_chunk && load.a.is_static) {
+    chunk = &load.b;
+  }
+  if (chunk == nullptr) {
+    return;
+  }
+  if (ground_touched_.insert(support_key(chunk->structure_id, chunk->body_id))
+          .second) {
+    ++ground_touch_latches_;
+  }
 }
 
 void DestructionManager::note_pair_load(const PxShape *shape_a,
@@ -2010,45 +3128,60 @@ void DestructionManager::note_pair_load(const PxShape *shape_a,
   if (sum_abs_impulse_y <= 0.0f) {
     return;
   }
-  const auto resolve = [this](const PxShape *shape,
-                              const PxActor *actor) -> PendingPairSide {
-    PendingPairSide side{};
-    const auto owner = shape_owners_.find(shape);
-    if (owner != shape_owners_.end()) {
-      side.is_chunk = true;
-      side.structure_id = owner->second.first;
-      side.node_index = owner->second.second;
-      // node -> body from the LAST topology registration: exactly the
-      // configuration the physics step (and therefore this contact) ran
-      // against. If fracture moves the node this tick, the impulse was
-      // still exchanged with the old body.
-      if (const Slot *slot = find_slot(side.structure_id)) {
-        const auto body = slot->node_to_body.find(side.node_index);
-        if (body != slot->node_to_body.end()) {
-          side.body_id = body->second;
-        } else {
-          side.is_chunk = false; // unmapped: treat as foreign, blocks freezing
-        }
-      } else {
-        side.is_chunk = false;
-      }
-      return side;
-    }
-    // Non-chunk. Static geometry is immutable and needs no events; anything
-    // else that can touch debris (players, vehicles, props) is movable and
-    // NOT event-observable, so it must block freezing.
-    side.is_static =
-        actor != nullptr && actor->is<physx::PxRigidStatic>() != nullptr;
-    return side;
-  };
   PendingPairLoad load{};
-  load.a = resolve(shape_a, actor_a);
-  load.b = resolve(shape_b, actor_b);
+  load.a = resolve_pair_side(shape_a, actor_a);
+  load.b = resolve_pair_side(shape_b, actor_b);
   if (!load.a.is_chunk && !load.b.is_chunk) {
     return; // no debris involved; not our concern
   }
   load.sum_abs_impulse_y = sum_abs_impulse_y;
   load.min_separation = min_separation;
+  note_ground_touch(load);
+  pending_pair_loads_.push_back(load);
+}
+
+void DestructionManager::note_pair_load(const ContactTarget &target_a,
+                                        const ContactTarget &target_b,
+                                        const PxShape *shape_a,
+                                        const PxShape *shape_b,
+                                        const PxActor *actor_a,
+                                        const PxActor *actor_b,
+                                        float sum_abs_impulse_y,
+                                        float min_separation) {
+  if (sum_abs_impulse_y <= 0.0f) {
+    return;
+  }
+  // A non-null target already paid shape_owners_.find + find_slot in
+  // resolve_contact_target this manifold; reuse it. node_to_body still runs
+  // here — it is the one lookup the target does not carry, and it must read
+  // the same registration the original path reads.
+  const auto from_target = [this](const ContactTarget &target,
+                                  const PxShape *shape,
+                                  const PxActor *actor) -> PendingPairSide {
+    if (!target) {
+      return resolve_pair_side(shape, actor);
+    }
+    PendingPairSide side{};
+    side.is_chunk = true;
+    side.structure_id = target.structure_id;
+    side.node_index = target.node_index;
+    const auto body = target.slot->node_to_body.find(target.node_index);
+    if (body != target.slot->node_to_body.end()) {
+      side.body_id = body->second;
+    } else {
+      side.is_chunk = false; // unmapped: treat as foreign, blocks freezing
+    }
+    return side;
+  };
+  PendingPairLoad load{};
+  load.a = from_target(target_a, shape_a, actor_a);
+  load.b = from_target(target_b, shape_b, actor_b);
+  if (!load.a.is_chunk && !load.b.is_chunk) {
+    return; // no debris involved; not our concern
+  }
+  load.sum_abs_impulse_y = sum_abs_impulse_y;
+  load.min_separation = min_separation;
+  note_ground_touch(load);
   pending_pair_loads_.push_back(load);
 }
 
@@ -2077,7 +3210,8 @@ void DestructionManager::resolve_support_loads() {
     }
     return static_cast<std::uint64_t>(10);
   }();
-  const float g_dt = 9.81f * (last_dt_ > 0.0f ? last_dt_ : 1.0f / 60.0f);
+  // Was 9.81 while note_contact_pair used world gravity. See world_gravity().
+  const float g_dt = world_gravity() * (last_dt_ > 0.0f ? last_dt_ : 1.0f / 60.0f);
 
   // A/B switch for the lookup strategy. Same binary, same scene, same shot
   // plan -- the only way to compare these two honestly, because GPU
@@ -2102,13 +3236,9 @@ void DestructionManager::resolve_support_loads() {
   // invisible except as the gap between the native tick and the sum of its
   // phases, and it was the dominant term in that gap (measured: ~0.6 ms of a
   // ~0.65 ms gap at 3k bodies, and it grows linearly with body count).
-  const auto body_row = [&](std::uint32_t structure_id,
-                            std::uint64_t body_id)
+  const auto body_row_in = [&](const Slot &slot_ref, std::uint64_t body_id)
       -> const ExtStressPhysXBodySnapshot * {
-    const Slot *slot = find_slot(structure_id);
-    if (slot == nullptr) {
-      return nullptr;
-    }
+    const Slot *slot = &slot_ref;
     const std::uint32_t count =
         std::min<std::uint32_t>(slot->body_cache_count,
                                 static_cast<std::uint32_t>(slot->body_cache.size()));
@@ -2152,50 +3282,106 @@ void DestructionManager::resolve_support_loads() {
   last_support_pair_loads_ =
       static_cast<std::uint32_t>(pending_pair_loads_.size());
   std::unordered_set<std::uint64_t> touched;
-  for (const PendingPairLoad &load : pending_pair_loads_) {
-    // Work out which side depends on which. Kinematic and non-chunk sides
-    // never depend on debris; between two dynamics the higher centre of
-    // mass depends on the lower (ties carry no information -- skip).
-    struct Resolved {
-      bool chunk = false;
-      bool kinematic = false;
-      bool frozen = false;
-      bool rooted = false;
-      float com_y = 0.0f;
-      float mass = 0.0f;
-      std::uint32_t serial = 0;
-      const PendingPairSide *side = nullptr;
-    };
-    const auto classify = [&](const PendingPairSide &side) -> Resolved {
-      Resolved out{};
-      out.side = &side;
-      if (!side.is_chunk) {
-        return out;
-      }
-      const Slot *slot = find_slot(side.structure_id);
-      const ExtStressPhysXBodySnapshot *row =
-          body_row(side.structure_id, side.body_id);
-      if (slot == nullptr || row == nullptr) {
-        return out; // body died this tick; retire/promote events cover it
-      }
-      const auto serial_it = slot->body_to_serial.find(side.body_id);
-      if (serial_it == slot->body_to_serial.end()) {
-        return out;
-      }
-      out.chunk = true;
-      out.kinematic = row->kinematic;
-      out.frozen = slot->frozen.count(side.body_id) != 0;
-      out.rooted = slot->rooted.count(side.body_id) != 0;
-      out.com_y = com_world_position(*row).y;
-      out.mass = row->body != nullptr ? row->body->getMass() : 0.0f;
-      out.serial = serial_it->second;
+
+  // Work out which side depends on which. Kinematic and non-chunk sides
+  // never depend on debris; between two dynamics the higher centre of
+  // mass depends on the lower (ties carry no information -- skip).
+  struct Resolved {
+    bool chunk = false;
+    bool kinematic = false;
+    bool frozen = false;
+    bool rooted = false;
+    float com_y = 0.0f;
+    float mass = 0.0f;
+    std::uint32_t serial = 0;
+    const PendingPairSide *side = nullptr;
+  };
+  const auto classify = [&](const PendingPairSide &side) -> Resolved {
+    Resolved out{};
+    out.side = &side;
+    if (!side.is_chunk) {
       return out;
-    };
-    const Resolved a = classify(load.a);
-    const Resolved b = classify(load.b);
+    }
+    // One slot resolution per side. body_row re-resolved the slot
+    // internally, making four linear scans per pair -- free at one
+    // structure, dominant at a multi-structure grid.
+    const Slot *slot = find_slot(side.structure_id);
+    const ExtStressPhysXBodySnapshot *row =
+        slot != nullptr ? body_row_in(*slot, side.body_id) : nullptr;
+    if (slot == nullptr || row == nullptr) {
+      return out; // body died this tick; retire/promote events cover it
+    }
+    const auto serial_it = slot->body_to_serial.find(side.body_id);
+    if (serial_it == slot->body_to_serial.end()) {
+      return out;
+    }
+    out.chunk = true;
+    out.kinematic = row->kinematic;
+    out.frozen = slot->frozen.count(side.body_id) != 0;
+    out.rooted = slot->rooted.count(side.body_id) != 0;
+    out.com_y = com_world_position(*row).y;
+    // Cached at mass-recompute time by the library. The live getMass here
+    // was ~52k PhysX reads per tick at a 7.9k-awake peak.
+    out.mass = row->mass;
+    out.serial = serial_it->second;
+    return out;
+  };
+
+  // Pair -> (Resolved, Resolved) is pure lookups over state nothing mutates
+  // during this phase, so it fans out across the stress pool; the ingest
+  // below stays serial and walks the results in original pair order, so the
+  // supporter store is byte-identical to the single-threaded walk. This was
+  // 4.7-6.1 ms of serial wall per tick at 20k pairs, all of it here.
+  //
+  // The row_map A/B path builds its per-slot map lazily inside body_row_in,
+  // which is a shared-map write; warm every slot serially first so the
+  // parallel phase only ever reads it.
+  const std::size_t load_count = pending_pair_loads_.size();
+  std::vector<std::pair<Resolved, Resolved>> resolved(load_count);
+  const unsigned pool = stress_executor_ ? stress_executor_->parallelism() : 1;
+  // Below this the fan-out costs more than the walk. Measured live, same
+  // session, same build: 16.7k pairs ran at 0.186 us/pair parallel (vs the
+  // pre-change serial 0.226), but 5.7k pairs ran at 0.337 us/pair -- WORSE
+  // than serial, all of it fan-out overhead. The crossover sits near 10k.
+  constexpr std::size_t kParallelLoadFloor = 10000;
+  if (pool > 1 && load_count >= kParallelLoadFloor) {
+    if (use_row_map) {
+      for (const PendingPairLoad &load : pending_pair_loads_) {
+        for (const PendingPairSide *side : {&load.a, &load.b}) {
+          if (side->is_chunk) {
+            if (const Slot *slot = find_slot(side->structure_id)) {
+              (void)body_row_in(*slot, side->body_id);
+            }
+          }
+        }
+      }
+    }
+    const std::size_t strips = pool;
+    const std::size_t strip_len = (load_count + strips - 1) / strips;
+    stress_executor_->run(strips, [&](std::size_t strip) {
+      const std::size_t begin = strip * strip_len;
+      const std::size_t end = std::min(load_count, begin + strip_len);
+      for (std::size_t i = begin; i < end; ++i) {
+        resolved[i].first = classify(pending_pair_loads_[i].a);
+        resolved[i].second = classify(pending_pair_loads_[i].b);
+      }
+    });
+  } else {
+    for (std::size_t i = 0; i < load_count; ++i) {
+      resolved[i].first = classify(pending_pair_loads_[i].a);
+      resolved[i].second = classify(pending_pair_loads_[i].b);
+    }
+  }
+
+  for (std::size_t load_index = 0; load_index < load_count; ++load_index) {
+    const PendingPairLoad &load = pending_pair_loads_[load_index];
+    const Resolved &a = resolved[load_index].first;
+    const Resolved &b = resolved[load_index].second;
 
     const auto record = [&](const Resolved &dependent, const Resolved &supporter) {
+      ++sup_record_calls_;
       if (!dependent.chunk || dependent.kinematic) {
+        ++sup_reject_kinematic_;
         return; // kinematic bodies (frozen or rooted) depend on nothing
       }
       SupporterRec rec{};
@@ -2225,19 +3411,37 @@ void DestructionManager::resolve_support_loads() {
       touched.insert(key);
       entry.dirty = true;
       // Weight-bearing gate, scaled to the DEPENDENT's own resting load.
+      //
+      // 41.5% of record() calls end here (F18), which looks like an
+      // invitation to apply the same test back in the contact callback and
+      // never resolve those pairs at all. It is not, and the reason is
+      // everything above this line: a pair that fails this gate has ALREADY
+      // contributed entry.min_separation (which becomes penetration_m, and
+      // therefore decides freeze's squeeze test), refreshed
+      // last_report_tick (which the age-out below measures against), and
+      // marked the entry touched and dirty. Dropping sub-gate pairs earlier
+      // would change which bodies are eligible to freeze. That is a physics
+      // change wearing the costume of an optimization.
+      //
+      // The cost is also not where it looks: entry.entity needs
+      // dependent.serial, so classify() has to have run regardless.
       if (load.sum_abs_impulse_y < fy_ratio * dependent.mass * g_dt) {
+        ++sup_reject_fy_;
         return;
       }
       for (SupporterRec &existing : entry.supporters) {
         if (existing.kind == rec.kind && existing.entity == rec.entity &&
             existing.node == rec.node) {
           existing.last_tick = tick_count_;
+          ++sup_edge_existing_;
           return;
         }
       }
       rec.last_tick = tick_count_;
       entry.supporters.push_back(rec);
       entry.dirty = true;
+      entry.set_changed = true;
+      ++sup_edge_new_;
     };
 
     if (a.chunk && b.chunk && !a.kinematic && !b.kinematic) {
@@ -2271,8 +3475,15 @@ void DestructionManager::resolve_support_loads() {
         entry.supporters.end());
     if (entry.supporters.size() != before) {
       entry.dirty = true;
+      entry.set_changed = true;
     }
     if (entry.dirty) {
+      ++sup_sets_staged_;
+      if (!entry.set_changed) {
+        ++sup_sets_unchanged_;
+      }
+      sup_rows_staged_ += entry.supporters.size();
+      entry.set_changed = false;
       FfiSupportSet set{};
       set.dependent_entity = entry.entity;
       set.last_report_tick = entry.last_report_tick;
@@ -2357,7 +3568,23 @@ rust::Vec<FfiSupportRow> DestructionManager::take_support_rows() {
   return out;
 }
 
+void DestructionManager::span_add(const char *name, double value,
+                                  std::uint8_t kind) {
+  // Names are string LITERALS by convention (pointer compare is the fast
+  // path); a handful of spans per tick makes the linear scan free.
+  for (auto &entry : extra_spans_) {
+    if (entry.first == name || std::strcmp(entry.first, name) == 0) {
+      entry.second.first += value;
+      return;
+    }
+  }
+  extra_spans_.push_back({name, {value, kind}});
+}
+
 rust::Vec<std::uint32_t> DestructionManager::take_frozen_contact_wakes() {
+  // The tick's accumulated pair loads are judged here, at the drain, so the
+  // caller sees exactly one decision per body per tick.
+  resolve_frozen_contact_wakes();
   rust::Vec<std::uint32_t> out;
   out.reserve(contact_wake_order_.size());
   for (std::uint32_t entity : contact_wake_order_) {
@@ -2370,6 +3597,13 @@ rust::Vec<std::uint32_t> DestructionManager::take_frozen_contact_wakes() {
 
 FfiDestructionStats DestructionManager::destruction_stats() const {
   FfiDestructionStats stats{};
+  for (const auto &entry : extra_spans_) {
+    FfiNamedSpan span;
+    span.name = rust::String(entry.first);
+    span.value = entry.second.first;
+    span.kind = entry.second.second;
+    stats.extra_spans.push_back(std::move(span));
+  }
   stats.structures = static_cast<std::uint32_t>(slots_.size());
   stats.broken_bonds = total_broken_bonds_;
   stats.stress_solve_ms = last_stress_solve_ms_;
@@ -2399,6 +3633,20 @@ FfiDestructionStats DestructionManager::destruction_stats() const {
   // Counted from the bridge's own set rather than from Rust's, so a
   // disagreement between the two is visible instead of silently papered over.
   stats.frozen_chunk_bodies = frozen;
+  {
+    // Few dozen aggregates at most; the live occupancy read keeps this
+    // honest against bodies PhysX released while frozen.
+    std::uint32_t aggregates = 0;
+    std::uint32_t aggregated_actors = 0;
+    for (const auto &cell : frozen_agg_cells_) {
+      for (const physx::PxAggregate *aggregate : cell.second) {
+        ++aggregates;
+        aggregated_actors += aggregate->getNbActors();
+      }
+    }
+    stats.frozen_aggregates = aggregates;
+    stats.frozen_aggregate_actors = aggregated_actors;
+  }
   stats.frozen_serial_blocks = frozen_serial_blocks_;
   stats.frozen_adapter_releases = frozen_adapter_releases_;
   stats.freeze_flips = freeze_flips_;
@@ -2406,6 +3654,7 @@ FfiDestructionStats DestructionManager::destruction_stats() const {
   stats.contact_wakes = contact_wakes_;
   stats.support_promotions = support_promotions_;
   stats.rooted_guard_blocks = rooted_guard_blocks_;
+  stats.island_resleep_writes = island_resleep_writes_;
   stats.support_edges = support_edges_total_;
   std::uint32_t rooted_count = 0;
   for (const auto &slot_ptr : slots_) {
@@ -2414,6 +3663,12 @@ FfiDestructionStats DestructionManager::destruction_stats() const {
     }
   }
   stats.rooted_chunk_bodies = rooted_count;
+  float contact_slot_max = 0.0f;
+  float gravity_slot_max = 0.0f;
+  std::uint64_t single_node_bodies = 0;
+  std::uint64_t single_node_contacts = 0;
+  std::uint64_t single_node_awake = 0;
+  std::uint64_t bondless_skipped = 0;
   for (const auto &slot_ptr : slots_) {
     if (!slot_ptr || slot_ptr->dest == nullptr) {
       continue;
@@ -2435,6 +3690,94 @@ FfiDestructionStats DestructionManager::destruction_stats() const {
     const double gpu_delta = gpu_total - slot_ptr->last_gpu_stress_solve_ms;
     slot_ptr->last_gpu_stress_solve_ms = gpu_total;
     stats.gpu_stress_solve_ms += static_cast<float>(gpu_delta > 0.0 ? gpu_delta : 0.0);
+    // Same delta treatment for the host split. solve_ms minus the kernel ran
+    // 3.84 ms against a 1.24 ms kernel; these two say how much of that is
+    // reclaimable host work and how much is the host simply waiting.
+    const double work_total = telemetry.gpuStressHostWorkMilliseconds;
+    const double work_delta = work_total - slot_ptr->last_gpu_host_work_ms;
+    slot_ptr->last_gpu_host_work_ms = work_total;
+    gpu_host_work_ms_ += work_delta > 0.0 ? work_delta : 0.0;
+    const double blocked_total = telemetry.gpuStressHostBlockedMilliseconds;
+    const double blocked_delta = blocked_total - slot_ptr->last_gpu_host_blocked_ms;
+    slot_ptr->last_gpu_host_blocked_ms = blocked_total;
+    gpu_host_blocked_ms_ += blocked_delta > 0.0 ? blocked_delta : 0.0;
+    bondless_verify_checks_ = telemetry.bondlessVerifyChecks;
+    bondless_verify_mismatches_ = telemetry.bondlessVerifyMismatches;
+    {
+      const double t = telemetry.stressHostWalkInMilliseconds;
+      const double d = t - slot_ptr->last_hw_walk_in_ms;
+      slot_ptr->last_hw_walk_in_ms = t;
+      hw_walk_in_ms_ += d > 0.0 ? d : 0.0;
+    }
+    {
+      const double t = telemetry.stressHostResetMilliseconds;
+      const double d = t - slot_ptr->last_hw_reset_ms;
+      slot_ptr->last_hw_reset_ms = t;
+      hw_reset_ms_ += d > 0.0 ? d : 0.0;
+    }
+    {
+      const double t = telemetry.stressHostBondStressMilliseconds;
+      const double d = t - slot_ptr->last_hw_bond_stress_ms;
+      slot_ptr->last_hw_bond_stress_ms = t;
+      hw_bond_stress_ms_ += d > 0.0 ? d : 0.0;
+    }
+    {
+      const double t = telemetry.stressHostNodeStressMilliseconds;
+      const double d = t - slot_ptr->last_hw_node_stress_ms;
+      slot_ptr->last_hw_node_stress_ms = t;
+      hw_node_stress_ms_ += d > 0.0 ? d : 0.0;
+    }
+    // The adapter's counter is already cumulative, so this ASSIGNS the max
+    // across slots rather than accumulating -- adding a cumulative counter
+    // into another every tick is quadratic and produced a nonsense delta of
+    // 1.8M groups/tick on a 24k-bond scene.
+    bond_stress_skipped_ =
+        std::max(bond_stress_skipped_,
+                 static_cast<std::uint64_t>(telemetry.bondStressGroupsSkipped));
+    // Deltas, not max: skips and launches are two halves of one ratio and
+    // have to come from the same population. Taking the max across slots
+    // pairs the idlest structure's skip count with the busiest one's launch
+    // count, which reads as a plausible number and means nothing.
+    {
+      const std::uint64_t sk =
+          static_cast<std::uint64_t>(telemetry.bondStressGpuSkipped);
+      if (sk >= slot_ptr->last_bs_gpu_skipped) {
+        bs_gpu_skipped_ += sk - slot_ptr->last_bs_gpu_skipped;
+      }
+      slot_ptr->last_bs_gpu_skipped = sk;
+      const std::uint64_t rn =
+          static_cast<std::uint64_t>(telemetry.bondStressGpuRuns);
+      if (rn >= slot_ptr->last_bs_gpu_runs) {
+        bs_gpu_runs_ += rn - slot_ptr->last_bs_gpu_runs;
+      }
+      slot_ptr->last_bs_gpu_runs = rn;
+    }
+    bs_par_checks_ =
+        std::max(bs_par_checks_,
+                 static_cast<std::uint64_t>(telemetry.bondStressParallelChecks));
+    bs_par_mismatches_ = std::max(
+        bs_par_mismatches_,
+        static_cast<std::uint64_t>(telemetry.bondStressParallelMismatches));
+    const double gs_total = telemetry.stressGraphSolveMilliseconds;
+    const double gs_delta = gs_total - slot_ptr->last_stress_graph_solve_ms;
+    slot_ptr->last_stress_graph_solve_ms = gs_total;
+    stress_graph_solve_ms_ += gs_delta > 0.0 ? gs_delta : 0.0;
+    const double dr_total = telemetry.stressDrainMilliseconds;
+    const double dr_delta = dr_total - slot_ptr->last_stress_drain_ms;
+    slot_ptr->last_stress_drain_ms = dr_total;
+    stress_drain_ms_ += dr_delta > 0.0 ? dr_delta : 0.0;
+    const double copy_total = telemetry.stressImpulseCopyMilliseconds;
+    const double copy_delta = copy_total - slot_ptr->last_stress_impulse_copy_ms;
+    slot_ptr->last_stress_impulse_copy_ms = copy_total;
+    stress_impulse_copy_ms_ += copy_delta > 0.0 ? copy_delta : 0.0;
+    const double init_total = telemetry.stressInitializeMilliseconds;
+    const double init_delta = init_total - slot_ptr->last_stress_initialize_ms;
+    slot_ptr->last_stress_initialize_ms = init_total;
+    stress_initialize_ms_ += init_delta > 0.0 ? init_delta : 0.0;
+    const double err_total = telemetry.stressCalcErrorMilliseconds;
+    const double err_delta = err_total - slot_ptr->last_stress_calc_error_ms;
+    slot_ptr->last_stress_calc_error_ms = err_total;
+    stress_calc_error_ms_ += err_delta > 0.0 ? err_delta : 0.0;
     // Same delta-with-reset-guard treatment for the five phase timers the
     // adapter keeps alongside it. Summed across slots, like every other
     // per-structure figure here.
@@ -2443,11 +3786,19 @@ FfiDestructionStats DestructionManager::destruction_stats() const {
       previous = total;
       return static_cast<float>(delta > 0.0 ? delta : 0.0);
     };
-    stats.blast_contact_processing_ms += phase_delta(
+    // Per-slot maxima ride the span channel beside the sums: slots run
+    // concurrently, so MAX-across-slots is the wall-time bound a summed
+    // field cannot provide (reading a sum as wall nearly bought a CUDA
+    // kernel for a ~0.5 ms cost).
+    const float contact_slot_ms = phase_delta(
         telemetry.contactProcessingMilliseconds,
         slot_ptr->last_contact_processing_ms);
-    stats.blast_gravity_ms +=
+    stats.blast_contact_processing_ms += contact_slot_ms;
+    contact_slot_max = std::max(contact_slot_max, contact_slot_ms);
+    const float gravity_slot_ms =
         phase_delta(telemetry.gravityMilliseconds, slot_ptr->last_gravity_ms);
+    stats.blast_gravity_ms += gravity_slot_ms;
+    gravity_slot_max = std::max(gravity_slot_max, gravity_slot_ms);
     stats.blast_stress_solve_cpu_ms += phase_delta(
         telemetry.stressSolveMilliseconds, slot_ptr->last_stress_solve_cpu_ms);
     stats.blast_fracture_topology_ms += phase_delta(
@@ -2456,6 +3807,24 @@ FfiDestructionStats DestructionManager::destruction_stats() const {
     stats.blast_mapping_validation_ms += phase_delta(
         telemetry.mappingValidationMilliseconds,
         slot_ptr->last_mapping_validation_ms);
+    // The interior of fracture topology. Children of it, and NOT summable with
+    // it -- mapping validation is in there too, so the unattributed remainder
+    // is topology - (these five) - validation.
+    stats.blast_fracture_generate_ms += phase_delta(
+        telemetry.fractureGenerateMilliseconds,
+        slot_ptr->last_fracture_generate_ms);
+    stats.blast_fracture_prep_ms += phase_delta(
+        telemetry.fracturePrepMilliseconds,
+        slot_ptr->last_fracture_prep_ms);
+    stats.blast_fracture_apply_ms += phase_delta(
+        telemetry.fractureApplyMilliseconds,
+        slot_ptr->last_fracture_apply_ms);
+    stats.blast_fracture_scene_ms += phase_delta(
+        telemetry.fractureSceneMilliseconds,
+        slot_ptr->last_fracture_scene_ms);
+    stats.blast_fracture_rebuild_ms += phase_delta(
+        telemetry.fractureRebuildMilliseconds,
+        slot_ptr->last_fracture_rebuild_ms);
     stats.blast_sleeping_actors_skipped += telemetry.sleepingActorsSkipped;
     // The quantity that actually decides whether anything fractures this tick:
     // endTick() only runs fracture when it is non-zero. Without it in the
@@ -2464,6 +3833,11 @@ FfiDestructionStats DestructionManager::destruction_stats() const {
     stats.overstressed_bonds += telemetry.overstressedBondCount;
     stats.contacts_processed += telemetry.contactsProcessed;
     stats.contacts_dropped += telemetry.contactsDropped;
+    // Queued vs processed sizes the contact pipeline. Contacts are routed per
+    // contact POINT and twice per point (once per shape), so
+    // contacts_queued / (2 * support_pair_loads) is the points-per-manifold
+    // factor -- the number that decides what per-manifold aggregation is worth.
+    stats.contacts_queued += telemetry.contactsQueued;
     // The granularity PhysX actually sleeps at. A merged rubble field is one
     // island of thousands of bodies: it can only sleep as a whole, and any one
     // member waking wakes all of it. Body counts alone read identically
@@ -2471,10 +3845,153 @@ FfiDestructionStats DestructionManager::destruction_stats() const {
     stats.solver_island_count += telemetry.solverIslandCount;
     stats.solver_islands_skipped += telemetry.solverIslandsSkipped;
     stats.sleeping_actors_skipped += telemetry.sleepingActorsSkipped;
+    single_node_bodies += telemetry.singleNodeBodyCount;
+    single_node_contacts += telemetry.singleNodeContacts;
+    single_node_awake += telemetry.singleNodeAwakeBodies;
+    bondless_skipped += telemetry.bondlessContactsSkipped;
   }
+
+  // Bounded-growth tripwire. Both are keyed by (structure_id, bodyId) and
+  // erased on retire; pointer-keyed and never pruned, they grew without limit
+  // and let a recycled actor inherit a dead body's CCD state.
+  stats.ccd_tracked_bodies = static_cast<std::uint32_t>(ccd_enabled_.size());
+  stats.identity_stamped_bodies =
+      static_cast<std::uint32_t>(body_entity_stamp_.size());
+  stats.solver_islands_skipped_accum = solver_islands_skipped_accum_;
+  stats.solver_islands_total_accum = solver_islands_total_accum_;
   stats.bond_utilisation_max = last_bond_utilisation_max_;
   stats.bonds_above_half_utilisation = last_bonds_above_half_utilisation_;
+  // Wall-time bounds for the two most-consulted slot-summed fields (kind 0:
+  // these ARE wall — slots run concurrently, so the slowest slot bounds the
+  // phase's wall share).
+  const auto push_span = [&stats](const char *name, double value,
+                                  std::uint8_t kind) {
+    FfiNamedSpan span;
+    span.name = rust::String(name);
+    span.value = value;
+    span.kind = kind;
+    stats.extra_spans.push_back(std::move(span));
+  };
+  push_span("blast_gravity_slotmax_ms", gravity_slot_max, 0);
+  push_span("blast_contact_processing_slotmax_ms", contact_slot_max, 0);
+  // A single-node body has no internal bonds, so nothing in it can break: the
+  // contacts routed into it, and its share of the solve, cannot change the
+  // simulation whatever they contain. Published to size that share before
+  // anything is built on it.
+  push_span("single_node_bodies", static_cast<double>(single_node_bodies), 2);
+  // Only meaningful in the BLAST_SKIP_BONDLESS_CONTACTS=0 arm. With the skip
+  // on (the default) these contacts are dropped BEFORE the loop that counts
+  // them, so the counter is structurally pinned to zero -- and a pinned zero
+  // in a report reads as "measured, and it was none", which is the same
+  // failure F11 fixed for the PhysX split. Publish it only when it can carry
+  // information; `bondless_contacts_skipped` is the metric for the skip-on
+  // arm, and it is always published below.
+  if (bondless_skipped == 0) {
+    push_span("single_node_contacts",
+              static_cast<double>(single_node_contacts), 2);
+  }
+  push_span("single_node_awake", static_cast<double>(single_node_awake), 2);
+  push_span("ground_touch_latches", static_cast<double>(ground_touch_latches_), 2);
+  push_span("settle_assist_applied", static_cast<double>(settle_assist_applied_), 2);
+  // Cumulative. single_node_contacts now reads 0 BECAUSE the skip works --
+  // dropped contacts never reach the loop that counts them -- so the volume
+  // being saved is only visible here.
+  push_span("bondless_contacts_skipped", static_cast<double>(bondless_skipped), 2);
+  // Must stay 0. Non-zero means the cached node index disagreed with the
+  // library's map, i.e. a contact was routed to the wrong Blast node.
+  push_span("node_cache_mismatches",
+            static_cast<double>(node_cache_mismatches_), 2);
+  push_span("node_cache_checks", static_cast<double>(node_cache_checks_), 2);
+  push_span("sup_record_calls", static_cast<double>(sup_record_calls_), 2);
+  push_span("sup_reject_kinematic", static_cast<double>(sup_reject_kinematic_), 2);
+  push_span("sup_reject_fy", static_cast<double>(sup_reject_fy_), 2);
+  push_span("sup_edge_existing", static_cast<double>(sup_edge_existing_), 2);
+  push_span("sup_edge_new", static_cast<double>(sup_edge_new_), 2);
+  push_span("sup_sets_staged", static_cast<double>(sup_sets_staged_), 2);
+  push_span("sup_sets_unchanged", static_cast<double>(sup_sets_unchanged_), 2);
+  push_span("sup_rows_staged", static_cast<double>(sup_rows_staged_), 2);
+  push_span("bondless_verify_checks",
+            static_cast<double>(bondless_verify_checks_), 2);
+  push_span("bondless_verify_mismatches",
+            static_cast<double>(bondless_verify_mismatches_), 2);
+  push_span("bond_stress_skipped",
+            static_cast<double>(bond_stress_skipped_), 2);
+  push_span("bs_gpu_skipped", static_cast<double>(bs_gpu_skipped_), 2);
+  push_span("bs_gpu_runs", static_cast<double>(bs_gpu_runs_), 2);
+  push_span("bs_par_checks", static_cast<double>(bs_par_checks_), 2);
+  push_span("bs_par_mismatches", static_cast<double>(bs_par_mismatches_), 2);
+  push_span("hw_walk_in_ms", hw_walk_in_ms_, 0);
+  push_span("hw_reset_ms", hw_reset_ms_, 0);
+  push_span("hw_bond_stress_ms", hw_bond_stress_ms_, 0);
+  push_span("hw_node_stress_ms", hw_node_stress_ms_, 0);
+  push_span("stress_graph_solve_ms", stress_graph_solve_ms_, 0);
+  push_span("stress_drain_ms", stress_drain_ms_, 0);
+  push_span("stress_impulse_copy_ms", stress_impulse_copy_ms_, 0);
+  push_span("stress_initialize_ms", stress_initialize_ms_, 0);
+  push_span("stress_calc_error_ms", stress_calc_error_ms_, 0);
+  push_span("gpu_host_work_ms", gpu_host_work_ms_, 0);
+  push_span("gpu_host_blocked_ms", gpu_host_blocked_ms_, 0);
+  // Per-tick, not cumulative: zeroed once the observer has read them.
+  gpu_host_work_ms_ = 0.0;
+  gpu_host_blocked_ms_ = 0.0;
+  stress_initialize_ms_ = 0.0;
+  stress_impulse_copy_ms_ = 0.0;
+  stress_graph_solve_ms_ = 0.0;
+  hw_walk_in_ms_ = 0.0;
+  hw_reset_ms_ = 0.0;
+  hw_bond_stress_ms_ = 0.0;
+  hw_node_stress_ms_ = 0.0;
+  stress_drain_ms_ = 0.0;
+  stress_calc_error_ms_ = 0.0;
+  push_span("stress_solve_residual_ms",
+            static_cast<double>(last_stress_solve_residual_ms_), 0);
   return stats;
+}
+
+std::uint64_t DestructionManager::split_count() const {
+  std::uint64_t total = 0;
+  for (const auto &slot_ptr : slots_) {
+    if (!slot_ptr || slot_ptr->dest == nullptr) {
+      continue;
+    }
+    total += slot_ptr->dest->getTelemetry().splits;
+  }
+  return total;
+}
+
+bool DestructionManager::resim_needed() const {
+  for (const auto &slot_ptr : slots_) {
+    if (!slot_ptr || slot_ptr->dest == nullptr) {
+      continue;
+    }
+    if (slot_ptr->dest->needsResimulationSnapshot()) {
+      return true;
+    }
+  }
+  return false;
+}
+
+std::uint32_t DestructionManager::resim_capture() {
+  std::uint32_t captured = 0;
+  for (const auto &slot_ptr : slots_) {
+    if (!slot_ptr || slot_ptr->dest == nullptr) {
+      continue;
+    }
+    captured += slot_ptr->dest->captureResimulationSnapshot();
+  }
+  return captured;
+}
+
+bool DestructionManager::resim_restore() {
+  bool any = false;
+  for (const auto &slot_ptr : slots_) {
+    if (!slot_ptr || slot_ptr->dest == nullptr) {
+      continue;
+    }
+    // Full-scene restore: passing no active set rewinds every captured body.
+    any = slot_ptr->dest->restoreResimulationSnapshot() || any;
+  }
+  return any;
 }
 
 bool DestructionManager::validate_destruction_mappings() const {

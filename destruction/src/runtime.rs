@@ -57,6 +57,20 @@ impl std::fmt::Display for CityDestructionError {
 
 impl std::error::Error for CityDestructionError {}
 
+/// Below this, a chunk body is treated as escaped and parked. Ground level is
+/// y=0; nothing legitimate lives below about -2 m (`min_body_y` on a healthy
+/// settled city reads ~-0.3). Generous margin so a deep rubble compaction
+/// never trips it.
+fn kill_floor_y() -> f32 {
+    static VALUE: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
+    *VALUE.get_or_init(|| {
+        std::env::var("VIBE_CITY_KILL_FLOOR_Y")
+            .ok()
+            .and_then(|v| v.parse::<f32>().ok())
+            .unwrap_or(-40.0)
+    })
+}
+
 pub struct CityDestruction {
     /// Awake-body encoder input, rebuilt once per tick inside `post_step`.
     encoder_input: Vec<BodySnapshotInput>,
@@ -65,7 +79,22 @@ pub struct CityDestruction {
     settle_config: SettleConfig,
     tick: u64,
     stats: DestructionStats,
+    /// Generic named spans from the bridge (see FfiNamedSpan): ride beside
+    /// the Copy stats struct, refreshed each tick alongside it.
+    extra_spans: Vec<crate::types::NamedSpan>,
     degraded: bool,
+    /// Fracture-frame resimulation. 0 = off. Each pass rewinds motion and
+    /// re-runs simulate+tick when the previous tick split an island, so the
+    /// contact that caused the split resolves against the resulting pieces.
+    /// `VIBE_CITY_RESIM_PASSES` (default 0 while it is being validated).
+    resim_passes: u32,
+    last_split_count: u64,
+    resim_passes_run: u64,
+    resim_captures: u64,
+    resim_zero_captures: u64,
+    resim_not_needed: u64,
+    resim_errors: u64,
+    resim_last_error: Option<String>,
     /// Per-body rest state: the settle/wake edges the wire is built on, and
     /// (when enabled) the freeze decisions and spatial index over frozen
     /// rubble. Replaces the old `known_awake` map, which tracked only the
@@ -227,7 +256,19 @@ impl CityDestruction {
             settle: SettleTracker::default(),
             settle_config: SettleConfig::validated(sim_hz),
             tick: 0,
+            extra_spans: Vec::new(),
             degraded: false,
+            resim_passes: std::env::var("VIBE_CITY_RESIM_PASSES")
+                .ok()
+                .and_then(|v| v.parse::<u32>().ok())
+                .unwrap_or(0),
+            last_split_count: 0,
+            resim_passes_run: 0,
+            resim_captures: 0,
+            resim_zero_captures: 0,
+            resim_not_needed: 0,
+            resim_errors: 0,
+            resim_last_error: None,
             freeze: FreezeTracker::new(FreezeConfig::from_env()),
             pending_wakes: Vec::new(),
         })
@@ -320,6 +361,54 @@ impl CityDestruction {
 
     /// Call after `World::step()`. Runs the Blast stress tick, drains events,
     /// applies settle policy, and returns the network-facing output.
+    /// Resim engagement counters: (captures taken, re-passes run).
+    ///
+    /// Exposed because a resim that silently never captures is indistinguishable
+    /// from one that works, except in the frame budget -- and that is the most
+    /// expensive possible way to be wrong.
+    /// Take the fracture-frame resimulation capture. MUST be called by the
+    /// host immediately before `World::step()`.
+    ///
+    /// It cannot live at the end of post_step, which is where it was first
+    /// put: by then the tick has drained `m_contacts` and cleared the
+    /// had-forces flag, so `needsResimulationSnapshot()` answers false on every
+    /// single tick and the whole mechanism silently does nothing. Measured that
+    /// way it reported 0 captures over 360 ticks while appearing to work.
+    pub fn pre_step(&mut self, world: &mut World) {
+        if self.resim_passes == 0 {
+            return;
+        }
+        // Capture EVERY frame, not only when needsResimulationSnapshot() asks.
+        //
+        // The library's own driver gates on that predicate only when
+        // ExtStressPhysXResimOptions::quietCaptureSkip is set, and it defaults
+        // to FALSE -- shouldCapture() returns true immediately. Gating on it
+        // produced 96 captures against 221 restores, so a restore could rewind
+        // to a capture several frames old instead of to the start of this one.
+        match world.resim_capture() {
+            Ok(n) if n > 0 => self.resim_captures += 1,
+            Ok(_) => self.resim_zero_captures += 1,
+            Err(e) => {
+                if self.resim_last_error.is_none() {
+                    self.resim_last_error = Some(format!("capture: {e}"));
+                }
+                self.resim_errors += 1;
+            }
+        }
+    }
+
+    pub fn resim_counters(&self) -> (u64, u64) {
+        (self.resim_captures, self.resim_passes_run)
+    }
+
+    pub fn resim_diagnosis(&self) -> String {
+        format!(
+            "captures={} zero={} not_needed={} errors={} first_error={:?}",
+            self.resim_captures, self.resim_zero_captures, self.resim_not_needed,
+            self.resim_errors, self.resim_last_error
+        )
+    }
+
     pub fn post_step(
         &mut self,
         world: &mut World,
@@ -331,6 +420,7 @@ impl CityDestruction {
         }
         self.tick += 1;
         let tick = self.tick;
+        let post_step_total_started = std::time::Instant::now();
         // Host wall time of the native tick, including the FFI hop and the
         // per-slot dispatch the native counters cannot see. `stress_solve_ms`
         // is the manager's own bracket inside it; the gap between them is real.
@@ -340,6 +430,71 @@ impl CityDestruction {
         {
             self.degraded = true;
             return Err(CityDestructionError::Bridge(error.to_string()));
+        }
+
+        // Fracture-frame resimulation, following the library's own ordering in
+        // NvBlastExtStressPhysXResim: capture before simulate, and if the tick
+        // that followed fractured, rewind motion and re-run simulate+tick so
+        // contacts resolve against the pieces rather than the intact body.
+        //
+        // Without it a tower striking another resolves its contact against the
+        // whole rigid body; the split lands afterwards and the fragments are
+        // placed into a world where the impact is already over. That is why a
+        // building falling on a building reads softer than it should.
+        //
+        // Keyed on splits, not broken bonds: a bond can break without the
+        // island separating, and it is the separation that changes what the
+        // contact should have hit.
+        if self.resim_passes > 0 {
+            let mut passes = self.resim_passes;
+            while passes > 0 {
+                let splits = world.split_count().unwrap_or(self.last_split_count);
+                if splits <= self.last_split_count {
+                    break;
+                }
+                self.last_split_count = splits;
+                if !world.resim_restore().unwrap_or(false) {
+                    break; // no capture held -- nothing to rewind to
+                }
+                if world.step().is_err() {
+                    self.degraded = true;
+                    return Err(CityDestructionError::Bridge(
+                        "resim re-step failed".to_string(),
+                    ));
+                }
+                if let Err(error) =
+                    world.destruction_tick(dt, Vec3::new(gravity[0], gravity[1], gravity[2]))
+                {
+                    self.degraded = true;
+                    return Err(CityDestructionError::Bridge(error.to_string()));
+                }
+                self.resim_passes_run += 1;
+                passes -= 1;
+            }
+            self.last_split_count = world.split_count().unwrap_or(self.last_split_count);
+        }
+        if false {
+            match world.resim_needed() {
+                Ok(true) => match world.resim_capture() {
+                    Ok(n) if n > 0 => self.resim_captures += 1,
+                    Ok(_) => self.resim_zero_captures += 1,
+                    Err(e) => {
+                        // Loud once. Swallowing this is how resim spent a whole
+                        // measurement cycle looking like it worked.
+                        if self.resim_last_error.is_none() {
+                            self.resim_last_error = Some(format!("capture: {e}"));
+                        }
+                        self.resim_errors += 1;
+                    }
+                },
+                Ok(false) => self.resim_not_needed += 1,
+                Err(e) => {
+                    if self.resim_last_error.is_none() {
+                        self.resim_last_error = Some(format!("needed: {e}"));
+                    }
+                    self.resim_errors += 1;
+                }
+            }
         }
         let tick_ffi_ms = tick_ffi_started.elapsed().as_secs_f32() * 1000.0;
 
@@ -449,6 +604,7 @@ impl CityDestruction {
         let drain_ms = drain_started.elapsed().as_secs_f32() * 1000.0;
         let mut wakes: Vec<(u32, u32)> = std::mem::take(&mut self.pending_wakes);
 
+        let support_ingest_started = std::time::Instant::now();
         // Supporter-set updates from the engine's contact reports: who is
         // holding each body up, refreshed for every body whose set changed
         // during the physics step that just ran.
@@ -473,6 +629,10 @@ impl CityDestruction {
             }
         }
 
+        let support_ingest_ms =
+            support_ingest_started.elapsed().as_secs_f32() * 1000.0;
+
+        let cascade_started = std::time::Instant::now();
         // Contact wakes: frozen bodies that dynamic debris struck during the
         // physics step that just ran. This is the engine's own collision
         // detection driving the release -- the equivalent, for frozen rubble,
@@ -492,6 +652,8 @@ impl CityDestruction {
         if !supporter_deaths.is_empty() {
             self.cascade_release(world, supporter_deaths, &mut wakes, tick);
         }
+
+        let cascade_ms = cascade_started.elapsed().as_secs_f32() * 1000.0;
 
         let readback_started = std::time::Instant::now();
         let snapshots = world
@@ -535,6 +697,17 @@ impl CityDestruction {
         // and re-filtered it, all over data this loop already has in hand.
         let mut encoder_input: Vec<BodySnapshotInput> = Vec::with_capacity(snapshots.len());
         let mut max_angular = 0.0f32;
+        // Kill floor. A body that tunnels through the ground during a heavy
+        // collapse falls forever at 20 m/s^2; measured live, 24 escapees
+        // reached y = -19.6 MILLION metres at ~20 km/s. At that speed each
+        // one's speculative-CCD envelope sweeps hundreds of metres of
+        // broadphase per tick: the GPU patch buffer overflowed its 524k
+        // capacity (547,670 high-water, 2 GPU warnings), PhysX started
+        // dropping contacts, and gpu_wait hit 344 ms. Freezing an escapee the
+        // tick it crosses the floor parks it kinematic a few metres below
+        // ground, where it costs nothing and poisons nothing.
+        let kill_floor = kill_floor_y();
+        let mut escaped: Vec<u32> = Vec::new();
         for snap in snapshots.iter() {
             if snap.kinematic {
                 continue;
@@ -561,6 +734,9 @@ impl CityDestruction {
                     max_speed_entity = snap.entity_id;
                 }
                 max_angular = max_angular.max(angular);
+            }
+            if snap.position.y < kill_floor {
+                escaped.push(snap.entity_id);
             }
             if snap.position.y < min_body_y {
                 min_body_y = snap.position.y;
@@ -755,6 +931,26 @@ impl CityDestruction {
             self.stats.peak_body_angular_speed.max(max_angular);
         self.stats.drain_ms = drain_ms;
         self.stats.tick_ffi_ms = tick_ffi_ms;
+        self.stats.support_ingest_ms = support_ingest_ms;
+        self.stats.cascade_ms = cascade_ms;
+        if !escaped.is_empty() {
+            match world.freeze_chunk_bodies(&escaped) {
+                Ok(parked) => {
+                    self.stats.escaped_bodies_parked += u64::from(parked);
+                    // eprintln, not a logging crate: this crate carries no
+                    // logging dependency, and an escape is rare and serious
+                    // enough that stderr is the right loudness.
+                    eprintln!(
+                        "[destruction] KILL FLOOR: parked {} escaped bodies below y={}",
+                        escaped.len(),
+                        kill_floor
+                    );
+                }
+                Err(error) => {
+                    eprintln!("[destruction] kill floor freeze FAILED: {error}");
+                }
+            }
+        }
         self.stats.min_body_pos = min_pos;
         self.stats.min_body_vel = min_vel;
 
@@ -782,6 +978,11 @@ impl CityDestruction {
             self.stats.blast_stress_solve_cpu_ms = bridge_stats.blast_stress_solve_cpu_ms;
             self.stats.blast_fracture_topology_ms = bridge_stats.blast_fracture_topology_ms;
             self.stats.blast_mapping_validation_ms = bridge_stats.blast_mapping_validation_ms;
+            self.stats.blast_fracture_generate_ms = bridge_stats.blast_fracture_generate_ms;
+            self.stats.blast_fracture_prep_ms = bridge_stats.blast_fracture_prep_ms;
+            self.stats.blast_fracture_apply_ms = bridge_stats.blast_fracture_apply_ms;
+            self.stats.blast_fracture_scene_ms = bridge_stats.blast_fracture_scene_ms;
+            self.stats.blast_fracture_rebuild_ms = bridge_stats.blast_fracture_rebuild_ms;
             self.stats.blast_sleeping_actors_skipped = bridge_stats.blast_sleeping_actors_skipped;
             self.stats.slot_dispatch_ms = bridge_stats.slot_dispatch_ms;
             self.stats.bond_sample_ms = bridge_stats.bond_sample_ms;
@@ -791,6 +992,11 @@ impl CityDestruction {
             self.stats.overstressed_bonds = bridge_stats.overstressed_bonds;
             self.stats.contacts_processed = bridge_stats.contacts_processed;
             self.stats.contacts_dropped = bridge_stats.contacts_dropped;
+            self.stats.contacts_queued = bridge_stats.contacts_queued;
+            self.stats.solver_islands_skipped_accum = bridge_stats.solver_islands_skipped_accum;
+            self.stats.solver_islands_total_accum = bridge_stats.solver_islands_total_accum;
+            self.stats.ccd_tracked_bodies = bridge_stats.ccd_tracked_bodies;
+            self.stats.identity_stamped_bodies = bridge_stats.identity_stamped_bodies;
             self.stats.bond_utilisation_max = bridge_stats.bond_utilisation_max;
             self.stats.bonds_above_half_utilisation = bridge_stats.bonds_above_half_utilisation;
             self.stats.solver_island_count = bridge_stats.solver_island_count;
@@ -800,17 +1006,46 @@ impl CityDestruction {
             // from the tracker's: the two are meant to agree, and reporting
             // the side that actually owns the PhysX flag is what makes a
             // disagreement visible rather than self-confirming.
+            self.extra_spans = world
+                .take_destruction_spans()
+                .into_iter()
+                .map(|span| crate::types::NamedSpan {
+                    name: span.name,
+                    value: span.value,
+                    kind: span.kind,
+                })
+                .collect();
             self.stats.frozen_chunk_bodies = bridge_stats.frozen_chunk_bodies;
+            self.stats.frozen_aggregates = bridge_stats.frozen_aggregates;
+            self.stats.frozen_aggregate_actors = bridge_stats.frozen_aggregate_actors;
             self.stats.freeze_flips = bridge_stats.freeze_flips;
             self.stats.unfreeze_flips = bridge_stats.unfreeze_flips;
             self.stats.contact_wakes = bridge_stats.contact_wakes;
             self.stats.support_promotions = bridge_stats.support_promotions;
             self.stats.rooted_guard_blocks = bridge_stats.rooted_guard_blocks;
+            self.stats.island_resleep_writes = bridge_stats.island_resleep_writes;
             self.stats.rooted_chunk_bodies = bridge_stats.rooted_chunk_bodies;
             self.stats.support_edges = bridge_stats.support_edges;
             self.stats.frozen_serial_blocks = bridge_stats.frozen_serial_blocks;
             self.stats.frozen_adapter_releases = bridge_stats.frozen_adapter_releases;
         }
+
+        // Closure check, published rather than asserted. Every child of
+        // post_step is subtracted from its own wall time; what is left is the
+        // work still carrying no span. Keeping this as a NUMBER is the point:
+        // the previous remainder was ~2.9 ms that only existed if someone
+        // thought to do the subtraction by hand, and for a long time nobody
+        // did. `timing_closure` in the test suite gates it.
+        self.stats.post_step_total_ms =
+            post_step_total_started.elapsed().as_secs_f32() * 1000.0;
+        self.stats.post_step_residual_ms = self.stats.post_step_total_ms
+            - (self.stats.tick_ffi_ms
+                + self.stats.drain_ms
+                + self.stats.support_ingest_ms
+                + self.stats.cascade_ms
+                + self.stats.readback_ms_host
+                + self.stats.settle_ms
+                + self.stats.stats_ffi_ms);
 
         wakes.sort_unstable();
         wakes.dedup();
@@ -929,6 +1164,15 @@ impl CityDestruction {
         &self,
         _world: &World,
     ) -> Result<&[BodySnapshotInput], CityDestructionError> {
+        self.staged_snapshots()
+    }
+
+    /// The same captured buffer without the World witness: valid from the
+    /// `post_step` that filled it until the NEXT `post_step` overwrites it.
+    /// The observer-pipeline flush reads it inside that window, after the
+    /// world has already begun the next simulate — the data is tick N's
+    /// committed state either way.
+    pub fn staged_snapshots(&self) -> Result<&[BodySnapshotInput], CityDestructionError> {
         if self.degraded {
             return Err(CityDestructionError::Degraded);
         }
@@ -939,6 +1183,11 @@ impl CityDestruction {
         self.stats.post_step_ms = post_step_ms;
         self.stats.snapshot_ms = snapshot_ms;
         self.stats.ingest_ms = ingest_ms;
+    }
+
+    /// This tick's generic bridge spans (empty off the physx backend).
+    pub fn extra_spans(&self) -> &[crate::types::NamedSpan] {
+        &self.extra_spans
     }
 
     pub fn stats(&self) -> DestructionStats {

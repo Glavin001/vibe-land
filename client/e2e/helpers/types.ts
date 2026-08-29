@@ -112,6 +112,14 @@ export interface CityE2EStats {
   staleDrawnChunks: number;
   /** Cumulative chunks orphaned by a retire, including transient windows. */
   orphanedByRetire: number;
+  /** Ledger rebuilds this session; one at join is normal. */
+  bootstraps: number;
+  /** Seq-aligned ledger-hash comparisons that ran (the desync detector). */
+  hashChecks: number;
+  /** Comparisons that found divergence. */
+  hashMismatches: number;
+  /** Targeted per-structure repairs applied instead of full bootstraps. */
+  structureRepairs: number;
 }
 
 export interface VibeE2EBridge {

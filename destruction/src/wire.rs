@@ -232,6 +232,31 @@ impl DebrisCompressor {
 /// Reliable lane->entity assignment stream for the v3 debris wire.
 pub const PKT_CITY_LANES: u8 = 127;
 
+/// Periodic per-structure ledger hashes (see `CityLedger::structure_hashes`).
+/// Reliable and tiny; lets a client detect silent divergence the seq-gap
+/// check cannot see, and name the structure that needs repair.
+pub const PKT_CITY_TOPO_HASH: u8 = 128;
+
+/// A bootstrap scoped to the structures it names — the targeted repair a
+/// hash mismatch drives. Payload encoding is identical to PKT_CITY_BOOTSTRAP.
+pub const PKT_CITY_STRUCTURE_BOOTSTRAP: u8 = 129;
+
+/// `[kind][topo_seq u32][count u8]` then `[structure_id u32][hash u64]` each,
+/// all little-endian. Fixed-width on purpose: 4 structures is 54 bytes, and a
+/// client reads the hash as two u32 lane reads (see `structure_hashes`).
+pub fn encode_topology_hashes(topo_seq: u32, hashes: &[(u32, u64)]) -> Vec<u8> {
+    debug_assert!(hashes.len() <= u8::MAX as usize);
+    let mut out = Vec::with_capacity(6 + hashes.len() * 12);
+    out.push(PKT_CITY_TOPO_HASH);
+    out.extend_from_slice(&topo_seq.to_le_bytes());
+    out.push(hashes.len() as u8);
+    for &(structure_id, hash) in hashes {
+        out.extend_from_slice(&structure_id.to_le_bytes());
+        out.extend_from_slice(&hash.to_le_bytes());
+    }
+    out
+}
+
 pub fn encode_city_lanes(assignments: &[(u32, u64)], epoch: u8) -> Vec<u8> {
     let mut out = Vec::with_capacity(5 + assignments.len() * 8);
     out.push(PKT_CITY_LANES);
@@ -1026,8 +1051,18 @@ pub struct BootstrapMessage {
 }
 
 pub fn encode_bootstrap(message: &BootstrapMessage) -> Vec<u8> {
+    encode_bootstrap_kind(PKT_CITY_BOOTSTRAP, message)
+}
+
+/// Same payload as a full bootstrap, but the kind tells the client to rebuild
+/// only the structures the message names instead of resetting the world.
+pub fn encode_structure_bootstrap(message: &BootstrapMessage) -> Vec<u8> {
+    encode_bootstrap_kind(PKT_CITY_STRUCTURE_BOOTSTRAP, message)
+}
+
+fn encode_bootstrap_kind(kind: u8, message: &BootstrapMessage) -> Vec<u8> {
     let mut out = Vec::new();
-    out.push(PKT_CITY_BOOTSTRAP);
+    out.push(kind);
     out.push(CITY_WIRE_VERSION);
     out.extend_from_slice(&message.sim_tick.to_le_bytes());
     out.extend_from_slice(&message.manifest_hash);
@@ -1066,7 +1101,7 @@ pub fn encode_bootstrap(message: &BootstrapMessage) -> Vec<u8> {
 pub fn decode_bootstrap(data: &[u8]) -> Result<BootstrapMessage, WireError> {
     let mut reader = Reader::new(data);
     let kind = reader.u8()?;
-    if kind != PKT_CITY_BOOTSTRAP {
+    if kind != PKT_CITY_BOOTSTRAP && kind != PKT_CITY_STRUCTURE_BOOTSTRAP {
         return Err(WireError::BadKind(kind));
     }
     let version = reader.u8()?;
@@ -1147,6 +1182,20 @@ mod tests {
         let (epoch, entries) = super::decode_city_lanes(&packet).expect("decode");
         assert_eq!(epoch, 42);
         assert_eq!(entries, vec![(3, 900), (7, 901)]);
+    }
+
+    /// Byte-pinned against the client decoder test in
+    /// `client/src/city/wire.test.ts` ("decodes topology hashes against the
+    /// pinned server encoding") — change either side, both tests fail.
+    #[test]
+    fn topology_hash_encoding_is_pinned() {
+        let bytes = super::encode_topology_hashes(5, &[(0, 0xb97e_54fe_e243_a378)]);
+        assert_eq!(
+            bytes,
+            vec![
+                128, 5, 0, 0, 0, 1, 0, 0, 0, 0, 0x78, 0xa3, 0x43, 0xe2, 0xfe, 0x54, 0x7e, 0xb9,
+            ]
+        );
     }
 
     use super::*;

@@ -115,6 +115,17 @@ export class CityTopology {
   /** Set when a gap was detected; cleared by bootstrap. */
   needsResync = false;
   /**
+   * Structures whose ledger CONTENT is wrong at a known-good stream position —
+   * a migration named an island this client was never told about, or a settle
+   * pose disagreed with our membership. These repair with a structure-scoped
+   * bootstrap; only `needsResync` (a seq gap — the POSITION itself is lost)
+   * still demands the full rebuild. The distinction is what broke the
+   * 3.0-second full-bootstrap loop: every cascade fault used to escalate to a
+   * whole-world repaint, which read as the entire rubble field popping on the
+   * resync rate-limiter's exact cadence.
+   */
+  readonly resyncStructures = new Set<number>();
+  /**
    * Settles refused because their pose would have teleported the body.
    *
    * Must be 0. Each one is a body whose membership this client and the server
@@ -478,7 +489,9 @@ export class CityTopology {
         body.settled = true;
         if (drift > SETTLE_MAX_DRIFT_M) {
           this.settleFrameRejects += 1;
-          this.needsResync = true;
+          // Membership disagreement in ONE structure; the stream position is
+          // fine. Structure-scoped repair, not a world rebuild.
+          this.resyncStructures.add(settle.structureId);
         } else {
           body.position = vClone(settle.position);
           body.rotation = [...settle.rotation] as Quat;
@@ -749,9 +762,10 @@ export class CityTopology {
     if (!destination) {
       // The destination should have been promoted already. Without it there is
       // nowhere correct to put the chunk, and guessing is what produces
-      // chunks composed against the wrong frame.
+      // chunks composed against the wrong frame. One structure's content is
+      // wrong; the stream position is not — structure-scoped repair.
       this.migrateAnomalies.missingDestination += 1;
-      this.needsResync = true;
+      this.resyncStructures.add(structureId);
       return;
     }
     // An empty destination has no frame to leave, so `reoffsetBody` would fall
@@ -925,6 +939,7 @@ export class CityTopology {
     this.reset();
     this.lastTopoSeq = message.topoSeq;
     this.needsResync = false;
+    this.resyncStructures.clear();
     this.brokenBonds = 0;
     for (const structure of message.structures) {
       const bits = this.aliveBonds.get(structure.structureId);
@@ -952,6 +967,142 @@ export class CityTopology {
         settled: island.settled,
       });
     }
+  }
+
+  /**
+   * Rebuild only the structures a scoped bootstrap names, leaving every other
+   * structure's ledger — and the stream position — untouched. The caller must
+   * have verified `message.topoSeq === lastSeq()`: this repairs content at the
+   * position both sides already agree on, it does not move the position.
+   */
+  applyStructureBootstrap(message: BootstrapMessage): void {
+    for (const structureMessage of message.structures) {
+      this.resyncStructures.delete(structureMessage.structureId);
+      const manifestStructure = this.manifest.structures.find(
+        (candidate) => candidate.structureId === structureMessage.structureId,
+      );
+      if (!manifestStructure) {
+        continue;
+      }
+      const structureId = structureMessage.structureId;
+      // Every dynamic body of this structure is about to be restated; the
+      // support body is rebuilt to own every chunk again, exactly like
+      // `reset()`, and the message's islands then adopt theirs back out.
+      for (const key of [...this.bodies.keys()]) {
+        if (bodyKeyParts(key).structureId === structureId) {
+          this.bodies.delete(key);
+        }
+      }
+      const base = this.slotBase.get(structureId)!;
+      const supportKey = bodyKey(structureId, SUPPORT_SERIAL);
+      const slots: number[] = [];
+      for (const chunk of manifestStructure.chunks) {
+        const slot = base + chunk.nodeIndex;
+        slots.push(slot);
+        this.chunkBody[slot] = supportKey;
+        this.localPos[slot * 3] = chunk.centroid[0];
+        this.localPos[slot * 3 + 1] = chunk.centroid[1];
+        this.localPos[slot * 3 + 2] = chunk.centroid[2];
+        this.localRot[slot * 4] = 0;
+        this.localRot[slot * 4 + 1] = 0;
+        this.localRot[slot * 4 + 2] = 0;
+        this.localRot[slot * 4 + 3] = 1;
+      }
+      this.bodies.set(supportKey, {
+        key: supportKey,
+        structureId,
+        islandSerial: SUPPORT_SERIAL,
+        chunkSlots: slots,
+        position: vClone(manifestStructure.worldPosition),
+        rotation: [...manifestStructure.worldRotation] as Quat,
+        settled: true,
+      });
+      // The bond bitmap comes straight from the message — the whole point of
+      // the repair is that ours was wrong in a way we could not enumerate.
+      this.aliveBonds.set(structureId, new Uint8Array(structureMessage.aliveBonds));
+    }
+    for (const island of message.islands) {
+      const key = bodyKey(island.structureId, island.islandId);
+      const slots = this.adoptIslandMembers(island.structureId, key, island.nodes);
+      this.bodies.set(key, {
+        key,
+        structureId: island.structureId,
+        islandSerial: island.islandId,
+        chunkSlots: slots,
+        position: vClone(island.position),
+        rotation: [...island.rotation] as Quat,
+        settled: island.settled,
+      });
+    }
+    // Recount rather than patch: the repaired structures' previous counts are
+    // exactly what we no longer trust.
+    let broken = 0;
+    for (const structure of this.manifest.structures) {
+      const bits = this.aliveBonds.get(structure.structureId);
+      if (!bits) {
+        continue;
+      }
+      for (let i = 0; i < structure.bonds.length; i++) {
+        if ((bits[i >> 3] & (1 << (i & 7))) === 0) {
+          broken += 1;
+        }
+      }
+    }
+    this.brokenBonds = broken;
+  }
+
+  /**
+   * Per-structure ledger hashes, the client half of the silent-divergence
+   * detector. MUST match `CityLedger::structure_hashes` in
+   * `destruction/src/topology.rs` byte for byte: two 32-bit FNV-1a lanes over
+   * the alive-bond bitmap then each dynamic island as
+   * `[serial u32][node_count u32][nodes ascending u32...]`, islands in
+   * ascending serial order, all little-endian. The shared test vector lives in
+   * both sides' tests.
+   */
+  structureHashes(): Map<number, { laneA: number; laneB: number }> {
+    const FNV_PRIME = 16777619;
+    const result = new Map<number, { laneA: number; laneB: number }>();
+    for (const structure of this.manifest.structures) {
+      const bits = this.aliveBonds.get(structure.structureId);
+      if (!bits) {
+        continue;
+      }
+      let laneA = 0x811c9dc5 >>> 0;
+      let laneB = 0xdeadbeef >>> 0;
+      const feed = (byte: number): void => {
+        laneA = Math.imul(laneA ^ byte, FNV_PRIME) >>> 0;
+        laneB = Math.imul(laneB ^ byte, FNV_PRIME) >>> 0;
+      };
+      const feedU32 = (value: number): void => {
+        feed(value & 0xff);
+        feed((value >>> 8) & 0xff);
+        feed((value >>> 16) & 0xff);
+        feed((value >>> 24) & 0xff);
+      };
+      for (const byte of bits) {
+        feed(byte);
+      }
+      const serials: number[] = [];
+      for (const body of this.bodies.values()) {
+        if (body.structureId === structure.structureId && body.islandSerial !== SUPPORT_SERIAL) {
+          serials.push(body.islandSerial);
+        }
+      }
+      serials.sort((a, b) => a - b);
+      for (const serial of serials) {
+        const body = this.bodies.get(bodyKey(structure.structureId, serial))!;
+        feedU32(serial);
+        feedU32(body.chunkSlots.length);
+        const nodes = body.chunkSlots.map((slot) => this.slotNode[slot]);
+        nodes.sort((a, b) => a - b);
+        for (const node of nodes) {
+          feedU32(node);
+        }
+      }
+      result.set(structure.structureId, { laneA, laneB });
+    }
+    return result;
   }
 
   chunkStructure(slot: number): number {

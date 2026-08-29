@@ -55,7 +55,7 @@ use vibe_land_physx_bridge::{
 
 const GROUP_STATIC: u32 = 1 << 0;
 const ALL_GROUPS: u32 = u32::MAX;
-use vibe_land_destruction::city_config::CITY_GRAVITY as GRAVITY;
+use vibe_land_destruction::city_config::city_gravity;
 
 /// The match server's own shot, so fracture in a recording looks like play
 /// rather than like a synthetic impulse tuned to make the codec look good.
@@ -79,6 +79,21 @@ struct Args {
     /// it was authored from.
     targets: u32,
     output: PathBuf,
+    /// Compact per-tick phase metrics, one CSV row per tick.
+    ///
+    /// Deliberately separate from `output`, which is the wire/codec trace and
+    /// runs to gigabytes on a downtown-scale run -- large enough to fill the
+    /// disk, which is how this was learned. This stream is ~40 numbers a tick
+    /// and is what the benchmark campaign reads.
+    metrics_out: Option<PathBuf>,
+    /// End-of-run scenario summary (JSON): collapse-shape metrics around the
+    /// primary shot target, freeze health, damage totals. What the scenario
+    /// suite asserts against -- "the building fell and toppled" as numbers.
+    summary_out: Option<PathBuf>,
+    /// After the first shot lands, aim every later shot at the same building
+    /// (raking upward). The scenario suite's collapse-shape test needs one
+    /// tower demolished deliberately, not fire spread across the city.
+    aim_lock: bool,
     /// Directory to dump the exact client-bound bytes (manifest.json,
     /// packets.jsonl, state-header.bin) so the REAL client can be replayed
     /// over them offline -- see client/tools/replay-city-client.mts. This is
@@ -114,6 +129,9 @@ impl Args {
         let mut shots = 48u32;
         let mut targets = 0u32;
         let mut output = PathBuf::from("city.towertrace");
+        let mut metrics_out: Option<PathBuf> = None;
+        let mut summary_out: Option<PathBuf> = None;
+        let mut aim_lock = false;
         let mut packets_out = None;
         let mut packets_wire = 3u32;
         let mut packets_span_ms = 100u32;
@@ -137,7 +155,31 @@ impl Args {
                 "--shots" => shots = value()?.parse()?,
                 "--targets" => targets = value()?.parse()?,
                 "--output" => output = PathBuf::from(value()?),
+                "--metrics-out" => metrics_out = Some(PathBuf::from(value()?)),
+                "--summary-out" => summary_out = Some(PathBuf::from(value()?)),
+                "--aim-lock" => aim_lock = true,
                 "--packets-out" => packets_out = Some(PathBuf::from(value()?)),
+                // Run-dir convention: outputs land in
+                // bench-results/runs/<UTC>-<label>-<shortgit>/ so every run is
+                // uniquely addressed, self-describing (meta.json fingerprint),
+                // and discoverable by the comparison tooling without paths.
+                "--label" => {
+                    let label: String = value()?;
+                    let git = std::process::Command::new("git")
+                        .args(["rev-parse", "--short", "HEAD"])
+                        .output()
+                        .ok()
+                        .filter(|out| out.status.success())
+                        .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string())
+                        .unwrap_or_else(|| "nogit".into());
+                    let stamp = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_secs())
+                        .unwrap_or(0);
+                    packets_out = Some(PathBuf::from(format!(
+                        "bench-results/runs/{stamp}-{label}-{git}"
+                    )));
+                }
                 "--packets-wire" => packets_wire = value()?.parse()?,
                 "--packets-span-ms" => packets_span_ms = value()?.parse()?,
                 "--packets-budget-mbps" => packets_budget_mbps = value()?.parse()?,
@@ -173,6 +215,9 @@ impl Args {
             shots,
             targets,
             output,
+            metrics_out,
+            summary_out,
+            aim_lock,
             packets_out,
             packets_wire,
             packets_span_ms,
@@ -477,7 +522,7 @@ impl V3ServerTap {
         topology_encoder.add_client(1);
         let live = LiveEncoder::new(LiveEncoderConfig {
             dt: 1.0 / hz as f32,
-            gravity: Vec3::from_array(GRAVITY),
+            gravity: Vec3::from_array(city_gravity()),
             tolerances: LiveTolerances::new(
                 0.005,
                 3.0,
@@ -656,6 +701,31 @@ fn island_reach(manifest: &DestructionManifest, structure_id: u32, chunks: &[u32
         .fold(0.5f32, f32::max)
 }
 
+/// Look a named span up by name, 0.0 if this tick did not publish it.
+///
+/// The spans are a name/value channel rather than a struct, so a consumer
+/// that hard-codes an index breaks silently the moment a span is added.
+fn span_value(spans: &[vibe_land_destruction::types::NamedSpan], name: &str) -> f32 {
+    spans
+        .iter()
+        .find(|s| s.name == name)
+        .map(|s| s.value as f32)
+        .unwrap_or(0.0)
+}
+
+/// Same lookup over the bridge's own span type. Two types, one shape: the
+/// world spans cross the FFI boundary and the destruction spans do not.
+fn world_span_value(
+    spans: &[vibe_land_physx_bridge::NamedSpan],
+    name: &str,
+) -> f32 {
+    spans
+        .iter()
+        .find(|s| s.name == name)
+        .map(|s| s.value as f32)
+        .unwrap_or(0.0)
+}
+
 fn main() -> Result<()> {
     let args = Args::parse()?;
 
@@ -699,6 +769,31 @@ fn main() -> Result<()> {
     let mut destruction = CityDestruction::build(manifest.clone(), &mut world, settings, args.hz)
         .map_err(|error| anyhow::anyhow!("{error}"))?;
 
+    // A CPU-solver binary must never produce a measurement.
+    //
+    // `cargo build --features destruction` compiles the CUDA stress solver
+    // OUT and falls back to the CPU CG solve. That is not merely slower: the
+    // CPU solver's 8-32 iteration residual reads as real stress, so an
+    // untouched city tears itself apart (~30,000 bonds in 90 s at rest, vs 0
+    // on the GPU path). Every bisect arm of an entire afternoon came back
+    // red this way, on source that was green hours earlier -- the numbers
+    // were self-consistent and completely meaningless.
+    //
+    // The build that measures MUST be `--features cuda-stress`. This refuses
+    // rather than warns because a warning in a 200-second run's scrollback is
+    // exactly what got missed. VIBE_ALLOW_CPU_STRESS=1 for the rare case of
+    // deliberately profiling the CPU solver.
+    if !cfg!(feature = "cuda-stress")
+        && std::env::var("VIBE_ALLOW_CPU_STRESS").as_deref().unwrap_or("0") == "0"
+    {
+        anyhow::bail!(
+            "this binary was built WITHOUT the cuda-stress feature, so it runs the CPU \
+             stress solver, whose residual makes a city at rest destroy itself. Rebuild \
+             with: cargo build --release -p web-fps-server --features cuda-stress \
+             (set VIBE_ALLOW_CPU_STRESS=1 to override deliberately)"
+        );
+    }
+
     let dt = 1.0 / args.hz as f32;
     let total_ticks = (args.seconds * args.hz as f32).round() as u32;
     let extent = scene_extent(&manifest);
@@ -707,7 +802,7 @@ fn main() -> Result<()> {
         tick_count: total_ticks,
         pane_width: 960,
         pane_height: 540,
-        gravity: Vec3::from_array(GRAVITY),
+        gravity: Vec3::from_array(city_gravity()),
         cameras: overview_cameras(extent),
     };
 
@@ -757,12 +852,22 @@ fn main() -> Result<()> {
             dir.join("manifest.json"),
             serde_json::to_vec(&*manifest).context("manifest to JSON")?,
         )?;
+        // Fingerprinted: which build, under which resolved env, produced this
+        // run. A suite env gap once survived three full gate runs because no
+        // output could show "this run's env differs from production's" — the
+        // comparison tooling refuses to compare mismatched fingerprints.
         std::fs::write(
             dir.join("meta.json"),
-            format!(
-                "{{\"hz\":{},\"ticks\":{},\"wire\":{}}}",
-                args.hz, total_ticks, args.packets_wire
-            ),
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "hz": args.hz,
+                "ticks": total_ticks,
+                "wire": args.packets_wire,
+                "scene": args.scene,
+                "grid": args.grid,
+                "shots": args.shots,
+                "fingerprint": vibe_land_destruction::fingerprint::capture_with_build(cfg!(feature = "cuda-stress")),
+            }))
+            .context("meta to JSON")?,
         )?;
         // TWSTATE1 header (cameras + actor shapes) with the frame count the
         // replayer must match; it appends frame records and the terminator.
@@ -789,17 +894,106 @@ fn main() -> Result<()> {
     let trace_edge_ids: std::collections::HashSet<u64> =
         topology.edges.iter().map(|edge| edge.global_id).collect();
     let mut dropped_world_bonds = 0u64;
+    // Anchors for the cumulative counters, so each printed line is a rate over
+    // the interval since the previous line rather than a lifetime total.
+    let mut metrics_writer = match args.metrics_out.as_ref() {
+        Some(path) => {
+            let mut w = std::io::BufWriter::new(std::fs::File::create(path)?);
+            use std::io::Write as _;
+            writeln!(
+                w,
+                "tick,bodies,awake,frozen,sleeping,bonds,stress_solve,begin,solve,end,\
+                 readback,events,filters,ccd,support,shape,slot,bond_sample,gpu_solve,\
+                 contact_proc,gravity,cpu_solve,frac_topo,frac_valid,frac_gen,frac_prep,\
+                 frac_apply,frac_scene,frac_rebuild,physx_step,physx_sim,gpu_wait,fetch_copy,\
+                 callback,fetch_total,fetch_resid,post_resid,step_resid,solve_resid,\
+                 fetch_tick,cb_tick,cb_max_us,cb_entity,cb_extract,cb_resolve,\
+                 cb_queue,cb_events,cb_pairld,cb_wake,\
+                 cp_found,cp_persists,cp_points,cp_supp,node_mm,node_ck,\
+                 sup_calls,sup_kin,sup_fy,sup_exist,sup_new,sup_staged,sup_unch,sup_rows,\
+                 gpu_host_work,gpu_host_blocked,st_init,st_err,st_copy,st_graph,st_drain,hw_in,hw_reset,hw_bond,hw_node,bs_skip,bs_gpu_skip,bs_gpu_runs,bs_par_ck,bs_par_mm,cb_drain,cb_census,cb_resize,bl_ck,bl_mm,pairs,\
+                 contacts_q,islands_skip,islands_tot,quiet,freeze,unfreeze,contact_wakes,\
+                 min_y,pose_quiet,overstressed,patch_hw,escaped"
+            )?;
+            Some(w)
+        }
+        None => None,
+    };
+    let mut physx_step_ms_sum = 0.0f64;
+    let mut physx_step_samples = 0u32;
+    let mut last_contacts_queued = 0u64;
+    let mut last_islands_skipped = 0u64;
+    let mut last_islands_total = 0u64;
     let mut broken_total = 0u64;
     let mut migrations_total = 0u64;
     let mut mismatch_ticks = 0u64;
     let mut peak_bodies = 0usize;
+    // Collapse-shape metrics: standing height in the primary target's
+    // footprint before any shot, for the end-of-run comparison.
+    // Derived from where the FIRST shot actually lands, not from the manifest
+    // origin: with GRID=1 the whole downtown is ONE structure whose
+    // world_position is a street intersection, and calibrating against that
+    // produced a summary that measured nothing (target [0,0,0], 0 bonds).
+    let mut summary_target: Option<Vec3> = None;
+    let mut initial_height = 0.0f32;
     let mut next_shot = 0usize;
     let mut next_fire_tick = args.settle_ticks;
+    let adaptive_aim = std::env::var("VIBE_TRACE_ADAPTIVE_AIM")
+        .map(|v| v != "0")
+        .unwrap_or(true);
 
     for tick_index in 0..total_ticks {
         if tick_index >= next_fire_tick && next_shot < shot_plan.len() {
-            let (origin, direction) = shot_plan[next_shot];
-            fire(&mut destruction, &mut world, origin, direction);
+            let locked: Option<(Vec3, Vec3)> = match (args.aim_lock, summary_target) {
+                (true, Some(t)) => {
+                    // Rake upward on the same building, firing level from +Z.
+                    let aim_y = (t.y + (next_shot % 8) as f32 * 2.0).max(1.5);
+                    let origin = Vec3::new(t.x, aim_y, t.z + 40.0);
+                    let target = Vec3::new(t.x, aim_y, t.z);
+                    Some((origin, (target - origin).normalize()))
+                }
+                _ => None,
+            };
+            let (origin, direction) = if let Some(shot) = locked {
+                shot
+            } else if adaptive_aim {
+                // Aim at structure that is still standing, chosen from the live
+                // body set, instead of replaying a fixed plan.
+                //
+                // The fixed plan rakes a band from y=2 to y=22 across +/-4 m of
+                // each facade from one origin. Downtown towers are far taller
+                // than that band, so once it is rubble every later shot lands
+                // in debris and damage plateaus -- measured, at ~10.5k broken
+                // bonds no matter how many shots are fired, against 38k on a
+                // live server. That made every A/B here a measurement of the
+                // wrong regime.
+                adaptive_shot(&mut world, tick_index)
+                    .or_else(|| authored_shot(&manifest))
+                    .unwrap_or_else(|| shot_plan[next_shot])
+            } else {
+                shot_plan[next_shot]
+            };
+            let hit = fire(&mut destruction, &mut world, origin, direction);
+            if summary_target.is_none() {
+                if let Some(hit) = hit {
+                    summary_target = Some(hit);
+                    // Authored standing height around the impact, from the
+                    // manifest's rest centroids. Body positions cannot give
+                    // this: an intact tower is ONE rooted body whose COM sits
+                    // at half height.
+                    for structure in manifest.structures.iter() {
+                        let base = Vec3::from_array(structure.world_position);
+                        for chunk in &structure.chunks {
+                            let world_pos = base + Vec3::from_array(chunk.centroid);
+                            let dx = world_pos.x - hit.x;
+                            let dz = world_pos.z - hit.z;
+                            if dx * dx + dz * dz <= 13.0 * 13.0 {
+                                initial_height = initial_height.max(world_pos.y);
+                            }
+                        }
+                    }
+                }
+            }
             next_shot += 1;
             // Ramp: interval shrinks linearly across the plan, floor at the
             // ramp minimum. With the ramp off this is the old fixed cadence.
@@ -815,11 +1009,143 @@ fn main() -> Result<()> {
         }
 
         let sim_started = std::time::Instant::now();
+        // Resim capture belongs here -- before simulate, with last tick's
+        // contacts still queued -- not at the end of the destruction tick.
+        destruction.pre_step(&mut world);
+        let physx_started = std::time::Instant::now();
         world.step().map_err(|error| anyhow::anyhow!("{error}"))?;
+        // Drain contact events, exactly as physx_runtime::post_step_readbacks
+        // does every tick in the server. Without this the bridge's
+        // contact_events_ vector grows for the whole run -- ~12k events a
+        // tick, never released -- and each capacity doubling reallocates and
+        // copies the lot inside whichever contact callback triggered it.
+        //
+        // That produced a textbook artifact: single-callback stalls of 16, 32,
+        // 64, 130, 262 and 536 ms, each twice the last and half as frequent,
+        // which is amortised vector growth and nothing else. It was diagnosed
+        // as a large-scene physics spike for most of a session. The harness
+        // must do what the server does, or it measures the harness.
+        let _ = world
+            .take_contact_events()
+            .map_err(|error| anyhow::anyhow!("{error}"))?;
+        // Wall time around the PhysX step. onContact runs INSIDE fetchResults,
+        // so per-manifold work there lands here and in nothing the city-step
+        // phases report -- which is why it was previously invisible to this
+        // harness. With VIBE_PHYSX_PROFILE_FETCH=1 the fetch splits further
+        // into gpu_wait vs the call that runs the callbacks.
+        let physx_tick_ms = physx_started.elapsed().as_secs_f64() * 1000.0;
+        physx_step_ms_sum += physx_tick_ms;
+        physx_step_samples += 1;
         let output = destruction
-            .post_step(&mut world, dt, GRAVITY)
+            .post_step(&mut world, dt, city_gravity())
             .map_err(|error| anyhow::anyhow!("{error}"))?;
         let sim_ms = sim_started.elapsed().as_secs_f32() * 1000.0;
+
+        // Bracketed as its own column: these FFI reads used to fall in the
+        // gap between `sim` and `enc`, counted by NEITHER — per-tick work
+        // with no home is exactly how attribution drifts.
+        let stats_started = std::time::Instant::now();
+        let tick_stats = destruction.stats();
+        let tick_spans = destruction.extra_spans().to_vec();
+        let world_stats = world.stats().ok();
+        let world_spans = world.take_world_spans();
+        let stats_ms = stats_started.elapsed().as_secs_f64() * 1000.0;
+
+        if let Some(w) = metrics_writer.as_mut() {
+            use std::io::Write as _;
+            let s = &tick_stats;
+            let ws = world_stats.as_ref();
+            writeln!(
+                w,
+                // One spec per column, all plain {}. Hand-maintained precision specs
+                // drifted out of alignment with the column list three
+                // separate times -- printing a float with an integer
+                // spec, silently truncating cb_* sub-spans to whole
+                // milliseconds and making them look quantised. Rust
+                // prints shortest-roundtrip for floats, which is what a
+                // CSV wants anyway.
+                "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
+                tick_index, s.chunk_bodies, s.awake_chunk_bodies, s.frozen_chunk_bodies,
+                s.sleeping_chunk_bodies, s.broken_bonds,
+                s.stress_solve_ms, s.begin_ms, s.solve_ms, s.end_ms, s.readback_ms,
+                s.events_ms, s.filters_ms, s.ccd_ms, s.support_loads_ms,
+                s.shape_readback_ms, s.slot_dispatch_ms, s.bond_sample_ms,
+                s.gpu_stress_solve_ms, s.blast_contact_processing_ms, s.blast_gravity_ms,
+                s.blast_stress_solve_cpu_ms, s.blast_fracture_topology_ms,
+                s.blast_mapping_validation_ms, s.blast_fracture_generate_ms,
+                s.blast_fracture_prep_ms, s.blast_fracture_apply_ms,
+                s.blast_fracture_scene_ms, s.blast_fracture_rebuild_ms,
+                physx_tick_ms,
+                // simulate vs fetch: the 542 ms spikes are NOT in fetch, and
+                // this column is what says whether they are in dispatch.
+                ws.map(|w| w.last_simulate_ms).unwrap_or(0.0),
+                ws.map(|w| w.last_gpu_wait_ms).unwrap_or(0.0),
+                ws.map(|w| w.last_fetch_copy_ms).unwrap_or(0.0),
+                // Same-window values, so `fetch_resid` is a real remainder
+                // rather than a comparison between two sampling cadences.
+                world_span_value(&world_spans, "callback_recent_ms"),
+                world_span_value(&world_spans, "fetch_total_recent_ms"),
+                world_span_value(&world_spans, "fetch_residual_recent_ms"),
+                s.post_step_residual_ms,
+                0.0f32,
+                span_value(&tick_spans, "stress_solve_residual_ms"),
+                // PER-TICK, not the 16-sample ring the columns above use. The
+                // ring is right for a 1 Hz report and useless for a spike: a
+                // 541 ms tick reported its neighbours' average and the
+                // decomposition silently stopped meaning anything.
+                world_span_value(&world_spans, "fetch_total_ms"),
+                world_span_value(&world_spans, "contact_callback_est_ms"),
+                world_span_value(&world_spans, "cb_max_us"),
+                world_span_value(&world_spans, "cb_entity_ms"),
+                world_span_value(&world_spans, "cb_extract_ms"),
+                world_span_value(&world_spans, "cb_resolve_ms"),
+                world_span_value(&world_spans, "cb_queue_ms"),
+                world_span_value(&world_spans, "cb_events_ms"),
+                world_span_value(&world_spans, "cb_pair_load_ms"),
+                world_span_value(&world_spans, "cb_wake_ms"),
+                world_span_value(&world_spans, "cp_found"),
+                world_span_value(&world_spans, "cp_persists"),
+                world_span_value(&world_spans, "cp_points"),
+                world_span_value(&world_spans, "cp_supporter_relevant"),
+                span_value(&tick_spans, "node_cache_mismatches"),
+                span_value(&tick_spans, "node_cache_checks"),
+                span_value(&tick_spans, "sup_record_calls"),
+                span_value(&tick_spans, "sup_reject_kinematic"),
+                span_value(&tick_spans, "sup_reject_fy"),
+                span_value(&tick_spans, "sup_edge_existing"),
+                span_value(&tick_spans, "sup_edge_new"),
+                span_value(&tick_spans, "sup_sets_staged"),
+                span_value(&tick_spans, "sup_sets_unchanged"),
+                span_value(&tick_spans, "sup_rows_staged"),
+                span_value(&tick_spans, "gpu_host_work_ms"),
+                span_value(&tick_spans, "gpu_host_blocked_ms"),
+                span_value(&tick_spans, "stress_initialize_ms"),
+                span_value(&tick_spans, "stress_calc_error_ms"),
+                span_value(&tick_spans, "stress_impulse_copy_ms"),
+                span_value(&tick_spans, "stress_graph_solve_ms"),
+                span_value(&tick_spans, "stress_drain_ms"),
+                span_value(&tick_spans, "hw_walk_in_ms"),
+                span_value(&tick_spans, "hw_reset_ms"),
+                span_value(&tick_spans, "hw_bond_stress_ms"),
+                span_value(&tick_spans, "hw_node_stress_ms"),
+                span_value(&tick_spans, "bond_stress_skipped"),
+                span_value(&tick_spans, "bs_gpu_skipped"),
+                span_value(&tick_spans, "bs_gpu_runs"),
+                span_value(&tick_spans, "bs_par_checks"),
+                span_value(&tick_spans, "bs_par_mismatches"),
+                world_span_value(&world_spans, "cb_drain_ms"),
+                world_span_value(&world_spans, "cb_census_ms"),
+                world_span_value(&world_spans, "cb_resize_ms"),
+                span_value(&tick_spans, "bondless_verify_checks"),
+                span_value(&tick_spans, "bondless_verify_mismatches"),
+                s.support_pair_loads, s.contacts_queued,
+                s.solver_islands_skipped_accum, s.solver_islands_total_accum,
+                s.quiet_slot_ticks, s.freeze_flips, s.unfreeze_flips, s.contact_wakes,
+                s.min_body_y, s.pose_quiet_awake_bodies, s.overstressed_bonds,
+                ws.map(|w| w.gpu_rigid_patch_high_water).unwrap_or(0),
+                s.escaped_bodies_parked
+            )?;
+        }
 
         let enc_started = std::time::Instant::now();
         if v2_tap.is_some() || v3_tap.is_some() {
@@ -832,24 +1158,52 @@ fn main() -> Result<()> {
                 tap.server_tick(&manifest, tick_index, snapshots, &output)?;
             }
         }
+        // Evaluated BEFORE the writeln: the elapsed used to be computed
+        // inside the format args, so the stats read above was silently
+        // counted as encode time.
+        let enc_ms = enc_started.elapsed().as_secs_f32() * 1000.0;
         if let Some(log) = timings_log.as_mut() {
             use std::io::Write as _;
             // Awake count rides along with the timing, because sim ms against
             // awake bodies IS the acceptance curve -- a tick cost with no
             // population beside it cannot say whether a change made the
             // simulation cheaper or merely destroyed less. `frozen` separates
-            // "retired from the solver" from "never woke".
-            let tick_stats = destruction.stats();
+            // "retired from the solver" from "never woke". The wall phases
+            // let an A/B say WHERE a delta lives instead of only that one
+            // exists; `spans` carries every generically-authored metric.
+            let mut spans_json = String::new();
+            for span in tick_spans.iter() {
+                spans_json.push_str(&format!(
+                    ",\"{}\":{:.4}",
+                    span.name, span.value
+                ));
+            }
+            for span in world_spans.iter() {
+                spans_json.push_str(&format!(
+                    ",\"physx/{}\":{:.4}",
+                    span.name, span.value
+                ));
+            }
             writeln!(
                 log,
-                "{{\"t\":{tick_index},\"sim\":{sim_ms:.3},\"enc\":{:.3},\
-                 \"awake\":{},\"bodies\":{},\"frozen\":{},\"bonds\":{},\"floating\":{}}}",
-                enc_started.elapsed().as_secs_f32() * 1000.0,
+                "{{\"t\":{tick_index},\"sim\":{sim_ms:.3},\"enc\":{enc_ms:.3},\
+                 \"physx\":{physx_tick_ms:.3},\"stats\":{stats_ms:.3},\
+                 \"stress\":{:.3},\"solve\":{:.3},\"support\":{:.3},\
+                 \"settle\":{:.3},\"topo\":{:.3},\"gpu_wait\":{:.3},\"fetch_copy\":{:.3},\
+                 \"awake\":{},\"bodies\":{},\"frozen\":{},\"bonds\":{},\"floating\":{}{}}}",
+                tick_stats.stress_solve_ms,
+                tick_stats.solve_ms,
+                tick_stats.support_loads_ms,
+                tick_stats.settle_ms,
+                tick_stats.end_ms,
+                world_stats.as_ref().map(|w| w.last_gpu_wait_ms).unwrap_or(0.0),
+                world_stats.as_ref().map(|w| w.last_fetch_copy_ms).unwrap_or(0.0),
                 tick_stats.awake_chunk_bodies,
                 tick_stats.chunk_bodies,
                 tick_stats.frozen_chunk_bodies,
                 tick_stats.broken_bonds,
                 tick_stats.unsupported_resting_bodies,
+                spans_json,
             )?;
         }
 
@@ -1045,7 +1399,178 @@ fn main() -> Result<()> {
                 stats.quiet_slot_ticks,
                 stats.support_pair_loads,
             );
+            // Second line: the things that decide what the demolition work is
+            // worth. `topo` splits end_ms into fracture-minus-validation and
+            // validation, which overlap in the raw counters. `pts/pair` is the
+            // contact-pipeline inflation factor -- contacts are routed per
+            // point and twice per point, so the divisor is 2 * pairs. `skip` is
+            // differenced from running totals, because the gauge beside it is
+            // zeroed by any bond break and reads 0 all through a collapse.
+            // contacts_queued is cumulative and sampled every `interval` ticks,
+            // while support_pair_loads is the CURRENT tick's pair count. The
+            // interval has to be divided out or the ratio is ~300x too big --
+            // which is exactly how it read the first time.
+            let interval = (args.hz * 5).max(1) as f64;
+            let pts_per_pair = if stats.support_pair_loads > 0 {
+                ((stats.contacts_queued - last_contacts_queued) as f64 / interval)
+                    / (2.0 * stats.support_pair_loads as f64)
+            } else {
+                0.0
+            };
+            let skipped = stats.solver_islands_skipped_accum - last_islands_skipped;
+            let islands = stats.solver_islands_total_accum - last_islands_total;
+            println!(
+                "            topo {:.2} (frac {:.2} + valid {:.2})                   pts/pair {:.2}  islands skipped {}/{} ({:.0}%)",
+                stats.blast_fracture_topology_ms,
+                stats.blast_fracture_topology_ms - stats.blast_mapping_validation_ms,
+                stats.blast_mapping_validation_ms,
+                pts_per_pair,
+                skipped,
+                islands,
+                if islands > 0 { 100.0 * skipped as f64 / islands as f64 } else { 0.0 },
+            );
+            // The interior of the topology phase. Remainder is what none of the
+            // five named children account for.
+            let named = stats.blast_fracture_generate_ms
+                + stats.blast_fracture_prep_ms
+                + stats.blast_fracture_apply_ms
+                + stats.blast_fracture_scene_ms
+                + stats.blast_fracture_rebuild_ms
+                + stats.blast_mapping_validation_ms;
+            if stats.blast_fracture_topology_ms > 0.01 {
+                println!(
+                    "            fracture: gen {:.2} prep {:.2} apply {:.2} scene {:.2} \
+                     rebuild {:.2} valid {:.2} | rest {:.2}",
+                    stats.blast_fracture_generate_ms,
+                    stats.blast_fracture_prep_ms,
+                    stats.blast_fracture_apply_ms,
+                    stats.blast_fracture_scene_ms,
+                    stats.blast_fracture_rebuild_ms,
+                    stats.blast_mapping_validation_ms,
+                    stats.blast_fracture_topology_ms - named,
+                );
+            }
+            if physx_step_samples > 0 {
+                let w = world.stats().ok();
+                println!(
+                    "            physx step {:.2} ms avg over {} ticks{}",
+                    physx_step_ms_sum / physx_step_samples as f64,
+                    physx_step_samples,
+                    w.map(|w| format!(
+                        "  (last: gpu_wait {:.2} fetch_copy {:.2}, contacts hw {})",
+                        w.last_gpu_wait_ms,
+                        w.last_fetch_copy_ms,
+                        w.gpu_rigid_contact_high_water
+                    ))
+                    .unwrap_or_default(),
+                );
+            }
+            physx_step_ms_sum = 0.0;
+            physx_step_samples = 0;
+            last_contacts_queued = stats.contacts_queued;
+            last_islands_skipped = stats.solver_islands_skipped_accum;
+            last_islands_total = stats.solver_islands_total_accum;
         }
+    }
+
+    // Bounded-growth check on the two per-body bookkeeping containers.
+    //
+    // Read what this does and does not cover. It asserts they stay proportional
+    // to live bodies. It does NOT reproduce the recycled-actor bug that
+    // motivated rekeying them: measured both ways, identity_stamped equals live
+    // bodies exactly whether or not the retire path prunes, because retirement
+    // is rare with crush disabled and the containers are keyed per body either
+    // way. VIBE_CITY_PRUNE_BODY_BOOKKEEPING=0 does not make this fire.
+    //
+    // The real hazard -- a recycled PxRigidDynamic* making insert().second
+    // false so a brand new body silently never receives speculative CCD -- is
+    // addressed by keying on (structure_id, bodyId) rather than the pointer,
+    // which is the pattern the frozen set already documents. That is correct by
+    // construction and is still UNTESTED here; provoking it needs a workload
+    // that retires and recycles actors heavily, which this scene does not.
+    {
+        let s = destruction.stats();
+        let live = s.chunk_bodies;
+        println!(
+            "  ccd tracked {} / identity stamped {} against {} live bodies",
+            s.ccd_tracked_bodies, s.identity_stamped_bodies, live
+        );
+        // Allowance, not equality: a body retired this tick may not have been
+        // swept yet. Unbounded growth is what this catches, and before the fix
+        // these ran to the cumulative total of every body ever created.
+        let ceiling = live.saturating_mul(2).max(64);
+        anyhow::ensure!(
+            s.ccd_tracked_bodies <= ceiling && s.identity_stamped_bodies <= ceiling,
+            "per-body bookkeeping is unbounded: ccd {} / stamp {} against {} live \
+             (ceiling {}).",
+            s.ccd_tracked_bodies,
+            s.identity_stamped_bodies,
+            live,
+            ceiling
+        );
+    }
+
+    {
+        let (caps, passes) = destruction.resim_counters();
+        println!("  resim: {caps} captures, {passes} re-passes");
+        println!("  resim diag: {}", destruction.resim_diagnosis());
+    }
+
+    if let (Some(path), Some(target)) = (args.summary_out.as_ref(), summary_target) {
+        // Collapse shape, as numbers. "Pancaked in place" and "toppled/spread"
+        // separate cleanly here: a straight-down crumble leaves nearly all
+        // low-lying debris inside the target footprint (spread_fraction ~ 0),
+        // a topple pushes a real fraction into the surrounding ring.
+        let snapshots = world
+            .chunk_body_snapshots()
+            .map_err(|error| anyhow::anyhow!("{error}"))?;
+        let mut final_height = 0.0f32;
+        let mut center_pile = 0u32;
+        let mut ring_pile = 0u32;
+        for snap in snapshots {
+            let dx = snap.position.x - target.x;
+            let dz = snap.position.z - target.z;
+            let d2 = dx * dx + dz * dz;
+            if d2 <= 13.0 * 13.0 {
+                final_height = final_height.max(snap.position.y);
+                if snap.position.y < 8.0 {
+                    center_pile += 1;
+                }
+            } else if d2 <= 40.0 * 40.0 && snap.position.y < 8.0 {
+                ring_pile += 1;
+            }
+        }
+        let s = destruction.stats();
+        let spread = if center_pile + ring_pile > 0 {
+            ring_pile as f32 / (center_pile + ring_pile) as f32
+        } else {
+            0.0
+        };
+        let summary = serde_json::json!({
+            "target": [target.x, target.y, target.z],
+            "initial_height_m": initial_height,
+            "final_height_m": final_height,
+            "height_retained": if initial_height > 0.0 { final_height / initial_height } else { 1.0 },
+            "center_pile": center_pile,
+            "ring_pile": ring_pile,
+            "spread_fraction": spread,
+            "broken_bonds": s.broken_bonds,
+            "chunk_bodies": s.chunk_bodies,
+            "awake_bodies": s.awake_chunk_bodies,
+            "frozen_bodies": s.frozen_chunk_bodies,
+            "sleeping_bodies": s.sleeping_chunk_bodies,
+        });
+        std::fs::write(path, serde_json::to_string_pretty(&summary)?)?;
+        println!(
+            "  summary: height {:.1} -> {:.1} m (retained {:.0}%)  pile center {} ring {}              (spread {:.0}%)  -> {}",
+            initial_height,
+            final_height,
+            100.0 * final_height / initial_height.max(0.001),
+            center_pile,
+            ring_pile,
+            100.0 * spread,
+            path.display()
+        );
     }
 
     if dropped_world_bonds > 0 {
@@ -1200,6 +1725,48 @@ fn overview_cameras(extent: f32) -> [Camera; 4] {
 /// Shots that rake each building around a height band, cycling structures so a
 /// multi-building scene collapses broadly instead of felling one tower while
 /// the rest stand untouched.
+/// The structure the fixed shot plan fires at first. Factored out so the
+/// scenario summary measures the SAME building the shots were aimed at.
+fn primary_target(manifest: &DestructionManifest) -> Option<Vec3> {
+    let mut order: Vec<&_> = manifest.structures.iter().collect();
+    order.sort_by(|a, b| {
+        b.world_position[2]
+            .partial_cmp(&a.world_position[2])
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| {
+                a.world_position[0]
+                    .abs()
+                    .partial_cmp(&b.world_position[0].abs())
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+    });
+    order.first().map(|s| Vec3::from_array(s.world_position))
+}
+
+/// Deterministic shot at authored geometry, for when the adaptive targeter has
+/// no candidates: a pristine city is all ROOTED structure bodies, which are
+/// kinematic, and the body-snapshot API skips kinematic bodies -- so the very
+/// first shot of a run used to fall back to a plan aimed at the manifest
+/// origin, a street intersection, and miss the entire city.
+fn authored_shot(manifest: &DestructionManifest) -> Option<(Vec3, Vec3)> {
+    let mut best: Option<Vec3> = None;
+    for structure in &manifest.structures {
+        let base = Vec3::from_array(structure.world_position);
+        for chunk in &structure.chunks {
+            let world_pos = base + Vec3::from_array(chunk.centroid);
+            if best.map_or(true, |b| world_pos.y > b.y) {
+                best = Some(world_pos);
+            }
+        }
+    }
+    let top = best?;
+    // Base of the tallest tower, fired level from +Z so the ray cannot sail
+    // over the roofline.
+    let target = Vec3::new(top.x, 3.0, top.z);
+    let origin = Vec3::new(top.x, 3.0, top.z + 40.0);
+    Some((origin, (target - origin).normalize()))
+}
+
 fn build_shot_plan(manifest: &DestructionManifest, shots: u32, targets: u32) -> Vec<(Vec3, Vec3)> {
     let mut plan = Vec::with_capacity(shots as usize);
     if manifest.structures.is_empty() {
@@ -1243,7 +1810,81 @@ fn build_shot_plan(manifest: &DestructionManifest, shots: u32, targets: u32) -> 
     plan
 }
 
-fn fire(destruction: &mut CityDestruction, world: &mut World, origin: Vec3, direction: Vec3) {
+/// Picks a shot at whatever is still standing.
+///
+/// Intact structure is identified by height: a chunk well above the rubble line
+/// is still part of a building, because debris settles. Sampling the live body
+/// set means the barrage follows the city down instead of grinding a hole in
+/// one facade and then firing into gravel for the rest of the run.
+///
+/// Deterministic despite the name: the index walk is seeded from the tick, so
+/// the same trace fires the same shots. `VIBE_TRACE_ADAPTIVE_AIM=0` restores
+/// the fixed plan.
+fn adaptive_shot(world: &mut World, tick: u32) -> Option<(Vec3, Vec3)> {
+    let snapshots = world.chunk_body_snapshots().ok()?;
+    if snapshots.is_empty() {
+        return None;
+    }
+    // Highest standing chunks first is too narrow -- it drills the tallest
+    // tower forever. Take the band above the rubble line and stride through it.
+    let mut tallest = 0.0f32;
+    for s in snapshots.iter() {
+        if s.position.y > tallest {
+            tallest = s.position.y;
+        }
+    }
+    let floor_y = (tallest * 0.35).max(6.0);
+    let mut candidates = snapshots
+        .iter()
+        .filter(|s| s.position.y >= floor_y)
+        .map(|s| Vec3::new(s.position.x, s.position.y, s.position.z))
+        .collect::<Vec<_>>();
+    if candidates.is_empty() {
+        return None;
+    }
+    // Spread fire across BUILDINGS, not across a height-sorted list.
+    //
+    // Sorting by height and striding looks like it spreads, and does not: the
+    // tallest structure stays the tallest until it is gone, so it keeps winning
+    // the top slots and the barrage drills one tower. The video showed this
+    // immediately -- one shredded building and a city standing around it --
+    // while the body and bond counts looked like a city-wide collapse.
+    //
+    // Bucketing by horizontal cell gives one entry per standing structure, and
+    // rotating through the cells puts consecutive shots on different buildings.
+    const CELL_M: f32 = 24.0;
+    let mut by_cell: std::collections::BTreeMap<(i32, i32), Vec3> =
+        std::collections::BTreeMap::new();
+    for c in &candidates {
+        let key = ((c.x / CELL_M).floor() as i32, (c.z / CELL_M).floor() as i32);
+        by_cell
+            .entry(key)
+            .and_modify(|best| {
+                if c.y > best.y {
+                    *best = *c;
+                }
+            })
+            .or_insert(*c);
+    }
+    if by_cell.is_empty() {
+        return None;
+    }
+    let cells: Vec<Vec3> = by_cell.into_values().collect();
+    // Odd stride against the cell count so the rotation visits every building
+    // before repeating, and stays deterministic.
+    let target = cells[(tick as usize / 4) % cells.len()];
+    // Fire from the camera side, level with the target so the ray reaches it
+    // instead of clipping the facade below.
+    let origin = target + Vec3::new(0.0, 0.0, 45.0);
+    Some((origin, (target - origin).normalize()))
+}
+
+fn fire(
+    destruction: &mut CityDestruction,
+    world: &mut World,
+    origin: Vec3,
+    direction: Vec3,
+) -> Option<Vec3> {
     use vibe_land_physx_bridge::RaycastRequest;
     let hit = world
         .raycast(RaycastRequest {
@@ -1257,7 +1898,7 @@ fn fire(destruction: &mut CityDestruction, world: &mut World, origin: Vec3, dire
         .ok()
         .filter(|hit| hit.hit);
     let Some(hit) = hit else {
-        return;
+        return None;
     };
     let surface = Vec3::new(hit.position.x, hit.position.y, hit.position.z);
     let shot = shot_profile();
@@ -1281,4 +1922,5 @@ fn fire(destruction: &mut CityDestruction, world: &mut World, origin: Vec3, dire
         shot.stress_impulse,
         shot.push_speed,
     );
+    Some(surface)
 }

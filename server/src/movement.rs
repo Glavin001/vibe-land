@@ -67,6 +67,13 @@ pub struct PhysicsHealth {
     pub last_readback_ms: f32,
     pub last_refresh_players_ms: f32,
     pub last_vehicle_control_ms: f32,
+    /// PhysX's own high-water marks for the two GPU buffers that have a fixed
+    /// capacity, with those capacities beside them. Exceeding one degrades
+    /// hard, and nothing was reporting them.
+    pub gpu_rigid_contact_high_water: u32,
+    pub gpu_rigid_patch_high_water: u32,
+    pub gpu_max_rigid_contacts: u32,
+    pub gpu_max_rigid_patches: u32,
 }
 
 enum PhysicsBackend {
@@ -395,6 +402,43 @@ impl PhysicsArena {
         }
     }
 
+    /// Split step, first half: scene writes then dispatch, returning while the
+    /// GPU simulates. `supports_split_step` reports whether the backend can do
+    /// it; only the PhysX GPU arena can, and a caller that gets `false` must
+    /// use `step_vehicles_and_dynamics` instead. Between the halves the scene
+    /// is mid-simulate and NO physics call is legal.
+    pub fn supports_split_step(&self) -> bool {
+        match &self.backend {
+            PhysicsBackend::Rapier(_) => false,
+            #[cfg(feature = "physx-gpu")]
+            PhysicsBackend::Physx(_) => true,
+        }
+    }
+
+    /// Panics on a backend without split support — call `supports_split_step`
+    /// first. A silent fallback here would leave the caller's deferred work
+    /// running outside any GPU wait, which is the whole point of the split.
+    pub fn begin_dynamics(&mut self, dt: f32) {
+        match &mut self.backend {
+            PhysicsBackend::Rapier(_) => {
+                let _ = dt;
+                panic!("begin_dynamics on a backend without split-step support")
+            }
+            #[cfg(feature = "physx-gpu")]
+            PhysicsBackend::Physx(arena) => arena.begin_dynamics(),
+        }
+    }
+
+    pub fn finish_dynamics(&mut self) -> (f32, f32) {
+        match &mut self.backend {
+            PhysicsBackend::Rapier(_) => {
+                panic!("finish_dynamics on a backend without split-step support")
+            }
+            #[cfg(feature = "physx-gpu")]
+            PhysicsBackend::Physx(arena) => arena.finish_dynamics(),
+        }
+    }
+
     #[cfg(test)]
     pub fn step_dynamics(&mut self, dt: f32) {
         match &mut self.backend {
@@ -568,6 +612,19 @@ impl PhysicsArena {
             #[cfg(feature = "physx-gpu")]
             PhysicsBackend::Physx(arena) => arena.health(),
         }
+    }
+
+    /// Generic bridge spans stashed by the health() read; empty off physx.
+    #[cfg(feature = "physx-gpu")]
+    pub fn take_physics_spans(&self) -> Vec<vibe_land_physx_bridge::NamedSpan> {
+        match &self.backend {
+            PhysicsBackend::Rapier(_) => Vec::new(),
+            PhysicsBackend::Physx(arena) => arena.take_physics_spans(),
+        }
+    }
+    #[cfg(not(feature = "physx-gpu"))]
+    pub fn take_physics_spans(&self) -> Vec<vibe_land_destruction::types::NamedSpan> {
+        Vec::new()
     }
 
     pub fn awake_dynamic_body_counts(

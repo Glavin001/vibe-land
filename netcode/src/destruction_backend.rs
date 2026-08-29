@@ -217,6 +217,14 @@ pub struct DestructionStats {
     pub overstressed_bonds: u32,
     pub contacts_processed: u32,
     pub contacts_dropped: u32,
+    pub contacts_queued: u64,
+    pub solver_islands_skipped_accum: u64,
+    pub solver_islands_total_accum: u64,
+    /// Bodies frozen by the kill floor after escaping below ground. Must stay
+    /// 0 in healthy play; every increment is a tunnelling event.
+    pub escaped_bodies_parked: u64,
+    pub ccd_tracked_bodies: u32,
+    pub identity_stamped_bodies: u32,
     /// Worst stress / elastic-limit ratio across bonds; 1.0 = at the limit.
     pub bond_utilisation_max: f32,
     pub bonds_above_half_utilisation: u32,
@@ -276,6 +284,21 @@ pub struct DestructionStats {
     pub stats_ffi_ms: f32,
     /// The three FFI event drains plus batch assembly.
     pub drain_ms: f32,
+    /// Supporter-set ingest from the engine's contact reports (an FFI readback
+    /// of every changed set) and the freeze cascades that contact wakes and
+    /// supporter deaths trigger. Both sat untimed between `drain_ms` and
+    /// `readback_ms_host`, and were the bulk of the post_step remainder.
+    pub support_ingest_ms: f32,
+    pub cascade_ms: f32,
+    /// Wall time of the whole of `Runtime::post_step`, and what is left of it
+    /// after every child above is subtracted.
+    ///
+    /// Published so the accounting is falsifiable rather than asserted: any
+    /// future untimed block shows up here as a number instead of hiding in a
+    /// subtraction nobody performs. `city_step_residual_ms` is the same idea
+    /// one level up. Both are gated by `timing_closure` in the test suite.
+    pub post_step_total_ms: f32,
+    pub post_step_residual_ms: f32,
     /// The destruction_tick FFI call itself (all C++ phases inside it).
     pub tick_ffi_ms: f32,
     pub snapshot_ms: f32,
@@ -310,6 +333,11 @@ pub struct DestructionStats {
     pub blast_stress_solve_cpu_ms: f32,
     pub blast_fracture_topology_ms: f32,
     pub blast_mapping_validation_ms: f32,
+    pub blast_fracture_generate_ms: f32,
+    pub blast_fracture_prep_ms: f32,
+    pub blast_fracture_apply_ms: f32,
+    pub blast_fracture_scene_ms: f32,
+    pub blast_fracture_rebuild_ms: f32,
     pub blast_sleeping_actors_skipped: u64,
     /// The last two untimed blocks inside the `stress_solve_ms` bracket:
     /// per-slot dispatch (live-slot gather + telemetry read + topology
@@ -344,6 +372,10 @@ pub struct DestructionStats {
     pub pose_quiet_awake_bodies: u32,
     /// Settled bodies currently held kinematic, out of the rigid-body solver.
     pub frozen_chunk_bodies: u32,
+    /// P1b clusters: PxAggregates holding frozen bodies, and the bodies in
+    /// them. `frozen_chunk_bodies - frozen_aggregate_actors` is standalone.
+    pub frozen_aggregates: u32,
+    pub frozen_aggregate_actors: u32,
     /// Cumulative freeze and wake transitions. A pile that has genuinely
     /// settled shows these flat; sustained churn with no new damage is the
     /// signature of a freeze policy fighting the engine.
@@ -362,6 +394,14 @@ pub struct DestructionStats {
     /// Freeze/unfreeze calls refused for naming a rooted body. Releasing a
     /// stump would drop a standing building; must stay zero.
     pub rooted_guard_blocks: u64,
+    /// Re-sleep writes issued because a kinematic flip woke the flipped
+    /// body's contact island as collateral -- PhysX re-forms an island AWAKE
+    /// when a node leaves it, so every freeze batch would otherwise wake the
+    /// pile it is retiring. Counts writes, not confirmed wakes. Rises with
+    /// freeze activity and falls to zero with it; a flat zero WHILE
+    /// freeze_flips climbs means the repair is switched off
+    /// (VIBE_FREEZE_ISLAND_RESLEEP=0) and the pile will not settle.
+    pub island_resleep_writes: u64,
     /// Ground-anchored kinematic fragments currently standing.
     pub rooted_chunk_bodies: u32,
     /// Weight-bearing dependency edges currently held by the bridge.

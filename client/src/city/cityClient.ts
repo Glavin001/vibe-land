@@ -10,7 +10,7 @@ import {
   PresentationTrack,
   presentationConfig60Hz,
 } from './presentation';
-import { CityTopology, bodyKey } from './topology';
+import { CityTopology, bodyKey, bodyKeyParts } from './topology';
 import type { Quat, Vec3 } from './vec';
 import { qRotate, vAdd } from './vec';
 import {
@@ -22,12 +22,16 @@ import {
   decodeBaseline,
   decodeBootstrap,
   decodeChunksDatagram,
+  decodeStructureBootstrap,
   decodeTopology,
+  decodeTopologyHashes,
   encodeCityResyncRequest,
   decodeCityLanes,
   decodeDebrisHeader,
   encodeCityNack,
   PKT_CITY_LANES,
+  PKT_CITY_STRUCTURE_BOOTSTRAP,
+  PKT_CITY_TOPO_HASH,
 } from './wire';
 import type { DebrisDecoder } from './debrisWasm';
 import {
@@ -38,6 +42,7 @@ import {
   PKT_CITY_TOPOLOGY,
 } from '../net/sharedConstants';
 import { isCitySuspect, isRecording, recordCityEvent } from '../netlab/recorder';
+import { noteBaseline, noteClientEvent } from './debugReport';
 import { addDecodeMs } from './renderStats';
 
 export interface CityClientStats {
@@ -58,6 +63,12 @@ export interface CityClientStats {
   /// world; a climbing count means the client keeps losing agreement with the
   /// server and asking for a fresh copy.
   bootstraps: number;
+  /** Seq-aligned ledger-hash comparisons that actually ran. */
+  hashChecks: number;
+  /** Comparisons that found divergence — the detector firing. */
+  hashMismatches: number;
+  /** Targeted per-structure repairs applied (vs full bootstraps). */
+  structureRepairs: number;
   /// Settles refused because their pose would have teleported the body --
   /// membership disagreement, caught before it could be drawn.
   settleRejects: number;
@@ -188,6 +199,12 @@ export class CityClient {
   /// Resyncs skipped by the rate limit. Each one is a full world rebuild that
   /// did not happen; the next one repairs whatever they would have.
   resyncsSuppressed = 0;
+  /** Seq-aligned hash comparisons performed (the detector actually ran). */
+  hashChecks = 0;
+  /** Comparisons that found at least one structure diverged. */
+  hashMismatches = 0;
+  /** Targeted per-structure repairs applied. */
+  structureRepairs = 0;
   /**
    * Topology messages released by the wall-clock valve rather than by the
    * sample clock reaching their tick, and how far ahead they were.
@@ -584,6 +601,7 @@ export class CityClient {
         this.resyncRequested = false;
         this.bootstrapped = true;
         this.bootstrapCount += 1;
+        noteClientEvent('bootstrap', { topoSeq: message.topoSeq, simTick: message.simTick });
         this.repaintAll = true;
         this.repaintBodies.clear();
         // Bootstrap names the generation in flight. Recording it (empty) means
@@ -591,6 +609,84 @@ export class CityClient {
         // as a rollover that discards what came before.
         this.baselineId = message.baselineId;
         this.baselineGenerations.set(message.baselineId, new Map());
+        break;
+      }
+      case PKT_CITY_TOPO_HASH: {
+        if (!this.bootstrapped) {
+          break;
+        }
+        const message = decodeTopologyHashes(bytes);
+        // Only compare at the position the hashes describe. During a cascade
+        // (or the v3 hold-back) our applied seq lags the message's and the
+        // comparison would be meaningless — the detector targets STEADY
+        // divergence, which quiet periods expose within one interval.
+        if (message.topoSeq !== this.topology.lastSeq()) {
+          break;
+        }
+        this.hashChecks += 1;
+        const local = this.topology.structureHashes();
+        const mismatched: number[] = [];
+        for (const entry of message.hashes) {
+          const ours = local.get(entry.structureId);
+          if (ours && (ours.laneA !== entry.laneA || ours.laneB !== entry.laneB)) {
+            mismatched.push(entry.structureId);
+          }
+        }
+        if (mismatched.length > 0) {
+          this.hashMismatches += 1;
+          noteClientEvent('hashMismatch', { structures: mismatched, topoSeq: message.topoSeq });
+          const nowMs = performance.now();
+          if (nowMs - this.lastResyncAtMs >= RESYNC_MIN_INTERVAL_MS) {
+            this.lastResyncAtMs = nowMs;
+            this.sendResync(encodeCityResyncRequest(this.topology.lastSeq(), mismatched));
+          } else {
+            this.resyncsSuppressed += 1;
+          }
+        }
+        break;
+      }
+      case PKT_CITY_STRUCTURE_BOOTSTRAP: {
+        if (!this.bootstrapped) {
+          break;
+        }
+        const message = decodeStructureBootstrap(bytes);
+        // The repair restates content at a seq, so the ledger must BE at that
+        // seq. Held v3 messages are applied now — a one-frame basis jump on a
+        // repair beats comparing state across different positions.
+        while (this.pendingTopology.length > 0) {
+          this.applyTopologyMessage(this.pendingTopology.shift()!.message);
+        }
+        if (message.topoSeq !== this.topology.lastSeq()) {
+          // A real gap opened between request and repair; only the full path
+          // can recover the stream position itself.
+          if (!this.resyncRequested) {
+            this.resyncRequested = true;
+            this.sendResync(encodeCityResyncRequest(this.topology.lastSeq()));
+          }
+          break;
+        }
+        this.topology.applyStructureBootstrap(message);
+        noteClientEvent('structureRepair', {
+          topoSeq: message.topoSeq,
+          structures: message.structures.map((structure) => structure.structureId),
+        });
+        const repaired = new Set(message.structures.map((structure) => structure.structureId));
+        for (const key of [...this.bodies.keys()]) {
+          if (repaired.has(bodyKeyParts(key).structureId)) {
+            this.bodies.delete(key);
+            this.kinetic.delete(key);
+          }
+        }
+        this.structureRepairs += 1;
+        // Repaint ONLY the repaired structures — restating the whole world
+        // here would reintroduce the full-bootstrap pop this path exists to
+        // remove. The repaired structures' bodies (support included) cover
+        // exactly the slots the repair rewrote.
+        for (const body of this.topology.allBodies()) {
+          if (repaired.has(body.structureId)) {
+            this.repaintBodies.add(body.key);
+          }
+        }
         break;
       }
       default:
@@ -675,22 +771,20 @@ export class CityClient {
           }
           this.drainPending();
         }
-        // Checked independently of `applied`: a successful apply still sets
-        // this when a migration names an island the client does not have, and
-        // that chunk stays on the wrong body until a bootstrap replaces it.
+        // Checked independently of `applied`: a successful apply still flags
+        // faults when a migration names an island the client does not have,
+        // and that chunk stays on the wrong body until a repair replaces it.
+        //
+        // Two tiers, and the split is what broke the 3.0-second popping loop:
+        // a seq GAP costs the stream position and only the full bootstrap can
+        // recover it — but the cascade-time faults (missing migration
+        // destination, settle-frame reject) corrupt ONE structure's content
+        // at a position both sides still agree on. Those used to escalate to
+        // the full path too: every world rebuild repainted all 96k chunks,
+        // and with the faults recurring each collapse, the whole rubble field
+        // visibly snapped on the rate-limiter's exact 3.0 s cadence.
+        const nowMs = performance.now();
         if (this.topology.needsResync && !this.resyncRequested) {
-          // Rate limited. A resync is a FULL ledger rebuild: every body
-          // replaced, every lane reset, all 24k chunks repainted. The trigger
-          // is usually one chunk -- a migration naming an island this client
-          // has not been told about -- and during a heavy collapse those
-          // arrive in a stream: measured at 22 missing destinations in one
-          // building, and 65 bootstraps on a session panel. Rebuilding the
-          // world 65 times to re-home a handful of chunks trades a small
-          // wrongness for a large, repeated one.
-          //
-          // The bootstrap that does land repairs everything outstanding, so
-          // spacing them costs only the delay, not the repair.
-          const nowMs = performance.now();
           if (nowMs - this.lastResyncAtMs >= RESYNC_MIN_INTERVAL_MS) {
             this.lastResyncAtMs = nowMs;
             this.resyncRequested = true;
@@ -698,10 +792,26 @@ export class CityClient {
           } else {
             this.resyncsSuppressed += 1;
           }
+        } else if (this.topology.resyncStructures.size > 0 && !this.resyncRequested) {
+          // Same spacing as the full path: the repair covers every fault
+          // accumulated by send time, so waiting costs delay, not repair.
+          // The set stays populated until the structure bootstrap lands and
+          // clears it, so a lost request re-fires on the next interval.
+          if (nowMs - this.lastResyncAtMs >= RESYNC_MIN_INTERVAL_MS) {
+            this.lastResyncAtMs = nowMs;
+            this.sendResync(
+              encodeCityResyncRequest(this.topology.lastSeq(), [
+                ...this.topology.resyncStructures,
+              ]),
+            );
+          } else {
+            this.resyncsSuppressed += 1;
+          }
         }
   }
 
   private handleBaseline(message: BaselineMessage): void {
+    noteBaseline(message.baselineId, message.simTick);
     let poses = this.baselineGenerations.get(message.baselineId);
     if (!poses) {
       poses = new Map();
@@ -1120,6 +1230,9 @@ export class CityClient {
       bytesReceived: this.bytesReceived,
       bytesPerSecond: windowSeconds > 0.25 ? windowBytes / windowSeconds : 0,
       manifestHash: this.manifest.hashHex,
+      hashChecks: this.hashChecks,
+      hashMismatches: this.hashMismatches,
+      structureRepairs: this.structureRepairs,
     };
   }
 }
