@@ -200,6 +200,9 @@ fn compile_cuda_stress(blast: &std::path::Path) {
     for header in [
         "include/extensions/stressgpu/NvBlastExtStressGpu.h",
         "include/extensions/stress/NvBlastExtStressSolver.h",
+        // The stress equation itself now lives in a header shared with the
+        // host walk. Editing it changes the kernel, so it belongs here too.
+        "include/extensions/stress/NvBlastExtStressFormula.h",
     ] {
         println!("cargo:rerun-if-changed={}", blast.join(header).display());
     }
