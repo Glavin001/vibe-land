@@ -324,7 +324,14 @@ pub fn manifest_asset() -> Option<&'static (String, Arc<DestructionManifest>, Ve
         .get_or_init(|| match build_scene() {
             Ok(scene) => {
                 let manifest = DestructionManifest::from_city(&scene);
-                let json = manifest.to_json_bytes();
+                // to_bytes, not to_json_bytes: the binary VLCM payload.
+                //
+                // This regressed silently in the merge -- no conflict marker,
+                // upstream's older line simply won -- and the symptom was an
+                // empty world. 60 MB of JSON where 16 MB of binary belongs,
+                // which a browser has to hold as bytes, as a string, and as a
+                // parsed object graph all at once.
+                let json = manifest.to_bytes();
                 let mut encoder =
                     flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
                 use std::io::Write;
