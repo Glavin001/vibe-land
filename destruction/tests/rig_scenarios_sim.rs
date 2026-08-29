@@ -539,8 +539,26 @@ fn how_many_columns_the_garage_survives() {
             node.centroid.y < 4.0
         });
         assert!(!ground.is_empty(), "no ground-storey columns found");
-        let take = (ground.len() * percent as usize / 100).min(ground.len());
-        let cut: Vec<u32> = ground.into_iter().take(take).collect();
+        // Cut a REGION, not a scatter.
+        //
+        // Taking the first N by index removes columns from all over the plan,
+        // which leaves a thinned but still-working grid -- and a thinned grid
+        // is genuinely something a flat plate can survive. A player does not
+        // do that. They stand in one place and remove what is around them, so
+        // the cut is a contiguous fraction of the building and the deck above
+        // it has no support within reach.
+        let mut xs: Vec<f32> = ground
+            .iter()
+            .map(|&i| pack.nodes[i as usize].centroid.x)
+            .collect();
+        xs.sort_by(f32::total_cmp);
+        let cutoff = xs[((xs.len() * percent as usize / 100).max(1) - 1).min(xs.len() - 1)];
+        let cut: Vec<u32> = ground
+            .iter()
+            .copied()
+            .filter(|&i| pack.nodes[i as usize].centroid.x <= cutoff)
+            .collect();
+        let take = cut.len();
 
         let wounded = remove_nodes(&pack, &cut);
         let deck: Vec<u32> = select_nodes_where(&wounded, &NodeSel::role("slab"), |_, node| {
