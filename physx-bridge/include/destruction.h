@@ -82,9 +82,17 @@ private:
   const std::function<void(std::size_t)> *task_ = nullptr;
   std::size_t count_ = 0;
   std::atomic<std::size_t> next_{0};
-  std::size_t active_ = 0;
-  std::uint64_t generation_ = 0;
-  bool stop_ = false;
+  // Atomic so the barrier costs an atomic op rather than a lock. The old
+  // shape took the mutex twice per worker per dispatch -- once to wait on
+  // start_, once to decrement active_ -- which is ~62 serialised acquisitions
+  // for 31 workers and measured ~1.009 ms per dispatch. A good pool barrier
+  // is 5-20 us.
+  std::atomic<unsigned> active_{0};
+  std::atomic<std::uint64_t> generation_{0};
+  std::atomic<bool> stop_{false};
+  /// Set only while the caller is actually parked, so workers can skip the
+  /// notify (and its lock) on the overwhelmingly common path.
+  std::atomic<bool> caller_parked_{false};
   std::exception_ptr error_;
 };
 

@@ -1480,6 +1480,10 @@ void DestructionManager::refresh_shape_snapshots(Slot &slot) const {
   }
 }
 
+/// How long a worker spins before parking. Dispatches arrive every tick, so
+/// this is sized to cover the inter-dispatch gap, not a whole task.
+static constexpr int kBarrierSpins = 4000;
+
 StressExecutor::StressExecutor(unsigned workers) {
   // `workers` counts total parallelism; the calling thread is one of them.
   const unsigned extra = workers > 1 ? workers - 1 : 0;
@@ -1488,20 +1492,34 @@ StressExecutor::StressExecutor(unsigned workers) {
     threads_.emplace_back([this] {
       std::uint64_t seen = 0;
       for (;;) {
-        {
-          std::unique_lock<std::mutex> lock(mutex_);
-          start_.wait(lock, [this, seen] { return stop_ || generation_ != seen; });
-          if (stop_) {
-            return;
-          }
-          seen = generation_;
+        // Spin briefly, then park. Dispatches arrive every tick, so the spin
+        // almost always covers the gap and the wait costs no lock at all.
+        std::uint64_t generation = generation_.load(std::memory_order_acquire);
+        for (int spin = 0; spin < kBarrierSpins && generation == seen
+                           && !stop_.load(std::memory_order_acquire);
+             ++spin) {
+#if defined(__x86_64__) || defined(__i386__)
+          __builtin_ia32_pause();
+#endif
+          generation = generation_.load(std::memory_order_acquire);
         }
+        if (generation == seen && !stop_.load(std::memory_order_acquire)) {
+          std::unique_lock<std::mutex> lock(mutex_);
+          start_.wait(lock, [this, seen] {
+            return stop_.load(std::memory_order_acquire)
+                   || generation_.load(std::memory_order_acquire) != seen;
+          });
+          generation = generation_.load(std::memory_order_acquire);
+        }
+        if (stop_.load(std::memory_order_acquire)) {
+          return;
+        }
+        seen = generation;
         drain();
-        {
+        if (active_.fetch_sub(1, std::memory_order_acq_rel) == 1
+            && caller_parked_.load(std::memory_order_acquire)) {
           std::lock_guard<std::mutex> lock(mutex_);
-          if (--active_ == 0) {
-            done_.notify_one();
-          }
+          done_.notify_one();
         }
       }
     });
@@ -1511,8 +1529,8 @@ StressExecutor::StressExecutor(unsigned workers) {
 StressExecutor::~StressExecutor() {
   {
     std::lock_guard<std::mutex> lock(mutex_);
-    stop_ = true;
-    ++generation_;
+    stop_.store(true, std::memory_order_release);
+    generation_.fetch_add(1, std::memory_order_acq_rel);
   }
   start_.notify_all();
   for (auto &thread : threads_) {
@@ -1571,22 +1589,40 @@ void StressExecutor::run(std::size_t count,
     return;
   }
 
+  task_ = &task;
+  count_ = count;
+  next_.store(0, std::memory_order_relaxed);
+  active_.store(static_cast<unsigned>(threads_.size()), std::memory_order_relaxed);
+  error_ = nullptr;
+  caller_parked_.store(false, std::memory_order_relaxed);
+  // Release: everything above must be visible to a worker that sees the new
+  // generation. Spinning workers pick it up here without any lock.
+  generation_.fetch_add(1, std::memory_order_acq_rel);
   {
+    // Only for workers that already gave up spinning and parked. Cheap when
+    // nobody is waiting, and it must be under the mutex or a parked worker
+    // can miss the wakeup.
     std::lock_guard<std::mutex> lock(mutex_);
-    task_ = &task;
-    count_ = count;
-    next_.store(0, std::memory_order_relaxed);
-    active_ = threads_.size();
-    error_ = nullptr;
-    ++generation_;
   }
   start_.notify_all();
 
   // The caller works too rather than idling while the pool runs.
   drain();
 
-  std::unique_lock<std::mutex> lock(mutex_);
-  done_.wait(lock, [this] { return active_ == 0; });
+  // Same shape on the join: spin, then park.
+  for (int spin = 0; spin < kBarrierSpins
+                     && active_.load(std::memory_order_acquire) != 0;
+       ++spin) {
+#if defined(__x86_64__) || defined(__i386__)
+    __builtin_ia32_pause();
+#endif
+  }
+  if (active_.load(std::memory_order_acquire) != 0) {
+    caller_parked_.store(true, std::memory_order_release);
+    std::unique_lock<std::mutex> lock(mutex_);
+    done_.wait(lock, [this] { return active_.load(std::memory_order_acquire) == 0; });
+    caller_parked_.store(false, std::memory_order_release);
+  }
   task_ = nullptr;
   if (error_) {
     std::exception_ptr error = error_;
