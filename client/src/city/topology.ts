@@ -1042,7 +1042,10 @@ export class CityTopology {
       if (!bits) {
         continue;
       }
-      for (let i = 0; i < structure.bonds.length; i++) {
+      // bondCountOf, not structure.bonds.length: the binary manifest path
+      // never materialises bond objects, so `bonds` is undefined there.
+      const count = bondCountOf(structure);
+      for (let i = 0; i < count; i++) {
         if ((bits[i >> 3] & (1 << (i & 7))) === 0) {
           broken += 1;
         }
