@@ -29,12 +29,23 @@ scene="${SUITE_SCENE:-fractured-downtown.json}"
 
 # name : grid : seconds : shots : shot-interval-ticks
 #
-# `idle` is the control and the most valuable single scenario: with no shots
-# the sim is BIT-DETERMINISTIC run to run (measured), so its comparison is
-# exact rather than statistical. Every bombard rate below it is chaotic and
-# must be judged on medians plus the work check.
+# `idle` is the control: with no shots the sim is BIT-DETERMINISTIC run to run
+# (measured), so its comparison is exact. But idle exercises almost nothing, so
+# it cannot rank a solver change.
+#
+# `bombard-short` is the scenario to A/B on, and the reason is measured. Run-to-
+# run work drift GROWS with tick count, because each tiny contact difference
+# feeds back into what breaks next: at 20 s the arms ended up destroying 5.7%
+# different amounts of the city, which swamps any change worth measuring. At 8 s
+# the same scene drifts 0.3% while still breaking ~1,950 bonds and waking ~200
+# bodies. Nineteen times more comparable, for the same kind of work.
+#
+# The longer bombard rates below stay in the suite for REPORTING -- they are the
+# honest picture of cost under sustained load -- but they are close to useless
+# for ranking two arms, and the work check will say so.
 SCENARIOS=(
   "idle:2:10:0:0"
+  "bombard-short:2:8:12:14"
   "bombard-slow:2:20:12:30"
   "bombard-med:2:20:28:14"
   "bombard-fast:2:20:56:6"
@@ -94,8 +105,22 @@ ab)
     echo "=== $name : A=[${arm_a:-baseline}] vs B=[${arm_b:-baseline}] , $reps pairs ==="
     a_files=(); b_files=()
     for i in $(seq 1 "$reps"); do
-      run_one "$spec" "$arm_a" "$out/${name}_a$i.csv"; a_files+=("$out/${name}_a$i.csv")
-      run_one "$spec" "$arm_b" "$out/${name}_b$i.csv"; b_files+=("$out/${name}_b$i.csv")
+      # COUNTERBALANCED order: A-first on odd pairs, B-first on even ones.
+      #
+      # Plain A,B,A,B is NOT enough, and this was caught the hard way: with two
+      # ACCIDENTALLY IDENTICAL arms the suite reported "B faster" at p=0.008,
+      # because B always ran second in the pair and inherited a warm GPU, warm
+      # page cache and settled clocks. Always running A first turns any
+      # within-pair warming trend into a fake, highly significant result.
+      # Alternating the order makes that trend cancel across pairs.
+      if [ $((i % 2)) -eq 1 ]; then
+        run_one "$spec" "$arm_a" "$out/${name}_a$i.csv"
+        run_one "$spec" "$arm_b" "$out/${name}_b$i.csv"
+      else
+        run_one "$spec" "$arm_b" "$out/${name}_b$i.csv"
+        run_one "$spec" "$arm_a" "$out/${name}_a$i.csv"
+      fi
+      a_files+=("$out/${name}_a$i.csv"); b_files+=("$out/${name}_b$i.csv")
       printf '.' >&2
     done
     echo >&2
