@@ -378,6 +378,32 @@ private:
 
   std::vector<std::unique_ptr<Slot>> slots_;
   std::unique_ptr<StressExecutor> stress_executor_;
+
+ public:
+  /// Run a parallel loop on the stress pool.
+  ///
+  /// Exposed so the deferred contact drain can hoist its pure lookups without
+  /// standing up a second pool beside this one -- a second pool of 31 threads
+  /// on a 32-core box oversubscribes 2:1, which is exactly how the N1
+  /// experiment measured ~2x WORSE at rest.
+  ///
+  /// Safe from the drain because it runs in end_step, outside every other
+  /// fan-out, so this cannot re-enter the pool from one of its own tasks.
+  void run_parallel(std::size_t count,
+                    const std::function<void(std::size_t)> &task) {
+    if (stress_executor_) {
+      stress_executor_->run(count, task);
+    } else {
+      for (std::size_t i = 0; i < count; ++i) {
+        task(i);
+      }
+    }
+  }
+  unsigned pool_parallelism() const {
+    return stress_executor_ ? stress_executor_->parallelism() : 1u;
+  }
+
+ private:
   /// Separate pool for the bond-stress strip walk.
   ///
   /// The walk is dispatched from INSIDE a slot-fan-out task, so it cannot use

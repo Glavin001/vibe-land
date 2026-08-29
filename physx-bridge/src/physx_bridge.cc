@@ -610,13 +610,46 @@ public:
   /// from inside the contact callback) and the deferred drain (called from
   /// end_step after fetchResults returns). ONE body on purpose: two copies
   /// of this logic would drift, and a drift here is a physics divergence.
+  /// The per-pair work that is a pure function of the pair: two shape->owner
+  /// lookups and two rigid-body mass reads. Both are read-only over state that
+  /// nothing mutates during the drain, which is what lets them move off the
+  /// serial walk.
+  struct PairPrecomputed {
+#ifdef VIBE_LAND_DESTRUCTION
+    DestructionManager::ContactTarget target0;
+    DestructionManager::ContactTarget target1;
+#endif
+    float mass0 = -1.0f;
+    float mass1 = -1.0f;
+    bool valid = false;
+  };
+
+  static float dynamic_mass_of(const PxActor *actor) {
+    const PxRigidDynamic *dynamic =
+        actor != nullptr ? actor->is<PxRigidDynamic>() : nullptr;
+    if (dynamic == nullptr ||
+        dynamic->getRigidBodyFlags().isSet(PxRigidBodyFlag::eKINEMATIC)) {
+      return -1.0f;
+    }
+    return dynamic->getMass();
+  }
+
+  static bool contact_classify_enabled() {
+    static const bool enabled = [] {
+      const char *raw = std::getenv("VIBE_PHYSX_CONTACT_CLASSIFY");
+      return raw == nullptr || std::string(raw) != "0";
+    }();
+    return enabled;
+  }
+
   void process_extracted_pair(PxActor *actor0, PxActor *actor1,
                               PxShape *shape0, PxShape *shape1,
                               std::uint32_t entity_a, std::uint32_t entity_b,
                               bool ev_persists, bool ev_found,
                               const physx::PxContactPairPoint *points,
                               PxU32 extracted, PxU32 contact_count,
-                              bool sample_subspans) {
+                              bool sample_subspans,
+                              const PairPrecomputed *pre = nullptr) {
     const auto sub_now = [&]() {
       return sample_subspans ? cycle_now() : std::uint64_t{0};
     };
@@ -651,7 +684,10 @@ public:
       DestructionManager::ContactTarget target0;
       DestructionManager::ContactTarget target1;
       const auto resolve_started = sub_now();
-      if (destruction_ && contact_cse_enabled()) {
+      if (pre != nullptr && pre->valid) {
+        target0 = pre->target0;
+        target1 = pre->target1;
+      } else if (destruction_ && contact_cse_enabled()) {
         target0 = destruction_->resolve_contact_target(shape0);
         target1 = destruction_->resolve_contact_target(shape1);
       }
@@ -791,19 +827,11 @@ public:
       const auto wake_started = sub_now();
       if (destruction_ && destruction_->has_frozen_bodies() &&
           total_magnitude > 0.0f) {
-        const auto dynamic_mass = [](const PxActor *actor) -> float {
-          const PxRigidDynamic *dynamic =
-              actor != nullptr ? actor->is<PxRigidDynamic>() : nullptr;
-          if (dynamic == nullptr ||
-              dynamic->getRigidBodyFlags().isSet(
-                  PxRigidBodyFlag::eKINEMATIC)) {
-            return -1.0f;
-          }
-          return dynamic->getMass();
-        };
-        destruction_->note_contact_pair(entity_a, entity_b,
-                                        dynamic_mass(actor0),
-                                        dynamic_mass(actor1),
+        const float mass0 = (pre != nullptr && pre->valid)
+                                ? pre->mass0 : dynamic_mass_of(actor0);
+        const float mass1 = (pre != nullptr && pre->valid)
+                                ? pre->mass1 : dynamic_mass_of(actor1);
+        destruction_->note_contact_pair(entity_a, entity_b, mass0, mass1,
                                         total_magnitude);
       }
       if (sample_subspans) {
@@ -818,15 +846,58 @@ public:
       return;
     }
     const std::uint64_t drain_started = cycle_now();
-    for (const DeferredContactPair &rec : deferred_pairs_) {
+
+    // Classify in parallel, ingest serially in recorded order.
+    //
+    // The two shape->owner resolves and the two mass reads are pure lookups
+    // over state nothing mutates during the drain, so they fan out. Everything
+    // that MUTATES stays on the serial walk below, in the original order,
+    // because that order is load bearing: queue_contact_at feeds
+    // ext_stress_solver_add_all_forces, whose per-node force sum is a float
+    // reduction, so reordering it changes which bonds break.
+    //
+    // Same shape as resolve_support_loads: an output vector pre-sized and
+    // indexed by input index, so ordering is structural rather than emergent.
+    const std::size_t pair_count = deferred_pairs_.size();
+    classify_scratch_.clear();
+#ifdef VIBE_LAND_DESTRUCTION
+    constexpr std::size_t kClassifyFloor = 512;
+    const bool classify_parallel =
+        contact_classify_enabled() && destruction_ != nullptr &&
+        contact_cse_enabled() && pair_count >= kClassifyFloor &&
+        destruction_->pool_parallelism() > 1;
+    if (classify_parallel) {
+      classify_scratch_.resize(pair_count);
+      const std::size_t strips = destruction_->pool_parallelism();
+      const std::size_t strip_len = (pair_count + strips - 1) / strips;
+      destruction_->run_parallel(strips, [&](std::size_t strip) {
+        const std::size_t begin = strip * strip_len;
+        const std::size_t end = std::min(pair_count, begin + strip_len);
+        for (std::size_t i = begin; i < end; ++i) {
+          const DeferredContactPair &rec = deferred_pairs_[i];
+          PairPrecomputed &out = classify_scratch_[i];
+          out.target0 = destruction_->resolve_contact_target(rec.shape0);
+          out.target1 = destruction_->resolve_contact_target(rec.shape1);
+          out.mass0 = dynamic_mass_of(rec.actor0);
+          out.mass1 = dynamic_mass_of(rec.actor1);
+          out.valid = true;
+        }
+      });
+    }
+#endif
+
+    for (std::size_t i = 0; i < pair_count; ++i) {
+      const DeferredContactPair &rec = deferred_pairs_[i];
       ++contact_drain_records_;
       const bool sample =
           profile_callback_enabled() && (contact_drain_records_ & 7u) == 0;
+      const PairPrecomputed *pre =
+          i < classify_scratch_.size() ? &classify_scratch_[i] : nullptr;
       process_extracted_pair(rec.actor0, rec.actor1, rec.shape0, rec.shape1,
                              rec.entity_a, rec.entity_b, rec.ev_persists,
                              rec.ev_found,
                              deferred_points_.data() + rec.point_begin,
-                             rec.point_count, rec.reported_count, sample);
+                             rec.point_count, rec.reported_count, sample, pre);
     }
     deferred_pairs_.clear();
     deferred_points_.clear();
@@ -2300,6 +2371,7 @@ private:
     bool ev_found;
   };
   std::vector<DeferredContactPair> deferred_pairs_;
+  std::vector<PairPrecomputed> classify_scratch_;
   std::vector<physx::PxContactPairPoint> deferred_points_;
   std::uint64_t contact_drain_cycles_ = 0;
   std::uint64_t contact_drain_records_ = 0;
