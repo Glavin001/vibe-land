@@ -33,9 +33,19 @@ use std::path::{Path, PathBuf};
 use vibe_land_destruction::rig::audit::{audit, Outcome};
 use vibe_land_destruction::scene_pack::{load_scene_pack_file, ScenePack};
 
-/// Seconds a structure gets before it has failed. Just above the ten-second
-/// bar, so a verdict says which side of it the structure fell on.
-const BAR_SECS: f32 = 15.0;
+/// The bar: a structure must be quiet by this many seconds.
+const SETTLE_BAR_SECS: f32 = 10.0;
+
+/// How long the audit is allowed to run.
+///
+/// This is NOT the bar, and conflating them is a mistake I made and had to
+/// unpick. Convergence is defined as ten consecutive seconds of quiet, so the
+/// earliest any structure can be DECLARED converged is at ten seconds, and a
+/// structure that goes quiet at seven needs seventeen to prove it. Capping at
+/// fifteen therefore failed Villa Savoye, which settles at seven and is fine.
+///
+/// So the cap is the bar plus the quiet window, plus a little slack.
+const CAP_SECS: f32 = SETTLE_BAR_SECS + 12.0;
 
 fn load(name: &str) -> ScenePack {
     let path: PathBuf =
@@ -49,15 +59,15 @@ fn load(name: &str) -> ScenePack {
 /// not actionable and "slab<->wall, 80% of the run, y=4 m" is.
 fn assert_stable(name: &str) {
     let pack = load(name);
-    let report = audit(&pack, BAR_SECS);
+    let report = audit(&pack, CAP_SECS);
 
     let why = match &report.outcome {
         Outcome::Converged { at, broke_total } if *broke_total == 0 => {
             assert!(
-                *at <= 10.0,
-                "{name}: settles, but takes {at:.0} s. The bar is 10 s. Slow \
-                 settling is a structural property, not a solver setting -- \
-                 something in here is badly conditioned."
+                *at <= SETTLE_BAR_SECS,
+                "{name}: settles, but not until {at:.0} s. The bar is \
+                 {SETTLE_BAR_SECS:.0} s. Slow settling is a structural property, \
+                 not a solver setting -- something in here is badly conditioned."
             );
             return;
         }
