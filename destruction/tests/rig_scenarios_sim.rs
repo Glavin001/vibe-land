@@ -565,7 +565,16 @@ fn how_many_columns_the_garage_survives() {
             node.centroid.y > 3.0 && node.centroid.y < 8.0
         });
         let mut rig = Rig::spin_up(&wounded).expect("install");
-        rig.run_secs(6.0).expect("tick");
+        // Fifteen seconds, not six.
+        //
+        // A flat plate does not drop the instant its columns go: the deck
+        // hangs on its remaining joints, they take gradual damage, and it lets
+        // go when enough of them have. Watching one bond showed the sequence --
+        // nothing until 3.5 s, then 108 bonds, 1,145, 2,267, 3,553. Reading the
+        // drop at 6 s caught the start of that and called it "still standing",
+        // which is how a garage that DOES collapse was reported as one that
+        // does not.
+        rig.run_secs(15.0).expect("tick");
         let drop = rig.median_drop(&deck);
         let broken = rig.broken_bonds();
         // A deck that has moved less than a tenth of a metre in six seconds is
@@ -606,4 +615,66 @@ fn how_many_columns_the_garage_survives() {
             "  {percent:>3}%   {take:>7}   {drop:>11.2} m   {broken:>12}                peak {peak:>5.2} ({hot})  columns {col_peak:>5.2}   {verdict}"
         );
     }
+}
+
+/// Does an overloaded bond actually degrade?
+///
+/// The garage will not collapse however many columns are cut, and the reason
+/// is not the damage gate (BLAST_FRACTURE_NODE_SKIP=0 changes nothing). The
+/// remaining arithmetic says a joint at 2.9x elastic should take gradual
+/// damage, lose area, and -- since stress is force over area -- climb past its
+/// fatal limit and break. It does not.
+///
+/// So watch one bond. If its utilisation is flat while it sits above its
+/// elastic limit, damage is not reaching it or is not raising its stress, and
+/// that is a solver question rather than an authoring one.
+#[test]
+#[ignore = "diagnostic"]
+fn does_an_overloaded_bond_degrade() {
+    let pack = load("parking-garage");
+    let ground: Vec<u32> = select_nodes_where(&pack, &NodeSel::role("column"), |_, node| {
+        node.centroid.y < 4.0
+    });
+    let mut xs: Vec<f32> = ground.iter().map(|&i| pack.nodes[i as usize].centroid.x).collect();
+    xs.sort_by(f32::total_cmp);
+    let cutoff = xs[(xs.len() * 90 / 100).min(xs.len() - 1)];
+    let cut: Vec<u32> = ground
+        .iter()
+        .copied()
+        .filter(|&i| pack.nodes[i as usize].centroid.x <= cutoff)
+        .collect();
+    let wounded = remove_nodes(&pack, &cut);
+    let mut rig = Rig::spin_up(&wounded).expect("install");
+    rig.run_secs(1.0).expect("tick");
+
+    // The hottest bond after a second of settling: whatever is worst is what
+    // should be failing.
+    let watched = match rig.stress_report().bonds.first() {
+        Some(b) => b.bond_index,
+        None => {
+            println!("  no bonds reported");
+            return;
+        }
+    };
+    println!("\n  watching bond #{watched} in a garage with 90% of its columns cut");
+    println!("  {:>5}  {:>10}  {:>10}  {:>8}", "t", "utilisation", "area m2", "broken");
+    for step in 0..12 {
+        rig.run_secs(0.5).expect("tick");
+        let report = rig.stress_report();
+        match report.bonds.iter().find(|b| b.bond_index == watched) {
+            Some(b) => println!(
+                "  {:>5.1}  {:>10.3}  {:>10.4}  {:>8}",
+                rig.secs(), b.utilisation, b.area, rig.broken_bonds()
+            ),
+            None => {
+                println!("  {:>5.1}  GONE -- it broke", rig.secs());
+                break;
+            }
+        }
+        let _ = step;
+    }
+    println!(
+        "\n  A flat utilisation with a flat area means the bond is not degrading:\n  \
+         damage is either not applied, or not raising the stress it is applied against."
+    );
 }
