@@ -65,3 +65,80 @@ Three rules came out of that and are enforced in the scripts:
    ranked on, and the longer rates are for reporting cost, not for ranking.
    A sign test on n pairs also cannot go below p = 2/2^n, so n=4 can never reach
    significance; 8 is the working default.
+
+---
+
+# Idle cost: identified, measured, reduced
+
+## The baseline above was measured in the wrong configuration
+
+The suite relied on library defaults while the server set its own; they had
+drifted. Corrected (both now source `scripts/physics-env.sh`):
+
+| scenario | old (wrong config) | production config |
+|---|---|---|
+| idle cpu p50 | 14.86 ms | **3.65 ms** |
+| bombard-fast bonds broken | 5,495 | **24,212** |
+
+Idle was overstated 4× (the suite ran the serial bond-stress walk over 268k
+bonds, which production does not) and bombardment understated ~4× in damage
+(without `STRESS_LIMIT_SCALE=0.45` the city is far tougher). Both directions of
+error came from the same cause.
+
+## Where idle actually went
+
+```
+TOTAL cpu_ms      3.645
+  gravity         0.951   26.1%
+  hw_in           0.926   25.4%    velocity walk-in
+  hw_bond         0.203    5.6%
+  hw_reset        0.195    5.3%
+  physx_step      0.226    6.2%
+islands 64,800, of which 63,450 settled (97.9%) · awake 0 · bonds broken 0
+```
+
+**Gravity and the walk-in are 51.5% of an idle tick**, both sweeping ~87,000
+nodes every tick to recompute the same arithmetic for a city that is not
+moving, while the solver retires 97.9% of islands as settled and never reads
+the result.
+
+## They are one problem, not two
+
+`addNodeForce` is the only writer of `localVel`, so the walk-in can skip
+whenever no force was applied — but gravity applies force to every node every
+tick, so **the walk-in could never skip while gravity ran**. Fixing the walk-in
+alone measured as nothing: `hw_in` went 1.075 → 0.937, and `gravity` moved the
+same 13% despite being untouched by the change, which is what identified it as
+machine noise rather than an effect.
+
+The fix compares this tick's body snapshot against last tick's — 108 poses,
+bit-exact — and when nothing moved and no contact landed, skips gravity
+entirely. The solver's velocity array persists across ticks, so with both
+passes sitting out it re-solves inputs it already had.
+
+**The coupling is the whole trick, and getting it backwards cost 15×.** The
+first version required two consecutive quiet ticks before the walk-in would
+skip, on the reasoning that retaining last tick's velocities was a stale-input
+hazard. Retaining them is the point: the first quiet tick still walked in and
+wrote the zeros that skipped gravity had left behind, unloading every
+structure, waking the settled islands, and turning a 3.7 ms idle tick into
+**54 ms**.
+
+## Result — 8 counterbalanced pairs
+
+| scenario | metric | A (skip on) | B (off) | verdict |
+|---|---|---|---|---|
+| idle | `cpu_ms` | **3.326** | 4.056 | **A faster, −18%, p=0.008 (8/8)** |
+| idle | `stress_solve` | **0.653** | 0.806 | **A faster, −19%, p=0.008 (8/8)** |
+| bombard-short | every metric | — | — | no call — no regression under load |
+
+Correctness: idle holds at 0 broken bonds, 0 awake, 108 bodies in both arms;
+under bombardment the work check did not flag bonds, bodies or awake, so a 7.4%
+bond difference seen in a single unpaired run was chaos, not behaviour.
+
+Flags `BLAST_GRAVITY_QUIET_SKIP` and `BLAST_WALKIN_SKIP`, both default ON.
+
+**Remaining idle cost** is ~3.3 ms, now led by `hw_bond` (0.2), `hw_reset`
+(0.2) and PhysX's own step (0.23) — no single dominant term left. Note the
+unpaired report above reads idle at 4.80 ms rather than 3.33: single runs swing
+on this box, and the paired A/B is the number to trust.
