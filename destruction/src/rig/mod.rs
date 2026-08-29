@@ -174,6 +174,14 @@ pub struct Rig {
     /// scenario measured a two-metre collapse at thirteen seconds and nothing
     /// at all by sixteen. A body that has stopped moving still has a position.
     last_pose: HashMap<u32, (Vec3, Quat)>,
+    /// Multiplier on gravity, for capacity ramps.
+    ///
+    /// Scaling gravity scales SELF-WEIGHT along with everything else, which is
+    /// the right question for these structures: "how much more of itself can
+    /// this carry" is what a stack asks of its ground storey. It is not the
+    /// same as a point load on the roof, and deliberately so -- a distributed
+    /// answer is the one that composes.
+    gravity_scale: f32,
 }
 
 impl Rig {
@@ -206,6 +214,7 @@ impl Rig {
         let index = ChunkIndex::from_manifest(&manifest);
         let membership = Membership::new(&index);
         Ok(Self {
+            gravity_scale: 1.0,
             world,
             destruction,
             pack: pack.clone(),
@@ -217,6 +226,11 @@ impl Rig {
         })
     }
 
+    /// Set the gravity multiplier. 1.0 is Earth; a ramp walks this up.
+    pub fn set_gravity_scale(&mut self, scale: f32) {
+        self.gravity_scale = scale;
+    }
+
     pub fn secs(&self) -> f32 {
         self.tick as f32 * DT
     }
@@ -224,7 +238,12 @@ impl Rig {
     /// One tick of the production loop, with the ledger and trace kept current.
     pub fn step(&mut self) -> Result<(), CityDestructionError> {
         self.world.step().expect("physx step");
-        let output = self.destruction.post_step(&mut self.world, DT, GRAVITY)?;
+        let gravity = [
+            GRAVITY[0] * self.gravity_scale,
+            GRAVITY[1] * self.gravity_scale,
+            GRAVITY[2] * self.gravity_scale,
+        ];
+        let output = self.destruction.post_step(&mut self.world, DT, gravity)?;
         // Before poses are read: a chunk promoted this tick belongs to its new
         // body's frame already.
         self.membership.apply_tick(&output, &self.index);
