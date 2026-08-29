@@ -41,6 +41,11 @@ export VIBE_WORLD_RESTITUTION=0.02
 # 122,819 broken bonds in 90 s, bond utilisation 4,349-14,350x, step 22 -> 132
 # ms. With this switch the same scene holds at 0 broken, 0 awake, utilisation
 # 1.0, 3.7 ms. Set to 0 only to reproduce the bug.
+# TEST DEPLOYMENT: the bond-stress walk on the GPU. Default OFF in the
+# library; turned on here so the live server can be soaked and recorded.
+# Set BLAST_BOND_STRESS_GPU=0 in the environment to fall back to the serial
+# walk without editing this file.
+export BLAST_BOND_STRESS_GPU=${BLAST_BOND_STRESS_GPU:-1}
 export BLAST_GPU_WHOLE_RESET_ON_TOPOLOGY=${BLAST_GPU_WHOLE_RESET_ON_TOPOLOGY:-1}
 export RUST_LOG=info
 
