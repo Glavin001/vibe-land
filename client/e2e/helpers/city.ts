@@ -456,3 +456,85 @@ export async function parkOutside(
   );
   await page.waitForTimeout(400);
 }
+
+/**
+ * Park the capture camera on a fixed pose, without deriving it from the city.
+ *
+ * `parkOutside` aims at the skyline, which is what a look-at-the-buildings
+ * capture wants. A sky capture wants the opposite: a pose chosen so that
+ * nothing but sky is in frame, which means naming the position and direction
+ * outright rather than framing an object.
+ */
+export async function parkPose(
+  page: Page,
+  position: [number, number, number],
+  lookAt: [number, number, number],
+): Promise<void> {
+  await page.evaluate(
+    (pose) => (window as unknown as {
+      __VIBE_E2E__: { setCapturePose: (p: unknown) => void };
+    }).__VIBE_E2E__.setCapturePose(pose),
+    { position, lookAt },
+  );
+}
+
+/**
+ * Translate the capture camera every animation frame, position and lookAt by
+ * the same vector, so the view direction is held exactly constant.
+ *
+ * The step is per *frame*, not per second, which is what makes this usable as
+ * an assertion. A velocity in m/s would make the offset between the camera and
+ * anything that lags it depend on the frame rate the machine happened to
+ * deliver, so the same spec would be a different test on a different box; a
+ * per-frame step pins the lag to a known distance whatever the frame rate is.
+ *
+ * Driving it from rAF rather than from the render loop is deliberate too: the
+ * point is to reproduce what a moving player does to the scene from outside
+ * it, without giving the spec any influence over the ordering inside the
+ * frame -- that ordering is the thing under test.
+ */
+export async function startMovingPose(
+  page: Page,
+  options: {
+    position: [number, number, number];
+    lookAt: [number, number, number];
+    /** Metres added to both position and lookAt each animation frame. */
+    stepPerFrame: [number, number, number];
+  },
+): Promise<void> {
+  await page.evaluate((opts) => {
+    const win = window as unknown as {
+      __VIBE_E2E__: { setCapturePose: (p: unknown) => void };
+      __SKY_MOTION__?: { handle: number; frames: number };
+    };
+    const position = [...opts.position] as [number, number, number];
+    const lookAt = [...opts.lookAt] as [number, number, number];
+    const state = { handle: 0, frames: 0 };
+    const tick = () => {
+      for (let i = 0; i < 3; i += 1) {
+        position[i] += opts.stepPerFrame[i];
+        lookAt[i] += opts.stepPerFrame[i];
+      }
+      state.frames += 1;
+      win.__VIBE_E2E__.setCapturePose({ position: [...position], lookAt: [...lookAt] });
+      state.handle = requestAnimationFrame(tick);
+    };
+    win.__SKY_MOTION__ = state;
+    state.handle = requestAnimationFrame(tick);
+  }, options);
+}
+
+/** Stop `startMovingPose` and release the capture camera. Returns frames stepped. */
+export async function stopMovingPose(page: Page): Promise<number> {
+  return page.evaluate(() => {
+    const win = window as unknown as {
+      __VIBE_E2E__: { setCapturePose: (p: unknown) => void };
+      __SKY_MOTION__?: { handle: number; frames: number };
+    };
+    const state = win.__SKY_MOTION__;
+    if (state) cancelAnimationFrame(state.handle);
+    win.__VIBE_E2E__.setCapturePose(null);
+    delete win.__SKY_MOTION__;
+    return state?.frames ?? 0;
+  });
+}
