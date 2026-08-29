@@ -22,6 +22,8 @@ pub struct StressLimits {
     /// over-connected structure SHARES load between parallel paths (k = EA/L).
     /// 0 means the pack predates the field; the solver treats it as 30 GPa.
     pub elastic_modulus: f32,
+    /// Fraction of original bond area damage will not go below. 0 = runaway.
+    pub residual_area_fraction: f32,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -203,6 +205,8 @@ struct LimitsJson {
     /// Absent on packs authored before stiffness existed; 0 = solver default.
     #[serde(default)]
     elastic_modulus: f32,
+    #[serde(default)]
+    residual_area_fraction: f32,
 }
 
 /// How a material LOOKS. Advisory: no solver reads any of it.
@@ -311,6 +315,7 @@ const PLACEHOLDER_LIMITS: StressLimits = StressLimits {
     shear_elastic: 1.6e6,
     shear_fatal: 4.0e6,
     elastic_modulus: 30.0e9,
+    residual_area_fraction: 0.0,
 };
 
 fn limits_from(limits: &LimitsJson) -> StressLimits {
@@ -322,6 +327,7 @@ fn limits_from(limits: &LimitsJson) -> StressLimits {
         shear_elastic: limits.shear_elastic,
         shear_fatal: limits.shear_fatal,
         elastic_modulus: limits.elastic_modulus,
+        residual_area_fraction: limits.residual_area_fraction,
     }
 }
 
@@ -349,6 +355,7 @@ fn resolve_inherited(limits: &StressLimits) -> StressLimits {
         shear_elastic: inherit(limits.shear_elastic, limits.compression_elastic),
         shear_fatal: inherit(limits.shear_fatal, limits.compression_fatal),
         elastic_modulus: limits.elastic_modulus,
+        residual_area_fraction: limits.residual_area_fraction,
     }
 }
 

@@ -819,6 +819,7 @@ void DestructionManager::create_destructible(
     stress_materials[i].shearElasticLimit = src.shear_elastic;
     stress_materials[i].shearFatalLimit = src.shear_fatal;
     stress_materials[i].elasticModulusPa = src.elastic_modulus;
+    stress_materials[i].residualAreaFraction = src.residual_area_fraction;
 
     // CHUNK crushing, opt-in via BLAST_CRUSH_CAP (Pa).
     //

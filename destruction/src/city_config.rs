@@ -80,6 +80,7 @@ pub fn stress_settings(pack_materials: &[StressLimits]) -> StressSolverSettings 
                 // SHARED, not how much it takes to break -- a different and
                 // unwanted knob.
                 elastic_modulus_pa: l.elastic_modulus,
+                residual_area_fraction: l.residual_area_fraction,
             })
             .collect()
     } else {
@@ -91,6 +92,7 @@ pub fn stress_settings(pack_materials: &[StressLimits]) -> StressSolverSettings 
             shear_elastic_mpa: 1.6e6 * scale,
             shear_fatal_mpa: 4e6 * scale,
             elastic_modulus_pa: 30.0e9,
+            residual_area_fraction: 0.0,
         }]
     };
     let _ = from_pack;

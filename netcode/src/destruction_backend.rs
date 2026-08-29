@@ -24,6 +24,8 @@ pub struct StressMaterial {
     /// an over-connected structure shares load between parallel paths
     /// (k = EA/L). 0 means unknown and is treated as 30 GPa concrete.
     pub elastic_modulus_pa: f32,
+    /// Fraction of original bond area damage will not go below. 0 = runaway.
+    pub residual_area_fraction: f32,
 
 }
 
@@ -37,6 +39,7 @@ impl Default for StressMaterial {
             shear_elastic_mpa: -1.0,
             shear_fatal_mpa: -1.0,
             elastic_modulus_pa: 0.0,
+            residual_area_fraction: 0.0,
         }
     }
 }

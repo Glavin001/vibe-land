@@ -91,22 +91,29 @@ fn env_f32(name: &str, default: f32) -> f32 {
         .unwrap_or(default)
 }
 
-/// World gravity magnitude, m/s^2. Default 20.0.
+/// World gravity magnitude, m/s^2. Default 9.81.
 ///
-/// One world, one gravity. The player already falls at 20 m/s^2 -- roughly 2x
-/// Earth, and near-exactly the Source engine's `sv_gravity 800` (800 in/s^2 =
-/// 20.32 m/s^2) that Half-Life, Counter-Strike and Team Fortress ship. Raising
-/// gravity for jump feel is standard practice; applying it to only part of the
-/// world is not. Source applies `sv_gravity` to players, props and ragdolls
-/// alike.
+/// One world, one gravity, and the important half of that is still ONE. This
+/// scene once ran the player at 20 and every rigid body at 9.81, so the player
+/// was the only reference the eye had and all debris read as falling in slow
+/// motion -- an 84 m drop taking 4.1 s instead of 2.9. The fix was to make them
+/// agree, and they must keep agreeing: city_bench asserts it, because feeding
+/// the stress solver one gravity inside a PhysX scene integrating another is a
+/// combination production never runs.
 ///
-/// This scene previously ran the player at 20 and every rigid body at 9.81, so
-/// the player was the only reference frame the eye had and all debris read as
-/// falling in slow motion: an 84 m drop took 4.1 s instead of 2.9 s.
+/// They now agree at Earth's. The 20 m/s^2 they agreed at before was the Source
+/// engine's `sv_gravity 800` convention, adopted because 9.81 felt floaty --
+/// which removing linear damping addressed on its own. What it cost was the
+/// buildings: every structure here is designed for 9.81, and at 20 a parking
+/// deck sits at 99% of its cracking stress with no safety factor, so realistic
+/// concrete cracked it under its own weight.
 ///
 /// Override with VIBE_WORLD_GRAVITY (a positive magnitude).
 pub fn world_gravity_magnitude() -> f32 {
-    env_f32("VIBE_WORLD_GRAVITY", 20.0).abs()
+    // Earth. Must match MoveConfig::default().gravity -- city_bench asserts
+    // they agree, because feeding the stress solver one gravity inside a PhysX
+    // scene integrating another is a combination production never runs.
+    env_f32("VIBE_WORLD_GRAVITY", 9.81).abs()
 }
 
 impl Default for WorldConfig {
@@ -344,6 +351,8 @@ pub struct StressMaterialDesc {
     /// an over-connected structure shares load between parallel paths.
     /// 0 = treat as the 30 GPa concrete reference.
     pub elastic_modulus: f32,
+    /// Fraction of original bond area damage will not go below.
+    pub residual_area_fraction: f32,
 }
 
 #[derive(Clone, Debug)]
@@ -376,6 +385,7 @@ impl Default for DestructibleSettings {
                 shear_elastic: -1.0,
                 shear_fatal: -1.0,
                 elastic_modulus: 0.0,
+                residual_area_fraction: 0.0,
             }],
             maximum_bodies: 48,
             maximum_fractures_per_actor_per_tick: 8,
@@ -1495,6 +1505,7 @@ mod ffi {
         shear_elastic: f32,
         shear_fatal: f32,
         elastic_modulus: f32,
+        residual_area_fraction: f32,
     }
 
     struct FfiDestructibleSettings {
@@ -2105,6 +2116,7 @@ impl From<DestructibleSettings> for ffi::FfiDestructibleSettings {
                     shear_elastic: material.shear_elastic,
                     shear_fatal: material.shear_fatal,
                     elastic_modulus: material.elastic_modulus,
+                    residual_area_fraction: material.residual_area_fraction,
                 })
                 .collect(),
             maximum_bodies: value.maximum_bodies,
