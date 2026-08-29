@@ -324,3 +324,32 @@ fn audit_every_building() {
         println!("\nnot stable: {}", unresolved.join(", "));
     }
 }
+
+/// Wall-clock cost of simulating a fixed slice of time, at whatever the
+/// solver's iteration count is set to.
+///
+/// The question this answers is the only one that matters for shipping: a
+/// 60 Hz tick has 16.7 ms, so a run that takes longer in wall clock than the
+/// sim time it covers cannot be played. Reported as a real-time factor, where
+/// 1.0 is exactly break-even and lower is headroom.
+#[test]
+#[ignore = "measurement"]
+fn tick_cost() {
+    let name = std::env::var("AUDIT_PACKS").unwrap_or_else(|_| "minas-tirith".into());
+    let secs: f32 = std::env::var("COST_SECS")
+        .ok().and_then(|v| v.parse().ok()).unwrap_or(10.0);
+    let pack = load(&name);
+    let mut rig = Rig::spin_up(&pack).expect("install");
+    // Skip the spawn transient: measure a structure mid-settle, which is the
+    // expensive regime and the one destruction puts a city back into.
+    rig.run_ticks(HZ).expect("tick");
+
+    let ticks = (secs * HZ as f32) as u32;
+    let start = std::time::Instant::now();
+    rig.run_ticks(ticks).expect("tick");
+    let wall = start.elapsed().as_secs_f32();
+    println!(
+        "[cost] {name}: {:.1} s of sim in {:.2} s wall = {:.2}x real time, {:.2} ms/tick",
+        secs, wall, secs / wall, wall * 1000.0 / ticks as f32
+    );
+}
