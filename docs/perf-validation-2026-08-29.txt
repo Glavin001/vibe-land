@@ -1,0 +1,55 @@
+# Improvement validation — scenario=bombard-short reps=8
+# A = optimisation ON (current default), B = OFF. Want: 'A faster'.
+
+## gpu bond-stress walk   (A: BLAST_BOND_STRESS_GPU=1   B: BLAST_BOND_STRESS_GPU=0)
+=== bombard-short : A=[BLAST_BOND_STRESS_GPU=1] vs B=[BLAST_BOND_STRESS_GPU=0] , 8 pairs ===
+  cpu_ms         A=  16.404 B=  26.486  delta +66.63%  B wins 0/8  p=0.008  A faster
+  stress_solve   A=   4.207 B=   6.804  delta +57.13%  B wins 0/8  p=0.008  A faster
+  physx_step     A=   5.341 B=   5.363  delta  +1.07%  B wins 4/8  p=1.000  no call
+  cb_drain       A=   0.256 B=   0.260  delta  +2.33%  B wins 2/8  p=0.289  no call
+  gpu_solve      A=   0.585 B=   0.605  delta  +4.06%  B wins 0/8  p=0.008  A faster
+  cpu_solve      A=   5.250 B=  15.382  delta +194.70%  B wins 0/8  p=0.008  A faster
+  cpu_ms/awake   A=  50.061 B=  79.718  delta +60.27%  B wins 0/8  p=0.008  A faster
+  stress_solve/awake A=  14.712 B=  21.804  delta +48.07%  B wins 0/8  p=0.008  A faster
+  cpu_solve/awake A=  19.644 B=  48.490  delta +148.53%  B wins 0/8  p=0.008  A faster
+
+## cuda graph update (vs recapture)   (A: BLAST_GPU_GRAPH_UPDATE=1   B: BLAST_GPU_GRAPH_UPDATE=0)
+=== bombard-short : A=[BLAST_GPU_GRAPH_UPDATE=1] vs B=[BLAST_GPU_GRAPH_UPDATE=0] , 8 pairs ===
+  ! work differs: bonds median A=651390 B=776537 (+19.2%) -- cost comparison is suspect
+  ! work differs: awake median A=142005 B=152816 (+7.6%) -- cost comparison is suspect
+  ! work differs: contacts_q median A=72549372 B=99276056 (+36.8%) -- cost comparison is suspect
+  ! work differs: bodies median A=215763 B=244302 (+13.2%) -- cost comparison is suspect
+  cpu_ms         A=  23.719 B=  28.067  delta +17.16%  B wins 0/8  p=0.008  A faster
+  stress_solve   A=   5.898 B=   9.362  delta +57.40%  B wins 0/8  p=0.008  A faster
+  physx_step     A=   4.260 B=   4.555  delta  +7.65%  B wins 1/8  p=0.070  no call
+  cb_drain       A=   0.247 B=   0.271  delta  +9.35%  B wins 2/8  p=0.289  no call
+  gpu_solve      A=   0.614 B=   1.360  delta +127.43%  B wins 0/8  p=0.008  A faster
+  cpu_solve      A=  14.133 B=  17.526  delta +23.47%  B wins 0/8  p=0.008  A faster
+  cpu_ms/awake   A=  71.425 B=  78.850  delta  +8.04%  B wins 1/8  p=0.070  no call
+  stress_solve/awake A=  19.380 B=  25.815  delta +33.07%  B wins 0/8  p=0.008  A faster
+  cpu_solve/awake A=  44.044 B=  53.166  delta +18.87%  B wins 0/8  p=0.008  A faster
+
+## stable graph   (A: BLAST_GPU_STABLE_GRAPH=1   B: BLAST_GPU_STABLE_GRAPH=0)
+=== bombard-short : A=[BLAST_GPU_STABLE_GRAPH=1] vs B=[BLAST_GPU_STABLE_GRAPH=0] , 8 pairs ===
+  cpu_ms         A=  24.206 B=  24.430  delta  +0.64%  B wins 4/8  p=1.000  no call
+  stress_solve   A=   6.070 B=   6.213  delta  +0.05%  B wins 4/8  p=1.000  no call
+  physx_step     A=   4.364 B=   4.365  delta  +1.08%  B wins 3/8  p=0.727  no call
+  cb_drain       A=   0.250 B=   0.251  delta  +1.21%  B wins 3/8  p=0.727  no call
+  gpu_solve      A=   0.615 B=   0.606  delta  -1.65%  B wins 5/8  p=0.727  no call
+  cpu_solve      A=  14.410 B=  14.495  delta  +1.00%  B wins 3/8  p=0.727  no call
+  cpu_ms/awake   A=  73.259 B=  73.545  delta  +0.01%  B wins 4/8  p=1.000  no call
+  stress_solve/awake A=  19.971 B=  20.127  delta  +1.13%  B wins 3/8  p=0.727  no call
+  cpu_solve/awake A=  45.053 B=  45.352  delta  +1.42%  B wins 3/8  p=0.727  no call
+
+## parallel contact classify   (A: VIBE_PHYSX_CONTACT_CLASSIFY=1   B: VIBE_PHYSX_CONTACT_CLASSIFY=0)
+=== bombard-short : A=[VIBE_PHYSX_CONTACT_CLASSIFY=1] vs B=[VIBE_PHYSX_CONTACT_CLASSIFY=0] , 8 pairs ===
+  cpu_ms         A=  23.674 B=  23.599  delta  -0.49%  B wins 4/8  p=1.000  no call
+  stress_solve   A=   5.866 B=   6.003  delta  +2.81%  B wins 3/8  p=0.727  no call
+  physx_step     A=   4.246 B=   4.384  delta  +3.02%  B wins 1/8  p=0.070  no call
+  cb_drain       A=   0.246 B=   0.370  delta +50.79%  B wins 0/8  p=0.008  A faster
+  gpu_solve      A=   0.605 B=   0.602  delta  -0.57%  B wins 5/8  p=0.727  no call
+  cpu_solve      A=  14.093 B=  14.272  delta  +2.08%  B wins 2/8  p=0.289  no call
+  cpu_ms/awake   A=  71.585 B=  71.403  delta  -1.38%  B wins 6/8  p=0.289  no call
+  stress_solve/awake A=  19.354 B=  19.523  delta  +0.70%  B wins 3/8  p=0.727  no call
+  cpu_solve/awake A=  43.796 B=  44.596  delta  +1.06%  B wins 3/8  p=0.727  no call
+
