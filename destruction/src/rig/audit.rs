@@ -205,3 +205,40 @@ pub fn audit(pack: &ScenePack, max_secs: f32) -> Audit {
         bonds: pack.bonds.len(),
     }
 }
+
+/// Longest chain of bonds between an anchored chunk and the farthest chunk
+/// from it: the load path, counted in joints.
+///
+/// This is what predicts how long a structure takes to settle, and it is not
+/// chunk count. The parking garage has 3,350 chunks over 19 hops and settles
+/// in four seconds; a 32-floor component stack has 2,240 over roughly seventy
+/// and never does. Conjugate gradient moves information about one hop per
+/// iteration, so depth is the thing a fixed iteration budget is spent against.
+pub fn hops_to_ground(pack: &ScenePack) -> u32 {
+    let n = pack.nodes.len();
+    let mut adj: Vec<Vec<u32>> = vec![Vec::new(); n];
+    for b in &pack.bonds {
+        adj[b.node0 as usize].push(b.node1);
+        adj[b.node1 as usize].push(b.node0);
+    }
+    let mut dist = vec![u32::MAX; n];
+    let mut queue = std::collections::VecDeque::new();
+    for (i, node) in pack.nodes.iter().enumerate() {
+        if node.is_support() {
+            dist[i] = 0;
+            queue.push_back(i as u32);
+        }
+    }
+    let mut far = 0;
+    while let Some(x) = queue.pop_front() {
+        let d = dist[x as usize];
+        far = far.max(d);
+        for &y in &adj[x as usize] {
+            if dist[y as usize] == u32::MAX {
+                dist[y as usize] = d + 1;
+                queue.push_back(y);
+            }
+        }
+    }
+    far
+}

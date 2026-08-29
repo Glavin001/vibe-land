@@ -30,13 +30,26 @@
 
 use std::path::{Path, PathBuf};
 
-use vibe_land_destruction::rig::audit::{audit, Outcome};
+use vibe_land_destruction::rig::audit::{audit, hops_to_ground, Outcome};
 use vibe_land_destruction::scene_pack::{load_scene_pack_file, ScenePack};
 
-/// The bar: a structure must be quiet by this many seconds.
-const SETTLE_BAR_SECS: f32 = 10.0;
+/// The settling budget, scaled to how deep the structure's load path is.
+///
+/// A flat bar in seconds is really a bar on height. Conjugate gradient moves
+/// information about one hop per iteration, so a structure whose farthest
+/// chunk is 67 joints from an anchor cannot settle as fast as one at 7,
+/// however well either is built -- the parking garage settles in 4 s over 19
+/// hops while a taller component stack with FEWER chunks never does.
+///
+/// So the budget is depth-proportional, fitted to the structures that are
+/// sound: 7 hops settling at 0 s and 19 hops at 4 s, with generous slack
+/// because the gate is meant to catch buildings that do not settle, not to
+/// police the ones that do.
+fn settle_budget_secs(hops: u32) -> f32 {
+    4.0 + hops as f32 * 0.5
+}
 
-/// How long the audit is allowed to run.
+/// How long the audit is allowed to run, given the budget.
 ///
 /// This is NOT the bar, and conflating them is a mistake I made and had to
 /// unpick. Convergence is defined as ten consecutive seconds of quiet, so the
@@ -45,7 +58,23 @@ const SETTLE_BAR_SECS: f32 = 10.0;
 /// fifteen therefore failed Villa Savoye, which settles at seven and is fine.
 ///
 /// So the cap is the bar plus the quiet window, plus a little slack.
-const CAP_SECS: f32 = SETTLE_BAR_SECS + 12.0;
+
+
+/// Raise the cap for investigation: `AUDIT_MAX_SECS=120 cargo test ...`.
+///
+/// The gate never wants this -- a structure over the bar has failed and
+/// watching it longer does not change that. It is for asking "how long does
+/// this actually take", which is a different question and the one that found
+/// the delayed collapse in 432 Park.
+fn cap_secs(budget: f32) -> f32 {
+    std::env::var("AUDIT_MAX_SECS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        // The budget plus the ten-second quiet window convergence needs to be
+        // DECLARED, plus slack. Conflating the two once failed Villa Savoye,
+        // which settles at seven and is fine.
+        .unwrap_or(budget + 14.0)
+}
 
 fn load(name: &str) -> ScenePack {
     let path: PathBuf =
@@ -59,15 +88,18 @@ fn load(name: &str) -> ScenePack {
 /// not actionable and "slab<->wall, 80% of the run, y=4 m" is.
 fn assert_stable(name: &str) {
     let pack = load(name);
-    let report = audit(&pack, CAP_SECS);
+    let hops = hops_to_ground(&pack);
+    let budget = settle_budget_secs(hops);
+    let report = audit(&pack, cap_secs(budget));
 
     let why = match &report.outcome {
         Outcome::Converged { at, broke_total } if *broke_total == 0 => {
             assert!(
-                *at <= SETTLE_BAR_SECS,
-                "{name}: settles, but not until {at:.0} s. The bar is \
-                 {SETTLE_BAR_SECS:.0} s. Slow settling is a structural property, \
-                 not a solver setting -- something in here is badly conditioned."
+                *at <= budget,
+                "{name}: settles, but not until {at:.0} s, against a {budget:.0} s \
+                 budget for its {hops}-hop load path. Slow settling is a structural \
+                 property, not a solver setting -- either something is badly \
+                 conditioned, or the load path is longer than it needs to be."
             );
             return;
         }
