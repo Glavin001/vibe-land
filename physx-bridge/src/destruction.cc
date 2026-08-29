@@ -426,6 +426,12 @@ struct DestructionManager::Slot {
   double last_hw_walk_in_ms = 0.0;
   double last_hw_reset_ms = 0.0;
   double last_hw_bond_stress_ms = 0.0;
+  // Cumulative per solver; carried per slot so the span can accumulate
+  // DELTAS and report a true cross-slot total. max() across slots would take
+  // the skip count from one structure and the launch count from another, and
+  // the two would not be addable.
+  std::uint64_t last_bs_gpu_skipped = 0;
+  std::uint64_t last_bs_gpu_runs = 0;
   double last_hw_node_stress_ms = 0.0;
   double last_stress_drain_ms = 0.0;
   double last_stress_calc_error_ms = 0.0;
@@ -3634,6 +3640,24 @@ FfiDestructionStats DestructionManager::destruction_stats() const {
     bond_stress_skipped_ =
         std::max(bond_stress_skipped_,
                  static_cast<std::uint64_t>(telemetry.bondStressGroupsSkipped));
+    // Deltas, not max: skips and launches are two halves of one ratio and
+    // have to come from the same population. Taking the max across slots
+    // pairs the idlest structure's skip count with the busiest one's launch
+    // count, which reads as a plausible number and means nothing.
+    {
+      const std::uint64_t sk =
+          static_cast<std::uint64_t>(telemetry.bondStressGpuSkipped);
+      if (sk >= slot_ptr->last_bs_gpu_skipped) {
+        bs_gpu_skipped_ += sk - slot_ptr->last_bs_gpu_skipped;
+      }
+      slot_ptr->last_bs_gpu_skipped = sk;
+      const std::uint64_t rn =
+          static_cast<std::uint64_t>(telemetry.bondStressGpuRuns);
+      if (rn >= slot_ptr->last_bs_gpu_runs) {
+        bs_gpu_runs_ += rn - slot_ptr->last_bs_gpu_runs;
+      }
+      slot_ptr->last_bs_gpu_runs = rn;
+    }
     bs_par_checks_ =
         std::max(bs_par_checks_,
                  static_cast<std::uint64_t>(telemetry.bondStressParallelChecks));
@@ -3798,6 +3822,8 @@ FfiDestructionStats DestructionManager::destruction_stats() const {
             static_cast<double>(bondless_verify_mismatches_), 2);
   push_span("bond_stress_skipped",
             static_cast<double>(bond_stress_skipped_), 2);
+  push_span("bs_gpu_skipped", static_cast<double>(bs_gpu_skipped_), 2);
+  push_span("bs_gpu_runs", static_cast<double>(bs_gpu_runs_), 2);
   push_span("bs_par_checks", static_cast<double>(bs_par_checks_), 2);
   push_span("bs_par_mismatches", static_cast<double>(bs_par_mismatches_), 2);
   push_span("hw_walk_in_ms", hw_walk_in_ms_, 0);
