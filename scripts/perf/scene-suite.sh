@@ -24,8 +24,14 @@ set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 root="$(cd "$here/../.." && pwd)"
 bin="$root/target/release/record-city-trace"
+
+# Measure the configuration production actually runs. Sourcing the same file
+# the server does is the only thing that keeps these numbers meaningful; when
+# the suite relied on library defaults instead it reported idle at 14.9 ms
+# against production's 4.0, because BLAST_BOND_STRESS_GPU defaults OFF.
+. "$root/scripts/physics-env.sh"
 out="${SUITE_OUT:-/tmp/scene-suite}"
-scene="${SUITE_SCENE:-fractured-downtown.json}"
+scene="${SUITE_SCENE:-$VIBE_CITY_SCENE}"
 
 # name : grid : seconds : shots : shot-interval-ticks
 #
