@@ -819,6 +819,59 @@ void DestructionManager::create_destructible(
     stress_materials[i].shearElasticLimit = src.shear_elastic;
     stress_materials[i].shearFatalLimit = src.shear_fatal;
     stress_materials[i].elasticModulusPa = src.elastic_modulus;
+
+    // CHUNK crushing, opt-in via BLAST_CRUSH_CAP (Pa).
+    //
+    // The bond limits above decide whether a JOINT fails. They cannot express
+    // the thing that actually brings a flat-plate garage down when its columns
+    // go: the surviving columns inherit the tributary area of the ones that
+    // left, and concrete answers that by CRUSHING. Pipers Row, 1997, was a
+    // flat-slab car park that came down exactly this way.
+    //
+    // Without it a column chunk is indestructible by construction -- only its
+    // bonds can fail -- so a deck can sit on a handful of columns at twice
+    // their elastic limit indefinitely, which is what it does today.
+    //
+    // Drucker-Prager with a hydrostatic cap, which is the standard model for
+    // concrete under confinement. Values are derived from the material's own
+    // compressive limit rather than invented: cohesion at a quarter of it is
+    // the usual approximation for concrete, and the friction slope of 1.0 is
+    // mid-range for a cohesive-frictional solid.
+    if (const char *raw = std::getenv("BLAST_CRUSH_CAP")) {
+      const float cap = std::strtof(raw, nullptr);
+      if (cap > 0.0f) {
+        stress_materials[i].crushCapPressure = cap;
+        // Cohesion derived from the stress at which the chunk should crush,
+        // not guessed. Under uniaxial compression s the invariants are
+        // p = s/3 and q = s, so the Drucker-Prager surface q = c + slope*p
+        // yields at s = c / (1 - slope/3). Inverting: c = s * (1 - slope/3).
+        //
+        // A first attempt used c = 0.25 * f with slope 1, which puts uniaxial
+        // crushing at 18 MPa on a material whose joints survive to 48 -- so
+        // every column crushed at working load and the garage fell down intact,
+        // at every cap from 60 MPa to 600. The cap was never the governing
+        // term; the cone was.
+        //
+        // Target the FATAL limit: a chunk should grind itself up only past the
+        // point where its own joints would already have failed.
+        const float slope = 1.0f;
+        const float crush_at = src.compression_fatal;
+        stress_materials[i].crushCohesion = crush_at * (1.0f - slope / 3.0f);
+        stress_materials[i].crushFrictionSlope = slope;
+        // Plastic work to fully comminute, J/m^3. Concrete takes far more
+        // energy to grind to dust than to crack, which is what keeps this from
+        // pulverising everything the moment it yields.
+        stress_materials[i].crushEnergy = 1.0e6f;
+        stress_materials[i].crushViscosity = 1.0e4f;
+        // CEB dynamic increase factor: concrete is stronger the faster it is
+        // loaded, which is why a slow overload crushes where an impact spalls.
+        stress_materials[i].crushStrainRateExponent = 0.014f;
+        stress_materials[i].crushReferenceStrainRate = 30.0e-6f;
+        // Most of the mass becomes rubble rather than vanishing.
+        stress_materials[i].crushDebrisMassFraction = 0.5f;
+        stress_materials[i].crushDebrisFragmentCount = 4;
+      }
+    }
   }
   desc.stressMaterials = stress_materials.data();
   desc.stressMaterialCount = static_cast<std::uint32_t>(stress_materials.size());

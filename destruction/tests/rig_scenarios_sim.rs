@@ -515,3 +515,77 @@ fn the_real_garage_loses_one_side() {
     );
     eprintln!("{}", report.card(&wounded, "real garage, one side cut"));
 }
+
+/// How many ground columns can be cut before the garage comes down.
+///
+/// The reported behaviour is that almost every pillar has to go before it
+/// falls, which is not what a parking deck does: a flat plate on a column grid
+/// has no other load path, so once a large enough patch of grid is gone the
+/// plate has to hog across the gap and the remaining columns take a moment
+/// they were never sized for.
+///
+/// So this is a SWEEP rather than a pass/fail: cut a growing fraction of the
+/// ground-storey columns, and report where the deck actually starts falling.
+/// The number that matters is the threshold, and a threshold near 100% is the
+/// bug being described.
+#[test]
+#[ignore = "measurement: reports the collapse threshold"]
+fn how_many_columns_the_garage_survives() {
+    let pack = load("parking-garage");
+    println!("\n  cut    columns   deck drop @6s   broken bonds   verdict");
+    for percent in [25u32, 50, 75, 90, 100] {
+        // Ground storey only: the columns actually holding the building up.
+        let ground: Vec<u32> = select_nodes_where(&pack, &NodeSel::role("column"), |_, node| {
+            node.centroid.y < 4.0
+        });
+        assert!(!ground.is_empty(), "no ground-storey columns found");
+        let take = (ground.len() * percent as usize / 100).min(ground.len());
+        let cut: Vec<u32> = ground.into_iter().take(take).collect();
+
+        let wounded = remove_nodes(&pack, &cut);
+        let deck: Vec<u32> = select_nodes_where(&wounded, &NodeSel::role("slab"), |_, node| {
+            node.centroid.y > 3.0 && node.centroid.y < 8.0
+        });
+        let mut rig = Rig::spin_up(&wounded).expect("install");
+        rig.run_secs(6.0).expect("tick");
+        let drop = rig.median_drop(&deck);
+        let broken = rig.broken_bonds();
+        // A deck that has moved less than a tenth of a metre in six seconds is
+        // standing, whatever its stress readings say.
+        let verdict = if drop > 1.0 {
+            "COLLAPSING"
+        } else if drop > 0.1 {
+            "sagging"
+        } else {
+            "still standing"
+        };
+        // Peak utilisation matters as much as the drop: a deck that is not
+        // moving AND not straining means the solver is not seeing the load,
+        // which is a different bug from a deck that is strained but too strong.
+        let report = rig.stress_report();
+        let peak = report.bonds.first().map(|b| b.utilisation).unwrap_or(0.0);
+        // What the SURVIVING columns are carrying. In a real flat-plate garage
+        // this is the thing that fails: the remaining columns inherit the
+        // tributary area of the ones that went, and either they crush or the
+        // slab punches through around their heads. Pipers Row, 1997, was
+        // exactly that.
+        let col_peak = report
+            .bonds
+            .iter()
+            .filter(|b| {
+                let r0 = wounded.node_role(b.node0 as usize);
+                let r1 = wounded.node_role(b.node1 as usize);
+                r0 == "column" || r1 == "column"
+            })
+            .map(|b| b.utilisation)
+            .fold(0.0f32, f32::max);
+        let hot = report
+            .bonds
+            .first()
+            .map(|b| format!("{} {:.3} m2", b.governing_mode(), b.area))
+            .unwrap_or_default();
+        println!(
+            "  {percent:>3}%   {take:>7}   {drop:>11.2} m   {broken:>12}                peak {peak:>5.2} ({hot})  columns {col_peak:>5.2}   {verdict}"
+        );
+    }
+}
