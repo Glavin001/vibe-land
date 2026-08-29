@@ -117,7 +117,8 @@ pub fn facade_aim(pack: &ScenePack) -> ([f32; 3], [f32; 3]) {
 
 pub const HZ: u32 = 60;
 pub const DT: f32 = 1.0 / HZ as f32;
-pub const GRAVITY: [f32; 3] = [0.0, -9.81, 0.0];
+/// Re-exported so rig users get the production value by construction.
+pub use crate::city_config::CITY_GRAVITY as GRAVITY;
 const GROUP_STATIC: u32 = 1 << 0;
 
 /// When a rig counts as "at rest".

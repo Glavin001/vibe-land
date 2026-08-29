@@ -159,6 +159,17 @@ pub fn stress_settings(pack_materials: &[StressLimits]) -> StressSolverSettings 
     settings
 }
 
+/// Gravity the destructible city runs under, m/s^2.
+///
+/// One definition, imported by the server, the rig, the benches and the trace
+/// recorder, because it was four copies of the same literal and a structural
+/// test measured against the wrong one is worse than no test. Note the game is
+/// NOT uniformly this: the player and vehicle arena runs at -20 (roughly twice
+/// Earth, for feel), while the city's destruction physics runs at -9.81. Both
+/// are deliberate and they are different numbers for different systems; this
+/// is the one buildings actually stand in.
+pub const CITY_GRAVITY: [f32; 3] = [0.0, -9.81, 0.0];
+
 /// What one shot does to a structure.
 ///
 /// The match server, the trace recorder and the structural rig all fire "a

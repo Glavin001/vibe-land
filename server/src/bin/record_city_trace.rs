@@ -55,7 +55,7 @@ use vibe_land_physx_bridge::{
 
 const GROUP_STATIC: u32 = 1 << 0;
 const ALL_GROUPS: u32 = u32::MAX;
-const GRAVITY: [f32; 3] = [0.0, -9.81, 0.0];
+use vibe_land_destruction::city_config::CITY_GRAVITY as GRAVITY;
 
 /// The match server's own shot, so fracture in a recording looks like play
 /// rather than like a synthetic impulse tuned to make the codec look good.

@@ -54,7 +54,7 @@
 //! resolves inside the cap it says so, which is a real answer too -- a
 //! structure still arguing with gravity after five minutes is not stable.
 //!
-//! AUDIT_PACKS=name,name limits it; AUDIT_MAX_SECS caps the run (default 300).
+//! AUDIT_PACKS=name,name limits it; AUDIT_MAX_SECS caps the run (default 15).
 #![cfg(feature = "physx")]
 
 use std::collections::HashMap;
@@ -267,10 +267,21 @@ fn audit_every_building() {
     let names: Vec<String> = std::env::var("AUDIT_PACKS")
         .map(|v| v.split(',').map(str::to_string).collect())
         .unwrap_or_else(|_| DEFAULT_PACKS.iter().map(|s| s.to_string()).collect());
+    // Fifteen seconds, not three hundred.
+    //
+    // The bar is that a structure settles inside ten, so waiting five minutes
+    // to find out it did not is five minutes spent confirming a failure that
+    // was obvious at fifteen. A cap slightly above the bar gives the verdict
+    // and a little context about which side of it the structure fell on.
+    //
+    // Raise it deliberately when the question is "how long does this actually
+    // take" rather than "does it pass" -- that is what found the delayed
+    // collapse in 432 Park -- but it is the wrong default for a loop that
+    // should feel instant.
     let max_secs: f32 = std::env::var("AUDIT_MAX_SECS")
         .ok()
         .and_then(|v| v.parse().ok())
-        .unwrap_or(300.0);
+        .unwrap_or(15.0);
 
     let mut unresolved = Vec::new();
     for name in &names {

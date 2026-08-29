@@ -34,7 +34,7 @@ const SETTLE_TICKS: u32 = 300;
 /// state we actually care about, many bodies active at once.
 const SHOT_INTERVAL_TICKS: u32 = 20;
 const DT: f32 = 1.0 / 60.0;
-const GRAVITY: [f32; 3] = [0.0, -9.81, 0.0];
+use vibe_land_destruction::city_config::CITY_GRAVITY as GRAVITY;
 
 const GROUP_STATIC: u32 = 1 << 0;
 const ALL_GROUPS: u32 = u32::MAX;
