@@ -77,7 +77,7 @@ report)
   python3 "$here/scene-suite.py" report "${args[@]}"
   ;;
 ab)
-  reps=5; arm_a=""; arm_b=""; only=""
+  reps=6; arm_a=""; arm_b=""; only=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --reps) reps="$2"; shift 2 ;;

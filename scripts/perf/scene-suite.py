@@ -21,6 +21,9 @@ from math import comb
 # Column name -> what it is. Cost columns are timings; work columns are counts
 # that must match before a cost comparison is meaningful.
 COST = ["cpu_ms", "stress_solve", "physx_step", "cb_drain", "gpu_solve", "cpu_solve"]
+# Work-normalized variants, appended by summarize(). Judged the same way,
+# but immune to the arms destroying different amounts of the city.
+NORMALIZED = ["cpu_ms/awake", "stress_solve/awake", "cpu_solve/awake"]
 WORK = ["bonds", "awake", "contacts_q", "bodies"]
 
 
@@ -65,11 +68,19 @@ def summarize(path, settle=60):
         if v:
             out[w] = {"final": v[-1], "peak": max(v), "integral": sum(v)}
     # Cost per unit work: the only cross-run-comparable cost on a chaotic scene.
+    # Cost per unit work. On a chaotic scene the arms do NOT do the same job --
+    # turning one solver flag off changed total bonds broken by 3.2% -- so the
+    # raw medians are confounded by how much destruction happened. Dividing the
+    # cost by the work makes the arms comparable again, and these are the
+    # metrics an A/B should be decided on whenever the work check fires.
     awake = col(rows, "awake", skip=settle)
-    cpu = col(rows, "cpu_ms", skip=settle)
     body_ticks = sum(awake)
-    if body_ticks > 0 and cpu:
-        out["us_per_awake_body"] = 1000.0 * sum(cpu) / body_ticks
+    for c in ("cpu_ms", "stress_solve", "cpu_solve"):
+        v = col(rows, c, skip=settle)
+        if body_ticks > 0 and v:
+            out[f"{c}/awake"] = {"p50": 1000.0 * sum(v) / body_ticks}
+    if body_ticks > 0:
+        out["us_per_awake_body"] = out.get("cpu_ms/awake", {}).get("p50", 0.0)
     return out
 
 
@@ -90,6 +101,18 @@ def fmt_report(results):
     return "\n".join(lines)
 
 
+def min_pairs_note(n):
+    """A sign test on n pairs cannot go below p = 2/2^n even if one arm wins
+    every single pair. At n=4 the floor is 0.125, so four reps can NEVER
+    produce a significant call however clean the result looks. Six is the
+    smallest useful number (floor 0.031)."""
+    floor = min(1.0, 2.0 / 2 ** n)
+    if floor >= 0.05:
+        return (f"  ! {n} pairs cannot reach p<0.05 (best possible p={floor:.3f}); "
+                f"use at least 6")
+    return None
+
+
 def sign_test(deltas):
     """Two-sided sign test. With no real effect each pair is a coin flip, so
     this is what stops 'B won 7 of 10' from being read as a result."""
@@ -107,6 +130,9 @@ def ab(a_paths, b_paths, settle=60):
     b = [summarize(p, settle) for p in b_paths]
     n = min(len(a), len(b))
     out = []
+    note = min_pairs_note(n)
+    if note:
+        out.append(note)
     # Work check first -- see module docstring.
     for w in WORK:
         av = [x[w]["integral"] for x in a[:n] if w in x]
@@ -117,7 +143,7 @@ def ab(a_paths, b_paths, settle=60):
             if abs(drift) > 2.0:
                 out.append(f"  ! work differs: {w} median A={am:.0f} B={bm:.0f} "
                            f"({drift:+.1f}%) -- cost comparison is suspect")
-    for c in COST:
+    for c in COST + NORMALIZED:
         av = [x[c]["p50"] for x in a[:n] if c in x]
         bv = [x[c]["p50"] for x in b[:n] if c in x]
         if len(av) < n or len(bv) < n or not av:
