@@ -231,6 +231,26 @@ impl Args {
     }
 }
 
+/// CPU time consumed by THIS PROCESS (all threads), in nanoseconds.
+///
+/// Wall-clock on a shared box measures the machine, not us: a co-tenant that
+/// saturates the GPU or the cores inflates every span we record without our
+/// program doing one instruction more. CLOCK_PROCESS_CPUTIME_ID only advances
+/// while our threads are actually on-CPU, so it is immune to other processes'
+/// scheduling -- the residual coupling is cache and memory bandwidth, not
+/// runqueue time. It sums across threads, so a tick using 4 workers for 2 ms
+/// each reads as 8 ms of CPU: that is the compute cost, which is the quantity
+/// we are trying to drive down.
+fn process_cpu_ns() -> u64 {
+    let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+    // Safety: writing into a stack timespec with a valid clock id.
+    let rc = unsafe { libc::clock_gettime(libc::CLOCK_PROCESS_CPUTIME_ID, &mut ts) };
+    if rc != 0 {
+        return 0;
+    }
+    (ts.tv_sec as u64) * 1_000_000_000 + (ts.tv_nsec as u64)
+}
+
 fn default_scene_path() -> PathBuf {
     let file =
         std::env::var("VIBE_CITY_SCENE").unwrap_or_else(|_| "high-rise-10f-local.json".to_string());
@@ -851,7 +871,19 @@ fn main() -> Result<()> {
         table.edges.len()
     );
 
-    let mut world = World::new(WorldConfig::default()).context("PhysX GPU world")?;
+    // PhysX's CPU dispatcher width is a determinism lever: task-graph work is
+    // split across these threads, and the split is what makes contact
+    // generation vary run to run. Overridable so a determinism check can pin
+    // it to 1 without a rebuild.
+    let mut world_config = WorldConfig::default();
+    if let Ok(v) = std::env::var("VIBE_PHYSX_CPU_THREADS") {
+        if let Ok(n) = v.parse::<u32>() {
+            if n > 0 {
+                world_config.cpu_threads = n;
+            }
+        }
+    }
+    let mut world = World::new(world_config).context("PhysX GPU world")?;
     world
         .add_static_box(StaticBoxDesc {
             entity_id: 1,
@@ -1012,7 +1044,7 @@ fn main() -> Result<()> {
                  sup_calls,sup_kin,sup_fy,sup_exist,sup_new,sup_staged,sup_unch,sup_rows,\
                  gpu_host_work,gpu_host_blocked,st_init,st_err,st_copy,st_graph,st_drain,hw_in,hw_reset,hw_bond,hw_node,bs_skip,bs_gpu_skip,bs_gpu_runs,bs_par_ck,bs_par_mm,cb_drain,cb_census,cb_resize,bl_ck,bl_mm,pairs,\
                  contacts_q,islands_skip,islands_tot,quiet,freeze,unfreeze,contact_wakes,\
-                 min_y,pose_quiet,overstressed,patch_hw,escaped"
+                 min_y,pose_quiet,overstressed,patch_hw,escaped,cpu_ms"
             )?;
             Some(w)
         }
@@ -1108,6 +1140,7 @@ fn main() -> Result<()> {
         }
 
         let sim_started = std::time::Instant::now();
+        let sim_cpu_started = process_cpu_ns();
         // Resim capture belongs here -- before simulate, with last tick's
         // contacts still queued -- not at the end of the destruction tick.
         destruction.pre_step(&mut world);
@@ -1139,6 +1172,7 @@ fn main() -> Result<()> {
             .post_step(&mut world, dt, GRAVITY)
             .map_err(|error| anyhow::anyhow!("{error}"))?;
         let sim_ms = sim_started.elapsed().as_secs_f32() * 1000.0;
+        let sim_cpu_ms = (process_cpu_ns().saturating_sub(sim_cpu_started)) as f64 / 1.0e6;
 
         // Bracketed as its own column: these FFI reads used to fall in the
         // gap between `sim` and `enc`, counted by NEITHER — per-tick work
@@ -1163,7 +1197,7 @@ fn main() -> Result<()> {
                 // milliseconds and making them look quantised. Rust
                 // prints shortest-roundtrip for floats, which is what a
                 // CSV wants anyway.
-                "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
+                "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
                 tick_index, s.chunk_bodies, s.awake_chunk_bodies, s.frozen_chunk_bodies,
                 s.sleeping_chunk_bodies, s.broken_bonds,
                 s.stress_solve_ms, s.begin_ms, s.solve_ms, s.end_ms, s.readback_ms,
@@ -1242,7 +1276,8 @@ fn main() -> Result<()> {
                 s.quiet_slot_ticks, s.freeze_flips, s.unfreeze_flips, s.contact_wakes,
                 s.min_body_y, s.pose_quiet_awake_bodies, s.overstressed_bonds,
                 ws.map(|w| w.gpu_rigid_patch_high_water).unwrap_or(0),
-                s.escaped_bodies_parked
+                s.escaped_bodies_parked,
+                sim_cpu_ms
             )?;
         }
 

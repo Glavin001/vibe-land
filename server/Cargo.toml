@@ -18,6 +18,7 @@ cuda-stress = ["destruction", "vibe-land-physx-bridge/cuda-stress"]
 blast-core = ["destruction", "vibe-land-destruction/blast-core"]
 
 [dependencies]
+libc = "0.2"
 vibe-netcode = { path = "../netcode", features = ["simd-stable"] }
 vibe-land-shared = { path = "../shared", features = ["simd-stable"] }
 vibe-land-destruction = { path = "../destruction" }
