@@ -192,3 +192,26 @@ CPU**, at 53.9 ms/tick against a 16.7 ms budget — a visible hitch of roughly a
 quarter second whenever the scene loads. That is 65× the converged per-tick
 cost, and it is the real target for baking a precomputed stress state into the
 scene pack: the win is startup, not steady state.
+
+## Current state — all optimisations on (56a72be)
+
+| scenario | cpu p50 | cpu p95 | cpu max | stress p50 | physx p50 | peak awake | bonds broken | µs/awake body |
+|---|---|---|---|---|---|---|---|---|
+| idle | **0.36** | 0.71 | 4.44 | 0.05 | 0.13 | 0 | 0 | — |
+| bombard-short | 28.23 | 36.85 | 57.75 | 12.21 | 6.61 | 1,872 | 7,732 | 20.82 |
+| bombard-slow | 20.44 | 36.29 | 45.40 | 9.07 | 5.80 | 2,001 | 9,016 | 16.71 |
+| bombard-med | 36.87 | 74.68 | 102.91 | 12.87 | 10.63 | 4,523 | 20,070 | 13.02 |
+| bombard-fast | 45.77 | 77.94 | 93.31 | 14.35 | 11.37 | 5,873 | 24,429 | 12.67 |
+
+Idle went 14.86 (wrong config) -> 4.06 (production baseline) -> **0.36-0.84**,
+i.e. a still city now costs ~2% of the 16.7 ms frame budget instead of ~24%.
+
+Caveat on the loaded rows: these are SINGLE runs. Against the equivalent
+pre-optimisation report they look 25-35% better at comparable damage (24,429 vs
+24,212 bonds broken), but the controlled 8-pair A/B of the quiet-skip under
+bombardment returned NO CALL. So the loaded improvement is suggestive and not
+established; only the idle result is statistically confirmed.
+
+Under load the tick is still far over budget (36.9 ms p50 at bombard-med, 102.9
+max against 16.7). The remaining cost is dominated by PhysX's own rigid-body
+solve, which scales with awake bodies and is explicitly out of scope.
