@@ -248,3 +248,80 @@ compares the between-arm difference against the WITHIN-ARM drift observed in
 the same run, and distinguishes "exceeds the scene's own noise" (suspect) from
 "consistent with the scene's own noise" (reported, not alarming). A drift
 baseline is only meaningful for the configuration it was measured in.
+
+---
+
+# The GPU CG solve's host-side wrapper
+
+## What the tracing found, and what it refuted
+
+The plan on file said the mid-enqueue `cudaStreamSynchronize` in
+`refreshActiveLists` was "essentially all of hostSync". Measured, it is **5%**:
+
+| host phase | ms/solve |
+|---|---|
+| `applyTopologyChange` | **2.20** |
+| graph exec update | 0.73 |
+| `refreshActiveLists` | 0.23 |
+| **midSync** | **0.16** |
+| `planSettledSkip` | 0.06 |
+| *(wait for device)* | *4.86* |
+
+Two corrections fell out of this:
+
+1. **`gpu_host_blocked` is not wrapper overhead.** It is
+   `cudaEventSynchronize(m_statusReady)` — the host waiting for the device to
+   finish computing. Shrinking it means less device work or more overlap, not
+   tighter host code. An earlier summary here called the whole 17.5 ms "host
+   wrapper"; only the `gpu_host_work` half is reclaimable.
+2. **`planSettledSkip` is 0.06 ms**, not a redundant full-node pass worth
+   attacking. The plan listed it as item 3.
+
+## Inside applyTopologyChange
+
+| sub-step | ms/call |
+|---|---|
+| **uploads** | **2.20** |
+| computeIslands | 0.55 |
+| buildNodeBondCsr | 0.33 |
+| groupBondsByIsland | 0.12 |
+| memset | 0.03 |
+
+Fifteen **blocking** `cudaMemcpy` out of pageable `std::vector`, which cannot
+DMA — the driver bounces them chunk by chunk at ~0.9 GB/s.
+
+## Two hypotheses, one discarded before being built
+
+* **Pinned staging + async copies: only 17%.** Instrumenting the failure
+  explained it: 5.30 MB per fracture tick, DMA enqueue 0.09 ms, host memcpy
+  into the staging arena **1.52 ms**. It swapped the driver's hidden staging
+  copy for an explicit one. *The copy, not the transfer, was the cost.*
+* **Upload only the changed bytes: not viable.** 5.048 MB of the 5.31 MB is
+  dirty every fracture tick, because `computeIslands` renumbers island ids
+  wholesale. Measured before building it.
+
+So the fix **deletes** the copy: the host arrays are backed by a pinned
+allocator and the DMA reads the buffer the host already wrote.
+
+| metric | before | after |
+|---|---|---|
+| upload | 2.609 | **0.073** ms/solve |
+| staging memcpy | 1.524 | **0.000** |
+| applyTopologyChange | 2.529 | **0.730** ms/solve |
+| host plan total | 3.873 | **1.986** ms/solve |
+
+Some cost moved into `midSync` (0.16 → 1.04): the DMA still takes time, it is
+now overlapped rather than blocking.
+
+## Two hazards handled
+
+`cudaMemset` runs on the legacy default stream, which implicitly synchronises
+every stream — it would have blocked on the very uploads made async. Now
+`cudaMemsetAsync` on the solver stream. And resizing a pinned vector frees
+memory a DMA may still be reading; every solve normally waits first, but the
+no-op solve path returns early, so `applyTopologyChange` waits on an upload
+event before touching the arrays.
+
+`BLAST_TOPO_PINNED=0` reproduces the original faithfully — a blocking copy out
+of a **pageable bounce buffer** — because the sources are pinned now, and an arm
+that does not reproduce the old cost structure measures nothing.
