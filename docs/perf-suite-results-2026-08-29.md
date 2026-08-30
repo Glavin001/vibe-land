@@ -142,3 +142,53 @@ Flags `BLAST_GRAVITY_QUIET_SKIP` and `BLAST_WALKIN_SKIP`, both default ON.
 (0.2) and PhysX's own step (0.23) — no single dominant term left. Note the
 unpaired report above reads idle at 4.80 ms rather than 3.33: single runs swing
 on this box, and the paired A/B is the number to trust.
+
+## Follow-up: idle was not at its floor — 4.06 → 0.84 ms
+
+Two more unconditional full-node passes, and one self-inflicted bug.
+
+**The gravity skip was alternating.** `m_lastSnapshotApplied = !skipLoads`
+flipped every tick: apply, skip, apply, skip. It looked like it worked and left
+exactly half the benefit unclaimed. The distribution exposed it where the mean
+could not — **50.0% of idle ticks were expensive and no physical quantity
+correlated with which ones**: no contact, no wake, no pose change, no body
+count change. A clean 50% split with no physical correlate is a state machine,
+not a scene.
+
+**`resetVelocities()` then became the largest term** (1.07 ms). It zeroes
+`localVel` for every node every tick, but `addNodeForce` is the only writer, so
+on a quiet tick it writes zeros over zeros.
+
+| stage | idle cpu p50 |
+|---|---|
+| production baseline | 4.06 ms |
+| gravity + walk-in skip (alternating) | 3.36 ms |
+| alternation fixed | 2.20 ms |
+| reset skip | **0.89 ms** |
+
+Paired A/B, 8 counterbalanced pairs: `cpu_ms` **0.838 vs 3.206, p=0.008 (8/8)**;
+`cpu_solve` 0.155 vs 1.268. Expensive-tick share 50% → 0%. Correctness: 30 s at
+rest holds at 0 broken bonds, 0 awake, 0 overstressed.
+
+What remains is ~1.4 ms of PhysX GPU wait (wall, not our CPU), 0.20 physx_step,
+0.15 hw_bond, 0.10 stress_solve. No dominant term.
+
+## Does the scene converge? Yes — in 15 ticks
+
+30 s idle, unsettled islands per band:
+
+| ticks | cpu_ms total | cpu p50 | unsettled islands |
+|---|---|---|---|
+| 0–15 | **1,494.4 ms** | 53.91 | 1,026 |
+| 15–30 | 74.8 | 4.41 | 0 |
+| 30–60 | 59.7 | 1.85 | 0 |
+| 60–1799 | 2,102 | 0.79–0.84 | **0** |
+
+The city converges completely within **15 ticks (0.25 s)** and stays converged
+for the full 30 s. So idle cost is not unconverged solving.
+
+But convergence is **not free at load**: the first 15 ticks burn **1.49 s of
+CPU**, at 53.9 ms/tick against a 16.7 ms budget — a visible hitch of roughly a
+quarter second whenever the scene loads. That is 65× the converged per-tick
+cost, and it is the real target for baking a precomputed stress state into the
+scene pack: the win is startup, not steady state.
