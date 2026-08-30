@@ -215,3 +215,36 @@ established; only the idle result is statistically confirmed.
 Under load the tick is still far over budget (36.9 ms p50 at bombard-med, 102.9
 max against 16.7). The remaining cost is dominated by PhysX's own rigid-body
 solve, which scales with awake bodies and is explicitly out of scope.
+
+## Resolved: graph update vs recapture is NOT a different numeric path
+
+An earlier A/B flagged the two arms destroying 19.2% different bond counts and
+recorded it as an open correctness question -- recapture appearing to take a
+different numeric path, not merely a slower one. It does not. Three independent
+lines of evidence:
+
+1. **Idle, which is bit-deterministic: the traces are BIT-IDENTICAL** between
+   `BLAST_GPU_GRAPH_UPDATE=1` and `=0` over 15 s. Every pose, every topology
+   change. Only `overstressed` and `islands_skip` differ, and those differ by
+   more than that between two runs of the SAME arm.
+2. **Short bombard (3 s, 3 shots), with a control pair.** Two runs of the same
+   arm produced 1,760 and 1,781 broken bonds with different trace hashes, while
+   the other arm produced 1,741 -- i.e. the cross-arm result sits INSIDE the
+   same-arm spread.
+3. **Eight runs per arm.** Within-arm spread 15.0%, between-arm median
+   difference 5.8%, exact Mann-Whitney p=0.061. The scene's own noise is larger
+   than the effect.
+
+**Why it looked real.** The 19.2% was compared against a 0.3% drift baseline
+measured under the OLD non-production config, where `STRESS_LIMIT_SCALE` left
+the city roughly 4x tougher and damage 4x smaller. Under the production config
+the same scenario drifts up to 15% by itself. The work check fired correctly;
+the mistake was reading "work differs" as "numerics differ" against a
+yardstick borrowed from a different configuration.
+
+**Harness fix.** The work check compared against a fixed 2% threshold, which
+under the production config flags essentially every loaded comparison. It now
+compares the between-arm difference against the WITHIN-ARM drift observed in
+the same run, and distinguishes "exceeds the scene's own noise" (suspect) from
+"consistent with the scene's own noise" (reported, not alarming). A drift
+baseline is only meaningful for the configuration it was measured in.

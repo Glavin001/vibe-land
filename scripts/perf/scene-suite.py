@@ -113,6 +113,15 @@ def min_pairs_note(n):
     return None
 
 
+def _spread(v):
+    """Peak-to-peak as a percentage of the median: how much this arm moved on
+    its own, across repeats of an identical configuration."""
+    if len(v) < 2:
+        return 0.0
+    m = statistics.median(v)
+    return 100.0 * (max(v) - min(v)) / m if m else 0.0
+
+
 def sign_test(deltas):
     """Two-sided sign test. With no real effect each pair is a coin flip, so
     this is what stops 'B won 7 of 10' from being read as a result."""
@@ -140,9 +149,22 @@ def ab(a_paths, b_paths, settle=60):
         if av and bv:
             am, bm = statistics.median(av), statistics.median(bv)
             drift = 100.0 * (bm - am) / am if am else 0.0
-            if abs(drift) > 2.0:
+            # Compare against the WITHIN-ARM drift actually observed in this
+            # run, not a fixed threshold. A fixed 2% was calibrated on a
+            # non-production config where the city was ~4x tougher; under the
+            # production stress limit the same scenario drifts up to 15% run to
+            # run all by itself, so 2% flagged every comparison and one such
+            # flag was mistaken for evidence of a numerics bug. The scene's own
+            # noise is the only fair yardstick for the scene's own numbers.
+            within = max(_spread(av), _spread(bv))
+            if abs(drift) > max(2.0, within):
                 out.append(f"  ! work differs: {w} median A={am:.0f} B={bm:.0f} "
-                           f"({drift:+.1f}%) -- cost comparison is suspect")
+                           f"({drift:+.1f}%, exceeds within-arm drift "
+                           f"{within:.1f}%) -- cost comparison is suspect")
+            elif abs(drift) > 2.0:
+                out.append(f"  . work varies: {w} {drift:+.1f}% between arms, "
+                           f"within-arm drift {within:.1f}% -- consistent with "
+                           f"the scene's own noise")
     for c in COST + NORMALIZED:
         av = [x[c]["p50"] for x in a[:n] if c in x]
         bv = [x[c]["p50"] for x in b[:n] if c in x]
