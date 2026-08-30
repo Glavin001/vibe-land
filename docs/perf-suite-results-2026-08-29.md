@@ -405,3 +405,89 @@ it. The candidates, in the order the evidence supports:
 
 None of these are addressed by the host-wrapper work, and claiming otherwise
 would misread the data.
+
+---
+
+# The incremental topology path is not corrupt — the scene is tuned to an under-converged solver
+
+`BLAST_GPU_WHOLE_RESET_ON_TOPOLOGY=1` zeroes every warm-start impulse whenever a
+bond breaks, so each fracture tick cold-starts the CG solve. It is on because
+the incremental alternative "makes the city tear itself apart". Investigated:
+that reading is wrong, and the truth matters more than the bug would have.
+
+## Reproduction
+
+Same 8 shots, then 25 s of quiet. Incremental breaks 6.8x more bonds
+(24,186 vs 3,539) and keeps cascading long after the shots stop.
+
+## The measurement that inverted the diagnosis
+
+Convergence telemetry (`iters=` / `unconverged=` on the `[gpu-host]` line):
+
+| path | bonds broken | iterations/solve | unconverged |
+|---|---|---|---|
+| whole-reset (**shipped**) | 3,476 | **32.0 — the cap** | **99.8–100%** |
+| incremental | 27,759 | 30.3 → 21.7 | 85% → 35% |
+
+**The shipped path never converges.** It hits the 32-iteration cap on
+essentially every solve. An under-converged CG underestimates the stress field,
+so fewer bonds reach their limit. The incremental path retains its warm start,
+converges further, and therefore breaks more.
+
+The hypothesis this replaced — that a stale warm start left the solve
+unconverged — was exactly backwards.
+
+## Destruction is currently a function of the iteration budget
+
+Same whole-reset path, only the cap changed:
+
+| path | iters | bonds broken | unconverged |
+|---|---|---|---|
+| whole-reset | 32 | 3,383 | 100% |
+| whole-reset | 128 | 7,685 | 36% |
+| whole-reset | 512 | 66,788 | 51% |
+| incremental | 32 | 27,772 | 45% |
+| incremental | 128 | 37,061 | 61% |
+| incremental | 512 | **70,139** | 11% |
+| incremental | 1024 | **65,728** | 3.7% |
+
+**20x more destruction from the iteration budget alone**, with identical
+materials, identical shots and identical geometry.
+
+## The two paths agree at convergence
+
+Well-converged, both land at ~66–70k broken bonds. The incremental path gets
+there with ~168 iterations/solve and 3.7–11% unconverged; whole-reset is still
+51% unconverged at 512. **So the incremental path is correct.** It is doing what
+a warm start is supposed to do — reach the same answer sooner.
+
+## What this actually means
+
+1. **The incremental path is not a correctness bug.** It agrees with the
+   reference at convergence.
+2. **`VIBE_CITY_STRESS_LIMIT_SCALE=0.45` is calibrated against truncation.** The
+   city holds together because the solver stops early, not because the material
+   is strong enough to hold it.
+3. **Effective material strength therefore varies with load.** How far the solve
+   converges depends on how many islands are contending for the iteration
+   budget, so the same wall takes different damage depending on what else is
+   happening in the city. That is a physical inconsistency, and it is invisible
+   until you measure convergence.
+4. Enabling the incremental path buys the ~26% device-time slice and the spike
+   tail, but it is a **recalibration, not a drop-in**: materials must be re-tuned
+   against a converged solve to preserve the look.
+
+## Also found
+
+`VIBE_CITY_SOLVER_ITERATIONS=1024` with whole-reset **segfaults**. Not
+investigated; filed here because a crash reachable from a config value is worth
+knowing about.
+
+## Next steps, in the order the evidence supports
+
+1. Re-tune `STRESS_LIMIT_SCALE` against the incremental path at a fixed
+   iteration budget, and compare the result on video — this is a perceptual
+   call, not a metric one.
+2. Then enable incremental by default: it is the same physics, converged
+   sooner, and it removes the cold start that drives the spike tail.
+3. Investigate the 1024-iteration segfault.
