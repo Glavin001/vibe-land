@@ -31,6 +31,7 @@
 use std::path::{Path, PathBuf};
 
 use vibe_land_destruction::rig::audit::{audit, hops_to_ground, Outcome};
+use vibe_land_destruction::rig::freshness::assert_pack_fresh;
 use vibe_land_destruction::scene_pack::{load_scene_pack_file, ScenePack};
 
 /// The settling budget, scaled to how deep the structure's load path is.
@@ -79,6 +80,10 @@ fn cap_secs(budget: f32) -> f32 {
 fn load(name: &str) -> ScenePack {
     let path: PathBuf =
         Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("assets/scenes/{name}.json"));
+    // Before anything else: is this pack built from the sources on disk? A
+    // failed `node build.mjs` leaves the previous one in place and every
+    // number below then describes the wrong building.
+    assert_pack_fresh(&path);
     load_scene_pack_file(&path).unwrap_or_else(|e| panic!("load {name}: {e:?}"))
 }
 
@@ -136,10 +141,33 @@ fn assert_stable(name: &str) {
             )
         })
         .collect();
+    // What actually broke, earliest first. This is the line that says where to
+    // look; the persistent list below says what was merely working hard, and
+    // they are routinely different joints.
+    let broke: Vec<String> = report
+        .breaks
+        .iter()
+        .take(5)
+        .map(|b| {
+            format!(
+                "#{} BROKE at {:.0} s, {} {} at y={:.0}m over {:.3} m2, last seen at {:.2}x",
+                b.id, b.at, b.mode, b.class, b.height, b.area, b.last_util
+            )
+        })
+        .collect();
+    let broke_line = if broke.is_empty() {
+        "  (nothing broke -- the load simply never stopped moving)".to_string()
+    } else {
+        format!("  {}", broke.join("\n  "))
+    };
     panic!(
-        "{name}: {why}\n  peak {:.2} -> {:.2}\n  joint classes by time overloaded: {}\n  {}",
+        "{name}: {why}\n  peak {:.2} -> {:.2}, sag {:.2} m ({})\n{}\n  \
+         joint classes by time overloaded: {}\n  {}",
         report.early_peak,
         report.late_peak,
+        report.peak_sag,
+        if report.sag_role.is_empty() { "-" } else { &report.sag_role },
+        broke_line,
         classes.join(", "),
         worst.join("\n  "),
     );

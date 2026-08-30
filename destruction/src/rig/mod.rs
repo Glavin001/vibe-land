@@ -48,6 +48,7 @@ use crate::runtime::{CityDestruction, CityDestructionError};
 use crate::scene_pack::ScenePack;
 
 pub mod audit;
+pub mod freshness;
 pub use audit::{audit, Audit, Outcome};
 pub use stress_report::{BondStress, StressReport};
 pub use surgery::{select_nodes, NodeSel};
