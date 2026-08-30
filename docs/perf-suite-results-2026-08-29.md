@@ -371,3 +371,37 @@ than removing it — into an explicit memcpy, into host waiting, into default-
 stream stalls. Only the component-level trace distinguished those from the one
 that actually removed work, and only the 16-pair A/B caught that the most
 promising-looking version was a net regression.
+
+## The spikes are device-side, not host-side
+
+p99 ticks (n=46) against median ticks (n=2281), 4,560 ticks with the fix in:
+
+| phase | spike | normal | delta | % of excess |
+|---|---|---|---|---|
+| `cpu_solve` | 67.44 | 15.88 | 51.56 | **78.9%** |
+| — `gpu_solve` *(device)* | 43.75 | 7.68 | 36.07 | **55.2%** |
+| — `gpu_host_blocked` *(waiting)* | 41.18 | 8.92 | 32.26 | 49.3% |
+| — `gpu_host_work` *(reclaimable)* | 13.56 | 3.68 | 9.88 | 15.1% |
+| `physx_step` | 15.99 | 9.66 | 6.32 | 9.7% |
+| `frac_topo` | 2.52 | 1.03 | 1.49 | 2.3% |
+
+Total tick excess 65.37 ms (p50 44.2 → p99 93.0, max 130.3).
+
+**The spike is the device solve, and it is superlinear.** Awake bodies rise only
+1.57x (2,452 → 3,839) while `gpu_solve` rises **5.7x** (7.68 → 43.75 ms). Host
+work explains 15% of the excess; device time and waiting on it explain the rest.
+
+So the remaining spike work is a different problem from the one just fixed: it
+is device work, not host overhead, and no amount of faster enqueueing touches
+it. The candidates, in the order the evidence supports:
+
+1. **CG iteration count under load.** Cost that grows 5.7x for 1.57x the bodies
+   is the signature of more iterations per island as well as more islands.
+   `VIBE_CITY_SOLVER_ITERATIONS` is 32; whether spike ticks are hitting that cap
+   is not yet instrumented at tick level and is the first thing to measure.
+2. **Per-iteration kernel cost** at high active counts.
+3. `hw_bond` also spikes 1.62 → 8.00 ms (9.8% of the excess), disproportionate
+   to its 0.15 ms median.
+
+None of these are addressed by the host-wrapper work, and claiming otherwise
+would misread the data.
