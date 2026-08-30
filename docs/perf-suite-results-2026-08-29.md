@@ -325,3 +325,49 @@ event before touching the arrays.
 `BLAST_TOPO_PINNED=0` reproduces the original faithfully — a blocking copy out
 of a **pageable bounce buffer** — because the sources are pinned now, and an arm
 that does not reproduce the old cost structure measures nothing.
+
+## Verified: sync mode is the win; async was a regression
+
+Two 16-pair counterbalanced A/Bs, `bombard-med`.
+
+**Attempt 1 — pinned + async (rejected):**
+
+| metric | A (async) | B (pageable) | verdict |
+|---|---|---|---|
+| `gpu_solve` | 10.531 | 9.648 | **B faster, 13/16, p=0.021** |
+| `cpu_ms` | 44.452 | 44.413 | no call |
+
+It made the *device* significantly slower. The 5.3 MB H2D rode alongside the CG
+kernels and competed for memory bandwidth, where the blocking copies it replaced
+had finished before the solve was enqueued. And the host time it saved never
+became tick time, because **this phase is device-bound**: finishing the enqueue
+1.9 ms earlier just makes the host wait 1.9 ms longer on
+`cudaEventSynchronize`. Host work converted into host waiting.
+
+**Attempt 2 — pinned + async + drained once before the solve (shipped):**
+
+| metric | A (sync) | B (pageable) | verdict |
+|---|---|---|---|
+| `cpu_ms` | 44.331 | 45.263 | **A faster, 2/16, p=0.004** |
+| `stress_solve` | 14.710 | 15.936 | **A faster, 3/16, p=0.021** |
+| `stress_solve/awake` | 4.992 | 5.179 | **A faster, 3/16, p=0.021** |
+| `gpu_solve` | 10.450 | 10.378 | no call, 8/16, p=1.000 |
+| `cpu_solve` | 21.815 | 23.426 | +8.89%, 4/16, p=0.077 |
+
+Whole-tick CPU down 2.33% at p=0.004, stress solve down 9.13%, and `gpu_solve`
+exactly neutral — the regression is gone rather than hidden.
+
+**Why the first sync attempt also failed.** Implemented with a blocking
+`cudaMemcpy` it measured 1.99 ms, barely better than pageable, because a
+blocking copy runs on the legacy default stream and implicitly synchronises
+with every stream: each of the fifteen copies waited on whatever the GPU
+already had queued. It was waiting, not transferring. Enqueuing all fifteen
+async and draining **once** gives 0.91 ms, which is the real transfer.
+
+**Cost ledger, host plan per solve:** 3.76 (pageable) → 2.43 (sync).
+
+**The general lesson.** Three of the four things tried here moved cost rather
+than removing it — into an explicit memcpy, into host waiting, into default-
+stream stalls. Only the component-level trace distinguished those from the one
+that actually removed work, and only the 16-pair A/B caught that the most
+promising-looking version was a net regression.
