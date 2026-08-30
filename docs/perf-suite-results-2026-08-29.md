@@ -491,3 +491,32 @@ knowing about.
 2. Then enable incremental by default: it is the same physics, converged
    sooner, and it removes the cold start that drives the spike tail.
 3. Investigate the 1024-iteration segfault.
+
+## The CPU solver cannot currently serve as the reference
+
+Using NVIDIA's CPU stress solver as ground truth is the right instinct, and it
+is the correct long-term reference. Measured today it cannot be:
+
+| solver | scenario | bonds broken |
+|---|---|---|
+| CPU (`VIBE_CITY_GPU_STRESS=0`) | **at rest, no shots, 20 s** | **56,614** |
+| GPU | at rest, no shots, 20 s | **0** |
+| CPU | 8 shots, 32 iters | 34,539 |
+| GPU | 8 shots, 32 iters | 3,465 |
+
+**The CPU path destroys a city that nothing is touching.** This is known in
+tree: `record_city_trace.rs` carries a hard guard refusing to run without the
+`cuda-stress` feature, whose message is "its residual makes a city at rest
+destroy itself".
+
+So the 10x difference under load is the CPU **over**-destroying, not the GPU
+under-destroying, and the earlier reading of "the GPU stops 35x past tolerance,
+therefore it is inaccurate" cannot stand on its own: the arm that holds a city
+up under gravity is the GPU one.
+
+**The open question is whether the CPU solver here is unmodified NVIDIA code.**
+If it has been modified in this fork, this is a regression we introduced and
+fixing it hands us the reference we need. If it is stock, then NVIDIA's solver
+genuinely cannot hold this scene at these materials and iteration counts, which
+would say the scene configuration is out of range rather than the solver being
+wrong. That diff is the next thing to do, and it gates the accuracy test.
