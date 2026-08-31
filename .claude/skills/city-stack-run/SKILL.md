@@ -103,3 +103,148 @@ An empty world is nearly always the bootstrap, not the network. Check
 `bootstraps` and `bonds cli/srv` before suspecting transport: a healthy
 connection with `bootstraps 0` means the client connected fine and never
 ingested the manifest.
+
+
+## WT_PUBLIC_URL is a BASE url — do not put `/game` on it
+
+`/game` is appended downstream (`format!("{}/game", wt_base_url)`). Passing
+`WT_PUBLIC_URL=https://IP:PORT/game` makes `/session-config` advertise
+`https://IP:PORT/game/game`, the client dials a route that does not exist, and
+the QUIC handshake never completes. The page loads, the world stays empty, and
+it reads exactly like "WebTransport is broken" or "the UDP port is not
+forwarded" — so it sends you hunting the port mapping instead of the string.
+
+```bash
+WT_PUBLIC_URL=https://209.121.195.117:40628      # correct
+WT_PUBLIC_URL=https://209.121.195.117:40628/game # doubles to /game/game
+```
+
+Always read back what the server actually advertises before believing a launch:
+
+```bash
+curl -sk "https://127.0.0.1:<caddy-port>/session-config?match_id=city-default" \
+  | python3 -c "import json,sys; print(json.load(sys.stdin)['url'])"
+# must end in exactly one /game
+```
+
+## Verify the PATH, not just the host
+
+The `/session-config` override in the section above replaces the whole URL with
+a hand-written one — which silently repairs the very field a doubled-path bug
+lives in. A headless check written that way passes against a server no real
+client can reach. Rewrite only host and port, and keep the advertised path:
+
+```js
+await page.route('**/session-config*', async route => {
+  const r = await route.fetch(); const b = JSON.parse(await r.text());
+  const u = new URL(b.url);            // keep u.pathname as the server sent it
+  u.hostname = '127.0.0.1'; u.port = '<WT_BIND_ADDR port>';
+  b.url = u.toString();
+  await route.fulfill({ response: r, body: JSON.stringify(b),
+    headers: { ...r.headers(), 'content-type': 'application/json' } });
+});
+```
+
+## Proving the public ports really work
+
+The container cannot reach its own public IP, so `curl` against it proves
+nothing either way. Two checks that do work:
+
+**TCP** — have something outside fetch it. Any server-side fetcher will do:
+
+```bash
+curl -s "https://r.jina.ai/https://<public-ip>:<caddy-public-port>/healthz"
+```
+
+A `/healthz` body coming back means the TCP mapping is live end to end.
+
+**UDP** — do not try to synthesise it; read the server log. Every inbound
+WebTransport attempt is logged with its peer address:
+
+```bash
+grep "WT connection attempt reached the listener" server.log
+#  ... remote=142.169.16.183:3293 attempts=2
+```
+
+A **non-loopback, non-local** address there is proof that UDP traversed the
+Vast NAT into the container. If every address is `127.0.0.1`, you have only
+tested your own harness. `udp_verified: true` in `/healthz` is NOT proof of
+external reachability — a loopback headless test sets it too.
+
+## WebTransport certificate constraints
+
+`serverCertificateHashes` (which is what lets a self-signed cert work at all)
+requires **ECDSA P-256** and a validity span of **at most 14 days**. A normal
+one-year self-signed cert is rejected by Chrome with no useful error. Check
+before blaming the network:
+
+```bash
+openssl x509 -in .certs/page-cert.pem -noout -text | grep -E "NIST CURVE|IP Address"
+openssl x509 -in .certs/page-cert.pem -noout -dates    # span <= 14 days
+openssl x509 -in .certs/page-cert.pem -outform der | openssl dgst -sha256 -hex
+```
+
+The last line must equal `server_certificate_hash_hex` from `/session-config`,
+and the SAN must contain the public IP clients dial. Because the span is capped
+at 14 days, these certs expire constantly — regenerating is routine, not an
+incident.
+
+## Rebuild the client bundle, not just the server
+
+`client/dist` is not rebuilt by the cargo build, and a stale bundle against a
+new server is a silent version skew. The stats overlay prints
+`build srv/cli <server> / <client>` — check both timestamps are current before
+handing a URL over.
+
+## Solver troubleshooting quick table
+
+| symptom | first thing to check |
+|---|---|
+| page loads, world empty, `transport: connecting` forever | `/session-config` url — count the `/game` segments |
+| page loads, `transport: websocket` | UDP never arrived; check the log for a non-loopback `WT connection attempt` |
+| Chrome refuses the WT connection outright | cert span > 14 days, or not ECDSA P-256 |
+| overlay says `stress solver CPU` | built without `cuda-stress`; `strings target/release/web-fps-server \| grep -c ExtStressGpuSolver` |
+| solver change made with `BLAST_ROOT` has no effect | `.cu`-only edits relink the OLD kernel — `touch physx-bridge/src/lib.rs`, then confirm the `.o` mtime AND size moved |
+
+
+## Driving a real player and measuring the solver: `e2e/drive-city-perf.mjs`
+
+A headless trace can bombard a scene, but only a real client exercises the full
+tick -- netcode, support-graph ingest, contact processing and readback -- while
+the stress solver is under load. This connects over WebTransport, demolishes
+the city, and records per-tick solver telemetry throughout.
+
+```bash
+cd client
+node e2e/drive-city-perf.mjs --page https://127.0.0.1:8384 --wt-port 4435 \
+     --rounds 8 --shots 10 --csv /tmp/city-perf.csv
+```
+
+Output is one row per sample: broken bonds, islands, awake bodies, `step_ms`,
+`stress_solve_ms`, `gpu_stress_solve_ms`, `physx_step_ms`, plus the GPU host
+work/blocked split. It exits non-zero if the transport is not WebTransport or
+if no city appears on the server.
+
+Four traps are handled inside it, all of which cost real time to find:
+
+1. **Input goes through `window.__VIBE_DRIVE__`, not synthetic mouse events.**
+   Headless Chromium cannot grant pointer lock, so `page.mouse.click()` reaches
+   nothing and `shotsFired` stays 0 while every other indicator looks healthy.
+   The one real click that IS required is the join gesture at the viewport
+   centre -- gameplay input and the fire path both hang off it.
+2. **`page.waitForFunction(fn, {timeout})` passes the options as the page
+   function's ARGUMENT.** The signature is `(fn, arg, options)`, so the timeout
+   is silently ignored and you get the 30 s default.
+3. **Node's global `fetch` rejects the dev stack's self-signed certificate**, so
+   every `/match-stats` call returns null -- which reads as "the server has no
+   stats" rather than "TLS refused".
+4. **Do not gate on the client's `snapshot().city`.** It publishes every ~30
+   frames and headless swiftshader renders at ~1 fps, so that is a ~30 s
+   interval. Poll the server's `/match-stats`, which is per-tick and is where
+   the solver timings live anyway.
+
+Reading the result: the GPU stress solve should be a small fraction of
+`stress_solve_ms`. If it is not, profile the solver with `gpu_stress_suite`
+(see the `gpu-stress-perf` skill in blast-stress-solver). If `stress_solve_ms`
+is large while `gpu_stress_solve_ms` is small, the cost is in the work AROUND
+the solve -- support ingest, contact processing, readback -- not in the solver.
