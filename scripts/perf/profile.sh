@@ -61,12 +61,17 @@ if [ -z "$REUSE" ]; then
   echo "== building (cuda-stress,blast-core)"
   cargo build --release -p web-fps-server --features cuda-stress,blast-core \
     2>&1 | grep -E "^error" && exit 1
-  # 2. Physics env, matching the live server.
+  # 2. Physics env, matching the live server. SOURCE it -- do not restate it.
+  # This block used to inline a partial copy and silently omitted the two
+  # BLAST_* flags, so the profile measured a scene production never runs:
+  # BLAST_BOND_STRESS_GPU unset put hw_bond on the serial CPU walk (10.3 ms
+  # flat vs 0.2 ms), and BLAST_GPU_WHOLE_RESET_ON_TOPOLOGY unset let the
+  # grid-2 city tear itself apart at rest (49,832 bonds broken with 0 shots).
+  # That is the exact drift physics-env.sh was created to end.
   export LD_LIBRARY_PATH="/root/PhysX/physx/install/linux-clang/PhysX/bin/linux.x86_64/release:${LD_LIBRARY_PATH:-}"
-  export VIBE_CITY_FREEZE=1 VIBE_CITY_VARIED_HEIGHTS=0 VIBE_CITY_SOLVER_ITERATIONS=32
-  export VIBE_WORLD_FRICTION=0.75 VIBE_WORLD_RESTITUTION=0.02
-  export VIBE_CITY_STRESS_LIMIT_SCALE=0.45
-  export VIBE_CITY_SHOT_BLAST_RADIUS=0.7 VIBE_CITY_SHOT_STRESS_IMPULSE=4.0e7
+  # shellcheck source=../physics-env.sh
+  . "$(dirname "${BASH_SOURCE[0]}")/../physics-env.sh"
+  export VIBE_CITY_GRID="$GRID"
   OUT="${TMPDIR:-/tmp}/cityprof-$(date -u +%Y%m%d-%H%M%S)-g${GRID}-s${SHOTS}.csv"
   echo "== tracing  scene=$(basename "$SCENE") grid=$GRID ${SECONDS_RUN}s shots=$SHOTS"
   ./target/release/record-city-trace \

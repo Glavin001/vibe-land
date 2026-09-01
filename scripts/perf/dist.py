@@ -91,10 +91,20 @@ class Dist:
         v = self.v
         mean = sum(v) / self.n
         sd = statistics.pstdev(v) if self.n > 1 else 0.0
+        # Occurrence stats. A phase that fires on 16% of ticks at 1.4 ms each
+        # has an unconditional mean of 0.22 ms, which reads as negligible and
+        # is not -- it is a 1.4 ms spike six times a second. `hits` and
+        # `hit_mean` are what separate "cheap" from "rare but expensive", and
+        # a mean alone cannot tell you which you are looking at.
+        hits = [x for x in v if x > 0]
         return dict(
             n=self.n, min=v[0], p50=quant(v, 0.50), p95=quant(v, 0.95),
             p99=quant(v, 0.99), p999=quant(v, 0.999), max=v[-1],
             mean=mean, sd=sd, total=sum(v),
+            hits=len(hits), hit_rate=len(hits) / self.n,
+            hit_mean=(sum(hits) / len(hits)) if hits else 0.0,
+            hit_max=(hits[-1] if hits else 0.0),
+            cv=(sd / mean) if mean > 0 else 0.0,
             ratio=(v[-1] / v[self.n // 2]) if v[self.n // 2] > 0 else float("inf"),
         )
 
@@ -244,7 +254,13 @@ def ab(path_a, path_b, warmup, by):
 #
 # For these, children are shown as a share of the SUM of children, and the
 # speedup is printed instead of an [unattributed] row.
-PARALLEL = {"solve"}
+# cb_tick belongs here for the same reason as solve, arrived at from the other
+# direction: the cb_* timers accumulate inside PhysX contact callbacks, which
+# run on PhysX's worker threads, while cb_tick is the wall bracket around the
+# whole fan-out. Treating them as disjoint children printed cb_queue at 151%
+# of its parent and an [unattributed] row of -204%, which is not a residual --
+# it is thread concurrency wearing a residual's clothes.
+PARALLEL = {"solve", "cb_tick"}
 
 TREE = {
     "TOTAL": ["physx_step", "stress_solve"],
@@ -283,36 +299,57 @@ def tree(path, warmup, by):
         totv = [float(r["physx_step"]) + float(r["stress_solve"]) for r in sel]
         grand = sum(totv)
         print(f"\n-- bucket {by}={label}  ({len(sel)} ticks)")
-        print(f"{'phase':<26}{'mean':>8}{'%par':>7}{'%tot':>7}"
-              f"{'p50':>8}{'p95':>8}{'p99':>8}{'max':>8}{'n>0':>7}")
+        print(f"{'phase':<24}{'wall':>7}{'%par':>7}{'%tot':>7}"
+              f"{'raw':>7}{'min':>7}{'p50':>7}{'p95':>7}{'p99':>7}{'max':>7}"
+              f"{'hit%':>6}{'/hit':>7}{'calls':>7}")
 
-        def emit(name, values, parent_sum, depth):
+        def emit(name, values, parent_sum, depth, wall_scale=1.0):
+            """wall_scale converts a slot-summed child into its wall share.
+
+            Children of a PARALLEL node are accumulated per slot and summed, so
+            their raw mean is thread-time, not wall time, and adding them up
+            overshoots the parent -- which is exactly how `solve` once appeared
+            to have 46% unattributed. Scaling by parent_wall/children_sum gives
+            a WALL column that decomposes correctly at every depth, so the wall
+            column always sums to its parent and ultimately to TOTAL. `raw` is
+            kept beside it so the thread-time is still visible.
+            """
             d = Dist(values).row()
             if not d:
                 return
-            nz = sum(1 for v in values if v > 0)
             pad = "  " * depth
             mark = " ~" if name in DERIVED else ""
-            print(f"{pad + name + mark:<26}{d['mean']:>8.2f}"
+            wall = d["mean"] * wall_scale
+            raw = d["mean"]
+            print(f"{pad + name + mark:<24}{wall:>7.2f}"
                   f"{100 * d['total'] / max(parent_sum, 1e-9):>6.1f}%"
                   f"{100 * d['total'] / max(grand, 1e-9):>6.1f}%"
-                  f"{d['p50']:>8.2f}{d['p95']:>8.2f}{d['p99']:>8.2f}{d['max']:>8.2f}"
-                  f"{100.0 * nz / len(values):>6.0f}%")
+                  f"{raw:>7.2f}{d['min']:>7.2f}"
+                  f"{d['p50']:>7.2f}{d['p95']:>7.2f}{d['p99']:>7.2f}{d['max']:>7.2f}"
+                  f"{100.0 * d['hit_rate']:>5.0f}%{d['hit_mean']:>7.2f}"
+                  f"{d['hits']:>7d}")
 
-        def walk(node, values, depth):
+        holes = []          # (node, signed residual sum, derived-limited?)
+
+        def walk(node, values, depth, wall_scale=1.0):
             vsum = sum(values)
             kids = TREE.get(node, [])
             present = [k for k in kids if k in sel[0]]
             acc = None
             denom = vsum
+            kid_scale = wall_scale
             if node in PARALLEL:
                 denom = sum(sum(col(k)) for k in present)
+                # The parent's WALL is vsum * wall_scale; the children carry
+                # `denom` of thread-time between them. This ratio is what makes
+                # the wall column add up through a concurrent fan-out.
+                kid_scale = (vsum * wall_scale / denom) if denom else wall_scale
             for k in present:
                 kv = col(k)
-                emit(k, kv, denom, depth)
+                emit(k, kv, denom, depth, kid_scale)
                 acc = kv if acc is None else [a + b for a, b in zip(acc, kv)]
                 if k in TREE:
-                    walk(k, kv, depth + 1)
+                    walk(k, kv, depth + 1, kid_scale)
             if present and acc is not None:
                 if node in PARALLEL:
                     ssum = sum(acc)
@@ -324,15 +361,40 @@ def tree(path, warmup, by):
                           f"wall; the difference is NOT unattributed time.")
                 else:
                     resid = [a - b for a, b in zip(values, acc)]
-                    emit("[unattributed]", resid, vsum, depth)
+                    # A residual under a node with SAMPLED children cannot be
+                    # closed: the children are 1-in-16 estimates, so the gap is
+                    # estimator error, not missing work. Flagged, not counted
+                    # as a coverage failure -- and it is the only reason this
+                    # tree is not exactly 100%.
+                    approx = any(k in DERIVED for k in present)
+                    holes.append((node, sum(resid), approx))
+                    emit("[unattributed]" + (" ~est" if approx else ""),
+                         resid, vsum, depth, wall_scale)
 
         emit("TOTAL", totv, grand, 0)
-        walk("TOTAL", totv, 1)
+        walk("TOTAL", totv, 1, 1.0)
         if "gpu_solve" in sel[0]:
             g = Dist(col("gpu_solve")).row()
             print(f"   [concurrent] gpu_solve device {g['mean']:.2f} ms mean, "
                   f"p50 {g['p50']:.2f}, max {g['max']:.2f} -- overlaps "
                   f"gpu_host_blocked, NOT a disjoint child of solve.")
+        exact = sum(abs(h[1]) for h in holes if not h[2])
+        est = sum(abs(h[1]) for h in holes if h[2])
+        print(f"   COVERAGE  attributed {100 * (1 - (exact + est) / grand):.2f}%"
+              f"  |  unattributed {100 * exact / grand:.2f}% exact"
+              f" + {100 * est / grand:.2f}% sampling error")
+        if exact / grand > 0.001:
+            worst = max((h for h in holes if not h[2]),
+                        key=lambda h: abs(h[1]), default=None)
+            if worst:
+                print(f"   COVERAGE WARNING  >0.1% unexplained; largest hole is "
+                      f"under '{worst[0]}' ({100 * abs(worst[1]) / grand:.2f}% "
+                      f"of total). A phase is missing a span.")
+        print("   wall = WALL ms/tick, decomposes at every level (children sum "
+              "to parent).\n   raw = as measured; for rows under a [parallel] "
+              "node that is SLOT-SUMMED\n   thread time, which is why raw can "
+              "exceed its parent and wall cannot.\n   hit% = ticks where the "
+              "phase ran; /hit = mean WHEN it ran; calls = tick count.")
         print("   %par = share of the row above it, by SUM. Quantiles do not "
               "decompose:\n   a parent's max and its children's maxes are "
               "different ticks. n>0 = ticks where the phase ran at all.")

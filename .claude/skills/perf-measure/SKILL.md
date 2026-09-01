@@ -1,6 +1,6 @@
 ---
 name: perf-measure
-description: Measure server tick performance without fooling yourself — which endpoint to read, which fields nest inside which, and the six traps that have each produced a wrong conclusion in this project. Use when profiling the city step, comparing hardware or scenes, investigating a slow tick, or before claiming any performance number.
+description: Measure server tick performance without fooling yourself. The bench.sh scenario matrix, the wall-time tree that decomposes at every level, the cost-driver regression that says WHY a phase is expensive, and the thirteen traps that have each produced a wrong conclusion in this project. Use when profiling the city step, comparing builds or scenes, investigating a slow tick, or before claiming any performance number.
 ---
 
 # Measuring server performance
@@ -8,12 +8,97 @@ description: Measure server tick performance without fooling yourself — which 
 ## The one command
 
 ```bash
-scripts/perf/profile.sh              # downtown grid 2: 87k chunks, 268k bonds
-scripts/perf/profile.sh --grid 1     # smaller scene
-scripts/perf/profile.sh --idle       # at rest, no shots
-scripts/perf/profile.sh --reuse X.csv    # re-analyse, no re-run
-scripts/perf/profile.sh --ab A.csv B.csv # matched-n comparison
+scripts/perf/bench.sh --label base           # full matrix: idle + light + heavy
+scripts/perf/bench.sh --label mychange       # record the other arm
+scripts/perf/bench.sh --ab base mychange     # matched, refuses invalid compares
+scripts/perf/bench.sh --show base            # re-print, no re-run
+scripts/perf/bench.sh --label x --quick      # grid 1, ~2 min end to end
 ```
+
+`bench.sh` is the entry point for anything you intend to QUOTE. It runs the
+three load regimes, prints one hierarchical budget per scenario, and stamps
+each set with git hash, binary inode+mtime, and the full BLAST_*/VIBE_* env,
+into `bench-results/perf/<label>/`. `--label` is mandatory: an unlabelled run
+cannot be compared later without guessing what it was.
+
+### The procedure, in order
+
+Every conclusion in this file was reached this way. Follow it rather than
+improvising, because each step exists to stop a specific wrong answer.
+
+1. **`bench.sh --label <name>`.** Never hand-run `record-city-trace`; the
+   wrapper is what guarantees the env, the feature set, and the fingerprint.
+2. **Read each scenario's CITY UNDER TEST block first, not its timings.** A
+   per-phase table that does not say which structural regime it describes is
+   an anecdote. If REGIME CHECK failed, the timings under it describe a
+   different experiment than the name claims -- do not quote them.
+3. **Read the COVERAGE line.** Below 99.9% exact means a phase is unnamed and
+   any conclusion about that subtree is provisional.
+4. **Read the `wall` column, not `raw`.** `wall` decomposes at every level;
+   `raw` is thread time under a `[parallel]` node and legitimately exceeds its
+   parent.
+5. **Check `hit%` and `/hit` before calling a phase cheap.** `events` averages
+   0.21 ms and is really a 1.33 ms spike on 16% of ticks.
+6. **Read the cost-driver table at the end** (`drivers.py`, printed
+   automatically). A mean says a phase is expensive; the driver says whether
+   it is expensive for the WRONG REASON. A per-tick walk whose cost tracks
+   TOTAL bodies is doing work for bodies that are frozen -- an algorithmic
+   defect with a known fix, not a constant factor to shave. A low R2 means the
+   model is missing that phase's real driver; find it before designing a fix.
+7. **Only then compare.** `bench.sh --ab base <name>`, honouring `min_reps`.
+
+### What a single run can and cannot resolve
+
+Three IDENTICAL `saturated` runs ended at 53,437 / 62,488 / 60,597 broken
+bonds -- a **14.5% spread**. The cascade is chaotic and GPU rigid-body
+simulation is not bit-reproducible, so the arms genuinely simulate different
+cities even with the binary, env and scene fixed.
+
+So: `intact` and `onset` hold their work counters to a few percent and a 3-5%
+timing delta there is real. On `demolition` / `saturated` / `aftermath`, **a
+single-run delta under ~15% is indistinguishable from cascade drift** no matter
+how clean the timing looks. Measure small wins on the tight scenarios, confirm
+direction on the deep ones, and use n>=3 (`min_reps`, enforced by the A/B gate)
+before quoting a deep-scenario number.
+
+**Read the COVERAGE line before reading anything else.** Every tree ends with
+`COVERAGE attributed N%`, split into exact residual and sampling error. Above
+99.9% exact means the breakdown accounts for the tick. Below that it prints
+`COVERAGE WARNING` naming the phase with the largest hole -- that is a missing
+span, and any conclusion drawn from that subtree is provisional. As of
+2026-09-01 `st_graph` carries a real ~1.5-1.9% hole; it is not yet named.
+
+`--ab` REFUSES rather than reports when the arms broke bond counts more than
+10% apart, because a per-phase delta across diverged physics is a different
+workload, not a speedup. It also warns when both arms share a binary inode AND
+an identical env, which means you are comparing a run against itself.
+
+`scripts/perf/profile.sh` remains for one-off single-scenario work and
+`--reuse` re-analysis. It sources the same physics-env.sh.
+
+**The files, and which question each answers.** All under `scripts/perf/`:
+
+| file | question it answers |
+|---|---|
+| `bench.sh` | run the matrix, fingerprinted and labelled |
+| `scenarios.py` | which regimes exist, what each PROVES, and the assertions that prove the run reached it |
+| `bench_report.py` | what city was simulated; is the A/B legitimate |
+| `dist.py` | where did the wall time go (the tree) |
+| `drivers.py` | WHY -- what variable drives each phase |
+
+Scenarios are declarations, not shot counts. Add one in `scenarios.py` with a
+`purpose`, a `proves`, and `asserts` that fail if the run misses the regime --
+that gate caught the original scenario set claiming a 15-60% damage band it
+could not reach, and caught a `settled` scenario asserting a resting state that
+does not exist.
+
+**The 18.6% damage ceiling.** A 2,000-shot / 200 s probe showed damage saturates
+at 18.6% of bonds; the plateau arrives by ~450 shots and the next 1,550 add
+0.9%. The 25-75% partly-demolished band -- which the convergence analysis calls
+the hardest regime -- CANNOT be produced by shooting. Use the standalone
+`gpu_stress_suite` for it. Do NOT raise `VIBE_CITY_SHOT_BLAST_RADIUS` or
+`VIBE_CITY_SHOT_STRESS_IMPULSE` to force it; those are production physics
+constants and moving them makes the suite describe a game nobody plays.
 
 It prints a hierarchical budget where the shares add up, plus the worst
 ticks fully decomposed. It refuses to run while the vl4 server is up,
@@ -216,6 +301,33 @@ building by hand. The startup banner is the confirmation:
   debug-report forensics; the client packet does not.
 - `physics_contact_pairs` is ABSENT (not 0) under the GPU pipeline; pair
   activity = `spans.physics/gpu_found_lost_pairs` + contact high-waters.
+
+## Two traps that produced wrong numbers on 2026-08-31
+
+**11. A caller that RESTATES the physics env instead of sourcing it.**
+`profile.sh` inlined its own copy and omitted `BLAST_BOND_STRESS_GPU` (so
+`hw_bond` ran the serial CPU walk at 10.3 ms, 14.5x its real cost, and was
+FLAT across load -- 25% fewer live bonds bought 4% less time) and
+`BLAST_GPU_WHOLE_RESET_ON_TOPOLOGY` (so the "idle" city broke 49,832 bonds
+with nobody shooting). Both fixed by sourcing `physics-env.sh`. If you need a
+knob, add it THERE.
+
+**13. `pkill -x web-fps-server-vl4` silently does nothing.** `-x` matches the
+process NAME, which the kernel truncates to 15 characters (`web-fps-server-`),
+so an 18-char pattern can never match. `pgrep -x` fails the same way, so a
+"did it stop?" check built on it reports success while the server is still up
+holding the GPU. Use `kill $(pgrep -f '[w]eb-fps-server-vl4')` and verify with
+`ps -eo pid,args | grep`.
+
+**12. `run-vl4-server.sh` launches a HARDLINK, `web-fps-server-vl4`.** A
+`cargo build` writes a new inode at `web-fps-server` and leaves the hardlink
+pointing at the old one, so the running server can be hours stale. Observed as
+a 2.3x `solve_ms` "regression" (4.1 -> 9.3 ms at matched damage) that was
+entirely a stale deploy: the reports carried build 03:40:30 / git 41e8739 and
+were missing six `BLAST_*` flags the afternoon build had. **Always check
+`fingerprint.binary_mtime_unix` and `fingerprint.git` in a debug report before
+comparing it to anything.** `stat -c %i` on both names tells you instantly
+whether the hardlink is intact.
 
 ## Before claiming a number
 
