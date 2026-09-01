@@ -2150,7 +2150,7 @@ DestructionManager::resolve_contact_target(PxShape *shape) {
                        blast_node};
 }
 
-void DestructionManager::queue_contact_at(const ContactTarget &target,
+bool DestructionManager::queue_contact_at(const ContactTarget &target,
                                           FfiVec3 position, FfiVec3 impulse,
                                           bool wake) {
   ExtStressPhysXContact contact;
@@ -2159,7 +2159,27 @@ void DestructionManager::queue_contact_at(const ContactTarget &target,
   contact.worldPosition = to_px(position);
   contact.worldImpulse = to_px(impulse);
   contact.wake = wake;
-  target.slot->dest->queueContact(contact);
+  return target.slot->dest->queueContact(contact);
+}
+
+bool DestructionManager::target_is_bondless(const ContactTarget &target) const {
+  return target.slot != nullptr && target.slot->dest != nullptr
+         && target.blast_node != UINT32_MAX
+         && target.slot->dest->isNodeBondless(target.blast_node);
+}
+
+void DestructionManager::note_bondless_skipped(std::uint32_t count) {
+  if (count == 0) {
+    return;
+  }
+  // Any live adapter will do -- the counter is a scene-wide total and the
+  // published figure is a sum across slots either way.
+  for (auto &slot_ptr : slots_) {
+    if (slot_ptr && slot_ptr->dest != nullptr) {
+      slot_ptr->dest->noteBondlessSkipped(count);
+      return;
+    }
+  }
 }
 
 void DestructionManager::route_contact_shape(PxShape *shape, FfiVec3 position,
@@ -2935,7 +2955,8 @@ float contact_wake_ratio() {
 void DestructionManager::note_contact_pair(std::uint32_t entity_a,
                                            std::uint32_t entity_b,
                                            float mass_a, float mass_b,
-                                           float impulse) {
+                                           float impulse, int frozen_a,
+                                           int frozen_b) {
   const float ratio = contact_wake_ratio();
   if (ratio <= 0.0f || frozen_entities_.empty() || impulse <= 0.0f) {
     return;
@@ -2949,19 +2970,26 @@ void DestructionManager::note_contact_pair(std::uint32_t entity_a,
   // flips, and debris visibly bouncing red before it could stay blue, was
   // this per-pair judgement. The body's load is the SUM over its pairs; only
   // the sum can be compared against what it was carrying yesterday.
-  const auto consider = [&](std::uint32_t entity, float striker_mass) {
+  const auto consider = [&](std::uint32_t entity, float striker_mass,
+                            int known_frozen) {
     if (striker_mass <= 0.0f) {
       return; // struck by a static or kinematic: no resting load to compare.
     }
-    if (frozen_entities_.find(entity) == frozen_entities_.end()) {
+    // known_frozen comes from the parallel classify pass; -1 means the caller
+    // did not resolve it and we pay the probe here as before.
+    const bool frozen = known_frozen >= 0
+                            ? known_frozen != 0
+                            : frozen_entities_.find(entity) !=
+                                  frozen_entities_.end();
+    if (!frozen) {
       return;
     }
     contact_tick_load_[entity] += impulse;
     auto &strongest = contact_tick_striker_[entity];
     strongest = std::max(strongest, striker_mass);
   };
-  consider(entity_a, mass_b);
-  consider(entity_b, mass_a);
+  consider(entity_a, mass_b, frozen_a);
+  consider(entity_b, mass_a, frozen_b);
 }
 
 /// Judge the tick's accumulated contact load per frozen body — see

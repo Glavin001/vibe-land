@@ -260,7 +260,17 @@ def ab(path_a, path_b, warmup, by):
 # whole fan-out. Treating them as disjoint children printed cb_queue at 151%
 # of its parent and an [unattributed] row of -204%, which is not a residual --
 # it is thread concurrency wearing a residual's clothes.
-PARALLEL = {"solve", "cb_tick"}
+# cb_tick stays here: onContact is invoked from PhysX's worker threads, so its
+# children are thread-summed against a wall parent. cb_drain is NOT parallel --
+# it is a serial loop on the main thread, which is exactly why its children now
+# sum cleanly to 83% of it instead of needing an invented concurrency factor.
+# cb_tick is NOT here. It was, while it wrongly held process_extracted_pair's
+# timers; once those moved to cb_drain its remaining children (cb_entity,
+# cb_capture) sum BELOW it, and a parallel node with children under its parent
+# prints a meaningless "0.54x concurrency" where an honest residual belongs.
+# The residual is real: the per-pair loop, the removed-shape and zero-contact
+# skips, and the flag checks, none of which are timed.
+PARALLEL = {"solve"}
 
 TREE = {
     "TOTAL": ["physx_step", "stress_solve"],
@@ -268,8 +278,20 @@ TREE = {
     # the fetch split is recorded, so it is a sibling of fetch, not a child.
     "physx_step": ["physx_sim", "fetch_tick", "cb_drain"],
     "fetch_tick": ["gpu_wait", "cb_tick", "fetch_copy"],
-    "cb_tick": ["cb_entity", "cb_extract", "cb_resolve", "cb_queue",
-                "cb_events", "cb_pairld", "cb_wake", "cb_census", "cb_resize"],
+    # Correct parenting, established 2026-09-01 by reading the code rather
+    # than the names. With VIBE_PHYSX_DEFER_CONTACTS on (the default),
+    # onContact only CAPTURES -- entity ids, extractContacts, push -- and
+    # process_extracted_pair runs later, inside drain_deferred_contacts.
+    # So resolve/queue/events/pairld/wake/census are children of CB_DRAIN.
+    #
+    # Parenting them under cb_tick made the tree report "2.65x concurrency"
+    # on a 1.73 ms parent holding 4.59 ms of children. That factor was not
+    # real: it was a 4.4 ms block attributed to the wrong phase. Under
+    # cb_drain (5.29 ms, serial on the main thread) the same children sum to
+    # 83% with no concurrency needed.
+    "cb_tick": ["cb_entity", "cb_capture", "cb_extract", "cb_resize"],
+    "cb_drain": ["cb_resolve", "cb_queue", "cb_events", "cb_pairld",
+                 "cb_wake", "cb_census"],
     "stress_solve": ["begin", "solve", "end", "readback", "events", "filters",
                      "ccd", "support", "shape", "slot", "bond_sample"],
     # gpu_solve is DEVICE time and runs concurrently with gpu_host_blocked --

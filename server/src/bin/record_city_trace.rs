@@ -1039,7 +1039,7 @@ fn main() -> Result<()> {
                  frac_apply,frac_scene,frac_rebuild,physx_step,physx_sim,gpu_wait,fetch_copy,\
                  callback,fetch_total,fetch_resid,post_resid,step_resid,solve_resid,\
                  fetch_tick,cb_tick,cb_max_us,cb_entity,cb_extract,cb_resolve,\
-                 cb_queue,cb_events,cb_pairld,cb_wake,\
+                 cb_capture,cb_queue,cb_events,cb_pairld,cb_wake,\
                  cp_found,cp_persists,cp_points,cp_supp,node_mm,node_ck,\
                  sup_calls,sup_kin,sup_fy,sup_exist,sup_new,sup_staged,sup_unch,sup_rows,\
                  gpu_host_work,gpu_host_blocked,st_init,st_err,st_copy,st_graph,st_drain,hw_in,hw_reset,hw_bond,hw_node,bs_skip,bs_gpu_skip,bs_gpu_runs,bs_par_ck,bs_par_mm,cb_drain,cb_census,cb_resize,bl_ck,bl_mm,pairs,\
@@ -1197,7 +1197,7 @@ fn main() -> Result<()> {
                 // milliseconds and making them look quantised. Rust
                 // prints shortest-roundtrip for floats, which is what a
                 // CSV wants anyway.
-                "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
+                "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
                 tick_index, s.chunk_bodies, s.awake_chunk_bodies, s.frozen_chunk_bodies,
                 s.sleeping_chunk_bodies, s.broken_bonds,
                 s.stress_solve_ms, s.begin_ms, s.solve_ms, s.end_ms, s.readback_ms,
@@ -1232,6 +1232,7 @@ fn main() -> Result<()> {
                 world_span_value(&world_spans, "cb_entity_ms"),
                 world_span_value(&world_spans, "cb_extract_ms"),
                 world_span_value(&world_spans, "cb_resolve_ms"),
+                world_span_value(&world_spans, "cb_capture_ms"),
                 world_span_value(&world_spans, "cb_queue_ms"),
                 world_span_value(&world_spans, "cb_events_ms"),
                 world_span_value(&world_spans, "cb_pair_load_ms"),
@@ -1890,14 +1891,19 @@ fn overview_cameras(extent: f32) -> [Camera; 4] {
 fn primary_target(manifest: &DestructionManifest) -> Option<Vec3> {
     let mut order: Vec<&_> = manifest.structures.iter().collect();
     order.sort_by(|a, b| {
+        // total_cmp, NOT partial_cmp().unwrap_or(Equal). The latter is not a
+        // total order when any coordinate is NaN -- NaN compares Equal to
+        // everything, which breaks transitivity -- and Rust's sort detects
+        // that and PANICS ("user-provided comparison function does not
+        // correctly implement a total order"), killing the trace mid-run.
+        // Observed once on a 45 s demolition. total_cmp orders NaN
+        // deterministically instead of pretending it is equal to everything.
         b.world_position[2]
-            .partial_cmp(&a.world_position[2])
-            .unwrap_or(std::cmp::Ordering::Equal)
+            .total_cmp(&a.world_position[2])
             .then_with(|| {
                 a.world_position[0]
                     .abs()
-                    .partial_cmp(&b.world_position[0].abs())
-                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .total_cmp(&b.world_position[0].abs())
             })
     });
     order.first().map(|s| Vec3::from_array(s.world_position))
@@ -1938,14 +1944,19 @@ fn build_shot_plan(manifest: &DestructionManifest, shots: u32, targets: u32) -> 
     // fired from -Z and every recording showed the undamaged back of the city.
     let mut order: Vec<&_> = manifest.structures.iter().collect();
     order.sort_by(|a, b| {
+        // total_cmp, NOT partial_cmp().unwrap_or(Equal). The latter is not a
+        // total order when any coordinate is NaN -- NaN compares Equal to
+        // everything, which breaks transitivity -- and Rust's sort detects
+        // that and PANICS ("user-provided comparison function does not
+        // correctly implement a total order"), killing the trace mid-run.
+        // Observed once on a 45 s demolition. total_cmp orders NaN
+        // deterministically instead of pretending it is equal to everything.
         b.world_position[2]
-            .partial_cmp(&a.world_position[2])
-            .unwrap_or(std::cmp::Ordering::Equal)
+            .total_cmp(&a.world_position[2])
             .then_with(|| {
                 a.world_position[0]
                     .abs()
-                    .partial_cmp(&b.world_position[0].abs())
-                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .total_cmp(&b.world_position[0].abs())
             })
     });
     let pool = if targets == 0 {

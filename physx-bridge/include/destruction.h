@@ -166,7 +166,10 @@ public:
     explicit operator bool() const { return slot != nullptr; }
   };
   ContactTarget resolve_contact_target(physx::PxShape *shape);
-  void queue_contact_at(const ContactTarget &target, FfiVec3 position,
+  /// Returns whether the adapter actually QUEUED it (false = dropped, e.g.
+  /// bondless). The bridge's hoist verifier compares this against what it
+  /// predicted it would skip.
+  bool queue_contact_at(const ContactTarget &target, FfiVec3 position,
                         FfiVec3 impulse, bool wake);
 
   void route_contact_shape(physx::PxShape *shape, FfiVec3 position,
@@ -282,8 +285,12 @@ public:
   /// (m*g*dt), so it self-normalises across chunk masses: debris resting on
   /// a frozen pile scores ~1 and never wakes it, an impact at >~0.7 m/s
   /// scores past the default ratio of 4 and releases the chunk it hit.
+  /// frozen_a/frozen_b are the membership answers, pre-resolved by the caller
+  /// (see entity_is_frozen). Pass -1 for "unknown" and it falls back to the
+  /// hash probe.
   void note_contact_pair(std::uint32_t entity_a, std::uint32_t entity_b,
-                         float mass_a, float mass_b, float impulse);
+                         float mass_a, float mass_b, float impulse,
+                         int frozen_a = -1, int frozen_b = -1);
 
   /// Frozen bodies contact-struck since the last drain, deduplicated.
   rust::Vec<std::uint32_t> take_frozen_contact_wakes();
@@ -291,6 +298,23 @@ public:
   /// Whether contact reports need to consult the frozen set at all; lets the
   /// scene callback skip the lookup on the hot path when nothing is frozen.
   bool has_frozen_bodies() const { return !frozen_entities_.empty(); }
+  /// Is this entity currently frozen? The drain's hot path asks this twice per
+  /// manifold and the answer is "no" ~40% of the time, each miss costing an
+  /// unordered_set probe and usually a cache miss. Safe to evaluate from the
+  /// parallel classify pass: frozen_entities_ is mutated by the freeze/thaw
+  /// pass and by body retirement, both of which run LATER in the tick than the
+  /// contact drain, so the set is immutable for the drain's duration.
+  bool entity_is_frozen(std::uint32_t entity) const {
+    return frozen_entities_.find(entity) != frozen_entities_.end();
+  }
+  /// Would a contact on this target be dropped by queueContact as bondless?
+  /// Pure lookup over state nothing mutates during the drain, so it is safe
+  /// to evaluate from the parallel classify pass. Defined in the .cc: Slot is
+  /// still incomplete here.
+  bool target_is_bondless(const ContactTarget &target) const;
+  /// Contacts the bridge skipped via target_is_bondless, handed to the
+  /// adapters so bondlessContactsSkipped keeps its meaning.
+  void note_bondless_skipped(std::uint32_t count);
 
   FfiDestructionStats destruction_stats() const;
   bool validate_destruction_mappings() const;

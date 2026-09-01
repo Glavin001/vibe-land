@@ -285,6 +285,63 @@ bool contact_census_enabled() {
 /// nondeterminism), and cumulative contact counters swing 2-3x between
 /// identical-config runs, so counter deltas across arms are NOT evidence
 /// either way. VIBE_PHYSX_DEFER_CONTACTS=0 restores inline processing.
+/// A/B for hoisting the bondless test out of queueContact and into the
+/// parallel classify pass. Default ON. One binary, two arms -- separate
+/// builds would reintroduce build identity as a confounder.
+///
+/// The arms must agree EXACTLY on contacts_queued: the hoist skips only
+/// contacts queueContact would itself have dropped, so the set reaching the
+/// solver, and its order, are unchanged. A difference in contacts_queued is a
+/// bug, not a tuning artefact.
+bool bondless_hoist_enabled() {
+  static const bool enabled = [] {
+    const char *value = std::getenv("VIBE_PHYSX_BONDLESS_HOIST");
+    return value == nullptr || std::string(value) != "0";
+  }();
+  return enabled;
+}
+
+/// Self-check for the hoist, immune to cascade nondeterminism because both
+/// arms run in the SAME tick of the SAME run: predict the skip, then queue
+/// anyway and compare the adapter's verdict. A contact the bridge would have
+/// skipped that queueContact ACCEPTS is a real divergence -- it would have
+/// been lost load on the solver. Off by default; it reinstates exactly the
+/// work the hoist removes.
+bool bondless_hoist_verify() {
+  static const bool on = [] {
+    const char *value = std::getenv("VIBE_PHYSX_BONDLESS_HOIST_VERIFY");
+    return value != nullptr && std::string(value) == "1";
+  }();
+  return on;
+}
+
+/// A/B for hoisting the frozen-membership probe into the parallel classify
+/// pass, same shape as the bondless hoist. Default ON.
+///
+/// The drain asks "is this entity frozen?" twice per manifold -- ~17,700 probes
+/// a tick at `saturated` -- and ~40% of the answers are "no", each costing an
+/// unordered_set lookup and usually a cache miss, purely to decide to do
+/// nothing. The set cannot change during the drain (freeze/thaw and body
+/// retirement both run later in the tick), so the answer is the same whether
+/// it is computed serially or in the fan-out.
+/// Same self-check as the bondless hoist: recompute the membership serially
+/// and compare against what the parallel pass decided, in the same tick.
+bool frozen_hoist_verify() {
+  static const bool on = [] {
+    const char *value = std::getenv("VIBE_PHYSX_FROZEN_HOIST_VERIFY");
+    return value != nullptr && std::string(value) == "1";
+  }();
+  return on;
+}
+
+bool frozen_hoist_enabled() {
+  static const bool enabled = [] {
+    const char *value = std::getenv("VIBE_PHYSX_FROZEN_HOIST");
+    return value == nullptr || std::string(value) != "0";
+  }();
+  return enabled;
+}
+
 bool defer_contacts_enabled() {
   static const bool enabled = [] {
     const char *value = std::getenv("VIBE_PHYSX_DEFER_CONTACTS");
@@ -621,6 +678,20 @@ public:
 #endif
     float mass0 = -1.0f;
     float mass1 = -1.0f;
+    /// Would queueContact drop a contact on this side as bondless? Resolved
+    /// in the PARALLEL classify pass, so the serial drain skips the whole
+    /// manifold's queue calls for that side at zero serial cost.
+    ///
+    /// 65% of queued contacts are aimed at single-node debris and dropped
+    /// inside queueContact -- after the host has built the struct, converted
+    /// two vectors and made a virtual call, once per contact POINT. This
+    /// answers the same question once per manifold SIDE.
+    bool bondless0 = false;
+    bool bondless1 = false;
+    /// Frozen membership for the two entities, resolved in the parallel pass.
+    /// -1 = unresolved (the serial path then probes as before).
+    int frozen_a = -1;
+    int frozen_b = -1;
     bool valid = false;
   };
 
@@ -691,6 +762,19 @@ public:
         target0 = destruction_->resolve_contact_target(shape0);
         target1 = destruction_->resolve_contact_target(shape1);
       }
+      bool skip0 = false;
+      bool skip1 = false;
+      if (!bondless_hoist_enabled()) {
+        // Arm B: let queueContact make the decision, as before.
+      } else if (pre != nullptr && pre->valid) {
+        skip0 = pre->bondless0;
+        skip1 = pre->bondless1;
+      } else if (destruction_ && contact_cse_enabled()) {
+        // Serial fallback (pair_count below the parallel floor). Still one
+        // lookup per manifold side rather than one per point.
+        skip0 = destruction_->target_is_bondless(target0);
+        skip1 = destruction_->target_is_bondless(target1);
+      }
       if (sample_subspans) {
         cb_resolve_ms_ += 8.0 * sub_ms(resolve_started);
       }
@@ -735,13 +819,43 @@ public:
           // wake_bodies_near, and a fracture wakes the bodies it creates. The
           // queued load still reaches the solver either way.
           if (contact_cse_enabled()) {
-            if (target0) {
-              destruction_->queue_contact_at(target0, position, impulse,
-                                             /*wake=*/false);
-            }
-            if (target1) {
-              destruction_->queue_contact_at(target1, position, neg,
-                                             /*wake=*/false);
+            // skip0/skip1 were decided once per manifold in the parallel
+            // classify pass. queueContact would drop these anyway -- this
+            // removes the struct build, the two to_px conversions and the
+            // virtual call that preceded the drop, for every point.
+            if (bondless_hoist_verify()) {
+              // Queue everything, then check the prediction against reality.
+              if (target0) {
+                const bool queued = destruction_->queue_contact_at(
+                    target0, position, impulse, /*wake=*/false);
+                ++hoist_verify_checks_;
+                if (skip0 == queued) {
+                  report_hoist_mismatch(skip0, queued);
+                }
+              }
+              if (target1) {
+                const bool queued = destruction_->queue_contact_at(
+                    target1, position, neg, /*wake=*/false);
+                ++hoist_verify_checks_;
+                if (skip1 == queued) {
+                  report_hoist_mismatch(skip1, queued);
+                }
+              }
+            } else {
+              if (target0 && skip0) {
+                ++bondless_skipped_host_;
+              }
+              if (target1 && skip1) {
+                ++bondless_skipped_host_;
+              }
+              if (target0 && !skip0) {
+                destruction_->queue_contact_at(target0, position, impulse,
+                                               /*wake=*/false);
+              }
+              if (target1 && !skip1) {
+                destruction_->queue_contact_at(target1, position, neg,
+                                               /*wake=*/false);
+              }
             }
           } else {
             destruction_->route_contact_shape(shape0, position, impulse,
@@ -831,8 +945,30 @@ public:
                                 ? pre->mass0 : dynamic_mass_of(actor0);
         const float mass1 = (pre != nullptr && pre->valid)
                                 ? pre->mass1 : dynamic_mass_of(actor1);
+        const int fa = pre != nullptr ? pre->frozen_a : -1;
+        const int fb = pre != nullptr ? pre->frozen_b : -1;
+        if (frozen_hoist_verify() && fa >= 0) {
+          const int truth_a = destruction_->entity_is_frozen(entity_a) ? 1 : 0;
+          const int truth_b = destruction_->entity_is_frozen(entity_b) ? 1 : 0;
+          ++frozen_verify_checks_;
+          if (fa != truth_a || fb != truth_b) {
+            ++frozen_verify_mismatches_;
+            if (frozen_verify_mismatches_ <= 5) {
+              std::fprintf(stderr,
+                           "[frozen] MISMATCH hoisted=(%d,%d) truth=(%d,%d)\n",
+                           fa, fb, truth_a, truth_b);
+            }
+          }
+          if ((frozen_verify_checks_ % 20000000) == 0) {
+            std::fprintf(stderr,
+                         "[frozen] verify: checks=%llu mismatches=%llu\n",
+                         static_cast<unsigned long long>(frozen_verify_checks_),
+                         static_cast<unsigned long long>(
+                             frozen_verify_mismatches_));
+          }
+        }
         destruction_->note_contact_pair(entity_a, entity_b, mass0, mass1,
-                                        total_magnitude);
+                                        total_magnitude, fa, fb);
       }
       if (sample_subspans) {
         cb_wake_ms_ += 8.0 * sub_ms(wake_started);
@@ -880,6 +1016,14 @@ public:
           out.target1 = destruction_->resolve_contact_target(rec.shape1);
           out.mass0 = dynamic_mass_of(rec.actor0);
           out.mass1 = dynamic_mass_of(rec.actor1);
+          if (bondless_hoist_enabled()) {
+            out.bondless0 = destruction_->target_is_bondless(out.target0);
+            out.bondless1 = destruction_->target_is_bondless(out.target1);
+          }
+          if (frozen_hoist_enabled() && destruction_->has_frozen_bodies()) {
+            out.frozen_a = destruction_->entity_is_frozen(rec.entity_a) ? 1 : 0;
+            out.frozen_b = destruction_->entity_is_frozen(rec.entity_b) ? 1 : 0;
+          }
           out.valid = true;
         }
       });
@@ -901,6 +1045,15 @@ public:
     }
     deferred_pairs_.clear();
     deferred_points_.clear();
+#ifdef VIBE_LAND_DESTRUCTION
+    if (destruction_ != nullptr && bondless_skipped_host_ != 0) {
+      destruction_->note_bondless_skipped(bondless_skipped_host_);
+      bondless_skipped_host_ = 0;
+    }
+#endif
+    if (bondless_hoist_verify() && (++hoist_verify_drains_ % 600) == 0) {
+      dump_hoist_verify();
+    }
     contact_drain_cycles_ += cycle_now() - drain_started;
   }
 
@@ -950,6 +1103,12 @@ public:
         // callback, so extraction cannot defer; everything else can and
         // does. Indices, not pointers, into deferred_points_ -- it grows
         // during capture.
+        // The capture was the one untimed block on the default path, and it
+        // is the whole of what onContact still does per manifold: extraction
+        // cannot defer (the contact stream is valid only inside this
+        // callback). Without it cb_tick had a ~1.5 ms hole that the tree had
+        // no name for.
+        const auto capture_started = sub_now();
         const std::size_t base = deferred_points_.size();
         deferred_points_.resize(base + contact_count);
         const PxU32 extracted =
@@ -964,6 +1123,9 @@ public:
              static_cast<bool>(pair.events &
                                (PxPairFlag::eNOTIFY_THRESHOLD_FORCE_FOUND |
                                 PxPairFlag::eNOTIFY_TOUCH_FOUND))});
+        if (sample_subspans) {
+          cb_capture_ms_ += 8.0 * sub_ms(capture_started);
+        }
         continue;
       }
       // Reused across pairs and ticks. This was a fresh heap allocation per
@@ -1356,6 +1518,7 @@ public:
     require(!step_in_flight_, "begin_step called twice without end_step");
     contact_callback_ms_ = 0.0;
     cb_extract_ms_ = 0.0;
+    cb_capture_ms_ = 0.0;
     cb_queue_ms_ = 0.0;
     cb_pair_load_ms_ = 0.0;
     cb_wake_ms_ = 0.0;
@@ -1710,6 +1873,10 @@ public:
     }
     span("tsc_suspect_ticks", static_cast<double>(tsc_suspect_ticks_), 2);
     span("cb_extract_ms", cb_extract_ms_, 0);
+    span("hoist_verify_checks", static_cast<double>(hoist_verify_checks_), 2);
+    span("hoist_verify_mismatches",
+         static_cast<double>(hoist_verify_mismatches_), 2);
+    span("cb_capture_ms", cb_capture_ms_, 0);
     span("cb_queue_ms", cb_queue_ms_, 0);
     span("cb_pair_load_ms", cb_pair_load_ms_, 0);
     span("cb_wake_ms", cb_wake_ms_, 0);
@@ -2341,6 +2508,7 @@ private:
   // + the dynamic_mass virtual reads. Residual vs contact_callback_est_ms is
   // header decode + entity lookup + CSE resolve.
   double cb_extract_ms_ = 0.0;
+  double cb_capture_ms_ = 0.0;
   double cb_queue_ms_ = 0.0;
   double cb_pair_load_ms_ = 0.0;
   double cb_wake_ms_ = 0.0;
@@ -2374,6 +2542,31 @@ private:
   std::vector<PairPrecomputed> classify_scratch_;
   std::vector<physx::PxContactPairPoint> deferred_points_;
   std::uint64_t contact_drain_cycles_ = 0;
+  std::uint32_t bondless_skipped_host_ = 0;
+  std::uint64_t frozen_verify_checks_ = 0;
+  std::uint64_t frozen_verify_mismatches_ = 0;
+  std::uint64_t hoist_verify_drains_ = 0;
+  std::uint64_t hoist_verify_checks_ = 0;
+  std::uint64_t hoist_verify_mismatches_ = 0;
+  void report_hoist_mismatch(bool predicted_skip, bool queued) {
+    ++hoist_verify_mismatches_;
+    if (hoist_verify_mismatches_ <= 5 ||
+        (hoist_verify_mismatches_ % 100000) == 0) {
+      std::fprintf(stderr,
+                   "[hoist] MISMATCH #%llu predicted_skip=%d queueContact_"
+                   "queued=%d  (checks so far %llu)\n",
+                   static_cast<unsigned long long>(hoist_verify_mismatches_),
+                   predicted_skip ? 1 : 0, queued ? 1 : 0,
+                   static_cast<unsigned long long>(hoist_verify_checks_));
+    }
+  }
+  void dump_hoist_verify() const {
+    if (bondless_hoist_verify()) {
+      std::fprintf(stderr, "[hoist] verify: checks=%llu mismatches=%llu\n",
+                   static_cast<unsigned long long>(hoist_verify_checks_),
+                   static_cast<unsigned long long>(hoist_verify_mismatches_));
+    }
+  }
   std::uint64_t contact_drain_records_ = 0;
 
   /// Longest SINGLE callback this tick, in cycles. See the sum/max comment.
