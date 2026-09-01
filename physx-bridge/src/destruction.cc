@@ -1347,7 +1347,13 @@ void DestructionManager::collect_events(Slot &slot) {
     // which is exactly the supporter-death signal its dependents need.
     slot.rooted.erase(id);
     // Its supporter entries (and any it was a dependent of) die with it.
-    support_store_.erase(support_key(slot.structure_id, id));
+    {
+      const auto dying = support_store_.find(support_key(slot.structure_id, id));
+      if (dying != support_store_.end()) {
+        support_edges_total_ -= dying->second.supporters.size();
+        support_store_.erase(dying);
+      }
+    }
     slot.body_to_serial.erase(id);
     // These two were pointer-keyed and pruned nowhere, so they leaked an entry
     // per retired body AND let a recycled actor inherit a dead body's state.
@@ -2966,15 +2972,27 @@ void DestructionManager::resolve_frozen_contact_wakes() {
   }
   const float ratio = contact_wake_ratio();
   const float g_dt = world_gravity() * (last_dt_ > 0.0f ? last_dt_ : 1.0f / 60.0f);
-  // Sorted so wake order does not depend on hash-map iteration.
-  std::vector<std::uint32_t> entities;
-  entities.reserve(contact_tick_load_.size());
+  // Determinism costs a sort, but only over the entities that actually SPIKE.
+  //
+  // This used to collect every entity with contact load, sort it, and walk it
+  // in order -- and in a settled pile essentially every body is bearing a
+  // contact, so contact_tick_load_ holds ~21,000 entries at `saturated`. It
+  // sorted all of them, every tick, to wake a measured 0.6 per tick.
+  //
+  // Only the WAKE ORDER needs to be independent of hash-map iteration
+  // (contact_wake_order_ is consumed in order downstream). The baseline
+  // updates below are per-entity and mutate nothing shared, so their order is
+  // immaterial. So: judge unsorted, collect the rare spikes, sort THOSE, and
+  // wake in that order. Identical results, O(spikes log spikes) instead of
+  // O(bodies log bodies).
+  //
+  // This was the residual O(bodies) term in `support` after the edge-count
+  // walk was made incremental: with contact pairs controlled for, the body
+  // coefficient was still 167.7 us/1k bodies at R2=0.97.
+  spiked_entities_.clear();
   for (const auto &entry : contact_tick_load_) {
-    entities.push_back(entry.first);
-  }
-  std::sort(entities.begin(), entities.end());
-  for (const std::uint32_t entity : entities) {
-    const float total = contact_tick_load_[entity];
+    const std::uint32_t entity = entry.first;
+    const float total = entry.second;
     // Two references, and the wake needs to clear BOTH.
     //
     // The single-body floor stops trivia waking anything: it is the heaviest
@@ -3002,6 +3020,11 @@ void DestructionManager::resolve_frozen_contact_wakes() {
     // A real spike. Forget the baseline so the body re-learns its load once
     // it settles again, rather than inheriting a stale one from the hit.
     contact_load_baseline_.erase(entity);
+    spiked_entities_.push_back(entity);
+  }
+  // Sorted so wake order does not depend on hash-map iteration.
+  std::sort(spiked_entities_.begin(), spiked_entities_.end());
+  for (const std::uint32_t entity : spiked_entities_) {
     if (contact_wake_pending_.insert(entity).second) {
       contact_wake_order_.push_back(entity);
       ++contact_wakes_;
@@ -3386,6 +3409,7 @@ void DestructionManager::resolve_support_loads() {
       }
       rec.last_tick = tick_count_;
       entry.supporters.push_back(rec);
+      ++support_edges_total_;
       entry.dirty = true;
       entry.set_changed = true;
       ++sup_edge_new_;
@@ -3421,6 +3445,7 @@ void DestructionManager::resolve_support_loads() {
                        }),
         entry.supporters.end());
     if (entry.supporters.size() != before) {
+      support_edges_total_ -= before - entry.supporters.size();
       entry.dirty = true;
       entry.set_changed = true;
     }
@@ -3448,9 +3473,34 @@ void DestructionManager::resolve_support_loads() {
       entry.dirty = false;
     }
   }
-  support_edges_total_ = 0;
-  for (const auto &entry : support_store_) {
-    support_edges_total_ += entry.second.supporters.size();
+  // support_edges_total_ is maintained INCREMENTALLY at the four sites that
+  // change an edge (add, age-out, entry retirement, world clear). It used to
+  // be recomputed here by walking the whole support_store_ every tick -- an
+  // O(all bodies) hash-map traversal, pointer-chasing, purely to refresh a
+  // TELEMETRY counter, and it ran whether or not anything moved.
+  //
+  // That single loop is why `support` was the one host walk whose cost tracked
+  // TOTAL bodies rather than awake ones (189.7 us/1k bodies vs 118.9 us/1k
+  // awake, R2=0.96 over 10,395 pooled ticks). It made `saturated` -- 21,030
+  // bodies of which 13,894 are FROZEN -- cost MORE in support (4.63 ms) than
+  // peak `demolition` with a third more awake bodies (3.33 ms).
+  //
+  // If this ever drifts, VIBE_CITY_VERIFY_SUPPORT_EDGES=1 re-derives it the
+  // old way and reports the first mismatch.
+  if (verify_support_edges_) {
+    std::uint64_t derived = 0;
+    for (const auto &entry : support_store_) {
+      derived += entry.second.supporters.size();
+    }
+    if (derived != support_edges_total_) {
+      std::fprintf(stderr,
+                   "[support] edge count drift: incremental=%llu derived=%llu "
+                   "tick=%llu\n",
+                   static_cast<unsigned long long>(support_edges_total_),
+                   static_cast<unsigned long long>(derived),
+                   static_cast<unsigned long long>(tick_count_));
+      support_edges_total_ = derived;
+    }
   }
 }
 

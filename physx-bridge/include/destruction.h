@@ -556,8 +556,21 @@ private:
   /// Dependents whose supporter set changed, staged for the paired drains.
   std::vector<FfiSupportSet> staged_support_sets_;
   std::vector<FfiSupportRow> staged_support_rows_;
+  /// Reused across ticks: the entities whose contact load spiked this tick.
+  /// Only these need sorting for deterministic wake order.
+  std::vector<std::uint32_t> spiked_entities_;
   std::uint64_t tick_count_ = 0;
+  /// Total supporter edges across the store. Maintained INCREMENTALLY at the
+  /// four sites that change an edge; it is telemetry only, and recomputing it
+  /// per tick cost an O(all bodies) walk that made `support` the one host
+  /// phase scaling with total rather than awake bodies.
   std::uint64_t support_edges_total_ = 0;
+  /// VIBE_CITY_VERIFY_SUPPORT_EDGES=1 re-derives the count the old way each
+  /// tick and reports drift. Off by default: it reinstates exactly the cost
+  /// the incremental counter exists to remove.
+  const bool verify_support_edges_ =
+      std::getenv("VIBE_CITY_VERIFY_SUPPORT_EDGES") != nullptr
+      && std::string(std::getenv("VIBE_CITY_VERIFY_SUPPORT_EDGES")) == "1";
   /// Resolve pending pair loads into the store; runs once per
   /// destruction_tick after serials are current.
   void resolve_support_loads();
