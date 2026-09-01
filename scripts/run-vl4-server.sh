@@ -49,7 +49,11 @@ fi
 # The CPU solver's iteration residual reads as real stress and breaks bonds
 # that are not overloaded, so a binary without the GPU solver silently
 # simulates a different game. Refuse rather than serve it.
-if ! strings "$DST" | grep -q ExtStressGpuSolver; then
+# grep -c, NOT grep -q. With `set -o pipefail`, grep -q exits on the FIRST
+# match, strings takes SIGPIPE, and the pipeline reports failure -- so the
+# guard fired on every launch including binaries that were perfectly fine.
+# grep -c consumes all input, so there is no early exit to misread.
+if [ "$(strings "$DST" | grep -c ExtStressGpuSolver)" -eq 0 ]; then
   echo "REFUSING: $DST has no CUDA stress solver (built without --features"
   echo "  cuda-stress). The CPU fallback breaks bonds that are not overloaded."
   exit 1
