@@ -75,6 +75,12 @@ pub fn stress_settings(pack_materials: &[StressLimits]) -> StressSolverSettings 
                 tension_fatal_mpa: l.tension_fatal * scale,
                 shear_elastic_mpa: l.shear_elastic * scale,
                 shear_fatal_mpa: l.shear_fatal * scale,
+                // Deliberately NOT multiplied by the strength scale: modulus
+                // is stiffness, and scaling it would change how load is
+                // SHARED, not how much it takes to break -- a different and
+                // unwanted knob.
+                elastic_modulus_pa: l.elastic_modulus,
+                residual_area_fraction: l.residual_area_fraction,
             })
             .collect()
     } else {
@@ -85,6 +91,8 @@ pub fn stress_settings(pack_materials: &[StressLimits]) -> StressSolverSettings 
             tension_fatal_mpa: 3e6 * scale,
             shear_elastic_mpa: 1.6e6 * scale,
             shear_fatal_mpa: 4e6 * scale,
+            elastic_modulus_pa: 30.0e9,
+            residual_area_fraction: 0.0,
         }]
     };
     let _ = from_pack;
@@ -92,15 +100,36 @@ pub fn stress_settings(pack_materials: &[StressLimits]) -> StressSolverSettings 
     settings.materials = materials;
     // City towers have ~150–200 chunks; the synthetic default of 48
     // truncates island promotions mid-collapse.
-    // Stress-solve cost is the dominant term once a city is heavily
-    // fractured: measured 17.8 ms of a ~30 ms city step at ~6000 broken
-    // bonds. Iterations trade convergence for time, and graph reduction
-    // coarsens the solved graph. Both are overridable while tuning.
+    // Iterations are not a quality dial. Below convergence the solver reports
+    // a stress that is simply wrong, and wrong in the flattering direction --
+    // a structure looks sound because the sum stopped early.
+    //
+    // Measured on 432 Park (48,763 bonds), peak bond utilisation after three
+    // seconds of gravity:
+    //
+    //     4 iterations   0.89       32 iterations   2.98
+    //     8 iterations   1.14       64 iterations   2.99
+    //    16 iterations   2.62
+    //
+    // The answer converges at 32; 64 agrees to within 0.3%. At the old default
+    // of 8 that tower reported 1.14 against a true 2.98, understating what it
+    // carries by a factor of 2.6 -- which is why buildings kept looking stable
+    // while sitting at three times their limit.
+    //
+    // The cost is not the 3x it looks like, because iterations are only paid
+    // while a structure is MOVING. Ten seconds of the parking garage costs
+    // 1.48 s at 8 and 1.24 s at 32 -- flat, because it settles in 1.2 s and
+    // the settled-island skip then makes iteration count irrelevant. Petronas
+    // costs 1.8x more because it never settles, which is it telling us it is
+    // failing rather than the solver being slow.
+    //
+    // So: solve properly, and let settling -- not truncation -- be what makes
+    // it cheap.
     settings.max_solver_iterations_per_frame = std::env::var("VIBE_CITY_SOLVER_ITERATIONS")
         .ok()
         .and_then(|v| v.parse::<u32>().ok())
         .filter(|v| *v > 0)
-        .unwrap_or(8);
+        .unwrap_or(32);
     settings.graph_reduction_level = std::env::var("VIBE_CITY_GRAPH_REDUCTION")
         .ok()
         .and_then(|v| v.parse::<u32>().ok())
@@ -170,4 +199,114 @@ pub fn stress_settings(pack_materials: &[StressLimits]) -> StressSolverSettings 
         .map(|value| value != "0")
         .unwrap_or(true);
     settings
+}
+
+/// Gravity the destructible city runs under, m/s^2.
+///
+/// Delegates to the movement config rather than restating a number, which is
+/// the whole point: this was a hardcoded -9.81 and the world had been raised to
+/// -20. Everything structural measured against it was measured at half the load
+/// production applies. Anything production decides, this must CALL rather than
+/// copy -- the same rule the bench learned when it fed 9.81 into a 20 m/s^2
+/// PhysX scene, a combination that never runs.
+pub fn city_gravity() -> [f32; 3] {
+    vibe_netcode::movement::default_world_gravity()
+}
+
+/// What one shot does to a structure.
+///
+/// The match server, the trace recorder and the structural rig all fire "a
+/// shot", and until this existed each carried its own copy of the numbers --
+/// so a test could assert a building survived a hit that the server no longer
+/// fired. The profile is the weapon; the three callers only choose where to
+/// point it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ShotProfile {
+    /// Blast stress contact magnitude, N-s. This is what breaks bonds: it is
+    /// queued as a contact impulse, the same channel a real collision uses.
+    pub stress_impulse: f32,
+    /// Rigid-body push on debris, as a velocity change in m/s at the centre,
+    /// falling off quadratically.
+    pub push_speed: f32,
+    pub blast_radius_m: f32,
+    /// Slightly larger than the stress radius so post-fracture debris near the
+    /// crater still gets the shove after kinematic -> dynamic promotion.
+    pub push_radius_m: f32,
+    /// How far past the raycast surface point to seat the blast centre, so the
+    /// radius covers material instead of straddling the face.
+    pub blast_depth_m: f32,
+    /// Hitscan range for city damage.
+    pub max_distance_m: f32,
+}
+
+impl ShotProfile {
+    /// Matched to the 2.5 m radius below, and to the AUTHORED buildings.
+    ///
+    /// Upstream retuned this to 4.0e5 against a 0.4 m radius, calibrated on the
+    /// fractured-* scenes. Measured against the authored packs those values do
+    /// nothing at all -- a shot at a timber house facade broke zero bonds, and
+    /// so did every combination tried between them. Those scenes are fractured
+    /// far finer, so a 0.4 m sphere still contains chunks; an authored house
+    /// wall is a handful of half-metre pieces and the same sphere reaches
+    /// almost nothing.
+    ///
+    /// The tuning therefore belongs to the CONTENT, not to the weapon, which
+    /// is an argument for it living in this profile rather than as constants
+    /// in the server. Set VIBE_CITY_SHOT_STRESS_IMPULSE=4.0e5 and
+    /// VIBE_CITY_SHOT_BLAST_RADIUS=0.4 to get upstream's values back for the
+    /// fractured-* scenes.
+    pub const DEFAULT_STRESS_IMPULSE: f32 = 1.2e7;
+    pub const DEFAULT_PUSH_SPEED: f32 = 12.0;
+
+    /// The city's shot, including its env overrides.
+    ///
+    /// Retuned from artillery to rifle scale, which is what the weapon
+    /// actually is. 2.5 m of blast radius is an artillery footprint -- a single
+    /// burst removed most of a building because every round drove load into
+    /// every bond within a five-metre diameter. A rifle round against concrete
+    /// spalls a crater measured in centimetres, and this gun is full-auto, so
+    /// the destruction budget should come from many small precise hits rather
+    /// than one enormous one.
+    ///
+    /// The stress impulse falls with it: at 0.4 m the old 1.2e7 would
+    /// concentrate roughly forty times the load density into the bonds it does
+    /// reach.
+    pub fn city() -> Self {
+        let env_f32 = |name: &str, fallback: f32| {
+            std::env::var(name)
+                .ok()
+                .and_then(|value| value.parse::<f32>().ok())
+                .filter(|value| *value > 0.0)
+                .unwrap_or(fallback)
+        };
+        Self {
+            stress_impulse: env_f32(
+                "VIBE_CITY_SHOT_STRESS_IMPULSE",
+                Self::DEFAULT_STRESS_IMPULSE,
+            ),
+            // A velocity change rather than an impulse: an impulse divides by
+            // mass, so a blast tuned to nudge a 5 t slab handed a 5 kg fragment
+            // 4000 m/s. A bounded kick speed is a property of the weapon;
+            // everything past it is unmodified physics.
+            push_speed: env_f32("VIBE_CITY_SHOT_PUSH_SPEED", Self::DEFAULT_PUSH_SPEED),
+            blast_radius_m: env_f32("VIBE_CITY_SHOT_BLAST_RADIUS", 2.5),
+            push_radius_m: env_f32("VIBE_CITY_SHOT_PUSH_RADIUS", 4.0),
+            // Derived from the radius rather than fixed, which is what the
+            // server does: seat the centre a fraction of the radius past the
+            // surface so the blast covers material instead of straddling the
+            // face. Fixed at 0.5 against a 0.4 m radius it would sit entirely
+            // behind the crater it is supposed to make.
+            blast_depth_m: env_f32(
+                "VIBE_CITY_SHOT_BLAST_DEPTH",
+                env_f32("VIBE_CITY_SHOT_BLAST_RADIUS", 2.5) * 0.2,
+            ),
+            max_distance_m: 400.0,
+        }
+    }
+}
+
+impl Default for ShotProfile {
+    fn default() -> Self {
+        Self::city()
+    }
 }

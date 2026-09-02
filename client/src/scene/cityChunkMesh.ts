@@ -41,7 +41,8 @@ import { ShellBuilder, retireShellRange } from './cityShell';
 import { renderStats } from '../city/renderStats';
 import { applyCityTriplanar } from './cityMaterialShader';
 import { attachInstanceAnchors, bakeRestAnchors } from './cityTexAnchor';
-import { layerCodeForBuilding } from './cityTextures';
+import { layerCodeForBuilding, layerCodeForTextureKey } from './cityTextures';
+import { bondEndpoints, type MaterialAppearance } from '../city/manifest';
 
 const TMP_POSITION = new THREE.Vector3();
 const TMP_QUATERNION = new THREE.Quaternion();
@@ -144,6 +145,69 @@ export function buildCityMaterial(): THREE.Material {
 }
 
 /**
+ * The material for chunks a pack marked transparent.
+ *
+ * There is no transparency anywhere else in the destructible pipeline — the
+ * city's own packs are opaque concrete throughout, and the only other glass in
+ * the game is a decorative plane inset into a vehicle. An authored structure
+ * that says a piece is glazing needs a second material, because transparency is
+ * a property of the material and cannot be carried per instance.
+ *
+ * Deliberately plain: a flat tint at partial opacity, no transmission and no
+ * refraction, both of which cost a render pass and buy nothing at the distance
+ * a building is looked at.
+ */
+function buildGlassMaterial(appearance: MaterialAppearance): THREE.Material {
+  return new THREE.MeshPhysicalMaterial({
+    color: new THREE.Color(appearance.color ?? '#7fb6e0'),
+    transparent: true,
+    opacity: appearance.opacity ?? 0.5,
+    roughness: appearance.roughness ?? 0.06,
+    metalness: appearance.metalness ?? 0,
+    side: THREE.DoubleSide,
+    // Depth IS written, which is unusual for a transparent material. The city
+    // draws its chunks in cell batches with no back-to-front ordering between
+    // them, so every pane on the far side of a building would otherwise blend
+    // through every pane on the near side and a curtain wall five panes deep
+    // comes out opaque navy. Writing depth keeps the nearest glass surface,
+    // which is what looking at a glazed facade actually gives you.
+    depthWrite: true,
+    reflectivity: 0.7,
+    envMapIntensity: 2.2,
+  });
+}
+
+/**
+ * Per-slot material index, and which slots are transparent.
+ *
+ * Absent on every pack that authors no per-node material, in which case every
+ * slot is material 0 and nothing is transparent — the existing city path,
+ * unchanged.
+ */
+function resolveChunkMaterials(client: CityClient, count: number): {
+  materialOfSlot: Int32Array;
+  transparentBySlot: Uint8Array;
+  appearance: MaterialAppearance[];
+} {
+  const manifest = client.manifest.manifest;
+  const appearance = manifest.materialAppearance ?? [];
+  const materialOfSlot = new Int32Array(count);
+  const transparentBySlot = new Uint8Array(count);
+  if (appearance.length === 0) {
+    return { materialOfSlot, transparentBySlot, appearance };
+  }
+  for (const structure of manifest.structures) {
+    for (const chunk of structure.chunks) {
+      const slot = client.topology.slotOf(structure.structureId, chunk.nodeIndex);
+      const material = chunk.material ?? 0;
+      materialOfSlot[slot] = material;
+      if (appearance[material]?.opacity != null) transparentBySlot[slot] = 1;
+    }
+  }
+  return { materialOfSlot, transparentBySlot, appearance };
+}
+
+/**
  * The base a chunk's instance colour starts from.
  *
  * Buildings used to be told apart by a per-structure hue; they are now told
@@ -189,9 +253,12 @@ function resolveBuildingIds(client: CityClient, count: number): Int32Array {
     return node;
   };
   for (const structure of client.manifest.manifest.structures) {
-    for (const bond of structure.bonds) {
-      const a = find(client.topology.slotOf(structure.structureId, bond.node0));
-      const b = find(client.topology.slotOf(structure.structureId, bond.node1));
+    // Endpoints only: the union-find wants which chunks a bond joins, and a
+    // bond's centroid, normal and area are the solver's business.
+    const { node0, node1 } = bondEndpoints(structure);
+    for (let i = 0; i < node0.length; i += 1) {
+      const a = find(client.topology.slotOf(structure.structureId, node0[i]));
+      const b = find(client.topology.slotOf(structure.structureId, node1[i]));
       if (a !== b) parent[a] = b;
     }
   }
@@ -236,7 +303,11 @@ type ResolvedShapes = {
  * with its total vertex and index budget up front, which is only knowable once
  * the distinct hulls are known.
  */
-function resolveShapes(client: CityClient, count: number): ResolvedShapes {
+function resolveShapes(
+  client: CityClient,
+  count: number,
+  materials: ReturnType<typeof resolveChunkMaterials>,
+): ResolvedShapes {
   const manifest = client.manifest.manifest;
   const buildingOfSlot = resolveBuildingIds(client, count);
   const scales = new Float32Array(count * 3);
@@ -269,7 +340,16 @@ function resolveShapes(client: CityClient, count: number): ResolvedShapes {
       anchors[slot * 4] = structure.worldPosition[0] + TMP_POSITION.x;
       anchors[slot * 4 + 1] = structure.worldPosition[1] + TMP_POSITION.y;
       anchors[slot * 4 + 2] = structure.worldPosition[2] + TMP_POSITION.z;
-      anchors[slot * 4 + 3] = layerCodeForBuilding(buildingOfSlot[slot]);
+      // A pack that names its materials picks the texture layer by name; one
+      // that does not falls back to hashing the building id, which is the only
+      // thing that distinguishes buildings made of identical concrete.
+      const appearance = materials.appearance[materials.materialOfSlot[slot]];
+      // '' rather than undefined for a material with appearance but no named
+      // surface: it still wants a fixed layer, not a hashed one.
+      const keyed = materials.appearance.length > 0
+        ? layerCodeForTextureKey(appearance?.textureKey ?? '')
+        : null;
+      anchors[slot * 4 + 3] = keyed ?? layerCodeForBuilding(buildingOfSlot[slot]);
 
       const shape = chunkShape(chunk);
       shapeBySlot[slot] = shape;
@@ -318,7 +398,11 @@ type HullSharing = {
  * clears the threshold, every hull stays in its cell batch, and this costs one
  * pass over the hull slots.
  */
-function groupHullShapes(shapeBySlot: ResolvedShapes['shapeBySlot'], count: number): HullSharing {
+function groupHullShapes(
+  shapeBySlot: ResolvedShapes['shapeBySlot'],
+  count: number,
+  transparentBySlot: Uint8Array,
+): HullSharing {
   const slotsOfHullKey = new Map<string, number[]>();
   const hullPointsOfKey = new Map<string, Float32Array>();
   const keyOfSlot = new Map<number, string>();
@@ -326,6 +410,10 @@ function groupHullShapes(shapeBySlot: ResolvedShapes['shapeBySlot'], count: numb
   for (let slot = 0; slot < count; slot += 1) {
     const shape = shapeBySlot[slot];
     if (!shape || shape.kind !== 'hull') continue;
+    // Transparent shards never join a shared mesh: those are built against a
+    // single material, and a pane sharing its shape with a concrete shard would
+    // have to be drawn as one or the other.
+    if (transparentBySlot[slot]) continue;
     keyOfSlot.set(slot, shape.key);
     if (!hullPointsOfKey.has(shape.key)) hullPointsOfKey.set(shape.key, shape.points);
     const existing = slotsOfHullKey.get(shape.key);
@@ -340,9 +428,37 @@ function groupHullShapes(shapeBySlot: ResolvedShapes['shapeBySlot'], count: numb
   return { slotsOfHullKey, hullPointsOfKey, instancedKeys, keyOfSlot };
 }
 
-/** Per-structure tint for every slot, so a chunk drawn anywhere has a colour. */
-function resolveTints(client: CityClient, count: number): Float32Array {
+/**
+ * Per-slot tint, so a chunk drawn anywhere has a colour.
+ *
+ * White for the city's own packs, for the reason `chunkBaseColor` gives: the
+ * channel is MULTIPLIED over the sampled texture, so anything else tints every
+ * layer. That multiply is exactly what an authored material wants, though —
+ * it is how near-white architectural concrete and painted timber come out of a
+ * shared texture array.
+ */
+function resolveTints(
+  client: CityClient,
+  count: number,
+  materials: ReturnType<typeof resolveChunkMaterials>,
+): Float32Array {
   const baseColors = new Float32Array(count * 3);
+  if (materials.appearance.length > 0) {
+    const cache = new Map<number, THREE.Color>();
+    for (let slot = 0; slot < count; slot += 1) {
+      const index = materials.materialOfSlot[slot];
+      let colour = cache.get(index);
+      if (!colour) {
+        const authored = materials.appearance[index]?.color;
+        colour = authored ? new THREE.Color(authored) : new THREE.Color(1, 1, 1);
+        cache.set(index, colour);
+      }
+      baseColors[slot * 3] = colour.r;
+      baseColors[slot * 3 + 1] = colour.g;
+      baseColors[slot * 3 + 2] = colour.b;
+    }
+    return baseColors;
+  }
   for (const structure of client.manifest.manifest.structures) {
     const tint = chunkBaseColor();
     for (const chunk of structure.chunks) {
@@ -682,10 +798,20 @@ export function buildCityMesh(client: CityClient): CityMeshState {
   const manifest = client.manifest.manifest;
   const count = client.topology.chunkCount;
 
+  const materials = resolveChunkMaterials(client, count);
   const { shapeBySlot, scales, radii, localXZ, anchors, buildingCount }
-    = resolveShapes(client, count);
-  const sharing = groupHullShapes(shapeBySlot, count);
+    = resolveShapes(client, count, materials);
+  // Transparent shards stay out of the city-wide shared-shape meshes: those are
+  // built against one material, and a pane sharing a shape with a concrete
+  // shard would have to pick one of the two.
+  const sharing = groupHullShapes(shapeBySlot, count, materials.transparentBySlot);
   const material = buildCityMaterial();
+  // One glass material per transparent entry in the pack's table. Empty for
+  // every pack that authors none, which is the existing city path untouched.
+  const glassMaterials = new Map<number, THREE.Material>();
+  materials.appearance.forEach((entry, index) => {
+    if (entry.opacity != null) glassMaterials.set(index, buildGlassMaterial(entry));
+  });
 
   const sink: BuildSink = {
     renderables: [],
@@ -701,7 +827,7 @@ export function buildCityMesh(client: CityClient): CityMeshState {
     shellIndexCountBySlot: new Int32Array(count).fill(0),
     scales,
     anchors,
-    baseColors: resolveTints(client, count),
+    baseColors: resolveTints(client, count, materials),
     totalVertices: 0,
     hullBatchVertices: 0,
     hullBatchSharedVertices: 0,
@@ -724,17 +850,33 @@ export function buildCityMesh(client: CityClient): CityMeshState {
       // stagger phase just because both were the third cell of their own pack.
       const cell = cellCount;
       cellCount += 1;
-      const boxSlots: number[] = [];
-      const hullSlots: number[] = [];
+      // Split by MATERIAL as well as by shape. Transparency is a property of
+      // the material and cannot ride on an instance, so a cell holding both
+      // glazing and concrete needs a batch of each. Only transparency splits:
+      // opaque chunks of every material share one, because which brick or
+      // concrete they wear travels per instance in the anchor.
+      const boxSlots = new Map<number, number[]>();
+      const hullSlots = new Map<number, number[]>();
+      const push = (into: Map<number, number[]>, slot: number) => {
+        const key = materials.transparentBySlot[slot] ? materials.materialOfSlot[slot] : -1;
+        const list = into.get(key) ?? [];
+        list.push(slot);
+        into.set(key, list);
+      };
       for (const slot of slots) {
-        if (shapeBySlot[slot].kind === 'box') boxSlots.push(slot);
+        if (shapeBySlot[slot].kind === 'box') push(boxSlots, slot);
         // A shape drawn city-wide is claimed by that mesh, not this cell.
         else if (!sharing.instancedKeys.has(sharing.keyOfSlot.get(slot) ?? '')) {
-          hullSlots.push(slot);
+          push(hullSlots, slot);
         }
       }
-      buildCellBoxes(sink, client, material, cell, boxSlots, colour);
-      buildCellHullBatch(sink, client, material, shapeBySlot, cell, hullSlots, colour);
+      const materialFor = (key: number) => (key < 0 ? material : glassMaterials.get(key) ?? material);
+      for (const [key, list] of boxSlots) {
+        buildCellBoxes(sink, client, materialFor(key), cell, list, colour);
+      }
+      for (const [key, list] of hullSlots) {
+        buildCellHullBatch(sink, client, materialFor(key), shapeBySlot, cell, list, colour);
+      }
     }
   }
 

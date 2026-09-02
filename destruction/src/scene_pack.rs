@@ -18,6 +18,12 @@ pub struct StressLimits {
     pub tension_fatal: f32,
     pub shear_elastic: f32,
     pub shear_fatal: f32,
+    /// Young's modulus, Pa. Stiffness, not strength: what decides how an
+    /// over-connected structure SHARES load between parallel paths (k = EA/L).
+    /// 0 means the pack predates the field; the solver treats it as 30 GPa.
+    pub elastic_modulus: f32,
+    /// Fraction of original bond area damage will not go below. 0 = runaway.
+    pub residual_area_fraction: f32,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -25,6 +31,15 @@ pub struct SceneNode {
     pub centroid: Vec3,
     pub mass: f32,
     pub volume: f32,
+    /// Index into `ScenePack::materials`, from `nodes[].m`.
+    ///
+    /// v2 assigns material per BOND, which is right for the solver: a joint has
+    /// a strength and a bond is a joint. It leaves a renderer with nothing,
+    /// because a chunk then has no material of its own and cannot be shaded by
+    /// what it is made of. This is the field v3 already defines for picking
+    /// crush properties, read here for the same per-chunk purpose. Omitted
+    /// means 0, which is what every existing pack means.
+    pub material: u32,
 }
 
 impl SceneNode {
@@ -77,16 +92,40 @@ pub struct ScenePack {
     /// clip is meant to shed long before the frame does -- and that difference
     /// is authored here rather than by distorting bond areas.
     pub materials: Vec<StressLimits>,
+    /// Parallel to `materials`. Empty for a pack that authored no appearance.
+    pub appearances: Vec<MaterialAppearance>,
     pub nodes: Vec<SceneNode>,
     pub bonds: Vec<SceneBond>,
     /// Visual box size per node (full extents), used for rendering.
     pub node_sizes: Vec<Vec3>,
     pub node_colliders: Vec<SceneCollider>,
+    /// What each chunk IS structurally -- "column", "slab", "foundation",
+    /// "glazing". Authored, not inferred: which element carries a building is a
+    /// property of how it was built, and the exporter is the only thing that
+    /// knows it. Empty for a pack that authored none.
+    ///
+    /// Parsed for the scenario rig, which has to be able to say "cut every
+    /// column on this side" without reverse-engineering roles from geometry.
+    /// Deliberately NOT carried into `DestructionManifest`: the manifest is
+    /// content-addressed, so a new field there would invalidate every cached
+    /// copy of every pack for data no client needs.
+    pub node_types: Vec<String>,
+    /// Which authored piece each chunk was fractured from. Chunks sharing a
+    /// value were one column, one slab, one pane before the fracturer ran --
+    /// which is how a test asks "is this piece still intact".
+    pub node_pieces: Vec<u32>,
 }
 
 impl ScenePack {
     pub fn support_node_count(&self) -> usize {
         self.nodes.iter().filter(|node| node.is_support()).count()
+    }
+
+    /// The structural role of node `index`, or `""` when the pack authored no
+    /// roles. Empty rather than `Option` so callers can compare without
+    /// unwrapping; no real role is the empty string.
+    pub fn node_role(&self, index: usize) -> &str {
+        self.node_types.get(index).map_or("", String::as_str)
     }
 }
 
@@ -146,12 +185,56 @@ struct LimitsJson {
     #[serde(default)]
     #[allow(dead_code)]
     name: Option<String>,
+    /// Appearance, all optional and all ignored by the solver.
+    #[serde(default)]
+    color: Option<String>,
+    #[serde(default)]
+    opacity: Option<f32>,
+    #[serde(default)]
+    texture_key: Option<String>,
+    #[serde(default)]
+    roughness: Option<f32>,
+    #[serde(default)]
+    metalness: Option<f32>,
     compression_elastic: f32,
     compression_fatal: f32,
     tension_elastic: f32,
     tension_fatal: f32,
     shear_elastic: f32,
     shear_fatal: f32,
+    /// Absent on packs authored before stiffness existed; 0 = solver default.
+    #[serde(default)]
+    elastic_modulus: f32,
+    #[serde(default)]
+    residual_area_fraction: f32,
+}
+
+/// How a material LOOKS. Advisory: no solver reads any of it.
+///
+/// Strength and appearance are kept apart deliberately -- `StressLimits` stays
+/// `Copy` and six floats wide, which is what the solver wants, while this rides
+/// alongside for the renderer. A pack without these fields is no less valid.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct MaterialAppearance {
+    pub name: Option<String>,
+    pub color: Option<String>,
+    /// Presence of this is what marks a material transparent.
+    pub opacity: Option<f32>,
+    pub texture_key: Option<String>,
+    pub roughness: Option<f32>,
+    pub metalness: Option<f32>,
+}
+
+impl MaterialAppearance {
+    /// True when nothing was authored, so the manifest can skip emitting it and
+    /// keep hashing exactly as it did before this existed.
+    pub fn is_empty(&self) -> bool {
+        self.color.is_none()
+            && self.opacity.is_none()
+            && self.texture_key.is_none()
+            && self.roughness.is_none()
+            && self.metalness.is_none()
+    }
 }
 
 #[derive(Deserialize)]
@@ -165,6 +248,10 @@ struct ScenarioJson {
     /// bounded pattern count, where every shard carries its own points.
     #[serde(default)]
     shape_library: Vec<NodeColliderJson>,
+    #[serde(default)]
+    node_types: Vec<String>,
+    #[serde(default)]
+    node_pieces: Vec<u32>,
 }
 
 #[derive(Deserialize)]
@@ -172,6 +259,9 @@ struct ScenarioNodeJson {
     centroid: Vec3Json,
     mass: f32,
     volume: f32,
+    /// The node's own material index. Omitted means 0.
+    #[serde(default, rename = "m")]
+    m: u32,
 }
 
 #[derive(Deserialize)]
@@ -224,6 +314,8 @@ const PLACEHOLDER_LIMITS: StressLimits = StressLimits {
     tension_fatal: 3.0e6,
     shear_elastic: 1.6e6,
     shear_fatal: 4.0e6,
+    elastic_modulus: 30.0e9,
+    residual_area_fraction: 0.0,
 };
 
 fn limits_from(limits: &LimitsJson) -> StressLimits {
@@ -234,12 +326,25 @@ fn limits_from(limits: &LimitsJson) -> StressLimits {
         tension_fatal: limits.tension_fatal,
         shear_elastic: limits.shear_elastic,
         shear_fatal: limits.shear_fatal,
+        elastic_modulus: limits.elastic_modulus,
+        residual_area_fraction: limits.residual_area_fraction,
     }
 }
 
 /// A negative tension or shear limit means "same as compression". Resolved
 /// once, here, so every consumer downstream sees real numbers -- a sentinel
 /// that reached a log or an assertion would read as a nonsensical strength.
+fn appearance_from(json: &LimitsJson) -> MaterialAppearance {
+    MaterialAppearance {
+        name: json.name.clone(),
+        color: json.color.clone(),
+        opacity: json.opacity,
+        texture_key: json.texture_key.clone(),
+        roughness: json.roughness,
+        metalness: json.metalness,
+    }
+}
+
 fn resolve_inherited(limits: &StressLimits) -> StressLimits {
     let inherit = |value: f32, fallback: f32| if value < 0.0 { fallback } else { value };
     StressLimits {
@@ -249,6 +354,8 @@ fn resolve_inherited(limits: &StressLimits) -> StressLimits {
         tension_fatal: inherit(limits.tension_fatal, limits.compression_fatal),
         shear_elastic: inherit(limits.shear_elastic, limits.compression_elastic),
         shear_fatal: inherit(limits.shear_fatal, limits.compression_fatal),
+        elastic_modulus: limits.elastic_modulus,
+        residual_area_fraction: limits.residual_area_fraction,
     }
 }
 
@@ -275,7 +382,7 @@ pub fn parse_scene_pack(payload: &str) -> Result<ScenePack, ScenePackError> {
     if pack.version != 1 && pack.version != 2 {
         return Err(ScenePackError::UnsupportedVersion(pack.version));
     }
-    let scenario = pack.scenario;
+    let mut scenario = pack.scenario;
     if scenario.nodes.len() != scenario.node_sizes.len() {
         return Err(ScenePackError::CountMismatch(format!(
             "scene pack node/size count mismatch: {} nodes vs {} sizes",
@@ -354,6 +461,43 @@ pub fn parse_scene_pack(payload: &str) -> Result<ScenePack, ScenePackError> {
         validate_material(index, material)?;
     }
     let materials: Vec<StressLimits> = materials.iter().map(resolve_inherited).collect();
+    let appearances: Vec<MaterialAppearance> = match (pack.version, solver.as_ref()) {
+        (2, Some(solver)) => solver
+            .materials
+            .as_ref()
+            .map(|table| table.iter().map(appearance_from).collect())
+            .unwrap_or_default(),
+        _ => Vec::new(),
+    };
+
+    // A node's material index has to exist for the same reason a bond's does.
+    // v1 packs have no table to index, so any stray value there is not
+    // meaningful and is flattened rather than rejected.
+    let nodes_material_max = if pack.version >= 2 { materials.len() } else { 1 };
+    for (index, node) in scenario.nodes.iter().enumerate() {
+        let m = if pack.version >= 2 { node.m } else { 0 };
+        if m as usize >= nodes_material_max {
+            return Err(ScenePackError::Invalid(format!(
+                "node {index} references material {m}, table has {}",
+                materials.len()
+            )));
+        }
+    }
+
+    // Roles are optional, but a partial list is worse than none: a rig that
+    // selects "every column" off a truncated array silently tests the wrong
+    // chunks. Present means parallel.
+    for (label, len) in [
+        ("nodeTypes", scenario.node_types.len()),
+        ("nodePieces", scenario.node_pieces.len()),
+    ] {
+        if len != 0 && len != scenario.nodes.len() {
+            return Err(ScenePackError::CountMismatch(format!(
+                "{label} has {len} entries but the pack has {} nodes",
+                scenario.nodes.len()
+            )));
+        }
+    }
 
     let bonds: Vec<SceneBond> = scenario
         .bonds
@@ -380,9 +524,14 @@ pub fn parse_scene_pack(payload: &str) -> Result<ScenePack, ScenePackError> {
         })
         .collect::<Result<_, _>>()?;
 
+    let node_types = std::mem::take(&mut scenario.node_types);
+    let node_pieces = std::mem::take(&mut scenario.node_pieces);
+
     Ok(ScenePack {
         title: pack.title,
         version: pack.version,
+        node_types,
+        node_pieces,
         // v2 authors its limits in the table; keep field one exposed here so
         // callers that only want "the" limits still get a sensible answer.
         stress_limits: if pack.version >= 2 {
@@ -391,6 +540,7 @@ pub fn parse_scene_pack(payload: &str) -> Result<ScenePack, ScenePackError> {
             authored_limits.map(|limits| resolve_inherited(&limits))
         },
         materials,
+        appearances,
         nodes: scenario
             .nodes
             .into_iter()
@@ -398,6 +548,7 @@ pub fn parse_scene_pack(payload: &str) -> Result<ScenePack, ScenePackError> {
                 centroid: node.centroid.into(),
                 mass: node.mass,
                 volume: node.volume,
+                material: if pack.version >= 2 { node.m } else { 0 },
             })
             .collect(),
         bonds,

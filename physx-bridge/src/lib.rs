@@ -91,22 +91,29 @@ fn env_f32(name: &str, default: f32) -> f32 {
         .unwrap_or(default)
 }
 
-/// World gravity magnitude, m/s^2. Default 20.0.
+/// World gravity magnitude, m/s^2. Default 9.81.
 ///
-/// One world, one gravity. The player already falls at 20 m/s^2 -- roughly 2x
-/// Earth, and near-exactly the Source engine's `sv_gravity 800` (800 in/s^2 =
-/// 20.32 m/s^2) that Half-Life, Counter-Strike and Team Fortress ship. Raising
-/// gravity for jump feel is standard practice; applying it to only part of the
-/// world is not. Source applies `sv_gravity` to players, props and ragdolls
-/// alike.
+/// One world, one gravity, and the important half of that is still ONE. This
+/// scene once ran the player at 20 and every rigid body at 9.81, so the player
+/// was the only reference the eye had and all debris read as falling in slow
+/// motion -- an 84 m drop taking 4.1 s instead of 2.9. The fix was to make them
+/// agree, and they must keep agreeing: city_bench asserts it, because feeding
+/// the stress solver one gravity inside a PhysX scene integrating another is a
+/// combination production never runs.
 ///
-/// This scene previously ran the player at 20 and every rigid body at 9.81, so
-/// the player was the only reference frame the eye had and all debris read as
-/// falling in slow motion: an 84 m drop took 4.1 s instead of 2.9 s.
+/// They now agree at Earth's. The 20 m/s^2 they agreed at before was the Source
+/// engine's `sv_gravity 800` convention, adopted because 9.81 felt floaty --
+/// which removing linear damping addressed on its own. What it cost was the
+/// buildings: every structure here is designed for 9.81, and at 20 a parking
+/// deck sits at 99% of its cracking stress with no safety factor, so realistic
+/// concrete cracked it under its own weight.
 ///
 /// Override with VIBE_WORLD_GRAVITY (a positive magnitude).
 pub fn world_gravity_magnitude() -> f32 {
-    env_f32("VIBE_WORLD_GRAVITY", 20.0).abs()
+    // Earth. Must match MoveConfig::default().gravity -- city_bench asserts
+    // they agree, because feeding the stress solver one gravity inside a PhysX
+    // scene integrating another is a combination production never runs.
+    env_f32("VIBE_WORLD_GRAVITY", 9.81).abs()
 }
 
 impl Default for WorldConfig {
@@ -340,6 +347,12 @@ pub struct StressMaterialDesc {
     pub tension_fatal: f32,
     pub shear_elastic: f32,
     pub shear_fatal: f32,
+    /// Young's modulus, Pa. Stiffness rather than strength: what decides how
+    /// an over-connected structure shares load between parallel paths.
+    /// 0 = treat as the 30 GPa concrete reference.
+    pub elastic_modulus: f32,
+    /// Fraction of original bond area damage will not go below.
+    pub residual_area_fraction: f32,
 }
 
 #[derive(Clone, Debug)]
@@ -371,6 +384,8 @@ impl Default for DestructibleSettings {
                 tension_fatal: -1.0,
                 shear_elastic: -1.0,
                 shear_fatal: -1.0,
+                elastic_modulus: 0.0,
+                residual_area_fraction: 0.0,
             }],
             maximum_bodies: 48,
             maximum_fractures_per_actor_per_tick: 8,
@@ -1139,6 +1154,21 @@ impl World {
     /// copied ~760 KB out of C++ and then again into a Rust Vec, every tick.
     /// Valid until the next call.
     #[cfg(feature = "destruction")]
+    /// Per-bond stress for one structure, as of the last solve.
+    ///
+    /// The tick loop's own sampler reduces this to a max and a count, which
+    /// says whether anything is overloaded and nothing about where. This is
+    /// the readout that can answer where.
+    #[cfg(feature = "destruction")]
+    pub fn bond_stress_rows(
+        &self,
+        structure_id: u32,
+    ) -> Result<Vec<ffi::FfiBondStressRow>, BridgeError> {
+        self.inner
+            .bond_stress_rows(structure_id)
+            .map_err(operation_error)
+    }
+
     pub fn chunk_body_snapshots(&self) -> Result<&[ffi::FfiChunkBodySnapshot], BridgeError> {
         self.inner.chunk_body_snapshots().map_err(operation_error)
     }
@@ -1474,6 +1504,8 @@ mod ffi {
         tension_fatal: f32,
         shear_elastic: f32,
         shear_fatal: f32,
+        elastic_modulus: f32,
+        residual_area_fraction: f32,
     }
 
     struct FfiDestructibleSettings {
@@ -1684,6 +1716,22 @@ mod ffi {
         supporter_node: u32,
     }
 
+    /// One bond's stress state, for locating what is actually overloaded.
+    #[derive(Clone, Copy, Debug)]
+    struct FfiBondStressRow {
+        bond_index: u32,
+        node0: u32,
+        node1: u32,
+        material: u32,
+        area: f32,
+        /// Stress over this bond's own material's ELASTIC limit. 1.0 is at the
+        /// limit; damage accrues above it and never below.
+        utilisation: f32,
+        compression: f32,
+        tension: f32,
+        shear: f32,
+    }
+
     unsafe extern "C++" {
         include!("physx_bridge.h");
 
@@ -1778,6 +1826,7 @@ mod ffi {
         fn take_frozen_contact_wakes(self: Pin<&mut World>) -> Result<Vec<u32>>;
         fn take_support_sets(self: Pin<&mut World>) -> Result<Vec<FfiSupportSet>>;
         fn take_support_rows(self: Pin<&mut World>) -> Result<Vec<FfiSupportRow>>;
+        fn bond_stress_rows(self: &World, structure_id: u32) -> Result<Vec<FfiBondStressRow>>;
         fn destruction_stats(self: &World) -> Result<FfiDestructionStats>;
         fn validate_destruction_mappings(self: &World) -> Result<bool>;
         fn split_count(self: &World) -> Result<u64>;
@@ -2066,6 +2115,8 @@ impl From<DestructibleSettings> for ffi::FfiDestructibleSettings {
                     tension_fatal: material.tension_fatal,
                     shear_elastic: material.shear_elastic,
                     shear_fatal: material.shear_fatal,
+                    elastic_modulus: material.elastic_modulus,
+                    residual_area_fraction: material.residual_area_fraction,
                 })
                 .collect(),
             maximum_bodies: value.maximum_bodies,

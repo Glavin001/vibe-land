@@ -34,6 +34,10 @@ pub struct DestructionManifest {
     /// re-fetch for no gain.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub materials: Vec<StressMaterialDef>,
+    /// Parallel to `materials`, and empty unless the pack authored appearance.
+    /// Advisory: nothing in the simulation reads it, the renderer does.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub material_appearance: Vec<MaterialAppearanceDef>,
     /// Distinct shard hulls, stored once and referenced by `ChunkGeometry`.
     ///
     /// The pack already deduplicates these -- a bounded fracture-pattern count
@@ -87,6 +91,16 @@ pub struct ChunkDef {
     pub radius: f32,
     /// Zero-mass nodes anchor the structure to world support.
     pub support: bool,
+    /// Index into `DestructionManifest::materials` — the chunk's OWN material,
+    /// as opposed to a bond's. Lets the client shade a chunk by what it is made
+    /// of instead of by a hash of its building id.
+    ///
+    /// Skipped when 0 so every pack that authors no per-node material — which
+    /// is all of them but the authored structures — hashes exactly as it did
+    /// before this field existed. The manifest is content-addressed by SHA-256,
+    /// so an unguarded field here would invalidate every client's cached copy.
+    #[serde(default, skip_serializing_if = "is_default_material")]
+    pub material: u32,
 }
 
 /// Collider geometry as served to clients.
@@ -117,6 +131,26 @@ pub enum ChunkGeometry {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         shape_id: Option<u32>,
     },
+}
+
+/// How a material looks. Every field optional; a material that authored none of
+/// them serialises to `{}` and is skipped entirely at the table level.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct MaterialAppearanceDef {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
+    /// Presence of this marks the material transparent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub opacity: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub texture_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub roughness: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metalness: Option<f32>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -174,6 +208,7 @@ impl DestructionManifest {
                             },
                             radius: collider_bounding_radius(&pack.node_colliders[node_index]),
                             support: node.is_support(),
+                            material: node.material,
                         })
                         .collect(),
                     bonds: pack
@@ -215,6 +250,31 @@ impl DestructionManifest {
                     .collect()
             })
             .unwrap_or_default();
+        // Appearance rides alongside the strength table, from the same pack.
+        // Empty unless something authored it, and skipped at serialisation when
+        // empty, so no existing manifest changes shape or hash.
+        let material_appearance: Vec<MaterialAppearanceDef> = city
+            .instances
+            .first()
+            .map(|instance| &city.variant_for(instance).pack)
+            .filter(|pack| pack.version >= 2)
+            .map(|pack| {
+                pack.appearances
+                    .iter()
+                    .map(|a| MaterialAppearanceDef {
+                        name: a.name.clone(),
+                        color: a.color.clone(),
+                        opacity: a.opacity,
+                        texture_key: a.texture_key.clone(),
+                        roughness: a.roughness,
+                        metalness: a.metalness,
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .filter(|table: &Vec<MaterialAppearanceDef>| table.iter().any(|a| {
+                a.color.is_some() || a.opacity.is_some() || a.texture_key.is_some()
+            }))
+            .unwrap_or_default();
         // Hoist every shard the pack named into a manifest-level library and
         // drop the inline copy. Packs deduplicate these already; without this
         // the manifest re-inlined them per chunk, so the thing players actually
@@ -251,6 +311,7 @@ impl DestructionManifest {
             version: MANIFEST_VERSION,
             structures,
             materials,
+            material_appearance,
             shape_library,
         }
     }
@@ -278,16 +339,27 @@ impl DestructionManifest {
         }
     }
 
-    /// Canonical serialized bytes — the payload served over HTTP and the hash
-    /// input. serde_json field order is declaration order, so this is stable
-    /// for a fixed crate version.
+    /// serde_json field order is declaration order, so this is stable for a
+    /// fixed crate version. Kept for tooling and tests; what a client is
+    /// actually served is `to_bytes`.
     pub fn to_json_bytes(&self) -> Vec<u8> {
         serde_json::to_vec(self).expect("manifest serialization cannot fail")
     }
 
+    /// Canonical serialized bytes: the payload served to clients and the hash
+    /// input.
+    ///
+    /// Binary, because a 47,000-chunk city is 62 MB of JSON and a browser has
+    /// to hold the bytes, a string of them, and the parsed object graph at once
+    /// to read it. See `manifest_binary` for the layout and for what that cost
+    /// on a phone.
+    pub fn to_bytes(&self) -> Vec<u8> {
+        crate::manifest_binary::encode(self)
+    }
+
     pub fn hash(&self) -> [u8; 32] {
         let mut hasher = Sha256::new();
-        hasher.update(self.to_json_bytes());
+        hasher.update(self.to_bytes());
         hasher.finalize().into()
     }
 
@@ -466,6 +538,7 @@ mod tests {
             version: MANIFEST_VERSION,
             structures: Vec::new(),
             materials: Vec::new(),
+            material_appearance: Vec::new(),
             shape_library: vec![vec![1.0, 2.0, 3.0]],
         };
         let referenced = ChunkGeometry::ConvexHull {

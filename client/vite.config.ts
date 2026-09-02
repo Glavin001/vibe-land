@@ -1,4 +1,5 @@
 import fs from 'fs';
+import path from 'path';
 import { defineConfig, loadEnv } from 'vite';
 import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
@@ -17,7 +18,32 @@ export default defineConfig(({ mode }) => {
     : undefined;
 
   return {
-    plugins: [tailwindcss(), react()],
+    plugins: [
+      tailwindcss(),
+      react(),
+      {
+        // The /structure viewer's packs, for a BUILT client.
+        //
+        // In dev they are served in place through /@fs. A build has neither,
+        // and the SPA fallback answers that path with index.html and a 200 --
+        // so the viewer appeared to work everywhere and failed only on the
+        // deployed QA page, as a JSON parse error that named no file.
+        name: 'copy-scene-packs',
+        apply: 'build' as const,
+        generateBundle(this: { emitFile: (f: unknown) => void }) {
+          const dir = path.resolve(process.cwd(), '../destruction/assets/scenes');
+          if (!fs.existsSync(dir)) return;
+          for (const file of fs.readdirSync(dir)) {
+            if (!file.endsWith('.json')) continue;
+            this.emitFile({
+              type: 'asset',
+              fileName: `scenes/${file}`,
+              source: fs.readFileSync(path.join(dir, file)),
+            });
+          }
+        },
+      },
+    ],
     envDir: '../',
     server: {
       port: Number(env.CLIENT_PORT) || 3001,
@@ -62,6 +88,13 @@ export default defineConfig(({ mode }) => {
       },
     },
     define: {
+      // Absolute path to the authored ScenePacks, for the /structure viewer.
+      // `server.fs.allow: ['..']` above already lets vite serve them through
+      // /@fs, so the viewer reads them in place instead of duplicating several
+      // megabytes of JSON into public/.
+      __SCENES_DIR__: JSON.stringify(
+        path.resolve(process.cwd(), '../destruction/assets/scenes'),
+      ),
       // Build stamp so a stale page is visible in a screenshot. The client is
       // hot-reloaded independently of the server, so "which code is running"
       // has two answers and both need to be on screen.

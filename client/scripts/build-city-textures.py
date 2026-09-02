@@ -65,17 +65,39 @@ class TextureSet:
     # stochastic rotation -- a 90-degree variant turns horizontal pour lines
     # vertical mid-wall. The shader scales its rotation by this per layer.
     directional: bool = False
+    # Which authored MATERIAL this layer depicts, or None for a set that is
+    # only a variant of one. The city picks a layer by hashing the building id,
+    # because its buildings are all the same concrete; an authored structure
+    # knows its pieces are brick or stone or steel and looks the layer up by
+    # name instead. Consumed by the standalone structure viewer.
+    material_key: str | None = None
 
 
 # Order IS the array layer index, and walls must come first: the client derives
 # a structure's wall layer by hashing into [0, wallCount) and its floor layer
 # into [wallCount, total).
+# The masonry and metal sets are appended at the END of the wall block rather
+# than interleaved: wall layer order feeds the building-id hash, so inserting
+# ahead of an existing set would reshuffle which concrete every /city building
+# wears for no reason.
 SETS = [
-    TextureSet("cracked_concrete_wall", "wall"),
+    TextureSet("cracked_concrete_wall", "wall", material_key="concrete-wall"),
     TextureSet("worn_mossy_plasterwall", "wall"),
     TextureSet("cracked_concrete_02", "wall"),
     TextureSet("concrete_layers_02", "wall", directional=True),
-    TextureSet("concrete_floor_worn_02", "floor"),
+    # All three are directional and must say so. Masonry coursing is the
+    # strongest case there is: the stochastic retiling rotates tiles 90 deg
+    # to break repetition, which turns horizontal brick courses vertical
+    # halfway up a wall. Metal plate has a rolling direction for the same
+    # reason.
+    TextureSet("red_brick_03", "wall", directional=True, material_key="brick"),
+    TextureSet("stone_wall_02", "wall", directional=True, material_key="stone"),
+    TextureSet("metal_plate", "wall", directional=True, material_key="metal"),
+    # Architectural white concrete — the Algedra balconies and parapets. The
+    # existing concrete sets are all weathered grey-beige, which reads as a
+    # car park rather than as a finished facade.
+    TextureSet("painted_plaster_wall", "wall", material_key="white-concrete"),
+    TextureSet("concrete_floor_worn_02", "floor", material_key="concrete-floor"),
     TextureSet("concrete_floor_damaged_01", "floor"),
     # Ground layers, after walls and floors: the terrain samples these, keyed
     # by the splatmap plus a macro mask rather than by building id.
@@ -185,6 +207,7 @@ def main() -> int:
     layers = "\n".join(
         f"  {{ slug: '{e.slug}', role: '{e.role}', metresPerTile: {m:.3f}, "
         f"directional: {'true' if e.directional else 'false'}, "
+        f"materialKey: {repr(e.material_key).replace(chr(39), chr(39)) if e.material_key else 'null'}, "
         f"meanLinear: [{mean[0]:.4f}, {mean[1]:.4f}, {mean[2]:.4f}] }},"
         for e, m, mean in zip(SETS, metres, means)
     )
@@ -203,6 +226,8 @@ def main() -> int:
         "  metresPerTile: number;\n"
         "  /** Strata/plank surfaces that cannot survive stochastic rotation. */\n"
         "  directional: boolean;\n"
+        "  /** Authored material this layer depicts, for name-keyed lookup. */\n"
+        "  materialKey: string | null;\n"
         "  /** Mean albedo in linear RGB, for variance-preserving blends. */\n"
         "  meanLinear: [number, number, number];\n"
         "}\n"

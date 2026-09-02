@@ -45,16 +45,7 @@ const SYNTHETIC_SHOT_IMPULSE: f32 = 400.0;
 /// Blast stress contact magnitude for PhysX hitscan (breaks bonds locally).
 /// Override with VIBE_CITY_SHOT_STRESS_IMPULSE.
 fn physx_shot_stress_impulse() -> f32 {
-    std::env::var("VIBE_CITY_SHOT_STRESS_IMPULSE")
-        .ok()
-        .and_then(|value| value.parse::<f32>().ok())
-        .filter(|value| *value > 0.0)
-        // Keep this below the old "nuke the whole tower" 5e9 / 8e7 band so a
-        // hit opens a local crater instead of shredding every bond in radius.
-        // Bullet-scale. 1.2e7 was chosen against a 2.5 m radius; with a
-        // 0.4 m radius the same number concentrates ~40x the load density
-        // into the bonds it does reach.
-        .unwrap_or(4.0e5)
+    vibe_land_destruction::city_config::ShotProfile::city().stress_impulse
 }
 /// Rigid-body push on dynamic debris after / during a hit (rocket feel), as a
 /// velocity change in m/s at the blast centre, falling off quadratically.
@@ -68,11 +59,7 @@ fn physx_shot_stress_impulse() -> f32 {
 /// is unmodified physics, with speculative CCD (not clamps) keeping fast bodies
 /// from tunnelling.
 fn physx_shot_push_impulse() -> f32 {
-    std::env::var("VIBE_CITY_SHOT_PUSH_SPEED")
-        .ok()
-        .and_then(|value| value.parse::<f32>().ok())
-        .filter(|value| *value > 0.0)
-        .unwrap_or(12.0)
+    vibe_land_destruction::city_config::ShotProfile::city().push_speed
 }
 /// How far from the raycast surface point a chunk may be and still be the one
 /// that was hit.
@@ -131,11 +118,7 @@ fn city_round_momentum_ns() -> f32 {
 ///
 /// Override with VIBE_CITY_SHOT_BLAST_RADIUS.
 fn shot_blast_radius_m() -> f32 {
-    std::env::var("VIBE_CITY_SHOT_BLAST_RADIUS")
-        .ok()
-        .and_then(|v| v.parse::<f32>().ok())
-        .filter(|v| *v > 0.0)
-        .unwrap_or(0.4)
+    vibe_land_destruction::city_config::ShotProfile::city().blast_radius_m
 }
 
 /// Radius of the rigid-body shove on already-loose debris. Slightly wider than
@@ -143,11 +126,7 @@ fn shot_blast_radius_m() -> f32 {
 ///
 /// Override with VIBE_CITY_SHOT_PUSH_RADIUS.
 fn shot_push_radius_m() -> f32 {
-    std::env::var("VIBE_CITY_SHOT_PUSH_RADIUS")
-        .ok()
-        .and_then(|v| v.parse::<f32>().ok())
-        .filter(|v| *v > 0.0)
-        .unwrap_or(0.7)
+    vibe_land_destruction::city_config::ShotProfile::city().push_radius_m
 }
 
 /// How far past the surface to seat the blast centre.
@@ -345,7 +324,14 @@ pub fn manifest_asset() -> Option<&'static (String, Arc<DestructionManifest>, Ve
         .get_or_init(|| match build_scene() {
             Ok(scene) => {
                 let manifest = DestructionManifest::from_city(&scene);
-                let json = manifest.to_json_bytes();
+                // to_bytes, not to_json_bytes: the binary VLCM payload.
+                //
+                // This regressed silently in the merge -- no conflict marker,
+                // upstream's older line simply won -- and the symptom was an
+                // empty world. 60 MB of JSON where 16 MB of binary belongs,
+                // which a browser has to hold as bytes, as a string, and as a
+                // parsed object graph all at once.
+                let json = manifest.to_bytes();
                 let mut encoder =
                     flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
                 use std::io::Write;

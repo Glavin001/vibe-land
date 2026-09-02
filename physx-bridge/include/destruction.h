@@ -45,6 +45,7 @@ struct FfiIslandBodyEvent;
 struct FfiChunkBodySnapshot;
 struct FfiSupportSet;
 struct FfiSupportRow;
+struct FfiBondStressRow;
 struct FfiDestructionStats;
 
 /// Owns ExtStressPhysXDestructible slots for one PxScene / World.
@@ -265,6 +266,18 @@ public:
   /// together; callers must consume them as a pair.
   rust::Vec<FfiSupportSet> take_support_sets();
   rust::Vec<FfiSupportRow> take_support_rows();
+
+  /// Per-bond stress for one structure: the surgical readout.
+  ///
+  /// The tick-loop sampler reduces the same data to a max and a count, which
+  /// answers "is anything overloaded" and nothing about WHERE. This returns a
+  /// row per bond so a caller can join it against the manifest and say which
+  /// joint, between which chunks, in which mode, is the one that fails --
+  /// which is the difference between reinforcing a wall and turning a global
+  /// dial.
+  ///
+  /// Snapshot of the last solve; no solving is done here.
+  rust::Vec<FfiBondStressRow> bond_stress_rows(std::uint32_t structure_id) const;
 
   /// A reported contact touched these two entities with this total impulse.
   /// Called from the scene's onContact for every reported chunk pair; decides

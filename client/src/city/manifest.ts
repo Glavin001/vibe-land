@@ -1,8 +1,15 @@
-// City destruction manifest: fetch, hash-verify, and parse into typed arrays.
+// City destruction manifest: fetch, hash-verify, and decode.
 //
-// The server serves canonical JSON (Content-Encoding: gzip — the browser
-// decompresses transparently) content-addressed by the SHA-256 of the raw
-// JSON bytes, so the decompressed body hashes to the URL hash.
+// The payload is binary (see `manifestBinary.ts`), gzipped on the wire, and
+// content-addressed by the SHA-256 of the decompressed bytes so the body
+// hashes to the URL hash. It used to be JSON, which a phone could not afford:
+// a 47,000-chunk city ran to 62 MB of text, and reading it meant holding the
+// bytes, a string of them and the parsed objects at once.
+//
+// JSON is still accepted on the read side. A client can outlive the server it
+// was built against, and the two formats are told apart by four magic bytes.
+
+import { decodeBinaryManifest, looksBinary } from './manifestBinary';
 
 export interface ChunkGeometryCuboid {
   // Server serde emits camelCase enum tags ("cuboid"); accept both.
@@ -65,6 +72,14 @@ export interface ManifestChunk {
   geometry: ChunkGeometryCuboid | ChunkGeometryConvexHull;
   radius: number;
   support: boolean;
+  /**
+   * Index into `CityManifest.materialAppearance` — the chunk's OWN material.
+   *
+   * Absent on every pack that does not author per-node material, which is all
+   * of them but the hand-authored structures; the server skips the field when
+   * it is 0 so those manifests keep their content hash.
+   */
+  material?: number;
 }
 
 export interface ManifestBond {
@@ -81,7 +96,50 @@ export interface ManifestStructure {
   worldPosition: [number, number, number];
   worldRotation: [number, number, number, number];
   chunks: ManifestChunk[];
-  bonds: ManifestBond[];
+  /**
+   * Bonds as objects. Present only on the legacy JSON path.
+   *
+   * The client reads exactly two things from a bond -- which chunks it joins --
+   * and never its centroid, normal or area, all of which the solver needs and
+   * the renderer does not. A city of 190,000 bonds therefore spent tens of
+   * megabytes on objects holding two 3-vectors apiece that nothing ever
+   * touched. The binary path supplies the endpoints as typed arrays instead
+   * and leaves this undefined; read it through `bondEndpoints`.
+   */
+  bonds?: ManifestBond[];
+  bondCount?: number;
+  bondNode0?: Uint32Array;
+  bondNode1?: Uint32Array;
+}
+
+/** How many bonds a structure has, whichever path delivered it. */
+export function bondCountOf(structure: ManifestStructure): number {
+  return structure.bondCount ?? structure.bonds?.length ?? 0;
+}
+
+/**
+ * Bond endpoints as typed arrays.
+ *
+ * Free on the binary path, which already has them. Derived once and cached on
+ * the structure for the JSON path, so a caller does not have to know which it
+ * is holding.
+ */
+export function bondEndpoints(
+  structure: ManifestStructure,
+): { node0: Uint32Array; node1: Uint32Array } {
+  if (!structure.bondNode0 || !structure.bondNode1) {
+    const bonds = structure.bonds ?? [];
+    const node0 = new Uint32Array(bonds.length);
+    const node1 = new Uint32Array(bonds.length);
+    for (let i = 0; i < bonds.length; i += 1) {
+      node0[i] = bonds[i].node0;
+      node1[i] = bonds[i].node1;
+    }
+    structure.bondNode0 = node0;
+    structure.bondNode1 = node1;
+    structure.bondCount = bonds.length;
+  }
+  return { node0: structure.bondNode0, node1: structure.bondNode1 };
 }
 
 export interface CityManifest {
@@ -95,6 +153,25 @@ export interface CityManifest {
    * nothing downstream has to know it existed.
    */
   shapeLibrary?: number[][];
+  /**
+   * How each material looks, parallel to the solver's strength table.
+   *
+   * Advisory and usually absent: the city's own packs are all one concrete and
+   * get their variety from hashing a building id into the texture array. An
+   * authored structure says what its pieces are made of, which is what lets
+   * them be shaded as brick or steel or glass.
+   */
+  materialAppearance?: MaterialAppearance[];
+}
+
+/** Presence of `opacity` is what marks a material transparent. */
+export interface MaterialAppearance {
+  name?: string;
+  color?: string;
+  opacity?: number;
+  textureKey?: string;
+  roughness?: number;
+  metalness?: number;
 }
 
 export interface LoadedCityManifest {
@@ -191,7 +268,13 @@ async function parseCityManifest(
   if (hashHex !== expectedHashHex) {
     throw new Error(`city manifest hash mismatch: got ${hashHex}, expected ${expectedHashHex}`);
   }
-  const manifest = JSON.parse(new TextDecoder().decode(bytes)) as CityManifest;
+  // Binary is what the server sends now. JSON is still read, because a client
+  // can outlive a server it was built against and the two are trivially told
+  // apart by their first four bytes -- which is why the format carries a magic
+  // rather than a version field that would have to be parsed to be reached.
+  const manifest = looksBinary(bytes)
+    ? decodeBinaryManifest(bytes)
+    : (JSON.parse(new TextDecoder().decode(bytes)) as CityManifest);
   if (manifest.version !== 1) {
     throw new Error(`unsupported city manifest version ${manifest.version}`);
   }
@@ -200,7 +283,7 @@ async function parseCityManifest(
   let totalBonds = 0;
   for (const structure of manifest.structures) {
     totalChunks += structure.chunks.length;
-    totalBonds += structure.bonds.length;
+    totalBonds += bondCountOf(structure);
   }
   return { manifest, hashHex, totalChunks, totalBonds };
 }

@@ -10,6 +10,7 @@
 // rigid, so offsets stay valid until the chunk migrates again.
 
 import type { CityManifest } from './manifest';
+import { bondCountOf } from './manifest';
 import type { BootstrapMessage, TopologyMessage } from './wire';
 
 /** Which writer produced a body pose. See `updateBodyPose`. */
@@ -197,10 +198,11 @@ export class CityTopology {
         rotation: [...structure.worldRotation] as Quat,
         settled: true,
       });
-      const bits = new Uint8Array(Math.ceil(structure.bonds.length / 8));
+      const bondCount = bondCountOf(structure);
+      const bits = new Uint8Array(Math.ceil(bondCount / 8));
       bits.fill(0xff);
       // Clear padding bits past bondCount.
-      const excess = bits.length * 8 - structure.bonds.length;
+      const excess = bits.length * 8 - bondCount;
       if (excess > 0 && bits.length > 0) {
         bits[bits.length - 1] &= 0xff >>> excess;
       }
@@ -1040,7 +1042,10 @@ export class CityTopology {
       if (!bits) {
         continue;
       }
-      for (let i = 0; i < structure.bonds.length; i++) {
+      // bondCountOf, not structure.bonds.length: the binary manifest path
+      // never materialises bond objects, so `bonds` is undefined there.
+      const count = bondCountOf(structure);
+      for (let i = 0; i < count; i++) {
         if ((bits[i >> 3] & (1 << (i & 7))) === 0) {
           broken += 1;
         }

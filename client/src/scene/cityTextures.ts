@@ -87,6 +87,30 @@ export interface CityTextureArrays {
  * decorrelates consecutive inputs, and it is a pure function of the id so a
  * rebuild picks the same concrete.
  */
+/**
+ * Layer code for a named surface, for a pack that says what its pieces are
+ * made of.
+ *
+ * `layerCodeForBuilding` hashes because the city's buildings are all the same
+ * concrete and the hash exists only to tell them apart. An authored structure
+ * knows a piece is brick, so it asks for brick.
+ */
+export function layerCodeForTextureKey(key: string | undefined): number | null {
+  // A material that names no surface still gets a DETERMINISTIC layer rather
+  // than the building hash. Falling back to the hash gave the Algedra tower's
+  // white balcony bands a randomly chosen weathered concrete, which is the one
+  // thing they must not be.
+  if (key === undefined) return null;
+  const wall = key === '' ? 0 : CITY_TEXTURE_SETS.findIndex((set) => set.materialKey === key);
+  if (wall < 0) return null;
+  // Metal reads as metal from every angle; everything else takes worn concrete
+  // on its up-facing surfaces, which is what a slab top or a broken edge is.
+  const floorKey = key === 'metal' ? key : 'concrete-floor';
+  const floorIndex = CITY_TEXTURE_SETS.findIndex((set) => set.materialKey === floorKey);
+  const floor = floorIndex >= 0 ? floorIndex : WALL_LAYER_COUNT;
+  return wall + LAYER_CODE_RADIX * floor;
+}
+
 export function layerCodeForBuilding(buildingId: number): number {
   let h = buildingId >>> 0;
   h ^= h >>> 16;

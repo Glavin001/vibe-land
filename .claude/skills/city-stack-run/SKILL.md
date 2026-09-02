@@ -60,6 +60,58 @@ pgrep -x web-fps-server | while read p; do
 done
 ```
 
+## Choosing what the city serves
+
+`VIBE_CITY_SCENE` picks the pack, `VIBE_CITY_GRID` how many copies (1-16, the
+grid edge). A scene of only the structures that pass their own stability audit:
+
+```bash
+VIBE_CITY_SCENE=skyline-stable.json VIBE_CITY_GRID=1 ./scripts/run-city-server.sh
+```
+
+Prefer `skyline-stable` over `skyline` for anything a person will look at:
+`skyline` is EVERY authored structure, which makes it every authored failure
+too, and nobody can tell a bug from a feature in a recording of a building that
+falls down on its own.
+
+Confirm what a running server actually loaded — the env, not your intent:
+
+```bash
+tr '\0' '\n' < /proc/$(pgrep -x web-fps-server | head -1)/environ | grep VIBE_CITY
+```
+
+## Verify the manifest wire format — 30 seconds, no browser
+
+The highest-value check available, and the one that catches an empty world
+without launching anything. A silent merge once turned `to_bytes()` into
+`to_json_bytes()`, producing 60 MB of JSON that the client could not ingest;
+the symptom was `bonds cli/srv 0 / 283` and a black world, and it cost a whole
+round of transport debugging.
+
+```bash
+# The match is created LAZILY -- /match-stats 404s until a player joins, but
+# /session-config creates enough to hand out the manifest hash.
+H=$(curl -sk "https://127.0.0.1:<port>/session-config?match_id=city-default" \
+      | python3 -c "import json,sys; print(json.load(sys.stdin)['city_manifest_hash'])")
+
+curl -sk "https://127.0.0.1:<port>/city-manifest/$H" -o /tmp/m.bin \
+  -w "http=%{http_code} bytes=%{size_download}\n"
+
+python3 -c "
+d=open('/tmp/m.bin','rb').read(8)
+print('BINARY VLCM' if d[:4]==b'VLCM' else 'JSON -- the empty-world bug' if d[:1] in (b'{',b'[') else d[:8].hex())"
+```
+
+Expect `VLCM` and single-digit megabytes. Tens of megabytes, or a leading `{`,
+means JSON on the wire and a world that will render nothing.
+
+Note the route is `/city-manifest/<hash>`, not `/city-manifest/<match>`; the
+match-shaped URL 404s and reads as "the endpoint is broken".
+
+**Verify by manifest hash, not HTTP status.** A 200 from a page proves Caddy is
+up, nothing more. Four deployments were once reported working on the strength of
+a 200 while every one of their servers had failed to start.
+
 ## Verifying without a human
 
 **The container cannot reach its own public IP.** `curl https://<public-ip>:<port>`

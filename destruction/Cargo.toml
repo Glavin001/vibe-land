@@ -20,13 +20,23 @@ default = []
 # Native PhysX-backed runtime (CityDestruction). Gated so the crate core stays
 # pure Rust and CI-safe on machines without PhysX/CUDA.
 physx = ["dep:vibe-land-physx-bridge", "vibe-land-physx-bridge/destruction"]
+# The CUDA stress solver -- the one the match server runs.
+#
+# Without this a test built with `physx` silently gets the CPU CG solve, whose
+# 8-iteration residual is reported as real stress: a city nobody touches breaks
+# thousands of bonds at rest where the GPU path breaks none. Every number
+# measured on that path is an artefact of the solver rather than a property of
+# the structure, and it is indistinguishable from a real regression.
+cuda-stress = ["physx", "vibe-land-physx-bridge/cuda-stress"]
 # Drive destruction through the standardized blast-stress-solver core instead of
 # the bespoke ExtStressPhysXDestructible path. Both can be built at once so the
 # two can be A/B'd against the same scene before the old path is retired.
 blast-core = ["physx", "dep:blast-stress-solver"]
 
 [dependencies.blast-stress-solver]
-path = "/root/workspace/blast-stress-solver-2/blast/blast-stress-solver-rs"
+# Same checkout as BLAST_ROOT in physx-bridge/build.rs: mixing two
+# solver trees in one binary is not a thing anyone wants to debug.
+path = "/root/workspace/blast-stress-solver/blast/blast-stress-solver-rs"
 optional = true
 default-features = false
 features = ["physx", "scenarios"]

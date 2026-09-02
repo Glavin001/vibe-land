@@ -818,6 +818,61 @@ void DestructionManager::create_destructible(
     stress_materials[i].tensionFatalLimit = src.tension_fatal;
     stress_materials[i].shearElasticLimit = src.shear_elastic;
     stress_materials[i].shearFatalLimit = src.shear_fatal;
+    stress_materials[i].elasticModulusPa = src.elastic_modulus;
+    stress_materials[i].residualAreaFraction = src.residual_area_fraction;
+
+    // CHUNK crushing, opt-in via BLAST_CRUSH_CAP (Pa).
+    //
+    // The bond limits above decide whether a JOINT fails. They cannot express
+    // the thing that actually brings a flat-plate garage down when its columns
+    // go: the surviving columns inherit the tributary area of the ones that
+    // left, and concrete answers that by CRUSHING. Pipers Row, 1997, was a
+    // flat-slab car park that came down exactly this way.
+    //
+    // Without it a column chunk is indestructible by construction -- only its
+    // bonds can fail -- so a deck can sit on a handful of columns at twice
+    // their elastic limit indefinitely, which is what it does today.
+    //
+    // Drucker-Prager with a hydrostatic cap, which is the standard model for
+    // concrete under confinement. Values are derived from the material's own
+    // compressive limit rather than invented: cohesion at a quarter of it is
+    // the usual approximation for concrete, and the friction slope of 1.0 is
+    // mid-range for a cohesive-frictional solid.
+    if (const char *raw = std::getenv("BLAST_CRUSH_CAP")) {
+      const float cap = std::strtof(raw, nullptr);
+      if (cap > 0.0f) {
+        stress_materials[i].crushCapPressure = cap;
+        // Cohesion derived from the stress at which the chunk should crush,
+        // not guessed. Under uniaxial compression s the invariants are
+        // p = s/3 and q = s, so the Drucker-Prager surface q = c + slope*p
+        // yields at s = c / (1 - slope/3). Inverting: c = s * (1 - slope/3).
+        //
+        // A first attempt used c = 0.25 * f with slope 1, which puts uniaxial
+        // crushing at 18 MPa on a material whose joints survive to 48 -- so
+        // every column crushed at working load and the garage fell down intact,
+        // at every cap from 60 MPa to 600. The cap was never the governing
+        // term; the cone was.
+        //
+        // Target the FATAL limit: a chunk should grind itself up only past the
+        // point where its own joints would already have failed.
+        const float slope = 1.0f;
+        const float crush_at = src.compression_fatal;
+        stress_materials[i].crushCohesion = crush_at * (1.0f - slope / 3.0f);
+        stress_materials[i].crushFrictionSlope = slope;
+        // Plastic work to fully comminute, J/m^3. Concrete takes far more
+        // energy to grind to dust than to crack, which is what keeps this from
+        // pulverising everything the moment it yields.
+        stress_materials[i].crushEnergy = 1.0e6f;
+        stress_materials[i].crushViscosity = 1.0e4f;
+        // CEB dynamic increase factor: concrete is stronger the faster it is
+        // loaded, which is why a slow overload crushes where an impact spalls.
+        stress_materials[i].crushStrainRateExponent = 0.014f;
+        stress_materials[i].crushReferenceStrainRate = 30.0e-6f;
+        // Most of the mass becomes rubble rather than vanishing.
+        stress_materials[i].crushDebrisMassFraction = 0.5f;
+        stress_materials[i].crushDebrisFragmentCount = 4;
+      }
+    }
   }
   desc.stressMaterials = stress_materials.data();
   desc.stressMaterialCount = static_cast<std::uint32_t>(stress_materials.size());
@@ -2253,6 +2308,27 @@ DestructionManager::apply_destruction_explosion(FfiVec3 center, float radius,
   return affected;
 }
 
+/// Whether blast impulse scales with the face a chunk presents to it.
+///
+/// OFF by default, and that is an honesty statement rather than a preference.
+/// The flat model is demonstrably the wrong SHAPE -- there is no single value
+/// that both scratches a stone city and lets a timber house settle -- and
+/// scaling by intercepted area is what a pressure wave actually does. But
+/// sweeping the area-scaled version did not produce a value that satisfies the
+/// gates either, and the results were non-monotonic (2e8 passing where 1e8
+/// failed), which means the sweep was reading run-to-run variation rather than
+/// signal. A default should not be changed on that.
+///
+/// BLAST_SHOT_AREA_SCALED=1 turns it on for the work of settling it, which
+/// wants a deterministic shot harness rather than the whole-building gate.
+static bool shotAreaScaled() {
+  static const bool enabled = [] {
+    const char *raw = std::getenv("BLAST_SHOT_AREA_SCALED");
+    return raw != nullptr && raw[0] != '0';
+  }();
+  return enabled;
+}
+
 std::uint32_t DestructionManager::apply_destruction_blast(
     FfiVec3 center, FfiVec3 direction, float radius, float stress_impulse,
     float push_impulse) {
@@ -2316,7 +2392,38 @@ std::uint32_t DestructionManager::apply_destruction_blast(
       }
       if (stress_impulse > 0.0f) {
         const float falloff = 1.0f - (distance / radius);
-        const float stress_scale = falloff * falloff;
+        // Scaled by how much blast the chunk actually INTERCEPTS.
+        //
+        // Every shape in radius used to receive the same impulse regardless of
+        // its size, which is not how a blast loads anything: a pressure wave
+        // delivers force over area, so a big face catches more of it than a
+        // small one. A flat impulse instead loads a fortress block and a
+        // window panel identically, and since the block is also far stronger,
+        // no single number can serve both. Measured: at 8e7 a shot did not
+        // scratch a stone city; at 1.2e8 a timber house was still coming apart
+        // eight seconds later. There was no value in between that worked,
+        // which is the signature of a model with the wrong shape rather than
+        // the wrong constant.
+        //
+        // The projected area of the shape's bounds along the shot direction is
+        // that intercept. Normalising by one square metre keeps the tuning
+        // number meaning what it says: impulse per square metre of exposed
+        // face, at the centre of the blast.
+        //
+        // BLAST_SHOT_AREA_SCALED=0 restores the flat impulse for A/B.
+        float area_scale = 1.0f;
+        if (shotAreaScaled()) {
+          PxBounds3 bounds;
+          if (PxGeometryQuery::computeGeomBounds(
+                  bounds, shape.shape->getGeometry(), shape.worldPose)) {
+            const PxVec3 h = bounds.getExtents();  // half-extents
+            const float projected = 4.0f * (std::fabs(shot.x) * h.y * h.z
+                                          + std::fabs(shot.y) * h.x * h.z
+                                          + std::fabs(shot.z) * h.x * h.y);
+            if (projected > 0.0f) area_scale = projected;
+          }
+        }
+        const float stress_scale = falloff * falloff * area_scale;
         const PxVec3 stress = shot * (stress_impulse * stress_scale);
         if (slot.dest->queueContact(*shape.shape, c, stress)) {
           ++affected;
@@ -3539,6 +3646,47 @@ rust::Vec<FfiSupportSet> DestructionManager::take_support_sets() {
     out.push_back(set);
   }
   staged_support_sets_.clear();
+  return out;
+}
+
+rust::Vec<FfiBondStressRow> DestructionManager::bond_stress_rows(
+    std::uint32_t structure_id) const {
+  rust::Vec<FfiBondStressRow> out;
+  const Slot *slot = find_slot(structure_id);
+  if (slot == nullptr || slot->dest == nullptr) {
+    return out;
+  }
+  const std::uint32_t bond_count =
+      static_cast<std::uint32_t>(slot->bond_descs.size());
+  if (bond_count == 0) {
+    return out;
+  }
+  // Utilisation and the three stress modes are separate queries. Asking for
+  // utilisation rather than dividing the stresses by hand is deliberate: the
+  // solver divides by the limits of the bond's OWN material, and rediscovering
+  // which material that is on this side is how the two drift apart.
+  std::vector<float> utilisation(bond_count, 0.0f);
+  std::vector<float> compression(bond_count, 0.0f);
+  std::vector<float> tension(bond_count, 0.0f);
+  std::vector<float> shear(bond_count, 0.0f);
+  const std::uint32_t written =
+      slot->dest->getBondUtilisations(utilisation.data(), bond_count);
+  slot->dest->getBondStresses(compression.data(), tension.data(), shear.data(),
+                              bond_count);
+  out.reserve(written);
+  for (std::uint32_t i = 0; i < written; ++i) {
+    FfiBondStressRow row{};
+    row.bond_index = i;
+    row.node0 = slot->bond_descs[i].node0;
+    row.node1 = slot->bond_descs[i].node1;
+    row.material = slot->bond_descs[i].material;
+    row.area = slot->bond_descs[i].area;
+    row.utilisation = std::isfinite(utilisation[i]) ? utilisation[i] : 0.0f;
+    row.compression = std::isfinite(compression[i]) ? compression[i] : 0.0f;
+    row.tension = std::isfinite(tension[i]) ? tension[i] : 0.0f;
+    row.shear = std::isfinite(shear[i]) ? shear[i] : 0.0f;
+    out.push_back(row);
+  }
   return out;
 }
 

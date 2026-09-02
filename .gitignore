@@ -39,6 +39,7 @@ client/e2e/texture-qa/
 client/e2e/texture-tuning/
 client/e2e/look-tuning/
 client/e2e/hero-ab/
+experiments/
 
 # One-button debug reports (client+server state per press); evidence, not source.
 debug-reports/

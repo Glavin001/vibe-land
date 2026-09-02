@@ -5,7 +5,14 @@ use std::{env, path::PathBuf};
 const DEFAULT_PHYSX_ROOT: &str = "/root/PhysX/physx/install/linux-clang/PhysX";
 
 #[cfg(feature = "gpu")]
-const DEFAULT_BLAST_ROOT: &str = "/root/workspace/blast-stress-solver-2/blast";
+/// This branch pairs with the `blast-stress-solver` checkout, not `-2`.
+///
+/// Upstream defaults to `-2`, which is where the other line of work lives, and
+/// merging it in silently repointed this build at a tree that does not have
+/// the solver changes this branch depends on -- it failed on a missing
+/// `elasticModulusPa`, which is the giveaway that it was compiling against the
+/// wrong Blast. Overridable by BLAST_ROOT either way.
+const DEFAULT_BLAST_ROOT: &str = "/root/workspace/blast-stress-solver/blast";
 
 #[cfg(feature = "gpu")]
 fn main() {
