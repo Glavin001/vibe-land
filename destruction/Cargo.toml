@@ -36,7 +36,7 @@ blast-core = ["physx", "dep:blast-stress-solver"]
 [dependencies.blast-stress-solver]
 # Same checkout as BLAST_ROOT in physx-bridge/build.rs: mixing two
 # solver trees in one binary is not a thing anyone wants to debug.
-path = "/root/workspace/blast-stress-solver/blast/blast-stress-solver-rs"
+path = "/root/workspace/blast-stress-solver-2/blast/blast-stress-solver-rs"
 optional = true
 default-features = false
 features = ["physx", "scenarios"]

@@ -72,7 +72,7 @@ export VIBE_CITY_STRESS_LIMIT_SCALE="${VIBE_CITY_STRESS_LIMIT_SCALE:-0.45}"
 export VIBE_CITY_SHOT_BLAST_RADIUS="${VIBE_CITY_SHOT_BLAST_RADIUS:-0.7}"
 export VIBE_CITY_SHOT_STRESS_IMPULSE="${VIBE_CITY_SHOT_STRESS_IMPULSE:-4.0e7}"
 export VIBE_CITY_EXCESS_FORCES="${VIBE_CITY_EXCESS_FORCES:-1}"
-export VIBE_CITY_RESIM_PASSES="${VIBE_CITY_RESIM_PASSES:-0}"
+export VIBE_CITY_RESIM_PASSES="${VIBE_CITY_RESIM_PASSES:-1}"
 # Production default (see run-vl4-server.sh): the incremental device-topology
 # path diverges the GPU solver, and the LIBRARY's own default is incremental.
 # Without this a fresh shell gates the known-bad configuration — measured as

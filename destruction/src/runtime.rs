@@ -86,7 +86,7 @@ pub struct CityDestruction {
     /// Fracture-frame resimulation. 0 = off. Each pass rewinds motion and
     /// re-runs simulate+tick when the previous tick split an island, so the
     /// contact that caused the split resolves against the resulting pieces.
-    /// `VIBE_CITY_RESIM_PASSES` (default 0 while it is being validated).
+    /// `VIBE_CITY_RESIM_PASSES` (default 1; 0 disables, for A/B only).
     resim_passes: u32,
     last_split_count: u64,
     resim_passes_run: u64,
@@ -259,10 +259,15 @@ impl CityDestruction {
             tick: 0,
             extra_spans: Vec::new(),
             degraded: false,
+            // Default ON (1 pass). Owner decision 2026-09-02: fracture-frame
+            // resimulation is the intended production behaviour -- a
+            // projectile must resolve against the pieces it fractured, not
+            // bounce off the intact wall -- so tests and production run it
+            // unless explicitly disabled. 0 turns it off for A/B only.
             resim_passes: std::env::var("VIBE_CITY_RESIM_PASSES")
                 .ok()
                 .and_then(|v| v.parse::<u32>().ok())
-                .unwrap_or(0),
+                .unwrap_or(1),
             last_split_count: 0,
             resim_passes_run: 0,
             resim_captures: 0,

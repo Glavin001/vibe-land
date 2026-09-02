@@ -19,7 +19,11 @@ export VIBE_CITY_STRESS_LIMIT_SCALE=${VIBE_CITY_STRESS_LIMIT_SCALE:-0.45}
 export VIBE_CITY_SHOT_BLAST_RADIUS=${VIBE_CITY_SHOT_BLAST_RADIUS:-0.7}
 export VIBE_CITY_SHOT_STRESS_IMPULSE=${VIBE_CITY_SHOT_STRESS_IMPULSE:-4.0e7}
 export VIBE_CITY_EXCESS_FORCES=${VIBE_CITY_EXCESS_FORCES:-1}
-export VIBE_CITY_RESIM_PASSES=${VIBE_CITY_RESIM_PASSES:-0}
+# DEFAULT ON (owner decision 2026-09-02): fracture-frame resimulation is the
+# intended production behaviour, and every measurement must include its cost.
+# 0 disables it for A/B only. The code default (destruction/src/runtime.rs)
+# is 1 as well, so tests get it without this file.
+export VIBE_CITY_RESIM_PASSES=${VIBE_CITY_RESIM_PASSES:-1}
 export VIBE_CITY_SOLVER_ITERATIONS=${VIBE_CITY_SOLVER_ITERATIONS:-32}
 export VIBE_WORLD_FRICTION=${VIBE_WORLD_FRICTION:-0.75}
 export VIBE_WORLD_RESTITUTION=${VIBE_WORLD_RESTITUTION:-0.02}
