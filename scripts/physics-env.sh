@@ -16,8 +16,14 @@ export VIBE_CITY_GRID=${VIBE_CITY_GRID:-2}
 export VIBE_CITY_VARIED_HEIGHTS=${VIBE_CITY_VARIED_HEIGHTS:-0}
 export VIBE_CITY_FREEZE=${VIBE_CITY_FREEZE:-1}
 export VIBE_CITY_STRESS_LIMIT_SCALE=${VIBE_CITY_STRESS_LIMIT_SCALE:-0.45}
-export VIBE_CITY_SHOT_BLAST_RADIUS=${VIBE_CITY_SHOT_BLAST_RADIUS:-0.7}
-export VIBE_CITY_SHOT_STRESS_IMPULSE=${VIBE_CITY_SHOT_STRESS_IMPULSE:-4.0e7}
+# Shot profile. These now match ShotProfile::city() in destruction/src/
+# city_config.rs (the structural-realism calibration: 1.2e7 at 2.5 m). The
+# previous override here, 4.0e7 at 0.7 m, was tuned against the old physics and
+# after the 2026-09-02 merge (Young's-modulus column scaling, fibre bending,
+# 9.81 gravity) it breaks NOTHING: 12 shots on grid 1 -> 0 bonds, where this
+# profile breaks 5,725. Judge the look on video before retuning either number.
+export VIBE_CITY_SHOT_BLAST_RADIUS=${VIBE_CITY_SHOT_BLAST_RADIUS:-2.5}
+export VIBE_CITY_SHOT_STRESS_IMPULSE=${VIBE_CITY_SHOT_STRESS_IMPULSE:-1.2e7}
 export VIBE_CITY_EXCESS_FORCES=${VIBE_CITY_EXCESS_FORCES:-1}
 # DEFAULT ON (owner decision 2026-09-02): fracture-frame resimulation is the
 # intended production behaviour, and every measurement must include its cost.
