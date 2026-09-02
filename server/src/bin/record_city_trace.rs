@@ -945,7 +945,9 @@ fn main() -> Result<()> {
                  sup_calls,sup_kin,sup_fy,sup_exist,sup_new,sup_staged,sup_unch,sup_rows,\
                  gpu_host_work,gpu_host_blocked,st_init,st_err,st_copy,st_graph,st_drain,hw_in,hw_reset,hw_bond,hw_node,bs_skip,bs_gpu_skip,bs_gpu_runs,bs_par_ck,bs_par_mm,cb_drain,cb_census,cb_resize,bl_ck,bl_mm,pairs,\
                  contacts_q,islands_skip,islands_tot,quiet,freeze,unfreeze,contact_wakes,\
-                 min_y,pose_quiet,overstressed,patch_hw,escaped,cpu_ms"
+                 min_y,pose_quiet,overstressed,patch_hw,escaped,cpu_ms,\
+                 sim,tick_ffi,post_step,drain,sup_ingest,cascade,readback_host,settle,stats_ffi,\
+                 resim,resim_passes,resim_capture,resim_restore,resim_step,resim_tick"
             )?;
             Some(w)
         }
@@ -1098,7 +1100,8 @@ fn main() -> Result<()> {
                 // milliseconds and making them look quantised. Rust
                 // prints shortest-roundtrip for floats, which is what a
                 // CSV wants anyway.
-                "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
+                "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},\
+                 {},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
                 tick_index, s.chunk_bodies, s.awake_chunk_bodies, s.frozen_chunk_bodies,
                 s.sleeping_chunk_bodies, s.broken_bonds,
                 s.stress_solve_ms, s.begin_ms, s.solve_ms, s.end_ms, s.readback_ms,
@@ -1179,7 +1182,28 @@ fn main() -> Result<()> {
                 s.min_body_y, s.pose_quiet_awake_bodies, s.overstressed_bonds,
                 ws.map(|w| w.gpu_rigid_patch_high_water).unwrap_or(0),
                 s.escaped_bodies_parked,
-                sim_cpu_ms
+                sim_cpu_ms,
+                // The whole simulated tick (pre-step capture + PhysX + the
+                // destruction post-step incl. resim), and its Rust-side phases,
+                // so the profile tree covers the tick rather than the two
+                // native brackets. `post_step` here is the Rust-side work that
+                // is NOT the native tick, and `resim` is the whole re-pass.
+                sim_ms,
+                s.tick_ffi_ms,
+                s.drain_ms + s.support_ingest_ms + s.cascade_ms + s.readback_ms_host
+                    + s.settle_ms + s.stats_ffi_ms,
+                s.drain_ms,
+                s.support_ingest_ms,
+                s.cascade_ms,
+                s.readback_ms_host,
+                s.settle_ms,
+                s.stats_ffi_ms,
+                s.resim_capture_ms + s.resim_restore_ms + s.resim_step_ms + s.resim_tick_ms,
+                s.resim_passes,
+                s.resim_capture_ms,
+                s.resim_restore_ms,
+                s.resim_step_ms,
+                s.resim_tick_ms
             )?;
         }
 

@@ -37,11 +37,12 @@ import sys
 TIME_HINTS = ("_ms", "step", "solve", "begin", "end", "readback", "events",
               "filters", "ccd", "support", "shape", "slot", "bond_sample",
               "gpu_wait", "fetch", "callback", "gravity", "contact_proc",
-              "frac_", "cb_", "gpu_host", "cascade", "ingest")
+              "frac_", "cb_", "gpu_host", "cascade", "ingest",
+              "sim", "tick_ffi", "drain", "settle", "stats_ffi", "resim")
 NOT_TIME = {"tick", "bodies", "awake", "frozen", "sleeping", "bonds", "pairs",
             "contacts_q", "islands_skip", "islands_tot", "quiet", "freeze",
             "unfreeze", "contact_wakes", "min_y", "pose_quiet", "overstressed",
-            "patch_hw", "escaped", "cp_found", "cp_persists", "cp_points",
+            "patch_hw", "escaped", "resim_passes", "cp_found", "cp_persists", "cp_points",
             "cp_supp", "node_mm", "node_ck", "sup_calls", "sup_kin", "sup_fy",
             "sup_exist", "sup_new", "sup_staged", "sup_unch", "sup_rows"}
 
@@ -273,7 +274,14 @@ def ab(path_a, path_b, warmup, by):
 PARALLEL = {"solve"}
 
 TREE = {
-    "TOTAL": ["physx_step", "stress_solve"],
+    # TOTAL is the simulated tick: the two native brackets, the Rust-side
+    # post-step work that is not the native tick, and the resim re-pass.
+    # Traces older than 2026-09-02 lack the last two columns and fall back to
+    # the two-bracket total (see tree()).
+    "TOTAL": ["physx_step", "stress_solve", "post_step", "resim"],
+    "post_step": ["drain", "sup_ingest", "cascade", "readback_host", "settle",
+                  "stats_ffi"],
+    "resim": ["resim_capture", "resim_restore", "resim_step", "resim_tick"],
     # cb_drain is the deferred-contact drain: runs inside end_step but after
     # the fetch split is recorded, so it is a sibling of fetch, not a child.
     "physx_step": ["physx_sim", "fetch_tick", "cb_drain"],
@@ -318,7 +326,9 @@ def tree(path, warmup, by):
     print(f"== {path}   {len(rows)} ticks analysed (warm-up tick <= {warmup} excluded)")
     for label, sel in buckets(rows, by):
         col = lambda c: [float(r[c]) for r in sel] if c in sel[0] else None
-        totv = [float(r["physx_step"]) + float(r["stress_solve"]) for r in sel]
+        totv = [float(r["physx_step"]) + float(r["stress_solve"])
+                + (float(r["post_step"]) if "post_step" in r else 0.0)
+                + (float(r["resim"]) if "resim" in r else 0.0) for r in sel]
         grand = sum(totv)
         print(f"\n-- bucket {by}={label}  ({len(sel)} ticks)")
         print(f"{'phase':<24}{'wall':>7}{'%par':>7}{'%tot':>7}"

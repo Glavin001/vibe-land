@@ -381,9 +381,11 @@ impl CityDestruction {
     /// single tick and the whole mechanism silently does nothing. Measured that
     /// way it reported 0 captures over 360 ticks while appearing to work.
     pub fn pre_step(&mut self, world: &mut World) {
+        self.stats.resim_capture_ms = 0.0;
         if self.resim_passes == 0 {
             return;
         }
+        let capture_started = std::time::Instant::now();
         // Capture EVERY frame, not only when needsResimulationSnapshot() asks.
         //
         // The library's own driver gates on that predicate only when
@@ -391,7 +393,9 @@ impl CityDestruction {
         // to FALSE -- shouldCapture() returns true immediately. Gating on it
         // produced 96 captures against 221 restores, so a restore could rewind
         // to a capture several frames old instead of to the start of this one.
-        match world.resim_capture() {
+        let captured = world.resim_capture();
+        self.stats.resim_capture_ms = capture_started.elapsed().as_secs_f32() * 1000.0;
+        match captured {
             Ok(n) if n > 0 => self.resim_captures += 1,
             Ok(_) => self.resim_zero_captures += 1,
             Err(e) => {
@@ -437,6 +441,13 @@ impl CityDestruction {
             self.degraded = true;
             return Err(CityDestructionError::Bridge(error.to_string()));
         }
+        // The first pass only. Everything the resim loop below costs is
+        // bracketed into its own stats so a profile can price it separately.
+        let tick_ffi_ms = tick_ffi_started.elapsed().as_secs_f32() * 1000.0;
+        let mut resim_restore_ms = 0.0f32;
+        let mut resim_step_ms = 0.0f32;
+        let mut resim_tick_ms = 0.0f32;
+        let mut resim_passes_this_tick = 0u32;
 
         // Fracture-frame resimulation, following the library's own ordering in
         // NvBlastExtStressPhysXResim: capture before simulate, and if the tick
@@ -459,22 +470,31 @@ impl CityDestruction {
                     break;
                 }
                 self.last_split_count = splits;
-                if !world.resim_restore().unwrap_or(false) {
+                let restore_started = std::time::Instant::now();
+                let restored = world.resim_restore().unwrap_or(false);
+                resim_restore_ms += restore_started.elapsed().as_secs_f32() * 1000.0;
+                if !restored {
                     break; // no capture held -- nothing to rewind to
                 }
-                if world.step().is_err() {
+                let step_started = std::time::Instant::now();
+                let stepped = world.step();
+                resim_step_ms += step_started.elapsed().as_secs_f32() * 1000.0;
+                if stepped.is_err() {
                     self.degraded = true;
                     return Err(CityDestructionError::Bridge(
                         "resim re-step failed".to_string(),
                     ));
                 }
-                if let Err(error) =
-                    world.destruction_tick(dt, Vec3::new(gravity[0], gravity[1], gravity[2]))
-                {
+                let tick_started = std::time::Instant::now();
+                let ticked =
+                    world.destruction_tick(dt, Vec3::new(gravity[0], gravity[1], gravity[2]));
+                resim_tick_ms += tick_started.elapsed().as_secs_f32() * 1000.0;
+                if let Err(error) = ticked {
                     self.degraded = true;
                     return Err(CityDestructionError::Bridge(error.to_string()));
                 }
                 self.resim_passes_run += 1;
+                resim_passes_this_tick += 1;
                 passes -= 1;
             }
             self.last_split_count = world.split_count().unwrap_or(self.last_split_count);
@@ -502,7 +522,10 @@ impl CityDestruction {
                 }
             }
         }
-        let tick_ffi_ms = tick_ffi_started.elapsed().as_secs_f32() * 1000.0;
+        self.stats.resim_restore_ms = resim_restore_ms;
+        self.stats.resim_step_ms = resim_step_ms;
+        self.stats.resim_tick_ms = resim_tick_ms;
+        self.stats.resim_passes = resim_passes_this_tick;
 
         let drain_started = std::time::Instant::now();
         let broken = world
@@ -1046,6 +1069,9 @@ impl CityDestruction {
             post_step_total_started.elapsed().as_secs_f32() * 1000.0;
         self.stats.post_step_residual_ms = self.stats.post_step_total_ms
             - (self.stats.tick_ffi_ms
+                + self.stats.resim_restore_ms
+                + self.stats.resim_step_ms
+                + self.stats.resim_tick_ms
                 + self.stats.drain_ms
                 + self.stats.support_ingest_ms
                 + self.stats.cascade_ms

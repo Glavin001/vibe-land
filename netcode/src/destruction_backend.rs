@@ -302,8 +302,21 @@ pub struct DestructionStats {
     /// one level up. Both are gated by `timing_closure` in the test suite.
     pub post_step_total_ms: f32,
     pub post_step_residual_ms: f32,
-    /// The destruction_tick FFI call itself (all C++ phases inside it).
+    /// The destruction_tick FFI call itself (all C++ phases inside it). The
+    /// FIRST pass only; a resim re-pass is accounted under `resim_tick_ms`.
     pub tick_ffi_ms: f32,
+    /// Fracture-frame resimulation, per tick. `resim_capture_ms` is the
+    /// pre-step motion capture (every tick while resim is on);
+    /// restore / step / tick are the rewind, the second PhysX step and the
+    /// second destruction tick, paid only on ticks where an island split.
+    /// `resim_passes` is how many re-passes ran this tick. Kept out of
+    /// `tick_ffi_ms` and the physics step so a profile can price resim on
+    /// its own instead of folding it into phases that then read 2x.
+    pub resim_capture_ms: f32,
+    pub resim_restore_ms: f32,
+    pub resim_step_ms: f32,
+    pub resim_tick_ms: f32,
+    pub resim_passes: u32,
     pub snapshot_ms: f32,
     pub ingest_ms: f32,
     pub readback_ms: f32,
