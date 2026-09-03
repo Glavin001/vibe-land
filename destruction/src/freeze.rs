@@ -877,6 +877,14 @@ impl FreezeTracker {
         }
     }
 
+    /// The bridge reported the same supporter list as last time; only the
+    /// contact separation moved. Exactly the `penetration_m` half of
+    /// `ingest_support`, and nothing else: the stored list, and the rooted
+    /// liveness it implied, are unchanged by construction.
+    pub fn ingest_penetration(&mut self, entity: u32, min_separation: f32) {
+        self.penetration_m.insert(entity, min_separation);
+    }
+
     /// The supporters currently stored for a body (diagnostics/tests).
     pub fn supporters_of(&self, entity: u32) -> Option<&[Supporter]> {
         self.supporters.get(&entity).map(|list| list.as_slice())

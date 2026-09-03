@@ -693,7 +693,78 @@ public:
     int frozen_a = -1;
     int frozen_b = -1;
     bool valid = false;
+    /// Per-manifold sums over the extracted points, computed in the parallel
+    /// classify pass so the serial drain does not walk the points at all.
+    /// Same loop, same order, same float sums as the serial walk produced.
+    PxVec3 total_impulse{0.0f};
+    PxVec3 weighted_point{0.0f};
+    float total_magnitude = 0.0f;
+    float sum_abs_impulse_y = 0.0f;
+    float min_separation = 1.0e6f;
+    bool aggregated = false;
+    /// The stress-solver injection for this manifold was already done by the
+    /// per-structure parallel pass; the serial drain must not repeat it.
+    bool queued = false;
   };
+
+  /// One stress-solver injection per manifold SIDE instead of one per point.
+  ///
+  /// The solver's addNodeForce discards the application point and keeps only
+  /// the force sum per node (the point matters only to the crush virial,
+  /// which is opt-in behind BLAST_CRUSH_CAP), so handing it the manifold's
+  /// summed impulse at the impulse-weighted point is the same load. That
+  /// halves queueContact calls (1.6-1.8 points per manifold on downtown) and
+  /// lets the serial drain drop its per-point loop entirely.
+  /// VIBE_PHYSX_CONTACT_AGGREGATE=0 restores per-point injection.
+  static bool contact_aggregate_enabled() {
+    static const bool enabled = [] {
+      const char *raw = std::getenv("VIBE_PHYSX_CONTACT_AGGREGATE");
+      if (raw != nullptr && std::string(raw) == "0") {
+        return false;
+      }
+      // Crush needs the per-point positions.
+      return std::getenv("BLAST_CRUSH_CAP") == nullptr;
+    }();
+    return enabled;
+  }
+
+  /// Inject each structure's contacts from its own pool task.
+  ///
+  /// queue_contact_at feeds a per-node float reduction inside the adapter,
+  /// so the ORDER of a structure's contacts is load bearing -- but only
+  /// within that structure: the four adapters share nothing. Each task walks
+  /// the recorded pairs in order and queues only the sides that land on its
+  /// structure, so every adapter sees exactly the sequence the serial drain
+  /// gave it. VIBE_PHYSX_DRAIN_PARALLEL=0 restores the serial injection;
+  /// VIBE_PHYSX_DRAIN_PARALLEL_VERIFY=1 replays the partition serially and
+  /// compares the per-structure call sequences, same tick.
+  static bool drain_parallel_enabled() {
+    static const bool enabled = [] {
+      const char *raw = std::getenv("VIBE_PHYSX_DRAIN_PARALLEL");
+      return raw == nullptr || std::string(raw) != "0";
+    }();
+    return enabled;
+  }
+  static bool drain_parallel_verify() {
+    static const bool enabled = [] {
+      const char *raw = std::getenv("VIBE_PHYSX_DRAIN_PARALLEL_VERIFY");
+      return raw != nullptr && std::string(raw) == "1";
+    }();
+    return enabled;
+  }
+  struct QueueTrace {
+    const void *slot;
+    std::uint32_t node;
+    float x, y, z;
+    bool operator==(const QueueTrace &o) const {
+      return slot == o.slot && node == o.node && x == o.x && y == o.y && z == o.z;
+    }
+  };
+  std::vector<std::vector<QueueTrace>> drain_trace_parallel_;
+  std::vector<QueueTrace> drain_trace_serial_;
+  std::uint64_t drain_verify_ticks_ = 0;
+  std::uint64_t drain_verify_calls_ = 0;
+  std::uint64_t drain_verify_mismatches_ = 0;
 
   static float dynamic_mass_of(const PxActor *actor) {
     const PxRigidDynamic *dynamic =
@@ -785,7 +856,39 @@ public:
       float sum_abs_impulse_y = 0.0f;
       float min_separation = 1.0e6f;
       const auto points_started = sub_now();
-      for (PxU32 point_index = 0; point_index < extracted; ++point_index) {
+#ifdef VIBE_LAND_DESTRUCTION
+      const bool pre_aggregated = pre != nullptr && pre->valid && pre->aggregated;
+      if (pre_aggregated) {
+        total_impulse = pre->total_impulse;
+        weighted_point = pre->weighted_point;
+        total_magnitude = pre->total_magnitude;
+        sum_abs_impulse_y = pre->sum_abs_impulse_y;
+        min_separation = pre->min_separation;
+        // Injection: done by the per-structure parallel pass, or here as one
+        // call per side with the manifold's summed impulse.
+        if (destruction_ && !pre->queued && total_magnitude > 0.0f) {
+          const FfiVec3 position = from_px(weighted_point / total_magnitude);
+          const FfiVec3 impulse = from_px(total_impulse);
+          const FfiVec3 neg{-impulse.x, -impulse.y, -impulse.z};
+          if (target0 && skip0) {
+            ++bondless_skipped_host_;
+          }
+          if (target1 && skip1) {
+            ++bondless_skipped_host_;
+          }
+          if (target0 && !skip0) {
+            destruction_->queue_contact_at(target0, position, impulse, /*wake=*/false);
+          }
+          if (target1 && !skip1) {
+            destruction_->queue_contact_at(target1, position, neg, /*wake=*/false);
+          }
+        }
+      }
+      const PxU32 point_loop_count = pre_aggregated ? 0u : extracted;
+#else
+      const PxU32 point_loop_count = extracted;
+#endif
+      for (PxU32 point_index = 0; point_index < point_loop_count; ++point_index) {
         const PxContactPairPoint &point = points[point_index];
         if (point.separation < min_separation) {
           min_separation = point.separation;
@@ -998,6 +1101,7 @@ public:
     classify_scratch_.clear();
 #ifdef VIBE_LAND_DESTRUCTION
     constexpr std::size_t kClassifyFloor = 512;
+    const bool aggregate = contact_aggregate_enabled() && contact_cse_enabled();
     const bool classify_parallel =
         contact_classify_enabled() && destruction_ != nullptr &&
         contact_cse_enabled() && pair_count >= kClassifyFloor &&
@@ -1024,9 +1128,166 @@ public:
             out.frozen_a = destruction_->entity_is_frozen(rec.entity_a) ? 1 : 0;
             out.frozen_b = destruction_->entity_is_frozen(rec.entity_b) ? 1 : 0;
           }
+          if (aggregate) {
+            // The serial point loop, moved here verbatim: same order, same
+            // sums. min_separation over every point; |impulse.y| only, the
+            // sign being ordering-dependent (see process_extracted_pair).
+            const physx::PxContactPairPoint *points =
+                deferred_points_.data() + rec.point_begin;
+            PxVec3 total_impulse(0.0f);
+            PxVec3 weighted_point(0.0f);
+            float total_magnitude = 0.0f;
+            float sum_abs_impulse_y = 0.0f;
+            float min_separation = 1.0e6f;
+            for (PxU32 p = 0; p < rec.point_count; ++p) {
+              const physx::PxContactPairPoint &point = points[p];
+              if (point.separation < min_separation) {
+                min_separation = point.separation;
+              }
+              const float magnitude = point.impulse.magnitude();
+              total_impulse += point.impulse;
+              weighted_point += point.position * magnitude;
+              total_magnitude += magnitude;
+              sum_abs_impulse_y += point.impulse.y < 0.0f ? -point.impulse.y
+                                                          : point.impulse.y;
+            }
+            out.total_impulse = total_impulse;
+            out.weighted_point = weighted_point;
+            out.total_magnitude = total_magnitude;
+            out.sum_abs_impulse_y = sum_abs_impulse_y;
+            out.min_separation = min_separation;
+            out.aggregated = true;
+          }
           out.valid = true;
         }
       });
+
+      // Per-structure parallel injection. Only with the per-side aggregate
+      // (so a side is one call), only when the bondless answer is hoisted
+      // (so no per-point drop decision remains), and never under the hoist
+      // verifier, which needs the old queue-everything path.
+      if (aggregate && drain_parallel_enabled() && bondless_hoist_enabled() &&
+          !bondless_hoist_verify()) {
+        // Slot is opaque here; the target carries the structure id, which
+        // orders the tasks deterministically.
+        std::vector<std::pair<std::uint32_t, DestructionManager::Slot *>> keyed;
+        for (std::size_t i = 0; i < pair_count; ++i) {
+          const PairPrecomputed &pre = classify_scratch_[i];
+          for (const DestructionManager::ContactTarget *t : {&pre.target0, &pre.target1}) {
+            if (t->slot == nullptr) {
+              continue;
+            }
+            bool seen = false;
+            for (const auto &k : keyed) {
+              if (k.second == t->slot) {
+                seen = true;
+                break;
+              }
+            }
+            if (!seen) {
+              keyed.emplace_back(t->structure_id, t->slot);
+            }
+          }
+        }
+        std::sort(keyed.begin(), keyed.end(),
+                  [](const auto &a, const auto &b) { return a.first < b.first; });
+        std::vector<DestructionManager::Slot *> slots;
+        std::vector<std::uint32_t> slot_ids;
+        for (const auto &k : keyed) {
+          slots.push_back(k.second);
+          slot_ids.push_back(k.first);
+        }
+        const bool verify = drain_parallel_verify();
+        if (verify) {
+          drain_trace_parallel_.assign(slots.size(), {});
+        }
+        std::vector<std::uint32_t> skipped(slots.size(), 0u);
+        destruction_->run_parallel(slots.size(), [&](std::size_t s) {
+          DestructionManager::Slot *mine = slots[s];
+          std::uint32_t my_skipped = 0;
+          for (std::size_t i = 0; i < pair_count; ++i) {
+            const PairPrecomputed &pre = classify_scratch_[i];
+            if (pre.total_magnitude <= 0.0f) {
+              // Same gate as the serial path's weighted point: a manifold
+              // with no impulse queued nothing per point either (every
+              // point's impulse is zero), and its position is undefined.
+              continue;
+            }
+            const FfiVec3 position =
+                from_px(pre.weighted_point / pre.total_magnitude);
+            const FfiVec3 impulse = from_px(pre.total_impulse);
+            const FfiVec3 neg{-impulse.x, -impulse.y, -impulse.z};
+            if (pre.target0.slot == mine) {
+              if (pre.bondless0) {
+                ++my_skipped;
+              } else {
+                if (verify) {
+                  drain_trace_parallel_[s].push_back(
+                      {mine, pre.target0.blast_node, impulse.x, impulse.y, impulse.z});
+                }
+                destruction_->queue_contact_at(pre.target0, position, impulse,
+                                               /*wake=*/false);
+              }
+            }
+            if (pre.target1.slot == mine) {
+              if (pre.bondless1) {
+                ++my_skipped;
+              } else {
+                if (verify) {
+                  drain_trace_parallel_[s].push_back(
+                      {mine, pre.target1.blast_node, neg.x, neg.y, neg.z});
+                }
+                destruction_->queue_contact_at(pre.target1, position, neg,
+                                               /*wake=*/false);
+              }
+            }
+          }
+          skipped[s] = my_skipped;
+        });
+        for (std::size_t i = 0; i < pair_count; ++i) {
+          classify_scratch_[i].queued = true;
+        }
+        for (const std::uint32_t n : skipped) {
+          bondless_skipped_host_ += n;
+        }
+        if (verify) {
+          // Serial replay of the partition, in recorded order, per structure.
+          ++drain_verify_ticks_;
+          for (std::size_t s = 0; s < slots.size(); ++s) {
+            drain_trace_serial_.clear();
+            for (std::size_t i = 0; i < pair_count; ++i) {
+              const PairPrecomputed &pre = classify_scratch_[i];
+              if (pre.total_magnitude <= 0.0f) {
+                continue;
+              }
+              const FfiVec3 impulse = from_px(pre.total_impulse);
+              if (pre.target0.slot == slots[s] && !pre.bondless0) {
+                drain_trace_serial_.push_back(
+                    {slots[s], pre.target0.blast_node, impulse.x, impulse.y, impulse.z});
+              }
+              if (pre.target1.slot == slots[s] && !pre.bondless1) {
+                drain_trace_serial_.push_back(
+                    {slots[s], pre.target1.blast_node, -impulse.x, -impulse.y, -impulse.z});
+              }
+            }
+            drain_verify_calls_ += drain_trace_serial_.size();
+            if (drain_trace_serial_ != drain_trace_parallel_[s]) {
+              ++drain_verify_mismatches_;
+              std::fprintf(stderr,
+                           "[drain-parallel] MISMATCH structure=%u serial=%zu parallel=%zu\n",
+                           slot_ids[s], drain_trace_serial_.size(),
+                           drain_trace_parallel_[s].size());
+            }
+          }
+          if (drain_verify_ticks_ % 600 == 0) {
+            std::fprintf(stderr,
+                         "[drain-parallel] ticks=%llu calls=%llu mismatches=%llu\n",
+                         static_cast<unsigned long long>(drain_verify_ticks_),
+                         static_cast<unsigned long long>(drain_verify_calls_),
+                         static_cast<unsigned long long>(drain_verify_mismatches_));
+          }
+        }
+      }
     }
 #endif
 

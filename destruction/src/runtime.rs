@@ -639,6 +639,13 @@ impl CityDestruction {
         // during the physics step that just ran.
         if let Ok((sets, rows)) = world.take_support_updates() {
             for set in &sets {
+                if set.unchanged != 0 {
+                    // Header only: the list is the one already stored, so
+                    // only the penetration moves. No rows, no allocation.
+                    self.freeze
+                        .ingest_penetration(set.dependent_entity, set.min_separation);
+                    continue;
+                }
                 let start = set.first_row as usize;
                 let end = (start + set.row_count as usize).min(rows.len());
                 let supporters = rows[start..end]

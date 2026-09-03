@@ -1704,6 +1704,12 @@ mod ffi {
         min_separation: f32,
         first_row: u32,
         row_count: u32,
+        /// 1 when the supporter LIST is the one already delivered: only
+        /// `min_separation` (and the freshness stamp) moved, and no rows are
+        /// attached. The consumer keeps its stored list and updates the
+        /// penetration. In a settled pile nearly every touched body reports
+        /// an unchanged list every tick, so this is most sets.
+        unchanged: u8,
     }
 
     /// One supporter of a dependent. kind: 0 = World (immutable static),

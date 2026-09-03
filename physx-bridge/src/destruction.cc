@@ -3586,24 +3586,42 @@ void DestructionManager::resolve_support_loads() {
     }
     if (entry.dirty) {
       ++sup_sets_staged_;
-      if (!entry.set_changed) {
-        ++sup_sets_unchanged_;
-      }
-      sup_rows_staged_ += entry.supporters.size();
-      entry.set_changed = false;
       FfiSupportSet set{};
       set.dependent_entity = entry.entity;
       set.last_report_tick = entry.last_report_tick;
       set.min_separation = entry.min_separation;
       set.first_row = static_cast<std::uint32_t>(staged_support_rows_.size());
-      set.row_count = static_cast<std::uint32_t>(entry.supporters.size());
-      for (const SupporterRec &rec : entry.supporters) {
-        FfiSupportRow row{};
-        row.kind = rec.kind;
-        row.supporter_entity = rec.entity;
-        row.supporter_node = rec.node;
-        staged_support_rows_.push_back(row);
+      // An unchanged LIST ships as a header only. The rows would be the ones
+      // the consumer already holds, and re-sending them cost a row copy here
+      // plus a Vec allocation and a hash-map replace per body on the Rust
+      // side, for every touched body, every tick: in a settled pile that is
+      // nearly the whole population (`sup_sets_unchanged` counts it). The
+      // penetration and freshness stamp still travel, so freeze admission
+      // sees exactly what it saw before. VIBE_CITY_SUPPORT_STAGE_UNCHANGED=1
+      // restores the full re-send for A/B.
+      static const bool stage_unchanged_rows = [] {
+        const char *raw = std::getenv("VIBE_CITY_SUPPORT_STAGE_UNCHANGED");
+        return raw != nullptr && std::string(raw) != "0";
+      }();
+      if (!entry.set_changed) {
+        ++sup_sets_unchanged_;
       }
+      if (!entry.set_changed && !stage_unchanged_rows) {
+        set.row_count = 0;
+        set.unchanged = 1;
+      } else {
+        set.row_count = static_cast<std::uint32_t>(entry.supporters.size());
+        set.unchanged = 0;
+        sup_rows_staged_ += entry.supporters.size();
+        for (const SupporterRec &rec : entry.supporters) {
+          FfiSupportRow row{};
+          row.kind = rec.kind;
+          row.supporter_entity = rec.entity;
+          row.supporter_node = rec.node;
+          staged_support_rows_.push_back(row);
+        }
+      }
+      entry.set_changed = false;
       staged_support_sets_.push_back(set);
       entry.dirty = false;
     }
@@ -4104,6 +4122,10 @@ bool DestructionManager::resim_needed() const {
 }
 
 std::uint32_t DestructionManager::resim_capture() {
+  // Measured 2026-09-03: building this from the body cache instead of a
+  // second PhysX walk saved nothing (0.18 us/body either way) -- the PhysX
+  // reads are ~30 ns each; the cost was the per-body hash-map rebuild of
+  // the snapshot index, which the adapter no longer does.
   std::uint32_t captured = 0;
   for (const auto &slot_ptr : slots_) {
     if (!slot_ptr || slot_ptr->dest == nullptr) {
