@@ -1944,8 +1944,45 @@ void DestructionManager::destruction_tick(float dt, FfiVec3 gravity) {
   last_bond_sample_ms_ = ms_since(bond_phase);
 
   phase = clock::now();
-  for (Slot *slot : live_slots_) {
-    require(slot->dest->endTick(), "endTick failed");
+  // endTick in two halves: the fracture-command generation (solver-only, no
+  // PhysX) fans out across structures on the stress pool; the solver apply
+  // and the scene mutation stay serial in slot order, exactly as before.
+  // Any slot that cannot split (crush resistance on) sends every slot down
+  // the serial path.
+  //
+  // OFF by default, measured 2026-09-03 (grid 2, same binary, n=2 per arm):
+  // 80 shots  -- end on fracture ticks 1.95/1.69 ms split vs 1.85/1.58 serial
+  // 450 shots -- end at >=6k awake 1.87 vs 1.79; fracture ticks 2.35 vs 2.14
+  // The generation work is almost entirely in the ONE structure being hit
+  // (frac_gen slot-summed ~= end wall), so a four-way fan-out has nothing to
+  // spread and pays the dispatch barrier. BLAST_END_TICK_SPLIT=1 enables it
+  // for scenes where fracture is spread across many structures.
+  static const bool split_end = [] {
+    const char *raw = std::getenv("BLAST_END_TICK_SPLIT");
+    return raw != nullptr && std::string(raw) == "1";
+  }();
+  bool end_split_ok = split_end && !live_slots_.empty();
+  if (end_split_ok) {
+    for (Slot *slot : live_slots_) {
+      if (!slot->dest->supportsSplitEnd()) {
+        end_split_ok = false;
+        break;
+      }
+    }
+  }
+  if (end_split_ok) {
+    std::vector<std::uint8_t> generated(live_slots_.size(), 0u);
+    stress_executor_->run(live_slots_.size(), [this, &generated](std::size_t index) {
+      generated[index] = live_slots_[index]->dest->endTickGenerate() ? 1u : 0u;
+    });
+    for (std::size_t i = 0; i < live_slots_.size(); ++i) {
+      require(generated[i] != 0u, "endTickGenerate failed");
+      require(live_slots_[i]->dest->endTickApply(), "endTickApply failed");
+    }
+  } else {
+    for (Slot *slot : live_slots_) {
+      require(slot->dest->endTick(), "endTick failed");
+    }
   }
   end_ms += ms_since(phase);
 
