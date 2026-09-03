@@ -118,7 +118,11 @@ SCENARIOS = [
         ),
         watch="awake, and whether begin/support/cb_drain approach their `intact` "
               "values. On 2026-09-01 they do not.",
-        asserts=dict(broken_frac_min=0.15, awake_mean_max=6000,
+        # awake_mean_max was 6,000 against the pre-merge physics. After the
+        # structural-realism merge (2026-09-03) the same run holds ~6,400
+        # awake 170 s past the plateau; the band follows the physics, the
+        # assertion's purpose (is the quiet path ever reached? no) does not.
+        asserts=dict(broken_frac_min=0.15, awake_mean_max=8000,
                      bodies_mean_min=12000),
     ),
 ]

@@ -2376,7 +2376,12 @@ std::uint32_t DestructionManager::apply_destruction_blast(
     }
 
     // Closest in-radius shape distance per dynamic body in this structure.
-    std::unordered_map<physx::PxRigidDynamic *, float> push_distance;
+    struct PushTarget {
+      float distance;
+      Slot *slot;
+      ExtStressPhysXId body_id;
+    };
+    std::unordered_map<physx::PxRigidDynamic *, PushTarget> push_distance;
 
     // 1) Directed stress at the impact point (no radial inflate).
     // 2) Mark dynamic bodies that own a shape inside the blast radius —
@@ -2437,15 +2442,17 @@ std::uint32_t DestructionManager::apply_destruction_blast(
           body_it->second.kinematic) {
         continue;
       }
-      auto inserted = push_distance.emplace(body_it->second.body, distance);
+      auto inserted = push_distance.emplace(
+          body_it->second.body, PushTarget{distance, &slot, shape.bodyId});
       if (!inserted.second) {
-        inserted.first->second = std::min(inserted.first->second, distance);
+        inserted.first->second.distance =
+            std::min(inserted.first->second.distance, distance);
       }
     }
 
     for (const auto &entry : push_distance) {
       physx::PxRigidDynamic *rigid = entry.first;
-      const float distance = entry.second;
+      const float distance = entry.second.distance;
       const float falloff = 1.0f - (distance / radius);
       const PxVec3 offset = rigid->getGlobalPose().p - c;
       const float body_distance = offset.magnitude();
@@ -2472,6 +2479,11 @@ std::uint32_t DestructionManager::apply_destruction_blast(
       // real contacts, which debris has no shortage of.
       const PxVec3 kick = push_dir * (push_impulse * falloff * falloff);
       rigid->addForce(kick, physx::PxForceMode::eVELOCITY_CHANGE, true);
+      // A resim restore must clear this kick again; the adapter skips the
+      // clears on bodies nobody pushed, so it has to know about this one.
+      if (entry.second.slot != nullptr && entry.second.slot->dest != nullptr) {
+        entry.second.slot->dest->noteExternalImpulse(entry.second.body_id);
+      }
       ++affected;
     }
   }
