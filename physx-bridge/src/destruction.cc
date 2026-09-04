@@ -1912,26 +1912,64 @@ void DestructionManager::destruction_tick(float dt, FfiVec3 gravity) {
     std::uint32_t above_half = 0;
     for (Slot *slot_ptr : live_slots_) {
       Slot &slot = *slot_ptr;
-      const std::uint32_t bond_count =
-          static_cast<std::uint32_t>(slot.bond_descs.size());
-      if (bond_count == 0) {
+      if (slot.bond_descs.empty()) {
         continue;
       }
-      if (slot.bond_utilisation.size() < bond_count) {
-        slot.bond_utilisation.resize(bond_count);
+      // Two numbers, not a per-bond buffer: with the device walk active they
+      // are reduced on the device and ride its readback, so the sample no
+      // longer scans every bond of the city (and no longer forces the full
+      // per-group stress fetch across the bus to do it).
+      float slot_max = 0.0f;
+      std::uint32_t slot_above_half = 0;
+      if (slot.dest->getBondUtilisationSummary(slot_max, slot_above_half)) {
+        if (std::isfinite(slot_max) && slot_max > utilisation_max) {
+          utilisation_max = slot_max;
+        }
+        above_half += slot_above_half;
       }
-      const std::uint32_t written = slot.dest->getBondUtilisations(
-          slot.bond_utilisation.data(), bond_count);
-      for (std::uint32_t i = 0; i < written; ++i) {
-        const float utilisation = slot.bond_utilisation[i];
-        if (!std::isfinite(utilisation)) {
-          continue;
+      static const bool verify_sample = [] {
+        const char *v = std::getenv("VIBE_CITY_BOND_SAMPLE_VERIFY");
+        return v != nullptr && std::string(v) != "0";
+      }();
+      if (verify_sample) {
+        // Same numbers from the per-bond scan the summary replaced. Exact:
+        // the device reduces the identical ratios in the identical order.
+        const std::uint32_t bond_count =
+            static_cast<std::uint32_t>(slot.bond_descs.size());
+        if (slot.bond_utilisation.size() < bond_count) {
+          slot.bond_utilisation.resize(bond_count);
         }
-        if (utilisation > utilisation_max) {
-          utilisation_max = utilisation;
+        const std::uint32_t written = slot.dest->getBondUtilisations(
+            slot.bond_utilisation.data(), bond_count);
+        float scan_max = 0.0f;
+        std::uint32_t scan_above = 0;
+        for (std::uint32_t i = 0; i < written; ++i) {
+          const float u = slot.bond_utilisation[i];
+          if (!std::isfinite(u)) {
+            continue;
+          }
+          if (u > scan_max) {
+            scan_max = u;
+          }
+          if (u >= 0.5f) {
+            ++scan_above;
+          }
         }
-        if (utilisation >= 0.5f) {
-          ++above_half;
+        ++bond_sample_verify_checks_;
+        if (std::memcmp(&scan_max, &slot_max, sizeof(float)) != 0 ||
+            scan_above != slot_above_half) {
+          ++bond_sample_verify_mismatches_;
+          if (bond_sample_verify_mismatches_ <= 8) {
+            fprintf(stderr,
+                    "[bond-sample-verify] summary max=%.9g above=%u "
+                    "scan max=%.9g above=%u\n",
+                    slot_max, slot_above_half, scan_max, scan_above);
+          }
+        }
+        if ((bond_sample_verify_checks_ % 200u) == 0u) {
+          fprintf(stderr, "[bond-sample-verify] checks=%llu mismatches=%llu\n",
+                  (unsigned long long)bond_sample_verify_checks_,
+                  (unsigned long long)bond_sample_verify_mismatches_);
         }
       }
     }

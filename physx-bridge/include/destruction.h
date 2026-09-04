@@ -477,6 +477,8 @@ private:
   /// it produces are published once a second.
   std::uint32_t bond_sample_interval_ = 30;
   std::uint32_t bond_sample_counter_ = 0;
+  std::uint64_t bond_sample_verify_checks_ = 0;
+  std::uint64_t bond_sample_verify_mismatches_ = 0;
   /// Slot-ticks where topology was unchanged and the event diff was skipped.
   std::uint64_t quiet_slot_ticks_ = 0;
   /// Running totals of the per-tick island partition, so a rate can be had by
