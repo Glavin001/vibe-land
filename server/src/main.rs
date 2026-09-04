@@ -352,6 +352,14 @@ struct CityStatsSnapshot {
     /// `backend.post_step` in full -- the parent of the destruction phases,
     /// measured by the host rather than summed from them.
     post_step_ms: f32,
+    /// Fracture-frame resimulation, per tick: the pre-step capture (every
+    /// tick), and on ticks that split, the rewind, the PhysX re-step and the
+    /// second destruction tick. These are what a ~100 ms spike is made of.
+    resim_capture_ms: f32,
+    resim_restore_ms: f32,
+    resim_step_ms: f32,
+    resim_tick_ms: f32,
+    resim_passes: u32,
     /// Broadcasting this tick's reliable and v3 packets to every viewer. Scales
     /// with packets x players and clones each packet per viewer.
     fan_out_ms: f32,
@@ -4336,6 +4344,11 @@ impl MatchState {
                     post_step_residual_ms: stats.post_step_residual_ms,
                     stats_ffi_ms: stats.stats_ffi_ms,
                     post_step_ms: stats.post_step_ms,
+                    resim_capture_ms: stats.resim_capture_ms,
+                    resim_restore_ms: stats.resim_restore_ms,
+                    resim_step_ms: stats.resim_step_ms,
+                    resim_tick_ms: stats.resim_tick_ms,
+                    resim_passes: stats.resim_passes,
                     fan_out_ms: self.last_fan_out_ms,
                     city_desync_repairs: self.city_desync_repairs,
                     publish_ms: self.last_publish_ms,
