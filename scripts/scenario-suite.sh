@@ -5,7 +5,7 @@
 # production construction) and asserts on behaviour, not vibes:
 #
 #   T1  at-rest        a city nobody shoots must not fall down
-#   T2  single shot    one shot breaks a bounded amount -- not nothing, not a building
+#   T2  single shot    expected facade response for this particular fixture
 #   T3  collapse shape a shelled tower must FALL and must TOPPLE/SPREAD,
 #                      not pancake vertically in its own footprint
 #   T4  freeze health  after the last shot, debris must retire; awake must fall.
@@ -22,6 +22,9 @@
 #
 # Check the EXIT CODE directly -- `suite.sh | grep ...` reports grep's exit,
 # not the suite's, which is precisely how its first failing run read as green.
+# Outcome bands are fixture expectations, never runtime damage budgets. A validated
+# physical correction may require revisiting a band; do not clip forces, speeds
+# or fractures to make it pass. See docs/simulation-fidelity-contract.md.
 #
 # T3's collapse-shape bands are deliberately coarse: measured on identical
 # inputs, height_retained swung 0.04 -> 0.25 and spread 0.75 -> 0.25 between

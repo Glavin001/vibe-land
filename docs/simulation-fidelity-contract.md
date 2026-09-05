@@ -36,7 +36,7 @@ settings or deployment changed as part of recording this clarification.
 |---|---|---|
 | Body-count cap | `VIBE_CITY_MAX_BODIES` is unset; city resolves to `maximum_bodies = 0` (unlimited). The old positive-value override still exists. | Do not use the override as a performance fallback; remove that escape path from future city configuration. |
 | Per-actor bond-break cap | City sets `maximum_fractures_per_actor_per_tick = 0` (unlimited). | Preserve unlimited fracture output through topology changes and replay. |
-| Rigid-body angular-speed limit | PhysX initializes ordinary dynamic bodies with a 100 rad/s ceiling; adapter creation does not remove it. | Remove the artificial trajectory limit and validate fast-spin and torque-driven fracture cases on both physics paths. |
+| Rigid-body angular-speed limit | The rotation-fidelity candidate uses the SDK numeric range instead of the inherited 100 rad/s ceiling, including fracture children. | Focused CPU/GPU/Direct GPU momentum and centrifugal-fracture tests pass; complete city qualification and rollout are still required. |
 | Bending/torsion gain ceiling | `BLAST_BEND_MAX_GAIN` is unset, selecting the existing default ceiling of 3 in the shared stress formula. | Correct and validate the discretization/load model rather than hiding excess stress under a gain ceiling. |
 | Depenetration-speed limit | `VIBE_CITY_DEPEN_VELOCITY` is unset; the bridge supplies its existing 1 m/s overlap-correction limit. | Assess its effect on contact impulses and fracture. Do not assume that numerical correction is fidelity-neutral. |
 
@@ -49,3 +49,7 @@ The Direct GPU qualification in
 [the current checkpoint](direct-gpu-city-qualification-2026-09-05.md) establishes
 specific observed behavior. It does not establish full compliance with this
 contract. Future promotions must report remaining fidelity issues explicitly.
+
+The [rotation-fidelity increment](rotation-fidelity-2026-09-05.md) also corrects
+centrifugal load direction and speculative collision bounds. Its tests do not
+close the remaining audit items.

@@ -2863,6 +2863,9 @@ private:
       configure_shape(*shape, entity_id, group, mask);
       require(PxRigidBodyExt::setMassAndUpdateInertia(*actor, mass),
               "failed to compute dynamic body inertia");
+      // The PhysX 100 rad/s default clips angular momentum from off-centre
+      // impacts. Use the SDK's numeric range, as for destructible children.
+      actor->setMaxAngularVelocity(1.0e16f);
       // Match Rapier ball damping; boxes stay lightly damped.
       if (kind == RecordKind::DynamicSphere) {
         actor->setLinearDamping(0.3f);
