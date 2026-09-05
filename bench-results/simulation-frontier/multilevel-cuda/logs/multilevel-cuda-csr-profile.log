@@ -1,0 +1,6 @@
+==WARNING== Note: Running with unmodified GPU clocks. If not controlled otherwise, profiling results may be inconsistent.
+==PROF== Connected to process 3986459 (/root/workspace/blast-stress-solver-2/demos/blast-stress-demo/build-gpu-activity/multilevel_gpu_test)
+==ERROR== ERR_NVGPUCTRPERM - The user does not have permission to access NVIDIA GPU Performance Counters on the target device 0. For instructions on enabling permissions and to get more information see https://developer.nvidia.com/ERR_NVGPUCTRPERM
+{"gpu":"NVIDIA GeForce RTX 4090","operator":"double","preconditioner_storage":"float","preconditioner_arithmetic":"float","outer_vectors_and_reductions":"double","cuda_graph":false,"device_setup_upload_graph_ms":406.745518,"rows":35616,"free":false,"levels":3,"scope":"offline CPU-built hierarchy; no game integration"}
+{"trial":0,"passed":true,"iterations":33,"submitted":40,"cuda_solve_ms":245.735046,"wall_solve_ms":245.758009,"force_residual":1.56704427652e-11,"moment_residual":1.88029085534e-11,"bond_relative_error":6.64492385962e-14,"bond_max_error_over_peak":8.31804160773e-14,"recurrence_relative_residual":9.651091238e-11,"failed":0}
+==PROF== Disconnected from process 3986459

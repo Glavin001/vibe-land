@@ -69,7 +69,9 @@ coordinates and the solver's signed angular convention. It is held from
 rollout: analytical CPU/GPU tests pass, but the corrected physical residual
 reveals severe large-graph under-convergence at the city's 32 iterations.
 Pre-sign city trials are superseded and do not qualify the final candidate.
-A CPU-only multilevel reference validates anchored and free-fragment equations;
-its GPU implementation and production qualification remain outstanding.
+The multilevel reference validates anchored and free-fragment equations, and a
+[standalone CUDA proof](multilevel-cuda-proof-2026-09-05.md) now passes matching
+physical-residual and bond-load checks, including extreme load scaling.
+Production integration and complete city qualification remain outstanding.
 Load lifetimes, scalar inertia, native quality failures and the other inherited
 limits remain open.

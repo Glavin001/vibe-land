@@ -1,0 +1,10 @@
+{
+  "stage": "v0 float storage with double arithmetic",
+  "files": {
+    "demos/blast-stress-demo/CMakeLists.txt": "48c8bbc4cf4aaa43859415ddf2cb10ffb855c9a9c6e9ce880528ef1479bb285f",
+    "demos/blast-stress-demo/tests/export_multilevel.py": "650cf9f93c9b232ace4cea6740a828212bebf27ea293ac8bee5da17291243a07",
+    "demos/blast-stress-demo/tests/multilevel_gpu_test.cu": "9086bda20327f385d515ba930b2e8cb4f0ac6b5b0cea95254eebdc85a166a4ce",
+    "demos/blast-stress-demo/tests/multilevel_reference.py": "c09ae99d0e77c72840aa9bfc11850413e4574fcd436481201016b2b7868baacc"
+  },
+  "binary_sha256": "cb24afcd6c6962b90845c0fa5a95c44839b7368fed03f50696fc14490b04e36d"
+}

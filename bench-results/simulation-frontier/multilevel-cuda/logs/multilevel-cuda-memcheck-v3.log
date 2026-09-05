@@ -1,0 +1,5 @@
+========= COMPUTE-SANITIZER
+{"gpu":"NVIDIA GeForce RTX 4090","operator":"double","preconditioner_storage":"float","preconditioner_arithmetic":"float","outer_vectors_and_reductions":"double","cuda_graph":true,"device_context_upload_graph_ms":279.956207,"rows":35616,"free":true,"levels":3,"scope":"offline CPU-built hierarchy; no game integration"}
+{"trial":0,"passed":true,"iterations":30,"submitted":32,"cuda_solve_ms":417.835785,"wall_solve_ms":417.854947,"force_residual":1.64176086757e-11,"moment_residual":2.02740950602e-11,"bond_relative_error":5.73520083133e-14,"bond_max_error_over_peak":5.35243280278e-14,"recurrence_relative_residual":9.57763534095e-11,"failed":0}
+========= LEAK SUMMARY: 0 bytes leaked in 0 allocations
+========= ERROR SUMMARY: 0 errors

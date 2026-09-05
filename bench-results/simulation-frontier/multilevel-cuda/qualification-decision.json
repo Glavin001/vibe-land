@@ -1,0 +1,18 @@
+{
+  "eligible": false,
+  "deployed": false,
+  "numerical_proof": true,
+  "final_passed_solves": 28,
+  "fixtures_reproduced_byte_for_byte": 5,
+  "memcheck_errors": 0,
+  "leaked_bytes": 0,
+  "incomplete_solve_rejected": true,
+  "remaining": [
+    "Native hierarchy construction and update policy",
+    "Batched exact component/null-space handling through arbitrary fracture",
+    "Device input/output integration with the real stress/fracture pipeline",
+    "Native physical-quality failures and full city/replay/settling qualification",
+    "Matched heavy destruction at 5-6k awake bodies and whole-tick/streaming measurement"
+  ],
+  "limits": "One-building algebraic proof; no city-scale speed or constitutive-fidelity certification."
+}

@@ -1,0 +1,10 @@
+{
+  "stage": "v1 float preconditioner arithmetic; double physical operator and outer solve",
+  "files": {
+    "demos/blast-stress-demo/CMakeLists.txt": "48c8bbc4cf4aaa43859415ddf2cb10ffb855c9a9c6e9ce880528ef1479bb285f",
+    "demos/blast-stress-demo/tests/export_multilevel.py": "5cde99c16534765a091813c102a987e7c232ed22728154ea9631d148973fbef3",
+    "demos/blast-stress-demo/tests/multilevel_gpu_test.cu": "385dd393681d56547943e18198deef08fc6333dd51eee849f71d766cd62ee960",
+    "demos/blast-stress-demo/tests/multilevel_reference.py": "c09ae99d0e77c72840aa9bfc11850413e4574fcd436481201016b2b7868baacc"
+  },
+  "binary_sha256": "2d8ea25d24fdcdcaa0cf6e2aacc6d9b54c64b60477970c6454a88e69c81dcfb9"
+}

@@ -1,0 +1,3 @@
+[ 50%] Building CUDA object CMakeFiles/multilevel_gpu_test.dir/tests/multilevel_gpu_test.cu.o
+[100%] Linking CUDA executable multilevel_gpu_test
+[100%] Built target multilevel_gpu_test

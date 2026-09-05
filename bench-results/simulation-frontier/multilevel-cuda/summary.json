@@ -1,0 +1,702 @@
+{
+  "scope": "Standalone CUDA stress-graph proof; not city performance or deployment qualification.",
+  "cases": {
+    "anchored-double": {
+      "metadata": {
+        "gpu": "NVIDIA GeForce RTX 4090",
+        "operator": "double",
+        "preconditioner_storage": "double",
+        "preconditioner_arithmetic": "double",
+        "outer_vectors_and_reductions": "double",
+        "cuda_graph": true,
+        "device_context_upload_graph_ms": 184.696896,
+        "rows": 35616,
+        "free": false,
+        "levels": 3,
+        "scope": "offline CPU-built hierarchy; no game integration"
+      },
+      "trials": [
+        {
+          "trial": 0,
+          "passed": true,
+          "iterations": 33,
+          "submitted": 40,
+          "cuda_solve_ms": 10.651456,
+          "wall_solve_ms": 10.660309,
+          "force_residual": 1.56660257216e-11,
+          "moment_residual": 1.87712039168e-11,
+          "bond_relative_error": 5.64923171051e-14,
+          "bond_max_error_over_peak": 5.94145829123e-14,
+          "recurrence_relative_residual": 9.65107989033e-11,
+          "failed": 0
+        },
+        {
+          "trial": 1,
+          "passed": true,
+          "iterations": 33,
+          "submitted": 40,
+          "cuda_solve_ms": 10.633216,
+          "wall_solve_ms": 10.641243,
+          "force_residual": 1.56660257216e-11,
+          "moment_residual": 1.87712039168e-11,
+          "bond_relative_error": 5.64923171051e-14,
+          "bond_max_error_over_peak": 5.94145829123e-14,
+          "recurrence_relative_residual": 9.65107989033e-11,
+          "failed": 0
+        },
+        {
+          "trial": 2,
+          "passed": true,
+          "iterations": 33,
+          "submitted": 40,
+          "cuda_solve_ms": 10.63184,
+          "wall_solve_ms": 10.638668,
+          "force_residual": 1.56660257216e-11,
+          "moment_residual": 1.87712039168e-11,
+          "bond_relative_error": 5.64923171051e-14,
+          "bond_max_error_over_peak": 5.94145829123e-14,
+          "recurrence_relative_residual": 9.65107989033e-11,
+          "failed": 0
+        },
+        {
+          "trial": 3,
+          "passed": true,
+          "iterations": 33,
+          "submitted": 40,
+          "cuda_solve_ms": 10.632064,
+          "wall_solve_ms": 10.639319,
+          "force_residual": 1.56660257216e-11,
+          "moment_residual": 1.87712039168e-11,
+          "bond_relative_error": 5.64923171051e-14,
+          "bond_max_error_over_peak": 5.94145829123e-14,
+          "recurrence_relative_residual": 9.65107989033e-11,
+          "failed": 0
+        }
+      ],
+      "median_warm_cuda_ms": 10.632064,
+      "phases": [
+        {
+          "phase": "preconditioner",
+          "cuda_ms": 0.269864321,
+          "graph_nodes": 31,
+          "repetitions": 50,
+          "diagnostic_only": true
+        },
+        {
+          "phase": "physical_operator",
+          "cuda_ms": 0.02074624,
+          "graph_nodes": 1,
+          "repetitions": 50,
+          "diagnostic_only": true
+        },
+        {
+          "phase": "dot_and_scalar_update",
+          "cuda_ms": 0.00468992,
+          "graph_nodes": 2,
+          "repetitions": 50,
+          "diagnostic_only": true
+        },
+        {
+          "phase": "solution_and_residual_update",
+          "cuda_ms": 0.00190464,
+          "graph_nodes": 1,
+          "repetitions": 50,
+          "diagnostic_only": true
+        },
+        {
+          "phase": "search_direction_update",
+          "cuda_ms": 0.0016992,
+          "graph_nodes": 1,
+          "repetitions": 50,
+          "diagnostic_only": true
+        }
+      ],
+      "log_sha256": "7727f8a1854bcb7c983f475f1952d3911cdb5e64f31eedfcaa055147884bea9e"
+    },
+    "anchored-mixed": {
+      "metadata": {
+        "gpu": "NVIDIA GeForce RTX 4090",
+        "operator": "double",
+        "preconditioner_storage": "float",
+        "preconditioner_arithmetic": "float",
+        "outer_vectors_and_reductions": "double",
+        "cuda_graph": true,
+        "device_context_upload_graph_ms": 157.131654,
+        "rows": 35616,
+        "free": false,
+        "levels": 3,
+        "scope": "offline CPU-built hierarchy; no game integration"
+      },
+      "trials": [
+        {
+          "trial": 0,
+          "passed": true,
+          "iterations": 33,
+          "submitted": 40,
+          "cuda_solve_ms": 5.871744,
+          "wall_solve_ms": 5.880796,
+          "force_residual": 1.56221973994e-11,
+          "moment_residual": 1.87931103076e-11,
+          "bond_relative_error": 8.01539259616e-14,
+          "bond_max_error_over_peak": 6.53560412036e-14,
+          "recurrence_relative_residual": 9.65111353039e-11,
+          "failed": 0
+        },
+        {
+          "trial": 1,
+          "passed": true,
+          "iterations": 33,
+          "submitted": 40,
+          "cuda_solve_ms": 5.856224,
+          "wall_solve_ms": 5.864326,
+          "force_residual": 1.56221973994e-11,
+          "moment_residual": 1.87931103076e-11,
+          "bond_relative_error": 8.01539259616e-14,
+          "bond_max_error_over_peak": 6.53560412036e-14,
+          "recurrence_relative_residual": 9.65111353039e-11,
+          "failed": 0
+        },
+        {
+          "trial": 2,
+          "passed": true,
+          "iterations": 33,
+          "submitted": 40,
+          "cuda_solve_ms": 5.844448,
+          "wall_solve_ms": 5.850539,
+          "force_residual": 1.56221973994e-11,
+          "moment_residual": 1.87931103076e-11,
+          "bond_relative_error": 8.01539259616e-14,
+          "bond_max_error_over_peak": 6.53560412036e-14,
+          "recurrence_relative_residual": 9.65111353039e-11,
+          "failed": 0
+        },
+        {
+          "trial": 3,
+          "passed": true,
+          "iterations": 33,
+          "submitted": 40,
+          "cuda_solve_ms": 5.851072,
+          "wall_solve_ms": 5.857242,
+          "force_residual": 1.56221973994e-11,
+          "moment_residual": 1.87931103076e-11,
+          "bond_relative_error": 8.01539259616e-14,
+          "bond_max_error_over_peak": 6.53560412036e-14,
+          "recurrence_relative_residual": 9.65111353039e-11,
+          "failed": 0
+        }
+      ],
+      "median_warm_cuda_ms": 5.851072,
+      "phases": [
+        {
+          "phase": "preconditioner",
+          "cuda_ms": 0.125393927,
+          "graph_nodes": 35,
+          "repetitions": 50,
+          "diagnostic_only": true
+        },
+        {
+          "phase": "physical_operator",
+          "cuda_ms": 0.020689281,
+          "graph_nodes": 1,
+          "repetitions": 50,
+          "diagnostic_only": true
+        },
+        {
+          "phase": "dot_and_scalar_update",
+          "cuda_ms": 0.00464896,
+          "graph_nodes": 2,
+          "repetitions": 50,
+          "diagnostic_only": true
+        },
+        {
+          "phase": "solution_and_residual_update",
+          "cuda_ms": 0.00188416,
+          "graph_nodes": 1,
+          "repetitions": 50,
+          "diagnostic_only": true
+        },
+        {
+          "phase": "search_direction_update",
+          "cuda_ms": 0.00167936,
+          "graph_nodes": 1,
+          "repetitions": 50,
+          "diagnostic_only": true
+        }
+      ],
+      "log_sha256": "838af9a8f7cb9c78bdd48d8ebe58bba55512570224ce5462ad0cddf4cbbc635d"
+    },
+    "free-double": {
+      "metadata": {
+        "gpu": "NVIDIA GeForce RTX 4090",
+        "operator": "double",
+        "preconditioner_storage": "double",
+        "preconditioner_arithmetic": "double",
+        "outer_vectors_and_reductions": "double",
+        "cuda_graph": true,
+        "device_context_upload_graph_ms": 160.419185,
+        "rows": 35616,
+        "free": true,
+        "levels": 3,
+        "scope": "offline CPU-built hierarchy; no game integration"
+      },
+      "trials": [
+        {
+          "trial": 0,
+          "passed": true,
+          "iterations": 30,
+          "submitted": 32,
+          "cuda_solve_ms": 10.622176,
+          "wall_solve_ms": 10.633297,
+          "force_residual": 1.6416352717e-11,
+          "moment_residual": 2.02739738869e-11,
+          "bond_relative_error": 4.6466626561e-14,
+          "bond_max_error_over_peak": 4.6914722066e-14,
+          "recurrence_relative_residual": 9.5775974018e-11,
+          "failed": 0
+        },
+        {
+          "trial": 1,
+          "passed": true,
+          "iterations": 30,
+          "submitted": 32,
+          "cuda_solve_ms": 10.599072,
+          "wall_solve_ms": 10.60787,
+          "force_residual": 1.6416352717e-11,
+          "moment_residual": 2.02739738869e-11,
+          "bond_relative_error": 4.6466626561e-14,
+          "bond_max_error_over_peak": 4.6914722066e-14,
+          "recurrence_relative_residual": 9.5775974018e-11,
+          "failed": 0
+        },
+        {
+          "trial": 2,
+          "passed": true,
+          "iterations": 30,
+          "submitted": 32,
+          "cuda_solve_ms": 10.589472,
+          "wall_solve_ms": 10.596439,
+          "force_residual": 1.6416352717e-11,
+          "moment_residual": 2.02739738869e-11,
+          "bond_relative_error": 4.6466626561e-14,
+          "bond_max_error_over_peak": 4.6914722066e-14,
+          "recurrence_relative_residual": 9.5775974018e-11,
+          "failed": 0
+        },
+        {
+          "trial": 3,
+          "passed": true,
+          "iterations": 30,
+          "submitted": 32,
+          "cuda_solve_ms": 10.586144,
+          "wall_solve_ms": 10.592322,
+          "force_residual": 1.6416352717e-11,
+          "moment_residual": 2.02739738869e-11,
+          "bond_relative_error": 4.6466626561e-14,
+          "bond_max_error_over_peak": 4.6914722066e-14,
+          "recurrence_relative_residual": 9.5775974018e-11,
+          "failed": 0
+        }
+      ],
+      "median_warm_cuda_ms": 10.589472,
+      "phases": [
+        {
+          "phase": "preconditioner",
+          "cuda_ms": 0.295321584,
+          "graph_nodes": 37,
+          "repetitions": 50,
+          "diagnostic_only": true
+        },
+        {
+          "phase": "physical_operator",
+          "cuda_ms": 0.03364864,
+          "graph_nodes": 4,
+          "repetitions": 50,
+          "diagnostic_only": true
+        },
+        {
+          "phase": "dot_and_scalar_update",
+          "cuda_ms": 0.00466944,
+          "graph_nodes": 2,
+          "repetitions": 50,
+          "diagnostic_only": true
+        },
+        {
+          "phase": "solution_and_residual_update",
+          "cuda_ms": 0.0018976,
+          "graph_nodes": 1,
+          "repetitions": 50,
+          "diagnostic_only": true
+        },
+        {
+          "phase": "search_direction_update",
+          "cuda_ms": 0.00170176,
+          "graph_nodes": 1,
+          "repetitions": 50,
+          "diagnostic_only": true
+        }
+      ],
+      "log_sha256": "a86bf70bd8af3d2790106cbb2637c4067cbed2d936c78ad6547b6eda6fa6908f"
+    },
+    "free-mixed": {
+      "metadata": {
+        "gpu": "NVIDIA GeForce RTX 4090",
+        "operator": "double",
+        "preconditioner_storage": "float",
+        "preconditioner_arithmetic": "float",
+        "outer_vectors_and_reductions": "double",
+        "cuda_graph": true,
+        "device_context_upload_graph_ms": 151.322241,
+        "rows": 35616,
+        "free": true,
+        "levels": 3,
+        "scope": "offline CPU-built hierarchy; no game integration"
+      },
+      "trials": [
+        {
+          "trial": 0,
+          "passed": true,
+          "iterations": 30,
+          "submitted": 32,
+          "cuda_solve_ms": 6.228608,
+          "wall_solve_ms": 6.237781,
+          "force_residual": 1.64165566337e-11,
+          "moment_residual": 2.0273360941e-11,
+          "bond_relative_error": 6.08650157231e-14,
+          "bond_max_error_over_peak": 7.50635553056e-14,
+          "recurrence_relative_residual": 9.57763346324e-11,
+          "failed": 0
+        },
+        {
+          "trial": 1,
+          "passed": true,
+          "iterations": 30,
+          "submitted": 32,
+          "cuda_solve_ms": 6.215552,
+          "wall_solve_ms": 6.222773,
+          "force_residual": 1.64165566337e-11,
+          "moment_residual": 2.0273360941e-11,
+          "bond_relative_error": 6.08650157231e-14,
+          "bond_max_error_over_peak": 7.50635553056e-14,
+          "recurrence_relative_residual": 9.57763346324e-11,
+          "failed": 0
+        },
+        {
+          "trial": 2,
+          "passed": true,
+          "iterations": 30,
+          "submitted": 32,
+          "cuda_solve_ms": 6.208992,
+          "wall_solve_ms": 6.215521,
+          "force_residual": 1.64165566337e-11,
+          "moment_residual": 2.0273360941e-11,
+          "bond_relative_error": 6.08650157231e-14,
+          "bond_max_error_over_peak": 7.50635553056e-14,
+          "recurrence_relative_residual": 9.57763346324e-11,
+          "failed": 0
+        },
+        {
+          "trial": 3,
+          "passed": true,
+          "iterations": 30,
+          "submitted": 32,
+          "cuda_solve_ms": 6.213984,
+          "wall_solve_ms": 6.219988,
+          "force_residual": 1.64165566337e-11,
+          "moment_residual": 2.0273360941e-11,
+          "bond_relative_error": 6.08650157231e-14,
+          "bond_max_error_over_peak": 7.50635553056e-14,
+          "recurrence_relative_residual": 9.57763346324e-11,
+          "failed": 0
+        }
+      ],
+      "median_warm_cuda_ms": 6.213984,
+      "phases": [
+        {
+          "phase": "preconditioner",
+          "cuda_ms": 0.149831682,
+          "graph_nodes": 41,
+          "repetitions": 50,
+          "diagnostic_only": true
+        },
+        {
+          "phase": "physical_operator",
+          "cuda_ms": 0.03364864,
+          "graph_nodes": 4,
+          "repetitions": 50,
+          "diagnostic_only": true
+        },
+        {
+          "phase": "dot_and_scalar_update",
+          "cuda_ms": 0.00466816,
+          "graph_nodes": 2,
+          "repetitions": 50,
+          "diagnostic_only": true
+        },
+        {
+          "phase": "solution_and_residual_update",
+          "cuda_ms": 0.00188416,
+          "graph_nodes": 1,
+          "repetitions": 50,
+          "diagnostic_only": true
+        },
+        {
+          "phase": "search_direction_update",
+          "cuda_ms": 0.00168192,
+          "graph_nodes": 1,
+          "repetitions": 50,
+          "diagnostic_only": true
+        }
+      ],
+      "log_sha256": "80fd504a691e4f05144a67555829c492735aeed4992ee0dfcee0159d1dcf99b6"
+    },
+    "reused-mixed": {
+      "metadata": {
+        "gpu": "NVIDIA GeForce RTX 4090",
+        "operator": "double",
+        "preconditioner_storage": "float",
+        "preconditioner_arithmetic": "float",
+        "outer_vectors_and_reductions": "double",
+        "cuda_graph": true,
+        "device_context_upload_graph_ms": 154.392827,
+        "rows": 35616,
+        "free": true,
+        "levels": 3,
+        "scope": "offline CPU-built hierarchy; no game integration"
+      },
+      "trials": [
+        {
+          "trial": 0,
+          "passed": true,
+          "iterations": 53,
+          "submitted": 56,
+          "cuda_solve_ms": 10.885856,
+          "wall_solve_ms": 10.894866,
+          "force_residual": 1.28079076162e-11,
+          "moment_residual": 1.599281853e-11,
+          "bond_relative_error": 1.89077981111e-11,
+          "bond_max_error_over_peak": 4.43792745553e-11,
+          "recurrence_relative_residual": 7.57271867091e-11,
+          "failed": 0
+        },
+        {
+          "trial": 1,
+          "passed": true,
+          "iterations": 53,
+          "submitted": 56,
+          "cuda_solve_ms": 10.863552,
+          "wall_solve_ms": 10.871191,
+          "force_residual": 1.28079076162e-11,
+          "moment_residual": 1.599281853e-11,
+          "bond_relative_error": 1.89077981111e-11,
+          "bond_max_error_over_peak": 4.43792745553e-11,
+          "recurrence_relative_residual": 7.57271867091e-11,
+          "failed": 0
+        },
+        {
+          "trial": 2,
+          "passed": true,
+          "iterations": 53,
+          "submitted": 56,
+          "cuda_solve_ms": 10.883776,
+          "wall_solve_ms": 10.890778,
+          "force_residual": 1.28079076162e-11,
+          "moment_residual": 1.599281853e-11,
+          "bond_relative_error": 1.89077981111e-11,
+          "bond_max_error_over_peak": 4.43792745553e-11,
+          "recurrence_relative_residual": 7.57271867091e-11,
+          "failed": 0
+        },
+        {
+          "trial": 3,
+          "passed": true,
+          "iterations": 53,
+          "submitted": 56,
+          "cuda_solve_ms": 10.85984,
+          "wall_solve_ms": 10.865982,
+          "force_residual": 1.28079076162e-11,
+          "moment_residual": 1.599281853e-11,
+          "bond_relative_error": 1.89077981111e-11,
+          "bond_max_error_over_peak": 4.43792745553e-11,
+          "recurrence_relative_residual": 7.57271867091e-11,
+          "failed": 0
+        }
+      ],
+      "median_warm_cuda_ms": 10.863552,
+      "phases": [],
+      "log_sha256": "c712c46a04c2a51dd465dcc541d9a04d7c8101ec38930d7c38da1716406ed0e5"
+    },
+    "large-load-mixed": {
+      "metadata": {
+        "gpu": "NVIDIA GeForce RTX 4090",
+        "operator": "double",
+        "preconditioner_storage": "float",
+        "preconditioner_arithmetic": "float",
+        "outer_vectors_and_reductions": "double",
+        "cuda_graph": true,
+        "device_context_upload_graph_ms": 154.979011,
+        "rows": 35616,
+        "free": true,
+        "levels": 3,
+        "scope": "offline CPU-built hierarchy; no game integration"
+      },
+      "trials": [
+        {
+          "trial": 0,
+          "passed": true,
+          "iterations": 30,
+          "submitted": 32,
+          "cuda_solve_ms": 6.231424,
+          "wall_solve_ms": 6.240918,
+          "force_residual": 1.64176086757e-11,
+          "moment_residual": 2.02740950602e-11,
+          "bond_relative_error": 5.73520083133e-14,
+          "bond_max_error_over_peak": 5.35243280278e-14,
+          "recurrence_relative_residual": 9.57763534095e-11,
+          "failed": 0
+        },
+        {
+          "trial": 1,
+          "passed": true,
+          "iterations": 30,
+          "submitted": 32,
+          "cuda_solve_ms": 6.21472,
+          "wall_solve_ms": 6.222814,
+          "force_residual": 1.64176086757e-11,
+          "moment_residual": 2.02740950602e-11,
+          "bond_relative_error": 5.73520083133e-14,
+          "bond_max_error_over_peak": 5.35243280278e-14,
+          "recurrence_relative_residual": 9.57763534095e-11,
+          "failed": 0
+        },
+        {
+          "trial": 2,
+          "passed": true,
+          "iterations": 30,
+          "submitted": 32,
+          "cuda_solve_ms": 6.219328,
+          "wall_solve_ms": 6.225429,
+          "force_residual": 1.64176086757e-11,
+          "moment_residual": 2.02740950602e-11,
+          "bond_relative_error": 5.73520083133e-14,
+          "bond_max_error_over_peak": 5.35243280278e-14,
+          "recurrence_relative_residual": 9.57763534095e-11,
+          "failed": 0
+        },
+        {
+          "trial": 3,
+          "passed": true,
+          "iterations": 30,
+          "submitted": 32,
+          "cuda_solve_ms": 6.211072,
+          "wall_solve_ms": 6.217013,
+          "force_residual": 1.64176086757e-11,
+          "moment_residual": 2.02740950602e-11,
+          "bond_relative_error": 5.73520083133e-14,
+          "bond_max_error_over_peak": 5.35243280278e-14,
+          "recurrence_relative_residual": 9.57763534095e-11,
+          "failed": 0
+        }
+      ],
+      "median_warm_cuda_ms": 6.21472,
+      "phases": [],
+      "log_sha256": "e99947e3e5b99c49b85d7766e66acd938435e71ff8e99cc84f704f33070cdd06"
+    },
+    "small-load-mixed": {
+      "metadata": {
+        "gpu": "NVIDIA GeForce RTX 4090",
+        "operator": "double",
+        "preconditioner_storage": "float",
+        "preconditioner_arithmetic": "float",
+        "outer_vectors_and_reductions": "double",
+        "cuda_graph": true,
+        "device_context_upload_graph_ms": 156.877621,
+        "rows": 35616,
+        "free": true,
+        "levels": 3,
+        "scope": "offline CPU-built hierarchy; no game integration"
+      },
+      "trials": [
+        {
+          "trial": 0,
+          "passed": true,
+          "iterations": 30,
+          "submitted": 32,
+          "cuda_solve_ms": 6.229824,
+          "wall_solve_ms": 6.238463,
+          "force_residual": 1.64176860599e-11,
+          "moment_residual": 2.02743169855e-11,
+          "bond_relative_error": 5.84156823962e-14,
+          "bond_max_error_over_peak": 5.92147041875e-14,
+          "recurrence_relative_residual": 9.57762935418e-11,
+          "failed": 0
+        },
+        {
+          "trial": 1,
+          "passed": true,
+          "iterations": 30,
+          "submitted": 32,
+          "cuda_solve_ms": 6.212416,
+          "wall_solve_ms": 6.219969,
+          "force_residual": 1.64176860599e-11,
+          "moment_residual": 2.02743169855e-11,
+          "bond_relative_error": 5.84156823962e-14,
+          "bond_max_error_over_peak": 5.92147041875e-14,
+          "recurrence_relative_residual": 9.57762935418e-11,
+          "failed": 0
+        },
+        {
+          "trial": 2,
+          "passed": true,
+          "iterations": 30,
+          "submitted": 32,
+          "cuda_solve_ms": 6.205344,
+          "wall_solve_ms": 6.211282,
+          "force_residual": 1.64176860599e-11,
+          "moment_residual": 2.02743169855e-11,
+          "bond_relative_error": 5.84156823962e-14,
+          "bond_max_error_over_peak": 5.92147041875e-14,
+          "recurrence_relative_residual": 9.57762935418e-11,
+          "failed": 0
+        },
+        {
+          "trial": 3,
+          "passed": true,
+          "iterations": 30,
+          "submitted": 32,
+          "cuda_solve_ms": 6.207936,
+          "wall_solve_ms": 6.213767,
+          "force_residual": 1.64176860599e-11,
+          "moment_residual": 2.02743169855e-11,
+          "bond_relative_error": 5.84156823962e-14,
+          "bond_max_error_over_peak": 5.92147041875e-14,
+          "recurrence_relative_residual": 9.57762935418e-11,
+          "failed": 0
+        }
+      ],
+      "median_warm_cuda_ms": 6.207936,
+      "phases": [],
+      "log_sha256": "812f2253f1084cf06a3b92f41f13e0b3d55b8b281a9a717f7d3cecde09a8248a"
+    }
+  },
+  "incomplete_solve_rejected": {
+    "trial": 0,
+    "passed": false,
+    "iterations": 1,
+    "submitted": 1,
+    "cuda_solve_ms": 0.349344,
+    "wall_solve_ms": 0.358238,
+    "force_residual": 20.4194436638,
+    "moment_residual": 11.8653247688,
+    "bond_relative_error": 0.407430466246,
+    "bond_max_error_over_peak": 0.55935999962,
+    "recurrence_relative_residual": 67.764392153,
+    "failed": 0
+  },
+  "memcheck": {
+    "errors": 0,
+    "leaked_bytes": 0,
+    "timings_excluded": true
+  },
+  "fixtures_reproduced_byte_for_byte": 5,
+  "deployment_eligible": false
+}

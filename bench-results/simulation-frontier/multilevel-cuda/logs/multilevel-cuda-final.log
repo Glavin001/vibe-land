@@ -1,0 +1,19 @@
+Running anchored-double-v3
+anchored-double-v3 exit 0 expected 0
+Running anchored-mixed-v3
+anchored-mixed-v3 exit 0 expected 0
+Running free-double-v3
+free-double-v3 exit 0 expected 0
+Running free-mixed-v3
+free-mixed-v3 exit 0 expected 0
+Running reused-mixed-v3
+reused-mixed-v3 exit 0 expected 0
+Running large-load-mixed-v3
+large-load-mixed-v3 exit 0 expected 0
+Running small-load-mixed-v3
+small-load-mixed-v3 exit 0 expected 0
+Running incomplete-negative-control-v3
+incomplete-negative-control-v3 exit 1 expected 1
+Running memcheck-v3
+memcheck-v3 exit 0 expected 0
+Original city deployment restored and healthy

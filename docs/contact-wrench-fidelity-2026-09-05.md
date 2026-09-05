@@ -149,11 +149,12 @@ On the exported building, with a stricter 1e-10 iterative tolerance:
 | Released building, varied forces and torques | 30 | 1.64e-11 / 2.03e-11 |
 | Released building, gravity | 0 internal iterations | 8.26e-14 / 3.30e-18 |
 
-These are numerical results, **not GPU speed measurements**. Setup, storage,
-FP32/mixed precision, damage updates, warm starts, device execution and real
-fracture outcomes still need implementation and qualification. Equilibrium
-alone also does not certify constitutive response or the distribution of bond
-stresses in a redundant structure.
+These CPU results are **not GPU speed measurements**. A subsequent
+[standalone CUDA proof](multilevel-cuda-proof-2026-09-05.md) implements and tests
+mixed-precision device solving on the same building. Production setup, damage
+updates, warm starts, game integration and real fracture outcomes still require
+implementation and qualification. Equilibrium alone also does not certify
+constitutive response or the distribution of bond stresses in a redundant structure.
 
 ## Evidence and remaining limits
 

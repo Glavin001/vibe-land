@@ -1,0 +1,362 @@
+[
+  {
+    "file": ".gitattributes",
+    "bytes": 83,
+    "sha256": "f1d1460c16aabcf580ecb63f1afd76103880bc6e42a8abda6faa55a7ead3d934"
+  },
+  {
+    "file": "README.md",
+    "bytes": 1955,
+    "sha256": "89ad4f4084655f24dab95100f874dfb8588c9106d9459ce0c88f0048bb3ae160"
+  },
+  {
+    "file": "anchored-fixture.json",
+    "bytes": 968,
+    "sha256": "db147f1caa85adc87f3a4574f91ec471860154989ee30c8911d21c3db057c234"
+  },
+  {
+    "file": "committed-source.json",
+    "bytes": 165,
+    "sha256": "6a007b5f725bd0a8671c2b5ca6f5602161fe045598c2414d64b86b360e13be47"
+  },
+  {
+    "file": "fixtures.json",
+    "bytes": 1594,
+    "sha256": "c67ed21179bf8e1b167f16d4bd9cadf35749bc181651553ade1ca253412ae46e"
+  },
+  {
+    "file": "free-fixture.json",
+    "bytes": 963,
+    "sha256": "f1a3ee7369892bd68b925787ae731d2ebdbb1c4c1282c32bf39d45ce460db89d"
+  },
+  {
+    "file": "large-load-fixture.json",
+    "bytes": 1030,
+    "sha256": "f8d3771ffc755cc3aaa98cc8d147874cd702c283b0c89bc7b8a0fe46c5530301"
+  },
+  {
+    "file": "live-preserved.json",
+    "bytes": 238,
+    "sha256": "555ffe94765e670f26cc2deaecc5b30f465de666179dd4b5227ea5caec53d649"
+  },
+  {
+    "file": "logs/multilevel-anchored-building.log",
+    "bytes": 2465,
+    "sha256": "740a57ae38679c1857b6fa055c1b656a9f1152c07d1ed7cf65ed974d9da427a0"
+  },
+  {
+    "file": "logs/multilevel-anchored-export.log",
+    "bytes": 968,
+    "sha256": "db147f1caa85adc87f3a4574f91ec471860154989ee30c8911d21c3db057c234"
+  },
+  {
+    "file": "logs/multilevel-cuda-anchored-double-no-graph.log",
+    "bytes": 1581,
+    "sha256": "8e5d9c387d49b2efb361bebb60a43e46a6fdfe2cfe8fc07e07e55170acff3d0d"
+  },
+  {
+    "file": "logs/multilevel-cuda-anchored-double-v1.log",
+    "bytes": 1621,
+    "sha256": "874adc6c0562a8b7b16556f0ba97c024f34c91fbe511c7eaa0bb8ac1ed683e5d"
+  },
+  {
+    "file": "logs/multilevel-cuda-anchored-double-v2.log",
+    "bytes": 2182,
+    "sha256": "458039fb20bc7aa1845038d9e29c318c5c701dc619478eeafad5cdfc8565eb87"
+  },
+  {
+    "file": "logs/multilevel-cuda-anchored-double-v3.log",
+    "bytes": 2182,
+    "sha256": "7727f8a1854bcb7c983f475f1952d3911cdb5e64f31eedfcaa055147884bea9e"
+  },
+  {
+    "file": "logs/multilevel-cuda-anchored-double.log",
+    "bytes": 1626,
+    "sha256": "7aff94726fe8e2bd0be4b6ff80e9d79653e723300200d0f65f9d8f860ba258c5"
+  },
+  {
+    "file": "logs/multilevel-cuda-anchored-float-storage.log",
+    "bytes": 1579,
+    "sha256": "f980e90cb3f3676d556cb8695b4113a1ecf72e83607f2089d83b733fb226840e"
+  },
+  {
+    "file": "logs/multilevel-cuda-anchored-mixed-v1.log",
+    "bytes": 1603,
+    "sha256": "d728a6e5fc0dd7b386a91e5e97e3cfa98ffd4e764d166e0bdb6db77734963687"
+  },
+  {
+    "file": "logs/multilevel-cuda-anchored-mixed-v2.log",
+    "bytes": 2164,
+    "sha256": "1f3ac2a21064857ed4cae17ceba712c12bca2dacf14b196325dfef3974cfe7bc"
+  },
+  {
+    "file": "logs/multilevel-cuda-anchored-mixed-v3.log",
+    "bytes": 2172,
+    "sha256": "838af9a8f7cb9c78bdd48d8ebe58bba55512570224ce5462ad0cddf4cbbc635d"
+  },
+  {
+    "file": "logs/multilevel-cuda-build.log",
+    "bytes": 185,
+    "sha256": "e43faa917c78c2cf6c58c350004d1452921fff8a54d432d71462606d4ff25104"
+  },
+  {
+    "file": "logs/multilevel-cuda-checks.log",
+    "bytes": 152,
+    "sha256": "7fadd6ccf0ac0884d4d63234901171bfe32bea83be5328b9e8d2ba023003cbe9"
+  },
+  {
+    "file": "logs/multilevel-cuda-comparison.log",
+    "bytes": 133,
+    "sha256": "002445160d88a52719be6c1d9a296eb4dc9211d40dadf139ff2ca4c26692c6b8"
+  },
+  {
+    "file": "logs/multilevel-cuda-configure.log",
+    "bytes": 171,
+    "sha256": "9c210c6c5bfefcd279816d51e949755c88d780af38dd89b5d265c4fa869f3f1a"
+  },
+  {
+    "file": "logs/multilevel-cuda-csr-profile.log",
+    "bytes": 1199,
+    "sha256": "2a4bd046cb18e34a45ba9bbc6adae40f959fc15287733dd0b1a5f7596498ea8f"
+  },
+  {
+    "file": "logs/multilevel-cuda-final.log",
+    "bytes": 610,
+    "sha256": "0a3d2d8d86145f4568fa947dd829707d2afa653e9c7676735c0f201193c8a248"
+  },
+  {
+    "file": "logs/multilevel-cuda-free-double-v1.log",
+    "bytes": 1604,
+    "sha256": "deaad87643d367e982fb9670a5f2c8caddfb17e9e25ac48b24b2e828774c71d6"
+  },
+  {
+    "file": "logs/multilevel-cuda-free-double-v2.log",
+    "bytes": 2165,
+    "sha256": "e6e34c65aeed3c2e5ad8d661e7617b02853ee95f643608128c087a92b35ad3f2"
+  },
+  {
+    "file": "logs/multilevel-cuda-free-double-v3.log",
+    "bytes": 2165,
+    "sha256": "a86bf70bd8af3d2790106cbb2637c4067cbed2d936c78ad6547b6eda6fa6908f"
+  },
+  {
+    "file": "logs/multilevel-cuda-free-double.log",
+    "bytes": 1563,
+    "sha256": "4913e773213a9fc5622fc968617cb4fffcfab910c25cc3332b42667f63b881b9"
+  },
+  {
+    "file": "logs/multilevel-cuda-free-float-storage.log",
+    "bytes": 1578,
+    "sha256": "8cd7d752e98e5f19e6022c38734c86ed505d423c0eee870bfda6e7457ac97266"
+  },
+  {
+    "file": "logs/multilevel-cuda-free-mixed-v1.log",
+    "bytes": 1610,
+    "sha256": "aaf050690c08448bba6d9b57f359f7da4207c4c4926861c05ac665ff00da6b61"
+  },
+  {
+    "file": "logs/multilevel-cuda-free-mixed-v2.log",
+    "bytes": 2171,
+    "sha256": "8097d71e49fe0d386c223c0619299cec02e07e97695ea930b509980f6c12e887"
+  },
+  {
+    "file": "logs/multilevel-cuda-free-mixed-v3.log",
+    "bytes": 2167,
+    "sha256": "80fd504a691e4f05144a67555829c492735aeed4992ee0dfcee0159d1dcf99b6"
+  },
+  {
+    "file": "logs/multilevel-cuda-incomplete-negative-control-v3.log",
+    "bytes": 623,
+    "sha256": "ffb48a51444f76c0997e27386eafcce7b427967695287b61a4dce8acc87f69a5"
+  },
+  {
+    "file": "logs/multilevel-cuda-large-load-mixed-v3.log",
+    "bytes": 1612,
+    "sha256": "e99947e3e5b99c49b85d7766e66acd938435e71ff8e99cc84f704f33070cdd06"
+  },
+  {
+    "file": "logs/multilevel-cuda-memcheck-v3.log",
+    "bytes": 765,
+    "sha256": "c9a44cc6602e8af8b386e58e164f30ffc6559d465e5ba731a09758addb5b2973"
+  },
+  {
+    "file": "logs/multilevel-cuda-memcheck.log",
+    "bytes": 763,
+    "sha256": "556f5304de267667f95be791ee4dcfb1b2ab6b799335798fe1eaa760e2380a23"
+  },
+  {
+    "file": "logs/multilevel-cuda-mixed-build.log",
+    "bytes": 185,
+    "sha256": "e43faa917c78c2cf6c58c350004d1452921fff8a54d432d71462606d4ff25104"
+  },
+  {
+    "file": "logs/multilevel-cuda-mixed-comparison.log",
+    "bytes": 120,
+    "sha256": "1749b7e279d66ec5c66d98e24af713ef4e21a9e6a05aaf29160aba4888142d9a"
+  },
+  {
+    "file": "logs/multilevel-cuda-phase-build.log",
+    "bytes": 185,
+    "sha256": "e43faa917c78c2cf6c58c350004d1452921fff8a54d432d71462606d4ff25104"
+  },
+  {
+    "file": "logs/multilevel-cuda-phases.log",
+    "bytes": 120,
+    "sha256": "ff2925e865c8bcc2a7ac70fbdf687671242454a5758a833b7666eb5b0ed2b67d"
+  },
+  {
+    "file": "logs/multilevel-cuda-reused-hierarchy.log",
+    "bytes": 1614,
+    "sha256": "abc0189d97d31d5cf4935bbac541e1a81902ca364bc4bd77b90afe368c3b62b4"
+  },
+  {
+    "file": "logs/multilevel-cuda-reused-mixed-v3.log",
+    "bytes": 1612,
+    "sha256": "c712c46a04c2a51dd465dcc541d9a04d7c8101ec38930d7c38da1716406ed0e5"
+  },
+  {
+    "file": "logs/multilevel-cuda-scaled-build.log",
+    "bytes": 185,
+    "sha256": "e43faa917c78c2cf6c58c350004d1452921fff8a54d432d71462606d4ff25104"
+  },
+  {
+    "file": "logs/multilevel-cuda-small-load-mixed-v3.log",
+    "bytes": 1612,
+    "sha256": "812f2253f1084cf06a3b92f41f13e0b3d55b8b281a9a717f7d3cecde09a8248a"
+  },
+  {
+    "file": "logs/multilevel-final-reference-tests.log",
+    "bytes": 842,
+    "sha256": "37cb37efa5a555c00adfa2fd2ea2cf161318407f748e055a422dfcec0ca91057"
+  },
+  {
+    "file": "logs/multilevel-fixture-reproduction.log",
+    "bytes": 1330,
+    "sha256": "bba16e9e6ba5bb6f554385398175e4dd90303c0f49f3353c6df38c1c79c32e75"
+  },
+  {
+    "file": "logs/multilevel-free-building-gravity.log",
+    "bytes": 418,
+    "sha256": "402328c8439d27a8b1b50c8e739746c1546e824ab0963d090b064218b0e2ede1"
+  },
+  {
+    "file": "logs/multilevel-free-building-random.log",
+    "bytes": 775,
+    "sha256": "c9e9dede7aee0f551699bbf4c1022835b94618c8ff30b95d9f5ae2ad392093fc"
+  },
+  {
+    "file": "logs/multilevel-free-export.log",
+    "bytes": 963,
+    "sha256": "f1a3ee7369892bd68b925787ae731d2ebdbb1c4c1282c32bf39d45ce460db89d"
+  },
+  {
+    "file": "logs/multilevel-free-fixtures.log",
+    "bytes": 843,
+    "sha256": "18d0dcbb93e4131c7a779ea2c7820e89aedc3cca818a167afe38af916009f3f9"
+  },
+  {
+    "file": "logs/multilevel-large-load-export.log",
+    "bytes": 1030,
+    "sha256": "f8d3771ffc755cc3aaa98cc8d147874cd702c283b0c89bc7b8a0fe46c5530301"
+  },
+  {
+    "file": "logs/multilevel-large-load-initial-failed.log",
+    "bytes": 1953,
+    "sha256": "846b17e5d6da073230f2c6989290d187508740a13aa0f2a6127c31ee9adee662"
+  },
+  {
+    "file": "logs/multilevel-reproduce-anchored.log",
+    "bytes": 1029,
+    "sha256": "bedaf7f2d05a34516520272884826a0a6d5aaea2d860db057ae9d38256f123ce"
+  },
+  {
+    "file": "logs/multilevel-reproduce-free.log",
+    "bytes": 1028,
+    "sha256": "87185aeb5229fcaf9c2e6a4496d3e662a3ae5f9fad9923ada86c47c15c69526c"
+  },
+  {
+    "file": "logs/multilevel-reproduce-large-load.log",
+    "bytes": 1030,
+    "sha256": "d9ca264fdab31dbc75b4bdf18e370c880974b267eca21b9d214e775ddb81c2ce"
+  },
+  {
+    "file": "logs/multilevel-reproduce-reused.log",
+    "bytes": 1027,
+    "sha256": "cb7744d153e1a09cb296e560af296b4b1016342094547120d8454a1b260f0523"
+  },
+  {
+    "file": "logs/multilevel-reproduce-small-load.log",
+    "bytes": 1028,
+    "sha256": "5bc05ccfe7ad8700f8d29fecf4aa5f03dd60cda87295a47005f9f1755572150a"
+  },
+  {
+    "file": "logs/multilevel-reused-export.log",
+    "bytes": 1002,
+    "sha256": "b32556f0465f2227143af262cb0e0addded0af1e417d97ba44cd6b0a73ceae82"
+  },
+  {
+    "file": "logs/multilevel-small-load-export.log",
+    "bytes": 1029,
+    "sha256": "05eeb23fb1501fea6ce04e973e8ed33782d5591ec4426d59d5833bb7995c872b"
+  },
+  {
+    "file": "qualification-decision.json",
+    "bytes": 737,
+    "sha256": "b3dc14de252706659706f9ac6692fc5f76998812803d7170142be32192521a19"
+  },
+  {
+    "file": "reproduce-fixtures.py",
+    "bytes": 1416,
+    "sha256": "b1dab566a0906da5b4455ecd69f2f75e6a8cca6402d50bb2f3de74eaf7d06c96"
+  },
+  {
+    "file": "reused-fixture.json",
+    "bytes": 1002,
+    "sha256": "b32556f0465f2227143af262cb0e0addded0af1e417d97ba44cd6b0a73ceae82"
+  },
+  {
+    "file": "run-final.py",
+    "bytes": 1337,
+    "sha256": "42a47eb5e57dd009b4474cd5a7bd890f92918b4218301723529e68cf145cb078"
+  },
+  {
+    "file": "small-load-fixture.json",
+    "bytes": 1029,
+    "sha256": "05eeb23fb1501fea6ce04e973e8ed33782d5591ec4426d59d5833bb7995c872b"
+  },
+  {
+    "file": "source-v0.json",
+    "bytes": 658,
+    "sha256": "762516f8d882a9003d51d2ca1ebfed202a0b35a0feedc574ab48bfb08d720c2c"
+  },
+  {
+    "file": "source-v0.tar.gz",
+    "bytes": 18480,
+    "sha256": "e4fc1c94d0012bc9d443e80a15e47f58b5f1a7afffdf445f16797fe6ef72b38b"
+  },
+  {
+    "file": "source-v1.json",
+    "bytes": 695,
+    "sha256": "a4805dc7849c6257f58a3b01811985ea7682c209ac4ffb6524f34f8034b28cc6"
+  },
+  {
+    "file": "source-v1.tar.gz",
+    "bytes": 18903,
+    "sha256": "f68091b764b39e4862507f6beb118331e297cc87960bf74bf4b8b7113e041a6a"
+  },
+  {
+    "file": "source-v3.json",
+    "bytes": 1107,
+    "sha256": "3de7ed56c5acdac09b284f0184bd52338fd9cf96416d57e02fabeace1e294619"
+  },
+  {
+    "file": "summarize.py",
+    "bytes": 2084,
+    "sha256": "a84517925e32b068ec9d6af93b685622e1736979e401e3507f33a1b69e9cd658"
+  },
+  {
+    "file": "summary.json",
+    "bytes": 22685,
+    "sha256": "33685d649dc29af740b390265bc7608e9a0f730cb93f84e66fb4709f1c304c3c"
+  }
+]

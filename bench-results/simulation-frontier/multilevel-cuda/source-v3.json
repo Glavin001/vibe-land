@@ -1,0 +1,20 @@
+{
+  "stage": "v3 normalized mixed-precision preconditioner with zero-state work removed",
+  "source": {
+    "demos/blast-stress-demo/CMakeLists.txt": "48c8bbc4cf4aaa43859415ddf2cb10ffb855c9a9c6e9ce880528ef1479bb285f",
+    "demos/blast-stress-demo/tests/export_multilevel.py": "d4a34b739b28712c97461554fa8c0bd206b71d4bfa513fb0b85f5672e96a9fcf",
+    "demos/blast-stress-demo/tests/multilevel_gpu_test.cu": "91011b7806eddfd51a725ebf74569e9b331a163dc628adf1b7f0dfef6e04d4ef",
+    "demos/blast-stress-demo/tests/multilevel_reference.py": "2f296468a40cfd49efa3630cd777affe7c79818d4d7e86757e689841471a430c"
+  },
+  "binary": {
+    "path": "/root/workspace/blast-stress-solver-2/demos/blast-stress-demo/build-gpu-activity/multilevel_gpu_test",
+    "sha256": "19702e1fcd79b319bf0bed43fe020d77d9d93cf26dc5dd0c9407a497ae5c5510"
+  },
+  "python": "3.12.3 (main, Jun 19 2026, 12:46:00) [GCC 13.3.0]",
+  "numpy": "2.5.1",
+  "scipy": "1.18.0",
+  "source_parent": "a03c9727645891b18aa29e2e3af78444d6f9e2cc",
+  "cuda": "12.8",
+  "gpu": "RTX 4090",
+  "scope": "Standalone CUDA proof only; no game integration or deployment."
+}

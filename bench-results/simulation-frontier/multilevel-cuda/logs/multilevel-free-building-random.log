@@ -1,0 +1,38 @@
+{
+  "components": [
+    {
+      "nodes": 5936,
+      "free": true,
+      "iterations": 30,
+      "null_error": 5.393943736192427e-18,
+      "levels": [
+        {
+          "blocks": 5936,
+          "nnz": 827552,
+          "coarse_blocks": 913
+        },
+        {
+          "blocks": 913,
+          "nnz": 982836,
+          "coarse_blocks": 120
+        },
+        {
+          "blocks": 120,
+          "nnz": 233928,
+          "coarse_blocks": 17
+        }
+      ],
+      "setup_seconds": 0.5081243542954326
+    }
+  ],
+  "residual": {
+    "force": 1.6417774407535804e-11,
+    "moment": 2.0274356616937757e-11
+  },
+  "cpu_seconds": 0.8254221864044666,
+  "active_nodes": 5936,
+  "bonds": 18564,
+  "released": true,
+  "loads": "random",
+  "scope": "CPU/double reference only"
+}

@@ -1,0 +1,10 @@
+{"gpu":"NVIDIA GeForce RTX 4090","operator":"double","preconditioner_storage":"float","preconditioner_arithmetic":"float","outer_vectors_and_reductions":"double","cuda_graph":true,"device_context_upload_graph_ms":157.131654,"rows":35616,"free":false,"levels":3,"scope":"offline CPU-built hierarchy; no game integration"}
+{"trial":0,"passed":true,"iterations":33,"submitted":40,"cuda_solve_ms":5.871744,"wall_solve_ms":5.880796,"force_residual":1.56221973994e-11,"moment_residual":1.87931103076e-11,"bond_relative_error":8.01539259616e-14,"bond_max_error_over_peak":6.53560412036e-14,"recurrence_relative_residual":9.65111353039e-11,"failed":0}
+{"trial":1,"passed":true,"iterations":33,"submitted":40,"cuda_solve_ms":5.856224,"wall_solve_ms":5.864326,"force_residual":1.56221973994e-11,"moment_residual":1.87931103076e-11,"bond_relative_error":8.01539259616e-14,"bond_max_error_over_peak":6.53560412036e-14,"recurrence_relative_residual":9.65111353039e-11,"failed":0}
+{"trial":2,"passed":true,"iterations":33,"submitted":40,"cuda_solve_ms":5.844448,"wall_solve_ms":5.850539,"force_residual":1.56221973994e-11,"moment_residual":1.87931103076e-11,"bond_relative_error":8.01539259616e-14,"bond_max_error_over_peak":6.53560412036e-14,"recurrence_relative_residual":9.65111353039e-11,"failed":0}
+{"trial":3,"passed":true,"iterations":33,"submitted":40,"cuda_solve_ms":5.851072,"wall_solve_ms":5.857242,"force_residual":1.56221973994e-11,"moment_residual":1.87931103076e-11,"bond_relative_error":8.01539259616e-14,"bond_max_error_over_peak":6.53560412036e-14,"recurrence_relative_residual":9.65111353039e-11,"failed":0}
+{"phase":"preconditioner","cuda_ms":0.125393927,"graph_nodes":35,"repetitions":50,"diagnostic_only":true}
+{"phase":"physical_operator","cuda_ms":0.020689281,"graph_nodes":1,"repetitions":50,"diagnostic_only":true}
+{"phase":"dot_and_scalar_update","cuda_ms":0.004648960,"graph_nodes":2,"repetitions":50,"diagnostic_only":true}
+{"phase":"solution_and_residual_update","cuda_ms":0.001884160,"graph_nodes":1,"repetitions":50,"diagnostic_only":true}
+{"phase":"search_direction_update","cuda_ms":0.001679360,"graph_nodes":1,"repetitions":50,"diagnostic_only":true}

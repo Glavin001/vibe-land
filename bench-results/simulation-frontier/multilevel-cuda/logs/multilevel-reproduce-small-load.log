@@ -1,0 +1,38 @@
+{
+  "file": "/tmp/multilevel-reproduced.bin",
+  "sha256": "153b9af84d647f99aeada4aebffff6fc6f26e10b3825568d6cbc66e17f74e267",
+  "graph": "/root/workspace/vibe-land-4/bench-results/simulation-frontier/contact-wrench/conditioning/single-building.json.gz",
+  "graph_sha256": "aab7d53eaac2f6767a783f5045fb2b84f5ab45c19c045e17077932d44272397f",
+  "active_nodes": 5936,
+  "bonds": 18564,
+  "free": true,
+  "loads": "random",
+  "load_scale": 1e-30,
+  "reused_anchored_hierarchy": false,
+  "offline_cpu_setup_seconds": 0.579415325075388,
+  "levels": [
+    {
+      "blocks": 5936,
+      "nnz": 827552,
+      "coarse_blocks": 913
+    },
+    {
+      "blocks": 913,
+      "nnz": 982836,
+      "coarse_blocks": 120
+    },
+    {
+      "blocks": 120,
+      "nnz": 233928,
+      "coarse_blocks": 17
+    }
+  ],
+  "reference_residual": {
+    "force": 1.6417040108945277e-11,
+    "moment": 2.027345719524421e-11
+  },
+  "reference_iterations": [
+    30
+  ],
+  "scope": "Offline hierarchy fixture only; no runtime topology-update implementation."
+}

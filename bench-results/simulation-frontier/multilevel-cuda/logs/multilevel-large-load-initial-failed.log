@@ -1,0 +1,31 @@
+Traceback (most recent call last):
+  File "/root/workspace/blast-stress-solver-2/demos/blast-stress-demo/tests/export_multilevel.py", line 116, in <module>
+    if __name__=='__main__':main()
+                            ^^^^^^
+  File "/root/workspace/blast-stress-solver-2/demos/blast-stress-demo/tests/export_multilevel.py", line 85, in main
+    expected = solve(graph,force,moment)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/workspace/blast-stress-solver-2/demos/blast-stress-demo/tests/multilevel_reference.py", line 236, in solve
+    np.testing.assert_allclose(predicted[:,3:]*graph.length, acceleration, rtol=1e-10, atol=1e-10)
+  File "/usr/local/lib/python3.12/dist-packages/numpy/testing/_private/utils.py", line 1780, in assert_allclose
+    assert_array_compare(compare, actual, desired, err_msg=str(err_msg),
+  File "/usr/local/lib/python3.12/dist-packages/numpy/testing/_private/utils.py", line 988, in assert_array_compare
+    raise AssertionError(msg)
+AssertionError: 
+Not equal to tolerance rtol=1e-10, atol=1e-10
+
+Mismatched elements: 6 / 17808 (0.0337%)
+First 5 mismatches are at indices:
+ [724, 2]: 7.862937210432408e+23 (ACTUAL), 7.862937200513182e+23 (DESIRED)
+ [726, 2]: 7.862937210432408e+23 (ACTUAL), 7.862937200513182e+23 (DESIRED)
+ [728, 2]: 7.862937210432408e+23 (ACTUAL), 7.862937200513182e+23 (DESIRED)
+ [730, 2]: 7.862937210432408e+23 (ACTUAL), 7.862937200513182e+23 (DESIRED)
+ [732, 2]: 7.862937210432408e+23 (ACTUAL), 7.862937200513182e+23 (DESIRED)
+Max absolute difference among violations: 9.91922563e+14
+Max relative difference among violations: 1.26151658e-09
+ ACTUAL: array([[ 1.974280e+28, -2.595588e+28,  3.779111e+28],
+       [ 1.920705e+28, -2.595588e+28,  3.666027e+28],
+       [ 2.904986e+28, -2.266617e+28,  3.779111e+28],...
+ DESIRED: array([[ 1.974280e+28, -2.595588e+28,  3.779111e+28],
+       [ 1.920705e+28, -2.595588e+28,  3.666027e+28],
+       [ 2.904986e+28, -2.266617e+28,  3.779111e+28],...

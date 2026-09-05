@@ -1,0 +1,7 @@
+PASS free unequal-mass point load: 6 N transmitted, 2 m/s^2 rigid acceleration
+PASS free off-center couple: alpha=2/3 rad/s^2, orbital inertia retained
+PASS free gravity produces rigid acceleration and zero internal bond load
+PASS anchored load retains complete 8 N reaction
+PASS free heterogeneous rod: multilevel bond loads match dense minimum-norm reference {"components": [{"nodes": 40, "free": true, "iterations": 46, "null_error": 2.4351876681127124e-17, "levels": [{"blocks": 40, "nnz": 872, "coarse_blocks": 5}], "setup_seconds": 0.0025579999200999737}], "residual": {"force": 3.739933361308146e-11, "moment": 4.538036780607814e-11}, "cpu_seconds": 0.00992300407961011}
+PASS mixed anchored/free fracture components: independent rigid motion and bond loads
+PASS rotated/translated mixed components preserve force and moment covariance
