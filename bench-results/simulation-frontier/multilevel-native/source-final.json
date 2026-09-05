@@ -1,0 +1,46 @@
+{
+  "solver_parent": "0aba5a3a",
+  "files": [
+    {
+      "path": "blast/source/sdk/extensions/stressgpu/NvBlastExtStressGpuMultilevel.cpp",
+      "sha256": "1a02bb2c64214b2c532223c65ed31f1913be1ae8e28072a188c5cbff8ad6c742"
+    },
+    {
+      "path": "blast/source/sdk/extensions/stressgpu/NvBlastExtStressGpuMultilevel.h",
+      "sha256": "dfac16f819b4f5d5d4749bcf17be655161ad65c5bfaacf820803fb725c1ab3d5"
+    },
+    {
+      "path": "demos/blast-stress-demo/CMakeLists.txt",
+      "sha256": "a45d7ce89bfedc0243f0849006a6233bf9a1e35746aef1bb576f1e86d1bf8112"
+    },
+    {
+      "path": "demos/blast-stress-demo/tests/multilevel_gpu_test.cu",
+      "sha256": "0e76dd4f625715e3cda19689a198f36173a484ab7ee6f8b7d6a994451ccb70f0"
+    },
+    {
+      "path": "demos/blast-stress-demo/tests/multilevel_native_test.cpp",
+      "sha256": "e3ceccbc593aecea4fc0bffa61707559285efa92eaafd435771d557f0329b9e4"
+    },
+    {
+      "path": "demos/blast-stress-demo/tests/multilevel_validation.h",
+      "sha256": "855c63a99be02473657bb1b1d6e9522b282df9417102420005b658bd19686bf3"
+    },
+    {
+      "path": "demos/blast-stress-demo/tests/export_multilevel.py",
+      "sha256": "31d71fc9c23dae5bfa892a28c357575227b817badc3dae3a4410bd7124320ee9"
+    },
+    {
+      "path": "demos/blast-stress-demo/tests/multilevel_reference.py",
+      "sha256": "2f296468a40cfd49efa3630cd777affe7c79818d4d7e86757e689841471a430c"
+    },
+    {
+      "path": "demos/blast-stress-demo/build-gpu-activity/multilevel_gpu_test",
+      "sha256": "a25c1886a9fd9413947582c9bfce79993a5769bca91db7fe83a6d3a65104628b"
+    },
+    {
+      "path": "demos/blast-stress-demo/build-gpu-activity/multilevel_native_test",
+      "sha256": "32ba9b4a0d95b3b4ca26ef7d13fe438656b0efd4e44a0efe7587cc01c7c1b25d"
+    }
+  ],
+  "solver_commit": "24090f328beca783014adc354cadc05342a82ff5"
+}

@@ -1,0 +1,38 @@
+{
+  "file": "/tmp/multilevel-free-gravity.bin",
+  "sha256": "cd9a31aed9e1fb46aa8ca4140077712853fe6e3ecdf53df3822823ca4129c7f7",
+  "graph": "../vibe-land-4/bench-results/simulation-frontier/contact-wrench/conditioning/single-building.json.gz",
+  "graph_sha256": "aab7d53eaac2f6767a783f5045fb2b84f5ab45c19c045e17077932d44272397f",
+  "active_nodes": 5936,
+  "bonds": 18564,
+  "free": true,
+  "loads": "gravity",
+  "load_scale": 1.0,
+  "reused_anchored_hierarchy": false,
+  "offline_cpu_setup_seconds": 0.5753793972544372,
+  "levels": [
+    {
+      "blocks": 5936,
+      "nnz": 827552,
+      "coarse_blocks": 913
+    },
+    {
+      "blocks": 913,
+      "nnz": 982836,
+      "coarse_blocks": 120
+    },
+    {
+      "blocks": 120,
+      "nnz": 233928,
+      "coarse_blocks": 17
+    }
+  ],
+  "reference_residual": {
+    "force": 8.2594326551979e-14,
+    "moment": 3.298261888713302e-18
+  },
+  "reference_iterations": [
+    0
+  ],
+  "scope": "Offline hierarchy fixture only; no runtime topology-update implementation."
+}

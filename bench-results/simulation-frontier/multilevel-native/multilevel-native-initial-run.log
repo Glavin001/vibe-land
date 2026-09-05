@@ -1,0 +1,37 @@
+anchored-python exit 0
+{"gpu":"NVIDIA GeForce RTX 4090","operator":"double","preconditioner_storage":"float","preconditioner_arithmetic":"float","outer_vectors_and_reductions":"double","cuda_graph":true,"device_context_upload_graph_ms":196.057719,"rows":35616,"free":false,"levels":3,"scope":"offline CPU-built hierarchy; no game integration"}
+{"trial":0,"passed":true,"iterations":33,"submitted":40,"cuda_solve_ms":5.856896,"wall_solve_ms":5.865585,"force_residual":1.56221973994e-11,"moment_residual":1.87931103076e-11,"bond_relative_error":8.01539259616e-14,"bond_max_error_over_peak":6.53560412036e-14,"recurrence_relative_residual":9.65111353039e-11,"failed":0}
+{"trial":1,"passed":true,"iterations":33,"submitted":40,"cuda_solve_ms":5.854752,"wall_solve_ms":5.861738,"force_residual":1.56221973994e-11,"moment_residual":1.87931103076e-11,"bond_relative_error":8.01539259616e-14,"bond_max_error_over_peak":6.53560412036e-14,"recurrence_relative_residual":9.65111353039e-11,"failed":0}
+{"trial":2,"passed":true,"iterations":33,"submitted":40,"cuda_solve_ms":5.859008,"wall_solve_ms":5.866918,"force_residual":1.56221973994e-11,"moment_residual":1.87931103076e-11,"bond_relative_error":8.01539259616e-14,"bond_max_error_over_peak":6.53560412036e-14,"recurrence_relative_residual":9.65111353039e-11,"failed":0}
+{"trial":3,"passed":true,"iterations":33,"submitted":40,"cuda_solve_ms":5.852640,"wall_solve_ms":5.859104,"force_residual":1.56221973994e-11,"moment_residual":1.87931103076e-11,"bond_relative_error":8.01539259616e-14,"bond_max_error_over_peak":6.53560412036e-14,"recurrence_relative_residual":9.65111353039e-11,"failed":0}
+
+anchored-native exit 0
+{"native_hierarchy_setup_ms":184.211413,"basis_reconstruction_error":6.30524868645e-17,"levels":3,"coarse_rows":96}
+{"native_level":0,"rows":35616,"nnz":827552,"coarse_rows":5100,"omega":0.362592830966,"eigenvalue_upper_bound":2.75791442797}
+{"native_level":1,"rows":5100,"nnz":890280,"coarse_rows":738,"omega":0.323463091358,"eigenvalue_upper_bound":3.09154282734}
+{"native_level":2,"rows":738,"nnz":225180,"coarse_rows":96,"omega":0.327324714219,"eigenvalue_upper_bound":3.0550702607}
+{"gpu":"NVIDIA GeForce RTX 4090","operator":"double","preconditioner_storage":"float","preconditioner_arithmetic":"float","outer_vectors_and_reductions":"double","cuda_graph":true,"device_context_upload_graph_ms":153.997754,"rows":35616,"free":false,"levels":3,"scope":"offline CPU-built hierarchy; no game integration"}
+{"trial":0,"passed":true,"iterations":48,"submitted":48,"cuda_solve_ms":7.742560,"wall_solve_ms":7.751000,"force_residual":1.24034366964e-11,"moment_residual":1.32229118043e-11,"bond_relative_error":4.82687892083e-13,"bond_max_error_over_peak":4.8125812159e-13,"recurrence_relative_residual":6.77525885061e-11,"failed":0}
+{"trial":1,"passed":true,"iterations":48,"submitted":48,"cuda_solve_ms":7.720544,"wall_solve_ms":7.727837,"force_residual":1.24034366964e-11,"moment_residual":1.32229118043e-11,"bond_relative_error":4.82687892083e-13,"bond_max_error_over_peak":4.8125812159e-13,"recurrence_relative_residual":6.77525885061e-11,"failed":0}
+{"trial":2,"passed":true,"iterations":48,"submitted":48,"cuda_solve_ms":7.724448,"wall_solve_ms":7.730262,"force_residual":1.24034366964e-11,"moment_residual":1.32229118043e-11,"bond_relative_error":4.82687892083e-13,"bond_max_error_over_peak":4.8125812159e-13,"recurrence_relative_residual":6.77525885061e-11,"failed":0}
+{"trial":3,"passed":true,"iterations":48,"submitted":48,"cuda_solve_ms":7.730144,"wall_solve_ms":7.736293,"force_residual":1.24034366964e-11,"moment_residual":1.32229118043e-11,"bond_relative_error":4.82687892083e-13,"bond_max_error_over_peak":4.8125812159e-13,"recurrence_relative_residual":6.77525885061e-11,"failed":0}
+
+free-python exit 0
+{"gpu":"NVIDIA GeForce RTX 4090","operator":"double","preconditioner_storage":"float","preconditioner_arithmetic":"float","outer_vectors_and_reductions":"double","cuda_graph":true,"device_context_upload_graph_ms":152.995065,"rows":35616,"free":true,"levels":3,"scope":"offline CPU-built hierarchy; no game integration"}
+{"trial":0,"passed":true,"iterations":30,"submitted":32,"cuda_solve_ms":6.225984,"wall_solve_ms":6.234604,"force_residual":1.64165566337e-11,"moment_residual":2.0273360941e-11,"bond_relative_error":6.08650157231e-14,"bond_max_error_over_peak":7.50635553056e-14,"recurrence_relative_residual":9.57763346324e-11,"failed":0}
+{"trial":1,"passed":true,"iterations":30,"submitted":32,"cuda_solve_ms":6.210720,"wall_solve_ms":6.218343,"force_residual":1.64165566337e-11,"moment_residual":2.0273360941e-11,"bond_relative_error":6.08650157231e-14,"bond_max_error_over_peak":7.50635553056e-14,"recurrence_relative_residual":9.57763346324e-11,"failed":0}
+{"trial":2,"passed":true,"iterations":30,"submitted":32,"cuda_solve_ms":6.206240,"wall_solve_ms":6.212332,"force_residual":1.64165566337e-11,"moment_residual":2.0273360941e-11,"bond_relative_error":6.08650157231e-14,"bond_max_error_over_peak":7.50635553056e-14,"recurrence_relative_residual":9.57763346324e-11,"failed":0}
+{"trial":3,"passed":true,"iterations":30,"submitted":32,"cuda_solve_ms":6.211296,"wall_solve_ms":6.217632,"force_residual":1.64165566337e-11,"moment_residual":2.0273360941e-11,"bond_relative_error":6.08650157231e-14,"bond_max_error_over_peak":7.50635553056e-14,"recurrence_relative_residual":9.57763346324e-11,"failed":0}
+
+free-native exit 0
+{"native_hierarchy_setup_ms":184.477729,"basis_reconstruction_error":6.42271737357e-17,"levels":3,"coarse_rows":96}
+{"native_level":0,"rows":35616,"nnz":827552,"coarse_rows":5100,"omega":0.360659814161,"eigenvalue_upper_bound":2.77269593322}
+{"native_level":1,"rows":5100,"nnz":890280,"coarse_rows":738,"omega":0.32339220964,"eigenvalue_upper_bound":3.09222043757}
+{"native_level":2,"rows":738,"nnz":225180,"coarse_rows":96,"omega":0.327234702892,"eigenvalue_upper_bound":3.05591060839}
+{"gpu":"NVIDIA GeForce RTX 4090","operator":"double","preconditioner_storage":"float","preconditioner_arithmetic":"float","outer_vectors_and_reductions":"double","cuda_graph":true,"device_context_upload_graph_ms":150.344984,"rows":35616,"free":true,"levels":3,"scope":"offline CPU-built hierarchy; no game integration"}
+{"trial":0,"passed":true,"iterations":44,"submitted":48,"cuda_solve_ms":9.096640,"wall_solve_ms":9.105716,"force_residual":1.10697141306e-11,"moment_residual":1.26064443692e-11,"bond_relative_error":1.46931755767e-11,"bond_max_error_over_peak":2.08079254086e-11,"recurrence_relative_residual":5.8402021766e-11,"failed":0}
+{"trial":1,"passed":true,"iterations":44,"submitted":48,"cuda_solve_ms":9.084000,"wall_solve_ms":9.091439,"force_residual":1.10697141306e-11,"moment_residual":1.26064443692e-11,"bond_relative_error":1.46931755767e-11,"bond_max_error_over_peak":2.08079254086e-11,"recurrence_relative_residual":5.8402021766e-11,"failed":0}
+{"trial":2,"passed":true,"iterations":44,"submitted":48,"cuda_solve_ms":9.085344,"wall_solve_ms":9.091440,"force_residual":1.10697141306e-11,"moment_residual":1.26064443692e-11,"bond_relative_error":1.46931755767e-11,"bond_max_error_over_peak":2.08079254086e-11,"recurrence_relative_residual":5.8402021766e-11,"failed":0}
+{"trial":3,"passed":true,"iterations":44,"submitted":48,"cuda_solve_ms":9.082592,"wall_solve_ms":9.088945,"force_residual":1.10697141306e-11,"moment_residual":1.26064443692e-11,"bond_relative_error":1.46931755767e-11,"bond_max_error_over_peak":2.08079254086e-11,"recurrence_relative_residual":5.8402021766e-11,"failed":0}
+
+Original city deployment restored and healthy

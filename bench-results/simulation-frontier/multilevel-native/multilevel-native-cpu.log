@@ -1,0 +1,8 @@
+Internal ctest changing into directory: /root/workspace/blast-stress-solver-2/demos/blast-stress-demo/build-gpu-activity
+Test project /root/workspace/blast-stress-solver-2/demos/blast-stress-demo/build-gpu-activity
+    Start 1: blast_stress_multilevel_native
+1/1 Test #1: blast_stress_multilevel_native ...   Passed    0.18 sec
+
+100% tests passed, 0 tests failed out of 1
+
+Total Test time (real) =   0.18 sec

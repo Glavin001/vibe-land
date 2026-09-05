@@ -1,0 +1,208 @@
+[
+  {
+    "label": "anchored-python",
+    "command": [
+      "/root/workspace/blast-stress-solver-2/demos/blast-stress-demo/build-gpu-activity/multilevel_gpu_test",
+      "/tmp/multilevel-anchored.bin",
+      "--solves",
+      "4",
+      "--float-preconditioner"
+    ],
+    "exit": 0,
+    "expected_exit": 0
+  },
+  {
+    "label": "free-python",
+    "command": [
+      "/root/workspace/blast-stress-solver-2/demos/blast-stress-demo/build-gpu-activity/multilevel_gpu_test",
+      "/tmp/multilevel-free.bin",
+      "--solves",
+      "4",
+      "--float-preconditioner"
+    ],
+    "exit": 0,
+    "expected_exit": 0
+  },
+  {
+    "label": "anchored-native-mixed",
+    "command": [
+      "/root/workspace/blast-stress-solver-2/demos/blast-stress-demo/build-gpu-activity/multilevel_gpu_test",
+      "/tmp/multilevel-anchored.bin",
+      "--solves",
+      "4",
+      "--native-basis",
+      "/tmp/multilevel-anchored.basis",
+      "--float-preconditioner"
+    ],
+    "exit": 0,
+    "expected_exit": 0
+  },
+  {
+    "label": "free-native-mixed",
+    "command": [
+      "/root/workspace/blast-stress-solver-2/demos/blast-stress-demo/build-gpu-activity/multilevel_gpu_test",
+      "/tmp/multilevel-free.bin",
+      "--solves",
+      "4",
+      "--native-basis",
+      "/tmp/multilevel-free.basis",
+      "--float-preconditioner"
+    ],
+    "exit": 0,
+    "expected_exit": 0
+  },
+  {
+    "label": "anchored-native-double",
+    "command": [
+      "/root/workspace/blast-stress-solver-2/demos/blast-stress-demo/build-gpu-activity/multilevel_gpu_test",
+      "/tmp/multilevel-anchored.bin",
+      "--solves",
+      "4",
+      "--native-basis",
+      "/tmp/multilevel-anchored.basis"
+    ],
+    "exit": 0,
+    "expected_exit": 0
+  },
+  {
+    "label": "free-native-double",
+    "command": [
+      "/root/workspace/blast-stress-solver-2/demos/blast-stress-demo/build-gpu-activity/multilevel_gpu_test",
+      "/tmp/multilevel-free.bin",
+      "--solves",
+      "4",
+      "--native-basis",
+      "/tmp/multilevel-free.basis"
+    ],
+    "exit": 0,
+    "expected_exit": 0
+  },
+  {
+    "label": "large-native-mixed",
+    "command": [
+      "/root/workspace/blast-stress-solver-2/demos/blast-stress-demo/build-gpu-activity/multilevel_gpu_test",
+      "/tmp/multilevel-large-load.bin",
+      "--solves",
+      "4",
+      "--native-basis",
+      "/tmp/multilevel-free.basis",
+      "--float-preconditioner"
+    ],
+    "exit": 0,
+    "expected_exit": 0
+  },
+  {
+    "label": "small-native-mixed",
+    "command": [
+      "/root/workspace/blast-stress-solver-2/demos/blast-stress-demo/build-gpu-activity/multilevel_gpu_test",
+      "/tmp/multilevel-small-load.bin",
+      "--solves",
+      "4",
+      "--native-basis",
+      "/tmp/multilevel-free.basis",
+      "--float-preconditioner"
+    ],
+    "exit": 0,
+    "expected_exit": 0
+  },
+  {
+    "label": "gravity-native-mixed",
+    "command": [
+      "/root/workspace/blast-stress-solver-2/demos/blast-stress-demo/build-gpu-activity/multilevel_gpu_test",
+      "/tmp/multilevel-free-gravity.bin",
+      "--solves",
+      "4",
+      "--native-basis",
+      "/tmp/multilevel-free.basis",
+      "--float-preconditioner"
+    ],
+    "exit": 0,
+    "expected_exit": 0
+  },
+  {
+    "label": "free-zero-native-mixed",
+    "command": [
+      "/root/workspace/blast-stress-solver-2/demos/blast-stress-demo/build-gpu-activity/multilevel_gpu_test",
+      "/tmp/multilevel-free-zero.bin",
+      "--solves",
+      "4",
+      "--native-basis",
+      "/tmp/multilevel-free.basis",
+      "--float-preconditioner"
+    ],
+    "exit": 0,
+    "expected_exit": 0
+  },
+  {
+    "label": "anchored-zero-native-mixed",
+    "command": [
+      "/root/workspace/blast-stress-solver-2/demos/blast-stress-demo/build-gpu-activity/multilevel_gpu_test",
+      "/tmp/multilevel-anchored-zero.bin",
+      "--solves",
+      "4",
+      "--native-basis",
+      "/tmp/multilevel-anchored.basis",
+      "--float-preconditioner"
+    ],
+    "exit": 0,
+    "expected_exit": 0
+  },
+  {
+    "label": "incomplete-negative",
+    "command": [
+      "/root/workspace/blast-stress-solver-2/demos/blast-stress-demo/build-gpu-activity/multilevel_gpu_test",
+      "/tmp/multilevel-anchored.bin",
+      "--native-basis",
+      "/tmp/multilevel-anchored.basis",
+      "--float-preconditioner",
+      "--solves",
+      "1",
+      "--iterations",
+      "1"
+    ],
+    "exit": 1,
+    "expected_exit": 1
+  },
+  {
+    "label": "memcheck-free-gravity",
+    "command": [
+      "/usr/local/cuda/bin/compute-sanitizer",
+      "--tool",
+      "memcheck",
+      "--leak-check",
+      "full",
+      "--error-exitcode",
+      "3",
+      "/root/workspace/blast-stress-solver-2/demos/blast-stress-demo/build-gpu-activity/multilevel_gpu_test",
+      "/tmp/multilevel-free-gravity.bin",
+      "--native-basis",
+      "/tmp/multilevel-free.basis",
+      "--float-preconditioner",
+      "--solves",
+      "1"
+    ],
+    "exit": 0,
+    "expected_exit": 0
+  },
+  {
+    "label": "memcheck-free-zero",
+    "command": [
+      "/usr/local/cuda/bin/compute-sanitizer",
+      "--tool",
+      "memcheck",
+      "--leak-check",
+      "full",
+      "--error-exitcode",
+      "3",
+      "/root/workspace/blast-stress-solver-2/demos/blast-stress-demo/build-gpu-activity/multilevel_gpu_test",
+      "/tmp/multilevel-free-zero.bin",
+      "--native-basis",
+      "/tmp/multilevel-free.basis",
+      "--float-preconditioner",
+      "--solves",
+      "1"
+    ],
+    "exit": 0,
+    "expected_exit": 0
+  }
+]

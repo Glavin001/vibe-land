@@ -1,0 +1,131 @@
+{
+  "scope": "Standalone native hierarchy and CUDA solve; no game integration/deployment",
+  "arms": [
+    {
+      "name": "anchored-python",
+      "trials": 4,
+      "iterations": 33,
+      "native_setup_ms": null,
+      "median_warmed_cuda_ms": 5.85936,
+      "max_force_residual": 1.56221973994e-11,
+      "max_moment_residual": 1.87931103076e-11,
+      "max_bond_force_error_over_input": 3.63893071168e-12,
+      "max_bond_moment_error_over_input": 9.87006680289e-13
+    },
+    {
+      "name": "free-python",
+      "trials": 4,
+      "iterations": 30,
+      "native_setup_ms": null,
+      "median_warmed_cuda_ms": 6.225024,
+      "max_force_residual": 1.64165566337e-11,
+      "max_moment_residual": 2.0273360941e-11,
+      "max_bond_force_error_over_input": 9.9165873899e-14,
+      "max_bond_moment_error_over_input": 2.46171221597e-14
+    },
+    {
+      "name": "anchored-native-mixed",
+      "trials": 4,
+      "iterations": 34,
+      "native_setup_ms": 203.384754,
+      "median_warmed_cuda_ms": 5.885248,
+      "max_force_residual": 1.41395294155e-11,
+      "max_moment_residual": 1.69471274237e-11,
+      "max_bond_force_error_over_input": 1.72661558024e-11,
+      "max_bond_moment_error_over_input": 1.40373377758e-11
+    },
+    {
+      "name": "free-native-mixed",
+      "trials": 4,
+      "iterations": 31,
+      "native_setup_ms": 203.322184,
+      "median_warmed_cuda_ms": 6.309056,
+      "max_force_residual": 9.00492397045e-12,
+      "max_moment_residual": 1.12505210929e-11,
+      "max_bond_force_error_over_input": 1.52223401837e-11,
+      "max_bond_moment_error_over_input": 1.29968000942e-11
+    },
+    {
+      "name": "anchored-native-double",
+      "trials": 4,
+      "iterations": 34,
+      "native_setup_ms": 201.810979,
+      "median_warmed_cuda_ms": 10.674624,
+      "max_force_residual": 1.413731595e-11,
+      "max_moment_residual": 1.69680189261e-11,
+      "max_bond_force_error_over_input": 1.73040236644e-11,
+      "max_bond_moment_error_over_input": 1.40324320955e-11
+    },
+    {
+      "name": "free-native-double",
+      "trials": 4,
+      "iterations": 31,
+      "native_setup_ms": 209.461973,
+      "median_warmed_cuda_ms": 10.660224,
+      "max_force_residual": 9.00495693085e-12,
+      "max_moment_residual": 1.12505413344e-11,
+      "max_bond_force_error_over_input": 1.52203493823e-11,
+      "max_bond_moment_error_over_input": 1.29957863372e-11
+    },
+    {
+      "name": "large-native-mixed",
+      "trials": 4,
+      "iterations": 31,
+      "native_setup_ms": 207.444519,
+      "median_warmed_cuda_ms": 6.303936,
+      "max_force_residual": 9.00660711258e-12,
+      "max_moment_residual": 1.12509837616e-11,
+      "max_bond_force_error_over_input": 1.52218484119e-11,
+      "max_bond_moment_error_over_input": 1.29961527529e-11
+    },
+    {
+      "name": "small-native-mixed",
+      "trials": 4,
+      "iterations": 31,
+      "native_setup_ms": 205.458946,
+      "median_warmed_cuda_ms": 6.312032,
+      "max_force_residual": 9.00764704928e-12,
+      "max_moment_residual": 1.12508261038e-11,
+      "max_bond_force_error_over_input": 1.52233466659e-11,
+      "max_bond_moment_error_over_input": 1.29962234876e-11
+    },
+    {
+      "name": "gravity-native-mixed",
+      "trials": 4,
+      "iterations": 23,
+      "native_setup_ms": 207.31226,
+      "median_warmed_cuda_ms": 4.726272,
+      "max_force_residual": 8.25907688496e-14,
+      "max_moment_residual": 4.57528141511e-19,
+      "max_bond_force_error_over_input": 2.10152962067e-16,
+      "max_bond_moment_error_over_input": 1.31680040151e-16
+    },
+    {
+      "name": "free-zero-native-mixed",
+      "trials": 4,
+      "iterations": 0,
+      "native_setup_ms": 204.474684,
+      "median_warmed_cuda_ms": 0.011264,
+      "max_force_residual": 0,
+      "max_moment_residual": 0,
+      "max_bond_force_error_over_input": 0,
+      "max_bond_moment_error_over_input": 0
+    },
+    {
+      "name": "anchored-zero-native-mixed",
+      "trials": 4,
+      "iterations": 0,
+      "native_setup_ms": 205.8905,
+      "median_warmed_cuda_ms": 0.010112,
+      "max_force_residual": 0,
+      "max_moment_residual": 0,
+      "max_bond_force_error_over_input": 0,
+      "max_bond_moment_error_over_input": 0
+    }
+  ],
+  "solves_passed": 44,
+  "negative_control_rejected": true,
+  "cpu_sanitizers_passed": true,
+  "cuda_memory_checks_passed": 2,
+  "live_binary_unchanged": true
+}

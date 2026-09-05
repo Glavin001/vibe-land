@@ -206,3 +206,12 @@ that every migration destination is represented in the wire ledger. Correcting
 this requires preserving rooted identity, pose, support and later dynamic
 promotion semantics; merely suppressing the repair request would hide the fault.
 No topology runtime fix has been deployed as part of this follow-up.
+
+## Later report inventory and solver follow-up
+
+A later inventory still found these six reports to be the latest submissions.
+Re-running `analyze-city-reports.py` reproduced the committed summary exactly.
+The [native solver setup follow-up](multilevel-native-setup-2026-09-05.md) records
+additional standalone numerical checks and their limits. It did not deploy a
+new city build or fix the repair loop. The reported contact/replay costs and
+missing migration destinations remain open qualification targets.

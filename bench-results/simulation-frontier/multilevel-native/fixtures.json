@@ -1,0 +1,47 @@
+[
+  {
+    "path": "/tmp/multilevel-anchored.bin",
+    "bytes": 71659416,
+    "sha256": "918d68481a6563f31092d468712ed8ebd6de52174687c804fa264ebed2a42aa0"
+  },
+  {
+    "path": "/tmp/multilevel-free.bin",
+    "bytes": 73354608,
+    "sha256": "305b0c777174045a10a04bb7abed18ba5472f463d6cb190f53655348114ecec1"
+  },
+  {
+    "path": "/tmp/multilevel-large-load.bin",
+    "bytes": 73354608,
+    "sha256": "69819fdc1380cb9a86f3f9a7701784d2ac7f2dc894d8372f45f6ab12cdcb7297"
+  },
+  {
+    "path": "/tmp/multilevel-small-load.bin",
+    "bytes": 73354608,
+    "sha256": "153b9af84d647f99aeada4aebffff6fc6f26e10b3825568d6cbc66e17f74e267"
+  },
+  {
+    "path": "/tmp/multilevel-free-gravity.bin",
+    "bytes": 73354608,
+    "sha256": "cd9a31aed9e1fb46aa8ca4140077712853fe6e3ecdf53df3822823ca4129c7f7"
+  },
+  {
+    "path": "/tmp/multilevel-free-zero.bin",
+    "bytes": 73354608,
+    "sha256": "3ad0f649ce9aaf2e363cfc510e4fc5f8f86f58a477b8176673b4cd2c3e4533bf"
+  },
+  {
+    "path": "/tmp/multilevel-anchored-zero.bin",
+    "bytes": 71659416,
+    "sha256": "21b470b25ce7d86447c8e9fa0120881c2bb66ba0a6e78f513888a75c8c63685f"
+  },
+  {
+    "path": "/tmp/multilevel-anchored.basis",
+    "bytes": 1709580,
+    "sha256": "abe314ab70740e32c735611d4f04b72dc9bff412072de5337d99c38ed6b7293d"
+  },
+  {
+    "path": "/tmp/multilevel-free.basis",
+    "bytes": 1709580,
+    "sha256": "e80ce83a942b9732ff13eaca400c57e8da0e55fde205e4c221d9061e8e1af1ba"
+  }
+]

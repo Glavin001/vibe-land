@@ -1,0 +1,12 @@
+{
+  "eligible_for_city": false,
+  "deployed": false,
+  "reason": [
+    "Native hierarchy and CUDA proof only; no production input/output integration",
+    "202\u2013209 ms setup needs measured topology update/reuse strategy",
+    "Existing physical quality and contact-ordering holds remain unresolved",
+    "Full city, near-threshold fracture, replay and 5\u20136k-awake qualification pending",
+    "Rooted-fragment wire topology defect remains open"
+  ],
+  "force_or_fracture_caps_added": false
+}

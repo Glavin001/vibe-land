@@ -135,3 +135,8 @@ access or a restart.
 The rooted-fragment promotion gap identified from the player reports remains
 an independent outstanding topology fix. No force, impulse, velocity, fracture,
 bond or body cap was added by this increment. No new game build was deployed.
+
+The next [native setup increment](multilevel-native-setup-2026-09-05.md) replaces
+Python hierarchy construction in the standalone harness, adds exact-zero and
+free-fall checks, and measures the remaining construction cost. It is also held
+from game deployment.

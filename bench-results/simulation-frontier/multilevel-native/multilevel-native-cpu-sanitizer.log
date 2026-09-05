@@ -1,0 +1,13 @@
+chain nodes=1 anchored=0 levels=0 setup_ms=0.091451 passed
+chain nodes=1 anchored=1 levels=0 setup_ms=0.086302 passed
+chain nodes=2 anchored=0 levels=0 setup_ms=0.081943 passed
+chain nodes=2 anchored=1 levels=0 setup_ms=0.049744 passed
+chain nodes=29 anchored=0 levels=0 setup_ms=20.281290 passed
+chain nodes=29 anchored=1 levels=0 setup_ms=16.136749 passed
+chain nodes=30 anchored=0 levels=1 setup_ms=2.173485 passed
+chain nodes=30 anchored=1 levels=1 setup_ms=1.756906 passed
+chain nodes=64 anchored=0 levels=1 setup_ms=3.423974 passed
+chain nodes=64 anchored=1 levels=1 setup_ms=3.112200 passed
+chain nodes=256 anchored=0 levels=2 setup_ms=11.933117 passed
+chain nodes=256 anchored=1 levels=2 setup_ms=11.109698 passed
+All native hierarchy checks passed
