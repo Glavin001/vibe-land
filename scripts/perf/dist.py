@@ -27,6 +27,7 @@ Usage:
 Warm-up is EXCLUDED BY DEFAULT and the exclusion is printed, because the
 one time it was applied ad hoc it was forgotten on the next run.
 """
+import argparse
 import csv
 import math
 import statistics
@@ -56,7 +57,8 @@ NOT_TIME = {"tick", "bodies", "awake", "frozen", "sleeping", "bonds", "pairs",
 # and refused as denominators or spike evidence.
 DERIVED = {
     "gpu_wait": "sampled 1-in-16",
-    "fetch_copy": "sampled 1-in-16",
+    "fetch_copy": "sampled fetch call, includes callbacks",
+    "result_copy": "sampled fetch call minus callbacks",
     "callback": "16-sample ring mean",
     "fetch_total": "16-sample ring mean",
     "fetch_resid": "16-sample ring mean",
@@ -113,6 +115,12 @@ class Dist:
 def load(path, warmup):
     with open(path) as fh:
         rows = [r for r in csv.DictReader(fh)]
+    for row in rows:
+        if "fetch_copy" in row and "cb_tick" in row and "result_copy" not in row:
+            # fetch_copy is the whole successful fetchResults call, including
+            # callbacks. Its name previously caused callbacks to be counted
+            # again as a sibling in the tree. Unsampled copies remain zero.
+            row["result_copy"] = max(0.0, float(row["fetch_copy"]) - float(row["cb_tick"]))
     kept = [r for r in rows if float(r["tick"]) > warmup]
     return rows, kept
 
@@ -129,6 +137,14 @@ def buckets(rows, key):
     return out
 
 
+def tick_total(row):
+    """Measured simulation wall time, falling back to older disjoint brackets."""
+    if "sim" in row:
+        return float(row["sim"])
+    return (float(row["physx_step"]) + float(row["stress_solve"])
+            + float(row.get("post_step", 0)) + float(row.get("resim", 0)))
+
+
 def report(path, warmup, by, spikes):
     allrows, rows = load(path, warmup)
     print(f"== {path}")
@@ -139,16 +155,15 @@ def report(path, warmup, by, spikes):
     cols = [c for c in rows[0] if is_time(c)]
 
     for label, sel in buckets(rows, by):
-        # Total is physx + blast: the two parents. Their children are shares
-        # of one of them, never of each other.
-        tot = [float(r["physx_step"]) + float(r["stress_solve"]) for r in sel]
+        # Match the tree budget, including post-step work and fracture replay.
+        tot = [tick_total(r) for r in sel]
         grand = sum(tot)
         print(f"\n-- bucket {by}={label}  ({len(sel)} ticks)  "
               f"total p50 {quant(sorted(tot), .5):.2f} ms, "
               f"p99 {quant(sorted(tot), .99):.2f} ms, max {max(tot):.2f} ms")
         print(f"{'column':<20}{'n':>6}{'min':>8}{'p50':>8}{'p95':>8}{'p99':>8}"
               f"{'p99.9':>8}{'max':>9}{'mean':>8}{'sd':>8}{'share':>7}{'max/p50':>9}")
-        stats = []
+        stats = [("TOTAL", Dist(tot).row())]
         for c in cols:
             d = Dist([float(r[c]) for r in sel]).row()
             if d and d["total"] > 0:
@@ -192,17 +207,19 @@ def report(path, warmup, by, spikes):
 
     if spikes:
         print(f"\n-- {spikes} worst ticks by total, fully decomposed")
-        ranked = sorted(rows, key=lambda r: -(float(r["physx_step"]) + float(r["stress_solve"])))
+        ranked = sorted(rows, key=lambda r: -tick_total(r))
         idx = {r["tick"]: i for i, r in enumerate(rows)}
         for r in ranked[:spikes]:
-            t = float(r["physx_step"]) + float(r["stress_solve"])
+            t = tick_total(r)
             i = idx[r["tick"]]
             prev = rows[i - 1] if i > 0 else r
             pairs = float(r.get("cp_found", 0)) + float(r.get("cp_persists", 0))
             print(f"   tick {float(r['tick']):>7.0f} total {t:>8.2f}  "
                   f"physx {float(r['physx_step']):>7.2f} (sim {float(r.get('physx_sim',0)):>5.2f} "
                   f"fetch {float(r.get('fetch_tick',0)):>7.2f} cb {float(r.get('cb_tick',0)):>7.2f})  "
-                  f"blast {float(r['stress_solve']):>6.2f}  "
+                  f"blast {float(r['stress_solve']):>6.2f} "
+                  f"post {float(r.get('post_step', 0)):>6.2f} "
+                  f"replay {float(r.get('resim', 0)):>6.2f}  "
                   f"awake {float(r['awake']):>6.0f} pairs {pairs:>6.0f} "
                   f"dBody {float(r['bodies'])-float(prev['bodies']):>5.0f} "
                   f"dBond {float(r['bonds'])-float(prev['bonds']):>5.0f}")
@@ -214,12 +231,13 @@ def ab(path_a, path_b, warmup, by):
     _, A = load(path_a, warmup)
     _, B = load(path_b, warmup)
     print(f"== A/B  A={path_a} ({len(A)} ticks)  B={path_b} ({len(B)} ticks)")
-    cols = [c for c in A[0] if is_time(c)]
-    for label, _ in buckets(A, by):
-        lo, hi = label.replace("+", str(10**9)).split("-")
-        lo, hi = float(lo), float(hi)
-        sa = [r for r in A if lo <= float(r[by]) < hi]
-        sb = [r for r in B if lo <= float(r[by]) < hi]
+    if not A or not B:
+        print("   no comparison: an arm has no ticks after warm-up")
+        return
+    cols = ["TOTAL"] + [c for c in A[0] if is_time(c) and c in B[0]]
+    b_buckets = dict(buckets(B, by))
+    for label, sa in buckets(A, by):
+        sb = b_buckets.get(label, [])
         n = min(len(sa), len(sb))
         if n < 20:
             continue
@@ -227,7 +245,8 @@ def ab(path_a, path_b, warmup, by):
         print(f"{'column':<20}{'A p50':>9}{'B p50':>9}{'d p50':>9}"
               f"{'A p99':>9}{'B p99':>9}{'d p99':>9}")
         for c in cols:
-            va, vb = sorted(float(r[c]) for r in sa[:n]), sorted(float(r[c]) for r in sb[:n])
+            value = tick_total if c == "TOTAL" else lambda r: float(r[c])
+            va, vb = sorted(value(r) for r in sa[:n]), sorted(value(r) for r in sb[:n])
             a50, b50 = quant(va, .5), quant(vb, .5)
             a99, b99 = quant(va, .99), quant(vb, .99)
             if max(a50, b50) < 0.05:
@@ -274,10 +293,9 @@ def ab(path_a, path_b, warmup, by):
 PARALLEL = {"solve"}
 
 TREE = {
-    # TOTAL is the simulated tick: the two native brackets, the Rust-side
-    # post-step work that is not the native tick, and the resim re-pass.
-    # Traces older than 2026-09-02 lack the last two columns and fall back to
-    # the two-bracket total (see tree()).
+    # TOTAL uses the measured simulation wall time when present. Its children
+    # are disjoint brackets; any gap is exposed instead of defining it away.
+    # Older traces fall back to the sum of their available brackets.
     "TOTAL": ["physx_step", "stress_solve", "post_step", "resim"],
     "post_step": ["drain", "sup_ingest", "cascade", "readback_host", "settle",
                   "stats_ffi"],
@@ -285,7 +303,7 @@ TREE = {
     # cb_drain is the deferred-contact drain: runs inside end_step but after
     # the fetch split is recorded, so it is a sibling of fetch, not a child.
     "physx_step": ["physx_sim", "fetch_tick", "cb_drain"],
-    "fetch_tick": ["gpu_wait", "cb_tick", "fetch_copy"],
+    "fetch_tick": ["gpu_wait", "cb_tick", "result_copy"],
     # Correct parenting, established 2026-09-01 by reading the code rather
     # than the names. With VIBE_PHYSX_DEFER_CONTACTS on (the default),
     # onContact only CAPTURES -- entity ids, extractContacts, push -- and
@@ -324,11 +342,11 @@ def tree(path, warmup, by):
     """
     _, rows = load(path, warmup)
     print(f"== {path}   {len(rows)} ticks analysed (warm-up tick <= {warmup} excluded)")
+    if not rows:
+        return
     for label, sel in buckets(rows, by):
         col = lambda c: [float(r[c]) for r in sel] if c in sel[0] else None
-        totv = [float(r["physx_step"]) + float(r["stress_solve"])
-                + (float(r["post_step"]) if "post_step" in r else 0.0)
-                + (float(r["resim"]) if "resim" in r else 0.0) for r in sel]
+        totv = [tick_total(r) for r in sel]
         grand = sum(totv)
         print(f"\n-- bucket {by}={label}  ({len(sel)} ticks)")
         print(f"{'phase':<24}{'wall':>7}{'%par':>7}{'%tot':>7}"
@@ -433,21 +451,27 @@ def tree(path, warmup, by):
 
 
 def main(argv):
-    args = [a for a in argv[1:] if not a.startswith("--")]
-    flags = {a.split("=")[0]: (a.split("=")[1] if "=" in a else True)
-             for a in argv[1:] if a.startswith("--")}
-    warmup = int(flags.get("--warmup", 600))
-    by = flags.get("--by", "awake")
-    spikes = int(flags.get("--spikes", 8))
-    if flags.get("--tree"):
-        for p in args:
-            tree(p, warmup, by)
-        return 0
-    if flags.get("--ab") and len(args) >= 2:
-        ab(args[0], args[1], warmup, by)
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("traces", nargs="+")
+    parser.add_argument("--warmup", type=int, default=600)
+    parser.add_argument("--by", default="awake")
+    parser.add_argument("--spikes", type=int, default=8)
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--tree", action="store_true")
+    mode.add_argument("--ab", action="store_true")
+    options = parser.parse_args(argv[1:])
+    if options.warmup < 0 or options.spikes < 0:
+        parser.error("--warmup and --spikes must be non-negative")
+    if options.ab and len(options.traces) != 2:
+        parser.error("--ab requires exactly two traces")
+    if options.tree:
+        for path in options.traces:
+            tree(path, options.warmup, options.by)
+    elif options.ab:
+        ab(*options.traces, options.warmup, options.by)
     else:
-        for p in args:
-            report(p, warmup, by, spikes)
+        for path in options.traces:
+            report(path, options.warmup, options.by, options.spikes)
     return 0
 
 

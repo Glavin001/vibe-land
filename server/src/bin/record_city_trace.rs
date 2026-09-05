@@ -1071,11 +1071,21 @@ fn main() -> Result<()> {
         let physx_tick_ms = physx_started.elapsed().as_secs_f64() * 1000.0;
         physx_step_ms_sum += physx_tick_ms;
         physx_step_samples += 1;
+        // Capture the matching PhysX pass before destruction can replay the
+        // scene and overwrite its timers. Keep instrumentation outside sim_ms
+        // and price it in stats_ms, as the old post-simulation reads were.
+        let first_stats_started = std::time::Instant::now();
+        let first_stats_cpu_started = process_cpu_ns();
+        let world_stats = world.stats().ok();
+        let world_spans = world.take_world_spans();
+        let first_stats_ms = first_stats_started.elapsed().as_secs_f64() * 1000.0;
+        let first_stats_cpu_ns = process_cpu_ns().saturating_sub(first_stats_cpu_started);
         let output = destruction
             .post_step(&mut world, dt, city_gravity())
             .map_err(|error| anyhow::anyhow!("{error}"))?;
-        let sim_ms = sim_started.elapsed().as_secs_f32() * 1000.0;
-        let sim_cpu_ms = (process_cpu_ns().saturating_sub(sim_cpu_started)) as f64 / 1.0e6;
+        let sim_ms = sim_started.elapsed().as_secs_f32() * 1000.0 - first_stats_ms as f32;
+        let sim_cpu_ms = process_cpu_ns().saturating_sub(sim_cpu_started)
+            .saturating_sub(first_stats_cpu_ns) as f64 / 1.0e6;
 
         // Bracketed as its own column: these FFI reads used to fall in the
         // gap between `sim` and `enc`, counted by NEITHER — per-tick work
@@ -1083,9 +1093,7 @@ fn main() -> Result<()> {
         let stats_started = std::time::Instant::now();
         let tick_stats = destruction.stats();
         let tick_spans = destruction.extra_spans().to_vec();
-        let world_stats = world.stats().ok();
-        let world_spans = world.take_world_spans();
-        let stats_ms = stats_started.elapsed().as_secs_f64() * 1000.0;
+        let stats_ms = first_stats_ms + stats_started.elapsed().as_secs_f64() * 1000.0;
 
         if let Some(w) = metrics_writer.as_mut() {
             use std::io::Write as _;

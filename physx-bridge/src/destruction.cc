@@ -289,9 +289,8 @@ bool freeze_remove_from_scene() {
 #if defined(NVBLAST_ENABLE_CUDA_STRESS)
 /// Whether to request the CUDA stress solver (VIBE_CITY_GPU_STRESS=0 disables).
 ///
-/// On by default when compiled in: the GPU path was verified to converge to the
-/// same solution as the CPU path, and it is the only one that can afford to
-/// reach convergence at all. See the note on gpu_stress_min_bonds().
+/// Enabled by default when compiled in. Backend choice does not prove
+/// convergence: both solvers obey the configured iteration budget.
 bool gpu_stress_enabled() {
   static const bool enabled = [] {
     const char *value = std::getenv("VIBE_CITY_GPU_STRESS");
@@ -301,25 +300,9 @@ bool gpu_stress_enabled() {
 }
 
 /// Bond-count crossover below which a structure stays on the CPU solver.
-///
-/// The GPU solve is not less accurate than the CPU one -- it is more converged.
-/// Sweeping iterations on the 10-floor city with identical input, both solvers
-/// descend monotonically to the SAME answer:
-///
-///   iterations      CPU bonds   GPU bonds
-///            8           5149           -
-///        32-44           4096        1901
-///          150           3156        1150
-///          400           1073        1246
-///
-/// So ~1100-1250 broken bonds is what this structure actually does under load,
-/// and the 5149 our CPU default produced was solver residual, not physics. The
-/// CPU cannot afford convergence (solve goes 5.95 -> 60+ ms); the GPU reaches
-/// it in ~3 ms. That is the real argument for the GPU path.
-///
-/// Consequence for content: destruction scale must come from material strength,
-/// not from under-solving. VIBE_CITY_STRESS_LIMIT_SCALE=0.5 restores it with
-/// converged physics and zero spontaneous damage on the intact city.
+/// Keep the default uniform across structures. Historical broken-bond counts
+/// are not a convergence oracle: assess residuals and load paths at the same
+/// material settings before changing the iteration policy or backend split.
 std::uint32_t gpu_stress_min_bonds() {
   static const std::uint32_t bonds = [] {
     if (const char *value = std::getenv("VIBE_CITY_GPU_STRESS_MIN_BONDS")) {
@@ -755,20 +738,15 @@ void DestructionManager::create_destructible(
   }
   desc.settings.gpuStressSolver = gpu_stress_enabled();
   desc.settings.gpuStressMinimumBondCount = gpu_stress_min_bonds();
-  // Converged stress means authored material strength is finally what decides
-  // destruction -- and these packs were authored against an under-converged
-  // solver, so at full strength they barely fracture (the e2e's "debris comes
-  // to rest" check fails with peakAwake == 0). Warn once, rather than let a
-  // silently indestructible city look like a bug somewhere else.
-  static bool warned = false;
-  if (!warned && gpu_stress_enabled()) {
-    warned = true;
+  static bool reported_gpu_solver = false;
+  if (!reported_gpu_solver && gpu_stress_enabled()) {
+    reported_gpu_solver = true;
     std::fprintf(stderr,
-                 "[destruction] CUDA stress solver active: stress is solved to "
-                 "convergence, so scenes authored against the CPU solver need "
-                 "weaker materials to fracture as before "
-                 "(VIBE_CITY_STRESS_LIMIT_SCALE ~0.06-0.12).\n");
+                 "[destruction] CUDA stress solver active; configured iteration "
+                 "budget %u. Convergence depends on the current load and topology.\n",
+                 desc.settings.maxSolverIterationsPerFrame);
   }
+
 #else
   desc.settings.gpuStressSolver = false;
 #endif

@@ -2484,6 +2484,7 @@ fn timing_closure_leaves_under_one_percent_unattributed() {
     let mut total_post = 0.0f64;
     let mut total_post_residual = 0.0f64;
     let mut sampled = 0u32;
+    let mut replay_ticks = 0u32;
 
     let mut tick = 0u32;
     for step_index in 0..2400 {
@@ -2501,11 +2502,26 @@ fn timing_closure_leaves_under_one_percent_unattributed() {
                 Some(&mut world),
             );
         }
+        city.pre_step(Some(&mut world));
         world.step().expect("step");
         let _ = city.step(tick, DT, gravity(), Some(&mut world));
         tick += 1;
 
         let stats = city.stats();
+        if stats.resim_passes > 0 {
+            replay_ticks += 1;
+            // Native timings must still describe the first call inside its
+            // Rust bracket, even when a longer replay followed that call.
+            assert!(stats.stress_solve_ms <= stats.tick_ffi_ms + 0.01,
+                "replay timing escaped into first-pass stress: {} > {}",
+                stats.stress_solve_ms, stats.tick_ffi_ms);
+            let native_children = stats.begin_ms + stats.solve_ms + stats.end_ms
+                + stats.readback_ms + stats.events_ms + stats.filters_ms
+                + stats.ccd_ms + stats.support_loads_ms + stats.shape_readback_ms
+                + stats.slot_dispatch_ms + stats.bond_sample_ms;
+            assert!(native_children <= stats.stress_solve_ms + 0.01,
+                "stress child timings describe a different pass");
+        }
         // Only ticks that actually did work can say anything about closure.
         if stats.post_step_total_ms < 0.2 {
             continue;
@@ -2524,6 +2540,8 @@ fn timing_closure_leaves_under_one_percent_unattributed() {
         }
     }
 
+    assert!(replay_ticks > 0, "timing fixture never exercised fracture replay");
+    eprintln!("[timing closure] verified first-pass attribution on {replay_ticks} replay ticks");
     assert!(
         sampled > 100,
         "only {sampled} ticks did enough work to judge closure; the bench is \

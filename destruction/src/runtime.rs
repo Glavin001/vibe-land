@@ -444,6 +444,21 @@ impl CityDestruction {
         // The first pass only. Everything the resim loop below costs is
         // bracketed into its own stats so a profile can price it separately.
         let tick_ffi_ms = tick_ffi_started.elapsed().as_secs_f32() * 1000.0;
+        // A replay overwrites native per-pass timers. Preserve the first pass
+        // before it can run, while reading final counters after all passes.
+        // Only split ticks pay for the extra snapshot; its cost belongs to
+        // stats_ffi, not to an unexplained gap in the tick budget.
+        let profile_started = std::time::Instant::now();
+        let first_pass_profile = if self.resim_passes > 0
+            && world.split_count().unwrap_or(self.last_split_count) > self.last_split_count
+        {
+            world.destruction_stats().ok().map(|stats| {
+                (stats, world.take_destruction_spans())
+            })
+        } else {
+            None
+        };
+        let first_pass_profile_ms = profile_started.elapsed().as_secs_f32() * 1000.0;
         let mut resim_restore_ms = 0.0f32;
         let mut resim_step_ms = 0.0f32;
         let mut resim_tick_ms = 0.0f32;
@@ -991,38 +1006,39 @@ impl CityDestruction {
         self.stats.min_body_vel = min_vel;
 
         if let Ok(bridge_stats) = world.destruction_stats() {
+            let timing_stats = first_pass_profile.as_ref()
+                .map(|(stats, _)| stats).unwrap_or(&bridge_stats);
             self.stats.chunk_bodies = bridge_stats.chunk_bodies;
             self.stats.awake_chunk_bodies = bridge_stats.awake_chunk_bodies;
-            self.stats.stress_solve_ms = bridge_stats.stress_solve_ms;
+            self.stats.stress_solve_ms = timing_stats.stress_solve_ms;
             self.stats.unmapped_body_skips = bridge_stats.unmapped_body_skips;
             self.stats.readback_ms_host = readback_ms_host;
             self.stats.settle_ms = settle_ms;
-            self.stats.stats_ffi_ms = stats_ffi_started.elapsed().as_secs_f32() * 1000.0;
-            self.stats.begin_ms = bridge_stats.begin_ms;
-            self.stats.solve_ms = bridge_stats.solve_ms;
-            self.stats.end_ms = bridge_stats.end_ms;
-            self.stats.readback_ms = bridge_stats.readback_ms;
-            self.stats.events_ms = bridge_stats.events_ms;
+            self.stats.begin_ms = timing_stats.begin_ms;
+            self.stats.solve_ms = timing_stats.solve_ms;
+            self.stats.end_ms = timing_stats.end_ms;
+            self.stats.readback_ms = timing_stats.readback_ms;
+            self.stats.events_ms = timing_stats.events_ms;
             self.stats.gpu_stress_structures = bridge_stats.gpu_stress_structures;
-            self.stats.gpu_stress_solve_ms = bridge_stats.gpu_stress_solve_ms;
-            self.stats.filters_ms = bridge_stats.filters_ms;
-            self.stats.ccd_ms = bridge_stats.ccd_ms;
-            self.stats.support_loads_ms = bridge_stats.support_loads_ms;
+            self.stats.gpu_stress_solve_ms = timing_stats.gpu_stress_solve_ms;
+            self.stats.filters_ms = timing_stats.filters_ms;
+            self.stats.ccd_ms = timing_stats.ccd_ms;
+            self.stats.support_loads_ms = timing_stats.support_loads_ms;
             self.stats.support_pair_loads = bridge_stats.support_pair_loads;
-            self.stats.blast_contact_processing_ms = bridge_stats.blast_contact_processing_ms;
-            self.stats.blast_gravity_ms = bridge_stats.blast_gravity_ms;
-            self.stats.blast_stress_solve_cpu_ms = bridge_stats.blast_stress_solve_cpu_ms;
-            self.stats.blast_fracture_topology_ms = bridge_stats.blast_fracture_topology_ms;
-            self.stats.blast_mapping_validation_ms = bridge_stats.blast_mapping_validation_ms;
-            self.stats.blast_fracture_generate_ms = bridge_stats.blast_fracture_generate_ms;
-            self.stats.blast_fracture_prep_ms = bridge_stats.blast_fracture_prep_ms;
-            self.stats.blast_fracture_apply_ms = bridge_stats.blast_fracture_apply_ms;
-            self.stats.blast_fracture_scene_ms = bridge_stats.blast_fracture_scene_ms;
-            self.stats.blast_fracture_rebuild_ms = bridge_stats.blast_fracture_rebuild_ms;
+            self.stats.blast_contact_processing_ms = timing_stats.blast_contact_processing_ms;
+            self.stats.blast_gravity_ms = timing_stats.blast_gravity_ms;
+            self.stats.blast_stress_solve_cpu_ms = timing_stats.blast_stress_solve_cpu_ms;
+            self.stats.blast_fracture_topology_ms = timing_stats.blast_fracture_topology_ms;
+            self.stats.blast_mapping_validation_ms = timing_stats.blast_mapping_validation_ms;
+            self.stats.blast_fracture_generate_ms = timing_stats.blast_fracture_generate_ms;
+            self.stats.blast_fracture_prep_ms = timing_stats.blast_fracture_prep_ms;
+            self.stats.blast_fracture_apply_ms = timing_stats.blast_fracture_apply_ms;
+            self.stats.blast_fracture_scene_ms = timing_stats.blast_fracture_scene_ms;
+            self.stats.blast_fracture_rebuild_ms = timing_stats.blast_fracture_rebuild_ms;
             self.stats.blast_sleeping_actors_skipped = bridge_stats.blast_sleeping_actors_skipped;
-            self.stats.slot_dispatch_ms = bridge_stats.slot_dispatch_ms;
-            self.stats.bond_sample_ms = bridge_stats.bond_sample_ms;
-            self.stats.shape_readback_ms = bridge_stats.shape_readback_ms;
+            self.stats.slot_dispatch_ms = timing_stats.slot_dispatch_ms;
+            self.stats.bond_sample_ms = timing_stats.bond_sample_ms;
+            self.stats.shape_readback_ms = timing_stats.shape_readback_ms;
             self.stats.quiet_slot_ticks = bridge_stats.quiet_slot_ticks;
             self.stats.sleeping_chunk_bodies = bridge_stats.sleeping_chunk_bodies;
             self.stats.overstressed_bonds = bridge_stats.overstressed_bonds;
@@ -1051,6 +1067,13 @@ impl CityDestruction {
                     kind: span.kind,
                 })
                 .collect();
+            if let Some((_, first_spans)) = first_pass_profile.as_ref() {
+                for first in first_spans.iter().filter(|span| span.kind == 0) {
+                    if let Some(span) = self.extra_spans.iter_mut().find(|span| span.name == first.name) {
+                        span.value = first.value;
+                    }
+                }
+            }
             self.stats.frozen_chunk_bodies = bridge_stats.frozen_chunk_bodies;
             self.stats.frozen_aggregates = bridge_stats.frozen_aggregates;
             self.stats.frozen_aggregate_actors = bridge_stats.frozen_aggregate_actors;
@@ -1065,6 +1088,9 @@ impl CityDestruction {
             self.stats.frozen_serial_blocks = bridge_stats.frozen_serial_blocks;
             self.stats.frozen_adapter_releases = bridge_stats.frozen_adapter_releases;
         }
+
+        self.stats.stats_ffi_ms = first_pass_profile_ms
+            + stats_ffi_started.elapsed().as_secs_f32() * 1000.0;
 
         // Closure check, published rather than asserted. Every child of
         // post_step is subtracted from its own wall time; what is left is the
