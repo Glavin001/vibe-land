@@ -1,0 +1,22 @@
+{
+  "VIBE_PHYSICS_BACKEND": "physx_gpu",
+  "VIBE_CITY_SCENE": "fractured-downtown.json",
+  "VIBE_CITY_GRID": "2",
+  "VIBE_CITY_VARIED_HEIGHTS": "0",
+  "VIBE_CITY_FREEZE": "1",
+  "VIBE_CITY_STRESS_LIMIT_SCALE": "0.45",
+  "VIBE_CITY_SHOT_BLAST_RADIUS": "2.5",
+  "VIBE_CITY_SHOT_STRESS_IMPULSE": "1.2e7",
+  "VIBE_CITY_EXCESS_FORCES": "1",
+  "VIBE_CITY_RESIM_PASSES": "1",
+  "VIBE_CITY_SOLVER_ITERATIONS": "32",
+  "VIBE_WORLD_FRICTION": "0.75",
+  "VIBE_WORLD_RESTITUTION": "0.02",
+  "BLAST_GPU_WHOLE_RESET_ON_TOPOLOGY": "1",
+  "BLAST_BOND_STRESS_GPU": "1",
+  "BLAST_GPU_IMPULSE_READBACK": "1",
+  "BLAST_GPU_DETERMINISTIC_REDUCTIONS": "0",
+  "VIBE_PHYSX_DIRECT_GPU": "0",
+  "PHYSX_ROOT": "/root/workspace/physx-gpu-activity/physx",
+  "LD_LIBRARY_PATH": "/root/workspace/physx-gpu-activity/physx/bin/linux.x86_64/release"
+}

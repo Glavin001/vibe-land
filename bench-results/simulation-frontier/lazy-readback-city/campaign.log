@@ -1,0 +1,13 @@
+START 0-eager 1788617878.0048118
+DONE {'trial': 0, 'mode': 'eager', 'exit_code': 0, 'wall_seconds': 148.03940505813807}
+START 0-lazy 1788618026.0447328
+DONE {'trial': 0, 'mode': 'lazy', 'exit_code': 0, 'wall_seconds': 116.55918852379546}
+START 1-lazy 1788618142.6044352
+DONE {'trial': 1, 'mode': 'lazy', 'exit_code': 0, 'wall_seconds': 118.47043970134109}
+START 1-eager 1788618261.0754056
+DONE {'trial': 1, 'mode': 'eager', 'exit_code': 0, 'wall_seconds': 141.574608404655}
+START 2-eager 1788618402.6505268
+DONE {'trial': 2, 'mode': 'eager', 'exit_code': 0, 'wall_seconds': 113.81902811909094}
+START 2-lazy 1788618516.4700592
+DONE {'trial': 2, 'mode': 'lazy', 'exit_code': 0, 'wall_seconds': 112.05324344802648}
+CAMPAIGN COMPLETE

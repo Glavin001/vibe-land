@@ -85,13 +85,48 @@ log, rather than claiming an uninterrupted green run.
 
 ## Performance and remaining work
 
-Three paired, alternating eager/lazy demolition trials on grid 2 are being
-measured from one fixed binary with the production 32-iteration, full-resimulation
-settings. Deterministic reductions and Direct GPU are disabled in this comparison
-so it isolates host impulse observation. Results belong in a subsequent update;
-there is no whole-city speedup claim at this checkpoint.
+Three paired eager/lazy demolition trials on grid 2 completed with one fixed
+binary, alternating arm order. Every trial ran 2,700 ticks, 450 shots and the
+production 32-iteration, full-resimulation settings. Deterministic reductions and
+Direct GPU were disabled. Final broken-bond counts ranged from 20,957 to 29,720
+in the eager controls and 23,180 to 26,975 in the lazy trials; each reported zero
+membership mismatches. Their differing trajectories prohibit interpreting raw
+whole-run time differences as the optimization's effect.
 
-Remaining work includes the at-rest and full scenario gates, benchmark analysis,
+After a 600-tick warmup, the 3,000–6,000-awake band yielded 1,062–2,100 samples
+per run. Its reported impulse-copy mean was 1.302 ms eager and zero lazy; solver
+host work was 3.559 vs 1.369 ms. For a closer comparison, the only 500-body band
+with at least 20 replay and 20 non-replay samples in **every** run was
+4,500–5,000 awake. Reweighting each trial to the same replay share (28.436%)
+gives the following averages across the three independent trial means:
+
+| Reported phase | Eager ms | Lazy ms | Observed reduction |
+|---|---:|---:|---:|
+| Impulse copy (`st_copy`) | 1.313 | 0.000 | 100% |
+| GPU-solver host work | 3.557 | 1.398 | 60.7% |
+| Solve wall bracket | 3.592 | 2.405 | 33.0% |
+| Destruction bracket | 9.417 | 8.157 | 13.4% |
+| Simulation including replay | 43.543 | 40.999 | 5.8% |
+
+These brackets overlap and must not be added. `sim` includes capture, PhysX,
+destruction and replay; it excludes encoding, transport and server scheduling.
+The comparison establishes removed host work and an observed simulation-mean
+improvement, not a multiplayer throughput or backlog result.
+
+Tail behavior is mixed. Standardized simulation p99 was 99.5, 108.3 and 96.9 ms
+for eager, versus 89.6, 95.8 and 125.4 ms for lazy. One shared-band trial has only
+56 samples, so these tails are particularly weak evidence. There is **no
+consistent p99 improvement**. Fracture/contact populations still differ within
+the matched band; the 5.8% mean reduction should not be treated as an isolated
+causal estimate or a production guarantee.
+
+The fixed binary hash, run manifest, runtime settings sample, raw logs, compressed
+CSVs and analyses are in `bench-results/simulation-frontier/lazy-readback-city/`.
+The runner restored the original deployment after each arm. The source checkpoints
+are solver `cdf6c3ed` and game `02b73a9` (the manifest was recorded before those
+local commits and also records the dirty-source and binary hashes).
+
+Remaining work includes the at-rest and full scenario gates, broader performance qualification,
 avoiding unnecessary host enumeration of changed bonds, and measuring observation
 cost on converged/mostly sleeping scenes. Lazy convergence observations currently
 read the whole live impulse array and may cost more than eager compact readback
@@ -99,3 +134,7 @@ in that regime. Body-to-node loads, contact ownership, complete replay and
 commit-only streaming still need the wider GPU integration described in the
 [city integration report](direct-gpu-city-integration-2026-09-05.md). The live city
 has not been switched to these experimental options.
+
+After the campaign, public HTTPS and a local browser WebTransport/bootstrap check
+passed on the restored city: 96,420 chunks rendered, no browser errors, orphaned
+chunks or hash mismatches. This does not establish external public UDP reachability.

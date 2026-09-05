@@ -1,0 +1,26 @@
+{
+  "0-eager/demolition.csv": {
+    "sha256": "75ebdfea41b8b938305156359087aea34a03e3afa7f60ef616267c1bb6b8a70e",
+    "gzip": "0-eager/demolition.csv.gz"
+  },
+  "0-lazy/demolition.csv": {
+    "sha256": "0d5d57a0c5acb4ed0428aa9005e239c2400bc28643cfc5b5bc7bab4f8227ca75",
+    "gzip": "0-lazy/demolition.csv.gz"
+  },
+  "1-eager/demolition.csv": {
+    "sha256": "144814a669d04599a01ce4c83662e19f0202461709e877107098fbccf0d81da7",
+    "gzip": "1-eager/demolition.csv.gz"
+  },
+  "1-lazy/demolition.csv": {
+    "sha256": "fb8a6cfa92a806f4e23b414787d6bc137048dfcb515f905775890b4b3a08aeb6",
+    "gzip": "1-lazy/demolition.csv.gz"
+  },
+  "2-eager/demolition.csv": {
+    "sha256": "12bbcae42d5eaba521e0f5d6659a399c86a77e5f3c477058d301338f8243bb9b",
+    "gzip": "2-eager/demolition.csv.gz"
+  },
+  "2-lazy/demolition.csv": {
+    "sha256": "33108d6ef7d115bab46f66468b9a62dc6555f0994dd19d83fd5bb48cb0dd6a11",
+    "gzip": "2-lazy/demolition.csv.gz"
+  }
+}

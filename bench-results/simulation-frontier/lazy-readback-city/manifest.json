@@ -1,0 +1,53 @@
+{
+  "game_head": "473f414adbe398948a62f05eb3247ff55df1bc30",
+  "solver_head": "86aac8baf0bf6c2ab3655f060f694ca6089c3cb2",
+  "binary_sha256": "b976aaf173d90983dcd578446c569f54c6db438327d206e7d550a5fda6b21e19",
+  "game_diff_sha256": "e7ccbb16e7226738557af06a650c398128925c8eaee33546ff5c9467f79fe2d0",
+  "solver_diff_sha256": "03e09e27354e46560622fddd1161a7ba75925831f10049c5d8a02813b3780f07",
+  "trials": 3,
+  "grid": 2,
+  "scenario": "demolition",
+  "seconds": 45,
+  "shots": 450,
+  "interval": 4,
+  "direct_gpu": false,
+  "deterministic_reductions": false,
+  "results": [
+    {
+      "trial": 0,
+      "mode": "eager",
+      "exit_code": 0,
+      "wall_seconds": 148.03940505813807
+    },
+    {
+      "trial": 0,
+      "mode": "lazy",
+      "exit_code": 0,
+      "wall_seconds": 116.55918852379546
+    },
+    {
+      "trial": 1,
+      "mode": "lazy",
+      "exit_code": 0,
+      "wall_seconds": 118.47043970134109
+    },
+    {
+      "trial": 1,
+      "mode": "eager",
+      "exit_code": 0,
+      "wall_seconds": 141.574608404655
+    },
+    {
+      "trial": 2,
+      "mode": "eager",
+      "exit_code": 0,
+      "wall_seconds": 113.81902811909094
+    },
+    {
+      "trial": 2,
+      "mode": "lazy",
+      "exit_code": 0,
+      "wall_seconds": 112.05324344802648
+    }
+  ]
+}
