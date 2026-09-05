@@ -142,6 +142,11 @@ fn a_shot_damages_the_facade_without_starting_a_collapse() {
         let end = rig.destruction.stats();
         let after = end.broken_bonds.saturating_sub(before);
         let cascade = after.saturating_sub(burst);
+        eprintln!(
+            "{name}: facade burst={burst} cascade={cascade} background_per_sec={background_per_sec} \
+             awake={} nodes={} total_bonds={}",
+            end.awake_chunk_bodies, pack.nodes.len(), end.broken_bonds,
+        );
 
         assert!(burst > 0, "{name}: a shot at the facade broke nothing at all");
 
@@ -168,8 +173,8 @@ fn a_shot_damages_the_facade_without_starting_a_collapse() {
         let still_moving = end.awake_chunk_bodies as f64 / pack.nodes.len() as f64;
         assert!(
             still_moving < 0.05,
-            "{name}: {} of {} bodies still moving 8 s after a single shot — it has not stopped \
-             coming apart",
+            "{name}: {} of {} bodies still moving 8 s after a single shot — \
+             this fixture's settling expectation was not met",
             end.awake_chunk_bodies, pack.nodes.len(),
         );
     }

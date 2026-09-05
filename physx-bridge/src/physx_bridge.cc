@@ -1327,12 +1327,23 @@ public:
 
 #ifdef NVBLAST_ENABLE_CUDA_STRESS
   void capture_gpu_contacts() {
+    gpu_contact_copy_ms_ = gpu_contact_ownership_ms_ = gpu_contact_validate_ms_ = 0.0;
+    gpu_contact_sort_ms_ = gpu_contact_reduce_ms_ = gpu_contact_route_ms_ = 0.0;
+    auto phase_start = std::chrono::steady_clock::now();
+    const auto finish_phase = [&]() {
+      const auto now = std::chrono::steady_clock::now();
+      const double ms = std::chrono::duration<double, std::milli>(now - phase_start).count();
+      phase_start = now;
+      return ms;
+    };
     require(deferred_pairs_.empty() && deferred_points_.empty(),
             "Direct GPU mixed native callbacks with device contacts");
     const PxU32 count = gpu_contact_drain_->copyContacts(
         gpu_contacts_.data(), static_cast<PxU32>(gpu_contacts_.size()));
     require(gpu_contact_drain_->lastCopyComplete(),
             "GPU contact readback failed or exceeded configured capacity");
+    gpu_contact_copy_ms_ = finish_phase();
+    gpu_contact_count_ = count;
     if (count == 0) {
       gpu_previous_pairs_.clear();
       return;
@@ -1364,6 +1375,7 @@ public:
         gpu_contact_shapes_[index] = {shape, actor};
       }
     }
+    gpu_contact_ownership_ms_ = finish_phase();
     // Native thresholds aggregate all shapes of a solver-body pair. Static
     // actors share the solver's world body, including separate static actors.
     const auto actor_pair_key = [](PxRigidActor *a, PxRigidActor *b) {
@@ -1395,11 +1407,13 @@ public:
         contact.worldNormal = -contact.worldNormal;
       }
     }
+    gpu_contact_validate_ms_ = finish_phase();
     std::sort(gpu_contacts_.begin(), gpu_contacts_.begin() + count,
               [](const auto &a, const auto &b) {
                 return std::tie(a.transformCacheRef0, a.transformCacheRef1, a.friction, a.pointIndex)
                      < std::tie(b.transformCacheRef0, b.transformCacheRef1, b.friction, b.pointIndex);
               });
+    gpu_contact_sort_ms_ = finish_phase();
     // Accumulate in the sorted order, independent of CUDA atomic emission.
     for (PxU32 i = 0; i < count; ++i) {
       const auto &contact = gpu_contacts_[i];
@@ -1408,6 +1422,7 @@ public:
             += contact.normalImpulse;
       }
     }
+    gpu_contact_reduce_ms_ = finish_phase();
     gpu_current_pairs_.clear();
     for (PxU32 begin = 0; begin < count;) {
       const auto &first = gpu_contacts_[begin];
@@ -1457,6 +1472,7 @@ public:
       begin = end;
     }
     gpu_previous_pairs_.swap(gpu_current_pairs_);
+    gpu_contact_route_ms_ = finish_phase();
   }
 #endif
 
@@ -2085,6 +2101,7 @@ public:
     }
 #ifdef NVBLAST_ENABLE_CUDA_STRESS
     if (gpu_host_mirror_ != nullptr) {
+      const auto mirror_start = std::chrono::steady_clock::now();
       const PxU32 count = scene_->getNbActors(PxActorTypeFlag::eRIGID_DYNAMIC);
       gpu_mirror_actors_.resize(count);
       gpu_mirror_bodies_.resize(count);
@@ -2096,6 +2113,8 @@ public:
       }
       require(gpu_host_mirror_->synchronize(gpu_mirror_bodies_.data(), count),
               "GPU motion observation failed");
+      gpu_host_mirror_ms_ = std::chrono::duration<double, std::milli>(
+          std::chrono::steady_clock::now() - mirror_start).count();
       capture_gpu_contacts();
     }
 #endif
@@ -2258,6 +2277,16 @@ public:
     // Kept under its old name so existing traces and comparisons keep
     // working, but it is no longer an estimate: every callback is timed.
     span("contact_callback_est_ms", contact_callback_ms_, 0);
+#ifdef NVBLAST_ENABLE_CUDA_STRESS
+    span("direct_host_mirror_ms", gpu_host_mirror_ms_, 0);
+    span("direct_contact_copy_ms", gpu_contact_copy_ms_, 0);
+    span("direct_contact_ownership_ms", gpu_contact_ownership_ms_, 0);
+    span("direct_contact_validate_ms", gpu_contact_validate_ms_, 0);
+    span("direct_contact_sort_ms", gpu_contact_sort_ms_, 0);
+    span("direct_contact_reduce_ms", gpu_contact_reduce_ms_, 0);
+    span("direct_contact_route_ms", gpu_contact_route_ms_, 0);
+    span("direct_contact_count", gpu_contact_count_, 2);
+#endif
     // The rigid-body decomposition. sim_wall and fetch_call are 0 on
     // unsampled ticks; sim_wall_sampled marks the ones that carry a number,
     // so an average is taken over the right denominator rather than being
@@ -2926,6 +2955,12 @@ private:
   std::vector<PxRigidDynamic *> gpu_mirror_bodies_;
   Nv::Blast::ExtStressPhysXDirectGpuContactDrain *gpu_contact_drain_ = nullptr;
   std::vector<Nv::Blast::ExtStressPhysXDirectGpuContact> gpu_contacts_;
+  // Exact wall times for explicit Direct GPU observation, separate from fetch.
+  double gpu_host_mirror_ms_ = 0.0, gpu_contact_copy_ms_ = 0.0;
+  double gpu_contact_ownership_ms_ = 0.0, gpu_contact_validate_ms_ = 0.0;
+  double gpu_contact_sort_ms_ = 0.0, gpu_contact_reduce_ms_ = 0.0;
+  double gpu_contact_route_ms_ = 0.0;
+  PxU32 gpu_contact_count_ = 0;
   struct GpuContactShape { PxShape *shape = nullptr; PxRigidActor *actor = nullptr; };
   std::vector<GpuContactShape> gpu_contact_shapes_;
   std::vector<PxActor *> gpu_contact_actors_;

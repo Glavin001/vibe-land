@@ -191,7 +191,7 @@ checks = [
      f"{measured['t2_bonds']} vs >= {g['t2_bonds_min']} (too weak)"),
     ("T2 bonds <= max",        measured["t2_bonds"] <= g["t2_bonds_max"],
      f"{measured['t2_bonds']} vs <= {g['t2_bonds_max']} (one shot pulverizes)"),
-    ("T2 bodies bounded",      measured["t2_bodies"] <= g["t2_bodies_max"],
+    ("T2 fixture body count",      measured["t2_bodies"] <= g["t2_bodies_max"],
      f"{measured['t2_bodies']} vs <= {g['t2_bodies_max']} (runaway cascade)"),
     ("T3 tower fell",          measured["t3_height_retained"] <= g["t3_height_retained_max"],
      f"retained {measured['t3_height_retained']:.2f} vs <= {g['t3_height_retained_max']:.2f}"),

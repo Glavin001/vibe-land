@@ -86,6 +86,8 @@ struct Args {
     /// disk, which is how this was learned. This stream is ~40 numbers a tick
     /// and is what the benchmark campaign reads.
     metrics_out: Option<PathBuf>,
+    /// Per-tick named spans without requiring a packet/encoder capture.
+    timings_out: Option<PathBuf>,
     /// End-of-run scenario summary (JSON): collapse-shape metrics around the
     /// primary shot target, freeze health, damage totals. What the scenario
     /// suite asserts against -- "the building fell and toppled" as numbers.
@@ -130,6 +132,7 @@ impl Args {
         let mut targets = 0u32;
         let mut output = PathBuf::from("city.towertrace");
         let mut metrics_out: Option<PathBuf> = None;
+        let mut timings_out: Option<PathBuf> = None;
         let mut summary_out: Option<PathBuf> = None;
         let mut aim_lock = false;
         let mut packets_out = None;
@@ -156,6 +159,7 @@ impl Args {
                 "--targets" => targets = value()?.parse()?,
                 "--output" => output = PathBuf::from(value()?),
                 "--metrics-out" => metrics_out = Some(PathBuf::from(value()?)),
+                "--timings-out" => timings_out = Some(PathBuf::from(value()?)),
                 "--summary-out" => summary_out = Some(PathBuf::from(value()?)),
                 "--aim-lock" => aim_lock = true,
                 "--packets-out" => packets_out = Some(PathBuf::from(value()?)),
@@ -191,12 +195,15 @@ impl Args {
                         "record-city-trace --output <path> [--scene <pack.json>] \
                          [--grid N] [--hz 60] [--seconds 30] [--settle-ticks 60] \
                          [--shots N] [--targets N] [--shot-interval-ticks N] \
-                         [--packets-out <dir>] [--packets-wire 2|3]"
+                         [--timings-out <jsonl>] [--packets-out <dir>] [--packets-wire 2|3]"
                     );
                     std::process::exit(0);
                 }
                 other => bail!("unknown flag {other}"),
             }
+        }
+        if timings_out.is_some() && packets_out.is_some() {
+            bail!("--timings-out and --packets-out both select a timing destination; use one");
         }
         if grid == 0 || grid > 8 {
             // 6 structure-id bits; grid 8 is 64 structures, the packing limit.
@@ -216,6 +223,7 @@ impl Args {
             targets,
             output,
             metrics_out,
+            timings_out,
             summary_out,
             aim_lock,
             packets_out,
@@ -912,6 +920,9 @@ fn main() -> Result<()> {
         timings_log = Some(std::io::BufWriter::new(std::fs::File::create(
             dir.join("timings.jsonl"),
         )?));
+    }
+    if let Some(path) = args.timings_out.as_ref() {
+        timings_log = Some(std::io::BufWriter::new(std::fs::File::create(path)?));
     }
     let shot_plan = build_shot_plan(&manifest, args.shots, args.targets);
     let mut epoch = 0u32;
