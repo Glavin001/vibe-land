@@ -81,10 +81,59 @@ Diagnostic logs describe successive candidates; only the final sources and
 current SDK manifest define the candidate for city qualification. Raw timings
 from these tiny fixtures are not city performance measurements.
 
-## Remaining qualification
+## City qualification and deployment
 
-The rebuilt city candidate needs its complete release integration suites,
-city scenarios, replay audits and deployment/browser verification. Its initial
-focused success does not certify the city's full fidelity or performance.
-The inherited bending/torsion gain ceiling, depenetration behavior and other
-items in [the fidelity contract](simulation-fidelity-contract.md) remain open.
+Both ordinary GPU and Direct GPU passed the complete release destruction and
+bridge integration suites: **176 passed, 27 ignored per mode**. Both main city
+scenario runs passed, including 90 seconds at rest (one bond break each), facade
+damage, collapse, settling, escapes and contact-buffer headroom.
+
+The single T5 scenario run measured physics-plus-stress p95 of **24 ms ordinary
+GPU and 39 ms Direct GPU** in the 3,000–6,000-awake range (840 and 932 samples).
+These are different fracture trajectories, not a three-trial matched performance
+campaign, and they exclude encoding/streaming/transport. Direct GPU still has
+substantial CPU contact processing and observation overhead. No city speedup is
+claimed for enabling that mode.
+
+A grid-2, 900-tick Direct GPU audit completed **900 captures and 312 replays**,
+with zero capture errors and membership mismatches. Threshold, removal ordering,
+node masks, compact fracture sets, impulse mirrors and cached payload checks
+reported no mismatches. Tiny stress/bending differences remain near zero
+(maximum reported stress error `1.009e-16`, zero large discrepancies); this is
+not an all-values-bit-identical claim or a device-only topology checkpoint proof.
+
+The main collapse run and two repeats all ended at zero awake bodies. The second
+repeat narrowly missed the settling-time band: final-five-second median 66 of
+639 peak bodies, **10.33% versus the 10% threshold**, despite reaching zero by
+the end. Thus repeated settling qualification remains open. No speed, force or
+fracture limiter, or more aggressive freezing, was added to make this band pass.
+
+The first Direct GPU playtest is now deployed at
+[the city](https://209.121.195.117:40617/city). The running environment has
+`VIBE_PHYSX_DIRECT_GPU=1`, the experimental SDK root, native GPU sleeping support,
+and lazy stress impulse readback. The existing grid-2 fractured-downtown scene,
+32 stress iterations, one full replay pass and other physics settings remain.
+Speculative CCD stays enabled. Runtime binary and loaded GPU module identity
+were checked before browser verification.
+
+- Server SHA-256: `c8c62e6aaad2fc03c9aec8d51f0ace728e44e9204017d84f50ea4d9810e72377`.
+- SDK manifest: `617b9966dd8c4ee128e756f92e339f5898a9b81b3bcf58f68e11f889394bb70b`.
+- Simulation source: game `2e8c2bb`, solver `f0b16a90`; solver `f5d20298` subsequently fixes cached compiler-name resolution without changing runtime artifacts.
+- Browser: WebTransport, bootstrap, 96,420 rendered chunks, no JavaScript errors,
+  orphaned chunks or ledger hash mismatches; **one structure repair**.
+- Public HTTPS passed. External UDP is **not verified** by the local browser.
+  The P-256 self-signed certificate expires September 17; Chrome/Edge require
+  accepting the certificate warning. The browser test used FAST 480×270 and did
+  not fire; it is functional evidence, not a visual/performance certification.
+
+`deployment.json`, `candidate.json`, `sdk-manifest.json`, and the hash inventory
+pin the deployed artifacts. `summarize.py` recomputes results from raw or gzipped
+logs/CSV. The scoped rollout retained the previous binary and private environment
+under `.certs/vast-city/` for rollback; those private environment values are not
+part of the committed evidence.
+
+The deployment is a functional Direct GPU milestone, not completion of the
+simulation-frontier plan. Next are GPU contact/load assembly, removal of CPU
+observation overhead, repeated settling and full-tick/streaming qualification.
+The bending/torsion gain ceiling, depenetration behavior and other items in
+[the fidelity contract](simulation-fidelity-contract.md) remain open.

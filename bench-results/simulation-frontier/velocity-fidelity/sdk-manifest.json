@@ -1,0 +1,25 @@
+{
+  "base": "3ca45ad36e9755f7c8c5bea9f7c57d308d9f0c54",
+  "patch_sha256": "f241b416c6c72f44b14fd8bb7e41ca7fa120fbfaa015eaa7b4af1cd9f6ec3c95",
+  "feature_version": 1,
+  "host_access_version": 1,
+  "sdk": "/root/workspace/physx-gpu-activity/physx",
+  "libraries": {
+    "libPVDRuntime_64.so": "7ced8c8e62fd6323cbb75910cf1a9cf29e2cfe5cfe1d053a8ad061a6bd4d1c2b",
+    "libPhysXCharacterKinematic_static_64.a": "80a499ae47b28d3531b32fb6aadb7b38b72d2f603bbd52a21b7513466692a26e",
+    "libPhysXCommon_static_64.a": "25877027ce9e4b43c888e42f01b94dd193ec1bd165c78aeee0216a61053be547",
+    "libPhysXCooking_static_64.a": "8c919efa53e9ad97930c370c0757e706bcc7f12f0e0b801278ddcd33ec5826a6",
+    "libPhysXCudaContextManager_static_64.a": "7f4eff7b488a369d50000ecb19230d85571eb78791541e5b3118f7ec136c9e2e",
+    "libPhysXExtensions_static_64.a": "3e733b54a1d8c8cbdecb70d5baffe84a528f8a6f8ca976b662437123448942de",
+    "libPhysXFoundation_static_64.a": "38faa4441cba5b4360e46e877bf2d3cee2672e284e14b2887cb05fe43dfe3d54",
+    "libPhysXGpuActivity_64.so": "a9d31ed627fe083a5f47f67b5c1f0600f0b2353f1e5b695bd32d2d3dca0df0a8",
+    "libPhysXPvdSDK_static_64.a": "7c548afd8f3a480d7b0777df43da6a8b7feb001fd007eb788ce5c33a2f23c318",
+    "libPhysXVehicle_static_64.a": "132ba95f094403a40dc75526951fbe63c34df2c6447db50e0c96c19b7dbf99ab",
+    "libPhysX_static_64.a": "3edf1b610e45024bd436582ef41ca4d2ab605d82449fc0dfa02d3721ed2d9b26"
+  },
+  "compilers": {
+    "cc": "Ubuntu clang version 18.1.3 (1ubuntu1)",
+    "cxx": "Ubuntu clang version 18.1.3 (1ubuntu1)",
+    "cuda": "nvcc: NVIDIA (R) Cuda compiler driver"
+  }
+}

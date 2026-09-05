@@ -1,0 +1,62 @@
+{
+  "binary_sha256": "c8c62e6aaad2fc03c9aec8d51f0ace728e44e9204017d84f50ea4d9810e72377",
+  "previous_binary_sha256": "e50182b598fb8ab53a9aa095ef23f24793df5199583990aeba9135acf6360e40",
+  "sdk_manifest_sha256": "617b9966dd8c4ee128e756f92e339f5898a9b81b3bcf58f68e11f889394bb70b",
+  "direct_gpu": "1",
+  "verification": {
+    "url": "https://209.121.195.117:40617/city",
+    "health": {
+      "status": "ok",
+      "physics_backend": "physx_gpu",
+      "physics_gpu_required": true,
+      "sim_hz": 60,
+      "snapshot_hz": 60,
+      "active_matches": 0,
+      "players": 0,
+      "udp_verified": false,
+      "wt_connection_attempts": 0,
+      "session_configs_served": 0
+    },
+    "manifest_bytes": 29918116,
+    "certificate_expires": "Sep 17 05:46:36 2026 GMT",
+    "local_http": "passed",
+    "public_https": "passed",
+    "public_udp": "not_verified",
+    "browser": {
+      "ok": true,
+      "profile": "fast, 480x270, software rendering",
+      "publicUdpVerified": false,
+      "errors": [],
+      "advertisedUrl": "https://209.121.195.117:40628/game",
+      "transport": "webtransport",
+      "city": {
+        "wireVersion": 2,
+        "chunksTotal": 96420,
+        "chunksAwake": 0,
+        "chunksSettled": 0,
+        "brokenBonds": 0,
+        "liveIslands": 0,
+        "topoSeqGaps": 0,
+        "datagramsReceived": 0,
+        "bytesPerSecond": 76.66238167582097,
+        "manifestHash": "1172d302f5598a5f366d8149b3772f8a9642788f42b753f00e8c3607fbe09c50",
+        "rendered": true,
+        "minChunkY": 0.3009999990463257,
+        "chunksBelowGround": 0,
+        "chunkUpdateP95Ms": 55.72499990463257,
+        "orphanedChunks": 0,
+        "orphanedByRetire": 0,
+        "staleDrawnChunks": 0,
+        "bootstraps": 1,
+        "settleRejects": 0,
+        "valveApplies": 0,
+        "valveTicksAhead": 0,
+        "hashChecks": 3,
+        "hashMismatches": 0,
+        "structureRepairs": 1,
+        "deepest": null
+      },
+      "elapsedMs": 13993
+    }
+  }
+}

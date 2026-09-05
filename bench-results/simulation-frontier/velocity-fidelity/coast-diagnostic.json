@@ -1,0 +1,54 @@
+[
+  {
+    "label": "cpu",
+    "exit_code": 0,
+    "wall_seconds": 0.007621584925800562,
+    "binary_sha256": "e8f04bb5bcd00f2a0c79cddbf8ad8278981de27543f43fac0b9378b0851e42d9",
+    "command": [
+      "/root/workspace/blast-stress-solver-2/demos/blast-stress-demo/build-gpu-activity/velocity_fidelity_test",
+      "cpu"
+    ]
+  },
+  {
+    "label": "gpu",
+    "exit_code": 1,
+    "wall_seconds": 0.5145657560788095,
+    "binary_sha256": "e8f04bb5bcd00f2a0c79cddbf8ad8278981de27543f43fac0b9378b0851e42d9",
+    "command": [
+      "/root/workspace/blast-stress-solver-2/demos/blast-stress-demo/build-gpu-activity/velocity_fidelity_test",
+      "gpu"
+    ]
+  },
+  {
+    "label": "direct",
+    "exit_code": 1,
+    "wall_seconds": 0.46452139783650637,
+    "binary_sha256": "e8f04bb5bcd00f2a0c79cddbf8ad8278981de27543f43fac0b9378b0851e42d9",
+    "command": [
+      "/root/workspace/blast-stress-solver-2/demos/blast-stress-demo/build-gpu-activity/velocity_fidelity_test",
+      "direct"
+    ]
+  },
+  {
+    "label": "bridge-gpu",
+    "exit_code": 0,
+    "wall_seconds": 1.4674122389405966,
+    "binary_sha256": "519221a7aebdb2f72afe727c2021a22abf6386a1cc47a1826f9ddece4993d3f3",
+    "command": [
+      "/root/workspace/vibe-land-4/target/gpu-activity/debug/deps/velocity_fidelity-68fd790b9769f0e3",
+      "--nocapture",
+      "--test-threads=1"
+    ]
+  },
+  {
+    "label": "bridge-direct",
+    "exit_code": 0,
+    "wall_seconds": 1.9671588758938015,
+    "binary_sha256": "519221a7aebdb2f72afe727c2021a22abf6386a1cc47a1826f9ddece4993d3f3",
+    "command": [
+      "/root/workspace/vibe-land-4/target/gpu-activity/debug/deps/velocity_fidelity-68fd790b9769f0e3",
+      "--nocapture",
+      "--test-threads=1"
+    ]
+  }
+]

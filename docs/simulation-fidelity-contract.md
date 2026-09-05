@@ -36,7 +36,7 @@ settings or deployment changed as part of recording this clarification.
 |---|---|---|
 | Body-count cap | `VIBE_CITY_MAX_BODIES` is unset; city resolves to `maximum_bodies = 0` (unlimited). The old positive-value override still exists. | Do not use the override as a performance fallback; remove that escape path from future city configuration. |
 | Per-actor bond-break cap | City sets `maximum_fractures_per_actor_per_tick = 0` (unlimited). | Preserve unlimited fracture output through topology changes and replay. |
-| Rigid-body angular-speed limit | The rotation-fidelity candidate uses the SDK numeric range instead of the inherited 100 rad/s ceiling, including fracture children. | Focused CPU/GPU/Direct GPU momentum and centrifugal-fracture tests pass; complete city qualification and rollout are still required. |
+| Rigid-body angular-speed limit | The live Direct GPU increment uses the SDK numeric range instead of the inherited 100 rad/s ceiling, including fracture children. | Focused momentum/fracture tests and complete release integration suites pass in both GPU modes; broader fidelity auditing remains open. |
 | Bending/torsion gain ceiling | `BLAST_BEND_MAX_GAIN` is unset, selecting the existing default ceiling of 3 in the shared stress formula. | Correct and validate the discretization/load model rather than hiding excess stress under a gain ceiling. |
 | Depenetration-speed limit | `VIBE_CITY_DEPEN_VELOCITY` is unset; the bridge supplies its existing 1 m/s overlap-correction limit. | Assess its effect on contact impulses and fracture. Do not assume that numerical correction is fidelity-neutral. |
 

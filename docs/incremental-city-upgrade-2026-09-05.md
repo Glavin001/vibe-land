@@ -97,3 +97,7 @@ Direct GPU motion/contact integration, GPU sleeping experiments, complete GPU
 fracture replay, device-owned load assembly and full streaming optimization are
 still separate work. This rollout makes the validated readback improvement
 playable while that larger implementation continues.
+
+Latest deployment: the [rotation-fidelity increment](rotation-fidelity-2026-09-05.md)
+enables Direct GPU in the public city. The results above describe the earlier
+checkpoint; see the new report for current artifacts and remaining limitations.

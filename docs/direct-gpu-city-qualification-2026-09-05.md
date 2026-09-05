@@ -129,3 +129,7 @@ The owner subsequently clarified the [simulation fidelity contract](simulation-f
 Outcome guardrails must never be implemented through runtime force, velocity or
 fracture caps. The initial audit identifies inherited limiters still requiring
 correction; the passing cases above are not a claim that the simulation is uncapped.
+
+Latest deployment: the [rotation-fidelity increment](rotation-fidelity-2026-09-05.md)
+enables Direct GPU in the public city. The results above describe the earlier
+checkpoint; see the new report for current artifacts and remaining limitations.

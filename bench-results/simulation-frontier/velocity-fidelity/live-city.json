@@ -1,0 +1,30 @@
+{
+  "pid": 3665986,
+  "health": {
+    "status": "ok",
+    "physics_backend": "physx_gpu",
+    "physics_gpu_required": true,
+    "sim_hz": 60,
+    "snapshot_hz": 60,
+    "active_matches": 1,
+    "players": 0,
+    "udp_verified": true,
+    "wt_connection_attempts": 1,
+    "session_configs_served": 3
+  },
+  "binary_sha256": "c8c62e6aaad2fc03c9aec8d51f0ace728e44e9204017d84f50ea4d9810e72377",
+  "env": {
+    "BLAST_GPU_IMPULSE_READBACK": "0",
+    "BLAST_GPU_DETERMINISTIC_REDUCTIONS": "0",
+    "PHYSX_ROOT": "/root/workspace/physx-gpu-activity/physx",
+    "VIBE_PHYSX_DIRECT_GPU": "1",
+    "VIBE_CITY_STRESS_LIMIT_SCALE": "0.45",
+    "VIBE_CITY_FREEZE": "1",
+    "BLAST_GPU_WHOLE_RESET_ON_TOPOLOGY": "1",
+    "BLAST_BOND_STRESS_GPU": "1",
+    "VIBE_CITY_SOLVER_ITERATIONS": "32",
+    "VIBE_CITY_RESIM_PASSES": "1",
+    "VIBE_CITY_GRID": "2",
+    "VIBE_CITY_SCENE": "fractured-downtown.json"
+  }
+}

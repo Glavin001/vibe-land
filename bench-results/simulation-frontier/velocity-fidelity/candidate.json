@@ -1,0 +1,10 @@
+{
+  "game_commit": "2e8c2bb",
+  "solver_commit": "f0b16a90",
+  "sdk_manifest_sha256": "617b9966dd8c4ee128e756f92e339f5898a9b81b3bcf58f68e11f889394bb70b",
+  "sdk_patch_sha256": "f241b416c6c72f44b14fd8bb7e41ca7fa120fbfaa015eaa7b4af1cd9f6ec3c95",
+  "binaries": {
+    "web-fps-server": "c8c62e6aaad2fc03c9aec8d51f0ace728e44e9204017d84f50ea4d9810e72377",
+    "record-city-trace": "e8ef27773b8d1946f96ebf37e1e18e8a91be21aa6ba89307b1c347b5ca72bc3b"
+  }
+}
