@@ -1,0 +1,51 @@
+# Simulation fidelity contract
+
+Owner clarification, 2026-09-05: performance improvements must not suppress
+physical interactions by limiting forces, impulses, velocities, fractures,
+broken bonds or the number of resulting bodies. Apply this constraint to the
+ordinary GPU path, Direct GPU path, stress solver, replay and streaming work.
+
+A scenario assertion about localized facade damage is an expectation for its
+specific authored structure, initial state and shot. It does not impose a
+runtime damage budget. If the physical response requires a progressive or
+complete collapse, the simulation must permit it. Investigate the model and
+fixture expectation; do not force the output into a desired bond-count band.
+Likewise, a retirement or performance guard cannot justify suppressing motion,
+artificially weakening loads or freezing debris that should still move.
+
+Material strength, geometry, friction and fracture energy determine the physical
+response. Arbitrary computational ceilings are not substitutes for those laws.
+Numerical regularization also requires validation: calling a limiter a stability
+fix does not establish that it preserves fidelity. Distinguish floating-point
+roundoff protection from changing a meaningful force or motion. Residual and
+convergence errors must be measured, not hidden by clipping stresses.
+
+Finite storage capacity is an engineering constraint, not permission to discard
+interactions. Detect exhaustion explicitly and expand/retry where supported;
+do not stream a result as complete after truncating contacts, fracture commands,
+wake events or other required work. Preserve full same-tick fracture replay and
+publish only committed state. Sleeping/freezing must retain correct support and
+wake behavior rather than being used to meet a timing target.
+
+## Initial audit of the current city
+
+This is a partial audit, not a claim that all limits have been removed. No runtime
+settings or deployment changed as part of recording this clarification.
+
+| Mechanism | Observed current behavior | Required follow-up |
+|---|---|---|
+| Body-count cap | `VIBE_CITY_MAX_BODIES` is unset; city resolves to `maximum_bodies = 0` (unlimited). The old positive-value override still exists. | Do not use the override as a performance fallback; remove that escape path from future city configuration. |
+| Per-actor bond-break cap | City sets `maximum_fractures_per_actor_per_tick = 0` (unlimited). | Preserve unlimited fracture output through topology changes and replay. |
+| Rigid-body angular-speed limit | PhysX initializes ordinary dynamic bodies with a 100 rad/s ceiling; adapter creation does not remove it. | Remove the artificial trajectory limit and validate fast-spin and torque-driven fracture cases on both physics paths. |
+| Bending/torsion gain ceiling | `BLAST_BEND_MAX_GAIN` is unset, selecting the existing default ceiling of 3 in the shared stress formula. | Correct and validate the discretization/load model rather than hiding excess stress under a gain ceiling. |
+| Depenetration-speed limit | `VIBE_CITY_DEPEN_VELOCITY` is unset; the bridge supplies its existing 1 m/s overlap-correction limit. | Assess its effect on contact impulses and fracture. Do not assume that numerical correction is fidelity-neutral. |
+
+Other inherited defaults, contact-report filters, overflow handling, force
+injection, damping and freeze/wake behavior still require inspection. Existing
+comments saying there are no velocity caps do not account for inherited engine
+defaults and are insufficient evidence.
+
+The Direct GPU qualification in
+[the current checkpoint](direct-gpu-city-qualification-2026-09-05.md) establishes
+specific observed behavior. It does not establish full compliance with this
+contract. Future promotions must report remaining fidelity issues explicitly.

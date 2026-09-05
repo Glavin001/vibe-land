@@ -124,3 +124,8 @@ the candidate server is
 `653f9c331cc0d29987afd140b44e458f9da65d7fbcd2570137d6c24bf82700e8`.
 The live ordinary-GPU server is a different artifact, recorded separately in
 `live-city.json`. No Direct GPU browser or public-network rollout is claimed.
+
+The owner subsequently clarified the [simulation fidelity contract](simulation-fidelity-contract.md).
+Outcome guardrails must never be implemented through runtime force, velocity or
+fracture caps. The initial audit identifies inherited limiters still requiring
+correction; the passing cases above are not a claim that the simulation is uncapped.

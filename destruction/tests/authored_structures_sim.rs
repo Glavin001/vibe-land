@@ -152,6 +152,10 @@ fn a_shot_damages_the_facade_without_starting_a_collapse() {
         // over, a collapse keeps taking the structure apart for seconds after.
         // Nine seconds of aftermath, so the building's own settling accounts
         // for that much of whatever kept breaking.
+        // Outcome assertion for this fixture, never a runtime damage budget.
+        // If a validated physical model predicts a collapse here, revisit the
+        // fixture expectation; do not cap forces, velocities or bond breaks
+        // to make this assertion pass (see simulation-fidelity-contract.md).
         let expected_background = (background_per_sec * 9.0).ceil() as u32;
         assert!(
             cascade <= burst + expected_background,
