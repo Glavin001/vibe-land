@@ -27,6 +27,19 @@ fn load(name: &str) -> ScenePack {
     load_scene_pack_file(&path).unwrap_or_else(|e| panic!("load {name}: {e:?}"))
 }
 
+/// A quiet structure still needs a current snapshot: the next physics step
+/// can introduce an impact and fracture even when the previous step did not.
+#[test]
+fn each_physics_step_has_a_current_replay_snapshot() {
+    let pack = load(SMALL);
+    let mut rig = Rig::spin_up(&pack).expect("install");
+    for tick in 1..=4 {
+        rig.step().expect("tick");
+        let (captures, _) = rig.destruction.resim_counters();
+        assert_eq!(captures, tick, "{}", rig.destruction.resim_diagnosis());
+    }
+}
+
 /// The bench stands a building up, notices it stopped moving, and knows where
 /// its chunks are.
 #[test]

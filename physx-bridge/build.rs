@@ -1,22 +1,17 @@
 #[cfg(feature = "gpu")]
 use std::{env, path::PathBuf};
 
+// Both native libraries and reference stress sources come from the same SDK.
 #[cfg(feature = "gpu")]
-const DEFAULT_PHYSX_ROOT: &str = "/root/PhysX/physx/install/linux-clang/PhysX";
-
-#[cfg(feature = "gpu")]
-/// The production checkout is `blast-stress-solver-2`, and since the
-/// structural-realism merge (perf/full-tick) it carries BOTH lines of solver
-/// work: the GPU solve (node-space CGLS, delta upload, early exit) and the
-/// structural rig (Young's modulus column scaling, fibre bending, crush). A
-/// build that fails on a missing `elasticModulusPa` or `colScale` is compiling
-/// against a stale Blast tree. Overridable by BLAST_ROOT either way, and it
-/// must agree with `destruction/Cargo.toml`'s `blast-stress-solver` path.
-const DEFAULT_BLAST_ROOT: &str = "/root/workspace/blast-stress-solver-2/blast";
+fn destruction_sdk() -> PathBuf {
+    env::var_os("PHYSX_DESTRUCTION_SDK").map(PathBuf::from).unwrap_or_else(||
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../physx-2"))
+}
 
 #[cfg(feature = "gpu")]
 fn main() {
     println!("cargo:rerun-if-env-changed=PHYSX_ROOT");
+    println!("cargo:rerun-if-env-changed=PHYSX_DESTRUCTION_SDK");
     println!("cargo:rerun-if-env-changed=BLAST_ROOT");
     println!("cargo:rerun-if-changed=src/lib.rs");
     println!("cargo:rerun-if-changed=src/physx_bridge.cc");
@@ -24,9 +19,24 @@ fn main() {
     println!("cargo:rerun-if-changed=include/physx_bridge.h");
     println!("cargo:rerun-if-changed=include/destruction.h");
 
-    let root =
-        PathBuf::from(env::var_os("PHYSX_ROOT").unwrap_or_else(|| DEFAULT_PHYSX_ROOT.into()));
-    let include = root.join("include");
+    let root = env::var_os("PHYSX_ROOT").map(PathBuf::from)
+        .unwrap_or_else(|| destruction_sdk().join("physx"));
+    let include = if root.join("include/physx/PxPhysicsAPI.h").is_file() {
+        root.join("include/physx")
+    } else { root.join("include") };
+    // The activity SDK has a different CPU/GPU ABI. Select the module from
+    // the header we compile against, never from whichever .so happens to be
+    // present first on the library search path.
+    let scene_header = include.join("PxSceneDesc.h");
+    println!("cargo:rerun-if-changed={}", scene_header.display());
+    let gpu_library = if std::fs::read_to_string(&scene_header)
+        .expect("cannot read PhysX scene descriptor header")
+        .contains("#define PX_DIRECT_GPU_SLEEPING_VERSION")
+    {
+        "PhysXGpuActivity_64"
+    } else {
+        "PhysXGpu_64"
+    };
     let lib = [root.join("bin/linux.x86_64/release"), root.join("lib")]
         .into_iter()
         .find(|candidate| candidate.join("libPhysX_static_64.a").is_file())
@@ -47,13 +57,14 @@ fn main() {
         lib.join("libPhysXCooking_static_64.a"),
         lib.join("libPhysXCharacterKinematic_static_64.a"),
         lib.join("libPhysXVehicle_static_64.a"),
-        lib.join("libPhysXGpu_64.so"),
+        lib.join(format!("lib{gpu_library}.so")),
     ] {
         assert!(
             required.is_file(),
             "required PhysX artifact is missing: {}",
             required.display()
         );
+        println!("cargo:rerun-if-changed={}", required.display());
     }
 
     let mut build = cxx_build::bridge("src/lib.rs");
@@ -67,8 +78,8 @@ fn main() {
         .flag_if_supported("-Wextra");
 
     if cfg!(feature = "destruction") {
-        let blast =
-            PathBuf::from(env::var_os("BLAST_ROOT").unwrap_or_else(|| DEFAULT_BLAST_ROOT.into()));
+        let blast = env::var_os("BLAST_ROOT").map(PathBuf::from)
+            .unwrap_or_else(|| destruction_sdk().join("blast"));
         let blast_sources = [
             "rust_stress_example/ffi/ext_stress_bridge.cpp",
             "source/shared/stress_solver/stress.cpp",
@@ -127,8 +138,25 @@ fn main() {
         #[cfg(feature = "cuda-stress")]
         {
             build.define("NVBLAST_ENABLE_CUDA_STRESS", None);
+            build.define("NVBLAST_ENABLE_DIRECT_GPU_CONTACT_DRAIN", None);
             build.include(blast.join("include/extensions/stressgpu"));
-            compile_cuda_stress(&blast);
+            for source in [
+                "source/sdk/extensions/stressphysx/NvBlastExtStressPhysXDirectGpu.cpp",
+                "source/sdk/extensions/stressphysx/NvBlastExtStressPhysXGpuActivity.cpp",
+                "source/sdk/extensions/stressphysx/NvBlastExtStressPhysXGpuHostMirror.cpp",
+            ] {
+                let path = blast.join(source);
+                println!("cargo:rerun-if-changed={}", path.display());
+                build.file(path);
+            }
+            for header in [
+                "include/extensions/stressphysx/NvBlastExtStressPhysXDirectGpu.h",
+                "include/extensions/stressphysx/NvBlastExtStressPhysXGpuActivity.h",
+                "include/extensions/stressphysx/NvBlastExtStressPhysXGpuHostMirror.h",
+            ] {
+                println!("cargo:rerun-if-changed={}", blast.join(header).display());
+            }
+            compile_cuda_stress(&blast, &include);
         }
     }
 
@@ -153,7 +181,10 @@ fn main() {
     // hardware rather than a missing runtime path, and silently downgrades
     // every GPU test to a skip.
     println!("cargo:rustc-link-arg=-Wl,-rpath,{}", lib.display());
-    println!("cargo:rustc-link-lib=dylib=PhysXGpu_64");
+    println!("cargo:rustc-link-lib=dylib={gpu_library}");
+    if lib.join("libPVDRuntime_64.so").is_file() {
+        println!("cargo:rustc-link-lib=dylib=PVDRuntime_64");
+    }
     println!("cargo:rustc-link-lib=dylib=cuda");
     // The .cu uses both the runtime API and the driver API (cuCtxPushCurrent).
     #[cfg(feature = "cuda-stress")]
@@ -184,12 +215,12 @@ fn cuda_lib_dir() -> Option<PathBuf> {
     None
 }
 
-/// Compiles the one CUDA translation unit the Blast stress solver needs.
+/// Compiles the stress solver and GPU contact decoder.
 ///
-/// Kept as its own static library because it is the only file that must go
-/// through nvcc; everything else stays on the host compiler.
+/// Kept in their own static library because these files must go through nvcc;
+/// everything else stays on the host compiler.
 #[cfg(feature = "cuda-stress")]
-fn compile_cuda_stress(blast: &std::path::Path) {
+fn compile_cuda_stress(blast: &std::path::Path, physx_include: &std::path::Path) {
     let source = blast.join("source/sdk/extensions/stressgpu/NvBlastExtStressGpu.cu");
     assert!(
         source.is_file(),
@@ -204,6 +235,9 @@ fn compile_cuda_stress(blast: &std::path::Path) {
     // The arch list belongs here too: changing it changes the emitted SASS.
     println!("cargo:rerun-if-env-changed=VIBE_CUDA_ARCH");
     println!("cargo:rerun-if-changed={}", source.display());
+    let contacts =
+        blast.join("source/sdk/extensions/stressphysx/NvBlastExtStressPhysXContactGpu.cu");
+    println!("cargo:rerun-if-changed={}", contacts.display());
     for header in [
         "include/extensions/stressgpu/NvBlastExtStressGpu.h",
         "include/extensions/stress/NvBlastExtStressSolver.h",
@@ -241,12 +275,16 @@ fn compile_cuda_stress(blast: &std::path::Path) {
         .flag("-Xcompiler")
         .flag("-fPIC")
         .define("NVBLAST_ENABLE_CUDA_STRESS", None)
+        .define("NDEBUG", None)
         .file(source)
+        .file(contacts)
+        .include(physx_include)
         .include(blast.join("include"))
         .include(blast.join("include/globals"))
         .include(blast.join("include/lowlevel"))
         .include(blast.join("include/extensions/stress"))
         .include(blast.join("include/extensions/stressgpu"))
+        .include(blast.join("include/extensions/stressphysx"))
         .include(blast.join("include/shared/NvFoundation"))
         .include(blast.join("source/shared"))
         .include(blast.join("source/shared/stress_solver"))

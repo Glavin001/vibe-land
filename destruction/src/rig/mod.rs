@@ -245,6 +245,9 @@ impl Rig {
 
     /// One tick of the production loop, with the ledger and trace kept current.
     pub fn step(&mut self) -> Result<(), CityDestructionError> {
+        // Match the server and trace recorder: fracture replay must restore
+        // the start of this physics step, including steps that begin at rest.
+        self.destruction.pre_step(&mut self.world);
         self.world.step().expect("physx step");
         let g = city_gravity();
         let gravity = [
