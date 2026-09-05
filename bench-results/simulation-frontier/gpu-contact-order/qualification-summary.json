@@ -1,0 +1,487 @@
+{
+  "audits": {
+    "provenance-audit": {
+      "order_verify_checks": 1194,
+      "order_verify_mismatches": 0,
+      "legacy_threshold_checks": 16328239,
+      "legacy_threshold_mismatches": 0,
+      "legacy_sum_max_ulp": 1,
+      "ticks": 900,
+      "ambiguous_ticks": 0,
+      "max_awake": 3888,
+      "max_contacts": 100886.0,
+      "replay_passes": 356
+    },
+    "heavy-audit": {
+      "order_verify_checks": 1608,
+      "order_verify_mismatches": 0,
+      "legacy_threshold_checks": 16174114,
+      "legacy_threshold_mismatches": 0,
+      "legacy_sum_max_ulp": 2,
+      "ticks": 1200,
+      "ambiguous_ticks": 0,
+      "max_awake": 4068,
+      "max_contacts": 65170.0,
+      "replay_passes": 470
+    }
+  },
+  "settling_controls": {
+    "cpu-1": {
+      "binary_sha256": "f28842ad8c3ed837a75f1a993fd4dc23913b1482af43d1eeb56656f0da20630f",
+      "gpu_order": "0",
+      "windows": {
+        "40": {
+          "awake_peak": 672.0,
+          "awake_tail_median": 1.0,
+          "awake_end_over_peak": 0.001,
+          "retired_fraction": 0.93,
+          "final_bodies": 761.0,
+          "final_bonds": 2730.0
+        },
+        "60": {
+          "awake_peak": 672.0,
+          "awake_tail_median": 1.0,
+          "awake_end_over_peak": 0.001,
+          "retired_fraction": 0.93,
+          "final_bodies": 761.0,
+          "final_bonds": 2730.0
+        }
+      }
+    },
+    "cpu-2": {
+      "binary_sha256": "f28842ad8c3ed837a75f1a993fd4dc23913b1482af43d1eeb56656f0da20630f",
+      "gpu_order": "0",
+      "windows": {
+        "40": {
+          "awake_peak": 635.0,
+          "awake_tail_median": 40.0,
+          "awake_end_over_peak": 0.063,
+          "retired_fraction": 0.87,
+          "final_bodies": 723.0,
+          "final_bonds": 2580.0
+        },
+        "60": {
+          "awake_peak": 635.0,
+          "awake_tail_median": 26.0,
+          "awake_end_over_peak": 0.041,
+          "retired_fraction": 0.888,
+          "final_bodies": 726.0,
+          "final_bonds": 2599.0
+        }
+      }
+    },
+    "cpu-3": {
+      "binary_sha256": "f28842ad8c3ed837a75f1a993fd4dc23913b1482af43d1eeb56656f0da20630f",
+      "gpu_order": "0",
+      "windows": {
+        "40": {
+          "awake_peak": 645.0,
+          "awake_tail_median": 0.0,
+          "awake_end_over_peak": 0.0,
+          "retired_fraction": 0.929,
+          "final_bodies": 729.0,
+          "final_bonds": 2609.0
+        },
+        "60": {
+          "awake_peak": 645.0,
+          "awake_tail_median": 0.0,
+          "awake_end_over_peak": 0.0,
+          "retired_fraction": 0.929,
+          "final_bodies": 729.0,
+          "final_bonds": 2609.0
+        }
+      }
+    },
+    "cpu-4": {
+      "binary_sha256": "f28842ad8c3ed837a75f1a993fd4dc23913b1482af43d1eeb56656f0da20630f",
+      "gpu_order": "0",
+      "windows": {
+        "40": {
+          "awake_peak": 636.0,
+          "awake_tail_median": 0.0,
+          "awake_end_over_peak": 0.0,
+          "retired_fraction": 0.93,
+          "final_bodies": 728.0,
+          "final_bonds": 2592.0
+        },
+        "60": {
+          "awake_peak": 636.0,
+          "awake_tail_median": 0.0,
+          "awake_end_over_peak": 0.0,
+          "retired_fraction": 0.929,
+          "final_bodies": 729.0,
+          "final_bonds": 2595.0
+        }
+      }
+    },
+    "cpu-5": {
+      "binary_sha256": "f28842ad8c3ed837a75f1a993fd4dc23913b1482af43d1eeb56656f0da20630f",
+      "gpu_order": "0",
+      "windows": {
+        "40": {
+          "awake_peak": 647.0,
+          "awake_tail_median": 101.0,
+          "awake_end_over_peak": 0.156,
+          "retired_fraction": 0.794,
+          "final_bodies": 748.0,
+          "final_bonds": 2719.0
+        },
+        "60": {
+          "awake_peak": 647.0,
+          "awake_tail_median": 0.0,
+          "awake_end_over_peak": 0.0,
+          "retired_fraction": 0.929,
+          "final_bodies": 749.0,
+          "final_bonds": 2721.0
+        }
+      }
+    },
+    "cpu-6": {
+      "binary_sha256": "f28842ad8c3ed837a75f1a993fd4dc23913b1482af43d1eeb56656f0da20630f",
+      "gpu_order": "0",
+      "windows": {
+        "40": {
+          "awake_peak": 646.0,
+          "awake_tail_median": 0.0,
+          "awake_end_over_peak": 0.0,
+          "retired_fraction": 0.928,
+          "final_bodies": 722.0,
+          "final_bonds": 2593.0
+        },
+        "60": {
+          "awake_peak": 646.0,
+          "awake_tail_median": 0.0,
+          "awake_end_over_peak": 0.0,
+          "retired_fraction": 0.928,
+          "final_bodies": 722.0,
+          "final_bonds": 2593.0
+        }
+      }
+    },
+    "cpu-7": {
+      "binary_sha256": "f28842ad8c3ed837a75f1a993fd4dc23913b1482af43d1eeb56656f0da20630f",
+      "gpu_order": "0",
+      "windows": {
+        "40": {
+          "awake_peak": 637.0,
+          "awake_tail_median": 0.0,
+          "awake_end_over_peak": 0.0,
+          "retired_fraction": 0.928,
+          "final_bodies": 712.0,
+          "final_bonds": 2549.0
+        },
+        "60": {
+          "awake_peak": 637.0,
+          "awake_tail_median": 0.0,
+          "awake_end_over_peak": 0.0,
+          "retired_fraction": 0.928,
+          "final_bodies": 712.0,
+          "final_bonds": 2549.0
+        }
+      }
+    },
+    "cpu-8": {
+      "binary_sha256": "f28842ad8c3ed837a75f1a993fd4dc23913b1482af43d1eeb56656f0da20630f",
+      "gpu_order": "0",
+      "windows": {
+        "40": {
+          "awake_peak": 630.0,
+          "awake_tail_median": 0.0,
+          "awake_end_over_peak": 0.0,
+          "retired_fraction": 0.926,
+          "final_bodies": 716.0,
+          "final_bonds": 2540.0
+        },
+        "60": {
+          "awake_peak": 630.0,
+          "awake_tail_median": 0.0,
+          "awake_end_over_peak": 0.0,
+          "retired_fraction": 0.926,
+          "final_bodies": 716.0,
+          "final_bonds": 2540.0
+        }
+      }
+    },
+    "cpu-9": {
+      "binary_sha256": "f28842ad8c3ed837a75f1a993fd4dc23913b1482af43d1eeb56656f0da20630f",
+      "gpu_order": "0",
+      "windows": {
+        "40": {
+          "awake_peak": 656.0,
+          "awake_tail_median": 0.0,
+          "awake_end_over_peak": 0.0,
+          "retired_fraction": 0.928,
+          "final_bodies": 736.0,
+          "final_bonds": 2639.0
+        },
+        "60": {
+          "awake_peak": 656.0,
+          "awake_tail_median": 0.0,
+          "awake_end_over_peak": 0.0,
+          "retired_fraction": 0.928,
+          "final_bodies": 736.0,
+          "final_bonds": 2639.0
+        }
+      }
+    },
+    "gpu-1": {
+      "binary_sha256": "f28842ad8c3ed837a75f1a993fd4dc23913b1482af43d1eeb56656f0da20630f",
+      "gpu_order": "1",
+      "windows": {
+        "40": {
+          "awake_peak": 649.0,
+          "awake_tail_median": 80.0,
+          "awake_end_over_peak": 0.123,
+          "retired_fraction": 0.819,
+          "final_bodies": 728.0,
+          "final_bonds": 2617.0
+        },
+        "60": {
+          "awake_peak": 649.0,
+          "awake_tail_median": 0.0,
+          "awake_end_over_peak": 0.0,
+          "retired_fraction": 0.929,
+          "final_bodies": 729.0,
+          "final_bonds": 2639.0
+        }
+      }
+    },
+    "gpu-2": {
+      "binary_sha256": "f28842ad8c3ed837a75f1a993fd4dc23913b1482af43d1eeb56656f0da20630f",
+      "gpu_order": "1",
+      "windows": {
+        "40": {
+          "awake_peak": 642.0,
+          "awake_tail_median": 127.0,
+          "awake_end_over_peak": 0.198,
+          "retired_fraction": 0.757,
+          "final_bodies": 756.0,
+          "final_bonds": 2755.0
+        },
+        "60": {
+          "awake_peak": 642.0,
+          "awake_tail_median": 99.0,
+          "awake_end_over_peak": 0.154,
+          "retired_fraction": 0.799,
+          "final_bodies": 762.0,
+          "final_bonds": 2767.0
+        }
+      }
+    },
+    "gpu-3": {
+      "binary_sha256": "f28842ad8c3ed837a75f1a993fd4dc23913b1482af43d1eeb56656f0da20630f",
+      "gpu_order": "1",
+      "windows": {
+        "40": {
+          "awake_peak": 636.0,
+          "awake_tail_median": 11.0,
+          "awake_end_over_peak": 0.017,
+          "retired_fraction": 0.912,
+          "final_bodies": 721.0,
+          "final_bonds": 2600.0
+        },
+        "60": {
+          "awake_peak": 636.0,
+          "awake_tail_median": 0.0,
+          "awake_end_over_peak": 0.0,
+          "retired_fraction": 0.926,
+          "final_bodies": 721.0,
+          "final_bonds": 2600.0
+        }
+      }
+    },
+    "gpu-4": {
+      "binary_sha256": "f28842ad8c3ed837a75f1a993fd4dc23913b1482af43d1eeb56656f0da20630f",
+      "gpu_order": "1",
+      "windows": {
+        "40": {
+          "awake_peak": 633.0,
+          "awake_tail_median": 3.0,
+          "awake_end_over_peak": 0.005,
+          "retired_fraction": 0.923,
+          "final_bodies": 701.0,
+          "final_bonds": 2505.0
+        },
+        "60": {
+          "awake_peak": 633.0,
+          "awake_tail_median": 3.0,
+          "awake_end_over_peak": 0.005,
+          "retired_fraction": 0.923,
+          "final_bodies": 701.0,
+          "final_bonds": 2505.0
+        }
+      }
+    },
+    "gpu-5": {
+      "binary_sha256": "f28842ad8c3ed837a75f1a993fd4dc23913b1482af43d1eeb56656f0da20630f",
+      "gpu_order": "1",
+      "windows": {
+        "40": {
+          "awake_peak": 661.0,
+          "awake_tail_median": 104.5,
+          "awake_end_over_peak": 0.158,
+          "retired_fraction": 0.787,
+          "final_bodies": 759.0,
+          "final_bonds": 2739.0
+        },
+        "60": {
+          "awake_peak": 661.0,
+          "awake_tail_median": 177.0,
+          "awake_end_over_peak": 0.268,
+          "retired_fraction": 0.699,
+          "final_bodies": 778.0,
+          "final_bonds": 2815.0
+        }
+      }
+    },
+    "gpu-6": {
+      "binary_sha256": "f28842ad8c3ed837a75f1a993fd4dc23913b1482af43d1eeb56656f0da20630f",
+      "gpu_order": "1",
+      "windows": {
+        "40": {
+          "awake_peak": 638.0,
+          "awake_tail_median": 0.0,
+          "awake_end_over_peak": 0.0,
+          "retired_fraction": 0.928,
+          "final_bodies": 711.0,
+          "final_bonds": 2528.0
+        },
+        "60": {
+          "awake_peak": 638.0,
+          "awake_tail_median": 0.0,
+          "awake_end_over_peak": 0.0,
+          "retired_fraction": 0.928,
+          "final_bodies": 711.0,
+          "final_bonds": 2528.0
+        }
+      }
+    },
+    "gpu-7": {
+      "binary_sha256": "f28842ad8c3ed837a75f1a993fd4dc23913b1482af43d1eeb56656f0da20630f",
+      "gpu_order": "1",
+      "windows": {
+        "40": {
+          "awake_peak": 659.0,
+          "awake_tail_median": 140.0,
+          "awake_end_over_peak": 0.212,
+          "retired_fraction": 0.741,
+          "final_bodies": 750.0,
+          "final_bonds": 2690.0
+        },
+        "60": {
+          "awake_peak": 659.0,
+          "awake_tail_median": 110.0,
+          "awake_end_over_peak": 0.167,
+          "retired_fraction": 0.783,
+          "final_bodies": 757.0,
+          "final_bonds": 2735.0
+        }
+      }
+    },
+    "gpu-8": {
+      "binary_sha256": "f28842ad8c3ed837a75f1a993fd4dc23913b1482af43d1eeb56656f0da20630f",
+      "gpu_order": "1",
+      "windows": {
+        "40": {
+          "awake_peak": 659.0,
+          "awake_tail_median": 0.0,
+          "awake_end_over_peak": 0.0,
+          "retired_fraction": 0.929,
+          "final_bodies": 750.0,
+          "final_bonds": 2698.0
+        },
+        "60": {
+          "awake_peak": 659.0,
+          "awake_tail_median": 0.0,
+          "awake_end_over_peak": 0.0,
+          "retired_fraction": 0.929,
+          "final_bodies": 750.0,
+          "final_bonds": 2698.0
+        }
+      }
+    },
+    "gpu-9": {
+      "binary_sha256": "f28842ad8c3ed837a75f1a993fd4dc23913b1482af43d1eeb56656f0da20630f",
+      "gpu_order": "1",
+      "windows": {
+        "40": {
+          "awake_peak": 641.0,
+          "awake_tail_median": 0.0,
+          "awake_end_over_peak": 0.0,
+          "retired_fraction": 0.929,
+          "final_bodies": 734.0,
+          "final_bonds": 2621.0
+        },
+        "60": {
+          "awake_peak": 641.0,
+          "awake_tail_median": 0.0,
+          "awake_end_over_peak": 0.0,
+          "retired_fraction": 0.929,
+          "final_bodies": 734.0,
+          "final_bonds": 2621.0
+        }
+      }
+    }
+  },
+  "scope": "Exact-input contact checks are separate from legacy scenario expectations. Preserve failed gates; control trials do not recalibrate them.",
+  "native": {
+    "passed": 6,
+    "failed": 0,
+    "manifest": {
+      "command": [
+        "ctest",
+        "--test-dir",
+        "/root/workspace/blast-stress-solver-2/demos/blast-stress-demo/build-gpu-activity",
+        "-R",
+        "blast_stress_velocity_fidelity_(cpu|gpu|direct)$|blast_stress_physx_direct_gpu_(resim|contacts)$|blast_stress_physx_gpu_activity$",
+        "--output-on-failure",
+        "-V"
+      ],
+      "start_utc": "2026-09-05T19:33:53Z",
+      "binary_sha256": "7925c2af9cd282405a172728364debdc88ea03e52a04af7766e60b1bbd6c028d",
+      "exit_code": 0,
+      "wall_seconds": 11.517323573119938
+    }
+  },
+  "integration": {
+    "passed": 176,
+    "failed": 0,
+    "ignored": 27
+  },
+  "scenario": {
+    "exit_code": 1,
+    "measured": {
+      "t2_bonds": 494,
+      "t2_bodies": 157,
+      "t3_height_retained": 0.2839423716068268,
+      "t3_spread_fraction": 0.4365079402923584,
+      "t4_retired_fraction": 0.798,
+      "t4_awake_end_over_peak": 0.146,
+      "t5_p95_ms": 31.2,
+      "t5_bucket_ticks": 776
+    },
+    "checks": [
+      "PASS  T2 bonds >= min            494 vs >= 126 (too weak)",
+      "PASS  T2 bonds <= max            494 vs <= 2028 (one shot pulverizes)",
+      "PASS  T2 fixture body count      157 vs <= 707 (runaway cascade)",
+      "PASS  T3 tower fell              retained 0.28 vs <= 0.55",
+      "PASS  T3 toppled/spread          spread 0.44 vs >= 0.10 (pancaked in place)",
+      "PASS  T4 debris retired          retired 0.80 vs >= 0.60 (freeze starved)",
+      "FAIL  T4 awake declined          end/peak 0.15 vs <= 0.10",
+      "PASS  T6 escapes contained       min_y -0.3 (>-1000), escaped-parked 0 (<=20)",
+      "PASS  T6 patch buffer headroom   28514 vs <= 1887436 (overflow drops contacts)",
+      "PASS  T5 perf p95 @3-6k awake    31.2 ms vs <= 91.4 ms"
+    ],
+    "at_rest_total_bonds": 1,
+    "at_rest_final_third_bonds": 1
+  },
+  "settling_complete": true,
+  "settling_40s_gate_failures": {
+    "cpu": 1,
+    "gpu": 4
+  },
+  "settling_60s_gate_failures": {
+    "cpu": 0,
+    "gpu": 3
+  }
+}

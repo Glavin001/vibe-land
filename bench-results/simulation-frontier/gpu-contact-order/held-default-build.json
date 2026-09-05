@@ -1,0 +1,10 @@
+{
+  "compile_passed": true,
+  "deployed": false,
+  "command": "PHYSX_ROOT=/root/workspace/physx-gpu-activity/physx BLAST_ROOT=/root/workspace/blast-stress-solver-2/blast CARGO_TARGET_DIR=target/gpu-activity cargo build --release -p web-fps-server --bin web-fps-server --features blast-core,cuda-stress",
+  "server_sha256": "3c61a84728d4b97ea7ab1a40f3b650e0fe53b89ddc698083923902985f2ff1b2",
+  "trace_sha256": "f28842ad8c3ed837a75f1a993fd4dc23913b1482af43d1eeb56656f0da20630f",
+  "source_patch_sha256": "101f79dabae98900b2b172a454378fece2d232ebfb902975bcf915d1586ed652",
+  "sdk_manifest_sha256": "53e5fe7d4b9e54d2d173b622a7dc1e8e7e72a5cd5c14ce5ab79eb62877ee3c79",
+  "difference_from_measured_candidate": "Launch default changed from enabled to opt-in, plus explanatory comments; benchmark/test order arms explicitly select the path. Guarded server compiled; it was not deployed or used for the preceding GPU runtime trials."
+}

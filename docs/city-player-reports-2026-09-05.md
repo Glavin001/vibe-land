@@ -181,3 +181,9 @@ The report analysis was validated by reproducing the JSON and independently
 checking its input counts, checksums, aggregate timings, and worst tick against
 the originals. No physics or gameplay tests were run for this read-only analysis;
 it changes neither the simulator nor the deployed client.
+
+The first implementation follow-up is the
+[GPU contact-ordering experiment](gpu-contact-order-2026-09-05.md). It reduced
+ordering time in benchmarks, but is not deployed because expanded settling
+controls left a possible regression unresolved. The existing Direct GPU city
+remains available; the repeated topology repair issue is still open.

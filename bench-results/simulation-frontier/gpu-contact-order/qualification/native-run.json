@@ -1,0 +1,15 @@
+{
+  "command": [
+    "ctest",
+    "--test-dir",
+    "/root/workspace/blast-stress-solver-2/demos/blast-stress-demo/build-gpu-activity",
+    "-R",
+    "blast_stress_velocity_fidelity_(cpu|gpu|direct)$|blast_stress_physx_direct_gpu_(resim|contacts)$|blast_stress_physx_gpu_activity$",
+    "--output-on-failure",
+    "-V"
+  ],
+  "start_utc": "2026-09-05T19:33:53Z",
+  "binary_sha256": "7925c2af9cd282405a172728364debdc88ea03e52a04af7766e60b1bbd6c028d",
+  "exit_code": 0,
+  "wall_seconds": 11.517323573119938
+}

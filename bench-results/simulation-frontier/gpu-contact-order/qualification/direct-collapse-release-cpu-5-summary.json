@@ -1,0 +1,18 @@
+{
+  "awake_bodies": 0,
+  "broken_bonds": 2721,
+  "center_pile": 2,
+  "chunk_bodies": 749,
+  "final_height_m": 22.44830322265625,
+  "frozen_bodies": 637,
+  "height_retained": 0.2657358646392822,
+  "initial_height_m": 84.47599792480469,
+  "ring_pile": 15,
+  "sleeping_bodies": 59,
+  "spread_fraction": 0.8823529481887817,
+  "target": [
+    3.597140073776245,
+    3.0,
+    -23.89594841003418
+  ]
+}

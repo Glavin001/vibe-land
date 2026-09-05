@@ -1,0 +1,543 @@
+diff --git a/blast/include/extensions/stressphysx/NvBlastExtStressPhysXDirectGpu.h b/blast/include/extensions/stressphysx/NvBlastExtStressPhysXDirectGpu.h
+index 44d5a54b..ad408436 100644
+--- a/blast/include/extensions/stressphysx/NvBlastExtStressPhysXDirectGpu.h
++++ b/blast/include/extensions/stressphysx/NvBlastExtStressPhysXDirectGpu.h
+@@ -50,6 +50,10 @@ struct ExtStressPhysXDirectGpuContact
+     uint32_t friction;
+     // Original solver scalar; avoid normal-vector roundoff in force thresholds.
+     float normalImpulse;
++    // Ordinal in this copy's PhysX pair buffer. Multiple pair entries can
++    // share shape IDs and pointIndex; retain provenance to order those ties.
++    // This is not a persistent identity and is not compared across copies.
++    uint32_t pairIndex;
+ };
+ 
+ // Every normal contact and nonzero friction anchor is a separate record.
+@@ -86,9 +90,24 @@ public:
+      */
+     virtual bool copyContactsDevice(
+         ExtStressPhysXDirectGpuContactView& view, uint32_t capacity) = 0;
+-    /// Synchronous reference/debug readback. Returns zero on any overflow.
++    /** Synchronous readback. Returns zero on any overflow/error, never a prefix.
++     * canonicalOrder uses GPU ordering by (min shape, max shape, friction,
++     * pointIndex, pairIndex), swapping actors and negating impulse/normal as
++     * necessary. pairIndex makes the old four-key comparator's unspecified
++     * ties explicit. No force reduction or contact removal takes place.
++     * If even the full provenance key repeats, ORIGINAL raw records are
++     * returned and lastCopyOrdered() is false. Check that flag before relying
++     * on canonical order. The device-only view is unchanged.
++     * Optional rawReference receives the same input records in original
++     * decoder order for verification; it needs capacity entries and must not
++     * overlap out. There is no extra host transfer when rawReference is null.
++     */
+     virtual uint32_t copyContacts(
+-        ExtStressPhysXDirectGpuContact* out, uint32_t capacity) = 0;
++        ExtStressPhysXDirectGpuContact* out, uint32_t capacity, bool canonicalOrder = false,
++        ExtStressPhysXDirectGpuContact* rawReference = nullptr) = 0;
++    virtual bool lastCopyOrdered() const = 0;
++    /// Host wall time for GPU ordering, including launch, growth and completion.
++    virtual double lastOrderMilliseconds() const = 0;
+     /// Distinguishes an empty successful host copy from failure/truncation.
+     virtual bool lastCopyComplete() const = 0;
+     virtual bool available() const = 0;
+diff --git a/blast/source/sdk/extensions/stressphysx/NvBlastExtStressPhysXContactGpu.cu b/blast/source/sdk/extensions/stressphysx/NvBlastExtStressPhysXContactGpu.cu
+index 2174a6de..841191d1 100644
+--- a/blast/source/sdk/extensions/stressphysx/NvBlastExtStressPhysXContactGpu.cu
++++ b/blast/source/sdk/extensions/stressphysx/NvBlastExtStressPhysXContactGpu.cu
+@@ -2,13 +2,91 @@
+ #include <PxContact.h>
+ #include <cuda_runtime.h>
+ #include <cfloat>
++#include <cub/device/device_radix_sort.cuh>
++#include <new>
+ 
+ namespace Nv { namespace Blast {
+ namespace {
+ using namespace physx;
++using Contact = ExtStressPhysXDirectGpuContact;
++
++// Sort indices rather than entire records. Stable least-significant-first
++// passes retain source-pair provenance, then friction/pointIndex, then the
++// canonical shape pair. All five 32-bit fields retain their full range.
++struct ContactSortWorkspace
++{
++    unsigned long long* keys[2]{};
++    PxU32* indices[2]{};
++    Contact* contacts{};
++    PxU32* ambiguous{};
++    void* scratch{};
++    size_t scratchBytes{};
++    PxU32 capacity{};
++    void freeItems()
++    {
++        for (auto& p : keys) { cudaFree(p); p = nullptr; }
++        for (auto& p : indices) { cudaFree(p); p = nullptr; }
++        cudaFree(contacts); contacts = nullptr; capacity = 0;
++    }
++    ~ContactSortWorkspace()
++    {
++        freeItems(); cudaFree(ambiguous); cudaFree(scratch);
++    }
++};
++
++__device__ unsigned long long shapeKey(const Contact& c)
++{
++    const PxU32 lo = min(c.transformCacheRef0, c.transformCacheRef1);
++    const PxU32 hi = max(c.transformCacheRef0, c.transformCacheRef1);
++    return (static_cast<unsigned long long>(lo) << 32) | hi;
++}
++__global__ void contactProvenanceKeys(const Contact* input, PxU32 count,
++    unsigned long long* keys, PxU32* indices)
++{
++    const PxU32 i = blockIdx.x * blockDim.x + threadIdx.x;
++    if (i >= count) return;
++    keys[i] = input[i].pairIndex; indices[i] = i;
++}
++__global__ void contactSecondaryKeys(const Contact* input, PxU32 count,
++    unsigned long long* keys, const PxU32* indices)
++{
++    const PxU32 i = blockIdx.x * blockDim.x + threadIdx.x;
++    if (i >= count) return;
++    const auto& c = input[indices[i]];
++    keys[i] = (static_cast<unsigned long long>(c.friction) << 32) | c.pointIndex;
++}
++__global__ void contactPrimaryKeys(const Contact* input, PxU32 count,
++    unsigned long long* keys, const PxU32* indices)
++{
++    const PxU32 i = blockIdx.x * blockDim.x + threadIdx.x;
++    if (i < count) keys[i] = shapeKey(input[indices[i]]);
++}
++__global__ void gatherCanonicalContacts(const Contact* input, PxU32 count,
++    const PxU32* indices, Contact* output, PxU32* ambiguous)
++{
++    const PxU32 i = blockIdx.x * blockDim.x + threadIdx.x;
++    if (i >= count) return;
++    auto c = input[indices[i]];
++    if (i)
++    {
++        const auto& previous = input[indices[i - 1]];
++        if (shapeKey(previous) == shapeKey(c) && previous.friction == c.friction
++            && previous.pointIndex == c.pointIndex && previous.pairIndex == c.pairIndex)
++            atomicExch(ambiguous, 1u);
++    }
++    if (c.transformCacheRef1 < c.transformCacheRef0)
++    {
++        auto* actor = c.actor0; c.actor0 = c.actor1; c.actor1 = actor;
++        const auto shape = c.transformCacheRef0;
++        c.transformCacheRef0 = c.transformCacheRef1; c.transformCacheRef1 = shape;
++        c.impulseOnActor0 = -c.impulseOnActor0; c.worldNormal = -c.worldNormal;
++    }
++    output[i] = c;
++}
++
+ __device__ void emitContact(const PxGpuContactPair& pair, const PxVec3& point,
+     const PxVec3& impulse, const PxVec3& normal, float separation, float normalImpulse,
+-    PxU32 pointIndex, bool friction, ExtStressPhysXDirectGpuContact* output,
++    PxU32 pointIndex, bool friction, PxU32 pairIndex, ExtStressPhysXDirectGpuContact* output,
+     ExtStressPhysXDirectGpuContactStatus* status, PxU32 capacity)
+ {
+     if (friction && impulse.isZero()) { return; }
+@@ -16,7 +94,7 @@ __device__ void emitContact(const PxGpuContactPair& pair, const PxVec3& point,
+     if (slot >= capacity) { atomicExch(&status->overflow, 1u); return; }
+     output[slot] = {static_cast<PxRigidActor*>(pair.actor0),
+         static_cast<PxRigidActor*>(pair.actor1), point, impulse,
+-        pair.transformCacheRef0, pair.transformCacheRef1, normal, separation, pointIndex, PxU32(friction), normalImpulse};
++        pair.transformCacheRef0, pair.transformCacheRef1, normal, separation, pointIndex, PxU32(friction), normalImpulse, pairIndex};
+ }
+ __global__ void decodeContacts(const PxGpuContactPair* pairs, const PxU32* pairCount,
+     PxU32 pairCapacity, ExtStressPhysXDirectGpuContact* output,
+@@ -40,7 +118,7 @@ __global__ void decodeContacts(const PxGpuContactPair* pairs, const PxU32* pairC
+                 emitContact(p, contacts.getContactPoint(),
+                     contacts.getContactNormal() * p.contactForces[pointIndex],
+                     contacts.getContactNormal(), contacts.getSeparation(), p.contactForces[pointIndex], pointIndex, false,
+-                    output, status, capacity);
++                    i, output, status, capacity);
+                 ++pointIndex;
+             }
+         }
+@@ -57,13 +135,87 @@ __global__ void decodeContacts(const PxGpuContactPair* pairs, const PxU32* pairC
+                 friction.nextFrictionAnchor();
+                 const auto& patch = reinterpret_cast<const PxContactPatch*>(p.contactPatches)[patchIndex];
+                 emitContact(p, friction.getPosition(), friction.getImpulse(), patch.normal,
+-                    FLT_MAX, 0.0f, pointIndex++, true, output, status, capacity);
++                    FLT_MAX, 0.0f, pointIndex++, true, i, output, status, capacity);
+             }
+             ++patchIndex;
+         }
+     }
+ }
+ }
++// Caller holds PhysX's CUDA context and serializes calls on its stream.
++// Outputs are borrowed until next call/release; input is never modified.
++bool launchDirectGpuContactOrder(void*& workspace, const Contact* input, PxU32 count,
++    const Contact*& output, const PxU32*& ambiguous, CUstream cuStream)
++{
++    output = nullptr; ambiguous = nullptr;
++    if (!input || !count) return false;
++    auto* w = static_cast<ContactSortWorkspace*>(workspace);
++    if (!w)
++    {
++        w = new (std::nothrow) ContactSortWorkspace;
++        if (!w) return false;
++        workspace = w;
++    }
++    const auto stream = reinterpret_cast<cudaStream_t>(cuStream);
++    if (count > w->capacity)
++    {
++        // Grow geometrically to avoid allocating on each new high-water mark.
++        // Storage capacity never changes how many contacts are processed.
++        if (cudaStreamSynchronize(stream) != cudaSuccess) return false;
++        const size_t grown = static_cast<size_t>(w->capacity) * 2;
++        const PxU32 capacity = grown > count && grown <= UINT32_MAX ? PxU32(grown) : count;
++        w->freeItems();
++        if (cudaMalloc(&w->keys[0], size_t(capacity) * sizeof(*w->keys[0])) != cudaSuccess
++            || cudaMalloc(&w->keys[1], size_t(capacity) * sizeof(*w->keys[1])) != cudaSuccess
++            || cudaMalloc(&w->indices[0], size_t(capacity) * sizeof(*w->indices[0])) != cudaSuccess
++            || cudaMalloc(&w->indices[1], size_t(capacity) * sizeof(*w->indices[1])) != cudaSuccess
++            || cudaMalloc(&w->contacts, size_t(capacity) * sizeof(*w->contacts)) != cudaSuccess)
++            return false;
++        w->capacity = capacity;
++    }
++    if (!w->ambiguous && cudaMalloc(&w->ambiguous, sizeof(*w->ambiguous)) != cudaSuccess) return false;
++    cub::DoubleBuffer<unsigned long long> keys(w->keys[0], w->keys[1]);
++    cub::DoubleBuffer<PxU32> indices(w->indices[0], w->indices[1]);
++    size_t bytes = 0, provenanceBytes = 0;
++    if (cub::DeviceRadixSort::SortPairs(nullptr, bytes, keys, indices, count, 0, 64, stream)
++        != cudaSuccess || cub::DeviceRadixSort::SortPairs(nullptr, provenanceBytes,
++            keys, indices, count, 0, 32, stream) != cudaSuccess) return false;
++    if (provenanceBytes > bytes) bytes = provenanceBytes;
++    if (bytes > w->scratchBytes)
++    {
++        if (cudaStreamSynchronize(stream) != cudaSuccess) return false;
++        cudaFree(w->scratch); w->scratch = nullptr; w->scratchBytes = 0;
++        if (cudaMalloc(&w->scratch, bytes) != cudaSuccess) return false;
++        w->scratchBytes = bytes;
++    }
++    if (cudaMemsetAsync(w->ambiguous, 0, sizeof(*w->ambiguous), stream) != cudaSuccess) return false;
++    const auto sort = [&](int bits) {
++        // Keep allocated capacity distinct from CUB's in/out size argument.
++        size_t available = w->scratchBytes;
++        return cub::DeviceRadixSort::SortPairs(w->scratch, available, keys, indices,
++            count, 0, bits, stream);
++    };
++    const PxU32 blocks = count / 256 + (count % 256 != 0);
++    contactProvenanceKeys<<<blocks, 256, 0, stream>>>(input, count, keys.Current(), indices.Current());
++    if (cudaGetLastError() != cudaSuccess
++        || sort(32) != cudaSuccess) return false;
++    contactSecondaryKeys<<<blocks, 256, 0, stream>>>(input, count, keys.Current(), indices.Current());
++    if (cudaGetLastError() != cudaSuccess
++        || sort(64) != cudaSuccess) return false;
++    contactPrimaryKeys<<<blocks, 256, 0, stream>>>(input, count, keys.Current(), indices.Current());
++    if (cudaGetLastError() != cudaSuccess
++        || sort(64) != cudaSuccess) return false;
++    gatherCanonicalContacts<<<blocks, 256, 0, stream>>>(input, count,
++        indices.Current(), w->contacts, w->ambiguous);
++    if (cudaGetLastError() != cudaSuccess) return false;
++    output = w->contacts; ambiguous = w->ambiguous;
++    return true;
++}
++void releaseDirectGpuContactOrder(void* workspace)
++{
++    delete static_cast<ContactSortWorkspace*>(workspace);
++}
++
+ bool launchDirectGpuContactDecode(const physx::PxGpuContactPair* pairs,
+     const physx::PxU32* pairCount, physx::PxU32 pairCapacity,
+     ExtStressPhysXDirectGpuContact* output, ExtStressPhysXDirectGpuContactStatus* status,
+diff --git a/blast/source/sdk/extensions/stressphysx/NvBlastExtStressPhysXDirectGpu.cpp b/blast/source/sdk/extensions/stressphysx/NvBlastExtStressPhysXDirectGpu.cpp
+index 82ee6b4c..6d23e7cb 100644
+--- a/blast/source/sdk/extensions/stressphysx/NvBlastExtStressPhysXDirectGpu.cpp
++++ b/blast/source/sdk/extensions/stressphysx/NvBlastExtStressPhysXDirectGpu.cpp
+@@ -6,6 +6,7 @@
+ 
+ #include <algorithm>
+ #include <cstdint>
++#include <chrono>
+ #include <limits>
+ #include <memory>
+ #include <new>
+@@ -22,6 +23,9 @@ using physx::Ext::PxCudaHelpersExt;
+ #if defined(NVBLAST_ENABLE_DIRECT_GPU_CONTACT_DRAIN)
+ bool launchDirectGpuContactDecode(const PxGpuContactPair*, const PxU32*, PxU32,
+     ExtStressPhysXDirectGpuContact*, ExtStressPhysXDirectGpuContactStatus*, PxU32, CUstream);
++bool launchDirectGpuContactOrder(void*&, const ExtStressPhysXDirectGpuContact*, PxU32,
++    const ExtStressPhysXDirectGpuContact*&, const PxU32*&, CUstream);
++void releaseDirectGpuContactOrder(void*);
+ #endif
+ 
+ namespace
+@@ -342,6 +346,9 @@ public:
+                 if (m_stream) { cuda->streamSynchronize(m_stream); cuda->streamDestroy(m_stream); }
+                 if (m_pairsReady) { cuda->eventDestroy(m_pairsReady); }
+                 if (m_ready) { cuda->eventDestroy(m_ready); }
++#if defined(NVBLAST_ENABLE_DIRECT_GPU_CONTACT_DRAIN)
++                releaseDirectGpuContactOrder(m_orderWorkspace);
++#endif
+             }
+             PxCudaHelpersExt::freeDeviceBuffer(*m_cuda, m_contacts);
+             PxCudaHelpersExt::freeDeviceBuffer(*m_cuda, m_status);
+@@ -356,6 +363,8 @@ public:
+     {
+         view = {};
+         m_lastCopyComplete = false;
++        m_lastCopyOrdered = false;
++        m_lastOrderMilliseconds = 0.0;
+ #if PX_SUPPORT_GPU_PHYSX && defined(NVBLAST_ENABLE_DIRECT_GPU_CONTACT_DRAIN)
+         if (!m_available || !capacity) { return false; }
+         if (capacity > m_capacity)
+@@ -402,10 +411,13 @@ public:
+ #endif
+     }
+ 
+-    uint32_t copyContacts(ExtStressPhysXDirectGpuContact* out, uint32_t capacity) override
++    uint32_t copyContacts(ExtStressPhysXDirectGpuContact* out, uint32_t capacity,
++        bool canonicalOrder, ExtStressPhysXDirectGpuContact* rawReference) override
+     {
+         m_lastCopyComplete = false;
+-        if (!out) { return 0; }
++        m_lastCopyOrdered = false;
++        m_lastOrderMilliseconds = 0.0;
++        if (!out || out == rawReference) { return 0; }
+         ExtStressPhysXDirectGpuContactView view;
+         if (!copyContactsDevice(view, capacity)) { return 0; }
+ #if PX_SUPPORT_GPU_PHYSX
+@@ -415,9 +427,34 @@ public:
+         if (cuda->eventSynchronize(m_ready) != 0
+             || cuda->memcpyDtoH(&status, reinterpret_cast<CUdeviceptr>(m_status), sizeof(status)) != 0
+             || status.overflow || status.count > capacity) { return 0; }
+-        if (status.count && cuda->memcpyDtoH(out, reinterpret_cast<CUdeviceptr>(m_contacts),
++        if (rawReference && status.count && cuda->memcpyDtoH(rawReference,
++            reinterpret_cast<CUdeviceptr>(m_contacts), sizeof(*rawReference) * status.count) != 0) return 0;
++        const ExtStressPhysXDirectGpuContact* contacts = m_contacts;
++        bool ordered = canonicalOrder;
++#if defined(NVBLAST_ENABLE_DIRECT_GPU_CONTACT_DRAIN)
++        if (canonicalOrder && status.count)
++        {
++            const auto orderStarted = std::chrono::steady_clock::now();
++            const ExtStressPhysXDirectGpuContact* sorted = nullptr;
++            const PxU32* deviceAmbiguous = nullptr;
++            PxU32 ambiguous = 0;
++            if (!launchDirectGpuContactOrder(m_orderWorkspace, m_contacts, status.count,
++                    sorted, deviceAmbiguous, m_stream)
++                || cuda->streamSynchronize(m_stream) != 0
++                || cuda->memcpyDtoH(&ambiguous, reinterpret_cast<CUdeviceptr>(deviceAmbiguous),
++                    sizeof(ambiguous)) != 0) return 0;
++            ordered = ambiguous == 0;
++            if (ordered) contacts = sorted;
++            m_lastOrderMilliseconds = std::chrono::duration<double, std::milli>(
++                std::chrono::steady_clock::now() - orderStarted).count();
++        }
++#else
++        ordered = false;
++#endif
++        if (status.count && cuda->memcpyDtoH(out, reinterpret_cast<CUdeviceptr>(contacts),
+             sizeof(*out) * status.count) != 0) { return 0; }
+         m_lastCopyComplete = true;
++        m_lastCopyOrdered = ordered;
+         return status.count;
+ #else
+         return 0;
+@@ -425,18 +462,23 @@ public:
+     }
+     bool available() const override { return m_available; }
+     bool lastCopyComplete() const override { return m_lastCopyComplete; }
++    bool lastCopyOrdered() const override { return m_lastCopyOrdered; }
++    double lastOrderMilliseconds() const override { return m_lastOrderMilliseconds; }
+ 
+ private:
+     PxScene& m_scene;
+     uint32_t m_maxPairs;
+     bool m_available{false};
+     bool m_lastCopyComplete{false};
++    bool m_lastCopyOrdered{false};
++    double m_lastOrderMilliseconds{0.0};
+ #if PX_SUPPORT_GPU_PHYSX
+     PxCudaContextManager* m_cuda{nullptr};
+     PxGpuContactPair* m_pairs{nullptr};
+     PxU32* m_pairCount{nullptr};
+     ExtStressPhysXDirectGpuContactStatus* m_status{nullptr};
+     ExtStressPhysXDirectGpuContact* m_contacts{nullptr};
++    void* m_orderWorkspace{nullptr};
+     uint32_t m_capacity{0};
+     CUstream m_stream{nullptr};
+     CUevent m_pairsReady{nullptr}, m_ready{nullptr};
+diff --git a/demos/blast-stress-demo/tests/direct_gpu_contact_test.cu b/demos/blast-stress-demo/tests/direct_gpu_contact_test.cu
+index d11ebf7d..0b58c747 100644
+--- a/demos/blast-stress-demo/tests/direct_gpu_contact_test.cu
++++ b/demos/blast-stress-demo/tests/direct_gpu_contact_test.cu
+@@ -11,6 +11,10 @@
+ #include <cstdio>
+ #include <stdexcept>
+ #include <vector>
++#include <algorithm>
++#include <cstring>
++#include <random>
++#include <tuple>
+ 
+ using namespace physx;
+ using namespace Nv::Blast;
+@@ -18,10 +22,111 @@ using physx::Ext::PxCudaHelpersExt;
+ namespace Nv { namespace Blast {
+ bool launchDirectGpuContactDecode(const PxGpuContactPair*, const PxU32*, PxU32,
+     ExtStressPhysXDirectGpuContact*, ExtStressPhysXDirectGpuContactStatus*, PxU32, CUstream);
++bool launchDirectGpuContactOrder(void*&, const ExtStressPhysXDirectGpuContact*, PxU32,
++    const ExtStressPhysXDirectGpuContact*&, const PxU32*&, CUstream);
++void releaseDirectGpuContactOrder(void*);
+ }}
+ namespace {
+ void require(bool b, const char* message) { if (!b) throw std::runtime_error(message); }
+ void check(cudaError_t r) { require(r == cudaSuccess, cudaGetErrorString(r)); }
++using Contact = ExtStressPhysXDirectGpuContact;
++void canonicalize(Contact& c)
++{
++    if (c.transformCacheRef1 < c.transformCacheRef0)
++    {
++        std::swap(c.actor0, c.actor1); std::swap(c.transformCacheRef0, c.transformCacheRef1);
++        c.impulseOnActor0 = -c.impulseOnActor0; c.worldNormal = -c.worldNormal;
++    }
++}
++bool lessContact(const Contact& a, const Contact& b)
++{
++    return std::tie(a.transformCacheRef0, a.transformCacheRef1, a.friction, a.pointIndex, a.pairIndex)
++         < std::tie(b.transformCacheRef0, b.transformCacheRef1, b.friction, b.pointIndex, b.pairIndex);
++}
++bool sameContact(const Contact& a, const Contact& b)
++{
++    return a.actor0 == b.actor0 && a.actor1 == b.actor1
++        && a.transformCacheRef0 == b.transformCacheRef0 && a.transformCacheRef1 == b.transformCacheRef1
++        && a.friction == b.friction && a.pointIndex == b.pointIndex && a.pairIndex == b.pairIndex
++        && std::memcmp(&a.worldPosition, &b.worldPosition, sizeof(PxVec3)) == 0
++        && std::memcmp(&a.impulseOnActor0, &b.impulseOnActor0, sizeof(PxVec3)) == 0
++        && std::memcmp(&a.worldNormal, &b.worldNormal, sizeof(PxVec3)) == 0
++        && std::memcmp(&a.separation, &b.separation, sizeof(float)) == 0
++        && std::memcmp(&a.normalImpulse, &b.normalImpulse, sizeof(float)) == 0;
++}
++
++// Device ordering must preserve every field, zero-normal support points,
++// signed zero, all key bits, and exact sequential accumulation. Exercise
++// workspace growth/reuse and duplicate detection on a non-default stream.
++void checkOrdering(PxCudaContextManager& manager)
++{
++    PxScopedCudaLock lock(manager);
++    void* workspace = nullptr;
++    cudaStream_t stream; check(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
++    std::mt19937 random(1987);
++    for (const unsigned count : {1u, 2u, 255u, 256u, 257u, 100003u, 17u, 262147u, 13u})
++    {
++        std::vector<Contact> input(count);
++        for (unsigned i = 0; i < count; ++i)
++        {
++            auto& c = input[i];
++            c.transformCacheRef0 = (i / 31) * 2654435761u;
++            c.transformCacheRef1 = ~c.transformCacheRef0;
++            c.actor0 = reinterpret_cast<PxRigidActor*>(uintptr_t(c.transformCacheRef0));
++            c.actor1 = reinterpret_cast<PxRigidActor*>(uintptr_t(c.transformCacheRef1));
++            c.pointIndex = ((i % 31) % 5) * 0x30000000u;
++            c.pairIndex = ((i % 31) / 5) * 0x28000000u;
++            c.friction = i % 3 == 0;
++            c.worldPosition = PxVec3(float(i), -float(i % 7), float(i % 19));
++            c.worldNormal = PxVec3(0.0f, 1.0f, -0.0f);
++            c.normalImpulse = c.friction || i % 7 == 0 ? 0.0f : i % 2 ? 1e16f : 1e-12f;
++            c.impulseOnActor0 = c.friction ? PxVec3(-float(i), -0.0f, 1.0f)
++                : c.worldNormal * c.normalImpulse;
++            c.separation = c.friction ? PX_MAX_F32 : -0.0f;
++        }
++        std::shuffle(input.begin(), input.end(), random);
++        Contact* device; check(cudaMalloc(&device, size_t(count) * sizeof(Contact)));
++        auto run = [&](bool duplicate) {
++            check(cudaMemcpyAsync(device, input.data(), size_t(count) * sizeof(Contact), cudaMemcpyHostToDevice, stream));
++            const Contact* sorted; const PxU32* deviceAmbiguous;
++            require(launchDirectGpuContactOrder(workspace, device, count, sorted, deviceAmbiguous,
++                reinterpret_cast<CUstream>(stream)), "GPU contact ordering launch failed");
++            std::vector<Contact> result(count), unchanged(count), expected = input;
++            PxU32 ambiguous = 99;
++            check(cudaMemcpyAsync(result.data(), sorted, size_t(count) * sizeof(Contact), cudaMemcpyDeviceToHost, stream));
++            check(cudaMemcpyAsync(unchanged.data(), device, size_t(count) * sizeof(Contact), cudaMemcpyDeviceToHost, stream));
++            check(cudaMemcpyAsync(&ambiguous, deviceAmbiguous, sizeof(ambiguous), cudaMemcpyDeviceToHost, stream));
++            check(cudaStreamSynchronize(stream));
++            require(bool(ambiguous) == duplicate, "duplicate contact keys were not classified correctly");
++            require(std::memcmp(input.data(), unchanged.data(), size_t(count) * sizeof(Contact)) == 0,
++                "ordering mutated original contact records");
++            for (auto& c : expected) canonicalize(c);
++            if (duplicate) std::stable_sort(expected.begin(), expected.end(), lessContact);
++            else std::sort(expected.begin(), expected.end(), lessContact);
++            float sum = 0.0f, referenceSum = 0.0f;
++            for (unsigned i = 0; i < count; ++i)
++            {
++                require(sameContact(result[i], expected[i]), "GPU order changed a contact payload or reference order");
++                sum += result[i].normalImpulse; referenceSum += expected[i].normalImpulse;
++            }
++            require(std::memcmp(&sum, &referenceSum, sizeof(float)) == 0, "ordered contact accumulation changed");
++        };
++        run(false);
++        if (count > 1)
++        {
++            const Contact original = input.back();
++            input.back() = input.front(); input.back().worldPosition.x += 123.0f;
++            run(true);
++            input.back() = original;
++            run(false); // The ambiguity flag must clear on reuse.
++        }
++        check(cudaFree(device));
++    }
++    releaseDirectGpuContactOrder(workspace);
++    check(cudaStreamDestroy(stream));
++    std::printf("GPU contact ordering: unique/duplicate keys, growth/reuse, payload and exact sums passed\n");
++}
++
+ // Equal and opposite forces can carry zero net impulse and a nonzero couple.
+ // A single averaged contact would erase this load even if its force sum were exact.
+ void checkCouple(PxCudaContextManager& manager)
+@@ -103,6 +208,7 @@ int main()
+         blast_demo::PhysXScene context(blast_demo::PhysicsMode::Gpu, true, capacity, nullptr, true);
+         auto& scene = context.scene();
+         auto& cuda = *context.cudaContextManager();
++        checkOrdering(cuda);
+         checkCouple(cuda);
+         auto* body = context.physics().createRigidDynamic(PxTransform(PxVec3(0, 0.7f, 0)));
+         const PxBoxGeometry geometry(PxVec3(0.5f));
+@@ -127,6 +233,7 @@ int main()
+             PxVec3 v; PxCudaHelpersExt::copyDToH(cuda, &v, velocity, 1); return v;
+         };
+         std::vector<ExtStressPhysXDirectGpuContact> records(4096);
++        std::vector<Contact> reference(4096);
+         bool sawNormal = false, sawFriction = false, overflowTested = false;
+         float worstError = 0.0f;
+         ExtStressGpuNode nodes[2] = {{{0,0,0},0,0}, {{0,1,0},1,1}};
+@@ -146,8 +253,12 @@ int main()
+             const PxVec3 before = readVelocity();
+             step(scene);
+             const PxVec3 after = readVelocity();
+-            const unsigned count = drain->copyContacts(records.data(), records.size());
+-            require(drain->lastCopyComplete(), "contact copy failed or overflowed");
++            const unsigned count = drain->copyContacts(records.data(), records.size(), true, reference.data());
++            require(drain->lastCopyComplete() && drain->lastCopyOrdered(), "ordered contact copy failed or overflowed");
++            for (unsigned i = 0; i < count; ++i) canonicalize(reference[i]);
++            std::sort(reference.begin(), reference.begin() + count, lessContact);
++            for (unsigned i = 0; i < count; ++i)
++                require(sameContact(records[i], reference[i]), "real contact order differs from exact input reference");
+             PxVec3 total(0.0f);
+             for (unsigned i = 0; i < count; ++i)
+             {
+@@ -171,7 +282,7 @@ int main()
+             if (!count) continue;
+             if (count > 1 && !overflowTested)
+             {
+-                require(drain->copyContacts(records.data(), 1) == 0 && !drain->lastCopyComplete(),
++                require(drain->copyContacts(records.data(), 1, true) == 0 && !drain->lastCopyComplete() && !drain->lastCopyOrdered(),
+                     "truncated contacts reported as complete");
+                 overflowTested = true;
+             }
+@@ -208,8 +319,10 @@ int main()
+         // takes an empty-copy branch that used to leave its old pair count.
+         scene.removeActor(*body);
+         step(scene);
+-        require(drain->copyContacts(records.data(), records.size()) == 0
+-            && drain->lastCopyComplete(), "empty frame reused stale GPU contacts");
++        require(drain->copyContacts(records.data(), records.size(), true) == 0
++            && drain->lastCopyComplete() && drain->lastCopyOrdered(), "empty frame reused stale GPU contacts");
++        require(drain->copyContacts(nullptr, 4096, true) == 0 && !drain->lastCopyComplete()
++            && !drain->lastCopyOrdered(), "invalid copy retained success flags");
+         solver->release(); drain->release();
+         { PxScopedCudaLock lock(cuda); check(cudaEventDestroy(ready)); check(cudaStreamDestroy(stream)); }
+         PxCudaHelpersExt::freeDeviceBuffer(cuda, inputs);

@@ -1,0 +1,205 @@
+diff --git a/physx-bridge/src/physx_bridge.cc b/physx-bridge/src/physx_bridge.cc
+index c5d860e..fd34845 100644
+--- a/physx-bridge/src/physx_bridge.cc
++++ b/physx-bridge/src/physx_bridge.cc
+@@ -23,6 +23,7 @@
+ #include <cstdlib>
+ #include <cmath>
+ #include <cstdint>
++#include <cstring>
+ #include <cstdio>
+ #include <limits>
+ #include <memory>
+@@ -143,6 +144,57 @@ bool contact_cse_enabled() {
+   return enabled;
+ }
+ 
++#ifdef NVBLAST_ENABLE_CUDA_STRESS
++bool gpu_contact_order_enabled() {
++  // Experimental until the repeated settling-gate difference is resolved.
++  // See docs/gpu-contact-order-2026-09-05.md; ordinary launches keep CPU order.
++  static const bool enabled = [] {
++    const char *value = std::getenv("VIBE_PHYSX_GPU_CONTACT_ORDER");
++    return value != nullptr && std::string(value) != "0";
++  }();
++  return enabled;
++}
++bool gpu_contact_order_verify() {
++  static const bool enabled = [] {
++    const char *value = std::getenv("VIBE_PHYSX_GPU_CONTACT_ORDER_VERIFY");
++    return value != nullptr && std::string(value) != "0";
++  }();
++  return enabled;
++}
++using GpuContact = Nv::Blast::ExtStressPhysXDirectGpuContact;
++void canonicalize_gpu_contact(GpuContact &contact) {
++  if (contact.transformCacheRef1 < contact.transformCacheRef0) {
++    std::swap(contact.actor0, contact.actor1);
++    std::swap(contact.transformCacheRef0, contact.transformCacheRef1);
++    contact.impulseOnActor0 = -contact.impulseOnActor0;
++    contact.worldNormal = -contact.worldNormal;
++  }
++}
++bool gpu_contact_less(const GpuContact &a, const GpuContact &b) {
++  return std::tie(a.transformCacheRef0, a.transformCacheRef1, a.friction, a.pointIndex)
++       < std::tie(b.transformCacheRef0, b.transformCacheRef1, b.friction, b.pointIndex);
++}
++bool gpu_contact_provenance_less(const GpuContact &a, const GpuContact &b) {
++  return std::tie(a.transformCacheRef0, a.transformCacheRef1, a.friction, a.pointIndex, a.pairIndex)
++       < std::tie(b.transformCacheRef0, b.transformCacheRef1, b.friction, b.pointIndex, b.pairIndex);
++}
++float gpu_contact_threshold(PxRigidActor *actor) {
++  const auto *body = actor->is<PxRigidDynamic>();
++  return body ? body->getContactReportThreshold() : PX_MAX_F32;
++}
++// Compare every payload field, including signed zero, without struct padding.
++bool same_gpu_contact(const GpuContact &a, const GpuContact &b) {
++  return a.actor0 == b.actor0 && a.actor1 == b.actor1
++      && a.transformCacheRef0 == b.transformCacheRef0 && a.transformCacheRef1 == b.transformCacheRef1
++      && a.friction == b.friction && a.pointIndex == b.pointIndex && a.pairIndex == b.pairIndex
++      && std::memcmp(&a.worldPosition, &b.worldPosition, sizeof(PxVec3)) == 0
++      && std::memcmp(&a.impulseOnActor0, &b.impulseOnActor0, sizeof(PxVec3)) == 0
++      && std::memcmp(&a.worldNormal, &b.worldNormal, sizeof(PxVec3)) == 0
++      && std::memcmp(&a.separation, &b.separation, sizeof(float)) == 0
++      && std::memcmp(&a.normalImpulse, &b.normalImpulse, sizeof(float)) == 0;
++}
++#endif
++
+ /// Cycle counter for probes that fire thousands of times per tick.
+ ///
+ /// `steady_clock::now()` costs ~20-25 ns; `rdtsc` costs ~7. At cascade rates
+@@ -1329,6 +1381,8 @@ public:
+   void capture_gpu_contacts() {
+     gpu_contact_copy_ms_ = gpu_contact_ownership_ms_ = gpu_contact_validate_ms_ = 0.0;
+     gpu_contact_sort_ms_ = gpu_contact_reduce_ms_ = gpu_contact_route_ms_ = 0.0;
++    gpu_contact_order_verify_ms_ = 0.0;
++    gpu_contact_ordered_ = gpu_contact_order_ambiguous_ = false;
+     auto phase_start = std::chrono::steady_clock::now();
+     const auto finish_phase = [&]() {
+       const auto now = std::chrono::steady_clock::now();
+@@ -1338,12 +1392,18 @@ public:
+     };
+     require(deferred_pairs_.empty() && deferred_points_.empty(),
+             "Direct GPU mixed native callbacks with device contacts");
++    const bool verify_order = gpu_contact_order_enabled() && gpu_contact_order_verify();
++    if (verify_order) gpu_contact_reference_.resize(gpu_contacts_.size());
+     const PxU32 count = gpu_contact_drain_->copyContacts(
+-        gpu_contacts_.data(), static_cast<PxU32>(gpu_contacts_.size()));
++        gpu_contacts_.data(), static_cast<PxU32>(gpu_contacts_.size()), gpu_contact_order_enabled(),
++        verify_order ? gpu_contact_reference_.data() : nullptr);
+     require(gpu_contact_drain_->lastCopyComplete(),
+             "GPU contact readback failed or exceeded configured capacity");
+-    gpu_contact_copy_ms_ = finish_phase();
++    gpu_contact_gpu_order_ms_ = gpu_contact_drain_->lastOrderMilliseconds();
++    gpu_contact_copy_ms_ = finish_phase() - gpu_contact_gpu_order_ms_;
+     gpu_contact_count_ = count;
++    gpu_contact_ordered_ = gpu_contact_drain_->lastCopyOrdered();
++    gpu_contact_order_ambiguous_ = gpu_contact_order_enabled() && count && !gpu_contact_ordered_;
+     if (count == 0) {
+       gpu_previous_pairs_.clear();
+       return;
+@@ -1400,20 +1460,30 @@ public:
+       const auto &b = gpu_contact_shapes_[contact.transformCacheRef1];
+       require(a.shape && b.shape && a.actor == contact.actor0 && b.actor == contact.actor1,
+               "GPU contact ownership disagrees with live shape mapping");
+-      if (contact.transformCacheRef1 < contact.transformCacheRef0) {
+-        std::swap(contact.actor0, contact.actor1);
+-        std::swap(contact.transformCacheRef0, contact.transformCacheRef1);
+-        contact.impulseOnActor0 = -contact.impulseOnActor0;
+-        contact.worldNormal = -contact.worldNormal;
+-      }
++      canonicalize_gpu_contact(contact);
+     }
+     gpu_contact_validate_ms_ = finish_phase();
+-    std::sort(gpu_contacts_.begin(), gpu_contacts_.begin() + count,
+-              [](const auto &a, const auto &b) {
+-                return std::tie(a.transformCacheRef0, a.transformCacheRef1, a.friction, a.pointIndex)
+-                     < std::tie(b.transformCacheRef0, b.transformCacheRef1, b.friction, b.pointIndex);
+-              });
++    if (!gpu_contact_ordered_) {
++      std::sort(gpu_contacts_.begin(), gpu_contacts_.begin() + count, gpu_contact_less);
++    }
+     gpu_contact_sort_ms_ = finish_phase();
++    if (verify_order && gpu_contact_ordered_) {
++      // Reference observes the EXACT original decoder input, not another
++      // copyContactData call whose pair order could differ. Preserve a copy
++      // for the legacy four-key comparator's threshold decisions too.
++      for (PxU32 i = 0; i < count; ++i) canonicalize_gpu_contact(gpu_contact_reference_[i]);
++      gpu_contact_legacy_reference_.assign(gpu_contact_reference_.begin(), gpu_contact_reference_.begin() + count);
++      std::sort(gpu_contact_reference_.begin(), gpu_contact_reference_.begin() + count, gpu_contact_provenance_less);
++      std::sort(gpu_contact_legacy_reference_.begin(), gpu_contact_legacy_reference_.end(), gpu_contact_less);
++      ++gpu_contact_order_verify_checks_;
++      for (PxU32 i = 0; i < count; ++i) {
++        if (!same_gpu_contact(gpu_contacts_[i], gpu_contact_reference_[i])) {
++          ++gpu_contact_order_verify_mismatches_;
++          require(false, "GPU contact ordering changed the canonical contact sequence");
++        }
++      }
++    }
++    gpu_contact_order_verify_ms_ = finish_phase();
+     // Accumulate in the sorted order, independent of CUDA atomic emission.
+     for (PxU32 i = 0; i < count; ++i) {
+       const auto &contact = gpu_contacts_[i];
+@@ -1423,6 +1493,31 @@ public:
+       }
+     }
+     gpu_contact_reduce_ms_ = finish_phase();
++    if (verify_order && gpu_contact_ordered_) {
++      struct LegacyPair { float impulse = 0.0f; float threshold = 0.0f; };
++      std::unordered_map<std::uint64_t, LegacyPair> legacy;
++      for (const auto &contact : gpu_contact_legacy_reference_) {
++        if (contact.friction) continue;
++        auto [entry, inserted] = legacy.try_emplace(actor_pair_key(contact.actor0, contact.actor1));
++        if (inserted) entry->second.threshold = std::min(gpu_contact_threshold(contact.actor0),
++            gpu_contact_threshold(contact.actor1)) * kFixedTimestep;
++        entry->second.impulse += contact.normalImpulse;
++      }
++      for (const auto &[key, expected] : legacy) {
++        const float actual = gpu_actor_pair_normal_impulses_.at(key);
++        std::uint32_t actual_bits, expected_bits;
++        std::memcpy(&actual_bits, &actual, sizeof(actual_bits));
++        std::memcpy(&expected_bits, &expected.impulse, sizeof(expected_bits));
++        gpu_contact_legacy_max_ulp_ = std::max(gpu_contact_legacy_max_ulp_,
++            actual_bits > expected_bits ? actual_bits - expected_bits : expected_bits - actual_bits);
++        ++gpu_contact_legacy_threshold_checks_;
++        if ((actual > expected.threshold) != (expected.impulse > expected.threshold)) {
++          ++gpu_contact_legacy_threshold_mismatches_;
++          require(false, "GPU contact provenance ordering changed a legacy force-threshold decision");
++        }
++      }
++    }
++    gpu_contact_order_verify_ms_ += finish_phase();
+     gpu_current_pairs_.clear();
+     for (PxU32 begin = 0; begin < count;) {
+       const auto &first = gpu_contacts_[begin];
+@@ -2286,6 +2381,15 @@ public:
+     span("direct_contact_reduce_ms", gpu_contact_reduce_ms_, 0);
+     span("direct_contact_route_ms", gpu_contact_route_ms_, 0);
+     span("direct_contact_count", gpu_contact_count_, 2);
++    span("direct_contact_gpu_order_ms", gpu_contact_gpu_order_ms_, 0);
++    span("direct_contact_gpu_ordered", gpu_contact_ordered_, 2);
++    span("direct_contact_order_ambiguous", gpu_contact_order_ambiguous_, 2);
++    span("direct_contact_order_verify_checks", gpu_contact_order_verify_checks_, 2);
++    span("direct_contact_order_verify_mismatches", gpu_contact_order_verify_mismatches_, 2);
++    span("direct_contact_order_verify_ms", gpu_contact_order_verify_ms_, 0);
++    span("direct_contact_legacy_threshold_checks", gpu_contact_legacy_threshold_checks_, 2);
++    span("direct_contact_legacy_threshold_mismatches", gpu_contact_legacy_threshold_mismatches_, 2);
++    span("direct_contact_legacy_sum_max_ulp", gpu_contact_legacy_max_ulp_, 2);
+ #endif
+     // The rigid-body decomposition. sim_wall and fetch_call are 0 on
+     // unsampled ticks; sim_wall_sampled marks the ones that carry a number,
+@@ -2955,6 +3059,14 @@ private:
+   std::vector<PxRigidDynamic *> gpu_mirror_bodies_;
+   Nv::Blast::ExtStressPhysXDirectGpuContactDrain *gpu_contact_drain_ = nullptr;
+   std::vector<Nv::Blast::ExtStressPhysXDirectGpuContact> gpu_contacts_;
++  std::vector<GpuContact> gpu_contact_reference_;
++  std::vector<GpuContact> gpu_contact_legacy_reference_;
++  std::uint64_t gpu_contact_legacy_threshold_checks_ = 0, gpu_contact_legacy_threshold_mismatches_ = 0;
++  std::uint32_t gpu_contact_legacy_max_ulp_ = 0;
++  bool gpu_contact_ordered_ = false, gpu_contact_order_ambiguous_ = false;
++  std::uint64_t gpu_contact_order_verify_checks_ = 0, gpu_contact_order_verify_mismatches_ = 0;
++  double gpu_contact_order_verify_ms_ = 0.0;
++  double gpu_contact_gpu_order_ms_ = 0.0;
+   // Exact wall times for explicit Direct GPU observation, separate from fetch.
+   double gpu_host_mirror_ms_ = 0.0, gpu_contact_copy_ms_ = 0.0;
+   double gpu_contact_ownership_ms_ = 0.0, gpu_contact_validate_ms_ = 0.0;

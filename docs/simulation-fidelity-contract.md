@@ -57,3 +57,8 @@ close the remaining audit items.
 The [Direct GPU observation increment](direct-gpu-observation-2026-09-05.md)
 removes redundant scene-query scheduling only for exactly unchanged inactive
 bodies; active updates are retained. It introduces no motion tolerance or damage budget.
+
+The [GPU contact-ordering experiment](gpu-contact-order-2026-09-05.md) is held
+from deployment. Exact-input contact audits passed, but repeated settling
+controls showed unresolved behavior differences. The path is opt-in; no
+retirement threshold, force, velocity or damage limit was changed to qualify it.

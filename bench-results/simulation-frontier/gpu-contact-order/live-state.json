@@ -1,0 +1,20 @@
+{
+  "checked_utc": "2026-09-05T20:12:55Z",
+  "server_pid": 3864982,
+  "server_sha256": "51efeb841976fe88eb5f52b1a2d84e4227ee2612d784463f82138315073a2f79",
+  "players": 0,
+  "health_reachable": true,
+  "url": "https://209.121.195.117:40617/city",
+  "selected_env": {
+    "PHYSX_ROOT": "/root/workspace/physx-gpu-activity/physx",
+    "VIBE_PHYSICS_BACKEND": "physx_gpu",
+    "VIBE_PHYSX_DIRECT_GPU": "1",
+    "VIBE_PHYSX_GPU_CONTACT_ORDER": null,
+    "VIBE_CITY_SCENE": "fractured-downtown.json",
+    "VIBE_CITY_GRID": "2",
+    "VIBE_CITY_SOLVER_ITERATIONS": "32",
+    "VIBE_CITY_RESIM_PASSES": "1",
+    "VIBE_CITY_FREEZE": "1"
+  },
+  "candidate_deployed": false
+}

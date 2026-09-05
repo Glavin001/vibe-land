@@ -1,0 +1,8 @@
+{
+  "status": "held",
+  "eligible_for_rollout": false,
+  "reason": "Settling qualification unresolved: at 40 seconds 4/9 GPU vs 1/9 CPU exceed 0.10; at 60 seconds 3/9 GPU vs 0/9 CPU exceed it.",
+  "default_gpu_contact_order": false,
+  "source_dependency_commit": "89e5f398",
+  "no_runtime_physics_limits_added": true
+}
