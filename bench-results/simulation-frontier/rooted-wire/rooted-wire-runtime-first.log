@@ -1,0 +1,16 @@
+
+running 1 test
+test rooted_fragments_reach_live_and_late_join_ledgers_with_their_rest_poses ... [destruction] CUDA stress solver active; configured iteration budget 25. Convergence depends on the current load and topology.
+
+thread 'rooted_fragments_reach_live_and_late_join_ledgers_with_their_rest_poses' (4048884) panicked at destruction/tests/rooted_wire.rs:99:17:
+rooted bootstrap COM differs from fixed authored frame: BootstrapIsland { structure_id: 0, island_id: 2, nodes: [0], pose: Pose { position: Vec3(0.0, 0.0, 0.0), rotation: Quat(0.0, 0.0, 0.0, 1.0) }, linear_velocity: Vec3(0.0, 0.0, 0.0), angular_velocity: Vec3(0.0, 0.0, 0.0), settled: true }, expected=Vec3(-3.0, 0.5, 0.0)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+
+failures:
+
+failures:
+    rooted_fragments_reach_live_and_late_join_ledgers_with_their_rest_poses
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.04s
+

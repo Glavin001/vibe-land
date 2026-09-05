@@ -1,0 +1,13 @@
+
+running 7 tests
+test a_multi_structure_city_round_trips ... ok
+test binary_is_far_smaller_than_json ... [measure] algedra-tower manifest: json 5.4 MB, binary 2.1 MB (62% smaller)
+ok
+test dump_for_measurement ... ignored, measurement tool
+test every_authored_manifest_round_trips ... ok
+test json_is_not_mistaken_for_binary ... ok
+test mixed_geometry_survives_the_round_trip ... ok
+test write_ts_fixture ... ignored, regenerates a checked-in fixture
+
+test result: ok. 5 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 0.10s
+

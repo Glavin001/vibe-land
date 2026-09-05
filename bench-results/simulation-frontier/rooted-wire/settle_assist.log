@@ -1,0 +1,13 @@
+
+running 7 tests
+test arm_body::heavy ... ignored
+test arm_body::in_flight ... ignored
+test arm_body::settle ... ignored
+test assist_settles_a_pile_faster_than_it_settles_unassisted ... awake-body-ticks: off 3775 on 3619, assisted 17
+ok
+test debris_in_flight_is_never_assisted ... ok
+test slabs_above_the_mass_ceiling_are_never_assisted ... ok
+test the_assist_is_off_by_default ... ok
+
+test result: ok. 4 passed; 0 failed; 3 ignored; 0 measured; 0 filtered out; finished in 6.23s
+

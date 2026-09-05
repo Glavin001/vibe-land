@@ -1,0 +1,12 @@
+
+running 7 tests
+test authored_packs_are_anchored_and_internally_consistent ... ok
+test authored_packs_build_a_manifest ... ok
+test authored_packs_carry_material_and_appearance ... ok
+test authored_packs_carry_structural_roles ... ok
+test authored_packs_parse_as_v2_with_a_material_table ... ok
+test existing_packs_gain_no_manifest_fields ... ok
+test packs_without_roles_still_load ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.07s
+

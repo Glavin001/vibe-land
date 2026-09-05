@@ -1,0 +1,18 @@
+
+running 8 tests
+test each_physics_step_has_a_current_replay_snapshot ... [destruction] CUDA stress solver active; configured iteration budget 32. Convergence depends on the current load and topology.
+ok
+test stress_report ... ignored, diagnostic
+test surgery_removes_chunks_and_keeps_the_bond_graph_consistent ... ok
+test the_bench_can_stand_a_building_up_and_find_its_chunks ... ok
+test the_parking_garage_settles ... [measure] parking-garage settle: Rested { secs: 1.0 }, broken 0
+  t     broken  bodies  awake  overstressed  util_max
+    1.0       0       1      0           116      2.98
+
+ok
+test the_whole_skyline_stands ... ignored, heavy: the full skyline scene
+test time_to_settle ... ignored, diagnostic
+test utilisation_per_tick ... ignored, diagnostic
+
+test result: ok. 4 passed; 0 failed; 4 ignored; 0 measured; 0 filtered out; finished in 4.21s
+

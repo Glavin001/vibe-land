@@ -1,0 +1,9 @@
+
+running 4 tests
+test depenetrating_body_looks_quiet_to_the_settle_floor ... ok
+test force_sleep_deadline_still_applies_to_moving_bodies ... ok
+test re_arming_a_deferred_body_keeps_it_eligible ... ok
+test tracker_settles_a_quiet_body_regardless_of_position ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

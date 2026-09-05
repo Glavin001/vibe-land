@@ -1,0 +1,4 @@
+2026-09-05T23:49:18.732783Z  INFO web_fps_server: city shot routing match_id=city-default shots=1 hits=1 broken_bonds_before=12
+2026-09-05T23:49:20.240255Z  INFO web_fps_server: city shot routing match_id=city-default shots=1 hits=1 broken_bonds_before=1446
+2026-09-05T23:49:21.740347Z  INFO web_fps_server: city shot routing match_id=city-default shots=1 hits=1 broken_bonds_before=1456
+2026-09-05T23:49:24.256563Z  INFO web_fps_server: city shot routing match_id=city-default shots=1 hits=1 broken_bonds_before=1517

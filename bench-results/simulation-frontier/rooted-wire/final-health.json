@@ -1,0 +1,12 @@
+{
+  "status": "ok",
+  "physics_backend": "physx_gpu",
+  "physics_gpu_required": true,
+  "sim_hz": 60,
+  "snapshot_hz": 60,
+  "active_matches": 1,
+  "players": 0,
+  "udp_verified": true,
+  "wt_connection_attempts": 3,
+  "session_configs_served": 7
+}

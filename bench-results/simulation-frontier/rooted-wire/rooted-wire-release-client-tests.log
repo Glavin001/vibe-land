@@ -1,0 +1,13 @@
+
+> vibe-land-client@0.1.0 test
+> vitest run src/city/rootedWire.test.ts src/city/topology.test.ts src/city/cityClient.test.ts
+
+
+ RUN  v4.1.2 /root/workspace/vibe-land-4/client
+
+
+ Test Files  3 passed (3)
+      Tests  42 passed (42)
+   Start at  23:43:25
+   Duration  282ms (transform 400ms, setup 0ms, import 493ms, tests 36ms, environment 0ms)
+

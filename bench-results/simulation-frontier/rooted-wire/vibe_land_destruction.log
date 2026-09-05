@@ -1,0 +1,118 @@
+
+running 106 tests
+test city::tests::grid_is_centered_on_origin ... ok
+test classify::tests::classifier_ballistic_is_conservative ... ok
+test classify::tests::impact_burst_overrides_and_decays ... ok
+test classify::tests::predictor_applies_gravity_and_damping ... ok
+test classify::tests::stable_slow_body_becomes_quiescent ... ok
+test encoder::tests::a_woken_body_clears_its_settle_on_the_wire ... ok
+test encoder::tests::bootstrap_reflects_ledger_state ... ok
+test encoder::tests::ceiling_bounds_selected_bytes ... ok
+test encoder::tests::deltas_flow_after_a_baseline_and_absolutes_before ... ok
+test encoder::tests::duplicate_body_entities_are_dropped_not_fatal ... ok
+test encoder::tests::fracture_ingest_stages_topology_and_streams_the_island ... ok
+test encoder::tests::irrelevant_bodies_are_not_sent ... ok
+test fingerprint::tests::capture_collects_prefixed_env ... ok
+test freeze::dependency_tests::a_foreign_supporter_blocks_freezing ... ok
+test freeze::dependency_tests::a_migrated_rooted_node_releases_only_its_dependents ... ok
+test freeze::dependency_tests::a_rooted_death_releases_its_dependents ... ok
+test freeze::dependency_tests::a_settled_stack_freezes_in_one_fold ... ok
+test freeze::dependency_tests::a_thawed_supporter_cascades_through_the_stack ... ok
+test freeze::dependency_tests::fold_and_cascade_match_the_reachability_oracle_on_random_graphs ... ok
+test freeze::dependency_tests::ground_support_is_analytic ... ok
+test freeze::dependency_tests::rooted_support_does_not_admit_a_freeze_by_default ... ok
+test freeze::dependency_tests::the_backstop_finds_nothing_after_a_correct_cascade ... ok
+test freeze::tests::a_body_woken_before_the_window_never_freezes ... ok
+test freeze::tests::a_creeping_body_never_counts_as_quiet ... ok
+test freeze::tests::a_thrashing_body_earns_a_longer_freeze_window ... ok
+test freeze::tests::engine_sleep_edge_still_settles_with_freezing_off ... ok
+test freeze::tests::freeze_waits_for_the_window_then_fires_once ... ok
+test freeze::tests::pose_census_counts_still_bodies_that_never_sleep ... ok
+test freeze::tests::retiring_a_frozen_body_clears_its_cell ... ok
+test freeze::tests::shell_error_charges_rotation_at_the_shell ... ok
+test freeze::tests::spatial_query_finds_only_nearby_frozen_bodies ... ok
+test freeze::tests::thawing_reports_only_bodies_that_were_frozen ... ok
+test freeze::tests::the_adapter_flipping_a_frozen_body_back_reads_as_a_wake ... ok
+test freeze::tests::the_master_switch_covers_pose_freezing_too ... ok
+test freeze::tests::the_wake_column_reaches_rubble_above_the_impact ... ok
+test freeze::tests::wake_edge_is_reported_and_resets_the_settle ... ok
+test ids::tests::body_entities_round_trip_and_namespace ... ok
+test ids::tests::bond_ids_round_trip ... ok
+test ids::tests::bond_index_past_the_field_is_loud - should panic ... 
+thread 'ids::tests::bond_index_past_the_field_is_loud' (4069770) panicked at destruction/src/ids.rs:73:5:
+bond 1048576 exceeds 1048576 bonds/structure
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+ok
+test ids::tests::chunk_ids_round_trip ... ok
+test ids::tests::district_sized_structures_round_trip ... ok
+test ids::tests::downtown_sized_structures_round_trip ... ok
+test ids::tests::intra_structure_ids_are_dense_for_leb128_gaps ... ok
+test ids::tests::node_index_past_the_field_is_loud - should panic ... 
+thread 'ids::tests::node_index_past_the_field_is_loud' (4069775) panicked at destruction/src/ids.rs:57:5:
+node 65536 exceeds 65536 nodes/structure
+ok
+test ids::tests::widened_fields_stay_inside_the_id_mask ... ok
+test interest::cluster_cone_tests::cone_never_rejects_what_a_member_frustum_accepts ... ok
+test interest::cluster_cone_tests::empty_group_accepts_rather_than_drops ... ok
+test interest::cluster_cone_tests::opposed_group_degenerates_to_accepting_everything ... ok
+test interest::cluster_cone_tests::tight_group_rejects_most_of_the_world ... ok
+test interest::tests::camera_motion_prefetches_future_view ... ok
+test interest::tests::margin_prevents_edge_churn ... ok
+test interest::tests::proximity_keeps_body_relevant_behind_camera ... ok
+test interest::tests::velocity_lookahead_prefetches_before_frustum_entry ... ok
+test interest::tests::visible_body_enters_then_receives_exit_grace ... ok
+test manifest::tests::hull_points_resolve_through_the_shape_library ... ok
+test manifest::tests::manifest_geometry_keys_are_camel_case ... ok
+test manifest::tests::manifest_hash_is_stable_across_builds ... ok
+test manifest::tests::manifest_round_trips_through_json ... ok
+test manifest::tests::served_manifest_has_no_snake_case_keys ... ok
+test manifest::tests::v1_manifests_do_not_serialise_material_fields ... ok
+test packet::tests::packet_size_never_exceeds_mtu ... ok
+test packet::tests::relative_body_ids_use_leb128_sized_gaps ... ok
+test quant::tests::centimeter_quantization_is_bounded ... ok
+test quant::tests::projection_scales_with_distance ... ok
+test quant::tests::quaternion_round_trip_is_small ... ok
+test quant::tests::rigid_shell_error_combines_translation_and_rotation ... ok
+test quant::tests::velocity_quantization_round_trips ... ok
+test scene_pack::tests::fatal_below_elastic_is_rejected ... ok
+test scene_pack::tests::out_of_range_material_index_names_the_bond ... ok
+test scene_pack::tests::parses_minimal_pack ... ok
+test scene_pack::tests::parses_v2_material_table_and_bond_indices ... ok
+test scene_pack::tests::rejects_out_of_range_bond ... ok
+test scene_pack::tests::rejects_wrong_version ... ok
+test scene_pack::tests::unsupported_versions_are_still_rejected ... ok
+test scene_pack::tests::v1_synthesises_a_single_material ... ok
+test scene_pack::tests::v1_without_limits_falls_back_to_placeholder ... ok
+test scene_pack::tests::v2_negative_limits_inherit_compression ... ok
+test scene_pack::tests::v2_with_empty_material_table_is_rejected ... ok
+test scene_pack::tests::v2_without_materials_is_rejected ... ok
+test scheduler::tests::budget_is_a_ceiling_not_a_fill_target ... ok
+test scheduler::tests::highest_priority_candidates_fit_first ... ok
+test scheduler::tests::moving_body_eventually_reaches_hard_deadline ... ok
+test scheduler::tests::perturbed_contact_outranks_stable_contact ... ok
+test scheduler::tests::recent_update_has_lower_priority_than_old_update ... ok
+test settle::tests::force_sleep_deadline_settles_a_jittering_body ... ok
+test settle::tests::motion_resets_the_quiet_run ... ok
+test settle::tests::sustained_quiet_settles_early ... ok
+test settle::tests::wake_restarts_tracking ... ok
+test synthetic::tests::explosion_breaks_bonds_promotes_flies_and_settles ... ok
+test synthetic::tests::synthetic_end_to_end_through_the_encoder ... ok
+test topology::tests::batches_update_bitsets_and_islands ... ok
+test topology::tests::filtered_bootstrap_scopes_to_named_structures ... ok
+test topology::tests::full_and_scoped_bootstraps_use_reliable_rest_until_wake ... ok
+test topology::tests::hash_vector_is_pinned ... ok
+test topology::tests::settle_pins_pose_and_wake_reverses ... ok
+test topology::tests::union_find_components_follow_alive_bonds ... ok
+test wire::tests::baseline_round_trips ... ok
+test wire::tests::bootstrap_round_trips ... ok
+test wire::tests::chunks_datagram_golden_vector ... ok
+test wire::tests::chunks_datagram_round_trips ... ok
+test wire::tests::chunks_datagrams_split_at_mtu_and_stay_decodable ... ok
+test wire::tests::city_lanes_epoch_round_trips ... ok
+test wire::tests::debris_datagram_epoch_round_trips ... ok
+test wire::tests::delta_fits_detects_saturation ... ok
+test wire::tests::topology_hash_encoding_is_pinned ... ok
+test wire::tests::topology_round_trips ... ok
+
+test result: ok. 106 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+

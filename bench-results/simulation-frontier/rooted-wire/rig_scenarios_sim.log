@@ -1,0 +1,28 @@
+
+running 10 tests
+test a_cantilever_fails_by_length_and_the_marginal_ones_take_longer ... [destruction] CUDA stress solver active; configured iteration budget 32. Convergence depends on the current load and topology.
+[measure] cantilever ladder — drop 2m=0.00 4m=0.00 6m=0.00 8m=0.00 10m=0.00 12m=3.80 | failed at 2m=held 4m=held 6m=held 8m=held 10m=held 12m=2s
+ok
+test a_garage_collapses_when_one_whole_side_is_cut ... [measure] garage, one side cut — peak utilisation 4.68, up to          46 bonds overstressed, 514 bonds broken
+ok
+test a_garage_stands_on_every_second_column ... ok
+test a_shot_damages_a_column_without_erasing_it ... [measure] one city shot on a 3.20 m column broke 9 of 9 bonds
+ok
+test a_slab_on_one_ledge_is_loaded_where_it_bears ... ok
+test does_an_overloaded_bond_degrade ... ignored, diagnostic
+test every_rig_stands_under_its_own_weight ... ok
+test how_many_columns_the_garage_survives ... ignored, measurement: reports the collapse threshold
+test measure_rest_utilisation ... 
+  rig                  rest util_max   overstressed
+  rig-column                  0.039              0
+  rig-portal                  0.036              0
+  rig-cantilever              1.820              2
+  rig-garage                  0.527              0
+  rig-pane                    0.035              0
+  rig-wall                    0.036              0
+  rig-toppled                 0.910              0
+ok
+test the_real_garage_loses_one_side ... ignored, diagnostic on a shipping building
+
+test result: ok. 7 passed; 0 failed; 3 ignored; 0 measured; 0 filtered out; finished in 24.01s
+

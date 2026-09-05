@@ -1,0 +1,9 @@
+
+running 3 tests
+test chunk_raycast_resolves_the_real_surface_and_misses_are_real ... [destruction] CUDA stress solver active; configured iteration budget 25. Convergence depends on the current load and topology.
+ok
+test destruction_tower_settles_and_fractures ... ok
+test event_ids_round_trip_across_multiple_structures ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.10s
+

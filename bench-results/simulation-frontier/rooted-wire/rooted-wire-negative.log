@@ -1,0 +1,16 @@
+
+running 1 test
+test rooted_fragment_migration_destinations_are_announced ... [destruction] CUDA stress solver active; configured iteration budget 25. Convergence depends on the current load and topology.
+
+thread 'rooted_fragment_migration_destinations_are_announced' (4038760) panicked at physx-bridge/tests/freeze_wake_semantics.rs:733:13:
+tick 0: migration ChunkMigrationEvent { structure_id: 0, chunk_id: 0, from_island: 0, to_island: 2 } names an unannounced destination; events=[IslandBodyEvent { structure_id: 0, island_id: 1, kind: 0, mass: 720.0, position: Vec3 { x: -0.375, y: 1.5500001, z: 0.0 }, rotation: Quat { x: 0.0, y: 0.0, z: 0.0, w: 1.0 }, linear_velocity: Vec3 { x: 0.0, y: 0.0, z: 0.0 }, angular_velocity: Vec3 { x: 0.0, y: 0.0, z: 0.0 }, chunk_ids: [6, 7, 8, 9, 10, 11] }, IslandBodyEvent { structure_id: 0, island_id: 8, kind: 0, mass: 720.0, position: Vec3 { x: -0.3750001, y: 2.6, z: 0.0 }, rotation: Quat { x: 0.0, y: 0.0, z: 0.0, w: 1.0 }, linear_velocity: Vec3 { x: 0.0, y: 0.0, z: 0.0 }, angular_velocity: Vec3 { x: 0.0, y: 0.0, z: 0.0 }, chunk_ids: [12, 13, 14, 15, 16, 17] }, IslandBodyEvent { structure_id: 0, island_id: 9, kind: 0, mass: 720.0, position: Vec3 { x: -0.3750001, y: 3.6499999, z: 0.0 }, rotation: Quat { x: 0.0, y: 0.0, z: 0.0, w: 1.0 }, linear_velocity: Vec3 { x: 0.0, y: 0.0, z: 0.0 }, angular_velocity: Vec3 { x: 0.0, y: 0.0, z: 0.0 }, chunk_ids: [18, 19, 20, 21, 22, 23] }, IslandBodyEvent { structure_id: 0, island_id: 10, kind: 0, mass: 720.0, position: Vec3 { x: -0.3750001, y: 4.7, z: 0.0 }, rotation: Quat { x: 0.0, y: 0.0, z: 0.0, w: 1.0 }, linear_velocity: Vec3 { x: 0.0, y: 0.0, z: 0.0 }, angular_velocity: Vec3 { x: 0.0, y: 0.0, z: 0.0 }, chunk_ids: [24, 25, 26, 27, 28, 29] }]
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+
+failures:
+
+failures:
+    rooted_fragment_migration_destinations_are_announced
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 9 filtered out; finished in 1.07s
+

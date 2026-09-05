@@ -1,0 +1,12 @@
+
+running 7 tests
+test chunk_boxes_do_not_interpenetrate ... ok
+test city_grid_leaves_a_street_between_buildings ... ok
+test default_city_fits_the_chunk_budget ... ok
+test drawn_size_equals_collider_extent ... ok
+test every_chunk_is_a_box ... ok
+test pack_carries_its_own_stress_limits ... ok
+test variant_ladder_stays_supported ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+

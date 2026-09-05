@@ -1,0 +1,7 @@
+
+running 1 test
+test rooted_fragment_keeps_its_serial_when_its_last_anchor_breaks ... [destruction] CUDA stress solver active; configured iteration budget 32. Convergence depends on the current load and topology.
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 10 filtered out; finished in 1.11s
+

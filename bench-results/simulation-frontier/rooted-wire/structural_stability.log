@@ -1,0 +1,20 @@
+
+running 14 tests
+test comp_frame_bay_is_stable ... [destruction] CUDA stress solver active; configured iteration budget 32. Convergence depends on the current load and topology.
+ok
+test comp_room_is_stable ... ok
+test comp_stack_is_stable ... ok
+test comp_storey_is_stable ... ok
+test comp_wall_bay_is_stable ... ok
+test frame_bays_compose_in_a_row ... ok
+test house_1story_is_stable ... ignored, slow: run before shipping a structure change
+test house_2story_is_stable ... ignored, slow: run before shipping a structure change
+test minas_tirith_is_stable ... ignored, slow: run before shipping a structure change
+test park_432_is_stable ... ignored, slow: run before shipping a structure change
+test parking_garage_is_stable ... ignored, slow: run before shipping a structure change
+test petronas_is_stable ... ignored, slow: run before shipping a structure change
+test villa_savoye_is_stable ... ignored, slow: run before shipping a structure change
+test wall_bays_compose_in_a_row ... ok
+
+test result: ok. 7 passed; 0 failed; 7 ignored; 0 measured; 0 filtered out; finished in 13.68s
+

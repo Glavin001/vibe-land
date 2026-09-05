@@ -1,0 +1,21 @@
+
+running 11 tests
+test debris_landing_on_frozen_rubble_releases_it_by_contact ... [destruction] CUDA stress solver active; configured iteration budget 25. Convergence depends on the current load and topology.
+ok
+test freezing_a_whole_pile_retires_it_without_losing_identity ... ok
+test freezing_part_of_a_sleeping_pile_leaves_the_rest_asleep ... ok
+test frozen_rubble_still_collides ... ok
+test resting_contact_reports_fire_on_gpu_and_the_sign_is_measured ... pin: chunk-pair=5028 chunk-static=0
+chunk-chunk impulse.y sign: +2315 / -2713 (ordering-dependent, unusable for orientation)
+ok
+test rooted_fragment_keeps_its_serial_when_its_last_anchor_breaks ... ok
+test rooted_fragment_migration_destinations_are_announced ... ok
+test support_edges_arrive_with_world_stump_and_debris_supporters ... support edges: sets=4390 world=0 foreign=0 rooted=12 debris=29
+rooted=6 support_edges=24 promotions=1
+ok
+test the_support_actor_is_never_frozen_or_released ... ok
+test unfreezing_restores_the_body_at_rest_and_in_place ... ok
+test unknown_and_repeated_ids_are_tolerated ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 12.19s
+

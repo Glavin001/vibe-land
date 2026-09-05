@@ -1,0 +1,9 @@
+
+running 4 tests
+test cct_push_keeps_light_ball_at_realistic_speed ... ok
+test force_threshold_sums_loads_across_static_supports ... ok
+test gpu_world_smoke_test_requires_real_cuda_scene ... ok
+test multiple_gpu_worlds_share_one_process_runtime ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.74s
+

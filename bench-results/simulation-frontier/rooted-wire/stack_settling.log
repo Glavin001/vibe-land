@@ -1,0 +1,10 @@
+
+running 5 tests
+test a_pile_of_boxes_comes_to_rest ... ignored, needs a GPU
+test piles_settle_at_city_scale ... ignored, measurement: needs a GPU, runs several large piles
+test residual_velocity_settles_to_near_zero ... ignored, needs a GPU
+test stacked_boxes_do_not_sink_into_the_ground ... ignored, needs a GPU
+test sweep_solver_iterations_for_the_knee ... ignored, measurement: needs a GPU
+
+test result: ok. 0 passed; 0 failed; 5 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

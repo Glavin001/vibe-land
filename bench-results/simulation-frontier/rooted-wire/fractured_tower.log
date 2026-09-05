@@ -1,0 +1,8 @@
+
+running 3 tests
+test default_city_matches_plan_scale ... ok
+test manifest_is_stable_and_reasonably_sized ... ok
+test variant_counts_match_the_cpp_contract ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+

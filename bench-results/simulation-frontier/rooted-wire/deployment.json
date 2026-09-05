@@ -1,0 +1,10 @@
+{
+  "game": "ed9c2ad",
+  "solver": "646a0f414816204483c7eccdbd049fa1208e8f80",
+  "binary_sha256": "9b405a0199afba106b248666b551dabb9e8dea110274fbb861a48f72d051e8d1",
+  "previous_sha256": "51efeb841976fe88eb5f52b1a2d84e4227ee2612d784463f82138315073a2f79",
+  "simulation_env_changes": {},
+  "public_url": "https://209.121.195.117:40617/city",
+  "server_pid": 4074930,
+  "deployed_unix": 1788651867.306346
+}

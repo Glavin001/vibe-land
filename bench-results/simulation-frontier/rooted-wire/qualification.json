@@ -1,0 +1,21 @@
+{
+  "game_release_commit": "ed9c2ad",
+  "game_main_fix_commit": "f00c793",
+  "solver_commit": "646a0f414816204483c7eccdbd049fa1208e8f80",
+  "physx_root": "/root/workspace/physx-gpu-activity/physx",
+  "build": "cargo test --release -p vibe-land-destruction -p vibe-land-physx-bridge --features cuda-stress --no-run --message-format=json",
+  "test_execution": "Every emitted test executable run serially with --test-threads=1 --nocapture, exclusive GPU; existing city restored afterward.",
+  "environment": {
+    "VIBE_PHYSX_DIRECT_GPU": "1",
+    "BLAST_GPU_IMPULSE_READBACK": "0",
+    "BLAST_GPU_BOND_STRESS_READBACK": "1",
+    "BLAST_GPU_DETERMINISTIC_REDUCTIONS": "0",
+    "VIBE_CITY_RESIM_PASSES": "1"
+  },
+  "results": {
+    "passed": 180,
+    "failed": 0,
+    "ignored": 27,
+    "client_passed": 42
+  }
+}
