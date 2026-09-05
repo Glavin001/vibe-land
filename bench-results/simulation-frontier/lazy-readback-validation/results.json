@@ -1,0 +1,10 @@
+{
+  "lazy-topology-backend": 0,
+  "deterministic-existing-gpu": 0,
+  "lazy-bond-space": 0,
+  "lazy-jacobi": 0,
+  "numerical-0": 0,
+  "numerical-1": 0,
+  "memcheck-device": 0,
+  "memcheck-cpu": 0
+}

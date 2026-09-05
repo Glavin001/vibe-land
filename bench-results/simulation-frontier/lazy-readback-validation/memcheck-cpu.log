@@ -1,0 +1,3 @@
+========= COMPUTE-SANITIZER
+lazy readback CPU observer passed: 53 updates, 3 tail fractures, 2 island cuts, complete shattering, backend switching, 40 unconverged, 0 bytes avoided
+========= ERROR SUMMARY: 0 errors

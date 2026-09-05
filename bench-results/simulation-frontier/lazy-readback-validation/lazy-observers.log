@@ -1,0 +1,52 @@
+Internal ctest changing into directory: /root/workspace/blast-stress-solver-2/demos/blast-stress-demo/build-gpu-activity
+UpdateCTestConfiguration  from :/root/workspace/blast-stress-solver-2/demos/blast-stress-demo/build-gpu-activity/DartConfiguration.tcl
+UpdateCTestConfiguration  from :/root/workspace/blast-stress-solver-2/demos/blast-stress-demo/build-gpu-activity/DartConfiguration.tcl
+Test project /root/workspace/blast-stress-solver-2/demos/blast-stress-demo/build-gpu-activity
+Constructing a list of tests
+Done constructing a list of tests
+Updating test list for fixtures
+Added 0 tests to meet fixture requirements
+Checking test dependency graph...
+Checking test dependency graph end
+test 25
+    Start 25: blast_stress_gpu_lazy_readback
+
+25: Test command: /root/workspace/blast-stress-solver-2/demos/blast-stress-demo/build-gpu-activity/gpu_lazy_readback_test
+25: Working Directory: /root/workspace/blast-stress-solver-2/demos/blast-stress-demo/build-gpu-activity
+25: Environment variables: 
+25:  BLAST_GPU_DETERMINISTIC_REDUCTIONS=1
+25:  BLAST_GPU_GATHER=1
+25: Test timeout computed to be: 10000000
+25: lazy readback device walk passed: 53 updates, 3 tail fractures, 2 island cuts, complete shattering, backend switching, 40 unconverged, 4218656 bytes avoided
+1/3 Test #25: blast_stress_gpu_lazy_readback ............   Passed    0.69 sec
+test 26
+    Start 26: blast_stress_gpu_lazy_cpu_observer
+
+26: Test command: /root/workspace/blast-stress-solver-2/demos/blast-stress-demo/build-gpu-activity/gpu_lazy_readback_test "--cpu-walk"
+26: Working Directory: /root/workspace/blast-stress-solver-2/demos/blast-stress-demo/build-gpu-activity
+26: Environment variables: 
+26:  BLAST_GPU_DETERMINISTIC_REDUCTIONS=1
+26:  BLAST_GPU_GATHER=1
+26: Test timeout computed to be: 10000000
+26: lazy readback CPU observer passed: 53 updates, 3 tail fractures, 2 island cuts, complete shattering, backend switching, 40 unconverged, 0 bytes avoided
+2/3 Test #26: blast_stress_gpu_lazy_cpu_observer ........   Passed    0.66 sec
+test 27
+    Start 27: blast_stress_gpu_lazy_parallel_observer
+
+27: Test command: /root/workspace/blast-stress-solver-2/demos/blast-stress-demo/build-gpu-activity/gpu_lazy_readback_test "--parallel-cpu-walk"
+27: Working Directory: /root/workspace/blast-stress-solver-2/demos/blast-stress-demo/build-gpu-activity
+27: Environment variables: 
+27:  BLAST_GPU_DETERMINISTIC_REDUCTIONS=1
+27:  BLAST_GPU_GATHER=1
+27: Test timeout computed to be: 10000000
+27: lazy readback CPU observer passed: 53 updates, 3 tail fractures, 2 island cuts, complete shattering, backend switching, 40 unconverged, 0 bytes avoided
+3/3 Test #27: blast_stress_gpu_lazy_parallel_observer ...   Passed    0.68 sec
+
+The following tests passed:
+	blast_stress_gpu_lazy_readback
+	blast_stress_gpu_lazy_cpu_observer
+	blast_stress_gpu_lazy_parallel_observer
+
+100% tests passed, 0 tests failed out of 3
+
+Total Test time (real) =   2.03 sec

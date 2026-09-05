@@ -1,0 +1,9 @@
+Test project /root/workspace/blast-stress-solver-2/demos/blast-stress-demo/build-gpu-activity
+    Start 25: blast_stress_gpu_lazy_readback
+1/2 Test #25: blast_stress_gpu_lazy_readback .......   Passed    0.67 sec
+    Start 26: blast_stress_gpu_lazy_cpu_observer
+2/2 Test #26: blast_stress_gpu_lazy_cpu_observer ...   Passed    0.65 sec
+
+100% tests passed, 0 tests failed out of 2
+
+Total Test time (real) =   1.32 sec

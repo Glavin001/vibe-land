@@ -84,3 +84,7 @@ solver numerical qualification, the at-rest/scenario/full-resimulation suites,
 and at least three matched saturated-awake city benchmarks including whole-tick
 p99 and backlog. Motion checkpoint success is not full destruction replay proof.
 Only after these gates should the Direct GPU path be deployed for human review.
+
+A subsequent [GPU impulse-observation checkpoint](gpu-lazy-readback-2026-09-05.md)
+adds lazy host readback, deterministic reduction audits and a scenario-harness
+replay fix. It retains the deployment and full-replay qualification boundary above.

@@ -1,0 +1,96 @@
+pack 'Fractured downtown (dense mixed-height blocks, street spacing)': 24105 nodes, 74543 bonds | grid 1 | iters 32 | solves 20
+
+=== single-building (largest connected structure only) ===
+
+=== city (all buildings, intact) ===
+
+=== broken-25 (25% of bonds gone) ===
+
+=== broken-50 (50% of bonds gone) ===
+
+=== broken-75 (75% of bonds gone) ===
+
+=== broken-90 (90% of bonds gone) ===
+
+=== broken-99 (99% of bonds gone) ===
+
+=== live-light (blast-localised, ~4% bonds gone (early bombardment)) ===
+
+=== live-city (blast-localised; matches a real /city session: ~1.35k islands, ~28k bonds gone) ===
+
+=== live-heavy (blast-localised, ~2x the live session's damage) ===
+
+=== shatter-4 (fragments of <=4 chunks, sparsely bonded) ===
+
+=== shatter-3 (fragments of <=3 chunks) ===
+
+=== shatter-2 (fragments of <=2 chunks (pairs)) ===
+
+=== dust (every bond broken; every chunk free) ===
+
+================================ SUMMARY ================================
+scenario              nodes     bonds  islands  device ms     ms/iter   conv@     ok  note
+single-building       24105     18627        1      0.783     0.02447    32.0    yes  peak |J| cpu 2.28e+05 / gpu 2.28e+05
+                                                                                      equilibrium residual lin=2.4667e+00 ang=5.7069e-02
+city                  24105     74543       27      0.888     0.02774    32.0    yes  peak |J| cpu 2.43e+05 / gpu 2.43e+05
+                                                                                      equilibrium residual lin=1.0893e+00 ang=5.2595e-02
+broken-25             24105     55907       59      0.893     0.02790    32.0    yes  peak |J| cpu 3.47e+05 / gpu 3.48e+05
+                                                                                      equilibrium residual lin=1.2778e+00 ang=4.3685e-02
+broken-50             24105     37271      171      0.924     0.02887    32.0    yes  peak |J| cpu 4.32e+05 / gpu 4.33e+05
+                                                                                      equilibrium residual lin=1.8152e+00 ang=4.4815e-02
+broken-75             24105     18635     2195      0.640     0.02000    32.0    yes  peak |J| cpu 2.22e+05 / gpu 2.22e+05
+                                                                                      equilibrium residual lin=1.7155e+00 ang=6.6793e-02
+broken-90             24105      7454     3841      0.487     0.01520    32.0    yes  peak |J| cpu 1.19e+05 / gpu 1.19e+05
+                                                                                      equilibrium residual lin=1.7592e-01 ang=1.5087e-01
+broken-99             24105       745      713      0.077     0.00241     3.0    yes  peak |J| cpu 1.02e+04 / gpu 1.02e+04
+                                                                                      equilibrium residual lin=1.2894e-07 ang=8.2297e+00
+live-light            24105     72071      131      0.958     0.02993    32.0    yes  peak |J| cpu 3.28e+05 / gpu 3.28e+05
+                                                                                      equilibrium residual lin=1.1212e+00 ang=5.2406e-02
+live-city             24105     66723      352      0.900     0.02812    32.0    yes  peak |J| cpu 3.74e+05 / gpu 3.74e+05
+                                                                                      equilibrium residual lin=1.2219e+00 ang=5.3624e-02
+live-heavy            24105     54724      766      0.839     0.02623    32.0    yes  peak |J| cpu 3.97e+05 / gpu 3.97e+05
+                                                                                      equilibrium residual lin=1.5214e+00 ang=5.7630e-02
+shatter-4             24105     17991     7000      0.475     0.01484    32.0    yes  peak |J| cpu 1.15e+05 / gpu 1.15e+05
+                                                                                      equilibrium residual lin=1.7097e-03 ang=2.3653e-03
+shatter-3             24105     13580     7666      0.404     0.01264    27.0    yes  peak |J| cpu 7.74e+04 / gpu 7.74e+04
+                                                                                      equilibrium residual lin=1.6538e-03 ang=2.8143e-03
+shatter-2             24105      7625     7504      0.232     0.00726    14.0    yes  peak |J| cpu 3.98e+04 / gpu 3.98e+04
+                                                                                      equilibrium residual lin=1.0310e-03 ang=2.7370e-03
+dust                  24105         0        0      0.000     0.00000     0.0    yes  no bonds (all free chunks) - nothing to solve
+=========================================================================
+
+=================== CPU (Blast reference) vs GPU ====================
+scenario              cpu ms     gpu ms  speedup cpu iters max rel err rms rel err
+single-building        8.028      0.783    10.3x       -32    3.44e+01    1.75e-01
+city                  26.582      0.888    29.9x      -864    3.67e+01    7.40e-02
+broken-25             20.497      0.893    23.0x      -896    3.48e+01    1.11e-01
+broken-50             14.655      0.924    15.9x     -1089    1.02e+01    2.74e-02
+broken-75              2.408      0.640     3.8x     -2815    3.49e+01    1.98e-01
+broken-90              0.457      0.487     0.9x      -477    1.87e+00    1.86e-02
+broken-99              0.057      0.077     0.7x        25    1.24e-03    4.31e-05
+live-light            25.379      0.958    26.5x      -975    2.15e+02    3.98e-01
+live-city             22.681      0.900    25.2x     -1328    3.35e+01    7.00e-02
+live-heavy            18.439      0.839    22.0x     -1853    2.48e+01    1.27e-01
+shatter-4              0.948      0.475     2.0x     -2711    9.53e+01    3.83e-01
+shatter-3              0.737      0.404     1.8x      1653    7.49e+01    3.37e-01
+shatter-2              0.602      0.232     2.6x      1064    1.39e+00    1.01e-02
+====================================================================
+
+============ EQUILIBRIUM RESIDUAL (the real quality gate) ============
+scenario               cpu lin      gpu lin      cpu ang      gpu ang
+single-building      2.471e+00    2.467e+00    5.718e-02    5.707e-02
+city                 1.090e+00    1.089e+00    5.255e-02    5.260e-02
+broken-25            1.278e+00    1.278e+00    4.370e-02    4.369e-02
+broken-50            1.815e+00    1.815e+00    4.481e-02    4.482e-02
+broken-75            1.716e+00    1.715e+00    6.678e-02    6.679e-02
+broken-90            1.758e-01    1.759e-01    1.539e-01    1.509e-01
+broken-99            1.031e-07    1.289e-07    8.230e+00    8.230e+00
+live-light           1.122e+00    1.121e+00    5.248e-02    5.241e-02
+live-city            1.222e+00    1.222e+00    5.381e-02    5.362e-02
+live-heavy           1.523e+00    1.521e+00    5.751e-02    5.763e-02
+shatter-4            1.681e-03    1.710e-03    2.351e-03    2.365e-03
+shatter-3            9.691e-04    1.654e-03    1.745e-03    2.814e-03
+shatter-2            1.030e-03    1.031e-03    2.762e-03    2.737e-03
+=====================================================================
+quality gate (GPU equilibrium residual <= 2x CPU): PASS
+ALL SCENARIOS OK

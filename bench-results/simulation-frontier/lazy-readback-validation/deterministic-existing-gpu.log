@@ -1,0 +1,15 @@
+Test project /root/workspace/blast-stress-solver-2/demos/blast-stress-demo/build-gpu-activity
+    Start  8: blast_stress_physx_direct_gpu_resim
+1/5 Test  #8: blast_stress_physx_direct_gpu_resim ......   Passed    0.40 sec
+    Start  9: blast_stress_physx_gpu_activity
+2/5 Test  #9: blast_stress_physx_gpu_activity ..........   Passed    9.37 sec
+    Start 24: blast_stress_physx_direct_gpu_contacts
+3/5 Test #24: blast_stress_physx_direct_gpu_contacts ...   Passed    0.43 sec
+    Start 27: blast_stress_gpu_device_input
+4/5 Test #27: blast_stress_gpu_device_input ............   Passed    0.25 sec
+    Start 28: blast_stress_gpu_equivalence
+5/5 Test #28: blast_stress_gpu_equivalence .............   Passed    0.24 sec
+
+100% tests passed, 0 tests failed out of 5
+
+Total Test time (real) =  10.69 sec
