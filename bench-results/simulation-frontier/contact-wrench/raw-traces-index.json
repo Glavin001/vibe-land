@@ -1,0 +1,150 @@
+{
+  "archive_sha256": "bffd509f37e3b6bf5dbd3de855f161aea0c0eceecabafcbc83b0c94b565e0c75",
+  "files": [
+    {
+      "file": "heavy-cpu-1.csv",
+      "bytes": 919356,
+      "sha256": "232c4f239907423198f344b29ada53254a8df23a6d241fa6a26da79a590918ad"
+    },
+    {
+      "file": "heavy-cpu-1.jsonl",
+      "bytes": 4172236,
+      "sha256": "ffaab741c19aeed8feddc74fbaffb0b02ac8b9799e57f7ddf7c759931621e2c1"
+    },
+    {
+      "file": "heavy-cpu-2.csv",
+      "bytes": 925039,
+      "sha256": "750a4271399d14b9389f44e487a087eb36fe393cf1787dae938f76d254300e99"
+    },
+    {
+      "file": "heavy-cpu-2.jsonl",
+      "bytes": 4173875,
+      "sha256": "9f0b8b5c1d6db3724aacc01bca9b191b7fa21e6fae3b19d24232d0b15ce73e0f"
+    },
+    {
+      "file": "heavy-cpu-3.csv",
+      "bytes": 921516,
+      "sha256": "57f941a2323b244d2b73887cbe8e6fb1e5c47047783b80327fb90d904b7b4506"
+    },
+    {
+      "file": "heavy-cpu-3.jsonl",
+      "bytes": 4171415,
+      "sha256": "920523240f7fe138d819fd8f49dd6169aaf7678116db9b4d27febf04777adaa9"
+    },
+    {
+      "file": "heavy-gpu-1.csv",
+      "bytes": 924402,
+      "sha256": "5e23a2d65d1ab0cefde42766145b6eeca20bf179f6f5af446e06565a2996b887"
+    },
+    {
+      "file": "heavy-gpu-1.jsonl",
+      "bytes": 4173821,
+      "sha256": "2be01454e436d6815bbe9be2e59fe7bc995e4d3e5cd3e0e83e67fa7b518750cc"
+    },
+    {
+      "file": "heavy-gpu-2.csv",
+      "bytes": 922557,
+      "sha256": "5e4928c6e50fc13bc8a74f0e9cc99602fc31dbcfec2a3fae50eaf9c4f9eac609"
+    },
+    {
+      "file": "heavy-gpu-2.jsonl",
+      "bytes": 4173575,
+      "sha256": "2f6f9ed19e215d172e46ea9c7735058fcf292098e098508d1dca2dbf9328f153"
+    },
+    {
+      "file": "heavy-gpu-3.csv",
+      "bytes": 913094,
+      "sha256": "66bc9b06ca47a9cc7c0fa037b93dd1c5938b097ef32cee0dad5ef403e1990bca"
+    },
+    {
+      "file": "heavy-gpu-3.jsonl",
+      "bytes": 4170505,
+      "sha256": "c4f71e0b37136deaadbc66973da71bfada1a889ec6291fab447386574340280f"
+    },
+    {
+      "file": "qualification/direct-audit-release-gpu-order.csv",
+      "bytes": 697547,
+      "sha256": "3e179adab1084c4aecc8b0a1e489947e10923a155ea338d2904eaa24754ee411"
+    },
+    {
+      "file": "qualification/direct-audit-release-gpu-order.jsonl",
+      "bytes": 3141276,
+      "sha256": "19bac0d95e78a6076234e6701b431c4d0c7f2a16f7ee8098d3f447712242adfe"
+    },
+    {
+      "file": "qualification/direct-collapse-release-cpu-1.csv",
+      "bytes": 2382618,
+      "sha256": "ae3bc0f0364f3e70768de040e18976c56250f723836d24fb4c1dec6911fad6a0"
+    },
+    {
+      "file": "qualification/direct-collapse-release-cpu-2.csv",
+      "bytes": 2403351,
+      "sha256": "a29c0854f5c239498e8bbb63f9917e278713dd41106e402df890f2315e8eb326"
+    },
+    {
+      "file": "qualification/direct-collapse-release-cpu-3.csv",
+      "bytes": 2396277,
+      "sha256": "3255b9b4157444de12531f4e5056d1c4ed3d1c65ce5f650d28cedb6dbeda5a0d"
+    },
+    {
+      "file": "qualification/direct-collapse-release-gpu-1.csv",
+      "bytes": 2383368,
+      "sha256": "1c9716d5b674457a258d4e3425f4924c455f47d4b3688044c662c070f65956d9"
+    },
+    {
+      "file": "qualification/direct-collapse-release-gpu-2.csv",
+      "bytes": 2377355,
+      "sha256": "194e248753e2beb9f57994b06a80ceb8effe590a47b021cb0017532ff4c8645c"
+    },
+    {
+      "file": "qualification/direct-collapse-release-gpu-3.csv",
+      "bytes": 2383228,
+      "sha256": "76f0e76806a62f6de409d1646e5bb34e252ad3917b34ac247723578064c1dce5"
+    },
+    {
+      "file": "qualification/direct-idle-release-gpu-order-data/at-rest.csv",
+      "bytes": 3213840,
+      "sha256": "e04225d7207b38f3a9cd947e210160a680c94f79cb1e00afa73bbf445efae5f2"
+    },
+    {
+      "file": "qualification/direct-scenario-release-cpu-order-data/at-rest.csv",
+      "bytes": 3217006,
+      "sha256": "c638d457652e1bfc59880d7770a7c706dd1ac1758085cf2cd0cf4ec34eee3454"
+    },
+    {
+      "file": "qualification/direct-scenario-release-cpu-order-data/t2.csv",
+      "bytes": 300427,
+      "sha256": "e78318ec3d715e01864a4793bd796c643e7ee6bb1f7f3de1a2235ab14a733b49"
+    },
+    {
+      "file": "qualification/direct-scenario-release-cpu-order-data/t3.csv",
+      "bytes": 1627162,
+      "sha256": "2078574b2ee4e005afe38f8c8107dd918ba575866e1f54bc55ad020a205b9c54"
+    },
+    {
+      "file": "qualification/direct-scenario-release-cpu-order-data/t5.csv",
+      "bytes": 1116877,
+      "sha256": "34abe6355ea0a7729b0b0519f91e2cf02ab1bdfcc74dd26c1ebef8feea65ab2e"
+    },
+    {
+      "file": "qualification/direct-scenario-release-gpu-order-data/at-rest.csv",
+      "bytes": 3213577,
+      "sha256": "7ac09ef9071c8b2cf58f046acf5e402310716b5803bb4a141d83cb9318362c41"
+    },
+    {
+      "file": "qualification/direct-scenario-release-gpu-order-data/t2.csv",
+      "bytes": 300341,
+      "sha256": "4ae0d0ebdae988343598b3f44172315a6168788503f014b87be7b045b320cb61"
+    },
+    {
+      "file": "qualification/direct-scenario-release-gpu-order-data/t3.csv",
+      "bytes": 1613458,
+      "sha256": "5d8ed584a1cf6578fc7bd5539d40d4e584c2a035855ba5e47206a3aa3a22b371"
+    },
+    {
+      "file": "qualification/direct-scenario-release-gpu-order-data/t5.csv",
+      "bytes": 1121662,
+      "sha256": "a9469c2433279cfcc370a21800fc5567144d58de7f862ee064302dc9027bc6d9"
+    }
+  ]
+}

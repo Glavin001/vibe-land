@@ -1,0 +1,4909 @@
+{
+  "scope": "CPU is the legacy four-key std::sort; GPU adds source-pair provenance to formerly unspecified ties. First-step spans and whole simulation, no encoder/transport. Same binary and physics settings, independent trajectories; population bands are not identical replay states.",
+  "runs": {
+    "heavy-cpu-1": {
+      "metadata": {
+        "command": [
+          "/root/workspace/vibe-land-4/target/gpu-activity/release/record-city-trace",
+          "--scene",
+          "destruction/assets/scenes/fractured-downtown.json",
+          "--grid",
+          "2",
+          "--seconds",
+          "20",
+          "--shots",
+          "200",
+          "--shot-interval-ticks",
+          "4",
+          "--targets",
+          "27",
+          "--output",
+          "/dev/null",
+          "--metrics-out",
+          "/root/workspace/vibe-land-4/bench-results/simulation-frontier/contact-wrench/heavy-cpu-1.csv",
+          "--timings-out",
+          "/root/workspace/vibe-land-4/bench-results/simulation-frontier/contact-wrench/heavy-cpu-1.jsonl"
+        ],
+        "env": {
+          "VIBE_CITY_VARIED_HEIGHTS": "0",
+          "VIBE_CITY_EXCESS_FORCES": "1",
+          "VIBE_WORLD_RESTITUTION": "0.02",
+          "VIBE_CITY_STRESS_LIMIT_SCALE": "0.45",
+          "VIBE_CITY_FREEZE": "1",
+          "VIBE_PHYSICS_BACKEND": "physx_gpu",
+          "BLAST_GPU_WHOLE_RESET_ON_TOPOLOGY": "1",
+          "BLAST_BOND_STRESS_GPU": "1",
+          "VIBE_CITY_SOLVER_ITERATIONS": "32",
+          "VIBE_CITY_RESIM_PASSES": "1",
+          "LD_LIBRARY_PATH": "/usr/local/cuda/lib64:/root/workspace/physx-gpu-activity/physx/bin/linux.x86_64/release",
+          "VIBE_CITY_SHOT_STRESS_IMPULSE": "1.2e7",
+          "VIBE_CITY_GRID": "2",
+          "VIBE_CITY_SCENE": "fractured-downtown.json",
+          "VIBE_CITY_SHOT_BLAST_RADIUS": "2.5",
+          "VIBE_WORLD_FRICTION": "0.75",
+          "PHYSX_ROOT": "/root/workspace/physx-gpu-activity/physx",
+          "BLAST_ROOT": "/root/workspace/blast-stress-solver-2/blast",
+          "BLAST_GPU_IMPULSE_READBACK": "0",
+          "BLAST_GPU_DETERMINISTIC_REDUCTIONS": "0",
+          "VIBE_PHYSX_DIRECT_GPU": "1",
+          "VIBE_PHYSX_GPU_CONTACT_ORDER": "0",
+          "VIBE_PHYSX_GPU_CONTACT_ORDER_VERIFY": "0"
+        },
+        "binary_sha256": "fea1e8d7564182e77407c9bf5fdfc92e51e6d56662d3d73a6ce4b26749b49fe1",
+        "start_utc": "2026-09-05T21:12:42Z",
+        "game_head": "b62edf0c814ff3570095a31725b595577a03f9c8",
+        "game_diff_sha256": "cf6a83c98d25791e83cafcde2fff042d6148d22cc1085d1308862ab75712a8b7",
+        "solver_head": "89e5f398237c4ac2589f4303351957713c2f47eb",
+        "solver_diff_sha256": "6d911c145ff59a87ec0963b2d9fc5eab53d4946a18e2c3bb988d5c7ef6d5784e",
+        "exit_code": 0,
+        "wall_seconds": 46.132445599883795
+      },
+      "final": {
+        "awake": 2284,
+        "bodies": 2985,
+        "bonds": 9597
+      },
+      "groups": {
+        "all": {
+          "sim": {
+            "n": 1200,
+            "mean": 31.013904166666666,
+            "p50": 21.464,
+            "p95": 60.383,
+            "p99": 64.435,
+            "max": 551.214
+          },
+          "physx": {
+            "n": 1200,
+            "mean": 11.0526975,
+            "p50": 12.355,
+            "p95": 14.791,
+            "p99": 15.708,
+            "max": 46.882
+          },
+          "awake": {
+            "n": 1200,
+            "mean": 1760.7308333333333,
+            "p50": 2207,
+            "p95": 2459,
+            "p99": 2470,
+            "max": 2472
+          },
+          "bodies": {
+            "n": 1200,
+            "mean": 2053.1675,
+            "p50": 2395,
+            "p95": 2975,
+            "p99": 2985,
+            "max": 2985
+          },
+          "bonds": {
+            "n": 1200,
+            "mean": 6625.695,
+            "p50": 7810,
+            "p95": 9561,
+            "p99": 9597,
+            "max": 9597
+          },
+          "ordering_ms": {
+            "n": 1200,
+            "mean": 2.144703333333333,
+            "p50": 2.5894,
+            "p95": 3.3681,
+            "p99": 3.5623,
+            "max": 3.6745
+          },
+          "contact_pipeline_ms": {
+            "n": 1200,
+            "mean": 6.515423166666666,
+            "p50": 7.5394,
+            "p95": 9.1704,
+            "p99": 9.7427,
+            "max": 10.463
+          },
+          "physx/direct_host_mirror_ms": {
+            "n": 1200,
+            "mean": 0.4440415,
+            "p50": 0.3499,
+            "p95": 1.1332,
+            "p99": 1.2681,
+            "max": 3.2144
+          },
+          "physx/direct_contact_copy_ms": {
+            "n": 1200,
+            "mean": 0.3408101666666667,
+            "p50": 0.3897,
+            "p95": 0.4527,
+            "p99": 0.4827,
+            "max": 2.2776
+          },
+          "physx/direct_contact_ownership_ms": {
+            "n": 1200,
+            "mean": 2.127822,
+            "p50": 2.234,
+            "p95": 2.5773,
+            "p99": 2.8547,
+            "max": 3.9384
+          },
+          "physx/direct_contact_validate_ms": {
+            "n": 1200,
+            "mean": 0.49085466666666666,
+            "p50": 0.5669,
+            "p95": 0.7874,
+            "p99": 0.8485,
+            "max": 1.0042
+          },
+          "physx/direct_contact_sort_ms": {
+            "n": 1200,
+            "mean": 2.144703333333333,
+            "p50": 2.5894,
+            "p95": 3.3681,
+            "p99": 3.5623,
+            "max": 3.6745
+          },
+          "physx/direct_contact_reduce_ms": {
+            "n": 1200,
+            "mean": 0.5211620833333334,
+            "p50": 0.5917,
+            "p95": 0.945,
+            "p99": 1.1629,
+            "max": 1.4908
+          },
+          "physx/direct_contact_route_ms": {
+            "n": 1200,
+            "mean": 0.8900709166666667,
+            "p50": 1.0939,
+            "p95": 1.4696,
+            "p99": 1.6552,
+            "max": 2.3898
+          },
+          "physx/direct_contact_count": {
+            "n": 1200,
+            "mean": 24893.085833333334,
+            "p50": 30573.0,
+            "p95": 34561.0,
+            "p99": 35578.0,
+            "max": 35850.0
+          },
+          "physx/direct_contact_gpu_order_ms": {
+            "n": 1200,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_gpu_ordered": {
+            "n": 1200,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_order_ambiguous": {
+            "n": 1200,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_wrench_checks": {
+            "n": 1200,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_wrench_mismatches": {
+            "n": 1200,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_wrench_max_force_error": {
+            "n": 1200,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_wrench_max_moment_error": {
+            "n": 1200,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_order_verify_checks": {
+            "n": 1200,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_order_verify_mismatches": {
+            "n": 1200,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_order_verify_ms": {
+            "n": 1200,
+            "mean": 0.00010216666666666667,
+            "p50": 0.0001,
+            "p95": 0.0002,
+            "p99": 0.0002,
+            "max": 0.0008
+          },
+          "physx/direct_contact_legacy_threshold_checks": {
+            "n": 1200,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_legacy_threshold_mismatches": {
+            "n": 1200,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_legacy_sum_max_ulp": {
+            "n": 1200,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          }
+        },
+        "awake_2000_4000": {
+          "sim": {
+            "n": 700,
+            "mean": 33.401024285714286,
+            "p50": 21.376,
+            "p95": 61.652,
+            "p99": 65.275,
+            "max": 70.176
+          },
+          "physx": {
+            "n": 700,
+            "mean": 13.403027142857143,
+            "p50": 13.461,
+            "p95": 15.07,
+            "p99": 15.967,
+            "max": 17.069
+          },
+          "awake": {
+            "n": 700,
+            "mean": 2344.157142857143,
+            "p50": 2374,
+            "p95": 2465,
+            "p99": 2470,
+            "max": 2472
+          },
+          "bodies": {
+            "n": 700,
+            "mean": 2749.9185714285713,
+            "p50": 2871,
+            "p95": 2979,
+            "p99": 2985,
+            "max": 2985
+          },
+          "bonds": {
+            "n": 700,
+            "mean": 8876.435714285713,
+            "p50": 9244,
+            "p95": 9578,
+            "p99": 9597,
+            "max": 9597
+          },
+          "ordering_ms": {
+            "n": 700,
+            "mean": 2.8584261428571427,
+            "p50": 2.8159,
+            "p95": 3.4894,
+            "p99": 3.5756,
+            "max": 3.6745
+          },
+          "contact_pipeline_ms": {
+            "n": 700,
+            "mean": 8.219530285714285,
+            "p50": 8.1542,
+            "p95": 9.4411,
+            "p99": 10.0047,
+            "max": 10.463
+          },
+          "physx/direct_host_mirror_ms": {
+            "n": 700,
+            "mean": 0.42422185714285715,
+            "p50": 0.3872,
+            "p95": 1.0162,
+            "p99": 1.19,
+            "max": 1.5273
+          },
+          "physx/direct_contact_copy_ms": {
+            "n": 700,
+            "mean": 0.4175042857142857,
+            "p50": 0.4159,
+            "p95": 0.4612,
+            "p99": 0.4996,
+            "max": 0.7334
+          },
+          "physx/direct_contact_ownership_ms": {
+            "n": 700,
+            "mean": 2.320900857142857,
+            "p50": 2.3096,
+            "p95": 2.6132,
+            "p99": 2.9115,
+            "max": 3.9384
+          },
+          "physx/direct_contact_validate_ms": {
+            "n": 700,
+            "mean": 0.6626252857142857,
+            "p50": 0.6827,
+            "p95": 0.8153,
+            "p99": 0.8746,
+            "max": 1.0042
+          },
+          "physx/direct_contact_sort_ms": {
+            "n": 700,
+            "mean": 2.8584261428571427,
+            "p50": 2.8159,
+            "p95": 3.4894,
+            "p99": 3.5756,
+            "max": 3.6745
+          },
+          "physx/direct_contact_reduce_ms": {
+            "n": 700,
+            "mean": 0.7066437142857143,
+            "p50": 0.6591,
+            "p95": 0.9985,
+            "p99": 1.2312,
+            "max": 1.4908
+          },
+          "physx/direct_contact_route_ms": {
+            "n": 700,
+            "mean": 1.25343,
+            "p50": 1.2339,
+            "p95": 1.5259,
+            "p99": 1.7332,
+            "max": 2.3898
+          },
+          "physx/direct_contact_count": {
+            "n": 700,
+            "mean": 32734.60142857143,
+            "p50": 33268.0,
+            "p95": 34784.0,
+            "p99": 35700.0,
+            "max": 35850.0
+          },
+          "physx/direct_contact_gpu_order_ms": {
+            "n": 700,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_gpu_ordered": {
+            "n": 700,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_order_ambiguous": {
+            "n": 700,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_wrench_checks": {
+            "n": 700,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_wrench_mismatches": {
+            "n": 700,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_wrench_max_force_error": {
+            "n": 700,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_wrench_max_moment_error": {
+            "n": 700,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_order_verify_checks": {
+            "n": 700,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_order_verify_mismatches": {
+            "n": 700,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_order_verify_ms": {
+            "n": 700,
+            "mean": 0.00010871428571428572,
+            "p50": 0.0001,
+            "p95": 0.0002,
+            "p99": 0.0002,
+            "max": 0.0008
+          },
+          "physx/direct_contact_legacy_threshold_checks": {
+            "n": 700,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_legacy_threshold_mismatches": {
+            "n": 700,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_legacy_sum_max_ulp": {
+            "n": 700,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          }
+        },
+        "awake_5000_7000": {
+          "sim": null,
+          "physx": null,
+          "awake": null,
+          "bodies": null,
+          "bonds": null,
+          "ordering_ms": null,
+          "contact_pipeline_ms": null,
+          "physx/direct_host_mirror_ms": null,
+          "physx/direct_contact_copy_ms": null,
+          "physx/direct_contact_ownership_ms": null,
+          "physx/direct_contact_validate_ms": null,
+          "physx/direct_contact_sort_ms": null,
+          "physx/direct_contact_reduce_ms": null,
+          "physx/direct_contact_route_ms": null,
+          "physx/direct_contact_count": null,
+          "physx/direct_contact_gpu_order_ms": null,
+          "physx/direct_contact_gpu_ordered": null,
+          "physx/direct_contact_order_ambiguous": null,
+          "physx/direct_contact_wrench_checks": null,
+          "physx/direct_contact_wrench_mismatches": null,
+          "physx/direct_contact_wrench_max_force_error": null,
+          "physx/direct_contact_wrench_max_moment_error": null,
+          "physx/direct_contact_order_verify_checks": null,
+          "physx/direct_contact_order_verify_mismatches": null,
+          "physx/direct_contact_order_verify_ms": null,
+          "physx/direct_contact_legacy_threshold_checks": null,
+          "physx/direct_contact_legacy_threshold_mismatches": null,
+          "physx/direct_contact_legacy_sum_max_ulp": null
+        },
+        "contacts_30000_60000": {
+          "sim": {
+            "n": 659,
+            "mean": 32.83667678300455,
+            "p50": 21.324,
+            "p95": 61.663,
+            "p99": 65.134,
+            "max": 70.176
+          },
+          "physx": {
+            "n": 659,
+            "mean": 13.45911684370258,
+            "p50": 13.503,
+            "p95": 15.114,
+            "p99": 15.967,
+            "max": 17.069
+          },
+          "awake": {
+            "n": 659,
+            "mean": 2362.1396054628226,
+            "p50": 2385,
+            "p95": 2465,
+            "p99": 2470,
+            "max": 2472
+          },
+          "bodies": {
+            "n": 659,
+            "mean": 2783.01062215478,
+            "p50": 2889,
+            "p95": 2979,
+            "p99": 2985,
+            "max": 2985
+          },
+          "bonds": {
+            "n": 659,
+            "mean": 8979.241274658574,
+            "p50": 9301,
+            "p95": 9578,
+            "p99": 9597,
+            "max": 9597
+          },
+          "ordering_ms": {
+            "n": 659,
+            "mean": 2.8855905918057663,
+            "p50": 2.8225,
+            "p95": 3.4958,
+            "p99": 3.5756,
+            "max": 3.6745
+          },
+          "contact_pipeline_ms": {
+            "n": 659,
+            "mean": 8.290279817905919,
+            "p50": 8.2083,
+            "p95": 9.4624,
+            "p99": 10.0047,
+            "max": 10.463
+          },
+          "physx/direct_host_mirror_ms": {
+            "n": 659,
+            "mean": 0.4058192716236722,
+            "p50": 0.3861,
+            "p95": 0.5796,
+            "p99": 1.1687,
+            "max": 1.5273
+          },
+          "physx/direct_contact_copy_ms": {
+            "n": 659,
+            "mean": 0.42057374810318665,
+            "p50": 0.4177,
+            "p95": 0.4623,
+            "p99": 0.4996,
+            "max": 0.7334
+          },
+          "physx/direct_contact_ownership_ms": {
+            "n": 659,
+            "mean": 2.327369195751138,
+            "p50": 2.3151,
+            "p95": 2.62,
+            "p99": 2.9115,
+            "max": 3.9384
+          },
+          "physx/direct_contact_validate_ms": {
+            "n": 659,
+            "mean": 0.6667833080424886,
+            "p50": 0.6871,
+            "p95": 0.8186,
+            "p99": 0.8746,
+            "max": 1.0042
+          },
+          "physx/direct_contact_sort_ms": {
+            "n": 659,
+            "mean": 2.8855905918057663,
+            "p50": 2.8225,
+            "p95": 3.4958,
+            "p99": 3.5756,
+            "max": 3.6745
+          },
+          "physx/direct_contact_reduce_ms": {
+            "n": 659,
+            "mean": 0.7163871016691957,
+            "p50": 0.6661,
+            "p95": 1.0053,
+            "p99": 1.2312,
+            "max": 1.4908
+          },
+          "physx/direct_contact_route_ms": {
+            "n": 659,
+            "mean": 1.2735758725341426,
+            "p50": 1.2452,
+            "p95": 1.547,
+            "p99": 1.7332,
+            "max": 2.3898
+          },
+          "physx/direct_contact_count": {
+            "n": 659,
+            "mean": 32989.38694992413,
+            "p50": 33328.0,
+            "p95": 34820.0,
+            "p99": 35700.0,
+            "max": 35850.0
+          },
+          "physx/direct_contact_gpu_order_ms": {
+            "n": 659,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_gpu_ordered": {
+            "n": 659,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_order_ambiguous": {
+            "n": 659,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_wrench_checks": {
+            "n": 659,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_wrench_mismatches": {
+            "n": 659,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_wrench_max_force_error": {
+            "n": 659,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_wrench_max_moment_error": {
+            "n": 659,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_order_verify_checks": {
+            "n": 659,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_order_verify_mismatches": {
+            "n": 659,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_order_verify_ms": {
+            "n": 659,
+            "mean": 0.00010895295902883156,
+            "p50": 0.0001,
+            "p95": 0.0002,
+            "p99": 0.0002,
+            "max": 0.0008
+          },
+          "physx/direct_contact_legacy_threshold_checks": {
+            "n": 659,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_legacy_threshold_mismatches": {
+            "n": 659,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_legacy_sum_max_ulp": {
+            "n": 659,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          }
+        },
+        "contacts_80000_120000": {
+          "sim": null,
+          "physx": null,
+          "awake": null,
+          "bodies": null,
+          "bonds": null,
+          "ordering_ms": null,
+          "contact_pipeline_ms": null,
+          "physx/direct_host_mirror_ms": null,
+          "physx/direct_contact_copy_ms": null,
+          "physx/direct_contact_ownership_ms": null,
+          "physx/direct_contact_validate_ms": null,
+          "physx/direct_contact_sort_ms": null,
+          "physx/direct_contact_reduce_ms": null,
+          "physx/direct_contact_route_ms": null,
+          "physx/direct_contact_count": null,
+          "physx/direct_contact_gpu_order_ms": null,
+          "physx/direct_contact_gpu_ordered": null,
+          "physx/direct_contact_order_ambiguous": null,
+          "physx/direct_contact_wrench_checks": null,
+          "physx/direct_contact_wrench_mismatches": null,
+          "physx/direct_contact_wrench_max_force_error": null,
+          "physx/direct_contact_wrench_max_moment_error": null,
+          "physx/direct_contact_order_verify_checks": null,
+          "physx/direct_contact_order_verify_mismatches": null,
+          "physx/direct_contact_order_verify_ms": null,
+          "physx/direct_contact_legacy_threshold_checks": null,
+          "physx/direct_contact_legacy_threshold_mismatches": null,
+          "physx/direct_contact_legacy_sum_max_ulp": null
+        }
+      }
+    },
+    "heavy-cpu-2": {
+      "metadata": {
+        "command": [
+          "/root/workspace/vibe-land-4/target/gpu-activity/release/record-city-trace",
+          "--scene",
+          "destruction/assets/scenes/fractured-downtown.json",
+          "--grid",
+          "2",
+          "--seconds",
+          "20",
+          "--shots",
+          "200",
+          "--shot-interval-ticks",
+          "4",
+          "--targets",
+          "27",
+          "--output",
+          "/dev/null",
+          "--metrics-out",
+          "/root/workspace/vibe-land-4/bench-results/simulation-frontier/contact-wrench/heavy-cpu-2.csv",
+          "--timings-out",
+          "/root/workspace/vibe-land-4/bench-results/simulation-frontier/contact-wrench/heavy-cpu-2.jsonl"
+        ],
+        "env": {
+          "VIBE_CITY_VARIED_HEIGHTS": "0",
+          "VIBE_CITY_EXCESS_FORCES": "1",
+          "VIBE_WORLD_RESTITUTION": "0.02",
+          "VIBE_CITY_STRESS_LIMIT_SCALE": "0.45",
+          "VIBE_CITY_FREEZE": "1",
+          "VIBE_PHYSICS_BACKEND": "physx_gpu",
+          "BLAST_GPU_WHOLE_RESET_ON_TOPOLOGY": "1",
+          "BLAST_BOND_STRESS_GPU": "1",
+          "VIBE_CITY_SOLVER_ITERATIONS": "32",
+          "VIBE_CITY_RESIM_PASSES": "1",
+          "LD_LIBRARY_PATH": "/usr/local/cuda/lib64:/root/workspace/physx-gpu-activity/physx/bin/linux.x86_64/release",
+          "VIBE_CITY_SHOT_STRESS_IMPULSE": "1.2e7",
+          "VIBE_CITY_GRID": "2",
+          "VIBE_CITY_SCENE": "fractured-downtown.json",
+          "VIBE_CITY_SHOT_BLAST_RADIUS": "2.5",
+          "VIBE_WORLD_FRICTION": "0.75",
+          "PHYSX_ROOT": "/root/workspace/physx-gpu-activity/physx",
+          "BLAST_ROOT": "/root/workspace/blast-stress-solver-2/blast",
+          "BLAST_GPU_IMPULSE_READBACK": "0",
+          "BLAST_GPU_DETERMINISTIC_REDUCTIONS": "0",
+          "VIBE_PHYSX_DIRECT_GPU": "1",
+          "VIBE_PHYSX_GPU_CONTACT_ORDER": "0",
+          "VIBE_PHYSX_GPU_CONTACT_ORDER_VERIFY": "0"
+        },
+        "binary_sha256": "fea1e8d7564182e77407c9bf5fdfc92e51e6d56662d3d73a6ce4b26749b49fe1",
+        "start_utc": "2026-09-05T21:15:03Z",
+        "game_head": "b62edf0c814ff3570095a31725b595577a03f9c8",
+        "game_diff_sha256": "cf6a83c98d25791e83cafcde2fff042d6148d22cc1085d1308862ab75712a8b7",
+        "solver_head": "89e5f398237c4ac2589f4303351957713c2f47eb",
+        "solver_diff_sha256": "6d911c145ff59a87ec0963b2d9fc5eab53d4946a18e2c3bb988d5c7ef6d5784e",
+        "exit_code": 0,
+        "wall_seconds": 56.507336154114455
+      },
+      "final": {
+        "awake": 2921,
+        "bodies": 3717,
+        "bonds": 12399
+      },
+      "groups": {
+        "all": {
+          "sim": {
+            "n": 1200,
+            "mean": 39.55957333333333,
+            "p50": 28.227,
+            "p95": 74.171,
+            "p99": 79.864,
+            "max": 587.977
+          },
+          "physx": {
+            "n": 1200,
+            "mean": 13.404664166666667,
+            "p50": 15.5,
+            "p95": 18.665,
+            "p99": 19.686,
+            "max": 47.753
+          },
+          "awake": {
+            "n": 1200,
+            "mean": 2161.3016666666667,
+            "p50": 2667,
+            "p95": 3157,
+            "p99": 3178,
+            "max": 3185
+          },
+          "bodies": {
+            "n": 1200,
+            "mean": 2425.1725,
+            "p50": 2834,
+            "p95": 3677,
+            "p99": 3714,
+            "max": 3717
+          },
+          "bonds": {
+            "n": 1200,
+            "mean": 8098.980833333333,
+            "p50": 9485,
+            "p95": 12262,
+            "p99": 12385,
+            "max": 12399
+          },
+          "ordering_ms": {
+            "n": 1200,
+            "mean": 2.9671896666666666,
+            "p50": 3.7414,
+            "p95": 4.5898,
+            "p99": 5.1084,
+            "max": 5.3056
+          },
+          "contact_pipeline_ms": {
+            "n": 1200,
+            "mean": 8.1826395,
+            "p50": 9.861,
+            "p95": 11.8491,
+            "p99": 12.8077,
+            "max": 13.5112
+          },
+          "physx/direct_host_mirror_ms": {
+            "n": 1200,
+            "mean": 0.46648758333333334,
+            "p50": 0.368,
+            "p95": 1.1618,
+            "p99": 1.2608,
+            "max": 3.2966
+          },
+          "physx/direct_contact_copy_ms": {
+            "n": 1200,
+            "mean": 0.41497191666666666,
+            "p50": 0.489,
+            "p95": 0.5675,
+            "p99": 0.6074,
+            "max": 2.3384
+          },
+          "physx/direct_contact_ownership_ms": {
+            "n": 1200,
+            "mean": 2.2094289166666665,
+            "p50": 2.3341,
+            "p95": 2.6147,
+            "p99": 2.8332,
+            "max": 3.5128
+          },
+          "physx/direct_contact_validate_ms": {
+            "n": 1200,
+            "mean": 0.7121190833333333,
+            "p50": 0.9027,
+            "p95": 1.1157,
+            "p99": 1.1777,
+            "max": 1.4225
+          },
+          "physx/direct_contact_sort_ms": {
+            "n": 1200,
+            "mean": 2.9671896666666666,
+            "p50": 3.7414,
+            "p95": 4.5898,
+            "p99": 5.1084,
+            "max": 5.3056
+          },
+          "physx/direct_contact_reduce_ms": {
+            "n": 1200,
+            "mean": 0.6912614166666666,
+            "p50": 0.8465,
+            "p95": 1.2305,
+            "p99": 1.577,
+            "max": 2.2463
+          },
+          "physx/direct_contact_route_ms": {
+            "n": 1200,
+            "mean": 1.1876685,
+            "p50": 1.4829,
+            "p95": 1.9736,
+            "p99": 2.1643,
+            "max": 2.5311
+          },
+          "physx/direct_contact_count": {
+            "n": 1200,
+            "mean": 34249.416666666664,
+            "p50": 43387.0,
+            "p95": 49987.0,
+            "p99": 50512.0,
+            "max": 50692.0
+          },
+          "physx/direct_contact_gpu_order_ms": {
+            "n": 1200,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_gpu_ordered": {
+            "n": 1200,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_order_ambiguous": {
+            "n": 1200,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_wrench_checks": {
+            "n": 1200,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_wrench_mismatches": {
+            "n": 1200,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_wrench_max_force_error": {
+            "n": 1200,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_wrench_max_moment_error": {
+            "n": 1200,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_order_verify_checks": {
+            "n": 1200,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_order_verify_mismatches": {
+            "n": 1200,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_order_verify_ms": {
+            "n": 1200,
+            "mean": 0.00010291666666666667,
+            "p50": 0.0001,
+            "p95": 0.0002,
+            "p99": 0.0002,
+            "max": 0.0007
+          },
+          "physx/direct_contact_legacy_threshold_checks": {
+            "n": 1200,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_legacy_threshold_mismatches": {
+            "n": 1200,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_legacy_sum_max_ulp": {
+            "n": 1200,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          }
+        },
+        "awake_2000_4000": {
+          "sim": {
+            "n": 777,
+            "mean": 45.981790218790216,
+            "p50": 28.627,
+            "p95": 75.455,
+            "p99": 80.339,
+            "max": 84.23
+          },
+          "physx": {
+            "n": 777,
+            "mean": 16.593267696267695,
+            "p50": 16.711,
+            "p95": 18.933,
+            "p99": 19.802,
+            "max": 20.871
+          },
+          "awake": {
+            "n": 777,
+            "mean": 2880.705276705277,
+            "p50": 3009,
+            "p95": 3165,
+            "p99": 3180,
+            "max": 3185
+          },
+          "bodies": {
+            "n": 777,
+            "mean": 3220.769626769627,
+            "p50": 3406,
+            "p95": 3696,
+            "p99": 3714,
+            "max": 3717
+          },
+          "bonds": {
+            "n": 777,
+            "mean": 10744.142857142857,
+            "p50": 11351,
+            "p95": 12329,
+            "p99": 12385,
+            "max": 12399
+          },
+          "ordering_ms": {
+            "n": 777,
+            "mean": 4.012465765765766,
+            "p50": 4.1377,
+            "p95": 4.7461,
+            "p99": 5.2203,
+            "max": 5.3056
+          },
+          "contact_pipeline_ms": {
+            "n": 777,
+            "mean": 10.49032290862291,
+            "p50": 10.6918,
+            "p95": 12.077,
+            "p99": 12.9312,
+            "max": 13.5112
+          },
+          "physx/direct_host_mirror_ms": {
+            "n": 777,
+            "mean": 0.46857091377091376,
+            "p50": 0.384,
+            "p95": 1.0813,
+            "p99": 1.2282,
+            "max": 1.351
+          },
+          "physx/direct_contact_copy_ms": {
+            "n": 777,
+            "mean": 0.5170056628056628,
+            "p50": 0.5213,
+            "p95": 0.5793,
+            "p99": 0.6097,
+            "max": 0.7809
+          },
+          "physx/direct_contact_ownership_ms": {
+            "n": 777,
+            "mean": 2.3949624195624195,
+            "p50": 2.3857,
+            "p95": 2.6501,
+            "p99": 2.8678,
+            "max": 3.5128
+          },
+          "physx/direct_contact_validate_ms": {
+            "n": 777,
+            "mean": 0.9751231660231661,
+            "p50": 0.9967,
+            "p95": 1.1353,
+            "p99": 1.2019,
+            "max": 1.4225
+          },
+          "physx/direct_contact_sort_ms": {
+            "n": 777,
+            "mean": 4.012465765765766,
+            "p50": 4.1377,
+            "p95": 4.7461,
+            "p99": 5.2203,
+            "max": 5.3056
+          },
+          "physx/direct_contact_reduce_ms": {
+            "n": 777,
+            "mean": 0.9367120978120979,
+            "p50": 0.89,
+            "p95": 1.3413,
+            "p99": 1.7862,
+            "max": 2.2463
+          },
+          "physx/direct_contact_route_ms": {
+            "n": 777,
+            "mean": 1.6540537966537967,
+            "p50": 1.7243,
+            "p95": 2.0424,
+            "p99": 2.2771,
+            "max": 2.5311
+          },
+          "physx/direct_contact_count": {
+            "n": 777,
+            "mean": 45889.76576576577,
+            "p50": 47471.0,
+            "p95": 50268.0,
+            "p99": 50584.0,
+            "max": 50692.0
+          },
+          "physx/direct_contact_gpu_order_ms": {
+            "n": 777,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_gpu_ordered": {
+            "n": 777,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_order_ambiguous": {
+            "n": 777,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_wrench_checks": {
+            "n": 777,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_wrench_mismatches": {
+            "n": 777,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_wrench_max_force_error": {
+            "n": 777,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_wrench_max_moment_error": {
+            "n": 777,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_order_verify_checks": {
+            "n": 777,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_order_verify_mismatches": {
+            "n": 777,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_order_verify_ms": {
+            "n": 777,
+            "mean": 0.00010978120978120979,
+            "p50": 0.0001,
+            "p95": 0.0002,
+            "p99": 0.0002,
+            "max": 0.0005
+          },
+          "physx/direct_contact_legacy_threshold_checks": {
+            "n": 777,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_legacy_threshold_mismatches": {
+            "n": 777,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_legacy_sum_max_ulp": {
+            "n": 777,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          }
+        },
+        "awake_5000_7000": {
+          "sim": null,
+          "physx": null,
+          "awake": null,
+          "bodies": null,
+          "bonds": null,
+          "ordering_ms": null,
+          "contact_pipeline_ms": null,
+          "physx/direct_host_mirror_ms": null,
+          "physx/direct_contact_copy_ms": null,
+          "physx/direct_contact_ownership_ms": null,
+          "physx/direct_contact_validate_ms": null,
+          "physx/direct_contact_sort_ms": null,
+          "physx/direct_contact_reduce_ms": null,
+          "physx/direct_contact_route_ms": null,
+          "physx/direct_contact_count": null,
+          "physx/direct_contact_gpu_order_ms": null,
+          "physx/direct_contact_gpu_ordered": null,
+          "physx/direct_contact_order_ambiguous": null,
+          "physx/direct_contact_wrench_checks": null,
+          "physx/direct_contact_wrench_mismatches": null,
+          "physx/direct_contact_wrench_max_force_error": null,
+          "physx/direct_contact_wrench_max_moment_error": null,
+          "physx/direct_contact_order_verify_checks": null,
+          "physx/direct_contact_order_verify_mismatches": null,
+          "physx/direct_contact_order_verify_ms": null,
+          "physx/direct_contact_legacy_threshold_checks": null,
+          "physx/direct_contact_legacy_threshold_mismatches": null,
+          "physx/direct_contact_legacy_sum_max_ulp": null
+        },
+        "contacts_30000_60000": {
+          "sim": {
+            "n": 781,
+            "mean": 45.925709346991034,
+            "p50": 28.627,
+            "p95": 75.455,
+            "p99": 80.339,
+            "max": 84.23
+          },
+          "physx": {
+            "n": 781,
+            "mean": 16.569993597951346,
+            "p50": 16.697,
+            "p95": 18.933,
+            "p99": 19.802,
+            "max": 20.871
+          },
+          "awake": {
+            "n": 781,
+            "mean": 2876.175416133163,
+            "p50": 3008,
+            "p95": 3165,
+            "p99": 3180,
+            "max": 3185
+          },
+          "bodies": {
+            "n": 781,
+            "mean": 3215.202304737516,
+            "p50": 3406,
+            "p95": 3696,
+            "p99": 3714,
+            "max": 3717
+          },
+          "bonds": {
+            "n": 781,
+            "mean": 10726.074263764405,
+            "p50": 11351,
+            "p95": 12329,
+            "p99": 12385,
+            "max": 12399
+          },
+          "ordering_ms": {
+            "n": 781,
+            "mean": 4.00526338028169,
+            "p50": 4.1363,
+            "p95": 4.7461,
+            "p99": 5.2203,
+            "max": 5.3056
+          },
+          "contact_pipeline_ms": {
+            "n": 781,
+            "mean": 10.474761203585148,
+            "p50": 10.6828,
+            "p95": 12.077,
+            "p99": 12.9312,
+            "max": 13.5112
+          },
+          "physx/direct_host_mirror_ms": {
+            "n": 781,
+            "mean": 0.46857003841229194,
+            "p50": 0.384,
+            "p95": 1.0813,
+            "p99": 1.2282,
+            "max": 1.351
+          },
+          "physx/direct_contact_copy_ms": {
+            "n": 781,
+            "mean": 0.5164165172855314,
+            "p50": 0.5212,
+            "p95": 0.5793,
+            "p99": 0.6097,
+            "max": 0.7809
+          },
+          "physx/direct_contact_ownership_ms": {
+            "n": 781,
+            "mean": 2.3940920614596672,
+            "p50": 2.3854,
+            "p95": 2.6501,
+            "p99": 2.8678,
+            "max": 3.5128
+          },
+          "physx/direct_contact_validate_ms": {
+            "n": 781,
+            "mean": 0.9733096030729833,
+            "p50": 0.9964,
+            "p95": 1.1353,
+            "p99": 1.2019,
+            "max": 1.4225
+          },
+          "physx/direct_contact_sort_ms": {
+            "n": 781,
+            "mean": 4.00526338028169,
+            "p50": 4.1363,
+            "p95": 4.7461,
+            "p99": 5.2203,
+            "max": 5.3056
+          },
+          "physx/direct_contact_reduce_ms": {
+            "n": 781,
+            "mean": 0.9356775928297055,
+            "p50": 0.8893,
+            "p95": 1.3413,
+            "p99": 1.7862,
+            "max": 2.2463
+          },
+          "physx/direct_contact_route_ms": {
+            "n": 781,
+            "mean": 1.6500020486555698,
+            "p50": 1.7228,
+            "p95": 2.0424,
+            "p99": 2.2771,
+            "max": 2.5311
+          },
+          "physx/direct_contact_count": {
+            "n": 781,
+            "mean": 45810.14724711908,
+            "p50": 47423.0,
+            "p95": 50268.0,
+            "p99": 50584.0,
+            "max": 50692.0
+          },
+          "physx/direct_contact_gpu_order_ms": {
+            "n": 781,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_gpu_ordered": {
+            "n": 781,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_order_ambiguous": {
+            "n": 781,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_wrench_checks": {
+            "n": 781,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_wrench_mismatches": {
+            "n": 781,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_wrench_max_force_error": {
+            "n": 781,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_wrench_max_moment_error": {
+            "n": 781,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_order_verify_checks": {
+            "n": 781,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_order_verify_mismatches": {
+            "n": 781,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_order_verify_ms": {
+            "n": 781,
+            "mean": 0.00010973111395646607,
+            "p50": 0.0001,
+            "p95": 0.0002,
+            "p99": 0.0002,
+            "max": 0.0005
+          },
+          "physx/direct_contact_legacy_threshold_checks": {
+            "n": 781,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_legacy_threshold_mismatches": {
+            "n": 781,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_legacy_sum_max_ulp": {
+            "n": 781,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          }
+        },
+        "contacts_80000_120000": {
+          "sim": null,
+          "physx": null,
+          "awake": null,
+          "bodies": null,
+          "bonds": null,
+          "ordering_ms": null,
+          "contact_pipeline_ms": null,
+          "physx/direct_host_mirror_ms": null,
+          "physx/direct_contact_copy_ms": null,
+          "physx/direct_contact_ownership_ms": null,
+          "physx/direct_contact_validate_ms": null,
+          "physx/direct_contact_sort_ms": null,
+          "physx/direct_contact_reduce_ms": null,
+          "physx/direct_contact_route_ms": null,
+          "physx/direct_contact_count": null,
+          "physx/direct_contact_gpu_order_ms": null,
+          "physx/direct_contact_gpu_ordered": null,
+          "physx/direct_contact_order_ambiguous": null,
+          "physx/direct_contact_wrench_checks": null,
+          "physx/direct_contact_wrench_mismatches": null,
+          "physx/direct_contact_wrench_max_force_error": null,
+          "physx/direct_contact_wrench_max_moment_error": null,
+          "physx/direct_contact_order_verify_checks": null,
+          "physx/direct_contact_order_verify_mismatches": null,
+          "physx/direct_contact_order_verify_ms": null,
+          "physx/direct_contact_legacy_threshold_checks": null,
+          "physx/direct_contact_legacy_threshold_mismatches": null,
+          "physx/direct_contact_legacy_sum_max_ulp": null
+        }
+      }
+    },
+    "heavy-cpu-3": {
+      "metadata": {
+        "command": [
+          "/root/workspace/vibe-land-4/target/gpu-activity/release/record-city-trace",
+          "--scene",
+          "destruction/assets/scenes/fractured-downtown.json",
+          "--grid",
+          "2",
+          "--seconds",
+          "20",
+          "--shots",
+          "200",
+          "--shot-interval-ticks",
+          "4",
+          "--targets",
+          "27",
+          "--output",
+          "/dev/null",
+          "--metrics-out",
+          "/root/workspace/vibe-land-4/bench-results/simulation-frontier/contact-wrench/heavy-cpu-3.csv",
+          "--timings-out",
+          "/root/workspace/vibe-land-4/bench-results/simulation-frontier/contact-wrench/heavy-cpu-3.jsonl"
+        ],
+        "env": {
+          "VIBE_CITY_VARIED_HEIGHTS": "0",
+          "VIBE_CITY_EXCESS_FORCES": "1",
+          "VIBE_WORLD_RESTITUTION": "0.02",
+          "VIBE_CITY_STRESS_LIMIT_SCALE": "0.45",
+          "VIBE_CITY_FREEZE": "1",
+          "VIBE_PHYSICS_BACKEND": "physx_gpu",
+          "BLAST_GPU_WHOLE_RESET_ON_TOPOLOGY": "1",
+          "BLAST_BOND_STRESS_GPU": "1",
+          "VIBE_CITY_SOLVER_ITERATIONS": "32",
+          "VIBE_CITY_RESIM_PASSES": "1",
+          "LD_LIBRARY_PATH": "/usr/local/cuda/lib64:/root/workspace/physx-gpu-activity/physx/bin/linux.x86_64/release",
+          "VIBE_CITY_SHOT_STRESS_IMPULSE": "1.2e7",
+          "VIBE_CITY_GRID": "2",
+          "VIBE_CITY_SCENE": "fractured-downtown.json",
+          "VIBE_CITY_SHOT_BLAST_RADIUS": "2.5",
+          "VIBE_WORLD_FRICTION": "0.75",
+          "PHYSX_ROOT": "/root/workspace/physx-gpu-activity/physx",
+          "BLAST_ROOT": "/root/workspace/blast-stress-solver-2/blast",
+          "BLAST_GPU_IMPULSE_READBACK": "0",
+          "BLAST_GPU_DETERMINISTIC_REDUCTIONS": "0",
+          "VIBE_PHYSX_DIRECT_GPU": "1",
+          "VIBE_PHYSX_GPU_CONTACT_ORDER": "0",
+          "VIBE_PHYSX_GPU_CONTACT_ORDER_VERIFY": "0"
+        },
+        "binary_sha256": "fea1e8d7564182e77407c9bf5fdfc92e51e6d56662d3d73a6ce4b26749b49fe1",
+        "start_utc": "2026-09-05T21:16:58Z",
+        "game_head": "b62edf0c814ff3570095a31725b595577a03f9c8",
+        "game_diff_sha256": "cf6a83c98d25791e83cafcde2fff042d6148d22cc1085d1308862ab75712a8b7",
+        "solver_head": "89e5f398237c4ac2589f4303351957713c2f47eb",
+        "solver_diff_sha256": "6d911c145ff59a87ec0963b2d9fc5eab53d4946a18e2c3bb988d5c7ef6d5784e",
+        "exit_code": 0,
+        "wall_seconds": 46.07830121181905
+      },
+      "final": {
+        "awake": 2261,
+        "bodies": 2992,
+        "bonds": 9829
+      },
+      "groups": {
+        "all": {
+          "sim": {
+            "n": 1200,
+            "mean": 31.076811666666668,
+            "p50": 21.718,
+            "p95": 58.693,
+            "p99": 62.637,
+            "max": 559.844
+          },
+          "physx": {
+            "n": 1200,
+            "mean": 10.438529166666667,
+            "p50": 11.349,
+            "p95": 14.762,
+            "p99": 15.355,
+            "max": 47.936
+          },
+          "awake": {
+            "n": 1200,
+            "mean": 1585.1516666666666,
+            "p50": 1917,
+            "p95": 2365,
+            "p99": 2372,
+            "max": 2380
+          },
+          "bodies": {
+            "n": 1200,
+            "mean": 1843.3366666666666,
+            "p50": 2080,
+            "p95": 2971,
+            "p99": 2986,
+            "max": 2992
+          },
+          "bonds": {
+            "n": 1200,
+            "mean": 5970.8975,
+            "p50": 6674,
+            "p95": 9769,
+            "p99": 9814,
+            "max": 9829
+          },
+          "ordering_ms": {
+            "n": 1200,
+            "mean": 1.95693375,
+            "p50": 2.3287,
+            "p95": 3.0911,
+            "p99": 3.4784,
+            "max": 3.7423
+          },
+          "contact_pipeline_ms": {
+            "n": 1200,
+            "mean": 6.0496765,
+            "p50": 6.8136,
+            "p95": 8.5927,
+            "p99": 9.2133,
+            "max": 10.749600000000001
+          },
+          "physx/direct_host_mirror_ms": {
+            "n": 1200,
+            "mean": 0.39619683333333333,
+            "p50": 0.2695,
+            "p95": 1.1324,
+            "p99": 1.2259,
+            "max": 3.6252
+          },
+          "physx/direct_contact_copy_ms": {
+            "n": 1200,
+            "mean": 0.3154593333333333,
+            "p50": 0.3515,
+            "p95": 0.4353,
+            "p99": 0.4566,
+            "max": 2.3472
+          },
+          "physx/direct_contact_ownership_ms": {
+            "n": 1200,
+            "mean": 2.1205706666666666,
+            "p50": 2.2424,
+            "p95": 2.5176,
+            "p99": 2.7565,
+            "max": 3.6079
+          },
+          "physx/direct_contact_validate_ms": {
+            "n": 1200,
+            "mean": 0.43304691666666667,
+            "p50": 0.4992,
+            "p95": 0.7282,
+            "p99": 0.7846,
+            "max": 0.8959
+          },
+          "physx/direct_contact_sort_ms": {
+            "n": 1200,
+            "mean": 1.95693375,
+            "p50": 2.3287,
+            "p95": 3.0911,
+            "p99": 3.4784,
+            "max": 3.7423
+          },
+          "physx/direct_contact_reduce_ms": {
+            "n": 1200,
+            "mean": 0.44968433333333335,
+            "p50": 0.513,
+            "p95": 0.7623,
+            "p99": 0.9112,
+            "max": 1.3986
+          },
+          "physx/direct_contact_route_ms": {
+            "n": 1200,
+            "mean": 0.7739815,
+            "p50": 0.8776,
+            "p95": 1.3584,
+            "p99": 1.4823,
+            "max": 1.8745
+          },
+          "physx/direct_contact_count": {
+            "n": 1200,
+            "mean": 23100.680833333332,
+            "p50": 27800.0,
+            "p95": 34867.0,
+            "p99": 35438.0,
+            "max": 35554.0
+          },
+          "physx/direct_contact_gpu_order_ms": {
+            "n": 1200,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_gpu_ordered": {
+            "n": 1200,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_order_ambiguous": {
+            "n": 1200,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_wrench_checks": {
+            "n": 1200,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_wrench_mismatches": {
+            "n": 1200,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_wrench_max_force_error": {
+            "n": 1200,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_wrench_max_moment_error": {
+            "n": 1200,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_order_verify_checks": {
+            "n": 1200,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_order_verify_mismatches": {
+            "n": 1200,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_order_verify_ms": {
+            "n": 1200,
+            "mean": 0.00010375,
+            "p50": 0.0001,
+            "p95": 0.0002,
+            "p99": 0.0002,
+            "max": 0.0005
+          },
+          "physx/direct_contact_legacy_threshold_checks": {
+            "n": 1200,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_legacy_threshold_mismatches": {
+            "n": 1200,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_legacy_sum_max_ulp": {
+            "n": 1200,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          }
+        },
+        "awake_2000_4000": {
+          "sim": {
+            "n": 511,
+            "mean": 35.91117808219178,
+            "p50": 22.135,
+            "p95": 61.084,
+            "p99": 63.306,
+            "max": 64.897
+          },
+          "physx": {
+            "n": 511,
+            "mean": 13.236778864970645,
+            "p50": 13.363,
+            "p95": 15.092,
+            "p99": 15.57,
+            "max": 16.359
+          },
+          "awake": {
+            "n": 511,
+            "mean": 2290.320939334638,
+            "p50": 2330,
+            "p95": 2370,
+            "p99": 2374,
+            "max": 2380
+          },
+          "bodies": {
+            "n": 511,
+            "mean": 2701.5185909980432,
+            "p50": 2707,
+            "p95": 2981,
+            "p99": 2989,
+            "max": 2992
+          },
+          "bonds": {
+            "n": 511,
+            "mean": 8811.808219178081,
+            "p50": 8803,
+            "p95": 9798,
+            "p99": 9821,
+            "max": 9829
+          },
+          "ordering_ms": {
+            "n": 511,
+            "mean": 2.785413111545988,
+            "p50": 2.7785,
+            "p95": 3.3552,
+            "p99": 3.5715,
+            "max": 3.7423
+          },
+          "contact_pipeline_ms": {
+            "n": 511,
+            "mean": 7.994543639921722,
+            "p50": 8.0246,
+            "p95": 8.9465,
+            "p99": 9.4215,
+            "max": 10.749600000000001
+          },
+          "physx/direct_host_mirror_ms": {
+            "n": 511,
+            "mean": 0.34709158512720156,
+            "p50": 0.3098,
+            "p95": 0.5391,
+            "p99": 1.0195,
+            "max": 1.2079
+          },
+          "physx/direct_contact_copy_ms": {
+            "n": 511,
+            "mean": 0.405718590998043,
+            "p50": 0.4093,
+            "p95": 0.4438,
+            "p99": 0.4671,
+            "max": 0.4958
+          },
+          "physx/direct_contact_ownership_ms": {
+            "n": 511,
+            "mean": 2.3419874755381604,
+            "p50": 2.3437,
+            "p95": 2.5469,
+            "p99": 2.7565,
+            "max": 3.4408
+          },
+          "physx/direct_contact_validate_ms": {
+            "n": 511,
+            "mean": 0.6415473581213307,
+            "p50": 0.6619,
+            "p95": 0.7549,
+            "p99": 0.8183,
+            "max": 0.8959
+          },
+          "physx/direct_contact_sort_ms": {
+            "n": 511,
+            "mean": 2.785413111545988,
+            "p50": 2.7785,
+            "p95": 3.3552,
+            "p99": 3.5715,
+            "max": 3.7423
+          },
+          "physx/direct_contact_reduce_ms": {
+            "n": 511,
+            "mean": 0.6321818003913894,
+            "p50": 0.6109,
+            "p95": 0.8258,
+            "p99": 0.949,
+            "max": 1.3986
+          },
+          "physx/direct_contact_route_ms": {
+            "n": 511,
+            "mean": 1.1876953033268103,
+            "p50": 1.1864,
+            "p95": 1.4265,
+            "p99": 1.518,
+            "max": 1.8745
+          },
+          "physx/direct_contact_count": {
+            "n": 511,
+            "mean": 32781.76320939335,
+            "p50": 33387.0,
+            "p95": 35334.0,
+            "p99": 35484.0,
+            "max": 35554.0
+          },
+          "physx/direct_contact_gpu_order_ms": {
+            "n": 511,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_gpu_ordered": {
+            "n": 511,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_order_ambiguous": {
+            "n": 511,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_wrench_checks": {
+            "n": 511,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_wrench_mismatches": {
+            "n": 511,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_wrench_max_force_error": {
+            "n": 511,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_wrench_max_moment_error": {
+            "n": 511,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_order_verify_checks": {
+            "n": 511,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_order_verify_mismatches": {
+            "n": 511,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_order_verify_ms": {
+            "n": 511,
+            "mean": 0.0001076320939334638,
+            "p50": 0.0001,
+            "p95": 0.0002,
+            "p99": 0.0002,
+            "max": 0.0003
+          },
+          "physx/direct_contact_legacy_threshold_checks": {
+            "n": 511,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_legacy_threshold_mismatches": {
+            "n": 511,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_legacy_sum_max_ulp": {
+            "n": 511,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          }
+        },
+        "awake_5000_7000": {
+          "sim": null,
+          "physx": null,
+          "awake": null,
+          "bodies": null,
+          "bonds": null,
+          "ordering_ms": null,
+          "contact_pipeline_ms": null,
+          "physx/direct_host_mirror_ms": null,
+          "physx/direct_contact_copy_ms": null,
+          "physx/direct_contact_ownership_ms": null,
+          "physx/direct_contact_validate_ms": null,
+          "physx/direct_contact_sort_ms": null,
+          "physx/direct_contact_reduce_ms": null,
+          "physx/direct_contact_route_ms": null,
+          "physx/direct_contact_count": null,
+          "physx/direct_contact_gpu_order_ms": null,
+          "physx/direct_contact_gpu_ordered": null,
+          "physx/direct_contact_order_ambiguous": null,
+          "physx/direct_contact_wrench_checks": null,
+          "physx/direct_contact_wrench_mismatches": null,
+          "physx/direct_contact_wrench_max_force_error": null,
+          "physx/direct_contact_wrench_max_moment_error": null,
+          "physx/direct_contact_order_verify_checks": null,
+          "physx/direct_contact_order_verify_mismatches": null,
+          "physx/direct_contact_order_verify_ms": null,
+          "physx/direct_contact_legacy_threshold_checks": null,
+          "physx/direct_contact_legacy_threshold_mismatches": null,
+          "physx/direct_contact_legacy_sum_max_ulp": null
+        },
+        "contacts_30000_60000": {
+          "sim": {
+            "n": 411,
+            "mean": 37.09463503649635,
+            "p50": 22.541,
+            "p95": 61.369,
+            "p99": 63.306,
+            "max": 64.891
+          },
+          "physx": {
+            "n": 411,
+            "mean": 13.618878345498784,
+            "p50": 13.617,
+            "p95": 15.128,
+            "p99": 15.67,
+            "max": 16.359
+          },
+          "awake": {
+            "n": 411,
+            "mean": 2330.661800486618,
+            "p50": 2339,
+            "p95": 2371,
+            "p99": 2374,
+            "max": 2380
+          },
+          "bodies": {
+            "n": 411,
+            "mean": 2783.2457420924575,
+            "p50": 2774,
+            "p95": 2984,
+            "p99": 2989,
+            "max": 2992
+          },
+          "bonds": {
+            "n": 411,
+            "mean": 9094.148418491484,
+            "p50": 9049,
+            "p95": 9810,
+            "p99": 9821,
+            "max": 9829
+          },
+          "ordering_ms": {
+            "n": 411,
+            "mean": 2.868832603406326,
+            "p50": 2.8209,
+            "p95": 3.4053,
+            "p99": 3.5993,
+            "max": 3.7423
+          },
+          "contact_pipeline_ms": {
+            "n": 411,
+            "mean": 8.214719464720195,
+            "p50": 8.1605,
+            "p95": 9.031,
+            "p99": 9.5332,
+            "max": 10.749600000000001
+          },
+          "physx/direct_host_mirror_ms": {
+            "n": 411,
+            "mean": 0.35688369829683697,
+            "p50": 0.3299,
+            "p95": 0.5391,
+            "p99": 0.6284,
+            "max": 1.1978
+          },
+          "physx/direct_contact_copy_ms": {
+            "n": 411,
+            "mean": 0.4159625304136253,
+            "p50": 0.4142,
+            "p95": 0.4458,
+            "p99": 0.4674,
+            "max": 0.4958
+          },
+          "physx/direct_contact_ownership_ms": {
+            "n": 411,
+            "mean": 2.3728844282238444,
+            "p50": 2.354,
+            "p95": 2.5781,
+            "p99": 2.8466,
+            "max": 3.4408
+          },
+          "physx/direct_contact_validate_ms": {
+            "n": 411,
+            "mean": 0.6714805352798053,
+            "p50": 0.6795,
+            "p95": 0.7613,
+            "p99": 0.823,
+            "max": 0.8959
+          },
+          "physx/direct_contact_sort_ms": {
+            "n": 411,
+            "mean": 2.868832603406326,
+            "p50": 2.8209,
+            "p95": 3.4053,
+            "p99": 3.5993,
+            "max": 3.7423
+          },
+          "physx/direct_contact_reduce_ms": {
+            "n": 411,
+            "mean": 0.6496564476885645,
+            "p50": 0.6246,
+            "p95": 0.829,
+            "p99": 1.0491,
+            "max": 1.3986
+          },
+          "physx/direct_contact_route_ms": {
+            "n": 411,
+            "mean": 1.2359029197080291,
+            "p50": 1.2153,
+            "p95": 1.4391,
+            "p99": 1.5357,
+            "max": 1.8745
+          },
+          "physx/direct_contact_count": {
+            "n": 411,
+            "mean": 33657.69586374696,
+            "p50": 34067.0,
+            "p95": 35387.0,
+            "p99": 35507.0,
+            "max": 35554.0
+          },
+          "physx/direct_contact_gpu_order_ms": {
+            "n": 411,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_gpu_ordered": {
+            "n": 411,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_order_ambiguous": {
+            "n": 411,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_wrench_checks": {
+            "n": 411,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_wrench_mismatches": {
+            "n": 411,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_wrench_max_force_error": {
+            "n": 411,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_wrench_max_moment_error": {
+            "n": 411,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_order_verify_checks": {
+            "n": 411,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_order_verify_mismatches": {
+            "n": 411,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_order_verify_ms": {
+            "n": 411,
+            "mean": 0.00010802919708029198,
+            "p50": 0.0001,
+            "p95": 0.0002,
+            "p99": 0.0002,
+            "max": 0.0003
+          },
+          "physx/direct_contact_legacy_threshold_checks": {
+            "n": 411,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_legacy_threshold_mismatches": {
+            "n": 411,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_legacy_sum_max_ulp": {
+            "n": 411,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          }
+        },
+        "contacts_80000_120000": {
+          "sim": null,
+          "physx": null,
+          "awake": null,
+          "bodies": null,
+          "bonds": null,
+          "ordering_ms": null,
+          "contact_pipeline_ms": null,
+          "physx/direct_host_mirror_ms": null,
+          "physx/direct_contact_copy_ms": null,
+          "physx/direct_contact_ownership_ms": null,
+          "physx/direct_contact_validate_ms": null,
+          "physx/direct_contact_sort_ms": null,
+          "physx/direct_contact_reduce_ms": null,
+          "physx/direct_contact_route_ms": null,
+          "physx/direct_contact_count": null,
+          "physx/direct_contact_gpu_order_ms": null,
+          "physx/direct_contact_gpu_ordered": null,
+          "physx/direct_contact_order_ambiguous": null,
+          "physx/direct_contact_wrench_checks": null,
+          "physx/direct_contact_wrench_mismatches": null,
+          "physx/direct_contact_wrench_max_force_error": null,
+          "physx/direct_contact_wrench_max_moment_error": null,
+          "physx/direct_contact_order_verify_checks": null,
+          "physx/direct_contact_order_verify_mismatches": null,
+          "physx/direct_contact_order_verify_ms": null,
+          "physx/direct_contact_legacy_threshold_checks": null,
+          "physx/direct_contact_legacy_threshold_mismatches": null,
+          "physx/direct_contact_legacy_sum_max_ulp": null
+        }
+      }
+    },
+    "heavy-gpu-1": {
+      "metadata": {
+        "command": [
+          "/root/workspace/vibe-land-4/target/gpu-activity/release/record-city-trace",
+          "--scene",
+          "destruction/assets/scenes/fractured-downtown.json",
+          "--grid",
+          "2",
+          "--seconds",
+          "20",
+          "--shots",
+          "200",
+          "--shot-interval-ticks",
+          "4",
+          "--targets",
+          "27",
+          "--output",
+          "/dev/null",
+          "--metrics-out",
+          "/root/workspace/vibe-land-4/bench-results/simulation-frontier/contact-wrench/heavy-gpu-1.csv",
+          "--timings-out",
+          "/root/workspace/vibe-land-4/bench-results/simulation-frontier/contact-wrench/heavy-gpu-1.jsonl"
+        ],
+        "env": {
+          "VIBE_CITY_VARIED_HEIGHTS": "0",
+          "VIBE_CITY_EXCESS_FORCES": "1",
+          "VIBE_WORLD_RESTITUTION": "0.02",
+          "VIBE_CITY_STRESS_LIMIT_SCALE": "0.45",
+          "VIBE_CITY_FREEZE": "1",
+          "VIBE_PHYSICS_BACKEND": "physx_gpu",
+          "BLAST_GPU_WHOLE_RESET_ON_TOPOLOGY": "1",
+          "BLAST_BOND_STRESS_GPU": "1",
+          "VIBE_CITY_SOLVER_ITERATIONS": "32",
+          "VIBE_CITY_RESIM_PASSES": "1",
+          "LD_LIBRARY_PATH": "/usr/local/cuda/lib64:/root/workspace/physx-gpu-activity/physx/bin/linux.x86_64/release",
+          "VIBE_CITY_SHOT_STRESS_IMPULSE": "1.2e7",
+          "VIBE_CITY_GRID": "2",
+          "VIBE_CITY_SCENE": "fractured-downtown.json",
+          "VIBE_CITY_SHOT_BLAST_RADIUS": "2.5",
+          "VIBE_WORLD_FRICTION": "0.75",
+          "PHYSX_ROOT": "/root/workspace/physx-gpu-activity/physx",
+          "BLAST_ROOT": "/root/workspace/blast-stress-solver-2/blast",
+          "BLAST_GPU_IMPULSE_READBACK": "0",
+          "BLAST_GPU_DETERMINISTIC_REDUCTIONS": "0",
+          "VIBE_PHYSX_DIRECT_GPU": "1",
+          "VIBE_PHYSX_GPU_CONTACT_ORDER": "1",
+          "VIBE_PHYSX_GPU_CONTACT_ORDER_VERIFY": "0"
+        },
+        "binary_sha256": "fea1e8d7564182e77407c9bf5fdfc92e51e6d56662d3d73a6ce4b26749b49fe1",
+        "start_utc": "2026-09-05T21:13:28Z",
+        "game_head": "b62edf0c814ff3570095a31725b595577a03f9c8",
+        "game_diff_sha256": "cf6a83c98d25791e83cafcde2fff042d6148d22cc1085d1308862ab75712a8b7",
+        "solver_head": "89e5f398237c4ac2589f4303351957713c2f47eb",
+        "solver_diff_sha256": "6d911c145ff59a87ec0963b2d9fc5eab53d4946a18e2c3bb988d5c7ef6d5784e",
+        "exit_code": 0,
+        "wall_seconds": 47.9502619067207
+      },
+      "final": {
+        "awake": 2844,
+        "bodies": 3537,
+        "bonds": 11699
+      },
+      "groups": {
+        "all": {
+          "sim": {
+            "n": 1200,
+            "mean": 32.5058725,
+            "p50": 22.42,
+            "p95": 59.85,
+            "p99": 63.589,
+            "max": 560.157
+          },
+          "physx": {
+            "n": 1200,
+            "mean": 9.683184166666667,
+            "p50": 10.796,
+            "p95": 13.034,
+            "p99": 13.743,
+            "max": 48.104
+          },
+          "awake": {
+            "n": 1200,
+            "mean": 1982.7633333333333,
+            "p50": 2370,
+            "p95": 2968,
+            "p99": 2975,
+            "max": 2978
+          },
+          "bodies": {
+            "n": 1200,
+            "mean": 2250.840833333333,
+            "p50": 2571,
+            "p95": 3490,
+            "p99": 3529,
+            "max": 3537
+          },
+          "bonds": {
+            "n": 1200,
+            "mean": 7384.701666666667,
+            "p50": 8526,
+            "p95": 11534,
+            "p99": 11665,
+            "max": 11699
+          },
+          "ordering_ms": {
+            "n": 1200,
+            "mean": 0.23507641666666668,
+            "p50": 0.2474,
+            "p95": 0.2716,
+            "p99": 0.2833,
+            "max": 0.5967
+          },
+          "contact_pipeline_ms": {
+            "n": 1200,
+            "mean": 4.8265045,
+            "p50": 5.5084,
+            "p95": 6.6758,
+            "p99": 7.0728,
+            "max": 8.0963
+          },
+          "physx/direct_host_mirror_ms": {
+            "n": 1200,
+            "mean": 0.460824,
+            "p50": 0.3522,
+            "p95": 1.1447,
+            "p99": 1.2431,
+            "max": 3.5153
+          },
+          "physx/direct_contact_copy_ms": {
+            "n": 1200,
+            "mean": 0.36234066666666664,
+            "p50": 0.4169,
+            "p95": 0.5035,
+            "p99": 0.5377,
+            "max": 2.3292
+          },
+          "physx/direct_contact_ownership_ms": {
+            "n": 1200,
+            "mean": 2.13581625,
+            "p50": 2.2817,
+            "p95": 2.5,
+            "p99": 2.678,
+            "max": 3.5969
+          },
+          "physx/direct_contact_validate_ms": {
+            "n": 1200,
+            "mean": 0.51527725,
+            "p50": 0.6466,
+            "p95": 0.8419,
+            "p99": 0.8915,
+            "max": 0.9745
+          },
+          "physx/direct_contact_sort_ms": {
+            "n": 1200,
+            "mean": 1.0166666666666667e-05,
+            "p50": 0.0,
+            "p95": 0.0001,
+            "p99": 0.0001,
+            "max": 0.0002
+          },
+          "physx/direct_contact_reduce_ms": {
+            "n": 1200,
+            "mean": 0.5730234166666667,
+            "p50": 0.6618,
+            "p95": 1.0254,
+            "p99": 1.2179,
+            "max": 1.7267
+          },
+          "physx/direct_contact_route_ms": {
+            "n": 1200,
+            "mean": 1.0049705,
+            "p50": 1.2094,
+            "p95": 1.7257,
+            "p99": 1.8757,
+            "max": 2.8228
+          },
+          "physx/direct_contact_count": {
+            "n": 1200,
+            "mean": 28404.7375,
+            "p50": 34991.0,
+            "p95": 42780.0,
+            "p99": 43617.0,
+            "max": 43886.0
+          },
+          "physx/direct_contact_gpu_order_ms": {
+            "n": 1200,
+            "mean": 0.23506625,
+            "p50": 0.2474,
+            "p95": 0.2716,
+            "p99": 0.2833,
+            "max": 0.5967
+          },
+          "physx/direct_contact_gpu_ordered": {
+            "n": 1200,
+            "mean": 1.0,
+            "p50": 1.0,
+            "p95": 1.0,
+            "p99": 1.0,
+            "max": 1.0
+          },
+          "physx/direct_contact_order_ambiguous": {
+            "n": 1200,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_wrench_checks": {
+            "n": 1200,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_wrench_mismatches": {
+            "n": 1200,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_wrench_max_force_error": {
+            "n": 1200,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_wrench_max_moment_error": {
+            "n": 1200,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_order_verify_checks": {
+            "n": 1200,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_order_verify_mismatches": {
+            "n": 1200,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_order_verify_ms": {
+            "n": 1200,
+            "mean": 0.00012475,
+            "p50": 0.0001,
+            "p95": 0.0003,
+            "p99": 0.0006,
+            "max": 0.001
+          },
+          "physx/direct_contact_legacy_threshold_checks": {
+            "n": 1200,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_legacy_threshold_mismatches": {
+            "n": 1200,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_legacy_sum_max_ulp": {
+            "n": 1200,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          }
+        },
+        "awake_2000_4000": {
+          "sim": {
+            "n": 696,
+            "mean": 36.57905747126437,
+            "p50": 21.706,
+            "p95": 61.261,
+            "p99": 64.167,
+            "max": 67.424
+          },
+          "physx": {
+            "n": 696,
+            "mean": 11.721349137931034,
+            "p50": 11.724,
+            "p95": 13.313,
+            "p99": 13.943,
+            "max": 15.38
+          },
+          "awake": {
+            "n": 696,
+            "mean": 2721.015804597701,
+            "p50": 2862,
+            "p95": 2971,
+            "p99": 2975,
+            "max": 2978
+          },
+          "bodies": {
+            "n": 696,
+            "mean": 3084.6005747126437,
+            "p50": 3213,
+            "p95": 3508,
+            "p99": 3530,
+            "max": 3537
+          },
+          "bonds": {
+            "n": 696,
+            "mean": 10187.01724137931,
+            "p50": 10607,
+            "p95": 11595,
+            "p99": 11669,
+            "max": 11699
+          },
+          "ordering_ms": {
+            "n": 696,
+            "mean": 0.25542830459770116,
+            "p50": 0.253,
+            "p95": 0.2753,
+            "p99": 0.2844,
+            "max": 0.5967
+          },
+          "contact_pipeline_ms": {
+            "n": 696,
+            "mean": 6.026414367816092,
+            "p50": 6.0195,
+            "p95": 6.8602,
+            "p99": 7.2669,
+            "max": 8.0963
+          },
+          "physx/direct_host_mirror_ms": {
+            "n": 696,
+            "mean": 0.4448744252873563,
+            "p50": 0.3754,
+            "p95": 1.0285,
+            "p99": 1.1991,
+            "max": 1.4563
+          },
+          "physx/direct_contact_copy_ms": {
+            "n": 696,
+            "mean": 0.4556044540229885,
+            "p50": 0.4552,
+            "p95": 0.5145,
+            "p99": 0.5429,
+            "max": 0.6608
+          },
+          "physx/direct_contact_ownership_ms": {
+            "n": 696,
+            "mean": 2.359611925287356,
+            "p50": 2.3565,
+            "p95": 2.542,
+            "p99": 2.7011,
+            "max": 3.2525
+          },
+          "physx/direct_contact_validate_ms": {
+            "n": 696,
+            "mean": 0.7303551724137931,
+            "p50": 0.7295,
+            "p95": 0.8556,
+            "p99": 0.9056,
+            "max": 0.9745
+          },
+          "physx/direct_contact_sort_ms": {
+            "n": 696,
+            "mean": 1.4080459770114944e-05,
+            "p50": 0.0,
+            "p95": 0.0001,
+            "p99": 0.0001,
+            "max": 0.0002
+          },
+          "physx/direct_contact_reduce_ms": {
+            "n": 696,
+            "mean": 0.7896415229885058,
+            "p50": 0.762,
+            "p95": 1.0942,
+            "p99": 1.2496,
+            "max": 1.7267
+          },
+          "physx/direct_contact_route_ms": {
+            "n": 696,
+            "mean": 1.435772988505747,
+            "p50": 1.4193,
+            "p95": 1.7928,
+            "p99": 1.9956,
+            "max": 2.8228
+          },
+          "physx/direct_contact_count": {
+            "n": 696,
+            "mean": 38519.86494252874,
+            "p50": 37995.0,
+            "p95": 43214.0,
+            "p99": 43691.0,
+            "max": 43886.0
+          },
+          "physx/direct_contact_gpu_order_ms": {
+            "n": 696,
+            "mean": 0.255414224137931,
+            "p50": 0.253,
+            "p95": 0.2752,
+            "p99": 0.2843,
+            "max": 0.5967
+          },
+          "physx/direct_contact_gpu_ordered": {
+            "n": 696,
+            "mean": 1.0,
+            "p50": 1.0,
+            "p95": 1.0,
+            "p99": 1.0,
+            "max": 1.0
+          },
+          "physx/direct_contact_order_ambiguous": {
+            "n": 696,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_wrench_checks": {
+            "n": 696,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_wrench_mismatches": {
+            "n": 696,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_wrench_max_force_error": {
+            "n": 696,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_wrench_max_moment_error": {
+            "n": 696,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_order_verify_checks": {
+            "n": 696,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_order_verify_mismatches": {
+            "n": 696,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_order_verify_ms": {
+            "n": 696,
+            "mean": 0.0001346264367816092,
+            "p50": 0.0001,
+            "p95": 0.0003,
+            "p99": 0.0006,
+            "max": 0.0007
+          },
+          "physx/direct_contact_legacy_threshold_checks": {
+            "n": 696,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_legacy_threshold_mismatches": {
+            "n": 696,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_legacy_sum_max_ulp": {
+            "n": 696,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          }
+        },
+        "awake_5000_7000": {
+          "sim": null,
+          "physx": null,
+          "awake": null,
+          "bodies": null,
+          "bonds": null,
+          "ordering_ms": null,
+          "contact_pipeline_ms": null,
+          "physx/direct_host_mirror_ms": null,
+          "physx/direct_contact_copy_ms": null,
+          "physx/direct_contact_ownership_ms": null,
+          "physx/direct_contact_validate_ms": null,
+          "physx/direct_contact_sort_ms": null,
+          "physx/direct_contact_reduce_ms": null,
+          "physx/direct_contact_route_ms": null,
+          "physx/direct_contact_count": null,
+          "physx/direct_contact_gpu_order_ms": null,
+          "physx/direct_contact_gpu_ordered": null,
+          "physx/direct_contact_order_ambiguous": null,
+          "physx/direct_contact_wrench_checks": null,
+          "physx/direct_contact_wrench_mismatches": null,
+          "physx/direct_contact_wrench_max_force_error": null,
+          "physx/direct_contact_wrench_max_moment_error": null,
+          "physx/direct_contact_order_verify_checks": null,
+          "physx/direct_contact_order_verify_mismatches": null,
+          "physx/direct_contact_order_verify_ms": null,
+          "physx/direct_contact_legacy_threshold_checks": null,
+          "physx/direct_contact_legacy_threshold_mismatches": null,
+          "physx/direct_contact_legacy_sum_max_ulp": null
+        },
+        "contacts_30000_60000": {
+          "sim": {
+            "n": 680,
+            "mean": 36.354895588235294,
+            "p50": 21.499,
+            "p95": 61.278,
+            "p99": 64.167,
+            "max": 67.424
+          },
+          "physx": {
+            "n": 680,
+            "mean": 11.746261764705883,
+            "p50": 11.747,
+            "p95": 13.315,
+            "p99": 13.943,
+            "max": 15.38
+          },
+          "awake": {
+            "n": 680,
+            "mean": 2737.573529411765,
+            "p50": 2870,
+            "p95": 2971,
+            "p99": 2975,
+            "max": 2978
+          },
+          "bodies": {
+            "n": 680,
+            "mean": 3105.704411764706,
+            "p50": 3221,
+            "p95": 3508,
+            "p99": 3530,
+            "max": 3537
+          },
+          "bonds": {
+            "n": 680,
+            "mean": 10259.39705882353,
+            "p50": 10629,
+            "p95": 11595,
+            "p99": 11669,
+            "max": 11699
+          },
+          "ordering_ms": {
+            "n": 680,
+            "mean": 0.25538661764705883,
+            "p50": 0.253,
+            "p95": 0.2753,
+            "p99": 0.2844,
+            "max": 0.5967
+          },
+          "contact_pipeline_ms": {
+            "n": 680,
+            "mean": 6.048342941176471,
+            "p50": 6.0349,
+            "p95": 6.8728,
+            "p99": 7.2669,
+            "max": 8.0963
+          },
+          "physx/direct_host_mirror_ms": {
+            "n": 680,
+            "mean": 0.4379705882352941,
+            "p50": 0.3754,
+            "p95": 0.9879,
+            "p99": 1.1873,
+            "max": 1.4563
+          },
+          "physx/direct_contact_copy_ms": {
+            "n": 680,
+            "mean": 0.4573275,
+            "p50": 0.4565,
+            "p95": 0.5159,
+            "p99": 0.5429,
+            "max": 0.6608
+          },
+          "physx/direct_contact_ownership_ms": {
+            "n": 680,
+            "mean": 2.362471029411765,
+            "p50": 2.3588,
+            "p95": 2.5429,
+            "p99": 2.7011,
+            "max": 3.2525
+          },
+          "physx/direct_contact_validate_ms": {
+            "n": 680,
+            "mean": 0.7341255882352942,
+            "p50": 0.7331,
+            "p95": 0.8567,
+            "p99": 0.9056,
+            "max": 0.9745
+          },
+          "physx/direct_contact_sort_ms": {
+            "n": 680,
+            "mean": 1.3970588235294118e-05,
+            "p50": 0.0,
+            "p95": 0.0001,
+            "p99": 0.0001,
+            "max": 0.0002
+          },
+          "physx/direct_contact_reduce_ms": {
+            "n": 680,
+            "mean": 0.7930775,
+            "p50": 0.7637,
+            "p95": 1.105,
+            "p99": 1.2496,
+            "max": 1.7267
+          },
+          "physx/direct_contact_route_ms": {
+            "n": 680,
+            "mean": 1.445954705882353,
+            "p50": 1.4252,
+            "p95": 1.7949,
+            "p99": 1.9956,
+            "max": 2.8228
+          },
+          "physx/direct_contact_count": {
+            "n": 680,
+            "mean": 38738.71323529412,
+            "p50": 38817.0,
+            "p95": 43261.0,
+            "p99": 43691.0,
+            "max": 43886.0
+          },
+          "physx/direct_contact_gpu_order_ms": {
+            "n": 680,
+            "mean": 0.2553726470588235,
+            "p50": 0.253,
+            "p95": 0.2752,
+            "p99": 0.2843,
+            "max": 0.5967
+          },
+          "physx/direct_contact_gpu_ordered": {
+            "n": 680,
+            "mean": 1.0,
+            "p50": 1.0,
+            "p95": 1.0,
+            "p99": 1.0,
+            "max": 1.0
+          },
+          "physx/direct_contact_order_ambiguous": {
+            "n": 680,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_wrench_checks": {
+            "n": 680,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_wrench_mismatches": {
+            "n": 680,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_wrench_max_force_error": {
+            "n": 680,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_wrench_max_moment_error": {
+            "n": 680,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_order_verify_checks": {
+            "n": 680,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_order_verify_mismatches": {
+            "n": 680,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_order_verify_ms": {
+            "n": 680,
+            "mean": 0.000135,
+            "p50": 0.0001,
+            "p95": 0.0003,
+            "p99": 0.0006,
+            "max": 0.0007
+          },
+          "physx/direct_contact_legacy_threshold_checks": {
+            "n": 680,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_legacy_threshold_mismatches": {
+            "n": 680,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_legacy_sum_max_ulp": {
+            "n": 680,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          }
+        },
+        "contacts_80000_120000": {
+          "sim": null,
+          "physx": null,
+          "awake": null,
+          "bodies": null,
+          "bonds": null,
+          "ordering_ms": null,
+          "contact_pipeline_ms": null,
+          "physx/direct_host_mirror_ms": null,
+          "physx/direct_contact_copy_ms": null,
+          "physx/direct_contact_ownership_ms": null,
+          "physx/direct_contact_validate_ms": null,
+          "physx/direct_contact_sort_ms": null,
+          "physx/direct_contact_reduce_ms": null,
+          "physx/direct_contact_route_ms": null,
+          "physx/direct_contact_count": null,
+          "physx/direct_contact_gpu_order_ms": null,
+          "physx/direct_contact_gpu_ordered": null,
+          "physx/direct_contact_order_ambiguous": null,
+          "physx/direct_contact_wrench_checks": null,
+          "physx/direct_contact_wrench_mismatches": null,
+          "physx/direct_contact_wrench_max_force_error": null,
+          "physx/direct_contact_wrench_max_moment_error": null,
+          "physx/direct_contact_order_verify_checks": null,
+          "physx/direct_contact_order_verify_mismatches": null,
+          "physx/direct_contact_order_verify_ms": null,
+          "physx/direct_contact_legacy_threshold_checks": null,
+          "physx/direct_contact_legacy_threshold_mismatches": null,
+          "physx/direct_contact_legacy_sum_max_ulp": null
+        }
+      }
+    },
+    "heavy-gpu-2": {
+      "metadata": {
+        "command": [
+          "/root/workspace/vibe-land-4/target/gpu-activity/release/record-city-trace",
+          "--scene",
+          "destruction/assets/scenes/fractured-downtown.json",
+          "--grid",
+          "2",
+          "--seconds",
+          "20",
+          "--shots",
+          "200",
+          "--shot-interval-ticks",
+          "4",
+          "--targets",
+          "27",
+          "--output",
+          "/dev/null",
+          "--metrics-out",
+          "/root/workspace/vibe-land-4/bench-results/simulation-frontier/contact-wrench/heavy-gpu-2.csv",
+          "--timings-out",
+          "/root/workspace/vibe-land-4/bench-results/simulation-frontier/contact-wrench/heavy-gpu-2.jsonl"
+        ],
+        "env": {
+          "VIBE_CITY_VARIED_HEIGHTS": "0",
+          "VIBE_CITY_EXCESS_FORCES": "1",
+          "VIBE_WORLD_RESTITUTION": "0.02",
+          "VIBE_CITY_STRESS_LIMIT_SCALE": "0.45",
+          "VIBE_CITY_FREEZE": "1",
+          "VIBE_PHYSICS_BACKEND": "physx_gpu",
+          "BLAST_GPU_WHOLE_RESET_ON_TOPOLOGY": "1",
+          "BLAST_BOND_STRESS_GPU": "1",
+          "VIBE_CITY_SOLVER_ITERATIONS": "32",
+          "VIBE_CITY_RESIM_PASSES": "1",
+          "LD_LIBRARY_PATH": "/usr/local/cuda/lib64:/root/workspace/physx-gpu-activity/physx/bin/linux.x86_64/release",
+          "VIBE_CITY_SHOT_STRESS_IMPULSE": "1.2e7",
+          "VIBE_CITY_GRID": "2",
+          "VIBE_CITY_SCENE": "fractured-downtown.json",
+          "VIBE_CITY_SHOT_BLAST_RADIUS": "2.5",
+          "VIBE_WORLD_FRICTION": "0.75",
+          "PHYSX_ROOT": "/root/workspace/physx-gpu-activity/physx",
+          "BLAST_ROOT": "/root/workspace/blast-stress-solver-2/blast",
+          "BLAST_GPU_IMPULSE_READBACK": "0",
+          "BLAST_GPU_DETERMINISTIC_REDUCTIONS": "0",
+          "VIBE_PHYSX_DIRECT_GPU": "1",
+          "VIBE_PHYSX_GPU_CONTACT_ORDER": "1",
+          "VIBE_PHYSX_GPU_CONTACT_ORDER_VERIFY": "0"
+        },
+        "binary_sha256": "fea1e8d7564182e77407c9bf5fdfc92e51e6d56662d3d73a6ce4b26749b49fe1",
+        "start_utc": "2026-09-05T21:14:16Z",
+        "game_head": "b62edf0c814ff3570095a31725b595577a03f9c8",
+        "game_diff_sha256": "cf6a83c98d25791e83cafcde2fff042d6148d22cc1085d1308862ab75712a8b7",
+        "solver_head": "89e5f398237c4ac2589f4303351957713c2f47eb",
+        "solver_diff_sha256": "6d911c145ff59a87ec0963b2d9fc5eab53d4946a18e2c3bb988d5c7ef6d5784e",
+        "exit_code": 0,
+        "wall_seconds": 46.95078674284741
+      },
+      "final": {
+        "awake": 2663,
+        "bodies": 3494,
+        "bonds": 11461
+      },
+      "groups": {
+        "all": {
+          "sim": {
+            "n": 1200,
+            "mean": 31.663118333333333,
+            "p50": 21.232,
+            "p95": 59.212,
+            "p99": 63.829,
+            "max": 597.496
+          },
+          "physx": {
+            "n": 1200,
+            "mean": 9.993848333333334,
+            "p50": 11.198,
+            "p95": 13.101,
+            "p99": 14.053,
+            "max": 48.181
+          },
+          "awake": {
+            "n": 1200,
+            "mean": 2031.0941666666668,
+            "p50": 2635,
+            "p95": 2925,
+            "p99": 2954,
+            "max": 2964
+          },
+          "bodies": {
+            "n": 1200,
+            "mean": 2332.1483333333335,
+            "p50": 2825,
+            "p95": 3469,
+            "p99": 3493,
+            "max": 3494
+          },
+          "bonds": {
+            "n": 1200,
+            "mean": 7654.608333333334,
+            "p50": 9340,
+            "p95": 11354,
+            "p99": 11458,
+            "max": 11461
+          },
+          "ordering_ms": {
+            "n": 1200,
+            "mean": 0.23599558333333334,
+            "p50": 0.2476,
+            "p95": 0.2732,
+            "p99": 0.2829,
+            "max": 0.318
+          },
+          "contact_pipeline_ms": {
+            "n": 1200,
+            "mean": 5.038085,
+            "p50": 5.7781,
+            "p95": 6.8444,
+            "p99": 7.5694,
+            "max": 8.746599999999999
+          },
+          "physx/direct_host_mirror_ms": {
+            "n": 1200,
+            "mean": 0.4742800833333333,
+            "p50": 0.3755,
+            "p95": 1.1545,
+            "p99": 1.2513,
+            "max": 3.5632
+          },
+          "physx/direct_contact_copy_ms": {
+            "n": 1200,
+            "mean": 0.3847388333333333,
+            "p50": 0.4486,
+            "p95": 0.5175,
+            "p99": 0.5485,
+            "max": 2.2736
+          },
+          "physx/direct_contact_ownership_ms": {
+            "n": 1200,
+            "mean": 2.2042581666666665,
+            "p50": 2.325,
+            "p95": 2.6165,
+            "p99": 2.9558,
+            "max": 3.9421
+          },
+          "physx/direct_contact_validate_ms": {
+            "n": 1200,
+            "mean": 0.553292,
+            "p50": 0.6896,
+            "p95": 0.8615,
+            "p99": 0.94,
+            "max": 1.0347
+          },
+          "physx/direct_contact_sort_ms": {
+            "n": 1200,
+            "mean": 1.3000000000000001e-05,
+            "p50": 0.0,
+            "p95": 0.0001,
+            "p99": 0.0001,
+            "max": 0.0006
+          },
+          "physx/direct_contact_reduce_ms": {
+            "n": 1200,
+            "mean": 0.5995444166666667,
+            "p50": 0.7068,
+            "p95": 1.0001,
+            "p99": 1.2729,
+            "max": 1.7436
+          },
+          "physx/direct_contact_route_ms": {
+            "n": 1200,
+            "mean": 1.060256,
+            "p50": 1.3072,
+            "p95": 1.7115,
+            "p99": 1.9298,
+            "max": 2.9242
+          },
+          "physx/direct_contact_count": {
+            "n": 1200,
+            "mean": 29304.565,
+            "p50": 36607.0,
+            "p95": 41752.0,
+            "p99": 42456.0,
+            "max": 42917.0
+          },
+          "physx/direct_contact_gpu_order_ms": {
+            "n": 1200,
+            "mean": 0.23598258333333333,
+            "p50": 0.2475,
+            "p95": 0.2732,
+            "p99": 0.2829,
+            "max": 0.318
+          },
+          "physx/direct_contact_gpu_ordered": {
+            "n": 1200,
+            "mean": 1.0,
+            "p50": 1.0,
+            "p95": 1.0,
+            "p99": 1.0,
+            "max": 1.0
+          },
+          "physx/direct_contact_order_ambiguous": {
+            "n": 1200,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_wrench_checks": {
+            "n": 1200,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_wrench_mismatches": {
+            "n": 1200,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_wrench_max_force_error": {
+            "n": 1200,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_wrench_max_moment_error": {
+            "n": 1200,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_order_verify_checks": {
+            "n": 1200,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_order_verify_mismatches": {
+            "n": 1200,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_order_verify_ms": {
+            "n": 1200,
+            "mean": 0.00013975,
+            "p50": 0.0001,
+            "p95": 0.0004,
+            "p99": 0.0006,
+            "max": 0.0008
+          },
+          "physx/direct_contact_legacy_threshold_checks": {
+            "n": 1200,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_legacy_threshold_mismatches": {
+            "n": 1200,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_legacy_sum_max_ulp": {
+            "n": 1200,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          }
+        },
+        "awake_2000_4000": {
+          "sim": {
+            "n": 760,
+            "mean": 34.291868421052634,
+            "p50": 20.939,
+            "p95": 60.611,
+            "p99": 64.111,
+            "max": 73.151
+          },
+          "physx": {
+            "n": 760,
+            "mean": 11.779872368421053,
+            "p50": 11.732,
+            "p95": 13.351,
+            "p99": 14.245,
+            "max": 15.326
+          },
+          "awake": {
+            "n": 760,
+            "mean": 2701.4763157894736,
+            "p50": 2767,
+            "p95": 2940,
+            "p99": 2956,
+            "max": 2964
+          },
+          "bodies": {
+            "n": 760,
+            "mean": 3102.5684210526315,
+            "p50": 3257,
+            "p95": 3474,
+            "p99": 3494,
+            "max": 3494
+          },
+          "bonds": {
+            "n": 760,
+            "mean": 10193.831578947369,
+            "p50": 10700,
+            "p95": 11386,
+            "p99": 11461,
+            "max": 11461
+          },
+          "ordering_ms": {
+            "n": 760,
+            "mean": 0.2547865789473684,
+            "p50": 0.2529,
+            "p95": 0.2749,
+            "p99": 0.2829,
+            "max": 0.318
+          },
+          "contact_pipeline_ms": {
+            "n": 760,
+            "mean": 6.110519868421052,
+            "p50": 6.0771999999999995,
+            "p95": 6.9715,
+            "p99": 7.6194,
+            "max": 8.746599999999999
+          },
+          "physx/direct_host_mirror_ms": {
+            "n": 760,
+            "mean": 0.4543417105263158,
+            "p50": 0.3959,
+            "p95": 1.0423,
+            "p99": 1.2433,
+            "max": 1.3398
+          },
+          "physx/direct_contact_copy_ms": {
+            "n": 760,
+            "mean": 0.47238565789473685,
+            "p50": 0.471,
+            "p95": 0.5278,
+            "p99": 0.5576,
+            "max": 0.5921
+          },
+          "physx/direct_contact_ownership_ms": {
+            "n": 760,
+            "mean": 2.396792105263158,
+            "p50": 2.3785,
+            "p95": 2.6801,
+            "p99": 2.9903,
+            "max": 3.4808
+          },
+          "physx/direct_contact_validate_ms": {
+            "n": 760,
+            "mean": 0.74459,
+            "p50": 0.7545,
+            "p95": 0.8836,
+            "p99": 0.9621,
+            "max": 1.0347
+          },
+          "physx/direct_contact_sort_ms": {
+            "n": 760,
+            "mean": 1.5921052631578948e-05,
+            "p50": 0.0,
+            "p95": 0.0001,
+            "p99": 0.0001,
+            "max": 0.0006
+          },
+          "physx/direct_contact_reduce_ms": {
+            "n": 760,
+            "mean": 0.7963003947368421,
+            "p50": 0.7601,
+            "p95": 1.0879,
+            "p99": 1.4097,
+            "max": 1.7436
+          },
+          "physx/direct_contact_route_ms": {
+            "n": 760,
+            "mean": 1.4456651315789473,
+            "p50": 1.4628,
+            "p95": 1.7774,
+            "p99": 1.9824,
+            "max": 2.9242
+          },
+          "physx/direct_contact_count": {
+            "n": 760,
+            "mean": 38253.734210526316,
+            "p50": 38788.0,
+            "p95": 42093.0,
+            "p99": 42503.0,
+            "max": 42917.0
+          },
+          "physx/direct_contact_gpu_order_ms": {
+            "n": 760,
+            "mean": 0.25477065789473685,
+            "p50": 0.2529,
+            "p95": 0.2749,
+            "p99": 0.2829,
+            "max": 0.318
+          },
+          "physx/direct_contact_gpu_ordered": {
+            "n": 760,
+            "mean": 1.0,
+            "p50": 1.0,
+            "p95": 1.0,
+            "p99": 1.0,
+            "max": 1.0
+          },
+          "physx/direct_contact_order_ambiguous": {
+            "n": 760,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_wrench_checks": {
+            "n": 760,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_wrench_mismatches": {
+            "n": 760,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_wrench_max_force_error": {
+            "n": 760,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_wrench_max_moment_error": {
+            "n": 760,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_order_verify_checks": {
+            "n": 760,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_order_verify_mismatches": {
+            "n": 760,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_order_verify_ms": {
+            "n": 760,
+            "mean": 0.00014513157894736843,
+            "p50": 0.0001,
+            "p95": 0.0004,
+            "p99": 0.0006,
+            "max": 0.0008
+          },
+          "physx/direct_contact_legacy_threshold_checks": {
+            "n": 760,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_legacy_threshold_mismatches": {
+            "n": 760,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_legacy_sum_max_ulp": {
+            "n": 760,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          }
+        },
+        "awake_5000_7000": {
+          "sim": null,
+          "physx": null,
+          "awake": null,
+          "bodies": null,
+          "bonds": null,
+          "ordering_ms": null,
+          "contact_pipeline_ms": null,
+          "physx/direct_host_mirror_ms": null,
+          "physx/direct_contact_copy_ms": null,
+          "physx/direct_contact_ownership_ms": null,
+          "physx/direct_contact_validate_ms": null,
+          "physx/direct_contact_sort_ms": null,
+          "physx/direct_contact_reduce_ms": null,
+          "physx/direct_contact_route_ms": null,
+          "physx/direct_contact_count": null,
+          "physx/direct_contact_gpu_order_ms": null,
+          "physx/direct_contact_gpu_ordered": null,
+          "physx/direct_contact_order_ambiguous": null,
+          "physx/direct_contact_wrench_checks": null,
+          "physx/direct_contact_wrench_mismatches": null,
+          "physx/direct_contact_wrench_max_force_error": null,
+          "physx/direct_contact_wrench_max_moment_error": null,
+          "physx/direct_contact_order_verify_checks": null,
+          "physx/direct_contact_order_verify_mismatches": null,
+          "physx/direct_contact_order_verify_ms": null,
+          "physx/direct_contact_legacy_threshold_checks": null,
+          "physx/direct_contact_legacy_threshold_mismatches": null,
+          "physx/direct_contact_legacy_sum_max_ulp": null
+        },
+        "contacts_30000_60000": {
+          "sim": {
+            "n": 765,
+            "mean": 34.257856209150326,
+            "p50": 20.939,
+            "p95": 60.519,
+            "p99": 64.111,
+            "max": 73.151
+          },
+          "physx": {
+            "n": 765,
+            "mean": 11.77152156862745,
+            "p50": 11.73,
+            "p95": 13.35,
+            "p99": 14.245,
+            "max": 15.326
+          },
+          "awake": {
+            "n": 765,
+            "mean": 2696.681045751634,
+            "p50": 2766,
+            "p95": 2940,
+            "p99": 2956,
+            "max": 2964
+          },
+          "bodies": {
+            "n": 765,
+            "mean": 3096.0718954248364,
+            "p50": 3257,
+            "p95": 3474,
+            "p99": 3494,
+            "max": 3494
+          },
+          "bonds": {
+            "n": 765,
+            "mean": 10172.977777777778,
+            "p50": 10700,
+            "p95": 11386,
+            "p99": 11461,
+            "max": 11461
+          },
+          "ordering_ms": {
+            "n": 765,
+            "mean": 0.25468875816993464,
+            "p50": 0.2529,
+            "p95": 0.2748,
+            "p99": 0.2829,
+            "max": 0.318
+          },
+          "contact_pipeline_ms": {
+            "n": 765,
+            "mean": 6.102702614379085,
+            "p50": 6.0735,
+            "p95": 6.9634,
+            "p99": 7.6194,
+            "max": 8.746599999999999
+          },
+          "physx/direct_host_mirror_ms": {
+            "n": 765,
+            "mean": 0.45648627450980395,
+            "p50": 0.3961,
+            "p95": 1.0621,
+            "p99": 1.2433,
+            "max": 1.3398
+          },
+          "physx/direct_contact_copy_ms": {
+            "n": 765,
+            "mean": 0.4717962091503268,
+            "p50": 0.4707,
+            "p95": 0.527,
+            "p99": 0.5576,
+            "max": 0.5921
+          },
+          "physx/direct_contact_ownership_ms": {
+            "n": 765,
+            "mean": 2.3956816993464054,
+            "p50": 2.3776,
+            "p95": 2.672,
+            "p99": 2.9903,
+            "max": 3.4808
+          },
+          "physx/direct_contact_validate_ms": {
+            "n": 765,
+            "mean": 0.7431949019607843,
+            "p50": 0.7538,
+            "p95": 0.8834,
+            "p99": 0.9621,
+            "max": 1.0347
+          },
+          "physx/direct_contact_sort_ms": {
+            "n": 765,
+            "mean": 1.5816993464052288e-05,
+            "p50": 0.0,
+            "p95": 0.0001,
+            "p99": 0.0001,
+            "max": 0.0006
+          },
+          "physx/direct_contact_reduce_ms": {
+            "n": 765,
+            "mean": 0.7950312418300653,
+            "p50": 0.7591,
+            "p95": 1.0778,
+            "p99": 1.4097,
+            "max": 1.7436
+          },
+          "physx/direct_contact_route_ms": {
+            "n": 765,
+            "mean": 1.4423098039215687,
+            "p50": 1.4625,
+            "p95": 1.7732,
+            "p99": 1.9824,
+            "max": 2.9242
+          },
+          "physx/direct_contact_count": {
+            "n": 765,
+            "mean": 38201.2954248366,
+            "p50": 38783.0,
+            "p95": 42085.0,
+            "p99": 42503.0,
+            "max": 42917.0
+          },
+          "physx/direct_contact_gpu_order_ms": {
+            "n": 765,
+            "mean": 0.2546729411764706,
+            "p50": 0.2529,
+            "p95": 0.2748,
+            "p99": 0.2829,
+            "max": 0.318
+          },
+          "physx/direct_contact_gpu_ordered": {
+            "n": 765,
+            "mean": 1.0,
+            "p50": 1.0,
+            "p95": 1.0,
+            "p99": 1.0,
+            "max": 1.0
+          },
+          "physx/direct_contact_order_ambiguous": {
+            "n": 765,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_wrench_checks": {
+            "n": 765,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_wrench_mismatches": {
+            "n": 765,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_wrench_max_force_error": {
+            "n": 765,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_wrench_max_moment_error": {
+            "n": 765,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_order_verify_checks": {
+            "n": 765,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_order_verify_mismatches": {
+            "n": 765,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_order_verify_ms": {
+            "n": 765,
+            "mean": 0.00014496732026143792,
+            "p50": 0.0001,
+            "p95": 0.0004,
+            "p99": 0.0006,
+            "max": 0.0008
+          },
+          "physx/direct_contact_legacy_threshold_checks": {
+            "n": 765,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_legacy_threshold_mismatches": {
+            "n": 765,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_legacy_sum_max_ulp": {
+            "n": 765,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          }
+        },
+        "contacts_80000_120000": {
+          "sim": null,
+          "physx": null,
+          "awake": null,
+          "bodies": null,
+          "bonds": null,
+          "ordering_ms": null,
+          "contact_pipeline_ms": null,
+          "physx/direct_host_mirror_ms": null,
+          "physx/direct_contact_copy_ms": null,
+          "physx/direct_contact_ownership_ms": null,
+          "physx/direct_contact_validate_ms": null,
+          "physx/direct_contact_sort_ms": null,
+          "physx/direct_contact_reduce_ms": null,
+          "physx/direct_contact_route_ms": null,
+          "physx/direct_contact_count": null,
+          "physx/direct_contact_gpu_order_ms": null,
+          "physx/direct_contact_gpu_ordered": null,
+          "physx/direct_contact_order_ambiguous": null,
+          "physx/direct_contact_wrench_checks": null,
+          "physx/direct_contact_wrench_mismatches": null,
+          "physx/direct_contact_wrench_max_force_error": null,
+          "physx/direct_contact_wrench_max_moment_error": null,
+          "physx/direct_contact_order_verify_checks": null,
+          "physx/direct_contact_order_verify_mismatches": null,
+          "physx/direct_contact_order_verify_ms": null,
+          "physx/direct_contact_legacy_threshold_checks": null,
+          "physx/direct_contact_legacy_threshold_mismatches": null,
+          "physx/direct_contact_legacy_sum_max_ulp": null
+        }
+      }
+    },
+    "heavy-gpu-3": {
+      "metadata": {
+        "command": [
+          "/root/workspace/vibe-land-4/target/gpu-activity/release/record-city-trace",
+          "--scene",
+          "destruction/assets/scenes/fractured-downtown.json",
+          "--grid",
+          "2",
+          "--seconds",
+          "20",
+          "--shots",
+          "200",
+          "--shot-interval-ticks",
+          "4",
+          "--targets",
+          "27",
+          "--output",
+          "/dev/null",
+          "--metrics-out",
+          "/root/workspace/vibe-land-4/bench-results/simulation-frontier/contact-wrench/heavy-gpu-3.csv",
+          "--timings-out",
+          "/root/workspace/vibe-land-4/bench-results/simulation-frontier/contact-wrench/heavy-gpu-3.jsonl"
+        ],
+        "env": {
+          "VIBE_CITY_VARIED_HEIGHTS": "0",
+          "VIBE_CITY_EXCESS_FORCES": "1",
+          "VIBE_WORLD_RESTITUTION": "0.02",
+          "VIBE_CITY_STRESS_LIMIT_SCALE": "0.45",
+          "VIBE_CITY_FREEZE": "1",
+          "VIBE_PHYSICS_BACKEND": "physx_gpu",
+          "BLAST_GPU_WHOLE_RESET_ON_TOPOLOGY": "1",
+          "BLAST_BOND_STRESS_GPU": "1",
+          "VIBE_CITY_SOLVER_ITERATIONS": "32",
+          "VIBE_CITY_RESIM_PASSES": "1",
+          "LD_LIBRARY_PATH": "/usr/local/cuda/lib64:/root/workspace/physx-gpu-activity/physx/bin/linux.x86_64/release",
+          "VIBE_CITY_SHOT_STRESS_IMPULSE": "1.2e7",
+          "VIBE_CITY_GRID": "2",
+          "VIBE_CITY_SCENE": "fractured-downtown.json",
+          "VIBE_CITY_SHOT_BLAST_RADIUS": "2.5",
+          "VIBE_WORLD_FRICTION": "0.75",
+          "PHYSX_ROOT": "/root/workspace/physx-gpu-activity/physx",
+          "BLAST_ROOT": "/root/workspace/blast-stress-solver-2/blast",
+          "BLAST_GPU_IMPULSE_READBACK": "0",
+          "BLAST_GPU_DETERMINISTIC_REDUCTIONS": "0",
+          "VIBE_PHYSX_DIRECT_GPU": "1",
+          "VIBE_PHYSX_GPU_CONTACT_ORDER": "1",
+          "VIBE_PHYSX_GPU_CONTACT_ORDER_VERIFY": "0"
+        },
+        "binary_sha256": "fea1e8d7564182e77407c9bf5fdfc92e51e6d56662d3d73a6ce4b26749b49fe1",
+        "start_utc": "2026-09-05T21:17:44Z",
+        "game_head": "b62edf0c814ff3570095a31725b595577a03f9c8",
+        "game_diff_sha256": "cf6a83c98d25791e83cafcde2fff042d6148d22cc1085d1308862ab75712a8b7",
+        "solver_head": "89e5f398237c4ac2589f4303351957713c2f47eb",
+        "solver_diff_sha256": "6d911c145ff59a87ec0963b2d9fc5eab53d4946a18e2c3bb988d5c7ef6d5784e",
+        "exit_code": 0,
+        "wall_seconds": 38.07039836375043
+      },
+      "final": {
+        "awake": 1876,
+        "bodies": 2407,
+        "bonds": 7753
+      },
+      "groups": {
+        "all": {
+          "sim": {
+            "n": 1200,
+            "mean": 24.34516,
+            "p50": 16.304,
+            "p95": 48.454,
+            "p99": 51.927,
+            "max": 561.675
+          },
+          "physx": {
+            "n": 1200,
+            "mean": 8.37712,
+            "p50": 8.991,
+            "p95": 10.738,
+            "p99": 11.293,
+            "max": 48.815
+          },
+          "awake": {
+            "n": 1200,
+            "mean": 1473.0241666666666,
+            "p50": 1892,
+            "p95": 2040,
+            "p99": 2044,
+            "max": 2047
+          },
+          "bodies": {
+            "n": 1200,
+            "mean": 1711.0166666666667,
+            "p50": 2101,
+            "p95": 2402,
+            "p99": 2405,
+            "max": 2407
+          },
+          "bonds": {
+            "n": 1200,
+            "mean": 5428.32,
+            "p50": 6739,
+            "p95": 7736,
+            "p99": 7747,
+            "max": 7753
+          },
+          "ordering_ms": {
+            "n": 1200,
+            "mean": 0.23197158333333334,
+            "p50": 0.2432,
+            "p95": 0.2672,
+            "p99": 0.2789,
+            "max": 0.2908
+          },
+          "contact_pipeline_ms": {
+            "n": 1200,
+            "mean": 4.273662333333333,
+            "p50": 4.8368,
+            "p95": 5.5827,
+            "p99": 6.0506,
+            "max": 6.9042
+          },
+          "physx/direct_host_mirror_ms": {
+            "n": 1200,
+            "mean": 0.35719283333333335,
+            "p50": 0.2444,
+            "p95": 1.0785,
+            "p99": 1.1474,
+            "max": 3.8396
+          },
+          "physx/direct_contact_copy_ms": {
+            "n": 1200,
+            "mean": 0.3189685,
+            "p50": 0.3683,
+            "p95": 0.4229,
+            "p99": 0.4507,
+            "max": 2.3316
+          },
+          "physx/direct_contact_ownership_ms": {
+            "n": 1200,
+            "mean": 2.1379985,
+            "p50": 2.2463,
+            "p95": 2.5251,
+            "p99": 2.764,
+            "max": 3.0824
+          },
+          "physx/direct_contact_validate_ms": {
+            "n": 1200,
+            "mean": 0.39888466666666667,
+            "p50": 0.4962,
+            "p95": 0.614,
+            "p99": 0.6828,
+            "max": 0.8373
+          },
+          "physx/direct_contact_sort_ms": {
+            "n": 1200,
+            "mean": 8.666666666666668e-06,
+            "p50": 0.0,
+            "p95": 0.0001,
+            "p99": 0.0001,
+            "max": 0.0002
+          },
+          "physx/direct_contact_reduce_ms": {
+            "n": 1200,
+            "mean": 0.42601191666666666,
+            "p50": 0.5012,
+            "p95": 0.7192,
+            "p99": 0.8593,
+            "max": 1.1271
+          },
+          "physx/direct_contact_route_ms": {
+            "n": 1200,
+            "mean": 0.7598271666666667,
+            "p50": 0.9514,
+            "p95": 1.2011,
+            "p99": 1.33,
+            "max": 1.8136
+          },
+          "physx/direct_contact_count": {
+            "n": 1200,
+            "mean": 22171.055,
+            "p50": 28576.0,
+            "p95": 30640.0,
+            "p99": 30896.0,
+            "max": 31017.0
+          },
+          "physx/direct_contact_gpu_order_ms": {
+            "n": 1200,
+            "mean": 0.23196291666666666,
+            "p50": 0.2432,
+            "p95": 0.2672,
+            "p99": 0.2789,
+            "max": 0.2908
+          },
+          "physx/direct_contact_gpu_ordered": {
+            "n": 1200,
+            "mean": 1.0,
+            "p50": 1.0,
+            "p95": 1.0,
+            "p99": 1.0,
+            "max": 1.0
+          },
+          "physx/direct_contact_order_ambiguous": {
+            "n": 1200,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_wrench_checks": {
+            "n": 1200,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_wrench_mismatches": {
+            "n": 1200,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_wrench_max_force_error": {
+            "n": 1200,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_wrench_max_moment_error": {
+            "n": 1200,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_order_verify_checks": {
+            "n": 1200,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_order_verify_mismatches": {
+            "n": 1200,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_order_verify_ms": {
+            "n": 1200,
+            "mean": 0.00012566666666666667,
+            "p50": 0.0001,
+            "p95": 0.0002,
+            "p99": 0.0006,
+            "max": 0.0007
+          },
+          "physx/direct_contact_legacy_threshold_checks": {
+            "n": 1200,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_legacy_threshold_mismatches": {
+            "n": 1200,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_legacy_sum_max_ulp": {
+            "n": 1200,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          }
+        },
+        "awake_2000_4000": {
+          "sim": {
+            "n": 154,
+            "mean": 23.57868831168831,
+            "p50": 16.644,
+            "p95": 48.238,
+            "p99": 50.868,
+            "max": 55.409
+          },
+          "physx": {
+            "n": 154,
+            "mean": 9.836064935064934,
+            "p50": 9.879,
+            "p95": 11.137,
+            "p99": 11.875,
+            "max": 12.724
+          },
+          "awake": {
+            "n": 154,
+            "mean": 2029.2207792207791,
+            "p50": 2039,
+            "p95": 2044,
+            "p99": 2046,
+            "max": 2047
+          },
+          "bodies": {
+            "n": 154,
+            "mean": 2317.6428571428573,
+            "p50": 2326,
+            "p95": 2345,
+            "p99": 2347,
+            "max": 2348
+          },
+          "bonds": {
+            "n": 154,
+            "mean": 7436.915584415585,
+            "p50": 7470,
+            "p95": 7511,
+            "p99": 7516,
+            "max": 7521
+          },
+          "ordering_ms": {
+            "n": 154,
+            "mean": 0.2470305194805195,
+            "p50": 0.246,
+            "p95": 0.2671,
+            "p99": 0.2761,
+            "max": 0.2836
+          },
+          "contact_pipeline_ms": {
+            "n": 154,
+            "mean": 5.2954383116883115,
+            "p50": 5.2531,
+            "p95": 6.0085,
+            "p99": 6.2977,
+            "max": 6.9042
+          },
+          "physx/direct_host_mirror_ms": {
+            "n": 154,
+            "mean": 0.26629545454545456,
+            "p50": 0.2395,
+            "p95": 0.4329,
+            "p99": 0.4685,
+            "max": 1.1565
+          },
+          "physx/direct_contact_copy_ms": {
+            "n": 154,
+            "mean": 0.40054935064935066,
+            "p50": 0.4006,
+            "p95": 0.4483,
+            "p99": 0.4926,
+            "max": 0.5186
+          },
+          "physx/direct_contact_ownership_ms": {
+            "n": 154,
+            "mean": 2.389088961038961,
+            "p50": 2.3583,
+            "p95": 2.6841,
+            "p99": 2.905,
+            "max": 3.0505
+          },
+          "physx/direct_contact_validate_ms": {
+            "n": 154,
+            "mean": 0.5667409090909091,
+            "p50": 0.5768,
+            "p95": 0.6588,
+            "p99": 0.6832,
+            "max": 0.7552
+          },
+          "physx/direct_contact_sort_ms": {
+            "n": 154,
+            "mean": 1.103896103896104e-05,
+            "p50": 0.0,
+            "p95": 0.0001,
+            "p99": 0.0001,
+            "max": 0.0002
+          },
+          "physx/direct_contact_reduce_ms": {
+            "n": 154,
+            "mean": 0.5825090909090909,
+            "p50": 0.545,
+            "p95": 0.7942,
+            "p99": 0.946,
+            "max": 1.1271
+          },
+          "physx/direct_contact_route_ms": {
+            "n": 154,
+            "mean": 1.1095194805194806,
+            "p50": 1.0904,
+            "p95": 1.2695,
+            "p99": 1.3645,
+            "max": 1.8136
+          },
+          "physx/direct_contact_count": {
+            "n": 154,
+            "mean": 30228.448051948053,
+            "p50": 30168.0,
+            "p95": 30901.0,
+            "p99": 30965.0,
+            "max": 31017.0
+          },
+          "physx/direct_contact_gpu_order_ms": {
+            "n": 154,
+            "mean": 0.24701948051948053,
+            "p50": 0.246,
+            "p95": 0.2671,
+            "p99": 0.2761,
+            "max": 0.2836
+          },
+          "physx/direct_contact_gpu_ordered": {
+            "n": 154,
+            "mean": 1.0,
+            "p50": 1.0,
+            "p95": 1.0,
+            "p99": 1.0,
+            "max": 1.0
+          },
+          "physx/direct_contact_order_ambiguous": {
+            "n": 154,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_wrench_checks": {
+            "n": 154,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_wrench_mismatches": {
+            "n": 154,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_wrench_max_force_error": {
+            "n": 154,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_wrench_max_moment_error": {
+            "n": 154,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_order_verify_checks": {
+            "n": 154,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_order_verify_mismatches": {
+            "n": 154,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_order_verify_ms": {
+            "n": 154,
+            "mean": 0.00014285714285714287,
+            "p50": 0.0001,
+            "p95": 0.0003,
+            "p99": 0.0006,
+            "max": 0.0007
+          },
+          "physx/direct_contact_legacy_threshold_checks": {
+            "n": 154,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_legacy_threshold_mismatches": {
+            "n": 154,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_legacy_sum_max_ulp": {
+            "n": 154,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          }
+        },
+        "awake_5000_7000": {
+          "sim": null,
+          "physx": null,
+          "awake": null,
+          "bodies": null,
+          "bonds": null,
+          "ordering_ms": null,
+          "contact_pipeline_ms": null,
+          "physx/direct_host_mirror_ms": null,
+          "physx/direct_contact_copy_ms": null,
+          "physx/direct_contact_ownership_ms": null,
+          "physx/direct_contact_validate_ms": null,
+          "physx/direct_contact_sort_ms": null,
+          "physx/direct_contact_reduce_ms": null,
+          "physx/direct_contact_route_ms": null,
+          "physx/direct_contact_count": null,
+          "physx/direct_contact_gpu_order_ms": null,
+          "physx/direct_contact_gpu_ordered": null,
+          "physx/direct_contact_order_ambiguous": null,
+          "physx/direct_contact_wrench_checks": null,
+          "physx/direct_contact_wrench_mismatches": null,
+          "physx/direct_contact_wrench_max_force_error": null,
+          "physx/direct_contact_wrench_max_moment_error": null,
+          "physx/direct_contact_order_verify_checks": null,
+          "physx/direct_contact_order_verify_mismatches": null,
+          "physx/direct_contact_order_verify_ms": null,
+          "physx/direct_contact_legacy_threshold_checks": null,
+          "physx/direct_contact_legacy_threshold_mismatches": null,
+          "physx/direct_contact_legacy_sum_max_ulp": null
+        },
+        "contacts_30000_60000": {
+          "sim": {
+            "n": 247,
+            "mean": 23.462032388663967,
+            "p50": 16.282,
+            "p95": 48.917,
+            "p99": 51.313,
+            "max": 53.458
+          },
+          "physx": {
+            "n": 247,
+            "mean": 9.665437246963563,
+            "p50": 9.794,
+            "p95": 10.883,
+            "p99": 11.335,
+            "max": 12.724
+          },
+          "awake": {
+            "n": 247,
+            "mean": 1968.6072874493927,
+            "p50": 1973,
+            "p95": 2043,
+            "p99": 2045,
+            "max": 2047
+          },
+          "bodies": {
+            "n": 247,
+            "mean": 2259.773279352227,
+            "p50": 2325,
+            "p95": 2380,
+            "p99": 2380,
+            "max": 2380
+          },
+          "bonds": {
+            "n": 247,
+            "mean": 7260.987854251012,
+            "p50": 7467,
+            "p95": 7673,
+            "p99": 7673,
+            "max": 7673
+          },
+          "ordering_ms": {
+            "n": 247,
+            "mean": 0.24875384615384616,
+            "p50": 0.24639999999999998,
+            "p95": 0.2686,
+            "p99": 0.2796,
+            "max": 0.2908
+          },
+          "contact_pipeline_ms": {
+            "n": 247,
+            "mean": 5.160991093117409,
+            "p50": 5.1171,
+            "p95": 5.727,
+            "p99": 6.1152,
+            "max": 6.3423
+          },
+          "physx/direct_host_mirror_ms": {
+            "n": 247,
+            "mean": 0.2699080971659919,
+            "p50": 0.2445,
+            "p95": 0.4435,
+            "p99": 1.0075,
+            "max": 1.1565
+          },
+          "physx/direct_contact_copy_ms": {
+            "n": 247,
+            "mean": 0.39910485829959513,
+            "p50": 0.4009,
+            "p95": 0.4343,
+            "p99": 0.4572,
+            "max": 0.5186
+          },
+          "physx/direct_contact_ownership_ms": {
+            "n": 247,
+            "mean": 2.318799190283401,
+            "p50": 2.3079,
+            "p95": 2.5914,
+            "p99": 2.8722,
+            "max": 3.0505
+          },
+          "physx/direct_contact_validate_ms": {
+            "n": 247,
+            "mean": 0.5470866396761134,
+            "p50": 0.554,
+            "p95": 0.6462,
+            "p99": 0.6957,
+            "max": 0.8373
+          },
+          "physx/direct_contact_sort_ms": {
+            "n": 247,
+            "mean": 1.417004048582996e-05,
+            "p50": 0.0,
+            "p95": 0.0001,
+            "p99": 0.0001,
+            "max": 0.0001
+          },
+          "physx/direct_contact_reduce_ms": {
+            "n": 247,
+            "mean": 0.5714352226720648,
+            "p50": 0.5369,
+            "p95": 0.7706,
+            "p99": 0.858,
+            "max": 0.9542
+          },
+          "physx/direct_contact_route_ms": {
+            "n": 247,
+            "mean": 1.0758113360323887,
+            "p50": 1.0676,
+            "p95": 1.2346,
+            "p99": 1.286,
+            "max": 1.5049
+          },
+          "physx/direct_contact_count": {
+            "n": 247,
+            "mean": 30406.963562753037,
+            "p50": 30338.0,
+            "p95": 30895.0,
+            "p99": 30965.0,
+            "max": 31017.0
+          },
+          "physx/direct_contact_gpu_order_ms": {
+            "n": 247,
+            "mean": 0.24873967611336031,
+            "p50": 0.2463,
+            "p95": 0.2686,
+            "p99": 0.2796,
+            "max": 0.2908
+          },
+          "physx/direct_contact_gpu_ordered": {
+            "n": 247,
+            "mean": 1.0,
+            "p50": 1.0,
+            "p95": 1.0,
+            "p99": 1.0,
+            "max": 1.0
+          },
+          "physx/direct_contact_order_ambiguous": {
+            "n": 247,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_wrench_checks": {
+            "n": 247,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_wrench_mismatches": {
+            "n": 247,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_wrench_max_force_error": {
+            "n": 247,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_wrench_max_moment_error": {
+            "n": 247,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_order_verify_checks": {
+            "n": 247,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_order_verify_mismatches": {
+            "n": 247,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_order_verify_ms": {
+            "n": 247,
+            "mean": 0.00014129554655870446,
+            "p50": 0.0001,
+            "p95": 0.0003,
+            "p99": 0.0006,
+            "max": 0.0007
+          },
+          "physx/direct_contact_legacy_threshold_checks": {
+            "n": 247,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_legacy_threshold_mismatches": {
+            "n": 247,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          },
+          "physx/direct_contact_legacy_sum_max_ulp": {
+            "n": 247,
+            "mean": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0
+          }
+        },
+        "contacts_80000_120000": {
+          "sim": null,
+          "physx": null,
+          "awake": null,
+          "bodies": null,
+          "bonds": null,
+          "ordering_ms": null,
+          "contact_pipeline_ms": null,
+          "physx/direct_host_mirror_ms": null,
+          "physx/direct_contact_copy_ms": null,
+          "physx/direct_contact_ownership_ms": null,
+          "physx/direct_contact_validate_ms": null,
+          "physx/direct_contact_sort_ms": null,
+          "physx/direct_contact_reduce_ms": null,
+          "physx/direct_contact_route_ms": null,
+          "physx/direct_contact_count": null,
+          "physx/direct_contact_gpu_order_ms": null,
+          "physx/direct_contact_gpu_ordered": null,
+          "physx/direct_contact_order_ambiguous": null,
+          "physx/direct_contact_wrench_checks": null,
+          "physx/direct_contact_wrench_mismatches": null,
+          "physx/direct_contact_wrench_max_force_error": null,
+          "physx/direct_contact_wrench_max_moment_error": null,
+          "physx/direct_contact_order_verify_checks": null,
+          "physx/direct_contact_order_verify_mismatches": null,
+          "physx/direct_contact_order_verify_ms": null,
+          "physx/direct_contact_legacy_threshold_checks": null,
+          "physx/direct_contact_legacy_threshold_mismatches": null,
+          "physx/direct_contact_legacy_sum_max_ulp": null
+        }
+      }
+    }
+  },
+  "median_trial_means": {
+    "heavy-all": {
+      "cpu": {
+        "sim": 31.076811666666668,
+        "physx": 11.0526975,
+        "awake": 1760.7308333333333,
+        "bodies": 2053.1675,
+        "bonds": 6625.695,
+        "ordering_ms": 2.144703333333333,
+        "contact_pipeline_ms": 6.515423166666666,
+        "physx/direct_contact_count": 24893.085833333334,
+        "physx/direct_contact_sort_ms": 2.144703333333333,
+        "physx/direct_contact_gpu_order_ms": 0.0,
+        "physx/direct_contact_order_ambiguous": 0.0
+      },
+      "gpu": {
+        "sim": 31.663118333333333,
+        "physx": 9.683184166666667,
+        "awake": 1982.7633333333333,
+        "bodies": 2250.840833333333,
+        "bonds": 7384.701666666667,
+        "ordering_ms": 0.23507641666666668,
+        "contact_pipeline_ms": 4.8265045,
+        "physx/direct_contact_count": 28404.7375,
+        "physx/direct_contact_sort_ms": 1.0166666666666667e-05,
+        "physx/direct_contact_gpu_order_ms": 0.23506625,
+        "physx/direct_contact_order_ambiguous": 0.0
+      }
+    },
+    "heavy-awake_2000_4000": {
+      "cpu": {
+        "sim": 35.91117808219178,
+        "physx": 13.403027142857143,
+        "awake": 2344.157142857143,
+        "bodies": 2749.9185714285713,
+        "bonds": 8876.435714285713,
+        "ordering_ms": 2.8584261428571427,
+        "contact_pipeline_ms": 8.219530285714285,
+        "physx/direct_contact_count": 32781.76320939335,
+        "physx/direct_contact_sort_ms": 2.8584261428571427,
+        "physx/direct_contact_gpu_order_ms": 0.0,
+        "physx/direct_contact_order_ambiguous": 0.0
+      },
+      "gpu": {
+        "sim": 34.291868421052634,
+        "physx": 11.721349137931034,
+        "awake": 2701.4763157894736,
+        "bodies": 3084.6005747126437,
+        "bonds": 10187.01724137931,
+        "ordering_ms": 0.2547865789473684,
+        "contact_pipeline_ms": 6.026414367816092,
+        "physx/direct_contact_count": 38253.734210526316,
+        "physx/direct_contact_sort_ms": 1.4080459770114944e-05,
+        "physx/direct_contact_gpu_order_ms": 0.25477065789473685,
+        "physx/direct_contact_order_ambiguous": 0.0
+      }
+    },
+    "heavy-contacts_30000_60000": {
+      "cpu": {
+        "sim": 37.09463503649635,
+        "physx": 13.618878345498784,
+        "awake": 2362.1396054628226,
+        "bodies": 2783.2457420924575,
+        "bonds": 9094.148418491484,
+        "ordering_ms": 2.8855905918057663,
+        "contact_pipeline_ms": 8.290279817905919,
+        "physx/direct_contact_count": 33657.69586374696,
+        "physx/direct_contact_sort_ms": 2.8855905918057663,
+        "physx/direct_contact_gpu_order_ms": 0.0,
+        "physx/direct_contact_order_ambiguous": 0.0
+      },
+      "gpu": {
+        "sim": 34.257856209150326,
+        "physx": 11.746261764705883,
+        "awake": 2696.681045751634,
+        "bodies": 3096.0718954248364,
+        "bonds": 10172.977777777778,
+        "ordering_ms": 0.25468875816993464,
+        "contact_pipeline_ms": 6.048342941176471,
+        "physx/direct_contact_count": 38201.2954248366,
+        "physx/direct_contact_sort_ms": 1.417004048582996e-05,
+        "physx/direct_contact_gpu_order_ms": 0.2546729411764706,
+        "physx/direct_contact_order_ambiguous": 0.0
+      }
+    }
+  }
+}

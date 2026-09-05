@@ -1,0 +1,64 @@
+/root/workspace/blast-stress-solver-2/demos/blast-stress-demo/tests/multilevel_reference.py:137: DeprecationWarning: `block_diag` is switching to the sparse array interface.
+
+        For the case where input arrays are numpy arrays, this function is
+        switching to returning a sparse array instead of sparse matrix.
+        Recover the sparse matrix return value by making one input a sparse matrix.
+        For example, block_diag([coo_matrix(A), B]).
+        Avoid this message for sparse array output using block_diag([coo_array(A), B]).
+        For more information, see the spmatrix to sparray migration guide
+        https://docs.scipy.org/doc/scipy/reference/sparse.migration_to_sparray.html
+
+        This function will be changed no earlier than v1.20.
+        
+  inverse = block_diag(list(np.linalg.inv(diagonal)), format='csr')
+/root/workspace/blast-stress-solver-2/demos/blast-stress-demo/tests/multilevel_reference.py:138: DeprecationWarning: `block_diag` is switching to the sparse array interface.
+
+        For the case where input arrays are numpy arrays, this function is
+        switching to returning a sparse array instead of sparse matrix.
+        Recover the sparse matrix return value by making one input a sparse matrix.
+        For example, block_diag([coo_matrix(A), B]).
+        Avoid this message for sparse array output using block_diag([coo_array(A), B]).
+        For more information, see the spmatrix to sparray migration guide
+        https://docs.scipy.org/doc/scipy/reference/sparse.migration_to_sparray.html
+
+        This function will be changed no earlier than v1.20.
+        
+  white = block_diag(list(np.linalg.inv(np.linalg.cholesky(diagonal))), format='csr')
+{
+  "components": [
+    {
+      "nodes": 5936,
+      "free": false,
+      "iterations": 33,
+      "null_error": 0.0,
+      "levels": [
+        {
+          "blocks": 5936,
+          "nnz": 827552,
+          "coarse_blocks": 913
+        },
+        {
+          "blocks": 913,
+          "nnz": 982836,
+          "coarse_blocks": 120
+        },
+        {
+          "blocks": 120,
+          "nnz": 233928,
+          "coarse_blocks": 17
+        }
+      ],
+      "setup_seconds": 0.5878917658701539
+    }
+  ],
+  "residual": {
+    "force": 1.5789955300946428e-11,
+    "moment": 1.878121546152095e-11
+  },
+  "cpu_seconds": 0.8810947961173952,
+  "active_nodes": 5936,
+  "bonds": 18627,
+  "released": false,
+  "loads": "gravity",
+  "scope": "CPU/double reference only"
+}

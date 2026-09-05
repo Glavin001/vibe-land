@@ -1,0 +1,4 @@
+at-rest check: scale=0.45, 90s, zero shots, budget 30 bonds
+  bonds broken total: 0
+  broken in final third: 0
+  PASS: the city stands up

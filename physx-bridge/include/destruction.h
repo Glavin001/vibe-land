@@ -172,6 +172,8 @@ public:
   /// predicted it would skip.
   bool queue_contact_at(const ContactTarget &target, FfiVec3 position,
                         FfiVec3 impulse, bool wake);
+  bool queue_contact_wrench_at(const ContactTarget &target, FfiVec3 position,
+                               FfiVec3 impulse, FfiVec3 angular_impulse, bool wake);
 
   void route_contact_shape(physx::PxShape *shape, FfiVec3 position,
                            FfiVec3 impulse, bool wake);

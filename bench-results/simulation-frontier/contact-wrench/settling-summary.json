@@ -1,0 +1,74 @@
+{
+  "cpu-1": {
+    "40": {
+      "awake_peak": 126.0,
+      "awake_tail_median": 0.0,
+      "awake_ratio": 0.0
+    },
+    "60": {
+      "awake_peak": 126.0,
+      "awake_tail_median": 0.0,
+      "awake_ratio": 0.0
+    }
+  },
+  "cpu-2": {
+    "40": {
+      "awake_peak": 138.0,
+      "awake_tail_median": 0.0,
+      "awake_ratio": 0.0
+    },
+    "60": {
+      "awake_peak": 138.0,
+      "awake_tail_median": 0.0,
+      "awake_ratio": 0.0
+    }
+  },
+  "cpu-3": {
+    "40": {
+      "awake_peak": 133.0,
+      "awake_tail_median": 0.0,
+      "awake_ratio": 0.0
+    },
+    "60": {
+      "awake_peak": 133.0,
+      "awake_tail_median": 0.0,
+      "awake_ratio": 0.0
+    }
+  },
+  "gpu-1": {
+    "40": {
+      "awake_peak": 111.0,
+      "awake_tail_median": 0.0,
+      "awake_ratio": 0.0
+    },
+    "60": {
+      "awake_peak": 111.0,
+      "awake_tail_median": 0.0,
+      "awake_ratio": 0.0
+    }
+  },
+  "gpu-2": {
+    "40": {
+      "awake_peak": 123.0,
+      "awake_tail_median": 0.0,
+      "awake_ratio": 0.0
+    },
+    "60": {
+      "awake_peak": 123.0,
+      "awake_tail_median": 0.0,
+      "awake_ratio": 0.0
+    }
+  },
+  "gpu-3": {
+    "40": {
+      "awake_peak": 128.0,
+      "awake_tail_median": 0.0,
+      "awake_ratio": 0.0
+    },
+    "60": {
+      "awake_peak": 128.0,
+      "awake_tail_median": 0.0,
+      "awake_ratio": 0.0
+    }
+  }
+}

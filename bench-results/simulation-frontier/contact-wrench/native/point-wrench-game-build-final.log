@@ -1,0 +1,500 @@
+   Compiling vibe-land-physx-bridge v0.1.0 (/root/workspace/vibe-land-4/physx-bridge)
+warning: unused import: `ActorState`
+  --> research/destruction-codec/src/debris_tracks.rs:42:20
+   |
+42 | use crate::trace::{ActorState, Camera, Pose, TraceReader};
+   |                    ^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `exp_bucket`
+  --> research/destruction-codec/src/residual_coder.rs:16:5
+   |
+16 |     exp_bucket, unzigzag, zigzag, AdaptiveModel, RansDecoder, RansEncoder, EXP_SYMBOLS,
+   |     ^^^^^^^^^^
+
+warning: unreachable pattern
+   --> research/destruction-codec/src/debris_tracks.rs:365:17
+    |
+365 |                 _ => {}
+    |                 ^ no value can reach this
+    |
+note: multiple earlier patterns match some of the same values
+   --> research/destruction-codec/src/debris_tracks.rs:365:17
+    |
+355 |                 (Tier::Coarse, _) | (_, None) => {
+    |                 ----------------------------- matches some of the same values
+...
+358 |                 (_, Some(cell)) => {
+    |                 --------------- matches some of the same values
+...
+365 |                 _ => {}
+    |                 ^ collectively making this unreachable
+    = note: `#[warn(unreachable_patterns)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `block_ticks`
+    --> research/destruction-codec/src/debris_tracks.rs:1080:5
+     |
+1080 |     block_ticks: u32,
+     |     ^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_block_ticks`
+     |
+     = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `keyframe_ticks`
+    --> research/destruction-codec/src/debris_tracks.rs:1081:5
+     |
+1081 |     keyframe_ticks: u32,
+     |     ^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_keyframe_ticks`
+
+warning: type `RootSegment` is more private than the item `TopologyState::last_segments`
+   --> research/destruction-codec/src/hierarchy.rs:503:5
+    |
+503 |     pub(crate) last_segments: BTreeMap<u32, RootSegment>,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ field `TopologyState::last_segments` is reachable at visibility `pub(crate)`
+    |
+note: but type `RootSegment` is only usable at visibility `pub(self)`
+   --> research/destruction-codec/src/hierarchy.rs:364:1
+    |
+364 | struct RootSegment {
+    | ^^^^^^^^^^^^^^^^^^
+    = note: `#[warn(private_interfaces)]` on by default
+
+warning: variant `Mid` is never constructed
+  --> research/destruction-codec/src/debris_tracks.rs:71:5
+   |
+65 | pub(crate) enum Tier {
+   |                 ---- variant in this enum
+...
+71 |     Mid,
+   |     ^^^
+   |
+   = note: `Tier` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `compact` is never read
+    --> research/destruction-codec/src/hierarchy.rs:1805:9
+     |
+1799 |     struct Candidate {
+     |            --------- field in this struct
+...
+1805 |         compact: Pose,
+     |         ^^^^^^^
+
+warning: field `base_bound_m` is never read
+    --> research/destruction-codec/src/hierarchy.rs:2214:5
+     |
+2205 | struct FitContext<'a> {
+     |        ---------- field in this struct
+...
+2214 |     base_bound_m: f32,
+     |     ^^^^^^^^^^^^
+
+warning: method `symbol_count` is never used
+   --> research/destruction-codec/src/rans.rs:343:19
+    |
+309 | impl RansEncoder {
+    | ---------------- method in this implementation
+...
+343 |     pub(crate) fn symbol_count(&self) -> usize {
+    |                   ^^^^^^^^^^^^
+
+warning: use of deprecated method `rapier3d::dynamics::RigidBodyBuilder::position`: renamed to `RigidBodyBuilder::pose`
+    --> shared/src/local_session.rs:1129:14
+     |
+1129 |             .position(Isometry3::from_parts(Translation3::new(px, py, pz), iso))
+     |              ^^^^^^^^
+     |
+     = note: `#[warn(deprecated)]` on by default
+
+warning: `destruction-codec` (lib) generated 10 warnings (run `cargo fix --lib -p destruction-codec` to apply 4 suggestions)
+warning: `vibe-land-shared` (lib) generated 1 warning
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/source/sdk/lowlevel/NvBlastFamily.cpp: In function 'NvBlastFamily* Nv::Blast::createFamily(void*, const NvBlastAssetMemSizeData&, NvBlastLog)':
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/source/sdk/lowlevel/NvBlastFamily.cpp:106:20: warning: unused variable 'bondCount' [-Wunused-variable]
+warning: vibe-land-physx-bridge@0.1.0:   106 |     const uint32_t bondCount = sizeData.bondCount;
+warning: vibe-land-physx-bridge@0.1.0:       |                    ^~~~~~~~~
+warning: vibe-land-physx-bridge@0.1.0: In file included from /root/workspace/blast-stress-solver-2/blast/source/sdk/lowlevel/NvBlastFamilyGraph.h:37,
+warning: vibe-land-physx-bridge@0.1.0:                  from /root/workspace/blast-stress-solver-2/blast/source/sdk/lowlevel/NvBlastFamilyGraph.cpp:28:
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/source/sdk/common/NvBlastFixedPriorityQueue.h: In instantiation of 'Nv::Blast::FixedPriorityQueue<Element, Comparator>::FixedPriorityQueue(const Comparator&) [with Element = Nv::Blast::FamilyGraph::QueueElement; Comparator = Nv::Blast::FamilyGraph::NodeComparator]':
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/source/sdk/lowlevel/NvBlastFamilyGraph.cpp:440:71:   required from here
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/source/sdk/common/NvBlastFixedPriorityQueue.h:75:94: warning: implicitly-declared 'constexpr Nv::Blast::FamilyGraph::NodeComparator::NodeComparator(const Nv::Blast::FamilyGraph::NodeComparator&)' is deprecated [-Wdeprecated-copy]
+warning: vibe-land-physx-bridge@0.1.0:    75 |     FixedPriorityQueue(const Comparator& less = Comparator()) : Comparator(less), mHeapSize(0)
+warning: vibe-land-physx-bridge@0.1.0:       |                                                                                              ^
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/source/sdk/lowlevel/NvBlastFamilyGraph.h:236:25: note: because 'Nv::Blast::FamilyGraph::NodeComparator' has user-provided 'Nv::Blast::FamilyGraph::NodeComparator& Nv::Blast::FamilyGraph::NodeComparator::operator=(const Nv::Blast::FamilyGraph::NodeComparator&)'
+warning: vibe-land-physx-bridge@0.1.0:   236 |         NodeComparator& operator = (const NodeComparator&);
+warning: vibe-land-physx-bridge@0.1.0:       |                         ^~~~~~~~
+warning: vibe-land-physx-bridge@0.1.0: In file included from /root/workspace/blast-stress-solver-2/blast/source/sdk/extensions/stress/NvBlastExtStressSolver.cpp:29:
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/include/extensions/stress/NvBlastExtStressSolver.h: In constructor 'Nv::Blast::ExtStressMaterial::ExtStressMaterial()':
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/include/extensions/stress/NvBlastExtStressSolver.h:216:11: warning: 'Nv::Blast::ExtStressMaterial::elasticModulusPa' will be initialized after [-Wreorder]
+warning: vibe-land-physx-bridge@0.1.0:   216 |     float elasticModulusPa;
+warning: vibe-land-physx-bridge@0.1.0:       |           ^~~~~~~~~~~~~~~~
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/include/extensions/stress/NvBlastExtStressSolver.h:209:11: warning:   'float Nv::Blast::ExtStressMaterial::residualAreaFraction' [-Wreorder]
+warning: vibe-land-physx-bridge@0.1.0:   209 |     float residualAreaFraction;
+warning: vibe-land-physx-bridge@0.1.0:       |           ^~~~~~~~~~~~~~~~~~~~
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/include/extensions/stress/NvBlastExtStressSolver.h:221:5: warning:   when initialized here [-Wreorder]
+warning: vibe-land-physx-bridge@0.1.0:   221 |     ExtStressMaterial() :
+warning: vibe-land-physx-bridge@0.1.0:       |     ^~~~~~~~~~~~~~~~~
+warning: vibe-land-physx-bridge@0.1.0: In file included from /root/workspace/blast-stress-solver-2/blast/rust_stress_example/ffi/ext_stress_bridge.cpp:17:
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/include/extensions/stress/NvBlastExtStressSolver.h: In constructor 'Nv::Blast::ExtStressMaterial::ExtStressMaterial()':
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/include/extensions/stress/NvBlastExtStressSolver.h:216:11: warning: 'Nv::Blast::ExtStressMaterial::elasticModulusPa' will be initialized after [-Wreorder]
+warning: vibe-land-physx-bridge@0.1.0:   216 |     float elasticModulusPa;
+warning: vibe-land-physx-bridge@0.1.0:       |           ^~~~~~~~~~~~~~~~
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/include/extensions/stress/NvBlastExtStressSolver.h:209:11: warning:   'float Nv::Blast::ExtStressMaterial::residualAreaFraction' [-Wreorder]
+warning: vibe-land-physx-bridge@0.1.0:   209 |     float residualAreaFraction;
+warning: vibe-land-physx-bridge@0.1.0:       |           ^~~~~~~~~~~~~~~~~~~~
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/include/extensions/stress/NvBlastExtStressSolver.h:221:5: warning:   when initialized here [-Wreorder]
+warning: vibe-land-physx-bridge@0.1.0:   221 |     ExtStressMaterial() :
+warning: vibe-land-physx-bridge@0.1.0:       |     ^~~~~~~~~~~~~~~~~
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/rust_stress_example/ffi/ext_stress_bridge.cpp: In function 'uint8_t ext_stress_solver_apply_fracture_commands(ExtStressSolverHandle*, const ExtStressFractureCommands*, uint32_t, ExtStressSplitEvent*, uint32_t, ExtStressActor*, uint32_t, uint32_t*, uint32_t*, uint32_t*, uint32_t, uint32_t*)':
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/rust_stress_example/ffi/ext_stress_bridge.cpp:2194:18: warning: variable 'childStored' set but not used [-Wunused-but-set-variable]
+warning: vibe-land-physx-bridge@0.1.0:  2194 |             bool childStored = false;
+warning: vibe-land-physx-bridge@0.1.0:       |                  ^~~~~~~~~~~
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/source/sdk/globals/NvBlastGlobals.cpp: In member function 'virtual void Nv::Blast::DefaultErrorCallback::reportError(nvidia::NvErrorCode::Enum, const char*, const char*, int)':
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/source/sdk/globals/NvBlastGlobals.cpp:120:14: warning: variable 'critical' set but not used [-Wunused-but-set-variable]
+warning: vibe-land-physx-bridge@0.1.0:   120 |         bool critical = false;
+warning: vibe-land-physx-bridge@0.1.0:       |              ^~~~~~~~
+warning: vibe-land-physx-bridge@0.1.0: In file included from /root/workspace/blast-stress-solver-2/blast/source/shared/stress_solver/coupling.h:30,
+warning: vibe-land-physx-bridge@0.1.0:                  from /root/workspace/blast-stress-solver-2/blast/source/shared/stress_solver/bond.h:29,
+warning: vibe-land-physx-bridge@0.1.0:                  from /root/workspace/blast-stress-solver-2/blast/source/shared/stress_solver/stress.h:29,
+warning: vibe-land-physx-bridge@0.1.0:                  from /root/workspace/blast-stress-solver-2/blast/source/shared/stress_solver/stress.cpp:27:
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/source/shared/stress_solver/anglin6.h:167:25: warning: ignoring attributes on template argument '__m128' [-Wignored-attributes]
+warning: vibe-land-physx-bridge@0.1.0:   167 | struct AngLin6Ops<__m128>
+warning: vibe-land-physx-bridge@0.1.0:       |                         ^
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/source/shared/stress_solver/coupling.h:121:43: warning: ignoring attributes on template argument 'SIMD_Scalar' {aka '__m128'} [-Wignored-attributes]
+warning: vibe-land-physx-bridge@0.1.0:   121 | struct CouplingMatrixOps<Elem, SIMD_Scalar>
+warning: vibe-land-physx-bridge@0.1.0:       |                                           ^
+warning: vibe-land-physx-bridge@0.1.0: In file included from /root/workspace/blast-stress-solver-2/blast/source/shared/stress_solver/bond.h:30:
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/source/shared/stress_solver/inertia.h:86:36: warning: ignoring attributes on template argument 'SIMD_Scalar' {aka '__m128'} [-Wignored-attributes]
+warning: vibe-land-physx-bridge@0.1.0:    86 | struct InertiaMatrixOps<SIMD_Scalar>
+warning: vibe-land-physx-bridge@0.1.0:       |                                    ^
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/source/shared/stress_solver/stress.cpp:41:45: warning: ignoring attributes on template argument 'SIMD_Scalar' {aka '__m128'} [-Wignored-attributes]
+warning: vibe-land-physx-bridge@0.1.0:    41 | typedef CGNR<AngLin6, AngLin6Ops<SIMD_Scalar>, BondMatrixS, BondMatrixOpsS<SIMD_Scalar>, SIMD_Scalar, AngLin6ErrorSq>       CGNR_SIMD;
+warning: vibe-land-physx-bridge@0.1.0:       |                                             ^
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/source/shared/stress_solver/stress.cpp:41:87: warning: ignoring attributes on template argument 'SIMD_Scalar' {aka '__m128'} [-Wignored-attributes]
+warning: vibe-land-physx-bridge@0.1.0:    41 | typedef CGNR<AngLin6, AngLin6Ops<SIMD_Scalar>, BondMatrixS, BondMatrixOpsS<SIMD_Scalar>, SIMD_Scalar, AngLin6ErrorSq>       CGNR_SIMD;
+warning: vibe-land-physx-bridge@0.1.0:       |                                                                                       ^
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/source/shared/stress_solver/stress.cpp:41:117: warning: ignoring attributes on template argument 'SIMD_Scalar' {aka '__m128'} [-Wignored-attributes]
+warning: vibe-land-physx-bridge@0.1.0:    41 | typedef CGNR<AngLin6, AngLin6Ops<SIMD_Scalar>, BondMatrixS, BondMatrixOpsS<SIMD_Scalar>, SIMD_Scalar, AngLin6ErrorSq>       CGNR_SIMD;
+warning: vibe-land-physx-bridge@0.1.0:       |                                                                                                                     ^
+warning: vibe-land-physx-bridge@0.1.0: In file included from /root/workspace/blast-stress-solver-2/blast/source/shared/stress_solver/stress.cpp:30:
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/source/shared/stress_solver/simd/simd_device_query.h:144:1: warning: 'void print_supported_instruction_sets()' defined but not used [-Wunused-function]
+warning: vibe-land-physx-bridge@0.1.0:   144 | print_supported_instruction_sets()
+warning: vibe-land-physx-bridge@0.1.0:       | ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+warning: vibe-land-physx-bridge@0.1.0: In file included from /root/workspace/blast-stress-solver-2/blast/source/shared/stress_solver/coupling.h:30,
+warning: vibe-land-physx-bridge@0.1.0:                  from /root/workspace/blast-stress-solver-2/blast/source/shared/stress_solver/bond.h:29,
+warning: vibe-land-physx-bridge@0.1.0:                  from /root/workspace/blast-stress-solver-2/blast/source/shared/stress_solver/stress.h:29,
+warning: vibe-land-physx-bridge@0.1.0:                  from /root/workspace/blast-stress-solver-2/blast/source/sdk/extensions/stress/NvBlastExtStressSolver.cpp:43:
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/source/shared/stress_solver/anglin6.h: At global scope:
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/source/shared/stress_solver/anglin6.h:167:25: warning: ignoring attributes on template argument '__m128' [-Wignored-attributes]
+warning: vibe-land-physx-bridge@0.1.0:   167 | struct AngLin6Ops<__m128>
+warning: vibe-land-physx-bridge@0.1.0:       |                         ^
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/source/shared/stress_solver/coupling.h:121:43: warning: ignoring attributes on template argument 'SIMD_Scalar' {aka '__m128'} [-Wignored-attributes]
+warning: vibe-land-physx-bridge@0.1.0:   121 | struct CouplingMatrixOps<Elem, SIMD_Scalar>
+warning: vibe-land-physx-bridge@0.1.0:       |                                           ^
+warning: vibe-land-physx-bridge@0.1.0: In file included from /root/workspace/blast-stress-solver-2/blast/source/shared/stress_solver/bond.h:30:
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/source/shared/stress_solver/inertia.h:86:36: warning: ignoring attributes on template argument 'SIMD_Scalar' {aka '__m128'} [-Wignored-attributes]
+warning: vibe-land-physx-bridge@0.1.0:    86 | struct InertiaMatrixOps<SIMD_Scalar>
+warning: vibe-land-physx-bridge@0.1.0:       |                                    ^
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/source/sdk/extensions/stress/NvBlastExtStressSolver.cpp: In member function 'void Nv::Blast::SupportGraphProcessor::addBond(uint32_t, uint32_t, uint32_t)':
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/source/sdk/extensions/stress/NvBlastExtStressSolver.cpp:1595:13: warning: missing initializer for member 'Nv::Blast::SupportGraphProcessor::BondData::stressShear' [-Wmissing-field-initializers]
+warning: vibe-land-physx-bridge@0.1.0:  1595 |             };
+warning: vibe-land-physx-bridge@0.1.0:       |             ^
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/source/sdk/extensions/stress/NvBlastExtStressSolver.cpp:1595:13: warning: missing initializer for member 'Nv::Blast::SupportGraphProcessor::BondData::stressBend' [-Wmissing-field-initializers]
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/source/sdk/extensions/stress/NvBlastExtStressSolver.cpp:1595:13: warning: missing initializer for member 'Nv::Blast::SupportGraphProcessor::BondData::normal' [-Wmissing-field-initializers]
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/source/sdk/extensions/stress/NvBlastExtStressSolver.cpp:1595:13: warning: missing initializer for member 'Nv::Blast::SupportGraphProcessor::BondData::centroid' [-Wmissing-field-initializers]
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/source/sdk/extensions/stress/NvBlastExtStressSolver.cpp: In member function 'void Nv::Blast::SupportGraphProcessor::syncNodes(const NvBlastBond*)':
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/source/sdk/extensions/stress/NvBlastExtStressSolver.cpp:4036:24: warning: unused variable 'STATIC_NODES_COUNT_PENALTY' [-Wunused-variable]
+warning: vibe-land-physx-bridge@0.1.0:  4036 |         const uint32_t STATIC_NODES_COUNT_PENALTY = 2 << 2;
+warning: vibe-land-physx-bridge@0.1.0:       |                        ^~~~~~~~~~~~~~~~~~~~~~~~~~
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/source/sdk/extensions/stress/NvBlastExtStressSolver.cpp: In member function 'virtual bool Nv::Blast::ExtStressSolverImpl::getExcessForces(uint32_t, const NvcVec3&, NvcVec3&, NvcVec3&)':
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/source/sdk/extensions/stress/NvBlastExtStressSolver.cpp:5314:20: warning: unused variable 'retCount' [-Wunused-variable]
+warning: vibe-land-physx-bridge@0.1.0:  5314 |     const uint32_t retCount = NvBlastActorGetGraphNodeIndices(nodeIndices, nodeCount, actor, logLL);
+warning: vibe-land-physx-bridge@0.1.0:       |                    ^~~~~~~~
+warning: vibe-land-physx-bridge@0.1.0: In file included from /root/workspace/blast-stress-solver-2/blast/source/shared/NsFoundation/include/NsHashMap.h:30,
+warning: vibe-land-physx-bridge@0.1.0:                  from /root/workspace/blast-stress-solver-2/blast/source/sdk/common/NvBlastHashMap.h:33,
+warning: vibe-land-physx-bridge@0.1.0:                  from /root/workspace/blast-stress-solver-2/blast/source/sdk/extensions/stress/NvBlastExtStressSolver.cpp:34:
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/source/shared/NsFoundation/include/NsHashInternals.h: In instantiation of 'nvidia::shdfnd::internal::HashBase<Entry, Key, HashFn, GetKey, Allocator, compacting>::Iter nvidia::shdfnd::internal::HashBase<Entry, Key, HashFn, GetKey, Allocator, compacting>::Iter::operator++() [with Entry = const NvBlastActor*; Key = const NvBlastActor*; HashFn = nvidia::shdfnd::Hash<const NvBlastActor*>; GetKey = nvidia::shdfnd::internal::HashSetBase<const NvBlastActor*, nvidia::shdfnd::Hash<const NvBlastActor*>, Nv::Blast::Allocator, false>::GetKey; Allocator = Nv::Blast::Allocator; bool compacting = false]':
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/source/sdk/extensions/stress/NvBlastExtStressSolver.cpp:6033:68:   required from here
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/source/shared/NsFoundation/include/NsHashInternals.h:459:21: warning: implicitly-declared 'constexpr nvidia::shdfnd::internal::HashBase<const NvBlastActor*, const NvBlastActor*, nvidia::shdfnd::Hash<const NvBlastActor*>, nvidia::shdfnd::internal::HashSetBase<const NvBlastActor*, nvidia::shdfnd::Hash<const NvBlastActor*>, Nv::Blast::Allocator, false>::GetKey, Nv::Blast::Allocator, false>::Iter::Iter(const nvidia::shdfnd::internal::HashBase<const NvBlastActor*, const NvBlastActor*, nvidia::shdfnd::Hash<const NvBlastActor*>, nvidia::shdfnd::internal::HashSetBase<const NvBlastActor*, nvidia::shdfnd::Hash<const NvBlastActor*>, Nv::Blast::Allocator, false>::GetKey, Nv::Blast::Allocator, false>::Iter&)' is deprecated [-Wdeprecated-copy]
+warning: vibe-land-physx-bridge@0.1.0:   459 |             return *this;
+warning: vibe-land-physx-bridge@0.1.0:       |                     ^~~~
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/source/shared/NsFoundation/include/NsHashInternals.h:490:15: note: because 'nvidia::shdfnd::internal::HashBase<const NvBlastActor*, const NvBlastActor*, nvidia::shdfnd::Hash<const NvBlastActor*>, nvidia::shdfnd::internal::HashSetBase<const NvBlastActor*, nvidia::shdfnd::Hash<const NvBlastActor*>, Nv::Blast::Allocator, false>::GetKey, Nv::Blast::Allocator, false>::Iter' has user-provided 'nvidia::shdfnd::internal::HashBase<Entry, Key, HashFn, GetKey, Allocator, compacting>::Iter& nvidia::shdfnd::internal::HashBase<Entry, Key, HashFn, GetKey, Allocator, compacting>::Iter::operator=(const nvidia::shdfnd::internal::HashBase<Entry, Key, HashFn, GetKey, Allocator, compacting>::Iter&) [with Entry = const NvBlastActor*; Key = const NvBlastActor*; HashFn = nvidia::shdfnd::Hash<const NvBlastActor*>; GetKey = nvidia::shdfnd::internal::HashSetBase<const NvBlastActor*, nvidia::shdfnd::Hash<const NvBlastActor*>, Nv::Blast::Allocator, false>::GetKey; Allocator = Nv::Blast::Allocator; bool compacting = false]'
+warning: vibe-land-physx-bridge@0.1.0:   490 |         Iter& operator=(const Iter&);
+warning: vibe-land-physx-bridge@0.1.0:       |               ^~~~~~~~
+warning: vibe-land-physx-bridge@0.1.0: In file included from src/destruction.cc:6:
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/include/extensions/stress/NvBlastExtStressSolver.h: In constructor 'Nv::Blast::ExtStressMaterial::ExtStressMaterial()':
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/include/extensions/stress/NvBlastExtStressSolver.h:216:11: warning: 'Nv::Blast::ExtStressMaterial::elasticModulusPa' will be initialized after [-Wreorder]
+warning: vibe-land-physx-bridge@0.1.0:   216 |     float elasticModulusPa;
+warning: vibe-land-physx-bridge@0.1.0:       |           ^~~~~~~~~~~~~~~~
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/include/extensions/stress/NvBlastExtStressSolver.h:209:11: warning:   'float Nv::Blast::ExtStressMaterial::residualAreaFraction' [-Wreorder]
+warning: vibe-land-physx-bridge@0.1.0:   209 |     float residualAreaFraction;
+warning: vibe-land-physx-bridge@0.1.0:       |           ^~~~~~~~~~~~~~~~~~~~
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/include/extensions/stress/NvBlastExtStressSolver.h:221:5: warning:   when initialized here [-Wreorder]
+warning: vibe-land-physx-bridge@0.1.0:   221 |     ExtStressMaterial() :
+warning: vibe-land-physx-bridge@0.1.0:       |     ^~~~~~~~~~~~~~~~~
+warning: vibe-land-physx-bridge@0.1.0: In file included from /root/workspace/blast-stress-solver-2/blast/source/sdk/extensions/stress/NvBlastExtStressSolver.cpp:45:
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/source/shared/stress_solver/simd/simd_device_query.h: At global scope:
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/source/shared/stress_solver/simd/simd_device_query.h:144:1: warning: 'void print_supported_instruction_sets()' defined but not used [-Wunused-function]
+warning: vibe-land-physx-bridge@0.1.0:   144 | print_supported_instruction_sets()
+warning: vibe-land-physx-bridge@0.1.0:       | ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+warning: vibe-land-physx-bridge@0.1.0: In file included from /root/workspace/blast-stress-solver-2/blast/source/sdk/extensions/stress/NvBlastExtStressSolver.cpp:32:
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/source/sdk/extensions/stress/NvBlastExtStressSolver.cpp: In member function 'virtual void Nv::Blast::ExtStressSolverImpl::release()':
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/include/globals/NvBlastGlobals.h:138:9: warning: 'nonnull' argument 'this' compared to NULL [-Wnonnull-compare]
+warning: vibe-land-physx-bridge@0.1.0:   138 |         if ((obj) != nullptr)                                       \
+warning: vibe-land-physx-bridge@0.1.0:       |         ^~
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/source/sdk/extensions/stress/NvBlastExtStressSolver.cpp:5256:5: note: in expansion of macro 'NVBLAST_DELETE'
+warning: vibe-land-physx-bridge@0.1.0:  5256 |     NVBLAST_DELETE(this, ExtStressSolverImpl);
+warning: vibe-land-physx-bridge@0.1.0:       |     ^~~~~~~~~~~~~~
+   Compiling vibe-land-destruction v0.1.0 (/root/workspace/vibe-land-4/destruction)
+warning: unused import: `SettleSample`
+  --> destruction/src/runtime.rs:22:35
+   |
+22 | use crate::settle::{SettleConfig, SettleSample, SettleTracker};
+   |                                   ^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `client`
+   --> destruction/src/encoder.rs:393:25
+    |
+393 |                     for client in self.clients.values_mut() {
+    |                         ^^^^^^ help: if this is intentional, prefix it with an underscore: `_client`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `entity`
+   --> destruction/src/encoder.rs:619:17
+    |
+619 |             let entity = shared_record.record.body_entity;
+    |                 ^^^^^^ help: if this is intentional, prefix it with an underscore: `_entity`
+
+warning: variable does not need to be mutable
+   --> destruction/src/wire.rs:593:9
+    |
+593 |     let mut current: Vec<u8> = Vec::new();
+    |         ----^^^^^^^
+    |         |
+    |         help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `nodes` is never read
+  --> destruction/src/synthetic.rs:58:5
+   |
+57 | struct SynthIsland {
+   |        ----------- field in this struct
+58 |     nodes: Vec<u32>,
+   |     ^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `settle_config` is never read
+  --> destruction/src/runtime.rs:79:5
+   |
+74 | pub struct CityDestruction {
+   |            --------------- field in this struct
+...
+79 |     settle_config: SettleConfig,
+   |     ^^^^^^^^^^^^^
+
+warning: `vibe-land-destruction` (lib) generated 6 warnings (run `cargo fix --lib -p vibe-land-destruction` to apply 4 suggestions)
+   Compiling web-fps-server v0.1.0 (/root/workspace/vibe-land-4/server)
+warning: variable does not need to be mutable
+    --> server/src/bin/record_city_trace.rs:1926:9
+     |
+1926 |     let mut candidates = snapshots
+     |         ----^^^^^^^^^^
+     |         |
+     |         help: remove this `mut`
+     |
+     = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `primary_target` is never used
+    --> server/src/bin/record_city_trace.rs:1809:4
+     |
+1809 | fn primary_target(manifest: &DestructionManifest) -> Option<Vec3> {
+     |    ^^^^^^^^^^^^^^
+     |
+     = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: constant `SNAPSHOT_HEADER_BYTES` is never used
+   --> server/src/main.rs:105:7
+    |
+105 | const SNAPSHOT_HEADER_BYTES: usize = 23;
+    |       ^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: constant `SNAPSHOT_PLAYER_STATE_BYTES` is never used
+   --> server/src/main.rs:106:7
+    |
+106 | const SNAPSHOT_PLAYER_STATE_BYTES: usize = 29;
+    |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: constant `SNAPSHOT_DYNAMIC_BODY_STATE_BYTES` is never used
+   --> server/src/main.rs:107:7
+    |
+107 | const SNAPSHOT_DYNAMIC_BODY_STATE_BYTES: usize = 43;
+    |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: constant `SNAPSHOT_VEHICLE_STATE_BYTES` is never used
+   --> server/src/main.rs:108:7
+    |
+108 | const SNAPSHOT_VEHICLE_STATE_BYTES: usize = 50;
+    |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: field `inputs_skipped_for_catchup` is never read
+    --> server/src/main.rs:1079:5
+     |
+1073 | struct PlayerRuntime {
+     |        ------------- field in this struct
+...
+1079 |     inputs_skipped_for_catchup: u64,
+     |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: constant `LATCHED_BUTTONS` is never used
+    --> server/src/main.rs:5838:7
+     |
+5838 | const LATCHED_BUTTONS: u16 = BTN_JUMP | BTN_RELOAD;
+     |       ^^^^^^^^^^^^^^^
+
+warning: constant `SHOT_BLAST_RADIUS_M` is never used
+   --> server/src/city.rs:141:7
+    |
+141 | const SHOT_BLAST_RADIUS_M: f32 = 2.5;
+    |       ^^^^^^^^^^^^^^^^^^^
+
+warning: constant `SHOT_PUSH_RADIUS_M` is never used
+   --> server/src/city.rs:144:7
+    |
+144 | const SHOT_PUSH_RADIUS_M: f32 = 4.0;
+    |       ^^^^^^^^^^^^^^^^^^
+
+warning: constant `SHOT_BLAST_DEPTH_M` is never used
+   --> server/src/city.rs:147:7
+    |
+147 | const SHOT_BLAST_DEPTH_M: f32 = 0.5;
+    |       ^^^^^^^^^^^^^^^^^^
+
+warning: methods `last_v3_span_encode_ms` and `set_freeze_config` are never used
+    --> server/src/city.rs:1707:12
+     |
+ 770 | impl CityRuntime {
+     | ---------------- methods in this implementation
+...
+1707 |     pub fn last_v3_span_encode_ms(&self) -> f32 {
+     |            ^^^^^^^^^^^^^^^^^^^^^^
+...
+1784 |     pub fn set_freeze_config(&mut self, config: vibe_land_destruction::freeze::FreezeConfig) {
+     |            ^^^^^^^^^^^^^^^^^
+
+warning: function `seed_default_world` is never used
+  --> server/src/demo_world.rs:30:8
+   |
+30 | pub fn seed_default_world(arena: &mut PhysicsArena) -> Result<(), WorldDocumentError> {
+   |        ^^^^^^^^^^^^^^^^^^
+
+warning: method `spawn_dynamic_ball` is never used
+   --> server/src/movement.rs:204:12
+    |
+ 92 | impl PhysicsArena {
+    | ----------------- method in this implementation
+...
+204 |     pub fn spawn_dynamic_ball(&mut self, position: Vec3, radius: f32) -> u32 {
+    |            ^^^^^^^^^^^^^^^^^^
+
+warning: methods `world`, `spawn_areas`, and `spawn_dynamic_ball` are never used
+   --> server/src/physx_runtime.rs:196:12
+    |
+114 | impl PhysxPhysicsArena {
+    | ---------------------- methods in this implementation
+...
+196 |     pub fn world(&self) -> &bridge::World {
+    |            ^^^^^
+...
+204 |     pub fn spawn_areas(&self) -> &[SpawnArea] {
+    |            ^^^^^^^^^^^
+...
+986 |     pub fn spawn_dynamic_ball(&mut self, position: Vector3<f32>, radius: f32) -> u32 {
+    |            ^^^^^^^^^^^^^^^^^^
+
+warning: variants `Welcome`, `ShotResult`, `ChunkFull`, and `ChunkDiff` are never constructed
+  --> server/src/protocol.rs:89:5
+   |
+88 | pub enum ServerReliablePacket {
+   |          -------------------- variants in this enum
+89 |     Welcome(WelcomePacket),
+   |     ^^^^^^^
+90 |     ShotResult(ShotResultPacket),
+   |     ^^^^^^^^^^
+...
+95 |     ChunkFull(ChunkFullPacket),
+   |     ^^^^^^^^^
+96 |     ChunkDiff(ChunkDiffPacket),
+   |     ^^^^^^^^^
+   |
+   = note: `ServerReliablePacket` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+
+warning: variant `Snapshot` is never constructed
+   --> server/src/protocol.rs:103:5
+    |
+102 | pub enum ServerDatagramPacket {
+    |          -------------------- variant in this enum
+103 |     Snapshot(SnapshotPacket),
+    |     ^^^^^^^^
+    |
+    = note: `ServerDatagramPacket` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+
+warning: constant `DEFAULT_DEMO_GROUND_RADIUS` is never used
+  --> server/src/voxel_world.rs:12:7
+   |
+12 | const DEFAULT_DEMO_GROUND_RADIUS: i32 = 24;
+   |       ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: multiple methods are never used
+   --> server/src/voxel_world.rs:40:12
+    |
+ 33 | impl VoxelWorld {
+    | --------------- methods in this implementation
+...
+ 40 |     pub fn seed_demo_world(&mut self, arena: &mut PhysicsArena) {
+    |            ^^^^^^^^^^^^^^^
+...
+ 61 |     fn seed_ball_pit(&mut self, arena: &mut PhysicsArena) {
+    |        ^^^^^^^^^^^^^
+...
+251 |     pub fn take_dirty_chunk_diffs(&mut self) -> Vec<ChunkDiffPacket> {
+    |            ^^^^^^^^^^^^^^^^^^^^^^
+...
+266 |     fn set_block(
+    |        ^^^^^^^^^
+...
+282 |     fn set_block_deferred(&mut self, (key, local): (ChunkKey, [u8; 3]), material: u16) {
+    |        ^^^^^^^^^^^^^^^^^^
+...
+292 |     fn rebuild_all_chunk_colliders(&mut self, arena: &mut PhysicsArena) {
+    |        ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+299 |     fn rebuild_chunk_colliders(
+    |        ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `demo_ground_radius` is never used
+   --> server/src/voxel_world.rs:330:4
+    |
+330 | fn demo_ground_radius() -> i32 {
+    |    ^^^^^^^^^^^^^^^^^^
+
+warning: function `world_to_chunk_and_local` is never used
+   --> server/src/voxel_world.rs:351:8
+    |
+351 | pub fn world_to_chunk_and_local(wx: i32, wy: i32, wz: i32) -> (ChunkKey, [u8; 3]) {
+    |        ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `mod_floor` is never used
+   --> server/src/voxel_world.rs:398:4
+    |
+398 | fn mod_floor(a: i32, b: i32) -> i32 {
+    |    ^^^^^^^^^
+
+warning: `web-fps-server` (bin "record-city-trace") generated 2 warnings (run `cargo fix --bin "record-city-trace" -p web-fps-server` to apply 1 suggestion)
+warning: `web-fps-server` (bin "web-fps-server") generated 20 warnings
+    Finished `release` profile [optimized] target(s) in 44.18s

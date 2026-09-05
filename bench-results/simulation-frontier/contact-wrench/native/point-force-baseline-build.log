@@ -1,0 +1,5 @@
+[ 10%] Built target NvBlastExtStressGpu
+[ 90%] Built target blast_stress_core
+[ 95%] Building CXX object CMakeFiles/point_force_test.dir/tests/point_force_test.cpp.o
+[100%] Linking CXX executable point_force_test
+[100%] Built target point_force_test

@@ -1,0 +1,36 @@
+matrix (35616, 111762) nodes 5936 nnz 827552 mass range 33.08741 4312.60498 length 0.9426916923997034
+/tmp/wrench_amg_prototype.py:17: DeprecationWarning: `block_diag` is switching to the sparse array interface.
+
+        For the case where input arrays are numpy arrays, this function is
+        switching to returning a sparse array instead of sparse matrix.
+        Recover the sparse matrix return value by making one input a sparse matrix.
+        For example, block_diag([coo_matrix(A), B]).
+        Avoid this message for sparse array output using block_diag([coo_array(A), B]).
+        For more information, see the spmatrix to sparray migration guide
+        https://docs.scipy.org/doc/scipy/reference/sparse.migration_to_sparray.html
+
+        This function will be changed no earlier than v1.20.
+        
+  invop=block_diag(di,format='csr')
+/tmp/wrench_amg_prototype.py:19: DeprecationWarning: `block_diag` is switching to the sparse array interface.
+
+        For the case where input arrays are numpy arrays, this function is
+        switching to returning a sparse array instead of sparse matrix.
+        Recover the sparse matrix return value by making one input a sparse matrix.
+        For example, block_diag([coo_matrix(A), B]).
+        Avoid this message for sparse array output using block_diag([coo_array(A), B]).
+        For more information, see the spmatrix to sparray migration guide
+        https://docs.scipy.org/doc/scipy/reference/sparse.migration_to_sparray.html
+
+        This function will be changed no earlier than v1.20.
+        
+  chol=np.linalg.cholesky(diag);white=block_diag(np.linalg.inv(chol),format='csr')
+level 0 blocks 5936 nnz 827552 to 913 rho 1.9710020510268738
+level 1 blocks 913 nnz 982836 to 120 rho 1.6918462274994732
+level 2 blocks 120 nnz 233928 to 17 rho 1.6189309964964946
+setup_seconds 0.6267004637047648 coarse (102, 102)
+amg_pcg 1 force_residual 20.419496676246816 seconds 0.013300790917128325
+amg_pcg 4 force_residual 1.032285558108723 seconds 0.038092951755970716
+amg_pcg 8 force_residual 0.03482987776111682 seconds 0.07209843909367919
+amg_pcg 16 force_residual 3.769214565124163e-05 seconds 0.14176610903814435
+amg_pcg end 28 0 1.4196128012446848e-09 seconds 0.242556553799659

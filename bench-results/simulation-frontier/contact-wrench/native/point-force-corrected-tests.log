@@ -1,0 +1,48 @@
+Internal ctest changing into directory: /root/workspace/blast-stress-solver-2/demos/blast-stress-demo/build-gpu-activity
+UpdateCTestConfiguration  from :/root/workspace/blast-stress-solver-2/demos/blast-stress-demo/build-gpu-activity/DartConfiguration.tcl
+UpdateCTestConfiguration  from :/root/workspace/blast-stress-solver-2/demos/blast-stress-demo/build-gpu-activity/DartConfiguration.tcl
+Test project /root/workspace/blast-stress-solver-2/demos/blast-stress-demo/build-gpu-activity
+Constructing a list of tests
+Done constructing a list of tests
+Updating test list for fixtures
+Added 0 tests to meet fixture requirements
+Checking test dependency graph...
+Checking test dependency graph end
+test 5
+    Start 5: blast_stress_point_force_cpu
+
+5: Test command: /root/workspace/blast-stress-solver-2/demos/blast-stress-demo/build-gpu-activity/point_force_test "cpu"
+5: Working Directory: /root/workspace/blast-stress-solver-2/demos/blast-stress-demo/build-gpu-activity
+5: Test timeout computed to be: 10000000
+5: cpu arm=0.00 force=10.00 offset=(0.0,0.0,0.0) reverse=0 stress=(0,0,0)
+5: cpu arm=1.00 force=10.00 offset=(0.0,0.0,0.0) reverse=0 stress=(299.999969,299.999969,5.60283706e-06)
+5: cpu arm=2.00 force=5.00 offset=(0.0,0.0,0.0) reverse=0 stress=(299.999969,299.999969,5.60283706e-06)
+5: cpu arm=1.00 force=10.00 offset=(8.0,-3.0,5.0) reverse=0 stress=(299.999969,299.999969,5.60283706e-06)
+5: cpu arm=1.00 force=10.00 offset=(0.0,0.0,0.0) reverse=1 stress=(299.999969,299.999969,5.60283706e-06)
+5: cpu arm=1.00 force=20.00 offset=(0.0,0.0,0.0) reverse=0 stress=(599.999939,599.999939,1.12056741e-05)
+5: Point-force couples passed
+1/2 Test #5: blast_stress_point_force_cpu .....   Passed    0.00 sec
+test 6
+    Start 6: blast_stress_point_force_gpu
+
+6: Test command: /root/workspace/blast-stress-solver-2/demos/blast-stress-demo/build-gpu-activity/point_force_test "gpu"
+6: Working Directory: /root/workspace/blast-stress-solver-2/demos/blast-stress-demo/build-gpu-activity
+6: Test timeout computed to be: 10000000
+6: gpu arm=0.00 force=10.00 offset=(0.0,0.0,0.0) reverse=0 stress=(0,0,0)
+6: gpu arm=1.00 force=10.00 offset=(0.0,0.0,0.0) reverse=0 stress=(299.999908,299.999908,2.8610224e-05)
+6: gpu arm=2.00 force=5.00 offset=(0.0,0.0,0.0) reverse=0 stress=(299.999908,299.999908,2.8610224e-05)
+6: gpu arm=1.00 force=10.00 offset=(8.0,-3.0,5.0) reverse=0 stress=(299.999908,299.999908,2.8610224e-05)
+6: gpu arm=1.00 force=10.00 offset=(0.0,0.0,0.0) reverse=1 stress=(299.999908,299.999908,2.8610224e-05)
+6: gpu arm=1.00 force=20.00 offset=(0.0,0.0,0.0) reverse=0 stress=(599.999817,599.999817,5.72204481e-05)
+6: cpu arm=1.00 force=10.00 offset=(0.0,0.0,0.0) reverse=0 stress=(299.999969,299.999969,5.60283706e-06)
+6: Point-force couples passed
+2/2 Test #6: blast_stress_point_force_gpu .....   Passed    0.26 sec
+
+The following tests passed:
+	blast_stress_point_force_cpu
+	blast_stress_point_force_gpu
+
+100% tests passed, 0 tests failed out of 2
+
+Total Test time (real) =   0.27 sec
+Original city deployment restored and healthy

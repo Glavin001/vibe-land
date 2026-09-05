@@ -1,0 +1,33 @@
+{
+  "eligible": false,
+  "deployed": false,
+  "stage": "signed physical wrench candidate",
+  "reasons": [
+    "Physical anchored-building force residual 0.9970 at 32 GPU iterations and 0.6408 at 2048; CPU similarly under-converged.",
+    "Final native CTest passes 32 of 35; three quality failures remain.",
+    "Pre-sign city trials are superseded and cannot qualify the final candidate.",
+    "No candidate trial reproduces the reported 5-6k awake load.",
+    "Multilevel reference is CPU-only; production GPU solve and topology updates are unimplemented."
+  ],
+  "live": {
+    "server_source": "66a7257",
+    "solver_source": "646a0f41",
+    "binary_sha256": "51efeb841976fe88eb5f52b1a2d84e4227ee2612d784463f82138315073a2f79",
+    "direct_gpu": true,
+    "gpu_contact_order": false
+  },
+  "final_native": {
+    "passed": 32,
+    "total": 35,
+    "log": "native/point-wrench-signed-native-tests.log",
+    "failures": {
+      "load_path": "Weak-material footing did not fail.",
+      "reference_building_load_path": "Infill self-weight safety 0.7611 < 2.",
+      "destruction_quality": "Extreme 40t impact fragmentation 0.515625; fixture expects more complete destruction."
+    }
+  },
+  "final_game": "Release server and recorder compiled successfully; no final-sign city runtime qualification.",
+  "prototype_city": "candidate-v1-artifacts.json; unsigned angular convention, superseded",
+  "multilevel": "CPU/double numerical reference only, no GPU performance claim",
+  "fidelity": "No force, impulse, velocity, fracture, bond or body cap was added."
+}

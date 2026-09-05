@@ -1,0 +1,63 @@
+[  3%] Built target blast_direct_gpu_p0
+[  6%] Built target scene_pack_test
+[  9%] Built target node_mesh_test
+[ 12%] Built target scene_pack_v3_test
+[ 15%] Built target scene_pack_conformance_test
+[ 17%] Built target NvBlastExtStressGpu
+[ 19%] Built target gpu_device_input_test
+[ 20%] Building CXX object CMakeFiles/blast_stress_core.dir/root/workspace/blast-stress-solver-2/blast/source/sdk/extensions/stress/NvBlastExtStressSolver.cpp.o
+In file included from /root/workspace/blast-stress-solver-2/blast/source/shared/stress_solver/coupling.h:30,
+                 from /root/workspace/blast-stress-solver-2/blast/source/shared/stress_solver/bond.h:29,
+                 from /root/workspace/blast-stress-solver-2/blast/source/shared/stress_solver/stress.h:29,
+                 from /root/workspace/blast-stress-solver-2/blast/source/sdk/extensions/stress/NvBlastExtStressSolver.cpp:43:
+/root/workspace/blast-stress-solver-2/blast/source/shared/stress_solver/anglin6.h:167:25: warning: ignoring attributes on template argument ‘__m128’ [-Wignored-attributes]
+  167 | struct AngLin6Ops<__m128>
+      |                         ^
+/root/workspace/blast-stress-solver-2/blast/source/shared/stress_solver/coupling.h:121:43: warning: ignoring attributes on template argument ‘SIMD_Scalar’ {aka ‘__m128’} [-Wignored-attributes]
+  121 | struct CouplingMatrixOps<Elem, SIMD_Scalar>
+      |                                           ^
+In file included from /root/workspace/blast-stress-solver-2/blast/source/shared/stress_solver/bond.h:30:
+/root/workspace/blast-stress-solver-2/blast/source/shared/stress_solver/inertia.h:86:36: warning: ignoring attributes on template argument ‘SIMD_Scalar’ {aka ‘__m128’} [-Wignored-attributes]
+   86 | struct InertiaMatrixOps<SIMD_Scalar>
+      |                                    ^
+[ 21%] Linking CXX static library libblast_stress_core.a
+[ 35%] Built target blast_stress_core
+[ 36%] Linking CXX executable gpu_stress_test
+[ 37%] Linking CXX executable gpu_stress_benchmark
+[ 39%] Linking CXX executable gpu_stress_suite
+[ 45%] Built target NvBlastExtStressPhysX
+[ 49%] Linking CXX executable load_path_test
+[ 49%] Linking CXX executable resim_snapshot_test
+[ 49%] Linking CXX executable velocity_fidelity_test
+[ 49%] Linking CXX executable blast_stress_demo
+[ 50%] Linking CXX executable point_force_test
+[ 51%] Built target gpu_stress_benchmark
+[ 52%] Built target gpu_stress_test
+[ 54%] Built target gpu_stress_suite
+[ 55%] Linking CXX executable solver_divergence_test
+[ 56%] Linking CXX executable resim_punchthrough_test
+[ 57%] Linking CXX executable resim_scoped_cascade_test
+[ 59%] Built target velocity_fidelity_test
+[ 62%] Linking CXX executable direct_gpu_resim_test
+[ 62%] Built target point_force_test
+[ 66%] Built target blast_stress_demo
+[ 68%] Built target load_path_test
+[ 70%] Built target resim_snapshot_test
+[ 71%] Linking CXX executable gpu_activity_bench
+[ 72%] Linking CXX executable material_behavior_test
+[ 73%] Linking CXX executable gpu_activity_test
+[ 75%] Built target solver_divergence_test
+[ 76%] Linking CXX executable chunk_crush_test
+[ 78%] Built target resim_punchthrough_test
+[ 80%] Built target resim_scoped_cascade_test
+[ 81%] Linking CXX executable destruction_quality_test
+[ 82%] Linking CXX executable direct_gpu_contact_test
+[ 83%] Linking CXX executable gpu_lazy_readback_test
+[ 85%] Built target direct_gpu_resim_test
+[ 89%] Built target material_behavior_test
+[ 89%] Built target gpu_activity_bench
+[ 91%] Built target chunk_crush_test
+[ 96%] Built target gpu_activity_test
+[ 96%] Built target destruction_quality_test
+[ 98%] Built target direct_gpu_contact_test
+[100%] Built target gpu_lazy_readback_test

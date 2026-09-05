@@ -135,6 +135,9 @@ fn main() {
             .include(blast.join("source/shared/NsFoundation/include"))
             .include(blast.join("rust_stress_example/ffi"));
 
+        println!("cargo:rerun-if-changed={}", blast.join(
+            "include/extensions/stressphysx/NvBlastExtStressPhysXContactWrench.h").display());
+
         // NvBlastExtStressSolver.cpp only reaches for the CUDA solver when this
         // is defined; without it the GPU path is compiled out and requesting
         // gpuStressSolver fails destructible creation outright.

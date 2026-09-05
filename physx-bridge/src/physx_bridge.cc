@@ -4,6 +4,7 @@
 
 #ifdef VIBE_LAND_DESTRUCTION
 #include "destruction.h"
+#include "NvBlastExtStressPhysXContactWrench.h"
 #endif
 
 #ifdef NVBLAST_ENABLE_CUDA_STRESS
@@ -754,8 +755,10 @@ public:
     bool valid = false;
     /// Per-manifold sums over the extracted points, computed in the parallel
     /// classify pass so the serial drain does not walk the points at all.
-    /// Same loop, same order, same float sums as the serial walk produced.
+    /// Compensated force/moment sums preserve the full manifold wrench.
     PxVec3 total_impulse{0.0f};
+    PxVec3 impulse_origin{0.0f};
+    PxVec3 angular_impulse{0.0f};
     PxVec3 weighted_point{0.0f};
     float total_magnitude = 0.0f;
     float sum_abs_impulse_y = 0.0f;
@@ -766,15 +769,10 @@ public:
     bool queued = false;
   };
 
-  /// One stress-solver injection per manifold SIDE instead of one per point.
-  ///
-  /// The solver's addNodeForce discards the application point and keeps only
-  /// the force sum per node (the point matters only to the crush virial,
-  /// which is opt-in behind BLAST_CRUSH_CAP), so handing it the manifold's
-  /// summed impulse at the impulse-weighted point is the same load. That
-  /// halves queueContact calls (1.6-1.8 points per manifold on downtown) and
-  /// lets the serial drain drop its per-point loop entirely.
-  /// VIBE_PHYSX_CONTACT_AGGREGATE=0 restores per-point injection.
+  /// One full wrench per manifold side preserves the resultant AND moment.
+  /// Crushing retains point contacts because its virial/closing history cannot
+  /// be recovered from a wrench. VIBE_PHYSX_CONTACT_AGGREGATE=0 is a per-point
+  /// reference path; neither path removes forces or contact couples.
   static bool contact_aggregate_enabled() {
     static const bool enabled = [] {
       const char *raw = std::getenv("VIBE_PHYSX_CONTACT_AGGREGATE");
@@ -814,9 +812,10 @@ public:
   struct QueueTrace {
     const void *slot;
     std::uint32_t node;
-    float x, y, z;
+    float x, y, z, px, py, pz, ax, ay, az;
     bool operator==(const QueueTrace &o) const {
-      return slot == o.slot && node == o.node && x == o.x && y == o.y && z == o.z;
+      return std::tie(slot,node,x,y,z,px,py,pz,ax,ay,az)
+          == std::tie(o.slot,o.node,o.x,o.y,o.z,o.px,o.py,o.pz,o.ax,o.ay,o.az);
     }
   };
   std::vector<std::vector<QueueTrace>> drain_trace_parallel_;
@@ -924,11 +923,13 @@ public:
         sum_abs_impulse_y = pre->sum_abs_impulse_y;
         min_separation = pre->min_separation;
         // Injection: done by the per-structure parallel pass, or here as one
-        // call per side with the manifold's summed impulse.
+        // call per side with the manifold's complete wrench.
         if (destruction_ && !pre->queued && total_magnitude > 0.0f) {
-          const FfiVec3 position = from_px(weighted_point / total_magnitude);
+          const FfiVec3 position = from_px(pre->impulse_origin);
           const FfiVec3 impulse = from_px(total_impulse);
+          const FfiVec3 angular = from_px(pre->angular_impulse);
           const FfiVec3 neg{-impulse.x, -impulse.y, -impulse.z};
+          const FfiVec3 neg_angular{-angular.x, -angular.y, -angular.z};
           if (target0 && skip0) {
             ++bondless_skipped_host_;
           }
@@ -936,10 +937,10 @@ public:
             ++bondless_skipped_host_;
           }
           if (target0 && !skip0) {
-            destruction_->queue_contact_at(target0, position, impulse, /*wake=*/false);
+            destruction_->queue_contact_wrench_at(target0, position, impulse, angular, /*wake=*/false);
           }
           if (target1 && !skip1) {
-            destruction_->queue_contact_at(target1, position, neg, /*wake=*/false);
+            destruction_->queue_contact_wrench_at(target1, position, neg, neg_angular, /*wake=*/false);
           }
         }
       }
@@ -947,21 +948,22 @@ public:
 #else
       const PxU32 point_loop_count = extracted;
 #endif
+      double impulse_sum[3] = {}, weighted_sum[3] = {};
+      double magnitude_sum = 0.0, vertical_sum = 0.0;
       for (PxU32 point_index = 0; point_index < point_loop_count; ++point_index) {
         const PxContactPairPoint &point = points[point_index];
         if (point.separation < min_separation) {
           min_separation = point.separation;
         }
-        const float magnitude = point.impulse.magnitude();
-        total_impulse += point.impulse;
-        weighted_point += point.position * magnitude;
-        total_magnitude += magnitude;
-        // |y| only: the impulse SIGN is ordering-dependent
-        // (eINTERNAL_CONTACTS_ARE_FLIPPED, never corrected) and must not be
-        // read; the magnitude of the vertical component is what says a
-        // contact carries weight.
-        sum_abs_impulse_y += point.impulse.y < 0.0f ? -point.impulse.y
-                                                    : point.impulse.y;
+        const double x=point.impulse.x, y=point.impulse.y, z=point.impulse.z;
+        const double magnitude = std::sqrt(x*x+y*y+z*z);
+        impulse_sum[0] += x; impulse_sum[1] += y; impulse_sum[2] += z;
+        weighted_sum[0] += double(point.position.x)*magnitude;
+        weighted_sum[1] += double(point.position.y)*magnitude;
+        weighted_sum[2] += double(point.position.z)*magnitude;
+        magnitude_sum += magnitude;
+        // A support contact's vertical magnitude is independent of actor order.
+        vertical_sum += std::abs(y);
 #ifdef VIBE_LAND_DESTRUCTION
         if (destruction_) {
           const FfiVec3 position = from_px(point.position);
@@ -1027,6 +1029,12 @@ public:
           }
         }
 #endif
+      }
+      if (point_loop_count != 0) {
+        total_impulse = PxVec3(float(impulse_sum[0]),float(impulse_sum[1]),float(impulse_sum[2]));
+        weighted_point = PxVec3(float(weighted_sum[0]),float(weighted_sum[1]),float(weighted_sum[2]));
+        total_magnitude = float(magnitude_sum);
+        sum_abs_impulse_y = float(vertical_sum);
       }
       if (sample_subspans) {
         cb_queue_ms_ += 8.0 * sub_ms(points_started);
@@ -1188,33 +1196,33 @@ public:
             out.frozen_b = destruction_->entity_is_frozen(rec.entity_b) ? 1 : 0;
           }
           if (aggregate) {
-            // The serial point loop, moved here verbatim: same order, same
-            // sums. min_separation over every point; |impulse.y| only, the
-            // sign being ordering-dependent (see process_extracted_pair).
-            const physx::PxContactPairPoint *points =
-                deferred_points_.data() + rec.point_begin;
-            PxVec3 total_impulse(0.0f);
-            PxVec3 weighted_point(0.0f);
-            float total_magnitude = 0.0f;
-            float sum_abs_impulse_y = 0.0f;
+            const physx::PxContactPairPoint *points = deferred_points_.data() + rec.point_begin;
+            const PxVec3 origin = static_cast<PxRigidActor*>(rec.actor0)->getGlobalPose().p;
+            Nv::Blast::ExtStressPhysXContactWrenchAccumulator wrench(origin);
+            double weighted[3] = {}, magnitude_sum = 0.0, vertical_sum = 0.0;
             float min_separation = 1.0e6f;
             for (PxU32 p = 0; p < rec.point_count; ++p) {
-              const physx::PxContactPairPoint &point = points[p];
-              if (point.separation < min_separation) {
-                min_separation = point.separation;
-              }
-              const float magnitude = point.impulse.magnitude();
-              total_impulse += point.impulse;
-              weighted_point += point.position * magnitude;
-              total_magnitude += magnitude;
-              sum_abs_impulse_y += point.impulse.y < 0.0f ? -point.impulse.y
-                                                          : point.impulse.y;
+              const auto &point = points[p];
+              min_separation = std::min(min_separation, point.separation);
+              wrench.add(point.position, point.impulse);
+              const double x=point.impulse.x, y=point.impulse.y, z=point.impulse.z;
+              const double magnitude = std::sqrt(x*x+y*y+z*z);
+              weighted[0] += double(point.position.x)*magnitude;
+              weighted[1] += double(point.position.y)*magnitude;
+              weighted[2] += double(point.position.z)*magnitude;
+              magnitude_sum += magnitude;
+              vertical_sum += std::abs(y);
             }
-            out.total_impulse = total_impulse;
-            out.weighted_point = weighted_point;
-            out.total_magnitude = total_magnitude;
-            out.sum_abs_impulse_y = sum_abs_impulse_y;
+            out.total_impulse = wrench.linearImpulse();
+            out.angular_impulse = wrench.angularImpulse();
+            out.impulse_origin = origin;
+            out.weighted_point = PxVec3(float(weighted[0]), float(weighted[1]), float(weighted[2]));
+            out.total_magnitude = float(magnitude_sum);
+            out.sum_abs_impulse_y = float(vertical_sum);
             out.min_separation = min_separation;
+            require(out.total_impulse.isFinite() && out.angular_impulse.isFinite()
+                    && out.weighted_point.isFinite() && finite(out.total_magnitude)
+                    && finite(out.sum_abs_impulse_y), "Contact wrench exceeded numeric representation");
             out.aggregated = true;
           }
           out.valid = true;
@@ -1272,20 +1280,21 @@ public:
               // point's impulse is zero), and its position is undefined.
               continue;
             }
-            const FfiVec3 position =
-                from_px(pre.weighted_point / pre.total_magnitude);
+            const FfiVec3 position = from_px(pre.impulse_origin);
             const FfiVec3 impulse = from_px(pre.total_impulse);
+            const FfiVec3 angular = from_px(pre.angular_impulse);
             const FfiVec3 neg{-impulse.x, -impulse.y, -impulse.z};
+            const FfiVec3 neg_angular{-angular.x, -angular.y, -angular.z};
             if (pre.target0.slot == mine) {
               if (pre.bondless0) {
                 ++my_skipped;
               } else {
                 if (verify) {
                   drain_trace_parallel_[s].push_back(
-                      {mine, pre.target0.blast_node, impulse.x, impulse.y, impulse.z});
+                      {mine, pre.target0.blast_node, impulse.x, impulse.y, impulse.z, position.x, position.y, position.z, angular.x, angular.y, angular.z});
                 }
-                destruction_->queue_contact_at(pre.target0, position, impulse,
-                                               /*wake=*/false);
+                destruction_->queue_contact_wrench_at(pre.target0, position, impulse, angular,
+                                                      /*wake=*/false);
               }
             }
             if (pre.target1.slot == mine) {
@@ -1294,10 +1303,10 @@ public:
               } else {
                 if (verify) {
                   drain_trace_parallel_[s].push_back(
-                      {mine, pre.target1.blast_node, neg.x, neg.y, neg.z});
+                      {mine, pre.target1.blast_node, neg.x, neg.y, neg.z, position.x, position.y, position.z, neg_angular.x, neg_angular.y, neg_angular.z});
                 }
-                destruction_->queue_contact_at(pre.target1, position, neg,
-                                               /*wake=*/false);
+                destruction_->queue_contact_wrench_at(pre.target1, position, neg, neg_angular,
+                                                      /*wake=*/false);
               }
             }
           }
@@ -1322,11 +1331,11 @@ public:
               const FfiVec3 impulse = from_px(pre.total_impulse);
               if (pre.target0.slot == slots[s] && !pre.bondless0) {
                 drain_trace_serial_.push_back(
-                    {slots[s], pre.target0.blast_node, impulse.x, impulse.y, impulse.z});
+                    {slots[s], pre.target0.blast_node, impulse.x, impulse.y, impulse.z, pre.impulse_origin.x, pre.impulse_origin.y, pre.impulse_origin.z, pre.angular_impulse.x, pre.angular_impulse.y, pre.angular_impulse.z});
               }
               if (pre.target1.slot == slots[s] && !pre.bondless1) {
                 drain_trace_serial_.push_back(
-                    {slots[s], pre.target1.blast_node, -impulse.x, -impulse.y, -impulse.z});
+                    {slots[s], pre.target1.blast_node, -impulse.x, -impulse.y, -impulse.z, pre.impulse_origin.x, pre.impulse_origin.y, pre.impulse_origin.z, -pre.angular_impulse.x, -pre.angular_impulse.y, -pre.angular_impulse.z});
               }
             }
             drain_verify_calls_ += drain_trace_serial_.size();
@@ -1517,6 +1526,38 @@ public:
         }
       }
     }
+#ifdef VIBE_LAND_DESTRUCTION
+    if (verify_order && gpu_contact_ordered_) {
+      for (PxU32 begin=0; begin<count;) {
+        const auto& first=gpu_contacts_[begin];
+        PxU32 end=begin+1;
+        while (end<count && gpu_contacts_[end].transformCacheRef0==first.transformCacheRef0
+               && gpu_contacts_[end].transformCacheRef1==first.transformCacheRef1) ++end;
+        const PxVec3 origin=first.actor0->getGlobalPose().p;
+        Nv::Blast::ExtStressPhysXContactWrenchAccumulator actual(origin), expected(origin);
+        for (PxU32 i=begin; i<end; ++i) {
+          const auto& a=gpu_contacts_[i];
+          const auto& e=gpu_contact_legacy_reference_[i];
+          require(e.transformCacheRef0==first.transformCacheRef0
+                      && e.transformCacheRef1==first.transformCacheRef1,
+                  "Legacy contact audit grouped different shape pairs");
+          actual.add(a.worldPosition,a.impulseOnActor0);
+          expected.add(e.worldPosition,e.impulseOnActor0);
+        }
+        const PxVec3 af=actual.linearImpulse(), ef=expected.linearImpulse();
+        const PxVec3 am=actual.angularImpulse(), em=expected.angularImpulse();
+        ++gpu_contact_wrench_checks_;
+        if (af!=ef || am!=em) ++gpu_contact_wrench_mismatches_;
+        for (unsigned axis=0; axis<3; ++axis) {
+          gpu_contact_wrench_max_force_error_=std::max(gpu_contact_wrench_max_force_error_,
+              std::abs(double(af[axis])-ef[axis]));
+          gpu_contact_wrench_max_moment_error_=std::max(gpu_contact_wrench_max_moment_error_,
+              std::abs(double(am[axis])-em[axis]));
+        }
+        begin=end;
+      }
+    }
+#endif
     gpu_contact_order_verify_ms_ += finish_phase();
     gpu_current_pairs_.clear();
     for (PxU32 begin = 0; begin < count;) {
@@ -2384,6 +2425,10 @@ public:
     span("direct_contact_gpu_order_ms", gpu_contact_gpu_order_ms_, 0);
     span("direct_contact_gpu_ordered", gpu_contact_ordered_, 2);
     span("direct_contact_order_ambiguous", gpu_contact_order_ambiguous_, 2);
+    span("direct_contact_wrench_checks", gpu_contact_wrench_checks_, 2);
+    span("direct_contact_wrench_mismatches", gpu_contact_wrench_mismatches_, 2);
+    span("direct_contact_wrench_max_force_error", gpu_contact_wrench_max_force_error_, 0);
+    span("direct_contact_wrench_max_moment_error", gpu_contact_wrench_max_moment_error_, 0);
     span("direct_contact_order_verify_checks", gpu_contact_order_verify_checks_, 2);
     span("direct_contact_order_verify_mismatches", gpu_contact_order_verify_mismatches_, 2);
     span("direct_contact_order_verify_ms", gpu_contact_order_verify_ms_, 0);
@@ -3061,6 +3106,8 @@ private:
   std::vector<Nv::Blast::ExtStressPhysXDirectGpuContact> gpu_contacts_;
   std::vector<GpuContact> gpu_contact_reference_;
   std::vector<GpuContact> gpu_contact_legacy_reference_;
+  std::uint64_t gpu_contact_wrench_checks_ = 0, gpu_contact_wrench_mismatches_ = 0;
+  double gpu_contact_wrench_max_force_error_ = 0.0, gpu_contact_wrench_max_moment_error_ = 0.0;
   std::uint64_t gpu_contact_legacy_threshold_checks_ = 0, gpu_contact_legacy_threshold_mismatches_ = 0;
   std::uint32_t gpu_contact_legacy_max_ulp_ = 0;
   bool gpu_contact_ordered_ = false, gpu_contact_order_ambiguous_ = false;

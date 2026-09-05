@@ -1,0 +1,861 @@
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/source/sdk/lowlevel/NvBlastFamily.cpp: In function 'NvBlastFamily* Nv::Blast::createFamily(void*, const NvBlastAssetMemSizeData&, NvBlastLog)':
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/source/sdk/lowlevel/NvBlastFamily.cpp:106:20: warning: unused variable 'bondCount' [-Wunused-variable]
+warning: vibe-land-physx-bridge@0.1.0:   106 |     const uint32_t bondCount = sizeData.bondCount;
+warning: vibe-land-physx-bridge@0.1.0:       |                    ^~~~~~~~~
+warning: vibe-land-physx-bridge@0.1.0: In file included from /root/workspace/blast-stress-solver-2/blast/source/sdk/lowlevel/NvBlastFamilyGraph.h:37,
+warning: vibe-land-physx-bridge@0.1.0:                  from /root/workspace/blast-stress-solver-2/blast/source/sdk/lowlevel/NvBlastFamilyGraph.cpp:28:
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/source/sdk/common/NvBlastFixedPriorityQueue.h: In instantiation of 'Nv::Blast::FixedPriorityQueue<Element, Comparator>::FixedPriorityQueue(const Comparator&) [with Element = Nv::Blast::FamilyGraph::QueueElement; Comparator = Nv::Blast::FamilyGraph::NodeComparator]':
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/source/sdk/lowlevel/NvBlastFamilyGraph.cpp:440:71:   required from here
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/source/sdk/common/NvBlastFixedPriorityQueue.h:75:94: warning: implicitly-declared 'constexpr Nv::Blast::FamilyGraph::NodeComparator::NodeComparator(const Nv::Blast::FamilyGraph::NodeComparator&)' is deprecated [-Wdeprecated-copy]
+warning: vibe-land-physx-bridge@0.1.0:    75 |     FixedPriorityQueue(const Comparator& less = Comparator()) : Comparator(less), mHeapSize(0)
+warning: vibe-land-physx-bridge@0.1.0:       |                                                                                              ^
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/source/sdk/lowlevel/NvBlastFamilyGraph.h:236:25: note: because 'Nv::Blast::FamilyGraph::NodeComparator' has user-provided 'Nv::Blast::FamilyGraph::NodeComparator& Nv::Blast::FamilyGraph::NodeComparator::operator=(const Nv::Blast::FamilyGraph::NodeComparator&)'
+warning: vibe-land-physx-bridge@0.1.0:   236 |         NodeComparator& operator = (const NodeComparator&);
+warning: vibe-land-physx-bridge@0.1.0:       |                         ^~~~~~~~
+warning: vibe-land-physx-bridge@0.1.0: In file included from /root/workspace/blast-stress-solver-2/blast/source/sdk/extensions/stress/NvBlastExtStressSolver.cpp:29:
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/include/extensions/stress/NvBlastExtStressSolver.h: In constructor 'Nv::Blast::ExtStressMaterial::ExtStressMaterial()':
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/include/extensions/stress/NvBlastExtStressSolver.h:216:11: warning: 'Nv::Blast::ExtStressMaterial::elasticModulusPa' will be initialized after [-Wreorder]
+warning: vibe-land-physx-bridge@0.1.0:   216 |     float elasticModulusPa;
+warning: vibe-land-physx-bridge@0.1.0:       |           ^~~~~~~~~~~~~~~~
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/include/extensions/stress/NvBlastExtStressSolver.h:209:11: warning:   'float Nv::Blast::ExtStressMaterial::residualAreaFraction' [-Wreorder]
+warning: vibe-land-physx-bridge@0.1.0:   209 |     float residualAreaFraction;
+warning: vibe-land-physx-bridge@0.1.0:       |           ^~~~~~~~~~~~~~~~~~~~
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/include/extensions/stress/NvBlastExtStressSolver.h:221:5: warning:   when initialized here [-Wreorder]
+warning: vibe-land-physx-bridge@0.1.0:   221 |     ExtStressMaterial() :
+warning: vibe-land-physx-bridge@0.1.0:       |     ^~~~~~~~~~~~~~~~~
+warning: vibe-land-physx-bridge@0.1.0: In file included from /root/workspace/blast-stress-solver-2/blast/rust_stress_example/ffi/ext_stress_bridge.cpp:17:
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/include/extensions/stress/NvBlastExtStressSolver.h: In constructor 'Nv::Blast::ExtStressMaterial::ExtStressMaterial()':
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/include/extensions/stress/NvBlastExtStressSolver.h:216:11: warning: 'Nv::Blast::ExtStressMaterial::elasticModulusPa' will be initialized after [-Wreorder]
+warning: vibe-land-physx-bridge@0.1.0:   216 |     float elasticModulusPa;
+warning: vibe-land-physx-bridge@0.1.0:       |           ^~~~~~~~~~~~~~~~
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/include/extensions/stress/NvBlastExtStressSolver.h:209:11: warning:   'float Nv::Blast::ExtStressMaterial::residualAreaFraction' [-Wreorder]
+warning: vibe-land-physx-bridge@0.1.0:   209 |     float residualAreaFraction;
+warning: vibe-land-physx-bridge@0.1.0:       |           ^~~~~~~~~~~~~~~~~~~~
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/include/extensions/stress/NvBlastExtStressSolver.h:221:5: warning:   when initialized here [-Wreorder]
+warning: vibe-land-physx-bridge@0.1.0:   221 |     ExtStressMaterial() :
+warning: vibe-land-physx-bridge@0.1.0:       |     ^~~~~~~~~~~~~~~~~
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/rust_stress_example/ffi/ext_stress_bridge.cpp: In function 'uint8_t ext_stress_solver_apply_fracture_commands(ExtStressSolverHandle*, const ExtStressFractureCommands*, uint32_t, ExtStressSplitEvent*, uint32_t, ExtStressActor*, uint32_t, uint32_t*, uint32_t*, uint32_t*, uint32_t, uint32_t*)':
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/rust_stress_example/ffi/ext_stress_bridge.cpp:2194:18: warning: variable 'childStored' set but not used [-Wunused-but-set-variable]
+warning: vibe-land-physx-bridge@0.1.0:  2194 |             bool childStored = false;
+warning: vibe-land-physx-bridge@0.1.0:       |                  ^~~~~~~~~~~
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/source/sdk/globals/NvBlastGlobals.cpp: In member function 'virtual void Nv::Blast::DefaultErrorCallback::reportError(nvidia::NvErrorCode::Enum, const char*, const char*, int)':
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/source/sdk/globals/NvBlastGlobals.cpp:120:14: warning: variable 'critical' set but not used [-Wunused-but-set-variable]
+warning: vibe-land-physx-bridge@0.1.0:   120 |         bool critical = false;
+warning: vibe-land-physx-bridge@0.1.0:       |              ^~~~~~~~
+warning: vibe-land-physx-bridge@0.1.0: In file included from /root/workspace/blast-stress-solver-2/blast/source/shared/stress_solver/coupling.h:30,
+warning: vibe-land-physx-bridge@0.1.0:                  from /root/workspace/blast-stress-solver-2/blast/source/shared/stress_solver/bond.h:29,
+warning: vibe-land-physx-bridge@0.1.0:                  from /root/workspace/blast-stress-solver-2/blast/source/shared/stress_solver/stress.h:29,
+warning: vibe-land-physx-bridge@0.1.0:                  from /root/workspace/blast-stress-solver-2/blast/source/shared/stress_solver/stress.cpp:27:
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/source/shared/stress_solver/anglin6.h:167:25: warning: ignoring attributes on template argument '__m128' [-Wignored-attributes]
+warning: vibe-land-physx-bridge@0.1.0:   167 | struct AngLin6Ops<__m128>
+warning: vibe-land-physx-bridge@0.1.0:       |                         ^
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/source/shared/stress_solver/coupling.h:121:43: warning: ignoring attributes on template argument 'SIMD_Scalar' {aka '__m128'} [-Wignored-attributes]
+warning: vibe-land-physx-bridge@0.1.0:   121 | struct CouplingMatrixOps<Elem, SIMD_Scalar>
+warning: vibe-land-physx-bridge@0.1.0:       |                                           ^
+warning: vibe-land-physx-bridge@0.1.0: In file included from /root/workspace/blast-stress-solver-2/blast/source/shared/stress_solver/bond.h:30:
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/source/shared/stress_solver/inertia.h:86:36: warning: ignoring attributes on template argument 'SIMD_Scalar' {aka '__m128'} [-Wignored-attributes]
+warning: vibe-land-physx-bridge@0.1.0:    86 | struct InertiaMatrixOps<SIMD_Scalar>
+warning: vibe-land-physx-bridge@0.1.0:       |                                    ^
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/source/shared/stress_solver/stress.cpp:41:45: warning: ignoring attributes on template argument 'SIMD_Scalar' {aka '__m128'} [-Wignored-attributes]
+warning: vibe-land-physx-bridge@0.1.0:    41 | typedef CGNR<AngLin6, AngLin6Ops<SIMD_Scalar>, BondMatrixS, BondMatrixOpsS<SIMD_Scalar>, SIMD_Scalar, AngLin6ErrorSq>       CGNR_SIMD;
+warning: vibe-land-physx-bridge@0.1.0:       |                                             ^
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/source/shared/stress_solver/stress.cpp:41:87: warning: ignoring attributes on template argument 'SIMD_Scalar' {aka '__m128'} [-Wignored-attributes]
+warning: vibe-land-physx-bridge@0.1.0:    41 | typedef CGNR<AngLin6, AngLin6Ops<SIMD_Scalar>, BondMatrixS, BondMatrixOpsS<SIMD_Scalar>, SIMD_Scalar, AngLin6ErrorSq>       CGNR_SIMD;
+warning: vibe-land-physx-bridge@0.1.0:       |                                                                                       ^
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/source/shared/stress_solver/stress.cpp:41:117: warning: ignoring attributes on template argument 'SIMD_Scalar' {aka '__m128'} [-Wignored-attributes]
+warning: vibe-land-physx-bridge@0.1.0:    41 | typedef CGNR<AngLin6, AngLin6Ops<SIMD_Scalar>, BondMatrixS, BondMatrixOpsS<SIMD_Scalar>, SIMD_Scalar, AngLin6ErrorSq>       CGNR_SIMD;
+warning: vibe-land-physx-bridge@0.1.0:       |                                                                                                                     ^
+warning: vibe-land-physx-bridge@0.1.0: In file included from /root/workspace/blast-stress-solver-2/blast/source/shared/stress_solver/stress.cpp:30:
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/source/shared/stress_solver/simd/simd_device_query.h:144:1: warning: 'void print_supported_instruction_sets()' defined but not used [-Wunused-function]
+warning: vibe-land-physx-bridge@0.1.0:   144 | print_supported_instruction_sets()
+warning: vibe-land-physx-bridge@0.1.0:       | ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+warning: vibe-land-physx-bridge@0.1.0: In file included from /root/workspace/blast-stress-solver-2/blast/source/shared/stress_solver/coupling.h:30,
+warning: vibe-land-physx-bridge@0.1.0:                  from /root/workspace/blast-stress-solver-2/blast/source/shared/stress_solver/bond.h:29,
+warning: vibe-land-physx-bridge@0.1.0:                  from /root/workspace/blast-stress-solver-2/blast/source/shared/stress_solver/stress.h:29,
+warning: vibe-land-physx-bridge@0.1.0:                  from /root/workspace/blast-stress-solver-2/blast/source/sdk/extensions/stress/NvBlastExtStressSolver.cpp:43:
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/source/shared/stress_solver/anglin6.h: At global scope:
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/source/shared/stress_solver/anglin6.h:167:25: warning: ignoring attributes on template argument '__m128' [-Wignored-attributes]
+warning: vibe-land-physx-bridge@0.1.0:   167 | struct AngLin6Ops<__m128>
+warning: vibe-land-physx-bridge@0.1.0:       |                         ^
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/source/shared/stress_solver/coupling.h:121:43: warning: ignoring attributes on template argument 'SIMD_Scalar' {aka '__m128'} [-Wignored-attributes]
+warning: vibe-land-physx-bridge@0.1.0:   121 | struct CouplingMatrixOps<Elem, SIMD_Scalar>
+warning: vibe-land-physx-bridge@0.1.0:       |                                           ^
+warning: vibe-land-physx-bridge@0.1.0: In file included from /root/workspace/blast-stress-solver-2/blast/source/shared/stress_solver/bond.h:30:
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/source/shared/stress_solver/inertia.h:86:36: warning: ignoring attributes on template argument 'SIMD_Scalar' {aka '__m128'} [-Wignored-attributes]
+warning: vibe-land-physx-bridge@0.1.0:    86 | struct InertiaMatrixOps<SIMD_Scalar>
+warning: vibe-land-physx-bridge@0.1.0:       |                                    ^
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/source/sdk/extensions/stress/NvBlastExtStressSolver.cpp: In member function 'void Nv::Blast::SupportGraphProcessor::addBond(uint32_t, uint32_t, uint32_t)':
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/source/sdk/extensions/stress/NvBlastExtStressSolver.cpp:1595:13: warning: missing initializer for member 'Nv::Blast::SupportGraphProcessor::BondData::stressShear' [-Wmissing-field-initializers]
+warning: vibe-land-physx-bridge@0.1.0:  1595 |             };
+warning: vibe-land-physx-bridge@0.1.0:       |             ^
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/source/sdk/extensions/stress/NvBlastExtStressSolver.cpp:1595:13: warning: missing initializer for member 'Nv::Blast::SupportGraphProcessor::BondData::stressBend' [-Wmissing-field-initializers]
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/source/sdk/extensions/stress/NvBlastExtStressSolver.cpp:1595:13: warning: missing initializer for member 'Nv::Blast::SupportGraphProcessor::BondData::normal' [-Wmissing-field-initializers]
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/source/sdk/extensions/stress/NvBlastExtStressSolver.cpp:1595:13: warning: missing initializer for member 'Nv::Blast::SupportGraphProcessor::BondData::centroid' [-Wmissing-field-initializers]
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/source/sdk/extensions/stress/NvBlastExtStressSolver.cpp: In member function 'void Nv::Blast::SupportGraphProcessor::syncNodes(const NvBlastBond*)':
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/source/sdk/extensions/stress/NvBlastExtStressSolver.cpp:4036:24: warning: unused variable 'STATIC_NODES_COUNT_PENALTY' [-Wunused-variable]
+warning: vibe-land-physx-bridge@0.1.0:  4036 |         const uint32_t STATIC_NODES_COUNT_PENALTY = 2 << 2;
+warning: vibe-land-physx-bridge@0.1.0:       |                        ^~~~~~~~~~~~~~~~~~~~~~~~~~
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/source/sdk/extensions/stress/NvBlastExtStressSolver.cpp: In member function 'virtual bool Nv::Blast::ExtStressSolverImpl::getExcessForces(uint32_t, const NvcVec3&, NvcVec3&, NvcVec3&)':
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/source/sdk/extensions/stress/NvBlastExtStressSolver.cpp:5314:20: warning: unused variable 'retCount' [-Wunused-variable]
+warning: vibe-land-physx-bridge@0.1.0:  5314 |     const uint32_t retCount = NvBlastActorGetGraphNodeIndices(nodeIndices, nodeCount, actor, logLL);
+warning: vibe-land-physx-bridge@0.1.0:       |                    ^~~~~~~~
+warning: vibe-land-physx-bridge@0.1.0: In file included from /root/workspace/blast-stress-solver-2/blast/source/shared/NsFoundation/include/NsHashMap.h:30,
+warning: vibe-land-physx-bridge@0.1.0:                  from /root/workspace/blast-stress-solver-2/blast/source/sdk/common/NvBlastHashMap.h:33,
+warning: vibe-land-physx-bridge@0.1.0:                  from /root/workspace/blast-stress-solver-2/blast/source/sdk/extensions/stress/NvBlastExtStressSolver.cpp:34:
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/source/shared/NsFoundation/include/NsHashInternals.h: In instantiation of 'nvidia::shdfnd::internal::HashBase<Entry, Key, HashFn, GetKey, Allocator, compacting>::Iter nvidia::shdfnd::internal::HashBase<Entry, Key, HashFn, GetKey, Allocator, compacting>::Iter::operator++() [with Entry = const NvBlastActor*; Key = const NvBlastActor*; HashFn = nvidia::shdfnd::Hash<const NvBlastActor*>; GetKey = nvidia::shdfnd::internal::HashSetBase<const NvBlastActor*, nvidia::shdfnd::Hash<const NvBlastActor*>, Nv::Blast::Allocator, false>::GetKey; Allocator = Nv::Blast::Allocator; bool compacting = false]':
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/source/sdk/extensions/stress/NvBlastExtStressSolver.cpp:6033:68:   required from here
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/source/shared/NsFoundation/include/NsHashInternals.h:459:21: warning: implicitly-declared 'constexpr nvidia::shdfnd::internal::HashBase<const NvBlastActor*, const NvBlastActor*, nvidia::shdfnd::Hash<const NvBlastActor*>, nvidia::shdfnd::internal::HashSetBase<const NvBlastActor*, nvidia::shdfnd::Hash<const NvBlastActor*>, Nv::Blast::Allocator, false>::GetKey, Nv::Blast::Allocator, false>::Iter::Iter(const nvidia::shdfnd::internal::HashBase<const NvBlastActor*, const NvBlastActor*, nvidia::shdfnd::Hash<const NvBlastActor*>, nvidia::shdfnd::internal::HashSetBase<const NvBlastActor*, nvidia::shdfnd::Hash<const NvBlastActor*>, Nv::Blast::Allocator, false>::GetKey, Nv::Blast::Allocator, false>::Iter&)' is deprecated [-Wdeprecated-copy]
+warning: vibe-land-physx-bridge@0.1.0:   459 |             return *this;
+warning: vibe-land-physx-bridge@0.1.0:       |                     ^~~~
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/source/shared/NsFoundation/include/NsHashInternals.h:490:15: note: because 'nvidia::shdfnd::internal::HashBase<const NvBlastActor*, const NvBlastActor*, nvidia::shdfnd::Hash<const NvBlastActor*>, nvidia::shdfnd::internal::HashSetBase<const NvBlastActor*, nvidia::shdfnd::Hash<const NvBlastActor*>, Nv::Blast::Allocator, false>::GetKey, Nv::Blast::Allocator, false>::Iter' has user-provided 'nvidia::shdfnd::internal::HashBase<Entry, Key, HashFn, GetKey, Allocator, compacting>::Iter& nvidia::shdfnd::internal::HashBase<Entry, Key, HashFn, GetKey, Allocator, compacting>::Iter::operator=(const nvidia::shdfnd::internal::HashBase<Entry, Key, HashFn, GetKey, Allocator, compacting>::Iter&) [with Entry = const NvBlastActor*; Key = const NvBlastActor*; HashFn = nvidia::shdfnd::Hash<const NvBlastActor*>; GetKey = nvidia::shdfnd::internal::HashSetBase<const NvBlastActor*, nvidia::shdfnd::Hash<const NvBlastActor*>, Nv::Blast::Allocator, false>::GetKey; Allocator = Nv::Blast::Allocator; bool compacting = false]'
+warning: vibe-land-physx-bridge@0.1.0:   490 |         Iter& operator=(const Iter&);
+warning: vibe-land-physx-bridge@0.1.0:       |               ^~~~~~~~
+warning: vibe-land-physx-bridge@0.1.0: In file included from src/destruction.cc:6:
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/include/extensions/stress/NvBlastExtStressSolver.h: In constructor 'Nv::Blast::ExtStressMaterial::ExtStressMaterial()':
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/include/extensions/stress/NvBlastExtStressSolver.h:216:11: warning: 'Nv::Blast::ExtStressMaterial::elasticModulusPa' will be initialized after [-Wreorder]
+warning: vibe-land-physx-bridge@0.1.0:   216 |     float elasticModulusPa;
+warning: vibe-land-physx-bridge@0.1.0:       |           ^~~~~~~~~~~~~~~~
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/include/extensions/stress/NvBlastExtStressSolver.h:209:11: warning:   'float Nv::Blast::ExtStressMaterial::residualAreaFraction' [-Wreorder]
+warning: vibe-land-physx-bridge@0.1.0:   209 |     float residualAreaFraction;
+warning: vibe-land-physx-bridge@0.1.0:       |           ^~~~~~~~~~~~~~~~~~~~
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/include/extensions/stress/NvBlastExtStressSolver.h:221:5: warning:   when initialized here [-Wreorder]
+warning: vibe-land-physx-bridge@0.1.0:   221 |     ExtStressMaterial() :
+warning: vibe-land-physx-bridge@0.1.0:       |     ^~~~~~~~~~~~~~~~~
+warning: vibe-land-physx-bridge@0.1.0: In file included from /root/workspace/blast-stress-solver-2/blast/source/sdk/extensions/stress/NvBlastExtStressSolver.cpp:45:
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/source/shared/stress_solver/simd/simd_device_query.h: At global scope:
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/source/shared/stress_solver/simd/simd_device_query.h:144:1: warning: 'void print_supported_instruction_sets()' defined but not used [-Wunused-function]
+warning: vibe-land-physx-bridge@0.1.0:   144 | print_supported_instruction_sets()
+warning: vibe-land-physx-bridge@0.1.0:       | ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+warning: vibe-land-physx-bridge@0.1.0: In file included from /root/workspace/blast-stress-solver-2/blast/source/sdk/extensions/stress/NvBlastExtStressSolver.cpp:32:
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/source/sdk/extensions/stress/NvBlastExtStressSolver.cpp: In member function 'virtual void Nv::Blast::ExtStressSolverImpl::release()':
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/include/globals/NvBlastGlobals.h:138:9: warning: 'nonnull' argument 'this' compared to NULL [-Wnonnull-compare]
+warning: vibe-land-physx-bridge@0.1.0:   138 |         if ((obj) != nullptr)                                       \
+warning: vibe-land-physx-bridge@0.1.0:       |         ^~
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/source/sdk/extensions/stress/NvBlastExtStressSolver.cpp:5256:5: note: in expansion of macro 'NVBLAST_DELETE'
+warning: vibe-land-physx-bridge@0.1.0:  5256 |     NVBLAST_DELETE(this, ExtStressSolverImpl);
+warning: vibe-land-physx-bridge@0.1.0:       |     ^~~~~~~~~~~~~~
+warning: unused import: `SettleSample`
+  --> destruction/src/runtime.rs:22:35
+   |
+22 | use crate::settle::{SettleConfig, SettleSample, SettleTracker};
+   |                                   ^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `client`
+   --> destruction/src/encoder.rs:393:25
+    |
+393 |                     for client in self.clients.values_mut() {
+    |                         ^^^^^^ help: if this is intentional, prefix it with an underscore: `_client`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `entity`
+   --> destruction/src/encoder.rs:619:17
+    |
+619 |             let entity = shared_record.record.body_entity;
+    |                 ^^^^^^ help: if this is intentional, prefix it with an underscore: `_entity`
+
+warning: variable does not need to be mutable
+   --> destruction/src/wire.rs:593:9
+    |
+593 |     let mut current: Vec<u8> = Vec::new();
+    |         ----^^^^^^^
+    |         |
+    |         help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `nodes` is never read
+  --> destruction/src/synthetic.rs:58:5
+   |
+57 | struct SynthIsland {
+   |        ----------- field in this struct
+58 |     nodes: Vec<u32>,
+   |     ^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `settle_config` is never read
+  --> destruction/src/runtime.rs:79:5
+   |
+74 | pub struct CityDestruction {
+   |            --------------- field in this struct
+...
+79 |     settle_config: SettleConfig,
+   |     ^^^^^^^^^^^^^
+
+warning: variable does not need to be mutable
+    --> destruction/src/freeze.rs:1753:13
+     |
+1753 |         let mut tracker = tracker_with(&[(1, 0.4, vec![]), (2, 8.0, vec![])]);
+     |             ----^^^^^^^
+     |             |
+     |             help: remove this `mut`
+     |
+     = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+    --> destruction/src/freeze.rs:1828:13
+     |
+1828 |         let mut tracker = tracker_with(&[
+     |             ----^^^^^^^
+     |             |
+     |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> destruction/src/wire.rs:593:9
+    |
+593 |     let mut current: Vec<u8> = Vec::new();
+    |         ----^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `bodies`
+  --> physx-bridge/tests/stack_settling.rs:97:9
+   |
+97 |     let bodies = build_pile(&mut world, layers);
+   |         ^^^^^^ help: if this is intentional, prefix it with an underscore: `_bodies`
+   |
+   = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: `vibe-land-destruction` (lib) generated 6 warnings (run `cargo fix --lib -p vibe-land-destruction` to apply 4 suggestions)
+warning: `vibe-land-destruction` (lib test) generated 8 warnings (5 duplicates) (run `cargo fix --lib -p vibe-land-destruction --tests` to apply 3 suggestions)
+warning: `vibe-land-physx-bridge` (test "stack_settling") generated 1 warning (run `cargo fix --test "stack_settling" -p vibe-land-physx-bridge` to apply 1 suggestion)
+    Finished `release` profile [optimized] target(s) in 0.09s
+     Running unittests src/lib.rs (target/gpu-activity/release/deps/vibe_land_destruction-56ae6397d401f5aa)
+
+running 105 tests
+test city::tests::grid_is_centered_on_origin ... ok
+test classify::tests::classifier_ballistic_is_conservative ... ok
+test classify::tests::impact_burst_overrides_and_decays ... ok
+test classify::tests::predictor_applies_gravity_and_damping ... ok
+test classify::tests::stable_slow_body_becomes_quiescent ... ok
+test encoder::tests::a_woken_body_clears_its_settle_on_the_wire ... ok
+test encoder::tests::bootstrap_reflects_ledger_state ... ok
+test encoder::tests::ceiling_bounds_selected_bytes ... ok
+test encoder::tests::deltas_flow_after_a_baseline_and_absolutes_before ... ok
+test encoder::tests::duplicate_body_entities_are_dropped_not_fatal ... ok
+test encoder::tests::fracture_ingest_stages_topology_and_streams_the_island ... ok
+test encoder::tests::irrelevant_bodies_are_not_sent ... ok
+test fingerprint::tests::capture_collects_prefixed_env ... ok
+test freeze::dependency_tests::a_foreign_supporter_blocks_freezing ... ok
+test freeze::dependency_tests::a_migrated_rooted_node_releases_only_its_dependents ... ok
+test freeze::dependency_tests::a_rooted_death_releases_its_dependents ... ok
+test freeze::dependency_tests::a_settled_stack_freezes_in_one_fold ... ok
+test freeze::dependency_tests::a_thawed_supporter_cascades_through_the_stack ... ok
+test freeze::dependency_tests::fold_and_cascade_match_the_reachability_oracle_on_random_graphs ... ok
+test freeze::dependency_tests::ground_support_is_analytic ... ok
+test freeze::dependency_tests::rooted_support_does_not_admit_a_freeze_by_default ... ok
+test freeze::dependency_tests::the_backstop_finds_nothing_after_a_correct_cascade ... ok
+test freeze::tests::a_body_woken_before_the_window_never_freezes ... ok
+test freeze::tests::a_creeping_body_never_counts_as_quiet ... ok
+test freeze::tests::a_thrashing_body_earns_a_longer_freeze_window ... ok
+test freeze::tests::engine_sleep_edge_still_settles_with_freezing_off ... ok
+test freeze::tests::freeze_waits_for_the_window_then_fires_once ... ok
+test freeze::tests::pose_census_counts_still_bodies_that_never_sleep ... ok
+test freeze::tests::retiring_a_frozen_body_clears_its_cell ... ok
+test freeze::tests::shell_error_charges_rotation_at_the_shell ... ok
+test freeze::tests::spatial_query_finds_only_nearby_frozen_bodies ... ok
+test freeze::tests::thawing_reports_only_bodies_that_were_frozen ... ok
+test freeze::tests::the_adapter_flipping_a_frozen_body_back_reads_as_a_wake ... ok
+test freeze::tests::the_master_switch_covers_pose_freezing_too ... ok
+test freeze::tests::the_wake_column_reaches_rubble_above_the_impact ... ok
+test freeze::tests::wake_edge_is_reported_and_resets_the_settle ... ok
+test ids::tests::body_entities_round_trip_and_namespace ... ok
+test ids::tests::bond_ids_round_trip ... ok
+test ids::tests::bond_index_past_the_field_is_loud - should panic ... ok
+test ids::tests::chunk_ids_round_trip ... ok
+test ids::tests::district_sized_structures_round_trip ... ok
+test ids::tests::downtown_sized_structures_round_trip ... ok
+test ids::tests::intra_structure_ids_are_dense_for_leb128_gaps ... ok
+test ids::tests::node_index_past_the_field_is_loud - should panic ... ok
+test ids::tests::widened_fields_stay_inside_the_id_mask ... ok
+test interest::cluster_cone_tests::cone_never_rejects_what_a_member_frustum_accepts ... ok
+test interest::cluster_cone_tests::empty_group_accepts_rather_than_drops ... ok
+test interest::cluster_cone_tests::opposed_group_degenerates_to_accepting_everything ... ok
+test interest::cluster_cone_tests::tight_group_rejects_most_of_the_world ... ok
+test interest::tests::camera_motion_prefetches_future_view ... ok
+test interest::tests::margin_prevents_edge_churn ... ok
+test interest::tests::proximity_keeps_body_relevant_behind_camera ... ok
+test interest::tests::velocity_lookahead_prefetches_before_frustum_entry ... ok
+test interest::tests::visible_body_enters_then_receives_exit_grace ... ok
+test manifest::tests::hull_points_resolve_through_the_shape_library ... ok
+test manifest::tests::manifest_geometry_keys_are_camel_case ... ok
+test manifest::tests::manifest_hash_is_stable_across_builds ... ok
+test manifest::tests::manifest_round_trips_through_json ... ok
+test manifest::tests::served_manifest_has_no_snake_case_keys ... ok
+test manifest::tests::v1_manifests_do_not_serialise_material_fields ... ok
+test packet::tests::packet_size_never_exceeds_mtu ... ok
+test packet::tests::relative_body_ids_use_leb128_sized_gaps ... ok
+test quant::tests::centimeter_quantization_is_bounded ... ok
+test quant::tests::projection_scales_with_distance ... ok
+test quant::tests::quaternion_round_trip_is_small ... ok
+test quant::tests::rigid_shell_error_combines_translation_and_rotation ... ok
+test quant::tests::velocity_quantization_round_trips ... ok
+test scene_pack::tests::fatal_below_elastic_is_rejected ... ok
+test scene_pack::tests::out_of_range_material_index_names_the_bond ... ok
+test scene_pack::tests::parses_minimal_pack ... ok
+test scene_pack::tests::parses_v2_material_table_and_bond_indices ... ok
+test scene_pack::tests::rejects_out_of_range_bond ... ok
+test scene_pack::tests::rejects_wrong_version ... ok
+test scene_pack::tests::unsupported_versions_are_still_rejected ... ok
+test scene_pack::tests::v1_synthesises_a_single_material ... ok
+test scene_pack::tests::v1_without_limits_falls_back_to_placeholder ... ok
+test scene_pack::tests::v2_negative_limits_inherit_compression ... ok
+test scene_pack::tests::v2_with_empty_material_table_is_rejected ... ok
+test scene_pack::tests::v2_without_materials_is_rejected ... ok
+test scheduler::tests::budget_is_a_ceiling_not_a_fill_target ... ok
+test scheduler::tests::highest_priority_candidates_fit_first ... ok
+test scheduler::tests::moving_body_eventually_reaches_hard_deadline ... ok
+test scheduler::tests::perturbed_contact_outranks_stable_contact ... ok
+test scheduler::tests::recent_update_has_lower_priority_than_old_update ... ok
+test settle::tests::force_sleep_deadline_settles_a_jittering_body ... ok
+test settle::tests::motion_resets_the_quiet_run ... ok
+test settle::tests::sustained_quiet_settles_early ... ok
+test settle::tests::wake_restarts_tracking ... ok
+test synthetic::tests::explosion_breaks_bonds_promotes_flies_and_settles ... ok
+test synthetic::tests::synthetic_end_to_end_through_the_encoder ... ok
+test topology::tests::batches_update_bitsets_and_islands ... ok
+test topology::tests::filtered_bootstrap_scopes_to_named_structures ... ok
+test topology::tests::hash_vector_is_pinned ... ok
+test topology::tests::settle_pins_pose_and_wake_reverses ... ok
+test topology::tests::union_find_components_follow_alive_bonds ... ok
+test wire::tests::baseline_round_trips ... ok
+test wire::tests::bootstrap_round_trips ... ok
+test wire::tests::chunks_datagram_golden_vector ... ok
+test wire::tests::chunks_datagram_round_trips ... ok
+test wire::tests::chunks_datagrams_split_at_mtu_and_stay_decodable ... ok
+test wire::tests::city_lanes_epoch_round_trips ... ok
+test wire::tests::debris_datagram_epoch_round_trips ... ok
+test wire::tests::delta_fits_detects_saturation ... ok
+test wire::tests::topology_hash_encoding_is_pinned ... ok
+test wire::tests::topology_round_trips ... ok
+
+test result: ok. 105 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+     Running unittests src/bin/structure-audit.rs (target/gpu-activity/release/deps/structure_audit-52f23f9e8269b429)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/authored_structures.rs (target/gpu-activity/release/deps/authored_structures-7af23fb7d294f812)
+
+running 7 tests
+test authored_packs_are_anchored_and_internally_consistent ... ok
+test authored_packs_build_a_manifest ... ok
+test authored_packs_carry_material_and_appearance ... ok
+test authored_packs_carry_structural_roles ... ok
+test authored_packs_parse_as_v2_with_a_material_table ... ok
+test existing_packs_gain_no_manifest_fields ... ok
+test packs_without_roles_still_load ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.04s
+
+     Running tests/authored_structures_sim.rs (target/gpu-activity/release/deps/authored_structures_sim-78880ad0adbe5ee8)
+
+running 4 tests
+test a_dropped_building_breaks_up_instead_of_landing_in_one_piece ... [destruction] CUDA stress solver active; configured iteration budget 32. Convergence depends on the current load and topology.
+[bs-phase] calls=599 per-call ms: upload 0.034 kernel 0.134 readback 0.023 | prep 0.032 enqueue 0.152 sync 0.011 | host total 0.201 | skipped 0 of 599 | up 0.16 MB down 0.23 MB | PROBE empty 0.000 nullkernel1 0.000 nullkernel2 0.000 copy4B 0.000
+[bond-stress-gpu] ticks=600 attempts=599 ranOnDevice=599 checks=0 MISMATCHES=0 (count=0 removeSize=0 removeOrder=0 mask=0) firstBadTick=0 lastBadTick=0 refuse(noSolver=0 stale=0 pendingTopo=0 csr=0) STRESS_MISMATCH=0/0 big=0 maxRel=0.000e+00 BEND_MISMATCH=0 bendMaxRel=0.000e+00 OVERSET_MISMATCH=0/0 compactHits=14802 misses=0 IMPULSE=0/0 impMaxRel=0.000e+00 PAYLOAD(n=0 node=0 normal=0 disp=0 centroid=0)
+[bs-phase] calls=1199 per-call ms: upload 0.034 kernel 0.114 readback 0.020 | prep 0.033 enqueue 0.131 sync 0.007 | host total 0.177 | skipped 0 of 1199 | up 0.16 MB down 0.13 MB | PROBE empty 0.000 nullkernel1 0.000 nullkernel2 0.000 copy4B 0.000
+[bond-stress-gpu] ticks=1200 attempts=1199 ranOnDevice=1199 checks=0 MISMATCHES=0 (count=0 removeSize=0 removeOrder=0 mask=0) firstBadTick=0 lastBadTick=0 refuse(noSolver=0 stale=0 pendingTopo=0 csr=0) STRESS_MISMATCH=0/0 big=0 maxRel=0.000e+00 BEND_MISMATCH=0 bendMaxRel=0.000e+00 OVERSET_MISMATCH=0/0 compactHits=29306 misses=0 IMPULSE=0/0 impMaxRel=0.000e+00 PAYLOAD(n=0 node=0 normal=0 disp=0 centroid=0)
+[bs-phase] calls=553 per-call ms: upload 0.132 kernel 0.721 readback 0.020 | prep 0.115 enqueue 0.752 sync 0.012 | host total 0.886 | skipped 46 of 599 | up 0.80 MB down 0.22 MB | PROBE empty 0.000 nullkernel1 0.000 nullkernel2 0.000 copy4B 0.000
+[bond-stress-gpu] ticks=600 attempts=599 ranOnDevice=599 checks=0 MISMATCHES=0 (count=0 removeSize=0 removeOrder=0 mask=0) firstBadTick=0 lastBadTick=0 refuse(noSolver=0 stale=0 pendingTopo=0 csr=0) STRESS_MISMATCH=0/0 big=0 maxRel=0.000e+00 BEND_MISMATCH=0 bendMaxRel=0.000e+00 OVERSET_MISMATCH=0/0 compactHits=106998 misses=0 IMPULSE=0/0 impMaxRel=0.000e+00 PAYLOAD(n=0 node=0 normal=0 disp=0 centroid=0)
+[bs-phase] calls=1153 per-call ms: upload 0.121 kernel 0.442 readback 0.020 | prep 0.105 enqueue 0.470 sync 0.012 | host total 0.596 | skipped 46 of 1199 | up 0.72 MB down 0.23 MB | PROBE empty 0.000 nullkernel1 0.000 nullkernel2 0.000 copy4B 0.000
+[bond-stress-gpu] ticks=1200 attempts=1199 ranOnDevice=1199 checks=0 MISMATCHES=0 (count=0 removeSize=0 removeOrder=0 mask=0) firstBadTick=0 lastBadTick=0 refuse(noSolver=0 stale=0 pendingTopo=0 csr=0) STRESS_MISMATCH=0/0 big=0 maxRel=0.000e+00 BEND_MISMATCH=0 bendMaxRel=0.000e+00 OVERSET_MISMATCH=0/0 compactHits=155976 misses=0 IMPULSE=0/0 impMaxRel=0.000e+00 PAYLOAD(n=0 node=0 normal=0 disp=0 centroid=0)
+ok
+test a_shot_damages_the_facade_without_starting_a_collapse ... [bs-phase] calls=599 per-call ms: upload 0.013 kernel 0.015 readback 0.013 | prep 0.011 enqueue 0.029 sync 0.003 | host total 0.047 | skipped 0 of 599 | up 0.02 MB down 0.02 MB | PROBE empty 0.000 nullkernel1 0.000 nullkernel2 0.000 copy4B 0.000
+[bond-stress-gpu] ticks=600 attempts=599 ranOnDevice=599 checks=0 MISMATCHES=0 (count=0 removeSize=0 removeOrder=0 mask=0) firstBadTick=0 lastBadTick=0 refuse(noSolver=0 stale=0 pendingTopo=0 csr=0) STRESS_MISMATCH=0/0 big=0 maxRel=0.000e+00 BEND_MISMATCH=0 bendMaxRel=0.000e+00 OVERSET_MISMATCH=0/0 compactHits=402 misses=0 IMPULSE=0/0 impMaxRel=0.000e+00 PAYLOAD(n=0 node=0 normal=0 disp=0 centroid=0)
+[bs-phase] calls=440 per-call ms: upload 0.008 kernel 0.022 readback 0.013 | prep 0.007 enqueue 0.036 sync 0.003 | host total 0.049 | skipped 159 of 599 | up 0.00 MB down 0.02 MB | PROBE empty 0.000 nullkernel1 0.000 nullkernel2 0.000 copy4B 0.000
+[bond-stress-gpu] ticks=600 attempts=599 ranOnDevice=599 checks=0 MISMATCHES=0 (count=0 removeSize=0 removeOrder=0 mask=0) firstBadTick=0 lastBadTick=0 refuse(noSolver=0 stale=0 pendingTopo=0 csr=0) STRESS_MISMATCH=0/0 big=0 maxRel=0.000e+00 BEND_MISMATCH=0 bendMaxRel=0.000e+00 OVERSET_MISMATCH=0/0 compactHits=11 misses=0 IMPULSE=0/0 impMaxRel=0.000e+00 PAYLOAD(n=0 node=0 normal=0 disp=0 centroid=0)
+[bs-phase] calls=599 per-call ms: upload 0.007 kernel 0.018 readback 0.013 | prep 0.007 enqueue 0.032 sync 0.003 | host total 0.044 | skipped 0 of 599 | up 0.00 MB down 0.02 MB | PROBE empty 0.000 nullkernel1 0.000 nullkernel2 0.000 copy4B 0.000
+[bond-stress-gpu] ticks=600 attempts=599 ranOnDevice=599 checks=0 MISMATCHES=0 (count=0 removeSize=0 removeOrder=0 mask=0) firstBadTick=0 lastBadTick=0 refuse(noSolver=0 stale=0 pendingTopo=0 csr=0) STRESS_MISMATCH=0/0 big=0 maxRel=0.000e+00 BEND_MISMATCH=0 bendMaxRel=0.000e+00 OVERSET_MISMATCH=0/0 compactHits=61 misses=0 IMPULSE=0/0 impMaxRel=0.000e+00 PAYLOAD(n=0 node=0 normal=0 disp=0 centroid=0)
+[bs-phase] calls=599 per-call ms: upload 0.008 kernel 0.015 readback 0.012 | prep 0.007 enqueue 0.028 sync 0.003 | host total 0.042 | skipped 0 of 599 | up 0.00 MB down 0.01 MB | PROBE empty 0.000 nullkernel1 0.000 nullkernel2 0.000 copy4B 0.000
+[bond-stress-gpu] ticks=600 attempts=599 ranOnDevice=599 checks=0 MISMATCHES=0 (count=0 removeSize=0 removeOrder=0 mask=0) firstBadTick=0 lastBadTick=0 refuse(noSolver=0 stale=0 pendingTopo=0 csr=0) STRESS_MISMATCH=0/0 big=0 maxRel=0.000e+00 BEND_MISMATCH=0 bendMaxRel=0.000e+00 OVERSET_MISMATCH=0/0 compactHits=222 misses=0 IMPULSE=0/0 impMaxRel=0.000e+00 PAYLOAD(n=0 node=0 normal=0 disp=0 centroid=0)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+[bs-phase] calls=599 per-call ms: upload 0.158 kernel 0.031 readback 0.014 | prep 0.078 enqueue 0.044 sync 0.085 | host total 0.222 | skipped 0 of 599 | up 1.87 MB down 0.07 MB | PROBE empty 0.000 nullkernel1 0.000 nullkernel2 0.000 copy4B 0.000
+[bond-stress-gpu] ticks=600 attempts=599 ranOnDevice=599 checks=0 MISMATCHES=0 (count=0 removeSize=0 removeOrder=0 mask=0) firstBadTick=0 lastBadTick=0 refuse(noSolver=0 stale=0 pendingTopo=0 csr=0) STRESS_MISMATCH=0/0 big=0 maxRel=0.000e+00 BEND_MISMATCH=0 bendMaxRel=0.000e+00 OVERSET_MISMATCH=0/0 compactHits=64053 misses=0 IMPULSE=0/0 impMaxRel=0.000e+00 PAYLOAD(n=0 node=0 normal=0 disp=0 centroid=0)
+[bs-phase] calls=599 per-call ms: upload 0.022 kernel 0.016 readback 0.011 | prep 0.018 enqueue 0.029 sync 0.006 | host total 0.056 | skipped 0 of 599 | up 0.09 MB down 0.03 MB | PROBE empty 0.000 nullkernel1 0.000 nullkernel2 0.000 copy4B 0.000
+[bond-stress-gpu] ticks=600 attempts=599 ranOnDevice=599 checks=0 MISMATCHES=0 (count=0 removeSize=0 removeOrder=0 mask=0) firstBadTick=0 lastBadTick=0 refuse(noSolver=0 stale=0 pendingTopo=0 csr=0) STRESS_MISMATCH=0/0 big=0 maxRel=0.000e+00 BEND_MISMATCH=0 bendMaxRel=0.000e+00 OVERSET_MISMATCH=0/0 compactHits=440 misses=0 IMPULSE=0/0 impMaxRel=0.000e+00 PAYLOAD(n=0 node=0 normal=0 disp=0 centroid=0)
+[bs-phase] calls=599 per-call ms: upload 0.011 kernel 0.013 readback 0.012 | prep 0.009 enqueue 0.028 sync 0.003 | host total 0.042 | skipped 0 of 599 | up 0.02 MB down 0.01 MB | PROBE empty 0.000 nullkernel1 0.000 nullkernel2 0.000 copy4B 0.000
+[bond-stress-gpu] ticks=600 attempts=599 ranOnDevice=599 checks=0 MISMATCHES=0 (count=0 removeSize=0 removeOrder=0 mask=0) firstBadTick=0 lastBadTick=0 refuse(noSolver=0 stale=0 pendingTopo=0 csr=0) STRESS_MISMATCH=0/0 big=0 maxRel=0.000e+00 BEND_MISMATCH=0 bendMaxRel=0.000e+00 OVERSET_MISMATCH=0/0 compactHits=2816 misses=0 IMPULSE=0/0 impMaxRel=0.000e+00 PAYLOAD(n=0 node=0 normal=0 disp=0 centroid=0)
+[bs-phase] calls=599 per-call ms: upload 0.019 kernel 0.015 readback 0.011 | prep 0.016 enqueue 0.028 sync 0.005 | host total 0.052 | skipped 0 of 599 | up 0.05 MB down 0.03 MB | PROBE empty 0.000 nullkernel1 0.000 nullkernel2 0.000 copy4B 0.000
+[bond-stress-gpu] ticks=600 attempts=599 ranOnDevice=599 checks=0 MISMATCHES=0 (count=0 removeSize=0 removeOrder=0 mask=0) firstBadTick=0 lastBadTick=0 refuse(noSolver=0 stale=0 pendingTopo=0 csr=0) STRESS_MISMATCH=0/0 big=0 maxRel=0.000e+00 BEND_MISMATCH=0 bendMaxRel=0.000e+00 OVERSET_MISMATCH=0/0 compactHits=1250 misses=0 IMPULSE=0/0 impMaxRel=0.000e+00 PAYLOAD(n=0 node=0 normal=0 disp=0 centroid=0)
+ok
+test every_structure_stands_under_its_own_weight ... PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+PhysX[2] Cooking::cookConvexMesh: GPU-compatible convex hull could not be built because of oblong shape. Will fall back to CPU collision, particles and deformables will not collide with this mesh! (/root/workspace/physx-gpu-activity/physx/source/geomutils/src/cooking/GuCookingConvexMesh.cpp:124)
+ok
+test the_frame_needs_a_bigger_hit_than_the_cladding ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 196.04s
+
+     Running tests/blast_core_city_test.rs (target/gpu-activity/release/deps/blast_core_city_test-4c851f11fe2f0a5b)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/capacity_ramp.rs (target/gpu-activity/release/deps/capacity_ramp-b91afe4b34073dce)
+
+running 1 test
+test capacity_ramp ... ignored, measurement: minutes per component
+
+test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/fractured_tower.rs (target/gpu-activity/release/deps/fractured_tower-1f7f9efeaa6de380)
+
+running 3 tests
+test default_city_matches_plan_scale ... ok
+test manifest_is_stable_and_reasonably_sized ... ok
+test variant_counts_match_the_cpp_contract ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+     Running tests/high_rise.rs (target/gpu-activity/release/deps/high_rise-78b0547a4a6cb482)
+
+running 7 tests
+test chunk_boxes_do_not_interpenetrate ... ok
+test city_grid_leaves_a_street_between_buildings ... ok
+test default_city_fits_the_chunk_budget ... ok
+test drawn_size_equals_collider_extent ... ok
+test every_chunk_is_a_box ... ok
+test pack_carries_its_own_stress_limits ... ok
+test variant_ladder_stays_supported ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/manifest_binary.rs (target/gpu-activity/release/deps/manifest_binary-d9b4e165e72ae804)
+
+running 7 tests
+test a_multi_structure_city_round_trips ... ok
+test binary_is_far_smaller_than_json ... ok
+test dump_for_measurement ... ignored, measurement tool
+test every_authored_manifest_round_trips ... ok
+test json_is_not_mistaken_for_binary ... ok
+test mixed_geometry_survives_the_round_trip ... ok
+test write_ts_fixture ... ignored, regenerates a checked-in fixture
+
+test result: ok. 5 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 0.10s
+
+     Running tests/rig_scenarios_sim.rs (target/gpu-activity/release/deps/rig_scenarios_sim-09e86fcf0bc9140f)
+
+running 10 tests
+test a_cantilever_fails_by_length_and_the_marginal_ones_take_longer ... [destruction] CUDA stress solver active; configured iteration budget 32. Convergence depends on the current load and topology.
+[bs-phase] calls=248 per-call ms: upload 0.009 kernel 0.014 readback 0.013 | prep 0.008 enqueue 0.028 sync 0.003 | host total 0.042 | skipped 351 of 599 | up 0.00 MB down 0.01 MB | PROBE empty 0.000 nullkernel1 0.000 nullkernel2 0.000 copy4B 0.000
+[bond-stress-gpu] ticks=600 attempts=599 ranOnDevice=599 checks=0 MISMATCHES=0 (count=0 removeSize=0 removeOrder=0 mask=0) firstBadTick=0 lastBadTick=0 refuse(noSolver=0 stale=0 pendingTopo=0 csr=0) STRESS_MISMATCH=0/0 big=0 maxRel=0.000e+00 BEND_MISMATCH=0 bendMaxRel=0.000e+00 OVERSET_MISMATCH=0/0 compactHits=540 misses=0 IMPULSE=0/0 impMaxRel=0.000e+00 PAYLOAD(n=0 node=0 normal=0 disp=0 centroid=0)
+[bs-phase] calls=248 per-call ms: upload 0.009 kernel 0.014 readback 0.013 | prep 0.008 enqueue 0.028 sync 0.003 | host total 0.042 | skipped 951 of 1199 | up 0.00 MB down 0.01 MB | PROBE empty 0.000 nullkernel1 0.000 nullkernel2 0.000 copy4B 0.000
+[bond-stress-gpu] ticks=1200 attempts=1199 ranOnDevice=1199 checks=0 MISMATCHES=0 (count=0 removeSize=0 removeOrder=0 mask=0) firstBadTick=0 lastBadTick=0 refuse(noSolver=0 stale=0 pendingTopo=0 csr=0) STRESS_MISMATCH=0/0 big=0 maxRel=0.000e+00 BEND_MISMATCH=0 bendMaxRel=0.000e+00 OVERSET_MISMATCH=0/0 compactHits=540 misses=0 IMPULSE=0/0 impMaxRel=0.000e+00 PAYLOAD(n=0 node=0 normal=0 disp=0 centroid=0)
+[bs-phase] calls=248 per-call ms: upload 0.009 kernel 0.014 readback 0.013 | prep 0.008 enqueue 0.028 sync 0.003 | host total 0.042 | skipped 1551 of 1799 | up 0.00 MB down 0.01 MB | PROBE empty 0.000 nullkernel1 0.000 nullkernel2 0.000 copy4B 0.000
+[bond-stress-gpu] ticks=1800 attempts=1799 ranOnDevice=1799 checks=0 MISMATCHES=0 (count=0 removeSize=0 removeOrder=0 mask=0) firstBadTick=0 lastBadTick=0 refuse(noSolver=0 stale=0 pendingTopo=0 csr=0) STRESS_MISMATCH=0/0 big=0 maxRel=0.000e+00 BEND_MISMATCH=0 bendMaxRel=0.000e+00 OVERSET_MISMATCH=0/0 compactHits=540 misses=0 IMPULSE=0/0 impMaxRel=0.000e+00 PAYLOAD(n=0 node=0 normal=0 disp=0 centroid=0)
+ok
+test a_garage_collapses_when_one_whole_side_is_cut ... [bs-phase] calls=599 per-call ms: upload 0.011 kernel 0.015 readback 0.013 | prep 0.010 enqueue 0.030 sync 0.003 | host total 0.048 | skipped 0 of 599 | up 0.01 MB down 0.01 MB | PROBE empty 0.000 nullkernel1 0.000 nullkernel2 0.000 copy4B 0.000
+[bond-stress-gpu] ticks=600 attempts=599 ranOnDevice=599 checks=0 MISMATCHES=0 (count=0 removeSize=0 removeOrder=0 mask=0) firstBadTick=0 lastBadTick=0 refuse(noSolver=0 stale=0 pendingTopo=0 csr=0) STRESS_MISMATCH=0/0 big=0 maxRel=0.000e+00 BEND_MISMATCH=0 bendMaxRel=0.000e+00 OVERSET_MISMATCH=0/0 compactHits=11625 misses=0 IMPULSE=0/0 impMaxRel=0.000e+00 PAYLOAD(n=0 node=0 normal=0 disp=0 centroid=0)
+[bs-phase] calls=1199 per-call ms: upload 0.010 kernel 0.017 readback 0.013 | prep 0.009 enqueue 0.031 sync 0.003 | host total 0.048 | skipped 0 of 1199 | up 0.01 MB down 0.01 MB | PROBE empty 0.000 nullkernel1 0.000 nullkernel2 0.000 copy4B 0.000
+[bond-stress-gpu] ticks=1200 attempts=1199 ranOnDevice=1199 checks=0 MISMATCHES=0 (count=0 removeSize=0 removeOrder=0 mask=0) firstBadTick=0 lastBadTick=0 refuse(noSolver=0 stale=0 pendingTopo=0 csr=0) STRESS_MISMATCH=0/0 big=0 maxRel=0.000e+00 BEND_MISMATCH=0 bendMaxRel=0.000e+00 OVERSET_MISMATCH=0/0 compactHits=16416 misses=0 IMPULSE=0/0 impMaxRel=0.000e+00 PAYLOAD(n=0 node=0 normal=0 disp=0 centroid=0)
+ok
+test a_garage_stands_on_every_second_column ... [bs-phase] calls=57 per-call ms: upload 0.008 kernel 0.014 readback 0.013 | prep 0.007 enqueue 0.029 sync 0.003 | host total 0.042 | skipped 542 of 599 | up 0.00 MB down 0.01 MB | PROBE empty 0.000 nullkernel1 0.000 nullkernel2 0.000 copy4B 0.000
+[bond-stress-gpu] ticks=600 attempts=599 ranOnDevice=599 checks=0 MISMATCHES=0 (count=0 removeSize=0 removeOrder=0 mask=0) firstBadTick=0 lastBadTick=0 refuse(noSolver=0 stale=0 pendingTopo=0 csr=0) STRESS_MISMATCH=0/0 big=0 maxRel=0.000e+00 BEND_MISMATCH=0 bendMaxRel=0.000e+00 OVERSET_MISMATCH=0/0 compactHits=0 misses=0 IMPULSE=0/0 impMaxRel=0.000e+00 PAYLOAD(n=0 node=0 normal=0 disp=0 centroid=0)
+[bs-phase] calls=57 per-call ms: upload 0.008 kernel 0.014 readback 0.013 | prep 0.007 enqueue 0.029 sync 0.003 | host total 0.042 | skipped 1142 of 1199 | up 0.00 MB down 0.01 MB | PROBE empty 0.000 nullkernel1 0.000 nullkernel2 0.000 copy4B 0.000
+[bond-stress-gpu] ticks=1200 attempts=1199 ranOnDevice=1199 checks=0 MISMATCHES=0 (count=0 removeSize=0 removeOrder=0 mask=0) firstBadTick=0 lastBadTick=0 refuse(noSolver=0 stale=0 pendingTopo=0 csr=0) STRESS_MISMATCH=0/0 big=0 maxRel=0.000e+00 BEND_MISMATCH=0 bendMaxRel=0.000e+00 OVERSET_MISMATCH=0/0 compactHits=0 misses=0 IMPULSE=0/0 impMaxRel=0.000e+00 PAYLOAD(n=0 node=0 normal=0 disp=0 centroid=0)
+ok
+test a_shot_damages_a_column_without_erasing_it ... ok
+test a_slab_on_one_ledge_is_loaded_where_it_bears ... [bs-phase] calls=33 per-call ms: upload 0.008 kernel 0.015 readback 0.013 | prep 0.007 enqueue 0.029 sync 0.003 | host total 0.041 | skipped 566 of 599 | up 0.00 MB down 0.00 MB | PROBE empty 0.000 nullkernel1 0.000 nullkernel2 0.000 copy4B 0.000
+[bond-stress-gpu] ticks=600 attempts=599 ranOnDevice=599 checks=0 MISMATCHES=0 (count=0 removeSize=0 removeOrder=0 mask=0) firstBadTick=0 lastBadTick=0 refuse(noSolver=0 stale=0 pendingTopo=0 csr=0) STRESS_MISMATCH=0/0 big=0 maxRel=0.000e+00 BEND_MISMATCH=0 bendMaxRel=0.000e+00 OVERSET_MISMATCH=0/0 compactHits=0 misses=0 IMPULSE=0/0 impMaxRel=0.000e+00 PAYLOAD(n=0 node=0 normal=0 disp=0 centroid=0)
+ok
+test does_an_overloaded_bond_degrade ... ignored, diagnostic
+test every_rig_stands_under_its_own_weight ... ok
+test how_many_columns_the_garage_survives ... ignored, measurement: reports the collapse threshold
+test measure_rest_utilisation ... ok
+test the_real_garage_loses_one_side ... ignored, diagnostic on a shipping building
+
+test result: ok. 7 passed; 0 failed; 3 ignored; 0 measured; 0 filtered out; finished in 21.97s
+
+     Running tests/rig_smoke_sim.rs (target/gpu-activity/release/deps/rig_smoke_sim-65a85a786328de7a)
+
+running 8 tests
+test each_physics_step_has_a_current_replay_snapshot ... [destruction] CUDA stress solver active; configured iteration budget 32. Convergence depends on the current load and topology.
+ok
+test stress_report ... ignored, diagnostic
+test surgery_removes_chunks_and_keeps_the_bond_graph_consistent ... ok
+test the_bench_can_stand_a_building_up_and_find_its_chunks ... ok
+test the_parking_garage_settles ... ok
+test the_whole_skyline_stands ... ignored, heavy: the full skyline scene
+test time_to_settle ... ignored, diagnostic
+test utilisation_per_tick ... ignored, diagnostic
+
+test result: ok. 4 passed; 0 failed; 4 ignored; 0 measured; 0 filtered out; finished in 4.27s
+
+     Running tests/settle_ground.rs (target/gpu-activity/release/deps/settle_ground-7cc21ee54cceedf9)
+
+running 4 tests
+test depenetrating_body_looks_quiet_to_the_settle_floor ... ok
+test force_sleep_deadline_still_applies_to_moving_bodies ... ok
+test re_arming_a_deferred_body_keeps_it_eligible ... ok
+test tracker_settles_a_quiet_body_regardless_of_position ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/structural_stability.rs (target/gpu-activity/release/deps/structural_stability-b2066239266b33f7)
+
+running 14 tests
+test comp_frame_bay_is_stable ... [destruction] CUDA stress solver active; configured iteration budget 32. Convergence depends on the current load and topology.
+[bs-phase] calls=18 per-call ms: upload 0.009 kernel 0.020 readback 0.013 | prep 0.008 enqueue 0.034 sync 0.003 | host total 0.049 | skipped 581 of 599 | up 0.00 MB down 0.00 MB | PROBE empty 0.000 nullkernel1 0.000 nullkernel2 0.000 copy4B 0.000
+[bond-stress-gpu] ticks=600 attempts=599 ranOnDevice=599 checks=0 MISMATCHES=0 (count=0 removeSize=0 removeOrder=0 mask=0) firstBadTick=0 lastBadTick=0 refuse(noSolver=0 stale=0 pendingTopo=0 csr=0) STRESS_MISMATCH=0/0 big=0 maxRel=0.000e+00 BEND_MISMATCH=0 bendMaxRel=0.000e+00 OVERSET_MISMATCH=0/0 compactHits=0 misses=0 IMPULSE=0/0 impMaxRel=0.000e+00 PAYLOAD(n=0 node=0 normal=0 disp=0 centroid=0)
+ok
+test comp_room_is_stable ... [bs-phase] calls=6 per-call ms: upload 0.010 kernel 0.032 readback 0.013 | prep 0.009 enqueue 0.047 sync 0.003 | host total 0.063 | skipped 593 of 599 | up 0.00 MB down 0.00 MB | PROBE empty 0.000 nullkernel1 0.000 nullkernel2 0.000 copy4B 0.000
+[bond-stress-gpu] ticks=600 attempts=599 ranOnDevice=599 checks=0 MISMATCHES=0 (count=0 removeSize=0 removeOrder=0 mask=0) firstBadTick=0 lastBadTick=0 refuse(noSolver=0 stale=0 pendingTopo=0 csr=0) STRESS_MISMATCH=0/0 big=0 maxRel=0.000e+00 BEND_MISMATCH=0 bendMaxRel=0.000e+00 OVERSET_MISMATCH=0/0 compactHits=0 misses=0 IMPULSE=0/0 impMaxRel=0.000e+00 PAYLOAD(n=0 node=0 normal=0 disp=0 centroid=0)
+ok
+test comp_stack_is_stable ... [bs-phase] calls=40 per-call ms: upload 0.010 kernel 0.015 readback 0.013 | prep 0.009 enqueue 0.029 sync 0.003 | host total 0.045 | skipped 559 of 599 | up 0.00 MB down 0.01 MB | PROBE empty 0.000 nullkernel1 0.000 nullkernel2 0.000 copy4B 0.000
+[bond-stress-gpu] ticks=600 attempts=599 ranOnDevice=599 checks=0 MISMATCHES=0 (count=0 removeSize=0 removeOrder=0 mask=0) firstBadTick=0 lastBadTick=0 refuse(noSolver=0 stale=0 pendingTopo=0 csr=0) STRESS_MISMATCH=0/0 big=0 maxRel=0.000e+00 BEND_MISMATCH=0 bendMaxRel=0.000e+00 OVERSET_MISMATCH=0/0 compactHits=80 misses=1526 IMPULSE=0/0 impMaxRel=0.000e+00 PAYLOAD(n=0 node=0 normal=0 disp=0 centroid=0)
+ok
+test comp_storey_is_stable ... [bs-phase] calls=9 per-call ms: upload 0.009 kernel 0.023 readback 0.014 | prep 0.009 enqueue 0.038 sync 0.003 | host total 0.053 | skipped 590 of 599 | up 0.00 MB down 0.01 MB | PROBE empty 0.000 nullkernel1 0.000 nullkernel2 0.000 copy4B 0.000
+[bond-stress-gpu] ticks=600 attempts=599 ranOnDevice=599 checks=0 MISMATCHES=0 (count=0 removeSize=0 removeOrder=0 mask=0) firstBadTick=0 lastBadTick=0 refuse(noSolver=0 stale=0 pendingTopo=0 csr=0) STRESS_MISMATCH=0/0 big=0 maxRel=0.000e+00 BEND_MISMATCH=0 bendMaxRel=0.000e+00 OVERSET_MISMATCH=0/0 compactHits=0 misses=0 IMPULSE=0/0 impMaxRel=0.000e+00 PAYLOAD(n=0 node=0 normal=0 disp=0 centroid=0)
+ok
+test comp_wall_bay_is_stable ... [bs-phase] calls=8 per-call ms: upload 0.009 kernel 0.021 readback 0.013 | prep 0.009 enqueue 0.035 sync 0.003 | host total 0.050 | skipped 591 of 599 | up 0.00 MB down 0.00 MB | PROBE empty 0.000 nullkernel1 0.000 nullkernel2 0.000 copy4B 0.000
+[bond-stress-gpu] ticks=600 attempts=599 ranOnDevice=599 checks=0 MISMATCHES=0 (count=0 removeSize=0 removeOrder=0 mask=0) firstBadTick=0 lastBadTick=0 refuse(noSolver=0 stale=0 pendingTopo=0 csr=0) STRESS_MISMATCH=0/0 big=0 maxRel=0.000e+00 BEND_MISMATCH=0 bendMaxRel=0.000e+00 OVERSET_MISMATCH=0/0 compactHits=0 misses=0 IMPULSE=0/0 impMaxRel=0.000e+00 PAYLOAD(n=0 node=0 normal=0 disp=0 centroid=0)
+ok
+test frame_bays_compose_in_a_row ... [bs-phase] calls=20 per-call ms: upload 0.008 kernel 0.016 readback 0.012 | prep 0.007 enqueue 0.030 sync 0.003 | host total 0.043 | skipped 579 of 599 | up 0.00 MB down 0.01 MB | PROBE empty 0.000 nullkernel1 0.000 nullkernel2 0.000 copy4B 0.000
+[bond-stress-gpu] ticks=600 attempts=599 ranOnDevice=599 checks=0 MISMATCHES=0 (count=0 removeSize=0 removeOrder=0 mask=0) firstBadTick=0 lastBadTick=0 refuse(noSolver=0 stale=0 pendingTopo=0 csr=0) STRESS_MISMATCH=0/0 big=0 maxRel=0.000e+00 BEND_MISMATCH=0 bendMaxRel=0.000e+00 OVERSET_MISMATCH=0/0 compactHits=0 misses=0 IMPULSE=0/0 impMaxRel=0.000e+00 PAYLOAD(n=0 node=0 normal=0 disp=0 centroid=0)
+[bs-phase] calls=18 per-call ms: upload 0.008 kernel 0.017 readback 0.013 | prep 0.007 enqueue 0.031 sync 0.003 | host total 0.044 | skipped 581 of 599 | up 0.00 MB down 0.01 MB | PROBE empty 0.000 nullkernel1 0.000 nullkernel2 0.000 copy4B 0.000
+[bond-stress-gpu] ticks=600 attempts=599 ranOnDevice=599 checks=0 MISMATCHES=0 (count=0 removeSize=0 removeOrder=0 mask=0) firstBadTick=0 lastBadTick=0 refuse(noSolver=0 stale=0 pendingTopo=0 csr=0) STRESS_MISMATCH=0/0 big=0 maxRel=0.000e+00 BEND_MISMATCH=0 bendMaxRel=0.000e+00 OVERSET_MISMATCH=0/0 compactHits=0 misses=0 IMPULSE=0/0 impMaxRel=0.000e+00 PAYLOAD(n=0 node=0 normal=0 disp=0 centroid=0)
+[bs-phase] calls=16 per-call ms: upload 0.009 kernel 0.017 readback 0.013 | prep 0.008 enqueue 0.031 sync 0.003 | host total 0.045 | skipped 583 of 599 | up 0.00 MB down 0.01 MB | PROBE empty 0.000 nullkernel1 0.000 nullkernel2 0.000 copy4B 0.000
+[bond-stress-gpu] ticks=600 attempts=599 ranOnDevice=599 checks=0 MISMATCHES=0 (count=0 removeSize=0 removeOrder=0 mask=0) firstBadTick=0 lastBadTick=0 refuse(noSolver=0 stale=0 pendingTopo=0 csr=0) STRESS_MISMATCH=0/0 big=0 maxRel=0.000e+00 BEND_MISMATCH=0 bendMaxRel=0.000e+00 OVERSET_MISMATCH=0/0 compactHits=0 misses=0 IMPULSE=0/0 impMaxRel=0.000e+00 PAYLOAD(n=0 node=0 normal=0 disp=0 centroid=0)
+ok
+test house_1story_is_stable ... ignored, slow: run before shipping a structure change
+test house_2story_is_stable ... ignored, slow: run before shipping a structure change
+test minas_tirith_is_stable ... ignored, slow: run before shipping a structure change
+test park_432_is_stable ... ignored, slow: run before shipping a structure change
+test parking_garage_is_stable ... ignored, slow: run before shipping a structure change
+test petronas_is_stable ... ignored, slow: run before shipping a structure change
+test villa_savoye_is_stable ... ignored, slow: run before shipping a structure change
+test wall_bays_compose_in_a_row ... [bs-phase] calls=10 per-call ms: upload 0.009 kernel 0.020 readback 0.013 | prep 0.008 enqueue 0.034 sync 0.003 | host total 0.048 | skipped 589 of 599 | up 0.00 MB down 0.01 MB | PROBE empty 0.000 nullkernel1 0.000 nullkernel2 0.000 copy4B 0.000
+[bond-stress-gpu] ticks=600 attempts=599 ranOnDevice=599 checks=0 MISMATCHES=0 (count=0 removeSize=0 removeOrder=0 mask=0) firstBadTick=0 lastBadTick=0 refuse(noSolver=0 stale=0 pendingTopo=0 csr=0) STRESS_MISMATCH=0/0 big=0 maxRel=0.000e+00 BEND_MISMATCH=0 bendMaxRel=0.000e+00 OVERSET_MISMATCH=0/0 compactHits=0 misses=0 IMPULSE=0/0 impMaxRel=0.000e+00 PAYLOAD(n=0 node=0 normal=0 disp=0 centroid=0)
+[bs-phase] calls=72 per-call ms: upload 0.010 kernel 0.013 readback 0.013 | prep 0.009 enqueue 0.027 sync 0.003 | host total 0.043 | skipped 527 of 599 | up 0.00 MB down 0.01 MB | PROBE empty 0.000 nullkernel1 0.000 nullkernel2 0.000 copy4B 0.000
+[bond-stress-gpu] ticks=600 attempts=599 ranOnDevice=599 checks=0 MISMATCHES=0 (count=0 removeSize=0 removeOrder=0 mask=0) firstBadTick=0 lastBadTick=0 refuse(noSolver=0 stale=0 pendingTopo=0 csr=0) STRESS_MISMATCH=0/0 big=0 maxRel=0.000e+00 BEND_MISMATCH=0 bendMaxRel=0.000e+00 OVERSET_MISMATCH=0/0 compactHits=116 misses=1840 IMPULSE=0/0 impMaxRel=0.000e+00 PAYLOAD(n=0 node=0 normal=0 disp=0 centroid=0)
+[bs-phase] calls=12 per-call ms: upload 0.009 kernel 0.019 readback 0.012 | prep 0.008 enqueue 0.032 sync 0.003 | host total 0.047 | skipped 587 of 599 | up 0.00 MB down 0.01 MB | PROBE empty 0.000 nullkernel1 0.000 nullkernel2 0.000 copy4B 0.000
+[bond-stress-gpu] ticks=600 attempts=599 ranOnDevice=599 checks=0 MISMATCHES=0 (count=0 removeSize=0 removeOrder=0 mask=0) firstBadTick=0 lastBadTick=0 refuse(noSolver=0 stale=0 pendingTopo=0 csr=0) STRESS_MISMATCH=0/0 big=0 maxRel=0.000e+00 BEND_MISMATCH=0 bendMaxRel=0.000e+00 OVERSET_MISMATCH=0/0 compactHits=0 misses=0 IMPULSE=0/0 impMaxRel=0.000e+00 PAYLOAD(n=0 node=0 normal=0 disp=0 centroid=0)
+ok
+
+test result: ok. 7 passed; 0 failed; 7 ignored; 0 measured; 0 filtered out; finished in 14.02s
+
+     Running unittests src/lib.rs (target/gpu-activity/release/deps/vibe_land_physx_bridge-6a10db72fa83db42)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/destruction_smoke.rs (target/gpu-activity/release/deps/destruction_smoke-f4f8f4871b52f248)
+
+running 3 tests
+test chunk_raycast_resolves_the_real_surface_and_misses_are_real ... [destruction] CUDA stress solver active; configured iteration budget 25. Convergence depends on the current load and topology.
+ok
+test destruction_tower_settles_and_fractures ... ok
+test event_ids_round_trip_across_multiple_structures ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.17s
+
+     Running tests/freeze_wake_semantics.rs (target/gpu-activity/release/deps/freeze_wake_semantics-cdae2f317b03ae85)
+
+running 9 tests
+test debris_landing_on_frozen_rubble_releases_it_by_contact ... [destruction] CUDA stress solver active; configured iteration budget 25. Convergence depends on the current load and topology.
+ok
+test freezing_a_whole_pile_retires_it_without_losing_identity ... ok
+test freezing_part_of_a_sleeping_pile_leaves_the_rest_asleep ... ok
+test frozen_rubble_still_collides ... ok
+test resting_contact_reports_fire_on_gpu_and_the_sign_is_measured ... ok
+test support_edges_arrive_with_world_stump_and_debris_supporters ... ok
+test the_support_actor_is_never_frozen_or_released ... ok
+test unfreezing_restores_the_body_at_rest_and_in_place ... ok
+test unknown_and_repeated_ids_are_tolerated ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 10.41s
+
+     Running tests/gpu_load.rs (target/gpu-activity/release/deps/gpu_load-705f88d83fb78dca)
+
+running 1 test
+test cascade_capacity_has_no_gpu_buffer_warnings ... ignored, requires dedicated GPU load-test capacity
+
+test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/gpu_smoke.rs (target/gpu-activity/release/deps/gpu_smoke-fc411684801d3ffa)
+
+running 4 tests
+test cct_push_keeps_light_ball_at_realistic_speed ... ok
+test force_threshold_sums_loads_across_static_supports ... ok
+test gpu_world_smoke_test_requires_real_cuda_scene ... ok
+test multiple_gpu_worlds_share_one_process_runtime ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.88s
+
+     Running tests/gpu_step_bench.rs (target/gpu-activity/release/deps/gpu_step_bench-3122982871a00afc)
+
+running 1 test
+test gpu_step_cost_by_body_count ... ignored, benchmark: needs a GPU and burns a core when profiling
+
+test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/settle_assist.rs (target/gpu-activity/release/deps/settle_assist-f46db0caffbbebb1)
+
+running 7 tests
+test arm_body::heavy ... ignored
+test arm_body::in_flight ... ignored
+test arm_body::settle ... ignored
+test assist_settles_a_pile_faster_than_it_settles_unassisted ... ok
+test debris_in_flight_is_never_assisted ... ok
+test slabs_above_the_mass_ceiling_are_never_assisted ... ok
+test the_assist_is_off_by_default ... ok
+
+test result: ok. 4 passed; 0 failed; 3 ignored; 0 measured; 0 filtered out; finished in 6.42s
+
+     Running tests/stack_settling.rs (target/gpu-activity/release/deps/stack_settling-812e6a185314b5b8)
+
+running 5 tests
+test a_pile_of_boxes_comes_to_rest ... ignored, needs a GPU
+test piles_settle_at_city_scale ... ignored, measurement: needs a GPU, runs several large piles
+test residual_velocity_settles_to_near_zero ... ignored, needs a GPU
+test stacked_boxes_do_not_sink_into_the_ground ... ignored, needs a GPU
+test sweep_solver_iterations_for_the_knee ... ignored, measurement: needs a GPU
+
+test result: ok. 0 passed; 0 failed; 5 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/stub.rs (target/gpu-activity/release/deps/stub-32d6dee5cd04d6b7)
+
+running 1 test
+test pod_defaults_match_the_fixed_step_contract ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/timing_consistency.rs (target/gpu-activity/release/deps/timing_consistency-ee73af7eed5e8ae5)
+
+running 1 test
+test published_timings_stay_consistent_with_their_documented_relations ... [destruction] CUDA stress solver active; configured iteration budget 25. Convergence depends on the current load and topology.
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.10s
+
+     Running tests/velocity_fidelity.rs (target/gpu-activity/release/deps/velocity_fidelity-1fcd120c1258a97b)
+
+running 1 test
+test torque_impulses_preserve_spin_above_the_physx_default_ceiling ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.04s
+
+   Doc-tests vibe_land_destruction
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests vibe_land_physx_bridge
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

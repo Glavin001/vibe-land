@@ -1,0 +1,38 @@
+{
+  "game_head": "b62edf0c814ff3570095a31725b595577a03f9c8",
+  "solver_head": "89e5f398237c4ac2589f4303351957713c2f47eb",
+  "stage": "v2 signed physical moments; native tested; game compiled only; held from deployment",
+  "binaries": {
+    "/root/workspace/vibe-land-4/target/gpu-activity/release/web-fps-server": "e8c21dad25e7cdd20e122d3f5d985876bf05dd5fa5a2490c29fbdad65fb66091",
+    "/root/workspace/vibe-land-4/target/gpu-activity/release/record-city-trace": "ec72e7fdfe659633952e300d09656331f944583b186d1012e9aef83a3537d993",
+    "/root/workspace/blast-stress-solver-2/demos/blast-stress-demo/build-gpu-activity/point_force_test": "df3b73f1fd295863931b415daebfcecd10de1dcf835d27da9e2c7d4b984495a9",
+    "/root/workspace/blast-stress-solver-2/demos/blast-stress-demo/build-gpu-activity/direct_gpu_contact_test": "695e06b58b5762c40e703c8d8a86ae4743bb929a3d0675d78d025fd7cf713af3",
+    "/root/workspace/blast-stress-solver-2/demos/blast-stress-demo/build-gpu-activity/gpu_stress_suite": "0f1f74a9ad203001206ed9b85c1d5383d84241b38974607d61e489e5d3ed69a9",
+    "/root/workspace/physx-gpu-activity/physx/gpu-activity-manifest.json": "53e5fe7d4b9e54d2d173b622a7dc1e8e7e72a5cd5c14ce5ab79eb62877ee3c79"
+  },
+  "source": {
+    "/root/workspace/vibe-land-4/physx-bridge/build.rs": "2820cd709ffedba4c601b253c36668bda1a0c321365e5deefa68118bee0e6929",
+    "/root/workspace/vibe-land-4/physx-bridge/include/destruction.h": "b28432e283c8656300df9b247bec394752f316027ad5258ffaa45a52d6f2e5ab",
+    "/root/workspace/vibe-land-4/physx-bridge/src/destruction.cc": "162474a9bf32805e64d8d868e7d426dc00b90e926729f526b549e46a06f3fe6a",
+    "/root/workspace/vibe-land-4/physx-bridge/src/physx_bridge.cc": "8e1c7c0aac88d38eee7e60702198b3cfa6f8be3c869e0070e2d73bb1d64cb66e",
+    "/root/workspace/blast-stress-solver-2/blast/include/extensions/stress/NvBlastExtStressSolver.h": "1d6d904d858c23952a2f65778b07cbaf43281f6c529180ffe63a938aa203e0d6",
+    "/root/workspace/blast-stress-solver-2/blast/include/extensions/stressgpu/NvBlastExtStressGpu.h": "246181df86a170a4b1e9a0c2a2d1227d2f8126293c5e17d79c101f2ba88fd2e9",
+    "/root/workspace/blast-stress-solver-2/blast/include/extensions/stressphysx/NvBlastExtStressPhysX.h": "70cf1a827e5ea469463b9f5f705a662209caf5916d27670cb54f184d4729dfc9",
+    "/root/workspace/blast-stress-solver-2/blast/rust_stress_example/ffi/ext_stress_bridge.cpp": "d58b04632644938051186bd82f57ff8648dfba997ba9cbbf618a339cbd1adfb1",
+    "/root/workspace/blast-stress-solver-2/blast/rust_stress_example/ffi/ext_stress_bridge.h": "f610a07b620d81318293218f0b4835722d4ccceb6bf4188f96389692214065c3",
+    "/root/workspace/blast-stress-solver-2/blast/source/sdk/extensions/stress/NvBlastExtStressSolver.cpp": "ed62e2df05d0bcb06f9b8d7788a6bd88611f85c15c2bf9f2e4fd3d60c62bb640",
+    "/root/workspace/blast-stress-solver-2/blast/source/sdk/extensions/stressgpu/NvBlastExtStressGpu.cu": "32036e97a9b7f925db5657766bdf7d35e94ae0c0262c03c1d0b81ac1f925de9d",
+    "/root/workspace/blast-stress-solver-2/blast/source/sdk/extensions/stressphysx/NvBlastExtStressPhysX.cpp": "238fbaa1c9de86a3853fabece024bae1a99fe6fbdc1ac17bc675ad2e11a10bc3",
+    "/root/workspace/blast-stress-solver-2/demos/blast-stress-demo/CMakeLists.txt": "25719ecfafde167d2bcb371854b38d74e9c6640b5173015c0ffd977b73bcd540",
+    "/root/workspace/blast-stress-solver-2/demos/blast-stress-demo/tests/direct_gpu_contact_test.cu": "842690b9f7b2fa0908923c6f36afa09eb6bda92607fa6037287ae4a7b30435a6",
+    "/root/workspace/blast-stress-solver-2/demos/blast-stress-demo/tests/gpu_stress_benchmark.cpp": "0811a29a948318e24d2249f13c36a13e829b1270a7f63bdc8df1a595b71b60f9",
+    "/root/workspace/blast-stress-solver-2/demos/blast-stress-demo/tests/gpu_stress_suite.cpp": "ea21e847c048a5437ea86c2dba208cab561b308f31726b36cb1230c4e5ff9951",
+    "/root/workspace/blast-stress-solver-2/demos/blast-stress-demo/tests/gpu_stress_test.cpp": "8d1c00dd2d6fb3eaaa6622c6aec72b24c19dc0575dc2c94fa985ae9b6de4876a",
+    "/root/workspace/blast-stress-solver-2/blast/include/extensions/stressphysx/NvBlastExtStressPhysXContactWrench.h": "a4b9274c1f26aa35f5e7a84b21fab18de3eb6b9ea7d54158e56016096e2833f4",
+    "/root/workspace/blast-stress-solver-2/demos/blast-stress-demo/tests/point_force_test.cpp": "a964311af11c36d4b9fcec5eb8e66301bbe978b15e24c424059da5002ef0cf5e"
+  },
+  "reference_script": {
+    "path": "/root/workspace/blast-stress-solver-2/demos/blast-stress-demo/tests/multilevel_reference.py",
+    "sha256": "c09ae99d0e77c72840aa9bfc11850413e4574fcd436481201016b2b7868baacc"
+  }
+}

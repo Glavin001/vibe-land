@@ -1,0 +1,65 @@
+[  5%] Building CUDA object CMakeFiles/NvBlastExtStressGpu.dir/root/workspace/blast-stress-solver-2/blast/source/sdk/extensions/stressgpu/NvBlastExtStressGpu.cu.o
+/root/workspace/blast-stress-solver-2/blast/source/sdk/extensions/stressgpu/NvBlastExtStressGpu.cu(361): warning #177-D: function "Nv::Blast::<unnamed>::verifyPartitionEnabled" was declared but never referenced
+  bool verifyPartitionEnabled()
+       ^
+
+Remark: The warnings can be suppressed with "-diag-suppress <warning-number>"
+
+/root/workspace/blast-stress-solver-2/blast/source/sdk/extensions/stressgpu/NvBlastExtStressGpu.cu(541): warning #177-D: variable "Nv::Blast::<unnamed>::kQRefresh" was declared but never referenced
+  static constexpr std::uint32_t kQRefresh = 16u;
+                                 ^
+
+/root/workspace/blast-stress-solver-2/blast/source/sdk/extensions/stressgpu/NvBlastExtStressGpu.cu(965): warning #177-D: function "Nv::Blast::<unnamed>::squaredMagnitude" was declared but never referenced
+            void squaredMagnitude(
+                 ^
+
+/root/workspace/blast-stress-solver-2/blast/source/sdk/extensions/stressgpu/NvBlastExtStressGpu.cu(984): warning #177-D: function "Nv::Blast::<unnamed>::setTolerance" was declared but never referenced
+            void setTolerance(float* deltaSquared, const float* rhsSquared, float tolerance)
+                 ^
+
+/root/workspace/blast-stress-solver-2/blast/source/sdk/extensions/stressgpu/NvBlastExtStressGpu.cu(1949): warning #177-D: function "Nv::Blast::<unnamed>::resetActiveCount" was declared but never referenced
+            void resetActiveCount(SolveStatus* status)
+                 ^
+
+/root/workspace/blast-stress-solver-2/blast/source/sdk/extensions/stressgpu/NvBlastExtStressGpu.cu(1978): warning #177-D: function "Nv::Blast::<unnamed>::summarizeIslands" was declared but never referenced
+            void summarizeIslands(
+                 ^
+
+/root/workspace/blast-stress-solver-2/blast/source/sdk/extensions/stressgpu/NvBlastExtStressGpu.cu(2008): warning #177-D: function "Nv::Blast::<unnamed>::latchConvergence" was declared but never referenced
+            void latchConvergence(SolveStatus* status, std::uint32_t iteration)
+                 ^
+
+/root/workspace/blast-stress-solver-2/blast/source/sdk/extensions/stressgpu/NvBlastExtStressGpu.cu(2020): warning #177-D: function "Nv::Blast::<unnamed>::checkConvergence" was declared but never referenced
+            void checkConvergence(
+                 ^
+
+/root/workspace/blast-stress-solver-2/blast/source/sdk/extensions/stressgpu/NvBlastExtStressGpu.cu(2072): warning #177-D: function "Nv::Blast::<unnamed>::saveGradientSquaredPerIsland" was declared but never referenced
+            void saveGradientSquaredPerIsland(
+                 ^
+
+/root/workspace/blast-stress-solver-2/blast/source/sdk/extensions/stressgpu/NvBlastExtStressGpu.cu(5409): warning #177-D: function "Nv::Blast::<unnamed>::ExtStressGpuSolverImpl::verifyPartitionAgainstRebuild" was declared but never referenced
+      void verifyPartitionAgainstRebuild()
+           ^
+
+[ 10%] Linking CUDA static library libNvBlastExtStressGpu.a
+[ 10%] Built target NvBlastExtStressGpu
+[ 15%] Building CXX object CMakeFiles/blast_stress_core.dir/root/workspace/blast-stress-solver-2/blast/source/sdk/extensions/stress/NvBlastExtStressSolver.cpp.o
+In file included from /root/workspace/blast-stress-solver-2/blast/source/shared/stress_solver/coupling.h:30,
+                 from /root/workspace/blast-stress-solver-2/blast/source/shared/stress_solver/bond.h:29,
+                 from /root/workspace/blast-stress-solver-2/blast/source/shared/stress_solver/stress.h:29,
+                 from /root/workspace/blast-stress-solver-2/blast/source/sdk/extensions/stress/NvBlastExtStressSolver.cpp:43:
+/root/workspace/blast-stress-solver-2/blast/source/shared/stress_solver/anglin6.h:167:25: warning: ignoring attributes on template argument ‘__m128’ [-Wignored-attributes]
+  167 | struct AngLin6Ops<__m128>
+      |                         ^
+/root/workspace/blast-stress-solver-2/blast/source/shared/stress_solver/coupling.h:121:43: warning: ignoring attributes on template argument ‘SIMD_Scalar’ {aka ‘__m128’} [-Wignored-attributes]
+  121 | struct CouplingMatrixOps<Elem, SIMD_Scalar>
+      |                                           ^
+In file included from /root/workspace/blast-stress-solver-2/blast/source/shared/stress_solver/bond.h:30:
+/root/workspace/blast-stress-solver-2/blast/source/shared/stress_solver/inertia.h:86:36: warning: ignoring attributes on template argument ‘SIMD_Scalar’ {aka ‘__m128’} [-Wignored-attributes]
+   86 | struct InertiaMatrixOps<SIMD_Scalar>
+      |                                    ^
+[ 20%] Linking CXX static library libblast_stress_core.a
+[ 90%] Built target blast_stress_core
+[ 95%] Building CXX object CMakeFiles/point_force_test.dir/tests/point_force_test.cpp.o
+[100%] Linking CXX executable point_force_test
+[100%] Built target point_force_test

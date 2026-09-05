@@ -1,0 +1,48 @@
+Internal ctest changing into directory: /root/workspace/blast-stress-solver-2/demos/blast-stress-demo/build-gpu-activity
+UpdateCTestConfiguration  from :/root/workspace/blast-stress-solver-2/demos/blast-stress-demo/build-gpu-activity/DartConfiguration.tcl
+UpdateCTestConfiguration  from :/root/workspace/blast-stress-solver-2/demos/blast-stress-demo/build-gpu-activity/DartConfiguration.tcl
+Test project /root/workspace/blast-stress-solver-2/demos/blast-stress-demo/build-gpu-activity
+Constructing a list of tests
+Done constructing a list of tests
+Updating test list for fixtures
+Added 0 tests to meet fixture requirements
+Checking test dependency graph...
+Checking test dependency graph end
+test 5
+    Start 5: blast_stress_point_force_cpu
+
+5: Test command: /root/workspace/blast-stress-solver-2/demos/blast-stress-demo/build-gpu-activity/point_force_test "cpu"
+5: Working Directory: /root/workspace/blast-stress-solver-2/demos/blast-stress-demo/build-gpu-activity
+5: Test timeout computed to be: 10000000
+5: separated equal/opposite point forces lost their bending couple
+5: cpu arm=0.00 force=10.00 offset=(0.0,0.0,0.0) reverse=0 stress=(0,0,0)
+5: cpu arm=1.00 force=10.00 offset=(0.0,0.0,0.0) reverse=0 stress=(0,0,0)
+1/2 Test #5: blast_stress_point_force_cpu .....***Failed    0.00 sec
+separated equal/opposite point forces lost their bending couple
+cpu arm=0.00 force=10.00 offset=(0.0,0.0,0.0) reverse=0 stress=(0,0,0)
+cpu arm=1.00 force=10.00 offset=(0.0,0.0,0.0) reverse=0 stress=(0,0,0)
+
+test 6
+    Start 6: blast_stress_point_force_gpu
+
+6: Test command: /root/workspace/blast-stress-solver-2/demos/blast-stress-demo/build-gpu-activity/point_force_test "gpu"
+6: Working Directory: /root/workspace/blast-stress-solver-2/demos/blast-stress-demo/build-gpu-activity
+6: Test timeout computed to be: 10000000
+6: separated equal/opposite point forces lost their bending couple
+6: gpu arm=0.00 force=10.00 offset=(0.0,0.0,0.0) reverse=0 stress=(0,0,0)
+6: gpu arm=1.00 force=10.00 offset=(0.0,0.0,0.0) reverse=0 stress=(0,0,0)
+2/2 Test #6: blast_stress_point_force_gpu .....***Failed    0.26 sec
+separated equal/opposite point forces lost their bending couple
+gpu arm=0.00 force=10.00 offset=(0.0,0.0,0.0) reverse=0 stress=(0,0,0)
+gpu arm=1.00 force=10.00 offset=(0.0,0.0,0.0) reverse=0 stress=(0,0,0)
+
+
+0% tests passed, 2 tests failed out of 2
+
+Total Test time (real) =   0.26 sec
+
+The following tests FAILED:
+	  5 - blast_stress_point_force_cpu (Failed)
+	  6 - blast_stress_point_force_gpu (Failed)
+Errors while running CTest
+Original city deployment restored and healthy

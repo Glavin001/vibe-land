@@ -1,0 +1,8 @@
+{
+  "url": "https://209.121.195.117:40617/city",
+  "pid": 3952197,
+  "binary_sha256": "51efeb841976fe88eb5f52b1a2d84e4227ee2612d784463f82138315073a2f79",
+  "players": 0,
+  "direct_gpu": "1",
+  "gpu_contact_order": "unset (default off)"
+}

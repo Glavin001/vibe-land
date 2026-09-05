@@ -1,0 +1,171 @@
+Running ['ctest', '--test-dir', '/root/workspace/blast-stress-solver-2/demos/blast-stress-demo/build-gpu-activity', '-R', 'point_force|direct_gpu_contacts', '--output-on-failure', '-V']
+Internal ctest changing into directory: /root/workspace/blast-stress-solver-2/demos/blast-stress-demo/build-gpu-activity
+UpdateCTestConfiguration  from :/root/workspace/blast-stress-solver-2/demos/blast-stress-demo/build-gpu-activity/DartConfiguration.tcl
+UpdateCTestConfiguration  from :/root/workspace/blast-stress-solver-2/demos/blast-stress-demo/build-gpu-activity/DartConfiguration.tcl
+Test project /root/workspace/blast-stress-solver-2/demos/blast-stress-demo/build-gpu-activity
+Constructing a list of tests
+Done constructing a list of tests
+Updating test list for fixtures
+Added 0 tests to meet fixture requirements
+Checking test dependency graph...
+Checking test dependency graph end
+test 5
+    Start  5: blast_stress_point_force_cpu
+
+5: Test command: /root/workspace/blast-stress-solver-2/demos/blast-stress-demo/build-gpu-activity/point_force_test "cpu"
+5: Working Directory: /root/workspace/blast-stress-solver-2/demos/blast-stress-demo/build-gpu-activity
+5: Test timeout computed to be: 10000000
+5: Physical force balance and compensated cancellation passed
+5: recentered cpu snapshot=0 actual=(2.508059e-05,0,0.079366744) reference=(0,0,0.079365075)
+5: recentered cpu snapshot=1 actual=(2.508059e-05,0,0.079366744) reference=(0,0,0.079365075)
+5: cpu arm=0.00 force=10.00 offset=(0.0,0.0,0.0) reverse=0 stress=(0,0,0)
+5: cpu arm=1.00 force=10.00 offset=(0.0,0.0,0.0) reverse=0 stress=(4.44444466,4.44444466,3.56591663e-08)
+5: cpu arm=1.00 force=10.00 offset=(0.0,0.0,0.0) reverse=0 stress=(4.44444609,4.44444609,1.10331371e-06)
+5: cpu arm=1.00 force=10.00 offset=(0.0,0.0,0.0) reverse=0 stress=(4.44444466,4.44444466,5.49227707e-07)
+5: cpu arm=1.00 force=10.00 offset=(0.0,0.0,0.0) reverse=0 stress=(4.44444466,4.44444466,3.56591663e-08)
+5: cpu arm=1.00 force=10.00 offset=(8.0,-3.0,5.0) reverse=1 stress=(4.44444466,4.44444466,3.56591663e-08)
+5: cpu arm=2.00 force=5.00 offset=(0.0,0.0,0.0) reverse=0 stress=(4.44444466,4.44444466,3.56591663e-08)
+5: cpu arm=1.00 force=10.00 offset=(8.0,-3.0,5.0) reverse=0 stress=(4.44444466,4.44444466,3.56591663e-08)
+5: cpu arm=1.00 force=10.00 offset=(0.0,0.0,0.0) reverse=1 stress=(4.44444466,4.44444466,3.56591663e-08)
+5: cpu arm=1.00 force=20.00 offset=(0.0,0.0,0.0) reverse=0 stress=(8.88888931,8.88888931,7.13183326e-08)
+5: Point-force couples passed
+1/3 Test  #5: blast_stress_point_force_cpu .............   Passed    0.01 sec
+test 6
+    Start  6: blast_stress_point_force_gpu
+
+6: Test command: /root/workspace/blast-stress-solver-2/demos/blast-stress-demo/build-gpu-activity/point_force_test "gpu"
+6: Working Directory: /root/workspace/blast-stress-solver-2/demos/blast-stress-demo/build-gpu-activity
+6: Test timeout computed to be: 10000000
+6: Physical force balance and compensated cancellation passed
+6: recentered gpu snapshot=0 actual=(5.3174169e-08,5.3174169e-08,0.079366766) reference=(0,0,0.079365075)
+6: recentered gpu snapshot=1 actual=(5.3174169e-08,5.3174169e-08,0.079366766) reference=(0,0,0.079365075)
+6: gpu arm=0.00 force=10.00 offset=(0.0,0.0,0.0) reverse=0 stress=(0,0,0)
+6: gpu arm=1.00 force=10.00 offset=(0.0,0.0,0.0) reverse=0 stress=(4.44444466,4.44444466,1.32454772e-07)
+6: gpu arm=1.00 force=10.00 offset=(0.0,0.0,0.0) reverse=0 stress=(4.44444561,4.44444561,6.35782897e-07)
+6: gpu arm=1.00 force=10.00 offset=(0.0,0.0,0.0) reverse=0 stress=(4.44444466,4.44444466,3.97364289e-07)
+6: gpu arm=1.00 force=10.00 offset=(0.0,0.0,0.0) reverse=0 stress=(4.44444466,4.44444466,1.32454772e-07)
+6: gpu arm=1.00 force=10.00 offset=(8.0,-3.0,5.0) reverse=1 stress=(4.44444466,4.44444466,1.32454772e-07)
+6: gpu arm=2.00 force=5.00 offset=(0.0,0.0,0.0) reverse=0 stress=(4.44444466,4.44444466,1.32454772e-07)
+6: gpu arm=1.00 force=10.00 offset=(8.0,-3.0,5.0) reverse=0 stress=(4.44444466,4.44444466,1.32454772e-07)
+6: gpu arm=1.00 force=10.00 offset=(0.0,0.0,0.0) reverse=1 stress=(4.44444466,4.44444466,1.32454772e-07)
+6: gpu arm=1.00 force=20.00 offset=(0.0,0.0,0.0) reverse=0 stress=(8.88888931,8.88888931,2.64909545e-07)
+6: cpu arm=1.00 force=10.00 offset=(0.0,0.0,0.0) reverse=0 stress=(4.44444466,4.44444466,3.56591663e-08)
+6: Point-force couples passed
+2/3 Test  #6: blast_stress_point_force_gpu .............   Passed    0.95 sec
+test 29
+    Start 29: blast_stress_physx_direct_gpu_contacts
+
+29: Test command: /root/workspace/blast-stress-solver-2/demos/blast-stress-demo/build-gpu-activity/direct_gpu_contact_test
+29: Working Directory: /root/workspace/blast-stress-solver-2/demos/blast-stress-demo/build-gpu-activity
+29: Test timeout computed to be: 10000000
+29: GPU contact ordering: unique/duplicate keys, growth/reuse, payload and exact sums passed
+29: contact-to-stress GPU pipeline passed: 27 solves, momentum error <= 2.68247e-07 kg m/s
+3/3 Test #29: blast_stress_physx_direct_gpu_contacts ...   Passed    0.73 sec
+
+The following tests passed:
+	blast_stress_point_force_cpu
+	blast_stress_point_force_gpu
+	blast_stress_physx_direct_gpu_contacts
+
+100% tests passed, 0 tests failed out of 3
+
+Total Test time (real) =   1.69 sec
+Running ['/root/workspace/blast-stress-solver-2/demos/blast-stress-demo/build-gpu-activity/gpu_stress_suite', '--pack', '/root/workspace/blast-stress-solver-2/blast/blast-stress-solver/assets/mini-city/fractured-downtown.json', '--grid', '2', '--iters', '32', '--solves', '3', '--compare']
+pack 'Fractured downtown (dense mixed-height blocks, street spacing)': 24105 nodes, 74543 bonds | grid 2 | iters 32 | solves 3
+
+=== single-building (largest connected structure only) ===
+
+=== city (all buildings, intact) ===
+
+=== broken-25 (25% of bonds gone) ===
+
+=== broken-50 (50% of bonds gone) ===
+
+=== broken-75 (75% of bonds gone) ===
+
+=== broken-90 (90% of bonds gone) ===
+
+=== broken-99 (99% of bonds gone) ===
+
+=== live-light (blast-localised, ~4% bonds gone (early bombardment)) ===
+
+=== live-city (blast-localised; matches a real /city session: ~1.35k islands, ~28k bonds gone) ===
+
+=== live-heavy (blast-localised, ~2x the live session's damage) ===
+
+=== shatter-4 (fragments of <=4 chunks, sparsely bonded) ===
+
+=== shatter-3 (fragments of <=3 chunks) ===
+
+=== shatter-2 (fragments of <=2 chunks (pairs)) ===
+
+=== dust (every bond broken; every chunk free) ===
+
+================================ SUMMARY ================================
+scenario              nodes     bonds  islands  device ms     ms/iter   conv@     ok  note
+single-building       96420     18627        1      0.982     0.03070    32.0    yes  peak |J| cpu 2.3e+04 / gpu 2.25e+04
+                                                                                      equilibrium residual lin=7.1929e+00 ang=2.4459e-01
+city                  96420    298172      108      1.704     0.05324    32.0    yes  peak |J| cpu 4.17e+04 / gpu 4.23e+04
+                                                                                      equilibrium residual lin=3.3821e+00 ang=2.4439e-01
+broken-25             96420    223629      231      1.933     0.06042    32.0    yes  peak |J| cpu 4.24e+04 / gpu 4.19e+04
+                                                                                      equilibrium residual lin=3.8233e+00 ang=2.0710e-01
+broken-50             96420    149086      678      1.828     0.05713    32.0    yes  peak |J| cpu 6.73e+04 / gpu 6.73e+04
+                                                                                      equilibrium residual lin=4.8361e+00 ang=1.5770e-01
+broken-75             96420     74543     8863      0.737     0.02302    32.0    yes  peak |J| cpu 1.89e+05 / gpu 1.89e+05
+                                                                                      equilibrium residual lin=2.8880e+00 ang=1.0971e-01
+broken-90             96420     29817    15681      0.560     0.01751    32.0    yes  peak |J| cpu 1.3e+05 / gpu 1.31e+05
+                                                                                      equilibrium residual lin=8.9683e-01 ang=9.5243e-02
+broken-99             96420      2981     2790      0.275     0.00859    14.0    yes  peak |J| cpu 3.12e+04 / gpu 3.12e+04
+                                                                                      equilibrium residual lin=5.3295e-01 ang=5.4955e-04
+live-light            96420    289661      473      1.794     0.05606    32.0    yes  peak |J| cpu 5.38e+04 / gpu 5.38e+04
+                                                                                      equilibrium residual lin=3.4900e+00 ang=2.2160e-01
+live-city             96420    268663     1243      1.571     0.04911    32.0    yes  peak |J| cpu 8.16e+04 / gpu 8.16e+04
+                                                                                      equilibrium residual lin=3.7043e+00 ang=1.8602e-01
+live-heavy            96420    230149     2584      1.431     0.04470    32.0    yes  peak |J| cpu 7.04e+04 / gpu 7.05e+04
+                                                                                      equilibrium residual lin=4.1604e+00 ang=1.5149e-01
+shatter-4             96420     72012    27979      0.556     0.01739    32.0    yes  peak |J| cpu 1.89e+05 / gpu 1.89e+05
+                                                                                      equilibrium residual lin=9.1188e-01 ang=3.9081e-02
+shatter-3             96420     53733    30540      0.542     0.01693    32.0    yes  peak |J| cpu 1.62e+05 / gpu 1.62e+05
+                                                                                      equilibrium residual lin=7.2867e-01 ang=7.7111e-03
+shatter-2             96420     30479    29978      0.382     0.01195    21.0    yes  peak |J| cpu 6.05e+04 / gpu 6.05e+04
+                                                                                      equilibrium residual lin=5.0031e-01 ang=4.3898e-04
+dust                  96420         0        0      0.000     0.00000     0.0    yes  no bonds (all free chunks) - nothing to solve
+=========================================================================
+
+=================== CPU (Blast reference) vs GPU ====================
+scenario              cpu ms     gpu ms  speedup cpu iters max rel err rms rel err
+single-building       20.787      0.982    21.2x       -32    7.90e+01    6.12e-01
+city                 106.026      1.704    62.2x     -3456    1.37e+02    6.85e-01
+broken-25             81.544      1.933    42.2x     -3600    2.52e+02    9.74e-01
+broken-50             57.890      1.828    31.7x     -4585    1.78e+02    6.21e-01
+broken-75              8.353      0.737    11.3x    -11958    1.80e+02    8.51e-01
+broken-90              1.808      0.560     3.2x     -2770    6.71e+01    2.41e-01
+broken-99              0.237      0.275     0.9x       113    3.23e-02    2.74e-04
+live-light           102.118      1.794    56.9x     -4447    1.62e+02    5.84e-01
+live-city             95.217      1.571    60.6x     -6018    1.95e+02    5.51e-01
+live-heavy            99.391      1.431    69.5x     -7827    1.98e+02    7.11e-01
+shatter-4              4.166      0.556     7.5x    -14042    6.60e+02    1.13e+00
+shatter-3              3.366      0.542     6.2x    -10116    9.77e+01    3.09e-01
+shatter-2              2.439      0.382     6.4x      5210    1.80e+02    7.29e-01
+====================================================================
+
+============ EQUILIBRIUM RESIDUAL (the real quality gate) ============
+scenario               cpu lin      gpu lin      cpu ang      gpu ang
+single-building      7.127e+00    7.193e+00    2.530e-01    2.446e-01
+city                 3.375e+00    3.382e+00    2.430e-01    2.444e-01
+broken-25            3.819e+00    3.823e+00    2.035e-01    2.071e-01
+broken-50            4.839e+00    4.836e+00    1.581e-01    1.577e-01
+broken-75            2.888e+00    2.888e+00    1.111e-01    1.097e-01
+broken-90            8.959e-01    8.968e-01    9.670e-02    9.524e-02
+broken-99            5.329e-01    5.329e-01    5.562e-04    5.496e-04
+live-light           3.494e+00    3.490e+00    2.234e-01    2.216e-01
+live-city            3.706e+00    3.704e+00    1.860e-01    1.860e-01
+live-heavy           4.151e+00    4.160e+00    1.521e-01    1.515e-01
+shatter-4            9.122e-01    9.119e-01    4.010e-02    3.908e-02
+shatter-3            7.287e-01    7.287e-01    7.747e-03    7.711e-03
+shatter-2            5.003e-01    5.003e-01    4.375e-04    4.390e-04
+=====================================================================
+quality gate (GPU equilibrium residual <= 2x CPU): PASS
+ALL SCENARIOS OK
+Exit codes [0, 0]
+Original city deployment restored and healthy

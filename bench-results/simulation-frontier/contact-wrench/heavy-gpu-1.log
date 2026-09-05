@@ -1,0 +1,43 @@
+scene destruction/assets/scenes/fractured-downtown.json | structures 4 | chunks 86966 | bonds 267992
+[destruction] CUDA stress solver active; configured iteration budget 32. Convergence depends on the current load and topology.
+tick      0  bodies    108  awake      0  broken       0  solve 463.49 ms  | begin 0.87 solve 155.69 end 283.95 readback 4.83 events 3.08 filters 10.39 ccd 0.00 support 0.00 shape 4.67 => gap 0.01 ms  quiet 4  pairs 0
+            topo 283.94 (frac 281.91 + valid 2.03)                   pts/pair 0.00  islands skipped 0/216 (0%)
+            fracture: gen 1.78 prep 6.97 apply 3.61 scene 270.85 rebuild 0.00 valid 2.03 | rest -1.31
+            physx step 48.10 ms avg over 1 ticks  (last: gpu_wait 13.85 fetch_copy 8.39, contacts hw 0)
+tick    300  bodies   1256  awake   1115  broken    4045  solve 5.15 ms  | begin 0.61 solve 3.59 end 0.44 readback 0.06 events 0.00 filters 0.00 ccd 0.00 support 0.44 shape 0.00 => gap 0.00 ms  quiet 1507  pairs 1903
+            topo 0.44 (frac 0.44 + valid 0.00)                   pts/pair 0.23  islands skipped 64/63809 (0%)
+            fracture: gen 0.21 prep 0.00 apply 0.00 scene 0.00 rebuild 0.00 valid 0.00 | rest 0.23
+            physx step 5.30 ms avg over 300 ticks  (last: gpu_wait 2.74 fetch_copy 0.56, contacts hw 13599)
+[bs-phase] calls=599 per-call ms: upload 0.099 kernel 0.039 readback 0.020 | prep 0.064 enqueue 0.064 sync 0.036 | host total 0.173 | skipped 0 of 599 | up 0.29 MB down 0.03 MB | PROBE empty 0.000 nullkernel1 0.000 nullkernel2 0.000 copy4B 0.000
+[bond-stress-gpu] ticks=600 attempts=599 ranOnDevice=599 checks=0 MISMATCHES=0 (count=0 removeSize=0 removeOrder=0 mask=0) firstBadTick=0 lastBadTick=0 refuse(noSolver=0 stale=0 pendingTopo=0 csr=0) STRESS_MISMATCH=0/0 big=0 maxRel=0.000e+00 BEND_MISMATCH=0 bendMaxRel=0.000e+00 OVERSET_MISMATCH=0/0 compactHits=13715 misses=0 IMPULSE=0/0 impMaxRel=0.000e+00 PAYLOAD(n=0 node=0 normal=0 disp=0 centroid=0)
+[bs-phase] calls=599 per-call ms: upload 0.146 kernel 0.036 readback 0.020 | prep 0.099 enqueue 0.058 sync 0.050 | host total 0.216 | skipped 0 of 599 | up 0.42 MB down 0.03 MB | PROBE empty 0.000 nullkernel1 0.000 nullkernel2 0.000 copy4B 0.000
+[bond-stress-gpu] ticks=600 attempts=599 ranOnDevice=599 checks=0 MISMATCHES=0 (count=0 removeSize=0 removeOrder=0 mask=0) firstBadTick=0 lastBadTick=0 refuse(noSolver=0 stale=0 pendingTopo=0 csr=0) STRESS_MISMATCH=0/0 big=0 maxRel=0.000e+00 BEND_MISMATCH=0 bendMaxRel=0.000e+00 OVERSET_MISMATCH=0/0 compactHits=13094 misses=0 IMPULSE=0/0 impMaxRel=0.000e+00 PAYLOAD(n=0 node=0 normal=0 disp=0 centroid=0)
+[bs-phase] calls=599 per-call ms: upload 0.133 kernel 0.036 readback 0.021 | prep 0.089 enqueue 0.062 sync 0.045 | host total 0.205 | skipped 0 of 599 | up 0.38 MB down 0.03 MB | PROBE empty 0.000 nullkernel1 0.000 nullkernel2 0.000 copy4B 0.000
+[bond-stress-gpu] ticks=600 attempts=599 ranOnDevice=599 checks=0 MISMATCHES=0 (count=0 removeSize=0 removeOrder=0 mask=0) firstBadTick=0 lastBadTick=0 refuse(noSolver=0 stale=0 pendingTopo=0 csr=0) STRESS_MISMATCH=0/0 big=0 maxRel=0.000e+00 BEND_MISMATCH=0 bendMaxRel=0.000e+00 OVERSET_MISMATCH=0/0 compactHits=13056 misses=0 IMPULSE=0/0 impMaxRel=0.000e+00 PAYLOAD(n=0 node=0 normal=0 disp=0 centroid=0)
+[bs-phase] calls=599 per-call ms: upload 0.131 kernel 0.141 readback 0.012 | prep 0.114 enqueue 0.164 sync 0.010 | host total 0.297 | skipped 0 of 599 | up 0.83 MB down 0.04 MB | PROBE empty 0.000 nullkernel1 0.000 nullkernel2 0.000 copy4B 0.000
+[bond-stress-gpu] ticks=600 attempts=599 ranOnDevice=599 checks=0 MISMATCHES=0 (count=0 removeSize=0 removeOrder=0 mask=0) firstBadTick=0 lastBadTick=0 refuse(noSolver=0 stale=0 pendingTopo=0 csr=0) STRESS_MISMATCH=0/0 big=0 maxRel=0.000e+00 BEND_MISMATCH=0 bendMaxRel=0.000e+00 OVERSET_MISMATCH=0/0 compactHits=31556 misses=0 IMPULSE=0/0 impMaxRel=0.000e+00 PAYLOAD(n=0 node=0 normal=0 disp=0 centroid=0)
+tick    600  bodies   2602  awake   2403  broken    8651  solve 11.11 ms  | begin 0.74 solve 3.46 end 2.75 readback 0.39 events 0.95 filters 1.03 ccd 0.00 support 1.06 shape 0.72 => gap 0.00 ms  quiet 3138  pairs 5154
+            topo 2.54 (frac 2.54 + valid 0.00)                   pts/pair 0.18  islands skipped 27/100756 (0%)
+            fracture: gen 0.24 prep 0.25 apply 0.31 scene 1.62 rebuild 0.00 valid 0.00 | rest 0.11
+            physx step 9.63 ms avg over 300 ticks  (last: gpu_wait 3.33 fetch_copy 0.73, contacts hw 26984)
+[bs-phase] calls=1199 per-call ms: upload 0.109 kernel 0.037 readback 0.023 | prep 0.069 enqueue 0.068 sync 0.038 | host total 0.183 | skipped 0 of 1199 | up 0.27 MB down 0.03 MB | PROBE empty 0.000 nullkernel1 0.000 nullkernel2 0.000 copy4B 0.000
+[bond-stress-gpu] ticks=1200 attempts=1199 ranOnDevice=1199 checks=0 MISMATCHES=0 (count=0 removeSize=0 removeOrder=0 mask=0) firstBadTick=0 lastBadTick=0 refuse(noSolver=0 stale=0 pendingTopo=0 csr=0) STRESS_MISMATCH=0/0 big=0 maxRel=0.000e+00 BEND_MISMATCH=0 bendMaxRel=0.000e+00 OVERSET_MISMATCH=0/0 compactHits=25245 misses=0 IMPULSE=0/0 impMaxRel=0.000e+00 PAYLOAD(n=0 node=0 normal=0 disp=0 centroid=0)
+[bs-phase] calls=1199 per-call ms: upload 0.126 kernel 0.033 readback 0.022 | prep 0.089 enqueue 0.058 sync 0.039 | host total 0.195 | skipped 0 of 1199 | up 0.35 MB down 0.03 MB | PROBE empty 0.000 nullkernel1 0.000 nullkernel2 0.000 copy4B 0.000
+[bond-stress-gpu] ticks=1200 attempts=1199 ranOnDevice=1199 checks=0 MISMATCHES=0 (count=0 removeSize=0 removeOrder=0 mask=0) firstBadTick=0 lastBadTick=0 refuse(noSolver=0 stale=0 pendingTopo=0 csr=0) STRESS_MISMATCH=0/0 big=0 maxRel=0.000e+00 BEND_MISMATCH=0 bendMaxRel=0.000e+00 OVERSET_MISMATCH=0/0 compactHits=24888 misses=0 IMPULSE=0/0 impMaxRel=0.000e+00 PAYLOAD(n=0 node=0 normal=0 disp=0 centroid=0)
+[bs-phase] calls=1199 per-call ms: upload 0.135 kernel 0.032 readback 0.021 | prep 0.098 enqueue 0.055 sync 0.041 | host total 0.202 | skipped 0 of 1199 | up 0.39 MB down 0.03 MB | PROBE empty 0.000 nullkernel1 0.000 nullkernel2 0.000 copy4B 0.000
+[bond-stress-gpu] ticks=1200 attempts=1199 ranOnDevice=1199 checks=0 MISMATCHES=0 (count=0 removeSize=0 removeOrder=0 mask=0) firstBadTick=0 lastBadTick=0 refuse(noSolver=0 stale=0 pendingTopo=0 csr=0) STRESS_MISMATCH=0/0 big=0 maxRel=0.000e+00 BEND_MISMATCH=0 bendMaxRel=0.000e+00 OVERSET_MISMATCH=0/0 compactHits=23684 misses=0 IMPULSE=0/0 impMaxRel=0.000e+00 PAYLOAD(n=0 node=0 normal=0 disp=0 centroid=0)
+[bs-phase] calls=1199 per-call ms: upload 0.132 kernel 0.120 readback 0.012 | prep 0.116 enqueue 0.144 sync 0.009 | host total 0.277 | skipped 0 of 1199 | up 0.86 MB down 0.05 MB | PROBE empty 0.000 nullkernel1 0.000 nullkernel2 0.000 copy4B 0.000
+[bond-stress-gpu] ticks=1200 attempts=1199 ranOnDevice=1199 checks=0 MISMATCHES=0 (count=0 removeSize=0 removeOrder=0 mask=0) firstBadTick=0 lastBadTick=0 refuse(noSolver=0 stale=0 pendingTopo=0 csr=0) STRESS_MISMATCH=0/0 big=0 maxRel=0.000e+00 BEND_MISMATCH=0 bendMaxRel=0.000e+00 OVERSET_MISMATCH=0/0 compactHits=81002 misses=0 IMPULSE=0/0 impMaxRel=0.000e+00 PAYLOAD(n=0 node=0 normal=0 disp=0 centroid=0)
+tick    900  bodies   3295  awake   2917  broken   10851  solve 8.32 ms  | begin 0.63 solve 2.89 end 1.19 readback 0.30 events 0.46 filters 0.62 ccd 0.00 support 1.71 shape 0.52 => gap 0.00 ms  quiet 4681  pairs 6137
+            topo 1.17 (frac 1.17 + valid 0.00)                   pts/pair 0.19  islands skipped 294/116808 (0%)
+            fracture: gen 0.14 prep 0.01 apply 0.05 scene 0.44 rebuild 0.00 valid 0.00 | rest 0.52
+            physx step 11.33 ms avg over 300 ticks  (last: gpu_wait 5.07 fetch_copy 0.73, contacts hw 28576)
+  ccd tracked 0 / identity stamped 3537 against 3537 live bodies
+  resim: 1200 captures, 591 re-passes
+  resim diag: captures=1200 zero=0 not_needed=0 errors=0 first_error=None
+
+wrote /dev/null
+  ticks 1200  chunks 86966  bonds 267992
+  broken bonds 11699 (adapter 11699)
+  migrations 73701  peak bodies 3032  membership mismatches 0
+wrote /dev/null.sidecar.json

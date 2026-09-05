@@ -1,0 +1,44 @@
+== suite env fingerprint ==
+git: b62edf0-dirty
+BLAST_BOND_STRESS_GPU=1
+BLAST_GPU_DETERMINISTIC_REDUCTIONS=0
+BLAST_GPU_IMPULSE_READBACK=0
+BLAST_GPU_WHOLE_RESET_ON_TOPOLOGY=1
+BLAST_ROOT=/root/workspace/blast-stress-solver-2/blast
+VIBE_CITY_EXCESS_FORCES=1
+VIBE_CITY_FREEZE=1
+VIBE_CITY_GRID=2
+VIBE_CITY_RESIM_PASSES=1
+VIBE_CITY_SCENARIO_OUT=/root/workspace/vibe-land-4/bench-results/simulation-frontier/contact-wrench/qualification/direct-scenario-release-gpu-order-data
+VIBE_CITY_SCENE=fractured-downtown.json
+VIBE_CITY_SHOT_BLAST_RADIUS=2.5
+VIBE_CITY_SHOT_STRESS_IMPULSE=1.2e7
+VIBE_CITY_SOLVER_ITERATIONS=32
+VIBE_CITY_STRESS_LIMIT_SCALE=0.45
+VIBE_CITY_TRACE_BIN=/root/workspace/vibe-land-4/target/gpu-activity/release/record-city-trace
+VIBE_CITY_VARIED_HEIGHTS=0
+VIBE_PHYSICS_BACKEND=physx_gpu
+VIBE_PHYSX_DIRECT_GPU=1
+VIBE_PHYSX_GPU_CONTACT_ORDER=1
+VIBE_WORLD_FRICTION=0.75
+VIBE_WORLD_RESTITUTION=0.02
+-- divergence vs run-vl4-server.sh exports (physics-relevant only) --
+-- end divergence check --
+== T2/T3 workloads (fixed aim, one tower) ==
+== T5 workload (full bombardment) ==
+measured: {"t2_bonds": 114, "t2_bodies": 54, "t3_height_retained": 0.3078782558441162, "t3_spread_fraction": 0.7692307829856873, "t4_retired_fraction": 0.807, "t4_awake_end_over_peak": 0.0, "t5_p95_ms": null, "t5_bucket_ticks": 0}
+  note: T5 bucket underpopulated; perf guard skipped this run
+  FAIL  T2 bonds >= min            114 vs >= 126 (too weak)
+  PASS  T2 bonds <= max            114 vs <= 2028 (one shot pulverizes)
+  PASS  T2 fixture body count      54 vs <= 707 (runaway cascade)
+  PASS  T3 tower fell              retained 0.31 vs <= 0.55
+  PASS  T3 toppled/spread          spread 0.77 vs >= 0.10 (pancaked in place)
+  PASS  T4 debris retired          retired 0.81 vs >= 0.60 (freeze starved)
+  PASS  T4 awake declined          end/peak 0.00 vs <= 0.10
+  PASS  T6 escapes contained       min_y -0.3 (>-1000), escaped-parked 0 (<=20)
+  PASS  T6 patch buffer headroom   9648 vs <= 1887436 (overflow drops contacts)
+== T1 at-rest ==
+at-rest check: scale=0.45, 90s, zero shots, budget 30 bonds
+  bonds broken total: 0
+  broken in final third: 0
+  PASS: the city stands up

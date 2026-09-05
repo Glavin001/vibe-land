@@ -1,0 +1,89 @@
+{
+  "ticks": 900,
+  "audit": {
+    "wrench_checks": 6801764.0,
+    "wrench_mismatches": 0.0,
+    "wrench_max_force_error": 0.0,
+    "wrench_max_moment_error": 0.0,
+    "order_verify_checks": 1269.0,
+    "order_verify_mismatches": 0.0,
+    "legacy_threshold_checks": 5909784.0,
+    "legacy_threshold_mismatches": 0.0,
+    "legacy_sum_max_ulp": 0.0
+  },
+  "replay_passes": 432,
+  "peak": {
+    "awake": 2321,
+    "bodies": 2705,
+    "bonds": 8834,
+    "physx/direct_contact_count": 31902.0
+  },
+  "restore_pose_guard": {
+    "checked": 77217,
+    "moved_and_restored": 1146
+  },
+  "parallel_drain_last_report": {
+    "ticks": 1200,
+    "calls": 1108628,
+    "mismatches": 0
+  },
+  "integration": {
+    "passed": 176,
+    "failed": 0,
+    "ignored": 27
+  },
+  "scenarios": {
+    "cpu": {
+      "exit_code": 1,
+      "measurements": {
+        "t2_bonds": 114,
+        "t2_bodies": 54,
+        "t3_height_retained": 0.3078816831111908,
+        "t3_spread_fraction": 0.6315789222717285,
+        "t4_retired_fraction": 0.844,
+        "t4_awake_end_over_peak": 0.0,
+        "t5_p95_ms": null,
+        "t5_bucket_ticks": 0
+      },
+      "checks": [
+        "FAIL  T2 bonds >= min            114 vs >= 126 (too weak)",
+        "PASS  T2 bonds <= max            114 vs <= 2028 (one shot pulverizes)",
+        "PASS  T2 fixture body count      54 vs <= 707 (runaway cascade)",
+        "PASS  T3 tower fell              retained 0.31 vs <= 0.55",
+        "PASS  T3 toppled/spread          spread 0.63 vs >= 0.10 (pancaked in place)",
+        "PASS  T4 debris retired          retired 0.84 vs >= 0.60 (freeze starved)",
+        "PASS  T4 awake declined          end/peak 0.00 vs <= 0.10",
+        "PASS  T6 escapes contained       min_y -0.3 (>-1000), escaped-parked 0 (<=20)",
+        "PASS  T6 patch buffer headroom   7427 vs <= 1887436 (overflow drops contacts)"
+      ],
+      "at_rest_bonds": 0,
+      "at_rest_final_third_bonds": 0
+    },
+    "gpu": {
+      "exit_code": 1,
+      "measurements": {
+        "t2_bonds": 114,
+        "t2_bodies": 54,
+        "t3_height_retained": 0.3078782558441162,
+        "t3_spread_fraction": 0.7692307829856873,
+        "t4_retired_fraction": 0.807,
+        "t4_awake_end_over_peak": 0.0,
+        "t5_p95_ms": null,
+        "t5_bucket_ticks": 0
+      },
+      "checks": [
+        "FAIL  T2 bonds >= min            114 vs >= 126 (too weak)",
+        "PASS  T2 bonds <= max            114 vs <= 2028 (one shot pulverizes)",
+        "PASS  T2 fixture body count      54 vs <= 707 (runaway cascade)",
+        "PASS  T3 tower fell              retained 0.31 vs <= 0.55",
+        "PASS  T3 toppled/spread          spread 0.77 vs >= 0.10 (pancaked in place)",
+        "PASS  T4 debris retired          retired 0.81 vs >= 0.60 (freeze starved)",
+        "PASS  T4 awake declined          end/peak 0.00 vs <= 0.10",
+        "PASS  T6 escapes contained       min_y -0.3 (>-1000), escaped-parked 0 (<=20)",
+        "PASS  T6 patch buffer headroom   9648 vs <= 1887436 (overflow drops contacts)"
+      ],
+      "at_rest_bonds": 0,
+      "at_rest_final_third_bonds": 0
+    }
+  }
+}

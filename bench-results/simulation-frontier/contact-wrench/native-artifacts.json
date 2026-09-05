@@ -1,0 +1,66 @@
+[
+  {
+    "file": "native/point-force-baseline-build.log",
+    "sha256": "6f7c2143553cbc5e8bfa36bb1936f040ee09cee4a1accff1e9d25720146b3632"
+  },
+  {
+    "file": "native/point-force-baseline-tests.log",
+    "sha256": "179d75967b117fb681d687d231fe2a4d290a78f4de44eef0cc2112f3ecc5ebb3"
+  },
+  {
+    "file": "native/point-force-corrected-tests.log",
+    "sha256": "5dc1a5d8005518d4a35ddb6712b596e08a964a2123f42758e45a558f786945d9"
+  },
+  {
+    "file": "native/point-force-physical-mass-build.log",
+    "sha256": "5c6b74e4d8849ef7bdcb0585e7d21563d579aa5209b3290ac3b0f55f07c354ae"
+  },
+  {
+    "file": "native/point-force-physical-mass-tests.log",
+    "sha256": "7048cc0f76a7f7b0c0fb01594e95e71fd381f5ffd9bd06569601160b56553ceb"
+  },
+  {
+    "file": "native/point-wrench-adapter-tests.log",
+    "sha256": "11f410cb159315a66f2907774f53f8a1ad2341581d8cbd8caac7a11c2bed6b5e"
+  },
+  {
+    "file": "native/point-wrench-angular-convention-build.log",
+    "sha256": "d78fc6fd91f9e5831bed3b38175ca06fd2a713e4544ea058b9f79c571afd2a17"
+  },
+  {
+    "file": "native/point-wrench-context-build.log",
+    "sha256": "09550e88259761c68e82ec4a5a636bd93abb1e2c8d27f8939deea30b85d2bf60"
+  },
+  {
+    "file": "native/point-wrench-final-native-build.log",
+    "sha256": "b1afa8341f53125a959366937aec5f6188724861c0814f64175224336859bb9b"
+  },
+  {
+    "file": "native/point-wrench-full-native-tests.log",
+    "sha256": "bcb7623bff39ef2a2a9c5cb66c5fcd306dde27f495bcffa5a9e70dc0bf483b93"
+  },
+  {
+    "file": "native/point-wrench-game-build-final.log",
+    "sha256": "1343f04dea292747bcd1c0187dc171fbc19163bf6715c5798705d0e828aa6616"
+  },
+  {
+    "file": "native/point-wrench-game-test-build.log",
+    "sha256": "99df7cf804f1e8ee2db7b26a105f0c301f925a351cfedc16e1395552bb23464f"
+  },
+  {
+    "file": "native/point-wrench-lever-initial.log",
+    "sha256": "68076f31bc6b19ab7900498a7bdd7c8cf96bb6b9cef0bfe0a76b85a3d61477f3"
+  },
+  {
+    "file": "native/point-wrench-native-qualification.log",
+    "sha256": "c58351776154ce1b694af286ae9fa2cc4251f08491a7c3ccd92164c0513b5cc3"
+  },
+  {
+    "file": "native/point-wrench-signed-game-build.log",
+    "sha256": "40117be88ca27bde2b76ece6c222fef05380584d97cac5fcf6a6cd87358ae860"
+  },
+  {
+    "file": "native/point-wrench-signed-native-tests.log",
+    "sha256": "84fc2c2f2d02aa866e748116419be40238bac7f336cdf2b90a95cf00beac69cd"
+  }
+]

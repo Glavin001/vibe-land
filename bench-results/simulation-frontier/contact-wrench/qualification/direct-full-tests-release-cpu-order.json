@@ -1,0 +1,39 @@
+{
+  "game_commit": "b62edf0c814ff3570095a31725b595577a03f9c8",
+  "solver_commit": "89e5f398237c4ac2589f4303351957713c2f47eb",
+  "command": [
+    "cargo",
+    "test",
+    "--release",
+    "-p",
+    "vibe-land-destruction",
+    "-p",
+    "vibe-land-physx-bridge",
+    "--features",
+    "cuda-stress",
+    "--no-fail-fast",
+    "--",
+    "--test-threads=1"
+  ],
+  "cwd": "/root/workspace/vibe-land-4",
+  "env": {
+    "LD_LIBRARY_PATH": "/usr/local/cuda/lib64:/root/workspace/physx-gpu-activity/physx/bin/linux.x86_64/release",
+    "PHYSX_ROOT": "/root/workspace/physx-gpu-activity/physx",
+    "BLAST_ROOT": "/root/workspace/blast-stress-solver-2/blast",
+    "CARGO_TARGET_DIR": "target/gpu-activity",
+    "BLAST_GPU_IMPULSE_READBACK": "0",
+    "BLAST_BOND_STRESS_GPU": "1",
+    "VIBE_CITY_RESIM_PASSES": "1",
+    "BLAST_GPU_DETERMINISTIC_REDUCTIONS": "0",
+    "VIBE_PHYSX_DIRECT_GPU": "1",
+    "VIBE_PHYSX_GPU_CONTACT_ORDER": "0"
+  },
+  "start_utc": "2026-09-05T21:03:40Z",
+  "game_diff_sha256": "ce86b9638707ed58d8efbe41c7d8ddace31d182118da335e833e18bf648122e2",
+  "solver_diff_sha256": "6d911c145ff59a87ec0963b2d9fc5eab53d4946a18e2c3bb988d5c7ef6d5784e",
+  "record-city-trace_sha256": "fea1e8d7564182e77407c9bf5fdfc92e51e6d56662d3d73a6ce4b26749b49fe1",
+  "web-fps-server_sha256": "3be521509b775dc3d8b683e2462e28b2521b9ad0542487d95a8f631d919cefbc",
+  "sdk_manifest_sha256": "53e5fe7d4b9e54d2d173b622a7dc1e8e7e72a5cd5c14ce5ab79eb62877ee3c79",
+  "exit_code": 0,
+  "wall_seconds": 267.4107602997683
+}

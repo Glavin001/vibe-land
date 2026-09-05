@@ -62,3 +62,14 @@ The [GPU contact-ordering experiment](gpu-contact-order-2026-09-05.md) is held
 from deployment. Exact-input contact audits passed, but repeated settling
 controls showed unresolved behavior differences. The path is opt-in; no
 retirement threshold, force, velocity or damage limit was changed to qualify it.
+
+The [contact-wrench correction](contact-wrench-fidelity-2026-09-05.md) preserves
+point-force moments, physical mass/inertia scaling and fracture-child contact
+coordinates and the solver's signed angular convention. It is held from
+rollout: analytical CPU/GPU tests pass, but the corrected physical residual
+reveals severe large-graph under-convergence at the city's 32 iterations.
+Pre-sign city trials are superseded and do not qualify the final candidate.
+A CPU-only multilevel reference validates anchored and free-fragment equations;
+its GPU implementation and production qualification remain outstanding.
+Load lifetimes, scalar inertia, native quality failures and the other inherited
+limits remain open.

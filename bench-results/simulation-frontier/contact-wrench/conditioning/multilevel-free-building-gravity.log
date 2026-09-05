@@ -1,0 +1,21 @@
+{
+  "components": [
+    {
+      "nodes": 5936,
+      "free": true,
+      "iterations": 0,
+      "null_error": 5.393943736192427e-18,
+      "levels": []
+    }
+  ],
+  "residual": {
+    "force": 8.2594326551979e-14,
+    "moment": 3.298261888713302e-18
+  },
+  "cpu_seconds": 0.061771085020154715,
+  "active_nodes": 5936,
+  "bonds": 18564,
+  "released": true,
+  "loads": "gravity",
+  "scope": "CPU/double reference only"
+}

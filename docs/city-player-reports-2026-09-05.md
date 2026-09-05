@@ -187,3 +187,22 @@ The first implementation follow-up is the
 ordering time in benchmarks, but is not deployed because expanded settling
 controls left a possible regression unresolved. The existing Direct GPU city
 remains available; the repeated topology repair issue is still open.
+
+
+## Follow-up: rooted-fragment promotion gap
+
+A subsequent source audit found a concrete candidate for the missing-destination
+path. In `DestructionManager::collect_events`, a first-seen kinematic rooted
+fragment receives a real island serial, but the promotion event is emitted only
+inside `if (!bodies[i].kinematic)`. The later shape loop still emits migrations
+to that serial. The client requires the destination to exist and requests a
+structure repair when it does not. The server ledger also silently skips an
+absent migration destination, so a bootstrap need not restore that fragment.
+
+This is a reproducible source-level inconsistency to target with a rooted-split
+fixture, not yet a packet-level identification of the six reported failures.
+The existing supporter fixture observes rooted fragments but does not assert
+that every migration destination is represented in the wire ledger. Correcting
+this requires preserving rooted identity, pose, support and later dynamic
+promotion semantics; merely suppressing the repair request would hide the fault.
+No topology runtime fix has been deployed as part of this follow-up.

@@ -2261,11 +2261,17 @@ DestructionManager::resolve_contact_target(PxShape *shape) {
 bool DestructionManager::queue_contact_at(const ContactTarget &target,
                                           FfiVec3 position, FfiVec3 impulse,
                                           bool wake) {
+  return queue_contact_wrench_at(target, position, impulse, FfiVec3{0, 0, 0}, wake);
+}
+
+bool DestructionManager::queue_contact_wrench_at(const ContactTarget &target,
+    FfiVec3 position, FfiVec3 impulse, FfiVec3 angular_impulse, bool wake) {
   ExtStressPhysXContact contact;
   contact.shape = target.shape;
   contact.nodeIndex = target.blast_node;
   contact.worldPosition = to_px(position);
   contact.worldImpulse = to_px(impulse);
+  contact.worldAngularImpulse = to_px(angular_impulse);
   contact.wake = wake;
   return target.slot->dest->queueContact(contact);
 }

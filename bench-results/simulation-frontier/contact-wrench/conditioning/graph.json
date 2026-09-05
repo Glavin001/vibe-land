@@ -1,0 +1,8 @@
+{
+  "raw_sha256": "4274a298c39c939fcc99719dd347d92918c4cddec744561bc0f451943bd799c7",
+  "nodes": 96420,
+  "active_dynamic_nodes": 5936,
+  "bonds": 18627,
+  "source": "gpu_stress_suite --pack blast/blast-stress-solver/assets/mini-city/fractured-downtown.json --grid 2 --only single-building --export PATH",
+  "scope": "Anchored single-building CPU reference only; no GPU speed or free-island correctness claim."
+}
