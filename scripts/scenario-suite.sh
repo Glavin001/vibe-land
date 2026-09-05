@@ -35,9 +35,11 @@ set -uo pipefail
 cd "$(dirname "$0")/.."
 
 GUARD=bench-results/guardrails.json
-TRACE=./target/release/record-city-trace
+# An explicit candidate keeps SDK/feature qualification from overwriting the
+# production trace binary. Defaults retain the normal local workflow.
+TRACE="${VIBE_CITY_TRACE_BIN:-./target/release/record-city-trace}"
 SCENE=destruction/assets/scenes/fractured-downtown.json
-OUT=/tmp/scenario-suite; mkdir -p "$OUT"
+OUT="${VIBE_CITY_SCENARIO_OUT:-/tmp/scenario-suite}"; mkdir -p "$OUT"
 
 # Refuse whenever a server PROCESS exists, not just when someone is playing.
 # An idle server still holds a 24k-chunk scene on the GPU, and running the

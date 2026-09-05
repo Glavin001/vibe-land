@@ -1,0 +1,7 @@
+{
+  "test_pid": 3568651,
+  "test_executable": "/root/workspace/vibe-land-4/target/gpu-activity/debug/deps/authored_structures_sim-25f9971959a3b1fc",
+  "signal": "SIGTERM",
+  "reason": "Dropped-building fixture exceeded six minutes with no new test progress; active test thread busy and sampled GPU utilization zero. Interrupted for targeted diagnosis. Remaining authored tests in this binary did not run.",
+  "utc": "2026-09-05T15:48:12Z"
+}

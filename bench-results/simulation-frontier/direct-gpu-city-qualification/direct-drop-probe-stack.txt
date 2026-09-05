@@ -1,0 +1,150 @@
+Sample 1
+physx::PxVec3T<float>::operator*(float) const
+/root/workspace/physx-gpu-activity/physx/include/foundation/PxVec3.h:212
+physx::PxMassProperties::PxMassProperties(physx::PxGeometry const&)
+/root/workspace/physx-gpu-activity/physx/include/extensions/PxMassProperties.h:146 (discriminator 2)
+Nv::Blast::ExtStressPhysXDestructibleImpl::updateMassProperties(Nv::Blast::ExtStressPhysXDestructibleImpl::BodyState&)
+/root/workspace/blast-stress-solver-2/blast/source/sdk/extensions/stressphysx/NvBlastExtStressPhysX.cpp:3276
+Nv::Blast::ExtStressPhysXDestructibleImpl::applySplit(ExtStressSplitEvent const&, std::map<unsigned int, Nv::Blast::(anonymous namespace)::ParentMotion, std::less<unsigned int>, std::allocator<std::pair<unsigned int const, Nv::Blast::(anonymous namespace)::ParentMotion> > > const&, std::vector<Nv::Blast::(anonymous namespace)::NodeSnapshot, std::allocator<Nv::Blast::(anonymous namespace)::NodeSnapshot> > const&, float)
+/root/workspace/blast-stress-solver-2/blast/source/sdk/extensions/stressphysx/NvBlastExtStressPhysX.cpp:4301 (discriminator 2)
+Nv::Blast::ExtStressPhysXDestructibleImpl::fractureApply(float)
+/root/workspace/blast-stress-solver-2/blast/source/sdk/extensions/stressphysx/NvBlastExtStressPhysX.cpp:3842 (discriminator 1)
+Nv::Blast::ExtStressPhysXDestructibleImpl::fracture(float)
+/root/workspace/blast-stress-solver-2/blast/source/sdk/extensions/stressphysx/NvBlastExtStressPhysX.cpp:3594 (discriminator 1)
+Nv::Blast::ExtStressPhysXDestructibleImpl::endTick()
+/root/workspace/blast-stress-solver-2/blast/source/sdk/extensions/stressphysx/NvBlastExtStressPhysX.cpp:1962 (discriminator 1)
+vibe_land::physx_bridge::DestructionManager::destruction_tick(float, vibe_land::physx_bridge::FfiVec3)
+/root/workspace/vibe-land-4/physx-bridge/src/destruction.cc:2000 (discriminator 1)
+vibe_land::physx_bridge::World::Impl::destruction_tick(float, vibe_land::physx_bridge::FfiVec3)
+/root/workspace/vibe-land-4/physx-bridge/src/physx_bridge.cc:2449
+vibe_land::physx_bridge::World::destruction_tick(float, vibe_land::physx_bridge::FfiVec3)
+/root/workspace/vibe-land-4/physx-bridge/src/physx_bridge.cc:3186
+Sample 2
+libcudart_static_daedcea17177362c37c34d10632b001f03c10dcf
+cuos_utils.cpp:?
+Sample 3
+physx::PxgNphaseImplementationContext::refreshContactManager(physx::PxsContactManager*)
+:?
+notifyActorInteractionsOfTransformChange(physx::Sc::ActorSim&)
+ScShapeSimBase.cpp:?
+physx::Sc::BodyCore::setBody2World(physx::PxTransformT<float> const&)
+ScBodyCore.cpp:?
+physx::NpRigidDynamic::setGlobalPose(physx::PxTransformT<float> const&, bool)
+NpRigidDynamic.cpp:?
+Nv::Blast::ExtStressPhysXDestructibleImpl::restoreBodyMotion(Nv::Blast::ExtStressPhysXDestructibleImpl::BodyState&, Nv::Blast::ExtStressPhysXDestructibleImpl::ResimBodySnapshot const&)
+/root/workspace/blast-stress-solver-2/blast/source/sdk/extensions/stressphysx/NvBlastExtStressPhysX.cpp:3215
+Nv::Blast::ExtStressPhysXDestructibleImpl::restoreResimulationSnapshot(physx::PxRigidDynamic* const*, unsigned int)
+/root/workspace/blast-stress-solver-2/blast/source/sdk/extensions/stressphysx/NvBlastExtStressPhysX.cpp:2661
+vibe_land::physx_bridge::DestructionManager::resim_restore()
+/root/workspace/vibe-land-4/physx-bridge/src/destruction.cc:4211 (discriminator 1)
+vibe_land::physx_bridge::World::Impl::resim_restore()
+/root/workspace/vibe-land-4/physx-bridge/src/physx_bridge.cc:2655
+vibe_land::physx_bridge::World::resim_restore()
+/root/workspace/vibe-land-4/physx-bridge/src/physx_bridge.cc:3262
+vibe_land$physx_bridge$cxxbridge1$199$World$resim_restore::{lambda()#1}::operator()() const
+/root/workspace/vibe-land-4/target/gpu-activity/debug/build/vibe-land-physx-bridge-6334c389d201677a/out/cxxbridge/sources/vibe-land-physx-bridge/src/lib.rs.cc:1950 (discriminator 2)
+Sample 4
+std::__new_allocator<std::__detail::_Hash_node<std::pair<unsigned long const, float>, false> >::deallocate(std::__detail::_Hash_node<std::pair<unsigned long const, float>, false>*, unsigned long)
+/usr/include/c++/13/bits/new_allocator.h:173
+std::allocator_traits<std::allocator<std::__detail::_Hash_node<std::pair<unsigned long const, float>, false> > >::deallocate(std::allocator<std::__detail::_Hash_node<std::pair<unsigned long const, float>, false> >&, std::__detail::_Hash_node<std::pair<unsigned long const, float>, false>*, unsigned long)
+/usr/include/c++/13/bits/alloc_traits.h:517
+std::__detail::_Hashtable_alloc<std::allocator<std::__detail::_Hash_node<std::pair<unsigned long const, float>, false> > >::_M_deallocate_node(std::__detail::_Hash_node<std::pair<unsigned long const, float>, false>*)
+/usr/include/c++/13/bits/hashtable_policy.h:2013
+std::__detail::_Hashtable_alloc<std::allocator<std::__detail::_Hash_node<std::pair<unsigned long const, float>, false> > >::_M_deallocate_nodes(std::__detail::_Hash_node<std::pair<unsigned long const, float>, false>*)
+/usr/include/c++/13/bits/hashtable_policy.h:2029
+std::_Hashtable<unsigned long, std::pair<unsigned long const, float>, std::allocator<std::pair<unsigned long const, float> >, std::__detail::_Select1st, std::equal_to<unsigned long>, std::hash<unsigned long>, std::__detail::_Mod_range_hashing, std::__detail::_Default_ranged_hash, std::__detail::_Prime_rehash_policy, std::__detail::_Hashtable_traits<false, false, true> >::clear()
+/usr/include/c++/13/bits/hashtable.h:2526
+std::unordered_map<unsigned long, float, std::hash<unsigned long>, std::equal_to<unsigned long>, std::allocator<std::pair<unsigned long const, float> > >::clear()
+/usr/include/c++/13/bits/unordered_map.h:798
+vibe_land::physx_bridge::World::Impl::capture_gpu_contacts()
+/root/workspace/vibe-land-4/physx-bridge/src/physx_bridge.cc:1378
+vibe_land::physx_bridge::World::Impl::end_step()
+/root/workspace/vibe-land-4/physx-bridge/src/physx_bridge.cc:2104
+vibe_land::physx_bridge::World::Impl::step()
+/root/workspace/vibe-land-4/physx-bridge/src/physx_bridge.cc:2122
+vibe_land::physx_bridge::World::step()
+/root/workspace/vibe-land-4/physx-bridge/src/physx_bridge.cc:3146
+Sample 5
+std::_Head_base<0ul, unsigned int const&, false>::_M_head(std::_Head_base<0ul, unsigned int const&, false> const&)
+/usr/include/c++/13/tuple:237
+std::_Tuple_impl<0ul, unsigned int const&, unsigned int const&, unsigned int const&, unsigned int const&>::_M_head(std::_Tuple_impl<0ul, unsigned int const&, unsigned int const&, unsigned int const&, unsigned int const&> const&)
+/usr/include/c++/13/tuple:272
+unsigned int const& const& std::__get_helper<0ul, unsigned int const&, unsigned int const&, unsigned int const&, unsigned int const&>(std::_Tuple_impl<0ul, unsigned int const&, unsigned int const&, unsigned int const&, unsigned int const&> const&)
+/usr/include/c++/13/tuple:1793
+std::tuple_element<0ul, std::tuple<unsigned int const&, unsigned int const&, unsigned int const&, unsigned int const&> >::type const& std::get<0ul, unsigned int const&, unsigned int const&, unsigned int const&, unsigned int const&>(std::tuple<unsigned int const&, unsigned int const&, unsigned int const&, unsigned int const&> const&)
+/usr/include/c++/13/tuple:1810
+std::__tuple_compare<std::tuple<unsigned int const&, unsigned int const&, unsigned int const&, unsigned int const&>, std::tuple<unsigned int const&, unsigned int const&, unsigned int const&, unsigned int const&>, 0ul, 4ul>::__less(std::tuple<unsigned int const&, unsigned int const&, unsigned int const&, unsigned int const&> const&, std::tuple<unsigned int const&, unsigned int const&, unsigned int const&, unsigned int const&> const&)
+/usr/include/c++/13/tuple:1901 (discriminator 1)
+bool std::operator< <unsigned int const&, unsigned int const&, unsigned int const&, unsigned int const&, unsigned int const&, unsigned int const&, unsigned int const&, unsigned int const&>(std::tuple<unsigned int const&, unsigned int const&, unsigned int const&, unsigned int const&> const&, std::tuple<unsigned int const&, unsigned int const&, unsigned int const&, unsigned int const&> const&)
+/usr/include/c++/13/tuple:1970
+auto vibe_land::physx_bridge::World::Impl::capture_gpu_contacts()::{lambda(auto:1 const&, auto:2 const&)#1}::operator()<Nv::Blast::ExtStressPhysXDirectGpuContact, Nv::Blast::ExtStressPhysXDirectGpuContact>(Nv::Blast::ExtStressPhysXDirectGpuContact const&, Nv::Blast::ExtStressPhysXDirectGpuContact const&) const
+/root/workspace/vibe-land-4/physx-bridge/src/physx_bridge.cc:1402
+bool __gnu_cxx::__ops::_Iter_comp_iter<vibe_land::physx_bridge::World::Impl::capture_gpu_contacts()::{lambda(auto:1 const&, auto:2 const&)#1}>::operator()<__gnu_cxx::__normal_iterator<Nv::Blast::ExtStressPhysXDirectGpuContact*, std::vector<Nv::Blast::ExtStressPhysXDirectGpuContact, std::allocator<Nv::Blast::ExtStressPhysXDirectGpuContact> > >, __gnu_cxx::__normal_iterator<Nv::Blast::ExtStressPhysXDirectGpuContact*, std::vector<Nv::Blast::ExtStressPhysXDirectGpuContact, std::allocator<Nv::Blast::ExtStressPhysXDirectGpuContact> > > >(__gnu_cxx::__normal_iterator<Nv::Blast::ExtStressPhysXDirectGpuContact*, std::vector<Nv::Blast::ExtStressPhysXDirectGpuContact, std::allocator<Nv::Blast::ExtStressPhysXDirectGpuContact> > >, __gnu_cxx::__normal_iterator<Nv::Blast::ExtStressPhysXDirectGpuContact*, std::vector<Nv::Blast::ExtStressPhysXDirectGpuContact, std::allocator<Nv::Blast::ExtStressPhysXDirectGpuContact> > >)
+/usr/include/c++/13/bits/predefined_ops.h:158
+__gnu_cxx::__normal_iterator<Nv::Blast::ExtStressPhysXDirectGpuContact*, std::vector<Nv::Blast::ExtStressPhysXDirectGpuContact, std::allocator<Nv::Blast::ExtStressPhysXDirectGpuContact> > > std::__unguarded_partition<__gnu_cxx::__normal_iterator<Nv::Blast::ExtStressPhysXDirectGpuContact*, std::vector<Nv::Blast::ExtStressPhysXDirectGpuContact, std::allocator<Nv::Blast::ExtStressPhysXDirectGpuContact> > >, __gnu_cxx::__ops::_Iter_comp_iter<vibe_land::physx_bridge::World::Impl::capture_gpu_contacts()::{lambda(auto:1 const&, auto:2 const&)#1}> >(__gnu_cxx::__normal_iterator<Nv::Blast::ExtStressPhysXDirectGpuContact*, std::vector<Nv::Blast::ExtStressPhysXDirectGpuContact, std::allocator<Nv::Blast::ExtStressPhysXDirectGpuContact> > >, __gnu_cxx::__normal_iterator<Nv::Blast::ExtStressPhysXDirectGpuContact*, std::vector<Nv::Blast::ExtStressPhysXDirectGpuContact, std::allocator<Nv::Blast::ExtStressPhysXDirectGpuContact> > >, __gnu_cxx::__normal_iterator<Nv::Blast::ExtStressPhysXDirectGpuContact*, std::vector<Nv::Blast::ExtStressPhysXDirectGpuContact, std::allocator<Nv::Blast::ExtStressPhysXDirectGpuContact> > >, __gnu_cxx::__ops::_Iter_comp_iter<vibe_land::physx_bridge::World::Impl::capture_gpu_contacts()::{lambda(auto:1 const&, auto:2 const&)#1}>)
+/usr/include/c++/13/bits/stl_algo.h:1877 (discriminator 1)
+__gnu_cxx::__normal_iterator<Nv::Blast::ExtStressPhysXDirectGpuContact*, std::vector<Nv::Blast::ExtStressPhysXDirectGpuContact, std::allocator<Nv::Blast::ExtStressPhysXDirectGpuContact> > > std::__unguarded_partition_pivot<__gnu_cxx::__normal_iterator<Nv::Blast::ExtStressPhysXDirectGpuContact*, std::vector<Nv::Blast::ExtStressPhysXDirectGpuContact, std::allocator<Nv::Blast::ExtStressPhysXDirectGpuContact> > >, __gnu_cxx::__ops::_Iter_comp_iter<vibe_land::physx_bridge::World::Impl::capture_gpu_contacts()::{lambda(auto:1 const&, auto:2 const&)#1}> >(__gnu_cxx::__normal_iterator<Nv::Blast::ExtStressPhysXDirectGpuContact*, std::vector<Nv::Blast::ExtStressPhysXDirectGpuContact, std::allocator<Nv::Blast::ExtStressPhysXDirectGpuContact> > >, __gnu_cxx::__normal_iterator<Nv::Blast::ExtStressPhysXDirectGpuContact*, std::vector<Nv::Blast::ExtStressPhysXDirectGpuContact, std::allocator<Nv::Blast::ExtStressPhysXDirectGpuContact> > >, __gnu_cxx::__ops::_Iter_comp_iter<vibe_land::physx_bridge::World::Impl::capture_gpu_contacts()::{lambda(auto:1 const&, auto:2 const&)#1}>)
+/usr/include/c++/13/bits/stl_algo.h:1900
+Sample 6
+physx::PxVec3T<float>::operator=(physx::PxVec3T<float> const&)
+/root/workspace/physx-gpu-activity/physx/include/foundation/PxVec3.h:101
+void std::__unguarded_linear_insert<__gnu_cxx::__normal_iterator<Nv::Blast::ExtStressPhysXDirectGpuContact*, std::vector<Nv::Blast::ExtStressPhysXDirectGpuContact, std::allocator<Nv::Blast::ExtStressPhysXDirectGpuContact> > >, __gnu_cxx::__ops::_Val_comp_iter<vibe_land::physx_bridge::World::Impl::capture_gpu_contacts()::{lambda(auto:1 const&, auto:2 const&)#1}> >(__gnu_cxx::__normal_iterator<Nv::Blast::ExtStressPhysXDirectGpuContact*, std::vector<Nv::Blast::ExtStressPhysXDirectGpuContact, std::allocator<Nv::Blast::ExtStressPhysXDirectGpuContact> > >, __gnu_cxx::__ops::_Val_comp_iter<vibe_land::physx_bridge::World::Impl::capture_gpu_contacts()::{lambda(auto:1 const&, auto:2 const&)#1}>)
+/usr/include/c++/13/bits/stl_algo.h:1806
+void std::__unguarded_insertion_sort<__gnu_cxx::__normal_iterator<Nv::Blast::ExtStressPhysXDirectGpuContact*, std::vector<Nv::Blast::ExtStressPhysXDirectGpuContact, std::allocator<Nv::Blast::ExtStressPhysXDirectGpuContact> > >, __gnu_cxx::__ops::_Iter_comp_iter<vibe_land::physx_bridge::World::Impl::capture_gpu_contacts()::{lambda(auto:1 const&, auto:2 const&)#1}> >(__gnu_cxx::__normal_iterator<Nv::Blast::ExtStressPhysXDirectGpuContact*, std::vector<Nv::Blast::ExtStressPhysXDirectGpuContact, std::allocator<Nv::Blast::ExtStressPhysXDirectGpuContact> > >, __gnu_cxx::__normal_iterator<Nv::Blast::ExtStressPhysXDirectGpuContact*, std::vector<Nv::Blast::ExtStressPhysXDirectGpuContact, std::allocator<Nv::Blast::ExtStressPhysXDirectGpuContact> > >, __gnu_cxx::__ops::_Iter_comp_iter<vibe_land::physx_bridge::World::Impl::capture_gpu_contacts()::{lambda(auto:1 const&, auto:2 const&)#1}>)
+/usr/include/c++/13/bits/stl_algo.h:1839 (discriminator 2)
+void std::__final_insertion_sort<__gnu_cxx::__normal_iterator<Nv::Blast::ExtStressPhysXDirectGpuContact*, std::vector<Nv::Blast::ExtStressPhysXDirectGpuContact, std::allocator<Nv::Blast::ExtStressPhysXDirectGpuContact> > >, __gnu_cxx::__ops::_Iter_comp_iter<vibe_land::physx_bridge::World::Impl::capture_gpu_contacts()::{lambda(auto:1 const&, auto:2 const&)#1}> >(__gnu_cxx::__normal_iterator<Nv::Blast::ExtStressPhysXDirectGpuContact*, std::vector<Nv::Blast::ExtStressPhysXDirectGpuContact, std::allocator<Nv::Blast::ExtStressPhysXDirectGpuContact> > >, __gnu_cxx::__normal_iterator<Nv::Blast::ExtStressPhysXDirectGpuContact*, std::vector<Nv::Blast::ExtStressPhysXDirectGpuContact, std::allocator<Nv::Blast::ExtStressPhysXDirectGpuContact> > >, __gnu_cxx::__ops::_Iter_comp_iter<vibe_land::physx_bridge::World::Impl::capture_gpu_contacts()::{lambda(auto:1 const&, auto:2 const&)#1}>)
+/usr/include/c++/13/bits/stl_algo.h:1865
+void std::__sort<__gnu_cxx::__normal_iterator<Nv::Blast::ExtStressPhysXDirectGpuContact*, std::vector<Nv::Blast::ExtStressPhysXDirectGpuContact, std::allocator<Nv::Blast::ExtStressPhysXDirectGpuContact> > >, __gnu_cxx::__ops::_Iter_comp_iter<vibe_land::physx_bridge::World::Impl::capture_gpu_contacts()::{lambda(auto:1 const&, auto:2 const&)#1}> >(__gnu_cxx::__normal_iterator<Nv::Blast::ExtStressPhysXDirectGpuContact*, std::vector<Nv::Blast::ExtStressPhysXDirectGpuContact, std::allocator<Nv::Blast::ExtStressPhysXDirectGpuContact> > >, __gnu_cxx::__normal_iterator<Nv::Blast::ExtStressPhysXDirectGpuContact*, std::vector<Nv::Blast::ExtStressPhysXDirectGpuContact, std::allocator<Nv::Blast::ExtStressPhysXDirectGpuContact> > >, __gnu_cxx::__ops::_Iter_comp_iter<vibe_land::physx_bridge::World::Impl::capture_gpu_contacts()::{lambda(auto:1 const&, auto:2 const&)#1}>)
+/usr/include/c++/13/bits/stl_algo.h:1952
+void std::sort<__gnu_cxx::__normal_iterator<Nv::Blast::ExtStressPhysXDirectGpuContact*, std::vector<Nv::Blast::ExtStressPhysXDirectGpuContact, std::allocator<Nv::Blast::ExtStressPhysXDirectGpuContact> > >, vibe_land::physx_bridge::World::Impl::capture_gpu_contacts()::{lambda(auto:1 const&, auto:2 const&)#1}>(__gnu_cxx::__normal_iterator<Nv::Blast::ExtStressPhysXDirectGpuContact*, std::vector<Nv::Blast::ExtStressPhysXDirectGpuContact, std::allocator<Nv::Blast::ExtStressPhysXDirectGpuContact> > >, __gnu_cxx::__normal_iterator<Nv::Blast::ExtStressPhysXDirectGpuContact*, std::vector<Nv::Blast::ExtStressPhysXDirectGpuContact, std::allocator<Nv::Blast::ExtStressPhysXDirectGpuContact> > >, vibe_land::physx_bridge::World::Impl::capture_gpu_contacts()::{lambda(auto:1 const&, auto:2 const&)#1})
+/usr/include/c++/13/bits/stl_algo.h:4895
+vibe_land::physx_bridge::World::Impl::capture_gpu_contacts()
+/root/workspace/vibe-land-4/physx-bridge/src/physx_bridge.cc:1404
+vibe_land::physx_bridge::World::Impl::end_step()
+/root/workspace/vibe-land-4/physx-bridge/src/physx_bridge.cc:2104
+vibe_land::physx_bridge::World::Impl::step()
+/root/workspace/vibe-land-4/physx-bridge/src/physx_bridge.cc:2122
+vibe_land::physx_bridge::World::step()
+/root/workspace/vibe-land-4/physx-bridge/src/physx_bridge.cc:3146
+Sample 7
+std::_Head_base<3ul, unsigned int const&, false>::_Head_base(unsigned int const&)
+/usr/include/c++/13/tuple:194
+std::_Tuple_impl<3ul, unsigned int const&>::_Tuple_impl(unsigned int const&)
+/usr/include/c++/13/tuple:509
+std::_Tuple_impl<2ul, unsigned int const&, unsigned int const&>::_Tuple_impl(unsigned int const&, unsigned int const&)
+/usr/include/c++/13/tuple:285 (discriminator 1)
+std::_Tuple_impl<1ul, unsigned int const&, unsigned int const&, unsigned int const&>::_Tuple_impl(unsigned int const&, unsigned int const&, unsigned int const&)
+/usr/include/c++/13/tuple:285 (discriminator 1)
+std::_Tuple_impl<0ul, unsigned int const&, unsigned int const&, unsigned int const&, unsigned int const&>::_Tuple_impl(unsigned int const&, unsigned int const&, unsigned int const&, unsigned int const&)
+/usr/include/c++/13/tuple:285 (discriminator 1)
+std::tuple<unsigned int const&, unsigned int const&, unsigned int const&, unsigned int const&>::tuple<true, true>(unsigned int const&, unsigned int const&, unsigned int const&, unsigned int const&)
+/usr/include/c++/13/tuple:876
+std::tuple<unsigned int const&, unsigned int const&, unsigned int const&, unsigned int const&> std::tie<unsigned int const, unsigned int const, unsigned int const, unsigned int const>(unsigned int const&, unsigned int const&, unsigned int const&, unsigned int const&)
+/usr/include/c++/13/tuple:2170
+auto vibe_land::physx_bridge::World::Impl::capture_gpu_contacts()::{lambda(auto:1 const&, auto:2 const&)#1}::operator()<Nv::Blast::ExtStressPhysXDirectGpuContact, Nv::Blast::ExtStressPhysXDirectGpuContact>(Nv::Blast::ExtStressPhysXDirectGpuContact const&, Nv::Blast::ExtStressPhysXDirectGpuContact const&) const
+/root/workspace/vibe-land-4/physx-bridge/src/physx_bridge.cc:1400
+bool __gnu_cxx::__ops::_Iter_comp_iter<vibe_land::physx_bridge::World::Impl::capture_gpu_contacts()::{lambda(auto:1 const&, auto:2 const&)#1}>::operator()<__gnu_cxx::__normal_iterator<Nv::Blast::ExtStressPhysXDirectGpuContact*, std::vector<Nv::Blast::ExtStressPhysXDirectGpuContact, std::allocator<Nv::Blast::ExtStressPhysXDirectGpuContact> > >, __gnu_cxx::__normal_iterator<Nv::Blast::ExtStressPhysXDirectGpuContact*, std::vector<Nv::Blast::ExtStressPhysXDirectGpuContact, std::allocator<Nv::Blast::ExtStressPhysXDirectGpuContact> > > >(__gnu_cxx::__normal_iterator<Nv::Blast::ExtStressPhysXDirectGpuContact*, std::vector<Nv::Blast::ExtStressPhysXDirectGpuContact, std::allocator<Nv::Blast::ExtStressPhysXDirectGpuContact> > >, __gnu_cxx::__normal_iterator<Nv::Blast::ExtStressPhysXDirectGpuContact*, std::vector<Nv::Blast::ExtStressPhysXDirectGpuContact, std::allocator<Nv::Blast::ExtStressPhysXDirectGpuContact> > >)
+/usr/include/c++/13/bits/predefined_ops.h:158
+__gnu_cxx::__normal_iterator<Nv::Blast::ExtStressPhysXDirectGpuContact*, std::vector<Nv::Blast::ExtStressPhysXDirectGpuContact, std::allocator<Nv::Blast::ExtStressPhysXDirectGpuContact> > > std::__unguarded_partition<__gnu_cxx::__normal_iterator<Nv::Blast::ExtStressPhysXDirectGpuContact*, std::vector<Nv::Blast::ExtStressPhysXDirectGpuContact, std::allocator<Nv::Blast::ExtStressPhysXDirectGpuContact> > >, __gnu_cxx::__ops::_Iter_comp_iter<vibe_land::physx_bridge::World::Impl::capture_gpu_contacts()::{lambda(auto:1 const&, auto:2 const&)#1}> >(__gnu_cxx::__normal_iterator<Nv::Blast::ExtStressPhysXDirectGpuContact*, std::vector<Nv::Blast::ExtStressPhysXDirectGpuContact, std::allocator<Nv::Blast::ExtStressPhysXDirectGpuContact> > >, __gnu_cxx::__normal_iterator<Nv::Blast::ExtStressPhysXDirectGpuContact*, std::vector<Nv::Blast::ExtStressPhysXDirectGpuContact, std::allocator<Nv::Blast::ExtStressPhysXDirectGpuContact> > >, __gnu_cxx::__normal_iterator<Nv::Blast::ExtStressPhysXDirectGpuContact*, std::vector<Nv::Blast::ExtStressPhysXDirectGpuContact, std::allocator<Nv::Blast::ExtStressPhysXDirectGpuContact> > >, __gnu_cxx::__ops::_Iter_comp_iter<vibe_land::physx_bridge::World::Impl::capture_gpu_contacts()::{lambda(auto:1 const&, auto:2 const&)#1}>)
+/usr/include/c++/13/bits/stl_algo.h:1880 (discriminator 1)
+Sample 8
+void std::_Construct<std::pair<vibe_land::physx_bridge::DestructionManager::resolve_support_loads()::Resolved, vibe_land::physx_bridge::DestructionManager::resolve_support_loads()::Resolved>>(std::pair<vibe_land::physx_bridge::DestructionManager::resolve_support_loads()::Resolved, vibe_land::physx_bridge::DestructionManager::resolve_support_loads()::Resolved>*)
+/usr/include/c++/13/bits/stl_construct.h:109
+std::pair<vibe_land::physx_bridge::DestructionManager::resolve_support_loads()::Resolved, vibe_land::physx_bridge::DestructionManager::resolve_support_loads()::Resolved>* std::__uninitialized_default_n_1<false>::__uninit_default_n<std::pair<vibe_land::physx_bridge::DestructionManager::resolve_support_loads()::Resolved, vibe_land::physx_bridge::DestructionManager::resolve_support_loads()::Resolved>*, unsigned long>(std::pair<vibe_land::physx_bridge::DestructionManager::resolve_support_loads()::Resolved, vibe_land::physx_bridge::DestructionManager::resolve_support_loads()::Resolved>*, unsigned long)
+/usr/include/c++/13/bits/stl_uninitialized.h:642
+std::pair<vibe_land::physx_bridge::DestructionManager::resolve_support_loads()::Resolved, vibe_land::physx_bridge::DestructionManager::resolve_support_loads()::Resolved>* std::__uninitialized_default_n<std::pair<vibe_land::physx_bridge::DestructionManager::resolve_support_loads()::Resolved, vibe_land::physx_bridge::DestructionManager::resolve_support_loads()::Resolved>*, unsigned long>(std::pair<vibe_land::physx_bridge::DestructionManager::resolve_support_loads()::Resolved, vibe_land::physx_bridge::DestructionManager::resolve_support_loads()::Resolved>*, unsigned long)
+/usr/include/c++/13/bits/stl_uninitialized.h:713
+std::pair<vibe_land::physx_bridge::DestructionManager::resolve_support_loads()::Resolved, vibe_land::physx_bridge::DestructionManager::resolve_support_loads()::Resolved>* std::__uninitialized_default_n_a<std::pair<vibe_land::physx_bridge::DestructionManager::resolve_support_loads()::Resolved, vibe_land::physx_bridge::DestructionManager::resolve_support_loads()::Resolved>*, unsigned long, std::pair<vibe_land::physx_bridge::DestructionManager::resolve_support_loads()::Resolved, vibe_land::physx_bridge::DestructionManager::resolve_support_loads()::Resolved> >(std::pair<vibe_land::physx_bridge::DestructionManager::resolve_support_loads()::Resolved, vibe_land::physx_bridge::DestructionManager::resolve_support_loads()::Resolved>*, unsigned long, std::allocator<std::pair<vibe_land::physx_bridge::DestructionManager::resolve_support_loads()::Resolved, vibe_land::physx_bridge::DestructionManager::resolve_support_loads()::Resolved> >&)
+/usr/include/c++/13/bits/stl_uninitialized.h:779
+std::vector<std::pair<vibe_land::physx_bridge::DestructionManager::resolve_support_loads()::Resolved, vibe_land::physx_bridge::DestructionManager::resolve_support_loads()::Resolved>, std::allocator<std::pair<vibe_land::physx_bridge::DestructionManager::resolve_support_loads()::Resolved, vibe_land::physx_bridge::DestructionManager::resolve_support_loads()::Resolved> > >::_M_default_initialize(unsigned long)
+/usr/include/c++/13/bits/stl_vector.h:1717
+std::vector<std::pair<vibe_land::physx_bridge::DestructionManager::resolve_support_loads()::Resolved, vibe_land::physx_bridge::DestructionManager::resolve_support_loads()::Resolved>, std::allocator<std::pair<vibe_land::physx_bridge::DestructionManager::resolve_support_loads()::Resolved, vibe_land::physx_bridge::DestructionManager::resolve_support_loads()::Resolved> > >::vector(unsigned long, std::allocator<std::pair<vibe_land::physx_bridge::DestructionManager::resolve_support_loads()::Resolved, vibe_land::physx_bridge::DestructionManager::resolve_support_loads()::Resolved> > const&)
+/usr/include/c++/13/bits/stl_vector.h:558
+vibe_land::physx_bridge::DestructionManager::resolve_support_loads()
+/usr/include/c++/13/bits/allocator.h:184
+vibe_land::physx_bridge::DestructionManager::destruction_tick(float, vibe_land::physx_bridge::FfiVec3)
+/root/workspace/vibe-land-4/physx-bridge/src/destruction.cc:2170
+vibe_land::physx_bridge::World::Impl::destruction_tick(float, vibe_land::physx_bridge::FfiVec3)
+/root/workspace/vibe-land-4/physx-bridge/src/physx_bridge.cc:2449
+vibe_land::physx_bridge::World::destruction_tick(float, vibe_land::physx_bridge::FfiVec3)
+/root/workspace/vibe-land-4/physx-bridge/src/physx_bridge.cc:3186

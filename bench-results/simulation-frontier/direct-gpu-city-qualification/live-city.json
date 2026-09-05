@@ -1,0 +1,31 @@
+{
+  "url": "https://209.121.195.117:40617/city",
+  "server": 3585406,
+  "health": {
+    "status": "ok",
+    "physics_backend": "physx_gpu",
+    "physics_gpu_required": true,
+    "sim_hz": 60,
+    "snapshot_hz": 60,
+    "active_matches": 0,
+    "players": 0,
+    "udp_verified": false,
+    "wt_connection_attempts": 0,
+    "session_configs_served": 0
+  },
+  "server_sha256": "e50182b598fb8ab53a9aa095ef23f24793df5199583990aeba9135acf6360e40",
+  "runtime": {
+    "VIBE_PHYSICS_BACKEND": "physx_gpu",
+    "VIBE_PHYSX_DIRECT_GPU": "0",
+    "PHYSX_ROOT": "/root/PhysX/physx/install/linux-clang/PhysX",
+    "BLAST_GPU_IMPULSE_READBACK": "0",
+    "BLAST_GPU_DETERMINISTIC_REDUCTIONS": "0",
+    "VIBE_CITY_SCENE": "fractured-downtown.json",
+    "VIBE_CITY_GRID": "2",
+    "VIBE_CITY_SOLVER_ITERATIONS": "32",
+    "VIBE_CITY_RESIM_PASSES": "1",
+    "VIBE_CITY_STRESS_LIMIT_SCALE": "0.45"
+  },
+  "verified_at_utc": "2026-09-05T16:11:07Z",
+  "direct_gpu_deployed": false
+}

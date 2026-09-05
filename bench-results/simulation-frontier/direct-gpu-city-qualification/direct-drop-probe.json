@@ -1,0 +1,69 @@
+{
+  "command": [
+    "/root/workspace/vibe-land-4/target/gpu-activity/debug/deps/authored_structures_sim-25f9971959a3b1fc",
+    "--exact",
+    "a_dropped_building_breaks_up_instead_of_landing_in_one_piece",
+    "--nocapture",
+    "--test-threads=1"
+  ],
+  "source_manifest": "direct-destruction.json",
+  "test_only_preload": "direct-gpu-stack-probe.so",
+  "wall_seconds": 180.37881753826514,
+  "exit_code": -15,
+  "samples": [
+    {
+      "seconds": 20.002440904267132,
+      "tid": 3574676,
+      "cpu_ticks": 1922,
+      "signal_result": 0
+    },
+    {
+      "seconds": 40.004135142080486,
+      "tid": 3574676,
+      "cpu_ticks": 3832,
+      "signal_result": 0
+    },
+    {
+      "seconds": 60.005626551341265,
+      "tid": 3574676,
+      "cpu_ticks": 5744,
+      "signal_result": 0
+    },
+    {
+      "seconds": 80.00717476010323,
+      "tid": 3574676,
+      "cpu_ticks": 7663,
+      "signal_result": 0
+    },
+    {
+      "seconds": 100.00868944311514,
+      "tid": 3574676,
+      "cpu_ticks": 9579,
+      "signal_result": 0
+    },
+    {
+      "seconds": 120.01019970234483,
+      "tid": 3574676,
+      "cpu_ticks": 11501,
+      "signal_result": 0
+    },
+    {
+      "seconds": 140.01162353996187,
+      "tid": 3574676,
+      "cpu_ticks": 13429,
+      "signal_result": 0
+    },
+    {
+      "seconds": 160.01307258103043,
+      "tid": 3574676,
+      "cpu_ticks": 15362,
+      "signal_result": 0
+    },
+    {
+      "seconds": 180.01485312590376,
+      "tid": 3574676,
+      "cpu_ticks": 17296,
+      "signal_result": 0
+    }
+  ]
+}

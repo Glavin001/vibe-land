@@ -28,15 +28,26 @@ export VIBE_CITY_FREEZE=1 VIBE_CITY_VARIED_HEIGHTS=0 VIBE_CITY_SOLVER_ITERATIONS
 export VIBE_WORLD_FRICTION=0.75 VIBE_WORLD_RESTITUTION=0.02
 export VIBE_CITY_STRESS_LIMIT_SCALE="$SCALE"
 
-CSV=$(mktemp /tmp/at-rest-XXXX.csv)
-trap 'rm -f "$CSV"' EXIT
+TRACE="${VIBE_CITY_TRACE_BIN:-./target/release/record-city-trace}"
+if [[ -n "${VIBE_CITY_SCENARIO_OUT:-}" ]]; then
+  mkdir -p "$VIBE_CITY_SCENARIO_OUT"
+  CSV="$VIBE_CITY_SCENARIO_OUT/at-rest.csv"
+  LOG="$VIBE_CITY_SCENARIO_OUT/at-rest.log"
+else
+  CSV=$(mktemp /tmp/at-rest-XXXX.csv)
+  LOG=$(mktemp /tmp/at-rest-XXXX.log)
+  trap 'rm -f "$CSV" "$LOG"' EXIT
+fi
 
 echo "at-rest check: scale=$SCALE, ${SECONDS_RUN}s, zero shots, budget ${BUDGET} bonds"
-./target/release/record-city-trace \
+"$TRACE" \
   --scene destruction/assets/scenes/fractured-downtown.json --grid 1 \
   --seconds "$SECONDS_RUN" --shots 0 --targets 27 \
-  --output /dev/null --metrics-out "$CSV" >/dev/null 2>&1 || {
-    echo "FAIL: trace did not complete"; exit 1; }
+  --output /dev/null --metrics-out "$CSV" >"$LOG" 2>&1 || {
+    echo "FAIL: trace did not complete ($TRACE)"
+    tail -20 "$LOG"
+    exit 1
+  }
 
 python3 - "$CSV" "$BUDGET" <<'PY'
 import csv, sys

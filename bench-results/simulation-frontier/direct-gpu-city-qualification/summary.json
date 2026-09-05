@@ -1,0 +1,79 @@
+{
+  "direct_bridge": {
+    "passed": 22,
+    "failed": 0,
+    "ignored": 10,
+    "exit_code": 0
+  },
+  "direct_destruction_debug": {
+    "passed": 149,
+    "failed": 0,
+    "ignored": 17,
+    "exit_code": 101
+  },
+  "direct_authored_release": {
+    "passed": 4,
+    "failed": 0,
+    "ignored": 0,
+    "exit_code": 0
+  },
+  "debug_authored_target_interrupted": true,
+  "direct_idle": true,
+  "direct_gpu_deployed": false,
+  "audit": {
+    "ticks": 900,
+    "last_tick": 899,
+    "captures": 900,
+    "full_replays": 418,
+    "membership_mismatches": 0,
+    "capture_errors": 0,
+    "MISMATCHES_max": 0,
+    "removeOrder_max": 0,
+    "mask_max": 0,
+    "OVERSET_MISMATCH_max": 0,
+    "IMPULSE_max": 0,
+    "big_max": 0,
+    "node_max": 0,
+    "normal_max": 0,
+    "disp_max": 0,
+    "centroid_max": 0,
+    "node_mm_max": 0.0,
+    "bs_par_mm_max": 0.0,
+    "bl_mm_max": 0.0,
+    "escaped_max": 0.0
+  },
+  "initial_scenario_exit_code": 1,
+  "collapse": {
+    "direct_initial": {
+      "ticks": 2399,
+      "peak_awake": 630.0,
+      "tail_median_awake": 93.5,
+      "tail_over_peak": 0.1484126984126984,
+      "retirement_gate_passed": false,
+      "final_awake": 2.0,
+      "final_broken_bonds": 2597,
+      "mean_sim_ms": 6.798005986035848
+    },
+    "native_control": {
+      "ticks": 2399,
+      "peak_awake": 628.0,
+      "tail_median_awake": 0.0,
+      "tail_over_peak": 0.0,
+      "retirement_gate_passed": true,
+      "final_awake": 0.0,
+      "final_broken_bonds": 2514,
+      "mean_sim_ms": 2.921308934722801
+    },
+    "direct_repeat": {
+      "ticks": 2399,
+      "peak_awake": 628.0,
+      "tail_median_awake": 0.0,
+      "tail_over_peak": 0.0,
+      "retirement_gate_passed": true,
+      "final_awake": 0.0,
+      "final_broken_bonds": 2526,
+      "mean_sim_ms": 6.022114855439766
+    }
+  },
+  "performance_interpretation": "Exploratory scenario means with differing fracture trajectories; not a matched-awake multi-trial speedup claim. Native and Direct controls use one identical release trace and SDK. The initial Direct scenario also passed the existing p95 guard (54.5 ms <= 91.4 ms, 571 samples). This guard measures physx_step + stress_solve, not whole-tick streaming p99."
+}

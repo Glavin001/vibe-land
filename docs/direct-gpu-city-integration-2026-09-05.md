@@ -88,3 +88,9 @@ Only after these gates should the Direct GPU path be deployed for human review.
 A subsequent [GPU impulse-observation checkpoint](gpu-lazy-readback-2026-09-05.md)
 adds lazy host readback, deterministic reduction audits and a scenario-harness
 replay fix. It retains the deployment and full-replay qualification boundary above.
+
+The subsequent [Direct GPU city qualification](direct-gpu-city-qualification-2026-09-05.md)
+rebuilds this mode with the latest arithmetic fixes, runs the full city replay
+audit and broader destruction coverage, and records the retirement/performance
+issues that still prevent promotion. It prioritizes a first playable Direct GPU
+increment before completing every GPU migration.
