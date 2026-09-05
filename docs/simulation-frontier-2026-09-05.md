@@ -2,7 +2,7 @@
 
 The best direction is a persistent GPU simulation transaction: contact wrenches feed stress directly, stress feeds damage and connectivity, and the CPU receives compact topology decisions plus the final state needed by gameplay and streaming. Bulk contact, node-load and bond-impulse round trips are architectural overhead. Moving those boundaries is more promising than repeatedly optimizing the host loops that service them.
 
-This change establishes and tests the first device pipeline in the dependency and fixes the measurement gates in the game. **It does not enable Direct GPU mode for `/city`, replace the city fracture adapter, or claim a measured city speedup.** Existing physics, materials, solver tolerances, iteration counts, same-tick replay and streaming behavior are preserved. New branches in both repositories are `codex/simulation-frontier`. The dependency implementation is commit `598787fd`.
+This change establishes and tests the first device pipeline in the dependency and fixes the measurement gates in the game. **It does not enable Direct GPU mode for `/city`, replace the city fracture adapter, or claim a measured city speedup.** Existing physics, materials, solver tolerances, iteration counts, same-tick replay and streaming behavior are preserved. New branches in both repositories are `codex/simulation-frontier`. The dependency pipeline implementation is commit `598787fd`; corrected fixtures and the activity benchmark follow in `6913b92a`.
 
 ## What the source audit changed
 
@@ -41,14 +41,14 @@ Hardware/toolchain: RTX 4090, driver 595.71.05, CUDA 12.8.93, PhysX 5.10.0, Rust
 | Direct GPU checkpoint, contact pipeline, device-input and existing CPU/GPU stress equivalence CTests | 4/4 passed |
 | Compute Sanitizer memcheck: contact pipeline and device inputs | 0 errors in both |
 | Delayed producer; cold/warm loads; island skipping; host/device transitions; bond removal | Maximum observed host/device impulse difference: 0 |
-| Sliding impact, normal and friction impulses compared with momentum change | Maximum error 9.53674e-7 kg·m/s across 18 GPU contact-to-stress submissions |
+| Sliding impact, normal and friction impulses compared with momentum change | Maximum error 2.68247e-7 kg·m/s across 27 GPU contact-to-stress submissions |
 | Zero-resultant contact couple | Nonzero torque preserved |
 | Contact overflow and live-contact → empty-scene transition | Rejected truncation; no stale contact reuse |
-| Motion checkpoint at 5,000 bodies, 100 repetitions | Capture 0.0402 ms; restore 0.0422 ms mean |
+| Motion checkpoint at 5,000 bodies, 100 repetitions | Capture 0.0413 ms; restore 0.0444 ms mean |
 | Report regressions | 9 passed |
 | Existing 2,400-tick timing-closure benchmark, now with replay | Passed; 190 replay ticks; post-step unaccounted time 0.01% |
 
-The checkpoint figures are isolated motion-copy timings. They exclude fracture membership/provenance work and do not establish a matched speedup over the production checkpoint.
+The checkpoint/contact figures above use corrected nondegenerate box fixtures; see [the follow-up audit](direct-gpu-sleep-2026-09-05.md). The checkpoint figures are isolated motion-copy timings. They exclude fracture membership/provenance work and do not establish a matched speedup over the production checkpoint.
 
 A separate 720-tick city trace used grid 1, freezing disabled, 16 shots across 4 targets, 120 settling ticks and the existing 32-iteration/material settings. It produced 313 replay ticks, 9,857 broken bonds, peak 2,538 bodies, peak 2,460 awake bodies, and zero membership mismatches. Across replay ticks:
 
@@ -91,4 +91,4 @@ An additional algorithmic candidate is static condensation of intact structure i
 
 Numerical acceptance needs known-load columns and cantilevers, anchored reactions, free-fall rigid modes, momentum/energy checks and a strong CPU/double-precision reference. The existing large-pack equilibrium metric fits its own scale from the answer; by itself that cannot reject a uniformly scaled answer, and its zero-load edge case is not a sufficient gate. Broken-bond counts are outcome checks, not proof of convergence. Fix that reference before using it to approve a new recurrence, iteration reduction or multilevel solve.
 
-After those semantics hold, measure the complete awake-body frontier with matched workloads, at least three runs per arm, first-pass/replay separation, transferred bytes, tail latency and backlog. Preserve fidelity criteria before accepting a speed result. Only then redesign sleeping/freezing and streaming: final-state GPU pose compaction, topology epochs, reliable ownership changes, per-client relevance, and explicit resynchronization when a client misses topology. Those layers should exploit the committed simulation state without changing which structures were actually simulated.
+After those semantics hold, measure the complete awake-body frontier with matched workloads, at least three runs per arm, first-pass/replay separation, transferred bytes, tail latency and backlog. Preserve fidelity criteria before accepting a speed result. Evaluate sleeping alongside the Direct GPU architecture, using [the measured activity tradeoff and wake contracts](direct-gpu-sleep-2026-09-05.md). Streaming then consumes the committed state: final-state GPU pose compaction, topology epochs, reliable ownership changes, per-client relevance, and explicit resynchronization when a client misses topology. Those layers should exploit the committed simulation state without changing which structures were actually simulated.
