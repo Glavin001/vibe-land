@@ -24,8 +24,8 @@
     "sha256": "1bd42e7d7345c93789de15b06855eb45d4afce08c7dc72675f4eaec08fdf86d0"
   },
   "browser-targeted-harness.mjs": {
-    "bytes": 4990,
-    "sha256": "bc3ffda1f3dc4a8a92347cf72b581351f7e3a5079fa350bbd1c23f0b31ce6b6b"
+    "bytes": 6001,
+    "sha256": "c98e96d78dd72d3a75e8040f2348f55f88b5bbc323e6d48e0bfbd4d4ece0e031"
   },
   "browser-targeted-server-shots.log": {
     "bytes": 518,

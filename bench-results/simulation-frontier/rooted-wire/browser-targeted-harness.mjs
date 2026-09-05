@@ -51,7 +51,25 @@ try {
   }, null, { timeout: 40_000 });
   const before = await page.evaluate(() => window.__VIBE_E2E__.snapshot());
   report.before = { shotsFired: before.shotsFired, city: before.city };
-  const targets = JSON.parse(readFileSync('/tmp/rooted-wire-shot-targets.json', 'utf8'));
+  // Reconstruct the live grid-2 layout from its pinned authored scene.
+  const pack = JSON.parse(readFileSync('/root/workspace/vibe-land-4/destruction/assets/scenes/fractured-downtown.json', 'utf8')).scenario;
+  const low=[Infinity,Infinity,Infinity], high=[-Infinity,-Infinity,-Infinity];
+  for(let i=0;i<pack.nodes.length;i++) {
+    const n=pack.nodes[i].centroid,c=pack.nodeColliders[i],center=[n.x,n.y,n.z];
+    const points=[];
+    if(c.kind==='cuboid') {
+      const h=[c.halfExtents.x,c.halfExtents.y,c.halfExtents.z];
+      points.push(h,h.map(v=>-v));
+    } else for(let j=0;j<c.points.length;j+=3) points.push(c.points.slice(j,j+3));
+    for(const point of points) for(let a=0;a<3;a++) {
+      low[a]=Math.min(low[a],center[a]+point[a]); high[a]=Math.max(high[a],center[a]+point[a]);
+    }
+  }
+  const pitch=Math.max(high[0]-low[0],high[2]-low[2])+10;
+  const targets=[];
+  for(const x of [-pitch/2,pitch/2]) for(const z of [-pitch/2,pitch/2])
+    for(const n of pack.nodes) if(n.mass>0 && n.centroid.y>3 && n.centroid.y<6)
+      targets.push([n.centroid.x+x,n.centroid.y,n.centroid.z+z]);
   const camera = before.cameraPosition;
   targets.sort((a,b)=>Math.hypot(...a.map((v,i)=>v-camera[i]))-Math.hypot(...b.map((v,i)=>v-camera[i])));
   const target=targets[0]; report.target=target;
