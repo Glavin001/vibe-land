@@ -3066,15 +3066,15 @@ impl MatchState {
                                 let bootstrap = city.bootstrap(self.server_tick);
                                 let _ = try_queue_packet(&runtime.tx, bootstrap, &self.io);
                             } else {
-                                // Hash mismatch named the structures — this is
-                                // the detector actually firing, so the repair
-                                // counter finally means what it says.
+                                // Scoped requests can report hash mismatch,
+                                // missing migration destination, or rejected
+                                // settle pose; the protocol carries IDs only.
                                 info!(
                                     match_id = %self.id,
                                     player_id,
                                     last_topo_seq,
                                     ?structures,
-                                    "city ledger hash mismatch; sending structure bootstrap"
+                                    "city structure resync requested; sending structure bootstrap"
                                 );
                                 let bootstrap =
                                     city.structure_bootstrap(self.server_tick, &structures);

@@ -558,6 +558,7 @@ impl CityDestruction {
         // death), retired bodies, and nodes migrating off still-standing
         // stumps. Cascaded after `wakes` exists.
         let mut supporter_deaths: Vec<u32> = Vec::new();
+        let mut rooted_settled = Vec::new();
         let mut batches: HashMap<u32, FractureBatch> = HashMap::new();
         for event in broken {
             let batch = batches.entry(event.structure_id).or_insert_with(|| FractureBatch {
@@ -587,25 +588,39 @@ impl CityDestruction {
             });
         }
         for event in islands {
+            if event.kind == 3 {
+                // The native drain supplies the final COM frame after every
+                // replay. This is wire rest state only: an anchored fragment
+                // must not enter the dynamic debris freeze/settle trackers.
+                rooted_settled.push(SettleEvent {
+                    structure_id: event.structure_id,
+                    island_id: event.island_id,
+                    position: [event.position.x, event.position.y, event.position.z],
+                    rotation: [event.rotation.x, event.rotation.y, event.rotation.z, event.rotation.w],
+                });
+                continue;
+            }
             let batch = batches.entry(event.structure_id).or_insert_with(|| FractureBatch {
                 structure_id: event.structure_id,
                 ..FractureBatch::default()
             });
-            if event.kind == 0 {
-                let body = ids::body_entity(event.structure_id, event.island_id);
-                self.settle.promote(body, tick);
-                // Reach comes from the manifest, so a body's freeze shell is
-                // the same shell the wire holds it to.
-                let reach = crate::freeze::island_reach(
-                    &self.manifest,
-                    event.structure_id,
-                    &event.chunk_ids,
-                );
-                self.freeze.promote(body, reach);
-                // If this entity was serving as a ROOTED supporter, its
-                // promotion means the stump went dynamic: a supporter death
-                // for everything leaning on it.
-                supporter_deaths.extend(self.freeze.supporter_died(body, true));
+            if event.kind == 0 || event.kind == 2 {
+                if event.kind == 0 {
+                    let body = ids::body_entity(event.structure_id, event.island_id);
+                    self.settle.promote(body, tick);
+                    // Reach comes from the manifest, so a body's freeze shell is
+                    // the same shell the wire holds it to.
+                    let reach = crate::freeze::island_reach(
+                        &self.manifest,
+                        event.structure_id,
+                        &event.chunk_ids,
+                    );
+                    self.freeze.promote(body, reach);
+                    // If this entity was serving as a ROOTED supporter, its
+                    // promotion means the stump went dynamic: a supporter death
+                    // for everything leaning on it.
+                    supporter_deaths.extend(self.freeze.supporter_died(body, true));
+                }
                 batch.promoted_islands.push(IslandPromotion {
                     structure_id: event.structure_id,
                     island_id: event.island_id,
@@ -634,7 +649,7 @@ impl CityDestruction {
                     ],
                     ..IslandPromotion::default()
                 });
-            } else {
+            } else if event.kind == 1 {
                 let body = ids::body_entity(event.structure_id, event.island_id);
                 self.settle.retire(body);
                 self.freeze.retire(body);
@@ -642,6 +657,10 @@ impl CityDestruction {
                 // frozen debris or a rooted stump.
                 supporter_deaths.extend(self.freeze.supporter_died(body, true));
                 batch.retired_island_ids.push(event.island_id);
+            } else {
+                return Err(CityDestructionError::Bridge(format!(
+                    "unknown island event kind {}", event.kind
+                )));
             }
         }
 
@@ -723,7 +742,7 @@ impl CityDestruction {
         // A body the engine puts to sleep has genuinely come to rest, and that
         // transition is the network-definitive "at rest now" moment the stream
         // needs.
-        let mut settled = Vec::new();
+        let mut settled = rooted_settled;
         // Bodies the wire must be told are moving again. Two sources, both
         // below: the adapter flipping a frozen body back when it splits, and
         // spatial wakes staged by an impact since the last tick.

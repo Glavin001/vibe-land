@@ -350,12 +350,15 @@ impl CityLedger {
             serials.sort_unstable();
             for serial in serials {
                 let island = &structure.islands[&serial];
-                let (pose, linear_velocity, angular_velocity) =
-                    live_motion(structure_id, serial).unwrap_or((
-                        island.pose,
-                        island.linear_velocity,
-                        island.angular_velocity,
-                    ));
+                // A reliable rest record owns a stationary body's pose.
+                // Rooted fragments never enter the moving stream, and a
+                // frozen body's stream track may still hold an older frame.
+                let rest_motion = (island.pose, island.linear_velocity, island.angular_velocity);
+                let (pose, linear_velocity, angular_velocity) = if island.settled {
+                    rest_motion
+                } else {
+                    live_motion(structure_id, serial).unwrap_or(rest_motion)
+                };
                 islands.push(BootstrapIsland {
                     structure_id,
                     island_id: serial as u32,
@@ -588,4 +591,42 @@ mod tests {
         assert_eq!(map[&0], vec![0, 1]);
         assert_eq!(map[&2], vec![2, 3]);
     }
+    #[test]
+    fn full_and_scoped_bootstraps_use_reliable_rest_until_wake() {
+        let mut ledger = CityLedger::from_manifest(&manifest());
+        ledger.apply_batch(&FractureBatch {
+            structure_id: 0,
+            promoted_islands: vec![IslandPromotion {
+                structure_id: 0, island_id: 1, chunks: vec![ids::chunk_id(0, 2)],
+                position: [3.0, 4.0, 5.0], rotation: [0.0, 0.0, 0.0, 1.0],
+                ..IslandPromotion::default()
+            }],
+            ..FractureBatch::default()
+        });
+        let rest = SettleEvent { structure_id: 0, island_id: 1,
+            position: [7.0, 8.0, 9.0], rotation: [0.0, 0.0, 0.0, 1.0] };
+        ledger.apply_settle(&rest);
+        let calls = std::cell::Cell::new(0);
+        let moving = |_: u32, _: u32| {
+            calls.set(calls.get() + 1);
+            Some((Pose { position: Vec3::splat(100.0), rotation: glam::Quat::IDENTITY },
+                  Vec3::X, Vec3::Y))
+        };
+        for only in [None, Some(&[0u32][..])] {
+            let bootstrap = ledger.bootstrap_filtered(10, [0;32], 0, 1, &moving, only);
+            let island = bootstrap.islands.iter().find(|body|body.island_id==1).unwrap();
+            assert_eq!(island.pose.position, Vec3::from_array(rest.position));
+            assert_eq!(island.linear_velocity, Vec3::ZERO);
+            assert_eq!(island.angular_velocity, Vec3::ZERO);
+            assert!(island.settled);
+        }
+        assert_eq!(calls.get(), 0, "stationary bodies must not read obsolete stream tracks");
+        ledger.apply_wake(0, 1);
+        let bootstrap = ledger.bootstrap(11, [0;32], 0, 2, &moving);
+        let island = bootstrap.islands.iter().find(|body|body.island_id==1).unwrap();
+        assert_eq!(island.pose.position, Vec3::splat(100.0));
+        assert!(!island.settled);
+        assert_eq!(calls.get(), 1);
+    }
+
 }

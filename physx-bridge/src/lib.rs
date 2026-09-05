@@ -440,6 +440,9 @@ pub struct ChunkMigrationEvent {
 pub struct IslandBodyEvent {
     pub structure_id: u32,
     pub island_id: u32,
+    /// 0: dynamic promotion, 1: retirement, 2: rooted creation,
+    /// 3: final rooted rest pose after all steps since the previous drain.
+    /// Rooted creation announces membership without declaring support dead.
     pub kind: u32,
     pub mass: f32,
     pub position: Vec3,

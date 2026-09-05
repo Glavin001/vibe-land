@@ -700,3 +700,184 @@ fn support_edges_arrive_with_world_stump_and_debris_supporters() {
         "mappings invalid after support capture"
     );
 }
+
+/// Every real serial named by a migration must have a creation event, even
+/// when its body is still anchored. A bootstrap cannot repair an ID that the
+/// producer has never announced to the server ledger either.
+#[test]
+fn rooted_fragment_migration_destinations_are_announced() {
+    use std::collections::HashSet;
+    let mut world = rubble_world(6, 5);
+    let mut announced = HashSet::from([0u32]);
+    let mut rooted_seen = false;
+    let mut migrations_seen = 0;
+    for tick_index in 0..180 {
+        if tick_index == 30 {
+            world
+                .apply_destruction_blast(
+                    Vec3::new(0.0, 3.0, 0.0),
+                    Vec3::new(0.0, -1.0, 0.2),
+                    8.0,
+                    5.0e6,
+                    6.0,
+                )
+                .expect("blast");
+        }
+        world.step().expect("step");
+        world.destruction_tick(DT, GRAVITY).expect("tick");
+        let events = world.take_island_events().expect("island events");
+        let migrations = world.take_chunk_migrations().expect("migrations");
+        for event in &events {
+            if event.kind == 0 || event.kind == 2 {
+                assert!(
+                    !event.chunk_ids.is_empty(),
+                    "empty creation event: {event:?}"
+                );
+                announced.insert(event.island_id);
+            }
+        }
+        for migration in migrations {
+            migrations_seen += 1;
+            assert!(announced.contains(&migration.to_island),
+                "tick {tick_index}: migration {migration:?} names an unannounced destination; events={events:?}");
+        }
+        for event in &events {
+            if event.kind == 1 {
+                announced.remove(&event.island_id);
+            }
+        }
+        rooted_seen |= world
+            .destruction_stats()
+            .expect("stats")
+            .rooted_chunk_bodies
+            > 0;
+        let _ = world.take_broken_bonds().expect("bonds");
+    }
+    assert!(rooted_seen, "fixture never created a rooted fragment");
+    assert!(migrations_seen > 0, "fixture never migrated chunks");
+}
+
+#[test]
+fn rooted_fragment_keeps_its_serial_when_its_last_anchor_breaks() {
+    use std::collections::HashSet;
+    let mut world = World::new(WorldConfig::default()).expect("GPU scene");
+    let positions = [
+        Vec3::new(-2.0, 0.5, 0.0),
+        Vec3::new(2.0, 0.5, 0.0),
+        Vec3::new(-2.0, 1.5, 0.0),
+        Vec3::new(2.0, 1.5, 0.0),
+        Vec3::new(-2.0, 2.5, 0.0),
+        Vec3::new(2.0, 2.5, 0.0),
+    ];
+    let nodes: Vec<_> = positions
+        .iter()
+        .enumerate()
+        .map(|(i, &p)| node(i as u32, p, if i < 2 { 0.0 } else { 120.0 }))
+        .collect();
+    let mut bonds = vec![
+        bond(0, 0, 2, Vec3::new(-2.0, 1.0, 0.0)),
+        bond(1, 1, 3, Vec3::new(2.0, 1.0, 0.0)),
+        bond(2, 2, 4, Vec3::new(-2.0, 2.0, 0.0)),
+        bond(3, 3, 5, Vec3::new(2.0, 2.0, 0.0)),
+        bond(4, 4, 5, Vec3::new(0.0, 2.5, 0.0)),
+    ];
+    bonds[0].material = 1;
+    bonds[1].material = 1;
+    bonds[2].material = 2;
+    bonds[3].material = 2;
+    let material = |strength: f32| StressMaterialDesc {
+        compression_elastic: strength,
+        compression_fatal: 2.0 * strength,
+        tension_elastic: strength,
+        tension_fatal: 2.0 * strength,
+        shear_elastic: strength,
+        shear_fatal: 2.0 * strength,
+        elastic_modulus: 0.0,
+        residual_area_fraction: 0.0,
+    };
+    let mut settings = DestructibleSettings::default();
+    settings.max_solver_iterations_per_frame = 32;
+    settings.maximum_bodies = 0;
+    settings.maximum_fractures_per_actor_per_tick = 0;
+    // Fixture strengths separate two exact topology events. No excess-force
+    // push is needed for this identity test; production settings are untouched.
+    settings.apply_excess_forces = false;
+    settings.materials = vec![material(1e-6), material(1e7), material(1e12)];
+    world
+        .create_destructible(
+            0,
+            Pose {
+                position: Vec3::new(0.0, 0.0, 0.0),
+                rotation: Quat::IDENTITY,
+            },
+            &nodes,
+            &bonds,
+            settings,
+            GROUP_CHUNK,
+            ALL,
+        )
+        .expect("two pillars");
+    world.step().expect("initialize physics");
+    world
+        .queue_chunk_damage(0, 4, Vec3::new(0.0, 0.0, 1e3), positions[4])
+        .expect("break weak connecting bond");
+    world
+        .destruction_tick(DT, Vec3::new(0.0, 0.0, 0.0))
+        .expect("first split");
+    let births = world.take_island_events().expect("births");
+    let rooted: HashSet<_> = births
+        .iter()
+        .filter(|e| e.kind == 2 && e.chunk_ids.len() == 3)
+        .map(|e| e.island_id)
+        .collect();
+    assert!(!rooted.is_empty(), "no mixed rooted fragment: {births:?}");
+    for &id in &rooted {
+        assert!(
+            births.iter().any(|e| e.kind == 3 && e.island_id == id),
+            "rooted birth missing rest pose"
+        );
+    }
+    world.step().expect("next physics");
+    for index in [4usize, 5] {
+        world
+            .queue_chunk_damage(0, index as u32, Vec3::new(0.0, 0.0, 1e9), positions[index])
+            .expect("break anchors");
+    }
+    world
+        .destruction_tick(DT, Vec3::new(0.0, 0.0, 0.0))
+        .expect("anchor split");
+    let released = world.take_island_events().expect("released events");
+    let continued: Vec<_> = released
+        .iter()
+        .filter(|e| e.kind == 0 && rooted.contains(&e.island_id))
+        .collect();
+    assert!(
+        !continued.is_empty(),
+        "no rooted serial continued as dynamic: births={births:?}, released={released:?}"
+    );
+    let snapshots = world.chunk_body_snapshots().expect("live dynamic bodies");
+    for event in continued {
+        assert!(
+            !released
+                .iter()
+                .any(|e| (e.kind == 1 || e.kind == 3) && e.island_id == event.island_id),
+            "released body was retired or re-parked: {released:?}"
+        );
+        assert!(
+            !event.chunk_ids.iter().any(|&node| node < 2),
+            "free body still owns an anchor"
+        );
+        let body = snapshots
+            .iter()
+            .find(|b| b.island_id == event.island_id)
+            .expect("same live identity");
+        assert!(!body.kinematic);
+        assert_eq!(
+            (body.position.x, body.position.y, body.position.z),
+            (event.position.x, event.position.y, event.position.z)
+        );
+    }
+    assert!(world
+        .validate_destruction_mappings()
+        .expect("mapping check"));
+}

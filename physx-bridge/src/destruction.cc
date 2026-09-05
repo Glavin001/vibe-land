@@ -374,6 +374,9 @@ struct DestructionManager::Slot {
   /// would drop a standing building. Maintained wherever the adapter flips
   /// bodies: create seeding, first-seen kinematics, became-dynamic, retire.
   std::unordered_set<ExtStressPhysXId> rooted;
+  // Rooted membership changed since the last event drain. Publish the final
+  // COM pose after every same-tick replay has finished, from the shared cache.
+  std::unordered_set<ExtStressPhysXId> rooted_pose_dirty;
 
   // Tracking for event diffs.
   std::unordered_map<ExtStressPhysXId, std::uint32_t> body_to_serial;
@@ -1259,8 +1262,6 @@ void DestructionManager::collect_events(Slot &slot) {
   const auto &bodies = slot.body_cache;
   const std::uint32_t body_count = slot.body_cache_count;
 
-  std::unordered_map<ExtStressPhysXId, const ExtStressPhysXBodySnapshot *>
-      body_by_id;
   std::unordered_set<ExtStressPhysXId> live_bodies;
   // Keyed by island serial, which is 22 bits. Narrowing this to uint16 silently
   // fails the lookup below for any serial past 65535, which means a promoted
@@ -1268,7 +1269,6 @@ void DestructionManager::collect_events(Slot &slot) {
   // but nothing is bound to it, so it renders as nothing at all.
   std::unordered_map<std::uint32_t, std::size_t> promo_event_index;
   for (std::uint32_t i = 0; i < body_count; ++i) {
-    body_by_id[bodies[i].bodyId] = &bodies[i];
     live_bodies.insert(bodies[i].bodyId);
     // A body already mapped to the support sentinel but no longer kinematic
     // has become an independent island since we last looked. Treat it as new:
@@ -1324,13 +1324,17 @@ void DestructionManager::collect_events(Slot &slot) {
         slot.body_to_serial[bodies[i].bodyId] = serial;
         if (bodies[i].kinematic && !frozen) {
           slot.rooted.insert(bodies[i].bodyId);
+          slot.rooted_pose_dirty.insert(bodies[i].bodyId);
         }
       }
-      if (!bodies[i].kinematic) {
+      {
+        // A first-seen rooted fragment needs a wire identity too: subsequent
+        // migrations already name this real serial. Its birth is distinct
+        // from losing support, so Rust must not treat it as a dynamic wake.
         FfiIslandBodyEvent event{};
         event.structure_id = slot.structure_id;
         event.island_id = serial;
-        event.kind = 0; // promoted
+        event.kind = bodies[i].kinematic ? 2 : 0; // rooted birth / dynamic promotion
         event.mass =
             bodies[i].body != nullptr ? bodies[i].body->getMass() : 0.0f;
         event.position = from_px(com_world_position(bodies[i]));
@@ -1429,6 +1433,11 @@ void DestructionManager::collect_events(Slot &slot) {
         new_serial_it != slot.body_to_serial.end() ? new_serial_it->second : 0;
 
     if (old_body != 0 && old_body != new_body) {
+      // Both COM frames can change. Pose publication is deferred until drain,
+      // so a further split/release/retirement during replay cannot leave a
+      // stale rest pose behind. The support sentinel is filtered at drain.
+      if (slot.rooted.count(old_body)) slot.rooted_pose_dirty.insert(old_body);
+      if (slot.rooted.count(new_body)) slot.rooted_pose_dirty.insert(new_body);
       FfiChunkMigrationEvent migration{};
       migration.structure_id = slot.structure_id;
       migration.chunk_id = pack_chunk_id(slot.structure_id, node);
@@ -2570,6 +2579,38 @@ rust::Vec<FfiChunkMigrationEvent> DestructionManager::take_chunk_migrations() {
 }
 
 rust::Vec<FfiIslandBodyEvent> DestructionManager::take_island_events() {
+  // Dynamic poses stream separately; rooted bodies do not. Rest records use
+  // the FINAL cached body state, after all fracture/replay passes. Only roots
+  // whose membership changed need a lookup; there is no per-tick body scan or
+  // extra device readback. A retired or released root must not receive a rest.
+  for (auto &slot_ptr : slots_) {
+    if (!slot_ptr || slot_ptr->rooted_pose_dirty.empty()) continue;
+    Slot &slot = *slot_ptr;
+    std::vector<ExtStressPhysXId> dirty(slot.rooted_pose_dirty.begin(),
+                                      slot.rooted_pose_dirty.end());
+    std::sort(dirty.begin(), dirty.end());
+    const auto begin = slot.body_cache.begin();
+    const auto end = begin + slot.body_cache_count;
+    for (const ExtStressPhysXId id : dirty) {
+      if (!slot.rooted.count(id)) continue;
+      const auto serial = slot.body_to_serial.find(id);
+      if (serial == slot.body_to_serial.end() || serial->second == 0) continue;
+      const auto body = slot.body_cache_sorted
+          ? std::lower_bound(begin, end, id, [](const auto &row, ExtStressPhysXId value) {
+              return row.bodyId < value;
+            })
+          : std::find_if(begin, end, [id](const auto &row) { return row.bodyId == id; });
+      if (body == end || body->bodyId != id || !body->kinematic) continue;
+      FfiIslandBodyEvent event{};
+      event.structure_id = slot.structure_id;
+      event.island_id = serial->second;
+      event.kind = 3; // final rooted rest pose, no membership change
+      event.position = from_px(com_world_position(*body));
+      event.rotation = from_px(body->globalPose.q);
+      island_events_.push_back(std::move(event));
+    }
+    slot.rooted_pose_dirty.clear();
+  }
   rust::Vec<FfiIslandBodyEvent> out;
   out.reserve(island_events_.size());
   for (const auto &event : island_events_) {
