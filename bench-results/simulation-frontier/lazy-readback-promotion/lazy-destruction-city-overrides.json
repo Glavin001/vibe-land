@@ -1,0 +1,42 @@
+{
+  "game_commit": "05c23194e948aef3e8f949cbae991bd3d54fca9a",
+  "solver_commit": "cdf6c3ed19eeeb78a0b7c4f3a0775544b8591fea",
+  "command": [
+    "cargo",
+    "test",
+    "-p",
+    "vibe-land-destruction",
+    "--features",
+    "cuda-stress",
+    "--no-fail-fast",
+    "--",
+    "--test-threads=1"
+  ],
+  "env": {
+    "VIBE_CITY_VARIED_HEIGHTS": "0",
+    "VIBE_CITY_EXCESS_FORCES": "1",
+    "VIBE_WORLD_RESTITUTION": "0.02",
+    "VIBE_CITY_STRESS_LIMIT_SCALE": "0.45",
+    "VIBE_CITY_FREEZE": "1",
+    "VIBE_PHYSICS_BACKEND": "physx_gpu",
+    "BLAST_GPU_WHOLE_RESET_ON_TOPOLOGY": "1",
+    "BLAST_BOND_STRESS_GPU": "1",
+    "VIBE_CITY_SOLVER_ITERATIONS": "32",
+    "VIBE_CITY_RESIM_PASSES": "1",
+    "LD_LIBRARY_PATH": "/usr/local/cuda/lib64:/root/PhysX/physx/install/linux-clang/PhysX/bin/linux.x86_64/release",
+    "VIBE_CITY_SHOT_STRESS_IMPULSE": "1.2e7",
+    "VIBE_CITY_GRID": "2",
+    "VIBE_CITY_SCENE": "fractured-downtown.json",
+    "VIBE_CITY_SHOT_BLAST_RADIUS": "2.5",
+    "VIBE_WORLD_FRICTION": "0.75",
+    "PHYSX_ROOT": "/root/PhysX/physx/install/linux-clang/PhysX",
+    "BLAST_GPU_IMPULSE_READBACK": "0",
+    "BLAST_GPU_DETERMINISTIC_REDUCTIONS": "0",
+    "VIBE_PHYSX_DIRECT_GPU": "0"
+  },
+  "start_utc": "2026-09-05T14:50:04Z",
+  "record-city-trace_sha256": "e6aa42d966dd55164323c25b223f3b5da9ec5fbcfa35e9941206ba2ce3c5aa66",
+  "web-fps-server_sha256": "da0f2911dfd2f18a3f2ad80c36577715d60082aad236fbc85b5bf64686bf8e99",
+  "exit_code": 101,
+  "wall_seconds": 345.43359444709495
+}

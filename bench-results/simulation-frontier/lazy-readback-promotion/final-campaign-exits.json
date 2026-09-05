@@ -1,0 +1,10 @@
+{
+  "audit": 0,
+  "scenario": 0,
+  "idle": 1,
+  "native": 8,
+  "memcheck": 0,
+  "numerical": 1,
+  "bridge": 0,
+  "destruction": 0
+}

@@ -1,0 +1,5 @@
+{
+  "eager-audit": 0,
+  "eager-idle": 1,
+  "lazy-destruction": 0
+}

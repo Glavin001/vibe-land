@@ -1,0 +1,39 @@
+{
+  "lazy": {
+    "ticks": 900,
+    "reported_max_per_solver_counters": {
+      "MISMATCHES": 0,
+      "STRESS_MISMATCH": 915895,
+      "BEND_MISMATCH": 675953,
+      "OVERSET_MISMATCH": 0,
+      "IMPULSE": 0
+    },
+    "csv_max_mismatches": {
+      "node_mm": 0.0,
+      "bs_par_mm": 0.0,
+      "bl_mm": 0.0
+    },
+    "resim_captures": [
+      "900",
+      "0",
+      "0",
+      "0"
+    ],
+    "replay_passes": 351.0,
+    "membership": [
+      "0"
+    ],
+    "last_gpu_reports": [
+      "[bond-stress-gpu] ticks=2400 attempts=1200 ranOnDevice=1200 checks=20334013 MISMATCHES=0 (count=0 removeSize=0 removeOrder=0 mask=0) firstBadTick=0 lastBadTick=0 refuse(noSolver=0 stale=0 pendingTopo=0 csr=0) STRESS_MISMATCH=0/120229928 big=0 maxRel=0.000e+00 BEND_MISMATCH=0 bendMaxRel=0.000e+00 OVERSET_MISMATCH=0/60114964 compactHits=0 misses=0 IMPULSE=0/60116335 impMaxRel=0.000e+00 PAYLOAD(n=60116335 node=0 normal=0 disp=0 centroid=0)",
+      "[bond-stress-gpu] ticks=2400 attempts=1200 ranOnDevice=1200 checks=26142227 MISMATCHES=0 (count=0 removeSize=0 removeOrder=0 mask=0) firstBadTick=0 lastBadTick=0 refuse(noSolver=0 stale=0 pendingTopo=0 csr=0) STRESS_MISMATCH=325546/157364274 big=0 maxRel=3.734e-17 BEND_MISMATCH=330383 bendMaxRel=9.661e-17 OVERSET_MISMATCH=0/78682137 compactHits=0 misses=0 IMPULSE=0/78683766 impMaxRel=0.000e+00 PAYLOAD(n=78683766 node=0 normal=0 disp=0 centroid=0)",
+      "[bond-stress-gpu] ticks=2400 attempts=1200 ranOnDevice=1200 checks=28905939 MISMATCHES=0 (count=0 removeSize=0 removeOrder=0 mask=0) firstBadTick=0 lastBadTick=0 refuse(noSolver=0 stale=0 pendingTopo=0 csr=0) STRESS_MISMATCH=915895/174737856 big=0 maxRel=1.210e-16 BEND_MISMATCH=675953 bendMaxRel=2.935e-16 OVERSET_MISMATCH=0/87368928 compactHits=0 misses=0 IMPULSE=0/87370574 impMaxRel=0.000e+00 PAYLOAD(n=87370574 node=0 normal=0 disp=0 centroid=0)",
+      "[bond-stress-gpu] ticks=2400 attempts=1200 ranOnDevice=1200 checks=28905642 MISMATCHES=0 (count=0 removeSize=0 removeOrder=0 mask=0) firstBadTick=0 lastBadTick=0 refuse(noSolver=0 stale=0 pendingTopo=0 csr=0) STRESS_MISMATCH=354428/148780572 big=0 maxRel=9.161e-17 BEND_MISMATCH=349892 bendMaxRel=3.655e-16 OVERSET_MISMATCH=0/74390286 compactHits=0 misses=0 IMPULSE=0/74391635 impMaxRel=0.000e+00 PAYLOAD(n=74391635 node=0 normal=0 disp=0 centroid=0)"
+    ],
+    "idle": {
+      "ticks": 5399,
+      "broken_bonds": 4.0,
+      "tail_broken_bonds": 4.0,
+      "passed": false
+    }
+  }
+}

@@ -1,0 +1,29 @@
+{
+  "game_commit": "05c23194e948aef3e8f949cbae991bd3d54fca9a",
+  "solver_commit": "cdf6c3ed19eeeb78a0b7c4f3a0775544b8591fea",
+  "command": [
+    "cargo",
+    "test",
+    "-p",
+    "vibe-land-destruction",
+    "--features",
+    "cuda-stress",
+    "--no-fail-fast",
+    "--",
+    "--test-threads=1"
+  ],
+  "env": {
+    "LD_LIBRARY_PATH": "/usr/local/cuda/lib64:/root/PhysX/physx/install/linux-clang/PhysX/bin/linux.x86_64/release",
+    "PHYSX_ROOT": "/root/PhysX/physx/install/linux-clang/PhysX",
+    "BLAST_GPU_IMPULSE_READBACK": "0",
+    "BLAST_BOND_STRESS_GPU": "1",
+    "VIBE_CITY_RESIM_PASSES": "1",
+    "VIBE_PHYSX_DIRECT_GPU": "0",
+    "BLAST_GPU_DETERMINISTIC_REDUCTIONS": "0"
+  },
+  "start_utc": "2026-09-05T14:58:41Z",
+  "record-city-trace_sha256": "e6aa42d966dd55164323c25b223f3b5da9ec5fbcfa35e9941206ba2ce3c5aa66",
+  "web-fps-server_sha256": "da0f2911dfd2f18a3f2ad80c36577715d60082aad236fbc85b5bf64686bf8e99",
+  "exit_code": 0,
+  "wall_seconds": 216.96035437379032
+}

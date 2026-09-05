@@ -1,0 +1,12 @@
+{
+  "destruction": {
+    "passed": 153,
+    "failed": 0,
+    "ignored": 17
+  },
+  "bridge": {
+    "passed": 22,
+    "failed": 0,
+    "ignored": 10
+  }
+}

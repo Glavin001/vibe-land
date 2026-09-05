@@ -1,5 +1,10 @@
 # GPU stress observation checkpoint, 2026-09-05
 
+Deployment update: lazy readback is now enabled on the city with the subsequent
+host/device arithmetic fixes in solver `bdd35671`. See the
+[incremental rollout record](incremental-city-upgrade-2026-09-05.md). The
+measurements below describe the earlier checkpoint.
+
 This checkpoint removes unconditional impulse readback from the high-level CUDA
 stress solver behind `BLAST_GPU_IMPULSE_READBACK=0`. The default remains eager.
 It also adds opt-in fixed-order GPU reductions for strict audits, repairs a
@@ -132,8 +137,8 @@ cost on converged/mostly sleeping scenes. Lazy convergence observations currentl
 read the whole live impulse array and may cost more than eager compact readback
 in that regime. Body-to-node loads, contact ownership, complete replay and
 commit-only streaming still need the wider GPU integration described in the
-[city integration report](direct-gpu-city-integration-2026-09-05.md). The live city
-has not been switched to these experimental options.
+[city integration report](direct-gpu-city-integration-2026-09-05.md). The live city had not been switched at this checkpoint; the subsequent
+[incremental rollout](incremental-city-upgrade-2026-09-05.md) enables lazy readback.
 
 After the campaign, public HTTPS and a local browser WebTransport/bootstrap check
 passed on the restored city: 96,420 chunks rendered, no browser errors, orphaned

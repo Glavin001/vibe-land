@@ -1,0 +1,42 @@
+{
+  "scope": "incremental playtest; full-plan qualification remains incomplete",
+  "checks": {
+    "audit": {
+      "exit_code": 0,
+      "log": "lazy-audit.log"
+    },
+    "scenario": {
+      "exit_code": 0,
+      "log": "lazy-scenario.log"
+    },
+    "idle": {
+      "exit_code": 1,
+      "log": "lazy-idle.log"
+    },
+    "native": {
+      "exit_code": 8,
+      "log": "lazy-native.log"
+    },
+    "memcheck": {
+      "exit_code": 0,
+      "log": "lazy-memcheck.log"
+    },
+    "numerical": {
+      "exit_code": 0,
+      "log": "lazy-numerical.log"
+    },
+    "bridge": {
+      "exit_code": 0,
+      "log": "lazy-bridge.log"
+    },
+    "destruction": {
+      "exit_code": 0,
+      "log": "lazy-destruction.log"
+    },
+    "solver_variants": {
+      "bond-space": 0,
+      "jacobi": 0
+    }
+  },
+  "historical_note": "final-campaign-exits.json includes the numerical launch with incorrect cwd; final corrected numerical result is above. Invalid and earlier runs remain separately named."
+}
