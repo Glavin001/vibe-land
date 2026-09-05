@@ -6,6 +6,12 @@
 #include "destruction.h"
 #endif
 
+#ifdef NVBLAST_ENABLE_CUDA_STRESS
+#include "NvBlastExtStressPhysXGpuActivity.h"
+#include "NvBlastExtStressPhysXDirectGpu.h"
+#include "NvBlastExtStressPhysXGpuHostMirror.h"
+#endif
+
 #if defined(__x86_64__) || defined(_M_X64)
 #include <x86intrin.h>
 #define VIBE_HAVE_RDTSC 1
@@ -24,6 +30,7 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <tuple>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -1318,6 +1325,141 @@ public:
     contact_drain_cycles_ += cycle_now() - drain_started;
   }
 
+#ifdef NVBLAST_ENABLE_CUDA_STRESS
+  void capture_gpu_contacts() {
+    require(deferred_pairs_.empty() && deferred_points_.empty(),
+            "Direct GPU mixed native callbacks with device contacts");
+    const PxU32 count = gpu_contact_drain_->copyContacts(
+        gpu_contacts_.data(), static_cast<PxU32>(gpu_contacts_.size()));
+    require(gpu_contact_drain_->lastCopyComplete(),
+            "GPU contact readback failed or exceeded configured capacity");
+    if (count == 0) {
+      gpu_previous_pairs_.clear();
+      return;
+    }
+    // Reference routing boundary. Rebuild from live shapes so recycled PhysX
+    // indices never resolve through a retired shape or actor. The GPU stress
+    // route can replace this observer once its ownership tables are wired.
+    std::fill(gpu_contact_shapes_.begin(), gpu_contact_shapes_.end(), GpuContactShape{});
+    const auto types = PxActorTypeFlag::eRIGID_DYNAMIC | PxActorTypeFlag::eRIGID_STATIC;
+    gpu_contact_actors_.resize(scene_->getNbActors(types));
+    const PxU32 actors = scene_->getActors(types, gpu_contact_actors_.data(),
+                                          static_cast<PxU32>(gpu_contact_actors_.size()));
+    for (PxU32 i = 0; i < actors; ++i) {
+      auto *actor = static_cast<PxRigidActor *>(gpu_contact_actors_[i]);
+      gpu_shape_scratch_.resize(actor->getNbShapes());
+      const PxU32 shapes = actor->getShapes(gpu_shape_scratch_.data(),
+                                           static_cast<PxU32>(gpu_shape_scratch_.size()));
+      for (PxU32 j = 0; j < shapes; ++j) {
+        auto *shape = gpu_shape_scratch_[j];
+#if defined(PX_DIRECT_GPU_HOST_ACCESS_VERSION)
+        // Geometry indices and contact transform-cache indices are separate
+        // allocators; they diverge as soon as fracture migrates a shape.
+        const auto index = scene_->getDirectGPUAPI().getShapeContactIndex(*shape);
+#else
+        const auto index = PX_INVALID_U32;
+#endif
+        require(index != PX_INVALID_U32, "live contact shape has no GPU contact index");
+        if (index >= gpu_contact_shapes_.size()) gpu_contact_shapes_.resize(size_t(index) + 1);
+        gpu_contact_shapes_[index] = {shape, actor};
+      }
+    }
+    // Native thresholds aggregate all shapes of a solver-body pair. Static
+    // actors share the solver's world body, including separate static actors.
+    const auto actor_pair_key = [](PxRigidActor *a, PxRigidActor *b) {
+      const auto index = [](PxRigidActor *actor) {
+        const auto *body = actor->is<PxRigidDynamic>();
+        return body ? body->getGPUIndex() : PX_INVALID_U32;
+      };
+      const PxU32 ia = index(a), ib = index(b);
+      return (std::uint64_t(std::min(ia, ib)) << 32) | std::max(ia, ib);
+    };
+    gpu_actor_pair_normal_impulses_.clear();
+    for (PxU32 i = 0; i < count; ++i) {
+      auto &contact = gpu_contacts_[i];
+      require(contact.worldPosition.isFinite() && contact.impulseOnActor0.isFinite()
+                  && contact.worldNormal.isFinite() && finite(contact.separation)
+                  && finite(contact.normalImpulse) && contact.normalImpulse >= 0.0f,
+              "nonfinite or negative GPU contact");
+      require(contact.transformCacheRef0 < gpu_contact_shapes_.size()
+                  && contact.transformCacheRef1 < gpu_contact_shapes_.size(),
+              "GPU contact references an unknown shape");
+      const auto &a = gpu_contact_shapes_[contact.transformCacheRef0];
+      const auto &b = gpu_contact_shapes_[contact.transformCacheRef1];
+      require(a.shape && b.shape && a.actor == contact.actor0 && b.actor == contact.actor1,
+              "GPU contact ownership disagrees with live shape mapping");
+      if (contact.transformCacheRef1 < contact.transformCacheRef0) {
+        std::swap(contact.actor0, contact.actor1);
+        std::swap(contact.transformCacheRef0, contact.transformCacheRef1);
+        contact.impulseOnActor0 = -contact.impulseOnActor0;
+        contact.worldNormal = -contact.worldNormal;
+      }
+    }
+    std::sort(gpu_contacts_.begin(), gpu_contacts_.begin() + count,
+              [](const auto &a, const auto &b) {
+                return std::tie(a.transformCacheRef0, a.transformCacheRef1, a.friction, a.pointIndex)
+                     < std::tie(b.transformCacheRef0, b.transformCacheRef1, b.friction, b.pointIndex);
+              });
+    // Accumulate in the sorted order, independent of CUDA atomic emission.
+    for (PxU32 i = 0; i < count; ++i) {
+      const auto &contact = gpu_contacts_[i];
+      if (!contact.friction) {
+        gpu_actor_pair_normal_impulses_[actor_pair_key(contact.actor0, contact.actor1)]
+            += contact.normalImpulse;
+      }
+    }
+    gpu_current_pairs_.clear();
+    for (PxU32 begin = 0; begin < count;) {
+      const auto &first = gpu_contacts_[begin];
+      PxU32 end = begin + 1;
+      while (end < count && gpu_contacts_[end].transformCacheRef0 == first.transformCacheRef0
+             && gpu_contacts_[end].transformCacheRef1 == first.transformCacheRef1) ++end;
+      require(first.transformCacheRef0 < gpu_contact_shapes_.size()
+                  && first.transformCacheRef1 < gpu_contact_shapes_.size(),
+              "GPU contact references an unknown shape");
+      const auto &a = gpu_contact_shapes_[first.transformCacheRef0];
+      const auto &b = gpu_contact_shapes_[first.transformCacheRef1];
+      require(a.shape && b.shape && a.actor == first.actor0 && b.actor == first.actor1,
+              "GPU contact ownership disagrees with live shape mapping");
+      float normal_impulse = 0.0f;
+      for (PxU32 i = begin; i < end; ++i) {
+        const auto &c = gpu_contacts_[i];
+        require(c.actor0 == a.actor && c.actor1 == b.actor, "GPU contact pair changed ownership");
+        if (!c.friction) normal_impulse += c.normalImpulse;
+      }
+      const auto threshold = [](PxRigidActor *actor) {
+        const auto *body = actor->is<PxRigidDynamic>();
+        return body ? body->getContactReportThreshold() : PX_MAX_F32;
+      };
+      const auto load = gpu_actor_pair_normal_impulses_.find(actor_pair_key(a.actor, b.actor));
+      const float actor_pair_impulse = load == gpu_actor_pair_normal_impulses_.end() ? 0.0f : load->second;
+      // PhysX only inserts shape pairs with a nonzero normal impulse in its
+      // threshold stream, even when other shapes of the body exceed the limit.
+      if (normal_impulse > 0.0f && actor_pair_impulse >
+              std::min(threshold(a.actor), threshold(b.actor)) * kFixedTimestep) {
+        const std::uint64_t key = (std::uint64_t(first.transformCacheRef0) << 32) | first.transformCacheRef1;
+        const bool persists = gpu_previous_pairs_.find(key) != gpu_previous_pairs_.end();
+        gpu_current_pairs_.insert(key);
+        const auto point_begin = static_cast<PxU32>(deferred_points_.size());
+        for (PxU32 i = begin; i < end; ++i) {
+          const auto &c = gpu_contacts_[i];
+          PxContactPairPoint point{};
+          point.position = c.worldPosition;
+          point.normal = c.worldNormal;
+          point.impulse = c.impulseOnActor0;
+          point.separation = c.separation;
+          deferred_points_.push_back(point);
+        }
+        deferred_pairs_.push_back({a.actor, b.actor, a.shape, b.shape,
+            actor_entity_id(a.actor), actor_entity_id(b.actor), point_begin,
+            end - begin, end - begin, persists, !persists});
+      }
+      begin = end;
+    }
+    gpu_previous_pairs_.swap(gpu_current_pairs_);
+  }
+#endif
+
   void onContact(const PxContactPairHeader &header,
                  const PxContactPair *pairs, PxU32 pair_count) override {
     // EXACT self-timing: this callback runs INSIDE fetchResults, so its cost
@@ -1941,6 +2083,24 @@ public:
     if (callback_ms > fetch_total_ms * 1.05 + 0.05) {
       ++tsc_suspect_ticks_;
     }
+#ifdef NVBLAST_ENABLE_CUDA_STRESS
+    if (gpu_host_mirror_ != nullptr) {
+      const PxU32 count = scene_->getNbActors(PxActorTypeFlag::eRIGID_DYNAMIC);
+      gpu_mirror_actors_.resize(count);
+      gpu_mirror_bodies_.resize(count);
+      const PxU32 written = scene_->getActors(PxActorTypeFlag::eRIGID_DYNAMIC,
+                                             gpu_mirror_actors_.data(), count);
+      require(written == count, "GPU observation actor list changed during fetch");
+      for (PxU32 i = 0; i < count; ++i) {
+        gpu_mirror_bodies_[i] = static_cast<PxRigidDynamic *>(gpu_mirror_actors_[i]);
+      }
+      require(gpu_host_mirror_->synchronize(gpu_mirror_bodies_.data(), count),
+              "GPU motion observation failed");
+      capture_gpu_contacts();
+    }
+#endif
+    // Include explicit observation in the completed physics step, while the
+    // native fetch/callback timings above retain their original boundaries.
     const auto end = std::chrono::steady_clock::now();
     last_fetch_ms_ =
         std::chrono::duration<float, std::milli>(end - fetch_start).count();
@@ -2571,6 +2731,19 @@ private:
       scene_desc.gpuDynamicsConfig.collisionStackSize =
           config.gpu_collision_stack_size;
     }
+    const char *direct_env = std::getenv("VIBE_PHYSX_DIRECT_GPU");
+    const bool direct_gpu = direct_env != nullptr && direct_env[0] == '1';
+    if (direct_gpu) {
+#if defined(NVBLAST_ENABLE_CUDA_STRESS) && defined(PX_DIRECT_GPU_HOST_ACCESS_VERSION)
+      require(defer_contacts_enabled(), "Direct GPU requires deferred contact processing");
+      require(contact_persists_enabled(), "Direct GPU requires persistent support contacts");
+      require(Nv::Blast::ExtStressPhysXGpuActivity::configureScene(scene_desc),
+              "PhysX SDK does not support Direct GPU with native sleeping");
+      scene_desc.flags |= PxSceneFlag::eENABLE_DIRECT_GPU_HOST_ACCESS;
+#else
+      throw std::runtime_error("VIBE_PHYSX_DIRECT_GPU requires CUDA stress and the host-access SDK");
+#endif
+    }
     require(scene_desc.isValid(), "invalid GPU PhysX scene descriptor");
     scene_ = physics.createScene(scene_desc);
     require(scene_ != nullptr, "failed to create GPU PhysX scene");
@@ -2582,6 +2755,22 @@ private:
     require(actual_flags.isSet(PxSceneFlag::eENABLE_GPU_DYNAMICS),
             "created scene did not retain GPU dynamics");
 
+#ifdef NVBLAST_ENABLE_CUDA_STRESS
+    if (direct_gpu) {
+      gpu_host_mirror_ = Nv::Blast::ExtStressPhysXGpuHostMirror::create(*scene_);
+      require(gpu_host_mirror_ != nullptr && gpu_host_mirror_->available(),
+              "GPU observation capability missing from created scene");
+      gpu_contact_drain_ = Nv::Blast::ExtStressPhysXDirectGpuContactDrain::create(
+          *scene_, scene_desc.gpuDynamicsConfig.maxRigidPatchCount);
+      require(gpu_contact_drain_ != nullptr && gpu_contact_drain_->available(),
+              "GPU contact capability missing from created scene");
+      // At most one normal record per contact and two friction anchors per patch.
+      const std::uint64_t capacity = std::uint64_t(scene_desc.gpuDynamicsConfig.maxRigidContactCount)
+          + 2ull * scene_desc.gpuDynamicsConfig.maxRigidPatchCount;
+      require(capacity <= std::numeric_limits<PxU32>::max(), "GPU contact capacity overflows indexing");
+      gpu_contacts_.resize(static_cast<size_t>(capacity));
+    }
+#endif
     material_ = physics.createMaterial(
         config.static_friction, config.dynamic_friction, config.restitution);
     require(material_ != nullptr, "failed to create default material");
@@ -2601,6 +2790,16 @@ private:
   }
 
   void teardown() noexcept {
+#ifdef NVBLAST_ENABLE_CUDA_STRESS
+    if (gpu_contact_drain_ != nullptr) {
+      gpu_contact_drain_->release();
+      gpu_contact_drain_ = nullptr;
+    }
+    if (gpu_host_mirror_ != nullptr) {
+      gpu_host_mirror_->release();
+      gpu_host_mirror_ = nullptr;
+    }
+#endif
 #ifdef VIBE_LAND_DESTRUCTION
     destruction_.reset();
 #endif
@@ -2718,6 +2917,19 @@ private:
   std::shared_ptr<SharedPhysxRuntime> runtime_;
   PxDefaultCpuDispatcher *dispatcher_ = nullptr;
   PxScene *scene_ = nullptr;
+#ifdef NVBLAST_ENABLE_CUDA_STRESS
+  Nv::Blast::ExtStressPhysXGpuHostMirror *gpu_host_mirror_ = nullptr;
+  std::vector<PxActor *> gpu_mirror_actors_;
+  std::vector<PxRigidDynamic *> gpu_mirror_bodies_;
+  Nv::Blast::ExtStressPhysXDirectGpuContactDrain *gpu_contact_drain_ = nullptr;
+  std::vector<Nv::Blast::ExtStressPhysXDirectGpuContact> gpu_contacts_;
+  struct GpuContactShape { PxShape *shape = nullptr; PxRigidActor *actor = nullptr; };
+  std::vector<GpuContactShape> gpu_contact_shapes_;
+  std::vector<PxActor *> gpu_contact_actors_;
+  std::vector<PxShape *> gpu_shape_scratch_;
+  std::unordered_set<std::uint64_t> gpu_previous_pairs_, gpu_current_pairs_;
+  std::unordered_map<std::uint64_t, float> gpu_actor_pair_normal_impulses_;
+#endif
   PxMaterial *material_ = nullptr;
   PxControllerManager *controller_manager_ = nullptr;
   std::unordered_map<std::uint32_t, Record> records_;

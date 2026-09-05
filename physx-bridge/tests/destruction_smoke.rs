@@ -70,6 +70,8 @@ fn destruction_tower_settles_and_fractures() {
         tension_fatal: -1.0,
         shear_elastic: -1.0,
         shear_fatal: -1.0,
+        elastic_modulus: 0.0,
+        residual_area_fraction: 0.0,
     }];
     settings.maximum_bodies = 16;
     settings.maximum_fractures_per_actor_per_tick = 8;
@@ -305,6 +307,8 @@ fn event_ids_round_trip_across_multiple_structures() {
         tension_fatal: 5.0e-4,
         shear_elastic: -1.0,
         shear_fatal: -1.0,
+        elastic_modulus: 0.0,
+        residual_area_fraction: 0.0,
     }];
 
     // Two towers, well apart, so each structure's events are unambiguous.

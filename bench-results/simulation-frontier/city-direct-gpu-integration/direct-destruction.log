@@ -1,0 +1,183 @@
+warning: vibe-land-physx-bridge@0.1.0: In file included from /root/workspace/blast-stress-solver-2/blast/rust_stress_example/ffi/ext_stress_bridge.cpp:17:
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/include/extensions/stress/NvBlastExtStressSolver.h: In constructor 'Nv::Blast::ExtStressMaterial::ExtStressMaterial()':
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/include/extensions/stress/NvBlastExtStressSolver.h:216:11: warning: 'Nv::Blast::ExtStressMaterial::elasticModulusPa' will be initialized after [-Wreorder]
+warning: vibe-land-physx-bridge@0.1.0:   216 |     float elasticModulusPa;
+warning: vibe-land-physx-bridge@0.1.0:       |           ^~~~~~~~~~~~~~~~
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/include/extensions/stress/NvBlastExtStressSolver.h:209:11: warning:   'float Nv::Blast::ExtStressMaterial::residualAreaFraction' [-Wreorder]
+warning: vibe-land-physx-bridge@0.1.0:   209 |     float residualAreaFraction;
+warning: vibe-land-physx-bridge@0.1.0:       |           ^~~~~~~~~~~~~~~~~~~~
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/include/extensions/stress/NvBlastExtStressSolver.h:221:5: warning:   when initialized here [-Wreorder]
+warning: vibe-land-physx-bridge@0.1.0:   221 |     ExtStressMaterial() :
+warning: vibe-land-physx-bridge@0.1.0:       |     ^~~~~~~~~~~~~~~~~
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/rust_stress_example/ffi/ext_stress_bridge.cpp: In function 'uint8_t ext_stress_solver_apply_fracture_commands(ExtStressSolverHandle*, const ExtStressFractureCommands*, uint32_t, ExtStressSplitEvent*, uint32_t, ExtStressActor*, uint32_t, uint32_t*, uint32_t*, uint32_t*, uint32_t, uint32_t*)':
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/rust_stress_example/ffi/ext_stress_bridge.cpp:2178:18: warning: variable 'childStored' set but not used [-Wunused-but-set-variable]
+warning: vibe-land-physx-bridge@0.1.0:  2178 |             bool childStored = false;
+warning: vibe-land-physx-bridge@0.1.0:       |                  ^~~~~~~~~~~
+warning: vibe-land-physx-bridge@0.1.0: In file included from /root/workspace/blast-stress-solver-2/blast/source/shared/stress_solver/coupling.h:30,
+warning: vibe-land-physx-bridge@0.1.0:                  from /root/workspace/blast-stress-solver-2/blast/source/shared/stress_solver/bond.h:29,
+warning: vibe-land-physx-bridge@0.1.0:                  from /root/workspace/blast-stress-solver-2/blast/source/shared/stress_solver/stress.h:29,
+warning: vibe-land-physx-bridge@0.1.0:                  from /root/workspace/blast-stress-solver-2/blast/source/shared/stress_solver/stress.cpp:27:
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/source/shared/stress_solver/anglin6.h:167:25: warning: ignoring attributes on template argument '__m128' [-Wignored-attributes]
+warning: vibe-land-physx-bridge@0.1.0:   167 | struct AngLin6Ops<__m128>
+warning: vibe-land-physx-bridge@0.1.0:       |                         ^
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/source/shared/stress_solver/coupling.h:121:43: warning: ignoring attributes on template argument 'SIMD_Scalar' {aka '__m128'} [-Wignored-attributes]
+warning: vibe-land-physx-bridge@0.1.0:   121 | struct CouplingMatrixOps<Elem, SIMD_Scalar>
+warning: vibe-land-physx-bridge@0.1.0:       |                                           ^
+warning: vibe-land-physx-bridge@0.1.0: In file included from /root/workspace/blast-stress-solver-2/blast/source/shared/stress_solver/bond.h:30:
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/source/shared/stress_solver/inertia.h:86:36: warning: ignoring attributes on template argument 'SIMD_Scalar' {aka '__m128'} [-Wignored-attributes]
+warning: vibe-land-physx-bridge@0.1.0:    86 | struct InertiaMatrixOps<SIMD_Scalar>
+warning: vibe-land-physx-bridge@0.1.0:       |                                    ^
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/source/shared/stress_solver/stress.cpp:41:45: warning: ignoring attributes on template argument 'SIMD_Scalar' {aka '__m128'} [-Wignored-attributes]
+warning: vibe-land-physx-bridge@0.1.0:    41 | typedef CGNR<AngLin6, AngLin6Ops<SIMD_Scalar>, BondMatrixS, BondMatrixOpsS<SIMD_Scalar>, SIMD_Scalar, AngLin6ErrorSq>       CGNR_SIMD;
+warning: vibe-land-physx-bridge@0.1.0:       |                                             ^
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/source/shared/stress_solver/stress.cpp:41:87: warning: ignoring attributes on template argument 'SIMD_Scalar' {aka '__m128'} [-Wignored-attributes]
+warning: vibe-land-physx-bridge@0.1.0:    41 | typedef CGNR<AngLin6, AngLin6Ops<SIMD_Scalar>, BondMatrixS, BondMatrixOpsS<SIMD_Scalar>, SIMD_Scalar, AngLin6ErrorSq>       CGNR_SIMD;
+warning: vibe-land-physx-bridge@0.1.0:       |                                                                                       ^
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/source/shared/stress_solver/stress.cpp:41:117: warning: ignoring attributes on template argument 'SIMD_Scalar' {aka '__m128'} [-Wignored-attributes]
+warning: vibe-land-physx-bridge@0.1.0:    41 | typedef CGNR<AngLin6, AngLin6Ops<SIMD_Scalar>, BondMatrixS, BondMatrixOpsS<SIMD_Scalar>, SIMD_Scalar, AngLin6ErrorSq>       CGNR_SIMD;
+warning: vibe-land-physx-bridge@0.1.0:       |                                                                                                                     ^
+warning: vibe-land-physx-bridge@0.1.0: In file included from /root/workspace/blast-stress-solver-2/blast/source/shared/stress_solver/stress.cpp:30:
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/source/shared/stress_solver/simd/simd_device_query.h:144:1: warning: 'void print_supported_instruction_sets()' defined but not used [-Wunused-function]
+warning: vibe-land-physx-bridge@0.1.0:   144 | print_supported_instruction_sets()
+warning: vibe-land-physx-bridge@0.1.0:       | ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/source/sdk/globals/NvBlastGlobals.cpp: In member function 'virtual void Nv::Blast::DefaultErrorCallback::reportError(nvidia::NvErrorCode::Enum, const char*, const char*, int)':
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/source/sdk/globals/NvBlastGlobals.cpp:120:14: warning: variable 'critical' set but not used [-Wunused-but-set-variable]
+warning: vibe-land-physx-bridge@0.1.0:   120 |         bool critical = false;
+warning: vibe-land-physx-bridge@0.1.0:       |              ^~~~~~~~
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/source/sdk/lowlevel/NvBlastFamily.cpp: In function 'NvBlastFamily* Nv::Blast::createFamily(void*, const NvBlastAssetMemSizeData&, NvBlastLog)':
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/source/sdk/lowlevel/NvBlastFamily.cpp:106:20: warning: unused variable 'bondCount' [-Wunused-variable]
+warning: vibe-land-physx-bridge@0.1.0:   106 |     const uint32_t bondCount = sizeData.bondCount;
+warning: vibe-land-physx-bridge@0.1.0:       |                    ^~~~~~~~~
+warning: vibe-land-physx-bridge@0.1.0: In file included from /root/workspace/blast-stress-solver-2/blast/source/sdk/lowlevel/NvBlastFamilyGraph.h:37,
+warning: vibe-land-physx-bridge@0.1.0:                  from /root/workspace/blast-stress-solver-2/blast/source/sdk/lowlevel/NvBlastFamilyGraph.cpp:28:
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/source/sdk/common/NvBlastFixedPriorityQueue.h: In instantiation of 'Nv::Blast::FixedPriorityQueue<Element, Comparator>::FixedPriorityQueue(const Comparator&) [with Element = Nv::Blast::FamilyGraph::QueueElement; Comparator = Nv::Blast::FamilyGraph::NodeComparator]':
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/source/sdk/lowlevel/NvBlastFamilyGraph.cpp:440:71:   required from here
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/source/sdk/common/NvBlastFixedPriorityQueue.h:75:94: warning: implicitly-declared 'constexpr Nv::Blast::FamilyGraph::NodeComparator::NodeComparator(const Nv::Blast::FamilyGraph::NodeComparator&)' is deprecated [-Wdeprecated-copy]
+warning: vibe-land-physx-bridge@0.1.0:    75 |     FixedPriorityQueue(const Comparator& less = Comparator()) : Comparator(less), mHeapSize(0)
+warning: vibe-land-physx-bridge@0.1.0:       |                                                                                              ^
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/source/sdk/lowlevel/NvBlastFamilyGraph.h:236:25: note: because 'Nv::Blast::FamilyGraph::NodeComparator' has user-provided 'Nv::Blast::FamilyGraph::NodeComparator& Nv::Blast::FamilyGraph::NodeComparator::operator=(const Nv::Blast::FamilyGraph::NodeComparator&)'
+warning: vibe-land-physx-bridge@0.1.0:   236 |         NodeComparator& operator = (const NodeComparator&);
+warning: vibe-land-physx-bridge@0.1.0:       |                         ^~~~~~~~
+warning: vibe-land-physx-bridge@0.1.0: In file included from /root/workspace/blast-stress-solver-2/blast/source/sdk/extensions/stress/NvBlastExtStressSolver.cpp:29:
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/include/extensions/stress/NvBlastExtStressSolver.h: In constructor 'Nv::Blast::ExtStressMaterial::ExtStressMaterial()':
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/include/extensions/stress/NvBlastExtStressSolver.h:216:11: warning: 'Nv::Blast::ExtStressMaterial::elasticModulusPa' will be initialized after [-Wreorder]
+warning: vibe-land-physx-bridge@0.1.0:   216 |     float elasticModulusPa;
+warning: vibe-land-physx-bridge@0.1.0:       |           ^~~~~~~~~~~~~~~~
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/include/extensions/stress/NvBlastExtStressSolver.h:209:11: warning:   'float Nv::Blast::ExtStressMaterial::residualAreaFraction' [-Wreorder]
+warning: vibe-land-physx-bridge@0.1.0:   209 |     float residualAreaFraction;
+warning: vibe-land-physx-bridge@0.1.0:       |           ^~~~~~~~~~~~~~~~~~~~
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/include/extensions/stress/NvBlastExtStressSolver.h:221:5: warning:   when initialized here [-Wreorder]
+warning: vibe-land-physx-bridge@0.1.0:   221 |     ExtStressMaterial() :
+warning: vibe-land-physx-bridge@0.1.0:       |     ^~~~~~~~~~~~~~~~~
+warning: vibe-land-physx-bridge@0.1.0: In file included from /root/workspace/blast-stress-solver-2/blast/source/shared/stress_solver/coupling.h:30,
+warning: vibe-land-physx-bridge@0.1.0:                  from /root/workspace/blast-stress-solver-2/blast/source/shared/stress_solver/bond.h:29,
+warning: vibe-land-physx-bridge@0.1.0:                  from /root/workspace/blast-stress-solver-2/blast/source/shared/stress_solver/stress.h:29,
+warning: vibe-land-physx-bridge@0.1.0:                  from /root/workspace/blast-stress-solver-2/blast/source/sdk/extensions/stress/NvBlastExtStressSolver.cpp:43:
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/source/shared/stress_solver/anglin6.h: At global scope:
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/source/shared/stress_solver/anglin6.h:167:25: warning: ignoring attributes on template argument '__m128' [-Wignored-attributes]
+warning: vibe-land-physx-bridge@0.1.0:   167 | struct AngLin6Ops<__m128>
+warning: vibe-land-physx-bridge@0.1.0:       |                         ^
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/source/shared/stress_solver/coupling.h:121:43: warning: ignoring attributes on template argument 'SIMD_Scalar' {aka '__m128'} [-Wignored-attributes]
+warning: vibe-land-physx-bridge@0.1.0:   121 | struct CouplingMatrixOps<Elem, SIMD_Scalar>
+warning: vibe-land-physx-bridge@0.1.0:       |                                           ^
+warning: vibe-land-physx-bridge@0.1.0: In file included from /root/workspace/blast-stress-solver-2/blast/source/shared/stress_solver/bond.h:30:
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/source/shared/stress_solver/inertia.h:86:36: warning: ignoring attributes on template argument 'SIMD_Scalar' {aka '__m128'} [-Wignored-attributes]
+warning: vibe-land-physx-bridge@0.1.0:    86 | struct InertiaMatrixOps<SIMD_Scalar>
+warning: vibe-land-physx-bridge@0.1.0:       |                                    ^
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/source/sdk/extensions/stress/NvBlastExtStressSolver.cpp: In member function 'void Nv::Blast::SupportGraphProcessor::addBond(uint32_t, uint32_t, uint32_t)':
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/source/sdk/extensions/stress/NvBlastExtStressSolver.cpp:1475:13: warning: missing initializer for member 'Nv::Blast::SupportGraphProcessor::BondData::stressShear' [-Wmissing-field-initializers]
+warning: vibe-land-physx-bridge@0.1.0:  1475 |             };
+warning: vibe-land-physx-bridge@0.1.0:       |             ^
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/source/sdk/extensions/stress/NvBlastExtStressSolver.cpp:1475:13: warning: missing initializer for member 'Nv::Blast::SupportGraphProcessor::BondData::stressBend' [-Wmissing-field-initializers]
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/source/sdk/extensions/stress/NvBlastExtStressSolver.cpp:1475:13: warning: missing initializer for member 'Nv::Blast::SupportGraphProcessor::BondData::normal' [-Wmissing-field-initializers]
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/source/sdk/extensions/stress/NvBlastExtStressSolver.cpp:1475:13: warning: missing initializer for member 'Nv::Blast::SupportGraphProcessor::BondData::centroid' [-Wmissing-field-initializers]
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/source/sdk/extensions/stress/NvBlastExtStressSolver.cpp: In member function 'void Nv::Blast::SupportGraphProcessor::syncNodes(const NvBlastBond*)':
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/source/sdk/extensions/stress/NvBlastExtStressSolver.cpp:3897:24: warning: unused variable 'STATIC_NODES_COUNT_PENALTY' [-Wunused-variable]
+warning: vibe-land-physx-bridge@0.1.0:  3897 |         const uint32_t STATIC_NODES_COUNT_PENALTY = 2 << 2;
+warning: vibe-land-physx-bridge@0.1.0:       |                        ^~~~~~~~~~~~~~~~~~~~~~~~~~
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/source/sdk/extensions/stress/NvBlastExtStressSolver.cpp: In member function 'virtual bool Nv::Blast::ExtStressSolverImpl::getExcessForces(uint32_t, const NvcVec3&, NvcVec3&, NvcVec3&)':
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/source/sdk/extensions/stress/NvBlastExtStressSolver.cpp:5171:20: warning: unused variable 'retCount' [-Wunused-variable]
+warning: vibe-land-physx-bridge@0.1.0:  5171 |     const uint32_t retCount = NvBlastActorGetGraphNodeIndices(nodeIndices, nodeCount, actor, logLL);
+warning: vibe-land-physx-bridge@0.1.0:       |                    ^~~~~~~~
+warning: vibe-land-physx-bridge@0.1.0: In file included from /root/workspace/blast-stress-solver-2/blast/source/shared/NsFoundation/include/NsHashMap.h:30,
+warning: vibe-land-physx-bridge@0.1.0:                  from /root/workspace/blast-stress-solver-2/blast/source/sdk/common/NvBlastHashMap.h:33,
+warning: vibe-land-physx-bridge@0.1.0:                  from /root/workspace/blast-stress-solver-2/blast/source/sdk/extensions/stress/NvBlastExtStressSolver.cpp:34:
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/source/shared/NsFoundation/include/NsHashInternals.h: In instantiation of 'nvidia::shdfnd::internal::HashBase<Entry, Key, HashFn, GetKey, Allocator, compacting>::Iter nvidia::shdfnd::internal::HashBase<Entry, Key, HashFn, GetKey, Allocator, compacting>::Iter::operator++() [with Entry = const NvBlastActor*; Key = const NvBlastActor*; HashFn = nvidia::shdfnd::Hash<const NvBlastActor*>; GetKey = nvidia::shdfnd::internal::HashSetBase<const NvBlastActor*, nvidia::shdfnd::Hash<const NvBlastActor*>, Nv::Blast::Allocator, false>::GetKey; Allocator = Nv::Blast::Allocator; bool compacting = false]':
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/source/sdk/extensions/stress/NvBlastExtStressSolver.cpp:5876:68:   required from here
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/source/shared/NsFoundation/include/NsHashInternals.h:459:21: warning: implicitly-declared 'constexpr nvidia::shdfnd::internal::HashBase<const NvBlastActor*, const NvBlastActor*, nvidia::shdfnd::Hash<const NvBlastActor*>, nvidia::shdfnd::internal::HashSetBase<const NvBlastActor*, nvidia::shdfnd::Hash<const NvBlastActor*>, Nv::Blast::Allocator, false>::GetKey, Nv::Blast::Allocator, false>::Iter::Iter(const nvidia::shdfnd::internal::HashBase<const NvBlastActor*, const NvBlastActor*, nvidia::shdfnd::Hash<const NvBlastActor*>, nvidia::shdfnd::internal::HashSetBase<const NvBlastActor*, nvidia::shdfnd::Hash<const NvBlastActor*>, Nv::Blast::Allocator, false>::GetKey, Nv::Blast::Allocator, false>::Iter&)' is deprecated [-Wdeprecated-copy]
+warning: vibe-land-physx-bridge@0.1.0:   459 |             return *this;
+warning: vibe-land-physx-bridge@0.1.0:       |                     ^~~~
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/source/shared/NsFoundation/include/NsHashInternals.h:490:15: note: because 'nvidia::shdfnd::internal::HashBase<const NvBlastActor*, const NvBlastActor*, nvidia::shdfnd::Hash<const NvBlastActor*>, nvidia::shdfnd::internal::HashSetBase<const NvBlastActor*, nvidia::shdfnd::Hash<const NvBlastActor*>, Nv::Blast::Allocator, false>::GetKey, Nv::Blast::Allocator, false>::Iter' has user-provided 'nvidia::shdfnd::internal::HashBase<Entry, Key, HashFn, GetKey, Allocator, compacting>::Iter& nvidia::shdfnd::internal::HashBase<Entry, Key, HashFn, GetKey, Allocator, compacting>::Iter::operator=(const nvidia::shdfnd::internal::HashBase<Entry, Key, HashFn, GetKey, Allocator, compacting>::Iter&) [with Entry = const NvBlastActor*; Key = const NvBlastActor*; HashFn = nvidia::shdfnd::Hash<const NvBlastActor*>; GetKey = nvidia::shdfnd::internal::HashSetBase<const NvBlastActor*, nvidia::shdfnd::Hash<const NvBlastActor*>, Nv::Blast::Allocator, false>::GetKey; Allocator = Nv::Blast::Allocator; bool compacting = false]'
+warning: vibe-land-physx-bridge@0.1.0:   490 |         Iter& operator=(const Iter&);
+warning: vibe-land-physx-bridge@0.1.0:       |               ^~~~~~~~
+warning: vibe-land-physx-bridge@0.1.0: In file included from /root/workspace/blast-stress-solver-2/blast/source/sdk/extensions/stress/NvBlastExtStressSolver.cpp:45:
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/source/shared/stress_solver/simd/simd_device_query.h: At global scope:
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/source/shared/stress_solver/simd/simd_device_query.h:144:1: warning: 'void print_supported_instruction_sets()' defined but not used [-Wunused-function]
+warning: vibe-land-physx-bridge@0.1.0:   144 | print_supported_instruction_sets()
+warning: vibe-land-physx-bridge@0.1.0:       | ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+warning: vibe-land-physx-bridge@0.1.0: In file included from /root/workspace/blast-stress-solver-2/blast/source/sdk/extensions/stress/NvBlastExtStressSolver.cpp:32:
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/source/sdk/extensions/stress/NvBlastExtStressSolver.cpp: In member function 'virtual void Nv::Blast::ExtStressSolverImpl::release()':
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/include/globals/NvBlastGlobals.h:138:9: warning: 'nonnull' argument 'this' compared to NULL [-Wnonnull-compare]
+warning: vibe-land-physx-bridge@0.1.0:   138 |         if ((obj) != nullptr)                                       \
+warning: vibe-land-physx-bridge@0.1.0:       |         ^~
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/source/sdk/extensions/stress/NvBlastExtStressSolver.cpp:5113:5: note: in expansion of macro 'NVBLAST_DELETE'
+warning: vibe-land-physx-bridge@0.1.0:  5113 |     NVBLAST_DELETE(this, ExtStressSolverImpl);
+warning: vibe-land-physx-bridge@0.1.0:       |     ^~~~~~~~~~~~~~
+warning: vibe-land-physx-bridge@0.1.0: In file included from src/destruction.cc:6:
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/include/extensions/stress/NvBlastExtStressSolver.h: In constructor 'Nv::Blast::ExtStressMaterial::ExtStressMaterial()':
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/include/extensions/stress/NvBlastExtStressSolver.h:216:11: warning: 'Nv::Blast::ExtStressMaterial::elasticModulusPa' will be initialized after [-Wreorder]
+warning: vibe-land-physx-bridge@0.1.0:   216 |     float elasticModulusPa;
+warning: vibe-land-physx-bridge@0.1.0:       |           ^~~~~~~~~~~~~~~~
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/include/extensions/stress/NvBlastExtStressSolver.h:209:11: warning:   'float Nv::Blast::ExtStressMaterial::residualAreaFraction' [-Wreorder]
+warning: vibe-land-physx-bridge@0.1.0:   209 |     float residualAreaFraction;
+warning: vibe-land-physx-bridge@0.1.0:       |           ^~~~~~~~~~~~~~~~~~~~
+warning: vibe-land-physx-bridge@0.1.0: /root/workspace/blast-stress-solver-2/blast/include/extensions/stress/NvBlastExtStressSolver.h:221:5: warning:   when initialized here [-Wreorder]
+warning: vibe-land-physx-bridge@0.1.0:   221 |     ExtStressMaterial() :
+warning: vibe-land-physx-bridge@0.1.0:       |     ^~~~~~~~~~~~~~~~~
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.06s
+     Running tests/destruction_smoke.rs (target/gpu-activity/debug/deps/destruction_smoke-b63167c6ac85a411)
+
+running 3 tests
+test chunk_raycast_resolves_the_real_surface_and_misses_are_real ... [destruction] CUDA stress solver active; configured iteration budget 25. Convergence depends on the current load and topology.
+ok
+test destruction_tower_settles_and_fractures ... ok
+test event_ids_round_trip_across_multiple_structures ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.97s
+
+     Running tests/freeze_wake_semantics.rs (target/gpu-activity/debug/deps/freeze_wake_semantics-f55a4a7319ee62c6)
+
+running 9 tests
+test debris_landing_on_frozen_rubble_releases_it_by_contact ... [destruction] CUDA stress solver active; configured iteration budget 25. Convergence depends on the current load and topology.
+ok
+test freezing_a_whole_pile_retires_it_without_losing_identity ... ok
+test freezing_part_of_a_sleeping_pile_leaves_the_rest_asleep ... ok
+test frozen_rubble_still_collides ... ok
+test resting_contact_reports_fire_on_gpu_and_the_sign_is_measured ... ok
+test support_edges_arrive_with_world_stump_and_debris_supporters ... ok
+test the_support_actor_is_never_frozen_or_released ... ok
+test unfreezing_restores_the_body_at_rest_and_in_place ... ok
+test unknown_and_repeated_ids_are_tolerated ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 10.81s
+
+     Running tests/settle_assist.rs (target/gpu-activity/debug/deps/settle_assist-02c87a3a99694ef0)
+
+running 7 tests
+test arm_body::heavy ... ignored
+test arm_body::in_flight ... ignored
+test arm_body::settle ... ignored
+test assist_settles_a_pile_faster_than_it_settles_unassisted ... ok
+test debris_in_flight_is_never_assisted ... ok
+test slabs_above_the_mass_ceiling_are_never_assisted ... ok
+test the_assist_is_off_by_default ... ok
+
+test result: ok. 4 passed; 0 failed; 3 ignored; 0 measured; 0 filtered out; finished in 6.36s
+
+     Running tests/timing_consistency.rs (target/gpu-activity/debug/deps/timing_consistency-19b95d2cadd581ff)
+
+running 1 test
+test published_timings_stay_consistent_with_their_documented_relations ... [destruction] CUDA stress solver active; configured iteration budget 25. Convergence depends on the current load and topology.
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.06s

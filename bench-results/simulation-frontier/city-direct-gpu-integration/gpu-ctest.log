@@ -1,0 +1,16 @@
+Internal ctest changing into directory: /root/workspace/blast-stress-solver-2/demos/blast-stress-demo/build-gpu-activity
+Test project /root/workspace/blast-stress-solver-2/demos/blast-stress-demo/build-gpu-activity
+    Start  8: blast_stress_physx_direct_gpu_resim
+1/5 Test  #8: blast_stress_physx_direct_gpu_resim ......   Passed    0.43 sec
+    Start  9: blast_stress_physx_gpu_activity
+2/5 Test  #9: blast_stress_physx_gpu_activity ..........   Passed    8.98 sec
+    Start 24: blast_stress_physx_direct_gpu_contacts
+3/5 Test #24: blast_stress_physx_direct_gpu_contacts ...   Passed    0.44 sec
+    Start 25: blast_stress_gpu_device_input
+4/5 Test #25: blast_stress_gpu_device_input ............   Passed    0.24 sec
+    Start 26: blast_stress_gpu_equivalence
+5/5 Test #26: blast_stress_gpu_equivalence .............   Passed    0.23 sec
+
+100% tests passed, 0 tests failed out of 5
+
+Total Test time (real) =  10.31 sec

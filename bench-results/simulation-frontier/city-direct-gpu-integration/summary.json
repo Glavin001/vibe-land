@@ -1,0 +1,13 @@
+{
+  "gpu_ctests_passed": 5,
+  "native_bridge_tests_passed": 21,
+  "direct_bridge_tests_passed": 21,
+  "ignored_settle_probes_per_mode": 3,
+  "whole_city_benchmark_run": false,
+  "full_replay_qualified": false,
+  "default_direct_gpu_enabled": false,
+  "stock_sdk_build_passed": true,
+  "patch_sha256": "b114234b7175a66cea6e669013468558d76cab34367f72b72f0541bfbe0b4a1b",
+  "activity_memcheck_errors": 0,
+  "solver_commit": "86aac8baf0bf6c2ab3655f060f694ca6089c3cb2"
+}

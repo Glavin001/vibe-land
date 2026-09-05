@@ -75,6 +75,8 @@ fn published_timings_stay_consistent_with_their_documented_relations() {
         tension_fatal: -1.0,
         shear_elastic: -1.0,
         shear_fatal: -1.0,
+        elastic_modulus: 0.0,
+        residual_area_fraction: 0.0,
     }];
     settings.maximum_bodies = 16;
     settings.maximum_fractures_per_actor_per_tick = 8;

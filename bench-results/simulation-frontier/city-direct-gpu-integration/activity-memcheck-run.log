@@ -1,0 +1,21 @@
+[PhysX:8] Direct GPU sleeping currently supports rigid bodies only; articulation insertion rejected. (/root/workspace/physx-gpu-activity/physx/source/physx/src/NpScene.cpp:1032)
+thin landing direct=0 pgs=0 y=0.250013
+thin landing direct=1 pgs=0 y=0.250013
+thin landing direct=0 pgs=1 y=0.249998
+thin landing direct=1 pgs=1 y=0.249998
+thin landing direct=0 pgs=1 y=0.249998
+thin landing direct=1 pgs=1 y=0.249998
+commands and metadata passed: 31 body samples, max position error 5.96046e-08 m
+contact wake passed: 100 body samples, max position error 0 m
+support removal passed: 35 body samples, max position error 0 m
+joint wake passed: 40 body samples, max position error 3.58129e-07 m
+manual sleep/wake cycles passed: 9 body samples, max position error 0 m
+checkpoint logical activity and device motion passed
+replacement passed: 6 body samples, max position error 0 m
+producer event, replacement lifetime and articulation guard passed
+batch rejection and actor reinsertion passed
+host commands, forces, query publication and kinematics passed: 72 body samples, max position error 0 m
+thin box landing TGS passed: 80 body samples, max position error 0 m
+thin box landing PGS passed: 80 body samples, max position error 0 m
+landing beside a moving kinematic passed: 160 body samples, max position error 0 m
+Original city deployment restored and healthy

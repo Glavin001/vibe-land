@@ -148,7 +148,7 @@ fn gpu_world_smoke_test_requires_real_cuda_scene() {
     assert_eq!(players.len(), 2);
     let supported_player = players.iter().find(|player| player.entity_id == 8).unwrap();
     assert!(supported_player.has_support);
-    assert_eq!(supported_player.support_entity_id, 7);
+    assert_eq!(supported_player.support_entity_id, 7, "players={players:?}; bodies={:?}", world.body_snapshots().unwrap());
     assert!(
         supported_player.pose.position.x > 8.25,
         "CCT should ride a moving dynamic support"
@@ -339,4 +339,49 @@ fn multiple_gpu_worlds_share_one_process_runtime() {
 
     assert_eq!(first.stats().unwrap().completed_steps, 1);
     assert_eq!(second.stats().unwrap().completed_steps, 1);
+}
+
+
+#[test]
+fn force_threshold_sums_loads_across_static_supports() {
+    let mut config = WorldConfig::default();
+    config.contact_report_threshold = 75.0;
+    let mut world = World::new(config).expect("GPU scene");
+    for (entity_id, x) in [(1, -0.75), (2, 0.75)] {
+        world.add_static_box(StaticBoxDesc {
+            entity_id,
+            user_id: entity_id,
+            pose: pose(x, -0.5, 0.0),
+            half_extents: Vec3::new(0.5, 0.5, 2.0),
+            collision_group: 1,
+            collision_mask: ALL,
+        }).unwrap();
+    }
+    world.add_dynamic_box(DynamicBoxDesc {
+        entity_id: 3,
+        user_id: 3,
+        pose: pose(0.0, 0.5, 0.0),
+        half_extents: Vec3::new(1.5, 0.5, 0.5),
+        mass: 10.0,
+        collision_group: 1,
+        collision_mask: ALL,
+    }).unwrap();
+    let mut distributed_reports = 0;
+    for _ in 0..16 {
+        world.step().unwrap();
+        let events = world.take_contact_events().unwrap();
+        if events.len() == 2 {
+            let impulse_limit = config.contact_report_threshold / 60.0;
+            let impulses: Vec<_> = events.iter().map(|event| event.impulse.y.abs()).collect();
+            if impulses.iter().all(|impulse| *impulse < impulse_limit)
+                && impulses.iter().sum::<f32>() > impulse_limit
+            {
+                assert!(events.iter().any(|e| e.entity_a == 1 || e.entity_b == 1));
+                assert!(events.iter().any(|e| e.entity_a == 2 || e.entity_b == 2));
+                distributed_reports += 1;
+            }
+        }
+    }
+    assert!(distributed_reports > 0,
+        "both supports must report a distributed load that exceeds the threshold only in aggregate");
 }

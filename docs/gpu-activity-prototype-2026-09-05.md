@@ -1,5 +1,9 @@
 # Direct GPU motion with native sleeping: implemented prototype
 
+A later [city integration checkpoint](direct-gpu-city-integration-2026-09-05.md)
+adds host observation and contact routing. The measurements below describe this
+earlier prototype and do not establish the later adapter's performance.
+
 The narrow engine extension proposed in [the sleeping analysis](direct-gpu-sleep-2026-09-05.md)
 is implemented and tested in the dependency repository. It retains GPU motion
 and native sleeping, including contact, support-loss and joint wake propagation.

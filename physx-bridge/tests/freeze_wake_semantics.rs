@@ -120,6 +120,8 @@ fn rubble_world(columns: u32, rows: u32) -> World {
         tension_fatal: 5.0e-4,
         shear_elastic: -1.0,
         shear_fatal: -1.0,
+        elastic_modulus: 0.0,
+        residual_area_fraction: 0.0,
     }];
     settings.maximum_bodies = 0;
     settings.maximum_fractures_per_actor_per_tick = 0;
