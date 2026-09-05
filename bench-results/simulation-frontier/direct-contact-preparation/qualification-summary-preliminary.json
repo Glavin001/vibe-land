@@ -1,0 +1,32 @@
+{
+  "direct_integration": {
+    "passed": 176,
+    "failed": 0,
+    "ignored": 27
+  },
+  "direct_audit": {
+    "captures": 900,
+    "replays": 436,
+    "capture_errors": 0,
+    "membership_mismatches": 0,
+    "max_threshold_mismatches": 0,
+    "max_large_stress_mismatches": 0,
+    "max_reported_stress_error": 1.251e-16
+  },
+  "direct_scenario": {
+    "exit_code": 0,
+    "checks": [
+      "PASS  T2 bonds >= min            493 vs >= 126 (too weak)",
+      "PASS  T2 bonds <= max            493 vs <= 2028 (one shot pulverizes)",
+      "PASS  T2 bodies bounded          156 vs <= 707 (runaway cascade)",
+      "PASS  T3 tower fell              retained 0.27 vs <= 0.55",
+      "PASS  T3 toppled/spread          spread 0.43 vs >= 0.10 (pancaked in place)",
+      "PASS  T4 debris retired          retired 0.93 vs >= 0.60 (freeze starved)",
+      "PASS  T4 awake declined          end/peak 0.00 vs <= 0.10",
+      "PASS  T6 escapes contained       min_y -0.4 (>-1000), escaped-parked 0 (<=20)",
+      "PASS  T6 patch buffer headroom   33946 vs <= 1887436 (overflow drops contacts)",
+      "PASS  T5 perf p95 @3-6k awake    40.1 ms vs <= 91.4 ms",
+      "PASS: the city stands up"
+    ]
+  }
+}

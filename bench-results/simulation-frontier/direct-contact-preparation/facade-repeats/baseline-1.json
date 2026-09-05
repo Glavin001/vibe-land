@@ -1,0 +1,98 @@
+{
+  "label": "baseline-1",
+  "command": [
+    "/tmp/authored-query-baseline",
+    "a_shot_damages_the_facade_without_starting_a_collapse",
+    "--exact",
+    "--nocapture",
+    "--test-threads=1"
+  ],
+  "env": {
+    "LD_LIBRARY_PATH": "/tmp/physx-query-baseline/bin/linux.x86_64/release:/usr/local/cuda/lib64",
+    "PHYSX_ROOT": "/tmp/physx-query-baseline",
+    "BLAST_ROOT": "/root/workspace/blast-stress-solver-2/blast",
+    "BLAST_GPU_IMPULSE_READBACK": "0",
+    "BLAST_BOND_STRESS_GPU": "1",
+    "VIBE_CITY_RESIM_PASSES": "1",
+    "BLAST_GPU_DETERMINISTIC_REDUCTIONS": "0",
+    "VIBE_PHYSX_DIRECT_GPU": "1"
+  },
+  "binary_sha256": "32efa51dd7818e05d73450cbdcc0c4ebb4f7c23e6812c1e038b047a9a535dec7",
+  "sdk_manifest_sha256": "617b9966dd8c4ee128e756f92e339f5898a9b81b3bcf58f68e11f889394bb70b",
+  "exit_code": 0,
+  "wall_seconds": 37.61665704380721,
+  "observations": [
+    {
+      "structure": "algedra-tower",
+      "burst": "352",
+      "cascade": "6",
+      "background_per_sec": "0",
+      "awake": "0",
+      "nodes": "7959",
+      "total_bonds": "358"
+    },
+    {
+      "structure": "house-1story",
+      "burst": "541",
+      "cascade": "0",
+      "background_per_sec": "0",
+      "awake": "0",
+      "nodes": "319",
+      "total_bonds": "541"
+    },
+    {
+      "structure": "house-2story",
+      "burst": "589",
+      "cascade": "0",
+      "background_per_sec": "0",
+      "awake": "20",
+      "nodes": "599",
+      "total_bonds": "589"
+    },
+    {
+      "structure": "villa-savoye",
+      "burst": "306",
+      "cascade": "3",
+      "background_per_sec": "0",
+      "awake": "0",
+      "nodes": "1045",
+      "total_bonds": "309"
+    },
+    {
+      "structure": "minas-tirith",
+      "burst": "541",
+      "cascade": "8",
+      "background_per_sec": "26",
+      "awake": "0",
+      "nodes": "49049",
+      "total_bonds": "668"
+    },
+    {
+      "structure": "park-432",
+      "burst": "548",
+      "cascade": "14",
+      "background_per_sec": "0",
+      "awake": "26",
+      "nodes": "24452",
+      "total_bonds": "562"
+    },
+    {
+      "structure": "parking-garage",
+      "burst": "316",
+      "cascade": "85",
+      "background_per_sec": "0",
+      "awake": "13",
+      "nodes": "3177",
+      "total_bonds": "401"
+    },
+    {
+      "structure": "petronas",
+      "burst": "115",
+      "cascade": "0",
+      "background_per_sec": "0",
+      "awake": "0",
+      "nodes": "24766",
+      "total_bonds": "115"
+    }
+  ]
+}

@@ -53,3 +53,7 @@ contract. Future promotions must report remaining fidelity issues explicitly.
 The [rotation-fidelity increment](rotation-fidelity-2026-09-05.md) also corrects
 centrifugal load direction and speculative collision bounds. Its tests do not
 close the remaining audit items.
+
+The [Direct GPU observation increment](direct-gpu-observation-2026-09-05.md)
+removes redundant scene-query scheduling only for exactly unchanged inactive
+bodies; active updates are retained. It introduces no motion tolerance or damage budget.

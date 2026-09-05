@@ -1,0 +1,35 @@
+{
+  "url": "https://209.121.195.117:40617/city",
+  "server_pid": 3789642,
+  "binary_sha256": "51efeb841976fe88eb5f52b1a2d84e4227ee2612d784463f82138315073a2f79",
+  "gpu_module": "/root/workspace/physx-gpu-activity/physx/bin/linux.x86_64/release/libPhysXGpuActivity_64.so",
+  "health": {
+    "status": "ok",
+    "physics_backend": "physx_gpu",
+    "physics_gpu_required": true,
+    "sim_hz": 60,
+    "snapshot_hz": 60,
+    "active_matches": 1,
+    "players": 0,
+    "udp_verified": true,
+    "wt_connection_attempts": 1,
+    "session_configs_served": 3
+  },
+  "physics_environment_changes": {},
+  "settings": {
+    "PHYSX_ROOT": "/root/workspace/physx-gpu-activity/physx",
+    "VIBE_PHYSX_DIRECT_GPU": "1",
+    "VIBE_CITY_SCENE": "fractured-downtown.json",
+    "VIBE_CITY_GRID": "2",
+    "VIBE_CITY_FREEZE": "1",
+    "VIBE_CITY_CCD": null,
+    "VIBE_CITY_SOLVER_ITERATIONS": "32",
+    "VIBE_CITY_RESIM_PASSES": "1",
+    "VIBE_CITY_STRESS_LIMIT_SCALE": "0.45",
+    "VIBE_CITY_MAX_BODIES": null,
+    "VIBE_CITY_DEPEN_VELOCITY": null,
+    "BLAST_BEND_MAX_GAIN": null,
+    "BLAST_GPU_IMPULSE_READBACK": "0",
+    "BLAST_GPU_DETERMINISTIC_REDUCTIONS": "0"
+  }
+}

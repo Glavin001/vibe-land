@@ -1,0 +1,1347 @@
+diff --git a/physx/include/PxDirectGPUAPI.h b/physx/include/PxDirectGPUAPI.h
+index 1eb2add..3688246 100644
+--- a/physx/include/PxDirectGPUAPI.h
++++ b/physx/include/PxDirectGPUAPI.h
+@@ -31,6 +31,7 @@
+ 
+ #include "cudamanager/PxCudaTypes.h"
+ #include "foundation/PxVec4.h"
++#include "foundation/PxTransform.h"
+ #include "foundation/PxSimpleTypes.h"
+ 
+ #if !PX_DOXYGEN
+@@ -41,6 +42,8 @@ namespace physx
+ /**
+ \brief This flag specifies the type of data to get when calling PxDirectGPUAPI::getRigidDynamicData().
+ */
++class PxRigidDynamic;
++
+ class PxRigidDynamicGPUAPIReadType
+ {
+ public:
+@@ -440,6 +443,27 @@ public:
+ 	
+ 	*/
+ 	virtual bool getD6JointData(void* data, const PxD6JointGPUIndex* gpuIndices, PxD6JointGPUAPIReadType::Enum dataType, PxU32 nbElements, CUevent startEvent = NULL, CUevent finishEvent = NULL) const = 0;
++
++    /** Publish a completed motion readback to CPU getters and scene queries.
++    All arrays are HOST arrays, ordered identically, with nbElements entries.
++    Call outside simulation, before querying or editing pose-dependent metadata.
++    Actors must remain alive and uploaded, with no pending host motion commands.
++    The caller owns readback freshness and actor lifetime; this method performs
++    no device read/write and does not change sleeping or force state.
++    Returns false without publishing any row if validation fails.
++    */
++    virtual bool publishRigidDynamicHostData(PxRigidDynamic* const* bodies,
++        const PxTransform* poses, const PxVec3* linear, const PxVec3* angular,
++        PxU32 nbElements) = 0;
++
++    /** Contact transform-cache identity of a live exclusive shape in this scene.
++    This is the identifier in PxGpuContactPair::transformCacheRef0/1, NOT the
++    geometry index returned by PxShape::getGPUIndex(). It changes on detach and
++    can be recycled. Call outside simulation after fetch; keep the actor/shape
++    alive and rebuild ownership after topology changes. Returns PX_INVALID_U32
++    for nonexclusive, detached or foreign shapes or unavailable host access.
++    */
++    virtual PxU32 getShapeContactIndex(const class PxShape& shape) const = 0;
+ };
+ 
+ #if !PX_DOXYGEN
+diff --git a/physx/include/PxSceneDesc.h b/physx/include/PxSceneDesc.h
+index 94ffc52..3532002 100644
+--- a/physx/include/PxSceneDesc.h
++++ b/physx/include/PxSceneDesc.h
+@@ -377,6 +377,26 @@ struct PxSceneFlag
+ 		*/
+ 		eDISABLE_SLEEPING = (1 << 20),
+ 
++        /**
++        \brief Experimental rigid-body native sleeping with Direct GPU motion ownership.
++
++        Requires eENABLE_DIRECT_GPU_API and forbids eDISABLE_SLEEPING. Rigid-body
++        sleep metadata is read back; motion remains device-owned. CPU motion
++        getters and scene queries retain the Direct GPU restrictions. Call
++        PxRigidDynamic::wakeUp() before device writes to sleeping bodies.
++        Articulations are not supported by this experimental mode.
++        */
++        eENABLE_DIRECT_GPU_SLEEPING = (1 << 21),
++
++        /** Explicit host observation and sparse host motion commands with GPU
++        motion ownership. Requires eENABLE_DIRECT_GPU_SLEEPING. Call
++        publishRigidDynamicHostData with completed device readbacks before CPU
++        motion reads, queries, or metadata edits that depend on body pose.
++        Host pose/velocity writes are queued in the existing metadata upload;
++        they become device-visible at the next simulate, not immediately.
++        */
++        eENABLE_DIRECT_GPU_HOST_ACCESS = (1 << 22),
++
+ 		eMUTABLE_FLAGS = eENABLE_ACTIVE_ACTORS|eEXCLUDE_KINEMATICS_FROM_ACTIVE_ACTORS
+ 	};
+ };
+@@ -1195,6 +1215,16 @@ PX_INLINE bool PxSceneDesc::isValid() const
+ 	if(!gpuDynamicsConfig.isValid())
+ 		return false;
+ 
++    if((flags & PxSceneFlag::eENABLE_DIRECT_GPU_HOST_ACCESS)
++        && !(flags & PxSceneFlag::eENABLE_DIRECT_GPU_SLEEPING))
++        return false;
++
++    if(flags & PxSceneFlag::eENABLE_DIRECT_GPU_SLEEPING)
++    {
++        if(!(flags & PxSceneFlag::eENABLE_DIRECT_GPU_API) || (flags & PxSceneFlag::eDISABLE_SLEEPING))
++            return false;
++    }
++
+ 	if(flags & PxSceneFlag::eENABLE_DIRECT_GPU_API)
+ 	{
+ 		if(!(flags & PxSceneFlag::eENABLE_GPU_DYNAMICS && broadPhaseType == PxBroadPhaseType::eGPU))
+@@ -1218,4 +1248,8 @@ PX_INLINE bool PxSceneDesc::isValid() const
+ } // namespace physx
+ #endif
+ 
++// Feature detection for consumers of this opt-in engine extension.
++#define PX_DIRECT_GPU_SLEEPING_VERSION 1
++#define PX_DIRECT_GPU_HOST_ACCESS_VERSION 1
++
+ #endif
+diff --git a/physx/source/compiler/cmake/linux/PhysX.cmake b/physx/source/compiler/cmake/linux/PhysX.cmake
+index 50db656..9410e2b 100644
+--- a/physx/source/compiler/cmake/linux/PhysX.cmake
++++ b/physx/source/compiler/cmake/linux/PhysX.cmake
+@@ -89,7 +89,7 @@ IF(CMAKE_SIZEOF_VOID_P EQUAL 8)
+ ELSE()
+     SET(BITNESS_STRING "32")
+ ENDIF()
+-SET(PHYSX_GPU_SHARED_LIB_NAME_DEF PX_PHYSX_GPU_SHARED_LIB_NAME=libPhysXGpu_${BITNESS_STRING}.so)
++SET(PHYSX_GPU_SHARED_LIB_NAME_DEF PX_PHYSX_GPU_SHARED_LIB_NAME=libPhysXGpuActivity_${BITNESS_STRING}.so)
+ 
+ SET(PHYSX_COMPILE_DEFS
+ 	# Common to all configurations
+diff --git a/physx/source/compiler/cmake/windows/PhysX.cmake b/physx/source/compiler/cmake/windows/PhysX.cmake
+index d5561c1..8c0cdd8 100644
+--- a/physx/source/compiler/cmake/windows/PhysX.cmake
++++ b/physx/source/compiler/cmake/windows/PhysX.cmake
+@@ -106,7 +106,7 @@ IF(CMAKE_SIZEOF_VOID_P EQUAL 8)
+ ELSE()
+     SET(BITNESS_STRING "32")
+ ENDIF()
+-SET(PHYSX_GPU_SHARED_LIB_NAME_DEF PX_PHYSX_GPU_SHARED_LIB_NAME=PhysXGpu_${BITNESS_STRING}.dll)
++SET(PHYSX_GPU_SHARED_LIB_NAME_DEF PX_PHYSX_GPU_SHARED_LIB_NAME=PhysXGpuActivity_${BITNESS_STRING}.dll)
+ 
+ IF(NOT PX_GENERATE_STATIC_LIBRARIES)
+ 	SET(PXPHYSX_LIBTYPE_DEFS
+diff --git a/physx/source/compiler/cmakegpu/PhysXGpu.cmake b/physx/source/compiler/cmakegpu/PhysXGpu.cmake
+index 7527716..d0c21f2 100644
+--- a/physx/source/compiler/cmakegpu/PhysXGpu.cmake
++++ b/physx/source/compiler/cmakegpu/PhysXGpu.cmake
+@@ -62,11 +62,11 @@ ADD_LIBRARY(PhysXGpu ${PHYSXGPU_LIBTYPE}
+ )
+ 
+ # Match the output name expected by the runtime loader (PX_PHYSX_GPU_SHARED_LIB_NAME).
+-# The PhysX runtime does dlopen("libPhysXGpu_64.so") / LoadLibrary("PhysXGpu_64.dll"),
++# The PhysX runtime does dlopen("libPhysXGpuActivity_64.so") / LoadLibrary("PhysXGpuActivity_64.dll"),
+ # so the built library must use the _64 suffix to be found at runtime.
+ #
+ # In the standalone build (via source/compiler/cmake/CMakeLists.txt), NvidiaBuildOptions.cmake
+-# sets CMAKE_DEBUG_POSTFIX="_64" etc., so OUTPUT_NAME="PhysXGpu" + postfix="_64" produces the
++# sets CMAKE_DEBUG_POSTFIX="_64" etc., so OUTPUT_NAME="PhysXGpuActivity" + postfix="_64" produces the
+ # correct name. We only override OUTPUT_NAME when postfixes are NOT set (FetchContent path).
+ IF(NOT CMAKE_DEBUG_POSTFIX)
+ 	IF(CMAKE_SIZEOF_VOID_P EQUAL 8)
+@@ -74,7 +74,7 @@ IF(NOT CMAKE_DEBUG_POSTFIX)
+ 	ELSE()
+ 		SET(_PX_GPU_BITNESS "32")
+ 	ENDIF()
+-	SET_TARGET_PROPERTIES(PhysXGpu PROPERTIES OUTPUT_NAME "PhysXGpu_${_PX_GPU_BITNESS}")
++	SET_TARGET_PROPERTIES(PhysXGpu PROPERTIES OUTPUT_NAME "PhysXGpuActivity_${_PX_GPU_BITNESS}")
+ ENDIF()
+ 
+ TARGET_INCLUDE_DIRECTORIES(PhysXGpu
+@@ -110,11 +110,11 @@ TARGET_INCLUDE_DIRECTORIES(PhysXGpu
+ # Add CUDA manager include directory
+ TARGET_INCLUDE_DIRECTORIES(PhysXGpu PRIVATE ${PHYSX_SOURCE_DIR}/physx/src/opensource/cudamanager/include)
+ 
+-# For standalone builds (CMAKE_DEBUG_POSTFIX is set), keep the base name as "PhysXGpu"
++# For standalone builds (CMAKE_DEBUG_POSTFIX is set), keep the base name as "PhysXGpuActivity"
+ # and let the postfix system add "_64". For FetchContent builds (no postfix), the
+-# OUTPUT_NAME was already set to "PhysXGpu_64" above.
++# OUTPUT_NAME was already set to "PhysXGpuActivity_64" above.
+ IF(CMAKE_DEBUG_POSTFIX)
+-	SET_TARGET_PROPERTIES(PhysXGpu PROPERTIES OUTPUT_NAME "PhysXGpu")
++	SET_TARGET_PROPERTIES(PhysXGpu PROPERTIES OUTPUT_NAME "PhysXGpuActivity")
+ ENDIF()
+ 
+ IF(PHYSXGPU_LIBTYPE STREQUAL "STATIC")
+diff --git a/physx/source/gpucommon/include/PxgKernelNames.h b/physx/source/gpucommon/include/PxgKernelNames.h
+index 0c28a38..c783dac 100644
+--- a/physx/source/gpucommon/include/PxgKernelNames.h
++++ b/physx/source/gpucommon/include/PxgKernelNames.h
+@@ -604,3 +604,5 @@ KERNEL_DEF(sdf_ApplyHoleCorrections, "sdfApplyHoleCorrections")
+ KERNEL_DEF(sdf_CalculateDenseGridPointCloud, "sdfCalculateDenseGridPointCloud")
+ 
+ #endif
++
++KERNEL_DEF(NATIVE_SLEEP_GATHER_POSES, "gatherNativeSleepPoses")
+diff --git a/physx/source/gpusimulationcontroller/include/PxgSimulationController.h b/physx/source/gpusimulationcontroller/include/PxgSimulationController.h
+index 848e7d4..02f4df4 100644
+--- a/physx/source/gpusimulationcontroller/include/PxgSimulationController.h
++++ b/physx/source/gpusimulationcontroller/include/PxgSimulationController.h
+@@ -480,6 +480,10 @@ namespace physx
+ 
+ 		// new direct-GPU API
+ 		virtual bool	getRigidDynamicData(void* data, const PxRigidDynamicGPUIndex* gpuIndices, PxRigidDynamicGPUAPIReadType::Enum dataType, PxU32 nbElements, CUevent startEvent, CUevent finishEvent) const PX_OVERRIDE PX_FINAL;
++        virtual void removeDynamic(const PxNodeIndex& nodeIndex) PX_OVERRIDE;
++        bool finalizeSleepingRigidBodies(const PxU32* indices, PxU32 count, bool rollbackPose) PX_OVERRIDE PX_FINAL;
++        bool publishHostRigidPoses(const PxU32* indices, const PxTransform* poses, PxU32 count) PX_OVERRIDE PX_FINAL;
++        bool reserveNativeTransitionBuffers(PxU32 count);
+ 		virtual bool 	setRigidDynamicData(const void* data, const PxRigidDynamicGPUIndex* gpuIndices, PxRigidDynamicGPUAPIWriteType::Enum dataType, PxU32 nbElements, CUevent startEvent, CUevent finishEvent) PX_OVERRIDE PX_FINAL;
+ 		
+ 		virtual bool 	getArticulationData(void* data, const PxArticulationGPUIndex* gpuIndices, PxArticulationGPUAPIReadType::Enum dataType, PxU32 nbElements, CUevent startEvent, CUevent finishEvent) const PX_OVERRIDE PX_FINAL;
+@@ -656,6 +660,10 @@ namespace physx
+ 		Cm::PinnableArray<PxGpuTendonJointCoefficientData>			mTendonJointCoefficientDataPool;
+ 		Cm::PinnableArray<PxU32>									mTendonTendonJointMapPool; //store each start index of the attachment to the corresponding tendons
+ 
++        CUdeviceptr mNativeSleepIndices = 0;
++        CUdeviceptr mNativeSleepZeros = 0;
++        CUdeviceptr mNativeSleepPoses = 0;
++        PxU32 mNativeSleepCapacity = 0;
+ 		Cm::PinnableArray<PxU32>									mPathToRootPool;
+ 
+ 		Cm::PinnableArray<Dy::ArticulationMimicJointCore>			mMimicJointPool;
+diff --git a/physx/source/gpusimulationcontroller/src/CUDA/updateBodiesAndShapes.cu b/physx/source/gpusimulationcontroller/src/CUDA/updateBodiesAndShapes.cu
+index e82f40f..59a554e 100644
+--- a/physx/source/gpusimulationcontroller/src/CUDA/updateBodiesAndShapes.cu
++++ b/physx/source/gpusimulationcontroller/src/CUDA/updateBodiesAndShapes.cu
+@@ -133,7 +133,10 @@ extern "C" __global__ void updateBodiesLaunchDirectAPI(const PxgNewBodiesDesc* s
+ 		// preist: note that we copy this flag to persistent GPU memory on first transfer, but that is no problem
+ 		// because we only check the update data flag here which will be reset on CPU
+ 		const bool firstTransfer = internalFlags & PxsRigidBody::eFIRST_BODY_COPY_GPU;
+-		const bool copyVel = internalFlags & PxsRigidBody::eVELOCITY_COPY_GPU;
++        const bool copyVel = internalFlags & PxsRigidBody::eVELOCITY_COPY_GPU;
++        const bool copyPose = internalFlags & PxsRigidBody::eHOST_POSE_COPY_GPU;
++        const bool copyLinear = copyVel || (internalFlags & PxsRigidBody::eHOST_LINEAR_COPY_GPU);
++        const bool copyAngular = copyVel || (internalFlags & PxsRigidBody::eHOST_ANGULAR_COPY_GPU);
+ 
+ 
+ 		// figure out which threads will execute the else below.
+@@ -184,7 +187,7 @@ extern "C" __global__ void updateBodiesLaunchDirectAPI(const PxgNewBodiesDesc* s
+ 
+ 				// load the new stuff no matter what
+ 				// keep linear and angular velocity intact, but copy inverseMass and pen bias:
+-				if(index < PXG_BODY_SIM_MAX_LIN_VEL_IND && !copyVel)
++				if(index < PXG_BODY_SIM_MAX_LIN_VEL_IND && ((index == 0 && !copyLinear) || (index == 1 && !copyAngular)))
+ 				{
+ 					gBodySimPool[bodyIndex * PXG_BODY_SIM_UINT4_SIZE + index].w = data.w;
+ 				}
+@@ -201,14 +204,14 @@ extern "C" __global__ void updateBodiesLaunchDirectAPI(const PxgNewBodiesDesc* s
+ 				{
+ 					PxAlignedTransform newBody2Actor = *reinterpret_cast<PxAlignedTransform*>(&gBodySimPool[bodyIndex * PXG_BODY_SIM_UINT4_SIZE + PXG_BODY_SIM_BODY2ACTOR_IND]);
+ 
+-					if (oldBody2Actor != newBody2Actor)
++					if (!copyPose && oldBody2Actor != newBody2Actor)
+ 					{
+ 						PxAlignedTransform actor2World = body2World * oldBody2Actor.getInverse();
+ 						body2World = actor2World * newBody2Actor;
+ 					}
+ 
+ 					PxAlignedTransform* body2WorldPtr = reinterpret_cast<PxAlignedTransform*>(&gBodySimPool[bodyIndex * PXG_BODY_SIM_UINT4_SIZE + PXG_BODY_SIM_BODY2WORLD_IND]);
+-					*body2WorldPtr = body2World;
++					if (!copyPose) *body2WorldPtr = body2World;
+ 				}
+ 
+ 				__syncwarp(sync_mask);
+@@ -935,6 +938,23 @@ extern "C" __global__ void updateBodyExternalVelocitiesLaunch(const PxgUpdatedBo
+ 		const PxgBodySimVelocityUpdate& updatedBody = gUpdatedBodies[i];
+ 		float4 linearVel = updatedBody.linearVelocityXYZ_bodySimIndexW;
+ 		const PxU32 bodyIndex = reinterpret_cast<PxU32&>(linearVel.w);
++        const PxU32 hostFlags = __float_as_uint(updatedBody.externalLinearAccelerationXYZ.w);
++        if(hostFlags & PxsRigidBody::eHOST_VELOCITY_DELTA_GPU)
++        {
++            float4& lv = gBodySim[bodyIndex].linearVelocityXYZ_inverseMassW;
++            float4& av = gBodySim[bodyIndex].angularVelocityXYZ_maxPenBiasW;
++            lv.x += updatedBody.externalLinearAccelerationXYZ.x;
++            lv.y += updatedBody.externalLinearAccelerationXYZ.y;
++            lv.z += updatedBody.externalLinearAccelerationXYZ.z;
++            av.x += updatedBody.externalAngularAccelerationXYZ.x;
++            av.y += updatedBody.externalAngularAccelerationXYZ.y;
++            av.z += updatedBody.externalAngularAccelerationXYZ.z;
++            if(hostFlags & PxsRigidBody::eHOST_CLEAR_FORCE_GPU)
++                gBodySim[bodyIndex].externalLinearAcceleration = make_float4(0.f);
++            if(hostFlags & PxsRigidBody::eHOST_CLEAR_TORQUE_GPU)
++                gBodySim[bodyIndex].externalAngularAcceleration = make_float4(0.f);
++            continue;
++        }
+ 		const float4 originalLinearV = gBodySim[bodyIndex].linearVelocityXYZ_inverseMassW;
+ 		linearVel.w = originalLinearV.w;
+ 		gBodySim[bodyIndex].linearVelocityXYZ_inverseMassW = linearVel;
+diff --git a/physx/source/gpusimulationcontroller/src/PxgBodySimManager.cpp b/physx/source/gpusimulationcontroller/src/PxgBodySimManager.cpp
+index 8a28095..a88da01 100644
+--- a/physx/source/gpusimulationcontroller/src/PxgBodySimManager.cpp
++++ b/physx/source/gpusimulationcontroller/src/PxgBodySimManager.cpp
+@@ -41,9 +41,6 @@ using namespace physx;
+ 
+ void PxgBodySimManager::addBody(PxsRigidBody* rigidBody, const PxU32 nodeIndex)
+ {
+-	if (mUpdatedMap.boundedTest(nodeIndex))
+-		return;
+-
+ 	if (mBodies.capacity() <= nodeIndex)
+ 	{
+ 		mBodies.resize(2 * nodeIndex + 1);
+@@ -51,8 +48,14 @@ void PxgBodySimManager::addBody(PxsRigidBody* rigidBody, const PxU32 nodeIndex)
+ 
+ 	mBodies[nodeIndex] = reinterpret_cast<void*>(rigidBody);
+ 
+-	mUpdatedMap.growAndSet(nodeIndex);
+-	mNewOrUpdatedBodySims.pushBack(nodeIndex);
++    // A removed body may already have a queued update at this reused index.
++    // Refresh ownership and first-upload state even when the queue entry exists.
++    // Only deduplicate the queue itself; the new actor must initialize GPU motion.
++    if(!mUpdatedMap.boundedTest(nodeIndex))
++    {
++        mUpdatedMap.growAndSet(nodeIndex);
++        mNewOrUpdatedBodySims.pushBack(nodeIndex);
++    }
+ 	mTotalNumBodies = PxMax(mTotalNumBodies, nodeIndex + 1);
+ 
+ 	mStaticConstraints.reserve(mTotalNumBodies);
+@@ -792,6 +795,7 @@ void PxgBodySimManager::updateBodies(PxsRigidBody** rigidBodies, PxU32* nodeIndi
+ 	{
+ 		PxsRigidBody* rigid = rigidBodies[i];
+ 		PxsBodyCore& bcLL = rigid->getCore();
++        const PxU32 hostFlags = PxU32(rigid->mGpuHostDirty) << 16;
+ 
+ 		newUpdatedBodies[i + startIndex].linearVelocityXYZ_bodySimIndexW = make_float4(bcLL.linearVelocity.x, bcLL.linearVelocity.y, bcLL.linearVelocity.z, PX_FR(nodeIndices[i]));
+ 		newUpdatedBodies[i + startIndex].angularVelocityXYZ_maxPenBiasW = make_float4(bcLL.angularVelocity.x, bcLL.angularVelocity.y, bcLL.angularVelocity.z, bcLL.maxPenBias);
+@@ -810,6 +814,9 @@ void PxgBodySimManager::updateBodies(PxsRigidBody** rigidBodies, PxU32* nodeIndi
+ 				newUpdatedBodies[i + startIndex].externalAngularAccelerationXYZ = make_float4(0.0f);
+ 			}
+ 		}
++        newUpdatedBodies[i + startIndex].externalLinearAccelerationXYZ.w = PX_FR(hostFlags);
++        rigid->mGpuHostDirty &= ~PxU16((PxsRigidBody::eHOST_VELOCITY_DELTA_GPU
++            | PxsRigidBody::eHOST_CLEAR_FORCE_GPU | PxsRigidBody::eHOST_CLEAR_TORQUE_GPU) >> 16);
+ 	}
+ }
+ 
+diff --git a/physx/source/gpusimulationcontroller/src/PxgSimulationController.cpp b/physx/source/gpusimulationcontroller/src/PxgSimulationController.cpp
+index 672d389..fbfa97a 100644
+--- a/physx/source/gpusimulationcontroller/src/PxgSimulationController.cpp
++++ b/physx/source/gpusimulationcontroller/src/PxgSimulationController.cpp
+@@ -230,6 +230,14 @@ namespace physx
+ 
+ 	PxgSimulationController::~PxgSimulationController()
+ 	{
++        {
++            PxScopedCudaLock lock(*mCudaContextManager);
++            PxCudaContext* cuda = mCudaContextManager->getCudaContext();
++            if(mNativeSleepIndices) cuda->memFree(mNativeSleepIndices);
++            if(mNativeSleepZeros) cuda->memFree(mNativeSleepZeros);
++                if(mNativeSleepPoses) cuda->memFree(mNativeSleepPoses);
++        }
++
+ 		PX_DELETE(mSimulationCore);
+ 
+ 		if (mPBDParticleSystemCore)
+@@ -269,6 +277,14 @@ namespace physx
+ 		mSimulationCore->mPxgShapeSimManager.removePxgShape(index);
+ 	}
+ 
++    void PxgSimulationController::removeDynamic(const PxNodeIndex& nodeIndex)
++    {
++        // BodySim storage can be reused before the next upload. Do not leave
++        // a pending entry dereferencing the removed body's old address.
++        const PxU32 index = nodeIndex.index();
++        if(index < mBodySimManager.mBodies.size()) mBodySimManager.mBodies[index] = NULL;
++    }
++
+ 	void PxgSimulationController::addDynamic(PxsRigidBody* rigidBody, const PxNodeIndex& nodeIndex)
+ 	{
+ 		mBodySimManager.addBody(rigidBody, nodeIndex.index());
+@@ -833,6 +849,14 @@ namespace physx
+ 		mRecomputeArticulationBlockFormat = false;
+ 
+ 		const PxU32 nbNewArticulations = mBodySimManager.mNewArticulationSims.size();
++        // Compact once per upload, rather than scanning the queue per removal.
++        PxArray<PxU32>& pendingBodies = mBodySimManager.mNewOrUpdatedBodySims;
++        PxU32 liveCount = 0;
++        for(PxU32 i = 0; i < pendingBodies.size(); ++i)
++        {
++            if(mBodySimManager.mBodies[pendingBodies[i]]) pendingBodies[liveCount++] = pendingBodies[i];
++        }
++        pendingBodies.forceSize_Unsafe(liveCount);
+ 		const PxU32 nbNewBodies = mBodySimManager.mNewOrUpdatedBodySims.size();
+ 
+ 		const PxU32 totalNumNewBodies = nbNewBodies + nbNewArticulations;
+@@ -2401,7 +2425,8 @@ namespace physx
+ 			
+ 			bodySim.externalLinearAcceleration = make_float4(0.0f);
+ 			bodySim.externalAngularAcceleration = make_float4(0.0f);
+-			if (mBodySimManager.mExternalAccelerations && mBodySimManager.mExternalAccelerations->hasAccelerations())
++			if (!mDynamicContext->getEnableDirectGPUHostAccess()
++                && mBodySimManager.mExternalAccelerations && mBodySimManager.mExternalAccelerations->hasAccelerations())
+ 			{
+ 				const PxsRigidBodyExternalAcceleration& acc = mBodySimManager.mExternalAccelerations->get(index);
+ 				bodySim.externalLinearAcceleration = make_float4(acc.linearAcceleration.x, acc.linearAcceleration.y, acc.linearAcceleration.z, 0.0f);
+@@ -2413,7 +2438,8 @@ namespace physx
+ 			bodySim.sleepAngVelAccXYZ_accelScaleW = make_float4(reinterpret_cast<float3&>(rbLL.mSleepAngVelAcc), rbLL.mAccelScale);
+ 			bodySim.disableGravity = bcLL.disableGravity;
+ 			bodySim.lockFlags = bcLL.lockFlags;
+-			bodySim.internalFlags = rbLL.mInternalFlags;
++			bodySim.internalFlags = rbLL.mInternalFlags | (PxU32(rbLL.mGpuHostDirty) << 16);
++            rbLL.mGpuHostDirty = 0;
+ 			//Note: it might be tempting to copy the pattern for new articulations and use this opportunity to raise bodySim.internalFlags with eFIRST_BODY_COPY_GPU.
+ 			//This is possible for new articulations because we process new articulations in a single function that iterates over mBodySimManager.mNewArticulationSims.
+ 			//It is not possible for rigid bodies because we bundle new and updated bodies here so we cannot tell which bodies are new and which are updated.
+@@ -2886,6 +2912,99 @@ namespace physx
+ 		}
+ 	}
+ 
++    bool PxgSimulationController::reserveNativeTransitionBuffers(PxU32 count)
++    {
++        PxScopedCudaLock lock(*mCudaContextManager);
++        PxCudaContext* cuda = mCudaContextManager->getCudaContext();
++            if(count > mNativeSleepCapacity)
++            {
++                CUdeviceptr newIndices = 0, newZeros = 0, newPoses = 0;
++                if(cuda->memAlloc(&newIndices, PxU64(count)*sizeof(PxU32)) != 0) return false;
++                if(cuda->memAlloc(&newZeros, PxU64(count)*sizeof(PxVec3)) != 0)
++                {
++                    cuda->memFree(newIndices);
++                    return false;
++                }
++                if(cuda->memAlloc(&newPoses, PxU64(count)*sizeof(PxTransform)) != 0)
++                {
++                    cuda->memFree(newIndices);
++                    cuda->memFree(newZeros);
++                    return false;
++                }
++                if(mNativeSleepIndices) cuda->memFree(mNativeSleepIndices);
++                if(mNativeSleepZeros) cuda->memFree(mNativeSleepZeros);
++                if(mNativeSleepPoses) cuda->memFree(mNativeSleepPoses);
++                mNativeSleepIndices = newIndices;
++                mNativeSleepZeros = newZeros;
++                mNativeSleepPoses = newPoses;
++                mNativeSleepCapacity = count;
++            }
++        return true;
++    }
++
++    bool PxgSimulationController::publishHostRigidPoses(const PxU32* indices, const PxTransform* poses, PxU32 count)
++    {
++        if(!count) return true;
++        if(!reserveNativeTransitionBuffers(count)) return false;
++        {
++            PxScopedCudaLock lock(*mCudaContextManager);
++            PxCudaContext* cuda = mCudaContextManager->getCudaContext();
++            if(cuda->memcpyHtoD(mNativeSleepIndices,indices,PxU64(count)*sizeof(PxU32)) != 0
++                || cuda->memcpyHtoD(mNativeSleepPoses,poses,PxU64(count)*sizeof(PxTransform)) != 0) return false;
++        }
++        return setRigidDynamicData(reinterpret_cast<void*>(mNativeSleepPoses),
++            reinterpret_cast<PxRigidDynamicGPUIndex*>(mNativeSleepIndices),
++            PxRigidDynamicGPUAPIWriteType::eGLOBAL_POSE,count,NULL,NULL);
++    }
++
++    bool PxgSimulationController::finalizeSleepingRigidBodies(const PxU32* indices, PxU32 count, bool rollbackPose)
++    {
++        if(!count) return true;
++        if(!reserveNativeTransitionBuffers(count)) return false;
++        {
++            PxScopedCudaLock lock(*mCudaContextManager);
++            PxCudaContext* cuda = mCudaContextManager->getCudaContext();
++            if(cuda->memcpyHtoD(mNativeSleepIndices, indices, PxU64(count)*sizeof(PxU32)) != 0
++                || cuda->memsetD32(mNativeSleepZeros, 0, PxU64(count)*3) != 0) return false;
++        }
++        if(rollbackPose)
++        {
++            {
++                PxScopedCudaLock lock(*mCudaContextManager);
++                PxgSolverCore* solver = mDynamicContext->getGpuSolverCore();
++                const CUdeviceptr desc = solver->getSolverCoreDescDeviceptr();
++                const CUdeviceptr solverIndices = solver->getSolverBodyIndices();
++                PxCudaKernelParam params[] = {
++                    PX_CUDA_KERNEL_PARAM(mNativeSleepPoses), PX_CUDA_KERNEL_PARAM(mNativeSleepIndices),
++                    PX_CUDA_KERNEL_PARAM(desc), PX_CUDA_KERNEL_PARAM(solverIndices), PX_CUDA_KERNEL_PARAM(count)
++                };
++                const CUfunction kernel = mGpuWranglerManager->getCuFunction(PxgKernelIds::NATIVE_SLEEP_GATHER_POSES);
++                PxCudaContext* cuda = mCudaContextManager->getCudaContext();
++                if(cuda->launchKernel(kernel, (count+255)/256, 1, 1, 256, 1, 1, 0, solver->getStream(),
++                    params, sizeof(params), 0, PX_FL) != 0 || cuda->streamSynchronize(solver->getStream()) != 0)
++                    return false;
++            }
++            // The setter also refreshes GPU shape bounds and transform caches.
++            if(!setRigidDynamicData(reinterpret_cast<void*>(mNativeSleepPoses),
++                reinterpret_cast<PxRigidDynamicGPUIndex*>(mNativeSleepIndices),
++                PxRigidDynamicGPUAPIWriteType::eGLOBAL_POSE, count, NULL, NULL)) return false;
++        }
++        // Sparse transition work completes before fetch returns or commands
++        // wake a body. No stale CPU pose/velocity can overwrite a later write.
++        return setRigidDynamicData(reinterpret_cast<void*>(mNativeSleepZeros),
++                   reinterpret_cast<PxRigidDynamicGPUIndex*>(mNativeSleepIndices),
++                   PxRigidDynamicGPUAPIWriteType::eLINEAR_VELOCITY, count, NULL, NULL)
++            && setRigidDynamicData(reinterpret_cast<void*>(mNativeSleepZeros),
++                   reinterpret_cast<PxRigidDynamicGPUIndex*>(mNativeSleepIndices),
++                   PxRigidDynamicGPUAPIWriteType::eANGULAR_VELOCITY, count, NULL, NULL)
++            && setRigidDynamicData(reinterpret_cast<void*>(mNativeSleepZeros),
++                   reinterpret_cast<PxRigidDynamicGPUIndex*>(mNativeSleepIndices),
++                   PxRigidDynamicGPUAPIWriteType::eFORCE, count, NULL, NULL)
++            && setRigidDynamicData(reinterpret_cast<void*>(mNativeSleepZeros),
++                   reinterpret_cast<PxRigidDynamicGPUIndex*>(mNativeSleepIndices),
++                   PxRigidDynamicGPUAPIWriteType::eTORQUE, count, NULL, NULL);
++    }
++
+ 	void PxgSimulationController::updateScBodyAndShapeSim(PxsTransformCache& cache, Bp::BoundsArray& boundArray, PxBaseTask* continuation)
+ 	{
+ 		PX_UNUSED(cache);
+@@ -2895,6 +3014,13 @@ namespace physx
+ 
+ 		mCudaContextManager->acquireContext();
+ 		mSimulationCore->syncDmaback(mNbFrozenShapes, mNbUnfrozenShapes, mHasBeenSimulated);
++        // Direct GPU omits the CPU scene-query frozen/unfrozen index arrays.
++        // Activity callbacks may run, but must never consume those arrays.
++        if(mDynamicContext->getEnableDirectGPUAPI())
++        {
++            mNbFrozenShapes = 0;
++            mNbUnfrozenShapes = 0;
++        }
+ 		if (mFEMClothCore)
+ 			mFEMClothCore->syncCloths();
+ 		if (mSoftBodyCore)
+@@ -2910,7 +3036,7 @@ namespace physx
+ #if PXG_SC_DEBUG
+ 			mSimulationCore->mPxgShapeSimManager.validateCacheAndBounds(boundArray.getBounds(), cache.getTransforms());
+ #endif
+-			if ( (!mDynamicContext->getEnableDirectGPUAPI()) || mEnableOVDReadback)
++			if ((!mDynamicContext->getEnableDirectGPUAPI()) || !mDynamicContext->isSleepingDisabled() || mEnableOVDReadback)
+ 			{
+ 				mCallback->updateScBodyAndShapeSim(continuation);
+ 				//Now update sleep state for FEM cloth...
+diff --git a/physx/source/gpusimulationcontroller/src/PxgSimulationCore.cpp b/physx/source/gpusimulationcontroller/src/PxgSimulationCore.cpp
+index 34280fd..98e4816 100644
+--- a/physx/source/gpusimulationcontroller/src/PxgSimulationCore.cpp
++++ b/physx/source/gpusimulationcontroller/src/PxgSimulationCore.cpp
+@@ -2283,8 +2283,9 @@ void PxgSimulationCore::syncDmaback(PxU32& nbFrozenShapesThisFrame, PxU32& nbUnf
+ 
+ void PxgSimulationCore::updateBodies(const PxU32 nbUpdatedBodies, const PxU32 nbNewBodies)
+ {
++    const auto updateVelocities = [&]()
+ 	{
+-		if (nbUpdatedBodies > 0 && !mGpuContext->getEnableDirectGPUAPI())
++		if (nbUpdatedBodies > 0)
+ 		{
+ 			CUdeviceptr descptr = mUpdatedBodiesDescBuffer.getDevicePtr();
+ 			PxCudaKernelParam kernelParams[] =
+@@ -2304,7 +2305,8 @@ void PxgSimulationCore::updateBodies(const PxU32 nbUpdatedBodies, const PxU32 nb
+ 				PxGetFoundation().error(PxErrorCode::eINTERNAL_ERROR, PX_FL, "GPU update bodies velocities kernel fail!\n");
+ #endif
+ 		}
+-	}
++	};
++    if(!mGpuContext->getEnableDirectGPUAPI()) updateVelocities();
+ 
+ 	{
+ 		if (nbNewBodies > 0)
+@@ -2335,6 +2337,7 @@ void PxgSimulationCore::updateBodies(const PxU32 nbUpdatedBodies, const PxU32 nb
+ #endif
+ 		}
+ 	}
++    if(mGpuContext->getEnableDirectGPUHostAccess()) updateVelocities();
+ }
+ 
+ void PxgSimulationCore::updateArticulations(const PxU32 nbNewArticulations, PxgArticulationSimUpdate* updates, 
+diff --git a/physx/source/gpusolver/include/PxgContext.h b/physx/source/gpusolver/include/PxgContext.h
+index 1388392..2859086 100644
+--- a/physx/source/gpusolver/include/PxgContext.h
++++ b/physx/source/gpusolver/include/PxgContext.h
+@@ -409,6 +409,7 @@ namespace physx
+ 		void 								allocateTempPinnedSolverMemoryCommon();
+ 
+ 		PX_FORCE_INLINE bool				getEnableDirectGPUAPI() const { return mEnableDirectGPUAPI;	}
++        PX_FORCE_INLINE bool getEnableDirectGPUHostAccess() const { return mEnableDirectGPUHostAccess; }
+ 
+ 		PxvSimStats&			 			getSimStats() { return mSimStats; }
+ 
+@@ -574,6 +575,7 @@ namespace physx
+ 		PxU32									mMaxNumStaticPartitions;
+ 
+ 		const bool								mEnableDirectGPUAPI;
++        bool mEnableDirectGPUHostAccess;
+ 		bool									mRecomputeArticulationBlockFormat;
+ 
+ 		// when Direct GPU API is enabled, the constraint writeback data might have to be copied to host to
+diff --git a/physx/source/gpusolver/src/CUDA/integration.cu b/physx/source/gpusolver/src/CUDA/integration.cu
+index 60c27c1..e3270c1 100644
+--- a/physx/source/gpusolver/src/CUDA/integration.cu
++++ b/physx/source/gpusolver/src/CUDA/integration.cu
+@@ -113,3 +113,22 @@ extern "C" __global__ void integrateCoreParallelLaunch(
+ 		assert(body2World.isSane());
+ 	}
+ }
++
++// The CPU island manager can retire a body in parallel with integration.
++// Recover the existing pre-step transform on device, matching native sleep's
++// last-CCD-pose rollback without copying motion to the CPU.
++extern "C" __global__ void gatherNativeSleepPoses(PxTransform* poses, const PxU32* indices,
++    const PxgSolverCoreDesc* desc, const PxU32* solverIndices, PxU32 count)
++{
++    const PxU32 i = threadIdx.x + blockIdx.x * blockDim.x;
++    if(i < count)
++    {
++        const PxU32 node = indices[i];
++        const PxU32 solverIndex = solverIndices[node];
++        assert(solverIndex < desc->numSolverBodies);
++        const PxgSolverBodyData& data = desc->solverBodyDataPool[solverIndex];
++        assert(data.islandNodeIndex.index() == node);
++        const PxgBodySim& body = desc->mBodySimBufferDeviceData[node];
++        poses[i] = (data.body2World * body.body2Actor_maxImpulseW.getInverse()).getTransform();
++    }
++}
+diff --git a/physx/source/gpusolver/src/PxgContext.cpp b/physx/source/gpusolver/src/PxgContext.cpp
+index 7221f89..e72120b 100644
+--- a/physx/source/gpusolver/src/PxgContext.cpp
++++ b/physx/source/gpusolver/src/PxgContext.cpp
+@@ -381,6 +381,7 @@ namespace physx
+ 		mIsTGS(isTGS),
+ 		mIsExternalForcesEveryTgsIterationEnabled(false),
+ 		mEnableDirectGPUAPI(sceneFlags & PxSceneFlag::eENABLE_DIRECT_GPU_API),
++        mEnableDirectGPUHostAccess(sceneFlags & PxSceneFlag::eENABLE_DIRECT_GPU_HOST_ACCESS),
+ 		mRecomputeArticulationBlockFormat(false),
+ 		mEnforceConstraintWriteBackToHostCopy(false),
+ 
+@@ -682,6 +683,39 @@ namespace physx
+ 	};
+ 
+ 
++    // Only the small activity record crosses to the CPU. CPU motion remains
++    // unavailable in Direct GPU scenes; metadata uploads preserve device poses.
++    class PxgPostSolveSleepTask : public Cm::Task
++    {
++        const PxNodeIndex* mNodes;
++        const PxgSolverBodySleepData* mSleep;
++        PxU32 mCount;
++        IG::IslandSim& mIslands;
++    public:
++        PxgPostSolveSleepTask(const PxNodeIndex* nodes, const PxgSolverBodySleepData* sleep,
++                             PxU32 count, IG::IslandSim& islands)
++            : Cm::Task(0), mNodes(nodes), mSleep(sleep), mCount(count), mIslands(islands) {}
++        void runInternal() PX_OVERRIDE PX_FINAL
++        {
++            PX_PROFILE_ZONE("GpuDynamics.PxgPostSolveSleepTask", 0);
++            for(PxU32 i = 0; i < mCount; ++i)
++            {
++                PxsRigidBody& body = *getRigidBodyFromIG(mIslands, mNodes[i]);
++                PxsBodyCore& core = body.getCore();
++                core.solverWakeCounter = mSleep[i].wakeCounter;
++                body.mInternalFlags = PxU16((body.mInternalFlags & ~PxsRigidBody::eSLEEPING_FLAGS) | (mSleep[i].internalFlags & PxsRigidBody::eSLEEPING_FLAGS));
++                if(mSleep[i].wakeCounter == 0.0f)
++                {
++                    core.linearVelocity = PxVec3(0.0f);
++                    core.angularVelocity = PxVec3(0.0f);
++                }
++            }
++        }
++        const char* getName() const PX_OVERRIDE PX_FINAL { return "PxgPostSolveSleepTask"; }
++    private:
++        PX_NOCOPY(PxgPostSolveSleepTask)
++    };
++
+ 	class PxgPostSolveArticulationTask : public Cm::Task
+ 	{
+ 		PxNodeIndex* mNodeIndices;
+@@ -847,6 +881,10 @@ namespace physx
+ 
+ 	void PxgGpuContext::doPostSolveTask(physx::PxBaseTask* continuation)
+ 	{
++        if(mEnableDirectGPUAPI)
++        {
++        }
++
+ 		if (!mSolvedThisFrame)
+ 			return;
+ 
+@@ -869,6 +907,20 @@ namespace physx
+ 		getNarrowphaseCore()->drawFrictionAnchors();
+ 		mForceChangedThresholdStream.forceSize_Unsafe(nbThresholdElems); 
+ 
++        if (mEnableDirectGPUAPI && !mIsSleepingDisabled && !getSimulationController()->getEnableOVDReadback())
++        {
++            const PxU32 offset = 1 + mKinematicCount;
++            const PxU32 total = mSolverBodyPool.size();
++            IG::IslandSim& islands = mIslandManager.getAccurateIslandSim();
++            for(PxU32 i = offset; i < total; i += 512)
++            {
++                PxgPostSolveSleepTask* task = PX_PLACEMENT_NEW(mFlushPool.allocate(sizeof(PxgPostSolveSleepTask)), PxgPostSolveSleepTask)(
++                    mActiveNodeIndex.begin() + i, mSolverBodySleepDataPool.begin() + i, PxMin(512u, total - i), islands);
++                task->setContinuation(continuation);
++                task->removeReference();
++            }
++        }
++
+ 		if (!mEnableDirectGPUAPI || getSimulationController()->getEnableOVDReadback())
+ 		{
+ 			//TODO - multi-thread this!
+diff --git a/physx/source/gpusolver/src/PxgSolverCore.cpp b/physx/source/gpusolver/src/PxgSolverCore.cpp
+index 5564561..0de10af 100644
+--- a/physx/source/gpusolver/src/PxgSolverCore.cpp
++++ b/physx/source/gpusolver/src/PxgSolverCore.cpp
+@@ -227,8 +227,13 @@ void PxgSolverCore::gpuMemDMAbackSolverBodies(float4* solverBodyPool, PxU32 nbSo
+ 	{
+ 		mCudaContext->memcpyDtoHAsync(solverBodyPool, mOutVelocityPool.getDevicePtr(), sizeof(PxgSolverBody) * nbSolverBodies, mStream);
+ 		mCudaContext->memcpyDtoHAsync(body2WorldPool.begin(), mOutBody2WorldPool.getDevicePtr(), sizeof(PxAlignedTransform) * nbSolverBodies, mStream);
+-		mCudaContext->memcpyDtoHAsync(solverBodySleepDataPool.begin(), mSolverBodySleepDataPool.getDevicePtr(), sizeof(PxgSolverBodySleepData) * nbSolverBodies, mStream);
+-	}
++    }
++    // Native islands need sleep eligibility even when motion stays on device.
++    // This copy joins the existing solver completion fence below.
++    if (!enableDirectGPUAPI || !mGpuContext->isSleepingDisabled())
++    {
++        mCudaContext->memcpyDtoHAsync(solverBodySleepDataPool.begin(), mSolverBodySleepDataPool.getDevicePtr(), sizeof(PxgSolverBodySleepData) * nbSolverBodies, mStream);
++    }
+ 
+ 	synchronizeStreams(mCudaContext, mStream2, mStream, mIntegrateEvent);
+ 
+diff --git a/physx/source/lowlevel/software/include/PxsRigidBody.h b/physx/source/lowlevel/software/include/PxsRigidBody.h
+index e454af4..60b4fc6 100644
+--- a/physx/source/lowlevel/software/include/PxsRigidBody.h
++++ b/physx/source/lowlevel/software/include/PxsRigidBody.h
+@@ -67,12 +67,20 @@ class PxsRigidBody
+ 		eFREE_FLAG_3			= 1 << 13,
+ 		eFREE_FLAG_4			= 1 << 14,
+ 		eFREE_FLAG_5			= 1 << 15,
++        // Upload-only flags stored separately from the 16-bit native flags.
++        eHOST_POSE_COPY_GPU = 1 << 16,
++        eHOST_LINEAR_COPY_GPU = 1 << 17,
++        eHOST_ANGULAR_COPY_GPU = 1 << 18,
++        eHOST_VELOCITY_DELTA_GPU = 1 << 19,
++        eHOST_CLEAR_FORCE_GPU = 1 << 20,
++        eHOST_CLEAR_TORQUE_GPU = 1 << 21,
+ 		eFREE_FLAGS				= eFREE_FLAG_1 | eFREE_FLAG_2 | eFREE_FLAG_3 | eFREE_FLAG_4 | eFREE_FLAG_5
+ 	};
+ 
+ 	PX_FORCE_INLINE						PxsRigidBody(PxsBodyCore* core, PxReal freeze_count) :
+ 											mLastTransform	(core->body2World),
+ 											mInternalFlags	(0),
++                                            mGpuHostDirty   (0),
+ 											mCCD			(NULL),
+ 											mCore			(core),
+ 											mSleepLinVelAcc	(PxVec3(0.0f)),
+@@ -135,7 +143,7 @@ class PxsRigidBody
+ 					PxTransform			mLastTransform;
+ 
+ 					PxU16				mInternalFlags;			// PT: PxsRigidBodyFlags
+-					PxU16				mPadding16;				// PT: free space here
++					PxU16               mGpuHostDirty;          // Sparse CPU commands; layout unchanged
+ 
+ 					PxsCCDBody*			mCCD;					// only valid during CCD	
+ 
+diff --git a/physx/source/lowlevel/software/include/PxsSimulationController.h b/physx/source/lowlevel/software/include/PxsSimulationController.h
+index b4ef946..90f0ba5 100644
+--- a/physx/source/lowlevel/software/include/PxsSimulationController.h
++++ b/physx/source/lowlevel/software/include/PxsSimulationController.h
+@@ -333,6 +333,11 @@ namespace physx
+ 		virtual bool					hasDeformableVolumes()					const	{ return false;	}
+ #endif
+ 
++        // Experimental native activity bridge; append to preserve existing virtual slots.
++        virtual void removeDynamic(const PxNodeIndex& /*nodeIndex*/) {}
++        virtual bool finalizeSleepingRigidBodies(const PxU32* /*indices*/, PxU32 /*count*/, bool /*rollbackPose*/) { return false; }
++        virtual bool publishHostRigidPoses(const PxU32*, const PxTransform*, PxU32) { return false; }
++
+ 	protected:
+ 		PxsSimulationControllerCallback*	mCallback;
+ 	public:
+diff --git a/physx/source/physx/src/NpDirectGPUAPI.cpp b/physx/source/physx/src/NpDirectGPUAPI.cpp
+index a38a7fb..2feb637 100644
+--- a/physx/source/physx/src/NpDirectGPUAPI.cpp
++++ b/physx/source/physx/src/NpDirectGPUAPI.cpp
+@@ -30,6 +30,9 @@
+ #include "foundation/PxFoundation.h"
+ #include "NpDirectGPUAPI.h"
+ #include "NpScene.h"
++#include "NpRigidDynamic.h"
++#include "ScBodySim.h"
++#include "ScShapeSim.h"
+ 
+ using namespace physx;
+ 
+@@ -300,3 +303,61 @@ bool NpDirectGPUAPI::getD6JointData(void* data, const PxD6JointGPUIndex* gpuIndi
+ }
+ 
+ #endif // PX_SUPPORT_GPU_PHYSX
++
++
++bool NpDirectGPUAPI::publishRigidDynamicHostData(PxRigidDynamic* const* bodies,
++    const PxTransform* poses, const PxVec3* linear, const PxVec3* angular, PxU32 count)
++{
++#if PX_SUPPORT_GPU_PHYSX
++    if(mNpScene.isAPIWriteForbidden() || !mNpScene.isDirectGPUAPIInitialized()
++        || !(mNpScene.getFlags() & PxSceneFlag::eENABLE_DIRECT_GPU_HOST_ACCESS)) return false;
++    if(!count) return true;
++    if(!bodies || !poses || !linear || !angular) return false;
++    for(PxU32 i = 0; i < count; ++i)
++    {
++        if(!bodies[i] || bodies[i]->getScene() != &mNpScene || !poses[i].isSane()
++            || !linear[i].isFinite() || !angular[i].isFinite()) return false;
++        const Sc::BodySim* sim = static_cast<NpRigidDynamic*>(bodies[i])->getCore().getSim();
++        if(!sim || (sim->getLowLevelBody().mGpuHostDirty & ((PxsRigidBody::eHOST_POSE_COPY_GPU
++            | PxsRigidBody::eHOST_LINEAR_COPY_GPU | PxsRigidBody::eHOST_ANGULAR_COPY_GPU) >> 16))
++            || (sim->getLowLevelBody().mInternalFlags & PxsRigidBody::eFIRST_BODY_COPY_GPU)) return false;
++    }
++    for(PxU32 i = 0; i < count; ++i)
++    {
++        NpRigidDynamic& body = *static_cast<NpRigidDynamic*>(bodies[i]);
++        Sc::BodyCore& core = body.getCore();
++        const PxTransform body2World = poses[i] * core.getBody2Actor();
++        const PxTransform& previous = core.getCore().body2World;
++        // Observation must not dirty every shape of an unchanged building.
++        // Use exact component equality: this is redundant-work elimination,
++        // not a motion tolerance. Host pose/shape commands mark their own SQ
++        // updates, which this path never clears. Still publish both velocities
++        // and validate all pending commands, even when the pose is unchanged.
++        const bool poseChanged = !(previous.p == body2World.p && previous.q == body2World.q);
++        core.getCore().body2World = body2World;
++        core.setLinearVelocityInternal(linear[i]);
++        core.setAngularVelocityInternal(angular[i]);
++        if(poseChanged)
++            body.getShapeManager().markActorForSQUpdate(mNpScene.getSQAPI(), body);
++    }
++    return true;
++#else
++    PX_UNUSED(bodies); PX_UNUSED(poses); PX_UNUSED(linear); PX_UNUSED(angular); PX_UNUSED(count);
++    return false;
++#endif
++}
++
++PxU32 NpDirectGPUAPI::getShapeContactIndex(const PxShape& shape) const
++{
++#if PX_SUPPORT_GPU_PHYSX
++    if(mNpScene.isAPIWriteForbidden() || !mNpScene.isDirectGPUAPIInitialized()
++        || !(mNpScene.getFlags() & PxSceneFlag::eENABLE_DIRECT_GPU_HOST_ACCESS)) return PX_INVALID_U32;
++    const NpShape& npShape = static_cast<const NpShape&>(shape);
++    if(!npShape.isExclusive() || npShape.getNpScene() != &mNpScene) return PX_INVALID_U32;
++    const Sc::ShapeSim* sim = npShape.getCore().getExclusiveSim();
++    return sim ? sim->getTransformCacheID() : PX_INVALID_U32;
++#else
++    PX_UNUSED(shape);
++    return PX_INVALID_U32;
++#endif
++}
+diff --git a/physx/source/physx/src/NpDirectGPUAPI.h b/physx/source/physx/src/NpDirectGPUAPI.h
+index c81c66b..98d3453 100644
+--- a/physx/source/physx/src/NpDirectGPUAPI.h
++++ b/physx/source/physx/src/NpDirectGPUAPI.h
+@@ -61,6 +61,10 @@ public:
+ 	virtual PxArticulationGPUAPIMaxCounts getArticulationGPUAPIMaxCounts()	const	PX_OVERRIDE PX_FINAL;
+ 
+ 	virtual bool getD6JointData(void* data, const PxD6JointGPUIndex* gpuIndices, PxD6JointGPUAPIReadType::Enum dataType, PxU32 nbElements, CUevent startEvent = NULL, CUevent finishEvent = NULL) const PX_OVERRIDE PX_FINAL;
++    virtual bool publishRigidDynamicHostData(PxRigidDynamic* const* bodies,
++        const PxTransform* poses, const PxVec3* linear, const PxVec3* angular,
++        PxU32 nbElements) PX_OVERRIDE PX_FINAL;
++    virtual PxU32 getShapeContactIndex(const PxShape& shape) const PX_OVERRIDE PX_FINAL;
+ 	//~PxDirectGPUAPI
+ 
+ 	NpScene& mNpScene;
+diff --git a/physx/source/physx/src/NpPhysics.cpp b/physx/source/physx/src/NpPhysics.cpp
+index d2389b7..3b5fb2b 100644
+--- a/physx/source/physx/src/NpPhysics.cpp
++++ b/physx/source/physx/src/NpPhysics.cpp
+@@ -373,7 +373,8 @@ PxScene* NpPhysics::createScene(const PxSceneDesc& desc)
+ {
+ 	PxSceneDesc mutableDesc = desc;
+ 
+-	if((mutableDesc.flags & PxSceneFlag::eENABLE_DIRECT_GPU_API) && !(mutableDesc.flags & PxSceneFlag::eDISABLE_SLEEPING))
++	if((mutableDesc.flags & PxSceneFlag::eENABLE_DIRECT_GPU_API) && !(mutableDesc.flags & PxSceneFlag::eDISABLE_SLEEPING)
++        && !(mutableDesc.flags & PxSceneFlag::eENABLE_DIRECT_GPU_SLEEPING))
+ 	{
+ 		mFoundation.error(PxErrorCode::eDEBUG_WARNING, PX_FL, "eENABLE_DIRECT_GPU_API is set, automatically enabling eDISABLE_SLEEPING");
+ 		mutableDesc.flags |= PxSceneFlag::eDISABLE_SLEEPING;
+diff --git a/physx/source/physx/src/NpRigidDynamic.cpp b/physx/source/physx/src/NpRigidDynamic.cpp
+index 3e585bf..846013b 100644
+--- a/physx/source/physx/src/NpRigidDynamic.cpp
++++ b/physx/source/physx/src/NpRigidDynamic.cpp
+@@ -98,7 +98,8 @@ void NpRigidDynamic::setGlobalPose(const PxTransform& pose, bool autowake)
+ 
+ 	PX_CHECK_SCENE_API_WRITE_FORBIDDEN(npScene, "PxRigidDynamic::setGlobalPose() not allowed while simulation is running. Call will be ignored.")
+ 
+-	if (npScene && (npScene->getFlags() & PxSceneFlag::eENABLE_DIRECT_GPU_API) && npScene->isDirectGPUAPIInitialized())
++	if (npScene && (npScene->getFlags() & PxSceneFlag::eENABLE_DIRECT_GPU_API) && npScene->isDirectGPUAPIInitialized()
++        && !(npScene->getFlags() & PxSceneFlag::eENABLE_DIRECT_GPU_HOST_ACCESS))
+ 	{
+ 		outputError<PxErrorCode::eINVALID_OPERATION>(__LINE__, "PxRigidDynamic::setGlobalPose(): it is illegal to call this method if PxSceneFlag::eENABLE_DIRECT_GPU_API is enabled!");
+ 		return;
+@@ -253,7 +254,8 @@ void NpRigidDynamic::setLinearVelocity(const PxVec3& velocity, bool autowake)
+ 
+ 	PX_CHECK_SCENE_API_WRITE_FORBIDDEN_EXCEPT_SPLIT_SIM(npScene, "PxRigidDynamic::setLinearVelocity() not allowed while simulation is running. Call will be ignored.")
+ 
+-	if (npScene && (npScene->getFlags() & PxSceneFlag::eENABLE_DIRECT_GPU_API) && npScene->isDirectGPUAPIInitialized())
++	if (npScene && (npScene->getFlags() & PxSceneFlag::eENABLE_DIRECT_GPU_API) && npScene->isDirectGPUAPIInitialized()
++        && !(npScene->getFlags() & PxSceneFlag::eENABLE_DIRECT_GPU_HOST_ACCESS))
+ 	{
+ 		outputError<PxErrorCode::eINVALID_OPERATION>(__LINE__, "PxRigidDynamic::setLinearVelocity(): it is illegal to call this method if PxSceneFlag::eENABLE_DIRECT_GPU_API is enabled!");
+ 		return;
+@@ -299,7 +301,8 @@ void NpRigidDynamic::setAngularVelocity(const PxVec3& velocity, bool autowake)
+ 
+ 	OMNI_PVD_SET(OMNI_PVD_CONTEXT_HANDLE, PxRigidBody, angularVelocity, *static_cast<PxRigidBody*>(this), velocity);
+ 
+-	if (npScene && (npScene->getFlags() & PxSceneFlag::eENABLE_DIRECT_GPU_API) && npScene->isDirectGPUAPIInitialized())
++	if (npScene && (npScene->getFlags() & PxSceneFlag::eENABLE_DIRECT_GPU_API) && npScene->isDirectGPUAPIInitialized()
++        && !(npScene->getFlags() & PxSceneFlag::eENABLE_DIRECT_GPU_HOST_ACCESS))
+ 	{
+ 		outputError<PxErrorCode::eINVALID_OPERATION>(__LINE__, "PxRigidDynamic::setAngularVelocity(): it is illegal to call this method if PxSceneFlag::eENABLE_DIRECT_GPU_API is enabled!");
+ 		return;
+@@ -325,7 +328,8 @@ void NpRigidDynamic::addForce(const PxVec3& force, PxForceMode::Enum mode, bool
+ 		return;
+ 	}
+ 
+-	if (npScene && (npScene->getFlags() & PxSceneFlag::eENABLE_DIRECT_GPU_API) && npScene->isDirectGPUAPIInitialized())
++	if (npScene && (npScene->getFlags() & PxSceneFlag::eENABLE_DIRECT_GPU_API) && npScene->isDirectGPUAPIInitialized()
++        && !(npScene->getFlags() & PxSceneFlag::eENABLE_DIRECT_GPU_HOST_ACCESS))
+ 	{
+ 		outputError<PxErrorCode::eINVALID_OPERATION>(__LINE__, "PxRigidDynamic::addForce(): it is illegal to call this method if PxSceneFlag::eENABLE_DIRECT_GPU_API is enabled!");
+ 		return;
+@@ -347,7 +351,8 @@ void NpRigidDynamic::setForceAndTorque(const PxVec3& force, const PxVec3& torque
+ 
+ 	PX_CHECK_SCENE_API_WRITE_FORBIDDEN_EXCEPT_SPLIT_SIM(npScene, "PxRigidDynamic::setForceAndTorque() not allowed while simulation is running. Call will be ignored.")
+ 
+-	if (npScene && (npScene->getFlags() & PxSceneFlag::eENABLE_DIRECT_GPU_API) && npScene->isDirectGPUAPIInitialized())
++	if (npScene && (npScene->getFlags() & PxSceneFlag::eENABLE_DIRECT_GPU_API) && npScene->isDirectGPUAPIInitialized()
++        && !(npScene->getFlags() & PxSceneFlag::eENABLE_DIRECT_GPU_HOST_ACCESS))
+ 	{
+ 		outputError<PxErrorCode::eINVALID_OPERATION>(__LINE__, "PxRigidDynamic::setForceAndTorque(): it is illegal to call this method if PxSceneFlag::eENABLE_DIRECT_GPU_API is enabled!");
+ 		return;
+@@ -380,7 +385,8 @@ void NpRigidDynamic::addTorque(const PxVec3& torque, PxForceMode::Enum mode, boo
+ 		return;
+ 	}
+ 
+-	if (npScene && (npScene->getFlags() & PxSceneFlag::eENABLE_DIRECT_GPU_API) && npScene->isDirectGPUAPIInitialized())
++	if (npScene && (npScene->getFlags() & PxSceneFlag::eENABLE_DIRECT_GPU_API) && npScene->isDirectGPUAPIInitialized()
++        && !(npScene->getFlags() & PxSceneFlag::eENABLE_DIRECT_GPU_HOST_ACCESS))
+ 	{
+ 		outputError<PxErrorCode::eINVALID_OPERATION>(__LINE__, "PxRigidDynamic::addTorque(): it is illegal to call this method if PxSceneFlag::eENABLE_DIRECT_GPU_API is enabled!");
+ 		return;
+@@ -406,7 +412,8 @@ void NpRigidDynamic::clearForce(PxForceMode::Enum mode)
+ 		return;
+ 	}
+ 	
+-	if (npScene && (npScene->getFlags() & PxSceneFlag::eENABLE_DIRECT_GPU_API) && npScene->isDirectGPUAPIInitialized())
++	if (npScene && (npScene->getFlags() & PxSceneFlag::eENABLE_DIRECT_GPU_API) && npScene->isDirectGPUAPIInitialized()
++        && !(npScene->getFlags() & PxSceneFlag::eENABLE_DIRECT_GPU_HOST_ACCESS))
+ 	{
+ 		outputError<PxErrorCode::eINVALID_OPERATION>(__LINE__, "PxRigidDynamic::clearForce(): it is illegal to call this method if PxSceneFlag::eENABLE_DIRECT_GPU_API is enabled!");
+ 		return;
+@@ -430,7 +437,8 @@ void NpRigidDynamic::clearTorque(PxForceMode::Enum mode)
+ 		return;
+ 	}
+ 
+-	if (npScene && (npScene->getFlags() & PxSceneFlag::eENABLE_DIRECT_GPU_API) && npScene->isDirectGPUAPIInitialized())
++	if (npScene && (npScene->getFlags() & PxSceneFlag::eENABLE_DIRECT_GPU_API) && npScene->isDirectGPUAPIInitialized()
++        && !(npScene->getFlags() & PxSceneFlag::eENABLE_DIRECT_GPU_HOST_ACCESS))
+ 	{
+ 		outputError<PxErrorCode::eINVALID_OPERATION>(__LINE__, "PxRigidDynamic::clearTorque(): it is illegal to call this method if PxSceneFlag::eENABLE_DIRECT_GPU_API is enabled!");
+ 		return;
+@@ -533,6 +541,11 @@ void NpRigidDynamic::wakeUp()
+ 
+ 	PX_CHECK_SCENE_API_WRITE_FORBIDDEN_EXCEPT_SPLIT_SIM(npScene, "PxRigidDynamic::wakeUp() not allowed while simulation is running. Call will be ignored.")
+ 
++    if(!npScene->getScScene().finalizeGpuSleep(&mCore))
++    {
++        outputError<PxErrorCode::eINTERNAL_ERROR>(__LINE__, "GPU sleep finalization failed before wake.");
++        return;
++    }
+ 	scWakeUp();
+ }
+ 
+diff --git a/physx/source/physx/src/NpScene.cpp b/physx/source/physx/src/NpScene.cpp
+index 0939f4d..7e6a492 100644
+--- a/physx/source/physx/src/NpScene.cpp
++++ b/physx/source/physx/src/NpScene.cpp
+@@ -1027,6 +1027,12 @@ void NpScene::removeRigidDynamic(NpRigidDynamic& body, bool wakeOnLostTouch, boo
+ 
+ bool NpScene::addArticulation(PxArticulationReducedCoordinate& articulation)
+ {
++    if(getFlags() & PxSceneFlag::eENABLE_DIRECT_GPU_SLEEPING)
++    {
++        outputError<PxErrorCode::eINVALID_OPERATION>(__LINE__, "Direct GPU sleeping currently supports rigid bodies only; articulation insertion rejected.");
++        return false;
++    }
++
+ 	PX_PROFILE_ZONE("API.addArticulation", getContextId());
+ 	NP_WRITE_CHECK(this);
+ 	PX_CHECK_AND_RETURN_VAL(articulation.getNbLinks()>0, "PxScene::addArticulation: Empty articulations may not be added to a scene.", false);
+@@ -1275,6 +1281,12 @@ bool NpScene::addArticulationMimicJointInternal(NpArticulationReducedCoordinate*
+ 
+ bool NpScene::addArticulationInternal(PxArticulationReducedCoordinate& npa)
+ {
++    if(getFlags() & PxSceneFlag::eENABLE_DIRECT_GPU_SLEEPING)
++    {
++        outputError<PxErrorCode::eINVALID_OPERATION>(__LINE__, "Direct GPU sleeping currently supports rigid bodies only; articulation insertion rejected.");
++        return false;
++    }
++
+ 	// Add root link first
+ 	const PxU32 nbLinks = npa.getNbLinks();
+ 	PX_ASSERT(nbLinks > 0);
+@@ -2928,6 +2940,9 @@ bool NpScene::simulateOrCollide(PxReal elapsedTime, PxBaseTask* completionTask,
+ 
+ 		if (!checkGpuErrorsPreSim(true))
+ 			return false;
++        if(!mScene.finalizeGpuSleep())
++            return outputError<PxErrorCode::eINTERNAL_ERROR>(__LINE__, "GPU sleep finalization failed before simulate.");
++
+ 
+ 		PX_CHECK_AND_RETURN_VAL(elapsedTime > 0, "PxScene::collide/simulate: The elapsed time must be positive!", false);
+ 
+diff --git a/physx/source/simulationcontroller/include/ScScene.h b/physx/source/simulationcontroller/include/ScScene.h
+index 47a576e..d746b03 100644
+--- a/physx/source/simulationcontroller/include/ScScene.h
++++ b/physx/source/simulationcontroller/include/ScScene.h
+@@ -440,6 +440,7 @@ namespace Sc
+ 					void						postCallbacksPreSyncKinematics();
+ 					void						postReportsCleanup();
+ 					void						fireCallbacksPostSync();
++                    bool finalizeGpuSleep(BodyCore* body = NULL);
+ 					void						syncSceneQueryBounds(SqBoundsSync& sync, SqRefFinder& finder);					
+ 
+ 					PxU32						getDefaultContactReportStreamBufferSize() const;
+@@ -783,6 +784,8 @@ namespace Sc
+ 			const	PxPairFilteringMode::Enum	mStaticKineFilteringMode;
+ 
+ 					PxCoalescedHashSet<BodyCore*> mSleepBodies;
++                    PxCoalescedHashSet<BodyCore*> mGpuSleepPendingBodies;
++        PxCoalescedHashSet<BodyCore*> mGpuSleepRollbackBodies;
+ 					PxCoalescedHashSet<BodyCore*> mWokeBodies;
+ 
+ 					bool						mWokeBodyListValid;
+diff --git a/physx/source/simulationcontroller/src/ScBodyCore.cpp b/physx/source/simulationcontroller/src/ScBodyCore.cpp
+index 599073d..db96941 100644
+--- a/physx/source/simulationcontroller/src/ScBodyCore.cpp
++++ b/physx/source/simulationcontroller/src/ScBodyCore.cpp
+@@ -85,6 +85,12 @@ void Sc::BodyCore::restoreDynamicData()
+ //
+ //--------------------------------------------------------------
+ 
++static void markDirectGpuHostWrite(Sc::BodySim* sim, PxU32 flags)
++{
++    if(sim && (sim->getScene().getFlags() & PxSceneFlag::eENABLE_DIRECT_GPU_HOST_ACCESS))
++        sim->getLowLevelBody().mGpuHostDirty |= PxU16(flags >> 16);
++}
++
+ void Sc::BodyCore::setBody2World(const PxTransform& p)
+ {
+ 	mCore.body2World = p;
+@@ -94,6 +100,7 @@ void Sc::BodyCore::setBody2World(const PxTransform& p)
+ 	BodySim* sim = getSim();
+ 	if(sim)
+ 	{
++		markDirectGpuHostWrite(sim, PxsRigidBody::eHOST_POSE_COPY_GPU);
+ 		sim->postBody2WorldChange();
+ 		sim->getScene().gpu_updateBodySim(*sim);
+ 	}
+@@ -113,6 +120,7 @@ void Sc::BodyCore::setCMassLocalPose(const PxTransform& newBody2Actor)
+ 
+ void Sc::BodyCore::setLinearVelocity(const PxVec3& v, bool skipBodySimUpdate)
+ {
++    markDirectGpuHostWrite(getSim(), PxsRigidBody::eHOST_LINEAR_COPY_GPU);
+ 	mCore.linearVelocity = v;
+ 
+ 	PX_ASSERT(!skipBodySimUpdate || (getFlags() & PxRigidBodyFlag::eKINEMATIC));
+@@ -123,6 +131,7 @@ void Sc::BodyCore::setLinearVelocity(const PxVec3& v, bool skipBodySimUpdate)
+ 
+ void Sc::BodyCore::setAngularVelocity(const PxVec3& v, bool skipBodySimUpdate)
+ {
++    markDirectGpuHostWrite(getSim(), PxsRigidBody::eHOST_ANGULAR_COPY_GPU);
+ 	mCore.angularVelocity = v;
+ 
+ 	PX_ASSERT(!skipBodySimUpdate || (getFlags() & PxRigidBodyFlag::eKINEMATIC));
+diff --git a/physx/source/simulationcontroller/src/ScBodySim.cpp b/physx/source/simulationcontroller/src/ScBodySim.cpp
+index d6f014f..7966193 100644
+--- a/physx/source/simulationcontroller/src/ScBodySim.cpp
++++ b/physx/source/simulationcontroller/src/ScBodySim.cpp
+@@ -290,6 +290,12 @@ void BodySim::addSpatialAcceleration(const PxVec3* linAcc, const PxVec3* angAcc)
+ 
+ void BodySim::setSpatialAcceleration(const PxVec3* linAcc, const PxVec3* angAcc)
+ {
++    if(mScene.getFlags() & PxSceneFlag::eENABLE_DIRECT_GPU_HOST_ACCESS)
++    {
++        const PxU32 flags = (linAcc ? PxsRigidBody::eHOST_CLEAR_FORCE_GPU : 0)
++            | (angAcc ? PxsRigidBody::eHOST_CLEAR_TORQUE_GPU : 0);
++        getLowLevelBody().mGpuHostDirty |= PxU16(flags >> 16);
++    }
+ 	notifyDirtySpatialAcceleration();
+ 
+ 	if (!mSimStateData || !mSimStateData->isVelMod())
+@@ -304,6 +310,13 @@ void BodySim::setSpatialAcceleration(const PxVec3* linAcc, const PxVec3* angAcc)
+ 
+ void BodySim::clearSpatialAcceleration(bool force, bool torque)
+ {
++    if(mScene.getFlags() & PxSceneFlag::eENABLE_DIRECT_GPU_HOST_ACCESS)
++    {
++        if(!mSimStateData) setupSimStateData(false);
++        const PxU32 flags = (force ? PxsRigidBody::eHOST_CLEAR_FORCE_GPU : 0)
++            | (torque ? PxsRigidBody::eHOST_CLEAR_TORQUE_GPU : 0);
++        getLowLevelBody().mGpuHostDirty |= PxU16(flags >> 16);
++    }
+ 	PX_ASSERT(force || torque);
+ 
+ 	notifyDirtySpatialAcceleration();
+@@ -703,7 +716,17 @@ bool BodySim::updateForces(PxReal dt, PxsRigidBody** updatedBodySims, PxU32* upd
+ 			angVelDt += velmod->getAngularVelModPerSec()*dt;
+ 		}
+ 
+-		if (acceleration)
++        if(mScene.getFlags() & PxSceneFlag::eENABLE_DIRECT_GPU_HOST_ACCESS)
++        {
++            PX_ASSERT(externalAccelerations);
++            // Preserve native integration ordering and rounding: these values
++            // are delta velocities, not acceleration reconstructed with 1/dt.
++            PxsRigidBodyExternalAcceleration delta(linVelDt,angVelDt);
++            externalAccelerations->setValue(delta,
++                getNodeIndex().index(),maxNumExternalAccelerations);
++            getLowLevelBody().mGpuHostDirty |= PxU16(PxsRigidBody::eHOST_VELOCITY_DELTA_GPU >> 16);
++        }
++        else if (acceleration)
+ 		{
+ 			const PxReal invDt = 1.f / dt;
+ 			acceleration->linear = linVelDt * invDt;
+diff --git a/physx/source/simulationcontroller/src/ScCCD.cpp b/physx/source/simulationcontroller/src/ScCCD.cpp
+index f0fae76..0cfd3fa 100644
+--- a/physx/source/simulationcontroller/src/ScCCD.cpp
++++ b/physx/source/simulationcontroller/src/ScCCD.cpp
+@@ -32,6 +32,7 @@
+ #include "ScArticulationSim.h"
+ #include "ScArticulationCore.h"
+ #include "DyIslandManager.h"
++#include "GuBounds.h"
+ 
+ using namespace physx;
+ using namespace Sc;
+@@ -64,6 +65,7 @@ void BodySim::removeFromSpeculativeCCDMap()
+ // PT: TODO: consider using a non-member function for this one
+ void BodySim::updateContactDistance(PxReal* contactDistance, PxReal dt, const Bp::BoundsArray& boundsArray)
+ {
++	PX_UNUSED(boundsArray);
+ 	const PxsRigidBody& llBody = getLowLevelBody();
+ 
+ 	const PxRigidBodyFlags flags = llBody.getCore().mFlags;
+@@ -84,12 +86,21 @@ void BodySim::updateContactDistance(PxReal* contactDistance, PxReal dt, const Bp
+ 
+ 			const PxU32 index = current->getElementID();
+ 
+-			const PxBounds3& bounds = boundsArray.getBounds(index);
+-
+-			const PxReal radius = bounds.getExtents().magnitude();
+-
+-			//Heuristic for angular velocity...
+-			const PxReal angularInflation = angVelMagTimesDt * radius;
++			// Enclose each point in the body's mass frame. World CPU bounds are
++			// stale in Direct GPU scenes; mixing them with an observed GPU COM
++			// makes a translating body acquire an ever-growing rotational halo.
++			// Local geometry and shape/COM transforms only change with metadata.
++			const ShapeCore& shape = current->getCore();
++			const PxTransform shapeToBody = llBody.getCore().getBody2Actor().transformInv(shape.getTransform());
++			PxBounds3 bounds;
++			Gu::computeBounds(bounds, shape.getGeometryUnion().getGeometry(), shapeToBody, 0.0f, 1.0f);
++			const PxReal radius = (bounds.getExtents() + bounds.getCenter().abs()).magnitude();
++
++			// A point at radius r cannot move farther than 2*r under rotation,
++			// however many turns occur in the step. The arc-length bound w*dt*r
++			// is tighter for small angles. Both enclose the entire swept path;
++			// this limits search inflation, never angular velocity or impulses.
++			const PxReal angularInflation = PxMin(angVelMagTimesDt, 2.0f) * radius;
+ 
+ 			contactDistance[index] = linearInflation + current->getContactOffset() + angularInflation;
+ 		}
+diff --git a/physx/source/simulationcontroller/src/ScKinematics.cpp b/physx/source/simulationcontroller/src/ScKinematics.cpp
+index 63b6cd7..9b82a85 100644
+--- a/physx/source/simulationcontroller/src/ScKinematics.cpp
++++ b/physx/source/simulationcontroller/src/ScKinematics.cpp
+@@ -57,6 +57,11 @@ void BodySim::calculateKinematicVelocity(PxReal oneOverDt)
+ 	PX_ASSERT(isActive());
+ 
+ 	BodyCore& core = getBodyCore();
++    if(mScene.getFlags() & PxSceneFlag::eENABLE_DIRECT_GPU_HOST_ACCESS)
++    {
++        getLowLevelBody().mGpuHostDirty |= PxU16((PxsRigidBody::eHOST_LINEAR_COPY_GPU
++            | PxsRigidBody::eHOST_ANGULAR_COPY_GPU) >> 16);
++    }
+ 
+ 	if (readInternalFlag(BF_KINEMATIC_MOVED))
+ 	{
+@@ -327,6 +332,13 @@ public:
+ // PT: warning, this runs in parallel with ScAfterIntegrationTask and updateArticulationAfterIntegration, and all of these touching the getChangedAABBMgActorHandleMap() bitmap
+ void Sc::Scene::updateKinematicCached(PxBaseTask* continuation)
+ {
++    // The Direct GPU host bridge publishes exact kinematic targets through
++    // the device pose API after integration. That updates GPU bounds/caches.
++    // The native CPU cache task marks the entire host bounds array changed;
++    // on a GPU-owned scene its other entries are stale and can overwrite
++    // moving dynamic bounds, dropping unrelated broadphase pairs.
++    if(mPublicFlags & PxSceneFlag::eENABLE_DIRECT_GPU_HOST_ACCESS)
++        return;
+ 	PX_PROFILE_ZONE("Sim.updateKinematicCached", mContextId);
+ 
+ 	const PxU32 nbKinematics = getActiveKinematicBodiesCount();
+diff --git a/physx/source/simulationcontroller/src/ScPipeline.cpp b/physx/source/simulationcontroller/src/ScPipeline.cpp
+index 6f3b1ca..3696398 100644
+--- a/physx/source/simulationcontroller/src/ScPipeline.cpp
++++ b/physx/source/simulationcontroller/src/ScPipeline.cpp
+@@ -2658,6 +2658,19 @@ void Sc::Scene::afterIntegration(PxBaseTask* continuation)
+ 		const PxNodeIndex*const deactivatingIndices = islandSim.getNodesToDeactivate(IG::Node::eRIGID_BODY_TYPE);
+ 
+ 		PxU32 previousNumBodiesToDeactivate = mNumDeactivatingNodes[IG::Node::eRIGID_BODY_TYPE];
++        if(mPublicFlags & PxSceneFlag::eENABLE_DIRECT_GPU_SLEEPING)
++        {
++            // Include explicitly slept bodies: they may still have reached
++            // the solver while accurate island generation ran in parallel.
++            for(PxU32 i = 0; i < numBodiesToDeactivate; ++i)
++            {
++                PxsRigidBody* rigid = getRigidBodyFromIG(islandSim, deactivatingIndices[i]);
++                BodySim* sim = reinterpret_cast<BodySim*>(reinterpret_cast<PxU8*>(rigid) - rigidBodyOffset);
++                mGpuSleepPendingBodies.insert(&sim->getBodyCore());
++                mGpuSleepRollbackBodies.insert(&sim->getBodyCore());
++            }
++        }
++
+ 
+ 		{
+ 			PX_PROFILE_ZONE("AfterIntegration::deactivateStage", mContextId);
+@@ -2673,11 +2686,14 @@ void Sc::Scene::afterIntegration(PxBaseTask* continuation)
+ 				//user perceives the same behavior as before.
+ 
+ 				//if(!islandSim.getNode(bodySim->getNodeIndex()).isActive())
+-				rigid->setPose(rigid->getLastCCDTransform());
+-
+-				// PT: we are not inside a task here so we can run the non-thread-safe version, but we still need atomics for the bitmap update, as there are other parts running in parallel
+-				// that also update the same bitmap.
+-				bodySim->updateCached_NotThreadSafe(params, &changedAABBMgrActorHandles, false, true);
++                // GPU-owned motion/cache are already current. CPU CCD poses
++                // and shape bounds are stale in this mode and must not feed
++                // the GPU bounds merge on a native sleep transition.
++                if(!(mPublicFlags & PxSceneFlag::eENABLE_DIRECT_GPU_SLEEPING))
++                {
++                    rigid->setPose(rigid->getLastCCDTransform());
++                    bodySim->updateCached_NotThreadSafe(params, &changedAABBMgrActorHandles, false, true);
++                }
+ 
+ 				gpu_updateBodySim(*bodySim);
+ 
+@@ -2685,8 +2701,8 @@ void Sc::Scene::afterIntegration(PxBaseTask* continuation)
+ 				//might have processed bodies that are now considered deactivated. This could have resulted in either freezing or unfreezing one of these bodies this frame, so we need to process those
+ 				//events to ensure that the SqManager's bounds arrays are consistently maintained. Also, we need to clear the frame flags for these bodies.
+ 
+-				if(rigid->isFreezeThisFrame())
+-					bodySim->freezeTransforms(params, &changedAABBMgrActorHandles);
++				if(rigid->isFreezeThisFrame() && !(mPublicFlags & PxSceneFlag::eENABLE_DIRECT_GPU_SLEEPING))
++                    bodySim->freezeTransforms(params, &changedAABBMgrActorHandles);
+ 
+ 				//KS - the IG deactivates bodies in parallel with the solver. It appears that under certain circumstances, the solver's integration (which performs
+ 				//sleep checks) could decide that the body is no longer a candidate for sleeping on the same frame that the island gen decides to deactivate the island
+diff --git a/physx/source/simulationcontroller/src/ScScene.cpp b/physx/source/simulationcontroller/src/ScScene.cpp
+index 5cfba8f..097dc36 100644
+--- a/physx/source/simulationcontroller/src/ScScene.cpp
++++ b/physx/source/simulationcontroller/src/ScScene.cpp
+@@ -625,6 +625,8 @@ Sc::Scene::Scene(const PxSceneDesc& desc, PxU64 contextID) :
+ 	mKineKineFilteringMode			(desc.kineKineFilteringMode),
+ 	mStaticKineFilteringMode		(desc.staticKineFilteringMode),
+ 	mSleepBodies					("sceneSleepBodies"),
++    mGpuSleepPendingBodies("sceneGpuSleepPendingBodies"),
++    mGpuSleepRollbackBodies("sceneGpuSleepRollbackBodies"),
+ 	mWokeBodies						("sceneWokeBodies"),
+ 	mEnableStabilization			(desc.flags & PxSceneFlag::eENABLE_STABILIZATION),
+ 	mActiveActors					("clientActiveActors"),
+@@ -1649,9 +1651,16 @@ PxSimulationEventCallback* Sc::Scene::getSimulationEventCallback() const
+ void Sc::Scene::removeBody(BodySim& body)	//this also notifies any connected joints!
+ {
+ 	BodyCore& core = body.getBodyCore();
++    if(!body.isArticulationLink() && body.getNodeIndex().isValid())
++    {
++        mSimulationController->removeDynamic(body.getNodeIndex());
++    }
++
+ 
+ 	// Remove from sleepBodies array
+ 	mSleepBodies.erase(&core);
++    mGpuSleepPendingBodies.erase(&core);
++    mGpuSleepRollbackBodies.erase(&core);
+ 	PX_ASSERT(!mSleepBodies.contains(&core));
+ 
+ 	// Remove from wokeBodies array
+@@ -2062,8 +2071,67 @@ void Sc::Scene::fireTriggerCallbacks()
+ /*
+ Threading: called in the context of the user thread, but only after the physics thread has finished its run
+ */
++bool Sc::Scene::finalizeGpuSleep(BodyCore* body)
++{
++    if(!(mPublicFlags & PxSceneFlag::eENABLE_DIRECT_GPU_SLEEPING) || mGpuSleepPendingBodies.size() == 0)
++        return true;
++#if PX_SUPPORT_GPU_PHYSX
++    if(body && !mGpuSleepPendingBodies.contains(body)) return true;
++    PxArray<PxU32> indices, rollbackIndices;
++    const PxU32 count = body ? 1 : mGpuSleepPendingBodies.size();
++    BodyCore* const* entries = mGpuSleepPendingBodies.getEntries();
++    indices.reserve(count);
++    for(PxU32 i = 0; i < count; ++i)
++    {
++        BodyCore* core = body ? body : entries[i];
++        // A not-yet-uploaded body will start with the CPU's zero velocities.
++        if(!(core->getSim()->getLowLevelBody().mInternalFlags & PxsRigidBody::eFIRST_BODY_COPY_GPU))
++        {
++            PxArray<PxU32>& target = mGpuSleepRollbackBodies.contains(core) ? rollbackIndices : indices;
++            target.pushBack(static_cast<PxRigidDynamic*>(core->getPxActor())->getGPUIndex());
++        }
++    }
++    if(rollbackIndices.size() && !mSimulationController->finalizeSleepingRigidBodies(rollbackIndices.begin(), rollbackIndices.size(), true))
++        return false;
++    if(indices.size() && !mSimulationController->finalizeSleepingRigidBodies(indices.begin(), indices.size(), false))
++        return false;
++    if(body)
++    {
++        mGpuSleepPendingBodies.erase(body);
++        mGpuSleepRollbackBodies.erase(body);
++    }
++    else
++    {
++        mGpuSleepPendingBodies.clear();
++        mGpuSleepRollbackBodies.clear();
++    }
++#endif
++    return true;
++}
++
+ void Sc::Scene::fireCallbacksPostSync()
+ {
++    if(mPublicFlags & PxSceneFlag::eENABLE_DIRECT_GPU_HOST_ACCESS)
++    {
++        PxArray<PxU32> indices;
++        PxArray<PxTransform> poses;
++        const PxU32 count = getActiveKinematicBodiesCount();
++        BodyCore* const* bodies = getActiveKinematicBodies();
++        indices.reserve(count); poses.reserve(count);
++        for(PxU32 i=0; i<count; ++i)
++        {
++            BodyCore& core = *bodies[i];
++            indices.pushBack(static_cast<PxRigidDynamic*>(core.getPxActor())->getGPUIndex());
++            poses.pushBack(core.getBody2World() * core.getBody2Actor().getInverse());
++        }
++        if(count && !mSimulationController->publishHostRigidPoses(indices.begin(),poses.begin(),count))
++            PxGetFoundation().error(PxErrorCode::eINTERNAL_ERROR,PX_FL,"GPU kinematic target publication failed.");
++    }
++    if(!finalizeGpuSleep())
++    {
++        PxGetFoundation().error(PxErrorCode::eINTERNAL_ERROR, PX_FL, "GPU sleeping velocity finalization failed.");
++    }
++
+ 	//
+ 	// Fire sleep & woken callbacks
+ 	//
+@@ -2716,6 +2784,11 @@ void Sc::Scene::clearSleepWakeBodies()
+ 
+ void Sc::Scene::onBodySleep(BodySim* body)
+ {
++    if((mPublicFlags & PxSceneFlag::eENABLE_DIRECT_GPU_SLEEPING) && !body->isKinematic())
++    {
++        mGpuSleepPendingBodies.insert(&body->getBodyCore());
++    }
++
+ 	if (!mSimulationEventCallback && !mOnSleepingStateChanged)
+ 		return;
+ 

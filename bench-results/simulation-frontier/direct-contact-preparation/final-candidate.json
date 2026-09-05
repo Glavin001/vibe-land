@@ -1,0 +1,9 @@
+{
+  "game_parent": "2c29f76",
+  "solver_parent": "f5d20298",
+  "server_sha256": "e65176731a8e830b7b1f152c0db793432ee11e66a82e3b15e616e9d8e9e711ed",
+  "trace_sha256": "4de42568c8291ee651b49f858f63c9c884a8943faeaf8fa29d257030054ee2e7",
+  "sdk_manifest_sha256": "83a3de3cb57f00b71d33c88cd48f585841271130d8bf80572050a224f72fe20d",
+  "sdk_patch_sha256": "e58ffa560219800ae436be69051e3097c350478861f30ec081d3ee19adfb7d85",
+  "gpu_activity_test_sha256": "8191feadacb17b7ac661ea30964331e0608d2d5f664e2dffd1e211e54abb06ad"
+}

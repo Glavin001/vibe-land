@@ -137,3 +137,7 @@ simulation-frontier plan. Next are GPU contact/load assembly, removal of CPU
 observation overhead, repeated settling and full-tick/streaming qualification.
 The bending/torsion gain ceiling, depenetration behavior and other items in
 [the fidelity contract](simulation-fidelity-contract.md) remain open.
+
+The subsequent [Direct GPU observation increment](direct-gpu-observation-2026-09-05.md)
+is now deployed. It retains this rotation/collision work and removes redundant
+query scheduling only for exactly unchanged inactive bodies.

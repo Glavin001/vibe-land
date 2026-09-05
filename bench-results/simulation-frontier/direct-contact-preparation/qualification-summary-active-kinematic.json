@@ -1,0 +1,10 @@
+{
+  "direct_integration": {
+    "passed": 175,
+    "failed": 1,
+    "ignored": 27,
+    "failure": "house-2story: 34 of 599 nodes awake at the eight-second settling checkpoint; fixture requires fewer than 5%."
+  },
+  "direct_audit": "pending for corrected SDK",
+  "direct_scenario": "pending for corrected SDK"
+}
