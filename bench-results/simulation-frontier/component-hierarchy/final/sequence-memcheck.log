@@ -1,0 +1,53 @@
+========= COMPUTE-SANITIZER
+{"native_physical_assembly_ms":32.941153,"active_nodes":5936,"bonds":18627,"independent_operator_comparison":true,"native_load_projection":true}
+{"galerkin_algorithm":2}
+{"gpu_galerkin_context_ms":185.610930}
+{"setup_repeat":0,"gpu_galerkin":true,"setup_ms":1491.081479,"retained_bytes":359861155,"allocations":24}
+{"native_hierarchy_setup_ms":1491.081479,"input_validation_ms":37.084079,"coarse_setup_ms":0.439140,"basis_reconstruction_error":6.38176246387e-17,"levels":3,"coarse_rows":96}
+{"native_level":0,"rows":35616,"nnz":827552,"coarse_rows":5100,"omega":0.483457107955,"eigenvalue_upper_bound":2.75791442797,"diagonal_ms":2.516650,"spectral_bound_ms":15.787350,"aggregate_ms":5.186125,"interpolation_ms":15.422399,"galerkin_ms":621.215767,"representation_ms":20.042596}
+{"native_level":1,"rows":5100,"nnz":890280,"coarse_rows":738,"omega":0.430145208696,"eigenvalue_upper_bound":3.09972843212,"diagonal_ms":0.367376,"spectral_bound_ms":5.794621,"aggregate_ms":0.598838,"interpolation_ms":4.224238,"galerkin_ms":667.091382,"representation_ms":5.528193}
+{"native_level":2,"rows":738,"nnz":225180,"coarse_rows":96,"omega":0.438084405917,"eigenvalue_upper_bound":3.04355351463,"diagonal_ms":0.046477,"spectral_bound_ms":1.430571,"aggregate_ms":0.088946,"interpolation_ms":0.848875,"galerkin_ms":85.479940,"representation_ms":0.893038}
+{"resident_bond_operator":true,"gpu_rigid_projector":true}
+{"gpu":"NVIDIA GeForce RTX 4090","operator":"double","preconditioner_storage":"float","preconditioner_arithmetic":"float","outer_vectors_and_reductions":"double","cuda_graph":true,"device_context_upload_graph_ms":19.889871,"rows":35616,"free":false,"levels":3,"scope":"standalone hierarchy validation; no game integration"}
+{"fracture_frame":0,"live_bonds":18627}
+{"component_hierarchy_rebuild_ms":1441.547322,"physical_assembly_ms":16.156009,"hierarchy_setup_ms":1412.201844,"bonded_components":1,"isolated_nodes":0,"levels":3,"coarse_rows":96,"coarse_nnz":9216,"gpu_galerkin":true,"independent_current_matrix_check":true}
+{"hierarchy_device_replace_ms":8.521102,"coupling_reuploaded":false,"graph_recaptured":true}
+{"topology_and_rhs_update_ms":3.502119,"hierarchy_rebuilt":true,"coupling_reuploaded":false,"graph_recaptured":true}
+{"trial":0,"passed":true,"iterations":31,"submitted":32,"cuda_solve_ms":398.117188,"wall_solve_ms":398.137859,"force_residual":1.09255354568e-11,"moment_residual":1.37937504727e-11,"bond_relative_error":5.56630007669e-12,"bond_max_error_over_peak":2.34052329245e-12,"bond_force_error_n":2.8025158133e-06,"bond_moment_error_nm":1.89403472338e-06,"bond_force_error_over_input":1.1161607381e-11,"bond_moment_error_over_input":8.00197014711e-12,"zero_bond_reference":false,"recurrence_relative_residual":6.72636448469e-11,"failed":0}
+{"fracture_frame":1,"live_bonds":18564}
+{"component_hierarchy_rebuild_ms":1427.516821,"physical_assembly_ms":18.746025,"hierarchy_setup_ms":1395.580376,"bonded_components":1,"isolated_nodes":0,"levels":3,"coarse_rows":96,"coarse_nnz":9216,"gpu_galerkin":true,"independent_current_matrix_check":true}
+{"hierarchy_device_replace_ms":8.906031,"coupling_reuploaded":false,"graph_recaptured":true}
+{"topology_and_rhs_update_ms":4.621720,"hierarchy_rebuilt":true,"coupling_reuploaded":false,"graph_recaptured":true}
+{"trial":1,"passed":true,"iterations":30,"submitted":32,"cuda_solve_ms":399.893219,"wall_solve_ms":399.915164,"force_residual":1.61702606911e-11,"moment_residual":2.00025550587e-11,"bond_relative_error":1.95490357833e-11,"bond_max_error_over_peak":3.42340491449e-11,"bond_force_error_n":3.58548195287e-06,"bond_moment_error_nm":2.63586474569e-06,"bond_force_error_over_input":1.42799343502e-11,"bond_moment_error_over_input":1.11360740891e-11,"zero_bond_reference":false,"recurrence_relative_residual":9.4828351093e-11,"failed":0}
+{"fracture_frame":2,"live_bonds":18036}
+{"component_hierarchy_rebuild_ms":1036.784898,"physical_assembly_ms":17.487796,"hierarchy_setup_ms":1004.090096,"bonded_components":2,"isolated_nodes":0,"levels":3,"coarse_rows":114,"coarse_nnz":6516,"gpu_galerkin":true,"independent_current_matrix_check":true}
+{"hierarchy_device_replace_ms":7.741667,"coupling_reuploaded":false,"graph_recaptured":true}
+{"topology_and_rhs_update_ms":4.319716,"hierarchy_rebuilt":true,"coupling_reuploaded":false,"graph_recaptured":true}
+{"trial":2,"passed":true,"iterations":36,"submitted":40,"cuda_solve_ms":470.066833,"wall_solve_ms":470.088478,"force_residual":1.44311294128e-11,"moment_residual":1.82192514269e-11,"bond_relative_error":1.08172029504e-11,"bond_max_error_over_peak":2.20037944574e-11,"bond_force_error_n":3.14030544299e-06,"bond_moment_error_nm":2.76401012985e-06,"bond_force_error_over_input":1.2506925472e-11,"bond_moment_error_over_input":1.1677466243e-11,"zero_bond_reference":false,"recurrence_relative_residual":8.44669369617e-11,"failed":0}
+{"fracture_frame":3,"live_bonds":0}
+{"component_hierarchy_rebuild_ms":1.138516,"physical_assembly_ms":0.894180,"hierarchy_setup_ms":0.033012,"bonded_components":0,"isolated_nodes":5936,"levels":0,"coarse_rows":35616,"coarse_nnz":0,"gpu_galerkin":true,"independent_current_matrix_check":true}
+{"hierarchy_device_replace_ms":1.190643,"coupling_reuploaded":false,"graph_recaptured":true}
+{"topology_and_rhs_update_ms":3.117511,"hierarchy_rebuilt":true,"coupling_reuploaded":false,"graph_recaptured":true}
+{"trial":3,"passed":true,"iterations":0,"submitted":0,"cuda_solve_ms":0.016928,"wall_solve_ms":0.024856,"force_residual":0,"moment_residual":0,"bond_relative_error":null,"bond_max_error_over_peak":null,"bond_force_error_n":0,"bond_moment_error_nm":0,"bond_force_error_over_input":0,"bond_moment_error_over_input":0,"zero_bond_reference":true,"recurrence_relative_residual":0,"failed":0}
+{"fracture_frame":4,"live_bonds":18627}
+{"component_hierarchy_rebuild_ms":1412.436293,"physical_assembly_ms":14.578783,"hierarchy_setup_ms":1384.769912,"bonded_components":1,"isolated_nodes":0,"levels":3,"coarse_rows":96,"coarse_nnz":9216,"gpu_galerkin":true,"independent_current_matrix_check":true}
+{"hierarchy_device_replace_ms":7.313467,"coupling_reuploaded":false,"graph_recaptured":true}
+{"topology_and_rhs_update_ms":3.521405,"hierarchy_rebuilt":true,"coupling_reuploaded":false,"graph_recaptured":true}
+{"trial":4,"passed":true,"iterations":31,"submitted":32,"cuda_solve_ms":398.687317,"wall_solve_ms":398.708236,"force_residual":1.09255354568e-11,"moment_residual":1.37937504727e-11,"bond_relative_error":5.56630007669e-12,"bond_max_error_over_peak":2.34052329245e-12,"bond_force_error_n":2.8025158133e-06,"bond_moment_error_nm":1.89403472338e-06,"bond_force_error_over_input":1.1161607381e-11,"bond_moment_error_over_input":8.00197014711e-12,"zero_bond_reference":false,"recurrence_relative_residual":6.72636448469e-11,"failed":0}
+{"fracture_frame":5,"live_bonds":12418}
+{"component_hierarchy_rebuild_ms":1295.933246,"physical_assembly_ms":10.582581,"hierarchy_setup_ms":1275.746851,"bonded_components":7,"isolated_nodes":1,"levels":3,"coarse_rows":180,"coarse_nnz":20796,"gpu_galerkin":true,"independent_current_matrix_check":true}
+{"hierarchy_device_replace_ms":8.388685,"coupling_reuploaded":false,"graph_recaptured":true}
+{"topology_and_rhs_update_ms":3.382035,"hierarchy_rebuilt":true,"coupling_reuploaded":false,"graph_recaptured":true}
+{"trial":5,"passed":true,"iterations":44,"submitted":48,"cuda_solve_ms":565.118896,"wall_solve_ms":565.142608,"force_residual":9.92352694395e-12,"moment_residual":1.19418613052e-11,"bond_relative_error":6.98585176722e-12,"bond_max_error_over_peak":4.91750547824e-12,"bond_force_error_n":5.17061798462e-06,"bond_moment_error_nm":2.81240908548e-06,"bond_force_error_over_input":2.05930712638e-11,"bond_moment_error_over_input":1.18819434858e-11,"zero_bond_reference":false,"recurrence_relative_residual":5.51441796894e-11,"failed":0}
+{"fracture_frame":6,"live_bonds":18564}
+{"component_hierarchy_rebuild_ms":1421.655678,"physical_assembly_ms":18.135314,"hierarchy_setup_ms":1390.481005,"bonded_components":1,"isolated_nodes":0,"levels":3,"coarse_rows":96,"coarse_nnz":9216,"gpu_galerkin":true,"independent_current_matrix_check":true}
+{"hierarchy_device_replace_ms":8.930316,"coupling_reuploaded":false,"graph_recaptured":true}
+{"topology_and_rhs_update_ms":4.540739,"hierarchy_rebuilt":true,"coupling_reuploaded":false,"graph_recaptured":true}
+{"trial":6,"passed":true,"iterations":30,"submitted":32,"cuda_solve_ms":399.441345,"wall_solve_ms":399.461025,"force_residual":1.61702606911e-11,"moment_residual":2.00025550587e-11,"bond_relative_error":1.95490357833e-11,"bond_max_error_over_peak":3.42340491449e-11,"bond_force_error_n":3.58548195287e-06,"bond_moment_error_nm":2.63586474569e-06,"bond_force_error_over_input":1.42799343502e-11,"bond_moment_error_over_input":1.11360740891e-11,"zero_bond_reference":false,"recurrence_relative_residual":9.4828351093e-11,"failed":0}
+{"fracture_frame":7,"live_bonds":18627}
+{"component_hierarchy_rebuild_ms":1416.387781,"physical_assembly_ms":14.887509,"hierarchy_setup_ms":1388.459491,"bonded_components":1,"isolated_nodes":0,"levels":3,"coarse_rows":96,"coarse_nnz":9216,"gpu_galerkin":true,"independent_current_matrix_check":true}
+{"hierarchy_device_replace_ms":8.666713,"coupling_reuploaded":false,"graph_recaptured":true}
+{"topology_and_rhs_update_ms":3.522558,"hierarchy_rebuilt":true,"coupling_reuploaded":false,"graph_recaptured":true}
+{"trial":7,"passed":true,"iterations":31,"submitted":32,"cuda_solve_ms":400.100830,"wall_solve_ms":400.121847,"force_residual":1.09255354568e-11,"moment_residual":1.37937504727e-11,"bond_relative_error":5.56630007669e-12,"bond_max_error_over_peak":2.34052329245e-12,"bond_force_error_n":2.8025158133e-06,"bond_moment_error_nm":1.89403472338e-06,"bond_force_error_over_input":1.1161607381e-11,"bond_moment_error_over_input":8.00197014711e-12,"zero_bond_reference":false,"recurrence_relative_residual":6.72636448469e-11,"failed":0}
+========= LEAK SUMMARY: 0 bytes leaked in 0 allocations
+========= ERROR SUMMARY: 0 errors

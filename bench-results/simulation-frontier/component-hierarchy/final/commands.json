@@ -1,0 +1,297 @@
+[
+  {
+    "name": "cpu-float-0",
+    "command": [
+      "/root/workspace/blast-stress-solver-2/demos/blast-stress-demo/build-gpu-activity/multilevel_gpu_test",
+      "/tmp/multilevel-anchored.bin",
+      "--native-graph",
+      "/tmp/physical-graph-final/building-anchored-component.input",
+      "--resident-operator",
+      "--gpu-projector",
+      "--sequence",
+      "/tmp/building-fracture-sequence.bin",
+      "--rebuild-hierarchy",
+      "--solves",
+      "2",
+      "--float-preconditioner"
+    ],
+    "expected": 0,
+    "exit": 0
+  },
+  {
+    "name": "cpu-double-0",
+    "command": [
+      "/root/workspace/blast-stress-solver-2/demos/blast-stress-demo/build-gpu-activity/multilevel_gpu_test",
+      "/tmp/multilevel-anchored.bin",
+      "--native-graph",
+      "/tmp/physical-graph-final/building-anchored-component.input",
+      "--resident-operator",
+      "--gpu-projector",
+      "--sequence",
+      "/tmp/building-fracture-sequence.bin",
+      "--rebuild-hierarchy",
+      "--solves",
+      "2"
+    ],
+    "expected": 0,
+    "exit": 0
+  },
+  {
+    "name": "gpu-float-0",
+    "command": [
+      "/root/workspace/blast-stress-solver-2/demos/blast-stress-demo/build-gpu-activity/multilevel_gpu_test",
+      "/tmp/multilevel-anchored.bin",
+      "--native-graph",
+      "/tmp/physical-graph-final/building-anchored-component.input",
+      "--resident-operator",
+      "--gpu-projector",
+      "--sequence",
+      "/tmp/building-fracture-sequence.bin",
+      "--rebuild-hierarchy",
+      "--solves",
+      "2",
+      "--gpu-galerkin",
+      "--float-preconditioner"
+    ],
+    "expected": 0,
+    "exit": 0
+  },
+  {
+    "name": "gpu-double-0",
+    "command": [
+      "/root/workspace/blast-stress-solver-2/demos/blast-stress-demo/build-gpu-activity/multilevel_gpu_test",
+      "/tmp/multilevel-anchored.bin",
+      "--native-graph",
+      "/tmp/physical-graph-final/building-anchored-component.input",
+      "--resident-operator",
+      "--gpu-projector",
+      "--sequence",
+      "/tmp/building-fracture-sequence.bin",
+      "--rebuild-hierarchy",
+      "--solves",
+      "2",
+      "--gpu-galerkin"
+    ],
+    "expected": 0,
+    "exit": 0
+  },
+  {
+    "name": "cpu-float-1",
+    "command": [
+      "/root/workspace/blast-stress-solver-2/demos/blast-stress-demo/build-gpu-activity/multilevel_gpu_test",
+      "/tmp/multilevel-anchored.bin",
+      "--native-graph",
+      "/tmp/physical-graph-final/building-anchored-component.input",
+      "--resident-operator",
+      "--gpu-projector",
+      "--sequence",
+      "/tmp/building-fracture-sequence.bin",
+      "--rebuild-hierarchy",
+      "--solves",
+      "2",
+      "--float-preconditioner"
+    ],
+    "expected": 0,
+    "exit": 0
+  },
+  {
+    "name": "cpu-double-1",
+    "command": [
+      "/root/workspace/blast-stress-solver-2/demos/blast-stress-demo/build-gpu-activity/multilevel_gpu_test",
+      "/tmp/multilevel-anchored.bin",
+      "--native-graph",
+      "/tmp/physical-graph-final/building-anchored-component.input",
+      "--resident-operator",
+      "--gpu-projector",
+      "--sequence",
+      "/tmp/building-fracture-sequence.bin",
+      "--rebuild-hierarchy",
+      "--solves",
+      "2"
+    ],
+    "expected": 0,
+    "exit": 0
+  },
+  {
+    "name": "gpu-float-1",
+    "command": [
+      "/root/workspace/blast-stress-solver-2/demos/blast-stress-demo/build-gpu-activity/multilevel_gpu_test",
+      "/tmp/multilevel-anchored.bin",
+      "--native-graph",
+      "/tmp/physical-graph-final/building-anchored-component.input",
+      "--resident-operator",
+      "--gpu-projector",
+      "--sequence",
+      "/tmp/building-fracture-sequence.bin",
+      "--rebuild-hierarchy",
+      "--solves",
+      "2",
+      "--gpu-galerkin",
+      "--float-preconditioner"
+    ],
+    "expected": 0,
+    "exit": 0
+  },
+  {
+    "name": "gpu-double-1",
+    "command": [
+      "/root/workspace/blast-stress-solver-2/demos/blast-stress-demo/build-gpu-activity/multilevel_gpu_test",
+      "/tmp/multilevel-anchored.bin",
+      "--native-graph",
+      "/tmp/physical-graph-final/building-anchored-component.input",
+      "--resident-operator",
+      "--gpu-projector",
+      "--sequence",
+      "/tmp/building-fracture-sequence.bin",
+      "--rebuild-hierarchy",
+      "--solves",
+      "2",
+      "--gpu-galerkin"
+    ],
+    "expected": 0,
+    "exit": 0
+  },
+  {
+    "name": "cpu-float-2",
+    "command": [
+      "/root/workspace/blast-stress-solver-2/demos/blast-stress-demo/build-gpu-activity/multilevel_gpu_test",
+      "/tmp/multilevel-anchored.bin",
+      "--native-graph",
+      "/tmp/physical-graph-final/building-anchored-component.input",
+      "--resident-operator",
+      "--gpu-projector",
+      "--sequence",
+      "/tmp/building-fracture-sequence.bin",
+      "--rebuild-hierarchy",
+      "--solves",
+      "2",
+      "--float-preconditioner"
+    ],
+    "expected": 0,
+    "exit": 0
+  },
+  {
+    "name": "cpu-double-2",
+    "command": [
+      "/root/workspace/blast-stress-solver-2/demos/blast-stress-demo/build-gpu-activity/multilevel_gpu_test",
+      "/tmp/multilevel-anchored.bin",
+      "--native-graph",
+      "/tmp/physical-graph-final/building-anchored-component.input",
+      "--resident-operator",
+      "--gpu-projector",
+      "--sequence",
+      "/tmp/building-fracture-sequence.bin",
+      "--rebuild-hierarchy",
+      "--solves",
+      "2"
+    ],
+    "expected": 0,
+    "exit": 0
+  },
+  {
+    "name": "gpu-float-2",
+    "command": [
+      "/root/workspace/blast-stress-solver-2/demos/blast-stress-demo/build-gpu-activity/multilevel_gpu_test",
+      "/tmp/multilevel-anchored.bin",
+      "--native-graph",
+      "/tmp/physical-graph-final/building-anchored-component.input",
+      "--resident-operator",
+      "--gpu-projector",
+      "--sequence",
+      "/tmp/building-fracture-sequence.bin",
+      "--rebuild-hierarchy",
+      "--solves",
+      "2",
+      "--gpu-galerkin",
+      "--float-preconditioner"
+    ],
+    "expected": 0,
+    "exit": 0
+  },
+  {
+    "name": "gpu-double-2",
+    "command": [
+      "/root/workspace/blast-stress-solver-2/demos/blast-stress-demo/build-gpu-activity/multilevel_gpu_test",
+      "/tmp/multilevel-anchored.bin",
+      "--native-graph",
+      "/tmp/physical-graph-final/building-anchored-component.input",
+      "--resident-operator",
+      "--gpu-projector",
+      "--sequence",
+      "/tmp/building-fracture-sequence.bin",
+      "--rebuild-hierarchy",
+      "--solves",
+      "2",
+      "--gpu-galerkin"
+    ],
+    "expected": 0,
+    "exit": 0
+  },
+  {
+    "name": "unchanged-hierarchy-control",
+    "command": [
+      "/root/workspace/blast-stress-solver-2/demos/blast-stress-demo/build-gpu-activity/multilevel_gpu_test",
+      "/tmp/multilevel-anchored.bin",
+      "--native-graph",
+      "/tmp/physical-graph-final/building-anchored-component.input",
+      "--resident-operator",
+      "--gpu-projector",
+      "--sequence",
+      "/tmp/building-fracture-sequence.bin",
+      "--float-preconditioner",
+      "--solves",
+      "2"
+    ],
+    "expected": 1,
+    "exit": 1
+  },
+  {
+    "name": "incomplete-negative",
+    "command": [
+      "/root/workspace/blast-stress-solver-2/demos/blast-stress-demo/build-gpu-activity/multilevel_gpu_test",
+      "/tmp/multilevel-anchored.bin",
+      "--native-graph",
+      "/tmp/physical-graph-final/building-anchored-component.input",
+      "--resident-operator",
+      "--gpu-projector",
+      "--sequence",
+      "/tmp/building-fracture-sequence.bin",
+      "--rebuild-hierarchy",
+      "--gpu-galerkin",
+      "--float-preconditioner",
+      "--solves",
+      "1",
+      "--iterations",
+      "1"
+    ],
+    "expected": 1,
+    "exit": 1
+  },
+  {
+    "name": "sequence-memcheck",
+    "command": [
+      "/usr/local/cuda/bin/compute-sanitizer",
+      "--tool",
+      "memcheck",
+      "--leak-check",
+      "full",
+      "--error-exitcode",
+      "99",
+      "/root/workspace/blast-stress-solver-2/demos/blast-stress-demo/build-gpu-activity/multilevel_gpu_test",
+      "/tmp/multilevel-anchored.bin",
+      "--native-graph",
+      "/tmp/physical-graph-final/building-anchored-component.input",
+      "--resident-operator",
+      "--gpu-projector",
+      "--sequence",
+      "/tmp/building-fracture-sequence.bin",
+      "--rebuild-hierarchy",
+      "--gpu-galerkin",
+      "--float-preconditioner",
+      "--solves",
+      "1"
+    ],
+    "expected": 0,
+    "exit": 0
+  }
+]

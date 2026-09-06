@@ -1,0 +1,5 @@
+cpu-float exit 0
+cpu-double exit 0
+gpu-float exit 0
+gpu-double exit 0
+Original city deployment restored and healthy

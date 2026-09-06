@@ -1,0 +1,18 @@
+{
+  "url": "https://209.121.195.117:40617/city",
+  "pid": 9048,
+  "binary_sha256": "9b405a0199afba106b248666b551dabb9e8dea110274fbb861a48f72d051e8d1",
+  "players": 0,
+  "settings": {
+    "VIBE_PHYSX_DIRECT_GPU": "1",
+    "VIBE_CITY_SOLVER_ITERATIONS": "32",
+    "VIBE_CITY_RESIM_PASSES": "1",
+    "VIBE_CITY_FREEZE": "1",
+    "VIBE_CITY_SCENE": "fractured-downtown.json",
+    "VIBE_CITY_GRID": "2",
+    "VIBE_CITY_STRESS_LIMIT_SCALE": "0.45",
+    "VIBE_PHYSX_GPU_CONTACT_ORDER": null,
+    "VIBE_RELEASE_GAME_REVISION": "ed9c2ad",
+    "VIBE_RELEASE_SOLVER_REVISION": "646a0f414816204483c7eccdbd049fa1208e8f80"
+  }
+}

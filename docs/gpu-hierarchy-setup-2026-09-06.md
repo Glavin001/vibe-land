@@ -151,3 +151,12 @@ Evidence and reproduction commands are in
 [`gpu-hierarchy-setup`](../bench-results/simulation-frontier/gpu-hierarchy-setup/summary.json).
 Run `python3 bench-results/simulation-frontier/gpu-hierarchy-setup/verify-results.py`
 to verify the archive. It explicitly reports that this is not a release pass.
+
+## Current-component sequence follow-up
+
+Solver `0ef769fa` now passes the numerical fracture sequence with fresh sparse
+component hierarchies: 192/192 final samples pass and the split takes 36
+iterations. This resolves the earlier standalone split convergence case.
+Rebuild/upload overhead is still too high for deployment; production integration
+is incomplete. See [component hierarchy evidence](component-hierarchy-2026-09-06.md)
+for the controls, safety checks and complete cost breakdown.

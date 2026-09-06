@@ -173,3 +173,12 @@ matrices still takes 243 iterations on the exact-native split case; fresh
 unsmoothed interpolation takes 142. The new CUDA coarse-product backend reduces
 warm static setup by about 26–29%, with independent physical checks passing.
 It does not close this document's dynamic split gate or change the city release.
+
+## Current-component sequence follow-up
+
+Solver `0ef769fa` now passes the numerical fracture sequence with fresh sparse
+component hierarchies: 192/192 final samples pass and the split takes 36
+iterations. This resolves the earlier standalone split convergence case.
+Rebuild/upload overhead is still too high for deployment; production integration
+is incomplete. See [component hierarchy evidence](component-hierarchy-2026-09-06.md)
+for the controls, safety checks and complete cost breakdown.

@@ -1,0 +1,74 @@
+[
+  {
+    "name": "cpu-float",
+    "command": [
+      "/root/workspace/blast-stress-solver-2/demos/blast-stress-demo/build-gpu-activity/multilevel_gpu_test",
+      "/tmp/multilevel-anchored.bin",
+      "--native-graph",
+      "/tmp/physical-graph-final/building-anchored-component.input",
+      "--resident-operator",
+      "--gpu-projector",
+      "--sequence",
+      "/tmp/building-fracture-sequence.bin",
+      "--rebuild-hierarchy",
+      "--solves",
+      "2",
+      "--float-preconditioner"
+    ],
+    "exit": 0
+  },
+  {
+    "name": "cpu-double",
+    "command": [
+      "/root/workspace/blast-stress-solver-2/demos/blast-stress-demo/build-gpu-activity/multilevel_gpu_test",
+      "/tmp/multilevel-anchored.bin",
+      "--native-graph",
+      "/tmp/physical-graph-final/building-anchored-component.input",
+      "--resident-operator",
+      "--gpu-projector",
+      "--sequence",
+      "/tmp/building-fracture-sequence.bin",
+      "--rebuild-hierarchy",
+      "--solves",
+      "2"
+    ],
+    "exit": 0
+  },
+  {
+    "name": "gpu-float",
+    "command": [
+      "/root/workspace/blast-stress-solver-2/demos/blast-stress-demo/build-gpu-activity/multilevel_gpu_test",
+      "/tmp/multilevel-anchored.bin",
+      "--native-graph",
+      "/tmp/physical-graph-final/building-anchored-component.input",
+      "--resident-operator",
+      "--gpu-projector",
+      "--sequence",
+      "/tmp/building-fracture-sequence.bin",
+      "--rebuild-hierarchy",
+      "--solves",
+      "2",
+      "--gpu-galerkin",
+      "--float-preconditioner"
+    ],
+    "exit": 0
+  },
+  {
+    "name": "gpu-double",
+    "command": [
+      "/root/workspace/blast-stress-solver-2/demos/blast-stress-demo/build-gpu-activity/multilevel_gpu_test",
+      "/tmp/multilevel-anchored.bin",
+      "--native-graph",
+      "/tmp/physical-graph-final/building-anchored-component.input",
+      "--resident-operator",
+      "--gpu-projector",
+      "--sequence",
+      "/tmp/building-fracture-sequence.bin",
+      "--rebuild-hierarchy",
+      "--solves",
+      "2",
+      "--gpu-galerkin"
+    ],
+    "exit": 0
+  }
+]

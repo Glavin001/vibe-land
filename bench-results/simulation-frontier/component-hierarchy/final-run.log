@@ -1,0 +1,16 @@
+cpu-float-0 exit 0 expected 0
+cpu-double-0 exit 0 expected 0
+gpu-float-0 exit 0 expected 0
+gpu-double-0 exit 0 expected 0
+cpu-float-1 exit 0 expected 0
+cpu-double-1 exit 0 expected 0
+gpu-float-1 exit 0 expected 0
+gpu-double-1 exit 0 expected 0
+cpu-float-2 exit 0 expected 0
+cpu-double-2 exit 0 expected 0
+gpu-float-2 exit 0 expected 0
+gpu-double-2 exit 0 expected 0
+unchanged-hierarchy-control exit 1 expected 1
+incomplete-negative exit 1 expected 1
+sequence-memcheck exit 0 expected 0
+Original city deployment restored and healthy
