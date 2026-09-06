@@ -1,0 +1,330 @@
+{
+  "production_release_gate_passed": false,
+  "reason": "Reused initial hierarchy fails the split frame at 256 iterations in float and double preconditioner modes.",
+  "static_solves": {
+    "anchored-double-gpu-projector": {
+      "warm_median_cuda_ms": 12.276864,
+      "iterations": 34,
+      "all_passed": true
+    },
+    "anchored-double-reference-projector": {
+      "warm_median_cuda_ms": 10.75536,
+      "iterations": 34,
+      "all_passed": true
+    },
+    "anchored-float-gpu-projector": {
+      "warm_median_cuda_ms": 7.489344,
+      "iterations": 34,
+      "all_passed": true
+    },
+    "anchored-float-reference-projector": {
+      "warm_median_cuda_ms": 6.000608,
+      "iterations": 34,
+      "all_passed": true
+    },
+    "free-double-gpu-projector": {
+      "warm_median_cuda_ms": 11.50544,
+      "iterations": 31,
+      "all_passed": true
+    },
+    "free-double-reference-projector": {
+      "warm_median_cuda_ms": 10.689824,
+      "iterations": 31,
+      "all_passed": true
+    },
+    "free-float-gpu-projector": {
+      "warm_median_cuda_ms": 7.13824,
+      "iterations": 31,
+      "all_passed": true
+    },
+    "free-float-reference-projector": {
+      "warm_median_cuda_ms": 6.356896,
+      "iterations": 31,
+      "all_passed": true
+    }
+  },
+  "sequences": {
+    "diagnostic-sequence-1024": {
+      "passed_samples": 16,
+      "failed_samples": 0,
+      "frames": [
+        {
+          "frame": 0,
+          "iterations": 31,
+          "cuda_solve_ms": [
+            6.097216,
+            6.099296
+          ],
+          "passed": true,
+          "max_force_residual": 1.09404248566e-11,
+          "max_moment_residual": 1.37956182279e-11
+        },
+        {
+          "frame": 1,
+          "iterations": 54,
+          "cuda_solve_ms": [
+            11.789824,
+            11.797504
+          ],
+          "passed": true,
+          "max_force_residual": 1.34666148759e-11,
+          "max_moment_residual": 1.67769328733e-11
+        },
+        {
+          "frame": 2,
+          "iterations": 326,
+          "cuda_solve_ms": [
+            69.506912,
+            69.519806
+          ],
+          "passed": true,
+          "max_force_residual": 1.85415056759e-11,
+          "max_moment_residual": 2.24688760894e-11
+        },
+        {
+          "frame": 3,
+          "iterations": 0,
+          "cuda_solve_ms": [
+            0.009408,
+            0.009056
+          ],
+          "passed": true,
+          "max_force_residual": 0,
+          "max_moment_residual": 0
+        },
+        {
+          "frame": 4,
+          "iterations": 31,
+          "cuda_solve_ms": [
+            6.095328,
+            6.109088
+          ],
+          "passed": true,
+          "max_force_residual": 1.09404248566e-11,
+          "max_moment_residual": 1.37956182279e-11
+        },
+        {
+          "frame": 5,
+          "iterations": 157,
+          "cuda_solve_ms": [
+            30.175873,
+            30.181601
+          ],
+          "passed": true,
+          "max_force_residual": 1.74725561833e-11,
+          "max_moment_residual": 1.85658019856e-11
+        },
+        {
+          "frame": 6,
+          "iterations": 54,
+          "cuda_solve_ms": [
+            11.792,
+            11.802368
+          ],
+          "passed": true,
+          "max_force_residual": 1.34660390652e-11,
+          "max_moment_residual": 1.67768682314e-11
+        },
+        {
+          "frame": 7,
+          "iterations": 31,
+          "cuda_solve_ms": [
+            6.091488,
+            6.10912
+          ],
+          "passed": true,
+          "max_force_residual": 1.09404248566e-11,
+          "max_moment_residual": 1.37956182279e-11
+        }
+      ]
+    },
+    "sequence-double": {
+      "passed_samples": 14,
+      "failed_samples": 2,
+      "frames": [
+        {
+          "frame": 0,
+          "iterations": 31,
+          "cuda_solve_ms": [
+            10.287712,
+            10.271424
+          ],
+          "passed": true,
+          "max_force_residual": 1.09257110993e-11,
+          "max_moment_residual": 1.37916395478e-11
+        },
+        {
+          "frame": 1,
+          "iterations": 54,
+          "cuda_solve_ms": [
+            19.071169,
+            19.077984
+          ],
+          "passed": true,
+          "max_force_residual": 1.34663614996e-11,
+          "max_moment_residual": 1.67767242056e-11
+        },
+        {
+          "frame": 2,
+          "iterations": 256,
+          "cuda_solve_ms": [
+            89.290016,
+            89.339363
+          ],
+          "passed": false,
+          "max_force_residual": 2.16401597352e-06,
+          "max_moment_residual": 2.66042772413e-06
+        },
+        {
+          "frame": 3,
+          "iterations": 0,
+          "cuda_solve_ms": [
+            0.010784,
+            0.009344
+          ],
+          "passed": true,
+          "max_force_residual": 0,
+          "max_moment_residual": 0
+        },
+        {
+          "frame": 4,
+          "iterations": 31,
+          "cuda_solve_ms": [
+            10.284704,
+            10.345376
+          ],
+          "passed": true,
+          "max_force_residual": 1.09257110993e-11,
+          "max_moment_residual": 1.37916395478e-11
+        },
+        {
+          "frame": 5,
+          "iterations": 157,
+          "cuda_solve_ms": [
+            51.352993,
+            51.406433
+          ],
+          "passed": true,
+          "max_force_residual": 1.745616011e-11,
+          "max_moment_residual": 1.85554278809e-11
+        },
+        {
+          "frame": 6,
+          "iterations": 54,
+          "cuda_solve_ms": [
+            19.149281,
+            19.155199
+          ],
+          "passed": true,
+          "max_force_residual": 1.34656996253e-11,
+          "max_moment_residual": 1.67768260885e-11
+        },
+        {
+          "frame": 7,
+          "iterations": 31,
+          "cuda_solve_ms": [
+            10.318016,
+            10.31376
+          ],
+          "passed": true,
+          "max_force_residual": 1.09257110993e-11,
+          "max_moment_residual": 1.37916395478e-11
+        }
+      ]
+    },
+    "sequence-float": {
+      "passed_samples": 14,
+      "failed_samples": 2,
+      "frames": [
+        {
+          "frame": 0,
+          "iterations": 31,
+          "cuda_solve_ms": [
+            6.412288,
+            6.405216
+          ],
+          "passed": true,
+          "max_force_residual": 1.09404248566e-11,
+          "max_moment_residual": 1.37956182279e-11
+        },
+        {
+          "frame": 1,
+          "iterations": 54,
+          "cuda_solve_ms": [
+            12.3672,
+            12.369696
+          ],
+          "passed": true,
+          "max_force_residual": 1.34668931151e-11,
+          "max_moment_residual": 1.67770603991e-11
+        },
+        {
+          "frame": 2,
+          "iterations": 256,
+          "cuda_solve_ms": [
+            57.324417,
+            57.387745
+          ],
+          "passed": false,
+          "max_force_residual": 2.16399829326e-06,
+          "max_moment_residual": 2.66042625749e-06
+        },
+        {
+          "frame": 3,
+          "iterations": 0,
+          "cuda_solve_ms": [
+            0.011392,
+            0.009152
+          ],
+          "passed": true,
+          "max_force_residual": 0,
+          "max_moment_residual": 0
+        },
+        {
+          "frame": 4,
+          "iterations": 31,
+          "cuda_solve_ms": [
+            6.39904,
+            6.409184
+          ],
+          "passed": true,
+          "max_force_residual": 1.09404248566e-11,
+          "max_moment_residual": 1.37956182279e-11
+        },
+        {
+          "frame": 5,
+          "iterations": 157,
+          "cuda_solve_ms": [
+            31.057535,
+            30.190624
+          ],
+          "passed": true,
+          "max_force_residual": 1.74725561833e-11,
+          "max_moment_residual": 1.85658019856e-11
+        },
+        {
+          "frame": 6,
+          "iterations": 54,
+          "cuda_solve_ms": [
+            11.812224,
+            11.813408
+          ],
+          "passed": true,
+          "max_force_residual": 1.3466133865e-11,
+          "max_moment_residual": 1.6777092469e-11
+        },
+        {
+          "frame": 7,
+          "iterations": 31,
+          "cuda_solve_ms": [
+            6.111136,
+            6.10816
+          ],
+          "passed": true,
+          "max_force_residual": 1.09404248566e-11,
+          "max_moment_residual": 1.37956182279e-11
+        }
+      ]
+    }
+  }
+}

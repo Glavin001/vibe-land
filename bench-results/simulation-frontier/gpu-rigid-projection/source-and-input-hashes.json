@@ -1,0 +1,16 @@
+{
+  "/root/workspace/blast-stress-solver-2/blast/source/sdk/extensions/stressgpu/NvBlastExtStressGpuRigidProjector.h": "df2f692758ce805e0d69916e390d0069d7a342775dcdf150bcc87b495081a93a",
+  "/root/workspace/blast-stress-solver-2/blast/source/sdk/extensions/stressgpu/NvBlastExtStressGpuRigidProjector.cu": "0efe2995f68d3efdd53bce56b8daabe92e70e19d203b47a62cbaf981436a5d30",
+  "/root/workspace/blast-stress-solver-2/demos/blast-stress-demo/tests/resident_rigid_projector_test.cu": "a5737ed7dab127ec3c4b0f7ea19c4b6377562504624001d6eb32e1dc0cfd819d",
+  "/root/workspace/blast-stress-solver-2/demos/blast-stress-demo/tests/multilevel_gpu_test.cu": "417a8f38762e42b1b54dae1202a49c8ff60d4bca91a753fe7211c8fbfe41fa7d",
+  "/root/workspace/blast-stress-solver-2/demos/blast-stress-demo/tests/export_fracture_sequence.py": "3b5cae6a2d8efc464200709aeacc8887b59474e0f47890cd3a64d2e5b1f10ee8",
+  "/root/workspace/blast-stress-solver-2/demos/blast-stress-demo/CMakeLists.txt": "ab9fca428a3204485df2444c9aa506dcfad94dcfc6e682d31d77752932946ba7",
+  "/root/workspace/blast-stress-solver-2/demos/blast-stress-demo/build-gpu-activity/resident_rigid_projector_test": "579f7507747d7c7dc465bba96374fb157625ad1b4594c1944dfc07da96fd864b",
+  "/root/workspace/blast-stress-solver-2/demos/blast-stress-demo/build-gpu-activity/multilevel_gpu_test": "5cfc5e160889ff464b245eebff3cf280cf60d53be25793f02a791dc682e00bdd",
+  "/tmp/physical-graph-final/building-anchored-component.input": "ecdf949b24771b88d14cfa76d6a81eaa773d12c06e4f2e2b7a7d2d74e20c1c3a",
+  "/tmp/physical-graph-final/building-free-component.input": "af71804f0c8f11184e1ff787ce260e517efa21e735b0c721fa18ee487f8a5ea9",
+  "/tmp/multilevel-anchored.bin": "918d68481a6563f31092d468712ed8ebd6de52174687c804fa264ebed2a42aa0",
+  "/tmp/multilevel-free.bin": "305b0c777174045a10a04bb7abed18ba5472f463d6cb190f53655348114ecec1",
+  "/tmp/building-fracture-sequence.bin": "942b2b59b661784110eab4fe1e13eca3e375ba04d87abcb7f32ec0066e0bfaa6",
+  "/usr/local/cuda/include/cub/device/device_reduce.cuh": "b335e3953ac8542eedceb09ae024c34317f094fa0f68c9135d01b72351f02674"
+}

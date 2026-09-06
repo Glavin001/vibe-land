@@ -1,0 +1,34 @@
+[
+  {
+    "name": "small",
+    "command": [
+      "/root/workspace/blast-stress-solver-2/demos/blast-stress-demo/build-gpu-activity/resident_rigid_projector_test"
+    ],
+    "expected": 0,
+    "exit": 0
+  },
+  {
+    "name": "building",
+    "command": [
+      "/root/workspace/blast-stress-solver-2/demos/blast-stress-demo/build-gpu-activity/resident_rigid_projector_test",
+      "/tmp/physical-graph-final/building-anchored-component.input"
+    ],
+    "expected": 0,
+    "exit": 0
+  },
+  {
+    "name": "sanitizer-small",
+    "command": [
+      "/usr/local/cuda/bin/compute-sanitizer",
+      "--tool",
+      "memcheck",
+      "--leak-check",
+      "full",
+      "--error-exitcode",
+      "99",
+      "/root/workspace/blast-stress-solver-2/demos/blast-stress-demo/build-gpu-activity/resident_rigid_projector_test"
+    ],
+    "expected": 0,
+    "exit": 0
+  }
+]

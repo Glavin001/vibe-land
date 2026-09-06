@@ -1,0 +1,30 @@
+========= COMPUTE-SANITIZER
+{"rows":36,"original_bonds":6,"resident_bytes":2654,"coupling_uploads":1,"graph_captures":1}
+{"projection_step":0,"projection_relative_error":0,"exact_components":2,"passed":true}
+{"step":0,"live_bonds":6,"exact_components":2,"update_bytes":6,"host_update_ms":1.224705,"cuda_operator_and_projection_ms":0.278592,"operator_relative_error":1.22956614401e-16,"bond_relative_error":2.85143788808e-17,"passed":true}
+{"projection_step":1,"projection_relative_error":9.31118067596e-17,"exact_components":2,"passed":true}
+{"step":1,"live_bonds":4,"exact_components":2,"update_bytes":6,"host_update_ms":1.756567,"cuda_operator_and_projection_ms":0.590432,"operator_relative_error":1.93345402795e-16,"bond_relative_error":2.28672974496e-17,"passed":true}
+{"projection_step":2,"projection_relative_error":1.23244754245e-16,"exact_components":3,"passed":true}
+{"step":2,"live_bonds":3,"exact_components":3,"update_bytes":6,"host_update_ms":1.826508,"cuda_operator_and_projection_ms":0.596864,"operator_relative_error":7.06671852889e-17,"bond_relative_error":1.04803986582e-16,"passed":true}
+{"projection_step":3,"projection_relative_error":0,"exact_components":6,"passed":true}
+{"step":3,"live_bonds":0,"exact_components":6,"update_bytes":6,"host_update_ms":1.220116,"cuda_operator_and_projection_ms":0.363680,"operator_relative_error":0,"bond_relative_error":0,"passed":true}
+{"projection_step":4,"projection_relative_error":0,"exact_components":2,"passed":true}
+{"step":4,"live_bonds":6,"exact_components":2,"update_bytes":6,"host_update_ms":1.238330,"cuda_operator_and_projection_ms":0.259136,"operator_relative_error":1.61245436623e-16,"bond_relative_error":3.54739900222e-17,"passed":true}
+{"projection_step":5,"projection_relative_error":1.13918139966e-16,"exact_components":3,"passed":true}
+{"step":5,"live_bonds":4,"exact_components":3,"update_bytes":6,"host_update_ms":1.756788,"cuda_operator_and_projection_ms":0.596064,"operator_relative_error":1.36203304244e-16,"bond_relative_error":2.49884918898e-17,"passed":true}
+{"projection_step":6,"projection_relative_error":1.96040156837e-16,"exact_components":2,"passed":true}
+{"step":6,"live_bonds":4,"exact_components":2,"update_bytes":6,"host_update_ms":1.805088,"cuda_operator_and_projection_ms":0.604672,"operator_relative_error":1.55206354373e-16,"bond_relative_error":6.42560074844e-17,"passed":true}
+{"projection_step":7,"projection_relative_error":0,"exact_components":6,"passed":true}
+{"step":7,"live_bonds":0,"exact_components":6,"update_bytes":6,"host_update_ms":1.167939,"cuda_operator_and_projection_ms":0.256384,"operator_relative_error":0,"bond_relative_error":0,"passed":true}
+{"projection_step":8,"projection_relative_error":0,"exact_components":2,"passed":true}
+{"step":8,"live_bonds":6,"exact_components":2,"update_bytes":6,"host_update_ms":1.214516,"cuda_operator_and_projection_ms":0.284640,"operator_relative_error":1.35082246119e-16,"bond_relative_error":4.97690863327e-17,"passed":true}
+{"projection_step":9,"projection_relative_error":0,"exact_components":2,"passed":true}
+{"step":9,"live_bonds":6,"exact_components":2,"update_bytes":6,"host_update_ms":1.170223,"cuda_operator_and_projection_ms":0.358400,"operator_relative_error":1.23055323031e-16,"bond_relative_error":1.64699654138e-17,"passed":true}
+{"projection_step":10,"projection_relative_error":0,"exact_components":2,"passed":true}
+{"step":10,"live_bonds":6,"exact_components":2,"update_bytes":6,"host_update_ms":1.206530,"cuda_operator_and_projection_ms":0.259744,"operator_relative_error":1.24034660188e-16,"bond_relative_error":2.47776642615e-17,"passed":true}
+{"projection_step":11,"projection_relative_error":0,"exact_components":2,"passed":true}
+{"step":11,"live_bonds":6,"exact_components":2,"update_bytes":6,"host_update_ms":1.165765,"cuda_operator_and_projection_ms":0.260416,"operator_relative_error":0,"bond_relative_error":0,"passed":true}
+{"stale_projector_rejected":true}
+{"stale_membership_rejected":true,"half_response_rejected":true,"completed_graph_preserves_output":true,"empty_cases_passed":true}
+========= LEAK SUMMARY: 0 bytes leaked in 0 allocations
+========= ERROR SUMMARY: 0 errors

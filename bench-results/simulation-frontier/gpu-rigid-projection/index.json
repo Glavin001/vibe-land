@@ -1,0 +1,190 @@
+{
+  "city-after-validation.json": {
+    "bytes": 1063,
+    "sha256": "b04ff9ac14c088be782078cb6b22faee0d24da7317180b02df55dbc7d23a9759"
+  },
+  "fracture-reference-reproduced.log": {
+    "bytes": 1798,
+    "sha256": "f55411e02e477121ee000956c7c81381d3e3d7c3cb9a4429eaa2ec023181eb29"
+  },
+  "fracture-reference.log": {
+    "bytes": 1795,
+    "sha256": "d570e30f0be8d7677c8e87d8881fde96c85ee1d546c9c8042220601dc0777dc6"
+  },
+  "fracture-sequence-manifest.json": {
+    "bytes": 2869,
+    "sha256": "3e9a40c338ca7ac100282c02a18b332332d2464689f3859f0d01a222e50394f3"
+  },
+  "initial-serial-projector.cu": {
+    "bytes": 13953,
+    "sha256": "67091423fd764e65792c21b59eb730272dd5106f16b12d5c984dd5daaa136e1f"
+  },
+  "integrated-sanitizer.log": {
+    "bytes": 1710,
+    "sha256": "5e25208b2ed5a2a70efc1458b792fdba642e4f27263b524cbd09fd14b5870586"
+  },
+  "projection-exclusive.log": {
+    "bytes": 157,
+    "sha256": "97f1003c769334e8683c3f1f68df51ee343e17d2e665e011bf1042885485d810"
+  },
+  "projection-final/building.log": {
+    "bytes": 4138,
+    "sha256": "eed7092dc27d6d8974fc5f98a60d54c6421156edd14d361b7d5ad94b4f95e6f7"
+  },
+  "projection-final/commands.json": {
+    "bytes": 1110,
+    "sha256": "dd65968fc22de8969996e86f20dbb96f81a7eb439c683334a67ff2618b4d4faf"
+  },
+  "projection-final/rotated.log": {
+    "bytes": 4075,
+    "sha256": "78f02c8d607d6dcc0a563362e0b88af57ca2815f2c15187bf4b258d9afa12b32"
+  },
+  "projection-final/sanitizer-small.log": {
+    "bytes": 4164,
+    "sha256": "4ac57b291fa80ace4ed1d8ac0a61928095342e78b851c83a087a10be39f8f691"
+  },
+  "projection-final/small.log": {
+    "bytes": 4046,
+    "sha256": "9abba9cba732784a0579575b5f1ab1586b4886d655d0c50bc5418878abfba451"
+  },
+  "projection-initial/building.log": {
+    "bytes": 4138,
+    "sha256": "bd15e7ebd423ffe621ea20b27b942dc1e8d24161f1851a7c812e46e0c34e9761"
+  },
+  "projection-initial/commands.json": {
+    "bytes": 858,
+    "sha256": "b558cdd5de1647851821614ba74cf3cf0ad2d0d1367506d0722422bd3e3d51fe"
+  },
+  "projection-initial/sanitizer-small.log": {
+    "bytes": 4164,
+    "sha256": "9c96e36fa6aea64c4c6492e6fe96246a328d0aab56eb2765f4994b0e1dd0c233"
+  },
+  "projection-initial/small.log": {
+    "bytes": 4046,
+    "sha256": "a827d2ee141f468698884b2cb72d022c5aab37b878fc3e835fef374cb2673eee"
+  },
+  "reference-reproduction.json": {
+    "bytes": 130,
+    "sha256": "e8862ff1a30a3074a7ebd7f3ff584facc8c508f7c8b231d58d70e8b90d5cec25"
+  },
+  "rotated-irregular.input": {
+    "bytes": 2256,
+    "sha256": "c901f4c54742272a79b04a4e45edc5cb24528d436ce1bd46f4e6b29a121df2cb"
+  },
+  "run-projection-qualification.py": {
+    "bytes": 940,
+    "sha256": "3b99f7c157f7c65180fa9263cdd955a4482b7cf5783fbf3b45b771048a14207d"
+  },
+  "run-solve-qualification.py": {
+    "bytes": 1892,
+    "sha256": "3141c648ca38501fc889a442e0efb3244e034618be15e0da06f8449439cefadc"
+  },
+  "solve-exclusive.log": {
+    "bytes": 582,
+    "sha256": "faf17b7e52ed5ac8e06302c31c23cf8a84bfc57327b6623a16d4062b4df54258"
+  },
+  "solve-final/anchored-double-gpu-projector.log": {
+    "bytes": 3131,
+    "sha256": "1bed71baa0aa6d8289b5b7495cf98c5279319b3112bc573afe2248d394731f1b"
+  },
+  "solve-final/anchored-double-reference-projector.log": {
+    "bytes": 3132,
+    "sha256": "bbbbe6d2ec84ee1960d2e134f7a3bd2c8adf2a08400bb5e953366e57e9803da1"
+  },
+  "solve-final/anchored-float-gpu-projector.log": {
+    "bytes": 3129,
+    "sha256": "baf3a357dbd265354b7530ae03d83257d73070448f630abbddd825e1947c8490"
+  },
+  "solve-final/anchored-float-reference-projector.log": {
+    "bytes": 3130,
+    "sha256": "5fe35bad00a69b458119b1de8fccdbdbdb293880031cb940a1528fb5deac9738"
+  },
+  "solve-final/commands.json": {
+    "bytes": 5592,
+    "sha256": "e7fc7c2a1496440e0291fa93aa04873d22ff7ce0d2de429ab0539c2da336301b"
+  },
+  "solve-final/diagnostic-sequence-1024.log": {
+    "bytes": 10465,
+    "sha256": "2cd7f58e8f14d1dd818489ad28be0ba77eebb68b5d8b9fee73cc400cc79a0944"
+  },
+  "solve-final/free-double-gpu-projector.log": {
+    "bytes": 3130,
+    "sha256": "0358efc5f938d60416714ec8df7cfb93272b8bc49eb9e33b05d61b54442cdb30"
+  },
+  "solve-final/free-double-reference-projector.log": {
+    "bytes": 3138,
+    "sha256": "dd5ca4df42ba49dbbb415d19f4af6e32b316e2d3804a2aa557430aa522c85a4a"
+  },
+  "solve-final/free-float-gpu-projector.log": {
+    "bytes": 3126,
+    "sha256": "cfa3054f8000660c77e2ddbac232fd4c42715f7753020cb5d716f7172baaf6cc"
+  },
+  "solve-final/free-float-reference-projector.log": {
+    "bytes": 3128,
+    "sha256": "172892df9d46c05707b1c4f2a7eed05df007f329b40f68aaa95b5fa5eef59d95"
+  },
+  "solve-final/incomplete-negative.log": {
+    "bytes": 6135,
+    "sha256": "bbfad779a965a8d1ade4f1dd05e9ef0ab2a1cc9c5213610d2a19494e1e50503f"
+  },
+  "solve-final/sequence-double.log": {
+    "bytes": 10466,
+    "sha256": "ad9f971bd2565b03bbe5d3a184c99ea74b9403ce867c2f7473c983c579e47729"
+  },
+  "solve-final/sequence-float.log": {
+    "bytes": 10445,
+    "sha256": "b44d63e50f3c624dc7718cd3f9219e2ca9e40b5df983dec17a0cec268825b98a"
+  },
+  "solve-initial/anchored-double-gpu-projector.log": {
+    "bytes": 3131,
+    "sha256": "7d7283d999933691111a6bed61d34276d3e385d4d94209ecd4523af2661295f2"
+  },
+  "solve-initial/anchored-double-reference-projector.log": {
+    "bytes": 3132,
+    "sha256": "91ab990df1dca51d33f08d1bbf09628e1a932a2a2281d9209e1e3b9adae39aa0"
+  },
+  "solve-initial/anchored-float-gpu-projector.log": {
+    "bytes": 3129,
+    "sha256": "b4c202321ade0c52a7e26fa933aec6a28db6d2558c187f2d7bf4adc284c4088f"
+  },
+  "solve-initial/anchored-float-reference-projector.log": {
+    "bytes": 3130,
+    "sha256": "8ed6d5fa2a258cd29d2e47ea212e85e9adbc99115ae5c4fa74c25e04a228cd85"
+  },
+  "solve-initial/commands.json": {
+    "bytes": 3991,
+    "sha256": "757bf65eb78a649194115b5b0983a0437ae7f62dda38004657f83639a32d28b9"
+  },
+  "solve-initial/free-double-gpu-projector.log": {
+    "bytes": 3133,
+    "sha256": "3dbbac7419da8f560550707b4e8f23943b7773a5bec370a187c0622722c97aef"
+  },
+  "solve-initial/free-double-reference-projector.log": {
+    "bytes": 3138,
+    "sha256": "fced5328bcf99145ca77387f4318b7bfbde671b421ed4039e3bd599c28d5452e"
+  },
+  "solve-initial/free-float-gpu-projector.log": {
+    "bytes": 3131,
+    "sha256": "d5244eb54d65b00ca170a24383fa9e413b30c673011341ee62e1184a0670db4d"
+  },
+  "solve-initial/free-float-reference-projector.log": {
+    "bytes": 3128,
+    "sha256": "f0c9e91532121769e32632d1dec201fad178a5d3bae68eda2ff4eca0cca2556a"
+  },
+  "solve-initial/sequence-float.log": {
+    "bytes": 10455,
+    "sha256": "24b55bdb7de6c9825db13d054cc0925e68bc6eb33bb9a280dde0f41081b7a0b7"
+  },
+  "source-and-input-hashes.json": {
+    "bytes": 2086,
+    "sha256": "68714b1ccb05ad9d9f1f3882f1e84b3593385e8823d6534ab37d87a48634de11"
+  },
+  "summary.json": {
+    "bytes": 8377,
+    "sha256": "46adb63044ee70907e93d01767eff21b65fabb30e1d5294c2a05df7be8f054c2"
+  },
+  "verify-results.py": {
+    "bytes": 3565,
+    "sha256": "323c51d86ece6e2167729ccdac84d1d7beecb1200c6e0e4e877d80a4a101cdb9"
+  }
+}

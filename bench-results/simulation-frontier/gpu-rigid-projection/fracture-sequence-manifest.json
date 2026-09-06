@@ -1,0 +1,117 @@
+{
+  "input": "/tmp/physical-graph-final/building-anchored-component.input",
+  "input_sha256": "ecdf949b24771b88d14cfa76d6a81eaa773d12c06e4f2e2b7a7d2d74e20c1c3a",
+  "file_sha256": "942b2b59b661784110eab4fe1e13eca3e375ba04d87abcb7f32ec0066e0bfaa6",
+  "rows": 35616,
+  "bonds": 18627,
+  "mass": 918.4026608610116,
+  "length": 0.9426916923997247,
+  "frames": [
+    {
+      "name": "original",
+      "live_bonds": 18627,
+      "reference_bonded_components": 1,
+      "cpu_seconds": 0.803852581884712,
+      "reference_residual": {
+        "force": 1.5783402721921706e-12,
+        "moment": 1.1347939939207067e-12
+      },
+      "reference_iterations": [
+        33
+      ]
+    },
+    {
+      "name": "released",
+      "live_bonds": 18564,
+      "reference_bonded_components": 1,
+      "cpu_seconds": 0.8592000543139875,
+      "reference_residual": {
+        "force": 8.615606283317556e-13,
+        "moment": 1.0896466712769102e-12
+      },
+      "reference_iterations": [
+        33
+      ]
+    },
+    {
+      "name": "split",
+      "live_bonds": 18036,
+      "reference_bonded_components": 2,
+      "cpu_seconds": 0.6911195269785821,
+      "reference_residual": {
+        "force": 1.3709431057429116e-12,
+        "moment": 1.7001735187123126e-12
+      },
+      "reference_iterations": [
+        38,
+        33
+      ]
+    },
+    {
+      "name": "isolated",
+      "live_bonds": 0,
+      "reference_bonded_components": 0,
+      "cpu_seconds": 0.0,
+      "reference_residual": {},
+      "reference_iterations": []
+    },
+    {
+      "name": "restored",
+      "live_bonds": 18627,
+      "reference_bonded_components": 1,
+      "cpu_seconds": 0.803852581884712,
+      "reference_residual": {
+        "force": 1.5783402721921706e-12,
+        "moment": 1.1347939939207067e-12
+      },
+      "reference_iterations": [
+        33
+      ]
+    },
+    {
+      "name": "partial",
+      "live_bonds": 12418,
+      "reference_bonded_components": 7,
+      "cpu_seconds": 0.9028709027916193,
+      "reference_residual": {
+        "force": 2.6541881657338906e-12,
+        "moment": 1.5260112492097893e-12
+      },
+      "reference_iterations": [
+        48,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1
+      ]
+    },
+    {
+      "name": "released-again",
+      "live_bonds": 18564,
+      "reference_bonded_components": 1,
+      "cpu_seconds": 0.8592000543139875,
+      "reference_residual": {
+        "force": 8.615606283317556e-13,
+        "moment": 1.0896466712769102e-12
+      },
+      "reference_iterations": [
+        33
+      ]
+    },
+    {
+      "name": "restored-again",
+      "live_bonds": 18627,
+      "reference_bonded_components": 1,
+      "cpu_seconds": 0.803852581884712,
+      "reference_residual": {
+        "force": 1.5783402721921706e-12,
+        "moment": 1.1347939939207067e-12
+      },
+      "reference_iterations": [
+        33
+      ]
+    }
+  ]
+}
