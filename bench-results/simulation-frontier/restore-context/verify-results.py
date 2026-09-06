@@ -47,12 +47,12 @@ assert state['exe_sha256']=='9b405a0199afba106b248666b551dabb9e8dea110274fbb861a
 assert state['flags']['VIBE_PHYSX_DIRECT_GPU']=='1'
 assert state['flags']['BLAST_RESIM_BATCH_CUDA_CONTEXT'] is None
 assert state['flags']['BLAST_RESIM_PROFILE'] is None
-assert 'BLAST_RESTORE_BENCH_CUDA_CONTEXT_CHECKS' in (root/'native-bench-flags.make').read_text()
+assert 'BLAST_RESTORE_BENCH_CUDA_CONTEXT_CHECKS' in gzip.decompress((root/'native-bench-flags.make.gz').read_bytes()).decode()
 v=json.loads((root/'city-verification.json').read_text())
 assert v['local_http']==v['public_https']=='passed'
 assert v['browser']['ok'] and v['browser']['transport']=='webtransport' and v['browser']['errors']==[]
-assert v['browser_city']['rendered'] and v['browser_city']['chunksTotal']==96420
-assert v['browser_city']['structureRepairs']==v['browser_city']['hashMismatches']==0
+assert v['browser']['city']['rendered'] and v['browser']['city']['chunksTotal']==96420
+assert v['browser']['city']['structureRepairs']==v['browser']['city']['hashMismatches']==0
 assert v['browser']['publicUdpVerified'] is False
 assert json.loads((root/'failed-native-profiler-run.json').read_text())['exit_code']==143
 print('PASS: context lifecycle/replay checks and attribution verified. NO QUALIFIED SPEEDUP; NOT A CITY RELEASE PASS.')
