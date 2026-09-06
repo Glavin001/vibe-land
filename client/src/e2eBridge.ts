@@ -144,6 +144,17 @@ export interface CityE2EStats {
   minChunkY: number;
   /** Chunks whose centroid has sunk below the ground plane. */
   chunksBelowGround: number;
+  /** Coverage and time of this report's optional geometric diagnostics. */
+  diagnosticSweep?: {
+    performed: boolean;
+    capturedAtUnixMs: number | null;
+    capturedAtPerformanceMs: number | null;
+    topologySeq: number;
+    validChunkPoses: number;
+    unresolvedChunkPoses: number;
+    staleDrawProbeInstalled: boolean;
+    drawnChunkPosesChecked: number;
+  };
   /**
    * Milliseconds this layer spent recomposing chunk transforms, p95.
    *
@@ -178,7 +189,9 @@ export interface CityE2EStats {
   /** Cumulative chunks orphaned by a retire, including transient windows. */
   orphanedByRetire: number;
   /**
-   * Provenance of the lowest chunk, when it is genuinely sunk.
+   * Composition inputs for the lowest chunk below the counting threshold.
+   * These are client ledger poses, which may be interpolated; they are not a
+   * simultaneous sample of the server's physical shape pose.
    *
    * Counting sunk chunks says a fault exists; this says which one and what it
    * was composed from, so the body pose and the local offset can be told
@@ -193,6 +206,14 @@ export interface CityE2EStats {
     bodyPos: [number, number, number] | null;
     bodyMembers: number;
     localOffset: [number, number, number];
+    worldPosition: [number, number, number];
+    bodyKey: number;
+    bodyRotation: [number, number, number, number];
+    localRotation: [number, number, number, number];
+    settled: boolean;
+    topologySeq: number;
+    poseSourceTracking: boolean;
+    poseSource: string | null;
   } | null;
 }
 

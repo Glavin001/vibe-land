@@ -64,7 +64,6 @@ import {
 import { updateCityE2E } from '../e2eBridge';
 import { addCitySuspect, isRecording, recordCityEvent, recordCityStats } from '../netlab/recorder';
 import { noteTeleport } from '../city/debugReport';
-import type { CityE2EStats } from '../e2eBridge';
 import {
   bodyDebug,
   bodyDebugColor,
@@ -73,6 +72,7 @@ import {
 } from '../city/bodyDebugColors';
 import { frameStartTime, markFrameEndAndSample, renderStats } from '../city/renderStats';
 import { cityDiagnosticsWanted } from '../city/cityDiagnostics';
+import { CHUNK_SUNK_Y_M, compareDrawnChunkPositions, deepestChunkProvenance } from '../city/chunkDiagnostics';
 
 const TMP_MATRIX = new THREE.Matrix4();
 const TMP_POSITION = new THREE.Vector3();
@@ -88,12 +88,6 @@ const EMPTY_POSITIONS = new Float32Array(0);
  * that buffer would let a diagnostic clobber a transform mid-write.
  */
 const TMP_POSE = new Float32Array(7);
-
-/**
- * Centroid depth below the flat city ground (y=0) that counts as "sunk".
- * Generous: a big slab lying flat still has its centroid above -0.25 m.
- */
-const CHUNK_SUNK_Y_M = -0.25;
 
 /**
  * Keep a bounded window of update costs. Bounded because this runs every frame
@@ -157,7 +151,7 @@ function countFloatingSettledIslands(
         minSlot = slot;
       }
     }
-    if (minY < 1.5) continue; // near ground — supported or close enough
+    if (minSlot < 0 || minY < 1.5) continue; // near ground — supported or close enough
     const columnFloor =
       columns.get(columnKey(positions[minSlot * 3], positions[minSlot * 3 + 2])) ?? minY;
     // Nothing beneath it in its own column within 1.5 m → hovering.
@@ -184,6 +178,7 @@ function sweepChunkPositions(client: CityClient): {
   minChunkY: number;
   deepestSlot: number;
   chunksBelowGround: number;
+  unresolvedChunkPoses: number;
 } {
   const topology = client.topology;
   const count = topology.chunkCount;
@@ -196,6 +191,7 @@ function sweepChunkPositions(client: CityClient): {
   let minChunkY = Infinity;
   let deepestSlot = -1;
   let chunksBelowGround = 0;
+  let unresolvedChunkPoses = 0;
   // Body lookups are hoisted across a run of slots sharing one body: chunk
   // slots of the same body are contiguous far more often than not, and the
   // Map lookup was previously repeated for every chunk.
@@ -208,7 +204,13 @@ function sweepChunkPositions(client: CityClient): {
       lastBody = topology.body(key);
     }
     const at = slot * 3;
-    topology.chunkWorldPoseInto(slot, lastBody, TMP_POSE, 0);
+    const resolved = topology.chunkWorldPoseInto(slot, lastBody, TMP_POSE, 0);
+    if (!resolved || !Number.isFinite(TMP_POSE[0]) || !Number.isFinite(TMP_POSE[1])
+      || !Number.isFinite(TMP_POSE[2])) {
+      positions[at] = positions[at + 1] = positions[at + 2] = Number.NaN;
+      unresolvedChunkPoses += 1;
+      continue;
+    }
     const x = TMP_POSE[0];
     const y = TMP_POSE[1];
     const z = TMP_POSE[2];
@@ -224,7 +226,7 @@ function sweepChunkPositions(client: CityClient): {
     const lowest = columns.get(column);
     if (lowest === undefined || y < lowest) columns.set(column, y);
   }
-  return { positions, columns, minChunkY, deepestSlot, chunksBelowGround };
+  return { positions, columns, minChunkY, deepestSlot, chunksBelowGround, unresolvedChunkPoses };
 }
 
 /**
@@ -237,7 +239,8 @@ function sweepChunkPositions(client: CityClient): {
  * observes this: every other city metric reads the ledger, which is correct
  * even when the screen is not.
  */
-let countStaleDrawnChunks: ((client: CityClient, toleranceM: number) => number) | null = null;
+let countStaleDrawnChunks: ((positions: Float32Array, count: number, toleranceM: number)
+  => { checked: number; stale: number }) | null = null;
 
 /**
  * Watch every written chunk transform for single-frame jumps.
@@ -255,20 +258,8 @@ function installChunkTeleportProbe(chunkCount: number): () => void {
   /** EMA of each slot's own write-to-write speed, m/s. */
   const speedEst = new Float32Array(chunkCount);
   const teleportStrikes = new Map<number, number>();
-  countStaleDrawnChunks = (client, toleranceM) => {
-    let stale = 0;
-    const count = client.topology.chunkCount;
-    for (let slot = 0; slot < count; slot += 1) {
-      const base = slot * 3;
-      if (Number.isNaN(previous[base])) continue;
-      const pose = client.topology.chunkWorldPose(slot);
-      const dx = pose.position[0] - previous[base];
-      const dy = pose.position[1] - previous[base + 1];
-      const dz = pose.position[2] - previous[base + 2];
-      if (Math.hypot(dx, dy, dz) > toleranceM) stale += 1;
-    }
-    return stale;
-  };
+  countStaleDrawnChunks = (positions, count, toleranceM) =>
+    compareDrawnChunkPositions(positions, previous, count, toleranceM);
   setChunkTeleportProbe((slot, position, ctx) => {
     const base = slot * 3;
     const px = previous[base];
@@ -627,29 +618,14 @@ export function CityChunksLayer({
       const minChunkY = sweep ? sweep.minChunkY : 0;
       const chunksBelowGround = sweep ? sweep.chunksBelowGround : 0;
       const deepestSlot = sweep ? sweep.deepestSlot : -1;
-      // Name the offending chunk rather than only counting it. The server is
-      // measured to hold every body at y >= 0, so a chunk drawn hundreds of
-      // metres down is this client composing a body pose with a local offset
-      // wrongly -- and which of the two is wrong is only visible by reporting
-      // both.
-      let deepest: CityE2EStats['deepest'] = null;
-      if (deepestSlot >= 0 && minChunkY < -5) {
-        const key = client.topology.bodyKeyOf(deepestSlot);
-        const body = client.topology.body(key);
-        const offset = client.topology.chunkLocalOffset(deepestSlot).position;
-        deepest = {
-          slot: deepestSlot,
-          structure: client.topology.chunkStructure(deepestSlot),
-          node: client.topology.chunkNode(deepestSlot),
-          worldY: minChunkY,
-          islandSerial: body ? body.islandSerial : null,
-          bodyPos: body
-            ? [body.position[0], body.position[1], body.position[2]]
-            : null,
-          bodyMembers: body ? body.chunkSlots.length : 0,
-          localOffset: [offset[0], offset[1], offset[2]],
-        };
-      }
+      // Report the same depth range as the counter, with enough information
+      // to reconstruct body-pose × local-offset composition. A positive body
+      // origin alone does not prove every rotated chunk is above ground.
+      const deepest = sweep
+        ? deepestChunkProvenance(client.topology, deepestSlot, positions)
+        : null;
+      const sweepUnixMs = sweep ? Date.now() : null;
+      const sweepPerformanceMs = sweep ? performance.now() : null;
       // Invariant scans. Both walk the ledger, so they ride the existing 2 Hz
       // telemetry cadence rather than running per frame.
       if (isRecording()) {
@@ -673,9 +649,10 @@ export function CityChunksLayer({
       // Both consumers below want these, and both used to compute them
       // independently -- so the city-wide stale-chunk sweep ran TWICE per
       // telemetry tick, and the percentile twice with it.
-      const staleDrawnChunks = wantSweep && countStaleDrawnChunks
-        ? countStaleDrawnChunks(client, 0.5)
-        : 0;
+      const drawnCheck = sweep && countStaleDrawnChunks
+        ? countStaleDrawnChunks(positions, client.topology.chunkCount, 0.5)
+        : { checked: 0, stale: 0 };
+      const staleDrawnChunks = drawnCheck.stale;
       const chunkUpdateP95Ms = percentile(updateSamplesRef.current, 0.95);
       // Island statistics are derived from the sweep's positions, so without a
       // sweep there is nothing to derive them from -- and computing them anyway
@@ -763,6 +740,16 @@ export function CityChunksLayer({
         hashMismatches: stats.hashMismatches,
         structureRepairs: stats.structureRepairs,
         deepest,
+        diagnosticSweep: {
+          performed: sweep !== null,
+          capturedAtUnixMs: sweepUnixMs,
+          capturedAtPerformanceMs: sweepPerformanceMs,
+          topologySeq: client.topology.lastSeq(),
+          validChunkPoses: sweep ? client.topology.chunkCount - sweep.unresolvedChunkPoses : 0,
+          unresolvedChunkPoses: sweep ? sweep.unresolvedChunkPoses : 0,
+          staleDrawProbeInstalled: countStaleDrawnChunks !== null,
+          drawnChunkPosesChecked: drawnCheck.checked,
+        },
       });
       renderStats.telemetryMs = performance.now() - telemetryStartedAt;
     }
