@@ -28,7 +28,10 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, ensure, Context, Result};
+
+#[path = "record_city_trace/shot_tape.rs"]
+mod shot_tape;
 use destruction_codec::debris_codec::{
     SleepPolicy as LiveSleepPolicy, Tolerances as LiveTolerances,
 };
@@ -73,6 +76,8 @@ struct Args {
     settle_ticks: u32,
     shot_interval_ticks: u32,
     shots: u32,
+    shot_tape_in: Option<PathBuf>,
+    shot_tape_out: Option<PathBuf>,
     /// How many structures to attack (0 = all). The rest stand untouched,
     /// which is the case the island model is built for: an intact structure is
     /// one kinematic body and costs nothing per tick no matter how many chunks
@@ -122,6 +127,10 @@ struct Args {
 
 impl Args {
     fn parse() -> Result<Self> {
+        Self::parse_from(std::env::args().skip(1))
+    }
+
+    fn parse_from(mut args: impl Iterator<Item = String>) -> Result<Self> {
         let mut scene = default_scene_path();
         let mut grid = 1u32;
         let mut hz = 60u32;
@@ -129,6 +138,9 @@ impl Args {
         let mut settle_ticks = 60u32;
         let mut shot_interval_ticks = 14u32;
         let mut shots = 48u32;
+        let mut shot_tape_in = None;
+        let mut shot_tape_out = None;
+        let mut generation_flags = Vec::new();
         let mut targets = 0u32;
         let mut output = PathBuf::from("city.towertrace");
         let mut metrics_out: Option<PathBuf> = None;
@@ -143,8 +155,18 @@ impl Args {
         let mut packets_small_rubble = String::new();
         let mut shot_ramp_min_ticks = 0u32;
 
-        let mut args = std::env::args().skip(1);
         while let Some(flag) = args.next() {
+            if matches!(
+                flag.as_str(),
+                "--shots"
+                    | "--targets"
+                    | "--settle-ticks"
+                    | "--shot-interval-ticks"
+                    | "--aim-lock"
+                    | "--shot-ramp-min-ticks"
+            ) {
+                generation_flags.push(flag.clone());
+            }
             let mut value = || -> Result<String> {
                 args.next().with_context(|| format!("{flag} needs a value"))
             };
@@ -156,6 +178,8 @@ impl Args {
                 "--settle-ticks" => settle_ticks = value()?.parse()?,
                 "--shot-interval-ticks" => shot_interval_ticks = value()?.parse()?,
                 "--shots" => shots = value()?.parse()?,
+                "--shot-tape-in" => shot_tape_in = Some(PathBuf::from(value()?)),
+                "--shot-tape-out" => shot_tape_out = Some(PathBuf::from(value()?)),
                 "--targets" => targets = value()?.parse()?,
                 "--output" => output = PathBuf::from(value()?),
                 "--metrics-out" => metrics_out = Some(PathBuf::from(value()?)),
@@ -195,13 +219,33 @@ impl Args {
                         "record-city-trace --output <path> [--scene <pack.json>] \
                          [--grid N] [--hz 60] [--seconds 30] [--settle-ticks 60] \
                          [--shots N] [--targets N] [--shot-interval-ticks N] \
-                         [--timings-out <jsonl>] [--packets-out <dir>] [--packets-wire 2|3]"
+                         [--timings-out <jsonl>] [--packets-out <dir>] [--packets-wire 2|3] \
+                         [--shot-tape-in <json>] [--shot-tape-out <new.json>]"
                     );
                     std::process::exit(0);
                 }
                 other => bail!("unknown flag {other}"),
             }
         }
+        ensure!(
+            shot_tape_in.is_none() || generation_flags.is_empty(),
+            "--shot-tape-in cannot be combined with shot generation flags: {}",
+            generation_flags.join(", ")
+        );
+        // World::step currently integrates exactly 1/60 s. Advertising another
+        // rate would feed the stress solver and trace a different timestep.
+        ensure!(
+            hz == 60,
+            "--hz must be 60: the PhysX bridge has a fixed 60 Hz step"
+        );
+        let ticks = (seconds * hz as f32).round();
+        ensure!(
+            seconds.is_finite()
+                && seconds > 0.0
+                && ticks >= 1.0
+                && f64::from(ticks) <= f64::from(u32::MAX),
+            "--seconds must produce 1..=u32::MAX finite simulation ticks"
+        );
         if timings_out.is_some() && packets_out.is_some() {
             bail!("--timings-out and --packets-out both select a timing destination; use one");
         }
@@ -220,6 +264,8 @@ impl Args {
             settle_ticks,
             shot_interval_ticks,
             shots,
+            shot_tape_in,
+            shot_tape_out,
             targets,
             output,
             metrics_out,
@@ -237,6 +283,151 @@ impl Args {
     }
 }
 
+// /dev/null is a supported metrics-only sink; never write a sidecar in /dev.
+fn trace_sidecar(args: &Args) -> Option<PathBuf> {
+    if args.output == std::path::Path::new("/dev/null") {
+        args.metrics_out
+            .as_ref()
+            .map(|p| p.with_extension("sidecar.json"))
+    } else {
+        Some(args.output.with_extension("sidecar.json"))
+    }
+}
+
+fn validate_tape_paths(args: &Args) -> Result<()> {
+    use std::os::unix::fs::MetadataExt;
+    use std::path::Path;
+    // Resolve symlinks, including the existing parents of a new output.
+    fn resolved(path: &Path) -> Result<PathBuf> {
+        let path = std::path::absolute(path)?;
+        match path.canonicalize() {
+            Ok(path) => Ok(path),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                let parent = path.parent().context("output has no parent")?;
+                Ok(resolved(parent)?.join(path.file_name().context("output has no filename")?))
+            }
+            Err(error) => Err(error.into()),
+        }
+    }
+    fn aliases(a: &Path, b: &Path) -> Result<bool> {
+        if resolved(a)? == resolved(b)? {
+            return Ok(true);
+        }
+        // canonicalize alone does not catch two names for the same hard link.
+        Ok(match (a.metadata(), b.metadata()) {
+            (Ok(a), Ok(b)) => a.dev() == b.dev() && a.ino() == b.ino(),
+            _ => false,
+        })
+    }
+    let mut destinations = vec![args.output.clone(), args.scene.clone()];
+    destinations.extend(trace_sidecar(args));
+    destinations.extend(args.metrics_out.clone());
+    destinations.extend(args.timings_out.clone());
+    destinations.extend(args.summary_out.clone());
+    for tape in args.shot_tape_in.iter().chain(args.shot_tape_out.iter()) {
+        for destination in &destinations {
+            ensure!(
+                !aliases(tape, destination)?,
+                "shot tape {} aliases another input/output {}",
+                tape.display(),
+                destination.display()
+            );
+        }
+        if let Some(directory) = &args.packets_out {
+            ensure!(
+                !resolved(tape)?.starts_with(resolved(directory)?),
+                "shot tape must be outside the packet output directory"
+            );
+        }
+    }
+    if let Some(output) = &args.shot_tape_out {
+        ensure!(
+            output
+                .symlink_metadata()
+                .is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound),
+            "shot tape output {} already exists or cannot be accessed",
+            output.display()
+        );
+        if let Some(input) = &args.shot_tape_in {
+            ensure!(
+                !aliases(input, output)?,
+                "shot tape input and output must differ"
+            );
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod shot_args_tests {
+    use super::*;
+    fn parse(flags: &[&str]) -> Result<Args> {
+        Args::parse_from(flags.iter().map(|s| s.to_string()))
+    }
+    #[test]
+    fn replay_rejects_generation_flags_and_misleading_timing() {
+        for flags in [
+            vec!["--shots", "0"],
+            vec!["--targets", "1"],
+            vec!["--settle-ticks", "0"],
+            vec!["--shot-interval-ticks", "4"],
+            vec!["--aim-lock"],
+            vec!["--shot-ramp-min-ticks", "1"],
+        ] {
+            let mut args = vec!["--shot-tape-in", "input.json"];
+            args.extend(flags);
+            assert!(parse(&args).is_err());
+        }
+        for flags in [
+            ["--hz", "0"],
+            ["--hz", "120"],
+            ["--seconds", "NaN"],
+            ["--seconds", "inf"],
+            ["--seconds", "0"],
+            ["--seconds", "-1"],
+            ["--seconds", "1e20"],
+            ["--seconds", "0.0001"],
+        ] {
+            assert!(parse(&flags).is_err());
+        }
+        assert!(parse(&[
+            "--shot-tape-in",
+            "input.json",
+            "--shot-tape-out",
+            "output.json"
+        ])
+        .is_ok());
+    }
+    #[test]
+    fn replay_input_cannot_be_truncated_by_an_output() {
+        let path = format!("/tmp/city-shot-input-{}.json", std::process::id());
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .unwrap();
+        let alias = format!("{path}.alias");
+        std::fs::hard_link(&path, &alias).unwrap();
+        let args = parse(&["--shot-tape-in", &path, "--metrics-out", &alias]).unwrap();
+        assert!(validate_tape_paths(&args).is_err());
+        std::fs::remove_file(&alias).unwrap();
+        std::os::unix::fs::symlink(&path, &alias).unwrap();
+        assert!(validate_tape_paths(&args).is_err());
+        std::fs::remove_file(&alias).unwrap();
+        std::fs::remove_file(&path).unwrap();
+    }
+    #[test]
+    fn metrics_only_sidecar_stays_out_of_dev() {
+        let args = parse(&["--output", "/dev/null"]).unwrap();
+        assert!(trace_sidecar(&args).is_none());
+        let args = parse(&["--output", "/dev/null", "--metrics-out", "run.csv"]).unwrap();
+        assert_eq!(
+            trace_sidecar(&args),
+            Some(PathBuf::from("run.sidecar.json"))
+        );
+    }
+}
+
 /// CPU time consumed by THIS PROCESS (all threads), in nanoseconds.
 ///
 /// Wall-clock on a shared box measures the machine, not us: a co-tenant that
@@ -248,7 +439,10 @@ impl Args {
 /// each reads as 8 ms of CPU: that is the compute cost, which is the quantity
 /// we are trying to drive down.
 fn process_cpu_ns() -> u64 {
-    let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+    let mut ts = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
     // Safety: writing into a stack timespec with a valid clock id.
     let rc = unsafe { libc::clock_gettime(libc::CLOCK_PROCESS_CPUTIME_ID, &mut ts) };
     if rc != 0 {
@@ -743,10 +937,7 @@ fn span_value(spans: &[vibe_land_destruction::types::NamedSpan], name: &str) -> 
 
 /// Same lookup over the bridge's own span type. Two types, one shape: the
 /// world spans cross the FFI boundary and the destruction spans do not.
-fn world_span_value(
-    spans: &[vibe_land_physx_bridge::NamedSpan],
-    name: &str,
-) -> f32 {
+fn world_span_value(spans: &[vibe_land_physx_bridge::NamedSpan], name: &str) -> f32 {
     spans
         .iter()
         .find(|s| s.name == name)
@@ -756,6 +947,7 @@ fn world_span_value(
 
 fn main() -> Result<()> {
     let args = Args::parse()?;
+    validate_tape_paths(&args)?;
 
     let pack = load_scene_pack_file(&args.scene)
         .map_err(|error| anyhow::anyhow!("{error}"))
@@ -769,6 +961,39 @@ fn main() -> Result<()> {
     )
     .map_err(|error| anyhow::anyhow!("{error}"))?;
     let manifest = Arc::new(DestructionManifest::from_city(&scene));
+    let dt = 1.0 / args.hz as f32;
+    let total_ticks = (args.seconds * args.hz as f32).round() as u32;
+    let shot = shot_profile();
+    let tape_metadata = shot_tape::Metadata {
+        manifest_hash: manifest.hash_hex(),
+        hz: args.hz,
+        ticks: total_ticks,
+        gravity_bits: city_gravity().map(f32::to_bits),
+        shot_profile_bits: [
+            shot.stress_impulse,
+            shot.push_speed,
+            shot.blast_radius_m,
+            shot.push_radius_m,
+            shot.blast_depth_m,
+            shot.max_distance_m,
+        ]
+        .map(f32::to_bits),
+    };
+    let replay_tape = args
+        .shot_tape_in
+        .as_ref()
+        .map(|path| shot_tape::Tape::read(path, &tape_metadata))
+        .transpose()?;
+    let mut recorded_tape = shot_tape::Tape::new(tape_metadata);
+    recorded_tape.validate(&recorded_tape.metadata)?;
+    let mut replay_cursor = 0usize;
+    let mut shot_hits = 0usize;
+    if let Some(tape) = &replay_tape {
+        println!(
+            "replaying {} exact shot inputs; adaptive aim is bypassed",
+            tape.shots.len()
+        );
+    }
     let table = build_chunk_table(&manifest);
     println!(
         "scene {} | structures {} | chunks {} | bonds {}",
@@ -824,7 +1049,10 @@ fn main() -> Result<()> {
     // exactly what got missed. VIBE_ALLOW_CPU_STRESS=1 for the rare case of
     // deliberately profiling the CPU solver.
     if !cfg!(feature = "cuda-stress")
-        && std::env::var("VIBE_ALLOW_CPU_STRESS").as_deref().unwrap_or("0") == "0"
+        && std::env::var("VIBE_ALLOW_CPU_STRESS")
+            .as_deref()
+            .unwrap_or("0")
+            == "0"
     {
         anyhow::bail!(
             "this binary was built WITHOUT the cuda-stress feature, so it runs the CPU \
@@ -834,8 +1062,6 @@ fn main() -> Result<()> {
         );
     }
 
-    let dt = 1.0 / args.hz as f32;
-    let total_ticks = (args.seconds * args.hz as f32).round() as u32;
     let extent = scene_extent(&manifest);
     let header = Header {
         physics_hz: args.hz,
@@ -924,7 +1150,11 @@ fn main() -> Result<()> {
     if let Some(path) = args.timings_out.as_ref() {
         timings_log = Some(std::io::BufWriter::new(std::fs::File::create(path)?));
     }
-    let shot_plan = build_shot_plan(&manifest, args.shots, args.targets);
+    let shot_plan = if replay_tape.is_some() {
+        Vec::new()
+    } else {
+        build_shot_plan(&manifest, args.shots, args.targets)
+    };
     let mut epoch = 0u32;
     // Sentinel, so every actor counts as changed on tick 0: the format
     // requires the first tick to carry a complete island map rather than a
@@ -988,7 +1218,7 @@ fn main() -> Result<()> {
         .unwrap_or(true);
 
     for tick_index in 0..total_ticks {
-        if tick_index >= next_fire_tick && next_shot < shot_plan.len() {
+        let generated_shot = if tick_index >= next_fire_tick && next_shot < shot_plan.len() {
             let locked: Option<(Vec3, Vec3)> = match (args.aim_lock, summary_target) {
                 (true, Some(t)) => {
                     // Rake upward on the same building, firing level from +Z.
@@ -1018,7 +1248,43 @@ fn main() -> Result<()> {
             } else {
                 shot_plan[next_shot]
             };
-            let hit = fire(&mut destruction, &mut world, origin, direction);
+            next_shot += 1;
+            // Ramp: interval shrinks linearly across the plan, floor at the
+            // ramp minimum. With the ramp off this is the old fixed cadence.
+            let start = args.shot_interval_ticks.max(1);
+            let floor = if args.shot_ramp_min_ticks == 0 {
+                start
+            } else {
+                args.shot_ramp_min_ticks.min(start)
+            };
+            let span = start.saturating_sub(floor);
+            let interval = start - (span * next_shot as u32) / shot_plan.len().max(1) as u32;
+            next_fire_tick = tick_index.saturating_add(interval.max(floor));
+            // Record the normalized command at the fire boundary. Replay uses
+            // these bits directly, without another rounding through normalize.
+            Some(shot_tape::Shot::new(
+                tick_index,
+                origin.to_array(),
+                direction.normalize_or_zero().to_array(),
+            ))
+        } else {
+            None
+        };
+        let replay_shots = match &replay_tape {
+            Some(tape) => tape.take_tick(&mut replay_cursor, tick_index),
+            None => &[],
+        };
+        for input in replay_shots.iter().chain(generated_shot.iter()) {
+            let hit = fire(
+                &mut destruction,
+                &mut world,
+                Vec3::from_array(input.origin()),
+                Vec3::from_array(input.direction()),
+                &shot,
+            )
+            .with_context(|| format!("shot {} at tick {tick_index}", recorded_tape.shots.len()))?;
+            shot_hits += usize::from(hit.is_some());
+            recorded_tape.shots.push(input.clone());
             if summary_target.is_none() {
                 if let Some(hit) = hit {
                     summary_target = Some(hit);
@@ -1039,18 +1305,6 @@ fn main() -> Result<()> {
                     }
                 }
             }
-            next_shot += 1;
-            // Ramp: interval shrinks linearly across the plan, floor at the
-            // ramp minimum. With the ramp off this is the old fixed cadence.
-            let start = args.shot_interval_ticks.max(1);
-            let floor = if args.shot_ramp_min_ticks == 0 {
-                start
-            } else {
-                args.shot_ramp_min_ticks.min(start)
-            };
-            let span = start.saturating_sub(floor);
-            let interval = start - (span * next_shot as u32) / shot_plan.len().max(1) as u32;
-            next_fire_tick = tick_index + interval.max(floor);
         }
 
         let sim_started = std::time::Instant::now();
@@ -1095,8 +1349,10 @@ fn main() -> Result<()> {
             .post_step(&mut world, dt, city_gravity())
             .map_err(|error| anyhow::anyhow!("{error}"))?;
         let sim_ms = sim_started.elapsed().as_secs_f32() * 1000.0 - first_stats_ms as f32;
-        let sim_cpu_ms = process_cpu_ns().saturating_sub(sim_cpu_started)
-            .saturating_sub(first_stats_cpu_ns) as f64 / 1.0e6;
+        let sim_cpu_ms = process_cpu_ns()
+            .saturating_sub(sim_cpu_started)
+            .saturating_sub(first_stats_cpu_ns) as f64
+            / 1.0e6;
 
         // Bracketed as its own column: these FFI reads used to fall in the
         // gap between `sim` and `enc`, counted by NEITHER — per-tick work
@@ -1252,16 +1508,10 @@ fn main() -> Result<()> {
             // exists; `spans` carries every generically-authored metric.
             let mut spans_json = String::new();
             for span in tick_spans.iter() {
-                spans_json.push_str(&format!(
-                    ",\"{}\":{:.4}",
-                    span.name, span.value
-                ));
+                spans_json.push_str(&format!(",\"{}\":{:.4}", span.name, span.value));
             }
             for span in world_spans.iter() {
-                spans_json.push_str(&format!(
-                    ",\"physx/{}\":{:.4}",
-                    span.name, span.value
-                ));
+                spans_json.push_str(&format!(",\"physx/{}\":{:.4}", span.name, span.value));
             }
             writeln!(
                 log,
@@ -1275,8 +1525,14 @@ fn main() -> Result<()> {
                 tick_stats.support_loads_ms,
                 tick_stats.settle_ms,
                 tick_stats.end_ms,
-                world_stats.as_ref().map(|w| w.last_gpu_wait_ms).unwrap_or(0.0),
-                world_stats.as_ref().map(|w| w.last_fetch_copy_ms).unwrap_or(0.0),
+                world_stats
+                    .as_ref()
+                    .map(|w| w.last_gpu_wait_ms)
+                    .unwrap_or(0.0),
+                world_stats
+                    .as_ref()
+                    .map(|w| w.last_fetch_copy_ms)
+                    .unwrap_or(0.0),
                 tick_stats.awake_chunk_bodies,
                 tick_stats.chunk_bodies,
                 tick_stats.frozen_chunk_bodies,
@@ -1537,9 +1793,7 @@ fn main() -> Result<()> {
                     physx_step_samples,
                     w.map(|w| format!(
                         "  (last: gpu_wait {:.2} fetch_copy {:.2}, contacts hw {})",
-                        w.last_gpu_wait_ms,
-                        w.last_fetch_copy_ms,
-                        w.gpu_rigid_contact_high_water
+                        w.last_gpu_wait_ms, w.last_fetch_copy_ms, w.gpu_rigid_contact_high_water
                     ))
                     .unwrap_or_default(),
                 );
@@ -1715,7 +1969,7 @@ fn main() -> Result<()> {
         mismatch_ticks
     );
 
-    let sidecar = args.output.with_extension("sidecar.json");
+    let sidecar = trace_sidecar(&args);
     let per_structure: Vec<serde_json::Value> = manifest
         .structures
         .iter()
@@ -1731,24 +1985,50 @@ fn main() -> Result<()> {
             })
         })
         .collect();
-    std::fs::write(
-        &sidecar,
-        serde_json::to_vec_pretty(&serde_json::json!({
-            "manifestHash": manifest.hash_hex(),
-            "scene": args.scene.display().to_string(),
-            "grid": args.grid,
-            "physicsHz": args.hz,
-            "ticks": total_ticks,
-            "chunks": table.actors.len(),
-            "bonds": table.edges.len(),
-            "brokenBonds": broken_total,
-            "chunkMigrations": migrations_total,
-            "peakBodies": peak_bodies,
-            "membershipMismatchTicks": mismatch_ticks,
-            "structures": per_structure,
-        }))?,
-    )?;
-    println!("wrote {}", sidecar.display());
+    if let Some(sidecar) = &sidecar {
+        std::fs::write(
+            sidecar,
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "manifestHash": manifest.hash_hex(),
+                "scene": args.scene.display().to_string(),
+                "grid": args.grid,
+                "physicsHz": args.hz,
+                "ticks": total_ticks,
+                "chunks": table.actors.len(),
+                "bonds": table.edges.len(),
+                "brokenBonds": broken_total,
+                "chunkMigrations": migrations_total,
+                "peakBodies": peak_bodies,
+                "membershipMismatchTicks": mismatch_ticks,
+                "structures": per_structure,
+                "shotInputs": recorded_tape.shots.len(),
+                "shotHits": shot_hits,
+                "shotTapeReplay": replay_tape.is_some(),
+            }))?,
+        )?;
+        println!("wrote {}", sidecar.display());
+    }
+    if let Some(tape) = &replay_tape {
+        ensure!(
+            replay_cursor == tape.shots.len() && &recorded_tape == tape,
+            "not all replay inputs were applied exactly"
+        );
+    }
+    if let Some(mut metrics) = metrics_writer.take() {
+        use std::io::Write as _;
+        metrics.flush().context("flush metrics")?;
+    }
+    if let Some(path) = &args.shot_tape_out {
+        recorded_tape.write_new(path)?;
+        println!("wrote exact shot tape {}", path.display());
+    }
+    println!(
+        "shot inputs: {} attempted, {} hits, {} misses, replay={}",
+        recorded_tape.shots.len(),
+        shot_hits,
+        recorded_tape.shots.len() - shot_hits,
+        replay_tape.is_some()
+    );
     Ok(())
 }
 
@@ -1973,24 +2253,24 @@ fn fire(
     world: &mut World,
     origin: Vec3,
     direction: Vec3,
-) -> Option<Vec3> {
+    shot: &ShotProfile,
+) -> Result<Option<Vec3>> {
     use vibe_land_physx_bridge::RaycastRequest;
     let hit = world
         .raycast(RaycastRequest {
             origin: BridgeVec3::new(origin.x, origin.y, origin.z),
             direction: BridgeVec3::new(direction.x, direction.y, direction.z),
-            max_distance: 200.0,
+            max_distance: shot.max_distance_m,
             collision_mask: vibe_land_destruction::runtime::GROUP_CHUNK,
             ignore_entity_id: 0,
             has_ignore_entity: false,
         })
-        .ok()
-        .filter(|hit| hit.hit);
-    let Some(hit) = hit else {
-        return None;
-    };
+        .map_err(|error| anyhow::anyhow!("{error}"))
+        .context("shot raycast")?;
+    if !hit.hit {
+        return Ok(None);
+    }
     let surface = Vec3::new(hit.position.x, hit.position.y, hit.position.z);
-    let shot = shot_profile();
     let point = surface + direction * shot.blast_depth_m;
     // Release frozen rubble around the impact first, exactly as the match
     // server's apply_shot_ray does.
@@ -2002,14 +2282,20 @@ fn fire(
     // damage flatlined at 763 broken bonds from t+30 s while the unfrozen
     // control went on to 2,112. The wider push radius is used so every body
     // the push will reach is dynamic before it arrives.
-    let _ = destruction.wake_around(world, point.to_array(), shot.push_radius_m);
-    let _ = destruction.apply_blast(
-        world,
-        point.to_array(),
-        direction.to_array(),
-        shot.blast_radius_m,
-        shot.stress_impulse,
-        shot.push_speed,
-    );
-    Some(surface)
+    destruction
+        .wake_around(world, point.to_array(), shot.push_radius_m)
+        .map_err(|error| anyhow::anyhow!("{error}"))
+        .context("wake around shot")?;
+    destruction
+        .apply_blast(
+            world,
+            point.to_array(),
+            direction.to_array(),
+            shot.blast_radius_m,
+            shot.stress_impulse,
+            shot.push_speed,
+        )
+        .map_err(|error| anyhow::anyhow!("{error}"))
+        .context("apply shot blast")?;
+    Ok(Some(surface))
 }
