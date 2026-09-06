@@ -215,3 +215,34 @@ The [native solver setup follow-up](multilevel-native-setup-2026-09-05.md) recor
 additional standalone numerical checks and their limits. It did not deploy a
 new city build or fix the repair loop. The reported contact/replay costs and
 missing migration destinations remain open qualification targets.
+
+## Inventory on 2026-09-06: distinguish local verification from play
+
+Two later files exist, captured at 23:45:59 and 23:48:43 UTC. Both identify a
+loopback URL, HeadlessChrome and the 480×270 verification viewport. Their client
+city snapshots are null, frame counters are uninitialized and event rings are
+empty. The server snapshots have zero connected players; the corresponding
+server log records only loopback sessions around these times. They are local
+verification captures, not new evidence from the user's public play session.
+Do not interpret missing counters as zero faults or these idle server timings
+(2.98 and 2.78 ms rolling means) as a destruction performance improvement.
+
+The original analyzer raised TypeError on the null city snapshot. Schema 2 now
+retains absent city counters as null and records loopback/headless provenance,
+telemetry availability, and the allowlisted actual release identity. It does
+not infer that an unclassified capture is a human session. Both newer captures
+identify release game `ed9c2ad`, solver `646a0f41`, and binary `9b405a0199af…`.
+The source-worktree fingerprint alone would identify the wrong build.
+
+All original fields in the six play summaries still match the archived schema-1
+results exactly. The schema-2 copies and supplemental local captures are in
+`bench-results/simulation-frontier/report-inventory-2026-09-06/`; its
+`verify-results.py` checks that preservation, release identity and missing-data
+semantics. The earlier literal `cmp` reproduction is specific to schema 1;
+compare the original report fields or use this verifier with schema 2.
+
+The rooted-fragment creation/rest-pose fix is now deployed; see
+`rooted-fragment-wire-2026-09-05.md` for its tests and limitations. The earlier
+sections above record state at the time of each investigation, not current
+release status. This inventory changes only analysis tooling and evidence;
+no new city runtime or frontend deployment was needed.

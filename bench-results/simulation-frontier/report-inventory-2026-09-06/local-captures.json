@@ -1,0 +1,341 @@
+{
+  "notes": [
+    "Missing city telemetry is null, not a zero fault count; local headless captures are not public play evidence.",
+    "Release artifact metadata identifies isolated deployments more precisely than the serving working directory revision.",
+    "Rolling windows are 180 simulation ticks, not a fixed wall-clock duration.",
+    "Client and server observations are asynchronous, not identical-state samples.",
+    "Do not sum nested timing spans, different windows, or cumulative report counters.",
+    "Client frame profiles are point samples; telemetryMs retains its last periodic value.",
+    "Zero reported faults establish only the checks actually enabled and recorded.",
+    "The 180-tick interpretation is for this server revision; check it before reuse."
+  ],
+  "reports": [
+    {
+      "awake_bodies": 0,
+      "bodies": 108,
+      "broken_bonds": 0,
+      "capture_context": {
+        "client_city_telemetry_present": false,
+        "client_frame_telemetry_present": false,
+        "headless_browser": true,
+        "loopback_url": true,
+        "origin_hint": "local_headless",
+        "server_players_at_snapshot": 0
+      },
+      "captured_at": "2026-09-05T23:45:59.987Z",
+      "client_bytes_per_second": null,
+      "client_event_ring": {
+        "repair_events": 0,
+        "repair_interval_median_seconds": null,
+        "repaired_structure_mentions": {},
+        "teleports": 0
+      },
+      "client_frame_point_sample": {
+        "beforeCityMs": 0,
+        "chunksHidden": 0,
+        "chunksUnresolved": 0,
+        "cityFrameMs": 0,
+        "cpuFrameMs": 0,
+        "debugE2eMs": 0,
+        "decodeMs": 0,
+        "dirtyWriteMs": 0,
+        "drawCalls": 0,
+        "frameTotalMs": 0,
+        "geometries": 0,
+        "glRenderMs": 0,
+        "gpuFrameMs": 0,
+        "instanceWrites": 0,
+        "offFrameMs": 0,
+        "sampleMs": 0,
+        "sphereMs": 0,
+        "subDraws": 0,
+        "telemetryMs": 0,
+        "textures": 0,
+        "triangles": 0,
+        "unattributedMs": 0
+      },
+      "client_tick": 0,
+      "client_topology_counters": {
+        "bootstraps": null,
+        "chunksTotal": null,
+        "hashChecks": null,
+        "hashMismatches": null,
+        "orphanedByRetire": null,
+        "orphanedChunks": null,
+        "settleRejects": null,
+        "structureRepairs": null,
+        "topoSeqGaps": null
+      },
+      "client_transport": "connecting",
+      "first_physics_pass_point_sample": {
+        "contact_host_work_ms": 0.0,
+        "direct_contact_copy_ms": 0.056776,
+        "direct_contact_count": 0.0,
+        "direct_contact_ownership_ms": 0.0,
+        "direct_contact_reduce_ms": 0.0,
+        "direct_contact_route_ms": 0.0,
+        "direct_contact_sort_ms": 0.0,
+        "direct_contact_validate_ms": 0.0,
+        "direct_host_mirror_ms": 0.084657
+      },
+      "gpu_warning_count": 0,
+      "pending_input_frames": [],
+      "physics_env": {
+        "BLAST_GPU_IMPULSE_READBACK": "0",
+        "VIBE_CITY_FREEZE": "1",
+        "VIBE_CITY_GRID": "2",
+        "VIBE_CITY_MAX_BODIES": null,
+        "VIBE_CITY_RESIM_PASSES": "1",
+        "VIBE_CITY_SCENE": "fractured-downtown.json",
+        "VIBE_CITY_SOLVER_ITERATIONS": "32",
+        "VIBE_CITY_STRESS_LIMIT_SCALE": "0.45",
+        "VIBE_PHYSX_DIRECT_GPU": "1"
+      },
+      "release_artifact": {
+        "binary_sha256": "9b405a0199afba106b248666b551dabb9e8dea110274fbb861a48f72d051e8d1",
+        "game_revision": "ed9c2ad",
+        "solver_revision": "646a0f414816204483c7eccdbd049fa1208e8f80"
+      },
+      "replay_point_sample": {
+        "resim_capture_ms": 0.040846,
+        "resim_passes": 0,
+        "resim_restore_ms": 0.0,
+        "resim_step_ms": 0.0,
+        "resim_tick_ms": 0.0
+      },
+      "report": "report-1788651959-city-default-tick2760",
+      "server_build": "23:43:27",
+      "server_counters": {
+        "contacts_dropped": 0,
+        "contacts_processed": 0,
+        "contacts_queued": 0,
+        "degraded": false,
+        "duplicate_body_records": 0,
+        "escaped_bodies_parked": 0,
+        "freeze_flips": 0,
+        "frozen_bodies": 0,
+        "unfreeze_flips": 0,
+        "unmapped_body_skips": 0
+      },
+      "server_network_counters": {
+        "datagram_fallbacks": 0,
+        "dropped_outbound_packets": 0,
+        "dropped_outbound_snapshots": 0,
+        "malformed_packets": 0
+      },
+      "server_rolling_180_ticks_ms": {
+        "city_total_ms": {
+          "avg": 2.5360522,
+          "max": 3.67101,
+          "p95": 2.81223
+        },
+        "dynamics_ms": {
+          "avg": 0.40367988,
+          "max": 1.79791,
+          "p95": 0.586212
+        },
+        "player_sim_ms": {
+          "avg": 0.002287261,
+          "max": 0.023764,
+          "p95": 0.009267
+        },
+        "total_ms": {
+          "avg": 2.9794543,
+          "max": 4.291175,
+          "p95": 3.329714
+        }
+      },
+      "server_started": "23:45:14",
+      "server_tick": 2760,
+      "server_tick_ring": {
+        "first_tick": 2460,
+        "last_tick": 2759,
+        "samples": 300,
+        "total_ms": {
+          "avg": 2.9558212283333334,
+          "max": 4.291175,
+          "p95": 3.329714
+        },
+        "worst_tick": {
+          "awake": 0,
+          "city": 2.465033,
+          "dyn_ms": 1.79791,
+          "flips": 0,
+          "frozen": 0,
+          "t": 2623,
+          "total": 4.291175
+        }
+      },
+      "shots_fired": 0,
+      "source_revision": "f00c793-dirty",
+      "source_sha256": {
+        "client.json": "7cb875ccd9e146f0a47efe60a5fbb573d950033cffa7e8a165a075f0afd5bcee",
+        "server.json": "a592f33f073dbdc0e4b12f9caa8b91fe8e2b96a716c552e82070e6d80b1379d4"
+      }
+    },
+    {
+      "awake_bodies": 0,
+      "bodies": 120,
+      "broken_bonds": 12,
+      "capture_context": {
+        "client_city_telemetry_present": false,
+        "client_frame_telemetry_present": false,
+        "headless_browser": true,
+        "loopback_url": true,
+        "origin_hint": "local_headless",
+        "server_players_at_snapshot": 0
+      },
+      "captured_at": "2026-09-05T23:48:43.718Z",
+      "client_bytes_per_second": null,
+      "client_event_ring": {
+        "repair_events": 0,
+        "repair_interval_median_seconds": null,
+        "repaired_structure_mentions": {},
+        "teleports": 0
+      },
+      "client_frame_point_sample": {
+        "beforeCityMs": 0,
+        "chunksHidden": 0,
+        "chunksUnresolved": 0,
+        "cityFrameMs": 0,
+        "cpuFrameMs": 0,
+        "debugE2eMs": 0,
+        "decodeMs": 0,
+        "dirtyWriteMs": 0,
+        "drawCalls": 0,
+        "frameTotalMs": 0,
+        "geometries": 0,
+        "glRenderMs": 0,
+        "gpuFrameMs": 0,
+        "instanceWrites": 0,
+        "offFrameMs": 0,
+        "sampleMs": 0,
+        "sphereMs": 0,
+        "subDraws": 0,
+        "telemetryMs": 0,
+        "textures": 0,
+        "triangles": 0,
+        "unattributedMs": 0
+      },
+      "client_tick": 0,
+      "client_topology_counters": {
+        "bootstraps": null,
+        "chunksTotal": null,
+        "hashChecks": null,
+        "hashMismatches": null,
+        "orphanedByRetire": null,
+        "orphanedChunks": null,
+        "settleRejects": null,
+        "structureRepairs": null,
+        "topoSeqGaps": null
+      },
+      "client_transport": "connecting",
+      "first_physics_pass_point_sample": {
+        "contact_host_work_ms": 0.0,
+        "direct_contact_copy_ms": 0.050985,
+        "direct_contact_count": 0.0,
+        "direct_contact_ownership_ms": 0.0,
+        "direct_contact_reduce_ms": 0.0,
+        "direct_contact_route_ms": 0.0,
+        "direct_contact_sort_ms": 0.0,
+        "direct_contact_validate_ms": 0.0,
+        "direct_host_mirror_ms": 0.069419
+      },
+      "gpu_warning_count": 0,
+      "pending_input_frames": [],
+      "physics_env": {
+        "BLAST_GPU_IMPULSE_READBACK": "0",
+        "VIBE_CITY_FREEZE": "1",
+        "VIBE_CITY_GRID": "2",
+        "VIBE_CITY_MAX_BODIES": null,
+        "VIBE_CITY_RESIM_PASSES": "1",
+        "VIBE_CITY_SCENE": "fractured-downtown.json",
+        "VIBE_CITY_SOLVER_ITERATIONS": "32",
+        "VIBE_CITY_STRESS_LIMIT_SCALE": "0.45",
+        "VIBE_PHYSX_DIRECT_GPU": "1"
+      },
+      "release_artifact": {
+        "binary_sha256": "9b405a0199afba106b248666b551dabb9e8dea110274fbb861a48f72d051e8d1",
+        "game_revision": "ed9c2ad",
+        "solver_revision": "646a0f414816204483c7eccdbd049fa1208e8f80"
+      },
+      "replay_point_sample": {
+        "resim_capture_ms": 0.050544,
+        "resim_passes": 0,
+        "resim_restore_ms": 0.0,
+        "resim_step_ms": 0.0,
+        "resim_tick_ms": 0.0
+      },
+      "report": "report-1788652123-city-default-tick12600",
+      "server_build": "23:43:27",
+      "server_counters": {
+        "contacts_dropped": 0,
+        "contacts_processed": 0,
+        "contacts_queued": 0,
+        "degraded": false,
+        "duplicate_body_records": 0,
+        "escaped_bodies_parked": 0,
+        "freeze_flips": 0,
+        "frozen_bodies": 0,
+        "unfreeze_flips": 0,
+        "unmapped_body_skips": 0
+      },
+      "server_network_counters": {
+        "datagram_fallbacks": 0,
+        "dropped_outbound_packets": 0,
+        "dropped_outbound_snapshots": 0,
+        "malformed_packets": 0
+      },
+      "server_rolling_180_ticks_ms": {
+        "city_total_ms": {
+          "avg": 2.3969119,
+          "max": 3.150872,
+          "p95": 2.794878
+        },
+        "dynamics_ms": {
+          "avg": 0.343309,
+          "max": 2.16745,
+          "p95": 0.460679
+        },
+        "player_sim_ms": {
+          "avg": 0.00012501668,
+          "max": 0.000721,
+          "p95": 0.00024
+        },
+        "total_ms": {
+          "avg": 2.777876,
+          "max": 4.859747,
+          "p95": 3.2337658
+        }
+      },
+      "server_started": "23:45:14",
+      "server_tick": 12600,
+      "server_tick_ring": {
+        "first_tick": 12300,
+        "last_tick": 12599,
+        "samples": 300,
+        "total_ms": {
+          "avg": 2.751782113,
+          "max": 4.859747,
+          "p95": 3.188411
+        },
+        "worst_tick": {
+          "awake": 0,
+          "city": 2.626474,
+          "dyn_ms": 2.16745,
+          "flips": 0,
+          "frozen": 0,
+          "t": 12570,
+          "total": 4.859747
+        }
+      },
+      "shots_fired": 0,
+      "source_revision": "f00c793-dirty",
+      "source_sha256": {
+        "client.json": "a68534d50cbb9834c7a6ed4b288afa1073d23024cee21d2543c186248baaf018",
+        "server.json": "251d15b9d750a122b1d90c0ecdaf4d7bf2d2264f399fb6aa3c4dac07d3241668"
+      }
+    }
+  ],
+  "schema": 2
+}

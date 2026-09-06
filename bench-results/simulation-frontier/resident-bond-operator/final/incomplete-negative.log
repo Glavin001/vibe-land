@@ -1,0 +1,8 @@
+{"native_physical_assembly_ms":35.409920,"active_nodes":5936,"bonds":18627,"independent_operator_comparison":true,"native_load_projection":true}
+{"native_hierarchy_setup_ms":191.187660,"basis_reconstruction_error":6.38176246387e-17,"levels":3,"coarse_rows":96}
+{"native_level":0,"rows":35616,"nnz":827552,"coarse_rows":5100,"omega":0.483457107955,"eigenvalue_upper_bound":2.75791442797}
+{"native_level":1,"rows":5100,"nnz":890280,"coarse_rows":738,"omega":0.430145208696,"eigenvalue_upper_bound":3.09972843212}
+{"native_level":2,"rows":738,"nnz":225180,"coarse_rows":96,"omega":0.438084405917,"eigenvalue_upper_bound":3.04355351463}
+{"resident_bond_operator":true}
+{"gpu":"NVIDIA GeForce RTX 4090","operator":"double","preconditioner_storage":"float","preconditioner_arithmetic":"float","outer_vectors_and_reductions":"double","cuda_graph":true,"device_context_upload_graph_ms":146.262056,"rows":35616,"free":false,"levels":3,"scope":"standalone hierarchy validation; no game integration"}
+{"trial":0,"passed":false,"iterations":1,"submitted":1,"cuda_solve_ms":0.341600,"wall_solve_ms":0.350454,"force_residual":19.9428296892,"moment_residual":11.3617983946,"bond_relative_error":0.415624004784,"bond_max_error_over_peak":0.689525414545,"bond_force_error_n":20370608.5991,"bond_moment_error_nm":9320564.33337,"bond_force_error_over_input":14.6784953834,"bond_moment_error_over_input":7.12442903448,"zero_bond_reference":false,"recurrence_relative_residual":66.249748803,"failed":0}

@@ -1,0 +1,102 @@
+{
+  "final": {
+    "anchored-double-assembled": {
+      "warm_median_cuda_ms": 10.668288,
+      "iterations": 34,
+      "max_force_residual": 1.40680866615e-11,
+      "max_moment_residual": 1.69664886155e-11
+    },
+    "anchored-double-resident": {
+      "warm_median_cuda_ms": 10.751584,
+      "iterations": 34,
+      "max_force_residual": 1.41169685781e-11,
+      "max_moment_residual": 1.69677220528e-11
+    },
+    "anchored-float-assembled": {
+      "warm_median_cuda_ms": 5.918368,
+      "iterations": 34,
+      "max_force_residual": 1.40770253789e-11,
+      "max_moment_residual": 1.69467812566e-11
+    },
+    "anchored-float-resident": {
+      "warm_median_cuda_ms": 6.003648,
+      "iterations": 34,
+      "max_force_residual": 1.41330325132e-11,
+      "max_moment_residual": 1.69593240043e-11
+    },
+    "free-double-assembled": {
+      "warm_median_cuda_ms": 10.638368,
+      "iterations": 31,
+      "max_force_residual": 9.00427453012e-12,
+      "max_moment_residual": 1.12505643467e-11
+    },
+    "free-double-resident": {
+      "warm_median_cuda_ms": 10.69072,
+      "iterations": 31,
+      "max_force_residual": 9.00440005516e-12,
+      "max_moment_residual": 1.12506093373e-11
+    },
+    "free-float-assembled": {
+      "warm_median_cuda_ms": 6.281216,
+      "iterations": 31,
+      "max_force_residual": 9.00594802958e-12,
+      "max_moment_residual": 1.12501028498e-11
+    },
+    "free-float-resident": {
+      "warm_median_cuda_ms": 6.353248,
+      "iterations": 31,
+      "max_force_residual": 9.00495414154e-12,
+      "max_moment_residual": 1.12505123036e-11
+    }
+  },
+  "initial-fullwarp": {
+    "anchored-double-assembled": {
+      "warm_median_cuda_ms": 10.68272,
+      "iterations": 34,
+      "max_force_residual": 1.40680866615e-11,
+      "max_moment_residual": 1.69664886155e-11
+    },
+    "anchored-double-resident": {
+      "warm_median_cuda_ms": 11.866784,
+      "iterations": 34,
+      "max_force_residual": 1.41169685781e-11,
+      "max_moment_residual": 1.69677220528e-11
+    },
+    "anchored-float-assembled": {
+      "warm_median_cuda_ms": 5.9144,
+      "iterations": 34,
+      "max_force_residual": 1.40770253789e-11,
+      "max_moment_residual": 1.69467812566e-11
+    },
+    "anchored-float-resident": {
+      "warm_median_cuda_ms": 7.121216,
+      "iterations": 34,
+      "max_force_residual": 1.41330325132e-11,
+      "max_moment_residual": 1.69593240043e-11
+    },
+    "free-double-assembled": {
+      "warm_median_cuda_ms": 10.64288,
+      "iterations": 31,
+      "max_force_residual": 9.00427453012e-12,
+      "max_moment_residual": 1.12505643467e-11
+    },
+    "free-double-resident": {
+      "warm_median_cuda_ms": 11.695328,
+      "iterations": 31,
+      "max_force_residual": 9.00440005516e-12,
+      "max_moment_residual": 1.12506093373e-11
+    },
+    "free-float-assembled": {
+      "warm_median_cuda_ms": 6.28176,
+      "iterations": 31,
+      "max_force_residual": 9.00594802958e-12,
+      "max_moment_residual": 1.12501028498e-11
+    },
+    "free-float-resident": {
+      "warm_median_cuda_ms": 7.357504,
+      "iterations": 31,
+      "max_force_residual": 9.00495414154e-12,
+      "max_moment_residual": 1.12505123036e-11
+    }
+  }
+}

@@ -1,0 +1,32 @@
+{
+  "binary_sha256": "9b405a0199afba106b248666b551dabb9e8dea110274fbb861a48f72d051e8d1",
+  "server_pid": 4124164,
+  "health": {
+    "status": "ok",
+    "physics_backend": "physx_gpu",
+    "physics_gpu_required": true,
+    "sim_hz": 60,
+    "snapshot_hz": 60,
+    "active_matches": 0,
+    "players": 0,
+    "udp_verified": false,
+    "wt_connection_attempts": 0,
+    "session_configs_served": 0
+  },
+  "settings": {
+    "VIBE_PHYSICS_BACKEND": "physx_gpu",
+    "VIBE_PHYSX_DIRECT_GPU": "1",
+    "VIBE_PHYSX_GPU_CONTACT_ORDER": null,
+    "BLAST_GPU_IMPULSE_READBACK": "0",
+    "VIBE_CITY_SCENE": "fractured-downtown.json",
+    "VIBE_CITY_GRID": "2",
+    "VIBE_CITY_SOLVER_ITERATIONS": "32",
+    "VIBE_CITY_RESIM_PASSES": "1",
+    "VIBE_CITY_FREEZE": "1",
+    "VIBE_CITY_STRESS_LIMIT_SCALE": "0.45",
+    "VIBE_CITY_MAX_BODIES": null,
+    "VIBE_RELEASE_GAME_REVISION": "ed9c2ad",
+    "VIBE_RELEASE_SOLVER_REVISION": "646a0f414816204483c7eccdbd049fa1208e8f80",
+    "VIBE_RELEASE_BINARY_SHA256": "9b405a0199afba106b248666b551dabb9e8dea110274fbb861a48f72d051e8d1"
+  }
+}

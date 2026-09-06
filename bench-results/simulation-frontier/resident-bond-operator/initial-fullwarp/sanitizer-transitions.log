@@ -1,0 +1,17 @@
+========= COMPUTE-SANITIZER
+{"rows":36,"original_bonds":6,"resident_bytes":2654,"coupling_uploads":1,"graph_captures":1}
+{"step":0,"live_bonds":6,"exact_components":2,"update_bytes":6,"host_update_ms":0.006512,"cuda_apply_and_response_ms":1.118208,"operator_relative_error":1.22956614401e-16,"bond_relative_error":2.85143788808e-17,"passed":true}
+{"step":1,"live_bonds":4,"exact_components":2,"update_bytes":6,"host_update_ms":0.014307,"cuda_apply_and_response_ms":0.086016,"operator_relative_error":1.93345402795e-16,"bond_relative_error":2.28672974496e-17,"passed":true}
+{"step":2,"live_bonds":3,"exact_components":3,"update_bytes":6,"host_update_ms":0.004639,"cuda_apply_and_response_ms":0.091136,"operator_relative_error":7.06671852889e-17,"bond_relative_error":1.04803986582e-16,"passed":true}
+{"step":3,"live_bonds":0,"exact_components":6,"update_bytes":6,"host_update_ms":0.010660,"cuda_apply_and_response_ms":0.073728,"operator_relative_error":0,"bond_relative_error":0,"passed":true}
+{"step":4,"live_bonds":6,"exact_components":2,"update_bytes":6,"host_update_ms":0.004859,"cuda_apply_and_response_ms":0.081632,"operator_relative_error":1.61245436623e-16,"bond_relative_error":3.54739900222e-17,"passed":true}
+{"step":5,"live_bonds":4,"exact_components":3,"update_bytes":6,"host_update_ms":0.010108,"cuda_apply_and_response_ms":0.081952,"operator_relative_error":1.36203304244e-16,"bond_relative_error":2.49884918898e-17,"passed":true}
+{"step":6,"live_bonds":4,"exact_components":2,"update_bytes":6,"host_update_ms":0.005039,"cuda_apply_and_response_ms":0.078848,"operator_relative_error":1.55206354373e-16,"bond_relative_error":6.42560074844e-17,"passed":true}
+{"step":7,"live_bonds":0,"exact_components":6,"update_bytes":6,"host_update_ms":0.009838,"cuda_apply_and_response_ms":0.071680,"operator_relative_error":0,"bond_relative_error":0,"passed":true}
+{"step":8,"live_bonds":6,"exact_components":2,"update_bytes":6,"host_update_ms":0.004558,"cuda_apply_and_response_ms":0.078816,"operator_relative_error":1.35082246119e-16,"bond_relative_error":4.97690863327e-17,"passed":true}
+{"step":9,"live_bonds":6,"exact_components":2,"update_bytes":6,"host_update_ms":0.009928,"cuda_apply_and_response_ms":0.090112,"operator_relative_error":1.23055323031e-16,"bond_relative_error":1.64699654138e-17,"passed":true}
+{"step":10,"live_bonds":6,"exact_components":2,"update_bytes":6,"host_update_ms":0.004619,"cuda_apply_and_response_ms":0.077824,"operator_relative_error":1.24034660188e-16,"bond_relative_error":2.47776642615e-17,"passed":true}
+{"step":11,"live_bonds":6,"exact_components":2,"update_bytes":6,"host_update_ms":0.010259,"cuda_apply_and_response_ms":0.080896,"operator_relative_error":0,"bond_relative_error":0,"passed":true}
+{"stale_membership_rejected":true,"half_response_rejected":true,"completed_graph_preserves_output":true,"empty_cases_passed":true}
+========= LEAK SUMMARY: 0 bytes leaked in 0 allocations
+========= ERROR SUMMARY: 0 errors
