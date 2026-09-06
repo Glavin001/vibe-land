@@ -1,0 +1,54 @@
+{
+  "client_game_revision": "4f62f24",
+  "release_client_revision": "62e7a23",
+  "server_revision": "a4685b3",
+  "server_sha256": "7c5d04267217f6993ca6da0464de8a3ea8ebf8bfe3283f089521f003841aa5ee",
+  "published": true,
+  "server_restarted": false,
+  "backend_compact_contacts_enabled": false,
+  "unit_tests_passed": 49,
+  "typescript_passed": true,
+  "vite_build_passed": true,
+  "browser_scope": "Local WebTransport, 480x270 FAST software rendering; no shots; not external UDP or a frame-rate/performance certification",
+  "live_stream_checks": {
+    "chunks": 96420,
+    "datagrams": 262,
+    "hash_checks": 1,
+    "hash_mismatches": 0,
+    "topology_gaps": 0,
+    "orphans": 0,
+    "below_ground_chunks": 4,
+    "stale_drawn_chunks": 1,
+    "poses_checked": 96420
+  },
+  "open_issues": [
+    "Other below-ground chunks need matched authoritative shape poses",
+    "One stale-draw comparison in live software-browser capture",
+    "Existing kill-floor parking is a physics intervention and can bypass minimum-height/settled-state tracking; unchanged by this client update",
+    "Backend compact-contact full-city GPU qualification pending while human client remains connected"
+  ],
+  "native_escape_observation": {
+    "log_line": 62326,
+    "preceding_log_timestamp": "2026-09-06T04:51:24.420759Z",
+    "message": "[destruction] KILL FLOOR: parked 1 escaped bodies below y=-40",
+    "later_stats_utc": "2026-09-06T07:57:17Z",
+    "escaped_bodies_parked": 1,
+    "min_body_y": -0.077364676
+  },
+  "artifact_sha256": {
+    "build.log.gz": "87b0b6d7d5cf988b41d2fd834ba98a6936321e42a1d30a0bcb6db2aa197c9832",
+    "live-bootstrap-browser.json.gz": "e612df0d77125397e31f71cc183abb27a4e535d87739b87020e2921df72caab2",
+    "live-http.json.gz": "438e304d744ce49d5141516cc81a599c14cb372fb8927378487ac158a65a014f",
+    "live-stream-browser.json.gz": "6f75be4029ec55e054871dda1aee746d62da0b0e320a785b0a008ef5ecdab1d9",
+    "publication.json.gz": "b963dd9e9153ab12e193384d94bcb1bf9fda093f3d70c0e418717ca2a022c811",
+    "staged-browser.json.gz": "d2f5c66ec419bd92b057043b1be0becfa4bd55dea01bd7efa49825f4b6745f6b",
+    "tests.log.gz": "d030b1c0baa0c5e7d056c90276308c3306b9974dfc7ea386c2f62444a8c1d7be",
+    "types.log.gz": "f61f27bd17de546264aa58f40f3aafaac7021e0ef69c17f6b1b4cd7664a037ec"
+  },
+  "sources": {
+    "client/src/city/chunkDiagnostics.ts": "76641c3b29464495b2e0a374d6a1dd75b345692a6932f716bfdb312be3fcad20",
+    "client/src/city/chunkDiagnostics.test.ts": "163fcd3494e7e9a6b581ce2d5e4044336c9fa1a0fc135517a7c465d42895fdcf",
+    "client/src/e2eBridge.ts": "3b7024432d10747e2cb1207bf4eb9f67e9c3cf9283fffa3ecccb514f29b8f08f",
+    "client/src/scene/CityChunksLayer.tsx": "5f2009bdb07d7aa46afab42c167669088e387daf81fe6b0f4db193607ebfb86e"
+  }
+}
