@@ -151,3 +151,12 @@ validated contact-free reference and opt-in phase instrumentation. It restores
 city state matters before attributing its 30.21 ms restore to API call count.
 That work is committed but not deployed; it records a high-coordinate numerical
 precision failure separately and makes no city speedup claim.
+
+
+## Streaming release follow-up
+
+The [outbound stream fix](outbound-stream-isolation-2026-09-06.md) is deployed.
+Datagrams and recoverable fallbacks no longer occupy reliable-state queue slots;
+a stalled reliable write does not block WebTransport datagram submission.
+Private city destruction and public browser checks passed. Heavy simulation
+ticks and below-ground geometry remain open, with no claimed physics speedup.

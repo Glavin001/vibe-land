@@ -1,0 +1,137 @@
+{
+  "server_tick": 1920,
+  "player_count": 2,
+  "physics_backend": "physx_gpu",
+  "physics_gpu_active": true,
+  "physics_gpu_warning_count": 0,
+  "network": {
+    "inbound_bps": 61,
+    "outbound_bps": 270045,
+    "inbound_packets_per_sec": 2,
+    "outbound_packets_per_sec": 479,
+    "total_inbound_bytes": 1704,
+    "total_outbound_bytes": 16064464,
+    "total_inbound_packets": 102,
+    "total_outbound_packets": 7136,
+    "reliable_packets_sent": 3109,
+    "datagram_packets_sent": 4029,
+    "datagram_fallbacks": 0,
+    "malformed_packets": 0,
+    "snapshot_reliable_sent": 0,
+    "snapshot_datagram_sent": 2805,
+    "websocket_snapshot_reliable_sent": 0,
+    "webtransport_snapshot_reliable_sent": 0,
+    "webtransport_snapshot_datagram_sent": 2805,
+    "strict_snapshot_drops": 0,
+    "strict_snapshot_drop_oversize": 0,
+    "strict_snapshot_drop_connection_closed": 0,
+    "strict_snapshot_drop_unsupported_peer": 0,
+    "strict_snapshot_drop_other": 0,
+    "dropped_outbound_packets": 0,
+    "dropped_outbound_snapshots": 0,
+    "snapshot_bytes_per_client": {
+      "avg": 56.0,
+      "p95": 56.0,
+      "max": 56.0
+    },
+    "snapshot_bytes_per_tick": {
+      "avg": 112.0,
+      "p95": 112.0,
+      "max": 112.0
+    },
+    "snapshot_players_per_client": {
+      "avg": 1.0,
+      "p95": 1.0,
+      "max": 1.0
+    },
+    "snapshot_dynamic_bodies_per_client": {
+      "avg": 0.0,
+      "p95": 0.0,
+      "max": 0.0
+    },
+    "snapshot_vehicles_per_client": {
+      "avg": 0.0,
+      "p95": 0.0,
+      "max": 0.0
+    },
+    "visible_batteries_per_client": {
+      "avg": 0.0,
+      "p95": 0.0,
+      "max": 0.0
+    },
+    "local_player_energy_packets_sent": 2805,
+    "local_player_energy_bytes_sent": 14025,
+    "battery_sync_packets_sent": 2,
+    "battery_sync_bytes_sent": 12,
+    "dynamic_bodies_considered_per_tick": {
+      "avg": 0.0,
+      "p95": 0.0,
+      "max": 0.0
+    },
+    "dynamic_contacts_raw_per_tick": {
+      "avg": 0.0,
+      "p95": 0.0,
+      "max": 0.0
+    },
+    "dynamic_contacts_kept_per_tick": {
+      "avg": 0.0,
+      "p95": 0.0,
+      "max": 0.0
+    },
+    "dynamic_bodies_pushed_per_tick": {
+      "avg": 0.0,
+      "p95": 0.0,
+      "max": 0.0
+    },
+    "dynamic_impulses_applied_per_tick": {
+      "avg": 0.0,
+      "p95": 0.0,
+      "max": 0.0
+    },
+    "contacted_dynamic_mass_per_tick": {
+      "avg": 0.0,
+      "p95": 0.0,
+      "max": 0.0
+    },
+    "player_kcc_horizontal_calls_per_tick": {
+      "avg": 0.0,
+      "p95": 0.0,
+      "max": 0.0
+    },
+    "player_kcc_support_calls_per_tick": {
+      "avg": 0.0,
+      "p95": 0.0,
+      "max": 0.0
+    },
+    "player_support_probe_count_per_tick": {
+      "avg": 0.0,
+      "p95": 0.0,
+      "max": 0.0
+    },
+    "player_support_probe_hit_count_per_tick": {
+      "avg": 0.0,
+      "p95": 0.0,
+      "max": 0.0
+    },
+    "awake_dynamic_bodies_total": {
+      "avg": 0.0,
+      "p95": 0.0,
+      "max": 0.0
+    },
+    "awake_dynamic_bodies_near_players": {
+      "avg": 0.0,
+      "p95": 0.0,
+      "max": 0.0
+    },
+    "players_in_vehicles": {
+      "avg": 0.0,
+      "p95": 0.0,
+      "max": 0.0
+    },
+    "dead_players_skipped": {
+      "avg": 0.0,
+      "p95": 0.0,
+      "max": 0.0
+    }
+  }
+}

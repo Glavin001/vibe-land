@@ -54,6 +54,47 @@ or held physical-solver change is enabled by this patch.
 
 ## Release status
 
-The source change is ready for final server build and city browser qualification.
-Deployment evidence will be recorded separately with its actual executable hash.
-The original report analysis is in [city-player-reports-2026-09-06.md](city-player-reports-2026-09-06.md).
+Deployed at **2026-09-06 04:00 UTC** to
+[the public city](https://209.121.195.117:40617/city): game `a4685b3`, solver
+`bd71ce1b`, executable SHA-256
+`7c5d04267217f6993ca6da0464de8a3ea8ebf8bfe3283f089521f003841aa5ee`.
+The main game branch carries the same implementation as `a4eb15b`.
+
+Before deployment, that exact immutable executable ran alone on the GPU on
+private loopback ports, with the existing city settings and client bundle. The
+browser bootstrap rendered all 96,420 chunks. Four aimed shots then produced
+945 broken bonds visible in a fresh client snapshot, 364 received motion
+datagrams and fresh hash checks. Server logs confirm three routed city hits. The client reports four fired shots;
+this capture does not prove server delivery of all four. The periodic client
+snapshot is also older than the final server bond count.
+There were zero topology sequence gaps, repairs, hash mismatches, orphaned
+chunks, settle rejects or JavaScript errors. Server telemetry reported zero
+outbound queue drops, zero malformed packets and zero GPU warnings. This is
+functional destruction/streaming coverage, not a heavy-load speed benchmark.
+
+The same capture retained **two below-ground chunk centroids**, minimum Y
+−0.753 m; the deeper provenance field remained null. That known issue is open.
+Zero stale-drawn chunks in this capture does not establish a general fix for
+previously reported stale rendering. The test uses the normal shot force and
+fracture behavior; its four-shot script is a test input, not a runtime limit.
+
+The private candidate was stopped and the previous public artifact restored
+before deployment. Deployment then rechecked zero connected players, installed
+the qualified immutable executable using the owned supervisor/helper, and
+verified its live hash. Public HTTPS and a local WebTransport browser check
+passed, again rendering all 96,420 chunks without topology errors. Local browser
+checks do not prove external UDP reachability. The unchanged endpoint is ready
+for human testing in Chrome/Edge with the existing self-signed certificate.
+
+All VIBE/BLAST simulation settings compare equal before and after, excluding the
+new release-provenance fields. Direct GPU remains enabled. The solver includes
+the restore profiling/context-scope code, with **both flags disabled**; the held
+physical multilevel solver and contact-ordering changes remain excluded. Client
+assets are unchanged. The previous immutable executable remains available for
+rollback. Commits remain local; no source push was attempted in this increment.
+
+The [source-hashed evidence and verifier](../bench-results/simulation-frontier/outbound-streams/summary.json)
+record the deployment, tests and remaining geometry issue. Next work remains
+heavy-tick contact/restore costs, exact shot-input replay for comparisons, and
+the report's below-ground pose provenance. The original analysis is in
+[city-player-reports-2026-09-06.md](city-player-reports-2026-09-06.md).

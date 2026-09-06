@@ -100,3 +100,9 @@ HTTP/manifest/certificate checks, local WebTransport browser bootstrap/render
 (96,420 chunks, zero repairs/hash mismatches/JavaScript errors), and public HTTPS.
 The local browser does not prove external UDP reachability. The user's human
 reports remain the public WebTransport evidence for this unchanged artifact.
+
+
+Subsequent deployment: the [streaming release](outbound-stream-isolation-2026-09-06.md)
+uses solver `bd71ce1b`, which includes this instrumentation and context experiment.
+Both flags remain disabled. This does not change the conclusion that context
+batching has no demonstrated city speedup.

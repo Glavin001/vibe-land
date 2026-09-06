@@ -1,0 +1,9 @@
+{
+  "source_sha256": "3b59dc994ccc128761384a01dc1fafb8a282de37456fcdf19e0812fdaae61828",
+  "source_bytes": 46066,
+  "lines": [
+    "2026-09-06T03:57:13.233822Z  INFO web_fps_server: city shot routing match_id=city-default shots=1 hits=1 broken_bonds_before=0",
+    "2026-09-06T03:57:15.688141Z  INFO web_fps_server: city shot routing match_id=city-default shots=1 hits=1 broken_bonds_before=945",
+    "2026-09-06T03:57:17.585120Z  INFO web_fps_server: city shot routing match_id=city-default shots=1 hits=1 broken_bonds_before=946"
+  ]
+}

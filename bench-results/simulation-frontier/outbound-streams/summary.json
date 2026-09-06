@@ -1,0 +1,40 @@
+{
+  "change": "Independent datagram and reliable queues, separate recoverable fallback, explicit reliable-overflow session failure, copy-free frame assembly",
+  "main_game_commit": "a4eb15b",
+  "release_game_commit": "a4685b3a0793db12566bf47a1eaf0ad8eb71367a",
+  "release_solver_commit": "bd71ce1bd9765dd65dc6d8f8f9d7150bf9e1ab23",
+  "live_binary_sha256": "7c5d04267217f6993ca6da0464de8a3ea8ebf8bfe3283f089521f003841aa5ee",
+  "deployed": true,
+  "outbound_tests_passed": 7,
+  "snapshot_tests_passed": 10,
+  "simulation_performance_claim": false,
+  "public_udp_verified": false,
+  "known_issues": [
+    "Heavy simulation tick costs remain",
+    "Below-ground chunk readings remain (two in this private destruction capture)",
+    "Full physical-solver/contact-order qualification remains open"
+  ],
+  "source_sha256": {
+    "server/src/main.rs": "61bb9451b95e811751250b9dc6c453575f4780d98fe2d1fdbfe7f2fa5443498b",
+    "server/src/outbound.rs": "02fe2e238047130c446a803326bd278605db5a52ce06c65b6c64adbb3a35b81d"
+  },
+  "evidence_sha256": {
+    "deploy-city-outbound.py": "0a04341bc424e1a22c3d570c680920ea0cd409aed7b08c6b3deaf45f4c24a9f0",
+    "deployment.json": "dfe4a7af20d7ccd7b35284f7287f4993c3d6e8462fd0e589649c4360e718cf8f",
+    "live-state.json": "872f3911ff1dab02a710c79b81a651672e58ac66a5bc40ff3b192aa4621cc6c9",
+    "outbound-tests.log.gz": "6d8bc0fc689b9862ef993c79624ffa07f5e846e695e7a049ee30fe65541566b9",
+    "private-bootstrap.json": "c114f11b152d1949efd479aa484da64368ac9dead73cd5f701aa582a5ac512c4",
+    "private-destruction.json": "8718720857f269cae471b9f5f783ee663e8bff13195d151d9a7ca9835db0f76a",
+    "private-metrics.json": "4b9c6b1307ef0cd8b353c3e0a3872b0479cfa7d8e3f2c5b20294d967b69559e7",
+    "qualification.json": "10bffa2416697616e001f8f1d3972d7b22b873a19538f0bfae6d9956466096a9",
+    "qualify-city-outbound.py": "cf89eb016457668906821f1c2d4c0f09a651dd21858f36ecb0b0f9eb6a4b8dcb",
+    "server-build.log.gz": "2ba711faa2ae069f71f38e210bf007e696f9dcaeb4394779593e1d55fed8c0dd",
+    "server-events.json": "d181de4ffbc73daa5cd225f21325c5681d5ac4c502d662b5a01135a4f96dc336",
+    "snapshot-tests.log.gz": "2251b471cd15f6d630bf82ded20839a0ea30feee2e1d61582452eb7e5252dba1"
+  },
+  "qualification_limits": [
+    "Four client shots reported; three server city hits logged. This is not proof of all four shot deliveries.",
+    "Periodic client destruction snapshot predates final server bond count.",
+    "Private and public local browser checks do not prove external UDP reachability."
+  ]
+}
