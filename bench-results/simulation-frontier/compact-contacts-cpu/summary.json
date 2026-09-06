@@ -1,0 +1,42 @@
+{
+  "status": "CPU tests and qualified-release compilation passed; GPU/city qualification and deployment pending",
+  "compiler": "c++ (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0",
+  "libstdcxx_date": 20240904,
+  "cpu_order_records": 3910872,
+  "cpu_sum_additions": 693000,
+  "table_frames": 100,
+  "cpu_sanitizers": [
+    "AddressSanitizer",
+    "UndefinedBehaviorSanitizer"
+  ],
+  "release_server_sha256": "3fc9d6d81cd5a05815ea882e863d6b2b83c41d5080ed8a893cb1bd325d8f97e8",
+  "release_recorder_sha256": "58576dc30d2a0a4c2aaf69c13f7f8a99441aabcfceff2d610dbbe195b5fd0a82",
+  "source_sha256": {
+    "/root/workspace/vibe-land-4/physx-bridge/src/physx_bridge.cc": "8a979048bfb264caa1deea1f3969a7369c7d042bc75ae2c27ddcfa629281cba0",
+    "/root/workspace/vibe-land-4/physx-bridge/build.rs": "76510046cb32942cd6bf53ced7d8ef393e679e251b2b1dde543ff8aed771bc14",
+    "/root/workspace/vibe-land-4-rooted-wire/physx-bridge/src/physx_bridge.cc": "7dcc28795854311cf66fc677a0b7816eea265c7c6addc09f3517a4fa52856b16",
+    "/root/workspace/vibe-land-4-rooted-wire/physx-bridge/build.rs": "75d6b5231fad0570339ebf8dc38e299ab8ea2bdc8704b5930a86d6fa074034b0",
+    "/root/workspace/blast-stress-solver-2/blast/include/extensions/stressphysx/NvBlastExtStressPhysXContactScratch.h": "008583d54e0848d49d820526ecb83c845eab984b209e705bd3ac1ced3f620727",
+    "/root/workspace/blast-stress-solver-2/demos/blast-stress-demo/tests/contact_scratch_test.cpp": "833bbb76ead0137e22c2338d9f32953b78464f5a0e6bc1e578f19a808bd8b337",
+    "/root/workspace/blast-stress-solver-2-rooted-wire/blast/include/extensions/stressphysx/NvBlastExtStressPhysXContactScratch.h": "008583d54e0848d49d820526ecb83c845eab984b209e705bd3ac1ced3f620727",
+    "/root/workspace/blast-stress-solver-2-rooted-wire/demos/blast-stress-demo/tests/contact_scratch_test.cpp": "833bbb76ead0137e22c2338d9f32953b78464f5a0e6bc1e578f19a808bd8b337"
+  },
+  "tests_gpu_required": false,
+  "full_city_audit_run": false,
+  "city_deployed": false,
+  "source_limits": "Opt-in libstdc++ path; exact tie order must be requalified on toolchain changes. No full-city speedup claim.",
+  "solver_revisions": {
+    "codex/simulation-frontier": "f1b931fa",
+    "codex/city-rooted-wire": "887b4fa7"
+  },
+  "game_parents": {
+    "/root/workspace/vibe-land-4": "65387cf3ddf33a36afcad36457a8e910232a9028",
+    "/root/workspace/vibe-land-4-rooted-wire": "dc6598310f8183369d71cff58cd405cd41892184"
+  },
+  "artifact_sha256": {
+    "sanitizer.log.gz": "8c91372b242d5bf5fcb0d76ed8f6fca0c4f06d05766a2d7459ca580dab0e93fb",
+    "cmake-test.log.gz": "b5f24ee191893ec8b322fbe588bf244dd8dcd591970e0cee77052773558d774e",
+    "release-build.log.gz": "0c98de16bf613c4fac62705d021d574f42c4a6688a46945203e3f0bc8ef365ed",
+    "main-syntax.log.gz": "f61f27bd17de546264aa58f40f3aafaac7021e0ef69c17f6b1b4cd7664a037ec"
+  }
+}

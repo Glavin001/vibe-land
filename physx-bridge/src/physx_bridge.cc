@@ -10,6 +10,7 @@
 #ifdef NVBLAST_ENABLE_CUDA_STRESS
 #include "NvBlastExtStressPhysXGpuActivity.h"
 #include "NvBlastExtStressPhysXDirectGpu.h"
+#include "NvBlastExtStressPhysXContactScratch.h"
 #include "NvBlastExtStressPhysXGpuHostMirror.h"
 #endif
 
@@ -146,6 +147,20 @@ bool contact_cse_enabled() {
 }
 
 #ifdef NVBLAST_ENABLE_CUDA_STRESS
+bool compact_contacts_enabled() {
+  static const bool enabled = [] {
+    const char *value = std::getenv("VIBE_PHYSX_COMPACT_CONTACTS");
+    return value != nullptr && std::string(value) == "1";
+  }();
+  return enabled;
+}
+bool compact_contacts_verify() {
+  static const bool enabled = [] {
+    const char *value = std::getenv("VIBE_PHYSX_COMPACT_CONTACTS_VERIFY");
+    return value != nullptr && std::string(value) == "1";
+  }();
+  return enabled;
+}
 bool gpu_contact_order_enabled() {
   // Experimental until the repeated settling-gate difference is resolved.
   // See docs/gpu-contact-order-2026-09-05.md; ordinary launches keep CPU order.
@@ -634,7 +649,17 @@ public:
     }
   }
 
-  ~Impl() { teardown(); }
+  ~Impl() {
+#ifdef NVBLAST_ENABLE_CUDA_STRESS
+    if (compact_contacts_verify()) {
+      std::fprintf(stderr, "[compact-contact-audit] batches=%llu verified=%llu records=%llu pairs=%llu mismatches=%llu\n",
+          (unsigned long long)gpu_compact_batches_, (unsigned long long)gpu_compact_verify_batches_,
+          (unsigned long long)gpu_compact_verify_records_, (unsigned long long)gpu_compact_verify_pairs_,
+          (unsigned long long)gpu_compact_verify_mismatches_);
+    }
+#endif
+    teardown();
+  }
 
   void onShapeHit(const PxControllerShapeHit &hit) override {
     PxRigidDynamic *dynamic =
@@ -1387,7 +1412,186 @@ public:
   }
 
 #ifdef NVBLAST_ENABLE_CUDA_STRESS
+  // Preserve the full legacy sequence (including equivalent-key payloads),
+  // every float addition, and the complete deferred callback boundary. The
+  // optional reference uses this same decoder batch, never another GPU copy.
+  void capture_compact_gpu_contacts(PxU32 count) {
+    using Clock = std::chrono::steady_clock;
+    auto started = Clock::now();
+    const auto finish = [&]() {
+      const auto now = Clock::now();
+      const double ms = std::chrono::duration<double, std::milli>(now - started).count();
+      started = now;
+      return ms;
+    };
+    const auto actor_key = [](const auto &a, const auto &b) {
+      return (std::uint64_t(std::min(a.actor_index, b.actor_index)) << 32)
+           | std::max(a.actor_index, b.actor_index);
+    };
+    const auto *ordered = gpu_compact_order_.sort(gpu_contacts_.data(), count);
+    gpu_contact_sort_ms_ = finish();
+    gpu_compact_impulses_.clear();
+    for (PxU32 i = 0; i < count; ++i) {
+      const auto &c = ordered[i];
+      if (!c.friction) {
+        const auto &a = gpu_contact_shapes_[c.transformCacheRef0];
+        const auto &b = gpu_contact_shapes_[c.transformCacheRef1];
+        gpu_compact_impulses_.add(actor_key(a, b), c.normalImpulse);
+      }
+    }
+    gpu_contact_reduce_ms_ = finish();
+    // Instantiate the identical event construction with independent tables and
+    // metadata getters for the reference. Neither path changes event order.
+    const auto route = [&](const GpuContact *input, auto load, auto threshold,
+                           auto record_pair, auto &points, auto &pairs) {
+      for (PxU32 begin = 0; begin < count;) {
+        const auto &first = input[begin];
+        PxU32 end = begin + 1;
+        while (end < count && input[end].transformCacheRef0 == first.transformCacheRef0
+               && input[end].transformCacheRef1 == first.transformCacheRef1) ++end;
+        require(first.transformCacheRef0 < gpu_contact_shapes_.size()
+                    && first.transformCacheRef1 < gpu_contact_shapes_.size(),
+                "GPU contact references an unknown shape");
+        const auto &a = gpu_contact_shapes_[first.transformCacheRef0];
+        const auto &b = gpu_contact_shapes_[first.transformCacheRef1];
+        require(a.shape && b.shape && a.actor == first.actor0 && b.actor == first.actor1,
+                "GPU contact ownership disagrees with live shape mapping");
+        float normal_impulse = 0.0f;
+        for (PxU32 i = begin; i < end; ++i) {
+          const auto &c = input[i];
+          require(c.actor0 == a.actor && c.actor1 == b.actor, "GPU contact pair changed ownership");
+          if (!c.friction) normal_impulse += c.normalImpulse;
+        }
+        if (normal_impulse > 0.0f && load(a, b) > threshold(a, b) * kFixedTimestep) {
+          const std::uint64_t key = (std::uint64_t(first.transformCacheRef0) << 32) | first.transformCacheRef1;
+          const bool persists = record_pair(key);
+          const auto point_begin = static_cast<PxU32>(points.size());
+          for (PxU32 i = begin; i < end; ++i) {
+            const auto &c = input[i];
+            PxContactPairPoint point{};
+            point.position = c.worldPosition;
+            point.normal = c.worldNormal;
+            point.impulse = c.impulseOnActor0;
+            point.separation = c.separation;
+            points.push_back(point);
+          }
+          pairs.push_back({a.actor, b.actor, a.shape, b.shape,
+              actor_entity_id(a.actor), actor_entity_id(b.actor), point_begin,
+              end - begin, end - begin, persists, !persists});
+        }
+        begin = end;
+      }
+    };
+    gpu_compact_current_.clear();
+    route(ordered,
+        [&](const auto &a, const auto &b) {
+          const float *value = gpu_compact_impulses_.find(actor_key(a, b));
+          return value ? *value : 0.0f;
+        },
+        [](const auto &a, const auto &b) { return std::min(a.threshold, b.threshold); },
+        [&](std::uint64_t key) {
+          const bool persists = gpu_compact_previous_.contains(key);
+          gpu_compact_current_.insert(key);
+          return persists;
+        }, deferred_points_, deferred_pairs_);
+    gpu_contact_route_ms_ = finish();
+    if (compact_contacts_verify()) {
+      const auto audit = [&](bool ok, const char *message) {
+        if (!ok) ++gpu_compact_verify_mismatches_;
+        require(ok, message);
+      };
+      const auto same_float = [](float a, float b) {
+        return std::memcmp(&a, &b, sizeof(float)) == 0;
+      };
+      std::sort(gpu_contacts_.begin(), gpu_contacts_.begin() + count, gpu_contact_less);
+      for (PxU32 i = 0; i < count; ++i)
+        audit(same_gpu_contact(ordered[i], gpu_contacts_[i]),
+              "Compact contact sort changed a complete legacy contact or tie order");
+      const auto reference_key = [](PxRigidActor *a, PxRigidActor *b) {
+        const auto index = [](PxRigidActor *actor) {
+          const auto *body = actor->is<PxRigidDynamic>();
+          return body ? body->getGPUIndex() : PX_INVALID_U32;
+        };
+        const PxU32 ia = index(a), ib = index(b);
+        return (std::uint64_t(std::min(ia, ib)) << 32) | std::max(ia, ib);
+      };
+      for (const auto &shape : gpu_contact_shapes_) {
+        if (shape.shape) audit(same_float(shape.threshold, gpu_contact_threshold(shape.actor)),
+                               "Compact contact cached threshold differs");
+      }
+      gpu_actor_pair_normal_impulses_.clear();
+      for (PxU32 i = 0; i < count; ++i) {
+        const auto &c = gpu_contacts_[i];
+        const auto key = reference_key(c.actor0, c.actor1);
+        audit(key == actor_key(gpu_contact_shapes_[c.transformCacheRef0],
+                               gpu_contact_shapes_[c.transformCacheRef1]),
+              "Compact contact cached actor key differs");
+        if (!c.friction) gpu_actor_pair_normal_impulses_[key] += c.normalImpulse;
+      }
+      audit(gpu_compact_impulses_.size() == gpu_actor_pair_normal_impulses_.size(),
+            "Compact contact impulse table cardinality differs");
+      for (const auto &[key, expected] : gpu_actor_pair_normal_impulses_) {
+        const auto *actual = gpu_compact_impulses_.find(key);
+        audit(actual && same_float(*actual, expected), "Compact contact impulse sum bits differ");
+      }
+      gpu_compact_reference_points_.clear();
+      gpu_compact_reference_pairs_.clear();
+      gpu_current_pairs_.clear();
+      route(gpu_contacts_.data(),
+          [&](const auto &a, const auto &b) {
+            const auto found = gpu_actor_pair_normal_impulses_.find(reference_key(a.actor, b.actor));
+            return found == gpu_actor_pair_normal_impulses_.end() ? 0.0f : found->second;
+          },
+          [](const auto &a, const auto &b) {
+            return std::min(gpu_contact_threshold(a.actor), gpu_contact_threshold(b.actor));
+          },
+          [&](std::uint64_t key) {
+            const bool persists = gpu_previous_pairs_.find(key) != gpu_previous_pairs_.end();
+            gpu_current_pairs_.insert(key);
+            return persists;
+          }, gpu_compact_reference_points_, gpu_compact_reference_pairs_);
+      audit(gpu_compact_current_.size() == gpu_current_pairs_.size(),
+            "Compact contact shape-pair set cardinality differs");
+      for (const auto key : gpu_current_pairs_)
+        audit(gpu_compact_current_.contains(key), "Compact contact shape-pair set differs");
+      audit(deferred_points_.size() == gpu_compact_reference_points_.size()
+                && deferred_pairs_.size() == gpu_compact_reference_pairs_.size(),
+            "Compact contact output cardinality differs");
+      for (size_t i = 0; i < deferred_points_.size(); ++i) {
+        const auto &a = deferred_points_[i], &b = gpu_compact_reference_points_[i];
+        audit(std::memcmp(&a.position, &b.position, sizeof(PxVec3)) == 0
+                  && std::memcmp(&a.normal, &b.normal, sizeof(PxVec3)) == 0
+                  && std::memcmp(&a.impulse, &b.impulse, sizeof(PxVec3)) == 0
+                  && same_float(a.separation, b.separation)
+                  && a.internalFaceIndex0 == b.internalFaceIndex0
+                  && a.internalFaceIndex1 == b.internalFaceIndex1,
+              "Compact contact emitted point payload/order differs");
+      }
+      for (size_t i = 0; i < deferred_pairs_.size(); ++i) {
+        const auto &a = deferred_pairs_[i], &b = gpu_compact_reference_pairs_[i];
+        audit(a.actor0 == b.actor0 && a.actor1 == b.actor1 && a.shape0 == b.shape0 && a.shape1 == b.shape1
+                  && a.entity_a == b.entity_a && a.entity_b == b.entity_b && a.point_begin == b.point_begin
+                  && a.point_count == b.point_count && a.reported_count == b.reported_count
+                  && a.ev_persists == b.ev_persists && a.ev_found == b.ev_found,
+              "Compact contact emitted pair payload/order differs");
+      }
+      gpu_previous_pairs_.swap(gpu_current_pairs_);
+      ++gpu_compact_verify_batches_;
+      gpu_compact_verify_records_ += count;
+      gpu_compact_verify_pairs_ += deferred_pairs_.size();
+      gpu_compact_verify_ms_ = finish();
+    }
+    gpu_compact_previous_.swap(gpu_compact_current_);
+  }
+
   void capture_gpu_contacts() {
+    const bool compact = compact_contacts_enabled();
+    require(!compact_contacts_verify() || compact, "Compact contact verification requires compact mode");
+    require(!compact || Nv::Blast::ExtStressPhysXCompactContactOrder<GpuContact>::supported(),
+            "Compact contact order requires a qualified libstdc++ build");
+    require(!compact || !gpu_contact_order_enabled(), "Compact and GPU contact ordering are mutually exclusive");
+    gpu_compact_verify_ms_ = 0.0;
+    if (compact) ++gpu_compact_batches_;
     gpu_contact_copy_ms_ = gpu_contact_ownership_ms_ = gpu_contact_validate_ms_ = 0.0;
     gpu_contact_sort_ms_ = gpu_contact_reduce_ms_ = gpu_contact_route_ms_ = 0.0;
     gpu_contact_order_verify_ms_ = 0.0;
@@ -1415,6 +1619,8 @@ public:
     gpu_contact_order_ambiguous_ = gpu_contact_order_enabled() && count && !gpu_contact_ordered_;
     if (count == 0) {
       gpu_previous_pairs_.clear();
+      gpu_compact_previous_.clear();
+      if (compact_contacts_verify()) ++gpu_compact_verify_batches_;
       return;
     }
     // Reference routing boundary. Rebuild from live shapes so recycled PhysX
@@ -1427,6 +1633,9 @@ public:
                                           static_cast<PxU32>(gpu_contact_actors_.size()));
     for (PxU32 i = 0; i < actors; ++i) {
       auto *actor = static_cast<PxRigidActor *>(gpu_contact_actors_[i]);
+      const auto *body = compact ? actor->is<PxRigidDynamic>() : nullptr;
+      const PxU32 actor_index = body ? body->getGPUIndex() : PX_INVALID_U32;
+      const float threshold = body ? body->getContactReportThreshold() : PX_MAX_F32;
       gpu_shape_scratch_.resize(actor->getNbShapes());
       const PxU32 shapes = actor->getShapes(gpu_shape_scratch_.data(),
                                            static_cast<PxU32>(gpu_shape_scratch_.size()));
@@ -1441,7 +1650,7 @@ public:
 #endif
         require(index != PX_INVALID_U32, "live contact shape has no GPU contact index");
         if (index >= gpu_contact_shapes_.size()) gpu_contact_shapes_.resize(size_t(index) + 1);
-        gpu_contact_shapes_[index] = {shape, actor};
+        gpu_contact_shapes_[index] = {shape, actor, actor_index, threshold};
       }
     }
     gpu_contact_ownership_ms_ = finish_phase();
@@ -1455,7 +1664,7 @@ public:
       const PxU32 ia = index(a), ib = index(b);
       return (std::uint64_t(std::min(ia, ib)) << 32) | std::max(ia, ib);
     };
-    gpu_actor_pair_normal_impulses_.clear();
+    if (!compact) gpu_actor_pair_normal_impulses_.clear();
     for (PxU32 i = 0; i < count; ++i) {
       auto &contact = gpu_contacts_[i];
       require(contact.worldPosition.isFinite() && contact.impulseOnActor0.isFinite()
@@ -1472,6 +1681,7 @@ public:
       canonicalize_gpu_contact(contact);
     }
     gpu_contact_validate_ms_ = finish_phase();
+    if (compact) { capture_compact_gpu_contacts(count); return; }
     if (!gpu_contact_ordered_) {
       std::sort(gpu_contacts_.begin(), gpu_contacts_.begin() + count, gpu_contact_less);
     }
@@ -2419,6 +2629,13 @@ public:
     span("direct_contact_ownership_ms", gpu_contact_ownership_ms_, 0);
     span("direct_contact_validate_ms", gpu_contact_validate_ms_, 0);
     span("direct_contact_sort_ms", gpu_contact_sort_ms_, 0);
+    span("compact_contact_enabled", compact_contacts_enabled(), 2);
+    span("compact_contact_batches", gpu_compact_batches_, 2);
+    span("compact_contact_verify_ms", gpu_compact_verify_ms_, 0);
+    span("compact_contact_verify_batches", gpu_compact_verify_batches_, 2);
+    span("compact_contact_verify_records", gpu_compact_verify_records_, 2);
+    span("compact_contact_verify_pairs", gpu_compact_verify_pairs_, 2);
+    span("compact_contact_verify_mismatches", gpu_compact_verify_mismatches_, 2);
     span("direct_contact_reduce_ms", gpu_contact_reduce_ms_, 0);
     span("direct_contact_route_ms", gpu_contact_route_ms_, 0);
     span("direct_contact_count", gpu_contact_count_, 2);
@@ -3120,7 +3337,17 @@ private:
   double gpu_contact_sort_ms_ = 0.0, gpu_contact_reduce_ms_ = 0.0;
   double gpu_contact_route_ms_ = 0.0;
   PxU32 gpu_contact_count_ = 0;
-  struct GpuContactShape { PxShape *shape = nullptr; PxRigidActor *actor = nullptr; };
+  Nv::Blast::ExtStressPhysXCompactContactOrder<GpuContact> gpu_compact_order_;
+  Nv::Blast::ExtStressPhysXContactTable gpu_compact_impulses_, gpu_compact_previous_, gpu_compact_current_;
+  double gpu_compact_verify_ms_ = 0.0;
+  std::uint64_t gpu_compact_batches_ = 0, gpu_compact_verify_batches_ = 0;
+  std::uint64_t gpu_compact_verify_records_ = 0, gpu_compact_verify_pairs_ = 0, gpu_compact_verify_mismatches_ = 0;
+  struct GpuContactShape {
+    PxShape *shape = nullptr;
+    PxRigidActor *actor = nullptr;
+    PxU32 actor_index = PX_INVALID_U32;
+    float threshold = PX_MAX_F32;
+  };
   std::vector<GpuContactShape> gpu_contact_shapes_;
   std::vector<PxActor *> gpu_contact_actors_;
   std::vector<PxShape *> gpu_shape_scratch_;
@@ -3215,6 +3442,10 @@ private:
     bool ev_persists;
     bool ev_found;
   };
+#ifdef NVBLAST_ENABLE_CUDA_STRESS
+  std::vector<DeferredContactPair> gpu_compact_reference_pairs_;
+  std::vector<PxContactPairPoint> gpu_compact_reference_points_;
+#endif
   std::vector<DeferredContactPair> deferred_pairs_;
   std::vector<PairPrecomputed> classify_scratch_;
   std::vector<physx::PxContactPairPoint> deferred_points_;

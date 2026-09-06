@@ -157,6 +157,7 @@ fn main() {
             }
             for header in [
                 "include/extensions/stressphysx/NvBlastExtStressPhysXDirectGpu.h",
+                "include/extensions/stressphysx/NvBlastExtStressPhysXContactScratch.h",
                 "include/extensions/stressphysx/NvBlastExtStressPhysXGpuActivity.h",
                 "include/extensions/stressphysx/NvBlastExtStressPhysXGpuHostMirror.h",
             ] {
