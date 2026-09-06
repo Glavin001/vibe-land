@@ -150,3 +150,33 @@ reports remain unchanged under `debug-reports/`. The
 [previous session](city-player-reports-2026-09-06.md) and
 [exact-input recorder qualification](shot-input-replay-2026-09-06.md) remain
 separate evidence.
+
+
+## Follow-up at 05:27 UTC
+
+After the low-priority candidate builds finished, another ten read-only samples
+ran from **05:27:10 to 05:27:55 UTC** with the same deployed executable and one
+connected player. No build or benchmark ran during this capture.
+
+- Rolling average ticks ranged **41.54–45.50 ms**, p95 **43.86–55.17 ms**.
+  The published tick numbers advanced 1,080 over 45 wall seconds: approximately
+  **24 authoritative ticks/second**, still below the 60 Hz target.
+- Awake bodies ranged **2,930–2,995**. Broken bonds increased from 41,381 to
+  41,396. This is a different evolving scene state from the earlier samples,
+  not an optimization comparison.
+- Host contact work averaged **18.91 ms** across the sampled phase values.
+  GPU utilization samples averaged **12.1%** and process CPU consumption was
+  **1.41 core equivalents**. Contact work alone still exceeded the tick budget
+  in this point-sample mean.
+- Restore/replay point values were zero in these ten snapshots. Sampling can
+  miss intervening replay ticks; this is not evidence that none occurred.
+- The connection sent another **3,746 packets**, with zero new outbound queue
+  drops or malformed packets. Outbound byte growth was 2,109,498 bytes, about
+  **0.375 Mbps** in wall time. Only 18 inbound packets/90 bytes arrived; pending
+  input was zero, so this low-input window does not test active responsiveness.
+
+[Late sanitized capture and verifier](../bench-results/simulation-frontier/player-reports-2026-09-06-live/late/summary.json)
+retain these observations. The compact host contact candidate has since been
+[implemented and CPU-tested](compact-contacts-2026-09-06.md), with complete
+same-batch auditing prepared. It remains disabled and undeployed while full-city
+GPU and multiplayer qualification await an empty public session.

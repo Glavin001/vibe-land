@@ -1,0 +1,97 @@
+{
+  "samples": 10,
+  "start_utc": "2026-09-06T05:27:10Z",
+  "end_utc": "2026-09-06T05:27:55Z",
+  "wall_seconds": 45.00072424998507,
+  "tick_rate": 23.999613739557944,
+  "simulated_seconds": 18.0,
+  "mean_tick_ms_range": [
+    41.541378,
+    45.4967
+  ],
+  "p95_tick_ms_range": [
+    43.861164,
+    55.166145
+  ],
+  "contact_host_point_mean_ms": 18.9081869,
+  "restore_point_mean_ms": 0.0,
+  "replay_point_mean_ms": 0.0,
+  "gpu_utilization_sample_mean_percent": 12.1,
+  "process_cpu_core_equivalents": 1.4081995580331337,
+  "network_counter_deltas": {
+    "total_inbound_bytes": 90,
+    "total_outbound_bytes": 2109498,
+    "total_inbound_packets": 18,
+    "total_outbound_packets": 3746,
+    "reliable_packets_sent": 1656,
+    "datagram_packets_sent": 2090,
+    "dropped_outbound_packets": 0,
+    "malformed_packets": 0
+  },
+  "awake_range": [
+    2930,
+    2995
+  ],
+  "bonds_start_end": [
+    41381,
+    41396
+  ],
+  "players": [
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1
+  ],
+  "pending_inputs": [
+    [
+      0
+    ],
+    [
+      0
+    ],
+    [
+      0
+    ],
+    [
+      0
+    ],
+    [
+      0
+    ],
+    [
+      0
+    ],
+    [
+      0
+    ],
+    [
+      0
+    ],
+    [
+      0
+    ],
+    [
+      0
+    ]
+  ],
+  "exe_sha256": "7c5d04267217f6993ca6da0464de8a3ea8ebf8bfe3283f089521f003841aa5ee",
+  "sample_sha256": {
+    "00.json.gz": "3f44ef7bcd7a7ab8f9f833e397d67aff453804084163792a1f27e33911078e2a",
+    "01.json.gz": "fc898cb33d7aec71d40c5ea8e0e29cc9f0615c534e7a3729046b015abe94dc14",
+    "02.json.gz": "267061b0b0240453667e440b5c77a132c7ee4afd46eb27ab36240851608001e3",
+    "03.json.gz": "61f71c5aee90f5f0f7f918449807ee368c3b27381d8a9b081bcb8859f986cdde",
+    "04.json.gz": "b0329e2e2cbcac3f7144fd5fc409c858e40782855aef996f02c22d3f338ef889",
+    "05.json.gz": "b019b4f78160f630632320b991436b30f4f4f14fe2175502ba40bb7b6e5d8654",
+    "06.json.gz": "ed4adf0229384757a47441c8852b04a91d96c73fd7f5202082afbaf4888b2425",
+    "07.json.gz": "b9e8a516689e75028a44545620575f05c73069a3105c82b99887b1a2a78cfba7",
+    "08.json.gz": "596e3db74ef1e1a03f56bac0e5b34a1f53807d6c57ac6aaab7d77af1a158e112",
+    "09.json.gz": "2d8c94c703688ee52ac72f083b40fcb776d98ad472802c2b506b6ee716dc522c"
+  },
+  "scope": "Read-only point sampling after builds completed; overlapping rolling windows, not a candidate benchmark or whole-interval replay count."
+}
