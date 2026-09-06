@@ -264,12 +264,7 @@ fn build_scene() -> anyhow::Result<CityScene> {
     // monolith but can leave a structural pack's facade panels hanging off a
     // removed slab. VIBE_CITY_VARIED_HEIGHTS=0 builds every tower at full
     // height so the authored load path is untouched.
-    if matches!(
-        std::env::var("VIBE_CITY_VARIED_HEIGHTS").as_deref(),
-        Ok("0") | Ok("false") | Ok("no") | Ok("off")
-    ) {
-        desc.varied_heights = false;
-    }
+    desc.varied_heights = vibe_land_destruction::city_config::city_varied_heights();
     // Grid edge length in buildings. The pitch is derived from the pack's own
     // footprint, so widening the grid grows the map without pushing buildings
     // into each other.

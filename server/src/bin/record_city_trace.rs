@@ -956,6 +956,7 @@ fn main() -> Result<()> {
         &pack,
         CitySceneDesc {
             grid: args.grid,
+            varied_heights: vibe_land_destruction::city_config::city_varied_heights(),
             ..CitySceneDesc::default()
         },
     )

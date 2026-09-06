@@ -4,6 +4,15 @@ use vibe_netcode::destruction_backend::{StressMaterial, StressSolverSettings};
 
 use crate::scene_pack::StressLimits;
 
+/// Match the authored-height setting in both the city server and recorders.
+/// Truncating a structural pack can remove slabs that support facade panels.
+pub fn city_varied_heights() -> bool {
+    !matches!(
+        std::env::var("VIBE_CITY_VARIED_HEIGHTS").as_deref(),
+        Ok("0") | Ok("false") | Ok("no") | Ok("off")
+    )
+}
+
 /// The solver configuration the city runs.
 ///
 /// Split out of `CityRuntime::physx` so anything driving `CityDestruction`
