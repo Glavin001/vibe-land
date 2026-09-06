@@ -14,6 +14,17 @@ The release game dependency now points consistently at its release solver
 checkout; no held physical-solver changes were imported. This is simulation
 attribution, without multiplayer traffic or a rendered client.
 
+## Later recorder audit: scene mismatch
+
+The exact-shot replay work subsequently found that this recorder ignored
+`VIBE_CITY_VARIED_HEIGHTS=0`. All three retained native logs report **86,966
+chunks**, while the deployed city has **96,420**. Matching environment strings
+therefore did not establish matching geometry. These timings still attribute
+work within their recorded scenes; they are not measurements of the exact live
+city manifest. The context scope remains unqualified and disabled. The
+[corrected recorder and manifest check](shot-input-replay-2026-09-06.md) use the
+shared authored-height setting and compare against the serving manifest hash.
+
 ## CUDA context experiment: no demonstrated win
 
 Solver `27fa6974` (release-branch cherry-pick `bd71ce1b`) adds an opt-in

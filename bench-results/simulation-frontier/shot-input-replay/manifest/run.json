@@ -1,0 +1,27 @@
+{
+  "command": [
+    "/root/workspace/vibe-land-4/target/gpu-activity/release/record-city-trace",
+    "--scene",
+    "/root/workspace/vibe-land-4-rooted-wire/destruction/assets/scenes/fractured-downtown.json",
+    "--grid",
+    "2",
+    "--seconds",
+    "0.016666666666666666",
+    "--output",
+    "/dev/null",
+    "--metrics-out",
+    "/tmp/city-shot-tape-live-manifest/manifest/metrics.csv",
+    "--timings-out",
+    "/tmp/city-shot-tape-live-manifest/manifest/timings.jsonl",
+    "--summary-out",
+    "/tmp/city-shot-tape-live-manifest/manifest/scenario.json",
+    "--shot-tape-out",
+    "/tmp/city-shot-tape-live-manifest/manifest/shots.json",
+    "--shots",
+    "0"
+  ],
+  "extra_env": {},
+  "start_utc": "2026-09-06T04:33:41Z",
+  "exit_code": 0,
+  "wall_seconds": 2.7186468527652323
+}

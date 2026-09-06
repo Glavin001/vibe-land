@@ -1,0 +1,42 @@
+{
+  "utc": "2026-09-06T04:28:06Z",
+  "pid": 159245,
+  "executable": "/root/workspace/vibe-land-4/.certs/vast-city/web-fps-server-outbound-streams-1788666961620509945",
+  "sha256": "7c5d04267217f6993ca6da0464de8a3ea8ebf8bfe3283f089521f003841aa5ee",
+  "health": {
+    "status": "ok",
+    "physics_backend": "physx_gpu",
+    "physics_gpu_required": true,
+    "sim_hz": 60,
+    "snapshot_hz": 60,
+    "active_matches": 0,
+    "players": 0,
+    "udp_verified": false,
+    "wt_connection_attempts": 0,
+    "session_configs_served": 0
+  },
+  "url": "https://209.121.195.117:40617/city",
+  "simulation_env": {
+    "BLAST_GPU_IMPULSE_READBACK": "0",
+    "BLAST_GPU_DETERMINISTIC_REDUCTIONS": "0",
+    "VIBE_PHYSX_DIRECT_GPU": "1",
+    "VIBE_CITY_VARIED_HEIGHTS": "0",
+    "VIBE_CITY_EXCESS_FORCES": "1",
+    "VIBE_WORLD_RESTITUTION": "0.02",
+    "VIBE_CITY_STRESS_LIMIT_SCALE": "0.45",
+    "VIBE_CITY_FREEZE": "1",
+    "VIBE_PHYSICS_BACKEND": "physx_gpu",
+    "BLAST_GPU_WHOLE_RESET_ON_TOPOLOGY": "1",
+    "BLAST_BOND_STRESS_GPU": "1",
+    "VIBE_CITY_SOLVER_ITERATIONS": "32",
+    "VIBE_CITY_RESIM_PASSES": "1",
+    "VIBE_CITY_SHOT_STRESS_IMPULSE": "1.2e7",
+    "VIBE_CITY_GRID": "2",
+    "VIBE_CITY_SCENE": "fractured-downtown.json",
+    "VIBE_CITY_SHOT_BLAST_RADIUS": "2.5",
+    "VIBE_WORLD_FRICTION": "0.75",
+    "VIBE_RELEASE_GAME_REVISION": "a4685b3a0793db12566bf47a1eaf0ad8eb71367a",
+    "VIBE_RELEASE_SOLVER_REVISION": "bd71ce1bd9765dd65dc6d8f8f9d7150bf9e1ab23",
+    "VIBE_RELEASE_BINARY_SHA256": "7c5d04267217f6993ca6da0464de8a3ea8ebf8bfe3283f089521f003841aa5ee"
+  }
+}

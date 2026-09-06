@@ -1,0 +1,138 @@
+{
+  "first_counter_divergence": {
+    "tick": 80,
+    "record": {
+      "bodies": "566",
+      "awake": "445",
+      "bonds": "1955"
+    },
+    "replay": {
+      "bodies": "561",
+      "awake": "440",
+      "bonds": "1937"
+    }
+  },
+  "matches_live_city_manifest": true,
+  "full_multiplayer_performance_gate": false,
+  "awake_target_5000_reached": true,
+  "scope": "Exact external input replay and error handling; not deterministic physics or a performance comparison",
+  "city_simulation_changed": false,
+  "identical_full_run_shot_inputs": true,
+  "cases": {
+    "manifest": {
+      "chunks": 96420,
+      "manifest_hash": "1172d302f5598a5f366d8149b3772f8a9642788f42b753f00e8c3607fbe09c50",
+      "ticks": 1,
+      "attempted": 0,
+      "hits": 0,
+      "misses": 0,
+      "max_awake": 0,
+      "replay_ticks": 1,
+      "final_broken_bonds": 0,
+      "input_sha256": "c86f069bfbace458388814b89ca4be988622d60f437f26dd67d6de31a8e494f0",
+      "membership_mismatch_ticks": 0
+    },
+    "record": {
+      "chunks": 96420,
+      "manifest_hash": "1172d302f5598a5f366d8149b3772f8a9642788f42b753f00e8c3607fbe09c50",
+      "ticks": 1200,
+      "attempted": 200,
+      "hits": 200,
+      "misses": 0,
+      "max_awake": 5566,
+      "replay_ticks": 614,
+      "final_broken_bonds": 24641,
+      "input_sha256": "4d333252d93e2bc02874ef6d8a80304caae07d645d5243b14dbb529ff01aed79",
+      "membership_mismatch_ticks": 0
+    },
+    "replay": {
+      "chunks": 96420,
+      "manifest_hash": "1172d302f5598a5f366d8149b3772f8a9642788f42b753f00e8c3607fbe09c50",
+      "ticks": 1200,
+      "attempted": 200,
+      "hits": 82,
+      "misses": 118,
+      "max_awake": 7754,
+      "replay_ticks": 707,
+      "final_broken_bonds": 32707,
+      "input_sha256": "4d333252d93e2bc02874ef6d8a80304caae07d645d5243b14dbb529ff01aed79",
+      "membership_mismatch_ticks": 0
+    },
+    "dispatch": {
+      "chunks": 96420,
+      "manifest_hash": "1172d302f5598a5f366d8149b3772f8a9642788f42b753f00e8c3607fbe09c50",
+      "ticks": 120,
+      "attempted": 3,
+      "hits": 1,
+      "misses": 2,
+      "max_awake": 113,
+      "replay_ticks": 3,
+      "final_broken_bonds": 485,
+      "input_sha256": "ee52c15dcf06a3a985e3e729a37fdc00c3ac591d82d86542e1d0961ea18c7ed9",
+      "membership_mismatch_ticks": 0
+    }
+  },
+  "negative_cases": [
+    {
+      "case": "weapon",
+      "exit_code": 1,
+      "output_created": false,
+      "metadata_rejected": true
+    },
+    {
+      "case": "duration",
+      "exit_code": 1,
+      "output_created": false,
+      "metadata_rejected": true
+    },
+    {
+      "case": "scene",
+      "exit_code": 1,
+      "output_created": false,
+      "metadata_rejected": true
+    }
+  ],
+  "configuration_note": "configuration-used.json is the pre-existing path/environment template. Its old binary/revision fields are unused by the runner; provenance.json records the executable and sources actually exercised.",
+  "evidence_sha256": {
+    "build.log.gz": "d809a9857a19af5faab3bca4cd0661c1d78b8ceddd2532724d09afdd9809d246",
+    "configuration-used.json": "5f0409b8e2cfd2caf16d10baa4557f68a2f6485f768f155e53bf8ed2fbac75ee",
+    "dispatch/metrics.csv.gz": "de1371e3f288e6d7aa4ca2c32d2e7d32152d35edc4d62a235746bc5f70618d71",
+    "dispatch/metrics.sidecar.json": "8f8aca4df586350cdd75b202b40d2ba1c0828b62b204fe375c537b1dd59b551f",
+    "dispatch/native.log.gz": "b26b3c1cad91440cee5d8ef0e17118fb2e48047526e2d4c92918f8a8ef5c16c4",
+    "dispatch/run.json": "11ee88f1846d8da2bfc3944d73d40617a682bdcc470e24f19428ec4caa56c188",
+    "dispatch/scenario.json": "3eaf252d0d7d1bc57f6e3302f3ea5fa90095281a984e1fcb3830f48cb6fd180d",
+    "dispatch/shots.json": "ee52c15dcf06a3a985e3e729a37fdc00c3ac591d82d86542e1d0961ea18c7ed9",
+    "dispatch/timings.jsonl.gz": "165efe33132f8f35686307f5177dcfd2f2ff2153d7d231ebb0c8f7919a7785ea",
+    "dispatch-fixture.json": "ee52c15dcf06a3a985e3e729a37fdc00c3ac591d82d86542e1d0961ea18c7ed9",
+    "exclusive-runner.py": "13c6773c792aeb265adf9ff627e793a533e485a743f114222348e4504adbcba0",
+    "exclusive.log.gz": "b869c107cae4e7fabc6c0e0ee4087bb27a30ca83a271294b1de71879c59ec41a",
+    "expected-live-manifest.json": "e7a37b70618f2c5bb064a78fa99032ba5e4f76e080af4176fc23b1f4ae310c4f",
+    "live-state.json": "49db43a44a7929beb3b8cb01d898dfe72e62aae5d48a0b0984c480892978db32",
+    "manifest/metrics.csv.gz": "f929bbf7d7c79dc119baebbf3577bcc533da34e968ec22a1b742080df35fa3bb",
+    "manifest/metrics.sidecar.json": "7ca3b00f40a3801e671f5e7b2d39c6e3fff91d0af418b62fc82d6b9882a01bbb",
+    "manifest/native.log.gz": "b0ba1db66f04f28c86880e8456ab6c77b1a9cf2dc81510c456bad731f93d1217",
+    "manifest/run.json": "69c80c2be86c6493ae8c12fc69a49cb847d7fab6f0573f86455c71ceb3f40ebb",
+    "manifest/shots.json": "c86f069bfbace458388814b89ca4be988622d60f437f26dd67d6de31a8e494f0",
+    "manifest/timings.jsonl.gz": "51774670c238ccbf4c7b5e6c60233ec82a71f9d312043b38c069065f102ae447",
+    "negative-duration/native.log.gz": "63408785fa23fdd189ab4a87ac89e6fbe035b0327eb5ef1d6e832d3038f9643b",
+    "negative-scene/native.log.gz": "63408785fa23fdd189ab4a87ac89e6fbe035b0327eb5ef1d6e832d3038f9643b",
+    "negative-weapon/native.log.gz": "63408785fa23fdd189ab4a87ac89e6fbe035b0327eb5ef1d6e832d3038f9643b",
+    "provenance.json": "00f92fcb906db87739b817ddc1daca2ae84f64be47685a9ed888ebf95626762b",
+    "qualification-runner.py": "7782738a0d2652c24688cdc6e731d557d69e65d10cd93bcc23d9d35625526a0f",
+    "record/metrics.csv.gz": "9568cb0134f25991ad11976637661e41e76eae3b818af48945871c3b6116461a",
+    "record/metrics.sidecar.json": "7a124baa1e9ce22a76c0a6b188a6c265460b94606f0c0bd84f5a86f6021b8c88",
+    "record/native.log.gz": "796aaab55f8879c15ccf14c44d8037aede52a72e0657e1a8d77a734e653bff3c",
+    "record/run.json": "bd1a9565e4b60e6757d691354587109f371ef062224af8335a68d27071e0b987",
+    "record/scenario.json": "623ca4994de3baeb9c6fa4f46bd24c5645be368c00c62108843258cf666299c5",
+    "record/shots.json": "4d333252d93e2bc02874ef6d8a80304caae07d645d5243b14dbb529ff01aed79",
+    "record/timings.jsonl.gz": "c8074e3b4023a301468a973f7c850aa55799fba6582560af04c456691ad33b64",
+    "replay/metrics.csv.gz": "6f6e3e404200a5774cf68963f1081333c93cbebdd19137bb187062796507d6c4",
+    "replay/metrics.sidecar.json": "07d160375df8cfa8455e19b25db6e1d0280cf8b6ddc86d906f069b87ab34af11",
+    "replay/native.log.gz": "b506d18da64e43af44fc119adca7240a966a331cc2314d76b0b031490eda1fb5",
+    "replay/run.json": "e8265678f901efd7c7f708a93dde9dfe08872f0eed201a39a4015ae49b774865",
+    "replay/scenario.json": "93935a4a6f5131d4164fdf8f781d697ccca4030f63ee96606e2ff410942c6189",
+    "replay/shots.json": "4d333252d93e2bc02874ef6d8a80304caae07d645d5243b14dbb529ff01aed79",
+    "replay/timings.jsonl.gz": "7655464e3083a5b4d8159864481e5fd33ab7af77f87479ab195cc8be0eee107e",
+    "tests.log.gz": "8fb6656a494e314aa76dfec2e0ad259fbad64af95a8816ea99c92e3e9c3e9d14"
+  }
+}

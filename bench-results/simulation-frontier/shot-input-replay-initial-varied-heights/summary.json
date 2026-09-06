@@ -1,0 +1,106 @@
+{
+  "scope": "Exact external input replay and error handling; not deterministic physics or a performance comparison",
+  "city_simulation_changed": false,
+  "identical_full_run_shot_inputs": true,
+  "cases": {
+    "record": {
+      "ticks": 1200,
+      "attempted": 200,
+      "hits": 200,
+      "misses": 0,
+      "max_awake": 4292,
+      "replay_ticks": 502,
+      "final_broken_bonds": 17630,
+      "input_sha256": "ab32255dbe5c4c36694e9b2694b637826647338b6d5b4f7f540d7d5e6285afcd",
+      "membership_mismatch_ticks": 0
+    },
+    "replay": {
+      "ticks": 1200,
+      "attempted": 200,
+      "hits": 182,
+      "misses": 18,
+      "max_awake": 4221,
+      "replay_ticks": 427,
+      "final_broken_bonds": 17107,
+      "input_sha256": "ab32255dbe5c4c36694e9b2694b637826647338b6d5b4f7f540d7d5e6285afcd",
+      "membership_mismatch_ticks": 0
+    },
+    "dispatch": {
+      "ticks": 120,
+      "attempted": 3,
+      "hits": 1,
+      "misses": 2,
+      "max_awake": 113,
+      "replay_ticks": 3,
+      "final_broken_bonds": 485,
+      "input_sha256": "92a57596e77f0e7116253b8f2f323e29e24d62e9caca2a2ee866cbf37c899651",
+      "membership_mismatch_ticks": 0
+    }
+  },
+  "negative_cases": [
+    {
+      "case": "weapon",
+      "exit_code": 1,
+      "output_created": false,
+      "metadata_rejected": true
+    },
+    {
+      "case": "duration",
+      "exit_code": 1,
+      "output_created": false,
+      "metadata_rejected": true
+    }
+  ],
+  "first_counter_divergence": {
+    "tick": 64,
+    "record": {
+      "bodies": "344",
+      "awake": "223",
+      "bonds": "983"
+    },
+    "replay": {
+      "bodies": "345",
+      "awake": "224",
+      "bonds": "979"
+    }
+  },
+  "full_multiplayer_performance_gate": false,
+  "awake_target_5000_reached": false,
+  "configuration_note": "configuration-used.json is the pre-existing path/environment template. Its old binary/revision fields are unused by the runner; provenance.json records the executable and sources actually exercised.",
+  "evidence_sha256": {
+    "build.log.gz": "1045d8635d48fee6176a64524f21974280f08ec946948998310f512bbb292085",
+    "configuration-used.json": "5f0409b8e2cfd2caf16d10baa4557f68a2f6485f768f155e53bf8ed2fbac75ee",
+    "dispatch/metrics.csv.gz": "abcaf3ddda7959d74e46cc92dcdf3ec7fb1848d0d918675ec28139ce5e770dcb",
+    "dispatch/metrics.sidecar.json": "3da31503b538a7eddb8ef34ea85cc584bdd3410fd5ab1406ea0ee95e89621e55",
+    "dispatch/native.log.gz": "4e5cc98174569e78fb07e3907b7cec4692af3d6286ce6c4cb08b4f631cb768f6",
+    "dispatch/run.json": "e56f80ea3f70845951a7a019945d5fc4f81daca06c2a9679f8f3766e0e2201f4",
+    "dispatch/scenario.json": "3eaf252d0d7d1bc57f6e3302f3ea5fa90095281a984e1fcb3830f48cb6fd180d",
+    "dispatch/shots.json": "92a57596e77f0e7116253b8f2f323e29e24d62e9caca2a2ee866cbf37c899651",
+    "dispatch/timings.jsonl.gz": "3fbf39cf5d99980e275439c4aa1f1bb59022e94b6d4a65f4eab72ab783362ae9",
+    "dispatch-fixture.json": "92a57596e77f0e7116253b8f2f323e29e24d62e9caca2a2ee866cbf37c899651",
+    "exclusive-runner.py": "13c6773c792aeb265adf9ff627e793a533e485a743f114222348e4504adbcba0",
+    "exclusive.log.gz": "7051ede0919d06a1401c036d3c7ddd883c7dba90426226109685910f58ec0a5b",
+    "live-state.json": "5a3958f0f94e276431e916997d76f4da7383e2624158eb913e2481dcfe9932a9",
+    "negative-duration/native.log.gz": "63408785fa23fdd189ab4a87ac89e6fbe035b0327eb5ef1d6e832d3038f9643b",
+    "negative-weapon/native.log.gz": "63408785fa23fdd189ab4a87ac89e6fbe035b0327eb5ef1d6e832d3038f9643b",
+    "provenance.json": "11feb6cfceaf062e4e8fee1c94c9d4a4bc78717e28043869c217d004c037e91d",
+    "qualification-runner.py": "3fe35f148243c7add4f8e6e0f36bb1d5d5f8f83b559ef97e6fcbb766c1fa4c7a",
+    "record/metrics.csv.gz": "dfa533ffd704d57334c62519cbf83527f58e33020d06bc406d648f0f53d4a6a2",
+    "record/metrics.sidecar.json": "e86d2acf106210a755f9b778d893a884053d37796dbecd758f6599f46303b48a",
+    "record/native.log.gz": "0114f90762bb227ab4befd9d46b7bff81e845ea36980632124074e35cb3c51cc",
+    "record/run.json": "26d1cd96225b1e28afc1675982851db6f3989a4983c4915efcdccbdef3672f2d",
+    "record/scenario.json": "45ed561b8cda67714c108aa71f886b1c7fbd6bf448b9b40046f7d96f50bf33c5",
+    "record/shots.json": "ab32255dbe5c4c36694e9b2694b637826647338b6d5b4f7f540d7d5e6285afcd",
+    "record/timings.jsonl.gz": "d7a16afb4b9b9e1363f3b850a75c27edcc74d86b54567470e3927f46a237e936",
+    "replay/metrics.csv.gz": "4272a735828a50b61c0e38b8c25e8b8fd6d0cca8ce3ef08ced1d93252e3a420f",
+    "replay/metrics.sidecar.json": "27fd9ad5472595db77e1d81f8ef5556c9d5d362e34029c94a70d887a99819324",
+    "replay/native.log.gz": "150c814c47b73db2da72882651d7539c9db870c4d7aa7b99ddd6b1cf9dddc09c",
+    "replay/run.json": "f01732dea2a2454b16c14d5219537562980c48112ccdf14a81b0264dde40bb15",
+    "replay/scenario.json": "a20090e8fa727cf52dfe916865c7f7f03cc1f744857fb531f662adedc6f1532b",
+    "replay/shots.json": "ab32255dbe5c4c36694e9b2694b637826647338b6d5b4f7f540d7d5e6285afcd",
+    "replay/timings.jsonl.gz": "01022cc01b293b92e72168e40909da03dbf0f1b2bf8e9b7bc8d15fa41f8d2a7c",
+    "tests.log.gz": "f10f5c17b1662e82fd0f3d3c735d5e54078494b1b730b94c3cfacdcee32dcfa3"
+  },
+  "matches_live_city_manifest": false,
+  "superseded_reason": "The recorder ignored VIBE_CITY_VARIED_HEIGHTS=0, building 86,966 chunks instead of the live 96,420. Retained as the initial exact-input test, not a live-scene qualification."
+}

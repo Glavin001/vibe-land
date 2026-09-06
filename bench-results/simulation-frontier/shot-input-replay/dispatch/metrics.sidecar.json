@@ -1,0 +1,46 @@
+{
+  "bonds": 298172,
+  "brokenBonds": 485,
+  "chunkMigrations": 72700,
+  "chunks": 96420,
+  "grid": 2,
+  "manifestHash": "1172d302f5598a5f366d8149b3772f8a9642788f42b753f00e8c3607fbe09c50",
+  "membershipMismatchTicks": 0,
+  "peakBodies": 113,
+  "physicsHz": 60,
+  "scene": "/root/workspace/vibe-land-4-rooted-wire/destruction/assets/scenes/fractured-downtown.json",
+  "shotHits": 1,
+  "shotInputs": 3,
+  "shotTapeReplay": true,
+  "structures": [
+    {
+      "bondIdBits": 17,
+      "bonds": 74543,
+      "chunkIdBits": 15,
+      "chunks": 24105,
+      "structureId": 0
+    },
+    {
+      "bondIdBits": 17,
+      "bonds": 74543,
+      "chunkIdBits": 15,
+      "chunks": 24105,
+      "structureId": 1
+    },
+    {
+      "bondIdBits": 17,
+      "bonds": 74543,
+      "chunkIdBits": 15,
+      "chunks": 24105,
+      "structureId": 2
+    },
+    {
+      "bondIdBits": 17,
+      "bonds": 74543,
+      "chunkIdBits": 15,
+      "chunks": 24105,
+      "structureId": 3
+    }
+  ],
+  "ticks": 120
+}

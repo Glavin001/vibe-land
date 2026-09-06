@@ -1,0 +1,32 @@
+{
+  "binary_sha256": "4409d43c8841e466036bb2ef5528801b3bf8c5b04588eaca9a3a80b2b76bf080",
+  "game_revision": "d4f3611bda36e4d0acde5ddfe85cc1e4aba1b125",
+  "solver_revision": "bd71ce1bd9765dd65dc6d8f8f9d7150bf9e1ab23",
+  "simulation_env": {
+    "BLAST_GPU_IMPULSE_READBACK": "0",
+    "BLAST_GPU_DETERMINISTIC_REDUCTIONS": "0",
+    "VIBE_PHYSX_DIRECT_GPU": "1",
+    "VIBE_CITY_VARIED_HEIGHTS": "0",
+    "VIBE_CITY_EXCESS_FORCES": "1",
+    "VIBE_WORLD_RESTITUTION": "0.02",
+    "VIBE_CITY_STRESS_LIMIT_SCALE": "0.45",
+    "VIBE_CITY_FREEZE": "1",
+    "VIBE_PHYSICS_BACKEND": "physx_gpu",
+    "BLAST_GPU_WHOLE_RESET_ON_TOPOLOGY": "1",
+    "BLAST_BOND_STRESS_GPU": "1",
+    "VIBE_CITY_SOLVER_ITERATIONS": "32",
+    "VIBE_CITY_RESIM_PASSES": "1",
+    "VIBE_CITY_SHOT_STRESS_IMPULSE": "1.2e7",
+    "VIBE_CITY_GRID": "2",
+    "VIBE_CITY_SCENE": "fractured-downtown.json",
+    "VIBE_CITY_SHOT_BLAST_RADIUS": "2.5",
+    "VIBE_WORLD_FRICTION": "0.75"
+  },
+  "scene": "/root/workspace/vibe-land-4-rooted-wire/destruction/assets/scenes/fractured-downtown.json",
+  "scene_sha256": "df3a4744309595a21ca70c2f7c8bba2ddfc4308aa39e4b925add970385612854",
+  "physx_library_sha256": "a9d31ed627fe083a5f47f67b5c1f0600f0b2353f1e5b695bd32d2d3dca0df0a8",
+  "sources": {
+    "server/src/bin/record_city_trace.rs": "3c53b89ac1d791ab2e12ed239d388a7255b8e3959402162ea2236395bf8b6622",
+    "server/src/bin/record_city_trace/shot_tape.rs": "999023f161e052a2e7c9d80436bb1782867af02b541129921a330f8faf46555d"
+  }
+}

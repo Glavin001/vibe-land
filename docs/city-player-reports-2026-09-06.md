@@ -160,3 +160,11 @@ Datagrams and recoverable fallbacks no longer occupy reliable-state queue slots;
 a stalled reliable write does not block WebTransport datagram submission.
 Private city destruction and public browser checks passed. Heavy simulation
 ticks and below-ground geometry remain open, with no claimed physics speedup.
+
+
+The subsequent [exact-shot recorder qualification](shot-input-replay-2026-09-06.md)
+found and corrected recorder drift in shot range and authored building heights.
+Its full-height manifest now matches this live city exactly. Recorded inputs are
+replayed bit for bit at 5–7k awake-body loads, while physical outcome variation
+remains visible. This supplies better comparison inputs; it does not resolve the
+reported below-ground geometry or establish a new simulation speedup.
