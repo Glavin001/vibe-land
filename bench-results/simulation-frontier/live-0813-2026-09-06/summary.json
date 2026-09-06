@@ -1,0 +1,267 @@
+{
+  "start_utc": "2026-09-06T08:13:29Z",
+  "end_utc": "2026-09-06T08:14:14Z",
+  "wall_seconds": 45.00073401303962,
+  "samples": 10,
+  "server_pid": 166548,
+  "exe": "/root/workspace/vibe-land-4/.certs/vast-city/web-fps-server-outbound-streams-1788666961620509945",
+  "exe_sha256": "7c5d04267217f6993ca6da0464de8a3ea8ebf8bfe3283f089521f003841aa5ee",
+  "tick_rate": 6.666557925767847,
+  "simulated_seconds": 5.0,
+  "rolling_tick_mean_ms": {
+    "min": 127.16011,
+    "mean": 132.73236,
+    "max": 138.55302
+  },
+  "rolling_tick_p95_ms": {
+    "min": 134.87257,
+    "mean": 142.17942,
+    "max": 148.36739
+  },
+  "contact_host_ms": {
+    "min": 59.458422999999996,
+    "mean": 65.2032097,
+    "max": 74.829886
+  },
+  "contact_phases_ms": {
+    "ownership": {
+      "min": 5.270394,
+      "mean": 5.8043974,
+      "max": 6.653324
+    },
+    "validate": {
+      "min": 6.422213,
+      "mean": 6.8668971,
+      "max": 7.70635
+    },
+    "sort": {
+      "min": 17.821493,
+      "mean": 18.2722846,
+      "max": 18.980637
+    },
+    "reduce": {
+      "min": 12.099036,
+      "mean": 14.025215,
+      "max": 16.676186
+    },
+    "route": {
+      "min": 17.153847,
+      "mean": 20.2344156,
+      "max": 25.25846
+    },
+    "copy": {
+      "min": 2.023435,
+      "mean": 2.1694731000000003,
+      "max": 2.401311
+    }
+  },
+  "contact_records": {
+    "min": 240581.0,
+    "mean": 241448.9,
+    "max": 243282.0
+  },
+  "city_point_samples": {
+    "gpu_stress_solve_ms": {
+      "min": 1.9477441,
+      "mean": 2.49416644,
+      "max": 3.050752
+    },
+    "stress_solve_ms": {
+      "min": 20.15718,
+      "mean": 21.7441304,
+      "max": 23.753311
+    },
+    "encode_shared_ms": {
+      "min": 1.590919,
+      "mean": 1.81797732,
+      "max": 2.034837
+    },
+    "client_datagrams_ms": {
+      "min": 0.126296,
+      "mean": 0.14679420099999999,
+      "max": 0.196788
+    },
+    "resim_capture_ms": {
+      "min": 8.112368,
+      "mean": 8.883773099999999,
+      "max": 9.655035
+    },
+    "resim_restore_ms": {
+      "min": 0.0,
+      "mean": 0.0,
+      "max": 0.0
+    },
+    "resim_step_ms": {
+      "min": 0.0,
+      "mean": 0.0,
+      "max": 0.0
+    },
+    "resim_tick_ms": {
+      "min": 0.0,
+      "mean": 0.0,
+      "max": 0.0
+    }
+  },
+  "gpu_utilization_percent": {
+    "min": 2.0,
+    "mean": 10.3,
+    "max": 17.0
+  },
+  "cpu_core_equivalents": 1.3282005574104905,
+  "awake": {
+    "min": 8883,
+    "mean": 8897.2,
+    "max": 8905
+  },
+  "frozen": {
+    "min": 24451,
+    "mean": 24456.4,
+    "max": 24468
+  },
+  "bonds_start_end": [
+    126534,
+    126539
+  ],
+  "network_delta": {
+    "total_inbound_bytes": 25,
+    "total_outbound_bytes": 1064608,
+    "total_inbound_packets": 5,
+    "total_outbound_packets": 1051,
+    "reliable_packets_sent": 510,
+    "datagram_packets_sent": 543,
+    "datagram_fallbacks": 0,
+    "malformed_packets": 0,
+    "dropped_outbound_packets": 0,
+    "dropped_outbound_snapshots": 0
+  },
+  "players": [
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1
+  ],
+  "pending_inputs": [
+    [
+      0
+    ],
+    [
+      0
+    ],
+    [
+      0
+    ],
+    [
+      0
+    ],
+    [
+      0
+    ],
+    [
+      0
+    ],
+    [
+      0
+    ],
+    [
+      0
+    ],
+    [
+      0
+    ],
+    [
+      0
+    ]
+  ],
+  "deduplicated_ring": {
+    "count": 600,
+    "first_tick": 127920,
+    "last_tick": 128519,
+    "missing_ticks": 0,
+    "total_ms": {
+      "min": 114.59468,
+      "mean": 130.12581513333333,
+      "max": 534.507,
+      "p95": 141.10756
+    },
+    "worst_tick": {
+      "t": 128249,
+      "total": 534.507,
+      "dyn_ms": 91.221924,
+      "city": 433.69168,
+      "awake": 8896,
+      "frozen": 24463,
+      "flips": 201896
+    }
+  },
+  "sample_sha256": {
+    "00.json.gz": "a26240eac4caca648c402f28bd593a9711515f5b043635efdf0ed25e95a9c463",
+    "01.json.gz": "42857fdb91661581336302b8913c99971e97b293ef297740c66de19490c97531",
+    "02.json.gz": "84054708b9ca42c749d8594cfc2bed13db7604a7b759ad65ae5349cdd94fffe8",
+    "03.json.gz": "5a915281961f918828c0dff5f342ad909bd217f48441e57c57ba082e4b6be797",
+    "04.json.gz": "3f877c52eec74ea2c0b000ad2eadeed9859add4818e39bdefbe3ee19ce1b5855",
+    "05.json.gz": "9c4452b9d22616b34422dd9dfa70c08e518d5cfe36bfdfa353e521e211b6789a",
+    "06.json.gz": "dfa961e78c385c930014a7a8cd1707e2c5a70e5d0c23ceefa4e559451adfbaa5",
+    "07.json.gz": "da6df247af07d8770199dfccabe5dea90745e02c1a544ce1a8546d86151274b6",
+    "08.json.gz": "dda2e8365ab17af758c63540848b6f6e95e3e03fe6e28e64d68186225707d9e5",
+    "09.json.gz": "b1e97de31ca33384113c4cb298e94e1c0ecc2ae57ac62c08c9011ff378ceacdb"
+  },
+  "outbound_mbps": 0.18926055733962283,
+  "unique_published_snapshots": 6,
+  "city_counter_delta": {
+    "freeze_flips": 162,
+    "unfreeze_flips": 151,
+    "contact_wakes": 140,
+    "resettled_wakes": 87,
+    "contacts_queued": 5927350,
+    "contacts_processed": 5927350,
+    "contacts_dropped": 0,
+    "escaped_bodies_parked": 0
+  },
+  "limits": [
+    "Read-only capture with one connected player. No server restart, build, competing GPU benchmark or settings change.",
+    "Rolling timing windows overlap; phase samples can repeat the same published tick. Sample averages are not per-tick distributions.",
+    "Published tick numbers update each 60 simulated ticks, so the wall-clock tick-rate estimate is quantized.",
+    "The merged 600-tick ring includes history before the 45-second sample.",
+    "GPU utilization is sampled engine duty cycle, not occupancy or a kernel profile.",
+    "Only 5 inbound packets/25 bytes arrived; this window does not qualify active-input latency.",
+    "Parent and child spans overlap; do not add nested timers.",
+    "No before/after optimization comparison is made."
+  ],
+  "source_sha256": {
+    "live_ground_source": {
+      "path": "/root/workspace/vibe-land-4-rooted-wire/server/src/demo_world.rs",
+      "sha256": "df06e3d367c74c9b994d85831116b570ac2b48bd6ecab06da2547dd439d791dc"
+    },
+    "restore_adapter": {
+      "path": "/root/workspace/blast-stress-solver-2-rooted-wire/blast/source/sdk/extensions/stressphysx/NvBlastExtStressPhysX.cpp",
+      "sha256": "6127d7c3956d0aac89651d34478e16c43fc6592ca62c2eaffa970e594c688f71"
+    },
+    "host_pose_setter": {
+      "path": "/root/workspace/physx-gpu-activity/physx/source/physx/src/NpRigidDynamic.cpp",
+      "sha256": "9f8ad5bdbf3ac0274a14d0c0fcd7869c15c4e785342f884ff8b1d5645d1738bd"
+    },
+    "body_transform_change": {
+      "path": "/root/workspace/physx-gpu-activity/physx/source/simulationcontroller/src/ScBodySim.cpp",
+      "sha256": "e049004a5e6020e48cd47cb684dbedbce4d62dce8e8aef95c65c68fa9546e59e"
+    },
+    "shape_transform_change": {
+      "path": "/root/workspace/physx-gpu-activity/physx/source/simulationcontroller/src/ScShapeSimBase.cpp",
+      "sha256": "31ae910e3cf93f82ad1a9b23a3450f7ffdd8ccd1cc1c1998c8a12542bc4748b9"
+    },
+    "gpu_contact_refresh": {
+      "path": "/root/workspace/physx-gpu-activity/physx/source/gpunarrowphase/src/PxgNarrowphaseCore.cpp",
+      "sha256": "378f981c36587c4e421cbb107916e4adbd49ac811f21fa90284e709367b8246c"
+    },
+    "direct_gpu_pose_kernel": {
+      "path": "/root/workspace/physx-gpu-activity/physx/source/gpusimulationcontroller/src/CUDA/updateBodiesAndShapes.cu",
+      "sha256": "17db6a3d0dc4bb85635a39928b5ce19eb7925d5c1dc6530c5ddc404a20019de9"
+    }
+  },
+  "report_classification_sha256": "193eb5be1214630944710b52bd4b5731163812550948ca193da7bd559fb3857d"
+}

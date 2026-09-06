@@ -1,0 +1,254 @@
+[
+  {
+    "report": "report-1788669965-city-default-tick3360",
+    "source_sha256": {
+      "client.json": "e27701f7aab00090a2d431ff46cc7eabf13b68bb75538a453a9999fb263295fe",
+      "server.json": "24104314632cee539fb801196a182fdb960730d38fe092159ca8935e1233a95b"
+    },
+    "captured_at": "2026-09-06T04:46:05.665Z",
+    "capture_context": {
+      "loopback_url": false,
+      "headless_browser": false,
+      "client_city_telemetry_present": true,
+      "client_frame_telemetry_present": true,
+      "server_players_at_snapshot": 1,
+      "origin_hint": "unclassified"
+    },
+    "server_tick": 3360,
+    "awake_bodies": 1579,
+    "broken_bonds": 7717,
+    "client_transport": "webtransport",
+    "shots_fired": 4,
+    "client_geometry_point_sample": {
+      "minChunkY": -0.14777778089046478,
+      "chunksBelowGround": 0,
+      "staleDrawnChunks": 0,
+      "chunkUpdateP95Ms": 0.7450000047683716,
+      "deepest": null
+    }
+  },
+  {
+    "report": "report-1788669997-city-default-tick4620",
+    "source_sha256": {
+      "client.json": "6ce1e37b65328587c698329c3b4e8c9e204216000539b016ef824de6067d474f",
+      "server.json": "482c930307653ef217ce0d7d1188661a2390695ee317da6308ca4dba2598bbc2"
+    },
+    "captured_at": "2026-09-06T04:46:36.934Z",
+    "capture_context": {
+      "loopback_url": false,
+      "headless_browser": false,
+      "client_city_telemetry_present": true,
+      "client_frame_telemetry_present": true,
+      "server_players_at_snapshot": 1,
+      "origin_hint": "unclassified"
+    },
+    "server_tick": 4620,
+    "awake_bodies": 2148,
+    "broken_bonds": 12261,
+    "client_transport": "webtransport",
+    "shots_fired": 7,
+    "client_geometry_point_sample": {
+      "minChunkY": -0.3996351361274719,
+      "chunksBelowGround": 1,
+      "staleDrawnChunks": 0,
+      "chunkUpdateP95Ms": 1.5900000035762787,
+      "deepest": null
+    }
+  },
+  {
+    "report": "report-1788670018-city-default-tick4920",
+    "source_sha256": {
+      "client.json": "ee3fca0607fbbd9d615bc98cd6dd0bf7c67223a224f2d4d5e75ab56473ba1566",
+      "server.json": "dff31d5d1cab991f64dbbfb18bafa0c831a6edda649a8e6a2b35d3af6d5d7c87"
+    },
+    "captured_at": "2026-09-06T04:46:58.587Z",
+    "capture_context": {
+      "loopback_url": false,
+      "headless_browser": false,
+      "client_city_telemetry_present": true,
+      "client_frame_telemetry_present": true,
+      "server_players_at_snapshot": 1,
+      "origin_hint": "unclassified"
+    },
+    "server_tick": 4920,
+    "awake_bodies": 4066,
+    "broken_bonds": 21100,
+    "client_transport": "webtransport",
+    "shots_fired": 16,
+    "client_geometry_point_sample": {
+      "minChunkY": -1.0079295635223389,
+      "chunksBelowGround": 15,
+      "staleDrawnChunks": 0,
+      "chunkUpdateP95Ms": 1.4850000143051147,
+      "deepest": null
+    }
+  },
+  {
+    "report": "report-1788670031-city-default-tick5040",
+    "source_sha256": {
+      "client.json": "a37eb0a1815b582581d75df7c0ceb02af38094c3fb44dcec6c28585f76e8ecd4",
+      "server.json": "36da5c45fd8fac52774257991f74b6d8b20ba20461bcfe29de19ef656d9aae26"
+    },
+    "captured_at": "2026-09-06T04:47:11.453Z",
+    "capture_context": {
+      "loopback_url": false,
+      "headless_browser": false,
+      "client_city_telemetry_present": true,
+      "client_frame_telemetry_present": true,
+      "server_players_at_snapshot": 1,
+      "origin_hint": "unclassified"
+    },
+    "server_tick": 5040,
+    "awake_bodies": 4599,
+    "broken_bonds": 22754,
+    "client_transport": "webtransport",
+    "shots_fired": 20,
+    "client_geometry_point_sample": {
+      "minChunkY": -1.0991110801696777,
+      "chunksBelowGround": 18,
+      "staleDrawnChunks": 0,
+      "chunkUpdateP95Ms": 2.2600000202655792,
+      "deepest": null
+    }
+  },
+  {
+    "report": "report-1788670072-city-default-tick5220",
+    "source_sha256": {
+      "client.json": "a4d6aba7184f80009c4118a57fde75b20ee89335be858263fa9fdbfead2ad4a2",
+      "server.json": "030d87aaac1464e4aa343550540349dd384f1b4e89d0e3ea32a5049ce3a5c111"
+    },
+    "captured_at": "2026-09-06T04:47:52.379Z",
+    "capture_context": {
+      "loopback_url": false,
+      "headless_browser": false,
+      "client_city_telemetry_present": true,
+      "client_frame_telemetry_present": true,
+      "server_players_at_snapshot": 1,
+      "origin_hint": "unclassified"
+    },
+    "server_tick": 5220,
+    "awake_bodies": 7126,
+    "broken_bonds": 32681,
+    "client_transport": "webtransport",
+    "shots_fired": 20,
+    "client_geometry_point_sample": {
+      "minChunkY": -1.9935221672058105,
+      "chunksBelowGround": 127,
+      "staleDrawnChunks": 0,
+      "chunkUpdateP95Ms": 1.6400000154972076,
+      "deepest": null
+    }
+  },
+  {
+    "report": "report-1788670078-city-default-tick5280",
+    "source_sha256": {
+      "client.json": "5520297fa76cf8c50eb3b9606cd88ec7e4794593e94595ad6bb2ffac82e72ec9",
+      "server.json": "814813fc6827b662ce1ba8dbbf844eac2ad3c1b75a8fb08fc5d98d9d957f7e5f"
+    },
+    "captured_at": "2026-09-06T04:47:58.335Z",
+    "capture_context": {
+      "loopback_url": false,
+      "headless_browser": false,
+      "client_city_telemetry_present": true,
+      "client_frame_telemetry_present": true,
+      "server_players_at_snapshot": 1,
+      "origin_hint": "unclassified"
+    },
+    "server_tick": 5280,
+    "awake_bodies": 7887,
+    "broken_bonds": 35434,
+    "client_transport": "webtransport",
+    "shots_fired": 21,
+    "client_geometry_point_sample": {
+      "minChunkY": -1.9937777519226074,
+      "chunksBelowGround": 164,
+      "staleDrawnChunks": 0,
+      "chunkUpdateP95Ms": 1.7200000286102295,
+      "deepest": null
+    }
+  },
+  {
+    "report": "report-1788681078-city-default-tick118860",
+    "source_sha256": {
+      "client.json": "5fdef52b5e49d896ff612fa49a403ea7a242660c38f1cd11edcd6668b4498dd0",
+      "server.json": "c53b6fe7d9e457655d8713e6696b0d26ef215533c57809b0c1be1c22ef020cdc"
+    },
+    "captured_at": "2026-09-06T07:51:18.368Z",
+    "capture_context": {
+      "loopback_url": true,
+      "headless_browser": true,
+      "client_city_telemetry_present": false,
+      "client_frame_telemetry_present": false,
+      "server_players_at_snapshot": 1,
+      "origin_hint": "local_headless"
+    },
+    "server_tick": 118860,
+    "awake_bodies": 9782,
+    "broken_bonds": 126429,
+    "client_transport": "connecting",
+    "shots_fired": 0,
+    "client_geometry_point_sample": {
+      "minChunkY": null,
+      "chunksBelowGround": null,
+      "staleDrawnChunks": null,
+      "chunkUpdateP95Ms": null,
+      "deepest": null
+    }
+  },
+  {
+    "report": "report-1788681283-city-default-tick120180",
+    "source_sha256": {
+      "client.json": "de8a9e7e04ecee1e95fef39f36900c9ef9717aa8fa5efcf89642c17534e9021e",
+      "server.json": "85e912d3765b566554c411ff6351b6020285289c4a8b5ee10bb46417f0946205"
+    },
+    "captured_at": "2026-09-06T07:54:43.913Z",
+    "capture_context": {
+      "loopback_url": true,
+      "headless_browser": true,
+      "client_city_telemetry_present": false,
+      "client_frame_telemetry_present": false,
+      "server_players_at_snapshot": 1,
+      "origin_hint": "local_headless"
+    },
+    "server_tick": 120180,
+    "awake_bodies": 9420,
+    "broken_bonds": 126441,
+    "client_transport": "connecting",
+    "shots_fired": 0,
+    "client_geometry_point_sample": {
+      "minChunkY": null,
+      "chunksBelowGround": null,
+      "staleDrawnChunks": null,
+      "chunkUpdateP95Ms": null,
+      "deepest": null
+    }
+  },
+  {
+    "report": "report-1788681348-city-default-tick120660",
+    "source_sha256": {
+      "client.json": "3242135dffd09a3e6ca81aad48131a22752e69fcf3a82aa22c67618410ba3102",
+      "server.json": "709c421152b403e405e907f3c507ef40400e5f90e9338a051c6d7dea3603d2e7"
+    },
+    "captured_at": "2026-09-06T07:55:48.657Z",
+    "capture_context": {
+      "loopback_url": true,
+      "headless_browser": true,
+      "client_city_telemetry_present": false,
+      "client_frame_telemetry_present": false,
+      "server_players_at_snapshot": 1,
+      "origin_hint": "local_headless"
+    },
+    "server_tick": 120660,
+    "awake_bodies": 9641,
+    "broken_bonds": 126442,
+    "client_transport": "connecting",
+    "shots_fired": 0,
+    "client_geometry_point_sample": {
+      "minChunkY": null,
+      "chunksBelowGround": null,
+      "staleDrawnChunks": null,
+      "chunkUpdateP95Ms": null,
+      "deepest": null
+    }
+  }
+]
