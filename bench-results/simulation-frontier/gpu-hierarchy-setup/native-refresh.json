@@ -1,0 +1,93 @@
+[
+  {
+    "frame": 2,
+    "policy": "unchanged",
+    "iterations": 326,
+    "converged": true,
+    "force_residual": 1.767248813033076e-11,
+    "moment_residual": 2.150778593472537e-11,
+    "bond_relative_error": 1.835858502975077e-11,
+    "passed": true,
+    "cpu_setup_seconds": 2.173706889152527e-06,
+    "cpu_solve_seconds": 2.4332180116325617
+  },
+  {
+    "frame": 2,
+    "policy": "refresh-pinv",
+    "iterations": 243,
+    "converged": true,
+    "force_residual": 1.4645969365901714e-11,
+    "moment_residual": 1.820782434825928e-11,
+    "bond_relative_error": 1.4868189660824433e-11,
+    "passed": true,
+    "cpu_setup_seconds": 1.1789690279401839,
+    "cpu_solve_seconds": 1.8012173450551927,
+    "levels": [
+      {
+        "rows": 5100,
+        "matrix_nnz": 877896,
+        "coupling_nnz": 3155881
+      },
+      {
+        "rows": 738,
+        "matrix_nnz": 224532,
+        "coupling_nnz": 10349784
+      },
+      {
+        "rows": 96,
+        "matrix_nnz": 8928,
+        "coupling_nnz": 6893604
+      }
+    ],
+    "coarse_eigenvalue_min": 7.924953755631142e-06,
+    "coarse_eigenvalue_max": 0.7771431316155438,
+    "coarse_near_null": 0
+  },
+  {
+    "frame": 2,
+    "policy": "unsmoothed-4",
+    "iterations": 142,
+    "converged": true,
+    "force_residual": 1.650483290898246e-11,
+    "moment_residual": 1.9936669582801375e-11,
+    "bond_relative_error": 3.053714303045069e-11,
+    "passed": true,
+    "cpu_setup_seconds": 0.16392897674813867,
+    "cpu_solve_seconds": 0.7176768113858998,
+    "levels": [
+      {
+        "rows": 35616,
+        "matrix_nnz": 811624,
+        "coarse_rows": 9564,
+        "interpolation_nnz": 213696
+      },
+      {
+        "rows": 9564,
+        "matrix_nnz": 440712,
+        "coarse_rows": 2610,
+        "interpolation_nnz": 57384
+      },
+      {
+        "rows": 2610,
+        "matrix_nnz": 145692,
+        "coarse_rows": 798,
+        "interpolation_nnz": 15660
+      },
+      {
+        "rows": 798,
+        "matrix_nnz": 37548,
+        "coarse_rows": 294,
+        "interpolation_nnz": 4788
+      },
+      {
+        "rows": 294,
+        "matrix_nnz": 8820,
+        "coarse_rows": 126,
+        "interpolation_nnz": 1764
+      }
+    ],
+    "coarse_eigenvalue_min": -3.5838108181976455e-14,
+    "coarse_eigenvalue_max": 672.9299026680167,
+    "coarse_near_null": 12
+  }
+]

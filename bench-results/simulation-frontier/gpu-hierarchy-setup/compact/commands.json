@@ -1,0 +1,183 @@
+[
+  {
+    "name": "small",
+    "command": [
+      "/root/workspace/blast-stress-solver-2/demos/blast-stress-demo/build-gpu-activity/gpu_galerkin_test"
+    ],
+    "exit": 0
+  },
+  {
+    "name": "anchored-alg0",
+    "command": [
+      "/root/workspace/blast-stress-solver-2/demos/blast-stress-demo/build-gpu-activity/multilevel_gpu_test",
+      "/tmp/multilevel-anchored.bin",
+      "--native-graph",
+      "/tmp/physical-graph-final/building-anchored-component.input",
+      "--resident-operator",
+      "--gpu-projector",
+      "--float-preconditioner",
+      "--setup-repeats",
+      "8",
+      "--solves",
+      "4"
+    ],
+    "exit": 0
+  },
+  {
+    "name": "anchored-alg1",
+    "command": [
+      "/root/workspace/blast-stress-solver-2/demos/blast-stress-demo/build-gpu-activity/multilevel_gpu_test",
+      "/tmp/multilevel-anchored.bin",
+      "--native-graph",
+      "/tmp/physical-graph-final/building-anchored-component.input",
+      "--resident-operator",
+      "--gpu-projector",
+      "--float-preconditioner",
+      "--setup-repeats",
+      "8",
+      "--solves",
+      "4",
+      "--gpu-galerkin",
+      "--verify-galerkin",
+      "--galerkin-algorithm",
+      "1"
+    ],
+    "exit": 0
+  },
+  {
+    "name": "anchored-alg2",
+    "command": [
+      "/root/workspace/blast-stress-solver-2/demos/blast-stress-demo/build-gpu-activity/multilevel_gpu_test",
+      "/tmp/multilevel-anchored.bin",
+      "--native-graph",
+      "/tmp/physical-graph-final/building-anchored-component.input",
+      "--resident-operator",
+      "--gpu-projector",
+      "--float-preconditioner",
+      "--setup-repeats",
+      "8",
+      "--solves",
+      "4",
+      "--gpu-galerkin",
+      "--verify-galerkin",
+      "--galerkin-algorithm",
+      "2"
+    ],
+    "exit": 0
+  },
+  {
+    "name": "anchored-alg3",
+    "command": [
+      "/root/workspace/blast-stress-solver-2/demos/blast-stress-demo/build-gpu-activity/multilevel_gpu_test",
+      "/tmp/multilevel-anchored.bin",
+      "--native-graph",
+      "/tmp/physical-graph-final/building-anchored-component.input",
+      "--resident-operator",
+      "--gpu-projector",
+      "--float-preconditioner",
+      "--setup-repeats",
+      "8",
+      "--solves",
+      "4",
+      "--gpu-galerkin",
+      "--verify-galerkin",
+      "--galerkin-algorithm",
+      "3"
+    ],
+    "exit": 0
+  },
+  {
+    "name": "free-alg0",
+    "command": [
+      "/root/workspace/blast-stress-solver-2/demos/blast-stress-demo/build-gpu-activity/multilevel_gpu_test",
+      "/tmp/multilevel-free.bin",
+      "--native-graph",
+      "/tmp/physical-graph-final/building-free-component.input",
+      "--resident-operator",
+      "--gpu-projector",
+      "--float-preconditioner",
+      "--setup-repeats",
+      "8",
+      "--solves",
+      "4"
+    ],
+    "exit": 0
+  },
+  {
+    "name": "free-alg1",
+    "command": [
+      "/root/workspace/blast-stress-solver-2/demos/blast-stress-demo/build-gpu-activity/multilevel_gpu_test",
+      "/tmp/multilevel-free.bin",
+      "--native-graph",
+      "/tmp/physical-graph-final/building-free-component.input",
+      "--resident-operator",
+      "--gpu-projector",
+      "--float-preconditioner",
+      "--setup-repeats",
+      "8",
+      "--solves",
+      "4",
+      "--gpu-galerkin",
+      "--verify-galerkin",
+      "--galerkin-algorithm",
+      "1"
+    ],
+    "exit": 0
+  },
+  {
+    "name": "free-alg2",
+    "command": [
+      "/root/workspace/blast-stress-solver-2/demos/blast-stress-demo/build-gpu-activity/multilevel_gpu_test",
+      "/tmp/multilevel-free.bin",
+      "--native-graph",
+      "/tmp/physical-graph-final/building-free-component.input",
+      "--resident-operator",
+      "--gpu-projector",
+      "--float-preconditioner",
+      "--setup-repeats",
+      "8",
+      "--solves",
+      "4",
+      "--gpu-galerkin",
+      "--verify-galerkin",
+      "--galerkin-algorithm",
+      "2"
+    ],
+    "exit": 0
+  },
+  {
+    "name": "free-alg3",
+    "command": [
+      "/root/workspace/blast-stress-solver-2/demos/blast-stress-demo/build-gpu-activity/multilevel_gpu_test",
+      "/tmp/multilevel-free.bin",
+      "--native-graph",
+      "/tmp/physical-graph-final/building-free-component.input",
+      "--resident-operator",
+      "--gpu-projector",
+      "--float-preconditioner",
+      "--setup-repeats",
+      "8",
+      "--solves",
+      "4",
+      "--gpu-galerkin",
+      "--verify-galerkin",
+      "--galerkin-algorithm",
+      "3"
+    ],
+    "exit": 0
+  },
+  {
+    "name": "small-memcheck",
+    "command": [
+      "/usr/local/cuda/bin/compute-sanitizer",
+      "--tool",
+      "memcheck",
+      "--leak-check",
+      "full",
+      "--error-exitcode",
+      "99",
+      "/root/workspace/blast-stress-solver-2/demos/blast-stress-demo/build-gpu-activity/gpu_galerkin_test"
+    ],
+    "exit": 0
+  }
+]

@@ -1,0 +1,11 @@
+{"native_physical_assembly_ms":34.090520,"active_nodes":5936,"bonds":18564,"independent_operator_comparison":true,"native_load_projection":true}
+{"galerkin_algorithm":2}
+{"gpu_galerkin_context_ms":145.603392}
+{"setup_repeat":0,"gpu_galerkin":true,"setup_ms":172.392002,"retained_bytes":359913427,"allocations":24}
+{"native_hierarchy_setup_ms":172.392002,"input_validation_ms":39.267739,"coarse_setup_ms":0.556006,"basis_reconstruction_error":6.15321854078e-17,"levels":3,"coarse_rows":96}
+{"native_level":0,"rows":35616,"nnz":827552,"coarse_rows":5100,"omega":0.480879752214,"eigenvalue_upper_bound":2.77269593322,"diagonal_ms":2.628068,"spectral_bound_ms":16.238406,"aggregate_ms":5.329664,"interpolation_ms":15.239844,"galerkin_ms":40.857291,"representation_ms":20.673503}
+{"native_level":1,"rows":5100,"nnz":890280,"coarse_rows":738,"omega":0.430581738721,"eigenvalue_upper_bound":3.09658588238,"diagonal_ms":0.371583,"spectral_bound_ms":6.513700,"aggregate_ms":0.616329,"interpolation_ms":4.205298,"galerkin_ms":10.365129,"representation_ms":4.500037}
+{"native_level":2,"rows":738,"nnz":225180,"coarse_rows":96,"omega":0.43781278245,"eigenvalue_upper_bound":3.04544176594,"diagonal_ms":0.046266,"spectral_bound_ms":1.390803,"aggregate_ms":0.087202,"interpolation_ms":0.707108,"galerkin_ms":1.383289,"representation_ms":0.650412}
+{"resident_bond_operator":true,"gpu_rigid_projector":true}
+{"gpu":"NVIDIA GeForce RTX 4090","operator":"double","preconditioner_storage":"float","preconditioner_arithmetic":"float","outer_vectors_and_reductions":"double","cuda_graph":true,"device_context_upload_graph_ms":12.777345,"rows":35616,"free":true,"levels":3,"scope":"standalone hierarchy validation; no game integration"}
+{"trial":0,"passed":false,"iterations":1,"submitted":1,"cuda_solve_ms":0.447456,"wall_solve_ms":0.457523,"force_residual":0.851699896826,"moment_residual":0.480181918564,"bond_relative_error":0.455619761812,"bond_max_error_over_peak":0.478027688776,"bond_force_error_n":142542.513962,"bond_moment_error_nm":69098.9876577,"bond_force_error_over_input":0.577834562731,"bond_moment_error_over_input":0.297035189852,"zero_bond_reference":false,"recurrence_relative_residual":2.40391215512,"failed":0}

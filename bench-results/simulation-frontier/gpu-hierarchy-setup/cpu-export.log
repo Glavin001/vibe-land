@@ -1,0 +1,6 @@
+{"native_physical_assembly_ms":34.379291,"active_nodes":5936,"bonds":18627,"independent_operator_comparison":true,"native_load_projection":true}
+{"setup_repeat":0,"gpu_galerkin":false,"setup_ms":201.940889,"retained_bytes":0,"allocations":0}
+{"native_hierarchy_setup_ms":201.940889,"input_validation_ms":36.763856,"coarse_setup_ms":0.427397,"basis_reconstruction_error":6.38176246387e-17,"levels":3,"coarse_rows":96}
+{"native_level":0,"rows":35616,"nnz":827552,"coarse_rows":5100,"omega":0.483457107955,"eigenvalue_upper_bound":2.75791442797,"diagonal_ms":2.735549,"spectral_bound_ms":15.810119,"aggregate_ms":5.093935,"interpolation_ms":15.192067,"galerkin_ms":42.559559,"representation_ms":17.875800}
+{"native_level":1,"rows":5100,"nnz":890280,"coarse_rows":738,"omega":0.430145208696,"eigenvalue_upper_bound":3.09972843212,"diagonal_ms":0.366884,"spectral_bound_ms":6.117242,"aggregate_ms":0.605168,"interpolation_ms":4.027217,"galerkin_ms":39.763658,"representation_ms":5.882234}
+{"native_level":2,"rows":738,"nnz":225180,"coarse_rows":96,"omega":0.438084405917,"eigenvalue_upper_bound":3.04355351463,"diagonal_ms":0.048650,"spectral_bound_ms":1.428002,"aggregate_ms":0.087733,"interpolation_ms":0.690988,"galerkin_ms":4.874296,"representation_ms":0.673295}

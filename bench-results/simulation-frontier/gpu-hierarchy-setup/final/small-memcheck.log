@@ -1,0 +1,6 @@
+========= COMPUTE-SANITIZER
+{"gpu_galerkin_independent_checks":true,"retained_bytes":1129670,"allocations":56,"fixed_shape_reuse":true}
+{"gpu_galerkin_independent_checks":true,"retained_bytes":145606,"allocations":54,"fixed_shape_reuse":true}
+{"gpu_galerkin_independent_checks":true,"retained_bytes":244957,"allocations":55,"fixed_shape_reuse":true}
+========= LEAK SUMMARY: 0 bytes leaked in 0 allocations
+========= ERROR SUMMARY: 0 errors

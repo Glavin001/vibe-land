@@ -1,0 +1,204 @@
+{
+  "solver_commit": "555ed503a6f9a8b7c5f8fc95a5b52fa482a6059b",
+  "scope": "standalone hybrid hierarchy setup; no runtime integration or deployment",
+  "warm_convention": "median of setup repeats 4 through 7, zero based; startup and cold repeats retained separately",
+  "timings": {
+    "anchored-alg0": {
+      "warm_setup_ms": 145.60662000000002,
+      "all_setup_ms": [
+        198.089834,
+        168.146825,
+        158.173807,
+        148.308131,
+        144.762842,
+        145.621202,
+        145.592038,
+        147.13833
+      ],
+      "retained_bytes": 0,
+      "allocations_per_repeat": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    "anchored-alg1": {
+      "warm_setup_ms": 102.152875,
+      "all_setup_ms": [
+        170.924033,
+        126.695608,
+        109.45779,
+        106.976155,
+        113.807928,
+        103.279024,
+        101.026726,
+        100.816093
+      ],
+      "retained_bytes": 1792006010,
+      "allocations_per_repeat": [
+        22,
+        22,
+        22,
+        22,
+        22,
+        22,
+        22,
+        22
+      ]
+    },
+    "anchored-alg2": {
+      "warm_setup_ms": 108.14537899999999,
+      "all_setup_ms": [
+        164.14105,
+        131.126417,
+        110.843032,
+        115.687671,
+        109.947282,
+        115.187419,
+        105.732056,
+        106.343476
+      ],
+      "retained_bytes": 359861155,
+      "allocations_per_repeat": [
+        24,
+        24,
+        24,
+        24,
+        24,
+        24,
+        24,
+        24
+      ]
+    },
+    "anchored-alg3": {
+      "warm_setup_ms": 116.559066,
+      "all_setup_ms": [
+        178.017083,
+        141.222905,
+        123.822053,
+        118.873619,
+        114.537839,
+        113.861909,
+        118.580293,
+        121.380863
+      ],
+      "retained_bytes": 299505625,
+      "allocations_per_repeat": [
+        25,
+        25,
+        25,
+        25,
+        25,
+        25,
+        25,
+        25
+      ]
+    },
+    "free-alg0": {
+      "warm_setup_ms": 156.67582199999998,
+      "all_setup_ms": [
+        199.50332,
+        174.972159,
+        153.281039,
+        158.092137,
+        155.096263,
+        157.553112,
+        162.742384,
+        155.798532
+      ],
+      "retained_bytes": 0,
+      "allocations_per_repeat": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    "free-alg1": {
+      "warm_setup_ms": 106.769135,
+      "all_setup_ms": [
+        171.745945,
+        130.674174,
+        112.348398,
+        107.610608,
+        107.185286,
+        106.352984,
+        116.304862,
+        104.331737
+      ],
+      "retained_bytes": 1791998954,
+      "allocations_per_repeat": [
+        22,
+        22,
+        22,
+        22,
+        22,
+        22,
+        22,
+        22
+      ]
+    },
+    "free-alg2": {
+      "warm_setup_ms": 111.8617065,
+      "all_setup_ms": [
+        178.02028,
+        141.551828,
+        120.325827,
+        120.205022,
+        114.677339,
+        116.49092,
+        109.046074,
+        107.779443
+      ],
+      "retained_bytes": 359913427,
+      "allocations_per_repeat": [
+        24,
+        24,
+        24,
+        24,
+        24,
+        24,
+        24,
+        24
+      ]
+    },
+    "free-alg3": {
+      "warm_setup_ms": 125.16525250000001,
+      "all_setup_ms": [
+        182.897661,
+        143.706806,
+        126.755501,
+        127.503445,
+        123.904829,
+        120.432817,
+        126.567841,
+        126.425676
+      ],
+      "retained_bytes": 299506441,
+      "allocations_per_repeat": [
+        25,
+        25,
+        25,
+        25,
+        25,
+        25,
+        25,
+        25
+      ]
+    }
+  },
+  "normal_solve_samples": 60,
+  "physical_checks_passed": true,
+  "cpu_fixture_byte_identical": true,
+  "city_changed": false,
+  "dynamic_fracture_release_gate": "Still open: old interpolation split failure is not resolved by this static setup benchmark."
+}

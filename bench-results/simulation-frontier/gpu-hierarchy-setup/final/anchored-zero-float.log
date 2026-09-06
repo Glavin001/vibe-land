@@ -1,0 +1,12 @@
+{"galerkin_algorithm":2}
+{"gpu_galerkin_context_ms":154.375050}
+{"setup_repeat":0,"gpu_galerkin":true,"setup_ms":169.515078,"retained_bytes":359883427,"allocations":24}
+{"gpu_hierarchy_reference_check":true,"coarse_inverse_relative_error":9.11894098767e-13}
+{"native_hierarchy_setup_ms":169.515078,"input_validation_ms":35.769759,"coarse_setup_ms":0.412138,"basis_reconstruction_error":6.30524868645e-17,"levels":3,"coarse_rows":96}
+{"native_level":0,"rows":35616,"nnz":827552,"coarse_rows":5100,"omega":0.483457107955,"eigenvalue_upper_bound":2.75791442797,"diagonal_ms":3.838284,"spectral_bound_ms":15.657653,"aggregate_ms":5.717747,"interpolation_ms":15.538392,"galerkin_ms":39.820349,"representation_ms":20.665346}
+{"native_level":1,"rows":5100,"nnz":890280,"coarse_rows":738,"omega":0.430145208696,"eigenvalue_upper_bound":3.09972843212,"diagonal_ms":0.355092,"spectral_bound_ms":6.622483,"aggregate_ms":0.589328,"interpolation_ms":4.645288,"galerkin_ms":10.375519,"representation_ms":4.466084}
+{"native_level":2,"rows":738,"nnz":225180,"coarse_rows":96,"omega":0.438084405917,"eigenvalue_upper_bound":3.04355351463,"diagonal_ms":0.045094,"spectral_bound_ms":1.372769,"aggregate_ms":0.085870,"interpolation_ms":0.700075,"galerkin_ms":1.380563,"representation_ms":0.637448}
+{"resident_bond_operator":true,"gpu_rigid_projector":false}
+{"gpu":"NVIDIA GeForce RTX 4090","operator":"double","preconditioner_storage":"float","preconditioner_arithmetic":"float","outer_vectors_and_reductions":"double","cuda_graph":true,"device_context_upload_graph_ms":11.286236,"rows":35616,"free":false,"levels":3,"scope":"standalone hierarchy validation; no game integration"}
+{"trial":0,"passed":true,"iterations":0,"submitted":0,"cuda_solve_ms":0.017728,"wall_solve_ms":0.026960,"force_residual":0,"moment_residual":0,"bond_relative_error":null,"bond_max_error_over_peak":null,"bond_force_error_n":0,"bond_moment_error_nm":0,"bond_force_error_over_input":0,"bond_moment_error_over_input":0,"zero_bond_reference":true,"recurrence_relative_residual":0,"failed":0}
+{"trial":1,"passed":true,"iterations":0,"submitted":0,"cuda_solve_ms":0.012640,"wall_solve_ms":0.019176,"force_residual":0,"moment_residual":0,"bond_relative_error":null,"bond_max_error_over_peak":null,"bond_force_error_n":0,"bond_moment_error_nm":0,"bond_force_error_over_input":0,"bond_moment_error_over_input":0,"zero_bond_reference":true,"recurrence_relative_residual":0,"failed":0}

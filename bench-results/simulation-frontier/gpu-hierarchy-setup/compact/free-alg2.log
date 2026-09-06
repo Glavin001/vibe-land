@@ -1,0 +1,22 @@
+{"native_physical_assembly_ms":34.914707,"active_nodes":5936,"bonds":18564,"independent_operator_comparison":true,"native_load_projection":true}
+{"galerkin_algorithm":2}
+{"gpu_galerkin_context_ms":138.932194}
+{"setup_repeat":0,"gpu_galerkin":true,"setup_ms":185.157540,"retained_bytes":360963119,"allocations":26}
+{"setup_repeat":1,"gpu_galerkin":true,"setup_ms":145.347970,"retained_bytes":360963119,"allocations":26}
+{"setup_repeat":2,"gpu_galerkin":true,"setup_ms":129.125288,"retained_bytes":360963119,"allocations":26}
+{"setup_repeat":3,"gpu_galerkin":true,"setup_ms":120.842292,"retained_bytes":360963119,"allocations":26}
+{"setup_repeat":4,"gpu_galerkin":true,"setup_ms":118.677328,"retained_bytes":360963119,"allocations":26}
+{"setup_repeat":5,"gpu_galerkin":true,"setup_ms":119.673213,"retained_bytes":360963119,"allocations":26}
+{"setup_repeat":6,"gpu_galerkin":true,"setup_ms":120.451884,"retained_bytes":360963119,"allocations":26}
+{"setup_repeat":7,"gpu_galerkin":true,"setup_ms":118.431760,"retained_bytes":360963119,"allocations":26}
+{"gpu_hierarchy_reference_check":true,"coarse_inverse_relative_error":2.5354855388e-14}
+{"native_hierarchy_setup_ms":118.431760,"basis_reconstruction_error":6.15321854078e-17,"levels":3,"coarse_rows":96}
+{"native_level":0,"rows":35616,"nnz":827552,"coarse_rows":5100,"omega":0.480879752214,"eigenvalue_upper_bound":2.77269593322,"diagonal_ms":2.302711,"spectral_bound_ms":10.895725,"aggregate_ms":5.124891,"interpolation_ms":7.079874,"galerkin_ms":24.231107}
+{"native_level":1,"rows":5100,"nnz":890280,"coarse_rows":738,"omega":0.430581738721,"eigenvalue_upper_bound":3.09658588238,"diagonal_ms":0.411387,"spectral_bound_ms":6.233016,"aggregate_ms":0.593065,"interpolation_ms":3.973525,"galerkin_ms":13.257006}
+{"native_level":2,"rows":738,"nnz":225180,"coarse_rows":96,"omega":0.43781278245,"eigenvalue_upper_bound":3.04544176594,"diagonal_ms":0.061544,"spectral_bound_ms":1.456625,"aggregate_ms":0.093194,"interpolation_ms":0.675859,"galerkin_ms":1.999206}
+{"resident_bond_operator":true,"gpu_rigid_projector":true}
+{"gpu":"NVIDIA GeForce RTX 4090","operator":"double","preconditioner_storage":"float","preconditioner_arithmetic":"float","outer_vectors_and_reductions":"double","cuda_graph":true,"device_context_upload_graph_ms":11.886171,"rows":35616,"free":true,"levels":3,"scope":"standalone hierarchy validation; no game integration"}
+{"trial":0,"passed":true,"iterations":31,"submitted":32,"cuda_solve_ms":7.151584,"wall_solve_ms":7.161787,"force_residual":9.00548900434e-12,"moment_residual":1.12508568683e-11,"bond_relative_error":1.4348636596e-11,"bond_max_error_over_peak":2.07098443177e-11,"bond_force_error_n":3.86284748454e-06,"bond_moment_error_nm":3.04613770044e-06,"bond_force_error_over_input":1.56590951365e-11,"bond_moment_error_over_input":1.3094404431e-11,"zero_bond_reference":false,"recurrence_relative_residual":5.24218754976e-11,"failed":0}
+{"trial":1,"passed":true,"iterations":31,"submitted":32,"cuda_solve_ms":7.137728,"wall_solve_ms":7.143753,"force_residual":9.00567276303e-12,"moment_residual":1.12506696234e-11,"bond_relative_error":1.43488413571e-11,"bond_max_error_over_peak":2.07094044922e-11,"bond_force_error_n":3.8629281309e-06,"bond_moment_error_nm":3.04614048791e-06,"bond_force_error_over_input":1.56594220583e-11,"bond_moment_error_over_input":1.30944164135e-11,"zero_bond_reference":false,"recurrence_relative_residual":5.24218419295e-11,"failed":0}
+{"trial":2,"passed":true,"iterations":31,"submitted":32,"cuda_solve_ms":7.135360,"wall_solve_ms":7.141309,"force_residual":9.0052844963e-12,"moment_residual":1.12506928017e-11,"bond_relative_error":1.4348717551e-11,"bond_max_error_over_peak":2.07101375348e-11,"bond_force_error_n":3.86285459791e-06,"bond_moment_error_nm":3.0461485216e-06,"bond_force_error_over_input":1.56591239724e-11,"bond_moment_error_over_input":1.30944509478e-11,"zero_bond_reference":false,"recurrence_relative_residual":5.24218597111e-11,"failed":0}
+{"trial":3,"passed":true,"iterations":31,"submitted":32,"cuda_solve_ms":7.146976,"wall_solve_ms":7.154764,"force_residual":9.00432184077e-12,"moment_residual":1.12509713259e-11,"bond_relative_error":1.43487460191e-11,"bond_max_error_over_peak":2.07094777965e-11,"bond_force_error_n":3.86288863451e-06,"bond_moment_error_nm":3.04614006468e-06,"bond_force_error_over_input":1.5659261949e-11,"bond_moment_error_over_input":1.30944145941e-11,"zero_bond_reference":false,"recurrence_relative_residual":5.24218414261e-11,"failed":0}

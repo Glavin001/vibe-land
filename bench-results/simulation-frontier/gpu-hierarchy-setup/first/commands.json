@@ -1,0 +1,81 @@
+[
+  {
+    "name": "small",
+    "command": [
+      "/root/workspace/blast-stress-solver-2/demos/blast-stress-demo/build-gpu-activity/gpu_galerkin_test"
+    ],
+    "exit": 0
+  },
+  {
+    "name": "anchored-cpu",
+    "command": [
+      "/root/workspace/blast-stress-solver-2/demos/blast-stress-demo/build-gpu-activity/multilevel_gpu_test",
+      "/tmp/multilevel-anchored.bin",
+      "--native-graph",
+      "/tmp/physical-graph-final/building-anchored-component.input",
+      "--resident-operator",
+      "--gpu-projector",
+      "--float-preconditioner",
+      "--setup-repeats",
+      "4",
+      "--solves",
+      "4"
+    ],
+    "exit": 0
+  },
+  {
+    "name": "anchored-gpu",
+    "command": [
+      "/root/workspace/blast-stress-solver-2/demos/blast-stress-demo/build-gpu-activity/multilevel_gpu_test",
+      "/tmp/multilevel-anchored.bin",
+      "--native-graph",
+      "/tmp/physical-graph-final/building-anchored-component.input",
+      "--resident-operator",
+      "--gpu-projector",
+      "--float-preconditioner",
+      "--setup-repeats",
+      "4",
+      "--solves",
+      "4",
+      "--gpu-galerkin",
+      "--verify-galerkin"
+    ],
+    "exit": 0
+  },
+  {
+    "name": "free-cpu",
+    "command": [
+      "/root/workspace/blast-stress-solver-2/demos/blast-stress-demo/build-gpu-activity/multilevel_gpu_test",
+      "/tmp/multilevel-free.bin",
+      "--native-graph",
+      "/tmp/physical-graph-final/building-free-component.input",
+      "--resident-operator",
+      "--gpu-projector",
+      "--float-preconditioner",
+      "--setup-repeats",
+      "4",
+      "--solves",
+      "4"
+    ],
+    "exit": 0
+  },
+  {
+    "name": "free-gpu",
+    "command": [
+      "/root/workspace/blast-stress-solver-2/demos/blast-stress-demo/build-gpu-activity/multilevel_gpu_test",
+      "/tmp/multilevel-free.bin",
+      "--native-graph",
+      "/tmp/physical-graph-final/building-free-component.input",
+      "--resident-operator",
+      "--gpu-projector",
+      "--float-preconditioner",
+      "--setup-repeats",
+      "4",
+      "--solves",
+      "4",
+      "--gpu-galerkin",
+      "--verify-galerkin"
+    ],
+    "exit": 0
+  }
+]

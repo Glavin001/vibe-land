@@ -1,0 +1,3 @@
+{"gpu_galerkin_independent_checks":true,"retained_bytes":1129670,"allocations":56,"fixed_shape_reuse":true}
+{"gpu_galerkin_independent_checks":true,"retained_bytes":146298,"allocations":55,"fixed_shape_reuse":true}
+{"gpu_galerkin_independent_checks":true,"retained_bytes":381172,"allocations":55,"fixed_shape_reuse":true}

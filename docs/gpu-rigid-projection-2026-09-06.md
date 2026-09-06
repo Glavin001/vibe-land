@@ -164,3 +164,12 @@ reproduction is in `physical-graph-integration-2026-09-06.md`.
 
 Commits remain local. No new push was attempted following the earlier automatic
 approval rejection of private-source upload.
+
+## Setup follow-up
+
+[GPU hierarchy setup](gpu-hierarchy-setup-2026-09-06.md) records the next
+experiment, solver `555ed503`. Retaining interpolation while refreshing current
+matrices still takes 243 iterations on the exact-native split case; fresh
+unsmoothed interpolation takes 142. The new CUDA coarse-product backend reduces
+warm static setup by about 26–29%, with independent physical checks passing.
+It does not close this document's dynamic split gate or change the city release.

@@ -1,0 +1,25 @@
+small exit 0 expected 0
+anchored-alg0 exit 0 expected 0
+anchored-alg1 exit 0 expected 0
+anchored-alg2 exit 0 expected 0
+anchored-alg3 exit 0 expected 0
+anchored-double exit 0 expected 0
+free-alg0 exit 0 expected 0
+free-alg1 exit 0 expected 0
+free-alg2 exit 0 expected 0
+free-alg3 exit 0 expected 0
+free-double exit 0 expected 0
+anchored-zero-float exit 0 expected 0
+anchored-zero-double exit 0 expected 0
+free-gravity-float exit 0 expected 0
+free-gravity-double exit 0 expected 0
+free-zero-float exit 0 expected 0
+free-zero-double exit 0 expected 0
+large-load-float exit 0 expected 0
+large-load-double exit 0 expected 0
+small-load-float exit 0 expected 0
+small-load-double exit 0 expected 0
+incomplete-negative exit 1 expected 1
+small-memcheck exit 0 expected 0
+integrated-memcheck exit 0 expected 0
+Original city deployment restored and healthy

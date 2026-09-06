@@ -1,0 +1,5 @@
+{"native_physical_assembly_ms":33.157717,"active_nodes":5936,"bonds":18627,"independent_operator_comparison":true,"native_load_projection":true}
+{"native_hierarchy_setup_ms":194.321955,"basis_reconstruction_error":6.38176246387e-17,"levels":3,"coarse_rows":96}
+{"native_level":0,"rows":35616,"nnz":827552,"coarse_rows":5100,"omega":0.483457107955,"eigenvalue_upper_bound":2.75791442797,"diagonal_ms":2.371095,"spectral_bound_ms":16.048000,"aggregate_ms":5.114102,"interpolation_ms":15.521921,"galerkin_ms":39.827637}
+{"native_level":1,"rows":5100,"nnz":890280,"coarse_rows":738,"omega":0.430145208696,"eigenvalue_upper_bound":3.09972843212,"diagonal_ms":0.411857,"spectral_bound_ms":6.138319,"aggregate_ms":0.590339,"interpolation_ms":3.993406,"galerkin_ms":38.216787}
+{"native_level":2,"rows":738,"nnz":225180,"coarse_rows":96,"omega":0.438084405917,"eigenvalue_upper_bound":3.04355351463,"diagonal_ms":0.060142,"spectral_bound_ms":1.511093,"aggregate_ms":0.089246,"interpolation_ms":0.684855,"galerkin_ms":4.965967}

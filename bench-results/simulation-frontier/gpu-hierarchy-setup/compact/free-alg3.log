@@ -1,0 +1,22 @@
+{"native_physical_assembly_ms":38.046614,"active_nodes":5936,"bonds":18564,"independent_operator_comparison":true,"native_load_projection":true}
+{"galerkin_algorithm":3}
+{"gpu_galerkin_context_ms":146.252386}
+{"setup_repeat":0,"gpu_galerkin":true,"setup_ms":194.462862,"retained_bytes":514642208,"allocations":25}
+{"setup_repeat":1,"gpu_galerkin":true,"setup_ms":153.194053,"retained_bytes":514642208,"allocations":25}
+{"setup_repeat":2,"gpu_galerkin":true,"setup_ms":138.553789,"retained_bytes":514642208,"allocations":25}
+{"setup_repeat":3,"gpu_galerkin":true,"setup_ms":148.366176,"retained_bytes":514642208,"allocations":25}
+{"setup_repeat":4,"gpu_galerkin":true,"setup_ms":133.478912,"retained_bytes":514642208,"allocations":25}
+{"setup_repeat":5,"gpu_galerkin":true,"setup_ms":142.231604,"retained_bytes":514642208,"allocations":25}
+{"setup_repeat":6,"gpu_galerkin":true,"setup_ms":137.273794,"retained_bytes":514642208,"allocations":25}
+{"setup_repeat":7,"gpu_galerkin":true,"setup_ms":139.682353,"retained_bytes":514642208,"allocations":25}
+{"gpu_hierarchy_reference_check":true,"coarse_inverse_relative_error":2.84466675878e-14}
+{"native_hierarchy_setup_ms":139.682353,"basis_reconstruction_error":6.15321854078e-17,"levels":3,"coarse_rows":96}
+{"native_level":0,"rows":35616,"nnz":827552,"coarse_rows":5100,"omega":0.480879752214,"eigenvalue_upper_bound":2.77269593322,"diagonal_ms":2.421743,"spectral_bound_ms":11.305980,"aggregate_ms":5.127095,"interpolation_ms":7.424887,"galerkin_ms":33.429970}
+{"native_level":1,"rows":5100,"nnz":890280,"coarse_rows":738,"omega":0.430581738721,"eigenvalue_upper_bound":3.09658588238,"diagonal_ms":0.417308,"spectral_bound_ms":6.313345,"aggregate_ms":0.607823,"interpolation_ms":4.112304,"galerkin_ms":17.279692}
+{"native_level":2,"rows":738,"nnz":225180,"coarse_rows":96,"omega":0.43781278245,"eigenvalue_upper_bound":3.04544176594,"diagonal_ms":0.060854,"spectral_bound_ms":1.485568,"aggregate_ms":0.088616,"interpolation_ms":0.710974,"galerkin_ms":4.971115}
+{"resident_bond_operator":true,"gpu_rigid_projector":true}
+{"gpu":"NVIDIA GeForce RTX 4090","operator":"double","preconditioner_storage":"float","preconditioner_arithmetic":"float","outer_vectors_and_reductions":"double","cuda_graph":true,"device_context_upload_graph_ms":11.481867,"rows":35616,"free":true,"levels":3,"scope":"standalone hierarchy validation; no game integration"}
+{"trial":0,"passed":true,"iterations":31,"submitted":32,"cuda_solve_ms":7.140832,"wall_solve_ms":7.150365,"force_residual":9.00423066902e-12,"moment_residual":1.12508502224e-11,"bond_relative_error":1.43486030455e-11,"bond_max_error_over_peak":2.0709917622e-11,"bond_force_error_n":3.8628439784e-06,"bond_moment_error_nm":3.04614276704e-06,"bond_force_error_over_input":1.56590809234e-11,"bond_moment_error_over_input":1.30944262107e-11,"zero_bond_reference":false,"recurrence_relative_residual":5.24218386601e-11,"failed":0}
+{"trial":1,"passed":true,"iterations":31,"submitted":32,"cuda_solve_ms":7.137664,"wall_solve_ms":7.143683,"force_residual":9.00448874674e-12,"moment_residual":1.12507599466e-11,"bond_relative_error":1.43487781924e-11,"bond_max_error_over_peak":2.07091112752e-11,"bond_force_error_n":3.86299164853e-06,"bond_moment_error_nm":3.04614140824e-06,"bond_force_error_over_input":1.56596795441e-11,"bond_moment_error_over_input":1.30944203697e-11,"zero_bond_reference":false,"recurrence_relative_residual":5.24218424481e-11,"failed":0}
+{"trial":2,"passed":true,"iterations":31,"submitted":32,"cuda_solve_ms":7.135072,"wall_solve_ms":7.141058,"force_residual":9.00609773216e-12,"moment_residual":1.12501194114e-11,"bond_relative_error":1.43487617171e-11,"bond_max_error_over_peak":2.0710210839e-11,"bond_force_error_n":3.86294887132e-06,"bond_moment_error_nm":3.04613562683e-06,"bond_force_error_over_input":1.56595061352e-11,"bond_moment_error_over_input":1.30943955172e-11,"zero_bond_reference":false,"recurrence_relative_residual":5.24218453146e-11,"failed":0}
+{"trial":3,"passed":true,"iterations":31,"submitted":32,"cuda_solve_ms":7.135200,"wall_solve_ms":7.141018,"force_residual":9.00533524392e-12,"moment_residual":1.12503022498e-11,"bond_relative_error":1.43487330028e-11,"bond_max_error_over_peak":2.0710210839e-11,"bond_force_error_n":3.86291955369e-06,"bond_moment_error_nm":3.04613149133e-06,"bond_force_error_over_input":1.56593872883e-11,"bond_moment_error_over_input":1.309437774e-11,"zero_bond_reference":false,"recurrence_relative_residual":5.24218684447e-11,"failed":0}
