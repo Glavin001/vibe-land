@@ -1,0 +1,17 @@
+{
+  "utc": "2026-09-06T04:57:22Z",
+  "server_tick": 12540,
+  "players": 1,
+  "awake_bodies": 5431,
+  "broken_bonds": 37183,
+  "tick_ms": {
+    "avg": 56.37582,
+    "p95": 72.87312,
+    "max": 194.23093
+  },
+  "pending_inputs": [
+    0
+  ],
+  "dropped_outbound_packets": 0,
+  "gpu_warning_count": 0
+}

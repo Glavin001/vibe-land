@@ -1,0 +1,194 @@
+{
+  "scope": "Six human reports plus read-only observation of the running server; no restart, build, benchmark, or settings change during capture",
+  "reports": 6,
+  "live_samples": 10,
+  "start_utc": "2026-09-06T04:50:34Z",
+  "end_utc": "2026-09-06T04:51:19Z",
+  "duration_seconds": 45.00120386015624,
+  "release_artifact": {
+    "game_revision": "a4685b3a0793db12566bf47a1eaf0ad8eb71367a",
+    "solver_revision": "bd71ce1bd9765dd65dc6d8f8f9d7150bf9e1ab23",
+    "binary_sha256": "7c5d04267217f6993ca6da0464de8a3ea8ebf8bfe3283f089521f003841aa5ee"
+  },
+  "rolling_tick_mean_ms": {
+    "min": 76.34252,
+    "mean": 79.72863290000001,
+    "max": 82.98644
+  },
+  "rolling_tick_p95_ms": {
+    "min": 91.72191,
+    "mean": 204.161225,
+    "max": 219.28818
+  },
+  "observed_tick_rate": 11.999678979213096,
+  "simulation_seconds_advanced": 9.0,
+  "gpu_utilization_percent": {
+    "min": 2.0,
+    "mean": 9.2,
+    "max": 15.0
+  },
+  "process_cpu_cores": {
+    "min": 1.3679751654082049,
+    "mean": 1.37751875005213,
+    "max": 1.3879807779195232
+  },
+  "awake_bodies": {
+    "min": 7390,
+    "mean": 7495.4,
+    "max": 7613
+  },
+  "contact_host_ms_point_samples": {
+    "min": 30.270932,
+    "mean": 33.4048067,
+    "max": 39.104832
+  },
+  "contact_phases_ms_point_samples": {
+    "ownership": {
+      "min": 2.655299,
+      "mean": 3.0924429,
+      "max": 3.440211
+    },
+    "validate": {
+      "min": 3.438808,
+      "mean": 3.7481719,
+      "max": 4.42165
+    },
+    "sort": {
+      "min": 10.67269,
+      "mean": 11.7809746,
+      "max": 13.14171
+    },
+    "reduce": {
+      "min": 4.918215,
+      "mean": 6.108794,
+      "max": 8.295038
+    },
+    "route": {
+      "min": 7.444814,
+      "mean": 8.674423299999999,
+      "max": 11.367433
+    },
+    "copy": {
+      "min": 1.279775,
+      "mean": 1.4460961,
+      "max": 1.65263
+    }
+  },
+  "city_ms_point_samples": {
+    "gpu_stress_solve_ms": {
+      "min": 5.8020163,
+      "mean": 6.14553282,
+      "max": 7.007264
+    },
+    "encode_shared_ms": {
+      "min": 1.0177261,
+      "mean": 1.08305912,
+      "max": 1.213451
+    },
+    "client_datagrams_ms": {
+      "min": 0.21586299,
+      "mean": 0.241308698,
+      "max": 0.264312
+    },
+    "publish_ms": {
+      "min": 1.44899,
+      "mean": 1.60536941,
+      "max": 1.806566
+    },
+    "fan_out_ms": {
+      "min": 0.0056499997,
+      "mean": 0.00674660007,
+      "max": 0.0076550003
+    }
+  },
+  "network_delta": {
+    "total_inbound_bytes": 45,
+    "total_outbound_bytes": 3753596,
+    "total_inbound_packets": 9,
+    "total_outbound_packets": 3915,
+    "reliable_packets_sent": 1070,
+    "datagram_packets_sent": 2845,
+    "dropped_outbound_packets": 0,
+    "dropped_outbound_snapshots": 0,
+    "malformed_packets": 0
+  },
+  "live_deduplicated_ring": {
+    "ticks": 840,
+    "first": 6360,
+    "last": 7199,
+    "total_ms": {
+      "min": 60.451576,
+      "mean": 82.25466526904762,
+      "max": 284.87393
+    },
+    "worst_tick": {
+      "t": 6756,
+      "total": 284.87393,
+      "dyn_ms": 61.740906,
+      "city": 221.01173,
+      "awake": 7556,
+      "frozen": 2025,
+      "flips": 8538
+    }
+  },
+  "original_live_source_sha256": {
+    "initial-stats.json.gz": "f06c8bf9abbf9e9dd55e363191c14d8cf90d50c0b31524c966f4ee4d0f74b455",
+    "live/00.json.gz": "cf99c7a1b5788ae6bc387958602daac76273610c35ae6c4834dcbbd2f992cdbc",
+    "live/01.json.gz": "e3a335bdeb65c3cc91c746ae8b3ac4407ed7e86940e4377ed19990eac8bed68a",
+    "live/02.json.gz": "8fbc7d28f600f9bb0d3789f6b9f5b59301a35af91fc6e978fb56c6c0dc6c93d5",
+    "live/03.json.gz": "2046effa59c350ded1ce29e0efbc0b970047ef13dd708c5afb6568c76fe9b69e",
+    "live/04.json.gz": "f69f61087954ab70a88de4dbe2ee0da69d6ebc8e25db8c9ea84b6170c0902ce5",
+    "live/05.json.gz": "245729c4005bd37d593d7456c0fa99cfa15ce6825079b836aea5fdb5d9ea1c27",
+    "live/06.json.gz": "2b82a520784f1f16b7cb5775f9f14cf881c01c2e6b7615adefcedada66e73a97",
+    "live/07.json.gz": "acd0fd12b10c499cc8deb0ecebe47609e7e650e3744221e6d2c3c817c3b7b8b1",
+    "live/08.json.gz": "d5c079200cbb71c911fc29395aa685caae2f6bf578c7722fd8979f83f02775bf",
+    "live/09.json.gz": "472b50b0b086a56bb2e23a79d935e5beb87fdee031604a1eb9b67c6e2ddcd10c"
+  },
+  "limitations": [
+    "Stats snapshots publish every 60 simulation ticks; observed wall tick rate is approximate.",
+    "Live input traffic was low; empty backlog is not proof of active-input responsiveness.",
+    "GPU utilization is sampled engine duty cycle, not SM occupancy or a kernel profile.",
+    "Phase fields are point samples and may refer to different substeps; nested timings must not be added to their parents.",
+    "publish_ms is stats publication; encode_shared_ms and client_datagrams_ms describe stream encoding.",
+    "City bytes/packets per second cover 60 simulation ticks and overstate wall rates when the simulation is slow.",
+    "Client geometry and body origins are different, asynchronous measurements.",
+    "Geometry sweep enable/time and shallow deepest provenance are absent.",
+    "No same-input before/after performance comparison is claimed."
+  ],
+  "observed_outbound_mbps": 0.667288103965309,
+  "evidence_sha256": {
+    "archive-live.py": "13089ebf7316e940decca319f48a4b7e54a56198e99b11fff32cdd4bdccd137a",
+    "capture-live.py": "c67f821863fdd855eeb6157ec8f013beef5c5cc2b7809e92fd0a3a10ade5fd2d",
+    "initial-stats.json.gz": "7c1b47185c95fcd092b1ce076b872ead622ce0bc6b90df1917043e46516f97b0",
+    "latest.json": "1f76e89325b8f1a4f8f30d472cf75a490baba28f41f91a3521f9d689f5118a5d",
+    "live/00.json.gz": "1603fc80f1a7891d3cf0684edce7b1eecbf66e10587a675bf003ea99d2b539bd",
+    "live/01.json.gz": "c6a2ff97d13cd9614164823985ff6c46778b25bb30d20e20c4ac05cd6de629da",
+    "live/02.json.gz": "c126844439aa4b4792fc7722a893c2c080720c3a5a6a573667812b955dda2a42",
+    "live/03.json.gz": "f302b5b68d64207af3c891eb397b32a97a7e49d46b123a8c7c4a4788e871c285",
+    "live/04.json.gz": "e32fb9ef92a0236dda394a50917ed245cff5215a007d84e12101f5b0576b9f70",
+    "live/05.json.gz": "0cb33dc737200a57e4dbb1c04a19fb3d75830e3b02b7a9d33782c8f559ad2a26",
+    "live/06.json.gz": "43a48dd4df493c8d84c7bf404f66ff4e440491725004fc1be29ccd32b43bce83",
+    "live/07.json.gz": "63a60ea6c5af8b2caf70be0c9b951560ee36d0443d763b4a266d58c582d28d87",
+    "live/08.json.gz": "66d761a03d30c8744db98fcc53cbb0b31d11cd6482d361774e0b57106ea2aed7",
+    "live/09.json.gz": "29e5e775a99098bb30b29af1cd1d22e64051cea091d4f75f0db6e07619a02707",
+    "reports.json": "b086660aa4e13261b9a5a5f45afd0c3f1eb93877c5652b365604f0985348aa4e"
+  },
+  "latest_observation": {
+    "utc": "2026-09-06T04:57:22Z",
+    "server_tick": 12540,
+    "players": 1,
+    "awake_bodies": 5431,
+    "broken_bonds": 37183,
+    "tick_ms": {
+      "avg": 56.37582,
+      "p95": 72.87312,
+      "max": 194.23093
+    },
+    "pending_inputs": [
+      0
+    ],
+    "dropped_outbound_packets": 0,
+    "gpu_warning_count": 0
+  },
+  "live_executable_sha256": "7c5d04267217f6993ca6da0464de8a3ea8ebf8bfe3283f089521f003841aa5ee"
+}

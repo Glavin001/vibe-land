@@ -168,3 +168,10 @@ Its full-height manifest now matches this live city exactly. Recorded inputs are
 replayed bit for bit at 5–7k awake-body loads, while physical outcome variation
 remains visible. This supplies better comparison inputs; it does not resolve the
 reported below-ground geometry or establish a new simulation speedup.
+
+
+The later [04:46 live session analysis](city-player-reports-2026-09-06-live.md)
+contains six more human reports and a read-only live capture. It confirms zero
+recorded outbound drops or topology repairs on the new streaming build while
+exposing much larger contact batches and rollback costs. The observed city
+geometry and diagnostic provenance issues remain open.
