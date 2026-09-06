@@ -141,3 +141,13 @@ positions or addresses. `verify-results.py` reproduces the analysis, checks
 original file hashes, independently verifies the key totals, and verifies that
 schema 3 preserves all previously recorded measurements. No deployment is
 claimed by this analysis.
+
+
+## Restore profiling follow-up
+
+The [native restore attribution](restore-profile-2026-09-06.md) now supplies a
+validated contact-free reference and opt-in phase instrumentation. It restores
+6,001 bodies in 1.48 ms median without profiling, so reproducing the contact-heavy
+city state matters before attributing its 30.21 ms restore to API call count.
+That work is committed but not deployed; it records a high-coordinate numerical
+precision failure separately and makes no city speedup claim.

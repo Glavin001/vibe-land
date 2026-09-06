@@ -1,0 +1,26 @@
+{
+  "browser": {
+    "elapsedMs": 17620,
+    "errors": [],
+    "ok": true,
+    "profile": "fast, 480x270, software rendering",
+    "publicUdpVerified": false,
+    "transport": "webtransport"
+  },
+  "browser_city": {
+    "bootstraps": 1,
+    "chunksTotal": 96420,
+    "hashMismatches": 0,
+    "orphanedByRetire": 0,
+    "orphanedChunks": 0,
+    "rendered": true,
+    "structureRepairs": 0,
+    "topoSeqGaps": 0
+  },
+  "certificate_expires": "Sep 17 05:46:36 2026 GMT",
+  "local_http": "passed",
+  "manifest_bytes": 29918116,
+  "public_https": "passed",
+  "public_udp": "not_verified",
+  "url": "https://209.121.195.117:40617/city"
+}

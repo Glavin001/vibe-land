@@ -1,0 +1,90 @@
+{
+  "benchmark": "contact-free airborne compounds; no runtime stress solve",
+  "cases": {
+    "cpu-profiled-bench.log": {
+      "bodies": 65,
+      "height": 10,
+      "phase_medians_ms": {
+        "bodies_ms": 0.0223315,
+        "child_clears_ms": 0.0,
+        "child_pose_ms": 0.0,
+        "child_velocity_ms": 0.0,
+        "child_wake_ms": 0.0,
+        "children_ms": 2.5e-05,
+        "clears_ms": 0.0025905,
+        "pose_ms": 0.006026,
+        "preparation_ms": 0.000125,
+        "sleep_ms": 0.002169,
+        "total_ms": 0.022546999999999998,
+        "velocity_ms": 0.0029565
+      },
+      "restore_ms_max": 0.041958,
+      "restore_ms_median": 0.033381999999999995,
+      "restore_ms_min": 0.03256,
+      "samples": 12,
+      "shapes_per_compound": 2
+    },
+    "gpu-profiled.log": {
+      "bodies": 6001,
+      "height": 10,
+      "phase_medians_ms": {
+        "bodies_ms": 2.2505685,
+        "child_clears_ms": 0.0,
+        "child_pose_ms": 0.0,
+        "child_velocity_ms": 0.0,
+        "child_wake_ms": 0.0,
+        "children_ms": 2e-05,
+        "clears_ms": 0.265141,
+        "pose_ms": 0.6571865,
+        "preparation_ms": 0.003662,
+        "sleep_ms": 0.225144,
+        "total_ms": 2.2543355,
+        "velocity_ms": 0.3010695
+      },
+      "restore_ms_max": 3.062267,
+      "restore_ms_median": 2.275135,
+      "restore_ms_min": 2.069486,
+      "samples": 12,
+      "shapes_per_compound": 2
+    },
+    "gpu-unprofiled.log": {
+      "bodies": 6001,
+      "height": 10,
+      "restore_ms_max": 1.769127,
+      "restore_ms_median": 1.481105,
+      "restore_ms_min": 1.141988,
+      "samples": 12,
+      "shapes_per_compound": 2
+    }
+  },
+  "city_release_ready": false,
+  "discarded_warmup_trials": 2,
+  "evidence_sha256": {
+    "cpu-profiled-bench.log": "2d34e19c4c43f8bb2e1daf91743f79db419893e24d37eb3cb0797a59e52a90b2",
+    "cpu-snapshot-profiled.log": "6b784ab0305af0e82c875267a007d12af1d50f92e9c37720afeed9ad4586b2bc",
+    "cpu-snapshot-unprofiled.log": "fb74fc8de108149ec5538787e7a818292da32cd3826182d44cd84ed6dd038e2a",
+    "gpu-coordinate-failure.log": "ade525d3012b899a834e2a224cfd89da8ca6b12627041a6c8684f823db81035b",
+    "gpu-profiled.log": "fb897f82533f23986a40fa96e46a828c6916ec08babb7a4dfea113455b0b6161",
+    "gpu-small-translated.log": "9b92917744733e07773d9767c2498a3c9789d19bfe7482cae4ebf53d6048f4b3",
+    "gpu-unprofiled.log": "c55810b5a3cd0fdf44b81f07df22288fc140ad9dd2c18fd32e2c9e4ef083b989"
+  },
+  "final_benchmark_sha256": "1b267369181b4c6585e12d3302a36477c0ac4675ca81e57b5b0503ae70b52c64",
+  "independent_processes_per_arm": 1,
+  "known_failure": {
+    "angular_velocity_error": 0,
+    "case": "64 compounds, 2 shapes, Direct GPU, height 1000",
+    "linear_velocity_error": 0,
+    "position_error_m": 0.000488287,
+    "relaxed_tolerance": false
+  },
+  "notes": [
+    "Profiled/unprofiled large cases used the same final binary; only final source edit afterward corrected a coverage comment.",
+    "The small translated GPU case predates the final additional actor-count assertion; it is supporting diagnostic evidence, not a timing comparison.",
+    "No contacts, new fracture children or sleeping transitions occur inside timed benchmark trials.",
+    "Fine-grained clocks and stderr output add overhead; no production speedup is claimed.",
+    "Native snapshot/provenance tests ran with profiling on and off on CPU.",
+    "The initially proposed large multi-case matrix was rejected by approval review and did not execute; inspected scoped single-case runs proceeded afterward."
+  ],
+  "solver_commit": "c3b743af",
+  "trials_per_process": 12
+}

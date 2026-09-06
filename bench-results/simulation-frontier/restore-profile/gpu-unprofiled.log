@@ -1,0 +1,13 @@
+{"restore_bench":true,"gpu":true,"bodies":6001,"shapes_per_body":2,"height":10,"crush_resistance_setting":true,"trial":0,"restore_ms":2.297241000}
+{"restore_bench":true,"gpu":true,"bodies":6001,"shapes_per_body":2,"height":10,"crush_resistance_setting":true,"trial":1,"restore_ms":1.436427000}
+{"restore_bench":true,"gpu":true,"bodies":6001,"shapes_per_body":2,"height":10,"crush_resistance_setting":true,"trial":2,"restore_ms":1.587448000}
+{"restore_bench":true,"gpu":true,"bodies":6001,"shapes_per_body":2,"height":10,"crush_resistance_setting":true,"trial":3,"restore_ms":1.567141000}
+{"restore_bench":true,"gpu":true,"bodies":6001,"shapes_per_body":2,"height":10,"crush_resistance_setting":true,"trial":4,"restore_ms":1.706971000}
+{"restore_bench":true,"gpu":true,"bodies":6001,"shapes_per_body":2,"height":10,"crush_resistance_setting":true,"trial":5,"restore_ms":1.769127000}
+{"restore_bench":true,"gpu":true,"bodies":6001,"shapes_per_body":2,"height":10,"crush_resistance_setting":true,"trial":6,"restore_ms":1.611102000}
+{"restore_bench":true,"gpu":true,"bodies":6001,"shapes_per_body":2,"height":10,"crush_resistance_setting":true,"trial":7,"restore_ms":1.395069000}
+{"restore_bench":true,"gpu":true,"bodies":6001,"shapes_per_body":2,"height":10,"crush_resistance_setting":true,"trial":8,"restore_ms":1.363981000}
+{"restore_bench":true,"gpu":true,"bodies":6001,"shapes_per_body":2,"height":10,"crush_resistance_setting":true,"trial":9,"restore_ms":1.362850000}
+{"restore_bench":true,"gpu":true,"bodies":6001,"shapes_per_body":2,"height":10,"crush_resistance_setting":true,"trial":10,"restore_ms":1.377397000}
+{"restore_bench":true,"gpu":true,"bodies":6001,"shapes_per_body":2,"height":10,"crush_resistance_setting":true,"trial":11,"restore_ms":1.141988000}
+Original city deployment restored and healthy
