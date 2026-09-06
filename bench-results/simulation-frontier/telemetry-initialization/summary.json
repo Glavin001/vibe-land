@@ -1,0 +1,64 @@
+{
+  "scope": "Constructor initialization and audit coverage; no GPU qualification or backend deployment",
+  "solver_revision": "7c09837e",
+  "release_solver_revision": "491a2d41",
+  "regression": [
+    {
+      "arm": "before",
+      "exit_code": -6,
+      "output": "uninitialized telemetry field gpuStressHostWorkMilliseconds with poison 165\nterminate called after throwing an instance of 'std::runtime_error'\n  what():  fresh telemetry must have zero counters/timers and no error\n"
+    },
+    {
+      "arm": "after",
+      "exit_code": 0,
+      "output": "PASS: 308 telemetry initialization checks over four storage patterns\n"
+    }
+  ],
+  "initialization_checks": 308,
+  "native_ctest_passed": true,
+  "validator_tests_passed": 6,
+  "release_build_passed": true,
+  "historical_trace_sha256": "94a47061703d07bd44b379d038e865b58ac793b0f22f5b121fdeffba183c3e81",
+  "candidate_binaries": {
+    "record-city-trace": "f55e3e1db956fe3025b3a61175f4422fa56ef310e289e74e53df4eaa55f2f73d",
+    "web-fps-server": "87349429ecc1d9fcdc08bc29683de4695b4dc1d9dd6519a66d6b34ae1593bb9e"
+  },
+  "live_binary_sha256": "7c5d04267217f6993ca6da0464de8a3ea8ebf8bfe3283f089521f003841aa5ee",
+  "constructor_test_executables": {
+    "before": "aebe73702c8afaa770c43f444798dcff15a8c7ec29704cec2dd79fec526adfdc",
+    "after": "34641c0aac12327c3fbf9714bde100ef8e67f0f43bad509dbc9aaa395a9a0a00"
+  },
+  "sources": {
+    "/root/workspace/blast-stress-solver-2-rooted-wire/blast/include/extensions/stressphysx/NvBlastExtStressPhysX.h": "f8f756f48638436c5da54dfc945bce43d33e5aa8d0e2be67e027c274cb49a12a",
+    "/root/workspace/blast-stress-solver-2-rooted-wire/blast/source/sdk/extensions/stressphysx/NvBlastExtStressPhysX.cpp": "6127d7c3956d0aac89651d34478e16c43fc6592ca62c2eaffa970e594c688f71",
+    "/root/workspace/blast-stress-solver-2-rooted-wire/demos/blast-stress-demo/tests/telemetry_initialization_test.cpp": "335e71691c39665f5349b269eb7ba5b0afb54dc47979214ed49c7aa60caccaf5",
+    "/root/workspace/vibe-land-4-rooted-wire/physx-bridge/src/physx_bridge.cc": "7dcc28795854311cf66fc677a0b7816eea265c7c6addc09f3517a4fa52856b16",
+    "/root/workspace/vibe-land-4/scripts/perf/verify_compact_contact_audit.py": "960ef3fc9d228db0324bc2c8be3848cc9b242485f3bd11a4c42f59f2bf49d98a",
+    "/root/workspace/vibe-land-4/scripts/perf/test_verify_compact_contact_audit.py": "53fc99ca919b1ddf41906813bc749926dcfd41c22f394eb4fb650116d26b6147"
+  },
+  "not_qualified": [
+    "full-city GPU contact audit",
+    "matched-work performance",
+    "settling/scenario",
+    "multiplayer",
+    "deployment"
+  ],
+  "evidence_sha256": {
+    "after-build.log.gz": "f61f27bd17de546264aa58f40f3aafaac7021e0ef69c17f6b1b4cd7664a037ec",
+    "after.log.gz": "87f33f162fdfe5f39b75077215be7e401468ecb60f2d97a0535100e3376e68fb",
+    "before-build.log.gz": "f61f27bd17de546264aa58f40f3aafaac7021e0ef69c17f6b1b4cd7664a037ec",
+    "before-telemetry-header.h.gz": "3baa06c9d21c2d69e23fec685adcd06a28324ef28cbf9d602d762ccea2f80e9c",
+    "before.log.gz": "a9b2d89060cc8666de914b19da0a0d816bae134ac4db8af8e488aa631ea32b31",
+    "build-constructor-regression.py": "283b7a1048469657b6191bc275c774b4ee1549c07682c0024c1e8e226cf37b61",
+    "cmake-configure.log.gz": "5b2ba017a25c633e38832285e38b253c52336b38c7aca27cab7804b97c71356f",
+    "cmake.log.gz": "002a771914cccecbbe472cde310a57397e0dc0bb96fe2a1e6d9291104c6d3296",
+    "ctest.log.gz": "f19dc803fa02c37059537c87254bcfd86e563fc25d9a078f8cdea2fa374757f7",
+    "historical-first-tick.json.gz": "831e941e0ff104fd0c1bbcbd0780a996a22682909782801d40caa960d304f7eb",
+    "prepared-audit-runner.py": "298e90fc8e6ce549962427b11f7b10f01a1de454ef20d117e86bed42f1ff60b8",
+    "regression.json.gz": "0e56efd99bb09dcd21d6086f0b381e1f3ea2a76118bf5e3caaa1244c8f2cd2f1",
+    "release-build.log.gz": "30102cd736a88a3d333074f74981bcf980080ab028f396ca750bf60177a25fc7",
+    "validator-tests.log.gz": "686f4b3a507b498a9069be54c455b999c1e6aba5579217f8cd211a5d45a95e13",
+    "gpu-admission.log.gz": "63bbabbe9fd459c0be07af7874b933c361af1527d8e907e4098dca546a2da979",
+    "gpu-admission.json": "2cd125e37a7b6bac4af4f0373db6b2cf2bee6b468ef17d17a1a213d9b07fab53"
+  }
+}

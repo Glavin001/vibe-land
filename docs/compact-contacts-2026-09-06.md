@@ -99,3 +99,5 @@ Next, under exclusive GPU use when the city is empty:
 
 The synthetic compact-sort probe is not a city performance result. No new
 full-city speedup, settling pass, or deployment is claimed by this commit.
+
+The candidate was subsequently rebuilt with the [telemetry initialization fix](telemetry-initialization-2026-09-06.md). The prepared audit now rejects insufficient heavy-load/replay coverage through `scripts/perf/verify_compact_contact_audit.py`; the later evidence records the new binary hashes. It remains undeployed.

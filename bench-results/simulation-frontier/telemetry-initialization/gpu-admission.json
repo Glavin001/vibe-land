@@ -1,0 +1,19 @@
+{
+  "attempt_exit_code": 1,
+  "reason": "Exclusive GPU tests require a healthy idle deployment",
+  "gpu_test_started": false,
+  "audit_output_created": false,
+  "server_pid_after": 166548,
+  "health_after": {
+    "status": "ok",
+    "physics_backend": "physx_gpu",
+    "physics_gpu_required": true,
+    "sim_hz": 60,
+    "snapshot_hz": 60,
+    "active_matches": 1,
+    "players": 1,
+    "udp_verified": true,
+    "wt_connection_attempts": 7,
+    "session_configs_served": 15
+  }
+}
