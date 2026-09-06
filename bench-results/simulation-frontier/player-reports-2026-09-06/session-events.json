@@ -1,0 +1,36 @@
+{
+  "events": [
+    "2026-09-06T02:19:51.375180Z  INFO web_fps_server: player disconnected from match match_id=city-default player_id=1 transport=\"webtransport\" pending_inputs=0 input_silence_ms=285.0625 last_received_input_seq=659 last_ack_input_seq=659 active_players=0 tick_ms_p95=4.293729782104492 max_pending_inputs=0 datagram_fallbacks=0 strict_snapshot_drops=0",
+    "2026-09-06T02:19:59.838023Z  WARN web_fps_server: match dropped outbound packets because client queues were full match_id=city-default newly_added=13 total=13 dropped_snapshots=6",
+    "2026-09-06T02:20:00.838316Z  WARN web_fps_server: match dropped outbound packets because client queues were full match_id=city-default newly_added=125 total=138 dropped_snapshots=66",
+    "2026-09-06T02:20:01.837782Z  WARN web_fps_server: match dropped outbound packets because client queues were full match_id=city-default newly_added=123 total=261 dropped_snapshots=126",
+    "2026-09-06T02:20:02.837912Z  WARN web_fps_server: match dropped outbound packets because client queues were full match_id=city-default newly_added=125 total=386 dropped_snapshots=186",
+    "2026-09-06T02:20:03.837695Z  WARN web_fps_server: match dropped outbound packets because client queues were full match_id=city-default newly_added=123 total=509 dropped_snapshots=246",
+    "2026-09-06T02:20:04.304237Z  INFO web_fps_server: city ledger repaired: bootstrap re-sent after a dropped reliable packet match_id=city-default player_id=2",
+    "2026-09-06T02:20:04.837451Z  WARN web_fps_server: match dropped outbound packets because client queues were full match_id=city-default newly_added=56 total=565 dropped_snapshots=273",
+    "2026-09-06T02:20:45.328302Z  INFO web_fps_server: debug report stored match_id=city-default folder=\"report-1788661245-city-default-tick3840\" bytes=5438",
+    "2026-09-06T02:21:32.933451Z  INFO web_fps_server: debug report stored match_id=city-default folder=\"report-1788661292-city-default-tick5220\" bytes=6883",
+    "2026-09-06T02:22:00.350024Z  INFO web_fps_server: debug report stored match_id=city-default folder=\"report-1788661320-city-default-tick5460\" bytes=7967",
+    "2026-09-06T02:22:02.340850Z  INFO web_fps_server: city reset requested match_id=city-default",
+    "2026-09-06T02:22:03.609531Z  INFO web_fps_server: city reset; re-bootstrapped clients match_id=city-default players=1",
+    "2026-09-06T02:22:03.982735Z  INFO web_fps_server: player disconnected from match match_id=city-default player_id=2 transport=\"webtransport\" pending_inputs=120 input_silence_ms=0.002505000215023756 last_received_input_seq=7492 last_ack_input_seq=7296 active_players=0 tick_ms_p95=196.6758270263672 max_pending_inputs=111 datagram_fallbacks=0 strict_snapshot_drops=0"
+  ],
+  "first_non_droppable_drop": "2026-09-06T02:19:59.752001Z",
+  "hits_before_reset": 21,
+  "last_non_droppable_drop": "2026-09-06T02:20:04.284595Z",
+  "log_window_end_exclusive": "2026-09-06T02:22:05",
+  "log_window_start": "2026-09-06T02:19:37",
+  "non_droppable_drop_warning_counts_by_packet_kind": {
+    "113": 2,
+    "115": 273,
+    "121": 5,
+    "124": 5,
+    "128": 2
+  },
+  "raw_window_lines": 1591,
+  "raw_window_sha256": "65ba10ea25e783e7bca19d7d9ca5a0416461f907232783350078c86eb2dfb771",
+  "restore_errors": {
+    "[StressPhysX:1 node=4294967295] restoreResimulationSnapshot requires a prior capture.": 4
+  },
+  "shots_before_reset": 22
+}

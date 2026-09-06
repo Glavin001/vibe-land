@@ -246,3 +246,12 @@ The rooted-fragment creation/rest-pose fix is now deployed; see
 sections above record state at the time of each investigation, not current
 release status. This inventory changes only analysis tooling and evidence;
 no new city runtime or frontend deployment was needed.
+
+
+## New public session on 2026-09-06
+
+The [02:20–02:22 UTC gameplay reports](city-player-reports-2026-09-06.md) now
+exercise the deployed rooted-fragment fix: no repeated structure repairs, but
+115.48 ms rolling tick mean at 5,435 awake bodies. They also expose a separate
+startup queue overflow and below-ground geometry readings. Use that report for
+the latest player observations; the local captures above remain idle checks.

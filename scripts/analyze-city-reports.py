@@ -120,6 +120,15 @@ def load_report(directory):
                 "hashMismatches", "structureRepairs",
             )
         },
+        "client_geometry_point_sample": {
+            key: client_city.get(key) for key in (
+                "minChunkY", "chunksBelowGround", "staleDrawnChunks",
+                "chunkUpdateP95Ms", "deepest",
+            )
+        },
+        "server_body_point_sample": {
+            "min_body_y": city.get("min_body_y"),
+        },
         "client_event_ring": {
             "teleports": len(client["events"]["teleports"]),
             "repair_events": len(repairs),
@@ -155,7 +164,7 @@ def main():
     reports = sorted((load_report(path) for path in args.reports),
                      key=lambda report: report["captured_at"])
     output = {
-        "schema": 2,
+        "schema": 3,
         "notes": [
             "Missing city telemetry is null, not a zero fault count; local headless captures are not public play evidence.",
             "Release artifact metadata identifies isolated deployments more precisely than the serving working directory revision.",
@@ -164,6 +173,8 @@ def main():
             "Do not sum nested timing spans, different windows, or cumulative report counters.",
             "Client frame profiles are point samples; telemetryMs retains its last periodic value.",
             "Zero reported faults establish only the checks actually enabled and recorded.",
+            "Geometry diagnostics may be gated or stale; these reports do not record whether their sweep ran.",
+            "Client chunk centroids and server body origins are different measurements, not a matched penetration test.",
             "The 180-tick interpretation is for this server revision; check it before reuse.",
         ],
         "reports": reports,
