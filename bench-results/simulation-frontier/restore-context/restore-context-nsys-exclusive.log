@@ -1,0 +1,9 @@
+Collecting data...
+Generating '/tmp/nsys-report-50ba.qdstrm'
+[1/1] [0%                          ] city-restore-context-cuda-off.nsys-rep[1/1] [0%                          ] city-restore-context-cuda-off.nsys-rep[1/1] [=====30%                    ] city-restore-context-cuda-off.nsys-rep[1/1] [=============59%            ] city-restore-context-cuda-off.nsys-rep[1/1] [===============66%          ] city-restore-context-cuda-off.nsys-rep[1/1] [========================100%] city-restore-context-cuda-off.nsys-rep[1/1] [========================100%] city-restore-context-cuda-off.nsys-rep
+Generated:
+    /tmp/city-restore-context-cuda-off.nsys-rep
+Original city deployment restored and healthy
+The target application terminated. One or more process it created re-parented.
+Waiting for termination of re-parented processes.
+Use the `--wait` option to modify this behavior.

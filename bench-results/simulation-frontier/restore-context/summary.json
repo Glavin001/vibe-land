@@ -1,0 +1,114 @@
+{
+  "city_release_ready": false,
+  "optimization_enabled_in_city": false,
+  "scope": "Attribution and context-lifecycle checks; not a performance or fidelity release gate",
+  "independent_processes_per_profile_arm": 1,
+  "adaptive_aim": true,
+  "identical_shot_inputs_verified": false,
+  "cases": {
+    "before-experiment": {
+      "ticks": 1200,
+      "replay_ticks": 510,
+      "max_awake": 5311,
+      "restore_ms_replay_median": 32.682665,
+      "simulation_wall_ms_mean": 67.187057214,
+      "process_cpu_ms_mean": 91.24238337416666,
+      "profile_rows": 2040,
+      "large_restore_rows": 495,
+      "large_restore_sums": {
+        "restored": 1976317,
+        "restored_shapes": 2825615,
+        "total_ms": 14397.890235,
+        "pose_ms": 13333.741047,
+        "velocity_ms": 116.508489,
+        "clears_ms": 169.738432,
+        "sleep_ms": 161.344024
+      }
+    },
+    "profile-off": {
+      "ticks": 1200,
+      "replay_ticks": 516,
+      "max_awake": 3949,
+      "restore_ms_replay_median": 14.822036,
+      "simulation_wall_ms_mean": 43.90240622975,
+      "process_cpu_ms_mean": 62.15991472166667,
+      "profile_rows": 2064,
+      "large_restore_rows": 502,
+      "large_restore_sums": {
+        "restored": 1582308,
+        "restored_shapes": 2624221,
+        "total_ms": 7045.540829,
+        "pose_ms": 6287.066753,
+        "velocity_ms": 91.094718,
+        "clears_ms": 124.43015199999999,
+        "sleep_ms": 123.325971
+      }
+    },
+    "profile-on": {
+      "ticks": 1200,
+      "replay_ticks": 549,
+      "max_awake": 4414,
+      "restore_ms_replay_median": 14.963071,
+      "simulation_wall_ms_mean": 48.509907644,
+      "process_cpu_ms_mean": 69.34149940583333,
+      "profile_rows": 2196,
+      "large_restore_rows": 526,
+      "large_restore_sums": {
+        "restored": 1672484,
+        "restored_shapes": 2755348,
+        "total_ms": 7653.31322,
+        "pose_ms": 6804.847618,
+        "velocity_ms": 99.713876,
+        "clears_ms": 141.403557,
+        "sleep_ms": 128.516283
+      }
+    }
+  },
+  "profiler_failures": {
+    "launcher_capture": "No CUDA data; session ended while test descendants remained. Owned descendants stopped immediately after discovery; discard the attempt, including overlap with restored city.",
+    "native_capture": "Direct native target stalled during initialization, no simulation metrics. Stopped owned target; nsys exited 143 and wrapper restored city.",
+    "cpu_sampling": "perf_event_open unavailable; gdb ptrace also unavailable.",
+    "timing_claims_from_failed_captures": false
+  },
+  "native_benchmark_sha256": "01f32f09da52d43fd7503e44ce56ef5498953181e46ae09e195048049f2bf299",
+  "solver_commits": {
+    "main": "27fa6974",
+    "qualified_branch": "bd71ce1b"
+  },
+  "evidence_sha256": {
+    "before-experiment/metrics.csv.gz": "3b8e29d7c2af001ee400c554e12faf15f89b36582a82f513b1fa228bd334a48e",
+    "before-experiment/native.log.gz": "7f99377e2ba619bf02b77660d927e96dcefe3ddc2558254037d6e64761653258",
+    "before-experiment/run.json": "920f216628867b40045e3143cb207b5b75c493713e47276a990be829158074e5",
+    "before-experiment/scenario.json": "75124961b73c25ee1633c5fb85224492363f21b3aadf763af41eaba76c4b522d",
+    "before-experiment/timings.jsonl.gz": "9f3690dbdfcd8c23a80bbdf32d466f27c322566e29631cc088700e1819fb2ede",
+    "city-restore-context-nsys-stats.log": "133c18b5cb16f7d0150c3660c768003c46e2e75ccd59977923708d6c204d4518",
+    "city-state.json": "af72a2be0814085f5a2e4085273751cc1f552fae9f893b39b6e7a4e4c8420286",
+    "city-verification.json": "bf2b09b173b3e1c7741ddc1ce159378e66ffd580138bedf061238d13e8204e47",
+    "cpu-bench-0.log": "43fcd7ca63f29e6ac503664eb5e8e35a7b367f6aed377e11d8ebdca933c4fc0b",
+    "cpu-bench-1.log": "4aa4d61530dac892bd45fba9e717c8401156435466d78c6c7f7a35002c8ac9ba",
+    "cpu-snapshot-0.log": "fb74fc8de108149ec5538787e7a818292da32cd3826182d44cd84ed6dd038e2a",
+    "cpu-snapshot-1.log": "fb74fc8de108149ec5538787e7a818292da32cd3826182d44cd84ed6dd038e2a",
+    "failed-launcher-profiler-run.json": "5c034436cb1a3f9b3252443f072348ce4413372223798b33d9e2b911eeeac6aa",
+    "failed-native-profiler-run.json": "830062a8f0da01b59234c59e15ad3ed3060c7d1e859f60f40e269a2b4570f3f5",
+    "gpu-0.log": "951cd0e81f918f7d6ab89b625aa31aadec915f72f130ce7f28ef917c3cc81498",
+    "gpu-1.log": "e9ace4b614cb7a7c4cd8ebb2f8aa30cf02c09a870931ebf4d2b936c6f2d69bfc",
+    "measure-city-restore-context.py": "3ca06091173dafca96531878e3c96eb020fce45721fc0ec374cb19a2cd7e35e5",
+    "native-bench-flags.make": "d42a935032e9bf1277a8991e4c2a5935f0236bce7df9ce94bb648e29744b690e",
+    "profile-city-restore-config.json": "5f0409b8e2cfd2caf16d10baa4557f68a2f6485f768f155e53bf8ed2fbac75ee",
+    "profile-city-restore-native.py": "cfd0a5af89ad292cc06d4224c778427a08e3524fd0c7bd682a8638ebb743a9ae",
+    "profile-off/metrics.csv.gz": "6b4ebc003624663c9c854b2b2efa5039e5c88133b453094b02170f9e5fe88f48",
+    "profile-off/native.log.gz": "592a77743d228a49ddb32b06107f17e9e2d0864d084d85f8b825c4c159a8ba57",
+    "profile-off/run.json": "d38aaecac3e9c21c192735c3f68c26ac068a5df79ba761e3b8588cf1222049f4",
+    "profile-off/scenario.json": "44c3095ff34939b3c0bd94df323ae52a30b51c99da295bca437fee43a64799fb",
+    "profile-off/timings.jsonl.gz": "3e7fa44c75675a7d2d5de8a4fbd26d7afebcc0ec31dcf0ef23556617af488c58",
+    "profile-on/metrics.csv.gz": "405cd92db1d9add91251df450681612caf5311c7c2d3d521fc4042880b304cba",
+    "profile-on/native.log.gz": "136b93f2554cfda5aa496de024533d1ae78f52f635b0cb1034cb03d642ba7cff",
+    "profile-on/run.json": "8f1c04d16881cb78de894990dae7fce0ccb8183bb9bf121eee6e27a1d78d0d2f",
+    "profile-on/scenario.json": "87277d179bff2cacbce73b61f710c78e80399b465586d2fda4c40e5d1a4931fd",
+    "profile-on/timings.jsonl.gz": "9a8fcf86d7179b9a5054aa370bb383708af50b7bfa3dbe7cb3cf0a1652f7c451",
+    "restore-context-nsys-exclusive.log": "f0782bf16091a21e717a828f60dff4934217ceb1e721d690c26f9df5bdb8cee8",
+    "restore-context-nsys-native-exclusive.log": "563b9b6625c530f6bf08c958cba77a42287ece986b2a97f0d2969b9c4775c441",
+    "restore-context-nsys-native-stacks.log": "af38f5a281bad7ecfc6a408a262f3b3df2d4aa63b395bb9440722f7afe086844",
+    "test-restore-context-gpu.py": "b5185214b015d272ce15e4db8f9a773916153d3d17bd9e039e33801a37bc6a3f"
+  }
+}

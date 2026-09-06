@@ -1,0 +1,11 @@
+{
+  "pid": 107256,
+  "exe": "/root/workspace/vibe-land-4/.certs/vast-city/web-fps-server-rooted-wire-1788651865899070115",
+  "exe_sha256": "9b405a0199afba106b248666b551dabb9e8dea110274fbb861a48f72d051e8d1",
+  "flags": {
+    "VIBE_PHYSX_DIRECT_GPU": "1",
+    "BLAST_RESIM_BATCH_CUDA_CONTEXT": null,
+    "BLAST_RESIM_PROFILE": null,
+    "VIBE_RELEASE_BINARY_SHA256": "9b405a0199afba106b248666b551dabb9e8dea110274fbb861a48f72d051e8d1"
+  }
+}

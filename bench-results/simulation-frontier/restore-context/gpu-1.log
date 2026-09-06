@@ -1,0 +1,12 @@
+{"restore_bench":true,"gpu":true,"bodies":6001,"shapes_per_body":2,"height":10,"crush_resistance_setting":true,"trial":0,"restore_ms":2.194636000}
+{"restore_bench":true,"gpu":true,"bodies":6001,"shapes_per_body":2,"height":10,"crush_resistance_setting":true,"trial":1,"restore_ms":1.504627000}
+{"restore_bench":true,"gpu":true,"bodies":6001,"shapes_per_body":2,"height":10,"crush_resistance_setting":true,"trial":2,"restore_ms":1.599394000}
+{"restore_bench":true,"gpu":true,"bodies":6001,"shapes_per_body":2,"height":10,"crush_resistance_setting":true,"trial":3,"restore_ms":1.505650000}
+{"restore_bench":true,"gpu":true,"bodies":6001,"shapes_per_body":2,"height":10,"crush_resistance_setting":true,"trial":4,"restore_ms":1.481996000}
+{"restore_bench":true,"gpu":true,"bodies":6001,"shapes_per_body":2,"height":10,"crush_resistance_setting":true,"trial":5,"restore_ms":1.492305000}
+{"restore_bench":true,"gpu":true,"bodies":6001,"shapes_per_body":2,"height":10,"crush_resistance_setting":true,"trial":6,"restore_ms":1.502865000}
+{"restore_bench":true,"gpu":true,"bodies":6001,"shapes_per_body":2,"height":10,"crush_resistance_setting":true,"trial":7,"restore_ms":1.514817000}
+{"restore_bench":true,"gpu":true,"bodies":6001,"shapes_per_body":2,"height":10,"crush_resistance_setting":true,"trial":8,"restore_ms":1.517132000}
+{"restore_bench":true,"gpu":true,"bodies":6001,"shapes_per_body":2,"height":10,"crush_resistance_setting":true,"trial":9,"restore_ms":1.598082000}
+{"restore_bench":true,"gpu":true,"bodies":6001,"shapes_per_body":2,"height":10,"crush_resistance_setting":true,"trial":10,"restore_ms":1.513004000}
+{"restore_bench":true,"gpu":true,"bodies":6001,"shapes_per_body":2,"height":10,"crush_resistance_setting":true,"trial":11,"restore_ms":1.508906000}

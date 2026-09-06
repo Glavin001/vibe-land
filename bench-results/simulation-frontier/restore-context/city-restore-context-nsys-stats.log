@@ -1,0 +1,7 @@
+Generating SQLite file /tmp/city-restore-context-cuda-off.sqlite from /tmp/city-restore-context-cuda-off.nsys-rep
+Processing [/tmp/city-restore-context-cuda-off.sqlite] with [/opt/nvidia/nsight-compute/2025.1.1/host/target-linux-x64/reports/cuda_api_sum.py] to [/tmp/city-restore-context-cuda-off-summary_cuda_api_sum.csv]... PROCESSED (EMPTY RESULTS)
+
+SKIPPED: /tmp/city-restore-context-cuda-off.sqlite does not contain CUDA trace data.
+
+Processing [/tmp/city-restore-context-cuda-off.sqlite] with [/opt/nvidia/nsight-compute/2025.1.1/host/target-linux-x64/reports/osrt_sum.py] to [/tmp/city-restore-context-cuda-off-summary_osrt_sum.csv]... PROCESSED
+

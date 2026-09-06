@@ -104,3 +104,7 @@ Do not flip a simulation optimization on the basis of the airborne benchmark.
 include the failing case. The neighboring verifier checks the source hashes,
 complete trial/body counts, nested-timer consistency and unchanged live artifact;
 it explicitly reports that this is **not a city release pass**.
+
+Follow-up: the [contact-heavy restore experiment](restore-context-experiment-2026-09-06.md)
+reproduced the expensive pose path. CUDA context batching passed lifecycle/motion
+checks but has no demonstrated city speedup and remains disabled.
