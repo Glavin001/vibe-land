@@ -1,0 +1,107 @@
+[
+  {
+    "active_nodes": 1,
+    "bonds": 1,
+    "components": 1,
+    "assembly_ms": 0.002505,
+    "name": "anchored-lever"
+  },
+  {
+    "active_nodes": 17,
+    "bonds": 16,
+    "components": 2,
+    "assembly_ms": 0.056636,
+    "name": "anchored-with-isolated"
+  },
+  {
+    "active_nodes": 17,
+    "bonds": 15,
+    "components": 2,
+    "assembly_ms": 0.072215,
+    "name": "released"
+  },
+  {
+    "active_nodes": 17,
+    "bonds": 14,
+    "components": 3,
+    "assembly_ms": 0.064039,
+    "name": "fractured"
+  },
+  {
+    "active_nodes": 17,
+    "bonds": 0,
+    "components": 17,
+    "assembly_ms": 0.012894,
+    "name": "isolated"
+  },
+  {
+    "active_nodes": 17,
+    "bonds": 15,
+    "components": 3,
+    "assembly_ms": 0.054011,
+    "name": "mixed"
+  },
+  {
+    "active_nodes": 17,
+    "bonds": 14,
+    "components": 3,
+    "assembly_ms": 0.066324,
+    "name": "free-gravity"
+  },
+  {
+    "active_nodes": 17,
+    "bonds": 14,
+    "components": 3,
+    "assembly_ms": 0.07449,
+    "name": "zero-load"
+  },
+  {
+    "active_nodes": 17,
+    "bonds": 14,
+    "components": 3,
+    "assembly_ms": 0.063609,
+    "name": "load-1e+30"
+  },
+  {
+    "active_nodes": 17,
+    "bonds": 14,
+    "components": 3,
+    "assembly_ms": 0.059621,
+    "name": "load-1e-30"
+  },
+  {
+    "active_nodes": 17,
+    "bonds": 14,
+    "components": 3,
+    "assembly_ms": 0.077906,
+    "name": "rotated-translated"
+  },
+  {
+    "active_nodes": 94640,
+    "bonds": 18627,
+    "components": 88705,
+    "assembly_ms": 77.065203,
+    "name": "building-anchored"
+  },
+  {
+    "active_nodes": 94640,
+    "bonds": 18564,
+    "components": 88705,
+    "assembly_ms": 81.236307,
+    "name": "building-free"
+  },
+  {
+    "active_nodes": 5936,
+    "bonds": 18627,
+    "components": 1,
+    "assembly_ms": 36.241818,
+    "name": "building-anchored-component"
+  },
+  {
+    "active_nodes": 5936,
+    "bonds": 18564,
+    "components": 1,
+    "assembly_ms": 42.834805,
+    "name": "building-free-component"
+  }
+]

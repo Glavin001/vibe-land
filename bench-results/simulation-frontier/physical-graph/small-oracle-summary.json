@@ -1,0 +1,87 @@
+[
+  {
+    "active_nodes": 1,
+    "bonds": 1,
+    "components": 1,
+    "assembly_ms": 0.002134,
+    "name": "anchored-lever"
+  },
+  {
+    "active_nodes": 2,
+    "bonds": 2,
+    "components": 2,
+    "assembly_ms": 0.003607,
+    "name": "shared-fixed-support"
+  },
+  {
+    "active_nodes": 17,
+    "bonds": 16,
+    "components": 2,
+    "assembly_ms": 0.062026,
+    "name": "anchored-with-isolated"
+  },
+  {
+    "active_nodes": 17,
+    "bonds": 15,
+    "components": 2,
+    "assembly_ms": 0.061906,
+    "name": "released",
+    "negative_controls_rejected": 3
+  },
+  {
+    "active_nodes": 17,
+    "bonds": 14,
+    "components": 3,
+    "assembly_ms": 0.058759,
+    "name": "fractured"
+  },
+  {
+    "active_nodes": 17,
+    "bonds": 0,
+    "components": 17,
+    "assembly_ms": 0.009578,
+    "name": "isolated"
+  },
+  {
+    "active_nodes": 17,
+    "bonds": 15,
+    "components": 3,
+    "assembly_ms": 0.053379,
+    "name": "mixed"
+  },
+  {
+    "active_nodes": 17,
+    "bonds": 14,
+    "components": 3,
+    "assembly_ms": 0.058981,
+    "name": "free-gravity"
+  },
+  {
+    "active_nodes": 17,
+    "bonds": 14,
+    "components": 3,
+    "assembly_ms": 0.071754,
+    "name": "zero-load"
+  },
+  {
+    "active_nodes": 17,
+    "bonds": 14,
+    "components": 3,
+    "assembly_ms": 0.069499,
+    "name": "load-1e+30"
+  },
+  {
+    "active_nodes": 17,
+    "bonds": 14,
+    "components": 3,
+    "assembly_ms": 0.06423,
+    "name": "load-1e-30"
+  },
+  {
+    "active_nodes": 17,
+    "bonds": 14,
+    "components": 3,
+    "assembly_ms": 0.073337,
+    "name": "rotated-translated"
+  }
+]

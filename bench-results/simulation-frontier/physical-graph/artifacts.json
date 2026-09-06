@@ -1,0 +1,18 @@
+{
+  "solver_commit": "79e2c9a05b6f8a3a215b2d2aa216643e2510ce51",
+  "source_sha256": {
+    "blast/source/sdk/extensions/stressgpu/NvBlastExtStressGpuPhysicalGraph.h": "91e5465aba3c3b328ef5fe00a73b4240ee1eabcebc03f50e2d582845608d2b21",
+    "blast/source/sdk/extensions/stressgpu/NvBlastExtStressGpuPhysicalGraph.cpp": "f7fd7630627b4ddc7d093253c3d0246aaad098e3ce22e0ea9d8846c8af697b25",
+    "blast/source/sdk/extensions/stressgpu/NvBlastExtStressGpuMultilevel.h": "dfac16f819b4f5d5d4749bcf17be655161ad65c5bfaacf820803fb725c1ab3d5",
+    "blast/source/sdk/extensions/stressgpu/NvBlastExtStressGpuMultilevel.cpp": "1a02bb2c64214b2c532223c65ed31f1913be1ae8e28072a188c5cbff8ad6c742",
+    "demos/blast-stress-demo/tests/physical_graph_test.cpp": "14d18c179e7258549e389c28980c506fcfb85c2ebb57510c2e6152e24fbb873d",
+    "demos/blast-stress-demo/tests/physical_graph_reference.py": "f19d5c9c139a1711e65cbde7d2823f6ac3dc004ebe6eb50daa0733680c066804",
+    "demos/blast-stress-demo/tests/multilevel_gpu_test.cu": "97e6875924de35d26dcfb1b01271de9af328f15ce928585325abeafeb72ee5f0",
+    "demos/blast-stress-demo/tests/multilevel_reference.py": "2f296468a40cfd49efa3630cd777affe7c79818d4d7e86757e689841471a430c"
+  },
+  "binary_sha256": {
+    "demos/blast-stress-demo/build-gpu-activity/physical_graph_test": "0dea1c94ab50d7dcd2d9c7706411bd0b4f66460020d8e195d6214f2be823e308",
+    "demos/blast-stress-demo/build-gpu-activity/multilevel_gpu_test": "336111d0b710459792d814b639ea644004daefb20e73a059fb53bcc1af2759c3"
+  },
+  "scope": "Native physical graph feeds standalone CUDA solver; production backend selection and live city solver unchanged."
+}

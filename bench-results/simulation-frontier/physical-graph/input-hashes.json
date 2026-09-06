@@ -1,0 +1,110 @@
+{
+  "/tmp/physical-graph-final/anchored-lever.input": {
+    "bytes": 248,
+    "sha256": "e29797e4d9d602ab6299a3bd476a05f4b090177ca8ef4e577e694b8a63d3a454"
+  },
+  "/tmp/physical-graph-final/anchored-with-isolated.input": {
+    "bytes": 2256,
+    "sha256": "9a168b1ea6b82c1693a172a81428d2eb114b07071874181a7d1b080725aa3d43"
+  },
+  "/tmp/physical-graph-final/released.input": {
+    "bytes": 2216,
+    "sha256": "28ba541e4bdbba114e7c1ca455ee782acc1748fa382439041b6533ea33fa2e70"
+  },
+  "/tmp/physical-graph-final/fractured.input": {
+    "bytes": 2176,
+    "sha256": "a7ad86414a4ed909a34dc405d37fd1cd405ae6baa1c9c2689b61c427fb491f4d"
+  },
+  "/tmp/physical-graph-final/isolated.input": {
+    "bytes": 1616,
+    "sha256": "a34ec773511f1bbed0ce1d8bb640aad5fbe07b030f4bfe465f1774396225d298"
+  },
+  "/tmp/physical-graph-final/mixed.input": {
+    "bytes": 2216,
+    "sha256": "e8cc3e076f0a881fca813305350d108cd8108f430755e9ce4e4df744e7e59817"
+  },
+  "/tmp/physical-graph-final/free-gravity.input": {
+    "bytes": 2176,
+    "sha256": "78e930f946162e053de6664dddd3cf46441a8fdcb55b427fdf0acb5768a8aa53"
+  },
+  "/tmp/physical-graph-final/zero-load.input": {
+    "bytes": 2176,
+    "sha256": "4d17a510f953252944260d5c41fa574abd794c002f755c677ebc4553faeeef5f"
+  },
+  "/tmp/physical-graph-final/load-1e+30.input": {
+    "bytes": 2176,
+    "sha256": "09106ad053e0077f859c129997803d2c1426be4c909f187ab0e6dc46deff5326"
+  },
+  "/tmp/physical-graph-final/load-1e-30.input": {
+    "bytes": 2176,
+    "sha256": "39baae4be203a3d699d852f0d82a1577c43352bac753d0f37b5d6e06d0b7af4c"
+  },
+  "/tmp/physical-graph-final/rotated-translated.input": {
+    "bytes": 2176,
+    "sha256": "2298ecfae2bf99d462519b7c5d9d24ce8d53d6e31135730804a09efc56f3f058"
+  },
+  "/tmp/physical-graph-final/building-anchored.input": {
+    "bytes": 9230072,
+    "sha256": "8b970a217eec499453231f1f987b3ed7edb5bc0f8491811ed79c493ac1362ac9"
+  },
+  "/tmp/physical-graph-final/building-free.input": {
+    "bytes": 9227552,
+    "sha256": "aaa6063378c34633b77b1fd11b04b10ffadb51e441952d582ecf59128dc0ee32"
+  },
+  "/tmp/physical-graph-final/building-anchored-component.input": {
+    "bytes": 1270648,
+    "sha256": "ecdf949b24771b88d14cfa76d6a81eaa773d12c06e4f2e2b7a7d2d74e20c1c3a"
+  },
+  "/tmp/physical-graph-final/building-free-component.input": {
+    "bytes": 1264960,
+    "sha256": "af71804f0c8f11184e1ff787ce260e517efa21e735b0c721fa18ee487f8a5ea9"
+  },
+  "/tmp/physical-graph-final-oracles/anchored-lever.input": {
+    "bytes": 248,
+    "sha256": "e29797e4d9d602ab6299a3bd476a05f4b090177ca8ef4e577e694b8a63d3a454"
+  },
+  "/tmp/physical-graph-final-oracles/shared-fixed-support.input": {
+    "bytes": 376,
+    "sha256": "354de5284fbf9807e7d934228f8ef26528873cc93d21e1887e7c9bfe9991505c"
+  },
+  "/tmp/physical-graph-final-oracles/anchored-with-isolated.input": {
+    "bytes": 2256,
+    "sha256": "1d0baa3da4553e42384c519a57927ad7ed301b3cb7a9321f862444e5859aa456"
+  },
+  "/tmp/physical-graph-final-oracles/released.input": {
+    "bytes": 2216,
+    "sha256": "34ef63fcddb85e8ced1e6181a4d5f575258139bc470dd1db0647c74cebc0d36a"
+  },
+  "/tmp/physical-graph-final-oracles/fractured.input": {
+    "bytes": 2176,
+    "sha256": "b03a56351e1b5403982a2fab1b394452182e191ab130f5d554e2d02a004b3272"
+  },
+  "/tmp/physical-graph-final-oracles/isolated.input": {
+    "bytes": 1616,
+    "sha256": "da8f83de907cb9ba9dbc940cdc1d7ff7145ed2f8b806e726513659969324b483"
+  },
+  "/tmp/physical-graph-final-oracles/mixed.input": {
+    "bytes": 2216,
+    "sha256": "8c39db9c5b8d7d0c4494ebfed2b3e4380d1291379f201847b31b816f1147e060"
+  },
+  "/tmp/physical-graph-final-oracles/free-gravity.input": {
+    "bytes": 2176,
+    "sha256": "ce6676c827c140ade4a3904c70ea5772b5905f5a0303505b5ffcc661a16abf55"
+  },
+  "/tmp/physical-graph-final-oracles/zero-load.input": {
+    "bytes": 2176,
+    "sha256": "3178ea3a268aa7bb57447452c95d510a5238bc20fd540a0ab95a6d24f03840e8"
+  },
+  "/tmp/physical-graph-final-oracles/load-1e+30.input": {
+    "bytes": 2176,
+    "sha256": "c4b0c86a3852d7bc89349939c730ab2fcf433031a9c7f28ef7ce7ba8c83b8fab"
+  },
+  "/tmp/physical-graph-final-oracles/load-1e-30.input": {
+    "bytes": 2176,
+    "sha256": "6a9649d9461a57199f320ac6b512fef77b490e4b6889d909c86db29eacbed88e"
+  },
+  "/tmp/physical-graph-final-oracles/rotated-translated.input": {
+    "bytes": 2176,
+    "sha256": "5e357af0cddd5b45d4401a3c1fac787de60c47ee4e52642073bcf321b2459bc0"
+  }
+}

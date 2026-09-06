@@ -1,0 +1,42 @@
+[
+  {
+    "name": "anchored-float",
+    "passes": 4,
+    "iterations": 34,
+    "median_warm_cuda_ms": 5.87776,
+    "assembly_ms": 33.194666,
+    "hierarchy_ms": 202.09893,
+    "force_residual": 1.40770253789e-11,
+    "moment_residual": 1.69467812566e-11
+  },
+  {
+    "name": "anchored-double",
+    "passes": 4,
+    "iterations": 34,
+    "median_warm_cuda_ms": 10.65616,
+    "assembly_ms": 32.255032,
+    "hierarchy_ms": 201.335244,
+    "force_residual": 1.40680866615e-11,
+    "moment_residual": 1.69664886155e-11
+  },
+  {
+    "name": "free-float",
+    "passes": 4,
+    "iterations": 31,
+    "median_warm_cuda_ms": 6.283872,
+    "assembly_ms": 36.931175,
+    "hierarchy_ms": 206.071639,
+    "force_residual": 9.00594802958e-12,
+    "moment_residual": 1.12501028498e-11
+  },
+  {
+    "name": "free-double",
+    "passes": 4,
+    "iterations": 31,
+    "median_warm_cuda_ms": 10.639008,
+    "assembly_ms": 37.308869,
+    "hierarchy_ms": 203.7219,
+    "force_residual": 9.00427453012e-12,
+    "moment_residual": 1.12505643467e-11
+  }
+]

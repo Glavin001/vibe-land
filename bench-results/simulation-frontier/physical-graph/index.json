@@ -1,0 +1,78 @@
+{
+  "anchored-double.log": {
+    "bytes": 3080,
+    "sha256": "1d9fc787707c6efe5b1de37c48d6242c5bc6c32178b1f79a704d405a3991a05a"
+  },
+  "anchored-float.log": {
+    "bytes": 3070,
+    "sha256": "f0d57bec5f7db602b0ccb72086d06b4948b93aeef6f924766cbc5c265327fb74"
+  },
+  "artifacts.json": {
+    "bytes": 1627,
+    "sha256": "5f67f35085e8d27f9aae9b5cc07f38db96c53e8c252eaddbac5301a47fc9cbf8"
+  },
+  "city-after-validation.json": {
+    "bytes": 849,
+    "sha256": "35a3159ccac06f50ae45e373d3aa5d646db1ffffb6e6291054c4245bbb1d2c5f"
+  },
+  "commands.json": {
+    "bytes": 1939,
+    "sha256": "34d42b0bae2ec94f152e24f67e459d9baccd9a5be52ab6d0084287d5b3c44426"
+  },
+  "free-double.log": {
+    "bytes": 3070,
+    "sha256": "d08b9d9b62f3680f89b138b1050ec4ad0cb37c414e5c1e0aa9b947821f10bdf3"
+  },
+  "free-float.log": {
+    "bytes": 3060,
+    "sha256": "16eb908bea14816fc8fab33622dc09fdb996d6050d00bb789a83dee90897bc30"
+  },
+  "gpu-summary.json": {
+    "bytes": 1029,
+    "sha256": "8ef320d03131d18c5da7fbc4a240f144199e9f5ee2b79d6ab3e40d0957192594"
+  },
+  "incomplete-negative.log": {
+    "bytes": 1450,
+    "sha256": "eb4b15b3053529f0950a305d24fba04ebee7c16351c2ed8667ab9dba1f3a8570"
+  },
+  "input-hashes.json": {
+    "bytes": 4372,
+    "sha256": "a4a662311e078eb4fd5b9180efe206a9ea7b0e942c705b0d8b6db1534a6c6d55"
+  },
+  "large-reference-summary.json": {
+    "bytes": 1964,
+    "sha256": "179aa05cc263d908aedb6b24e42c8efbabdfd4671d72c563d40b40b5af9b60e6"
+  },
+  "physical-graph-ctest.log": {
+    "bytes": 540,
+    "sha256": "77f46bff882c6e748238927c788f614f4ee3f08ef3dd53c8d83cd099c2b4c0a3"
+  },
+  "physical-graph-cuda-sanitizer.log": {
+    "bytes": 1650,
+    "sha256": "bcd87b2b76d7e901f40e60deddcae6a76cf7e06737b612cdce7f1040e44ea9f5"
+  },
+  "physical-graph-final-oracles.log": {
+    "bytes": 2434,
+    "sha256": "8051aaa27d6592a8d107c992f92c5a81b10255163b81806ca67d6148c7913984"
+  },
+  "physical-graph-final-reference.log": {
+    "bytes": 3078,
+    "sha256": "c5ef0ed230a9fe75bff3eb984db4a4950f1b50dc8cce45647c6680faad55fe63"
+  },
+  "physical-graph-gpu-run.log": {
+    "bytes": 1628,
+    "sha256": "f305e8d806460151ea1e6d7c6c34baa001a0363ddaf295f878ecc76a76c2ed3c"
+  },
+  "physical-graph-sanitizer.log": {
+    "bytes": 75,
+    "sha256": "d7d23780cb42a7d4267a5467df920fbe268d1c13d1f9f1f4c5253a66830296f1"
+  },
+  "small-oracle-summary.json": {
+    "bytes": 1560,
+    "sha256": "58708d3b738b5025c48406f88a82597f96ac31359f303b6545ea49292d7379ae"
+  },
+  "verify-results.py": {
+    "bytes": 1558,
+    "sha256": "9eedc0c66a6673e3e9642814063e418d7b4082113d286c0ad41d311ecb70b379"
+  }
+}
