@@ -6,6 +6,7 @@ mod demo_world;
 mod heartbeat;
 mod lag_comp;
 mod movement;
+mod outbound;
 #[cfg(feature = "physx-gpu")]
 mod physx_runtime;
 mod protocol;
@@ -34,7 +35,6 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use bytes::BufMut;
 use futures_util::{sink::SinkExt, stream::StreamExt, FutureExt};
 use sha2::{Digest, Sha256};
 use tokio::sync::{mpsc, RwLock as AsyncRwLock};
@@ -79,13 +79,9 @@ const MAX_CLIENT_FIRE_FUTURE_MS: u32 = 50;
 const RESPAWN_DELAY_MS: u32 = 3_000;
 const NEARBY_PLAYER_RADIUS_M: f32 = 12.0;
 const ROLLING_METRIC_SAMPLES: usize = 180;
-/// Per-player outbound queue depth.
-///
-/// Raised from 64 after topology messages were measured being dropped on a
-/// full queue during a collapse: a burst of reliable city state plus a phone's
-/// drain rate filled 64 slots in a tick. The queue is the only buffer between
-/// a 60 Hz producer and a client's link, and overflowing it costs correctness
-/// for city state, not just latency.
+/// Per-player queue depth for each delivery lane. Datagrams cannot occupy
+/// reliable slots or wait behind a blocked reliable write. Exhausting reliable
+/// capacity terminates that connection instead of leaving a holed state stream.
 const PLAYER_OUTBOUND_QUEUE_CAPACITY: usize = 256;
 /// A session that opens a stream and then says nothing holds a task and a QUIC
 /// stream open; drop it rather than letting it accumulate.
@@ -1056,7 +1052,7 @@ struct PlayerConnection {
     player_id: u32,
     identity: String,
     transport: ClientTransport,
-    tx: mpsc::Sender<Vec<u8>>,
+    tx: outbound::Sender,
 }
 
 enum MatchEvent {
@@ -1073,7 +1069,7 @@ enum MatchEvent {
 struct PlayerRuntime {
     identity: String,
     transport: ClientTransport,
-    tx: mpsc::Sender<Vec<u8>>,
+    tx: outbound::Sender,
     pending_inputs: VecDeque<InputCmd>,
     /// Inputs dropped to stay current. Non-zero means the loop is behind.
     inputs_skipped_for_catchup: u64,
@@ -2123,7 +2119,7 @@ async fn handle_wt_session(app: Arc<AppState>, connection: Connection) -> Result
     let player_id = app.next_player_id.fetch_add(1, Ordering::Relaxed);
     let handle = get_or_create_match(app.clone(), hello.match_id.clone()).await;
 
-    let (out_tx, mut out_rx) = mpsc::channel::<Vec<u8>>(PLAYER_OUTBOUND_QUEUE_CAPACITY);
+    let (out_tx, out_rx) = outbound::channel(PLAYER_OUTBOUND_QUEUE_CAPACITY);
 
     handle.tx.send(MatchEvent::Connect(PlayerConnection {
         player_id,
@@ -2132,81 +2128,65 @@ async fn handle_wt_session(app: Arc<AppState>, connection: Connection) -> Result
         tx: out_tx,
     }))?;
 
-    // Writer: prefer datagrams for snapshots/pings; fall back to reliable stream
-    // if the datagram is too large for the current QUIC path MTU.
+    // Independent writer lanes: a flow-controlled reliable stream must not
+    // prevent QUIC datagrams from being submitted. Reliable frames remain FIFO.
     let conn_write = connection.clone();
     let telemetry = handle.telemetry.clone();
     let strict_snapshot_datagrams = app.strict_snapshot_datagrams;
     let writer = tokio::spawn(async move {
-        let mut buf = bytes::BytesMut::with_capacity(4096);
-        while let Some(bytes) = out_rx.recv().await {
-            if bytes.is_empty() {
-                continue;
-            }
-            let first = bytes[0];
-            let datagram_result = if wants_unreliable_delivery(first) {
-                Some(conn_write.send_datagram(bytes.as_slice()))
-            } else {
-                None
-            };
-            let delivery = classify_outbound_delivery(
-                first,
-                strict_snapshot_datagrams,
-                datagram_result
-                    .as_ref()
-                    .is_some_and(|result| result.is_ok()),
-            );
-            match delivery {
-                OutboundDelivery::Datagram => {
-                    telemetry.observe_outbound_datagram(
-                        bytes.len(),
-                        ClientTransport::WebTransport,
-                        is_snapshot_packet_kind(first),
-                    );
-                }
-                OutboundDelivery::StrictDrop => {
-                    telemetry.observe_strict_snapshot_drop(
-                        datagram_result
-                            .as_ref()
-                            .and_then(|result| result.as_ref().err())
-                            .map(strict_snapshot_drop_cause_from_send_error)
-                            .unwrap_or(StrictSnapshotDropCause::Other),
-                    );
-                    continue;
-                }
-                OutboundDelivery::ReliableFallback => {
-                    telemetry.observe_datagram_fallback();
-                    buf.clear();
-                    buf.put_u32_le(bytes.len() as u32);
-                    buf.put_slice(&bytes);
-                    if let Err(err) = send_stream.write_all(&buf).await {
-                        warn!(player_id, error = ?err, "WT reliable writer stopped");
-                        break;
+        let result = outbound::write_webtransport(
+            &mut send_stream,
+            out_rx,
+            |bytes| {
+                let kind = bytes[0];
+                let sent = conn_write.send_datagram(bytes);
+                match classify_outbound_delivery(kind, strict_snapshot_datagrams, sent.is_ok()) {
+                    OutboundDelivery::Datagram => {
+                        telemetry.observe_outbound_datagram(
+                            bytes.len(),
+                            ClientTransport::WebTransport,
+                            is_snapshot_packet_kind(kind),
+                        );
+                        true
                     }
-                    telemetry.observe_outbound_reliable(
-                        bytes.len(),
-                        ClientTransport::WebTransport,
-                        is_snapshot_packet_kind(first),
-                    );
-                    telemetry.observe_packet_kind(first, bytes.len());
-                }
-                OutboundDelivery::Reliable => {
-                    buf.clear();
-                    buf.put_u32_le(bytes.len() as u32);
-                    buf.put_slice(&bytes);
-                    if let Err(err) = send_stream.write_all(&buf).await {
-                        warn!(player_id, error = ?err, "WT reliable writer stopped");
-                        break;
+                    OutboundDelivery::StrictDrop => {
+                        telemetry.observe_strict_snapshot_drop(
+                            sent.as_ref()
+                                .err()
+                                .map(strict_snapshot_drop_cause_from_send_error)
+                                .unwrap_or(StrictSnapshotDropCause::Other),
+                        );
+                        true
                     }
-                    telemetry.observe_outbound_reliable(
-                        bytes.len(),
-                        ClientTransport::WebTransport,
-                        is_snapshot_packet_kind(first),
-                    );
-                    telemetry.observe_packet_kind(first, bytes.len());
+                    OutboundDelivery::ReliableFallback => {
+                        telemetry.observe_datagram_fallback();
+                        false
+                    }
+                    OutboundDelivery::Reliable => {
+                        unreachable!("only datagram packets enter this lane")
+                    }
                 }
-            }
+            },
+            |bytes| {
+                telemetry.observe_outbound_reliable(
+                    bytes.len(),
+                    ClientTransport::WebTransport,
+                    is_snapshot_packet_kind(bytes[0]),
+                );
+                telemetry.observe_packet_kind(bytes[0], bytes.len());
+            },
+            |bytes| telemetry.observe_outbound_drop(is_snapshot_packet_kind(bytes[0])),
+        )
+        .await;
+        if let Err(err) = result {
+            warn!(player_id, error = ?err, "WT writer failed; closing session");
         }
+        // Also releases the datagram reader so a failed writer cannot leave a
+        // connected player receiving an incomplete reliable state stream.
+        conn_write.close(
+            wtransport::VarInt::from_u32(1),
+            b"server outbound stream closed",
+        );
         info!(player_id, "WT writer task exited");
     });
 
@@ -2263,7 +2243,10 @@ async fn handle_wt_session(app: Arc<AppState>, connection: Connection) -> Result
             }
             let payload_len = u32::from_le_bytes(length) as usize;
             if payload_len == 0 || payload_len > MAX_CLIENT_STREAM_PACKET_BYTES {
-                warn!(player_id, payload_len, "closing WT uplink: implausible frame length");
+                warn!(
+                    player_id,
+                    payload_len, "closing WT uplink: implausible frame length"
+                );
                 break;
             }
             let mut payload = vec![0u8; payload_len];
@@ -2323,7 +2306,7 @@ async fn handle_socket(
     let handle = get_or_create_match(app.clone(), match_id.clone()).await;
 
     let (mut ws_tx, mut ws_rx) = socket.split();
-    let (out_tx, mut out_rx) = mpsc::channel::<Vec<u8>>(PLAYER_OUTBOUND_QUEUE_CAPACITY);
+    let (out_tx, mut out_rx) = outbound::channel(PLAYER_OUTBOUND_QUEUE_CAPACITY);
 
     handle.tx.send(MatchEvent::Connect(PlayerConnection {
         player_id,
@@ -2333,12 +2316,23 @@ async fn handle_socket(
     }))?;
 
     let telemetry = handle.telemetry.clone();
-    let writer = tokio::spawn(async move {
-        while let Some(packet) = out_rx.recv().await {
+    let mut writer = tokio::spawn(async move {
+        let mut failed = out_rx.failed.clone();
+        loop {
+            let packet = tokio::select! {
+                biased;
+                _ = outbound::failed(&mut failed) => break,
+                packet = out_rx.recv() => match packet { Some(packet) => packet, None => break },
+            };
             let packet_len = packet.len();
             let packet_kind = packet.first().copied().unwrap_or_default();
             let is_snapshot = packet.first().copied().is_some_and(is_snapshot_packet_kind);
-            if let Err(err) = ws_tx.send(Message::Binary(packet.into())).await {
+            let sent = tokio::select! {
+                biased;
+                _ = outbound::failed(&mut failed) => break,
+                sent = ws_tx.send(Message::Binary(packet.into())) => sent,
+            };
+            if let Err(err) = sent {
                 warn!(player_id, error = ?err, "websocket writer stopped");
                 break;
             }
@@ -2354,7 +2348,7 @@ async fn handle_socket(
 
     let tx_to_match = handle.tx.clone();
     let telemetry = handle.telemetry.clone();
-    let reader = tokio::spawn(async move {
+    let mut reader = tokio::spawn(async move {
         while let Some(result) = ws_rx.next().await {
             let message = match result {
                 Ok(message) => message,
@@ -2385,11 +2379,13 @@ async fn handle_socket(
                 _ => {}
             }
         }
-        let _ = tx_to_match.send(MatchEvent::Disconnect { player_id });
         info!(player_id, "websocket reader task exited");
     });
 
-    let _ = tokio::join!(writer, reader);
+    tokio::select! { _ = &mut writer => {}, _ = &mut reader => {} }
+    writer.abort();
+    reader.abort();
+    let _ = handle.tx.send(MatchEvent::Disconnect { player_id });
     Ok(())
 }
 
@@ -2713,7 +2709,7 @@ impl MatchState {
         }
     }
 
-    fn send_initial_metadata(&self, tx: &mpsc::Sender<Vec<u8>>) {
+    fn send_initial_metadata(&self, tx: &outbound::Sender) {
         let mut entries: Vec<_> = self
             .dynamic_body_handles
             .iter()
@@ -6111,36 +6107,24 @@ fn classify_outbound_delivery(
 }
 
 fn try_queue_packet(
-    tx: &mpsc::Sender<Vec<u8>>,
+    tx: &outbound::Sender,
     packet: Vec<u8>,
     telemetry: &MatchIoTelemetry,
 ) -> bool {
-    let is_snapshot = packet.first().copied().is_some_and(is_snapshot_packet_kind);
-    // Droppable = the receiver recovers on its own. Pose streams do: v2 chunk
-    // records are re-sent every tick, and v3 debris spans heal through the nack
-    // loop and lane restatement (they ride unreliable datagrams by design
-    // anyway). City TOPOLOGY does not -- it is a delta stream over the client's
-    // ledger, so a hole in it is permanent. Under congestion the queue must
-    // therefore shed poses, never state.
-    let is_droppable = is_snapshot
-        || packet.first().copied().is_some_and(|kind| {
-            kind == PKT_PING || kind == PKT_CITY_CHUNKS || kind == PKT_CITY_DEBRIS
-        });
-    match tx.try_send(packet) {
-        Ok(()) => true,
-        Err(tokio::sync::mpsc::error::TrySendError::Full(packet)) => {
-            if is_droppable {
-                telemetry.observe_outbound_drop(is_snapshot);
-            } else {
-                warn!(
-                    packet_kind = packet.first().copied().unwrap_or_default(),
-                    "dropping non-droppable outbound packet because client queue is full"
-                );
-                telemetry.observe_outbound_drop(is_snapshot);
-            }
+    let kind = packet.first().copied().unwrap_or_default();
+    let is_snapshot = is_snapshot_packet_kind(kind);
+    match tx.enqueue(packet, wants_unreliable_delivery(kind)) {
+        outbound::Enqueue::Queued => true,
+        outbound::Enqueue::DatagramDropped => {
+            telemetry.observe_outbound_drop(is_snapshot);
             false
         }
-        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => false,
+        outbound::Enqueue::ReliableOverflow => {
+            telemetry.observe_outbound_drop(is_snapshot);
+            warn!(packet_kind = kind, "reliable outbound queue exhausted; closing client connection");
+            false
+        }
+        outbound::Enqueue::Closed => false,
     }
 }
 
@@ -6214,12 +6198,11 @@ mod tests {
         PLAYER_OUTBOUND_QUEUE_CAPACITY, RIFLE_BODY_DAMAGE, RIFLE_HEAD_DAMAGE,
     };
     use std::collections::{HashMap, HashSet, VecDeque};
-    use tokio::sync::mpsc;
     use vibe_land_shared::seq::seq_is_newer;
     use wtransport::error::SendDatagramError;
 
     fn runtime() -> PlayerRuntime {
-        let (tx, _rx) = mpsc::channel(PLAYER_OUTBOUND_QUEUE_CAPACITY);
+        let (tx, _rx) = super::outbound::channel(PLAYER_OUTBOUND_QUEUE_CAPACITY);
         PlayerRuntime {
             identity: "test-player".to_string(),
             transport: super::ClientTransport::WebSocket,
@@ -6445,10 +6428,10 @@ mod tests {
         assert_eq!(server_build_profile(), "release");
     }
 
-    #[test]
-    fn try_queue_packet_drops_snapshot_when_queue_is_full() {
+    #[tokio::test]
+    async fn try_queue_packet_drops_snapshot_when_queue_is_full() {
         let telemetry = MatchIoTelemetry::default();
-        let (tx, mut rx) = mpsc::channel(1);
+        let (tx, mut rx) = super::outbound::channel(1);
 
         assert!(try_queue_packet(
             &tx,
@@ -6462,7 +6445,21 @@ mod tests {
                 .load(std::sync::atomic::Ordering::Relaxed),
             1
         );
-        assert_eq!(rx.try_recv().ok(), Some(vec![PKT_PING, 1, 2, 3, 4]));
+        assert_eq!(rx.recv().await, Some(vec![PKT_PING, 1, 2, 3, 4]));
+    }
+
+    #[tokio::test]
+    async fn outbound_reliable_state_survives_datagram_pressure_and_fails_explicitly() {
+        let telemetry = MatchIoTelemetry::default();
+        let (tx, mut rx) = super::outbound::channel(1);
+        assert!(try_queue_packet(&tx, vec![PKT_SNAPSHOT, 0], &telemetry));
+        assert!(!try_queue_packet(&tx, vec![PKT_SNAPSHOT, 1], &telemetry));
+        assert!(try_queue_packet(&tx, vec![vibe_land_shared::constants::PKT_CITY_TOPOLOGY, 2], &telemetry));
+        assert!(!try_queue_packet(&tx, vec![vibe_land_shared::constants::PKT_CITY_TOPOLOGY, 3], &telemetry));
+        super::outbound::failed(&mut rx.failed).await;
+        assert_eq!(telemetry.dropped_outbound_packets.load(std::sync::atomic::Ordering::Relaxed), 2);
+        assert_eq!(telemetry.dropped_outbound_snapshots.load(std::sync::atomic::Ordering::Relaxed), 1);
+        assert!(!try_queue_packet(&tx, vec![vibe_land_shared::constants::PKT_CITY_TOPOLOGY, 4], &telemetry));
     }
 
     #[test]
