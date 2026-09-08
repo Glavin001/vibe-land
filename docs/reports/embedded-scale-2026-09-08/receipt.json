@@ -1,0 +1,18 @@
+{
+  "game_revision": "60ce8b3f0d831e47723e49d4f863a75860229099",
+  "engine_revision": "72a672709b1327add0d39a745e9a321a00c5806c",
+  "game_worktree_diff": "diff --git a/destruction/Cargo.toml b/destruction/Cargo.toml\nindex 6a3219a..a4c11df 100644\n--- a/destruction/Cargo.toml\n+++ b/destruction/Cargo.toml\n@@ -46,3 +46,7 @@ features = [\"physx\", \"scenarios\"]\n path = \"../physx-bridge\"\n optional = true\n features = [\"destruction\"]\n+\n+[[example]]\n+name = \"embedded_city_bench\"\n+required-features = [\"embedded-destruction\"]\n",
+  "binary_sha256": "23c2cf0859c34bd8ebb1d2dcb55f8d59a0537b1d88e1384df0b17c66e5c23709",
+  "gpu_before": "name, driver_version, temperature.gpu, clocks.current.sm [MHz], memory.used [MiB]\nNVIDIA GeForce RTX 4090, 595.71.05, 46, 210 MHz, 4 MiB\n",
+  "qualified_source_and_binary_sha256": {
+    "/root/workspace/vibe-land-2/destruction/examples/embedded_city_bench.rs": "65796e1f8b6fdbf33fab8c0af3c532fe64225169048725beefe42b8d4644470f",
+    "/root/workspace/vibe-land-2/destruction/assets/scenes/embedded-four-buildings.json": "571938df739fbbc8be755d3a23e7666ef1140bec3c6319ca68f01b01459c6c14",
+    "/root/workspace/physx-2/physx/source/simulationcontroller/src/ScPipeline.cpp": "3f0fc9d10e555f756efff8d3bf9ba89a91548513a2be12623cf604a5fbd932f7",
+    "/root/workspace/physx-2/out/vibe-native/release/examples/embedded_city_bench": "23c2cf0859c34bd8ebb1d2dcb55f8d59a0537b1d88e1384df0b17c66e5c23709",
+    "/root/workspace/physx-2/out/vibe-native/release/web-fps-server": "3d885c16daccb60e827b523829b8cd551cd2cd704abaf30584a984a61475f5b3",
+    "/root/workspace/physx-2/physx/bin/linux.x86_64/release/libPhysXGpuActivity_64.so": "f7ec9e900d68910d15563226d4fa28afd3f9c344ea16fa51ba6c235d0c529464",
+    "/root/workspace/physx-2/physx/bin/linux.x86_64/release/libPhysXDestructionGpuRuntime_64.so": "bb3d4ca769f873a0e87fb8c77fdaa76dfef1e7d423aae3b534a6bc8ce18cf79c"
+  },
+  "gpu_isolation": "Owned server stopped before each screen; nvidia-smi compute process list checked empty; runs sequential; server restored in finally.",
+  "build_state": "Hashes identify WIP subsequently committed; revision fields identify the parent revisions at capture."
+}

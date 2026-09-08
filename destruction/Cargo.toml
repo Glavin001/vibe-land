@@ -46,3 +46,7 @@ features = ["physx", "scenarios"]
 path = "../physx-bridge"
 optional = true
 features = ["destruction"]
+
+[[example]]
+name = "embedded_city_bench"
+required-features = ["embedded-destruction"]

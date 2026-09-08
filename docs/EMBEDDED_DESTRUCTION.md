@@ -16,7 +16,7 @@ The native feature does not compile the legacy external adapter/solver sources.
 
 ## Build and run on this instance
 
-Tested engine commit: `72a67270` on `physx-2/codex/gpu-destruction`.
+Tested engine commit: `6ef3fd47` on `physx-2/codex/gpu-destruction`.
 Build the engine SDK/GPU runtime first using its repository build instructions.
 Then from this checkout:
 
@@ -69,8 +69,32 @@ inputs, four exact 444-node connected components per asset, and full binary
 manifest round-trip. Building pitch is **17.96 m**, leaving the game's standard
 10 m street between collision faces. This differs from the standalone native
 bombardment layout; equal chunk/bond counts alone do not make a matched benchmark.
-This asset is **authoring/protocol tested, not yet GPU/playable qualified**. The
-public deployment remains on the previously tested single-building scene.
+The asset now passes a **600-step native game-consumer bombardment** at 256
+buildings, after fixing a retained contact-report crash in engine correction.
+It has not passed large-scene browser/endurance or real-time performance gates.
+The public deployment remains on the tested single-building scene.
+
+## Reproducible native consumer timing
+
+[Generated 4/64/256-building report](reports/embedded-scale-2026-09-08/report.md)
+includes every step, disjoint CPU/GPU boundary timings at the actual peak,
+recorded physical command tapes, compressed raw samples and build receipts.
+Run `embedded_city_bench` only while the GPU is otherwise idle:
+
+```bash
+cargo build --release -p vibe-land-destruction --features embedded-destruction --example embedded_city_bench
+# OUTPUT_DIR, tile-grid edge, steps, projectile waves (0..3)
+"$CARGO_TARGET_DIR/release/examples/embedded_city_bench" /tmp/NEW-capture/256-buildings 8 600 3
+python3 scripts/report-embedded-city-bench.py /tmp/NEW-capture /tmp/NEW-report
+```
+
+The benchmark includes projectile insertion, native physics/stress/correction
+and accepted game event/snapshot processing. It excludes renderer/network work.
+It rejects output reuse and writes accepted rows incrementally so a later crash
+cannot erase the preceding samples. Only complete runs produce final reports.
+The report generator checks row counts, peak identity, deadline counts and that
+phase intervals sum to each complete advance. Do not use its native aggregate
+to infer a kernel-level compute/bandwidth bottleneck.
 
 ## Validation and limitations
 

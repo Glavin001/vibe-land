@@ -1,0 +1,60 @@
+{
+  "topology_identity_sha256": "e589eb8317c456147287443232209bb950514a75b5e4fb6783e2de5fe7486d4c",
+  "projectile_clearance_step": 39,
+  "projectile_clearance_seconds": 0.6666666666666666,
+  "projectile_position_at_clearance": [
+    0.012902067974209785,
+    6.492729187011719,
+    4.746237754821777
+  ],
+  "corrected_steps": [
+    17,
+    32,
+    33
+  ],
+  "fracture_steps": [
+    17,
+    30,
+    32,
+    33
+  ],
+  "corrections_per_step_max": 1,
+  "largest_connected_cluster": 398,
+  "supported_chunks": 398,
+  "detached_chunks": 46,
+  "final_cluster_count": 43,
+  "displaced_wall_chunks": {
+    "entry": [
+      243,
+      244,
+      271,
+      272
+    ],
+    "exit": [
+      263,
+      264,
+      291,
+      292
+    ]
+  },
+  "broken_bonds": 199,
+  "all_stress_steps_converged": true,
+  "max_render_collision_position_error": 0,
+  "max_cluster_com_error": 3.93221307604108e-06,
+  "physics_ms": {
+    "min": 0.596292,
+    "mean": 7.040390126666663,
+    "p50": 6.873599,
+    "p95": 9.131904,
+    "p99": 9.782148,
+    "max": 20.645894
+  },
+  "frozen_identity_gate_passed": true,
+  "golden_sha256": "25887814484a49c7db82f3a3e36f7adb408764c928a4f64236baf466871947da",
+  "capture": "/root/workspace/physx-2/out/vibe-game-screen-20260908-fixed2/penetration",
+  "artifacts": {
+    "/root/workspace/physx-2/out/destruction-sdk/reference/native_destruction_demo": "bbd99e7bda0e2d330c28db616a5a5bece7be7d8f244b4e0745fd3ad50c38f3ae",
+    "/root/workspace/physx-2/physx/bin/linux.x86_64/release/libPhysXDestructionGpuRuntime_64.so": "bb3d4ca769f873a0e87fb8c77fdaa76dfef1e7d423aae3b534a6bc8ce18cf79c",
+    "/root/workspace/physx-2/physx/bin/linux.x86_64/release/libPhysXGpuActivity_64.so": "f7ec9e900d68910d15563226d4fa28afd3f9c344ea16fa51ba6c235d0c529464"
+  }
+}
