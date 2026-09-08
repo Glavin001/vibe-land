@@ -1,5 +1,5 @@
 //! Headless production-consumer benchmark. Run sequentially on an idle GPU.
-//! Usage: embedded_city_bench OUTPUT_DIR TILE_GRID STEPS WAVES [SCENE_FILE]
+//! Usage: embedded_city_bench OUTPUT_DIR TILE_GRID STEPS WAVES [SCENE_FILE [COMMAND_FILE]]
 //! One tile = four disconnected 444-chunk / 896-bond buildings. No render/network.
 use serde_json::json;
 use std::io::{BufWriter, Write};
@@ -26,8 +26,8 @@ fn ms(t: std::time::Duration) -> f64 {
 }
 fn main() -> Result<(), Box<dyn Error>> {
     let args: Vec<_> = std::env::args().collect();
-    if !(5..=6).contains(&args.len()) {
-        return Err("usage: embedded_city_bench OUTPUT_DIR TILE_GRID STEPS WAVES [SCENE_FILE]".into());
+    if !(5..=7).contains(&args.len()) {
+        return Err("usage: embedded_city_bench OUTPUT_DIR TILE_GRID STEPS WAVES [SCENE_FILE [COMMAND_FILE]]".into());
     }
     let output = Path::new(&args[1]);
     if output.exists() {
@@ -37,7 +37,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let steps: u32 = args[3].parse()?;
     let waves: u32 = args[4].parse()?;
     let asset = args.get(5).map(String::as_str).unwrap_or("embedded-four-buildings.json");
-    if args.len() == 6 && waves != 0 {
+    if args.len() >= 6 && waves != 0 {
         return Err("explicit-scene diagnostic requires waves=0; bombardment commands are authored for the frozen four-building tile".into());
     }
     if !(1..=8).contains(&grid)
@@ -105,6 +105,28 @@ fn main() -> Result<(), Box<dyn Error>> {
                         instance.offset.z + z - 8.,
                     ));
                 }
+            }
+        }
+    }
+    // A recorded physical command tape lets the same authored scene run idle
+    // and under impact. Parsing/validation is asset preparation, not tick work.
+    if let Some(path) = args.get(6) {
+        let tape: serde_json::Value = serde_json::from_slice(&fs::read(path)?)?;
+        for row in tape.as_array().ok_or("commands must be an array")? {
+            let tick = row["tick"].as_u64().ok_or("invalid command tick")? as usize;
+            if tick >= commands.len() || row["mass"] != json!(18000)
+                || row["radius"] != json!(0.5) || row["velocity"] != json!([0,0,40]) {
+                return Err("command tape must use the frozen projectile and valid ticks".into());
+            }
+            for position in row["positions"].as_array().ok_or("missing positions")? {
+                let v = position.as_array().ok_or("position must be an array")?;
+                if v.len() != 3 {return Err("position needs three coordinates".into());}
+                let mut xyz = [0f32;3];
+                for k in 0..3 {
+                    xyz[k] = v[k].as_f64().ok_or("invalid coordinate")? as f32;
+                    if !xyz[k].is_finite() {return Err("nonfinite coordinate".into());}
+                }
+                commands[tick].push(pose(xyz[0],xyz[1],xyz[2]));
             }
         }
     }
