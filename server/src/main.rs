@@ -11,6 +11,9 @@ mod physx_runtime;
 mod protocol;
 mod voxel_world;
 
+#[cfg(all(feature = "embedded-destruction", feature = "blast-core"))]
+compile_error!("embedded-destruction cannot link the external blast-core backend");
+
 use std::{
     backtrace::Backtrace,
     collections::{HashMap, HashSet, VecDeque},
@@ -1766,6 +1769,12 @@ async fn spawn_web_listener(app: Router) -> anyhow::Result<()> {
         }
     };
 
+    let app = app.layer(axum::middleware::from_fn(|request, next: axum::middleware::Next| async move {
+        let mut response=next.run(request).await;
+        response.headers_mut().insert("cross-origin-opener-policy", axum::http::HeaderValue::from_static("same-origin"));
+        response.headers_mut().insert("cross-origin-embedder-policy", axum::http::HeaderValue::from_static("require-corp"));
+        response
+    }));
     tokio::spawn(async move {
         if let Err(error) = axum_server::bind_rustls(addr, tls)
             .serve(app.into_make_service())
@@ -1779,6 +1788,7 @@ async fn spawn_web_listener(app: Router) -> anyhow::Result<()> {
 
 #[derive(serde::Serialize)]
 struct HealthResponse {
+    destruction_backend: &'static str,
     status: &'static str,
     physics_backend: &'static str,
     physics_gpu_required: bool,
@@ -1801,6 +1811,8 @@ struct HealthResponse {
 async fn health_handler(State(state): State<SharedAppState>) -> Json<HealthResponse> {
     let (active_matches, players) = heartbeat::fleet_stats(&state.inner).await;
     Json(HealthResponse {
+        destruction_backend: if cfg!(feature = "embedded-destruction") {"physx_embedded_cuda"}
+            else if cfg!(feature = "destruction") {"external_blast"} else {"none"},
         status: "ok",
         physics_backend: state.inner.physics.backend.name(),
         physics_gpu_required: state.inner.physics.capabilities.gpu_required,
@@ -3590,7 +3602,26 @@ impl MatchState {
     /// Route queued hitscan shots into city destruction before
     /// `process_hitscan` drains them (players/vehicles still take the same
     /// hitscan resolution afterwards).
+    #[cfg(feature = "embedded-destruction")]
+    fn launch_native_city_round(&mut self, origin: [f32;3], direction: [f32;3]) -> anyhow::Result<()> {
+        let next_handle=self.dynamic_body_handles.values().map(|m|m.handle).max().unwrap_or(0)
+            .checked_add(1).ok_or_else(||anyhow::anyhow!("dynamic network handles exhausted"))?;
+        let Some(id)=self.arena.launch_destruction_projectile(origin.into(),direction.into())? else {
+            tracing::debug!("native projectile muzzle obstructed");return Ok(());
+        };
+        self.dynamic_body_handles.insert(id,DynamicBodyMetaRuntime{
+            handle:next_handle,shape_type:SHAPE_SPHERE,half_extents_m:[0.5;3]});
+        // The existing wire packet is a complete metadata table. Publish it
+        // before snapshots can reference the newly assigned handle.
+        for runtime in self.players.values() {self.send_initial_metadata(&runtime.tx);}
+        tracing::info!(id,?origin,?direction,mass_kg=18000,speed_m_s=40,"native demolition projectile launched");
+        Ok(())
+    }
+
     fn route_city_shots(&mut self) {
+        // Native rounds are spawned after process_hitscan accepts the command,
+        // so duplicate/cooldown-rejected commands cannot spawn extra bodies.
+        if cfg!(feature = "embedded-destruction") { return; }
         if self.city.is_none() {
             return;
         }
@@ -3971,6 +4002,8 @@ impl MatchState {
             // the encoder drops the duplicate rather than failing the match.
             duplicate_body_records = encoder.duplicate_body_records,
             min_body_y = stats.min_body_y,
+            min_body_pos = ?stats.min_body_pos,
+            min_body_vel = ?stats.min_body_vel,
             settle_deferred = stats.settle_deferred_penetrating,
             unmapped_body_skips = stats.unmapped_body_skips,
             resettled_wakes = stats.resettled_wakes,
@@ -5038,11 +5071,12 @@ impl MatchState {
                         + impulse[1] * impulse[1]
                         + impulse[2] * impulse[2])
                         .sqrt();
-                    let _ = self.arena.apply_dynamic_body_impulse(
-                        dynamic_body_id,
-                        impulse,
-                        impact_point,
-                    );
+                    let impulse_mag = if cfg!(feature = "embedded-destruction") && self.city.is_some() {
+                        0.0 // The physical round will deliver its actual contact impulse.
+                    } else {
+                        let _ = self.arena.apply_dynamic_body_impulse(dynamic_body_id, impulse, impact_point);
+                        impulse_mag
+                    };
                     self.build_shot_result(
                         queued.cmd.shot_id,
                         queued.cmd.weapon,
@@ -5071,6 +5105,14 @@ impl MatchState {
                 let _ = try_queue_packet(&shooter.tx, encode_server_packet(&result), &self.io);
             }
 
+            #[cfg(feature = "embedded-destruction")]
+            if self.city.is_some() {
+                let current_origin=[shooter_state.position.x as f32,
+                    shooter_state.position.y as f32+PLAYER_EYE_HEIGHT_M,shooter_state.position.z as f32];
+                if let Err(error)=self.launch_native_city_round(current_origin,queued.cmd.dir) {
+                    tracing::error!(%error,"native demolition round rejected");
+                }
+            }
             // Broadcast the shot-fired trace to every connected player so remote
             // observers see the bullet. Stamped with the current server tick so
             // clients can suppress packets whose render window has already expired.

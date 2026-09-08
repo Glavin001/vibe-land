@@ -1,0 +1,3774 @@
+{
+  "before": {
+    "route": "/city",
+    "mode": "multiplayer",
+    "matchId": "city-default",
+    "connected": true,
+    "statusText": "Player #1",
+    "playerId": 1,
+    "transport": "webtransport",
+    "pointerLocked": true,
+    "debugOverlayVisible": false,
+    "position": [
+      -15.98,
+      0.81,
+      0
+    ],
+    "velocity": [
+      0,
+      -0.5,
+      0
+    ],
+    "hp": 100,
+    "onGround": true,
+    "inVehicle": false,
+    "dead": false,
+    "cameraPosition": [
+      -15.98,
+      1.61,
+      0
+    ],
+    "cameraYaw": 0,
+    "cameraPitch": 0,
+    "movementTelemetry": {
+      "renderedPosition": [
+        -15.98,
+        0.81,
+        0
+      ],
+      "authoritativePosition": [
+        -15.98,
+        0.81,
+        0
+      ],
+      "presentationOffset": [
+        0,
+        0,
+        0
+      ],
+      "authoritativeVelocity": [
+        0,
+        -0.5,
+        0
+      ],
+      "frameDeltaMs": 49.21000000834465
+    },
+    "drivenVehicleId": null,
+    "nearestVehicleId": null,
+    "remotePlayers": [],
+    "shotsFired": 0,
+    "lastShotOutcome": "none",
+    "debugStats": {
+      "fps": 0,
+      "transport": "webtransport",
+      "pingMs": 0,
+      "remotePlayers": 0,
+      "playerId": 1,
+      "position": [
+        -15.98,
+        0.81,
+        0
+      ],
+      "velocity": [
+        0,
+        -0.5,
+        0
+      ],
+      "hp": 100,
+      "onGround": true,
+      "inVehicle": false,
+      "dead": false,
+      "shotsFired": 0,
+      "lastShotOutcome": "none",
+      "snapshotsPerSec": 0,
+      "serverTick": 173,
+      "datagramSnapshotsReceived": 0,
+      "reliableSnapshotsReceived": 0,
+      "lastSnapshotGapMs": 0,
+      "interpolationDelayMs": 8.33,
+      "jitterMs": 0,
+      "snapshotGapP95Ms": 0,
+      "snapshotGapMaxMs": 0,
+      "playerCorrectionMagnitude": 0,
+      "playerCorrectionPeak5sM": 0
+    },
+    "city": {
+      "wireVersion": 2,
+      "chunksTotal": 444,
+      "chunksAwake": 0,
+      "chunksSettled": 0,
+      "brokenBonds": 0,
+      "liveIslands": 0,
+      "topoSeqGaps": 0,
+      "datagramsReceived": 0,
+      "bytesPerSecond": 228.7180920091221,
+      "manifestHash": "fb4d7f9d43464b95fa1b9fb74afab78f08827b75b4d5ba30ef6faac6edb75f3d",
+      "rendered": true,
+      "minChunkY": 0.5,
+      "chunksBelowGround": 0,
+      "chunkUpdateP95Ms": 1,
+      "orphanedChunks": 0,
+      "orphanedByRetire": 0,
+      "staleDrawnChunks": 0,
+      "bootstraps": 1,
+      "settleRejects": 0,
+      "valveApplies": 0,
+      "valveTicksAhead": 0,
+      "hashChecks": 1,
+      "hashMismatches": 0,
+      "structureRepairs": 0,
+      "deepest": null
+    }
+  },
+  "after": {
+    "route": "/city",
+    "mode": "multiplayer",
+    "matchId": "city-default",
+    "connected": true,
+    "statusText": "Player #1",
+    "playerId": 1,
+    "transport": "webtransport",
+    "pointerLocked": true,
+    "debugOverlayVisible": false,
+    "position": [
+      -15.98,
+      0.81,
+      8.594999998717133
+    ],
+    "velocity": [
+      0,
+      -0.5,
+      0
+    ],
+    "hp": 100,
+    "onGround": true,
+    "inVehicle": false,
+    "dead": false,
+    "cameraPosition": [
+      -15.98,
+      1.61,
+      8.594999998717133
+    ],
+    "cameraYaw": 1.9668893365339202,
+    "cameraPitch": 0.2373424384931086,
+    "movementTelemetry": {
+      "renderedPosition": [
+        -15.98,
+        0.81,
+        8.594999998717133
+      ],
+      "authoritativePosition": [
+        -15.98,
+        0.81,
+        8.595
+      ],
+      "presentationOffset": [
+        0,
+        0,
+        -1.2828671458464669e-9
+      ],
+      "authoritativeVelocity": [
+        0,
+        -0.5,
+        0
+      ],
+      "frameDeltaMs": 52.74500000476837
+    },
+    "drivenVehicleId": null,
+    "nearestVehicleId": null,
+    "remotePlayers": [],
+    "shotsFired": 8,
+    "lastShotOutcome": "shot 8 result confirmed=no player_hit=0 server=2 dyn_body=5 dyn_toi=6.42 dyn_impulse=0.00",
+    "debugStats": {
+      "fps": 0,
+      "transport": "webtransport",
+      "pingMs": 0,
+      "remotePlayers": 0,
+      "playerId": 1,
+      "position": [
+        -15.98,
+        0.81,
+        8.594999998717133
+      ],
+      "velocity": [
+        0,
+        -0.5,
+        0
+      ],
+      "hp": 100,
+      "onGround": true,
+      "inVehicle": false,
+      "dead": false,
+      "shotsFired": 8,
+      "lastShotOutcome": "shot 8 result confirmed=no player_hit=0 server=2 dyn_body=5 dyn_toi=6.42 dyn_impulse=0.00",
+      "snapshotsPerSec": 0,
+      "serverTick": 712,
+      "datagramSnapshotsReceived": 0,
+      "reliableSnapshotsReceived": 0,
+      "lastSnapshotGapMs": 0,
+      "interpolationDelayMs": 8.33,
+      "jitterMs": 0,
+      "snapshotGapP95Ms": 0,
+      "snapshotGapMaxMs": 0,
+      "playerCorrectionMagnitude": 2.8908270254484534e-9,
+      "playerCorrectionPeak5sM": 0
+    },
+    "city": {
+      "wireVersion": 2,
+      "chunksTotal": 444,
+      "chunksAwake": 12,
+      "chunksSettled": 120,
+      "brokenBonds": 289,
+      "liveIslands": 70,
+      "topoSeqGaps": 0,
+      "datagramsReceived": 189,
+      "bytesPerSecond": 3768.313646927729,
+      "manifestHash": "fb4d7f9d43464b95fa1b9fb74afab78f08827b75b4d5ba30ef6faac6edb75f3d",
+      "rendered": true,
+      "minChunkY": 0.47999998927116394,
+      "chunksBelowGround": 0,
+      "chunkUpdateP95Ms": 0.2849999964237213,
+      "orphanedChunks": 0,
+      "orphanedByRetire": 0,
+      "staleDrawnChunks": 1,
+      "bootstraps": 1,
+      "settleRejects": 0,
+      "valveApplies": 0,
+      "valveTicksAhead": 0,
+      "hashChecks": 5,
+      "hashMismatches": 0,
+      "structureRepairs": 0,
+      "deepest": null
+    }
+  },
+  "stats": {
+    "id": "city-default",
+    "scenario_tag": "city-default",
+    "spans": {
+      "destruction/native_bonds": {
+        "v": 896,
+        "k": 2
+      },
+      "destruction/native_chunks": {
+        "v": 444,
+        "k": 2
+      },
+      "destruction/native_clusters": {
+        "v": 71,
+        "k": 2
+      },
+      "destruction/native_correction_passes": {
+        "v": 0,
+        "k": 2
+      },
+      "destruction/native_corrections_total": {
+        "v": 7,
+        "k": 2
+      },
+      "destruction/native_embedded": {
+        "v": 1,
+        "k": 2
+      },
+      "destruction/native_stress_iterations": {
+        "v": 197,
+        "k": 2
+      },
+      "destruction/native_stress_passes": {
+        "v": 1,
+        "k": 2
+      },
+      "physics/bp_adds": {
+        "v": 0,
+        "k": 2
+      },
+      "physics/bp_lost_pairs": {
+        "v": 7,
+        "k": 2
+      },
+      "physics/bp_new_pairs": {
+        "v": 0,
+        "k": 2
+      },
+      "physics/bp_removes": {
+        "v": 0,
+        "k": 2
+      },
+      "physics/callback_recent_ms": {
+        "v": 0.0006267955068324227,
+        "k": 0
+      },
+      "physics/cb_capture_ms": {
+        "v": 0.0024846399271441603,
+        "k": 0
+      },
+      "physics/cb_census_ms": {
+        "v": 0,
+        "k": 0
+      },
+      "physics/cb_drain_ms": {
+        "v": 0.0006311786911696859,
+        "k": 0
+      },
+      "physics/cb_entity_ms": {
+        "v": 0.0002404490252074994,
+        "k": 0
+      },
+      "physics/cb_events_ms": {
+        "v": 0.0002404490252074994,
+        "k": 0
+      },
+      "physics/cb_extract_ms": {
+        "v": 0,
+        "k": 0
+      },
+      "physics/cb_max_us": {
+        "v": 0.4408232128804156,
+        "k": 0
+      },
+      "physics/cb_pair_load_ms": {
+        "v": 0.00016029935013833294,
+        "k": 0
+      },
+      "physics/cb_queue_ms": {
+        "v": 0.0004808980504149988,
+        "k": 0
+      },
+      "physics/cb_resize_ms": {
+        "v": 0,
+        "k": 0
+      },
+      "physics/cb_resolve_ms": {
+        "v": 0.0004007483753458323,
+        "k": 0
+      },
+      "physics/cb_wake_ms": {
+        "v": 0.00008014967506916647,
+        "k": 0
+      },
+      "physics/contact_callback_est_ms": {
+        "v": 0.0010619831946664555,
+        "k": 0
+      },
+      "physics/contact_callbacks": {
+        "v": 5,
+        "k": 2
+      },
+      "physics/cp_found": {
+        "v": 0,
+        "k": 0
+      },
+      "physics/cp_other": {
+        "v": 0,
+        "k": 0
+      },
+      "physics/cp_persists": {
+        "v": 0,
+        "k": 0
+      },
+      "physics/cp_points": {
+        "v": 0,
+        "k": 0
+      },
+      "physics/cp_supporter_relevant": {
+        "v": 5,
+        "k": 0
+      },
+      "physics/cp_zero_impulse": {
+        "v": 0,
+        "k": 0
+      },
+      "physics/fetch_call_ms": {
+        "v": 0,
+        "k": 0
+      },
+      "physics/fetch_residual_recent_ms": {
+        "v": 0.00010590495003270917,
+        "k": 0
+      },
+      "physics/fetch_total_ms": {
+        "v": 7.410967826843262,
+        "k": 0
+      },
+      "physics/fetch_total_recent_ms": {
+        "v": 9.690696269273758,
+        "k": 0
+      },
+      "physics/gpu_found_lost_pairs_high_water": {
+        "v": 350,
+        "k": 2
+      },
+      "physics/hoist_verify_checks": {
+        "v": 0,
+        "k": 2
+      },
+      "physics/hoist_verify_mismatches": {
+        "v": 0,
+        "k": 2
+      },
+      "physics/result_copy_ms": {
+        "v": 0,
+        "k": 0
+      },
+      "physics/result_copy_recent_ms": {
+        "v": 0.04879539168905467,
+        "k": 0
+      },
+      "physics/sim_wall_ms": {
+        "v": 0,
+        "k": 0
+      },
+      "physics/sim_wall_recent_ms": {
+        "v": 9.641168177127838,
+        "k": 0
+      },
+      "physics/sim_wall_recent_n": {
+        "v": 16,
+        "k": 2
+      },
+      "physics/sim_wall_sampled": {
+        "v": 0,
+        "k": 2
+      },
+      "physics/tsc_suspect_ticks": {
+        "v": 0,
+        "k": 2
+      }
+    },
+    "fingerprint": {
+      "git": "4183b54-dirty",
+      "binary": "/root/workspace/physx-2/out/vibe-native/release/web-fps-server",
+      "binary_mtime_unix": 1788858346,
+      "env": {
+        "VIBE_CITY_BLAST_CORE": "0",
+        "VIBE_CITY_FREEZE": "0",
+        "VIBE_CITY_GRID": "1",
+        "VIBE_CITY_RESIM_PASSES": "1",
+        "VIBE_CITY_SCENE": "embedded-penetration.json",
+        "VIBE_CITY_SOLVER_ITERATIONS": "8192",
+        "VIBE_CITY_SYNTHETIC": "0",
+        "VIBE_CITY_VARIED_HEIGHTS": "0",
+        "VIBE_PHYSICS_BACKEND": "physx_gpu",
+        "VIBE_PHYSX_DIRECT_GPU": "0",
+        "VIBE_WEB_DIR": "/root/workspace/vibe-land-2/client/dist"
+      },
+      "cuda_stress": false
+    },
+    "tick_ring": [
+      {
+        "t": 360,
+        "total": 10.836631,
+        "dyn_ms": 10.520812,
+        "city": 0.081372,
+        "awake": 35,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 361,
+        "total": 10.440532,
+        "dyn_ms": 10.3408165,
+        "city": 0.070171,
+        "awake": 35,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 362,
+        "total": 10.098543,
+        "dyn_ms": 9.995151,
+        "city": 0.076132,
+        "awake": 35,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 363,
+        "total": 9.772725,
+        "dyn_ms": 9.685232,
+        "city": 0.060203,
+        "awake": 35,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 364,
+        "total": 11.2435,
+        "dyn_ms": 11.145768,
+        "city": 0.073898,
+        "awake": 34,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 365,
+        "total": 9.909371,
+        "dyn_ms": 9.831315,
+        "city": 0.053430002,
+        "awake": 34,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 366,
+        "total": 10.157714,
+        "dyn_ms": 10.058239,
+        "city": 0.076092005,
+        "awake": 34,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 367,
+        "total": 8.185804,
+        "dyn_ms": 8.107779,
+        "city": 0.053319,
+        "awake": 34,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 368,
+        "total": 9.568935,
+        "dyn_ms": 9.4596615,
+        "city": 0.081272006,
+        "awake": 34,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 369,
+        "total": 9.828961,
+        "dyn_ms": 9.732942,
+        "city": 0.064731,
+        "awake": 34,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 370,
+        "total": 10.822965,
+        "dyn_ms": 10.704704,
+        "city": 0.089086,
+        "awake": 34,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 371,
+        "total": 10.796877,
+        "dyn_ms": 10.698603,
+        "city": 0.065182,
+        "awake": 34,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 372,
+        "total": 9.315562,
+        "dyn_ms": 9.205868,
+        "city": 0.085279,
+        "awake": 34,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 373,
+        "total": 8.266685,
+        "dyn_ms": 8.1821575,
+        "city": 0.057938,
+        "awake": 34,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 374,
+        "total": 9.477775,
+        "dyn_ms": 9.366817,
+        "city": 0.081652,
+        "awake": 34,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 375,
+        "total": 9.920231,
+        "dyn_ms": 9.825434,
+        "city": 0.063609,
+        "awake": 34,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 376,
+        "total": 10.040705,
+        "dyn_ms": 9.942552,
+        "city": 0.072966,
+        "awake": 29,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 377,
+        "total": 10.238175,
+        "dyn_ms": 10.144078,
+        "city": 0.062988,
+        "awake": 29,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 378,
+        "total": 11.690314,
+        "dyn_ms": 11.335541,
+        "city": 0.329665,
+        "awake": 29,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 379,
+        "total": 11.864439,
+        "dyn_ms": 11.781173,
+        "city": 0.058739,
+        "awake": 29,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 380,
+        "total": 10.322061,
+        "dyn_ms": 10.209061,
+        "city": 0.082925,
+        "awake": 29,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 381,
+        "total": 10.40199,
+        "dyn_ms": 10.313715,
+        "city": 0.059231,
+        "awake": 29,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 382,
+        "total": 10.439149,
+        "dyn_ms": 10.34274,
+        "city": 0.071183,
+        "awake": 29,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 383,
+        "total": 11.267785,
+        "dyn_ms": 11.167929,
+        "city": 0.062717,
+        "awake": 29,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 384,
+        "total": 11.15766,
+        "dyn_ms": 11.046582,
+        "city": 0.085851006,
+        "awake": 26,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 385,
+        "total": 10.000661,
+        "dyn_ms": 9.923717,
+        "city": 0.052077,
+        "awake": 26,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 386,
+        "total": 10.992102,
+        "dyn_ms": 10.880553,
+        "city": 0.084978,
+        "awake": 26,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 387,
+        "total": 10.670792,
+        "dyn_ms": 10.582787,
+        "city": 0.05885,
+        "awake": 26,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 388,
+        "total": 10.610098,
+        "dyn_ms": 10.527584,
+        "city": 0.061544996,
+        "awake": 26,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 389,
+        "total": 10.110276,
+        "dyn_ms": 10.019877,
+        "city": 0.055574,
+        "awake": 26,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 390,
+        "total": 11.29704,
+        "dyn_ms": 11.188156,
+        "city": 0.081532,
+        "awake": 23,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 391,
+        "total": 11.045331,
+        "dyn_ms": 10.976942,
+        "city": 0.045916,
+        "awake": 23,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 392,
+        "total": 11.291328,
+        "dyn_ms": 11.197966,
+        "city": 0.067476004,
+        "awake": 23,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 393,
+        "total": 11.742221,
+        "dyn_ms": 11.654687,
+        "city": 0.064701,
+        "awake": 22,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 394,
+        "total": 10.687262,
+        "dyn_ms": 10.603636,
+        "city": 0.05901,
+        "awake": 22,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 395,
+        "total": 10.347408,
+        "dyn_ms": 10.267239,
+        "city": 0.053078998,
+        "awake": 22,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 396,
+        "total": 10.832003,
+        "dyn_ms": 10.741634,
+        "city": 0.067606,
+        "awake": 22,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 397,
+        "total": 11.0005865,
+        "dyn_ms": 10.939942,
+        "city": 0.040125,
+        "awake": 22,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 398,
+        "total": 10.590912,
+        "dyn_ms": 10.484162,
+        "city": 0.079008,
+        "awake": 22,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 399,
+        "total": 11.091236,
+        "dyn_ms": 11.0111265,
+        "city": 0.053279,
+        "awake": 22,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 400,
+        "total": 11.227961,
+        "dyn_ms": 11.137182,
+        "city": 0.067736,
+        "awake": 22,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 401,
+        "total": 10.772902,
+        "dyn_ms": 10.704433,
+        "city": 0.044894002,
+        "awake": 22,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 402,
+        "total": 10.647629,
+        "dyn_ms": 10.556037,
+        "city": 0.068518,
+        "awake": 22,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 403,
+        "total": 10.523545,
+        "dyn_ms": 10.43962,
+        "city": 0.054372,
+        "awake": 22,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 404,
+        "total": 10.365201,
+        "dyn_ms": 10.19831,
+        "city": 0.131836,
+        "awake": 22,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 405,
+        "total": 10.814029,
+        "dyn_ms": 10.645464,
+        "city": 0.097733,
+        "awake": 22,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 406,
+        "total": 10.83699,
+        "dyn_ms": 10.710775,
+        "city": 0.079348,
+        "awake": 22,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 407,
+        "total": 10.557799,
+        "dyn_ms": 10.480356,
+        "city": 0.050044,
+        "awake": 22,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 408,
+        "total": 10.599057,
+        "dyn_ms": 10.494753,
+        "city": 0.072466,
+        "awake": 22,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 409,
+        "total": 10.0957775,
+        "dyn_ms": 10.023253,
+        "city": 0.04811,
+        "awake": 22,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 410,
+        "total": 10.9551525,
+        "dyn_ms": 10.875834,
+        "city": 0.057728,
+        "awake": 22,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 411,
+        "total": 25.249977,
+        "dyn_ms": 24.859707,
+        "city": 0.35819802,
+        "awake": 43,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 412,
+        "total": 11.729066,
+        "dyn_ms": 11.60299,
+        "city": 0.097712,
+        "awake": 33,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 413,
+        "total": 11.414368,
+        "dyn_ms": 11.315172,
+        "city": 0.071804,
+        "awake": 32,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 414,
+        "total": 9.01417,
+        "dyn_ms": 8.870241,
+        "city": 0.116859004,
+        "awake": 33,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 415,
+        "total": 12.027734,
+        "dyn_ms": 11.932386,
+        "city": 0.064751,
+        "awake": 33,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 416,
+        "total": 10.967404,
+        "dyn_ms": 10.832693,
+        "city": 0.106538,
+        "awake": 34,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 417,
+        "total": 11.283925,
+        "dyn_ms": 11.185142,
+        "city": 0.063949004,
+        "awake": 34,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 418,
+        "total": 11.400682,
+        "dyn_ms": 11.279206,
+        "city": 0.092813,
+        "awake": 32,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 419,
+        "total": 11.776904,
+        "dyn_ms": 11.670707,
+        "city": 0.08005,
+        "awake": 42,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 420,
+        "total": 11.953534,
+        "dyn_ms": 11.550202,
+        "city": 0.098844,
+        "awake": 42,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 421,
+        "total": 11.403248,
+        "dyn_ms": 11.284547,
+        "city": 0.076903,
+        "awake": 42,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 422,
+        "total": 11.056331,
+        "dyn_ms": 10.956404,
+        "city": 0.072675996,
+        "awake": 42,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 423,
+        "total": 10.887404,
+        "dyn_ms": 10.768413,
+        "city": 0.086601004,
+        "awake": 37,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 424,
+        "total": 11.52792,
+        "dyn_ms": 11.402417,
+        "city": 0.097491995,
+        "awake": 37,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 425,
+        "total": 10.920718,
+        "dyn_ms": 10.818437,
+        "city": 0.071213,
+        "awake": 37,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 426,
+        "total": 10.72898,
+        "dyn_ms": 10.604167,
+        "city": 0.095328,
+        "awake": 37,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 427,
+        "total": 10.90124,
+        "dyn_ms": 10.801946,
+        "city": 0.065582,
+        "awake": 37,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 428,
+        "total": 10.843283,
+        "dyn_ms": 10.726695,
+        "city": 0.088886,
+        "awake": 37,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 429,
+        "total": 10.557119,
+        "dyn_ms": 10.435793,
+        "city": 0.087533996,
+        "awake": 37,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 430,
+        "total": 10.639402,
+        "dyn_ms": 10.507556,
+        "city": 0.097642,
+        "awake": 37,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 431,
+        "total": 10.966083,
+        "dyn_ms": 10.855466,
+        "city": 0.071714,
+        "awake": 37,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 432,
+        "total": 10.87352,
+        "dyn_ms": 10.694677,
+        "city": 0.130844,
+        "awake": 37,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 433,
+        "total": 10.995497,
+        "dyn_ms": 10.862219,
+        "city": 0.076182,
+        "awake": 37,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 434,
+        "total": 10.575103,
+        "dyn_ms": 10.423551,
+        "city": 0.113802,
+        "awake": 37,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 435,
+        "total": 10.385851,
+        "dyn_ms": 10.285302,
+        "city": 0.063649,
+        "awake": 37,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 436,
+        "total": 11.211039,
+        "dyn_ms": 11.082709,
+        "city": 0.093034,
+        "awake": 37,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 437,
+        "total": 11.043256,
+        "dyn_ms": 10.960001,
+        "city": 0.058909997,
+        "awake": 36,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 438,
+        "total": 10.033001,
+        "dyn_ms": 9.948012,
+        "city": 0.062036,
+        "awake": 36,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 439,
+        "total": 10.396179,
+        "dyn_ms": 10.298709,
+        "city": 0.065842,
+        "awake": 36,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 440,
+        "total": 10.266357,
+        "dyn_ms": 10.164737,
+        "city": 0.07492,
+        "awake": 36,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 441,
+        "total": 10.394566,
+        "dyn_ms": 10.322712,
+        "city": 0.047078,
+        "awake": 36,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 442,
+        "total": 10.911241,
+        "dyn_ms": 10.793261,
+        "city": 0.083957,
+        "awake": 36,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 443,
+        "total": 11.750405,
+        "dyn_ms": 11.661811,
+        "city": 0.060122002,
+        "awake": 36,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 444,
+        "total": 11.710311,
+        "dyn_ms": 11.622598,
+        "city": 0.063799,
+        "awake": 36,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 445,
+        "total": 11.481684,
+        "dyn_ms": 11.390364,
+        "city": 0.058238998,
+        "awake": 36,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 446,
+        "total": 10.796666,
+        "dyn_ms": 10.687451,
+        "city": 0.080941,
+        "awake": 36,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 447,
+        "total": 10.694076,
+        "dyn_ms": 10.579852,
+        "city": 0.076532,
+        "awake": 36,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 448,
+        "total": 10.7396,
+        "dyn_ms": 10.558892,
+        "city": 0.119333,
+        "awake": 36,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 449,
+        "total": 10.656886,
+        "dyn_ms": 10.554774,
+        "city": 0.065893,
+        "awake": 36,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 450,
+        "total": 9.833048,
+        "dyn_ms": 9.731178,
+        "city": 0.077104,
+        "awake": 36,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 451,
+        "total": 12.575515,
+        "dyn_ms": 12.231984,
+        "city": 0.293178,
+        "awake": 36,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 452,
+        "total": 13.090927,
+        "dyn_ms": 12.733641,
+        "city": 0.29482,
+        "awake": 32,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 453,
+        "total": 12.314467,
+        "dyn_ms": 12.21861,
+        "city": 0.062317,
+        "awake": 32,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 454,
+        "total": 11.037756,
+        "dyn_ms": 10.936117,
+        "city": 0.073898,
+        "awake": 32,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 455,
+        "total": 11.189288,
+        "dyn_ms": 11.06083,
+        "city": 0.083827,
+        "awake": 31,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 456,
+        "total": 10.821113,
+        "dyn_ms": 10.665331,
+        "city": 0.105206005,
+        "awake": 31,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 457,
+        "total": 11.180822,
+        "dyn_ms": 11.071179,
+        "city": 0.071894,
+        "awake": 31,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 458,
+        "total": 11.020565,
+        "dyn_ms": 10.882836,
+        "city": 0.101578996,
+        "awake": 31,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 459,
+        "total": 11.203917,
+        "dyn_ms": 11.082811,
+        "city": 0.079767995,
+        "awake": 31,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 460,
+        "total": 10.760459,
+        "dyn_ms": 10.591854,
+        "city": 0.120304,
+        "awake": 31,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 461,
+        "total": 10.81973,
+        "dyn_ms": 10.722838,
+        "city": 0.053941,
+        "awake": 31,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 462,
+        "total": 11.045721,
+        "dyn_ms": 10.935735,
+        "city": 0.082733996,
+        "awake": 31,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 463,
+        "total": 11.024371,
+        "dyn_ms": 10.931317,
+        "city": 0.060072,
+        "awake": 31,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 464,
+        "total": 11.117925,
+        "dyn_ms": 11.019152,
+        "city": 0.073707,
+        "awake": 31,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 465,
+        "total": 11.076798,
+        "dyn_ms": 10.99694,
+        "city": 0.056224998,
+        "awake": 30,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 466,
+        "total": 10.9791565,
+        "dyn_ms": 10.885582,
+        "city": 0.069579996,
+        "awake": 30,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 467,
+        "total": 10.952477,
+        "dyn_ms": 10.878048,
+        "city": 0.047619,
+        "awake": 30,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 468,
+        "total": 11.309844,
+        "dyn_ms": 11.190712,
+        "city": 0.089677,
+        "awake": 30,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 469,
+        "total": 11.203216,
+        "dyn_ms": 11.094732,
+        "city": 0.075832,
+        "awake": 30,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 470,
+        "total": 9.669834,
+        "dyn_ms": 9.573694,
+        "city": 0.069159,
+        "awake": 30,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 471,
+        "total": 10.722378,
+        "dyn_ms": 10.642568,
+        "city": 0.052798,
+        "awake": 30,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 472,
+        "total": 10.816394,
+        "dyn_ms": 10.715304,
+        "city": 0.074198,
+        "awake": 30,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 473,
+        "total": 11.173049,
+        "dyn_ms": 11.047494,
+        "city": 0.098223,
+        "awake": 34,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 474,
+        "total": 11.011307,
+        "dyn_ms": 10.908736,
+        "city": 0.077885,
+        "awake": 34,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 475,
+        "total": 8.839394,
+        "dyn_ms": 8.7457485,
+        "city": 0.0639,
+        "awake": 34,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 476,
+        "total": 10.961373,
+        "dyn_ms": 10.85795,
+        "city": 0.077906,
+        "awake": 34,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 477,
+        "total": 11.17904,
+        "dyn_ms": 11.081618,
+        "city": 0.064289995,
+        "awake": 34,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 478,
+        "total": 11.406734,
+        "dyn_ms": 11.29228,
+        "city": 0.0857,
+        "awake": 34,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 479,
+        "total": 11.526708,
+        "dyn_ms": 11.429577,
+        "city": 0.066204,
+        "awake": 34,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 480,
+        "total": 11.421223,
+        "dyn_ms": 11.156678,
+        "city": 0.082715,
+        "awake": 33,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 481,
+        "total": 11.178298,
+        "dyn_ms": 11.059907,
+        "city": 0.074719,
+        "awake": 33,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 482,
+        "total": 10.490827,
+        "dyn_ms": 10.361885,
+        "city": 0.093534,
+        "awake": 33,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 483,
+        "total": 10.618083,
+        "dyn_ms": 10.506234,
+        "city": 0.070191,
+        "awake": 33,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 484,
+        "total": 11.103178,
+        "dyn_ms": 10.976652,
+        "city": 0.090099,
+        "awake": 33,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 485,
+        "total": 11.282483,
+        "dyn_ms": 11.182236,
+        "city": 0.067355,
+        "awake": 29,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 486,
+        "total": 10.902304,
+        "dyn_ms": 10.684908,
+        "city": 0.173344,
+        "awake": 33,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 487,
+        "total": 11.100924,
+        "dyn_ms": 10.989596,
+        "city": 0.066765,
+        "awake": 33,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 488,
+        "total": 10.985719,
+        "dyn_ms": 10.865405,
+        "city": 0.089697,
+        "awake": 33,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 489,
+        "total": 10.732427,
+        "dyn_ms": 10.603987,
+        "city": 0.084588,
+        "awake": 33,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 490,
+        "total": 10.714002,
+        "dyn_ms": 10.586744,
+        "city": 0.087192,
+        "awake": 33,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 491,
+        "total": 11.348705,
+        "dyn_ms": 11.260512,
+        "city": 0.060563,
+        "awake": 33,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 492,
+        "total": 11.600677,
+        "dyn_ms": 11.357101,
+        "city": 0.119313,
+        "awake": 33,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 493,
+        "total": 11.400052,
+        "dyn_ms": 11.305186,
+        "city": 0.061854996,
+        "awake": 33,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 494,
+        "total": 11.393041,
+        "dyn_ms": 11.30231,
+        "city": 0.067536,
+        "awake": 32,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 495,
+        "total": 11.293464,
+        "dyn_ms": 11.188047,
+        "city": 0.066213,
+        "awake": 32,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 496,
+        "total": 11.220487,
+        "dyn_ms": 11.115412,
+        "city": 0.079508,
+        "awake": 32,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 497,
+        "total": 10.496015,
+        "dyn_ms": 10.405758,
+        "city": 0.062336,
+        "awake": 32,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 498,
+        "total": 10.716316,
+        "dyn_ms": 10.594389,
+        "city": 0.086531,
+        "awake": 32,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 499,
+        "total": 10.464335,
+        "dyn_ms": 10.367856,
+        "city": 0.068317994,
+        "awake": 28,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 500,
+        "total": 11.384111,
+        "dyn_ms": 11.229565,
+        "city": 0.113482,
+        "awake": 28,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 501,
+        "total": 11.482687,
+        "dyn_ms": 11.277564,
+        "city": 0.076743,
+        "awake": 27,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 502,
+        "total": 11.577763,
+        "dyn_ms": 11.467938,
+        "city": 0.077835,
+        "awake": 27,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 503,
+        "total": 10.77775,
+        "dyn_ms": 10.694665,
+        "city": 0.056876,
+        "awake": 27,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 504,
+        "total": 11.264309,
+        "dyn_ms": 11.141409,
+        "city": 0.081742994,
+        "awake": 27,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 505,
+        "total": 11.079955,
+        "dyn_ms": 10.991369,
+        "city": 0.060603,
+        "awake": 27,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 506,
+        "total": 10.881254,
+        "dyn_ms": 10.765288,
+        "city": 0.082614005,
+        "awake": 27,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 507,
+        "total": 11.336905,
+        "dyn_ms": 11.245233,
+        "city": 0.058819998,
+        "awake": 27,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 508,
+        "total": 10.757513,
+        "dyn_ms": 10.656866,
+        "city": 0.07472,
+        "awake": 27,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 509,
+        "total": 11.054977,
+        "dyn_ms": 10.981582,
+        "city": 0.047078,
+        "awake": 27,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 510,
+        "total": 10.717629,
+        "dyn_ms": 10.570104,
+        "city": 0.114874,
+        "awake": 31,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 511,
+        "total": 11.685595,
+        "dyn_ms": 11.5965395,
+        "city": 0.063809,
+        "awake": 27,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 512,
+        "total": 11.826999,
+        "dyn_ms": 11.721462,
+        "city": 0.081452005,
+        "awake": 31,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 513,
+        "total": 11.06658,
+        "dyn_ms": 10.968247,
+        "city": 0.060603,
+        "awake": 31,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 514,
+        "total": 11.284025,
+        "dyn_ms": 11.177026,
+        "city": 0.073518,
+        "awake": 31,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 515,
+        "total": 11.474171,
+        "dyn_ms": 11.381097,
+        "city": 0.060503,
+        "awake": 31,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 516,
+        "total": 11.495982,
+        "dyn_ms": 11.395253,
+        "city": 0.071263,
+        "awake": 31,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 517,
+        "total": 11.930483,
+        "dyn_ms": 11.847797,
+        "city": 0.054651998,
+        "awake": 31,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 518,
+        "total": 10.745951,
+        "dyn_ms": 10.645344,
+        "city": 0.074208,
+        "awake": 31,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 519,
+        "total": 11.444816,
+        "dyn_ms": 11.352242,
+        "city": 0.061355,
+        "awake": 31,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 520,
+        "total": 10.475247,
+        "dyn_ms": 10.391921,
+        "city": 0.060974,
+        "awake": 31,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 521,
+        "total": 11.0339985,
+        "dyn_ms": 10.92167,
+        "city": 0.069419004,
+        "awake": 31,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 522,
+        "total": 10.915769,
+        "dyn_ms": 10.811574,
+        "city": 0.075601,
+        "awake": 31,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 523,
+        "total": 13.063456,
+        "dyn_ms": 12.693777,
+        "city": 0.342139,
+        "awake": 31,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 524,
+        "total": 28.545946,
+        "dyn_ms": 28.176268,
+        "city": 0.33845198,
+        "awake": 50,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 525,
+        "total": 13.24262,
+        "dyn_ms": 13.155767,
+        "city": 0.061904997,
+        "awake": 45,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 526,
+        "total": 12.182432,
+        "dyn_ms": 12.039677,
+        "city": 0.114033,
+        "awake": 48,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 527,
+        "total": 24.773928,
+        "dyn_ms": 24.42193,
+        "city": 0.324145,
+        "awake": 51,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 528,
+        "total": 9.4032955,
+        "dyn_ms": 9.299753,
+        "city": 0.077294,
+        "awake": 51,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 529,
+        "total": 9.785139,
+        "dyn_ms": 9.686485,
+        "city": 0.063549,
+        "awake": 51,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 530,
+        "total": 10.428198,
+        "dyn_ms": 10.286895,
+        "city": 0.118471,
+        "awake": 50,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 531,
+        "total": 9.587709,
+        "dyn_ms": 9.438262,
+        "city": 0.092914,
+        "awake": 50,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 532,
+        "total": 10.240599,
+        "dyn_ms": 9.821657,
+        "city": 0.355924,
+        "awake": 50,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 533,
+        "total": 10.3242855,
+        "dyn_ms": 10.169255,
+        "city": 0.109635,
+        "awake": 49,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 534,
+        "total": 9.885316,
+        "dyn_ms": 9.734573,
+        "city": 0.117409,
+        "awake": 49,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 535,
+        "total": 9.066869,
+        "dyn_ms": 8.948126,
+        "city": 0.076152,
+        "awake": 49,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 536,
+        "total": 9.956598,
+        "dyn_ms": 9.829862,
+        "city": 0.093875,
+        "awake": 49,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 537,
+        "total": 9.570007,
+        "dyn_ms": 9.481512,
+        "city": 0.057827,
+        "awake": 49,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 538,
+        "total": 9.717673,
+        "dyn_ms": 9.595966,
+        "city": 0.087403,
+        "awake": 49,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 539,
+        "total": 8.758243,
+        "dyn_ms": 8.659358,
+        "city": 0.065583,
+        "awake": 49,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 540,
+        "total": 9.899022,
+        "dyn_ms": 9.65211,
+        "city": 0.067756996,
+        "awake": 49,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 541,
+        "total": 9.797783,
+        "dyn_ms": 9.631332,
+        "city": 0.110286,
+        "awake": 51,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 542,
+        "total": 9.100992,
+        "dyn_ms": 8.98699,
+        "city": 0.086280994,
+        "awake": 51,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 543,
+        "total": 7.762134,
+        "dyn_ms": 7.6630487,
+        "city": 0.06394,
+        "awake": 51,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 544,
+        "total": 9.336361,
+        "dyn_ms": 9.18585,
+        "city": 0.108011,
+        "awake": 51,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 545,
+        "total": 9.653453,
+        "dyn_ms": 9.563806,
+        "city": 0.062145997,
+        "awake": 50,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 546,
+        "total": 9.129456,
+        "dyn_ms": 8.983473,
+        "city": 0.110847004,
+        "awake": 50,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 547,
+        "total": 7.848315,
+        "dyn_ms": 7.723071,
+        "city": 0.079067,
+        "awake": 50,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 548,
+        "total": 9.648104,
+        "dyn_ms": 9.5269375,
+        "city": 0.093023,
+        "awake": 50,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 549,
+        "total": 8.190032,
+        "dyn_ms": 8.120032,
+        "city": 0.046166,
+        "awake": 50,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 550,
+        "total": 7.675011,
+        "dyn_ms": 7.496859,
+        "city": 0.122839004,
+        "awake": 50,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 551,
+        "total": 8.8532,
+        "dyn_ms": 8.735851,
+        "city": 0.076854,
+        "awake": 50,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 552,
+        "total": 8.128186,
+        "dyn_ms": 7.9808526,
+        "city": 0.10080899,
+        "awake": 50,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 553,
+        "total": 9.447679,
+        "dyn_ms": 9.358212,
+        "city": 0.058549,
+        "awake": 50,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 554,
+        "total": 9.6839,
+        "dyn_ms": 9.530273,
+        "city": 0.116257,
+        "awake": 50,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 555,
+        "total": 9.259448,
+        "dyn_ms": 9.153269,
+        "city": 0.06989,
+        "awake": 50,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 556,
+        "total": 9.529092,
+        "dyn_ms": 9.3901615,
+        "city": 0.102882,
+        "awake": 48,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 557,
+        "total": 9.13178,
+        "dyn_ms": 8.969657,
+        "city": 0.11255,
+        "awake": 50,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 558,
+        "total": 8.67676,
+        "dyn_ms": 8.533272,
+        "city": 0.101730004,
+        "awake": 50,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 559,
+        "total": 9.15306,
+        "dyn_ms": 9.057701,
+        "city": 0.063738994,
+        "awake": 50,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 560,
+        "total": 8.936113,
+        "dyn_ms": 8.770786,
+        "city": 0.118992,
+        "awake": 50,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 561,
+        "total": 9.213613,
+        "dyn_ms": 9.096383,
+        "city": 0.07505,
+        "awake": 50,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 562,
+        "total": 9.180592,
+        "dyn_ms": 9.047963,
+        "city": 0.097332,
+        "awake": 50,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 563,
+        "total": 9.009581,
+        "dyn_ms": 8.865312,
+        "city": 0.097161,
+        "awake": 50,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 564,
+        "total": 9.614201,
+        "dyn_ms": 9.473808,
+        "city": 0.102482,
+        "awake": 50,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 565,
+        "total": 9.772666,
+        "dyn_ms": 9.66326,
+        "city": 0.074199,
+        "awake": 50,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 566,
+        "total": 9.5926895,
+        "dyn_ms": 9.463218,
+        "city": 0.098264,
+        "awake": 50,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 567,
+        "total": 9.549199,
+        "dyn_ms": 9.370886,
+        "city": 0.086802,
+        "awake": 50,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 568,
+        "total": 7.201879,
+        "dyn_ms": 7.060796,
+        "city": 0.098634005,
+        "awake": 50,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 569,
+        "total": 9.206379,
+        "dyn_ms": 9.091885,
+        "city": 0.072976,
+        "awake": 50,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 570,
+        "total": 9.618328,
+        "dyn_ms": 9.434745,
+        "city": 0.118420996,
+        "awake": 50,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 571,
+        "total": 9.334128,
+        "dyn_ms": 9.206489,
+        "city": 0.080409996,
+        "awake": 50,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 572,
+        "total": 9.518962,
+        "dyn_ms": 9.353484,
+        "city": 0.117509,
+        "awake": 50,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 573,
+        "total": 9.629959,
+        "dyn_ms": 9.455634,
+        "city": 0.104334995,
+        "awake": 50,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 574,
+        "total": 9.380154,
+        "dyn_ms": 9.232628,
+        "city": 0.087813996,
+        "awake": 50,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 575,
+        "total": 7.9878654,
+        "dyn_ms": 7.892778,
+        "city": 0.059591997,
+        "awake": 50,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 576,
+        "total": 8.780614,
+        "dyn_ms": 8.589308,
+        "city": 0.117689,
+        "awake": 50,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 577,
+        "total": 9.561982,
+        "dyn_ms": 9.44834,
+        "city": 0.071713,
+        "awake": 50,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 578,
+        "total": 9.51749,
+        "dyn_ms": 9.385874,
+        "city": 0.097241,
+        "awake": 50,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 579,
+        "total": 8.034443,
+        "dyn_ms": 7.881787,
+        "city": 0.093354,
+        "awake": 50,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 580,
+        "total": 7.9290457,
+        "dyn_ms": 7.7704897,
+        "city": 0.10705,
+        "awake": 50,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 581,
+        "total": 9.5066595,
+        "dyn_ms": 9.364044,
+        "city": 0.100287,
+        "awake": 47,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 582,
+        "total": 8.126635,
+        "dyn_ms": 7.916162,
+        "city": 0.14316699,
+        "awake": 47,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 583,
+        "total": 8.916668,
+        "dyn_ms": 8.7964735,
+        "city": 0.074198,
+        "awake": 47,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 584,
+        "total": 7.8378644,
+        "dyn_ms": 7.720757,
+        "city": 0.083165005,
+        "awake": 47,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 585,
+        "total": 9.278002,
+        "dyn_ms": 9.132902,
+        "city": 0.084969,
+        "awake": 47,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 586,
+        "total": 9.275829,
+        "dyn_ms": 9.152488,
+        "city": 0.088986,
+        "awake": 47,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 587,
+        "total": 7.786189,
+        "dyn_ms": 7.6892276,
+        "city": 0.062396996,
+        "awake": 47,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 588,
+        "total": 9.481914,
+        "dyn_ms": 9.348886,
+        "city": 0.097311996,
+        "awake": 47,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 589,
+        "total": 9.78069,
+        "dyn_ms": 9.64131,
+        "city": 0.078145996,
+        "awake": 47,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 590,
+        "total": 8.298645,
+        "dyn_ms": 8.175886,
+        "city": 0.088195,
+        "awake": 47,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 591,
+        "total": 7.719805,
+        "dyn_ms": 7.616142,
+        "city": 0.066444,
+        "awake": 47,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 592,
+        "total": 9.816688,
+        "dyn_ms": 9.646169,
+        "city": 0.103243,
+        "awake": 47,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 593,
+        "total": 8.4218645,
+        "dyn_ms": 8.316408,
+        "city": 0.064541,
+        "awake": 47,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 594,
+        "total": 9.674884,
+        "dyn_ms": 9.5043545,
+        "city": 0.13022299,
+        "awake": 47,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 595,
+        "total": 9.5352125,
+        "dyn_ms": 9.417353,
+        "city": 0.065342,
+        "awake": 47,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 596,
+        "total": 9.242556,
+        "dyn_ms": 9.103717,
+        "city": 0.101578996,
+        "awake": 47,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 597,
+        "total": 7.789495,
+        "dyn_ms": 7.687594,
+        "city": 0.066374,
+        "awake": 47,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 598,
+        "total": 9.413155,
+        "dyn_ms": 9.29779,
+        "city": 0.081092,
+        "awake": 47,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 599,
+        "total": 9.638876,
+        "dyn_ms": 9.518831,
+        "city": 0.08051,
+        "awake": 47,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 600,
+        "total": 9.1662445,
+        "dyn_ms": 8.838263,
+        "city": 0.096741,
+        "awake": 47,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 601,
+        "total": 9.473717,
+        "dyn_ms": 9.335579,
+        "city": 0.084287,
+        "awake": 38,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 602,
+        "total": 9.921132,
+        "dyn_ms": 9.800337,
+        "city": 0.08598,
+        "awake": 38,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 603,
+        "total": 8.056744,
+        "dyn_ms": 7.976003,
+        "city": 0.049642,
+        "awake": 38,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 604,
+        "total": 7.9644613,
+        "dyn_ms": 7.871518,
+        "city": 0.065692,
+        "awake": 38,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 605,
+        "total": 8.212874,
+        "dyn_ms": 8.095536,
+        "city": 0.072185,
+        "awake": 35,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 606,
+        "total": 9.366677,
+        "dyn_ms": 9.173858,
+        "city": 0.154358,
+        "awake": 38,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 607,
+        "total": 9.6328745,
+        "dyn_ms": 9.52863,
+        "city": 0.063949004,
+        "awake": 38,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 608,
+        "total": 7.632141,
+        "dyn_ms": 7.490166,
+        "city": 0.098765,
+        "awake": 38,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 609,
+        "total": 8.150079,
+        "dyn_ms": 8.044351,
+        "city": 0.063309,
+        "awake": 38,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 610,
+        "total": 9.073913,
+        "dyn_ms": 8.943169,
+        "city": 0.095658,
+        "awake": 38,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 611,
+        "total": 8.61729,
+        "dyn_ms": 8.527152,
+        "city": 0.057597,
+        "awake": 38,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 612,
+        "total": 6.958625,
+        "dyn_ms": 6.820356,
+        "city": 0.085029,
+        "awake": 38,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 613,
+        "total": 7.719404,
+        "dyn_ms": 7.6075463,
+        "city": 0.06463,
+        "awake": 38,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 614,
+        "total": 9.191602,
+        "dyn_ms": 9.094771,
+        "city": 0.066153,
+        "awake": 38,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 615,
+        "total": 9.34089,
+        "dyn_ms": 9.221295,
+        "city": 0.065582,
+        "awake": 38,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 616,
+        "total": 7.954372,
+        "dyn_ms": 7.8228974,
+        "city": 0.089947,
+        "awake": 38,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 617,
+        "total": 7.901554,
+        "dyn_ms": 7.818549,
+        "city": 0.052128002,
+        "awake": 38,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 618,
+        "total": 7.605251,
+        "dyn_ms": 7.467344,
+        "city": 0.092342995,
+        "awake": 38,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 619,
+        "total": 9.017637,
+        "dyn_ms": 8.91249,
+        "city": 0.066915005,
+        "awake": 38,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 620,
+        "total": 8.750308,
+        "dyn_ms": 8.631846,
+        "city": 0.083626,
+        "awake": 38,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 621,
+        "total": 7.9620676,
+        "dyn_ms": 7.825793,
+        "city": 0.083626,
+        "awake": 38,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 622,
+        "total": 8.5237055,
+        "dyn_ms": 8.407178,
+        "city": 0.072545,
+        "awake": 38,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 623,
+        "total": 7.305642,
+        "dyn_ms": 7.18157,
+        "city": 0.072105005,
+        "awake": 38,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 624,
+        "total": 8.040594,
+        "dyn_ms": 7.8742633,
+        "city": 0.108522,
+        "awake": 38,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 625,
+        "total": 8.136422,
+        "dyn_ms": 8.009956,
+        "city": 0.077985,
+        "awake": 38,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 626,
+        "total": 9.056209,
+        "dyn_ms": 8.934061,
+        "city": 0.084296994,
+        "awake": 38,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 627,
+        "total": 8.878477,
+        "dyn_ms": 8.760907,
+        "city": 0.076281995,
+        "awake": 38,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 628,
+        "total": 9.690943,
+        "dyn_ms": 9.537938,
+        "city": 0.093463995,
+        "awake": 38,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 629,
+        "total": 7.405108,
+        "dyn_ms": 7.296715,
+        "city": 0.072675,
+        "awake": 38,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 630,
+        "total": 9.3473015,
+        "dyn_ms": 9.215405,
+        "city": 0.090077996,
+        "awake": 38,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 631,
+        "total": 9.222669,
+        "dyn_ms": 9.071497,
+        "city": 0.084758,
+        "awake": 38,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 632,
+        "total": 9.216217,
+        "dyn_ms": 9.117854,
+        "city": 0.063658,
+        "awake": 38,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 633,
+        "total": 9.043254,
+        "dyn_ms": 8.947977,
+        "city": 0.059611,
+        "awake": 38,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 634,
+        "total": 7.8414016,
+        "dyn_ms": 7.6837983,
+        "city": 0.094146,
+        "awake": 38,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 635,
+        "total": 7.6824546,
+        "dyn_ms": 7.5837507,
+        "city": 0.061605003,
+        "awake": 38,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 636,
+        "total": 8.70893,
+        "dyn_ms": 8.598114,
+        "city": 0.079127,
+        "awake": 38,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 637,
+        "total": 7.414836,
+        "dyn_ms": 7.3079967,
+        "city": 0.064771,
+        "awake": 38,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 638,
+        "total": 8.021158,
+        "dyn_ms": 7.8722296,
+        "city": 0.094456,
+        "awake": 38,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 639,
+        "total": 9.134826,
+        "dyn_ms": 9.042954,
+        "city": 0.059702,
+        "awake": 38,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 640,
+        "total": 9.007968,
+        "dyn_ms": 8.894418,
+        "city": 0.081432,
+        "awake": 38,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 641,
+        "total": 9.008911,
+        "dyn_ms": 8.889438,
+        "city": 0.067526005,
+        "awake": 38,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 642,
+        "total": 8.185744,
+        "dyn_ms": 8.067384,
+        "city": 0.083455995,
+        "awake": 38,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 643,
+        "total": 7.644785,
+        "dyn_ms": 7.562942,
+        "city": 0.050635,
+        "awake": 38,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 644,
+        "total": 7.770199,
+        "dyn_ms": 7.635888,
+        "city": 0.089738004,
+        "awake": 38,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 645,
+        "total": 8.034323,
+        "dyn_ms": 7.9251585,
+        "city": 0.06952,
+        "awake": 38,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 646,
+        "total": 9.578524,
+        "dyn_ms": 9.462327,
+        "city": 0.084177,
+        "awake": 38,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 647,
+        "total": 8.562117,
+        "dyn_ms": 8.461048,
+        "city": 0.066083,
+        "awake": 38,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 648,
+        "total": 8.117146,
+        "dyn_ms": 7.9734483,
+        "city": 0.089868,
+        "awake": 38,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 649,
+        "total": 9.205306,
+        "dyn_ms": 9.096914,
+        "city": 0.065692,
+        "awake": 38,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 650,
+        "total": 9.240793,
+        "dyn_ms": 9.144524,
+        "city": 0.067266,
+        "awake": 38,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 651,
+        "total": 8.930254,
+        "dyn_ms": 8.84814,
+        "city": 0.05313,
+        "awake": 38,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 652,
+        "total": 8.20967,
+        "dyn_ms": 8.065431,
+        "city": 0.094436,
+        "awake": 38,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 653,
+        "total": 8.140261,
+        "dyn_ms": 8.020295,
+        "city": 0.074589,
+        "awake": 38,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 654,
+        "total": 8.0655,
+        "dyn_ms": 7.9173436,
+        "city": 0.109224,
+        "awake": 38,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 655,
+        "total": 7.490317,
+        "dyn_ms": 7.358281,
+        "city": 0.080731,
+        "awake": 38,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 656,
+        "total": 7.675543,
+        "dyn_ms": 7.538417,
+        "city": 0.089818,
+        "awake": 38,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 657,
+        "total": 8.356362,
+        "dyn_ms": 8.250004,
+        "city": 0.070310995,
+        "awake": 38,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 658,
+        "total": 7.783223,
+        "dyn_ms": 7.6731777,
+        "city": 0.075151004,
+        "awake": 38,
+        "frozen": 0,
+        "flips": 0
+      },
+      {
+        "t": 659,
+        "total": 9.587669,
+        "dyn_ms": 9.460544,
+        "city": 0.08037,
+        "awake": 38,
+        "frozen": 0,
+        "flips": 0
+      }
+    ],
+    "server_build": "09:05:46",
+    "server_started": "09:06:25",
+    "physics_backend": "physx_gpu",
+    "physics_gpu_required": true,
+    "physics_gpu_active": true,
+    "physics_gpu_warning_count": 0,
+    "physics_gpu_rigid_contact_high_water": 987,
+    "physics_gpu_rigid_patch_high_water": 334,
+    "physics_gpu_max_rigid_contacts": 2097152,
+    "physics_gpu_max_rigid_patches": 2097152,
+    "physics_active_dynamic_bodies": 44,
+    "physics_last_step_ms": 7.431527,
+    "physics_simulate_ms": 0.019547,
+    "physics_fetch_ms": 7.411039,
+    "physics_gpu_wait_ms": 9.641169,
+    "physics_fetch_copy_ms": 0.04879539,
+    "physics_readback_ms": 0.003266,
+    "physics_refresh_players_ms": 0.004007,
+    "physics_vehicle_control_ms": 0.00004,
+    "physics_controller_ms": 0.000901,
+    "server_tick": 660,
+    "player_count": 1,
+    "dynamic_body_count": 6,
+    "vehicle_count": 0,
+    "battery_count": 0,
+    "chunk_count": 0,
+    "load": {
+      "nearby_radius_m": 12,
+      "avg_nearby_players": 0,
+      "max_nearby_players": 0,
+      "websocket_players": 0,
+      "webtransport_players": 1,
+      "void_kills": 0
+    },
+    "timings": {
+      "total_ms": {
+        "avg": 9.642441,
+        "p95": 11.577763,
+        "max": 28.545946
+      },
+      "player_sim_ms": {
+        "avg": 0.01859054,
+        "p95": 0.036608,
+        "max": 0.061464
+      },
+      "input_frames_per_tick": {
+        "avg": 1.3277777,
+        "p95": 2,
+        "max": 2
+      },
+      "player_move_math_ms": {
+        "avg": 0,
+        "p95": 0,
+        "max": 0
+      },
+      "player_query_ctx_ms": {
+        "avg": 0,
+        "p95": 0,
+        "max": 0
+      },
+      "player_kcc_ms": {
+        "avg": 0,
+        "p95": 0,
+        "max": 0
+      },
+      "player_kcc_horizontal_ms": {
+        "avg": 0,
+        "p95": 0,
+        "max": 0
+      },
+      "player_kcc_support_ms": {
+        "avg": 0,
+        "p95": 0,
+        "max": 0
+      },
+      "player_kcc_merged_ms": {
+        "avg": 0,
+        "p95": 0,
+        "max": 0
+      },
+      "player_support_probe_ms": {
+        "avg": 0,
+        "p95": 0,
+        "max": 0
+      },
+      "player_collider_sync_ms": {
+        "avg": 0,
+        "p95": 0,
+        "max": 0
+      },
+      "player_dynamic_contact_query_ms": {
+        "avg": 0,
+        "p95": 0,
+        "max": 0
+      },
+      "player_dynamic_interaction_ms": {
+        "avg": 0,
+        "p95": 0,
+        "max": 0
+      },
+      "player_dynamic_impulse_apply_ms": {
+        "avg": 0,
+        "p95": 0,
+        "max": 0
+      },
+      "player_history_record_ms": {
+        "avg": 0.00029460565,
+        "p95": 0.00056099996,
+        "max": 0.000942
+      },
+      "vehicle_ms": {
+        "avg": 0.000040466668,
+        "p95": 0.00007,
+        "max": 0.00009
+      },
+      "dynamics_ms": {
+        "avg": 9.490036,
+        "p95": 11.395253,
+        "max": 28.176268
+      },
+      "hitscan_ms": {
+        "avg": 0.001066139,
+        "p95": 0.00025,
+        "max": 0.087073
+      },
+      "snapshot_ms": {
+        "avg": 0.009741816,
+        "p95": 0.015858999,
+        "max": 0.023373999
+      },
+      "city_total_ms": {
+        "avg": 0.08820828,
+        "p95": 0.119313,
+        "max": 0.355924
+      },
+      "tick_unattributed_ms": {
+        "avg": 0.011341548,
+        "p95": 0.017680168,
+        "max": 0.030815125
+      }
+    },
+    "network": {
+      "inbound_bps": 545,
+      "outbound_bps": 26779,
+      "inbound_packets_per_sec": 17,
+      "outbound_packets_per_sec": 157,
+      "total_inbound_bytes": 5455,
+      "total_outbound_bytes": 268406,
+      "total_inbound_packets": 178,
+      "total_outbound_packets": 1618,
+      "reliable_packets_sent": 763,
+      "datagram_packets_sent": 856,
+      "datagram_fallbacks": 0,
+      "malformed_packets": 0,
+      "snapshot_reliable_sent": 0,
+      "snapshot_datagram_sent": 660,
+      "websocket_snapshot_reliable_sent": 0,
+      "webtransport_snapshot_reliable_sent": 0,
+      "webtransport_snapshot_datagram_sent": 660,
+      "strict_snapshot_drops": 0,
+      "strict_snapshot_drop_oversize": 0,
+      "strict_snapshot_drop_connection_closed": 0,
+      "strict_snapshot_drop_unsupported_peer": 0,
+      "strict_snapshot_drop_other": 0,
+      "dropped_outbound_packets": 0,
+      "dropped_outbound_snapshots": 0,
+      "snapshot_bytes_per_client": {
+        "avg": 172.55556,
+        "p95": 176,
+        "max": 176
+      },
+      "snapshot_bytes_per_tick": {
+        "avg": 172.55556,
+        "p95": 176,
+        "max": 176
+      },
+      "snapshot_players_per_client": {
+        "avg": 1,
+        "p95": 1,
+        "max": 1
+      },
+      "snapshot_dynamic_bodies_per_client": {
+        "avg": 5.827778,
+        "p95": 6,
+        "max": 6
+      },
+      "snapshot_vehicles_per_client": {
+        "avg": 0,
+        "p95": 0,
+        "max": 0
+      },
+      "visible_batteries_per_client": {
+        "avg": 0,
+        "p95": 0,
+        "max": 0
+      },
+      "local_player_energy_packets_sent": 660,
+      "local_player_energy_bytes_sent": 3300,
+      "battery_sync_packets_sent": 1,
+      "battery_sync_bytes_sent": 6,
+      "dynamic_bodies_considered_per_tick": {
+        "avg": 0,
+        "p95": 0,
+        "max": 0
+      },
+      "dynamic_contacts_raw_per_tick": {
+        "avg": 0,
+        "p95": 0,
+        "max": 0
+      },
+      "dynamic_contacts_kept_per_tick": {
+        "avg": 0,
+        "p95": 0,
+        "max": 0
+      },
+      "dynamic_bodies_pushed_per_tick": {
+        "avg": 0,
+        "p95": 0,
+        "max": 0
+      },
+      "dynamic_impulses_applied_per_tick": {
+        "avg": 0,
+        "p95": 0,
+        "max": 0
+      },
+      "contacted_dynamic_mass_per_tick": {
+        "avg": 0,
+        "p95": 0,
+        "max": 0
+      },
+      "player_kcc_horizontal_calls_per_tick": {
+        "avg": 0,
+        "p95": 0,
+        "max": 0
+      },
+      "player_kcc_support_calls_per_tick": {
+        "avg": 0,
+        "p95": 0,
+        "max": 0
+      },
+      "player_support_probe_count_per_tick": {
+        "avg": 0,
+        "p95": 0,
+        "max": 0
+      },
+      "player_support_probe_hit_count_per_tick": {
+        "avg": 0,
+        "p95": 0,
+        "max": 0
+      },
+      "awake_dynamic_bodies_total": {
+        "avg": 7.8166666,
+        "p95": 8,
+        "max": 8
+      },
+      "awake_dynamic_bodies_near_players": {
+        "avg": 0.17777778,
+        "p95": 1,
+        "max": 2
+      },
+      "players_in_vehicles": {
+        "avg": 0,
+        "p95": 0,
+        "max": 0
+      },
+      "dead_players_skipped": {
+        "avg": 0,
+        "p95": 0,
+        "max": 0
+      }
+    },
+    "players": [
+      {
+        "id": 1,
+        "identity": "wt-player-1",
+        "transport": "webtransport",
+        "one_way_ms": 60,
+        "pending_inputs": 0,
+        "last_received_input_seq": 567,
+        "last_ack_input_seq": 567,
+        "hp": 100,
+        "pos_m": [
+          -15.979794,
+          0.80999994,
+          8.594759
+        ],
+        "vel_ms": [
+          3.9381526e-8,
+          -0.5,
+          0.0016405702
+        ],
+        "on_ground": true,
+        "in_vehicle": false,
+        "dead": false,
+        "input_jitter_ms": 17.229843,
+        "avg_bundle_size": 3.1333334,
+        "correction_m": 0.10330071,
+        "physics_ms": 0,
+        "has_debug_stats": true
+      }
+    ],
+    "city": {
+      "structures": 1,
+      "wire_version": 2,
+      "v3_span_ticks": 0,
+      "v3_rate_scale": 1,
+      "v3_ema_mbps": 0,
+      "v3_epoch": 0,
+      "v3_span_encode_ms": 0,
+      "window_step_ms": {
+        "min": 0.040455002,
+        "avg": 0.065115355,
+        "p95": 0.081713,
+        "max": 0.088485,
+        "samples": 60
+      },
+      "window_ingest_ms": {
+        "min": 0.002435,
+        "avg": 0.0045869006,
+        "p95": 0.006842,
+        "max": 0.009017,
+        "samples": 60
+      },
+      "window_span_encode_ms": {
+        "min": 0,
+        "avg": 0,
+        "p95": 0,
+        "max": 0,
+        "samples": 0
+      },
+      "window_awake": {
+        "min": 35,
+        "avg": 37.95,
+        "p95": 38,
+        "max": 38,
+        "samples": 60
+      },
+      "phase_windows": {
+        "begin_ms": {
+          "min": 0,
+          "avg": 0,
+          "p95": 0,
+          "max": 0,
+          "samples": 60
+        },
+        "blast_contact_processing_ms": {
+          "min": 0,
+          "avg": 0,
+          "p95": 0,
+          "max": 0,
+          "samples": 60
+        },
+        "blast_fracture_apply_ms": {
+          "min": 0,
+          "avg": 0,
+          "p95": 0,
+          "max": 0,
+          "samples": 60
+        },
+        "blast_fracture_generate_ms": {
+          "min": 0,
+          "avg": 0,
+          "p95": 0,
+          "max": 0,
+          "samples": 60
+        },
+        "blast_fracture_prep_ms": {
+          "min": 0,
+          "avg": 0,
+          "p95": 0,
+          "max": 0,
+          "samples": 60
+        },
+        "blast_fracture_rebuild_ms": {
+          "min": 0,
+          "avg": 0,
+          "p95": 0,
+          "max": 0,
+          "samples": 60
+        },
+        "blast_fracture_scene_ms": {
+          "min": 0,
+          "avg": 0,
+          "p95": 0,
+          "max": 0,
+          "samples": 60
+        },
+        "blast_fracture_topology_excl_validation_ms": {
+          "min": 0,
+          "avg": 0,
+          "p95": 0,
+          "max": 0,
+          "samples": 60
+        },
+        "blast_fracture_topology_ms": {
+          "min": 0,
+          "avg": 0,
+          "p95": 0,
+          "max": 0,
+          "samples": 60
+        },
+        "blast_gravity_ms": {
+          "min": 0,
+          "avg": 0,
+          "p95": 0,
+          "max": 0,
+          "samples": 60
+        },
+        "blast_mapping_validation_ms": {
+          "min": 0,
+          "avg": 0,
+          "p95": 0,
+          "max": 0,
+          "samples": 60
+        },
+        "blast_stress_solve_cpu_ms": {
+          "min": 0,
+          "avg": 0,
+          "p95": 0,
+          "max": 0,
+          "samples": 60
+        },
+        "bond_sample_ms": {
+          "min": 0,
+          "avg": 0,
+          "p95": 0,
+          "max": 0,
+          "samples": 60
+        },
+        "ccd_ms": {
+          "min": 0,
+          "avg": 0,
+          "p95": 0,
+          "max": 0,
+          "samples": 60
+        },
+        "end_ms": {
+          "min": 0,
+          "avg": 0,
+          "p95": 0,
+          "max": 0,
+          "samples": 60
+        },
+        "events_ms": {
+          "min": 0,
+          "avg": 0,
+          "p95": 0,
+          "max": 0,
+          "samples": 60
+        },
+        "filters_ms": {
+          "min": 0,
+          "avg": 0,
+          "p95": 0,
+          "max": 0,
+          "samples": 60
+        },
+        "gpu_stress_solve_ms": {
+          "min": 0,
+          "avg": 0,
+          "p95": 0,
+          "max": 0,
+          "samples": 60
+        },
+        "readback_ms": {
+          "min": 0,
+          "avg": 0,
+          "p95": 0,
+          "max": 0,
+          "samples": 60
+        },
+        "settle_ms": {
+          "min": 0.003507,
+          "avg": 0.0064717676,
+          "p95": 0.008576,
+          "max": 0.011051,
+          "samples": 60
+        },
+        "shape_readback_ms": {
+          "min": 0,
+          "avg": 0,
+          "p95": 0,
+          "max": 0,
+          "samples": 60
+        },
+        "slot_dispatch_ms": {
+          "min": 0,
+          "avg": 0,
+          "p95": 0,
+          "max": 0,
+          "samples": 60
+        },
+        "solve_ms": {
+          "min": 0,
+          "avg": 0,
+          "p95": 0,
+          "max": 0,
+          "samples": 60
+        },
+        "stress_solve_ms": {
+          "min": 0,
+          "avg": 0,
+          "p95": 0,
+          "max": 0,
+          "samples": 60
+        },
+        "support_loads_ms": {
+          "min": 0,
+          "avg": 0,
+          "p95": 0,
+          "max": 0,
+          "samples": 60
+        }
+      },
+      "chunk_bodies": 70,
+      "awake_bodies": 38,
+      "broken_bonds": 289,
+      "step_ms": 0.054622,
+      "stress_solve_ms": 0,
+      "solve_ms": 0,
+      "readback_ms": 0,
+      "events_ms": 0,
+      "begin_ms": 0,
+      "end_ms": 0,
+      "readback_ms_host": 0.00020000001,
+      "settle_ms": 0.0055609997,
+      "ingest_ms": 0.003747,
+      "push_reapply_ms": 0,
+      "step_residual_ms": 0,
+      "tick_ffi_ms": 0.006562,
+      "drain_ms": 0.000531,
+      "support_ingest_ms": 0.00022,
+      "cascade_ms": 0.000191,
+      "post_step_total_ms": 0.050033998,
+      "post_step_residual_ms": 0.000381995,
+      "stats_ffi_ms": 0.036387004,
+      "post_step_ms": 0.050324,
+      "resim_capture_ms": 0,
+      "resim_restore_ms": 0,
+      "resim_step_ms": 0,
+      "resim_tick_ms": 0,
+      "resim_passes": 0,
+      "fan_out_ms": 0.00004,
+      "city_desync_repairs": 0,
+      "publish_ms": 0.193821,
+      "encode_shared_ms": 0.010039,
+      "client_datagrams_ms": 0.009587999,
+      "gpu_stress_structures": 1,
+      "gpu_stress_solve_ms": 0,
+      "filters_ms": 0,
+      "ccd_ms": 0,
+      "support_loads_ms": 0,
+      "support_pair_loads": 0,
+      "shape_readback_ms": 0,
+      "blast_contact_processing_ms": 0,
+      "blast_gravity_ms": 0,
+      "blast_stress_solve_cpu_ms": 0,
+      "blast_fracture_topology_ms": 0,
+      "blast_mapping_validation_ms": 0,
+      "blast_fracture_generate_ms": 0,
+      "blast_fracture_prep_ms": 0,
+      "blast_fracture_apply_ms": 0,
+      "blast_fracture_scene_ms": 0,
+      "blast_fracture_rebuild_ms": 0,
+      "blast_sleeping_actors_skipped": 0,
+      "slot_dispatch_ms": 0,
+      "bond_sample_ms": 0,
+      "quiet_slot_ticks": 0,
+      "contacts_queued": 0,
+      "contacts_processed": 698,
+      "contacts_dropped": 0,
+      "solver_islands_skipped_accum": 0,
+      "solver_islands_total_accum": 0,
+      "escaped_bodies_parked": 0,
+      "ccd_tracked_bodies": 0,
+      "identity_stamped_bodies": 0,
+      "sleeping_bodies": 32,
+      "overstressed_bonds": 0,
+      "bond_utilisation_max": 0,
+      "bonds_above_half_utilisation": 0,
+      "packets_per_sec": 30,
+      "records_per_sec": 30,
+      "bytes_per_sec": 3180,
+      "topo_seq": 41,
+      "baseline_id": 11,
+      "min_body_y": 0.47999597,
+      "resettled_wakes": 54,
+      "settle_deferred_penetrating": 0,
+      "unmapped_body_skips": 0,
+      "duplicate_body_records": 0,
+      "solver_island_count": 11,
+      "solver_islands_skipped": 0,
+      "frozen_bodies": 0,
+      "frozen_aggregates": 0,
+      "frozen_aggregate_actors": 0,
+      "freeze_flips": 0,
+      "unfreeze_flips": 0,
+      "contact_wakes": 0,
+      "chunk_sleep_events": 0,
+      "chunk_wake_events": 0,
+      "pose_quiet_awake_bodies": 0,
+      "unsupported_resting_bodies": 0,
+      "backstop_releases": 0,
+      "frozen_serial_blocks": 0,
+      "degraded": false
+    }
+  },
+  "errors": [
+    "Failed to load resource: net::ERR_BLOCKED_BY_RESPONSE.NotSameOriginAfterDefaultedToSameOriginByCoep",
+    "Failed to load resource: the server responded with a status of 404 ()",
+    "Failed to load resource: the server responded with a status of 404 ()",
+    "Failed to load resource: the server responded with a status of 404 ()",
+    "Failed to load resource: the server responded with a status of 404 ()",
+    "Failed to load resource: the server responded with a status of 404 ()",
+    "Failed to load resource: the server responded with a status of 404 ()"
+  ]
+}

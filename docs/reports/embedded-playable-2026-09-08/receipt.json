@@ -1,0 +1,31 @@
+{
+  "engine_revision": "80e9ac77492933226a493753874957393a785ec7",
+  "files": {
+    "/root/workspace/physx-2/out/vibe-native/release/web-fps-server": {
+      "sha256": "4a0ca0b8ca9e6581c45f731163db3dbb89e40102aeb7e567b4e4b4b031aca908",
+      "bytes": 20304744
+    },
+    "/root/workspace/physx-2/physx/bin/linux.x86_64/release/libPhysXGpuActivity_64.so": {
+      "sha256": "d21ec16cf6bc159acdb93a47b8aace0345d01cb85b5d1cad66327b8b101473ac",
+      "bytes": 349335304
+    },
+    "/root/workspace/physx-2/physx/bin/linux.x86_64/release/libPhysXDestructionGpuRuntime_64.so": {
+      "sha256": "c5accc7ac2dd6fc05bfef03c6be9bff77080b4ad77b4ee100b377c767cc6596d",
+      "bytes": 14483840
+    },
+    "client/dist/index.html": {
+      "sha256": "62e9981e80c8da90b21d3555537f1728137249c8e8276851dd3bfacc00ea4320",
+      "bytes": 1105
+    },
+    "destruction/assets/scenes/embedded-penetration.json": {
+      "sha256": "c4d1dad0ed0770a8fc687d519629dd0a45dab344f28d88b26911424e3266112b",
+      "bytes": 193420
+    }
+  },
+  "direct_gpu": false,
+  "native_sleep": true,
+  "correction_limit": 1,
+  "dt": 0.016666666666666666,
+  "max_stress_iterations": 8192,
+  "public_url": "https://209.121.195.117:40617/city?portal=true&match=city-default"
+}

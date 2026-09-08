@@ -9,6 +9,8 @@ publish = false
 default = []
 gpu = ["dep:cxx", "dep:cxx-build"]
 destruction = ["gpu"]
+# One scene-owned CUDA pipeline; no external Blast adapter is linked.
+embedded-destruction = ["destruction"]
 # CUDA stress solver. Needs nvcc and a CUDA-capable GPU; the CPU solver is used
 # when this is off, and the adapter hard-fails if gpuStressSolver is requested
 # without it, so the runtime flag is gated on this feature.

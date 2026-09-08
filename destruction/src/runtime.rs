@@ -264,10 +264,10 @@ impl CityDestruction {
             // projectile must resolve against the pieces it fractured, not
             // bounce off the intact wall -- so tests and production run it
             // unless explicitly disabled. 0 turns it off for A/B only.
-            resim_passes: std::env::var("VIBE_CITY_RESIM_PASSES")
+            resim_passes: if cfg!(feature = "embedded-destruction") { 0 } else { std::env::var("VIBE_CITY_RESIM_PASSES")
                 .ok()
                 .and_then(|v| v.parse::<u32>().ok())
-                .unwrap_or(1),
+                .unwrap_or(1) },
             last_split_count: 0,
             resim_passes_run: 0,
             resim_captures: 0,
@@ -275,7 +275,14 @@ impl CityDestruction {
             resim_not_needed: 0,
             resim_errors: 0,
             resim_last_error: None,
-            freeze: FreezeTracker::new(FreezeConfig::from_env()),
+            freeze: FreezeTracker::new({
+                let mut config = FreezeConfig::from_env();
+                if cfg!(feature = "embedded-destruction") {
+                    config.enabled = false;
+                    config.pose_enabled = false;
+                }
+                config
+            }),
             pending_wakes: Vec::new(),
         })
     }
@@ -285,7 +292,8 @@ impl CityDestruction {
     /// The live server reads it from the environment once, at build. Tests
     /// need to drive both sides of the A/B in one process, where a global
     /// would make the answer depend on test ordering.
-    pub fn set_freeze_config(&mut self, config: FreezeConfig) {
+    pub fn set_freeze_config(&mut self, mut config: FreezeConfig) {
+        if cfg!(feature = "embedded-destruction") {config.enabled=false;config.pose_enabled=false;}
         self.freeze = FreezeTracker::new(config);
     }
 
@@ -786,7 +794,7 @@ impl CityDestruction {
                 }
                 max_angular = max_angular.max(angular);
             }
-            if snap.position.y < kill_floor {
+            if !cfg!(feature = "embedded-destruction") && snap.position.y < kill_floor {
                 escaped.push(snap.entity_id);
             }
             if snap.position.y < min_body_y {
@@ -1067,6 +1075,11 @@ impl CityDestruction {
                     kind: span.kind,
                 })
                 .collect();
+            if cfg!(feature = "embedded-destruction") {
+                self.stats.resim_passes=self.extra_spans.iter()
+                    .find(|span|span.name=="native_correction_passes").map_or(0,|span|span.value as u32);
+                self.resim_passes_run+=u64::from(self.stats.resim_passes);
+            }
             if let Some((_, first_spans)) = first_pass_profile.as_ref() {
                 for first in first_spans.iter().filter(|span| span.kind == 0) {
                     if let Some(span) = self.extra_spans.iter_mut().find(|span| span.name == first.name) {

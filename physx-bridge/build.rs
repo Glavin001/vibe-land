@@ -77,7 +77,20 @@ fn main() {
         .flag_if_supported("-Wall")
         .flag_if_supported("-Wextra");
 
-    if cfg!(feature = "destruction") {
+    assert!(!(cfg!(feature = "embedded-destruction") && cfg!(feature = "cuda-stress")),
+        "embedded-destruction and the external cuda-stress adapter are mutually exclusive");
+    if cfg!(feature = "embedded-destruction") {
+        for path in ["src/embedded_destruction.cc", "src/embedded_observation.cc",
+                     "include/embedded_destruction.h", "include/embedded_state.h"] {
+            println!("cargo:rerun-if-changed={path}");
+        }
+        build.file("src/embedded_destruction.cc").file("src/embedded_observation.cc")
+            .define("VIBE_LAND_DESTRUCTION", None)
+            .define("VIBE_LAND_EMBEDDED_DESTRUCTION", None)
+            .define("NDEBUG", None).include("/usr/local/cuda/include");
+        assert!(lib.join("libPhysXDestructionGpuRuntime_64.so").is_file(),
+            "embedded destruction runtime missing; build PhysXDestructionGpuRuntime first");
+    } else if cfg!(feature = "destruction") {
         let blast = env::var_os("BLAST_ROOT").map(PathBuf::from)
             .unwrap_or_else(|| destruction_sdk().join("blast"));
         let blast_sources = [

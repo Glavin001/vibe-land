@@ -1,3 +1,6 @@
+#ifdef VIBE_LAND_EMBEDDED_DESTRUCTION
+#include "embedded_destruction.h"
+#else
 #pragma once
 
 #include "rust/cxx.h"
@@ -730,3 +733,5 @@ private:
 };
 
 } // namespace vibe_land::physx_bridge
+
+#endif

@@ -66,6 +66,7 @@ public:
   /// Wait for and fetch the dispatched simulation's results.
   void end_step();
 
+  bool sphere_overlaps(FfiVec3 center, float radius, std::uint32_t mask) const;
   FfiRaycastHit raycast(const FfiRaycastRequest &request) const;
   rust::Vec<FfiBodySnapshot> body_snapshots() const;
   rust::Vec<FfiPlayerSnapshot> player_snapshots() const;

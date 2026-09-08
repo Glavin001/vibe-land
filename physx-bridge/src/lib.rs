@@ -919,6 +919,11 @@ impl World {
         }
     }
 
+    /// Test actual committed colliders before spawning a physical projectile.
+    #[cfg(feature = "gpu")]
+    pub fn sphere_overlaps(&self, center: Vec3, radius: f32, mask: u32) -> Result<bool, BridgeError> {
+        self.inner.sphere_overlaps(center.into(), radius, mask).map_err(operation_error)
+    }
     pub fn raycast(&self, request: RaycastRequest) -> Result<RaycastHit, BridgeError> {
         #[cfg(feature = "gpu")]
         {
@@ -1782,6 +1787,7 @@ mod ffi {
         fn begin_step(self: Pin<&mut World>) -> Result<()>;
         fn end_step(self: Pin<&mut World>) -> Result<()>;
 
+        fn sphere_overlaps(self: &World, center: FfiVec3, radius: f32, mask: u32) -> Result<bool>;
         fn raycast(self: &World, request: &FfiRaycastRequest) -> Result<FfiRaycastHit>;
         fn body_snapshots(self: &World) -> Result<Vec<FfiBodySnapshot>>;
         fn player_snapshots(self: &World) -> Result<Vec<FfiPlayerSnapshot>>;

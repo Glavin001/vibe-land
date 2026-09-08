@@ -983,6 +983,31 @@ impl PhysxPhysicsArena {
             .expect("PhysX wake query failed");
     }
 
+    /// Playable embedded prototype: visible, physical demolition rounds.
+    /// Contacts, stress and correction all run inside the scene advance.
+    #[cfg(feature = "embedded-destruction")]
+    pub fn launch_destruction_projectile(&mut self, origin: Vector3<f32>, direction: Vector3<f32>) -> Result<Option<u32>> {
+        if !direction.iter().all(|x|x.is_finite()) || direction.norm_squared()<1e-8 {return Ok(None);}
+        let direction=direction.normalize();
+        let radius=0.5; let mass=18000.0; let speed=40.0;
+        let position=origin+direction*1.1;
+        let mask=ALL_GROUPS & !GROUP_PLAYER;
+        if self.world.sphere_overlaps(vec3(position),radius,mask)? {return Ok(None);}
+        // Also reject a muzzle placed beyond a nearby thin wall.
+        let ray=self.world.raycast(bridge::RaycastRequest{origin:vec3(origin),direction:vec3(direction),
+            max_distance:1.1+radius,collision_mask:mask,ignore_entity_id:0,has_ignore_entity:false})?;
+        if ray.hit {return Ok(None);}
+        let id=self.next_dynamic_id;
+        anyhow::ensure!(id<ID_MASK,"projectile entity IDs exhausted");
+        self.world.add_dynamic_sphere(bridge::DynamicSphereDesc{entity_id:NS_DYNAMIC|id,user_id:id,
+            pose:pose(position,[0.,0.,0.,1.]),radius,mass,collision_group:GROUP_DYNAMIC,collision_mask:mask})?;
+        self.world.apply_impulse(NS_DYNAMIC|id,vec3(direction*(mass*speed)))?;
+        self.next_dynamic_id+=1;
+        self.dynamic.insert(id,DynamicMeta{half_extents:[radius;3],shape_type:SHAPE_SPHERE});
+        self.snapshots_valid=false;
+        Ok(Some(id))
+    }
+
     pub fn spawn_dynamic_ball(&mut self, position: Vector3<f32>, radius: f32) -> u32 {
         let id = self.next_dynamic_id;
         self.next_dynamic_id = self.next_dynamic_id.saturating_add(1);

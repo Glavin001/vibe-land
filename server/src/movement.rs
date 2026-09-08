@@ -201,6 +201,14 @@ impl PhysicsArena {
         }
     }
 
+    #[cfg(feature = "embedded-destruction")]
+    pub fn launch_destruction_projectile(&mut self, origin: Vec3, direction: Vec3) -> anyhow::Result<Option<u32>> {
+        match &mut self.backend {
+            PhysicsBackend::Physx(arena) => arena.launch_destruction_projectile(origin, direction),
+            _ => anyhow::bail!("embedded destruction requires the PhysX GPU arena"),
+        }
+    }
+
     pub fn spawn_dynamic_ball(&mut self, position: Vec3, radius: f32) -> u32 {
         match &mut self.backend {
             PhysicsBackend::Rapier(arena) => arena.spawn_dynamic_ball(position, radius),

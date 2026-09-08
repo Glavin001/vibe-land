@@ -416,6 +416,12 @@ PxFilterFlags simulation_filter(PxFilterObjectAttributes attributes0,
   // route with wake=false, and a sleeping pair generates no narrowphase at
   // all, so a settled pile costs nothing. VIBE_PHYSX_CONTACT_PERSISTS=0 is the
   // kill switch if a pathological scene turns up.
+#ifdef VIBE_LAND_EMBEDDED_DESTRUCTION
+  if ((filter0.word3 | filter1.word3) & (1u << 31)) {
+    pair_flags = PxPairFlag::eCONTACT_DEFAULT;
+    return PxFilterFlag::eDEFAULT; // Native chunk loads come from GPU producers.
+  } // Preserve ordinary actors' application contact notifications.
+#endif
   pair_flags = PxPairFlag::eCONTACT_DEFAULT |
                PxPairFlag::eNOTIFY_THRESHOLD_FORCE_FOUND |
                PxPairFlag::eNOTIFY_CONTACT_POINTS;
@@ -1942,6 +1948,9 @@ public:
     }
     contact_callbacks_this_step_ = 0;
     step_start_ = std::chrono::steady_clock::now();
+#ifdef VIBE_LAND_EMBEDDED_DESTRUCTION
+    destruction_->prepare_scene();
+#endif
     controller_manager_->computeInteractions(kFixedTimestep);
     const auto after_controllers = std::chrono::steady_clock::now();
     scene_->simulate(kFixedTimestep);
@@ -2121,6 +2130,14 @@ public:
     end_step();
   }
 
+  bool sphere_overlaps(FfiVec3 center, float radius, std::uint32_t mask) const {
+    require(radius > 0 && finite(radius), "invalid sphere query radius");
+    PxOverlapBuffer hits;
+    MaskQueryFilter callback(mask, false, 0);
+    PxQueryFilterData filter(PxFilterData(mask,0,0,0),
+        PxQueryFlag::eSTATIC | PxQueryFlag::eDYNAMIC | PxQueryFlag::ePREFILTER | PxQueryFlag::eANY_HIT);
+    return scene_->overlap(PxSphereGeometry(radius), PxTransform(to_px(center)), hits, filter, &callback);
+  }
   FfiRaycastHit raycast(const FfiRaycastRequest &request) const {
     require(finite(request.max_distance) && request.max_distance > 0.0f,
             "raycast distance must be finite and positive");
@@ -3150,6 +3167,9 @@ void World::step() { impl_->step(); }
 void World::begin_step() { impl_->begin_step(); }
 void World::end_step() { impl_->end_step(); }
 
+bool World::sphere_overlaps(FfiVec3 center, float radius, std::uint32_t mask) const {
+  return impl_->sphere_overlaps(center, radius, mask);
+}
 FfiRaycastHit World::raycast(const FfiRaycastRequest &request) const {
   return impl_->raycast(request);
 }
