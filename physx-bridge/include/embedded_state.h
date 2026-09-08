@@ -28,6 +28,8 @@ struct DestructionManager::State {
     struct Chunk {
         physx::PxShape* shape;
         std::uint32_t structure, authored, serial=0;
+        std::uint32_t root=PX_INVALID_U32;
+        std::uint64_t generation=0;
     };
     struct Body {
         physx::PxRigidDynamic* actor;
@@ -42,7 +44,9 @@ struct DestructionManager::State {
     std::vector<std::pair<std::uint32_t,std::uint32_t>> bondIds;
     std::vector<physx::PxDestructionStressCluster> clusters;
     std::vector<physx::PxDestructionMaterial> materials;
-    std::vector<float> health;
+    std::uint32_t brokenCount=0, stressIslandCount=0;
+    std::uint32_t observedChunks=0, observedBonds=0;
+    std::uint64_t observationBytes=0;
     std::map<std::uint32_t,std::uint32_t> nextSerial;
     // Root+generation tracks GPU identity, never recycled actor addresses.
     std::map<std::pair<std::uint32_t,std::uint64_t>,Body> bodies;

@@ -26,6 +26,7 @@ fn ms(t: std::time::Duration) -> f64 {
 }
 fn main() -> Result<(), Box<dyn Error>> {
     let args: Vec<_> = std::env::args().collect();
+    let audit_every_tick = std::env::var("VIBE_EMBEDDED_AUDIT_EVERY_TICK").as_deref() == Ok("1");
     if !(5..=7).contains(&args.len()) {
         return Err("usage: embedded_city_bench OUTPUT_DIR TILE_GRID STEPS WAVES [SCENE_FILE [COMMAND_FILE]]".into());
     }
@@ -186,6 +187,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         #[cfg(feature = "embedded-profiling")]
         profiler.accepted()?;
         // Audits and JSON/report work are outside the authoritative timer.
+        if audit_every_tick && !world.validate_destruction_mappings()? {
+            return Err(format!("invalid committed GPU/CPU ownership or bond publication at tick {tick}").into());
+        }
         for batch in &events.batches {
             for id in &batch.broken_bond_ids {
                 if !broken.insert(*id) {
@@ -265,7 +269,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 .total_cmp(&b["complete_step_ms"].as_f64().unwrap())
         })
         .unwrap();
-    let report = json!({"schema":1,"status":"complete","instrumented":cfg!(feature="embedded-profiling"),"backend":"physx_embedded_cuda",
+    let report = json!({"schema":1,"status":"complete","instrumented":cfg!(feature="embedded-profiling") || audit_every_tick,"audit_every_tick":audit_every_tick,"backend":"physx_embedded_cuda",
         "direct_gpu_api":false,"sleeping":true,"max_correction":1,"max_stress_passes":2,
         "timestep_seconds":1./60.,"iterations_max":8192,"tolerance":1e-5,
         "source_asset":asset,"manifest_hash":manifest.hash_hex(),

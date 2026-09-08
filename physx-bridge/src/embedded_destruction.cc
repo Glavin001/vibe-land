@@ -131,7 +131,7 @@ void DestructionManager::prepare_scene() {
     desc.chunkMassProperties=s.properties.data();desc.materials=s.materials.data();desc.materialCount=PxU32(s.materials.size());
     desc.maxIterations=s.iterations;desc.tolerance=1e-5f;desc.internalCorrectionLimit=1;desc.preserveUnchangedContactPairs=true;
     native_require(api->configureStress(desc),"native destruction configuration failed");
-    s.configured=true;s.health.assign(s.bonds.size(),1);
+    s.configured=true;
     std::fprintf(stderr,"[embedded-destruction] chunks=%zu bonds=%zu initial_clusters=%zu direct_gpu=0 native_sleep=1 correction_limit=1 max_stress_passes=2 iterations=%u\n",s.nodes.size(),s.bonds.size(),s.clusters.size(),s.iterations);
 }
 void DestructionManager::destruction_tick(float,FfiVec3) {
@@ -139,6 +139,7 @@ void DestructionManager::destruction_tick(float,FfiVec3) {
     s.last=s.scene.getDestructionScene()->getLastStatus();
     native_require(!s.last.error,"native destruction step incomplete; refusing gameplay publication");
     if(s.last.frame==s.observedFrame)return;
+    s.observedChunks=s.observedBonds=0;s.observationBytes=0;
     if(!s.observedFrame || s.last.brokenBonds) s.observe_topology();
     s.corrections+=s.last.correctionPasses;
     s.observedFrame=s.last.frame;s.refresh_snapshots();
