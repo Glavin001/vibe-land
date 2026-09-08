@@ -46,11 +46,19 @@ demolition rounds, not rifle bullets. Spawn overlap and muzzle ray checks preven
 starting rounds inside a wall. The actual shot origin/direction comes from the
 player; no damage is preauthored. Existing player hitscan combat remains separate.
 
-The default building has **444 chunks and 896 bonds**, with the native demo's
-panel/frame materials. The game shot path, damping and controller differ from the
-frozen engine regression; do not compare their fracture counts as equal-input runs.
-`VIBE_CITY_GRID` can author more copies, subject to the current 64-structure wire
-limit. Larger playable scenes have not been qualified by this integration test.
+The default is now the original **fractured downtown** district: **27 connected
+building groups, 24,105 chunks and 74,543 bonds**, mixed-height towers, smaller
+buildings and authored streets. Browser shooting, movement, native correction,
+settling/sleeping and reset passed. A four-district version (96,420 chunks /
+298,172 bonds) also passed those functional checks but is too slow for the default.
+Impact pauses remain; this is not a 60 Hz qualification. See the
+[downtown deployment and browser evidence](reports/embedded-downtown-2026-09-08/README.md).
+
+The original 444-chunk / 896-bond panel/frame building remains available via
+`VIBE_CITY_SCENE=embedded-penetration.json VIBE_CITY_GRID=1`. The game shot path,
+damping and controller differ from the frozen engine regression; do not compare
+their fracture counts as equal-input runs. `VIBE_CITY_GRID` authors more asset
+copies, subject to the current 64-structure wire limit.
 
 The new `embedded-four-buildings.json` asset contains four **disconnected** copies
 of the same building (1,776 chunks / 3,584 bonds). An 8×8 grid of this asset fits
@@ -72,7 +80,7 @@ bombardment layout; equal chunk/bond counts alone do not make a matched benchmar
 The asset now passes a **600-step native game-consumer bombardment** at 256
 buildings, after fixing a retained contact-report crash in engine correction.
 It has not passed large-scene browser/endurance or real-time performance gates.
-The public deployment remains on the tested single-building scene.
+The public deployment uses the tested downtown district described above.
 
 ## Reproducible native consumer timing
 

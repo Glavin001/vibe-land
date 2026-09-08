@@ -1,0 +1,72 @@
+{
+  "runtime_sha256": "1437bd31b875b71222331224aa6c3670a8d53bc812095727b7d67d60ec733f9e",
+  "runtime_behavior_revision": "45ae3488",
+  "source_asset": "fractured-downtown.json",
+  "asset_sha256": "df3a4744309595a21ca70c2f7c8bba2ddfc4308aa39e4b925add970385612854",
+  "direct_gpu_api": false,
+  "native_sleeping": true,
+  "artificial_freezing": false,
+  "correction_limit": 1,
+  "max_stress_passes": 2,
+  "deployed_grid": 1,
+  "results": [
+    {
+      "grid": 2,
+      "building_groups": 108,
+      "chunks": 96420,
+      "bonds": 298172,
+      "trigger_actions": 4,
+      "hold_ms": 750,
+      "shots_observed": 6,
+      "projectile_bodies": 8,
+      "broken_bonds_after_shots": 150,
+      "fragment_bodies_after_shots": 16,
+      "settling_samples": 30,
+      "settling_minimum_com_y": 0.07498169,
+      "final_awake_fragments": 0,
+      "final_sleeping_fragments": 16,
+      "reset_pass": true,
+      "server_tick_rolling_ms": {
+        "avg": 66.576385,
+        "p95": 59.431778,
+        "max": 965.5977
+      },
+      "resource_errors": [
+        "Failed to load resource: net::ERR_BLOCKED_BY_RESPONSE.NotSameOriginAfterDefaultedToSameOriginByCoep"
+      ]
+    },
+    {
+      "grid": 1,
+      "building_groups": 27,
+      "chunks": 24105,
+      "bonds": 74543,
+      "trigger_actions": 4,
+      "hold_ms": 750,
+      "shots_observed": 8,
+      "projectile_bodies": 7,
+      "broken_bonds_after_shots": 112,
+      "fragment_bodies_after_shots": 7,
+      "settling_samples": 30,
+      "settling_minimum_com_y": 0.07460022,
+      "final_awake_fragments": 0,
+      "final_sleeping_fragments": 11,
+      "reset_pass": true,
+      "server_tick_rolling_ms": {
+        "avg": 93.64993,
+        "p95": 158.74187,
+        "max": 913.83435
+      },
+      "resource_errors": [
+        "Failed to load resource: net::ERR_BLOCKED_BY_RESPONSE.NotSameOriginAfterDefaultedToSameOriginByCoep",
+        "Failed to load resource: the server responded with a status of 404 ()",
+        "Failed to load resource: the server responded with a status of 404 ()",
+        "Failed to load resource: the server responded with a status of 404 ()",
+        "Failed to load resource: the server responded with a status of 404 ()",
+        "Failed to load resource: the server responded with a status of 404 ()",
+        "Failed to load resource: the server responded with a status of 404 ()",
+        "Failed to load resource: the server responded with a status of 404 ()",
+        "Failed to load resource: the server responded with a status of 404 ()"
+      ]
+    }
+  ]
+}
