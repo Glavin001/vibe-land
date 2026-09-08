@@ -47,11 +47,11 @@ def main():
         'These are live user-session observations, not isolated benchmark runs. '
         'Each report preserves a rolling server tick history plus a later client snapshot. '
         'Server/client snapshots and smoothed GPU-wait counters are not aligned enough to sum into a phase breakdown.', '',
-        '| Report | Chunks / bonds | Ordinary dynamic bodies | Fragments / awake | Broken bonds | Server rolling avg / peak ms | Client GPU ms |',
-        '|---|---:|---:|---:|---:|---:|---:|']
+        '| Report | Chunks / bonds | Ordinary dynamic bodies | Fragments / awake | Broken bonds | Server rolling avg / peak ms | Stress iterations / correction passes | Client GPU ms |',
+        '|---|---:|---:|---:|---:|---:|---:|---:|']
     for r in rows:
         t=r['server_tick_rolling_ms']
-        lines.append(f"| {Path(r['folder']).name} | {r['chunks']:,} / {r['bonds']:,} | {r['projectiles']} | {r['fragment_bodies']} / {r['awake_fragments']} | {r['broken_bonds']} | {t['avg']:.3f} / {t['max']:.3f} | {r['client_gpu_ms']:.3f} |")
+        lines.append(f"| {Path(r['folder']).name} | {r['chunks']:,} / {r['bonds']:,} | {r['projectiles']} | {r['fragment_bodies']} / {r['awake_fragments']} | {r['broken_bonds']} | {t['avg']:.3f} / {t['max']:.3f} | {r['stress_iterations']} / {r['correction_passes']} | {r['client_gpu_ms']:.3f} |")
     lines+=['','## What the evidence establishes','',
         '- Client GPU rendering is much cheaper than the server simulation. Moving fewer render instances is not the principal fix for these reports.',
         '- Both reports were submitted after firing. Their zero-awake-fragment rows do not prove that ordinary bodies were asleep, or that the entire world was intact.',
@@ -63,12 +63,7 @@ def main():
         if q:
             lines.append(f"- {Path(r['folder']).name}: {r['zero_awake_fragment_samples']} of {r['ring_samples']} recorded ticks have zero awake fragments; total tick min / median / max = {q['min']:.3f} / {q['median']:.3f} / {q['max']:.3f} ms.")
     lines+=['', 'Overlapping tick histories are reported separately, not counted as independent repeats.', '',
-        '## Source-confirmed work to remove', '',
-        '1. `StressResidentAPI.inl::solveDeviceAsync` rejects the old settled-island skipping flags. Native warm starts reuse a guess, then re-run the solve. Sleeping rigid bodies do not currently certify that a structural solve can be reused.',
-        '2. Components above 1,024 nodes use the cooperative multilevel path. Downtown includes several such components; the 444-chunk building benchmark does not.',
-        '3. The deployed cooperative loop enters its preconditioner after all components have converged. A candidate now exits at that already-verified boundary and preserves final status/scratch writes. It is not deployed or timed yet.',
-        '4. Exact unchanged-input reuse still needs an operator/load/convergence certificate, with support, contact, topology and damage invalidation. This must preserve the material evaluation and never reuse an unconverged output.', '',
-        'These findings identify unnecessary work; the submitted reports do not quantify each item\'s milliseconds. Attribute that with a separate internal phase capture before claiming a speedup.', '',
+        'Phase attribution requires a separate capture of the matching runtime. Current stress iteration and correction counters are shown above; a rolling peak may belong to an earlier fracture step.', '',
         'Raw report paths and content hashes, timing scopes and retained ring rows are in [summary.json](summary.json).', '']
     (args.output/'report.md').write_text('\n'.join(lines))
     print(args.output/'report.md')

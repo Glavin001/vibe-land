@@ -1,0 +1,53 @@
+// Reproduce live after-impact slowdown through real player commands. The server
+// samples are observational: software browser rendering is not a timing gate.
+import {chromium} from 'playwright';
+import {mkdirSync,writeFileSync,appendFileSync,readFileSync} from 'node:fs';
+import assert from 'node:assert/strict';
+const origin='https://127.0.0.1:8384';
+const output=process.env.E2E_EMBEDDED_OUTPUT;
+assert.ok(output,'provide a fresh E2E_EMBEDDED_OUTPUT');mkdirSync(output,{recursive:false});
+const browser=await chromium.launch({headless:true,args:['--ignore-certificate-errors','--enable-unsafe-swiftshader','--use-gl=swiftshader']});
+const page=await browser.newPage({ignoreHTTPSErrors:true,viewport:{width:960,height:540}});
+const errors=[],actions=[];let phase='join',sampling=true;
+const pack=JSON.parse(readFileSync('destruction/assets/scenes/fractured-downtown.json','utf8')).scenario;
+async function faceFacade(height){
+ const position=(await page.evaluate(()=>window.__VIBE_E2E__.snapshot())).cameraPosition;
+ const nodes=pack.nodes.filter(n=>n.mass>0 && Math.abs(n.centroid.y-height)<2);
+ nodes.sort((a,b)=>Math.hypot(a.centroid.x-position[0],a.centroid.y-position[1],a.centroid.z-position[2])-Math.hypot(b.centroid.x-position[0],b.centroid.y-position[1],b.centroid.z-position[2]));
+ assert.ok(nodes.length);const n=nodes[0].centroid,dx=n.x-position[0],dz=n.z-position[2];return [Math.atan2(dx,dz),Math.atan2(n.y-position[1],Math.hypot(dx,dz))];
+}
+page.on('pageerror',e=>errors.push(String(e)));
+const sampler=(async()=>{while(sampling){
+ try{const response=await fetch('http://127.0.0.1:4005/match-stats/city-default');if(response.ok)appendFileSync(`${output}/server.jsonl`,JSON.stringify({wall:Date.now(),phase,stats:await response.json()})+'\n');}catch(e){}
+ await new Promise(r=>setTimeout(r,500));
+}})();
+async function capture(name){const snapshot=await page.evaluate(()=>window.__VIBE_E2E__.snapshot());writeFileSync(`${output}/${name}.json`,JSON.stringify(snapshot,null,2));await page.screenshot({path:`${output}/${name}.png`});return snapshot;}
+async function shot(yaw,pitch){
+ const before=await page.evaluate(()=>window.__VIBE_E2E__.snapshot());
+ await page.evaluate(({yaw,pitch})=>window.__VIBE_DRIVE__.look(yaw,pitch),{yaw,pitch});await page.waitForTimeout(1500);
+ await page.evaluate(({yaw,pitch})=>{window.__VIBE_DRIVE__.look(yaw,pitch);window.__VIBE_DRIVE__.fire({holdMs:5000});},{yaw,pitch});
+ await page.waitForFunction(n=>window.__VIBE_E2E__.snapshot().shotsFired>n,before.shotsFired,{timeout:10000});
+ await page.evaluate(()=>window.__VIBE_DRIVE__.clear());
+ const after=await page.evaluate(()=>window.__VIBE_E2E__.snapshot());
+ actions.push({wall:Date.now(),phase,yaw,pitch,before,after});writeFileSync(`${output}/actions.json`,JSON.stringify(actions,null,2));
+}
+try{
+ await page.route('**/session-config*',async route=>{const response=await route.fetch(),data=await response.json(),url=new URL(data.url);assert.equal(url.pathname,'/game');url.hostname='127.0.0.1';url.port='4435';data.url=url.toString();await route.fulfill({response,json:data});});
+ await page.goto(`${origin}/city?portal=true&match=city-default`,{waitUntil:'domcontentloaded',timeout:60000});
+ await page.waitForFunction(()=>window.__VIBE_E2E__?.snapshot().city?.rendered,null,{timeout:60000});
+ await page.mouse.click(480,270);
+ await page.waitForFunction(()=>window.__VIBE_E2E__.snapshot().transport==='webtransport',null,{timeout:60000});
+ await capture('existing-session');
+ const health=await (await fetch('http://127.0.0.1:4005/healthz')).json();assert.equal(health.players,1,'another player joined; do not reset their scene');
+ await page.evaluate(()=>document.exitPointerLock());await page.getByTestId('city-reset').click();
+ await page.waitForFunction(()=>{const c=window.__VIBE_E2E__.snapshot().city;return c?.rendered && c.brokenBonds===0 && c.liveIslands===0;},null,{timeout:60000});
+ phase='intact-idle';await page.waitForTimeout(10000);await capture('idle');
+ phase='walk';await page.evaluate(()=>{window.__VIBE_DRIVE__.faceCity();window.__VIBE_DRIVE__.move({forward:1,durationMs:2000});});await page.waitForTimeout(3500);await page.evaluate(()=>window.__VIBE_DRIVE__.stop());
+ phase='two-shots';await shot(...await faceFacade(8));await page.waitForTimeout(3500);await shot(...await faceFacade(8));await page.waitForTimeout(5000);await capture('two-shots');
+ phase='two-shot-aftermath';await page.waitForTimeout(15000);await capture('two-shot-aftermath');
+ phase='five-shots';for(let i=0;i<3;++i){await shot(...await faceFacade(12+i*3));await page.waitForTimeout(3500);}await capture('five-shots');
+ phase='settling';await page.waitForTimeout(45000);const after=await capture('settled');
+ assert.equal(after.transport,'webtransport');assert.equal(after.city.chunksTotal,24105);assert.equal(after.city.hashMismatches,0);assert.equal(after.city.orphanedChunks,0);
+ assert.ok(after.city.brokenBonds>0,'shots missed the city');
+ writeFileSync(`${output}/complete.json`,JSON.stringify({passed:true,errors,actions:actions.length,final:after},null,2));
+}finally{sampling=false;await sampler;writeFileSync(`${output}/errors.json`,JSON.stringify(errors,null,2));await browser.close();}
