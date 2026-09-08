@@ -57,6 +57,13 @@ fn main() -> Result<(), Box<dyn Error>> {
         std::env::set_var(key, value);
     }
     fs::create_dir_all(output)?;
+    #[cfg(feature = "embedded-profiling")]
+    let mut profiler = vibe_land_physx_bridge::NativeProfile::new(
+        output
+            .join("native.phases.csv")
+            .to_str()
+            .ok_or("invalid profile path")?,
+    )?;
     let initial = Instant::now();
     let pack = load_scene_pack_file(
         &Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/scenes/embedded-four-buildings.json"),
@@ -112,6 +119,8 @@ fn main() -> Result<(), Box<dyn Error>> {
           "positions":shots.iter().map(|p|[p.position.x,p.position.y,p.position.z]).collect::<Vec<_>>(),
           "mass":18000,"radius":0.5,"velocity":[0,0,40]})).collect::<Vec<_>>())?)?;
     for tick in 0..steps {
+        #[cfg(feature = "embedded-profiling")]
+        profiler.begin(tick);
         let start = Instant::now();
         for &shot in &commands[tick as usize] {
             let id = 1000 + projectile_count;
@@ -136,6 +145,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         let stats = destruction.stats();
         let snapshots = destruction.staged_snapshots()?;
         let complete = Instant::now();
+        #[cfg(feature = "embedded-profiling")]
+        profiler.accepted()?;
         // Audits and JSON/report work are outside the authoritative timer.
         for batch in &events.batches {
             for id in &batch.broken_bond_ids {
@@ -216,7 +227,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 .total_cmp(&b["complete_step_ms"].as_f64().unwrap())
         })
         .unwrap();
-    let report = json!({"schema":1,"status":"complete","backend":"physx_embedded_cuda",
+    let report = json!({"schema":1,"status":"complete","instrumented":cfg!(feature="embedded-profiling"),"backend":"physx_embedded_cuda",
         "direct_gpu_api":false,"sleeping":true,"max_correction":1,"max_stress_passes":2,
         "timestep_seconds":1./60.,"iterations_max":8192,"tolerance":1e-5,
         "asset_instances":grid*grid,"buildings":grid*grid*4,"chunks":scene.total_chunks(),"bonds":scene.total_bonds(),

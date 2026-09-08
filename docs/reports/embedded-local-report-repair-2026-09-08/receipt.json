@@ -1,0 +1,17 @@
+{
+  "engine_revision": "69fe462a",
+  "server_sha256": "d2ca2b1db32564691d896f9f13eebaa18a975e5204317c1080d845ad8ec65bf1",
+  "scene_chunks": 444,
+  "scene_bonds": 896,
+  "projectiles": 6,
+  "broken_bonds": 310,
+  "fragment_groups": 74,
+  "settling_samples": 30,
+  "minimum_fragment_com_y": 0.4799956,
+  "direct_gpu_api": false,
+  "sleeping": true,
+  "profiling_feature_in_production": false,
+  "reset_broken_bonds": 0,
+  "reset_detached_groups": 0,
+  "scope": "Local browser WebTransport join/shoot/move/settle/reset. Timed input, not a matched physics benchmark. Six resource load errors (COEP/404) remain."
+}

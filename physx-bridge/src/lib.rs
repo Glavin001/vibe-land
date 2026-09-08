@@ -6,6 +6,10 @@
 //! runtime; there is deliberately no CPU PhysX fallback.
 
 use std::fmt;
+#[cfg(feature = "embedded-profiling")]
+mod profiling;
+#[cfg(feature = "embedded-profiling")]
+pub use profiling::NativeProfile;
 
 pub const FIXED_TIMESTEP: f32 = 1.0 / 60.0;
 

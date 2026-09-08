@@ -67,7 +67,19 @@ fn main() {
         println!("cargo:rerun-if-changed={}", required.display());
     }
 
-    let mut build = cxx_build::bridge("src/lib.rs");
+    let mut bridges = vec!["src/lib.rs"];
+    if cfg!(feature = "embedded-profiling") { bridges.push("src/profiling.rs"); }
+    let mut build = cxx_build::bridges(bridges);
+    if cfg!(feature = "embedded-profiling") {
+        let diagnostics = destruction_sdk().join("demos/blast-stress-demo");
+        for path in ["src/profiling.rs", "src/embedded_profiling.cc", "include/embedded_profiling.h"] {
+            println!("cargo:rerun-if-changed={path}");
+        }
+        for path in ["native_phase_profiler.h", "native_gpu_activity.h"] {
+            println!("cargo:rerun-if-changed={}", diagnostics.join(path).display());
+        }
+        build.file("src/embedded_profiling.cc").include(diagnostics);
+    }
     build
         .file("src/physx_bridge.cc")
         .include(&include)

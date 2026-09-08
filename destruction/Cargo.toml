@@ -28,6 +28,7 @@ physx = ["dep:vibe-land-physx-bridge", "vibe-land-physx-bridge/destruction"]
 # measured on that path is an artefact of the solver rather than a property of
 # the structure, and it is indistinguishable from a real regression.
 embedded-destruction = ["physx", "vibe-land-physx-bridge/embedded-destruction"]
+embedded-profiling = ["embedded-destruction", "vibe-land-physx-bridge/embedded-profiling"]
 cuda-stress = ["physx", "vibe-land-physx-bridge/cuda-stress"]
 # Drive destruction through the standardized blast-stress-solver core instead of
 # the bespoke ExtStressPhysXDestructible path. Both can be built at once so the

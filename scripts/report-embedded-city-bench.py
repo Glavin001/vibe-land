@@ -21,6 +21,7 @@ def generate(capture, output):
         if report.get('backend') != 'physx_embedded_cuda':
             continue
         assert report['status'] == 'complete', f'incomplete: {path}'
+        assert not report.get('instrumented', False), 'instrumented replay cannot enter untraced performance report'
         rows = json.loads((path.parent / 'steps.json').read_text())
         assert len(rows) == report['steps']
         for tick, row in enumerate(rows):

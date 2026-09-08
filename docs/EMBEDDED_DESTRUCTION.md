@@ -16,7 +16,7 @@ The native feature does not compile the legacy external adapter/solver sources.
 
 ## Build and run on this instance
 
-Tested engine commit: `6ef3fd47` on `physx-2/codex/gpu-destruction`.
+Tested engine commit: `69fe462a` on `physx-2/codex/gpu-destruction`.
 Build the engine SDK/GPU runtime first using its repository build instructions.
 Then from this checkout:
 
@@ -95,6 +95,33 @@ cannot erase the preceding samples. Only complete runs produce final reports.
 The report generator checks row counts, peak identity, deadline counts and that
 phase intervals sum to each complete advance. Do not use its native aggregate
 to infer a kernel-level compute/bandwidth bottleneck.
+
+The latest optimization repairs only CPU-reported collision participants instead
+of refiltering the entire city on a corrected tick. See the SDK's generated
+`qualification/vibe-consumer-local-report-repair-20260908/report.md`: in two
+10-second 256-building screens, the worse fracture-step peak fell from 186.782 ms
+to 147.162 ms. These are short screens; they do not pass the real-time gate.
+
+### Optional internal phase replay
+
+`embedded-profiling` is a separate diagnostic Cargo feature. It uses the SDK's
+existing `NativePhaseProfiler` header from the full source checkout and exposes
+`NativeProfile` through the Rust bridge. Construct it before `World` so the
+collector outlives asynchronous PhysX tasks. The production server enables only
+`embedded-destruction`; its dependency graph has no profiling feature.
+
+```bash
+cargo build --release -p vibe-land-destruction --features embedded-profiling --example embedded_city_bench
+# Run the benchmark normally with a fresh output path, on an otherwise idle GPU.
+# It writes native.phases.csv and native.phases.csv.device.csv alongside the steps.
+```
+
+The benchmark marks diagnostic reports `instrumented: true`; the untraced report
+generator rejects them. Rebuild without `embedded-profiling` before recording
+new deadline results. Host timestamps use CLOCK_MONOTONIC; CUDA intervals come
+from the existing native runtime profiler, with no hardware-counter dependency.
+SDK `tools/scripts/report-vibe-consumer-phases.py` produces a disjoint wall-time
+report; use `--fracture-peak` to examine destruction instead of initialization.
 
 ## Validation and limitations
 
