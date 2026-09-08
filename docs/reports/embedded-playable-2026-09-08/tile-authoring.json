@@ -1,0 +1,20 @@
+{
+  "scope": "CPU authoring and wire-format validation; no GPU simulation or performance qualification",
+  "buildings": 256,
+  "asset_instances": 64,
+  "chunks": 113664,
+  "bonds": 229376,
+  "initial_components": 256,
+  "building_pitch_m": 17.96,
+  "manifest_bytes": 18734004,
+  "tests_passed": 2,
+  "test_command": "PHYSX_DESTRUCTION_SDK=/root/workspace/physx-2 CARGO_TARGET_DIR=/root/workspace/physx-2/out/vibe-native LD_LIBRARY_PATH=/root/workspace/physx-2/physx/bin/linux.x86_64/release:/usr/local/cuda/lib64 cargo test -p vibe-land-destruction --features embedded-destruction --test embedded_city_layout -- --nocapture",
+  "default_asset_unchanged": true,
+  "build_limitation": "The default-feature test build encounters an existing structure-audit binary import of feature-gated rig. The passing run links embedded-destruction but these two tests do not create a GPU scene.",
+  "sha256": {
+    "scripts/generate-embedded-demo.py": "e30b0ad716c2ba9dbe62eda6eec6146c0d8c442ab035277428ad8900615a7da2",
+    "destruction/assets/scenes/embedded-penetration.json": "c4d1dad0ed0770a8fc687d519629dd0a45dab344f28d88b26911424e3266112b",
+    "destruction/assets/scenes/embedded-four-buildings.json": "571938df739fbbc8be755d3a23e7666ef1140bec3c6319ca68f01b01459c6c14",
+    "destruction/tests/embedded_city_layout.rs": "27891b84437348a62d50c64bcb893a8d90e5eaf101db21bcc3511d74c9e88918"
+  }
+}

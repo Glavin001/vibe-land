@@ -5,6 +5,8 @@ Only initial geometry and material inputs are authored. No fracture is scripted.
 The game controls camera, shot origin/direction and projectile insertion; this is
 not a replacement for the engine's frozen trajectory regression.
 """
+import argparse
+import copy
 import json
 from pathlib import Path
 
@@ -55,7 +57,42 @@ def generate():
                       nodeColliders=colliders, nodeTypes=roles))
 
 
+def generate_tile():
+    """Four disconnected buildings per asset; wire IDs identify asset instances.
+
+    A 64-instance city then has 256 buildings without spending more structure
+    bits or creating bonds between buildings. The 17.96 m pitch leaves 10 m
+    between collision faces, matching the game's city layout rule.
+    """
+    source = generate()
+    result = copy.deepcopy(source)
+    result.update(key='embedded-four-buildings', title='Four native GPU demolition buildings')
+    output = result['scenario'] = {key: [] for key in source['scenario']}
+    for z in (-8.98, 8.98):
+        for x in (-8.98, 8.98):
+            offset = len(output['nodes'])
+            part = copy.deepcopy(source['scenario'])
+            for item in part['nodes'] + part['bonds']:
+                item['centroid']['x'] += x
+                item['centroid']['z'] += z
+            for bond in part['bonds']:
+                bond['node0'] += offset
+                bond['node1'] += offset
+            for key, values in part.items():
+                output[key].extend(values)
+    return result
+
+
 if __name__ == '__main__':
-    target = Path(__file__).resolve().parents[1] / 'destruction/assets/scenes/embedded-penetration.json'
-    target.write_text(json.dumps(generate(), separators=(',', ':')) + '\n')
-    print(f'{target}: 444 chunks, 896 bonds; unchanged native benchmark materials')
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--four-buildings', action='store_true',
+                        help='author a disconnected four-building tile for the 256-building city')
+    parser.add_argument('--output', type=Path)
+    args = parser.parse_args()
+    pack = generate_tile() if args.four_buildings else generate()
+    target = args.output or (Path(__file__).resolve().parents[1] /
+                            f"destruction/assets/scenes/{pack['key']}.json")
+    target.write_text(json.dumps(pack, separators=(',', ':')) + '\n')
+    scene = pack['scenario']
+    print(f"{target}: {len(scene['nodes'])} chunks, {len(scene['bonds'])} bonds; "
+          'unchanged native benchmark materials')

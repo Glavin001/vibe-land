@@ -52,6 +52,26 @@ frozen engine regression; do not compare their fracture counts as equal-input ru
 `VIBE_CITY_GRID` can author more copies, subject to the current 64-structure wire
 limit. Larger playable scenes have not been qualified by this integration test.
 
+The new `embedded-four-buildings.json` asset contains four **disconnected** copies
+of the same building (1,776 chunks / 3,584 bonds). An 8×8 grid of this asset fits
+within the existing 64 asset IDs and contains **256 independent buildings,
+113,664 chunks and 229,376 bonds**. It does not join their bond graphs or share
+one motion state across the four buildings. Regenerate with:
+
+```bash
+python3 scripts/generate-embedded-demo.py --four-buildings
+# Only when intentionally replacing this checkout's owned running demo:
+VIBE_CITY_SCENE=embedded-four-buildings.json VIBE_CITY_GRID=8 scripts/run-embedded-city.sh
+```
+
+The layout/manifest gate checks all IDs, translated geometry, unchanged material
+inputs, four exact 444-node connected components per asset, and full binary
+manifest round-trip. Building pitch is **17.96 m**, leaving the game's standard
+10 m street between collision faces. This differs from the standalone native
+bombardment layout; equal chunk/bond counts alone do not make a matched benchmark.
+This asset is **authoring/protocol tested, not yet GPU/playable qualified**. The
+public deployment remains on the previously tested single-building scene.
+
 ## Validation and limitations
 
 The [follow-up browser retest](reports/embedded-playable-2026-09-08/self-test-followup.md)
