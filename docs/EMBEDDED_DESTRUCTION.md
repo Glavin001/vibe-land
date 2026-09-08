@@ -16,7 +16,7 @@ The native feature does not compile the legacy external adapter/solver sources.
 
 ## Build and run on this instance
 
-Tested engine commit: `69fe462a` on `physx-2/codex/gpu-destruction`.
+Tested engine commit: `45ae3488` on `physx-2/codex/gpu-destruction`.
 Build the engine SDK/GPU runtime first using its repository build instructions.
 Then from this checkout:
 
