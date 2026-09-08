@@ -1,5 +1,5 @@
 //! Headless production-consumer benchmark. Run sequentially on an idle GPU.
-//! Usage: embedded_city_bench OUTPUT_DIR TILE_GRID STEPS WAVES
+//! Usage: embedded_city_bench OUTPUT_DIR TILE_GRID STEPS WAVES [SCENE_FILE]
 //! One tile = four disconnected 444-chunk / 896-bond buildings. No render/network.
 use serde_json::json;
 use std::io::{BufWriter, Write};
@@ -26,8 +26,8 @@ fn ms(t: std::time::Duration) -> f64 {
 }
 fn main() -> Result<(), Box<dyn Error>> {
     let args: Vec<_> = std::env::args().collect();
-    if args.len() != 5 {
-        return Err("usage: embedded_city_bench OUTPUT_DIR TILE_GRID STEPS WAVES".into());
+    if !(5..=6).contains(&args.len()) {
+        return Err("usage: embedded_city_bench OUTPUT_DIR TILE_GRID STEPS WAVES [SCENE_FILE]".into());
     }
     let output = Path::new(&args[1]);
     if output.exists() {
@@ -36,6 +36,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     let grid: u32 = args[2].parse()?;
     let steps: u32 = args[3].parse()?;
     let waves: u32 = args[4].parse()?;
+    let asset = args.get(5).map(String::as_str).unwrap_or("embedded-four-buildings.json");
+    if args.len() == 6 && waves != 0 {
+        return Err("explicit-scene diagnostic requires waves=0; bombardment commands are authored for the frozen four-building tile".into());
+    }
     if !(1..=8).contains(&grid)
         || steps == 0
         || waves > 3
@@ -66,8 +70,20 @@ fn main() -> Result<(), Box<dyn Error>> {
     )?;
     let initial = Instant::now();
     let pack = load_scene_pack_file(
-        &Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/scenes/embedded-four-buildings.json"),
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/scenes").join(asset),
     )?;
+    // Authoring-only graph inventory; no runtime topology or physical work is
+    // approximated. Report actual initial connected groups for downtown too.
+    let mut parent: Vec<usize> = (0..pack.nodes.len()).collect();
+    fn root(parent: &mut [usize], mut i: usize) -> usize {
+        while parent[i] != i {parent[i] = parent[parent[i]];i = parent[i];}i
+    }
+    for bond in &pack.bonds {
+        let a = root(&mut parent, bond.node0 as usize);
+        let b = root(&mut parent, bond.node1 as usize);parent[b] = a;
+    }
+    let groups: HashSet<_> = (0..pack.nodes.len()).map(|i|root(&mut parent,i)).collect();
+    let buildings = groups.len() as u32 * grid * grid;
     let scene = build_city_scene(
         &pack,
         CitySceneDesc {
@@ -230,7 +246,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     let report = json!({"schema":1,"status":"complete","instrumented":cfg!(feature="embedded-profiling"),"backend":"physx_embedded_cuda",
         "direct_gpu_api":false,"sleeping":true,"max_correction":1,"max_stress_passes":2,
         "timestep_seconds":1./60.,"iterations_max":8192,"tolerance":1e-5,
-        "asset_instances":grid*grid,"buildings":grid*grid*4,"chunks":scene.total_chunks(),"bonds":scene.total_bonds(),
+        "source_asset":asset,"manifest_hash":manifest.hash_hex(),
+        "asset_instances":grid*grid,"buildings":buildings,"chunks":scene.total_chunks(),"bonds":scene.total_bonds(),
         "steps":steps,"seconds":steps as f64/60.,"waves":waves,"projectiles":projectile_count,
         "initialization_ms":initialization_ms,"unique_broken_bonds":broken.len(),"minimum_fragment_com_y":minimum_com_y,
         "gate_8ms_misses":rows.iter().filter(|r|r["complete_step_ms"].as_f64().unwrap()>8.).count(),
@@ -243,7 +260,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         output.join("report.json"),
         serde_json::to_vec_pretty(&report)?,
     )?;
-    let mut md=format!("# Embedded game-consumer bombardment\n\n{} buildings · {} chunks · {} bonds · {} projectiles · {} steps / {:.1} simulated seconds. Direct GPU API off, sleep on, correction ≤1.\n\n{}\n\n| Phase | Owner | Min ms | Mean ms | Max ms |\n|---|---|---:|---:|---:|\n",grid*grid*4,scene.total_chunks(),scene.total_bonds(),projectile_count,steps,steps as f64/60.,report["timing_scope"].as_str().unwrap());
+    let mut md=format!("# Embedded game-consumer bombardment\n\n{} buildings · {} chunks · {} bonds · {} projectiles · {} steps / {:.1} simulated seconds. Direct GPU API off, sleep on, correction ≤1.\n\n{}\n\n| Phase | Owner | Min ms | Mean ms | Max ms |\n|---|---|---:|---:|---:|\n",buildings,scene.total_chunks(),scene.total_bonds(),projectile_count,steps,steps as f64/60.,report["timing_scope"].as_str().unwrap());
     for (key, label, owner) in [
         (fields[0], "Complete advance", "CPU + GPU"),
         (
