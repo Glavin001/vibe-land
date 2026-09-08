@@ -30,7 +30,7 @@ fn native_contact_fracture_publishes_once_and_preserves_queries() {
     settings.materials=vec![StressMaterialDesc{compression_elastic:50000.,compression_fatal:100000.,
         tension_elastic:5000.,tension_fatal:10000.,shear_elastic:10000.,shear_fatal:20000.,
         elastic_modulus:30e9,residual_area_fraction:0.}];
-    world.create_destructible(0,pose(0.,0.,0.),&nodes,&bonds,settings,32,u32::MAX).unwrap();
+    world.create_destructible(0,pose(0.,0.,0.),&nodes,&bonds,settings.clone(),32,u32::MAX).unwrap();
     let gravity=Vec3::new(0.,-9.81,0.);
     for _ in 0..5 {world.step().unwrap();world.destruction_tick(1./60.,gravity).unwrap();}
     assert!(world.take_broken_bonds().unwrap().is_empty(),"intact wall broke without impact");
@@ -54,4 +54,24 @@ fn native_contact_fracture_publishes_once_and_preserves_queries() {
     assert!(!broken.is_empty() && promotions>0 && corrections>0.,"physical impact did not exercise native correction");
     eprintln!("native gameplay: 36 chunks, 60 bonds, one 100 kg projectile at 30 m/s; broken={} corrections={} promotions={}",broken.len(),corrections,promotions);
     world.clear_destructibles().unwrap();
+    // Reuse the live scene, including its ordinary projectile and player state.
+    // A reset that renders intact is not enough: the next impact must work too.
+    for cycle in 0..3 {
+        world.remove_actor(3).unwrap();
+        world.create_destructible(0,pose(0.,0.,0.),&nodes,&bonds,settings.clone(),32,u32::MAX).unwrap();
+        for _ in 0..20 {world.step().unwrap();world.destruction_tick(1./60.,gravity).unwrap();}
+        world.add_capsule_player(CapsulePlayerDesc{entity_id:3,user_id:0,position:Vec3::new(5.,1.5,-2.),
+            cylinder_height:1.,radius:0.4,step_offset:0.3,contact_offset:0.05,slope_limit_radians:0.785,
+            collision_group:1,collision_mask:u32::MAX}).unwrap();
+        let id=10+cycle;
+        world.add_dynamic_sphere(DynamicSphereDesc{entity_id:id,user_id:0,pose:pose(0.,3.,4.),radius:0.6,mass:100.,collision_group:1,collision_mask:u32::MAX}).unwrap();
+        world.apply_impulse(id,Vec3::new(0.,0.,-3000.)).unwrap();
+        for _ in 0..120 {
+            world.move_player(3,Vec3::new(0.,-0.02,0.01)).unwrap();
+            world.step().unwrap();world.destruction_tick(1./60.,gravity).unwrap();
+            assert!(world.validate_destruction_mappings().unwrap());
+        }
+        assert!(world.destruction_stats().unwrap().broken_bonds>0,"reset impact did not fracture");
+        world.clear_destructibles().unwrap();
+    }
 }

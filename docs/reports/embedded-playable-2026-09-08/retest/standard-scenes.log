@@ -1,0 +1,24 @@
+Internal ctest changing into directory: /root/workspace/physx-2/out/destruction-sdk
+Test project /root/workspace/physx-2/out/destruction-sdk
+    Start 75: physx_native_standard_reuse
+1/7 Test #75: physx_native_standard_reuse ............   Passed    0.91 sec
+    Start 77: physx_native_standard_awake
+2/7 Test #77: physx_native_standard_awake ............   Passed    0.50 sec
+    Start 78: physx_native_standard_sleep
+3/7 Test #78: physx_native_standard_sleep ............   Passed    0.87 sec
+    Start 79: physx_native_standard_sleep_boundary
+4/7 Test #79: physx_native_standard_sleep_boundary ...   Passed    1.52 sec
+    Start 80: physx_native_standard_gpu_islands
+5/7 Test #80: physx_native_standard_gpu_islands ......   Passed    0.96 sec
+    Start 81: physx_native_standard_wake_boundary
+6/7 Test #81: physx_native_standard_wake_boundary ....   Passed    0.84 sec
+    Start 82: physx_native_standard_late_impact
+7/7 Test #82: physx_native_standard_late_impact ......   Passed    0.88 sec
+
+100% tests passed, 0 tests failed out of 7
+
+Label Time Summary:
+gpu            =   6.48 sec*proc (7 tests)
+integration    =   6.48 sec*proc (7 tests)
+
+Total Test time (real) =   6.49 sec

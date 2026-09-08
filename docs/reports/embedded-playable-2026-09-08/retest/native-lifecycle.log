@@ -1,0 +1,14 @@
+   Compiling vibe-land-physx-bridge v0.1.0 (/root/workspace/vibe-land-2/physx-bridge)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 5.14s
+     Running tests/embedded_gameplay.rs (out/vibe-native/debug/deps/embedded_gameplay-ecdd96983ec36fac)
+
+running 1 test
+[embedded-destruction] chunks=36 bonds=60 initial_clusters=1 direct_gpu=0 native_sleep=1 correction_limit=1 max_stress_passes=2 iterations=512
+native gameplay: 36 chunks, 60 bonds, one 100 kg projectile at 30 m/s; broken=42 corrections=2 promotions=19
+[embedded-destruction] chunks=36 bonds=60 initial_clusters=1 direct_gpu=0 native_sleep=1 correction_limit=1 max_stress_passes=2 iterations=512
+[embedded-destruction] chunks=36 bonds=60 initial_clusters=1 direct_gpu=0 native_sleep=1 correction_limit=1 max_stress_passes=2 iterations=512
+[embedded-destruction] chunks=36 bonds=60 initial_clusters=1 direct_gpu=0 native_sleep=1 correction_limit=1 max_stress_passes=2 iterations=512
+test native_contact_fracture_publishes_once_and_preserves_queries ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.43s
+

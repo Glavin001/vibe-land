@@ -1,0 +1,9 @@
+{
+  "engine_revision": "72a672709b1327add0d39a745e9a321a00c5806c",
+  "server_sha256": "a00b8f10745dfe9f0dcc0b06d45f0dbc4d71eb070b4df532b0ee9edf970d8586",
+  "direct_gpu": false,
+  "sleeping": true,
+  "correction_limit": 1,
+  "chunks": 444,
+  "bonds": 896
+}

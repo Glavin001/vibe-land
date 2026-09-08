@@ -16,7 +16,7 @@ The native feature does not compile the legacy external adapter/solver sources.
 
 ## Build and run on this instance
 
-Tested engine commit: `80e9ac77` on `physx-2/codex/gpu-destruction`.
+Tested engine commit: `72a67270` on `physx-2/codex/gpu-destruction`.
 Build the engine SDK/GPU runtime first using its repository build instructions.
 Then from this checkout:
 
@@ -53,6 +53,10 @@ frozen engine regression; do not compare their fracture counts as equal-input ru
 limit. Larger playable scenes have not been qualified by this integration test.
 
 ## Validation and limitations
+
+The [follow-up browser retest](reports/embedded-playable-2026-09-08/self-test-followup.md)
+found and fixed a reset/re-impact GPU bounds-lifetime crash and verifies two full
+browser cycles plus three native reset/reconnect/re-impact cycles.
 
 [Recorded qualification](reports/embedded-playable-2026-09-08/report.md) includes
 native tests, a frozen physics regression, real-browser play, settling and reset.
