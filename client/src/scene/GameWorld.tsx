@@ -13,6 +13,7 @@ import { SkyEnvironment } from '../graphics/SkyEnvironment';
 import { skyGradient } from '../graphics/sunSky';
 import { SunLight } from './SunLight';
 import { applyCapturePose } from './captureCamera';
+import { advanceAerialPose, type AerialPose } from './aerialFlight';
 import { useFrame, useThree } from '@react-three/fiber';
 import * as THREE from 'three';
 import type { GameMode } from '../app/gameMode';
@@ -382,6 +383,8 @@ type FrameDebugCallback = (
 ) => void;
 
 type GameWorldProps = {
+  aerialMode?: boolean;
+  aerialSpeed?: number;
   mode: GameMode;
   worldDocument?: WorldDocument;
   onWelcome: (id: number) => void;
@@ -1125,6 +1128,8 @@ export function GameWorld({
   onInputFrame,
   inputFamilyMode = 'auto',
   inputBindings,
+  aerialMode = false,
+  aerialSpeed = 30,
   onSnapshot,
   rapierDebugModeBits = 0,
   showDebugHelpers = false,
@@ -1148,7 +1153,8 @@ export function GameWorld({
 }: GameWorldProps) {
   const resolvedFogColor = fogColor ?? WEATHER_PRESETS[weather].fogColor;
   const skyLightGradient = useMemo(() => skyGradient(resolvedFogColor), [resolvedFogColor]);
-  const effectiveFogDensity = fogDensity * intensity;
+  // Ground-level fog hides the skyline from a distant inspection camera.
+  const effectiveFogDensity = (aerialMode ? Math.min(fogDensity, 0.001) : fogDensity) * intensity;
   const qualityIsPretty = useQualityTier() === 'pretty';
   const shadowsOn = useShadowsEnabled();
   const ambientOcclusionOn = useAmbientOcclusionEnabled();
@@ -1217,6 +1223,14 @@ export function GameWorld({
   );
   runtimeRefForShotFired.current = runtimeRef.current;
   const { camera, gl } = useThree();
+  const aerialPoseRef = useRef<AerialPose | null>(null);
+  useEffect(() => {
+    if (!aerialMode || !(camera instanceof THREE.PerspectiveCamera)) return;
+    const previousFar = camera.far;
+    camera.far = Math.max(previousFar, 4000);
+    camera.updateProjectionMatrix();
+    return () => { camera.far = previousFar; camera.updateProjectionMatrix(); };
+  }, [aerialMode, camera]);
 
   const inputManagerRef = useRef<GameInputManager | null>(null);
   const yawRef = useRef(0);
@@ -1888,23 +1902,32 @@ export function GameWorld({
     const inputSample = inputManagerRef.current?.sample(
       frameDelta,
       pointerLocked,
-      isDrivingNow ? 'vehicle' : 'onFoot',
+      isDrivingNow && !aerialMode ? 'vehicle' : 'onFoot',
       inputBindings,
       inputFamilyMode,
     )
       ?? { activeFamily: null, action: null, context: isDrivingNow ? 'vehicle' : 'onFoot' as const };
     onInputFrameRef.current?.(inputSample);
+    const focusedElement = document.activeElement;
+    const editingControl = focusedElement instanceof HTMLElement
+      && (focusedElement.isContentEditable || !!focusedElement.closest('input, textarea, select, button, [role="dialog"]'));
+    const aerialAction = aerialMode && document.hasFocus() && !document.hidden && !editingControl
+      && (inputSample.activeFamily !== 'keyboardMouse' || pointerLocked)
+      ? inputSample.action : null;
+    // Neutral player input keeps camera exploration from moving, firing, or
+    // interacting through the grounded player (including agent-drive input).
+    if (aerialMode) inputSample.action = null;
     prediction.advanceDynamicBodies(frameDelta, !prediction.isInVehicle());
     const physStats = prediction.getDebugStats();
-    const vehicleBenchmarkEnabled = benchmarkAutopilot?.enabled
+    const vehicleBenchmarkEnabled = !aerialMode && benchmarkAutopilot?.enabled
       && benchmarkAutopilot.scenario.playBenchmark?.mode === 'vehicle_driver';
     const botAutopilotEnabled = Boolean(
-      benchmarkAutopilot?.enabled
+      !aerialMode && benchmarkAutopilot?.enabled
       && benchmarkAutopilot.scenario.playBenchmark?.mode !== 'vehicle_driver'
       && botBrainRef.current
       && !isDrivingNow,
     );
-    const agentDriveActive = isAgentDriveActive();
+    const agentDriveActive = !aerialMode && isAgentDriveActive();
 
     if (inputSample.action?.materialSlot1Pressed) selectedMaterialRef.current = 1;
     if (inputSample.action?.materialSlot2Pressed) selectedMaterialRef.current = 2;
@@ -1955,7 +1978,7 @@ export function GameWorld({
       onScopeActiveChangeRef.current?.(isAiming);
     }
 
-    const driveInput = sampleAgentDrive(now, yawRef.current, pitchRef.current);
+    const driveInput = aerialMode ? null : sampleAgentDrive(now, yawRef.current, pitchRef.current);
     if (driveInput) {
       yawRef.current = driveInput.yaw;
       pitchRef.current = driveInput.pitch;
@@ -2355,9 +2378,28 @@ export function GameWorld({
       camera.lookAt(lookX, lookY, lookZ);
     }
 
-    // Last, so it overrides both the chase and first-person paths. Nothing sets
-    // it unless a capture harness does.
-    applyCapturePose(camera);
+    if (aerialMode) {
+      if (!aerialPoseRef.current) {
+        const direction = camera.getWorldDirection(new THREE.Vector3());
+        aerialPoseRef.current = {
+          position: [camera.position.x, camera.position.y, camera.position.z],
+          yaw: Math.atan2(direction.x, direction.z),
+          pitch: Math.asin(THREE.MathUtils.clamp(direction.y, -1, 1)),
+        };
+      }
+      const pose = advanceAerialPose(aerialPoseRef.current, aerialAction, aerialSpeed, frameDelta);
+      aerialPoseRef.current = pose;
+      camera.position.set(...pose.position);
+      camera.lookAt(
+        pose.position[0] + Math.sin(pose.yaw) * Math.cos(pose.pitch),
+        pose.position[1] + Math.sin(pose.pitch),
+        pose.position[2] + Math.cos(pose.yaw) * Math.cos(pose.pitch),
+      );
+    } else {
+      aerialPoseRef.current = null;
+      // Preserve the independent camera used by capture harnesses.
+      applyCapturePose(camera);
+    }
 
     if (isDriving && drivenVehicleId != null) {
       const cameraMotionState = localVehicleCameraMotionStateRef.current;
@@ -2696,8 +2738,8 @@ export function GameWorld({
       const authoritativePosition = localAuthoritativeSample?.position ?? pos;
       const frameState: Parameters<typeof updateE2EBridgeFrameState>[0] = {
         cameraPosition: [camera.position.x, camera.position.y, camera.position.z],
-        cameraYaw: yawRef.current,
-        cameraPitch: pitchRef.current,
+        cameraYaw: aerialPoseRef.current?.yaw ?? yawRef.current,
+        cameraPitch: aerialPoseRef.current?.pitch ?? pitchRef.current,
         movementTelemetry: {
           renderedPosition: pos as [number, number, number],
           authoritativePosition,

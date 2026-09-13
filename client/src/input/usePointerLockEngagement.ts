@@ -12,11 +12,12 @@ type Options = {
   getCanvas: () => HTMLElement | null;
 };
 
-function isTextInputTarget(target: EventTarget | null): boolean {
+function isInteractiveTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false;
   const tag = target.tagName;
   if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true;
   if (target.isContentEditable) return true;
+  if (target.closest('button, a, input, textarea, select, summary, [role="button"], [role="dialog"]')) return true;
   return false;
 }
 
@@ -46,7 +47,7 @@ export function usePointerLockEngagement({ enabled, getCanvas }: Options): void 
     };
 
     const onGesture = (event: Event): void => {
-      if (isTextInputTarget(event.target)) return;
+      if (isInteractiveTarget(event.target)) return;
       tryLock();
     };
 

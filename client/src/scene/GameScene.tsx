@@ -17,6 +17,8 @@ import type { WorldDocument } from '../world/worldDocument';
 import type { WeatherPreset } from '../graphics/weatherPresets';
 
 type GameSceneProps = {
+  aerialMode?: boolean;
+  aerialSpeed?: number;
   mode: GameMode;
   onWelcome: (id: number) => void;
   onDisconnect: (reason?: string) => void;
@@ -84,6 +86,8 @@ export function GameScene({
   onInputFrame,
   inputFamilyMode,
   inputBindings,
+  aerialMode,
+  aerialSpeed,
   onSnapshot,
   rapierDebugModeBits = 0,
   showRenderStats,
@@ -149,6 +153,8 @@ export function GameScene({
           onInputFrame={onInputFrame}
           inputFamilyMode={inputFamilyMode}
           inputBindings={inputBindings}
+          aerialMode={aerialMode}
+          aerialSpeed={aerialSpeed}
           onSnapshot={onSnapshot}
           rapierDebugModeBits={rapierDebugModeBits}
           showDebugHelpers={showDebugHelpers}

@@ -47,6 +47,7 @@ import { FirstRunPrompt } from './calibration/FirstRunPrompt';
 import { CALIBRATION_WORLD_DOCUMENT } from './calibration/calibrationWorld';
 import { CITY_WORLD_DOCUMENT } from './world/cityWorld';
 import { CityStatsOverlay } from './city/CityStatsOverlay';
+import { CityFlightControls } from './city/CityFlightControls';
 import {
   getInputSettings,
   hasStoredInputSettings,
@@ -205,6 +206,8 @@ export function App({
   const [copyNotice, setCopyNotice] = useState('');
   const [crosshairState, setCrosshairState] = useState<CrosshairAimState>('idle');
   const [scopeActive, setScopeActive] = useState(false);
+  const [aerialMode, setAerialMode] = useState(false);
+  const [aerialSpeed, setAerialSpeed] = useState(30);
   const [inputFamilyMode, setInputFamilyMode] = useState<InputFamilyMode>('auto');
   const [controlsOverlayExpanded, setControlsOverlayExpanded] = useState(true);
   const [controlsOpen, setControlsOpen] = useState(false);
@@ -281,6 +284,7 @@ export function App({
   // default here desynced movement from the server and buried the towers in
   // terrain the server does not simulate.
   const cityWorld = !practiceMode && isCityMatchId(multiplayerMatchId);
+  useEffect(() => { setAerialMode(false); }, [cityWorld, connected, sessionKey]);
   const effectiveWorldDocument = calibrationOpen
     ? CALIBRATION_WORLD_DOCUMENT
     : cityWorld
@@ -953,7 +957,7 @@ export function App({
           {copyNotice}
         </div>
       )}
-      {connected && !scopeActive && (
+      {connected && !scopeActive && !aerialMode && (
         <div
           style={{
             position: 'absolute',
@@ -991,7 +995,7 @@ export function App({
           />
         </div>
       )}
-      {connected && scopeActive && (
+      {connected && scopeActive && !aerialMode && (
         <div
           data-testid="scope-overlay"
           style={{
@@ -1054,7 +1058,7 @@ export function App({
       <ControlHintsOverlay
         bindings={inputBindings}
         state={controlHintsState}
-        visible={connected && isDesktop && !touchMode}
+        visible={connected && isDesktop && !touchMode && !aerialMode}
         expanded={controlsOverlayExpanded}
         onToggleExpanded={() => setControlsOverlayExpanded((value) => !value)}
         inputFamilyMode={inputFamilyMode}
@@ -1123,6 +1127,9 @@ export function App({
         visible={connected}
       />
       <MeleeHUD visible={connected} />
+      {cityWorld && connected && (
+        <CityFlightControls active={aerialMode} speed={aerialSpeed} onActiveChange={setAerialMode} onSpeedChange={setAerialSpeed} bindings={inputBindings} touch={touchMode} />
+      )}
       {cityWorld && connected && (
         <CityStatsOverlay
           matchId={activeSession?.matchId ?? multiplayerMatchId}
@@ -1197,6 +1204,8 @@ export function App({
           key={sessionKey}
           mode={mode}
           worldDocument={effectiveWorldDocument}
+          aerialMode={cityWorld && aerialMode}
+          aerialSpeed={aerialSpeed}
           onWelcome={handleWelcome}
           onDisconnect={handleDisconnect}
           onAimStateChange={setCrosshairState}
