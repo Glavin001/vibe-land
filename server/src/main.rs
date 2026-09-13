@@ -1762,6 +1762,22 @@ async fn spawn_web_listener(app: Router) -> anyhow::Result<()> {
         }
     };
 
+    // Match the Caddy deployment: the standalone HTTPS page and its assets
+    // need cross-origin isolation for SharedArrayBuffer-backed browser features.
+    let app = app.layer(axum::middleware::map_response(
+        |mut response: axum::response::Response| async move {
+            response.headers_mut().insert(
+                "cross-origin-opener-policy",
+                axum::http::HeaderValue::from_static("same-origin"),
+            );
+            response.headers_mut().insert(
+                "cross-origin-embedder-policy",
+                axum::http::HeaderValue::from_static("require-corp"),
+            );
+            response
+        },
+    ));
+
     tokio::spawn(async move {
         if let Err(error) = axum_server::bind_rustls(addr, tls)
             .serve(app.into_make_service())
