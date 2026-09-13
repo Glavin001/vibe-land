@@ -45,7 +45,7 @@ export function CityFlightControls({ active, speed, onActiveChange, onSpeedChang
         <div className="mt-3 space-y-3 text-xs text-slate-300">
           <div>
             <p className="mb-1 font-semibold text-cyan-200">Aerial view</p>
-            <p>Explore freely. Your player stays below.</p>
+            <p>Explore freely. Return here to drop into the city.</p>
           </div>
           <p>
             {touch

@@ -1,3 +1,4 @@
+import type { CityCameraDropCmd } from '../net/protocol';
 import { resolveMultiplayerBackend } from '../app/runtimeConfig';
 import { wantsWebSocketTransport } from '../net/transportPolicy';
 import { setActiveSession, setConnectPhase, setMatchStats } from '../app/connectPhase';
@@ -142,6 +143,7 @@ export interface GameRuntimeClient {
   syncVehicleAuthority(): void;
   sendInputs(cmds: InputCmd[]): void;
   sendFire(cmd: FireCmd): void;
+  sendCityCameraDrop(cmd: CityCameraDropCmd): boolean;
   sendMelee(cmd: MeleeCmd): void;
   sendBlockEdit(cmd: BlockEditCmd): void;
   sendVehicleEnter(vehicleId: number, seat?: number): void;
@@ -399,6 +401,7 @@ abstract class BaseGameRuntime implements GameRuntimeClient {
   abstract syncVehicleAuthority(): void;
   abstract sendInputs(cmds: InputCmd[]): void;
   abstract sendFire(cmd: FireCmd): void;
+  sendCityCameraDrop(_cmd: CityCameraDropCmd): boolean { return false; }
   abstract sendMelee(cmd: MeleeCmd): void;
   abstract sendBlockEdit(cmd: BlockEditCmd): void;
   abstract sendVehicleEnter(vehicleId: number, seat?: number): void;
@@ -1471,6 +1474,10 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
 
   sendFire(cmd: FireCmd): void {
     this.client?.sendFire(cmd);
+  }
+
+  sendCityCameraDrop(cmd: CityCameraDropCmd): boolean {
+    return this.client?.sendCityCameraDrop(cmd) ?? false;
   }
 
   sendMelee(cmd: MeleeCmd): void {

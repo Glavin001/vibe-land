@@ -6,6 +6,7 @@ import {
   PKT_INPUT_BUNDLE,
   PKT_FIRE,
   PKT_MELEE,
+  PKT_CITY_CAMERA_DROP,
   PKT_BLOCK_EDIT,
   PKT_VEHICLE_ENTER,
   PKT_VEHICLE_EXIT,
@@ -59,6 +60,16 @@ export type FireCmd = {
   clientDynamicInterpMs: number;
   dir: [number, number, number];
 };
+
+export type CityCameraDropCmd = { position: [number, number, number]; yaw: number; pitch: number };
+
+export function encodeCityCameraDrop(cmd: CityCameraDropCmd): Uint8Array {
+  const bytes = new Uint8Array(21);
+  const view = new DataView(bytes.buffer);
+  view.setUint8(0, PKT_CITY_CAMERA_DROP);
+  [...cmd.position, cmd.yaw, cmd.pitch].forEach((value, i) => view.setFloat32(1 + 4 * i, value, true));
+  return bytes;
+}
 
 export type MeleeCmd = {
   seq: number;

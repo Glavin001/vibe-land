@@ -1090,6 +1090,7 @@ struct PlayerRuntime {
     next_allowed_fire_ms: u32,
     last_processed_swing_id: Option<u32>,
     next_allowed_melee_ms: u32,
+    next_allowed_camera_drop_ms: u32,
     melee_flag_clear_tick: u32,
     spawn_protection_ends_at_tick: u32,
     respawn_at_ms: Option<u32>,
@@ -2784,6 +2785,7 @@ impl MatchState {
                         next_allowed_fire_ms: 0,
                         last_processed_swing_id: None,
                         next_allowed_melee_ms: 0,
+                        next_allowed_camera_drop_ms: 0,
                         melee_flag_clear_tick: 0,
                         spawn_protection_ends_at_tick: 0,
                         respawn_at_ms: None,
@@ -2952,6 +2954,18 @@ impl MatchState {
                         runtime.spawn_protection_ends_at_tick = 0;
                         let _ = self.arena.set_player_spawn_protected(player_id, false);
                         self.queued_shots.push(QueuedShot { player_id, cmd });
+                    }
+                    ClientPacket::CityCameraDrop(cmd) => {
+                        // The connection supplies player_id: a packet cannot move anyone else.
+                        let now_ms = self.server_tick * (1000 / SIM_HZ as u32);
+                        if is_dead || !city::is_city_match(&self.id) || now_ms < runtime.next_allowed_camera_drop_ms {
+                            return;
+                        }
+                        if self.arena.drop_player_from_camera(player_id, &cmd) {
+                            runtime.next_allowed_camera_drop_ms = now_ms.saturating_add(500);
+                            runtime.pending_inputs.clear();
+                            runtime.last_applied_input = InputCmd { yaw: cmd.yaw, pitch: cmd.pitch, ..InputCmd::default() };
+                        }
                     }
                     ClientPacket::Melee(cmd) => {
                         if is_dead {
@@ -6240,6 +6254,7 @@ mod tests {
             next_allowed_fire_ms: 0,
             last_processed_swing_id: None,
             next_allowed_melee_ms: 0,
+            next_allowed_camera_drop_ms: 0,
             melee_flag_clear_tick: 0,
             spawn_protection_ends_at_tick: 0,
             respawn_at_ms: None,

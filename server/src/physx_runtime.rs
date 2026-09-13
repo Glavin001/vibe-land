@@ -271,6 +271,42 @@ impl PhysxPhysicsArena {
         self.exit_vehicle(id);
     }
 
+    pub fn drop_player_from_camera(&mut self, id: u32, cmd: &vibe_land_shared::protocol::CityCameraDropCmd) -> bool {
+        let Some(previous) = self.players.get(&id).cloned() else { return false; };
+        if previous.dead || !cmd.is_valid() { return false; }
+        if previous.controller_present && self.world.remove_actor(Self::player_bridge_id(id)).is_err() {
+            return false;
+        }
+        let position = Vec3d::new(f64::from(cmd.position[0]), f64::from(cmd.position[1]), f64::from(cmd.position[2]));
+        if self.add_player_controller(id, position).is_err() {
+            if previous.controller_present {
+                self.add_player_controller(id, previous.position)
+                    .expect("failed to restore player controller after rejected camera drop");
+            }
+            return false;
+        }
+        // A seated player has no controller. The new controller is already at
+        // the destination, so detach ownership without creating an exit one.
+        if let Some(vehicle_id) = self.vehicle_of_player.remove(&id) {
+            if let Some(vehicle) = self.vehicles.get_mut(&vehicle_id) {
+                if vehicle.driver_id == id {
+                    vehicle.driver_id = 0;
+                    vehicle.latest_input = InputCmd::default();
+                }
+            }
+        }
+        let state = self.players.get_mut(&id).expect("checked player");
+        state.position = position;
+        state.velocity = Vec3d::zeros();
+        state.yaw = f64::from(cmd.yaw);
+        state.pitch = f64::from(cmd.pitch);
+        state.last_input = InputCmd { yaw: cmd.yaw, pitch: cmd.pitch, ..InputCmd::default() };
+        state.on_ground = false;
+        state.controller_present = true;
+        state.support_entity_id = None;
+        true
+    }
+
     pub fn respawn_player(&mut self, id: u32) -> Option<[f32; 3]> {
         let position = self.spawn_position(id);
         let bridge_id = Self::player_bridge_id(id);

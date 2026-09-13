@@ -225,6 +225,14 @@ impl PhysicsArena {
         }
     }
 
+    pub fn drop_player_from_camera(&mut self, player_id: u32, cmd: &vibe_land_shared::protocol::CityCameraDropCmd) -> bool {
+        match &mut self.backend {
+            PhysicsBackend::Rapier(arena) => arena.drop_player_from_camera(player_id, cmd),
+            #[cfg(feature = "physx-gpu")]
+            PhysicsBackend::Physx(arena) => arena.drop_player_from_camera(player_id, cmd),
+        }
+    }
+
     pub fn respawn_player(&mut self, player_id: u32) -> Option<[f32; 3]> {
         match &mut self.backend {
             PhysicsBackend::Rapier(arena) => arena.respawn_player(player_id),

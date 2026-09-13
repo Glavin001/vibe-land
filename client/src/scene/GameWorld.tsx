@@ -385,6 +385,7 @@ type FrameDebugCallback = (
 type GameWorldProps = {
   aerialMode?: boolean;
   aerialSpeed?: number;
+  aerialDropRequest?: number;
   mode: GameMode;
   worldDocument?: WorldDocument;
   onWelcome: (id: number) => void;
@@ -1130,6 +1131,7 @@ export function GameWorld({
   inputBindings,
   aerialMode = false,
   aerialSpeed = 30,
+  aerialDropRequest = 0,
   onSnapshot,
   rapierDebugModeBits = 0,
   showDebugHelpers = false,
@@ -1224,6 +1226,8 @@ export function GameWorld({
   runtimeRefForShotFired.current = runtimeRef.current;
   const { camera, gl } = useThree();
   const aerialPoseRef = useRef<AerialPose | null>(null);
+  const lastAerialDropRequestRef = useRef(aerialDropRequest);
+  const pendingAerialDropRef = useRef<{ pose: AerialPose; sentAt: number } | null>(null);
   useEffect(() => {
     if (!aerialMode || !(camera instanceof THREE.PerspectiveCamera)) return;
     const previousFar = camera.far;
@@ -1897,6 +1901,16 @@ export function GameWorld({
       localVehicleMeshMotionStateRef.current.vehicleId = null;
       localVehicleCameraMotionStateRef.current.vehicleId = null;
     }
+    if (lastAerialDropRequestRef.current !== aerialDropRequest) {
+      lastAerialDropRequestRef.current = aerialDropRequest;
+      const pose = aerialPoseRef.current;
+      if (pose && client.sendCityCameraDrop(pose)) {
+        yawRef.current = pose.yaw;
+        pitchRef.current = pose.pitch;
+        pendingAerialDropRef.current = { pose, sentAt: now };
+      }
+    }
+    const suppressPlayerInput = aerialMode || pendingAerialDropRef.current !== null;
     const isDrivingNow = client.isInVehicle();
     const pointerLocked = document.pointerLockElement === gl.domElement;
     const inputSample = inputManagerRef.current?.sample(
@@ -1916,18 +1930,18 @@ export function GameWorld({
       ? inputSample.action : null;
     // Neutral player input keeps camera exploration from moving, firing, or
     // interacting through the grounded player (including agent-drive input).
-    if (aerialMode) inputSample.action = null;
+    if (suppressPlayerInput) inputSample.action = null;
     prediction.advanceDynamicBodies(frameDelta, !prediction.isInVehicle());
     const physStats = prediction.getDebugStats();
-    const vehicleBenchmarkEnabled = !aerialMode && benchmarkAutopilot?.enabled
+    const vehicleBenchmarkEnabled = !suppressPlayerInput && benchmarkAutopilot?.enabled
       && benchmarkAutopilot.scenario.playBenchmark?.mode === 'vehicle_driver';
     const botAutopilotEnabled = Boolean(
-      !aerialMode && benchmarkAutopilot?.enabled
+      !suppressPlayerInput && benchmarkAutopilot?.enabled
       && benchmarkAutopilot.scenario.playBenchmark?.mode !== 'vehicle_driver'
       && botBrainRef.current
       && !isDrivingNow,
     );
-    const agentDriveActive = !aerialMode && isAgentDriveActive();
+    const agentDriveActive = !suppressPlayerInput && isAgentDriveActive();
 
     if (inputSample.action?.materialSlot1Pressed) selectedMaterialRef.current = 1;
     if (inputSample.action?.materialSlot2Pressed) selectedMaterialRef.current = 2;
@@ -1978,7 +1992,7 @@ export function GameWorld({
       onScopeActiveChangeRef.current?.(isAiming);
     }
 
-    const driveInput = aerialMode ? null : sampleAgentDrive(now, yawRef.current, pitchRef.current);
+    const driveInput = suppressPlayerInput ? null : sampleAgentDrive(now, yawRef.current, pitchRef.current);
     if (driveInput) {
       yawRef.current = driveInput.yaw;
       pitchRef.current = driveInput.pitch;
@@ -2319,6 +2333,17 @@ export function GameWorld({
     const vehiclePoseForCamera = localVehicleVisualPose ?? localControlledVehiclePose;
     const predictedPos = prediction.getPosition();
     const pos = predictedPos ?? state.localPosition;
+    const pendingDrop = pendingAerialDropRef.current;
+    if (pendingDrop) {
+      const target = pendingDrop.pose.position;
+      const arrived = Math.hypot(pos[0] - target[0], pos[2] - target[2]) < 1
+        && Math.abs(pos[1] - target[1]) < 8 && !client.isInVehicle();
+      if (arrived || now - pendingDrop.sentAt > 3000) {
+        if (!arrived) console.warn('[city] Camera drop was not confirmed by the server');
+        pendingAerialDropRef.current = null;
+        aerialPoseRef.current = null;
+      }
+    }
     const yaw = yawRef.current;
     const pitch = pitchRef.current;
     if (localPlayerDebugRef.current) {
@@ -2378,7 +2403,7 @@ export function GameWorld({
       camera.lookAt(lookX, lookY, lookZ);
     }
 
-    if (aerialMode) {
+    if (aerialMode || pendingAerialDropRef.current) {
       if (!aerialPoseRef.current) {
         const direction = camera.getWorldDirection(new THREE.Vector3());
         aerialPoseRef.current = {
@@ -2387,7 +2412,9 @@ export function GameWorld({
           pitch: Math.asin(THREE.MathUtils.clamp(direction.y, -1, 1)),
         };
       }
-      const pose = advanceAerialPose(aerialPoseRef.current, aerialAction, aerialSpeed, frameDelta);
+      const pose = aerialMode
+        ? advanceAerialPose(aerialPoseRef.current, aerialAction, aerialSpeed, frameDelta)
+        : pendingAerialDropRef.current!.pose;
       aerialPoseRef.current = pose;
       camera.position.set(...pose.position);
       camera.lookAt(

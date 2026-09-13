@@ -8,6 +8,8 @@ import {
   encodeFirePacket,
   encodeInputBundle,
   encodeMeleePacket,
+  encodeCityCameraDrop,
+  type CityCameraDropCmd,
   encodePingPacket,
   encodeVehicleEnterPacket,
   encodeVehicleExitPacket,
@@ -214,12 +216,9 @@ export class WebTransportGameClient {
     const control = await transport.createBidirectionalStream();
     const controlWriter = control.writable.getWriter();
     await controlWriter.write(frameReliablePacket(encodeClientHello({ matchId: this.options.matchId })));
-    if (this.uplink === 'stream') {
-      // Held open: everything the player does travels over it from here.
-      this.controlWriter = controlWriter;
-    } else {
-      await controlWriter.close();
-    }
+    // Keep the control stream for one-shot reliable commands, even when
+    // movement uses datagrams. Losing a camera drop must not strand the player.
+    this.controlWriter = controlWriter;
     console.info('[webtransport] ClientHello sent, waiting for Welcome...');
 
     this.startReliableReader(control.readable);
@@ -270,6 +269,13 @@ export class WebTransportGameClient {
       return;
     }
     this.sendClientPacket(encodeFirePacket(command));
+  }
+
+  sendCityCameraDrop(command: CityCameraDropCmd): boolean {
+    if (this.closed || !this.controlWriter) return false;
+    void this.controlWriter.write(frameReliablePacket(encodeCityCameraDrop(command)))
+      .catch((error) => this.handleClosed(error));
+    return true;
   }
 
   sendMelee(command: MeleeCmd): void {

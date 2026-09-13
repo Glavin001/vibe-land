@@ -19,6 +19,7 @@ import type { WeatherPreset } from '../graphics/weatherPresets';
 type GameSceneProps = {
   aerialMode?: boolean;
   aerialSpeed?: number;
+  aerialDropRequest?: number;
   mode: GameMode;
   onWelcome: (id: number) => void;
   onDisconnect: (reason?: string) => void;
@@ -88,6 +89,7 @@ export function GameScene({
   inputBindings,
   aerialMode,
   aerialSpeed,
+  aerialDropRequest,
   onSnapshot,
   rapierDebugModeBits = 0,
   showRenderStats,
@@ -155,6 +157,7 @@ export function GameScene({
           inputBindings={inputBindings}
           aerialMode={aerialMode}
           aerialSpeed={aerialSpeed}
+          aerialDropRequest={aerialDropRequest}
           onSnapshot={onSnapshot}
           rapierDebugModeBits={rapierDebugModeBits}
           showDebugHelpers={showDebugHelpers}

@@ -28,6 +28,8 @@ export const PKT_VEHICLE_ENTER = 5;
 export const PKT_VEHICLE_EXIT = 6;
 export const PKT_DEBUG_STATS = 7;
 export const PKT_MELEE = 8;
+/// City inspection camera: place the sending player here, then resume gravity.
+export const PKT_CITY_CAMERA_DROP = 10;
 
 export const PKT_WELCOME = 101;
 export const PKT_SNAPSHOT = 102;

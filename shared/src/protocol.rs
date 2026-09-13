@@ -1,5 +1,20 @@
 use crate::unit_conv::*;
 
+#[derive(Clone, Debug)]
+pub struct CityCameraDropCmd {
+    pub position: [f32; 3],
+    pub yaw: f32,
+    pub pitch: f32,
+}
+
+impl CityCameraDropCmd {
+    pub fn is_valid(&self) -> bool {
+        self.position.iter().all(|v| v.is_finite() && v.abs() <= 10_000.0)
+            && self.yaw.is_finite() && self.yaw.abs() <= 1_000_000.0
+            && self.pitch.is_finite() && self.pitch.abs() <= std::f32::consts::FRAC_PI_2
+    }
+}
+
 // ── Core types ──────────────────────────────────
 
 #[derive(Clone, Debug, Default)]

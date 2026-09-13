@@ -113,6 +113,7 @@ try {
   const returned = await snapshot();
   assert(await toggle.getAttribute('aria-pressed') === 'false', 'Return button did not disable flight');
   assert(distance(returned.cameraPosition, returned.position) < 3, 'Camera did not return to player');
+  await page.waitForFunction(() => window.__VIBE_E2E__.snapshot().onGround, null, { timeout: 20000 });
   await page.keyboard.press('n');
   await page.waitForTimeout(400);
   assert(await toggle.getAttribute('aria-pressed') === 'true', 'N did not enable flight');

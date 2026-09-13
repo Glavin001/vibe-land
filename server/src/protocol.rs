@@ -20,6 +20,7 @@ pub enum ClientPacket {
     InputBundle(Vec<InputCmd>),
     Fire(FireCmd),
     Melee(MeleeCmd),
+    CityCameraDrop(CityCameraDropCmd),
     BlockEdit(BlockEditCmd),
     Ping(u32),
     VehicleEnter(VehicleEnterCmd),
@@ -66,6 +67,7 @@ pub enum ClientDatagram {
     InputBundle(Vec<InputFrame>),
     Fire(FireCmd),
     Melee(MeleeCmd),
+    CityCameraDrop(CityCameraDropCmd),
     BlockEdit(BlockEditCmd),
     VehicleEnter(VehicleEnterCmd),
     VehicleExit(VehicleExitCmd),
@@ -269,6 +271,16 @@ pub fn decode_client_hello(bytes: &[u8]) -> Result<ClientHello> {
     })
 }
 
+fn decode_camera_drop(buf: &mut impl Buf) -> Result<CityCameraDropCmd> {
+    ensure!(buf.remaining() == 20, "invalid camera drop length");
+    let cmd = CityCameraDropCmd {
+        position: [buf.get_f32_le(), buf.get_f32_le(), buf.get_f32_le()],
+        yaw: buf.get_f32_le(), pitch: buf.get_f32_le(),
+    };
+    ensure!(cmd.is_valid(), "invalid camera drop coordinates");
+    Ok(cmd)
+}
+
 pub fn decode_client_datagram(bytes: &[u8]) -> Result<ClientDatagram> {
     ensure!(!bytes.is_empty(), "empty client datagram");
     let mut buf = bytes;
@@ -301,6 +313,7 @@ pub fn decode_client_datagram(bytes: &[u8]) -> Result<ClientDatagram> {
                 dir,
             })
         }
+        PKT_CITY_CAMERA_DROP => ClientDatagram::CityCameraDrop(decode_camera_drop(&mut buf)?),
         PKT_MELEE => {
             ensure!(buf.remaining() >= 18, "short melee datagram");
             let seq = buf.get_u16_le();
@@ -396,6 +409,7 @@ pub fn client_datagram_to_packet(d: ClientDatagram) -> ClientPacket {
         ClientDatagram::InputBundle(frames) => ClientPacket::InputBundle(frames),
         ClientDatagram::Fire(cmd) => ClientPacket::Fire(cmd),
         ClientDatagram::Melee(cmd) => ClientPacket::Melee(cmd),
+        ClientDatagram::CityCameraDrop(cmd) => ClientPacket::CityCameraDrop(cmd),
         ClientDatagram::BlockEdit(cmd) => ClientPacket::BlockEdit(cmd),
         ClientDatagram::VehicleEnter(cmd) => ClientPacket::VehicleEnter(cmd),
         ClientDatagram::VehicleExit(cmd) => ClientPacket::VehicleExit(cmd),
@@ -738,6 +752,7 @@ pub fn decode_client_packet(bytes: &[u8]) -> Result<ClientPacket> {
                 dir,
             })
         }
+        PKT_CITY_CAMERA_DROP => ClientPacket::CityCameraDrop(decode_camera_drop(&mut buf)?),
         PKT_MELEE => {
             ensure!(buf.remaining() >= 18, "short melee packet");
             let seq = buf.get_u16_le();
@@ -1333,5 +1348,36 @@ mod tests {
             u32::from_le_bytes([encoded[1], encoded[2], encoded[3], encoded[4]]),
             0xDEAD_BEEF
         );
+    }
+}
+
+#[cfg(test)]
+mod camera_drop_tests {
+    use super::*;
+    fn packet(values: [f32; 5]) -> Vec<u8> {
+        let mut bytes = vec![PKT_CITY_CAMERA_DROP];
+        for value in values { bytes.extend(value.to_le_bytes()); }
+        bytes
+    }
+    #[test]
+    fn camera_drop_decodes_on_both_transports() {
+        let bytes = packet([12.0, 40.0, -8.0, 1.0, -0.4]);
+        for decoded in [decode_client_packet(&bytes).unwrap(), client_datagram_to_packet(decode_client_datagram(&bytes).unwrap())] {
+            let ClientPacket::CityCameraDrop(cmd) = decoded else { panic!("wrong packet") };
+            assert_eq!(cmd.position, [12.0, 40.0, -8.0]);
+            assert_eq!(cmd.yaw, 1.0);
+            assert_eq!(cmd.pitch, -0.4);
+        }
+    }
+    #[test]
+    fn camera_drop_rejects_nonfinite_out_of_range_and_wrong_lengths() {
+        for value in [f32::NAN, f32::INFINITY, 10_001.0] {
+            assert!(decode_client_datagram(&packet([value, 40.0, 0.0, 0.0, 0.0])).is_err());
+        }
+        assert!(decode_client_datagram(&packet([0.0, 40.0, 0.0, 0.0, 2.0])).is_err());
+        let bytes = packet([0.0; 5]);
+        assert!(decode_client_datagram(&bytes[..20]).is_err());
+        let mut long = bytes; long.push(0);
+        assert!(decode_client_datagram(&long).is_err());
     }
 }

@@ -208,6 +208,11 @@ export function App({
   const [scopeActive, setScopeActive] = useState(false);
   const [aerialMode, setAerialMode] = useState(false);
   const [aerialSpeed, setAerialSpeed] = useState(30);
+  const [aerialDropRequest, setAerialDropRequest] = useState(0);
+  const changeAerialMode = (active: boolean) => {
+    if (aerialMode && !active) setAerialDropRequest((value) => value + 1);
+    setAerialMode(active);
+  };
   const [inputFamilyMode, setInputFamilyMode] = useState<InputFamilyMode>('auto');
   const [controlsOverlayExpanded, setControlsOverlayExpanded] = useState(true);
   const [controlsOpen, setControlsOpen] = useState(false);
@@ -1128,7 +1133,7 @@ export function App({
       />
       <MeleeHUD visible={connected} />
       {cityWorld && connected && (
-        <CityFlightControls active={aerialMode} speed={aerialSpeed} onActiveChange={setAerialMode} onSpeedChange={setAerialSpeed} bindings={inputBindings} touch={touchMode} />
+        <CityFlightControls active={aerialMode} speed={aerialSpeed} onActiveChange={changeAerialMode} onSpeedChange={setAerialSpeed} bindings={inputBindings} touch={touchMode} />
       )}
       {cityWorld && connected && (
         <CityStatsOverlay
@@ -1206,6 +1211,7 @@ export function App({
           worldDocument={effectiveWorldDocument}
           aerialMode={cityWorld && aerialMode}
           aerialSpeed={aerialSpeed}
+          aerialDropRequest={aerialDropRequest}
           onWelcome={handleWelcome}
           onDisconnect={handleDisconnect}
           onAimStateChange={setCrosshairState}

@@ -19,6 +19,8 @@ import {
   type BatterySyncPacket,
   type DamageEventPacket,
   encodeDebugStatsPacket,
+  encodeCityCameraDrop,
+  type CityCameraDropCmd,
   netDynamicBodyStateToMeters,
   netStateToMeters,
   netVehicleStateToMeters,
@@ -421,6 +423,13 @@ export class NetcodeClient {
     } else {
       this.socket?.sendFire(cmd);
     }
+  }
+
+  sendCityCameraDrop(cmd: CityCameraDropCmd): boolean {
+    if (this.wtClient) return this.wtClient.sendCityCameraDrop(cmd);
+    if (!this.socket) return false;
+    this.socket.sendRaw(encodeCityCameraDrop(cmd));
+    return true;
   }
 
   sendMelee(cmd: MeleeCmd): void {
