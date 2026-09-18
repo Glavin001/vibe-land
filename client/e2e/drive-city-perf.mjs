@@ -16,6 +16,7 @@
  *   --match <id>        match id.                      default city-default
  *   --rounds <n>        sample points.                 default 8
  *   --shots <n>         shots between samples.         default 10
+ *   --cannonball        fire the heavy ball, not the rifle.
  *   --out <file.json>   write the samples as JSON.
  *   --csv <file.csv>    write the samples as CSV.
  *   --headed            show the browser.
@@ -138,18 +139,32 @@ async function sample(tag) {
     + ` gpuSolve=${f(s.gpuStressSolveMs)} physx=${f(s.physxStepMs)} ms`);
 }
 
+// --cannonball fires the heavy ball instead of the rifle, which is otherwise
+// only reachable by clicking the overlay and so would never be driven.
+if (flag('cannonball')) {
+  await page.evaluate(() => window.__VIBE_E2E__?.setCannonball(true));
+  console.log('shot mode: cannonball');
+}
+
 await sample('idle');
 await page.evaluate(() => window.__VIBE_DRIVE__.faceCity());
 await page.waitForTimeout(1500);
 
 // Sweep aim across the skyline so damage spreads over several structures
-// rather than boring one hole. Pitch varies so shots land at several heights.
-const PITCHES = [0.05, -0.02, 0.12, 0.0];
+// rather than boring one hole. Heights vary so shots land at several floors.
+//
+// Aimed at world points, not at absolute yaw/pitch. The sweep used to set
+// angles directly, which discarded the faceCity() aim and pointed wherever the
+// player happened to be standing relative to them: runs would fire a hundred
+// rounds into open ground and report perfect frame times for a city nobody had
+// touched. lookAt is relative to the player's actual position, so it hits from
+// any spawn.
+const HEIGHTS = [4, 10, 18, 7];
 for (let round = 0; round < ROUNDS; ++round) {
-  const yaw = -0.6 + round * 0.15;
   for (let i = 0; i < SHOTS; ++i) {
-    await page.evaluate(([y, p]) => window.__VIBE_DRIVE__.look(y, p),
-      [yaw + (i - SHOTS / 2) * 0.03, PITCHES[i % PITCHES.length]]);
+    const across = -18 + ((round * SHOTS + i) % 12) * 3;
+    const height = HEIGHTS[i % HEIGHTS.length];
+    await page.evaluate(([x, y]) => window.__VIBE_DRIVE__.lookAt(x, y, 0), [across, height]);
     await page.evaluate(() => window.__VIBE_DRIVE__.fire({ holdMs: 140 }));
     await page.waitForTimeout(200);
   }

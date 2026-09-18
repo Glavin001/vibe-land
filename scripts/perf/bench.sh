@@ -82,14 +82,17 @@ fi
 
 # 2. The feature set that measures the real solver. 'destruction' alone
 #    compiles the CUDA solver OUT and the CPU residual reads as real stress.
-echo "== building (cuda-stress,blast-core)"
-cargo build --release -p web-fps-server --features cuda-stress,blast-core \
+echo "== building (cuda-stress,blast-core,native-destruction)"
+cargo build --release -p web-fps-server --features cuda-stress,blast-core,native-destruction \
   2>&1 | grep -E "^error" && exit 1
 
-# 3. Physics env: SOURCE it, never restate it.
-export LD_LIBRARY_PATH="/root/PhysX/physx/install/linux-clang/PhysX/bin/linux.x86_64/release:${LD_LIBRARY_PATH:-}"
+# 3. Physics env: SOURCE it, never restate it. It also derives PHYSX_LIB_DIR
+#    from the selected destruction backend, which has to be on LD_LIBRARY_PATH
+#    *before* anything else: the upstream and physx-2 SDKs ship identical
+#    library names, and the path decides which engine the process actually runs.
 # shellcheck source=../physics-env.sh
 . "$ROOT/scripts/physics-env.sh"
+export LD_LIBRARY_PATH="$PHYSX_LIB_DIR:${LD_LIBRARY_PATH:-}"
 export VIBE_CITY_GRID="$GRID"
 
 DEST="$OUTROOT/$LABEL"

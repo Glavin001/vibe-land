@@ -13,6 +13,7 @@ struct FfiStaticBoxDesc;
 struct FfiHeightfieldDesc;
 struct FfiDynamicBoxDesc;
 struct FfiDynamicSphereDesc;
+struct FfiLaunchedBallDesc;
 struct FfiCapsulePlayerDesc;
 struct FfiVehicleChassisDesc;
 struct FfiRaycastRequest;
@@ -34,6 +35,10 @@ struct FfiSupportSet;
 struct FfiSupportRow;
 struct FfiBondStressRow;
 struct FfiDestructionStats;
+struct FfiNativeConfig;
+struct FfiNativeConfigured;
+struct FfiNativeStatus;
+struct FfiRoundDesc;
 
 class World final {
 public:
@@ -48,6 +53,7 @@ public:
                        rust::Slice<const float> samples);
   void add_dynamic_box(const FfiDynamicBoxDesc &desc);
   void add_dynamic_sphere(const FfiDynamicSphereDesc &desc);
+  void launch_dynamic_ball(const FfiLaunchedBallDesc &desc);
   void add_capsule_player(const FfiCapsulePlayerDesc &desc);
   void add_vehicle_chassis(const FfiVehicleChassisDesc &desc);
   void remove_actor(std::uint32_t entity_id);
@@ -122,6 +128,31 @@ public:
   //
   // Returned as opaque integers because cxx cannot express a raw PxScene*.
   // The pointers stay valid for the lifetime of this World.
+#ifdef VIBE_LAND_NATIVE_DESTRUCTION
+  // --- PhysX's own GPU destruction stage ------------------------------------
+  void native_attach();
+  void native_create_destructible(std::uint32_t structure_id,
+                                  const FfiPose &pose,
+                                  rust::Slice<const FfiChunkNodeDesc> nodes,
+                                  rust::Slice<const FfiChunkBondDesc> bonds,
+                                  const FfiDestructibleSettings &settings,
+                                  std::uint32_t collision_group,
+                                  std::uint32_t collision_mask);
+  FfiNativeConfigured native_configure(const FfiNativeConfig &config);
+  FfiNativeStatus native_tick();
+  FfiNativeStatus native_last_status() const;
+  std::uint32_t native_fire_round(const FfiRoundDesc &desc);
+  rust::Vec<FfiBrokenBondEvent> native_take_broken_bonds();
+  rust::Vec<FfiChunkMigrationEvent> native_take_chunk_migrations();
+  rust::Vec<FfiIslandBodyEvent> native_take_island_events();
+  rust::Slice<const FfiChunkBodySnapshot> native_chunk_body_snapshots() const;
+  rust::Vec<FfiBondStressRow> native_bond_stress_rows(std::uint32_t structure_id) const;
+  FfiDestructionStats native_stats() const;
+  bool native_validate_mappings() const;
+  void native_clear();
+  bool native_configured() const;
+#endif
+
   std::uintptr_t scene_ptr() const;
   std::uintptr_t physics_ptr() const;
 
@@ -129,6 +160,13 @@ private:
   class Impl;
   std::unique_ptr<Impl> impl_;
 };
+
+#ifdef VIBE_LAND_NATIVE_DESTRUCTION
+/// Network entity id for a native body. Free-standing so a test can assert the
+/// C++ mirror and `destruction/src/ids.rs` agree, rather than assuming it.
+std::uint32_t native_entity_id(std::uint32_t structure_id,
+                               std::uint32_t island_serial);
+#endif
 
 std::unique_ptr<World> new_world(const FfiWorldConfig &config);
 

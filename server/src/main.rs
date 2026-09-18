@@ -48,7 +48,7 @@ use vibe_land_shared::constants::{
     OUT_OF_BOUNDS_Y_M, PLAYER_AOI_RADIUS_M, PLAYER_EYE_HEIGHT_M, RIFLE_BODY_DAMAGE,
     RIFLE_FIRE_INTERVAL_MS, RIFLE_HEAD_DAMAGE, RIFLE_SHOT_ENERGY_COST, SHAPE_SPHERE, SIM_HZ,
     SPAWN_PROTECTION_MS, VEHICLE_AOI_RADIUS_M, VEHICLE_INPUT_CATCHUP_THRESHOLD,
-    VEHICLE_INTERACT_RADIUS_M,
+    VEHICLE_INTERACT_RADIUS_M, WEAPON_CANNONBALL,
 };
 use wtransport::{error::SendDatagramError, Connection, Endpoint, Identity, ServerConfig};
 
@@ -78,6 +78,13 @@ const MAX_LAG_COMP_MS: u32 = 250;
 const MAX_CLIENT_FIRE_FUTURE_MS: u32 = 50;
 const RESPAWN_DELAY_MS: u32 = 3_000;
 const NEARBY_PLAYER_RADIUS_M: f32 = 12.0;
+
+/// How many fired balls a match reserves ids and client metadata for.
+///
+/// Matches the arena's own live-ball ceiling: the ids are a ring, so this is
+/// both the number of balls that can be in the air and the number of handles
+/// the join-time metadata has to carry.
+const CANNONBALL_POOL: usize = 24;
 const ROLLING_METRIC_SAMPLES: usize = 180;
 /// Per-player queue depth for each delivery lane. Datagrams cannot occupy
 /// reliable slots or wait behind a blocked reliable write. Exhausting reliable
@@ -1809,6 +1816,28 @@ struct HealthResponse {
     udp_verified: bool,
     wt_connection_attempts: u64,
     session_configs_served: u64,
+    /// Which destruction engine `/city` is configured to run, and the PhysX SDK
+    /// this binary linked. A deployment that cannot answer both cannot say what
+    /// it is running: the two Blast paths and the native stage need different
+    /// SDKs, and a successful build does not establish which one loaded.
+    destruction_backend: String,
+    physx_sdk: &'static str,
+}
+
+/// The PhysX SDK this binary was built against.
+///
+/// Recorded at build time by `physx-bridge/build.rs`, because the runtime
+/// cannot tell: both SDKs ship the same library names, and `LD_LIBRARY_PATH`
+/// takes precedence over the embedded rpath.
+fn linked_physx_sdk() -> &'static str {
+    #[cfg(feature = "native-destruction")]
+    {
+        option_env!("VIBE_PHYSX_SDK_ROOT").unwrap_or("unknown")
+    }
+    #[cfg(not(feature = "native-destruction"))]
+    {
+        "upstream"
+    }
 }
 
 async fn health_handler(State(state): State<SharedAppState>) -> Json<HealthResponse> {
@@ -1824,6 +1853,10 @@ async fn health_handler(State(state): State<SharedAppState>) -> Json<HealthRespo
         udp_verified: state.inner.wt_attempts.load(Ordering::Relaxed) > 0,
         wt_connection_attempts: state.inner.wt_attempts.load(Ordering::Relaxed),
         session_configs_served: state.inner.session_configs_served.load(Ordering::Relaxed),
+        destruction_backend: city::selected_backend()
+            .map(|backend| backend.as_str().to_string())
+            .unwrap_or_else(|error| format!("invalid: {error}")),
+        physx_sdk: linked_physx_sdk(),
     })
 }
 
@@ -2451,7 +2484,7 @@ async fn run_match_loop(
         .expect("selected authoritative physics backend should initialize");
     let world = VoxelWorld::new();
     seed_world_for_match(&mut arena, &match_id).expect("world document should instantiate");
-    let dynamic_body_handles = arena
+    let mut dynamic_body_handles: HashMap<u32, DynamicBodyMetaRuntime> = arena
         .snapshot_dynamic_bodies()
         .into_iter()
         .enumerate()
@@ -2468,6 +2501,27 @@ async fn run_match_loop(
             )
         })
         .collect();
+    // Fired balls get their handles here, before any client has joined, because
+    // the metadata packet a client receives on join is the only one it gets and
+    // it replaces rather than merges. A ball whose handle arrived later would
+    // be dropped by the client as an unknown body, which is to say invisible --
+    // and an invisible projectile is the exact thing this weapon exists to fix.
+    {
+        let radius = city::city_ball_radius_m();
+        let mut next_handle = u16::try_from(dynamic_body_handles.len() + 1)
+            .expect("snapshot V2 supports at most 65,535 dynamic bodies per match");
+        for id in arena.reserve_ball_pool(CANNONBALL_POOL) {
+            dynamic_body_handles.insert(
+                id,
+                DynamicBodyMetaRuntime {
+                    handle: next_handle,
+                    shape_type: SHAPE_SPHERE,
+                    half_extents_m: [radius; 3],
+                },
+            );
+            next_handle = next_handle.saturating_add(1);
+        }
+    }
     let vehicle_handles = arena
         .snapshot_vehicles()
         .into_iter()
@@ -2492,6 +2546,9 @@ async fn run_match_loop(
                 // the session config, so every client that joins has already
                 // agreed to this layout.
                 runtime.set_wire_version(city::city_wire_version(&match_id));
+                // The engine may refuse a step only on the native stage, and
+                // the arena must learn that from the city it actually opened.
+                arena.set_tolerate_rejected_steps(runtime.backend_name() == "native");
                 info!(
                     %match_id,
                     structures = runtime.manifest.structures.len(),
@@ -3620,7 +3677,7 @@ impl MatchState {
         if self.city.is_none() {
             return;
         }
-        let shots: Vec<(glam::Vec3, glam::Vec3)> = self
+        let shots: Vec<(glam::Vec3, glam::Vec3, u8)> = self
             .queued_shots
             .iter()
             .filter_map(|queued| {
@@ -3635,6 +3692,7 @@ impl MatchState {
                         state.position.z as f32,
                     ),
                     glam::Vec3::from_array(queued.cmd.dir),
+                    queued.cmd.weapon,
                 ))
             })
             .collect();
@@ -3642,7 +3700,26 @@ impl MatchState {
         let mut city = self.city.take().expect("checked above");
         let broken_before = city.stats().broken_bonds;
         let mut hits = 0u32;
-        for (origin, direction) in shots {
+        let mut balls = 0u32;
+        for (origin, direction, weapon) in shots {
+            // A cannonball is not routed into the city at all. It is thrown
+            // into the scene and then it is the scene's problem: what it hits
+            // and what that breaks is decided by PhysX solving its contacts,
+            // which is exactly how the engine's own demos deliver a shot.
+            if weapon == WEAPON_CANNONBALL {
+                let launched = self.arena.launch_ball(
+                    nalgebra::Vector3::new(origin.x, origin.y, origin.z),
+                    nalgebra::Vector3::new(direction.x, direction.y, direction.z),
+                    city::city_ball_radius_m(),
+                    city::city_ball_mass_kg(),
+                    city::city_ball_speed_ms(),
+                    city::city_ball_ttl_ticks(),
+                );
+                if launched.is_some() {
+                    balls += 1;
+                }
+                continue;
+            }
             #[cfg(feature = "destruction")]
             let world = self.arena.physx_world_mut();
             #[cfg(not(feature = "destruction"))]
@@ -3656,6 +3733,8 @@ impl MatchState {
                 match_id = %self.id,
                 shots = shot_count,
                 hits,
+                balls_launched = balls,
+                balls_live = self.arena.launched_ball_count(),
                 broken_bonds_before = broken_before,
                 "city shot routing"
             );
@@ -4895,6 +4974,14 @@ impl MatchState {
                     server_time_ms,
                     DeathCause::EnergyDepletion,
                 );
+                continue;
+            }
+
+            // A cannonball has already been thrown by route_city_shots. It
+            // hits things by colliding with them, so resolving it a second
+            // time as an instant ray would damage players the ball never
+            // reached. The fire rate and energy cost above still applied.
+            if queued.cmd.weapon == WEAPON_CANNONBALL {
                 continue;
             }
 

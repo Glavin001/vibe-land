@@ -15,6 +15,7 @@ import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { BODY_DEBUG_STATES, setBodyDebugEnabled, setBodyDebugStates } from './bodyDebugColors';
 import { formatPerfSweep, formatPerfSweepMobile, runPerfSweep } from './perfSweep';
 import { renderStats } from './renderStats';
+import { cannonballEnabled, onCannonballChange, setCannonballEnabled } from './shotMode';
 import { isTouchDevice } from '../device';
 
 /** Matches the server's CityStatsSnapshot in server/src/main.rs. */
@@ -293,6 +294,11 @@ export function CityStatsOverlay({
   const [savedName, setSavedName] = useState<string | null>(null);
   const [shadows, setShadows] = useState(shadowsEnabled);
   const [ao, setAo] = useState(ambientOcclusionPreferred);
+  const [cannonball, setCannonball] = useState(cannonballEnabled);
+  // The setting can also be changed from outside this component (the e2e
+  // bridge does), and a button whose label disagrees with what the next shot
+  // fires is worse than no button.
+  useEffect(() => onCannonballChange(() => setCannonball(cannonballEnabled())), []);
   const [cityTex, setCityTex] = useState<CityTextureDetail>(cityTextureDetail);
   const [skyIbl, setSkyIbl] = useState(skyIblEnabledSetting);
   const [skyDome, setSkyDome] = useState(skyDomeEnabled);
@@ -706,6 +712,23 @@ export function CityStatsOverlay({
               : resetState === 'failed'
                 ? 'RESET FAILED'
                 : 'RESET CITY'}
+        </button>
+      </div>
+
+      <div style={{ ...row, marginBottom: 2 }}>
+        <button
+          type="button"
+          onClick={() => {
+            const next = !cannonball;
+            setCannonballEnabled(next);
+            setCannonball(next);
+          }}
+          style={{ ...toggleButton, position: 'static', width: '100%' }}
+          data-testid="city-cannonball-toggle"
+          aria-label="Toggle cannonball shot"
+          title="CANNONBALL throws a visible 1.5 t ball that flies, lands and breaks what it hits, the way the PhysX destruction demos deliver a shot. RIFLE is the instant hitscan."
+        >
+          {cannonball ? 'SHOT: CANNONBALL' : 'SHOT: RIFLE'}
         </button>
       </div>
 

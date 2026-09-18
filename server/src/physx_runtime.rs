@@ -1,6 +1,6 @@
 #![cfg(feature = "physx-gpu")]
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 
 use anyhow::{Context, Result};
 use nalgebra::{DMatrix, Vector3};
@@ -38,6 +38,8 @@ const NS_PLAYER: u32 = 0x4000_0000;
 const NS_VEHICLE: u32 = 0x6000_0000;
 const NS_BATTERY: u32 = 0x7000_0000;
 const ID_MASK: u32 = 0x0fff_ffff;
+/// The namespace half of an entity id. Ids are only unique within one.
+const NS_MASK: u32 = 0xf000_0000;
 
 #[derive(Clone)]
 struct PlayerState {
@@ -60,6 +62,30 @@ struct DynamicMeta {
     shape_type: u8,
 }
 
+/// Gap between the shooter's eye and the back of a fired ball.
+///
+/// The player is a capsule about 0.4 m across, so a ball created any closer
+/// starts overlapping it and the first thing the solver does is push the
+/// player, not the ball.
+const MUZZLE_CLEARANCE_M: f32 = 0.6;
+
+/// How many fired balls may exist at once.
+///
+/// Each one is a real rigid body with real contacts. Twenty-four is a few
+/// seconds of sustained fire, which is as far ahead as anyone watches a shot.
+const MAX_LIVE_LAUNCHED_BALLS: usize = 24;
+
+/// A ball that was fired as a projectile, and the tick it gets cleaned up on.
+///
+/// Fired balls are ordinary networked dynamic bodies, so the client already
+/// knows how to draw them and nothing new goes on the wire. What they are not
+/// is permanent: without a retirement every trigger pull would leave another
+/// tonne of steel in the scene forever.
+struct LaunchedBall {
+    id: u32,
+    expires_at: u64,
+}
+
 struct VehicleMeta {
     vehicle_type: u8,
     driver_id: u32,
@@ -75,6 +101,18 @@ struct BatteryState {
 
 /// Rust gameplay adapter over the single-threaded C++ PhysX scene.
 pub struct PhysxPhysicsArena {
+    /// Whether a step the engine refuses to complete is survivable.
+    ///
+    /// True only for PhysX's native destruction stage, which documents a
+    /// rejected step as an outcome: it declines to publish a step whose stress
+    /// solve did not converge. Every other backend treats a failed step as the
+    /// engine being broken, where continuing would publish a fiction.
+    ///
+    /// Set from the backend that is actually running rather than read from the
+    /// environment, because the two can disagree -- and when they did, a
+    /// rejected step went down the path that reads a scene which never
+    /// finished stepping.
+    tolerate_rejected_steps: bool,
     world: bridge::World,
     config: MoveConfig,
     players: HashMap<u32, PlayerState>,
@@ -87,6 +125,22 @@ pub struct PhysxPhysicsArena {
     next_static_id: u32,
     next_dynamic_id: u32,
     next_battery_id: u32,
+    /// Ids reserved for fired balls, used as a ring.
+    ///
+    /// Clients learn a dynamic body's handle, shape and size from one metadata
+    /// packet sent when they join, and that packet is a full replacement rather
+    /// than a delta. A ball given a fresh id at fire time would therefore be
+    /// invisible: the snapshot would carry a handle the client has no entry
+    /// for, and it would be dropped. Reserving the ids up front means the
+    /// metadata every client already has covers every ball the match can fire.
+    ball_pool: Vec<u32>,
+    ball_cursor: usize,
+    /// Fired balls, oldest first, with the tick each one retires on.
+    launched_balls: VecDeque<LaunchedBall>,
+    /// Counts accepted steps, which is what a ball's lifetime is measured in.
+    /// Deliberately not the match tick: this is arena bookkeeping and must not
+    /// depend on a caller remembering to pass a clock.
+    launch_tick: u64,
     material_field: Option<TerrainMaterialField>,
     /// The GPU buffer capacities this scene was created with. Published beside
     /// the high-water marks so utilisation reads as a ratio: with no caps on
@@ -137,6 +191,7 @@ impl PhysxPhysicsArena {
         let world = bridge::World::new(world_config)
             .context("failed to initialize required PhysX GPU scene")?;
         Ok(Self {
+            tolerate_rejected_steps: false,
             world,
             config,
             players: HashMap::new(),
@@ -148,6 +203,10 @@ impl PhysxPhysicsArena {
             runtime_static: HashMap::new(),
             next_static_id: 1,
             next_dynamic_id: 1,
+            ball_pool: Vec::new(),
+            ball_cursor: 0,
+            launched_balls: VecDeque::new(),
+            launch_tick: 0,
             next_battery_id: 1,
             material_field: None,
             contact_events: Vec::new(),
@@ -700,6 +759,7 @@ impl PhysxPhysicsArena {
     /// scene-free observer work (the deferred city encode/send bundle) inside
     /// the GPU wait instead of after it.
     pub fn begin_dynamics(&mut self) {
+        self.expire_launched_balls();
         self.drive_vehicles();
         let started = std::time::Instant::now();
         self.world
@@ -716,9 +776,20 @@ impl PhysxPhysicsArena {
     /// the caller overlapped, which reports itself).
     pub fn finish_dynamics(&mut self) -> (f32, f32) {
         let started = std::time::Instant::now();
-        self.world
-            .end_step()
-            .expect("PhysX GPU simulation end_step failed");
+        let completed = self.world.end_step();
+        #[cfg(feature = "native-destruction")]
+        if let Err(error) = &completed {
+            if self.tolerate_rejected_steps {
+                report_rejected_step(&self.world, "end_step", error);
+                // Same rule as the unsplit path: no readbacks from a step that
+                // did not complete.
+                return (
+                    self.last_vehicle_control_ms,
+                    self.pending_begin_ms + started.elapsed().as_secs_f32() * 1000.0,
+                );
+            }
+        }
+        completed.expect("PhysX GPU simulation end_step failed");
         let after_step = std::time::Instant::now();
         self.post_step_readbacks(after_step);
         let ms =
@@ -728,9 +799,28 @@ impl PhysxPhysicsArena {
     }
 
     pub fn step_vehicles_and_dynamics(&mut self, _dt: f32) -> (f32, f32) {
+        self.expire_launched_balls();
         self.drive_vehicles();
         let started = std::time::Instant::now();
-        self.world.step().expect("PhysX GPU simulation step failed");
+        if let Err(error) = self.world.step() {
+            #[cfg(feature = "native-destruction")]
+            if self.tolerate_rejected_steps {
+                report_rejected_step(&self.world, "step", &error);
+                // Nothing after this point may read the scene. A step that did
+                // not complete has no results to read: draining contacts and
+                // body poses from it is reading half-written state, and the
+                // caches from the last accepted step are the only coherent
+                // answer available. Returning here keeps them.
+                return (
+                    self.last_vehicle_control_ms,
+                    started.elapsed().as_secs_f32() * 1000.0,
+                );
+            } else {
+                panic!("PhysX GPU simulation step failed: {error}");
+            }
+            #[cfg(not(feature = "native-destruction"))]
+            panic!("PhysX GPU simulation step failed: {error}");
+        }
         // `dynamics_ms` used to be ONE bracket around the step and everything
         // below it, so three separate FFI readbacks and the player refresh were
         // folded into a number labelled as the simulation step. Only the step
@@ -747,6 +837,12 @@ impl PhysxPhysicsArena {
 
     /// Everything the tick must read back once results are fetched — shared
     /// verbatim by the combined and split step paths so they cannot drift.
+    /// Declare that the destruction backend in this scene can legitimately
+    /// have a step refused. See `tolerate_rejected_steps`.
+    pub fn set_tolerate_rejected_steps(&mut self, tolerate: bool) {
+        self.tolerate_rejected_steps = tolerate;
+    }
+
     fn post_step_readbacks(&mut self, after_step: std::time::Instant) {
         self.contact_events = self
             .world
@@ -848,6 +944,14 @@ impl PhysxPhysicsArena {
         self.current_body_snapshots()
             .into_iter()
             .filter_map(|body| {
+                // User ids are only unique WITHIN a namespace: a battery and a
+                // dynamic body can both be number 5. Joining on the id alone
+                // matched whichever the readback listed first, so a battery's
+                // pose could be published under a dynamic body's id and that
+                // body would appear frozen wherever the battery stands.
+                if body.entity_id & NS_MASK != NS_DYNAMIC {
+                    return None;
+                }
                 let id = body.user_id;
                 let meta = self.dynamic.get(&id)?;
                 Some((
@@ -1024,6 +1128,139 @@ impl PhysxPhysicsArena {
         self.next_dynamic_id = self.next_dynamic_id.saturating_add(1);
         self.spawn_dynamic_ball_with_id(id, position, radius);
         id
+    }
+
+    /// Reserve the ids fired balls will use, and return them.
+    ///
+    /// Called once while the match is being built, so the ids can go into the
+    /// dynamic-body metadata every client receives on join. See `ball_pool`.
+    pub fn reserve_ball_pool(&mut self, count: usize) -> Vec<u32> {
+        for _ in 0..count {
+            let id = self.next_dynamic_id;
+            self.next_dynamic_id = self.next_dynamic_id.saturating_add(1);
+            self.ball_pool.push(id);
+        }
+        self.ball_pool.clone()
+    }
+
+    /// Throw a visible ball from `position` along `direction` and return its id.
+    ///
+    /// This is the shot the engine's own destruction demos fire. It matters
+    /// that it is a real body and not an effect: the native stage reads loads
+    /// from contacts PhysX solved, so the ball the player watches fly is the
+    /// same object that breaks the bonds when it lands. Returns None rather
+    /// than panicking on a malformed shot, because the caller is a network
+    /// packet.
+    pub fn launch_ball(
+        &mut self,
+        position: Vector3<f32>,
+        direction: Vector3<f32>,
+        radius: f32,
+        mass: f32,
+        speed: f32,
+        ttl_ticks: u32,
+    ) -> Option<u32> {
+        let length =
+            (direction.x * direction.x + direction.y * direction.y + direction.z * direction.z)
+                .sqrt();
+        if !length.is_finite()
+            || length <= 0.0
+            || !(radius > 0.0)
+            || !(mass > 0.0)
+            || !(speed > 0.0)
+        {
+            return None;
+        }
+        let unit = direction / length;
+        // Clear of the shooter. A ball spawned inside the player's own capsule
+        // resolves by launching the player instead of the ball.
+        let muzzle = position + unit * (radius + MUZZLE_CLEARANCE_M);
+        // Round-robin through the reserved ids, retiring whatever still holds
+        // the one that comes up. Without a reservation (tests, and any caller
+        // that has not asked for one) a fresh id is fine, because nothing is
+        // watching over a network.
+        let id = if self.ball_pool.is_empty() {
+            let fresh = self.next_dynamic_id;
+            self.next_dynamic_id = self.next_dynamic_id.saturating_add(1);
+            fresh
+        } else {
+            let slot = self.ball_cursor % self.ball_pool.len();
+            self.ball_cursor = slot.wrapping_add(1);
+            let reserved = self.ball_pool[slot];
+            if self.dynamic.contains_key(&reserved) {
+                self.retire_launched_ball(reserved);
+                self.launched_balls.retain(|ball| ball.id != reserved);
+            }
+            reserved
+        };
+        let entity = NS_DYNAMIC | (id & ID_MASK);
+        if let Err(error) = self.world.launch_dynamic_ball(bridge::LaunchedBallDesc {
+            entity_id: entity,
+            user_id: id,
+            pose: pose(muzzle, [0.0, 0.0, 0.0, 1.0]),
+            radius,
+            mass,
+            linear_velocity: vec3(unit * speed),
+            collision_group: GROUP_DYNAMIC,
+            collision_mask: ALL_GROUPS,
+        }) {
+            tracing::warn!(%error, "ball could not be launched");
+            return None;
+        }
+        self.snapshots_valid = false;
+        self.dynamic.insert(
+            id,
+            DynamicMeta {
+                half_extents: [radius; 3],
+                shape_type: SHAPE_SPHERE,
+            },
+        );
+        self.launched_balls.push_back(LaunchedBall {
+            id,
+            expires_at: self.launch_tick + u64::from(ttl_ticks.max(1)),
+        });
+        // Bounded, and the bound is enforced by retiring the oldest rather than
+        // refusing the newest: a player holding the trigger should keep seeing
+        // their shots, and the scene should not grow without limit.
+        while self.launched_balls.len() > MAX_LIVE_LAUNCHED_BALLS {
+            if let Some(oldest) = self.launched_balls.pop_front() {
+                self.retire_launched_ball(oldest.id);
+            }
+        }
+        Some(id)
+    }
+
+    /// How many fired balls are currently in the scene.
+    pub fn launched_ball_count(&self) -> usize {
+        self.launched_balls.len()
+    }
+
+    /// Remove fired balls whose lifetime has run out.
+    ///
+    /// Called before a step rather than after one, so a retired ball is gone
+    /// from both the scene and the wire in the same tick. Doing it after the
+    /// step would publish one more frame of a body that no longer exists.
+    fn expire_launched_balls(&mut self) {
+        self.launch_tick = self.launch_tick.saturating_add(1);
+        while self
+            .launched_balls
+            .front()
+            .is_some_and(|ball| ball.expires_at <= self.launch_tick)
+        {
+            let ball = self.launched_balls.pop_front().expect("checked above");
+            self.retire_launched_ball(ball.id);
+        }
+    }
+
+    fn retire_launched_ball(&mut self, id: u32) {
+        // Dropped from the metadata map first: `snapshot_dynamic_bodies` joins
+        // on it, so the ball stops being published even if the actor removal
+        // is refused for a reason we have not thought of.
+        self.dynamic.remove(&id);
+        if let Err(error) = self.world.remove_actor(NS_DYNAMIC | (id & ID_MASK)) {
+            tracing::warn!(%error, id, "fired ball could not be removed");
+        }
+        self.snapshots_valid = false;
     }
 
     pub fn spawn_battery(&mut self, position: Vec3d, energy: f32, radius: f32, height: f32) -> u32 {
@@ -1544,5 +1781,48 @@ mod tests {
         assert_eq!(arena.player_vehicle_id(10), None);
         assert!(arena.players[&10].controller_present);
         assert_eq!(arena.vehicles[&7].driver_id, 0);
+    }
+}
+
+/// Report a rejected PhysX step instead of taking the match down with it.
+///
+/// On the native destruction backend a step CAN be rejected. Panicking turns one
+/// rejected tick into a dead match, which is strictly worse than a frozen one --
+/// and it destroys the only evidence of why. The scene keeps its previous
+/// accepted state, so the next tick simply tries again.
+///
+/// A slow stress solve is no longer one of the reasons. The stage used to fail
+/// the whole simulation step when the solve had not converged inside one tick's
+/// iteration budget, which is not a fault at all: the solver keeps its
+/// warm-started iterate and refines it on the next tick. That check is gone
+/// from the engine, so what reaches here is a real fault.
+///
+/// Every other backend still fails loudly: there, a failed step means the
+/// engine itself is broken and continuing would publish a fiction.
+#[cfg(feature = "native-destruction")]
+fn report_rejected_step(world: &vibe_land_physx_bridge::World, phase: &str, error: &dyn std::fmt::Display) {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static REPORTED: AtomicU64 = AtomicU64::new(0);
+    let n = REPORTED.fetch_add(1, Ordering::Relaxed);
+    // Bounded: a persistent fault would otherwise fill the log faster than
+    // anyone can read it. The exact count stays in the stage's own spans.
+    if n < 8 || n % 600 == 0 {
+        match world.native_last_status() {
+            Ok(status) => tracing::error!(
+                %error,
+                phase,
+                rejected_steps = n + 1,
+                error_bits = status.error,
+                iterations = status.iterations,
+                converged = status.converged,
+                "PhysX rejected this step; the city keeps its last accepted state \
+                 (error bit 8192 = contact lifetime space exhausted, 32 = topology \
+                 transaction, 2 = nonfinite stress)"
+            ),
+            Err(status_error) => tracing::error!(
+                %error, phase, %status_error,
+                "PhysX rejected this step and its status could not be read"
+            ),
+        }
     }
 }

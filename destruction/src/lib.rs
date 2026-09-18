@@ -49,6 +49,10 @@ pub mod core_runtime;
 // pure-Rust CI-safe one this gate exists to protect.
 #[cfg(feature = "physx")]
 pub mod runtime;
+/// PhysX's own GPU destruction stage. Behind a feature because it needs the
+/// physx-2 SDK; additive with the Blast paths so one binary carries all three.
+#[cfg(feature = "native-destruction")]
+pub mod native_runtime;
 
 #[cfg(feature = "physx")]
 pub mod rig;

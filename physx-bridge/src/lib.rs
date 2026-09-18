@@ -198,6 +198,24 @@ pub struct DynamicSphereDesc {
     pub collision_mask: u32,
 }
 
+/// A heavy sphere thrown into the world along `linear_velocity`.
+///
+/// See `FfiLaunchedBallDesc`: this is deliberately not `DynamicSphereDesc` with
+/// an impulse afterwards, because a prop's damping would start eating the
+/// muzzle speed the moment it existed.
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[repr(C)]
+pub struct LaunchedBallDesc {
+    pub entity_id: u32,
+    pub user_id: u32,
+    pub pose: Pose,
+    pub radius: f32,
+    pub mass: f32,
+    pub linear_velocity: Vec3,
+    pub collision_group: u32,
+    pub collision_mask: u32,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[repr(C)]
 pub struct CapsulePlayerDesc {
@@ -735,6 +753,21 @@ impl World {
         }
     }
 
+    pub fn launch_dynamic_ball(&mut self, desc: LaunchedBallDesc) -> Result<(), BridgeError> {
+        #[cfg(feature = "gpu")]
+        {
+            self.inner
+                .pin_mut()
+                .launch_dynamic_ball(&desc.into())
+                .map_err(operation_error)
+        }
+        #[cfg(not(feature = "gpu"))]
+        {
+            let _ = desc;
+            Err(stub_unavailable())
+        }
+    }
+
     pub fn add_capsule_player(&mut self, desc: CapsulePlayerDesc) -> Result<(), BridgeError> {
         #[cfg(feature = "gpu")]
         {
@@ -1172,6 +1205,160 @@ impl World {
             .map_err(operation_error)
     }
 
+    // --- PhysX's own GPU destruction stage -----------------------------------
+
+    /// Attach the stage to this scene. Fails when the linked SDK has none, or
+    /// when the scene is configured in a way the stage does not support.
+    #[cfg(feature = "native-destruction")]
+    pub fn native_attach(&mut self) -> Result<(), BridgeError> {
+        self.inner.pin_mut().native_attach().map_err(operation_error)
+    }
+
+    #[cfg(feature = "native-destruction")]
+    #[allow(clippy::too_many_arguments)]
+    pub fn native_create_destructible(
+        &mut self,
+        structure_id: u32,
+        pose: Pose,
+        nodes: &[ChunkNodeDesc],
+        bonds: &[ChunkBondDesc],
+        settings: DestructibleSettings,
+        collision_group: u32,
+        collision_mask: u32,
+    ) -> Result<(), BridgeError> {
+        let ffi_nodes: Vec<ffi::FfiChunkNodeDesc> = nodes.iter().cloned().map(Into::into).collect();
+        let ffi_bonds: Vec<ffi::FfiChunkBondDesc> = bonds.iter().cloned().map(Into::into).collect();
+        self.inner
+            .pin_mut()
+            .native_create_destructible(
+                structure_id,
+                &pose.into(),
+                &ffi_nodes,
+                &ffi_bonds,
+                &settings.into(),
+                collision_group,
+                collision_mask,
+            )
+            .map_err(operation_error)
+    }
+
+    /// Hand the authored asset to the stage. The scene must already have
+    /// completed one step, which is what gives chunks their GPU identities.
+    #[cfg(feature = "native-destruction")]
+    pub fn native_configure(
+        &mut self,
+        config: NativeConfig,
+    ) -> Result<NativeConfigured, BridgeError> {
+        self.inner
+            .pin_mut()
+            .native_configure(&config.into())
+            .map(Into::into)
+            .map_err(operation_error)
+    }
+
+    /// The stage's current status, consuming nothing. Use it to find out why a
+    /// step was rejected, since a rejected step is never observed.
+    #[cfg(feature = "native-destruction")]
+    pub fn native_last_status(&self) -> Result<NativeStatus, BridgeError> {
+        self.inner
+            .native_last_status()
+            .map(Into::into)
+            .map_err(operation_error)
+    }
+
+    /// Observe the step that just completed.
+    #[cfg(feature = "native-destruction")]
+    pub fn native_tick(&mut self) -> Result<NativeStatus, BridgeError> {
+        self.inner
+            .pin_mut()
+            .native_tick()
+            .map(Into::into)
+            .map_err(operation_error)
+    }
+
+    #[cfg(feature = "native-destruction")]
+    pub fn native_fire_round(&mut self, desc: RoundDesc) -> Result<u32, BridgeError> {
+        self.inner
+            .pin_mut()
+            .native_fire_round(&desc.into())
+            .map_err(operation_error)
+    }
+
+    #[cfg(feature = "native-destruction")]
+    pub fn native_take_broken_bonds(&mut self) -> Result<Vec<BrokenBondEvent>, BridgeError> {
+        self.inner
+            .pin_mut()
+            .native_take_broken_bonds()
+            .map(|events| events.into_iter().map(Into::into).collect())
+            .map_err(operation_error)
+    }
+
+    #[cfg(feature = "native-destruction")]
+    pub fn native_take_chunk_migrations(
+        &mut self,
+    ) -> Result<Vec<ChunkMigrationEvent>, BridgeError> {
+        self.inner
+            .pin_mut()
+            .native_take_chunk_migrations()
+            .map(|events| events.into_iter().map(Into::into).collect())
+            .map_err(operation_error)
+    }
+
+    #[cfg(feature = "native-destruction")]
+    pub fn native_take_island_events(&mut self) -> Result<Vec<IslandBodyEvent>, BridgeError> {
+        self.inner
+            .pin_mut()
+            .native_take_island_events()
+            .map(|events| events.into_iter().map(Into::into).collect())
+            .map_err(operation_error)
+    }
+
+    #[cfg(feature = "native-destruction")]
+    pub fn native_chunk_body_snapshots(
+        &self,
+    ) -> Result<&[ffi::FfiChunkBodySnapshot], BridgeError> {
+        self.inner.native_chunk_body_snapshots().map_err(operation_error)
+    }
+
+    #[cfg(feature = "native-destruction")]
+    pub fn native_bond_stress_rows(
+        &self,
+        structure_id: u32,
+    ) -> Result<Vec<ffi::FfiBondStressRow>, BridgeError> {
+        self.inner
+            .native_bond_stress_rows(structure_id)
+            .map_err(operation_error)
+    }
+
+    /// Stage statistics. Spans are stashed for `take_native_spans`, mirroring
+    /// the Blast path so both backends feed the same telemetry channel.
+    #[cfg(feature = "native-destruction")]
+    pub fn native_stats(&self) -> Result<DestructionStats, BridgeError> {
+        self.inner
+            .native_stats()
+            .map(|mut ffi_stats| {
+                *self.destruction_spans.borrow_mut() =
+                    convert_spans(std::mem::take(&mut ffi_stats.extra_spans));
+                ffi_stats.into()
+            })
+            .map_err(operation_error)
+    }
+
+    #[cfg(feature = "native-destruction")]
+    pub fn native_validate_mappings(&self) -> Result<bool, BridgeError> {
+        self.inner.native_validate_mappings().map_err(operation_error)
+    }
+
+    #[cfg(feature = "native-destruction")]
+    pub fn native_clear(&mut self) -> Result<(), BridgeError> {
+        self.inner.pin_mut().native_clear().map_err(operation_error)
+    }
+
+    #[cfg(feature = "native-destruction")]
+    pub fn native_configured(&self) -> Result<bool, BridgeError> {
+        self.inner.native_configured().map_err(operation_error)
+    }
+
     pub fn chunk_body_snapshots(&self) -> Result<&[ffi::FfiChunkBodySnapshot], BridgeError> {
         self.inner.chunk_body_snapshots().map_err(operation_error)
     }
@@ -1398,6 +1585,23 @@ mod ffi {
         collision_mask: u32,
     }
 
+    /// A heavy sphere thrown into the world, not a prop dropped into it.
+    ///
+    /// Separate from `FfiDynamicSphereDesc` because the two want opposite
+    /// things: a prop gets damping so it stops rolling, a thrown ball must keep
+    /// the speed it was launched with and let gravity and contacts decide the
+    /// rest.
+    struct FfiLaunchedBallDesc {
+        entity_id: u32,
+        user_id: u32,
+        pose: FfiPose,
+        radius: f32,
+        mass: f32,
+        linear_velocity: FfiVec3,
+        collision_group: u32,
+        collision_mask: u32,
+    }
+
     struct FfiCapsulePlayerDesc {
         entity_id: u32,
         user_id: u32,
@@ -1570,6 +1774,87 @@ mod ffi {
         linear_velocity: FfiVec3,
         angular_velocity: FfiVec3,
         chunk_ids: Vec<u32>,
+    }
+
+    /// How the native destruction stage is configured, once, at attach.
+    ///
+    /// Everything here is a physical or budget choice the caller owns. The
+    /// correction limit is not among them: the stage is always configured for
+    /// exactly one corrected pass, because zero means it refuses every
+    /// membership change and the city can never break.
+    struct FfiNativeConfig {
+        /// Stress iterations per evaluation. This is physics, not a speed
+        /// dial: below convergence the solver reports its residual as stress
+        /// and residual breaks bonds, so the stage rejects a step it could not
+        /// converge rather than publishing one.
+        max_iterations: u32,
+        tolerance: f32,
+        warm_start: bool,
+        damage_rate: f32,
+        bend_gain_max: f32,
+        fibre_bending: bool,
+        /// Contact-pair storage to touch up front, so a first impact does not
+        /// page-fault on the simulation thread.
+        reserved_contact_pairs: u32,
+        preserve_unchanged_contact_pairs: bool,
+        gpu_island_repair: bool,
+        /// How often the whole-graph bond verdict read runs, in ticks. The
+        /// value it produces is published with its age beside it.
+        verdict_sample_ticks: u32,
+    }
+
+    /// What the stage accepted, so the caller can report the real shape of the
+    /// city rather than what it intended to build.
+    struct FfiNativeConfigured {
+        chunks: u32,
+        bonds: u32,
+        clusters: u32,
+        materials: u32,
+        reserved_pairs: u32,
+    }
+
+    /// One completed engine step, as the stage describes it.
+    struct FfiNativeStatus {
+        frame: u64,
+        /// Engine error bits. Non-zero means the step was not completed and
+        /// nothing was observed from it.
+        error: u32,
+        iterations: u32,
+        converged: bool,
+        normal_contacts: u32,
+        friction_anchors: u32,
+        bond_commands: u32,
+        broken_bonds: u32,
+        crushed_chunks: u32,
+        correction_passes: u32,
+        stress_passes: u32,
+        post_correction_broken_bonds: u32,
+        committed_chunks: u32,
+        committed_bonds: u32,
+        cluster_count: u32,
+        stress_island_count: u32,
+        /// False when this frame produced no observation: an error, or a frame
+        /// already consumed. Events and snapshots are unchanged in that case.
+        observed: bool,
+        /// The scene cannot continue (contact lifetime space exhausted). The
+        /// city is frozen from here; the match should be reported, not faked.
+        degraded: bool,
+        missed_frames: u32,
+    }
+
+    /// One shot, delivered as a physical body.
+    ///
+    /// The stage takes loads only from PhysX's own solved contacts, so there is
+    /// no force to inject: a hitscan round becomes a real body carrying the
+    /// round's momentum for the few ticks it takes to strike. Mass follows from
+    /// momentum and speed rather than being chosen.
+    struct FfiRoundDesc {
+        position: FfiVec3,
+        direction: FfiVec3,
+        momentum_ns: f32,
+        radius: f32,
+        speed: f32,
+        ttl_ticks: u32,
     }
 
     struct FfiChunkBodySnapshot {
@@ -1756,6 +2041,7 @@ mod ffi {
         ) -> Result<()>;
         fn add_dynamic_box(self: Pin<&mut World>, desc: &FfiDynamicBoxDesc) -> Result<()>;
         fn add_dynamic_sphere(self: Pin<&mut World>, desc: &FfiDynamicSphereDesc) -> Result<()>;
+        fn launch_dynamic_ball(self: Pin<&mut World>, desc: &FfiLaunchedBallDesc) -> Result<()>;
         fn add_capsule_player(self: Pin<&mut World>, desc: &FfiCapsulePlayerDesc) -> Result<()>;
         fn add_vehicle_chassis(self: Pin<&mut World>, desc: &FfiVehicleChassisDesc) -> Result<()>;
         fn remove_actor(self: Pin<&mut World>, entity_id: u32) -> Result<()>;
@@ -1843,11 +2129,60 @@ mod ffi {
         fn resim_capture(self: Pin<&mut World>) -> Result<u32>;
         fn resim_restore(self: Pin<&mut World>) -> Result<bool>;
 
+        /// PhysX's own GPU destruction stage. Every call must run outside a
+        /// step: the stage is configured and observed between simulates,
+        /// never during one.
+        fn native_attach(self: Pin<&mut World>) -> Result<()>;
+        fn native_create_destructible(
+            self: Pin<&mut World>,
+            structure_id: u32,
+            pose: &FfiPose,
+            nodes: &[FfiChunkNodeDesc],
+            bonds: &[FfiChunkBondDesc],
+            settings: &FfiDestructibleSettings,
+            collision_group: u32,
+            collision_mask: u32,
+        ) -> Result<()>;
+        fn native_configure(
+            self: Pin<&mut World>,
+            config: &FfiNativeConfig,
+        ) -> Result<FfiNativeConfigured>;
+        fn native_tick(self: Pin<&mut World>) -> Result<FfiNativeStatus>;
+        fn native_last_status(self: &World) -> Result<FfiNativeStatus>;
+        fn native_fire_round(self: Pin<&mut World>, desc: &FfiRoundDesc) -> Result<u32>;
+        fn native_take_broken_bonds(self: Pin<&mut World>) -> Result<Vec<FfiBrokenBondEvent>>;
+        fn native_take_chunk_migrations(
+            self: Pin<&mut World>,
+        ) -> Result<Vec<FfiChunkMigrationEvent>>;
+        fn native_take_island_events(self: Pin<&mut World>) -> Result<Vec<FfiIslandBodyEvent>>;
+        fn native_chunk_body_snapshots(self: &World) -> Result<&[FfiChunkBodySnapshot]>;
+        fn native_bond_stress_rows(
+            self: &World,
+            structure_id: u32,
+        ) -> Result<Vec<FfiBondStressRow>>;
+        fn native_stats(self: &World) -> Result<FfiDestructionStats>;
+        fn native_validate_mappings(self: &World) -> Result<bool>;
+        fn native_clear(self: Pin<&mut World>) -> Result<()>;
+        fn native_configured(self: &World) -> Result<bool>;
+        /// Network entity id for a native body, so the Rust id layout and the
+        /// C++ mirror can be asserted equal instead of assumed equal.
+        fn native_entity_id(structure_id: u32, island_serial: u32) -> u32;
+
         /// Raw PhysX handles, so the blast-stress-solver core can attach a
         /// backend to this scene instead of creating a second one.
         fn scene_ptr(self: &World) -> Result<usize>;
         fn physics_ptr(self: &World) -> Result<usize>;
     }
+}
+
+/// Network entity id for a native destruction body, from the C++ mirror.
+///
+/// Exposed so a test can assert the mirror and `destruction/src/ids.rs` agree
+/// rather than assuming it: if those two ever disagree, every body on the wire
+/// is renamed and the client silently draws the wrong chunks.
+#[cfg(feature = "native-destruction")]
+pub fn native_entity_id(structure_id: u32, island_serial: u32) -> u32 {
+    ffi::native_entity_id(structure_id, island_serial)
 }
 
 #[cfg(feature = "gpu")]
@@ -1939,6 +2274,20 @@ impl_ffi_from!(
         pose,
         radius,
         mass,
+        collision_group,
+        collision_mask,
+    }
+);
+#[cfg(feature = "gpu")]
+impl_ffi_from!(
+    LaunchedBallDesc,
+    ffi::FfiLaunchedBallDesc {
+        entity_id,
+        user_id,
+        pose,
+        radius,
+        mass,
+        linear_velocity,
         collision_group,
         collision_mask,
     }
@@ -2191,6 +2540,146 @@ impl From<ffi::FfiChunkMigrationEvent> for ChunkMigrationEvent {
             chunk_id: value.chunk_id,
             from_island: value.from_island,
             to_island: value.to_island,
+        }
+    }
+}
+
+/// Configuration for PhysX's own destruction stage.
+#[cfg(feature = "native-destruction")]
+#[derive(Clone, Copy, Debug)]
+pub struct NativeConfig {
+    pub max_iterations: u32,
+    pub tolerance: f32,
+    pub warm_start: bool,
+    pub damage_rate: f32,
+    pub bend_gain_max: f32,
+    pub fibre_bending: bool,
+    pub reserved_contact_pairs: u32,
+    pub preserve_unchanged_contact_pairs: bool,
+    pub gpu_island_repair: bool,
+    pub verdict_sample_ticks: u32,
+}
+
+#[cfg(feature = "native-destruction")]
+impl From<NativeConfig> for ffi::FfiNativeConfig {
+    fn from(v: NativeConfig) -> Self {
+        Self {
+            max_iterations: v.max_iterations,
+            tolerance: v.tolerance,
+            warm_start: v.warm_start,
+            damage_rate: v.damage_rate,
+            bend_gain_max: v.bend_gain_max,
+            fibre_bending: v.fibre_bending,
+            reserved_contact_pairs: v.reserved_contact_pairs,
+            preserve_unchanged_contact_pairs: v.preserve_unchanged_contact_pairs,
+            gpu_island_repair: v.gpu_island_repair,
+            verdict_sample_ticks: v.verdict_sample_ticks,
+        }
+    }
+}
+
+/// What the stage accepted at configuration.
+#[cfg(feature = "native-destruction")]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct NativeConfigured {
+    pub chunks: u32,
+    pub bonds: u32,
+    pub clusters: u32,
+    pub materials: u32,
+    pub reserved_pairs: u32,
+}
+
+#[cfg(feature = "native-destruction")]
+impl From<ffi::FfiNativeConfigured> for NativeConfigured {
+    fn from(v: ffi::FfiNativeConfigured) -> Self {
+        Self {
+            chunks: v.chunks,
+            bonds: v.bonds,
+            clusters: v.clusters,
+            materials: v.materials,
+            reserved_pairs: v.reserved_pairs,
+        }
+    }
+}
+
+/// One completed engine step as the destruction stage describes it.
+///
+/// `observed` false means this tick produced no events or snapshots -- either
+/// the step was rejected (`error` non-zero) or its frame was already consumed.
+/// Callers must not treat that as "nothing happened in the world".
+#[cfg(feature = "native-destruction")]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct NativeStatus {
+    pub frame: u64,
+    pub error: u32,
+    pub iterations: u32,
+    pub converged: bool,
+    pub normal_contacts: u32,
+    pub friction_anchors: u32,
+    pub bond_commands: u32,
+    pub broken_bonds: u32,
+    pub crushed_chunks: u32,
+    pub correction_passes: u32,
+    pub stress_passes: u32,
+    pub post_correction_broken_bonds: u32,
+    pub committed_chunks: u32,
+    pub committed_bonds: u32,
+    pub cluster_count: u32,
+    pub stress_island_count: u32,
+    pub observed: bool,
+    pub degraded: bool,
+    pub missed_frames: u32,
+}
+
+#[cfg(feature = "native-destruction")]
+impl From<ffi::FfiNativeStatus> for NativeStatus {
+    fn from(v: ffi::FfiNativeStatus) -> Self {
+        Self {
+            frame: v.frame,
+            error: v.error,
+            iterations: v.iterations,
+            converged: v.converged,
+            normal_contacts: v.normal_contacts,
+            friction_anchors: v.friction_anchors,
+            bond_commands: v.bond_commands,
+            broken_bonds: v.broken_bonds,
+            crushed_chunks: v.crushed_chunks,
+            correction_passes: v.correction_passes,
+            stress_passes: v.stress_passes,
+            post_correction_broken_bonds: v.post_correction_broken_bonds,
+            committed_chunks: v.committed_chunks,
+            committed_bonds: v.committed_bonds,
+            cluster_count: v.cluster_count,
+            stress_island_count: v.stress_island_count,
+            observed: v.observed,
+            degraded: v.degraded,
+            missed_frames: v.missed_frames,
+        }
+    }
+}
+
+/// A shot delivered as a physical body.
+#[cfg(feature = "native-destruction")]
+#[derive(Clone, Copy, Debug)]
+pub struct RoundDesc {
+    pub position: Vec3,
+    pub direction: Vec3,
+    pub momentum_ns: f32,
+    pub radius: f32,
+    pub speed: f32,
+    pub ttl_ticks: u32,
+}
+
+#[cfg(feature = "native-destruction")]
+impl From<RoundDesc> for ffi::FfiRoundDesc {
+    fn from(v: RoundDesc) -> Self {
+        Self {
+            position: v.position.into(),
+            direction: v.direction.into(),
+            momentum_ns: v.momentum_ns,
+            radius: v.radius,
+            speed: v.speed,
+            ttl_ticks: v.ttl_ticks,
         }
     }
 }

@@ -13,6 +13,12 @@ destruction = ["gpu"]
 # when this is off, and the adapter hard-fails if gpuStressSolver is requested
 # without it, so the runtime flag is gated on this feature.
 cuda-stress = ["destruction", "dep:cc"]
+# PhysX's own GPU destruction stage (physx-2), consumed through
+# `PxScene::getDestructionScene()`. Additive on purpose: a binary can carry this
+# and the Blast paths at once so the two are selectable at runtime and can be
+# A/B'd on one scene in one process. Enabling it links the physx-2 SDK, which
+# `build.rs` resolves from PHYSX_DESTRUCTION_SDK.
+native-destruction = ["destruction", "dep:cc"]
 
 [dependencies]
 cxx = { version = "1", optional = true }

@@ -25,6 +25,7 @@ import { useGameRuntime } from '../runtime/useGameRuntime';
 import type { GameRuntimeClient } from '../runtime/gameRuntime';
 import { updateE2EBridgeFrameState } from '../e2eBridge';
 import { addDebugE2eMs } from '../city/renderStats';
+import { cannonballEnabled } from '../city/shotMode';
 import { isRecording, recordFrame } from '../netlab/recorder';
 import { isAgentDriveActive, sampleAgentDrive } from '../agentDrive';
 import { DEFAULT_STATS } from '../ui/DebugOverlay';
@@ -70,6 +71,7 @@ import {
   RIFLE_FIRE_INTERVAL_MS,
   SPAWN_PROTECTION_MS,
   VEHICLE_INTERACT_RADIUS_M,
+  WEAPON_CANNONBALL,
   WEAPON_HITSCAN,
 } from '../net/protocol';
 import type {
@@ -2248,7 +2250,7 @@ export function GameWorld({
         client.sendFire({
           seq: prediction.peekNextInputSeq(),
           shotId,
-          weapon: WEAPON_HITSCAN,
+          weapon: cannonballEnabled() ? WEAPON_CANNONBALL : WEAPON_HITSCAN,
           clientFireTimeUs: client.serverClock.serverNowUs(),
           clientInterpMs: Math.round(state.interpolationDelayMs),
           clientDynamicInterpMs: dynamicLagMsForShot,

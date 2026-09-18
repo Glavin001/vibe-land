@@ -149,7 +149,15 @@ if [[ -n "${VIBE_PUBLIC_IP:-}" ]]; then
   echo "remote mode: open https://${VIBE_PUBLIC_IP}:<external port for 4443>/city"
 fi
 
-export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}${LD_LIBRARY_PATH:+:}/root/PhysX/physx/install/linux-clang/PhysX/bin/linux.x86_64/release"
+# The PhysX library path must match the destruction backend: the Blast paths
+# load the upstream install and the native path loads physx-2's, and both ship
+# identical library names. physics-env.sh derives PHYSX_LIB_DIR from
+# VIBE_CITY_DESTRUCTION.
+if [ -z "${PHYSX_LIB_DIR:-}" ]; then
+  # shellcheck source=physics-env.sh
+  . "$(dirname "$0")/physics-env.sh"
+fi
+export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}${LD_LIBRARY_PATH:+:}$PHYSX_LIB_DIR"
 export VIBE_PHYSICS_BACKEND="${VIBE_PHYSICS_BACKEND:-physx_gpu}"
 export WT_STRICT_SNAPSHOT_DATAGRAMS="${WT_STRICT_SNAPSHOT_DATAGRAMS:-1}"
 export BIND_ADDR="${BIND_ADDR:-127.0.0.1:4003}"

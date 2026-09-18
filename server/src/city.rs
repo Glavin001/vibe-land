@@ -107,6 +107,59 @@ fn city_round_momentum_ns() -> f32 {
         .unwrap_or(3.0e5)
 }
 
+/// Shape of the ball fired by the cannonball weapon: radius m, mass kg, speed
+/// m/s, lifetime in ticks.
+///
+/// 0.6 m across and 7.1 tonnes is a solid steel sphere of that radius, which is
+/// why those two numbers go together: the ball is a real object, not a damage
+/// figure dressed up as one. Speed and radius come from the engine's own
+/// interactive demo scene.
+///
+/// Mass is the dial that matters, and it was chosen by measurement. One shot at
+/// the same facade from the same 26 m stand-off:
+///
+/// ```text
+///    1,500 kg ->    7 bonds   (a scuff; the demo's interactive default)
+///    5,000 kg ->   56 bonds
+///    7,100 kg ->  249 bonds   <- solid steel, stops at the wall
+///   10,000 kg ->  323 bonds
+///   20,000 kg ->  492 bonds   (the demo's bombardment ball: punches clean
+///                              through and flies on for 123 m)
+/// ```
+///
+/// A wider ball is worse, not better, at the same mass: 1.2 m spreads the same
+/// impulse over more bonds and breaks fewer of them (1,500 kg: 7 -> 1).
+///
+/// Override with VIBE_CITY_BALL_RADIUS_M, VIBE_CITY_BALL_MASS_KG,
+/// VIBE_CITY_BALL_SPEED_MS and VIBE_CITY_BALL_TTL_TICKS.
+pub fn city_ball_radius_m() -> f32 {
+    env_positive_f32("VIBE_CITY_BALL_RADIUS_M", 0.6)
+}
+
+pub fn city_ball_mass_kg() -> f32 {
+    env_positive_f32("VIBE_CITY_BALL_MASS_KG", 7100.0)
+}
+
+pub fn city_ball_speed_ms() -> f32 {
+    env_positive_f32("VIBE_CITY_BALL_SPEED_MS", 60.0)
+}
+
+pub fn city_ball_ttl_ticks() -> u32 {
+    std::env::var("VIBE_CITY_BALL_TTL_TICKS")
+        .ok()
+        .and_then(|value| value.parse::<u32>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(360)
+}
+
+fn env_positive_f32(name: &str, default: f32) -> f32 {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.parse::<f32>().ok())
+        .filter(|value| value.is_finite() && *value > 0.0)
+        .unwrap_or(default)
+}
+
 /// Radius of the stress load a single round deposits.
 ///
 /// Bullet-scale, not shell-scale. This was 2.5 m, which is an artillery
@@ -188,7 +241,63 @@ pub fn city_wire_version(match_id: &str) -> u8 {
 /// an A/B is only worth running if you can be certain which side you got.
 #[cfg(feature = "blast-core")]
 fn prefer_blast_core() -> bool {
-    std::env::var("VIBE_CITY_BLAST_CORE").is_ok_and(|v| v == "1")
+    matches!(selected_backend(), Ok(DestructionBackendKind::BlastCore))
+}
+
+/// Which destruction engine drives `/city`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DestructionBackendKind {
+    /// The original `ExtStressPhysXDestructible` path.
+    Blast,
+    /// The standardized blast-stress-solver core.
+    BlastCore,
+    /// PhysX's own GPU destruction stage, inside `simulate()`.
+    Native,
+}
+
+impl DestructionBackendKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Blast => "blast",
+            Self::BlastCore => "blast-core",
+            Self::Native => "native",
+        }
+    }
+}
+
+/// Read the selected backend from the environment.
+///
+/// Explicit and failing, never inferred: an A/B is only worth running when you
+/// can be certain which side you got, and a silent fall-through would make the
+/// comparison measure the same code twice and agree with itself. The older
+/// `VIBE_CITY_BLAST_CORE=1` still works and is checked for agreement rather
+/// than quietly losing to the newer variable.
+pub fn selected_backend() -> anyhow::Result<DestructionBackendKind> {
+    let legacy = std::env::var("VIBE_CITY_BLAST_CORE").ok();
+    let legacy_core = legacy.as_deref() == Some("1");
+    let selected = match std::env::var("VIBE_CITY_DESTRUCTION").ok().as_deref() {
+        None => {
+            return Ok(if legacy_core {
+                DestructionBackendKind::BlastCore
+            } else {
+                DestructionBackendKind::Blast
+            })
+        }
+        Some("blast") => DestructionBackendKind::Blast,
+        Some("blast-core") | Some("blast_core") => DestructionBackendKind::BlastCore,
+        Some("native") => DestructionBackendKind::Native,
+        Some(other) => anyhow::bail!(
+            "VIBE_CITY_DESTRUCTION={other} is not a destruction backend \
+             (expected blast, blast-core or native)"
+        ),
+    };
+    if legacy_core && selected != DestructionBackendKind::BlastCore {
+        anyhow::bail!(
+            "VIBE_CITY_BLAST_CORE=1 and VIBE_CITY_DESTRUCTION={} disagree; set one",
+            selected.as_str()
+        );
+    }
+    Ok(selected)
 }
 
 fn prefer_synthetic() -> bool {
@@ -365,6 +474,16 @@ enum CityBackend {
     /// path stays the default until that comparison is green.
     #[cfg(feature = "blast-core")]
     Core(vibe_land_destruction::core_runtime::CoreCityDestruction),
+    /// PhysX's own GPU destruction stage, selected by
+    /// `VIBE_CITY_DESTRUCTION=native`.
+    ///
+    /// Beside the other two rather than replacing them, so all three can be run
+    /// against the same scene in the same binary. Under this backend there is
+    /// no freeze tracker, no resimulation and no support-set ingest: the engine
+    /// owns correction and its own sleep, and duplicating those here is what
+    /// made the previous attempt at this port impossible to reason about.
+    #[cfg(feature = "native-destruction")]
+    Native(vibe_land_destruction::native_runtime::NativeCityDestruction),
 }
 
 /// The wire-v3 pose stream: the live debris codec fed beside the v2 encoder.
@@ -928,6 +1047,35 @@ impl CityRuntime {
         Ok(Self::from_parts(CityBackend::Core(backend), manifest, sim_hz))
     }
 
+    /// The same city, driven by PhysX's own GPU destruction stage.
+    ///
+    /// Authored from the same manifest and the same material table as the other
+    /// backends -- a comparison between them means nothing unless both are
+    /// handed identical inputs.
+    #[cfg(feature = "native-destruction")]
+    pub fn native(sim_hz: u32, world: &mut World) -> anyhow::Result<Self> {
+        use vibe_land_destruction::native_runtime::NativeCityDestruction;
+        let (_, manifest, _) =
+            manifest_asset().context("city scene asset unavailable (destruction/assets/scenes)")?;
+        let manifest = manifest.clone();
+        let pack_materials = scene_stress_materials();
+        let settings = vibe_land_destruction::city_config::stress_settings(&pack_materials);
+        tracing::info!(
+            scene = %scene_file(),
+            from_pack = !pack_materials.is_empty(),
+            materials = settings.materials.len(),
+            structures = manifest.structures.len(),
+            "city on PhysX native destruction"
+        );
+        let backend = NativeCityDestruction::build(manifest.clone(), world, settings, sim_hz)
+            .map_err(|error| anyhow::anyhow!("{error}"))?;
+        Ok(Self::from_parts(
+            CityBackend::Native(backend),
+            manifest,
+            sim_hz,
+        ))
+    }
+
     /// Prefer PhysX when the feature is on and a world is supplied, unless
     /// `VIBE_CITY_SYNTHETIC=1`.
     pub fn open(
@@ -939,14 +1087,28 @@ impl CityRuntime {
         {
             if !prefer_synthetic() {
                 if let Some(world) = world {
-                    #[cfg(feature = "blast-core")]
-                    if prefer_blast_core() {
-                        // Opt-in, and it fails rather than falling back: a
-                        // silent fall-through to the old path would make an A/B
-                        // measure the same code twice and agree with itself.
-                        return Self::blast_core(sim_hz, world);
+                    // Fails rather than falling back, in both directions: an
+                    // unbuilt backend is a configuration error, not a reason to
+                    // quietly run a different engine than the one asked for.
+                    match selected_backend()? {
+                        DestructionBackendKind::Blast => return Self::physx(sim_hz, world),
+                        DestructionBackendKind::BlastCore => {
+                            #[cfg(feature = "blast-core")]
+                            return Self::blast_core(sim_hz, world);
+                            #[cfg(not(feature = "blast-core"))]
+                            anyhow::bail!(
+                                "VIBE_CITY_DESTRUCTION=blast-core needs the blast-core feature"
+                            );
+                        }
+                        DestructionBackendKind::Native => {
+                            #[cfg(feature = "native-destruction")]
+                            return Self::native(sim_hz, world);
+                            #[cfg(not(feature = "native-destruction"))]
+                            anyhow::bail!(
+                                "VIBE_CITY_DESTRUCTION=native needs the native-destruction feature"
+                            );
+                        }
                     }
-                    return Self::physx(sim_hz, world);
                 }
             }
         }
@@ -988,11 +1150,24 @@ impl CityRuntime {
         let clients = self.encoder.clients();
         #[cfg(feature = "destruction")]
         let world = {
-            // The backend refers to structures by id, not by pointer, so
-            // releasing the bridge's destructibles here cannot dangle: the old
-            // backend is dropped below when self is replaced.
+            // Each backend owns its own actors, so the release has to match the
+            // one that built them. The native stage additionally owns the
+            // fragment bodies it created, and `clearStress` is the only thing
+            // that can destroy them -- calling the wrong release would leave a
+            // scene full of orphaned chunks that the rebuilt city then collides
+            // with.
             if let Some(world) = world {
-                world.clear_destructibles()?;
+                match &mut self.backend {
+                    #[cfg(feature = "native-destruction")]
+                    CityBackend::Native(backend) => {
+                        backend
+                            .clear(world)
+                            .map_err(|error| anyhow::anyhow!("{error}"))?;
+                    }
+                    #[cfg(feature = "blast-core")]
+                    CityBackend::Core(_) => {}
+                    _ => world.clear_destructibles()?,
+                }
                 Some(world)
             } else {
                 None
@@ -1023,6 +1198,21 @@ impl CityRuntime {
             CityBackend::Physx(_) => true,
             #[cfg(feature = "blast-core")]
             CityBackend::Core(_) => true,
+            #[cfg(feature = "native-destruction")]
+            CityBackend::Native(_) => true,
+        }
+    }
+
+    /// The destruction engine this match is actually running.
+    pub fn backend_name(&self) -> &'static str {
+        match &self.backend {
+            CityBackend::Synthetic(_) => "synthetic",
+            #[cfg(feature = "destruction")]
+            CityBackend::Physx(_) => "blast",
+            #[cfg(feature = "blast-core")]
+            CityBackend::Core(_) => "blast-core",
+            #[cfg(feature = "native-destruction")]
+            CityBackend::Native(_) => "native",
         }
     }
 
@@ -1091,6 +1281,48 @@ impl CityRuntime {
         };
 
         match &mut self.backend {
+            #[cfg(feature = "native-destruction")]
+            CityBackend::Native(backend) => {
+                // The same real raycast as the other backends, then the shot is
+                // delivered as a physical round. The stage has no force to
+                // inject -- bonds break because PhysX solved a contact -- so a
+                // hitscan hit becomes a real body carrying the round's momentum
+                // for the few ticks it takes to strike.
+                let hit = world
+                    .as_ref()
+                    .and_then(|world| {
+                        world
+                            .raycast(RaycastRequest {
+                                origin: BridgeVec3::new(origin.x, origin.y, origin.z),
+                                direction: BridgeVec3::new(direction.x, direction.y, direction.z),
+                                max_distance: SHOT_MAX_DISTANCE_M,
+                                collision_mask: GROUP_CHUNK,
+                                ignore_entity_id: 0,
+                                has_ignore_entity: false,
+                            })
+                            .ok()
+                    })
+                    .filter(|hit| hit.hit);
+                let Some(hit) = hit else {
+                    return false;
+                };
+                let Some(world) = world else {
+                    return false;
+                };
+                let at = [hit.position.x, hit.position.y, hit.position.z];
+                match backend.fire_round(
+                    world,
+                    at,
+                    direction.to_array(),
+                    city_round_momentum_ns(),
+                ) {
+                    Ok(()) => true,
+                    Err(error) => {
+                        tracing::warn!(%error, "native round could not be fired");
+                        false
+                    }
+                }
+            }
             #[cfg(feature = "blast-core")]
             CityBackend::Core(backend) => {
                 // The same real raycast the old path uses, for the same reason:
@@ -1278,6 +1510,45 @@ impl CityRuntime {
         let mut reliable = Vec::new();
         let pending_pushes = std::mem::take(&mut self.pending_pushes);
         match &mut self.backend {
+            #[cfg(feature = "native-destruction")]
+            CityBackend::Native(backend) => {
+                // The engine already solved, fractured and corrected inside the
+                // step the host just finished. This arm only reads the
+                // committed result and feeds it onward; there is no solve to
+                // drive and nothing to replay.
+                let Some(world) = world else {
+                    tracing::error!("native city step missing World");
+                    return reliable;
+                };
+                let post_step_started = std::time::Instant::now();
+                let post_step_result = backend.post_step(world, dt);
+                let post_step_ms = post_step_started.elapsed().as_secs_f32() * 1000.0;
+                match post_step_result {
+                    Ok(output) => {
+                        let snapshots = backend.body_snapshots();
+                        if self.live.is_some() {
+                            self.encoder.ingest_tick_topology_only(
+                                sim_tick,
+                                snapshots,
+                                &output,
+                                &output.wakes,
+                            );
+                        } else {
+                            self.encoder
+                                .ingest_tick(sim_tick, snapshots, &output, &output.wakes);
+                        }
+                        if let Some(live) = self.live.as_mut() {
+                            live.ingest(&self.manifest, sim_tick, snapshots, &output);
+                        }
+                        reliable.extend(self.encoder.take_topology_messages());
+                    }
+                    Err(error) => {
+                        tracing::error!(%error, "native city tick failed; topology frozen");
+                    }
+                }
+                let _ = post_step_ms;
+                let _ = pending_pushes;
+            }
             #[cfg(feature = "blast-core")]
             CityBackend::Core(backend) => {
                 // The whole point of the migration: the pipeline emits the
@@ -1735,6 +2006,10 @@ impl CityRuntime {
             // per-body freeze states to show. Empty rather than invented.
             #[cfg(feature = "blast-core")]
             CityBackend::Core(_) => Vec::new(),
+            // The stage's fragment bodies are scene-owned and not in the public
+            // actor list; the snapshot stream is the observation channel.
+            #[cfg(feature = "native-destruction")]
+            CityBackend::Native(_) => Vec::new(),
         }
     }
 
@@ -1743,6 +2018,8 @@ impl CityRuntime {
         match &self.backend {
             #[cfg(feature = "destruction")]
             CityBackend::Physx(backend) => backend.extra_spans().to_vec(),
+            #[cfg(feature = "native-destruction")]
+            CityBackend::Native(backend) => backend.extra_spans().to_vec(),
             _ => Vec::new(),
         }
     }
@@ -1767,6 +2044,11 @@ impl CityRuntime {
                     ..DestructionStats::default()
                 }
             }
+            // The stage measures its own work, so this forwards rather than
+            // reconstructing. Phases that do not exist on this backend stay at
+            // their defaults; `native_*` spans carry what it can actually see.
+            #[cfg(feature = "native-destruction")]
+            CityBackend::Native(backend) => backend.stats(),
         }
     }
 
@@ -1810,6 +2092,8 @@ impl CityRuntime {
             // backend is never constructed.
             #[cfg(feature = "blast-core")]
             CityBackend::Core(_) => false,
+            #[cfg(feature = "native-destruction")]
+            CityBackend::Native(backend) => backend.is_degraded(),
         }
     }
 }

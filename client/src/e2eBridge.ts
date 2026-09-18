@@ -14,6 +14,7 @@ import type { DebugStats } from './ui/DebugOverlay';
 import { DEFAULT_STATS } from './ui/DebugOverlay';
 import { renderStats } from './city/renderStats';
 import { acquireCityDiagnostics } from './city/cityDiagnostics';
+import { setCannonballEnabled } from './city/shotMode';
 import {
   ambientOcclusionPreferred,
   cityTextureDetail,
@@ -276,6 +277,15 @@ export interface VibeE2EBridge {
    * Camera only -- the player does not move, so streaming and hitscan carry on
    * from wherever they actually are. See `scene/captureCamera`.
    */
+  /**
+   * Choose the shot the next trigger pull fires.
+   *
+   * The cannonball is otherwise only reachable by clicking the overlay, which
+   * a driver cannot do, so it would be the one weapon no automated run ever
+   * exercised.
+   */
+  setCannonball(on: boolean): void;
+
   setCapturePose(next: {
     position: [number, number, number];
     lookAt: [number, number, number];
@@ -471,6 +481,10 @@ const bridge: VibeE2EBridge = {
     if (next.shareThreshold !== undefined) setInstanceShareThreshold(next.shareThreshold);
     if (next.heroTiling !== undefined) setHeroTilingEnabled(next.heroTiling);
   },
+  /// Choose the shot the next trigger pull fires. Exposed so a driver can
+  /// exercise the cannonball, which is otherwise only reachable by clicking
+  /// the overlay.
+  setCannonball: (on: boolean) => setCannonballEnabled(on),
   setCapturePose: (next) => setCapturePose(next),
   runPerfSweep: (profile?: PerfSweepProfile) => runPerfSweep(profile),
   formatPerfSweepMobile: (report: unknown) => formatPerfSweepMobile(report as PerfSweepReport),

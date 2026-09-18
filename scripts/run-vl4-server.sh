@@ -19,7 +19,15 @@
 # and the banner it prints, are what make that impossible to miss.
 set -uo pipefail
 ROOT=/root/workspace/vibe-land-4
-export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}${LD_LIBRARY_PATH:+:}/root/PhysX/physx/install/linux-clang/PhysX/bin/linux.x86_64/release"
+# The library path has to match the backend: the two Blast paths load the
+# upstream PhysX install and the native path loads physx-2's, and both ship the
+# same library names. LD_LIBRARY_PATH also beats the binary's own rpath, so
+# getting this wrong silently runs a different engine than the one linked --
+# which is indistinguishable from a physics regression. physics-env.sh derives
+# PHYSX_LIB_DIR from VIBE_CITY_DESTRUCTION; source it first.
+# shellcheck source=physics-env.sh
+. "$(dirname "${BASH_SOURCE[0]}")/physics-env.sh"
+export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}${LD_LIBRARY_PATH:+:}$PHYSX_LIB_DIR"
 
 export BIND_ADDR=127.0.0.1:4005
 export WT_BIND_ADDR=0.0.0.0:4435

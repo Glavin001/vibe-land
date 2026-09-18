@@ -124,6 +124,16 @@ impl PhysicsArena {
         }
     }
 
+    /// See `PhysxPhysicsArena::set_tolerate_rejected_steps`. A no-op on Rapier,
+    /// which has no such outcome.
+    pub fn set_tolerate_rejected_steps(&mut self, tolerate: bool) {
+        match &mut self.backend {
+            PhysicsBackend::Rapier(_) => {}
+            #[cfg(feature = "physx-gpu")]
+            PhysicsBackend::Physx(arena) => arena.set_tolerate_rejected_steps(tolerate),
+        }
+    }
+
     #[cfg(feature = "destruction")]
     pub fn physx_world_mut(&mut self) -> Option<&mut vibe_land_physx_bridge::World> {
         match &mut self.backend {
@@ -206,6 +216,47 @@ impl PhysicsArena {
             PhysicsBackend::Rapier(arena) => arena.spawn_dynamic_ball(position, radius),
             #[cfg(feature = "physx-gpu")]
             PhysicsBackend::Physx(arena) => arena.spawn_dynamic_ball(position, radius),
+        }
+    }
+
+    /// Throw a visible ball; None when the backend cannot fire one.
+    ///
+    /// Only the PhysX arena can: the ball exists to load the native
+    /// destruction stage through real contacts, and the Rapier arena has no
+    /// such stage to load.
+    pub fn launch_ball(
+        &mut self,
+        position: Vec3,
+        direction: Vec3,
+        radius: f32,
+        mass: f32,
+        speed: f32,
+        ttl_ticks: u32,
+    ) -> Option<u32> {
+        match &mut self.backend {
+            PhysicsBackend::Rapier(_) => None,
+            #[cfg(feature = "physx-gpu")]
+            PhysicsBackend::Physx(arena) => {
+                arena.launch_ball(position, direction, radius, mass, speed, ttl_ticks)
+            }
+        }
+    }
+
+    /// Reserve the ids fired balls will use. Empty when the backend has none.
+    pub fn reserve_ball_pool(&mut self, count: usize) -> Vec<u32> {
+        match &mut self.backend {
+            PhysicsBackend::Rapier(_) => Vec::new(),
+            #[cfg(feature = "physx-gpu")]
+            PhysicsBackend::Physx(arena) => arena.reserve_ball_pool(count),
+        }
+    }
+
+    /// How many fired balls are in the scene right now.
+    pub fn launched_ball_count(&self) -> usize {
+        match &self.backend {
+            PhysicsBackend::Rapier(_) => 0,
+            #[cfg(feature = "physx-gpu")]
+            PhysicsBackend::Physx(arena) => arena.launched_ball_count(),
         }
     }
 

@@ -90,6 +90,13 @@ pub const CLIENT_MOVEMENT_CAP_THIN_AUTHORITATIVE: u8 = 1 << 1;
 // ── Weapon types ────────────────────────────────
 pub const WEAPON_HITSCAN: u8 = 1;
 pub const WEAPON_ROCKET: u8 = 2;
+/// A visible, heavy ball thrown from the muzzle instead of an instant ray.
+///
+/// The native destruction stage takes loads only from contacts PhysX solved,
+/// so this is not a cosmetic variant of the hitscan shot: it is the shot the
+/// engine's own demos fire, and the thing you watch fly and land is the thing
+/// that does the damage.
+pub const WEAPON_CANNONBALL: u8 = 3;
 
 // ── Hit zones ───────────────────────────────────
 pub const HIT_ZONE_NONE: u8 = 0;

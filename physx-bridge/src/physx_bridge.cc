@@ -7,6 +7,10 @@
 #include "NvBlastExtStressPhysXContactWrench.h"
 #endif
 
+#ifdef VIBE_LAND_NATIVE_DESTRUCTION
+#include "native_destruction.h"
+#endif
+
 #ifdef NVBLAST_ENABLE_CUDA_STRESS
 #include "NvBlastExtStressPhysXGpuActivity.h"
 #include "NvBlastExtStressPhysXDirectGpu.h"
@@ -20,8 +24,10 @@
 #endif
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
+#include <map>
 #include <cstdlib>
 #include <cmath>
 #include <cstdint>
@@ -484,6 +490,17 @@ PxFilterFlags simulation_filter(PxFilterObjectAttributes attributes0,
   // route with wake=false, and a sleeping pair generates no narrowphase at
   // all, so a settled pile costs nothing. VIBE_PHYSX_CONTACT_PERSISTS=0 is the
   // kill switch if a pathological scene turns up.
+#ifdef VIBE_LAND_NATIVE_DESTRUCTION
+  // A pair involving a chunk owned by PhysX's own destruction stage needs no
+  // CPU contact report: the stage assembles its loads from the solved impulses
+  // on the GPU, so a notification here would cost a callback per manifold and
+  // feed nothing. Ordinary actors -- players, vehicles, props -- keep theirs,
+  // which is why this tests the shape bit rather than a global switch.
+  if (((filter0.word3 | filter1.word3) & kNativeChunkFilterBit) != 0) {
+    pair_flags = PxPairFlag::eCONTACT_DEFAULT;
+    return PxFilterFlag::eDEFAULT;
+  }
+#endif
   pair_flags = PxPairFlag::eCONTACT_DEFAULT |
                PxPairFlag::eNOTIFY_THRESHOLD_FORCE_FOUND |
                PxPairFlag::eNOTIFY_CONTACT_POINTS;
@@ -552,6 +569,108 @@ private:
   std::atomic<std::uint32_t> warning_count_{0};
 };
 
+/// Collects PhysX's own instrumentation for one tick.
+///
+/// PhysX and the destruction stage already measure themselves in detail. CPU
+/// phases arrive through zoneStart/zoneEnd; the stage's five CUDA phases arrive
+/// through recordData carrying milliseconds read from CUDA events straddling
+/// each phase. Nothing in this process was listening, which is why a 30 ms step
+/// appeared in the panel as 30 ms of nothing, above a list of destruction
+/// timings that were all honestly zero -- the work is inside `simulate()`, and
+/// no span on our side of the FFI can see into it.
+///
+/// Off unless VIBE_PHYSX_PROFILE is set, because every zone in the engine pays
+/// for it whether or not anyone reads the result.
+class BridgeProfiler final : public PxProfilerCallback {
+public:
+  using Clock = std::chrono::steady_clock;
+
+  struct Bucket {
+    double total_ms = 0.0;
+    std::uint32_t calls = 0;
+    bool device = false;
+  };
+
+  void *zoneStart(const char *name, bool, std::uint64_t) override {
+    const std::size_t slot =
+        cursor_.fetch_add(1, std::memory_order_relaxed) % kSamples;
+    Sample &sample = samples_[slot];
+    // A ring, so a burst deeper than kSamples overwrites the oldest in-flight
+    // sample rather than allocating. The name is re-checked on close, so a
+    // stolen slot is dropped instead of being charged to the wrong zone.
+    sample.name = name;
+    sample.start = Clock::now();
+    return &sample;
+  }
+
+  void zoneEnd(void *data, const char *name, bool, std::uint64_t) override {
+    Sample *sample = static_cast<Sample *>(data);
+    if (sample == nullptr || sample->name != name) {
+      return;
+    }
+    const double ms =
+        std::chrono::duration<double, std::milli>(Clock::now() - sample->start)
+            .count();
+    add(name, ms, false);
+  }
+
+  void recordData(float value, const char *name, std::uint64_t) override {
+    add(name, static_cast<double>(value), true);
+  }
+
+  void recordData(std::int32_t value, const char *name,
+                  std::uint64_t) override {
+    add(name, static_cast<double>(value), true);
+  }
+
+  /// Drain the tick's totals. Named by pointer while accumulating, because
+  /// PhysX guarantees the name is a persistent literal, and copied to owned
+  /// strings only here.
+  std::vector<std::pair<std::string, Bucket>> drain() {
+    std::lock_guard<std::mutex> guard(mutex_);
+    std::vector<std::pair<std::string, Bucket>> out;
+    out.reserve(buckets_.size());
+    for (const auto &entry : buckets_) {
+      out.emplace_back(entry.first, entry.second);
+    }
+    buckets_.clear();
+    return out;
+  }
+
+private:
+  struct Sample {
+    std::atomic<const char *> name{nullptr};
+    Clock::time_point start{};
+  };
+
+  void add(const char *name, double value, bool device) {
+    std::lock_guard<std::mutex> guard(mutex_);
+    Bucket &bucket = buckets_[name];
+    bucket.total_ms += value;
+    bucket.calls += 1;
+    bucket.device = device;
+  }
+
+  static constexpr std::size_t kSamples = 8192;
+  std::array<Sample, kSamples> samples_{};
+  std::atomic<std::size_t> cursor_{0};
+  std::mutex mutex_;
+  std::map<std::string, Bucket> buckets_;
+};
+
+inline bool physx_profile_enabled() {
+  static const bool enabled = [] {
+    const char *raw = std::getenv("VIBE_PHYSX_PROFILE");
+    return raw != nullptr && raw[0] != '\0' && raw[0] != '0';
+  }();
+  return enabled;
+}
+
+inline BridgeProfiler &bridge_profiler() {
+  static BridgeProfiler profiler;
+  return profiler;
+}
+
 // PhysX permits only one PxFoundation per process. Individual matches still
 // own isolated PxScene instances, while this process-wide runtime owns the
 // foundation, PxPhysics SDK, and CUDA context shared by those scenes.
@@ -562,6 +681,11 @@ public:
       foundation_ =
           PxCreateFoundation(PX_PHYSICS_VERSION, allocator_, error_callback_);
       require(foundation_ != nullptr, "PxCreateFoundation failed");
+      // Installed before PxCreatePhysics so every engine zone from here on is
+      // seen, including scene and CUDA setup.
+      if (physx_profile_enabled()) {
+        PxSetProfilerCallback(&bridge_profiler());
+      }
       physics_ = PxCreatePhysics(PX_PHYSICS_VERSION, *foundation_,
                                  PxTolerancesScale(), false, nullptr);
       require(physics_ != nullptr, "PxCreatePhysics failed");
@@ -2077,6 +2201,29 @@ public:
                 RecordKind::DynamicSphere);
   }
 
+  void launch_dynamic_ball(const FfiLaunchedBallDesc &desc) {
+    ensure_new_id(desc.entity_id);
+    require(finite(desc.radius) && desc.radius > 0.0f,
+            "launched ball radius must be positive");
+    const PxVec3 velocity = to_px(desc.linear_velocity);
+    require(velocity.isFinite(), "launched ball velocity must be finite");
+    add_dynamic(desc.entity_id, desc.user_id, desc.pose,
+                PxSphereGeometry(desc.radius), desc.mass,
+                desc.collision_group, desc.collision_mask,
+                RecordKind::DynamicSphere);
+    Record &record = find(desc.entity_id);
+    PxRigidDynamic *actor =
+        record.actor != nullptr ? record.actor->is<PxRigidDynamic>() : nullptr;
+    require(actor != nullptr, "launched ball is not a dynamic rigid body");
+    // A thrown ball is ballistic. The damping `add_dynamic` gives a loose prop
+    // so it stops rolling would bleed roughly a quarter of the muzzle speed
+    // away in the first second, which is the difference between a shot that
+    // reaches the building and one that drops short of it.
+    actor->setLinearDamping(0.0f);
+    actor->setAngularDamping(0.0f);
+    actor->setLinearVelocity(velocity);
+  }
+
   void add_capsule_player(const FfiCapsulePlayerDesc &desc) {
     ensure_new_id(desc.entity_id);
     require(finite(desc.cylinder_height) && desc.cylinder_height > 0.0f &&
@@ -2405,7 +2552,15 @@ public:
       }
     } else {
       const bool succeeded = scene_->fetchResults(true);
-      require(succeeded, "PhysX fetchResults failed");
+      if (!succeeded) {
+        // The simulate window is over either way: PhysX has fetched, and what
+        // failed is the step's own result. Leaving the in-flight flag set would
+        // make every later begin_step fail too, turning one rejected tick into
+        // a permanently frozen scene -- which is what happened the first time
+        // a caller tried to carry on after a rejected step.
+        step_in_flight_ = false;
+        require(false, "PhysX fetchResults failed");
+      }
       last_gpu_wait_ms_ = 0.0f;
       last_fetch_copy_ms_ = 0.0f;
       // Unsampled tick: the blocking call covers wait + copy + callbacks
@@ -3088,7 +3243,23 @@ private:
     scene_desc.flags |= PxSceneFlag::eENABLE_GPU_DYNAMICS;
     scene_desc.flags |= PxSceneFlag::eENABLE_PCM;
     scene_desc.flags |= PxSceneFlag::eENABLE_STABILIZATION;
+    // GPU broadphase by default; VIBE_PHYSX_BROADPHASE=abp|pabp selects a CPU
+    // one. A knob rather than a constant because the broadphase is the first
+    // thing a GPU scene constructs, so it is also the first thing to fail when
+    // an SDK build is wrong -- being able to take it out of the picture is the
+    // difference between bisecting an engine and guessing at it.
     scene_desc.broadPhaseType = PxBroadPhaseType::eGPU;
+    if (const char *raw = std::getenv("VIBE_PHYSX_BROADPHASE")) {
+      const std::string choice(raw);
+      if (choice == "abp") {
+        scene_desc.broadPhaseType = PxBroadPhaseType::eABP;
+      } else if (choice == "pabp") {
+        scene_desc.broadPhaseType = PxBroadPhaseType::ePABP;
+      } else if (choice != "gpu") {
+        throw std::runtime_error(
+            "VIBE_PHYSX_BROADPHASE must be gpu, abp or pabp");
+      }
+    }
     scene_desc.gpuMaxNumPartitions = config.gpu_max_partitions;
     // The frozen-body clusters (destruction.cc, VIBE_CITY_FREEZE_AGGREGATE)
     // put thousands of actors into PxAggregates; awake debris raining onto a
@@ -3194,6 +3365,11 @@ private:
       gpu_host_mirror_->release();
       gpu_host_mirror_ = nullptr;
     }
+#endif
+#ifdef VIBE_LAND_NATIVE_DESTRUCTION
+    // Before the scene's actors go: clearStress destroys the scene-owned
+    // fragment bodies, and it can only do that while the scene is alive.
+    native_.reset();
 #endif
 #ifdef VIBE_LAND_DESTRUCTION
     destruction_.reset();
@@ -3302,6 +3478,111 @@ private:
   }
 
 public:
+#ifdef VIBE_LAND_NATIVE_DESTRUCTION
+  // --- PhysX's own GPU destruction stage ------------------------------------
+  // Every entry point asserts we are outside a step. The stage is configured
+  // and observed between simulates; touching it during one is undefined, and
+  // the assert is what turns that into a clear error instead of a corrupt read.
+  NativeDestruction &native() {
+    require(native_ != nullptr, "native destruction is not attached");
+    return *native_;
+  }
+  const NativeDestruction &native() const {
+    require(native_ != nullptr, "native destruction is not attached");
+    return *native_;
+  }
+
+  void native_attach() {
+    require(!step_in_flight_, "native_attach must run outside a step");
+    require(scene_ != nullptr && runtime_ != nullptr, "scene unavailable");
+    if (native_ == nullptr) {
+      native_ = std::make_unique<NativeDestruction>(runtime_->physics(), *scene_,
+                                                    *material_);
+    }
+  }
+
+  void native_create_destructible(std::uint32_t structure_id,
+                                  const FfiPose &pose,
+                                  rust::Slice<const FfiChunkNodeDesc> nodes,
+                                  rust::Slice<const FfiChunkBondDesc> bonds,
+                                  const FfiDestructibleSettings &settings,
+                                  std::uint32_t collision_group,
+                                  std::uint32_t collision_mask) {
+    require(!step_in_flight_, "native_create_destructible must run outside a step");
+    native().create_destructible(structure_id, pose, nodes, bonds, settings,
+                                 collision_group, collision_mask);
+  }
+
+  FfiNativeConfigured native_configure(const FfiNativeConfig &config) {
+    require(!step_in_flight_, "native_configure must run outside a step");
+    return native().configure(config);
+  }
+
+  FfiNativeStatus native_tick() {
+    require(!step_in_flight_, "native_tick must run outside a step");
+    return native().tick();
+  }
+
+  FfiNativeStatus native_last_status() const { return native().last_status(); }
+
+  std::uint32_t native_fire_round(const FfiRoundDesc &desc) {
+    require(!step_in_flight_, "native_fire_round must run outside a step");
+    return native().fire_round(desc);
+  }
+
+  rust::Vec<FfiBrokenBondEvent> native_take_broken_bonds() {
+    return native().take_broken_bonds();
+  }
+  rust::Vec<FfiChunkMigrationEvent> native_take_chunk_migrations() {
+    return native().take_chunk_migrations();
+  }
+  rust::Vec<FfiIslandBodyEvent> native_take_island_events() {
+    return native().take_island_events();
+  }
+  rust::Slice<const FfiChunkBodySnapshot> native_chunk_body_snapshots() const {
+    return native().chunk_body_snapshots();
+  }
+  rust::Vec<FfiBondStressRow> native_bond_stress_rows(std::uint32_t structure_id) const {
+    return native().bond_stress_rows(structure_id);
+  }
+  FfiDestructionStats native_stats() const {
+    FfiDestructionStats stats = native().stats();
+    // The destruction stage runs inside PxScene::simulate(), so every span the
+    // stage itself can publish is honestly near zero while the step costs tens
+    // of milliseconds. These are the engine's own measurements of that step:
+    // five CUDA phases timed with events straddling each one, plus whatever CPU
+    // zones PhysX opened. Without them the panel says "31 ms" and then lists
+    // nothing that accounts for it.
+    if (physx_profile_enabled()) {
+      for (auto &entry : bridge_profiler().drain()) {
+        FfiNamedSpan span{};
+        span.name = rust::String(entry.first);
+        span.value = entry.second.total_ms;
+        // 1: summed across phases and threads, so it does not add up to a
+        // wall-clock parent and must not be read as if it did.
+        span.kind = 1;
+        stats.extra_spans.push_back(std::move(span));
+        FfiNamedSpan calls{};
+        calls.name = rust::String(entry.first + ".calls");
+        calls.value = static_cast<double>(entry.second.calls);
+        calls.kind = 2;
+        stats.extra_spans.push_back(std::move(calls));
+      }
+    }
+    return stats;
+  }
+  bool native_validate_mappings() const { return native().validate_mappings(); }
+  void native_clear() {
+    require(!step_in_flight_, "native_clear must run outside a step");
+    if (native_ != nullptr) {
+      native_->clear();
+    }
+  }
+  bool native_configured() const {
+    return native_ != nullptr && native_->configured();
+  }
+#endif
+
   // --- Bring-your-own-world hand-off ---------------------------------------
   // Lend the scene so the blast-stress-solver core can attach a backend to it
   // instead of standing up a second scene. Players, vehicles and the
@@ -3508,6 +3789,14 @@ private:
 #ifdef VIBE_LAND_DESTRUCTION
   std::unique_ptr<DestructionManager> destruction_;
 #endif
+#ifdef VIBE_LAND_NATIVE_DESTRUCTION
+  /// PhysX's own destruction stage for this scene. Independent of
+  /// `destruction_`: a binary can carry both and the runtime picks one, so the
+  /// two backends can be compared inside a single process.
+  std::unique_ptr<NativeDestruction> native_;
+#endif
+#ifdef VIBE_LAND_DESTRUCTION
+#endif
 };
 
 World::World(const FfiWorldConfig &config)
@@ -3530,6 +3819,10 @@ void World::add_dynamic_box(const FfiDynamicBoxDesc &desc) {
 
 void World::add_dynamic_sphere(const FfiDynamicSphereDesc &desc) {
   impl_->add_dynamic_sphere(desc);
+}
+
+void World::launch_dynamic_ball(const FfiLaunchedBallDesc &desc) {
+  impl_->launch_dynamic_ball(desc);
 }
 
 void World::add_capsule_player(const FfiCapsulePlayerDesc &desc) {
@@ -3688,6 +3981,70 @@ std::uint64_t World::split_count() const { return impl_->split_count(); }
 bool World::resim_needed() const { return impl_->resim_needed(); }
 std::uint32_t World::resim_capture() { return impl_->resim_capture(); }
 bool World::resim_restore() { return impl_->resim_restore(); }
+
+#ifdef VIBE_LAND_NATIVE_DESTRUCTION
+void World::native_attach() { impl_->native_attach(); }
+
+void World::native_create_destructible(
+    std::uint32_t structure_id, const FfiPose &pose,
+    rust::Slice<const FfiChunkNodeDesc> nodes,
+    rust::Slice<const FfiChunkBondDesc> bonds,
+    const FfiDestructibleSettings &settings, std::uint32_t collision_group,
+    std::uint32_t collision_mask) {
+  impl_->native_create_destructible(structure_id, pose, nodes, bonds, settings,
+                                    collision_group, collision_mask);
+}
+
+FfiNativeConfigured World::native_configure(const FfiNativeConfig &config) {
+  return impl_->native_configure(config);
+}
+
+FfiNativeStatus World::native_tick() { return impl_->native_tick(); }
+
+FfiNativeStatus World::native_last_status() const {
+  return impl_->native_last_status();
+}
+
+std::uint32_t World::native_fire_round(const FfiRoundDesc &desc) {
+  return impl_->native_fire_round(desc);
+}
+
+rust::Vec<FfiBrokenBondEvent> World::native_take_broken_bonds() {
+  return impl_->native_take_broken_bonds();
+}
+
+rust::Vec<FfiChunkMigrationEvent> World::native_take_chunk_migrations() {
+  return impl_->native_take_chunk_migrations();
+}
+
+rust::Vec<FfiIslandBodyEvent> World::native_take_island_events() {
+  return impl_->native_take_island_events();
+}
+
+rust::Slice<const FfiChunkBodySnapshot> World::native_chunk_body_snapshots() const {
+  return impl_->native_chunk_body_snapshots();
+}
+
+rust::Vec<FfiBondStressRow> World::native_bond_stress_rows(
+    std::uint32_t structure_id) const {
+  return impl_->native_bond_stress_rows(structure_id);
+}
+
+FfiDestructionStats World::native_stats() const { return impl_->native_stats(); }
+
+bool World::native_validate_mappings() const {
+  return impl_->native_validate_mappings();
+}
+
+void World::native_clear() { impl_->native_clear(); }
+
+bool World::native_configured() const { return impl_->native_configured(); }
+
+std::uint32_t native_entity_id(std::uint32_t structure_id,
+                               std::uint32_t island_serial) {
+  return NativeDestruction::entity_id(structure_id, island_serial);
+}
+#endif
 
 std::uintptr_t World::scene_ptr() const { return impl_->scene_ptr(); }
 

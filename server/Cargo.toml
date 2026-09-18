@@ -16,6 +16,11 @@ cuda-stress = ["destruction", "vibe-land-physx-bridge/cuda-stress"]
 # backend is chosen at runtime by VIBE_CITY_BLAST_CORE=1, so the two can be A/B'd
 # against the same scene before the old path is retired.
 blast-core = ["destruction", "vibe-land-destruction/blast-core"]
+# PhysX-native GPU destruction (physx-2): stress, fracture, fragment bodies and
+# one corrected re-solve run inside PxScene::simulate(). Additive with the two
+# Blast features, so `VIBE_CITY_DESTRUCTION=blast|blast-core|native` selects the
+# backend at runtime in a single binary.
+native-destruction = ["destruction", "vibe-land-destruction/native-destruction"]
 
 [dependencies]
 libc = "0.2"

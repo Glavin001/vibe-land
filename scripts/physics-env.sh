@@ -11,6 +11,25 @@
 # for an A/B without editing this file.
 
 export VIBE_PHYSICS_BACKEND=${VIBE_PHYSICS_BACKEND:-physx_gpu}
+# Which destruction engine drives /city: blast | blast-core | native.
+#
+# `native` is PhysX's own GPU destruction stage (physx-2), where stress,
+# fracture and the corrected re-solve all run inside PxScene::simulate(). It
+# needs a binary built with the native-destruction feature, and that binary
+# links the physx-2 SDK rather than the upstream install -- hence the library
+# path below, which must agree or the process loads a different engine than it
+# was built against.
+export VIBE_CITY_DESTRUCTION=${VIBE_CITY_DESTRUCTION:-blast}
+export PHYSX_DESTRUCTION_SDK=${PHYSX_DESTRUCTION_SDK:-/root/workspace/physx-2}
+if [ "$VIBE_CITY_DESTRUCTION" = "native" ]; then
+  export PHYSX_LIB_DIR=${PHYSX_LIB_DIR:-$PHYSX_DESTRUCTION_SDK/physx/bin/linux.x86_64/release}
+  # Architecture 89 is qualified on CUDA 12.8; see the destruction runtime's
+  # CMakeLists. A 13.x build of the same source compiles and then faults inside
+  # the GPU module while creating a scene.
+  export CUDA_HOME=${CUDA_HOME:-/usr/local/cuda-12.8}
+else
+  export PHYSX_LIB_DIR=${PHYSX_LIB_DIR:-${PHYSX_ROOT:-/root/PhysX/physx/install/linux-clang/PhysX}/bin/linux.x86_64/release}
+fi
 export VIBE_CITY_SCENE=${VIBE_CITY_SCENE:-fractured-downtown.json}
 export VIBE_CITY_GRID=${VIBE_CITY_GRID:-2}
 export VIBE_CITY_VARIED_HEIGHTS=${VIBE_CITY_VARIED_HEIGHTS:-0}

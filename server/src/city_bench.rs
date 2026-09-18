@@ -2270,6 +2270,532 @@ fn a_city_at_rest_does_not_destroy_itself_on_the_core_path() {
     eprintln!("[blast-core /city] at rest for 10 s: {} bonds broken", stats.broken_bonds);
 }
 
+/// Step the scene, and if the engine rejects the step say why.
+///
+/// A rejected step surfaces as a fetchResults failure, which on its own says
+/// nothing: "the stress solve did not converge" and "contact storage is
+/// exhausted" are different problems with different fixes, and the stage's own
+/// status is the only place that distinguishes them.
+#[cfg(feature = "native-destruction")]
+fn native_step(world: &mut World, city: &crate::city::CityRuntime, tick: u32, what: &str) -> bool {
+    let Err(error) = world.step() else { return true };
+    // The server keeps going after a rejected step, so the test has to as well:
+    // the interesting failures are the ones that happen *next*, and a test that
+    // stops here can never see them.
+    let status = world.native_last_status();
+    static REPORTED: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    if REPORTED.fetch_add(1, std::sync::atomic::Ordering::Relaxed) < 3 {
+        eprintln!("[native /city] {what} step {tick} rejected: {error}. {status:?}");
+    }
+    let _ = city;
+    false
+}
+
+#[cfg(feature = "native-destruction")]
+#[allow(dead_code)]
+fn native_step_strict(world: &mut World, city: &crate::city::CityRuntime, tick: u32, what: &str) {
+    let Err(error) = world.step() else { return };
+    let _ = city;
+    let status = world.native_last_status();
+    panic!(
+        "{what} step {tick} rejected: {error}. Stage status: {status:?} \
+         (error bit 8 = correction required, 4096 = stress solve did not converge, \
+         8192 = contact lifetime space exhausted)"
+    );
+}
+
+/// The same city, driven by PhysX's own GPU destruction stage.
+///
+/// Deliberately the same shape as the two Blast tests above -- same scene, same
+/// shot plan, same assertions -- because a backend comparison is only worth
+/// anything when both sides are asked the identical question.
+#[cfg(feature = "native-destruction")]
+#[test]
+#[ignore = "benchmark: needs a GPU"]
+fn the_native_path_drives_the_city_through_the_server_loop() {
+    // Production's world, not a hand-rolled one: heightfield terrain from the
+    // same document the match uses, and a player capsule in it. A flat box and
+    // no player is where this test previously differed from the server, and
+    // that gap is exactly what let a crash reach a player -- the round is
+    // spawned next to the shooter, so the shooter has to be there.
+    let mut arena = production_arena();
+    crate::demo_world::seed_world_for_match(&mut arena, crate::city::CITY_MATCH_PREFIX)
+        .expect("seed the production world document");
+    let player_spawn = arena.spawn_player(1);
+    let world = arena.physx_world_mut().expect("physx world");
+    assert_matches_production(world);
+    eprintln!("[native /city] production arena, player capsule at {player_spawn:.1?}");
+    let mut world = &mut *world;
+
+    // Constructed directly rather than through `open`, so the test cannot be
+    // silently reading an environment variable set by whichever test ran first.
+    let build_started = std::time::Instant::now();
+    let mut city =
+        crate::city::CityRuntime::native(60, world).expect("city opens on the native stage");
+    let build_ms = build_started.elapsed().as_secs_f32() * 1000.0;
+    city.add_client(1);
+
+    // The stage publishes its first observation after the first completed step,
+    // so the intact body count is only knowable once the scene has stepped. One
+    // step also settles the city onto the ground before the shooting starts.
+    let mut tick = 0u32;
+    let mut topology_messages = 0usize;
+    for _ in 0..30 {
+        native_step(&mut world, &city, tick, "settle");
+        topology_messages += city.step(tick, DT, gravity(), Some(&mut world)).len();
+        tick += 1;
+    }
+    let bodies_at_rest = city.stats().chunk_bodies;
+    assert!(bodies_at_rest > 0, "the city instantiated no bodies");
+
+    let (tx, tz) = (-36.0f32, -36.0f32);
+    let origin = Vec3::new(tx, 1.6, tz - 26.0);
+    let mut worst_step_ms = 0.0f32;
+    let mut total_step_ms = 0.0f32;
+    let mut steps = 0u32;
+    // Overridable, because the failure being hunted needs *accumulated* damage:
+    // the live crash arrived after 1,324 broken bonds, which forty shots never
+    // reach.
+    let shots: u32 = std::env::var("VIBE_CITY_BENCH_SHOTS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(40);
+    for shot in 0..shots {
+        let sweep = -4.0 + (shot % 9) as f32 * 1.0;
+        let aim_y = 2.0 + (shot % 12) as f32 * 2.2;
+        let target = Vec3::new(tx + sweep, aim_y, tz);
+        city.apply_shot_ray(origin, (target - origin).normalize(), Some(&mut *world));
+        for _ in 0..8 {
+            let started = std::time::Instant::now();
+            if !native_step(world, &city, tick, "shot") {
+                eprintln!(
+                    "[native /city] step rejected at tick {tick}, {} broken bonds so far",
+                    city.stats().broken_bonds
+                );
+            }
+            topology_messages += city.step(tick, DT, gravity(), Some(&mut *world)).len();
+            let ms = started.elapsed().as_secs_f32() * 1000.0;
+            worst_step_ms = worst_step_ms.max(ms);
+            total_step_ms += ms;
+            steps += 1;
+            tick += 1;
+        }
+    }
+
+    let stats = city.stats();
+    let spans = city.extra_spans();
+    let span = |name: &str| {
+        spans
+            .iter()
+            .find(|s| s.name == name)
+            .map(|s| s.value)
+            .unwrap_or(f64::NAN)
+    };
+    eprintln!(
+        "[native /city] build {build_ms:.0} ms | {} bonds broken, {} -> {} bodies, \
+{topology_messages} topology messages | step mean {:.2} ms worst {worst_step_ms:.2} ms \
+| error frames {} unconverged {} corrections {} stress iters peak {}",
+        stats.broken_bonds,
+        bodies_at_rest,
+        stats.chunk_bodies,
+        total_step_ms / steps as f32,
+        span("native_error_frames"),
+        span("native_unconverged_frames"),
+        span("native_corrections_total"),
+        span("native_stress_iterations_peak"),
+    );
+
+    // The engine rejecting steps is not a slow city, it is a city that was
+    // never simulated -- and it publishes nothing, so every other number here
+    // would look merely quiet.
+    assert_eq!(
+        span("native_error_frames"),
+        0.0,
+        "the engine rejected {} steps (last error bits {})",
+        span("native_error_frames"),
+        span("native_error_bits_last"),
+    );
+    assert!(
+        stats.broken_bonds > 0,
+        "40 shots broke no bonds; the round never reached the structure"
+    );
+    assert!(
+        stats.chunk_bodies > bodies_at_rest,
+        "bonds broke but no fragment bodies appeared ({} -> {})",
+        bodies_at_rest,
+        stats.chunk_bodies
+    );
+    assert!(
+        topology_messages > 0,
+        "the encoder produced no topology messages, so nothing would reach a client"
+    );
+    assert!(!city.is_degraded(), "the native path degraded mid-run");
+}
+
+/// The crash a player found: keep shooting until the engine rejects a step.
+///
+/// The distinguishing detail is that this steps through `PhysicsArena`, the way
+/// the server does, rather than calling `World::step` directly. That is the
+/// difference that mattered: after a rejected step the arena used to go on and
+/// drain contacts and body poses out of a scene whose step never completed.
+/// Driving `World::step` on its own never touches that code and so never
+/// reproduced it, which is how this reached a player.
+#[cfg(feature = "native-destruction")]
+#[test]
+#[ignore = "benchmark: needs a GPU"]
+fn sustained_fire_survives_a_rejected_step() {
+    let mut arena = production_arena();
+    crate::demo_world::seed_world_for_match(&mut arena, crate::city::CITY_MATCH_PREFIX)
+        .expect("seed the production world document");
+    arena.spawn_player(1);
+    let mut city = {
+        let world = arena.physx_world_mut().expect("physx world");
+        crate::city::CityRuntime::native(60, world).expect("city opens on the native stage")
+    };
+    city.add_client(1);
+    // What the match does when it opens a native city.
+    arena.set_tolerate_rejected_steps(city.backend_name() == "native");
+
+    let (tx, tz) = (-36.0f32, -36.0f32);
+    let origin = Vec3::new(tx, 1.6, tz - 26.0);
+    let shots: u32 = std::env::var("VIBE_CITY_BENCH_SHOTS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(400);
+    let mut tick = 0u32;
+    let mut rejected = 0u32;
+    // The scaling question this backend lives or dies on. The solve covers the
+    // same bonds every tick, so what makes it dearer as the city comes apart?
+    // Sampled while the run fragments the city, rather than argued about.
+    let cannonball = std::env::var("VIBE_CITY_BENCH_CANNONBALL").is_ok_and(|v| v != "0");
+    let mut curve: Vec<(u32, u32, u32, f64, f64, f64)> = Vec::new();
+    let (mut window_ticks, mut window_stress, mut window_iters, mut window_awake) =
+        (0.0f64, 0.0f64, 0.0f64, 0.0f64);
+    let mut window_wall = 0.0f64;
+    for shot in 0..shots {
+        let sweep = -4.0 + (shot % 9) as f32 * 1.0;
+        let aim_y = 2.0 + (shot % 12) as f32 * 2.2;
+        let target = Vec3::new(tx + sweep, aim_y, tz);
+        // VIBE_CITY_BENCH_CANNONBALL=1 reproduces what a player firing the
+        // heavy ball actually does to the scene. The rifle round settles the
+        // city into sleeping rubble quickly; the ball keeps hundreds of bodies
+        // moving, which is the regime the live server was measured in.
+        if cannonball {
+            let direction = (target - origin).normalize();
+            arena.launch_ball(
+                crate::movement::Vec3::new(origin.x, origin.y, origin.z),
+                crate::movement::Vec3::new(direction.x, direction.y, direction.z),
+                crate::city::city_ball_radius_m(),
+                crate::city::city_ball_mass_kg(),
+                crate::city::city_ball_speed_ms(),
+                crate::city::city_ball_ttl_ticks(),
+            );
+        } else {
+            let world = arena.physx_world_mut().expect("physx world");
+            city.apply_shot_ray(origin, (target - origin).normalize(), Some(world));
+        }
+        for _ in 0..8 {
+            // Production's entry point, including everything it does after the
+            // step returns.
+            let began = std::time::Instant::now();
+            arena.step_vehicles_and_dynamics(DT);
+            let world = arena.physx_world_mut().expect("physx world");
+            let _ = city.step(tick, DT, gravity(), Some(world));
+            window_wall += f64::from(began.elapsed().as_secs_f32()) * 1000.0;
+            tick += 1;
+            let spans = city.extra_spans();
+            let at = |name: &str| {
+                spans.iter().find(|s| s.name == name).map(|s| s.value).unwrap_or(0.0)
+            };
+            rejected = at("native_error_frames") as u32;
+            window_ticks += 1.0;
+            window_stress += at("GpuDestruction.cuda.stress");
+            window_iters += at("native_stress_iterations");
+            window_awake += f64::from(city.stats().awake_chunk_bodies);
+        }
+        if shot % 40 == 39 {
+            curve.push((
+                shot + 1,
+                city.stats().broken_bonds,
+                city.stats().chunk_bodies,
+                window_wall / window_ticks,
+                window_iters / window_ticks,
+                window_stress / window_ticks,
+            ));
+            window_wall = 0.0;
+            window_ticks = 0.0;
+            window_stress = 0.0;
+            window_iters = 0.0;
+            window_awake = 0.0;
+        }
+    }
+
+    eprintln!(
+        "  {:>5} {:>8} {:>7} {:>7} {:>7} {:>11}",
+        "shots", "bonds", "bodies", "tick_ms", "iters", "stress_ms"
+    );
+    for (shot, bonds, bodies, wall, iters, stress) in &curve {
+        eprintln!(
+            "  {shot:>5} {bonds:>8} {bodies:>7} {wall:>7.1} {iters:>7.1} {stress:>11.3}"
+        );
+    }
+
+    let stats = city.stats();
+    let spans = city.extra_spans();
+    let span = |name: &str| {
+        spans.iter().find(|s| s.name == name).map(|s| s.value).unwrap_or(f64::NAN)
+    };
+    eprintln!(
+        "[native /city] sustained fire: {} shots, {} bonds broken, {} bodies, \
+{rejected} rejected steps (last error bits {}, unconverged ticks {}) -- and the \
+process is still here",
+        shots,
+        stats.broken_bonds,
+        stats.chunk_bodies,
+        span("native_error_bits_last"),
+        span("native_unconverged_frames"),
+    );
+    assert!(
+        stats.broken_bonds > 0,
+        "sustained fire broke nothing, so this never exercised the path it is guarding"
+    );
+    assert!(!city.is_degraded(), "the scene reported it cannot continue");
+}
+
+/// The cannonball shot: a ball you can watch, that does the damage itself.
+///
+/// Three separate claims, because each one has failed on its own before. The
+/// ball must reach the client (it is an ordinary networked dynamic body, and a
+/// projectile nobody can see is the bug this option exists to fix). It must
+/// break bonds by colliding, with no ray cast and no injected force, which is
+/// the only delivery the native stage accepts. And it must be gone when its
+/// lifetime runs out, or every trigger pull leaves another tonne of steel in
+/// the scene forever.
+#[cfg(feature = "native-destruction")]
+#[test]
+#[ignore = "benchmark: needs a GPU"]
+fn a_cannonball_is_visible_breaks_what_it_hits_and_then_retires() {
+    let mut arena = production_arena();
+    crate::demo_world::seed_world_for_match(&mut arena, crate::city::CITY_MATCH_PREFIX)
+        .expect("seed the production world document");
+    arena.spawn_player(1);
+    let mut city = {
+        let world = arena.physx_world_mut().expect("physx world");
+        crate::city::CityRuntime::native(60, world).expect("city opens on the native stage")
+    };
+    city.add_client(1);
+    arena.set_tolerate_rejected_steps(city.backend_name() == "native");
+
+    // Same facade the sustained-fire test shoots at, from the same stand-off.
+    let (tx, tz) = (-36.0f32, -36.0f32);
+    let origin = Vec3::new(tx, 1.6, tz - 26.0);
+    let target = Vec3::new(tx, 7.0, tz);
+    let direction = (target - origin).normalize();
+
+    let ttl_ticks = 240u32;
+    let id = arena
+        .launch_ball(
+            crate::movement::Vec3::new(origin.x, origin.y, origin.z),
+            crate::movement::Vec3::new(direction.x, direction.y, direction.z),
+            crate::city::city_ball_radius_m(),
+            crate::city::city_ball_mass_kg(),
+            crate::city::city_ball_speed_ms(),
+            ttl_ticks,
+        )
+        .expect("the ball is launched");
+
+    let on_the_wire = |arena: &crate::movement::PhysicsArena| {
+        arena
+            .snapshot_dynamic_bodies()
+            .into_iter()
+            .find(|body| body.0 == id)
+    };
+    let spawned = on_the_wire(&arena).expect("a fired ball is published to clients");
+    assert_eq!(
+        spawned.6,
+        vibe_land_shared::constants::SHAPE_SPHERE,
+        "the client draws a sphere only if it is told the shape is one"
+    );
+
+    let broken_before = city.stats().broken_bonds;
+    let mut travelled = 0.0f32;
+    let start = spawned.1;
+    // Deterministic scenario, so these are comparable between runs: one ball,
+    // the same flight, the same impact. That makes this the place to ask what a
+    // tick actually costs while something is awake.
+    let mut step_ms: Vec<f32> = Vec::with_capacity(180);
+    let mut phase_ms: std::collections::HashMap<String, f64> = std::collections::HashMap::new();
+    for tick in 0..180u32 {
+        let began = std::time::Instant::now();
+        arena.step_vehicles_and_dynamics(DT);
+        let world = arena.physx_world_mut().expect("physx world");
+        let _ = city.step(tick, DT, gravity(), Some(world));
+        step_ms.push(began.elapsed().as_secs_f32() * 1000.0);
+        // Accumulated every tick, not sampled at the end: one tick of a
+        // destruction run is not representative of the run, and a correction
+        // tick costs roughly double a plain one.
+        for span in city.extra_spans() {
+            // Counts are accumulated too, so the iteration count can be
+            // averaged beside the phase it pays for. Cost per iteration is the
+            // number that bounds every possible fix here.
+            *phase_ms.entry(span.name).or_insert(0.0) += span.value;
+        }
+        if let Some(body) = on_the_wire(&arena) {
+            let delta = Vec3::new(
+                body.1[0] - start[0],
+                body.1[1] - start[1],
+                body.1[2] - start[2],
+            );
+            travelled = travelled.max(delta.length());
+        }
+    }
+    assert!(
+        travelled > 10.0,
+        "a thrown ball has to actually travel; it moved {travelled:.2} m"
+    );
+    let broken = city.stats().broken_bonds - broken_before;
+    assert!(
+        broken > 0,
+        "the ball reached the building and broke nothing, so a contact never \
+         became a load: {broken} bonds"
+    );
+    // With VIBE_PHYSX_PROFILE=1 these carry PhysX's own measurements of the
+    // step, including the destruction stage's five CUDA phases. They are the
+    // only view into simulate(), which is where the time goes.
+    let ticks = step_ms.len() as f64;
+    let wall_mean = step_ms.iter().map(|v| f64::from(*v)).sum::<f64>() / ticks;
+    let mut phases: Vec<_> = phase_ms
+        .into_iter()
+        .filter(|(_, total)| *total / ticks > 0.005)
+        .collect();
+    phases.sort_by(|a, b| b.1.total_cmp(&a.1));
+    eprintln!("  {:<56} {:>9}  {:>6}", "phase (mean per tick)", "ms", "% step");
+    eprintln!("  {:<56} {:9.3}  {:5.1}%", "WALL: arena step + city post-step", wall_mean, 100.0);
+    for (name, total) in &phases {
+        let mean = total / ticks;
+        eprintln!("  {:<56} {:9.3}  {:5.1}%", name, mean, 100.0 * mean / wall_mean);
+    }
+    let per = |name: &str| phases.iter().find(|(n, _)| n == name).map(|(_, t)| t / ticks);
+    if let (Some(stress), Some(iters)) = (per("GpuDestruction.cuda.stress"), per("native_stress_iterations")) {
+        eprintln!(
+            "  COST: stress {:.3} ms over {:.1} iterations = {:.4} ms/iteration",
+            stress, iters, stress / iters.max(1.0)
+        );
+    }
+
+    let mut sorted = step_ms.clone();
+    sorted.sort_by(f32::total_cmp);
+    let mean = step_ms.iter().sum::<f32>() / step_ms.len() as f32;
+    eprintln!(
+        "[native /city] cannonball: travelled {travelled:.1} m, broke {broken} bonds | \
+tick mean {mean:.2} ms median {:.2} p95 {:.2} max {:.2}",
+        sorted[sorted.len() / 2],
+        sorted[sorted.len() * 95 / 100],
+        sorted[sorted.len() - 1],
+    );
+
+    for tick in 180..(ttl_ticks + 90) {
+        arena.step_vehicles_and_dynamics(DT);
+        let world = arena.physx_world_mut().expect("physx world");
+        let _ = city.step(tick, DT, gravity(), Some(world));
+    }
+    assert!(
+        on_the_wire(&arena).is_none(),
+        "the ball outlived its lifetime and is still being published"
+    );
+    assert_eq!(
+        arena.launched_ball_count(),
+        0,
+        "the ball retired from the wire but is still tracked"
+    );
+}
+
+/// A city standing on its own must not destroy itself -- native stage.
+///
+/// The same gate the core path needed, for the same reason: every "did
+/// destruction happen" assertion is satisfied by a building falling down on its
+/// own, so the only way to tell the two apart is to ask what happens when
+/// nobody shoots.
+#[cfg(feature = "native-destruction")]
+#[test]
+#[ignore = "benchmark: needs a GPU"]
+fn a_city_at_rest_does_not_destroy_itself_on_the_native_path() {
+    let mut world = World::new(WorldConfig::default()).expect("GPU world");
+    world
+        .add_static_box(StaticBoxDesc {
+            entity_id: 1,
+            user_id: 0,
+            pose: Pose {
+                position: BridgeVec3::new(0.0, -10.0, 0.0),
+                rotation: Quat::IDENTITY,
+            },
+            half_extents: BridgeVec3::new(2000.0, 10.0, 2000.0),
+            collision_group: GROUP_STATIC,
+            collision_mask: ALL_GROUPS,
+        })
+        .expect("ground");
+    let mut city =
+        crate::city::CityRuntime::native(60, &mut world).expect("city opens on the native stage");
+    city.add_client(1);
+
+    let mut tick = 0u32;
+    let mut worst_step_ms = 0.0f32;
+    let mut total_step_ms = 0.0f32;
+    for _ in 0..600 {
+        let started = std::time::Instant::now();
+        // A rejected step surfaces here as a fetchResults failure, which on its
+        // own says nothing about why. The stage's own status does, so read it
+        // before failing: "incomplete step" and "the stress solve did not
+        // converge" are different problems with different fixes.
+        if let Err(error) = world.step() {
+            let spans = city.extra_spans();
+            let span = |name: &str| {
+                spans.iter().find(|s| s.name == name).map(|s| s.value).unwrap_or(f64::NAN)
+            };
+            panic!(
+                "step {tick} rejected: {error}. Stage error bits {} (4096 = stress solve \
+                 did not converge, 8192 = contact lifetime space exhausted), \
+                 stress iterations {} peak {}, error frames {}",
+                span("native_error_bits_last"),
+                span("native_stress_iterations"),
+                span("native_stress_iterations_peak"),
+                span("native_error_frames"),
+            );
+        }
+        let _ = city.step(tick, DT, gravity(), Some(&mut world));
+        let ms = started.elapsed().as_secs_f32() * 1000.0;
+        worst_step_ms = worst_step_ms.max(ms);
+        total_step_ms += ms;
+        tick += 1;
+    }
+
+    let stats = city.stats();
+    let spans = city.extra_spans();
+    let span = |name: &str| {
+        spans.iter().find(|s| s.name == name).map(|s| s.value).unwrap_or(f64::NAN)
+    };
+    eprintln!(
+        "[native /city] at rest 10 s: {} bonds broken | step mean {:.2} ms worst \
+{worst_step_ms:.2} ms | error frames {} unconverged {}",
+        stats.broken_bonds,
+        total_step_ms / 600.0,
+        span("native_error_frames"),
+        span("native_unconverged_frames"),
+    );
+    assert_eq!(
+        span("native_error_frames"),
+        0.0,
+        "the engine rejected steps while the city merely stood there"
+    );
+    assert_eq!(
+        stats.broken_bonds, 0,
+        "the city broke {} bonds under gravity alone. An anchored structure on \
+         its authored materials carries its own weight -- if it does not, the \
+         load path is wrong.",
+        stats.broken_bonds
+    );
+}
+
 /// A settled pile must STAY settled.
 ///
 /// This reproduces what a live server does, measured from a real session on

@@ -32,6 +32,9 @@ cuda-stress = ["physx", "vibe-land-physx-bridge/cuda-stress"]
 # the bespoke ExtStressPhysXDestructible path. Both can be built at once so the
 # two can be A/B'd against the same scene before the old path is retired.
 blast-core = ["physx", "dep:blast-stress-solver"]
+# PhysX-native GPU destruction (physx-2). Additive with the Blast features so
+# one binary carries every backend and `VIBE_CITY_DESTRUCTION` picks at runtime.
+native-destruction = ["physx", "vibe-land-physx-bridge/native-destruction"]
 
 [dependencies.blast-stress-solver]
 # Same checkout as BLAST_ROOT in physx-bridge/build.rs: mixing two

@@ -4,6 +4,25 @@ use std::{env, path::PathBuf};
 #[cfg(feature = "gpu")]
 const DEFAULT_PHYSX_ROOT: &str = "/root/PhysX/physx/install/linux-clang/PhysX";
 
+/// The PhysX fork whose GPU destruction stage runs inside `PxScene::simulate()`.
+///
+/// Only consulted under `native-destruction`, and only when `PHYSX_ROOT` is not
+/// set explicitly. The plain Blast builds keep `DEFAULT_PHYSX_ROOT`: an
+/// experiment must not silently move the baseline's SDK, which is exactly how an
+/// earlier attempt ended up comparing two different engines and calling it one.
+#[cfg(feature = "native-destruction")]
+const DEFAULT_PHYSX_DESTRUCTION_SDK: &str = "/root/workspace/physx-2";
+
+/// The native API revision this bridge is written against
+/// (`PxDestructionScene.h`). The header states that consumers are rebuilt
+/// together with the SDK; a silent bump would change struct layouts under our
+/// device reads, so the build fails loudly instead.
+#[cfg(feature = "native-destruction")]
+const NATIVE_DESTRUCTION_SCENE_VERSIONS: [&str; 2] = [
+    "#define PX_DESTRUCTION_SCENE_VERSION 15",
+    "#define PX_DESTRUCTION_SCENE_VERSION 16",
+];
+
 #[cfg(feature = "gpu")]
 /// The production checkout is `blast-stress-solver-2`, and since the
 /// structural-realism merge (perf/full-tick) it carries BOTH lines of solver
@@ -24,8 +43,8 @@ fn main() {
     println!("cargo:rerun-if-changed=include/physx_bridge.h");
     println!("cargo:rerun-if-changed=include/destruction.h");
 
-    let root =
-        PathBuf::from(env::var_os("PHYSX_ROOT").unwrap_or_else(|| DEFAULT_PHYSX_ROOT.into()));
+    println!("cargo:rerun-if-env-changed=PHYSX_DESTRUCTION_SDK");
+    let root = physx_root();
     let include = root.join("include");
     // The activity SDK has a different CPU/GPU ABI. Select the module from
     // the header we compile against, never from whichever .so happens to be
@@ -167,6 +186,9 @@ fn main() {
         }
     }
 
+    #[cfg(feature = "native-destruction")]
+    add_native_destruction(&mut build, &root, &include, &lib, gpu_library);
+
     build.compile("vibe_land_physx_bridge");
 
     println!("cargo:rustc-link-search=native={}", lib.display());
@@ -190,8 +212,9 @@ fn main() {
     println!("cargo:rustc-link-arg=-Wl,-rpath,{}", lib.display());
     println!("cargo:rustc-link-lib=dylib={gpu_library}");
     println!("cargo:rustc-link-lib=dylib=cuda");
-    // The .cu uses both the runtime API and the driver API (cuCtxPushCurrent).
-    #[cfg(feature = "cuda-stress")]
+    // The .cu uses both the runtime API and the driver API (cuCtxPushCurrent);
+    // the native shim uses the driver API for its device reads.
+    #[cfg(any(feature = "cuda-stress", feature = "native-destruction"))]
     if let Some(dir) = cuda_lib_dir() {
         println!("cargo:rustc-link-lib=dylib=cudart");
         println!("cargo:rustc-link-search=native={}", dir.display());
@@ -203,8 +226,170 @@ fn main() {
     println!("cargo:rustc-link-arg=-Wl,-rpath,{}", lib.display());
 }
 
+/// The PhysX SDK this build compiles and links against.
+///
+/// `PHYSX_ROOT` always wins, so an explicit override still selects any SDK.
+/// Otherwise `native-destruction` resolves the physx-2 checkout (whose headers
+/// carry `PxDestructionScene.h`) and every other build keeps the upstream
+/// install it has always used.
+#[cfg(feature = "gpu")]
+fn physx_root() -> PathBuf {
+    if let Some(explicit) = env::var_os("PHYSX_ROOT") {
+        return PathBuf::from(explicit);
+    }
+    #[cfg(feature = "native-destruction")]
+    {
+        let sdk = PathBuf::from(
+            env::var_os("PHYSX_DESTRUCTION_SDK")
+                .unwrap_or_else(|| DEFAULT_PHYSX_DESTRUCTION_SDK.into()),
+        );
+        // The checkout keeps headers in physx/include and libraries in
+        // physx/bin; `out/install` is the same SDK relocated. Accept either so a
+        // packaged install works without a different variable.
+        for candidate in [sdk.join("physx"), sdk.join("out/install"), sdk.clone()] {
+            if candidate.join("include/PxDestructionScene.h").is_file() {
+                return candidate;
+            }
+        }
+        panic!(
+            "native-destruction is enabled but no PxDestructionScene.h was found below \
+             PHYSX_DESTRUCTION_SDK={} (looked in physx/include and out/install/include); \
+             build it with tools/scripts/build-destruction-sdk.py",
+            sdk.display()
+        );
+    }
+    #[cfg(not(feature = "native-destruction"))]
+    PathBuf::from(DEFAULT_PHYSX_ROOT)
+}
+
+/// Compiles the native destruction shim and checks the SDK really provides the
+/// stage it talks to.
+///
+/// The header check is a version gate, not decoration: the device views this
+/// bridge reads are raw structs, so a header/runtime mismatch is a silent
+/// misread rather than a link error.
+#[cfg(feature = "native-destruction")]
+fn add_native_destruction(
+    build: &mut cc::Build,
+    root: &std::path::Path,
+    include: &std::path::Path,
+    lib: &std::path::Path,
+    gpu_library: &str,
+) {
+    let header = include.join("PxDestructionScene.h");
+    let text = std::fs::read_to_string(&header)
+        .unwrap_or_else(|e| panic!("cannot read {}: {e}", header.display()));
+    // The shim is written against v15 and v16. They differ only by additions it
+    // guards, and the device views it reads are raw structs, so an unknown
+    // version is a silent misread rather than a link error -- hence a hard stop.
+    let version = NATIVE_DESTRUCTION_SCENE_VERSIONS
+        .iter()
+        .position(|marker| text.contains(marker))
+        .unwrap_or_else(|| {
+            panic!(
+                "{} is not a destruction API this bridge understands (expected one of {:?}); \
+                 rebuild the SDK and this bridge together",
+                header.display(),
+                NATIVE_DESTRUCTION_SCENE_VERSIONS
+            )
+        });
+    let version = 15 + version;
+    build.define("VIBE_PHYSX_DESTRUCTION_SCENE_VERSION", version.to_string().as_str());
+    println!("cargo:rustc-env=VIBE_PHYSX_DESTRUCTION_SCENE_VERSION={version}");
+    assert_eq!(
+        gpu_library, "PhysXGpuActivity_64",
+        "native destruction needs the physx-2 GPU module; PHYSX_ROOT={} looks like \
+         an upstream PhysX install",
+        root.display()
+    );
+    let runtime = lib.join("libPhysXDestructionGpuRuntime_64.so");
+    assert!(
+        runtime.is_file(),
+        "native destruction runtime missing: {}",
+        runtime.display()
+    );
+    assert_sdk_cuda_matches(root);
+    println!("cargo:rerun-if-changed={}", header.display());
+    println!("cargo:rerun-if-changed={}", runtime.display());
+    println!("cargo:rerun-if-changed=src/native_destruction.cc");
+    println!("cargo:rerun-if-changed=src/native_observation.cc");
+    println!("cargo:rerun-if-changed=include/native_destruction.h");
+
+    build
+        .file("src/native_destruction.cc")
+        .file("src/native_observation.cc")
+        .define("VIBE_LAND_NATIVE_DESTRUCTION", None);
+    // cuda.h for CUevent and the synchronous device reads of the committed view.
+    if let Some(dir) = cuda_lib_dir().and_then(|d| d.parent().map(|r| r.join("include"))) {
+        build.include(dir);
+    }
+    // The SDK's own record of which sources produced these libraries; surfaced
+    // by the server so a deployment can say what it is actually running.
+    println!(
+        "cargo:rustc-env=VIBE_PHYSX_SDK_ROOT={}",
+        root.display()
+    );
+    println!("cargo:rustc-env=VIBE_PHYSX_SDK_LIB_DIR={}", lib.display());
+}
+
+/// Fail the build when this crate's CUDA toolkit is not the one that produced
+/// the linked SDK.
+///
+/// Not pedantry. The GPU module is built with a statically linked CUDA runtime
+/// and the architecture it was qualified on; building this crate's own device
+/// code against a different toolkit produces a binary that links cleanly and
+/// then segfaults inside the module's heap allocator while creating a scene.
+/// That failure looks like a driver or hardware problem and costs a day.
+#[cfg(feature = "native-destruction")]
+fn assert_sdk_cuda_matches(root: &std::path::Path) {
+    // `<sdk>/out/sdk-artifacts.json` records the exact compilers; the SDK root
+    // is either `<sdk>/physx` or `<sdk>/out/install`.
+    let manifest = root
+        .ancestors()
+        .map(|dir| dir.join("out/sdk-artifacts.json"))
+        .find(|candidate| candidate.is_file());
+    let Some(manifest) = manifest else {
+        // Nothing recorded: an install that was relocated without its manifest.
+        return;
+    };
+    println!("cargo:rerun-if-changed={}", manifest.display());
+    let text = std::fs::read_to_string(&manifest).unwrap_or_default();
+    let Some(sdk_release) = text
+        .split("release ")
+        .nth(1)
+        .and_then(|rest| rest.split(',').next())
+        .map(|v| v.trim().to_string())
+    else {
+        return;
+    };
+    let nvcc = cuda_lib_dir()
+        .and_then(|dir| dir.parent().map(|root| root.join("bin/nvcc")))
+        .filter(|nvcc| nvcc.is_file());
+    let Some(nvcc) = nvcc else { return };
+    let ours = std::process::Command::new(&nvcc)
+        .arg("--version")
+        .output()
+        .ok()
+        .map(|out| String::from_utf8_lossy(&out.stdout).into_owned())
+        .unwrap_or_default();
+    let ours_release = ours
+        .split("release ")
+        .nth(1)
+        .and_then(|rest| rest.split(',').next())
+        .map(|v| v.trim().to_string())
+        .unwrap_or_default();
+    assert_eq!(
+        ours_release,
+        sdk_release,
+        "CUDA {ours_release} ({}) does not match the {sdk_release} toolkit that built \
+         the destruction SDK ({}); set CUDA_HOME to that toolkit",
+        nvcc.display(),
+        manifest.display()
+    );
+}
+
 /// Where libcudart lives, so the linker and loader can find it.
-#[cfg(feature = "cuda-stress")]
+#[cfg(any(feature = "cuda-stress", feature = "native-destruction"))]
 fn cuda_lib_dir() -> Option<PathBuf> {
     let root = env::var_os("CUDA_PATH")
         .or_else(|| env::var_os("CUDA_HOME"))

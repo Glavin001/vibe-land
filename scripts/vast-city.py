@@ -129,7 +129,8 @@ def discover():
     if web not in ports['TCP'] or udp not in ports['UDP']:
         raise RuntimeError('No suitable mapped TCP/UDP ports; inspect PID-1 mappings or free a deployment-owned port.')
     return dict(ip=ip, web=web, udp=udp, api=api, public_web=ports['TCP'][web],
-                public_udp=ports['UDP'][udp], env=env, server=servers[0][0] if servers else None,
+                public_udp=ports["UDP"][udp], env=env,
+                server=servers[0][0] if servers else None,
                 proxy=proxy, supervisors=supervisors, server_identity=process_identity(servers[0][0]) if servers else None,
                 proxy_identity=process_identity(proxy[0]) if proxy else None, url=f'https://{ip}:{ports["TCP"][web]}/city')
 
@@ -181,7 +182,7 @@ def build(blast, rebuild):
         log = STATE / f'build-{kind}.log'
         with log.open('w') as out:
             if kind == 'server':
-                commands = [['cargo', 'build', '--release', '-p', 'web-fps-server', '--bin', 'web-fps-server', '--features', 'blast-core,cuda-stress']]
+                commands = [['cargo', 'build', '--release', '-p', 'web-fps-server', '--bin', 'web-fps-server', '--features', 'blast-core,cuda-stress,native-destruction']]
                 cwd = ROOT
             else:
                 lockhash = hashlib.sha256((ROOT / 'client/package-lock.json').read_bytes()).hexdigest()
@@ -244,31 +245,90 @@ def ready(process, port):
     raise RuntimeError('New server did not become healthy within 20 seconds')
 
 
+# Knobs that identify which city is being served. These persist across a bare
+# redeploy; everything else comes from the invoking environment only.
+STICKY = ('VIBE_CITY_SCENE', 'VIBE_CITY_GRID', 'VIBE_CITY_DESTRUCTION')
+
+
 def deploy(d, binary):
     oldenv = d['env']
     env = dict(os.environ, **oldenv)
+    # Which city runs is sticky: scene, grid and backend survive a bare redeploy
+    # (handled below). Every other knob is exactly what this command was invoked
+    # with. Both the running process and the saved deployment record a fully
+    # resolved environment, so a tuning value set once was inherited forward and
+    # could never be dropped -- the deployment kept running a number nobody had
+    # asked for while the logs showed the new default.
+    for name in [k for k in env
+                 if k.startswith(('VIBE_', 'BLAST_', 'PHYSX_')) and k not in STICKY]:
+        if name in os.environ:
+            env[name] = os.environ[name]
+        else:
+            del env[name]
     cert, key = STATE / 'cert.pem', STATE / 'key.pem'
     renew = not cert.exists() or sp.run(['openssl', 'x509', '-in', str(cert), '-checkend', '172800', '-noout'], stdout=sp.DEVNULL, stderr=sp.DEVNULL).returncode != 0
     if cert.exists() and not renew:
         renew = sp.run(['openssl', 'x509', '-in', str(cert), '-checkip', d['ip'], '-noout'], stdout=sp.DEVNULL, stderr=sp.DEVNULL).returncode != 0
     desired = dict(BIND_ADDR=f'127.0.0.1:{d["api"]}', WT_BIND_ADDR=f'0.0.0.0:{d["udp"]}',
                    WT_PUBLIC_URL=f'https://{d["ip"]}:{d["public_udp"]}')
-    same_binary = d['server'] and hashlib.sha256(Path(f'/proc/{d["server"]}/exe').read_bytes()).digest() == hashlib.sha256(binary.read_bytes()).digest()
-    if same_binary and d.get('supervisors') and not renew and all(env.get(k) == v for k, v in desired.items()) and env.get('WT_CERT_PEM') == str(cert):
-        print('Server already current; no restart.', flush=True)
-        return
-    identity = (d.get('server_identity') or process_identity(d['server'])) if d['server'] else None
-    if d['server'] and health(d['api']).get('players') != 0:
-        raise RuntimeError('Players are connected; builds are ready. Retry up once the match is empty.')
     if renew:
         sp.run(['openssl', 'ecparam', '-name', 'prime256v1', '-genkey', '-noout', '-out', str(key)], check=True)
         key.chmod(0o600)
         sp.run(['openssl', 'req', '-new', '-x509', '-key', str(key), '-out', str(cert), '-days', '12', '-subj', f'/CN={d["ip"]}', '-addext', f'subjectAltName=IP:{d["ip"]},IP:127.0.0.1'], check=True)
     env.update(desired, WT_CERT_PEM=str(cert), WT_KEY_PEM=str(key), RUST_LOG='info')
     env.setdefault('VIBE_PHYSICS_BACKEND', 'physx_gpu')
-    env.setdefault('VIBE_CITY_SCENE', 'skyline-stable.json')
-    env.setdefault('VIBE_CITY_GRID', '1')
-    env['LD_LIBRARY_PATH'] = env.get('LD_LIBRARY_PATH', '') + ':/root/PhysX/physx/install/linux-clang/PhysX/bin/linux.x86_64/release'
+    # An explicit environment override wins over the saved deployment, so a
+    # redeploy can change scene or backend. Without this the saved value always
+    # won and the deployment quietly kept serving the previous city.
+    for name, fallback in (('VIBE_CITY_SCENE', 'skyline-stable.json'), ('VIBE_CITY_GRID', '1')):
+        if name in os.environ:
+            env[name] = os.environ[name]
+        else:
+            env.setdefault(name, fallback)
+    # Built from scratch, never appended to what is already there. This used to
+    # extend the inherited value, and since the inherited value came from the
+    # running server -- which had itself inherited and extended -- every deploy
+    # added another copy. The FIRST entry wins at load time, so the path kept
+    # pointing at whichever engine was deployed first and silently ran that one
+    # no matter which SDK was built, verified and asked for.
+    env.pop('LD_LIBRARY_PATH', None)
+    # Which destruction engine this deployment runs. The PhysX library path has
+    # to match it: the Blast paths load the upstream install and the native path
+    # loads physx-2's, both ship identical library names, and LD_LIBRARY_PATH
+    # beats the binary's own rpath -- so a mismatch here silently runs a
+    # different engine than the one that was built and verified.
+    if 'VIBE_CITY_DESTRUCTION' in os.environ:
+        env['VIBE_CITY_DESTRUCTION'] = os.environ['VIBE_CITY_DESTRUCTION']
+    backend = env.setdefault('VIBE_CITY_DESTRUCTION', 'blast')
+    if backend == 'native':
+        sdk = os.environ.get('PHYSX_DESTRUCTION_SDK', '/root/workspace/physx-2')
+        env['PHYSX_DESTRUCTION_SDK'] = sdk
+        libdir = next((c for c in (f'{sdk}/bin/linux.x86_64/release',
+                                   f'{sdk}/physx/bin/linux.x86_64/release',
+                                   f'{sdk}/out/install/lib')
+                       if Path(c, 'libPhysXGpuActivity_64.so').is_file()), None)
+        if not libdir:
+            raise RuntimeError(f'No PhysX GPU module below PHYSX_DESTRUCTION_SDK={sdk}')
+        # Architecture 89 is qualified on CUDA 12.8; see the destruction
+        # runtime's CMakeLists in physx-2.
+        env['CUDA_HOME'] = os.environ.get('CUDA_HOME', '/usr/local/cuda-12.8')
+        env['LD_LIBRARY_PATH'] = f'{env["CUDA_HOME"]}/lib64:{libdir}'
+    else:
+        env['LD_LIBRARY_PATH'] = '/root/PhysX/physx/install/linux-clang/PhysX/bin/linux.x86_64/release'
+    # Restart unless the running process already has this exact configuration.
+    # This check used to run before the environment was resolved and compared
+    # only the bind addresses, so changing a tuning knob -- or dropping one --
+    # left the old process in place while the deploy reported success.
+    signature = {k for k in list(env) + list(oldenv)
+                 if k.startswith(('VIBE_', 'PHYSX_', 'BLAST_', 'CUDA_'))
+                 or k in ('LD_LIBRARY_PATH', 'BIND_ADDR', 'WT_BIND_ADDR', 'WT_PUBLIC_URL', 'WT_CERT_PEM', 'WT_KEY_PEM')}
+    same_binary = d['server'] and hashlib.sha256(Path(f'/proc/{d["server"]}/exe').read_bytes()).digest() == hashlib.sha256(binary.read_bytes()).digest()
+    if same_binary and d.get('supervisors') and not renew and all(env.get(k) == oldenv.get(k) for k in signature):
+        print('Server already current; no restart.', flush=True)
+        return
+    identity = (d.get('server_identity') or process_identity(d['server'])) if d['server'] else None
+    if d['server'] and health(d['api']).get('players') != 0:
+        raise RuntimeError('Players are connected; builds are ready. Retry up once the match is empty.')
     if not d['proxy']:
         if not d['server'] and not free_port(d['web']):
             raise RuntimeError('Selected web port became occupied')
