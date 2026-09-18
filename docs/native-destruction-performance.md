@@ -123,3 +123,49 @@ so a larger budget costs more only on the ticks that fail to converge. 256 and
   topology update fails with error bit 64 and never recovers. Which iteration
   caps start that scene is erratic (16 starts, 32 and 64 do not), so re-measure
   rather than reasoning about it.
+
+## QA without a human
+
+Two tools, because they answer different questions and neither can answer the
+other's. The headless runner is the authority on what the physics did; the
+browser tool is the only thing that can say whether any of it reached a screen.
+
+**Headless scenarios.** `scripts/qa.sh` drives production's own entry points --
+the same player tick, shot routing and arena step the server runs -- from a
+line-based script. Vocabulary in `server/src/city_qa.rs`.
+
+```bash
+scripts/qa.sh scenarios/impact.qa
+scripts/qa.sh -e 'look 0.8 0; probe; report'    # inline, ';' separates lines
+```
+
+The command that matters is `verify-aim <structure> <node>`: it fails unless a
+ray from the player's eye actually reaches that chunk. Shots that reach nothing
+still produce excellent frame times, which is how a broken aim survived for
+hours. `probe` names whichever chunk the current aim reaches, which is how you
+find a target id without guessing at one. A run reads:
+
+```text
+  ok   line 11  aim 0 5810              chunk 0:5810 at [-59.8, 1.6, -28.5], 40.6 m away
+  ok   line 12  verify-aim 0 5810       ray reaches 0:5810 at 40.5 m
+  ok   line 14  fire ball               cannonball away
+  ok   line 17  expect-detached 0 5810  chunk 0:5810 changed owner 2147483648 -> 2147483649
+  ok   line 18  expect-bonds 1          71 bonds broken since the last check, wanted 1
+```
+
+**Browser.** `client/e2e/qa-shot.mjs` joins, aims, fires and photographs the
+result, on the shared join helper in `client/e2e/helpers/qaSession.mjs`. Use it
+whenever the claim involves rendering: a projectile can be perfectly correct on
+the server and never drawn, which happened, because the client learns a dynamic
+body's shape from one metadata packet sent at join.
+
+```bash
+node client/e2e/qa-shot.mjs --cannonball --look 0.8,0 --shots 2 --out /tmp/qa
+```
+
+**Known gap.** The browser cannot yet name the chunk under its own crosshair,
+so client and server cannot be compared directly on where a chunk is. The
+client has the data (`CityTopology.chunkWorldPoseInto`), but the city client is
+not reachable from the e2e bridge; it needs a small module-level registry set
+where the layer already holds it. That comparison is what would turn "desync
+repairs 29" from a number into a diagnosis.

@@ -29,6 +29,8 @@ struct FfiNativeConfig;
 struct FfiNativeConfigured;
 struct FfiNativeStatus;
 struct FfiRoundDesc;
+struct FfiChunkAim;
+struct FfiChunkRayHit;
 
 /// Shape filter word3 bit marking a chunk owned by the native destruction
 /// stage.
@@ -99,6 +101,16 @@ public:
   /// round becomes a real body for the few ticks it takes to strike. Returns
   /// the number of rounds currently live.
   std::uint32_t fire_round(const FfiRoundDesc &desc);
+
+  /// Where a named chunk is now, and which body owns it.
+  FfiChunkAim chunk_aim(std::uint32_t structure_id,
+                        std::uint32_t node_index) const;
+
+  /// Raycast restricted to stage-owned chunks, reporting WHICH chunk was hit.
+  /// The ordinary raycast reports the owning body, which cannot distinguish
+  /// the chunk aimed at from its neighbour in the same fragment.
+  FfiChunkRayHit raycast_chunk(const FfiVec3 &origin, const FfiVec3 &direction,
+                               float max_distance) const;
 
   rust::Vec<FfiBrokenBondEvent> take_broken_bonds();
   rust::Vec<FfiChunkMigrationEvent> take_chunk_migrations();

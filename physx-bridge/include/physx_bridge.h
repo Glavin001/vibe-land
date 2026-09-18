@@ -12,6 +12,8 @@ struct FfiWorldConfig;
 struct FfiStaticBoxDesc;
 struct FfiHeightfieldDesc;
 struct FfiDynamicBoxDesc;
+struct FfiChunkAim;
+struct FfiChunkRayHit;
 struct FfiDynamicSphereDesc;
 struct FfiLaunchedBallDesc;
 struct FfiCapsulePlayerDesc;
@@ -142,6 +144,10 @@ public:
   FfiNativeStatus native_tick();
   FfiNativeStatus native_last_status() const;
   std::uint32_t native_fire_round(const FfiRoundDesc &desc);
+  FfiChunkAim native_chunk_aim(std::uint32_t structure_id,
+                               std::uint32_t node_index) const;
+  FfiChunkRayHit native_raycast_chunk(FfiVec3 origin, FfiVec3 direction,
+                                      float max_distance) const;
   rust::Vec<FfiBrokenBondEvent> native_take_broken_bonds();
   rust::Vec<FfiChunkMigrationEvent> native_take_chunk_migrations();
   rust::Vec<FfiIslandBodyEvent> native_take_island_events();

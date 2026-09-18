@@ -619,6 +619,59 @@ pub const fn gpu_support_compiled() -> bool {
     cfg!(feature = "gpu")
 }
 
+/// Where a chunk is, by identity rather than by remembered coordinates.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct ChunkAim {
+    pub found: bool,
+    pub chunk_id: u32,
+    pub structure_id: u32,
+    pub entity_id: u32,
+    pub center: Vec3,
+    pub sleeping: bool,
+}
+
+/// Which chunk a ray struck. `hit` false means the ray reached no stage-owned
+/// chunk: it was stopped by the ground, by debris, or by nothing at all.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct ChunkRayHit {
+    pub hit: bool,
+    pub chunk_id: u32,
+    pub structure_id: u32,
+    pub entity_id: u32,
+    pub distance: f32,
+    pub position: Vec3,
+    pub normal: Vec3,
+}
+
+#[cfg(feature = "gpu")]
+impl From<ffi::FfiChunkAim> for ChunkAim {
+    fn from(value: ffi::FfiChunkAim) -> Self {
+        Self {
+            found: value.found,
+            chunk_id: value.chunk_id,
+            structure_id: value.structure_id,
+            entity_id: value.entity_id,
+            center: value.center.into(),
+            sleeping: value.sleeping,
+        }
+    }
+}
+
+#[cfg(feature = "gpu")]
+impl From<ffi::FfiChunkRayHit> for ChunkRayHit {
+    fn from(value: ffi::FfiChunkRayHit) -> Self {
+        Self {
+            hit: value.hit,
+            chunk_id: value.chunk_id,
+            structure_id: value.structure_id,
+            entity_id: value.entity_id,
+            distance: value.distance,
+            position: value.position.into(),
+            normal: value.normal.into(),
+        }
+    }
+}
+
 /// One generically-authored metric from the bridge — see `FfiNamedSpan`.
 /// Rides BESIDE the Copy stats structs (a Vec on them would break every Copy
 /// consumer), stashed per stats call and drained with `take_*_spans`.
@@ -1284,6 +1337,34 @@ impl World {
             .map_err(operation_error)
     }
 
+    /// Where a named chunk is now, so a test can aim at an identity instead of
+    /// at coordinates that quietly stop being right.
+    #[cfg(feature = "native-destruction")]
+    pub fn native_chunk_aim(
+        &self,
+        structure_id: u32,
+        node_index: u32,
+    ) -> Result<ChunkAim, BridgeError> {
+        self.inner
+            .native_chunk_aim(structure_id, node_index)
+            .map(Into::into)
+            .map_err(operation_error)
+    }
+
+    /// Raycast reporting WHICH chunk stopped the ray, or that nothing did.
+    #[cfg(feature = "native-destruction")]
+    pub fn native_raycast_chunk(
+        &self,
+        origin: Vec3,
+        direction: Vec3,
+        max_distance: f32,
+    ) -> Result<ChunkRayHit, BridgeError> {
+        self.inner
+            .native_raycast_chunk(origin.into(), direction.into(), max_distance)
+            .map(Into::into)
+            .map_err(operation_error)
+    }
+
     #[cfg(feature = "native-destruction")]
     pub fn native_take_broken_bonds(&mut self) -> Result<Vec<BrokenBondEvent>, BridgeError> {
         self.inner
@@ -1848,6 +1929,34 @@ mod ffi {
     /// no force to inject: a hitscan round becomes a real body carrying the
     /// round's momentum for the few ticks it takes to strike. Mass follows from
     /// momentum and speed rather than being chosen.
+    /// Where a named chunk is right now, for aiming at it.
+    ///
+    /// Tests that aim with hardcoded coordinates silently stop hitting the
+    /// moment the scene, the spawn or the structure moves, and a shot that
+    /// reaches nothing still produces plausible frame times. This makes the
+    /// target an identity rather than a guess.
+    struct FfiChunkAim {
+        found: bool,
+        chunk_id: u32,
+        structure_id: u32,
+        entity_id: u32,
+        center: FfiVec3,
+        sleeping: bool,
+    }
+
+    /// Which chunk a ray actually struck. `hit` false means the ray reached no
+    /// stage-owned chunk at all, which is the failure an aiming test exists to
+    /// catch.
+    struct FfiChunkRayHit {
+        hit: bool,
+        chunk_id: u32,
+        structure_id: u32,
+        entity_id: u32,
+        distance: f32,
+        position: FfiVec3,
+        normal: FfiVec3,
+    }
+
     struct FfiRoundDesc {
         position: FfiVec3,
         direction: FfiVec3,
@@ -2150,6 +2259,8 @@ mod ffi {
         fn native_tick(self: Pin<&mut World>) -> Result<FfiNativeStatus>;
         fn native_last_status(self: &World) -> Result<FfiNativeStatus>;
         fn native_fire_round(self: Pin<&mut World>, desc: &FfiRoundDesc) -> Result<u32>;
+        fn native_chunk_aim(self: &World, structure_id: u32, node_index: u32) -> Result<FfiChunkAim>;
+        fn native_raycast_chunk(self: &World, origin: FfiVec3, direction: FfiVec3, max_distance: f32) -> Result<FfiChunkRayHit>;
         fn native_take_broken_bonds(self: Pin<&mut World>) -> Result<Vec<FfiBrokenBondEvent>>;
         fn native_take_chunk_migrations(
             self: Pin<&mut World>,

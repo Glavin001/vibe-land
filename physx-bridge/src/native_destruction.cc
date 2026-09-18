@@ -544,6 +544,75 @@ FfiNativeStatus NativeDestruction::last_status() const {
   return out;
 }
 
+FfiChunkAim NativeDestruction::chunk_aim(std::uint32_t structure_id,
+                                         std::uint32_t node_index) const {
+  FfiChunkAim out{};
+  const State &s = *state_;
+  for (const auto &chunk : s.chunks) {
+    if (chunk.structure != structure_id || chunk.authored != node_index) {
+      continue;
+    }
+    if (chunk.shape == nullptr) {
+      break; // destroyed; report not found rather than a stale position
+    }
+    PxRigidActor *actor = chunk.shape->getActor();
+    if (actor == nullptr) {
+      break;
+    }
+    const PxTransform pose = actor->getGlobalPose();
+    out.found = true;
+    out.chunk_id = native_chunk_id(structure_id, node_index);
+    out.structure_id = structure_id;
+    out.entity_id = entity_id(chunk.structure, chunk.serial);
+    // The shape's local pose is the chunk's centroid in the body frame, which
+    // is the point to aim at: the body origin can be metres away once a
+    // fragment carries several chunks.
+    out.center = native_ffi(pose.transform(chunk.shape->getLocalPose().p));
+    PxRigidDynamic *dynamic = actor->is<PxRigidDynamic>();
+    out.sleeping = dynamic != nullptr && dynamic->isSleeping();
+    break;
+  }
+  return out;
+}
+
+FfiChunkRayHit NativeDestruction::raycast_chunk(const FfiVec3 &origin,
+                                                const FfiVec3 &direction,
+                                                float max_distance) const {
+  FfiChunkRayHit out{};
+  const State &s = *state_;
+  native_require(std::isfinite(max_distance) && max_distance > 0.0f,
+                 "chunk raycast distance must be finite and positive");
+  PxVec3 ray = native_px(direction);
+  const float magnitude = ray.magnitude();
+  native_require(magnitude > 1.0e-6f, "chunk raycast direction has zero length");
+  ray /= magnitude;
+
+  PxRaycastBuffer buffer;
+  // Unfiltered by group on purpose: a shot that is stopped by the ground or by
+  // a fragment in front of the intended chunk has NOT reached it, and a test
+  // that filters those away would call that a hit.
+  if (!s.scene.raycast(native_px(origin), ray, max_distance, buffer,
+                       PxHitFlag::ePOSITION | PxHitFlag::eNORMAL) ||
+      !buffer.hasBlock) {
+    return out;
+  }
+  out.distance = buffer.block.distance;
+  out.position = native_ffi(buffer.block.position);
+  out.normal = native_ffi(buffer.block.normal);
+  out.chunk_id = ~0u;
+  for (const auto &chunk : s.chunks) {
+    if (chunk.shape != buffer.block.shape) {
+      continue;
+    }
+    out.hit = true;
+    out.chunk_id = native_chunk_id(chunk.structure, chunk.authored);
+    out.structure_id = chunk.structure;
+    out.entity_id = entity_id(chunk.structure, chunk.serial);
+    break;
+  }
+  return out;
+}
+
 std::uint32_t NativeDestruction::fire_round(const FfiRoundDesc &desc) {
   State &s = *state_;
   native_require(s.configured, "no native city to shoot at");

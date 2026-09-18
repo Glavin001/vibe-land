@@ -4009,6 +4009,16 @@ std::uint32_t World::native_fire_round(const FfiRoundDesc &desc) {
   return impl_->native_fire_round(desc);
 }
 
+FfiChunkAim World::native_chunk_aim(std::uint32_t structure_id,
+                                    std::uint32_t node_index) const {
+  return impl_->native().chunk_aim(structure_id, node_index);
+}
+
+FfiChunkRayHit World::native_raycast_chunk(FfiVec3 origin, FfiVec3 direction,
+                                           float max_distance) const {
+  return impl_->native().raycast_chunk(origin, direction, max_distance);
+}
+
 rust::Vec<FfiBrokenBondEvent> World::native_take_broken_bonds() {
   return impl_->native_take_broken_bonds();
 }

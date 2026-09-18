@@ -2570,6 +2570,229 @@ process is still here",
     assert!(!city.is_degraded(), "the scene reported it cannot continue");
 }
 
+/// Run a QA scenario against the real city, and say what every step did.
+///
+/// Driven by VIBE_QA_SCRIPT (a path) or VIBE_QA_STEPS (inline text). This is
+/// the entry point `scripts/qa.sh` wraps; see server/src/city_qa.rs for the
+/// command vocabulary and why it exists.
+#[cfg(feature = "native-destruction")]
+#[test]
+#[ignore = "QA driver: needs a GPU, and a scenario to run"]
+fn qa_scenario() {
+    use crate::city_qa::{aim_direction, eye_of, look_angles_at, parse, walk_input, QaReport, Step, StepOutcome};
+
+    let script = match (std::env::var("VIBE_QA_SCRIPT"), std::env::var("VIBE_QA_STEPS")) {
+        (Ok(path), _) => std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("cannot read VIBE_QA_SCRIPT {path}: {e}")),
+        (_, Ok(inline)) => inline.replace(';', "\n"),
+        _ => panic!("set VIBE_QA_SCRIPT=<path> or VIBE_QA_STEPS='walk 30 1 0; report'"),
+    };
+    let steps = parse(&script).unwrap_or_else(|e| panic!("{e}"));
+
+    let mut arena = production_arena();
+    crate::demo_world::seed_world_for_match(&mut arena, crate::city::CITY_MATCH_PREFIX)
+        .expect("seed the production world document");
+    arena.spawn_player(1);
+    let mut city = {
+        let world = arena.physx_world_mut().expect("physx world");
+        crate::city::CityRuntime::native(60, world).expect("city opens on the native stage")
+    };
+    city.add_client(1);
+    arena.set_tolerate_rejected_steps(city.backend_name() == "native");
+
+    let mut outcomes: Vec<StepOutcome> = Vec::new();
+    let mut tick = 0u32;
+    let mut seq = 0u16;
+    let (mut yaw, mut pitch) = (0.0f32, 0.0f32);
+    let mut checkpoint_bonds = city.stats().broken_bonds;
+    let mut owner_before: std::collections::HashMap<(u32, u32), u32> = Default::default();
+    let mut step_ms: Vec<f64> = Vec::new();
+
+    // One tick of everything production runs, in production's order.
+    macro_rules! advance {
+        ($count:expr, $input:expr) => {{
+            for _ in 0..$count {
+                let began = std::time::Instant::now();
+                let input: vibe_land_shared::protocol::InputCmd = $input;
+                arena.simulate_player_tick(1, &input, DT);
+                arena.step_vehicles_and_dynamics(DT);
+                let world = arena.physx_world_mut().expect("physx world");
+                let _ = city.step(tick, DT, gravity(), Some(world));
+                step_ms.push(f64::from(began.elapsed().as_secs_f32()) * 1000.0);
+                tick += 1;
+                seq = seq.wrapping_add(1);
+            }
+        }};
+    }
+
+    let chunk_center = |arena: &mut crate::movement::PhysicsArena, s: u32, n: u32| {
+        let world = arena.physx_world_mut().expect("physx world");
+        world.native_chunk_aim(s, n).ok()
+    };
+
+    for (line, text, step) in steps {
+        let mut ok = true;
+        let detail;
+        match step {
+            Step::Walk { ticks, forward, strafe } => {
+                advance!(ticks, walk_input(seq, yaw, pitch, forward, strafe));
+                let at = arena.player_state(1).expect("player").position;
+                detail = format!("player at [{:.1}, {:.1}, {:.1}]", at[0], at[1], at[2]);
+            }
+            Step::Look { yaw: y, pitch: p } => {
+                yaw = y;
+                pitch = p;
+                advance!(1u32, walk_input(seq, yaw, pitch, 0.0, 0.0));
+                detail = format!("yaw {yaw:.3} pitch {pitch:.3}");
+            }
+            Step::Aim { structure, node } => match chunk_center(&mut arena, structure, node) {
+                Some(aim) if aim.found => {
+                    let eye = eye_of(arena.player_state(1).expect("player").position);
+                    let target = Vec3::new(aim.center.x, aim.center.y, aim.center.z);
+                    let (y, p) = look_angles_at(eye, target);
+                    yaw = y;
+                    pitch = p;
+                    advance!(1u32, walk_input(seq, yaw, pitch, 0.0, 0.0));
+                    detail = format!(
+                        "chunk {structure}:{node} at [{:.1}, {:.1}, {:.1}], {:.1} m away",
+                        target.x, target.y, target.z, eye.distance(target)
+                    );
+                }
+                _ => {
+                    ok = false;
+                    detail = format!("chunk {structure}:{node} does not exist");
+                }
+            },
+            Step::VerifyAim { structure, node } => {
+                let eye = eye_of(arena.player_state(1).expect("player").position);
+                let dir = aim_direction(yaw, pitch);
+                let world = arena.physx_world_mut().expect("physx world");
+                let hit = world
+                    .native_raycast_chunk(
+                        vibe_land_physx_bridge::Vec3::new(eye.x, eye.y, eye.z),
+                        vibe_land_physx_bridge::Vec3::new(dir.x, dir.y, dir.z),
+                        crate::city::shot_max_distance_m(),
+                    )
+                    .expect("chunk raycast");
+                let wanted = (structure << 16) | node;
+                if !hit.hit {
+                    ok = false;
+                    detail = "the ray reached no chunk at all".to_string();
+                } else if hit.chunk_id != wanted {
+                    ok = false;
+                    detail = format!(
+                        "the ray reached chunk {}:{} at {:.1} m, not {structure}:{node}",
+                        hit.structure_id, hit.chunk_id & 0xffff, hit.distance
+                    );
+                } else {
+                    detail = format!("ray reaches {structure}:{node} at {:.1} m", hit.distance);
+                }
+            }
+            Step::Fire { ball } => {
+                let feet = arena.player_state(1).expect("player").position;
+                let eye = eye_of(feet);
+                let dir = aim_direction(yaw, pitch);
+                if ball {
+                    let launched = arena.launch_ball(
+                        crate::movement::Vec3::new(eye.x, eye.y, eye.z),
+                        crate::movement::Vec3::new(dir.x, dir.y, dir.z),
+                        crate::city::city_ball_radius_m(),
+                        crate::city::city_ball_mass_kg(),
+                        crate::city::city_ball_speed_ms(),
+                        crate::city::city_ball_ttl_ticks(),
+                    );
+                    ok = launched.is_some();
+                    detail = if ok { "cannonball away".into() } else { "the ball would not launch".into() };
+                } else {
+                    let world = arena.physx_world_mut();
+                    let landed = city.apply_shot_ray(eye, dir, world);
+                    ok = landed;
+                    detail = if landed { "rifle round hit".into() } else { "rifle round reached nothing".into() };
+                }
+            }
+            Step::Wait { ticks } => {
+                advance!(ticks, walk_input(seq, yaw, pitch, 0.0, 0.0));
+                detail = format!("{ticks} ticks");
+            }
+            Step::ExpectDetached { structure, node } => {
+                let before = owner_before.get(&(structure, node)).copied();
+                let now = chunk_center(&mut arena, structure, node);
+                match (before, now) {
+                    (Some(was), Some(aim)) if aim.found && aim.entity_id != was => {
+                        detail = format!("chunk {structure}:{node} changed owner {was} -> {}", aim.entity_id);
+                    }
+                    (_, Some(aim)) if !aim.found => {
+                        detail = format!("chunk {structure}:{node} was destroyed outright");
+                    }
+                    (Some(was), Some(_)) => {
+                        ok = false;
+                        detail = format!("chunk {structure}:{node} is still on body {was}");
+                    }
+                    _ => {
+                        ok = false;
+                        detail = format!("no owner recorded for {structure}:{node}; aim at it first");
+                    }
+                }
+            }
+            Step::ExpectBonds { at_least } => {
+                let broken = city.stats().broken_bonds.saturating_sub(checkpoint_bonds);
+                ok = broken >= at_least;
+                detail = format!("{broken} bonds broken since the last check, wanted {at_least}");
+                checkpoint_bonds = city.stats().broken_bonds;
+            }
+            Step::Probe => {
+                let eye = eye_of(arena.player_state(1).expect("player").position);
+                let dir = aim_direction(yaw, pitch);
+                let world = arena.physx_world_mut().expect("physx world");
+                let hit = world
+                    .native_raycast_chunk(
+                        vibe_land_physx_bridge::Vec3::new(eye.x, eye.y, eye.z),
+                        vibe_land_physx_bridge::Vec3::new(dir.x, dir.y, dir.z),
+                        crate::city::shot_max_distance_m(),
+                    )
+                    .expect("chunk raycast");
+                detail = if hit.hit {
+                    format!(
+                        "aim reaches chunk {}:{} at {:.1} m, body {}",
+                        hit.structure_id, hit.chunk_id & 0xffff, hit.distance, hit.entity_id
+                    )
+                } else {
+                    "aim reaches no chunk".to_string()
+                };
+            }
+            Step::Report => {
+                let stats = city.stats();
+                detail = format!(
+                    "tick {tick} | {} bonds | {} bodies ({} awake)",
+                    stats.broken_bonds, stats.chunk_bodies, stats.awake_chunk_bodies
+                );
+            }
+        }
+        // Remember owners as they are aimed at, so expect-detached has a before.
+        if let Step::Aim { structure, node } = step {
+            if let Some(aim) = chunk_center(&mut arena, structure, node) {
+                if aim.found {
+                    owner_before.insert((structure, node), aim.entity_id);
+                }
+            }
+        }
+        outcomes.push(StepOutcome { line, command: text, ok, detail });
+    }
+
+    let stats = city.stats();
+    let report = QaReport {
+        steps: outcomes,
+        ticks: tick,
+        broken_bonds: stats.broken_bonds,
+        chunk_bodies: stats.chunk_bodies,
+        awake_bodies: stats.awake_chunk_bodies,
+        tick_ms_mean: if step_ms.is_empty() { 0.0 } else { step_ms.iter().sum::<f64>() / step_ms.len() as f64 },
+        tick_ms_max: step_ms.iter().copied().fold(0.0, f64::max),
+    };
+    eprintln!("[city qa]\n{}", report.render());
+    assert!(!report.failed(), "a QA step failed; see the report above");
+}
+
 /// The cannonball shot: a ball you can watch, that does the damage itself.
 ///
 /// Three separate claims, because each one has failed on its own before. The

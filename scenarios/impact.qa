@@ -1,0 +1,19 @@
+# A cannonball must reach a named chunk and take it off the building.
+#
+# Every assertion here failed at some point during development: the shot
+# reached nothing, the aim pointed at open ground, or the ball was correct on
+# the server and invisible. Naming the chunk is what makes "it hit" checkable.
+
+report                    # the intact city
+
+look 0.8 0                # face the facade
+probe                     # say what is actually under the crosshair
+aim 0 5810                # now aim at that chunk by identity
+verify-aim 0 5810         # and refuse to continue if the ray misses it
+
+fire ball
+wait 120
+
+expect-detached 0 5810    # the chunk must have changed owner, i.e. come off
+expect-bonds 1            # and it must have cost the building bonds
+report

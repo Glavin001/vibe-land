@@ -201,6 +201,11 @@ const SHOT_BLAST_DEPTH_M: f32 = 0.5;
 /// Hitscan range for city damage.
 const SHOT_MAX_DISTANCE_M: f32 = 400.0;
 
+/// The shot range, for a test that needs to trace the same ray a shot does.
+pub fn shot_max_distance_m() -> f32 {
+    SHOT_MAX_DISTANCE_M
+}
+
 pub fn is_city_match(match_id: &str) -> bool {
     match_id.starts_with(CITY_MATCH_PREFIX)
 }

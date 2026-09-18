@@ -2,6 +2,8 @@ mod app_config;
 mod city;
 #[cfg(all(test, feature = "destruction"))]
 mod city_bench;
+#[cfg(all(test, feature = "destruction"))]
+mod city_qa;
 mod demo_world;
 mod heartbeat;
 mod lag_comp;
