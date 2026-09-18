@@ -3,7 +3,7 @@
 // Layer index is the array layer in city-albedo.webp / city-surface.webp.
 // Walls come first, then floors; `cityTextures.ts` relies on that order.
 
-export type CityTextureRole = 'wall' | 'floor' | 'ground';
+export type CityTextureRole = 'wall' | 'floor' | 'ground' | 'authored';
 
 export interface CityTextureSet {
   slug: string;
@@ -31,6 +31,9 @@ export const CITY_TEXTURE_SETS: readonly CityTextureSet[] = [
   { slug: 'concrete_floor_damaged_01', role: 'floor', metresPerTile: 5.000, directional: false, materialKey: null, meanLinear: [0.0793, 0.0583, 0.0372] },
   { slug: 'leafy_grass', role: 'ground', metresPerTile: 2.000, directional: false, materialKey: null, meanLinear: [0.3199, 0.2360, 0.1062] },
   { slug: 'brown_mud_leaves_01', role: 'ground', metresPerTile: 1.300, directional: false, materialKey: null, meanLinear: [0.1388, 0.0996, 0.0376] },
+  { slug: 'white-limestone', role: 'authored', metresPerTile: 3.000, directional: true, materialKey: 'white-limestone', meanLinear: [0.7955, 0.7424, 0.6357] },
+  { slug: 'roof-slate', role: 'authored', metresPerTile: 3.000, directional: true, materialKey: 'roof-slate', meanLinear: [0.0672, 0.0806, 0.0933] },
+  { slug: 'aged-timber', role: 'authored', metresPerTile: 3.000, directional: true, materialKey: 'aged-timber', meanLinear: [0.2328, 0.1210, 0.0491] },
 ];
 
 export const CITY_ALBEDO_PX = 1024;

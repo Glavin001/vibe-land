@@ -1,0 +1,6 @@
+{
+  "right-landing": { "position": [106, 32, -119], "target": [65, 10, -80] },
+  "left-landing": { "position": [-106, 32, -119], "target": [-65, 10, -80] },
+  "upper-turn": { "position": [118, 35, 27], "target": [90, 19, 9] },
+  "both-routes": { "position": [0, 220, -175], "target": [0, 22, -18] }
+}

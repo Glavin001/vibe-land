@@ -35,6 +35,7 @@ Sources are CC0 from Poly Haven. Outputs are committed, so an ordinary
 from __future__ import annotations
 
 import json
+import runpy
 import sys
 import urllib.request
 from dataclasses import dataclass
@@ -243,6 +244,7 @@ def main() -> int:
     for path in (albedo_path, surface_path):
         print(f"wrote {path.relative_to(HERE.parent)}  {path.stat().st_size / 1024:.0f} KiB")
     print(f"wrote {OUT_TS.relative_to(HERE.parent)}")
+    runpy.run_path(str(HERE / "bake-authored-city.py"), run_name="__main__")
     return 0
 
 

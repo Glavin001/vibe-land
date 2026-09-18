@@ -101,7 +101,7 @@ export function layerCodeForMaterial(material: PackMaterial | undefined): number
   // Steel reads as metal from every angle, so its floor projection is the metal
   // layer too; everything else takes worn concrete on its up-facing surfaces,
   // which is what a slab top or a broken edge actually looks like.
-  const floor = key === 'metal' ? wall : indexOfKey('concrete-floor');
+  const floor = key && ['metal', 'white-limestone', 'roof-slate', 'aged-timber'].includes(key) ? wall : indexOfKey('concrete-floor');
   return wall + LAYER_CODE_RADIX * floor;
 }
 

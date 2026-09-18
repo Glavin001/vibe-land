@@ -96,7 +96,7 @@ function buildGroups(pack: ScenePack): MaterialGroup[] {
     const c = nodes[i].centroid;
     geometry.translate(c.x, c.y, c.z);
 
-    const name = nodeMaterials?.[i] ?? table[nodes[i].m ?? 0]?.name ?? 'unknown';
+    const name = table[nodes[i].m ?? 0]?.name ?? nodeMaterials?.[i] ?? 'unknown';
     const list = byName.get(name) ?? [];
     list.push(geometry);
     byName.set(name, list);

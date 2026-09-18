@@ -1,0 +1,5 @@
+{
+  "front-perimeter": { "position": [0, 36, 174], "target": [0, 9, 103] },
+  "enclosed-city": { "position": [0, 205, 215], "target": [0, 23, 0] },
+  "stair-defences": { "position": [118, 45, -132], "target": [65, 12, -80] }
+}

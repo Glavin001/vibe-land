@@ -11,7 +11,7 @@
 // optional. Without --use-angle=vulkan Chromium silently falls back to
 // SwiftShader, which still renders -- just slowly and with different shading.
 import { chromium } from 'playwright-core';
-import { mkdir } from 'node:fs/promises';
+import { mkdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 
 const GPU_ARGS = [
@@ -27,6 +27,7 @@ const flag = (name, fallback) => {
   return i >= 0 ? args[i + 1] : fallback;
 };
 const port = flag('port', '6006');
+const origin = flag('origin', `https://127.0.0.1:${port}`);
 const outDir = flag('out', path.resolve('../docs/structures', pack));
 
 /**
@@ -45,7 +46,10 @@ const PRESETS = {
   detail:   { standoff: 1.15, height: 0.30, aim: 0.30, bearing: Math.PI * 0.05 },
   back:     { standoff: 2.6, height: 0.55, aim: 0.45, bearing: Math.PI },
 };
-const angles = (flag('angles', Object.keys(PRESETS).join(','))).split(',');
+// Optional named world-space cameras for inspecting authored details.
+const posesFile = flag('poses', null);
+const customPoses = posesFile ? JSON.parse(await readFile(posesFile, 'utf8')) : {};
+const angles = (flag('angles', Object.keys(posesFile ? customPoses : PRESETS).join(','))).split(',');
 
 const browser = await chromium.launch({ headless: true, args: GPU_ARGS });
 const page = await browser.newPage({ ignoreHTTPSErrors: true, viewport: { width: 1280, height: 720 } });
@@ -53,9 +57,9 @@ const problems = [];
 page.on('console', (m) => {
   if (m.type() === 'error') problems.push(`console: ${m.text().slice(0, 300)}`);
 });
-page.on('pageerror', (e) => problems.push(`pageerror: ${String(e).slice(0, 300)}`));
+page.on('pageerror', (e) => problems.push(`pageerror: ${String(e.stack ?? e).slice(0, 1000)}`));
 
-const url = `https://127.0.0.1:${port}/structure?pack=${encodeURIComponent(pack)}`;
+const url = `${origin}/structure?pack=${encodeURIComponent(pack)}`;
 console.log(`loading ${url}`);
 await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
 
@@ -79,13 +83,13 @@ console.log(`bounds radius ${b.radiusM.toFixed(1)} m, top ${b.topM.toFixed(1)} m
 await mkdir(outDir, { recursive: true });
 for (const name of angles) {
   const p = PRESETS[name];
-  if (!p) { console.error(`unknown angle "${name}"`); continue; }
+  if (!p && !customPoses[name]) { console.error(`unknown angle "${name}"`); continue; }
   // Framed on the larger of plan radius and half the height. Sizing on plan
   // radius alone put the camera 48 m from a 127 m tower and the shot was a
   // close-up of the middle of it.
   const scale = Math.max(b.radiusM, b.topM * 0.55);
-  const dist = scale * p.standoff + 8;
-  const pose = {
+  const dist = scale * (p?.standoff ?? 0) + 8;
+  const pose = customPoses[name] ?? {
     position: [
       b.centre[0] + Math.sin(p.bearing) * dist,
       Math.max(1.6, b.topM * p.height),

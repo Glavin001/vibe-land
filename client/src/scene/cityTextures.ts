@@ -105,7 +105,7 @@ export function layerCodeForTextureKey(key: string | undefined): number | null {
   if (wall < 0) return null;
   // Metal reads as metal from every angle; everything else takes worn concrete
   // on its up-facing surfaces, which is what a slab top or a broken edge is.
-  const floorKey = key === 'metal' ? key : 'concrete-floor';
+  const floorKey = ['metal', 'white-limestone', 'roof-slate', 'aged-timber'].includes(key) ? key : 'concrete-floor';
   const floorIndex = CITY_TEXTURE_SETS.findIndex((set) => set.materialKey === floorKey);
   const floor = floorIndex >= 0 ? floorIndex : WALL_LAYER_COUNT;
   return wall + LAYER_CODE_RADIX * floor;

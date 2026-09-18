@@ -3931,11 +3931,24 @@ FfiDestructionStats DestructionManager::destruction_stats() const {
   std::uint64_t single_node_contacts = 0;
   std::uint64_t single_node_awake = 0;
   std::uint64_t bondless_skipped = 0;
+  std::uint32_t stress_live_structures = 0;
+  std::uint32_t stress_converged_structures = 0;
+  std::uint64_t stress_completed_updates = 0;
+  std::uint64_t stress_active_island_updates = 0;
+  std::uint64_t stress_crush_yield_nodes = 0;
+  std::uint64_t stress_topology_changes = 0;
   for (const auto &slot_ptr : slots_) {
     if (!slot_ptr || slot_ptr->dest == nullptr) {
       continue;
     }
     const auto &telemetry = slot_ptr->dest->getTelemetry();
+    ++stress_live_structures;
+    stress_converged_structures += telemetry.stressConverged ? 1u : 0u;
+    stress_completed_updates += telemetry.completedStressUpdates;
+    stress_active_island_updates += telemetry.activeStressIslandUpdates;
+    stress_crush_yield_nodes += telemetry.nodesAtCrushYield;
+    stress_topology_changes += telemetry.splits + telemetry.bodiesCreated
+        + telemetry.bodiesRecycled + telemetry.shapesMigrated;
     stats.chunk_bodies += telemetry.bodyCount;
     stats.awake_chunk_bodies += telemetry.awakeDynamicBodyCount;
     // Whether the CUDA solver is actually running, not merely requested: the
@@ -4134,6 +4147,14 @@ FfiDestructionStats DestructionManager::destruction_stats() const {
     span.kind = kind;
     stats.extra_spans.push_back(std::move(span));
   };
+  // Counts, not timings: unchanged active work across an idle update proves
+  // the structural solve was skipped even when orchestration still runs.
+  push_span("stress_crush_yield_nodes", static_cast<double>(stress_crush_yield_nodes), 2);
+  push_span("stress_topology_changes", static_cast<double>(stress_topology_changes), 2);
+  push_span("stress_live_structures", stress_live_structures, 2);
+  push_span("stress_converged_structures", stress_converged_structures, 2);
+  push_span("stress_completed_updates", static_cast<double>(stress_completed_updates), 2);
+  push_span("stress_active_island_updates", static_cast<double>(stress_active_island_updates), 2);
   push_span("blast_gravity_slotmax_ms", gravity_slot_max, 0);
   push_span("blast_contact_processing_slotmax_ms", contact_slot_max, 0);
   // A single-node body has no internal bonds, so nothing in it can break: the
