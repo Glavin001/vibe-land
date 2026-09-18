@@ -2606,6 +2606,10 @@ fn qa_scenario() {
     let (mut yaw, mut pitch) = (0.0f32, 0.0f32);
     let mut checkpoint_bonds = city.stats().broken_bonds;
     let mut owner_before: std::collections::HashMap<(u32, u32), u32> = Default::default();
+    // The last ball fired, where it started, and how far away the thing it was
+    // aimed at is. Enough to say afterwards whether it stopped there.
+    let mut last_ball: Option<(u32, Vec3, f32)> = None;
+    let mut last_aim_range = f32::NAN;
     let mut step_ms: Vec<f64> = Vec::new();
 
     // One tick of everything production runs, in production's order.
@@ -2653,9 +2657,10 @@ fn qa_scenario() {
                     yaw = y;
                     pitch = p;
                     advance!(1u32, walk_input(seq, yaw, pitch, 0.0, 0.0));
+                    last_aim_range = eye.distance(target);
                     detail = format!(
                         "chunk {structure}:{node} at [{:.1}, {:.1}, {:.1}], {:.1} m away",
-                        target.x, target.y, target.z, eye.distance(target)
+                        target.x, target.y, target.z, last_aim_range
                     );
                 }
                 _ => {
@@ -2702,6 +2707,7 @@ fn qa_scenario() {
                         crate::city::city_ball_ttl_ticks(),
                     );
                     ok = launched.is_some();
+                    last_ball = launched.map(|id| (id, eye, last_aim_range));
                     detail = if ok { "cannonball away".into() } else { "the ball would not launch".into() };
                 } else {
                     let world = arena.physx_world_mut();
@@ -2740,6 +2746,39 @@ fn qa_scenario() {
                 detail = format!("{broken} bonds broken since the last check, wanted {at_least}");
                 checkpoint_bonds = city.stats().broken_bonds;
             }
+            Step::ExpectStopped { margin } => match last_ball {
+                Some((id, origin, range)) if range.is_finite() => {
+                    let travelled = arena
+                        .snapshot_dynamic_bodies()
+                        .into_iter()
+                        .find(|body| body.0 == id)
+                        .map(|body| {
+                            origin.distance(Vec3::new(body.1[0], body.1[1], body.1[2]))
+                        });
+                    match travelled {
+                        Some(distance) if distance <= range + margin => {
+                            detail = format!(
+                                "ball stopped {distance:.1} m out against a target at {range:.1} m (held {} times)",
+                                arena.balls_clamped()
+                            );
+                        }
+                        Some(distance) => {
+                            ok = false;
+                            detail = format!(
+                                "ball reached {distance:.1} m past a target at {range:.1} m: it went through (held {} times)",
+                                arena.balls_clamped()
+                            );
+                        }
+                        None => {
+                            detail = "the ball retired before this check; nothing to say".to_string();
+                        }
+                    }
+                }
+                _ => {
+                    ok = false;
+                    detail = "no ball fired at a named chunk yet".to_string();
+                }
+            },
             Step::Probe => {
                 let eye = eye_of(arena.player_state(1).expect("player").position);
                 let dir = aim_direction(yaw, pitch);

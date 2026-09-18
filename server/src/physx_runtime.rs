@@ -137,6 +137,10 @@ pub struct PhysxPhysicsArena {
     ball_cursor: usize,
     /// Fired balls, oldest first, with the tick each one retires on.
     launched_balls: VecDeque<LaunchedBall>,
+    /// Radius the balls were launched with, for the travel clamp.
+    ball_radius_m: f32,
+    /// How many times a ball was held at a surface it would have skipped.
+    balls_clamped: u64,
     /// Counts accepted steps, which is what a ball's lifetime is measured in.
     /// Deliberately not the match tick: this is arena bookkeeping and must not
     /// depend on a caller remembering to pass a clock.
@@ -203,6 +207,8 @@ impl PhysxPhysicsArena {
             runtime_static: HashMap::new(),
             next_static_id: 1,
             next_dynamic_id: 1,
+            ball_radius_m: 0.0,
+            balls_clamped: 0,
             ball_pool: Vec::new(),
             ball_cursor: 0,
             launched_balls: VecDeque::new(),
@@ -760,6 +766,7 @@ impl PhysxPhysicsArena {
     /// the GPU wait instead of after it.
     pub fn begin_dynamics(&mut self) {
         self.expire_launched_balls();
+        self.clamp_launched_ball_travel(1.0 / f32::from(vibe_land_shared::constants::SIM_HZ));
         self.drive_vehicles();
         let started = std::time::Instant::now();
         self.world
@@ -800,6 +807,7 @@ impl PhysxPhysicsArena {
 
     pub fn step_vehicles_and_dynamics(&mut self, _dt: f32) -> (f32, f32) {
         self.expire_launched_balls();
+        self.clamp_launched_ball_travel(_dt.max(1.0 / f32::from(vibe_land_shared::constants::SIM_HZ)));
         self.drive_vehicles();
         let started = std::time::Instant::now();
         if let Err(error) = self.world.step() {
@@ -1215,6 +1223,7 @@ impl PhysxPhysicsArena {
                 shape_type: SHAPE_SPHERE,
             },
         );
+        self.ball_radius_m = radius;
         self.launched_balls.push_back(LaunchedBall {
             id,
             expires_at: self.launch_tick + u64::from(ttl_ticks.max(1)),
@@ -1230,9 +1239,106 @@ impl PhysxPhysicsArena {
         Some(id)
     }
 
+    /// How many times a ball has been held at a surface it would have skipped.
+    pub fn balls_clamped(&self) -> u64 {
+        self.balls_clamped
+    }
+
     /// How many fired balls are currently in the scene.
     pub fn launched_ball_count(&self) -> usize {
         self.launched_balls.len()
+    }
+
+    /// Stop a fired ball at the first surface on its path this tick.
+    ///
+    /// The stage forbids scene CCD, so nothing sweeps a projectile between
+    /// steps: a 0.3 m ball at 60 m/s covers a full metre per tick against its
+    /// own 0.6 m diameter, and any wall thinner than the difference falls
+    /// between two positions and never generates a contact.
+    ///
+    /// Speculative contacts are the obvious answer and are worse. They do hold
+    /// the wall, but a speculative contact does not deliver the impulse the
+    /// destruction stage reads its loads from, so the shot that broke 51 bonds
+    /// broke none. Measured both ways.
+    ///
+    /// This instead casts the ball's own path each tick and, when something is
+    /// closer than the ball will travel, places it just short of that surface
+    /// with its velocity untouched. The next step then resolves an ordinary
+    /// contact, at full speed, and the impulse arrives intact.
+    fn clamp_launched_ball_travel(&mut self, dt: f32) {
+        // Off by default: it fires and it does not work. At 140 m/s it held the
+        // ball at the surface twice and the ball still finished 96.7 m past the
+        // wall having broken nothing. Placing a ten-tonne body against a wall
+        // does not stop it crossing 2.3 m in the next step. Kept behind
+        // VIBE_CITY_BALL_SWEEP=1 so the result is reproducible.
+        static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        if !*ENABLED.get_or_init(|| std::env::var("VIBE_CITY_BALL_SWEEP").is_ok_and(|v| v == "1")) {
+            return;
+        }
+        if self.launched_balls.is_empty() || !(dt > 0.0) {
+            return;
+        }
+        let radius = self.ball_radius_m;
+        let snapshots = self.current_body_snapshots();
+        let mut moves: Vec<(u32, Vector3<f32>)> = Vec::new();
+        for ball in &self.launched_balls {
+            let entity = NS_DYNAMIC | (ball.id & ID_MASK);
+            let Some(body) = snapshots.iter().find(|b| b.entity_id == entity) else {
+                continue;
+            };
+            let velocity = body.linear_velocity;
+            let speed = (velocity.x * velocity.x
+                + velocity.y * velocity.y
+                + velocity.z * velocity.z)
+                .sqrt();
+            let travel = speed * dt;
+            // Only a ball that outruns its own diameter can skip a wall.
+            if !(travel > radius * 2.0) {
+                continue;
+            }
+            let origin = body.pose.position;
+            let direction = bridge::Vec3::new(
+                velocity.x / speed,
+                velocity.y / speed,
+                velocity.z / speed,
+            );
+            let hit = self.world.raycast(bridge::RaycastRequest {
+                origin,
+                direction,
+                max_distance: travel + radius,
+                collision_mask: ALL_GROUPS,
+                ignore_entity_id: entity,
+                has_ignore_entity: true,
+            });
+            let Ok(hit) = hit else { continue };
+            if !hit.hit || hit.distance <= radius {
+                continue;
+            }
+            // Just short of the surface, so the contact happens next step.
+            let stop = hit.distance - radius;
+            if stop >= travel {
+                continue;
+            }
+            moves.push((
+                entity,
+                Vector3::new(
+                    origin.x + direction.x * stop,
+                    origin.y + direction.y * stop,
+                    origin.z + direction.z * stop,
+                ),
+            ));
+        }
+        for (entity, position) in moves {
+            if let Err(error) = self
+                .world
+                .set_body_pose(entity, pose(position, [0.0, 0.0, 0.0, 1.0]))
+            {
+                tracing::warn!(%error, "could not hold a ball at the surface it was about to skip");
+            } else {
+                self.balls_clamped = self.balls_clamped.saturating_add(1);
+                self.snapshots_valid = false;
+            }
+        }
     }
 
     /// Remove fired balls whose lifetime has run out.

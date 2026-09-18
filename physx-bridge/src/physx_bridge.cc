@@ -2215,6 +2215,31 @@ public:
     PxRigidDynamic *actor =
         record.actor != nullptr ? record.actor->is<PxRigidDynamic>() : nullptr;
     require(actor != nullptr, "launched ball is not a dynamic rigid body");
+    // Speculative contacts, because the geometry alone cannot stop this thing
+    // passing through a wall. The stage forbids scene CCD -- getDestructionScene()
+    // returns null when PxSceneFlag::eENABLE_CCD is set -- but that is the
+    // sweep-based pipeline. eENABLE_SPECULATIVE_CCD is a per-body flag which
+    // simply widens contact generation by how far the body will travel this
+    // step, inside the ordinary discrete solver, and the stage does not object
+    // to it. A 0.3 m ball at 60 m/s moves a full metre per 60 Hz tick against
+    // a 0.6 m diameter, so without this any wall thinner than about 0.4 m can
+    // fall between two positions and never generate a contact at all.
+    // Off by default, because it trades one bug for a worse one. It does stop
+    // the ball passing through: without it the ball goes through the wall at
+    // 140 m/s, with it the wall holds to somewhere past 140 and under 240. But
+    // a speculative contact does not deliver the impulse the destruction stage
+    // reads its loads from, so the same shot that broke 51 bonds breaks zero.
+    // A projectile that stops dead and does nothing is not an improvement on
+    // one that goes through. VIBE_CITY_BALL_SPECULATIVE_CCD=1 to re-measure.
+    static const bool speculative = [] {
+      const char *raw = std::getenv("VIBE_CITY_BALL_SPECULATIVE_CCD");
+      return raw != nullptr && raw[0] == '1';
+    }();
+    actor->setRigidBodyFlag(PxRigidBodyFlag::eENABLE_SPECULATIVE_CCD, speculative);
+    // Widening the shape's contact offset as well was tried and does nothing:
+    // at 240 m/s the ball went through at 75.7 m without it and 75.6 m with,
+    // so speculative contacts are already doing whatever there is to do here.
+    // Not kept, so the next person does not read it as load-bearing.
     // A thrown ball is ballistic. The damping `add_dynamic` gives a loose prop
     // so it stops rolling would bleed roughly a quarter of the muzzle speed
     // away in the first second, which is the difference between a shot that
@@ -2222,6 +2247,17 @@ public:
     actor->setLinearDamping(0.0f);
     actor->setAngularDamping(0.0f);
     actor->setLinearVelocity(velocity);
+  }
+
+  void set_body_pose(std::uint32_t entity_id, const FfiPose &pose) {
+    Record &record = find(entity_id);
+    require(record.controller == nullptr, "cannot move a capsule controller this way");
+    PxRigidDynamic *dynamic =
+        record.actor != nullptr ? record.actor->is<PxRigidDynamic>() : nullptr;
+    require(dynamic != nullptr, "entity is not a dynamic rigid body");
+    const PxTransform target = to_px(pose);
+    require(target.isSane(), "body pose must be finite");
+    dynamic->setGlobalPose(target, /*autowake=*/true);
   }
 
   void add_capsule_player(const FfiCapsulePlayerDesc &desc) {
@@ -3823,6 +3859,10 @@ void World::add_dynamic_sphere(const FfiDynamicSphereDesc &desc) {
 
 void World::launch_dynamic_ball(const FfiLaunchedBallDesc &desc) {
   impl_->launch_dynamic_ball(desc);
+}
+
+void World::set_body_pose(std::uint32_t entity_id, const FfiPose &pose) {
+  impl_->set_body_pose(entity_id, pose);
 }
 
 void World::add_capsule_player(const FfiCapsulePlayerDesc &desc) {

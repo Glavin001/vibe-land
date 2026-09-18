@@ -21,6 +21,7 @@
 //! expect-detached 0 1234 # that chunk must have changed owner, i.e. come off
 //! expect-bonds 1         # at least this many bonds broken since the last check
 //! probe                  # name whichever chunk the current aim reaches
+//! expect-stopped 6       # the ball must not fly more than 6 m past what it hit
 //! report                 # a stats line
 //! ```
 
@@ -103,6 +104,12 @@ pub enum Step {
     Wait { ticks: u32 },
     ExpectDetached { structure: u32, node: u32 },
     ExpectBonds { at_least: u32 },
+    /// Fail if the last fired ball travelled more than `margin` metres past
+    /// the range it was aimed at. The direct test for tunnelling: a ball that
+    /// passed through the wall keeps going, and nothing else in the run says
+    /// so -- bonds still break where it clipped the edge, and the frame times
+    /// look perfect.
+    ExpectStopped { margin: f32 },
     /// Report whichever chunk the current aim reaches. How you find a target
     /// id without guessing at one.
     Probe,
@@ -134,6 +141,7 @@ pub fn parse(script: &str) -> Result<Vec<(usize, String, Step)>, String> {
             "wait" => Step::Wait { ticks: count(1)? },
             "expect-detached" => Step::ExpectDetached { structure: count(1)?, node: count(2)? },
             "expect-bonds" => Step::ExpectBonds { at_least: count(1)? },
+            "expect-stopped" => Step::ExpectStopped { margin: number(1)? },
             "probe" => Step::Probe,
             "report" => Step::Report,
             other => return Err(format!("line {}: unknown command '{other}'", index + 1)),

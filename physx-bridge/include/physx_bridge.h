@@ -56,6 +56,7 @@ public:
   void add_dynamic_box(const FfiDynamicBoxDesc &desc);
   void add_dynamic_sphere(const FfiDynamicSphereDesc &desc);
   void launch_dynamic_ball(const FfiLaunchedBallDesc &desc);
+  void set_body_pose(std::uint32_t entity_id, const FfiPose &pose);
   void add_capsule_player(const FfiCapsulePlayerDesc &desc);
   void add_vehicle_chassis(const FfiVehicleChassisDesc &desc);
   void remove_actor(std::uint32_t entity_id);

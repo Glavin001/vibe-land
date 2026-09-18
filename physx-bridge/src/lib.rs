@@ -806,6 +806,27 @@ impl World {
         }
     }
 
+    /// Move a dynamic body without changing its velocity.
+    ///
+    /// For stopping a projectile at a surface it would otherwise have skipped
+    /// past between ticks. Keeping the velocity is the point: the contact then
+    /// resolves normally on the next step and delivers its impulse, which a
+    /// speculative contact does not.
+    pub fn set_body_pose(&mut self, entity_id: u32, pose: Pose) -> Result<(), BridgeError> {
+        #[cfg(feature = "gpu")]
+        {
+            self.inner
+                .pin_mut()
+                .set_body_pose(entity_id, &pose.into())
+                .map_err(operation_error)
+        }
+        #[cfg(not(feature = "gpu"))]
+        {
+            let _ = (entity_id, pose);
+            Err(stub_unavailable())
+        }
+    }
+
     pub fn launch_dynamic_ball(&mut self, desc: LaunchedBallDesc) -> Result<(), BridgeError> {
         #[cfg(feature = "gpu")]
         {
@@ -2151,6 +2172,7 @@ mod ffi {
         fn add_dynamic_box(self: Pin<&mut World>, desc: &FfiDynamicBoxDesc) -> Result<()>;
         fn add_dynamic_sphere(self: Pin<&mut World>, desc: &FfiDynamicSphereDesc) -> Result<()>;
         fn launch_dynamic_ball(self: Pin<&mut World>, desc: &FfiLaunchedBallDesc) -> Result<()>;
+        fn set_body_pose(self: Pin<&mut World>, entity_id: u32, pose: &FfiPose) -> Result<()>;
         fn add_capsule_player(self: Pin<&mut World>, desc: &FfiCapsulePlayerDesc) -> Result<()>;
         fn add_vehicle_chassis(self: Pin<&mut World>, desc: &FfiVehicleChassisDesc) -> Result<()>;
         fn remove_actor(self: Pin<&mut World>, entity_id: u32) -> Result<()>;

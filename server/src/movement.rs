@@ -251,6 +251,15 @@ impl PhysicsArena {
         }
     }
 
+    /// How many times a ball was held at a surface it would have skipped.
+    pub fn balls_clamped(&self) -> u64 {
+        match &self.backend {
+            PhysicsBackend::Rapier(_) => 0,
+            #[cfg(feature = "physx-gpu")]
+            PhysicsBackend::Physx(arena) => arena.balls_clamped(),
+        }
+    }
+
     /// How many fired balls are in the scene right now.
     pub fn launched_ball_count(&self) -> usize {
         match &self.backend {

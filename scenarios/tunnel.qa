@@ -1,0 +1,12 @@
+# Does the ball go through the wall?
+#
+# Bonds still break when a projectile clips the edge of what it passes through,
+# so damage alone cannot answer this. Measure how far the ball actually got.
+look 0.8 0
+probe
+aim 0 5810
+verify-aim 0 5810
+fire ball
+wait 40
+expect-stopped 6      # it must not be more than 6 m past the wall it hit
+report
