@@ -2884,14 +2884,6 @@ impl MatchState {
 
                 if let Some(city) = self.city.as_mut() {
                     city.add_client(u64::from(conn.player_id));
-                    // Manifest first: it describes the geometry every later city
-                    // packet refers to, so a client cannot use bootstrap without it.
-                    if let Some((_, _, gzipped)) = city::manifest_asset() {
-                        let mut packet = Vec::with_capacity(gzipped.len() + 1);
-                        packet.push(vibe_land_shared::constants::PKT_CITY_MANIFEST);
-                        packet.extend_from_slice(gzipped);
-                        let _ = try_queue_packet(&conn.tx, packet, &self.io);
-                    }
                     // A bootstrap dropped here is the worst case of all: the
                     // client never had a ledger, so it never sees a sequence
                     // gap either -- it renders the intact manifest forever and
@@ -2900,6 +2892,32 @@ impl MatchState {
                         try_queue_packet(&conn.tx, city.bootstrap(self.server_tick), &self.io);
                     if let Some(lanes) = city.full_lane_map() {
                         delivered = try_queue_packet(&conn.tx, lanes, &self.io) && delivered;
+                    }
+                    // Manifest LAST, though it is needed first.
+                    //
+                    // It describes the geometry every other city packet refers
+                    // to, so the client cannot use any of them until it has it,
+                    // and the obvious order is therefore manifest first. That
+                    // order is what made joining slow. Every reliable packet
+                    // shares one ordered QUIC stream, and the manifest is 1.8 MB
+                    // gzipped against a bootstrap of a few kilobytes: sending it
+                    // first puts the whole 1.8 MB in front of the packet that
+                    // makes the city appear, and in front of every topology
+                    // update behind that. On a link with ordinary jitter the
+                    // city took 6-8 seconds to show up, against 0.7 on loopback,
+                    // and on a worse one the ledger never caught up at all --
+                    // measured at 40% agreement with the server's broken-bond
+                    // count, and 0% worse still.
+                    //
+                    // The client holds city packets until its manifest is ready
+                    // and fetches that over HTTP in parallel, so this order
+                    // costs nothing and the small packets no longer queue behind
+                    // the large one. See loadCityManifest in gameRuntime.ts.
+                    if let Some((_, _, gzipped)) = city::manifest_asset() {
+                        let mut packet = Vec::with_capacity(gzipped.len() + 1);
+                        packet.push(vibe_land_shared::constants::PKT_CITY_MANIFEST);
+                        packet.extend_from_slice(gzipped);
+                        let _ = try_queue_packet(&conn.tx, packet, &self.io);
                     }
                     if !delivered {
                         warn!(

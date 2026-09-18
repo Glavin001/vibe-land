@@ -56,8 +56,17 @@ export async function startShaper(options) {
   const stats = {
     toServer: 0, toClient: 0, dropped: 0, reordered: 0,
     bytesToServer: 0, bytesToClient: 0,
+    // What the relay ACTUALLY did, against what it was asked to do. A shaper
+    // that quietly holds packets longer than its own settings is indis-
+    // tinguishable, from the far end, from a protocol that has stalled -- and
+    // is a far more likely explanation. Kept per direction and reported as
+    // max and mean so a run can be thrown out on the evidence.
+    heldMaxMs: { toServer: 0, toClient: 0 },
+    heldSumMs: { toServer: 0, toClient: 0 },
+    outOfOrder: { toServer: 0, toClient: 0 },
     delayMs, jitterMs, loss, reorder, preserveOrder,
   };
+  const lastSentAt = { toServer: 0, toClient: 0 };
 
   // One socket faces the browser, one faces the server. Two sockets rather than
   // one so the server's replies arrive on a port that is unambiguously ours,
@@ -100,9 +109,16 @@ export async function startShaper(options) {
       stats.dropped += 1;
       return;
     }
+    const arrivedAt = Date.now();
     const wait = schedule(p, counter);
     const send = () => {
       if (closed) return;
+      const heldMs = Date.now() - arrivedAt;
+      if (heldMs > stats.heldMaxMs[counter]) stats.heldMaxMs[counter] = heldMs;
+      stats.heldSumMs[counter] += heldMs;
+      const at = Date.now();
+      if (at < lastSentAt[counter]) stats.outOfOrder[counter] += 1;
+      lastSentAt[counter] = at;
       try { socket.send(message, port, address, () => {}); } catch { /* closing */ }
     };
     if (wait <= 0) {

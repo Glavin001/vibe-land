@@ -121,15 +121,6 @@ const RESYNC_MIN_INTERVAL_MS = 3000;
 const MIN_SAMPLE_DELAY_TICKS = 6;
 
 /**
- * Ceiling on the playout delay.
- *
- * Buffering is bought with latency, and past about half a second of it the
- * cure is worse than the teleport: debris lands visibly after the impact that
- * threw it. A link needing more than this is not one the buffer can rescue.
- */
-const MAX_SAMPLE_DELAY_TICKS = 30;
-
-/**
  * How fast the arrival estimates forget.
  *
  * The best-transit reference decays slowly, so one lucky packet cannot latch
@@ -141,19 +132,6 @@ const MAX_SAMPLE_DELAY_TICKS = 30;
  */
 const ARRIVAL_BEST_DECAY_TICKS_PER_S = 0.5;
 const ARRIVAL_LATENESS_DECAY_TICKS_PER_S = 1.0;
-
-/**
- * Slew rates for the applied delay, in ticks per frame.
- *
- * Growing the buffer runs the sample clock slow for a moment; shrinking it
- * runs the clock fast, which is a small teleport of every moving body at once.
- * So growth is allowed to be three times quicker than release: at 0.15 a
- * quarter-second of new buffer is absorbed in about a second of 15%
- * slow-motion, against four seconds of waiting at the old symmetric rate --
- * four seconds in which the sample clock is ahead of the data it needs.
- */
-const SAMPLE_DELAY_GROW_TICKS_PER_FRAME = 0.15;
-const SAMPLE_DELAY_SHRINK_TICKS_PER_FRAME = 0.05;
 
 export class CityClient {
   readonly topology: CityTopology;
@@ -243,13 +221,12 @@ export class CityClient {
    * units, is constant while transit is constant; it drops by precisely the
    * extra transit a held-up packet suffered. The largest offset seen recently
    * is therefore the fastest transit on offer, and every packet's shortfall
-   * against it is that packet's lateness. Sampling at a delay under the
-   * lateness reads a span that has not arrived: the decoder extrapolates the
-   * last analytic segment instead, and snaps when the real one lands. That
-   * snap is the debris teleport a player sees on a bad link.
+   * against it is that packet's lateness.
    *
-   * Measured, not configured, because it is the player's own link: a constant
-   * is either too small on a bad connection or wasted latency on a good one.
+   * It is an instrument, not an input. Sampling at a delay under the lateness
+   * would read a span that has not arrived -- the decoder would extrapolate the
+   * last segment and snap when the real one landed -- and this number is what
+   * says whether that is happening. So far it says no: see `sampleDebris`.
    */
   private arrivalOffsetBest = Number.NEGATIVE_INFINITY;
   private arrivalOffsetBestAtMs = 0;
@@ -413,27 +390,26 @@ export class CityClient {
       return live;
     }
     // Sampling delay = one observed flush window + interpolation margin, so
-    // the sample clock never outruns the span the encoder is still filling,
-    // AND the link's own lateness, so it never outruns the wire either. Both
-    // terms are needed and neither subsumes the other: the flush window is
-    // what the server has not sent yet, the lateness is what it sent and the
-    // network has not delivered. Floor of 6 ticks preserves the fixed-flush
-    // behaviour on a clean link exactly; the applied delay slews toward the
-    // target so the clock never jumps.
-    const targetDelay = Math.min(
-      MAX_SAMPLE_DELAY_TICKS,
-      Math.max(
-        MIN_SAMPLE_DELAY_TICKS,
-        Math.ceil(this.spanTicksEma) + 3,
-        Math.ceil(this.arrivalLateness) + 2,
-      ),
-    );
+    // the sample clock never outruns the span the encoder is still filling.
+    // Floor of 6 ticks preserves the fixed-flush behaviour exactly; the
+    // applied delay slews toward the target so the clock never jumps.
+    //
+    // Deliberately NOT sized against `arrivalLateness`, which this client now
+    // measures right beside it. Sampling under the link's lateness is the
+    // textbook cause of streamed bodies snapping, and the buffer to fix it was
+    // written -- and then removed, because on this stack the artefact does not
+    // occur. Across five links from loopback to +180 ms / 8% loss, six
+    // cannonball shots each, the whole sweep produced one streamed pose step
+    // over a metre, of 1.3 m. The presentation layer already re-anchors a
+    // revised path to the pose on screen and glides the correction, which is
+    // the same problem solved one layer down. The measurement stays so that
+    // claim keeps being checked; add the buffer when a run disagrees with it.
+    const targetDelay = Math.max(MIN_SAMPLE_DELAY_TICKS, Math.ceil(this.spanTicksEma) + 3);
+    const step = 0.05;
     if (this.sampleDelaySmooth < targetDelay) {
-      this.sampleDelaySmooth = Math.min(
-        targetDelay, this.sampleDelaySmooth + SAMPLE_DELAY_GROW_TICKS_PER_FRAME);
+      this.sampleDelaySmooth = Math.min(targetDelay, this.sampleDelaySmooth + step);
     } else if (this.sampleDelaySmooth > targetDelay) {
-      this.sampleDelaySmooth = Math.max(
-        targetDelay, this.sampleDelaySmooth - SAMPLE_DELAY_SHRINK_TICKS_PER_FRAME);
+      this.sampleDelaySmooth = Math.max(targetDelay, this.sampleDelaySmooth - step);
     }
     const sampleTick = Math.max(0, Math.floor(renderTick - this.sampleDelaySmooth));
     // Apply held topology whose tick the sample clock has reached, so a
@@ -711,15 +687,7 @@ export class CityClient {
         // Pose-stream clocks belong to the old world too.
         this.lastSpanTick = -1;
         this.spanTicksEma = 6;
-        // The flush cadence belongs to the old world; the link does not, so
-        // the measured lateness survives and the delay restarts at the floor
-        // it implies. Restarting at 6 on a jittery link would re-open the
-        // window this buffer exists to close, for the second or so the slew
-        // takes to climb back.
-        this.sampleDelaySmooth = Math.min(
-          MAX_SAMPLE_DELAY_TICKS,
-          Math.max(MIN_SAMPLE_DELAY_TICKS, Math.ceil(this.arrivalLateness) + 2),
-        );
+        this.sampleDelaySmooth = MIN_SAMPLE_DELAY_TICKS;
         this.renderClockTick = -1;
         this.settledAtTick.clear();
         this.baselineGenerations.clear();
@@ -963,6 +931,7 @@ export class CityClient {
     // a reordered packet, or the 2nd..Nth of one tick's MTU-split burst --
     // walks render time backwards, which `PresentationTrack.sample` is
     // documented not to accept. Advance the anchor only with the tick.
+    this.observeArrival(datagram.simTick, performance.now());
     if (datagram.simTick > this.latestSimTick) {
       this.observeSimTick(datagram.simTick);
     }
