@@ -1176,9 +1176,25 @@ impl CityRuntime {
                 match &mut self.backend {
                     #[cfg(feature = "native-destruction")]
                     CityBackend::Native(backend) => {
-                        backend
-                            .clear(world)
-                            .map_err(|error| anyhow::anyhow!("{error}"))?;
+                        // A failed clear must NOT abort the reset. `clearStress`
+                        // refuses while the stage is in an error state, which is
+                        // exactly the state a reset is being asked to repair --
+                        // so returning here made the one available repair
+                        // unavailable precisely when it was needed, and the
+                        // match stayed indestructible until the process was
+                        // restarted. Observed live: three reset attempts, all
+                        // refused, 19,590 rejected ticks between them.
+                        //
+                        // Rebuilding over a stage that would not release leaks
+                        // its actors for the life of the process. That is a bad
+                        // trade to make casually and a good one to make here:
+                        // the alternative is a match nobody can play.
+                        if let Err(error) = backend.clear(world) {
+                            tracing::error!(
+                                %error,
+                                "the native stage refused to release its topology; rebuilding anyway and leaking what it kept"
+                            );
+                        }
                     }
                     #[cfg(feature = "blast-core")]
                     CityBackend::Core(_) => {}
@@ -2110,6 +2126,20 @@ impl CityRuntime {
             CityBackend::Core(_) => false,
             #[cfg(feature = "native-destruction")]
             CityBackend::Native(backend) => backend.is_degraded(),
+        }
+    }
+
+    /// The stage has stopped producing frames and will not restart itself.
+    ///
+    /// Only the native backend can be in this state; see
+    /// `NativeCityDestruction::needs_rebuild`. The caller's answer is a reset,
+    /// which is the same repair a player would have asked for if they could
+    /// have seen what was wrong.
+    pub fn needs_rebuild(&self) -> bool {
+        match &self.backend {
+            #[cfg(feature = "native-destruction")]
+            CityBackend::Native(backend) => backend.needs_rebuild(),
+            _ => false,
         }
     }
 }

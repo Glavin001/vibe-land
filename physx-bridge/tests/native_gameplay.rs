@@ -537,3 +537,88 @@ fn a_reset_rebuilds_a_city_that_still_breaks() {
     // And it must still be clearable, or the match is stuck forever.
     world.native_clear().expect("clear after rebuild");
 }
+
+/// Reset a city that is still coming apart, with a player standing in it.
+///
+/// `a_rebuilt_city_leaves_nothing_of_the_old_one` clears a small wall that has
+/// finished falling, in an otherwise empty scene, and passes. Production does
+/// not get to choose its moment: `/city-reset` arrives whenever a player sends
+/// it, which in a QA sweep is a few seconds after twelve cannonballs, with
+/// hundreds of stage-owned fragments still moving, rounds still alive, and one
+/// or two capsule controllers in the scene.
+///
+/// Done that way the stage dies. It comes up from the rebuild stuck at frame 0
+/// with error bit 4 and never recovers, and every later `clearStress` is
+/// refused because of that state, so the match can be neither destroyed nor
+/// reset for as long as it lives. Observed twice on the live server, 4,560 and
+/// 19,590 consecutive rejected ticks, each time on a reset that followed heavy
+/// destruction with clients connected.
+#[test]
+fn a_reset_during_a_collapse_does_not_kill_the_stage() {
+    let mut world = World::new(WorldConfig::default()).expect("GPU scene");
+    ground(&mut world);
+
+    // A player in the scene for every cycle, as in production. The controller
+    // is not stage-owned, so it survives the clear and is still there when the
+    // new city is authored around it.
+    world
+        .add_capsule_player(CapsulePlayerDesc {
+            entity_id: 900,
+            user_id: 900,
+            position: Vec3::new(0.5, 1.0, 4.0),
+            cylinder_height: 1.0,
+            radius: 0.4,
+            step_offset: 0.3,
+            contact_offset: 0.05,
+            slope_limit_radians: 0.785,
+            collision_group: 1 << 2,
+            collision_mask: ALL,
+        })
+        .expect("player");
+
+    for cycle in 0..6 {
+        install(&mut world, 6, 6);
+        for _ in 0..5 {
+            world.step().expect("step");
+            let _ = world.native_tick().expect("observe");
+        }
+        world
+            .native_fire_round(RoundDesc {
+                position: Vec3::new(0.0, 3.5, 1.2),
+                direction: Vec3::new(0.0, 0.0, -1.0),
+                momentum_ns: 6.0e5,
+                radius: 0.4,
+                speed: 20.0,
+                // Long enough that the round is still in the scene at the clear
+                // below, which is the case production hits and the settled
+                // cycle test does not.
+                ttl_ticks: 60,
+            })
+            .unwrap_or_else(|e| panic!("cycle {cycle}: fire: {e}"));
+
+        // Mid-collapse on purpose: enough ticks for the wall to break and its
+        // fragments to be moving, nowhere near enough for anything to settle.
+        for _ in 0..8 {
+            world.step().expect("step");
+            let status = world.native_tick().expect("observe");
+            assert_eq!(status.error, 0, "cycle {cycle}: error before the reset");
+        }
+        let broken = world.native_take_broken_bonds().expect("bonds").len();
+        assert!(broken > 0, "cycle {cycle}: nothing was breaking, so this is not the case under test");
+        let _ = world.native_take_island_events();
+        let _ = world.native_take_chunk_migrations();
+
+        world
+            .native_clear()
+            .unwrap_or_else(|e| panic!("cycle {cycle}: clear during collapse: {e}"));
+        world.step().expect("step after clear");
+    }
+
+    // And the rebuilt city must still run and still break.
+    install(&mut world, 6, 6);
+    for tick in 0..20 {
+        world.step().expect("step");
+        let status = world.native_tick().expect("observe");
+        assert_eq!(status.error, 0, "tick {tick} after six reset cycles: error bits {}", status.error);
+    }
+}

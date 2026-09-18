@@ -3371,3 +3371,145 @@ fn timing_closure_leaves_under_one_percent_unattributed() {
         100.0 * step_fraction
     );
 }
+
+/// Reset the real city while it is coming apart, repeatedly, as a player does.
+///
+/// `/city-reset` is a button, so it arrives whenever someone presses it: in a
+/// QA sweep that is a few seconds after twelve cannonballs, with thousands of
+/// stage-owned fragments still moving and clients connected. Done at that
+/// moment, on the live server, the rebuilt stage came up stuck at frame 0 with
+/// error bit 4 and never recovered -- 4,560 and 19,590 consecutive rejected
+/// ticks on two separate occasions -- and every later `clearStress` was refused
+/// because of that state, so the match could be neither destroyed nor reset for
+/// as long as it lived. From outside it looked like a healthy 60 Hz server
+/// whose buildings had become indestructible.
+///
+/// The bridge-level version of this (`a_reset_during_a_collapse_does_not_kill_
+/// the_stage`, 36 chunks) does not reproduce it. This one uses the production
+/// arena and the production reset path.
+#[test]
+#[ignore = "needs a GPU and the production scene"]
+fn a_reset_mid_collapse_keeps_the_city_destructible() {
+    let mut arena = production_arena();
+    crate::demo_world::seed_world_for_match(&mut arena, crate::city::CITY_MATCH_PREFIX)
+        .expect("seed the production world document");
+    arena.spawn_player(1);
+    let world = arena.physx_world_mut().expect("physx world");
+    let mut city =
+        crate::city::CityRuntime::native(60, world).expect("city opens on the native stage");
+    city.add_client(1);
+
+    // The cannonball, not the rifle. A player in the QA sweep fires the heavy
+    // ball, which is an ordinary dynamic body the server owns -- not one of the
+    // stage's pooled rounds -- so at reset time the scene contains live rigid
+    // bodies resting on and penetrating fragments that `clearStress` is about
+    // to destroy. That is the difference between this and the bridge-level
+    // version of the test, which does not reproduce the failure.
+    let cannonball = std::env::var("VIBE_CITY_RESET_RIFLE").is_err();
+    let mut tick = 0u32;
+    let (tx, tz) = (-36.0f32, -36.0f32);
+    let origin = Vec3::new(tx, 1.6, tz - 26.0);
+    let cycles: u32 = std::env::var("VIBE_CITY_RESET_CYCLES")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(6);
+
+    for cycle in 0..cycles {
+        // Player churn across the reset, as the QA sweep produces it: the
+        // previous run's browser is still connected when the next one joins, so
+        // the server carries two capsule controllers through the rebuild and
+        // then loses one. Every live occurrence of the failure had players
+        // connected; none of the headless reproductions without them failed.
+        let joiner = 100 + cycle;
+        arena.spawn_player(joiner);
+        city.add_client(u64::from(joiner));
+        for _ in 0..20 {
+            let world = arena.physx_world_mut().expect("physx world");
+            native_step(world, &city, tick, "settle");
+            city.step(tick, DT, gravity(), Some(&mut *world));
+            tick += 1;
+        }
+        for shot in 0..12u32 {
+            let target = Vec3::new(tx - 4.0 + (shot % 9) as f32, 2.0 + (shot % 12) as f32 * 2.2, tz);
+            let direction = (target - origin).normalize();
+            if cannonball {
+                arena.launch_ball(
+                    crate::movement::Vec3::new(origin.x, origin.y, origin.z),
+                    crate::movement::Vec3::new(direction.x, direction.y, direction.z),
+                    crate::city::city_ball_radius_m(),
+                    crate::city::city_ball_mass_kg(),
+                    crate::city::city_ball_speed_ms(),
+                    crate::city::city_ball_ttl_ticks(),
+                );
+            } else {
+                let world = arena.physx_world_mut().expect("physx world");
+                city.apply_shot_ray(origin, direction, Some(world));
+            }
+            for _ in 0..8 {
+                let world = arena.physx_world_mut().expect("physx world");
+                native_step(world, &city, tick, "shot");
+                city.step(tick, DT, gravity(), Some(&mut *world));
+                tick += 1;
+            }
+        }
+        let broken = city.stats().broken_bonds;
+        assert!(
+            broken > 0,
+            "cycle {cycle}: twelve shots broke nothing, so the stage was already dead"
+        );
+
+        // Mid-collapse: no settling wait, exactly as pressing the button does.
+        {
+            let world = arena.physx_world_mut().expect("physx world");
+            city.reset(60, Some(world))
+                .unwrap_or_else(|e| panic!("cycle {cycle}: reset after {broken} broken bonds: {e}"));
+        }
+        city.add_client(1);
+        // And the joiner leaves just after, which is when the harness closes
+        // the browser: a controller removed from a scene whose stage was
+        // rebuilt moments ago.
+        arena.remove_player(joiner);
+
+        for _ in 0..20 {
+            let world = arena.physx_world_mut().expect("physx world");
+            native_step(world, &city, tick, "after reset");
+            city.step(tick, DT, gravity(), Some(&mut *world));
+            tick += 1;
+        }
+        // Shoot the rebuilt city. The stage failure is silent in every other
+        // reading -- the server keeps its tick rate, reports no fault to the
+        // client, and publishes a perfectly consistent intact city -- so the
+        // only honest test is whether the thing can still be broken.
+        for shot in 0..6u32 {
+            let target = Vec3::new(tx - 3.0 + shot as f32, 3.0 + shot as f32 * 2.0, tz);
+            let world = arena.physx_world_mut().expect("physx world");
+            city.apply_shot_ray(origin, (target - origin).normalize(), Some(world));
+            for _ in 0..8 {
+                let world = arena.physx_world_mut().expect("physx world");
+                native_step(world, &city, tick, "after reset");
+                city.step(tick, DT, gravity(), Some(&mut *world));
+                tick += 1;
+            }
+        }
+        let errors = city
+            .extra_spans()
+            .iter()
+            .find(|s| s.name == "native_error_frames")
+            .map(|s| s.value)
+            .unwrap_or(0.0);
+        let after = city.stats().broken_bonds;
+        eprintln!(
+            "[reset cycle {cycle}] {broken} bonds before the reset, {after} after it, \
+error frames {errors}"
+        );
+        assert_eq!(
+            errors, 0.0,
+            "cycle {cycle}: the rebuilt stage is rejecting steps; from here the city \
+             cannot be broken and cannot be reset"
+        );
+        assert!(
+            after > 0,
+            "cycle {cycle}: the rebuilt city absorbed six shots without breaking"
+        );
+    }
+}

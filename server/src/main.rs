@@ -1336,10 +1336,13 @@ async fn main() -> Result<()> {
     let watchdog_state = state.inner.clone();
 
     // Start WebTransport server
-    let wt_config = ServerConfig::builder()
+    let mut wt_config = ServerConfig::builder()
         .with_bind_address(wt_addr)
         .with_identity(identity)
         .build();
+    wt_config
+        .quic_config_mut()
+        .transport_config(std::sync::Arc::new(wt_transport_config()));
     let wt_endpoint = Endpoint::server(wt_config)?;
     info!(%wt_addr, "WebTransport endpoint listening");
 
@@ -3899,11 +3902,24 @@ impl MatchState {
         // Between steps is the only safe point to rebuild: the scene is not
         // mid-simulate, and the bootstrap we send afterwards describes the
         // city the very next step will advance.
-        let reset_requested = self
+        let mut reset_requested = self
             .reset_requests
             .write()
             .expect("reset requests poisoned")
             .remove(&self.id);
+        // A stage that has stopped producing frames asks for the same repair a
+        // player would have asked for, and cannot say so itself: the server
+        // keeps its tick rate, the clients keep their connections, and the only
+        // symptom is that the city has quietly become indestructible. Two
+        // seconds of that is enough to act on. See CityRuntime::needs_rebuild.
+        if !reset_requested && city.needs_rebuild() {
+            error!(
+                match_id = %self.id,
+                players = self.players.len(),
+                "the destruction stage has produced no frame for two seconds; rebuilding the city"
+            );
+            reset_requested = true;
+        }
         if reset_requested {
             match city.reset(SIM_HZ as u32, world) {
                 Ok(()) => {
@@ -6206,6 +6222,43 @@ fn write_city_telemetry(tick: u32, stats: &MatchStatsSnapshot) {
         let _ = writeln!(writer, "{{\"ts_ms\":{ts_ms},\"tick\":{tick},\"stats\":{json}}}");
         let _ = writer.flush();
     }
+}
+
+/// QUIC transport settings for the game connection.
+///
+/// The one that matters is the congestion controller. quinn defaults to Cubic,
+/// which reads every lost packet as congestion, and on a link that loses
+/// packets for other reasons -- wifi, cellular, a saturated uplink somewhere --
+/// that puts a hard ceiling on the reliable lane at roughly
+/// `MSS / (RTT * sqrt(loss))`. At 8% loss and 360 ms round trip that is about
+/// 12 KiB/s, and the measured lane ran at 12 KiB/s: the controller was the
+/// whole story. The visible symptom is a city that breaks on the server and
+/// takes 28 seconds to break on the player's screen, because the topology
+/// describing it is queued behind that ceiling.
+///
+/// BBR estimates bandwidth and round trip directly instead of treating loss as
+/// the signal, which is exactly the mismatch here. It is not free -- it can be
+/// less fair to competing loss-based flows on a shared bottleneck -- so it is
+/// switchable, and the default is whichever the measurement below supports.
+///
+///   VIBE_WT_CONGESTION=bbr|cubic
+fn wt_transport_config() -> wtransport::quinn::TransportConfig {
+    let mut transport = wtransport::quinn::TransportConfig::default();
+    let choice = std::env::var("VIBE_WT_CONGESTION").unwrap_or_else(|_| "bbr".to_string());
+    match choice.as_str() {
+        "cubic" => {
+            transport.congestion_controller_factory(std::sync::Arc::new(
+                wtransport::quinn::congestion::CubicConfig::default(),
+            ));
+        }
+        _ => {
+            transport.congestion_controller_factory(std::sync::Arc::new(
+                wtransport::quinn::congestion::BbrConfig::default(),
+            ));
+        }
+    }
+    info!(congestion = %choice, "WebTransport congestion controller");
+    transport
 }
 
 fn wants_unreliable_delivery(kind: u8) -> bool {

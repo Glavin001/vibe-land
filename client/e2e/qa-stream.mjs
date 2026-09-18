@@ -16,6 +16,7 @@
  *                    delay and jitter in ms, loss and reorder as fractions
  *   --shots <n>      shots per link.              default 6
  *   --settle <ms>    give up waiting for the city. default 60000
+ *   --drain <ms>     give up waiting for the ledger to catch up. default 30000
  *   --unordered      let jitter shuffle packets, which no real link does; kept
  *                    so the pathological case stays reproducible
  *   --api <url>      server stats origin.         default http://127.0.0.1:4017
@@ -32,6 +33,7 @@ const API = arg('api', 'http://127.0.0.1:4017');
 const MATCH = arg('match', 'city-default');
 const SHOTS = Number(arg('shots', 6));
 const SETTLE = Number(arg('settle', 60000));
+const DRAIN = Number(arg('drain', 30000));
 const PRESERVE_ORDER = !argv.includes('--unordered');
 const LINKS = arg('links', '0/0/0; 40/10/0.005; 90/25/0.02; 180/60/0.08/0.01')
   .split(';').map((s) => s.trim()).filter(Boolean)
@@ -124,7 +126,20 @@ for (const link of LINKS) {
       await page.evaluate(() => window.__VIBE_DRIVE__.fire({ holdMs: 140 }));
       await page.waitForTimeout(1100);
     }
-    await page.waitForTimeout(4000);
+    // Wait for the ledger to CATCH UP, and time it, rather than waiting a fixed
+    // few seconds and calling whatever is on screen the answer. The reliable
+    // lane can be slow without being broken, and a fixed wait cannot tell those
+    // apart -- which is exactly the mistake that produced an earlier "the
+    // stream completely fails" claim about a stream that was merely late.
+    const drainStarted = Date.now();
+    let convergedMs = null;
+    while (Date.now() - drainStarted < DRAIN) {
+      const truthNow = await serverStats();
+      const want = truthNow.city?.broken_bonds ?? 0;
+      const have = (await city(page)).brokenBonds ?? 0;
+      if (want > 0 && have >= want) { convergedMs = Date.now() - drainStarted; break; }
+      await page.waitForTimeout(500);
+    }
 
     const seen = await city(page);
     const shooter = await player(page);
@@ -142,6 +157,7 @@ for (const link of LINKS) {
     rows.push({
       link: shaper.describe(),
       bootMs,
+      convergedMs,
       // Whether the trigger actually produced a round. A link that delays the
       // world also delays this harness's own frames, and a run that fired
       // nothing looks exactly like a run whose shots were lost.
@@ -153,6 +169,7 @@ for (const link of LINKS) {
       kbUp: Math.round(shaper.stats.bytesToServer / 1024),
       reordered: shaper.stats.reordered,
       relayed: shaper.stats.toClient,
+      relayedUp: shaper.stats.toServer,
       dropped: shaper.stats.dropped,
       cliBonds: seen.brokenBonds ?? 0,
       srvBonds: truth.city?.broken_bonds ?? null,
@@ -185,7 +202,9 @@ console.log(`\n${'link'.padEnd(34)} ${'drop%'.padStart(6)} ${'boot'.padStart(7)}
   + ` ${'per bond'.padStart(9)}`
   + ` ${'gaps'.padStart(5)} ${'rejects'.padStart(8)}`);
 for (const r of rows) {
-  const sent = r.relayed + r.dropped;
+  // Both directions, on both sides of the ratio. Dividing drops from both by
+  // deliveries from one reported 26% on a link configured for 8%.
+  const sent = r.relayed + r.relayedUp + r.dropped;
   const dropPct = sent > 0 ? ((r.dropped / sent) * 100).toFixed(1) : '0.0';
   const agree = r.srvBonds ? `${((r.cliBonds / r.srvBonds) * 100).toFixed(0)}%` : '?';
   const boot = r.bootMs === null ? 'never' : `${(r.bootMs / 1000).toFixed(1)}s`;
@@ -198,6 +217,7 @@ for (const r of rows) {
     + ` ${pad(r.jumps1, 6)} ${pad(r.jumps4, 6)} ${pad(r.jumps16, 6)} ${pad(r.jumpMax.toFixed(1), 7)}`
     + ` ${pad(`${perBond}/100`, 9)}`
     + ` ${pad(r.topoGaps, 5)} ${pad(r.settleRejects, 8)}`
+    + ` | caught up ${r.convergedMs === null ? 'never' : `${(r.convergedMs / 1000).toFixed(1)}s`}`
     + ` | boot ${r.bootstraps} dgrams ${r.datagrams} wire ${r.wire}`
     + ` hash ${r.hashMismatches}/${r.hashChecks} repairs ${r.repairs}`
     + ` | ${r.kbDown} KiB down, ${r.kbUp} KiB up, ${r.reordered} reordered`

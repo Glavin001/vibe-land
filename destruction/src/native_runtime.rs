@@ -162,6 +162,17 @@ pub struct NativeCityDestruction {
     /// Incomplete steps already logged. Bounded so a persistent fault cannot
     /// drown the log; the count itself stays exact in the spans.
     error_frames_logged: u32,
+    /// Consecutive ticks the stage has rejected without ever reaching frame 1.
+    ///
+    /// The difference between "this tick did not complete" and "this stage
+    /// never started" is the frame counter, and it is the difference between a
+    /// hiccup and a match that is over. A stage stuck at frame 0 publishes
+    /// nothing, ever: the city cannot be broken, `clearStress` refuses because
+    /// of that state so it cannot be reset either, and every other reading --
+    /// tick rate, player count, client agreement -- looks healthy. Twice on the
+    /// live server this ran for 4,560 and 19,590 consecutive ticks before a
+    /// human noticed the buildings had stopped falling down.
+    stuck_at_frame_zero: u32,
 }
 
 impl NativeCityDestruction {
@@ -261,6 +272,7 @@ materials={} reserved_pairs={} iterations={} tolerance={:e}",
             migrations_total: 0,
             resettled_wakes: 0,
             error_frames_logged: 0,
+            stuck_at_frame_zero: 0,
         })
     }
 
@@ -290,6 +302,9 @@ materials={} reserved_pairs={} iterations={} tolerance={:e}",
             );
         }
         if status.error != 0 {
+            if status.frame == 0 {
+                self.stuck_at_frame_zero += 1;
+            }
             // A step the engine did not complete publishes nothing, so there is
             // nothing to hand on. Reported through the spans and the log, never
             // smoothed into an empty-but-normal-looking tick.
@@ -304,6 +319,7 @@ no observation this tick",
             self.refresh_stats(world, started);
             return Ok(DestructionTickOutput::default());
         }
+        self.stuck_at_frame_zero = 0;
         if !status.observed {
             self.refresh_stats(world, started);
             return Ok(DestructionTickOutput::default());
@@ -586,6 +602,22 @@ no observation this tick",
 
     pub fn is_degraded(&self) -> bool {
         self.degraded
+    }
+
+    /// True once the stage has been stuck at frame 0 long enough that it is not
+    /// going to start on its own.
+    ///
+    /// Two seconds, because a stage that is going to produce a frame produces
+    /// its first one immediately, and because the cure -- rebuilding the city
+    /// and re-bootstrapping every client -- is disruptive enough that it should
+    /// not fire on a transient. Why a rebuilt stage sometimes comes up this way
+    /// is not established: it has not been reproduced in thirty reset cycles at
+    /// production scale, mid-collapse, with cannonballs in the scene and player
+    /// churn across the reset. So this does not pretend to be a fix. It is the
+    /// difference between a match that recovers in a couple of seconds and one
+    /// that is silently over.
+    pub fn needs_rebuild(&self) -> bool {
+        self.stuck_at_frame_zero >= 120
     }
 
     pub fn last_status(&self) -> NativeStatus {
