@@ -249,7 +249,10 @@ static float native_debris_floor_m() {
         return parsed;
       }
     }
-    return -200.0f;
+    // Disabled with the rest of the lifecycle: parking uses the same
+    // putToSleep on the same stage-owned bodies. A body lost below the world
+    // is a real cost, but not one worth an unbreakable city.
+    return -std::numeric_limits<float>::infinity();
   }();
   return floor;
 }
@@ -285,6 +288,21 @@ static bool native_settle_freezes() {
   return freeze;
 }
 
+/// Off by default, and this is the second attempt that had to be turned off.
+///
+/// Both ways of taking a stage-owned fragment out of the simulation break the
+/// stage. Making one kinematic did not finish an 800-shot run in three times
+/// the wall time. Putting one to sleep looked fine in the bench and killed a
+/// live server: four minutes after the first cannonball, the stage began
+/// failing with runtime error bit 4 and did not stop -- 91,201 consecutive
+/// rejected steps, the city frozen at 90 broken bonds and unbreakable for the
+/// rest of the session. The bench never saw it because it fires and settles;
+/// only continuous play reaches the state.
+///
+/// These bodies belong to the destruction stage. Nothing outside it may decide
+/// when they stop simulating, and the fix for debris cost has to come from the
+/// stage itself. Set VIBE_CITY_NATIVE_SETTLE_TICKS to re-enable for
+/// investigation; it is not a tuning knob.
 static std::uint32_t native_settle_ticks() {
   static const std::uint32_t ticks = [] {
     if (const char *raw = std::getenv("VIBE_CITY_NATIVE_SETTLE_TICKS")) {
@@ -293,7 +311,7 @@ static std::uint32_t native_settle_ticks() {
         return static_cast<std::uint32_t>(parsed);
       }
     }
-    return 45u;
+    return 0u;
   }();
   return ticks;
 }

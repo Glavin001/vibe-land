@@ -19,6 +19,7 @@ import { chromium } from 'playwright';
  * @param {string|number} [options.wtPort]  local WebTransport port, default 4433
  * @param {{width:number,height:number}} [options.viewport]
  * @param {boolean} [options.quiet]   suppress the connection line
+ * @param {string} [options.recordVideo]  directory for a webm recording of the run
  */
 export async function openCity(options = {}) {
   const origin = options.page ?? 'https://127.0.0.1:1111';
@@ -26,8 +27,24 @@ export async function openCity(options = {}) {
   const viewport = options.viewport ?? { width: 1280, height: 800 };
 
   process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
-  const browser = await chromium.launch({ args: ['--ignore-certificate-errors'] });
-  const page = await browser.newPage({ ignoreHTTPSErrors: true, viewport });
+  // Headless Chromium falls back to software rendering and the city then runs
+  // at a few frames a second, which is useless for a recording. Ask for the
+  // real GPU; the flags are ignored where there is none.
+  const browser = await chromium.launch({
+    args: [
+      '--ignore-certificate-errors',
+      '--enable-gpu',
+      '--use-gl=egl',
+      '--ignore-gpu-blocklist',
+      '--enable-unsafe-webgpu',
+    ],
+  });
+  const context = await browser.newContext({
+    ignoreHTTPSErrors: true,
+    viewport,
+    ...(options.recordVideo ? { recordVideo: { dir: options.recordVideo, size: viewport } } : {}),
+  });
+  const page = await context.newPage();
   page.on('pageerror', (e) => console.log('[pageerror]', String(e).slice(0, 300)));
 
   // Rewrite only host:port of the advertised WebTransport URL, keeping its
@@ -66,7 +83,7 @@ export async function openCity(options = {}) {
   if (!options.quiet) {
     console.log(`connected  transport=${opening.transport}  player=${opening.playerId}`);
   }
-  return { browser, page, opening };
+  return { browser, context, page, opening };
 }
 
 /** The city panel of the read-only snapshot. */
