@@ -66,6 +66,22 @@ export interface CityTopologyStats {
   orphanedChunks: number;
   /** Cumulative chunks orphaned by a retire, including transient windows. */
   orphanedByRetire: number;
+  /**
+   * Streamed pose writes that moved a body further than the stream could
+   * honestly account for, binned by size. This is the artefact a player calls
+   * "things teleporting": a body arrives somewhere its last known position and
+   * velocity could not have carried it, because an update was lost, arrived
+   * late, or arrived out of order.
+   *
+   * Counted on `raw` writes only. The presented (interpolated) writer moves
+   * bodies smoothly by construction, so counting it would measure the
+   * interpolator rather than the link.
+   */
+  poseJumpsOver1m: number;
+  poseJumpsOver4m: number;
+  poseJumpsOver16m: number;
+  /** The largest single streamed pose jump seen, metres. */
+  poseJumpMaxM: number;
 }
 
 /**
@@ -108,6 +124,10 @@ export class CityTopology {
   private readonly aliveBonds: Map<number, Uint8Array> = new Map();
   private brokenBonds = 0;
   private orphanedByRetire = 0;
+  private poseJumpsOver1m = 0;
+  private poseJumpsOver4m = 0;
+  private poseJumpsOver16m = 0;
+  private poseJumpMaxM = 0;
   private lastTopoSeq = 0;
   private topoSeqGaps = 0;
   /** Topology messages ignored as already-applied; see apply(). */
@@ -380,6 +400,10 @@ export class CityTopology {
       topoSeqGaps: this.topoSeqGaps,
       orphanedChunks: orphaned,
       orphanedByRetire: this.orphanedByRetire,
+      poseJumpsOver1m: this.poseJumpsOver1m,
+      poseJumpsOver4m: this.poseJumpsOver4m,
+      poseJumpsOver16m: this.poseJumpsOver16m,
+      poseJumpMaxM: this.poseJumpMaxM,
     };
   }
 
@@ -539,6 +563,22 @@ export class CityTopology {
     if (!body) return;
     if (this.watchPoseSources) {
       this.observePoseWrite(key, body.position, position, source);
+    }
+    if (source === 'raw') {
+      // Always on, unlike the pose-source watch: this is cheap, and the whole
+      // point is to know the link was bad on the run where it was bad, not on
+      // a later one someone remembered to instrument.
+      const jump = Math.hypot(
+        position[0] - body.position[0],
+        position[1] - body.position[1],
+        position[2] - body.position[2],
+      );
+      if (jump > 1) {
+        this.poseJumpsOver1m += 1;
+        if (jump > 4) this.poseJumpsOver4m += 1;
+        if (jump > 16) this.poseJumpsOver16m += 1;
+        if (jump > this.poseJumpMaxM) this.poseJumpMaxM = jump;
+      }
     }
     body.position = vClone(position);
     body.rotation = [...rotation] as Quat;

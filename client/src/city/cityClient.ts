@@ -52,6 +52,11 @@ export interface CityClientStats {
   brokenBonds: number;
   orphanedChunks: number;
   orphanedByRetire: number;
+  /** Streamed pose writes larger than the stream can account for: teleports. */
+  poseJumpsOver1m: number;
+  poseJumpsOver4m: number;
+  poseJumpsOver16m: number;
+  poseJumpMaxM: number;
   liveIslands: number;
   topoSeqGaps: number;
   datagramsReceived: number;
@@ -1223,6 +1228,10 @@ export class CityClient {
       topoSeqGaps: topologyStats.topoSeqGaps,
       orphanedChunks: topologyStats.orphanedChunks,
       orphanedByRetire: topologyStats.orphanedByRetire,
+      poseJumpsOver1m: topologyStats.poseJumpsOver1m,
+      poseJumpsOver4m: topologyStats.poseJumpsOver4m,
+      poseJumpsOver16m: topologyStats.poseJumpsOver16m,
+      poseJumpMaxM: topologyStats.poseJumpMaxM,
       datagramsReceived: this.datagramsReceived,
       recordsApplied: this.recordsApplied,
       wireVersion: this.debris === null ? 2 : 3,

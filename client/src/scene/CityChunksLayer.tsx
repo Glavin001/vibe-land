@@ -729,6 +729,10 @@ export function CityChunksLayer({
         chunkUpdateP95Ms,
         orphanedChunks: stats.orphanedChunks,
         orphanedByRetire: stats.orphanedByRetire,
+        poseJumpsOver1m: stats.poseJumpsOver1m,
+        poseJumpsOver4m: stats.poseJumpsOver4m,
+        poseJumpsOver16m: stats.poseJumpsOver16m,
+        poseJumpMaxM: stats.poseJumpMaxM,
         // Same probe as the netlab line above: the only signal that catches a
         // chunk drawn away from its ledger pose.
         staleDrawnChunks,

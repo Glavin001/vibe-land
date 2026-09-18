@@ -189,6 +189,12 @@ export interface CityE2EStats {
   structureRepairs: number;
   /** Cumulative chunks orphaned by a retire, including transient windows. */
   orphanedByRetire: number;
+  /** Streamed pose writes that moved a body further than the stream could
+   * account for -- the artefact a player calls teleporting. */
+  poseJumpsOver1m: number;
+  poseJumpsOver4m: number;
+  poseJumpsOver16m: number;
+  poseJumpMaxM: number;
   /**
    * Composition inputs for the lowest chunk below the counting threshold.
    * These are client ledger poses, which may be interpolated; they are not a
