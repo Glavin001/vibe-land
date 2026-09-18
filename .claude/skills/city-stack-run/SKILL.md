@@ -5,6 +5,18 @@ description: Build, launch and headlessly verify the /city destruction stack on 
 
 # Running and verifying the /city stack
 
+For an ordinary deployment on the Vast instance you are already inside, use
+`python3 scripts/vast-city.py up --browser --public` from the current checkout.
+For an existing URL, `python3 scripts/vast-city.py verify --browser --public`
+skips building and restarting. Read [vastai-deploy](../vastai-deploy/SKILL.md)
+for the short workflow. The manual instructions below are for unusual layouts,
+side-by-side comparisons, or diagnosis after the helper reports a failure.
+
+Do not default to a PRETTY 1280×720 screenshot in software Chromium: the
+96,420-chunk scene took minutes to render that way. The helper's disposable
+FAST context verifies rendering without changing public graphics settings.
+
+
 Gets a real, playable `/city` URL and *proves* it works before handing it over.
 `AGENTS.md` covers ordinary dev setup; this covers standing up a second, isolated
 instance and verifying it without a human.

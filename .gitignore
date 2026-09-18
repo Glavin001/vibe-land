@@ -44,3 +44,6 @@ experiments/
 # One-button debug reports (client+server state per press); evidence, not source.
 debug-reports/
 scripts/perf/__pycache__/
+
+# Python deployment helper/test imports.
+scripts/__pycache__/

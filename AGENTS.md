@@ -1,3 +1,12 @@
+## Already on Vast.ai: deploy or verify `/city`
+
+Read [.claude/skills/vastai-deploy/SKILL.md](.claude/skills/vastai-deploy/SKILL.md).
+From this checkout, `python3 scripts/vast-city.py status` discovers the URL and
+listeners; `python3 scripts/vast-city.py up --browser --public` builds, deploys,
+and verifies. Use `verify --browser --public` instead of `up` when only checking
+a running deployment. Keep the user's current branches. Do not begin with fleet
+rental, Docker, a repo-wide skill dump, or hand-written PID/port discovery.
+
 ## Cursor Cloud specific instructions
 
 ### Overview
