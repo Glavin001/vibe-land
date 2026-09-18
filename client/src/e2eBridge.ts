@@ -204,6 +204,10 @@ export interface CityE2EStats {
   poseJumpsOver4m: number;
   poseJumpsOver16m: number;
   poseJumpMaxM: number;
+  /** The same, on the writer the renderer reads. See CityTopology. */
+  presentedJumpsOver1m: number;
+  presentedJumpsOver4m: number;
+  presentedJumpMaxM: number;
   /**
    * Composition inputs for the lowest chunk below the counting threshold.
    * These are client ledger poses, which may be interpolated; they are not a

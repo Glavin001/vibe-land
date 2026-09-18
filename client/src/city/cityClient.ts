@@ -57,6 +57,10 @@ export interface CityClientStats {
   poseJumpsOver4m: number;
   poseJumpsOver16m: number;
   poseJumpMaxM: number;
+  /** The same, on the writer the renderer reads. See CityTopology. */
+  presentedJumpsOver1m: number;
+  presentedJumpsOver4m: number;
+  presentedJumpMaxM: number;
   liveIslands: number;
   topoSeqGaps: number;
   datagramsReceived: number;
@@ -1388,6 +1392,9 @@ export class CityClient {
       poseJumpsOver4m: topologyStats.poseJumpsOver4m,
       poseJumpsOver16m: topologyStats.poseJumpsOver16m,
       poseJumpMaxM: topologyStats.poseJumpMaxM,
+      presentedJumpsOver1m: topologyStats.presentedJumpsOver1m,
+      presentedJumpsOver4m: topologyStats.presentedJumpsOver4m,
+      presentedJumpMaxM: topologyStats.presentedJumpMaxM,
       datagramsReceived: this.datagramsReceived,
       recordsApplied: this.recordsApplied,
       wireVersion: this.debris === null ? 2 : 3,

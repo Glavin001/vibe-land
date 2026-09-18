@@ -180,6 +180,9 @@ for (const link of LINKS) {
       jumps4: seen.poseJumpsOver4m ?? 0,
       jumps16: seen.poseJumpsOver16m ?? 0,
       jumpMax: seen.poseJumpMaxM ?? 0,
+      drawn1: seen.presentedJumpsOver1m ?? 0,
+      drawn4: seen.presentedJumpsOver4m ?? 0,
+      drawnMax: seen.presentedJumpMaxM ?? 0,
       topoGaps: seen.topoSeqGaps ?? 0,
       settleRejects: seen.settleRejects ?? 0,
       orphans: seen.orphanedChunks ?? 0,
@@ -200,6 +203,7 @@ const pad = (v, n) => String(v).padStart(n);
 console.log(`\n${'link'.padEnd(34)} ${'drop%'.padStart(6)} ${'boot'.padStart(7)} ${'cli/srv bonds'.padStart(14)}`
   + ` ${'>1m'.padStart(6)} ${'>4m'.padStart(6)} ${'>16m'.padStart(6)} ${'max m'.padStart(7)}`
   + ` ${'per bond'.padStart(9)}`
+  + ` ${'drawn >1/>4@max'.padStart(14)}`
   + ` ${'gaps'.padStart(5)} ${'rejects'.padStart(8)}`);
 for (const r of rows) {
   // Both directions, on both sides of the ratio. Dividing drops from both by
@@ -216,6 +220,7 @@ for (const r of rows) {
   console.log(`${r.link.padEnd(34)} ${pad(dropPct, 6)} ${pad(boot, 7)} ${pad(`${r.cliBonds}/${r.srvBonds ?? '?'} ${agree}`, 14)}`
     + ` ${pad(r.jumps1, 6)} ${pad(r.jumps4, 6)} ${pad(r.jumps16, 6)} ${pad(r.jumpMax.toFixed(1), 7)}`
     + ` ${pad(`${perBond}/100`, 9)}`
+    + ` ${pad(`${r.drawn1}/${r.drawn4}@${r.drawnMax.toFixed(1)}`, 14)}`
     + ` ${pad(r.topoGaps, 5)} ${pad(r.settleRejects, 8)}`
     + ` | caught up ${r.convergedMs === null ? 'never' : `${(r.convergedMs / 1000).toFixed(1)}s`}`
     + ` | boot ${r.bootstraps} dgrams ${r.datagrams} wire ${r.wire}`
@@ -224,7 +229,10 @@ for (const r of rows) {
     + ` | fired ${r.shotsFired} (${r.lastShot ?? 'none'})`
     + ` | buffer ${r.delayTicks.toFixed(1)} vs late ${r.lateTicks.toFixed(1)} ticks`);
 }
-console.log('\n>1m/>4m/>16m are streamed pose writes that moved a body further than the'
-  + '\nstream can account for: what a player sees as debris teleporting. Read the'
-  + '\nper-bond column, not the raw counts -- how much rubble a run produces varies'
-  + '\nby a factor of two on identical shots, and the raw counts vary with it.');
+console.log('\n>1m/>4m/>16m are RAW streamed pose writes that moved a body further than'
+  + '\nthe stream can account for. They are an upper bound on the link\'s roughness,'
+  + '\nnot on what a player saw: the presentation pass rewrites every live body once'
+  + '\na frame before the renderer composes, so most raw writes never reach a screen.'
+  + '\nThe "drawn" column is the one that did -- steps in the presented pose, which'
+  + '\nthe interpolator is supposed to make impossible. Read per bond, not raw: how'
+  + '\nmuch rubble a run produces varies by a factor of two on identical shots.');

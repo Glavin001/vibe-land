@@ -82,6 +82,22 @@ export interface CityTopologyStats {
   poseJumpsOver16m: number;
   /** The largest single streamed pose jump seen, metres. */
   poseJumpMaxM: number;
+  /**
+   * The same measurement on the writer the renderer actually reads.
+   *
+   * A raw write is usually invisible: `samplePresentation` writes every live
+   * body once per frame and runs before the renderer composes, so a raw pose
+   * that lands between frames is overwritten before anyone sees it. The raw
+   * counters above are therefore an upper bound on the link's roughness, not a
+   * count of what a player saw -- and quoting them as the latter overstates the
+   * artefact, sometimes by a lot. These count steps in the presented pose,
+   * which is the one that reaches the screen. The interpolator moves bodies
+   * smoothly by construction, so a step here is a real visible discontinuity:
+   * a correction too large to glide, or a body whose track was replaced.
+   */
+  presentedJumpsOver1m: number;
+  presentedJumpsOver4m: number;
+  presentedJumpMaxM: number;
 }
 
 /**
@@ -128,6 +144,9 @@ export class CityTopology {
   private poseJumpsOver4m = 0;
   private poseJumpsOver16m = 0;
   private poseJumpMaxM = 0;
+  private presentedJumpsOver1m = 0;
+  private presentedJumpsOver4m = 0;
+  private presentedJumpMaxM = 0;
   private lastTopoSeq = 0;
   private topoSeqGaps = 0;
   /** Topology messages ignored as already-applied; see apply(). */
@@ -404,6 +423,9 @@ export class CityTopology {
       poseJumpsOver4m: this.poseJumpsOver4m,
       poseJumpsOver16m: this.poseJumpsOver16m,
       poseJumpMaxM: this.poseJumpMaxM,
+      presentedJumpsOver1m: this.presentedJumpsOver1m,
+      presentedJumpsOver4m: this.presentedJumpsOver4m,
+      presentedJumpMaxM: this.presentedJumpMaxM,
     };
   }
 
@@ -578,6 +600,19 @@ export class CityTopology {
         if (jump > 4) this.poseJumpsOver4m += 1;
         if (jump > 16) this.poseJumpsOver16m += 1;
         if (jump > this.poseJumpMaxM) this.poseJumpMaxM = jump;
+      }
+    } else if (source === 'presented') {
+      const jump = Math.hypot(
+        position[0] - body.position[0],
+        position[1] - body.position[1],
+        position[2] - body.position[2],
+      );
+      // 1 m in one frame is 60 m/s, which no piece of falling masonry reaches;
+      // the interpolator is supposed to make this impossible.
+      if (jump > 1) {
+        this.presentedJumpsOver1m += 1;
+        if (jump > 4) this.presentedJumpsOver4m += 1;
+        if (jump > this.presentedJumpMaxM) this.presentedJumpMaxM = jump;
       }
     }
     body.position = vClone(position);
