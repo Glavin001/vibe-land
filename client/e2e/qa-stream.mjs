@@ -20,6 +20,7 @@
  *                    so the pathological case stays reproducible
  *   --api <url>      server stats origin.         default http://127.0.0.1:4017
  *   --match <id>     match id.                    default city-default
+ *   --query <s>      query string for /city, e.g. adaptiveBuffer=1
  */
 import { openCity, city, player } from './helpers/qaSession.mjs';
 import { startShaper } from './helpers/netShaper.mjs';
@@ -81,6 +82,7 @@ for (const link of LINKS) {
     const session = await openCity({
       page: arg('page', 'https://127.0.0.1:1111'),
       wtPort: shaper.port,
+      query: arg('query', ''),
       quiet: true,
     });
     browser = session.browser;
@@ -180,14 +182,21 @@ for (const link of LINKS) {
 const pad = (v, n) => String(v).padStart(n);
 console.log(`\n${'link'.padEnd(34)} ${'drop%'.padStart(6)} ${'boot'.padStart(7)} ${'cli/srv bonds'.padStart(14)}`
   + ` ${'>1m'.padStart(6)} ${'>4m'.padStart(6)} ${'>16m'.padStart(6)} ${'max m'.padStart(7)}`
+  + ` ${'per bond'.padStart(9)}`
   + ` ${'gaps'.padStart(5)} ${'rejects'.padStart(8)}`);
 for (const r of rows) {
   const sent = r.relayed + r.dropped;
   const dropPct = sent > 0 ? ((r.dropped / sent) * 100).toFixed(1) : '0.0';
   const agree = r.srvBonds ? `${((r.cliBonds / r.srvBonds) * 100).toFixed(0)}%` : '?';
   const boot = r.bootMs === null ? 'never' : `${(r.bootMs / 1000).toFixed(1)}s`;
+  // Jumps per hundred broken bonds, because the raw count is not comparable
+  // between runs. A collapse is chaotic: the same six shots break 780 bonds on
+  // one run and 1,581 on the next, and twice the rubble is twice the chance to
+  // see a body step. An A/B read off the raw column will find whatever it wants.
+  const perBond = r.srvBonds ? ((r.jumps1 * 100) / r.srvBonds).toFixed(1) : '?';
   console.log(`${r.link.padEnd(34)} ${pad(dropPct, 6)} ${pad(boot, 7)} ${pad(`${r.cliBonds}/${r.srvBonds ?? '?'} ${agree}`, 14)}`
     + ` ${pad(r.jumps1, 6)} ${pad(r.jumps4, 6)} ${pad(r.jumps16, 6)} ${pad(r.jumpMax.toFixed(1), 7)}`
+    + ` ${pad(`${perBond}/100`, 9)}`
     + ` ${pad(r.topoGaps, 5)} ${pad(r.settleRejects, 8)}`
     + ` | boot ${r.bootstraps} dgrams ${r.datagrams} wire ${r.wire}`
     + ` hash ${r.hashMismatches}/${r.hashChecks} repairs ${r.repairs}`
@@ -196,4 +205,6 @@ for (const r of rows) {
     + ` | buffer ${r.delayTicks.toFixed(1)} vs late ${r.lateTicks.toFixed(1)} ticks`);
 }
 console.log('\n>1m/>4m/>16m are streamed pose writes that moved a body further than the'
-  + '\nstream can account for: what a player sees as debris teleporting.');
+  + '\nstream can account for: what a player sees as debris teleporting. Read the'
+  + '\nper-bond column, not the raw counts -- how much rubble a run produces varies'
+  + '\nby a factor of two on identical shots, and the raw counts vary with it.');

@@ -21,6 +21,7 @@ import { chromium } from 'playwright';
  * @param {boolean} [options.quiet]   suppress the connection line
  * @param {string} [options.recordVideo]  directory for a webm recording of the run
  * @param {boolean} [options.public]  dial the advertised public address instead of loopback
+ * @param {string} [options.query]    query string for /city, without the '?'
  */
 export async function openCity(options = {}) {
   const origin = options.page ?? 'https://127.0.0.1:1111';
@@ -74,7 +75,8 @@ export async function openCity(options = {}) {
 
   // domcontentloaded, not load: the page keeps a connection open and 'load'
   // may never fire.
-  await page.goto(`${origin}/city`, { waitUntil: 'domcontentloaded', timeout: 60_000 });
+  const query = options.query ? `?${options.query}` : '';
+  await page.goto(`${origin}/city${query}`, { waitUntil: 'domcontentloaded', timeout: 60_000 });
   await page.waitForFunction(() => !!window.__VIBE_E2E__, null, { timeout: 60_000 });
   await page.mouse.click(Math.floor(viewport.width / 2), Math.floor(viewport.height / 2));
   await page.waitForFunction(

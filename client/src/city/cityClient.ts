@@ -132,6 +132,42 @@ const MIN_SAMPLE_DELAY_TICKS = 6;
 const ARRIVAL_BEST_DECAY_TICKS_PER_S = 0.5;
 const ARRIVAL_LATENESS_DECAY_TICKS_PER_S = 1.0;
 
+/**
+ * Ceiling on the playout delay.
+ *
+ * Buffering is bought with latency, and past about half a second of it the cure
+ * is worse than the teleport: debris lands visibly after the impact that threw
+ * it. A link needing more than this is not one a buffer can rescue.
+ */
+const MAX_SAMPLE_DELAY_TICKS = 30;
+
+/**
+ * Slew rates for the applied delay, in ticks per frame.
+ *
+ * Growing the buffer runs the sample clock slow for a moment; shrinking it runs
+ * the clock fast, which is a small teleport of every moving body at once. So
+ * growth is allowed to be three times quicker than release.
+ */
+const SAMPLE_DELAY_GROW_TICKS_PER_FRAME = 0.15;
+const SAMPLE_DELAY_SHRINK_TICKS_PER_FRAME = 0.05;
+
+/**
+ * Size the playout delay against the measured link, rather than holding it at
+ * one flush window.
+ *
+ * A switch because it is an experiment with a real cost on both sides: too
+ * small a buffer snaps bodies, too large a one delays every impact the player
+ * causes. Read once, from the page URL, so both arms of an A/B share a build
+ * and a deploy: /city?adaptiveBuffer=1.
+ */
+const ADAPTIVE_PLAYOUT_BUFFER = (() => {
+  try {
+    return new URLSearchParams(globalThis.location?.search ?? '').get('adaptiveBuffer') === '1';
+  } catch {
+    return false;
+  }
+})();
+
 export class CityClient {
   readonly topology: CityTopology;
   private readonly bodies: Map<number, BodyStreamState> = new Map();
@@ -394,6 +430,30 @@ export class CityClient {
     return this.renderClockTick;
   }
 
+  /**
+   * Slew the playout delay toward what this frame asks for, and return it.
+   *
+   * `spanFloor` is the wire's own requirement -- v3 must cover the encoder's
+   * flush window, v2 only its fixed interpolation delay. The link's lateness is
+   * added on top, behind the switch.
+   */
+  private advancePlayoutDelay(spanFloor: number): number {
+    const targetDelay = ADAPTIVE_PLAYOUT_BUFFER
+      ? Math.min(
+        MAX_SAMPLE_DELAY_TICKS,
+        Math.max(MIN_SAMPLE_DELAY_TICKS, spanFloor, Math.ceil(this.arrivalLateness) + 2),
+      )
+      : Math.max(MIN_SAMPLE_DELAY_TICKS, spanFloor);
+    if (this.sampleDelaySmooth < targetDelay) {
+      this.sampleDelaySmooth = Math.min(
+        targetDelay, this.sampleDelaySmooth + SAMPLE_DELAY_GROW_TICKS_PER_FRAME);
+    } else if (this.sampleDelaySmooth > targetDelay) {
+      this.sampleDelaySmooth = Math.max(
+        targetDelay, this.sampleDelaySmooth - SAMPLE_DELAY_SHRINK_TICKS_PER_FRAME);
+    }
+    return this.sampleDelaySmooth;
+  }
+
   private sampleDebris(renderTick: number, live: Set<number>): Set<number> {
     const debris = this.debris;
     if (debris === null) {
@@ -404,23 +464,16 @@ export class CityClient {
     // Floor of 6 ticks preserves the fixed-flush behaviour exactly; the
     // applied delay slews toward the target so the clock never jumps.
     //
-    // Deliberately NOT sized against `arrivalLateness`, which this client now
-    // measures right beside it. Sampling under the link's lateness is the
-    // textbook cause of streamed bodies snapping, and the buffer to fix it was
-    // written -- and then removed, because on this stack the artefact does not
-    // occur. Across five links from loopback to +180 ms / 8% loss, six
-    // cannonball shots each, the whole sweep produced one streamed pose step
-    // over a metre, of 1.3 m. The presentation layer already re-anchors a
-    // revised path to the pose on screen and glides the correction, which is
-    // the same problem solved one layer down. The measurement stays so that
-    // claim keeps being checked; add the buffer when a run disagrees with it.
-    const targetDelay = Math.max(MIN_SAMPLE_DELAY_TICKS, Math.ceil(this.spanTicksEma) + 3);
-    const step = 0.05;
-    if (this.sampleDelaySmooth < targetDelay) {
-      this.sampleDelaySmooth = Math.min(targetDelay, this.sampleDelaySmooth + step);
-    } else if (this.sampleDelaySmooth > targetDelay) {
-      this.sampleDelaySmooth = Math.max(targetDelay, this.sampleDelaySmooth - step);
-    }
+    // Under ADAPTIVE_PLAYOUT_BUFFER the link's own lateness is a third term.
+    // Sampling below it reads a span that has not arrived: the track
+    // extrapolates and then snaps when the real one lands, which is a body
+    // teleporting. Measured with the delay fixed at 6 ticks, six cannonball
+    // shots per link: lateness 7.1 ticks and no pose step over a metre; 8.5 and
+    // seven of them, worst 3.7 m; 24.4 and sixteen, six of those over four
+    // metres, worst 15.2 m. The presentation layer already glides a revised
+    // path onto the pose on screen, which is why the gap has to grow this far
+    // before it shows.
+    this.advancePlayoutDelay(Math.ceil(this.spanTicksEma) + 3);
     const sampleTick = Math.max(0, Math.floor(renderTick - this.sampleDelaySmooth));
     // Apply held topology whose tick the sample clock has reached, so a
     // migration's basis change lands in the same frame as the poses that
@@ -1235,12 +1288,16 @@ export class CityClient {
     // cannot move without an event that re-adds it, so re-sampling it every
     // frame only re-proves that. Deleting the current entry during Set
     // iteration is defined behaviour in JS.
+    // v2 buffers inside each PresentationTrack, so the shared playout clock has
+    // to be pushed into them rather than read out of one place.
+    const playoutDelay = this.advancePlayoutDelay(MIN_SAMPLE_DELAY_TICKS);
     for (const key of this.kinetic) {
       const state = this.bodies.get(key);
       if (!state) {
         this.kinetic.delete(key);
         continue;
       }
+      state.track.setInterpolationDelayTicks(playoutDelay);
       const presented = state.track.sample(renderTick);
       if (state.track.lastSampleSettled) {
         this.kinetic.delete(key);

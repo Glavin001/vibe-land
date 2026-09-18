@@ -323,6 +323,21 @@ export class PresentationTrack {
    */
   lastSampleSettled = false;
 
+  /**
+   * Resize the playout buffer.
+   *
+   * Per track because each one owns a copy of the config. Callers must slew
+   * this rather than step it: `sample` reads at `renderTick - delay`, so
+   * changing it by n ticks between frames moves every body by n ticks of its
+   * own motion, all at once. That is the artefact the buffer exists to avoid,
+   * caused by the buffer.
+   */
+  setInterpolationDelayTicks(ticks: number): void {
+    if (Number.isFinite(ticks) && ticks >= 0) {
+      this.config.interpolationDelayTicks = ticks;
+    }
+  }
+
   sample(renderTickInput: number): PresentedState {
     this.lastSampleSettled = false;
     if (this.snapshots.length === 0) {
