@@ -45,17 +45,33 @@ pub const PKT_DAMAGE_EVENT: u8 = 118;
 
 // ── Destructible city streams (destruction/src/wire.rs defines the layouts) ──
 pub const PKT_CITY_RESYNC_REQUEST: u8 = 9;
+/// Client -> server: "I could not fetch the manifest; send it down the session."
+///
+/// Asked for rather than pushed, because the push is enormous and the reliable
+/// lane is ordered. See `PKT_CITY_MANIFEST`.
+pub const PKT_CITY_MANIFEST_REQUEST: u8 = 11;
 pub const PKT_CITY_CHUNKS: u8 = 119;
 pub const PKT_CITY_TOPOLOGY: u8 = 120;
 pub const PKT_CITY_BASELINE: u8 = 121;
 pub const PKT_CITY_BOOTSTRAP: u8 = 122;
-/// The city manifest itself, gzipped, pushed on join.
+/// The city manifest itself, gzipped, sent only when a client asks for it.
 ///
-/// Clients used to fetch this over HTTP from the game server. That works only
-/// when the page and the server share an origin: a rented GPU box serves plain
-/// HTTP on a random port, which an HTTPS page may not fetch, and its
-/// WebTransport certificate is self-signed so an HTTPS fetch is refused too.
-/// Sending it down the session that is already open sidesteps all of it.
+/// Clients fetch this over HTTP from the game server. That works only when the
+/// page and the server share an origin: a rented GPU box serves plain HTTP on a
+/// random port, which an HTTPS page may not fetch, and its WebTransport
+/// certificate is self-signed so an HTTPS fetch is refused too. Sending it down
+/// the session that is already open sidesteps all of it.
+///
+/// It used to be pushed to everyone at join, and that is expensive in a way the
+/// size alone does not show. Every reliable city packet shares ONE ordered QUIC
+/// stream, so 1.8 MB of manifest is 1.8 MB in front of the bootstrap and in
+/// front of every topology update behind it. Measured at +90 ms with 2% loss,
+/// the push had not finished by the end of a 45-second run and the client's
+/// ledger never advanced past join: it agreed with 0 of the server's 544 broken
+/// bonds, and its own desync detector never fired, because the hash that would
+/// have tripped it was queued behind the same megabytes.
+///
+/// So the client asks, and only when its fetch has actually failed.
 pub const PKT_CITY_MANIFEST: u8 = 123;
 /// Per-match server telemetry as JSON, pushed roughly once a second.
 ///

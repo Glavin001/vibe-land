@@ -41,7 +41,12 @@ import { ThinAuthoritativePredictor } from '../physics/thinAuthoritativePredicto
 import { FLAG_IN_VEHICLE, FLAG_ON_GROUND } from '../net/protocol';
 import { fetchSessionConfig, type SessionConfigResponse } from '../net/webTransportClient';
 import { CityClient } from '../city/cityClient';
-import { PKT_CITY_BOOTSTRAP, PKT_CITY_MANIFEST, PKT_MATCH_STATS } from '../net/sharedConstants';
+import {
+  PKT_CITY_BOOTSTRAP,
+  PKT_CITY_MANIFEST,
+  PKT_CITY_MANIFEST_REQUEST,
+  PKT_MATCH_STATS,
+} from '../net/sharedConstants';
 import { decodeCityManifestPayload, fetchCityManifest } from '../city/manifest';
 import { CLIENT_MAX_CATCHUP_STEPS, FIXED_DT } from './clientSimConstants';
 import {
@@ -1033,42 +1038,35 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
   /** After connect: if the session is a city world, fetch the manifest and
    * bring up the city client, then drain any buffered city packets. */
   /**
-   * Manifest from the session or over HTTP, whichever lands first.
+   * Manifest over HTTP, and down the session only if that fails.
    *
-   * The push is the only path that works on a rented box, where plain HTTP on a
-   * random port is mixed content to an HTTPS page and its self-signed origin is
-   * refused. The fetch is the only path that is *cheap*: the manifest is 1.8 MB
-   * gzipped and the push carries it on the one ordered reliable stream that
-   * also carries the bootstrap, so every byte of it is in front of the packet
-   * that makes the city appear.
+   * The session copy is the only path that works on a rented box, where plain
+   * HTTP on a random port is mixed content to an HTTPS page and its self-signed
+   * origin is refused. It is also 1.8 MB on the one ordered reliable stream
+   * that carries the bootstrap and every topology update, so asking for it when
+   * it is not needed stalls the whole ledger behind it -- measured at +90 ms
+   * with 2% loss as a client that agreed with 0 of the server's 544 broken
+   * bonds for a full 45 seconds.
    *
-   * These used to run in sequence -- wait up to four seconds for the push, then
-   * fall back -- and the four seconds were spent on exactly the links that could
-   * least afford them. Measured on this host, join to first city: 0.7 s on
-   * loopback, 1.4 s at a flat +40 ms, and 6-8 s at +40 ms +/-10 ms, where the
-   * push crosses the timeout and the client waits out the full four before
-   * fetching the same bytes it is already receiving. Racing them costs one
-   * request that is usually cached and immutable, and removes the stall.
+   * So: fetch first, ask second, and only after the fetch has really failed.
+   * The fetch is same-origin and the response is immutable and cacheable, which
+   * is what makes the common case free.
    */
-  private async loadCityManifest(manifestHash: string) {
+  private async loadCityManifest(client: NetcodeClient, manifestHash: string) {
     if (this.pushedCityManifest) {
       return decodeCityManifestPayload(this.pushedCityManifest, manifestHash);
     }
-    // A failed fetch must not reject the race and must not fire unhandled: on
-    // a rented box it is expected to fail, and the push is the real answer.
-    const fetched = fetchCityManifest('', manifestHash).then(
-      (loaded) => ({ loaded }),
-      () => new Promise<never>(() => {}),
-    );
-    const pushed = this.pushedManifestArrived.then(() => ({ loaded: null }));
-    const winner = await Promise.race([fetched, pushed]);
-    if (winner.loaded) {
-      return winner.loaded;
+    try {
+      return await fetchCityManifest('', manifestHash);
+    } catch (error) {
+      console.info('[city] manifest fetch failed; asking for it over the session', error);
     }
-    if (this.pushedCityManifest) {
-      return decodeCityManifestPayload(this.pushedCityManifest, manifestHash);
+    client.sendCityResync(new Uint8Array([PKT_CITY_MANIFEST_REQUEST]));
+    await this.pushedManifestArrived;
+    if (!this.pushedCityManifest) {
+      throw new Error('city manifest unavailable over HTTP and over the session');
     }
-    return fetchCityManifest('', manifestHash);
+    return decodeCityManifestPayload(this.pushedCityManifest, manifestHash);
   }
 
   private async initCityClient(client: NetcodeClient): Promise<void> {
@@ -1089,7 +1087,7 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
         this.pendingCityPackets = [];
         return;
       }
-      const manifest = await this.loadCityManifest(manifestHash);
+      const manifest = await this.loadCityManifest(client, manifestHash);
       console.info('[city] manifest loaded', {
         hash: manifest.hashHex,
         source: this.pushedCityManifest ? 'pushed over session' : 'fetched over HTTP',

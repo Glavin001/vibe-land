@@ -42,6 +42,9 @@ pub enum ClientPacket {
     CityNack {
         bodies: Vec<u32>,
     },
+    /// The client could not fetch the manifest over HTTP; send it down the
+    /// session instead. Only this asks for it -- see `PKT_CITY_MANIFEST`.
+    CityManifestRequest,
 }
 
 #[derive(Clone, Debug)]
@@ -817,6 +820,7 @@ pub fn decode_client_packet(bytes: &[u8]) -> Result<ClientPacket> {
                 structures: decode_resync_structures(&mut buf)?,
             }
         }
+        PKT_CITY_MANIFEST_REQUEST => ClientPacket::CityManifestRequest,
         PKT_CITY_NACK => {
             ensure!(buf.remaining() >= 2, "short city nack packet");
             let count = usize::from(buf.get_u16_le());

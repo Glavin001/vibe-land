@@ -123,9 +123,8 @@ const MIN_SAMPLE_DELAY_TICKS = 6;
 /**
  * How fast the arrival estimates forget.
  *
- * The best-transit reference decays slowly, so one lucky packet cannot latch
- * the estimate high for the rest of the session and so local clock drift is
- * absorbed. The lateness high-water mark decays faster but still far slower
+ * The best-transit reference drifts back slowly, so one lucky packet cannot
+ * latch the estimate low for the rest of the session. The lateness high-water mark decays faster but still far slower
  * than it rises: a link that just got worse must be believed at once, while a
  * link that got better should give its buffer back gradually, because
  * shrinking the delay is what makes bodies jump forward.
@@ -217,18 +216,18 @@ export class CityClient {
    *
    * The delay above covers the SERVER's flush window. It says nothing about
    * the link, and on loopback there is nothing to say -- which is exactly why
-   * this was missing. A datagram's span tick minus the local clock, in tick
-   * units, is constant while transit is constant; it drops by precisely the
-   * extra transit a held-up packet suffered. The largest offset seen recently
-   * is therefore the fastest transit on offer, and every packet's shortfall
-   * against it is that packet's lateness.
+   * this was missing. How far the render clock has run past a span's tick when
+   * that span arrives is constant while transit is constant, and grows by
+   * exactly the extra transit a held-up packet suffered. The smallest such gap
+   * seen recently is therefore the fastest transit on offer, and every packet's
+   * excess over it is that packet's lateness.
    *
    * It is an instrument, not an input. Sampling at a delay under the lateness
    * would read a span that has not arrived -- the decoder would extrapolate the
    * last segment and snap when the real one landed -- and this number is what
    * says whether that is happening. So far it says no: see `sampleDebris`.
    */
-  private arrivalOffsetBest = Number.NEGATIVE_INFINITY;
+  private arrivalOffsetBest = Number.POSITIVE_INFINITY;
   private arrivalOffsetBestAtMs = 0;
   private arrivalLateness = 0;
   private arrivalLatenessAtMs = 0;
@@ -343,19 +342,30 @@ export class CityClient {
    * so a link that goes quiet does not freeze them.
    */
   private observeArrival(spanTick: number, nowMs: number): void {
-    const offset = spanTick - (nowMs / 1000) * this.tickRateEma;
-    if (!Number.isFinite(this.arrivalOffsetBest) || offset >= this.arrivalOffsetBest) {
-      this.arrivalOffsetBest = offset;
+    // Measured against the render clock, NOT against wall time scaled by the
+    // tick rate. The obvious spelling -- spanTick minus (now/1000 * rate) -- is
+    // a difference of two large products, so a fraction of a percent of drift
+    // in the rate estimate moves it by tens of ticks: it reported five to eight
+    // SECONDS of network lateness on a 40 ms link. The render clock already
+    // tracks the server's real tick production through a bounded pull, so how
+    // far behind it a span arrives is the honest quantity, and the smallest
+    // such gap seen recently is the reference everything else is late against.
+    if (this.renderClockTick < 0) {
+      return;
+    }
+    const behind = this.renderClockTick - spanTick;
+    if (!Number.isFinite(this.arrivalOffsetBest) || behind <= this.arrivalOffsetBest) {
+      this.arrivalOffsetBest = behind;
     } else {
       const elapsedS = Math.max(0, (nowMs - this.arrivalOffsetBestAtMs) / 1000);
-      this.arrivalOffsetBest = Math.max(
-        offset,
-        this.arrivalOffsetBest - elapsedS * ARRIVAL_BEST_DECAY_TICKS_PER_S,
+      this.arrivalOffsetBest = Math.min(
+        behind,
+        this.arrivalOffsetBest + elapsedS * ARRIVAL_BEST_DECAY_TICKS_PER_S,
       );
     }
     this.arrivalOffsetBestAtMs = nowMs;
 
-    const lateness = Math.max(0, this.arrivalOffsetBest - offset);
+    const lateness = Math.max(0, behind - this.arrivalOffsetBest);
     const elapsedS = Math.max(0, (nowMs - this.arrivalLatenessAtMs) / 1000);
     this.arrivalLateness = Math.max(
       lateness,
