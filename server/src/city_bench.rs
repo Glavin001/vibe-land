@@ -2519,7 +2519,7 @@ fn sustained_fire_survives_a_rejected_step() {
                 city.stats().broken_bonds,
                 city.stats().chunk_bodies,
                 window_wall / window_ticks,
-                window_iters / window_ticks,
+                window_awake / window_ticks,
                 window_stress / window_ticks,
             ));
             window_wall = 0.0;
@@ -2532,11 +2532,11 @@ fn sustained_fire_survives_a_rejected_step() {
 
     eprintln!(
         "  {:>5} {:>8} {:>7} {:>7} {:>7} {:>11}",
-        "shots", "bonds", "bodies", "tick_ms", "iters", "stress_ms"
+        "shots", "bonds", "bodies", "tick_ms", "awake", "stress_ms"
     );
-    for (shot, bonds, bodies, wall, iters, stress) in &curve {
+    for (shot, bonds, bodies, wall, awake, stress) in &curve {
         eprintln!(
-            "  {shot:>5} {bonds:>8} {bodies:>7} {wall:>7.1} {iters:>7.1} {stress:>11.3}"
+            "  {shot:>5} {bonds:>8} {bodies:>7} {wall:>7.1} {awake:>7.0} {stress:>11.3}"
         );
     }
 
@@ -2554,6 +2554,14 @@ process is still here",
         stats.chunk_bodies,
         span("native_error_bits_last"),
         span("native_unconverged_frames"),
+    );
+    eprintln!(
+        "[native /city] debris lifecycle: {} parked below the world, {} forced to sleep, \
+{} awake of {} bodies",
+        span("native_debris_parked"),
+        span("native_debris_settled"),
+        stats.awake_chunk_bodies,
+        stats.chunk_bodies,
     );
     assert!(
         stats.broken_bonds > 0,

@@ -58,6 +58,11 @@ struct NativeBody {
   /// rather than a level. The wire treats a settle as terminal, so a body that
   /// moves again has to be announced or the client keeps drawing it parked.
   bool sleeping = false;
+  /// Consecutive ticks this body has been barely moving. PhysX's own sleep
+  /// test never fires for a chunk in a deep rubble pile: contact solving is
+  /// iterative, so the pile keeps a residual jitter above the sleep threshold
+  /// forever, and the body simulates for the rest of the match.
+  std::uint32_t quiet_ticks = 0;
 };
 
 /// A shot in flight. Owned here rather than by `World`, because every body in
@@ -134,6 +139,11 @@ struct NativeDestruction::State {
   std::uint64_t active_island_updates = 0;
   std::uint64_t crush_yield_nodes = 0;
   std::uint64_t resettled_wakes = 0;
+  /// Debris taken out of the simulation: parked after leaving the world, and
+  /// forced to sleep after staying quiet. Published so the lifecycle is
+  /// visible rather than inferred from a falling body count.
+  std::uint64_t debris_parked = 0;
+  std::uint64_t debris_settled = 0;
 
   // --- sampled bond utilisation -------------------------------------------
   /// Per-bond verdicts are a whole-graph device read, so they are sampled on a

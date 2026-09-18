@@ -240,14 +240,115 @@ void NativeDestruction::State::apply_changed_chunks(
                  "committed GPU/CPU group count mismatch");
 }
 
+/// Below this height a body has left the world and is never coming back.
+static float native_debris_floor_m() {
+  static const float floor = [] {
+    if (const char *raw = std::getenv("VIBE_CITY_NATIVE_DEBRIS_FLOOR_M")) {
+      const float parsed = std::strtof(raw, nullptr);
+      if (std::isfinite(parsed)) {
+        return parsed;
+      }
+    }
+    return -200.0f;
+  }();
+  return floor;
+}
+
+/// Speed under which a body counts as quiet, and how many consecutive quiet
+/// ticks earn it a forced sleep. Zero ticks disables the assist.
+static float native_settle_speed() {
+  static const float speed = [] {
+    if (const char *raw = std::getenv("VIBE_CITY_NATIVE_SETTLE_SPEED")) {
+      const float parsed = std::strtof(raw, nullptr);
+      if (std::isfinite(parsed) && parsed >= 0.0f) {
+        return parsed;
+      }
+    }
+    return 0.12f;
+  }();
+  return speed;
+}
+
+/// Freeze quiet debris to kinematic rather than merely sleeping it.
+///
+/// Off, and measured that way rather than assumed. Flipping thousands of
+/// stage-owned fragments to kinematic did not finish an 800-shot run in three
+/// times the wall time the sleeping variant needed; these are GPU-resident
+/// bodies and changing that flag on them is evidently not the cheap bookkeeping
+/// it is for an ordinary actor. Kept behind the switch so the result is
+/// reproducible, not repeated.
+static bool native_settle_freezes() {
+  static const bool freeze = [] {
+    const char *raw = std::getenv("VIBE_CITY_NATIVE_SETTLE_FREEZE");
+    return raw != nullptr && raw[0] == '1';
+  }();
+  return freeze;
+}
+
+static std::uint32_t native_settle_ticks() {
+  static const std::uint32_t ticks = [] {
+    if (const char *raw = std::getenv("VIBE_CITY_NATIVE_SETTLE_TICKS")) {
+      const long parsed = std::strtol(raw, nullptr, 10);
+      if (parsed >= 0) {
+        return static_cast<std::uint32_t>(parsed);
+      }
+    }
+    return 45u;
+  }();
+  return ticks;
+}
+
 void NativeDestruction::State::refresh_snapshots() {
   snapshots.clear();
   snapshots.reserve(bodies.size());
+  const float floor_m = native_debris_floor_m();
+  const float quiet_speed = native_settle_speed();
+  const std::uint32_t quiet_limit = native_settle_ticks();
   for (auto &entry : bodies) {
     NativeBody &body = entry.second;
     PxRigidDynamic &actor = *body.actor;
     const bool kinematic =
         actor.getRigidBodyFlags().isSet(PxRigidBodyFlag::eKINEMATIC);
+
+    // Debris lifecycle. The stage has none of its own, and without one a city
+    // that has been fought over is thousands of chunks that simulate forever:
+    // a rubble pile never satisfies PhysX's sleep test, and anything that
+    // tunnels through the ground falls for the rest of the match. Measured at
+    // 6,181 awake bodies out of 6,510, the rigid-body step alone was 16.6 ms
+    // of a 16.7 ms budget -- the destruction was cheap by then and the debris
+    // was the whole cost.
+    if (!kinematic && !actor.isSleeping()) {
+      const PxVec3 position = actor.getGlobalPose().p;
+      const bool lost = !position.isFinite() || position.y < floor_m;
+      const float speed = actor.getLinearVelocity().magnitude();
+      const float spin = actor.getAngularVelocity().magnitude();
+      const bool quiet = speed <= quiet_speed && spin <= quiet_speed;
+      body.quiet_ticks = quiet ? body.quiet_ticks + 1 : 0;
+      if (lost) {
+        // Falling out of the world is terminal. Parking it costs one call and
+        // takes the body out of the simulation for good; it cannot be woken by
+        // a contact it will never have.
+        actor.putToSleep();
+        debris_parked += 1;
+      } else if (quiet_limit != 0 && body.quiet_ticks >= quiet_limit) {
+        // Sleep does not fully stick: over 800 cannonball shots this fired
+        // 27,043 times for 1,794 bodies, about fifteen times each, because
+        // something wakes them again. It still removes real work between
+        // wakes. Freezing to kinematic would be terminal and is what the Blast
+        // path does with rubble, but on stage-owned GPU bodies it measured
+        // far slower -- see native_settle_freezes.
+        if (native_settle_freezes()) {
+          actor.setRigidBodyFlag(PxRigidBodyFlag::eKINEMATIC, true);
+        } else {
+          actor.putToSleep();
+        }
+        body.quiet_ticks = 0;
+        debris_settled += 1;
+      }
+    } else {
+      body.quiet_ticks = 0;
+    }
+
     const bool sleeping = kinematic || actor.isSleeping();
     if (sleeping && !body.sleeping) {
       // Sleep edges are what the wire calls a settle; levels cannot express
@@ -425,6 +526,8 @@ FfiDestructionStats NativeDestruction::stats() const {
   span("native_observe_ms", s.observe_ms, 0);
   span("native_snapshot_ms", s.snapshot_ms, 0);
   span("native_rounds_ms", s.rounds_ms, 0);
+  span("native_debris_parked", static_cast<double>(s.debris_parked), 2);
+  span("native_debris_settled", static_cast<double>(s.debris_settled), 2);
   span("native_migrations_total", static_cast<double>(s.migration_total), 2);
   span("native_resettled_wakes", static_cast<double>(s.resettled_wakes), 2);
   span("native_splits", static_cast<double>(s.splits), 2);
