@@ -82,6 +82,13 @@ export interface CityClientStats {
   valveTicksAhead: number;
   bytesReceived: number;
   bytesPerSecond: number;
+  /// The playout delay in ticks actually applied this frame, and the network
+  /// arrival lateness (also ticks) it is sized against. On a clean link these
+  /// are 6 and 0; on a jittery one the first must exceed the second or debris
+  /// is sampled from a span that has not arrived.
+  sampleDelayTicks: number;
+  arrivalLatenessTicks: number;
+  arrivalLatenessPeakTicks: number;
   manifestHash: string;
 }
 
@@ -109,6 +116,44 @@ const PRESENTATION_EPSILON_M = 1e-4;
  * time.
  */
 const RESYNC_MIN_INTERVAL_MS = 3000;
+
+/** Floor on the playout delay: one flush window's worth, as shipped. */
+const MIN_SAMPLE_DELAY_TICKS = 6;
+
+/**
+ * Ceiling on the playout delay.
+ *
+ * Buffering is bought with latency, and past about half a second of it the
+ * cure is worse than the teleport: debris lands visibly after the impact that
+ * threw it. A link needing more than this is not one the buffer can rescue.
+ */
+const MAX_SAMPLE_DELAY_TICKS = 30;
+
+/**
+ * How fast the arrival estimates forget.
+ *
+ * The best-transit reference decays slowly, so one lucky packet cannot latch
+ * the estimate high for the rest of the session and so local clock drift is
+ * absorbed. The lateness high-water mark decays faster but still far slower
+ * than it rises: a link that just got worse must be believed at once, while a
+ * link that got better should give its buffer back gradually, because
+ * shrinking the delay is what makes bodies jump forward.
+ */
+const ARRIVAL_BEST_DECAY_TICKS_PER_S = 0.5;
+const ARRIVAL_LATENESS_DECAY_TICKS_PER_S = 1.0;
+
+/**
+ * Slew rates for the applied delay, in ticks per frame.
+ *
+ * Growing the buffer runs the sample clock slow for a moment; shrinking it
+ * runs the clock fast, which is a small teleport of every moving body at once.
+ * So growth is allowed to be three times quicker than release: at 0.15 a
+ * quarter-second of new buffer is absorbed in about a second of 15%
+ * slow-motion, against four seconds of waiting at the old symmetric rate --
+ * four seconds in which the sample clock is ahead of the data it needs.
+ */
+const SAMPLE_DELAY_GROW_TICKS_PER_FRAME = 0.15;
+const SAMPLE_DELAY_SHRINK_TICKS_PER_FRAME = 0.05;
 
 export class CityClient {
   readonly topology: CityTopology;
@@ -189,6 +234,28 @@ export class CityClient {
    * clock drift.
    */
   private sampleDelaySmooth = 6;
+  /**
+   * Network arrival lateness in ticks, measured from the datagrams themselves.
+   *
+   * The delay above covers the SERVER's flush window. It says nothing about
+   * the link, and on loopback there is nothing to say -- which is exactly why
+   * this was missing. A datagram's span tick minus the local clock, in tick
+   * units, is constant while transit is constant; it drops by precisely the
+   * extra transit a held-up packet suffered. The largest offset seen recently
+   * is therefore the fastest transit on offer, and every packet's shortfall
+   * against it is that packet's lateness. Sampling at a delay under the
+   * lateness reads a span that has not arrived: the decoder extrapolates the
+   * last analytic segment instead, and snaps when the real one lands. That
+   * snap is the debris teleport a player sees on a bad link.
+   *
+   * Measured, not configured, because it is the player's own link: a constant
+   * is either too small on a bad connection or wasted latency on a good one.
+   */
+  private arrivalOffsetBest = Number.NEGATIVE_INFINITY;
+  private arrivalOffsetBestAtMs = 0;
+  private arrivalLateness = 0;
+  private arrivalLatenessAtMs = 0;
+  private arrivalLatenessPeak = 0;
   /** Preallocated sampling buffers -- one FFI call per frame, no garbage. */
   private sampleLanes = new Uint32Array(4096);
   private samplePoses = new Float32Array(4096 * 7);
@@ -291,6 +358,38 @@ export class CityClient {
     this.latestSimTickAtMs = now;
   }
 
+  /**
+   * Fold one datagram's arrival into the network-lateness estimate.
+   *
+   * See `arrivalOffsetBest` for why span-tick-minus-local-clock is the right
+   * quantity. Both estimates are decayed on wall time rather than per packet,
+   * so a link that goes quiet does not freeze them.
+   */
+  private observeArrival(spanTick: number, nowMs: number): void {
+    const offset = spanTick - (nowMs / 1000) * this.tickRateEma;
+    if (!Number.isFinite(this.arrivalOffsetBest) || offset >= this.arrivalOffsetBest) {
+      this.arrivalOffsetBest = offset;
+    } else {
+      const elapsedS = Math.max(0, (nowMs - this.arrivalOffsetBestAtMs) / 1000);
+      this.arrivalOffsetBest = Math.max(
+        offset,
+        this.arrivalOffsetBest - elapsedS * ARRIVAL_BEST_DECAY_TICKS_PER_S,
+      );
+    }
+    this.arrivalOffsetBestAtMs = nowMs;
+
+    const lateness = Math.max(0, this.arrivalOffsetBest - offset);
+    const elapsedS = Math.max(0, (nowMs - this.arrivalLatenessAtMs) / 1000);
+    this.arrivalLateness = Math.max(
+      lateness,
+      this.arrivalLateness - elapsedS * ARRIVAL_LATENESS_DECAY_TICKS_PER_S,
+    );
+    this.arrivalLatenessAtMs = nowMs;
+    if (this.arrivalLateness > this.arrivalLatenessPeak) {
+      this.arrivalLatenessPeak = this.arrivalLateness;
+    }
+  }
+
   /** The render clock: the newest-tick anchor extrapolated at the MEASURED
    *  tick rate, followed through a bounded pull. A >2 s discontinuity
    *  (join, reset, resync) snaps. */
@@ -314,15 +413,27 @@ export class CityClient {
       return live;
     }
     // Sampling delay = one observed flush window + interpolation margin, so
-    // the sample clock never outruns the span the encoder is still filling.
-    // Floor of 6 ticks preserves the fixed-flush behaviour exactly; the
-    // applied delay slews toward the target so the clock never jumps.
-    const targetDelay = Math.max(6, Math.ceil(this.spanTicksEma) + 3);
-    const step = 0.05;
+    // the sample clock never outruns the span the encoder is still filling,
+    // AND the link's own lateness, so it never outruns the wire either. Both
+    // terms are needed and neither subsumes the other: the flush window is
+    // what the server has not sent yet, the lateness is what it sent and the
+    // network has not delivered. Floor of 6 ticks preserves the fixed-flush
+    // behaviour on a clean link exactly; the applied delay slews toward the
+    // target so the clock never jumps.
+    const targetDelay = Math.min(
+      MAX_SAMPLE_DELAY_TICKS,
+      Math.max(
+        MIN_SAMPLE_DELAY_TICKS,
+        Math.ceil(this.spanTicksEma) + 3,
+        Math.ceil(this.arrivalLateness) + 2,
+      ),
+    );
     if (this.sampleDelaySmooth < targetDelay) {
-      this.sampleDelaySmooth = Math.min(targetDelay, this.sampleDelaySmooth + step);
+      this.sampleDelaySmooth = Math.min(
+        targetDelay, this.sampleDelaySmooth + SAMPLE_DELAY_GROW_TICKS_PER_FRAME);
     } else if (this.sampleDelaySmooth > targetDelay) {
-      this.sampleDelaySmooth = Math.max(targetDelay, this.sampleDelaySmooth - step);
+      this.sampleDelaySmooth = Math.max(
+        targetDelay, this.sampleDelaySmooth - SAMPLE_DELAY_SHRINK_TICKS_PER_FRAME);
     }
     const sampleTick = Math.max(0, Math.floor(renderTick - this.sampleDelaySmooth));
     // Apply held topology whose tick the sample clock has reached, so a
@@ -473,6 +584,7 @@ export class CityClient {
         }
         const started = performance.now();
         const header = decodeDebrisHeader(bytes);
+        this.observeArrival(header.spanTick, now);
         if (header.spanTick > this.latestSimTick) {
           this.observeSimTick(header.spanTick);
         }
@@ -599,7 +711,15 @@ export class CityClient {
         // Pose-stream clocks belong to the old world too.
         this.lastSpanTick = -1;
         this.spanTicksEma = 6;
-        this.sampleDelaySmooth = 6;
+        // The flush cadence belongs to the old world; the link does not, so
+        // the measured lateness survives and the delay restarts at the floor
+        // it implies. Restarting at 6 on a jittery link would re-open the
+        // window this buffer exists to close, for the second or so the slew
+        // takes to climb back.
+        this.sampleDelaySmooth = Math.min(
+          MAX_SAMPLE_DELAY_TICKS,
+          Math.max(MIN_SAMPLE_DELAY_TICKS, Math.ceil(this.arrivalLateness) + 2),
+        );
         this.renderClockTick = -1;
         this.settledAtTick.clear();
         this.baselineGenerations.clear();
@@ -1238,6 +1358,9 @@ export class CityClient {
       recordsBuffered: this.recordsBuffered,
       bytesReceived: this.bytesReceived,
       bytesPerSecond: windowSeconds > 0.25 ? windowBytes / windowSeconds : 0,
+      sampleDelayTicks: this.sampleDelaySmooth,
+      arrivalLatenessTicks: this.arrivalLateness,
+      arrivalLatenessPeakTicks: this.arrivalLatenessPeak,
       manifestHash: this.manifest.hashHex,
       hashChecks: this.hashChecks,
       hashMismatches: this.hashMismatches,

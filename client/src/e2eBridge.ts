@@ -138,6 +138,15 @@ export interface CityE2EStats {
   topoSeqGaps: number;
   datagramsReceived: number;
   bytesPerSecond: number;
+  /**
+   * The playout buffer, and the network lateness it is sized against, both in
+   * ticks. Sized correctly the first exceeds the second; when it does not, the
+   * decoder is extrapolating past data it has not received, which is what the
+   * pose-jump counters below then record.
+   */
+  sampleDelayTicks: number;
+  arrivalLatenessTicks: number;
+  arrivalLatenessPeakTicks: number;
   manifestHash: string;
   /** False when the chunk mesh failed to build — the city is streaming but invisible. */
   rendered: boolean;

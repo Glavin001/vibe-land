@@ -473,3 +473,67 @@ fn observing_the_same_frame_twice_reports_nothing_the_second_time() {
         );
     }
 }
+
+/// A reset rebuilds a city that still breaks.
+///
+/// `a_rebuilt_city_leaves_nothing_of_the_old_one` proves the scene is left
+/// clean. This proves the other half, which is the half that failed in
+/// production: that the rebuilt stage actually runs. It re-authors in the same
+/// tick it cleared in, with no step between, because that is what
+/// `CityRuntime::reset` does -- it clears the backend and calls `open()` on the
+/// next line.
+///
+/// The live server reset its city and the stage came up stuck at frame 0 with
+/// error bit 4 and stayed there: 19,590 consecutive rejected ticks, every later
+/// `clearStress` refused, a city that could not be broken and could not be
+/// reset, with the server otherwise reporting a healthy 60 Hz. The ordering
+/// looked like the obvious culprit and is not -- this test passes without the
+/// intervening step. The cause was an SDK built from a revision that cannot
+/// construct a GPU scene on this card, installed over the qualified one by an
+/// overnight bisect. The test is kept pointed at the ordering anyway, so that
+/// if the engine ever does acquire that requirement, it is found here rather
+/// than in a match nobody can reset.
+#[test]
+fn a_reset_rebuilds_a_city_that_still_breaks() {
+    let mut world = World::new(WorldConfig::default()).expect("GPU scene");
+    ground(&mut world);
+    install(&mut world, 4, 4);
+    for _ in 0..10 {
+        step_and_observe(&mut world);
+    }
+
+    world.native_clear().expect("clear");
+    install(&mut world, 4, 4);
+
+    for tick in 0..20 {
+        world.step().expect("step");
+        let status = world.native_tick().expect("observe");
+        assert_eq!(
+            status.error, 0,
+            "tick {tick} after a rebuild: stage error bits {}",
+            status.error
+        );
+    }
+
+    world
+        .native_fire_round(RoundDesc {
+            position: Vec3::new(0.0, 2.5, 1.2),
+            direction: Vec3::new(0.0, 0.0, -1.0),
+            momentum_ns: 4.0e5,
+            radius: 0.4,
+            speed: 20.0,
+            ttl_ticks: 20,
+        })
+        .expect("fire at the rebuilt city");
+    for _ in 0..40 {
+        step_and_observe(&mut world);
+    }
+    assert!(
+        !world.native_take_broken_bonds().expect("bonds").is_empty(),
+        "the rebuilt city absorbed a round without breaking: this is the live \
+         failure, where the stage runs but does nothing"
+    );
+
+    // And it must still be clearable, or the match is stuck forever.
+    world.native_clear().expect("clear after rebuild");
+}

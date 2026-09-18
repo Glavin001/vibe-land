@@ -2,7 +2,16 @@
 
 Measured on an RTX 4090, CUDA 12.8, `fractured-downtown` at grid 1
 (24,105 chunks, 74,543 bonds), physx-2 SDK `sdk-converge`. Every number here
-came from a run, not from reading the code. Set `VIBE_PHYSX_PROFILE=1` to get
+came from a run, not from reading the code.
+
+`sdk-converge` is physx-2 revision `471ea8a5` plus the crash fixes below, now on
+branch `claude/qualified-sdk-471ea8a5`. **It is the only revision qualified on
+this card, and the difference is not subtle:** on `9fd9c67e` a forty-line
+program that creates one plain scene with GPU dynamics and GPU broadphase, and
+no destruction anywhere, segfaults at the first heap allocation, and physx-2's
+own ctest loses 118 of 164 with every GPU-scene test faulting. Check
+`out/sdk-artifacts.json` before trusting any measurement; see "When the engine
+under you is the wrong one" below. Set `VIBE_PHYSX_PROFILE=1` to get
 the engine's own instrumentation as `destruction/*` spans in match stats and in
 debug reports.
 
@@ -109,6 +118,35 @@ city's time is in the large-component cooperative solve, not here.
 **Iteration budget above 64 buys nothing.** The solve converges before the cap,
 so a larger budget costs more only on the ticks that fail to converge. 256 and
 1,024 produce identical destruction to 64 and cost twice as much.
+
+## When the engine under you is the wrong one
+
+This cost most of a day, so it is written down in the form that would have
+saved it.
+
+An overnight bisect built the SDK at other revisions and installed its
+artifacts over the qualified ones, into the same
+`physx/bin/linux.x86_64/release`. The live server picked them up on its next
+deploy and kept running. Nothing announced the swap. What it looked like from
+outside:
+
+- `/healthz` fine, 60 Hz, `destruction_backend: native`, players connected.
+- The city could not be broken. Any shot, any weapon, no bonds.
+- `destruction/native_error_frames` climbing by 60 every second, with
+  `native_error_bits_last 4` and `native_frame 0` -- the stage never started.
+- Every `/city-reset` after the first failing with `cannot clear the active
+  native destruction topology`, so the match could not even be restarted.
+
+And, crucially, what it looked like through the QA harness: **a perfect
+network**. Client and server agreed on zero broken bonds, which the stream
+comparison scored as 100% agreement across every degraded link. Four of five
+rows in a published sweep were measuring a dead city. `qa-stream.mjs` now reads
+`native_error_frames` before and after each link and refuses to report if the
+stage rejected a single tick.
+
+Two rules follow. The SDK's `source_revision` belongs in any performance claim,
+because artifacts in that directory are not immutable. And when both sides of a
+stream agree on nothing, check that there was something to agree about.
 
 ## Known engine defects hit along the way
 

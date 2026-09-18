@@ -10,12 +10,14 @@
  * container has no NET_ADMIN. See helpers/netShaper.mjs.
  *
  *   node client/e2e/qa-stream.mjs
- *   node client/e2e/qa-stream.mjs --links "0/0/0, 60/20/0.02, 150/40/0.08"
+ *   node client/e2e/qa-stream.mjs --links "0/0/0, 60/20/0.02, 150/40/0.08/0.01"
  *
- *   --links <list>   semicolon or comma separated delay/jitter/loss triples,
- *                    delay and jitter in ms, loss as a fraction
+ *   --links <list>   semicolon separated delay/jitter/loss[/reorder] specs,
+ *                    delay and jitter in ms, loss and reorder as fractions
  *   --shots <n>      shots per link.              default 6
- *   --settle <ms>    wait after joining.          default 8000
+ *   --settle <ms>    give up waiting for the city. default 60000
+ *   --unordered      let jitter shuffle packets, which no real link does; kept
+ *                    so the pathological case stays reproducible
  *   --api <url>      server stats origin.         default http://127.0.0.1:4017
  *   --match <id>     match id.                    default city-default
  */
@@ -28,12 +30,16 @@ const arg = (k, d) => { const i = argv.indexOf(`--${k}`); return i >= 0 ? argv[i
 const API = arg('api', 'http://127.0.0.1:4017');
 const MATCH = arg('match', 'city-default');
 const SHOTS = Number(arg('shots', 6));
-const SETTLE = Number(arg('settle', 8000));
-const LINKS = arg('links', '0/0/0, 40/10/0.005, 90/25/0.02, 180/60/0.08')
-  .split(/[;,]/).map((s) => s.trim()).filter(Boolean)
+const SETTLE = Number(arg('settle', 60000));
+const PRESERVE_ORDER = !argv.includes('--unordered');
+const LINKS = arg('links', '0/0/0; 40/10/0.005; 90/25/0.02; 180/60/0.08/0.01')
+  .split(';').map((s) => s.trim()).filter(Boolean)
   .map((spec) => {
-    const [delayMs, jitterMs, loss] = spec.split('/').map(Number);
-    return { delayMs: delayMs || 0, jitterMs: jitterMs || 0, loss: loss || 0 };
+    const [delayMs, jitterMs, loss, reorder] = spec.split('/').map(Number);
+    return {
+      delayMs: delayMs || 0, jitterMs: jitterMs || 0,
+      loss: loss || 0, reorder: reorder || 0,
+    };
   });
 
 const serverStats = async () => {
@@ -43,6 +49,20 @@ const serverStats = async () => {
   } catch { return {}; }
 };
 
+/**
+ * Rejected destruction ticks, cumulative.
+ *
+ * Read before and after every link because a stage that has stopped accepting
+ * steps looks EXACTLY like a perfect network from here: the city simply never
+ * breaks, so client and server agree on zero broken bonds and the run reports
+ * 100% agreement. A whole sweep was published that way -- four links scored
+ * against a city that had been indestructible since the first reset, with the
+ * stage rejecting every tick and the server otherwise reporting a healthy
+ * 60 Hz. Comparing two sides of a stream says nothing when neither side has
+ * anything to say.
+ */
+const rejectedTicks = (truth) => truth.spans?.['destruction/native_error_frames']?.v ?? 0;
+
 const reset = async () => {
   try { await fetch(`${API}/city-reset/${MATCH}`, { method: 'POST' }); } catch { /* best effort */ }
 };
@@ -51,8 +71,11 @@ const rows = [];
 for (const link of LINKS) {
   await reset();
   await new Promise((r) => setTimeout(r, 4000));
+  const rejectedBefore = rejectedTicks(await serverStats());
 
-  const shaper = await startShaper({ target: Number(arg('wt-port', 4433)), ...link });
+  const shaper = await startShaper({
+    target: Number(arg('wt-port', 4433)), preserveOrder: PRESERVE_ORDER, ...link,
+  });
   let browser;
   try {
     const session = await openCity({
@@ -69,7 +92,22 @@ for (const link of LINKS) {
       process.exit(1);
     }
     await page.evaluate(() => window.__VIBE_E2E__.setCannonball(true));
-    await page.waitForTimeout(SETTLE);
+
+    // How long the city takes to show up is the measurement, not a constant to
+    // wait out. A fixed settle cannot tell "never arrived" from "arrived at
+    // t+20s", and reading a too-short one as "never" is how a slow link got
+    // reported as a dead one.
+    const joinedAt = Date.now();
+    let bootMs = null;
+    while (Date.now() - joinedAt < SETTLE) {
+      const s = await city(page);
+      if ((s.bootstraps ?? 0) > 0) { bootMs = Date.now() - joinedAt; break; }
+      await page.waitForTimeout(250);
+    }
+    // Let the world finish arriving before shooting at it.
+    await page.waitForTimeout(3000);
+
+    console.log(`${shaper.describe()}: city at ${bootMs === null ? 'never' : `${bootMs} ms`}, firing`);
 
     // Same shot pattern every time, so the only variable is the link.
     for (let shot = 0; shot < SHOTS; ++shot) {
@@ -87,9 +125,31 @@ for (const link of LINKS) {
     await page.waitForTimeout(4000);
 
     const seen = await city(page);
+    const shooter = await player(page);
     const truth = await serverStats();
+    const rejected = rejectedTicks(truth) - rejectedBefore;
+    if (rejected > 0) {
+      console.error(`\nthe destruction stage rejected ${rejected} ticks during this link`
+        + ` (error bits ${truth.spans?.['destruction/native_error_bits_last']?.v ?? '?'}).`
+        + `\nNothing measured past this point is about the network: the city is not`
+        + `\nbreaking, so both sides agree on nothing. Restart the server first.`);
+      await browser.close();
+      shaper.stop();
+      process.exit(1);
+    }
     rows.push({
       link: shaper.describe(),
+      bootMs,
+      // Whether the trigger actually produced a round. A link that delays the
+      // world also delays this harness's own frames, and a run that fired
+      // nothing looks exactly like a run whose shots were lost.
+      shotsFired: shooter.shotsFired ?? 0,
+      lastShot: shooter.lastShot ?? null,
+      delayTicks: seen.sampleDelayTicks ?? 0,
+      lateTicks: seen.arrivalLatenessPeakTicks ?? 0,
+      kbDown: Math.round(shaper.stats.bytesToClient / 1024),
+      kbUp: Math.round(shaper.stats.bytesToServer / 1024),
+      reordered: shaper.stats.reordered,
       relayed: shaper.stats.toClient,
       dropped: shaper.stats.dropped,
       cliBonds: seen.brokenBonds ?? 0,
@@ -104,6 +164,12 @@ for (const link of LINKS) {
       topoGaps: seen.topoSeqGaps ?? 0,
       settleRejects: seen.settleRejects ?? 0,
       orphans: seen.orphanedChunks ?? 0,
+      bootstraps: seen.bootstraps ?? 0,
+      datagrams: seen.datagramsReceived ?? 0,
+      wire: seen.wireVersion ?? 0,
+      hashChecks: seen.hashChecks ?? 0,
+      hashMismatches: seen.hashMismatches ?? 0,
+      repairs: seen.structureRepairs ?? 0,
     });
   } finally {
     if (browser) await browser.close();
@@ -112,16 +178,22 @@ for (const link of LINKS) {
 }
 
 const pad = (v, n) => String(v).padStart(n);
-console.log(`\n${'link'.padEnd(34)} ${'drop%'.padStart(6)} ${'cli/srv bonds'.padStart(14)}`
+console.log(`\n${'link'.padEnd(34)} ${'drop%'.padStart(6)} ${'boot'.padStart(7)} ${'cli/srv bonds'.padStart(14)}`
   + ` ${'>1m'.padStart(6)} ${'>4m'.padStart(6)} ${'>16m'.padStart(6)} ${'max m'.padStart(7)}`
   + ` ${'gaps'.padStart(5)} ${'rejects'.padStart(8)}`);
 for (const r of rows) {
   const sent = r.relayed + r.dropped;
   const dropPct = sent > 0 ? ((r.dropped / sent) * 100).toFixed(1) : '0.0';
   const agree = r.srvBonds ? `${((r.cliBonds / r.srvBonds) * 100).toFixed(0)}%` : '?';
-  console.log(`${r.link.padEnd(34)} ${pad(dropPct, 6)} ${pad(`${r.cliBonds}/${r.srvBonds ?? '?'} ${agree}`, 14)}`
+  const boot = r.bootMs === null ? 'never' : `${(r.bootMs / 1000).toFixed(1)}s`;
+  console.log(`${r.link.padEnd(34)} ${pad(dropPct, 6)} ${pad(boot, 7)} ${pad(`${r.cliBonds}/${r.srvBonds ?? '?'} ${agree}`, 14)}`
     + ` ${pad(r.jumps1, 6)} ${pad(r.jumps4, 6)} ${pad(r.jumps16, 6)} ${pad(r.jumpMax.toFixed(1), 7)}`
-    + ` ${pad(r.topoGaps, 5)} ${pad(r.settleRejects, 8)}`);
+    + ` ${pad(r.topoGaps, 5)} ${pad(r.settleRejects, 8)}`
+    + ` | boot ${r.bootstraps} dgrams ${r.datagrams} wire ${r.wire}`
+    + ` hash ${r.hashMismatches}/${r.hashChecks} repairs ${r.repairs}`
+    + ` | ${r.kbDown} KiB down, ${r.kbUp} KiB up, ${r.reordered} reordered`
+    + ` | fired ${r.shotsFired} (${r.lastShot ?? 'none'})`
+    + ` | buffer ${r.delayTicks.toFixed(1)} vs late ${r.lateTicks.toFixed(1)} ticks`);
 }
 console.log('\n>1m/>4m/>16m are streamed pose writes that moved a body further than the'
   + '\nstream can account for: what a player sees as debris teleporting.');
