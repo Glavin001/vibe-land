@@ -27,17 +27,19 @@ export async function openCity(options = {}) {
   const viewport = options.viewport ?? { width: 1280, height: 800 };
 
   process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
-  // Headless Chromium falls back to software rendering and the city then runs
-  // at a few frames a second, which is useless for a recording. Ask for the
-  // real GPU; the flags are ignored where there is none.
+  // --use-angle=vulkan is what puts WebGL on the real card. Without it every
+  // other spelling here -- the default, --use-gl=egl, --use-gl=angle,
+  // --use-angle=gl-egl -- silently lands on SwiftShader or llvmpipe, and the
+  // city renders in software at about one frame a second. That is not merely
+  // slow: the drive's trigger is a deadline read once per rendered frame, so
+  // at that rate shots are set and expire without a frame ever seeing them,
+  // and a whole QA run reports firing while nothing leaves the muzzle.
+  //
+  // Verified on this host: ANGLE (NVIDIA, Vulkan 1.4.329 (NVIDIA GeForce RTX
+  // 4090), NVIDIA). Headless, no Xvfb, no sandbox flags needed. Where there is
+  // no Vulkan device the flag is ignored and Chromium falls back on its own.
   const browser = await chromium.launch({
-    args: [
-      '--ignore-certificate-errors',
-      '--enable-gpu',
-      '--use-gl=egl',
-      '--ignore-gpu-blocklist',
-      '--enable-unsafe-webgpu',
-    ],
+    args: ['--ignore-certificate-errors', '--use-angle=vulkan'],
   });
   const context = await browser.newContext({
     ignoreHTTPSErrors: true,
@@ -80,10 +82,20 @@ export async function openCity(options = {}) {
     throw new Error(
       `transport=${opening.transport}; the city stream is datagram-only, so the world will be empty`);
   }
+  // Say which renderer got picked, every time. A run that quietly dropped to
+  // software still produces plausible output, and the numbers in it are wrong.
+  const renderer = await page.evaluate(() => {
+    const canvas = document.createElement('canvas');
+    const gl = canvas.getContext('webgl2') || canvas.getContext('webgl');
+    const info = gl && gl.getExtension('WEBGL_debug_renderer_info');
+    return info ? String(gl.getParameter(info.UNMASKED_RENDERER_WEBGL)) : 'unknown';
+  });
+  const software = /SwiftShader|llvmpipe|softpipe/i.test(renderer);
   if (!options.quiet) {
     console.log(`connected  transport=${opening.transport}  player=${opening.playerId}`);
+    console.log(`renderer   ${software ? 'SOFTWARE -- timings and frame-rate claims are meaningless' : renderer.slice(0, 80)}`);
   }
-  return { browser, context, page, opening };
+  return { browser, context, page, opening, renderer, software };
 }
 
 /** The city panel of the read-only snapshot. */

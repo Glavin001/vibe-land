@@ -35,22 +35,14 @@ const { browser, context, page } = await openCity({
   viewport: { width: Number(arg('width', 960)), height: Number(arg('height', 600)) },
 });
 
-// Headless Chromium here has no GPU for WebGL -- every launch flag still lands
-// on SwiftShader -- so the city renders in software. At PRETTY with 24k chunks
-// that is one frame every two seconds, which is not a recording and is slow
-// enough that the client falls behind its own destruction stream. Strip the
-// renderer down to what software can carry.
-await page.evaluate(() => window.__VIBE_E2E__.setRenderQuality({
-  tier: 'fast', shadows: false, ao: false,
-}));
-await page.waitForTimeout(1500);
-const renderer = await page.evaluate(() => {
-  const c = document.createElement('canvas');
-  const gl = c.getContext('webgl2') || c.getContext('webgl');
-  const d = gl && gl.getExtension('WEBGL_debug_renderer_info');
-  return d ? String(gl.getParameter(d.UNMASKED_RENDERER_WEBGL)) : 'unknown';
-});
-console.log(`renderer: ${renderer.includes('SwiftShader') ? 'SwiftShader (software)' : renderer}`);
+// Quality is left alone on the GPU path: the point of a recording is to show
+// what a player sees. --quality fast is there for the software fallback.
+if (arg('quality', null) === 'fast') {
+  await page.evaluate(() => window.__VIBE_E2E__.setRenderQuality({
+    tier: 'fast', shadows: false, ao: false,
+  }));
+  await page.waitForTimeout(1200);
+}
 
 const say = async (what) => {
   const p = await player(page);
@@ -120,13 +112,12 @@ for (const pitch of [0.02, 0.09, 0.16, 0.05]) {
   await say(`fired ${SHOTS} at pitch ${pitch}`);
 }
 
-// A short walk. It will barely move: the input frames the drive produces are
-// generated per rendered frame, so at one frame a second a player walks about
-// a third of a metre in three seconds. Recorded anyway, because it is the
-// honest limit of browser QA on a box with no GPU for WebGL.
+// A short walk. How far it gets depends entirely on the frame rate: the drive
+// produces one input frame per rendered frame, so on the GPU this covers about
+// thirteen metres and in software it covered a third of one.
 await move(1, 0, 3000);
 await page.waitForTimeout(3400);
-await say('walked (software-rendering limited)');
+await say('walked');
 
 await aimAt(0.07);
 await page.waitForTimeout(1000);
