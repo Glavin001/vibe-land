@@ -10,6 +10,7 @@
  *   node client/e2e/qa-video.mjs --rifle --shots 6
  *
  *   --page <url>      page origin.            default https://127.0.0.1:1111
+ *   --public          dial the advertised public address, no loopback rewrite
  *   --wt-port <n>     local WebTransport port. default 4433
  *   --out <dir>       where the webm lands.   default ./qa-video
  *   --rifle           fire the rifle instead of the cannonball
@@ -32,6 +33,7 @@ const { browser, context, page } = await openCity({
   page: arg('page', 'https://127.0.0.1:1111'),
   wtPort: arg('wt-port', '4433'),
   recordVideo: OUT,
+  public: flag('public'),
   viewport: { width: Number(arg('width', 960)), height: Number(arg('height', 600)) },
 });
 

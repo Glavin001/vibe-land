@@ -20,6 +20,7 @@ import { chromium } from 'playwright';
  * @param {{width:number,height:number}} [options.viewport]
  * @param {boolean} [options.quiet]   suppress the connection line
  * @param {string} [options.recordVideo]  directory for a webm recording of the run
+ * @param {boolean} [options.public]  dial the advertised public address instead of loopback
  */
 export async function openCity(options = {}) {
   const origin = options.page ?? 'https://127.0.0.1:1111';
@@ -52,7 +53,12 @@ export async function openCity(options = {}) {
   // Rewrite only host:port of the advertised WebTransport URL, keeping its
   // path. Replacing the whole URL would repair a malformed one, and the run
   // would then pass against a server no real client can reach.
-  await page.route('**/session-config*', async (route) => {
+  //
+  // Skipped entirely in public mode. The rewrite is what makes a loopback run
+  // possible, and it is also what makes a loopback run unrepresentative: it
+  // bypasses the host's port mapping and the public address a player actually
+  // dials, so a break anywhere in that path is invisible here.
+  if (!options.public) await page.route('**/session-config*', async (route) => {
     const response = await route.fetch();
     const body = JSON.parse(await response.text());
     const url = new URL(body.url);

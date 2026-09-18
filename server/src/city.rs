@@ -110,10 +110,16 @@ fn city_round_momentum_ns() -> f32 {
 /// Shape of the ball fired by the cannonball weapon: radius m, mass kg, speed
 /// m/s, lifetime in ticks.
 ///
-/// 0.6 m across and 7.1 tonnes is a solid steel sphere of that radius, which is
-/// why those two numbers go together: the ball is a real object, not a damage
-/// figure dressed up as one. Speed and radius come from the engine's own
-/// interactive demo scene.
+/// 0.3 m radius and 10.65 tonnes, set by hand rather than derived: that is
+/// about forty times the density of steel, so this ball is deliberately not a
+/// physical object. Smaller and heavier makes it punch rather than shove.
+///
+/// The radius carries a risk worth knowing. The stage forbids CCD, so geometry
+/// is the only thing stopping a projectile passing through a wall between
+/// ticks, and at 60 m/s a ball travels exactly one metre per 60 Hz tick
+/// against a diameter of 0.6 m. Anything thinner than a metre can be tunnelled.
+/// Raise VIBE_CITY_BALL_RADIUS_M or lower VIBE_CITY_BALL_SPEED_MS if shots
+/// start passing through.
 ///
 /// Mass is the dial that matters, and it was chosen by measurement. One shot at
 /// the same facade from the same 26 m stand-off:
@@ -121,11 +127,16 @@ fn city_round_momentum_ns() -> f32 {
 /// ```text
 ///    1,500 kg ->    7 bonds   (a scuff; the demo's interactive default)
 ///    5,000 kg ->   56 bonds
-///    7,100 kg ->  249 bonds   <- solid steel, stops at the wall
+///    7,100 kg ->  249 bonds   (solid steel at 0.6 m, the previous default)
 ///   10,000 kg ->  323 bonds
 ///   20,000 kg ->  492 bonds   (the demo's bombardment ball: punches clean
 ///                              through and flies on for 123 m)
 /// ```
+///
+/// Those were all measured at 0.6 m radius. The current 0.3 m ball concentrates
+/// the same impulse on fewer bonds, and a narrower ball broke *more* at equal
+/// mass in the one direction already tested (1,500 kg: 0.6 m broke 7, 1.2 m
+/// broke 1), so expect a deeper, narrower hole rather than a wider one.
 ///
 /// A wider ball is worse, not better, at the same mass: 1.2 m spreads the same
 /// impulse over more bonds and breaks fewer of them (1,500 kg: 7 -> 1).
@@ -133,11 +144,11 @@ fn city_round_momentum_ns() -> f32 {
 /// Override with VIBE_CITY_BALL_RADIUS_M, VIBE_CITY_BALL_MASS_KG,
 /// VIBE_CITY_BALL_SPEED_MS and VIBE_CITY_BALL_TTL_TICKS.
 pub fn city_ball_radius_m() -> f32 {
-    env_positive_f32("VIBE_CITY_BALL_RADIUS_M", 0.6)
+    env_positive_f32("VIBE_CITY_BALL_RADIUS_M", 0.3)
 }
 
 pub fn city_ball_mass_kg() -> f32 {
-    env_positive_f32("VIBE_CITY_BALL_MASS_KG", 7100.0)
+    env_positive_f32("VIBE_CITY_BALL_MASS_KG", 10650.0)
 }
 
 pub fn city_ball_speed_ms() -> f32 {
