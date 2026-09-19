@@ -868,6 +868,15 @@ impl CityTickWindow {
 }
 
 pub struct CityRuntime {
+    /// Queued demolition targets, released a few per tick by
+    /// `drain_demolition` so a building fails progressively rather than being
+    /// cut cleanly in two.
+    pending_demolition: Vec<[f32; 3]>,
+    demolition_centre: [f32; 2],
+    demolition_heading_deg: f32,
+    demolition_wedge_deg: f32,
+    demolition_jitter: f32,
+    demolition_seed: u64,
     /// Per-tick samples between telemetry publishes; drained at each publish.
     pub tick_window: CityTickWindow,
     /// Present when this match speaks wire v3; owns the live pose stream.
@@ -936,6 +945,12 @@ impl CityRuntime {
             .collect();
         Self {
             live: None,
+            pending_demolition: Vec::new(),
+            demolition_centre: [0.0, 0.0],
+            demolition_heading_deg: 0.0,
+            demolition_wedge_deg: 0.0,
+            demolition_jitter: 0.0,
+            demolition_seed: 0x5eed_1234_abcd_ef01,
             tick_window: CityTickWindow::default(),
             sim_hz,
             backend,
@@ -2150,6 +2165,50 @@ impl CityRuntime {
     /// point and a radius this hits the same chunks every time.
     ///
     /// Returns how many rounds it fired.
+    /// The tallest place in the city, as world XZ.
+    ///
+    /// "Knock over a tall building" needs one, and the scene is authored as a
+    /// single structure, so a building is not a thing the manifest names -- it
+    /// is a column of chunks that happens to be tall. This bins chunks into
+    /// 8 m cells and returns the centre of whichever has the greatest height
+    /// extent.
+    pub fn tallest_footprint(&self) -> Option<([f32; 2], f32)> {
+        let (_, manifest, _) = manifest_asset()?;
+        let mut cells: HashMap<(i32, i32), (f32, f32)> = HashMap::new();
+        for structure in &manifest.structures {
+            for chunk in &structure.chunks {
+                let x = structure.world_position[0] + chunk.centroid[0];
+                let y = structure.world_position[1] + chunk.centroid[1];
+                let z = structure.world_position[2] + chunk.centroid[2];
+                let cell = ((x / 8.0).floor() as i32, (z / 8.0).floor() as i32);
+                let entry = cells.entry(cell).or_insert((f32::MAX, f32::MIN));
+                entry.0 = entry.0.min(y);
+                entry.1 = entry.1.max(y);
+            }
+        }
+        let (cell, extent) = cells
+            .iter()
+            .map(|(cell, (lo, hi))| (*cell, hi - lo))
+            .max_by(|a, b| a.1.total_cmp(&b.1))?;
+        Some((
+            [(cell.0 as f32 + 0.5) * 8.0, (cell.1 as f32 + 0.5) * 8.0],
+            extent,
+        ))
+    }
+
+    /// Queue rounds at the support chunks under a point, optionally as a wedge.
+    ///
+    /// `wedge_deg` cuts only the chunks within that half-angle of `heading_deg`
+    /// as seen from the centre, and ramps the height limit across the wedge, so
+    /// the footing is taken out asymmetrically and the building goes over
+    /// sideways instead of dropping straight down. `jitter` drops that fraction
+    /// of the targets at random, because a clean cut breaks a building into two
+    /// rigid pieces and a real collapse is hundreds of fractures -- which is
+    /// the regime the artefacts being chased live in.
+    ///
+    /// Targets are QUEUED, not fired: `drain_demolition` releases a few per
+    /// tick so the structure fails progressively.
+    #[allow(clippy::too_many_arguments)]
     pub fn demolish_supports(
         &mut self,
         centre: [f32; 2],
@@ -2172,7 +2231,16 @@ impl CityRuntime {
             // outside one and driven through it. Sorted by height so the lowest
             // supports go first: taking a column out from the bottom is what
             // drops a building, and taking it out from the middle is not.
+            let _ = world;
             let mut targets: Vec<[f32; 3]> = Vec::new();
+            // A cheap deterministic shuffle/jitter: the same request always
+            // produces the same collapse, which is the point of driving it
+            // from here rather than by shooting.
+            let mut seed = self.demolition_seed;
+            let mut next = || {
+                seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                ((seed >> 33) as u32 as f32) / (u32::MAX as f32)
+            };
             for structure in &manifest.structures {
                 for chunk in &structure.chunks {
                     let world_xyz = [
@@ -2180,24 +2248,79 @@ impl CityRuntime {
                         structure.world_position[1] + chunk.centroid[1],
                         structure.world_position[2] + chunk.centroid[2],
                     ];
-                    if world_xyz[1] > below_y {
-                        continue;
-                    }
                     let dx = world_xyz[0] - centre[0];
                     let dz = world_xyz[2] - centre[1];
-                    if dx * dx + dz * dz > radius_m * radius_m {
+                    let distance_sq = dx * dx + dz * dz;
+                    if distance_sq > radius_m * radius_m {
+                        continue;
+                    }
+                    // The wedge: only chunks within `wedge_deg` of the heading,
+                    // and the height limit ramps from full at the near edge to
+                    // nothing at the far one, so the cut is a slope rather than
+                    // a plane and the building topples along it.
+                    let mut limit = below_y;
+                    if self.demolition_wedge_deg > 0.0 {
+                        let bearing = dz.atan2(dx).to_degrees();
+                        let mut off = (bearing - self.demolition_heading_deg).rem_euclid(360.0);
+                        if off > 180.0 {
+                            off -= 360.0;
+                        }
+                        if off.abs() > self.demolition_wedge_deg {
+                            continue;
+                        }
+                        let across = 1.0 - (off.abs() / self.demolition_wedge_deg);
+                        limit = below_y * (0.25 + 0.75 * across);
+                    }
+                    if world_xyz[1] > limit {
+                        continue;
+                    }
+                    if self.demolition_jitter > 0.0 && next() < self.demolition_jitter {
                         continue;
                     }
                     targets.push(world_xyz);
                 }
             }
+            self.demolition_seed = seed;
             targets.sort_by(|a, b| a[1].total_cmp(&b[1]));
             targets.truncate(max_rounds);
+            let queued = targets.len();
+            self.demolition_centre = centre;
+            self.pending_demolition.extend(targets);
+            return queued;
+        }
+        #[cfg(not(feature = "native-destruction"))]
+        {
+            let _ = (centre, radius_m, below_y, max_rounds);
+            0
+        }
+    }
 
+    /// Release a few queued demolition rounds. Called once per tick.
+    ///
+    /// Progressive on purpose. Firing every round in one tick cuts a building
+    /// cleanly in half and it falls as two rigid pieces; a real collapse is
+    /// hundreds of fractures propagating, which is the regime the visual
+    /// artefacts live in, and a clean cut does not reproduce them.
+    pub fn drain_demolition(
+        &mut self,
+        per_tick: usize,
+        #[cfg(feature = "destruction")] world: Option<&mut World>,
+        #[cfg(not(feature = "destruction"))] _world: Option<()>,
+    ) -> usize {
+        #[cfg(feature = "native-destruction")]
+        {
+            if self.pending_demolition.is_empty() {
+                return 0;
+            }
+            let CityBackend::Native(backend) = &mut self.backend else {
+                self.pending_demolition.clear();
+                return 0;
+            };
+            let Some(world) = world else { return 0 };
+            let centre = self.demolition_centre;
+            let take = per_tick.min(self.pending_demolition.len());
             let mut fired = 0usize;
-            for at in targets {
-                // Inward, so the round drives through the column rather than
-                // skimming it. Straight down the radius from the centre.
+            for at in self.pending_demolition.drain(..take).collect::<Vec<_>>() {
                 let (dx, dz) = (at[0] - centre[0], at[2] - centre[1]);
                 let len = (dx * dx + dz * dz).sqrt().max(0.001);
                 let direction = [-dx / len, 0.0, -dz / len];
@@ -2213,9 +2336,16 @@ impl CityRuntime {
         }
         #[cfg(not(feature = "native-destruction"))]
         {
-            let _ = (centre, radius_m, below_y, max_rounds);
+            let _ = per_tick;
             0
         }
+    }
+
+    /// Wedge shape and randomness for the next `demolish_supports`.
+    pub fn set_demolition_shape(&mut self, heading_deg: f32, wedge_deg: f32, jitter: f32) {
+        self.demolition_heading_deg = heading_deg;
+        self.demolition_wedge_deg = wedge_deg;
+        self.demolition_jitter = jitter.clamp(0.0, 0.95);
     }
 
     pub fn needs_rebuild(&self) -> bool {

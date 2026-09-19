@@ -86,6 +86,8 @@ export interface CityClientStats {
   /// them long enough for their track to give up.
   /// Tracks started from the ledger pose rather than from nothing, which is
   /// what a waking body needs and what neither of the other two seeds covered.
+  /// Re-anchors that would have moved the render clock backwards.
+  renderClockReanchorsRefused: number;
   wakeSeeds: number;
   starvedReadmissions: number;
   settlesRestored: number;
@@ -347,6 +349,8 @@ export class CityClient {
   /** Continuous render clock (tick units); follows the extrapolated anchor
    *  with a ~0.5 s pull so per-packet anchor jitter never steps it. */
   private renderClockTick = -1;
+  /** Backwards re-anchors refused; see `renderTickNow`. */
+  private renderClockReanchorsRefused = 0;
   private renderClockMs = 0;
   /** Wire v3: the wasm debris decoder; null means this match speaks v2. */
   private readonly debris: DebrisDecoder | null;
@@ -599,7 +603,25 @@ export class CityClient {
     const raw =
       this.latestSimTick + ((nowMs - this.latestSimTickAtMs) / 1000) * this.tickRateEma;
     if (this.renderClockTick < 0 || Math.abs(raw - this.renderClockTick) > 120) {
-      this.renderClockTick = raw;
+      // The re-anchor. Two seconds of discontinuity means a join, a reset or a
+      // resync, and the clock has to jump to wherever the stream now is.
+      //
+      // Forwards only, unless there is no clock yet. This branch was the hole
+      // in the monotonic guard below: under a real collapse the server sheds
+      // sim rate hard enough that the anchor lands more than 120 ticks behind
+      // the extrapolating clock, the snap takes it backwards, and every
+      // PresentationTrack sampling it abandons its correction and jumps to the
+      // raw path. Toppling a ten-storey tower produced 5,561 of them with the
+      // smooth branch already guarded.
+      //
+      // Refusing to go back leaves the clock ahead of a stream that has slowed,
+      // which the smooth branch then walks off by slowing, over a second or so
+      // of imperceptible drift.
+      if (this.renderClockTick < 0 || raw > this.renderClockTick || !MONOTONIC_RENDER_CLOCK) {
+        this.renderClockTick = raw;
+      } else {
+        this.renderClockReanchorsRefused += 1;
+      }
     } else {
       const dt = Math.max(0, (nowMs - this.renderClockMs) / 1000);
       const error = raw - this.renderClockTick;
@@ -1886,6 +1908,7 @@ export class CityClient {
       implausibleJumps: this.presentationAnomalies.implausible_jump,
       presentationAnomalyMaxM: this.presentationAnomalyMaxM,
       recordsOutsideWorld: this.recordsOutsideWorld,
+      renderClockReanchorsRefused: this.renderClockReanchorsRefused,
       wakeSeeds: this.wakeSeeds,
       starvedReadmissions: this.starvedReadmissions,
       settlesRestored: this.settlesRestored,

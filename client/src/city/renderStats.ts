@@ -73,6 +73,28 @@ export const renderStats = {
   /// out, which is this pair of numbers both climbing together.
   chunksUnhidden: 0,
 
+  /// Render cells the frustum test rejects this frame, and how many chunks
+  /// written this frame were inside them. A cell culled while holding moving
+  /// geometry is the case where a whole block can vanish on screen while the
+  /// player is looking straight at it -- three does this test inside the
+  /// renderer and reports nothing, so it is replicated to be counted.
+  cellsCulled: 0,
+  culledLiveChunks: 0,
+  worstCulledLiveChunks: 0,
+  worstCulledAabbM: 0,
+
+  /// Chunks that left the static shell for their own instance. The single
+  /// moment a chunk changes which object draws it, and so the one place a
+  /// chunk could be drawn twice or not at all.
+  shellWakes: 0,
+
+  /// Live bodies whose chunks were NOT rewritten this frame, because the
+  /// distance stride deferred them, and the chunks that involved. By design
+  /// and invisible at a few frames; counted because the design assumes a body
+  /// is written often and a starved one is not.
+  staleLiveBodies: 0,
+  staleLiveChunks: 0,
+
   /// Currently hidden, recomputed on the telemetry sweep rather than tracked
   /// per write, because the interesting question is how much of the city is
   /// invisible right now and not how it got there.

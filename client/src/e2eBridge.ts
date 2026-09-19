@@ -221,6 +221,13 @@ export interface CityE2EStats {
   chunksHidden: number;
   chunksUnhidden: number;
   visibilityFlips: Record<string, number>;
+  /**
+   * Every remaining way a chunk that should be drawn is not: culled with its
+   * cell, still in the shell or mid-transition out of it, deferred by the
+   * distance stride, or never seated at all -- plus how often the drawn city
+   * collapsed between one frame and the next.
+   */
+  visualAudit: Record<string, number>;
   /** The whole teleport population split by cause. */
   drawnTeleportBy: Record<string, number>;
   drawnTeleports: number;
@@ -243,6 +250,7 @@ export interface CityE2EStats {
   presentationAnomalyMaxM: number;
   /** Streamed poses refused for being outside the world. Must be 0. */
   recordsOutsideWorld: number;
+  renderClockReanchorsRefused: number;
   wakeSeeds: number;
   starvedReadmissions: number;
   settlesRestored: number;

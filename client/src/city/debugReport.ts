@@ -107,6 +107,31 @@ interface VisibilityFlip {
   body: number;
   hidden: boolean;
   y: number;
+  /** How many chunks that body has, and how big it is across, in metres. */
+  bodyChunks?: number;
+  aabbM?: number;
+}
+
+/**
+ * One frame's drawn-chunk census, kept only when it is anomalous.
+ *
+ * Every mechanism chased so far -- hiding, culling, shell transitions, stale
+ * bounds -- was reached by guessing at a cause and then measuring it. This
+ * measures the SYMPTOM instead: how much of the city was actually drawable on
+ * a frame, and whether that number collapsed and came back. A player watching
+ * a building phase in and out is watching this number drop for a frame or two,
+ * whatever the reason, and one entry here names the body, the chunk count and
+ * the size of the box that vanished.
+ */
+interface DrawCensus {
+  t: number;
+  /** Chunks drawable this frame, and on the frame before it. */
+  drawn: number;
+  previous: number;
+  /** The body that lost the most chunks, with how big it is in metres. */
+  body: number;
+  bodyChunks: number;
+  aabbM: number;
 }
 
 const baselines: BaselineArrival[] = [];
@@ -114,6 +139,11 @@ const clientEvents: ClientEvent[] = [];
 const teleports: TeleportEvent[] = [];
 const adoptionJumps: AdoptionJump[] = [];
 const visibility: VisibilityFlip[] = [];
+const census: DrawCensus[] = [];
+let lastDrawn = -1;
+let worstDropChunks = 0;
+let worstDropAabbM = 0;
+let dropFrames = 0;
 let visibilityHidden = 0;
 let visibilityShown = 0;
 /** Chunks hidden together on one body in one flip run, worst seen. */
@@ -218,6 +248,47 @@ export function noteVisibility(flip: Omit<VisibilityFlip, 't'>): void {
   }
 }
 
+/**
+ * One frame's drawn-chunk count, recorded only when it falls sharply.
+ *
+ * `body`, `bodyChunks` and `aabbM` describe the largest contributor, because
+ * the size of what disappears is the difference between a speck and half a
+ * building -- and a single flip of an eight-hundred-chunk island is a bigger
+ * event than a thousand flips of single fragments.
+ */
+export function noteDrawCensus(
+  drawn: number,
+  worst: { body: number; chunks: number; aabbM: number },
+): void {
+  const previous = lastDrawn;
+  lastDrawn = drawn;
+  if (previous < 0) {
+    return;
+  }
+  // A drop of more than 2% of the drawn city in one frame. Ordinary settling
+  // retires chunks a handful at a time; this is for the cliff.
+  if (drawn >= previous - Math.max(16, previous * 0.02)) {
+    return;
+  }
+  dropFrames += 1;
+  const lost = previous - drawn;
+  if (lost > worstDropChunks) worstDropChunks = lost;
+  if (worst.aabbM > worstDropAabbM) worstDropAabbM = worst.aabbM;
+  push(census, {
+    t: performance.now(),
+    drawn,
+    previous,
+    body: worst.body,
+    bodyChunks: worst.chunks,
+    aabbM: worst.aabbM,
+  });
+}
+
+/** Drawn-census totals: how often the drawn city collapsed, and by how much. */
+export function drawCensusTotals(): Record<string, number> {
+  return { dropFrames, worstDropChunks, worstDropAabbM, lastDrawn };
+}
+
 /** Visibility totals for the stats panel and the QA harness. */
 export function visibilityTotals(): {
   hidden: number; shown: number; worstBodyHidden: number; bodiesPartlyHidden: number;
@@ -302,10 +373,15 @@ export async function sendDebugReport(matchId: string): Promise<string> {
       teleports: [...teleports],
       adoptionJumps: [...adoptionJumps],
       visibility: [...visibility],
+      drawCensus: [...census],
       fractures: [...fractures],
     },
     /** The rings, already asked the question they exist to answer. */
-    flicker: { ...fractureCorrelation(), visibility: visibilityTotals() },
+    flicker: {
+      ...fractureCorrelation(),
+      visibility: visibilityTotals(),
+      drawCensus: drawCensusTotals(),
+    },
   };
   const response = await fetch(`/match-stats/${encodeURIComponent(matchId)}/report`, {
     method: 'POST',

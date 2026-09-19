@@ -67,6 +67,8 @@ import {
   drawnTeleportBreakdown,
   drawnTeleportTotals,
   noteAdoptionJump,
+  drawCensusTotals,
+  noteDrawCensus,
   noteTeleport,
   visibilityTotals,
 } from '../city/debugReport';
@@ -81,6 +83,10 @@ import { cityDiagnosticsWanted } from '../city/cityDiagnostics';
 import { CHUNK_SUNK_Y_M, compareDrawnChunkPositions, deepestChunkProvenance } from '../city/chunkDiagnostics';
 
 const TMP_MATRIX = new THREE.Matrix4();
+/** Scratch for the visual audit's replicated frustum test. */
+const TMP_FRUSTUM = new THREE.Frustum();
+const TMP_PROJ = new THREE.Matrix4();
+const TMP_SPHERE = new THREE.Sphere();
 const TMP_POSITION = new THREE.Vector3();
 const TMP_QUATERNION = new THREE.Quaternion();
 const TMP_SCALE = new THREE.Vector3();
@@ -772,6 +778,21 @@ export function CityChunksLayer({
         chunksHidden: renderStats.chunksHidden,
         chunksUnhidden: renderStats.chunksUnhidden,
         visibilityFlips: visibilityTotals(),
+        // The visual audit: every remaining way a chunk that should be drawn
+        // is not. See the block at the end of the frame callback.
+        visualAudit: {
+          cellsCulled: renderStats.cellsCulled,
+          culledLiveChunks: renderStats.culledLiveChunks,
+          worstCulledLiveChunks: renderStats.worstCulledLiveChunks,
+          worstCulledAabbM: renderStats.worstCulledAabbM,
+          shellWakes: renderStats.shellWakes,
+          staleLiveBodies: renderStats.staleLiveBodies,
+          staleLiveChunks: renderStats.staleLiveChunks,
+          chunksUnresolved: renderStats.chunksUnresolved,
+          subDraws: renderStats.subDraws,
+          instanceWrites: renderStats.instanceWrites,
+          ...drawCensusTotals(),
+        },
         drawnTeleportBy: drawnTeleportBreakdown(),
         drawnTeleports: drawnTeleportTotals().count,
         drawnTeleportWorstM: drawnTeleportTotals().worstM,
@@ -791,6 +812,7 @@ export function CityChunksLayer({
         implausibleJumps: stats.implausibleJumps,
         presentationAnomalyMaxM: stats.presentationAnomalyMaxM,
         recordsOutsideWorld: stats.recordsOutsideWorld,
+        renderClockReanchorsRefused: stats.renderClockReanchorsRefused,
         wakeSeeds: stats.wakeSeeds,
         starvedReadmissions: stats.starvedReadmissions,
         settlesRestored: stats.settlesRestored,
@@ -873,6 +895,10 @@ export function CityChunksLayer({
     const camera = frameState.camera.position;
     const frame = frameCounterRef.current;
     const touchedMeshes = new Set<number>();
+    // Chunks written this frame per mesh, so a culled cell can say how much
+    // live geometry it was holding when it went off screen.
+    const liveChunksPerMesh: number[] = [];
+    let drawnThisFrame = 0;
     const updateStartedAt = performance.now();
     for (const key of dirty) {
       const body = client.topology.body(key);
@@ -925,6 +951,7 @@ export function CityChunksLayer({
       const debugCode = bodyDebug.enabled ? bodyDebugStateCode(key, false) : -1;
       // Always built now: the teleport probe is unconditional, and without this
       // context every teleport it records in an ordinary session is unattributable.
+      let wroteThisBody = false;
       const probeCtx: ChunkWriteContext = {
         bodyKey: key,
         settling,
@@ -964,7 +991,15 @@ export function CityChunksLayer({
           // one event per chunk into the totals -- 24,105 of them in a live
           // report, which is the chunk count, and roughly half of everything
           // the counter had to say.
-          if (wakeSlotFromShell(state, slot)) probeCtx.freshFromShell = true;
+          if (wakeSlotFromShell(state, slot)) {
+            probeCtx.freshFromShell = true;
+            // The one moment a chunk changes which object draws it: its
+            // geometry is retired from the cell's static shell and its own
+            // instance is made visible. If those ever disagree the chunk is
+            // drawn twice or not at all, which is what "a double write or
+            // switching between something" would look like.
+            renderStats.shellWakes += 1;
+          }
         }
         renderStats.instanceWrites += 1;
         writeInstance(
@@ -996,10 +1031,25 @@ export function CityChunksLayer({
             mesh.setColorAt(instanceId, TMP_COLOR);
           }
         }
-        touchedMeshes.add(state.meshOfSlot[slot]);
+        wroteThisBody = true;
+        const meshIndex = state.meshOfSlot[slot];
+        touchedMeshes.add(meshIndex);
+        liveChunksPerMesh[meshIndex] = (liveChunksPerMesh[meshIndex] ?? 0) + 1;
+        if (state.hiddenBySlot[slot] !== 1) {
+          drawnThisFrame += 1;
+        }
       }
       if (!live.has(key)) {
         dirty.delete(key);
+      }
+      // Deferred by the distance stride: a live body whose chunks were not
+      // rewritten this frame is drawn at the pose of whichever earlier frame
+      // last touched it. That is by design and invisible at a few frames; it
+      // is worth counting because the design assumes a body is written often,
+      // and a starved or strided body can go far longer.
+      if (live.has(key) && !wroteThisBody) {
+        renderStats.staleLiveBodies += 1;
+        renderStats.staleLiveChunks += body.chunkSlots.length;
       }
     }
     // A batch is culled against its bounding sphere, and debris falls outside
@@ -1030,6 +1080,59 @@ export function CityChunksLayer({
         if (!renderable.mesh.frustumCulled) continue;
       }
       renderable.mesh.computeBoundingSphere();
+    }
+    // ---- Visual audit -------------------------------------------------
+    //
+    // Everything above decides what ends up on screen, and until now each
+    // part of it was instrumented only after it became a suspect. These are
+    // the remaining paths by which a chunk that should be drawn is not, or is
+    // drawn somewhere it should not be, measured every frame so a report from
+    // a live session can answer the question rather than narrow it:
+    //
+    //   1. hidden below the world            -- chunksHidden / chunksUnhidden
+    //   2. culled with the cell it lives in  -- cellsCulled, below
+    //   3. still in the shell, or between it and its own instance -- shellWakes
+    //   4. deferred by the distance stride   -- staleLiveChunks
+    //   5. no instance seated at all         -- chunksUnresolved
+    //   6. drawn, but somewhere wrong        -- the teleport probe
+    //
+    // The frustum test is replicated rather than read back, because three does
+    // it inside the renderer and reports nothing. It is one sphere test per
+    // cell, and there are a few dozen cells.
+    {
+      let culled = 0;
+      let culledLiveChunks = 0;
+      let worstCulled = { body: 0, chunks: 0, aabbM: 0 };
+      const cam = frameState.camera;
+      cam.updateMatrixWorld();
+      TMP_PROJ.multiplyMatrices(cam.projectionMatrix, cam.matrixWorldInverse);
+      TMP_FRUSTUM.setFromProjectionMatrix(TMP_PROJ);
+      for (let index = 0; index < state.renderables.length; index += 1) {
+        const renderable = state.renderables[index];
+        if (!renderable || !renderable.mesh.frustumCulled) continue;
+        const sphere = renderable.mesh.boundingSphere;
+        if (!sphere) continue;
+        TMP_SPHERE.copy(sphere).applyMatrix4(renderable.mesh.matrixWorld);
+        if (TMP_FRUSTUM.intersectsSphere(TMP_SPHERE)) continue;
+        culled += 1;
+        // A cell culled while it holds moving chunks is the case worth
+        // knowing about: the sphere says it is off screen and the chunks in
+        // it may not be.
+        const liveHere = liveChunksPerMesh[index] ?? 0;
+        if (liveHere > 0) {
+          culledLiveChunks += liveHere;
+          if (liveHere > worstCulled.chunks) {
+            worstCulled = { body: 0, chunks: liveHere, aabbM: sphere.radius * 2 };
+          }
+        }
+      }
+      renderStats.cellsCulled = culled;
+      renderStats.culledLiveChunks = culledLiveChunks;
+      if (culledLiveChunks > renderStats.worstCulledLiveChunks) {
+        renderStats.worstCulledLiveChunks = culledLiveChunks;
+        renderStats.worstCulledAabbM = worstCulled.aabbM;
+      }
+      noteDrawCensus(drawnThisFrame, worstCulled);
     }
     const sphereEndedAt = performance.now();
     renderStats.sphereMs = sphereEndedAt - writeEndedAt;

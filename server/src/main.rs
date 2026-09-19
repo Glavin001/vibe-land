@@ -1184,6 +1184,8 @@ struct MatchState {
     reset_requests: Arc<StdRwLock<HashSet<String>>>,
     /// Queued demolition requests, per match. See `city_demolish_handler`.
     demolish_requests: Arc<StdRwLock<HashMap<String, DemolishRequest>>>,
+    /// Rounds the queued demolition releases per tick.
+    demolish_per_tick: usize,
     /// Players whose city ledger is known to be holed by a dropped reliable
     /// packet, awaiting a re-bootstrap once their queue drains.
     city_desync_players: HashSet<u32>,
@@ -2087,20 +2089,44 @@ fn format_stamp(time: std::time::SystemTime) -> String {
 #[derive(Clone, Debug, serde::Deserialize)]
 #[serde(default)]
 struct DemolishRequest {
-    /// Centre of the footing, world XZ.
+    /// Centre of the footing, world XZ. Ignored when `tallest` is set.
     x: f32,
     z: f32,
+    /// Aim at the tallest column in the city instead of x/z.
+    tallest: bool,
     /// How wide a footing to take out.
     radius_m: f32,
     /// Only chunks below this height count as supports.
     below_y: f32,
     /// Cap on rounds, so one request cannot spawn ten thousand bodies.
     rounds: usize,
+    /// Cut only within this half-angle of `heading_deg`, with the height limit
+    /// ramping across it: a wedge, so the building goes over sideways. 0 is a
+    /// full circle and drops it straight down.
+    wedge_deg: f32,
+    heading_deg: f32,
+    /// Fraction of targets dropped at random. A clean cut leaves two rigid
+    /// pieces; a real collapse is hundreds of fractures, and that is the
+    /// regime the visual artefacts live in.
+    jitter: f32,
+    /// Rounds released per tick. Progressive, for the same reason.
+    per_tick: usize,
 }
 
 impl Default for DemolishRequest {
     fn default() -> Self {
-        Self { x: -36.0, z: -36.0, radius_m: 10.0, below_y: 6.0, rounds: 48 }
+        Self {
+            x: -36.0,
+            z: -36.0,
+            tallest: false,
+            radius_m: 10.0,
+            below_y: 6.0,
+            rounds: 48,
+            wedge_deg: 0.0,
+            heading_deg: 0.0,
+            jitter: 0.0,
+            per_tick: 8,
+        }
     }
 }
 
@@ -2666,6 +2692,7 @@ async fn run_match_loop(
         body_states_registry,
         reset_requests,
         demolish_requests,
+        demolish_per_tick: 8,
         city_desync_players: HashSet::new(),
         city_desync_repairs: 0,
         last_fan_out_ms: 0.0,
@@ -3972,14 +3999,33 @@ impl MatchState {
             .expect("demolish requests poisoned")
             .remove(&self.id)
         {
-            let fired = city.demolish_supports(
-                [request.x, request.z],
+            city.set_demolition_shape(request.heading_deg, request.wedge_deg, request.jitter);
+            let (centre, height) = if request.tallest {
+                city.tallest_footprint()
+                    .map(|(c, h)| (c, h))
+                    .unwrap_or(([request.x, request.z], 0.0))
+            } else {
+                ([request.x, request.z], 0.0)
+            };
+            let queued = city.demolish_supports(
+                centre,
                 request.radius_m,
                 request.below_y,
                 request.rounds,
                 self.arena.physx_world_mut(),
             );
-            info!(match_id = %self.id, fired, "city demolition fired");
+            self.demolish_per_tick = request.per_tick.max(1);
+            info!(
+                match_id = %self.id, queued, ?centre, height,
+                "city demolition queued"
+            );
+        }
+        // A few rounds a tick, every tick, so the structure fails
+        // progressively instead of being cut in half in one frame.
+        {
+            let per_tick = self.demolish_per_tick;
+            let world = self.arena.physx_world_mut();
+            city.drain_demolition(per_tick, world);
         }
         #[cfg(feature = "destruction")]
         let world = self.arena.physx_world_mut();
