@@ -616,6 +616,26 @@ no observation this tick",
         let mut settled: Vec<SettleEvent> = Vec::new();
         let mut wakes: Vec<(u32, u32)> = std::mem::take(&mut self.pending_wakes);
         for snap in snapshots {
+            // The anchored remnant is not an island and has no business on the
+            // wire.
+            //
+            // It keeps island serial 0, which the client reserves for a
+            // structure's static support body and draws from the manifest's
+            // rest poses -- so its pose must never change. The settle and wake
+            // pushes below used to run BEFORE the kinematic test a few lines
+            // down, so every sleep edge of that remnant published a settle
+            // record carrying the kinematic actor's centre of mass. That
+            // centre wanders as the structure sheds chunks, and each record
+            // teleported the client's whole anchored remnant to it.
+            //
+            // Measured on a single-tower capture: 393 of 400 tracked chunks
+            // displaced by one identical vector within a single frame, body
+            // 0x80000000, position [0,0,0] -> [2.25,0.32,0] -> [0,0,0] ->
+            // [6.75,0.32,-4.67], with local offsets unchanged throughout. A
+            // building stepping sideways and back, twice in a second.
+            if snap.kinematic {
+                continue;
+            }
             if snap.flags == NATIVE_FLAG_SETTLED {
                 settled.push(SettleEvent {
                     structure_id: snap.structure_id,
@@ -632,10 +652,10 @@ no observation this tick",
                 self.resettled_wakes += 1;
                 wakes.push((snap.structure_id, snap.island_id));
             }
-            // Kinematic bodies are the anchored remnants: the client draws them
-            // from the manifest's rest poses, and streaming them would be a
-            // pose per tick for something that never moves.
-            if snap.kinematic || snap.sleeping {
+            // Sleeping bodies are not streamed: their settle record is the
+            // client's authority until they wake. (Kinematic remnants are
+            // already gone, above.)
+            if snap.sleeping {
                 continue;
             }
             // A fragment that has left the world is not streamed.
