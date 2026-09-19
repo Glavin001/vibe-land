@@ -2135,6 +2135,89 @@ impl CityRuntime {
     /// `NativeCityDestruction::needs_rebuild`. The caller's answer is a reset,
     /// which is the same repair a player would have asked for if they could
     /// have seen what was wrong.
+    /// Fire rounds at the support chunks under a point, to bring a building down.
+    ///
+    /// The engine has no way to break a bond on command -- `PxDestructionScene`
+    /// exposes configure, clear, a device view and a status, and nothing else;
+    /// bonds break from real contact impulses or not at all. So "demolish this
+    /// building" has to be spelled as impulses, and this spells it the way a
+    /// player does: at the footing, from outside, several at once.
+    ///
+    /// It exists because the flicker people report happens during a whole
+    /// building's collapse, and driving that through the browser is neither
+    /// repeatable nor quick -- the shots wander with the spawn point and the
+    /// same sixty rounds break anywhere between 900 and 7,700 bonds. Given a
+    /// point and a radius this hits the same chunks every time.
+    ///
+    /// Returns how many rounds it fired.
+    pub fn demolish_supports(
+        &mut self,
+        centre: [f32; 2],
+        radius_m: f32,
+        below_y: f32,
+        max_rounds: usize,
+        #[cfg(feature = "destruction")] world: Option<&mut World>,
+        #[cfg(not(feature = "destruction"))] _world: Option<()>,
+    ) -> usize {
+        #[cfg(feature = "native-destruction")]
+        {
+            let CityBackend::Native(backend) = &mut self.backend else {
+                return 0;
+            };
+            let Some(world) = world else { return 0 };
+            let Some((_, manifest, _)) = manifest_asset() else {
+                return 0;
+            };
+            // Targets are the chunks themselves, so the round is spawned just
+            // outside one and driven through it. Sorted by height so the lowest
+            // supports go first: taking a column out from the bottom is what
+            // drops a building, and taking it out from the middle is not.
+            let mut targets: Vec<[f32; 3]> = Vec::new();
+            for structure in &manifest.structures {
+                for chunk in &structure.chunks {
+                    let world_xyz = [
+                        structure.world_position[0] + chunk.centroid[0],
+                        structure.world_position[1] + chunk.centroid[1],
+                        structure.world_position[2] + chunk.centroid[2],
+                    ];
+                    if world_xyz[1] > below_y {
+                        continue;
+                    }
+                    let dx = world_xyz[0] - centre[0];
+                    let dz = world_xyz[2] - centre[1];
+                    if dx * dx + dz * dz > radius_m * radius_m {
+                        continue;
+                    }
+                    targets.push(world_xyz);
+                }
+            }
+            targets.sort_by(|a, b| a[1].total_cmp(&b[1]));
+            targets.truncate(max_rounds);
+
+            let mut fired = 0usize;
+            for at in targets {
+                // Inward, so the round drives through the column rather than
+                // skimming it. Straight down the radius from the centre.
+                let (dx, dz) = (at[0] - centre[0], at[2] - centre[1]);
+                let len = (dx * dx + dz * dz).sqrt().max(0.001);
+                let direction = [-dx / len, 0.0, -dz / len];
+                let spawn = [at[0] + direction[0] * -1.2, at[1], at[2] + direction[2] * -1.2];
+                if backend
+                    .fire_round(world, spawn, direction, city_round_momentum_ns())
+                    .is_ok()
+                {
+                    fired += 1;
+                }
+            }
+            return fired;
+        }
+        #[cfg(not(feature = "native-destruction"))]
+        {
+            let _ = (centre, radius_m, below_y, max_rounds);
+            0
+        }
+    }
+
     pub fn needs_rebuild(&self) -> bool {
         match &self.backend {
             #[cfg(feature = "native-destruction")]

@@ -995,6 +995,8 @@ struct AppState {
     /// here and consumed on the next tick, between steps where rebuilding the
     /// scene is safe.
     reset_requests: Arc<StdRwLock<HashSet<String>>>,
+    /// Queued demolition requests, per match. See `city_demolish_handler`.
+    demolish_requests: Arc<StdRwLock<HashMap<String, DemolishRequest>>>,
     /// Inbound-UDP reachability evidence.
     ///
     /// A box cannot test its own reachability from inside: a bind succeeding
@@ -1180,6 +1182,8 @@ struct MatchState {
     vehicle_handles: HashMap<u32, u8>,
     city: Option<city::CityRuntime>,
     reset_requests: Arc<StdRwLock<HashSet<String>>>,
+    /// Queued demolition requests, per match. See `city_demolish_handler`.
+    demolish_requests: Arc<StdRwLock<HashMap<String, DemolishRequest>>>,
     /// Players whose city ledger is known to be holed by a dropped reliable
     /// packet, awaiting a re-bootstrap once their queue drains.
     city_desync_players: HashSet<u32>,
@@ -1326,6 +1330,7 @@ async fn main() -> Result<()> {
             stats_registry: Arc::new(StdRwLock::new(HashMap::new())),
             body_states_registry: Arc::new(StdRwLock::new(HashMap::new())),
             reset_requests: Arc::new(StdRwLock::new(HashSet::new())),
+            demolish_requests: Arc::new(StdRwLock::new(HashMap::new())),
             wt_attempts: wt_attempts.clone(),
             session_configs_served: AtomicU64::new(0),
             first_session_config_ms: AtomicU64::new(0),
@@ -1417,6 +1422,7 @@ async fn main() -> Result<()> {
         .route("/match-stats/:match_id/report", post(debug_report_handler))
         .route("/match-stats/:match_id/bodies", get(match_body_states_handler))
         .route("/city-reset/:match_id", post(city_reset_handler))
+        .route("/city-demolish/:match_id", post(city_demolish_handler))
         .route("/ws/stats", get(ws_stats_handler))
         .route("/ws/:match_id", get(ws_handler))
         .layer(tower_http::cors::CorsLayer::permissive())
@@ -2073,6 +2079,58 @@ fn format_stamp(time: std::time::SystemTime) -> String {
     format!("{:02}:{:02}:{:02}", day / 3600, (day % 3600) / 60, day % 60)
 }
 
+/// Where to take a building's footing out, and how hard.
+///
+/// Defaults aim at the corner of the downtown scene that the QA harness has
+/// been shooting at all along, so `POST /city-demolish/city-default` with an
+/// empty body does something useful.
+#[derive(Clone, Debug, serde::Deserialize)]
+#[serde(default)]
+struct DemolishRequest {
+    /// Centre of the footing, world XZ.
+    x: f32,
+    z: f32,
+    /// How wide a footing to take out.
+    radius_m: f32,
+    /// Only chunks below this height count as supports.
+    below_y: f32,
+    /// Cap on rounds, so one request cannot spawn ten thousand bodies.
+    rounds: usize,
+}
+
+impl Default for DemolishRequest {
+    fn default() -> Self {
+        Self { x: -36.0, z: -36.0, radius_m: 10.0, below_y: 6.0, rounds: 48 }
+    }
+}
+
+/// Bring a building down on command, repeatably.
+///
+/// The engine cannot break a bond to order, so this is spelled as impulses at
+/// the footing -- see `CityRuntime::demolish_supports`. It exists because the
+/// artefacts worth chasing happen during a whole building's collapse, and
+/// driving that from a browser is neither repeatable nor quick: the same sixty
+/// rounds, aimed the same way, break anywhere between 900 and 7,700 bonds
+/// depending on where the player spawned.
+async fn city_demolish_handler(
+    Path(match_id): Path<String>,
+    State(state): State<SharedAppState>,
+    body: Option<Json<DemolishRequest>>,
+) -> impl IntoResponse {
+    if !city::is_city_match(&match_id) {
+        return (StatusCode::BAD_REQUEST, "not a city match").into_response();
+    }
+    let request = body.map(|Json(r)| r).unwrap_or_default();
+    info!(%match_id, ?request, "city demolition requested");
+    state
+        .inner
+        .demolish_requests
+        .write()
+        .expect("demolish requests poisoned")
+        .insert(match_id.clone(), request);
+    (StatusCode::ACCEPTED, "demolition queued").into_response()
+}
+
 async fn city_reset_handler(
     Path(match_id): Path<String>,
     State(state): State<SharedAppState>,
@@ -2491,6 +2549,8 @@ async fn run_match_loop(
     stats_registry: Arc<StdRwLock<HashMap<String, MatchStatsSnapshot>>>,
     body_states_registry: Arc<StdRwLock<HashMap<String, Vec<(u32, u8, u32, i32)>>>>,
     reset_requests: Arc<StdRwLock<HashSet<String>>>,
+    // Queued demolition requests, per match. See `city_demolish_handler`.
+    demolish_requests: Arc<StdRwLock<HashMap<String, DemolishRequest>>>,
 ) {
     let mut arena = PhysicsArena::new(MoveConfig::default(), physics.backend)
         .expect("selected authoritative physics backend should initialize");
@@ -2605,6 +2665,7 @@ async fn run_match_loop(
         stats_registry,
         body_states_registry,
         reset_requests,
+        demolish_requests,
         city_desync_players: HashSet::new(),
         city_desync_repairs: 0,
         last_fan_out_ms: 0.0,
@@ -2677,6 +2738,7 @@ fn spawn_match_loop(
                     app.stats_registry.clone(),
                     app.body_states_registry.clone(),
                     app.reset_requests.clone(),
+                    app.demolish_requests.clone(),
                 ))
                 .catch_unwind()
                 .await;
@@ -3902,6 +3964,23 @@ impl MatchState {
         };
 
         let mut city = self.city.take().expect("checked above");
+        // Before the world is bound for the reset below, which borrows it for
+        // the rest of this block.
+        if let Some(request) = self
+            .demolish_requests
+            .write()
+            .expect("demolish requests poisoned")
+            .remove(&self.id)
+        {
+            let fired = city.demolish_supports(
+                [request.x, request.z],
+                request.radius_m,
+                request.below_y,
+                request.rounds,
+                self.arena.physx_world_mut(),
+            );
+            info!(match_id = %self.id, fired, "city demolition fired");
+        }
         #[cfg(feature = "destruction")]
         let world = self.arena.physx_world_mut();
         #[cfg(not(feature = "destruction"))]

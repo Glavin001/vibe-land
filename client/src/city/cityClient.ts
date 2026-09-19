@@ -61,6 +61,9 @@ export interface CityClientStats {
   presentedJumpsOver1m: number;
   presentedJumpsOver4m: number;
   presentedJumpMaxM: number;
+  presentedJumpChunks: number;
+  presentedJumpWorstChunks: number;
+  presentedJumpWorstChunksM: number;
   /// Discontinuities the presentation layer produced on purpose, by kind.
   /// See PresentationAnomalyKind: a correction too large to glide, a render
   /// clock that moved backwards, or two snapshots too far apart to interpolate.
@@ -140,6 +143,21 @@ const RESYNC_MIN_INTERVAL_MS = 3000;
  * server that has not been updated or a scene that has widened its own bound.
  */
 const WORLD_BOUND_M = 1000;
+
+/**
+ * Forbid the render clock from running backwards. On by default.
+ *
+ * A switch only so the two can be compared in one build against one collapse:
+ * /city?monotonicClock=0 restores the clock that could reverse.
+ */
+const MONOTONIC_RENDER_CLOCK = (() => {
+  try {
+    return new URLSearchParams(globalThis.location?.search ?? '')
+      .get('monotonicClock') !== '0';
+  } catch {
+    return true;
+  }
+})();
 
 /** Floor on the playout delay: one flush window's worth, as shipped. */
 const MIN_SAMPLE_DELAY_TICKS = 6;
@@ -486,7 +504,27 @@ export class CityClient {
     } else {
       const dt = Math.max(0, (nowMs - this.renderClockMs) / 1000);
       const error = raw - this.renderClockTick;
-      this.renderClockTick += dt * this.tickRateEma + error * Math.min(1, dt * 2);
+      const step = dt * this.tickRateEma + error * Math.min(1, dt * 2);
+      // Never backwards.
+      //
+      // The pull can outrun the forward term: at 60 fps the frame advances the
+      // clock by one tick and the correction contributes error/30, so an
+      // anchor half a second behind the clock reverses it. That happens exactly
+      // when a big collapse is under way, because the server sheds sim rate
+      // under load and the rate estimate lags the shed.
+      //
+      // Reversing is not a small error. Every PresentationTrack samples at
+      // this clock, and each one that sees it move backwards abandons the
+      // correction it had in flight and snaps to the raw path -- so one
+      // backwards frame is not one body twitching, it is every live body in the
+      // city lurching at once. That is what "the whole building rubber-bands"
+      // means, and a block-wide collapse here produced 12,202 of them, with an
+      // 888-chunk island stepping eleven metres.
+      //
+      // A clock that is ahead is corrected by SLOWING, to a stop if need be,
+      // and it catches up on the other side. Time is allowed to stall; it is
+      // not allowed to run backwards.
+      this.renderClockTick += MONOTONIC_RENDER_CLOCK ? Math.max(0, step) : step;
     }
     this.renderClockMs = nowMs;
     return this.renderClockTick;
@@ -1578,6 +1616,9 @@ export class CityClient {
       presentedJumpsOver1m: topologyStats.presentedJumpsOver1m,
       presentedJumpsOver4m: topologyStats.presentedJumpsOver4m,
       presentedJumpMaxM: topologyStats.presentedJumpMaxM,
+      presentedJumpChunks: topologyStats.presentedJumpChunks,
+      presentedJumpWorstChunks: topologyStats.presentedJumpWorstChunks,
+      presentedJumpWorstChunksM: topologyStats.presentedJumpWorstChunksM,
       correctionSnaps: this.presentationAnomalies.correction_snap,
       clockRollbacks: this.presentationAnomalies.clock_rollback,
       implausibleJumps: this.presentationAnomalies.implausible_jump,

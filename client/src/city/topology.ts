@@ -98,6 +98,12 @@ export interface CityTopologyStats {
   presentedJumpsOver1m: number;
   presentedJumpsOver4m: number;
   presentedJumpMaxM: number;
+  /// Chunks carried by those steps, and the largest island that took one.
+  /// A step on one fragment is invisible; the same step on a half-standing
+  /// building is what a player reports.
+  presentedJumpChunks: number;
+  presentedJumpWorstChunks: number;
+  presentedJumpWorstChunksM: number;
 }
 
 /**
@@ -147,6 +153,9 @@ export class CityTopology {
   private presentedJumpsOver1m = 0;
   private presentedJumpsOver4m = 0;
   private presentedJumpMaxM = 0;
+  private presentedJumpChunks = 0;
+  private presentedJumpWorstChunks = 0;
+  private presentedJumpWorstChunksM = 0;
   private lastTopoSeq = 0;
   private topoSeqGaps = 0;
   /** Topology messages ignored as already-applied; see apply(). */
@@ -426,6 +435,9 @@ export class CityTopology {
       presentedJumpsOver1m: this.presentedJumpsOver1m,
       presentedJumpsOver4m: this.presentedJumpsOver4m,
       presentedJumpMaxM: this.presentedJumpMaxM,
+      presentedJumpChunks: this.presentedJumpChunks,
+      presentedJumpWorstChunks: this.presentedJumpWorstChunks,
+      presentedJumpWorstChunksM: this.presentedJumpWorstChunksM,
     };
   }
 
@@ -613,6 +625,17 @@ export class CityTopology {
         this.presentedJumpsOver1m += 1;
         if (jump > 4) this.presentedJumpsOver4m += 1;
         if (jump > this.presentedJumpMaxM) this.presentedJumpMaxM = jump;
+        // Weighted by how much of the world moved with it. A step on a
+        // single-chunk fragment is a speck; the same step on the island that
+        // is still most of a building is the whole building lurching, which is
+        // what gets reported from play. Counting bodies alone cannot tell
+        // those apart, and there are thousands of fragments and a handful of
+        // large islands, so the fragments win every average.
+        this.presentedJumpChunks += body.chunkSlots.length;
+        if (body.chunkSlots.length > this.presentedJumpWorstChunks) {
+          this.presentedJumpWorstChunks = body.chunkSlots.length;
+          this.presentedJumpWorstChunksM = jump;
+        }
       }
     }
     body.position = vClone(position);

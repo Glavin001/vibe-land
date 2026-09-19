@@ -208,6 +208,9 @@ export interface CityE2EStats {
   presentedJumpsOver1m: number;
   presentedJumpsOver4m: number;
   presentedJumpMaxM: number;
+  presentedJumpChunks: number;
+  presentedJumpWorstChunks: number;
+  presentedJumpWorstChunksM: number;
   /** Which designed escape hatch produced those steps. See PresentationAnomalyKind. */
   correctionSnaps: number;
   clockRollbacks: number;
