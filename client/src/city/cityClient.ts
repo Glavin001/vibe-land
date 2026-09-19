@@ -1552,10 +1552,21 @@ export class CityClient {
     for (const batch of message.batches) {
       for (const promotion of batch.promotions) {
         const key = bodyKey(promotion.structureId, promotion.islandId);
+        // A promotion for a key we already hold is NOT serial reuse, which is
+        // what this used to assume before skipping it. The server republishes
+        // a body whose membership changed -- `promoted |= old->chunks !=
+        // group.chunks` in the observation shim -- because a changed
+        // membership moves the centre of mass the wire pose is expressed in.
+        //
+        // So this is exactly the case where the frame just moved and the
+        // presented pose most needs anchoring to where the chunks are already
+        // drawn. Skipping it left the existing track holding motion from the
+        // old frame while records arrived in the new one, and the sample
+        // alternated between them: a 110-chunk slab drawn at [-0.2, 25.8,
+        // -0.8] and [-14.7, 0.3, 11.3] on consecutive frames, for about 250 ms
+        // each time. Counted, because these are the expensive ones.
         if (this.bodies.has(key)) {
-          // Serial reuse: the existing track reconciles this the usual way.
           this.promotionsSeedSkippedReused += 1;
-          continue;
         }
         const body = this.topology.body(key);
         if (!body || body.chunkSlots.length === 0) {

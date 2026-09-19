@@ -62,7 +62,7 @@ import {
   type CityRenderable,
 } from './cityChunkWrite';
 import { updateCityE2E } from '../e2eBridge';
-import { poseTraceRecord, poseTraceWanted } from '../city/poseTrace';
+import { POSE_SOURCES, poseTraceRecord, poseTraceWanted } from '../city/poseTrace';
 import { addCitySuspect, isRecording, recordCityEvent, recordCityStats } from '../netlab/recorder';
 import {
   drawnTeleportBreakdown,
@@ -680,6 +680,8 @@ export function CityChunksLayer({
           if (slot < 0 || slot >= traceTopology.chunkCount) return;
           const key = traceTopology.bodyKeyOf(slot);
           terms.bodyKey = key;
+          const written = traceTopology.poseSourceOf(key).source;
+          terms.sourceIndex = written ? POSE_SOURCES.indexOf(written) : -1;
           traceTopology.localOffsetInto(slot, terms.localOffset);
           const body = traceTopology.body(key);
           if (!body) return;

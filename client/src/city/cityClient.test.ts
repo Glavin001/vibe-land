@@ -330,6 +330,7 @@ describe('CityClient promotion continuity', () => {
     // And it must be presentable immediately, not only once a datagram lands.
     expect(internals(client).bodies.has(islandKey)).toBe(true);
   });
+
 });
 
 describe('CityClient topology anomalies', () => {

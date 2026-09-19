@@ -44,6 +44,8 @@ interface TraceState {
   localOffsets: Float32Array;
   /** Which body each tracked chunk belonged to, per frame. */
   bodyKeys: Int32Array;
+  /** Per tracked slot per frame: index into POSE_SOURCES, or -1. */
+  sources: Int8Array;
   ticks: Int32Array;
   times: Float64Array;
   capacity: number;
@@ -58,7 +60,28 @@ export interface PoseTerms {
   bodyRotation: Float32Array;
   localOffset: Float32Array;
   bodyKey: number;
+  /**
+   * Which writer last set this body's pose, as an index into
+   * `POSE_SOURCES`.
+   *
+   * Knowing that a body's pose moved is not the same as knowing what moved
+   * it. Six different paths write a body pose -- a streamed record, a settle,
+   * a promotion, a frame rebase, a bootstrap, the presentation layer -- and
+   * naming the one responsible turns "a slab jumped" into a single code path
+   * to read.
+   */
+  sourceIndex: number;
 }
+
+/** Index order for `PoseTerms.sourceIndex`; -1 means nothing has written yet. */
+export const POSE_SOURCES = [
+  'raw',
+  'presented',
+  'settle',
+  'promote',
+  'reoffset',
+  'bootstrap',
+] as const;
 
 let state: TraceState | null = null;
 
@@ -81,6 +104,7 @@ const TERMS: PoseTerms = {
   bodyRotation: new Float32Array(4),
   localOffset: new Float32Array(3),
   bodyKey: -1,
+  sourceIndex: -1,
 };
 
 export function poseTraceRecord(
@@ -101,6 +125,7 @@ export function poseTraceRecord(
   for (let index = 0; index < count; index += 1) {
     if (readTerms) {
       TERMS.bodyKey = -1;
+      TERMS.sourceIndex = -1;
       TERMS.bodyPosition.fill(Number.NaN);
       TERMS.bodyRotation.fill(Number.NaN);
       TERMS.localOffset.fill(Number.NaN);
@@ -118,6 +143,7 @@ export function poseTraceRecord(
       state.localOffsets[localAt + 1] = TERMS.localOffset[1];
       state.localOffsets[localAt + 2] = TERMS.localOffset[2];
       state.bodyKeys[frame * count + index] = TERMS.bodyKey;
+      state.sources[frame * count + index] = TERMS.sourceIndex;
     }
     const at = base + index * 3;
     if (read(state.slots[index], scratch)) {
@@ -156,6 +182,8 @@ export interface PoseTraceBridge {
     localOffsets: number[];
     /** Flat, frames x slots. */
     bodyKeys: number[];
+    /** Flat, frames x slots: index into POSE_SOURCES, -1 if never written. */
+    sources: number[];
   };
   armed(): boolean;
 }
@@ -171,6 +199,7 @@ export function installPoseTrace(): void {
         bodyPoses: new Float32Array(capacity * chosen.length * 7),
         localOffsets: new Float32Array(capacity * chosen.length * 3),
         bodyKeys: new Int32Array(capacity * chosen.length),
+        sources: new Int8Array(capacity * chosen.length),
         ticks: new Int32Array(capacity),
         times: new Float64Array(capacity),
         capacity,
@@ -185,7 +214,7 @@ export function installPoseTrace(): void {
       if (!current) {
         return {
           slots: [], frames: 0, overflow: 0, ticks: [], times: [],
-          positions: [], bodyPoses: [], localOffsets: [], bodyKeys: [],
+          positions: [], bodyPoses: [], localOffsets: [], bodyKeys: [], sources: [],
         };
       }
       const cells = current.frames * current.slots.length;
@@ -199,6 +228,7 @@ export function installPoseTrace(): void {
         bodyPoses: Array.from(current.bodyPoses.subarray(0, cells * 7)),
         localOffsets: Array.from(current.localOffsets.subarray(0, cells * 3)),
         bodyKeys: Array.from(current.bodyKeys.subarray(0, cells)),
+        sources: Array.from(current.sources.subarray(0, cells)),
       };
     },
     armed() {
