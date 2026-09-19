@@ -208,6 +208,11 @@ export interface CityE2EStats {
   presentedJumpsOver1m: number;
   presentedJumpsOver4m: number;
   presentedJumpMaxM: number;
+  /** Which designed escape hatch produced those steps. See PresentationAnomalyKind. */
+  correctionSnaps: number;
+  clockRollbacks: number;
+  implausibleJumps: number;
+  presentationAnomalyMaxM: number;
   /**
    * Composition inputs for the lowest chunk below the counting threshold.
    * These are client ledger poses, which may be interpolated; they are not a

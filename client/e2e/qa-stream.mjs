@@ -183,6 +183,17 @@ for (const link of LINKS) {
       drawn1: seen.presentedJumpsOver1m ?? 0,
       drawn4: seen.presentedJumpsOver4m ?? 0,
       drawnMax: seen.presentedJumpMaxM ?? 0,
+      // The topology valve releases a held message ahead of the pose clock when
+      // the sample clock has stalled. The client's own note on it says every
+      // absolute pose such a message carries states where a body WILL be, not
+      // where this client is drawing it -- metres per released tick for fast
+      // debris. That makes it the first suspect for any step in the drawn pose.
+      valve: seen.valveApplies ?? 0,
+      valveAhead: seen.valveTicksAhead ?? 0,
+      snaps: seen.correctionSnaps ?? 0,
+      rollbacks: seen.clockRollbacks ?? 0,
+      implausible: seen.implausibleJumps ?? 0,
+      anomalyMax: seen.presentationAnomalyMaxM ?? 0,
       topoGaps: seen.topoSeqGaps ?? 0,
       settleRejects: seen.settleRejects ?? 0,
       orphans: seen.orphanedChunks ?? 0,
@@ -204,6 +215,8 @@ console.log(`\n${'link'.padEnd(34)} ${'drop%'.padStart(6)} ${'boot'.padStart(7)}
   + ` ${'>1m'.padStart(6)} ${'>4m'.padStart(6)} ${'>16m'.padStart(6)} ${'max m'.padStart(7)}`
   + ` ${'per bond'.padStart(9)}`
   + ` ${'drawn >1/>4@max'.padStart(14)}`
+  + ` ${'valve/ahd'.padStart(10)}`
+  + ` ${'snap/roll/imp@max'.padStart(16)}`
   + ` ${'gaps'.padStart(5)} ${'rejects'.padStart(8)}`);
 for (const r of rows) {
   // Both directions, on both sides of the ratio. Dividing drops from both by
@@ -221,6 +234,8 @@ for (const r of rows) {
     + ` ${pad(r.jumps1, 6)} ${pad(r.jumps4, 6)} ${pad(r.jumps16, 6)} ${pad(r.jumpMax.toFixed(1), 7)}`
     + ` ${pad(`${perBond}/100`, 9)}`
     + ` ${pad(`${r.drawn1}/${r.drawn4}@${r.drawnMax.toFixed(1)}`, 14)}`
+    + ` ${pad(`${r.valve}/${r.valveAhead}`, 10)}`
+    + ` ${pad(`${r.snaps}/${r.rollbacks}/${r.implausible}@${r.anomalyMax.toFixed(1)}`, 16)}`
     + ` ${pad(r.topoGaps, 5)} ${pad(r.settleRejects, 8)}`
     + ` | caught up ${r.convergedMs === null ? 'never' : `${(r.convergedMs / 1000).toFixed(1)}s`}`
     + ` | boot ${r.bootstraps} dgrams ${r.datagrams} wire ${r.wire}`

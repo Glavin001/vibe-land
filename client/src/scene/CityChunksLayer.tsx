@@ -739,6 +739,10 @@ export function CityChunksLayer({
         presentedJumpsOver1m: stats.presentedJumpsOver1m,
         presentedJumpsOver4m: stats.presentedJumpsOver4m,
         presentedJumpMaxM: stats.presentedJumpMaxM,
+        correctionSnaps: stats.correctionSnaps,
+        clockRollbacks: stats.clockRollbacks,
+        implausibleJumps: stats.implausibleJumps,
+        presentationAnomalyMaxM: stats.presentationAnomalyMaxM,
         // Same probe as the netlab line above: the only signal that catches a
         // chunk drawn away from its ledger pose.
         staleDrawnChunks,

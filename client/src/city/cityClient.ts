@@ -61,6 +61,13 @@ export interface CityClientStats {
   presentedJumpsOver1m: number;
   presentedJumpsOver4m: number;
   presentedJumpMaxM: number;
+  /// Discontinuities the presentation layer produced on purpose, by kind.
+  /// See PresentationAnomalyKind: a correction too large to glide, a render
+  /// clock that moved backwards, or two snapshots too far apart to interpolate.
+  correctionSnaps: number;
+  clockRollbacks: number;
+  implausibleJumps: number;
+  presentationAnomalyMaxM: number;
   liveIslands: number;
   topoSeqGaps: number;
   datagramsReceived: number;
@@ -272,6 +279,21 @@ export class CityClient {
   private arrivalLateness = 0;
   private arrivalLatenessAtMs = 0;
   private arrivalLatenessPeak = 0;
+  /**
+   * Deliberate presentation discontinuities, by kind.
+   *
+   * Each is a designed escape hatch -- a correction too large to glide, a
+   * render clock that moved backwards, two snapshots too far apart to
+   * interpolate -- and each is visible on screen. Counting them is the
+   * difference between "the drawn pose stepped 7.9 m" and knowing which of
+   * three mechanisms did it.
+   */
+  private readonly presentationAnomalies: Record<string, number> = {
+    clock_rollback: 0,
+    correction_snap: 0,
+    implausible_jump: 0,
+  };
+  private presentationAnomalyMaxM = 0;
   /** Preallocated sampling buffers -- one FFI call per frame, no garbage. */
   private sampleLanes = new Uint32Array(4096);
   private samplePoses = new Float32Array(4096 * 7);
@@ -1034,6 +1056,16 @@ export class CityClient {
   /** Creates and registers a body's presentation track. */
   private createBodyState(key: number): BodyStreamState {
     const track = new PresentationTrack(presentationConfig60Hz());
+    // presentation.ts classifies every discontinuity it presents on purpose and
+    // says so through this listener rather than logging, "so a measurement
+    // harness can count them". Nothing had ever attached one, so the drawn pose
+    // steps this branch measured could be attributed to no mechanism at all.
+    track.setAnomalyListener((anomaly) => {
+      this.presentationAnomalies[anomaly.kind] += 1;
+      if (anomaly.magnitude > this.presentationAnomalyMaxM) {
+        this.presentationAnomalyMaxM = anomaly.magnitude;
+      }
+    });
     if (isRecording()) {
       track.setAnomalyListener((anomaly) => {
         recordCityEvent(
@@ -1395,6 +1427,10 @@ export class CityClient {
       presentedJumpsOver1m: topologyStats.presentedJumpsOver1m,
       presentedJumpsOver4m: topologyStats.presentedJumpsOver4m,
       presentedJumpMaxM: topologyStats.presentedJumpMaxM,
+      correctionSnaps: this.presentationAnomalies.correction_snap,
+      clockRollbacks: this.presentationAnomalies.clock_rollback,
+      implausibleJumps: this.presentationAnomalies.implausible_jump,
+      presentationAnomalyMaxM: this.presentationAnomalyMaxM,
       datagramsReceived: this.datagramsReceived,
       recordsApplied: this.recordsApplied,
       wireVersion: this.debris === null ? 2 : 3,
