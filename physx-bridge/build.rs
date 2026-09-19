@@ -330,6 +330,87 @@ fn add_native_destruction(
         root.display()
     );
     println!("cargo:rustc-env=VIBE_PHYSX_SDK_LIB_DIR={}", lib.display());
+    println!(
+        "cargo:rustc-env=VIBE_PHYSX_SDK_REVISION={}",
+        sdk_revision(root).unwrap_or_else(|| "unrecorded".to_string())
+    );
+    assert_sdk_libraries_match_manifest(root, &lib);
+}
+
+/// Locate `<sdk>/out/sdk-artifacts.json` from the resolved SDK root, which is
+/// either `<sdk>/physx` or `<sdk>/out/install`.
+fn sdk_manifest(root: &std::path::Path) -> Option<std::path::PathBuf> {
+    root.ancestors()
+        .map(|dir| dir.join("out/sdk-artifacts.json"))
+        .find(|candidate| candidate.is_file())
+}
+
+/// The source revision the installed SDK was built from.
+///
+/// Worth carrying all the way to `/healthz`. Artifacts in the SDK's library
+/// directory are not immutable -- a bisect, an experiment or an interrupted
+/// rebuild writes over them in place -- and the failure that produces is
+/// invisible from every other reading. A deployment ran for hours on a
+/// revision that cannot construct a GPU scene on this card, serving an
+/// indestructible city at a healthy 60 Hz, and nothing anywhere said which
+/// engine it had loaded.
+fn sdk_revision(root: &std::path::Path) -> Option<String> {
+    let text = std::fs::read_to_string(sdk_manifest(root)?).ok()?;
+    let value = text
+        .split("\"source_revision\"")
+        .nth(1)?
+        .split('"')
+        .nth(1)?
+        .to_string();
+    Some(value)
+}
+
+/// Refuse to build against libraries the SDK manifest does not describe.
+///
+/// The manifest records a sha256 per library at install time, so a library
+/// replaced afterwards -- by a second build tree, a partial install, a copy
+/// from another experiment -- no longer matches it. Linking that mixture
+/// produces a binary whose static half and GPU module came from different
+/// sources, and the symptom is a segfault deep inside the GPU allocator while
+/// creating a scene, with nothing to point at the cause.
+///
+/// Skipped, loudly, where sha256sum is unavailable: a missing checksum tool is
+/// not a reason to fail a build, but it is a reason to say so.
+fn assert_sdk_libraries_match_manifest(root: &std::path::Path, lib: &std::path::Path) {
+    let Some(manifest) = sdk_manifest(root) else { return };
+    let Ok(text) = std::fs::read_to_string(&manifest) else { return };
+    let Some(libraries) = text.split("\"libraries\"").nth(1) else { return };
+    let Some(block) = libraries.split('{').nth(1).and_then(|rest| rest.split('}').next()) else {
+        return;
+    };
+    for entry in block.split(',') {
+        let mut parts = entry.split('"').filter(|part| !part.trim().is_empty() && *part != ": ");
+        let (Some(name), Some(want)) = (parts.next(), parts.next()) else { continue };
+        if !name.starts_with("lib") {
+            continue;
+        }
+        let path = lib.join(name);
+        if !path.is_file() {
+            continue;
+        }
+        let Ok(output) = std::process::Command::new("sha256sum").arg(&path).output() else {
+            println!("cargo:warning=sha256sum unavailable; SDK libraries not verified");
+            return;
+        };
+        let got = String::from_utf8_lossy(&output.stdout)
+            .split_whitespace()
+            .next()
+            .unwrap_or_default()
+            .to_string();
+        assert_eq!(
+            got,
+            want,
+            "{} does not match the SDK manifest that describes it ({}). Something \
+             installed over this library without recording it; rebuild the SDK.",
+            path.display(),
+            manifest.display()
+        );
+    }
 }
 
 /// Fail the build when this crate's CUDA toolkit is not the one that produced

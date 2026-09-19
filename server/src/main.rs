@@ -1345,6 +1345,10 @@ async fn main() -> Result<()> {
         .transport_config(std::sync::Arc::new(wt_transport_config()));
     let wt_endpoint = Endpoint::server(wt_config)?;
     info!(%wt_addr, "WebTransport endpoint listening");
+    // Said once, at startup, next to everything else that decides what this
+    // process is. A deployment that silently picked up a different build of the
+    // destruction SDK is otherwise indistinguishable from a healthy one.
+    info!(physx_sdk = %linked_physx_sdk(), "destruction SDK");
 
     {
         let app_inner = state.inner.clone();
@@ -1826,22 +1830,25 @@ struct HealthResponse {
     /// it is running: the two Blast paths and the native stage need different
     /// SDKs, and a successful build does not establish which one loaded.
     destruction_backend: String,
-    physx_sdk: &'static str,
+    physx_sdk: String,
 }
 
-/// The PhysX SDK this binary was built against.
+/// The PhysX SDK this binary was built against, revision and path.
 ///
-/// Recorded at build time by `physx-bridge/build.rs`, because the runtime
-/// cannot tell: both SDKs ship the same library names, and `LD_LIBRARY_PATH`
-/// takes precedence over the embedded rpath.
-fn linked_physx_sdk() -> &'static str {
-    #[cfg(feature = "native-destruction")]
+/// This used to read `option_env!("VIBE_PHYSX_SDK_ROOT")` here, which is always
+/// None: that variable is emitted by physx-bridge's build script, and
+/// `option_env!` only sees variables set by the build script of the crate it is
+/// compiled in. So `/healthz` reported "unknown" for every deployment that ever
+/// ran, including the one that spent hours on an engine which cannot construct
+/// a GPU scene on this card.
+fn linked_physx_sdk() -> String {
+    #[cfg(feature = "destruction")]
     {
-        option_env!("VIBE_PHYSX_SDK_ROOT").unwrap_or("unknown")
+        vibe_land_physx_bridge::physx_sdk_identity()
     }
-    #[cfg(not(feature = "native-destruction"))]
+    #[cfg(not(feature = "destruction"))]
     {
-        "upstream"
+        "not linked".to_string()
     }
 }
 

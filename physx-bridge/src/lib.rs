@@ -2920,3 +2920,27 @@ impl From<ffi::FfiDestructionStats> for DestructionStats {
         }
     }
 }
+
+/// Which PhysX SDK this binary was linked against, as `revision @ path`.
+///
+/// Recorded at build time, because the runtime cannot work it out: both SDKs
+/// ship identical library names and `LD_LIBRARY_PATH` beats the embedded
+/// rpath. It belongs in `/healthz` and in the startup log for one reason --
+/// the libraries in an SDK's output directory are not immutable, and a
+/// deployment that quietly picks up a different build of them looks completely
+/// healthy from outside. One did, for hours, serving a city that could not be
+/// broken at a steady 60 Hz.
+pub fn physx_sdk_identity() -> String {
+    #[cfg(feature = "native-destruction")]
+    {
+        format!(
+            "{} @ {}",
+            option_env!("VIBE_PHYSX_SDK_REVISION").unwrap_or("unrecorded"),
+            option_env!("VIBE_PHYSX_SDK_ROOT").unwrap_or("unknown"),
+        )
+    }
+    #[cfg(not(feature = "native-destruction"))]
+    {
+        "upstream PhysX (no destruction stage)".to_string()
+    }
+}

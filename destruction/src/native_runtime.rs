@@ -140,6 +140,35 @@ fn env_u32(name: &str, default: u32) -> u32 {
         .unwrap_or(default)
 }
 
+/// Claim the stage is stuck, once, at a chosen tick.
+///
+/// The failure this exists to rehearse -- a rebuilt stage that comes up at
+/// frame 0 and never produces another -- has not been reproduced on demand, in
+/// thirty reset cycles at production scale, with cannonballs in the scene and
+/// player churn across the reset. An unreproducible fault still needs its
+/// recovery path exercised, or the recovery is only a belief. So:
+///
+///   VIBE_CITY_NATIVE_FAULT_AT_TICK=600
+///
+/// makes `needs_rebuild` report true once, ten seconds in, and the server
+/// should then rebuild the city, re-bootstrap its clients, and carry on being
+/// destructible. Fires once per process so the rebuilt city is not immediately
+/// torn down again.
+fn fault_injection_due(ticks: u64) -> bool {
+    static FIRED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    let Some(at) = std::env::var("VIBE_CITY_NATIVE_FAULT_AT_TICK")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+    else {
+        return false;
+    };
+    if ticks < at || FIRED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        return false;
+    }
+    eprintln!("[native-destruction] FAULT INJECTION: reporting the stage stuck at tick {ticks}");
+    true
+}
+
 /// Snapshot flags the bridge sets on a sleep or wake edge.
 const NATIVE_FLAG_SETTLED: u32 = 1;
 const NATIVE_FLAG_WOKE: u32 = 2;
@@ -617,6 +646,9 @@ no observation this tick",
     /// difference between a match that recovers in a couple of seconds and one
     /// that is silently over.
     pub fn needs_rebuild(&self) -> bool {
+        if fault_injection_due(self.ticks) {
+            return true;
+        }
         self.stuck_at_frame_zero >= 120
     }
 
