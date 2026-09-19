@@ -58,13 +58,26 @@ export interface PresentationConfig {
 const CORRECTION_SPEED_MPS = 30;
 const MAX_CORRECTION_SECONDS = 1.0;
 
-/** /city?glideCorrections=0 restores abandoning large corrections. */
+/**
+ * Glide large corrections instead of abandoning them. OFF.
+ *
+ * It does what it says -- 3,548 presented discontinuities a collapse became 6
+ * -- and it is not an improvement to watch. Judged in play: "I don't like the
+ * glide, it's not really better." A snap is wrong for one frame and the eye
+ * discards it; a glide is wrong for up to a second and is coherent, so the
+ * piece appears to travel a path the physics never took.
+ *
+ * The reason it changed nothing real is that the correction was never the
+ * fault. It is the client being told, late, that a body is metres from where
+ * it has been drawing it -- and that gap comes from the body not being
+ * streamed, not from how the gap is closed. /city?glideCorrections=1 to see it.
+ */
 const GLIDE_LARGE_CORRECTIONS = (() => {
   try {
     return new URLSearchParams(globalThis.location?.search ?? '')
-      .get('glideCorrections') !== '0';
+      .get('glideCorrections') === '1';
   } catch {
-    return true;
+    return false;
   }
 })();
 
