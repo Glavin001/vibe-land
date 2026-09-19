@@ -93,6 +93,13 @@ struct Args {
     /// Rounds released per tick. Low numbers make the failure progressive.
     demolish_per_tick: u32,
     demolish_seed: u64,
+    /// Dump exactly what the physics half hands the encoder, tick by tick.
+    ///
+    /// The GPU sim is not bit-deterministic, so two recordings of the same
+    /// scripted collapse differ by more than most scheduling changes are
+    /// worth. Replaying a tape holds the motion fixed, which is what makes an
+    /// encoder A/B mean anything.
+    encoder_tape_out: Option<PathBuf>,
     /// How many structures to attack (0 = all). The rest stand untouched,
     /// which is the case the island model is built for: an intact structure is
     /// one kinematic body and costs nothing per tick no matter how many chunks
@@ -163,6 +170,7 @@ impl Args {
         let mut demolish_below_y = 14.0f32;
         let mut demolish_per_tick = 2u32;
         let mut demolish_seed = 0x5DEECE66Du64;
+        let mut encoder_tape_out: Option<PathBuf> = None;
         let mut generation_flags = Vec::new();
         let mut targets = 0u32;
         let mut output = PathBuf::from("city.towertrace");
@@ -201,6 +209,7 @@ impl Args {
                 "--settle-ticks" => settle_ticks = value()?.parse()?,
                 "--shot-interval-ticks" => shot_interval_ticks = value()?.parse()?,
                 "--shots" => shots = value()?.parse()?,
+                "--encoder-tape-out" => encoder_tape_out = Some(PathBuf::from(value()?)),
                 "--demolish" => demolish = true,
                 "--demolish-wedge-deg" => demolish_wedge_deg = value()?.parse()?,
                 "--demolish-heading-deg" => demolish_heading_deg = value()?.parse()?,
@@ -335,6 +344,7 @@ impl Args {
             demolish_below_y,
             demolish_per_tick,
             demolish_seed,
+            encoder_tape_out,
             packets_out,
             packets_wire,
             packets_span_ms,
@@ -1171,6 +1181,28 @@ fn main() -> Result<()> {
     // them into what the shipping client displays.
     let mut v2_tap = None;
     let mut v3_tap = None;
+    let mut encoder_tape = match args.encoder_tape_out.as_ref() {
+        Some(path) => {
+            // Exactly the camera the v2 tap serves interest from: pane 0's eye
+            // and direction, with the tap's own 80 degree field of view.
+            let hero = header.cameras[0];
+            let camera = vibe_land_destruction::netlab::tape::TapeCamera {
+                eye: [hero.eye.x, hero.eye.y, hero.eye.z],
+                direction: [hero.direction.x, hero.direction.y, hero.direction.z],
+                fov_degrees: 80.0,
+            };
+            Some(
+                vibe_land_destruction::netlab::tape::TapeWriter::create(
+                    path,
+                    args.hz,
+                    manifest.hash(),
+                    camera,
+                )
+                .with_context(|| format!("create encoder tape {}", path.display()))?,
+            )
+        }
+        None => None,
+    };
     let mut timings_log: Option<std::io::BufWriter<std::fs::File>> = None;
     if let Some(dir) = &args.packets_out {
         std::fs::create_dir_all(dir)?;
@@ -1567,10 +1599,14 @@ fn main() -> Result<()> {
         }
 
         let enc_started = std::time::Instant::now();
-        if v2_tap.is_some() || v3_tap.is_some() {
+        if v2_tap.is_some() || v3_tap.is_some() || encoder_tape.is_some() {
             let snapshots = destruction
                 .body_snapshots(&world)
                 .map_err(|error| anyhow::anyhow!("{error}"))?;
+            if let Some(tape) = encoder_tape.as_mut() {
+                tape.push(tick_index, snapshots, &output)
+                    .context("write encoder tape tick")?;
+            }
             if let Some(tap) = v2_tap.as_mut() {
                 tap.server_tick(tick_index, snapshots, &output)?;
             } else if let Some(tap) = v3_tap.as_mut() {
@@ -2013,6 +2049,16 @@ fn main() -> Result<()> {
             mbps(reliable_bytes),
             mbps(total_bytes),
             span_ms
+        );
+    }
+    if let Some(tape) = encoder_tape.take() {
+        let ticks = tape.finish().context("finish encoder tape")?;
+        let path = args.encoder_tape_out.as_ref().expect("writer implies path");
+        println!(
+            "wrote {} ({} ticks, {:.1} MiB)",
+            path.display(),
+            ticks,
+            std::fs::metadata(path).map(|m| m.len()).unwrap_or(0) as f64 / (1024.0 * 1024.0),
         );
     }
     if let Some(tap) = v2_tap.take() {

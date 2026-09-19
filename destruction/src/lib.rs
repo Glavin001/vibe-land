@@ -29,6 +29,7 @@ pub mod interest;
 pub mod manifest;
 pub mod manifest_binary;
 pub mod membership;
+pub mod netlab;
 pub mod packet;
 pub mod quant;
 pub mod scene_pack;

@@ -192,8 +192,22 @@ pub struct Cell {
     /// Sum of |truth now - pose the client is holding|, over the sends where
     /// the client had been sent this body before. Metres.
     pub deferred_error_m: f64,
+    /// The same error weighted by the body's bounding radius, in m².
+    ///
+    /// Metres of centroid displacement treat a 10 m slab and a 0.3 m pebble as
+    /// equally wrong, and they are not: what a player sees is the AREA of the
+    /// mismatch between where a body is drawn and where it is, which scales
+    /// with displacement TIMES the body's silhouette. `projected_error_pixels`
+    /// has the same blind spot -- its `center` term is pure centroid distance
+    /// and radius enters only the rotational silhouette term -- so this column
+    /// exists to measure whether size-weighting changes which bodies deserve
+    /// the bytes. Kept ALONGSIDE metres rather than replacing it, so the two
+    /// rankings can be compared rather than assumed.
+    pub deferred_error_m2: f64,
     /// Worst single deferred error in this cell, metres.
     pub deferred_error_max_m: f32,
+    /// Worst single size-weighted error in this cell, m².
+    pub deferred_error_max_m2: f32,
     /// Sends counted in `deferred_error_m` (the rest had no reference pose).
     pub error_samples: u64,
     /// Sum of ticks since this client last had this body.
@@ -203,6 +217,16 @@ pub struct Cell {
 }
 
 impl Cell {
+    /// Square metres of visible mismatch per wire byte: the size-weighted
+    /// counterpart of `error_per_byte`.
+    pub fn error_area_per_byte(&self) -> f64 {
+        if self.bytes == 0 {
+            0.0
+        } else {
+            self.deferred_error_m2 / self.bytes as f64
+        }
+    }
+
     pub fn mean_error_m(&self) -> f64 {
         if self.error_samples == 0 {
             0.0
@@ -289,6 +313,7 @@ impl SendAudit {
         outcome: SendOutcome,
         cost_bytes: usize,
         deferred_error_m: Option<f32>,
+        radius_m: f32,
         age_ticks: Option<u32>,
     ) {
         let cell = self.cells.entry((phase, outcome)).or_default();
@@ -296,10 +321,15 @@ impl SendAudit {
         cell.bytes += cost_bytes as u64;
         match deferred_error_m {
             Some(error) => {
+                let area = error * radius_m.max(0.0);
                 cell.deferred_error_m += error as f64;
+                cell.deferred_error_m2 += area as f64;
                 cell.error_samples += 1;
                 if error > cell.deferred_error_max_m {
                     cell.deferred_error_max_m = error;
+                }
+                if area > cell.deferred_error_max_m2 {
+                    cell.deferred_error_max_m2 = area;
                 }
             }
             None => cell.never_sent += 1,
@@ -360,6 +390,8 @@ impl SendAudit {
             total.count += cell.count;
             total.bytes += cell.bytes;
             total.deferred_error_m += cell.deferred_error_m;
+            total.deferred_error_m2 += cell.deferred_error_m2;
+            total.deferred_error_max_m2 = total.deferred_error_max_m2.max(cell.deferred_error_max_m2);
             total.error_samples += cell.error_samples;
             total.age_ticks += cell.age_ticks;
             total.never_sent += cell.never_sent;
@@ -408,9 +440,12 @@ pub struct ReportCell {
     pub count: u64,
     pub bytes: u64,
     pub deferred_error_m: f64,
+    pub deferred_error_m2: f64,
     pub deferred_error_max_m: f32,
+    pub deferred_error_max_m2: f32,
     pub mean_error_m: f64,
     pub error_per_byte: f64,
+    pub error_area_per_byte: f64,
     pub mean_age_ticks: f64,
     pub never_sent: u64,
 }
@@ -461,9 +496,12 @@ impl SendAudit {
                     count: cell.count,
                     bytes: cell.bytes,
                     deferred_error_m: cell.deferred_error_m,
+                    deferred_error_m2: cell.deferred_error_m2,
                     deferred_error_max_m: cell.deferred_error_max_m,
+                    deferred_error_max_m2: cell.deferred_error_max_m2,
                     mean_error_m: cell.mean_error_m(),
                     error_per_byte: cell.error_per_byte(),
+                    error_area_per_byte: cell.error_area_per_byte(),
                     mean_age_ticks: cell.mean_age_ticks(),
                     never_sent: cell.never_sent,
                 });
@@ -483,8 +521,9 @@ impl SendAudit {
         let mut out = String::new();
         let _ = writeln!(
             out,
-            "{:<11} {:>14} {:>9} {:>8} {:>10} {:>9} {:>8}",
-            "phase", "outcome", "count", "KiB", "err m/avg", "err m/pk", "age tk"
+            "{:<11} {:>14} {:>9} {:>8} {:>10} {:>9} {:>10} {:>10} {:>7}",
+            "phase", "outcome", "count", "KiB", "err m/avg", "err m/pk",
+            "mm/B", "mm2/B", "age tk"
         );
         for phase in BodyPhase::ALL {
             let total = self.phase_total(phase);
@@ -498,13 +537,15 @@ impl SendAudit {
                 }
                 let _ = writeln!(
                     out,
-                    "{:<11} {:>14} {:>9} {:>8.0} {:>10.3} {:>9.2} {:>8.1}",
+                    "{:<11} {:>14} {:>9} {:>8.0} {:>10.3} {:>9.2} {:>10.3} {:>10.3} {:>7.1}",
                     phase.name(),
                     outcome.name(),
                     cell.count,
                     cell.bytes as f64 / 1024.0,
                     cell.mean_error_m(),
                     cell.deferred_error_max_m,
+                    cell.error_per_byte() * 1000.0,
+                    cell.error_area_per_byte() * 1000.0,
                     cell.mean_age_ticks(),
                 );
             }
@@ -515,8 +556,8 @@ impl SendAudit {
             };
             let _ = writeln!(
                 out,
-                "{:<11} {:>14} {:>9} {:>8.0} {:>10} {:>9} {:>7.1}%",
-                "", "TOTAL", total.count, total.bytes as f64 / 1024.0, "", "sent", share
+                "{:<11} {:>14} {:>9} {:>8.0} {:>10} {:>9} {:>10} {:>10} {:>6.1}%",
+                "", "TOTAL", total.count, total.bytes as f64 / 1024.0, "", "", "", "sent", share
             );
         }
         let (p50, p90, p99, max) = self.fall_latency_percentiles();
@@ -566,11 +607,11 @@ mod tests {
     fn fall_latency_measures_the_gap_to_the_first_record() {
         let mut audit = SendAudit::new();
         // Freed at tick 100, dropped by the ceiling for 18 ticks, then sent.
-        audit.note(100, 7, BodyPhase::JustFreed, SendOutcome::Ceiling, 12, None, None);
+        audit.note(100, 7, BodyPhase::JustFreed, SendOutcome::Ceiling, 12, None, 1.0, None);
         for tick in [104, 108, 112, 116] {
-            audit.note(tick, 7, BodyPhase::JustFreed, SendOutcome::Ceiling, 12, None, None);
+            audit.note(tick, 7, BodyPhase::JustFreed, SendOutcome::Ceiling, 12, None, 1.0, None);
         }
-        audit.note(118, 7, BodyPhase::JustFreed, SendOutcome::Sent, 30, Some(2.1), Some(18));
+        audit.note(118, 7, BodyPhase::JustFreed, SendOutcome::Sent, 30, Some(2.1), 1.0, Some(18));
         let reports = audit.fall_reports();
         assert_eq!(reports.len(), 1);
         assert_eq!(reports[0].latency_ticks(), 18);
@@ -582,7 +623,7 @@ mod tests {
     #[test]
     fn a_fall_that_is_never_sent_is_counted_not_dropped() {
         let mut audit = SendAudit::new();
-        audit.note(10, 3, BodyPhase::JustFreed, SendOutcome::NotNewsworthy, 12, None, None);
+        audit.note(10, 3, BodyPhase::JustFreed, SendOutcome::NotNewsworthy, 12, None, 1.0, None);
         assert!(audit.fall_reports().is_empty());
         assert_eq!(audit.unresolved_falls(), 1);
     }
@@ -591,10 +632,10 @@ mod tests {
     #[test]
     fn a_body_reports_its_first_fall_only() {
         let mut audit = SendAudit::new();
-        audit.note(10, 3, BodyPhase::JustFreed, SendOutcome::Ceiling, 12, None, None);
-        audit.note(20, 3, BodyPhase::JustFreed, SendOutcome::Sent, 30, Some(1.0), Some(10));
-        audit.note(90, 3, BodyPhase::JustFreed, SendOutcome::Ceiling, 12, None, None);
-        audit.note(99, 3, BodyPhase::JustFreed, SendOutcome::Sent, 30, Some(1.0), Some(9));
+        audit.note(10, 3, BodyPhase::JustFreed, SendOutcome::Ceiling, 12, None, 1.0, None);
+        audit.note(20, 3, BodyPhase::JustFreed, SendOutcome::Sent, 30, Some(1.0), 1.0, Some(10));
+        audit.note(90, 3, BodyPhase::JustFreed, SendOutcome::Ceiling, 12, None, 1.0, None);
+        audit.note(99, 3, BodyPhase::JustFreed, SendOutcome::Sent, 30, Some(1.0), 1.0, Some(9));
         assert_eq!(audit.fall_reports().len(), 1);
         assert_eq!(audit.fall_reports()[0].latency_ticks(), 10);
     }
@@ -603,9 +644,9 @@ mod tests {
     fn error_per_byte_is_the_ranking_currency() {
         let mut audit = SendAudit::new();
         // One expensive record that avoided a lot of error...
-        audit.note(1, 1, BodyPhase::JustFreed, SendOutcome::Sent, 30, Some(3.0), Some(30));
+        audit.note(1, 1, BodyPhase::JustFreed, SendOutcome::Sent, 30, Some(3.0), 1.0, Some(30));
         // ...and one that avoided almost none.
-        audit.note(1, 2, BodyPhase::Settling, SendOutcome::Sent, 30, Some(0.03), Some(30));
+        audit.note(1, 2, BodyPhase::Settling, SendOutcome::Sent, 30, Some(0.03), 1.0, Some(30));
         let freed = audit.cell(BodyPhase::JustFreed, SendOutcome::Sent);
         let settling = audit.cell(BodyPhase::Settling, SendOutcome::Sent);
         assert!(freed.error_per_byte() > settling.error_per_byte() * 50.0);
@@ -614,8 +655,37 @@ mod tests {
     #[test]
     fn percentiles_survive_a_single_sample() {
         let mut audit = SendAudit::new();
-        audit.note(0, 1, BodyPhase::JustFreed, SendOutcome::Ceiling, 12, None, None);
-        audit.note(9, 1, BodyPhase::JustFreed, SendOutcome::Sent, 30, Some(0.5), Some(9));
+        audit.note(0, 1, BodyPhase::JustFreed, SendOutcome::Ceiling, 12, None, 1.0, None);
+        audit.note(9, 1, BodyPhase::JustFreed, SendOutcome::Sent, 30, Some(0.5), 1.0, Some(9));
         assert_eq!(audit.fall_latency_percentiles(), (9, 9, 9, 9));
+    }
+
+    /// The whole point of the second currency: it must be able to disagree
+    /// with the first, or measuring it proves nothing.
+    ///
+    /// A 6 m slab 0.4 m out of place is a wall visibly in the wrong position;
+    /// a 0.2 m shard 1.2 m out of place is a pebble nobody can track. Metres
+    /// of centroid displacement rank the pebble three times higher; area of
+    /// visible mismatch ranks the slab higher, which is what a player sees.
+    #[test]
+    fn size_weighting_can_reverse_the_ranking() {
+        let mut audit = SendAudit::new();
+        audit.note(1, 1, BodyPhase::Falling, SendOutcome::Sent, 30, Some(0.4), 6.0, Some(4));
+        audit.note(1, 2, BodyPhase::Tumbling, SendOutcome::Sent, 30, Some(1.2), 0.2, Some(4));
+        let slab = audit.cell(BodyPhase::Falling, SendOutcome::Sent);
+        let shard = audit.cell(BodyPhase::Tumbling, SendOutcome::Sent);
+
+        assert!(
+            shard.error_per_byte() > slab.error_per_byte(),
+            "in metres the shard looks worse: {} vs {}",
+            shard.error_per_byte(),
+            slab.error_per_byte()
+        );
+        assert!(
+            slab.error_area_per_byte() > shard.error_area_per_byte(),
+            "in visible area the slab is worse: {} vs {}",
+            slab.error_area_per_byte(),
+            shard.error_area_per_byte()
+        );
     }
 }

@@ -1,0 +1,6 @@
+//! Offline measurement of the destruction stream.
+//!
+//! The pieces here answer "did this scheduling change help, and by how much"
+//! without a GPU and without the run-to-run noise of the physics sim.
+
+pub mod tape;

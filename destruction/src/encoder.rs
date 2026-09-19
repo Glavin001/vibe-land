@@ -177,6 +177,7 @@ fn note_outcome(
         // plus a typical 2-byte packet-local gap.
         record.record.body_bytes() - 4 + 2,
         error,
+        record.radius,
         age,
     );
 }
