@@ -76,6 +76,15 @@ impl Classifier {
         self.class
     }
 
+    /// Consecutive ticks this body has been eligible for free flight.
+    ///
+    /// Exposed for the send audit, which needs to tell a fall that has just
+    /// begun (where one record buys the most) from one already established
+    /// (where the client's own extrapolation is doing the work).
+    pub fn free_ticks(&self) -> u16 {
+        self.free_ticks
+    }
+
     pub fn update(&mut self, state: BodyState, cfg: ClassifierConfig) -> PhysicalClass {
         let event_mask = FLAG_CONTACT_BEGIN
             | FLAG_CONTACT_END

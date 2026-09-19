@@ -78,6 +78,21 @@ struct Args {
     shots: u32,
     shot_tape_in: Option<PathBuf>,
     shot_tape_out: Option<PathBuf>,
+    /// Scripted wedge demolition of the tallest footprint, in place of shots.
+    ///
+    /// This is the reproducible version of the collapse the netcode artefacts
+    /// show up in: take the footing out asymmetrically so the building goes
+    /// over sideways, progressively and with gaps, so it fails as hundreds of
+    /// fractures rather than splitting into two rigid halves.
+    demolish: bool,
+    demolish_wedge_deg: f32,
+    demolish_heading_deg: f32,
+    demolish_jitter: f32,
+    demolish_radius_m: f32,
+    demolish_below_y: f32,
+    /// Rounds released per tick. Low numbers make the failure progressive.
+    demolish_per_tick: u32,
+    demolish_seed: u64,
     /// How many structures to attack (0 = all). The rest stand untouched,
     /// which is the case the island model is built for: an intact structure is
     /// one kinematic body and costs nothing per tick no matter how many chunks
@@ -140,6 +155,14 @@ impl Args {
         let mut shots = 48u32;
         let mut shot_tape_in = None;
         let mut shot_tape_out = None;
+        let mut demolish = false;
+        let mut demolish_wedge_deg = 55.0f32;
+        let mut demolish_heading_deg = 0.0f32;
+        let mut demolish_jitter = 0.35f32;
+        let mut demolish_radius_m = 20.0f32;
+        let mut demolish_below_y = 14.0f32;
+        let mut demolish_per_tick = 2u32;
+        let mut demolish_seed = 0x5DEECE66Du64;
         let mut generation_flags = Vec::new();
         let mut targets = 0u32;
         let mut output = PathBuf::from("city.towertrace");
@@ -178,6 +201,14 @@ impl Args {
                 "--settle-ticks" => settle_ticks = value()?.parse()?,
                 "--shot-interval-ticks" => shot_interval_ticks = value()?.parse()?,
                 "--shots" => shots = value()?.parse()?,
+                "--demolish" => demolish = true,
+                "--demolish-wedge-deg" => demolish_wedge_deg = value()?.parse()?,
+                "--demolish-heading-deg" => demolish_heading_deg = value()?.parse()?,
+                "--demolish-jitter" => demolish_jitter = value()?.parse()?,
+                "--demolish-radius-m" => demolish_radius_m = value()?.parse()?,
+                "--demolish-below-y" => demolish_below_y = value()?.parse()?,
+                "--demolish-per-tick" => demolish_per_tick = value()?.parse()?,
+                "--demolish-seed" => demolish_seed = value()?.parse()?,
                 "--shot-tape-in" => shot_tape_in = Some(PathBuf::from(value()?)),
                 "--shot-tape-out" => shot_tape_out = Some(PathBuf::from(value()?)),
                 "--targets" => targets = value()?.parse()?,
@@ -220,13 +251,37 @@ impl Args {
                          [--grid N] [--hz 60] [--seconds 30] [--settle-ticks 60] \
                          [--shots N] [--targets N] [--shot-interval-ticks N] \
                          [--timings-out <jsonl>] [--packets-out <dir>] [--packets-wire 2|3] \
-                         [--shot-tape-in <json>] [--shot-tape-out <new.json>]"
+                         [--shot-tape-in <json>] [--shot-tape-out <new.json>] \
+                         [--demolish [--demolish-wedge-deg D] [--demolish-heading-deg D] \
+                         [--demolish-jitter F] [--demolish-radius-m M] [--demolish-below-y M] \
+                         [--demolish-per-tick N] [--demolish-seed N]]"
                     );
                     std::process::exit(0);
                 }
                 other => bail!("unknown flag {other}"),
             }
         }
+        ensure!(
+            !(demolish && shot_tape_in.is_some()),
+            "--demolish and --shot-tape-in are two different attacks; pick one"
+        );
+        // --settle-ticks is not shot generation under --demolish: it is when
+        // the attack begins, which the scripted collapse needs as much as the
+        // generated one does.
+        let demolish_conflicts: Vec<&str> = generation_flags
+            .iter()
+            .map(String::as_str)
+            .filter(|flag| *flag != "--settle-ticks")
+            .collect();
+        ensure!(
+            !demolish || demolish_conflicts.is_empty(),
+            "--demolish replaces shot generation, so it cannot be combined with: {}",
+            demolish_conflicts.join(", ")
+        );
+        ensure!(
+            !demolish || demolish_per_tick >= 1,
+            "--demolish-per-tick must be at least 1"
+        );
         ensure!(
             shot_tape_in.is_none() || generation_flags.is_empty(),
             "--shot-tape-in cannot be combined with shot generation flags: {}",
@@ -272,6 +327,14 @@ impl Args {
             timings_out,
             summary_out,
             aim_lock,
+            demolish,
+            demolish_wedge_deg,
+            demolish_heading_deg,
+            demolish_jitter,
+            demolish_radius_m,
+            demolish_below_y,
+            demolish_per_tick,
+            demolish_seed,
             packets_out,
             packets_wire,
             packets_span_ms,
@@ -644,6 +707,8 @@ struct V2ServerTap {
     camera: vibe_land_destruction::types::Camera,
     send_interval_ticks: u32,
     log: PacketLog,
+    dir: PathBuf,
+    hz: u32,
 }
 
 impl V2ServerTap {
@@ -659,6 +724,11 @@ impl V2ServerTap {
         config.interest.proximity_meters = 120.0;
         let mut encoder = ChunkStreamEncoder::new(manifest, config);
         encoder.add_client(1);
+        // Measurement only, and only here: the audit answers WHICH of the send
+        // path's six gates each body met, bucketed by what it was doing. A
+        // single "sent 350 of 10,000" number cannot tell those apart, and the
+        // fix is a different fix at each one.
+        encoder.enable_send_audit();
         // Interest is evaluated from the pane-0 camera, so the pane the video
         // shows is the view the encoder was actually serving.
         let hero = header.cameras[0];
@@ -675,6 +745,8 @@ impl V2ServerTap {
             camera,
             send_interval_ticks: (hz / 30).max(1),
             log,
+            dir: dir.to_path_buf(),
+            hz,
         })
     }
 
@@ -705,6 +777,14 @@ impl V2ServerTap {
     }
 
     fn finish(self) -> Result<(u64, u64)> {
+        if let Some(audit) = self.encoder.send_audit() {
+            std::fs::write(
+                self.dir.join("send-audit.json"),
+                serde_json::to_vec_pretty(&audit.report()).context("send audit to JSON")?,
+            )?;
+            println!("\n--- send audit (wire v2, one client) ---");
+            print!("{}", audit.table(self.hz as f32));
+        }
         self.log.finish()
     }
 }
@@ -980,11 +1060,14 @@ fn main() -> Result<()> {
         ]
         .map(f32::to_bits),
     };
-    let replay_tape = args
-        .shot_tape_in
-        .as_ref()
-        .map(|path| shot_tape::Tape::read(path, &tape_metadata))
-        .transpose()?;
+    let replay_tape = if args.demolish {
+        Some(build_demolition_tape(&manifest, &args, tape_metadata.clone())?)
+    } else {
+        args.shot_tape_in
+            .as_ref()
+            .map(|path| shot_tape::Tape::read(path, &tape_metadata))
+            .transpose()?
+    };
     let mut recorded_tape = shot_tape::Tape::new(tape_metadata);
     recorded_tape.validate(&recorded_tape.metadata)?;
     let mut replay_cursor = 0usize;
@@ -2130,6 +2213,75 @@ fn authored_shot(manifest: &DestructionManifest) -> Option<(Vec3, Vec3)> {
     let target = Vec3::new(top.x, 3.0, top.z);
     let origin = Vec3::new(top.x, 3.0, top.z + 40.0);
     Some((origin, (target - origin).normalize()))
+}
+
+/// Turn a wedge demolition plan into exact per-tick shot inputs.
+///
+/// The live `/city-demolish` endpoint drives the same target list through
+/// `fire_round` (a physical projectile); here the targets become raycast shots
+/// on the recorder's own firing path, which is the one a player's trigger
+/// takes. The SHAPE of the attack -- which chunks, in what order, with which
+/// gaps -- is identical because both read `demolition::wedge_targets`, and
+/// that shape is what decides how the building fails.
+fn build_demolition_tape(
+    manifest: &DestructionManifest,
+    args: &Args,
+    metadata: shot_tape::Metadata,
+) -> Result<shot_tape::Tape> {
+    use vibe_land_destruction::demolition::{
+        round_for_target, tallest_footprint, wedge_targets, DemolitionPlan,
+    };
+
+    let (centre, extent) = tallest_footprint(manifest)
+        .context("--demolish needs at least one chunk in the manifest")?;
+    let plan = DemolitionPlan {
+        centre,
+        radius_m: args.demolish_radius_m,
+        below_y: args.demolish_below_y,
+        heading_deg: args.demolish_heading_deg,
+        wedge_deg: args.demolish_wedge_deg,
+        jitter: args.demolish_jitter,
+        // Every target gets a tick, so the cap is the run length rather than a
+        // separate knob that could silently truncate the attack.
+        max_rounds: usize::MAX,
+        seed: args.demolish_seed,
+    };
+    let targets = wedge_targets(manifest, &plan);
+    ensure!(
+        !targets.is_empty(),
+        "--demolish selected no targets: radius {} m / below-y {} m / wedge {}° found nothing \
+         under the tallest footprint at ({:.1}, {:.1}), which stands {:.1} m",
+        args.demolish_radius_m,
+        args.demolish_below_y,
+        args.demolish_wedge_deg,
+        centre[0],
+        centre[1],
+        extent
+    );
+    let mut tape = shot_tape::Tape::new(metadata);
+    for (index, target) in targets.iter().enumerate() {
+        let (origin, direction) = round_for_target(*target, centre);
+        let tick = args
+            .settle_ticks
+            .saturating_add(index as u32 / args.demolish_per_tick.max(1));
+        tape.shots
+            .push(shot_tape::Shot::new(tick, origin, direction));
+    }
+    println!(
+        "demolish: {} rounds at the tallest footprint ({:.1}, {:.1}), {:.1} m tall | \
+         wedge {}° heading {}° jitter {:.2} | {} per tick from tick {} to {}",
+        tape.shots.len(),
+        centre[0],
+        centre[1],
+        extent,
+        args.demolish_wedge_deg,
+        args.demolish_heading_deg,
+        args.demolish_jitter,
+        args.demolish_per_tick,
+        args.settle_ticks,
+        tape.shots.last().map(|shot| shot.tick).unwrap_or(0),
+    );
+    Ok(tape)
 }
 
 fn build_shot_plan(manifest: &DestructionManifest, shots: u32, targets: u32) -> Vec<(Vec3, Vec3)> {

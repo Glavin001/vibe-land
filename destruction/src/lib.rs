@@ -18,6 +18,7 @@
 
 pub mod city;
 pub mod city_config;
+pub mod demolition;
 pub mod classify;
 pub mod encoder;
 pub mod equilibrium;
@@ -32,6 +33,7 @@ pub mod packet;
 pub mod quant;
 pub mod scene_pack;
 pub mod scheduler;
+pub mod send_audit;
 pub mod settle;
 pub mod synthetic;
 pub mod topology;

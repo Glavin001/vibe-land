@@ -21,6 +21,7 @@ use crate::quant::projected_error_pixels;
 use crate::scheduler::{
     compute_priority, select_with_ceiling, BudgetCandidate, PriorityConfig, PriorityInput,
 };
+use crate::send_audit::{BodyPhase, SendAudit, SendOutcome};
 use crate::topology::CityLedger;
 use crate::types::{BodyState, Camera, Pose, FLAG_CONTACT_BEGIN, FLAG_JOINT_BREAK, FLAG_WAKE_EVENT};
 use crate::wire::{
@@ -141,6 +142,45 @@ fn max_eval_per_client() -> usize {
     })
 }
 
+/// Record one body's send outcome, with the error the decision defers.
+///
+/// The error is measured against the pose this client is actually holding,
+/// which is only known once the body has been sent at least once; before that
+/// there is no reference and `SendAudit` counts it as `never_sent` rather than
+/// being handed a number that would be a guess.
+fn note_outcome(
+    audit: &mut SendAudit,
+    shared: &SharedRecords,
+    record: &SharedRecord,
+    state: &ClientBodyState,
+    outcome: SendOutcome,
+) {
+    let phase = BodyPhase::classify(
+        record.contacts,
+        record.linear_speed,
+        record.angular_speed,
+        record.free_ticks,
+    );
+    let (error, age) = match state.last_sent {
+        Some((tick, pose)) => (
+            Some(record.position.distance(pose.position)),
+            Some(shared.sim_tick.saturating_sub(tick)),
+        ),
+        None => (None, None),
+    };
+    audit.note(
+        shared.sim_tick,
+        record.record.body_entity,
+        phase,
+        outcome,
+        // Same cost model the budget used: logical bytes less the 4-byte id,
+        // plus a typical 2-byte packet-local gap.
+        record.record.body_bytes() - 4 + 2,
+        error,
+        age,
+    );
+}
+
 /// One shared (client-independent) candidate produced by `encode_send`.
 #[derive(Clone, Debug)]
 pub struct SharedRecord {
@@ -165,6 +205,8 @@ pub struct SharedRecord {
     pub radius: f32,
     pub position: Vec3,
     pub linear_velocity: Vec3,
+    /// Consecutive free-flight ticks, for send-audit phase classification.
+    pub free_ticks: u16,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -209,6 +251,9 @@ pub struct ChunkStreamEncoder {
     staged_topology: Vec<Vec<u8>>,
     clients: HashMap<u64, ClientState>,
     duplicate_body_records: u64,
+    /// Off in production. The offline recorder turns it on to learn which of
+    /// the send path's gates each body met, bucketed by what it was doing.
+    audit: Option<SendAudit>,
 }
 
 impl ChunkStreamEncoder {
@@ -244,7 +289,17 @@ impl ChunkStreamEncoder {
             free_slots: Vec::new(),
             next_slot: 0,
             duplicate_body_records: 0,
+            audit: None,
         }
+    }
+
+    /// Begin recording send decisions. Measurement only; never on in a match.
+    pub fn enable_send_audit(&mut self) {
+        self.audit = Some(SendAudit::new());
+    }
+
+    pub fn send_audit(&self) -> Option<&SendAudit> {
+        self.audit.as_ref()
     }
 
     pub fn ledger(&self) -> &CityLedger {
@@ -547,6 +602,7 @@ impl ChunkStreamEncoder {
                 angular_speed: state.angular_velocity.length(),
                 linear_innovation,
                 angular_innovation,
+                free_ticks: track.classifier.free_ticks(),
                 contact_begin: state.flags & FLAG_CONTACT_BEGIN != 0,
                 joint_break: state.flags & FLAG_JOINT_BREAK != 0,
                 wake: state.flags & FLAG_WAKE_EVENT != 0,
@@ -598,6 +654,10 @@ impl ChunkStreamEncoder {
         shared: &SharedRecords,
     ) -> Vec<Vec<u8>> {
         let config = self.config;
+        // Moved out for the body of this function: `state` below borrows self
+        // mutably, so the audit cannot also be reached through self. Put back
+        // before returning.
+        let mut audit = self.audit.take();
         let state = self.clients.entry(client).or_default();
         let view: InterestView = state.view.update(camera, config.interest);
 
@@ -614,6 +674,10 @@ impl ChunkStreamEncoder {
         // newsworthiness and is generous enough that per-client interest still
         // has real choice among them.
         let eval_limit = shared.eval_order.len().min(max_eval_per_client());
+        if let Some(audit) = audit.as_mut() {
+            audit.note_send();
+            audit.note_eval_cap((shared.eval_order.len() - eval_limit) as u64);
+        }
         for &index in shared.eval_order.iter().take(eval_limit) {
             let shared_record = &shared.records[index];
             let entity = shared_record.record.body_entity;
@@ -647,6 +711,9 @@ impl ChunkStreamEncoder {
                     % REST_EVAL_STRIDE
                     != 0
             {
+                if let Some(audit) = audit.as_mut() {
+                    note_outcome(audit, shared, shared_record, body_state, SendOutcome::RestStride);
+                }
                 continue;
             }
 
@@ -667,6 +734,10 @@ impl ChunkStreamEncoder {
                     && shared_record.position.distance_squared(last_pose.position)
                         <= REST_POSE_EPSILON_M * REST_POSE_EPSILON_M
                 {
+                    if let Some(audit) = audit.as_mut() {
+                        note_outcome(
+                            audit, shared, shared_record, body_state, SendOutcome::RestUnchanged);
+                    }
                     continue;
                 }
             }
@@ -682,6 +753,9 @@ impl ChunkStreamEncoder {
                 config.interest,
             );
             if !decision.relevant {
+                if let Some(audit) = audit.as_mut() {
+                    note_outcome(audit, shared, shared_record, body_state, SendOutcome::NotRelevant);
+                }
                 continue;
             }
             let age_ticks = body_state
@@ -718,6 +792,10 @@ impl ChunkStreamEncoder {
                 config.priority,
             );
             if !priority.should_send {
+                if let Some(audit) = audit.as_mut() {
+                    note_outcome(
+                        audit, shared, shared_record, body_state, SendOutcome::NotNewsworthy);
+                }
                 continue;
             }
             // Packed cost estimate: logical bytes minus the 4-byte id plus a
@@ -733,6 +811,22 @@ impl ChunkStreamEncoder {
 
         let selection =
             select_with_ceiling(&mut candidates, Some(config.client_ceiling_bytes), 0);
+        // Everything that was ranked but did not fit. This is the only drop
+        // site that is genuinely about bandwidth; the five above are policy,
+        // and telling them apart is the point of the audit.
+        if let Some(audit) = audit.as_mut() {
+            let won: std::collections::HashSet<usize> =
+                selection.selected_indices.iter().copied().collect();
+            for candidate in candidates.iter() {
+                if won.contains(&candidate.index) {
+                    continue;
+                }
+                let shared_record = &shared.records[candidate.index];
+                let slot = shared_record.slot as usize;
+                let body_state = state.slots.get(slot).cloned().unwrap_or_default();
+                note_outcome(audit, shared, shared_record, &body_state, SendOutcome::Ceiling);
+            }
+        }
         let mut selected: Vec<BodyRecord> = selection
             .selected_indices
             .iter()
@@ -757,15 +851,23 @@ impl ChunkStreamEncoder {
             if slot >= state.slots.len() {
                 state.slots.resize(slot + 1, ClientBodyState::default());
             }
+            // Noted BEFORE the overwrite: the error this record avoided is
+            // measured against the pose the client was holding until now.
+            if let Some(audit) = audit.as_mut() {
+                note_outcome(
+                    audit, shared, shared_record, &state.slots[slot], SendOutcome::Sent);
+            }
             state.slots[slot].last_sent =
                 Some((shared.sim_tick, shared_record.record.pose));
         }
-        encode_chunks_datagrams(
+        let datagrams = encode_chunks_datagrams(
             &selected,
             &mut state.sequence,
             self.baseline_id,
             shared.sim_tick,
-        )
+        );
+        self.audit = audit;
+        datagrams
     }
 
     /// Reliable topology messages staged since the last take — identical

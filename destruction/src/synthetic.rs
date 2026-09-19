@@ -630,11 +630,68 @@ mod tests {
         assert!(datagram_packets > 0, "kinematic stream must flow");
         assert!(saw_settle);
 
+        // (bootstrap check below)
         // A late joiner's bootstrap reflects the final state.
         let bootstrap =
             crate::wire::decode_bootstrap(&encoder.bootstrap_message(999)).expect("bootstrap");
         assert_eq!(bootstrap.manifest_hash, manifest.hash());
         assert!(!bootstrap.islands.is_empty());
         assert!(bootstrap.islands.iter().any(|island| island.settled));
+    }
+
+    /// Every body the encoder looks at must land in exactly one cell of the
+    /// funnel, or the cross-tab is a set of numbers that do not add up and
+    /// nothing can be concluded from it.
+    ///
+    /// This is the invariant that makes the audit worth reading: the six gates
+    /// partition the candidates, so the totals reconcile against the one
+    /// number the encoder decides independently -- how many records it ranked.
+    #[test]
+    fn the_send_audit_accounts_for_every_body_it_evaluates() {
+        use crate::send_audit::{BodyPhase, SendOutcome};
+
+        let manifest = tower_manifest();
+        let mut backend = SyntheticDestruction::from_manifest(&manifest, 60);
+        let mut encoder = ChunkStreamEncoder::new(&manifest, EncoderConfig::validated(60));
+        encoder.add_client(1);
+        encoder.enable_send_audit();
+        let camera = Camera {
+            eye: Vec3::new(0.0, 3.0, -15.0),
+            direction: Vec3::Z,
+            fov_degrees: 70.0,
+        };
+        backend.apply_explosion([0.0, 3.5, 0.0], 3.0, 400.0);
+
+        let mut evaluated = 0u64;
+        let mut sends = 0u64;
+        for tick in 0..(60 * 4) {
+            let output = backend.tick_after_fetch(1.0 / 60.0, [0.0, -9.81, 0.0]).expect("tick");
+            let snapshots = backend.body_snapshots();
+            encoder.ingest_tick(tick, &snapshots, &output, &[]);
+            encoder.take_topology_messages();
+            if tick % 2 == 0 {
+                encoder.maybe_emit_baseline(tick);
+                let shared = encoder.encode_send(tick);
+                evaluated += shared.eval_order.len() as u64;
+                encoder.client_datagrams(1, camera, &shared);
+                sends += 1;
+            }
+        }
+
+        let audit = encoder.send_audit().expect("audit enabled");
+        assert_eq!(audit.sends(), sends);
+        let counted: u64 = BodyPhase::ALL
+            .iter()
+            .map(|&phase| audit.phase_total(phase).count)
+            .sum();
+        assert_eq!(
+            counted, evaluated,
+            "funnel lost {} of {evaluated} evaluated bodies",
+            evaluated as i64 - counted as i64
+        );
+        assert!(
+            audit.cell(BodyPhase::JustFreed, SendOutcome::Sent).count > 0,
+            "an explosion must produce newly-freed bodies that get sent"
+        );
     }
 }
