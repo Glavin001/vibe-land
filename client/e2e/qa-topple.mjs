@@ -39,11 +39,23 @@ await page.waitForTimeout(7000);
 // recording only; nothing about the render path changes.
 await page.addStyleTag({
   content: `
-    [class*="overlay"], [class*="Overlay"], [class*="panel"], [class*="Panel"],
-    [class*="hud"], [class*="Hud"], [class*="controls"], [class*="Controls"],
-    [class*="stats"], [class*="Stats"] { display: none !important; }
-    canvas { z-index: 9999 !important; }
+    [data-testid="city-stats-overlay"], [data-testid="debug-overlay"],
+    [data-testid="city-stats-show"], [data-testid="damage-overlay"] {
+      display: none !important;
+    }
   `,
+});
+// Belt and braces: anything fixed-position and opaque that is not the canvas.
+await page.evaluate(() => {
+  for (const el of Array.from(document.querySelectorAll('body *'))) {
+    const node = el;
+    if (node.tagName === 'CANVAS') continue;
+    const style = getComputedStyle(node);
+    if (style.position === 'fixed' || style.position === 'absolute') {
+      const r = node.getBoundingClientRect();
+      if (r.width > 200 && r.height > 120) node.style.display = 'none';
+    }
+  }
 });
 await page.waitForTimeout(500);
 
@@ -85,7 +97,11 @@ console.log('visibility  :', JSON.stringify(c.visibilityFlips),
 console.log('teleports   :', c.drawnTeleports, JSON.stringify(c.drawnTeleportBy));
 console.log('presentation:', `implausible ${c.implausibleJumps} snaps ${c.correctionSnaps}`
   + ` rollbacks ${c.clockRollbacks} refusedReanchors ${c.renderClockReanchorsRefused}`
-  + ` starvedReadmissions ${c.starvedReadmissions}`);
+  + ` starvedReadmissions ${c.starvedReadmissions}`
+  + ` repairsGlided ${c.repairBodiesGlided} repairs ${c.structureRepairs}`
+  + ` bootstrapSeen ${c.bootstrapPosesSeen} gone ${c.bootstrapPosesGone}`
+  + ` glided ${c.bootstrapPosesGlided} snapped ${c.bootstrapPosesSnapped}`
+  + ` bootstraps ${c.bootstraps}`);
 
 // The same payload SEND REPORT posts, kept locally so the rings can be read
 // without going through the server's folder.

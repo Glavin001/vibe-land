@@ -88,6 +88,12 @@ export interface CityClientStats {
   /// what a waking body needs and what neither of the other two seeds covered.
   /// Re-anchors that would have moved the render clock backwards.
   renderClockReanchorsRefused: number;
+  /// Bodies carried across a structure repair rather than cut to its poses.
+  bootstrapPosesSeen: number;
+  bootstrapPosesGone: number;
+  bootstrapPosesGlided: number;
+  bootstrapPosesSnapped: number;
+  repairBodiesGlided: number;
   wakeSeeds: number;
   starvedReadmissions: number;
   settlesRestored: number;
@@ -180,6 +186,16 @@ const RESYNC_MIN_INTERVAL_MS = 3000;
  * server that has not been updated or a scene that has widened its own bound.
  */
 const WORLD_BOUND_M = 1000;
+
+/**
+ * How far a body may have moved and still be carried across a bootstrap.
+ *
+ * Generous against a collapse -- debris crosses tens of metres between a
+ * client noticing it is holed and the repair arriving -- and far below what a
+ * replaced world looks like, where the same key lands somewhere unrelated or
+ * does not exist at all.
+ */
+const BOOTSTRAP_GLIDE_MAX_M = 40;
 
 /**
  * How long a body may go unserved before its next record is treated as a
@@ -431,6 +447,13 @@ export class CityClient {
   /** Settles whose hard ledger write was put back for the track to glide. */
   /** Bodies re-anchored to their drawn pose after going unserved. */
   /** Tracks started from the ledger pose rather than from nothing. */
+  /** Bodies carried across a structure repair instead of cut to its poses. */
+  /** Bodies carried across a bootstrap, and bodies too far to carry. */
+  private bootstrapPosesSeen = 0;
+  private bootstrapPosesGone = 0;
+  private bootstrapPosesGlided = 0;
+  private bootstrapPosesSnapped = 0;
+  private repairBodiesGlided = 0;
   private wakeSeeds = 0;
   private starvedReadmissions = 0;
   private settlesRestored = 0;
@@ -972,7 +995,22 @@ export class CityClient {
         break;
       case PKT_CITY_BOOTSTRAP: {
         const message = decodeBootstrap(bytes);
+        // Where everything is drawn, if this is a RESYNC rather than a join.
+        //
+        // A bootstrap replaces the whole ledger and clears every presentation
+        // track, so the entire city moves to the bootstrapped poses in a single
+        // frame. That is right for a join or a city reset, where there is
+        // nothing on screen to be continuous with -- and wrong for a resync,
+        // where the same world is still being drawn and only the client's copy
+        // of it was holed. Toppling a tower produced runs with 48,210 drawn
+        // chunk teleports, which is twice the city's 24,105 chunks: two
+        // whole-city jumps, and nothing else in a collapse moves every chunk
+        // at once.
+        const drawnBefore = this.bootstrapped ? this.captureAllDrawnPoses() : null;
         this.topology.applyBootstrap(message);
+        if (drawnBefore) {
+          this.restoreDrawnPosesAfterBootstrap(drawnBefore);
+        }
         this.bodies.clear();
         this.kinetic.clear();
         this.pendingRecords = [];
@@ -1073,17 +1111,71 @@ export class CityClient {
           }
           break;
         }
+        const repaired = new Set(message.structures.map((structure) => structure.structureId));
+        // Where every affected body is DRAWN, before the repair replaces it.
+        //
+        // A repair rewrites the ledger pose of every body in the structure and
+        // then deleted every presentation track for it, so there was nothing
+        // left to carry the change: the whole structure moved to the repaired
+        // poses in one frame. The city is authored as ONE structure, so that is
+        // the entire city jumping at once, which is what a player watching a
+        // collapse reports as a big part of the building teleporting. Repairs
+        // are not rare during heavy destruction -- a rejected settle asks for
+        // one, and a live session counted 32.
+        const drawnBefore = new Map<number, { position: Vec3; rotation: Quat }>();
+        for (const body of this.topology.allBodies()) {
+          if (repaired.has(body.structureId) && this.bodies.has(body.key)) {
+            drawnBefore.set(body.key, {
+              position: [body.position[0], body.position[1], body.position[2]],
+              rotation: [...body.rotation] as Quat,
+            });
+          }
+        }
         this.topology.applyStructureBootstrap(message);
         noteClientEvent('structureRepair', {
           topoSeq: message.topoSeq,
           structures: message.structures.map((structure) => structure.structureId),
         });
-        const repaired = new Set(message.structures.map((structure) => structure.structureId));
+        const repairRenderTick = this.renderTickNow(performance.now());
         for (const key of [...this.bodies.keys()]) {
-          if (repaired.has(bodyKeyParts(key).structureId)) {
+          if (!repaired.has(bodyKeyParts(key).structureId)) {
+            continue;
+          }
+          const body = this.topology.body(key);
+          const state = this.bodies.get(key);
+          const before = drawnBefore.get(key);
+          if (!body || !state || !before) {
+            // Gone from the repaired ledger, or never had a track: there is
+            // nothing to glide and the repaired pose stands.
             this.bodies.delete(key);
             this.kinetic.delete(key);
+            continue;
           }
+          // Glide instead: put the drawn pose back, anchor the track to it, and
+          // hand it the repaired pose to move to over the usual correction.
+          const target: Vec3 = [body.position[0], body.position[1], body.position[2]];
+          const targetRotation = [...body.rotation] as Quat;
+          this.topology.updateBodyPose(key, before.position, before.rotation, 'presented');
+          state.track.seedPresented(
+            {
+              position: before.position,
+              rotation: before.rotation,
+              linearVelocity: [0, 0, 0],
+              angularVelocity: [0, 0, 0],
+            },
+            repairRenderTick,
+          );
+          state.track.push({
+            tick: message.simTick,
+            position: target,
+            rotation: targetRotation,
+            linearVelocity: [0, 0, 0],
+            angularVelocity: [0, 0, 0],
+            class: PresentationClass.Quiescent,
+          });
+          state.lastTick = message.simTick;
+          this.kinetic.add(key);
+          this.repairBodiesGlided += 1;
         }
         this.structureRepairs += 1;
         // Repaint ONLY the repaired structures — restating the whole world
@@ -1557,6 +1649,62 @@ export class CityClient {
     return out.size > 0 ? out : null;
   }
 
+  /** Every body's current ledger pose: where its chunks are drawn right now. */
+  private captureAllDrawnPoses(): Map<number, { position: Vec3; rotation: Quat }> {
+    const out = new Map<number, { position: Vec3; rotation: Quat }>();
+    for (const body of this.topology.allBodies()) {
+      out.set(body.key, {
+        position: [body.position[0], body.position[1], body.position[2]],
+        rotation: [...body.rotation] as Quat,
+      });
+    }
+    return out;
+  }
+
+  /**
+   * Put the drawn poses back after a bootstrap, where that is still the same
+   * body in the same place.
+   *
+   * A bootstrap replaces the whole ledger, and the tracks are cleared with it,
+   * so without this the entire city moves to the bootstrapped poses in one
+   * frame. That is right for a join or a city reset -- nothing is on screen to
+   * be continuous with -- and wrong for a resync, where the same world is
+   * still being drawn and only this client's copy of it was holed.
+   *
+   * The two are told apart by evidence rather than by a flag the wire does not
+   * carry: a body is restored only if it still exists after the bootstrap and
+   * has not moved further than a collapse could have moved it unnoticed. A
+   * genuine world replacement satisfies neither -- its island serials restart,
+   * so the old keys are mostly absent, and what survives is somewhere else
+   * entirely. The next record then builds a track seeded from the restored
+   * pose (see `createBodyState`) and glides to the bootstrapped one.
+   */
+  private restoreDrawnPosesAfterBootstrap(
+    drawnBefore: Map<number, { position: Vec3; rotation: Quat }>,
+  ): void {
+    this.bootstrapPosesSeen += drawnBefore.size;
+    for (const [key, pose] of drawnBefore) {
+      const body = this.topology.body(key);
+      if (!body) {
+        this.bootstrapPosesGone += 1;
+        continue;
+      }
+      const drift = Math.hypot(
+        body.position[0] - pose.position[0],
+        body.position[1] - pose.position[1],
+        body.position[2] - pose.position[2],
+      );
+      if (drift > BOOTSTRAP_GLIDE_MAX_M) {
+        this.bootstrapPosesSnapped += 1;
+        continue;
+      }
+      if (drift > PRESENTATION_EPSILON_M) {
+        this.topology.updateBodyPose(key, pose.position, pose.rotation, 'presented');
+        this.bootstrapPosesGlided += 1;
+      }
+    }
+  }
+
   private captureDrawnPoses(message: TopologyMessage): void {
     this.drawnChunkPose.clear();
     if (this.latestSimTickAtMs === 0) {
@@ -1909,6 +2057,11 @@ export class CityClient {
       presentationAnomalyMaxM: this.presentationAnomalyMaxM,
       recordsOutsideWorld: this.recordsOutsideWorld,
       renderClockReanchorsRefused: this.renderClockReanchorsRefused,
+      bootstrapPosesSeen: this.bootstrapPosesSeen,
+      bootstrapPosesGone: this.bootstrapPosesGone,
+      bootstrapPosesGlided: this.bootstrapPosesGlided,
+      bootstrapPosesSnapped: this.bootstrapPosesSnapped,
+      repairBodiesGlided: this.repairBodiesGlided,
       wakeSeeds: this.wakeSeeds,
       starvedReadmissions: this.starvedReadmissions,
       settlesRestored: this.settlesRestored,

@@ -144,6 +144,7 @@ let lastDrawn = -1;
 let worstDropChunks = 0;
 let worstDropAabbM = 0;
 let dropFrames = 0;
+let cameraMovedFrames = 0;
 let visibilityHidden = 0;
 let visibilityShown = 0;
 /** Chunks hidden together on one body in one flip run, worst seen. */
@@ -259,10 +260,19 @@ export function noteVisibility(flip: Omit<VisibilityFlip, 't'>): void {
 export function noteDrawCensus(
   drawn: number,
   worst: { body: number; chunks: number; aabbM: number },
+  cameraMoved: boolean,
 ): void {
   const previous = lastDrawn;
   lastDrawn = drawn;
   if (previous < 0) {
+    return;
+  }
+  // A camera that turned explains any drop: half the city leaving the frustum
+  // is the frustum working. Without this the census was dominated by the
+  // harness walking backwards and looking round, and reported the whole city
+  // vanishing 700 times a run.
+  if (cameraMoved) {
+    cameraMovedFrames += 1;
     return;
   }
   // A drop of more than 2% of the drawn city in one frame. Ordinary settling
@@ -286,7 +296,7 @@ export function noteDrawCensus(
 
 /** Drawn-census totals: how often the drawn city collapsed, and by how much. */
 export function drawCensusTotals(): Record<string, number> {
-  return { dropFrames, worstDropChunks, worstDropAabbM, lastDrawn };
+  return { dropFrames, worstDropChunks, worstDropAabbM, lastDrawn, cameraMovedFrames };
 }
 
 /** Visibility totals for the stats panel and the QA harness. */

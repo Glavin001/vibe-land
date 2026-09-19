@@ -264,9 +264,24 @@ let countStaleDrawnChunks: ((positions: Float32Array, count: number, toleranceM:
  * "moved 2 m because it was not drawn for 500 ms" from "jumped 2 m between
  * consecutive frames", and those have entirely different root causes.
  */
+/** Set by `installChunkTeleportProbe`; see the note inside it. */
+let resetTeleportBaseline: (() => void) | null = null;
+
 function installChunkTeleportProbe(chunkCount: number): () => void {
   const previous = new Float32Array(chunkCount * 3).fill(Number.NaN);
   const lastWriteMs = new Float32Array(chunkCount).fill(Number.NaN);
+  // A full repaint rewrites every chunk from a ledger that has just been
+  // replaced, so comparing those writes against what was there before measures
+  // the bootstrap, not the renderer. Two bootstraps at join put 48,210 events
+  // into the totals -- exactly twice the city's 24,105 chunks -- and swamped
+  // everything the probe had to say about the collapse that followed. Clearing
+  // the baseline makes the next write per slot a fresh start, which is what it
+  // is.
+  resetTeleportBaseline = () => {
+    previous.fill(Number.NaN);
+    lastWriteMs.fill(Number.NaN);
+    speedEst.fill(0);
+  };
   /** EMA of each slot's own write-to-write speed, m/s. */
   const speedEst = new Float32Array(chunkCount);
   const teleportStrikes = new Map<number, number>();
@@ -361,6 +376,11 @@ export function CityChunksLayer({
   const dirtyBodiesRef = useRef<Set<number>>(new Set());
   const frameCounterRef = useRef(0);
   const lastMigrateAnomaliesRef = useRef({ missingDestination: 0, emptyDestination: 0 });
+  const lastCamRef = useRef({
+    pos: new THREE.Vector3(),
+    quat: new THREE.Quaternion(),
+    set: false,
+  });
   const teleportProbeRef = useRef<(() => void) | null>(null);
   const recorderProbesRef = useRef(false);
   const buildFailedForRef = useRef<CityClient | null>(null);
@@ -813,6 +833,11 @@ export function CityChunksLayer({
         presentationAnomalyMaxM: stats.presentationAnomalyMaxM,
         recordsOutsideWorld: stats.recordsOutsideWorld,
         renderClockReanchorsRefused: stats.renderClockReanchorsRefused,
+        bootstrapPosesSeen: stats.bootstrapPosesSeen,
+        bootstrapPosesGone: stats.bootstrapPosesGone,
+        bootstrapPosesGlided: stats.bootstrapPosesGlided,
+        bootstrapPosesSnapped: stats.bootstrapPosesSnapped,
+        repairBodiesGlided: stats.repairBodiesGlided,
         wakeSeeds: stats.wakeSeeds,
         starvedReadmissions: stats.starvedReadmissions,
         settlesRestored: stats.settlesRestored,
@@ -869,6 +894,11 @@ export function CityChunksLayer({
     // normal write path; a repainted body that is not live gets the settling
     // final-write and then costs nothing again.
     const repaint = client.drainRepaint();
+    if (repaint.all) {
+      // The ledger was replaced wholesale; nothing written before it is
+      // comparable with anything written after.
+      resetTeleportBaseline?.();
+    }
     if (repaint.all) {
       for (const body of client.topology.allBodies()) {
         dirty.add(body.key);
@@ -1132,7 +1162,16 @@ export function CityChunksLayer({
         renderStats.worstCulledLiveChunks = culledLiveChunks;
         renderStats.worstCulledAabbM = worstCulled.aabbM;
       }
-      noteDrawCensus(drawnThisFrame, worstCulled);
+      // Camera motion, so a look-away is not mistaken for the city vanishing.
+      const camPos = cam.position;
+      const moved =
+        lastCamRef.current.set
+        && (camPos.distanceToSquared(lastCamRef.current.pos) > 0.02
+          || cam.quaternion.angleTo(lastCamRef.current.quat) > 0.01);
+      lastCamRef.current.pos.copy(camPos);
+      lastCamRef.current.quat.copy(cam.quaternion);
+      lastCamRef.current.set = true;
+      noteDrawCensus(drawnThisFrame, worstCulled, moved);
     }
     const sphereEndedAt = performance.now();
     renderStats.sphereMs = sphereEndedAt - writeEndedAt;

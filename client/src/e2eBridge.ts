@@ -251,6 +251,11 @@ export interface CityE2EStats {
   /** Streamed poses refused for being outside the world. Must be 0. */
   recordsOutsideWorld: number;
   renderClockReanchorsRefused: number;
+  bootstrapPosesSeen: number;
+  bootstrapPosesGone: number;
+  bootstrapPosesGlided: number;
+  bootstrapPosesSnapped: number;
+  repairBodiesGlided: number;
   wakeSeeds: number;
   starvedReadmissions: number;
   settlesRestored: number;
