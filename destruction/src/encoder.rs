@@ -13,7 +13,7 @@ use glam::Vec3;
 
 use vibe_netcode::destruction_backend::DestructionTickOutput;
 
-use crate::classify::{Classifier, ClassifierConfig, PhysicalClass};
+use crate::classify::{Classifier, ClassifierConfig, PhysicalClass, FRESH_FALL_TICKS};
 use crate::ids;
 use crate::interest::{InterestConfig, InterestTrack, InterestView, InterestViewTrack};
 use crate::manifest::DestructionManifest;
@@ -705,7 +705,25 @@ impl ChunkStreamEncoder {
             // (up to REST_EVAL_STRIDE sends, ~0.13 s at 30 Hz). It cannot
             // cause a wrong pose, only a late one, and only for something that
             // is not moving.
-            let resting = shared_record.linear_speed <= REST_SPEED_MPS
+            // A body that has just broken loose is NOT resting rubble, even
+            // though it is moving slower than rubble for its first few ticks.
+            //
+            // That is the whole trap: the stride's guard is speed alone, and a
+            // chunk one tick into free fall is slower than the rest threshold,
+            // so the gate built to save work on settled debris was deferring
+            // the single most valuable record in the stream -- the one that
+            // tells the client this thing is falling at all. Even correctly
+            // staggered the stride costs up to REST_EVAL_STRIDE sends, which
+            // is 267 ms at 30 Hz, and the client spends all of it drawing the
+            // chunk where it used to be.
+            //
+            // Bounded: only the first FRESH_FALL_TICKS of free flight are
+            // exempt, so long-settled bodies that report no contacts keep
+            // their stride and the work this saves is not given back.
+            let newly_freed =
+                shared_record.free_ticks > 0 && shared_record.free_ticks <= FRESH_FALL_TICKS;
+            let resting = !newly_freed
+                && shared_record.linear_speed <= REST_SPEED_MPS
                 && shared_record.angular_speed <= REST_ANGULAR_RPS;
             // Staggered by SEND index, not by sim tick.
             //

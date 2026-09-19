@@ -2172,28 +2172,14 @@ impl CityRuntime {
     /// is a column of chunks that happens to be tall. This bins chunks into
     /// 8 m cells and returns the centre of whichever has the greatest height
     /// extent.
+    /// The tallest 8 m footprint in the scene, for aiming a scripted collapse.
+    ///
+    /// Delegates: the ranking and its tie-break live in one place, because the
+    /// first version of this ranked over a HashMap and picked a different
+    /// building on every process start.
     pub fn tallest_footprint(&self) -> Option<([f32; 2], f32)> {
         let (_, manifest, _) = manifest_asset()?;
-        let mut cells: HashMap<(i32, i32), (f32, f32)> = HashMap::new();
-        for structure in &manifest.structures {
-            for chunk in &structure.chunks {
-                let x = structure.world_position[0] + chunk.centroid[0];
-                let y = structure.world_position[1] + chunk.centroid[1];
-                let z = structure.world_position[2] + chunk.centroid[2];
-                let cell = ((x / 8.0).floor() as i32, (z / 8.0).floor() as i32);
-                let entry = cells.entry(cell).or_insert((f32::MAX, f32::MIN));
-                entry.0 = entry.0.min(y);
-                entry.1 = entry.1.max(y);
-            }
-        }
-        let (cell, extent) = cells
-            .iter()
-            .map(|(cell, (lo, hi))| (*cell, hi - lo))
-            .max_by(|a, b| a.1.total_cmp(&b.1))?;
-        Some((
-            [(cell.0 as f32 + 0.5) * 8.0, (cell.1 as f32 + 0.5) * 8.0],
-            extent,
-        ))
+        vibe_land_destruction::demolition::tallest_footprint(&manifest)
     }
 
     /// Queue rounds at the support chunks under a point, optionally as a wedge.
@@ -2232,57 +2218,24 @@ impl CityRuntime {
             // supports go first: taking a column out from the bottom is what
             // drops a building, and taking it out from the middle is not.
             let _ = world;
-            let mut targets: Vec<[f32; 3]> = Vec::new();
-            // A cheap deterministic shuffle/jitter: the same request always
-            // produces the same collapse, which is the point of driving it
-            // from here rather than by shooting.
-            let mut seed = self.demolition_seed;
-            let mut next = || {
-                seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
-                ((seed >> 33) as u32 as f32) / (u32::MAX as f32)
+            // One implementation of the attack shape, shared with the offline
+            // recorder's --demolish. They were two copies, and the copies had
+            // already drifted; a fixture that does not reproduce what a player
+            // triggers is worth nothing.
+            let plan = vibe_land_destruction::demolition::DemolitionPlan {
+                centre,
+                radius_m,
+                below_y,
+                heading_deg: self.demolition_heading_deg,
+                wedge_deg: self.demolition_wedge_deg,
+                jitter: self.demolition_jitter,
+                max_rounds,
+                seed: self.demolition_seed,
             };
-            for structure in &manifest.structures {
-                for chunk in &structure.chunks {
-                    let world_xyz = [
-                        structure.world_position[0] + chunk.centroid[0],
-                        structure.world_position[1] + chunk.centroid[1],
-                        structure.world_position[2] + chunk.centroid[2],
-                    ];
-                    let dx = world_xyz[0] - centre[0];
-                    let dz = world_xyz[2] - centre[1];
-                    let distance_sq = dx * dx + dz * dz;
-                    if distance_sq > radius_m * radius_m {
-                        continue;
-                    }
-                    // The wedge: only chunks within `wedge_deg` of the heading,
-                    // and the height limit ramps from full at the near edge to
-                    // nothing at the far one, so the cut is a slope rather than
-                    // a plane and the building topples along it.
-                    let mut limit = below_y;
-                    if self.demolition_wedge_deg > 0.0 {
-                        let bearing = dz.atan2(dx).to_degrees();
-                        let mut off = (bearing - self.demolition_heading_deg).rem_euclid(360.0);
-                        if off > 180.0 {
-                            off -= 360.0;
-                        }
-                        if off.abs() > self.demolition_wedge_deg {
-                            continue;
-                        }
-                        let across = 1.0 - (off.abs() / self.demolition_wedge_deg);
-                        limit = below_y * (0.25 + 0.75 * across);
-                    }
-                    if world_xyz[1] > limit {
-                        continue;
-                    }
-                    if self.demolition_jitter > 0.0 && next() < self.demolition_jitter {
-                        continue;
-                    }
-                    targets.push(world_xyz);
-                }
-            }
-            self.demolition_seed = seed;
-            targets.sort_by(|a, b| a[1].total_cmp(&b[1]));
-            targets.truncate(max_rounds);
+            let targets = vibe_land_destruction::demolition::wedge_targets(&manifest, &plan);
+            // Advance the seed so a second request on the same building cuts
+            // somewhere else rather than repeating the identical pattern.
+            self.demolition_seed = self.demolition_seed.wrapping_add(0x9E37_79B9_7F4A_7C15);
             let queued = targets.len();
             self.demolition_centre = centre;
             self.pending_demolition.extend(targets);

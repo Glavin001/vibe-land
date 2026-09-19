@@ -71,15 +71,36 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     encoder.add_client(1);
     encoder.enable_send_audit();
 
-    // From the tape, not from a flag: interest and the pixel error budget are
+    // From the tape by default: interest and the pixel error budget are
     // camera-dependent, so replaying from somewhere else would silently be a
     // different question dressed up as a comparison.
+    //
+    // --camera-eye/--camera-look override it deliberately, for the one
+    // comparison where the viewpoint IS the variable (the same collapse seen
+    // from close up and from far away). It says so on every line of output, so
+    // an overridden run can never be mistaken for the recorded one.
     let recorded = reader.camera;
-    let camera = Camera {
+    let mut camera = Camera {
         eye: glam::Vec3::from_array(recorded.eye),
         direction: glam::Vec3::from_array(recorded.direction).normalize_or_zero(),
         fov_degrees: recorded.fov_degrees,
     };
+    let mut camera_overridden = false;
+    if let Some(value) = flag("--camera-eye") {
+        camera.eye = parse_vec3(&value)?;
+        camera_overridden = true;
+    }
+    if let Some(value) = flag("--camera-look") {
+        camera.direction = (parse_vec3(&value)? - camera.eye).normalize_or_zero();
+        camera_overridden = true;
+    }
+    if let Some(value) = flag("--camera-fov") {
+        camera.fov_degrees = value.parse()?;
+        camera_overridden = true;
+    }
+    if camera_overridden && camera.direction.length_squared() < 0.5 {
+        return Err("--camera-look resolves to the eye position: no view direction".into());
+    }
 
     let started = std::time::Instant::now();
     let mut ticks = 0u32;
@@ -113,7 +134,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let audit = encoder.send_audit().expect("audit enabled");
     println!("--- {label} ---");
     println!(
-        "camera eye ({:.1}, {:.1}, {:.1}) dir ({:.2}, {:.2}, {:.2}) fov {:.0}",
+        "camera{} eye ({:.1}, {:.1}, {:.1}) dir ({:.2}, {:.2}, {:.2}) fov {:.0}",
+        if camera_overridden { " OVERRIDDEN" } else { " (recorded)" },
         camera.eye.x, camera.eye.y, camera.eye.z,
         camera.direction.x, camera.direction.y, camera.direction.z,
         camera.fov_degrees,
@@ -137,6 +159,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("wrote {path}");
     }
     Ok(())
+}
+
+/// "x,y,z" -- refused rather than silently partially parsed, because a camera
+/// that quietly became the origin would look like a legitimate distant view.
+fn parse_vec3(value: &str) -> Result<glam::Vec3, Box<dyn std::error::Error>> {
+    let parts: Vec<&str> = value.split(',').map(str::trim).collect();
+    if parts.len() != 3 {
+        return Err(format!("expected x,y,z but got {value:?}").into());
+    }
+    Ok(glam::Vec3::new(
+        parts[0].parse()?,
+        parts[1].parse()?,
+        parts[2].parse()?,
+    ))
 }
 
 fn hex(bytes: &[u8; 32]) -> String {

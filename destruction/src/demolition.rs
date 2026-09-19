@@ -57,11 +57,17 @@ impl Default for DemolitionPlan {
     }
 }
 
-/// The 8 m XZ cell with the greatest vertical extent, and that extent.
+/// The `count` tallest 8 m XZ cells, tallest first, no two within `spacing_m`.
 ///
-/// Used to aim a scripted collapse at "the tallest thing here" without
-/// hard-coding coordinates that a scene edit would silently invalidate.
-pub fn tallest_footprint(manifest: &DestructionManifest) -> Option<([f32; 2], f32)> {
+/// For attacking several buildings in one run. The spacing test is what makes
+/// them different buildings: the tallest cells in a downtown are the four or
+/// five that one tower spans, so taking the top N by height alone would fell
+/// the same tower N times and call it a multi-building collapse.
+pub fn tallest_footprints(
+    manifest: &DestructionManifest,
+    count: usize,
+    spacing_m: f32,
+) -> Vec<([f32; 2], f32)> {
     let mut cells: std::collections::HashMap<(i32, i32), (f32, f32)> =
         std::collections::HashMap::new();
     for structure in &manifest.structures {
@@ -78,30 +84,44 @@ pub fn tallest_footprint(manifest: &DestructionManifest) -> Option<([f32; 2], f3
             entry.1 = entry.1.max(y);
         }
     }
-    // Ties broken on the cell coordinate, not on hash order.
-    //
-    // A downtown has several 8 m cells that reach exactly the same height --
-    // the same tower spans four of them -- and `max_by` over a HashMap picks
-    // whichever the iterator happened to reach last. That is re-randomised per
-    // process, so the "same" scenario aimed at a different corner of the
-    // building on every run, which makes any A/B between two runs meaningless.
-    // Observed: (12,-28), (12,-44), (20,-28) and (12,-36) from four identical
-    // invocations.
-    let (cell, extent) = cells
+    let mut ranked: Vec<((i32, i32), f32)> = cells
         .iter()
         .map(|(cell, (lo, hi))| (*cell, hi - lo))
-        .max_by(|a, b| {
-            a.1.total_cmp(&b.1)
-                .then_with(|| b.0 .0.cmp(&a.0 .0))
-                .then_with(|| b.0 .1.cmp(&a.0 .1))
-        })?;
-    Some((
-        [
+        .collect();
+    // Same total order as `tallest_footprint`: height, then cell coordinate,
+    // so ties never depend on hash iteration order.
+    ranked.sort_by(|a, b| {
+        b.1.total_cmp(&a.1)
+            .then_with(|| a.0 .0.cmp(&b.0 .0))
+            .then_with(|| a.0 .1.cmp(&b.0 .1))
+    });
+    let mut chosen: Vec<([f32; 2], f32)> = Vec::new();
+    for (cell, extent) in ranked {
+        if chosen.len() >= count {
+            break;
+        }
+        let centre = [
             (cell.0 as f32 + 0.5) * FOOTPRINT_CELL_M,
             (cell.1 as f32 + 0.5) * FOOTPRINT_CELL_M,
-        ],
-        extent,
-    ))
+        ];
+        let too_close = chosen.iter().any(|(other, _)| {
+            let (dx, dz) = (centre[0] - other[0], centre[1] - other[1]);
+            dx * dx + dz * dz < spacing_m * spacing_m
+        });
+        if !too_close {
+            chosen.push((centre, extent));
+        }
+    }
+    chosen
+}
+
+/// The 8 m XZ cell with the greatest vertical extent, and that extent.
+///
+/// Delegates to `tallest_footprints` so there is one ranking and one
+/// tie-break rule. They were written twice, with the tie-break spelled in
+/// opposite directions, which is how the hash-order bug got in the first time.
+pub fn tallest_footprint(manifest: &DestructionManifest) -> Option<([f32; 2], f32)> {
+    tallest_footprints(manifest, 1, 0.0).into_iter().next()
 }
 
 /// World-space centroids of the chunks the plan attacks, lowest first.
@@ -121,11 +141,16 @@ pub fn tallest_footprint(manifest: &DestructionManifest) -> Option<([f32; 2], f3
 /// `/city-demolish` path; every shipped pack places structures axis-aligned.
 pub fn wedge_targets(manifest: &DestructionManifest, plan: &DemolitionPlan) -> Vec<[f32; 3]> {
     let mut seed = plan.seed;
+    // `>> 32`, not `>> 33`. Shifting 33 keeps only 31 bits, and dividing those
+    // by u32::MAX yields [0, 0.5) rather than [0, 1) -- which silently doubled
+    // the meaning of `jitter` and made any value at or above 0.5 discard every
+    // target. Observed as a demolition that selected 1,563 targets at jitter
+    // 0.0, 452 at 0.35 (a 71% cut, not 35%) and zero at 0.6.
     let mut next = move || {
         seed = seed
             .wrapping_mul(6364136223846793005)
             .wrapping_add(1442695040888963407);
-        ((seed >> 33) as u32 as f32) / (u32::MAX as f32)
+        (seed >> 32) as u32 as f32 / (u32::MAX as f32 + 1.0)
     };
     let jitter = plan.jitter.clamp(0.0, 0.95);
     let mut targets: Vec<[f32; 3]> = Vec::new();
@@ -379,5 +404,87 @@ mod tests {
             }
         }
         manifest
+    }
+
+    /// Several buildings means several BUILDINGS, not the same tower's four
+    /// corner cells listed four times.
+    #[test]
+    fn several_footprints_are_spaced_apart() {
+        let mut manifest = lattice();
+        let mut node = 5000u32;
+        // Three towers, 40 m apart, of decreasing height.
+        for (index, (cx, cz)) in [(0.0, 0.0), (40.0, 0.0), (80.0, 0.0)].iter().enumerate() {
+            let height = 60 - index * 10;
+            // Each spans two cells, as a real tower does.
+            for offset in [0.0f32, 6.0] {
+                for y in 0..height {
+                    manifest.structures[0]
+                        .chunks
+                        .push(chunk(node, [cx + offset, y as f32, *cz]));
+                    node += 1;
+                }
+            }
+        }
+        let found = tallest_footprints(&manifest, 3, 24.0);
+        assert_eq!(found.len(), 3, "expected three distinct buildings: {found:?}");
+        for pair in found.windows(2) {
+            assert!(pair[0].1 >= pair[1].1, "tallest first: {found:?}");
+        }
+        for (index, (centre, _)) in found.iter().enumerate() {
+            for (other, _) in found.iter().skip(index + 1) {
+                let (dx, dz) = (centre[0] - other[0], centre[1] - other[1]);
+                assert!(
+                    dx * dx + dz * dz >= 24.0 * 24.0,
+                    "{centre:?} and {other:?} are the same building"
+                );
+            }
+        }
+        // And the single-footprint helper must agree with the first of these.
+        let single = tallest_footprint(&manifest).expect("non-empty");
+        assert_eq!(single, found[0], "the two helpers disagree on the tallest");
+    }
+
+    #[test]
+    fn asking_for_more_buildings_than_exist_returns_what_there_is() {
+        let manifest = lattice();
+        let found = tallest_footprints(&manifest, 50, 40.0);
+        assert!(!found.is_empty());
+        assert!(found.len() < 50);
+    }
+
+    /// `jitter` must mean what it says: keep roughly `1 - jitter` of the
+    /// targets, across the whole range. It used to mean "keep 1 - 2*jitter",
+    /// so 0.5 and above quietly demolished nothing at all.
+    #[test]
+    fn jitter_keeps_the_fraction_it_promises() {
+        let manifest = lattice();
+        let base = DemolitionPlan {
+            centre: [2.0, 2.0],
+            radius_m: 40.0,
+            below_y: 40.0,
+            max_rounds: usize::MAX,
+            ..DemolitionPlan::default()
+        };
+        let all = wedge_targets(&manifest, &base).len() as f32;
+        assert!(all > 100.0, "need a big enough sample: {all}");
+        for jitter in [0.0f32, 0.25, 0.5, 0.75, 0.9] {
+            // Averaged over seeds, so this tests the distribution rather than
+            // one draw from it.
+            let kept: f32 = (0..16)
+                .map(|seed| {
+                    wedge_targets(
+                        &manifest,
+                        &DemolitionPlan { jitter, seed: 0x1234_5678 + seed, ..base },
+                    )
+                    .len() as f32
+                })
+                .sum::<f32>()
+                / 16.0;
+            let expected = all * (1.0 - jitter);
+            assert!(
+                (kept - expected).abs() < all * 0.05,
+                "jitter {jitter}: kept {kept:.0} of {all:.0}, expected about {expected:.0}"
+            );
+        }
     }
 }

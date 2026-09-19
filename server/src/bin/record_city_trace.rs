@@ -93,6 +93,10 @@ struct Args {
     /// Rounds released per tick. Low numbers make the failure progressive.
     demolish_per_tick: u32,
     demolish_seed: u64,
+    /// How many separate buildings to fell, tallest first.
+    demolish_buildings: u32,
+    /// Ticks between one building's attack ending and the next beginning.
+    demolish_stagger_ticks: u32,
     /// Dump exactly what the physics half hands the encoder, tick by tick.
     ///
     /// The GPU sim is not bit-deterministic, so two recordings of the same
@@ -170,6 +174,8 @@ impl Args {
         let mut demolish_below_y = 14.0f32;
         let mut demolish_per_tick = 2u32;
         let mut demolish_seed = 0x5DEECE66Du64;
+        let mut demolish_buildings = 1u32;
+        let mut demolish_stagger_ticks = 180u32;
         let mut encoder_tape_out: Option<PathBuf> = None;
         let mut generation_flags = Vec::new();
         let mut targets = 0u32;
@@ -218,6 +224,8 @@ impl Args {
                 "--demolish-below-y" => demolish_below_y = value()?.parse()?,
                 "--demolish-per-tick" => demolish_per_tick = value()?.parse()?,
                 "--demolish-seed" => demolish_seed = value()?.parse()?,
+                "--demolish-buildings" => demolish_buildings = value()?.parse()?,
+                "--demolish-stagger-ticks" => demolish_stagger_ticks = value()?.parse()?,
                 "--shot-tape-in" => shot_tape_in = Some(PathBuf::from(value()?)),
                 "--shot-tape-out" => shot_tape_out = Some(PathBuf::from(value()?)),
                 "--targets" => targets = value()?.parse()?,
@@ -292,6 +300,10 @@ impl Args {
             "--demolish-per-tick must be at least 1"
         );
         ensure!(
+            !demolish || demolish_buildings >= 1,
+            "--demolish-buildings must be at least 1"
+        );
+        ensure!(
             shot_tape_in.is_none() || generation_flags.is_empty(),
             "--shot-tape-in cannot be combined with shot generation flags: {}",
             generation_flags.join(", ")
@@ -344,6 +356,8 @@ impl Args {
             demolish_below_y,
             demolish_per_tick,
             demolish_seed,
+            demolish_buildings,
+            demolish_stagger_ticks,
             encoder_tape_out,
             packets_out,
             packets_wire,
@@ -2275,58 +2289,89 @@ fn build_demolition_tape(
     metadata: shot_tape::Metadata,
 ) -> Result<shot_tape::Tape> {
     use vibe_land_destruction::demolition::{
-        round_for_target, tallest_footprint, wedge_targets, DemolitionPlan,
+        round_for_target, tallest_footprints, wedge_targets, DemolitionPlan,
     };
 
-    let (centre, extent) = tallest_footprint(manifest)
-        .context("--demolish needs at least one chunk in the manifest")?;
-    let plan = DemolitionPlan {
-        centre,
-        radius_m: args.demolish_radius_m,
-        below_y: args.demolish_below_y,
-        heading_deg: args.demolish_heading_deg,
-        wedge_deg: args.demolish_wedge_deg,
-        jitter: args.demolish_jitter,
-        // Every target gets a tick, so the cap is the run length rather than a
-        // separate knob that could silently truncate the attack.
-        max_rounds: usize::MAX,
-        seed: args.demolish_seed,
-    };
-    let targets = wedge_targets(manifest, &plan);
-    ensure!(
-        !targets.is_empty(),
-        "--demolish selected no targets: radius {} m / below-y {} m / wedge {}° found nothing \
-         under the tallest footprint at ({:.1}, {:.1}), which stands {:.1} m",
-        args.demolish_radius_m,
-        args.demolish_below_y,
-        args.demolish_wedge_deg,
-        centre[0],
-        centre[1],
-        extent
+    // Spaced by twice the attack radius so "three buildings" is three
+    // buildings, not one tower's neighbouring footprint cells.
+    let buildings = tallest_footprints(
+        manifest,
+        args.demolish_buildings as usize,
+        args.demolish_radius_m * 2.0,
     );
+    ensure!(
+        !buildings.is_empty(),
+        "--demolish needs at least one chunk in the manifest"
+    );
+    ensure!(
+        buildings.len() == args.demolish_buildings as usize,
+        "--demolish-buildings {} but only {} footprints are more than {:.0} m apart; \
+         lower the count or the radius",
+        args.demolish_buildings,
+        buildings.len(),
+        args.demolish_radius_m * 2.0
+    );
+
     let mut tape = shot_tape::Tape::new(metadata);
-    for (index, target) in targets.iter().enumerate() {
-        let (origin, direction) = round_for_target(*target, centre);
-        let tick = args
-            .settle_ticks
-            .saturating_add(index as u32 / args.demolish_per_tick.max(1));
-        tape.shots
-            .push(shot_tape::Shot::new(tick, origin, direction));
+    let mut next_tick = args.settle_ticks;
+    for (building, (centre, extent)) in buildings.iter().enumerate() {
+        let plan = DemolitionPlan {
+            centre: *centre,
+            radius_m: args.demolish_radius_m,
+            below_y: args.demolish_below_y,
+            heading_deg: args.demolish_heading_deg,
+            wedge_deg: args.demolish_wedge_deg,
+            jitter: args.demolish_jitter,
+            // Every target gets a tick, so the cap is the run length rather
+            // than a separate knob that could silently truncate the attack.
+            max_rounds: usize::MAX,
+            // Per building, so two towers in one run are not cut identically.
+            seed: args.demolish_seed.wrapping_add(building as u64 * 0x9E3779B9),
+        };
+        let targets = wedge_targets(manifest, &plan);
+        ensure!(
+            !targets.is_empty(),
+            "--demolish selected no targets for the building at ({:.1}, {:.1}), which stands \
+             {:.1} m: radius {} m / below-y {} m / wedge {}° found nothing",
+            centre[0],
+            centre[1],
+            extent,
+            args.demolish_radius_m,
+            args.demolish_below_y,
+            args.demolish_wedge_deg
+        );
+        let first_tick = next_tick;
+        for (index, target) in targets.iter().enumerate() {
+            let (origin, direction) = round_for_target(*target, *centre);
+            let tick = first_tick.saturating_add(index as u32 / args.demolish_per_tick.max(1));
+            tape.shots
+                .push(shot_tape::Shot::new(tick, origin, direction));
+            next_tick = next_tick.max(tick);
+        }
+        println!(
+            "demolish {}/{}: {} rounds at ({:.1}, {:.1}), {:.1} m tall | ticks {}..{}",
+            building + 1,
+            buildings.len(),
+            targets.len(),
+            centre[0],
+            centre[1],
+            extent,
+            first_tick,
+            next_tick,
+        );
+        next_tick = next_tick.saturating_add(args.demolish_stagger_ticks);
     }
     println!(
-        "demolish: {} rounds at the tallest footprint ({:.1}, {:.1}), {:.1} m tall | \
-         wedge {}° heading {}° jitter {:.2} | {} per tick from tick {} to {}",
+        "demolish: {} rounds total | wedge {}° heading {}° jitter {:.2} | {} per tick",
         tape.shots.len(),
-        centre[0],
-        centre[1],
-        extent,
         args.demolish_wedge_deg,
         args.demolish_heading_deg,
         args.demolish_jitter,
         args.demolish_per_tick,
-        args.settle_ticks,
-        tape.shots.last().map(|shot| shot.tick).unwrap_or(0),
     );
+    // The firing loop consumes the tape with a forward-only cursor, so the
+    // shots must be in tick order -- staggered buildings are not.
+    tape.shots.sort_by_key(|shot| shot.tick);
     Ok(tape)
 }
 

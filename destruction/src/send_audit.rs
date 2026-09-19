@@ -31,11 +31,7 @@ use std::collections::HashMap;
 
 use serde::Serialize;
 
-/// Consecutive free-flight ticks below which a fall counts as "just started".
-/// 30 ticks is half a second at 60 Hz -- long enough to cover the classifier's
-/// hold plus a few missed sends, short enough that a body still on this
-/// counter has not yet fallen far enough to look wrong.
-pub const FRESH_FALL_TICKS: u16 = 30;
+pub use crate::classify::FRESH_FALL_TICKS;
 
 /// Angular speed above which free flight is tumbling rather than dropping.
 /// Rotation is the part of a fall a client cannot predict well, so it is worth

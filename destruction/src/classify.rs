@@ -46,6 +46,14 @@ impl Default for ClassifierConfig {
     }
 }
 
+/// Free-flight ticks below which a fall counts as "just begun".
+///
+/// Half a second at 60 Hz. Long enough to cover the classifier's own hold plus
+/// a few missed sends; short enough that a body still inside it has not fallen
+/// far enough to look wrong. Both the scheduler (which must not defer these)
+/// and the send audit (which buckets them) read this, so the two cannot drift.
+pub const FRESH_FALL_TICKS: u16 = 30;
+
 #[derive(Clone, Copy, Debug)]
 pub struct Classifier {
     class: PhysicalClass,
