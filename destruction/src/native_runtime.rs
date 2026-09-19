@@ -300,6 +300,27 @@ struct TrackedBody {
     speed: f32,
 }
 
+/// The stage's own status on the tick a body was ejected.
+fn log_explosion_stage(status: &NativeStatus) {
+    eprintln!(
+        "[destruction]   stage frame {} error {} converged {} iterations {} \
+         correctionPasses {} stressPasses {} brokenBonds {} postCorrectionBroken {} \
+         crushed {} clusters {} stressIslands {} contacts {}",
+        status.frame,
+        status.error,
+        status.converged,
+        status.iterations,
+        status.correction_passes,
+        status.stress_passes,
+        status.broken_bonds,
+        status.post_correction_broken_bonds,
+        status.crushed_chunks,
+        status.cluster_count,
+        status.stress_island_count,
+        status.normal_contacts,
+    );
+}
+
 /// What appeared beside a body in the tick it was ejected.
 fn log_explosion_cause(born: usize, nearest: Option<(u32, f32, [f32; 3])>) {
     match nearest {
@@ -777,6 +798,17 @@ no observation this tick",
                                 self.born_this_tick.len(),
                                 nearest,
                             );
+                            // The stage's own account of the tick that did it.
+                            //
+                            // The victims are settled, spatially clustered,
+                            // and nothing new appears within 39 m of them, so
+                            // whatever ejects a whole pile at once is internal
+                            // to the step rather than a body arriving. These
+                            // are the levers that step has: an internal
+                            // correction pass that restores and re-resolves
+                            // the rigid scene, a stress solve that may not
+                            // have converged, and the error bits.
+                            log_explosion_stage(&self.last_status);
                             self.explosions.push(ExplosionSample {
                                 entity,
                                 age_ticks: self.ticks.saturating_sub(slot.first_tick),
