@@ -47,6 +47,27 @@ export interface PresentationConfig {
   snapDistanceMeters: number;
 }
 
+/**
+ * How fast a correction may carry a body, m/s, and the longest it may take.
+ *
+ * Debris in this world travels at 40-70 m/s, so a correction that moves at 30
+ * reads as the body hurrying rather than as something teleporting, and stays
+ * slower than the motion it is correcting. The cap stops a very large
+ * correction from being visible as a slow drift for several seconds.
+ */
+const CORRECTION_SPEED_MPS = 30;
+const MAX_CORRECTION_SECONDS = 1.0;
+
+/** /city?glideCorrections=0 restores abandoning large corrections. */
+const GLIDE_LARGE_CORRECTIONS = (() => {
+  try {
+    return new URLSearchParams(globalThis.location?.search ?? '')
+      .get('glideCorrections') !== '0';
+  } catch {
+    return true;
+  }
+})();
+
 /** Explicit 60 Hz config (≈100 ms delay / 133 ms max extrapolation). */
 export function presentationConfig60Hz(): PresentationConfig {
   return {
@@ -324,6 +345,16 @@ export class PresentationTrack {
   lastSampleSettled = false;
 
   /**
+   * The window the CURRENT correction is being spread over, seconds.
+   *
+   * Stretched for a large correction so the body arrives at a speed debris
+   * plausibly moves at instead of being dragged across the map by a fixed
+   * quarter second -- which was the reason large corrections used to be
+   * abandoned, and abandoning them is what produced the teleport.
+   */
+  private correctionSecondsActive = 0;
+
+  /**
    * Resize the playout buffer.
    *
    * Per track because each one owns a copy of the config. Callers must slew
@@ -388,11 +419,46 @@ export class PresentationTrack {
           ),
         };
         const correctionDistance = vLength(correction.position);
-        if (correctionDistance > this.config.snapDistanceMeters) {
+        // Abandoning a correction IS the teleport.
+        //
+        // Zeroing it puts the body straight onto the revised path, which moves
+        // it by exactly `correctionDistance` in one frame -- and that is the
+        // artefact left in the numbers after everything else was fixed: about
+        // three thousand drawn chunk steps over thirty-two metres per tower
+        // collapse, all of them on this writer.
+        //
+        // The reason for abandoning was that gliding a large correction drags
+        // the body across the map at whatever speed the fixed quarter-second
+        // implies. That is answered by stretching the glide instead of
+        // refusing it: the correction is spread over however long it takes to
+        // cover at a speed debris plausibly moves at, so the body arrives
+        // continuously rather than appearing somewhere else. Beyond
+        // `snapDistanceMeters * 24` it is not a correction at all -- it is a
+        // different place -- and that still snaps.
+        //
+        // Every case that used to need the snap now announces itself instead:
+        // promotions, wakes, starved re-admissions, structure repairs and
+        // resync bootstraps all seed the track explicitly, so what reaches here
+        // is an ordinary late packet.
+        if (GLIDE_LARGE_CORRECTIONS
+          && correctionDistance <= this.config.snapDistanceMeters * 24) {
+          this.correction = correction;
+          this.correctionSecondsActive = Math.max(
+            this.config.correctionSeconds,
+            Math.min(MAX_CORRECTION_SECONDS, correctionDistance / CORRECTION_SPEED_MPS),
+          );
+        } else if (correctionDistance > this.config.snapDistanceMeters) {
+          // Reported only when it actually snaps, so the counter means what it
+          // says: a discontinuity that was presented, not one that was
+          // considered. With gliding on this fires for a correction beyond
+          // twenty-four times the glide limit, which is a different place
+          // rather than a late packet.
           this.onAnomaly?.({ kind: 'correction_snap', magnitude: correctionDistance });
           this.correction = zeroCorrection();
+          this.correctionSecondsActive = this.config.correctionSeconds;
         } else {
           this.correction = correction;
+          this.correctionSecondsActive = this.config.correctionSeconds;
         }
       }
     }
@@ -474,13 +540,16 @@ export class PresentationTrack {
   }
 
   private decayCorrection(seconds: number): void {
-    if (this.config.correctionSeconds <= EPSILON) {
+    const over = this.correctionSecondsActive > 0
+      ? this.correctionSecondsActive
+      : this.config.correctionSeconds;
+    if (over <= EPSILON) {
       this.correction = zeroCorrection();
       return;
     }
     // Four time constants leaves ~9% of a critically damped zero-velocity
-    // displacement after correctionSeconds.
-    const omega = 4 / this.config.correctionSeconds;
+    // displacement after the correction window.
+    const omega = 4 / over;
     [this.correction.position, this.correction.linearVelocity] = criticalStep(
       this.correction.position,
       this.correction.linearVelocity,

@@ -92,6 +92,7 @@ await page.waitForTimeout(10000);
 const c = await city(page);
 console.log(`\nfinal: bonds ${c.brokenBonds} awake ${c.chunksAwake} islands ${c.liveIslands}`);
 console.log('visual audit:', JSON.stringify(c.visualAudit));
+console.log(`snaps ${c.correctionSnaps} worst ${(c.presentationAnomalyMaxM ?? 0).toFixed(1)} m`);
 console.log('visibility  :', JSON.stringify(c.visibilityFlips),
   `hidden ${c.chunksHidden} unhidden ${c.chunksUnhidden}`);
 console.log('teleports   :', c.drawnTeleports, JSON.stringify(c.drawnTeleportBy));

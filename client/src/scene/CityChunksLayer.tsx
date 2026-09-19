@@ -376,6 +376,8 @@ export function CityChunksLayer({
   const dirtyBodiesRef = useRef<Set<number>>(new Set());
   const frameCounterRef = useRef(0);
   const lastMigrateAnomaliesRef = useRef({ missingDestination: 0, emptyDestination: 0 });
+  /** Bootstraps + repairs seen, to spot a ledger the probe cannot compare across. */
+  const lastLedgerEpochRef = useRef(-1);
   const lastCamRef = useRef({
     pos: new THREE.Vector3(),
     quat: new THREE.Quaternion(),
@@ -894,9 +896,16 @@ export function CityChunksLayer({
     // normal write path; a repainted body that is not live gets the settling
     // final-write and then costs nothing again.
     const repaint = client.drainRepaint();
-    if (repaint.all) {
-      // The ledger was replaced wholesale; nothing written before it is
-      // comparable with anything written after.
+    // The ledger was replaced wholesale; nothing written before it is
+    // comparable with anything written after. `repaint.all` catches most of
+    // it, and a bootstrap or a structure repair rewrites every body of a
+    // structure without necessarily setting it -- which left 24,105 events,
+    // one per chunk, in runs that had one, and those runs were the ones that
+    // looked catastrophic.
+    const ledgerStats = client.stats();
+    const ledgerEpoch = ledgerStats.bootstraps + ledgerStats.structureRepairs;
+    if (repaint.all || ledgerEpoch !== lastLedgerEpochRef.current) {
+      lastLedgerEpochRef.current = ledgerEpoch;
       resetTeleportBaseline?.();
     }
     if (repaint.all) {
