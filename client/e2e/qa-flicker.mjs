@@ -80,12 +80,29 @@ const say = async (what) => {
 
 await page.evaluate(() => window.__VIBE_DRIVE__.faceCity());
 await page.waitForTimeout(400);
+
+// --demolish uses the server endpoint instead of shooting: same collapse every
+// run, which is the only way an A/B on a chaotic collapse means anything.
+const DEMOLISH = argv.includes('--demolish');
+if (DEMOLISH) {
+  const demolish = (b) => fetch(`${API}/city-demolish/${MATCH}`, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(b),
+  }).catch(() => {});
+  for (let pass = 0; pass < 4; ++pass) {
+    const t = (pass / 3) * 2 - 1;
+    for (const [radius_m, below_y] of [[20, 10], [20, 16], [24, 22]]) {
+      await demolish({ x: -36 + t * 40, z: -36 + t * 40, radius_m, below_y, rounds: 400 });
+      await page.waitForTimeout(1800);
+    }
+  }
+  await page.waitForTimeout(8000);
+}
 const p = await player(page);
 const range = Math.hypot(p.position[0], p.position[2]);
 await say('before');
 
 let peakAwake = 0;
-for (let shot = 0; shot < SHOTS; ++shot) {
+for (let shot = 0; shot < (DEMOLISH ? 0 : SHOTS); ++shot) {
   // Walk the aim up the face of the same building rather than sweeping across
   // the skyline: the goal is one structure losing its footing.
   const lift = Math.atan2(0.5 * 9.81 * (range / 60) ** 2, range);

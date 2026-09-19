@@ -61,6 +61,8 @@ export interface CityClientStats {
   presentedJumpsOver1m: number;
   presentedJumpsOver4m: number;
   presentedJumpMaxM: number;
+  reoffsets: number;
+  reoffsetMetres: number;
   adoptionJumps: number;
   adoptionJumpMaxM: number;
   adoptionJumpMetres: number;
@@ -78,6 +80,22 @@ export interface CityClientStats {
   presentationAnomalyMaxM: number;
   /// Streamed poses refused for being outside the world. Must be 0.
   recordsOutsideWorld: number;
+  /// Settles whose hard ledger write was put back so the track could glide it,
+  /// and settles with no track left, where the hard write stands.
+  /// Bodies re-anchored to their drawn pose after the server stopped serving
+  /// them long enough for their track to give up.
+  starvedReadmissions: number;
+  settlesRestored: number;
+  settlesLeftHard: number;
+  /// Promotion-continuity seeding: how many islands a fracture created, and
+  /// how many of them had their presented pose anchored to where their chunks
+  /// were already drawn. The gap is chunks jumping at the fracture.
+  promotionsSeen: number;
+  promotionsSeeded: number;
+  promotionsSeedSkippedReused: number;
+  promotionsSeedSkippedNoBody: number;
+  promotionsSeedSkippedNoDrawnPose: number;
+  promotionsUnseeded: number;
   liveIslands: number;
   topoSeqGaps: number;
   datagramsReceived: number;
@@ -119,6 +137,15 @@ interface BodyStreamState {
   settledHint: boolean;
   /** Last pose handed to the renderer, for skipping motionless bodies. */
   lastPresented?: { position: Vec3; rotation: Quat };
+  /**
+   * Speed of the last presented sample, m/s.
+   *
+   * Kept so the renderer's teleport probe can judge a step against what this
+   * body is KNOWN to be doing rather than against an average of the steps it
+   * has already taken. The difference decides whether a collapse reads as
+   * thousands of teleports or as thousands of chunks starting to fall.
+   */
+  lastPresentedSpeed?: number;
 }
 
 /**
@@ -148,6 +175,25 @@ const RESYNC_MIN_INTERVAL_MS = 3000;
  * server that has not been updated or a scene that has widened its own bound.
  */
 const WORLD_BOUND_M = 1000;
+
+/**
+ * How long a body may go unserved before its next record is treated as a
+ * re-admission rather than a continuation, in sim ticks.
+ *
+ * Half a second. Below that the track's own interpolation and correction cover
+ * the gap; beyond it the track has given up, been dropped from the per-frame
+ * walk, and its chunks are frozen somewhere the body no longer is.
+ */
+const STARVED_TICKS = 30;
+
+/** /city?seedStarved=0 restores the snap this replaced. */
+const SEED_ON_STARVED_READMISSION = (() => {
+  try {
+    return new URLSearchParams(globalThis.location?.search ?? '').get('seedStarved') !== '0';
+  } catch {
+    return true;
+  }
+})();
 
 /**
  * Forbid the render clock from running backwards. On by default.
@@ -375,6 +421,27 @@ export class CityClient {
    * retired, and every one of them poisons the anomaly counters around it.
    */
   private recordsOutsideWorld = 0;
+  /** Settles whose hard ledger write was put back for the track to glide. */
+  /** Bodies re-anchored to their drawn pose after going unserved. */
+  private starvedReadmissions = 0;
+  private settlesRestored = 0;
+  /** Settles with no track left to glide them, so the hard write stands. */
+  private settlesLeftHard = 0;
+  /**
+   * How the promotion-continuity seeding is actually going.
+   *
+   * Every fracture promotes islands, and each one either gets its presented
+   * pose anchored to where its chunks are already drawn or it does not. The
+   * ones that do not are the chunks that jump the instant a building breaks,
+   * and until these were counted there was no way to tell whether the seeding
+   * covered one promotion in a thousand or all of them.
+   */
+  private promotionsSeen = 0;
+  private promotionsSeeded = 0;
+  private promotionsSeedSkippedReused = 0;
+  private promotionsSeedSkippedNoBody = 0;
+  private promotionsSeedSkippedNoDrawnPose = 0;
+  private promotionsUnseeded = 0;
   /** Preallocated sampling buffers -- one FFI call per frame, no garbage. */
   private sampleLanes = new Uint32Array(4096);
   private samplePoses = new Float32Array(4096 * 7);
@@ -740,6 +807,16 @@ export class CityClient {
     return { all, bodies };
   }
 
+  /**
+   * Speed of a body's last presented sample, m/s, or 0 if it has none.
+   *
+   * For the renderer's teleport probe: a step is only anomalous if the body's
+   * own motion cannot account for it, and the body's own motion is known here.
+   */
+  bodyPresentedSpeed(key: number): number {
+    return this.bodies.get(key)?.lastPresentedSpeed ?? 0;
+  }
+
   /** Route one raw server packet (kind 119-122). */
   handlePacket(bytes: Uint8Array): void {
     if (bytes.length === 0) {
@@ -1013,7 +1090,36 @@ export class CityClient {
     // Read where the chunks about to be re-parented are drawn, before the
     // ledger moves them.
     this.captureDrawnPoses(message);
+    // Where every settling body is drawn right now, so the settle's hard write
+    // to the ledger can be put back.
+    //
+    // `topology.apply` assigns `body.position` from the settle directly,
+    // bypassing `updateBodyPose` entirely -- which is why these writes carry no
+    // pose source and why no jump counter in this client could see them. The
+    // glide added for settles pushes the rest pose into the track, but the
+    // ledger had already been overwritten underneath it, and the ledger is
+    // what the render layer composes from. A body not in the live set that
+    // frame is therefore drawn at the rest pose immediately, a whole playout
+    // delay of motion in one frame: 3,756 of 6,980 drawn teleports in a
+    // scripted collapse, all of them `settled=true` with no writer named, most
+    // between four and thirty-two metres.
+    const settledBefore = SETTLE_GLIDE ? this.captureSettlePoses(message) : null;
     const applied = this.topology.apply(message);
+    if (settledBefore) {
+      for (const [key, pose] of settledBefore) {
+        // Only where a track survives to glide it: without one there is
+        // nothing to carry the body to its rest pose and the hard write is the
+        // only thing that would ever put it there.
+        if (this.bodies.has(key)) {
+          this.topology.updateBodyPose(key, pose.position, pose.rotation, 'presented');
+          this.settlesRestored += 1;
+        } else {
+          // No track: the hard write stands, because nothing else would ever
+          // move this body to where the server says it stopped.
+          this.settlesLeftHard += 1;
+        }
+      }
+    }
         if (applied) {
           this.seedPromotions(message);
           for (const batch of message.batches) {
@@ -1277,7 +1383,9 @@ export class CityClient {
    * same bounded glide a late packet gets.
    */
   private seedPromotions(message: TopologyMessage): void {
+    for (const batch of message.batches) this.promotionsSeen += batch.promotions.length;
     if (this.latestSimTickAtMs === 0) {
+      this.promotionsUnseeded += message.batches.reduce((n, b) => n + b.promotions.length, 0);
       // Nothing has been drawn yet, so there is no on-screen pose to hold.
       return;
     }
@@ -1287,10 +1395,12 @@ export class CityClient {
         const key = bodyKey(promotion.structureId, promotion.islandId);
         if (this.bodies.has(key)) {
           // Serial reuse: the existing track reconciles this the usual way.
+          this.promotionsSeedSkippedReused += 1;
           continue;
         }
         const body = this.topology.body(key);
         if (!body || body.chunkSlots.length === 0) {
+          this.promotionsSeedSkippedNoBody += 1;
           continue;
         }
         // Solve for the body pose that leaves the anchor chunk exactly where
@@ -1298,8 +1408,10 @@ export class CityClient {
         const anchor = body.chunkSlots[0];
         const drawn = this.drawnChunkPose.get(anchor);
         if (!drawn) {
+          this.promotionsSeedSkippedNoDrawnPose += 1;
           continue;
         }
+        this.promotionsSeeded += 1;
         const local = this.topology.chunkLocalOffset(anchor).position;
         const seedRotation = drawn.rotation;
         const worldOffset = qRotate(seedRotation, local);
@@ -1354,6 +1466,34 @@ export class CityClient {
    * before the ledger changes. Reused across the topology branch only.
    */
   private readonly drawnChunkPose = new Map<number, { position: Vec3; rotation: Quat }>();
+
+  /**
+   * Ledger poses of the bodies this message settles, before it is applied.
+   *
+   * Returned rather than stored because it is consumed on the next line; the
+   * promotion capture keeps a member for the same reason in reverse -- it is
+   * read much later, inside `seedPromotions`.
+   */
+  private captureSettlePoses(
+    message: TopologyMessage,
+  ): Map<number, { position: Vec3; rotation: Quat }> | null {
+    if (message.settled.length === 0) {
+      return null;
+    }
+    const out = new Map<number, { position: Vec3; rotation: Quat }>();
+    for (const settle of message.settled) {
+      const key = bodyKey(settle.structureId, settle.islandId);
+      const body = this.topology.body(key);
+      if (!body) {
+        continue;
+      }
+      out.set(key, {
+        position: [body.position[0], body.position[1], body.position[2]],
+        rotation: [...body.rotation] as Quat,
+      });
+    }
+    return out.size > 0 ? out : null;
+  }
 
   private captureDrawnPoses(message: TopologyMessage): void {
     this.drawnChunkPose.clear();
@@ -1454,6 +1594,43 @@ export class CityClient {
     // A fresh record can revise the path even for a body that had settled out
     // of the walk; re-admit it before the staleness check, since even a stale
     // record costs one no-op sample and a missed fresh one costs a frozen chunk.
+    // Re-admitted after being starved: anchor the track to where this body is
+    // ACTUALLY DRAWN before taking the new record.
+    //
+    // A track whose snapshots stop arriving decides locally that it has
+    // settled, and `samplePresentation` then drops it from the per-frame walk
+    // so its chunks freeze at the last pose it produced. That is correct for a
+    // body that stopped; it is wrong for a body the server simply is not
+    // serving, and in a large collapse that is most of them -- a body outside
+    // the ranked interest set gets about one record a second. So the chunks sit
+    // still while the real body keeps falling, and when a record finally
+    // arrives they cross the gap in a single frame. Measured on a scripted
+    // collapse: 93% of all drawn chunk teleports were on bodies in exactly this
+    // state, almost all of them between four and thirty-two metres, one of them
+    // 14,070 ms since its last write.
+    //
+    // Seeding turns that into the bounded glide a late packet is supposed to
+    // get: the correction starts from the pose on screen instead of from a
+    // pose the track invented while nobody was looking. The same trick
+    // `seedPromotions` uses for a freshly fractured island.
+    const starvedTicks = datagram.simTick - state.lastTick;
+    if (
+      SEED_ON_STARVED_READMISSION
+      && state.lastPresented
+      && state.lastTick > 0
+      && starvedTicks > STARVED_TICKS
+    ) {
+      state.track.seedPresented(
+        {
+          position: state.lastPresented.position,
+          rotation: state.lastPresented.rotation,
+          linearVelocity: [0, 0, 0],
+          angularVelocity: [0, 0, 0],
+        },
+        this.renderTickNow(performance.now()),
+      );
+      this.starvedReadmissions += 1;
+    }
     this.kinetic.add(record.bodyEntity);
     if (datagram.simTick <= state.lastTick) {
       return true; // stale reordered datagram — latest wins
@@ -1585,7 +1762,17 @@ export class CityClient {
         previous.rotation[1] = presented.rotation[1];
         previous.rotation[2] = presented.rotation[2];
         previous.rotation[3] = presented.rotation[3];
+        state.lastPresentedSpeed = Math.hypot(
+          presented.linearVelocity[0],
+          presented.linearVelocity[1],
+          presented.linearVelocity[2],
+        );
       } else {
+        state.lastPresentedSpeed = Math.hypot(
+          presented.linearVelocity[0],
+          presented.linearVelocity[1],
+          presented.linearVelocity[2],
+        );
         state.lastPresented = {
           position: [presented.position[0], presented.position[1], presented.position[2]],
           rotation: [
@@ -1644,6 +1831,8 @@ export class CityClient {
       presentedJumpsOver1m: topologyStats.presentedJumpsOver1m,
       presentedJumpsOver4m: topologyStats.presentedJumpsOver4m,
       presentedJumpMaxM: topologyStats.presentedJumpMaxM,
+      reoffsets: topologyStats.reoffsets,
+      reoffsetMetres: topologyStats.reoffsetMetres,
       adoptionJumps: topologyStats.adoptionJumps,
       adoptionJumpMaxM: topologyStats.adoptionJumpMaxM,
       adoptionJumpMetres: topologyStats.adoptionJumpMetres,
@@ -1657,6 +1846,15 @@ export class CityClient {
       implausibleJumps: this.presentationAnomalies.implausible_jump,
       presentationAnomalyMaxM: this.presentationAnomalyMaxM,
       recordsOutsideWorld: this.recordsOutsideWorld,
+      starvedReadmissions: this.starvedReadmissions,
+      settlesRestored: this.settlesRestored,
+      settlesLeftHard: this.settlesLeftHard,
+      promotionsSeen: this.promotionsSeen,
+      promotionsSeeded: this.promotionsSeeded,
+      promotionsSeedSkippedReused: this.promotionsSeedSkippedReused,
+      promotionsSeedSkippedNoBody: this.promotionsSeedSkippedNoBody,
+      promotionsSeedSkippedNoDrawnPose: this.promotionsSeedSkippedNoDrawnPose,
+      promotionsUnseeded: this.promotionsUnseeded,
       datagramsReceived: this.datagramsReceived,
       recordsApplied: this.recordsApplied,
       wireVersion: this.debris === null ? 2 : 3,

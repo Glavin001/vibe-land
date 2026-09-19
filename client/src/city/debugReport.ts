@@ -51,6 +51,7 @@ interface TeleportEvent {
   /** Whether the ledger had this body settled and off the live list. */
   settling?: boolean;
   bodySettled?: boolean;
+  recentlyRebased?: boolean;
 }
 
 /**
@@ -112,6 +113,26 @@ export function noteClientEvent(kind: string, detail?: Record<string, unknown>):
 let teleportCount = 0;
 let teleportWorstM = 0;
 let teleportMetres = 0;
+/**
+ * The whole population, by cause.
+ *
+ * The ring holds 400 and the recorder is capped at 2,000 events a second,
+ * while a collapse produces a hundred thousand of these -- so every proportion
+ * read off either was a sample of whatever happened to fit, and two
+ * investigations were steered by one. These count all of them.
+ */
+const teleportBy = {
+  sourcePresented: 0,
+  sourceRaw: 0,
+  sourceUnknown: 0,
+  bodySettled: 0,
+  notInLiveSet: 0,
+  recentlyRebased: 0,
+  under1m: 0,
+  under4m: 0,
+  under32m: 0,
+  over32m: 0,
+};
 
 /** Anomalous chunk jumps from the always-on teleport probe. */
 export function noteTeleport(event: Omit<TeleportEvent, 't'>): void {
@@ -119,6 +140,16 @@ export function noteTeleport(event: Omit<TeleportEvent, 't'>): void {
   teleportCount += 1;
   teleportMetres += event.stepM;
   if (event.stepM > teleportWorstM) teleportWorstM = event.stepM;
+  if (event.source === 'presented') teleportBy.sourcePresented += 1;
+  else if (event.source === 'raw') teleportBy.sourceRaw += 1;
+  else teleportBy.sourceUnknown += 1;
+  if (event.bodySettled) teleportBy.bodySettled += 1;
+  if (event.settling) teleportBy.notInLiveSet += 1;
+  if (event.recentlyRebased) teleportBy.recentlyRebased += 1;
+  if (event.stepM < 1) teleportBy.under1m += 1;
+  else if (event.stepM < 4) teleportBy.under4m += 1;
+  else if (event.stepM < 32) teleportBy.under32m += 1;
+  else teleportBy.over32m += 1;
 }
 
 /**
@@ -136,6 +167,11 @@ export function drawnTeleportTotals(): {
   count: number; worstM: number; metres: number;
 } {
   return { count: teleportCount, worstM: teleportWorstM, metres: teleportMetres };
+}
+
+/** The whole teleport population split by cause. See `teleportBy`. */
+export function drawnTeleportBreakdown(): Record<string, number> {
+  return { ...teleportBy };
 }
 
 /** A chunk whose world pose moved when a topology batch re-parented it. */

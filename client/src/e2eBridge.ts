@@ -210,9 +210,13 @@ export interface CityE2EStats {
   presentedJumpMaxM: number;
   /// What the renderer actually drew: instances that moved further than the
   /// chunk's own recent speed explains. The measurement that counts.
+  /** The whole teleport population split by cause. */
+  drawnTeleportBy: Record<string, number>;
   drawnTeleports: number;
   drawnTeleportWorstM: number;
   drawnTeleportMetres: number;
+  reoffsets: number;
+  reoffsetMetres: number;
   adoptionJumps: number;
   adoptionJumpMaxM: number;
   adoptionJumpMetres: number;
@@ -228,6 +232,15 @@ export interface CityE2EStats {
   presentationAnomalyMaxM: number;
   /** Streamed poses refused for being outside the world. Must be 0. */
   recordsOutsideWorld: number;
+  starvedReadmissions: number;
+  settlesRestored: number;
+  settlesLeftHard: number;
+  promotionsSeen: number;
+  promotionsSeeded: number;
+  promotionsSeedSkippedReused: number;
+  promotionsSeedSkippedNoBody: number;
+  promotionsSeedSkippedNoDrawnPose: number;
+  promotionsUnseeded: number;
   /**
    * Composition inputs for the lowest chunk below the counting threshold.
    * These are client ledger poses, which may be interpolated; they are not a

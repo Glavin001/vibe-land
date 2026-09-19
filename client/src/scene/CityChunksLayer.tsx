@@ -63,7 +63,12 @@ import {
 } from './cityChunkWrite';
 import { updateCityE2E } from '../e2eBridge';
 import { addCitySuspect, isRecording, recordCityEvent, recordCityStats } from '../netlab/recorder';
-import { drawnTeleportTotals, noteAdoptionJump, noteTeleport } from '../city/debugReport';
+import {
+  drawnTeleportBreakdown,
+  drawnTeleportTotals,
+  noteAdoptionJump,
+  noteTeleport,
+} from '../city/debugReport';
 import {
   bodyDebug,
   bodyDebugColor,
@@ -272,12 +277,21 @@ function installChunkTeleportProbe(chunkCount: number): () => void {
       const dz = position[2] - previous[base + 2];
       const step = Math.hypot(dx, dy, dz);
       const gapSec = Math.max((nowMs - lastWriteMs[slot]) / 1000, 1 / 240);
-      // Judge the step against this chunk's own recent speed, not a flat
-      // bound: debris legitimately flies at 40-70 m/s since the push-speed
-      // redesign removed the velocity clamp, and a distant body on an 8-frame
-      // stride covers multiple metres per write. A fault is a step the
-      // chunk's own trajectory cannot explain.
-      const explained = 3 * speedEst[slot] * gapSec + 0.3;
+      // Judge the step against what this chunk's trajectory can account for,
+      // not a flat bound: debris legitimately flies at 40-70 m/s since the
+      // push-speed redesign removed the velocity clamp, and a distant body on
+      // an 8-frame stride covers multiple metres per write.
+      //
+      // The body's KNOWN speed, not just an average of the steps already
+      // taken. The average starts at zero for anything standing still, so a
+      // chunk in the intact shell tripped this on its first frame of falling,
+      // and a collapse breaks thousands loose: the count came out at three to
+      // five per broken bond, which measured the collapse rather than any
+      // fault in it. Two A/Bs were decided against that number before it was
+      // noticed, and both came out as noise, which is exactly what a metric
+      // dominated by an unrelated term does.
+      const known = Math.max(speedEst[slot], ctx.bodySpeed ?? 0);
+      const explained = 3 * known * gapSec + 0.3;
       const anomalous = step > CHUNK_TELEPORT_M && step > explained;
       speedEst[slot] = 0.7 * speedEst[slot] + 0.3 * (step / gapSec);
       if (anomalous) {
@@ -293,6 +307,7 @@ function installChunkTeleportProbe(chunkCount: number): () => void {
           z: position[2],
           settling: ctx.settling,
           bodySettled: ctx.bodySettled,
+          recentlyRebased: ctx.recentlyRebased,
         });
         recordCityEvent('city_chunk_teleport', {
           slot,
@@ -752,9 +767,12 @@ export function CityChunksLayer({
         presentedJumpsOver1m: stats.presentedJumpsOver1m,
         presentedJumpsOver4m: stats.presentedJumpsOver4m,
         presentedJumpMaxM: stats.presentedJumpMaxM,
+        drawnTeleportBy: drawnTeleportBreakdown(),
         drawnTeleports: drawnTeleportTotals().count,
         drawnTeleportWorstM: drawnTeleportTotals().worstM,
         drawnTeleportMetres: drawnTeleportTotals().metres,
+        reoffsets: stats.reoffsets,
+        reoffsetMetres: stats.reoffsetMetres,
         adoptionJumps: stats.adoptionJumps,
         adoptionJumpMaxM: stats.adoptionJumpMaxM,
         adoptionJumpMetres: stats.adoptionJumpMetres,
@@ -768,6 +786,15 @@ export function CityChunksLayer({
         implausibleJumps: stats.implausibleJumps,
         presentationAnomalyMaxM: stats.presentationAnomalyMaxM,
         recordsOutsideWorld: stats.recordsOutsideWorld,
+        starvedReadmissions: stats.starvedReadmissions,
+        settlesRestored: stats.settlesRestored,
+        settlesLeftHard: stats.settlesLeftHard,
+        promotionsSeen: stats.promotionsSeen,
+        promotionsSeeded: stats.promotionsSeeded,
+        promotionsSeedSkippedReused: stats.promotionsSeedSkippedReused,
+        promotionsSeedSkippedNoBody: stats.promotionsSeedSkippedNoBody,
+        promotionsSeedSkippedNoDrawnPose: stats.promotionsSeedSkippedNoDrawnPose,
+        promotionsUnseeded: stats.promotionsUnseeded,
         // Same probe as the netlab line above: the only signal that catches a
         // chunk drawn away from its ledger pose.
         staleDrawnChunks,
@@ -893,7 +920,16 @@ export function CityChunksLayer({
       // Always built now: the teleport probe is unconditional, and without this
       // context every teleport it records in an ordinary session is unattributable.
       const probeCtx: ChunkWriteContext = {
-        bodyKey: key, settling, bodySettled: body.settled, source: writeSource,
+        bodyKey: key,
+        settling,
+        bodySettled: body.settled,
+        source: writeSource,
+        bodySpeed: client.bodyPresentedSpeed(key),
+        // Was this body's island frame rebased in the last few batches? A
+        // rebase is supposed to leave every composed world pose untouched.
+        recentlyRebased:
+          client.topology.currentReoffsetSeq() - client.topology.reoffsetSeqOf(key) < 64
+          && client.topology.reoffsetSeqOf(key) >= 0,
       };
       // Support serial 0 is the intact structure: its chunks are AT rest by
       // definition, so a write for them (repaint.all marks every body dirty,

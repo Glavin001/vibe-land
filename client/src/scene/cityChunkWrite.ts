@@ -75,6 +75,21 @@ export interface ChunkWriteContext {
   bodySettled: boolean;
   /** Ledger pose source at write time — splits decoder jumps from compose jumps. */
   source?: string;
+  /**
+   * The body's own speed at this write, m/s.
+   *
+   * Without it the probe judges a step against an average of the steps that
+   * chunk has already taken, which starts at zero for anything that has been
+   * standing still. A chunk in the intact shell therefore trips the probe on
+   * its FIRST frame of falling -- at 60 fps anything above about 18 m/s clears
+   * the 0.3 m floor -- and a collapse breaks thousands of chunks loose, so the
+   * count came out at three to five per broken bond and measured the collapse
+   * rather than any fault in it. Two A/Bs were run against that number before
+   * it was noticed, and both came out as noise.
+   */
+  bodySpeed?: number;
+  /** Island frame rebased recently; see reoffsetBody. */
+  recentlyRebased?: boolean;
 }
 
 /** Set while recording; see `setChunkTeleportProbe`. */

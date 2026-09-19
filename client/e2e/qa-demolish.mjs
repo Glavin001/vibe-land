@@ -70,6 +70,15 @@ console.log(`drawn steps >1m ${c.presentedJumpsOver1m} (${per(c.presentedJumpsOv
 console.log(`DRAWN chunk teleports ${c.drawnTeleports} (${per(c.drawnTeleports)}/bond)`
   + `  worst ${(c.drawnTeleportWorstM ?? 0).toFixed(1)} m`
   + `  total ${Math.round(c.drawnTeleportMetres ?? 0)} m`);
+console.log(`island frame rebases ${c.reoffsets} (${Math.round(c.reoffsetMetres ?? 0)} m of local shift)`);
+console.log('teleports by cause:', JSON.stringify(c.drawnTeleportBy));
+console.log(`starved re-admissions ${c.starvedReadmissions}`);
+console.log(`settles: restored ${c.settlesRestored}  left hard ${c.settlesLeftHard}`);
+console.log(`promotions ${c.promotionsSeen}: seeded ${c.promotionsSeeded}`
+  + `  skipped reused ${c.promotionsSeedSkippedReused}`
+  + ` noBody ${c.promotionsSeedSkippedNoBody}`
+  + ` noDrawnPose ${c.promotionsSeedSkippedNoDrawnPose}`
+  + ` tooEarly ${c.promotionsUnseeded}`);
 console.log(`adoption jumps ${c.adoptionJumps} (${per(c.adoptionJumps)}/bond)`
   + `  worst ${(c.adoptionJumpMaxM ?? 0).toFixed(1)} m`
   + `  total ${Math.round(c.adoptionJumpMetres ?? 0)} m of chunks displaced by re-parenting`);

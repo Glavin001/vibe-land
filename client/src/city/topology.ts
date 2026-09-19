@@ -103,6 +103,10 @@ export interface CityTopologyStats {
   /// building is what a player reports.
   /// Chunk world poses displaced by a topology re-parent, which should be
   /// continuous across one. The fracture discontinuity.
+  /// Island frames rebased because membership changed, and the total local
+  /// displacement that involved. A rebase must not move anything on screen.
+  reoffsets: number;
+  reoffsetMetres: number;
   adoptionJumps: number;
   adoptionJumpMaxM: number;
   adoptionJumpMetres: number;
@@ -161,6 +165,21 @@ export class CityTopology {
   private presentedJumpsOver1m = 0;
   private presentedJumpsOver4m = 0;
   private presentedJumpMaxM = 0;
+  private reoffsetSeq = 0;
+  private reoffsets = 0;
+  private reoffsetMetres = 0;
+  private readonly reoffsetAt = new Map<number, number>();
+
+  /** Rebase sequence number for a body, for the teleport probe's correlation. */
+  reoffsetSeqOf(key: number): number {
+    return this.reoffsetAt.get(key) ?? -1;
+  }
+
+  /** The current rebase sequence, so a caller can say "this one is recent". */
+  currentReoffsetSeq(): number {
+    return this.reoffsetSeq;
+  }
+
   private adoptionJumps = 0;
   private adoptionJumpsFromMigration = 0;
   private adoptionJumpMetresFromMigration = 0;
@@ -449,6 +468,8 @@ export class CityTopology {
       presentedJumpsOver1m: this.presentedJumpsOver1m,
       presentedJumpsOver4m: this.presentedJumpsOver4m,
       presentedJumpMaxM: this.presentedJumpMaxM,
+      reoffsets: this.reoffsets,
+      reoffsetMetres: this.reoffsetMetres,
       adoptionJumps: this.adoptionJumps,
       adoptionJumpMaxM: this.adoptionJumpMaxM,
       adoptionJumpMetres: this.adoptionJumpMetres,
@@ -1023,6 +1044,14 @@ export class CityTopology {
     // render new-frame offsets against old-frame poses.
     const worldDelta = qRotate(body.rotation, delta);
     body.position = vAdd(body.position, worldDelta);
+    // Marked so the render layer's teleport probe can tell a chunk that moved
+    // because its island's frame was rebased from one that moved for any other
+    // reason. A rebase is supposed to leave the composed world pose untouched;
+    // if the drawn instances move anyway, the compensation is the suspect.
+    this.reoffsetSeq += 1;
+    this.reoffsetAt.set(body.key, this.reoffsetSeq);
+    this.reoffsets += 1;
+    this.reoffsetMetres += vLength(delta);
     this.onReoffset?.(body.key, delta);
   }
 
