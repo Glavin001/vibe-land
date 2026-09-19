@@ -54,7 +54,7 @@ const { browser, context, page } = await openCity({
   recordVideo: OUT,
   viewport: { width: 1280, height: 800 },
 });
-await page.waitForTimeout(7000);
+await page.waitForTimeout(3000);
 
 // Overlays cover a third of the frame and are useless when reading pixels
 // back. Hidden for the recording only; nothing in the render path changes.
@@ -82,11 +82,15 @@ if (before.brokenBonds > before.chunksTotal / 20) {
 
 // Stand well back and look at the tower, so the whole of it stays in frame
 // for the entire collapse. The spawn ring puts the camera at its foot.
-await page.evaluate(() => window.__VIBE_DRIVE__.move({ forward: -1, durationMs: 5000 }));
-await page.waitForTimeout(5200);
+//
+// Kept as short as it can be: the first capture spent fourteen of its
+// twenty-two seconds walking into position, so the collapse -- the only part
+// anybody wants to watch -- began two thirds of the way through the video.
+await page.evaluate(() => window.__VIBE_DRIVE__.move({ forward: -1, durationMs: 3200 }));
+await page.waitForTimeout(3400);
 const LOOK = [Number(arg('look-x', 0)), Number(arg('look-y', 12)), Number(arg('look-z', 0))];
 await page.evaluate(([x, y, z]) => window.__VIBE_DRIVE__.lookAt(x, y, z), LOOK);
-await page.waitForTimeout(1200);
+await page.waitForTimeout(600);
 
 // Track chunks spread evenly across the whole structure, so the sample covers
 // the part that falls and the part that does not.

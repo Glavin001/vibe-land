@@ -967,3 +967,105 @@ describe('CityTopology settle cannot teleport a body', () => {
     expect(topology.body(bodyKey(0, 0))!.chunkSlots).toContain(topology.slotOf(0, 1));
   });
 });
+
+describe('CityTopology frame rebasing', () => {
+  // A body that still contains its zero-mass support node, which is the root
+  // body of an intact structure -- the case a collapse spends most of its
+  // time in, and the one the single-chunk migration tests above never reach.
+  const promoteWithSupport = (topoSeq: number): TopologyMessage => ({
+    topoSeq,
+    simTick: 10,
+    batches: [
+      {
+        structureId: 0,
+        brokenBondIndices: [],
+        promotions: [
+          {
+            structureId: 0,
+            islandId: 1,
+            // Nodes 0 (mass 0, support), 1 and 2 (mass 10).
+            nodes: [0, 1, 2],
+            // The wire contract is chunk_world = body_pose o (rest - com), so
+            // the promotion pose is the island COM in world. Mass-weighted
+            // over the two massive nodes that is (10, 2.0, 0); the support
+            // contributes no mass and so does not move it.
+            position: [10, 2.0, 0],
+            rotation: [0, 0, 0, 1],
+            linearVelocity: [0, 0, 0],
+            angularVelocity: [0, 0, 0],
+          },
+        ],
+        retiredIslandIds: [],
+        migrations: [],
+      },
+    ],
+    settled: [],
+    wakes: [],
+  });
+
+  const leave = (topoSeq: number): TopologyMessage => ({
+    topoSeq,
+    simTick: 20,
+    batches: [
+      {
+        structureId: 0,
+        brokenBondIndices: [1],
+        promotions: [
+          {
+            structureId: 0,
+            islandId: 2,
+            nodes: [2],
+            position: [10, 2.5, 0],
+            rotation: [0, 0, 0, 1],
+            linearVelocity: [0, 0, 0],
+            angularVelocity: [0, 0, 0],
+          },
+        ],
+        retiredIslandIds: [],
+        migrations: [{ node: 2, fromIslandSerial: 1, toIslandSerial: 2 }],
+      },
+    ],
+    settled: [],
+    wakes: [],
+  });
+
+  // Rebasing a body's frame is a change of coordinates, so it must not move
+  // anything on screen. When it does, EVERY chunk of that body shifts by the
+  // same vector -- which is a whole building stepping sideways, not debris
+  // moving. A capture of a single tower showed 393 of 400 tracked chunks
+  // displaced by one identical vector in a single frame, with the inverse
+  // vector applied hundreds of frames later.
+  it('leaves survivors world-fixed when a chunk leaves a body holding a support', () => {
+    const topology = new CityTopology(manifest());
+    expect(topology.apply(promoteWithSupport(1))).toBe(true);
+    const survivor = topology.slotOf(0, 1);
+    const supportSlot = topology.slotOf(0, 0);
+    const before = topology.chunkWorldPose(survivor);
+    const supportBefore = topology.chunkWorldPose(supportSlot);
+
+    expect(topology.apply(leave(2))).toBe(true);
+
+    const after = topology.chunkWorldPose(survivor);
+    const supportAfter = topology.chunkWorldPose(supportSlot);
+    for (let axis = 0; axis < 3; axis += 1) {
+      expect(after.position[axis]).toBeCloseTo(before.position[axis], 5);
+      expect(supportAfter.position[axis]).toBeCloseTo(supportBefore.position[axis], 5);
+    }
+  });
+
+  // The centre of mass the client derives has to be the one the server's pose
+  // was expressed in, or every chunk of the body is drawn at a fixed offset
+  // from where the server put it. A zero-mass node contributes no mass to a
+  // real centre of mass; giving it a weight of 1 moves the frame.
+  it('excludes zero-mass supports from the centre of mass it derives', () => {
+    const topology = new CityTopology(manifest());
+    expect(topology.apply(promoteWithSupport(1))).toBe(true);
+    // Massive nodes sit at y = 1.5 and 2.5, so their mass-weighted centre is
+    // y = 2.0 -- which is what the promotion pose above declares. Composing
+    // that pose must place them back at their rest heights.
+    const one = topology.chunkWorldPose(topology.slotOf(0, 1));
+    const two = topology.chunkWorldPose(topology.slotOf(0, 2));
+    expect(one.position[1]).toBeCloseTo(1.5, 5);
+    expect(two.position[1]).toBeCloseTo(2.5, 5);
+  });
+});

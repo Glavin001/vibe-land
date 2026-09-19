@@ -28,12 +28,36 @@ export interface PoseTraceSample {
 interface TraceState {
   slots: Int32Array;
   positions: Float32Array;
+  /**
+   * The composition's INPUTS: body position (3) and body rotation (4) per
+   * tracked slot per frame.
+   *
+   * A composed world pose that jumps says only that something upstream moved.
+   * `chunk_world = body_pose ∘ (rest_local − island_com)` has two terms and a
+   * body identity, and which of the three changed is the entire question. A
+   * capture that records only the result can show a whole building stepping
+   * two metres sideways and cannot say whether the body moved, its frame was
+   * rebased, or the chunk changed hands.
+   */
+  bodyPoses: Float32Array;
+  /** Local offset (3) per tracked slot per frame: the other term. */
+  localOffsets: Float32Array;
+  /** Which body each tracked chunk belonged to, per frame. */
+  bodyKeys: Int32Array;
   ticks: Int32Array;
   times: Float64Array;
   capacity: number;
   frames: number;
   /** Frames dropped because the ring filled. Reported, never silent. */
   overflow: number;
+}
+
+/** Filled by the caller for one slot: body pos/rot, local offset, body key. */
+export interface PoseTerms {
+  bodyPosition: Float32Array;
+  bodyRotation: Float32Array;
+  localOffset: Float32Array;
+  bodyKey: number;
 }
 
 let state: TraceState | null = null;
@@ -52,10 +76,18 @@ export function poseTraceSlots(): Int32Array {
  * Record one frame. `read(slot, out)` must fill `out` with the drawn world
  * position of that slot; it is called once per tracked slot per frame.
  */
+const TERMS: PoseTerms = {
+  bodyPosition: new Float32Array(3),
+  bodyRotation: new Float32Array(4),
+  localOffset: new Float32Array(3),
+  bodyKey: -1,
+};
+
 export function poseTraceRecord(
   tick: number,
   timeMs: number,
   read: (slot: number, out: Float32Array) => boolean,
+  readTerms?: (slot: number, out: PoseTerms) => void,
 ): void {
   if (!state) return;
   if (state.frames >= state.capacity) {
@@ -63,9 +95,30 @@ export function poseTraceRecord(
     return;
   }
   const frame = state.frames;
-  const base = frame * state.slots.length * 3;
+  const count = state.slots.length;
+  const base = frame * count * 3;
   const scratch = new Float32Array(3);
-  for (let index = 0; index < state.slots.length; index += 1) {
+  for (let index = 0; index < count; index += 1) {
+    if (readTerms) {
+      TERMS.bodyKey = -1;
+      TERMS.bodyPosition.fill(Number.NaN);
+      TERMS.bodyRotation.fill(Number.NaN);
+      TERMS.localOffset.fill(Number.NaN);
+      readTerms(state.slots[index], TERMS);
+      const poseAt = (frame * count + index) * 7;
+      state.bodyPoses[poseAt] = TERMS.bodyPosition[0];
+      state.bodyPoses[poseAt + 1] = TERMS.bodyPosition[1];
+      state.bodyPoses[poseAt + 2] = TERMS.bodyPosition[2];
+      state.bodyPoses[poseAt + 3] = TERMS.bodyRotation[0];
+      state.bodyPoses[poseAt + 4] = TERMS.bodyRotation[1];
+      state.bodyPoses[poseAt + 5] = TERMS.bodyRotation[2];
+      state.bodyPoses[poseAt + 6] = TERMS.bodyRotation[3];
+      const localAt = (frame * count + index) * 3;
+      state.localOffsets[localAt] = TERMS.localOffset[0];
+      state.localOffsets[localAt + 1] = TERMS.localOffset[1];
+      state.localOffsets[localAt + 2] = TERMS.localOffset[2];
+      state.bodyKeys[frame * count + index] = TERMS.bodyKey;
+    }
     const at = base + index * 3;
     if (read(state.slots[index], scratch)) {
       state.positions[at] = scratch[0];
@@ -97,6 +150,12 @@ export interface PoseTraceBridge {
     times: number[];
     /** Flat, frames x slots x 3. */
     positions: number[];
+    /** Flat, frames x slots x 7: body position then body rotation. */
+    bodyPoses: number[];
+    /** Flat, frames x slots x 3. */
+    localOffsets: number[];
+    /** Flat, frames x slots. */
+    bodyKeys: number[];
   };
   armed(): boolean;
 }
@@ -109,6 +168,9 @@ export function installPoseTrace(): void {
       state = {
         slots: chosen,
         positions: new Float32Array(capacity * chosen.length * 3),
+        bodyPoses: new Float32Array(capacity * chosen.length * 7),
+        localOffsets: new Float32Array(capacity * chosen.length * 3),
+        bodyKeys: new Int32Array(capacity * chosen.length),
         ticks: new Int32Array(capacity),
         times: new Float64Array(capacity),
         capacity,
@@ -121,16 +183,22 @@ export function installPoseTrace(): void {
       const current = state;
       state = null;
       if (!current) {
-        return { slots: [], frames: 0, overflow: 0, ticks: [], times: [], positions: [] };
+        return {
+          slots: [], frames: 0, overflow: 0, ticks: [], times: [],
+          positions: [], bodyPoses: [], localOffsets: [], bodyKeys: [],
+        };
       }
-      const used = current.frames * current.slots.length * 3;
+      const cells = current.frames * current.slots.length;
       return {
         slots: Array.from(current.slots),
         frames: current.frames,
         overflow: current.overflow,
         ticks: Array.from(current.ticks.subarray(0, current.frames)),
         times: Array.from(current.times.subarray(0, current.frames)),
-        positions: Array.from(current.positions.subarray(0, used)),
+        positions: Array.from(current.positions.subarray(0, cells * 3)),
+        bodyPoses: Array.from(current.bodyPoses.subarray(0, cells * 7)),
+        localOffsets: Array.from(current.localOffsets.subarray(0, cells * 3)),
+        bodyKeys: Array.from(current.bodyKeys.subarray(0, cells)),
       };
     },
     armed() {

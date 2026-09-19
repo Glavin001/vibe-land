@@ -675,6 +675,22 @@ export function CityChunksLayer({
           out[2] = TRACE_POSE[2];
           return Number.isFinite(out[0]) && Number.isFinite(out[1]) && Number.isFinite(out[2]);
         },
+        // Both terms of the composition, plus which body the chunk is in.
+        (slot, terms) => {
+          if (slot < 0 || slot >= traceTopology.chunkCount) return;
+          const key = traceTopology.bodyKeyOf(slot);
+          terms.bodyKey = key;
+          traceTopology.localOffsetInto(slot, terms.localOffset);
+          const body = traceTopology.body(key);
+          if (!body) return;
+          terms.bodyPosition[0] = body.position[0];
+          terms.bodyPosition[1] = body.position[1];
+          terms.bodyPosition[2] = body.position[2];
+          terms.bodyRotation[0] = body.rotation[0];
+          terms.bodyRotation[1] = body.rotation[1];
+          terms.bodyRotation[2] = body.rotation[2];
+          terms.bodyRotation[3] = body.rotation[3];
+        },
       );
     }
 

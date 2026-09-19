@@ -313,6 +313,20 @@ export class CityTopology {
     return this.chunkBody[slot];
   }
 
+  /**
+   * This chunk's offset within its body's frame, in body-local coordinates.
+   *
+   * One of the two terms of `chunk_world = body_pose ∘ local_offset`. A
+   * capture that records only the composed result can show a body moving and
+   * cannot say whether the pose moved or the frame was rebased underneath it;
+   * reading both terms separates those.
+   */
+  localOffsetInto(slot: number, out: Float32Array): void {
+    out[0] = this.localPos[slot * 3];
+    out[1] = this.localPos[slot * 3 + 1];
+    out[2] = this.localPos[slot * 3 + 2];
+  }
+
   chunkLocalOffset(slot: number): { position: Vec3; rotation: Quat } {
     return {
       position: [
@@ -837,25 +851,12 @@ export class CityTopology {
     key: number,
     nodes: number[],
   ): number[] {
-    let comX = 0;
-    let comY = 0;
-    let comZ = 0;
-    let totalWeight = 0;
-    for (const node of nodes) {
-      const slot = this.slotOf(structureId, node);
-      // Support chunks carry mass 0; weight them uniformly so an all-support
-      // island still resolves to its geometric centre instead of NaN.
-      const weight = this.restMass[slot] > 0 ? this.restMass[slot] : 1;
-      comX += this.restPos[slot * 3] * weight;
-      comY += this.restPos[slot * 3 + 1] * weight;
-      comZ += this.restPos[slot * 3 + 2] * weight;
-      totalWeight += weight;
-    }
-    if (totalWeight > 0) {
-      comX /= totalWeight;
-      comY /= totalWeight;
-      comZ /= totalWeight;
-    }
+    const memberSlots = nodes.map((node) => this.slotOf(structureId, node));
+    // Zero when the island has no members at all; the loop below then does
+    // nothing, and offsets relative to the structure origin are as good an
+    // answer as any for a body with no chunks in it.
+    const adoptCom = this.restCentreOfMassOf(memberSlots) ?? [0, 0, 0];
+    const [comX, comY, comZ] = adoptCom;
 
     const slots: number[] = [];
     // Bodies that lost members to this island. Their centre of mass moves when
@@ -979,19 +980,62 @@ export class CityTopology {
   /**
    * Centre of mass of a body's current members, in structure-rest coordinates.
    */
-  private centreOfMass(body: LedgerBody): Vec3 | null {
+  /**
+   * Centre of mass of these chunk slots, in structure-rest coordinates.
+   *
+   * The wire contract is `chunk_world = body_pose ∘ (rest_local − island_com)`,
+   * and the server expresses every body pose in the frame of a REAL centre of
+   * mass. So this has to be the real one: a zero-mass support node contributes
+   * nothing to it.
+   *
+   * Weighting supports uniformly instead -- which all three copies of this
+   * calculation used to do -- shifts the frame by a fraction of the support's
+   * offset, and then every chunk of that body is drawn at a fixed distance
+   * from where the server put it. Worse, the error CHANGES whenever the body
+   * gains or loses a chunk, because the support's share of the total weight
+   * changes with it, so each membership change steps the whole body sideways.
+   * A capture of a single tower collapsing showed 393 of 400 tracked chunks
+   * displaced by one identical vector within a single frame, and the exact
+   * inverse vector applied hundreds of frames later: a building stepping back
+   * and forth, not debris moving.
+   *
+   * The uniform fallback survives for the case it was actually written for --
+   * a body with no mass anywhere, which has no centre of mass to find and
+   * would otherwise divide by zero.
+   */
+  private restCentreOfMassOf(slots: readonly number[]): Vec3 | null {
     let x = 0;
     let y = 0;
     let z = 0;
-    let totalWeight = 0;
-    for (const slot of body.chunkSlots) {
-      const weight = this.restMass[slot] > 0 ? this.restMass[slot] : 1;
+    let mass = 0;
+    for (const slot of slots) {
+      const weight = this.restMass[slot];
+      if (!(weight > 0)) continue;
       x += this.restPos[slot * 3] * weight;
       y += this.restPos[slot * 3 + 1] * weight;
       z += this.restPos[slot * 3 + 2] * weight;
-      totalWeight += weight;
+      mass += weight;
     }
-    return totalWeight > 0 ? [x / totalWeight, y / totalWeight, z / totalWeight] : null;
+    if (mass > 0) {
+      return [x / mass, y / mass, z / mass];
+    }
+    // No mass anywhere: fall back to the geometric centre so an all-support
+    // island still resolves to a frame instead of NaN.
+    x = 0;
+    y = 0;
+    z = 0;
+    let count = 0;
+    for (const slot of slots) {
+      x += this.restPos[slot * 3];
+      y += this.restPos[slot * 3 + 1];
+      z += this.restPos[slot * 3 + 2];
+      count += 1;
+    }
+    return count > 0 ? [x / count, y / count, z / count] : null;
+  }
+
+  private centreOfMass(body: LedgerBody): Vec3 | null {
+    return this.restCentreOfMassOf(body.chunkSlots);
   }
 
   /**
@@ -1003,23 +1047,11 @@ export class CityTopology {
     if (body.islandSerial === SUPPORT_SERIAL || body.chunkSlots.length === 0) {
       return;
     }
-    let comX = 0;
-    let comY = 0;
-    let comZ = 0;
-    let totalWeight = 0;
-    for (const slot of body.chunkSlots) {
-      const weight = this.restMass[slot] > 0 ? this.restMass[slot] : 1;
-      comX += this.restPos[slot * 3] * weight;
-      comY += this.restPos[slot * 3 + 1] * weight;
-      comZ += this.restPos[slot * 3 + 2] * weight;
-      totalWeight += weight;
-    }
-    if (totalWeight <= 0) {
+    const com = this.restCentreOfMassOf(body.chunkSlots);
+    if (!com) {
       return;
     }
-    comX /= totalWeight;
-    comY /= totalWeight;
-    comZ /= totalWeight;
+    const [comX, comY, comZ] = com;
     // Every surviving offset is `rest - oldCom`, so any one of them recovers
     // the frame we are leaving. Read it before the loop below overwrites it.
     const anchor = body.chunkSlots[0];
