@@ -237,7 +237,19 @@ def stop(pid, identity):
 
 
 def start(binary, env, logfile):
-    with logfile.open('ab') as log:
+    # The supervisor's OWN output goes to its own small file, never to the log
+    # it rotates.
+    #
+    # It used to inherit an open fd on server.log. Rotation renames that file,
+    # so the supervisor kept writing into the renamed -- then deleted -- inode,
+    # whose space the filesystem could not reclaim while the fd lived. Worse,
+    # an inherited fd keeps its offset across a truncation: after server.log
+    # was truncated from 10 GB, the next write from the retained fd landed at
+    # its old offset and recreated the file sparse, back out past 10 GB. It
+    # reached 17.5 GB and filled the disk to 319 MB free.
+    supervisor_log = logfile.with_name('supervisor.log')
+    rotate_log(supervisor_log, 16 * 1024 * 1024)
+    with supervisor_log.open('ab') as log:
         return sp.Popen([sys.executable, str(Path(__file__).resolve()), '_serve', str(binary)], cwd=ROOT, env=env, stdin=sp.DEVNULL, stdout=log, stderr=log, start_new_session=True)
 
 
@@ -259,7 +271,7 @@ def ready(process, port):
 STICKY = ('VIBE_CITY_SCENE', 'VIBE_CITY_GRID', 'VIBE_CITY_DESTRUCTION')
 
 
-def deploy(d, binary):
+def deploy(d, binary, force=False):
     oldenv = d['env']
     env = dict(os.environ, **oldenv)
     # Which city runs is sticky: scene, grid and backend survive a bare redeploy
@@ -337,7 +349,12 @@ def deploy(d, binary):
         return
     identity = (d.get('server_identity') or process_identity(d['server'])) if d['server'] else None
     if d['server'] and health(d['api']).get('players') != 0:
-        raise RuntimeError('Players are connected; builds are ready. Retry up once the match is empty.')
+        if not force:
+            raise RuntimeError(
+                'Players are connected; builds are ready. Retry up once the match is empty, '
+                'or pass --force to replace the server and drop them.')
+        print('--force: replacing the server while players are connected; they will be '
+              'disconnected and must rejoin.', flush=True)
     if not d['proxy']:
         if not d['server'] and not free_port(d['web']):
             raise RuntimeError('Selected web port became occupied')
@@ -437,6 +454,8 @@ def main():
     parser.add_argument('action', choices=['status', 'up', 'verify'], nargs='?', default='status')
     parser.add_argument('--blast-root', type=Path, default=Path(os.environ.get('BLAST_ROOT', ROOT.parent / 'blast-stress-solver-2/blast')))
     parser.add_argument('--rebuild', action='store_true')
+    parser.add_argument('--force', action='store_true',
+                        help='Replace the server even with players connected, disconnecting them')
     parser.add_argument('--browser', action='store_true', help='Bounded, low-resolution render/WT smoke test; does not shoot')
     parser.add_argument('--public', action='store_true', help='Ask r.jina.ai to fetch the public /healthz endpoint')
     args = parser.parse_args()
@@ -457,7 +476,7 @@ def main():
             staged = STATE / 'client'
             if not d['server']:
                 shutil.copytree(staged, ROOT / 'client/dist', dirs_exist_ok=True)
-            deploy(d, binary)
+            deploy(d, binary, args.force)
             if staged.exists():
                 # Keep old content-addressed assets for already open browser tabs.
                 shutil.copytree(staged, ROOT / 'client/dist', dirs_exist_ok=True)
@@ -475,10 +494,16 @@ def main():
 MAX_LOG_BYTES = 512 * 1024 * 1024
 
 
-def rotate_log(path):
-    """Move the log aside if it is over the cap. Keeps exactly one previous."""
+def rotate_log(path, cap=None):
+    """Move the log aside if it is over the cap. Keeps exactly one previous.
+
+    Rename only, never truncate: truncating a file another process holds open
+    does not free its space and leaves that process writing at a stale offset,
+    which recreates the file sparse at its old size.
+    """
+    cap = MAX_LOG_BYTES if cap is None else cap
     try:
-        if path.exists() and path.stat().st_size > MAX_LOG_BYTES:
+        if path.exists() and path.stat().st_size > cap:
             previous = path.with_name(path.name + '.1')
             if previous.exists():
                 previous.unlink()
@@ -528,6 +553,15 @@ def pump(stream, path):
         handle.close()
 
 
+def note(path, line):
+    """One line into the server log, holding no fd between calls."""
+    try:
+        with path.open('ab') as handle:
+            handle.write((line + '\n').encode())
+    except OSError:
+        pass  # Logging must never be the reason the server stops.
+
+
 def serve(binary):
     # Keep the server available after /city-reset or an unexpected exit. The
     # parent handles SIGTERM and terminates only its own child on replacement.
@@ -549,7 +583,10 @@ def serve(binary):
         child = sp.Popen([binary], stdout=sp.PIPE, stderr=sp.STDOUT)
         pump(child.stdout, logfile)
         code = child.wait()
-        print(f'[vast-city supervisor] server exited {code}', flush=True)
+        # Appended with a short-lived handle, so the supervisor never holds an
+        # fd on the file it rotates -- and the restart still shows up in the
+        # server log, where it is needed to read a crash in context.
+        note(logfile, f'[vast-city supervisor] server exited {code}')
         for _ in range(30):
             if stopping:
                 break
