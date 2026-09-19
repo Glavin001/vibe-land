@@ -174,6 +174,15 @@ def build(blast, rebuild):
     for key in fingerprint:
         fingerprint[key] = hashlib.sha256((fingerprint[key] + config).encode() + envfiles).hexdigest()
     env = dict(os.environ, BLAST_ROOT=str(blast))
+    # Pin the same CUDA toolkit the server is RUN with (see serve()).
+    #
+    # Architecture 89 is qualified on 12.8, and physx-bridge/build.rs refuses to
+    # build against a toolkit that differs from the one recorded in the SDK's
+    # sdk-artifacts.json. Only the run environment set this, so a rebuild
+    # inherited whatever /usr/local/cuda points at -- 13.2 on this host -- and
+    # failed with a toolkit mismatch that reads like an SDK problem.
+    env['CUDA_HOME'] = os.environ.get('CUDA_HOME', '/usr/local/cuda-12.8')
+    env['PATH'] = f'{env["CUDA_HOME"]}/bin:{env.get("PATH", "")}'
     env.pop('CARGO_TARGET_DIR', None)  # Artifact location is explicitly this checkout's target/.
     jobs = []
     binary = ROOT / 'target/release/web-fps-server'
