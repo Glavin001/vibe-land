@@ -87,10 +87,38 @@ interface FractureBatch {
   brokenBonds: number;
 }
 
+/**
+ * A chunk going invisible, or coming back.
+ *
+ * Hiding is the only thing in this renderer that makes geometry vanish: a
+ * chunk whose composed height stays below -4 m for eight consecutive writes
+ * has its scale zeroed. That is a cull for debris that escaped the world, and
+ * it is correct for that -- but a body whose pose is briefly wrong takes all of
+ * its chunks below the line together, and eight writes later a whole building
+ * disappears and then comes back. Reported from play as large structures
+ * phasing in and out.
+ *
+ * Both directions, with the body, so a report can distinguish a few strays from
+ * an island going dark at once.
+ */
+interface VisibilityFlip {
+  t: number;
+  slot: number;
+  body: number;
+  hidden: boolean;
+  y: number;
+}
+
 const baselines: BaselineArrival[] = [];
 const clientEvents: ClientEvent[] = [];
 const teleports: TeleportEvent[] = [];
 const adoptionJumps: AdoptionJump[] = [];
+const visibility: VisibilityFlip[] = [];
+let visibilityHidden = 0;
+let visibilityShown = 0;
+/** Chunks hidden together on one body in one flip run, worst seen. */
+const hiddenPerBody = new Map<number, number>();
+let worstBodyHidden = 0;
 const fractures: FractureBatch[] = [];
 
 function push<T>(ring: T[], entry: T): void {
@@ -174,6 +202,34 @@ export function drawnTeleportBreakdown(): Record<string, number> {
   return { ...teleportBy };
 }
 
+/** A chunk going invisible or coming back; see `VisibilityFlip`. */
+export function noteVisibility(flip: Omit<VisibilityFlip, 't'>): void {
+  push(visibility, { t: performance.now(), ...flip });
+  if (flip.hidden) {
+    visibilityHidden += 1;
+    const n = (hiddenPerBody.get(flip.body) ?? 0) + 1;
+    hiddenPerBody.set(flip.body, n);
+    if (n > worstBodyHidden) worstBodyHidden = n;
+  } else {
+    visibilityShown += 1;
+    const n = (hiddenPerBody.get(flip.body) ?? 0) - 1;
+    if (n <= 0) hiddenPerBody.delete(flip.body);
+    else hiddenPerBody.set(flip.body, n);
+  }
+}
+
+/** Visibility totals for the stats panel and the QA harness. */
+export function visibilityTotals(): {
+  hidden: number; shown: number; worstBodyHidden: number; bodiesPartlyHidden: number;
+} {
+  return {
+    hidden: visibilityHidden,
+    shown: visibilityShown,
+    worstBodyHidden,
+    bodiesPartlyHidden: hiddenPerBody.size,
+  };
+}
+
 /** A chunk whose world pose moved when a topology batch re-parented it. */
 export function noteAdoptionJump(slot: number, stepM: number): void {
   push(adoptionJumps, { t: performance.now(), slot, stepM });
@@ -245,10 +301,11 @@ export async function sendDebugReport(matchId: string): Promise<string> {
       client: [...clientEvents],
       teleports: [...teleports],
       adoptionJumps: [...adoptionJumps],
+      visibility: [...visibility],
       fractures: [...fractures],
     },
     /** The rings, already asked the question they exist to answer. */
-    flicker: fractureCorrelation(),
+    flicker: { ...fractureCorrelation(), visibility: visibilityTotals() },
   };
   const response = await fetch(`/match-stats/${encodeURIComponent(matchId)}/report`, {
     method: 'POST',

@@ -71,8 +71,10 @@ console.log(`DRAWN chunk teleports ${c.drawnTeleports} (${per(c.drawnTeleports)}
   + `  worst ${(c.drawnTeleportWorstM ?? 0).toFixed(1)} m`
   + `  total ${Math.round(c.drawnTeleportMetres ?? 0)} m`);
 console.log(`island frame rebases ${c.reoffsets} (${Math.round(c.reoffsetMetres ?? 0)} m of local shift)`);
+console.log(`VISIBILITY: hidden ${c.chunksHidden} unhidden ${c.chunksUnhidden}`
+  + `  ${JSON.stringify(c.visibilityFlips)}`);
 console.log('teleports by cause:', JSON.stringify(c.drawnTeleportBy));
-console.log(`starved re-admissions ${c.starvedReadmissions}`);
+console.log(`starved re-admissions ${c.starvedReadmissions}  wake seeds ${c.wakeSeeds}`);
 console.log(`settles: restored ${c.settlesRestored}  left hard ${c.settlesLeftHard}`);
 console.log(`promotions ${c.promotionsSeen}: seeded ${c.promotionsSeeded}`
   + `  skipped reused ${c.promotionsSeedSkippedReused}`

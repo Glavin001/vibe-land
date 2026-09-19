@@ -64,6 +64,25 @@ export const renderStats = {
   /// makes geometry disappear, so a hole in a building starts here.
   chunksHidden: 0,
 
+  /// Chunks that came BACK from being hidden. The counterpart to the line
+  /// above and, until it existed, the missing half of the only mechanism in
+  /// this renderer that makes geometry disappear: hiding was counted,
+  /// un-hiding was not, so a chunk flickering out and back looked identical to
+  /// one that had genuinely escaped the world. A player watching a large
+  /// structure come down described it as parts of the building phasing in and
+  /// out, which is this pair of numbers both climbing together.
+  chunksUnhidden: 0,
+
+  /// Currently hidden, recomputed on the telemetry sweep rather than tracked
+  /// per write, because the interesting question is how much of the city is
+  /// invisible right now and not how it got there.
+  chunksHiddenNow: 0,
+
+  /// The largest number of chunks belonging to ONE body that were hidden
+  /// together, ever. One chunk vanishing is a speck; eight hundred vanishing
+  /// at once is half a building disappearing for a moment.
+  worstBodyHiddenChunks: 0,
+
   /// Chunk writes skipped because the ledger could not resolve the chunk's
   /// body. Cumulative. Must stay 0: every one is a frame where a chunk had no
   /// known pose, and before this it was drawn at its body-local offset --

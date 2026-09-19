@@ -754,18 +754,20 @@ function buildSharedShapeMeshes(
  * city-wide instanced shapes). Shared by the frame loop's first-movement wake
  * and the post-build sweep below.
  */
-export function wakeSlotFromShell(state: CityMeshState, slot: number): void {
-  if (state.wokenBySlot[slot]) return;
+/** Returns true on the write that actually woke this slot, false afterwards. */
+export function wakeSlotFromShell(state: CityMeshState, slot: number): boolean {
+  if (state.wokenBySlot[slot]) return false;
   state.wokenBySlot[slot] = 1;
   const renderable = state.renderables[state.meshOfSlot[slot]];
   const instanceId = state.instanceIds[slot];
-  if (!renderable || renderable.kind !== 'batched' || instanceId < 0) return;
-  if (state.shellIndexCountBySlot[slot] <= 0) return;
+  if (!renderable || renderable.kind !== 'batched' || instanceId < 0) return true;
+  if (state.shellIndexCountBySlot[slot] <= 0) return true;
   retireShellRange(renderable.mesh, {
     start: state.shellIndexStartBySlot[slot],
     count: state.shellIndexCountBySlot[slot],
   });
   renderable.mesh.setVisibleAt(instanceId, true);
+  return true;
 }
 
 /**

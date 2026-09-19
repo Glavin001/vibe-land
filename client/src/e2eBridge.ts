@@ -210,6 +210,17 @@ export interface CityE2EStats {
   presentedJumpMaxM: number;
   /// What the renderer actually drew: instances that moved further than the
   /// chunk's own recent speed explains. The measurement that counts.
+  /**
+   * Visibility, which is the only thing in this renderer that makes geometry
+   * vanish: a chunk below -4 m for eight consecutive writes has its scale
+   * zeroed. Both directions, because a chunk that flickers out and back is
+   * indistinguishable from one that genuinely escaped if only hiding is
+   * counted -- and a body whose pose is briefly wrong takes all of its chunks
+   * under the line together, which is a building disappearing for a moment.
+   */
+  chunksHidden: number;
+  chunksUnhidden: number;
+  visibilityFlips: Record<string, number>;
   /** The whole teleport population split by cause. */
   drawnTeleportBy: Record<string, number>;
   drawnTeleports: number;
@@ -232,6 +243,7 @@ export interface CityE2EStats {
   presentationAnomalyMaxM: number;
   /** Streamed poses refused for being outside the world. Must be 0. */
   recordsOutsideWorld: number;
+  wakeSeeds: number;
   starvedReadmissions: number;
   settlesRestored: number;
   settlesLeftHard: number;

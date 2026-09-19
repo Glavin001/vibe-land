@@ -84,6 +84,9 @@ export interface CityClientStats {
   /// and settles with no track left, where the hard write stands.
   /// Bodies re-anchored to their drawn pose after the server stopped serving
   /// them long enough for their track to give up.
+  /// Tracks started from the ledger pose rather than from nothing, which is
+  /// what a waking body needs and what neither of the other two seeds covered.
+  wakeSeeds: number;
   starvedReadmissions: number;
   settlesRestored: number;
   settlesLeftHard: number;
@@ -423,6 +426,8 @@ export class CityClient {
   private recordsOutsideWorld = 0;
   /** Settles whose hard ledger write was put back for the track to glide. */
   /** Bodies re-anchored to their drawn pose after going unserved. */
+  /** Tracks started from the ledger pose rather than from nothing. */
+  private wakeSeeds = 0;
   private starvedReadmissions = 0;
   private settlesRestored = 0;
   /** Settles with no track left to glide them, so the hard write stands. */
@@ -1367,6 +1372,41 @@ export class CityClient {
       );
     });
     const state: BodyStreamState = { track, lastTick: 0, settledHint: false };
+    // A body the ledger already knows is already ON SCREEN somewhere, so start
+    // the track there instead of nowhere.
+    //
+    // This also replaces the raw placeholder write. `applyRecord` used to put
+    // the first record straight into the ledger for a body with no presented
+    // sample yet, because "a body that has never been sampled needs SOME
+    // ledger pose or its chunks compose against garbage" -- and the ledger's
+    // own current pose is a better answer than the newest streamed tick, which
+    // is an interpolation delay ahead of everything drawn around it.
+    //
+    // The case this exists for is waking. A body that settles has its track
+    // converge and close, and when the server wakes it the next record builds a
+    // brand-new track with no history -- so the first sample jumps from the
+    // pose its chunks have been drawn at since the settle to wherever the body
+    // is now. `seedPromotions` does this for a freshly fractured island and the
+    // starved-readmission path does it for a body that went unserved; a wake
+    // fell between the two, because it has neither a captured drawn pose nor a
+    // previous presented sample to be re-anchored to.
+    const existing = this.topology.body(key);
+    if (existing && SEED_ON_STARVED_READMISSION) {
+      track.seedPresented(
+        {
+          position: [existing.position[0], existing.position[1], existing.position[2]],
+          rotation: [...existing.rotation] as Quat,
+          linearVelocity: [0, 0, 0],
+          angularVelocity: [0, 0, 0],
+        },
+        this.renderTickNow(performance.now()),
+      );
+      state.lastPresented = {
+        position: [existing.position[0], existing.position[1], existing.position[2]],
+        rotation: [...existing.rotation] as Quat,
+      };
+      this.wakeSeeds += 1;
+    }
     this.bodies.set(key, state);
     this.kinetic.add(key);
     return state;
@@ -1846,6 +1886,7 @@ export class CityClient {
       implausibleJumps: this.presentationAnomalies.implausible_jump,
       presentationAnomalyMaxM: this.presentationAnomalyMaxM,
       recordsOutsideWorld: this.recordsOutsideWorld,
+      wakeSeeds: this.wakeSeeds,
       starvedReadmissions: this.starvedReadmissions,
       settlesRestored: this.settlesRestored,
       settlesLeftHard: this.settlesLeftHard,

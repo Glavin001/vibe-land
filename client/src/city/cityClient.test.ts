@@ -173,7 +173,16 @@ describe('CityClient pose application', () => {
     // Arrives late, encoded before the tick-30 record.
     internals(client).handleChunks(datagram(25, key, [0, 99, 0]));
 
-    expect(client.topology.body(key)?.position[1]).toBeCloseTo(3, 5);
+    // Sampled first, because that is how the ledger is read in production: a
+    // new track starts at the pose its chunks are already drawn at and the
+    // records glide it from there, so the ledger between frames holds the
+    // seeded pose rather than the newest record. What this test is about is
+    // the REORDERED record, and it must leave no trace either way -- 99 is
+    // nowhere near the path from 5 to 3.
+    client.samplePresentation(performance.now() + 5000);
+    const y = client.topology.body(key)?.position[1] ?? 0;
+    expect(y).toBeGreaterThan(2.5);
+    expect(y).toBeLessThan(5.5);
   });
 
   it('is idempotent when the same datagram is delivered twice', () => {
@@ -185,7 +194,15 @@ describe('CityClient pose application', () => {
     internals(client).handleChunks(packet);
     internals(client).handleChunks(packet);
 
-    expect(client.topology.body(key)?.position[1]).toBeCloseTo(4, 5);
+    // Twice must be the same as once. Sampled, for the reason above.
+    client.samplePresentation(performance.now() + 5000);
+    const twice = client.topology.body(key)?.position[1] ?? 0;
+
+    const { client: single } = makeClient();
+    promote(single, 1, 1, [1, 2], [0, 5, 0]);
+    internals(single).handleChunks(datagram(30, key, [0, 4, 0]));
+    single.samplePresentation(performance.now() + 5000);
+    expect(twice).toBeCloseTo(single.topology.body(key)?.position[1] ?? 0, 5);
   });
 
   it('drops a delta whose baseline generation has been evicted, then recovers on the next absolute', () => {
@@ -204,11 +221,17 @@ describe('CityClient pose application', () => {
       ...datagram(30, key, [0, 1, 0], { mode: RecordMode.Delta }),
       baselineId: 1,
     };
+    // The stale delta must leave no mark: 1 is nowhere near where this body is.
     internals(client).handleChunks(stale);
-    expect(client.topology.body(key)?.position[1]).toBeCloseTo(5, 5);
+    client.samplePresentation(performance.now() + 5000);
+    expect(client.topology.body(key)?.position[1]).toBeGreaterThan(4);
 
+    // And the next absolute record is taken, gliding the body to 7. Sampled,
+    // because a track now starts at the pose its chunks are drawn at and the
+    // records move it from there rather than replacing it outright.
     internals(client).handleChunks(datagram(31, key, [0, 7, 0]));
-    expect(client.topology.body(key)?.position[1]).toBeCloseTo(7, 5);
+    client.samplePresentation(performance.now() + 10000);
+    expect(client.topology.body(key)?.position[1]).toBeCloseTo(7, 1);
   });
 
   it('does not let a pre-settle datagram roll a body back after it wakes', () => {

@@ -68,6 +68,7 @@ import {
   drawnTeleportTotals,
   noteAdoptionJump,
   noteTeleport,
+  visibilityTotals,
 } from '../city/debugReport';
 import {
   bodyDebug,
@@ -292,7 +293,8 @@ function installChunkTeleportProbe(chunkCount: number): () => void {
       // dominated by an unrelated term does.
       const known = Math.max(speedEst[slot], ctx.bodySpeed ?? 0);
       const explained = 3 * known * gapSec + 0.3;
-      const anomalous = step > CHUNK_TELEPORT_M && step > explained;
+      const anomalous =
+        !ctx.freshFromShell && step > CHUNK_TELEPORT_M && step > explained;
       speedEst[slot] = 0.7 * speedEst[slot] + 0.3 * (step / gapSec);
       if (anomalous) {
         // The debug-report ring is unconditional: SEND REPORT needs teleport
@@ -767,6 +769,9 @@ export function CityChunksLayer({
         presentedJumpsOver1m: stats.presentedJumpsOver1m,
         presentedJumpsOver4m: stats.presentedJumpsOver4m,
         presentedJumpMaxM: stats.presentedJumpMaxM,
+        chunksHidden: renderStats.chunksHidden,
+        chunksUnhidden: renderStats.chunksUnhidden,
+        visibilityFlips: visibilityTotals(),
         drawnTeleportBy: drawnTeleportBreakdown(),
         drawnTeleports: drawnTeleportTotals().count,
         drawnTeleportWorstM: drawnTeleportTotals().worstM,
@@ -786,6 +791,7 @@ export function CityChunksLayer({
         implausibleJumps: stats.implausibleJumps,
         presentationAnomalyMaxM: stats.presentationAnomalyMaxM,
         recordsOutsideWorld: stats.recordsOutsideWorld,
+        wakeSeeds: stats.wakeSeeds,
         starvedReadmissions: stats.starvedReadmissions,
         settlesRestored: stats.settlesRestored,
         settlesLeftHard: stats.settlesLeftHard,
@@ -950,7 +956,16 @@ export function CityChunksLayer({
         // First real movement: the chunk leaves the static shell and its own
         // instance takes over, same frame, same pose. One-way -- see
         // cityShell.ts for why a settled chunk never merges back.
-        if (!bodyIsSupport) wakeSlotFromShell(state, slot);
+        if (!bodyIsSupport) {
+          // A chunk leaving the static shell for its own instance is written
+          // for the first time against whatever the probe last held for that
+          // slot, which is the shell's rest pose. That is a change of
+          // representation, not a teleport, and counting it as one put exactly
+          // one event per chunk into the totals -- 24,105 of them in a live
+          // report, which is the chunk count, and roughly half of everything
+          // the counter had to say.
+          if (wakeSlotFromShell(state, slot)) probeCtx.freshFromShell = true;
+        }
         renderStats.instanceWrites += 1;
         writeInstance(
           renderable,

@@ -10,6 +10,7 @@ import * as THREE from 'three';
 
 import type { CityClient } from '../city/cityClient';
 import type { LedgerBody } from '../city/topology';
+import { noteVisibility } from '../city/debugReport';
 import { renderStats } from '../city/renderStats';
 
 const TMP_MATRIX = new THREE.Matrix4();
@@ -90,6 +91,15 @@ export interface ChunkWriteContext {
   bodySpeed?: number;
   /** Island frame rebased recently; see reoffsetBody. */
   recentlyRebased?: boolean;
+  /**
+   * This write is the one that moved the chunk out of the static shell.
+   *
+   * Its previous recorded position is the shell's rest pose, so the step is a
+   * change of representation rather than movement. Counting those as teleports
+   * put one event per chunk into the totals: 24,105 in a live report, which is
+   * exactly the chunk count and about half of everything the counter said.
+   */
+  freshFromShell?: boolean;
 }
 
 /** Set while recording; see `setChunkTeleportProbe`. */
@@ -144,6 +154,17 @@ export function writeInstance(
       if (renderable.kind === 'batched') renderable.mesh.setVisibleAt(instanceId, !hide);
       hiddenBySlot[slot] = hide ? 1 : 0;
       if (hide) renderStats.chunksHidden += 1;
+      else renderStats.chunksUnhidden += 1;
+      // Both directions, with the body, so a report can say whether a whole
+      // island went dark at once or a few strays did. This is the only thing
+      // in this renderer that makes geometry disappear, so anything a player
+      // describes as phasing in and out has to pass through here.
+      noteVisibility({
+        slot,
+        body: probeCtx?.bodyKey ?? 0,
+        hidden: hide,
+        y: TMP_POSE[1],
+      });
     }
     hidden = hide;
     // The matrix is written either way. Skipping it while hidden saved a
