@@ -242,6 +242,13 @@ pub struct NativeCityDestruction {
     velocity_explosions: u64,
     worst_velocity_jump: f32,
     explosions: Vec<ExplosionSample>,
+    /// Bodies first seen this tick, with where they appeared.
+    ///
+    /// The detector reports the body that FLIES, and every one of the first
+    /// 41 was old, at rest, and lying within 2 m of the ground -- settled
+    /// rubble, not a fresh fragment. That is the victim. Whatever ejects it
+    /// has to have arrived; this is the list to look in.
+    born_this_tick: Vec<(u32, [f32; 3])>,
     /// Consecutive ticks the stage has rejected without ever reaching frame 1.
     ///
     /// The difference between "this tick did not complete" and "this stage
@@ -291,6 +298,18 @@ struct TrackedBody {
     last_tick: u64,
     position: [f32; 3],
     speed: f32,
+}
+
+/// What appeared beside a body in the tick it was ejected.
+fn log_explosion_cause(born: usize, nearest: Option<(u32, f32, [f32; 3])>) {
+    match nearest {
+        Some((entity, distance, at)) => eprintln!(
+            "[destruction]   {born} bodies born this tick; nearest is {entity:#x} \
+             at {distance:.2} m, position ({:.1}, {:.1}, {:.1})",
+            at[0], at[1], at[2]
+        ),
+        None => eprintln!("[destruction]   {born} bodies born this tick, none near it"),
+    }
 }
 
 /// One-tick speed increase beyond which the cause cannot be a collision.
@@ -444,6 +463,7 @@ materials={} reserved_pairs={} iterations={} tolerance={:e}",
             velocity_explosions: 0,
             worst_velocity_jump: 0.0,
             explosions: Vec::new(),
+            born_this_tick: Vec::new(),
             stuck_at_frame_zero: 0,
         })
     }
@@ -613,6 +633,7 @@ no observation this tick",
         self.encoder_input.clear();
         self.encoder_input.reserve(snapshots.len());
         let bound = world_bound_m();
+        self.born_this_tick.clear();
         let mut settled: Vec<SettleEvent> = Vec::new();
         let mut wakes: Vec<(u32, u32)> = std::mem::take(&mut self.pending_wakes);
         for snap in snapshots {
@@ -734,6 +755,28 @@ no observation this tick",
                             self.worst_velocity_jump = jump;
                         }
                         if self.explosions.len() < 32 {
+                            // Nearest body that appeared this tick. A fragment
+                            // materialising inside a settled pile is the
+                            // standing suspicion; this is what would show it,
+                            // and equally what would rule it out.
+                            let mut nearest: Option<(u32, f32, [f32; 3])> = None;
+                            for (other, at) in &self.born_this_tick {
+                                if *other == entity {
+                                    continue;
+                                }
+                                let d = speed_of(
+                                    at[0] - slot.position[0],
+                                    at[1] - slot.position[1],
+                                    at[2] - slot.position[2],
+                                );
+                                if nearest.is_none_or(|(_, best, _)| d < best) {
+                                    nearest = Some((*other, d, *at));
+                                }
+                            }
+                            log_explosion_cause(
+                                self.born_this_tick.len(),
+                                nearest,
+                            );
                             self.explosions.push(ExplosionSample {
                                 entity,
                                 age_ticks: self.ticks.saturating_sub(slot.first_tick),
@@ -757,6 +800,7 @@ no observation this tick",
                     slot.last_tick = self.ticks;
                 }
                 std::collections::hash_map::Entry::Vacant(slot) => {
+                    self.born_this_tick.push((entity, [px, py, pz]));
                     slot.insert(TrackedBody {
                         first_tick: self.ticks,
                         last_tick: self.ticks,
