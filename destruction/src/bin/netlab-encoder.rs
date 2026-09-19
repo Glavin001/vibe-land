@@ -61,6 +61,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(value) = flag("--error-budget-px") {
         config.error_budget_px = value.parse()?;
     }
+    if let Some(value) = flag("--burst-capacity-sends") {
+        config.burst_capacity_sends = value.parse()?;
+    }
+    if let Some(value) = flag("--burst-max-multiple") {
+        config.burst_max_multiple = value.parse()?;
+    }
     // MAX_EVAL is read from the environment by the encoder itself; setting it
     // here keeps every knob on one command line.
     if let Some(value) = flag("--max-eval") {
@@ -141,8 +147,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         camera.fov_degrees,
     );
     println!(
-        "ticks {ticks} ({seconds:.1} s) | ceiling {} B | max-eval {} | replay {:.2} s",
+        "ticks {ticks} ({seconds:.1} s) | ceiling {} B | burst {}x{} | max-eval {} | \
+         replay {:.2} s",
         config.client_ceiling_bytes,
+        config.burst_capacity_sends,
+        config.burst_max_multiple,
         std::env::var("VIBE_CITY_MAX_EVAL").unwrap_or_else(|_| "default".into()),
         started.elapsed().as_secs_f32(),
     );

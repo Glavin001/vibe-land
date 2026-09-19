@@ -206,6 +206,17 @@ pub struct Cell {
     pub deferred_error_max_m2: f32,
     /// Sends counted in `deferred_error_m` (the rest had no reference pose).
     pub error_samples: u64,
+    /// Bytes belonging to those samples ONLY.
+    ///
+    /// The denominator for error-per-byte has to match its numerator. Dividing
+    /// by ALL bytes in the cell silently deflates any cell full of first-ever
+    /// records, because a body the client has never seen has no measurable
+    /// error avoided -- it contributes bytes and nothing else. The `sent` cell
+    /// is exactly that cell: 1,796 of its 6,311 newly-freed sends were first
+    /// records, against 4 in the ceiling cell, which made sent records look
+    /// 18% less valuable than the ones the ceiling threw away. That comparison
+    /// was an artefact of this denominator, not a property of the scheduler.
+    pub error_bytes: u64,
     /// Sum of ticks since this client last had this body.
     pub age_ticks: u64,
     /// Sends where this client had never been sent this body at all.
@@ -216,10 +227,10 @@ impl Cell {
     /// Square metres of visible mismatch per wire byte: the size-weighted
     /// counterpart of `error_per_byte`.
     pub fn error_area_per_byte(&self) -> f64 {
-        if self.bytes == 0 {
+        if self.error_bytes == 0 {
             0.0
         } else {
-            self.deferred_error_m2 / self.bytes as f64
+            self.deferred_error_m2 / self.error_bytes as f64
         }
     }
 
@@ -231,16 +242,19 @@ impl Cell {
         }
     }
 
-    /// Metres of client-side error per wire byte this cell accounts for.
+    /// Metres of client-side error per wire byte, over the sends where the
+    /// error is measurable.
     ///
     /// For `Sent` cells this is error *avoided* per byte spent; for dropped
     /// cells it is error *accepted* per byte saved. Comparing the two across a
-    /// row is the whole argument for or against a scheduling change.
+    /// row is the whole argument for or against a scheduling change -- which
+    /// is why the denominator counts only the bytes of the sends that have an
+    /// error figure at all. See `error_bytes`.
     pub fn error_per_byte(&self) -> f64 {
-        if self.bytes == 0 {
+        if self.error_bytes == 0 {
             0.0
         } else {
-            self.deferred_error_m / self.bytes as f64
+            self.deferred_error_m / self.error_bytes as f64
         }
     }
 
@@ -349,6 +363,7 @@ impl SendAudit {
         match deferred_error_m {
             Some(error) => {
                 let area = error * radius_m.max(0.0);
+                cell.error_bytes += cost_bytes as u64;
                 cell.deferred_error_m += error as f64;
                 cell.deferred_error_m2 += area as f64;
                 cell.error_samples += 1;
@@ -424,6 +439,7 @@ impl SendAudit {
             total.deferred_error_m2 += cell.deferred_error_m2;
             total.deferred_error_max_m2 = total.deferred_error_max_m2.max(cell.deferred_error_max_m2);
             total.error_samples += cell.error_samples;
+            total.error_bytes += cell.error_bytes;
             total.age_ticks += cell.age_ticks;
             total.never_sent += cell.never_sent;
             total.deferred_error_max_m = total.deferred_error_max_m.max(cell.deferred_error_max_m);
@@ -474,6 +490,8 @@ pub struct ReportCell {
     pub deferred_error_m2: f64,
     pub deferred_error_max_m: f32,
     pub deferred_error_max_m2: f32,
+    pub error_samples: u64,
+    pub error_bytes: u64,
     pub mean_error_m: f64,
     pub error_per_byte: f64,
     pub error_area_per_byte: f64,
@@ -530,6 +548,8 @@ impl SendAudit {
                     deferred_error_m2: cell.deferred_error_m2,
                     deferred_error_max_m: cell.deferred_error_max_m,
                     deferred_error_max_m2: cell.deferred_error_max_m2,
+                    error_samples: cell.error_samples,
+                    error_bytes: cell.error_bytes,
                     mean_error_m: cell.mean_error_m(),
                     error_per_byte: cell.error_per_byte(),
                     error_area_per_byte: cell.error_area_per_byte(),
@@ -751,5 +771,29 @@ mod tests {
             slab.error_area_per_byte(),
             shard.error_area_per_byte()
         );
+    }
+
+    /// The denominator must match the numerator, or a cell full of first-ever
+    /// records looks cheap when it is merely unmeasurable.
+    #[test]
+    fn first_ever_records_do_not_dilute_error_per_byte() {
+        let mut measurable = SendAudit::new();
+        let mut diluted = SendAudit::new();
+        // Both cells send the same ten measurable records...
+        for audit in [&mut measurable, &mut diluted] {
+            for body in 0..10 {
+                audit.note(1, body, BodyPhase::Falling, SendOutcome::Sent, 30, Some(0.5), 1.0, Some(4));
+            }
+        }
+        // ...but one also sends ninety first-ever records, which have no
+        // reference pose and so no measurable error avoided.
+        for body in 10..100 {
+            diluted.note(1, body, BodyPhase::Falling, SendOutcome::Sent, 30, None, 1.0, None);
+        }
+        let a = measurable.cell(BodyPhase::Falling, SendOutcome::Sent);
+        let b = diluted.cell(BodyPhase::Falling, SendOutcome::Sent);
+        assert_eq!(a.error_per_byte(), b.error_per_byte());
+        assert!(b.bytes > a.bytes, "the diluted cell really does carry more bytes");
+        assert_eq!(a.error_bytes, b.error_bytes);
     }
 }

@@ -129,10 +129,26 @@ pub fn select_with_ceiling(
     initial_bytes: usize,
 ) -> BudgetSelection {
     let order = &mut *candidates;
+    // Value per byte, not value.
+    //
+    // The budget is a byte budget, so the question at the cut line is "which
+    // record buys the most error removed per byte", and ranking by score alone
+    // answers a different one. Records here range from 12 bytes (a pose delta)
+    // to 30 (absolute pose plus velocities), so treating them as equal costs
+    // is a 2.5x mis-weighting -- which showed up as sent and dropped records
+    // having almost the same worth: for newly-freed bodies the ceiling was
+    // discarding 7.06 mm/B while sending 5.76 mm/B, i.e. throwing away better
+    // records than it kept.
+    //
+    // This is the greedy knapsack ordering, which is optimal to within one
+    // item for a fractional budget and is what the fill loop below assumes.
+    let density = |candidate: &BudgetCandidate| {
+        candidate.priority / candidate.cost_bytes.max(1) as f32
+    };
     let ranking = |a: &BudgetCandidate, b: &BudgetCandidate| {
         b.required
             .cmp(&a.required)
-            .then_with(|| b.priority.total_cmp(&a.priority))
+            .then_with(|| density(b).total_cmp(&density(a)))
             .then_with(|| a.index.cmp(&b.index))
     };
 

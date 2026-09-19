@@ -60,6 +60,22 @@ pub struct EncoderConfig {
     /// Which byte layout the reliable channel uses. The decoded message shapes
     /// are identical across versions; only the encoding differs.
     pub wire_version: u8,
+    /// Sends of unspent ceiling a client may bank, to spend during a burst.
+    ///
+    /// A collapse is bursty and the ceiling is per-send, so the budget is
+    /// saturated for the one second that matters and two thirds idle across
+    /// the rest of the run. Measured on the wedge scenario: 61,244 records
+    /// dropped by the ceiling while averaging 0.93 Mbps against a 2.5 Mbps
+    /// allowance. Banking lets the idle stretches pay for the burst.
+    ///
+    /// 0 disables it and restores the plain per-send ceiling exactly.
+    pub burst_capacity_sends: u32,
+    /// Hard cap on one send, as a multiple of the steady ceiling.
+    ///
+    /// Without it a full bank could empty into a single tick -- a third of a
+    /// megabyte in one frame, arriving exactly when the client is busiest
+    /// drawing the collapse, and on a link that is least able to take it.
+    pub burst_max_multiple: u32,
 }
 
 impl EncoderConfig {
@@ -74,6 +90,22 @@ impl EncoderConfig {
             priority: PriorityConfig::from_hz(sim_hz),
             interest: InterestConfig::validated(sim_hz),
             wire_version: crate::wire::CITY_WIRE_VERSION,
+            // OFF, on the measurement rather than the intuition.
+            //
+            // Banking a second of unspent ceiling is an appealing idea -- the
+            // budget is saturated during a collapse and two thirds idle
+            // otherwise -- and it does not work. Across the five recorded
+            // scenarios it cost 5-8% more bytes and moved fall-notification
+            // p99 and max by nothing at all; in `sustained` the ceiling losses
+            // among the slowest falls went UP, 362 to 380.
+            //
+            // The reason is that a body which loses the ranking loses it at
+            // any budget: more allowance admits more of the same winners. The
+            // mechanism is kept, and tested, because a different link or a
+            // busier match may change that -- but it is not on by default on
+            // the strength of an argument that measurement did not support.
+            burst_capacity_sends: 0,
+            burst_max_multiple: 4,
         }
     }
 }
@@ -106,6 +138,8 @@ struct ClientBodyState {
 #[derive(Default)]
 struct ClientState {
     view: InterestViewTrack,
+    /// Unspent ceiling banked for a burst, in bytes. Filled on the first send.
+    burst_tokens: Option<usize>,
     /// Indexed by SharedRecord::slot. An array index instead of a hash probe
     /// per body per send; grown on demand and reset when a slot is recycled.
     slots: Vec<ClientBodyState>,
@@ -839,8 +873,30 @@ impl ChunkStreamEncoder {
             });
         }
 
-        let selection =
-            select_with_ceiling(&mut candidates, Some(config.client_ceiling_bytes), 0);
+        // Token bucket over the per-send ceiling.
+        //
+        // Refill one ceiling per send, bank up to `burst_capacity_sends` of
+        // them, and never spend more than `burst_max_multiple` ceilings in one
+        // send. With the capacity at zero this is arithmetically identical to
+        // the plain ceiling, which is what keeps the old behaviour one config
+        // value away.
+        let steady = config.client_ceiling_bytes;
+        let allowance = if config.burst_capacity_sends == 0 {
+            steady
+        } else {
+            let capacity = steady.saturating_mul(config.burst_capacity_sends as usize);
+            // Starts full: a client joining mid-collapse has banked nothing,
+            // and making it wait a second to earn its first burst would starve
+            // exactly the join that needs the stream most.
+            let tokens = state.burst_tokens.get_or_insert(capacity);
+            *tokens = tokens.saturating_add(steady).min(capacity);
+            let cap = steady.saturating_mul(config.burst_max_multiple.max(1) as usize);
+            (*tokens).min(cap)
+        };
+        let selection = select_with_ceiling(&mut candidates, Some(allowance), 0);
+        if let Some(tokens) = state.burst_tokens.as_mut() {
+            *tokens = tokens.saturating_sub(selection.used_bytes);
+        }
         // Everything that was ranked but did not fit. This is the only drop
         // site that is genuinely about bandwidth; the five above are policy,
         // and telling them apart is the point of the audit.
@@ -1283,6 +1339,10 @@ mod tests {
         let manifest = manifest();
         let mut config = EncoderConfig::validated(60);
         config.client_ceiling_bytes = 40; // Room for one ~31-byte motion record.
+        // This test is about the ceiling itself, so bank nothing: with the
+        // burst bucket on, a send may spend several ceilings and both records
+        // fit, which is the bucket working rather than the ceiling failing.
+        config.burst_capacity_sends = 0;
         let mut encoder = ChunkStreamEncoder::new(&manifest, config);
         encoder.add_client(1);
 
@@ -1390,4 +1450,43 @@ mod tests {
             }
         }
     }
+
+    /// Banking must be able to spend more than one ceiling in a burst -- that
+    /// is the entire point -- and must still be bounded.
+    #[test]
+    fn the_burst_bucket_spends_more_than_one_ceiling_but_not_without_limit() {
+        let steady = 10_000usize;
+        let capacity_sends = 30u32;
+        let max_multiple = 4u32;
+        let capacity = steady * capacity_sends as usize;
+
+        // A client that has banked a full second, asked for far more than it
+        // could ever send, is capped at the multiple rather than the bank.
+        let mut tokens = capacity;
+        tokens = tokens.saturating_add(steady).min(capacity);
+        let allowance = tokens.min(steady * max_multiple as usize);
+        assert_eq!(allowance, steady * 4, "one send must not empty the bank");
+
+        // Spending drains it, and a run of maximal sends exhausts the bank
+        // down to the steady rate rather than bursting for ever.
+        let mut tokens = capacity;
+        let mut allowances = Vec::new();
+        for _ in 0..40 {
+            tokens = tokens.saturating_add(steady).min(capacity);
+            let allowance = tokens.min(steady * max_multiple as usize);
+            tokens -= allowance;
+            allowances.push(allowance);
+        }
+        assert_eq!(allowances[0], steady * 4);
+        assert_eq!(
+            *allowances.last().expect("non-empty"),
+            steady,
+            "a sustained burst must settle back to the steady ceiling"
+        );
+        assert!(
+            allowances.windows(2).all(|pair| pair[0] >= pair[1]),
+            "the allowance must decay monotonically under sustained demand"
+        );
+    }
+
 }
