@@ -157,6 +157,9 @@ public:
   FfiDestructionStats native_stats() const;
   bool native_validate_mappings() const;
   void native_clear();
+  /// True once a CUDA fault has made this process's context unusable. Cheap:
+  /// one relaxed atomic load, so it can be checked every tick.
+  bool gpu_context_lost() const;
   bool native_configured() const;
 #endif
 

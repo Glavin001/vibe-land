@@ -478,21 +478,19 @@ fn observing_the_same_frame_twice_reports_nothing_the_second_time() {
 ///
 /// `a_rebuilt_city_leaves_nothing_of_the_old_one` proves the scene is left
 /// clean. This proves the other half, which is the half that failed in
-/// production: that the rebuilt stage actually runs. It re-authors in the same
-/// tick it cleared in, with no step between, because that is what
-/// `CityRuntime::reset` does -- it clears the backend and calls `open()` on the
-/// next line.
+/// production: that the rebuilt stage actually runs.
 ///
 /// The live server reset its city and the stage came up stuck at frame 0 with
-/// error bit 4 and stayed there: 19,590 consecutive rejected ticks, every later
-/// `clearStress` refused, a city that could not be broken and could not be
-/// reset, with the server otherwise reporting a healthy 60 Hz. The ordering
-/// looked like the obvious culprit and is not -- this test passes without the
-/// intervening step. The cause was an SDK built from a revision that cannot
-/// construct a GPU scene on this card, installed over the qualified one by an
-/// overnight bisect. The test is kept pointed at the ordering anyway, so that
-/// if the engine ever does acquire that requirement, it is found here rather
-/// than in a match nobody can reset.
+/// error bit 4 and stayed there -- 19,590 consecutive rejected ticks, every
+/// later `clearStress` refused, a city that could be neither destroyed nor
+/// reset. The cause was the ordering: `CityRuntime::reset` cleared the backend
+/// and authored the next city on the following line, and the GPU broadphase
+/// was still holding pairs against the shapes that had just been released.
+///
+/// Note that this test cannot catch that. It passed throughout, without the
+/// step, on sixteen chunks: the hazard is the size of what the broadphase
+/// holds, and it took a real building coming down to show. The step is here
+/// because it is correct, and the bridge refuses to author without it.
 #[test]
 fn a_reset_rebuilds_a_city_that_still_breaks() {
     let mut world = World::new(WorldConfig::default()).expect("GPU scene");
@@ -503,6 +501,7 @@ fn a_reset_rebuilds_a_city_that_still_breaks() {
     }
 
     world.native_clear().expect("clear");
+    world.step().expect("the step the rebuild depends on");
     install(&mut world, 4, 4);
 
     for tick in 0..20 {
@@ -620,5 +619,47 @@ fn a_reset_during_a_collapse_does_not_kill_the_stage() {
         world.step().expect("step");
         let status = world.native_tick().expect("observe");
         assert_eq!(status.error, 0, "tick {tick} after six reset cycles: error bits {}", status.error);
+    }
+}
+
+/// Authoring a new city before the scene has stepped is refused.
+///
+/// The refusal is the point: what it prevents is a use-after-free that the GPU
+/// broadphase turns into an illegal memory access, and CUDA does not forgive
+/// one -- every later launch in the process fails with error 700 and the match
+/// is over, with `clearStress` then refusing because of that state so it cannot
+/// even be reset. Production did exactly this and lost matches to it.
+#[test]
+fn authoring_before_the_scene_has_stepped_is_refused() {
+    let mut world = World::new(WorldConfig::default()).expect("GPU scene");
+    ground(&mut world);
+    install(&mut world, 4, 4);
+    for _ in 0..10 {
+        step_and_observe(&mut world);
+    }
+
+    world.native_clear().expect("clear");
+    let (nodes, bonds) = wall(4, 4);
+    let error = world
+        .native_create_destructible(
+            0,
+            Pose { position: Vec3::new(0.0, 0.0, 0.0), rotation: Quat::IDENTITY },
+            &nodes,
+            &bonds,
+            settings(),
+            GROUP_CHUNK,
+            ALL,
+        )
+        .expect_err("authoring before the broadphase has caught up must be refused");
+    assert!(
+        error.to_string().contains("step the scene once after native_clear"),
+        "unhelpful refusal: {error}"
+    );
+
+    // And the refusal is not a dead end: step, and the same authoring works.
+    world.step().expect("step");
+    install(&mut world, 4, 4);
+    for _ in 0..10 {
+        step_and_observe(&mut world);
     }
 }

@@ -691,9 +691,37 @@ no observation this tick",
     }
 
     /// Release the stage and every actor it owns, so a fresh city can be built.
+    /// Release the stage and leave the scene ready to be authored again.
+    ///
+    /// The step is not optional and not a precaution. Releasing the authored
+    /// parents and their chunk shapes does not reach the GPU broadphase until
+    /// the scene next simulates, so authoring a new city first leaves it
+    /// holding pairs against freed shapes. What that costs is a single illegal
+    /// memory access inside GPU narrowphase, and CUDA does not forgive one:
+    /// every later launch in the process fails with error 700, the stage never
+    /// produces another frame, `clearStress` then refuses because of that
+    /// state, and the match can be neither destroyed nor reset for as long as
+    /// the process lives.
+    ///
+    /// Caught by driving a real collapse and resetting on top of it
+    /// (`client/e2e/qa-reset-storm.mjs`), which fails in three or four cycles.
+    /// It needs a big scene to show: the bridge-level cycle test does the same
+    /// thing with sixteen chunks and has always passed, and so did thirty
+    /// production-scale cycles that never had more than a few hundred bodies in
+    /// the air. The hazard is the size of what the broadphase is holding, and
+    /// `a_rebuilt_city_leaves_nothing_of_the_old_one` has stepped here since it
+    /// was written, against "a crash in an earlier attempt at this port, where
+    /// shapes released on reset were still referenced by the broadphase on the
+    /// next build". That note was right; production simply never did it.
+    ///
+    /// One tick of the emptied scene is the whole cost, and only on a reset.
     pub fn clear(&mut self, world: &mut World) -> Result<(), CityDestructionError> {
         world
             .native_clear()
-            .map_err(|e| CityDestructionError::Bridge(e.to_string()))
+            .map_err(|e| CityDestructionError::Bridge(e.to_string()))?;
+        world
+            .step()
+            .map_err(|e| CityDestructionError::Bridge(e.to_string()))?;
+        Ok(())
     }
 }

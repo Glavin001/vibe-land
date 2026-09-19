@@ -765,6 +765,12 @@ impl PhysxPhysicsArena {
     /// scene-free observer work (the deferred city encode/send bundle) inside
     /// the GPU wait instead of after it.
     pub fn begin_dynamics(&mut self) {
+        // The city runs the split step, not step_vehicles_and_dynamics, so the
+        // lost-context check has to sit on both paths or it sits on neither.
+        #[cfg(feature = "native-destruction")]
+        if self.world.gpu_context_lost() || pretend_context_lost() {
+            exit_on_lost_context();
+        }
         self.expire_launched_balls();
         self.clamp_launched_ball_travel(1.0 / f32::from(vibe_land_shared::constants::SIM_HZ));
         self.drive_vehicles();
@@ -810,6 +816,10 @@ impl PhysxPhysicsArena {
         self.clamp_launched_ball_travel(_dt.max(1.0 / f32::from(vibe_land_shared::constants::SIM_HZ)));
         self.drive_vehicles();
         let started = std::time::Instant::now();
+        #[cfg(feature = "native-destruction")]
+        if self.world.gpu_context_lost() || pretend_context_lost() {
+            exit_on_lost_context();
+        }
         if let Err(error) = self.world.step() {
             #[cfg(feature = "native-destruction")]
             if self.tolerate_rejected_steps {
@@ -1905,9 +1915,56 @@ mod tests {
 ///
 /// Every other backend still fails loudly: there, a failed step means the
 /// engine itself is broken and continuing would publish a fiction.
+/// Claim the CUDA context is lost, for exercising the path that responds to it.
+///
+/// The real thing cannot be produced on demand any more, which is the point of
+/// the fix that stopped producing it. An unreproducible fault still needs its
+/// response exercised, or the response is only a belief:
+///
+///   VIBE_PHYSX_FAKE_CONTEXT_LOST=1
+///
+/// turns the next rejected step into a process exit, and the supervisor should
+/// have the server back inside a few seconds.
+/// Leave the process, so the supervisor can provide a working one.
+///
+/// A lost CUDA context is not a rejected step, and treating it as one is how a
+/// match spends 11,876 consecutive ticks serving a world that will never move
+/// again. One illegal address or failed allocation anywhere in the device work
+/// poisons the context for the life of the process: every later launch fails
+/// identically, and no reset, rebuild or scene teardown undoes it. The only
+/// repair is a new process, and the supervisor makes one within a few seconds.
+#[cfg(feature = "native-destruction")]
+fn exit_on_lost_context() -> ! {
+    tracing::error!(
+        "the CUDA context is lost and cannot be recovered in this process; \
+         exiting so the supervisor restarts the server"
+    );
+    // Flush first: this line is the only explanation anyone gets.
+    use std::io::Write;
+    let _ = std::io::stderr().flush();
+    std::process::exit(70);
+}
+
+#[cfg(feature = "native-destruction")]
+fn pretend_context_lost() -> bool {
+    std::env::var("VIBE_PHYSX_FAKE_CONTEXT_LOST").is_ok_and(|v| v != "0")
+}
+
 #[cfg(feature = "native-destruction")]
 fn report_rejected_step(world: &vibe_land_physx_bridge::World, phase: &str, error: &dyn std::fmt::Display) {
     use std::sync::atomic::{AtomicU64, Ordering};
+    // A lost CUDA context is not a rejected step, and treating it as one is how
+    // a match spends 11,876 consecutive ticks serving a world that will never
+    // move again. One illegal address or failed allocation anywhere in the
+    // device work poisons the context for the life of the process: every later
+    // launch fails identically, and no reset, rebuild or scene teardown undoes
+    // it. The only repair is a new process, so say so plainly and take one --
+    // the supervisor restarts the server, and players reconnect to a city that
+    // works instead of one that cannot be broken.
+    if world.gpu_context_lost() || pretend_context_lost() {
+        tracing::error!(%error, phase, "the step that noticed the lost context");
+        exit_on_lost_context();
+    }
     static REPORTED: AtomicU64 = AtomicU64::new(0);
     let n = REPORTED.fetch_add(1, Ordering::Relaxed);
     // Bounded: a persistent fault would otherwise fill the log faster than

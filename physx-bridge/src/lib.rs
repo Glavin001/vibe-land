@@ -344,6 +344,12 @@ pub struct WorldStats {
     pub last_fetch_copy_ms: f32,
     pub completed_steps: u64,
     pub gpu_warning_count: u32,
+    /// The CUDA context has failed and cannot be recovered in this process.
+    ///
+    /// Not a rejected step: every later launch fails the same way, so the
+    /// scene will never simulate again however many times it is reset. See
+    /// LoggingErrorCallback.
+    pub gpu_context_lost: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -1456,6 +1462,16 @@ impl World {
         self.inner.pin_mut().native_clear().map_err(operation_error)
     }
 
+    /// True once a CUDA fault has made this process's context unusable.
+    ///
+    /// One relaxed atomic load, so it is checked every tick rather than only
+    /// when a step is rejected: the context can be lost by work that does not
+    /// immediately fail a step, and by the time one does the world has already
+    /// been served to players as if it were simulating.
+    pub fn gpu_context_lost(&self) -> bool {
+        self.inner.gpu_context_lost()
+    }
+
     #[cfg(feature = "native-destruction")]
     pub fn native_configured(&self) -> Result<bool, BridgeError> {
         self.inner.native_configured().map_err(operation_error)
@@ -1796,6 +1812,7 @@ mod ffi {
         last_fetch_copy_ms: f32,
         completed_steps: u64,
         gpu_warning_count: u32,
+        gpu_context_lost: bool,
     }
 
     struct FfiContactEvent {
@@ -2296,6 +2313,7 @@ mod ffi {
         fn native_stats(self: &World) -> Result<FfiDestructionStats>;
         fn native_validate_mappings(self: &World) -> Result<bool>;
         fn native_clear(self: Pin<&mut World>) -> Result<()>;
+        fn gpu_context_lost(self: &World) -> bool;
         fn native_configured(self: &World) -> Result<bool>;
         /// Network entity id for a native body, so the Rust id layout and the
         /// C++ mirror can be asserted equal instead of assumed equal.
@@ -2574,6 +2592,7 @@ impl From<ffi::FfiWorldStats> for WorldStats {
             last_fetch_copy_ms: value.last_fetch_copy_ms,
             completed_steps: value.completed_steps,
             gpu_warning_count: value.gpu_warning_count,
+            gpu_context_lost: value.gpu_context_lost,
         }
     }
 }

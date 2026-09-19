@@ -558,6 +558,20 @@ public:
           text.find("gpu") != std::string::npos) {
         warning_count_.fetch_add(1, std::memory_order_relaxed);
       }
+      // A CUDA context does not recover. One illegal address or a failed
+      // allocation anywhere in the device work poisons it for the life of the
+      // process: every later launch returns the same error, the scene stops
+      // simulating, and nothing at the application level can undo it -- not a
+      // reset, not rebuilding the stage, not releasing the scene. It has to be
+      // distinguished from an ordinary rejected step, because the right
+      // response is a new process and the wrong one is to keep serving a world
+      // that will never move again. A live match spent 11,876 consecutive ticks
+      // in exactly that state.
+      if (text.find("previous CUDA errors") != std::string::npos ||
+          text.find("Simulation cannot continue") != std::string::npos ||
+          text.find("failed to allocate GPU memory") != std::string::npos) {
+        context_lost_.store(true, std::memory_order_relaxed);
+      }
     }
   }
 
@@ -565,8 +579,13 @@ public:
     return warning_count_.load(std::memory_order_relaxed);
   }
 
+  bool context_lost() const {
+    return context_lost_.load(std::memory_order_relaxed);
+  }
+
 private:
   std::atomic<std::uint32_t> warning_count_{0};
+  std::atomic<bool> context_lost_{false};
 };
 
 /// Collects PhysX's own instrumentation for one tick.
@@ -721,6 +740,8 @@ public:
   std::uint32_t warning_count() const {
     return error_callback_.warning_count();
   }
+
+  bool context_lost() const { return error_callback_.context_lost(); }
 
 private:
   void teardown() noexcept {
@@ -2979,6 +3000,7 @@ public:
     }
     out.completed_steps = completed_steps_;
     out.gpu_warning_count = runtime_->warning_count();
+    out.gpu_context_lost = runtime_->context_lost();
     return out;
   }
 
@@ -3545,6 +3567,21 @@ public:
                                   std::uint32_t collision_group,
                                   std::uint32_t collision_mask) {
     require(!step_in_flight_, "native_create_destructible must run outside a step");
+    // Releasing the old city's shapes does not reach the GPU broadphase until
+    // the scene next simulates, so authoring before that leaves it holding
+    // pairs against freed shapes. The cost is one illegal memory access inside
+    // GPU narrowphase, and CUDA does not forgive one: every later launch in the
+    // process fails with error 700 and the match is over. Reproduced by
+    // collapsing a building and resetting on top of it, which failed on the
+    // third cycle and has since run twenty-six clean.
+    //
+    // Checked here because it is invisible at the call site and invisible in a
+    // small test -- the bridge's own rebuild cycle does this with sixteen
+    // chunks and has always passed.
+    require(native_cleared_at_step_ == kNoNativeClear ||
+                completed_steps_ > native_cleared_at_step_,
+            "step the scene once after native_clear before authoring again: "
+            "the GPU broadphase still holds pairs against the released shapes");
     native().create_destructible(structure_id, pose, nodes, bonds, settings,
                                  collision_group, collision_mask);
   }
@@ -3611,12 +3648,16 @@ public:
   void native_clear() {
     require(!step_in_flight_, "native_clear must run outside a step");
     if (native_ != nullptr) {
+      // Recorded before clear() can throw: a refused clearStress still leaves
+      // released actors behind, so the step is needed just as much.
+      native_cleared_at_step_ = completed_steps_;
       native_->clear();
     }
   }
   bool native_configured() const {
     return native_ != nullptr && native_->configured();
   }
+  bool gpu_context_lost() const { return runtime_->context_lost(); }
 #endif
 
   // --- Bring-your-own-world hand-off ---------------------------------------
@@ -3811,6 +3852,12 @@ private:
   float last_gpu_wait_ms_ = 0.0f;
   float last_fetch_copy_ms_ = 0.0f;
   bool step_in_flight_ = false;
+#ifdef VIBE_LAND_NATIVE_DESTRUCTION
+  /// Completed-step count at the last `native_clear`, or `kNoNativeClear` when
+  /// the stage has never been cleared. See `native_create_destructible`.
+  static constexpr std::uint64_t kNoNativeClear = ~0ull;
+  std::uint64_t native_cleared_at_step_ = kNoNativeClear;
+#endif
   // Value-checked, not presence-checked. This used to be `!= nullptr`, which
   // made `VIBE_PHYSX_PROFILE_FETCH=0` still poll -- so the obvious A/B for
   // "is the polling itself costing us a core?" compared two identical
@@ -4087,6 +4134,7 @@ bool World::native_validate_mappings() const {
 }
 
 void World::native_clear() { impl_->native_clear(); }
+bool World::gpu_context_lost() const { return impl_->gpu_context_lost(); }
 
 bool World::native_configured() const { return impl_->native_configured(); }
 
