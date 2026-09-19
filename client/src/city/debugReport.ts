@@ -109,9 +109,33 @@ export function noteClientEvent(kind: string, detail?: Record<string, unknown>):
   push(clientEvents, { t: performance.now(), kind, detail });
 }
 
+let teleportCount = 0;
+let teleportWorstM = 0;
+let teleportMetres = 0;
+
 /** Anomalous chunk jumps from the always-on teleport probe. */
 export function noteTeleport(event: Omit<TeleportEvent, 't'>): void {
   push(teleports, { t: performance.now(), ...event });
+  teleportCount += 1;
+  teleportMetres += event.stepM;
+  if (event.stepM > teleportWorstM) teleportWorstM = event.stepM;
+}
+
+/**
+ * The drawn-teleport totals, for the stats panel and the QA harness.
+ *
+ * This is the measurement that counts, and the ring alone could not carry it:
+ * the ring holds 400 entries and a collapse produces tens of thousands, so
+ * anything read off it is a floor. The probe judges an INSTANCE that was
+ * actually composed for the renderer against that chunk's own recent speed, so
+ * unlike a body-pose delta it cannot be fooled by a centre-of-mass change --
+ * an island that sheds half its members legitimately moves its body pose a
+ * long way in COM frame while every chunk stays exactly where it was.
+ */
+export function drawnTeleportTotals(): {
+  count: number; worstM: number; metres: number;
+} {
+  return { count: teleportCount, worstM: teleportWorstM, metres: teleportMetres };
 }
 
 /** A chunk whose world pose moved when a topology batch re-parented it. */

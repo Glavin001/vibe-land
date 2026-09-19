@@ -131,17 +131,30 @@ impl Default for WorldConfig {
             restitution: env_f32("VIBE_WORLD_RESTITUTION", 0.1),
             contact_report_threshold: 50.0,
             gpu_max_partitions: 8,
-            gpu_max_rigid_contacts: 2_097_152,
-            // 4x the PhysX default. Measured overflowing at 547,670 during a
-            // two-tower collapse compounded by escaped-body CCD sweeps: the
-            // overflow drops contacts, which is the failure mode a no-caps
-            // simulation actually has. ~64 MB of GPU heap at this size.
-            gpu_max_rigid_patches: 2_097_152,
-            gpu_heap_capacity: 268_435_456,
-            gpu_found_lost_pairs_capacity: 1_048_576,
-            gpu_found_lost_aggregate_pairs_capacity: 262_144,
-            gpu_total_aggregate_pairs_capacity: 1_048_576,
-            gpu_collision_stack_size: 67_108_864,
+            // Sized for a city coming down, not for a match.
+            //
+            // These were 2M contacts, 2M patches, a 256 MB heap, 1M found/lost
+            // pairs and a 64 MB collision stack -- comfortable for a two-tower
+            // collapse and not for eight thousand simultaneously-colliding
+            // fragments. Overflowing PhysX's GPU collision stack or pair
+            // buffers is not a clean failure: what it produced was an illegal
+            // memory access inside GPU narrowphase (`Synchronizing GPU
+            // Narrowphase failed! 700`), which poisons the CUDA context for the
+            // life of the process. From a player's side that is the match
+            // ending mid-collapse, repeatedly, at around 8,700 chunk bodies.
+            //
+            // Raised well past the observed peak rather than to it. The card
+            // has 24 GB and the scene was using 1.8, so headroom was never the
+            // constraint -- the numbers had simply never been raised past what
+            // a smaller scene needed. Every one is still overridable by its
+            // VIBE_PHYSX_GPU_* environment variable.
+            gpu_max_rigid_contacts: 8_388_608,
+            gpu_max_rigid_patches: 8_388_608,
+            gpu_heap_capacity: 2_147_483_648,
+            gpu_found_lost_pairs_capacity: 4_194_304,
+            gpu_found_lost_aggregate_pairs_capacity: 1_048_576,
+            gpu_total_aggregate_pairs_capacity: 4_194_304,
+            gpu_collision_stack_size: 536_870_912,
         }
     }
 }

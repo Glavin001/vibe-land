@@ -208,6 +208,16 @@ export interface CityE2EStats {
   presentedJumpsOver1m: number;
   presentedJumpsOver4m: number;
   presentedJumpMaxM: number;
+  /// What the renderer actually drew: instances that moved further than the
+  /// chunk's own recent speed explains. The measurement that counts.
+  drawnTeleports: number;
+  drawnTeleportWorstM: number;
+  drawnTeleportMetres: number;
+  adoptionJumps: number;
+  adoptionJumpMaxM: number;
+  adoptionJumpMetres: number;
+  adoptionJumpsFromMigration: number;
+  adoptionJumpMetresFromMigration: number;
   presentedJumpChunks: number;
   presentedJumpWorstChunks: number;
   presentedJumpWorstChunksM: number;

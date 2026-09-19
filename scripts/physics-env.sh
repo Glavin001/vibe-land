@@ -30,6 +30,28 @@ if [ "$VIBE_CITY_DESTRUCTION" = "native" ]; then
 else
   export PHYSX_LIB_DIR=${PHYSX_LIB_DIR:-${PHYSX_ROOT:-/root/PhysX/physx/install/linux-clang/PhysX}/bin/linux.x86_64/release}
 fi
+# GPU capacities for a city-scale collapse.
+#
+# The defaults in WorldConfig are sized for a match, not for eight thousand
+# simultaneously-colliding fragments, and overflowing PhysX's GPU collision
+# stack or pair buffers is not a clean failure. What it produced here was an
+# illegal memory access inside GPU narrowphase -- `Synchronizing GPU
+# Narrowphase failed! 700` -- which poisons the CUDA context for the life of
+# the process, so the server detects it and exits for a restart. From a
+# player's side that is the match ending mid-collapse, repeatedly, with
+# chunk_bodies around 8,700 each time.
+#
+# This card has 24 GB and the scene was using 1.8 of it, so the headroom was
+# never the constraint; the numbers were just never raised past what a smaller
+# scene needed. Raised well past the observed peak rather than to it, because
+# the cost of being wrong in this direction is a crash and the cost in the
+# other direction is some GPU memory nobody was using.
+export VIBE_PHYSX_GPU_COLLISION_STACK_SIZE=${VIBE_PHYSX_GPU_COLLISION_STACK_SIZE:-536870912}
+export VIBE_PHYSX_GPU_HEAP_CAPACITY=${VIBE_PHYSX_GPU_HEAP_CAPACITY:-2147483648}
+export VIBE_PHYSX_GPU_MAX_RIGID_CONTACTS=${VIBE_PHYSX_GPU_MAX_RIGID_CONTACTS:-8388608}
+export VIBE_PHYSX_GPU_MAX_RIGID_PATCHES=${VIBE_PHYSX_GPU_MAX_RIGID_PATCHES:-8388608}
+export VIBE_PHYSX_GPU_FOUND_LOST_PAIRS_CAPACITY=${VIBE_PHYSX_GPU_FOUND_LOST_PAIRS_CAPACITY:-4194304}
+
 export VIBE_CITY_SCENE=${VIBE_CITY_SCENE:-fractured-downtown.json}
 export VIBE_CITY_GRID=${VIBE_CITY_GRID:-2}
 export VIBE_CITY_VARIED_HEIGHTS=${VIBE_CITY_VARIED_HEIGHTS:-0}

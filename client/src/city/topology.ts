@@ -101,6 +101,14 @@ export interface CityTopologyStats {
   /// Chunks carried by those steps, and the largest island that took one.
   /// A step on one fragment is invisible; the same step on a half-standing
   /// building is what a player reports.
+  /// Chunk world poses displaced by a topology re-parent, which should be
+  /// continuous across one. The fracture discontinuity.
+  adoptionJumps: number;
+  adoptionJumpMaxM: number;
+  adoptionJumpMetres: number;
+  /// Of those, the ones caused by a migration rather than a promotion.
+  adoptionJumpsFromMigration: number;
+  adoptionJumpMetresFromMigration: number;
   presentedJumpChunks: number;
   presentedJumpWorstChunks: number;
   presentedJumpWorstChunksM: number;
@@ -153,6 +161,12 @@ export class CityTopology {
   private presentedJumpsOver1m = 0;
   private presentedJumpsOver4m = 0;
   private presentedJumpMaxM = 0;
+  private adoptionJumps = 0;
+  private adoptionJumpsFromMigration = 0;
+  private adoptionJumpMetresFromMigration = 0;
+  private readonly adoptionCause = new Map<number, 'promotion' | 'migration'>();
+  private adoptionJumpMaxM = 0;
+  private adoptionJumpMetres = 0;
   private presentedJumpChunks = 0;
   private presentedJumpWorstChunks = 0;
   private presentedJumpWorstChunksM = 0;
@@ -435,6 +449,11 @@ export class CityTopology {
       presentedJumpsOver1m: this.presentedJumpsOver1m,
       presentedJumpsOver4m: this.presentedJumpsOver4m,
       presentedJumpMaxM: this.presentedJumpMaxM,
+      adoptionJumps: this.adoptionJumps,
+      adoptionJumpMaxM: this.adoptionJumpMaxM,
+      adoptionJumpMetres: this.adoptionJumpMetres,
+      adoptionJumpsFromMigration: this.adoptionJumpsFromMigration,
+      adoptionJumpMetresFromMigration: this.adoptionJumpMetresFromMigration,
       presentedJumpChunks: this.presentedJumpChunks,
       presentedJumpWorstChunks: this.presentedJumpWorstChunks,
       presentedJumpWorstChunksM: this.presentedJumpWorstChunksM,
@@ -473,15 +492,23 @@ export class CityTopology {
     let poseBefore: Map<number, Vec3> | null = null;
     if (this.watchPoseSources && this.onAdoptionJump) {
       poseBefore = new Map();
+      // Split by cause, because the two have different handling and only one
+      // of them has any: a promotion seeds the new body's presented pose so
+      // its anchor chunk stays where it was drawn (see captureDrawnPoses in
+      // cityClient), and a migration does nothing of the kind.
       for (const batch of message.batches) {
-        const touched = [
-          ...batch.promotions.flatMap((p) => p.nodes),
-          ...batch.migrations.map((m) => m.node),
-        ];
-        for (const node of touched) {
+        for (const node of batch.promotions.flatMap((p) => p.nodes)) {
           const slot = this.slotOf(batch.structureId, node);
           if (!poseBefore.has(slot)) {
             poseBefore.set(slot, this.chunkWorldPose(slot).position);
+            this.adoptionCause.set(slot, 'promotion');
+          }
+        }
+        for (const migration of batch.migrations) {
+          const slot = this.slotOf(batch.structureId, migration.node);
+          if (!poseBefore.has(slot)) {
+            poseBefore.set(slot, this.chunkWorldPose(slot).position);
+            this.adoptionCause.set(slot, 'migration');
           }
         }
       }
@@ -571,7 +598,21 @@ export class CityTopology {
           after[1] - before[1],
           after[2] - before[2],
         );
-        if (step > POSE_QUANTUM_M) this.onAdoptionJump?.(slot, step);
+        if (step > POSE_QUANTUM_M) {
+          // Counted as well as reported. A chunk is the same physical object
+          // before and after a batch re-parents it, so any displacement here is
+          // the ledger disagreeing with itself about where that object is --
+          // the fracture discontinuity, which a live report showed landing
+          // within 150 ms of a fracture batch 400 times out of 400.
+          this.adoptionJumps += 1;
+          if (step > this.adoptionJumpMaxM) this.adoptionJumpMaxM = step;
+          this.adoptionJumpMetres += step;
+          if (this.adoptionCause.get(slot) === 'migration') {
+            this.adoptionJumpsFromMigration += 1;
+            this.adoptionJumpMetresFromMigration += step;
+          }
+          this.onAdoptionJump?.(slot, step);
+        }
       }
     }
     return true;

@@ -61,6 +61,11 @@ export interface CityClientStats {
   presentedJumpsOver1m: number;
   presentedJumpsOver4m: number;
   presentedJumpMaxM: number;
+  adoptionJumps: number;
+  adoptionJumpMaxM: number;
+  adoptionJumpMetres: number;
+  adoptionJumpsFromMigration: number;
+  adoptionJumpMetresFromMigration: number;
   presentedJumpChunks: number;
   presentedJumpWorstChunks: number;
   presentedJumpWorstChunksM: number;
@@ -150,6 +155,28 @@ const WORLD_BOUND_M = 1000;
  * A switch only so the two can be compared in one build against one collapse:
  * /city?monotonicClock=0 restores the clock that could reverse.
  */
+/**
+ * Hold topology to the pose clock on wire v2 as well as v3.
+ *
+ * The comment above the v3 path says what this is for and that it was
+ * "measured as meter-scale per-frame chunk teleports" -- and it was only ever
+ * applied to v3, while production runs v2, so it has twice looked like the
+ * obvious answer to the fracture-time flicker.
+ *
+ * OFF, because it has twice failed to pay. Three matched pairs on the same
+ * scripted collapse, drawn chunk teleports per broken bond: 5.460/3.015,
+ * 2.908/4.354, 2.885/5.084 without and with. Mean 3.75 against 4.15 -- no
+ * benefit and possibly a cost, and the spread between runs is larger than the
+ * difference either way. /city?holdTopology=1 turns it on.
+ */
+const HOLD_TOPOLOGY_ON_V2 = (() => {
+  try {
+    return new URLSearchParams(globalThis.location?.search ?? '').get('holdTopology') === '1';
+  } catch {
+    return false;
+  }
+})();
+
 const MONOTONIC_RENDER_CLOCK = (() => {
   try {
     return new URLSearchParams(globalThis.location?.search ?? '')
@@ -829,7 +856,7 @@ export class CityClient {
         // teleport rate from 1.55 to 1.85 per broken bond, inside the run-to-run
         // spread, and introduced 455 clock rollbacks that were not there before.
         // The v2 artefact has a different cause; see the settle handling below.
-        if (this.debris !== null) {
+        if (this.debris !== null || HOLD_TOPOLOGY_ON_V2) {
           this.pendingTopology.push({ message, receivedAtMs: performance.now() });
           break;
         }
@@ -1516,6 +1543,7 @@ export class CityClient {
     // v2 buffers inside each PresentationTrack, so the shared playout clock has
     // to be pushed into them rather than read out of one place.
     const playoutDelay = this.advancePlayoutDelay(MIN_SAMPLE_DELAY_TICKS);
+    this.drainPendingTopology(Math.max(0, Math.floor(renderTick - playoutDelay)), nowMs);
     for (const key of this.kinetic) {
       const state = this.bodies.get(key);
       if (!state) {
@@ -1616,6 +1644,11 @@ export class CityClient {
       presentedJumpsOver1m: topologyStats.presentedJumpsOver1m,
       presentedJumpsOver4m: topologyStats.presentedJumpsOver4m,
       presentedJumpMaxM: topologyStats.presentedJumpMaxM,
+      adoptionJumps: topologyStats.adoptionJumps,
+      adoptionJumpMaxM: topologyStats.adoptionJumpMaxM,
+      adoptionJumpMetres: topologyStats.adoptionJumpMetres,
+      adoptionJumpsFromMigration: topologyStats.adoptionJumpsFromMigration,
+      adoptionJumpMetresFromMigration: topologyStats.adoptionJumpMetresFromMigration,
       presentedJumpChunks: topologyStats.presentedJumpChunks,
       presentedJumpWorstChunks: topologyStats.presentedJumpWorstChunks,
       presentedJumpWorstChunksM: topologyStats.presentedJumpWorstChunksM,

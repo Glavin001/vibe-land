@@ -67,6 +67,14 @@ console.log(`implausible ${c.implausibleJumps}  snaps ${c.correctionSnaps}`
   + `  rollbacks ${c.clockRollbacks}  outsideWorld ${c.recordsOutsideWorld}`);
 console.log(`drawn steps >1m ${c.presentedJumpsOver1m} (${per(c.presentedJumpsOver1m)}/bond)`
   + `  >4m ${c.presentedJumpsOver4m}  worst ${(c.presentedJumpMaxM ?? 0).toFixed(1)} m`);
+console.log(`DRAWN chunk teleports ${c.drawnTeleports} (${per(c.drawnTeleports)}/bond)`
+  + `  worst ${(c.drawnTeleportWorstM ?? 0).toFixed(1)} m`
+  + `  total ${Math.round(c.drawnTeleportMetres ?? 0)} m`);
+console.log(`adoption jumps ${c.adoptionJumps} (${per(c.adoptionJumps)}/bond)`
+  + `  worst ${(c.adoptionJumpMaxM ?? 0).toFixed(1)} m`
+  + `  total ${Math.round(c.adoptionJumpMetres ?? 0)} m of chunks displaced by re-parenting`);
+console.log(`  of which from MIGRATION ${c.adoptionJumpsFromMigration}`
+  + ` (${Math.round(c.adoptionJumpMetresFromMigration ?? 0)} m), the rest from promotion`);
 console.log(`chunks carried by those steps ${c.presentedJumpChunks}`
   + `  worst single island ${c.presentedJumpWorstChunks} chunks moving`
   + ` ${(c.presentedJumpWorstChunksM ?? 0).toFixed(1)} m`);

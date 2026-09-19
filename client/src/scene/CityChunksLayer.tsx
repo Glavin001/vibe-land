@@ -63,7 +63,7 @@ import {
 } from './cityChunkWrite';
 import { updateCityE2E } from '../e2eBridge';
 import { addCitySuspect, isRecording, recordCityEvent, recordCityStats } from '../netlab/recorder';
-import { noteAdoptionJump, noteTeleport } from '../city/debugReport';
+import { drawnTeleportTotals, noteAdoptionJump, noteTeleport } from '../city/debugReport';
 import {
   bodyDebug,
   bodyDebugColor,
@@ -752,6 +752,14 @@ export function CityChunksLayer({
         presentedJumpsOver1m: stats.presentedJumpsOver1m,
         presentedJumpsOver4m: stats.presentedJumpsOver4m,
         presentedJumpMaxM: stats.presentedJumpMaxM,
+        drawnTeleports: drawnTeleportTotals().count,
+        drawnTeleportWorstM: drawnTeleportTotals().worstM,
+        drawnTeleportMetres: drawnTeleportTotals().metres,
+        adoptionJumps: stats.adoptionJumps,
+        adoptionJumpMaxM: stats.adoptionJumpMaxM,
+        adoptionJumpMetres: stats.adoptionJumpMetres,
+        adoptionJumpsFromMigration: stats.adoptionJumpsFromMigration,
+        adoptionJumpMetresFromMigration: stats.adoptionJumpMetresFromMigration,
         presentedJumpChunks: stats.presentedJumpChunks,
         presentedJumpWorstChunks: stats.presentedJumpWorstChunks,
         presentedJumpWorstChunksM: stats.presentedJumpWorstChunksM,
