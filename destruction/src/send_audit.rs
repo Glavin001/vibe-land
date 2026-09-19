@@ -270,6 +270,13 @@ struct FallLatency {
     /// Set once, when free flight is first reported: keeps the run's first
     /// fall per body rather than re-arming on every bounce.
     resolved: bool,
+    /// How many times each gate turned this body away while it was waiting.
+    ///
+    /// Without this, a long latency says only "it was late". Raising the byte
+    /// ceiling fourfold did not move p99 or max at all, so the tail is not a
+    /// bandwidth problem -- and the only way to say which gate it IS is to
+    /// count them per body while it hangs.
+    blocked_by: [u32; 7],
 }
 
 /// One body's free-fall notification delay, in ticks.
@@ -278,11 +285,35 @@ pub struct FallReport {
     pub body_entity: u32,
     pub freed_at_tick: u32,
     pub first_sent_tick: u32,
+    /// Times each gate turned this body away while it waited, indexed by
+    /// `SendOutcome::ALL`.
+    pub blocked_by: [u32; 7],
+}
+
+impl FallReport {
+    /// The gate that turned this body away most often while it hung.
+    pub fn dominant_blocker(&self) -> Option<(SendOutcome, u32)> {
+        SendOutcome::ALL
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| self.blocked_by[*index] > 0)
+            .max_by_key(|(index, _)| self.blocked_by[*index])
+            .map(|(index, outcome)| (*outcome, self.blocked_by[index]))
+    }
 }
 
 impl FallReport {
     pub fn latency_ticks(&self) -> u32 {
         self.first_sent_tick.saturating_sub(self.freed_at_tick)
+    }
+}
+
+impl SendOutcome {
+    fn index(self) -> usize {
+        SendOutcome::ALL
+            .iter()
+            .position(|candidate| *candidate == self)
+            .expect("every outcome is in ALL")
     }
 }
 
@@ -347,14 +378,18 @@ impl SendAudit {
                 entry.freed_at = Some(sim_tick);
             }
         }
-        if outcome.is_sent() {
-            if let Some(entry) = self.fall.get_mut(&body_entity) {
+        if let Some(entry) = self.fall.get_mut(&body_entity) {
+            if entry.freed_at.is_some() {
+                entry.blocked_by[outcome.index()] += 1;
+            }
+            if outcome.is_sent() {
                 if let Some(freed_at) = entry.freed_at.take() {
                     entry.resolved = true;
                     self.reports.push(FallReport {
                         body_entity,
                         freed_at_tick: freed_at,
                         first_sent_tick: sim_tick,
+                        blocked_by: entry.blocked_by,
                     });
                 }
             }
@@ -574,6 +609,33 @@ impl SendAudit {
             "fell and was never sent: {} bodies",
             self.unresolved_falls()
         );
+
+        // Which gate actually holds the tail. The p50 is zero ticks, so the
+        // artifact is entirely in the stragglers, and the average body's
+        // experience says nothing about why they wait.
+        let mut worst: Vec<&FallReport> = self.reports.iter().collect();
+        worst.sort_unstable_by_key(|report| std::cmp::Reverse(report.latency_ticks()));
+        let tail = worst.len().min(worst.len().div_ceil(100).max(1) * 1).max(1);
+        let slowest = &worst[..worst.len().min(tail.max(20))];
+        if !slowest.is_empty() {
+            let mut blockers: HashMap<&'static str, u64> = HashMap::new();
+            for report in slowest {
+                if let Some((outcome, times)) = report.dominant_blocker() {
+                    *blockers.entry(outcome.name()).or_default() += times as u64;
+                }
+            }
+            let mut ranked: Vec<(&'static str, u64)> = blockers.into_iter().collect();
+            ranked.sort_unstable_by_key(|(_, times)| std::cmp::Reverse(*times));
+            let _ = write!(
+                out,
+                "slowest {} falls waited on:",
+                slowest.len()
+            );
+            for (name, times) in ranked {
+                let _ = write!(out, " {name}={times}");
+            }
+            let _ = writeln!(out);
+        }
         out
     }
 }
@@ -615,6 +677,12 @@ mod tests {
         let reports = audit.fall_reports();
         assert_eq!(reports.len(), 1);
         assert_eq!(reports[0].latency_ticks(), 18);
+        // And it says WHY it waited, which is the part that picks the fix.
+        assert_eq!(
+            reports[0].dominant_blocker(),
+            Some((SendOutcome::Ceiling, 5)),
+            "five ceiling losses then a send"
+        );
         assert_eq!(audit.unresolved_falls(), 0);
     }
 

@@ -707,10 +707,21 @@ impl ChunkStreamEncoder {
             // is not moving.
             let resting = shared_record.linear_speed <= REST_SPEED_MPS
                 && shared_record.angular_speed <= REST_ANGULAR_RPS;
+            // Staggered by SEND index, not by sim tick.
+            //
+            // Sends run every `send_interval_ticks` ticks -- 2 at a 60 Hz sim
+            // -- so `sim_tick` is always even here, and `(even + slot) % 8` can
+            // never be zero for an odd slot. Half of all bodies were therefore
+            // never re-evaluated at all while they were below the rest speed,
+            // rather than being spread across sends as intended. Measured on a
+            // recorded wedge collapse: the twenty slowest falls were turned
+            // away by this gate 837 times, one body waited 1,538 ticks (25 s)
+            // for its first record, and quadrupling the byte ceiling did not
+            // move p99 or max by a single tick -- because the tail was never
+            // about bandwidth.
+            let send_index = shared.sim_tick / config.send_interval_ticks.max(1);
             if resting
-                && (shared.sim_tick.wrapping_add(shared_record.slot))
-                    % REST_EVAL_STRIDE
-                    != 0
+                && (send_index.wrapping_add(shared_record.slot)) % REST_EVAL_STRIDE != 0
             {
                 if let Some(audit) = audit.as_mut() {
                     note_outcome(audit, shared, shared_record, body_state, SendOutcome::RestStride);
@@ -1309,5 +1320,56 @@ mod tests {
         assert_eq!(bootstrap.islands[0].nodes, vec![2]);
         // Bond 1 broken -> alive bitset has only bond 0.
         assert_eq!(bootstrap.structures[0].alive_bonds, vec![0b0000_0001]);
+    }
+
+    /// Every slot must get its turn, at the send cadence the server runs.
+    ///
+    /// The stride is staggered so resting bodies spread across sends instead
+    /// of spiking on one. Staggering by SIM TICK broke that completely: sends
+    /// only happen on ticks divisible by `send_interval_ticks`, so at 30 Hz on
+    /// a 60 Hz sim `sim_tick` is always even and `(even + slot) % 8` can never
+    /// be zero for an odd slot. Half of all bodies were never re-evaluated
+    /// while they were below the rest speed -- which is how a chunk that had
+    /// just broken loose could hang for 1,538 ticks before its first record,
+    /// unaffected by any amount of extra bandwidth.
+    #[test]
+    fn the_rest_stride_gives_every_slot_a_turn_at_the_real_send_cadence() {
+        for sim_hz in [30, 60, 120] {
+            let send_interval = EncoderConfig::validated(sim_hz).send_interval_ticks.max(1);
+            for slot in 0..32u32 {
+                let turns = (0..2000)
+                    .filter(|tick| tick % send_interval == 0)
+                    .filter(|tick| {
+                        let send_index = tick / send_interval;
+                        send_index.wrapping_add(slot) % REST_EVAL_STRIDE == 0
+                    })
+                    .count();
+                assert!(
+                    turns > 0,
+                    "slot {slot} never evaluated at {sim_hz} Hz \
+                     (send interval {send_interval} ticks)"
+                );
+            }
+        }
+    }
+
+    /// And its turns must be evenly spaced, or "spread across sends" is only
+    /// half true and some slots still bunch up.
+    #[test]
+    fn the_rest_stride_spaces_each_slot_evenly() {
+        let send_interval = EncoderConfig::validated(60).send_interval_ticks.max(1);
+        for slot in 0..16u32 {
+            let turns: Vec<u32> = (0..2000)
+                .filter(|tick| tick % send_interval == 0)
+                .filter(|tick| (tick / send_interval).wrapping_add(slot) % REST_EVAL_STRIDE == 0)
+                .collect();
+            for pair in turns.windows(2) {
+                assert_eq!(
+                    pair[1] - pair[0],
+                    REST_EVAL_STRIDE * send_interval,
+                    "slot {slot} turns are not evenly spaced"
+                );
+            }
+        }
     }
 }
