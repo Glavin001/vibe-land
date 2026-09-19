@@ -143,8 +143,42 @@ fn city_round_momentum_ns() -> f32 {
 ///
 /// Override with VIBE_CITY_BALL_RADIUS_M, VIBE_CITY_BALL_MASS_KG,
 /// VIBE_CITY_BALL_SPEED_MS and VIBE_CITY_BALL_TTL_TICKS.
+/// Density of the material the cannonball is made of, kg/m^3. Steel.
+///
+/// The ball's radius is DERIVED from its mass and this, rather than set
+/// independently, because the two were independent and drifted into a sphere
+/// that could not exist: 10,650 kg at a radius of 0.3 m is 94,167 kg/m^3,
+/// four times the density of osmium.
+///
+/// That is not a cosmetic wrongness. A contact between a body and another a
+/// hundred times its mass is ill-conditioned, and when such a ball was found
+/// overlapping settled rubble the separation solved to speeds nothing in the
+/// scene could reach. Measured on the live server, always in the tick after a
+/// shot: 26 bodies went from rest on the ground to 277, 4,717, 8,596, 21,581
+/// and 29,690 m/s in one tick, then left the world and took the GPU context
+/// with them.
+///
+/// The fix is the density, not a clamp on the consequence. Mass and speed are
+/// unchanged, so the momentum a shot delivers -- and what it knocks down -- is
+/// exactly what it was.
+pub fn city_ball_density_kg_m3() -> f32 {
+    env_positive_f32("VIBE_CITY_BALL_DENSITY_KGM3", 7850.0)
+}
+
+/// Radius of a sphere of `city_ball_mass_kg` at `city_ball_density_kg_m3`.
+///
+/// `VIBE_CITY_BALL_RADIUS_M` still overrides it, for deliberately unphysical
+/// experiments. Nothing sets it in production.
 pub fn city_ball_radius_m() -> f32 {
-    env_positive_f32("VIBE_CITY_BALL_RADIUS_M", 0.3)
+    if let Some(explicit) = std::env::var("VIBE_CITY_BALL_RADIUS_M")
+        .ok()
+        .and_then(|value| value.parse::<f32>().ok())
+        .filter(|value| *value > 0.0 && value.is_finite())
+    {
+        return explicit;
+    }
+    let volume = city_ball_mass_kg() / city_ball_density_kg_m3();
+    (volume * 3.0 / (4.0 * std::f32::consts::PI)).cbrt()
 }
 
 pub fn city_ball_mass_kg() -> f32 {
@@ -2313,6 +2347,24 @@ impl CityRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A sphere denser than any element is not a physics simulation.
+    ///
+    /// The ball's mass and radius used to be independent settings, and the
+    /// shipped pair described 94,167 kg/m^3.
+    #[test]
+    fn the_cannonball_is_made_of_something_that_exists() {
+        let radius = city_ball_radius_m();
+        let mass = city_ball_mass_kg();
+        let volume = 4.0 / 3.0 * std::f32::consts::PI * radius.powi(3);
+        let density = mass / volume;
+        assert!(
+            (density - city_ball_density_kg_m3()).abs() < 1.0,
+            "radius {radius} m and mass {mass} kg give {density} kg/m^3, not steel"
+        );
+        // Osmium, the densest element. Nothing in a city is denser.
+        assert!(density < 22_590.0, "density {density} kg/m^3 exceeds osmium");
+    }
 
     /// A rebuild must keep speaking the wire the session config announced.
     ///
