@@ -17,6 +17,7 @@ import StructureViewerPage from './pages/StructureViewer';
 // E2E bridge: always-on read-only introspection for Playwright tests.
 // Importing the module installs window.__VIBE_E2E__ immediately.
 import './e2eBridge';
+import { installPoseTrace } from './city/poseTrace';
 // Agent drive: mutating look/move/shoot surface for browser agents.
 import './agentDrive';
 
@@ -83,3 +84,6 @@ switch (route.kind) {
   default:
     root.render(<HomePage />);
 }
+
+// Harness-only: a per-frame trace of where chosen chunks were DRAWN.
+installPoseTrace();

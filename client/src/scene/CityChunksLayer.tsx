@@ -62,6 +62,7 @@ import {
   type CityRenderable,
 } from './cityChunkWrite';
 import { updateCityE2E } from '../e2eBridge';
+import { poseTraceRecord, poseTraceWanted } from '../city/poseTrace';
 import { addCitySuspect, isRecording, recordCityEvent, recordCityStats } from '../netlab/recorder';
 import {
   drawnTeleportBreakdown,
@@ -182,6 +183,8 @@ function countFloatingSettledIslands(
  * is built once into reused storage and everything else reads it.
  */
 const sweepPositions = { data: new Float32Array(0) };
+/** Scratch for the per-frame pose trace; reused so tracing allocates nothing. */
+const TRACE_POSE = new Float32Array(7);
 const sweepColumns = new Map<number, number>();
 
 function sweepChunkPositions(client: CityClient): {
@@ -649,6 +652,32 @@ export function CityChunksLayer({
     // window E2E/QA has into decode, topology and bandwidth, and it must stay
     // observable even when rendering is broken.
     frameCounterRef.current += 1;
+
+    // Per-frame pose trace, for a capture harness only.
+    //
+    // Deliberately NOT inside the telemetry block below: that runs one frame
+    // in thirty, so a trace taken there samples at 2 Hz while claiming to be
+    // per-frame -- which is exactly what a jump between consecutive frames
+    // would hide. Only the traced slots are composed, so the cost is the
+    // sample size rather than the whole city.
+    if (poseTraceWanted()) {
+      const traceTopology = client.topology;
+      poseTraceRecord(
+        client.renderClockTickForTrace?.() ?? -1,
+        performance.now(),
+        (slot, out) => {
+          if (slot < 0 || slot >= traceTopology.chunkCount) return false;
+          const body = traceTopology.body(traceTopology.bodyKeyOf(slot));
+          const resolved = traceTopology.chunkWorldPoseInto(slot, body, TRACE_POSE, 0);
+          if (!resolved) return false;
+          out[0] = TRACE_POSE[0];
+          out[1] = TRACE_POSE[1];
+          out[2] = TRACE_POSE[2];
+          return Number.isFinite(out[0]) && Number.isFinite(out[1]) && Number.isFinite(out[2]);
+        },
+      );
+    }
+
     if (frameCounterRef.current % 30 === 0) {
       const telemetryStartedAt = performance.now();
       const stats = client.stats();

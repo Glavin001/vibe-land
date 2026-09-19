@@ -365,6 +365,11 @@ export class CityClient {
   /** Continuous render clock (tick units); follows the extrapolated anchor
    *  with a ~0.5 s pull so per-packet anchor jitter never steps it. */
   private renderClockTick = -1;
+
+  /** The tick this client is currently presenting, for the pose trace. */
+  renderClockTickForTrace(): number {
+    return this.renderClockTick;
+  }
   /** Backwards re-anchors refused; see `renderTickNow`. */
   private renderClockReanchorsRefused = 0;
   private renderClockMs = 0;

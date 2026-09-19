@@ -230,6 +230,18 @@ pub struct NativeCityDestruction {
     escape_age_total: u64,
     escape_age_min: u64,
     escape_age_max: u64,
+    /// Bodies whose speed jumped further in one tick than any contact could
+    /// explain, cumulative, and the worst such jump seen.
+    ///
+    /// This is the fault caught at its source. The world-bound check only
+    /// fires when a body crosses 1 km, which a live session showed happening
+    /// a median of 1,237 ticks after the body was already travelling at a
+    /// median of 1,275 m/s -- so it reports the consequence long after the
+    /// cause. One body went from 0 m/s, at rest on the ground at
+    /// (-36.8, 0.1, 64.8), to 50,298 m/s in a single tick.
+    velocity_explosions: u64,
+    worst_velocity_jump: f32,
+    explosions: Vec<ExplosionSample>,
     /// Consecutive ticks the stage has rejected without ever reaching frame 1.
     ///
     /// The difference between "this tick did not complete" and "this stage
@@ -279,6 +291,39 @@ struct TrackedBody {
     last_tick: u64,
     position: [f32; 3],
     speed: f32,
+}
+
+/// One-tick speed increase beyond which the cause cannot be a collision.
+///
+/// A 1/60 s tick at this threshold is 15,000 m/s^2, seven hundred times the
+/// scene's gravity. Nothing in a collapsing building accelerates like that.
+const VELOCITY_EXPLOSION_MPS: f32 = 250.0;
+
+/// One body's speed going somewhere physics cannot take it.
+#[derive(Clone, Copy, Debug)]
+struct ExplosionSample {
+    entity: u32,
+    age_ticks: u64,
+    from: [f32; 3],
+    from_speed: f32,
+    to: [f32; 3],
+    to_speed: f32,
+}
+
+fn log_explosion(
+    entity: u32,
+    age_ticks: u64,
+    from: [f32; 3],
+    from_speed: f32,
+    to: [f32; 3],
+    to_speed: f32,
+) {
+    eprintln!(
+        "[destruction] body {entity:#x} velocity explosion at age {age_ticks} ticks: \
+         ({:.1}, {:.1}, {:.1}) at {from_speed:.0} m/s -> \
+         ({:.1}, {:.1}, {:.1}) at {to_speed:.0} m/s in one tick",
+        from[0], from[1], from[2], to[0], to[1], to[2]
+    );
 }
 
 /// One body's first departure from the world, and the state it left from.
@@ -396,6 +441,9 @@ materials={} reserved_pairs={} iterations={} tolerance={:e}",
             escape_age_total: 0,
             escape_age_min: u64::MAX,
             escape_age_max: 0,
+            velocity_explosions: 0,
+            worst_velocity_jump: 0.0,
+            explosions: Vec::new(),
             stuck_at_frame_zero: 0,
         })
     }
@@ -648,11 +696,44 @@ no observation this tick",
                 }
                 continue;
             }
+            let speed = speed_of(
+                snap.linear_velocity.x,
+                snap.linear_velocity.y,
+                snap.linear_velocity.z,
+            );
             match self.tracked.entry(entity) {
                 std::collections::hash_map::Entry::Occupied(mut slot) => {
                     let slot = slot.get_mut();
+                    // A tick is 1/60 s. Rubble hit by anything in this scene
+                    // changes speed by tens of m/s, not thousands; a jump past
+                    // this threshold is the solver, not the collision.
+                    let jump = speed - slot.speed;
+                    if jump > VELOCITY_EXPLOSION_MPS {
+                        self.velocity_explosions += 1;
+                        if jump > self.worst_velocity_jump {
+                            self.worst_velocity_jump = jump;
+                        }
+                        if self.explosions.len() < 32 {
+                            self.explosions.push(ExplosionSample {
+                                entity,
+                                age_ticks: self.ticks.saturating_sub(slot.first_tick),
+                                from: slot.position,
+                                from_speed: slot.speed,
+                                to: [px, py, pz],
+                                to_speed: speed,
+                            });
+                            log_explosion(
+                                entity,
+                                self.ticks.saturating_sub(slot.first_tick),
+                                slot.position,
+                                slot.speed,
+                                [px, py, pz],
+                                speed,
+                            );
+                        }
+                    }
                     slot.position = [px, py, pz];
-                    slot.speed = speed_of(snap.linear_velocity.x, snap.linear_velocity.y, snap.linear_velocity.z);
+                    slot.speed = speed;
                     slot.last_tick = self.ticks;
                 }
                 std::collections::hash_map::Entry::Vacant(slot) => {
@@ -660,7 +741,7 @@ no observation this tick",
                         first_tick: self.ticks,
                         last_tick: self.ticks,
                         position: [px, py, pz],
-                        speed: speed_of(snap.linear_velocity.x, snap.linear_velocity.y, snap.linear_velocity.z),
+                        speed,
                     });
                 }
             }
@@ -765,6 +846,16 @@ no observation this tick",
         // Published so a deployment can see the runaway fragments this filters
         // out. Should read 0; anything else is a server-side fault the client
         // is being shielded from rather than one that has been fixed.
+        self.extra_spans.push(NamedSpan {
+            name: "native_velocity_explosions".to_string(),
+            value: self.velocity_explosions as f64,
+            kind: 2,
+        });
+        self.extra_spans.push(NamedSpan {
+            name: "native_worst_velocity_jump_mps".to_string(),
+            value: self.worst_velocity_jump as f64,
+            kind: 2,
+        });
         self.extra_spans.push(NamedSpan {
             name: "native_escaped_bodies".to_string(),
             value: self.escaped_bodies as f64,

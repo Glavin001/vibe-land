@@ -53,10 +53,18 @@ use vibe_land_destruction::runtime::CityDestruction;
 use vibe_land_destruction::scene_pack::load_scene_pack_file;
 use vibe_land_destruction::wire::{encode_debris_datagram, DebrisCompressor};
 use vibe_land_physx_bridge::{
-    Pose as BridgePose, Quat as BridgeQuat, StaticBoxDesc, Vec3 as BridgeVec3, World, WorldConfig,
+    CapsulePlayerDesc, Pose as BridgePose, Quat as BridgeQuat, StaticBoxDesc,
+    Vec3 as BridgeVec3, World, WorldConfig,
 };
 
 const GROUP_STATIC: u32 = 1 << 0;
+const GROUP_DYNAMIC: u32 = 1 << 1;
+const GROUP_PLAYER: u32 = 1 << 2;
+const GROUP_VEHICLE: u32 = 1 << 3;
+const GROUP_CHUNK: u32 = 1 << 5;
+/// Bridge entity id for the recorder's walking player. Namespaced away from
+/// chunk body ids, which set the top bit.
+const RECORDER_PLAYER_ENTITY: u32 = 0x0001_0001;
 const ALL_GROUPS: u32 = u32::MAX;
 use vibe_land_destruction::city_config::city_gravity;
 
@@ -97,6 +105,16 @@ struct Args {
     demolish_buildings: u32,
     /// Ticks between one building's attack ending and the next beginning.
     demolish_stagger_ticks: u32,
+    /// Walk a capsule controller through the collapse.
+    ///
+    /// Recordings had no player at all, and a live session has one standing in
+    /// the rubble. That is not a cosmetic difference: a kinematic controller
+    /// resolving a penetration against a resting chunk is one of the few
+    /// things in this scene that can apply an unbounded impulse, and the
+    /// velocity explosions being chased have never once appeared in a
+    /// player-free recording.
+    walker: bool,
+    walker_radius_m: f32,
     /// Dump exactly what the physics half hands the encoder, tick by tick.
     ///
     /// The GPU sim is not bit-deterministic, so two recordings of the same
@@ -176,6 +194,8 @@ impl Args {
         let mut demolish_seed = 0x5DEECE66Du64;
         let mut demolish_buildings = 1u32;
         let mut demolish_stagger_ticks = 180u32;
+        let mut walker = false;
+        let mut walker_radius_m = 14.0f32;
         let mut encoder_tape_out: Option<PathBuf> = None;
         let mut generation_flags = Vec::new();
         let mut targets = 0u32;
@@ -224,6 +244,8 @@ impl Args {
                 "--demolish-below-y" => demolish_below_y = value()?.parse()?,
                 "--demolish-per-tick" => demolish_per_tick = value()?.parse()?,
                 "--demolish-seed" => demolish_seed = value()?.parse()?,
+                "--walker" => walker = true,
+                "--walker-radius-m" => walker_radius_m = value()?.parse()?,
                 "--demolish-buildings" => demolish_buildings = value()?.parse()?,
                 "--demolish-stagger-ticks" => demolish_stagger_ticks = value()?.parse()?,
                 "--shot-tape-in" => shot_tape_in = Some(PathBuf::from(value()?)),
@@ -358,6 +380,8 @@ impl Args {
             demolish_seed,
             demolish_buildings,
             demolish_stagger_ticks,
+            walker,
+            walker_radius_m,
             encoder_tape_out,
             packets_out,
             packets_wire,
@@ -1343,11 +1367,60 @@ fn main() -> Result<()> {
     let mut initial_height = 0.0f32;
     let mut next_shot = 0usize;
     let mut next_fire_tick = args.settle_ticks;
+    // A player walking circles through the collapse, if asked for.
+    let walker_centre = if args.walker {
+        let centre = vibe_land_destruction::demolition::tallest_footprint(&manifest)
+            .map(|(centre, _)| centre)
+            .unwrap_or([0.0, 0.0]);
+        world
+            .add_capsule_player(CapsulePlayerDesc {
+                entity_id: RECORDER_PLAYER_ENTITY,
+                user_id: 1,
+                position: BridgeVec3::new(centre[0] + args.walker_radius_m, 2.0, centre[1]),
+                cylinder_height: 1.0,
+                radius: 0.4,
+                step_offset: 0.5,
+                contact_offset: 0.05,
+                slope_limit_radians: 0.9,
+                collision_group: GROUP_PLAYER,
+                collision_mask: GROUP_STATIC | GROUP_DYNAMIC | GROUP_VEHICLE | GROUP_CHUNK,
+            })
+            .map_err(|error| anyhow::anyhow!("{error}"))?;
+        println!(
+            "walker: capsule circling ({:.1}, {:.1}) at {:.0} m",
+            centre[0], centre[1], args.walker_radius_m
+        );
+        Some(centre)
+    } else {
+        None
+    };
     let adaptive_aim = std::env::var("VIBE_TRACE_ADAPTIVE_AIM")
         .map(|v| v != "0")
         .unwrap_or(true);
 
     for tick_index in 0..total_ticks {
+        // Drive the walker before the step, as the server does: a controller
+        // move is a kinematic target, resolved by the simulation that follows.
+        if let Some(centre) = walker_centre {
+            let radians = tick_index as f32 * 0.02;
+            let next = BridgeVec3::new(
+                centre[0] + args.walker_radius_m * radians.cos(),
+                2.0,
+                centre[1] + args.walker_radius_m * radians.sin(),
+            );
+            let previous_radians = (tick_index.saturating_sub(1)) as f32 * 0.02;
+            let previous = BridgeVec3::new(
+                centre[0] + args.walker_radius_m * previous_radians.cos(),
+                2.0,
+                centre[1] + args.walker_radius_m * previous_radians.sin(),
+            );
+            // Downward component every tick so the controller stays grounded
+            // on rubble instead of walking through the air it started in.
+            let step = BridgeVec3::new(next.x - previous.x, -0.05, next.z - previous.z);
+            world
+                .move_player(RECORDER_PLAYER_ENTITY, step)
+                .map_err(|error| anyhow::anyhow!("{error}"))?;
+        }
         let generated_shot = if tick_index >= next_fire_tick && next_shot < shot_plan.len() {
             let locked: Option<(Vec3, Vec3)> = match (args.aim_lock, summary_target) {
                 (true, Some(t)) => {
