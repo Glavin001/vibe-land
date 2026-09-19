@@ -29,6 +29,12 @@ const argv = process.argv.slice(2);
 const arg = (k, d) => { const i = argv.indexOf(`--${k}`); return i >= 0 ? argv[i + 1] : d; };
 
 const SHOTS = Number(arg('shots', 24));
+/** How far to sweep either side of the building's centre, radians. */
+const SWEEP_RAD = Number(arg('sweep', 0.13));
+/** How many times to walk across the frontage. */
+const PASSES = Number(arg('passes', 3));
+/** Aim at the footing, not the facade. */
+const BASE_PITCH = Number(arg('pitch', -0.015));
 const API = arg('api', 'http://127.0.0.1:4017');
 const MATCH = arg('match', 'city-default');
 const OUT = arg('out', null);
@@ -83,11 +89,15 @@ for (let shot = 0; shot < SHOTS; ++shot) {
   // Walk the aim up the face of the same building rather than sweeping across
   // the skyline: the goal is one structure losing its footing.
   const lift = Math.atan2(0.5 * 9.81 * (range / 60) ** 2, range);
-  // Low and tight: the base of one building, not its face. Chipping a facade
-  // produces rubble; taking the footing out produces the collapse the report
-  // is about, and only the collapse reaches thousands of moving bodies.
+  // Walk the shots ALONG the bottom row of supports, which is how a player
+  // actually brings a building down: hold the pitch at the base and sweep the
+  // yaw across its width, taking out the footing rather than chipping the
+  // facade. Chipping produces rubble and a few hundred moving bodies; taking
+  // the supports out produces the collapse the reports are about, with
+  // thousands. A 40 m frontage at this range is about +/-0.13 rad.
+  const sweep = SWEEP_RAD * Math.sin((shot / SHOTS) * Math.PI * PASSES * 2);
   await page.evaluate(([y, q]) => window.__VIBE_DRIVE__.look(y, q),
-    [p.yaw + (shot % 5 - 2) * 0.008, -0.01 + 0.006 * (shot % 3) + lift]);
+    [p.yaw + sweep, BASE_PITCH + lift]);
   await page.evaluate(() => window.__VIBE_DRIVE__.fire({ holdMs: 140 }));
   await page.waitForTimeout(300);
   const c = await city(page);
@@ -206,7 +216,9 @@ console.log(`\ntwo-writer flicker: ${flickers.length} draws across ${bodies.size
   + ` worst ${worst.toFixed(2)} m`);
 console.log(`  by how far the raw pose was from the interpolated one:`);
 for (const [name, n] of Object.entries(buckets)) console.log(`    ${name.padEnd(10)} ${n}`);
-console.log(`\ncorrection snaps ${after.correctionSnaps ?? 0}`
+console.log(`\nawake chunks ${after.chunksAwake ?? 0}, live islands ${after.liveIslands ?? 0},`
+  + ` poses refused as outside the world ${after.recordsOutsideWorld ?? 0}`);
+console.log(`correction snaps ${after.correctionSnaps ?? 0}`
   + ` (worst ${(after.presentationAnomalyMaxM ?? 0).toFixed(1)} m),`
   + ` rollbacks ${after.clockRollbacks ?? 0}, implausible ${after.implausibleJumps ?? 0}`);
 console.log(`drawn pose steps >1m ${after.presentedJumpsOver1m ?? 0},`

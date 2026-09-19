@@ -42,7 +42,7 @@ import {
   PKT_CITY_TOPOLOGY,
 } from '../net/sharedConstants';
 import { isCitySuspect, isRecording, recordCityEvent } from '../netlab/recorder';
-import { noteBaseline, noteClientEvent } from './debugReport';
+import { noteBaseline, noteClientEvent, noteFracture } from './debugReport';
 import { addDecodeMs } from './renderStats';
 
 export interface CityClientStats {
@@ -68,6 +68,8 @@ export interface CityClientStats {
   clockRollbacks: number;
   implausibleJumps: number;
   presentationAnomalyMaxM: number;
+  /// Streamed poses refused for being outside the world. Must be 0.
+  recordsOutsideWorld: number;
   liveIslands: number;
   topoSeqGaps: number;
   datagramsReceived: number;
@@ -127,6 +129,17 @@ const PRESENTATION_EPSILON_M = 1e-4;
  * time.
  */
 const RESYNC_MIN_INTERVAL_MS = 3000;
+
+/**
+ * Half-width of the box a streamed pose may occupy, metres.
+ *
+ * Sized against what the simulation can produce, not what the wire can encode:
+ * the cities are 130-180 m across and a chunk launched at the cannonball's
+ * 60 m/s carries about 180 m in this world's gravity. A kilometre is five times
+ * both, and matches the server's own filter -- this is the second line, for a
+ * server that has not been updated or a scene that has widened its own bound.
+ */
+const WORLD_BOUND_M = 1000;
 
 /** Floor on the playout delay: one flush window's worth, as shipped. */
 const MIN_SAMPLE_DELAY_TICKS = 6;
@@ -310,6 +323,13 @@ export class CityClient {
     implausible_jump: 0,
   };
   private presentationAnomalyMaxM = 0;
+  /**
+   * Streamed poses refused for being outside the world.
+   *
+   * Must be 0. Anything else is a fragment the server has thrown away and not
+   * retired, and every one of them poisons the anomaly counters around it.
+   */
+  private recordsOutsideWorld = 0;
   /** Preallocated sampling buffers -- one FFI call per frame, no garbage. */
   private sampleLanes = new Uint32Array(4096);
   private samplePoses = new Float32Array(4096 * 7);
@@ -943,6 +963,19 @@ export class CityClient {
           for (const settle of message.settled) {
             this.repaintBodies.add(bodyKey(settle.structureId, settle.islandId));
           }
+          // The timeline a debug report reads its jump rings against. "Chunks
+          // flicker when a building comes down" is a claim about coincidence,
+          // and no ring of jumps can support or refute it without the fractures
+          // to line them up with.
+          noteFracture({
+            simTick: message.simTick,
+            topoSeq: message.topoSeq,
+            promotions: message.batches.reduce((n, b) => n + b.promotions.length, 0),
+            migrations: message.batches.reduce((n, b) => n + b.migrations.length, 0),
+            retires: message.batches.reduce((n, b) => n + b.retiredIslandIds.length, 0),
+            settles: message.settled.length,
+            brokenBonds: message.batches.reduce((n, b) => n + b.brokenBondIndices.length, 0),
+          });
           for (const wake of message.wakes) {
             this.repaintBodies.add(bodyKey(wake.structureId, wake.islandSerial));
           }
@@ -1131,30 +1164,37 @@ export class CityClient {
     // says so through this listener rather than logging, "so a measurement
     // harness can count them". Nothing had ever attached one, so the drawn pose
     // steps this branch measured could be attributed to no mechanism at all.
+    // ONE listener. There is one slot, and there used to be two callers: a
+    // counting one installed here and a recording one installed immediately
+    // after it whenever the netlab recorder was running. The second replaced
+    // the first, so the counters read zero in precisely the runs that were
+    // being measured -- every A/B in this branch that quoted "correction snaps
+    // 0" was quoting a listener that had been unhooked. A report from a live
+    // session, which has no recorder, counted 4,054 implausible jumps in the
+    // same regime those runs called clean.
     track.setAnomalyListener((anomaly) => {
       this.presentationAnomalies[anomaly.kind] += 1;
       if (anomaly.magnitude > this.presentationAnomalyMaxM) {
         this.presentationAnomalyMaxM = anomaly.magnitude;
       }
+      if (!isRecording()) {
+        return;
+      }
+      recordCityEvent(
+        anomaly.kind === 'clock_rollback'
+          ? 'city_clock_rollback'
+          : anomaly.kind === 'correction_snap'
+            ? 'city_snap'
+            : 'city_implausible_jump',
+        {
+          body: key,
+          magnitude: anomaly.magnitude,
+          ...(anomaly.abandonedCorrectionM !== undefined
+            ? { abandonedCorrectionM: anomaly.abandonedCorrectionM }
+            : {}),
+        },
+      );
     });
-    if (isRecording()) {
-      track.setAnomalyListener((anomaly) => {
-        recordCityEvent(
-          anomaly.kind === 'clock_rollback'
-            ? 'city_clock_rollback'
-            : anomaly.kind === 'correction_snap'
-              ? 'city_snap'
-              : 'city_implausible_jump',
-          {
-            body: key,
-            magnitude: anomaly.magnitude,
-            ...(anomaly.abandonedCorrectionM !== undefined
-              ? { abandonedCorrectionM: anomaly.abandonedCorrectionM }
-              : {}),
-          },
-        );
-      });
-    }
     const state: BodyStreamState = { track, lastTick: 0, settledHint: false };
     this.bodies.set(key, state);
     this.kinetic.add(key);
@@ -1306,6 +1346,40 @@ export class CityClient {
       ];
     } else {
       position = record.position;
+    }
+
+    // A pose outside the world is not a pose. Refuse it rather than track it.
+    //
+    // A report from a live session had a single-member island at
+    // (-82 km, -33 km, +61 km): not a composition error -- the island's local
+    // offset was zero, so the body itself was there -- and not a decoding
+    // artefact either, since the wire encodes that position perfectly well.
+    // Something on the server threw a fragment out of the world and nothing
+    // brought it back, because the debris floor is disabled.
+    //
+    // What that costs the client is out of all proportion to five stray
+    // chunks. A body moving at kilometres per second makes every consecutive
+    // pair of its poses implausible to interpolate, so the presentation layer
+    // steps instead of blending, once per sampled frame, for as long as the
+    // body exists: the same session counted 4,054 implausible jumps and 3,256
+    // drawn pose steps whose worst magnitude was 29 km. Those numbers say
+    // almost nothing about the building the player was watching.
+    //
+    // So this is a guard, not a fix. The runaway is a server-side fault and is
+    // still there; `recordsOutsideWorld` is how anyone knows.
+    if (!Number.isFinite(position[0] + position[1] + position[2])
+        || Math.abs(position[0]) > WORLD_BOUND_M
+        || Math.abs(position[1]) > WORLD_BOUND_M
+        || Math.abs(position[2]) > WORLD_BOUND_M) {
+      this.recordsOutsideWorld += 1;
+      if (this.recordsOutsideWorld <= 4) {
+        noteClientEvent('recordOutsideWorld', {
+          body: record.bodyEntity,
+          position,
+          simTick: datagram.simTick,
+        });
+      }
+      return true;
     }
 
     let state = this.bodies.get(record.bodyEntity);
@@ -1508,6 +1582,7 @@ export class CityClient {
       clockRollbacks: this.presentationAnomalies.clock_rollback,
       implausibleJumps: this.presentationAnomalies.implausible_jump,
       presentationAnomalyMaxM: this.presentationAnomalyMaxM,
+      recordsOutsideWorld: this.recordsOutsideWorld,
       datagramsReceived: this.datagramsReceived,
       recordsApplied: this.recordsApplied,
       wireVersion: this.debris === null ? 2 : 3,

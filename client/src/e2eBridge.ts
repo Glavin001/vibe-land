@@ -213,6 +213,8 @@ export interface CityE2EStats {
   clockRollbacks: number;
   implausibleJumps: number;
   presentationAnomalyMaxM: number;
+  /** Streamed poses refused for being outside the world. Must be 0. */
+  recordsOutsideWorld: number;
   /**
    * Composition inputs for the lowest chunk below the counting threshold.
    * These are client ledger poses, which may be interpolated; they are not a

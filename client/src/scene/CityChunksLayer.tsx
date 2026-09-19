@@ -63,7 +63,7 @@ import {
 } from './cityChunkWrite';
 import { updateCityE2E } from '../e2eBridge';
 import { addCitySuspect, isRecording, recordCityEvent, recordCityStats } from '../netlab/recorder';
-import { noteTeleport } from '../city/debugReport';
+import { noteAdoptionJump, noteTeleport } from '../city/debugReport';
 import {
   bodyDebug,
   bodyDebugColor,
@@ -288,7 +288,11 @@ function installChunkTeleportProbe(chunkCount: number): () => void {
           stepM: step,
           body: ctx.bodyKey,
           source: ctx.source ?? 'unknown',
+          x: position[0],
           y: position[1],
+          z: position[2],
+          settling: ctx.settling,
+          bodySettled: ctx.bodySettled,
         });
         recordCityEvent('city_chunk_teleport', {
           slot,
@@ -551,16 +555,25 @@ export function CityChunksLayer({
     if (!teleportProbeRef.current) {
       teleportProbeRef.current = installChunkTeleportProbe(client.topology.chunkCount);
     }
-    if (recording && !recorderProbesRef.current) {
+    // Pose-source tagging and adoption jumps are no longer recorder-only.
+    //
+    // They were, and it made ordinary sessions unable to answer the one
+    // question players actually ask. A SEND REPORT from a real session carried
+    // a ring of chunk teleports in which 97% were tagged `unknown`, because the
+    // tag is written by this probe and this probe was off; and it carried no
+    // adoption jumps at all, because that listener was never installed. The
+    // flicker people see happens on their machine, not in a measurement run.
+    //
+    // The cost is two map writes per body whose pose changed, and a callback
+    // that fires only when a re-parent actually moved a chunk. Next to the
+    // per-chunk matrix compose happening in the same loop it does not register.
+    if (!recorderProbesRef.current) {
       recorderProbesRef.current = true;
       client.topology.watchPoseSources = true;
       client.topology.onAdoptionJump = (slot, stepM) => {
+        noteAdoptionJump(slot, stepM);
         recordCityEvent('city_adoption_jump', { slot, stepM });
       };
-    } else if (!recording && recorderProbesRef.current) {
-      recorderProbesRef.current = false;
-      client.topology.watchPoseSources = false;
-      client.topology.onAdoptionJump = null;
     }
 
     if (!stateRef.current && buildFailedForRef.current !== client) {
@@ -743,6 +756,7 @@ export function CityChunksLayer({
         clockRollbacks: stats.clockRollbacks,
         implausibleJumps: stats.implausibleJumps,
         presentationAnomalyMaxM: stats.presentationAnomalyMaxM,
+        recordsOutsideWorld: stats.recordsOutsideWorld,
         // Same probe as the netlab line above: the only signal that catches a
         // chunk drawn away from its ledger pose.
         staleDrawnChunks,
@@ -859,19 +873,17 @@ export function CityChunksLayer({
       // interpolation delay ahead of the frames around it. That is the
       // two-writer flicker, and this is the only place it can be observed,
       // because it depends on what the ledger holds at draw time.
-      let writeSource: string | undefined;
-      if (recording) {
-        const { source, deltaM } = client.topology.poseSourceOf(key);
-        writeSource = source;
-        if (source === 'raw' && deltaM > 0) {
-          recordCityEvent('city_flicker', { body: key, deltaM, settling });
-        }
+      const { source: writeSource, deltaM: writeDeltaM } = client.topology.poseSourceOf(key);
+      if (recording && writeSource === 'raw' && writeDeltaM > 0) {
+        recordCityEvent('city_flicker', { body: key, deltaM: writeDeltaM, settling });
       }
       const settledTint = body.settled ? 0.75 : 1;
       const debugCode = bodyDebug.enabled ? bodyDebugStateCode(key, false) : -1;
-      const probeCtx: ChunkWriteContext | undefined = recording
-        ? { bodyKey: key, settling, bodySettled: body.settled, source: writeSource }
-        : undefined;
+      // Always built now: the teleport probe is unconditional, and without this
+      // context every teleport it records in an ordinary session is unattributable.
+      const probeCtx: ChunkWriteContext = {
+        bodyKey: key, settling, bodySettled: body.settled, source: writeSource,
+      };
       // Support serial 0 is the intact structure: its chunks are AT rest by
       // definition, so a write for them (repaint.all marks every body dirty,
       // including this one) re-seats a pose that has not changed. Waking on it

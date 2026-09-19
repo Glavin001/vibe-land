@@ -427,6 +427,7 @@ export class PresentationTrack {
           targetTick,
           this.config.dt,
           this.config.snapDistanceMeters,
+          this.config.gravity,
           this.onAnomaly,
         );
       }
@@ -573,12 +574,29 @@ function snapshotState(snapshot: MotionSnapshot): PresentedState {
   };
 }
 
+/**
+ * Include the ballistic term in the plausibility bound. On by default.
+ *
+ * A switch only so the two can be compared in one build against one collapse:
+ * /city?ballisticPlausibility=0 restores the endpoint-speed-only bound this
+ * replaced.
+ */
+const BALLISTIC_PLAUSIBILITY = (() => {
+  try {
+    return new URLSearchParams(globalThis.location?.search ?? '')
+      .get('ballisticPlausibility') !== '0';
+  } catch {
+    return true;
+  }
+})();
+
 function interpolate(
   left: MotionSnapshot,
   right: MotionSnapshot,
   targetTick: number,
   dt: number,
   snapDistanceMeters: number,
+  gravity: Vec3,
   onAnomaly?: PresentationAnomalyListener | null,
 ): PresentedState {
   const tickSpan = right.tick - left.tick;
@@ -586,8 +604,29 @@ function interpolate(
     return snapshotState(right);
   }
   const seconds = tickSpan * dt;
+  // What the body could have covered between these two knots.
+  //
+  // The endpoint speeds alone are not that bound, and the case they miss is
+  // the commonest thing in a collapse: a chunk that breaks loose at rest,
+  // falls, and has stopped again by the next update this client received. Both
+  // endpoint velocities are near zero, so the old bound was near zero too, and
+  // ten metres of falling read as impossible. A body outside the ranked
+  // interest set is served about one record per second -- see
+  // `correctionSeconds` below -- and one second of this world's gravity is
+  // exactly ten metres. So during any real collapse this rejected honest
+  // motion, wholesale, and the rejection is not free: it abandons the
+  // interpolation and samples the pair as a STEP FUNCTION, holding the old
+  // pose and then snapping to the new one. That is the flicker reported from
+  // play, and a report from a live session counted 4,054 of them against 300
+  // correction snaps and no clock rollbacks at all.
+  //
+  // Adding the ballistic term makes the bound cover free fall while leaving it
+  // far below what this check exists to catch: a lane reused by another body,
+  // or a membership disagreement, which move things by tens to thousands of
+  // metres. The same report's worst was 29 km.
   const plausibleMotion =
-    Math.max(vLength(left.linearVelocity), vLength(right.linearVelocity)) * seconds;
+    Math.max(vLength(left.linearVelocity), vLength(right.linearVelocity)) * seconds
+    + (BALLISTIC_PLAUSIBILITY ? 0.5 * vLength(gravity) * seconds * seconds : 0);
   const knotDistance = vDistance(left.position, right.position);
   if (knotDistance > plausibleMotion + snapDistanceMeters) {
     onAnomaly?.({ kind: 'implausible_jump', magnitude: knotDistance });

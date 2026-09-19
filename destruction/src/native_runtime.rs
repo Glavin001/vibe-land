@@ -169,6 +169,27 @@ fn fault_injection_due(ticks: u64) -> bool {
     true
 }
 
+/// Half-width of the box a streamed body may occupy, metres.
+///
+/// Sized against what the simulation can actually produce, not against what
+/// the wire can encode. The cities this serves are 130-180 m across, and a
+/// chunk launched at the cannonball's 60 m/s has a ballistic range of about
+/// 180 m in this world's gravity. A kilometre is five times both.
+///
+/// It was four kilometres first, which sounded conservative and was useless: a
+/// body at +4 km and the same body at -4 km are each inside the bound, and the
+/// eight-kilometre step between them is drawn. The bound has to be tight
+/// enough that a body inside it cannot produce a visible jump.
+///
+/// `VIBE_CITY_WORLD_BOUND_M` moves it for a scene that needs more room.
+fn world_bound_m() -> f32 {
+    std::env::var("VIBE_CITY_WORLD_BOUND_M")
+        .ok()
+        .and_then(|v| v.parse::<f32>().ok())
+        .filter(|v| *v > 0.0)
+        .unwrap_or(1000.0)
+}
+
 /// Snapshot flags the bridge sets on a sleep or wake edge.
 const NATIVE_FLAG_SETTLED: u32 = 1;
 const NATIVE_FLAG_WOKE: u32 = 2;
@@ -191,6 +212,8 @@ pub struct NativeCityDestruction {
     /// Incomplete steps already logged. Bounded so a persistent fault cannot
     /// drown the log; the count itself stays exact in the spans.
     error_frames_logged: u32,
+    /// Bodies refused for being outside the world, cumulative. Should be 0.
+    bodies_outside_world: u64,
     /// Consecutive ticks the stage has rejected without ever reaching frame 1.
     ///
     /// The difference between "this tick did not complete" and "this stage
@@ -301,6 +324,7 @@ materials={} reserved_pairs={} iterations={} tolerance={:e}",
             migrations_total: 0,
             resettled_wakes: 0,
             error_frames_logged: 0,
+            bodies_outside_world: 0,
             stuck_at_frame_zero: 0,
         })
     }
@@ -460,6 +484,7 @@ no observation this tick",
             .map_err(|e| CityDestructionError::Bridge(e.to_string()))?;
         self.encoder_input.clear();
         self.encoder_input.reserve(snapshots.len());
+        let bound = world_bound_m();
         let mut settled: Vec<SettleEvent> = Vec::new();
         let mut wakes: Vec<(u32, u32)> = std::mem::take(&mut self.pending_wakes);
         for snap in snapshots {
@@ -483,6 +508,32 @@ no observation this tick",
             // from the manifest's rest poses, and streaming them would be a
             // pose per tick for something that never moves.
             if snap.kinematic || snap.sleeping {
+                continue;
+            }
+            // A fragment that has left the world is not streamed.
+            //
+            // Something in the collapse throws fragments a very long way: a
+            // report from a live session had a single-chunk island at
+            // (-82 km, -33 km, +61 km), and a collapse here produces about six
+            // hundred poses outside a four-kilometre box. Why is not
+            // established -- the likeliest candidate is an unbounded
+            // depenetration response where a fragment is created overlapping
+            // something -- and this does not fix it.
+            //
+            // What it stops is the damage those bodies do to everything else.
+            // A body moving at kilometres per second makes every consecutive
+            // pair of its streamed poses impossible to interpolate, so the
+            // client's presentation layer steps instead of blending, once per
+            // sampled frame, for as long as the body exists. Refusing to stream
+            // them cut a collapse's implausible-interpolation count by more
+            // than an order of magnitude. They are counted, not silenced.
+            let (px, py, pz) = (snap.position.x, snap.position.y, snap.position.z);
+            if !px.is_finite() || !py.is_finite() || !pz.is_finite()
+                || px.abs() > bound
+                || py.abs() > bound
+                || pz.abs() > bound
+            {
+                self.bodies_outside_world += 1;
                 continue;
             }
             let mut flags = 0u8;
@@ -583,6 +634,14 @@ no observation this tick",
             })
             .collect();
 
+        // Published so a deployment can see the runaway fragments this filters
+        // out. Should read 0; anything else is a server-side fault the client
+        // is being shielded from rather than one that has been fixed.
+        self.extra_spans.push(NamedSpan {
+            name: "native_bodies_outside_world".to_string(),
+            value: self.bodies_outside_world as f64,
+            kind: 2, // count
+        });
         let structures = self.manifest.structures.len() as u32;
         let total_ms = started.elapsed().as_secs_f32() * 1000.0;
         let tick_ffi_ms = self
