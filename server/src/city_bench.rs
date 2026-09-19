@@ -3429,7 +3429,11 @@ fn a_reset_mid_collapse_keeps_the_city_destructible() {
             city.step(tick, DT, gravity(), Some(&mut *world));
             tick += 1;
         }
-        for shot in 0..12u32 {
+        let shots: u32 = std::env::var("VIBE_CITY_RESET_SHOTS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(12);
+        for shot in 0..shots {
             let target = Vec3::new(tx - 4.0 + (shot % 9) as f32, 2.0 + (shot % 12) as f32 * 2.2, tz);
             let direction = (target - origin).normalize();
             if cannonball {
@@ -3445,7 +3449,14 @@ fn a_reset_mid_collapse_keeps_the_city_destructible() {
                 let world = arena.physx_world_mut().expect("physx world");
                 city.apply_shot_ray(origin, direction, Some(world));
             }
-            for _ in 0..8 {
+            // Few ticks between shots on purpose: the live failure followed a
+            // barrage that kept thousands of bodies in the air at once, and
+            // letting each shot settle before the next never gets there.
+            let between: u32 = std::env::var("VIBE_CITY_RESET_TICKS_BETWEEN")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(8);
+            for _ in 0..between {
                 let world = arena.physx_world_mut().expect("physx world");
                 native_step(world, &city, tick, "shot");
                 city.step(tick, DT, gravity(), Some(&mut *world));
@@ -3453,9 +3464,11 @@ fn a_reset_mid_collapse_keeps_the_city_destructible() {
             }
         }
         let broken = city.stats().broken_bonds;
+        let awake = city.stats().awake_chunk_bodies;
+        eprintln!("[reset cycle {cycle}] {broken} bonds, {awake} awake bodies before the reset");
         assert!(
             broken > 0,
-            "cycle {cycle}: twelve shots broke nothing, so the stage was already dead"
+            "cycle {cycle}: {shots} shots broke nothing, so the stage was already dead"
         );
 
         // Mid-collapse: no settling wait, exactly as pressing the button does.

@@ -67,26 +67,43 @@ bool NativeDestruction::configured() const { return state_->configured; }
 void NativeDestruction::clear() {
   State &s = *state_;
   s.release_rounds();
-  if (s.configured) {
-    // Fragment bodies are scene-owned and destroyed here, so this has to
-    // happen before the authored parents and shapes go away.
-    native_require(s.stage().clearStress(),
-                   "cannot clear the active native destruction topology");
-  }
-  for (PxRigidDynamic *parent : s.parents) {
-    if (parent != nullptr) {
-      parent->release();
+  // Fragment bodies are scene-owned and destroyed here, so this has to happen
+  // before the authored parents and shapes go away.
+  const bool released = s.configured ? s.stage().clearStress() : true;
+
+  // This used to throw the moment `clearStress` refused, which left the object
+  // exactly as it was: still `configured`, so the very next
+  // `create_destructible` was rejected as "immutable once configured". The
+  // stage refuses precisely when it is in an error state, which is the state a
+  // rebuild is trying to repair -- so the one repair available could never run,
+  // and the match stayed indestructible until the process was restarted.
+  // Observed live: the automatic rebuild firing, being refused, and firing
+  // again, with 10,684 rejected ticks behind it.
+  //
+  // So the teardown finishes either way and the failure is reported at the end,
+  // with the object usable again. What is NOT done on that path is releasing
+  // the authored parents and shapes: a stage that would not let go of its
+  // topology may still hold references to them, and freeing those would trade a
+  // dead match for a crash. They leak for the life of the process, which is the
+  // right side of that trade to be on.
+  if (released) {
+    for (PxRigidDynamic *parent : s.parents) {
+      if (parent != nullptr) {
+        parent->release();
+      }
     }
-  }
-  for (State::Chunk &chunk : s.chunks) {
-    if (chunk.shape != nullptr) {
-      chunk.shape->release();
+    for (State::Chunk &chunk : s.chunks) {
+      if (chunk.shape != nullptr) {
+        chunk.shape->release();
+      }
     }
   }
   PxPhysics &physics = s.physics;
   PxScene &scene = s.scene;
   PxMaterial &material = s.material;
   state_.reset(new State(physics, scene, material));
+  native_require(released,
+                 "cannot clear the active native destruction topology");
 }
 
 void NativeDestruction::create_destructible(

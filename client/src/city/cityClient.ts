@@ -171,6 +171,22 @@ const SAMPLE_DELAY_SHRINK_TICKS_PER_FRAME = 0.05;
  * causes. Read once, from the page URL, so both arms of an A/B share a build
  * and a deploy: /city?adaptiveBuffer=1.
  */
+/**
+ * Glide a settling body onto its rest pose instead of cutting to it.
+ *
+ * Behind a switch for the same reason the playout buffer is: it trades a hard
+ * step for a quarter-second of the body still drifting after the server says it
+ * stopped, and which of those a player prefers is a judgement the measurement
+ * alone does not make. /city?settleGlide=0 turns it off.
+ */
+const SETTLE_GLIDE = (() => {
+  try {
+    return new URLSearchParams(globalThis.location?.search ?? '').get('settleGlide') !== '0';
+  } catch {
+    return true;
+  }
+})();
+
 const ADAPTIVE_PLAYOUT_BUFFER = (() => {
   try {
     return new URLSearchParams(globalThis.location?.search ?? '').get('adaptiveBuffer') === '1';
@@ -480,7 +496,43 @@ export class CityClient {
     return this.sampleDelaySmooth;
   }
 
-  private sampleDebris(renderTick: number, live: Set<number>): Set<number> {
+  /**
+   * Apply held topology whose tick the sample clock has reached.
+   *
+   * A migration's basis change has to land in the same frame as the poses that
+   * were simulated under it. Sampled poses are read a playout delay behind the
+   * newest tick, so applying the new membership and island centre of mass as
+   * soon as the message arrives composes old-basis poses against the new basis.
+   * The wall-clock valve keeps a stalled sample clock -- everything parked, no
+   * datagrams -- from delaying fracture forever.
+   *
+   * `nowMs` comes from the caller rather than being read here, so the valve
+   * runs on the same clock as the sampling around it. Reading `performance.now`
+   * directly made the valve untestable: a test that advances the clock by
+   * passing a later timestamp to `samplePresentation` moved everything except
+   * this, and the held batch never released.
+   */
+  private drainPendingTopology(sampleTick: number, nowMs: number): void {
+    while (this.pendingTopology.length > 0) {
+      const head = this.pendingTopology[0];
+      if (head.message.simTick > sampleTick && nowMs - head.receivedAtMs < 1000) {
+        break;
+      }
+      // Count the valve firing SEPARATELY from an on-time apply. A message
+      // released by the valve is applied ahead of the pose clock, so every
+      // absolute pose it carries -- settles especially -- states where a body
+      // will be, not where this client is drawing it. For fast debris that is
+      // metres per released tick.
+      if (head.message.simTick > sampleTick) {
+        this.topologyValveApplies += 1;
+        this.topologyValveTicksAhead += head.message.simTick - sampleTick;
+      }
+      this.pendingTopology.shift();
+      this.applyTopologyMessage(head.message);
+    }
+  }
+
+  private sampleDebris(renderTick: number, live: Set<number>, nowMs: number): Set<number> {
     const debris = this.debris;
     if (debris === null) {
       return live;
@@ -501,28 +553,7 @@ export class CityClient {
     // before it shows.
     this.advancePlayoutDelay(Math.ceil(this.spanTicksEma) + 3);
     const sampleTick = Math.max(0, Math.floor(renderTick - this.sampleDelaySmooth));
-    // Apply held topology whose tick the sample clock has reached, so a
-    // migration's basis change lands in the same frame as the poses that
-    // were simulated under it. The wall-clock valve keeps a stalled sample
-    // clock (everything parked, no datagrams) from delaying fracture forever.
-    const nowMs = performance.now();
-    while (this.pendingTopology.length > 0) {
-      const head = this.pendingTopology[0];
-      if (head.message.simTick > sampleTick && nowMs - head.receivedAtMs < 1000) {
-        break;
-      }
-      // Count the valve firing SEPARATELY from an on-time apply. A message
-      // released by the valve is applied ahead of the pose clock, so every
-      // absolute pose it carries -- settles especially -- states where a body
-      // will be, not where this client is drawing it. For fast debris that is
-      // metres per released tick.
-      if (head.message.simTick > sampleTick) {
-        this.topologyValveApplies += 1;
-        this.topologyValveTicksAhead += head.message.simTick - sampleTick;
-      }
-      this.pendingTopology.shift();
-      this.applyTopologyMessage(head.message);
-    }
+    this.drainPendingTopology(sampleTick, nowMs);
     if (debris.lane_count() > this.sampleLanes.length) {
       this.sampleLanes = new Uint32Array(this.sampleLanes.length * 2);
       this.samplePoses = new Float32Array(this.sampleLanes.length * 7);
@@ -734,6 +765,12 @@ export class CityClient {
         // against the new basis -- measured as meter-scale per-frame chunk
         // teleports. Queue the message and apply it when the sample clock
         // reaches its tick (sampleDebris drains this every frame).
+        //
+        // Tried on v2 as well, because the artefact this describes is exactly
+        // what a collapse looks like there, and reverted: it changed the drawn
+        // teleport rate from 1.55 to 1.85 per broken bond, inside the run-to-run
+        // spread, and introduced 455 clock rollbacks that were not there before.
+        // The v2 artefact has a different cause; see the settle handling below.
         if (this.debris !== null) {
           this.pendingTopology.push({ message, receivedAtMs: performance.now() });
           break;
@@ -912,8 +949,42 @@ export class CityClient {
           // Settle closes tracks.
           for (const settle of message.settled) {
             const key = bodyKey(settle.structureId, settle.islandId);
-            this.bodies.delete(key);
-            this.kinetic.delete(key);
+            // Hand the rest pose to the track before dropping it, so the body
+            // GLIDES the last stretch instead of cutting to it.
+            //
+            // A settle carries the pose at the settle tick; the body is being
+            // drawn a playout delay behind that, which for debris at 40-70 m/s
+            // is several metres. Deleting the track and writing the rest pose
+            // in the same frame spends that whole gap in one frame, per body.
+            // In a collapse that is thousands of chunks each stepping metres --
+            // measured at 4,082 drawn teleports the chunks' own trajectories
+            // could not explain, over one building, on loopback, 97% of them on
+            // bodies in exactly this state. It is the flicker reported from
+            // play.
+            //
+            // The track already knows how to absorb a late revision: it
+            // re-anchors to the pose on screen and glides the correction over
+            // correctionSeconds. Pushed as a zero-velocity snapshot, a settle
+            // is just one more revision, and the body stops where the server
+            // says it stopped -- a quarter-second later instead of instantly.
+            // The per-frame sampler drops the track itself once it converges
+            // (`lastSampleSettled`), so nothing has to decide when that is.
+            const settling = SETTLE_GLIDE ? this.bodies.get(key) : undefined;
+            if (settling) {
+              settling.track.push({
+                tick: message.simTick,
+                position: settle.position,
+                rotation: settle.rotation,
+                linearVelocity: [0, 0, 0],
+                angularVelocity: [0, 0, 0],
+                class: PresentationClass.Quiescent,
+              });
+              settling.settledHint = true;
+              this.kinetic.add(key);
+            } else {
+              this.bodies.delete(key);
+              this.kinetic.delete(key);
+            }
             // Dropping the track also drops its per-body staleness guard, so
             // without this a pre-settle datagram still in flight would look
             // new, overwrite the authoritative rest pose, and stick -- the
@@ -1313,12 +1384,18 @@ export class CityClient {
   samplePresentation(nowMs: number): Set<number> {
     const live = new Set<number>();
     if (this.latestSimTickAtMs === 0) {
+      // No pose stream has arrived, so there is no clock to hold topology
+      // against -- but the holding still has to end, or a city that never
+      // moves never fractures. Only the wall-clock valve can release it here.
+      // Caught by rootedWire's capture, which is a standing scene with no
+      // motion packets by design: without this the roots never appear at all.
+      this.drainPendingTopology(0, nowMs);
       return live;
     }
     // Render tick estimate: latest known sim tick + elapsed since it arrived.
     const renderTick = this.renderTickNow(nowMs);
     if (this.debris !== null) {
-      return this.sampleDebris(renderTick, live);
+      return this.sampleDebris(renderTick, live, nowMs);
     }
     // The kinetic set, not the bodies map: a body whose track has settled
     // cannot move without an event that re-adds it, so re-sampling it every

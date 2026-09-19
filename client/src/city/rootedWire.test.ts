@@ -47,8 +47,15 @@ describe('rooted fragments from production wire capture', () => {
       expect(client.topology.migrateAnomalies.missingDestination).toBe(0);
       expect(client.stats().orphanedChunks).toBe(0);
     }
+    // Topology is held until the pose clock reaches its tick, so that an
+    // island's new basis lands with the poses simulated under it. This capture
+    // deliberately has no motion packets, so nothing advances that clock and
+    // the wall-clock valve is what releases the batch. Sampling past it is
+    // therefore part of what this test asserts: a still city still ends up
+    // with exactly these roots, by the slower of the two routes.
+    client.samplePresentation(performance.now() + 1500);
     assertStandingRoots(client);
-    for (const elapsed of [16, 1000, 10000]) {
+    for (const elapsed of [1516, 2500, 11500]) {
       client.samplePresentation(performance.now() + elapsed);
       assertStandingRoots(client);
     }

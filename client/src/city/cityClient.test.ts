@@ -73,6 +73,20 @@ function makeClient(): { client: CityClient; resyncs: Uint8Array[] } {
   return { client, resyncs };
 }
 
+/**
+ * Let the sample clock reach every held topology message.
+ *
+ * Topology is queued and applied when the pose clock reaches its tick, so that
+ * a migration's new island basis lands in the same frame as the poses that were
+ * simulated under it. In production that wait is the playout delay; here it
+ * would mean feeding poses forward just to advance a clock, so the tests reach
+ * past it and say plainly that this is the moment the message applies.
+ */
+function flushTopology(client: CityClient): void {
+  (client as unknown as { drainPendingTopology(tick: number): void })
+    .drainPendingTopology(Number.MAX_SAFE_INTEGER);
+}
+
 /** Establishes the join baseline; topology is refused until this runs. */
 function bootstrap(client: CityClient, topoSeq = 0): void {
   pendingBootstrap = {
@@ -215,6 +229,7 @@ describe('CityClient pose application', () => {
         wakes: [],
       } as unknown as TopologyMessage),
     );
+    flushTopology(client);
     client.handlePacket(
       encodeAsTopology({
         topoSeq: 3,
@@ -224,6 +239,7 @@ describe('CityClient pose application', () => {
         wakes: [{ structureId: 0, islandSerial: 1 }],
       } as unknown as TopologyMessage),
     );
+    flushTopology(client);
 
     // Encoded at tick 45, before the settle, but arriving after the wake.
     internals(client).handleChunks(datagram(45, key, [0, 42, 0]));
@@ -275,6 +291,7 @@ describe('CityClient promotion continuity', () => {
         wakes: [],
       } as unknown as TopologyMessage),
     );
+    flushTopology(client);
     // The next presented frame is what the player actually sees.
     client.samplePresentation(performance.now());
 
@@ -316,6 +333,7 @@ describe('CityClient topology anomalies', () => {
     } as unknown as TopologyMessage;
 
     client.handlePacket(encodeAsTopology(message));
+    flushTopology(client);
 
     expect(resyncs.length).toBe(1);
   });
@@ -345,6 +363,7 @@ describe('CityClient topology anomalies', () => {
         wakes: [],
       } as unknown as TopologyMessage),
     );
+    flushTopology(client);
 
     expect(internals(client).bodies.has(key)).toBe(false);
   });
@@ -420,6 +439,7 @@ describe('CityClient bootstrap integrity', () => {
         wakes: [],
       } as unknown as TopologyMessage),
     );
+    flushTopology(client);
 
     expect(resyncs.length).toBe(1);
   });
@@ -437,6 +457,7 @@ describe('CityClient bootstrap integrity', () => {
         wakes: [],
       } as unknown as TopologyMessage),
     );
+    flushTopology(client);
 
     expect(resyncs.length).toBe(0);
     expect(client.topology.lastSeq()).toBe(8);
@@ -459,6 +480,7 @@ describe('CityClient repaint requests', () => {
         wakes: [],
       } as unknown as TopologyMessage),
     );
+    flushTopology(client);
 
     const repaint = client.drainRepaint();
     expect(repaint.all).toBe(false);
