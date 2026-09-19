@@ -465,6 +465,69 @@ def main():
         print(json.dumps(verify(d, args.browser, args.public), indent=2))
 
 
+# Keep at most this much server log, in one live file plus one previous.
+#
+# It was append-only and unbounded, and reached 10.1 GB on a 128 GB disk with
+# 9 GB free -- one more bad night from taking the host down. 968,102 of the
+# lines in the last 200 MB were a single PhysX message repeated: once the
+# scene's CUDA context is gone, every tick calls fetchResults() illegally and
+# says so.
+MAX_LOG_BYTES = 512 * 1024 * 1024
+
+
+def rotate_log(path):
+    """Move the log aside if it is over the cap. Keeps exactly one previous."""
+    try:
+        if path.exists() and path.stat().st_size > MAX_LOG_BYTES:
+            previous = path.with_name(path.name + '.1')
+            if previous.exists():
+                previous.unlink()
+            path.rename(previous)
+    except OSError:
+        pass  # Logging must never be the reason the server stops.
+
+
+def pump(stream, path):
+    """Copy the child's output to `path`, rotating, collapsing repeats.
+
+    Identical consecutive lines are counted rather than written. A wedged
+    PhysX scene emits the same line every tick for as long as it is left
+    running, and a million copies of it carry exactly as much information as
+    one copy and a number -- while costing gigabytes and burying the lines
+    that matter.
+    """
+    previous = None
+    repeats = 0
+    written = 0
+    handle = path.open('ab')
+    try:
+        for line in stream:
+            if line == previous:
+                repeats += 1
+                continue
+            if repeats:
+                note = f'[vast-city supervisor] last line repeated {repeats} times\n'
+                handle.write(note.encode())
+                written += len(note)
+                repeats = 0
+            handle.write(line)
+            written += len(line)
+            previous = line
+            # Flushed per line: a crash must not take the last words with it.
+            handle.flush()
+            if written > (1 << 20):
+                written = 0
+                if path.exists() and path.stat().st_size > MAX_LOG_BYTES:
+                    handle.close()
+                    rotate_log(path)
+                    handle = path.open('ab')
+    finally:
+        if repeats:
+            handle.write(
+                f'[vast-city supervisor] last line repeated {repeats} times\n'.encode())
+        handle.close()
+
+
 def serve(binary):
     # Keep the server available after /city-reset or an unexpected exit. The
     # parent handles SIGTERM and terminates only its own child on replacement.
@@ -477,8 +540,14 @@ def serve(binary):
             child.terminate()
     signal.signal(signal.SIGTERM, shutdown)
     signal.signal(signal.SIGINT, shutdown)
+    logfile = STATE / 'server.log'
     while not stopping:
-        child = sp.Popen([binary])
+        rotate_log(logfile)
+        # Through a pipe rather than the inherited stdout, so the supervisor
+        # can bound what one child writes. Rotating only between restarts does
+        # not help: the 968k repeated lines were all from a single lifetime.
+        child = sp.Popen([binary], stdout=sp.PIPE, stderr=sp.STDOUT)
+        pump(child.stdout, logfile)
         code = child.wait()
         print(f'[vast-city supervisor] server exited {code}', flush=True)
         for _ in range(30):

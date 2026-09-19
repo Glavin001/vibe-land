@@ -214,6 +214,22 @@ pub struct NativeCityDestruction {
     error_frames_logged: u32,
     /// Bodies refused for being outside the world, cumulative. Should be 0.
     bodies_outside_world: u64,
+    /// Where each live body was last seen inside the world, and when it first
+    /// appeared. The point is the AGE at the moment a body escapes: the
+    /// standing hypothesis is that fragments are created overlapping something
+    /// and depenetration throws them, which predicts escapes in the first tick
+    /// or two of a body's life. If they are instead old bodies, the cause is
+    /// somewhere else entirely and the hypothesis is dead.
+    tracked: HashMap<u32, TrackedBody>,
+    /// First escape of each of the first few bodies to leave, with the state
+    /// they left from. Bounded: this is evidence, not a log.
+    escapes: Vec<EscapeSample>,
+    /// Distinct bodies that have escaped, cumulative.
+    escaped_bodies: u64,
+    /// Sum and worst age-at-escape, in ticks.
+    escape_age_total: u64,
+    escape_age_min: u64,
+    escape_age_max: u64,
     /// Consecutive ticks the stage has rejected without ever reaching frame 1.
     ///
     /// The difference between "this tick did not complete" and "this stage
@@ -225,6 +241,55 @@ pub struct NativeCityDestruction {
     /// live server this ran for 4,560 and 19,590 consecutive ticks before a
     /// human noticed the buildings had stopped falling down.
     stuck_at_frame_zero: u32,
+}
+
+/// Generic over the FFI vector type, which is private to the bridge crate.
+fn speed_of(x: f32, y: f32, z: f32) -> f32 {
+    (x * x + y * y + z * z).sqrt()
+}
+
+/// One escaped body, reported once.
+///
+/// eprintln rather than a logging macro: this crate is deliberately free of a
+/// logging dependency, and the server captures the destruction runtime's
+/// stderr anyway. Bounded by the caller to 32 bodies, so a scene that throws
+/// everything cannot flood the log -- which it has done before, at 968,102
+/// copies of one line.
+#[allow(clippy::too_many_arguments)]
+fn log_escape(
+    entity: u32,
+    age_ticks: u64,
+    from: [f32; 3],
+    from_speed: f32,
+    to: [f32; 3],
+    to_speed: f32,
+) {
+    eprintln!(
+        "[destruction] body {entity:#x} left the world at age {age_ticks} ticks: \
+         from ({:.1}, {:.1}, {:.1}) at {from_speed:.0} m/s \
+         to ({:.0}, {:.0}, {:.0}) at {to_speed:.0} m/s",
+        from[0], from[1], from[2], to[0], to[1], to[2]
+    );
+}
+
+/// Last known good state of a live body, for escape forensics.
+#[derive(Clone, Copy, Debug)]
+struct TrackedBody {
+    first_tick: u64,
+    last_tick: u64,
+    position: [f32; 3],
+    speed: f32,
+}
+
+/// One body's first departure from the world, and the state it left from.
+#[derive(Clone, Copy, Debug)]
+struct EscapeSample {
+    entity: u32,
+    age_ticks: u64,
+    from: [f32; 3],
+    from_speed: f32,
+    to: [f32; 3],
+    to_speed: f32,
 }
 
 impl NativeCityDestruction {
@@ -325,6 +390,12 @@ materials={} reserved_pairs={} iterations={} tolerance={:e}",
             resettled_wakes: 0,
             error_frames_logged: 0,
             bodies_outside_world: 0,
+            tracked: HashMap::new(),
+            escapes: Vec::new(),
+            escaped_bodies: 0,
+            escape_age_total: 0,
+            escape_age_min: u64::MAX,
+            escape_age_max: 0,
             stuck_at_frame_zero: 0,
         })
     }
@@ -478,6 +549,15 @@ no observation this tick",
             }
         }
 
+        // Retired bodies would otherwise accumulate in `tracked` for the life
+        // of the match. Swept on a cadence rather than per tick, because the
+        // map is only forensics and an O(n) scan every tick to serve it would
+        // be the diagnostic costing more than the fault.
+        if self.ticks % 600 == 0 {
+            let horizon = self.ticks.saturating_sub(600);
+            self.tracked.retain(|_, body| body.last_tick >= horizon);
+        }
+
         // Body rows, plus the settle and wake edges the stage reported.
         let snapshots = world
             .native_chunk_body_snapshots()
@@ -528,13 +608,61 @@ no observation this tick",
             // them cut a collapse's implausible-interpolation count by more
             // than an order of magnitude. They are counted, not silenced.
             let (px, py, pz) = (snap.position.x, snap.position.y, snap.position.z);
-            if !px.is_finite() || !py.is_finite() || !pz.is_finite()
+            let entity = ids::body_entity(snap.structure_id, snap.island_id);
+            let escaped = !px.is_finite()
+                || !py.is_finite()
+                || !pz.is_finite()
                 || px.abs() > bound
                 || py.abs() > bound
-                || pz.abs() > bound
-            {
+                || pz.abs() > bound;
+            if escaped {
                 self.bodies_outside_world += 1;
+                // Record the state it left FROM, once per body. A position
+                // outside the world says nothing on its own; the previous
+                // position and speed, and how old the body was, are what
+                // distinguish "thrown at creation" from "drifted out".
+                if let Some(previous) = self.tracked.remove(&entity) {
+                    let age = self.ticks.saturating_sub(previous.first_tick);
+                    self.escaped_bodies += 1;
+                    self.escape_age_total += age;
+                    self.escape_age_min = self.escape_age_min.min(age);
+                    self.escape_age_max = self.escape_age_max.max(age);
+                    if self.escapes.len() < 32 {
+                        self.escapes.push(EscapeSample {
+                            entity,
+                            age_ticks: age,
+                            from: previous.position,
+                            from_speed: previous.speed,
+                            to: [px, py, pz],
+                            to_speed: speed_of(snap.linear_velocity.x, snap.linear_velocity.y, snap.linear_velocity.z),
+                        });
+                        log_escape(
+                            entity,
+                            age,
+                            previous.position,
+                            previous.speed,
+                            [px, py, pz],
+                            speed_of(snap.linear_velocity.x, snap.linear_velocity.y, snap.linear_velocity.z),
+                        );
+                    }
+                }
                 continue;
+            }
+            match self.tracked.entry(entity) {
+                std::collections::hash_map::Entry::Occupied(mut slot) => {
+                    let slot = slot.get_mut();
+                    slot.position = [px, py, pz];
+                    slot.speed = speed_of(snap.linear_velocity.x, snap.linear_velocity.y, snap.linear_velocity.z);
+                    slot.last_tick = self.ticks;
+                }
+                std::collections::hash_map::Entry::Vacant(slot) => {
+                    slot.insert(TrackedBody {
+                        first_tick: self.ticks,
+                        last_tick: self.ticks,
+                        position: [px, py, pz],
+                        speed: speed_of(snap.linear_velocity.x, snap.linear_velocity.y, snap.linear_velocity.z),
+                    });
+                }
             }
             let mut flags = 0u8;
             if snap.flags == NATIVE_FLAG_WOKE {
@@ -637,6 +765,43 @@ no observation this tick",
         // Published so a deployment can see the runaway fragments this filters
         // out. Should read 0; anything else is a server-side fault the client
         // is being shielded from rather than one that has been fixed.
+        self.extra_spans.push(NamedSpan {
+            name: "native_escaped_bodies".to_string(),
+            value: self.escaped_bodies as f64,
+            kind: 2,
+        });
+        self.extra_spans.push(NamedSpan {
+            name: "native_escape_age_ticks_min".to_string(),
+            value: if self.escape_age_min == u64::MAX {
+                0.0
+            } else {
+                self.escape_age_min as f64
+            },
+            kind: 2,
+        });
+        self.extra_spans.push(NamedSpan {
+            name: "native_escape_age_ticks_max".to_string(),
+            value: self.escape_age_max as f64,
+            kind: 2,
+        });
+        self.extra_spans.push(NamedSpan {
+            name: "native_escape_age_ticks_avg".to_string(),
+            value: if self.escaped_bodies == 0 {
+                0.0
+            } else {
+                self.escape_age_total as f64 / self.escaped_bodies as f64
+            },
+            kind: 2,
+        });
+        self.extra_spans.push(NamedSpan {
+            name: "native_escape_from_speed_max".to_string(),
+            value: self
+                .escapes
+                .iter()
+                .map(|sample| sample.from_speed as f64)
+                .fold(0.0, f64::max),
+            kind: 2,
+        });
         self.extra_spans.push(NamedSpan {
             name: "native_bodies_outside_world".to_string(),
             value: self.bodies_outside_world as f64,

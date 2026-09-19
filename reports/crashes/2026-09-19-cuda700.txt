@@ -1,0 +1,38 @@
+=== crash 20:33:41 (error 700), new build ===
+ (/dev/shm/physx2-base/physx/source/gpusolver/src/PxgCudaSolverCore.cpp:1203)
+PhysX[32] GPU computeBodiesAverageVelocitiesFunction fail to launch kernel!!
+ (/dev/shm/physx2-base/physx/source/gpusolver/src/PxgCudaSolverCore.cpp:1255)
+PhysX[32] GPU solveStaticBlock fail to launch kernel!!
+ (/dev/shm/physx2-base/physx/source/gpusolver/src/PxgCudaSolverCore.cpp:1568)
+PhysX[32] GPU solveStaticBlock fail to launch kernel!!
+ (/dev/shm/physx2-base/physx/source/gpusolver/src/PxgCudaSolverCore.cpp:1577)
+PhysX[32] GPU writebackBlocks fail to launch kernel!!
+ (/dev/shm/physx2-base/physx/source/gpusolver/src/PxgCudaSolverCore.cpp:1128)
+PhysX[32] SynchronizeStreams cuEventRecord failed with error 700
+ (/dev/shm/physx2-base/physx/source/gpucommon/include/PxgCudaUtils.h:78)
+PhysX[32] SynchronizeStreams cuStreamWaitEvent failed with error 700
+ (/dev/shm/physx2-base/physx/source/gpucommon/include/PxgCudaUtils.h:84)
+PhysX[32] GPU constraintPartition fail to launch kernel!!
+ (/dev/shm/physx2-base/physx/source/gpusolver/src/PxgCudaSolverCore.cpp:781)
+PhysX[32] GPU integrateCoreParallel fail to launch kernel!!
+ (/dev/shm/physx2-base/physx/source/gpusolver/src/PxgCudaSolverCore.cpp:1837)
+PhysX[32] SynchronizeStreams cuEventRecord failed with error 700
+ (/dev/shm/physx2-base/physx/source/gpucommon/include/PxgCudaUtils.h:78)
+PhysX[32] SynchronizeStreams cuStreamWaitEvent failed with error 700
+ (/dev/shm/physx2-base/physx/source/gpucommon/include/PxgCudaUtils.h:84)
+PhysX[32] SynchronizeStreams cuEventRecord failed with error 700
+ (/dev/shm/physx2-base/physx/source/gpucommon/include/PxgCudaUtils.h:78)
+PhysX[32] SynchronizeStreams cuStreamWaitEvent failed with error 700
+ (/dev/shm/physx2-base/physx/source/gpucommon/include/PxgCudaUtils.h:84)
+PhysX[32] PhysX Internal CUDA error. Simulation cannot continue! Error code 700!
+ (/dev/shm/physx2-base/physx/source/physx/src/NpScene.cpp:3132)
+2026-09-19T20:33:41.824577Z ERROR web_fps_server::physx_runtime: the step that noticed the lost context error=PhysX operation failed: PhysX fetchResults failed phase="step"
+2026-09-19T20:33:41.824585Z ERROR web_fps_server::physx_runtime: the CUDA context is lost and cannot be recovered in this process; exiting so the supervisor restarts the server
+[vast-city supervisor] server exited 70
+2026-09-19T20:33:48.454618Z  INFO web_fps_server: validated PhysX GPU and CUDA scene initialization
+2026-09-19T20:33:48.454873Z  INFO web_fps_server: WebTransport: loaded CA-signed certificate cert_path=/root/workspace/vibe-land-4/.certs/vast-city/cert.pem
+2026-09-19T20:33:48.454890Z  INFO web_fps_server: WebTransport identity ready wt_base_url=https://209.121.195.117:40687 cert_hash=d598790db0db65755a971b0336b16c0024a42f95297aede2d20416df18983777
+
+=== load immediately before ===
+2026-09-19T20:33:39.674087Z  INFO web_fps_server: city stream match_id=city-default players=1 chunk_bodies=1634 awake_bodies=1349 encoder_awake=1340 broken_bonds=8367 packets_per_sec=160 records_per_sec=160 kbytes_per_sec=162 mbps=1.3332639932632446 encode_ms=1.0264949798583984 topo_seq=1593 baseline_id=694 duplicate_body_records=0 min_body_y=0.0 settle_deferred=0 unmapped_body_skips=0 resettled_wakes=1953 solve_ms=0.0 readback_ms=0.02656000852584839 events_ms=0.02656000852584839 filters_ms=0.0 sleeping_bodies=285 overstressed_bonds=1 bond_utilisation_max=2.7751197814941406
+2026-09-19T20:33:40.738320Z  INFO web_fps_server: city stream match_id=city-default players=1 chunk_bodies=1648 awake_bodies=1339 encoder_awake=1330 broken_bonds=8387 packets_per_sec=157 records_per_sec=157 kbytes_per_sec=161 mbps=1.3233360052108765 encode_ms=0.9800989627838135 topo_seq=1614 baseline_id=695 duplicate_body_records=0 min_body_y=0.0 settle_deferred=0 unmapped_body_skips=0 resettled_wakes=1964 solve_ms=0.0 readback_ms=0.04707801342010498 events_ms=0.04707801342010498 filters_ms=0.0 sleeping_bodies=309 overstressed_bonds=0 bond_utilisation_max=0.9443318247795105
