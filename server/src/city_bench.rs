@@ -3429,6 +3429,36 @@ fn a_reset_mid_collapse_keeps_the_city_destructible() {
             city.step(tick, DT, gravity(), Some(&mut *world));
             tick += 1;
         }
+        // Demolition, not shooting, when asked: reaching the scale that crashes
+        // needs tens of thousands of broken bonds, and rounds fired from one
+        // spot never get there. The live crash was a reset at 45,884 broken
+        // bonds with 11,911 bodies awake.
+        if std::env::var("VIBE_CITY_RESET_DEMOLISH").is_ok() {
+            for pass in 0..6i32 {
+                let t = (pass as f32 / 5.0) * 2.0 - 1.0;
+                for (radius_m, below_y) in [(20.0f32, 10.0f32), (20.0, 16.0), (24.0, 22.0)] {
+                    let world = arena.physx_world_mut();
+                    city.demolish_supports(
+                        [-36.0 + t * 40.0, -36.0 + t * 40.0],
+                        radius_m,
+                        below_y,
+                        400,
+                        world,
+                    );
+                    for _ in 0..90 {
+                        let world = arena.physx_world_mut().expect("physx world");
+                        native_step(world, &city, tick, "demolish");
+                        city.step(tick, DT, gravity(), Some(&mut *world));
+                        tick += 1;
+                    }
+                }
+                let st = city.stats();
+                eprintln!(
+                    "[demolish pass {pass}] {} bonds, {} awake bodies",
+                    st.broken_bonds, st.awake_chunk_bodies
+                );
+            }
+        }
         let shots: u32 = std::env::var("VIBE_CITY_RESET_SHOTS")
             .ok()
             .and_then(|v| v.parse().ok())
