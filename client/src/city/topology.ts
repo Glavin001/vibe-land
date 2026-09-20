@@ -944,8 +944,13 @@ export class CityTopology {
     }
     const source = this.bodies.get(bodyKey(structureId, fromIslandSerial));
     // Both frames have to be read before membership changes: afterwards they
-    // are no longer recoverable from the members' offsets.
-    const sourceOldCom = source ? this.centreOfMass(source) : null;
+    // are no longer recoverable from the members' offsets. The support body's
+    // frame is never re-offset (reoffsetBody returns for it), and it is the
+    // one body with tens of thousands of members: reading its centre of mass
+    // for every chunk that leaves it was 12% of all CPU time in a collapse.
+    const sourceOldCom = source && source.islandSerial !== SUPPORT_SERIAL && source.chunkSlots.length > 0
+      ? this.centreOfMass(source)
+      : null;
     const destinationOldCom = this.centreOfMass(destination);
     if (source) {
       const index = source.chunkSlots.indexOf(slot);
