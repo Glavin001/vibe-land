@@ -47,3 +47,4 @@ scripts/perf/__pycache__/
 
 # Python deployment helper/test imports.
 scripts/__pycache__/
+autoresearch-results.tsv
