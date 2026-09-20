@@ -374,6 +374,7 @@ export interface VibeE2EBridge {
     dustExtinction?: number;
     dustPhaseG?: number;
     dustSunBoost?: number;
+    dustBudgetM?: number;
   }): void;
   /**
    * Park the camera at a fixed pose, or `null` to hand it back to the player.

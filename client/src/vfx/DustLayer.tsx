@@ -119,6 +119,7 @@ export function DustLayer({
       volume.tuning.extinction = live.dustExtinction;
       volume.tuning.phaseG = live.dustPhaseG;
       volume.tuning.sunBoost = live.dustSunBoost;
+      volume.tuning.budget = live.dustBudgetM * 1e6;
       volume.applyTuning();
       volume.setLighting(lighting);
     };

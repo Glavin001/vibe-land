@@ -215,6 +215,7 @@ function Stat({ label, value, warn }: { label: string; value: string; warn?: boo
 }
 
 import { getMatchStats, subscribeMatchStats } from '../app/connectPhase';
+import { lookTuning } from '../graphics/lookTuning';
 import { acquireCityDiagnostics } from './cityDiagnostics';
 import { sendDebugReport } from './debugReport';
 import {
@@ -1163,8 +1164,8 @@ export function CityStatsOverlay({
       />
       <Stat
         label="dust samples"
-        value={`${renderStats.dustSamplesEstM.toFixed(1)} M`}
-        warn={renderStats.dustSamplesEstM >= 11.9}
+        value={`${renderStats.dustSamplesEstM.toFixed(1)} / ${lookTuning().dustBudgetM} M`}
+        warn={renderStats.dustSamplesEstM >= lookTuning().dustBudgetM * 0.99}
       />
       <Stat
         label="dust dropped"

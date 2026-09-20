@@ -29,6 +29,8 @@ type LookTuning = {
   dustPhaseG: number;
   /** Multiplier on the sun's contribution to the dust. */
   dustSunBoost: number;
+  /** The volume pass's per-frame ceiling, millions of samples (pixels × steps). */
+  dustBudgetM: number;
 };
 
 /**
@@ -50,6 +52,7 @@ const state: LookTuning = {
   dustExtinction: 0.24,
   dustPhaseG: 0.3,
   dustSunBoost: 1,
+  dustBudgetM: 12,
 };
 
 const listeners = new Set<(next: LookTuning) => void>();

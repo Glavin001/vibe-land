@@ -58,6 +58,8 @@ export interface DustLighting {
 }
 
 export interface DustRenderTuning extends DustEvalTuning {
+  /** Per-frame ceiling on Σ pixels·steps. */
+  budget: number;
   extinction: number;
   phaseG: number;
   sunBoost: number;
@@ -122,6 +124,7 @@ export class DustVolumeRenderer implements PipelineStage {
     size: 1,
     density: 1,
     lifetime: 1,
+    budget: SAMPLE_BUDGET,
     extinction: 0.24,
     phaseG: 0.3,
     sunBoost: 1,
@@ -424,7 +427,7 @@ export class DustVolumeRenderer implements PipelineStage {
       item.steps = eased;
     }
     items.sort((a, b) => a.distance - b.distance);
-    const estimate = applySampleBudget(items, SAMPLE_BUDGET, viewportPx);
+    const estimate = applySampleBudget(items, this.tuning.budget, viewportPx);
 
     // Route to layers.
     const native = this.nativeItems;
