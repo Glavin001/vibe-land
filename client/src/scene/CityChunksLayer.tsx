@@ -168,38 +168,57 @@ function countFloatingSettledIslands(
 }
 
 /**
- * One pass over every chunk, feeding every 2 Hz diagnostic.
+ * Every chunk's world position, feeding every 2 Hz diagnostic.
  *
  * These numbers used to cost five separate full sweeps -- ground probe,
  * floating-island columns, stale-draw check, island span, island size -- each
  * recomposing all 24k chunk poses through the allocating path, roughly 170k
  * arrays per sweep. They are all functions of the same position array, so it
  * is built once into reused storage and everything else reads it.
+ *
+ * And it is built a slice at a time: composing 49k poses in one frame was a
+ * 7-11 ms hitch twice a second, which is exactly what p95 measures. The sweep
+ * now advances by a thirtieth of the city every frame, so a full pass lands
+ * every 30 frames -- the telemetry cadence -- at ~0.25 ms a frame, and the
+ * 2 Hz block reads the most recently COMPLETED pass. A diagnostic reading a
+ * position up to a quarter second old is what a 2 Hz diagnostic always was.
  */
+const SWEEP_FRAMES = 30;
 const sweepPositions = { data: new Float32Array(0) };
 /**
  * World positions of chunks still in their structure's support body, which is
  * kinematic and never moves: composed once per ledger epoch, then copied. In a
  * collapse two thirds of the city is still standing, and composing a pose that
- * cannot have changed was two thirds of an 11 ms sweep.
+ * cannot have changed was two thirds of the sweep.
  */
 const sweepRestWorld = { data: new Float32Array(0), valid: new Uint8Array(0), epoch: -1 };
 /** Scratch for the per-frame pose trace; reused so tracing allocates nothing. */
 const TRACE_POSE = new Float32Array(7);
-const sweepColumns = new Map<number, number>();
 
-function sweepChunkPositions(client: CityClient): {
+type SweepResult = {
   positions: Float32Array;
   columns: Map<number, number>;
   minChunkY: number;
   deepestSlot: number;
   chunksBelowGround: number;
   unresolvedChunkPoses: number;
-} {
+};
+
+/** The pass in progress (slots below `cursor` are fresh) and the last complete one. */
+const sweep = {
+  cursor: 0,
+  building: { columns: new Map<number, number>(), minChunkY: Infinity, deepestSlot: -1, chunksBelowGround: 0, unresolvedChunkPoses: 0 },
+  complete: null as SweepResult | null,
+  completeColumns: new Map<number, number>(),
+};
+
+function advanceChunkSweep(client: CityClient): void {
   const topology = client.topology;
   const count = topology.chunkCount;
   if (sweepPositions.data.length < count * 3) {
     sweepPositions.data = new Float32Array(count * 3);
+    sweep.cursor = 0;
+    sweep.complete = null;
   }
   const positions = sweepPositions.data;
   const restWorld = sweepRestWorld;
@@ -213,18 +232,22 @@ function sweepChunkPositions(client: CityClient): {
     }
     restWorld.epoch = epoch;
   }
-  const columns = sweepColumns;
-  columns.clear();
-  let minChunkY = Infinity;
-  let deepestSlot = -1;
-  let chunksBelowGround = 0;
-  let unresolvedChunkPoses = 0;
+  const building = sweep.building;
+  const columns = building.columns;
+  if (sweep.cursor === 0) {
+    columns.clear();
+    building.minChunkY = Infinity;
+    building.deepestSlot = -1;
+    building.chunksBelowGround = 0;
+    building.unresolvedChunkPoses = 0;
+  }
+  const end = Math.min(count, sweep.cursor + Math.ceil(count / SWEEP_FRAMES));
   // Body lookups are hoisted across a run of slots sharing one body: chunk
   // slots of the same body are contiguous far more often than not, and the
   // Map lookup was previously repeated for every chunk.
   let lastKey = -1;
   let lastBody: LedgerBody | undefined;
-  for (let slot = 0; slot < count; slot += 1) {
+  for (let slot = sweep.cursor; slot < end; slot += 1) {
     const key = topology.bodyKeyOf(slot);
     if (key !== lastKey) {
       lastKey = key;
@@ -244,7 +267,7 @@ function sweepChunkPositions(client: CityClient): {
       if (!resolved || !Number.isFinite(TMP_POSE[0]) || !Number.isFinite(TMP_POSE[1])
         || !Number.isFinite(TMP_POSE[2])) {
         positions[at] = positions[at + 1] = positions[at + 2] = Number.NaN;
-        unresolvedChunkPoses += 1;
+        building.unresolvedChunkPoses += 1;
         continue;
       }
       x = TMP_POSE[0];
@@ -260,16 +283,37 @@ function sweepChunkPositions(client: CityClient): {
     positions[at] = x;
     positions[at + 1] = y;
     positions[at + 2] = z;
-    if (y < minChunkY) {
-      minChunkY = y;
-      deepestSlot = slot;
+    if (y < building.minChunkY) {
+      building.minChunkY = y;
+      building.deepestSlot = slot;
     }
-    if (y < CHUNK_SUNK_Y_M) chunksBelowGround += 1;
+    if (y < CHUNK_SUNK_Y_M) building.chunksBelowGround += 1;
     const column = columnKey(x, z);
     const lowest = columns.get(column);
     if (lowest === undefined || y < lowest) columns.set(column, y);
   }
-  return { positions, columns, minChunkY, deepestSlot, chunksBelowGround, unresolvedChunkPoses };
+  sweep.cursor = end;
+  if (end >= count) {
+    // Pass complete: publish it, and swap the column maps so the next pass
+    // builds into the one the consumers just stopped reading.
+    const published = sweep.completeColumns;
+    sweep.completeColumns = building.columns;
+    building.columns = published;
+    sweep.complete = {
+      positions,
+      columns: sweep.completeColumns,
+      minChunkY: building.minChunkY,
+      deepestSlot: building.deepestSlot,
+      chunksBelowGround: building.chunksBelowGround,
+      unresolvedChunkPoses: building.unresolvedChunkPoses,
+    };
+    sweep.cursor = 0;
+  }
+}
+
+/** The most recently completed pass, or null before the first one finishes. */
+function completedChunkSweep(): SweepResult | null {
+  return sweep.complete;
 }
 
 /**
@@ -697,6 +741,16 @@ export function CityChunksLayer({
       );
     }
 
+    // A slice of the diagnostic position sweep every frame, only while
+    // something reads the diagnostics -- the panel, the recorder, a spec.
+    if (cityDiagnosticsWanted() || recording) {
+      const sweepStartedAt = performance.now();
+      advanceChunkSweep(client);
+      renderStats.sweepSliceMs = performance.now() - sweepStartedAt;
+    } else {
+      renderStats.sweepSliceMs = 0;
+    }
+
     if (frameCounterRef.current % 30 === 0) {
       const telemetryStartedAt = performance.now();
       const stats = client.stats();
@@ -719,7 +773,7 @@ export function CityChunksLayer({
       // Unconditionally it was a 3.1 ms spike twice a second for every player,
       // including phones, where the panel is hidden by default.
       const wantSweep = cityDiagnosticsWanted() || recording;
-      const sweep = wantSweep ? sweepChunkPositions(client) : null;
+      const sweep = wantSweep ? completedChunkSweep() : null;
       const positions = sweep ? sweep.positions : EMPTY_POSITIONS;
       const minChunkY = sweep ? sweep.minChunkY : 0;
       const chunksBelowGround = sweep ? sweep.chunksBelowGround : 0;
