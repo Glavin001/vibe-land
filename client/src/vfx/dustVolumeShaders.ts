@@ -236,46 +236,56 @@ void main() {
 }
 `;
 
-export const UPSAMPLE_FRAGMENT = /* glsl */ `
-precision highp float;
-uniform sampler2D tHalf;
-uniform sampler2D tDepth;
-uniform vec2 uHalfSize;
-uniform vec2 uFullSize;
-uniform float uNear;
-uniform float uFar;
-in vec2 vUv;
-out vec4 outColor;
-
-float viewZFromDepth(float d) { return (uNear * uFar) / ((uFar - uNear) * d - uFar); }
-float zAt(vec2 uv) { return -viewZFromDepth(texture(tDepth, uv).r); }
-
-void main() {
-  float z = zAt(vUv);
-  vec2 cell = vUv * uHalfSize - 0.5;
+/**
+ * Lays a half-res premultiplied layer up to full res: 3x3 around the
+ * bilinear footprint, tent-weighted, so the half-res march's grain is
+ * smoothed as it is scaled up; depth-weighted, so the smoothing never
+ * crosses a building's edge. One function, so the composite (and any stage
+ * laid over the dust) can do this in its own pass instead of the dust
+ * paying a pass to do it first. Needs `viewZFromDepth` in scope (below).
+ */
+export const UPSAMPLE_GLSL = /* glsl */ `
+float dustViewZFromDepth(float d, float near, float far) { return (near * far) / ((far - near) * d - far); }
+vec4 dustUpsample(sampler2D tHalf, sampler2D tDepth, vec2 uv, vec2 halfSize, float near, float far) {
+  float z = -dustViewZFromDepth(texture(tDepth, uv).r, near, far);
+  vec2 cell = uv * halfSize - 0.5;
   vec2 base = floor(cell);
   vec2 f = fract(cell);
   vec4 color = vec4(0.0);
   float weight = 0.0;
-  // 3x3 around the bilinear footprint: tent-weighted, so the half-res
-  // march's grain is smoothed as it is scaled up; depth-weighted, so the
-  // smoothing never crosses a building's edge.
   for (int y = -1; y <= 2; y++) {
     for (int x = -1; x <= 2; x++) {
-      vec2 p = (base + vec2(float(x) + 0.5, float(y) + 0.5)) / uHalfSize;
+      vec2 p = (base + vec2(float(x) + 0.5, float(y) + 0.5)) / halfSize;
       float tx = 1.0 - min(1.0, abs(float(x) - f.x) * 0.6);
       float ty = 1.0 - min(1.0, abs(float(y) - f.y) * 0.6);
       // Floored: with every tap across a depth edge the weights would vanish
       // and the division below would amplify bilinear residue into bright
       // lines along every horizon. With the floor the result is a true
       // weighted average and can never exceed its taps.
-      float match = exp(-abs(zAt(p) - z) / (z * 0.002 + 0.2)) + 0.02;
+      float pz = -dustViewZFromDepth(texture(tDepth, p).r, near, far);
+      float match = exp(-abs(pz - z) / (z * 0.002 + 0.2)) + 0.02;
       float w = tx * ty * match;
       color += texture(tHalf, p) * w;
       weight += w;
     }
   }
   // Stays premultiplied: the composite expects it.
-  outColor = color / max(weight, 0.0001);
+  return color / max(weight, 0.0001);
+}
+`;
+
+/** The dust's own upsample pass, for a frame that also draws native-res parcels over it. */
+export const UPSAMPLE_FRAGMENT = /* glsl */ `
+precision highp float;
+uniform sampler2D tHalf;
+uniform sampler2D tDepth;
+uniform vec2 uHalfSize;
+uniform float uNear;
+uniform float uFar;
+in vec2 vUv;
+out vec4 outColor;
+${UPSAMPLE_GLSL}
+void main() {
+  outColor = dustUpsample(tHalf, tDepth, vUv, uHalfSize, uNear, uFar);
 }
 `;

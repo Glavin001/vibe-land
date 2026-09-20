@@ -11,7 +11,7 @@
 import * as THREE from 'three';
 
 import { renderStats } from '../city/renderStats';
-import type { PipelineStage, PipelineStageContext } from '../graphics/framePipelineStages';
+import type { PipelineStage, PipelineStageContext, StageOutput } from '../graphics/framePipelineStages';
 import type { DustSource } from '../city/destructionEvents';
 import { DustFieldBake } from './dustFieldBake';
 import { FluidBrick, type FluidQuality } from './fluid/FluidBrick';
@@ -95,6 +95,9 @@ export class DustVolumeRenderer implements PipelineStage {
   private readonly halfScene = new THREE.Scene();
   private target: THREE.WebGLRenderTarget | null = null;
   private halfTarget: THREE.WebGLRenderTarget | null = null;
+  private readonly halfSize = new THREE.Vector2(1, 1);
+  /** This frame's output is the half-res target itself (see render). */
+  private outputHalf = false;
   private targetDirty = false;
   private readonly stepsEased: Float32Array;
   /** Which active fluid brick steps this frame; see render(). */
@@ -200,7 +203,6 @@ export class DustVolumeRenderer implements PipelineStage {
         tHalf: { value: null },
         tDepth: { value: null },
         uHalfSize: { value: new THREE.Vector2(1, 1) },
-        uFullSize: { value: new THREE.Vector2(1, 1) },
         uNear: { value: 0.1 },
         uFar: { value: 200 },
       },
@@ -358,8 +360,9 @@ export class DustVolumeRenderer implements PipelineStage {
     u.uAlbedo.value = this.tuning.albedo;
   }
 
-  output(): THREE.Texture | null {
-    return this.target?.texture ?? null;
+  output(): StageOutput | null {
+    if (this.outputHalf) return this.halfTarget ? { texture: this.halfTarget.texture, halfSize: this.halfSize } : null;
+    return this.target ? { texture: this.target.texture, halfSize: null } : null;
   }
 
   resize(width: number, height: number): void {
@@ -384,7 +387,7 @@ export class DustVolumeRenderer implements PipelineStage {
     });
     this.upsampleMaterial.uniforms.tHalf.value = this.halfTarget.texture;
     (this.upsampleMaterial.uniforms.uHalfSize.value as THREE.Vector2).set(hw, hh);
-    (this.upsampleMaterial.uniforms.uFullSize.value as THREE.Vector2).set(width, height);
+    this.halfSize.set(hw, hh);
     this.targetDirty = true;
   }
 
@@ -547,6 +550,12 @@ export class DustVolumeRenderer implements PipelineStage {
     // The half-res layer: the fluid brick (always half-res: it fills the
     // view up close and its field is smooth) under the far parcels.
     const halfLayer = half.length > 0 || brickOn;
+    // Live parcels, none of them in view: nothing to lay over the frame.
+    if (!halfLayer && native.length === 0) {
+      renderer.setClearColor(this.clearColor, previousAlpha);
+      renderer.autoClear = previousAutoClear;
+      return false;
+    }
     if (halfLayer && this.halfTarget) {
       renderer.setRenderTarget(this.halfTarget);
       renderer.clear(true, false, false);
@@ -560,18 +569,24 @@ export class DustVolumeRenderer implements PipelineStage {
       u.uDepthScale.value = 2;
       renderer.render(this.halfScene, camera);
     }
-    renderer.setRenderTarget(this.target);
-    renderer.clear(true, false, false);
-    if (halfLayer) {
-      renderer.render(this.upsampleScene, this.quadCamera);
-    }
-    if (native.length > 0) {
+    // The full-res pass exists to lay the half-res layer up under the
+    // native-res parcels. With none of those to draw -- most frames -- the
+    // half-res layer IS the output and whoever reads it (the composite, or a
+    // stage laid over it) does the same upsample in the pass it already
+    // has. On the reporter's M3 the pass, not the upsample, was the cost.
+    this.outputHalf = native.length === 0;
+    if (!this.outputHalf) {
+      renderer.setRenderTarget(this.target);
+      renderer.clear(true, false, false);
+      if (halfLayer) {
+        renderer.render(this.upsampleScene, this.quadCamera);
+      }
       u.uDepthScale.value = 1;
       renderer.render(this.native.scene, camera);
+      this.targetDirty = true;
     }
     renderer.setClearColor(this.clearColor, previousAlpha);
     renderer.autoClear = previousAutoClear;
-    this.targetDirty = true;
     return true;
   }
 

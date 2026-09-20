@@ -13,9 +13,10 @@
 
 import * as THREE from 'three';
 
-import type { PipelineStage, PipelineStageContext } from '../graphics/framePipelineStages';
+import type { PipelineStage, PipelineStageContext, StageOutput } from '../graphics/framePipelineStages';
 import { renderStats } from '../city/renderStats';
 import { NOISE_GLSL, ROCK_SCALE } from './meteorRock';
+import { UPSAMPLE_GLSL } from './dustVolumeShaders';
 
 export const MAX_FIRE_METEORS = 4;
 
@@ -39,8 +40,12 @@ precision highp float;
 varying vec2 vUv;
 uniform sampler2D tDepth;
 uniform sampler2D tUnder;
+/** 0 none; 1 tUnder is full-res; 2 tUnder is half-res and laid up here. */
 uniform float uUnderOn;
+uniform vec2 uUnderHalfSize;
+uniform float uNear, uFar;
 uniform mat4 uInvProjection, uCameraWorld;
+${UPSAMPLE_GLSL}
 uniform vec3 uCamera;
 uniform float uTime, uTurbulence, uTrail;
 uniform int uSteps;
@@ -140,7 +145,8 @@ void main() {
     if (m >= uCount) break;
     marchMeteor(m, ray, maxDepth, emission, trans);
   }
-  vec4 under = uUnderOn > 0.5 ? texture2D(tUnder, vUv) : vec4(0.0);
+  vec4 under = uUnderOn > 1.5 ? dustUpsample(tUnder, tDepth, vUv, uUnderHalfSize, uNear, uFar)
+    : uUnderOn > 0.5 ? texture2D(tUnder, vUv) : vec4(0.0);
   // Premultiplied over: the fire in front of whatever the earlier stages drew.
   gl_FragColor = vec4(emission + under.rgb * trans, 1.0 - trans * (1.0 - under.a));
 }
@@ -173,6 +179,9 @@ export class MeteorFireStage implements PipelineStage {
         tDepth: { value: null },
         tUnder: { value: null },
         uUnderOn: { value: 0 },
+        uUnderHalfSize: { value: new THREE.Vector2(1, 1) },
+        uNear: { value: 0.1 },
+        uFar: { value: 200 },
         uInvProjection: { value: new THREE.Matrix4() },
         uCameraWorld: { value: new THREE.Matrix4() },
         uCamera: { value: new THREE.Vector3() },
@@ -204,8 +213,8 @@ export class MeteorFireStage implements PipelineStage {
     this.instances = instances;
   }
 
-  output(): THREE.Texture | null {
-    return this.target?.texture ?? null;
+  output(): StageOutput | null {
+    return this.target ? { texture: this.target.texture, halfSize: null } : null;
   }
 
   resize(width: number, height: number): void {
@@ -231,8 +240,12 @@ export class MeteorFireStage implements PipelineStage {
     this.time += dt;
     const u = this.material.uniforms;
     u.tDepth.value = beauty.depthTexture;
-    u.tUnder.value = under;
-    u.uUnderOn.value = under ? 1 : 0;
+    u.tUnder.value = under?.texture ?? null;
+    u.uUnderOn.value = under ? (under.halfSize ? 2 : 1) : 0;
+    if (under?.halfSize) (u.uUnderHalfSize.value as THREE.Vector2).copy(under.halfSize);
+    const perspective = camera as THREE.PerspectiveCamera;
+    u.uNear.value = perspective.near ?? 0.1;
+    u.uFar.value = perspective.far ?? 200;
     camera.updateMatrixWorld();
     (u.uInvProjection.value as THREE.Matrix4).copy(camera.projectionMatrixInverse);
     (u.uCameraWorld.value as THREE.Matrix4).copy(camera.matrixWorld);

@@ -33,7 +33,18 @@ export interface PipelineStageContext {
    * did. A stage that draws must lay itself over this: the composite takes
    * only the last output, so each stage carries the ones before it.
    */
-  under: THREE.Texture | null;
+  under: StageOutput | null;
+}
+
+/** A stage's layer, premultiplied RGBA. */
+export interface StageOutput {
+  texture: THREE.Texture;
+  /**
+   * Set when the texture is half the drawing buffer: the reader lays it up
+   * with `dustUpsample` (dustVolumeShaders.UPSAMPLE_GLSL), depth-aware, in
+   * its own pass -- a pass the stage did not have to spend on it.
+   */
+  halfSize: THREE.Vector2 | null;
 }
 
 export interface PipelineStage {
@@ -44,8 +55,8 @@ export interface PipelineStage {
   order?: number;
   /** Draw. Return false when nothing was drawn; the composite then ignores output(). */
   render(ctx: PipelineStageContext): boolean;
-  /** Premultiplied RGBA, full drawing-buffer size, or null. */
-  output(): THREE.Texture | null;
+  /** What it drew this frame, or null. */
+  output(): StageOutput | null;
   resize(width: number, height: number): void;
   dispose(): void;
 }

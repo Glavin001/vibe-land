@@ -17,6 +17,7 @@
 //   * the composite protects bright pixels, because AO belongs on the ambient
 //     term only -- multiplied into sunlit concrete it just looks grimy.
 
+import { UPSAMPLE_GLSL } from '../vfx/dustVolumeShaders';
 import * as THREE from 'three';
 
 export const KERNEL_SIZE = 16;
@@ -176,9 +177,15 @@ export const COMPOSITE_FRAGMENT = /* glsl */ `
   uniform sampler2D tDiffuse;
   uniform sampler2D tAO;
   uniform sampler2D tDust;
+  uniform sampler2D tDepth;
+  uniform vec2 uDustHalfSize;
+  uniform float uNear;
+  uniform float uFar;
   uniform float uPower;
   uniform float uAoOn;
+  /** 0 none; 1 tDust is full-res; 2 tDust is half-res and laid up here. */
   uniform float uDustOn;
+  ${UPSAMPLE_GLSL}
   void main() {
     vec3 col = texture2D(tDiffuse, vUv).rgb;
     if (uAoOn > 0.5) {
@@ -194,7 +201,9 @@ export const COMPOSITE_FRAGMENT = /* glsl */ `
     if (uDustOn > 0.5) {
       // Premultiplied: the dust pass accumulated front-to-back, so this is
       // the over operator with nothing to divide out.
-      vec4 dust = texture2D(tDust, vUv);
+      vec4 dust = uDustOn > 1.5
+        ? dustUpsample(tDust, tDepth, vUv, uDustHalfSize, uNear, uFar)
+        : texture2D(tDust, vUv);
       col = col * (1.0 - dust.a) + dust.rgb;
     }
     // The scene was rendered into a linear offscreen buffer, so the transfer

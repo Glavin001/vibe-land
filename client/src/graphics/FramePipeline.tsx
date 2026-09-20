@@ -25,7 +25,7 @@ import {
   buildKernel,
   makeTarget,
 } from './aoPasses';
-import { pipelineStages, pipelineStageCount } from './framePipelineStages';
+import { pipelineStages, pipelineStageCount, type StageOutput } from './framePipelineStages';
 import { lookTuning, subscribeLookTuning } from './lookTuning';
 
 type FramePipelineProps = {
@@ -93,6 +93,10 @@ export function FramePipeline({
         tDiffuse: { value: null },
         tAO: { value: null },
         tDust: { value: null },
+        tDepth: { value: null },
+        uDustHalfSize: { value: new THREE.Vector2(1, 1) },
+        uNear: { value: 0.1 },
+        uFar: { value: 200 },
         uPower: { value: activeStrength },
         uAoOn: { value: 0 },
         uDustOn: { value: 0 },
@@ -178,6 +182,7 @@ export function FramePipeline({
       passes.aoMaterial.uniforms.uFullResolution.value.set(width, height);
       passes.blurMaterial.uniforms.tDepth.value = passes.beauty.depthTexture;
       passes.compositeMaterial.uniforms.tDiffuse.value = passes.beauty.texture;
+      passes.compositeMaterial.uniforms.tDepth.value = passes.beauty.depthTexture;
       for (const stage of pipelineStages()) stage.resize(width, height);
       // The half-res AO targets follow the beauty target.
       passes.ao?.dispose();
@@ -209,6 +214,8 @@ export function FramePipeline({
     passes.aoMaterial.uniforms.uInvProj.value = camera.projectionMatrixInverse;
     passes.blurMaterial.uniforms.uNear.value = perspective.near ?? 0.1;
     passes.blurMaterial.uniforms.uFar.value = perspective.far ?? 200;
+    passes.compositeMaterial.uniforms.uNear.value = perspective.near ?? 0.1;
+    passes.compositeMaterial.uniforms.uFar.value = perspective.far ?? 200;
 
     renderer.setRenderTarget(passes.beauty);
     renderer.render(scene, camera);
@@ -225,7 +232,7 @@ export function FramePipeline({
     // over that, so the last one that draws is what the composite lays over.
     let dustOn = 0;
     if (pipelineStageCount() > 0) {
-      let under: THREE.Texture | null = null;
+      let under: StageOutput | null = null;
       for (const stage of pipelineStages()) {
         const ctx = { renderer, camera, scene, beauty: passes.beauty, width, height, dt, under };
         beginGpuDustStage();
@@ -235,8 +242,10 @@ export function FramePipeline({
           const output = stage.output();
           if (output) {
             under = output;
-            passes.compositeMaterial.uniforms.tDust.value = output;
-            dustOn = 1;
+            passes.compositeMaterial.uniforms.tDust.value = output.texture;
+            // A half-res layer is laid up here, in the pass the composite is anyway.
+            if (output.halfSize) (passes.compositeMaterial.uniforms.uDustHalfSize.value as THREE.Vector2).copy(output.halfSize);
+            dustOn = output.halfSize ? 2 : 1;
           }
         }
       }
