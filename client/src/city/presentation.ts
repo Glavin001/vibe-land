@@ -583,18 +583,14 @@ export class PresentationTrack {
     // Four time constants leaves ~9% of a critically damped zero-velocity
     // displacement after the correction window.
     const omega = 4 / over;
-    [this.correction.position, this.correction.linearVelocity] = criticalStep(
-      this.correction.position,
-      this.correction.linearVelocity,
-      omega,
-      seconds,
-    );
-    [this.correction.rotation, this.correction.angularVelocity] = criticalStep(
-      this.correction.rotation,
-      this.correction.angularVelocity,
-      omega,
-      seconds,
-    );
+    // In place: the correction's arrays are this track's own (built fresh at
+    // each re-anchor, copied out when presented), and this ran for every
+    // streamed body every frame as a dozen arrays through criticalStep.
+    if (seconds > 0) {
+      const decay = Math.exp(-omega * seconds);
+      criticalStepInPlace(this.correction.position, this.correction.linearVelocity, omega, seconds, decay);
+      criticalStepInPlace(this.correction.rotation, this.correction.angularVelocity, omega, seconds, decay);
+    }
     // Critically-damped decay is asymptotic, so a correction never actually
     // reaches zero -- it just gets very small and is carried forever. Collapse
     // it once it is far below anything observable (a tenth of a millimetre is
@@ -809,14 +805,15 @@ function dampedMotion(initial: Vec3, damping: number, seconds: number): [Vec3, V
   return [vScale(initial, (1 - decay) / damping), vScale(initial, decay)];
 }
 
-function criticalStep(position: Vec3, velocity: Vec3, omega: number, seconds: number): [Vec3, Vec3] {
-  if (seconds <= 0) {
-    return [position, velocity];
+/**
+ * One step of a critically damped spring toward zero, on the pair in place:
+ * p' = (p + (v + pω)t)e^{-ωt}, v' = (v - (v + pω)ωt)e^{-ωt}.
+ */
+function criticalStepInPlace(position: Vec3, velocity: Vec3, omega: number, seconds: number, decay: number): void {
+  const os = omega * seconds;
+  for (let i = 0; i < 3; i += 1) {
+    const offset = velocity[i] + position[i] * omega;
+    position[i] = (position[i] + offset * seconds) * decay;
+    velocity[i] = (velocity[i] - offset * os) * decay;
   }
-  const offset = vAdd(velocity, vScale(position, omega));
-  const decay = Math.exp(-omega * seconds);
-  return [
-    vScale(vAdd(position, vScale(offset, seconds)), decay),
-    vScale(vSub(velocity, vScale(offset, omega * seconds)), decay),
-  ];
 }
