@@ -97,12 +97,19 @@ describe('meteorFlights', () => {
     expect(flight.launchedAtLocalMs).toBe(6000);
     expect(isMeteorBody(31)).toBe(true);
     expect(meteorFlights(6000).length).toBe(1);
-    expect(meteorFlights(6000 + 2000 + 5000).length).toBe(1);
-    // A streamed body seen late keeps the flight alive past the linger.
-    flight.lastStreamedAtMs = 6000 + 12_000;
-    expect(meteorFlights(6000 + 15_000).length).toBe(1);
-    expect(meteorFlights(6000 + 12_000 + 7000).length).toBe(0);
+    expect(meteorFlights(6000 + 2000 + 2000).length).toBe(1);
+    expect(meteorFlights(6000 + 2000 + 4000).length).toBe(0);
     expect(isMeteorBody(31)).toBe(false);
+  });
+
+  it('forgets a streamed flight soon after its body is last seen', () => {
+    const flight = registerMeteorFlight(plan([0, 200, 0], [0, 0, 0], 2), (us) => us / 1000);
+    // Streamed well past the nominal landing: the body is the truth, so the
+    // arc's linger no longer applies...
+    flight.lastStreamedAtMs = 5000 + 12_000;
+    expect(meteorFlights(5000 + 12_000 + 500).length).toBe(1);
+    // ...and once the body is gone, the rock has nothing to stand on.
+    expect(meteorFlights(5000 + 12_000 + 1000).length).toBe(0);
   });
 
   it('replaces a flight whose body id is reused', () => {

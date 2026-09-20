@@ -75,10 +75,16 @@ export interface MeteorFlight extends MeteorLaunchedPacket {
 }
 
 /**
- * A flight is forgotten this long after it should have landed, or after the
- * streamed body was last seen, whichever is later.
+ * A flight that never streamed is forgotten this long after it should have
+ * landed: the rock is held at the aimed point meanwhile, which is a guess.
  */
-const LANDED_LINGER_S = 6;
+const LANDED_LINGER_S = 3;
+/**
+ * A flight whose body was streamed is forgotten this long after the body was
+ * last seen. Short: the body is the truth, and without it the rock can only
+ * stand still where it was, which reads as floating if it stands too long.
+ */
+const UNSTREAMED_LINGER_S = 0.75;
 /** And this long after launch regardless, in case something went badly wrong. */
 const MAX_AGE_S = 60;
 const MAX_FLIGHTS = 8;
@@ -114,11 +120,10 @@ export function meteorFlights(nowMs: number): readonly MeteorFlight[] {
   for (let i = flights.length - 1; i >= 0; i -= 1) {
     const flight = flights[i];
     const age = (nowMs - flight.launchedAtLocalMs) / 1000;
-    const landedAtMs = Math.max(
-      flight.launchedAtLocalMs + flight.flightTimeS * 1000,
-      flight.lastStreamedAtMs,
-    );
-    if (age > MAX_AGE_S || nowMs - landedAtMs > LANDED_LINGER_S * 1000) flights.splice(i, 1);
+    const forgotten = flight.lastStreamedAtMs > 0
+      ? nowMs - flight.lastStreamedAtMs > UNSTREAMED_LINGER_S * 1000
+      : age > flight.flightTimeS + LANDED_LINGER_S;
+    if (age > MAX_AGE_S || forgotten) flights.splice(i, 1);
   }
   return flights;
 }

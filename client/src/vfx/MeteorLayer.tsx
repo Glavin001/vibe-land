@@ -148,6 +148,20 @@ export function MeteorLayer({ getRuntime }: MeteorLayerProps) {
           streamed.quaternion[2],
           streamed.quaternion[3],
         );
+      } else if (flight.lastStreamedAtMs > 0) {
+        // The body was real and now is not: retired at its TTL, bounced out
+        // of the snapshot's range, or the viewer walked away from it. The
+        // arc knows nothing about where it went after impact -- falling back
+        // to it would teleport the rock to the aimed point and leave it
+        // hanging there -- so it stays where it was last seen, cold, until
+        // the store forgets it.
+        scratchPos[0] = meteor.group.position.x;
+        scratchPos[1] = meteor.group.position.y;
+        scratchPos[2] = meteor.group.position.z;
+        position = scratchPos;
+        scratchVel[0] = 0; scratchVel[1] = 0; scratchVel[2] = 0;
+        velocity = scratchVel;
+        meteor.lastBurningMs = Math.min(meteor.lastBurningMs, nowMs - 3000);
       } else {
         const t = (renderMs - flight.launchedAtLocalMs) / 1000;
         if (t < 0) {
