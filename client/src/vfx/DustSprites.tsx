@@ -160,7 +160,7 @@ export function DustSprites({ store, lighting, wind }: DustSpritesProps) {
       uSkyColor: { value: new THREE.Color() },
       uGroundColor: { value: new THREE.Color() },
       uAlbedo: { value: [
-        new THREE.Color(0xb5ac9e).convertSRGBToLinear(),
+        new THREE.Color(0xb3afa8).convertSRGBToLinear(),
         new THREE.Color(0x8f7250).convertSRGBToLinear(),
         new THREE.Color(0x66686c).convertSRGBToLinear(),
       ] },

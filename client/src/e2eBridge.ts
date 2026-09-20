@@ -32,8 +32,7 @@ import {
 } from './app/renderQuality';
 import { updateFogSettings } from './graphics/fogSettings';
 import { setLookTuning } from './graphics/lookTuning';
-import { DustPolicy } from './city/dustPolicy';
-import { DustPalette, dustParcels } from './vfx/dustParcelStore';
+import { pushDebugDustSource } from './vfx/dustDebug';
 
 let dustBurstSerial = 1;
 import { setCapturePose } from './scene/captureCamera';
@@ -607,8 +606,7 @@ const bridge: VibeE2EBridge = {
   setCapturePose: (next) => setCapturePose(next),
   dustBurst: (next) => {
     const normal = next.normal ?? [0, 1, 0];
-    const policy = new DustPolicy(dustParcels, () => DustPalette.Concrete);
-    return policy.emit({
+    pushDebugDustSource({
       kind: next.kind === 'impact' ? 'impact' : 'fracture',
       structureId: 0xffff,
       simTick: dustBurstSerial++,
@@ -627,6 +625,7 @@ const bridge: VibeE2EBridge = {
       material: 0,
       atMs: performance.now(),
     });
+    return 1;
   },
   runPerfSweep: (profile?: PerfSweepProfile) => runPerfSweep(profile),
   formatPerfSweepMobile: (report: unknown) => formatPerfSweepMobile(report as PerfSweepReport),

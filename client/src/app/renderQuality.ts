@@ -26,6 +26,7 @@ const SKY_DOME_KEY = 'vibe.render.skyDome';
 const DPR_CAP_KEY = 'vibe.render.dprCap';
 const HERO_TILING_KEY = 'vibe.render.heroTiling';
 const DUST_KEY = 'vibe.render.dust';
+const DUST_FLUID_KEY = 'vibe.render.dustFluid';
 const SHARE_THRESHOLD_KEY = 'vibe.render.instanceShare';
 const SHADOW_MAP_KEY = 'vibe.render.shadowMapSize';
 
@@ -72,12 +73,20 @@ export type CityTextureDetail = 'full' | 'albedo' | 'off';
  * emission as well as drawing.
  */
 export type DustMode = 'off' | 'sprites' | 'volumetric';
+/**
+ * The near-camera fluid brick: a small simulated volume that follows the
+ * most violent nearby break, so dust up close flows and pools rather than
+ * only billowing. `fast` is 48×36×48 cells, `balanced` 64×48×64. Only ever
+ * drawn inside the volumetric pass.
+ */
+export type DustFluid = 'off' | 'fast' | 'balanced';
 
 export type RenderQualityState = {
   shadows: boolean;
   tier: QualityTier;
   ao: boolean;
   dust: DustMode;
+  dustFluid: DustFluid;
   /**
    * The per-pixel knobs, together in one store because they all have to notify
    * the same listeners: the city rebuilds its material, the scene rebinds its
@@ -194,6 +203,9 @@ let heroTiling: boolean = readStored(HERO_TILING_KEY, (raw) => raw === '1') ?? t
 let dust: DustMode = readStored(DUST_KEY, (raw) =>
   raw === 'off' || raw === 'sprites' || raw === 'volumetric' ? raw : null)
   ?? (isTouchDevice() ? 'sprites' : 'volumetric');
+let dustFluid: DustFluid = readStored(DUST_FLUID_KEY, (raw) =>
+  raw === 'off' || raw === 'fast' || raw === 'balanced' ? raw : null)
+  ?? (isTouchDevice() ? 'off' : 'balanced');
 // Session-only, like the other sweep-priced knobs: no panel button writes it.
 let aoMsaaSamples = 4;
 // Session-only, deliberately. These two have no panel button -- the perf sweep
@@ -227,8 +239,25 @@ function notify(): void {
     shadowMapSize,
     heroTiling,
     dust,
+    dustFluid,
   };
   for (const listener of listeners) listener(state);
+}
+
+export function dustFluidPreferred(): DustFluid {
+  return dustFluid;
+}
+
+export function setDustFluid(next: DustFluid): void {
+  if (next === dustFluid) return;
+  dustFluid = next;
+  store(DUST_FLUID_KEY, next);
+  notify();
+}
+
+/** The fluid brick actually in effect: needs the volumetric pass. */
+export function dustFluidMode(): DustFluid {
+  return dustMode() === 'volumetric' ? dustFluid : 'off';
 }
 
 /** Player's dust preference, before the tier has its say. */
@@ -553,6 +582,7 @@ const PERSISTED_KEYS = [
   DPR_CAP_KEY,
   HERO_TILING_KEY,
   DUST_KEY,
+  DUST_FLUID_KEY,
 ] as const;
 
 export function snapshotStoredRenderSettings(): Array<[string, string | null]> {
@@ -621,4 +651,8 @@ export function useAmbientOcclusionEnabled(): boolean {
 /** React view of the effective dust mode (tier included). */
 export function useDustMode(): DustMode {
   return useSyncExternalStore(subscribe, dustMode, dustMode);
+}
+
+export function useDustFluid(): DustFluid {
+  return useSyncExternalStore(subscribe, dustFluidMode, dustFluidMode);
 }

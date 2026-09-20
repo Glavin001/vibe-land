@@ -223,3 +223,17 @@ describe('dust mode', () => {
     expect(store.get('vibe.render.dust')).toBe('off');
   });
 });
+
+describe('dust fluid', () => {
+  it('defaults balanced on desktop, off on touch, and needs the volumetric pass', async () => {
+    expect((await loadFresh({ touch: false })).module.dustFluidMode()).toBe('balanced');
+    expect((await loadFresh({ touch: true })).module.dustFluidMode()).toBe('off');
+    const { module } = await loadFresh({ touch: false, storedDust: 'sprites' });
+    expect(module.dustFluidPreferred()).toBe('balanced');
+    expect(module.dustFluidMode()).toBe('off');
+    module.setDustMode('volumetric');
+    expect(module.dustFluidMode()).toBe('balanced');
+    module.setDustFluid('fast');
+    expect(module.dustFluidMode()).toBe('fast');
+  });
+});

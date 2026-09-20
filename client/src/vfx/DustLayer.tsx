@@ -10,8 +10,11 @@ import { useFrame, useThree } from '@react-three/fiber';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three';
 
-import type { DustMode } from '../app/renderQuality';
+import type { DustFluid, DustMode } from '../app/renderQuality';
 import type { CityClient } from '../city/cityClient';
+import type { DustSource } from '../city/destructionEvents';
+import type { AtlasLayout } from './fluid/fluidAtlas';
+import type { BrickFrame } from './fluid/fluidColliders';
 import { DustPolicy, paletteFromAppearance } from '../city/dustPolicy';
 import { DUST_TICK_CAP_OVERRIDE, dustEnabled } from '../city/dustSettings';
 import { renderStats } from '../city/renderStats';
@@ -26,12 +29,15 @@ import {
 } from '../graphics/sunSky';
 import { windVectorFromSettings } from '../graphics/weatherPresets';
 import { DustSprites } from './DustSprites';
+import { drainDebugDustSources } from './dustDebug';
 import { dustParcels } from './dustParcelStore';
 import { DustVolumeRenderer, type DustLighting } from './DustVolumeRenderer';
+import { voxelizeStaticChunks } from './fluid/fluidColliders';
 
 type DustLayerProps = {
   getCityClient: () => CityClient | null;
   mode: DustMode;
+  fluid: DustFluid;
   fogColor: string;
   windStrengthMps: number;
   windDirectionDeg: number;
@@ -42,6 +48,7 @@ type DustLayerProps = {
 export function DustLayer({
   getCityClient,
   mode,
+  fluid,
   fogColor,
   windStrengthMps,
   windDirectionDeg,
@@ -49,7 +56,11 @@ export function DustLayer({
   sunAzimuthDeg = DEFAULT_SUN_AZIMUTH_DEG,
 }: DustLayerProps) {
   const gl = useThree((state) => state.gl);
-  const policyRef = useRef<{ client: CityClient; policy: DustPolicy } | null>(null);
+  const policyRef = useRef<{
+    client: CityClient;
+    policy: DustPolicy;
+    colliders: (frame: BrickFrame, layout: AtlasLayout, out: Uint8Array) => number;
+  } | null>(null);
   // The volumetric renderer bakes a 3D texture; a GL that cannot render to
   // one says so after the first layer, and the layer falls back to sprites.
   const [volumeFailed, setVolumeFailed] = useState(false);
@@ -91,6 +102,10 @@ export function DustLayer({
   }, [volume, lighting]);
 
   useEffect(() => {
+    volume?.setFluidQuality(fluid);
+  }, [volume, fluid]);
+
+  useEffect(() => {
     volume?.setWind(wind.x, wind.z);
   }, [volume, wind]);
 
@@ -117,9 +132,14 @@ export function DustLayer({
     // The policy is per client: a new match (new client) starts clean.
     if (policyRef.current?.client !== client) {
       dustParcels.clear();
-      const appearance = client.manifest.manifest.materialAppearance;
+      volume?.fluid?.retire();
+      const manifest = client.manifest.manifest;
+      const appearance = manifest.materialAppearance;
+      const byId = new Map(manifest.structures.map((s) => [s.structureId, s]));
       policyRef.current = {
         client,
+        colliders: (frame, layout, out) =>
+          voxelizeStaticChunks(client.topology, manifest, frame, layout, out, byId),
         policy: new DustPolicy(
           dustParcels,
           (material) => paletteFromAppearance(appearance, material),
@@ -135,7 +155,15 @@ export function DustLayer({
       renderStats.dustEmitMs = 0;
       return;
     }
-    client.drainDustSources((source) => policy.emit(source));
+    if (volume && volume.colliders !== policyRef.current.colliders) {
+      volume.colliders = policyRef.current.colliders;
+    }
+    const emit = (source: DustSource) => {
+      policy.emit(source);
+      volume?.considerSource(source, started, gl);
+    };
+    client.drainDustSources(emit);
+    drainDebugDustSources(emit);
     policy.tick(started);
     renderStats.dustEmitted = policy.stats.emitted;
     renderStats.dustDropped = policy.stats.droppedByTickCap + policy.stats.droppedByPalette

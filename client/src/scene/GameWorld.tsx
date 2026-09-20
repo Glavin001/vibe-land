@@ -2,6 +2,7 @@ import { useRef, useEffect, useMemo, type MutableRefObject, type ReactNode, type
 
 import {
   useAmbientOcclusionEnabled,
+  useDustFluid,
   useDustMode,
   useQualityTier,
   useShadowsEnabled,
@@ -1165,6 +1166,7 @@ export function GameWorld({
   const shadowsOn = useShadowsEnabled();
   const ambientOcclusionOn = useAmbientOcclusionEnabled();
   const dustMode = useDustMode();
+  const dustFluid = useDustFluid();
   // One offscreen pipeline serves both: SSAO and the volumetric dust each
   // need the scene's depth, which only exists off the canvas.
   const framePipelineOn = ambientOcclusionOn || dustMode === 'volumetric';
@@ -3343,6 +3345,7 @@ export function GameWorld({
       <DustLayer
         getCityClient={() => runtimeRef.current?.getCityClient?.() ?? null}
         mode={dustMode}
+        fluid={dustFluid}
         fogColor={resolvedFogColor}
         windStrengthMps={windStrengthMps}
         windDirectionDeg={windDirectionDeg}
