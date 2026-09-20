@@ -1188,7 +1188,7 @@ export function CityStatsOverlay({
       />
       <Stat
         label="gpu dust"
-        value={`${renderStats.gpuDustMs.toFixed(1)} ms / samples x${governorSampleScale()}`}
+        value={`${renderStats.gpuDustMs.toFixed(1)} ms / samples x${governorSampleScale()}${renderStats.governorDustSprites ? ' / sprites' : ''}`}
         warn={renderStats.gpuDustMs > 3}
       />
       <Stat label="body writes" value={`${renderStats.instanceWrites}`} />

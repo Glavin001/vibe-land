@@ -83,6 +83,7 @@ export const renderStats = {
   /// The dust governor's current trims: sample-budget multiplier and fluid cap (0 off, 1 fast, 2 balanced).
   governorSampleScale: 1,
   governorFluidCap: 2,
+  governorDustSprites: 0,
 
   /// Stream decode accumulated between the previous frame and this one. Runs
   /// in the datagram reader's microtasks, so it lands in offFrame, not cpuFrame.

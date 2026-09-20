@@ -6,8 +6,10 @@ import { renderStats } from '../city/renderStats';
 import {
   antialiasEnabled,
   dynamicResolutionEnabled,
+  governorDustSprites,
   governorFluidCap,
   governorSampleScale,
+  setGovernorDustSprites,
   setGovernorFluidCap,
   setGovernorSampleScale,
   flatToneMapping,
@@ -127,6 +129,7 @@ function DprController(): null {
       if (scaleRef.current !== 1) apply(1);
       if (governorFluidCap() !== 'balanced') setGovernorFluidCap('balanced');
       if (governorSampleScale() !== 1) setGovernorSampleScale(1);
+      if (governorDustSprites()) setGovernorDustSprites(false);
       renderStats.gpuBudgetMs = 0;
       return;
     }
@@ -197,6 +200,7 @@ function DprController(): null {
       else if (dustHeavy && cap === 'balanced') setGovernorFluidCap('fast');
       else if (dustHeavy && cap === 'fast') setGovernorFluidCap('off');
       else if (dustHeavy && scale > 0.25) setGovernorSampleScale(0.25);
+      else if (dustHeavy && !governorDustSprites()) setGovernorDustSprites(true);
       else if (scaleRef.current > 0.6) apply(Math.max(0.6, scaleRef.current * 0.92));
       return;
     }
@@ -211,6 +215,9 @@ function DprController(): null {
     if (before < 1) {
       apply(Math.min(1, before * 1.08));
       g.trial = { undo: () => apply(before), framesLeft: 60 };
+    } else if (governorDustSprites()) {
+      setGovernorDustSprites(false);
+      g.trial = { undo: () => setGovernorDustSprites(true), framesLeft: 60 };
     } else if (scale < 0.5) {
       setGovernorSampleScale(0.5);
       g.trial = { undo: () => setGovernorSampleScale(0.25), framesLeft: 60 };

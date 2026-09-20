@@ -280,6 +280,26 @@ const FLUID_RANK: Record<DustFluid, number> = { off: 0, fast: 1, balanced: 2 };
 let fluidCap: DustFluid = 'balanced';
 let sampleScale = 1;
 
+let dustCapSprites = false;
+
+/**
+ * The rung under "samples to a quarter": volumetric dust drawn as sprites.
+ * A ray-marched parcel's cost is pixels times steps and the budget that
+ * bounds it is an estimate; a camera inside a cloud of overlapping near
+ * parcels was still 40-80 ms of the M3's frame at a quarter of the budget.
+ * Sprites are billboards: one fill each, no march, no overdraw explosion.
+ */
+export function setGovernorDustSprites(next: boolean): void {
+  if (next === dustCapSprites) return;
+  dustCapSprites = next;
+  renderStats.governorDustSprites = next ? 1 : 0;
+  notify();
+}
+
+export function governorDustSprites(): boolean {
+  return dustCapSprites;
+}
+
 /** Ceiling on the fluid quality; the effective mode is the lesser of it and the preference. */
 export function setGovernorFluidCap(next: DustFluid): void {
   if (next === fluidCap) return;
@@ -328,7 +348,7 @@ export function setDustMode(next: DustMode): void {
  * to raymarch into, so a volumetric preference is drawn as sprites there.
  */
 export function dustMode(): DustMode {
-  if (dust === 'volumetric' && tier === 'fast') return 'sprites';
+  if (dust === 'volumetric' && (tier === 'fast' || dustCapSprites)) return 'sprites';
   return dust;
 }
 
