@@ -139,6 +139,30 @@ export function forgetMeteorFlight(bodyId: number): void {
 
 export function clearMeteorFlights(): void {
   flights.length = 0;
+  drawn.clear();
+}
+
+/** What the layer drew for a body last frame, and from which source. Forensics. */
+export interface MeteorDrawn {
+  position: [number, number, number];
+  source: 'arc' | 'body' | 'hold' | 'hidden';
+  /** Arc position at the same render time, for the gap between the two. */
+  arc: [number, number, number];
+  /** Latest raw snapshot of the streamed body, and the interpolated state the layer read. */
+  raw: { position: [number, number, number]; velocity: [number, number, number] } | null;
+  rendered: [number, number, number] | null;
+  interpDelayMs: number;
+  atMs: number;
+}
+
+const drawn = new Map<number, MeteorDrawn>();
+
+export function recordMeteorDrawn(bodyId: number, record: MeteorDrawn): void {
+  drawn.set(bodyId, record);
+}
+
+export function meteorDrawn(bodyId: number): MeteorDrawn | undefined {
+  return drawn.get(bodyId);
 }
 
 /**

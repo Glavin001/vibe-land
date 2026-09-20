@@ -20,6 +20,7 @@ import {
   meteorFlights,
   meteorPositionAt,
   meteorVelocityAt,
+  recordMeteorDrawn,
   type MeteorFlight,
 } from './meteorFlights';
 import {
@@ -42,6 +43,13 @@ type MeteorLayerProps = {
  * one -- and the first rock does not arrive with a compile hitch.
  */
 const LIGHT_POOL = 2;
+
+/**
+ * A moving body whose newest sample is older than this has left the
+ * streaming range. Hot bodies are sent every tick the budget allows; a
+ * quarter second is many missed sends, not one.
+ */
+const STALE_SAMPLE_MS = 250;
 
 interface LiveMeteor {
   flight: MeteorFlight;
@@ -117,10 +125,15 @@ export function MeteorLayer({ getRuntime }: MeteorLayerProps) {
     const meteors = live.current;
     const step = Math.min(0.1, Math.max(0, dt));
 
-    // The streamed body is interpolated behind real time; the arc is drawn
-    // at that same moment so the two agree when the body appears.
+    // The arc is evaluated at the SERVER time the body interpolator renders
+    // at, in that time base, with no mapping through the local clock: the
+    // launch stamp and the snapshot stamps are the same tick clock, so the
+    // two coincide by construction when the body appears. Mapping the launch
+    // onto performance.now() through the clock estimator's offset put the
+    // arc tens of milliseconds ahead on a jittery link -- 7 m at 147 m/s --
+    // so the rock visibly jumped back when the body took over.
     const lagMs = runtime?.state?.dynamicBodyInterpolationDelayMs ?? 0;
-    const renderMs = nowMs - lagMs;
+    const renderServerUs = runtime?.getDynamicBodyRenderTimeUs() ?? null;
 
     const seen = new Set<number>();
     for (const flight of flights) {
@@ -133,12 +146,30 @@ export function MeteorLayer({ getRuntime }: MeteorLayerProps) {
         meteors.set(flight.bodyId, meteor);
       }
 
-      const streamed = runtime?.state?.dynamicBodies.has(flight.bodyId)
-        ? runtime.getRenderedDynamicBodyState(flight.bodyId) ?? runtime.state.dynamicBodies.get(flight.bodyId) ?? null
-        : null;
+      const raw = runtime?.state?.dynamicBodies.get(flight.bodyId) ?? null;
+      // A body the snapshot has stopped carrying stays in the map with its
+      // last state. If it was moving when last seen and nothing has arrived
+      // since, it has left the streaming range, and drawing it where it was
+      // is a rock hanging in the air. A resting body is refreshed rarely on
+      // purpose and is genuinely where it was.
+      const sampleAgeMs = raw ? runtime!.getDynamicBodyObservedAgeMs(flight.bodyId) ?? 0 : 0;
+      const rawSpeed = raw ? Math.hypot(raw.velocity[0], raw.velocity[1], raw.velocity[2]) : 0;
+      const stale = raw !== null && sampleAgeMs > STALE_SAMPLE_MS && rawSpeed > 2;
+      const streamed = raw && !stale ? runtime!.getRenderedDynamicBodyState(flight.bodyId) ?? raw : null;
+      const forensics = {
+        raw: raw ? { position: raw.position, velocity: raw.velocity } : null,
+        rendered: streamed ? streamed.position : null,
+        interpDelayMs: lagMs,
+      };
       let position: ArrayLike<number>;
       let velocity: ArrayLike<number>;
+      let source: 'arc' | 'body' | 'hold' = 'arc';
+      const arcT = renderServerUs !== null
+        ? (renderServerUs - flight.serverLaunchTimeUs) / 1e6
+        : (nowMs - lagMs - flight.launchedAtLocalMs) / 1000;
+      const arcAt = meteorPositionAt(flight, arcT, [0, 0, 0]);
       if (streamed) {
+        source = 'body';
         flight.lastStreamedAtMs = nowMs;
         position = streamed.position;
         velocity = streamed.velocity;
@@ -149,6 +180,7 @@ export function MeteorLayer({ getRuntime }: MeteorLayerProps) {
           streamed.quaternion[3],
         );
       } else if (flight.lastStreamedAtMs > 0) {
+        source = 'hold';
         // The body was real and now is not: retired at its TTL, bounced out
         // of the snapshot's range, or the viewer walked away from it. The
         // arc knows nothing about where it went after impact -- falling back
@@ -163,12 +195,13 @@ export function MeteorLayer({ getRuntime }: MeteorLayerProps) {
         velocity = scratchVel;
         meteor.lastBurningMs = Math.min(meteor.lastBurningMs, nowMs - 3000);
       } else {
-        const t = (renderMs - flight.launchedAtLocalMs) / 1000;
+        const t = arcT;
         if (t < 0) {
           // Announced but not yet launched on this clock: keep it off-screen
           // rather than at the start point for a frame.
           meteor.group.visible = false;
           meteor.intensity = 0;
+          recordMeteorDrawn(flight.bodyId, { position: arcAt, source: 'hidden', arc: arcAt, ...forensics, atMs: nowMs });
           continue;
         }
         position = meteorPositionAt(flight, t, scratchPos);
@@ -181,6 +214,13 @@ export function MeteorLayer({ getRuntime }: MeteorLayerProps) {
       meteor.group.visible = true;
       meteor.group.position.set(position[0], position[1], position[2]);
       meteor.group.updateMatrixWorld(true);
+      recordMeteorDrawn(flight.bodyId, {
+        position: [position[0], position[1], position[2]],
+        source,
+        arc: arcAt,
+        ...forensics,
+        atMs: nowMs,
+      });
 
       const airSpeed = Math.hypot(velocity[0], velocity[1], velocity[2]);
       meteor.airSpeed = airSpeed;

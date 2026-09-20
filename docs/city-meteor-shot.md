@@ -41,8 +41,20 @@ server tells every client the start, velocity, aimed point, radius, gravity
 and flight time (65 bytes, reliable, raw bytes through the city-packet
 path), and the client draws the arc itself until the streamed body appears;
 the two agree to within quantisation until the rock hits something, so the
-handover is invisible. Past the aimed point with no body in sight, the rock
-is held at the aimed point and the fire dies over six seconds.
+handover is invisible -- provided the arc is evaluated in the body
+interpolator's own server-time base (`getDynamicBodyRenderTimeUs`). Mapping
+the launch onto the local clock through the estimator's offset instead put
+the arc tens of milliseconds ahead on a jittery link, 7 m at 147 m/s, and
+the rock visibly jumped back when the body took over ("it rewinds and
+comes in again"). Measured with `client/e2e/qa-meteor-trace.mjs` over the
+netlab `lte` profile: 7.2 m gap before, 0.14 m after.
+
+A body that stops arriving while it was moving has left the 80 m streaming
+range; the client keeps its last state in `dynamicBodies`, and drawing that
+is a rock hanging in the air where it last was. The layer treats a moving
+body with no sample for 250 ms as gone: held where it was, cold, forgotten
+within a second. Past the aimed point with no body ever seen, the rock is
+held at the aimed point for three seconds.
 
 ## Client
 
@@ -92,6 +104,14 @@ chunks at km/s (the skill's open fault, now reproducible on demand). They
 no longer crash the server; they fly to the slab's edge and are dropped by
 the 1 km streaming filter.
 
+## Correction passes
+
+`VIBE_CITY_NATIVE_CORRECTION_LIMIT` exists (default 1) but the stage takes
+only 0 or 1: `configureStress` rejects anything above one and treats the
+value as a boolean, and a rejected configuration comes up as a city that
+renders and cannot break, with a single WARN. The bridge clamps and logs.
+"Two corrected passes" would be an SDK change.
+
 ## Not done
 
 - No muzzle tracer or entry-dust registration for the meteor: the impact
@@ -101,6 +121,6 @@ the 1 km streaming filter.
   shooter, since no `PKT_SHOT_FIRED` goes out for balls or meteors.
 - Build and deploy against the pinned SDK: `PHYSX_DESTRUCTION_SDK=/root/workspace/physx-2-deployed`
   (the live `physx-2` tree is another session's moving target).
-- The headless driver's fire calls stop being accepted after a few thousand
-  chunk bodies appear (`qa-meteor.mjs` reports `NO LAUNCH` while the server
-  is healthy); a client-side issue, not investigated.
+- The headless driver's fire used to be a level pulse that a busy frame could
+  miss entirely (`NO LAUNCH` on a healthy server); `__VIBE_DRIVE__.fire` is
+  now also an edge the next sampled frame is guaranteed to see.

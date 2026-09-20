@@ -51,6 +51,13 @@ type DriveState = {
   sprint: boolean;
   jumpUntil: number;
   fireUntil: number;
+  /**
+   * A fire() not yet seen by any frame. The hold is a level, and a hold
+   * shorter than one frame -- easy on a busy scene -- expired between frames
+   * and fired nothing while every other indicator looked healthy. The edge
+   * guarantees the next sampled frame sees the trigger down at least once.
+   */
+  firePending: boolean;
   crouch: boolean;
 };
 
@@ -63,6 +70,7 @@ const EMPTY_STATE: DriveState = {
   sprint: false,
   jumpUntil: 0,
   fireUntil: 0,
+  firePending: false,
   crouch: false,
 };
 
@@ -119,6 +127,7 @@ export function isAgentDriveActive(now: number = nowMs()): boolean {
     || state.crouch
     || state.jumpUntil > now
     || state.fireUntil > now
+    || state.firePending
   );
 }
 
@@ -144,6 +153,9 @@ export function sampleAgentDrive(
   if (state.sprint) buttons |= BTN_SPRINT;
   if (state.crouch) buttons |= BTN_CROUCH;
 
+  const firePrimary = state.fireUntil > now || state.firePending;
+  // Sampled: the edge has done its job.
+  state.firePending = false;
   return {
     activeFamily: 'keyboardMouse',
     moveX: state.moveX,
@@ -151,7 +163,7 @@ export function sampleAgentDrive(
     yaw,
     pitch,
     buttons,
-    firePrimary: state.fireUntil > now,
+    firePrimary,
     aimSecondary: false,
     interactPressed: false,
     blockRemovePressed: false,
@@ -262,6 +274,7 @@ const bridge: VibeDriveBridge = {
     state.crouch = false;
     state.jumpUntil = 0;
     state.fireUntil = 0;
+    state.firePending = false;
   },
 
   setSprint(on: boolean) {
@@ -281,7 +294,9 @@ const bridge: VibeDriveBridge = {
     const hold = command.holdMs != null && Number.isFinite(command.holdMs)
       ? Math.max(16, command.holdMs)
       : 50;
-    getState().fireUntil = nowMs() + hold;
+    const state = getState();
+    state.fireUntil = nowMs() + hold;
+    state.firePending = true;
   },
 
   status(): AgentDriveStatus {

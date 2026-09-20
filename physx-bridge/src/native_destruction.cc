@@ -5,9 +5,40 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <numeric>
 
 using namespace physx;
+
+// Whether the stage runs its corrected rigid pass after a membership-changing
+// verdict. One is the production value: one trial evaluation plus one
+// corrected pass. Zero leaves the stage in its diagnostic mode, where any such
+// verdict is rejected. The SDK accepts nothing else: `configureStress` refuses
+// a limit above 1 (`PxgDestructionRuntime.cu`, `d.internalCorrectionLimit>1`)
+// and treats the value as a boolean, so "two passes" is not a thing this
+// engine can do. VIBE_CITY_NATIVE_CORRECTION_LIMIT=0 turns it off for A/B.
+// Anything above 1 is clamped and shouted about, because the rejected
+// configuration's symptom is a city that renders and cannot break, with one
+// WARN in the log to say why.
+static unsigned correction_limit() {
+  static const unsigned value = [] {
+    const char *raw = std::getenv("VIBE_CITY_NATIVE_CORRECTION_LIMIT");
+    if (raw == nullptr || *raw == '\0') return 1u;
+    char *end = nullptr;
+    const unsigned long parsed = std::strtoul(raw, &end, 10);
+    if (end == nullptr || *end != '\0') return 1u;
+    if (parsed > 1) {
+      std::fprintf(stderr,
+                   "[destruction] VIBE_CITY_NATIVE_CORRECTION_LIMIT=%lu is not supported by the "
+                   "stage (0 or 1 only; configureStress rejects more); using 1\n",
+                   parsed);
+      return 1u;
+    }
+    return unsigned(parsed);
+  }();
+  return value;
+}
 
 namespace vibe_land::physx_bridge {
 namespace {
@@ -385,8 +416,10 @@ FfiNativeConfigured NativeDestruction::configure(const FfiNativeConfig &config) 
   // One trial evaluation plus one corrected rigid pass. Zero would leave the
   // stage in its diagnostic mode, where any membership-changing verdict is
   // rejected -- that is, a city that can never actually break.
-  desc.internalCorrectionLimit = 1;
+  desc.internalCorrectionLimit = correction_limit();
   desc.preserveUnchangedContactPairs = config.preserve_unchanged_contact_pairs;
+  std::fprintf(stderr, "[destruction] native internalCorrectionLimit=%u\n",
+               unsigned(desc.internalCorrectionLimit));
 #if VIBE_PHYSX_DESTRUCTION_SCENE_VERSION >= 16
   // Pre-touching contact-pair storage arrived in API v16. Without it the first
   // impact pages this memory in on the simulation thread, which shows up as one

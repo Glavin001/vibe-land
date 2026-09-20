@@ -15,7 +15,7 @@ import { DEFAULT_STATS } from './ui/DebugOverlay';
 import { renderStats } from './city/renderStats';
 import { acquireCityDiagnostics } from './city/cityDiagnostics';
 import { setCannonballEnabled, setShotMode, type ShotMode } from './city/shotMode';
-import { meteorFlights } from './vfx/meteorFlights';
+import { meteorDrawn, meteorFlights } from './vfx/meteorFlights';
 import {
   ambientOcclusionPreferred,
   cityTextureDetail,
@@ -435,6 +435,13 @@ export interface VibeE2EBridge {
     streamed: boolean;
     start: [number, number, number];
     target: [number, number, number];
+    /** What was drawn last frame and from which source, beside the arc and the raw snapshot. */
+    drawn: { position: [number, number, number]; source: string; arc: [number, number, number] } | null;
+    /** Latest raw snapshot position and velocity of the streamed body, or null. */
+    raw: { position: [number, number, number]; velocity: [number, number, number] } | null;
+    /** The interpolated body state the layer reads, or null. */
+    rendered: [number, number, number] | null;
+    interpDelayMs: number;
   }>;
   cityStructures(): Array<{
     structureId: number;
@@ -649,15 +656,22 @@ const bridge: VibeE2EBridge = {
   setCapturePose: (next) => setCapturePose(next),
   meteors: () => {
     const now = performance.now();
-    return meteorFlights(now).map((flight) => ({
-      bodyId: flight.bodyId,
-      shooterPlayerId: flight.shooterPlayerId,
-      ageS: (now - flight.launchedAtLocalMs) / 1000,
-      flightTimeS: flight.flightTimeS,
-      streamed: flight.lastStreamedAtMs > 0,
-      start: flight.start,
-      target: flight.target,
-    }));
+    return meteorFlights(now).map((flight) => {
+      const drawn = meteorDrawn(flight.bodyId);
+      return {
+        bodyId: flight.bodyId,
+        shooterPlayerId: flight.shooterPlayerId,
+        ageS: (now - flight.launchedAtLocalMs) / 1000,
+        flightTimeS: flight.flightTimeS,
+        streamed: flight.lastStreamedAtMs > 0,
+        start: flight.start,
+        target: flight.target,
+        drawn: drawn ? { position: drawn.position, source: drawn.source, arc: drawn.arc } : null,
+        raw: drawn?.raw ?? null,
+        rendered: drawn?.rendered ?? null,
+        interpDelayMs: drawn?.interpDelayMs ?? 0,
+      };
+    });
   },
   cityStructures: () => refs.cityStructures,
   dustBurst: (next) => {
