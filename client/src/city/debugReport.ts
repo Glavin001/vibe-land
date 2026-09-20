@@ -354,6 +354,19 @@ function fractureCorrelation(): Record<string, unknown> {
 }
 
 /**
+ * The most recent render cost sweep (DOWNLOAD PERF REPORT / MOBILE PERF
+ * BISECT), so a sent report carries the per-feature wall-clock deltas from
+ * the reporter's own GPU -- the one measurement the frame profile cannot
+ * give, and the one that used to reach nobody: it downloaded to the phone or
+ * showed on screen.
+ */
+let lastPerfSweep: { capturedAt: string; text: string; report: unknown } | null = null;
+
+export function notePerfSweep(report: { capturedAt: string }, text: string): void {
+  lastPerfSweep = { capturedAt: report.capturedAt, text, report };
+}
+
+/**
  * POST the full client picture to the server; resolves to the folder name the
  * server stored it under. Uses the e2e bridge as the collector — it is
  * always on and already assembles every stat the overlay can show.
@@ -392,6 +405,7 @@ export async function sendDebugReport(matchId: string): Promise<string> {
       visibility: visibilityTotals(),
       drawCensus: drawCensusTotals(),
     },
+    perfSweep: lastPerfSweep,
   };
   const response = await fetch(`/match-stats/${encodeURIComponent(matchId)}/report`, {
     method: 'POST',

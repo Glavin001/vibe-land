@@ -217,7 +217,7 @@ function Stat({ label, value, warn }: { label: string; value: string; warn?: boo
 import { getMatchStats, subscribeMatchStats } from '../app/connectPhase';
 import { lookTuning } from '../graphics/lookTuning';
 import { acquireCityDiagnostics } from './cityDiagnostics';
-import { sendDebugReport } from './debugReport';
+import { notePerfSweep, sendDebugReport } from './debugReport';
 import {
   ambientOcclusionPreferred,
   dustFluidPreferred,
@@ -823,14 +823,25 @@ export function CityStatsOverlay({
           onClick={() => {
             setSweepState('running');
             void runPerfSweep()
-              .then((report) => {
-                const body = `${formatPerfSweep(report)}\n\n${JSON.stringify(report, null, 2)}\n`;
+              .then(async (report) => {
+                const table = formatPerfSweep(report);
+                const body = `${table}\n\n${JSON.stringify(report, null, 2)}\n`;
                 const url = URL.createObjectURL(new Blob([body], { type: 'text/plain' }));
                 const link = document.createElement('a');
                 link.href = url;
                 link.download = `city-perf-${report.capturedAt.replace(/[:.]/g, '-')}.txt`;
                 link.click();
                 URL.revokeObjectURL(url);
+                // And to the server, as a debug report carrying the sweep: the
+                // download reaches the reporter, this reaches whoever is fixing it.
+                notePerfSweep(report, table);
+                try {
+                  setSentFolder(await sendDebugReport(matchId));
+                  setSendState('sent');
+                  window.setTimeout(() => setSendState('idle'), 4000);
+                } catch {
+                  setSendState('failed');
+                }
                 setSweepState('done');
               })
               .catch(() => setSweepState('failed'));
@@ -838,12 +849,12 @@ export function CityStatsOverlay({
           style={{ ...toggleButton, position: 'static', width: '100%' }}
           data-testid="city-perf-sweep"
           aria-label="Run the render cost sweep"
-          title="~25 s. Measures each costly feature on and off, with real GPU time, and downloads the report"
+          title="~25 s. Measures each costly feature on and off, with real GPU time, downloads the report and sends it to the server"
         >
           {sweepState === 'running'
             ? 'MEASURING... (~25 s)'
             : sweepState === 'done'
-              ? 'PERF REPORT SAVED'
+              ? 'PERF REPORT SAVED + SENT'
               : sweepState === 'failed' ? 'PERF SWEEP FAILED' : 'DOWNLOAD PERF REPORT'}
         </button>
       </div>
@@ -862,8 +873,17 @@ export function CityStatsOverlay({
             setSweepState('running');
             setMobileReport(null);
             void runPerfSweep('mobile')
-              .then((report) => {
-                setMobileReport(formatPerfSweepMobile(report));
+              .then(async (report) => {
+                const text = formatPerfSweepMobile(report);
+                setMobileReport(text);
+                notePerfSweep(report, text.join('\n'));
+                try {
+                  setSentFolder(await sendDebugReport(matchId));
+                  setSendState('sent');
+                  window.setTimeout(() => setSendState('idle'), 4000);
+                } catch {
+                  setSendState('failed');
+                }
                 setSweepState('done');
               })
               .catch(() => setSweepState('failed'));
@@ -871,7 +891,7 @@ export function CityStatsOverlay({
           style={{ ...toggleButton, position: 'static', width: '100%' }}
           data-testid="city-perf-sweep-mobile"
           aria-label="Run the short mobile render cost sweep"
-          title="~40 s. Prices shadows, resolution and textures on THIS device and shows the answer on screen to screenshot"
+          title="~40 s. Prices shadows, resolution and textures on THIS device, shows the answer on screen and sends it to the server"
         >
           {sweepState === 'running' ? 'MEASURING... (~40 s)' : 'MOBILE PERF BISECT'}
         </button>
