@@ -72,6 +72,26 @@ is held at the aimed point and the fire dies over six seconds.
   stops moving. `GameWorld` skips the default sphere mesh for meteor bodies
   and brings the frame pipeline up while the meteor shot is selected.
 
+## The crashes it caused, and what they were
+
+The first live session crashed the server five times in seven minutes
+(`CUDA error 700`, context lost, supervisor restart). Isolated A/B arms on a
+second server ruled out mass, speed, start position and radius; the ball
+trace (`VIBE_CITY_BALL_TRACE=1`) showed a rock rolling across the plain at a
+constant 31 m/s crossing x = −256 on the faulting tick, twice. The city's
+floor was a 2 km slab *and* a flat heightfield over ±256 m lying on it; the
+GPU sphere-vs-heightfield kernel dereferences a non-existent adjacent
+triangle on the field's outer edge (upstream PhysX 5.6, `convexHeightfield.cu:472`).
+The heightfield is gone from `city_world()`; the reproducer and the
+sanitizer trace are in `physx-bridge/tests/heightfield_edge.rs` and the
+`native-destruction-faults` skill. After the fix: 5 + 4 launches of the
+default 110 t rock, rocks rolling out to 493 m, no fault.
+
+Still true: a 110 t rock ploughing through resting rubble ejects settled
+chunks at km/s (the skill's open fault, now reproducible on demand). They
+no longer crash the server; they fly to the slab's edge and are dropped by
+the 1 km streaming filter.
+
 ## Not done
 
 - No muzzle tracer or entry-dust registration for the meteor: the impact
@@ -79,9 +99,8 @@ is held at the aimed point and the fire dies over six seconds.
   streamed rock is a dust mover.
 - Remote players see the rock (the launch is broadcast) but nothing at the
   shooter, since no `PKT_SHOT_FIRED` goes out for balls or meteors.
-- The server build could not be run on this box on 2026-09-20: the
-  `/root/workspace/physx-2` SDK had been rebuilt out of band (manifest
-  mismatch, and `PxDestructionStressDesc::reservedContactPairs` gone from
-  the headers), which is a physx-2 problem, not this change. `meteor.rs`
-  was tested standalone; the rest type-checks in the default-feature build
-  apart from pre-existing `physx_world_mut` errors there.
+- Build and deploy against the pinned SDK: `PHYSX_DESTRUCTION_SDK=/root/workspace/physx-2-deployed`
+  (the live `physx-2` tree is another session's moving target).
+- The headless driver's fire calls stop being accepted after a few thousand
+  chunk bodies appear (`qa-meteor.mjs` reports `NO LAUNCH` while the server
+  is healthy); a client-side issue, not investigated.

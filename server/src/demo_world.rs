@@ -75,7 +75,20 @@ fn city_world() -> WorldDocument {
     // forever: the live server sat at 19k awake indefinitely while the
     // vehicle-free bench slept the same demolition to zero in 22 seconds.
     world.dynamic_entities.clear();
-    // Solid ground under the flat terrain.
+    // No heightfield. The benchmark template lays a flat 129x129 heightfield
+    // across a 512 m square, and the slab below is the actual floor; the two
+    // were coincident at y=0, so the heightfield was a second collider for
+    // the same surface -- one that ENDS at x,z = +-256 m while the world goes
+    // on. A body sliding across that edge with its contact still on the
+    // heightfield faults the GPU heightfield narrowphase (CUDA 700, context
+    // lost, server restart). Measured: a 2 m meteor rolling at a constant
+    // 31 m/s was at x = -256.1 and x = -254.6 heading outward on the tick
+    // the narrowphase failed, in two traced runs, and the cannonball, which
+    // stops in what it hits, never got there in forty shots. The settled
+    // rubble ejected at km/s in earlier sessions crosses the same edge in a
+    // few ticks. One floor, then: the slab, whose edge is 2 km out.
+    world.terrain.tiles.clear();
+    // Solid ground under the (now absent) terrain surface.
     //
     // A PhysX heightfield is a surface, not a volume: anything that ends up
     // beneath it keeps going. Debris from a collapse was doing exactly that,

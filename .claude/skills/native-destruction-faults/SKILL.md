@@ -9,6 +9,67 @@ Read the "already ruled out" section before forming a theory. Three separate
 sessions have chased the same wrong idea because the evidence that killed it
 was never written down.
 
+## The crash half is solved: a heightfield edge (2026-09-20)
+
+**`CUDA error 700` after a body crosses x or z = ±256 m is an upstream PhysX
+5.6 GPU bug at the heightfield's outer edge, and the city no longer has a
+heightfield.** Read this before treating any 700 as the ejection fault.
+
+`sphereHeightfieldNarrowphaseCore` (`gpunarrowphase/src/CUDA/convexHeightfield.cu:470-495`)
+handles a sphere whose closest feature is a triangle edge by fetching the
+adjacent triangle to test convexity — `getTriangle(..., triAdjTriIndices.x, ...)`
+— **without checking for `BOUNDARY` (0xffffffff)**. On the field's outer edge
+there is no adjacent triangle, the sample array is indexed with 0xffffffff,
+and the context is gone. `compute-sanitizer --tool memcheck` names it:
+
+```text
+Invalid __global__ read of size 1 bytes ... 5,459,017,223 bytes after the nearest allocation
+  isZerothVertexShared        heightfieldUtil.cuh:92
+  getTriangleVertexIndices    heightfieldUtil.cuh:111
+  getTriangle                 heightfieldUtil.cuh:275
+  sphereHeightfieldNarrowphaseCore  convexHeightfield.cu:472
+  sphereHeightfieldNarrowphase      convexHeightfield.cu:888
+```
+
+The city floor was two coincident colliders: the 2 km slab and, on top of it
+at y=0, the benchmark template's flat 129×129 heightfield over ±256 m. Every
+body that slid across that edge while in contact took the GPU down — a 2 m
+meteor rolling at a constant 31 m/s was at x = −256.1 and x = −254.6 on the
+faulting tick in two traced runs, and the rubble ejected at km/s in earlier
+sessions crosses the same edge within a few ticks. `city_world()` no longer
+lays the heightfield; the slab is the floor. Reproducer, forty lines, no
+city: `physx-bridge/tests/heightfield_edge.rs`. SDK fix for physx-2: guard
+the three `getTriangle` calls with `!= BOUNDARY`.
+
+What this does NOT explain is why settled rubble is ejected in the first
+place; that remains below. It does explain why an ejection crashed the
+server (it crossed ±256 m at km/s) rather than merely flying off. A 110 t
+meteor ploughing through its own rubble ejects settled chunks on demand
+(arm P: 25 ejections in 4 launches; ~10 t never ejects anything), which
+makes it the fastest reproducer that fault has had.
+
+**How to get a real stack trace out of a 700, instead of guessing.** The
+error is asynchronous: the kernel that faults never reports, the next stream
+sync does, so every log line says `SynchronizeStreams` or `Synchronizing
+GPU Narrowphase` — the sync site, not the culprit. Build the smallest
+reproducer as a bridge test and run it under the sanitizer with the SDK's
+libraries on the path:
+
+```bash
+export CUDA_HOME=/usr/local/cuda-12.8 \
+  LD_LIBRARY_PATH=/usr/local/cuda-12.8/lib64:/root/workspace/physx-2-deployed/physx/bin/linux.x86_64/release
+compute-sanitizer --tool memcheck --print-limit 3 \
+  target/release/deps/heightfield_edge-<hash> --ignored --nocapture --test-threads=1 a_ball_rolling
+```
+
+The SDK's kernels carry `-lineinfo`, so it prints file:line on the device
+side and a host backtrace to the launch. `CUDA_LAUNCH_BLOCKING=1` is the
+cheaper, cruder alternative: it makes every launch synchronous so the first
+error is the faulting kernel. `VIBE_CITY_BALL_TRACE=1` on the server logs
+every fired ball's position and speed at 10 Hz (`physx_runtime.rs`), which
+is how the ±256 m line was found — the chunk-side detectors only watch
+fragments.
+
 ## The fault, as currently understood
 
 A body **at rest, lying on the ground, is ejected at up to 83,000 m/s in one

@@ -19,6 +19,12 @@
  *   --lookat <x,y,z>   aim at a world point instead
  *   --out <dir>        where the pngs go.           default ./qa-meteor
  *   --settle <ms>      wait before the shot.        default 9000
+ *   --shots <n>        meteors to fire, one per interval. default 1
+ *   --interval <ms>    between shots when --shots > 1. default 8000
+ *
+ * With --shots > 1 the flight frames are skipped: this is the A/B mode, for
+ * counting what N meteors do to the server (read its log for exit 70s), and
+ * it prints one line per launch and whether the session was still alive.
  */
 import { mkdirSync } from 'node:fs';
 import { openCity, city } from './helpers/qaSession.mjs';
@@ -27,6 +33,8 @@ const argv = process.argv.slice(2);
 const arg = (k, d) => { const i = argv.indexOf(`--${k}`); return i >= 0 ? argv[i + 1] : d; };
 
 const SETTLE = Number(arg('settle', 9000));
+const SHOTS = Number(arg('shots', 1));
+const INTERVAL = Number(arg('interval', 8000));
 const OUT = arg('out', 'qa-meteor');
 const LOOK = arg('look', null);
 const LOOKAT = arg('lookat', null);
@@ -53,6 +61,34 @@ await page.waitForTimeout(800);
 
 const before = await city(page);
 await page.screenshot({ path: `${OUT}/00-before.png` });
+
+if (SHOTS > 1) {
+  let launched = 0;
+  for (let shot = 1; shot <= SHOTS; ++shot) {
+    let live = [];
+    try {
+      await page.evaluate(() => window.__VIBE_DRIVE__.fire({ holdMs: 40 }));
+      for (let i = 0; i < 20; ++i) {
+        await page.waitForTimeout(100);
+        live = await page.evaluate(() => window.__VIBE_E2E__.meteors());
+        if (live.some((f) => f.ageS < 2.5)) break;
+      }
+    } catch (error) {
+      console.log(`shot ${shot}: session gone (${String(error).slice(0, 80)})`);
+      break;
+    }
+    const fresh = live.find((f) => f.ageS < 2.5);
+    if (fresh) launched += 1;
+    const stats = await city(page).catch(() => ({}));
+    console.log(`shot ${shot}: ${fresh ? `launched body ${fresh.bodyId}` : 'NO LAUNCH'}, bonds ${stats.brokenBonds ?? '?'}`);
+    await page.waitForTimeout(INTERVAL);
+  }
+  await page.screenshot({ path: `${OUT}/99-after.png` }).catch(() => {});
+  console.log(`${launched}/${SHOTS} launches reached the client`);
+  await browser.close();
+  process.exit(0);
+}
+
 await page.evaluate(() => window.__VIBE_DRIVE__.fire({ holdMs: 120 }));
 
 // The launch packet is reliable and small; a second is generous.

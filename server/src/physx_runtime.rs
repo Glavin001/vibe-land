@@ -1448,8 +1448,53 @@ impl PhysxPhysicsArena {
     /// Called before a step rather than after one, so a retired ball is gone
     /// from both the scene and the wire in the same tick. Doing it after the
     /// step would publish one more frame of a body that no longer exists.
+    /// Forensics for fired balls and meteors: where each one is and how fast,
+    /// at 10 Hz under `VIBE_CITY_BALL_TRACE=1`, and always a warning when one
+    /// jumps past 300 m/s or 1.5 km out. The chunk-side detectors in
+    /// native_runtime.rs only watch fragment bodies; a projectile that comes
+    /// to grief is invisible to them, and a 2 m meteor took the GPU context
+    /// with it several times before anything reported where the rock was.
+    fn trace_launched_balls(&mut self) {
+        if self.launched_balls.is_empty() {
+            return;
+        }
+        static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let verbose =
+            *ENABLED.get_or_init(|| std::env::var("VIBE_CITY_BALL_TRACE").is_ok_and(|v| v == "1"));
+        let snapshots = self.current_body_snapshots();
+        for ball in &self.launched_balls {
+            let entity = NS_DYNAMIC | (ball.id & ID_MASK);
+            let Some(body) = snapshots.iter().find(|b| b.entity_id == entity) else {
+                continue;
+            };
+            let p = body.pose.position;
+            let v = body.linear_velocity;
+            let speed = (v.x * v.x + v.y * v.y + v.z * v.z).sqrt();
+            let radius = (p.x * p.x + p.y * p.y + p.z * p.z).sqrt();
+            if speed > 300.0 || radius > 1500.0 || !speed.is_finite() {
+                tracing::warn!(
+                    id = ball.id,
+                    tick = self.launch_tick,
+                    pos = ?[p.x, p.y, p.z],
+                    speed,
+                    "fired ball velocity explosion or escape"
+                );
+            } else if verbose && self.launch_tick % 6 == 0 {
+                tracing::info!(
+                    id = ball.id,
+                    tick = self.launch_tick,
+                    pos = ?[p.x, p.y, p.z],
+                    speed,
+                    sleeping = body.sleeping,
+                    "ball trace"
+                );
+            }
+        }
+    }
+
     fn expire_launched_balls(&mut self) {
         self.launch_tick = self.launch_tick.saturating_add(1);
+        self.trace_launched_balls();
         while self
             .launched_balls
             .front()
