@@ -98,7 +98,6 @@ export class DustVolumeRenderer implements PipelineStage {
   private targetDirty = false;
   private readonly stepsEased: Float32Array;
   /** Which active fluid brick steps this frame; see render(). */
-  private stepTurn = 0;
   private generation: number;
   private readonly items: DustDrawItem[] = [];
   private readonly evals = newDustEval();
@@ -416,21 +415,11 @@ export class DustVolumeRenderer implements PipelineStage {
     }
     if (activeFluids > 0) {
       this.refreshColliders(nowMs, false);
-      // One brick steps per frame, in turn. A step is a dozen dependent
-      // render passes, and on the reporter's M3 a frame where both bricks
-      // stepped was twice the length of one where neither did; each brick
-      // still gets its two catch-up steps when its turn comes, so the sim
-      // runs at the same rate -- the passes are spread across frames instead
-      // of stacked in one.
-      this.stepTurn += 1;
-      let turn = this.stepTurn % activeFluids;
+      // Every brick takes a turn every frame; a turn is one group of a
+      // step's passes (FluidBrick.step), so the frame carries a few fluid
+      // passes from each brick rather than a whole step from one.
       for (const fluid of this.fluids) {
-        if (!fluid.active) continue;
-        if (turn === 0) {
-          fluid.step(renderer, nowMs, dt * activeFluids);
-          break;
-        }
-        turn -= 1;
+        if (fluid.active) fluid.step(renderer, nowMs, dt);
       }
     }
     renderStats.dustFluidActive = activeFluids;

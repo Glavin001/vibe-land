@@ -32,14 +32,19 @@ import {
 export type FluidQuality = 'fast' | 'balanced';
 
 export const BRICK_SIZE_M: readonly [number, number, number] = [16, 12, 16];
-const STEP_S = 1 / 60;
 /**
- * One step per frame, never a catch-up pair. A brick that fell behind used to
- * run two steps in one frame -- two dozen dependent passes -- on exactly the
- * frames that were already long, which is how a slow frame bred a slower
- * one. Behind now means the smoke runs a little slow for a moment.
+ * The simulation step, 30 Hz. Smoke is slow; what a display refresh rate
+ * buys it is nothing, and what the step costs is nine dependent render
+ * passes -- on the reporter's M3 the passes were the frame. A step is run as
+ * three groups (advect+diverge, the pressure solve, project+dye), ONE group
+ * a frame while the sim is on time, so a 120 Hz frame carries two to four
+ * fluid passes and never nine. Behind (a hitch, or a 60 Hz display, where
+ * a step's worth of time accrues in two frames) a turn runs two groups; a
+ * backlog past one step is dropped rather than caught up.
  */
-const MAX_STEPS_PER_FRAME = 1;
+const STEP_S = 1 / 30;
+/** The per-step constants (pulse decay) were tuned at 60 Hz; this is that step. */
+const TUNED_STEP_S = 1 / 60;
 /** A source injects for this long. */
 const SOURCE_MS = 250;
 /** Retire after this long with nothing injected. Dissipation has taken ~90% by then. */
@@ -101,6 +106,9 @@ export class FluidBrick {
   private readonly injections: Injection[] = [];
   private accumulator = 0;
   private simTime = 0;
+  /** Which pass group the step in flight runs next; 0 between steps. */
+  private stage: 0 | 1 | 2 = 0;
+  private sourceCount = 0;
   private readonly sourcePos: THREE.Vector4[];
   private readonly sourceRate: THREE.Vector4[];
   private readonly moverPos: THREE.Vector4[];
@@ -280,6 +288,7 @@ export class FluidBrick {
     this.injections.length = 0;
     this.steps = 0;
     this.accumulator = 0;
+    this.stage = 0;
     this.clearFields(renderer);
   }
 
@@ -354,12 +363,48 @@ export class FluidBrick {
     renderer.setClearColor(color, alpha);
   }
 
-  /** Advance the simulation by up to two fixed steps and refresh the appearance. */
+  /**
+   * A turn: accrue time, run the next pass group of the step in flight (or
+   * begin a step if one is owed), refresh the appearance when a step ends.
+   * Returns the steps completed this turn.
+   */
   step(renderer: THREE.WebGLRenderer, nowMs: number, dtSeconds: number): number {
     if (!this.active) return 0;
     this.accumulator += Math.min(dtSeconds, 0.1);
-    let stepsRun = 0;
-    // Pulses decay per step, so they are set once per frame from the live list.
+    const previous = renderer.getRenderTarget();
+    const autoClear = renderer.autoClear;
+    renderer.autoClear = false;
+    let completed = 0;
+    // On time: one group. A step owed on top of the one in flight: two.
+    const groups = this.accumulator >= STEP_S && this.stage !== 0 ? 2 : 1;
+    for (let g = 0; g < groups; g += 1) {
+      if (this.stage === 0) {
+        if (this.accumulator < STEP_S) break;
+        this.accumulator -= STEP_S;
+        this.simTime += STEP_S;
+        this.beginStep(renderer, nowMs);
+        this.stage = 1;
+      } else if (this.stage === 1) {
+        this.solvePressure(renderer);
+        this.stage = 2;
+      } else {
+        this.finishStep(renderer);
+        this.stage = 0;
+        this.steps += 1;
+        completed += 1;
+      }
+    }
+    // A backlog past one step is a hitch; it is dropped, not caught up.
+    if (this.accumulator > STEP_S) this.accumulator = STEP_S;
+    renderer.autoClear = autoClear;
+    renderer.setRenderTarget(previous);
+    return completed;
+  }
+
+  /** Group 1: the sources as they stand now, then advect and diverge. */
+  private beginStep(renderer: THREE.WebGLRenderer, nowMs: number): void {
+    // Pulses decay per step, so they are set once per step from the live
+    // list; the dye pass two turns on reads the same values.
     let count = 0;
     for (let i = this.injections.length - 1; i >= 0; i -= 1) {
       if (this.injections[i].untilMs < nowMs) this.injections.splice(i, 1);
@@ -369,50 +414,14 @@ export class FluidBrick {
       this.sourceRate[count].copy(inj.rate);
       count += 1;
     }
-    const previous = renderer.getRenderTarget();
-    const autoClear = renderer.autoClear;
-    renderer.autoClear = false;
-    // One step per turn, of however much time has accrued up to two fixed
-    // steps' worth: the advection is semi-Lagrangian and takes its dt as a
-    // uniform, so a brick that gets a turn every other frame integrates the
-    // same seconds in half the passes rather than running slow.
-    while (this.accumulator >= STEP_S && stepsRun < MAX_STEPS_PER_FRAME) {
-      const dt = Math.min(this.accumulator, STEP_S * 2);
-      this.accumulator -= dt;
-      this.simTime += dt;
-      this.setStepDt(dt);
-      this.runStep(renderer, count);
-      for (const inj of this.injections) inj.rate.z *= Math.pow(0.82, dt / STEP_S);
-      stepsRun += 1;
-      this.steps += 1;
-    }
-    if (this.accumulator > STEP_S * 2) this.accumulator = 0;
-    if (stepsRun > 0) {
-      const a = this.passes.appearance;
-      a.material.uniforms.tDye.value = this.dyeA.texture;
-      a.material.uniforms.uTime.value = this.simTime;
-      renderer.setRenderTarget(this.appearance);
-      renderer.render(a.scene, this.camera);
-    }
-    renderer.autoClear = autoClear;
-    renderer.setRenderTarget(previous);
-    return stepsRun;
-  }
+    for (const inj of this.injections) inj.rate.z *= Math.pow(0.82, STEP_S / TUNED_STEP_S);
+    this.sourceCount = count;
 
-  private setStepDt(dt: number): void {
-    for (const pass of Object.values(this.passes)) {
-      const uniform = pass.material.uniforms.uDt;
-      if (uniform) uniform.value = dt;
-    }
-  }
-
-  private runStep(renderer: THREE.WebGLRenderer, sourceCount: number): void {
-    const q = QUALITY[this.quality];
     const v = this.passes.velocity;
     v.material.uniforms.tVelocity.value = this.velA.texture;
     v.material.uniforms.tDye.value = this.dyeA.texture;
     v.material.uniforms.uTime.value = this.simTime;
-    v.material.uniforms.uSourceCount.value = sourceCount;
+    v.material.uniforms.uSourceCount.value = count;
     renderer.setRenderTarget(this.velB);
     renderer.render(v.scene, this.camera);
 
@@ -420,17 +429,23 @@ export class FluidBrick {
     d.material.uniforms.tVelocity.value = this.velB.texture;
     renderer.setRenderTarget(this.div);
     renderer.render(d.scene, this.camera);
+  }
 
+  /** Group 2: the Jacobi passes, two iterations each (PRESSURE_FRAGMENT). */
+  private solvePressure(renderer: THREE.WebGLRenderer): void {
+    const q = QUALITY[this.quality];
     const p = this.passes.pressure;
     p.material.uniforms.tDivergence.value = this.div.texture;
-    // Two iterations per pass (PRESSURE_FRAGMENT); an odd count rounds up.
     for (let i = 0; i < Math.ceil(q.jacobi / 2); i += 1) {
       p.material.uniforms.tPressure.value = this.pA.texture;
       renderer.setRenderTarget(this.pB);
       renderer.render(p.scene, this.camera);
       [this.pA, this.pB] = [this.pB, this.pA];
     }
+  }
 
+  /** Group 3: project, advect the dye, and refresh what the brick draws. */
+  private finishStep(renderer: THREE.WebGLRenderer): void {
     const pr = this.passes.project;
     pr.material.uniforms.tVelocity.value = this.velB.texture;
     pr.material.uniforms.tPressure.value = this.pA.texture;
@@ -441,10 +456,16 @@ export class FluidBrick {
     dye.material.uniforms.tDye.value = this.dyeA.texture;
     dye.material.uniforms.tVelocity.value = this.velA.texture;
     dye.material.uniforms.uTime.value = this.simTime;
-    dye.material.uniforms.uSourceCount.value = sourceCount;
+    dye.material.uniforms.uSourceCount.value = this.sourceCount;
     renderer.setRenderTarget(this.dyeB);
     renderer.render(dye.scene, this.camera);
     [this.dyeA, this.dyeB] = [this.dyeB, this.dyeA];
+
+    const a = this.passes.appearance;
+    a.material.uniforms.tDye.value = this.dyeA.texture;
+    a.material.uniforms.uTime.value = this.simTime;
+    renderer.setRenderTarget(this.appearance);
+    renderer.render(a.scene, this.camera);
   }
 
   /** Distance from a point to the brick's centre. */
