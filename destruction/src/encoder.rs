@@ -289,6 +289,10 @@ pub struct ChunkStreamEncoder {
     /// Off in production. The offline recorder turns it on to learn which of
     /// the send path's gates each body met, bucketed by what it was doing.
     audit: Option<SendAudit>,
+    /// When set, only these clients feed the audit. A replay with a hundred
+    /// clients wants the cross-tab for a representative few, not a blend of
+    /// every viewpoint into one table.
+    audit_clients: Option<std::collections::HashSet<u64>>,
 }
 
 impl ChunkStreamEncoder {
@@ -325,6 +329,7 @@ impl ChunkStreamEncoder {
             next_slot: 0,
             duplicate_body_records: 0,
             audit: None,
+            audit_clients: None,
         }
     }
 
@@ -335,6 +340,11 @@ impl ChunkStreamEncoder {
 
     pub fn send_audit(&self) -> Option<&SendAudit> {
         self.audit.as_ref()
+    }
+
+    /// Restrict the audit to `clients` (measurement only).
+    pub fn set_audit_clients(&mut self, clients: impl IntoIterator<Item = u64>) {
+        self.audit_clients = Some(clients.into_iter().collect());
     }
 
     pub fn ledger(&self) -> &CityLedger {
@@ -692,7 +702,11 @@ impl ChunkStreamEncoder {
         // Moved out for the body of this function: `state` below borrows self
         // mutably, so the audit cannot also be reached through self. Put back
         // before returning.
-        let mut audit = self.audit.take();
+        let audited = self
+            .audit_clients
+            .as_ref()
+            .map_or(true, |clients| clients.contains(&client));
+        let mut audit = if audited { self.audit.take() } else { None };
         let state = self.clients.entry(client).or_default();
         let view: InterestView = state.view.update(camera, config.interest);
 
@@ -952,7 +966,9 @@ impl ChunkStreamEncoder {
             self.baseline_id,
             shared.sim_tick,
         );
-        self.audit = audit;
+        if audited {
+            self.audit = audit;
+        }
         datagrams
     }
 

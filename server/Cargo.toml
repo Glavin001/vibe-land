@@ -64,3 +64,8 @@ wtransport = { version = "0.7", features = ["self-signed", "quinn"] }
 name = "record-city-trace"
 path = "src/bin/record_city_trace.rs"
 required-features = ["destruction"]
+
+# Headless WebTransport load clients for /city; needs no GPU features.
+[[bin]]
+name = "city-bots"
+path = "src/bin/city_bots.rs"

@@ -1002,6 +1002,10 @@ struct AppState {
     reset_requests: Arc<StdRwLock<HashSet<String>>>,
     /// Queued demolition requests, per match. See `city_demolish_handler`.
     demolish_requests: Arc<StdRwLock<HashMap<String, DemolishRequest>>>,
+    /// Queued meteor targets, per match. See `city_meteor_handler`.
+    meteor_requests: Arc<StdRwLock<HashMap<String, Vec<[f32; 3]>>>>,
+    /// Matches asked to close their netlab capture cleanly.
+    capture_stop_requests: Arc<StdRwLock<HashSet<String>>>,
     /// Inbound-UDP reachability evidence.
     ///
     /// A box cannot test its own reachability from inside: a bind succeeding
@@ -1192,6 +1196,9 @@ struct MatchState {
     reset_requests: Arc<StdRwLock<HashSet<String>>>,
     /// Queued demolition requests, per match. See `city_demolish_handler`.
     demolish_requests: Arc<StdRwLock<HashMap<String, DemolishRequest>>>,
+    /// Queued meteor targets, per match. See `city_meteor_handler`.
+    meteor_requests: Arc<StdRwLock<HashMap<String, Vec<[f32; 3]>>>>,
+    capture_stop_requests: Arc<StdRwLock<HashSet<String>>>,
     /// Rounds the queued demolition releases per tick.
     demolish_per_tick: usize,
     /// Players whose city ledger is known to be holed by a dropped reliable
@@ -1341,6 +1348,8 @@ async fn main() -> Result<()> {
             body_states_registry: Arc::new(StdRwLock::new(HashMap::new())),
             reset_requests: Arc::new(StdRwLock::new(HashSet::new())),
             demolish_requests: Arc::new(StdRwLock::new(HashMap::new())),
+            meteor_requests: Arc::new(StdRwLock::new(HashMap::new())),
+            capture_stop_requests: Arc::new(StdRwLock::new(HashSet::new())),
             wt_attempts: wt_attempts.clone(),
             session_configs_served: AtomicU64::new(0),
             first_session_config_ms: AtomicU64::new(0),
@@ -1433,6 +1442,9 @@ async fn main() -> Result<()> {
         .route("/match-stats/:match_id/bodies", get(match_body_states_handler))
         .route("/city-reset/:match_id", post(city_reset_handler))
         .route("/city-demolish/:match_id", post(city_demolish_handler))
+        .route("/city-meteor/:match_id", post(city_meteor_handler))
+        .route("/city-capture-stop/:match_id", post(city_capture_stop_handler))
+        .route("/city-buildings", get(city_buildings_handler))
         .route("/ws/stats", get(ws_stats_handler))
         .route("/ws/:match_id", get(ws_handler))
         .layer(tower_http::cors::CorsLayer::permissive())
@@ -2165,6 +2177,92 @@ async fn city_demolish_handler(
     (StatusCode::ACCEPTED, "demolition queued").into_response()
 }
 
+/// One or more world-space points a meteor should land on.
+#[derive(Clone, Debug, serde::Deserialize)]
+struct MeteorRequest {
+    #[serde(default)]
+    x: f32,
+    #[serde(default)]
+    y: f32,
+    #[serde(default)]
+    z: f32,
+    /// Several at once, each `[x, y, z]`; `x/y/z` above is the one-target
+    /// spelling. Released one per tick in order.
+    #[serde(default)]
+    targets: Vec<[f32; 3]>,
+}
+
+/// Drop a meteor on an exact point, without a player having to aim at it.
+///
+/// A player-fired meteor lands wherever the aim ray first meets the world,
+/// which is right for play and wrong for a measurement that wants to say
+/// "one rock per building": from any vantage point some roofs are behind
+/// other roofs. This is the same launch path (same arc planner, same pool,
+/// same `PKT_METEOR_LAUNCHED`), only the target is given instead of found.
+async fn city_meteor_handler(
+    Path(match_id): Path<String>,
+    State(state): State<SharedAppState>,
+    body: Option<Json<MeteorRequest>>,
+) -> impl IntoResponse {
+    if !city::is_city_match(&match_id) {
+        return (StatusCode::BAD_REQUEST, "not a city match").into_response();
+    }
+    let request = body.map(|Json(r)| r);
+    let mut targets: Vec<[f32; 3]> = Vec::new();
+    if let Some(request) = request {
+        if !request.targets.is_empty() {
+            targets.extend(request.targets);
+        } else {
+            targets.push([request.x, request.y, request.z]);
+        }
+    }
+    if targets.is_empty() {
+        return (StatusCode::BAD_REQUEST, "no target").into_response();
+    }
+    let queued = targets.len();
+    state
+        .inner
+        .meteor_requests
+        .write()
+        .expect("meteor requests poisoned")
+        .entry(match_id)
+        .or_default()
+        .extend(targets);
+    (StatusCode::ACCEPTED, format!("{queued} meteor(s) queued")).into_response()
+}
+
+/// Close the match's netlab capture cleanly (the tape's zstd frame is only
+/// valid once finished), so the recording process can then be stopped.
+async fn city_capture_stop_handler(
+    Path(match_id): Path<String>,
+    State(state): State<SharedAppState>,
+) -> impl IntoResponse {
+    if !city::is_city_match(&match_id) {
+        return (StatusCode::BAD_REQUEST, "not a city match").into_response();
+    }
+    state
+        .inner
+        .capture_stop_requests
+        .write()
+        .expect("capture stop requests poisoned")
+        .insert(match_id);
+    (StatusCode::ACCEPTED, "capture stop queued").into_response()
+}
+
+/// The buildings in the city scene, as the bond graph defines them.
+///
+/// A scene pack is one flat scenario; the manifest has one structure per grid
+/// cell, not one per building. What a player calls a building is a connected
+/// component of the intact bond graph, so that is what this reports, in
+/// world space, so a driver can aim at each one in turn.
+async fn city_buildings_handler() -> impl IntoResponse {
+    let Some((_, manifest, _)) = city::manifest_asset() else {
+        return (StatusCode::SERVICE_UNAVAILABLE, "city scene unavailable").into_response();
+    };
+    let buildings = vibe_land_destruction::buildings::enumerate(manifest);
+    Json(buildings).into_response()
+}
+
 async fn city_reset_handler(
     Path(match_id): Path<String>,
     State(state): State<SharedAppState>,
@@ -2585,6 +2683,8 @@ async fn run_match_loop(
     reset_requests: Arc<StdRwLock<HashSet<String>>>,
     // Queued demolition requests, per match. See `city_demolish_handler`.
     demolish_requests: Arc<StdRwLock<HashMap<String, DemolishRequest>>>,
+    meteor_requests: Arc<StdRwLock<HashMap<String, Vec<[f32; 3]>>>>,
+    capture_stop_requests: Arc<StdRwLock<HashSet<String>>>,
 ) {
     let mut arena = PhysicsArena::new(MoveConfig::default(), physics.backend)
         .expect("selected authoritative physics backend should initialize");
@@ -2723,6 +2823,8 @@ async fn run_match_loop(
         body_states_registry,
         reset_requests,
         demolish_requests,
+        meteor_requests,
+        capture_stop_requests,
         demolish_per_tick: 8,
         city_desync_players: HashSet::new(),
         city_desync_repairs: 0,
@@ -2798,6 +2900,8 @@ fn spawn_match_loop(
                     app.body_states_registry.clone(),
                     app.reset_requests.clone(),
                     app.demolish_requests.clone(),
+                    app.meteor_requests.clone(),
+                    app.capture_stop_requests.clone(),
                 ))
                 .catch_unwind()
                 .await;
@@ -3026,6 +3130,10 @@ impl MatchState {
 
                 if let Some(city) = self.city.as_mut() {
                     city.add_client(u64::from(conn.player_id));
+                    city.capture_event(
+                        self.server_tick,
+                        serde_json::json!({"kind": "join", "player": conn.player_id}),
+                    );
                     // A bootstrap dropped here is the worst case of all: the
                     // client never had a ledger, so it never sees a sequence
                     // gap either -- it renders the intact manifest forever and
@@ -3064,6 +3172,10 @@ impl MatchState {
             MatchEvent::Disconnect { player_id } => {
                 if let Some(city) = self.city.as_mut() {
                     city.remove_client(u64::from(player_id));
+                    city.capture_event(
+                        self.server_tick,
+                        serde_json::json!({"kind": "leave", "player": player_id}),
+                    );
                 }
                 let disconnect_runtime = self.players.get(&player_id).map(|runtime| {
                     (
@@ -3867,8 +3979,9 @@ impl MatchState {
             // world and the rock is launched from far outside it on an arc
             // through that point. Whatever it meets first is what it hits.
             if weapon == WEAPON_METEOR {
-                if self.launch_meteor_at(origin, direction, shooter) {
+                if let Some(event) = self.launch_meteor_at(origin, direction, shooter) {
                     meteors += 1;
+                    city.capture_event(self.server_tick, event);
                 }
                 continue;
             }
@@ -3876,6 +3989,18 @@ impl MatchState {
             // into the scene and then it is the scene's problem: what it hits
             // and what that breaks is decided by PhysX solving its contacts,
             // which is exactly how the engine's own demos deliver a shot.
+            if city.capturing() {
+                city.capture_event(
+                    self.server_tick,
+                    serde_json::json!({
+                        "kind": "shot",
+                        "weapon": weapon,
+                        "shooter": shooter,
+                        "origin": origin.to_array(),
+                        "direction": direction.to_array(),
+                    }),
+                );
+            }
             if weapon == WEAPON_CANNONBALL {
                 let launched = self.arena.launch_ball(
                     nalgebra::Vector3::new(origin.x, origin.y, origin.z),
@@ -3921,16 +4046,30 @@ impl MatchState {
     /// nobody sees land. Every client is told the arc so it can draw the fall
     /// from the start, which is well outside the range the body snapshot can
     /// express (see `PKT_METEOR_LAUNCHED`).
-    fn launch_meteor_at(&mut self, origin: glam::Vec3, direction: glam::Vec3, shooter: u32) -> bool {
+    fn launch_meteor_at(
+        &mut self,
+        origin: glam::Vec3,
+        direction: glam::Vec3,
+        shooter: u32,
+    ) -> Option<serde_json::Value> {
         let Some(target) = self.arena.cast_solid_ray_point(
             origin.to_array(),
             direction.to_array(),
             HITSCAN_MAX_DISTANCE_M,
         ) else {
             tracing::info!(match_id = %self.id, shooter, "meteor aimed at nothing");
-            return false;
+            return None;
         };
-        let target = glam::Vec3::from_array(target);
+        self.launch_meteor_at_point(glam::Vec3::from_array(target), shooter)
+    }
+
+    /// Launch a meteor onto an exact world point. Returns the capture event
+    /// describing the launch, or `None` if no rock left the sky.
+    fn launch_meteor_at_point(
+        &mut self,
+        target: glam::Vec3,
+        shooter: u32,
+    ) -> Option<serde_json::Value> {
         let gravity = {
             let g = vibe_netcode::movement::default_world_gravity();
             glam::Vec3::new(g[0], g[1], g[2])
@@ -3944,7 +4083,7 @@ impl MatchState {
             tuning.mass_kg,
             tuning.ttl_ticks,
         ) else {
-            return false;
+            return None;
         };
         let packet = meteor::encode_meteor_launched(&meteor::MeteorLaunchedPacket {
             body_id,
@@ -3971,7 +4110,17 @@ impl MatchState {
             mass_kg = tuning.mass_kg,
             "meteor launched"
         );
-        true
+        Some(serde_json::json!({
+            "kind": "meteor",
+            "shooter": shooter,
+            "body_id": body_id,
+            "target": target.to_array(),
+            "start": launch.start.to_array(),
+            "velocity": launch.velocity.to_array(),
+            "flight_s": launch.flight_time_s,
+            "radius_m": tuning.radius_m,
+            "mass_kg": tuning.mass_kg,
+        }))
     }
 
     /// Camera used for per-client interest: player eye + aim direction, using
@@ -4107,6 +4256,31 @@ impl MatchState {
         };
 
         let mut city = self.city.take().expect("checked above");
+        if send_due {
+            city.capture_cameras(self.server_tick, &cameras);
+        }
+        // Scripted meteors: one per tick so the pool ring is never asked for
+        // more than the sky can hold in one frame.
+        let meteor_target = self
+            .meteor_requests
+            .write()
+            .expect("meteor requests poisoned")
+            .get_mut(&self.id)
+            .and_then(|queue| if queue.is_empty() { None } else { Some(queue.remove(0)) });
+        if let Some(target) = meteor_target {
+            if let Some(event) = self.launch_meteor_at_point(glam::Vec3::from_array(target), 0) {
+                city.capture_event(self.server_tick, event);
+            }
+        }
+        if city.capturing()
+            && self
+                .capture_stop_requests
+                .write()
+                .expect("capture stop requests poisoned")
+                .remove(&self.id)
+        {
+            city.finish_capture();
+        }
         // Before the world is bound for the reset below, which borrows it for
         // the rest of this block.
         if let Some(request) = self
@@ -4134,6 +4308,21 @@ impl MatchState {
             info!(
                 match_id = %self.id, queued, ?centre, height,
                 "city demolition queued"
+            );
+            city.capture_event(
+                self.server_tick,
+                serde_json::json!({
+                    "kind": "demolish",
+                    "centre": centre,
+                    "radius_m": request.radius_m,
+                    "below_y": request.below_y,
+                    "rounds": request.rounds,
+                    "queued": queued,
+                    "wedge_deg": request.wedge_deg,
+                    "heading_deg": request.heading_deg,
+                    "jitter": request.jitter,
+                    "per_tick": request.per_tick,
+                }),
             );
         }
         // A few rounds a tick, every tick, so the structure fails
@@ -4259,12 +4448,17 @@ impl MatchState {
         // detectable exactly when it happens, so record who it happened to and
         // repair them authoritatively below.
         let mut desynced: Vec<u32> = Vec::new();
+        let mut reliable_bytes_out: u64 = 0;
+        let mut outbound_drops: u64 = 0;
         for packet in &reliable {
             for (player_id, runtime) in self.players.iter() {
-                if !try_queue_packet(&runtime.tx, packet.clone(), &self.io)
-                    && !desynced.contains(player_id)
-                {
-                    desynced.push(*player_id);
+                if try_queue_packet(&runtime.tx, packet.clone(), &self.io) {
+                    reliable_bytes_out += packet.len() as u64;
+                } else {
+                    outbound_drops += 1;
+                    if !desynced.contains(player_id) {
+                        desynced.push(*player_id);
+                    }
                 }
             }
         }
@@ -4292,6 +4486,7 @@ impl MatchState {
         let v2_pose_stream = staged.is_none()
             && v3_datagrams.is_empty()
             && city.wire_version() != vibe_land_destruction::wire::CITY_WIRE_V3;
+        let mut encode_ms_this_tick = 0.0_f32;
         if send_due && v2_pose_stream {
             // Timed because it was the single largest unmeasured cost: at 10k
             // bodies the tick was 44 ms while the city step and physx step
@@ -4308,15 +4503,31 @@ impl MatchState {
                     let packets = city.client_datagrams(u64::from(player_id), camera, &shared);
                     if let Some(runtime) = self.players.get(&player_id) {
                         for packet in packets {
-                            let _ = try_queue_packet(&runtime.tx, packet, &self.io);
+                            if !try_queue_packet(&runtime.tx, packet, &self.io) {
+                                outbound_drops += 1;
+                            }
                         }
                     }
                 }
             }
-            city.record_encode_timings(
-                shared_ms,
-                datagrams_started.elapsed().as_secs_f32() * 1000.0,
-            );
+            let datagrams_ms = datagrams_started.elapsed().as_secs_f32() * 1000.0;
+            encode_ms_this_tick = shared_ms + datagrams_ms;
+            city.record_encode_timings(shared_ms, datagrams_ms);
+        }
+        if city.capturing() {
+            let (sent_records, sent_bytes) = city.stream_totals();
+            city.capture_stats(&vibe_land_destruction::netlab::capture::TickStats {
+                tick: self.server_tick,
+                awake: awake_after as u32,
+                step_ms: city_step_wall_ms,
+                encode_ms: encode_ms_this_tick,
+                players: self.players.len() as u32,
+                sent_records,
+                sent_bytes,
+                reliable_bytes: reliable_bytes_out,
+                outbound_drops,
+                desync_repairs: self.city_desync_repairs as u64,
+            });
         }
         self.city = Some(city);
         self.staged_city = staged;

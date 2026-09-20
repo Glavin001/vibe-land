@@ -23,6 +23,7 @@ use vibe_land_destruction::encoder::BodySnapshotInput;
 use vibe_land_destruction::encoder::{ChunkStreamEncoder, EncoderConfig, SharedRecords};
 use vibe_land_destruction::ids as city_ids;
 use vibe_land_destruction::manifest::DestructionManifest;
+use vibe_land_destruction::netlab::capture::{NetlabCapture, TickStats};
 use vibe_land_destruction::scene_pack::load_scene_pack_file;
 use vibe_land_destruction::synthetic::SyntheticDestruction;
 use vibe_land_destruction::types::Camera;
@@ -901,6 +902,85 @@ impl CityTickWindow {
     }
 }
 
+/// The one place the encoder is fed, on every backend and both pipelines.
+///
+/// The v2 encoder always owns the ledger and the reliable topology messages,
+/// so it always ingests; its per-awake-body classifier pass only feeds the v2
+/// pose stream, and a v3 match skips it. The capture, when present, sees the
+/// identical input first -- what it records is by construction what the
+/// encoder was given.
+fn feed_encoder(
+    capture: &mut Option<NetlabCapture>,
+    encoder: &mut ChunkStreamEncoder,
+    live: &mut Option<V3Live>,
+    manifest: &DestructionManifest,
+    sim_tick: u32,
+    snapshots: &[BodySnapshotInput],
+    output: &DestructionTickOutput,
+) {
+    if let Some(capture) = capture.as_mut() {
+        capture.push_tick(sim_tick, snapshots, output);
+    }
+    if live.is_some() {
+        encoder.ingest_tick_topology_only(sim_tick, snapshots, output, &output.wakes);
+    } else {
+        encoder.ingest_tick(sim_tick, snapshots, output, &output.wakes);
+    }
+    if let Some(live) = live.as_mut() {
+        live.ingest(manifest, sim_tick, snapshots, output);
+    }
+}
+
+fn backend_name_of(backend: &CityBackend) -> &'static str {
+    match backend {
+        CityBackend::Synthetic(_) => "synthetic",
+        #[cfg(feature = "destruction")]
+        CityBackend::Physx(_) => "blast",
+        #[cfg(feature = "blast-core")]
+        CityBackend::Core(_) => "blast-core",
+        #[cfg(feature = "native-destruction")]
+        CityBackend::Native(_) => "native",
+    }
+}
+
+/// `VIBE_CITY_TAPE_OUT=<dir>` turns a match into its own recorder.
+fn open_capture(
+    manifest: &DestructionManifest,
+    sim_hz: u32,
+    backend: &'static str,
+) -> Option<NetlabCapture> {
+    let dir = std::env::var("VIBE_CITY_TAPE_OUT").ok()?;
+    if dir.trim().is_empty() {
+        return None;
+    }
+    let wire = std::env::var("VIBE_CITY_WIRE")
+        .ok()
+        .and_then(|value| value.parse::<u8>().ok())
+        .unwrap_or(2);
+    let fingerprint = serde_json::to_value(
+        vibe_land_destruction::fingerprint::capture_with_build(cfg!(feature = "cuda-stress")),
+    )
+    .unwrap_or(serde_json::Value::Null);
+    match NetlabCapture::open(
+        std::path::Path::new(&dir),
+        sim_hz,
+        manifest,
+        &scene_file(),
+        backend,
+        wire,
+        fingerprint,
+    ) {
+        Ok(capture) => {
+            tracing::info!(dir = %dir, backend, "netlab capture recording");
+            Some(capture)
+        }
+        Err(error) => {
+            tracing::error!(%error, dir = %dir, "netlab capture could not open; not recording");
+            None
+        }
+    }
+}
+
 pub struct CityRuntime {
     /// Queued demolition targets, released a few per tick by
     /// `drain_demolition` so a building fails progressively rather than being
@@ -915,6 +995,10 @@ pub struct CityRuntime {
     pub tick_window: CityTickWindow,
     /// Present when this match speaks wire v3; owns the live pose stream.
     live: Option<V3Live>,
+    /// Present when `VIBE_CITY_TAPE_OUT` is set: the match records its own
+    /// encoder input so the stream can be replayed offline against exactly
+    /// what happened here.
+    capture: Option<NetlabCapture>,
     sim_hz: u32,
     backend: CityBackend,
     encoder: ChunkStreamEncoder,
@@ -934,6 +1018,10 @@ pub struct CityRuntime {
     sent_records: u64,
     sent_bytes: u64,
     sent_packets: u64,
+    /// Never reset: the capture's per-tick stats line reports totals so a
+    /// window's rate is a difference, not a drained counter's remainder.
+    total_sent_records: u64,
+    total_sent_bytes: u64,
     last_stream_counters: (u64, u64, u64),
     /// Blasts that need a post-fracture PhysX push (first hit on kinematic
     /// support promotes islands only during `step`, so we re-apply push then).
@@ -977,8 +1065,10 @@ impl CityRuntime {
                 (mid, radius)
             })
             .collect();
+        let capture = open_capture(&manifest, sim_hz, backend_name_of(&backend));
         Self {
             live: None,
+            capture,
             pending_demolition: Vec::new(),
             demolition_centre: [0.0, 0.0],
             demolition_heading_deg: 0.0,
@@ -1000,6 +1090,8 @@ impl CityRuntime {
             sent_records: 0,
             sent_bytes: 0,
             sent_packets: 0,
+            total_sent_records: 0,
+            total_sent_bytes: 0,
             last_stream_counters: (0, 0, 0),
             pending_pushes: Vec::new(),
         }
@@ -1286,14 +1378,44 @@ impl CityRuntime {
 
     /// The destruction engine this match is actually running.
     pub fn backend_name(&self) -> &'static str {
-        match &self.backend {
-            CityBackend::Synthetic(_) => "synthetic",
-            #[cfg(feature = "destruction")]
-            CityBackend::Physx(_) => "blast",
-            #[cfg(feature = "blast-core")]
-            CityBackend::Core(_) => "blast-core",
-            #[cfg(feature = "native-destruction")]
-            CityBackend::Native(_) => "native",
+        backend_name_of(&self.backend)
+    }
+
+    /// True when this match is recording an encoder tape.
+    pub fn capturing(&self) -> bool {
+        self.capture.is_some()
+    }
+
+    pub fn capture_cameras(&mut self, sim_tick: u32, cameras: &[(u32, Camera)]) {
+        if let Some(capture) = self.capture.as_mut() {
+            capture.push_cameras(sim_tick, cameras);
+        }
+    }
+
+    pub fn capture_event(&mut self, sim_tick: u32, value: serde_json::Value) {
+        if let Some(capture) = self.capture.as_mut() {
+            capture.push_event(sim_tick, value);
+        }
+    }
+
+    pub fn capture_stats(&mut self, stats: &TickStats) {
+        if let Some(capture) = self.capture.as_mut() {
+            capture.push_stats(stats);
+        }
+    }
+
+    /// Close the tape cleanly (the writer drains, then the metadata is
+    /// finalised). Also happens on drop; explicit so a reset can log it.
+    pub fn finish_capture(&mut self) {
+        if let Some(capture) = self.capture.take() {
+            match capture.finish() {
+                Ok(meta) => tracing::info!(
+                    ticks = meta.ticks,
+                    dropped = meta.dropped_ticks,
+                    "netlab capture finished"
+                ),
+                Err(error) => tracing::error!(%error, "netlab capture finish failed"),
+            }
         }
     }
 
@@ -1607,20 +1729,15 @@ impl CityRuntime {
                 match post_step_result {
                     Ok(output) => {
                         let snapshots = backend.body_snapshots();
-                        if self.live.is_some() {
-                            self.encoder.ingest_tick_topology_only(
-                                sim_tick,
-                                snapshots,
-                                &output,
-                                &output.wakes,
-                            );
-                        } else {
-                            self.encoder
-                                .ingest_tick(sim_tick, snapshots, &output, &output.wakes);
-                        }
-                        if let Some(live) = self.live.as_mut() {
-                            live.ingest(&self.manifest, sim_tick, snapshots, &output);
-                        }
+                        feed_encoder(
+                            &mut self.capture,
+                            &mut self.encoder,
+                            &mut self.live,
+                            &self.manifest,
+                            sim_tick,
+                            snapshots,
+                            &output,
+                        );
                         reliable.extend(self.encoder.take_topology_messages());
                     }
                     Err(error) => {
@@ -1650,21 +1767,30 @@ impl CityRuntime {
                     );
                 }
                 let snapshots = backend.body_snapshots();
-                self.encoder.ingest_tick(sim_tick, &snapshots, &output, &output.wakes);
-                if let Some(live) = self.live.as_mut() {
-                    live.ingest(&self.manifest, sim_tick, &snapshots, &output);
-                }
+                feed_encoder(
+                    &mut self.capture,
+                    &mut self.encoder,
+                    &mut self.live,
+                    &self.manifest,
+                    sim_tick,
+                    &snapshots,
+                    &output,
+                );
                 reliable.extend(self.encoder.take_topology_messages());
                 let _ = post_step_ms;
             }
             CityBackend::Synthetic(backend) => match backend.tick_after_fetch(dt, gravity) {
                 Ok(output) => {
                     let snapshots = backend.body_snapshots();
-                    self.encoder
-                        .ingest_tick(sim_tick, &snapshots, &output, &output.wakes);
-                    if let Some(live) = self.live.as_mut() {
-                        live.ingest(&self.manifest, sim_tick, &snapshots, &output);
-                    }
+                    feed_encoder(
+                        &mut self.capture,
+                        &mut self.encoder,
+                        &mut self.live,
+                        &self.manifest,
+                        sim_tick,
+                        &snapshots,
+                        &output,
+                    );
                     reliable.extend(self.encoder.take_topology_messages());
                 }
                 Err(error) => {
@@ -1702,29 +1828,15 @@ impl CityRuntime {
                         match snapshot_result {
                             Ok(snapshots) => {
                                 let ingest_started = std::time::Instant::now();
-                                // The v2 encoder still owns the ledger and the
-                                // reliable topology messages on every wire, so
-                                // it always ingests -- but its per-awake-body
-                                // classifier pass only feeds the v2 pose
-                                // stream, and a v3 match never reads it.
-                                if self.live.is_some() {
-                                    self.encoder.ingest_tick_topology_only(
-                                        sim_tick,
-                                        &snapshots,
-                                        &output,
-                                        &output.wakes,
-                                    );
-                                } else {
-                                    self.encoder.ingest_tick(
-                                        sim_tick,
-                                        &snapshots,
-                                        &output,
-                                        &output.wakes,
-                                    );
-                                }
-                                if let Some(live) = self.live.as_mut() {
-                                    live.ingest(&self.manifest, sim_tick, snapshots, &output);
-                                }
+                                feed_encoder(
+                                    &mut self.capture,
+                                    &mut self.encoder,
+                                    &mut self.live,
+                                    &self.manifest,
+                                    sim_tick,
+                                    snapshots,
+                                    &output,
+                                );
                                 reliable.extend(self.encoder.take_topology_messages());
                                 backend.record_host_timings(
                                     post_step_ms,
@@ -1878,24 +1990,15 @@ impl CityRuntime {
             let ingest_started = std::time::Instant::now();
             match backend.staged_snapshots() {
                 Ok(snapshots) => {
-                    if self.live.is_some() {
-                        self.encoder.ingest_tick_topology_only(
-                            sim_tick,
-                            &snapshots,
-                            &output,
-                            &output.wakes,
-                        );
-                    } else {
-                        self.encoder.ingest_tick(
-                            sim_tick,
-                            &snapshots,
-                            &output,
-                            &output.wakes,
-                        );
-                    }
-                    if let Some(live) = self.live.as_mut() {
-                        live.ingest(&self.manifest, sim_tick, snapshots, &output);
-                    }
+                    feed_encoder(
+                        &mut self.capture,
+                        &mut self.encoder,
+                        &mut self.live,
+                        &self.manifest,
+                        sim_tick,
+                        snapshots,
+                        &output,
+                    );
                     reliable.extend(self.encoder.take_topology_messages());
                 }
                 Err(error) => {
@@ -1952,10 +2055,16 @@ impl CityRuntime {
     ) -> Vec<Vec<u8>> {
         let packets = self.encoder.client_datagrams(client, camera, shared);
         self.sent_packets += packets.len() as u64;
+        let mut bytes = 0u64;
+        let mut records = 0u64;
         for packet in &packets {
-            self.sent_bytes += packet.len() as u64;
+            bytes += packet.len() as u64;
+            records += u64::from(vibe_land_destruction::wire::datagram_record_count(packet));
         }
-        self.sent_records += packets.len() as u64;
+        self.sent_bytes += bytes;
+        self.sent_records += records;
+        self.total_sent_bytes += bytes;
+        self.total_sent_records += records;
         packets
     }
 
@@ -2147,6 +2256,12 @@ impl CityRuntime {
 
     pub fn encoder_stats(&self) -> vibe_land_destruction::encoder::EncoderStats {
         self.encoder.stats()
+    }
+
+    /// Cumulative (records, bytes) sent on the pose stream since the match
+    /// opened; never drained.
+    pub fn stream_totals(&self) -> (u64, u64) {
+        (self.total_sent_records, self.total_sent_bytes)
     }
 
     pub fn take_stream_counters(&mut self) -> (u64, u64, u64) {

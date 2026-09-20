@@ -130,10 +130,40 @@ const MAX_PER_TICK: usize = 4_000_000;
 
 // --- writing -------------------------------------------------------------
 
+/// The sink a tape is written through: a plain buffered file, or a zstd
+/// stream over one.
+///
+/// A live capture of the town at ten thousand awake bodies is ~35 MB/s of
+/// f32 poses; zstd level 3 takes that down 2-3x at a cost the writer thread
+/// absorbs, and the reader sniffs the frame magic so a reader never needs
+/// telling which kind it has.
+enum TapeSink {
+    Plain(BufWriter<std::fs::File>),
+    Zstd(zstd::stream::write::Encoder<'static, BufWriter<std::fs::File>>),
+}
+
+impl Write for TapeSink {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        match self {
+            Self::Plain(inner) => inner.write(buf),
+            Self::Zstd(inner) => inner.write(buf),
+        }
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        match self {
+            Self::Plain(inner) => inner.flush(),
+            Self::Zstd(inner) => inner.flush(),
+        }
+    }
+}
+
 pub struct TapeWriter {
-    out: Writer<BufWriter<std::fs::File>>,
+    out: Writer<TapeSink>,
     ticks: u32,
 }
+
+/// The four bytes every zstd frame starts with.
+const ZSTD_MAGIC: [u8; 4] = [0x28, 0xB5, 0x2F, 0xFD];
 
 impl TapeWriter {
     pub fn create(
@@ -143,7 +173,28 @@ impl TapeWriter {
         camera: TapeCamera,
     ) -> std::io::Result<Self> {
         let file = std::fs::File::create(path)?;
-        let mut out = Writer { inner: BufWriter::new(file) };
+        Self::with_sink(TapeSink::Plain(BufWriter::new(file)), hz, manifest_hash, camera)
+    }
+
+    /// Same tape, zstd-framed. `TapeReader::open` reads either.
+    pub fn create_zstd(
+        path: &Path,
+        hz: u32,
+        manifest_hash: [u8; 32],
+        camera: TapeCamera,
+    ) -> std::io::Result<Self> {
+        let file = std::fs::File::create(path)?;
+        let encoder = zstd::stream::write::Encoder::new(BufWriter::new(file), 3)?;
+        Self::with_sink(TapeSink::Zstd(encoder), hz, manifest_hash, camera)
+    }
+
+    fn with_sink(
+        sink: TapeSink,
+        hz: u32,
+        manifest_hash: [u8; 32],
+        camera: TapeCamera,
+    ) -> std::io::Result<Self> {
+        let mut out = Writer { inner: sink };
         out.inner.write_all(MAGIC)?;
         out.u32(hz)?;
         out.inner.write_all(&manifest_hash)?;
@@ -221,8 +272,19 @@ impl TapeWriter {
         Ok(())
     }
 
-    pub fn finish(mut self) -> std::io::Result<u32> {
-        self.out.inner.flush()?;
+    /// Ticks written so far.
+    pub fn ticks(&self) -> u32 {
+        self.ticks
+    }
+
+    pub fn finish(self) -> std::io::Result<u32> {
+        match self.out.inner {
+            TapeSink::Plain(mut inner) => inner.flush()?,
+            TapeSink::Zstd(encoder) => {
+                let mut inner = encoder.finish()?;
+                inner.flush()?;
+            }
+        }
         Ok(self.ticks)
     }
 }
@@ -230,7 +292,7 @@ impl TapeWriter {
 // --- reading -------------------------------------------------------------
 
 pub struct TapeReader {
-    input: Reader<BufReader<std::fs::File>>,
+    input: Reader<Box<dyn Read>>,
     pub hz: u32,
     pub manifest_hash: [u8; 32],
     pub camera: TapeCamera,
@@ -238,8 +300,17 @@ pub struct TapeReader {
 
 impl TapeReader {
     pub fn open(path: &Path) -> std::io::Result<Self> {
-        let file = std::fs::File::open(path)?;
-        let mut input = Reader { inner: BufReader::new(file) };
+        use std::io::{Seek, SeekFrom};
+        let mut file = std::fs::File::open(path)?;
+        let mut head = [0u8; 4];
+        let sniffed = file.read(&mut head)?;
+        file.seek(SeekFrom::Start(0))?;
+        let source: Box<dyn Read> = if sniffed == 4 && head == ZSTD_MAGIC {
+            Box::new(zstd::stream::read::Decoder::new(file)?)
+        } else {
+            Box::new(BufReader::new(file))
+        };
+        let mut input = Reader { inner: source };
         let magic = input.exact::<8>()?;
         if &magic != MAGIC {
             return Err(std::io::Error::new(
@@ -454,6 +525,46 @@ mod tests {
         }
         assert!(reader.next_tick().expect("eof").is_none());
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// The compressed framing must be invisible to a reader: same header,
+    /// same ticks, and the file is genuinely smaller than the raw one.
+    #[test]
+    fn a_zstd_tape_reads_back_identically_and_smaller() {
+        let dir = std::env::temp_dir().join("vl-tape-roundtrip");
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let plain = dir.join("plain.tape");
+        let packed = dir.join("packed.tape");
+        let original = sample();
+        let camera = TapeCamera {
+            eye: [1.0, 2.0, 3.0],
+            direction: [0.0, 0.0, -1.0],
+            fov_degrees: 70.0,
+        };
+        let mut a = TapeWriter::create(&plain, 60, [9u8; 32], camera).expect("create");
+        let mut b = TapeWriter::create_zstd(&packed, 60, [9u8; 32], camera).expect("create");
+        for _ in 0..50 {
+            a.push(original.tick, &original.snapshots, &original.output).expect("push");
+            b.push(original.tick, &original.snapshots, &original.output).expect("push");
+        }
+        assert_eq!(a.finish().expect("finish"), 50);
+        assert_eq!(b.finish().expect("finish"), 50);
+        let plain_len = std::fs::metadata(&plain).expect("meta").len();
+        let packed_len = std::fs::metadata(&packed).expect("meta").len();
+        assert!(packed_len < plain_len / 2, "zstd {packed_len} vs plain {plain_len}");
+
+        let mut reader = TapeReader::open(&packed).expect("open");
+        assert_eq!(reader.hz, 60);
+        assert_eq!(reader.camera, camera);
+        let mut ticks = 0;
+        while let Some(read) = reader.next_tick().expect("read") {
+            assert_eq!(read.output, original.output);
+            assert_eq!(read.snapshots.len(), 2);
+            ticks += 1;
+        }
+        assert_eq!(ticks, 50);
+        let _ = std::fs::remove_file(&plain);
+        let _ = std::fs::remove_file(&packed);
     }
 
     #[test]

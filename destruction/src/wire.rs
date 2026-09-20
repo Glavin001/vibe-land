@@ -647,6 +647,15 @@ pub fn encode_chunks_datagrams(
     packets
 }
 
+/// The record count from a v2 pose datagram's header, without decoding the
+/// records. Zero for anything that is not one.
+pub fn datagram_record_count(data: &[u8]) -> u16 {
+    if data.len() < 14 || data[0] != PKT_CITY_CHUNKS {
+        return 0;
+    }
+    u16::from_le_bytes([data[12], data[13]])
+}
+
 pub fn decode_chunks_datagram(data: &[u8]) -> Result<ChunksDatagram, WireError> {
     let mut reader = Reader::new(data);
     let kind = reader.u8()?;

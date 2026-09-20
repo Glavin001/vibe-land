@@ -16,6 +16,7 @@
 //! The default build is pure Rust and CI-safe. The `physx` feature adds the
 //! native runtime that drives `ExtStressPhysXDestructible` via physx-bridge.
 
+pub mod buildings;
 pub mod city;
 pub mod city_config;
 pub mod demolition;
