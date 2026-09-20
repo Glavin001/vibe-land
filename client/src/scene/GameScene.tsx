@@ -74,11 +74,21 @@ type GameWorldDebugFrame = React.ComponentProps<typeof GameWorld>['onDebugFrame'
 function DprController(): null {
   const setDpr = useThree((state) => state.setDpr);
   const scaleRef = useRef(1);
-  const gpuEmaRef = useRef(0);
-  const frameMinRef = useRef({ min: Infinity, frames: 0, period: 0 });
-  const sinceAdjustRef = useRef(0);
-  const dustEmaRef = useRef(0);
-  const dustHeadroom = useRef(0);
+  const gov = useRef({
+    frameEma: 0,
+    cpuEma: 0,
+    gpuEma: 0,
+    dustEma: 0,
+    pacingMin: Infinity,
+    pacingFrames: 0,
+    period: 0,
+    sinceAdjust: 0,
+    // The recovery probe: how long to hold before trying a rung back, and
+    // the rung on trial. A trial that overruns is undone and the hold doubles.
+    probeHoldFrames: 180,
+    heldFrames: 0,
+    trial: null as null | { undo: () => void; framesLeft: number },
+  });
   const apply = (scale: number) => {
     scaleRef.current = scale;
     renderStats.dprScale = scale;
@@ -92,84 +102,114 @@ function DprController(): null {
       }),
     [setDpr],
   );
-  // The dynamic-resolution loop.
+  // The GPU governor.
   //
-  // The GPU number is the sum of the per-pass timer queries -- the renderer's
-  // own cost -- and the display period is read off the frame pacing: the
-  // shortest frame over a window is the vsync interval whenever the GPU is
-  // comfortably under it. The budget is 85% of that period. Every 20 frames
-  // the scale moves towards sqrt(budget / gpu) (pixels go as the square), at
-  // most 8% a step, and only grows back once there is a fifth of headroom, so
-  // it settles rather than hunts. Floor 0.6: below that the tier's look is gone.
+  // Over budget is decided from the WALL CLOCK: the frame's own pacing is
+  // longer than the display period, and the CPU is spending a large share of
+  // that waiting (offFrame), which is what GPU-bound looks like. The per-pass
+  // GPU timers are NOT used for that decision: on the reporter's M3 they
+  // summed to 26-52 ms inside 12 ms frames, so ANGLE's Metal queries report
+  // something wider than the pass. They are still the only thing that says
+  // WHICH pass is heavy, and that is all they decide here: whether a trim
+  // comes out of the dust stage (samples to half, fluid balanced -> fast ->
+  // off, samples to a quarter) or out of pixels (dpr, 8% a step, floor 0.6).
+  //
+  // Recovery cannot read headroom off a vsync-locked frame, so it probes:
+  // after a hold, one rung is given back on trial; if the frame overruns
+  // within a second the rung is taken away again and the hold doubles (to a
+  // cap of half a minute); if it holds, the trial sticks and the hold resets.
   useFrame(() => {
+    const g = gov.current;
     if (!dynamicResolutionEnabled()) {
       if (scaleRef.current !== 1) apply(1);
+      if (governorFluidCap() !== 'balanced') setGovernorFluidCap('balanced');
+      if (governorSampleScale() !== 1) setGovernorSampleScale(1);
       renderStats.gpuBudgetMs = 0;
       return;
     }
-    const gpu = renderStats.gpuFrameMs;
-    if (gpu > 0) gpuEmaRef.current = gpuEmaRef.current > 0 ? gpuEmaRef.current * 0.95 + gpu * 0.05 : gpu;
-    const pacing = frameMinRef.current;
     const frame = renderStats.frameTotalMs;
-    if (frame > 0 && frame < pacing.min) pacing.min = frame;
-    pacing.frames += 1;
-    if (pacing.frames >= 120) {
-      // Quantise to the refresh rates that exist; a GPU-bound window says
-      // nothing about the display and keeps the last estimate.
-      if (pacing.min < 9.5) pacing.period = 8.33;
-      else if (pacing.min < 17.5 && gpuEmaRef.current < 12) pacing.period = 16.67;
-      else if (pacing.period === 0) pacing.period = 16.67;
-      pacing.min = Infinity;
-      pacing.frames = 0;
+    const cpu = renderStats.cpuFrameMs;
+    if (frame > 0) {
+      g.frameEma = g.frameEma > 0 ? g.frameEma * 0.9 + frame * 0.1 : frame;
+      g.cpuEma = g.cpuEma > 0 ? g.cpuEma * 0.9 + cpu * 0.1 : cpu;
+      if (frame < g.pacingMin) g.pacingMin = frame;
+      g.pacingFrames += 1;
     }
-    const period = pacing.period || 8.33;
-    const budget = period * 0.85;
-    renderStats.gpuBudgetMs = budget;
-    const dust = renderStats.gpuDustMs;
-    dustEmaRef.current = dustEmaRef.current > 0 ? dustEmaRef.current * 0.9 + dust * 0.1 : dust;
-    sinceAdjustRef.current += 1;
-    if (sinceAdjustRef.current < 20 || gpuEmaRef.current <= 0) return;
-    sinceAdjustRef.current = 0;
-    const ema = gpuEmaRef.current;
-    // The dust stage first. Its fluid is a dozen dependent passes per step
-    // and its volume a sample budget; neither follows the canvas size, and on
-    // the reporter's M3 they were 10-129 ms of a frame -- so while the frame
-    // is over budget and dust is a third or more of it, the governor takes
-    // from dust: samples to half, then the fluid a rung, then samples to a
-    // quarter. It gives back one rung at a time, slowly, once the frame has
-    // held a fifth of headroom for two seconds.
-    const dustHeavy = ema > budget && dustEmaRef.current > budget * 0.35;
-    if (dustHeavy) {
-      const scale = governorSampleScale();
-      const cap = governorFluidCap();
-      if (scale > 0.5) setGovernorSampleScale(0.5);
-      else if (cap === 'balanced') setGovernorFluidCap('fast');
-      else if (cap === 'fast') setGovernorFluidCap('off');
-      else if (scale > 0.25) setGovernorSampleScale(0.25);
-      dustHeadroom.current = 0;
-      return;
+    const gpu = renderStats.gpuFrameMs;
+    if (gpu > 0) g.gpuEma = g.gpuEma > 0 ? g.gpuEma * 0.9 + gpu * 0.1 : gpu;
+    g.dustEma = g.dustEma > 0 ? g.dustEma * 0.9 + renderStats.gpuDustMs * 0.1 : renderStats.gpuDustMs;
+    if (g.pacingFrames >= 120) {
+      // Quantise to the refresh rates that exist. A window whose fastest
+      // frame is still long says nothing about the display; keep the last.
+      if (g.pacingMin < 9.5) g.period = 8.33;
+      else if (g.pacingMin < 17.5) g.period = 16.67;
+      else if (g.period === 0) g.period = 16.67;
+      g.pacingMin = Infinity;
+      g.pacingFrames = 0;
     }
-    if (ema < budget * 0.8) {
-      dustHeadroom.current += 1;
-      // 20 frames per evaluation: six evaluations is two seconds at 60 Hz.
-      if (dustHeadroom.current >= 6 && scaleRef.current >= 0.999) {
-        dustHeadroom.current = 0;
-        const scale = governorSampleScale();
-        const cap = governorFluidCap();
-        if (scale < 0.5) setGovernorSampleScale(0.5);
-        else if (cap === 'off') setGovernorFluidCap('fast');
-        else if (cap === 'fast') setGovernorFluidCap('balanced');
-        else if (scale < 1) setGovernorSampleScale(1);
+    const period = g.period || 8.33;
+    renderStats.gpuBudgetMs = period;
+    const gpuBound = g.frameEma - g.cpuEma > g.frameEma * 0.4;
+    const overBudget = g.frameEma > period * 1.15 && gpuBound;
+    const dustHeavy = g.gpuEma > 0 && g.dustEma > g.gpuEma * 0.35;
+
+    // A rung on trial: undo it the moment the frame overruns, else let it stick.
+    if (g.trial) {
+      g.trial.framesLeft -= 1;
+      if (overBudget) {
+        g.trial.undo();
+        g.trial = null;
+        g.probeHoldFrames = Math.min(1800, g.probeHoldFrames * 2);
+        g.heldFrames = 0;
         return;
       }
-    } else {
-      dustHeadroom.current = 0;
+      if (g.trial.framesLeft <= 0) {
+        g.trial = null;
+        g.probeHoldFrames = 180;
+        g.heldFrames = 0;
+      }
+      return;
     }
-    let next = scaleRef.current;
-    if (ema > budget) next = scaleRef.current * Math.max(0.92, Math.sqrt(budget / ema));
-    else if (ema < budget * 0.8) next = scaleRef.current * Math.min(1.08, Math.sqrt(budget / ema));
-    next = Math.min(1, Math.max(0.6, next));
-    if (Math.abs(next - scaleRef.current) > 0.005) apply(next);
+
+    g.sinceAdjust += 1;
+    if (g.sinceAdjust < 20 || g.frameEma <= 0) return;
+    g.sinceAdjust = 0;
+
+    if (overBudget) {
+      g.heldFrames = 0;
+      const scale = governorSampleScale();
+      const cap = governorFluidCap();
+      if (dustHeavy && scale > 0.5) setGovernorSampleScale(0.5);
+      else if (dustHeavy && cap === 'balanced') setGovernorFluidCap('fast');
+      else if (dustHeavy && cap === 'fast') setGovernorFluidCap('off');
+      else if (dustHeavy && scale > 0.25) setGovernorSampleScale(0.25);
+      else if (scaleRef.current > 0.6) apply(Math.max(0.6, scaleRef.current * 0.92));
+      return;
+    }
+
+    // Under budget (or CPU-bound, where pixels are free): probe a rung back.
+    g.heldFrames += 20;
+    if (g.heldFrames < g.probeHoldFrames) return;
+    g.heldFrames = 0;
+    const scale = governorSampleScale();
+    const cap = governorFluidCap();
+    const before = scaleRef.current;
+    if (before < 1) {
+      apply(Math.min(1, before * 1.08));
+      g.trial = { undo: () => apply(before), framesLeft: 60 };
+    } else if (scale < 0.5) {
+      setGovernorSampleScale(0.5);
+      g.trial = { undo: () => setGovernorSampleScale(0.25), framesLeft: 60 };
+    } else if (cap === 'off') {
+      setGovernorFluidCap('fast');
+      g.trial = { undo: () => setGovernorFluidCap('off'), framesLeft: 60 };
+    } else if (cap === 'fast') {
+      setGovernorFluidCap('balanced');
+      g.trial = { undo: () => setGovernorFluidCap('fast'), framesLeft: 60 };
+    } else if (scale < 1) {
+      setGovernorSampleScale(1);
+      g.trial = { undo: () => setGovernorSampleScale(0.5), framesLeft: 60 };
+    }
   });
   return null;
 }

@@ -265,6 +265,13 @@ let renderMsThisFrame = 0;
 // later, which is why they are polled rather than awaited. Per pass rather
 // than per frame because on a GPU shared with other processes the whole-frame
 // number includes their work; the minimum of a pass over many frames does not.
+//
+// Caveat, measured on an M3 Max through ANGLE's Metal backend: the passes of
+// a 12 ms frame summed to 26-52 ms. Metal's timer queries there report
+// something wider than the bracketed pass (command-buffer granularity, most
+// likely), so on that platform the per-pass numbers rank the passes but do
+// not add up to the frame. Nothing here should decide "over budget" from
+// them alone; the governor decides that from frame pacing.
 // ---------------------------------------------------------------------------
 
 type TimerExt = {
