@@ -126,6 +126,12 @@ function buildGlassMaterial(appearance: MaterialAppearance): THREE.Material {
     // comes out opaque navy. Writing depth keeps the nearest glass surface,
     // which is what looking at a glazed facade actually gives you.
     depthWrite: true,
+    // One pass for both faces. Three's default for a transparent DoubleSide
+    // material is two draws per mesh (backs, then fronts), each flagged
+    // needsUpdate -- two shader-program lookups per glass draw, every frame.
+    // The nearest pane wins here regardless (depth is written), so the
+    // ordering the second pass buys is nothing this material can show.
+    forceSinglePass: true,
     reflectivity: 0.7,
     envMapIntensity: 2.2,
   });
