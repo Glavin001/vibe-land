@@ -2199,6 +2199,17 @@ export class CityClient {
     return { renderTick: this.renderClockTick, playoutDelayTicks: this.sampleDelaySmooth };
   }
 
+  /**
+   * Bumps whenever the ledger is replaced wholesale (a bootstrap) or a
+   * structure is rewritten (a repair); anything written before is not
+   * comparable with anything written after. The render layer reads this every
+   * frame, and it used to read it off `stats()`, which walks every chunk slot
+   * of the city to count orphans -- 10% of all CPU time in a collapse.
+   */
+  ledgerEpoch(): number {
+    return this.bootstrapCount + this.structureRepairs;
+  }
+
   stats(): CityClientStats {
     const topologyStats = this.topology.stats();
     let windowBytes = 0;

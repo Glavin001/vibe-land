@@ -968,8 +968,7 @@ export function CityChunksLayer({
     // structure without necessarily setting it -- which left 24,105 events,
     // one per chunk, in runs that had one, and those runs were the ones that
     // looked catastrophic.
-    const ledgerStats = client.stats();
-    const ledgerEpoch = ledgerStats.bootstraps + ledgerStats.structureRepairs;
+    const ledgerEpoch = client.ledgerEpoch();
     if (repaint.all || ledgerEpoch !== lastLedgerEpochRef.current) {
       lastLedgerEpochRef.current = ledgerEpoch;
       resetTeleportBaseline?.();
