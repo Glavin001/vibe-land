@@ -1093,6 +1093,7 @@ export function CityChunksLayer({
     }
     const repaintBodies = repaintBodiesRef.current;
     repaintBodiesRef.current = false;
+    state.poses.bodyColoursUniform.value = bodyDebug.enabled ? 1 : 0;
     // Chunk records: which body each chunk rides and where it sits on it.
     const recordStartedAt = performance.now();
     const touchedMeshes = new Set<number>();

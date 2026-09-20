@@ -15,7 +15,8 @@
 //                  [bodyIndex, lx, ly, lz] [qx, qy, qz, qw]
 //   body poses     one per body, rewritten when the body moves (the same
 //                  distance stride as before decides how often):
-//                  [px, py, pz, tint] [qx, qy, qz, qw] [r, g, b, hidden] [-]
+//                  [px, py, pz, tint] [qx, qy, qz, qw] [r, g, b, -] [-]
+//                  (the colour texel is read only while BODY COLORS is on)
 //
 // and the vertex shader composes the matrix from the two. Every vertex of the
 // merged cell geometry carries its slot id, so a cell is ONE indexed draw in
@@ -83,6 +84,8 @@ export class CityGpuPoses {
   private bodyDirty = false;
   /** Materials hold the body texture as a uniform; a grown texture is a new object. */
   private readonly textureListeners = new Set<(texture: THREE.DataTexture) => void>();
+  /** 1 while the debug palette colours bodies, so the shader fetches the colour texel. */
+  readonly bodyColoursUniform = { value: 0 };
 
   constructor(chunkCount: number, radii: Float32Array) {
     this.chunkCount = chunkCount;
@@ -264,6 +267,7 @@ attribute float citySlot;
 uniform highp sampler2D cityChunks;
 uniform highp sampler2D cityBodies;
 uniform float cityHideY;
+uniform float cityBodyColours;
 vec3 vCityTintScratch;
 vec4 cityTexel( sampler2D tex, int texel ) {
   int size = textureSize( tex, 0 ).x;
@@ -282,11 +286,14 @@ mat4 citySlotMatrix() {
   int body = int( record0.x );
   vec4 body0 = cityTexel( cityBodies, body * 4 );
   vec4 body1 = cityTexel( cityBodies, body * 4 + 1 );
-  vec4 body2 = cityTexel( cityBodies, body * 4 + 2 );
   vec4 q = normalize( cityQuatMul( body1, record1 ) );
   vec3 p = body0.xyz + cityQuatRotate( body1, record0.yzw );
-  float s = ( body2.w > 0.5 || p.y < cityHideY || body < 0 ) ? 0.0 : 1.0;
-  vCityTintScratch = body2.rgb * body0.w;
+  float s = ( p.y < cityHideY || body < 0 ) ? 0.0 : 1.0;
+  // The third texel is the debug palette; a dependent fetch per vertex is
+  // only paid while BODY COLORS is on.
+  vCityTintScratch = cityBodyColours > 0.5
+    ? cityTexel( cityBodies, body * 4 + 2 ).rgb * body0.w
+    : vec3( body0.w );
   float xx = q.x * q.x, yy = q.y * q.y, zz = q.z * q.z;
   float xy = q.x * q.y, xz = q.x * q.z, yz = q.y * q.z;
   float wx = q.w * q.x, wy = q.w * q.y, wz = q.w * q.z;
@@ -328,6 +335,7 @@ export function injectSlotTransform(material: THREE.Material, poses: CityGpuPose
     shader.uniforms.cityChunks = { value: poses.chunkTexture };
     shader.uniforms.cityBodies = bodies;
     shader.uniforms.cityHideY = { value: CHUNK_HIDE_Y_M };
+    shader.uniforms.cityBodyColours = poses.bodyColoursUniform;
     const shaded = shader.fragmentShader.includes('#include <color_fragment>');
     shader.vertexShader = SLOT_PARS + (shaded ? 'varying vec3 vCityTint;\n' : '') + shader.vertexShader;
     if (shader.vertexShader.includes('#include <beginnormal_vertex>')) {

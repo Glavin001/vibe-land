@@ -73,6 +73,7 @@ type GameWorldDebugFrame = React.ComponentProps<typeof GameWorld>['onDebugFrame'
  */
 function DprController(): null {
   const setDpr = useThree((state) => state.setDpr);
+  const gl = useThree((state) => state.gl);
   const scaleRef = useRef(1);
   const gov = useRef({
     frameEma: 0,
@@ -88,6 +89,7 @@ function DprController(): null {
     probeHoldFrames: 180,
     heldFrames: 0,
     trial: null as null | { undo: () => void; framesLeft: number },
+    frameIndex: 0,
   });
   const apply = (scale: number) => {
     scaleRef.current = scale;
@@ -121,6 +123,7 @@ function DprController(): null {
   useFrame(() => {
     const g = gov.current;
     if (!dynamicResolutionEnabled()) {
+      gl.shadowMap.autoUpdate = true;
       if (scaleRef.current !== 1) apply(1);
       if (governorFluidCap() !== 'balanced') setGovernorFluidCap('balanced');
       if (governorSampleScale() !== 1) setGovernorSampleScale(1);
@@ -153,6 +156,13 @@ function DprController(): null {
     }
     const period = g.period || 8.33;
     renderStats.gpuBudgetMs = period;
+    // Shadows at 60 Hz on a 120 Hz display. The shadow pass re-renders every
+    // vertex of the city into a 2048^2 map; refreshing it every other frame
+    // halves that for a lag no eye can see at these rates, and it costs a
+    // frame of shadow lag only on debris in flight. Every frame on 60 Hz.
+    g.frameIndex += 1;
+    gl.shadowMap.autoUpdate = false;
+    gl.shadowMap.needsUpdate = period > 9 || (g.frameIndex & 1) === 0;
     const gpuBound = g.frameEma - g.cpuEma > g.frameEma * 0.4;
     const overBudget = g.frameEma > period * 1.15 && gpuBound;
     const dustHeavy = g.gpuEma > 0 && g.dustEma > g.gpuEma * 0.35;
