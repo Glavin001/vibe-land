@@ -9,10 +9,12 @@
 //
 //   /cityreplay                     the last tape recorded in this browser
 //   /cityreplay?tape=<name>         a named one
-//   /cityreplay?cam=x,y,z,tx,ty,tz  camera pose (default: from the spawn side)
+//   /cityreplay?cam=x,y,z,tx,ty,tz  starting camera pose (default: the spawn side)
 //   /cityreplay?loop=1              start over when the tape ends
 //
-// The camera is fixed: what moves is the city.
+// Drag to look, WASD/QE to fly, shift for speed; the pose is written back to
+// the URL as you move, so a view can be shared and a sweep re-run from it.
+// Space plays/pauses, arrows scrub 5 s, R rewinds.
 
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -43,6 +45,9 @@ declare global {
       rewind: () => Promise<void>;
       play: () => void;
       pause: () => void;
+      /** Jump to a tape time; backwards rewinds first. */
+      seek: (ms: number) => Promise<void>;
+      setSpeed: (speed: number) => void;
     };
   }
 }
@@ -58,13 +63,104 @@ function parseCamera(): { position: [number, number, number]; target: [number, n
   return { position: [0, 14, 140], target: [0, 6, 0] };
 }
 
+/**
+ * A free camera: drag to look, WASD to move, Q/E down/up, Shift to go fast,
+ * wheel to change speed. Starts at the pose from the URL and writes its pose
+ * back there (throttled), so a view can be shared and a sweep re-run from it.
+ */
 function ReplayCamera({ pose }: { pose: ReturnType<typeof parseCamera> }) {
   const camera = useThree((state) => state.camera);
+  const gl = useThree((state) => state.gl);
+  const keys = useRef(new Set<string>());
+  const look = useRef({ yaw: 0, pitch: 0, dragging: false, lastX: 0, lastY: 0 });
+  const speed = useRef(25);
+  const lastUrlWrite = useRef(0);
   useEffect(() => {
     camera.position.set(...pose.position);
     camera.lookAt(new THREE.Vector3(...pose.target));
+    const euler = new THREE.Euler().setFromQuaternion(camera.quaternion, 'YXZ');
+    look.current.yaw = euler.y;
+    look.current.pitch = euler.x;
     camera.updateProjectionMatrix();
   }, [camera, pose]);
+  useEffect(() => {
+    const el = gl.domElement;
+    const typing = (event: Event) => {
+      const target = event.target;
+      return target instanceof HTMLElement && !!target.closest('input, textarea, select');
+    };
+    const onDown = (event: PointerEvent) => {
+      if (event.button !== 0) return;
+      look.current.dragging = true;
+      look.current.lastX = event.clientX;
+      look.current.lastY = event.clientY;
+      el.setPointerCapture(event.pointerId);
+    };
+    const onMove = (event: PointerEvent) => {
+      if (!look.current.dragging) return;
+      const dx = event.clientX - look.current.lastX;
+      const dy = event.clientY - look.current.lastY;
+      look.current.lastX = event.clientX;
+      look.current.lastY = event.clientY;
+      look.current.yaw -= dx * 0.0035;
+      look.current.pitch = Math.max(-1.5, Math.min(1.5, look.current.pitch - dy * 0.0035));
+    };
+    const onUp = () => { look.current.dragging = false; };
+    const onKey = (down: boolean) => (event: KeyboardEvent) => {
+      if (typing(event)) return;
+      if (['KeyW', 'KeyA', 'KeyS', 'KeyD', 'KeyQ', 'KeyE', 'ShiftLeft', 'ShiftRight'].includes(event.code)) {
+        if (down) keys.current.add(event.code); else keys.current.delete(event.code);
+        event.preventDefault();
+      }
+    };
+    const onWheel = (event: WheelEvent) => {
+      speed.current = Math.max(2, Math.min(200, speed.current * (event.deltaY > 0 ? 0.8 : 1.25)));
+    };
+    const keyDown = onKey(true);
+    const keyUp = onKey(false);
+    el.addEventListener('pointerdown', onDown);
+    el.addEventListener('pointermove', onMove);
+    el.addEventListener('pointerup', onUp);
+    el.addEventListener('wheel', onWheel, { passive: true });
+    window.addEventListener('keydown', keyDown);
+    window.addEventListener('keyup', keyUp);
+    return () => {
+      el.removeEventListener('pointerdown', onDown);
+      el.removeEventListener('pointermove', onMove);
+      el.removeEventListener('pointerup', onUp);
+      el.removeEventListener('wheel', onWheel);
+      window.removeEventListener('keydown', keyDown);
+      window.removeEventListener('keyup', keyUp);
+    };
+  }, [gl]);
+  useFrame((_, dt) => {
+    const step = Math.min(0.1, dt);
+    const k = keys.current;
+    const fast = k.has('ShiftLeft') || k.has('ShiftRight') ? 4 : 1;
+    const move = new THREE.Vector3(
+      (k.has('KeyD') ? 1 : 0) - (k.has('KeyA') ? 1 : 0),
+      (k.has('KeyE') ? 1 : 0) - (k.has('KeyQ') ? 1 : 0),
+      (k.has('KeyS') ? 1 : 0) - (k.has('KeyW') ? 1 : 0),
+    );
+    camera.quaternion.setFromEuler(new THREE.Euler(look.current.pitch, look.current.yaw, 0, 'YXZ'));
+    if (move.lengthSq() > 0) {
+      move.normalize().multiplyScalar(speed.current * fast * step);
+      const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion);
+      const right = new THREE.Vector3(1, 0, 0).applyQuaternion(camera.quaternion);
+      camera.position.addScaledVector(right, move.x);
+      camera.position.y += move.y;
+      camera.position.addScaledVector(forward, -move.z);
+      const now = performance.now();
+      if (now - lastUrlWrite.current > 500) {
+        lastUrlWrite.current = now;
+        const at = new THREE.Vector3(0, 0, -10).applyQuaternion(camera.quaternion).add(camera.position);
+        const cam = [...camera.position.toArray(), ...at.toArray()].map((v) => v.toFixed(1)).join(',');
+        const url = new URL(window.location.href);
+        url.searchParams.set('cam', cam);
+        window.history.replaceState(null, '', url.toString());
+      }
+    }
+  });
   return null;
 }
 
@@ -127,6 +223,29 @@ export function CityReplayPage() {
           },
           play: () => playerRef.current?.play(),
           pause: () => playerRef.current?.pause(),
+          seek: async (ms) => {
+            const current = playerRef.current;
+            if (!current) return;
+            const wasPlaying = current.playing();
+            const speed = current.speed;
+            let target = current;
+            if (ms < current.timeMs()) {
+              target = await mount();
+              target.speed = speed;
+              target.pause();
+            }
+            target.fastForward(ms);
+            if (wasPlaying) target.play();
+            else target.pause();
+          },
+          setSpeed: (speed) => {
+            const current = playerRef.current;
+            if (!current) return;
+            const wasPlaying = current.playing();
+            current.pause();
+            current.speed = speed;
+            if (wasPlaying) current.play();
+          },
         };
         setStatus('');
       })
@@ -143,6 +262,31 @@ export function CityReplayPage() {
       if (current) setClock({ t: current.timeMs(), playing: current.playing() });
     }, 250);
     return () => window.clearInterval(tick);
+  }, []);
+
+  // Space play/pause, arrows 5 s, R rewind -- unless typing in a control.
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      const target = event.target;
+      if (target instanceof HTMLElement && target.closest('input, textarea, select, button')) return;
+      const replay = window.__VIBE_REPLAY__;
+      const current = playerRef.current;
+      if (!replay || !current) return;
+      if (event.code === 'Space') {
+        event.preventDefault();
+        if (current.playing()) current.pause(); else current.play();
+      } else if (event.code === 'ArrowLeft') {
+        event.preventDefault();
+        void replay.seek(Math.max(0, current.timeMs() - 5000));
+      } else if (event.code === 'ArrowRight') {
+        event.preventDefault();
+        void replay.seek(current.timeMs() + 5000);
+      } else if (event.code === 'KeyR') {
+        void replay.seek(0);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
   }, []);
 
   const onDrop = async (event: React.DragEvent) => {
@@ -225,16 +369,39 @@ export function CityReplayPage() {
         )}
         {player && (
           <>
-            <span>{(Math.min(clock.t, player.durationMs()) / 1000).toFixed(1)} / {(player.durationMs() / 1000).toFixed(1)} s{player.ended() ? ' · ended' : ''}</span>
-            <button type="button" style={button} onClick={() => (clock.playing ? player.pause() : player.play())}>
-              {clock.playing ? 'PAUSE' : 'PLAY'}
+            <button type="button" style={button} title="Rewind (R)" onClick={() => void window.__VIBE_REPLAY__?.seek(0)}>⏮</button>
+            <button type="button" style={button} title="Back 5 s (←)" onClick={() => void window.__VIBE_REPLAY__?.seek(Math.max(0, (playerRef.current?.timeMs() ?? 0) - 5000))}>−5s</button>
+            <button type="button" style={{ ...button, minWidth: 64 }} title="Play / pause (space)" onClick={() => (clock.playing ? player.pause() : player.play())}>
+              {clock.playing ? '❚❚ PAUSE' : '▶ PLAY'}
             </button>
-            <button type="button" style={button} onClick={() => void window.__VIBE_REPLAY__?.rewind()}>
-              REWIND
-            </button>
+            <button type="button" style={button} title="Forward 5 s (→)" onClick={() => void window.__VIBE_REPLAY__?.seek((playerRef.current?.timeMs() ?? 0) + 5000)}>+5s</button>
+            <input
+              type="range"
+              min={0}
+              max={Math.round(player.durationMs())}
+              value={Math.round(Math.min(clock.t, player.durationMs()))}
+              onChange={(event) => void window.__VIBE_REPLAY__?.seek(Number(event.target.value))}
+              style={{ width: 220 }}
+              title="Scrub"
+            />
+            <span style={{ minWidth: 110 }}>
+              {(Math.min(clock.t, player.durationMs()) / 1000).toFixed(1)} / {(player.durationMs() / 1000).toFixed(1)} s{player.ended() ? ' · ended' : ''}
+            </span>
+            <select
+              style={button}
+              defaultValue="1"
+              title="Playback speed"
+              onChange={(event) => window.__VIBE_REPLAY__?.setSpeed(Number(event.target.value))}
+            >
+              <option value="0.25">0.25×</option>
+              <option value="0.5">0.5×</option>
+              <option value="1">1×</option>
+              <option value="2">2×</option>
+            </select>
             <label>
               <input type="checkbox" defaultChecked={player.loop} onChange={(event) => { player.loop = event.target.checked; }} /> loop
             </label>
+            <span style={{ color: '#999' }}>drag to look · WASD/QE move · shift fast · wheel speed</span>
             <button
               type="button"
               style={button}

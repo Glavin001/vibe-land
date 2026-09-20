@@ -29,6 +29,11 @@ export interface ReplayPlayer {
   rewind(): Promise<ReplayPlayer>;
   /** Called every frame by the page; dispatches every packet now due. */
   tick(): void;
+  /**
+   * Jump forward to `ms` of tape: every packet up to there is applied at
+   * once. Backwards is a rewind followed by this; the page does that.
+   */
+  fastForward(ms: number): void;
   /** Playback rate; 1 is real time. */
   speed: number;
   loop: boolean;
@@ -90,6 +95,17 @@ export async function createReplayPlayer(
       playingNow = false;
     },
     rewind: () => createReplayPlayer(tape, assets),
+    fastForward: (ms) => {
+      const target = Math.min(durationMs, Math.max(0, ms));
+      while (cursor < tape.packets.length && tape.times[cursor] - origin <= target) {
+        const packet = tape.packets[cursor];
+        cursor += 1;
+        if (packet[0] === PKT_METEOR_LAUNCHED) continue;
+        client.handlePacket(packet);
+      }
+      pausedAt = target;
+      startedAt = performance.now() - target / player.speed;
+    },
     tick: () => {
       if (!playingNow) return;
       const now = player.timeMs();
