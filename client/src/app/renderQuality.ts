@@ -281,6 +281,23 @@ let fluidCap: DustFluid = 'balanced';
 let sampleScale = 1;
 
 let dustCapSprites = false;
+let governorHeld = false;
+
+/**
+ * The perf sweep holds the governor while it runs: it prices features by
+ * toggling them one at a time, and a governor trimming resolution and dust
+ * underneath it prices the governor instead. The first M3 sweep read every
+ * feature as worth the same 8 ms for exactly that reason.
+ */
+export function setGovernorPaused(next: boolean): void {
+  if (next === governorHeld) return;
+  governorHeld = next;
+  notify();
+}
+
+export function governorPaused(): boolean {
+  return governorHeld;
+}
 
 /**
  * The rung under "samples to a quarter": volumetric dust drawn as sprites.

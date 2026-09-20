@@ -45,6 +45,7 @@ import {
   type DustMode,
   setCityTextureDetail,
   setDprCap,
+  setGovernorPaused,
   setInstanceShareThreshold,
   setQualityTier,
   setShadowMapSize,
@@ -337,6 +338,7 @@ export async function runPerfSweep(
   // ever reached that browser again. Raw entries, restored verbatim --
   // including absent keys staying absent.
   const storedBefore = snapshotStoredRenderSettings();
+  setGovernorPaused(true);
   const steps: PerfSweepStep[] = [];
   let applied = original;
   const step = async (label: string, patch: Partial<Config>): Promise<PerfSweepStep> => {
@@ -414,6 +416,7 @@ export async function runPerfSweep(
   } finally {
     applyConfig(original);
     restoreStoredRenderSettings(storedBefore);
+    setGovernorPaused(false);
   }
 
   return finishReport(steps, sentinel, profile, presentPeriodMs);

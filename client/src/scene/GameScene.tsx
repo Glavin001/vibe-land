@@ -8,6 +8,7 @@ import {
   dynamicResolutionEnabled,
   governorDustSprites,
   governorFluidCap,
+  governorPaused,
   governorSampleScale,
   setGovernorDustSprites,
   setGovernorFluidCap,
@@ -124,7 +125,7 @@ function DprController(): null {
   // cap of half a minute); if it holds, the trial sticks and the hold resets.
   useFrame(() => {
     const g = gov.current;
-    if (!dynamicResolutionEnabled()) {
+    if (!dynamicResolutionEnabled() || governorPaused()) {
       gl.shadowMap.autoUpdate = true;
       if (scaleRef.current !== 1) apply(1);
       if (governorFluidCap() !== 'balanced') setGovernorFluidCap('balanced');
