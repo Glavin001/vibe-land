@@ -48,20 +48,13 @@ import {
   shadowsEnabled,
 } from '../app/renderQuality';
 import {
-  buildCityMaterial,
   buildCityMesh,
   refreshRenderableSphere,
-  wakeBrokenSlots,
-  wakeSlotFromShell,
+  writeBodyPose,
+  writeChunkRecord,
   type CityMeshState,
 } from './cityChunkMesh';
 import { loadCityTextures } from './cityTextures';
-import {
-  setChunkTeleportProbe,
-  writeInstance,
-  type ChunkWriteContext,
-  type CityRenderable,
-} from './cityChunkWrite';
 import { updateCityE2E, updateCityStructuresE2E } from '../e2eBridge';
 import { POSE_SOURCES, poseTraceRecord, poseTraceWanted } from '../city/poseTrace';
 import { addCitySuspect, isRecording, recordCityEvent, recordCityStats } from '../netlab/recorder';
@@ -83,9 +76,8 @@ import {
 import { frameStartTime, markFrameEndAndSample, renderStats } from '../city/renderStats';
 import { cityDiagnosticsWanted } from '../city/cityDiagnostics';
 import { dustEnabled } from '../city/dustSettings';
-import { CHUNK_SUNK_Y_M, compareDrawnChunkPositions, deepestChunkProvenance } from '../city/chunkDiagnostics';
+import { CHUNK_SUNK_Y_M, deepestChunkProvenance } from '../city/chunkDiagnostics';
 
-const TMP_MATRIX = new THREE.Matrix4();
 /** Scratch for the visual audit's replicated frustum test. */
 const TMP_FRUSTUM = new THREE.Frustum();
 const TMP_PROJ = new THREE.Matrix4();
@@ -281,86 +273,76 @@ function sweepChunkPositions(client: CityClient): {
 }
 
 /**
- * Slots whose last DRAWN position disagrees with the ledger by more than
- * `toleranceM`.
+ * Slots whose last DRAWN position disagrees with the ledger.
  *
- * The ledger is the authority the renderer is supposed to be showing, so a
- * standing disagreement means the screen is stale — a body whose pose changed
- * without anything ever marking its chunks for a rewrite. Nothing else
- * observes this: every other city metric reads the ledger, which is correct
- * even when the screen is not.
+ * Nothing installs this any more: the GPU composes every chunk from the
+ * ledger's own body pose and offset each frame, so the drawn position IS the
+ * ledger's, and the only way for them to disagree -- a chunk never marked
+ * for a rewrite -- no longer exists. Kept as a seam so the report field stays.
  */
-let countStaleDrawnChunks: ((positions: Float32Array, count: number, toleranceM: number)
+const countStaleDrawnChunks: ((positions: Float32Array, count: number, toleranceM: number)
   => { checked: number; stale: number }) | null = null;
 
 /**
- * Watch every written chunk transform for single-frame jumps.
+ * Watch every written body pose for single-frame jumps.
  *
- * Returns a disposer. Positions are held in a preallocated array so the probe
- * costs one compare and three stores per chunk write. Each event carries the
- * causal context of the write — which body, how long since this chunk's last
- * write, and what kind of write — because a bare step size cannot distinguish
- * "moved 2 m because it was not drawn for 500 ms" from "jumped 2 m between
- * consecutive frames", and those have entirely different root causes.
+ * Chunks are rigid within their body and composed on the GPU from the body's
+ * pose, so a chunk teleports exactly when its body's written pose does; the
+ * probe reads the body writes and reports against the body's first chunk.
+ * Each event carries the causal context of the write -- which body, how long
+ * since its last write, and what kind of write -- because a bare step size
+ * cannot distinguish "moved 2 m because it was not drawn for 500 ms" from
+ * "jumped 2 m between consecutive frames".
  */
-/** Set by `installChunkTeleportProbe`; see the note inside it. */
-let resetTeleportBaseline: (() => void) | null = null;
+type BodyWriteContext = {
+  bodyKey: number;
+  slot: number;
+  settling: boolean;
+  bodySettled: boolean;
+  source?: string;
+  bodySpeed?: number;
+  recentlyRebased?: boolean;
+};
 
-function installChunkTeleportProbe(chunkCount: number): () => void {
-  const previous = new Float32Array(chunkCount * 3).fill(Number.NaN);
-  const lastWriteMs = new Float32Array(chunkCount).fill(Number.NaN);
-  // A full repaint rewrites every chunk from a ledger that has just been
-  // replaced, so comparing those writes against what was there before measures
-  // the bootstrap, not the renderer. Two bootstraps at join put 48,210 events
-  // into the totals -- exactly twice the city's 24,105 chunks -- and swamped
-  // everything the probe had to say about the collapse that followed. Clearing
-  // the baseline makes the next write per slot a fresh start, which is what it
-  // is.
-  resetTeleportBaseline = () => {
-    previous.fill(Number.NaN);
-    lastWriteMs.fill(Number.NaN);
-    speedEst.fill(0);
-  };
-  /** EMA of each slot's own write-to-write speed, m/s. */
-  const speedEst = new Float32Array(chunkCount);
-  const teleportStrikes = new Map<number, number>();
-  countStaleDrawnChunks = (positions, count, toleranceM) =>
-    compareDrawnChunkPositions(positions, previous, count, toleranceM);
-  setChunkTeleportProbe((slot, position, ctx) => {
-    const base = slot * 3;
-    const px = previous[base];
+class BodyTeleportProbe {
+  private readonly previous = new Map<number, Float32Array>();
+  private readonly lastWriteMs = new Map<number, number>();
+  private readonly speedEst = new Map<number, number>();
+  private readonly teleportStrikes = new Map<number, number>();
+
+  /**
+   * A full repaint rewrites every body from a ledger that has just been
+   * replaced, so comparing those writes against what was there before
+   * measures the bootstrap, not the renderer. Clearing the baseline makes
+   * the next write per body a fresh start, which is what it is.
+   */
+  reset(): void {
+    this.previous.clear();
+    this.lastWriteMs.clear();
+    this.speedEst.clear();
+  }
+
+  observe(position: ArrayLike<number>, ctx: BodyWriteContext): void {
     const nowMs = performance.now();
-    // Teleport analysis needs the write's context; stale-detection only needs
-    // the position, so the builder's context-free initial writes still register.
-    if (!Number.isNaN(px) && ctx) {
-      const dx = position[0] - px;
-      const dy = position[1] - previous[base + 1];
-      const dz = position[2] - previous[base + 2];
+    const previous = this.previous.get(ctx.bodyKey);
+    if (previous) {
+      const dx = position[0] - previous[0];
+      const dy = position[1] - previous[1];
+      const dz = position[2] - previous[2];
       const step = Math.hypot(dx, dy, dz);
-      const gapSec = Math.max((nowMs - lastWriteMs[slot]) / 1000, 1 / 240);
-      // Judge the step against what this chunk's trajectory can account for,
-      // not a flat bound: debris legitimately flies at 40-70 m/s since the
-      // push-speed redesign removed the velocity clamp, and a distant body on
-      // an 8-frame stride covers multiple metres per write.
-      //
-      // The body's KNOWN speed, not just an average of the steps already
-      // taken. The average starts at zero for anything standing still, so a
-      // chunk in the intact shell tripped this on its first frame of falling,
-      // and a collapse breaks thousands loose: the count came out at three to
-      // five per broken bond, which measured the collapse rather than any
-      // fault in it. Two A/Bs were decided against that number before it was
-      // noticed, and both came out as noise, which is exactly what a metric
-      // dominated by an unrelated term does.
-      const known = Math.max(speedEst[slot], ctx.bodySpeed ?? 0);
+      const last = this.lastWriteMs.get(ctx.bodyKey) ?? nowMs;
+      const gapSec = Math.max((nowMs - last) / 1000, 1 / 240);
+      // Judge the step against what this body's trajectory can account for,
+      // not a flat bound: debris legitimately flies at 40-70 m/s, and a
+      // distant body on an 8-frame stride covers multiple metres per write.
+      const est = this.speedEst.get(ctx.bodyKey) ?? 0;
+      const known = Math.max(est, ctx.bodySpeed ?? 0);
       const explained = 3 * known * gapSec + 0.3;
-      const anomalous =
-        !ctx.freshFromShell && step > CHUNK_TELEPORT_M && step > explained;
-      speedEst[slot] = 0.7 * speedEst[slot] + 0.3 * (step / gapSec);
+      const anomalous = step > CHUNK_TELEPORT_M && step > explained;
+      this.speedEst.set(ctx.bodyKey, 0.7 * est + 0.3 * (step / gapSec));
       if (anomalous) {
-        // The debug-report ring is unconditional: SEND REPORT needs teleport
-        // timing from ordinary (non-recording) sessions, phones included.
         noteTeleport({
-          slot,
+          slot: ctx.slot,
           stepM: step,
           body: ctx.bodyKey,
           source: ctx.source ?? 'unknown',
@@ -372,35 +354,37 @@ function installChunkTeleportProbe(chunkCount: number): () => void {
           recentlyRebased: ctx.recentlyRebased,
         });
         recordCityEvent('city_chunk_teleport', {
-          slot,
+          slot: ctx.slot,
           stepM: step,
           body: ctx.bodyKey,
           settling: ctx.settling,
           bodySettled: ctx.bodySettled,
           source: ctx.source ?? 'unknown',
-          sinceLastWriteMs: Number.isNaN(lastWriteMs[slot])
-            ? -1
-            : Math.round(nowMs - lastWriteMs[slot]),
+          sinceLastWriteMs: Math.round(nowMs - last),
           x: position[0],
           y: position[1],
           z: position[2],
         });
         // Repeated teleports on one body: tap its raw record stream so the
         // wire trajectory itself becomes inspectable.
-        const strikes = (teleportStrikes.get(ctx.bodyKey) ?? 0) + 1;
-        teleportStrikes.set(ctx.bodyKey, strikes);
+        const strikes = (this.teleportStrikes.get(ctx.bodyKey) ?? 0) + 1;
+        this.teleportStrikes.set(ctx.bodyKey, strikes);
         if (strikes === 3) addCitySuspect(ctx.bodyKey);
       }
+      previous[0] = position[0];
+      previous[1] = position[1];
+      previous[2] = position[2];
+    } else {
+      this.previous.set(ctx.bodyKey, Float32Array.of(position[0], position[1], position[2]));
     }
-    previous[base] = position[0];
-    previous[base + 1] = position[1];
-    previous[base + 2] = position[2];
-    lastWriteMs[slot] = nowMs;
-  });
-  return () => {
-    setChunkTeleportProbe(null);
-    countStaleDrawnChunks = null;
-  };
+    this.lastWriteMs.set(ctx.bodyKey, nowMs);
+  }
+
+  forget(bodyKey: number): void {
+    this.previous.delete(bodyKey);
+    this.lastWriteMs.delete(bodyKey);
+    this.speedEst.delete(bodyKey);
+  }
 }
 
 export function CityChunksLayer({
@@ -422,7 +406,11 @@ export function CityChunksLayer({
     quat: new THREE.Quaternion(),
     set: false,
   });
-  const teleportProbeRef = useRef<(() => void) | null>(null);
+  const teleportProbeRef = useRef<BodyTeleportProbe>(new BodyTeleportProbe());
+  /** Set when the debug palette changed; every body is recoloured on the next frame. */
+  const repaintBodiesRef = useRef(false);
+  /** Slots whose record could not be written yet (their body is not in the ledger). */
+  const pendingRecordsRef = useRef<Set<number>>(new Set());
   const recorderProbesRef = useRef(false);
   const buildFailedForRef = useRef<CityClient | null>(null);
   const updateSamplesRef = useRef<number[]>([]);
@@ -460,10 +448,12 @@ export function CityChunksLayer({
         // last built rather than against the material's class, because the
         // texture detail is not visible from the material object at all.
         const want = `${cityPbrLighting() ? 'pbr' : 'flat'}:${cityTextureDetail()}:${heroTilingEnabled() ? 'hero' : 'plain'}`;
-        const replacement = current && want !== materialVariantRef.current
-          ? buildCityMaterial()
-          : null;
-        if (replacement) materialVariantRef.current = want;
+        // Every cell mesh owns its material (the pose textures ride on it),
+        // so a shader variant change is a rebuild rather than a swap.
+        if (current && want !== materialVariantRef.current) {
+          materialVariantRef.current = want;
+          rebuildRequestedRef.current = true;
+        }
         // The instancing threshold decides which shapes get a city-wide mesh,
         // which is baked in at build time -- a live material swap cannot
         // express it, so the mesh has to be rebuilt.
@@ -473,9 +463,7 @@ export function CityChunksLayer({
         for (const { mesh } of renderables) {
           mesh.castShadow = shadows;
           mesh.receiveShadow = shadows;
-          if (replacement) mesh.material = replacement;
         }
-        if (replacement) current?.dispose();
       }),
     [],
   );
@@ -514,8 +502,7 @@ export function CityChunksLayer({
           mesh.geometry.dispose();
           if (renderable.kind === 'slots') (mesh.material as THREE.Material).dispose();
         }
-        const shared = stateRef.current.renderables[0]?.mesh.material as THREE.Material | undefined;
-        shared?.dispose();
+        stateRef.current.poses.dispose();
         stateRef.current = null;
       }
       clientRef.current = client;
@@ -531,36 +518,11 @@ export function CityChunksLayer({
     }
 
     // Body-state debug repaint: when the toggle flips or fresh states arrive
-    // (~1 Hz while enabled), repaint EVERY chunk once -- per-frame cost stays
-    // zero, and the ordinary dirty-body path keeps freshly-moving bodies
-    // correctly colored between refreshes.
+    // (~1 Hz while enabled), every body is rewritten once with its palette
+    // colour -- a body pose write is where colour lives now.
     if (stateRef.current && bodyDebugVersionRef.current !== bodyDebug.version) {
       bodyDebugVersionRef.current = bodyDebug.version;
-      const state = stateRef.current;
-      const chunkBody = client.topology.chunkBody;
-      for (let slot = 0; slot < chunkBody.length; slot += 1) {
-        const instanceId = state.instanceIds[slot];
-        const renderable = state.renderables[state.meshOfSlot[slot]];
-        if (instanceId < 0 || !renderable) {
-          continue;
-        }
-        const mesh = renderable.mesh;
-        const key = chunkBody[slot];
-        // Support serial is 0: intact structure and rooted stumps both live
-        // on the client-side support body.
-        const isSupport = (key & 0x3f_ffff) === 0;
-        const debugColor = bodyDebug.enabled ? bodyDebugColor(key, isSupport) : null;
-        if (debugColor) {
-          mesh.setColorAt(instanceId, debugColor);
-        } else {
-          TMP_COLOR.setRGB(
-            state.baseColors[slot * 3],
-            state.baseColors[slot * 3 + 1],
-            state.baseColors[slot * 3 + 2],
-          );
-          mesh.setColorAt(instanceId, TMP_COLOR);
-        }
-      }
+      repaintBodiesRef.current = true;
     }
 
     // Measurement bridge for the resync differential: snapshot every chunk's
@@ -623,15 +585,13 @@ export function CityChunksLayer({
           let over = 0;
           const count = client.topology.chunkCount;
           for (let slot = 0; slot < count; slot += 1) {
-            const instanceId = meshState.instanceIds[slot];
-            const renderable = meshState.renderables[meshState.meshOfSlot[slot]];
-            if (instanceId < 0 || !renderable) continue;
-            if (meshState.hiddenBySlot[slot] === 1) continue;
-            renderable.mesh.getMatrixAt(instanceId, TMP_MATRIX);
+            // Composed on the CPU exactly as the shader composes it, from the
+            // records and body poses the GPU reads.
+            if (!meshState.poses.chunkWorldPositionInto(slot, TMP_POSE)) continue;
             const pose = client.topology.chunkWorldPose(slot).position;
-            const dx = TMP_MATRIX.elements[12] - pose[0];
-            const dy = TMP_MATRIX.elements[13] - pose[1];
-            const dz = TMP_MATRIX.elements[14] - pose[2];
+            const dx = TMP_POSE[0] - pose[0];
+            const dy = TMP_POSE[1] - pose[1];
+            const dz = TMP_POSE[2] - pose[2];
             const delta = Math.hypot(dx, dy, dz);
             if (delta > worst) { worst = delta; worstSlot = slot; }
             if (delta > 0.5) over += 1;
@@ -647,9 +607,7 @@ export function CityChunksLayer({
     // to the sample pass). The recorder-only extras (pose-source tagging,
     // adoption-jump events) stay gated on recording.
     const recording = isRecording();
-    if (!teleportProbeRef.current) {
-      teleportProbeRef.current = installChunkTeleportProbe(client.topology.chunkCount);
-    }
+    const teleportProbe = teleportProbeRef.current;
     // Pose-source tagging and adoption jumps are no longer recorder-only.
     //
     // They were, and it made ordinary sessions unable to answer the one
@@ -677,12 +635,8 @@ export function CityChunksLayer({
       // headless rather than retrying a throwing build every frame.
       try {
         stateRef.current = buildCityMesh(client);
-        // A build is not always against an intact city -- a mid-game rebuild
-        // (threshold, texture detail) or a late join happens over existing
-        // rubble, and the shell bakes rest poses. Wake everything already
-        // broken, or settled islands render as ghost buildings.
-        const preWoken = wakeBrokenSlots(stateRef.current, client);
-        if (preWoken > 0) console.info('[city] shell: woke pre-broken chunks', { preWoken });
+        lastLedgerEpochRef.current = client.ledgerEpoch();
+        teleportProbe.reset();
         materialVariantRef.current = `${cityPbrLighting() ? 'pbr' : 'flat'}:${cityTextureDetail()}:${heroTilingEnabled() ? 'hero' : 'plain'}`;
         builtShareThresholdRef.current = instanceShareThresholdSetting();
         for (const { mesh } of stateRef.current.renderables) {
@@ -1027,11 +981,16 @@ export function CityChunksLayer({
     // one per chunk, in runs that had one, and those runs were the ones that
     // looked catastrophic.
     const ledgerEpoch = client.ledgerEpoch();
-    if (repaint.all || ledgerEpoch !== lastLedgerEpochRef.current) {
+    // A ledger replaced wholesale (a bootstrap) or a structure rewritten (a
+    // repair) means every chunk record and every body pose is suspect:
+    // rewrite them all. Otherwise the ledger names exactly the slots it
+    // reassigned since last frame.
+    const rebuildRecords = repaint.all || ledgerEpoch !== lastLedgerEpochRef.current;
+    if (rebuildRecords) {
       lastLedgerEpochRef.current = ledgerEpoch;
-      resetTeleportBaseline?.();
+      teleportProbe.reset();
     }
-    if (repaint.all) {
+    if (repaint.all || rebuildRecords || repaintBodiesRef.current) {
       for (const body of client.topology.allBodies()) {
         dirty.add(body.key);
       }
@@ -1040,60 +999,70 @@ export function CityChunksLayer({
         if (client.topology.body(key)) dirty.add(key);
       }
     }
-    if (dirty.size === 0) {
+    const repaintBodies = repaintBodiesRef.current;
+    repaintBodiesRef.current = false;
+    // Chunk records: which body each chunk rides and where it sits on it.
+    const recordStartedAt = performance.now();
+    const touchedMeshes = new Set<number>();
+    let recordsWritten = 0;
+    if (rebuildRecords) {
+      const count = client.topology.chunkCount;
+      client.topology.drainSlotChanges();
+      pendingRecordsRef.current.clear();
+      for (let slot = 0; slot < count; slot += 1) {
+        if (!writeChunkRecord(state, client, slot)) pendingRecordsRef.current.add(slot);
+        recordsWritten += 1;
+      }
+      for (let index = 0; index < state.renderables.length; index += 1) touchedMeshes.add(index);
+    } else {
+      const pending = pendingRecordsRef.current;
+      for (const slot of client.topology.drainSlotChanges()) pending.add(slot);
+      for (const slot of pending) {
+        // A chunk whose body the ledger cannot name yet keeps drawing where
+        // it was; try again next frame.
+        if (!writeChunkRecord(state, client, slot)) continue;
+        pending.delete(slot);
+        recordsWritten += 1;
+        touchedMeshes.add(state.meshOfSlot[slot]);
+      }
+    }
+    renderStats.recordWrites = recordsWritten;
+    renderStats.recordWriteMs = performance.now() - recordStartedAt;
+
+    if (dirty.size === 0 && touchedMeshes.size === 0) {
       renderStats.cityFrameMs = performance.now() - cityFrameStartedAt;
       return;
     }
-    // Rewriting every moving chunk every frame is the client's dominant cost
-    // once a demolition is large: tens of thousands of matrix composes, most
-    // of them for rubble far enough away that a frame's motion is a fraction
-    // of a pixel. Distant bodies are updated on a stride instead, staggered by
-    // key so the deferred work spreads across frames rather than spiking on
-    // one.
+    // Body poses. Rewriting every moving body every frame is the client's
+    // per-frame cost once a demolition is large; distant bodies are written on
+    // a stride instead, staggered by cell so the deferred work spreads across
+    // frames rather than spiking on one.
     //
     // This is a render-rate decision only. The authoritative pose is whatever
-    // the ledger holds; deferring a write delays when a distant chunk is
+    // the ledger holds; deferring a write delays when a distant body is
     // redrawn, it never changes where it is.
-    const touchedMeshes = new Set<number>();
+    const updateStartedAt = performance.now();
     // Chunks written this frame per mesh, so a culled cell can say how much
     // live geometry it was holding when it went off screen.
     const liveChunksPerMesh: number[] = [];
     let drawnThisFrame = 0;
-    const updateStartedAt = performance.now();
     for (const key of dirty) {
       const body = client.topology.body(key);
       if (!body) {
         dirty.delete(key);
+        state.poses.releaseBody(key);
+        teleportProbe.forget(key);
         continue;
       }
       // A body that stopped moving gets its final write unconditionally.
-      // Deferring that one would strand the chunk at its second-to-last pose
-      // for good, since no further frame will list it as live.
+      // Deferring that one would strand it at its second-to-last pose for
+      // good, since no further frame will list it as live.
       const settling = !live.has(key);
-      if (!settling) {
-        // Staggered by CELL, not by body. An upload unit re-sends everything
-        // it holds when any one instance in it changes -- a batch its whole
-        // transform texture, an instanced mesh its whole matrix buffer -- so
-        // bodies sharing one must defer together. Staggering them individually
-        // would put at least one write in every unit on every frame and save
-        // nothing at all.
-        //
-        // The key is the cell rather than the renderable, because a cell now
-        // holds two objects (its boxes and its hulls) and a body's chunks can
-        // sit in both. Keying on the renderable gave those two different
-        // phases, which rewrote both on frames where neither used to move.
-        //
-        // And the cell rather than the structure it came from: those coincide
-        // only while one structure means one building; a pack authored as a
-        // whole district is a single structure, and keying on it gave every
-        // body the same phase, so the entire map deferred and resumed together
-        // instead of spreading across the stride window.
-        if (!dueThisFrame(key)) {
-          continue;
-        }
+      if (!settling && !repaintBodies && !dueThisFrame(key)) {
+        continue;
       }
       // A body drawn while its pose came from the raw writer is being shown at
-      // the newest streamed tick rather than the interpolated one — roughly an
+      // the newest streamed tick rather than the interpolated one -- roughly an
       // interpolation delay ahead of the frames around it. That is the
       // two-writer flicker, and this is the only place it can be observed,
       // because it depends on what the ledger holds at draw time.
@@ -1101,13 +1070,20 @@ export function CityChunksLayer({
       if (recording && writeSource === 'raw' && writeDeltaM > 0) {
         recordCityEvent('city_flicker', { body: key, deltaM: writeDeltaM, settling });
       }
-      const settledTint = body.settled ? 0.75 : 1;
       const debugCode = bodyDebug.enabled ? bodyDebugStateCode(key, false) : -1;
-      // Always built now: the teleport probe is unconditional, and without this
-      // context every teleport it records in an ordinary session is unattributable.
-      let wroteThisBody = false;
-      const probeCtx: ChunkWriteContext = {
+      const debugColor = debugCode >= 0 ? bodyDebugColorForCode(debugCode) : null;
+      // Settled rubble is dimmed, and live debris very slightly warmed, as the
+      // per-chunk colour writes used to do.
+      const bodyIsSupport = (key & 0x3f_ffff) === 0;
+      writeBodyPose(
+        state,
+        body,
+        body.settled ? 0.75 : 1,
+        debugColor ?? (body.settled || bodyIsSupport ? null : TMP_COLOR.setRGB(1, 1, 0.9)),
+      );
+      teleportProbe.observe(body.position, {
         bodyKey: key,
+        slot: body.chunkSlots[0] ?? -1,
         settling,
         bodySettled: body.settled,
         source: writeSource,
@@ -1117,125 +1093,36 @@ export function CityChunksLayer({
         recentlyRebased:
           client.topology.currentReoffsetSeq() - client.topology.reoffsetSeqOf(key) < 64
           && client.topology.reoffsetSeqOf(key) >= 0,
-      };
-      // Support serial 0 is the intact structure: its chunks are AT rest by
-      // definition, so a write for them (repaint.all marks every body dirty,
-      // including this one) re-seats a pose that has not changed. Waking on it
-      // would dissolve the whole shell into per-chunk sub-draws for a frame
-      // where nothing moved -- the exact cost the shell exists to avoid.
-      const bodyIsSupport = (key & 0x3f_ffff) === 0;
+      });
+      renderStats.instanceWrites += 1;
+      // The cells this body's chunks sit in: their culling spheres follow it.
+      // Support serial 0 is the intact structure, at rest by definition; its
+      // chunks are not counted as live geometry.
       for (const slot of body.chunkSlots) {
-        const instanceId = state.instanceIds[slot];
-        if (instanceId < 0) {
-          continue;
-        }
-        const renderable = state.renderables[state.meshOfSlot[slot]];
-        if (!renderable) {
-          continue;
-        }
-        const mesh = renderable.mesh;
-        // First real movement: the chunk leaves the static shell and its own
-        // instance takes over, same frame, same pose. One-way -- see
-        // cityShell.ts for why a settled chunk never merges back.
-        if (!bodyIsSupport) {
-          // A chunk leaving the static shell for its own instance is written
-          // for the first time against whatever the probe last held for that
-          // slot, which is the shell's rest pose. That is a change of
-          // representation, not a teleport, and counting it as one put exactly
-          // one event per chunk into the totals -- 24,105 of them in a live
-          // report, which is the chunk count, and roughly half of everything
-          // the counter had to say.
-          if (wakeSlotFromShell(state, slot)) {
-            probeCtx.freshFromShell = true;
-            // The one moment a chunk changes which object draws it: its
-            // geometry is retired from the cell's static shell and its own
-            // instance is made visible. If those ever disagree the chunk is
-            // drawn twice or not at all, which is what "a double write or
-            // switching between something" would look like.
-            renderStats.shellWakes += 1;
-          }
-        }
-        renderStats.instanceWrites += 1;
-        writeInstance(
-          renderable,
-          client,
-          slot,
-          body,
-          state.scales,
-          state.instanceIds,
-          state.hiddenBySlot,
-          state.belowStreakBySlot,
-          probeCtx,
-        );
-        // Written every dirty frame, deliberately. Skipping writes when the
-        // encoded state matched was a real saving and is REVERTED: it changes
-        // what ends up in the colour texture as a function of history rather
-        // than of current state, and a report of a mis-coloured, patchy city
-        // is not worth a millisecond. Re-land it only with a visual check.
-        {
-          const debugColor = debugCode >= 0 ? bodyDebugColorForCode(debugCode) : null;
-          if (debugColor) {
-            mesh.setColorAt(instanceId, debugColor);
-          } else {
-            TMP_COLOR.setRGB(
-              state.baseColors[slot * 3] * settledTint,
-              state.baseColors[slot * 3 + 1] * settledTint,
-              state.baseColors[slot * 3 + 2] * (body.settled ? 0.75 : 0.9),
-            );
-            mesh.setColorAt(instanceId, TMP_COLOR);
-          }
-        }
-        wroteThisBody = true;
         const meshIndex = state.meshOfSlot[slot];
+        if (meshIndex < 0) continue;
         touchedMeshes.add(meshIndex);
-        liveChunksPerMesh[meshIndex] = (liveChunksPerMesh[meshIndex] ?? 0) + 1;
-        if (state.hiddenBySlot[slot] !== 1) {
+        if (!bodyIsSupport) {
+          liveChunksPerMesh[meshIndex] = (liveChunksPerMesh[meshIndex] ?? 0) + 1;
           drawnThisFrame += 1;
         }
       }
       if (!live.has(key)) {
         dirty.delete(key);
       }
-      // Deferred by the distance stride: a live body whose chunks were not
-      // rewritten this frame is drawn at the pose of whichever earlier frame
-      // last touched it. That is by design and invisible at a few frames; it
-      // is worth counting because the design assumes a body is written often,
-      // and a starved or strided body can go far longer.
-      if (live.has(key) && !wroteThisBody) {
-        renderStats.staleLiveBodies += 1;
-        renderStats.staleLiveChunks += body.chunkSlots.length;
-      }
     }
-    // A batch is culled against its bounding sphere, and debris falls outside
-    // the footprint the sphere was built from. Recomputing it for batches that
-    // moved keeps a spreading pile from being culled while still on screen.
-    //
-    // The cheaper scheme (grow the sphere from each written pose, re-tighten
-    // one batch every 120 frames) is REVERTED. It is only correct if every
-    // growth is seen, and a wrongly small sphere culls a whole batch -- a
-    // block of city gone. That is indistinguishable from the report being
-    // chased, and unlike the exact recompute it cannot be verified by any
-    // counter this client has. refreshRenderableSphere keeps that property:
-    // it re-derives the sphere from every instance's current pose each time.
+    state.poses.upload();
     const writeEndedAt = performance.now();
     renderStats.dirtyWriteMs = writeEndedAt - updateStartedAt;
+    // A cell is culled against its bounding sphere, and debris falls outside
+    // the footprint the sphere was built from. Re-deriving it for cells whose
+    // bodies moved keeps a spreading pile from being culled while still on
+    // screen. See refreshRenderableSphere for why it is exact-conservative on
+    // every call rather than grown from history.
     for (const index of touchedMeshes) {
-      const renderable = state.renderables[index];
-      if (!renderable) continue;
-      if (renderable.kind === 'instanced') {
-        // A BatchedMesh writes into its own data textures and flags them
-        // itself; an InstancedMesh writes into plain buffer attributes and does
-        // not, so without this the cell's chunks freeze at their build pose.
-        renderable.mesh.instanceMatrix.needsUpdate = true;
-        if (renderable.mesh.instanceColor) renderable.mesh.instanceColor.needsUpdate = true;
-        // A pattern mesh is never sphere-tested (frustumCulled is off, because
-        // it spans the map), so recomputing its sphere is pure waste -- and the
-        // walk is city-wide, which made it the largest line in the frame until
-        // it was skipped.
-        if (!renderable.mesh.frustumCulled) continue;
-      }
       refreshRenderableSphere(state, index);
     }
+
     // ---- Visual audit -------------------------------------------------
     //
     // Everything above decides what ends up on screen, and until now each

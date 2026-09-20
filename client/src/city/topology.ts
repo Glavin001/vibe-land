@@ -140,6 +140,18 @@ export class CityTopology {
   private readonly localPos: Float32Array;
   private readonly localRot: Float32Array;
   /**
+   * Slots whose body or body-local offset changed since the last drain.
+   *
+   * The renderer composes chunk poses on the GPU from a per-chunk record of
+   * (body, offset) and a per-body pose; this is how it learns which records
+   * to rewrite without walking every chunk. Every site that assigns
+   * `chunkBody`, `localPos` or `localRot` marks the slot. A rebuild of the
+   * whole ledger (bootstrap, structure repair) bumps the epoch the renderer
+   * already watches instead of marking every slot.
+   */
+  private slotChanges: number[] = [];
+  private readonly slotChanged: Uint8Array;
+  /**
    * Manifest rest offset per chunk, in its structure's frame.
    *
    * The adapter builds every chunk shape at its authored local pose and reuses
@@ -235,6 +247,7 @@ export class CityTopology {
     this.chunkBody = new Float64Array(total);
     this.localPos = new Float32Array(total * 3);
     this.localRot = new Float32Array(total * 4);
+    this.slotChanged = new Uint8Array(total);
     this.restPos = new Float32Array(total * 3);
     this.restMass = new Float32Array(total);
     this.restRadius = new Float32Array(total);
@@ -329,6 +342,29 @@ export class CityTopology {
     out[0] = this.localPos[slot * 3];
     out[1] = this.localPos[slot * 3 + 1];
     out[2] = this.localPos[slot * 3 + 2];
+  }
+
+  localRotationInto(slot: number, out: Float32Array, at = 0): void {
+    out[at] = this.localRot[slot * 4];
+    out[at + 1] = this.localRot[slot * 4 + 1];
+    out[at + 2] = this.localRot[slot * 4 + 2];
+    out[at + 3] = this.localRot[slot * 4 + 3];
+  }
+
+  private markSlotChanged(slot: number): void {
+    if (this.slotChanged[slot] === 0) {
+      this.slotChanged[slot] = 1;
+      this.slotChanges.push(slot);
+    }
+  }
+
+  /** Slots whose (body, offset) changed since the last call; each at most once. */
+  drainSlotChanges(): number[] {
+    const out = this.slotChanges;
+    if (out.length === 0) return out;
+    for (const slot of out) this.slotChanged[slot] = 0;
+    this.slotChanges = [];
+    return out;
   }
 
   chunkLocalOffset(slot: number): { position: Vec3; rotation: Quat } {
@@ -887,6 +923,7 @@ export class CityTopology {
       this.localRot[slot * 4 + 1] = 0;
       this.localRot[slot * 4 + 2] = 0;
       this.localRot[slot * 4 + 3] = 1;
+      this.markSlotChanged(slot);
     }
     for (const body of drained) {
       this.reoffsetBody(body);
@@ -966,6 +1003,7 @@ export class CityTopology {
     this.localRot[slot * 4 + 1] = 0;
     this.localRot[slot * 4 + 2] = 0;
     this.localRot[slot * 4 + 3] = 1;
+    this.markSlotChanged(slot);
     // Membership changed on both sides, so both centres of mass moved.
     // reoffsetBody restates every member offset and shifts the body pose to
     // match, which also covers this chunk's new offset.
@@ -981,6 +1019,7 @@ export class CityTopology {
       this.localPos[slot * 3] = com ? this.restPos[slot * 3] - com[0] : 0;
       this.localPos[slot * 3 + 1] = com ? this.restPos[slot * 3 + 1] - com[1] : 0;
       this.localPos[slot * 3 + 2] = com ? this.restPos[slot * 3 + 2] - com[2] : 0;
+      this.markSlotChanged(slot);
     } else {
       this.reoffsetBody(destination, destinationOldCom);
     }
@@ -1074,6 +1113,7 @@ export class CityTopology {
       this.localPos[slot * 3] = this.restPos[slot * 3] - comX;
       this.localPos[slot * 3 + 1] = this.restPos[slot * 3 + 1] - comY;
       this.localPos[slot * 3 + 2] = this.restPos[slot * 3 + 2] - comZ;
+      this.markSlotChanged(slot);
     }
     if (!delta.every(Number.isFinite) || vLength(delta) <= EPSILON) {
       return;

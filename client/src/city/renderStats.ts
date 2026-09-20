@@ -69,6 +69,9 @@ export const renderStats = {
   sphereMs: 0,
   /// Nested in cityFrame: the 2 Hz telemetry/invariant sweeps.
   telemetryMs: 0,
+  /// Chunk records (body + offset) rewritten this frame, and what that cost.
+  recordWrites: 0,
+  recordWriteMs: 0,
 
   /// Stream decode accumulated between the previous frame and this one. Runs
   /// in the datagram reader's microtasks, so it lands in offFrame, not cpuFrame.

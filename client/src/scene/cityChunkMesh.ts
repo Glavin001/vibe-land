@@ -36,15 +36,13 @@ import {
   cityPbrLighting,
   cityTextureDetail,
   heroTilingEnabled,
-  instanceShareThresholdSetting,
   shadowsEnabled,
 } from '../app/renderQuality';
-import { writeInstance, type CityRenderable } from './cityChunkWrite';
-import { retireShellRange } from './cityShell';
-import { CitySlotMesh, SlotGeometryBuilder } from './citySlotMesh';
+import { CityGpuPoses, CitySlotMesh, SlotGeometryBuilder, type CityRenderable } from './citySlotMesh';
+import type { LedgerBody } from '../city/topology';
 import { renderStats } from '../city/renderStats';
 import { applyCityTriplanar } from './cityMaterialShader';
-import { attachInstanceAnchors, bakeRestAnchors } from './cityTexAnchor';
+import { bakeRestAnchors } from './cityTexAnchor';
 import { layerCodeForBuilding, layerCodeForTextureKey } from './cityTextures';
 import { bondEndpoints, type MaterialAppearance } from '../city/manifest';
 
@@ -53,80 +51,22 @@ const TMP_QUATERNION = new THREE.Quaternion();
 const TMP_COLOR = new THREE.Color();
 const IDENTITY_MATRIX = new THREE.Matrix4();
 
-/**
- * Uses of one shape below which it stays in its cell's batch.
- *
- * A city-wide instanced mesh trades N sub-draws for one REAL draw call. Which
- * way that pays is a property of the MACHINE, not of the scene: a real draw is
- * CPU submission, a sub-draw is GPU work, and fps -- the only instrument this
- * had when the threshold was first chosen -- cannot tell those apart.
- *
- * See `DEFAULT_INSTANCE_SHARE_THRESHOLD` in renderQuality for the current value
- * and the measurement behind it. Live-settable, because the answer differs per
- * machine and `perfSweep` prices it on whichever one is complaining.
- */
-function minShareToInstance(): number {
-  return instanceShareThresholdSetting();
-}
-
 export type CityMeshState = {
-  /**
-   * One entry per drawable object, in build order.
-   *
-   * three uploads a BatchedMesh's entire matrix texture whenever any instance
-   * in it moves -- textures have no partial-update path the way buffers do --
-   * and an InstancedMesh re-uploads its whole instance buffer on needsUpdate.
-   * A single city-wide object therefore re-uploaded megabytes every frame
-   * because one chunk somewhere was falling. Splitting means a patch of city
-   * nobody has touched costs nothing.
-   */
+  /** One drawable per render cell (and per material within it), in build order. */
   renderables: CityRenderable[];
   /**
-   * Renderable -> the render cell it was cut from.
-   *
-   * The distance stride is staggered by upload unit, and a cell has two of
-   * them. Keying the stagger on the renderable index would give a cell's box
-   * bodies and its hull bodies different phases, rewriting both on frames where
-   * neither used to move. Keying on the cell keeps the original property:
-   * everything sharing an upload defers together. City-wide shape meshes get
-   * synthetic ids past the real cells, since each is its own upload unit.
+   * Renderable -> the render cell it was cut from. The distance stride is
+   * staggered by cell so everything sharing an upload defers together.
    */
   cellOfRenderable: Int32Array;
   /** Slot -> index into `renderables`. */
   meshOfSlot: Int32Array;
-  /**
-   * Per renderable: the exact bounding sphere of the cell at rest, its shell
-   * instance id (-1 for none), and the largest chunk radius seated in it. The
-   * per-frame sphere refresh is built from these; see refreshRenderableSphere.
-   */
-  restSphereOfRenderable: THREE.Sphere[];
-  shellInstanceOfRenderable: Int32Array;
-  maxRadiusOfRenderable: Float32Array;
-  /**
-   * Slot -> instance id within its own object. BatchedMesh hands out its own
-   * ids and InstancedMesh ids are positions in that mesh's slot list; neither
-   * promises to match the topology slot.
-   */
-  instanceIds: Int32Array;
   /** Per-slot render scale: box extents, or 1 for hulls (already metric). */
   scales: Float32Array;
-  baseColors: Float32Array;
-  /** 1 = hidden (sunk below CHUNK_HIDE_Y_M). */
-  hiddenBySlot: Uint8Array;
-  /** Consecutive writes below the hide threshold; see CHUNK_HIDE_STREAK. */
-  belowStreakBySlot: Uint8Array;
   /** Bounding radius per chunk. */
   radii: Float32Array;
-  /**
-   * 1 once the slot's individual instance has taken over from the shell.
-   *
-   * Set for every slot outside a shell at build, so the wake test in the frame
-   * loop is one array read for the common case.
-   */
-  wokenBySlot: Uint8Array;
-  /** Slot -> [start,count] of its triangles inside its cell's shell, or -1. */
-  shellIndexStartBySlot: Int32Array;
-  shellIndexCountBySlot: Int32Array;
+  /** The chunk records and body poses the GPU composes from. */
+  poses: CityGpuPoses;
 };
 
 /**
@@ -391,217 +331,70 @@ function resolveShapes(
   return { shapeBySlot, scales, radii, localXZ, anchors, buildingCount };
 }
 
-type HullSharing = {
-  /** Shape key -> every slot drawing it. */
-  slotsOfHullKey: Map<string, number[]>;
-  hullPointsOfKey: Map<string, Float32Array>;
-  /** Shapes shared widely enough to earn a city-wide instanced mesh. */
-  instancedKeys: Set<string>;
-  keyOfSlot: Map<number, string>;
-};
 
-/**
- * Which hull shapes recur often enough to instance.
- *
- * This is the payoff for authoring a pack with a bounded fracture-pattern
- * library: shards that were one-of-a-kind become a few hundred shapes used tens
- * of times each. Automatic and self-disabling -- against a pack whose shards
- * are all distinct (downtown before pooling: 7,160 hulls, 7,160 shapes) no key
- * clears the threshold, every hull stays in its cell batch, and this costs one
- * pass over the hull slots.
- */
-function groupHullShapes(
-  shapeBySlot: ResolvedShapes['shapeBySlot'],
-  count: number,
-  transparentBySlot: Uint8Array,
-): HullSharing {
-  const slotsOfHullKey = new Map<string, number[]>();
-  const hullPointsOfKey = new Map<string, Float32Array>();
-  const keyOfSlot = new Map<number, string>();
-
-  for (let slot = 0; slot < count; slot += 1) {
-    const shape = shapeBySlot[slot];
-    if (!shape || shape.kind !== 'hull') continue;
-    // Transparent shards never join a shared mesh: those are built against a
-    // single material, and a pane sharing its shape with a concrete shard would
-    // have to be drawn as one or the other.
-    if (transparentBySlot[slot]) continue;
-    keyOfSlot.set(slot, shape.key);
-    if (!hullPointsOfKey.has(shape.key)) hullPointsOfKey.set(shape.key, shape.points);
-    const existing = slotsOfHullKey.get(shape.key);
-    if (existing) existing.push(slot);
-    else slotsOfHullKey.set(shape.key, [slot]);
-  }
-
-  const instancedKeys = new Set<string>();
-  for (const [key, slots] of slotsOfHullKey) {
-    if (slots.length >= minShareToInstance()) instancedKeys.add(key);
-  }
-  return { slotsOfHullKey, hullPointsOfKey, instancedKeys, keyOfSlot };
-}
-
-/**
- * Per-slot tint, so a chunk drawn anywhere has a colour.
- *
- * White for the city's own packs, for the reason `chunkBaseColor` gives: the
- * channel is MULTIPLIED over the sampled texture, so anything else tints every
- * layer. That multiply is exactly what an authored material wants, though —
- * it is how near-white architectural concrete and painted timber come out of a
- * shared texture array.
- */
-function resolveTints(
-  client: CityClient,
-  count: number,
-  materials: ReturnType<typeof resolveChunkMaterials>,
-): Float32Array {
-  const baseColors = new Float32Array(count * 3);
-  if (materials.appearance.length > 0) {
-    const cache = new Map<number, THREE.Color>();
-    for (let slot = 0; slot < count; slot += 1) {
-      const index = materials.materialOfSlot[slot];
-      let colour = cache.get(index);
-      if (!colour) {
-        const authored = materials.appearance[index]?.color;
-        colour = authored ? new THREE.Color(authored) : new THREE.Color(1, 1, 1);
-        cache.set(index, colour);
-      }
-      baseColors[slot * 3] = colour.r;
-      baseColors[slot * 3 + 1] = colour.g;
-      baseColors[slot * 3 + 2] = colour.b;
-    }
-    return baseColors;
-  }
-  for (const structure of client.manifest.manifest.structures) {
-    const tint = chunkBaseColor();
-    for (const chunk of structure.chunks) {
-      const slot = client.topology.slotOf(structure.structureId, chunk.nodeIndex);
-      baseColors[slot * 3] = tint.r;
-      baseColors[slot * 3 + 1] = tint.g;
-      baseColors[slot * 3 + 2] = tint.b;
-    }
-  }
-  return baseColors;
-}
-
-/** Mutable accumulator threaded through the three builders below. */
+/** Mutable accumulator threaded through the cell builder. */
 type BuildSink = {
   renderables: CityRenderable[];
-  radii: Float32Array;
   cellOfRenderable: number[];
-  shellInstanceOfRenderable: number[];
   meshOfSlot: Int32Array;
-  instanceIds: Int32Array;
-  hiddenBySlot: Uint8Array;
-  belowStreakBySlot: Uint8Array;
-  wokenBySlot: Uint8Array;
-  shellIndexStartBySlot: Int32Array;
-  shellIndexCountBySlot: Int32Array;
   scales: Float32Array;
+  radii: Float32Array;
   anchors: Float32Array;
-  baseColors: Float32Array;
+  poses: CityGpuPoses;
   totalVertices: number;
-  /**
-   * Vertices held by hull batches, against what they would hold if instances of
-   * one shape still shared a copy.
-   *
-   * They no longer can: each instance carries its own baked rest anchor, and
-   * since the static shell landed each batch ALSO holds a merged rest-pose copy
-   * of every member -- so the ratio is roughly twice the per-instance figure.
-   * Watch it per pack; it is memory, not draws.
-   */
-  hullBatchVertices: number;
-  hullBatchSharedVertices: number;
-  batchCount: number;
-  instancedCount: number;
-  /**
-   * Multi-draw sub-draws submitted per frame if everything were visible.
-   *
-   * The number `info.render.calls` hides, and the one frame time tracks.
-   */
-  subDraws: number;
 };
 
-/** Write a slot's rest pose into whichever object just claimed it. */
-function seatSlot(
-  sink: BuildSink,
-  client: CityClient,
-  renderable: CityRenderable,
-  meshIndex: number,
-  slot: number,
-  instanceId: number,
-  colour: THREE.Color,
+const TMP_LOCAL = new Float32Array(3);
+const TMP_LOCAL_ROT = new Float32Array(4);
+
+/**
+ * Write one chunk's record: which body it rides and where it sits on it.
+ * Called at build for every slot and afterwards for every slot the ledger
+ * reassigns (`drainSlotChanges`). Returns false when the ledger cannot say
+ * which body the chunk is on right now; the caller retries next frame and the
+ * chunk keeps drawing where it was, which is the only correct thing to show.
+ */
+export function writeChunkRecord(state: CityMeshState, client: CityClient, slot: number): boolean {
+  const key = client.topology.chunkBody[slot];
+  const body = client.topology.body(key);
+  if (!body) return false;
+  const index = state.poses.bodyIndexFor(key);
+  client.topology.localOffsetInto(slot, TMP_LOCAL);
+  client.topology.localRotationInto(slot, TMP_LOCAL_ROT);
+  state.poses.writeChunk(slot, index, TMP_LOCAL, TMP_LOCAL_ROT, state.radii[slot]);
+  return true;
+}
+
+/**
+ * Write one body's pose as the ledger holds it. `tint` dims settled rubble;
+ * the debug palette, when on, colours by body.
+ */
+export function writeBodyPose(
+  state: CityMeshState,
+  body: LedgerBody,
+  tint: number,
+  colour: THREE.Color | null,
 ): void {
-  sink.meshOfSlot[slot] = meshIndex;
-  sink.instanceIds[slot] = instanceId;
-  writeInstance(
-    renderable,
-    client,
-    slot,
-    client.topology.body(client.topology.bodyKeyOf(slot)),
-    sink.scales,
-    sink.instanceIds,
-    sink.hiddenBySlot,
-    sink.belowStreakBySlot,
+  const index = state.poses.bodyIndexFor(body.key);
+  state.poses.writeBody(
+    index,
+    body.position,
+    body.rotation,
+    tint,
+    colour ? colour.r : 1,
+    colour ? colour.g : 1,
+    colour ? colour.b : 1,
   );
-  renderable.mesh.setColorAt(instanceId, colour);
 }
 
-/** The cell's boxes: one instanced draw for all of them. */
-function buildCellBoxes(
-  sink: BuildSink,
-  client: CityClient,
-  material: THREE.Material,
-  cell: number,
-  slots: number[],
-  colour: THREE.Color,
-): void {
-  if (slots.length === 0) return;
-  // A fresh unit cube per cell, and it has to stay that way: three's VAO cache
-  // is keyed on geometry id with no per-object dimension, so sharing one cube
-  // across cells would give every cell the same anchor buffer -- the last one
-  // written. Deduplicating it is the obvious future optimisation and it would
-  // silently texture the whole city as one block.
-  const geometry = buildBoxGeometry();
-  sink.totalVertices += geometry.attributes.position.count;
-  const mesh = new THREE.InstancedMesh(geometry, material, slots.length);
-  // Toggleable at runtime: the city is the bulk of the shadow map, and on a
-  // phone that second pass is a candidate for the whole frame budget.
-  mesh.castShadow = shadowsEnabled();
-  mesh.receiveShadow = shadowsEnabled();
-  // Whole-cell culling: one sphere test that can drop a whole block.
-  mesh.frustumCulled = true;
-  // Rewritten every frame for any cell holding a live body.
-  mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-
-  const meshIndex = sink.renderables.length;
-  const renderable: CityRenderable = { kind: 'instanced', mesh };
-  for (let i = 0; i < slots.length; i += 1) {
-    seatSlot(sink, client, renderable, meshIndex, slots[i], i, colour);
-  }
-  attachInstanceAnchors(mesh, slots, sink.anchors, sink.scales);
-  mesh.instanceMatrix.needsUpdate = true;
-  if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
-  // Seed the culling sphere rather than leaving it null for three to compute
-  // lazily. The write path only GROWS it, so it needs a correct starting value
-  // -- a cell culled against a sphere that never existed is a block of city
-  // missing.
-  mesh.computeBoundingSphere();
-  sink.renderables.push(renderable);
-  sink.cellOfRenderable.push(cell);
-  sink.shellInstanceOfRenderable.push(-1);
-  sink.instancedCount += 1;
-  sink.subDraws += 1;
-}
-
-/** The cell's one-off hulls: one slot mesh, one draw, frustum culled as a cell. */
-function buildCellHullBatch(
+/** One cell (one material): every member merged, one draw. */
+function buildCell(
   sink: BuildSink,
   client: CityClient,
   material: THREE.Material,
   shapeBySlot: ResolvedShapes['shapeBySlot'],
   cell: number,
   slots: number[],
-  colour: THREE.Color,
 ): void {
   if (slots.length === 0) return;
   // One prototype per distinct shape in this cell, reused across every instance
@@ -623,10 +416,6 @@ function buildCellHullBatch(
     }
     return geometry;
   };
-
-  // Budgeted per INSTANCE rather than per shape. Each instance gets its own
-  // copy of the vertices because each carries its own baked rest anchor, which
-  // is what keeps the whole city on one material -- see cityTexAnchor.
   let vertexBudget = 0;
   let indexBudget = 0;
   for (const slot of slots) {
@@ -635,221 +424,42 @@ function buildCellHullBatch(
     indexBudget += geometry.index?.count ?? 0;
   }
   sink.totalVertices += vertexBudget;
-  sink.hullBatchVertices += vertexBudget;
-  for (const geometry of prototypes.values()) {
-    sink.hullBatchSharedVertices += geometry.attributes.position.count;
-  }
-  if (boxPrototype) {
-    sink.hullBatchSharedVertices += (boxPrototype as THREE.BufferGeometry)
-      .attributes.position.count;
-  }
 
-  // One draw for the cell, forever: every member's vertices tagged with its
-  // instance index, matrices in a texture. A chunk that moves costs a texture
-  // write, not a sub-draw -- see citySlotMesh.ts for the M3 numbers that
-  // retired the shell-plus-sub-draws scheme.
   const builder = new SlotGeometryBuilder(vertexBudget, indexBudget);
-  let reach = 0;
-  slots.forEach((slot, instance) => {
+  const meshIndex = sink.renderables.length;
+  for (const slot of slots) {
     const geometry = prototypeOf(slot);
     // Rewrite the prototype's anchor in place: the builder COPIES, so one
-    // mutable prototype per shape serves every instance of it.
+    // mutable prototype per shape serves every instance of it. The anchor is
+    // rest position plus rest scale times local position, so it is baked
+    // before the scale goes into the vertices.
     bakeRestAnchors(geometry, slot, sink.anchors, sink.scales);
-    builder.append(geometry, instance);
-    if (sink.radii[slot] > reach) reach = sink.radii[slot];
-  });
-  const mesh = new CitySlotMesh(builder.build(), material, builder.ranges, reach);
+    builder.append(geometry, slot, sink.scales[slot * 3], sink.scales[slot * 3 + 1], sink.scales[slot * 3 + 2]);
+    sink.meshOfSlot[slot] = meshIndex;
+  }
+  const mesh = new CitySlotMesh(builder.build(), material, sink.poses, slots);
   mesh.castShadow = shadowsEnabled();
   mesh.receiveShadow = shadowsEnabled();
   // Whole-cell culling is one sphere test that can drop a block. Only worth
   // anything because cells are cell sized: a city-wide mesh always intersects
   // the frustum.
   mesh.frustumCulled = true;
-
-  const meshIndex = sink.renderables.length;
-  const renderable: CityRenderable = { kind: 'slots', mesh };
-  slots.forEach((slot, instance) => {
-    seatSlot(sink, client, renderable, meshIndex, slot, instance, colour);
-  });
-  mesh.computeBoundingSphere();
-  sink.renderables.push(renderable);
+  sink.renderables.push({ kind: 'slots', mesh });
   sink.cellOfRenderable.push(cell);
-  sink.shellInstanceOfRenderable.push(-1);
-  sink.batchCount += 1;
-  // One draw, and it stays one draw.
-  sink.subDraws += 1;
 }
 
 /**
- * Shapes shared across the city: one instanced mesh each, keyed CITY-WIDE.
+ * Re-derive a cell's culling sphere from where its bodies are now.
  *
- * Per-cell keying would cost cells x shapes REAL draw calls and inverts past a
- * few dozen shapes -- measured at 100k chunks, per-cell ran 399 fps at 16
- * shapes but 197 at 32, while city-wide held 633 at 16, 679 at 64 and 489 at
- * 256. City-wide is what makes a large, good-looking shard library affordable.
- *
- * The trade is frustum culling: a shape's mesh spans the map, so its sphere
- * always intersects and every instance is submitted every frame. That is vertex
- * work on ~30-vertex shards, not fill, and measured far cheaper than the
- * sub-draws it replaces.
- */
-function buildSharedShapeMeshes(
-  sink: BuildSink,
-  client: CityClient,
-  material: THREE.Material,
-  sharing: HullSharing,
-  cellCount: number,
-): void {
-  for (const key of sharing.instancedKeys) {
-    const slots = sharing.slotsOfHullKey.get(key) ?? [];
-    if (slots.length === 0) continue;
-    const geometry = buildHullGeometry(sharing.hullPointsOfKey.get(key)!);
-    sink.totalVertices += geometry.attributes.position.count;
-    const mesh = new THREE.InstancedMesh(geometry, material, slots.length);
-    mesh.castShadow = shadowsEnabled();
-    mesh.receiveShadow = shadowsEnabled();
-    // Off deliberately -- see above. The frame loop keys on this flag to skip a
-    // bounding-sphere recompute that nothing would ever read.
-    mesh.frustumCulled = false;
-    mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-
-    const meshIndex = sink.renderables.length;
-    const renderable: CityRenderable = { kind: 'instanced', mesh };
-    for (let i = 0; i < slots.length; i += 1) {
-      const slot = slots[i];
-      seatSlot(sink, client, renderable, meshIndex, slot, i, TMP_COLOR.setRGB(
-        sink.baseColors[slot * 3],
-        sink.baseColors[slot * 3 + 1],
-        sink.baseColors[slot * 3 + 2],
-      ));
-    }
-    attachInstanceAnchors(mesh, slots, sink.anchors, sink.scales);
-    mesh.instanceMatrix.needsUpdate = true;
-    if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
-    sink.renderables.push(renderable);
-    sink.shellInstanceOfRenderable.push(-1);
-    // Its own stagger phase, continuing past the real cells: this mesh IS an
-    // upload unit, so every body drawing this shape must defer together for the
-    // stride to save anything.
-    sink.cellOfRenderable.push(cellCount + sink.instancedCount);
-    sink.instancedCount += 1;
-    sink.subDraws += 1;
-  }
-}
-
-/**
- * Refresh a cell mesh's bounding sphere from where its chunks are now.
- *
- * three's `computeBoundingSphere` decomposes every instance matrix and unions
- * a transformed sphere per instance; at 49k chunks in a collapse that was 8 ms
- * of a frame. What culling needs is a sphere that is never too small, and
- * that is cheaper to guarantee: start from the exact rest footprint (which
- * already covers the shell and every chunk that has not moved) and grow the
- * radius so every instance position plus the cell's largest chunk radius
- * fits. Every instance is visited on every refresh, so the sphere is
- * conservative for the poses actually written, not for a history of them --
- * the failure the grow-only scheme had.
- *
- * The centre stays put; a cell whose rubble has scattered gets a bigger
- * sphere rather than a shifted one. Conservative either way.
+ * A cell is culled against its bounding sphere, and debris falls outside the
+ * footprint the sphere was built from. Every chunk's body origin plus its
+ * reach is visited on every call, so the sphere is conservative for the poses
+ * actually drawn, not for a history of them -- a wrongly small sphere culls a
+ * whole batch, a block of city gone, and that failure is not verifiable by
+ * any counter this client has.
  */
 export function refreshRenderableSphere(state: CityMeshState, index: number): void {
-  const renderable = state.renderables[index];
-  const rest = state.restSphereOfRenderable[index];
-  if (!renderable || !rest) {
-    renderable?.mesh.computeBoundingSphere();
-    return;
-  }
-  const mesh = renderable.mesh;
-  const sphere = mesh.boundingSphere ?? (mesh.boundingSphere = new THREE.Sphere());
-  sphere.copy(rest);
-  const cx = sphere.center.x;
-  const cy = sphere.center.y;
-  const cz = sphere.center.z;
-  const reach = state.maxRadiusOfRenderable[index];
-  let radius = sphere.radius;
-  let data: ArrayLike<number> | null = null;
-  let count = 0;
-  if (renderable.kind === 'instanced') {
-    data = renderable.mesh.instanceMatrix.array;
-    count = renderable.mesh.count;
-  } else if (renderable.kind === 'slots') {
-    data = renderable.mesh.matricesData;
-    count = renderable.mesh.instanceCount;
-  } else {
-    // The matrices texture is the instance matrices; ids are dense from zero
-    // because the build never deletes an instance.
-    const texture = (renderable.mesh as unknown as {
-      _matricesTexture?: { image?: { data?: ArrayLike<number> } };
-    })._matricesTexture;
-    data = texture?.image?.data ?? null;
-    count = renderable.mesh.instanceCount;
-  }
-  if (!data) {
-    mesh.computeBoundingSphere();
-    return;
-  }
-  const shell = state.shellInstanceOfRenderable[index];
-  for (let i = 0; i < count; i += 1) {
-    // The shell sits at the identity, and the rest sphere already covers it.
-    if (i === shell) continue;
-    const at = i * 16;
-    const dx = data[at + 12] - cx;
-    const dy = data[at + 13] - cy;
-    const dz = data[at + 14] - cz;
-    const need = Math.sqrt(dx * dx + dy * dy + dz * dz) + reach;
-    if (need > radius) radius = need;
-  }
-  sphere.radius = radius;
-}
-
-/**
- * Move one slot from its cell's static shell to its own instance.
- *
- * Idempotent, and a no-op for slots that never had a shell range (boxes,
- * city-wide instanced shapes). Shared by the frame loop's first-movement wake
- * and the post-build sweep below.
- */
-/** Returns true on the write that actually woke this slot, false afterwards. */
-export function wakeSlotFromShell(state: CityMeshState, slot: number): boolean {
-  if (state.wokenBySlot[slot]) return false;
-  state.wokenBySlot[slot] = 1;
-  const renderable = state.renderables[state.meshOfSlot[slot]];
-  const instanceId = state.instanceIds[slot];
-  if (!renderable || renderable.kind !== 'batched' || instanceId < 0) return true;
-  if (state.shellIndexCountBySlot[slot] <= 0) return true;
-  retireShellRange(renderable.mesh, {
-    start: state.shellIndexStartBySlot[slot],
-    count: state.shellIndexCountBySlot[slot],
-  });
-  renderable.mesh.setVisibleAt(instanceId, true);
-  return true;
-}
-
-/**
- * Wake every slot whose body has already left the intact structure.
- *
- * The shell bakes REST poses, but a build does not always happen against an
- * intact city: a threshold or texture-detail change rebuilds mid-game, and a
- * late joiner's first build happens against whatever the server has already
- * demolished. Without this pass, every settled island's chunks would be drawn
- * as the un-broken shell -- ghost buildings standing over their own rubble --
- * until a repaint or bootstrap happened to mark their bodies dirty, which for
- * a settled island is never. Found by a perf report whose mid-rubble rebuild
- * rows drew a suspiciously intact city.
- */
-export function wakeBrokenSlots(state: CityMeshState, client: CityClient): number {
-  const chunkBody = client.topology.chunkBody;
-  let woken = 0;
-  for (let slot = 0; slot < chunkBody.length; slot += 1) {
-    // Support serial 0 is the intact structure; everything else has broken off.
-    if ((chunkBody[slot] & 0x3f_ffff) === 0) continue;
-    if (!state.wokenBySlot[slot]) {
-      wakeSlotFromShell(state, slot);
-      woken += 1;
-    }
-  }
-  return woken;
+  state.renderables[index]?.mesh.computeBoundingSphere();
 }
 
 export function buildCityMesh(client: CityClient): CityMeshState {
@@ -857,43 +467,19 @@ export function buildCityMesh(client: CityClient): CityMeshState {
   const count = client.topology.chunkCount;
 
   const materials = resolveChunkMaterials(client, count);
-  const { shapeBySlot, scales, radii, localXZ, anchors, buildingCount }
+  const { shapeBySlot, scales, radii, localXZ, anchors }
     = resolveShapes(client, count, materials);
-  // Transparent shards stay out of the city-wide shared-shape meshes: those are
-  // built against one material, and a pane sharing a shape with a concrete
-  // shard would have to pick one of the two.
-  const sharing = groupHullShapes(shapeBySlot, count, materials.transparentBySlot);
-  const material = buildCityMaterial();
-  // One glass material per transparent entry in the pack's table. Empty for
-  // every pack that authors none, which is the existing city path untouched.
-  const glassMaterials = new Map<number, THREE.Material>();
-  materials.appearance.forEach((entry, index) => {
-    if (entry.opacity != null) glassMaterials.set(index, buildGlassMaterial(entry));
-  });
+  const poses = new CityGpuPoses(count, radii);
 
   const sink: BuildSink = {
     renderables: [],
-    radii,
     cellOfRenderable: [],
-    shellInstanceOfRenderable: [],
     meshOfSlot: new Int32Array(count).fill(-1),
-    instanceIds: new Int32Array(count).fill(-1),
-    hiddenBySlot: new Uint8Array(count),
-    belowStreakBySlot: new Uint8Array(count),
-    // Every slot starts woken; buildCellHullBatch clears the flag for the
-    // slots it folds into a shell.
-    wokenBySlot: new Uint8Array(count).fill(1),
-    shellIndexStartBySlot: new Int32Array(count).fill(-1),
-    shellIndexCountBySlot: new Int32Array(count).fill(0),
     scales,
+    radii,
     anchors,
-    baseColors: resolveTints(client, count, materials),
+    poses,
     totalVertices: 0,
-    hullBatchVertices: 0,
-    hullBatchSharedVertices: 0,
-    batchCount: 0,
-    instancedCount: 0,
-    subDraws: 0,
   };
 
   let cellCount = 0;
@@ -902,107 +488,61 @@ export function buildCityMesh(client: CityClient): CityMeshState {
       client.topology.slotOf(structure.structureId, chunk.nodeIndex),
     );
     // Cells are cut inside a structure, so a grid of separate buildings still
-    // gets at least one batch per building (each far smaller than a cell) and a
+    // gets at least one mesh per building (each far smaller than a cell) and a
     // district pack gets one per city block.
-    const colour = chunkBaseColor();
     for (const slots of partitionSlotsByCell(localXZ, structureSlots).values()) {
       // Cell ids run across structures, so two structures' cells never share a
       // stagger phase just because both were the third cell of their own pack.
       const cell = cellCount;
       cellCount += 1;
-      // Split by MATERIAL as well as by shape. Transparency is a property of
-      // the material and cannot ride on an instance, so a cell holding both
-      // glazing and concrete needs a batch of each. Only transparency splits:
-      // opaque chunks of every material share one, because which brick or
-      // concrete they wear travels per instance in the anchor.
-      const boxSlots = new Map<number, number[]>();
-      const hullSlots = new Map<number, number[]>();
-      const push = (into: Map<number, number[]>, slot: number) => {
-        const key = materials.transparentBySlot[slot] ? materials.materialOfSlot[slot] : -1;
-        const list = into.get(key) ?? [];
-        list.push(slot);
-        into.set(key, list);
-      };
+      // Split by MATERIAL. Transparency is a property of the material and
+      // cannot ride on a vertex, so a cell holding both glazing and concrete
+      // gets a mesh of each. Only transparency splits: opaque chunks of every
+      // material share one, because which brick or concrete they wear travels
+      // in the anchor.
+      const byMaterial = new Map<number, number[]>();
       for (const slot of slots) {
-        if (shapeBySlot[slot].kind === 'box') push(boxSlots, slot);
-        // A shape drawn city-wide is claimed by that mesh, not this cell.
-        else if (!sharing.instancedKeys.has(sharing.keyOfSlot.get(slot) ?? '')) {
-          push(hullSlots, slot);
-        }
+        const key = materials.transparentBySlot[slot] ? materials.materialOfSlot[slot] : -1;
+        const list = byMaterial.get(key) ?? [];
+        list.push(slot);
+        byMaterial.set(key, list);
       }
-      const materialFor = (key: number) => (key < 0 ? material : glassMaterials.get(key) ?? material);
-      for (const [key, list] of boxSlots) {
-        buildCellBoxes(sink, client, materialFor(key), cell, list, colour);
-      }
-      // A slot mesh owns its material: the matrices texture rides on it as a
-      // uniform, and three only re-uploads uniforms when the material changes
-      // between draws. The program is still shared -- same cache key.
-      const freshMaterialFor = (key: number) => {
+      for (const [key, list] of byMaterial) {
+        // A slot mesh owns its material: the pose textures ride on it as
+        // uniforms, and three only re-uploads uniforms when the material
+        // changes between draws. The program is still shared -- same cache key.
         const glass = key < 0 ? undefined : materials.appearance[key];
-        const fresh = glass && glass.opacity != null ? buildGlassMaterial(glass) : buildCityMaterial();
-        fresh.vertexColors = true;
-        return fresh;
-      };
-      for (const [key, list] of hullSlots) {
-        buildCellHullBatch(sink, client, freshMaterialFor(key), shapeBySlot, cell, list, colour);
+        const material = glass && glass.opacity != null ? buildGlassMaterial(glass) : buildCityMaterial();
+        buildCell(sink, client, material, shapeBySlot, cell, list);
       }
     }
   }
 
-  buildSharedShapeMeshes(sink, client, material, sharing, cellCount);
+  const state: CityMeshState = {
+    renderables: sink.renderables,
+    cellOfRenderable: Int32Array.from(sink.cellOfRenderable),
+    meshOfSlot: sink.meshOfSlot,
+    scales,
+    radii,
+    poses,
+  };
+  // Every record and every body the ledger has, so the first frame draws the
+  // city exactly as the ledger holds it -- intact, or mid-collapse for a late
+  // join or a mid-game rebuild.
+  for (const body of client.topology.allBodies()) {
+    writeBodyPose(state, body, body.settled ? 0.75 : 1, null);
+  }
+  for (let slot = 0; slot < count; slot += 1) writeChunkRecord(state, client, slot);
+  poses.upload();
+  for (const { mesh } of state.renderables) mesh.anchorSphere();
 
   console.info('[city] chunk meshes ready', {
     chunks: count,
     structures: manifest.structures.length,
-    // Bonded components, i.e. buildings -- what the concrete is keyed on. One
-    // structure can hold the whole skyline, so this is the number that matters.
-    buildings: buildingCount,
-    instancedCells: sink.instancedCount,
-    hullBatches: sink.batchCount,
-    // Distinct shard shapes, and how many were shared widely enough to
-    // instance. 7,160 shapes for 7,160 shards means nothing can be instanced.
-    hullShapes: sharing.slotsOfHullKey.size,
-    instancedHullShapes: sharing.instancedKeys.size,
-    // Vertices in hull batches, and the multiple over what shape-sharing would
-    // have cost. That multiple is the price of per-instance rest anchors.
-    hullBatchVertices: sink.hullBatchVertices,
-    hullBatchVertexRatio: sink.hullBatchSharedVertices > 0
-      ? Number((sink.hullBatchVertices / sink.hullBatchSharedVertices).toFixed(2))
-      : 1,
-    // Sub-draws, not draw calls: this is the number frame time tracks.
-    subDraws: sink.subDraws,
-    shareThreshold: minShareToInstance(),
+    cells: cellCount,
+    meshes: state.renderables.length,
     vertices: sink.totalVertices,
   });
-
-  renderStats.subDraws = sink.subDraws;
-  // Every chunk is at rest here, so each mesh's sphere as three computed it
-  // during the build is the exact footprint of the cell at rest -- shell
-  // included. The per-frame refresh grows from it.
-  const restSphereOfRenderable = sink.renderables.map((renderable) => {
-    if (!renderable.mesh.boundingSphere) renderable.mesh.computeBoundingSphere();
-    return renderable.mesh.boundingSphere!.clone();
-  });
-  const maxRadiusOfRenderable = new Float32Array(sink.renderables.length);
-  for (let slot = 0; slot < count; slot += 1) {
-    const index = sink.meshOfSlot[slot];
-    if (index >= 0 && radii[slot] > maxRadiusOfRenderable[index]) maxRadiusOfRenderable[index] = radii[slot];
-  }
-  return {
-    renderables: sink.renderables,
-    cellOfRenderable: Int32Array.from(sink.cellOfRenderable),
-    restSphereOfRenderable,
-    shellInstanceOfRenderable: Int32Array.from(sink.shellInstanceOfRenderable),
-    maxRadiusOfRenderable,
-    meshOfSlot: sink.meshOfSlot,
-    instanceIds: sink.instanceIds,
-    scales,
-    baseColors: sink.baseColors,
-    hiddenBySlot: sink.hiddenBySlot,
-    radii,
-    belowStreakBySlot: sink.belowStreakBySlot,
-    wokenBySlot: sink.wokenBySlot,
-    shellIndexStartBySlot: sink.shellIndexStartBySlot,
-    shellIndexCountBySlot: sink.shellIndexCountBySlot,
-  };
+  renderStats.subDraws = state.renderables.length;
+  return state;
 }
