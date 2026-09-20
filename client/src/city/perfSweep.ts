@@ -37,6 +37,9 @@ import {
   instanceShareThresholdSetting,
   qualityTier,
   setAmbientOcclusionEnabled,
+  setDustMode,
+  dustModePreferred,
+  type DustMode,
   setCityTextureDetail,
   setDprCap,
   setInstanceShareThreshold,
@@ -92,6 +95,7 @@ type Config = {
   albedoAniso: number;
   heroTiling: boolean;
   aoMsaa: number;
+  dust: DustMode;
 };
 
 function currentConfig(): Config {
@@ -108,6 +112,7 @@ function currentConfig(): Config {
     albedoAniso: cityTextureAnisotropy(),
     heroTiling: heroTilingEnabled(),
     aoMsaa: aoMsaaSamplesSetting(),
+    dust: dustModePreferred(),
   };
 }
 
@@ -123,6 +128,7 @@ function applyConfig(config: Config): void {
   setShadowMapSize(config.shadowMapSize);
   setCityTextureAnisotropy(config.albedoAniso);
   setHeroTilingEnabled(config.heroTiling);
+  setDustMode(config.dust);
   setAoMsaaSamples(config.aoMsaa);
 }
 
@@ -369,6 +375,10 @@ export async function runPerfSweep(
       return finishReport(steps, sentinel, profile, presentPeriodMs);
     }
     await step('AO off', { ao: false });
+    // The dust pass itself is only priced while something is burning; with
+    // nothing live it skips, and this step measures the pipeline it needs.
+    await step('dust off', { dust: 'off' });
+    await step('dust sprites', { dust: 'sprites' });
     await step('shadows off', { shadows: false });
     await step('shadow map 1024', { shadowMapSize: 1024 });
     await step('sky IBL off', { skyIbl: false });

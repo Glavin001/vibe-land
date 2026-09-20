@@ -1136,6 +1136,20 @@ export function CityStatsOverlay({
         warn={renderStats.gpuFrameMs > 8}
       />
       <Stat label="inst writes" value={`${renderStats.instanceWrites}`} />
+      <Stat
+        label="dust live/drawn"
+        value={`${renderStats.dustParcelsLive} / ${renderStats.dustDrawn + renderStats.dustDrawnHalf}`}
+      />
+      <Stat
+        label="dust samples"
+        value={`${renderStats.dustSamplesEstM.toFixed(1)} M`}
+        warn={renderStats.dustSamplesEstM >= 11.9}
+      />
+      <Stat
+        label="dust dropped"
+        value={`${renderStats.dustDropped}`}
+        warn={renderStats.dustDropped > 0}
+      />
       {/* The only thing that makes chunk geometry disappear. A hole opening
           in a building starts here, so it is on screen rather than inferred. */}
       <Stat

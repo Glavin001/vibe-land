@@ -153,6 +153,20 @@ export interface CityE2EStats {
   arrivalLatenessTicks: number;
   arrivalLatenessPeakTicks: number;
   manifestHash: string;
+  /**
+   * Destruction dust: sources the client extracted from fracture messages,
+   * parcels the policy spawned, parcels alive now, and what was thrown away
+   * (per-tick cap, glass, queue overflow). `enabled` is the data side; how
+   * they are drawn is a render setting.
+   */
+  dust: {
+    enabled: boolean;
+    sourcesTotal: number;
+    parcelsEmitted: number;
+    parcelsLive: number;
+    parcelsDrawn: number;
+    dropped: number;
+  };
   /** False when the chunk mesh failed to build — the city is streaming but invisible. */
   rendered: boolean;
   /** Lowest chunk centroid, in metres. The city ground is a flat plane at y=0. */

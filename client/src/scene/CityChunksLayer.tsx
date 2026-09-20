@@ -81,6 +81,7 @@ import {
 } from '../city/bodyDebugColors';
 import { frameStartTime, markFrameEndAndSample, renderStats } from '../city/renderStats';
 import { cityDiagnosticsWanted } from '../city/cityDiagnostics';
+import { dustEnabled } from '../city/dustSettings';
 import { CHUNK_SUNK_Y_M, compareDrawnChunkPositions, deepestChunkProvenance } from '../city/chunkDiagnostics';
 
 const TMP_MATRIX = new THREE.Matrix4();
@@ -831,6 +832,14 @@ export function CityChunksLayer({
         arrivalLatenessTicks: stats.arrivalLatenessTicks,
         arrivalLatenessPeakTicks: stats.arrivalLatenessPeakTicks,
         manifestHash: stats.manifestHash,
+        dust: {
+          enabled: dustEnabled(),
+          sourcesTotal: stats.dustSources,
+          parcelsEmitted: renderStats.dustEmitted,
+          parcelsLive: renderStats.dustParcelsLive,
+          parcelsDrawn: renderStats.dustDrawn + renderStats.dustDrawnHalf,
+          dropped: renderStats.dustDropped + stats.dustQueueDropped,
+        },
         rendered: stateRef.current != null,
         minChunkY: Number.isFinite(minChunkY) ? minChunkY : 0,
         chunksBelowGround,
