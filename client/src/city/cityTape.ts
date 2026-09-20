@@ -15,7 +15,8 @@
 // hash from the page's own origin, as the game does.
 //
 // Format (VLTAPE01): a JSON header; then, when the header names `frames`, that
-// many frame samples [f32 tMs][f32 frameMs][f32 cpuMs][u32 awake]; then packets
+// many frame samples of `frameBytes` each -- [f32 tMs][f32 frameMs][f32 cpuMs]
+// [u32 awake][f32 camera xyz][f32 camera quaternion xyzw] -- then packets
 // as [u32 tMs][u32 len][bytes]. Little-endian throughout. Tapes live in IndexedDB on the reporter's machine and can be
 // downloaded as files.
 
@@ -34,8 +35,9 @@ export interface CityTapeHeader {
   durationMs: number;
   packets: number;
   bytes: number;
-  /** Frame samples in the block after the header: [f32 tMs, f32 frameMs, f32 cpuMs, u32 awake] each. */
+  /** Frame samples in the block after the header, `frameBytes` each (16 before the camera was added). */
   frames?: number;
+  frameBytes?: number;
 }
 
 /** One rendered frame on the recording machine: when, and what it cost there. */
@@ -46,7 +48,11 @@ export interface CityTapeFrames {
   cpuMs: Float32Array;
   /** Chunks awake, as the recorder's 2 Hz telemetry last reported it. */
   awake: Uint32Array;
+  /** Camera position (xyz) and quaternion (xyzw) per frame; the replay can follow it. */
+  camera: Float32Array;
 }
+
+const FRAME_BYTES = 44;
 
 export interface CityTape {
   header: CityTapeHeader;
@@ -71,6 +77,7 @@ class CityTapeRecorder {
   private frameMs: number[] = [];
   private frameCpuMs: number[] = [];
   private frameAwake: number[] = [];
+  private frameCamera: number[] = [];
   private lastAwake = 0;
   private meta: { matchId: string; manifestHash: string; wireVersion: number; simHz: number } | null = null;
   private requestResync: (() => void) | null = null;
@@ -100,6 +107,7 @@ class CityTapeRecorder {
     this.frameMs = [];
     this.frameCpuMs = [];
     this.frameAwake = [];
+    this.frameCamera = [];
     this.requestResync?.();
     this.notify();
   }
@@ -113,12 +121,18 @@ class CityTapeRecorder {
   }
 
   /** Every rendered frame while recording: the governor's frame hook calls this. */
-  noteFrame(frameMs: number, cpuMs: number): void {
+  noteFrame(
+    frameMs: number,
+    cpuMs: number,
+    camera: { position: { x: number; y: number; z: number }; quaternion: { x: number; y: number; z: number; w: number } },
+  ): void {
     if (!this.recording || !(frameMs > 0)) return;
     this.frameTimes.push(performance.now() - this.startedAtMs);
     this.frameMs.push(frameMs);
     this.frameCpuMs.push(cpuMs);
     this.frameAwake.push(this.lastAwake);
+    const { position: p, quaternion: q } = camera;
+    this.frameCamera.push(p.x, p.y, p.z, q.x, q.y, q.z, q.w);
   }
 
   /** The city layer's 2 Hz telemetry reports how many chunks are awake. */
@@ -157,6 +171,7 @@ class CityTapeRecorder {
         frameMs: Float32Array.from(this.frameMs),
         cpuMs: Float32Array.from(this.frameCpuMs),
         awake: Uint32Array.from(this.frameAwake),
+        camera: Float32Array.from(this.frameCamera),
       },
     };
     this.times = [];
@@ -166,6 +181,7 @@ class CityTapeRecorder {
     this.frameMs = [];
     this.frameCpuMs = [];
     this.frameAwake = [];
+    this.frameCamera = [];
     this.notify();
     return tape;
   }
@@ -184,8 +200,8 @@ export const cityTapeRecorder = new CityTapeRecorder();
 
 export function encodeCityTape(tape: CityTape): Uint8Array {
   const frameCount = tape.frames ? tape.frames.times.length : 0;
-  const header = new TextEncoder().encode(JSON.stringify({ ...tape.header, frames: frameCount }));
-  let size = MAGIC.length + 4 + header.length + frameCount * 16;
+  const header = new TextEncoder().encode(JSON.stringify({ ...tape.header, frames: frameCount, frameBytes: FRAME_BYTES }));
+  let size = MAGIC.length + 4 + header.length + frameCount * FRAME_BYTES;
   for (const packet of tape.packets) size += 8 + packet.length;
   const out = new Uint8Array(size);
   const view = new DataView(out.buffer);
@@ -201,7 +217,8 @@ export function encodeCityTape(tape: CityTape): Uint8Array {
       view.setFloat32(at + 4, tape.frames.frameMs[i], true);
       view.setFloat32(at + 8, tape.frames.cpuMs[i], true);
       view.setUint32(at + 12, tape.frames.awake[i], true);
-      at += 16;
+      for (let c = 0; c < 7; c += 1) view.setFloat32(at + 16 + c * 4, tape.frames.camera[i * 7 + c] ?? 0, true);
+      at += FRAME_BYTES;
     }
   }
   tape.packets.forEach((packet, index) => {
@@ -227,13 +244,19 @@ export function decodeCityTape(bytes: Uint8Array): CityTape {
   let frames: CityTapeFrames | null = null;
   if (header.frames && header.frames > 0) {
     const n = header.frames;
-    frames = { times: new Float32Array(n), frameMs: new Float32Array(n), cpuMs: new Float32Array(n), awake: new Uint32Array(n) };
+    const frameBytes = header.frameBytes ?? 16;
+    frames = { times: new Float32Array(n), frameMs: new Float32Array(n), cpuMs: new Float32Array(n), awake: new Uint32Array(n), camera: new Float32Array(n * 7) };
     for (let i = 0; i < n; i += 1) {
       frames.times[i] = view.getFloat32(at, true);
       frames.frameMs[i] = view.getFloat32(at + 4, true);
       frames.cpuMs[i] = view.getFloat32(at + 8, true);
       frames.awake[i] = view.getUint32(at + 12, true);
-      at += 16;
+      if (frameBytes >= 44) {
+        for (let c = 0; c < 7; c += 1) frames.camera[i * 7 + c] = view.getFloat32(at + 16 + c * 4, true);
+      } else {
+        frames.camera[i * 7 + 6] = 1;
+      }
+      at += frameBytes;
     }
   }
   const times: number[] = [];

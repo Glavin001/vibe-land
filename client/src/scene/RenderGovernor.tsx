@@ -54,6 +54,7 @@ export function sceneCanvasProps() {
 export function RenderGovernor(): null {
   const setDpr = useThree((state) => state.setDpr);
   const gl = useThree((state) => state.gl);
+  const camera = useThree((state) => state.camera);
   const scaleRef = useRef(1);
   const gov = useRef({
     frameEma: 0,
@@ -102,7 +103,9 @@ export function RenderGovernor(): null {
   // cap of half a minute); if it holds, the trial sticks and the hold resets.
   useFrame(() => {
     const g = gov.current;
-    cityTapeRecorder.noteFrame(renderStats.frameTotalMs, renderStats.cpuFrameMs);
+    if (cityTapeRecorder.recording) {
+      cityTapeRecorder.noteFrame(renderStats.frameTotalMs, renderStats.cpuFrameMs, camera);
+    }
     if (!dynamicResolutionEnabled() || governorPaused()) {
       gl.shadowMap.autoUpdate = true;
       if (scaleRef.current !== 1) apply(1);

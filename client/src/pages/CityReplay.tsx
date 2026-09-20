@@ -16,8 +16,11 @@
 // (the tape carries it); its red buttons are the worst moments -- one click
 // seeks there.
 //
-// Drag to look, WASD/QE to fly, shift for speed; the pose is written back to
-// the URL as you move, so a view can be shared and a sweep re-run from it.
+// The camera follows the one the tape recorded until you drag or press a
+// movement key; CAM: RECORDED re-attaches. Free flight: drag to look, WASD/QE
+// to fly, shift for speed; the pose is written back to the URL as you move,
+// so a view can be shared and a sweep re-run from it. The governor is off on
+// this page -- a bench shows raw cost -- so its trims never hide a hot spot.
 // Space plays/pauses, arrows scrub 5 s, R rewinds.
 
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
@@ -32,7 +35,7 @@ import { DustLayer } from '../vfx/DustLayer';
 import { MeteorLayer } from '../vfx/MeteorLayer';
 import { CityStatsOverlay } from '../city/CityStatsOverlay';
 import { useFogSettings } from '../graphics/fogSettings';
-import { useDustFluid, useDustMode } from '../app/renderQuality';
+import { setGovernorPaused, useDustFluid, useDustMode } from '../app/renderQuality';
 import { DEFAULT_WORLD_DOCUMENT } from '../world/worldDocument';
 import { decodeCityTape, listCityTapes, loadCityTape, type CityTape } from '../city/cityTape';
 import { createReplayPlayer, loadReplayAssets, type ReplayPlayer } from '../city/cityReplay';
@@ -72,19 +75,36 @@ function parseCamera(): { position: [number, number, number]; target: [number, n
  * wheel to change speed. Starts at the pose from the URL and writes its pose
  * back there (throttled), so a view can be shared and a sweep re-run from it.
  */
-function ReplayCamera({ pose }: { pose: ReturnType<typeof parseCamera> }) {
+function ReplayCamera({
+  pose,
+  follow,
+  tape,
+  timeMs,
+  onDetach,
+}: {
+  pose: ReturnType<typeof parseCamera>;
+  /** Follow the camera the tape recorded; any drag or key hands control to you. */
+  follow: boolean;
+  tape: CityTape | null;
+  timeMs: () => number;
+  onDetach: () => void;
+}) {
   const camera = useThree((state) => state.camera);
   const gl = useThree((state) => state.gl);
   const keys = useRef(new Set<string>());
   const look = useRef({ yaw: 0, pitch: 0, dragging: false, lastX: 0, lastY: 0 });
   const speed = useRef(25);
   const lastUrlWrite = useRef(0);
-  useEffect(() => {
-    camera.position.set(...pose.position);
-    camera.lookAt(new THREE.Vector3(...pose.target));
+  const frameCursor = useRef(0);
+  const syncLook = () => {
     const euler = new THREE.Euler().setFromQuaternion(camera.quaternion, 'YXZ');
     look.current.yaw = euler.y;
     look.current.pitch = euler.x;
+  };
+  useEffect(() => {
+    camera.position.set(...pose.position);
+    camera.lookAt(new THREE.Vector3(...pose.target));
+    syncLook();
     camera.updateProjectionMatrix();
   }, [camera, pose]);
   useEffect(() => {
@@ -95,6 +115,7 @@ function ReplayCamera({ pose }: { pose: ReturnType<typeof parseCamera> }) {
     };
     const onDown = (event: PointerEvent) => {
       if (event.button !== 0) return;
+      onDetach();
       look.current.dragging = true;
       look.current.lastX = event.clientX;
       look.current.lastY = event.clientY;
@@ -113,7 +134,12 @@ function ReplayCamera({ pose }: { pose: ReturnType<typeof parseCamera> }) {
     const onKey = (down: boolean) => (event: KeyboardEvent) => {
       if (typing(event)) return;
       if (['KeyW', 'KeyA', 'KeyS', 'KeyD', 'KeyQ', 'KeyE', 'ShiftLeft', 'ShiftRight'].includes(event.code)) {
-        if (down) keys.current.add(event.code); else keys.current.delete(event.code);
+        if (down) {
+          keys.current.add(event.code);
+          if (event.code !== 'ShiftLeft' && event.code !== 'ShiftRight') onDetach();
+        } else {
+          keys.current.delete(event.code);
+        }
         event.preventDefault();
       }
     };
@@ -136,8 +162,24 @@ function ReplayCamera({ pose }: { pose: ReturnType<typeof parseCamera> }) {
       window.removeEventListener('keydown', keyDown);
       window.removeEventListener('keyup', keyUp);
     };
-  }, [gl]);
+  }, [gl, onDetach]);
   useFrame((_, dt) => {
+    const frames = tape?.frames;
+    if (follow && frames && frames.times.length > 0) {
+      // The recorded pose at the tape's clock: walk the frame list from the
+      // last cursor (it only ever moves a few entries per frame), and hold the
+      // free camera's look angles in step so a detach continues from here.
+      const t = timeMs();
+      let i = frameCursor.current;
+      if (i >= frames.times.length || frames.times[i] > t) i = 0;
+      while (i + 1 < frames.times.length && frames.times[i + 1] <= t) i += 1;
+      frameCursor.current = i;
+      const c = frames.camera;
+      camera.position.set(c[i * 7], c[i * 7 + 1], c[i * 7 + 2]);
+      camera.quaternion.set(c[i * 7 + 3], c[i * 7 + 4], c[i * 7 + 5], c[i * 7 + 6]);
+      syncLook();
+      return;
+    }
     const step = Math.min(0.1, dt);
     const k = keys.current;
     const fast = k.has('ShiftLeft') || k.has('ShiftRight') ? 4 : 1;
@@ -265,11 +307,22 @@ export function CityReplayPage() {
   const playerRef = useRef<ReplayPlayer | null>(null);
   const [clock, setClock] = useState({ t: 0, playing: false });
   const [sweep, setSweep] = useState<'idle' | 'running' | 'sent' | 'failed'>('idle');
+  // Follow the recorded camera until the user takes the controls. Tapes cut
+  // before the camera was recorded have no pose to follow.
+  const [followCamera, setFollowCamera] = useState(true);
+  const detach = useMemo(() => () => setFollowCamera(false), []);
   const [sweepText, setSweepText] = useState<string | null>(null);
   const fog = useFogSettings();
   const dustMode = useDustMode();
   const dustFluid = useDustFluid();
   const pose = useMemo(parseCamera, []);
+
+  // A bench shows raw cost: the governor would otherwise trim dust and
+  // resolution until the frame fits and the hot spots read 120 Hz.
+  useEffect(() => {
+    setGovernorPaused(true);
+    return () => setGovernorPaused(false);
+  }, []);
 
   useEffect(() => {
     void listCityTapes().then(setTapes).catch(() => {});
@@ -399,7 +452,13 @@ export function CityReplayPage() {
       <Canvas {...sceneCanvasProps()} style={{ width: '100%', height: '100%' }} data-testid="replay-canvas">
         <RenderGovernor />
         <FrameClock />
-        <ReplayCamera pose={pose} />
+        <ReplayCamera
+          pose={pose}
+          follow={followCamera && !!tape?.frames && tape.frames.camera.some((v) => v !== 0)}
+          tape={tape}
+          timeMs={() => playerRef.current?.timeMs() ?? 0}
+          onDetach={detach}
+        />
         <ReplayTicker playerRef={playerRef} />
         <CityEnvironment
           fogEnabled={fog.enabled}
@@ -486,6 +545,14 @@ export function CityReplayPage() {
               <input type="checkbox" defaultChecked={player.loop} onChange={(event) => { player.loop = event.target.checked; }} /> loop
             </label>
             <FrameStrip tape={tape!} timeMs={Math.min(clock.t, player.durationMs())} onSeek={(ms) => void window.__VIBE_REPLAY__?.seek(ms)} />
+            <button
+              type="button"
+              style={{ ...button, background: followCamera ? '#1a3a1a' : '#222' }}
+              title="Follow the camera the tape recorded; drag or WASD to take over"
+              onClick={() => setFollowCamera((value) => !value)}
+            >
+              {followCamera ? 'CAM: RECORDED' : 'CAM: FREE'}
+            </button>
             <span style={{ color: '#999', whiteSpace: 'nowrap' }} title="drag to look · WASD/QE to fly · shift fast · wheel speed · space play · ←/→ 5 s · R rewind">? controls</span>
             <button
               type="button"
