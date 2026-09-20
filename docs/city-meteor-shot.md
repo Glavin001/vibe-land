@@ -106,11 +106,14 @@ the 1 km streaming filter.
 
 ## Correction passes
 
-`VIBE_CITY_NATIVE_CORRECTION_LIMIT` exists (default 1) but the stage takes
-only 0 or 1: `configureStress` rejects anything above one and treats the
-value as a boolean, and a rejected configuration comes up as a city that
-renders and cannot break, with a single WARN. The bridge clamps and logs.
-"Two corrected passes" would be an SDK change.
+`VIBE_CITY_NATIVE_CORRECTION_LIMIT` (default 1) is the number of corrected
+rigid solves one tick may run. From SDK v17 (physx-2 `8bc7aecb`) the stage
+loops: while the re-evaluated contacts keep breaking bonds it rewinds to the
+start of the tick and solves again, up to the limit, so a rock can go two or
+more layers deep in one tick instead of rebounding off the second. Each extra
+pass is a full rigid solve on fracturing frames only. `0` never rewinds and is
+the cheapest setting. Older SDKs refuse anything above one and treat the value
+as a boolean; against those the bridge clamps to 1 and logs.
 
 ## Not done
 

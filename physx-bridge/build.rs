@@ -18,9 +18,12 @@ const DEFAULT_PHYSX_DESTRUCTION_SDK: &str = "/root/workspace/physx-2";
 /// together with the SDK; a silent bump would change struct layouts under our
 /// device reads, so the build fails loudly instead.
 #[cfg(feature = "native-destruction")]
-const NATIVE_DESTRUCTION_SCENE_VERSIONS: [&str; 2] = [
+const NATIVE_DESTRUCTION_SCENE_VERSIONS: [&str; 3] = [
     "#define PX_DESTRUCTION_SCENE_VERSION 15",
     "#define PX_DESTRUCTION_SCENE_VERSION 16",
+    // v17 changes no layout: `internalCorrectionLimit` stops being a boolean
+    // and becomes the number of corrected solves one tick may run.
+    "#define PX_DESTRUCTION_SCENE_VERSION 17",
 ];
 
 #[cfg(feature = "gpu")]
@@ -322,8 +325,8 @@ fn add_native_destruction(
     let header = include.join("PxDestructionScene.h");
     let text = std::fs::read_to_string(&header)
         .unwrap_or_else(|e| panic!("cannot read {}: {e}", header.display()));
-    // The shim is written against v15 and v16. They differ only by additions it
-    // guards, and the device views it reads are raw structs, so an unknown
+    // The shim is written against v15 through v17. They differ only by additions
+    // it guards, and the device views it reads are raw structs, so an unknown
     // version is a silent misread rather than a link error -- hence a hard stop.
     let version = NATIVE_DESTRUCTION_SCENE_VERSIONS
         .iter()
@@ -339,6 +342,12 @@ fn add_native_destruction(
     let version = 15 + version;
     build.define("VIBE_PHYSX_DESTRUCTION_SCENE_VERSION", version.to_string().as_str());
     println!("cargo:rustc-env=VIBE_PHYSX_DESTRUCTION_SCENE_VERSION={version}");
+    // From v17 the stage loops its correction: configureStress takes any
+    // internalCorrectionLimit and runs up to that many corrected solves per
+    // tick. Older SDKs refuse anything above one, so the bridge clamps there.
+    if version >= 17 {
+        build.define("VIBE_PHYSX_CORRECTION_LOOP", None);
+    }
     // Two physx-2 lines both call themselves v16 and mean different things by
     // it (reserved contact pairs on one, correction blockers on the other), so
     // optional fields are detected by name, never by number.

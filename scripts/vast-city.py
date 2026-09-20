@@ -371,8 +371,12 @@ def deploy(d, binary, force=False):
     if d['server']:
         if process_identity(d['server']) != identity:
             raise RuntimeError('Serving process changed; retry deployment')
-        shutil.copyfile(f'/proc/{d["server"]}/exe', previous)
-        previous.chmod(0o700)
+        # After a rollback the serving process IS `previous`; copying a file
+        # onto itself fails, so stage the copy and replace atomically.
+        staged = previous.with_name(previous.name + '.staging')
+        shutil.copyfile(f'/proc/{d["server"]}/exe', staged)
+        staged.chmod(0o700)
+        os.replace(staged, previous)
     for supervisor, stamp in d.get('supervisors', []):
         stop(supervisor, stamp)
     if d['server']:

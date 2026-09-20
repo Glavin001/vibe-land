@@ -2464,6 +2464,9 @@ fn sustained_fire_survives_a_rejected_step() {
         .unwrap_or(400);
     let mut tick = 0u32;
     let mut rejected = 0u32;
+    // How deep one tick's correction went; the budget is
+    // VIBE_CITY_NATIVE_CORRECTION_LIMIT and anything above 1 is the loop.
+    let mut deepest_correction = 0u32;
     // The scaling question this backend lives or dies on. The solve covers the
     // same bonds every tick, so what makes it dearer as the city comes apart?
     // Sampled while the run fragments the city, rather than argued about.
@@ -2508,6 +2511,7 @@ fn sustained_fire_survives_a_rejected_step() {
                 spans.iter().find(|s| s.name == name).map(|s| s.value).unwrap_or(0.0)
             };
             rejected = at("native_error_frames") as u32;
+            deepest_correction = deepest_correction.max(at("native_correction_passes") as u32);
             window_ticks += 1.0;
             window_stress += at("GpuDestruction.cuda.stress");
             window_iters += at("native_stress_iterations");
@@ -2554,6 +2558,10 @@ process is still here",
         stats.chunk_bodies,
         span("native_error_bits_last"),
         span("native_unconverged_frames"),
+    );
+    eprintln!(
+        "[native /city] correction: deepest tick ran {deepest_correction} corrected solves (budget VIBE_CITY_NATIVE_CORRECTION_LIMIT={})",
+        std::env::var("VIBE_CITY_NATIVE_CORRECTION_LIMIT").unwrap_or_else(|_| "1".into())
     );
     eprintln!(
         "[native /city] debris lifecycle: {} parked below the world, {} forced to sleep, \

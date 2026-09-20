@@ -11,16 +11,16 @@
 
 using namespace physx;
 
-// Whether the stage runs its corrected rigid pass after a membership-changing
-// verdict. One is the production value: one trial evaluation plus one
-// corrected pass. Zero leaves the stage in its diagnostic mode, where any such
-// verdict is rejected. The SDK accepts nothing else: `configureStress` refuses
-// a limit above 1 (`PxgDestructionRuntime.cu`, `d.internalCorrectionLimit>1`)
-// and treats the value as a boolean, so "two passes" is not a thing this
-// engine can do. VIBE_CITY_NATIVE_CORRECTION_LIMIT=0 turns it off for A/B.
-// Anything above 1 is clamped and shouted about, because the rejected
-// configuration's symptom is a city that renders and cannot break, with one
-// WARN in the log to say why.
+// How many corrected rigid solves the stage may run in one tick after a
+// membership-changing verdict. One is the production value: one trial
+// evaluation plus one corrected pass, so an impact breaks one bond layer per
+// tick. Two and above let the stage rewind and solve again while the
+// re-evaluated contacts keep breaking bonds, so a rock can go N layers deep in
+// one tick instead of rebounding off the second; each extra pass is a full
+// rigid solve on the frames that fracture. Zero never rewinds, the cheapest
+// setting, and turns correction off for A/B. Before SDK v17 `configureStress`
+// refused anything above one and the symptom was a city that renders and
+// cannot break, so on those SDKs the value is clamped and shouted about.
 static unsigned correction_limit() {
   static const unsigned value = [] {
     const char *raw = std::getenv("VIBE_CITY_NATIVE_CORRECTION_LIMIT");
@@ -28,6 +28,7 @@ static unsigned correction_limit() {
     char *end = nullptr;
     const unsigned long parsed = std::strtoul(raw, &end, 10);
     if (end == nullptr || *end != '\0') return 1u;
+#if !defined(VIBE_PHYSX_CORRECTION_LOOP)
     if (parsed > 1) {
       std::fprintf(stderr,
                    "[destruction] VIBE_CITY_NATIVE_CORRECTION_LIMIT=%lu is not supported by the "
@@ -35,6 +36,7 @@ static unsigned correction_limit() {
                    parsed);
       return 1u;
     }
+#endif
     return unsigned(parsed);
   }();
   return value;

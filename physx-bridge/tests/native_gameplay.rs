@@ -169,10 +169,21 @@ fn step_and_observe(world: &mut World) -> vibe_land_physx_bridge::NativeStatus {
         "engine rejected the step (error bits {})",
         status.error
     );
+    // One corrected pass per tick unless VIBE_CITY_NATIVE_CORRECTION_LIMIT
+    // raised the budget; never more than the budget either way.
+    let limit: u32 = std::env::var("VIBE_CITY_NATIVE_CORRECTION_LIMIT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1);
     assert!(
-        status.correction_passes <= 1,
-        "more than one corrected pass: {}",
+        status.correction_passes <= limit,
+        "more corrected passes than the budget of {limit}: {}",
         status.correction_passes
+    );
+    assert_eq!(
+        status.stress_passes,
+        status.correction_passes + 1,
+        "one stress evaluation per solve"
     );
     status
 }
