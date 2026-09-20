@@ -36,6 +36,21 @@ export const renderStats = {
   glRenderMs: 0,
   /** Real GPU execution time, when the timer-query extension is available. */
   gpuFrameMs: 0,
+  /**
+   * GPU time of each `renderer.render()` call of the frame, in call order:
+   * with the frame pipeline on that is scene (shadow map + beauty), AO, blur,
+   * any dust stage renders, composite. They sum to gpuFrameMs. Exists because
+   * a whole-frame number could not say WHICH pass grew when destruction did.
+   * Six slots; a frame with more passes folds the rest into the last.
+   */
+  gpuPass0Ms: 0,
+  gpuPass1Ms: 0,
+  gpuPass2Ms: 0,
+  gpuPass3Ms: 0,
+  gpuPass4Ms: 0,
+  gpuPass5Ms: 0,
+  /// How many render() calls the measured frame issued.
+  gpuPassCount: 0,
   /// Everything the frame runs before the city layer: GameWorld's callback
   /// (input, prediction, camera, entity sync) plus the small scene extras.
   /// Measured as a span rather than bracketed inside GameWorld because that
@@ -164,11 +179,9 @@ export function addDecodeMs(ms: number): void {
  * ascending and only a *positive* priority disables its automatic render).
  */
 export function markFrameStart(): void {
-  // Close the previous frame's GPU query before anything this frame submits, so
-  // one query covers exactly one frame's worth of work.
-  closeGpuFrame();
-  drainGpuQueries();
-  openGpuFrame();
+  // Collect the GPU results that have landed and open this frame's pass
+  // numbering before anything this frame submits.
+  startGpuFrame();
   const now = performance.now();
   if (lastRafStamp > 0) {
     renderStats.frameTotalMs = now - lastRafStamp;
@@ -231,11 +244,13 @@ let renderMsThisFrame = 0;
 // is not academic: it is exactly how a change that multiplied per-pixel work
 // got measured as free on a GPU fast enough to hide it.
 //
-// EXT_disjoint_timer_query_webgl2 gives the real number. The query brackets a
-// whole frame -- opened when the frame's CPU work starts, closed when the next
-// frame's does -- so it covers every pass, including the ones a post-process
-// chain adds behind three's back. Results land a few frames later, which is
-// why they are polled rather than awaited.
+// EXT_disjoint_timer_query_webgl2 gives the real number. One query brackets
+// each `renderer.render()` call -- the scene pass, then whatever the frame
+// pipeline adds behind three's back -- so the frame's GPU time comes back
+// per pass (`gpuPassMs`) as well as in total. Results land a few frames
+// later, which is why they are polled rather than awaited. Per pass rather
+// than per frame because on a GPU shared with other processes the whole-frame
+// number includes their work; the minimum of a pass over many frames does not.
 // ---------------------------------------------------------------------------
 
 type TimerExt = {
@@ -245,16 +260,17 @@ type TimerExt = {
 
 let gl2: WebGL2RenderingContext | null = null;
 let timerExt: TimerExt | null = null;
-let openQuery: WebGLQuery | null = null;
-const pendingQueries: WebGLQuery[] = [];
 const freeQueries: WebGLQuery[] = [];
-
-function closeGpuFrame(): void {
-  if (!gl2 || !timerExt || !openQuery) return;
-  gl2.endQuery(timerExt.TIME_ELAPSED_EXT);
-  pendingQueries.push(openQuery);
-  openQuery = null;
-}
+// One query per render() call, tagged with the frame it belongs to and its
+// position in that frame. Results come back in issue order a few frames later.
+type PassQuery = { query: WebGLQuery; frame: number; pass: number };
+const pendingQueries: PassQuery[] = [];
+let frameSerial = 0;
+let passesThisFrame = 0;
+// Per-frame results being assembled: pass ms by index, and how many passes the
+// frame issued, so a frame publishes once every one of its passes is in.
+let assembling: { frame: number; ms: number[]; issued: number } | null = null;
+const passesIssuedByFrame = new Map<number, number>();
 
 function drainGpuQueries(): void {
   if (!gl2 || !timerExt) return;
@@ -262,27 +278,73 @@ function drainGpuQueries(): void {
   // every in-flight result is garbage. Throw them all away rather than report a
   // number that is wrong in an unknowable direction.
   if (gl2.getParameter(timerExt.GPU_DISJOINT_EXT)) {
-    for (const query of pendingQueries) freeQueries.push(query);
+    for (const entry of pendingQueries) freeQueries.push(entry.query);
     pendingQueries.length = 0;
+    assembling = null;
+    passesIssuedByFrame.clear();
     return;
   }
   while (pendingQueries.length > 0) {
-    const query = pendingQueries[0];
-    if (!gl2.getQueryParameter(query, gl2.QUERY_RESULT_AVAILABLE)) break;
+    const entry = pendingQueries[0];
+    if (!gl2.getQueryParameter(entry.query, gl2.QUERY_RESULT_AVAILABLE)) break;
     pendingQueries.shift();
-    renderStats.gpuFrameMs = gl2.getQueryParameter(query, gl2.QUERY_RESULT) / 1e6;
-    freeQueries.push(query);
+    const ms = gl2.getQueryParameter(entry.query, gl2.QUERY_RESULT) / 1e6;
+    freeQueries.push(entry.query);
+    if (!assembling || assembling.frame !== entry.frame) {
+      assembling = { frame: entry.frame, ms: [], issued: passesIssuedByFrame.get(entry.frame) ?? 0 };
+    }
+    assembling.ms[entry.pass] = ms;
+    if (assembling.ms.length >= assembling.issued && assembling.issued > 0) {
+      let total = 0;
+      const slots = [0, 0, 0, 0, 0, 0];
+      assembling.ms.forEach((v, index) => {
+        total += v || 0;
+        slots[Math.min(index, slots.length - 1)] += v || 0;
+      });
+      renderStats.gpuPass0Ms = slots[0];
+      renderStats.gpuPass1Ms = slots[1];
+      renderStats.gpuPass2Ms = slots[2];
+      renderStats.gpuPass3Ms = slots[3];
+      renderStats.gpuPass4Ms = slots[4];
+      renderStats.gpuPass5Ms = slots[5];
+      renderStats.gpuPassCount = assembling.ms.length;
+      renderStats.gpuFrameMs = total;
+      passesIssuedByFrame.delete(entry.frame);
+      assembling = null;
+    }
   }
 }
 
-function openGpuFrame(): void {
-  if (!gl2 || !timerExt || openQuery) return;
+function beginPassQuery(): WebGLQuery | null {
+  if (!gl2 || !timerExt) return null;
   // Cap the backlog: if results stop arriving, stop allocating queries.
-  if (pendingQueries.length > 8) return;
+  if (pendingQueries.length > 64) return null;
   const query = freeQueries.pop() ?? gl2.createQuery();
-  if (!query) return;
+  if (!query) return null;
   gl2.beginQuery(timerExt.TIME_ELAPSED_EXT, query);
-  openQuery = query;
+  return query;
+}
+
+function endPassQuery(query: WebGLQuery | null): void {
+  if (!gl2 || !timerExt || !query) return;
+  gl2.endQuery(timerExt.TIME_ELAPSED_EXT);
+  pendingQueries.push({ query, frame: frameSerial, pass: passesThisFrame });
+  passesThisFrame += 1;
+  passesIssuedByFrame.set(frameSerial, passesThisFrame);
+}
+
+/** Called at the top of every frame: results of earlier frames are collected here. */
+function startGpuFrame(): void {
+  drainGpuQueries();
+  frameSerial += 1;
+  passesThisFrame = 0;
+  // Frames that never resolved (a query lost to the backlog cap) would pin the
+  // map forever; anything older than the pending window is gone.
+  if (passesIssuedByFrame.size > 128) {
+    for (const key of passesIssuedByFrame.keys()) {
+      if (key < frameSerial - 64) passesIssuedByFrame.delete(key);
+    }
+  }
 }
 
 let patched = false;
@@ -299,7 +361,9 @@ export function patchRendererTiming(gl: { render: (...args: never[]) => void }):
   }
   (gl as { render: (...args: never[]) => void }).render = (...args: never[]) => {
     const started = performance.now();
+    const query = beginPassQuery();
     original(...args);
+    endPassQuery(query);
     const ended = performance.now();
     renderMsThisFrame += ended - started;
     if (info && info.render.calls > peakCalls) {

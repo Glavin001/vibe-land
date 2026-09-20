@@ -5,6 +5,7 @@
  *   node tools/city-120hz-bench.mjs [--page https://127.0.0.1:6006]
  *        [--wt https://127.0.0.1:4433/game] [--frames 300] [--viewport 2056x1198]
  *        [--dsf 2] [--tiers pretty,fast] [--metric pretty-p95] [--out dir]
+ *        (--metric also takes <tier>-<phase>-<stat>, e.g. pretty-cpuFrameMs-p95)
  *        [--demolish] [--meteors 12] [--meteor-gap 3000] [--storm-wait 12000] [--sample-from 2]
  *        [--repeats 1]
  *
@@ -71,10 +72,13 @@ const GPU_ARGS = [
 ];
 
 const KEYS = [
-  'frameTotalMs', 'cpuFrameMs', 'offFrameMs', 'gpuFrameMs', 'glRenderMs',
+  'frameTotalMs', 'cpuFrameMs', 'offFrameMs', 'gpuFrameMs',
+  'gpuPass0Ms', 'gpuPass1Ms', 'gpuPass2Ms', 'gpuPass3Ms', 'gpuPass4Ms', 'gpuPass5Ms', 'gpuPassCount',
+  'glRenderMs',
   'cityFrameMs', 'sampleMs', 'dirtyWriteMs', 'sphereMs', 'telemetryMs',
   'decodeMs', 'dustCpuMs', 'unattributedMs',
-  'drawCalls', 'subDraws', 'triangles', 'instanceWrites', 'dustDrawn',
+  'drawCalls', 'subDraws', 'triangles', 'instanceWrites',
+  'dustDrawn', 'dustDrawnHalf', 'dustParcelsLive', 'dustSamplesEstM', 'dustFluidActive',
 ];
 
 function pct(values, fraction) {
@@ -86,17 +90,22 @@ function summarize(rows) {
   const out = {};
   for (const key of KEYS) {
     const v = rows.map((r) => r[key] ?? 0);
+    // min: on a GPU shared with other processes, the pass that happened to
+    // run alone is the one that measures the renderer.
+    let min = Infinity;
+    for (const x of v) if (x < min) min = x;
     out[key] = { avg: v.reduce((a, b) => a + b, 0) / Math.max(1, v.length),
+      min: Number.isFinite(min) ? min : 0,
       p50: pct(v, 0.5), p95: pct(v, 0.95), max: Math.max(...v) };
   }
   return out;
 }
 function table(title, s) {
   const lines = [`=== ${title} ===`,
-    `${'phase'.padEnd(16)}${'avg'.padStart(9)}${'p50'.padStart(9)}${'p95'.padStart(9)}${'max'.padStart(9)}`];
+    `${'phase'.padEnd(16)}${'avg'.padStart(9)}${'min'.padStart(9)}${'p50'.padStart(9)}${'p95'.padStart(9)}${'max'.padStart(9)}`];
   for (const key of KEYS) {
     const r = s[key];
-    lines.push(`${key.padEnd(16)}${r.avg.toFixed(2).padStart(9)}${r.p50.toFixed(2).padStart(9)}`
+    lines.push(`${key.padEnd(16)}${r.avg.toFixed(2).padStart(9)}${r.min.toFixed(2).padStart(9)}${r.p50.toFixed(2).padStart(9)}`
       + `${r.p95.toFixed(2).padStart(9)}${r.max.toFixed(2).padStart(9)}`);
   }
   return lines.join('\n');
@@ -176,10 +185,16 @@ for (const tier of TIERS) {
       // launch path a player's shot takes -- so N means N and every run hits the
       // same spots. A 4x3 grid over the town's footprint (x,z in +-122, roofs at
       // ~17 m; see destruction/assets/scenes/fractured-town.json).
+      // A grid dense enough that every rock has its own spot: N rocks on a
+      // ceil(sqrt N)-wide lattice over the town's +-105 m footprint, walked in
+      // a fixed order, so the storm is the same every run and never wastes a
+      // rock on ground an earlier one already cleared.
       const targets = [];
+      const side = Math.max(1, Math.ceil(Math.sqrt(METEORS)));
       for (let i = 0; i < METEORS; i += 1) {
-        const col = i % 4, row = Math.floor(i / 4) % 3;
-        targets.push([-90 + col * 60, 8, -80 + row * 80]);
+        const col = i % side, row = Math.floor(i / side) % side;
+        const step = side > 1 ? 210 / (side - 1) : 0;
+        targets.push([-105 + col * step, 8, -105 + row * step]);
       }
       // One launch every --meteor-gap ms. Four rocks in flight at once (queued
       // together, or fired a second apart) has twice killed the GPU solver's
@@ -194,9 +209,16 @@ for (const tier of TIERS) {
           // in. A 5-second window read 3x apart on two identical storms.
           await page.evaluate(() => {
             window.__benchRows = [];
+            window.__benchAwake = [];
             window.__benchStop = false;
             const tick = () => {
               window.__benchRows.push(window.__VIBE_E2E__.frameProfile());
+              // The city's own census every 30 frames: how brutal the scene
+              // actually was while the frames above were measured.
+              if (window.__benchRows.length % 30 === 0) {
+                const c = window.__VIBE_E2E__.snapshot().city;
+                if (c) window.__benchAwake.push([c.chunksAwake, c.brokenBonds, c.liveIslands]);
+              }
               if (!window.__benchStop) requestAnimationFrame(tick);
             };
             requestAnimationFrame(tick);
@@ -216,13 +238,24 @@ for (const tier of TIERS) {
         await page.waitForTimeout(METEOR_GAP_MS);
       }
       console.log(`[${tier}] storm: ${seen}/${METEORS} meteor launches seen`);
-      if (seen < METEORS) throw new Error(`only ${seen}/${METEORS} meteors launched`);
+      // Under a heavy storm the client's frames are long and a launch packet
+    // can land after the 5 s watch; the rock still fell. Nine in ten is proof
+    // the storm happened.
+    if (seen < Math.ceil(METEORS * 0.9)) throw new Error(`only ${seen}/${METEORS} meteors launched`);
       await page.waitForTimeout(STORM_WAIT_MS);
     }
 
     let rows;
     if (DEMOLISH) {
       rows = await page.evaluate(() => { window.__benchStop = true; return window.__benchRows; });
+      const census = await page.evaluate(() => window.__benchAwake ?? []);
+      if (census.length) {
+        const awake = census.map((c) => c[0]);
+        const peak = Math.max(...awake);
+        const mean = awake.reduce((a, b) => a + b, 0) / awake.length;
+        console.log(`[${tier}] during sampling: awake peak=${peak} mean=${mean.toFixed(0)} bonds broken at end=${census[census.length - 1][1]} islands=${census[census.length - 1][2]}`);
+        rows.census = { awakePeak: peak, awakeMean: mean };
+      }
     } else {
       // Fixed rig: face the city centre from spawn, so both tiers see the same pixels.
       await page.evaluate(() => window.__VIBE_DRIVE__.look(Math.PI * 0.75, -0.12));
@@ -248,10 +281,14 @@ for (const tier of TIERS) {
     const rowsR = await measureOnce();
     const sR = summarize(rowsR);
     runs.push({ rows: rowsR, summary: sR });
-    if (REPEATS > 1) console.log(`[${tier}] repeat ${r + 1}/${REPEATS}: frames=${rowsR.length} p50=${sR.frameTotalMs.p50.toFixed(2)} p95=${sR.frameTotalMs.p95.toFixed(2)}`);
+    if (REPEATS > 1) console.log(`[${tier}] repeat ${r + 1}/${REPEATS}: frames=${rowsR.length} frame p50=${sR.frameTotalMs.p50.toFixed(2)} p95=${sR.frameTotalMs.p95.toFixed(2)} cpu p95=${sR.cpuFrameMs.p95.toFixed(2)} gpu min=${sR.gpuFrameMs.min.toFixed(2)}`);
   }
-  // Best of N: the run least disturbed by the rest of the box.
-  const best = runs.reduce((x, y) => (y.summary.frameTotalMs.p95 < x.summary.frameTotalMs.p95 ? y : x));
+  // Best of N: the run least disturbed by the rest of the box, judged on the
+  // metric's own phase and statistic.
+  const mp = METRIC.split('-');
+  const mField = mp.length === 3 ? mp[1] : 'frameTotalMs';
+  const mStat = mp[mp.length - 1] === 'p50' || mp[mp.length - 1] === 'min' || mp[mp.length - 1] === 'avg' ? mp[mp.length - 1] : 'p95';
+  const best = runs.reduce((x, y) => (y.summary[mField][mStat] < x.summary[mField][mStat] ? y : x));
   const rows = best.rows;
   const backing = await page.evaluate(() => {
     const c = document.querySelector('canvas');
@@ -279,12 +316,15 @@ if (OUT_DIR) {
 // --metric: <tier>-<stat> over frameTotalMs, or 'worst' = max over tiers of
 // p95 with FAST weighted 2x (FAST must run at least twice as cheap as PRETTY).
 const p95 = (t) => result.tiers[t]?.summary.frameTotalMs.p95 ?? NaN;
-const p50 = (t) => result.tiers[t]?.summary.frameTotalMs.p50 ?? NaN;
 let value;
 if (METRIC === 'worst') value = Math.max(p95('pretty'), 2 * p95('fast'));
 else {
-  const [t, stat] = METRIC.split('-');
-  value = stat === 'p50' ? p50(t) : p95(t);
+  // <tier>-<stat> over frameTotalMs, or <tier>-<field>-<stat> over any phase.
+  const parts = METRIC.split('-');
+  const t = parts[0];
+  const field = parts.length === 3 ? parts[1] : 'frameTotalMs';
+  const stat = parts[parts.length - 1];
+  value = result.tiers[t]?.summary[field]?.[stat] ?? NaN;
 }
 if (!Number.isFinite(value)) { console.error(`metric ${METRIC} unavailable`); process.exit(1); }
 console.log(`METRIC ${METRIC}`);
