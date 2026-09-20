@@ -67,6 +67,7 @@ public:
                               FfiVec3 point);
   std::uint32_t wake_bodies_near(FfiVec3 center, float radius);
   void drive_vehicle(std::uint32_t entity_id, const FfiVehicleCommands &commands);
+  void reset_vehicle(std::uint32_t entity_id, const FfiPose &pose);
   void move_player(std::uint32_t entity_id, FfiVec3 displacement,
                    float elapsed_time);
   void step();

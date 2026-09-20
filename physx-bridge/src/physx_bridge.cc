@@ -2358,18 +2358,28 @@ public:
         : PxVec3(desc.mass * (half.y * half.y + half.z * half.z) * 4.0f / 12.0f,
                  desc.mass * (half.x * half.x + half.z * half.z) * 4.0f / 12.0f,
                  desc.mass * (half.x * half.x + half.y * half.y) * 4.0f / 12.0f);
-    // The actor origin is the chassis centre and the centre of mass.
-    car.cMassLocalPose = PxTransform(PxIdentity);
+    // The actor origin is the chassis centre; the centre of mass may sit
+    // below it. The vehicle SDK lays its wheels out in the centre-of-mass
+    // frame while the caller gives hard points in the actor frame, so the
+    // attachment height is converted below.
+    require(finite(desc.com_offset_y) && std::fabs(desc.com_offset_y) < half.y * 2.0f,
+            "vehicle centre of mass must stay near the chassis");
+    car.cMassLocalPose = PxTransform(PxVec3(0.0f, desc.com_offset_y, 0.0f));
     car.chassisHalfExtents = half;
     car.chassisLocalPose = PxTransform(PxIdentity);
     car.chassisSimulationFilterData =
         PxFilterData(desc.collision_group, desc.collision_mask, desc.entity_id, 0);
     car.chassisQueryFilterData = PxFilterData(desc.collision_group, desc.entity_id, 0, 0);
-    car.chassisSceneQueryShape = false;
+    // The chassis answers scene queries: the capsule controllers find their
+    // obstacles by sweeping, and a car they cannot see is one they walk
+    // into, after which the kinematic capsule carries the car off at walking
+    // speed. The wheels' own road sweeps skip it by group (the road mask
+    // never names the vehicle group), which is what the flag was guarding.
+    car.chassisSceneQueryShape = true;
     car.frontAxleZ = desc.front_axle_z;
     car.rearAxleZ = desc.rear_axle_z;
     car.halfTrack = desc.half_track;
-    car.suspensionAttachmentY = desc.suspension_attachment_y;
+    car.suspensionAttachmentY = desc.suspension_attachment_y - desc.com_offset_y;
     car.suspensionTravel = desc.suspension_travel;
     car.wheelRadius = desc.wheel_radius;
     car.wheelHalfWidth = desc.wheel_half_width;
@@ -2380,6 +2390,10 @@ public:
     car.frontStiffness = car.rearStiffness = desc.suspension_stiffness;
     car.frontDamping = car.rearDamping = desc.suspension_damping;
     car.tyreFriction = desc.tyre_friction;
+    // Zero keeps the SDK's reference-car stiffness.
+    if (desc.front_lateral_stiffness > 0.0f) car.frontLateralStiffness = desc.front_lateral_stiffness;
+    if (desc.rear_lateral_stiffness > 0.0f) car.rearLateralStiffness = desc.rear_lateral_stiffness;
+    if (desc.longitudinal_stiffness > 0.0f) car.longitudinalStiffness = desc.longitudinal_stiffness;
     car.maxSteerRadians = desc.max_steer_radians;
     car.maxDriveTorque = desc.drive_torque;
     car.maxBrakeTorque = desc.brake_torque;
@@ -2403,6 +2417,9 @@ public:
     actor->setContactReportThreshold(contact_report_threshold_);
     actor->setSolverIterationCounts(dynamic_solver_position_iterations(),
                                     dynamic_solver_velocity_iterations());
+    require(finite(desc.angular_damping) && desc.angular_damping >= 0.0f,
+            "vehicle angular damping must be non-negative");
+    actor->setAngularDamping(desc.angular_damping);
     tag_actor(*actor, desc.entity_id);
     Record record{desc.entity_id, desc.user_id, desc.collision_group,
                   desc.collision_mask, RecordKind::VehicleChassis, actor};
@@ -2492,6 +2509,23 @@ public:
                                              : physx::native::NativeVehicle::eFORWARD);
     record.vehicle->setCommands(commands.throttle, commands.brake, commands.handbrake,
                                 commands.steer);
+  }
+
+  // A flipped or wedged car back on its wheels: pose set, velocities zeroed,
+  // body woken. The vehicle model reads the actor's pose at the start of its
+  // next step, so nothing in it needs resetting.
+  void reset_vehicle(std::uint32_t entity_id, const FfiPose &pose) {
+    Record &record = find(entity_id);
+    require(record.kind == RecordKind::VehicleChassis && record.vehicle != nullptr,
+            "entity is not a vehicle");
+    PxRigidDynamic *dynamic = record.actor->is<PxRigidDynamic>();
+    require(dynamic != nullptr, "vehicle lost its dynamic actor");
+    const PxTransform target = to_px(pose);
+    require(target.isSane(), "vehicle pose must be finite");
+    dynamic->setGlobalPose(target, /*autowake=*/true);
+    dynamic->setLinearVelocity(PxVec3(0.0f), /*autowake=*/true);
+    dynamic->setAngularVelocity(PxVec3(0.0f), /*autowake=*/true);
+    record.vehicle->setCommands(0.0f, 0.0f, 0.0f, 0.0f);
   }
 
   void move_player(std::uint32_t entity_id, const FfiVec3 &displacement,
@@ -4032,6 +4066,10 @@ std::uint32_t World::wake_bodies_near(FfiVec3 center, float radius) {
 
 void World::drive_vehicle(std::uint32_t entity_id, const FfiVehicleCommands &commands) {
   impl_->drive_vehicle(entity_id, commands);
+}
+
+void World::reset_vehicle(std::uint32_t entity_id, const FfiPose &pose) {
+  impl_->reset_vehicle(entity_id, pose);
 }
 
 void World::move_player(std::uint32_t entity_id, FfiVec3 displacement,

@@ -110,25 +110,54 @@ s = await snap();
 console.log('entered:', entered, 'drivenVehicleId', s.drivenVehicleId, 'inVehicle', s.inVehicle ?? s.debugStats?.inVehicle);
 if (!entered) await fail('E did not put the player in the car (server rejected VehicleEnter or the handle resolved to nothing)');
 
-// Drive forward for four seconds.
+// Drive forward for one second, then two seconds of throttle with the
+// wheel turned, then the brake. The car is parked 15 m from the first row
+// of houses, so the turn starts early and stays inside that band. The
+// heading is read from where the car actually goes (position deltas), so a
+// car that turns its wheels and ploughs straight on, or one that spins,
+// both fail the turn.
+const carNow = async () => (await snap()).vehicles.find(x => x.id === car.id);
 const before = (s.vehicles.find(x => x.id === car.id) ?? lastCar).position;
-await page.evaluate(() => window.__VIBE_DRIVE__.move({ forward: 1, durationMs: 4000 }));
-// One line a second: the speed profile is what tells a car that accelerated
-// from one that hit a house or never woke.
-for (let t = 1; t <= 4; t++) {
-  await page.waitForTimeout(1000);
-  const v = (await snap()).vehicles.find(x => x.id === car.id);
-  if (v) console.log(`  t=${t}s car at ${v.position.map(x => x.toFixed(1))} ${v.speedMs.toFixed(1)} m/s`);
+await page.evaluate(() => window.__VIBE_DRIVE__.move({ forward: 1, durationMs: 1000 }));
+await page.waitForTimeout(1000);
+const straight = await carNow();
+if (!straight) await fail('the driven car dropped out of the snapshot');
+const driven = Math.hypot(straight.position[0] - before[0], straight.position[2] - before[2]);
+console.log(`drove ${driven.toFixed(1)} m in 1 s, speed ${straight.speedMs.toFixed(1)} m/s, driver ${straight.driverId}`);
+if (driven < 1 || straight.speedMs < 3) await fail('the car did not move under throttle');
+
+// Turn: heading over the last 300 ms before and the last 300 ms of the turn.
+const headingOver = async (ms) => {
+  const a = await carNow(); await page.waitForTimeout(ms); const b = await carNow();
+  return a && b ? Math.atan2(b.position[0] - a.position[0], b.position[2] - a.position[2]) : NaN;
+};
+const headingBefore = await headingOver(300);
+await page.evaluate(() => window.__VIBE_DRIVE__.move({ forward: 1, strafe: 1, durationMs: 2000 }));
+await page.waitForTimeout(1600);
+const headingAfter = await headingOver(300);
+const turned = Math.abs(((headingAfter - headingBefore + Math.PI * 3) % (Math.PI * 2)) - Math.PI) * 180 / Math.PI;
+const turnedCar = await carNow();
+console.log(`turned ${turned.toFixed(0)} deg in 2 s of throttle and full lock, now ${turnedCar?.speedMs.toFixed(1)} m/s at ${turnedCar?.position.map(x => x.toFixed(1))}`);
+if (!(turned > 45)) await fail('the car did not turn under full lock (heading change ' + turned.toFixed(0) + ' deg)');
+if (!(turnedCar && turnedCar.speedMs > 4)) await fail('the car spun or stalled in the turn');
+
+// Brake: S while rolling forward is the brake pedal; held past the stop it
+// becomes reverse, so it is tapped for 0.7 s and the car is read after the
+// tap.
+await page.evaluate(() => window.__VIBE_DRIVE__.move({ forward: -1, durationMs: 700 }));
+for (let t = 0; t < 2; t++) {
+  await page.waitForTimeout(400);
+  const v = await carNow();
+  if (v) console.log(`  brake ${((t + 1) * 0.4).toFixed(1)}s: ${v.speedMs.toFixed(1)} m/s`);
 }
-await page.waitForTimeout(500);
+await page.waitForTimeout(200);
 s = await snap();
 const after = s.vehicles.find(x => x.id === car.id);
 if (!after) await fail('the driven car dropped out of the snapshot');
-const driven = Math.hypot(after.position[0] - before[0], after.position[2] - before[2]);
 const seated = s.movementTelemetry.authoritativePosition;
 const seatedGap = Math.hypot(after.position[0] - seated[0], after.position[2] - seated[2]);
-console.log(`drove ${driven.toFixed(1)} m in 4 s, speed now ${after.speedMs.toFixed(1)} m/s, driver ${after.driverId}, seated player ${seatedGap.toFixed(2)} m from the car`);
-if (driven < 5) await fail('the car did not move under throttle');
+console.log(`braked to ${after.speedMs.toFixed(1)} m/s, seated player ${seatedGap.toFixed(2)} m from the car`);
+if (after.speedMs > 4) await fail('S did not brake the car');
 if (seatedGap > 3) await fail('the seated player did not follow the car');
 
 // Get out.

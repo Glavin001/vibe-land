@@ -271,6 +271,19 @@ pub struct VehicleDesc {
     pub wheel_radius: f32,
     pub wheel_half_width: f32,
     pub tyre_friction: f32,
+    /// Tyre stiffness in N per radian of slip (lateral) and N per unit of
+    /// longitudinal slip; zero keeps the vehicle SDK's reference-car values,
+    /// which suit a two-tonne car and not much else. A tyre's grip curve peaks
+    /// at roughly friction * load / stiffness radians of slip, so stiffness
+    /// wants to scale with the load on the corner.
+    pub front_lateral_stiffness: f32,
+    pub rear_lateral_stiffness: f32,
+    pub longitudinal_stiffness: f32,
+    /// Centre of mass below (negative) or above the actor origin, along the
+    /// chassis up axis. The wheel hard points stay where they are.
+    pub com_offset_y: f32,
+    /// PhysX angular damping on the chassis body.
+    pub angular_damping: f32,
     pub max_steer_radians: f32,
     /// Torques in N m per wheel; drive torque applies to the driven wheels.
     pub drive_torque: f32,
@@ -1035,6 +1048,24 @@ impl World {
         #[cfg(not(feature = "gpu"))]
         {
             let _ = (entity_id, commands);
+            Err(stub_unavailable())
+        }
+    }
+
+    /// Re-pose a vehicle at rest: a flipped or wedged car back on its wheels.
+    /// Velocities are zeroed and the body woken; the vehicle model reads the
+    /// actor's pose afresh on its next step, so nothing else needs resetting.
+    pub fn reset_vehicle(&mut self, entity_id: u32, pose: Pose) -> Result<(), BridgeError> {
+        #[cfg(feature = "gpu")]
+        {
+            self.inner
+                .pin_mut()
+                .reset_vehicle(entity_id, &pose.into())
+                .map_err(operation_error)
+        }
+        #[cfg(not(feature = "gpu"))]
+        {
+            let _ = (entity_id, pose);
             Err(stub_unavailable())
         }
     }
@@ -1810,6 +1841,11 @@ mod ffi {
         wheel_radius: f32,
         wheel_half_width: f32,
         tyre_friction: f32,
+        front_lateral_stiffness: f32,
+        rear_lateral_stiffness: f32,
+        longitudinal_stiffness: f32,
+        com_offset_y: f32,
+        angular_damping: f32,
         max_steer_radians: f32,
         drive_torque: f32,
         brake_torque: f32,
@@ -2298,6 +2334,7 @@ mod ffi {
             entity_id: u32,
             commands: &FfiVehicleCommands,
         ) -> Result<()>;
+        fn reset_vehicle(self: Pin<&mut World>, entity_id: u32, pose: &FfiPose) -> Result<()>;
         fn move_player(
             self: Pin<&mut World>,
             entity_id: u32,
@@ -2568,6 +2605,11 @@ impl_ffi_from!(
         wheel_radius,
         wheel_half_width,
         tyre_friction,
+        front_lateral_stiffness,
+        rear_lateral_stiffness,
+        longitudinal_stiffness,
+        com_offset_y,
+        angular_damping,
         max_steer_radians,
         drive_torque,
         brake_torque,

@@ -7,18 +7,19 @@ use nalgebra::{DMatrix, Vector3};
 use vibe_land_physx_bridge as bridge;
 use vibe_land_shared::{
     constants::{
-        BTN_JUMP, BTN_SPRINT, FLAG_DEAD, FLAG_IN_VEHICLE, FLAG_ON_GROUND, FLAG_SPAWN_PROTECTED,
+        BTN_JUMP, BTN_RELOAD, BTN_SPRINT, FLAG_DEAD, FLAG_IN_VEHICLE, FLAG_ON_GROUND,
+        FLAG_SPAWN_PROTECTED,
         JUMP_ENERGY_COST, ON_FOOT_IDLE_DRAIN_PER_SEC, ON_FOOT_SPRINT_DRAIN_PER_SEC,
         ON_FOOT_WALK_DRAIN_PER_SEC, SHAPE_BOX, SHAPE_SPHERE, STARTING_ENERGY,
         VEHICLE_INTERACT_RADIUS_M,
     },
     movement::{
-        build_wish_dir, input_to_vehicle_cmd, VEHICLE_BRAKE_FORCE, VEHICLE_DAMAGE_MIN_SPEED_M_S,
-        VEHICLE_ENGINE_FORCE, VEHICLE_LETHAL_SPEED_M_S, VEHICLE_MAX_STEER_RAD,
+        build_wish_dir, input_to_vehicle_cmd, VehicleInputCmd, VEHICLE_DAMAGE_MIN_SPEED_M_S,
+        VEHICLE_LETHAL_SPEED_M_S, VEHICLE_MAX_STEER_RAD,
     },
     physics_arena::{MoveConfig, PlayerDamageOutcome, PlayerTickResult},
     protocol::{make_net_vehicle_state, InputCmd, NetVehicleState},
-    vehicle::vehicle_definition,
+    vehicle::{vehicle_definition, VEHICLE_RESET_FORWARD_M, VEHICLE_RESET_LIFT_M},
     world_document::{
         EffectiveTerrainMaterial, SpawnArea, TerrainMaterialField, WorldDocumentArena,
     },
@@ -119,6 +120,145 @@ struct VehicleMeta {
     vehicle_type: u8,
     driver_id: u32,
     latest_input: InputCmd,
+    /// The steer the vehicle SDK is being asked for, in `-1..=1` of the full
+    /// lock, slewed toward the driver's input each tick.
+    steer_command: f32,
+    /// Ticks until the next R is honoured, and whether R is currently down.
+    reset_cooldown_ticks: u32,
+    reset_held: bool,
+}
+
+/// The city car's tune on the vehicle SDK. The definition in the shared crate
+/// gives the geometry; these are the numbers that decide how it drives.
+///
+/// A tyre transmits at most friction * load, about 1.4 * 1471 N = 2060 N on
+/// a 150 kg corner, and the vehicle SDK's tyre model has a friction circle:
+/// drive force spent on longitudinal slip is lateral grip gone. Rapier's
+/// controller had no such coupling, so its 4000 N on two rear wheels was
+/// harmless there and a permanent wheelspin here, where the first steer
+/// input swung the tail out. All four wheels driven at 450 N m (1290 N per
+/// tyre, ~60 % of the limit) keeps most of the lateral grip under full
+/// throttle and still launches the car to 15 m/s in two seconds.
+const PHYSX_VEHICLE_MASS_KG: f32 = 600.0;
+const PHYSX_DRIVE_TORQUE_PER_WHEEL_N_M: f32 = 450.0;
+const PHYSX_BRAKE_TORQUE_PER_WHEEL_N_M: f32 = 900.0;
+const PHYSX_TYRE_FRICTION: f32 = 1.4;
+/// Tyre stiffness as a multiple of the corner's rest load, the ratio NVIDIA's
+/// reference car uses (21-31); the SDK defaults are absolute values for a
+/// two-tonne car, four times too stiff for this one, which put the grip peak
+/// at one degree of slip and made cornering a switch rather than a curve.
+const PHYSX_FRONT_LATERAL_STIFFNESS_PER_N: f32 = 28.0;
+const PHYSX_REAR_LATERAL_STIFFNESS_PER_N: f32 = 32.0;
+const PHYSX_LONGITUDINAL_STIFFNESS_PER_N: f32 = 12.0;
+/// Centre of mass 20 cm below the chassis centre, 15 cm above the axles.
+const PHYSX_COM_OFFSET_Y_M: f32 = -0.2;
+/// Rapier parity; settles the yaw after a swerve.
+const PHYSX_ANGULAR_DAMPING: f32 = 0.5;
+const PHYSX_TOP_SPEED_M_S: f32 = 30.0;
+const PHYSX_REVERSE_TOP_SPEED_M_S: f32 = 8.0;
+/// Steer slew in full locks per second: 0.2 s to full lock, 0.125 s back.
+const STEER_SLEW_IN_PER_S: f32 = 5.0;
+const STEER_SLEW_OUT_PER_S: f32 = 8.0;
+/// Full lock up to the first speed, tapering to the fraction at the second.
+const STEER_FULL_LOCK_BELOW_M_S: f32 = 6.0;
+const STEER_MIN_LOCK_ABOVE_M_S: f32 = 28.0;
+const STEER_MIN_LOCK_FRACTION: f32 = 0.35;
+/// Below this speed the pedals pick the gear; above it the opposite pedal
+/// brakes.
+const PEDAL_DIRECTION_THRESHOLD_M_S: f32 = 1.0;
+const VEHICLE_RESET_COOLDOWN_TICKS: u32 = 60;
+
+/// How much of the full lock the steering may use at this forward speed.
+fn steer_lock_fraction(forward_speed: f32) -> f32 {
+    let t = ((forward_speed.abs() - STEER_FULL_LOCK_BELOW_M_S)
+        / (STEER_MIN_LOCK_ABOVE_M_S - STEER_FULL_LOCK_BELOW_M_S))
+        .clamp(0.0, 1.0);
+    let smooth = t * t * (3.0 - 2.0 * t);
+    1.0 - (1.0 - STEER_MIN_LOCK_FRACTION) * smooth
+}
+
+/// The driver's pedals and wheel as the vehicle SDK should see them this
+/// tick. Steering is slewed toward the input and narrowed with speed so a
+/// digital key is a ramp and full lock at 28 m/s is not on offer; the pedals
+/// have the car's semantics, not the gearbox's: S while rolling forward
+/// brakes, and only from a standstill does it reverse (and W the mirror).
+fn shape_vehicle_commands(
+    input: &VehicleInputCmd,
+    forward_speed: f32,
+    steer_command: &mut f32,
+    dt: f32,
+) -> bridge::VehicleCommands {
+    let target = input.steer.clamp(-1.0, 1.0) * steer_lock_fraction(forward_speed);
+    let rate = if target.abs() > steer_command.abs() {
+        STEER_SLEW_IN_PER_S
+    } else {
+        STEER_SLEW_OUT_PER_S
+    };
+    let step = rate * dt;
+    *steer_command += (target - *steer_command).clamp(-step, step);
+
+    let rolling_forward = forward_speed > PEDAL_DIRECTION_THRESHOLD_M_S;
+    let rolling_back = forward_speed < -PEDAL_DIRECTION_THRESHOLD_M_S;
+    let (mut throttle, brake, reverse) = if rolling_forward && input.reverse > 0.0 && input.throttle <= 0.0 {
+        (0.0, input.reverse, false)
+    } else if rolling_back && input.throttle > 0.0 && input.reverse <= 0.0 {
+        (0.0, input.throttle, true)
+    } else {
+        let reverse = input.reverse > 0.0 && input.throttle <= 0.0;
+        (if reverse { input.reverse } else { input.throttle }, 0.0, reverse)
+    };
+    if reverse && forward_speed < -PHYSX_REVERSE_TOP_SPEED_M_S {
+        throttle = 0.0;
+    }
+    bridge::VehicleCommands {
+        throttle,
+        brake,
+        handbrake: if input.handbrake { 1.0 } else { 0.0 },
+        steer: *steer_command,
+        reverse,
+    }
+}
+
+/// Forward speed and how upright a vehicle is, from its last snapshot.
+fn vehicle_heading(snapshot: &bridge::VehicleSnapshot) -> (nalgebra::UnitQuaternion<f32>, f32, f32) {
+    let rotation = nalgebra::UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
+        snapshot.pose.rotation.w,
+        snapshot.pose.rotation.x,
+        snapshot.pose.rotation.y,
+        snapshot.pose.rotation.z,
+    ));
+    let forward = rotation * Vector3::z();
+    let up = rotation * Vector3::y();
+    let velocity = Vector3::new(
+        snapshot.linear_velocity.x,
+        snapshot.linear_velocity.y,
+        snapshot.linear_velocity.z,
+    );
+    (rotation, velocity.dot(&forward), up.y)
+}
+
+/// Where a reset puts the car: lifted a metre, upright, its planar heading
+/// kept, nudged forward so the hull clears whatever it was wedged against.
+/// The same numbers as the Rapier `reset_vehicle_body`.
+fn vehicle_reset_pose(snapshot: &bridge::VehicleSnapshot) -> bridge::Pose {
+    let (rotation, _, _) = vehicle_heading(snapshot);
+    let forward = rotation * Vector3::z();
+    let planar = Vector3::new(forward.x, 0.0, forward.z);
+    let (yaw, nudge) = if planar.norm_squared() > 1e-4 {
+        let n = planar.normalize();
+        (n.x.atan2(n.z), n * VEHICLE_RESET_FORWARD_M)
+    } else {
+        (0.0, Vector3::new(0.0, 0.0, VEHICLE_RESET_FORWARD_M))
+    };
+    let upright = nalgebra::UnitQuaternion::from_axis_angle(&Vector3::y_axis(), yaw);
+    pose(
+        Vector3::new(
+            snapshot.pose.position.x + nudge.x,
+            snapshot.pose.position.y + VEHICLE_RESET_LIFT_M,
+            snapshot.pose.position.z + nudge.z,
+        ),
+        [upright.i, upright.j, upright.k, upright.w],
+    )
 }
 
 struct BatteryState {
@@ -807,28 +947,55 @@ impl PhysxPhysicsArena {
 
     fn drive_vehicles(&mut self) {
         let vehicles_started = std::time::Instant::now();
-        for (&id, vehicle) in &self.vehicles {
+        let dt = 1.0 / f32::from(vibe_land_shared::constants::SIM_HZ);
+        for (&id, vehicle) in &mut self.vehicles {
+            let entity = NS_VEHICLE | (id & ID_MASK);
+            let snapshot = self
+                .cached_vehicle_snapshots
+                .iter()
+                .find(|snapshot| snapshot.user_id == id);
+            vehicle.reset_cooldown_ticks = vehicle.reset_cooldown_ticks.saturating_sub(1);
             // The same input mapping as the Rapier controller. A vehicle
-            // without a driver, or with an idle one, gets zero commands: the
-            // vehicle SDK applies nothing and wakes nothing for those, so a
-            // parked car sleeps with the rubble around it.
+            // without a driver sits on its handbrake and nothing else: the
+            // vehicle SDK applies nothing and wakes nothing for a car at
+            // rest, so a parked car sleeps with the rubble around it, and a
+            // player walking into it no longer sends it rolling down the
+            // street on free wheels.
             let cmd = if vehicle.driver_id == 0 {
-                bridge::VehicleCommands::default()
-            } else {
-                let input = input_to_vehicle_cmd(&vehicle.latest_input);
-                let reverse = input.reverse > 0.0 && input.throttle <= 0.0;
+                vehicle.steer_command = 0.0;
+                vehicle.reset_held = false;
                 bridge::VehicleCommands {
-                    throttle: if reverse { input.reverse } else { input.throttle },
-                    // Braking against the direction of travel is the
-                    // controller's job; here reverse simply selects the gear.
-                    brake: 0.0,
-                    handbrake: if input.handbrake { 1.0 } else { 0.0 },
-                    steer: input.steer,
-                    reverse,
+                    handbrake: 1.0,
+                    ..bridge::VehicleCommands::default()
                 }
+            } else {
+                let (forward_speed, up) = snapshot
+                    .map(|snapshot| {
+                        let (_, forward_speed, up) = vehicle_heading(snapshot);
+                        (forward_speed, up)
+                    })
+                    .unwrap_or((0.0, 1.0));
+                // R rights a car that is on its roof or stuck, once per press
+                // and no more than once a second; a moving, upright car keeps
+                // driving so a mis-press costs nothing.
+                let reset_down = vehicle.latest_input.buttons & BTN_RELOAD != 0;
+                let reset_edge = reset_down && !vehicle.reset_held;
+                vehicle.reset_held = reset_down;
+                if let Some(snapshot) = snapshot {
+                    let stuck = up < 0.5 || forward_speed.abs() < 0.5;
+                    if reset_edge && stuck && vehicle.reset_cooldown_ticks == 0 {
+                        self.world
+                            .reset_vehicle(entity, vehicle_reset_pose(snapshot))
+                            .expect("PhysX vehicle reset failed");
+                        vehicle.reset_cooldown_ticks = VEHICLE_RESET_COOLDOWN_TICKS;
+                        vehicle.steer_command = 0.0;
+                    }
+                }
+                let input = input_to_vehicle_cmd(&vehicle.latest_input);
+                shape_vehicle_commands(&input, forward_speed, &mut vehicle.steer_command, dt)
             };
             self.world
-                .drive_vehicle(NS_VEHICLE | (id & ID_MASK), cmd)
+                .drive_vehicle(entity, cmd)
                 .expect("PhysX vehicle control failed");
         }
         self.last_vehicle_control_ms =
@@ -1879,15 +2046,12 @@ impl WorldDocumentArena for PhysxPhysicsArena {
         let definition = vehicle_definition(vehicle_type);
         let [half_x, half_y, half_z] = definition.chassis_half_extents;
         let [[wheel_x, _, front_z], _, [_, _, rear_z], _] = definition.wheel_offsets;
-        // Rapier's 4000 N engine force on two rear wheels, as torque at the
-        // wheel; a 0.35 m radius makes 1400 N m per driven wheel.
-        let mass = 600.0;
-        let drive_torque = VEHICLE_ENGINE_FORCE * definition.wheel_radius_m;
-        let brake_torque = VEHICLE_BRAKE_FORCE * definition.wheel_radius_m;
+        let mass = PHYSX_VEHICLE_MASS_KG;
         // A quarter of the chassis on each corner; rest compression about a
         // third of the travel, critically damped.
         let sprung = mass / 4.0;
-        let stiffness = sprung * 9.81 / (definition.suspension_travel_m / 3.0);
+        let rest_load = sprung * 9.81;
+        let stiffness = rest_load / (definition.suspension_travel_m / 3.0);
         let damping = 2.0 * (stiffness * sprung).sqrt();
         self.world
             .add_vehicle(bridge::VehicleDesc {
@@ -1907,13 +2071,18 @@ impl WorldDocumentArena for PhysxPhysicsArena {
                 suspension_damping: damping,
                 wheel_radius: definition.wheel_radius_m,
                 wheel_half_width: 0.15,
-                tyre_friction: 1.5,
+                tyre_friction: PHYSX_TYRE_FRICTION,
+                front_lateral_stiffness: PHYSX_FRONT_LATERAL_STIFFNESS_PER_N * rest_load,
+                rear_lateral_stiffness: PHYSX_REAR_LATERAL_STIFFNESS_PER_N * rest_load,
+                longitudinal_stiffness: PHYSX_LONGITUDINAL_STIFFNESS_PER_N * rest_load,
+                com_offset_y: PHYSX_COM_OFFSET_Y_M,
+                angular_damping: PHYSX_ANGULAR_DAMPING,
                 max_steer_radians: VEHICLE_MAX_STEER_RAD,
-                drive_torque,
-                brake_torque,
-                handbrake_torque: 2.0 * brake_torque,
-                top_speed: 40.0,
-                rear_wheel_drive: true,
+                drive_torque: PHYSX_DRIVE_TORQUE_PER_WHEEL_N_M,
+                brake_torque: PHYSX_BRAKE_TORQUE_PER_WHEEL_N_M,
+                handbrake_torque: 2.0 * PHYSX_BRAKE_TORQUE_PER_WHEEL_N_M,
+                top_speed: PHYSX_TOP_SPEED_M_S,
+                rear_wheel_drive: false,
                 // Sweeps ride a cylinder over rubble; raycasts fall between chunks.
                 sweep_road_queries: true,
                 road_mask: GROUP_STATIC | GROUP_DYNAMIC | GROUP_CHUNK,
@@ -1928,6 +2097,9 @@ impl WorldDocumentArena for PhysxPhysicsArena {
                 vehicle_type,
                 driver_id: 0,
                 latest_input: InputCmd::default(),
+                steer_command: 0.0,
+                reset_cooldown_ticks: 0,
+                reset_held: false,
             },
         );
     }
@@ -2106,6 +2278,69 @@ mod tests {
         assert_eq!(arena.dynamic[&2].shape_type, SHAPE_SPHERE);
     }
 
+    fn idle_input() -> InputCmd {
+        InputCmd::default()
+    }
+
+    #[test]
+    fn steering_ramps_and_narrows_with_speed() {
+        let dt = 1.0 / 60.0;
+        let full_right = VehicleInputCmd { throttle: 0.0, reverse: 0.0, steer: 1.0, handbrake: false };
+        let mut steer = 0.0;
+        let mut ticks_to_full = 0;
+        while steer < 0.999 {
+            shape_vehicle_commands(&full_right, 0.0, &mut steer, dt);
+            ticks_to_full += 1;
+            assert!(ticks_to_full < 30, "steer never reached full lock");
+        }
+        assert!((10..=15).contains(&ticks_to_full), "full lock took {ticks_to_full} ticks");
+        let centre = VehicleInputCmd { steer: 0.0, ..full_right };
+        let mut ticks_to_centre = 0;
+        while steer > 0.001 {
+            shape_vehicle_commands(&centre, 0.0, &mut steer, dt);
+            ticks_to_centre += 1;
+            assert!(ticks_to_centre < 30, "steer never returned to centre");
+        }
+        assert!(ticks_to_centre <= 8, "return to centre took {ticks_to_centre} ticks");
+
+        // At speed the same key asks for a fraction of the lock.
+        assert!((steer_lock_fraction(0.0) - 1.0).abs() < 1e-6);
+        assert!((steer_lock_fraction(6.0) - 1.0).abs() < 1e-6);
+        assert!((steer_lock_fraction(28.0) - STEER_MIN_LOCK_FRACTION).abs() < 1e-6);
+        assert!((steer_lock_fraction(-28.0) - STEER_MIN_LOCK_FRACTION).abs() < 1e-6);
+        let mid = steer_lock_fraction(17.0);
+        assert!(mid > STEER_MIN_LOCK_FRACTION && mid < 1.0);
+        let mut fast_steer = 0.0;
+        for _ in 0..60 {
+            shape_vehicle_commands(&full_right, 28.0, &mut fast_steer, dt);
+        }
+        assert!((fast_steer - STEER_MIN_LOCK_FRACTION).abs() < 1e-4, "lock at 28 m/s: {fast_steer}");
+    }
+
+    #[test]
+    fn pedals_brake_against_motion_and_reverse_from_rest() {
+        let dt = 1.0 / 60.0;
+        let mut steer = 0.0;
+        let s_key = VehicleInputCmd { throttle: 0.0, reverse: 1.0, steer: 0.0, handbrake: false };
+        let w_key = VehicleInputCmd { throttle: 1.0, reverse: 0.0, steer: 0.0, handbrake: false };
+        // Rolling forward, S brakes in forward gear.
+        let cmd = shape_vehicle_commands(&s_key, 12.0, &mut steer, dt);
+        assert_eq!((cmd.throttle, cmd.brake, cmd.reverse), (0.0, 1.0, false));
+        // From rest, S reverses.
+        let cmd = shape_vehicle_commands(&s_key, 0.2, &mut steer, dt);
+        assert_eq!((cmd.throttle, cmd.brake, cmd.reverse), (1.0, 0.0, true));
+        // Rolling back, W brakes in reverse gear.
+        let cmd = shape_vehicle_commands(&w_key, -5.0, &mut steer, dt);
+        assert_eq!((cmd.throttle, cmd.brake, cmd.reverse), (0.0, 1.0, true));
+        // Reverse is capped.
+        let cmd = shape_vehicle_commands(&s_key, -9.0, &mut steer, dt);
+        assert_eq!((cmd.throttle, cmd.reverse), (0.0, true));
+        // No pedal: coast, no brake.
+        let idle = VehicleInputCmd { throttle: 0.0, reverse: 0.0, steer: 0.0, handbrake: false };
+        let cmd = shape_vehicle_commands(&idle, 12.0, &mut steer, dt);
+        assert_eq!((cmd.throttle, cmd.brake, cmd.handbrake), (0.0, 0.0, 0.0));
+    }
+
     #[test]
     fn vehicle_entry_requires_proximity_and_preserves_single_driver_lifecycle() {
         let _guard = gpu_test_guard();
@@ -2165,8 +2400,26 @@ mod tests {
         let (_, _, _, _, _, flags) = arena.snapshot_player(10).unwrap();
         assert_ne!(flags & FLAG_IN_VEHICLE, 0);
 
+        // S while rolling forward is the brake, not reverse gear: the car
+        // slows and keeps its heading instead of fighting its own momentum.
+        let mut brake = InputCmd::default();
+        brake.move_y = -127;
+        let before_brake = arena.current_vehicle_snapshots()[0];
+        let (_, speed_before, _) = vehicle_heading(&before_brake);
+        // Three quarters of a second: enough to lose most of the speed at
+        // the tyre limit, not enough to stop and start reversing.
+        for _ in 0..45 {
+            arena.simulate_player_tick(10, &brake, 1.0 / 60.0);
+            arena.step_vehicles_and_dynamics(1.0 / 60.0);
+        }
+        let after_brake = arena.current_vehicle_snapshots()[0];
+        let (_, speed_after, _) = vehicle_heading(&after_brake);
+        assert!(speed_before > 10.0, "not up to speed before braking: {speed_before}");
+        assert!(speed_after < speed_before * 0.6 && speed_after > 0.0,
+            "S did not brake the rolling car: {speed_before} -> {speed_after} m/s");
+
         // Handbrake to a stop before getting out; direct drive has no engine
-        // braking and a car coasting at 25 m/s is not parked.
+        // braking and a coasting car is not parked.
         let mut handbrake = InputCmd::default();
         handbrake.buttons |= BTN_JUMP;
         for _ in 0..240 {
@@ -2175,6 +2428,35 @@ mod tests {
         }
         let stopped = arena.snapshot_vehicles()[0];
         assert!(stopped.vx_cms.abs() < 50 && stopped.vz_cms.abs() < 50, "the handbrake did not stop the car: {stopped:?}");
+
+        // R with the car on its roof puts it back on its wheels where it
+        // was, facing the way it faced; a second R inside the cooldown, or
+        // one while the upright car is moving, does nothing.
+        let flipped = arena.current_vehicle_snapshots()[0];
+        let (_, _, up_before) = vehicle_heading(&flipped);
+        assert!(up_before > 0.9);
+        let roof = bridge::Pose {
+            position: flipped.pose.position,
+            rotation: bridge::Quat { x: 0.0, y: 0.0, z: 1.0, w: 0.0 },
+        };
+        arena.world.reset_vehicle(NS_VEHICLE | 7, roof).unwrap();
+        arena.step_vehicles_and_dynamics(1.0 / 60.0);
+        let (_, _, up_flipped) = vehicle_heading(&arena.current_vehicle_snapshots()[0]);
+        assert!(up_flipped < -0.9, "the test could not flip the car: up {up_flipped}");
+        let mut reset = InputCmd::default();
+        reset.buttons |= BTN_RELOAD;
+        arena.simulate_player_tick(10, &reset, 1.0 / 60.0);
+        arena.step_vehicles_and_dynamics(1.0 / 60.0);
+        for _ in 0..60 {
+            arena.simulate_player_tick(10, &idle_input(), 1.0 / 60.0);
+            arena.step_vehicles_and_dynamics(1.0 / 60.0);
+        }
+        let righted = arena.current_vehicle_snapshots()[0];
+        let (_, _, up_after) = vehicle_heading(&righted);
+        assert!(up_after > 0.9, "R did not right the car: up {up_after}");
+        assert!((righted.pose.position.x - flipped.pose.position.x).abs() < 1.0
+            && (righted.pose.position.z - flipped.pose.position.z).abs() < 1.0,
+            "the reset moved the car: {:?} -> {:?}", flipped.pose.position, righted.pose.position);
 
         arena.exit_vehicle(10);
         assert_eq!(arena.player_vehicle_id(10), None);

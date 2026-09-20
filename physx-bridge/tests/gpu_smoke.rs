@@ -6,6 +6,7 @@ use vibe_land_physx_bridge::{
 };
 
 const ALL: u32 = u32::MAX;
+const VEHICLE_GROUP: u32 = 1 << 3;
 
 fn pose(x: f32, y: f32, z: f32) -> Pose {
     Pose {
@@ -33,6 +34,11 @@ fn smoke_vehicle(entity_id: u32, user_id: u32, pose: Pose) -> VehicleDesc {
         wheel_radius: 0.35,
         wheel_half_width: 0.15,
         tyre_friction: 1.5,
+        front_lateral_stiffness: 0.0,
+        rear_lateral_stiffness: 0.0,
+        longitudinal_stiffness: 0.0,
+        com_offset_y: 0.0,
+        angular_damping: 0.0,
         max_steer_radians: 0.5,
         drive_torque: 1_400.0,
         brake_torque: 700.0,
@@ -40,10 +46,235 @@ fn smoke_vehicle(entity_id: u32, user_id: u32, pose: Pose) -> VehicleDesc {
         top_speed: 40.0,
         rear_wheel_drive: true,
         sweep_road_queries: true,
-        road_mask: ALL,
-        collision_group: 1,
+        // Its own group, and a road mask without it: the chassis answers
+        // scene queries, and the wheels must not stand on their own car.
+        road_mask: ALL & !VEHICLE_GROUP,
+        collision_group: VEHICLE_GROUP,
         collision_mask: ALL,
     }
+}
+
+/// The city car as the server tunes it: all four wheels driven at about half
+/// of what a tyre can transmit, tyre stiffness scaled to the 150 kg on each
+/// corner, the centre of mass 20 cm below the chassis centre, a little
+/// angular damping. The numbers mirror server/src/physx_runtime.rs.
+fn tuned_vehicle(entity_id: u32, user_id: u32, pose: Pose) -> VehicleDesc {
+    let rest_load = 150.0 * 9.81;
+    VehicleDesc {
+        tyre_friction: 1.4,
+        front_lateral_stiffness: 28.0 * rest_load,
+        rear_lateral_stiffness: 32.0 * rest_load,
+        longitudinal_stiffness: 12.0 * rest_load,
+        com_offset_y: -0.2,
+        angular_damping: 0.5,
+        drive_torque: 450.0,
+        brake_torque: 900.0,
+        handbrake_torque: 1_800.0,
+        top_speed: 30.0,
+        rear_wheel_drive: false,
+        ..smoke_vehicle(entity_id, user_id, pose)
+    }
+}
+
+/// Body-frame reading of a vehicle snapshot: forward speed, lateral speed,
+/// the slip angle between where the car points and where it goes, yaw rate,
+/// and how upright it is.
+struct Motion {
+    forward: f32,
+    slip_deg: f32,
+    yaw_rate: f32,
+    up: f32,
+}
+
+fn motion(snapshot: &vibe_land_physx_bridge::VehicleSnapshot) -> Motion {
+    let q = snapshot.pose.rotation;
+    let rotate = |v: [f32; 3]| -> [f32; 3] {
+        // q * v * q^-1 for a unit quaternion.
+        let (x, y, z, w) = (q.x, q.y, q.z, q.w);
+        let (vx, vy, vz) = (v[0], v[1], v[2]);
+        let tx = 2.0 * (y * vz - z * vy);
+        let ty = 2.0 * (z * vx - x * vz);
+        let tz = 2.0 * (x * vy - y * vx);
+        [
+            vx + w * tx + (y * tz - z * ty),
+            vy + w * ty + (z * tx - x * tz),
+            vz + w * tz + (x * ty - y * tx),
+        ]
+    };
+    let fwd = rotate([0.0, 0.0, 1.0]);
+    let right = rotate([-1.0, 0.0, 0.0]);
+    let up = rotate([0.0, 1.0, 0.0]);
+    let v = snapshot.linear_velocity;
+    let forward = v.x * fwd[0] + v.y * fwd[1] + v.z * fwd[2];
+    let lateral = v.x * right[0] + v.y * right[1] + v.z * right[2];
+    Motion {
+        forward,
+        slip_deg: lateral.abs().atan2(forward.abs()).to_degrees(),
+        yaw_rate: snapshot.angular_velocity.y,
+        up: up[1],
+    }
+}
+
+/// Drive one car through a scripted command sequence on a big slab and
+/// return the worst slip angle and yaw rate seen once it is moving, the
+/// lowest "upright" value, the mean yaw rate over the steering window and
+/// the peak forward speed.
+struct Handling {
+    max_slip_deg: f32,
+    max_yaw_rate: f32,
+    min_up: f32,
+    mean_steered_yaw_rate: f32,
+    peak_speed: f32,
+}
+
+fn drive(desc: VehicleDesc, commands: impl Fn(u32) -> VehicleCommands, ticks: u32) -> Handling {
+    let mut world = World::new(WorldConfig::default()).expect("GPU scene");
+    world
+        .add_static_box(StaticBoxDesc {
+            entity_id: 1,
+            user_id: 101,
+            pose: pose(0.0, -0.5, 0.0),
+            half_extents: Vec3::new(400.0, 0.5, 400.0),
+            collision_group: 1,
+            collision_mask: ALL,
+        })
+        .unwrap();
+    world.add_vehicle(desc).unwrap();
+    let mut out = Handling {
+        max_slip_deg: 0.0,
+        max_yaw_rate: 0.0,
+        min_up: 1.0,
+        mean_steered_yaw_rate: 0.0,
+        peak_speed: 0.0,
+    };
+    let mut steered_ticks = 0u32;
+    for tick in 0..ticks {
+        let cmd = commands(tick);
+        world.drive_vehicle(6, cmd).unwrap();
+        world.step().unwrap();
+        let m = motion(&world.vehicle_snapshots().unwrap()[0]);
+        out.min_up = out.min_up.min(m.up);
+        out.peak_speed = out.peak_speed.max(m.forward);
+        if m.forward.abs() > 3.0 {
+            out.max_slip_deg = out.max_slip_deg.max(m.slip_deg);
+            out.max_yaw_rate = out.max_yaw_rate.max(m.yaw_rate.abs());
+        }
+        if cmd.steer != 0.0 {
+            out.mean_steered_yaw_rate += m.yaw_rate.abs();
+            steered_ticks += 1;
+        }
+    }
+    if steered_ticks > 0 {
+        out.mean_steered_yaw_rate /= steered_ticks as f32;
+    }
+    out
+}
+
+/// Full throttle held from rest with a third of the steering from one second
+/// in. Under the old rear-drive tune the drive torque alone exceeded what the
+/// rear tyres could transmit, so they spun permanently; a spinning tyre has
+/// no lateral grip and the first steer input swung the tail out. On the
+/// tuned car the drive leaves most of the lateral grip in place and the car
+/// simply turns.
+#[test]
+fn tuned_vehicle_turns_under_full_throttle_without_spinning_out() {
+    let script = |tick: u32| VehicleCommands {
+        throttle: 1.0,
+        steer: if tick >= 60 { 0.3 } else { 0.0 },
+        ..VehicleCommands::default()
+    };
+    let tuned = drive(tuned_vehicle(6, 106, pose(0.0, 0.7, 0.0)), script, 180);
+    eprintln!(
+        "tuned: slip {:.1} deg, yaw {:.2} rad/s, mean steered yaw {:.2}, up {:.2}, peak {:.1} m/s",
+        tuned.max_slip_deg, tuned.max_yaw_rate, tuned.mean_steered_yaw_rate, tuned.min_up, tuned.peak_speed
+    );
+    assert!(tuned.max_slip_deg < 25.0, "the tuned car slid sideways: {:.1} deg", tuned.max_slip_deg);
+    assert!(tuned.max_yaw_rate < 1.2, "the tuned car spun: {:.2} rad/s", tuned.max_yaw_rate);
+    assert!(tuned.mean_steered_yaw_rate > 0.25, "the tuned car did not turn: {:.2} rad/s", tuned.mean_steered_yaw_rate);
+    assert!(tuned.min_up > 0.9, "the tuned car rolled: up {:.2}", tuned.min_up);
+    // Still a quick car: 15 m/s inside two seconds of full throttle.
+    let launch = drive(tuned_vehicle(6, 106, pose(0.0, 0.7, 0.0)), |_| VehicleCommands { throttle: 1.0, ..VehicleCommands::default() }, 120);
+    assert!(launch.peak_speed > 15.0, "the tuned car is slow: {:.1} m/s after 2 s", launch.peak_speed);
+
+    // The control: the old tune under the same script. Its slip angle is the
+    // spin-out the driver reported.
+    let old = drive(smoke_vehicle(6, 106, pose(0.0, 0.7, 0.0)), script, 180);
+    eprintln!("old rear-drive: slip {:.1} deg, yaw {:.2} rad/s, peak {:.1} m/s", old.max_slip_deg, old.max_yaw_rate, old.peak_speed);
+    assert!(old.max_slip_deg > tuned.max_slip_deg + 10.0,
+        "the old tune no longer slides more than the new one ({:.1} vs {:.1} deg); the friction-circle explanation needs revisiting",
+        old.max_slip_deg, tuned.max_slip_deg);
+}
+
+/// The brake pedal at 15 m/s: the tyres, not the pads, are the limit.
+#[test]
+fn tuned_vehicle_brakes_at_the_tyre_limit() {
+    let mut world = World::new(WorldConfig::default()).expect("GPU scene");
+    world
+        .add_static_box(StaticBoxDesc {
+            entity_id: 1,
+            user_id: 101,
+            pose: pose(0.0, -0.5, 0.0),
+            half_extents: Vec3::new(400.0, 0.5, 400.0),
+            collision_group: 1,
+            collision_mask: ALL,
+        })
+        .unwrap();
+    world.add_vehicle(tuned_vehicle(6, 106, pose(0.0, 0.7, 0.0))).unwrap();
+    let mut speed_at_brake = 0.0;
+    for tick in 0..150 {
+        let braking = tick >= 120;
+        world
+            .drive_vehicle(6, VehicleCommands { throttle: if braking { 0.0 } else { 1.0 }, brake: if braking { 1.0 } else { 0.0 }, ..VehicleCommands::default() })
+            .unwrap();
+        world.step().unwrap();
+        if tick == 119 {
+            speed_at_brake = motion(&world.vehicle_snapshots().unwrap()[0]).forward;
+        }
+    }
+    let after = motion(&world.vehicle_snapshots().unwrap()[0]).forward;
+    let decel = (speed_at_brake - after) / 0.5;
+    eprintln!("brake: {speed_at_brake:.1} -> {after:.1} m/s in 0.5 s, {decel:.1} m/s^2");
+    assert!(speed_at_brake > 14.0, "not up to speed: {speed_at_brake:.1}");
+    assert!(decel > 8.0, "the brakes are weak: {decel:.1} m/s^2");
+}
+
+/// Full lock at street speed turns tightly, and full lock at 20 m/s (what a
+/// raw command can still ask for; the server narrows the lock with speed)
+/// neither rolls the car nor spins it.
+#[test]
+fn tuned_vehicle_corners_hard_and_stays_on_its_wheels() {
+    // ~8 m/s: throttle up, then hold a quarter throttle and full lock.
+    let street = drive(
+        tuned_vehicle(6, 106, pose(0.0, 0.7, 0.0)),
+        |tick| VehicleCommands {
+            throttle: if tick < 55 { 1.0 } else { 0.25 },
+            steer: if tick >= 55 { 1.0 } else { 0.0 },
+            ..VehicleCommands::default()
+        },
+        175,
+    );
+    eprintln!(
+        "street: mean steered yaw {:.2} rad/s, slip {:.1} deg, up {:.2}, peak {:.1} m/s",
+        street.mean_steered_yaw_rate, street.max_slip_deg, street.min_up, street.peak_speed
+    );
+    assert!(street.mean_steered_yaw_rate > 0.9, "full lock at street speed is too lazy: {:.2} rad/s", street.mean_steered_yaw_rate);
+    assert!(street.min_up > 0.9, "rolled at street speed: up {:.2}", street.min_up);
+
+    let fast = drive(
+        tuned_vehicle(6, 106, pose(0.0, 0.7, 0.0)),
+        |tick| VehicleCommands {
+            throttle: if tick < 210 { 1.0 } else { 0.0 },
+            steer: if tick >= 210 { 1.0 } else { 0.0 },
+            ..VehicleCommands::default()
+        },
+        300,
+    );
+    eprintln!(
+        "fast: peak {:.1} m/s, slip {:.1} deg, yaw {:.2} rad/s, up {:.2}",
+        fast.peak_speed, fast.max_slip_deg, fast.max_yaw_rate, fast.min_up
+    );
+    assert!(fast.peak_speed > 18.0, "never reached highway speed: {:.1} m/s", fast.peak_speed);
+    assert!(fast.min_up > 0.8, "rolled in the fast swerve: up {:.2}", fast.min_up);
 }
 
 #[test]

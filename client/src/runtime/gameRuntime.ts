@@ -2152,9 +2152,14 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
   getVehiclePose(): { position: [number, number, number]; quaternion: [number, number, number, number] } | null {
     if (this.thinAuthoritative) {
       const vehicleId = this.client?.getLocalDrivenVehicleId();
-      if (vehicleId == null) return null;
-      const renderTimeUs = this.serverClock.renderTimeUs(this.interpolationDelayMs * 1000);
-      const sample = this.client?.sampleRemoteVehicle(vehicleId, renderTimeUs);
+      if (vehicleId == null || !this.client) return null;
+      // The driver's own car is drawn at the dynamic-body delay (16 ms and
+      // extrapolated on its velocities), like the rubble, not at the 100 ms
+      // the other players sit at: the steering wheel is in this player's
+      // hands and every millisecond between the key and the car turning on
+      // screen reads as a heavy car. Other cars stay on the long delay.
+      const renderTimeUs = this.client.getDynamicBodyRenderTimeUs();
+      const sample = this.client.sampleRemoteVehicle(vehicleId, renderTimeUs);
       return sample
         ? { position: sample.position, quaternion: sample.quaternion }
         : null;
