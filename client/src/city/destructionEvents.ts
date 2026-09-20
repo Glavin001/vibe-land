@@ -7,10 +7,17 @@
 // nearby breaks, each with a world position, a magnitude and the velocity of
 // the material that made it. The emission policy turns sources into clouds.
 //
-// Three kinds of event feed it:
-//   fracture  bonds broke      -> where the bonds were, Σ area
+// Five kinds of event feed it:
+//   fracture  bonds broke      -> where the bonds were, Σ area, a little
+//   entry     the first break a shot made -> the near face, spall toward the shooter
 //   shed      an island was born and is moving -> its centre of mass, its mass
-//   impact    an island came to rest fast      -> where it stopped, ½mv²
+//   impact    a body's velocity dropped sharply -> the contact, mass·Δv
+//             (the settle is a fallback for a body no impact was seen on)
+//   wave      many impacts in one place at once -> a collapse front
+//
+// Real dust is mostly crushing at impact, not cracks opening, and the
+// impacts are read off the authoritative velocity stream: a body that was
+// moving and suddenly is not hit something.
 //
 // Everything is O(events) with scratch typed arrays; nothing is allocated per
 // message after warm-up, because a collapse produces a message every server
@@ -22,7 +29,7 @@ import type { CityTopology } from './topology';
 import { bodyKey } from './topology';
 import type { TopologyMessage } from './wire';
 
-export type DustSourceKind = 'fracture' | 'shed' | 'impact';
+export type DustSourceKind = 'fracture' | 'entry' | 'shed' | 'impact' | 'wave';
 
 /** One clustered destruction event in world space. A pooled view: copy what you keep. */
 export interface DustSource {
@@ -43,8 +50,10 @@ export interface DustSource {
   vy: number;
   vz: number;
   /**
-   * Dimensionless dust units. Fracture: 10·Σarea (≈1.8 per median bond).
-   * Shed: mass/500 (≈1 per median chunk). Impact: ½mv²/5000.
+   * Dimensionless dust units. Fracture: 3·Σarea (≈0.5 per median bond;
+   * a bond whose chunks stay together counts 15%). Entry: the fracture,
+   * doubled. Shed: mass/500 (≈1 per median chunk). Impact: mass·|Δv|/4000
+   * (≈1 per median chunk hitting the ground at 8 m/s). Wave: Σ impacts.
    */
   magnitude: number;
   /** Events folded into this source. */
@@ -64,6 +73,12 @@ export interface DustExtractContext {
   drawnPoseInto(slot: number, out: Float32Array, at: number): boolean;
   /** Last presented speed of a body, m/s, 0 if it has no track. */
   presentedSpeed(key: number): number;
+  /** Whether an impact was already raised for this body recently (so a settle need not). */
+  impactedRecently?(key: number, nowMs: number): boolean;
+  /** The shot a break at this point belongs to, if any. */
+  matchShot?(x: number, y: number, z: number, nowMs: number): { ox: number; oy: number; oz: number } | null;
+  /** performance.now() at the time of the message, for the quiet-cell memory. */
+  nowMs?: number;
 }
 
 export interface DustExtractOptions {
@@ -87,16 +102,23 @@ export const DEFAULT_DUST_EXTRACT_OPTIONS: DustExtractOptions = {
   minShedMassKg: 5000,
 };
 
+/** A cell with no fracture for this long is quiet; the next break there may be an entry. */
+const ENTRY_QUIET_MS = 1000;
+/** How much a bond that broke without its chunks parting counts. */
+const UNSEPARATED_WEIGHT = 0.15;
+
 const MAX_CLUSTERS = 256;
 const MAX_IMPACT_MEMBERS = 256;
-const FRACTURE_UNITS_PER_M2 = 10;
+const FRACTURE_UNITS_PER_M2 = 3;
 const SHED_KG_PER_UNIT = 500;
 const IMPACT_J_PER_UNIT = 5000;
 
 const KIND_FRACTURE = 0;
 const KIND_SHED = 1;
 const KIND_IMPACT = 2;
-const KIND_NAMES: readonly DustSourceKind[] = ['fracture', 'shed', 'impact'];
+const KIND_ENTRY = 3;
+const KIND_WAVE = 4;
+const KIND_NAMES: readonly DustSourceKind[] = ['fracture', 'shed', 'impact', 'entry', 'wave'];
 
 /**
  * A ring of sources waiting for the frame. Several messages can apply between
@@ -208,6 +230,8 @@ const accCell = new Float64Array(MAX_CLUSTERS);
 const accOrdinal = new Uint16Array(MAX_CLUSTERS);
 const order = new Uint16Array(MAX_CLUSTERS);
 const ranked = new Uint16Array(MAX_CLUSTERS);
+/** Last fracture time per (structure, cell), for the entry test. */
+const quietCells = new Map<number, number>();
 const scratchSource: DustSource = {
   kind: 'fracture', structureId: 0, simTick: 0, ordinal: 0, x: 0, y: 0, z: 0,
   nx: 0, ny: 0, nz: 0, vx: 0, vy: 0, vz: 0, magnitude: 0, count: 0, material: 0, atMs: 0,
@@ -220,9 +244,10 @@ export interface DustExtractStats {
   clustersOverflowed: number;
   bondsUnresolved: number;
   droppedByCap: number;
+  entries: number;
 }
 
-const stats: DustExtractStats = { clustersOverflowed: 0, bondsUnresolved: 0, droppedByCap: 0 };
+const stats: DustExtractStats = { clustersOverflowed: 0, bondsUnresolved: 0, droppedByCap: 0, entries: 0 };
 
 /** Cumulative counters, for the stats panel. */
 export function dustExtractStats(): Readonly<DustExtractStats> {
@@ -393,7 +418,11 @@ export function extractDustSources(
         vy = v[1];
         vz = v[2];
       }
-      const w = area[bondIndex];
+      // A crack whose faces did not part makes little dust; separation is
+      // the two endpoints now belonging to different bodies.
+      const parted = topology.chunkBodyKey(topology.slotOf(batch.structureId, a))
+        !== topology.chunkBodyKey(topology.slotOf(batch.structureId, b));
+      const w = area[bondIndex] * (parted ? 1 : UNSEPARATED_WEIGHT);
       const key = cellKeyOf(batch.structureId, KIND_FRACTURE, bondPos[0], bondPos[1], bondPos[2], opts.cellSizeM);
       const c = clusterFor(batch.structureId, KIND_FRACTURE, key);
       accumulate(
@@ -428,6 +457,9 @@ export function extractDustSources(
 
   for (const settle of message.settled) {
     const key = bodyKey(settle.structureId, settle.islandId);
+    // The velocity stream usually saw the impact already; the settle is the
+    // fallback for a body it did not (a starved track, wire v3 sampling).
+    if (ctx.impactedRecently?.(key, atMs)) continue;
     const speed = ctx.presentedSpeed(key);
     if (speed < opts.minImpactSpeedMps) continue;
     const body = topology.body(key);
@@ -474,11 +506,15 @@ export function extractDustSources(
   stats.bondsUnresolved += bondsUnresolved;
 
   let pushed = 0;
+  const nowMs = ctx.nowMs ?? atMs;
   for (let k = 0; k < keep; k += 1) {
     const c = kept[k];
     const b = c * 12;
     const w = acc[b + 3];
     if (!(w > 0)) continue;
+    const x = acc[b] / w;
+    const y = acc[b + 1] / w;
+    const z = acc[b + 2] / w;
     let nx = acc[b + 4];
     let ny = acc[b + 5];
     let nz = acc[b + 6];
@@ -492,21 +528,55 @@ export function extractDustSources(
       ny = 0;
       nz = 0;
     }
+    let kind = accKind[c];
+    let magnitude = acc[b + 10];
+    if (kind === KIND_FRACTURE) {
+      // The first break in a quiet cell along a shot's path is that shot
+      // landing: spall on the near face, thrown back toward the shooter.
+      const quietKey = accCell[c];
+      const lastMs = quietCells.get(quietKey);
+      quietCells.set(quietKey, nowMs);
+      if (quietCells.size > 4096) {
+        for (const [key, at] of quietCells) {
+          if (nowMs - at > ENTRY_QUIET_MS) quietCells.delete(key);
+        }
+      }
+      if (lastMs === undefined || nowMs - lastMs > ENTRY_QUIET_MS) {
+        const shot = ctx.matchShot?.(x, y, z, nowMs);
+        if (shot) {
+          kind = KIND_ENTRY;
+          magnitude *= 2;
+          stats.entries += 1;
+          const tx = shot.ox - x;
+          const ty = shot.oy - y;
+          const tz = shot.oz - z;
+          const tl = Math.hypot(tx, ty, tz) || 1;
+          // Face the shooter, tilted by the bond normal so the puff hugs the wall.
+          nx = tx / tl + nx * 0.5;
+          ny = ty / tl + ny * 0.5;
+          nz = tz / tl + nz * 0.5;
+          const l2 = Math.hypot(nx, ny, nz) || 1;
+          nx /= l2;
+          ny /= l2;
+          nz /= l2;
+        }
+      }
+    }
     const s = scratchSource;
-    s.kind = KIND_NAMES[accKind[c]];
+    s.kind = KIND_NAMES[kind];
     s.structureId = accStructure[c];
     s.simTick = message.simTick;
     s.ordinal = accOrdinal[c];
-    s.x = acc[b] / w;
-    s.y = acc[b + 1] / w;
-    s.z = acc[b + 2] / w;
+    s.x = x;
+    s.y = y;
+    s.z = z;
     s.nx = nx;
     s.ny = ny;
     s.nz = nz;
     s.vx = acc[b + 7] / w;
     s.vy = acc[b + 8] / w;
     s.vz = acc[b + 9] / w;
-    s.magnitude = acc[b + 10];
+    s.magnitude = magnitude;
     s.count = accCount[c];
     s.material = accMaterial[c];
     s.atMs = atMs;

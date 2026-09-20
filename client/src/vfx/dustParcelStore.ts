@@ -25,6 +25,10 @@ export const enum DustShape {
   Impact = 1,
   /** A collapse still going: small, slow, keeps coming. */
   Smoulder = 2,
+  /** A shot landing: a fast spall jet, small and short-lived. */
+  Entry = 3,
+  /** A collapse front: wide, low, fast, and lingering. */
+  Wave = 4,
 }
 
 /** What the dust is made of: picks the colour and how much of it there is. */
@@ -58,10 +62,12 @@ export interface DustShapeCurve {
 /** Indexed by DustShape. The renderer reads a curve; it never branches on the shape. */
 export const DUST_SHAPES: readonly DustShapeCurve[] = [
   // r0 and growth multiply the parcel's radius0, so a cloud born at radius0
-  // has doubled by ~1 s and is ~5x at the end of its life.
-  { r0: 1.0, growth: 1.2, rise: 3.0, life: 12, aspectY: 0.75, drag: 1.4, density: 1.6, erosion: 0.55 },
-  { r0: 1.2, growth: 1.5, rise: 1.5, life: 14, aspectY: 0.40, drag: 1.4, density: 1.2, erosion: 0.50 },
-  { r0: 0.8, growth: 1.0, rise: 2.0, life: 14, aspectY: 0.90, drag: 0.9, density: 0.7, erosion: 0.60 },
+  // has grown ~1.9x by 1 s and ~3.8x at the end of its life.
+  { r0: 1.0, growth: 0.9, rise: 2.0, life: 10, aspectY: 0.75, drag: 1.4, density: 1.6, erosion: 0.55 },
+  { r0: 1.2, growth: 1.3, rise: 1.2, life: 14, aspectY: 0.40, drag: 1.4, density: 1.2, erosion: 0.50 },
+  { r0: 0.8, growth: 0.9, rise: 2.0, life: 12, aspectY: 0.90, drag: 0.9, density: 0.7, erosion: 0.60 },
+  { r0: 0.6, growth: 1.1, rise: 0.4, life: 5, aspectY: 0.80, drag: 2.2, density: 1.8, erosion: 0.70 },
+  { r0: 1.5, growth: 1.6, rise: 0.8, life: 24, aspectY: 0.30, drag: 0.8, density: 1.0, erosion: 0.45 },
 ];
 
 /** The longest any parcel lives, for anyone that needs a bound. */
@@ -86,6 +92,12 @@ export interface DustParcel {
   seed: number;
   shape: DustShape;
   palette: DustPalette;
+  /**
+   * Room around the birth point, m, along −x +x −y +y −z +z: how far the
+   * cloud may extend before it would be inside a wall or floor. Infinity
+   * (or omitted) means open air. The box and the drift are clamped to it.
+   */
+  clearance?: ArrayLike<number>;
 }
 
 /** What `evalParcel` fills: the parcel as it is right now. */
@@ -148,6 +160,8 @@ export class DustParcelStore {
    */
   readonly serial: Uint32Array;
   readonly alive: Uint8Array;
+  /** Six per slot: −x +x −y +y −z +z, m. */
+  readonly clearance: Float32Array;
 
   /** Next slot to write. Once wrapped, also the oldest parcel. */
   head = 0;
@@ -178,6 +192,7 @@ export class DustParcelStore {
     this.palette = new Uint8Array(capacity);
     this.serial = new Uint32Array(capacity);
     this.alive = new Uint8Array(capacity);
+    this.clearance = new Float32Array(capacity * 6).fill(Infinity);
   }
 
   /** Writes the record at the head and returns its slot. */
@@ -201,6 +216,8 @@ export class DustParcelStore {
     this.shape[slot] = p.shape;
     this.palette[slot] = p.palette;
     this.serial[slot] = this.nextSerial;
+    const c6 = slot * 6;
+    for (let i = 0; i < 6; i += 1) this.clearance[c6 + i] = p.clearance?.[i] ?? Infinity;
     this.alive[slot] = 1;
     this.nextSerial = (this.nextSerial + 1) >>> 0 || 1;
     this.head = (slot + 1) % this.capacity;
@@ -261,13 +278,41 @@ export function evalParcel(
   // Wind takes hold as the push is spent, so a fresh burst goes where it was
   // thrown and an old cloud goes where the weather says.
   const carried = t - spent;
-  out.cx = store.px[slot] + store.vx[slot] * spent + windX * carried * 0.35;
-  out.cy = store.py[slot] + store.vy[slot] * spent + rise;
-  out.cz = store.pz[slot] + store.vz[slot] * spent + windZ * carried * 0.35;
-  out.sx = r * 2;
-  out.sy = r * 2 * curve.aspectY;
-  out.sz = r * 2;
-  out.radius = r;
+  let cx = store.px[slot] + store.vx[slot] * spent + windX * carried * 0.35;
+  let cy = store.py[slot] + store.vy[slot] * spent + rise;
+  let cz = store.pz[slot] + store.vz[slot] * spent + windZ * carried * 0.35;
+  let hx = r;
+  let hy = r * curve.aspectY;
+  let hz = r;
+  // Stay in the room: the box shrinks to fit between the walls it was born
+  // among, and the centre cannot drift through them.
+  const c6 = slot * 6;
+  const cl = store.clearance;
+  if (cl[c6] !== Infinity || cl[c6 + 1] !== Infinity) {
+    const lo = store.px[slot] - cl[c6];
+    const hi = store.px[slot] + cl[c6 + 1];
+    hx = Math.min(hx, Math.max(0.2, (hi - lo) / 2));
+    cx = Math.min(hi - hx, Math.max(lo + hx, cx));
+  }
+  if (cl[c6 + 2] !== Infinity || cl[c6 + 3] !== Infinity) {
+    const lo = store.py[slot] - cl[c6 + 2];
+    const hi = store.py[slot] + cl[c6 + 3];
+    hy = Math.min(hy, Math.max(0.2, (hi - lo) / 2));
+    cy = Math.min(hi - hy, Math.max(lo + hy, cy));
+  }
+  if (cl[c6 + 4] !== Infinity || cl[c6 + 5] !== Infinity) {
+    const lo = store.pz[slot] - cl[c6 + 4];
+    const hi = store.pz[slot] + cl[c6 + 5];
+    hz = Math.min(hz, Math.max(0.2, (hi - lo) / 2));
+    cz = Math.min(hi - hz, Math.max(lo + hz, cz));
+  }
+  out.cx = cx;
+  out.cy = cy;
+  out.cz = cz;
+  out.sx = hx * 2;
+  out.sy = hy * 2;
+  out.sz = hz * 2;
+  out.radius = Math.max(hx, hz);
   out.age = t;
   const remaining = 1 - t / life;
   out.fade = Math.min(1, 6 * t) * Math.pow(remaining, 1.8);

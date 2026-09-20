@@ -273,16 +273,19 @@ export class FluidBrick {
   /** Feed a source inside the brick. Ignored if it is not inside. */
   inject(source: DustSource, nowMs: number): boolean {
     if (!this.contains(source.x, source.y, source.z)) return false;
-    const rate = Math.min(35, source.magnitude * 0.5);
+    const wave = source.kind === 'wave';
+    const entry = source.kind === 'entry';
+    const rate = Math.min(35, source.magnitude * (wave ? 1 : entry ? 0.8 : 0.5));
     if (rate <= 0) return false;
     const local = new THREE.Vector4(
       (source.x + source.nx * 0.4 - this.origin.x) / this.cell.x,
       (source.y + source.ny * 0.4 - this.origin.y) / this.cell.y,
       (source.z + source.nz * 0.4 - this.origin.z) / this.cell.z,
-      Math.min(4, 1 + Math.cbrt(source.magnitude) * 0.5),
+      Math.min(wave ? 7 : 4, (wave ? 2 : 1) + Math.cbrt(source.magnitude) * 0.5),
     );
-    const heat = source.kind === 'impact' ? 0.01 : 0.025;
-    const pulse = source.kind === 'impact' ? 1 : 0.6;
+    const heat = source.kind === 'impact' || wave ? 0.01 : 0.025;
+    // The blast impulse: a wave shoves hardest, an entry sharply, a crack barely.
+    const pulse = wave ? 1.6 : source.kind === 'impact' ? 1 : entry ? 1.2 : 0.4;
     if (this.injections.length >= FLUID_MAX_SOURCES) this.injections.shift();
     this.injections.push({ pos: local, rate: new THREE.Vector4(rate, heat, pulse, 0), untilMs: nowMs + SOURCE_MS });
     this.lastFedMs = nowMs;

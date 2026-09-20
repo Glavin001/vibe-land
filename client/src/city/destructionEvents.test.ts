@@ -92,7 +92,8 @@ describe('extractDustSources', () => {
     expect(s.x).toBeCloseTo(10, 4);
     expect(s.y).toBeCloseTo(2, 4);
     expect(s.z).toBeCloseTo(4, 4);
-    expect(s.magnitude).toBeCloseTo(5); // 10 units per m² × 0.5 m²
+    // 3 units per m² × 0.5 m², at 15%: the bond broke but its chunks stayed together.
+    expect(s.magnitude).toBeCloseTo(3 * 0.5 * 0.15);
     expect(s.count).toBe(1);
     expect([s.vx, s.vy, s.vz]).toEqual([0, 0, 0]);
     expect(s.ny).toBeCloseTo(1);
@@ -111,7 +112,7 @@ describe('extractDustSources', () => {
     const sources = drained(queue);
     const merged = sources.find((s) => s.structureId === 1)!;
     expect(merged.count).toBe(2);
-    expect(merged.magnitude).toBeCloseTo(20);
+    expect(merged.magnitude).toBeCloseTo(3 * 2 * 0.15);
     // Area-weighted: (1·0.5 + 2·1.5) / 2 = 1.75
     expect(merged.y).toBeCloseTo(1.75);
     expect(sources.find((s) => s.structureId === 2)!.x).toBeCloseTo(101);
@@ -154,7 +155,8 @@ describe('extractDustSources', () => {
     expect(extractDustSources(msg, ctx, queue, 0)).toBe(1);
     const [s] = drained(queue);
     expect(s.kind).toBe('fracture');
-    expect(s.magnitude).toBeCloseTo(5 + 0.25 * (500 / 500));
+    // Bond 2 parted (node 3 left the support body): full weight.
+    expect(s.magnitude).toBeCloseTo(3 * 0.5 + 0.25 * (500 / 500));
   });
 
   it('raises an impact where a fast island came to rest, and none for a crawl', () => {
@@ -215,6 +217,68 @@ describe('extractDustSources', () => {
     const sources = drained(queue).sort((a, b) => a.ordinal - b.ordinal);
     expect(sources.map((s) => s.ordinal)).toEqual([0, 1]);
     expect(sources[0].y).toBeLessThan(sources[1].y);
+  });
+});
+
+describe('entries and separation', () => {
+  it('weighs a parted bond fully and an unparted one at 15%', () => {
+    const tall = column(1, [0, 0, 0]);
+    tall.chunks[3].centroid = [1, 30, 0];
+    tall.bonds![2].centroid = [1, 29, 0];
+    const manifest: CityManifest = { version: 1, structures: [tall] };
+    const { ctx, topology } = context(manifest);
+    const promotion = {
+      structureId: 1, islandId: 3, nodes: [3], position: [1, 30, 0] as [number, number, number],
+      rotation: [0, 0, 0, 1] as [number, number, number, number],
+      linearVelocity: [0, -6, 0] as [number, number, number], angularVelocity: [0, 0, 0] as [number, number, number],
+    };
+    // Bond 2 (nodes 2-3) parts; bond 0 (nodes 0-1) cracks but both stay on the support.
+    const msg = message({ batches: [fracture(1, [0, 2], [promotion])] });
+    topology.apply(msg);
+    const queue = new DustSourceQueue();
+    extractDustSources(msg, ctx, queue, 0);
+    const sources = drained(queue).filter((s) => s.kind === 'fracture').sort((a, b) => a.y - b.y);
+    expect(sources[0].magnitude).toBeCloseTo(3 * 0.5 * 0.15);
+    expect(sources[1].magnitude).toBeCloseTo(3 * 0.5);
+  });
+
+  it('turns the first break in a quiet cell along a shot into an entry facing the shooter', () => {
+    const manifest: CityManifest = { version: 1, structures: [column(1, [0, 0, 0])] };
+    const { ctx, topology } = context(manifest, {
+      matchShot: (x, y, z) => (Math.abs(x - 1) < 2 && Math.abs(y - 2) < 2 ? { ox: 1, oy: 2, oz: -20 } : null),
+    });
+    const msg = message({ batches: [fracture(1, [1])] });
+    topology.apply(msg);
+    const queue = new DustSourceQueue();
+    ctx.nowMs = 5000;
+    extractDustSources(msg, ctx, queue, 5000);
+    const [entry] = drained(queue);
+    expect(entry.kind).toBe('entry');
+    // Toward the shooter (−z), tilted by the bond's +y normal.
+    expect(entry.nz).toBeLessThan(-0.5);
+    expect(entry.ny).toBeGreaterThan(0);
+    expect(entry.magnitude).toBeCloseTo(3 * 0.5 * 0.15 * 2);
+    // The same cell a moment later is not quiet: an ordinary fracture.
+    const again = message({ simTick: 101, batches: [fracture(1, [1])] });
+    ctx.nowMs = 5200;
+    extractDustSources(again, ctx, queue, 5200);
+    expect(drained(queue)[0].kind).toBe('fracture');
+  });
+
+  it('skips the settle fallback for a body the velocity stream already impacted', () => {
+    const manifest: CityManifest = { version: 1, structures: [column(1, [0, 0, 0])] };
+    const { ctx, topology, speeds } = context(manifest, { impactedRecently: () => true });
+    const promotion = {
+      structureId: 1, islandId: 3, nodes: [2, 3], position: [1, 3, 0] as [number, number, number],
+      rotation: [0, 0, 0, 1] as [number, number, number, number],
+      linearVelocity: [0, -8, 0] as [number, number, number], angularVelocity: [0, 0, 0] as [number, number, number],
+    };
+    topology.apply(message({ batches: [fracture(1, [1], [promotion])] }));
+    speeds.set(bodyKey(1, 3), 8);
+    const settle = message({ simTick: 130, settled: [{ structureId: 1, islandId: 3, position: [4, 1.2, 0], rotation: [0, 0, 0, 1] }] });
+    topology.apply(settle);
+    const queue = new DustSourceQueue();
+    expect(extractDustSources(settle, ctx, queue, 0)).toBe(0);
   });
 });
 

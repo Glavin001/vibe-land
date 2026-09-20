@@ -10,7 +10,7 @@ import {
   PresentationTrack,
   presentationConfig60Hz,
 } from './presentation';
-import { CityTopology, bodyKey, bodyKeyParts } from './topology';
+import { CityTopology, bodyKey, bodyKeyParts, type LedgerBody } from './topology';
 import type { Quat, Vec3 } from './vec';
 import { qRotate, vAdd } from './vec';
 import {
@@ -52,6 +52,8 @@ import {
   type DustSource,
 } from './destructionEvents';
 import { dustEnabled } from './dustSettings';
+import { DustImpactDetector } from './dustImpacts';
+import { matchDustShot } from '../vfx/dustShots';
 
 export interface CityClientStats {
   chunksTotal: number;
@@ -154,6 +156,10 @@ export interface CityClientStats {
   dustSources: number;
   dustSourcesDroppedByCap: number;
   dustQueueDropped: number;
+  /// By kind: shot entries, velocity-stream impacts, collapse waves.
+  dustEntries: number;
+  dustImpacts: number;
+  dustWaves: number;
 }
 
 interface BodyStreamState {
@@ -564,6 +570,8 @@ export class CityClient {
         return true;
       },
       presentedSpeed: (key) => this.bodyPresentedSpeed(key),
+      impactedRecently: (key, nowMs) => this.dustImpacts.impactedRecently(key, nowMs),
+      matchShot: (x, y, z, nowMs) => matchDustShot(x, y, z, nowMs),
     };
     // A body's frame moves when it sheds members. Carry that move through the
     // buffered poses so the smoothing delay cannot render new-frame offsets
@@ -869,6 +877,24 @@ export class CityClient {
         'presented',
       );
       live.add(entity);
+      // No velocity on this wire: difference the samples.
+      const body = this.topology.body(entity);
+      if (body) {
+        const prev = this.dustSamplePrev.get(entity);
+        const px = this.samplePoses[at];
+        const py = this.samplePoses[at + 1];
+        const pz = this.samplePoses[at + 2];
+        if (prev && sampleTick > prev[3]) {
+          const dtS = (sampleTick - prev[3]) / this.simHz;
+          this.noteDustVelocity(
+            entity, body, sampleTick, px, py, pz,
+            (px - prev[0]) / dtS, (py - prev[1]) / dtS, (pz - prev[2]) / dtS,
+          );
+          prev[0] = px; prev[1] = py; prev[2] = pz; prev[3] = sampleTick;
+        } else if (!prev) {
+          this.dustSamplePrev.set(entity, [px, py, pz, sampleTick]);
+        }
+      }
     }
     const poisoned = debris.drain_poisoned();
     if (poisoned.length > 0) {
@@ -900,10 +926,49 @@ export class CityClient {
   // badly (destructionEvents.ts) and queued as dust sources. The dust layer
   // drains the queue once per frame, so the policy's cost is inside the frame
   // and its stats, and several messages applied between frames arrive together.
-  private readonly dustContext: DustExtractContext;
+  private dustContext: DustExtractContext;
   private readonly dustQueue = new DustSourceQueue();
   private dustSourcesTotal = 0;
   private dustSourcesDroppedByCap = 0;
+
+  private readonly dustImpacts = new DustImpactDetector();
+  private readonly dustSamplePrev = new Map<number, [number, number, number, number]>();
+
+  /**
+   * A body's velocity sample from the wire (or differenced from samples on
+   * v3). The impact detector raises a dust source when the body just lost a
+   * lot of speed -- it hit something.
+   */
+  private noteDustVelocity(
+    key: number, body: LedgerBody, tick: number,
+    x: number, y: number, z: number, vx: number, vy: number, vz: number,
+  ): void {
+    if (!dustEnabled()) return;
+    let mass = 0;
+    let radius = 0;
+    const slots = body.chunkSlots;
+    const scanned = Math.min(slots.length, 64);
+    for (let i = 0; i < scanned; i += 1) {
+      mass += this.topology.restMassOf(slots[i]);
+      const r = this.topology.chunkRadiusOf(slots[i]);
+      if (r > radius) radius = r;
+    }
+    if (scanned < slots.length) mass *= slots.length / scanned;
+    // A body of many chunks is bigger than its biggest chunk.
+    radius = Math.min(6, radius * (1 + Math.cbrt(slots.length) * 0.5));
+    let leadMs = 0;
+    if (this.renderClockTick >= 0) {
+      const presentedTick = this.renderClockTick - this.sampleDelaySmooth;
+      leadMs = Math.min(500, Math.max(0, ((tick - presentedTick) / this.tickRateEma) * 1000));
+    }
+    const before = this.dustQueue.dropped;
+    if (this.dustImpacts.noteVelocity(
+      key, body.structureId, tick, x, y, z, vx, vy, vz, mass, radius,
+      performance.now() + leadMs, this.dustQueue,
+    )) {
+      this.dustSourcesTotal += 1 + (this.dustQueue.dropped - before);
+    }
+  }
 
   private extractDust(message: TopologyMessage): void {
     if (!dustEnabled()) return;
@@ -920,6 +985,7 @@ export class CityClient {
       leadMs = Math.min(leadMs, 500);
     }
     const before = this.dustQueue.dropped;
+    this.dustContext.nowMs = performance.now();
     const pushed = extractDustSources(message, this.dustContext, this.dustQueue, performance.now() + leadMs);
     this.dustSourcesTotal += pushed + (this.dustQueue.dropped - before);
   }
@@ -1122,6 +1188,9 @@ export class CityClient {
         this.spanTicksEma = 6;
         this.sampleDelaySmooth = MIN_SAMPLE_DELAY_TICKS;
         this.renderClockTick = -1;
+        // A new ledger: no body's last velocity is the same body's.
+        this.dustImpacts.clear();
+        this.dustSamplePrev.clear();
         this.settledAtTick.clear();
         this.baselineGenerations.clear();
         this.resyncRequested = false;
@@ -1953,6 +2022,11 @@ export class CityClient {
           : PresentationClass.ContactActive,
     };
     state.track.push(snapshot);
+    this.noteDustVelocity(
+      record.bodyEntity, body, datagram.simTick,
+      position[0], position[1], position[2],
+      record.linearVelocity[0], record.linearVelocity[1], record.linearVelocity[2],
+    );
     if (isCitySuspect(record.bodyEntity)) {
       recordCityEvent('city_suspect_record', {
         body: record.bodyEntity,
@@ -2179,6 +2253,9 @@ export class CityClient {
       dustSources: this.dustSourcesTotal,
       dustSourcesDroppedByCap: dustExtractStats().droppedByCap,
       dustQueueDropped: this.dustQueue.dropped,
+      dustEntries: dustExtractStats().entries,
+      dustImpacts: this.dustImpacts.impacts,
+      dustWaves: this.dustImpacts.wavesRaised,
       hashChecks: this.hashChecks,
       hashMismatches: this.hashMismatches,
       structureRepairs: this.structureRepairs,

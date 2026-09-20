@@ -114,6 +114,9 @@ export interface CityE2EStats {
     parcelsLive: number;
     parcelsDrawn: number;
     dropped: number;
+    entries: number;
+    impacts: number;
+    waves: number;
   };
   /** False when the chunk mesh failed to build — streaming but invisible. */
   rendered: boolean;

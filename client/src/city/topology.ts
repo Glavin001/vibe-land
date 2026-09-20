@@ -153,6 +153,8 @@ export class CityTopology {
   private readonly restPos: Float32Array;
   /** Manifest mass per chunk, for reconstructing an island's centre of mass. */
   private readonly restMass: Float32Array;
+  /** Manifest bounding radius per chunk, m. */
+  private readonly restRadius: Float32Array;
 
   private readonly bodies: Map<number, LedgerBody> = new Map();
   private readonly aliveBonds: Map<number, Uint8Array> = new Map();
@@ -235,10 +237,12 @@ export class CityTopology {
     this.localRot = new Float32Array(total * 4);
     this.restPos = new Float32Array(total * 3);
     this.restMass = new Float32Array(total);
+    this.restRadius = new Float32Array(total);
     for (const structure of manifest.structures) {
       const base = this.slotBase.get(structure.structureId)!;
       for (const chunk of structure.chunks) {
         this.restMass[base + chunk.nodeIndex] = chunk.mass;
+        this.restRadius[base + chunk.nodeIndex] = chunk.radius;
       }
     }
     this.reset();
@@ -1319,6 +1323,11 @@ export class CityTopology {
   /** Manifest mass of one chunk, kg. */
   restMassOf(slot: number): number {
     return this.restMass[slot];
+  }
+
+  /** Manifest bounding radius of one chunk, m. */
+  chunkRadiusOf(slot: number): number {
+    return this.restRadius[slot];
   }
 
   /** Manifest rest centroid of one chunk, in its structure's frame, into out[at..at+3). */

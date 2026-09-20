@@ -133,6 +133,7 @@ import { WeatherParticles } from './WeatherParticles';
 import { useWeatherAmbience } from '../graphics/weatherAudio';
 import { CityChunksLayer } from './CityChunksLayer';
 import { DustLayer } from '../vfx/DustLayer';
+import { registerDustShot } from '../vfx/dustShots';
 
 const VEHICLE_INTERACT_RADIUS = VEHICLE_INTERACT_RADIUS_M;
 const REMOTE_HIT_FLASH_MS = 180;
@@ -1213,6 +1214,15 @@ export function GameWorld({
     const nowMs = performance.now();
     if (expiresAtMs <= nowMs) return;
     const { origin, end } = shotFiredToWorldEndpoints(packet);
+    registerDustShot({
+      ox: origin[0], oy: origin[1], oz: origin[2],
+      dx: end[0] - origin[0], dy: end[1] - origin[1], dz: end[2] - origin[2],
+      ex: packet.weapon === WEAPON_CANNONBALL ? null : end[0],
+      ey: packet.weapon === WEAPON_CANNONBALL ? null : end[1],
+      ez: packet.weapon === WEAPON_CANNONBALL ? null : end[2],
+      weapon: packet.weapon,
+      atMs: nowMs,
+    });
     pushActiveShotTrace(activeShotTracesRef.current, {
       id: nextShotTraceIdRef.current++,
       shooterId: packet.shooterPlayerId,
@@ -2255,6 +2265,19 @@ export function GameWorld({
             sceneHit?.toi ?? null,
           ),
         );
+        {
+          const ball = cannonballEnabled();
+          const toi = !ball && sceneHit?.toi != null ? sceneHit.toi : null;
+          registerDustShot({
+            ox: camera.position.x, oy: camera.position.y, oz: camera.position.z,
+            dx: fireDir[0], dy: fireDir[1], dz: fireDir[2],
+            ex: toi === null ? null : camera.position.x + fireDir[0] * toi,
+            ey: toi === null ? null : camera.position.y + fireDir[1] * toi,
+            ez: toi === null ? null : camera.position.z + fireDir[2] * toi,
+            weapon: ball ? WEAPON_CANNONBALL : WEAPON_HITSCAN,
+            atMs: now,
+          });
+        }
         client.sendFire({
           seq: prediction.peekNextInputSeq(),
           shotId,

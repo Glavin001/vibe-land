@@ -15,6 +15,7 @@
 import {
   DustPalette,
   DustShape,
+  type DustParcel,
   type DustParcelStore,
 } from '../vfx/dustParcelStore';
 import type { DustSource } from './destructionEvents';
@@ -44,9 +45,9 @@ export const DEFAULT_DUST_POLICY: DustPolicyConfig = {
   parcelsPerTickCap: 32,
   parcelsPerSourceMax: 8,
   parcelsScale: 0.55,
-  radiusScale: 0.7,
-  radiusMin: 0.5,
-  radiusMax: 4,
+  radiusScale: 0.45,
+  radiusMin: 0.4,
+  radiusMax: 3,
   smoulderHoldMs: 1500,
   smoulderIntervalMs: 350,
   smoulderMaxCells: 16,
@@ -127,12 +128,30 @@ export class DustPolicy {
   private tickBudget = 0;
   private readonly smoulder = new Map<number, SmoulderCell>();
 
+  /** Room measurement at a birth point, when the layer has a city to measure against. */
+  clearanceOf: ((x: number, y: number, z: number, out: Float32Array) => void) | null = null;
+  private readonly clearance = new Float32Array(6);
+
   constructor(
     private readonly store: DustParcelStore,
     private readonly paletteOf: (material: number) => DustPalette,
     config: Partial<DustPolicyConfig> = {},
   ) {
     this.config = { ...DEFAULT_DUST_POLICY, ...config };
+  }
+
+  /** The narrowest axis of a measured room, m. */
+  private roomOf(c: Float32Array): number {
+    return Math.min(c[0] + c[1], c[2] + c[3], c[4] + c[5]);
+  }
+
+  private spawnAt(p: Omit<DustParcel, 'clearance'>): void {
+    if (this.clearanceOf) {
+      this.clearanceOf(p.x, p.y, p.z, this.clearance);
+      this.store.spawn({ ...p, clearance: this.clearance });
+    } else {
+      this.store.spawn(p);
+    }
   }
 
   /** Burst emission for one source. Returns parcels spawned. */
@@ -150,6 +169,7 @@ export class DustPolicy {
     }
     const m = Math.max(0, source.magnitude);
     let n = Math.max(1, Math.min(cfg.parcelsPerSourceMax, Math.round(cfg.parcelsScale * Math.sqrt(m))));
+    if (source.kind === 'wave') n = Math.max(6, n);
     if (n > this.tickBudget) {
       this.stats.droppedByTickCap += n - this.tickBudget;
       n = this.tickBudget;
@@ -157,42 +177,116 @@ export class DustPolicy {
     if (n <= 0) return 0;
     this.tickBudget -= n;
 
-    const impact = source.kind === 'impact';
-    const radius0 = Math.min(cfg.radiusMax, Math.max(cfg.radiusMin, cfg.radiusScale * Math.cbrt(m))) * (impact ? 1.5 : 1);
+    const kind = source.kind;
+    const impact = kind === 'impact' || kind === 'wave';
+    const entry = kind === 'entry';
+    const wave = kind === 'wave';
+    const radius0 = Math.min(cfg.radiusMax, Math.max(cfg.radiusMin, cfg.radiusScale * Math.cbrt(m)))
+      * (wave ? 2 : impact ? 1.5 : entry ? 0.6 : 1);
     const intensity = Math.min(1, 0.35 + 0.15 * Math.log2(1 + m)) * factor;
-    const shape = impact ? DustShape.Impact : DustShape.Fracture;
-    const ox = source.x + source.nx * cfg.normalOffsetM;
-    const oy = source.y + source.ny * cfg.normalOffsetM;
-    const oz = source.z + source.nz * cfg.normalOffsetM;
+    const shape = wave ? DustShape.Wave : impact ? DustShape.Impact : entry ? DustShape.Entry : DustShape.Fracture;
+    // A bond's normal has no side of its own: the face's outside is whichever
+    // side has room. Born inside the standing chunk, a puff has none and
+    // collapses to nothing; so measure both sides and take the open one.
+    let nx = source.nx;
+    let ny = source.ny;
+    let nz = source.nz;
+    let ox = source.x + nx * cfg.normalOffsetM;
+    let oy = source.y + ny * cfg.normalOffsetM;
+    let oz = source.z + nz * cfg.normalOffsetM;
+    if (this.clearanceOf && !impact) {
+      this.clearanceOf(ox, oy, oz, this.clearance);
+      const room = this.roomOf(this.clearance);
+      if (room < 1) {
+        const bx = source.x - nx * cfg.normalOffsetM;
+        const by = source.y - ny * cfg.normalOffsetM;
+        const bz = source.z - nz * cfg.normalOffsetM;
+        this.clearanceOf(bx, by, bz, this.clearance);
+        if (this.roomOf(this.clearance) > room) {
+          nx = -nx;
+          ny = -ny;
+          nz = -nz;
+          ox = bx;
+          oy = by;
+          oz = bz;
+        }
+      }
+    }
+    // A tangent basis around the normal, for the discs and the ring.
+    const nl = Math.hypot(nx, ny, nz);
+    if (nl < 1e-6) {
+      nx = 0;
+      ny = 1;
+      nz = 0;
+    } else {
+      nx /= nl;
+      ny /= nl;
+      nz /= nl;
+    }
+    const hx = Math.abs(ny) < 0.9 ? 0 : 1;
+    const hy = Math.abs(ny) < 0.9 ? 1 : 0;
+    let tx = hy * nz - 0 * ny;
+    let ty = 0 * nx - hx * nz;
+    let tz = hx * ny - hy * nx;
+    const tl = Math.hypot(tx, ty, tz) || 1;
+    tx /= tl;
+    ty /= tl;
+    tz /= tl;
+    const bx = ny * tz - nz * ty;
+    const by = nz * tx - nx * tz;
+    const bz = nx * ty - ny * tx;
 
     for (let i = 0; i < n; i += 1) {
       const seed = hash32(source.structureId, source.simTick, source.ordinal, i);
       const rng = new Rng(seed);
-      const theta = rng.range(0, Math.PI * 2);
+      const theta = wave ? (i / n) * Math.PI * 2 + rng.range(-0.3, 0.3) : rng.range(0, Math.PI * 2);
+      const ct = Math.cos(theta);
+      const st = Math.sin(theta);
       let x: number;
       let y: number;
       let z: number;
       let vx: number;
       let vy: number;
       let vz: number;
-      if (impact) {
-        // A disc on the ground, thrown outward and flat.
+      if (wave) {
+        // A ring around the front, every parcel pushed outward, hard.
+        const r = radius0 * 0.8;
+        x = ox + (tx * ct + bx * st) * r;
+        y = oy + 0.3;
+        z = oz + (tz * ct + bz * st) * r;
+        const push = rng.range(5, 9);
+        vx = (tx * ct + bx * st) * push;
+        vy = 0.3;
+        vz = (tz * ct + bz * st) * push;
+      } else if (impact) {
+        // A disc on the surface it hit, thrown outward along it.
         const r = radius0 * 1.2 * Math.sqrt(rng.next());
-        x = ox + Math.cos(theta) * r;
-        y = oy + 0.2;
-        z = oz + Math.sin(theta) * r;
+        x = ox + (tx * ct + bx * st) * r;
+        y = oy + (ty * ct + by * st) * r + ny * 0.2;
+        z = oz + (tz * ct + bz * st) * r;
         const push = rng.range(1.5, 3);
-        vx = Math.cos(theta) * push;
-        vy = 0;
-        vz = Math.sin(theta) * push;
+        vx = (tx * ct + bx * st) * push;
+        vy = (ty * ct + by * st) * push;
+        vz = (tz * ct + bz * st) * push;
+      } else if (entry) {
+        // Spall: a fast jet off the face, toward the shooter.
+        const r = radius0 * 0.5 * Math.sqrt(rng.next());
+        x = ox + (tx * ct + bx * st) * r;
+        y = oy + (ty * ct + by * st) * r;
+        z = oz + (tz * ct + bz * st) * r;
+        const push = rng.range(4, 8);
+        const spread = rng.range(0, 0.35);
+        vx = source.vx + (nx + (tx * ct + bx * st) * spread) * push;
+        vy = source.vy + (ny + (ty * ct + by * st) * spread) * push;
+        vz = source.vz + (nz + (tz * ct + bz * st) * spread) * push;
       } else {
         // A ball around the break, thrown every way and a little up, plus
         // whatever the material was doing.
         const r = radius0 * 0.6 * Math.cbrt(rng.next());
         const phi = Math.acos(rng.range(-1, 1));
-        x = ox + Math.sin(phi) * Math.cos(theta) * r;
+        x = ox + Math.sin(phi) * ct * r;
         y = oy + Math.cos(phi) * r;
-        z = oz + Math.sin(phi) * Math.sin(theta) * r;
+        z = oz + Math.sin(phi) * st * r;
         const push = rng.range(0.5, 1.5);
         const phi2 = Math.acos(rng.range(-1, 1));
         const theta2 = rng.range(0, Math.PI * 2);
@@ -200,7 +294,7 @@ export class DustPolicy {
         vy = source.vy + Math.cos(phi2) * push + 0.8 + source.ny * push;
         vz = source.vz + Math.sin(phi2) * Math.sin(theta2) * push + source.nz * push;
       }
-      this.store.spawn({
+      this.spawnAt({
         bornMs: source.atMs,
         x, y, z, vx, vy, vz,
         radius0: radius0 * rng.range(0.8, 1.2),
@@ -212,7 +306,7 @@ export class DustPolicy {
     }
     this.stats.emitted += n;
 
-    if (!impact) this.feedSmoulder(source, palette);
+    if (kind === 'fracture' || kind === 'entry') this.feedSmoulder(source, palette);
     return n;
   }
 
@@ -267,7 +361,7 @@ export class DustPolicy {
         const rng = new Rng(seed);
         const theta = rng.range(0, Math.PI * 2);
         const r = rng.range(0, 1.5);
-        this.store.spawn({
+        this.spawnAt({
           bornMs: cell.nextMs,
           x: cell.x + Math.cos(theta) * r,
           y: cell.y + rng.range(-0.5, 0.5),

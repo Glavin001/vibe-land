@@ -29,6 +29,8 @@ import {
 } from '../graphics/sunSky';
 import { windVectorFromSettings } from '../graphics/weatherPresets';
 import { DustSprites } from './DustSprites';
+import { DustClearance } from './dustClearance';
+import { clearDustShots } from './dustShots';
 import { drainDebugDustSources } from './dustDebug';
 import { dustParcels } from './dustParcelStore';
 import { DustVolumeRenderer, type DustLighting } from './DustVolumeRenderer';
@@ -137,15 +139,19 @@ export function DustLayer({
       const manifest = client.manifest.manifest;
       const appearance = manifest.materialAppearance;
       const byId = new Map(manifest.structures.map((s) => [s.structureId, s]));
+      clearDustShots();
+      const clearance = new DustClearance(client.topology, manifest);
+      const policy = new DustPolicy(
+        dustParcels,
+        (material) => paletteFromAppearance(appearance, material),
+        DUST_TICK_CAP_OVERRIDE ? { parcelsPerTickCap: DUST_TICK_CAP_OVERRIDE } : {},
+      );
+      policy.clearanceOf = (x, y, z, out) => clearance.clearanceAt(x, y, z, out);
       policyRef.current = {
         client,
         colliders: (frame, layout, out) =>
           voxelizeStaticChunks(client.topology, manifest, frame, layout, out, byId),
-        policy: new DustPolicy(
-          dustParcels,
-          (material) => paletteFromAppearance(appearance, material),
-          DUST_TICK_CAP_OVERRIDE ? { parcelsPerTickCap: DUST_TICK_CAP_OVERRIDE } : {},
-        ),
+        policy,
       };
     }
     const { policy } = policyRef.current;

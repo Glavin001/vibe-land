@@ -77,12 +77,12 @@ describe('DustPolicy', () => {
 
   it('spreads an impact flat and outward', () => {
     const { store, policy: p } = policy();
-    const n = p.emit(source({ kind: 'impact', y: 0.3, magnitude: 30 }));
+    const n = p.emit(source({ kind: 'impact', y: 0.3, nx: 0, ny: 1, nz: 0, magnitude: 30 }));
     for (let i = 0; i < n; i += 1) {
       expect(store.shape[i]).toBe(DustShape.Impact);
-      expect(store.vy[i]).toBe(0);
+      expect(store.vy[i]).toBeCloseTo(0);
       expect(Math.hypot(store.vx[i], store.vz[i])).toBeGreaterThanOrEqual(1.5);
-      expect(store.py[i]).toBeCloseTo(0.5);
+      expect(store.py[i]).toBeCloseTo(0.3 + 0.4 + 0.2);
     }
   });
 
@@ -125,6 +125,47 @@ describe('DustPolicy', () => {
     const burst = p.emit(source({ atMs: 0 }));
     p.tick(1400); // 4 intervals late; at most ~2 parcels, not 4
     expect(store.spawned - burst).toBeLessThanOrEqual(2);
+  });
+});
+
+describe('entry and wave shapes', () => {
+  it('jets an entry along its normal, fast', () => {
+    const { store, policy: p } = policy();
+    const n = p.emit(source({ kind: 'entry', nx: 0, ny: 0, nz: -1, magnitude: 40 }));
+    expect(n).toBeGreaterThan(0);
+    for (let i = 0; i < n; i += 1) {
+      expect(store.shape[i]).toBe(DustShape.Entry);
+      expect(store.vz[i]).toBeLessThan(-3);
+    }
+  });
+
+  it('rings a wave around the front and throws it outward', () => {
+    const { store, policy: p } = policy();
+    const n = p.emit(source({ kind: 'wave', x: 0, y: 0.3, z: 0, nx: 0, ny: 1, nz: 0, magnitude: 50 }));
+    expect(n).toBeGreaterThanOrEqual(6);
+    for (let i = 0; i < n; i += 1) {
+      expect(store.shape[i]).toBe(DustShape.Wave);
+      // Velocity points away from the centre.
+      const dot = store.px[i] * store.vx[i] + store.pz[i] * store.vz[i];
+      expect(dot).toBeGreaterThan(0);
+      expect(Math.hypot(store.vx[i], store.vz[i])).toBeGreaterThanOrEqual(5);
+    }
+  });
+
+  it('puts a fracture on the open side of its face', () => {
+    const { store, policy: p } = policy();
+    // Room on −z only: +z of the face is inside a chunk.
+    p.clearanceOf = (_x, _y, z, out) => { out.fill(8); if (z > 0) { out[4] = 0; out[5] = 0; } };
+    const n = p.emit(source({ x: 0, y: 2, z: 0, nx: 0, ny: 0, nz: 1, magnitude: 20 }));
+    for (let i = 0; i < n; i += 1) expect(store.pz[i]).toBeLessThan(0.5);
+  });
+
+  it('measures the room for every parcel it spawns', () => {
+    const { store, policy: p } = policy();
+    p.clearanceOf = (_x, _y, _z, out) => { out.fill(2); };
+    p.emit(source({ magnitude: 5 }));
+    expect(store.clearance[0]).toBe(2);
+    expect(store.clearance[5]).toBe(2);
   });
 });
 
