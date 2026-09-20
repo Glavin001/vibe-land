@@ -75,6 +75,7 @@ import {
 } from '../city/bodyDebugColors';
 import { frameStartTime, markFrameEndAndSample, renderStats } from '../city/renderStats';
 import { cityDiagnosticsWanted } from '../city/cityDiagnostics';
+import { cityTapeRecorder } from '../city/cityTape';
 import { dustEnabled } from '../city/dustSettings';
 import { CHUNK_SUNK_Y_M, deepestChunkProvenance } from '../city/chunkDiagnostics';
 
@@ -791,6 +792,7 @@ export function CityChunksLayer({
     if (frameCounterRef.current % 30 === 0) {
       const telemetryStartedAt = performance.now();
       const stats = client.stats();
+      cityTapeRecorder.noteAwake(stats.chunksAwake);
       const prevBroken = (window as unknown as { __VIBE_CITY_BROKEN__?: number }).__VIBE_CITY_BROKEN__ ?? 0;
       if (stats.brokenBonds > prevBroken) {
         console.info('[city] brokenBonds', prevBroken, '→', stats.brokenBonds, {

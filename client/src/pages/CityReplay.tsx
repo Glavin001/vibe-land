@@ -12,6 +12,10 @@
 //   /cityreplay?cam=x,y,z,tx,ty,tz  starting camera pose (default: the spawn side)
 //   /cityreplay?loop=1              start over when the tape ends
 //
+// The strip in the bar is the recording machine's frame time along the tape
+// (the tape carries it); its red buttons are the worst moments -- one click
+// seeks there.
+//
 // Drag to look, WASD/QE to fly, shift for speed; the pose is written back to
 // the URL as you move, so a view can be shared and a sweep re-run from it.
 // Space plays/pauses, arrows scrub 5 s, R rewinds.
@@ -164,6 +168,86 @@ function ReplayCamera({ pose }: { pose: ReturnType<typeof parseCamera> }) {
   return null;
 }
 
+/**
+ * The recording machine's frame time along the tape, as a strip: green under
+ * the 120 Hz budget, through amber, to red above 25 ms. Click to seek. The
+ * hot spots are the three worst half-seconds, as buttons.
+ */
+function FrameStrip({ tape, timeMs, onSeek }: { tape: CityTape; timeMs: number; onSeek: (ms: number) => void }) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const frames = tape.frames;
+  const duration = tape.header.durationMs;
+  const buckets = useMemo(() => {
+    if (!frames || frames.times.length === 0) return null;
+    const bucketMs = 500;
+    const n = Math.ceil(duration / bucketMs);
+    const sum = new Float64Array(n);
+    const count = new Uint32Array(n);
+    const awake = new Uint32Array(n);
+    for (let i = 0; i < frames.times.length; i += 1) {
+      const b = Math.min(n - 1, Math.floor(frames.times[i] / bucketMs));
+      sum[b] += frames.frameMs[i];
+      count[b] += 1;
+      awake[b] = Math.max(awake[b], frames.awake[i]);
+    }
+    const mean = Array.from(sum, (v, i) => (count[i] ? v / count[i] : 0));
+    const hot = mean
+      .map((ms, i) => ({ ms, at: i * bucketMs, awake: awake[i] }))
+      .sort((a, b) => b.ms - a.ms)
+      .filter((entry, index, all) => all.findIndex((other) => Math.abs(other.at - entry.at) < 3000) === index)
+      .slice(0, 3);
+    return { bucketMs, mean, hot };
+  }, [frames, duration]);
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || !buckets) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    const { width, height } = canvas;
+    ctx.clearRect(0, 0, width, height);
+    const n = buckets.mean.length;
+    for (let i = 0; i < n; i += 1) {
+      const ms = buckets.mean[i];
+      const t = Math.min(1, Math.max(0, (ms - 8.33) / (25 - 8.33)));
+      const hue = 120 * (1 - t);
+      ctx.fillStyle = ms > 0 ? `hsl(${hue}, 80%, 45%)` : '#333';
+      const x = (i / n) * width;
+      const h = Math.max(2, Math.min(height, (ms / 40) * height));
+      ctx.fillRect(x, height - h, Math.max(1, width / n - 1), h);
+    }
+    ctx.fillStyle = '#fff';
+    const px = (timeMs / duration) * width;
+    ctx.fillRect(px - 1, 0, 2, height);
+  }, [buckets, timeMs, duration]);
+  if (!buckets) return <span style={{ color: '#999' }}>no frame times on this tape</span>;
+  return (
+    <>
+      <canvas
+        ref={canvasRef}
+        width={320}
+        height={28}
+        style={{ width: 320, height: 28, background: '#111', cursor: 'pointer' }}
+        title="Frame time on the recording machine; click to seek"
+        onClick={(event) => {
+          const rect = event.currentTarget.getBoundingClientRect();
+          onSeek(((event.clientX - rect.left) / rect.width) * duration);
+        }}
+      />
+      {buckets.hot.map((spot) => (
+        <button
+          key={spot.at}
+          type="button"
+          style={{ font: 'inherit', padding: '2px 6px', background: '#3a1a1a', color: '#fdd', border: '1px solid #844' }}
+          title={`${Math.round(spot.awake)} chunks awake`}
+          onClick={() => onSeek(Math.max(0, spot.at - 1000))}
+        >
+          {(spot.at / 1000).toFixed(1)}s · {spot.ms.toFixed(0)} ms
+        </button>
+      ))}
+    </>
+  );
+}
+
 /** Dispatches the tape every frame, ahead of the city layer (negative priority). */
 function ReplayTicker({ playerRef }: { playerRef: React.MutableRefObject<ReplayPlayer | null> }) {
   useFrame(() => {
@@ -302,7 +386,7 @@ export function CityReplayPage() {
 
   const bar: React.CSSProperties = {
     position: 'fixed', left: 0, right: 0, bottom: 0, padding: '6px 10px', background: 'rgba(0,0,0,0.6)',
-    color: '#ddd', font: '12px ui-monospace, monospace', display: 'flex', gap: 12, alignItems: 'center', zIndex: 10,
+    color: '#ddd', font: '12px ui-monospace, monospace', display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center', zIndex: 10,
   };
   const button: React.CSSProperties = { font: 'inherit', padding: '2px 8px', background: '#222', color: '#eee', border: '1px solid #555' };
 
@@ -401,7 +485,8 @@ export function CityReplayPage() {
             <label>
               <input type="checkbox" defaultChecked={player.loop} onChange={(event) => { player.loop = event.target.checked; }} /> loop
             </label>
-            <span style={{ color: '#999' }}>drag to look · WASD/QE move · shift fast · wheel speed</span>
+            <FrameStrip tape={tape!} timeMs={Math.min(clock.t, player.durationMs())} onSeek={(ms) => void window.__VIBE_REPLAY__?.seek(ms)} />
+            <span style={{ color: '#999', whiteSpace: 'nowrap' }} title="drag to look · WASD/QE to fly · shift fast · wheel speed · space play · ←/→ 5 s · R rewind">? controls</span>
             <button
               type="button"
               style={button}

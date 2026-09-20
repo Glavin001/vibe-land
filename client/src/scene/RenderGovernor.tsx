@@ -9,6 +9,7 @@
 import { useFrame, useThree } from '@react-three/fiber';
 import { useEffect, useRef } from 'react';
 import { renderStats } from '../city/renderStats';
+import { cityTapeRecorder } from '../city/cityTape';
 import {
   antialiasEnabled,
   dynamicResolutionEnabled,
@@ -101,6 +102,7 @@ export function RenderGovernor(): null {
   // cap of half a minute); if it holds, the trial sticks and the hold resets.
   useFrame(() => {
     const g = gov.current;
+    cityTapeRecorder.noteFrame(renderStats.frameTotalMs, renderStats.cpuFrameMs);
     if (!dynamicResolutionEnabled() || governorPaused()) {
       gl.shadowMap.autoUpdate = true;
       if (scaleRef.current !== 1) apply(1);

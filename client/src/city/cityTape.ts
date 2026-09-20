@@ -14,8 +14,9 @@
 // from that bootstrap. The manifest is not in the tape -- it is fetched by
 // hash from the page's own origin, as the game does.
 //
-// Format (VLTAPE01): a JSON header, then packets as [u32 tMs][u32 len][bytes],
-// little-endian. Tapes live in IndexedDB on the reporter's machine and can be
+// Format (VLTAPE01): a JSON header; then, when the header names `frames`, that
+// many frame samples [f32 tMs][f32 frameMs][f32 cpuMs][u32 awake]; then packets
+// as [u32 tMs][u32 len][bytes]. Little-endian throughout. Tapes live in IndexedDB on the reporter's machine and can be
 // downloaded as files.
 
 const MAGIC = 'VLTAPE01';
@@ -33,6 +34,18 @@ export interface CityTapeHeader {
   durationMs: number;
   packets: number;
   bytes: number;
+  /** Frame samples in the block after the header: [f32 tMs, f32 frameMs, f32 cpuMs, u32 awake] each. */
+  frames?: number;
+}
+
+/** One rendered frame on the recording machine: when, and what it cost there. */
+export interface CityTapeFrames {
+  /** Tape time in ms of each frame. */
+  times: Float32Array;
+  frameMs: Float32Array;
+  cpuMs: Float32Array;
+  /** Chunks awake, as the recorder's 2 Hz telemetry last reported it. */
+  awake: Uint32Array;
 }
 
 export interface CityTape {
@@ -40,6 +53,12 @@ export interface CityTape {
   /** Arrival time in ms from recording start, per packet. */
   times: Float64Array;
   packets: Uint8Array[];
+  /**
+   * The frames the recording machine drew while the tape ran, so the replay
+   * can show WHERE the storm hurt and scrub straight to it. Absent on tapes
+   * cut before this existed.
+   */
+  frames: CityTapeFrames | null;
 }
 
 /** The live recorder; one per page. */
@@ -48,6 +67,11 @@ class CityTapeRecorder {
   private times: number[] = [];
   private packets: Uint8Array[] = [];
   private bytes = 0;
+  private frameTimes: number[] = [];
+  private frameMs: number[] = [];
+  private frameCpuMs: number[] = [];
+  private frameAwake: number[] = [];
+  private lastAwake = 0;
   private meta: { matchId: string; manifestHash: string; wireVersion: number; simHz: number } | null = null;
   private requestResync: (() => void) | null = null;
   private listeners = new Set<() => void>();
@@ -72,6 +96,10 @@ class CityTapeRecorder {
     this.times = [];
     this.packets = [];
     this.bytes = 0;
+    this.frameTimes = [];
+    this.frameMs = [];
+    this.frameCpuMs = [];
+    this.frameAwake = [];
     this.requestResync?.();
     this.notify();
   }
@@ -82,6 +110,20 @@ class CityTapeRecorder {
     this.times.push(performance.now() - this.startedAtMs);
     this.packets.push(bytes.slice());
     this.bytes += bytes.length;
+  }
+
+  /** Every rendered frame while recording: the governor's frame hook calls this. */
+  noteFrame(frameMs: number, cpuMs: number): void {
+    if (!this.recording || !(frameMs > 0)) return;
+    this.frameTimes.push(performance.now() - this.startedAtMs);
+    this.frameMs.push(frameMs);
+    this.frameCpuMs.push(cpuMs);
+    this.frameAwake.push(this.lastAwake);
+  }
+
+  /** The city layer's 2 Hz telemetry reports how many chunks are awake. */
+  noteAwake(awake: number): void {
+    this.lastAwake = awake;
   }
 
   status(): { recording: boolean; seconds: number; packets: number; megabytes: number } {
@@ -110,10 +152,20 @@ class CityTapeRecorder {
       },
       times: Float64Array.from(this.times),
       packets: this.packets,
+      frames: {
+        times: Float32Array.from(this.frameTimes),
+        frameMs: Float32Array.from(this.frameMs),
+        cpuMs: Float32Array.from(this.frameCpuMs),
+        awake: Uint32Array.from(this.frameAwake),
+      },
     };
     this.times = [];
     this.packets = [];
     this.bytes = 0;
+    this.frameTimes = [];
+    this.frameMs = [];
+    this.frameCpuMs = [];
+    this.frameAwake = [];
     this.notify();
     return tape;
   }
@@ -131,8 +183,9 @@ class CityTapeRecorder {
 export const cityTapeRecorder = new CityTapeRecorder();
 
 export function encodeCityTape(tape: CityTape): Uint8Array {
-  const header = new TextEncoder().encode(JSON.stringify(tape.header));
-  let size = MAGIC.length + 4 + header.length;
+  const frameCount = tape.frames ? tape.frames.times.length : 0;
+  const header = new TextEncoder().encode(JSON.stringify({ ...tape.header, frames: frameCount }));
+  let size = MAGIC.length + 4 + header.length + frameCount * 16;
   for (const packet of tape.packets) size += 8 + packet.length;
   const out = new Uint8Array(size);
   const view = new DataView(out.buffer);
@@ -142,6 +195,15 @@ export function encodeCityTape(tape: CityTape): Uint8Array {
   at += 4;
   out.set(header, at);
   at += header.length;
+  if (tape.frames) {
+    for (let i = 0; i < frameCount; i += 1) {
+      view.setFloat32(at, tape.frames.times[i], true);
+      view.setFloat32(at + 4, tape.frames.frameMs[i], true);
+      view.setFloat32(at + 8, tape.frames.cpuMs[i], true);
+      view.setUint32(at + 12, tape.frames.awake[i], true);
+      at += 16;
+    }
+  }
   tape.packets.forEach((packet, index) => {
     view.setUint32(at, Math.round(tape.times[index]), true);
     view.setUint32(at + 4, packet.length, true);
@@ -162,6 +224,18 @@ export function decodeCityTape(bytes: Uint8Array): CityTape {
   at += 4;
   const header = JSON.parse(new TextDecoder().decode(bytes.subarray(at, at + headerLength))) as CityTapeHeader;
   at += headerLength;
+  let frames: CityTapeFrames | null = null;
+  if (header.frames && header.frames > 0) {
+    const n = header.frames;
+    frames = { times: new Float32Array(n), frameMs: new Float32Array(n), cpuMs: new Float32Array(n), awake: new Uint32Array(n) };
+    for (let i = 0; i < n; i += 1) {
+      frames.times[i] = view.getFloat32(at, true);
+      frames.frameMs[i] = view.getFloat32(at + 4, true);
+      frames.cpuMs[i] = view.getFloat32(at + 8, true);
+      frames.awake[i] = view.getUint32(at + 12, true);
+      at += 16;
+    }
+  }
   const times: number[] = [];
   const packets: Uint8Array[] = [];
   while (at + 8 <= bytes.length) {
@@ -172,7 +246,7 @@ export function decodeCityTape(bytes: Uint8Array): CityTape {
     packets.push(bytes.slice(at, at + length));
     at += length;
   }
-  return { header, times: Float64Array.from(times), packets };
+  return { header, times: Float64Array.from(times), packets, frames };
 }
 
 function openDb(): Promise<IDBDatabase> {
