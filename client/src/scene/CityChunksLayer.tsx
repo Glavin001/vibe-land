@@ -947,8 +947,27 @@ export function CityChunksLayer({
       return;
     }
 
+    // One stride decision per body per frame, shared by the sampler and the
+    // write loop below so the two can never disagree about whether a body is
+    // due: a body sampled but not written wastes the sample, and one written
+    // but not sampled is drawn a stride late.
+    const cameraNow = frameState.camera.position;
+    const frameNow = frameCounterRef.current;
+    const dueThisFrame = (key: number): boolean => {
+      const body = client.topology.body(key);
+      if (!body) return true;
+      const dx = body.position[0] - cameraNow.x;
+      const dy = body.position[1] - cameraNow.y;
+      const dz = body.position[2] - cameraNow.z;
+      const stride = updateStrideForDistanceSq(dx * dx + dy * dy + dz * dz);
+      if (stride <= 1) return true;
+      // Staggered by CELL, not by body -- see the write loop for why.
+      const renderableIndex = state.meshOfSlot[body.chunkSlots[0]];
+      const batch = renderableIndex < 0 ? 0 : state.cellOfRenderable[renderableIndex];
+      return shouldUpdateThisFrame(frameNow, batch, stride);
+    };
     const sampleStartedAt = performance.now();
-    const live = client.samplePresentation(performance.now());
+    const live = client.samplePresentation(performance.now(), dueThisFrame);
     renderStats.sampleMs = performance.now() - sampleStartedAt;
     const dirty = dirtyBodiesRef.current;
     for (const key of live) {
@@ -996,8 +1015,6 @@ export function CityChunksLayer({
     // This is a render-rate decision only. The authoritative pose is whatever
     // the ledger holds; deferring a write delays when a distant chunk is
     // redrawn, it never changes where it is.
-    const camera = frameState.camera.position;
-    const frame = frameCounterRef.current;
     const touchedMeshes = new Set<number>();
     // Chunks written this frame per mesh, so a culled cell can say how much
     // live geometry it was holding when it went off screen.
@@ -1015,10 +1032,6 @@ export function CityChunksLayer({
       // for good, since no further frame will list it as live.
       const settling = !live.has(key);
       if (!settling) {
-        const dx = body.position[0] - camera.x;
-        const dy = body.position[1] - camera.y;
-        const dz = body.position[2] - camera.z;
-        const stride = updateStrideForDistanceSq(dx * dx + dy * dy + dz * dz);
         // Staggered by CELL, not by body. An upload unit re-sends everything
         // it holds when any one instance in it changes -- a batch its whole
         // transform texture, an instanced mesh its whole matrix buffer -- so
@@ -1036,9 +1049,7 @@ export function CityChunksLayer({
         // whole district is a single structure, and keying on it gave every
         // body the same phase, so the entire map deferred and resumed together
         // instead of spreading across the stride window.
-        const renderableIndex = state.meshOfSlot[body.chunkSlots[0]];
-        const batch = renderableIndex < 0 ? 0 : state.cellOfRenderable[renderableIndex];
-        if (!shouldUpdateThisFrame(frame, batch, stride)) {
+        if (!dueThisFrame(key)) {
           continue;
         }
       }

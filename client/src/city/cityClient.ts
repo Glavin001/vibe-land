@@ -2089,13 +2089,29 @@ export class CityClient {
    * Tracks are normally closed by SETTLE events, but a body the server never
    * settles must not cost anything per frame either.
    */
-  samplePresentation(nowMs: number): Set<number> {
-    const live = this.samplePresentationInto(nowMs);
+  /**
+   * `due`, when given, says whether a body's chunks will be rewritten this
+   * frame (the render layer's distance stride). A body that is not due is
+   * still reported live -- it is still moving -- but not sampled: the track
+   * measures elapsed ticks since its previous sample, so sampling a distant
+   * body every k-th frame lands it on the same pose as sampling it every
+   * frame would have. Sampling every kinetic body every frame was a fifth of
+   * all CPU time in a collapse, most of it for chunks whose write was then
+   * deferred anyway.
+   */
+  samplePresentation(
+    nowMs: number,
+    due?: (key: number, lastPosition: Vec3 | null) => boolean,
+  ): Set<number> {
+    const live = this.samplePresentationInto(nowMs, due);
     this.lastLive = live;
     return live;
   }
 
-  private samplePresentationInto(nowMs: number): Set<number> {
+  private samplePresentationInto(
+    nowMs: number,
+    due?: (key: number, lastPosition: Vec3 | null) => boolean,
+  ): Set<number> {
     const live = new Set<number>();
     if (this.latestSimTickAtMs === 0) {
       // No pose stream has arrived, so there is no clock to hold topology
@@ -2123,6 +2139,10 @@ export class CityClient {
       const state = this.bodies.get(key);
       if (!state) {
         this.kinetic.delete(key);
+        continue;
+      }
+      if (due && !due(key, state.lastPresented ? state.lastPresented.position : null)) {
+        live.add(key);
         continue;
       }
       state.track.setInterpolationDelayTicks(playoutDelay);
