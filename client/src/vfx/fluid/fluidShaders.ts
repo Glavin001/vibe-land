@@ -12,6 +12,8 @@
 // All GLSL ES 3.0; `atlasGlsl` supplies the addressing and grid constants.
 
 export const FLUID_MAX_SOURCES = 12;
+/** Moving bodies a brick takes as velocity sources per step. */
+export const FLUID_MAX_MOVERS = 16;
 
 export const FLUID_VERTEX = /* glsl */ `
 void main() {
@@ -45,6 +47,9 @@ uniform float uWindZ;
 uniform int uSourceCount;
 uniform vec4 uSourcePos[${FLUID_MAX_SOURCES}];   // uvw (cells), radius (cells)
 uniform vec4 uSourceRate[${FLUID_MAX_SOURCES}];  // rate, heat, pulse, 0
+uniform int uMoverCount;
+uniform vec4 uMoverPos[${FLUID_MAX_MOVERS}];     // uvw (cells), radius (m)
+uniform vec4 uMoverVel[${FLUID_MAX_MOVERS}];     // m/s, 0
 out vec4 outColor;
 
 // Solid-aware backtrace: never trace through a wall or into it.
@@ -78,7 +83,15 @@ void main() {
     float len = length(d);
     v += d / max(len, 0.01) * uSourceRate[i].z * exp(-len / 3.0) * 3.0;
   }
-  v = clamp(v, vec3(-5.0), vec3(5.0));
+  // Moving bodies carry the air with them: inside a body's reach the
+  // velocity is pulled toward the body's, hardest at its centre.
+  for (int i = 0; i < ${FLUID_MAX_MOVERS}; i++) {
+    if (i >= uMoverCount) break;
+    vec3 d = (uvw - uMoverPos[i].xyz) * uCell;
+    float w = max(0.0, 1.0 - length(d) / uMoverPos[i].w);
+    v = mix(v, uMoverVel[i].xyz, w * w * 0.9);
+  }
+  v = clamp(v, vec3(-8.0), vec3(8.0));
   if (solid(c)) v = vec3(0.0);
   outColor = vec4(v, 0.0);
 }
@@ -177,6 +190,8 @@ uniform float uCooling;
 uniform int uSourceCount;
 uniform vec4 uSourcePos[${FLUID_MAX_SOURCES}];
 uniform vec4 uSourceRate[${FLUID_MAX_SOURCES}];
+uniform int uMoverCount;
+uniform vec4 uMoverPos[${FLUID_MAX_MOVERS}];
 out vec4 outColor;
 
 vec3 backtrace(vec3 uvw, vec3 v) {
@@ -207,6 +222,12 @@ void main() {
   float fade = clamp(min(edge.x, min(edge.y + 0.05, edge.z)) / 0.04, 0.0, 1.0);
   density *= fade;
   heat *= fade;
+  // A body is not dust: its core displaces what it moves through.
+  for (int i = 0; i < ${FLUID_MAX_MOVERS}; i++) {
+    if (i >= uMoverCount) break;
+    float d = length((uvw - uMoverPos[i].xyz) * uCell);
+    density *= 1.0 - max(0.0, 1.0 - d / (uMoverPos[i].w * 0.6));
+  }
   if (solid(c)) { density = 0.0; heat = 0.0; }
   outColor = vec4(min(density, 6.0), min(heat, 5.0), 0.0, 1.0);
 }

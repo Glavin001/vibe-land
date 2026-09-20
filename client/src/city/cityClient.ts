@@ -177,6 +177,8 @@ interface BodyStreamState {
    * thousands of teleports or as thousands of chunks starting to fall.
    */
   lastPresentedSpeed?: number;
+  /** The track's velocity at the last presented sample, m/s (wire v2). */
+  lastPresentedVelocity?: Vec3;
 }
 
 /**
@@ -1012,6 +1014,18 @@ export class CityClient {
   bodyPresentedSpeed(key: number): number {
     return this.bodies.get(key)?.lastPresentedSpeed ?? 0;
   }
+
+  /** The track's velocity at the last presented sample, or null (wire v3 has none). */
+  bodyPresentedVelocity(key: number): Vec3 | null {
+    return this.bodies.get(key)?.lastPresentedVelocity ?? null;
+  }
+
+  /** Bodies the last sample presented. Read-only; replaced every frame. */
+  liveBodyKeys(): ReadonlySet<number> {
+    return this.lastLive;
+  }
+
+  private lastLive: ReadonlySet<number> = new Set();
 
   /** Route one raw server packet (kind 119-122). */
   handlePacket(bytes: Uint8Array): void {
@@ -2076,6 +2090,12 @@ export class CityClient {
    * settles must not cost anything per frame either.
    */
   samplePresentation(nowMs: number): Set<number> {
+    const live = this.samplePresentationInto(nowMs);
+    this.lastLive = live;
+    return live;
+  }
+
+  private samplePresentationInto(nowMs: number): Set<number> {
     const live = new Set<number>();
     if (this.latestSimTickAtMs === 0) {
       // No pose stream has arrived, so there is no clock to hold topology
@@ -2145,12 +2165,14 @@ export class CityClient {
           presented.linearVelocity[1],
           presented.linearVelocity[2],
         );
+        state.lastPresentedVelocity = presented.linearVelocity;
       } else {
         state.lastPresentedSpeed = Math.hypot(
           presented.linearVelocity[0],
           presented.linearVelocity[1],
           presented.linearVelocity[2],
         );
+        state.lastPresentedVelocity = presented.linearVelocity;
         state.lastPresented = {
           position: [presented.position[0], presented.position[1], presented.position[2]],
           rotation: [

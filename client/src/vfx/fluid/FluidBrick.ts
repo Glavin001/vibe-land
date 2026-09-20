@@ -21,6 +21,7 @@ import {
   BRICK_VERTEX,
   DIVERGENCE_FRAGMENT,
   DYE_FRAGMENT,
+  FLUID_MAX_MOVERS,
   FLUID_MAX_SOURCES,
   FLUID_VERTEX,
   PRESSURE_FRAGMENT,
@@ -95,6 +96,9 @@ export class FluidBrick {
   private simTime = 0;
   private readonly sourcePos: THREE.Vector4[];
   private readonly sourceRate: THREE.Vector4[];
+  private readonly moverPos: THREE.Vector4[];
+  private readonly moverVel: THREE.Vector4[];
+  private moverCount = 0;
   private readonly cell = new THREE.Vector3();
 
   constructor(quality: FluidQuality, noise: THREE.Data3DTexture) {
@@ -119,6 +123,8 @@ export class FluidBrick {
     this.cell.set(this.size.x / q.grid[0], this.size.y / q.grid[1], this.size.z / q.grid[2]);
     this.sourcePos = Array.from({ length: FLUID_MAX_SOURCES }, () => new THREE.Vector4());
     this.sourceRate = Array.from({ length: FLUID_MAX_SOURCES }, () => new THREE.Vector4());
+    this.moverPos = Array.from({ length: FLUID_MAX_MOVERS }, () => new THREE.Vector4());
+    this.moverVel = Array.from({ length: FLUID_MAX_MOVERS }, () => new THREE.Vector4());
 
     const atlas = atlasGlsl(this.layout);
     const common = () => ({
@@ -152,6 +158,9 @@ export class FluidBrick {
         uSourceCount: { value: 0 },
         uSourcePos: { value: this.sourcePos },
         uSourceRate: { value: this.sourceRate },
+        uMoverCount: { value: 0 },
+        uMoverPos: { value: this.moverPos },
+        uMoverVel: { value: this.moverVel },
       }),
       divergence: make(DIVERGENCE_FRAGMENT(atlas), { tVelocity: { value: null } }),
       pressure: make(PRESSURE_FRAGMENT(atlas), { tPressure: { value: null }, tDivergence: { value: null } }),
@@ -165,6 +174,8 @@ export class FluidBrick {
         uSourceCount: { value: 0 },
         uSourcePos: { value: this.sourcePos },
         uSourceRate: { value: this.sourceRate },
+        uMoverCount: { value: 0 },
+        uMoverPos: { value: this.moverPos },
       }),
       appearance: make(APPEARANCE_FRAGMENT(atlas), {
         tDye: { value: null },
@@ -290,6 +301,30 @@ export class FluidBrick {
     this.injections.push({ pos: local, rate: new THREE.Vector4(rate, heat, pulse, 0), untilMs: nowMs + SOURCE_MS });
     this.lastFedMs = nowMs;
     return true;
+  }
+
+  /**
+   * Moving bodies for this step: those inside the brick (or within their
+   * radius of it), nearest the centre first, up to the shader's limit.
+   */
+  setMovers(movers: ReadonlyArray<{ x: number; y: number; z: number; vx: number; vy: number; vz: number; radius: number }>): void {
+    let n = 0;
+    if (this.active) {
+      const o = this.origin;
+      const sz = this.size;
+      for (const m of movers) {
+        if (n >= FLUID_MAX_MOVERS) break;
+        if (m.x + m.radius < o.x || m.x - m.radius > o.x + sz.x
+          || m.y + m.radius < o.y || m.y - m.radius > o.y + sz.y
+          || m.z + m.radius < o.z || m.z - m.radius > o.z + sz.z) continue;
+        this.moverPos[n].set((m.x - o.x) / this.cell.x, (m.y - o.y) / this.cell.y, (m.z - o.z) / this.cell.z, m.radius);
+        this.moverVel[n].set(m.vx, m.vy, m.vz, 0);
+        n += 1;
+      }
+    }
+    this.moverCount = n;
+    this.passes.velocity.material.uniforms.uMoverCount.value = n;
+    this.passes.dye.material.uniforms.uMoverCount.value = n;
   }
 
   /** Static geometry inside the brick, as an atlas-shaped mask; see fluidColliders.ts. */

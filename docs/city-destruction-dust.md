@@ -61,6 +61,13 @@ skipping (zero extra bytes: the buffer was already pinned).
   ≥ 20 within 60 m, fed by every source inside, colliding with the standing
   city so the dust flows around walls, retired after 9 s quiet or 100 m
   away. Parcels inside a live brick fade as it takes over.
+- `client/src/vfx/dustMovers.ts` — moving bodies push the dust, Ember's
+  vehicle demo against the city: the fastest awake islands near the camera
+  (and the cannonball, a game body) become movers each frame. The bricks
+  take them as velocity sources and displace density in their core; parcels
+  within reach are carried and shoved (bounded to 4 m/s, so a cloud parts
+  rather than vanishes); big fast bodies shed a wake parcel every 250 ms
+  born with their velocity, at most three a frame.
 - `client/src/vfx/DustSprites.tsx` — soft lit discs for FAST, touch, or a
   GL without highp / render-to-3D.
 - `client/src/vfx/DustLayer.tsx` — the React glue, mounted after the city

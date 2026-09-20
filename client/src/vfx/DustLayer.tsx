@@ -31,6 +31,7 @@ import { windVectorFromSettings } from '../graphics/weatherPresets';
 import { DustSprites } from './DustSprites';
 import { DustClearance } from './dustClearance';
 import { DustOccupancy } from './dustOccupancy';
+import { DustMovers } from './dustMovers';
 import { clearDustShots } from './dustShots';
 import { drainDebugDustSources } from './dustDebug';
 import { dustParcels } from './dustParcelStore';
@@ -39,6 +40,8 @@ import { voxelizeStaticChunks } from './fluid/fluidColliders';
 
 type DustLayerProps = {
   getCityClient: () => CityClient | null;
+  /** Game dynamic bodies (the cannonball) this frame, for the movers. */
+  getDynamicBodies?: () => Iterable<{ id: number; position: ArrayLike<number>; velocity: ArrayLike<number>; halfExtents: ArrayLike<number> }> | null;
   mode: DustMode;
   fluid: DustFluid;
   fogColor: string;
@@ -50,6 +53,7 @@ type DustLayerProps = {
 
 export function DustLayer({
   getCityClient,
+  getDynamicBodies,
   mode,
   fluid,
   fogColor,
@@ -64,7 +68,9 @@ export function DustLayer({
     policy: DustPolicy;
     colliders: (frame: BrickFrame, layout: AtlasLayout, out: Uint8Array) => number;
     occupancy: DustOccupancy;
+    movers: DustMovers;
   } | null>(null);
+  const lastFrameMs = useRef(0);
   // The volumetric renderer bakes a 3D texture; a GL that cannot render to
   // one says so after the first layer, and the layer falls back to sprites.
   const [volumeFailed, setVolumeFailed] = useState(false);
@@ -163,6 +169,7 @@ export function DustLayer({
           voxelizeStaticChunks(client.topology, manifest, frame, layout, out, byId),
         policy,
         occupancy,
+        movers: new DustMovers(),
       };
     }
     const { policy } = policyRef.current;
@@ -187,6 +194,16 @@ export function DustLayer({
     client.drainDustSources(emit);
     drainDebugDustSources(emit);
     policy.tick(started);
+    // Moving bodies push the dust: the bricks take them as velocity sources,
+    // the parcels get shoved, and big fast ones leave a wake.
+    const dt = lastFrameMs.current > 0 ? Math.min(0.1, (started - lastFrameMs.current) / 1000) : 1 / 60;
+    lastFrameMs.current = started;
+    const { movers } = policyRef.current;
+    movers.update(client, camera.position.x, camera.position.y, camera.position.z, started, getDynamicBodies?.() ?? undefined);
+    movers.pushParcels(dustParcels, dt);
+    movers.emitWakes(policy, started);
+    if (volume) for (const brick of volume.fluids) brick.setMovers(movers.movers);
+    renderStats.dustMovers = movers.movers.length;
     renderStats.dustEmitted = policy.stats.emitted;
     renderStats.dustDropped = policy.stats.droppedByTickCap + policy.stats.droppedByPalette
       + client.dustQueueDropped();

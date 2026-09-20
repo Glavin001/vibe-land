@@ -162,6 +162,14 @@ export class DustParcelStore {
   readonly alive: Uint8Array;
   /** Six per slot: −x +x −y +y −z +z, m. */
   readonly clearance: Float32Array;
+  /**
+   * Displacement pushed onto the parcel by moving bodies, m. The one thing
+   * about a parcel that is not a function of its age; still clamped to its
+   * room, and the only writer is dustMovers.pushParcels.
+   */
+  readonly ox: Float32Array;
+  readonly oy: Float32Array;
+  readonly oz: Float32Array;
 
   /** Next slot to write. Once wrapped, also the oldest parcel. */
   head = 0;
@@ -193,6 +201,9 @@ export class DustParcelStore {
     this.serial = new Uint32Array(capacity);
     this.alive = new Uint8Array(capacity);
     this.clearance = new Float32Array(capacity * 6).fill(Infinity);
+    this.ox = new Float32Array(capacity);
+    this.oy = new Float32Array(capacity);
+    this.oz = new Float32Array(capacity);
   }
 
   /** Writes the record at the head and returns its slot. */
@@ -218,6 +229,9 @@ export class DustParcelStore {
     this.serial[slot] = this.nextSerial;
     const c6 = slot * 6;
     for (let i = 0; i < 6; i += 1) this.clearance[c6 + i] = p.clearance?.[i] ?? Infinity;
+    this.ox[slot] = 0;
+    this.oy[slot] = 0;
+    this.oz[slot] = 0;
     this.alive[slot] = 1;
     this.nextSerial = (this.nextSerial + 1) >>> 0 || 1;
     this.head = (slot + 1) % this.capacity;
@@ -278,9 +292,9 @@ export function evalParcel(
   // Wind takes hold as the push is spent, so a fresh burst goes where it was
   // thrown and an old cloud goes where the weather says.
   const carried = t - spent;
-  let cx = store.px[slot] + store.vx[slot] * spent + windX * carried * 0.35;
-  let cy = store.py[slot] + store.vy[slot] * spent + rise;
-  let cz = store.pz[slot] + store.vz[slot] * spent + windZ * carried * 0.35;
+  let cx = store.px[slot] + store.vx[slot] * spent + windX * carried * 0.35 + store.ox[slot];
+  let cy = store.py[slot] + store.vy[slot] * spent + rise + store.oy[slot];
+  let cz = store.pz[slot] + store.vz[slot] * spent + windZ * carried * 0.35 + store.oz[slot];
   let hx = r;
   let hy = r * curve.aspectY;
   let hz = r;

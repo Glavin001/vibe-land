@@ -139,6 +139,8 @@ export const renderStats = {
   dustFluidActive: 0,
   /// Last rebuild of the wall-occupancy volume the march samples, ms CPU.
   dustOccupancyMs: 0,
+  /// Moving bodies pushing the dust this frame.
+  dustMovers: 0,
 };
 
 let lastRafStamp = 0;

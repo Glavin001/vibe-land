@@ -3367,6 +3367,7 @@ export function GameWorld({
       {/* Destruction dust, fed by the city client's fracture stream */}
       <DustLayer
         getCityClient={() => runtimeRef.current?.getCityClient?.() ?? null}
+        getDynamicBodies={() => runtimeRef.current?.state?.dynamicBodies.values() ?? null}
         mode={dustMode}
         fluid={dustFluid}
         fogColor={resolvedFogColor}

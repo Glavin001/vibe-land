@@ -145,6 +145,12 @@ export class DustPolicy {
     return Math.min(c[0] + c[1], c[2] + c[3], c[4] + c[5]);
   }
 
+  /** A wake parcel from a moving body, through the same room measurement. */
+  spawnWake(p: Omit<DustParcel, 'clearance'>): void {
+    this.spawnAt(p);
+    this.stats.emitted += 1;
+  }
+
   private spawnAt(p: Omit<DustParcel, 'clearance'>): void {
     if (this.clearanceOf) {
       this.clearanceOf(p.x, p.y, p.z, this.clearance);
