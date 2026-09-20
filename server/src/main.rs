@@ -1439,6 +1439,10 @@ async fn main() -> Result<()> {
         // Nested under /match-stats so the caddy proxy block that already
         // forwards that prefix needs no change for phones to reach it.
         .route("/match-stats/:match_id/report", post(debug_report_handler))
+        .route(
+            "/match-stats/:match_id/tape",
+            post(city_tape_handler).layer(axum::extract::DefaultBodyLimit::max(96 * 1024 * 1024)),
+        )
         .route("/match-stats/:match_id/bodies", get(match_body_states_handler))
         .route("/city-reset/:match_id", post(city_reset_handler))
         .route("/city-demolish/:match_id", post(city_demolish_handler))
@@ -2024,6 +2028,40 @@ async fn debug_report_handler(
             .into_response();
     }
     info!(%match_id, folder, bytes = body.len(), "debug report stored");
+    (StatusCode::OK, Json(serde_json::json!({ "folder": folder }))).into_response()
+}
+
+/// A city tape -- the inbound stream a client recorded, opened on a
+/// bootstrap -- stored beside the debug reports so the storm a player hit can
+/// be replayed into the renderer anywhere. Tens of megabytes, so it gets its
+/// own body limit rather than the report handler's. Not parsed: the client
+/// formats it (VLTAPE01) and the client reads it.
+async fn city_tape_handler(
+    Path(match_id): Path<String>,
+    body: axum::body::Bytes,
+) -> impl IntoResponse {
+    if !city::is_city_match(&match_id) {
+        return (StatusCode::BAD_REQUEST, "not a city match").into_response();
+    }
+    if body.len() < 8 || &body[..8] != b"VLTAPE01" {
+        return (StatusCode::BAD_REQUEST, "not a city tape").into_response();
+    }
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs())
+        .unwrap_or(0);
+    let folder = format!("tape-{stamp}-{match_id}");
+    let dir = std::path::Path::new("debug-reports").join(&folder);
+    let write = std::fs::create_dir_all(&dir)
+        .and_then(|()| std::fs::write(dir.join("city.vltape"), &body));
+    if let Err(error) = write {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("tape write failed: {error}"),
+        )
+            .into_response();
+    }
+    info!(%match_id, folder, bytes = body.len(), "city tape stored");
     (StatusCode::OK, Json(serde_json::json!({ "folder": folder }))).into_response()
 }
 
