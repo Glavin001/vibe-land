@@ -11,6 +11,7 @@
 //   /cityreplay?tape=<name>         a named one
 //   /cityreplay?cam=x,y,z,tx,ty,tz  starting camera pose (default: the spawn side)
 //   /cityreplay?loop=1              start over when the tape ends
+//   /cityreplay?auto=1              run the replay bisect on load and send it
 //
 // The strip in the bar is the recording machine's frame time along the tape
 // (the tape carries it); its red buttons are the worst moments -- one click
@@ -312,6 +313,7 @@ export function CityReplayPage() {
   const [followCamera, setFollowCamera] = useState(true);
   const detach = useMemo(() => () => setFollowCamera(false), []);
   const [sweepText, setSweepText] = useState<string | null>(null);
+  const autoRan = useRef(false);
   const fog = useFogSettings();
   const dustMode = useDustMode();
   const dustFluid = useDustFluid();
@@ -385,6 +387,24 @@ export function CityReplayPage() {
           },
         };
         setStatus('');
+        if (params.get('auto') === '1' && !autoRan.current) {
+          // Unattended: the bisect on this tape's worst window, sent when done.
+          autoRan.current = true;
+          setSweep('running');
+          setStatus('auto: running the replay bisect…');
+          try {
+            const report = await runReplaySweep();
+            const text = formatPerfSweep(report);
+            setSweepText(text);
+            notePerfSweep(report, text);
+            await sendDebugReport(tape.header.matchId);
+            setSweep('sent');
+            setStatus('auto: bisect sent');
+          } catch (error) {
+            setSweep('failed');
+            setStatus(`auto: bisect failed: ${String(error)}`);
+          }
+        }
       })
       .catch((error) => setStatus(`replay failed: ${String(error)}`));
     return () => {

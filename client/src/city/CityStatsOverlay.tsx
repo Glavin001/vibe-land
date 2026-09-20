@@ -219,6 +219,7 @@ import { lookTuning } from '../graphics/lookTuning';
 import { acquireCityDiagnostics } from './cityDiagnostics';
 import { notePerfSweep, sendDebugReport } from './debugReport';
 import { cityTapeRecorder, downloadCityTape, saveCityTape } from './cityTape';
+import { hotspotWatch } from './hotspotWatch';
 import {
   ambientOcclusionPreferred,
   dustFluidPreferred,
@@ -326,8 +327,12 @@ export function CityStatsOverlay({
   const [dynamicRes, setDynamicRes] = useState(dynamicResolutionEnabled);
   const [tapeState, setTapeState] = useState<string | null>(null);
   const [tapeStatus, setTapeStatus] = useState(() => cityTapeRecorder.status());
+  const [hotspot, setHotspot] = useState(() => hotspotWatch.status());
   useEffect(() => {
-    const tick = window.setInterval(() => setTapeStatus(cityTapeRecorder.status()), 500);
+    const tick = window.setInterval(() => {
+      setTapeStatus(cityTapeRecorder.status());
+      setHotspot(hotspotWatch.status());
+    }, 500);
     return () => window.clearInterval(tick);
   }, []);
   const [bodyColors, setBodyColors] = useState(false);
@@ -950,6 +955,38 @@ export function CityStatsOverlay({
         >
           OPEN /CITYREPLAY
         </a>
+      </div>
+      {/*
+        The hot-spot watch: nothing to press. Frames over budget for two
+        seconds cut a twenty-second tape, send a report and try to upload the
+        tape; this row says what it is doing. ANALYZE opens the replay page on
+        the newest hot-spot tape and runs the bisect there unattended.
+      */}
+      <div style={{ ...row, marginBottom: 2, gap: 4 }}>
+        <span
+          style={{ ...toggleButton, position: 'static', flex: 1, textAlign: 'center', boxSizing: 'border-box', color: hotspot.state === 'recording' ? '#f88' : undefined }}
+          title="Automatic: when frames stay over budget for 2 s, a 20 s tape is recorded, a report is sent, and the tape is uploaded when the server accepts tapes"
+          data-testid="city-hotspot-status"
+        >
+          {!hotspot.armed
+            ? 'AUTO HOTSPOT: —'
+            : hotspot.state === 'recording'
+              ? `HOTSPOT: TAPING ${hotspot.secondsLeft} s`
+              : hotspot.state === 'sending'
+                ? 'HOTSPOT: SENDING'
+                : `AUTO HOTSPOT: ${hotspot.fired === 0 ? 'ARMED' : `SENT ×${hotspot.fired}${hotspot.tapeUploaded === false ? ' (tape local)' : ''}`}`}
+        </span>
+        {hotspot.lastTape && (
+          <a
+            href={`/cityreplay?tape=${encodeURIComponent(hotspot.lastTape)}&auto=1`}
+            target="_blank"
+            rel="noreferrer"
+            style={{ ...toggleButton, position: 'static', textDecoration: 'none', textAlign: 'center', boxSizing: 'border-box' }}
+            title="Open the newest hot-spot tape on /cityreplay and run the replay bisect there; it sends itself (~4 min)"
+          >
+            ANALYZE
+          </a>
+        )}
       </div>
 
       {/*

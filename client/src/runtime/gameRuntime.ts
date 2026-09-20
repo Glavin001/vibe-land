@@ -51,6 +51,7 @@ import {
 import { decodeCityManifestPayload, fetchCityManifest } from '../city/manifest';
 import { decodeMeteorLaunched, registerMeteorFlight } from '../vfx/meteorFlights';
 import { cityTapeRecorder } from '../city/cityTape';
+import { hotspotWatch } from '../city/hotspotWatch';
 import { CLIENT_MAX_CATCHUP_STEPS, FIXED_DT } from './clientSimConstants';
 import {
   shouldCreateGameplayWasmWorld,
@@ -1116,6 +1117,7 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
         { matchId: this.matchId, manifestHash: manifest.hashHex, wireVersion, simHz: 60 },
         () => cityClient.requestResync(),
       );
+      hotspotWatch.arm(this.matchId);
       const pending = this.pendingCityPackets.splice(0);
       for (const bytes of pending) {
         cityClient.handlePacket(bytes);
@@ -1382,6 +1384,7 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
   }
 
   disconnect(): void {
+    hotspotWatch.disarm();
     this.client?.disconnect();
     this.client = null;
     this.prediction?.dispose();

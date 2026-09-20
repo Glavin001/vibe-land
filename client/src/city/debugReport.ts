@@ -367,6 +367,17 @@ export function notePerfSweep(report: { capturedAt: string }, text: string): voi
 }
 
 /**
+ * What the hot-spot watch saw when it fired, for the report it then sends:
+ * the frame at the trigger, thirty seconds of frame history before it, and
+ * where the tape it cut went.
+ */
+let lastHotspot: Record<string, unknown> | null = null;
+
+export function noteHotspot(hotspot: Record<string, unknown>): void {
+  lastHotspot = hotspot;
+}
+
+/**
  * POST the full client picture to the server; resolves to the folder name the
  * server stored it under. Uses the e2e bridge as the collector — it is
  * always on and already assembles every stat the overlay can show.
@@ -406,6 +417,7 @@ export async function sendDebugReport(matchId: string): Promise<string> {
       drawCensus: drawCensusTotals(),
     },
     perfSweep: lastPerfSweep,
+    hotspot: lastHotspot,
   };
   const response = await fetch(`/match-stats/${encodeURIComponent(matchId)}/report`, {
     method: 'POST',

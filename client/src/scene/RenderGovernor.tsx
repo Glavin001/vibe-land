@@ -10,6 +10,7 @@ import { useFrame, useThree } from '@react-three/fiber';
 import { useEffect, useRef } from 'react';
 import { renderStats } from '../city/renderStats';
 import { cityTapeRecorder } from '../city/cityTape';
+import { hotspotWatch } from '../city/hotspotWatch';
 import {
   antialiasEnabled,
   dynamicResolutionEnabled,
@@ -106,6 +107,7 @@ export function RenderGovernor(): null {
     if (cityTapeRecorder.recording) {
       cityTapeRecorder.noteFrame(renderStats.frameTotalMs, renderStats.cpuFrameMs, camera);
     }
+    hotspotWatch.observe(performance.now(), renderStats.frameTotalMs);
     if (!dynamicResolutionEnabled() || governorPaused()) {
       gl.shadowMap.autoUpdate = true;
       if (scaleRef.current !== 1) apply(1);
@@ -141,6 +143,7 @@ export function RenderGovernor(): null {
     }
     const period = g.period || 8.33;
     renderStats.gpuBudgetMs = period;
+    hotspotWatch.setPeriod(period);
     // Shadows at 60 Hz on a 120 Hz display. The shadow pass re-renders every
     // vertex of the city into a 2048^2 map; refreshing it every other frame
     // halves that for a lag no eye can see at these rates, and it costs a
