@@ -30,6 +30,7 @@ import {
 import { windVectorFromSettings } from '../graphics/weatherPresets';
 import { DustSprites } from './DustSprites';
 import { DustClearance } from './dustClearance';
+import { DustOccupancy } from './dustOccupancy';
 import { clearDustShots } from './dustShots';
 import { drainDebugDustSources } from './dustDebug';
 import { dustParcels } from './dustParcelStore';
@@ -62,6 +63,7 @@ export function DustLayer({
     client: CityClient;
     policy: DustPolicy;
     colliders: (frame: BrickFrame, layout: AtlasLayout, out: Uint8Array) => number;
+    occupancy: DustOccupancy;
   } | null>(null);
   // The volumetric renderer bakes a 3D texture; a GL that cannot render to
   // one says so after the first layer, and the layer falls back to sprites.
@@ -104,7 +106,13 @@ export function DustLayer({
   }, [volume, lighting]);
 
   useEffect(() => {
-    volume?.setFluidQuality(fluid);
+    if (!volume) return;
+    const apply = () => {
+      const bricks = Math.max(1, Math.min(4, Math.round(lookTuning().dustFluidBricks)));
+      volume.setFluidQuality(fluid, bricks);
+    };
+    apply();
+    return subscribeLookTuning(apply);
   }, [volume, fluid]);
 
   useEffect(() => {
@@ -129,18 +137,20 @@ export function DustLayer({
     return subscribeLookTuning(apply);
   }, [volume, lighting]);
 
-  useFrame(() => {
+  useFrame(({ camera }) => {
     const client = getCityClient();
     if (!client) return;
     // The policy is per client: a new match (new client) starts clean.
     if (policyRef.current?.client !== client) {
       dustParcels.clear();
-      volume?.fluid?.retire();
+      for (const brick of volume?.fluids ?? []) brick.retire();
       const manifest = client.manifest.manifest;
       const appearance = manifest.materialAppearance;
       const byId = new Map(manifest.structures.map((s) => [s.structureId, s]));
       clearDustShots();
+      policyRef.current?.occupancy.dispose();
       const clearance = new DustClearance(client.topology, manifest);
+      const occupancy = new DustOccupancy(clearance);
       const policy = new DustPolicy(
         dustParcels,
         (material) => paletteFromAppearance(appearance, material),
@@ -152,6 +162,7 @@ export function DustLayer({
         colliders: (frame, layout, out) =>
           voxelizeStaticChunks(client.topology, manifest, frame, layout, out, byId),
         policy,
+        occupancy,
       };
     }
     const { policy } = policyRef.current;
@@ -164,6 +175,10 @@ export function DustLayer({
     }
     if (volume && volume.colliders !== policyRef.current.colliders) {
       volume.colliders = policyRef.current.colliders;
+      volume.occupancy = policyRef.current.occupancy;
+    }
+    if (volume && volume.occupancy) {
+      volume.occupancy.update(camera.position, client.topology.brokenBondCount(), started);
     }
     const emit = (source: DustSource) => {
       policy.emit(source);
@@ -177,6 +192,7 @@ export function DustLayer({
       + client.dustQueueDropped();
     renderStats.dustEmitMs = performance.now() - started;
     if (volume?.bake.failed && !volumeFailed) setVolumeFailed(true);
+    renderStats.dustOccupancyMs = policyRef.current.occupancy.lastBuildCostMs;
   });
 
   if (mode === 'off') return null;

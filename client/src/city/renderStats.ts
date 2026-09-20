@@ -135,8 +135,10 @@ export const renderStats = {
   dustDropped: 0,
   /// 1 when the volume pass did not run this frame (nothing to draw).
   dustPassSkipped: 1,
-  /// Whether the fluid brick is live, and its GPU-facing size.
+  /// Fluid bricks live this frame.
   dustFluidActive: 0,
+  /// Last rebuild of the wall-occupancy volume the march samples, ms CPU.
+  dustOccupancyMs: 0,
 };
 
 let lastRafStamp = 0;

@@ -15,6 +15,7 @@ import type { PipelineStage, PipelineStageContext } from '../graphics/framePipel
 import type { DustSource } from '../city/destructionEvents';
 import { DustFieldBake } from './dustFieldBake';
 import { FluidBrick, type FluidQuality } from './fluid/FluidBrick';
+import type { DustOccupancy } from './dustOccupancy';
 import type { AtlasLayout } from './fluid/fluidAtlas';
 import type { BrickFrame } from './fluid/fluidColliders';
 import {
@@ -110,8 +111,10 @@ export class DustVolumeRenderer implements PipelineStage {
     skyColor: new THREE.Color(0.5, 0.6, 0.8),
     groundColor: new THREE.Color(0.2, 0.18, 0.15),
   };
-  /** The near-camera fluid brick, when the quality setting wants one. */
-  fluid: FluidBrick | null = null;
+  /** The near-camera fluid bricks, as many as the quality setting wants. */
+  fluids: FluidBrick[] = [];
+  /** The standing city as voxels around the camera, or null to draw through walls. */
+  occupancy: DustOccupancy | null = null;
   /** Voxelizes the static city into a brick's occupancy; set by the layer, which has the client. */
   colliders: ((frame: BrickFrame, layout: AtlasLayout, out: Uint8Array) => number) | null = null;
   private collidersRefreshedMs = 0;
@@ -149,6 +152,10 @@ export class DustVolumeRenderer implements PipelineStage {
       glslVersion: THREE.GLSL3,
       uniforms: {
         tField: { value: this.bake.field.texture },
+        tOccupancy: { value: this.bake.noise },
+        uOccOrigin: { value: new THREE.Vector3() },
+        uOccInvSize: { value: new THREE.Vector3(1, 1, 1) },
+        uOccOn: { value: 0 },
         tDepth: { value: null },
         uDepthScale: { value: 1 },
         uNear: { value: 0.1 },
@@ -242,33 +249,44 @@ export class DustVolumeRenderer implements PipelineStage {
     (u.uSkyColor.value as THREE.Color).copy(light.skyColor);
     (u.uGroundColor.value as THREE.Color).copy(light.groundColor);
     this.sunAzimuthRad = Math.atan2(light.sunDir.x, light.sunDir.z);
-    this.fluid?.setLighting(
-      light.sunDir,
-      (u.uSunColor.value as THREE.Color),
-      light.skyColor,
-      light.groundColor,
-      this.tuning.albedo[0],
-    );
+    for (const fluid of this.fluids) {
+      fluid.setLighting(
+        light.sunDir,
+        (u.uSunColor.value as THREE.Color),
+        light.skyColor,
+        light.groundColor,
+        this.tuning.albedo[0],
+      );
+    }
   }
 
   setWind(x: number, z: number): void {
     this.windX = x;
     this.windZ = z;
-    this.fluid?.setWind(x, z);
+    for (const fluid of this.fluids) fluid.setWind(x, z);
   }
 
-  /** Create, resize or drop the fluid brick. */
-  setFluidQuality(quality: FluidQuality | 'off'): void {
-    if (quality === 'off') {
-      this.fluid?.dispose();
-      this.fluid = null;
-      return;
+  /** Create, resize or drop the fluid bricks. */
+  setFluidQuality(quality: FluidQuality | 'off', count = 1): void {
+    const want = quality === 'off' ? 0 : Math.max(0, count);
+    if (this.fluids.length === want && (want === 0 || this.fluids[0].quality === quality)) return;
+    for (const fluid of this.fluids) fluid.dispose();
+    this.fluids = [];
+    if (quality === 'off') return;
+    for (let i = 0; i < want; i += 1) {
+      const fluid = new FluidBrick(quality, this.bake.noise);
+      fluid.setWind(this.windX, this.windZ);
+      this.fluids.push(fluid);
     }
-    if (this.fluid?.quality === quality) return;
-    this.fluid?.dispose();
-    this.fluid = new FluidBrick(quality, this.bake.noise);
-    this.fluid.setWind(this.windX, this.windZ);
     this.setLighting(this.lighting);
+  }
+
+  /** Whether any live brick holds the point. */
+  private inFluid(x: number, y: number, z: number): FluidBrick | null {
+    for (const fluid of this.fluids) {
+      if (fluid.active && fluid.contains(x, y, z)) return fluid;
+    }
+    return null;
   }
 
   /**
@@ -276,29 +294,48 @@ export class DustVolumeRenderer implements PipelineStage {
    * and near and the brick is free or has been quiet, the brick moves there.
    */
   considerSource(source: DustSource, nowMs: number, renderer: THREE.WebGLRenderer): void {
-    const fluid = this.fluid;
-    if (!fluid) return;
-    if (fluid.active && fluid.inject(source, nowMs)) return;
+    if (this.fluids.length === 0) return;
+    const holder = this.inFluid(source.x, source.y, source.z);
+    if (holder) {
+      holder.inject(source, nowMs);
+      return;
+    }
     if (source.magnitude < DustVolumeRenderer.FLUID_MIN_MAGNITUDE) return;
     const cam = this.lastCamera;
     const distance = Math.hypot(source.x - cam.x, source.y - cam.y, source.z - cam.z);
     if (distance > DustVolumeRenderer.FLUID_PLACE_DISTANCE_M) return;
-    if (fluid.active && fluid.idleFor(nowMs) < DustVolumeRenderer.FLUID_REPLACE_IDLE_MS) return;
-    fluid.place(source.x, source.y, source.z, nowMs, renderer);
-    fluid.inject(source, nowMs);
+    // Not on top of a live brick: two overlapping volumes would each draw the same dust.
+    for (const fluid of this.fluids) {
+      if (fluid.active && fluid.distanceTo(source.x, source.y, source.z) < fluid.size.x * 0.9) return;
+    }
+    // The free brick, else the one quiet longest, if quiet long enough.
+    let pick: FluidBrick | null = null;
+    let quietest = -Infinity;
+    for (const fluid of this.fluids) {
+      const idle = fluid.idleFor(nowMs);
+      if (idle > quietest) {
+        quietest = idle;
+        pick = fluid;
+      }
+    }
+    if (!pick || (pick.active && quietest < DustVolumeRenderer.FLUID_REPLACE_IDLE_MS)) return;
+    pick.place(source.x, source.y, source.z, nowMs, renderer);
+    pick.inject(source, nowMs);
     this.refreshColliders(nowMs, true);
   }
 
   private refreshColliders(nowMs: number, force: boolean): void {
-    const fluid = this.fluid;
-    if (!fluid || !fluid.active || !this.colliders) return;
+    if (!this.colliders) return;
     if (!force && nowMs - this.collidersRefreshedMs < 500) return;
     this.collidersRefreshedMs = nowMs;
-    const frame: BrickFrame = {
-      originX: fluid.origin.x, originY: fluid.origin.y, originZ: fluid.origin.z,
-      sizeX: fluid.size.x, sizeY: fluid.size.y, sizeZ: fluid.size.z,
-    };
-    fluid.writeOccupancy((out) => { this.colliders!(frame, fluid.layout, out); });
+    for (const fluid of this.fluids) {
+      if (!fluid.active) continue;
+      const frame: BrickFrame = {
+        originX: fluid.origin.x, originY: fluid.origin.y, originZ: fluid.origin.z,
+        sizeX: fluid.size.x, sizeY: fluid.size.y, sizeZ: fluid.size.z,
+      };
+      fluid.writeOccupancy((out) => { this.colliders!(frame, fluid.layout, out); });
+    }
   }
 
   applyTuning(): void {
@@ -357,16 +394,18 @@ export class DustVolumeRenderer implements PipelineStage {
     }
     store.sweep(nowMs, this.tuning.lifetime);
     renderStats.dustParcelsLive = store.liveCount;
-    const fluid = this.fluid;
-    if (fluid?.active) {
+    let activeFluids = 0;
+    for (const fluid of this.fluids) {
+      if (!fluid.active) continue;
       fluid.retireIfDone(nowMs, camera.position);
-      if (fluid.active) {
-        this.refreshColliders(nowMs, false);
-        fluid.step(renderer, nowMs, dt);
-      }
+      if (fluid.active) activeFluids += 1;
     }
-    renderStats.dustFluidActive = fluid?.active ? 1 : 0;
-    if (store.liveCount === 0 && !fluid?.active) {
+    if (activeFluids > 0) {
+      this.refreshColliders(nowMs, false);
+      for (const fluid of this.fluids) if (fluid.active) fluid.step(renderer, nowMs, dt);
+    }
+    renderStats.dustFluidActive = activeFluids;
+    if (store.liveCount === 0 && activeFluids === 0) {
       this.clearIfDirty(renderer);
       renderStats.dustDrawn = 0;
       renderStats.dustDrawnHalf = 0;
@@ -458,8 +497,9 @@ export class DustVolumeRenderer implements PipelineStage {
     up.tDepth.value = beauty.depthTexture;
     up.uNear.value = u.uNear.value;
     up.uFar.value = u.uFar.value;
-    const brickOn = fluid?.active === true;
-    if (brickOn && fluid) {
+    const brickOn = activeFluids > 0;
+    for (const fluid of this.fluids) {
+      if (!fluid.active) continue;
       const b = fluid.brickUniforms;
       b.tDepth.value = beauty.depthTexture;
       b.uNear.value = u.uNear.value;
@@ -467,6 +507,16 @@ export class DustVolumeRenderer implements PipelineStage {
       (b.uCamForward.value as THREE.Vector3).copy(u.uCamForward.value as THREE.Vector3);
       (b.uFogColor.value as THREE.Color).copy(u.uFogColor.value as THREE.Color);
       b.uFogDensity.value = fogDensity;
+    }
+    // The standing city, for the march to stop at.
+    if (this.occupancy) {
+      u.tOccupancy.value = this.occupancy.texture;
+      (u.uOccOrigin.value as THREE.Vector3).copy(this.occupancy.origin);
+      (u.uOccInvSize.value as THREE.Vector3).set(
+        1 / this.occupancy.size.x, 1 / this.occupancy.size.y, 1 / this.occupancy.size.z);
+      u.uOccOn.value = 1;
+    } else {
+      u.uOccOn.value = 0;
     }
     renderStats.dustCpuMs = performance.now() - started;
 
@@ -482,7 +532,12 @@ export class DustVolumeRenderer implements PipelineStage {
     if (halfLayer && this.halfTarget) {
       renderer.setRenderTarget(this.halfTarget);
       renderer.clear(true, false, false);
-      if (brickOn && fluid) renderer.render(fluid.brickScene, camera);
+      if (brickOn) {
+        // Far bricks first, for the over operator.
+        const order = this.fluids.filter((f) => f.active)
+          .sort((a, b) => b.distanceTo(cam.x, cam.y, cam.z) - a.distanceTo(cam.x, cam.y, cam.z));
+        for (const fluid of order) renderer.render(fluid.brickScene, camera);
+      }
       if (half.length > 0) {
         u.uDepthScale.value = 2;
         renderer.render(this.half.scene, camera);
@@ -517,7 +572,6 @@ export class DustVolumeRenderer implements PipelineStage {
 
   private write(layer: Layer, items: DustDrawItem[], nowMs: number, nativeSide: 0 | 1): void {
     const store = this.store;
-    const fluid = this.fluid;
     const e = this.evals;
     const c = layer.center.array as Float32Array;
     const s = layer.size.array as Float32Array;
@@ -529,7 +583,8 @@ export class DustVolumeRenderer implements PipelineStage {
       if (!evalParcel(store, item.slot, nowMs, this.windX, this.windZ, tuning, e)) continue;
       let fade = e.fade * (nativeSide ? item.layerBlend : 1 - item.layerBlend);
       // Inside a live fluid brick the fluid is the dust; the parcel hands over.
-      if (fluid?.active && fluid.contains(e.cx, e.cy, e.cz)) fade *= 1 - fluid.coverage(nowMs);
+      const holder = this.inFluid(e.cx, e.cy, e.cz);
+      if (holder) fade *= 1 - holder.coverage(nowMs);
       if (fade <= 0.002) continue;
       const seed = e.seed;
       // Field +X faces the sun azimuth, jittered a little per parcel; the
@@ -586,7 +641,7 @@ export class DustVolumeRenderer implements PipelineStage {
     this.quad.dispose();
     this.target?.dispose();
     this.halfTarget?.dispose();
-    this.fluid?.dispose();
+    for (const fluid of this.fluids) fluid.dispose();
     this.bake.dispose();
   }
 }

@@ -110,6 +110,10 @@ export const VOLUME_FRAGMENT = /* glsl */ `
 precision highp float;
 precision highp sampler3D;
 uniform sampler3D tField;
+uniform sampler3D tOccupancy;   // R8, 255 where the standing city is; see dustOccupancy.ts
+uniform vec3 uOccOrigin;
+uniform vec3 uOccInvSize;
+uniform float uOccOn;
 uniform sampler2D tDepth;
 uniform float uDepthScale;
 uniform float uNear;
@@ -196,6 +200,12 @@ void main() {
     vec4 f = texture(tField, l * 0.5 + 0.5);
     float dens = max(0.0, f.r - erosion * f.b);
     if (dens < 0.002) continue;
+    // No dust inside a wall: the parcel is a shape, the city is not a box.
+    if (uOccOn > 0.5) {
+      vec3 oc = (cameraPosition + ray * t - uOccOrigin) * uOccInvSize;
+      if (all(greaterThanEqual(oc, vec3(0.0))) && all(lessThan(oc, vec3(1.0)))
+          && texture(tOccupancy, oc).r > 0.5) continue;
+    }
     float a = 1.0 - exp(-dens * densK * stride);
     float up = l.y * 0.5 + 0.5;
     vec3 ambient = mix(uGroundColor, uSkyColor, up);

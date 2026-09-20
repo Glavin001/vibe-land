@@ -31,6 +31,8 @@ type LookTuning = {
   dustSunBoost: number;
   /** The volume pass's per-frame ceiling, millions of samples (pixels × steps). */
   dustBudgetM: number;
+  /** Fluid bricks the near field may run at once, 1–4. */
+  dustFluidBricks: number;
 };
 
 /**
@@ -53,6 +55,7 @@ const state: LookTuning = {
   dustPhaseG: 0.3,
   dustSunBoost: 1,
   dustBudgetM: 12,
+  dustFluidBricks: 2,
 };
 
 const listeners = new Set<(next: LookTuning) => void>();

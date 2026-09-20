@@ -22,7 +22,7 @@ export const CLEARANCE_MAX_M = 16;
 /** The ray must pass through the box's cross-section by at least this margin to count. */
 const OVERLAP_MARGIN_M = 0.35;
 
-interface GridBox {
+export interface GridBox {
   slot: number;
   minX: number;
   minY: number;
@@ -97,8 +97,35 @@ export class DustClearance {
     }
   }
 
+  /** Every box whose grid cell range touches the world-space range, standing or not. */
+  forEachBoxIn(
+    minX: number, minY: number, minZ: number, maxX: number, maxY: number, maxZ: number,
+    visit: (box: GridBox) => void,
+  ): void {
+    const seen = new Set<number>();
+    const x0 = Math.floor(minX / CELL_M);
+    const x1 = Math.floor(maxX / CELL_M);
+    const y0 = Math.floor(minY / CELL_M);
+    const y1 = Math.floor(maxY / CELL_M);
+    const z0 = Math.floor(minZ / CELL_M);
+    const z1 = Math.floor(maxZ / CELL_M);
+    for (let gz = z0; gz <= z1; gz += 1) {
+      for (let gy = y0; gy <= y1; gy += 1) {
+        for (let gx = x0; gx <= x1; gx += 1) {
+          const list = this.cells.get(cellKey(gx, gy, gz));
+          if (!list) continue;
+          for (const box of list) {
+            if (seen.has(box.slot)) continue;
+            seen.add(box.slot);
+            visit(box);
+          }
+        }
+      }
+    }
+  }
+
   /** Whether the chunk is still standing: on its support body, or settled. */
-  private standing(slot: number): boolean {
+  standing(slot: number): boolean {
     const body = this.topology.body(this.topology.chunkBodyKey(slot));
     return !!body && (body.islandSerial === SUPPORT_SERIAL || body.settled);
   }

@@ -50,11 +50,17 @@ skipping (zero extra bytes: the buffer was already pinned).
   two instanced BackSide-box raymarches through one baked 128³ cloud
   (`dustFieldBake.ts`, GPU-baked over the first eight frames), scene-depth
   terminated, half-res layer brought up through a depth-weighted tent.
-- `client/src/vfx/fluid/` — the near-camera fluid brick: Ember's stable
-  fluids on a 2D slice atlas, 16×12×16 m, placed at the first source of
-  magnitude ≥ 20 within 60 m, fed by every source inside it, colliding with
-  the standing city, retired after 9 s quiet or 100 m away. Parcels inside
-  it fade as it takes over.
+- `client/src/vfx/dustOccupancy.ts` — the standing city as 0.5 m voxels in
+  a 96×48×96 m volume around the camera (rebuilt on a 24 m move or when
+  bonds break, ≤ 2 Hz, ~ms). The parcel march samples it per step and drops
+  density inside solids, so no parcel ever renders through a wall from any
+  angle: Ember's "density inside solid voxels is suppressed".
+- `client/src/vfx/fluid/` — the near-camera fluid bricks (lookTuning
+  `dustFluidBricks`, default 2, up to 4): Ember's stable fluids on a 2D
+  slice atlas, 16×12×16 m each, placed at distinct sources of magnitude
+  ≥ 20 within 60 m, fed by every source inside, colliding with the standing
+  city so the dust flows around walls, retired after 9 s quiet or 100 m
+  away. Parcels inside a live brick fade as it takes over.
 - `client/src/vfx/DustSprites.tsx` — soft lit discs for FAST, touch, or a
   GL without highp / render-to-3D.
 - `client/src/vfx/DustLayer.tsx` — the React glue, mounted after the city
@@ -95,8 +101,10 @@ the levers if it is over 2 ms.
   ~170 m from the player. The dust culls at the fog distance and scales to
   the aerial camera's 4 km / thin fog; seeing a collapse at 300 m needs a
   fog/far decision outside this feature.
-- Parcels do not collide as they move; they are confined to the axis-aligned
-  room measured at birth. The brick collides with static geometry only.
+- Parcels do not flow around walls; they are confined to the axis-aligned
+  room measured at birth and masked by the occupancy volume where they
+  render. Flow around geometry is the bricks' job, and only near the camera
+  and up to the brick count. Both collide with static geometry only.
 - The half-res layer's grain is smoothed by the upsample; native parcels
   keep the jittered march's fine grain, as SSAO does.
 - ANGLE's Vulkan backend logs "Running out of reserved outsideRenderPass

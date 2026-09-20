@@ -1320,6 +1320,11 @@ export class CityTopology {
     return this.slotNode[slot];
   }
 
+  /** Bonds broken since the last reset or bootstrap. Cheap; bumps whenever the standing set changes. */
+  brokenBondCount(): number {
+    return this.brokenBonds;
+  }
+
   /** Manifest mass of one chunk, kg. */
   restMassOf(slot: number): number {
     return this.restMass[slot];
