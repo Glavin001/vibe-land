@@ -286,6 +286,7 @@ let fluidCap: DustFluid = 'balanced';
 let sampleScale = 1;
 
 let dustCapSprites = false;
+let msaaCap = Infinity;
 let governorHeld = false;
 
 /**
@@ -320,6 +321,24 @@ export function setGovernorDustSprites(next: boolean): void {
 
 export function governorDustSprites(): boolean {
   return dustCapSprites;
+}
+
+/**
+ * The rung before pixels: the beauty target's multisampling. On the bench
+ * 4x MSAA was a fifth of the GPU frame, and on a dpr-2 display it is the
+ * least visible thing the frame draws; a 0.6 scale on the same display is
+ * blur over everything. Effective samples are the lesser of the setting
+ * and this cap.
+ */
+export function setGovernorMsaaCap(next: number): void {
+  if (next === msaaCap) return;
+  msaaCap = next;
+  renderStats.governorMsaaOff = next === 0 ? 1 : 0;
+  notify();
+}
+
+export function governorMsaaCap(): number {
+  return msaaCap;
 }
 
 /** Ceiling on the fluid quality; the effective mode is the lesser of it and the preference. */
@@ -484,7 +503,7 @@ export function setShadowMapSize(next: number | null): void {
  * hypothesis about the M3 until its sweep prices the 'AO msaa off' step.
  */
 export function aoMsaaSamplesSetting(): number {
-  return aoMsaaSamples;
+  return Math.min(aoMsaaSamples, msaaCap);
 }
 
 if (typeof window !== 'undefined') {

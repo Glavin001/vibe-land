@@ -84,6 +84,8 @@ export const renderStats = {
   governorSampleScale: 1,
   governorFluidCap: 2,
   governorDustSprites: 0,
+  /// 1 while the governor has the beauty target's multisampling off.
+  governorMsaaOff: 0,
 
   /// Stream decode accumulated between the previous frame and this one. Runs
   /// in the datagram reader's microtasks, so it lands in offFrame, not cpuFrame.

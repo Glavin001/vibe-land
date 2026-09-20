@@ -17,12 +17,14 @@ import {
   flatToneMapping,
   governorDustSprites,
   governorFluidCap,
+  governorMsaaCap,
   governorPaused,
   governorSampleScale,
   maxDpr,
   onRenderQualityChange,
   setGovernorDustSprites,
   setGovernorFluidCap,
+  setGovernorMsaaCap,
   setGovernorSampleScale,
 } from '../app/renderQuality';
 
@@ -114,6 +116,7 @@ export function RenderGovernor(): null {
       if (governorFluidCap() !== 'balanced') setGovernorFluidCap('balanced');
       if (governorSampleScale() !== 1) setGovernorSampleScale(1);
       if (governorDustSprites()) setGovernorDustSprites(false);
+      if (governorMsaaCap() !== Infinity) setGovernorMsaaCap(Infinity);
       renderStats.gpuBudgetMs = 0;
       return;
     }
@@ -186,6 +189,9 @@ export function RenderGovernor(): null {
       else if (dustHeavy && cap === 'fast') setGovernorFluidCap('off');
       else if (dustHeavy && scale > 0.25) setGovernorSampleScale(0.25);
       else if (dustHeavy && !governorDustSprites()) setGovernorDustSprites(true);
+      // Multisampling goes before pixels: a fifth of the GPU frame on the
+      // bench, and the least visible thing on a dpr-2 display.
+      else if (governorMsaaCap() > 0) setGovernorMsaaCap(0);
       else if (scaleRef.current > 0.6) apply(Math.max(0.6, scaleRef.current * 0.92));
       return;
     }
@@ -200,6 +206,9 @@ export function RenderGovernor(): null {
     if (before < 1) {
       apply(Math.min(1, before * 1.08));
       g.trial = { undo: () => apply(before), framesLeft: 60 };
+    } else if (governorMsaaCap() !== Infinity) {
+      setGovernorMsaaCap(Infinity);
+      g.trial = { undo: () => setGovernorMsaaCap(0), framesLeft: 60 };
     } else if (governorDustSprites()) {
       setGovernorDustSprites(false);
       g.trial = { undo: () => setGovernorDustSprites(true), framesLeft: 60 };

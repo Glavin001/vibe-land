@@ -1332,7 +1332,7 @@ export function CityStatsOverlay({
       <Stat
         label="dyn res"
         value={renderStats.gpuBudgetMs > 0
-          ? `${Math.round(renderStats.dprScale * 100)}% @ ${renderStats.gpuBudgetMs.toFixed(1)} ms period`
+          ? `${Math.round(renderStats.dprScale * 100)}%${renderStats.governorMsaaOff ? ' / msaa off' : ''} @ ${renderStats.gpuBudgetMs.toFixed(1)} ms period`
           : 'off'}
         warn={renderStats.dprScale < 0.999}
       />
