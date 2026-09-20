@@ -74,6 +74,10 @@ export const renderStats = {
   recordWriteMs: 0,
   /// Nested in cityFrame: this frame's slice of the diagnostic position sweep.
   sweepSliceMs: 0,
+  /// Dynamic resolution: the multiplier currently applied under the tier's dpr (1 = full).
+  dprScale: 1,
+  /// The GPU budget the resolution controller is holding the frame to, ms.
+  gpuBudgetMs: 0,
 
   /// Stream decode accumulated between the previous frame and this one. Runs
   /// in the datagram reader's microtasks, so it lands in offFrame, not cpuFrame.

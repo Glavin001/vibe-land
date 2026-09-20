@@ -235,6 +235,8 @@ import {
   setSkyIblEnabled,
   cityTextureDetail,
   dprCapOverride,
+  dynamicResolutionEnabled,
+  setDynamicResolutionEnabled,
   skyDomeEnabled,
   skyIblEnabledSetting,
   type CityTextureDetail,
@@ -318,6 +320,7 @@ export function CityStatsOverlay({
   // whoever is tuning is a screenshot.
   const [mobileReport, setMobileReport] = useState<string[] | null>(null);
   const [heroTiling, setHeroTiling] = useState(heroTilingEnabled);
+  const [dynamicRes, setDynamicRes] = useState(dynamicResolutionEnabled);
   const [bodyColors, setBodyColors] = useState(false);
   // Poll per-body freeze states only while the toggle is on: no reason to
   // fetch thousands of pairs for a feature that is off.
@@ -922,6 +925,23 @@ export function CityStatsOverlay({
         </button>
       </div>
 
+      <div style={{ ...row, marginBottom: 2 }}>
+        <button
+          type="button"
+          onClick={() => {
+            const next = !dynamicRes;
+            setDynamicResolutionEnabled(next);
+            setDynamicRes(next);
+          }}
+          style={{ ...toggleButton, position: 'static', width: '100%' }}
+          data-testid="city-dynamic-res-toggle"
+          aria-label="Toggle dynamic resolution"
+          title="Shrink the render resolution below the tier's dpr while the measured GPU frame overruns the display period; grow back with headroom. OFF pins the tier's dpr"
+        >
+          {dynamicRes ? 'DYN RES: ON' : 'DYN RES: OFF'}
+        </button>
+      </div>
+
       {/*
         The per-pixel bisection row. A GPU-bound frame can only be diagnosed on
         the machine that is slow -- a fast GPU reports all of these as free --
@@ -1157,7 +1177,15 @@ export function CityStatsOverlay({
         value={renderStats.gpuFrameMs > 0 ? `${renderStats.gpuFrameMs.toFixed(1)} ms` : 'n/a'}
         warn={renderStats.gpuFrameMs > 8}
       />
-      <Stat label="inst writes" value={`${renderStats.instanceWrites}`} />
+      <Stat
+        label="dyn res"
+        value={renderStats.gpuBudgetMs > 0
+          ? `${Math.round(renderStats.dprScale * 100)}% / ${renderStats.gpuBudgetMs.toFixed(1)} ms`
+          : 'off'}
+        warn={renderStats.dprScale < 0.999}
+      />
+      <Stat label="body writes" value={`${renderStats.instanceWrites}`} />
+      <Stat label="record writes" value={`${renderStats.recordWrites}`} />
       <Stat
         label="dust live/drawn"
         value={`${renderStats.dustParcelsLive} / ${renderStats.dustDrawn + renderStats.dustDrawnHalf}`}

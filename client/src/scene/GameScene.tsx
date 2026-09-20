@@ -1,9 +1,11 @@
 import { StatsGl } from '@react-three/drei';
-import { Canvas, useThree } from '@react-three/fiber';
-import { Suspense, useEffect, type ReactNode } from 'react';
+import { Canvas, useFrame, useThree } from '@react-three/fiber';
+import { Suspense, useEffect, useRef, type ReactNode } from 'react';
 import type { GameMode } from '../app/gameMode';
+import { renderStats } from '../city/renderStats';
 import {
   antialiasEnabled,
+  dynamicResolutionEnabled,
   flatToneMapping,
   maxDpr,
   onRenderQualityChange,
@@ -67,13 +69,66 @@ type GameWorldDebugFrame = React.ComponentProps<typeof GameWorld>['onDebugFrame'
  */
 function DprController(): null {
   const setDpr = useThree((state) => state.setDpr);
+  const scaleRef = useRef(1);
+  const gpuEmaRef = useRef(0);
+  const frameMinRef = useRef({ min: Infinity, frames: 0, period: 0 });
+  const sinceAdjustRef = useRef(0);
+  const apply = (scale: number) => {
+    scaleRef.current = scale;
+    renderStats.dprScale = scale;
+    setDpr(Math.min(window.devicePixelRatio, maxDpr()) * scale);
+  };
   useEffect(
     () =>
       onRenderQualityChange(() => {
-        setDpr(Math.min(window.devicePixelRatio, maxDpr()));
+        if (!dynamicResolutionEnabled()) scaleRef.current = 1;
+        apply(scaleRef.current);
       }),
     [setDpr],
   );
+  // The dynamic-resolution loop.
+  //
+  // The GPU number is the sum of the per-pass timer queries -- the renderer's
+  // own cost -- and the display period is read off the frame pacing: the
+  // shortest frame over a window is the vsync interval whenever the GPU is
+  // comfortably under it. The budget is 85% of that period. Every 20 frames
+  // the scale moves towards sqrt(budget / gpu) (pixels go as the square), at
+  // most 8% a step, and only grows back once there is a fifth of headroom, so
+  // it settles rather than hunts. Floor 0.6: below that the tier's look is gone.
+  useFrame(() => {
+    if (!dynamicResolutionEnabled()) {
+      if (scaleRef.current !== 1) apply(1);
+      renderStats.gpuBudgetMs = 0;
+      return;
+    }
+    const gpu = renderStats.gpuFrameMs;
+    if (gpu > 0) gpuEmaRef.current = gpuEmaRef.current > 0 ? gpuEmaRef.current * 0.95 + gpu * 0.05 : gpu;
+    const pacing = frameMinRef.current;
+    const frame = renderStats.frameTotalMs;
+    if (frame > 0 && frame < pacing.min) pacing.min = frame;
+    pacing.frames += 1;
+    if (pacing.frames >= 120) {
+      // Quantise to the refresh rates that exist; a GPU-bound window says
+      // nothing about the display and keeps the last estimate.
+      if (pacing.min < 9.5) pacing.period = 8.33;
+      else if (pacing.min < 17.5 && gpuEmaRef.current < 12) pacing.period = 16.67;
+      else if (pacing.period === 0) pacing.period = 16.67;
+      pacing.min = Infinity;
+      pacing.frames = 0;
+    }
+    const period = pacing.period || 8.33;
+    const budget = period * 0.85;
+    renderStats.gpuBudgetMs = budget;
+    sinceAdjustRef.current += 1;
+    if (sinceAdjustRef.current < 20 || gpuEmaRef.current <= 0) return;
+    sinceAdjustRef.current = 0;
+    const ema = gpuEmaRef.current;
+    let next = scaleRef.current;
+    if (ema > budget) next = scaleRef.current * Math.max(0.92, Math.sqrt(budget / ema));
+    else if (ema < budget * 0.8) next = scaleRef.current * Math.min(1.08, Math.sqrt(budget / ema));
+    next = Math.min(1, Math.max(0.6, next));
+    if (Math.abs(next - scaleRef.current) > 0.005) apply(next);
+  });
   return null;
 }
 

@@ -29,6 +29,7 @@ const DUST_KEY = 'vibe.render.dust';
 const DUST_FLUID_KEY = 'vibe.render.dustFluid';
 const SHARE_THRESHOLD_KEY = 'vibe.render.instanceShare';
 const SHADOW_MAP_KEY = 'vibe.render.shadowMapSize';
+const DYNAMIC_RES_KEY = 'vibe.render.dynamicRes';
 
 /**
  * Uses of one shard shape below which it stays in its cell's batch.
@@ -112,6 +113,8 @@ export type RenderQualityState = {
   instanceShareThreshold: number;
   /** The stochastic anti-tiling stack on the city's concrete (PRETTY only). */
   heroTiling: boolean;
+  /** Trim render resolution when the measured GPU frame overruns the display period. */
+  dynamicRes: boolean;
   /** Shadow-map edge in texels, or null to follow the tier (2048/1024). */
   shadowMapSize: number | null;
 };
@@ -206,6 +209,7 @@ let dprCap: number | null = readStored(DPR_CAP_KEY, (raw) => {
   return Number.isFinite(value) && value > 0 ? value : null;
 });
 let heroTiling: boolean = readStored(HERO_TILING_KEY, (raw) => raw === '1') ?? true;
+let dynamicRes: boolean = readStored(DYNAMIC_RES_KEY, (raw) => raw === '1') ?? true;
 let dust: DustMode = readStored(DUST_KEY, (raw) =>
   raw === 'off' || raw === 'sprites' || raw === 'volumetric' ? raw : null)
   ?? (isTouchDevice() ? 'sprites' : 'volumetric');
@@ -244,6 +248,7 @@ function notify(): void {
     instanceShareThreshold,
     shadowMapSize,
     heroTiling,
+    dynamicRes,
     dust,
     dustFluid,
   };
@@ -424,6 +429,25 @@ export function setHeroTilingEnabled(next: boolean): void {
   notify();
 }
 
+/**
+ * Dynamic resolution: the GPU frame is measured (per pass, EXT_disjoint_timer_query)
+ * and the canvas shrinks below the tier's dpr while it overruns the display's
+ * refresh period, growing back when there is headroom. Pixel count is the one
+ * lever whose cost is exactly predictable, so it is the one that can promise a
+ * frame rate; every other cost is trimmed first, this is the floor under them.
+ * DPR CAP still bounds it from above. Off, the tier's dpr is fixed.
+ */
+export function dynamicResolutionEnabled(): boolean {
+  return dynamicRes;
+}
+
+export function setDynamicResolutionEnabled(next: boolean): void {
+  if (next === dynamicRes) return;
+  dynamicRes = next;
+  store(DYNAMIC_RES_KEY, next ? '1' : '0');
+  notify();
+}
+
 export function dprCapOverride(): number | null {
   return dprCap;
 }
@@ -587,6 +611,7 @@ const PERSISTED_KEYS = [
   SKY_DOME_KEY,
   DPR_CAP_KEY,
   HERO_TILING_KEY,
+  DYNAMIC_RES_KEY,
   DUST_KEY,
   DUST_FLUID_KEY,
 ] as const;
