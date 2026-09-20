@@ -76,9 +76,15 @@ describe('dust LOD', () => {
     expect(scaled).toHaveLength(3);
     expect(scaled[0].steps).toBeLessThan(48);
     expect(scaled[0].steps).toBeGreaterThanOrEqual(6);
-    // Floor everything and still over: the farthest is dropped first.
+    // Floor everything and still over: the far end goes half-res first.
+    const demoted = items.map((i) => ({ ...i }));
+    applySampleBudget(demoted, 8e6, viewport);
+    expect(demoted).toHaveLength(3);
+    expect(demoted[2].layerBlend).toBe(0);
+    expect(demoted[0].layerBlend).toBe(1);
+    // Half-res everywhere and still over: the farthest is dropped first.
     const shed = items.map((i) => ({ ...i }));
-    applySampleBudget(shed, 8e6, viewport);
+    applySampleBudget(shed, 1.9e6, viewport);
     expect(shed.length).toBeLessThan(3);
     expect(shed[0].distance).toBe(10);
     // Never shed the nearest, however small the budget.
@@ -102,8 +108,8 @@ describe('dust LOD', () => {
     expect(mid).toBeLessThan(1);
     // Surface distance: a 40 m cloud whose centre is 100 m away is 60 m away.
     expect(layerBlendFor(100, 40, 400, viewport)).toBe(1);
-    // Filling the view sends it half-res however close it is.
-    expect(layerBlendFor(5, 3, 1500, viewport)).toBe(0);
+    // Filling the view keeps it native: the budget, not the layer, bounds that.
+    expect(layerBlendFor(5, 3, 1500, viewport)).toBe(1);
   });
 
   it('projects size with the camera fov', () => {

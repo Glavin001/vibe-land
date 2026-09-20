@@ -24,7 +24,7 @@ export interface DustPolicyConfig {
   /** Parcels one tick may spawn, across all its sources. */
   parcelsPerTickCap: number;
   parcelsPerSourceMax: number;
-  /** n = round(parcelsScale · magnitude^0.6). */
+  /** n = round(parcelsScale · magnitude^0.5). Few and big: overlapping volumes are the expensive kind. */
   parcelsScale: number;
   /** radius0 = radiusScale · magnitude^(1/3), clamped to [radiusMin, radiusMax]. */
   radiusScale: number;
@@ -41,10 +41,10 @@ export interface DustPolicyConfig {
 }
 
 export const DEFAULT_DUST_POLICY: DustPolicyConfig = {
-  parcelsPerTickCap: 48,
-  parcelsPerSourceMax: 12,
-  parcelsScale: 0.8,
-  radiusScale: 0.6,
+  parcelsPerTickCap: 32,
+  parcelsPerSourceMax: 8,
+  parcelsScale: 0.55,
+  radiusScale: 0.7,
   radiusMin: 0.5,
   radiusMax: 4,
   smoulderHoldMs: 1500,
@@ -149,7 +149,7 @@ export class DustPolicy {
       return 0;
     }
     const m = Math.max(0, source.magnitude);
-    let n = Math.max(1, Math.min(cfg.parcelsPerSourceMax, Math.round(cfg.parcelsScale * Math.pow(m, 0.6))));
+    let n = Math.max(1, Math.min(cfg.parcelsPerSourceMax, Math.round(cfg.parcelsScale * Math.sqrt(m))));
     if (n > this.tickBudget) {
       this.stats.droppedByTickCap += n - this.tickBudget;
       n = this.tickBudget;

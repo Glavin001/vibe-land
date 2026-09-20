@@ -19,6 +19,16 @@ type LookTuning = {
   aoRadius: number;
   /** Multiplier on the sky environment map's contribution. */
   envIntensity: number;
+  /** Destruction dust: thickness, size and lifetime multipliers. */
+  dustDensity: number;
+  dustSize: number;
+  dustLifetime: number;
+  /** Extinction per metre of full-density dust; the raymarch's opacity scale. */
+  dustExtinction: number;
+  /** Henyey-Greenstein g: 0 isotropic, toward 1 forward-scattering (bright rims against the sun). */
+  dustPhaseG: number;
+  /** Multiplier on the sun's contribution to the dust. */
+  dustSunBoost: number;
 };
 
 /**
@@ -34,6 +44,12 @@ const state: LookTuning = {
   aoStrength: 0.9,
   aoRadius: 1.0,
   envIntensity: 1,
+  dustDensity: 1,
+  dustSize: 1,
+  dustLifetime: 1,
+  dustExtinction: 0.24,
+  dustPhaseG: 0.3,
+  dustSunBoost: 1,
 };
 
 const listeners = new Set<(next: LookTuning) => void>();

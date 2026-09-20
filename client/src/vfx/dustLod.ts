@@ -77,13 +77,23 @@ export interface DustDrawItem {
   densityScale: number;
 }
 
+/** Cost of one item in samples: its area, its steps, and a quarter of that for the half-res share. */
+function itemCost(item: DustDrawItem, viewportPx: number): number {
+  const px = Math.min(item.projectedPx * item.projectedPx, viewportPx);
+  const share = item.layerBlend + (1 - item.layerBlend) * 0.25;
+  return px * item.steps * share;
+}
+
 /**
- * The per-frame ceiling on Σ pixels·steps. If the frame is over, every item's
- * steps scale down together (floor 6), and if still over the farthest are
- * dropped. Returns the estimate after adjustment.
+ * The per-frame ceiling on Σ pixels·steps. Three ways to give, in order:
+ * every item's steps scale down together (floor `minSteps`); then items move
+ * to the half-res layer from the far end, a quarter of the cost each; then,
+ * only if that is still not enough, the farthest are dropped. Returns the
+ * estimate after adjustment.
  *
  * 12 M samples is roughly 1.5–2 ms on a 2022 desktop GPU at one trilinear
  * fetch per step; depth termination and early-out make the real count lower.
+ * Items are expected sorted near-to-far.
  */
 export function applySampleBudget(
   items: DustDrawItem[],
@@ -92,9 +102,7 @@ export function applySampleBudget(
   minSteps = 6,
 ): number {
   let estimate = 0;
-  for (const item of items) {
-    estimate += Math.min(item.projectedPx * item.projectedPx, viewportPx) * item.steps;
-  }
+  for (const item of items) estimate += itemCost(item, viewportPx);
   if (estimate <= budget) return estimate;
   // Scale the items that can still give, holding the floored ones at the
   // floor. An item that hits the floor stops giving, so the others must give
@@ -103,26 +111,39 @@ export function applySampleBudget(
     let floored = 0;
     let scalable = 0;
     for (const item of items) {
-      const px = Math.min(item.projectedPx * item.projectedPx, viewportPx);
-      if (item.steps <= minSteps) floored += px * minSteps;
-      else scalable += px * item.steps;
+      const cost = itemCost(item, viewportPx);
+      if (item.steps <= minSteps) floored += cost;
+      else scalable += cost;
     }
     if (scalable <= 0) break;
     const scale = Math.max(0, budget - floored) / scalable;
     estimate = 0;
     for (const item of items) {
-      const px = Math.min(item.projectedPx * item.projectedPx, viewportPx);
       if (item.steps > minSteps) item.steps = Math.max(minSteps, item.steps * scale);
-      estimate += px * item.steps;
+      estimate += itemCost(item, viewportPx);
     }
   }
   if (estimate <= budget) return estimate;
-  // Still over at the floor: shed from the far end. Items are expected sorted
-  // near-to-far when this is called. The nearest is never shed: a budget that
-  // cannot afford the one cloud in the player's face is a budget that is wrong.
+  // Still over at the floor: demote to half-res from the far end. A crowded
+  // collapse is many overlapping clouds, and a quarter-cost cloud beats no
+  // cloud.
+  for (let i = items.length - 1; i >= 0 && estimate > budget; i -= 1) {
+    const item = items[i];
+    if (item.layerBlend <= 0) continue;
+    estimate -= itemCost(item, viewportPx);
+    item.layerBlend = 0;
+    // Twice the floor at a quarter of the pixels: half the cost, and the
+    // upsample has less grain to smooth.
+    item.steps = Math.max(item.steps, minSteps * 2);
+    estimate += itemCost(item, viewportPx);
+  }
+  if (estimate <= budget) return estimate;
+  // Still over: shed from the far end. The nearest is never shed: a budget
+  // that cannot afford the one cloud in the player's face is a budget that
+  // is wrong.
   while (items.length > 1 && estimate > budget) {
     const dropped = items.pop()!;
-    estimate -= Math.min(dropped.projectedPx * dropped.projectedPx, viewportPx) * dropped.steps;
+    estimate -= itemCost(dropped, viewportPx);
   }
   return estimate;
 }
@@ -130,9 +151,14 @@ export function applySampleBudget(
 /** Surface distance beyond which a parcel goes to the half-res layer, and the blend band. */
 export const HALF_RES_DISTANCE_M = 90;
 export const HALF_RES_BAND_M = 30;
-/** A parcel covering more than this fraction of the viewport also goes half-res: fill-bound, not detail-bound. */
-export const HALF_RES_COVERAGE = 0.15;
-const HALF_RES_COVERAGE_BAND = 0.10;
+/**
+ * A parcel covering more than this fraction of the viewport also goes
+ * half-res. Off (above 1) by default: the jittered march's grain is magnified
+ * by the upsample, and up close that grain is the whole picture. The sample
+ * budget bounds the near case instead.
+ */
+export const HALF_RES_COVERAGE = 4;
+const HALF_RES_COVERAGE_BAND = 1;
 
 /**
  * 1 = draw natively, 0 = draw in the half-res layer, between = both with the

@@ -25,7 +25,7 @@ describe('DustPolicy', () => {
     expect(hundred.store.radius0[0]).toBeGreaterThan(ten.store.radius0[0]);
     expect(hundred.store.intensity[0]).toBeGreaterThan(ten.store.intensity[0]);
     const thousand = policy();
-    expect(thousand.policy.emit(source({ magnitude: 1800 }))).toBe(12);
+    expect(thousand.policy.emit(source({ magnitude: 1800 }))).toBe(8);
   });
 
   it('clamps the radius', () => {
@@ -41,9 +41,9 @@ describe('DustPolicy', () => {
     const { policy: p } = policy();
     let spawned = 0;
     for (let i = 0; i < 10; i += 1) spawned += p.emit(source({ ordinal: i, magnitude: 1800 }));
-    expect(spawned).toBe(48);
-    expect(p.stats.droppedByTickCap).toBe(120 - 48);
-    expect(p.emit(source({ simTick: 101, magnitude: 1800 }))).toBe(12);
+    expect(spawned).toBe(32);
+    expect(p.stats.droppedByTickCap).toBe(80 - 32);
+    expect(p.emit(source({ simTick: 101, magnitude: 1800 }))).toBe(8);
   });
 
   it('is deterministic for the same source', () => {
@@ -63,7 +63,7 @@ describe('DustPolicy', () => {
   it('starts a fracture outside the face and throws it along the normal', () => {
     const { store, policy: p } = policy();
     const n = p.emit(source({ nx: 0, ny: 0, nz: 1, magnitude: 1800 }));
-    expect(n).toBe(12);
+    expect(n).toBe(8);
     let sumZ = 0;
     for (let i = 0; i < n; i += 1) {
       sumZ += store.pz[i];
@@ -71,7 +71,8 @@ describe('DustPolicy', () => {
       expect(store.vz[i]).toBeGreaterThanOrEqual(-1e-6);
       expect(store.shape[i]).toBe(DustShape.Fracture);
     }
-    expect(sumZ / n).toBeGreaterThan(-3);
+    // Centred 0.4 m out along the normal, scattered up to 0.6·radius0 around it.
+    expect(Math.abs(sumZ / n - (-3 + 0.4))).toBeLessThan(0.6 * 4 * 1.2);
   });
 
   it('spreads an impact flat and outward', () => {

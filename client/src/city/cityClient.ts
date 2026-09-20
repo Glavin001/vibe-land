@@ -932,6 +932,11 @@ export class CityClient {
     return this.dustQueue.drain(visit);
   }
 
+  /** Sources that arrived faster than frames drained them. Cumulative. */
+  dustQueueDropped(): number {
+    return this.dustQueue.dropped;
+  }
+
   /**
    * Speed of a body's last presented sample, m/s, or 0 if it has none.
    *

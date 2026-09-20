@@ -1,0 +1,483 @@
+// The volumetric dust pass: evaluate every live parcel, keep the ones worth
+// drawing, spend the sample budget across them, and raymarch them into a
+// premultiplied target for the frame pipeline's composite.
+//
+// CPU work per frame is O(live parcels) analytic evaluation (dustParcelStore)
+// plus a sort of what is drawn. GPU work is two instanced draws -- one at
+// full resolution for what is near or small, one at half resolution for what
+// is far or fills the screen -- and an upsample quad. When nothing is alive
+// the pass does not run at all.
+
+import * as THREE from 'three';
+
+import { renderStats } from '../city/renderStats';
+import type { PipelineStage, PipelineStageContext } from '../graphics/framePipelineStages';
+import { DustFieldBake } from './dustFieldBake';
+import {
+  applySampleBudget,
+  drawnAtTier,
+  easeSteps,
+  fogCullDistance,
+  layerBlendFor,
+  pixelsPerMetre,
+  sortBackToFront,
+  stepsFor,
+  tierFor,
+  TIER_STRIDE,
+  type DustDrawItem,
+} from './dustLod';
+import {
+  DustPalette,
+  evalParcel,
+  newDustEval,
+  type DustEvalTuning,
+  type DustParcelStore,
+} from './dustParcelStore';
+import {
+  UPSAMPLE_FRAGMENT,
+  UPSAMPLE_VERTEX,
+  VOLUME_FRAGMENT,
+  VOLUME_VERTEX,
+} from './dustVolumeShaders';
+
+/** Most parcels drawn per layer per frame. */
+export const MAX_DRAW = 1024;
+/** Σ pixels·steps per frame. ~1.5–2 ms on a 2022 desktop GPU at one fetch per step. */
+export const SAMPLE_BUDGET = 12e6;
+
+export interface DustLighting {
+  sunDir: THREE.Vector3;
+  /** Linear, already scaled by the sun's intensity. */
+  sunColor: THREE.Color;
+  skyColor: THREE.Color;
+  groundColor: THREE.Color;
+}
+
+export interface DustRenderTuning extends DustEvalTuning {
+  extinction: number;
+  phaseG: number;
+  sunBoost: number;
+  /** Linear albedo per palette: concrete, wood, metal. */
+  albedo: [THREE.Color, THREE.Color, THREE.Color];
+}
+
+interface Layer {
+  geometry: THREE.InstancedBufferGeometry;
+  mesh: THREE.Mesh;
+  scene: THREE.Scene;
+  center: THREE.InstancedBufferAttribute;
+  size: THREE.InstancedBufferAttribute;
+  params: THREE.InstancedBufferAttribute;
+  motion: THREE.InstancedBufferAttribute;
+}
+
+const TMP_SPHERE = new THREE.Sphere();
+const TMP_VEC = new THREE.Vector3();
+const TMP_PROJ = new THREE.Matrix4();
+const FRUSTUM = new THREE.Frustum();
+
+export class DustVolumeRenderer implements PipelineStage {
+  readonly bake: DustFieldBake;
+  private readonly material: THREE.ShaderMaterial;
+  private readonly upsampleMaterial: THREE.ShaderMaterial;
+  private readonly upsampleScene: THREE.Scene;
+  private readonly quadCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+  private readonly quad: THREE.PlaneGeometry;
+  private readonly native: Layer;
+  private readonly half: Layer;
+  private target: THREE.WebGLRenderTarget | null = null;
+  private halfTarget: THREE.WebGLRenderTarget | null = null;
+  private targetDirty = false;
+  private readonly stepsEased: Float32Array;
+  private generation: number;
+  private readonly items: DustDrawItem[] = [];
+  private readonly evals = newDustEval();
+  private readonly nativeItems: DustDrawItem[] = [];
+  private readonly halfItems: DustDrawItem[] = [];
+  private sunAzimuthRad: number;
+  private windX = 0;
+  private windZ = 0;
+  private readonly clearColor = new THREE.Color();
+  tuning: DustRenderTuning = {
+    size: 1,
+    density: 1,
+    lifetime: 1,
+    extinction: 0.24,
+    phaseG: 0.3,
+    sunBoost: 1,
+    albedo: [
+      new THREE.Color(0xb5ac9e).convertSRGBToLinear(),
+      new THREE.Color(0x8f7250).convertSRGBToLinear(),
+      new THREE.Color(0x66686c).convertSRGBToLinear(),
+    ],
+  };
+
+  constructor(
+    private readonly store: DustParcelStore,
+    sunElevationDeg: number,
+    sunAzimuthDeg: number,
+  ) {
+    this.bake = new DustFieldBake(sunElevationDeg);
+    this.sunAzimuthRad = (sunAzimuthDeg * Math.PI) / 180;
+    this.stepsEased = new Float32Array(store.capacity);
+    this.generation = store.generation;
+
+    this.material = new THREE.ShaderMaterial({
+      glslVersion: THREE.GLSL3,
+      uniforms: {
+        tField: { value: this.bake.field.texture },
+        tDepth: { value: null },
+        uDepthScale: { value: 1 },
+        uNear: { value: 0.1 },
+        uFar: { value: 200 },
+        uCamForward: { value: new THREE.Vector3(0, 0, -1) },
+        uSunDir: { value: new THREE.Vector3(0, 1, 0) },
+        uSunColor: { value: new THREE.Color(1, 1, 1) },
+        uSkyColor: { value: new THREE.Color(0.5, 0.6, 0.8) },
+        uGroundColor: { value: new THREE.Color(0.2, 0.18, 0.15) },
+        uAlbedo: { value: this.tuning.albedo },
+        uFogColor: { value: new THREE.Color(0.7, 0.7, 0.7) },
+        uFogDensity: { value: 0 },
+        uExtinction: { value: this.tuning.extinction },
+        uPhaseG: { value: this.tuning.phaseG },
+      },
+      vertexShader: VOLUME_VERTEX,
+      fragmentShader: VOLUME_FRAGMENT,
+      side: THREE.BackSide,
+      transparent: true,
+      depthTest: false,
+      depthWrite: false,
+      blending: THREE.NormalBlending,
+      premultipliedAlpha: true,
+      fog: false,
+      toneMapped: false,
+    });
+    this.native = this.buildLayer();
+    this.half = this.buildLayer();
+
+    this.quad = new THREE.PlaneGeometry(2, 2);
+    this.upsampleMaterial = new THREE.ShaderMaterial({
+      glslVersion: THREE.GLSL3,
+      uniforms: {
+        tHalf: { value: null },
+        tDepth: { value: null },
+        uHalfSize: { value: new THREE.Vector2(1, 1) },
+        uFullSize: { value: new THREE.Vector2(1, 1) },
+        uNear: { value: 0.1 },
+        uFar: { value: 200 },
+      },
+      vertexShader: UPSAMPLE_VERTEX,
+      fragmentShader: UPSAMPLE_FRAGMENT,
+      transparent: true,
+      depthTest: false,
+      depthWrite: false,
+      blending: THREE.NormalBlending,
+      premultipliedAlpha: true,
+      toneMapped: false,
+    });
+    this.upsampleScene = new THREE.Scene();
+    this.upsampleScene.add(new THREE.Mesh(this.quad, this.upsampleMaterial));
+  }
+
+  private buildLayer(): Layer {
+    const box = new THREE.BoxGeometry(1, 1, 1);
+    const geometry = new THREE.InstancedBufferGeometry();
+    geometry.setIndex(box.getIndex());
+    geometry.setAttribute('position', box.getAttribute('position'));
+    const make = (itemSize: number) => {
+      const attr = new THREE.InstancedBufferAttribute(new Float32Array(MAX_DRAW * itemSize), itemSize);
+      attr.setUsage(THREE.DynamicDrawUsage);
+      return attr;
+    };
+    const center = make(3);
+    const size = make(3);
+    const params = make(4);
+    const motion = make(4);
+    geometry.setAttribute('aCenter', center);
+    geometry.setAttribute('aSize', size);
+    geometry.setAttribute('aParams', params);
+    geometry.setAttribute('aMotion', motion);
+    geometry.instanceCount = 0;
+    // Never culled by three: the boxes are evaluated and culled here, and a
+    // box the camera is inside has no bounding sphere three would keep.
+    geometry.boundingSphere = new THREE.Sphere(new THREE.Vector3(), Infinity);
+    const mesh = new THREE.Mesh(geometry, this.material);
+    mesh.frustumCulled = false;
+    const scene = new THREE.Scene();
+    scene.add(mesh);
+    return { geometry, mesh, scene, center, size, params, motion };
+  }
+
+  setLighting(light: DustLighting): void {
+    const u = this.material.uniforms;
+    (u.uSunDir.value as THREE.Vector3).copy(light.sunDir);
+    (u.uSunColor.value as THREE.Color).copy(light.sunColor).multiplyScalar(this.tuning.sunBoost);
+    (u.uSkyColor.value as THREE.Color).copy(light.skyColor);
+    (u.uGroundColor.value as THREE.Color).copy(light.groundColor);
+    this.sunAzimuthRad = Math.atan2(light.sunDir.x, light.sunDir.z);
+  }
+
+  setWind(x: number, z: number): void {
+    this.windX = x;
+    this.windZ = z;
+  }
+
+  applyTuning(): void {
+    const u = this.material.uniforms;
+    u.uExtinction.value = this.tuning.extinction;
+    u.uPhaseG.value = this.tuning.phaseG;
+    u.uAlbedo.value = this.tuning.albedo;
+  }
+
+  output(): THREE.Texture | null {
+    return this.target?.texture ?? null;
+  }
+
+  resize(width: number, height: number): void {
+    if (this.target && this.target.width === width && this.target.height === height) return;
+    this.target?.dispose();
+    this.halfTarget?.dispose();
+    this.target = new THREE.WebGLRenderTarget(width, height, {
+      type: THREE.HalfFloatType,
+      minFilter: THREE.LinearFilter,
+      magFilter: THREE.LinearFilter,
+      depthBuffer: false,
+      stencilBuffer: false,
+    });
+    const hw = Math.max(1, Math.ceil(width / 2));
+    const hh = Math.max(1, Math.ceil(height / 2));
+    this.halfTarget = new THREE.WebGLRenderTarget(hw, hh, {
+      type: THREE.HalfFloatType,
+      minFilter: THREE.LinearFilter,
+      magFilter: THREE.LinearFilter,
+      depthBuffer: false,
+      stencilBuffer: false,
+    });
+    this.upsampleMaterial.uniforms.tHalf.value = this.halfTarget.texture;
+    (this.upsampleMaterial.uniforms.uHalfSize.value as THREE.Vector2).set(hw, hh);
+    (this.upsampleMaterial.uniforms.uFullSize.value as THREE.Vector2).set(width, height);
+    this.targetDirty = true;
+  }
+
+  render(ctx: PipelineStageContext): boolean {
+    const { renderer, camera, scene, beauty, width, height, dt } = ctx;
+    if (!this.bake.ready) {
+      this.bake.step(renderer);
+      if (!this.bake.ready) return false;
+    }
+    if (!this.target || this.target.width !== width || this.target.height !== height) {
+      this.resize(width, height);
+    }
+    const started = performance.now();
+    const nowMs = started;
+    const store = this.store;
+    if (store.generation !== this.generation) {
+      this.stepsEased.fill(0);
+      this.generation = store.generation;
+    }
+    store.sweep(nowMs, this.tuning.lifetime);
+    renderStats.dustParcelsLive = store.liveCount;
+    if (store.liveCount === 0) {
+      this.clearIfDirty(renderer);
+      renderStats.dustDrawn = 0;
+      renderStats.dustDrawnHalf = 0;
+      renderStats.dustSamplesEstM = 0;
+      renderStats.dustCpuMs = performance.now() - started;
+      return false;
+    }
+
+    const perspective = camera as THREE.PerspectiveCamera;
+    const fog = scene.fog as THREE.FogExp2 | null;
+    const fogDensity = fog && 'density' in fog ? fog.density : 0;
+    const cull = Math.min(perspective.far ?? 200, fogCullDistance(fogDensity));
+    const pxPerM = pixelsPerMetre(perspective.fov ?? 75, height);
+    const viewportPx = width * height;
+    TMP_PROJ.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
+    FRUSTUM.setFromProjectionMatrix(TMP_PROJ);
+    const cam = camera.position;
+
+    // Select.
+    const items = this.items;
+    items.length = 0;
+    const e = this.evals;
+    const tuning = this.tuning;
+    for (let slot = 0; slot < store.capacity; slot += 1) {
+      if (!store.alive[slot]) continue;
+      if (!evalParcel(store, slot, nowMs, this.windX, this.windZ, tuning, e)) continue;
+      const dx = e.cx - cam.x;
+      const dy = e.cy - cam.y;
+      const dz = e.cz - cam.z;
+      const distance = Math.sqrt(dx * dx + dy * dy + dz * dz);
+      if (distance - e.radius > cull) continue;
+      TMP_SPHERE.center.set(e.cx, e.cy, e.cz);
+      TMP_SPHERE.radius = e.radius * 0.87;
+      if (!FRUSTUM.intersectsSphere(TMP_SPHERE)) continue;
+      const projectedPx = (e.sx * pxPerM) / Math.max(distance, 1);
+      if (projectedPx < 3) continue;
+      const tier = tierFor(distance, e.radius);
+      if (!drawnAtTier(e.serial, tier)) continue;
+      const item = this.item(items.length);
+      item.slot = slot;
+      item.distance = distance;
+      item.projectedPx = projectedPx;
+      item.tier = tier;
+      item.steps = 0;
+      item.layerBlend = layerBlendFor(distance, e.radius, projectedPx, viewportPx);
+      item.densityScale = TIER_STRIDE[tier];
+      items.push(item);
+    }
+    if (items.length > MAX_DRAW) {
+      items.sort((a, b) => a.distance - b.distance);
+      items.length = MAX_DRAW;
+    }
+    // Steps: tier and projected size, eased per parcel.
+    for (const item of items) {
+      const target = stepsFor(item.tier, item.projectedPx);
+      const eased = easeSteps(this.stepsEased[item.slot], target, dt);
+      this.stepsEased[item.slot] = eased;
+      item.steps = eased;
+    }
+    items.sort((a, b) => a.distance - b.distance);
+    const estimate = applySampleBudget(items, SAMPLE_BUDGET, viewportPx);
+
+    // Route to layers.
+    const native = this.nativeItems;
+    const half = this.halfItems;
+    native.length = 0;
+    half.length = 0;
+    for (const item of items) {
+      if (item.layerBlend > 0) native.push(item);
+      if (item.layerBlend < 1) half.push(item);
+    }
+    sortBackToFront(native);
+    sortBackToFront(half);
+    this.write(this.native, native, nowMs, 1);
+    this.write(this.half, half, nowMs, 0);
+    renderStats.dustDrawn = native.length;
+    renderStats.dustDrawnHalf = half.length;
+    renderStats.dustSamplesEstM = estimate / 1e6;
+
+    // Uniforms.
+    const u = this.material.uniforms;
+    u.tDepth.value = beauty.depthTexture;
+    u.uNear.value = perspective.near ?? 0.1;
+    u.uFar.value = perspective.far ?? 200;
+    camera.getWorldDirection(u.uCamForward.value as THREE.Vector3);
+    if (fog && 'color' in fog) (u.uFogColor.value as THREE.Color).copy(fog.color);
+    u.uFogDensity.value = fogDensity;
+    const up = this.upsampleMaterial.uniforms;
+    up.tDepth.value = beauty.depthTexture;
+    up.uNear.value = u.uNear.value;
+    up.uFar.value = u.uFar.value;
+    renderStats.dustCpuMs = performance.now() - started;
+
+    // Draw.
+    const previousAutoClear = renderer.autoClear;
+    renderer.getClearColor(this.clearColor);
+    const previousAlpha = renderer.getClearAlpha();
+    renderer.setClearColor(0x000000, 0);
+    renderer.autoClear = false;
+    if (half.length > 0 && this.halfTarget) {
+      renderer.setRenderTarget(this.halfTarget);
+      renderer.clear(true, false, false);
+      u.uDepthScale.value = 2;
+      renderer.render(this.half.scene, camera);
+    }
+    renderer.setRenderTarget(this.target);
+    renderer.clear(true, false, false);
+    if (half.length > 0) {
+      renderer.render(this.upsampleScene, this.quadCamera);
+    }
+    if (native.length > 0) {
+      u.uDepthScale.value = 1;
+      renderer.render(this.native.scene, camera);
+    }
+    renderer.setClearColor(this.clearColor, previousAlpha);
+    renderer.autoClear = previousAutoClear;
+    this.targetDirty = true;
+    return true;
+  }
+
+  private item(index: number): DustDrawItem {
+    // Pooled: the item objects live as long as the renderer, so a frame that
+    // selects a thousand parcels allocates nothing.
+    let item = this.pool[index];
+    if (!item) {
+      item = { slot: 0, distance: 0, projectedPx: 0, tier: 0, steps: 0, layerBlend: 1, densityScale: 1 };
+      this.pool[index] = item;
+    }
+    return item;
+  }
+  private readonly pool: DustDrawItem[] = [];
+
+  private write(layer: Layer, items: DustDrawItem[], nowMs: number, nativeSide: 0 | 1): void {
+    const store = this.store;
+    const e = this.evals;
+    const c = layer.center.array as Float32Array;
+    const s = layer.size.array as Float32Array;
+    const p = layer.params.array as Float32Array;
+    const m = layer.motion.array as Float32Array;
+    const tuning = this.tuning;
+    let n = 0;
+    for (const item of items) {
+      if (!evalParcel(store, item.slot, nowMs, this.windX, this.windZ, tuning, e)) continue;
+      const fade = e.fade * (nativeSide ? item.layerBlend : 1 - item.layerBlend);
+      if (fade <= 0.002) continue;
+      const seed = e.seed;
+      // Field +X faces the sun azimuth, jittered a little per parcel; the
+      // mirror across the light plane keeps the baked shadow valid.
+      const yaw = this.sunAzimuthRad - Math.PI / 2 + ((seed & 0xff) / 255 - 0.5) * 0.6;
+      const mirror = seed & 0x100 ? -1 : 1;
+      c[n * 3] = e.cx;
+      c[n * 3 + 1] = e.cy;
+      c[n * 3 + 2] = e.cz;
+      s[n * 3] = e.sx;
+      s[n * 3 + 1] = e.sy;
+      s[n * 3 + 2] = e.sz;
+      p[n * 4] = e.density * item.densityScale;
+      p[n * 4 + 1] = yaw;
+      p[n * 4 + 2] = item.steps;
+      p[n * 4 + 3] = fade;
+      m[n * 4] = e.age;
+      m[n * 4 + 1] = e.erosion;
+      m[n * 4 + 2] = mirror;
+      m[n * 4 + 3] = (e.palette === DustPalette.Wood ? 1 : e.palette === DustPalette.Metal ? 2 : 0)
+        + ((seed >>> 9) & 0xff) / 256;
+      n += 1;
+    }
+    layer.geometry.instanceCount = n;
+    if (n > 0) {
+      for (const attr of [layer.center, layer.size, layer.params, layer.motion]) {
+        attr.clearUpdateRanges();
+        attr.addUpdateRange(0, n * attr.itemSize);
+        attr.needsUpdate = true;
+      }
+    }
+  }
+
+  private clearIfDirty(renderer: THREE.WebGLRenderer): void {
+    if (!this.targetDirty || !this.target) return;
+    const previous = renderer.getRenderTarget();
+    renderer.getClearColor(this.clearColor);
+    const previousAlpha = renderer.getClearAlpha();
+    renderer.setClearColor(0x000000, 0);
+    renderer.setRenderTarget(this.target);
+    renderer.clear(true, false, false);
+    renderer.setRenderTarget(previous);
+    renderer.setClearColor(this.clearColor, previousAlpha);
+    this.targetDirty = false;
+  }
+
+  dispose(): void {
+    for (const layer of [this.native, this.half]) {
+      layer.geometry.dispose();
+      layer.scene.clear();
+    }
+    this.material.dispose();
+    this.upsampleMaterial.dispose();
+    this.quad.dispose();
+    this.target?.dispose();
+    this.halfTarget?.dispose();
+    this.bake.dispose();
+  }
+}

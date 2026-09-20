@@ -57,9 +57,11 @@ export interface DustShapeCurve {
 
 /** Indexed by DustShape. The renderer reads a curve; it never branches on the shape. */
 export const DUST_SHAPES: readonly DustShapeCurve[] = [
-  { r0: 1.5, growth: 2.5, rise: 3.0, life: 12, aspectY: 0.75, drag: 1.4, density: 1.6, erosion: 0.55 },
-  { r0: 2.0, growth: 3.0, rise: 1.5, life: 14, aspectY: 0.40, drag: 1.4, density: 1.2, erosion: 0.50 },
-  { r0: 0.6, growth: 1.65, rise: 2.0, life: 14, aspectY: 0.90, drag: 0.9, density: 0.7, erosion: 0.60 },
+  // r0 and growth multiply the parcel's radius0, so a cloud born at radius0
+  // has doubled by ~1 s and is ~5x at the end of its life.
+  { r0: 1.0, growth: 1.2, rise: 3.0, life: 12, aspectY: 0.75, drag: 1.4, density: 1.6, erosion: 0.55 },
+  { r0: 1.2, growth: 1.5, rise: 1.5, life: 14, aspectY: 0.40, drag: 1.4, density: 1.2, erosion: 0.50 },
+  { r0: 0.8, growth: 1.0, rise: 2.0, life: 14, aspectY: 0.90, drag: 0.9, density: 0.7, erosion: 0.60 },
 ];
 
 /** The longest any parcel lives, for anyone that needs a bound. */

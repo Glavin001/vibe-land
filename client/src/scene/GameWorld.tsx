@@ -131,6 +131,7 @@ import { WEATHER_PRESETS, type WeatherPreset } from '../graphics/weatherPresets'
 import { WeatherParticles } from './WeatherParticles';
 import { useWeatherAmbience } from '../graphics/weatherAudio';
 import { CityChunksLayer } from './CityChunksLayer';
+import { DustLayer } from '../vfx/DustLayer';
 
 const VEHICLE_INTERACT_RADIUS = VEHICLE_INTERACT_RADIUS_M;
 const REMOTE_HIT_FLASH_MS = 180;
@@ -3338,6 +3339,14 @@ export function GameWorld({
 
       {/* Destructible city chunks (instanced; only active in city-* matches) */}
       <CityChunksLayer getCityClient={() => runtimeRef.current?.getCityClient?.() ?? null} />
+      {/* Destruction dust, fed by the city client's fracture stream */}
+      <DustLayer
+        getCityClient={() => runtimeRef.current?.getCityClient?.() ?? null}
+        mode={dustMode}
+        fogColor={resolvedFogColor}
+        windStrengthMps={windStrengthMps}
+        windDirectionDeg={windDirectionDeg}
+      />
 
       {/* Battery group */}
       <group ref={batteryGroupRef} />

@@ -23,6 +23,7 @@ import {
   instanceShareThresholdSetting,
   qualityTier,
   setAmbientOcclusionEnabled,
+  setDustMode,
   setQualityTier,
   setShadowsEnabled,
   setInstanceShareThreshold,
@@ -31,6 +32,10 @@ import {
 } from './app/renderQuality';
 import { updateFogSettings } from './graphics/fogSettings';
 import { setLookTuning } from './graphics/lookTuning';
+import { DustPolicy } from './city/dustPolicy';
+import { DustPalette, dustParcels } from './vfx/dustParcelStore';
+
+let dustBurstSerial = 1;
 import { setCapturePose } from './scene/captureCamera';
 import {
   formatPerfSweepMobile,
@@ -330,6 +335,7 @@ export interface VibeE2EBridge {
   setRenderQuality(next: {
     shadows?: boolean;
     ao?: boolean;
+    dust?: 'off' | 'sprites' | 'volumetric';
     tier?: 'fast' | 'pretty';
     shareThreshold?: number;
     heroTiling?: boolean;
@@ -347,6 +353,12 @@ export interface VibeE2EBridge {
     aoStrength?: number;
     aoRadius?: number;
     envIntensity?: number;
+    dustDensity?: number;
+    dustSize?: number;
+    dustLifetime?: number;
+    dustExtinction?: number;
+    dustPhaseG?: number;
+    dustSunBoost?: number;
   }): void;
   /**
    * Park the camera at a fixed pose, or `null` to hand it back to the player.
@@ -362,6 +374,21 @@ export interface VibeE2EBridge {
    * exercised.
    */
   setCannonball(on: boolean): void;
+  /**
+   * Spawn destruction dust directly, bypassing the wire: a burst of the
+   * given magnitude at a world point. Lets the renderer be exercised and
+   * measured without a server, a shot, or a building to break.
+   */
+  dustBurst(next: {
+    x: number;
+    y: number;
+    z: number;
+    magnitude?: number;
+    /** 'fracture' | 'impact' */
+    kind?: string;
+    /** Face normal for a fracture; defaults to +Y. */
+    normal?: [number, number, number];
+  }): number;
 
   setCapturePose(next: {
     position: [number, number, number];
@@ -554,6 +581,7 @@ const bridge: VibeE2EBridge = {
   setRenderQuality: (next) => {
     if (next.shadows !== undefined) setShadowsEnabled(next.shadows);
     if (next.ao !== undefined) setAmbientOcclusionEnabled(next.ao);
+    if (next.dust !== undefined) setDustMode(next.dust);
     if (next.tier !== undefined) setQualityTier(next.tier);
     if (next.shareThreshold !== undefined) setInstanceShareThreshold(next.shareThreshold);
     if (next.heroTiling !== undefined) setHeroTilingEnabled(next.heroTiling);
@@ -563,6 +591,29 @@ const bridge: VibeE2EBridge = {
   /// the overlay.
   setCannonball: (on: boolean) => setCannonballEnabled(on),
   setCapturePose: (next) => setCapturePose(next),
+  dustBurst: (next) => {
+    const normal = next.normal ?? [0, 1, 0];
+    const policy = new DustPolicy(dustParcels, () => DustPalette.Concrete);
+    return policy.emit({
+      kind: next.kind === 'impact' ? 'impact' : 'fracture',
+      structureId: 0xffff,
+      simTick: dustBurstSerial++,
+      ordinal: 0,
+      x: next.x,
+      y: next.y,
+      z: next.z,
+      nx: normal[0],
+      ny: normal[1],
+      nz: normal[2],
+      vx: 0,
+      vy: 0,
+      vz: 0,
+      magnitude: next.magnitude ?? 40,
+      count: 1,
+      material: 0,
+      atMs: performance.now(),
+    });
+  },
   runPerfSweep: (profile?: PerfSweepProfile) => runPerfSweep(profile),
   formatPerfSweepMobile: (report: unknown) => formatPerfSweepMobile(report as PerfSweepReport),
   renderSettings: () => ({
