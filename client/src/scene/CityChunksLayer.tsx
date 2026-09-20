@@ -349,10 +349,28 @@ type BodyWriteContext = {
 };
 
 class BodyTeleportProbe {
-  private readonly previous = new Map<number, Float32Array>();
-  private readonly lastWriteMs = new Map<number, number>();
-  private readonly speedEst = new Map<number, number>();
+  // Indexed by the GPU body index rather than keyed by body: three Map
+  // operations per body write were most of the write phase once the per-chunk
+  // work was gone. NaN in `previous` marks a body never seen since the reset.
+  private previous = new Float32Array(0);
+  private lastWriteMs = new Float32Array(0);
+  private speedEst = new Float32Array(0);
   private readonly teleportStrikes = new Map<number, number>();
+
+  private ensure(index: number): void {
+    if (index * 3 + 2 < this.previous.length) return;
+    let size = Math.max(4096, this.previous.length / 3);
+    while (size <= index) size *= 2;
+    const previous = new Float32Array(size * 3).fill(Number.NaN);
+    previous.set(this.previous);
+    const lastWriteMs = new Float32Array(size);
+    lastWriteMs.set(this.lastWriteMs);
+    const speedEst = new Float32Array(size);
+    speedEst.set(this.speedEst);
+    this.previous = previous;
+    this.lastWriteMs = lastWriteMs;
+    this.speedEst = speedEst;
+  }
 
   /**
    * A full repaint rewrites every body from a ledger that has just been
@@ -361,30 +379,53 @@ class BodyTeleportProbe {
    * the next write per body a fresh start, which is what it is.
    */
   reset(): void {
-    this.previous.clear();
-    this.lastWriteMs.clear();
-    this.speedEst.clear();
+    this.previous.fill(Number.NaN);
+    this.lastWriteMs.fill(0);
+    this.speedEst.fill(0);
   }
 
-  observe(position: ArrayLike<number>, ctx: BodyWriteContext): void {
-    const nowMs = performance.now();
-    const previous = this.previous.get(ctx.bodyKey);
-    if (previous) {
-      const dx = position[0] - previous[0];
-      const dy = position[1] - previous[1];
-      const dz = position[2] - previous[2];
-      const step = Math.hypot(dx, dy, dz);
-      const last = this.lastWriteMs.get(ctx.bodyKey) ?? nowMs;
-      const gapSec = Math.max((nowMs - last) / 1000, 1 / 240);
+  /**
+   * `context` is built only for a step big enough to be a teleport: the
+   * ledger lookups behind it (pose source, presented speed, rebase sequence)
+   * are a few hundred nanoseconds each, and at twenty thousand bodies a frame
+   * that was milliseconds spent describing writes nobody would ever read.
+   */
+  observe(index: number, position: ArrayLike<number>, nowMs: number, context: () => BodyWriteContext): void {
+    this.ensure(index);
+    const at = index * 3;
+    const px = this.previous[at];
+    if (!Number.isNaN(px)) {
+      const dx = position[0] - px;
+      const dy = position[1] - this.previous[at + 1];
+      const dz = position[2] - this.previous[at + 2];
+      const step = Math.sqrt(dx * dx + dy * dy + dz * dz);
+      const gapSec = Math.max((nowMs - this.lastWriteMs[index]) / 1000, 1 / 240);
+      const est = this.speedEst[index];
+      this.speedEst[index] = 0.7 * est + 0.3 * (step / gapSec);
+      if (step > CHUNK_TELEPORT_M) this.judge(step, gapSec, est, position, nowMs, index, context());
+    }
+    this.previous[at] = position[0];
+    this.previous[at + 1] = position[1];
+    this.previous[at + 2] = position[2];
+    this.lastWriteMs[index] = nowMs;
+  }
+
+  private judge(
+    step: number,
+    gapSec: number,
+    est: number,
+    position: ArrayLike<number>,
+    nowMs: number,
+    index: number,
+    ctx: BodyWriteContext,
+  ): void {
+    {
       // Judge the step against what this body's trajectory can account for,
       // not a flat bound: debris legitimately flies at 40-70 m/s, and a
       // distant body on an 8-frame stride covers multiple metres per write.
-      const est = this.speedEst.get(ctx.bodyKey) ?? 0;
       const known = Math.max(est, ctx.bodySpeed ?? 0);
       const explained = 3 * known * gapSec + 0.3;
-      const anomalous = step > CHUNK_TELEPORT_M && step > explained;
-      this.speedEst.set(ctx.bodyKey, 0.7 * est + 0.3 * (step / gapSec));
-      if (anomalous) {
+      if (step > explained) {
         noteTeleport({
           slot: ctx.slot,
           stepM: step,
@@ -404,7 +445,7 @@ class BodyTeleportProbe {
           settling: ctx.settling,
           bodySettled: ctx.bodySettled,
           source: ctx.source ?? 'unknown',
-          sinceLastWriteMs: Math.round(nowMs - last),
+          sinceLastWriteMs: Math.round(nowMs - this.lastWriteMs[index]),
           x: position[0],
           y: position[1],
           z: position[2],
@@ -415,19 +456,15 @@ class BodyTeleportProbe {
         this.teleportStrikes.set(ctx.bodyKey, strikes);
         if (strikes === 3) addCitySuspect(ctx.bodyKey);
       }
-      previous[0] = position[0];
-      previous[1] = position[1];
-      previous[2] = position[2];
-    } else {
-      this.previous.set(ctx.bodyKey, Float32Array.of(position[0], position[1], position[2]));
     }
-    this.lastWriteMs.set(ctx.bodyKey, nowMs);
   }
 
-  forget(bodyKey: number): void {
-    this.previous.delete(bodyKey);
-    this.lastWriteMs.delete(bodyKey);
-    this.speedEst.delete(bodyKey);
+  /** A body index about to be reused by another body starts fresh. */
+  forget(index: number): void {
+    if (index * 3 + 2 >= this.previous.length) return;
+    this.previous[index * 3] = Number.NaN;
+    this.lastWriteMs[index] = 0;
+    this.speedEst[index] = 0;
   }
 }
 
@@ -1096,6 +1133,7 @@ export function CityChunksLayer({
     // the ledger holds; deferring a write delays when a distant body is
     // redrawn, it never changes where it is.
     const updateStartedAt = performance.now();
+    const writeNowMs = updateStartedAt;
     // Chunks written this frame per mesh, so a culled cell can say how much
     // live geometry it was holding when it went off screen.
     const liveChunksPerMesh: number[] = [];
@@ -1104,8 +1142,8 @@ export function CityChunksLayer({
       const body = client.topology.body(key);
       if (!body) {
         dirty.delete(key);
+        if (state.poses.hasBody(key)) teleportProbe.forget(state.poses.bodyIndexFor(key));
         state.poses.releaseBody(key);
-        teleportProbe.forget(key);
         continue;
       }
       // A body that stopped moving gets its final write unconditionally.
@@ -1119,10 +1157,13 @@ export function CityChunksLayer({
       // the newest streamed tick rather than the interpolated one -- roughly an
       // interpolation delay ahead of the frames around it. That is the
       // two-writer flicker, and this is the only place it can be observed,
-      // because it depends on what the ledger holds at draw time.
-      const { source: writeSource, deltaM: writeDeltaM } = client.topology.poseSourceOf(key);
-      if (recording && writeSource === 'raw' && writeDeltaM > 0) {
-        recordCityEvent('city_flicker', { body: key, deltaM: writeDeltaM, settling });
+      // because it depends on what the ledger holds at draw time. Recorder
+      // only: the lookup is per body per frame.
+      if (recording) {
+        const { source: writeSource, deltaM: writeDeltaM } = client.topology.poseSourceOf(key);
+        if (writeSource === 'raw' && writeDeltaM > 0) {
+          recordCityEvent('city_flicker', { body: key, deltaM: writeDeltaM, settling });
+        }
       }
       const debugCode = bodyDebug.enabled ? bodyDebugStateCode(key, false) : -1;
       const debugColor = debugCode >= 0 ? bodyDebugColorForCode(debugCode) : null;
@@ -1135,19 +1176,19 @@ export function CityChunksLayer({
         body.settled ? 0.75 : 1,
         debugColor ?? (body.settled || bodyIsSupport ? null : TMP_COLOR.setRGB(1, 1, 0.9)),
       );
-      teleportProbe.observe(body.position, {
+      teleportProbe.observe(state.poses.bodyIndexFor(key), body.position, writeNowMs, () => ({
         bodyKey: key,
         slot: body.chunkSlots[0] ?? -1,
         settling,
         bodySettled: body.settled,
-        source: writeSource,
+        source: client.topology.poseSourceOf(key).source,
         bodySpeed: client.bodyPresentedSpeed(key),
         // Was this body's island frame rebased in the last few batches? A
         // rebase is supposed to leave every composed world pose untouched.
         recentlyRebased:
           client.topology.currentReoffsetSeq() - client.topology.reoffsetSeqOf(key) < 64
           && client.topology.reoffsetSeqOf(key) >= 0,
-      });
+      }));
       renderStats.instanceWrites += 1;
       // The cells this body's chunks sit in: their culling spheres follow it.
       // Support serial 0 is the intact structure, at rest by definition; its
