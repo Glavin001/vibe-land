@@ -25,6 +25,15 @@ export async function tallestStructureTarget(
   page: Page,
   aimHeightFraction = 0.6,
 ): Promise<[number, number, number]> {
+  // The client's own decoded manifest, when the bridge has it: the served
+  // manifest is binary now and cannot be read as JSON.
+  const fromBridge = await page.evaluate(() => {
+    const structures = (window as any).__VIBE_E2E__?.cityStructures?.() ?? [];
+    let best: any = null;
+    for (const s of structures) if (!best || s.chunks > best.chunks) best = s;
+    return best ? { x: best.position[0], y: best.position[1] + best.top, z: best.position[2] } : null;
+  });
+  if (fromBridge) return [fromBridge.x, fromBridge.y * aimHeightFraction, fromBridge.z];
   const { manifestHash } = await cityStats(page);
   const target = await page.evaluate(async (hash) => {
     const response = await fetch(`/city-manifest/${hash}`);

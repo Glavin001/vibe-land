@@ -61,7 +61,7 @@ import {
   type ChunkWriteContext,
   type CityRenderable,
 } from './cityChunkWrite';
-import { updateCityE2E } from '../e2eBridge';
+import { updateCityE2E, updateCityStructuresE2E } from '../e2eBridge';
 import { POSE_SOURCES, poseTraceRecord, poseTraceWanted } from '../city/poseTrace';
 import { addCitySuspect, isRecording, recordCityEvent, recordCityStats } from '../netlab/recorder';
 import {
@@ -482,6 +482,13 @@ export function CityChunksLayer({
       clientRef.current = client;
       buildFailedForRef.current = null;
       dirtyBodiesRef.current.clear();
+      // What a harness can aim at, from the manifest the client decoded.
+      updateCityStructuresE2E(client.manifest.manifest.structures.map((structure) => ({
+        structureId: structure.structureId,
+        position: [structure.worldPosition[0], structure.worldPosition[1], structure.worldPosition[2]],
+        top: structure.chunks.reduce((top, chunk) => Math.max(top, chunk.centroid[1]), -Infinity),
+        chunks: structure.chunks.length,
+      })));
     }
 
     // Body-state debug repaint: when the toggle flips or fresh states arrive

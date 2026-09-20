@@ -410,6 +410,17 @@ export interface VibeE2EBridge {
     lookAt: [number, number, number];
   } | null): void;
   /**
+   * Every city structure's footing, height and size, from the client's own
+   * decoded manifest -- the served manifest is binary, so a harness cannot
+   * read it as JSON. Empty outside a city match.
+   */
+  cityStructures(): Array<{
+    structureId: number;
+    position: [number, number, number];
+    top: number;
+    chunks: number;
+  }>;
+  /**
    * Run the per-feature cost sweep and hand back the report.
    *
    * The same one the panel's button downloads -- exposed here so a spec can
@@ -458,7 +469,13 @@ const refs = {
   remotePlayers: [] as Array<{ id: number; position: [number, number, number] }>,
   statsSnapshot: { ...DEFAULT_STATS } as DebugStats,
   city: null as CityE2EStats | null,
+  cityStructures: [] as Array<{ structureId: number; position: [number, number, number]; top: number; chunks: number }>,
 };
+
+/** Called once the city manifest is known; cleared with null. */
+export function updateCityStructuresE2E(structures: typeof refs.cityStructures | null): void {
+  refs.cityStructures = structures ?? [];
+}
 
 /** Update destructible-city stats. Called by CityChunksLayer (throttled). */
 export function updateCityE2E(stats: CityE2EStats | null): void {
@@ -607,6 +624,7 @@ const bridge: VibeE2EBridge = {
   /// the overlay.
   setCannonball: (on: boolean) => setCannonballEnabled(on),
   setCapturePose: (next) => setCapturePose(next),
+  cityStructures: () => refs.cityStructures,
   dustBurst: (next) => {
     const normal = next.normal ?? [0, 1, 0];
     pushDebugDustSource({
