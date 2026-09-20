@@ -44,14 +44,20 @@ const SHADOW_MAP_KEY = 'vibe.render.shadowMapSize';
  *                                       sub-draws hard, in the exact opposite
  *                                       direction.
  *
- * 8, because the M3 is the constrained machine: on the 4090 either value is
- * multiples under budget, on the M3 the difference is 2.7 ms of an 8.33 ms
- * frame. This default has been flipped once already by measuring on the wrong
- * hardware; do not change it again without a perf-sweep report from a machine
- * that is actually near budget. Live-settable so `perfSweep` can price it
- * wherever it runs.
+ * 8 was chosen because the M3 is the constrained machine: on the 4090 either
+ * value was multiples under budget, on the M3 the difference was 2.7 ms of an
+ * 8.33 ms frame -- with a BatchedMesh, whose per-chunk sub-draws were the
+ * Metal cost being avoided.
+ *
+ * Infinity now, because the cell mesh no longer has sub-draws at all: a cell's
+ * hulls are one indexed draw whether one or a thousand of them are moving
+ * (citySlotMesh.ts). Against that, a city-wide instanced shape is a real draw
+ * call in the shadow pass and another in the beauty pass, unculled, and the
+ * town scene had 873 of them: ~1,750 draws a frame for shapes a cell mesh can
+ * hold for the price of their vertices (~300k, a few MB). Live-settable so
+ * `perfSweep` can still price the old trade wherever it runs.
  */
-export const DEFAULT_INSTANCE_SHARE_THRESHOLD = 8;
+export const DEFAULT_INSTANCE_SHARE_THRESHOLD = Number.POSITIVE_INFINITY;
 
 export type QualityTier = 'fast' | 'pretty';
 
@@ -348,7 +354,7 @@ export function instanceShareThresholdSetting(): number {
 }
 
 export function setInstanceShareThreshold(next: number): void {
-  if (!Number.isFinite(next) || next < 1 || next === instanceShareThreshold) return;
+  if (Number.isNaN(next) || next < 1 || next === instanceShareThreshold) return;
   instanceShareThreshold = next;
   notify();
 }
