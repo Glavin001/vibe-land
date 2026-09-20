@@ -1,4 +1,4 @@
-import { useRef, useEffect, useMemo, type MutableRefObject, type ReactNode, type RefObject } from 'react';
+import { useRef, useEffect, useMemo, useState, type MutableRefObject, type ReactNode, type RefObject } from 'react';
 
 import {
   useAmbientOcclusionEnabled,
@@ -27,7 +27,7 @@ import { useGameRuntime } from '../runtime/useGameRuntime';
 import type { GameRuntimeClient } from '../runtime/gameRuntime';
 import { updateE2EBridgeFrameState } from '../e2eBridge';
 import { addDebugE2eMs } from '../city/renderStats';
-import { cannonballEnabled } from '../city/shotMode';
+import { onShotModeChange, shotMode, shotWeapon } from '../city/shotMode';
 import { isRecording, recordFrame } from '../netlab/recorder';
 import { isAgentDriveActive, sampleAgentDrive } from '../agentDrive';
 import { DEFAULT_STATS } from '../ui/DebugOverlay';
@@ -74,7 +74,6 @@ import {
   SPAWN_PROTECTION_MS,
   VEHICLE_INTERACT_RADIUS_M,
   WEAPON_CANNONBALL,
-  WEAPON_HITSCAN,
 } from '../net/protocol';
 import type {
   DamageEventPacket,
@@ -133,6 +132,8 @@ import { WeatherParticles } from './WeatherParticles';
 import { useWeatherAmbience } from '../graphics/weatherAudio';
 import { CityChunksLayer } from './CityChunksLayer';
 import { DustLayer } from '../vfx/DustLayer';
+import { MeteorLayer } from '../vfx/MeteorLayer';
+import { isMeteorBody } from '../vfx/meteorFlights';
 import { registerDustShot } from '../vfx/dustShots';
 
 const VEHICLE_INTERACT_RADIUS = VEHICLE_INTERACT_RADIUS_M;
@@ -1170,7 +1171,11 @@ export function GameWorld({
   const dustFluid = useDustFluid();
   // One offscreen pipeline serves both: SSAO and the volumetric dust each
   // need the scene's depth, which only exists off the canvas.
-  const framePipelineOn = ambientOcclusionOn || dustMode === 'volumetric';
+  // The meteor's fire is a pipeline stage, so choosing that shot brings the
+  // pipeline up before the first rock is in the air rather than as it lands.
+  const [meteorShot, setMeteorShot] = useState(() => shotMode() === 'meteor');
+  useEffect(() => onShotModeChange(() => setMeteorShot(shotMode() === 'meteor')), []);
+  const framePipelineOn = ambientOcclusionOn || dustMode === 'volumetric' || meteorShot;
   const skyDomeOn = useSkyDomeEnabled();
   const skyIblOn = useSkyIblEnabled();
   const shadowMapTexels = useShadowMapSizeOverride();
@@ -2253,20 +2258,25 @@ export function GameWorld({
             nearestRenderedBodyRadiusM: nearestRenderedCandidate?.radius ?? null,
           },
         );
-        pushActiveShotTrace(
-          activeShotTracesRef.current,
-          createLocalShotTrace(
-            nextShotTraceIdRef.current++,
-            client.playerId,
-            camera,
-            now,
-            fireDir,
-            remoteHits,
-            sceneHit?.toi ?? null,
-          ),
-        );
-        {
-          const ball = cannonballEnabled();
+        const mode = shotMode();
+        const weapon = shotWeapon();
+        // A meteor leaves nothing at the muzzle: no tracer, and no shot for
+        // the dust to read an entry from, because the rock arrives from the
+        // sky and its impact makes its own dust the way any falling body does.
+        if (mode !== 'meteor') {
+          pushActiveShotTrace(
+            activeShotTracesRef.current,
+            createLocalShotTrace(
+              nextShotTraceIdRef.current++,
+              client.playerId,
+              camera,
+              now,
+              fireDir,
+              remoteHits,
+              sceneHit?.toi ?? null,
+            ),
+          );
+          const ball = mode === 'cannonball';
           const toi = !ball && sceneHit?.toi != null ? sceneHit.toi : null;
           registerDustShot({
             ox: camera.position.x, oy: camera.position.y, oz: camera.position.z,
@@ -2274,14 +2284,14 @@ export function GameWorld({
             ex: toi === null ? null : camera.position.x + fireDir[0] * toi,
             ey: toi === null ? null : camera.position.y + fireDir[1] * toi,
             ez: toi === null ? null : camera.position.z + fireDir[2] * toi,
-            weapon: ball ? WEAPON_CANNONBALL : WEAPON_HITSCAN,
+            weapon,
             atMs: now,
           });
         }
         client.sendFire({
           seq: prediction.peekNextInputSeq(),
           shotId,
-          weapon: cannonballEnabled() ? WEAPON_CANNONBALL : WEAPON_HITSCAN,
+          weapon,
           clientFireTimeUs: client.serverClock.serverNowUs(),
           clientInterpMs: Math.round(state.interpolationDelayMs),
           clientDynamicInterpMs: dynamicLagMsForShot,
@@ -3042,6 +3052,9 @@ export function GameWorld({
     if (dbGroup) {
       const activeBodies = new Set<number>();
       for (const [id, body] of state.dynamicBodies) {
+        // A meteor is drawn by its own layer as a burning rock; the sphere
+        // the physics streams for it stays unrendered.
+        if (isMeteorBody(id)) continue;
         activeBodies.add(id);
         const renderBody = prediction.getRenderedDynamicBodyState(id) ?? body;
         let mesh = dynamicBodyMeshes.current.get(id);
@@ -3365,6 +3378,8 @@ export function GameWorld({
       {/* Destructible city chunks (instanced; only active in city-* matches) */}
       <CityChunksLayer getCityClient={() => runtimeRef.current?.getCityClient?.() ?? null} />
       {/* Destruction dust, fed by the city client's fracture stream */}
+      <MeteorLayer getRuntime={() => runtimeRef.current ?? null} />
+
       <DustLayer
         getCityClient={() => runtimeRef.current?.getCityClient?.() ?? null}
         getDynamicBodies={() => runtimeRef.current?.state?.dynamicBodies.values() ?? null}

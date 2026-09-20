@@ -221,15 +221,17 @@ export function FramePipeline({
     }
     passes.compositeMaterial.uniforms.uAoOn.value = ao && passes.ao ? 1 : 0;
 
-    // Stages: the last one that draws is what the composite lays over. (One
-    // stage today; a second would composite into the first's target.)
+    // Stages: each is handed what the ones before it drew and lays itself
+    // over that, so the last one that draws is what the composite lays over.
     let dustOn = 0;
     if (pipelineStageCount() > 0) {
-      const ctx = { renderer, camera, scene, beauty: passes.beauty, width, height, dt };
+      let under: THREE.Texture | null = null;
       for (const stage of pipelineStages()) {
+        const ctx = { renderer, camera, scene, beauty: passes.beauty, width, height, dt, under };
         if (stage.render(ctx)) {
           const output = stage.output();
           if (output) {
+            under = output;
             passes.compositeMaterial.uniforms.tDust.value = output;
             dustOn = 1;
           }

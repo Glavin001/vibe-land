@@ -91,6 +91,14 @@ export const PKT_CITY_DEBRIS = 125;
 /// Client -> server: bodies whose chains a lost packet poisoned; the server
 /// restates exactly these. The loss-heal cost scales with actual loss.
 export const PKT_CITY_NACK = 126;
+/// Server -> clients: a meteor was launched. Carries the start, the launch
+/// velocity, the aimed point and the gravity it flies under, so a client can
+/// draw the whole flight itself: the body snapshot is relative to the viewer
+/// and quantised to +-82 m, so a rock launched 300 m out cannot be streamed
+/// until the last half second of its fall. Reliable, raw bytes, routed like
+/// the other city packets (127-129 are the destruction wire's, see
+/// `destruction/src/wire.rs`). Layout in `server/src/meteor.rs`.
+export const PKT_METEOR_LAUNCHED = 130;
 // Chunk kinematic stream rate (sim ticks between sends: SIM_HZ / this).
 export const CITY_CHUNK_STREAM_HZ = 30;
 export const CITY_BASELINE_INTERVAL_MS = 1000;
@@ -116,6 +124,14 @@ export const WEAPON_ROCKET = 2;
 /// engine's own demos fire, and the thing you watch fly and land is the thing
 /// that does the damage.
 export const WEAPON_CANNONBALL = 3;
+/// A meteor: a very heavy rock that falls onto the point the shooter aimed at.
+///
+/// The shooter's ray picks the impact point; the server chooses a start high
+/// and far outside the city and solves the ballistic velocity that carries the
+/// rock through that point. It is the cannonball's mechanism -- a real body,
+/// damage from contacts PhysX solved -- at a mass and speed the cannon cannot
+/// reach, coming from a direction the shooter does not control.
+export const WEAPON_METEOR = 4;
 
 // ── Hit zones ───────────────────────────────────
 export const HIT_ZONE_NONE = 0;

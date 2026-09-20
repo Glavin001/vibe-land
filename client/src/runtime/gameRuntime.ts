@@ -46,8 +46,10 @@ import {
   PKT_CITY_MANIFEST,
   PKT_CITY_MANIFEST_REQUEST,
   PKT_MATCH_STATS,
+  PKT_METEOR_LAUNCHED,
 } from '../net/sharedConstants';
 import { decodeCityManifestPayload, fetchCityManifest } from '../city/manifest';
+import { decodeMeteorLaunched, registerMeteorFlight } from '../vfx/meteorFlights';
 import { CLIENT_MAX_CATCHUP_STEPS, FIXED_DT } from './clientSimConstants';
 import {
   shouldCreateGameplayWasmWorld,
@@ -1278,6 +1280,18 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
           }
         },
         onCityPacket: (bytes) => {
+          if (bytes.length > 1 && bytes[0] === PKT_METEOR_LAUNCHED) {
+            // A launch, not geometry: the layer that draws meteors reads the
+            // store directly, the way the dust reads its shots.
+            const launch = decodeMeteorLaunched(bytes);
+            if (launch) {
+              registerMeteorFlight(
+                launch,
+                (serverTimeUs) => (serverTimeUs - this.serverClock.getOffsetUs()) / 1000,
+              );
+            }
+            return;
+          }
           if (bytes.length > 1 && bytes[0] === PKT_MATCH_STATS) {
             try {
               setMatchStats(JSON.parse(new TextDecoder().decode(bytes.subarray(1))));

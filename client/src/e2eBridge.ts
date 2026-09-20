@@ -14,7 +14,8 @@ import type { DebugStats } from './ui/DebugOverlay';
 import { DEFAULT_STATS } from './ui/DebugOverlay';
 import { renderStats } from './city/renderStats';
 import { acquireCityDiagnostics } from './city/cityDiagnostics';
-import { setCannonballEnabled } from './city/shotMode';
+import { setCannonballEnabled, setShotMode, type ShotMode } from './city/shotMode';
+import { meteorFlights } from './vfx/meteorFlights';
 import {
   ambientOcclusionPreferred,
   cityTextureDetail,
@@ -394,6 +395,8 @@ export interface VibeE2EBridge {
    * exercised.
    */
   setCannonball(on: boolean): void;
+  /** Choose any of the three shots by name; `setCannonball` covers two of them. */
+  setShotMode(mode: ShotMode): void;
   /**
    * Spawn destruction dust directly, bypassing the wire: a burst of the
    * given magnitude at a world point. Lets the renderer be exercised and
@@ -419,6 +422,20 @@ export interface VibeE2EBridge {
    * decoded manifest -- the served manifest is binary, so a harness cannot
    * read it as JSON. Empty outside a city match.
    */
+  /**
+   * Meteors the server has announced and the client is drawing: which body,
+   * how far along its arc, and whether the streamed body has taken over.
+   * A driver fires a meteor and reads this to know the launch arrived.
+   */
+  meteors(): Array<{
+    bodyId: number;
+    shooterPlayerId: number;
+    ageS: number;
+    flightTimeS: number;
+    streamed: boolean;
+    start: [number, number, number];
+    target: [number, number, number];
+  }>;
   cityStructures(): Array<{
     structureId: number;
     position: [number, number, number];
@@ -628,7 +645,20 @@ const bridge: VibeE2EBridge = {
   /// exercise the cannonball, which is otherwise only reachable by clicking
   /// the overlay.
   setCannonball: (on: boolean) => setCannonballEnabled(on),
+  setShotMode: (mode: ShotMode) => setShotMode(mode),
   setCapturePose: (next) => setCapturePose(next),
+  meteors: () => {
+    const now = performance.now();
+    return meteorFlights(now).map((flight) => ({
+      bodyId: flight.bodyId,
+      shooterPlayerId: flight.shooterPlayerId,
+      ageS: (now - flight.launchedAtLocalMs) / 1000,
+      flightTimeS: flight.flightTimeS,
+      streamed: flight.lastStreamedAtMs > 0,
+      start: flight.start,
+      target: flight.target,
+    }));
+  },
   cityStructures: () => refs.cityStructures,
   dustBurst: (next) => {
     const normal = next.normal ?? [0, 1, 0];

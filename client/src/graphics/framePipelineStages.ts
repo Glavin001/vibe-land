@@ -10,6 +10,10 @@
 // A module-level registry rather than React context: the pipeline sits in a
 // 3,400-line scene component and threading a provider through it for one
 // consumer is more coupling than one Set.
+//
+// Two stages today: the dust and the meteor fire. They chain: each is handed
+// the previous one's output as `under` and lays itself over it, so the
+// composite still reads one texture.
 
 import type * as THREE from 'three';
 
@@ -24,9 +28,20 @@ export interface PipelineStageContext {
   height: number;
   /** Seconds since the previous frame, clamped. */
   dt: number;
+  /**
+   * What the stages before this one drew, premultiplied, or null when none
+   * did. A stage that draws must lay itself over this: the composite takes
+   * only the last output, so each stage carries the ones before it.
+   */
+  under: THREE.Texture | null;
 }
 
 export interface PipelineStage {
+  /**
+   * Draw order, low first; equal orders keep registration order. The dust is
+   * 0 and ignores `under`, so anything that lays over it must come later.
+   */
+  order?: number;
   /** Draw. Return false when nothing was drawn; the composite then ignores output(). */
   render(ctx: PipelineStageContext): boolean;
   /** Premultiplied RGBA, full drawing-buffer size, or null. */
@@ -35,15 +50,17 @@ export interface PipelineStage {
   dispose(): void;
 }
 
-const stages = new Set<PipelineStage>();
+const stages: PipelineStage[] = [];
 const listeners = new Set<() => void>();
 
-/** Adds a stage; returns the remover. Stages draw in registration order. */
+/** Adds a stage; returns the remover. Stages draw by `order`, then registration order. */
 export function registerPipelineStage(stage: PipelineStage): () => void {
-  stages.add(stage);
+  stages.push(stage);
+  stages.sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
   for (const listener of listeners) listener();
   return () => {
-    stages.delete(stage);
+    const index = stages.indexOf(stage);
+    if (index >= 0) stages.splice(index, 1);
     for (const listener of listeners) listener();
   };
 }
@@ -53,7 +70,7 @@ export function pipelineStages(): Iterable<PipelineStage> {
 }
 
 export function pipelineStageCount(): number {
-  return stages.size;
+  return stages.length;
 }
 
 /** Notified when a stage comes or goes. */

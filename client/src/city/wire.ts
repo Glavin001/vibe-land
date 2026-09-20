@@ -13,6 +13,7 @@ import {
   PKT_CITY_MANIFEST,
   PKT_CITY_TOPOLOGY,
   PKT_MATCH_STATS,
+  PKT_METEOR_LAUNCHED,
 } from '../net/sharedConstants';
 import type { Quat, Vec3 } from './vec';
 
@@ -580,7 +581,8 @@ export function isCityPacketKind(kind: number): boolean {
     kind === PKT_CITY_DEBRIS ||
     kind === PKT_CITY_LANES ||
     kind === PKT_CITY_TOPO_HASH ||
-    kind === PKT_CITY_STRUCTURE_BOOTSTRAP
+    kind === PKT_CITY_STRUCTURE_BOOTSTRAP ||
+    kind === PKT_METEOR_LAUNCHED
   );
 }
 

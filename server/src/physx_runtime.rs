@@ -75,6 +75,13 @@ const MUZZLE_CLEARANCE_M: f32 = 0.6;
 /// seconds of sustained fire, which is as far ahead as anyone watches a shot.
 const MAX_LIVE_LAUNCHED_BALLS: usize = 24;
 
+/// Which reserved ring of ids a launch draws from.
+#[derive(Clone, Copy)]
+enum Pool {
+    Ball,
+    Meteor,
+}
+
 /// A ball that was fired as a projectile, and the tick it gets cleaned up on.
 ///
 /// Fired balls are ordinary networked dynamic bodies, so the client already
@@ -135,7 +142,12 @@ pub struct PhysxPhysicsArena {
     /// metadata every client already has covers every ball the match can fire.
     ball_pool: Vec<u32>,
     ball_cursor: usize,
-    /// Fired balls, oldest first, with the tick each one retires on.
+    /// The meteor's own ring of ids, for the same reason and with its own
+    /// metadata: the join-time packet carries one radius per id, and a meteor
+    /// through a cannonball's id would be drawn as a cannonball.
+    meteor_pool: Vec<u32>,
+    meteor_cursor: usize,
+    /// Fired balls and meteors, oldest first, with the tick each one retires on.
     launched_balls: VecDeque<LaunchedBall>,
     /// Radius the balls were launched with, for the travel clamp.
     ball_radius_m: f32,
@@ -211,6 +223,8 @@ impl PhysxPhysicsArena {
             balls_clamped: 0,
             ball_pool: Vec::new(),
             ball_cursor: 0,
+            meteor_pool: Vec::new(),
+            meteor_cursor: 0,
             launched_balls: VecDeque::new(),
             launch_tick: 0,
             next_battery_id: 1,
@@ -1161,6 +1175,135 @@ impl PhysxPhysicsArena {
         self.ball_pool.clone()
     }
 
+    /// Reserve the ids meteors will use, and return them. See `meteor_pool`.
+    pub fn reserve_meteor_pool(&mut self, count: usize) -> Vec<u32> {
+        for _ in 0..count {
+            let id = self.next_dynamic_id;
+            self.next_dynamic_id = self.next_dynamic_id.saturating_add(1);
+            self.meteor_pool.push(id);
+        }
+        self.meteor_pool.clone()
+    }
+
+    /// The first solid thing along a ray -- terrain, structure, chunk or loose
+    /// body -- as a world point. Players are not solid here: a ray from a
+    /// shooter's own eye must not stop on their own capsule.
+    pub fn cast_solid_ray_point(
+        &self,
+        origin: [f32; 3],
+        direction: [f32; 3],
+        max_distance: f32,
+    ) -> Option<[f32; 3]> {
+        let hit = self
+            .world
+            .raycast(bridge::RaycastRequest {
+                origin: array_vec3(origin),
+                direction: array_vec3(direction),
+                max_distance,
+                collision_mask: GROUP_STATIC | GROUP_DYNAMIC | GROUP_CHUNK,
+                ignore_entity_id: 0,
+                has_ignore_entity: false,
+            })
+            .ok()?;
+        hit.hit
+            .then_some([hit.position.x, hit.position.y, hit.position.z])
+    }
+
+    /// Drop a meteor into the scene at `position` with `velocity`, and return
+    /// its id.
+    ///
+    /// The cannonball's mechanism -- a real body whose contacts the stage reads
+    /// its loads from -- with two differences: the start is wherever the caller
+    /// planned it, not the muzzle, and the velocity is given whole, because it
+    /// was solved to pass through a point rather than pointed. See `meteor.rs`.
+    pub fn launch_meteor(
+        &mut self,
+        position: Vector3<f32>,
+        velocity: Vector3<f32>,
+        radius: f32,
+        mass: f32,
+        ttl_ticks: u32,
+    ) -> Option<u32> {
+        if !(velocity.x.is_finite() && velocity.y.is_finite() && velocity.z.is_finite())
+            || !(radius > 0.0)
+            || !(mass > 0.0)
+        {
+            return None;
+        }
+        let id = self.take_pool_id(Pool::Meteor);
+        self.launch_body(id, position, velocity, radius, mass, ttl_ticks)
+    }
+
+    /// Next id from a ring, retiring whatever still holds it. Without a
+    /// reservation (tests, and any caller that has not asked for one) a fresh
+    /// id is fine, because nothing is watching over a network.
+    fn take_pool_id(&mut self, pool: Pool) -> u32 {
+        let (ids, cursor) = match pool {
+            Pool::Ball => (&self.ball_pool, &mut self.ball_cursor),
+            Pool::Meteor => (&self.meteor_pool, &mut self.meteor_cursor),
+        };
+        if ids.is_empty() {
+            let fresh = self.next_dynamic_id;
+            self.next_dynamic_id = self.next_dynamic_id.saturating_add(1);
+            return fresh;
+        }
+        let slot = *cursor % ids.len();
+        *cursor = slot.wrapping_add(1);
+        let reserved = ids[slot];
+        if self.dynamic.contains_key(&reserved) {
+            self.retire_launched_ball(reserved);
+            self.launched_balls.retain(|ball| ball.id != reserved);
+        }
+        reserved
+    }
+
+    /// The part of a launch that does not care what is being launched.
+    fn launch_body(
+        &mut self,
+        id: u32,
+        position: Vector3<f32>,
+        velocity: Vector3<f32>,
+        radius: f32,
+        mass: f32,
+        ttl_ticks: u32,
+    ) -> Option<u32> {
+        let entity = NS_DYNAMIC | (id & ID_MASK);
+        if let Err(error) = self.world.launch_dynamic_ball(bridge::LaunchedBallDesc {
+            entity_id: entity,
+            user_id: id,
+            pose: pose(position, [0.0, 0.0, 0.0, 1.0]),
+            radius,
+            mass,
+            linear_velocity: vec3(velocity),
+            collision_group: GROUP_DYNAMIC,
+            collision_mask: ALL_GROUPS,
+        }) {
+            tracing::warn!(%error, "ball could not be launched");
+            return None;
+        }
+        self.snapshots_valid = false;
+        self.dynamic.insert(
+            id,
+            DynamicMeta {
+                half_extents: [radius; 3],
+                shape_type: SHAPE_SPHERE,
+            },
+        );
+        self.launched_balls.push_back(LaunchedBall {
+            id,
+            expires_at: self.launch_tick + u64::from(ttl_ticks.max(1)),
+        });
+        // Bounded, and the bound is enforced by retiring the oldest rather than
+        // refusing the newest: a player holding the trigger should keep seeing
+        // their shots, and the scene should not grow without limit.
+        while self.launched_balls.len() > MAX_LIVE_LAUNCHED_BALLS {
+            if let Some(oldest) = self.launched_balls.pop_front() {
+                self.retire_launched_ball(oldest.id);
+            }
+        }
+        Some(id)
+    }
+
     /// Throw a visible ball from `position` along `direction` and return its id.
     ///
     /// This is the shot the engine's own destruction demos fire. It matters
@@ -1193,60 +1336,9 @@ impl PhysxPhysicsArena {
         // Clear of the shooter. A ball spawned inside the player's own capsule
         // resolves by launching the player instead of the ball.
         let muzzle = position + unit * (radius + MUZZLE_CLEARANCE_M);
-        // Round-robin through the reserved ids, retiring whatever still holds
-        // the one that comes up. Without a reservation (tests, and any caller
-        // that has not asked for one) a fresh id is fine, because nothing is
-        // watching over a network.
-        let id = if self.ball_pool.is_empty() {
-            let fresh = self.next_dynamic_id;
-            self.next_dynamic_id = self.next_dynamic_id.saturating_add(1);
-            fresh
-        } else {
-            let slot = self.ball_cursor % self.ball_pool.len();
-            self.ball_cursor = slot.wrapping_add(1);
-            let reserved = self.ball_pool[slot];
-            if self.dynamic.contains_key(&reserved) {
-                self.retire_launched_ball(reserved);
-                self.launched_balls.retain(|ball| ball.id != reserved);
-            }
-            reserved
-        };
-        let entity = NS_DYNAMIC | (id & ID_MASK);
-        if let Err(error) = self.world.launch_dynamic_ball(bridge::LaunchedBallDesc {
-            entity_id: entity,
-            user_id: id,
-            pose: pose(muzzle, [0.0, 0.0, 0.0, 1.0]),
-            radius,
-            mass,
-            linear_velocity: vec3(unit * speed),
-            collision_group: GROUP_DYNAMIC,
-            collision_mask: ALL_GROUPS,
-        }) {
-            tracing::warn!(%error, "ball could not be launched");
-            return None;
-        }
-        self.snapshots_valid = false;
-        self.dynamic.insert(
-            id,
-            DynamicMeta {
-                half_extents: [radius; 3],
-                shape_type: SHAPE_SPHERE,
-            },
-        );
+        let id = self.take_pool_id(Pool::Ball);
         self.ball_radius_m = radius;
-        self.launched_balls.push_back(LaunchedBall {
-            id,
-            expires_at: self.launch_tick + u64::from(ttl_ticks.max(1)),
-        });
-        // Bounded, and the bound is enforced by retiring the oldest rather than
-        // refusing the newest: a player holding the trigger should keep seeing
-        // their shots, and the scene should not grow without limit.
-        while self.launched_balls.len() > MAX_LIVE_LAUNCHED_BALLS {
-            if let Some(oldest) = self.launched_balls.pop_front() {
-                self.retire_launched_ball(oldest.id);
-            }
-        }
-        Some(id)
+        self.launch_body(id, muzzle, unit * speed, radius, mass, ttl_ticks)
     }
 
     /// How many times a ball has been held at a surface it would have skipped.

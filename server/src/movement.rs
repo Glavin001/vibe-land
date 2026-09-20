@@ -251,6 +251,51 @@ impl PhysicsArena {
         }
     }
 
+    /// Reserve the ids meteors will use. Empty when the backend has none.
+    pub fn reserve_meteor_pool(&mut self, count: usize) -> Vec<u32> {
+        match &mut self.backend {
+            PhysicsBackend::Rapier(_) => Vec::new(),
+            #[cfg(feature = "physx-gpu")]
+            PhysicsBackend::Physx(arena) => arena.reserve_meteor_pool(count),
+        }
+    }
+
+    /// Drop a meteor at `position` with `velocity`. None on the backend that
+    /// cannot, or on a malformed launch.
+    pub fn launch_meteor(
+        &mut self,
+        position: Vec3,
+        velocity: Vec3,
+        radius: f32,
+        mass: f32,
+        ttl_ticks: u32,
+    ) -> Option<u32> {
+        match &mut self.backend {
+            PhysicsBackend::Rapier(_) => None,
+            #[cfg(feature = "physx-gpu")]
+            PhysicsBackend::Physx(arena) => {
+                arena.launch_meteor(position, velocity, radius, mass, ttl_ticks)
+            }
+        }
+    }
+
+    /// The first solid thing along a ray as a world point; see the arena's
+    /// `cast_solid_ray_point`. None on the backend that has no scene query.
+    pub fn cast_solid_ray_point(
+        &self,
+        origin: [f32; 3],
+        direction: [f32; 3],
+        max_distance: f32,
+    ) -> Option<[f32; 3]> {
+        match &self.backend {
+            PhysicsBackend::Rapier(_) => None,
+            #[cfg(feature = "physx-gpu")]
+            PhysicsBackend::Physx(arena) => {
+                arena.cast_solid_ray_point(origin, direction, max_distance)
+            }
+        }
+    }
+
     /// How many times a ball was held at a surface it would have skipped.
     pub fn balls_clamped(&self) -> u64 {
         match &self.backend {

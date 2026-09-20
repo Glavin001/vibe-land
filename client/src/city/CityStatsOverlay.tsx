@@ -15,7 +15,7 @@ import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { BODY_DEBUG_STATES, setBodyDebugEnabled, setBodyDebugStates } from './bodyDebugColors';
 import { formatPerfSweep, formatPerfSweepMobile, runPerfSweep } from './perfSweep';
 import { renderStats } from './renderStats';
-import { cannonballEnabled, onCannonballChange, setCannonballEnabled } from './shotMode';
+import { nextShotMode, onShotModeChange, setShotMode, shotMode, type ShotMode } from './shotMode';
 import { isTouchDevice } from '../device';
 
 /** Matches the server's CityStatsSnapshot in server/src/main.rs. */
@@ -303,11 +303,11 @@ export function CityStatsOverlay({
   const [ao, setAo] = useState(ambientOcclusionPreferred);
   const [dust, setDust] = useState<DustMode>(dustModePreferred);
   const [dustFluid, setDustFluidState] = useState<DustFluid>(dustFluidPreferred);
-  const [cannonball, setCannonball] = useState(cannonballEnabled);
+  const [shot, setShot] = useState<ShotMode>(shotMode);
   // The setting can also be changed from outside this component (the e2e
   // bridge does), and a button whose label disagrees with what the next shot
   // fires is worse than no button.
-  useEffect(() => onCannonballChange(() => setCannonball(cannonballEnabled())), []);
+  useEffect(() => onShotModeChange(() => setShot(shotMode())), []);
   const [cityTex, setCityTex] = useState<CityTextureDetail>(cityTextureDetail);
   const [skyIbl, setSkyIbl] = useState(skyIblEnabledSetting);
   const [skyDome, setSkyDome] = useState(skyDomeEnabled);
@@ -728,16 +728,16 @@ export function CityStatsOverlay({
         <button
           type="button"
           onClick={() => {
-            const next = !cannonball;
-            setCannonballEnabled(next);
-            setCannonball(next);
+            const next = nextShotMode(shot);
+            setShotMode(next);
+            setShot(next);
           }}
           style={{ ...toggleButton, position: 'static', width: '100%' }}
           data-testid="city-cannonball-toggle"
-          aria-label="Toggle cannonball shot"
-          title="CANNONBALL throws a visible 1.5 t ball that flies, lands and breaks what it hits, the way the PhysX destruction demos deliver a shot. RIFLE is the instant hitscan."
+          aria-label="Cycle the shot: rifle, cannonball, meteor"
+          title="RIFLE is the instant hitscan. CANNONBALL throws a visible ball that flies, lands and breaks what it hits, the way the PhysX destruction demos deliver a shot. METEOR drops a burning 110 t rock onto the point you aim at, from a random start high and far outside the city, on a ballistic arc through that point."
         >
-          {cannonball ? 'SHOT: CANNONBALL' : 'SHOT: RIFLE'}
+          {shot === 'meteor' ? 'SHOT: METEOR' : shot === 'cannonball' ? 'SHOT: CANNONBALL' : 'SHOT: RIFLE'}
         </button>
       </div>
 

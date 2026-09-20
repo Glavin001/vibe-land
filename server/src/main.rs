@@ -7,6 +7,7 @@ mod city_qa;
 mod demo_world;
 mod heartbeat;
 mod lag_comp;
+mod meteor;
 mod movement;
 mod outbound;
 #[cfg(feature = "physx-gpu")]
@@ -50,7 +51,7 @@ use vibe_land_shared::constants::{
     OUT_OF_BOUNDS_Y_M, PLAYER_AOI_RADIUS_M, PLAYER_EYE_HEIGHT_M, RIFLE_BODY_DAMAGE,
     RIFLE_FIRE_INTERVAL_MS, RIFLE_HEAD_DAMAGE, RIFLE_SHOT_ENERGY_COST, SHAPE_SPHERE, SIM_HZ,
     SPAWN_PROTECTION_MS, VEHICLE_AOI_RADIUS_M, VEHICLE_INPUT_CATCHUP_THRESHOLD,
-    VEHICLE_INTERACT_RADIUS_M, WEAPON_CANNONBALL,
+    VEHICLE_INTERACT_RADIUS_M, WEAPON_CANNONBALL, WEAPON_METEOR,
 };
 use wtransport::{error::SendDatagramError, Connection, Endpoint, Identity, ServerConfig};
 
@@ -87,6 +88,10 @@ const NEARBY_PLAYER_RADIUS_M: f32 = 12.0;
 /// both the number of balls that can be in the air and the number of handles
 /// the join-time metadata has to carry.
 const CANNONBALL_POOL: usize = 24;
+/// How many meteors a match reserves ids and client metadata for. A ring, like
+/// the cannonball's: the ninth launch retires the first. Eight is more than
+/// anyone can watch fall at once.
+const METEOR_POOL: usize = 8;
 const ROLLING_METRIC_SAMPLES: usize = 180;
 /// Per-player queue depth for each delivery lane. Datagrams cannot occupy
 /// reliable slots or wait behind a blocked reliable write. Exhausting reliable
@@ -1181,6 +1186,9 @@ struct MatchState {
     dynamic_body_handles: HashMap<u32, DynamicBodyMetaRuntime>,
     vehicle_handles: HashMap<u32, u8>,
     city: Option<city::CityRuntime>,
+    /// Where the next meteor comes from. Seeded per match so two matches do
+    /// not rain from the same bearings in the same order.
+    meteor_rng: meteor::Rng,
     reset_requests: Arc<StdRwLock<HashSet<String>>>,
     /// Queued demolition requests, per match. See `city_demolish_handler`.
     demolish_requests: Arc<StdRwLock<HashMap<String, DemolishRequest>>>,
@@ -2619,6 +2627,21 @@ async fn run_match_loop(
             );
             next_handle = next_handle.saturating_add(1);
         }
+        // Meteors get their own ring for the same reason, with their own
+        // radius: the metadata is per id, so a meteor through a cannonball's
+        // id would be drawn at cannonball size.
+        let meteor_radius = meteor::MeteorTuning::from_env().radius_m;
+        for id in arena.reserve_meteor_pool(METEOR_POOL) {
+            dynamic_body_handles.insert(
+                id,
+                DynamicBodyMetaRuntime {
+                    handle: next_handle,
+                    shape_type: SHAPE_SPHERE,
+                    half_extents_m: [meteor_radius; 3],
+                },
+            );
+            next_handle = next_handle.saturating_add(1);
+        }
     }
     let vehicle_handles = arena
         .snapshot_vehicles()
@@ -2667,6 +2690,11 @@ async fn run_match_loop(
         None
     };
 
+    // Per-match, so two matches do not rain meteors from the same bearings.
+    let match_seed = {
+        let digest = Sha256::digest(match_id.as_bytes());
+        u64::from_le_bytes(digest[..8].try_into().expect("eight bytes of a digest"))
+    };
     let mut state = MatchState {
         id: match_id,
         arena,
@@ -2707,6 +2735,7 @@ async fn run_match_loop(
         player_handles: HashMap::new(),
         dynamic_body_handles,
         vehicle_handles,
+        meteor_rng: meteor::Rng::new(match_seed),
         city,
     };
 
@@ -3793,7 +3822,7 @@ impl MatchState {
         if self.city.is_none() {
             return;
         }
-        let shots: Vec<(glam::Vec3, glam::Vec3, u8)> = self
+        let shots: Vec<(glam::Vec3, glam::Vec3, u8, u32)> = self
             .queued_shots
             .iter()
             .filter_map(|queued| {
@@ -3809,6 +3838,7 @@ impl MatchState {
                     ),
                     glam::Vec3::from_array(queued.cmd.dir),
                     queued.cmd.weapon,
+                    queued.player_id,
                 ))
             })
             .collect();
@@ -3817,7 +3847,17 @@ impl MatchState {
         let broken_before = city.stats().broken_bonds;
         let mut hits = 0u32;
         let mut balls = 0u32;
-        for (origin, direction, weapon) in shots {
+        let mut meteors = 0u32;
+        for (origin, direction, weapon, shooter) in shots {
+            // A meteor is aimed, not thrown: the ray picks a point on the
+            // world and the rock is launched from far outside it on an arc
+            // through that point. Whatever it meets first is what it hits.
+            if weapon == WEAPON_METEOR {
+                if self.launch_meteor_at(origin, direction, shooter) {
+                    meteors += 1;
+                }
+                continue;
+            }
             // A cannonball is not routed into the city at all. It is thrown
             // into the scene and then it is the scene's problem: what it hits
             // and what that breaks is decided by PhysX solving its contacts,
@@ -3850,12 +3890,74 @@ impl MatchState {
                 shots = shot_count,
                 hits,
                 balls_launched = balls,
+                meteors_launched = meteors,
                 balls_live = self.arena.launched_ball_count(),
                 broken_bonds_before = broken_before,
                 "city shot routing"
             );
         }
         self.city = Some(city);
+    }
+
+    /// Aim a meteor along `direction` from `origin` and launch it. True when
+    /// a rock left the sky.
+    ///
+    /// The ray needs something solid to land on; aimed at the sky, nothing is
+    /// launched, because a meteor through a point in the air is a meteor
+    /// nobody sees land. Every client is told the arc so it can draw the fall
+    /// from the start, which is well outside the range the body snapshot can
+    /// express (see `PKT_METEOR_LAUNCHED`).
+    fn launch_meteor_at(&mut self, origin: glam::Vec3, direction: glam::Vec3, shooter: u32) -> bool {
+        let Some(target) = self.arena.cast_solid_ray_point(
+            origin.to_array(),
+            direction.to_array(),
+            HITSCAN_MAX_DISTANCE_M,
+        ) else {
+            tracing::info!(match_id = %self.id, shooter, "meteor aimed at nothing");
+            return false;
+        };
+        let target = glam::Vec3::from_array(target);
+        let gravity = {
+            let g = vibe_netcode::movement::default_world_gravity();
+            glam::Vec3::new(g[0], g[1], g[2])
+        };
+        let tuning = meteor::MeteorTuning::from_env();
+        let launch = meteor::plan(target, gravity, &tuning, &mut self.meteor_rng);
+        let Some(body_id) = self.arena.launch_meteor(
+            nalgebra::Vector3::new(launch.start.x, launch.start.y, launch.start.z),
+            nalgebra::Vector3::new(launch.velocity.x, launch.velocity.y, launch.velocity.z),
+            tuning.radius_m,
+            tuning.mass_kg,
+            tuning.ttl_ticks,
+        ) else {
+            return false;
+        };
+        let packet = meteor::encode_meteor_launched(&meteor::MeteorLaunchedPacket {
+            body_id,
+            shooter_player_id: shooter,
+            server_launch_time_us: (self.server_tick as u64) * (1_000_000 / SIM_HZ as u64),
+            start: launch.start.to_array(),
+            velocity: launch.velocity.to_array(),
+            target: target.to_array(),
+            radius_m: tuning.radius_m,
+            gravity_ms2: -gravity.y,
+            flight_time_s: launch.flight_time_s,
+        });
+        for player in self.players.values() {
+            let _ = try_queue_packet(&player.tx, packet.clone(), &self.io);
+        }
+        tracing::info!(
+            match_id = %self.id,
+            shooter,
+            body_id,
+            target = ?target.to_array(),
+            start = ?launch.start.to_array(),
+            speed = launch.velocity.length(),
+            flight_s = launch.flight_time_s,
+            mass_kg = tuning.mass_kg,
+            "meteor launched"
+        );
+        true
     }
 
     /// Camera used for per-client interest: player eye + aim direction, using
@@ -5146,7 +5248,7 @@ impl MatchState {
             // hits things by colliding with them, so resolving it a second
             // time as an instant ray would damage players the ball never
             // reached. The fire rate and energy cost above still applied.
-            if queued.cmd.weapon == WEAPON_CANNONBALL {
+            if queued.cmd.weapon == WEAPON_CANNONBALL || queued.cmd.weapon == WEAPON_METEOR {
                 continue;
             }
 
