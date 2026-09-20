@@ -16,7 +16,7 @@ import { useEffect, useMemo } from 'react';
 import * as THREE from 'three';
 
 import { aoMsaaSamplesSetting } from '../app/renderQuality';
-import { renderStats } from '../city/renderStats';
+import { beginGpuDustStage, endGpuDustStage, renderStats } from '../city/renderStats';
 import {
   AO_FRAGMENT,
   BLUR_FRAGMENT,
@@ -228,7 +228,10 @@ export function FramePipeline({
       let under: THREE.Texture | null = null;
       for (const stage of pipelineStages()) {
         const ctx = { renderer, camera, scene, beauty: passes.beauty, width, height, dt, under };
-        if (stage.render(ctx)) {
+        beginGpuDustStage();
+        const drew = stage.render(ctx);
+        endGpuDustStage();
+        if (drew) {
           const output = stage.output();
           if (output) {
             under = output;

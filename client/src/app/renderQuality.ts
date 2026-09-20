@@ -16,6 +16,7 @@
 import { useSyncExternalStore } from 'react';
 
 import { isTouchDevice } from '../device';
+import { renderStats } from '../city/renderStats';
 
 const SHADOWS_KEY = 'vibe.render.shadows';
 const TIER_KEY = 'vibe.render.tier';
@@ -266,9 +267,48 @@ export function setDustFluid(next: DustFluid): void {
   notify();
 }
 
+// ---------------------------------------------------------------------------
+// The GPU governor's overrides. It measures what the dust stage costs on the
+// GPU each frame and, when the frame is over budget, trims that stage BEFORE
+// the resolution controller gives up pixels: the fluid's dependent render
+// passes and the volume's ray-march samples are what the reporter's M3 was
+// spending 10-129 ms a frame on, and neither shrinks with the canvas. These
+// are effective values, not preferences -- the player's setting is untouched
+// and shown beside what the governor is doing.
+// ---------------------------------------------------------------------------
+const FLUID_RANK: Record<DustFluid, number> = { off: 0, fast: 1, balanced: 2 };
+let fluidCap: DustFluid = 'balanced';
+let sampleScale = 1;
+
+/** Ceiling on the fluid quality; the effective mode is the lesser of it and the preference. */
+export function setGovernorFluidCap(next: DustFluid): void {
+  if (next === fluidCap) return;
+  fluidCap = next;
+  renderStats.governorFluidCap = FLUID_RANK[next];
+  notify();
+}
+
+export function governorFluidCap(): DustFluid {
+  return fluidCap;
+}
+
+/** Multiplier on the volumetric dust's sample budget, 0.25..1. */
+export function setGovernorSampleScale(next: number): void {
+  const clamped = Math.min(1, Math.max(0.25, next));
+  if (clamped === sampleScale) return;
+  sampleScale = clamped;
+  renderStats.governorSampleScale = clamped;
+  notify();
+}
+
+export function governorSampleScale(): number {
+  return sampleScale;
+}
+
 /** The fluid brick actually in effect: needs the volumetric pass. */
 export function dustFluidMode(): DustFluid {
-  return dustMode() === 'volumetric' ? dustFluid : 'off';
+  if (dustMode() !== 'volumetric') return 'off';
+  return FLUID_RANK[fluidCap] < FLUID_RANK[dustFluid] ? fluidCap : dustFluid;
 }
 
 /** Player's dust preference, before the tier has its say. */

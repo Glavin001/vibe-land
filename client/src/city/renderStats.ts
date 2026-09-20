@@ -51,6 +51,8 @@ export const renderStats = {
   gpuPass5Ms: 0,
   /// How many render() calls the measured frame issued.
   gpuPassCount: 0,
+  /// GPU time of the dust stage's passes (fluid steps, volume, upsample) within gpuFrameMs.
+  gpuDustMs: 0,
   /// Everything the frame runs before the city layer: GameWorld's callback
   /// (input, prediction, camera, entity sync) plus the small scene extras.
   /// Measured as a span rather than bracketed inside GameWorld because that
@@ -78,6 +80,9 @@ export const renderStats = {
   dprScale: 1,
   /// The GPU budget the resolution controller is holding the frame to, ms.
   gpuBudgetMs: 0,
+  /// The dust governor's current trims: sample-budget multiplier and fluid cap (0 off, 1 fast, 2 balanced).
+  governorSampleScale: 1,
+  governorFluidCap: 2,
 
   /// Stream decode accumulated between the previous frame and this one. Runs
   /// in the datagram reader's microtasks, so it lands in offFrame, not cpuFrame.
@@ -280,6 +285,9 @@ let passesThisFrame = 0;
 // frame issued, so a frame publishes once every one of its passes is in.
 let assembling: { frame: number; ms: number[]; issued: number } | null = null;
 const passesIssuedByFrame = new Map<number, number>();
+/** Frame -> [first pass, one past last pass) of the dust stage, for gpuDustMs. */
+const dustRangeByFrame = new Map<number, [number, number]>();
+let dustStageStart = -1;
 
 function drainGpuQueries(): void {
   if (!gl2 || !timerExt) return;
@@ -318,6 +326,13 @@ function drainGpuQueries(): void {
       renderStats.gpuPass5Ms = slots[5];
       renderStats.gpuPassCount = assembling.ms.length;
       renderStats.gpuFrameMs = total;
+      const dust = dustRangeByFrame.get(entry.frame);
+      let dustMs = 0;
+      if (dust) {
+        for (let i = dust[0]; i < dust[1] && i < assembling.ms.length; i += 1) dustMs += assembling.ms[i] || 0;
+        dustRangeByFrame.delete(entry.frame);
+      }
+      renderStats.gpuDustMs = dustMs;
       passesIssuedByFrame.delete(entry.frame);
       assembling = null;
     }
@@ -327,7 +342,7 @@ function drainGpuQueries(): void {
 function beginPassQuery(): WebGLQuery | null {
   if (!gl2 || !timerExt) return null;
   // Cap the backlog: if results stop arriving, stop allocating queries.
-  if (pendingQueries.length > 64) return null;
+  if (pendingQueries.length > 1024) return null;
   const query = freeQueries.pop() ?? gl2.createQuery();
   if (!query) return null;
   gl2.beginQuery(timerExt.TIME_ELAPSED_EXT, query);
@@ -353,7 +368,21 @@ function startGpuFrame(): void {
     for (const key of passesIssuedByFrame.keys()) {
       if (key < frameSerial - 64) passesIssuedByFrame.delete(key);
     }
+    for (const key of dustRangeByFrame.keys()) {
+      if (key < frameSerial - 64) dustRangeByFrame.delete(key);
+    }
   }
+}
+
+/** Bracket the render() calls a pipeline stage issues, so their GPU time reports separately. */
+export function beginGpuDustStage(): void {
+  dustStageStart = passesThisFrame;
+}
+
+export function endGpuDustStage(): void {
+  if (dustStageStart < 0) return;
+  dustRangeByFrame.set(frameSerial, [dustStageStart, passesThisFrame]);
+  dustStageStart = -1;
 }
 
 let patched = false;

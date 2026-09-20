@@ -10,7 +10,7 @@ import { useFrame, useThree } from '@react-three/fiber';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three';
 
-import type { DustFluid, DustMode } from '../app/renderQuality';
+import { governorSampleScale, onRenderQualityChange, type DustFluid, type DustMode } from '../app/renderQuality';
 import type { CityClient } from '../city/cityClient';
 import type { DustSource } from '../city/destructionEvents';
 import type { AtlasLayout } from './fluid/fluidAtlas';
@@ -135,12 +135,17 @@ export function DustLayer({
       volume.tuning.extinction = live.dustExtinction;
       volume.tuning.phaseG = live.dustPhaseG;
       volume.tuning.sunBoost = live.dustSunBoost;
-      volume.tuning.budget = live.dustBudgetM * 1e6;
+      volume.tuning.budget = live.dustBudgetM * 1e6 * governorSampleScale();
       volume.applyTuning();
       volume.setLighting(lighting);
     };
     apply();
-    return subscribeLookTuning(apply);
+    const unsubscribeTuning = subscribeLookTuning(apply);
+    const unsubscribeQuality = onRenderQualityChange(apply);
+    return () => {
+      unsubscribeTuning();
+      unsubscribeQuality();
+    };
   }, [volume, lighting]);
 
   useFrame(({ camera }) => {

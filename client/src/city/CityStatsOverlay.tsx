@@ -235,7 +235,9 @@ import {
   setSkyIblEnabled,
   cityTextureDetail,
   dprCapOverride,
+  dustFluidMode,
   dynamicResolutionEnabled,
+  governorSampleScale,
   setDynamicResolutionEnabled,
   skyDomeEnabled,
   skyIblEnabledSetting,
@@ -805,7 +807,7 @@ export function CityStatsOverlay({
           aria-label="Cycle destruction dust fluid brick"
           title="Near-camera fluid brick: simulated dust that flows and pools at the nearest big break. BALANCED is 64³ cells, FAST 48³. Needs volumetric dust."
         >
-          {`DUST FLUID: ${dustFluid.toUpperCase()}`}
+          {`DUST FLUID: ${dustFluid.toUpperCase()}${dustFluidMode() !== dustFluid && dustFluid !== 'off' ? ` (AUTO: ${dustFluidMode().toUpperCase()})` : ''}`}
         </button>
       </div>
 
@@ -1183,6 +1185,11 @@ export function CityStatsOverlay({
           ? `${Math.round(renderStats.dprScale * 100)}% / ${renderStats.gpuBudgetMs.toFixed(1)} ms`
           : 'off'}
         warn={renderStats.dprScale < 0.999}
+      />
+      <Stat
+        label="gpu dust"
+        value={`${renderStats.gpuDustMs.toFixed(1)} ms / samples x${governorSampleScale()}`}
+        warn={renderStats.gpuDustMs > 3}
       />
       <Stat label="body writes" value={`${renderStats.instanceWrites}`} />
       <Stat label="record writes" value={`${renderStats.recordWrites}`} />

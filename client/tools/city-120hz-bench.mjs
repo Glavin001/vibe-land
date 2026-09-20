@@ -76,7 +76,7 @@ const KEYS = [
   'gpuPass0Ms', 'gpuPass1Ms', 'gpuPass2Ms', 'gpuPass3Ms', 'gpuPass4Ms', 'gpuPass5Ms', 'gpuPassCount',
   'glRenderMs',
   'cityFrameMs', 'sampleMs', 'dirtyWriteMs', 'sphereMs', 'telemetryMs',
-  'decodeMs', 'dustCpuMs', 'unattributedMs', 'recordWriteMs', 'sweepSliceMs', 'dprScale',
+  'decodeMs', 'dustCpuMs', 'unattributedMs', 'recordWriteMs', 'sweepSliceMs', 'dprScale', 'gpuDustMs', 'governorSampleScale', 'governorFluidCap',
   'drawCalls', 'subDraws', 'triangles', 'instanceWrites',
   'dustDrawn', 'dustDrawnHalf', 'dustParcelsLive', 'dustSamplesEstM', 'dustFluidActive',
 ];

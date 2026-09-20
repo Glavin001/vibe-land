@@ -6,6 +6,10 @@ import { renderStats } from '../city/renderStats';
 import {
   antialiasEnabled,
   dynamicResolutionEnabled,
+  governorFluidCap,
+  governorSampleScale,
+  setGovernorFluidCap,
+  setGovernorSampleScale,
   flatToneMapping,
   maxDpr,
   onRenderQualityChange,
@@ -73,6 +77,8 @@ function DprController(): null {
   const gpuEmaRef = useRef(0);
   const frameMinRef = useRef({ min: Infinity, frames: 0, period: 0 });
   const sinceAdjustRef = useRef(0);
+  const dustEmaRef = useRef(0);
+  const dustHeadroom = useRef(0);
   const apply = (scale: number) => {
     scaleRef.current = scale;
     renderStats.dprScale = scale;
@@ -119,10 +125,46 @@ function DprController(): null {
     const period = pacing.period || 8.33;
     const budget = period * 0.85;
     renderStats.gpuBudgetMs = budget;
+    const dust = renderStats.gpuDustMs;
+    dustEmaRef.current = dustEmaRef.current > 0 ? dustEmaRef.current * 0.9 + dust * 0.1 : dust;
     sinceAdjustRef.current += 1;
     if (sinceAdjustRef.current < 20 || gpuEmaRef.current <= 0) return;
     sinceAdjustRef.current = 0;
     const ema = gpuEmaRef.current;
+    // The dust stage first. Its fluid is a dozen dependent passes per step
+    // and its volume a sample budget; neither follows the canvas size, and on
+    // the reporter's M3 they were 10-129 ms of a frame -- so while the frame
+    // is over budget and dust is a third or more of it, the governor takes
+    // from dust: samples to half, then the fluid a rung, then samples to a
+    // quarter. It gives back one rung at a time, slowly, once the frame has
+    // held a fifth of headroom for two seconds.
+    const dustHeavy = ema > budget && dustEmaRef.current > budget * 0.35;
+    if (dustHeavy) {
+      const scale = governorSampleScale();
+      const cap = governorFluidCap();
+      if (scale > 0.5) setGovernorSampleScale(0.5);
+      else if (cap === 'balanced') setGovernorFluidCap('fast');
+      else if (cap === 'fast') setGovernorFluidCap('off');
+      else if (scale > 0.25) setGovernorSampleScale(0.25);
+      dustHeadroom.current = 0;
+      return;
+    }
+    if (ema < budget * 0.8) {
+      dustHeadroom.current += 1;
+      // 20 frames per evaluation: six evaluations is two seconds at 60 Hz.
+      if (dustHeadroom.current >= 6 && scaleRef.current >= 0.999) {
+        dustHeadroom.current = 0;
+        const scale = governorSampleScale();
+        const cap = governorFluidCap();
+        if (scale < 0.5) setGovernorSampleScale(0.5);
+        else if (cap === 'off') setGovernorFluidCap('fast');
+        else if (cap === 'fast') setGovernorFluidCap('balanced');
+        else if (scale < 1) setGovernorSampleScale(1);
+        return;
+      }
+    } else {
+      dustHeadroom.current = 0;
+    }
     let next = scaleRef.current;
     if (ema > budget) next = scaleRef.current * Math.max(0.92, Math.sqrt(budget / ema));
     else if (ema < budget * 0.8) next = scaleRef.current * Math.min(1.08, Math.sqrt(budget / ema));
