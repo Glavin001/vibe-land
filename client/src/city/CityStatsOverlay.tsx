@@ -219,7 +219,10 @@ import { acquireCityDiagnostics } from './cityDiagnostics';
 import { sendDebugReport } from './debugReport';
 import {
   ambientOcclusionPreferred,
+  dustModePreferred,
   setAmbientOcclusionEnabled,
+  setDustMode,
+  type DustMode,
   setCityTextureDetail,
   setDprCap,
   setHeroTilingEnabled,
@@ -294,6 +297,7 @@ export function CityStatsOverlay({
   const [savedName, setSavedName] = useState<string | null>(null);
   const [shadows, setShadows] = useState(shadowsEnabled);
   const [ao, setAo] = useState(ambientOcclusionPreferred);
+  const [dust, setDust] = useState<DustMode>(dustModePreferred);
   const [cannonball, setCannonball] = useState(cannonballEnabled);
   // The setting can also be changed from outside this component (the e2e
   // bridge does), and a button whose label disagrees with what the next shot
@@ -760,6 +764,23 @@ export function CityStatsOverlay({
           title="SSAO: contact shadows in corners and under debris. PRETTY only; costs an offscreen scene pass"
         >
           {ao ? 'AO: ON' : 'AO: OFF'}
+        </button>
+      </div>
+
+      <div style={{ ...row, marginBottom: 2 }}>
+        <button
+          type="button"
+          onClick={() => {
+            const next: DustMode = dust === 'volumetric' ? 'sprites' : dust === 'sprites' ? 'off' : 'volumetric';
+            setDustMode(next);
+            setDust(next);
+          }}
+          style={{ ...toggleButton, position: 'static', width: '100%' }}
+          data-testid="city-dust-toggle"
+          aria-label="Cycle destruction dust mode"
+          title="Destruction dust. VOLUMETRIC needs PRETTY and takes over the render loop like AO; SPRITES is the cheap in-scene fallback; OFF also stops emission."
+        >
+          {`DUST: ${dust.toUpperCase()}`}
         </button>
       </div>
 

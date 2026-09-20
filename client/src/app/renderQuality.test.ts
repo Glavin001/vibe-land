@@ -7,6 +7,7 @@ async function loadFresh(opts: {
   stored?: string | null;
   storedTier?: string;
   storedAo?: string;
+  storedDust?: string;
 }) {
   vi.resetModules();
   vi.doMock('../device', () => ({ isTouchDevice: () => opts.touch }));
@@ -14,6 +15,7 @@ async function loadFresh(opts: {
   if (opts.stored != null) store.set('vibe.render.shadows', opts.stored);
   if (opts.storedTier != null) store.set('vibe.render.tier', opts.storedTier);
   if (opts.storedAo != null) store.set('vibe.render.ao', opts.storedAo);
+  if (opts.storedDust != null) store.set('vibe.render.dust', opts.storedDust);
   vi.stubGlobal('localStorage', {
     getItem: (k: string) => store.get(k) ?? null,
     setItem: (k: string, v: string) => void store.set(k, v),
@@ -185,5 +187,39 @@ describe('ambient occlusion', () => {
 
     const stored = await loadFresh({ touch: true, storedAo: '1' });
     expect(stored.module.ambientOcclusionPreferred()).toBe(true);
+  });
+});
+
+describe('dust mode', () => {
+  it('defaults to volumetric on desktop and sprites on touch', async () => {
+    expect((await loadFresh({ touch: false })).module.dustMode()).toBe('volumetric');
+    expect((await loadFresh({ touch: true })).module.dustMode()).toBe('sprites');
+  });
+
+  it('draws a volumetric preference as sprites on the FAST tier', async () => {
+    const { module } = await loadFresh({ touch: false, storedTier: 'fast', storedDust: 'volumetric' });
+    expect(module.dustModePreferred()).toBe('volumetric');
+    expect(module.dustMode()).toBe('sprites');
+    expect(module.framePipelineEnabled()).toBe(false);
+  });
+
+  it('turns the frame pipeline on for volumetric dust even with SSAO off', async () => {
+    const { module } = await loadFresh({ touch: false, storedAo: '0', storedDust: 'volumetric' });
+    expect(module.ambientOcclusionEnabled()).toBe(false);
+    expect(module.framePipelineEnabled()).toBe(true);
+    // Context MSAA would be wasted behind an offscreen pass.
+    expect(module.antialiasEnabled()).toBe(false);
+    module.setDustMode('sprites');
+    expect(module.framePipelineEnabled()).toBe(false);
+    expect(module.antialiasEnabled()).toBe(true);
+  });
+
+  it('persists and notifies', async () => {
+    const { module, store } = await loadFresh({ touch: false });
+    let seen: string | undefined;
+    module.onRenderQualityChange((state) => { seen = state.dust; });
+    module.setDustMode('off');
+    expect(seen).toBe('off');
+    expect(store.get('vibe.render.dust')).toBe('off');
   });
 });

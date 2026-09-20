@@ -115,6 +115,28 @@ export const renderStats = {
   /// make this small, and a large number with low triangles convicts upload
   /// bandwidth.
   instanceWrites: 0,
+
+  // -- Destruction dust ------------------------------------------------------
+  /// Parcels alive in the store, and how many of them this frame drew, in the
+  /// full-res and the half-res layer.
+  dustParcelsLive: 0,
+  dustDrawn: 0,
+  dustDrawnHalf: 0,
+  /// Σ pixels·steps the volume pass was asked for, millions. The budget is
+  /// what holds it: if this sits at the budget the frame is dust-bound.
+  dustSamplesEstM: 0,
+  /// CPU inside the dust layer: emission (source drain + policy) and the
+  /// renderer's selection/upload, both nested in cityFrame's frame.
+  dustEmitMs: 0,
+  dustCpuMs: 0,
+  /// Parcels spawned, cumulative, and what never became one: per-tick cap,
+  /// palette, queue overflow.
+  dustEmitted: 0,
+  dustDropped: 0,
+  /// 1 when the volume pass did not run this frame (nothing to draw).
+  dustPassSkipped: 1,
+  /// Whether the fluid brick is live, and its GPU-facing size.
+  dustFluidActive: 0,
 };
 
 let lastRafStamp = 0;
@@ -173,7 +195,7 @@ export function addDebugE2eMs(ms: number): void {
  * Per-frame render totals, accumulated across however many passes ran.
  *
  * A frame is no longer one `render()` call. With SSAO on -- the PRETTY default
- * -- `AmbientOcclusion` takes the loop over and issues four: the scene into a
+ * -- `FramePipeline` takes the loop over and issues four: the scene into a
  * target, then AO, blur and composite quads. three clears `info.render` at the
  * top of every one of them, so whatever reads the counters afterwards sees the
  * composite quad alone: the panel and `city-frame-profile` both reported 1 draw

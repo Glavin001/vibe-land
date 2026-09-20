@@ -2,13 +2,14 @@ import { useRef, useEffect, useMemo, type MutableRefObject, type ReactNode, type
 
 import {
   useAmbientOcclusionEnabled,
+  useDustMode,
   useQualityTier,
   useShadowsEnabled,
   useShadowMapSizeOverride,
   useSkyDomeEnabled,
   useSkyIblEnabled,
 } from '../app/renderQuality';
-import { AmbientOcclusion } from '../graphics/AmbientOcclusion';
+import { FramePipeline } from '../graphics/FramePipeline';
 import { SkyEnvironment } from '../graphics/SkyEnvironment';
 import { skyGradient } from '../graphics/sunSky';
 import { SunLight } from './SunLight';
@@ -1162,6 +1163,10 @@ export function GameWorld({
   const qualityIsPretty = useQualityTier() === 'pretty';
   const shadowsOn = useShadowsEnabled();
   const ambientOcclusionOn = useAmbientOcclusionEnabled();
+  const dustMode = useDustMode();
+  // One offscreen pipeline serves both: SSAO and the volumetric dust each
+  // need the scene's depth, which only exists off the canvas.
+  const framePipelineOn = ambientOcclusionOn || dustMode === 'volumetric';
   const skyDomeOn = useSkyDomeEnabled();
   const skyIblOn = useSkyIblEnabled();
   const shadowMapTexels = useShadowMapSizeOverride();
@@ -3305,7 +3310,7 @@ export function GameWorld({
       <hemisphereLight
         args={[skyLightGradient.zenith, skyLightGradient.ground, qualityIsPretty ? 0.25 : 1.15]}
       />
-      {ambientOcclusionOn && <AmbientOcclusion />}
+      {framePipelineOn && <FramePipeline ao={ambientOcclusionOn} />}
       <WorldTerrain world={worldDocument} />
       <WorldStaticProps world={worldDocument} />
       <Portals runtimeRef={runtimeRef} />

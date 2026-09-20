@@ -25,6 +25,7 @@ const SKY_IBL_KEY = 'vibe.render.skyIbl';
 const SKY_DOME_KEY = 'vibe.render.skyDome';
 const DPR_CAP_KEY = 'vibe.render.dprCap';
 const HERO_TILING_KEY = 'vibe.render.heroTiling';
+const DUST_KEY = 'vibe.render.dust';
 const SHARE_THRESHOLD_KEY = 'vibe.render.instanceShare';
 const SHADOW_MAP_KEY = 'vibe.render.shadowMapSize';
 
@@ -64,10 +65,19 @@ export type QualityTier = 'fast' | 'pretty';
  */
 export type CityTextureDetail = 'full' | 'albedo' | 'off';
 
+/**
+ * How the destruction dust is drawn. `volumetric` is a raymarched pass that,
+ * like SSAO, takes over the render loop for an offscreen scene pass with a
+ * depth texture; `sprites` is soft billboards drawn in the scene; `off` skips
+ * emission as well as drawing.
+ */
+export type DustMode = 'off' | 'sprites' | 'volumetric';
+
 export type RenderQualityState = {
   shadows: boolean;
   tier: QualityTier;
   ao: boolean;
+  dust: DustMode;
   /**
    * The per-pixel knobs, together in one store because they all have to notify
    * the same listeners: the city rebuilds its material, the scene rebinds its
@@ -181,6 +191,9 @@ let dprCap: number | null = readStored(DPR_CAP_KEY, (raw) => {
   return Number.isFinite(value) && value > 0 ? value : null;
 });
 let heroTiling: boolean = readStored(HERO_TILING_KEY, (raw) => raw === '1') ?? true;
+let dust: DustMode = readStored(DUST_KEY, (raw) =>
+  raw === 'off' || raw === 'sprites' || raw === 'volumetric' ? raw : null)
+  ?? (isTouchDevice() ? 'sprites' : 'volumetric');
 // Session-only, like the other sweep-priced knobs: no panel button writes it.
 let aoMsaaSamples = 4;
 // Session-only, deliberately. These two have no panel button -- the perf sweep
@@ -213,8 +226,39 @@ function notify(): void {
     instanceShareThreshold,
     shadowMapSize,
     heroTiling,
+    dust,
   };
   for (const listener of listeners) listener(state);
+}
+
+/** Player's dust preference, before the tier has its say. */
+export function dustModePreferred(): DustMode {
+  return dust;
+}
+
+export function setDustMode(next: DustMode): void {
+  if (next === dust) return;
+  dust = next;
+  store(DUST_KEY, next);
+  notify();
+}
+
+/**
+ * The dust mode actually in effect. FAST has no offscreen HalfFloat pipeline
+ * to raymarch into, so a volumetric preference is drawn as sprites there.
+ */
+export function dustMode(): DustMode {
+  if (dust === 'volumetric' && tier === 'fast') return 'sprites';
+  return dust;
+}
+
+/**
+ * Whether the frame goes through the offscreen pipeline (scene into a beauty
+ * target with depth, then composite) rather than straight to the canvas.
+ * SSAO and volumetric dust both need it; either one turns it on.
+ */
+export function framePipelineEnabled(): boolean {
+  return ambientOcclusionEnabled() || dustMode() === 'volumetric';
 }
 
 /** How much of the city's surface shader to compile. FAST never gets the full set. */
@@ -433,18 +477,18 @@ export function maxDpr(): number {
 /**
  * MSAA. Context-creation-time: a change applies on the next reload.
  *
- * Off whenever SSAO is on, because SSAO renders the scene into its own
- * offscreen target and that target has no sample count -- so the multisampled
- * default framebuffer is allocated, never drawn into except by the composite
- * quad, and resolved every frame for nothing. At 9.85 MPix that is a real cost
- * for an image that is not antialiased either way.
+ * Off whenever the frame pipeline is on (SSAO or volumetric dust), because the
+ * pipeline renders the scene into its own offscreen target and the
+ * multisampled default framebuffer is then allocated, never drawn into except
+ * by the composite quad, and resolved every frame for nothing. At 9.85 MPix
+ * that is a real cost for an image that is not antialiased either way.
  *
- * The image does not change; the waste goes away. To actually GET antialiasing
- * back with SSAO on, the AO beauty target needs a sample count of its own,
- * which costs rather than saves.
+ * The image does not change; the waste goes away. Antialiasing with the
+ * pipeline on comes from the beauty target's own sample count
+ * (aoMsaaSamplesSetting), which costs rather than saves.
  */
 export function antialiasEnabled(): boolean {
-  return tier === 'pretty' && !ambientOcclusionEnabled();
+  return tier === 'pretty' && !framePipelineEnabled();
 }
 
 /** ACES filmic off on FAST. Also context-creation-time (r3f `flat`). */
@@ -508,6 +552,7 @@ const PERSISTED_KEYS = [
   SKY_DOME_KEY,
   DPR_CAP_KEY,
   HERO_TILING_KEY,
+  DUST_KEY,
 ] as const;
 
 export function snapshotStoredRenderSettings(): Array<[string, string | null]> {
@@ -571,4 +616,9 @@ export function useSkyIblEnabled(): boolean {
 
 export function useAmbientOcclusionEnabled(): boolean {
   return useSyncExternalStore(subscribe, ambientOcclusionEnabled, ambientOcclusionEnabled);
+}
+
+/** React view of the effective dust mode (tier included). */
+export function useDustMode(): DustMode {
+  return useSyncExternalStore(subscribe, dustMode, dustMode);
 }
