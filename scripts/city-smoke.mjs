@@ -3,13 +3,23 @@
 import { chromium } from 'playwright-core';
 
 const URL = process.env.CITY_URL ?? 'https://127.0.0.1:6006/city';
+// On the GPU, never SwiftShader (see city-vehicle-smoke.mjs).
 const browser = await chromium.launch({
   executablePath: '/usr/bin/google-chrome',
   headless: true,
-  args: ['--ignore-certificate-errors', '--no-sandbox', '--use-gl=swiftshader',
-         '--enable-unsafe-swiftshader', '--disable-dev-shm-usage'],
+  args: ['--headless=new', '--use-angle=vulkan', '--ignore-gpu-blocklist',
+         '--ignore-certificate-errors', '--no-sandbox', '--disable-dev-shm-usage'],
 });
 const page = await browser.newPage({ ignoreHTTPSErrors: true });
+const renderer = await page.evaluate(() => {
+  const gl = document.createElement('canvas').getContext('webgl2');
+  const d = gl?.getExtension('WEBGL_debug_renderer_info');
+  return gl ? (d ? gl.getParameter(d.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER)) : 'no webgl2';
+});
+if (!/nvidia/i.test(renderer) || /swiftshader/i.test(renderer)) {
+  console.log('FAIL: headless Chrome is not on the GPU (' + renderer + ')');
+  await browser.close(); process.exit(3);
+}
 const errors = [];
 page.on('console', m => { if (m.type() === 'error') errors.push(m.text().slice(0, 200)); });
 page.on('pageerror', e => errors.push('pageerror: ' + String(e).slice(0, 200)));

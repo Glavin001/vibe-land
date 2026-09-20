@@ -17,7 +17,8 @@ struct FfiChunkRayHit;
 struct FfiDynamicSphereDesc;
 struct FfiLaunchedBallDesc;
 struct FfiCapsulePlayerDesc;
-struct FfiVehicleChassisDesc;
+struct FfiVehicleDesc;
+struct FfiVehicleCommands;
 struct FfiRaycastRequest;
 struct FfiRaycastHit;
 struct FfiBodySnapshot;
@@ -58,15 +59,14 @@ public:
   void launch_dynamic_ball(const FfiLaunchedBallDesc &desc);
   void set_body_pose(std::uint32_t entity_id, const FfiPose &pose);
   void add_capsule_player(const FfiCapsulePlayerDesc &desc);
-  void add_vehicle_chassis(const FfiVehicleChassisDesc &desc);
+  void add_vehicle(const FfiVehicleDesc &desc);
   void remove_actor(std::uint32_t entity_id);
   void set_user_id(std::uint32_t entity_id, std::uint32_t user_id);
   void apply_impulse(std::uint32_t entity_id, FfiVec3 impulse);
   void apply_impulse_at_point(std::uint32_t entity_id, FfiVec3 impulse,
                               FfiVec3 point);
   std::uint32_t wake_bodies_near(FfiVec3 center, float radius);
-  void drive_vehicle(std::uint32_t entity_id, float throttle, float steer,
-                     float brake);
+  void drive_vehicle(std::uint32_t entity_id, const FfiVehicleCommands &commands);
   void move_player(std::uint32_t entity_id, FfiVec3 displacement,
                    float elapsed_time);
   void step();

@@ -10,7 +10,7 @@ const DEFAULT_PHYSX_ROOT: &str = "/root/PhysX/physx/install/linux-clang/PhysX";
 /// set explicitly. The plain Blast builds keep `DEFAULT_PHYSX_ROOT`: an
 /// experiment must not silently move the baseline's SDK, which is exactly how an
 /// earlier attempt ended up comparing two different engines and calling it one.
-#[cfg(feature = "native-destruction")]
+#[cfg(feature = "gpu")]
 const DEFAULT_PHYSX_DESTRUCTION_SDK: &str = "/root/workspace/physx-2";
 
 /// The native API revision this bridge is written against
@@ -189,6 +189,8 @@ fn main() {
     #[cfg(feature = "native-destruction")]
     add_native_destruction(&mut build, &root, &include, &lib, gpu_library);
 
+    add_vehicle(&mut build, &root);
+
     build.compile("vibe_land_physx_bridge");
 
     println!("cargo:rustc-link-search=native={}", lib.display());
@@ -228,6 +230,47 @@ fn main() {
 
 /// The PhysX SDK this build compiles and links against.
 ///
+/// The vehicle: physx-2's packaged `NativeVehicle` (a PhysX Vehicle SDK car)
+/// and the vehicle snippets' base/direct-drive/PhysX-integration classes it
+/// wraps, compiled straight into the bridge. The wrapper lives only in the
+/// physx-2 checkout; the snippet classes are NVIDIA's and identical in every
+/// PhysX 5 tree, taken from whichever tree owns `PHYSX_ROOT` when it has them.
+#[cfg(feature = "gpu")]
+fn add_vehicle(build: &mut cc::Build, root: &std::path::Path) {
+    let sdk = PathBuf::from(
+        env::var_os("PHYSX_DESTRUCTION_SDK").unwrap_or_else(|| DEFAULT_PHYSX_DESTRUCTION_SDK.into()),
+    );
+    let vehicle = sdk.join("destruction/vehicle");
+    let wrapper = vehicle.join("PxNativeVehicle.cpp");
+    assert!(
+        wrapper.is_file(),
+        "the packaged vehicle is missing: {} (PHYSX_DESTRUCTION_SDK={})",
+        wrapper.display(),
+        sdk.display()
+    );
+    // An install prefix has no snippets; the source tree three levels up does.
+    let snippets = [
+        root.join("snippets"),
+        root.join("../../../snippets"),
+        sdk.join("physx/snippets"),
+    ]
+    .into_iter()
+    .find(|dir| dir.join("snippetvehiclecommon/base/Base.cpp").is_file())
+    .unwrap_or_else(|| panic!("no snippetvehiclecommon below {} or {}", root.display(), sdk.display()));
+    println!("cargo:rerun-if-changed={}", wrapper.display());
+    println!("cargo:rerun-if-changed={}", vehicle.join("PxNativeVehicle.h").display());
+    build.file(&wrapper).include(&vehicle).include(&snippets);
+    for source in [
+        "snippetvehiclecommon/base/Base.cpp",
+        "snippetvehiclecommon/directdrivetrain/DirectDrivetrain.cpp",
+        "snippetvehiclecommon/physxintegration/PhysXIntegration.cpp",
+    ] {
+        let path = snippets.join(source);
+        println!("cargo:rerun-if-changed={}", path.display());
+        build.file(path);
+    }
+}
+
 /// `PHYSX_ROOT` always wins, so an explicit override still selects any SDK.
 /// Otherwise `native-destruction` resolves the physx-2 checkout (whose headers
 /// carry `PxDestructionScene.h`) and every other build keeps the upstream
@@ -296,6 +339,17 @@ fn add_native_destruction(
     let version = 15 + version;
     build.define("VIBE_PHYSX_DESTRUCTION_SCENE_VERSION", version.to_string().as_str());
     println!("cargo:rustc-env=VIBE_PHYSX_DESTRUCTION_SCENE_VERSION={version}");
+    // Two physx-2 lines both call themselves v16 and mean different things by
+    // it (reserved contact pairs on one, correction blockers on the other), so
+    // optional fields are detected by name, never by number.
+    for (field, define) in [
+        ("reservedContactPairs", "VIBE_PHYSX_HAS_RESERVED_CONTACT_PAIRS"),
+        ("correctionBlockers", "VIBE_PHYSX_HAS_CORRECTION_BLOCKERS"),
+    ] {
+        if text.contains(field) {
+            build.define(define, None);
+        }
+    }
     assert_eq!(
         gpu_library, "PhysXGpuActivity_64",
         "native destruction needs the physx-2 GPU module; PHYSX_ROOT={} looks like \

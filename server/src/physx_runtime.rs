@@ -12,9 +12,13 @@ use vibe_land_shared::{
         ON_FOOT_WALK_DRAIN_PER_SEC, SHAPE_BOX, SHAPE_SPHERE, STARTING_ENERGY,
         VEHICLE_INTERACT_RADIUS_M,
     },
-    movement::{build_wish_dir, VEHICLE_DAMAGE_MIN_SPEED_M_S, VEHICLE_LETHAL_SPEED_M_S},
+    movement::{
+        build_wish_dir, input_to_vehicle_cmd, VEHICLE_BRAKE_FORCE, VEHICLE_DAMAGE_MIN_SPEED_M_S,
+        VEHICLE_ENGINE_FORCE, VEHICLE_LETHAL_SPEED_M_S, VEHICLE_MAX_STEER_RAD,
+    },
     physics_arena::{MoveConfig, PlayerDamageOutcome, PlayerTickResult},
     protocol::{make_net_vehicle_state, InputCmd, NetVehicleState},
+    vehicle::vehicle_definition,
     world_document::{
         EffectiveTerrainMaterial, SpawnArea, TerrainMaterialField, WorldDocumentArena,
     },
@@ -91,6 +95,24 @@ enum Pool {
 struct LaunchedBall {
     id: u32,
     expires_at: u64,
+}
+
+/// Wheel spin and steer in the wire's `u16` per wheel (spin `u8` << 8 | steer
+/// `i8`), as the Rapier path encodes it. The vehicle SDK gives a rotation
+/// speed, not an angle, so spin here is the speed folded into a phase per
+/// tick; the client only turns it into a visual.
+fn physx_wheel_data(snapshot: &bridge::VehicleSnapshot) -> [u16; 4] {
+    let mut wheel_data = [0u16; 4];
+    for (i, slot) in wheel_data.iter_mut().enumerate() {
+        let spin = ((snapshot.wheel_rotation_speed[i] / std::f32::consts::TAU / 60.0)
+            .fract()
+            .abs()
+            * 255.0) as u8;
+        let steer = (snapshot.wheel_steer[i] / VEHICLE_MAX_STEER_RAD * 127.0).clamp(-127.0, 127.0)
+            as i8 as u8;
+        *slot = ((spin as u16) << 8) | (steer as u16);
+    }
+    wheel_data
 }
 
 struct VehicleMeta {
@@ -499,6 +521,34 @@ impl PhysxPhysicsArena {
             state.on_ground = snapshot.grounded;
             state.support_entity_id = snapshot.has_support.then_some(snapshot.support_entity_id);
         }
+        // A seated player has no controller and would otherwise stay at the
+        // point they got in: the snapshot anchor, area of interest and lag
+        // compensation all read this position, and beyond 82 m of it the
+        // driven vehicle itself falls out of the client's snapshot.
+        for (&player_id, &vehicle_id) in &self.vehicle_of_player {
+            let Some(vehicle) = self
+                .cached_vehicle_snapshots
+                .iter()
+                .find(|snapshot| snapshot.user_id == vehicle_id)
+            else {
+                continue;
+            };
+            let Some(state) = self.players.get_mut(&player_id) else {
+                continue;
+            };
+            state.position = Vec3d::new(
+                vehicle.pose.position.x as f64,
+                vehicle.pose.position.y as f64,
+                vehicle.pose.position.z as f64,
+            );
+            state.velocity = Vec3d::new(
+                vehicle.linear_velocity.x as f64,
+                vehicle.linear_velocity.y as f64,
+                vehicle.linear_velocity.z as f64,
+            );
+            state.on_ground = false;
+            state.support_entity_id = None;
+        }
     }
 
     pub fn snapshot_player(&self, id: u32) -> Option<([f32; 3], [f32; 3], f32, f32, u8, u16)> {
@@ -758,14 +808,27 @@ impl PhysxPhysicsArena {
     fn drive_vehicles(&mut self) {
         let vehicles_started = std::time::Instant::now();
         for (&id, vehicle) in &self.vehicles {
-            if vehicle.driver_id == 0 {
-                continue;
-            }
-            let throttle = vehicle.latest_input.move_y as f32 / 127.0;
-            let steer = vehicle.latest_input.move_x as f32 / 127.0;
-            let brake = if throttle.abs() < 0.01 { 0.2 } else { 0.0 };
+            // The same input mapping as the Rapier controller. A vehicle
+            // without a driver, or with an idle one, gets zero commands: the
+            // vehicle SDK applies nothing and wakes nothing for those, so a
+            // parked car sleeps with the rubble around it.
+            let cmd = if vehicle.driver_id == 0 {
+                bridge::VehicleCommands::default()
+            } else {
+                let input = input_to_vehicle_cmd(&vehicle.latest_input);
+                let reverse = input.reverse > 0.0 && input.throttle <= 0.0;
+                bridge::VehicleCommands {
+                    throttle: if reverse { input.reverse } else { input.throttle },
+                    // Braking against the direction of travel is the
+                    // controller's job; here reverse simply selects the gear.
+                    brake: 0.0,
+                    handbrake: if input.handbrake { 1.0 } else { 0.0 },
+                    steer: input.steer,
+                    reverse,
+                }
+            };
             self.world
-                .drive_vehicle(NS_VEHICLE | (id & ID_MASK), throttle, steer, brake)
+                .drive_vehicle(NS_VEHICLE | (id & ID_MASK), cmd)
                 .expect("PhysX vehicle control failed");
         }
         self.last_vehicle_control_ms =
@@ -1047,7 +1110,7 @@ impl PhysxPhysicsArena {
                         snapshot.angular_velocity.y,
                         snapshot.angular_velocity.z,
                     ],
-                    [0; 4],
+                    physx_wheel_data(&snapshot),
                 ))
             })
             .collect()
@@ -1807,13 +1870,53 @@ impl WorldDocumentArena for PhysxPhysicsArena {
         position: Vector3<f32>,
         rotation: [f32; 4],
     ) {
+        // The shared vehicle definition drives both backends: the same hull
+        // extents, wheel hard points, suspension rest and travel and wheel
+        // radius the Rapier controller and the client's meshes use. The
+        // vehicle SDK measures suspension from the chassis centre, so the
+        // attachment sits where the Rapier rest length ends up placing the
+        // wheel after its own static compression.
+        let definition = vehicle_definition(vehicle_type);
+        let [half_x, half_y, half_z] = definition.chassis_half_extents;
+        let [[wheel_x, _, front_z], _, [_, _, rear_z], _] = definition.wheel_offsets;
+        // Rapier's 4000 N engine force on two rear wheels, as torque at the
+        // wheel; a 0.35 m radius makes 1400 N m per driven wheel.
+        let mass = 600.0;
+        let drive_torque = VEHICLE_ENGINE_FORCE * definition.wheel_radius_m;
+        let brake_torque = VEHICLE_BRAKE_FORCE * definition.wheel_radius_m;
+        // A quarter of the chassis on each corner; rest compression about a
+        // third of the travel, critically damped.
+        let sprung = mass / 4.0;
+        let stiffness = sprung * 9.81 / (definition.suspension_travel_m / 3.0);
+        let damping = 2.0 * (stiffness * sprung).sqrt();
         self.world
-            .add_vehicle_chassis(bridge::VehicleChassisDesc {
+            .add_vehicle(bridge::VehicleDesc {
                 entity_id: NS_VEHICLE | (id & ID_MASK),
                 user_id: id,
                 pose: pose(position, rotation),
-                half_extents: bridge::Vec3::new(1.0, 0.45, 2.0),
-                mass: 1200.0,
+                chassis_half_extents: bridge::Vec3::new(half_x, half_y, half_z),
+                mass,
+                inertia: bridge::Vec3::new(0.0, 0.0, 0.0),
+                half_track: wheel_x.abs(),
+                suspension_attachment_y: -(definition.suspension_rest_length_m
+                    - definition.suspension_travel_m * 2.0 / 3.0),
+                front_axle_z: front_z.max(rear_z),
+                rear_axle_z: front_z.min(rear_z),
+                suspension_travel: definition.suspension_travel_m,
+                suspension_stiffness: stiffness,
+                suspension_damping: damping,
+                wheel_radius: definition.wheel_radius_m,
+                wheel_half_width: 0.15,
+                tyre_friction: 1.5,
+                max_steer_radians: VEHICLE_MAX_STEER_RAD,
+                drive_torque,
+                brake_torque,
+                handbrake_torque: 2.0 * brake_torque,
+                top_speed: 40.0,
+                rear_wheel_drive: true,
+                // Sweeps ride a cylinder over rubble; raycasts fall between chunks.
+                sweep_road_queries: true,
+                road_mask: GROUP_STATIC | GROUP_DYNAMIC | GROUP_CHUNK,
                 collision_group: GROUP_VEHICLE,
                 collision_mask: ALL_GROUPS,
             })
@@ -2007,6 +2110,14 @@ mod tests {
     fn vehicle_entry_requires_proximity_and_preserves_single_driver_lifecycle() {
         let _guard = gpu_test_guard();
         let mut arena = PhysxPhysicsArena::new(MoveConfig::default()).unwrap();
+        // A slab to drive on, its top at y=0.
+        WorldDocumentArena::add_static_cuboid(
+            &mut arena,
+            Vector3::new(0.0, -1.0, 0.0),
+            [0.0, 0.0, 0.0, 1.0],
+            Vector3::new(200.0, 1.0, 200.0),
+            1,
+        );
         let player_position = arena.spawn_player(10);
         WorldDocumentArena::spawn_vehicle_with_id(
             &mut arena,
@@ -2030,10 +2141,57 @@ mod tests {
         assert_eq!(arena.player_vehicle_id(11), None);
         assert_eq!(arena.vehicles[&7].driver_id, 10);
 
+        // Drive: full throttle for two seconds. The vehicle SDK moves the car,
+        // the seated player's position follows it (the snapshot anchor and
+        // area of interest read that position), and the wheels report spin.
+        let start = arena.snapshot_vehicles()[0];
+        let mut input = InputCmd::default();
+        input.move_y = 127;
+        for _ in 0..120 {
+            arena.simulate_player_tick(10, &input, 1.0 / 60.0);
+            arena.step_vehicles_and_dynamics(1.0 / 60.0);
+        }
+        let driven = arena.snapshot_vehicles()[0];
+        let travelled = (driven.px_mm - start.px_mm).pow(2) as f64 + (driven.pz_mm - start.pz_mm).pow(2) as f64;
+        assert!(travelled.sqrt() > 5_000.0, "the car did not drive: {start:?} -> {driven:?}");
+        assert!(driven.wheel_data.iter().any(|w| *w != 0), "wheel data is empty: {driven:?}");
+        let seated = arena.player_state(10).unwrap();
+        assert!(
+            ((seated.position.x * 1000.0) as i32 - driven.px_mm).abs() < 50
+                && ((seated.position.z * 1000.0) as i32 - driven.pz_mm).abs() < 50,
+            "seated player did not follow the car: {:?} vs {driven:?}",
+            seated.position
+        );
+        let (_, _, _, _, _, flags) = arena.snapshot_player(10).unwrap();
+        assert_ne!(flags & FLAG_IN_VEHICLE, 0);
+
+        // Handbrake to a stop before getting out; direct drive has no engine
+        // braking and a car coasting at 25 m/s is not parked.
+        let mut handbrake = InputCmd::default();
+        handbrake.buttons |= BTN_JUMP;
+        for _ in 0..240 {
+            arena.simulate_player_tick(10, &handbrake, 1.0 / 60.0);
+            arena.step_vehicles_and_dynamics(1.0 / 60.0);
+        }
+        let stopped = arena.snapshot_vehicles()[0];
+        assert!(stopped.vx_cms.abs() < 50 && stopped.vz_cms.abs() < 50, "the handbrake did not stop the car: {stopped:?}");
+
         arena.exit_vehicle(10);
         assert_eq!(arena.player_vehicle_id(10), None);
         assert!(arena.players[&10].controller_present);
         assert_eq!(arena.vehicles[&7].driver_id, 0);
+        // The parked car, with nobody driving it, comes to rest and sleeps.
+        let idle = InputCmd::default();
+        let mut slept = false;
+        for _ in 0..600 {
+            arena.simulate_player_tick(10, &idle, 1.0 / 60.0);
+            arena.step_vehicles_and_dynamics(1.0 / 60.0);
+            if arena.current_vehicle_snapshots()[0].sleeping {
+                slept = true;
+                break;
+            }
+        }
+        assert!(slept, "the parked car never slept");
     }
 }
 

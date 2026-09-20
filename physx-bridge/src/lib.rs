@@ -245,16 +245,58 @@ pub struct CapsulePlayerDesc {
     pub collision_mask: u32,
 }
 
+/// A PhysX Vehicle SDK car (physx-2's packaged `NativeVehicle`): a rigid
+/// chassis box on four raycast/sweep suspensions with a direct-drive
+/// transmission. The actor origin is the chassis centre; wheels hang below it.
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[repr(C)]
-pub struct VehicleChassisDesc {
+pub struct VehicleDesc {
     pub entity_id: u32,
     pub user_id: u32,
     pub pose: Pose,
-    pub half_extents: Vec3,
+    /// Chassis collision box, centred on the actor origin.
+    pub chassis_half_extents: Vec3,
     pub mass: f32,
+    /// Mass-space inertia; zero means "derive from the box".
+    pub inertia: Vec3,
+    /// Wheel hard points in the actor frame: `x` is the half track, `y` the
+    /// suspension attachment height, `z` the front and rear axle offsets.
+    pub half_track: f32,
+    pub suspension_attachment_y: f32,
+    pub front_axle_z: f32,
+    pub rear_axle_z: f32,
+    pub suspension_travel: f32,
+    pub suspension_stiffness: f32,
+    pub suspension_damping: f32,
+    pub wheel_radius: f32,
+    pub wheel_half_width: f32,
+    pub tyre_friction: f32,
+    pub max_steer_radians: f32,
+    /// Torques in N m per wheel; drive torque applies to the driven wheels.
+    pub drive_torque: f32,
+    pub brake_torque: f32,
+    pub handbrake_torque: f32,
+    /// The drive response falls to zero at this forward speed (m/s).
+    pub top_speed: f32,
+    pub rear_wheel_drive: bool,
+    /// Sweep a wheel cylinder instead of casting a ray for the road.
+    pub sweep_road_queries: bool,
+    /// Which collision groups the wheels may stand on.
+    pub road_mask: u32,
     pub collision_group: u32,
     pub collision_mask: u32,
+}
+
+/// One frame of driver input for a vehicle. Throttle, brake and handbrake are
+/// in `0..=1`, steer in `-1..=1` (positive turns right).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[repr(C)]
+pub struct VehicleCommands {
+    pub throttle: f32,
+    pub brake: f32,
+    pub handbrake: f32,
+    pub steer: f32,
+    pub reverse: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -336,6 +378,13 @@ pub struct VehicleSnapshot {
     pub linear_velocity: Vec3,
     pub angular_velocity: Vec3,
     pub sleeping: bool,
+    /// Per wheel, in the vehicle SDK's order: front-left, front-right,
+    /// rear-left, rear-right.
+    pub wheel_steer: [f32; 4],
+    pub wheel_rotation_speed: [f32; 4],
+    pub wheel_jounce: [f32; 4],
+    /// Bit `w` set when wheel `w`'s road query found ground.
+    pub wheels_on_road: u8,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -876,12 +925,12 @@ impl World {
         }
     }
 
-    pub fn add_vehicle_chassis(&mut self, desc: VehicleChassisDesc) -> Result<(), BridgeError> {
+    pub fn add_vehicle(&mut self, desc: VehicleDesc) -> Result<(), BridgeError> {
         #[cfg(feature = "gpu")]
         {
             self.inner
                 .pin_mut()
-                .add_vehicle_chassis(&desc.into())
+                .add_vehicle(&desc.into())
                 .map_err(operation_error)
         }
         #[cfg(not(feature = "gpu"))]
@@ -974,20 +1023,18 @@ impl World {
     pub fn drive_vehicle(
         &mut self,
         entity_id: u32,
-        throttle: f32,
-        steer: f32,
-        brake: f32,
+        commands: VehicleCommands,
     ) -> Result<(), BridgeError> {
         #[cfg(feature = "gpu")]
         {
             self.inner
                 .pin_mut()
-                .drive_vehicle(entity_id, throttle, steer, brake)
+                .drive_vehicle(entity_id, &commands.into())
                 .map_err(operation_error)
         }
         #[cfg(not(feature = "gpu"))]
         {
-            let _ = (entity_id, throttle, steer, brake);
+            let _ = (entity_id, commands);
             Err(stub_unavailable())
         }
     }
@@ -1746,14 +1793,41 @@ mod ffi {
         collision_mask: u32,
     }
 
-    struct FfiVehicleChassisDesc {
+    struct FfiVehicleDesc {
         entity_id: u32,
         user_id: u32,
         pose: FfiPose,
-        half_extents: FfiVec3,
+        chassis_half_extents: FfiVec3,
         mass: f32,
+        inertia: FfiVec3,
+        half_track: f32,
+        suspension_attachment_y: f32,
+        front_axle_z: f32,
+        rear_axle_z: f32,
+        suspension_travel: f32,
+        suspension_stiffness: f32,
+        suspension_damping: f32,
+        wheel_radius: f32,
+        wheel_half_width: f32,
+        tyre_friction: f32,
+        max_steer_radians: f32,
+        drive_torque: f32,
+        brake_torque: f32,
+        handbrake_torque: f32,
+        top_speed: f32,
+        rear_wheel_drive: bool,
+        sweep_road_queries: bool,
+        road_mask: u32,
         collision_group: u32,
         collision_mask: u32,
+    }
+
+    struct FfiVehicleCommands {
+        throttle: f32,
+        brake: f32,
+        handbrake: f32,
+        steer: f32,
+        reverse: bool,
     }
 
     struct FfiRaycastRequest {
@@ -1801,6 +1875,10 @@ mod ffi {
         linear_velocity: FfiVec3,
         angular_velocity: FfiVec3,
         sleeping: bool,
+        wheel_steer: [f32; 4],
+        wheel_rotation_speed: [f32; 4],
+        wheel_jounce: [f32; 4],
+        wheels_on_road: u8,
     }
 
     struct FfiWorldStats {
@@ -2204,7 +2282,7 @@ mod ffi {
         fn launch_dynamic_ball(self: Pin<&mut World>, desc: &FfiLaunchedBallDesc) -> Result<()>;
         fn set_body_pose(self: Pin<&mut World>, entity_id: u32, pose: &FfiPose) -> Result<()>;
         fn add_capsule_player(self: Pin<&mut World>, desc: &FfiCapsulePlayerDesc) -> Result<()>;
-        fn add_vehicle_chassis(self: Pin<&mut World>, desc: &FfiVehicleChassisDesc) -> Result<()>;
+        fn add_vehicle(self: Pin<&mut World>, desc: &FfiVehicleDesc) -> Result<()>;
         fn remove_actor(self: Pin<&mut World>, entity_id: u32) -> Result<()>;
         fn set_user_id(self: Pin<&mut World>, entity_id: u32, user_id: u32) -> Result<()>;
         fn apply_impulse(self: Pin<&mut World>, entity_id: u32, impulse: FfiVec3) -> Result<()>;
@@ -2218,9 +2296,7 @@ mod ffi {
         fn drive_vehicle(
             self: Pin<&mut World>,
             entity_id: u32,
-            throttle: f32,
-            steer: f32,
-            brake: f32,
+            commands: &FfiVehicleCommands,
         ) -> Result<()>;
         fn move_player(
             self: Pin<&mut World>,
@@ -2474,15 +2550,45 @@ impl_ffi_from!(
 );
 #[cfg(feature = "gpu")]
 impl_ffi_from!(
-    VehicleChassisDesc,
-    ffi::FfiVehicleChassisDesc {
+    VehicleDesc,
+    ffi::FfiVehicleDesc {
         entity_id,
         user_id,
         pose,
-        half_extents,
+        chassis_half_extents,
         mass,
+        inertia,
+        half_track,
+        suspension_attachment_y,
+        front_axle_z,
+        rear_axle_z,
+        suspension_travel,
+        suspension_stiffness,
+        suspension_damping,
+        wheel_radius,
+        wheel_half_width,
+        tyre_friction,
+        max_steer_radians,
+        drive_torque,
+        brake_torque,
+        handbrake_torque,
+        top_speed,
+        rear_wheel_drive,
+        sweep_road_queries,
+        road_mask,
         collision_group,
         collision_mask,
+    }
+);
+#[cfg(feature = "gpu")]
+impl_ffi_from!(
+    VehicleCommands,
+    ffi::FfiVehicleCommands {
+        throttle,
+        brake,
+        handbrake,
+        steer,
+        reverse,
     }
 );
 #[cfg(feature = "gpu")]
@@ -2581,6 +2687,10 @@ impl From<ffi::FfiVehicleSnapshot> for VehicleSnapshot {
             linear_velocity: value.linear_velocity.into(),
             angular_velocity: value.angular_velocity.into(),
             sleeping: value.sleeping,
+            wheel_steer: value.wheel_steer,
+            wheel_rotation_speed: value.wheel_rotation_speed,
+            wheel_jounce: value.wheel_jounce,
+            wheels_on_road: value.wheels_on_road,
         }
     }
 }

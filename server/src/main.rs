@@ -2643,8 +2643,11 @@ async fn run_match_loop(
             next_handle = next_handle.saturating_add(1);
         }
     }
-    let vehicle_handles = arena
-        .snapshot_vehicles()
+    // Handles in id order: the PhysX arena enumerates its vehicles from a hash
+    // map, and a thin client keys a vehicle by this handle.
+    let mut seeded_vehicles = arena.snapshot_vehicles();
+    seeded_vehicles.sort_by_key(|state| state.id);
+    let vehicle_handles = seeded_vehicles
         .into_iter()
         .enumerate()
         .map(|(index, state)| {
@@ -2844,16 +2847,27 @@ impl MatchState {
         self.server_tick * (1000 / SIM_HZ as u32)
     }
 
+    /// The id a `VehicleEnter`/`VehicleExit` packet names. A V2 client only
+    /// ever sees u8 handles, so under strict snapshot datagrams the handle
+    /// table is consulted first; a legacy client sends the runtime id and gets
+    /// it back directly. Either way an id that is not a handle still resolves
+    /// as itself, so the city's ids above 255 cannot collide with a handle.
     fn resolve_vehicle_runtime_id(&self, wire_vehicle_id: u32) -> Option<u32> {
+        let by_handle = || {
+            let handle = u8::try_from(wire_vehicle_id).ok()?;
+            self.vehicle_handles
+                .iter()
+                .find_map(|(vehicle_id, vehicle_handle)| {
+                    (*vehicle_handle == handle).then_some(*vehicle_id)
+                })
+        };
+        if self.strict_snapshot_datagrams {
+            return by_handle().or_else(|| self.arena.vehicle_exists(wire_vehicle_id).then_some(wire_vehicle_id));
+        }
         if self.arena.vehicle_exists(wire_vehicle_id) {
             return Some(wire_vehicle_id);
         }
-        let handle = u8::try_from(wire_vehicle_id).ok()?;
-        self.vehicle_handles
-            .iter()
-            .find_map(|(vehicle_id, vehicle_handle)| {
-                (*vehicle_handle == handle).then_some(*vehicle_id)
-            })
+        by_handle()
     }
 
     fn reclaim_player_handles(&mut self) {

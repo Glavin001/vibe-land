@@ -2823,6 +2823,14 @@ export function GameWorld({
         },
         drivenVehicleId: drivenVehicleId ?? null,
         nearestVehicleId: nearestVehicleIdRef.current,
+        vehicles: client
+          ? Array.from(client.vehicles.values()).map((vs) => ({
+              id: vs.id,
+              driverId: vs.driverId,
+              position: [...vs.position] as [number, number, number],
+              speedMs: Math.hypot(vs.linearVelocity[0], vs.linearVelocity[1], vs.linearVelocity[2]),
+            }))
+          : [],
         remotePlayers: remoteSummaries,
         stats: {
           ...DEFAULT_STATS,

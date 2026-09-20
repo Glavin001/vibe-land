@@ -2,7 +2,7 @@
 
 use vibe_land_physx_bridge::{
     gpu_support_compiled, CapsulePlayerDesc, DynamicBoxDesc, DynamicSphereDesc, HeightfieldDesc,
-    Pose, Quat, RaycastRequest, StaticBoxDesc, Vec3, VehicleChassisDesc, World, WorldConfig,
+    Pose, Quat, RaycastRequest, StaticBoxDesc, Vec3, VehicleDesc, VehicleCommands, World, WorldConfig,
 };
 
 const ALL: u32 = u32::MAX;
@@ -11,6 +11,38 @@ fn pose(x: f32, y: f32, z: f32) -> Pose {
     Pose {
         position: Vec3::new(x, y, z),
         rotation: Quat::IDENTITY,
+    }
+}
+
+/// The shared city car: a 600 kg box on four sweeps.
+fn smoke_vehicle(entity_id: u32, user_id: u32, pose: Pose) -> VehicleDesc {
+    VehicleDesc {
+        entity_id,
+        user_id,
+        pose,
+        chassis_half_extents: Vec3::new(0.9, 0.3, 1.8),
+        mass: 600.0,
+        inertia: Vec3::new(0.0, 0.0, 0.0),
+        half_track: 0.9,
+        suspension_attachment_y: -0.17,
+        front_axle_z: 1.1,
+        rear_axle_z: -1.1,
+        suspension_travel: 0.2,
+        suspension_stiffness: 22_000.0,
+        suspension_damping: 3_600.0,
+        wheel_radius: 0.35,
+        wheel_half_width: 0.15,
+        tyre_friction: 1.5,
+        max_steer_radians: 0.5,
+        drive_torque: 1_400.0,
+        brake_torque: 700.0,
+        handbrake_torque: 1_400.0,
+        top_speed: 40.0,
+        rear_wheel_drive: true,
+        sweep_road_queries: true,
+        road_mask: ALL,
+        collision_group: 1,
+        collision_mask: ALL,
     }
 }
 
@@ -85,17 +117,7 @@ fn gpu_world_smoke_test_requires_real_cuda_scene() {
             collision_mask: ALL,
         })
         .unwrap();
-    world
-        .add_vehicle_chassis(VehicleChassisDesc {
-            entity_id: 6,
-            user_id: 106,
-            pose: pose(4.0, 2.0, 0.0),
-            half_extents: Vec3::new(1.0, 0.4, 2.0),
-            mass: 800.0,
-            collision_group: 1,
-            collision_mask: ALL,
-        })
-        .unwrap();
+    world.add_vehicle(smoke_vehicle(6, 106, pose(4.0, 0.7, 0.0))).unwrap();
     world
         .add_dynamic_box(DynamicBoxDesc {
             entity_id: 7,
@@ -124,7 +146,18 @@ fn gpu_world_smoke_test_requires_real_cuda_scene() {
 
     world.apply_impulse(3, Vec3::new(1.0, 0.0, 0.0)).unwrap();
     world.apply_impulse(7, Vec3::new(100.0, 0.0, 0.0)).unwrap();
-    world.drive_vehicle(6, 1.0, 0.25, 0.0).unwrap();
+    world
+        .drive_vehicle(
+            6,
+            VehicleCommands {
+                // A third throttle, straight: this is a 13 m/s^2 car and two
+                // seconds of full throttle takes it off the 20 m ground slab.
+                throttle: 0.35,
+                steer: 0.0,
+                ..VehicleCommands::default()
+            },
+        )
+        .unwrap();
     world.move_player(5, Vec3::new(0.0, -0.25, 0.0)).unwrap();
     for _ in 0..120 {
         world.move_player(8, Vec3::new(0.0, -0.01, 0.0)).unwrap();
@@ -181,7 +214,13 @@ fn gpu_world_smoke_test_requires_real_cuda_scene() {
         impulse_body.angular_velocity.y.abs() > 0.01,
         "off-center impulses should preserve torque"
     );
-    assert_eq!(world.vehicle_snapshots().unwrap().len(), 1);
+    let vehicles = world.vehicle_snapshots().unwrap();
+    assert_eq!(vehicles.len(), 1);
+    // Driven for two seconds on the ground: it moved, and every wheel's road
+    // query found the ground.
+    assert!(vehicles[0].pose.position.z > 4.0 && vehicles[0].pose.position.z < 10.0,
+        "the vehicle did not drive straight ahead: {:?}", vehicles[0].pose);
+    assert_eq!(vehicles[0].wheels_on_road, 0b1111);
     assert_eq!(world.stats().unwrap().completed_steps, 121);
     assert!(
         world

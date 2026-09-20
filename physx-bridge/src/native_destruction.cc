@@ -420,8 +420,8 @@ FfiNativeConfigured NativeDestruction::configure(const FfiNativeConfig &config) 
   desc.preserveUnchangedContactPairs = config.preserve_unchanged_contact_pairs;
   std::fprintf(stderr, "[destruction] native internalCorrectionLimit=%u\n",
                unsigned(desc.internalCorrectionLimit));
-#if VIBE_PHYSX_DESTRUCTION_SCENE_VERSION >= 16
-  // Pre-touching contact-pair storage arrived in API v16. Without it the first
+#if defined(VIBE_PHYSX_HAS_RESERVED_CONTACT_PAIRS)
+  // Pre-touching contact-pair storage is an optional field. Without it the first
   // impact pages this memory in on the simulation thread, which shows up as one
   // unexplained spike at the moment of first contact and nowhere else.
   desc.reservedContactPairs = config.reserved_contact_pairs;
@@ -438,7 +438,7 @@ FfiNativeConfigured NativeDestruction::configure(const FfiNativeConfig &config) 
   out.bonds = static_cast<std::uint32_t>(s.bonds.size());
   out.clusters = static_cast<std::uint32_t>(s.clusters.size());
   out.materials = static_cast<std::uint32_t>(s.materials.size());
-#if VIBE_PHYSX_DESTRUCTION_SCENE_VERSION >= 16
+#if defined(VIBE_PHYSX_HAS_RESERVED_CONTACT_PAIRS)
   out.reserved_pairs = config.reserved_contact_pairs;
 #else
   // Reported as zero rather than as what we asked for: this SDK cannot reserve.

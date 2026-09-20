@@ -58,6 +58,7 @@ type DriveState = {
    * guarantees the next sampled frame sees the trigger down at least once.
    */
   firePending: boolean;
+  interactPending: boolean;
   crouch: boolean;
 };
 
@@ -71,6 +72,7 @@ const EMPTY_STATE: DriveState = {
   jumpUntil: 0,
   fireUntil: 0,
   firePending: false,
+  interactPending: false,
   crouch: false,
 };
 
@@ -128,6 +130,7 @@ export function isAgentDriveActive(now: number = nowMs()): boolean {
     || state.jumpUntil > now
     || state.fireUntil > now
     || state.firePending
+    || state.interactPending
   );
 }
 
@@ -154,8 +157,10 @@ export function sampleAgentDrive(
   if (state.crouch) buttons |= BTN_CROUCH;
 
   const firePrimary = state.fireUntil > now || state.firePending;
-  // Sampled: the edge has done its job.
+  const interactPressed = state.interactPending;
+  // Sampled: the edges have done their job.
   state.firePending = false;
+  state.interactPending = false;
   return {
     activeFamily: 'keyboardMouse',
     moveX: state.moveX,
@@ -165,7 +170,7 @@ export function sampleAgentDrive(
     buttons,
     firePrimary,
     aimSecondary: false,
-    interactPressed: false,
+    interactPressed,
     blockRemovePressed: false,
     blockPlacePressed: false,
     materialSlot1Pressed: false,
@@ -221,6 +226,8 @@ export type VibeDriveBridge = {
   jump(holdMs?: number): void;
   /** Hold firePrimary for holdMs (default 50). */
   fire(command?: AgentDriveFireCommand): void;
+  /** One-frame interact edge: enter or leave the nearest vehicle. */
+  interact(): void;
   status(): AgentDriveStatus;
 };
 
@@ -275,6 +282,7 @@ const bridge: VibeDriveBridge = {
     state.jumpUntil = 0;
     state.fireUntil = 0;
     state.firePending = false;
+    state.interactPending = false;
   },
 
   setSprint(on: boolean) {
@@ -297,6 +305,10 @@ const bridge: VibeDriveBridge = {
     const state = getState();
     state.fireUntil = nowMs() + hold;
     state.firePending = true;
+  },
+
+  interact() {
+    getState().interactPending = true;
   },
 
   status(): AgentDriveStatus {

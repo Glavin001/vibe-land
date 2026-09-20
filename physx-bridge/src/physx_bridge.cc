@@ -1,6 +1,7 @@
 #include "vibe-land-physx-bridge/src/lib.rs.h"
 
 #include "PxPhysicsAPI.h"
+#include "PxNativeVehicle.h"
 
 #ifdef VIBE_LAND_DESTRUCTION
 #include "destruction.h"
@@ -75,6 +76,8 @@ struct Record {
   RecordKind kind = RecordKind::StaticBox;
   PxRigidActor *actor = nullptr;
   PxController *controller = nullptr;
+  // Owns the actor for RecordKind::VehicleChassis; released through it.
+  physx::native::NativeVehicle *vehicle = nullptr;
   PxVec3 player_velocity{0.0f};
   bool grounded = false;
   float player_step_offset = 0.0f;
@@ -2332,14 +2335,79 @@ public:
     records_.emplace(desc.entity_id, player);
   }
 
-  void add_vehicle_chassis(const FfiVehicleChassisDesc &desc) {
+  // A PhysX Vehicle SDK car through physx-2's packaged NativeVehicle. The
+  // vehicle model is CPU code that queries this scene for road geometry and
+  // writes accelerations to an ordinary PxRigidDynamic, so it needs exactly
+  // the ordinary actor access this scene keeps; the chassis is one more rigid
+  // body whose contacts load the destruction stage. Its suspension-limit and
+  // sticky-tyre PxConstraints are kept: native correction admits constraints
+  // on bodies the stage does not own.
+  void add_vehicle(const FfiVehicleDesc &desc) {
     ensure_new_id(desc.entity_id);
-    require_positive_vec3(desc.half_extents,
+    require_positive_vec3(desc.chassis_half_extents,
                           "vehicle chassis half extents must be positive");
-    add_dynamic(desc.entity_id, desc.user_id, desc.pose,
-                PxBoxGeometry(to_px(desc.half_extents)), desc.mass,
-                desc.collision_group, desc.collision_mask,
-                RecordKind::VehicleChassis);
+    require(finite(desc.mass) && desc.mass > 0.0f, "vehicle mass must be positive");
+    require(desc.front_axle_z > desc.rear_axle_z, "vehicle front axle must be ahead of the rear axle");
+    physx::native::NativeVehicleDesc car;
+    car.mass = desc.mass;
+    const PxVec3 half = to_px(desc.chassis_half_extents);
+    // A box's inertia unless the caller supplies one.
+    const PxVec3 inertia = to_px(desc.inertia);
+    car.moi = (inertia.x > 0.0f && inertia.y > 0.0f && inertia.z > 0.0f)
+        ? inertia
+        : PxVec3(desc.mass * (half.y * half.y + half.z * half.z) * 4.0f / 12.0f,
+                 desc.mass * (half.x * half.x + half.z * half.z) * 4.0f / 12.0f,
+                 desc.mass * (half.x * half.x + half.y * half.y) * 4.0f / 12.0f);
+    // The actor origin is the chassis centre and the centre of mass.
+    car.cMassLocalPose = PxTransform(PxIdentity);
+    car.chassisHalfExtents = half;
+    car.chassisLocalPose = PxTransform(PxIdentity);
+    car.chassisSimulationFilterData =
+        PxFilterData(desc.collision_group, desc.collision_mask, desc.entity_id, 0);
+    car.chassisQueryFilterData = PxFilterData(desc.collision_group, desc.entity_id, 0, 0);
+    car.chassisSceneQueryShape = false;
+    car.frontAxleZ = desc.front_axle_z;
+    car.rearAxleZ = desc.rear_axle_z;
+    car.halfTrack = desc.half_track;
+    car.suspensionAttachmentY = desc.suspension_attachment_y;
+    car.suspensionTravel = desc.suspension_travel;
+    car.wheelRadius = desc.wheel_radius;
+    car.wheelHalfWidth = desc.wheel_half_width;
+    car.wheelMass = 0.02f * desc.mass;
+    car.wheelMoi = 0.5f * car.wheelMass * desc.wheel_radius * desc.wheel_radius;
+    // Sprung mass per corner: a quarter of the chassis.
+    car.frontSprungMass = car.rearSprungMass = 0.25f * desc.mass;
+    car.frontStiffness = car.rearStiffness = desc.suspension_stiffness;
+    car.frontDamping = car.rearDamping = desc.suspension_damping;
+    car.tyreFriction = desc.tyre_friction;
+    car.maxSteerRadians = desc.max_steer_radians;
+    car.maxDriveTorque = desc.drive_torque;
+    car.maxBrakeTorque = desc.brake_torque;
+    car.maxHandbrakeTorque = desc.handbrake_torque;
+    car.driveTopSpeed = desc.top_speed;
+    car.rearWheelDriveOnly = desc.rear_wheel_drive;
+    car.sweepRoadQueries = desc.sweep_road_queries;
+    // Wheels stand on whatever groups the mask names; PhysX's default query
+    // filter passes a shape when any word of its query data overlaps ours, and
+    // this scene keeps the group in word0 (configure_shape).
+    car.roadQueryFlags = PxQueryFlags(PxQueryFlag::eSTATIC | PxQueryFlag::eDYNAMIC);
+    car.roadQueryFilterData = PxFilterData(desc.road_mask, 0, 0, 0);
+    car.keepConstraints = true;
+    PxCookingParams cooking(runtime_->physics().getTolerancesScale());
+    cooking.buildGPUData = true;
+    physx::native::NativeVehicle *vehicle = physx::native::NativeVehicle::create(
+        runtime_->physics(), *scene_, cooking, *material_, car, to_px(desc.pose), "vibe-vehicle");
+    require(vehicle != nullptr, "PhysX vehicle creation failed");
+    PxRigidDynamic *actor = vehicle->actor();
+    require(actor != nullptr, "PhysX vehicle has no actor");
+    actor->setContactReportThreshold(contact_report_threshold_);
+    actor->setSolverIterationCounts(dynamic_solver_position_iterations(),
+                                    dynamic_solver_velocity_iterations());
+    tag_actor(*actor, desc.entity_id);
+    Record record{desc.entity_id, desc.user_id, desc.collision_group,
+                  desc.collision_mask, RecordKind::VehicleChassis, actor};
+    record.vehicle = vehicle;
+    records_.emplace(desc.entity_id, record);
   }
 
   void remove_actor(std::uint32_t entity_id) {
@@ -2349,6 +2417,11 @@ public:
     if (record.controller != nullptr) {
       record.controller->release();
       record.controller = nullptr;
+      record.actor = nullptr;
+    } else if (record.vehicle != nullptr) {
+      // The vehicle owns its actor and removes it from the scene.
+      record.vehicle->release();
+      record.vehicle = nullptr;
       record.actor = nullptr;
     } else if (record.actor != nullptr) {
       record.actor->release();
@@ -2408,27 +2481,17 @@ public:
     return woken;
   }
 
-  void drive_vehicle(std::uint32_t entity_id, float throttle, float steer,
-                     float brake) {
-    require(finite(throttle) && finite(steer) && finite(brake),
+  void drive_vehicle(std::uint32_t entity_id, const FfiVehicleCommands &commands) {
+    require(finite(commands.throttle) && finite(commands.brake) &&
+                finite(commands.handbrake) && finite(commands.steer),
             "vehicle input contains a non-finite value");
     Record &record = find(entity_id);
-    require(record.kind == RecordKind::VehicleChassis,
-            "entity is not a vehicle chassis");
-    PxRigidDynamic *dynamic = record.actor->is<PxRigidDynamic>();
-    require(dynamic != nullptr, "vehicle chassis lost its dynamic actor");
-
-    throttle = PxClamp(throttle, -1.0f, 1.0f);
-    steer = PxClamp(steer, -1.0f, 1.0f);
-    brake = PxClamp(brake, 0.0f, 1.0f);
-    const PxVec3 forward =
-        dynamic->getGlobalPose().q.rotate(PxVec3(0.0f, 0.0f, 1.0f));
-    dynamic->addForce(forward * (throttle * 12.0f),
-                      PxForceMode::eACCELERATION, true);
-    dynamic->addTorque(PxVec3(0.0f, steer * 2.5f, 0.0f),
-                       PxForceMode::eACCELERATION, true);
-    dynamic->setLinearDamping(0.1f + brake * 8.0f);
-    dynamic->setAngularDamping(0.5f + brake * 5.0f);
+    require(record.kind == RecordKind::VehicleChassis && record.vehicle != nullptr,
+            "entity is not a vehicle");
+    record.vehicle->setGear(commands.reverse ? physx::native::NativeVehicle::eREVERSE
+                                             : physx::native::NativeVehicle::eFORWARD);
+    record.vehicle->setCommands(commands.throttle, commands.brake, commands.handbrake,
+                                commands.steer);
   }
 
   void move_player(std::uint32_t entity_id, const FfiVec3 &displacement,
@@ -2508,6 +2571,14 @@ public:
     }
     contact_callbacks_this_step_ = 0;
     step_start_ = std::chrono::steady_clock::now();
+    // The vehicle model runs on the CPU against last step's scene and writes
+    // this step's accelerations before the scene integrates them. Idle input
+    // applies nothing and wakes nothing.
+    for (auto &entry : records_) {
+      if (entry.second.vehicle != nullptr) {
+        entry.second.vehicle->step(kFixedTimestep);
+      }
+    }
     controller_manager_->computeInteractions(kFixedTimestep);
     const auto after_controllers = std::chrono::steady_clock::now();
     scene_->simulate(kFixedTimestep);
@@ -2796,14 +2867,25 @@ public:
           record->actor == nullptr) {
         continue;
       }
-      const PxRigidDynamic *dynamic = record->actor->is<PxRigidDynamic>();
-      require(dynamic != nullptr, "vehicle chassis lost its dynamic actor");
-      output.push_back({record->entity_id,
-                        record->user_id,
-                        from_px(dynamic->getGlobalPose()),
-                        from_px(dynamic->getLinearVelocity()),
-                        from_px(dynamic->getAngularVelocity()),
-                        dynamic->isSleeping()});
+      require(record->vehicle != nullptr, "vehicle chassis lost its vehicle");
+      const physx::native::NativeVehicleState state = record->vehicle->state();
+      FfiVehicleSnapshot snapshot{};
+      snapshot.entity_id = record->entity_id;
+      snapshot.user_id = record->user_id;
+      snapshot.pose = from_px(state.pose);
+      snapshot.linear_velocity = from_px(state.linearVelocity);
+      snapshot.angular_velocity = from_px(record->actor->is<PxRigidDynamic>()->getAngularVelocity());
+      snapshot.sleeping = state.sleeping;
+      snapshot.wheels_on_road = 0;
+      for (unsigned w = 0; w < 4; ++w) {
+        snapshot.wheel_steer[w] = state.wheels[w].steerAngle;
+        snapshot.wheel_rotation_speed[w] = state.wheels[w].rotationSpeed;
+        snapshot.wheel_jounce[w] = state.wheels[w].jounce;
+        if (state.wheels[w].onRoad) {
+          snapshot.wheels_on_road |= static_cast<std::uint8_t>(1U << w);
+        }
+      }
+      output.push_back(snapshot);
     }
     return output;
   }
@@ -3439,6 +3521,13 @@ private:
           record.controller->release();
           record.controller = nullptr;
           record.actor = nullptr;
+        } else if (record.vehicle != nullptr) {
+          // Through the vehicle, which owns the actor and holds a foundation
+          // reference: releasing the actor alone leaves that reference
+          // pending and the next world in the process cannot create one.
+          record.vehicle->release();
+          record.vehicle = nullptr;
+          record.actor = nullptr;
         } else if (record.actor != nullptr) {
           record.actor->release();
           record.actor = nullptr;
@@ -3916,8 +4005,8 @@ void World::add_capsule_player(const FfiCapsulePlayerDesc &desc) {
   impl_->add_capsule_player(desc);
 }
 
-void World::add_vehicle_chassis(const FfiVehicleChassisDesc &desc) {
-  impl_->add_vehicle_chassis(desc);
+void World::add_vehicle(const FfiVehicleDesc &desc) {
+  impl_->add_vehicle(desc);
 }
 
 void World::remove_actor(std::uint32_t entity_id) {
@@ -3941,9 +4030,8 @@ std::uint32_t World::wake_bodies_near(FfiVec3 center, float radius) {
   return impl_->wake_bodies_near(center, radius);
 }
 
-void World::drive_vehicle(std::uint32_t entity_id, float throttle, float steer,
-                          float brake) {
-  impl_->drive_vehicle(entity_id, throttle, steer, brake);
+void World::drive_vehicle(std::uint32_t entity_id, const FfiVehicleCommands &commands) {
+  impl_->drive_vehicle(entity_id, commands);
 }
 
 void World::move_player(std::uint32_t entity_id, FfiVec3 displacement,

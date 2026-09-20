@@ -91,6 +91,12 @@ export interface GameE2ESnapshot {
   // Vehicle
   drivenVehicleId: number | null;
   nearestVehicleId: number | null;
+  vehicles: Array<{
+    id: number;
+    driverId: number;
+    position: [number, number, number];
+    speedMs: number;
+  }>;
 
   // Remote players
   remotePlayers: Array<{
@@ -495,6 +501,7 @@ const refs = {
   } as GameE2ESnapshot['movementTelemetry'],
   drivenVehicleId: null as number | null,
   nearestVehicleId: null as number | null,
+  vehicles: [] as Array<{ id: number; driverId: number; position: [number, number, number]; speedMs: number }>,
   remotePlayers: [] as Array<{ id: number; position: [number, number, number] }>,
   statsSnapshot: { ...DEFAULT_STATS } as DebugStats,
   city: null as CityE2EStats | null,
@@ -538,6 +545,7 @@ export function updateE2EBridgeFrameState(state: {
   movementTelemetry: GameE2ESnapshot['movementTelemetry'];
   drivenVehicleId: number | null;
   nearestVehicleId: number | null;
+  vehicles: Array<{ id: number; driverId: number; position: [number, number, number]; speedMs: number }>;
   remotePlayers: Array<{ id: number; position: [number, number, number] }>;
   stats: DebugStats;
 }): void {
@@ -547,6 +555,7 @@ export function updateE2EBridgeFrameState(state: {
   refs.movementTelemetry = state.movementTelemetry;
   refs.drivenVehicleId = state.drivenVehicleId;
   refs.nearestVehicleId = state.nearestVehicleId;
+  refs.vehicles = state.vehicles;
   refs.remotePlayers = state.remotePlayers;
   refs.statsSnapshot = state.stats;
 }
@@ -581,6 +590,7 @@ function buildSnapshot(): GameE2ESnapshot {
     },
     drivenVehicleId: refs.drivenVehicleId,
     nearestVehicleId: refs.nearestVehicleId,
+    vehicles: refs.vehicles.map((v) => ({ ...v, position: [...v.position] as [number, number, number] })),
     remotePlayers: refs.remotePlayers.map((rp) => ({
       id: rp.id,
       position: [...rp.position] as [number, number, number],

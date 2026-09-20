@@ -56,6 +56,11 @@ fn benchmark_world_document(match_id: &str) -> Option<WorldDocument> {
     }
 }
 
+/// The city's cars. Well above any u8 snapshot handle, so a client that keys a
+/// vehicle by its wire handle can never name a different car by accident.
+pub const CITY_VEHICLE_ID_DELOREAN: u32 = 1001;
+pub const CITY_VEHICLE_ID_CYBERTRUCK: u32 = 1002;
+
 /// Open flat terrain for the destructible city. The buildings themselves live
 /// in the destruction runtime (PhysX/Blast or synthetic), not the movement
 /// arena; spawn areas ring the 4×4 grid (half extent 27 m + tallest building
@@ -68,13 +73,37 @@ fn city_world() -> WorldDocument {
         BENCHMARK_TERRAIN_HALF_EXTENT_M,
         vec![0.0; BENCHMARK_TERRAIN_GRID_SIZE * BENCHMARK_TERRAIN_GRID_SIZE],
     );
-    // No vehicle. The benchmark template parks one at the origin -- the centre
-    // of the city grid -- and the vehicle sim keeps it permanently awake.
-    // PhysX sleeps bodies per contact island, so one always-awake actor
-    // resting among the rubble held every chunk touching that pile awake
-    // forever: the live server sat at 19k awake indefinitely while the
-    // vehicle-free bench slept the same demolition to zero in 22 seconds.
+    // Two cars, one per vehicle type, parked beside the east and west spawn
+    // areas on the ring and facing downtown. The benchmark template parks one
+    // at the origin, the centre of the city grid, which once held every chunk
+    // in its contact island awake forever; the vehicle SDK now applies its
+    // forces with autowake off and wakes only on a throttle or steer intent
+    // (physx-2 physx_native_vehicle_parked_sleeps), and the ring keeps a
+    // parked car outside every building's fall reach on this axis. The east
+    // and west areas rather than north and south because the downtown pack
+    // ends 32 m short of the ring on x and 12 m short on z.
     world.dynamic_entities.clear();
+    // VIBE_CITY_VEHICLES=0 seeds none: an operator's switch for a match that
+    // should not have cars, and the A/B for anything the cars are suspected of.
+    let vehicles_enabled = std::env::var("VIBE_CITY_VEHICLES").map_or(true, |v| v != "0");
+    let ring = if vehicles_enabled { crate::city::spawn_ring_radius_m() } else { 0.0 };
+    // Off the spawn area's 6 m radius so nobody spawns inside a car.
+    let cars = [(CITY_VEHICLE_ID_DELOREAN, 0u8, ring, 8.0f32), (CITY_VEHICLE_ID_CYBERTRUCK, 1u8, -ring, -8.0)];
+    for (id, vehicle_type, x, z) in cars.into_iter().filter(|_| vehicles_enabled) {
+        // +z forward rotated about y to face the origin.
+        let yaw = (-x).atan2(-z);
+        world.dynamic_entities.push(DynamicEntity {
+            id,
+            kind: DynamicEntityKind::Vehicle,
+            position: [x, 1.0, z],
+            rotation: [0.0, (yaw * 0.5).sin(), 0.0, (yaw * 0.5).cos()],
+            half_extents: None,
+            radius: None,
+            vehicle_type: Some(vehicle_type),
+            energy: None,
+            height: None,
+        });
+    }
     // No heightfield. The benchmark template lays a flat 129x129 heightfield
     // across a 512 m square, and the slab below is the actual floor; the two
     // were coincident at y=0, so the heightfield was a second collider for
@@ -291,6 +320,42 @@ mod tests {
         let vehicles = arena.snapshot_vehicles();
         assert_eq!(vehicles.len(), 1);
         assert!(vehicles[0].py_mm > 0);
+    }
+
+    #[test]
+    fn city_world_parks_two_cars_on_the_ring_outside_the_spawn_areas() {
+        let mut arena = PhysicsArena::new_rapier(MoveConfig::default());
+        seed_world_for_match(&mut arena, "city-default").expect("instantiate city world");
+        assert_eq!(arena.counts().1, 2);
+        let world = city_world();
+        let ring = crate::city::spawn_ring_radius_m();
+        let mut types = world
+            .dynamic_entities
+            .iter()
+            .filter(|entity| matches!(entity.kind, DynamicEntityKind::Vehicle))
+            .map(|entity| {
+                // On the x axis of the ring, where the downtown pack ends 32 m
+                // short, and clear of every spawn area's radius.
+                assert!((entity.position[0].abs() - ring).abs() < 0.5, "{:?}", entity.position);
+                for area in &world.spawn_areas {
+                    let dx = entity.position[0] - area.position[0];
+                    let dz = entity.position[2] - area.position[2];
+                    assert!((dx * dx + dz * dz).sqrt() > area.radius, "car {:?} inside spawn area {:?}", entity.position, area);
+                }
+                assert!(entity.id > 255, "vehicle id {} could collide with a u8 snapshot handle", entity.id);
+                entity.vehicle_type.unwrap()
+            })
+            .collect::<Vec<_>>();
+        types.sort_unstable();
+        assert_eq!(types, vec![0, 1]);
+
+        // Both rest on the ground box, upright.
+        for _ in 0..300 {
+            arena.step_vehicles_and_dynamics(1.0 / 60.0);
+        }
+        for vehicle in arena.snapshot_vehicles() {
+            assert!(vehicle.py_mm > 0 && vehicle.py_mm < 2_000, "{vehicle:?}");
+        }
     }
 
     #[test]
