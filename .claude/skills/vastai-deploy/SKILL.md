@@ -20,7 +20,8 @@ ports in one call. `up` builds against the sibling `blast-stress-solver-2/blast`
 (or `--blast-root /path/to/blast`), preserves the running scene/settings,
 renews a 12-day P-256 certificate, and starts only this deployment. It refuses
 ambiguous ownership and a restart while players are connected. Builds finish
-before that refusal; retry when empty. It never invokes broad `pkill`. It recognizes the checkout-owned legacy
+before that refusal; retry when empty, or pass `--force` when the owner has
+said to replace the server and drop whoever is on it. It never invokes broad `pkill`. It recognizes the checkout-owned legacy
 `run-vl4-server.sh` loop and replaces it with its own scoped supervisor, so
 resets and unexpected exits restart the current deployed binary.
 
@@ -83,3 +84,48 @@ commands, read [city-stack-run](../city-stack-run/SKILL.md).
 For **renting, templates, SSH boot, Docker images or fleet teardown**, read
 [the fleet/manual reference](references/fleet-and-manual.md). It retains the
 historical troubleshooting detail; do not load it for ordinary in-place deploys.
+
+## Three things that have bitten this deployment
+
+**The build must use the CUDA toolkit the server is run with.** `serve()` pins
+`CUDA_HOME` to 12.8 — the toolkit architecture 89 is qualified on, and the one
+recorded in the SDK's `sdk-artifacts.json` — and the *build* environment did
+not, so a rebuild inherited whatever `/usr/local/cuda` points at. That is 13.2
+on this host, and `physx-bridge/build.rs` correctly refused:
+
+```
+CUDA 13.2 (/usr/local/cuda/bin/nvcc) does not match the 12.8 toolkit that
+built the destruction SDK
+```
+
+which reads like an SDK problem and is a deploy-script one. Both environments
+now pin it. If you build by hand, export it yourself:
+
+```bash
+export CUDA_HOME=/usr/local/cuda-12.8 PATH=/usr/local/cuda-12.8/bin:$PATH
+```
+
+**Never truncate a log another process holds open.** `server.log` was
+append-only and unbounded and reached **10.1 GB on a disk with 9.0 GB free**;
+968,102 of the lines in the last 200 MB were one PhysX message repeated, because
+a scene whose CUDA context is gone calls `fetchResults()` illegally every tick
+and says so. Truncating it made things worse twice over: an inherited fd keeps
+its offset across a truncation, so the next write recreated the file **sparse at
+its old size**, and it reached 17.5 GB in eight minutes and took the disk to
+319 MB free. Deleting the rotated file freed nothing, because a live process
+still held it — that needed `: > /proc/<pid>/fd/1`.
+
+The supervisor now pipes the child's output so it can bound a *single* lifetime
+(rotating between restarts would not have helped — all 968k lines came from
+one), collapses identical consecutive lines to a count, keeps one 512 MB
+previous, and writes its own output to a separate `supervisor.log` so it never
+holds an fd on the file it rotates. `rotate_log` renames and never truncates.
+
+**Check what is actually deployed before answering "is it fixed".** The
+client bundle timestamp under `.certs/vast-city/client/assets/` and the running
+binary's mtime are the truth; a commit is not. Confirm a specific fix is in the
+binary rather than inferring it:
+
+```bash
+strings .certs/vast-city/web-fps-server-<id> | grep -c VIBE_CITY_BALL_DENSITY_KGM3
+```
