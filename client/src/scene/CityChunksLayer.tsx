@@ -1037,18 +1037,19 @@ export function CityChunksLayer({
     // but not sampled is drawn a stride late.
     const cameraNow = frameState.camera.position;
     const frameNow = frameCounterRef.current;
-    const dueThisFrame = (key: number): boolean => {
-      const body = client.topology.body(key);
-      if (!body) return true;
-      const dx = body.position[0] - cameraNow.x;
-      const dy = body.position[1] - cameraNow.y;
-      const dz = body.position[2] - cameraNow.z;
+    // Staggered by body key. It used to be by cell, because a cell's upload
+    // unit re-sent everything it held when any one instance in it changed;
+    // the body pose texture is one upload a frame whatever moved, so the
+    // stagger is free to spread the work as evenly as it can, and needs no
+    // lookup to do it.
+    const dueThisFrame = (key: number, at: ArrayLike<number> | null): boolean => {
+      if (!at) return true;
+      const dx = at[0] - cameraNow.x;
+      const dy = at[1] - cameraNow.y;
+      const dz = at[2] - cameraNow.z;
       const stride = updateStrideForDistanceSq(dx * dx + dy * dy + dz * dz);
       if (stride <= 1) return true;
-      // Staggered by CELL, not by body -- see the write loop for why.
-      const renderableIndex = state.meshOfSlot[body.chunkSlots[0]];
-      const batch = renderableIndex < 0 ? 0 : state.cellOfRenderable[renderableIndex];
-      return shouldUpdateThisFrame(frameNow, batch, stride);
+      return shouldUpdateThisFrame(frameNow, key, stride);
     };
     const sampleStartedAt = performance.now();
     const live = client.samplePresentation(performance.now(), dueThisFrame);
@@ -1150,7 +1151,7 @@ export function CityChunksLayer({
       // Deferring that one would strand it at its second-to-last pose for
       // good, since no further frame will list it as live.
       const settling = !live.has(key);
-      if (!settling && !repaintBodies && !dueThisFrame(key)) {
+      if (!settling && !repaintBodies && !dueThisFrame(key, body.position)) {
         continue;
       }
       // A body drawn while its pose came from the raw writer is being shown at
