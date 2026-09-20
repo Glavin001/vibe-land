@@ -50,6 +50,7 @@ import {
 import {
   buildCityMaterial,
   buildCityMesh,
+  refreshRenderableSphere,
   wakeBrokenSlots,
   wakeSlotFromShell,
   type CityMeshState,
@@ -1176,7 +1177,8 @@ export function CityChunksLayer({
     // growth is seen, and a wrongly small sphere culls a whole batch -- a
     // block of city gone. That is indistinguishable from the report being
     // chased, and unlike the exact recompute it cannot be verified by any
-    // counter this client has.
+    // counter this client has. refreshRenderableSphere keeps that property:
+    // it re-derives the sphere from every instance's current pose each time.
     const writeEndedAt = performance.now();
     renderStats.dirtyWriteMs = writeEndedAt - updateStartedAt;
     for (const index of touchedMeshes) {
@@ -1194,7 +1196,7 @@ export function CityChunksLayer({
         // it was skipped.
         if (!renderable.mesh.frustumCulled) continue;
       }
-      renderable.mesh.computeBoundingSphere();
+      refreshRenderableSphere(state, index);
     }
     // ---- Visual audit -------------------------------------------------
     //

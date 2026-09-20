@@ -91,6 +91,14 @@ export type CityMeshState = {
   /** Slot -> index into `renderables`. */
   meshOfSlot: Int32Array;
   /**
+   * Per renderable: the exact bounding sphere of the cell at rest, its shell
+   * instance id (-1 for none), and the largest chunk radius seated in it. The
+   * per-frame sphere refresh is built from these; see refreshRenderableSphere.
+   */
+  restSphereOfRenderable: THREE.Sphere[];
+  shellInstanceOfRenderable: Int32Array;
+  maxRadiusOfRenderable: Float32Array;
+  /**
    * Slot -> instance id within its own object. BatchedMesh hands out its own
    * ids and InstancedMesh ids are positions in that mesh's slot list; neither
    * promises to match the topology slot.
@@ -475,6 +483,7 @@ function resolveTints(
 type BuildSink = {
   renderables: CityRenderable[];
   cellOfRenderable: number[];
+  shellInstanceOfRenderable: number[];
   meshOfSlot: Int32Array;
   instanceIds: Int32Array;
   hiddenBySlot: Uint8Array;
@@ -574,6 +583,7 @@ function buildCellBoxes(
   mesh.computeBoundingSphere();
   sink.renderables.push(renderable);
   sink.cellOfRenderable.push(cell);
+  sink.shellInstanceOfRenderable.push(-1);
   sink.instancedCount += 1;
   sink.subDraws += 1;
 }
@@ -685,6 +695,7 @@ function buildCellHullBatch(
   mesh.computeBoundingSphere();
   sink.renderables.push(renderable);
   sink.cellOfRenderable.push(cell);
+  sink.shellInstanceOfRenderable.push(shellInstanceId);
   sink.batchCount += 1;
   // The shell. Wakes add live sub-draws at runtime; this counter is the
   // intact-city figure.
@@ -738,6 +749,7 @@ function buildSharedShapeMeshes(
     mesh.instanceMatrix.needsUpdate = true;
     if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
     sink.renderables.push(renderable);
+    sink.shellInstanceOfRenderable.push(-1);
     // Its own stagger phase, continuing past the real cells: this mesh IS an
     // upload unit, so every body drawing this shape must defer together for the
     // stride to save anything.
@@ -745,6 +757,69 @@ function buildSharedShapeMeshes(
     sink.instancedCount += 1;
     sink.subDraws += 1;
   }
+}
+
+/**
+ * Refresh a cell mesh's bounding sphere from where its chunks are now.
+ *
+ * three's `computeBoundingSphere` decomposes every instance matrix and unions
+ * a transformed sphere per instance; at 49k chunks in a collapse that was 8 ms
+ * of a frame. What culling needs is a sphere that is never too small, and
+ * that is cheaper to guarantee: start from the exact rest footprint (which
+ * already covers the shell and every chunk that has not moved) and grow the
+ * radius so every instance position plus the cell's largest chunk radius
+ * fits. Every instance is visited on every refresh, so the sphere is
+ * conservative for the poses actually written, not for a history of them --
+ * the failure the grow-only scheme had.
+ *
+ * The centre stays put; a cell whose rubble has scattered gets a bigger
+ * sphere rather than a shifted one. Conservative either way.
+ */
+export function refreshRenderableSphere(state: CityMeshState, index: number): void {
+  const renderable = state.renderables[index];
+  const rest = state.restSphereOfRenderable[index];
+  if (!renderable || !rest) {
+    renderable?.mesh.computeBoundingSphere();
+    return;
+  }
+  const mesh = renderable.mesh;
+  const sphere = mesh.boundingSphere ?? (mesh.boundingSphere = new THREE.Sphere());
+  sphere.copy(rest);
+  const cx = sphere.center.x;
+  const cy = sphere.center.y;
+  const cz = sphere.center.z;
+  const reach = state.maxRadiusOfRenderable[index];
+  let radius = sphere.radius;
+  let data: ArrayLike<number> | null = null;
+  let count = 0;
+  if (renderable.kind === 'instanced') {
+    data = renderable.mesh.instanceMatrix.array;
+    count = renderable.mesh.count;
+  } else {
+    // The matrices texture is the instance matrices; ids are dense from zero
+    // because the build never deletes an instance.
+    const texture = (renderable.mesh as unknown as {
+      _matricesTexture?: { image?: { data?: ArrayLike<number> } };
+    })._matricesTexture;
+    data = texture?.image?.data ?? null;
+    count = renderable.mesh.instanceCount;
+  }
+  if (!data) {
+    mesh.computeBoundingSphere();
+    return;
+  }
+  const shell = state.shellInstanceOfRenderable[index];
+  for (let i = 0; i < count; i += 1) {
+    // The shell sits at the identity, and the rest sphere already covers it.
+    if (i === shell) continue;
+    const at = i * 16;
+    const dx = data[at + 12] - cx;
+    const dy = data[at + 13] - cy;
+    const dz = data[at + 14] - cz;
+    const need = Math.sqrt(dx * dx + dy * dy + dz * dz) + reach;
+    if (need > radius) radius = need;
+  }
+  sphere.radius = radius;
 }
 
 /**
@@ -818,6 +893,7 @@ export function buildCityMesh(client: CityClient): CityMeshState {
   const sink: BuildSink = {
     renderables: [],
     cellOfRenderable: [],
+    shellInstanceOfRenderable: [],
     meshOfSlot: new Int32Array(count).fill(-1),
     instanceIds: new Int32Array(count).fill(-1),
     hiddenBySlot: new Uint8Array(count),
@@ -909,9 +985,24 @@ export function buildCityMesh(client: CityClient): CityMeshState {
   });
 
   renderStats.subDraws = sink.subDraws;
+  // Every chunk is at rest here, so each mesh's sphere as three computed it
+  // during the build is the exact footprint of the cell at rest -- shell
+  // included. The per-frame refresh grows from it.
+  const restSphereOfRenderable = sink.renderables.map((renderable) => {
+    if (!renderable.mesh.boundingSphere) renderable.mesh.computeBoundingSphere();
+    return renderable.mesh.boundingSphere!.clone();
+  });
+  const maxRadiusOfRenderable = new Float32Array(sink.renderables.length);
+  for (let slot = 0; slot < count; slot += 1) {
+    const index = sink.meshOfSlot[slot];
+    if (index >= 0 && radii[slot] > maxRadiusOfRenderable[index]) maxRadiusOfRenderable[index] = radii[slot];
+  }
   return {
     renderables: sink.renderables,
     cellOfRenderable: Int32Array.from(sink.cellOfRenderable),
+    restSphereOfRenderable,
+    shellInstanceOfRenderable: Int32Array.from(sink.shellInstanceOfRenderable),
+    maxRadiusOfRenderable,
     meshOfSlot: sink.meshOfSlot,
     instanceIds: sink.instanceIds,
     scales,
