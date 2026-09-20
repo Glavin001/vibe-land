@@ -37,7 +37,7 @@ import { useEffect, useRef } from 'react';
 import * as THREE from 'three';
 
 import type { CityClient } from '../city/cityClient';
-import type { LedgerBody } from '../city/topology';
+import { SUPPORT_SERIAL, type LedgerBody } from '../city/topology';
 import { shouldUpdateThisFrame, updateStrideForDistanceSq } from '../city/renderScheduling';
 import {
   cityPbrLighting,
@@ -185,6 +185,13 @@ function countFloatingSettledIslands(
  * is built once into reused storage and everything else reads it.
  */
 const sweepPositions = { data: new Float32Array(0) };
+/**
+ * World positions of chunks still in their structure's support body, which is
+ * kinematic and never moves: composed once per ledger epoch, then copied. In a
+ * collapse two thirds of the city is still standing, and composing a pose that
+ * cannot have changed was two thirds of an 11 ms sweep.
+ */
+const sweepRestWorld = { data: new Float32Array(0), valid: new Uint8Array(0), epoch: -1 };
 /** Scratch for the per-frame pose trace; reused so tracing allocates nothing. */
 const TRACE_POSE = new Float32Array(7);
 const sweepColumns = new Map<number, number>();
@@ -203,6 +210,17 @@ function sweepChunkPositions(client: CityClient): {
     sweepPositions.data = new Float32Array(count * 3);
   }
   const positions = sweepPositions.data;
+  const restWorld = sweepRestWorld;
+  const epoch = client.ledgerEpoch();
+  if (restWorld.data.length < count * 3 || restWorld.epoch !== epoch) {
+    if (restWorld.data.length < count * 3) {
+      restWorld.data = new Float32Array(count * 3);
+      restWorld.valid = new Uint8Array(count);
+    } else {
+      restWorld.valid.fill(0);
+    }
+    restWorld.epoch = epoch;
+  }
   const columns = sweepColumns;
   columns.clear();
   let minChunkY = Infinity;
@@ -221,16 +239,32 @@ function sweepChunkPositions(client: CityClient): {
       lastBody = topology.body(key);
     }
     const at = slot * 3;
-    const resolved = topology.chunkWorldPoseInto(slot, lastBody, TMP_POSE, 0);
-    if (!resolved || !Number.isFinite(TMP_POSE[0]) || !Number.isFinite(TMP_POSE[1])
-      || !Number.isFinite(TMP_POSE[2])) {
-      positions[at] = positions[at + 1] = positions[at + 2] = Number.NaN;
-      unresolvedChunkPoses += 1;
-      continue;
+    const standing = lastBody !== undefined && lastBody.islandSerial === SUPPORT_SERIAL;
+    let x: number;
+    let y: number;
+    let z: number;
+    if (standing && restWorld.valid[slot] === 1) {
+      x = restWorld.data[at];
+      y = restWorld.data[at + 1];
+      z = restWorld.data[at + 2];
+    } else {
+      const resolved = topology.chunkWorldPoseInto(slot, lastBody, TMP_POSE, 0);
+      if (!resolved || !Number.isFinite(TMP_POSE[0]) || !Number.isFinite(TMP_POSE[1])
+        || !Number.isFinite(TMP_POSE[2])) {
+        positions[at] = positions[at + 1] = positions[at + 2] = Number.NaN;
+        unresolvedChunkPoses += 1;
+        continue;
+      }
+      x = TMP_POSE[0];
+      y = TMP_POSE[1];
+      z = TMP_POSE[2];
+      if (standing) {
+        restWorld.data[at] = x;
+        restWorld.data[at + 1] = y;
+        restWorld.data[at + 2] = z;
+        restWorld.valid[slot] = 1;
+      }
     }
-    const x = TMP_POSE[0];
-    const y = TMP_POSE[1];
-    const z = TMP_POSE[2];
     positions[at] = x;
     positions[at + 1] = y;
     positions[at + 2] = z;
