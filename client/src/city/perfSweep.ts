@@ -254,6 +254,8 @@ async function measureStep(
   label: string,
   warmupFrames: number,
   sampleFrames: number = FRAMES,
+  /** Replay mode: sample while this returns true, ignoring `sampleFrames`. */
+  whileSampling?: () => boolean,
 ): Promise<PerfSweepStep> {
   const startedAt = performance.now();
   for (let i = 0; i < warmupFrames; i += 1) await nextFrame();
@@ -265,7 +267,7 @@ async function measureStep(
   let drawCalls = 0;
   let triangles = 0;
   let documentHidden = false;
-  for (let i = 0; i < sampleFrames; i += 1) {
+  for (let i = 0; whileSampling ? whileSampling() : i < sampleFrames; i += 1) {
     await nextFrame();
     frames.push(renderStats.frameTotalMs);
     cpu.push(renderStats.cpuFrameMs);
@@ -282,8 +284,8 @@ async function measureStep(
     frameMs: stats(frames),
     gpuMs: stats(gpu),
     cpuMs: stats(cpu),
-    glSubmitMs: glSubmit / sampleFrames,
-    cityFrameMs: cityFrame / sampleFrames,
+    glSubmitMs: glSubmit / Math.max(1, frames.length),
+    cityFrameMs: cityFrame / Math.max(1, frames.length),
     drawCalls,
     subDraws: renderStats.subDraws,
     triangles,
@@ -322,7 +324,7 @@ function describeGpu(): { gpu: string; multiDrawSupported: boolean } {
  * account for a 50 ms frame on a phone, in descending order of suspicion, and
  * gets through them before iOS throttles a busy tab.
  */
-export type PerfSweepProfile = 'full' | 'mobile';
+export type PerfSweepProfile = 'full' | 'mobile' | 'replay';
 
 export async function runPerfSweep(
   profile: PerfSweepProfile = 'full',
@@ -816,4 +818,59 @@ export function formatStormSweep(report: StormSweepReport): string {
     lines.push(`  r${impact.round} ${impact.label.padEnd(16)} frame ${impact.frameMs.median.toFixed(2)} / p95 ${impact.frameMs.p95.toFixed(2)}  cpu ${impact.cpuMs.median.toFixed(2)}  awake ${Math.round(impact.awakeMean)}  parcels ${Math.round(impact.parcelsMean)}  ${impact.backingStore}`);
   }
   return lines.join('\n');
+}
+
+// ---------------------------------------------------------------------------
+// The replay sweep: the same seconds of the same storm, once per row.
+//
+// On /cityreplay the scene is a tape, so every row can rewind to the
+// bootstrap, let the tape run to `fromMs` (the mesh rebuild from the rewind
+// happens in that time) and measure until `toMs`. The rows then differ in
+// nothing but the configuration, which is what a sweep was always meant to
+// mean. Same report shape and formatter as the live sweep.
+// ---------------------------------------------------------------------------
+
+const REPLAY_STEPS: Array<{ label: string; patch: Partial<Config> }> = [
+  { label: 'as configured', patch: {} },
+  { label: 'AO off', patch: { ao: false } },
+  { label: 'shadows off', patch: { shadows: false } },
+  { label: 'shadow map 1024', patch: { shadowMapSize: 1024 } },
+  { label: 'dust off', patch: { dust: 'off' } },
+  { label: 'dust sprites', patch: { dust: 'sprites' } },
+  { label: 'dust fluid off', patch: { dustFluid: 'off' } },
+  { label: 'dust fluid fast', patch: { dustFluid: 'fast' } },
+  { label: 'sky IBL off', patch: { skyIbl: false } },
+  { label: 'anti-tiling stack off', patch: { heroTiling: false } },
+  { label: 'AO msaa off (no AA)', patch: { aoMsaa: 0 } },
+  { label: 'city textures: albedo only', patch: { cityTextures: 'albedo' } },
+  { label: 'dpr cap 1.0', patch: { dprCap: 1 } },
+  { label: 'everything off (floor)', patch: { ao: false, shadows: false, cityTextures: 'off', skyIbl: false, dust: 'off' } },
+];
+
+export async function runReplaySweep(fromMs = 2000, toMs = 10000): Promise<PerfSweepReport> {
+  const replay = window.__VIBE_REPLAY__;
+  if (!replay) throw new Error('not on /cityreplay');
+  const original = currentConfig();
+  const storedBefore = snapshotStoredRenderSettings();
+  setGovernorPaused(true);
+  const presentPeriodMs = await measurePresentPeriod();
+  const steps: PerfSweepStep[] = [];
+  let sentinel: PerfSweepStep | null = null;
+  const measureRow = async (label: string, patch: Partial<Config>): Promise<PerfSweepStep> => {
+    applyConfig({ ...original, ...patch });
+    await replay.rewind();
+    replay.play();
+    // Let the tape reach the window; the rebuild the rewind caused lands here.
+    while (replay.timeMs() < fromMs) await nextFrame();
+    return measureStep(label, 0, 0, () => replay.timeMs() < toMs);
+  };
+  try {
+    for (const entry of REPLAY_STEPS) steps.push(await measureRow(entry.label, entry.patch));
+    sentinel = await measureRow('as configured (sentinel)', {});
+  } finally {
+    applyConfig(original);
+    restoreStoredRenderSettings(storedBefore);
+    setGovernorPaused(false);
+  }
+  return finishReport(steps, sentinel, 'replay', presentPeriodMs);
 }

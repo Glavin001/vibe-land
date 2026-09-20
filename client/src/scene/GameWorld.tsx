@@ -1,19 +1,10 @@
 import { useRef, useEffect, useMemo, useState, type MutableRefObject, type ReactNode, type RefObject } from 'react';
 
 import {
-  useAmbientOcclusionEnabled,
   useDustFluid,
   useDustMode,
-  useQualityTier,
-  useShadowsEnabled,
-  useShadowMapSizeOverride,
-  useSkyDomeEnabled,
-  useSkyIblEnabled,
 } from '../app/renderQuality';
-import { FramePipeline } from '../graphics/FramePipeline';
-import { SkyEnvironment } from '../graphics/SkyEnvironment';
-import { skyGradient } from '../graphics/sunSky';
-import { SunLight } from './SunLight';
+import { CityEnvironment, resolveFogColor } from './CityEnvironment';
 import { applyCapturePose } from './captureCamera';
 import { advanceAerialPose, type AerialPose } from './aerialFlight';
 import { useFrame, useThree } from '@react-three/fiber';
@@ -27,7 +18,7 @@ import { useGameRuntime } from '../runtime/useGameRuntime';
 import type { GameRuntimeClient } from '../runtime/gameRuntime';
 import { updateE2EBridgeFrameState } from '../e2eBridge';
 import { addDebugE2eMs } from '../city/renderStats';
-import { onShotModeChange, shotMode, shotWeapon } from '../city/shotMode';
+import { shotMode, shotWeapon } from '../city/shotMode';
 import { isRecording, recordFrame } from '../netlab/recorder';
 import { isAgentDriveActive, sampleAgentDrive } from '../agentDrive';
 import { DEFAULT_STATS } from '../ui/DebugOverlay';
@@ -127,8 +118,7 @@ import { PLAYER_PROFILE } from './characterAnim/profile';
 import { preload as preloadCharacterAssets } from './characterAnim/sharedAssets';
 import { STATE } from './characterAnim/types';
 import { DEFAULT_FOG_SETTINGS } from '../graphics/fogSettings';
-import { WEATHER_PRESETS, type WeatherPreset } from '../graphics/weatherPresets';
-import { WeatherParticles } from './WeatherParticles';
+import type { WeatherPreset } from '../graphics/weatherPresets';
 import { useWeatherAmbience } from '../graphics/weatherAudio';
 import { CityChunksLayer } from './CityChunksLayer';
 import { DustLayer } from '../vfx/DustLayer';
@@ -1160,26 +1150,9 @@ export function GameWorld({
   damageFeedback,
   sceneExtras,
 }: GameWorldProps) {
-  const resolvedFogColor = fogColor ?? WEATHER_PRESETS[weather].fogColor;
-  const skyLightGradient = useMemo(() => skyGradient(resolvedFogColor), [resolvedFogColor]);
-  // Ground-level fog hides the skyline from a distant inspection camera.
-  const effectiveFogDensity = (aerialMode ? Math.min(fogDensity, 0.001) : fogDensity) * intensity;
-  const qualityIsPretty = useQualityTier() === 'pretty';
-  const shadowsOn = useShadowsEnabled();
-  const ambientOcclusionOn = useAmbientOcclusionEnabled();
+  const resolvedFogColor = resolveFogColor(fogColor, weather);
   const dustMode = useDustMode();
   const dustFluid = useDustFluid();
-  // One offscreen pipeline serves both: SSAO and the volumetric dust each
-  // need the scene's depth, which only exists off the canvas.
-  // The meteor's fire is a pipeline stage, so choosing that shot brings the
-  // pipeline up before the first rock is in the air rather than as it lands.
-  const [meteorShot, setMeteorShot] = useState(() => shotMode() === 'meteor');
-  useEffect(() => onShotModeChange(() => setMeteorShot(shotMode() === 'meteor')), []);
-  const framePipelineOn = ambientOcclusionOn || dustMode === 'volumetric' || meteorShot;
-  const skyDomeOn = useSkyDomeEnabled();
-  const skyIblOn = useSkyIblEnabled();
-  const shadowMapTexels = useShadowMapSizeOverride();
-  const weatherOn = qualityIsPretty;
   useWeatherAmbience(weather, windStrengthMps);
   const practiceMode = isPracticeMode(mode);
   const localPlayerDebugHelper = useMemo(() => createPlayerDebugHelper(0x8cff66), []);
@@ -3295,69 +3268,18 @@ export function GameWorld({
 
   return (
     <>
-      <color attach="background" args={[resolvedFogColor]} />
-      {fogEnabled && <fogExp2 attach="fog" args={[resolvedFogColor, effectiveFogDensity]} />}
-      {/*
-        FAST-tier cuts, all fill/shader costs on a phone: weather particles are
-        transparent overdraw, the drei Sky runs an atmospheric shader over every
-        sky pixel (the plain background colour + fog above still give a
-        horizon), and the second directional light makes every Standard-material
-        pixel in the scene more expensive. The shadow light stays -- shadows
-        have their own toggle.
-      */}
-      {fogEnabled && weatherOn && (
-        <WeatherParticles
-          weather={weather}
-          windStrengthMps={windStrengthMps}
-          windDirectionDeg={windDirectionDeg}
-          fogColor={resolvedFogColor}
-          fogDensity={effectiveFogDensity}
-          intensity={intensity}
-        />
-      )}
-      {/*
-        Sky, skylight and sun all come from one description of the sky (see
-        `graphics/sunSky.ts`). The drei <Sky> dome that used to live here drew
-        its sun at [120, 28, 40] while the shadow light sat at [48, 42, 18] and
-        a blue fill light faked bounce from the opposite corner: three suns that
-        never agreed, over an `ambientLight` + `hemisphereLight` pair that lit
-        every surface in the world to the same value no matter which way it
-        faced. The environment map replaces that flat fill with real directional
-        skylight, so the remaining ambient is only a floor that keeps deep
-        interiors from going to pure black.
-      */}
-      <SkyEnvironment
-        fogColor={resolvedFogColor}
-        showDome={skyDomeOn}
-        bindEnvironment={skyIblOn}
-        intensity={qualityIsPretty ? 1 : 0.85}
+      {/* Light, air, sky and the frame pipeline: shared with /cityreplay, so
+          the render bench draws exactly what the game draws. */}
+      <CityEnvironment
+        fogEnabled={fogEnabled}
+        fogDensity={fogDensity}
+        fogColor={fogColor}
+        weather={weather}
+        windStrengthMps={windStrengthMps}
+        windDirectionDeg={windDirectionDeg}
+        intensity={intensity}
+        aerialMode={aerialMode}
       />
-      <SunLight
-        fogColor={resolvedFogColor}
-        castShadow={shadowsOn}
-        shadowHalfExtent={qualityIsPretty ? 48 : 60}
-        shadowMapSize={shadowMapTexels ?? (qualityIsPretty ? 2048 : 1024)}
-      />
-      {/*
-        On FAST the city is Lambert with no environment map, and a vertical
-        wall facing away from the sun gets only half the hemisphere (and the
-        dark ground half at that) -- measured 86 vs PRETTY's 121 mean luminance
-        on the same shaded face. The ambient floor is orientation-independent,
-        which is exactly what those faces are missing; PRETTY keeps the small
-        floor because its skylight comes from the environment map.
-      */}
-      <ambientLight intensity={qualityIsPretty ? 0.12 : 0.55} color={0xfdf6eb} />
-      {/*
-        The environment map only reaches Standard/Physical materials. FAST-tier
-        city chunks shade as Lambert, so a hemisphere light stands in for the
-        skylight there -- tinted from the same gradient, so the two tiers differ
-        in fidelity rather than in colour. On PRETTY it stays as a small floor
-        under the IBL.
-      */}
-      <hemisphereLight
-        args={[skyLightGradient.zenith, skyLightGradient.ground, qualityIsPretty ? 0.25 : 1.15]}
-      />
-      {framePipelineOn && <FramePipeline ao={ambientOcclusionOn} />}
       <WorldTerrain world={worldDocument} />
       <WorldStaticProps world={worldDocument} />
       <Portals runtimeRef={runtimeRef} />

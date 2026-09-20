@@ -38,11 +38,14 @@ import { pushDebugDustSource } from './vfx/dustDebug';
 
 let dustBurstSerial = 1;
 import { setCapturePose } from './scene/captureCamera';
+import { cityTapeRecorder, saveCityTape } from './city/cityTape';
 import {
   formatPerfSweepMobile,
   runPerfSweep,
   runStormSweep,
   formatStormSweep,
+  runReplaySweep,
+  formatPerfSweep,
   type PerfSweepProfile,
   type PerfSweepReport,
 } from './city/perfSweep';
@@ -467,6 +470,10 @@ export interface VibeE2EBridge {
   runPerfSweep(profile?: PerfSweepProfile): Promise<unknown>;
   /** The storm sweep: fires meteors and prices features inside the impact window. */
   runStormSweep(rounds?: number, windowMs?: number): Promise<{ text: string; report: unknown }>;
+  /** /cityreplay only: the same rows of the same tape, one configuration each. */
+  runReplaySweep(fromMs?: number, toMs?: number): Promise<{ text: string; report: unknown }>;
+  /** Record the city stream for `seconds`, save it as the last tape, return its header. */
+  recordTape(seconds: number): Promise<unknown>;
 
   /** The phone-screen summary of a report, as an array of lines. */
   formatPerfSweepMobile(report: unknown): string[];
@@ -715,6 +722,18 @@ const bridge: VibeE2EBridge = {
   runStormSweep: async (rounds?: number, windowMs?: number) => {
     const report = await runStormSweep(rounds, windowMs);
     return { text: formatStormSweep(report), report };
+  },
+  runReplaySweep: async (fromMs?: number, toMs?: number) => {
+    const report = await runReplaySweep(fromMs, toMs);
+    return { text: formatPerfSweep(report), report };
+  },
+  recordTape: async (seconds: number) => {
+    cityTapeRecorder.start();
+    await new Promise((resolve) => window.setTimeout(resolve, seconds * 1000));
+    const tape = cityTapeRecorder.stop();
+    if (!tape) return null;
+    await saveCityTape(`tape-${tape.header.capturedAt.replace(/[:.]/g, '-')}`, tape);
+    return tape.header;
   },
   formatPerfSweepMobile: (report: unknown) => formatPerfSweepMobile(report as PerfSweepReport),
   renderSettings: () => ({

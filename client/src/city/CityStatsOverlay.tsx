@@ -218,6 +218,7 @@ import { getMatchStats, subscribeMatchStats } from '../app/connectPhase';
 import { lookTuning } from '../graphics/lookTuning';
 import { acquireCityDiagnostics } from './cityDiagnostics';
 import { notePerfSweep, sendDebugReport } from './debugReport';
+import { cityTapeRecorder, downloadCityTape, saveCityTape } from './cityTape';
 import {
   ambientOcclusionPreferred,
   dustFluidPreferred,
@@ -323,6 +324,12 @@ export function CityStatsOverlay({
   const [mobileReport, setMobileReport] = useState<string[] | null>(null);
   const [heroTiling, setHeroTiling] = useState(heroTilingEnabled);
   const [dynamicRes, setDynamicRes] = useState(dynamicResolutionEnabled);
+  const [tapeState, setTapeState] = useState<string | null>(null);
+  const [tapeStatus, setTapeStatus] = useState(() => cityTapeRecorder.status());
+  useEffect(() => {
+    const tick = window.setInterval(() => setTapeStatus(cityTapeRecorder.status()), 500);
+    return () => window.clearInterval(tick);
+  }, []);
   const [bodyColors, setBodyColors] = useState(false);
   // Poll per-body freeze states only while the toggle is on: no reason to
   // fetch thousands of pairs for a feature that is off.
@@ -895,6 +902,54 @@ export function CityStatsOverlay({
         >
           {sweepState === 'running' ? 'MEASURING... (~40 s)' : 'MOBILE PERF BISECT'}
         </button>
+      </div>
+
+      {/*
+        The tape: every inbound city packet with its arrival time, opened on a
+        fresh bootstrap. /cityreplay plays it into the real renderer with no
+        server, so a sweep there rewinds the same storm for every row.
+      */}
+      <div style={{ ...row, marginBottom: 2 }}>
+        <button
+          type="button"
+          onClick={async () => {
+            if (cityTapeRecorder.recording) {
+              const tape = cityTapeRecorder.stop();
+              if (tape) {
+                const name = `tape-${tape.header.capturedAt.replace(/[:.]/g, '-')}`;
+                try {
+                  await saveCityTape(name, tape);
+                  setTapeState(`SAVED ${(tape.header.bytes / 1e6).toFixed(1)} MB, ${Math.round(tape.header.durationMs / 1000)} s`);
+                } catch {
+                  setTapeState('SAVE FAILED');
+                }
+                downloadCityTape(tape);
+              }
+            } else {
+              cityTapeRecorder.start();
+              setTapeState('RECORDING');
+            }
+          }}
+          style={{ ...toggleButton, position: 'static', width: '100%' }}
+          data-testid="city-tape-record"
+          aria-label="Record the city stream to a tape"
+          title="Records every city packet from a fresh bootstrap until pressed again, saves the tape in this browser for /cityreplay and downloads it"
+        >
+          {tapeStatus.recording
+            ? `STOP TAPE (${Math.round(tapeStatus.seconds)} s, ${tapeStatus.megabytes.toFixed(1)} MB)`
+            : tapeState ? `TAPE: ${tapeState}` : 'RECORD TAPE'}
+        </button>
+      </div>
+      <div style={{ ...row, marginBottom: 2 }}>
+        <a
+          href="/cityreplay"
+          target="_blank"
+          rel="noreferrer"
+          style={{ ...toggleButton, position: 'static', width: '100%', textDecoration: 'none', textAlign: 'center', boxSizing: 'border-box' }}
+          title="Open the render bench: the last tape replayed into the same renderer, no server"
+        >
+          OPEN /CITYREPLAY
+        </a>
       </div>
 
       {/*

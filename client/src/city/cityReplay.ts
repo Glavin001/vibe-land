@@ -1,0 +1,111 @@
+// Play a city tape into a real CityClient, on the clock the tape was cut at.
+//
+// The replay page's whole difference from the game is here: the client's
+// bytes come from a tape instead of a session, and the manifest and debris
+// dictionary are fetched from the page's origin exactly as the game fetches
+// them. Everything downstream -- ledger, presentation, renderer, dust -- is
+// the shipping code, untouched.
+
+import { CityClient } from './cityClient';
+import { fetchCityManifest, type LoadedCityManifest } from './manifest';
+import { PKT_CITY_BOOTSTRAP, PKT_METEOR_LAUNCHED } from '../net/sharedConstants';
+import type { CityTape } from './cityTape';
+
+export interface ReplayPlayer {
+  readonly tape: CityTape;
+  readonly client: CityClient;
+  /** Tape time in ms, 0 at the bootstrap the tape opens on. */
+  timeMs(): number;
+  durationMs(): number;
+  playing(): boolean;
+  play(): void;
+  pause(): void;
+  /**
+   * A fresh client at the tape's start. The renderer sees a new client and
+   * rebuilds its meshes, exactly as it does for a new match.
+   */
+  rewind(): Promise<ReplayPlayer>;
+  /** Called every frame by the page; dispatches every packet now due. */
+  tick(): void;
+  /** Playback rate; 1 is real time. */
+  speed: number;
+  loop: boolean;
+}
+
+/**
+ * What the tape needs from the origin, fetched once and shared across
+ * rewinds: the manifest by hash and the wasm decoder's dictionary.
+ */
+export async function loadReplayAssets(tape: CityTape, baseUrl = ''): Promise<{
+  manifest: LoadedCityManifest;
+  decoder: (() => Promise<{ decoder: import('./debrisWasm').DebrisDecoder } | undefined>);
+}> {
+  const manifest = await fetchCityManifest(baseUrl, tape.header.manifestHash);
+  let dictionary: Uint8Array | null = null;
+  const decoder = async () => {
+    if (tape.header.wireVersion !== 3) return undefined;
+    const { initDebrisWasm, fetchDebrisDictionary, createDebrisDecoder } = await import('./debrisWasm');
+    await initDebrisWasm();
+    dictionary = dictionary ?? await fetchDebrisDictionary();
+    return { decoder: createDebrisDecoder(dictionary, 1 << 16, tape.header.simHz) };
+  };
+  return { manifest, decoder };
+}
+
+export async function createReplayPlayer(
+  tape: CityTape,
+  assets: Awaited<ReturnType<typeof loadReplayAssets>>,
+): Promise<ReplayPlayer> {
+  // The tape opens on the resync the recorder asked for; anything before that
+  // bootstrap describes a ledger this client never had.
+  let first = tape.packets.findIndex((packet) => packet[0] === PKT_CITY_BOOTSTRAP);
+  if (first < 0) first = 0;
+  const origin = tape.times[first];
+  const client = new CityClient(assets.manifest, () => {}, await assets.decoder());
+  let cursor = first;
+  let startedAt = 0;
+  let pausedAt = 0;
+  let playingNow = false;
+  const durationMs = tape.times.length > 0 ? tape.times[tape.times.length - 1] - origin : 0;
+
+  const player: ReplayPlayer = {
+    tape,
+    client,
+    speed: 1,
+    loop: false,
+    timeMs: () => (playingNow ? (performance.now() - startedAt) * player.speed : pausedAt),
+    durationMs: () => durationMs,
+    playing: () => playingNow,
+    play: () => {
+      if (playingNow) return;
+      startedAt = performance.now() - pausedAt / player.speed;
+      playingNow = true;
+    },
+    pause: () => {
+      if (!playingNow) return;
+      pausedAt = player.timeMs();
+      playingNow = false;
+    },
+    rewind: () => createReplayPlayer(tape, assets),
+    tick: () => {
+      if (!playingNow) return;
+      const now = player.timeMs();
+      while (cursor < tape.packets.length && tape.times[cursor] - origin <= now) {
+        const packet = tape.packets[cursor];
+        cursor += 1;
+        // Launch packets name a server clock the replay does not have; the
+        // rock's own body and the dust it raises are in the stream regardless.
+        if (packet[0] === PKT_METEOR_LAUNCHED) continue;
+        client.handlePacket(packet);
+      }
+      if (cursor >= tape.packets.length && player.loop) {
+        // Looping means the SAME client sees the tape again from its
+        // bootstrap, which re-bootstraps the ledger in place.
+        cursor = first;
+        startedAt = performance.now();
+        pausedAt = 0;
+      }
+    },
+  };
+  return player;
+}

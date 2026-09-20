@@ -12,6 +12,7 @@ import { RagdollLabPage } from './pages/RagdollLab';
 import { MoqDemoPage } from './pages/MoqDemo';
 import { BodiesTransportLabPage } from './pages/BodiesTransportLab';
 import { RenderBenchPage } from './pages/RenderBench';
+import { CityReplayPage } from './pages/CityReplay';
 import StructureViewerPage from './pages/StructureViewer';
 
 // E2E bridge: always-on read-only introspection for Playwright tests.
@@ -76,6 +77,9 @@ switch (route.kind) {
     break;
   case 'renderBench':
     root.render(<RenderBenchPage />);
+    break;
+  case 'cityReplay':
+    root.render(<CityReplayPage />);
     break;
   case 'structureViewer':
     root.render(<StructureViewerPage pack={route.pack} />);

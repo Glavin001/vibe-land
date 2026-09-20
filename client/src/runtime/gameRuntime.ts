@@ -50,6 +50,7 @@ import {
 } from '../net/sharedConstants';
 import { decodeCityManifestPayload, fetchCityManifest } from '../city/manifest';
 import { decodeMeteorLaunched, registerMeteorFlight } from '../vfx/meteorFlights';
+import { cityTapeRecorder } from '../city/cityTape';
 import { CLIENT_MAX_CATCHUP_STEPS, FIXED_DT } from './clientSimConstants';
 import {
   shouldCreateGameplayWasmWorld,
@@ -1111,6 +1112,10 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
       }
       const cityClient = new CityClient(manifest, (bytes) => client.sendCityResync(bytes), v3);
       this.cityClient = cityClient;
+      cityTapeRecorder.describe(
+        { matchId: this.matchId, manifestHash: manifest.hashHex, wireVersion, simHz: 60 },
+        () => cityClient.requestResync(),
+      );
       const pending = this.pendingCityPackets.splice(0);
       for (const bytes of pending) {
         cityClient.handlePacket(bytes);
@@ -1280,6 +1285,9 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
           }
         },
         onCityPacket: (bytes) => {
+          // Every inbound city packet, launches included, onto the tape when
+          // one is recording; /cityreplay plays it back into a CityClient.
+          cityTapeRecorder.push(bytes);
           if (bytes.length > 1 && bytes[0] === PKT_METEOR_LAUNCHED) {
             // A launch, not geometry: the layer that draws meteors reads the
             // store directly, the way the dust reads its shots.

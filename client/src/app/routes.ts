@@ -12,6 +12,7 @@ export type AppRoute =
   | { kind: 'moqDemo' }
   | { kind: 'bodiesLab' }
   | { kind: 'renderBench' }
+  | { kind: 'cityReplay' }
   | { kind: 'structureViewer'; pack: string };
 
 function normalizePathname(pathname: string): string {
@@ -72,6 +73,10 @@ export function resolveAppRoute(pathname: string, search?: string): AppRoute {
       // Reproducible render benchmark: a seeded synthetic city on the real
       // batching path, with no server and no streamed poses.
       return { kind: 'renderBench' };
+    case '/cityreplay':
+      // The render bench that draws what the game draws: a recorded city
+      // stream replayed into the real client and renderer, no server.
+      return { kind: 'cityReplay' };
     default:
       return { kind: 'launcher' };
   }
