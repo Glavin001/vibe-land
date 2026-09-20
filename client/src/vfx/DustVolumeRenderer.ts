@@ -92,6 +92,7 @@ export class DustVolumeRenderer implements PipelineStage {
   private readonly quad: THREE.PlaneGeometry;
   private readonly native: Layer;
   private readonly half: Layer;
+  private readonly halfScene = new THREE.Scene();
   private target: THREE.WebGLRenderTarget | null = null;
   private halfTarget: THREE.WebGLRenderTarget | null = null;
   private targetDirty = false;
@@ -186,6 +187,12 @@ export class DustVolumeRenderer implements PipelineStage {
     });
     this.native = this.buildLayer();
     this.half = this.buildLayer();
+    // One scene for everything drawn at half resolution: the fluid bricks
+    // (far to near, by renderOrder) under the far parcels. One pass, where a
+    // pass per brick plus one for the parcels was three or four -- and on
+    // Metal a pass was the cost, not the pixels.
+    this.half.mesh.renderOrder = 1000;
+    this.halfScene.add(this.half.mesh);
 
     this.quad = new THREE.PlaneGeometry(2, 2);
     this.upsampleMaterial = new THREE.ShaderMaterial({
@@ -272,12 +279,17 @@ export class DustVolumeRenderer implements PipelineStage {
   setFluidQuality(quality: FluidQuality | 'off', count = 1): void {
     const want = quality === 'off' ? 0 : Math.max(0, count);
     if (this.fluids.length === want && (want === 0 || this.fluids[0].quality === quality)) return;
-    for (const fluid of this.fluids) fluid.dispose();
+    for (const fluid of this.fluids) {
+      this.halfScene.remove(fluid.brickMesh);
+      fluid.dispose();
+    }
     this.fluids = [];
     if (quality === 'off') return;
     for (let i = 0; i < want; i += 1) {
       const fluid = new FluidBrick(quality, this.bake.noise);
       fluid.setWind(this.windX, this.windZ);
+      fluid.brickMesh.visible = false;
+      this.halfScene.add(fluid.brickMesh);
       this.fluids.push(fluid);
     }
     this.setLighting(this.lighting);
@@ -549,16 +561,15 @@ export class DustVolumeRenderer implements PipelineStage {
     if (halfLayer && this.halfTarget) {
       renderer.setRenderTarget(this.halfTarget);
       renderer.clear(true, false, false);
-      if (brickOn) {
-        // Far bricks first, for the over operator.
-        const order = this.fluids.filter((f) => f.active)
-          .sort((a, b) => b.distanceTo(cam.x, cam.y, cam.z) - a.distanceTo(cam.x, cam.y, cam.z));
-        for (const fluid of order) renderer.render(fluid.brickScene, camera);
-      }
-      if (half.length > 0) {
-        u.uDepthScale.value = 2;
-        renderer.render(this.half.scene, camera);
-      }
+      // Far bricks first, for the over operator; the parcels last (renderOrder
+      // 1000, set once). Inactive bricks are hidden rather than removed.
+      const order = this.fluids.filter((f) => f.active)
+        .sort((a, b) => b.distanceTo(cam.x, cam.y, cam.z) - a.distanceTo(cam.x, cam.y, cam.z));
+      for (const fluid of this.fluids) fluid.brickMesh.visible = brickOn && fluid.active;
+      order.forEach((fluid, index) => { fluid.brickMesh.renderOrder = index; });
+      this.half.mesh.visible = half.length > 0;
+      u.uDepthScale.value = 2;
+      renderer.render(this.halfScene, camera);
     }
     renderer.setRenderTarget(this.target);
     renderer.clear(true, false, false);

@@ -103,6 +103,11 @@ export async function createReplayPlayer(
         if (packet[0] === PKT_METEOR_LAUNCHED) continue;
         client.handlePacket(packet);
       }
+      // Dust is born at the wall clock a packet is applied, so the burst just
+      // applied would raise a minute of destruction dust at once -- a storm
+      // the tape never had, thick enough to hide the city and to dominate a
+      // measurement taken from here. The skipped past raises none.
+      client.drainDustSources(() => {});
       pausedAt = target;
       startedAt = performance.now() - target / player.speed;
     },

@@ -33,7 +33,13 @@ export type FluidQuality = 'fast' | 'balanced';
 
 export const BRICK_SIZE_M: readonly [number, number, number] = [16, 12, 16];
 const STEP_S = 1 / 60;
-const MAX_STEPS_PER_FRAME = 2;
+/**
+ * One step per frame, never a catch-up pair. A brick that fell behind used to
+ * run two steps in one frame -- two dozen dependent passes -- on exactly the
+ * frames that were already long, which is how a slow frame bred a slower
+ * one. Behind now means the smoke runs a little slow for a moment.
+ */
+const MAX_STEPS_PER_FRAME = 1;
 /** A source injects for this long. */
 const SOURCE_MS = 250;
 /** Retire after this long with nothing injected. Dissipation has taken ~90% by then. */
@@ -89,7 +95,8 @@ export class FluidBrick {
   private readonly camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
   private readonly passes: Record<'velocity' | 'divergence' | 'pressure' | 'project' | 'dye' | 'appearance', { material: THREE.ShaderMaterial; scene: THREE.Scene }>;
   private readonly brickMaterial: THREE.ShaderMaterial;
-  private readonly brickMesh: THREE.Mesh;
+  /** Drawn by DustVolumeRenderer inside its half-res pass, in distance order. */
+  readonly brickMesh: THREE.Mesh;
   readonly brickScene = new THREE.Scene();
   private readonly injections: Injection[] = [];
   private accumulator = 0;
@@ -365,15 +372,21 @@ export class FluidBrick {
     const previous = renderer.getRenderTarget();
     const autoClear = renderer.autoClear;
     renderer.autoClear = false;
+    // One step per turn, of however much time has accrued up to two fixed
+    // steps' worth: the advection is semi-Lagrangian and takes its dt as a
+    // uniform, so a brick that gets a turn every other frame integrates the
+    // same seconds in half the passes rather than running slow.
     while (this.accumulator >= STEP_S && stepsRun < MAX_STEPS_PER_FRAME) {
-      this.accumulator -= STEP_S;
-      this.simTime += STEP_S;
+      const dt = Math.min(this.accumulator, STEP_S * 2);
+      this.accumulator -= dt;
+      this.simTime += dt;
+      this.setStepDt(dt);
       this.runStep(renderer, count);
-      for (const inj of this.injections) inj.rate.z *= 0.82;
+      for (const inj of this.injections) inj.rate.z *= Math.pow(0.82, dt / STEP_S);
       stepsRun += 1;
       this.steps += 1;
     }
-    if (this.accumulator > STEP_S * MAX_STEPS_PER_FRAME) this.accumulator = 0;
+    if (this.accumulator > STEP_S * 2) this.accumulator = 0;
     if (stepsRun > 0) {
       const a = this.passes.appearance;
       a.material.uniforms.tDye.value = this.dyeA.texture;
@@ -384,6 +397,13 @@ export class FluidBrick {
     renderer.autoClear = autoClear;
     renderer.setRenderTarget(previous);
     return stepsRun;
+  }
+
+  private setStepDt(dt: number): void {
+    for (const pass of Object.values(this.passes)) {
+      const uniform = pass.material.uniforms.uDt;
+      if (uniform) uniform.value = dt;
+    }
   }
 
   private runStep(renderer: THREE.WebGLRenderer, sourceCount: number): void {
@@ -403,7 +423,8 @@ export class FluidBrick {
 
     const p = this.passes.pressure;
     p.material.uniforms.tDivergence.value = this.div.texture;
-    for (let i = 0; i < q.jacobi; i += 1) {
+    // Two iterations per pass (PRESSURE_FRAGMENT); an odd count rounds up.
+    for (let i = 0; i < Math.ceil(q.jacobi / 2); i += 1) {
       p.material.uniforms.tPressure.value = this.pA.texture;
       renderer.setRenderTarget(this.pB);
       renderer.render(p.scene, this.camera);

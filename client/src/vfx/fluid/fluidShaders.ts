@@ -76,12 +76,13 @@ void main() {
   v.y += (dye.g * 3.5 - dye.r * 0.18) * uDt;
   v.x += (uWindX - v.x) * uDt * 0.55;
   v.z += (uWindZ - v.z) * uDt * 0.55;
-  v *= 0.997;
+  // Per second, not per step (0.997 a step at 60 Hz): a step may cover two.
+  v *= exp(-0.1803 * uDt);
   for (int i = 0; i < ${FLUID_MAX_SOURCES}; i++) {
     if (i >= uSourceCount) break;
     vec3 d = (uvw - uSourcePos[i].xyz) * uCell;
     float len = length(d);
-    v += d / max(len, 0.01) * uSourceRate[i].z * exp(-len / 3.0) * 3.0;
+    v += d / max(len, 0.01) * uSourceRate[i].z * exp(-len / 3.0) * 180.0 * uDt;
   }
   // Moving bodies carry the air with them: inside a body's reach the
   // velocity is pulled toward the body's, hardest at its centre.
@@ -121,26 +122,52 @@ void main() {
 `;
 
 /** One Jacobi iteration. Solid and out-of-grid neighbours take the centre's pressure. */
+/**
+ * TWO Jacobi iterations per pass, exactly. A pass on Metal was the cost, not
+ * the cells: the reporter's M3 spent milliseconds per dependent render pass
+ * and the eight-iteration solve was eight of them. Folding pairs halves that
+ * for the price of a wider stencil -- each cell recomputes its six
+ * neighbours' first iteration from THEIR neighbours, then its own second
+ * iteration from those. Same arithmetic, same boundary rule (an out-of-grid
+ * or solid neighbour takes the centre's value), so the field is bit-for-bit
+ * what two passes produced.
+ */
 export const PRESSURE_FRAGMENT = (atlas: string) => /* glsl */ `
 ${atlas}
 ${COMMON}
 uniform sampler2D tPressure;
 uniform sampler2D tDivergence;
 out vec4 outColor;
-float neighbour(ivec3 c, ivec3 d, float centre) {
+float p0(ivec3 c) { return cellFetch(tPressure, c).r; }
+float neighbour0(ivec3 c, ivec3 d, float centre) {
   ivec3 n = c + d;
   if (!inGrid(n) || solid(n)) return centre;
-  return cellFetch(tPressure, n).r;
+  return p0(n);
+}
+// One Jacobi iteration at n, from the incoming field.
+float iterate1(ivec3 n) {
+  if (solid(n)) return 0.0;
+  float centre = p0(n);
+  return (
+    neighbour0(n, ivec3(1, 0, 0), centre) + neighbour0(n, ivec3(-1, 0, 0), centre)
+    + neighbour0(n, ivec3(0, 1, 0), centre) + neighbour0(n, ivec3(0, -1, 0), centre)
+    + neighbour0(n, ivec3(0, 0, 1), centre) + neighbour0(n, ivec3(0, 0, -1), centre)
+    - cellFetch(tDivergence, n).r) / 6.0;
+}
+float neighbour1(ivec3 c, ivec3 d, float centre) {
+  ivec3 n = c + d;
+  if (!inGrid(n) || solid(n)) return centre;
+  return iterate1(n);
 }
 void main() {
   ivec3 c = cellOfFrag(gl_FragCoord.xy);
   if (solid(c)) { outColor = vec4(0.0); return; }
-  float centre = cellFetch(tPressure, c).r;
+  float centre = iterate1(c);
   float div = cellFetch(tDivergence, c).r;
   float p = (
-    neighbour(c, ivec3(1, 0, 0), centre) + neighbour(c, ivec3(-1, 0, 0), centre)
-    + neighbour(c, ivec3(0, 1, 0), centre) + neighbour(c, ivec3(0, -1, 0), centre)
-    + neighbour(c, ivec3(0, 0, 1), centre) + neighbour(c, ivec3(0, 0, -1), centre)
+    neighbour1(c, ivec3(1, 0, 0), centre) + neighbour1(c, ivec3(-1, 0, 0), centre)
+    + neighbour1(c, ivec3(0, 1, 0), centre) + neighbour1(c, ivec3(0, -1, 0), centre)
+    + neighbour1(c, ivec3(0, 0, 1), centre) + neighbour1(c, ivec3(0, 0, -1), centre)
     - div) / 6.0;
   outColor = vec4(p, 0.0, 0.0, 0.0);
 }

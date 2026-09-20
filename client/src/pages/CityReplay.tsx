@@ -37,7 +37,7 @@ import { MeteorLayer } from '../vfx/MeteorLayer';
 import { CityStatsOverlay } from '../city/CityStatsOverlay';
 import { useFogSettings } from '../graphics/fogSettings';
 import { setGovernorPaused, useDustFluid, useDustMode } from '../app/renderQuality';
-import { DEFAULT_WORLD_DOCUMENT } from '../world/worldDocument';
+import { CITY_WORLD_DOCUMENT } from '../world/cityWorld';
 import { decodeCityTape, listCityTapes, loadCityTape, type CityTape } from '../city/cityTape';
 import { createReplayPlayer, loadReplayAssets, type ReplayPlayer } from '../city/cityReplay';
 import { formatPerfSweep, runReplaySweep } from '../city/perfSweep';
@@ -309,8 +309,9 @@ export function CityReplayPage() {
   const [clock, setClock] = useState({ t: 0, playing: false });
   const [sweep, setSweep] = useState<'idle' | 'running' | 'sent' | 'failed'>('idle');
   // Follow the recorded camera until the user takes the controls. Tapes cut
-  // before the camera was recorded have no pose to follow.
-  const [followCamera, setFollowCamera] = useState(true);
+  // before the camera was recorded have no pose to follow, and a link that
+  // names a pose (`?cam=`) is asking for that view, not the recorded one.
+  const [followCamera, setFollowCamera] = useState(() => !params.has('cam'));
   const detach = useMemo(() => () => setFollowCamera(false), []);
   const [sweepText, setSweepText] = useState<string | null>(null);
   const autoRan = useRef(false);
@@ -489,7 +490,9 @@ export function CityReplayPage() {
           windDirectionDeg={fog.windDirectionDeg}
           intensity={fog.intensity}
         />
-        <WorldTerrain world={DEFAULT_WORLD_DOCUMENT} />
+        {/* The city's flat world, as /city draws it: the Demo World's hills would
+            bury the towers and cost a terrain the game never pays for. */}
+        <WorldTerrain world={CITY_WORLD_DOCUMENT} />
         <CityChunksLayer getCityClient={() => playerRef.current?.client ?? null} />
         <MeteorLayer getRuntime={() => null} />
         <DustLayer

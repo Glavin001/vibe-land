@@ -31,6 +31,9 @@ export default defineConfig(({ mode }) => {
         name: 'copy-scene-packs',
         apply: 'build' as const,
         generateBundle(this: { emitFile: (f: unknown) => void }) {
+          // A render-bench build serves no /structure viewer; the packs are
+          // 400 MB it would only delete again.
+          if (process.env.VIBE_SKIP_SCENE_PACKS === '1') return;
           const dir = path.resolve(process.cwd(), '../destruction/assets/scenes');
           if (!fs.existsSync(dir)) return;
           for (const file of fs.readdirSync(dir)) {
