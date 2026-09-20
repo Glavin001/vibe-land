@@ -44,6 +44,14 @@ import {
 import { isCitySuspect, isRecording, recordCityEvent } from '../netlab/recorder';
 import { noteBaseline, noteClientEvent, noteFracture } from './debugReport';
 import { addDecodeMs } from './renderStats';
+import {
+  DustSourceQueue,
+  dustExtractStats,
+  extractDustSources,
+  type DustExtractContext,
+  type DustSource,
+} from './destructionEvents';
+import { dustEnabled } from './dustSettings';
 
 export interface CityClientStats {
   chunksTotal: number;
@@ -140,6 +148,12 @@ export interface CityClientStats {
   arrivalLatenessTicks: number;
   arrivalLatenessPeakTicks: number;
   manifestHash: string;
+  /// Destruction dust sources extracted from topology messages, cumulative,
+  /// and the ones that never reached the renderer: over the per-message cap,
+  /// or queued past what one frame drains.
+  dustSources: number;
+  dustSourcesDroppedByCap: number;
+  dustQueueDropped: number;
 }
 
 interface BodyStreamState {
@@ -533,6 +547,24 @@ export class CityClient {
     this.debris = v3?.decoder ?? null;
     this.simHz = v3?.simHz ?? 60;
     this.topology = new CityTopology(manifest.manifest);
+    this.dustContext = {
+      manifest: manifest.manifest,
+      topology: this.topology,
+      structureById: new Map(manifest.manifest.structures.map((s) => [s.structureId, s])),
+      drawnPoseInto: (slot, out, at) => {
+        const drawn = this.drawnChunkPose.get(slot);
+        if (!drawn) return false;
+        out[at] = drawn.position[0];
+        out[at + 1] = drawn.position[1];
+        out[at + 2] = drawn.position[2];
+        out[at + 3] = drawn.rotation[0];
+        out[at + 4] = drawn.rotation[1];
+        out[at + 5] = drawn.rotation[2];
+        out[at + 6] = drawn.rotation[3];
+        return true;
+      },
+      presentedSpeed: (key) => this.bodyPresentedSpeed(key),
+    };
     // A body's frame moves when it sheds members. Carry that move through the
     // buffered poses so the smoothing delay cannot render new-frame offsets
     // against poses still stated in the old frame.
@@ -860,6 +892,44 @@ export class CityClient {
     this.repaintAll = false;
     this.repaintBodies.clear();
     return { all, bodies };
+  }
+
+  // -- Destruction dust ------------------------------------------------------
+  //
+  // Every applied topology message is read for where things broke and how
+  // badly (destructionEvents.ts) and queued as dust sources. The dust layer
+  // drains the queue once per frame, so the policy's cost is inside the frame
+  // and its stats, and several messages applied between frames arrive together.
+  private readonly dustContext: DustExtractContext;
+  private readonly dustQueue = new DustSourceQueue();
+  private dustSourcesTotal = 0;
+  private dustSourcesDroppedByCap = 0;
+
+  private extractDust(message: TopologyMessage): void {
+    if (!dustEnabled()) return;
+    // How far this message's tick is ahead of what is on screen. Wire v3 and
+    // holdTopology apply at the sample clock, so ~0; wire v2 applies at
+    // arrival, a playout delay ahead. Born that far in the future, the puff
+    // appears with the crack rather than before it.
+    let leadMs = 0;
+    if (this.renderClockTick >= 0) {
+      const presentedTick = this.renderClockTick - this.sampleDelaySmooth;
+      leadMs = Math.max(0, ((message.simTick - presentedTick) / this.tickRateEma) * 1000);
+      // A bootstrap or a valve release can put the tick far from the clock;
+      // a puff a second late is a puff nobody connects to anything.
+      leadMs = Math.min(leadMs, 500);
+    }
+    const before = this.dustQueue.dropped;
+    const pushed = extractDustSources(message, this.dustContext, this.dustQueue, performance.now() + leadMs);
+    this.dustSourcesTotal += pushed + (this.dustQueue.dropped - before);
+  }
+
+  /**
+   * Hands every queued dust source to `visit`, oldest first, and empties the
+   * queue. The source object is reused between calls: copy what you keep.
+   */
+  drainDustSources(visit: (source: DustSource) => void): number {
+    return this.dustQueue.drain(visit);
   }
 
   /**
@@ -1246,6 +1316,9 @@ export class CityClient {
     }
         if (applied) {
           this.seedPromotions(message);
+          // Before the settle loop below closes tracks: an impact is weighed by
+          // the speed the body was last drawn at, and that dies with the track.
+          this.extractDust(message);
           for (const batch of message.batches) {
             for (const promotion of batch.promotions) {
               this.repaintBodies.add(bodyKey(promotion.structureId, promotion.islandId));
@@ -2098,6 +2171,9 @@ export class CityClient {
       arrivalLatenessTicks: this.arrivalLateness,
       arrivalLatenessPeakTicks: this.arrivalLatenessPeak,
       manifestHash: this.manifest.hashHex,
+      dustSources: this.dustSourcesTotal,
+      dustSourcesDroppedByCap: dustExtractStats().droppedByCap,
+      dustQueueDropped: this.dustQueue.dropped,
       hashChecks: this.hashChecks,
       hashMismatches: this.hashMismatches,
       structureRepairs: this.structureRepairs,

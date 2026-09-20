@@ -1,12 +1,45 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  bondEndpoints,
+  bondGeometry,
   cuboidHalfExtents,
   isConvexHullGeometry,
   isCuboidGeometry,
   type ChunkGeometry,
+  type ManifestStructure,
   resolveShapeLibrary,
 } from './manifest';
+
+describe('bondGeometry', () => {
+  const jsonStructure = (): ManifestStructure => ({
+    structureId: 3,
+    worldPosition: [0, 0, 0],
+    worldRotation: [0, 0, 0, 1],
+    chunks: [],
+    bonds: [
+      { bondIndex: 0, node0: 0, node1: 1, centroid: [1, 2, 3], normal: [0, 1, 0], area: 0.5 },
+      { bondIndex: 1, node0: 1, node1: 2, centroid: [4, 5, 6], normal: [1, 0, 0], area: 0.25, material: 2 },
+    ],
+  });
+
+  it('derives the same arrays the binary path keeps', () => {
+    const structure = jsonStructure();
+    const { centroid, normal, area, material } = bondGeometry(structure);
+    expect(Array.from(centroid)).toEqual([1, 2, 3, 4, 5, 6]);
+    expect(Array.from(normal)).toEqual([0, 1, 0, 1, 0, 0]);
+    expect(Array.from(area)).toEqual([0.5, 0.25]);
+    expect(Array.from(material)).toEqual([0, 2]);
+    expect(Array.from(bondEndpoints(structure).node1)).toEqual([1, 2]);
+  });
+
+  it('caches on the structure', () => {
+    const structure = jsonStructure();
+    const first = bondGeometry(structure);
+    expect(bondGeometry(structure).centroid).toBe(first.centroid);
+    expect(structure.bondArea).toBe(first.area);
+  });
+});
 
 describe('city manifest geometry', () => {
   it('reads camelCase halfExtents from the fixed server', () => {

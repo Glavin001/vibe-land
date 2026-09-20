@@ -89,6 +89,8 @@ export interface ManifestBond {
   centroid: [number, number, number];
   normal: [number, number, number];
   area: number;
+  /** Index into the strength/appearance tables. Absent (= 0) on every pack that does not author it. */
+  material?: number;
 }
 
 export interface ManifestStructure {
@@ -99,17 +101,28 @@ export interface ManifestStructure {
   /**
    * Bonds as objects. Present only on the legacy JSON path.
    *
-   * The client reads exactly two things from a bond -- which chunks it joins --
-   * and never its centroid, normal or area, all of which the solver needs and
-   * the renderer does not. A city of 190,000 bonds therefore spent tens of
-   * megabytes on objects holding two 3-vectors apiece that nothing ever
-   * touched. The binary path supplies the endpoints as typed arrays instead
-   * and leaves this undefined; read it through `bondEndpoints`.
+   * A city of 190,000 bonds spent tens of megabytes on objects holding two
+   * 3-vectors apiece. The binary path supplies every bond field as a typed
+   * array view onto the received buffer instead and leaves this undefined;
+   * read endpoints through `bondEndpoints` and the rest through
+   * `bondGeometry`, which derive and cache the same views on the JSON path.
    */
   bonds?: ManifestBond[];
   bondCount?: number;
   bondNode0?: Uint32Array;
   bondNode1?: Uint32Array;
+  /**
+   * Where each bond sits, structure-local, xyz per bond. The destruction dust
+   * is born here: a broken bond's centroid is the one exact position the wire
+   * never carries and the manifest always had.
+   */
+  bondCentroid?: Float32Array;
+  /** Outward face direction per bond, xyz. Dust is seeded a little way along it. */
+  bondNormal?: Float32Array;
+  /** Contact area, m² (downtown median 0.18). Sum over a break = how much material let go. */
+  bondArea?: Float32Array;
+  /** Index into `CityManifest.materialStrength` / `materialAppearance`. */
+  bondMaterial?: Uint32Array;
 }
 
 /** How many bonds a structure has, whichever path delivered it. */
@@ -142,6 +155,51 @@ export function bondEndpoints(
   return { node0: structure.bondNode0, node1: structure.bondNode1 };
 }
 
+/**
+ * Bond centroid / normal / area / material as typed arrays.
+ *
+ * Free on the binary path, which keeps them as views onto the received buffer.
+ * Derived once and cached on the structure for the JSON path, exactly as
+ * `bondEndpoints` does, so no consumer needs to know which it is holding.
+ */
+export function bondGeometry(
+  structure: ManifestStructure,
+): { centroid: Float32Array; normal: Float32Array; area: Float32Array; material: Uint32Array } {
+  if (
+    !structure.bondCentroid
+    || !structure.bondNormal
+    || !structure.bondArea
+    || !structure.bondMaterial
+  ) {
+    const bonds = structure.bonds ?? [];
+    const centroid = new Float32Array(bonds.length * 3);
+    const normal = new Float32Array(bonds.length * 3);
+    const area = new Float32Array(bonds.length);
+    const material = new Uint32Array(bonds.length);
+    for (let i = 0; i < bonds.length; i += 1) {
+      const bond = bonds[i];
+      centroid[i * 3] = bond.centroid[0];
+      centroid[i * 3 + 1] = bond.centroid[1];
+      centroid[i * 3 + 2] = bond.centroid[2];
+      normal[i * 3] = bond.normal[0];
+      normal[i * 3 + 1] = bond.normal[1];
+      normal[i * 3 + 2] = bond.normal[2];
+      area[i] = bond.area;
+      material[i] = bond.material ?? 0;
+    }
+    structure.bondCentroid = centroid;
+    structure.bondNormal = normal;
+    structure.bondArea = area;
+    structure.bondMaterial = material;
+  }
+  return {
+    centroid: structure.bondCentroid,
+    normal: structure.bondNormal,
+    area: structure.bondArea,
+    material: structure.bondMaterial,
+  };
+}
+
 export interface CityManifest {
   version: number;
   structures: ManifestStructure[];
@@ -162,6 +220,13 @@ export interface CityManifest {
    * them be shaded as brick or steel or glass.
    */
   materialAppearance?: MaterialAppearance[];
+  /**
+   * The solver's strength table, six floats per material in MPa:
+   * compression elastic/fatal, tension elastic/fatal, shear elastic/fatal.
+   * Parallel to `materialAppearance`. Binary path only; the JSON path never
+   * carried it.
+   */
+  materialStrength?: Float32Array;
 }
 
 /** Presence of `opacity` is what marks a material transparent. */

@@ -94,9 +94,9 @@ export function decodeBinaryManifest(bytes: ArrayBuffer): CityManifest {
   const shapeCount = cursor.u32();
   const appearanceLength = cursor.u32();
 
-  // The strength table is read by the solver, not the renderer, and the client
-  // does not use it; skipped rather than materialised.
-  cursor.f32Array(materialCount * 6);
+  // Six floats per material. A view, not a copy; the dust emission weighs a
+  // break by what let go, and the fatal strengths are the only measure of that.
+  const materialStrength = cursor.f32Array(materialCount * 6);
 
   const shapeLibrary: number[][] = [];
   for (let i = 0; i < shapeCount; i += 1) {
@@ -119,6 +119,7 @@ export function decodeBinaryManifest(bytes: ArrayBuffer): CityManifest {
   const manifest: CityManifest = { version, structures };
   if (shapeLibrary.length > 0) manifest.shapeLibrary = shapeLibrary;
   if (materialAppearance) manifest.materialAppearance = materialAppearance;
+  if (materialCount > 0) manifest.materialStrength = materialStrength;
   return manifest;
 }
 
@@ -176,19 +177,21 @@ function readStructure(cursor: Cursor): ManifestStructure {
 
   // Bonds are NOT materialised as objects.
   //
-  // The client reads exactly one thing from a bond -- which two chunks it
-  // joins -- and never its index, centroid, normal or area. Those belong to
-  // the solver, which is server-side. Building 190,000 objects to carry two
-  // 3-vectors nobody reads cost tens of megabytes on the device least able to
-  // spare them, so the endpoints are kept as views onto the buffer and the
-  // rest is skipped by advancing over it.
+  // Building 190,000 objects to carry a few vectors apiece cost tens of
+  // megabytes on the device least able to spare them. Every bond field is
+  // instead a typed-array view onto the received buffer -- which is already
+  // pinned in memory by the endpoint views, so keeping the centroid, normal,
+  // area and material alongside them costs nothing. The destruction dust
+  // reads all four: the centroid is where a break happened, the normal which
+  // way it faces, the area and material how much let go. Only the bond index
+  // is skipped: it is the array position.
   cursor.u32Array(bondCount); // bond index
   const bondNode0 = cursor.u32Array(bondCount);
   const bondNode1 = cursor.u32Array(bondCount);
-  cursor.f32Array(bondCount * 3); // centroid
-  cursor.f32Array(bondCount * 3); // normal
-  cursor.f32Array(bondCount); // area
-  cursor.u32Array(bondCount); // material
+  const bondCentroid = cursor.f32Array(bondCount * 3);
+  const bondNormal = cursor.f32Array(bondCount * 3);
+  const bondArea = cursor.f32Array(bondCount);
+  const bondMaterial = cursor.u32Array(bondCount);
 
   return {
     structureId,
@@ -198,5 +201,9 @@ function readStructure(cursor: Cursor): ManifestStructure {
     bondCount,
     bondNode0,
     bondNode1,
+    bondCentroid,
+    bondNormal,
+    bondArea,
+    bondMaterial,
   };
 }

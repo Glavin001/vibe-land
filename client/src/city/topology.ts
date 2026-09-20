@@ -1315,4 +1315,17 @@ export class CityTopology {
   chunkNode(slot: number): number {
     return this.slotNode[slot];
   }
+
+  /** Manifest mass of one chunk, kg. */
+  restMassOf(slot: number): number {
+    return this.restMass[slot];
+  }
+
+  /** Manifest rest centroid of one chunk, in its structure's frame, into out[at..at+3). */
+  restPositionInto(slot: number, out: Float32Array, at: number): void {
+    const base = slot * 3;
+    out[at] = this.restPos[base];
+    out[at + 1] = this.restPos[base + 1];
+    out[at + 2] = this.restPos[base + 2];
+  }
 }

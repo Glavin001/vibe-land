@@ -528,6 +528,54 @@ describe('CityClient repaint requests', () => {
   });
 });
 
+describe('CityClient destruction dust', () => {
+  it('queues dust sources for an applied fracture, and drains to empty', () => {
+    const { client } = makeClient();
+    bootstrap(client);
+    const before = performance.now();
+    client.handlePacket(
+      encodeAsTopology({
+        topoSeq: 1,
+        simTick: 10,
+        batches: [
+          {
+            structureId: 0,
+            brokenBondIndices: [1],
+            promotions: [
+              {
+                structureId: 0,
+                islandId: 1,
+                nodes: [2, 3],
+                position: [0, 3, 0],
+                rotation: IDENTITY,
+                linearVelocity: [0, -5, 0],
+                angularVelocity: [0, 0, 0],
+              },
+            ],
+            retiredIslandIds: [],
+            migrations: [],
+          },
+        ],
+        settled: [],
+        wakes: [],
+      } as unknown as TopologyMessage),
+    );
+    flushTopology(client);
+
+    const kinds: string[] = [];
+    const drained = client.drainDustSources((source) => {
+      kinds.push(source.kind);
+      expect(source.atMs).toBeGreaterThanOrEqual(before);
+      expect(source.structureId).toBe(0);
+      expect(source.simTick).toBe(10);
+    });
+    expect(drained).toBeGreaterThanOrEqual(1);
+    expect(kinds).toContain('fracture');
+    expect(client.stats().dustSources).toBe(drained);
+    expect(client.drainDustSources(() => {})).toBe(0);
+  });
+});
+
 /**
  * Wire v3: a settled body is owned by the reliable channel.
  *

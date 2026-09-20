@@ -16,7 +16,13 @@ import path from 'path';
 import { describe, expect, it } from 'vitest';
 
 import { decodeBinaryManifest, looksBinary } from './manifestBinary';
-import { bondCountOf, bondEndpoints, isConvexHullGeometry, isCuboidGeometry } from './manifest';
+import {
+  bondCountOf,
+  bondEndpoints,
+  bondGeometry,
+  isConvexHullGeometry,
+  isCuboidGeometry,
+} from './manifest';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const bytes = readFileSync(path.join(here, '__fixtures__/manifest-rig-column.bin'));
@@ -76,6 +82,35 @@ describe('binary city manifest', () => {
       expect(node1[i]).toBeLessThan(structure.chunks.length);
       expect(node0[i]).not.toBe(node1[i]);
     }
+  });
+
+  it('keeps bond centroid, normal, area and material as views', () => {
+    // Values printed by the fixture generator. Bond 0 joins nodes 1 and 2,
+    // which both sit at y = 1.6, so its centroid does too.
+    const structure = decodeBinaryManifest(buffer).structures[0];
+    const { centroid, normal, area, material } = bondGeometry(structure);
+    expect(centroid).toHaveLength(30);
+    expect(centroid[1]).toBeCloseTo(1.6, 5);
+    expect(normal).toHaveLength(30);
+    expect(normal[2]).toBeCloseTo(0.99561, 4);
+    expect(Math.hypot(normal[0], normal[1], normal[2])).toBeCloseTo(1, 3);
+    expect(area).toHaveLength(10);
+    expect(area[0]).toBeCloseTo(1.76776, 4);
+    for (let i = 0; i < area.length; i += 1) {
+      expect(area[i]).toBeGreaterThan(0);
+      expect(centroid.subarray(i * 3, i * 3 + 3).every(Number.isFinite)).toBe(true);
+    }
+    // A v1 pack authors no bond material.
+    expect(Array.from(material)).toEqual(new Array(10).fill(0));
+    // Views, not copies: the buffer is pinned by the endpoints already.
+    expect(centroid.buffer).toBe(structure.bondNode0!.buffer);
+  });
+
+  it('keeps the strength table', () => {
+    const manifest = decodeBinaryManifest(buffer);
+    expect(manifest.materialStrength).toHaveLength(11 * 6);
+    // compression_elastic of material 0, in Pa.
+    expect(manifest.materialStrength![0]).toBe(48_000_000);
   });
 
   it('does not build bond objects at all', () => {
