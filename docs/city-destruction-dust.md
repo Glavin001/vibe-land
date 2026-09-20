@@ -14,10 +14,17 @@ skipping (zero extra bytes: the buffer was already pinned).
 
 - `client/src/city/destructionEvents.ts` — joins an applied topology
   message to the manifest and ledger: fractures at the bonds (through
-  whichever chunk carries them now), sheds at a born island's centre of
-  mass, impacts where a fast island came to rest. Clustered into 4 m cells,
-  largest first, capped per message, ordinals fixed by cell so a replay
-  numbers itself the same way.
+  whichever chunk carries them now; a bond whose chunks stayed together
+  counts 15%), entries where the first break in a quiet cell lies along a
+  registered shot (`vfx/dustShots.ts`; spall toward the shooter), sheds at a
+  born island's centre of mass, and settle impacts as a fallback. Clustered
+  into 4 m cells, largest first, capped per message, ordinals fixed by cell
+  so a replay numbers itself the same way.
+- `client/src/city/dustImpacts.ts` — the main dust: impacts read off the
+  velocity stream (a body that lost ≥ 4 m/s in one sample hit something;
+  impulse = mass·Δv, placed on its underside along the stop, ground or
+  debris by height and direction), and collapse waves when ≥ 100,000 kg·m/s
+  lands in one 8 m cell within half a second.
 - `client/src/city/dustPolicy.ts` — sources to parcels: count `∝ m^0.5`
   (≤ 8), radius `∝ m^⅓`, thickness from material, thrown out along the face
   normal, 32 parcels per tick, a smoulder that keeps a broken cell puffing
@@ -29,7 +36,12 @@ skipping (zero extra bytes: the buffer was already pinned).
 ## How it is drawn
 
 - `client/src/vfx/dustParcelStore.ts` — the ring of immutable births;
-  centre, size and fade are pure functions of age.
+  centre, size and fade are pure functions of age, clamped to the room the
+  parcel was born in.
+- `client/src/vfx/dustClearance.ts` — that room: a 4 m grid of chunk boxes,
+  consulted with the ledger so fallen walls do not count; six axis
+  clearances per birth, and the policy births a fracture on the open side
+  of its face.
 - `client/src/graphics/FramePipeline.tsx` — the offscreen frame (scene →
   beauty with depth → SSAO → stages → composite with ACES + sRGB). Replaced
   `AmbientOcclusion.tsx`; mounted when SSAO or volumetric dust is on.
@@ -83,7 +95,8 @@ the levers if it is over 2 ms.
   ~170 m from the player. The dust culls at the fog distance and scales to
   the aerial camera's 4 km / thin fog; seeing a collapse at 300 m needs a
   fog/far decision outside this feature.
-- Parcels do not collide; the brick does, with static geometry only.
+- Parcels do not collide as they move; they are confined to the axis-aligned
+  room measured at birth. The brick collides with static geometry only.
 - The half-res layer's grain is smoothed by the upsample; native parcels
   keep the jittered march's fine grain, as SSAO does.
 - ANGLE's Vulkan backend logs "Running out of reserved outsideRenderPass
