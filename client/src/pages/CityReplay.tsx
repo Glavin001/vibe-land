@@ -225,7 +225,7 @@ export function CityReplayPage() {
         )}
         {player && (
           <>
-            <span>{(clock.t / 1000).toFixed(1)} / {(player.durationMs() / 1000).toFixed(1)} s</span>
+            <span>{(Math.min(clock.t, player.durationMs()) / 1000).toFixed(1)} / {(player.durationMs() / 1000).toFixed(1)} s{player.ended() ? ' · ended' : ''}</span>
             <button type="button" style={button} onClick={() => (clock.playing ? player.pause() : player.play())}>
               {clock.playing ? 'PAUSE' : 'PLAY'}
             </button>
@@ -239,7 +239,7 @@ export function CityReplayPage() {
               type="button"
               style={button}
               disabled={sweep === 'running'}
-              title="Rewinds the tape for every configuration and measures seconds 2-10 of it each time; ~3 min; shows the table and sends it to the server"
+              title="Plays the tape once to find its worst 8 s, then rewinds it for every configuration and measures those same seconds each time; ~4 min; shows the table and sends it to the server"
               onClick={() => {
                 setSweep('running');
                 setSweepText(null);
@@ -258,7 +258,7 @@ export function CityReplayPage() {
                   .catch(() => setSweep('failed'));
               }}
             >
-              {sweep === 'running' ? 'MEASURING… (~3 min)' : sweep === 'sent' ? 'REPLAY PERF BISECT (SENT)' : 'REPLAY PERF BISECT'}
+              {sweep === 'running' ? 'MEASURING… (~4 min)' : sweep === 'sent' ? 'REPLAY PERF BISECT (SENT)' : 'REPLAY PERF BISECT'}
             </button>
           </>
         )}

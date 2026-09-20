@@ -248,6 +248,8 @@ export interface PerfSweepReport {
   sentinel: PerfSweepStep;
   unstable: boolean;
   steps: PerfSweepStep[];
+  /** Replay sweeps: the seconds of the tape every row measured. */
+  replayWindow?: { fromMs: number; toMs: number };
 }
 
 async function measureStep(
@@ -488,7 +490,10 @@ function finishReport(
 export function formatPerfSweep(report: PerfSweepReport): string {
   const budget = 1000 / 120;
   const lines = [
-    `# city render cost — ${report.capturedAt}`,
+    `# city render cost — ${report.capturedAt}${report.profile === 'replay' ? ' (replay: every row is the same tape)' : ''}`,
+    ...(report.replayWindow
+      ? [`tape window: ${(report.replayWindow.fromMs / 1000).toFixed(1)}-${(report.replayWindow.toMs / 1000).toFixed(1)} s (the tape's worst ${((report.replayWindow.toMs - report.replayWindow.fromMs) / 1000).toFixed(0)} s)`]
+      : []),
     `gpu: ${report.gpu}`,
     `backing store: ${report.backingStore} (dpr ${report.devicePixelRatio})`,
     `gpu timing: ${report.gpuTimingAvailable ? 'available' : 'UNAVAILABLE — gpu columns are 0'}`,
@@ -847,7 +852,46 @@ const REPLAY_STEPS: Array<{ label: string; patch: Partial<Config> }> = [
   { label: 'everything off (floor)', patch: { ao: false, shadows: false, cityTextures: 'off', skyIbl: false, dust: 'off' } },
 ];
 
-export async function runReplaySweep(fromMs = 2000, toMs = 10000): Promise<PerfSweepReport> {
+/**
+ * The tape's worst `windowMs`: play it through once at the configured
+ * settings, average the frame time per half second, and take the window
+ * whose mean is highest. That is where the storm bites, and it is the same
+ * place for every row afterwards.
+ */
+async function locateWorstWindow(
+  replay: NonNullable<typeof window.__VIBE_REPLAY__>,
+  windowMs: number,
+): Promise<{ fromMs: number; toMs: number }> {
+  await replay.rewind();
+  replay.play();
+  const bucketMs = 500;
+  const buckets: number[] = [];
+  const counts: number[] = [];
+  const duration = replay.durationMs();
+  while (replay.timeMs() < duration - 1) {
+    await nextFrame();
+    const bucket = Math.floor(replay.timeMs() / bucketMs);
+    buckets[bucket] = (buckets[bucket] ?? 0) + renderStats.frameTotalMs;
+    counts[bucket] = (counts[bucket] ?? 0) + 1;
+    if (!replay.ready()) break;
+  }
+  const means = buckets.map((sum, i) => (counts[i] ? sum / counts[i] : 0));
+  const span = Math.max(1, Math.round(windowMs / bucketMs));
+  let best = 0;
+  let bestAt = 0;
+  for (let i = 0; i + span <= means.length; i += 1) {
+    let total = 0;
+    for (let j = 0; j < span; j += 1) total += means[i + j] ?? 0;
+    if (total > best) {
+      best = total;
+      bestAt = i;
+    }
+  }
+  const fromMs = Math.max(500, bestAt * bucketMs);
+  return { fromMs, toMs: Math.min(duration, fromMs + windowMs) };
+}
+
+export async function runReplaySweep(windowMs = 8000, window_?: { fromMs: number; toMs: number }): Promise<PerfSweepReport> {
   const replay = window.__VIBE_REPLAY__;
   if (!replay) throw new Error('not on /cityreplay');
   const original = currentConfig();
@@ -856,6 +900,7 @@ export async function runReplaySweep(fromMs = 2000, toMs = 10000): Promise<PerfS
   const presentPeriodMs = await measurePresentPeriod();
   const steps: PerfSweepStep[] = [];
   let sentinel: PerfSweepStep | null = null;
+  const { fromMs, toMs } = window_ ?? await locateWorstWindow(replay, windowMs);
   const measureRow = async (label: string, patch: Partial<Config>): Promise<PerfSweepStep> => {
     applyConfig({ ...original, ...patch });
     await replay.rewind();
@@ -872,5 +917,6 @@ export async function runReplaySweep(fromMs = 2000, toMs = 10000): Promise<PerfS
     restoreStoredRenderSettings(storedBefore);
     setGovernorPaused(false);
   }
-  return finishReport(steps, sentinel, 'replay', presentPeriodMs);
+  const report = finishReport(steps, sentinel, 'replay', presentPeriodMs);
+  return { ...report, replayWindow: { fromMs, toMs } };
 }

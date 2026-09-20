@@ -16,6 +16,8 @@ export interface ReplayPlayer {
   readonly client: CityClient;
   /** Tape time in ms, 0 at the bootstrap the tape opens on. */
   timeMs(): number;
+  /** True once the last packet has played and `loop` is off. */
+  ended(): boolean;
   durationMs(): number;
   playing(): boolean;
   play(): void;
@@ -76,6 +78,7 @@ export async function createReplayPlayer(
     timeMs: () => (playingNow ? (performance.now() - startedAt) * player.speed : pausedAt),
     durationMs: () => durationMs,
     playing: () => playingNow,
+    ended: () => !playingNow && cursor >= tape.packets.length && !player.loop,
     play: () => {
       if (playingNow) return;
       startedAt = performance.now() - pausedAt / player.speed;
@@ -98,12 +101,19 @@ export async function createReplayPlayer(
         if (packet[0] === PKT_METEOR_LAUNCHED) continue;
         client.handlePacket(packet);
       }
-      if (cursor >= tape.packets.length && player.loop) {
-        // Looping means the SAME client sees the tape again from its
-        // bootstrap, which re-bootstraps the ledger in place.
-        cursor = first;
-        startedAt = performance.now();
-        pausedAt = 0;
+      if (cursor >= tape.packets.length) {
+        if (player.loop) {
+          // Looping means the SAME client sees the tape again from its
+          // bootstrap, which re-bootstraps the ledger in place.
+          cursor = first;
+          startedAt = performance.now();
+          pausedAt = 0;
+        } else {
+          // The tape is over; the clock stops with it. A settled end state
+          // at 120 Hz is not a measurement of the storm.
+          pausedAt = durationMs;
+          playingNow = false;
+        }
       }
     },
   };

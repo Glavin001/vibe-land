@@ -471,7 +471,7 @@ export interface VibeE2EBridge {
   /** The storm sweep: fires meteors and prices features inside the impact window. */
   runStormSweep(rounds?: number, windowMs?: number): Promise<{ text: string; report: unknown }>;
   /** /cityreplay only: the same rows of the same tape, one configuration each. */
-  runReplaySweep(fromMs?: number, toMs?: number): Promise<{ text: string; report: unknown }>;
+  runReplaySweep(windowMs?: number, window?: { fromMs: number; toMs: number }): Promise<{ text: string; report: unknown }>;
   /** Record the city stream for `seconds`, save it as the last tape, return its header. */
   recordTape(seconds: number): Promise<unknown>;
 
@@ -723,8 +723,8 @@ const bridge: VibeE2EBridge = {
     const report = await runStormSweep(rounds, windowMs);
     return { text: formatStormSweep(report), report };
   },
-  runReplaySweep: async (fromMs?: number, toMs?: number) => {
-    const report = await runReplaySweep(fromMs, toMs);
+  runReplaySweep: async (windowMs?: number, window_?: { fromMs: number; toMs: number }) => {
+    const report = await runReplaySweep(windowMs, window_);
     return { text: formatPerfSweep(report), report };
   },
   recordTape: async (seconds: number) => {

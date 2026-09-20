@@ -31,6 +31,8 @@ const DUST_FLUID_KEY = 'vibe.render.dustFluid';
 const SHARE_THRESHOLD_KEY = 'vibe.render.instanceShare';
 const SHADOW_MAP_KEY = 'vibe.render.shadowMapSize';
 const DYNAMIC_RES_KEY = 'vibe.render.dynamicRes';
+/** See snapshotStoredRenderSettings. Read at module init, so it lives up here. */
+const SWEEP_BACKUP_KEY = 'vibe.render.sweepBackup';
 
 /**
  * Uses of one shard shape below which it stays in its cell's batch.
@@ -197,6 +199,9 @@ function store(key: string, value: string): void {
     // Not fatal -- see readStoredShadows.
   }
 }
+
+// Must run before any setting below is read from storage.
+restoreInterruptedSweep();
 
 let shadows: boolean = readStoredShadows() ?? defaultShadows();
 let tier: QualityTier = readStoredTier() ?? defaultTier();
@@ -693,9 +698,17 @@ const PERSISTED_KEYS = [
   DUST_FLUID_KEY,
 ] as const;
 
+/**
+ * A sweep in progress keeps its snapshot HERE as well as in memory: the
+ * sweeps toggle settings through the ordinary persisting setters, so a tab
+ * closed mid-sweep left the browser on FAST with the dust off, and nothing
+ * said so. The next page load finds the backup and puts everything back.
+ */
 export function snapshotStoredRenderSettings(): Array<[string, string | null]> {
   try {
-    return PERSISTED_KEYS.map((key) => [key, localStorage?.getItem(key) ?? null]);
+    const snapshot: Array<[string, string | null]> = PERSISTED_KEYS.map((key) => [key, localStorage?.getItem(key) ?? null]);
+    localStorage?.setItem(SWEEP_BACKUP_KEY, JSON.stringify(snapshot));
+    return snapshot;
   } catch {
     return [];
   }
@@ -707,6 +720,24 @@ export function restoreStoredRenderSettings(snapshot: Array<[string, string | nu
       if (value === null) localStorage?.removeItem(key);
       else localStorage?.setItem(key, value);
     }
+    localStorage?.removeItem(SWEEP_BACKUP_KEY);
+  } catch {
+    // See readStoredShadows.
+  }
+}
+
+/** On load: a backup left behind by an interrupted sweep is the truth; restore it before anything reads. */
+function restoreInterruptedSweep(): void {
+  try {
+    const raw = localStorage?.getItem(SWEEP_BACKUP_KEY);
+    if (!raw) return;
+    const snapshot = JSON.parse(raw) as Array<[string, string | null]>;
+    for (const [key, value] of snapshot) {
+      if (value === null) localStorage?.removeItem(key);
+      else localStorage?.setItem(key, value);
+    }
+    localStorage?.removeItem(SWEEP_BACKUP_KEY);
+    console.warn('[render] a sweep was interrupted; its settings were put back');
   } catch {
     // See readStoredShadows.
   }
