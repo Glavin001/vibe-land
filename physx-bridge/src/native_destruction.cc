@@ -42,6 +42,52 @@ static unsigned correction_limit() {
   return value;
 }
 
+/// Rest-state properties for stage-owned chunks. Set once on each cluster
+/// parent; the stage copies them onto every fragment it splits off
+/// (NpDestructionBodyAllocator::observeSettings inherits damping, maxPenBias,
+/// sleep and freeze thresholds, solver iterations), so this is the one place
+/// they need to be written and nothing is ever written on a fragment.
+///
+/// The values are the Blast path's, which met the same failure first: a
+/// resting pile that never slept. Two mechanisms, both PhysX defaults:
+///
+///  - Depenetration is unbounded (1e32). A collapse leaves chunks overlapping,
+///    the solver pushes them apart at whatever speed closes the gap, and that
+///    kick resets sleep progress for the whole contact island. Measured on
+///    the Blast city as a resting pile spiking to 5 m/s every few seconds.
+///  - PhysX sleeps by ISLAND: every body in a contact island must sit under
+///    the sleep threshold for the wake counter's 0.4 s at once. One building's
+///    rubble is one island of thousands of bodies, and at the default
+///    0.005 m^2/s^2 one popping chunk keeps all of them awake. Observed live:
+///    awake held at exactly 19,533 for 300 consecutive ticks with nobody
+///    shooting, 0 new fractures, 0 corrections.
+///
+/// The stabilization threshold is PhysX's own pile-settling pass (the scene
+/// flag is already on): bodies under it are damped harder, which is what lets
+/// a pile relax instead of jitter. Zero or negative leaves the PhysX default,
+/// which is the A/B arm.
+static float native_env_f32(const char *name, float fallback) {
+  const char *raw = std::getenv(name);
+  if (raw == nullptr || *raw == '\0') return fallback;
+  char *end = nullptr;
+  const float parsed = std::strtof(raw, &end);
+  if (end == nullptr || *end != '\0' || !std::isfinite(parsed)) return fallback;
+  return parsed;
+}
+static float native_depenetration_velocity() {
+  static const float value = native_env_f32("VIBE_CITY_NATIVE_DEPEN_VELOCITY", 1.0f);
+  return value;
+}
+static float native_sleep_threshold() {
+  static const float value = native_env_f32("VIBE_CITY_NATIVE_SLEEP_THRESHOLD", 0.05f);
+  return value;
+}
+static float native_stabilization_threshold() {
+  static const float value =
+      native_env_f32("VIBE_CITY_NATIVE_STABILIZATION_THRESHOLD", 0.02f);
+  return value;
+}
+
 namespace vibe_land::physx_bridge {
 namespace {
 
@@ -336,6 +382,16 @@ void NativeDestruction::create_destructible(
     actor->setRigidBodyFlag(PxRigidBodyFlag::eKINEMATIC, supported);
     actor->setLinearDamping(settings.linear_damping);
     actor->setAngularDamping(settings.angular_damping);
+    // Inherited by every fragment of this cluster; see the helpers above.
+    if (native_depenetration_velocity() > 0.0f) {
+      actor->setMaxDepenetrationVelocity(native_depenetration_velocity());
+    }
+    if (native_sleep_threshold() > 0.0f) {
+      actor->setSleepThreshold(native_sleep_threshold());
+    }
+    if (native_stabilization_threshold() > 0.0f) {
+      actor->setStabilizationThreshold(native_stabilization_threshold());
+    }
     actor->userData = reinterpret_cast<void *>(
         static_cast<std::uintptr_t>(entity_id(structure_id, 0)) + 1u);
     s.scene.addActor(*actor);
