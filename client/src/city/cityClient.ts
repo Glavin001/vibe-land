@@ -2189,6 +2189,16 @@ export class CityClient {
     return live;
   }
 
+  /**
+   * The presentation clock as of the last `samplePresentation`: the render
+   * tick bodies were sampled at and the playout delay behind it. Read-only,
+   * for the offline replay to label each presented frame with the sim tick
+   * it corresponds to; the render layer never needs it.
+   */
+  presentationClock(): { renderTick: number; playoutDelayTicks: number } {
+    return { renderTick: this.renderClockTick, playoutDelayTicks: this.sampleDelaySmooth };
+  }
+
   stats(): CityClientStats {
     const topologyStats = this.topology.stats();
     let windowBytes = 0;

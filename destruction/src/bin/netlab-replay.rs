@@ -2,7 +2,7 @@
 //! write every client's byte stream plus the cost of producing it.
 //!
 //!   netlab-replay --capture <dir> --out <dir> [--clients N] [--client <spec>]...
-//!                 [--profiles none,wifi-bad,lte] [--audit <client-id>]
+//!                 [--profiles none,wifi-bad,lte] [--audit <client-id>] [--sample K]
 //!                 [--seed N] [--ceiling-bytes N] [--max-eval N] [--send-hz N]
 //!                 [--error-budget-px F] [--no-packets] [--check-stable]
 //!
@@ -106,16 +106,33 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
 
-    let audit_clients: Vec<u64> = flags("--audit")
+    let mut audit_clients: Vec<u64> = flags("--audit")
         .iter()
         .map(|v| v.parse::<u64>())
         .collect::<Result<_, _>>()?;
+    // --sample K: log packets for the first K clients (recorded players
+    // lead the set) and audit the first of them.
+    let packet_clients = match flag("--sample") {
+        Some(value) => {
+            let count: usize = value.parse()?;
+            let ids: std::collections::HashSet<u64> =
+                clients.iter().take(count).map(|c| c.id).collect();
+            if audit_clients.is_empty() {
+                if let Some(first) = clients.first() {
+                    audit_clients.push(first.id);
+                }
+            }
+            Some(ids)
+        }
+        None => None,
+    };
     let options = ReplayOptions {
         out_dir: out_dir.clone(),
         clients,
         knobs,
         audit_clients,
         write_packets: !has("--no-packets"),
+        packet_clients,
     };
 
     let report = replay::run(&input, &options)?;
@@ -138,10 +155,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             knobs: options.knobs.clone(),
             audit_clients: Vec::new(),
             write_packets: true,
+            packet_clients: options.packet_clients.clone(),
         };
         replay::run(&input, &second)?;
         let mut mismatches = 0;
         for client in &report.clients {
+            if let Some(set) = options.packet_clients.as_ref() {
+                if !set.contains(&client.id) {
+                    continue;
+                }
+            }
             let name = replay::client_dir_name(&client.spec);
             let a = std::fs::read(out_dir.join("pkts").join(&name).join("packets.jsonl"))?;
             let b = std::fs::read(second_dir.join("pkts").join(&name).join("packets.jsonl"))?;

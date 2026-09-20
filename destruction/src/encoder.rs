@@ -391,25 +391,7 @@ impl ChunkStreamEncoder {
         let Some(chunks) = self.structure_chunks.get(&structure_id) else {
             return 1.0;
         };
-        let mut mean = Vec3::ZERO;
-        let mut count = 0.0;
-        for &node in nodes {
-            if let Some((centroid, _)) = chunks.get(node as usize) {
-                mean += *centroid;
-                count += 1.0;
-            }
-        }
-        if count == 0.0 {
-            return 1.0;
-        }
-        mean /= count;
-        let mut radius = 0.0_f32;
-        for &node in nodes {
-            if let Some((centroid, chunk_radius)) = chunks.get(node as usize) {
-                radius = radius.max(centroid.distance(mean) + chunk_radius);
-            }
-        }
-        radius.max(0.1)
+        crate::manifest::island_radius(chunks, nodes)
     }
 
     /// 60 Hz ingest: apply topology output to the ledger, stage the reliable

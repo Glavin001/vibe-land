@@ -602,3 +602,30 @@ mod tests {
         );
     }
 }
+
+/// Island bounding radius from member rest centroids: chunks keep their rest
+/// poses relative to each other inside a rigid island, so the spread of
+/// member centroids (plus per-chunk radius) bounds the island around its
+/// origin. Shared by the encoder and the offline scorer so both agree on what
+/// a body's lever arm is.
+pub fn island_radius(chunks: &[(glam::Vec3, f32)], nodes: &[u32]) -> f32 {
+    let mut mean = glam::Vec3::ZERO;
+    let mut count = 0.0;
+    for &node in nodes {
+        if let Some((centroid, _)) = chunks.get(node as usize) {
+            mean += *centroid;
+            count += 1.0;
+        }
+    }
+    if count == 0.0 {
+        return 1.0;
+    }
+    mean /= count;
+    let mut radius = 0.0_f32;
+    for &node in nodes {
+        if let Some((centroid, chunk_radius)) = chunks.get(node as usize) {
+            radius = radius.max(centroid.distance(mean) + chunk_radius);
+        }
+    }
+    radius.max(0.1)
+}

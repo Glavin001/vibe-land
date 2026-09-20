@@ -154,7 +154,7 @@ pub fn rigid_shell_error_meters(truth: Pose, reconstruction: Pose, radius: f32) 
     center_error + 2.0 * radius * (angle * 0.5).sin().abs()
 }
 
-fn quaternion_angle_radians(a: Quat, b: Quat) -> f32 {
+pub fn quaternion_angle_radians(a: Quat, b: Quat) -> f32 {
     let a = a.normalize();
     let b = b.normalize();
     let component_delta = (a - b).length_squared().min((a + b).length_squared());

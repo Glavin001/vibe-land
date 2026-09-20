@@ -185,6 +185,10 @@ pub struct ReplayOptions {
     pub audit_clients: Vec<u64>,
     /// Skip writing packets (timing-only runs).
     pub write_packets: bool,
+    /// When set, packets are written only for these clients (the rest are
+    /// timed and counted but not logged -- a hundred clients' bytes are not
+    /// worth a hundred files when eight get scored).
+    pub packet_clients: Option<std::collections::HashSet<u64>>,
 }
 
 struct ClientState {
@@ -221,7 +225,9 @@ pub fn run(input: &ReplayInput, options: &ReplayOptions) -> std::io::Result<Repl
     let mut clients: Vec<ClientState> = Vec::with_capacity(options.clients.len());
     for spec in &options.clients {
         let dir = options.out_dir.join("pkts").join(client_dir_name(spec));
-        let log = if options.write_packets { Some(PacketLog::create(&dir)?) } else { None };
+        let logged = options.write_packets
+            && options.packet_clients.as_ref().map_or(true, |set| set.contains(&spec.id));
+        let log = if logged { Some(PacketLog::create(&dir)?) } else { None };
         clients.push(ClientState {
             spec: spec.clone(),
             log,
@@ -256,11 +262,10 @@ pub fn run(input: &ReplayInput, options: &ReplayOptions) -> std::io::Result<Repl
         peak_awake = peak_awake.max(entry.snapshots.len());
         awake_sum += entry.snapshots.len() as u64;
 
-        encoder.ingest_tick(tick, &entry.snapshots, &entry.output, &[]);
-
-        // Joins: a recorded player joins when its track begins; synthetic
-        // viewers are present from the first tick. The bootstrap is the
-        // ledger as of this tick, exactly what the server sends on join.
+        // Joins happen between ticks: the bootstrap is the ledger as of the
+        // previous tick, and this tick's topology messages follow it -- the
+        // order the server produces. A recorded player joins when its track
+        // begins; synthetic viewers are present from the first tick.
         for client in clients.iter_mut() {
             if client.joined {
                 continue;
@@ -279,6 +284,8 @@ pub fn run(input: &ReplayInput, options: &ReplayOptions) -> std::io::Result<Repl
                 log.push(tick, 'r', &bootstrap)?;
             }
         }
+
+        encoder.ingest_tick(tick, &entry.snapshots, &entry.output, &[]);
 
         let mut reliable: Vec<Vec<u8>> = encoder.take_topology_messages();
         if let Some(baselines) = encoder.maybe_emit_baseline(tick) {
@@ -368,7 +375,7 @@ pub fn run(input: &ReplayInput, options: &ReplayOptions) -> std::io::Result<Repl
             "knobs": options.knobs,
             "source": input.source,
         });
-        if options.write_packets {
+        if client.dir.is_dir() {
             std::fs::write(client.dir.join("meta.json"), serde_json::to_vec_pretty(&meta)?)?;
         }
         let audited = options.audit_clients.contains(&client.spec.id);

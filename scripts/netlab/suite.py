@@ -219,7 +219,7 @@ def jitter(b, rng):
 def capture(args) -> int:
     import random
     scenario = SCENARIOS[args.scenario]
-    out = Path(args.out) / args.scenario
+    out = Path(args.out) / (args.scenario + (f"-{args.tag}" if args.tag else ""))
     if out.exists():
         shutil.rmtree(out)
     out.mkdir(parents=True)
@@ -309,6 +309,202 @@ def validate(capture_dir: Path, bots: int) -> int:
     return 0 if ok else 1
 
 
+# --- replay: the whole netcode, headlessly --------------------------------------
+
+REPLAY_PROFILES = "none,wifi-good,wifi-bad,lte"
+
+
+def awake_windows(capture_dir: Path, hz: int):
+    """Windows of the tape labelled by how many bodies were awake.
+
+    `all` is the whole tape. `1k`/`5k`/`10k` are the rising spans between
+    those awake counts (up to the peak), `aftermath` the last 60 s. A window
+    that the tape never reaches is absent, so a scenario that peaked at 3k
+    bodies has no `5k` row rather than an empty one."""
+    rows = [json.loads(l) for l in (capture_dir / "stats.jsonl").read_text().splitlines() if l.strip()]
+    if not rows:
+        return {}
+    first, last = rows[0]["tick"], rows[-1]["tick"]
+    windows = {"all": (first, last)}
+    peak_index = max(range(len(rows)), key=lambda i: rows[i]["awake"])
+    levels = [(1000, "1k"), (5000, "5k"), (10000, "10k")]
+    for index, (level, name) in enumerate(levels):
+        start = next((r["tick"] for r in rows[: peak_index + 1] if r["awake"] >= level), None)
+        if start is None:
+            continue
+        nxt = next((r["tick"] for r in rows[: peak_index + 1] if index + 1 < len(levels) and r["awake"] >= levels[index + 1][0]), None)
+        end = nxt if nxt is not None else last
+        if end - start >= hz * 5:
+            windows[name] = (start, end)
+    if last - first > hz * 90:
+        windows["aftermath"] = (last - hz * 60, last)
+    return windows
+
+
+def run_replay(args) -> int:
+    capture_dir = Path(args.captures) / args.scenario / "capture"
+    if not capture_dir.is_dir():
+        # A bare downtown tape from scenarios.py.
+        raise SystemExit(f"no capture at {capture_dir}")
+    meta = json.loads((capture_dir / "capture.json").read_text())
+    out = Path(args.out) / args.scenario
+    out.mkdir(parents=True, exist_ok=True)
+    windows = awake_windows(capture_dir, meta["hz"])
+    print(f"[replay] {args.scenario}: windows {windows}", flush=True)
+    summary = {"scenario": args.scenario, "capture": str(capture_dir), "manifest_hash": meta["manifest_hash"],
+               "backend": meta["backend"], "windows": windows, "runs": {}}
+    knob_args = []
+    for name in ("ceiling-bytes", "max-eval", "send-hz", "error-budget-px"):
+        value = getattr(args, name.replace("-", "_"), None)
+        if value is not None:
+            knob_args += [f"--{name}", str(value)]
+    for count in [int(c) for c in args.clients.split(",")]:
+        run_dir = out / f"clients-{count}"
+        if run_dir.exists():
+            shutil.rmtree(run_dir)
+        cmd = [str(ROOT / "target/release/netlab-replay"), "--capture", str(capture_dir), "--out", str(run_dir),
+               "--clients", str(count), "--profiles", args.profiles, "--seed", str(args.seed), "--sample", str(args.sample)] + knob_args
+        if args.check_stable:
+            cmd.append("--check-stable")
+        started = time.monotonic()
+        result = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True)
+        (run_dir / "replay.log").write_text(result.stdout + result.stderr)
+        if result.returncode != 0:
+            print(result.stdout[-2000:], result.stderr[-2000:])
+            raise SystemExit(f"netlab-replay failed for {count} clients")
+        report = json.loads((run_dir / "replay.json").read_text())
+        print(f"[replay] {count} clients: per-send ms p50 {report['per_send_ms']['p50']:.2f} p95 {report['per_send_ms']['p95']:.2f} max {report['per_send_ms']['max']:.2f} | egress {report['egress_mbps_total']:.1f} Mbps | {time.monotonic()-started:.1f} s", flush=True)
+        run = {"replay": {k: report[k] for k in ("encode_send_ms", "client_datagrams_total_ms", "per_send_ms",
+                                                    "reliable_bytes_per_client", "egress_bytes_total", "egress_mbps_total",
+                                                    "peak_awake", "mean_awake", "sends", "ticks", "seconds", "ceiling_bytes")},
+               "clients": {}}
+        sampled = [c for c in report["clients"] if Path(c["dir"]).is_dir()][: args.sample]
+        for client in sampled:
+            cdir = Path(client["dir"])
+            presented = cdir / "presented.bin"
+            profile = client["spec"]["profile"]
+            ts_cmd = ["npx", "tsx", "tools/replay-city-client.mts", "--packets", str(cdir), "--manifest",
+                      str(capture_dir / "manifest.json"), "--bodies-out", str(presented), "--frame-hz", str(args.frame_hz)]
+            if profile != "none":
+                ts_cmd += ["--impair", profile]
+            started = time.monotonic()
+            result = subprocess.run(ts_cmd, cwd=ROOT / "client", capture_output=True, text=True)
+            (cdir / "ts-replay.log").write_text(result.stdout + result.stderr)
+            if result.returncode != 0:
+                print(result.stdout[-1500:], result.stderr[-1500:])
+                raise SystemExit(f"TS replay failed for client {client['id']}")
+            ts_seconds = time.monotonic() - started
+            ts_stats = json.loads((str(presented) + ".stats.json") and Path(str(presented) + ".stats.json").read_text())
+            entry = {"spec": client["spec"], "bytes": {k: client[k] for k in ("pose_bytes", "reliable_bytes", "datagrams", "records", "pose_mbps", "reliable_mbps")},
+                     "datagrams_ms": client["datagrams_ms"], "audit": client.get("audit"),
+                     "client_cpu": {"sample_ms": ts_stats["sampleMsPerFrame"], "avg_ms_per_second": ts_stats["clientMsAvgPerSecond"]},
+                     "client_stats": {k: ts_stats["stats"].get(k) for k in ("correctionSnaps", "clockRollbacks", "implausibleJumps",
+                                                                            "presentedJumpsOver1m", "presentedJumpsOver4m", "sampleDelayTicks",
+                                                                            "arrivalLatenessPeakTicks", "starvedReadmissions", "topoSeqGaps", "orphanedChunks")},
+                     "windows": {}}
+            for name, (wfrom, wto) in windows.items():
+                score_path = cdir / f"score-{name}.json"
+                cmd = [str(ROOT / "target/release/netlab-score"), "--capture", str(capture_dir), "--presented", str(presented),
+                       "--client-meta", str(cdir / "meta.json"), "--window", f"{wfrom},{wto}", "--gravity", str(args.gravity),
+                       "--out", str(score_path), "--md", str(cdir / f"score-{name}.md")]
+                result = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True)
+                if result.returncode != 0:
+                    print(result.stdout[-1500:], result.stderr[-1500:])
+                    raise SystemExit(f"netlab-score failed for client {client['id']} window {name}")
+                card = json.loads(score_path.read_text())
+                entry["windows"][name] = card
+                o = card["overall"]
+                print(f"[score] c{count} {client['id']:>6} {client['spec']['camera']['kind']:<7} {profile:<9} {name:<9} lever p95 {o['lever_m']['p95']:.3f} p99 {o['lever_m']['p99']:.3f} | px p95 {o['pixel']['p95']:.1f} >2px {o['pixel_over_budget']*100:.1f}% | freeze {o['gates']['freeze']:.0f} rev {o['gates']['reversal']:.0f} tele {o['gates']['teleport']:.0f} grav {o['gates']['gravity']:.0f} | missing {card['missing_moving_weight']:.0f} | ts {ts_seconds:.0f}s", flush=True)
+            run["clients"][str(client["id"])] = entry
+            if not args.keep_presented:
+                presented.unlink(missing_ok=True)
+        summary["runs"][str(count)] = run
+    (out / "summary.json").write_text(json.dumps(summary, indent=1))
+    print(f"[replay] wrote {out / 'summary.json'}")
+    return 0
+
+
+# --- compare: baseline vs candidate ---------------------------------------------
+
+# (path into a client-window scorecard, label, direction: -1 lower is better)
+FIDELITY_METRICS = [
+    (("overall", "lever_m", "p95"), "lever p95 m", -1, 0.02),
+    (("overall", "lever_m", "p99"), "lever p99 m", -1, 0.02),
+    (("overall", "pixel", "p95"), "px p95", -1, 0.02),
+    (("overall", "pixel_over_budget"), ">2px frac", -1, 0.02),
+    (("overall", "gates", "freeze"), "freeze", -1, 0.05),
+    (("overall", "gates", "reversal"), "reversal", -1, 0.05),
+    (("overall", "gates", "teleport"), "teleport", -1, 0.05),
+    (("overall", "gates", "gravity"), "gravity", -1, 0.05),
+    (("missing_moving_weight",), "missing", -1, 0.05),
+    (("settle_lever_m", "p95"), "settle p95 m", -1, 0.02),
+]
+GATE_ABS_FLOOR = 20.0
+
+
+def dig(d, path):
+    for key in path:
+        if d is None:
+            return None
+        d = d.get(key)
+    return d
+
+
+def compare(args) -> int:
+    base = json.loads(Path(args.baseline).read_text())
+    cand = json.loads(Path(args.candidate).read_text())
+    if base.get("manifest_hash") != cand.get("manifest_hash") or base.get("backend") != cand.get("backend"):
+        raise SystemExit("refusing to compare different manifests/backends")
+    regressions, improvements, lines = [], [], []
+    for count, brun in base["runs"].items():
+        crun = cand["runs"].get(count)
+        if not crun:
+            continue
+        # Server cost and bytes.
+        for path, label, tol in ((("per_send_ms", "p95"), "encode/send p95 ms", 0.10), (("per_send_ms", "p50"), "encode/send p50 ms", 0.10),
+                                 (("egress_mbps_total",), "egress Mbps", 0.03)):
+            b, c = dig(brun["replay"], path), dig(crun["replay"], path)
+            if b is None or c is None:
+                continue
+            delta = (c - b) / b if b else 0.0
+            tag = ""
+            if delta > tol and (c - b) > 0.05:
+                tag = "REGRESSION"; regressions.append(f"c{count} {label} {b:.3f}->{c:.3f} (+{delta*100:.1f}%)")
+            elif delta < -tol:
+                tag = "better"; improvements.append(f"c{count} {label} {b:.3f}->{c:.3f} ({delta*100:.1f}%)")
+            lines.append(f"c{count:<4} {label:<22} {b:10.3f} -> {c:10.3f} {delta*100:+7.1f}% {tag}")
+        for client_id, bclient in brun["clients"].items():
+            cclient = crun["clients"].get(client_id)
+            if not cclient:
+                continue
+            for window, bcard in bclient["windows"].items():
+                ccard = cclient["windows"].get(window)
+                if not ccard:
+                    continue
+                for path, label, direction, tol in FIDELITY_METRICS:
+                    b, c = dig(bcard, path), dig(ccard, path)
+                    if b is None or c is None:
+                        continue
+                    is_gate = path[-1] in ("freeze", "reversal", "teleport", "gravity") or path[0] == "missing_moving_weight"
+                    delta = (c - b) / b if b else (1.0 if c > 0 else 0.0)
+                    worse = c > b * (1 + tol) and (not is_gate or (c - b) > GATE_ABS_FLOOR or b == 0 and c > GATE_ABS_FLOOR)
+                    better = c < b * (1 - tol) and (not is_gate or (b - c) > GATE_ABS_FLOOR)
+                    tag = ""
+                    key = f"c{count} {client_id} {window} {label}"
+                    if worse:
+                        tag = "REGRESSION"; regressions.append(f"{key} {b:.3f}->{c:.3f}")
+                    elif better:
+                        tag = "better"; improvements.append(f"{key} {b:.3f}->{c:.3f}")
+                    if tag or args.verbose:
+                        lines.append(f"c{count:<4} {client_id:>6} {window:<9} {label:<14} {b:10.3f} -> {c:10.3f} {delta*100:+7.1f}% {tag}")
+    print("\n".join(lines))
+    print(f"\n{len(improvements)} better, {len(regressions)} regressions")
+    if regressions:
+        print("REGRESSIONS:\n  " + "\n  ".join(regressions[:40]))
+        return 1
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -317,15 +513,40 @@ def main() -> int:
     c.add_argument("--bots", type=int, default=10)
     c.add_argument("--profiles", default="wifi-good:40,wifi-bad:30,lte:20,loss-burst:10")
     c.add_argument("--seed", type=int, default=1)
+    c.add_argument("--tag", default="", help="suffix for the output directory (e.g. bots100)")
     c.add_argument("--out", default=str(DEFAULT_OUT))
     v = sub.add_parser("validate")
     v.add_argument("dir")
     v.add_argument("--bots", type=int, default=0)
+    r = sub.add_parser("replay")
+    r.add_argument("scenario")
+    r.add_argument("--captures", default=str(DEFAULT_OUT))
+    r.add_argument("--out", required=True, help="results directory (e.g. /dev/shm/netlab/runs/baseline)")
+    r.add_argument("--clients", default="10,50,100")
+    r.add_argument("--sample", type=int, default=8)
+    r.add_argument("--profiles", default=REPLAY_PROFILES)
+    r.add_argument("--seed", type=int, default=1)
+    r.add_argument("--frame-hz", type=int, default=60)
+    r.add_argument("--gravity", type=float, default=9.81)
+    r.add_argument("--ceiling-bytes", type=int)
+    r.add_argument("--max-eval", type=int)
+    r.add_argument("--send-hz", type=int)
+    r.add_argument("--error-budget-px", type=float)
+    r.add_argument("--check-stable", action="store_true")
+    r.add_argument("--keep-presented", action="store_true")
+    cmp = sub.add_parser("compare")
+    cmp.add_argument("--baseline", required=True, help="summary.json")
+    cmp.add_argument("--candidate", required=True, help="summary.json")
+    cmp.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
     if args.command == "capture":
         return capture(args)
     if args.command == "validate":
         return validate(Path(args.dir), args.bots)
+    if args.command == "replay":
+        return run_replay(args)
+    if args.command == "compare":
+        return compare(args)
     return 2
 
 

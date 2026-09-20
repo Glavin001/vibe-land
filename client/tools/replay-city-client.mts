@@ -9,6 +9,13 @@
  * towerstate:
  *
  *   npx tsx tools/replay-city-client.mts --packets <dir> --out <towerstate>
+ *   npx tsx tools/replay-city-client.mts --packets <dir> --bodies-out <presented.bin> [--frame-hz 60] [--impair lte]
+ *
+ * `--bodies-out` writes what the client would display per BODY (the island
+ * centre-of-mass frame the stream carries), one frame per render tick, as a
+ * VLPRES01 stream the netlab scorer compares against the encoder tape's
+ * truth. `--out` (per-chunk TWSTATE1) needs the recorder's state-header.bin
+ * and is optional when `--bodies-out` is given.
  *
  * This exists because hand-written Rust "client models" in the recorder
  * diverged from the shipping client three separate ways (topology timing,
@@ -16,6 +23,7 @@
  * defect on video when the product had none of it.
  */
 import { createWriteStream, readFileSync } from 'node:fs';
+import zlib from 'node:zlib';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -46,8 +54,19 @@ function hexToBytes(hex: string): Uint8Array {
   return out;
 }
 
+function optionalArg(name: string): string | null {
+  const index = process.argv.indexOf(name);
+  if (index < 0 || index + 1 >= process.argv.length) return null;
+  return process.argv[index + 1];
+}
+
 const packetsDir = arg('--packets');
-const outPath = arg('--out');
+const outPath = optionalArg('--out');
+const bodiesOutPath = optionalArg('--bodies-out');
+if (!outPath && !bodiesOutPath) {
+  throw new Error('need --out <towerstate> and/or --bodies-out <presented.bin>');
+}
+const frameHzArg = optionalArg('--frame-hz');
 // Optional link impairment, applied the way WebTransport actually behaves:
 // datagrams ('d') suffer loss, delay, jitter and reordering; the reliable
 // channel ('r') is delayed but never lost and never reordered (QUIC
@@ -61,8 +80,17 @@ const meta = JSON.parse(readFileSync(join(packetsDir, 'meta.json'), 'utf8')) as 
   hz: number;
   ticks: number;
   wire: number;
+  first_tick?: number;
+  last_tick?: number;
 };
-const manifestJson = JSON.parse(readFileSync(join(packetsDir, 'manifest.json'), 'utf8'));
+// A live capture's ticks start wherever the server's counter was; the
+// recorder's start at 0. Delivery ticks in the log are absolute either way.
+const firstTick = meta.first_tick ?? 0;
+const lastTick = meta.last_tick ?? firstTick + meta.ticks - 1;
+// The manifest sits beside the recorder's packets; a multi-client replay
+// keeps one copy at the capture root and names it.
+const manifestPath = optionalArg('--manifest') ?? join(packetsDir, 'manifest.json');
+const manifestJson = JSON.parse(readFileSync(manifestPath, 'utf8'));
 let totalChunks = 0;
 let totalBonds = 0;
 for (const structure of manifestJson.structures) {
@@ -148,9 +176,14 @@ if (meta.wire === 3) {
 // performance.now above is SIM time and must not leak into cost numbers.
 const realNowMs = () => Number(process.hrtime.bigint()) / 1e6;
 const clientMsPerSecond: number[] = [];
-function chargeClientMs(second: number, ms: number): void {
+const decodeMsPerSecond: number[] = [];
+const sampleMsPerSecond: number[] = [];
+const sampleMsPerFrame: number[] = [];
+function chargeClientMs(second: number, ms: number, bucket: number[]): void {
   while (clientMsPerSecond.length <= second) clientMsPerSecond.push(0);
+  while (bucket.length <= second) bucket.push(0);
   clientMsPerSecond[second] += ms;
+  bucket[second] += ms;
 }
 
 let nacks = 0;
@@ -165,20 +198,25 @@ const client = new CityClient(
 );
 
 // --- TWSTATE1 output: recorded header + frame records + terminator --------
-const headerBytes = readFileSync(join(packetsDir, 'state-header.bin'));
-const out = createWriteStream(outPath);
-out.write(headerBytes);
-const expectedFrames = new DataView(
-  headerBytes.buffer,
-  headerBytes.byteOffset,
-  headerBytes.byteLength,
-).getUint32(16, true);
+const out = outPath ? createWriteStream(outPath) : null;
+let expectedFrames = 0;
+if (out && outPath) {
+  const headerBytes = readFileSync(join(packetsDir, 'state-header.bin'));
+  out.write(headerBytes);
+  expectedFrames = new DataView(
+    headerBytes.buffer,
+    headerBytes.byteOffset,
+    headerBytes.byteLength,
+  ).getUint32(16, true);
+}
 
 const msPerTick = 1000 / meta.hz;
-const viewStep = Math.max(1, Math.floor(meta.hz / 30));
+const frameHz = frameHzArg ? Number(frameHzArg) : outPath ? 30 : 60;
+const viewStep = Math.max(1, Math.floor(meta.hz / frameHz));
 let framesWritten = 0;
 
 function writeFrame(): void {
+  if (!out) return;
   const count = client.topology.chunkCount;
   const frame = Buffer.alloc(1 + 4 + 4 + count * (4 + 28 + 1));
   let at = 0;
@@ -207,53 +245,178 @@ function writeFrame(): void {
   framesWritten += 1;
 }
 
+// --- VLPRES01: per-frame presented BODY poses, changed bodies only --------
+//
+// Every body the ledger holds is compared against what was last written, so
+// a pose that reached the ledger by any path -- the sampled track, a settle,
+// a promotion, a bootstrap, a structure repair -- is captured, and a body
+// that is gone from the ledger is reported retired. The scorer holds poses
+// forward between changes.
+// zstd-framed: at ten thousand moving bodies a frame is 300 KB and a
+// minute is a gigabyte per client. The Rust reader sniffs the frame magic.
+const bodiesOut = bodiesOutPath
+  ? (() => {
+      const { createZstdCompress } = zlib;
+      const file = createWriteStream(bodiesOutPath);
+      const packer = createZstdCompress({ params: { [zlib.constants.ZSTD_c_compressionLevel]: 3 } });
+      packer.pipe(file);
+      return { write: (chunk: Buffer) => packer.write(chunk), end: () => new Promise<void>((resolve, reject) => {
+        file.on('finish', () => resolve());
+        file.on('error', reject);
+        packer.end();
+      }) };
+    })()
+  : null;
+const lastWritten = new Map<number, Float32Array>();
+let presentedFrames = 0;
+let presentedRecords = 0;
+if (bodiesOut) {
+  const header = Buffer.alloc(8 + 4 + 4 + 4);
+  header.write('VLPRES01', 0, 'ascii');
+  header.writeUInt32LE(meta.hz, 8);
+  header.writeUInt32LE(frameHz, 12);
+  header.writeUInt32LE(firstTick, 16);
+  bodiesOut.write(header);
+}
+const scratch = new Float32Array(7);
+function writePresentedFrame(simTickNow: number): void {
+  if (!bodiesOut) return;
+  const clock = client.presentationClock();
+  const changed: number[] = [];
+  const poses: Float32Array[] = [];
+  const seen = new Set<number>();
+  for (const body of client.topology.allBodies()) {
+    seen.add(body.key);
+    const p = body.position;
+    const q = body.rotation;
+    const last = lastWritten.get(body.key);
+    if (
+      last
+      && last[0] === p[0] && last[1] === p[1] && last[2] === p[2]
+      && last[3] === q[0] && last[4] === q[1] && last[5] === q[2] && last[6] === q[3]
+    ) {
+      continue;
+    }
+    const stored = last ?? new Float32Array(7);
+    stored[0] = p[0]; stored[1] = p[1]; stored[2] = p[2];
+    stored[3] = q[0]; stored[4] = q[1]; stored[5] = q[2]; stored[6] = q[3];
+    if (!last) lastWritten.set(body.key, stored);
+    changed.push(body.key);
+    poses.push(stored);
+  }
+  const retired: number[] = [];
+  for (const key of lastWritten.keys()) {
+    if (!seen.has(key)) retired.push(key);
+  }
+  for (const key of retired) lastWritten.delete(key);
+  const frame = Buffer.alloc(4 + 4 + 4 + 4 + changed.length * 32 + 4 + retired.length * 4);
+  let at = 0;
+  frame.writeUInt32LE(simTickNow, at); at += 4;
+  frame.writeFloatLE(clock.renderTick, at); at += 4;
+  frame.writeFloatLE(clock.playoutDelayTicks, at); at += 4;
+  frame.writeUInt32LE(changed.length, at); at += 4;
+  for (let index = 0; index < changed.length; index += 1) {
+    frame.writeUInt32LE(changed[index], at); at += 4;
+    const pose = poses[index];
+    for (let k = 0; k < 7; k += 1) {
+      frame.writeFloatLE(pose[k], at); at += 4;
+    }
+  }
+  frame.writeUInt32LE(retired.length, at); at += 4;
+  for (const key of retired) {
+    frame.writeUInt32LE(key, at); at += 4;
+  }
+  bodiesOut.write(frame);
+  presentedFrames += 1;
+  presentedRecords += changed.length;
+  void scratch;
+}
+
 // Frame 0 mirrors the Rust models: bootstrap state before any packet.
 // (The bootstrap packet itself arrives at tick 0 below.)
 writeFrame();
 
-for (let tick = 0; tick < meta.ticks; tick += 1) {
-  fakeNowMs = tick * msPerTick;
-  const second = Math.floor(tick / meta.hz);
+for (let tick = firstTick; tick <= lastTick; tick += 1) {
+  fakeNowMs = (tick - firstTick) * msPerTick;
+  const second = Math.floor((tick - firstTick) / meta.hz);
   for (const { bytes } of byTick.get(tick) ?? []) {
     const started = realNowMs();
     client.handlePacket(bytes);
-    chargeClientMs(second, realNowMs() - started);
+    chargeClientMs(second, realNowMs() - started, decodeMsPerSecond);
   }
-  if (tick % viewStep === 0 && tick > 0) {
+  if ((tick - firstTick) % viewStep === 0 && tick > firstTick) {
     const started = realNowMs();
     client.samplePresentation(fakeNowMs);
-    chargeClientMs(second, realNowMs() - started);
+    const sampleMs = realNowMs() - started;
+    chargeClientMs(second, sampleMs, sampleMsPerSecond);
+    sampleMsPerFrame.push(sampleMs);
     writeFrame();
+    writePresentedFrame(tick);
   }
 }
 
-out.write(Buffer.from([255]));
-await new Promise((resolve, reject) => {
-  out.end(() => resolve(undefined));
-  out.on('error', reject);
-});
+if (out) {
+  out.write(Buffer.from([255]));
+  await new Promise((resolve, reject) => {
+    out.end(() => resolve(undefined));
+    out.on('error', reject);
+  });
+}
+if (bodiesOut) {
+  await bodiesOut.end();
+}
 
 const { writeFileSync } = await import('node:fs');
-writeFileSync(
-  `${outPath}.timings.json`,
-  JSON.stringify({ hz: meta.hz, clientMsPerSecond: clientMsPerSecond.map((v) => +v.toFixed(3)) }),
-);
+const percentile = (values: number[], q: number): number => {
+  if (values.length === 0) return 0;
+  const sorted = [...values].sort((a, b) => a - b);
+  return sorted[Math.min(sorted.length - 1, Math.round((sorted.length - 1) * q))];
+};
 const totalClientMs = clientMsPerSecond.reduce((a, b) => a + b, 0);
-
 const stats = client.stats();
+const timings = {
+  hz: meta.hz,
+  frameHz,
+  firstTick,
+  lastTick,
+  clientMsPerSecond: clientMsPerSecond.map((v) => +v.toFixed(3)),
+  decodeMsPerSecond: decodeMsPerSecond.map((v) => +v.toFixed(3)),
+  sampleMsPerSecond: sampleMsPerSecond.map((v) => +v.toFixed(3)),
+  sampleMsPerFrame: {
+    frames: sampleMsPerFrame.length,
+    p50: +percentile(sampleMsPerFrame, 0.5).toFixed(4),
+    p95: +percentile(sampleMsPerFrame, 0.95).toFixed(4),
+    max: +percentile(sampleMsPerFrame, 1).toFixed(4),
+  },
+  clientMsAvgPerSecond: +(totalClientMs / Math.max(1, clientMsPerSecond.length)).toFixed(3),
+  presentedFrames,
+  presentedRecords,
+  nacks,
+  stats,
+};
+const statsPath = bodiesOutPath ? `${bodiesOutPath}.stats.json` : `${outPath}.timings.json`;
+writeFileSync(statsPath, JSON.stringify(timings));
+
 console.log(
   JSON.stringify({
     framesWritten,
     expectedFrames,
+    presentedFrames,
+    presentedRecords,
     nacks,
     wireVersion: stats.wireVersion,
     topoSeqGaps: stats.topoSeqGaps,
     orphanedChunks: stats.orphanedChunks,
     brokenBonds: stats.brokenBonds,
-    clientMsAvgPerSecond: +(totalClientMs / Math.max(1, clientMsPerSecond.length)).toFixed(2),
+    correctionSnaps: stats.correctionSnaps,
+    implausibleJumps: stats.implausibleJumps,
+    clockRollbacks: stats.clockRollbacks,
+    sampleDelayTicks: stats.sampleDelayTicks,
+    clientMsAvgPerSecond: timings.clientMsAvgPerSecond,
+    sampleMsP95: timings.sampleMsPerFrame.p95,
   }),
 );
-if (framesWritten !== expectedFrames) {
+if (out && framesWritten !== expectedFrames) {
   console.error(`frame count mismatch: wrote ${framesWritten}, header says ${expectedFrames}`);
   process.exit(1);
 }

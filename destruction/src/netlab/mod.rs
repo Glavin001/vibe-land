@@ -4,7 +4,10 @@
 //! without a GPU and without the run-to-run noise of the physics sim.
 
 pub mod cameras;
+pub mod gates;
+pub mod presented;
 pub mod capture;
 pub mod packets;
 pub mod replay;
+pub mod score;
 pub mod tape;
