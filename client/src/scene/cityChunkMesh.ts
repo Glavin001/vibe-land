@@ -67,6 +67,8 @@ export type CityMeshState = {
   radii: Float32Array;
   /** The chunk records and body poses the GPU composes from. */
   poses: CityGpuPoses;
+  /** Every material the cells share: the concrete, any glass, the shadow depth. */
+  materials: THREE.Material[];
 };
 
 /**
@@ -392,6 +394,7 @@ function buildCell(
   sink: BuildSink,
   client: CityClient,
   material: THREE.Material,
+  depth: THREE.Material,
   shapeBySlot: ResolvedShapes['shapeBySlot'],
   cell: number,
   slots: number[],
@@ -437,7 +440,7 @@ function buildCell(
     builder.append(geometry, slot, sink.scales[slot * 3], sink.scales[slot * 3 + 1], sink.scales[slot * 3 + 2]);
     sink.meshOfSlot[slot] = meshIndex;
   }
-  const mesh = new CitySlotMesh(builder.build(), material, sink.poses, slots);
+  const mesh = new CitySlotMesh(builder.build(), material, depth, sink.poses, slots);
   mesh.castShadow = shadowsEnabled();
   mesh.receiveShadow = shadowsEnabled();
   // Whole-cell culling is one sphere test that can drop a block. Only worth
@@ -482,6 +485,24 @@ export function buildCityMesh(client: CityClient): CityMeshState {
     totalVertices: 0,
   };
 
+  // One material per surface KIND for the whole city, not per cell: the pose
+  // textures every cell reads are city-wide, so nothing about a material is
+  // per cell, and three re-uploads a material's uniforms only when the
+  // material changes between draws.
+  const concrete = buildCityMaterial();
+  const depth = new THREE.MeshDepthMaterial({ depthPacking: THREE.RGBADepthPacking });
+  const glassByKey = new Map<number, THREE.Material>();
+  const materialFor = (key: number): THREE.Material => {
+    const glass = key < 0 ? undefined : materials.appearance[key];
+    if (!glass || glass.opacity == null) return concrete;
+    let built = glassByKey.get(key);
+    if (!built) {
+      built = buildGlassMaterial(glass);
+      glassByKey.set(key, built);
+    }
+    return built;
+  };
+
   let cellCount = 0;
   for (const structure of manifest.structures) {
     const structureSlots = structure.chunks.map((chunk) =>
@@ -508,12 +529,7 @@ export function buildCityMesh(client: CityClient): CityMeshState {
         byMaterial.set(key, list);
       }
       for (const [key, list] of byMaterial) {
-        // A slot mesh owns its material: the pose textures ride on it as
-        // uniforms, and three only re-uploads uniforms when the material
-        // changes between draws. The program is still shared -- same cache key.
-        const glass = key < 0 ? undefined : materials.appearance[key];
-        const material = glass && glass.opacity != null ? buildGlassMaterial(glass) : buildCityMaterial();
-        buildCell(sink, client, material, shapeBySlot, cell, list);
+        buildCell(sink, client, materialFor(key), depth, shapeBySlot, cell, list);
       }
     }
   }
@@ -525,6 +541,7 @@ export function buildCityMesh(client: CityClient): CityMeshState {
     scales,
     radii,
     poses,
+    materials: [concrete, depth, ...glassByKey.values()],
   };
   // Every record and every body the ledger has, so the first frame draws the
   // city exactly as the ledger holds it -- intact, or mid-collapse for a late

@@ -310,7 +310,14 @@ mat4 citySlotMatrix() {
  * tint (settled rubble is dimmer; the debug palette colours by body) rides a
  * varying into the fragment shader when the material has one.
  */
+const injected = new WeakSet<THREE.Material>();
+
 export function injectSlotTransform(material: THREE.Material, poses: CityGpuPoses): void {
+  // The textures are city-wide, so one material serves every cell -- and
+  // three then skips the uniform re-upload between consecutive draws of it,
+  // which with a material per cell was most of the submit cost.
+  if (injected.has(material)) return;
+  injected.add(material);
   const previous = material.onBeforeCompile;
   const previousKey = material.customProgramCacheKey;
   material.defines = { ...(material.defines ?? {}), CITY_SLOTS: '' };
@@ -433,15 +440,20 @@ export class CitySlotMesh extends THREE.Mesh {
   /** Centre the sphere grows from: the cell's footprint when it was built. */
   private readonly centre = new THREE.Vector3();
 
-  constructor(geometry: THREE.BufferGeometry, material: THREE.Material, poses: CityGpuPoses, slots: number[]) {
+  constructor(
+    geometry: THREE.BufferGeometry,
+    material: THREE.Material,
+    depth: THREE.Material,
+    poses: CityGpuPoses,
+    slots: number[],
+  ) {
     super(geometry, material);
     this.poses = poses;
     this.slots = slots;
     injectSlotTransform(material, poses);
     // The shadow pass uses its own depth material and knows nothing about
     // the attribute; without this every moving chunk would shadow from its
-    // rest pose.
-    const depth = new THREE.MeshDepthMaterial({ depthPacking: THREE.RGBADepthPacking });
+    // rest pose. Shared across cells like the surface material.
     injectSlotTransform(depth, poses);
     this.customDepthMaterial = depth;
   }
@@ -486,7 +498,6 @@ export class CitySlotMesh extends THREE.Mesh {
     sphere.radius = radius;
   }
 
-  dispose(): void {
-    (this.customDepthMaterial as THREE.Material | undefined)?.dispose();
-  }
+  /** Materials are shared across cells; the layer disposes them with the mesh state. */
+  dispose(): void {}
 }

@@ -581,8 +581,8 @@ export function CityChunksLayer({
           // on it as a uniform); the others share the city material below.
           mesh.dispose();
           mesh.geometry.dispose();
-          if (renderable.kind === 'slots') (mesh.material as THREE.Material).dispose();
         }
+        for (const material of stateRef.current.materials) material.dispose();
         stateRef.current.poses.dispose();
         stateRef.current = null;
       }
