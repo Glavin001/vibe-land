@@ -139,10 +139,14 @@ function DprController(): null {
     if (gpu > 0) g.gpuEma = g.gpuEma > 0 ? g.gpuEma * 0.9 + gpu * 0.1 : gpu;
     g.dustEma = g.dustEma > 0 ? g.dustEma * 0.9 + renderStats.gpuDustMs * 0.1 : renderStats.gpuDustMs;
     if (g.pacingFrames >= 120) {
-      // Quantise to the refresh rates that exist. A window whose fastest
-      // frame is still long says nothing about the display; keep the last.
-      if (g.pacingMin < 9.5) g.period = 8.33;
-      else if (g.pacingMin < 17.5) g.period = 16.67;
+      // Quantise to the refresh rates that exist, and keep the FASTEST period
+      // ever seen: a window whose shortest frame is 12 ms is a loaded 120 Hz
+      // display, not a 60 Hz one, and relaxing the budget on it mid-storm is
+      // exactly backwards. Until anything fast has been seen, assume 60.
+      let seen = 0;
+      if (g.pacingMin < 9.5) seen = 8.33;
+      else if (g.pacingMin < 17.5) seen = 16.67;
+      if (seen > 0 && (g.period === 0 || seen < g.period)) g.period = seen;
       else if (g.period === 0) g.period = 16.67;
       g.pacingMin = Infinity;
       g.pacingFrames = 0;

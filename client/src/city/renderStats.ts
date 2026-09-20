@@ -292,8 +292,12 @@ let passesThisFrame = 0;
 // frame issued, so a frame publishes once every one of its passes is in.
 let assembling: { frame: number; ms: number[]; issued: number } | null = null;
 const passesIssuedByFrame = new Map<number, number>();
-/** Frame -> [first pass, one past last pass) of the dust stage, for gpuDustMs. */
-const dustRangeByFrame = new Map<number, [number, number]>();
+/**
+ * Frame -> pass ranges [first, one past last) issued by pipeline stages, for
+ * gpuDustMs. Several stages run per frame (the dust volume, the meteor fire);
+ * every stage's range counts, so the number is "the stages", dust foremost.
+ */
+const dustRangeByFrame = new Map<number, Array<[number, number]>>();
 let dustStageStart = -1;
 
 function drainGpuQueries(): void {
@@ -333,10 +337,12 @@ function drainGpuQueries(): void {
       renderStats.gpuPass5Ms = slots[5];
       renderStats.gpuPassCount = assembling.ms.length;
       renderStats.gpuFrameMs = total;
-      const dust = dustRangeByFrame.get(entry.frame);
+      const ranges = dustRangeByFrame.get(entry.frame);
       let dustMs = 0;
-      if (dust) {
-        for (let i = dust[0]; i < dust[1] && i < assembling.ms.length; i += 1) dustMs += assembling.ms[i] || 0;
+      if (ranges) {
+        for (const [from, to] of ranges) {
+          for (let i = from; i < to && i < assembling.ms.length; i += 1) dustMs += assembling.ms[i] || 0;
+        }
         dustRangeByFrame.delete(entry.frame);
       }
       renderStats.gpuDustMs = dustMs;
@@ -388,7 +394,11 @@ export function beginGpuDustStage(): void {
 
 export function endGpuDustStage(): void {
   if (dustStageStart < 0) return;
-  dustRangeByFrame.set(frameSerial, [dustStageStart, passesThisFrame]);
+  if (passesThisFrame > dustStageStart) {
+    const ranges = dustRangeByFrame.get(frameSerial) ?? [];
+    ranges.push([dustStageStart, passesThisFrame]);
+    dustRangeByFrame.set(frameSerial, ranges);
+  }
   dustStageStart = -1;
 }
 
