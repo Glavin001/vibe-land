@@ -476,9 +476,29 @@ export class PresentationTrack {
       }
     }
 
-    this.decayCorrection(elapsedSeconds);
+    // No correction in flight -- most bodies, most frames -- and the raw
+    // state IS the presented state: nothing to decay (a zero correction
+    // stays zero, exactly), nothing to add, no quaternion to compose and
+    // normalise. `raw` is this call's own object, so it is returned as the
+    // state rather than copied into one.
+    const state: PresentedState = this.correctionIsZero() ? raw : this.corrected(raw, elapsedSeconds);
 
-    const state: PresentedState = {
+    this.previous = { renderTick, state, revision: this.revision };
+    this.prune(targetTick);
+    return state;
+  }
+
+  private correctionIsZero(): boolean {
+    const c = this.correction;
+    return c.position[0] === 0 && c.position[1] === 0 && c.position[2] === 0
+      && c.linearVelocity[0] === 0 && c.linearVelocity[1] === 0 && c.linearVelocity[2] === 0
+      && c.rotation[0] === 0 && c.rotation[1] === 0 && c.rotation[2] === 0
+      && c.angularVelocity[0] === 0 && c.angularVelocity[1] === 0 && c.angularVelocity[2] === 0;
+  }
+
+  private corrected(raw: PresentedState, elapsedSeconds: number): PresentedState {
+    this.decayCorrection(elapsedSeconds);
+    return {
       position: vAdd(raw.position, this.correction.position),
       rotation: qNormalize(qMul(qFromScaledAxis(this.correction.rotation), raw.rotation)),
       linearVelocity: vAdd(raw.linearVelocity, this.correction.linearVelocity),
@@ -486,10 +506,6 @@ export class PresentationTrack {
       positionCorrection: vClone(this.correction.position),
       rotationCorrectionDegrees: (vLength(this.correction.rotation) * 180) / Math.PI,
     };
-
-    this.previous = { renderTick, state, revision: this.revision };
-    this.prune(targetTick);
-    return state;
   }
 
   private rawState(targetTick: number): PresentedState {
@@ -523,9 +539,12 @@ export class PresentationTrack {
 
     if (snapshot.class === PresentationClass.Quiescent) {
       return {
-        ...defaultState(),
         position: vClone(snapshot.position),
         rotation: snapshot.rotation,
+        linearVelocity: vZero(),
+        angularVelocity: vZero(),
+        positionCorrection: vZero(),
+        rotationCorrectionDegrees: 0,
       };
     }
 
@@ -544,11 +563,12 @@ export class PresentationTrack {
     );
 
     return {
-      ...defaultState(),
       position: vAdd(snapshot.position, positionDelta),
       rotation: qNormalize(qMul(qFromScaledAxis(angularDelta), snapshot.rotation)),
       linearVelocity,
       angularVelocity,
+      positionCorrection: vZero(),
+      rotationCorrectionDegrees: 0,
     };
   }
 
@@ -648,11 +668,12 @@ export class PresentationTrack {
 
 function snapshotState(snapshot: MotionSnapshot): PresentedState {
   return {
-    ...defaultState(),
     position: vClone(snapshot.position),
     rotation: snapshot.rotation,
     linearVelocity: vClone(snapshot.linearVelocity),
     angularVelocity: vClone(snapshot.angularVelocity),
+    positionCorrection: vZero(),
+    rotationCorrectionDegrees: 0,
   };
 }
 
@@ -723,29 +744,37 @@ function interpolate(
   const h01 = -2 * u3 + 3 * u2;
   const h11 = u3 - u2;
 
-  const position = vAdd(
-    vAdd(vScale(left.position, h00), vScale(left.linearVelocity, h10 * seconds)),
-    vAdd(vScale(right.position, h01), vScale(right.linearVelocity, h11 * seconds)),
-  );
+  // Hermite, written out: this runs for every moving body every frame, and
+  // as a chain of vector helpers it was sixteen arrays a body.
+  const lp = left.position, lv = left.linearVelocity, rp = right.position, rv = right.linearVelocity;
+  const h10s = h10 * seconds;
+  const h11s = h11 * seconds;
+  const position: Vec3 = [
+    lp[0] * h00 + lv[0] * h10s + rp[0] * h01 + rv[0] * h11s,
+    lp[1] * h00 + lv[1] * h10s + rp[1] * h01 + rv[1] * h11s,
+    lp[2] * h00 + lv[2] * h10s + rp[2] * h01 + rv[2] * h11s,
+  ];
 
   const dh00 = 6 * u2 - 6 * u;
   const dh10 = 3 * u2 - 4 * u + 1;
   const dh01 = -dh00;
   const dh11 = 3 * u2 - 2 * u;
-  const linearVelocity = vScale(
-    vAdd(
-      vAdd(vScale(left.position, dh00), vScale(left.linearVelocity, dh10 * seconds)),
-      vAdd(vScale(right.position, dh01), vScale(right.linearVelocity, dh11 * seconds)),
-    ),
-    1 / seconds,
-  );
+  const inv = 1 / seconds;
+  const dh10s = dh10 * seconds;
+  const dh11s = dh11 * seconds;
+  const linearVelocity: Vec3 = [
+    (lp[0] * dh00 + lv[0] * dh10s + rp[0] * dh01 + rv[0] * dh11s) * inv,
+    (lp[1] * dh00 + lv[1] * dh10s + rp[1] * dh01 + rv[1] * dh11s) * inv,
+    (lp[2] * dh00 + lv[2] * dh10s + rp[2] * dh01 + rv[2] * dh11s) * inv,
+  ];
 
   return {
-    ...defaultState(),
     position,
     rotation: qSlerp(left.rotation, right.rotation, u),
     linearVelocity,
     angularVelocity: vLerp(left.angularVelocity, right.angularVelocity, u),
+    positionCorrection: vZero(),
+    rotationCorrectionDegrees: 0,
   };
 }
 
