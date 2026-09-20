@@ -38,7 +38,10 @@ import {
   qualityTier,
   setAmbientOcclusionEnabled,
   setDustMode,
+  setDustFluid,
   dustModePreferred,
+  dustFluidPreferred,
+  type DustFluid,
   type DustMode,
   setCityTextureDetail,
   setDprCap,
@@ -96,6 +99,7 @@ type Config = {
   heroTiling: boolean;
   aoMsaa: number;
   dust: DustMode;
+  dustFluid: DustFluid;
 };
 
 function currentConfig(): Config {
@@ -113,6 +117,7 @@ function currentConfig(): Config {
     heroTiling: heroTilingEnabled(),
     aoMsaa: aoMsaaSamplesSetting(),
     dust: dustModePreferred(),
+    dustFluid: dustFluidPreferred(),
   };
 }
 
@@ -129,6 +134,7 @@ function applyConfig(config: Config): void {
   setCityTextureAnisotropy(config.albedoAniso);
   setHeroTilingEnabled(config.heroTiling);
   setDustMode(config.dust);
+  setDustFluid(config.dustFluid);
   setAoMsaaSamples(config.aoMsaa);
 }
 
@@ -379,6 +385,8 @@ export async function runPerfSweep(
     // nothing live it skips, and this step measures the pipeline it needs.
     await step('dust off', { dust: 'off' });
     await step('dust sprites', { dust: 'sprites' });
+    await step('dust fluid off', { dustFluid: 'off' });
+    await step('dust fluid fast', { dustFluid: 'fast' });
     await step('shadows off', { shadows: false });
     await step('shadow map 1024', { shadowMapSize: 1024 });
     await step('sky IBL off', { skyIbl: false });

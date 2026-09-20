@@ -219,9 +219,12 @@ import { acquireCityDiagnostics } from './cityDiagnostics';
 import { sendDebugReport } from './debugReport';
 import {
   ambientOcclusionPreferred,
+  dustFluidPreferred,
   dustModePreferred,
   setAmbientOcclusionEnabled,
+  setDustFluid,
   setDustMode,
+  type DustFluid,
   type DustMode,
   setCityTextureDetail,
   setDprCap,
@@ -298,6 +301,7 @@ export function CityStatsOverlay({
   const [shadows, setShadows] = useState(shadowsEnabled);
   const [ao, setAo] = useState(ambientOcclusionPreferred);
   const [dust, setDust] = useState<DustMode>(dustModePreferred);
+  const [dustFluid, setDustFluidState] = useState<DustFluid>(dustFluidPreferred);
   const [cannonball, setCannonball] = useState(cannonballEnabled);
   // The setting can also be changed from outside this component (the e2e
   // bridge does), and a button whose label disagrees with what the next shot
@@ -781,6 +785,23 @@ export function CityStatsOverlay({
           title="Destruction dust. VOLUMETRIC needs PRETTY and takes over the render loop like AO; SPRITES is the cheap in-scene fallback; OFF also stops emission."
         >
           {`DUST: ${dust.toUpperCase()}`}
+        </button>
+      </div>
+
+      <div style={{ ...row, marginBottom: 2 }}>
+        <button
+          type="button"
+          onClick={() => {
+            const next: DustFluid = dustFluid === 'balanced' ? 'fast' : dustFluid === 'fast' ? 'off' : 'balanced';
+            setDustFluid(next);
+            setDustFluidState(next);
+          }}
+          style={{ ...toggleButton, position: 'static', width: '100%' }}
+          data-testid="city-dust-fluid-toggle"
+          aria-label="Cycle destruction dust fluid brick"
+          title="Near-camera fluid brick: simulated dust that flows and pools at the nearest big break. BALANCED is 64³ cells, FAST 48³. Needs volumetric dust."
+        >
+          {`DUST FLUID: ${dustFluid.toUpperCase()}`}
         </button>
       </div>
 

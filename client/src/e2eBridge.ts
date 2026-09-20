@@ -23,6 +23,7 @@ import {
   instanceShareThresholdSetting,
   qualityTier,
   setAmbientOcclusionEnabled,
+  setDustFluid,
   setDustMode,
   setQualityTier,
   setShadowsEnabled,
@@ -349,6 +350,7 @@ export interface VibeE2EBridge {
     shadows?: boolean;
     ao?: boolean;
     dust?: 'off' | 'sprites' | 'volumetric';
+    dustFluid?: 'off' | 'fast' | 'balanced';
     tier?: 'fast' | 'pretty';
     shareThreshold?: number;
     heroTiling?: boolean;
@@ -595,6 +597,7 @@ const bridge: VibeE2EBridge = {
     if (next.shadows !== undefined) setShadowsEnabled(next.shadows);
     if (next.ao !== undefined) setAmbientOcclusionEnabled(next.ao);
     if (next.dust !== undefined) setDustMode(next.dust);
+    if (next.dustFluid !== undefined) setDustFluid(next.dustFluid);
     if (next.tier !== undefined) setQualityTier(next.tier);
     if (next.shareThreshold !== undefined) setInstanceShareThreshold(next.shareThreshold);
     if (next.heroTiling !== undefined) setHeroTilingEnabled(next.heroTiling);
