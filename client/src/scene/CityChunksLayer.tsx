@@ -502,13 +502,17 @@ export function CityChunksLayer({
     if (clientRef.current !== client || rebuildRequestedRef.current) {
       rebuildRequestedRef.current = false;
       if (stateRef.current) {
-        for (const { mesh } of stateRef.current.renderables) {
+        for (const renderable of stateRef.current.renderables) {
+          const { mesh } = renderable;
           group.remove(mesh);
-          // Both classes own GPU state beyond the geometry -- a BatchedMesh its
-          // matrix/colour data textures, an InstancedMesh its instance buffers
-          // -- and their own dispose is what releases it.
+          // Every class owns GPU state beyond the geometry -- a BatchedMesh its
+          // matrix/colour data textures, an InstancedMesh its instance buffers,
+          // a slot mesh its matrices texture -- and their own dispose is what
+          // releases it. A slot mesh also owns its material (the texture rides
+          // on it as a uniform); the others share the city material below.
           mesh.dispose();
           mesh.geometry.dispose();
+          if (renderable.kind === 'slots') (mesh.material as THREE.Material).dispose();
         }
         const shared = stateRef.current.renderables[0]?.mesh.material as THREE.Material | undefined;
         shared?.dispose();

@@ -7,6 +7,7 @@
 // upstream.
 
 import * as THREE from 'three';
+import type { CitySlotMesh } from './citySlotMesh';
 
 import type { CityClient } from '../city/cityClient';
 import type { LedgerBody } from '../city/topology';
@@ -31,7 +32,8 @@ const TMP_SCALE = new THREE.Vector3();
  */
 export type CityRenderable =
   | { kind: 'batched'; mesh: THREE.BatchedMesh }
-  | { kind: 'instanced'; mesh: THREE.InstancedMesh };
+  | { kind: 'instanced'; mesh: THREE.InstancedMesh }
+  | { kind: 'slots'; mesh: CitySlotMesh };
 
 /**
  * Depth below which a chunk cannot be poking through the flat y=0 ground no
@@ -174,8 +176,8 @@ export function writeInstance(
   }
   TMP_POSITION.set(TMP_POSE[0], TMP_POSE[1], TMP_POSE[2]);
   TMP_QUATERNION.set(TMP_POSE[3], TMP_POSE[4], TMP_POSE[5], TMP_POSE[6]);
-  if (hidden && renderable.kind === 'instanced') {
-    // An InstancedMesh has no per-instance visibility flag -- every instance in
+  if (hidden && renderable.kind !== 'batched') {
+    // An InstancedMesh (and a slot mesh) has no per-instance visibility flag -- every instance in
     // the buffer is drawn. A zero scale collapses the shape to a point, which
     // rasterises nothing; the vertex shader still runs for its vertices, which
     // is the whole cost and is far below what a sub-draw would have been.

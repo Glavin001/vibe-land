@@ -14,9 +14,12 @@
 //   shared hulls -> one InstancedMesh per shape, CITY-WIDE. Only reachable
 //                   when the pack was authored with a bounded fracture-pattern
 //                   library, so the same shard recurs many times.
-//   lone hulls   -> one BatchedMesh per render cell. A shape used once or twice
-//                   is not worth a real draw call, and a batch keeps frustum
-//                   culling.
+//   lone hulls   -> one CitySlotMesh per render cell: the cell's geometry
+//                   merged, each vertex tagged with its chunk, matrices in a
+//                   texture. ONE draw per pass whether none of its chunks are
+//                   moving or all of them are. (It replaced a BatchedMesh,
+//                   whose per-chunk sub-draws made the Mac's GPU cost scale
+//                   with the number of chunks awake; see citySlotMesh.ts.)
 //
 // The distinction that drove all of this: three renders a BatchedMesh through
 // WEBGL_multi_draw and emits one sub-draw RANGE PER INSTANCE, so
@@ -37,7 +40,8 @@ import {
   shadowsEnabled,
 } from '../app/renderQuality';
 import { writeInstance, type CityRenderable } from './cityChunkWrite';
-import { ShellBuilder, retireShellRange } from './cityShell';
+import { retireShellRange } from './cityShell';
+import { CitySlotMesh, SlotGeometryBuilder } from './citySlotMesh';
 import { renderStats } from '../city/renderStats';
 import { applyCityTriplanar } from './cityMaterialShader';
 import { attachInstanceAnchors, bakeRestAnchors } from './cityTexAnchor';
@@ -482,6 +486,7 @@ function resolveTints(
 /** Mutable accumulator threaded through the three builders below. */
 type BuildSink = {
   renderables: CityRenderable[];
+  radii: Float32Array;
   cellOfRenderable: number[];
   shellInstanceOfRenderable: number[];
   meshOfSlot: Int32Array;
@@ -588,7 +593,7 @@ function buildCellBoxes(
   sink.subDraws += 1;
 }
 
-/** The cell's one-off hulls: a batch, which keeps frustum culling. */
+/** The cell's one-off hulls: one slot mesh, one draw, frustum culled as a cell. */
 function buildCellHullBatch(
   sink: BuildSink,
   client: CityClient,
@@ -639,66 +644,39 @@ function buildCellHullBatch(
       .attributes.position.count;
   }
 
-  // Budget doubles: the shell is a full second copy of every member. ~70k
-  // verts city-wide for the packs served today -- memory noise, and the trade
-  // buys the intact city back ~1,600 sub-draws (see cityShell.ts).
-  const mesh = new THREE.BatchedMesh(
-    slots.length + 1,
-    vertexBudget * 2,
-    indexBudget * 2,
-    material,
-  );
+  // One draw for the cell, forever: every member's vertices tagged with its
+  // instance index, matrices in a texture. A chunk that moves costs a texture
+  // write, not a sub-draw -- see citySlotMesh.ts for the M3 numbers that
+  // retired the shell-plus-sub-draws scheme.
+  const builder = new SlotGeometryBuilder(vertexBudget, indexBudget);
+  let reach = 0;
+  slots.forEach((slot, instance) => {
+    const geometry = prototypeOf(slot);
+    // Rewrite the prototype's anchor in place: the builder COPIES, so one
+    // mutable prototype per shape serves every instance of it.
+    bakeRestAnchors(geometry, slot, sink.anchors, sink.scales);
+    builder.append(geometry, instance);
+    if (sink.radii[slot] > reach) reach = sink.radii[slot];
+  });
+  const mesh = new CitySlotMesh(builder.build(), material, builder.ranges, reach);
   mesh.castShadow = shadowsEnabled();
   mesh.receiveShadow = shadowsEnabled();
-  // Per-instance culling walks every chunk to decide each one, which is the
-  // work we are trying to avoid.
-  mesh.perObjectFrustumCulled = false;
-  mesh.sortObjects = false;
-  // Whole-batch culling is one sphere test that can drop a block. Only worth
-  // anything because batches are cell sized: a city-wide batch always
-  // intersects the frustum, which is why culling used to be off here.
+  // Whole-cell culling is one sphere test that can drop a block. Only worth
+  // anything because cells are cell sized: a city-wide mesh always intersects
+  // the frustum.
   mesh.frustumCulled = true;
 
   const meshIndex = sink.renderables.length;
-  const renderable: CityRenderable = { kind: 'batched', mesh };
-
-  // Two passes so the shell can be the FIRST geometry in the batch, which pins
-  // its index range to absolute 0 -- the invariant `retireShellRange` needs.
-  const shell = new ShellBuilder();
-  for (const slot of slots) {
-    const geometry = prototypeOf(slot);
-    // Rewrite the prototype's anchor in place: the shell COPIES, so one
-    // mutable prototype per shape serves every instance of it.
-    bakeRestAnchors(geometry, slot, sink.anchors, sink.scales);
-    const range = shell.append(geometry);
-    sink.shellIndexStartBySlot[slot] = range.start;
-    sink.shellIndexCountBySlot[slot] = range.count;
-    sink.wokenBySlot[slot] = 0;
-  }
-  const shellGeometryId = mesh.addGeometry(shell.build());
-  const shellInstanceId = mesh.addInstance(shellGeometryId);
-  mesh.setMatrixAt(shellInstanceId, IDENTITY_MATRIX);
-  mesh.setColorAt(shellInstanceId, TMP_COLOR.setRGB(1, 1, 1));
-
-  for (const slot of slots) {
-    const geometry = prototypeOf(slot);
-    // Re-baked unconditionally: prototypes are shared per shape, so after the
-    // shell pass a prototype holds whichever slot of its shape came LAST.
-    bakeRestAnchors(geometry, slot, sink.anchors, sink.scales);
-    const geometryId = mesh.addGeometry(geometry);
-    const instanceId = mesh.addInstance(geometryId);
-    seatSlot(sink, client, renderable, meshIndex, slot, instanceId, colour);
-    // Hidden until the chunk actually moves: a hidden instance is compacted
-    // out of the multi-draw entirely, so the intact cell costs ONE sub-draw.
-    mesh.setVisibleAt(instanceId, false);
-  }
+  const renderable: CityRenderable = { kind: 'slots', mesh };
+  slots.forEach((slot, instance) => {
+    seatSlot(sink, client, renderable, meshIndex, slot, instance, colour);
+  });
   mesh.computeBoundingSphere();
   sink.renderables.push(renderable);
   sink.cellOfRenderable.push(cell);
-  sink.shellInstanceOfRenderable.push(shellInstanceId);
+  sink.shellInstanceOfRenderable.push(-1);
   sink.batchCount += 1;
-  // The shell. Wakes add live sub-draws at runtime; this counter is the
-  // intact-city figure.
+  // One draw, and it stays one draw.
   sink.subDraws += 1;
 }
 
@@ -795,6 +773,9 @@ export function refreshRenderableSphere(state: CityMeshState, index: number): vo
   if (renderable.kind === 'instanced') {
     data = renderable.mesh.instanceMatrix.array;
     count = renderable.mesh.count;
+  } else if (renderable.kind === 'slots') {
+    data = renderable.mesh.matricesData;
+    count = renderable.mesh.instanceCount;
   } else {
     // The matrices texture is the instance matrices; ids are dense from zero
     // because the build never deletes an instance.
@@ -892,6 +873,7 @@ export function buildCityMesh(client: CityClient): CityMeshState {
 
   const sink: BuildSink = {
     renderables: [],
+    radii,
     cellOfRenderable: [],
     shellInstanceOfRenderable: [],
     meshOfSlot: new Int32Array(count).fill(-1),
@@ -952,8 +934,17 @@ export function buildCityMesh(client: CityClient): CityMeshState {
       for (const [key, list] of boxSlots) {
         buildCellBoxes(sink, client, materialFor(key), cell, list, colour);
       }
+      // A slot mesh owns its material: the matrices texture rides on it as a
+      // uniform, and three only re-uploads uniforms when the material changes
+      // between draws. The program is still shared -- same cache key.
+      const freshMaterialFor = (key: number) => {
+        const glass = key < 0 ? undefined : materials.appearance[key];
+        const fresh = glass && glass.opacity != null ? buildGlassMaterial(glass) : buildCityMaterial();
+        fresh.vertexColors = true;
+        return fresh;
+      };
       for (const [key, list] of hullSlots) {
-        buildCellHullBatch(sink, client, materialFor(key), shapeBySlot, cell, list, colour);
+        buildCellHullBatch(sink, client, freshMaterialFor(key), shapeBySlot, cell, list, colour);
       }
     }
   }

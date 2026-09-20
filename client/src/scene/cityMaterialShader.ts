@@ -214,12 +214,13 @@ if (typeof window !== 'undefined') {
  * chunk's rest scale. A BatchedMesh has no per-instance attribute channel at
  * all, so `buildCellHullBatch` bakes the absolute rest position into each
  * instance's own copy of the vertices instead -- which is why the batched
- * branch needs no scale term.
+ * branch needs no scale term. A slot mesh (CITY_SLOTS) is built the same way
+ * and takes the same branch; its matrix comes from citySlotMatrix().
  */
 const VERTEX_PARS = `
 varying vec3 vCityTexPos;
 flat varying float vCityLayer;
-#if defined( USE_BATCHING )
+#if defined( USE_BATCHING ) || defined( CITY_SLOTS )
   attribute vec4 cityAnchor;
 #elif defined( USE_INSTANCING )
   attribute vec4 cityAnchor;
@@ -233,7 +234,7 @@ flat varying vec3 vCityAxisY;
 `;
 
 const VERTEX_BODY = `
-#if defined( USE_BATCHING )
+#if defined( USE_BATCHING ) || defined( CITY_SLOTS )
   vCityTexPos = cityAnchor.xyz;
   vCityLayer = cityAnchor.w;
 #elif defined( USE_INSTANCING )
@@ -253,6 +254,8 @@ const VERTEX_BODY = `
 const VERTEX_BODY_PBR = `
 #if defined( USE_BATCHING )
   mat4 cityModel = batchingMatrix;
+#elif defined( CITY_SLOTS )
+  mat4 cityModel = citySlotMatrix();
 #elif defined( USE_INSTANCING )
   mat4 cityModel = instanceMatrix;
 #else
