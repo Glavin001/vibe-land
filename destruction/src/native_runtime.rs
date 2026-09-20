@@ -1032,6 +1032,15 @@ no observation this tick",
         &self.encoder_input
     }
 
+    /// The host-side cost of feeding this tick's rows to the encoder. Timed by
+    /// the caller because the encoder is not this backend's; recorded here so
+    /// it rides the same stats row as the rest of the step and the overlay's
+    /// "unattributed" bucket stops holding it (it was ~4.8 ms of an 11.3 ms
+    /// step at 19k awake bodies, reported as 0.0).
+    pub fn record_host_timings(&mut self, ingest_ms: f32) {
+        self.stats.ingest_ms = ingest_ms;
+    }
+
     pub fn stats(&self) -> DestructionStats {
         self.stats.clone()
     }

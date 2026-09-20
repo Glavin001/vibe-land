@@ -328,6 +328,30 @@ void NativeDestruction::State::refresh_snapshots() {
     const bool kinematic =
         actor.getRigidBodyFlags().isSet(PxRigidBodyFlag::eKINEMATIC);
 
+    // Steady sleeper: asleep last tick, asleep (or anchored) now, row already
+    // published. Nothing about it has changed, and the host drops sleeping
+    // rows before the encoder sees them, so the cached row is the answer.
+    // Two property reads instead of seven; see NativeBody::last_snapshot.
+    // The chunk count is refreshed from our own record because a migration
+    // can change it without waking the body.
+    if (body.sleeping && body.has_snapshot && (kinematic || actor.isSleeping())) {
+      body.quiet_ticks = 0;
+      FfiChunkBodySnapshot &snap = body.last_snapshot;
+      snap.kinematic = kinematic;
+      snap.node_count = static_cast<std::uint32_t>(body.chunks.size());
+      snap.flags = 0;
+      snapshots.push_back(snap);
+      continue;
+    }
+
+    // Each property once. The awake path used to read the sleep state, the
+    // pose and both velocities twice over (once for the debris lifecycle,
+    // once for the row), and at 19k awake bodies the second read was ~2 ms.
+    const bool asleep = !kinematic && actor.isSleeping();
+    const PxTransform pose = actor.getGlobalPose();
+    const PxVec3 linear = actor.getLinearVelocity();
+    const PxVec3 angular = actor.getAngularVelocity();
+
     // Debris lifecycle. The stage has none of its own, and without one a city
     // that has been fought over is thousands of chunks that simulate forever:
     // a rubble pile never satisfies PhysX's sleep test, and anything that
@@ -335,11 +359,12 @@ void NativeDestruction::State::refresh_snapshots() {
     // 6,181 awake bodies out of 6,510, the rigid-body step alone was 16.6 ms
     // of a 16.7 ms budget -- the destruction was cheap by then and the debris
     // was the whole cost.
-    if (!kinematic && !actor.isSleeping()) {
-      const PxVec3 position = actor.getGlobalPose().p;
+    bool parked_this_tick = false;
+    if (!kinematic && !asleep) {
+      const PxVec3 position = pose.p;
       const bool lost = !position.isFinite() || position.y < floor_m;
-      const float speed = actor.getLinearVelocity().magnitude();
-      const float spin = actor.getAngularVelocity().magnitude();
+      const float speed = linear.magnitude();
+      const float spin = angular.magnitude();
       const bool quiet = speed <= quiet_speed && spin <= quiet_speed;
       body.quiet_ticks = quiet ? body.quiet_ticks + 1 : 0;
       if (lost) {
@@ -347,6 +372,7 @@ void NativeDestruction::State::refresh_snapshots() {
         // takes the body out of the simulation for good; it cannot be woken by
         // a contact it will never have.
         actor.putToSleep();
+        parked_this_tick = true;
         debris_parked += 1;
       } else if (quiet_limit != 0 && body.quiet_ticks >= quiet_limit) {
         // Sleep does not fully stick: over 800 cannonball shots this fired
@@ -356,9 +382,12 @@ void NativeDestruction::State::refresh_snapshots() {
         // path does with rubble, but on stage-owned GPU bodies it measured
         // far slower -- see native_settle_freezes.
         if (native_settle_freezes()) {
+          // A body frozen this tick still answers isSleeping() false until the
+          // next step, and its row said so before this walk was rewritten.
           actor.setRigidBodyFlag(PxRigidBodyFlag::eKINEMATIC, true);
         } else {
           actor.putToSleep();
+          parked_this_tick = true;
         }
         body.quiet_ticks = 0;
         debris_settled += 1;
@@ -367,14 +396,15 @@ void NativeDestruction::State::refresh_snapshots() {
       body.quiet_ticks = 0;
     }
 
-    const bool sleeping = kinematic || actor.isSleeping();
+    // A body put to sleep this tick reads as sleeping from here on, exactly
+    // as the re-read it replaces did (putToSleep takes effect immediately).
+    const bool sleeping = kinematic || asleep || parked_this_tick;
     if (sleeping && !body.sleeping) {
       // Sleep edges are what the wire calls a settle; levels cannot express
       // "came to rest just now".
     } else if (!sleeping && body.sleeping) {
       resettled_wakes += 1;
     }
-    const PxTransform pose = actor.getGlobalPose();
     FfiChunkBodySnapshot snap{};
     snap.entity_id = NativeDestruction::entity_id(body.structure, body.serial);
     snap.structure_id = body.structure;
@@ -383,8 +413,8 @@ void NativeDestruction::State::refresh_snapshots() {
     // offsets minus the island centre of mass against it.
     snap.position = native_ffi(pose.transform(actor.getCMassLocalPose().p));
     snap.rotation = native_ffi(pose.q);
-    snap.linear_velocity = native_ffi(actor.getLinearVelocity());
-    snap.angular_velocity = native_ffi(actor.getAngularVelocity());
+    snap.linear_velocity = native_ffi(linear);
+    snap.angular_velocity = native_ffi(angular);
     snap.sleeping = sleeping;
     snap.kinematic = kinematic;
     snap.node_count = static_cast<std::uint32_t>(body.chunks.size());
@@ -393,6 +423,8 @@ void NativeDestruction::State::refresh_snapshots() {
       snap.flags = sleeping ? 1u : 2u; // 1 = settled this tick, 2 = woke.
     }
     body.sleeping = sleeping;
+    body.last_snapshot = snap;
+    body.has_snapshot = true;
     snapshots.push_back(snap);
   }
 }

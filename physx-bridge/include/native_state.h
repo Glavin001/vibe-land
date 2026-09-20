@@ -63,6 +63,15 @@ struct NativeBody {
   /// iterative, so the pile keeps a residual jitter above the sleep threshold
   /// forever, and the body simulates for the rest of the match.
   std::uint32_t quiet_ticks = 0;
+  /// The row published last tick, re-emitted while the body stays asleep.
+  /// A sleeper has not moved and nothing downstream reads a sleeper's pose
+  /// (the host skips sleeping rows before they reach the wire), so re-reading
+  /// seven actor properties for it every tick was pure cost: measured 5.4 ms
+  /// a tick at 29k bodies, tracking TOTAL bodies while the awake count was
+  /// two thirds of that. `has_snapshot` is false on a freshly rebuilt record,
+  /// so a body whose chunks just changed is always read in full once.
+  FfiChunkBodySnapshot last_snapshot{};
+  bool has_snapshot = false;
 };
 
 /// A shot in flight. Owned here rather than by `World`, because every body in

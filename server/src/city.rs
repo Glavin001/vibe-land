@@ -1728,6 +1728,10 @@ impl CityRuntime {
                 let post_step_ms = post_step_started.elapsed().as_secs_f32() * 1000.0;
                 match post_step_result {
                     Ok(output) => {
+                        // Timed, as the Physx arm's ingest is: this was the
+                        // one child of the native step with no span, and at
+                        // 19k awake bodies it was the largest one.
+                        let ingest_started = std::time::Instant::now();
                         let snapshots = backend.body_snapshots();
                         feed_encoder(
                             &mut self.capture,
@@ -1739,12 +1743,17 @@ impl CityRuntime {
                             &output,
                         );
                         reliable.extend(self.encoder.take_topology_messages());
+                        let ingest_ms = ingest_started.elapsed().as_secs_f32() * 1000.0;
+                        backend.record_host_timings(ingest_ms);
+                        // What the step spent that neither the backend's
+                        // post_step nor the ingest claims.
+                        self.last_step_residual_ms =
+                            started.elapsed().as_secs_f32() * 1000.0 - post_step_ms - ingest_ms;
                     }
                     Err(error) => {
                         tracing::error!(%error, "native city tick failed; topology frozen");
                     }
                 }
-                let _ = post_step_ms;
                 let _ = pending_pushes;
             }
             #[cfg(feature = "blast-core")]
