@@ -601,3 +601,219 @@ export function formatPerfSweepMobile(report: PerfSweepReport): string[] {
   }
   return lines;
 }
+
+// ---------------------------------------------------------------------------
+// The storm sweep: what each feature costs DURING an impact.
+//
+// The sweep above prices features on a scene that holds still. The frames that
+// matter are the ones right after a meteor lands -- ten thousand chunks awake,
+// dust everywhere -- and no two impacts are alike, so measuring one feature
+// per impact would price the impact. This one fires its own meteors: every
+// round shuffles the configurations, fires one rock per configuration at the
+// city, waits for it to land and measures the seconds after. Three rounds put
+// three independent impacts under each configuration in an order the scene's
+// drift cannot line up with, and the report is the median across them.
+// ---------------------------------------------------------------------------
+
+export interface StormSweepImpact {
+  label: string;
+  round: number;
+  frameMs: ReturnType<typeof stats>;
+  cpuMs: ReturnType<typeof stats>;
+  gpuMs: ReturnType<typeof stats>;
+  /** Chunks awake, averaged over the measured window: how hard the impact hit. */
+  awakeMean: number;
+  parcelsMean: number;
+  backingStore: string;
+}
+
+export interface StormSweepReport {
+  profile: 'storm';
+  capturedAt: string;
+  userAgent: string;
+  gpu: string;
+  presentPeriodMs: number;
+  rounds: number;
+  windowMs: number;
+  impacts: StormSweepImpact[];
+  /** Per label: medians across its impacts, and the same for awake chunks. */
+  summary: Array<{ label: string; impacts: number; frameMedian: number; frameP95: number; cpuMedian: number; awakeMean: number }>;
+  aborted: string | null;
+}
+
+type DriveBridge = {
+  lookAt: (x: number, y: number, z: number) => void;
+  fire: (command?: { holdMs?: number }) => void;
+};
+type E2eBridge = {
+  setShotMode: (mode: 'rifle' | 'cannonball' | 'meteor') => void;
+  meteors: () => Array<{ bodyId: number; ageS: number; flightTimeS: number }>;
+  snapshot: () => { city?: { chunksAwake: number } | null } | null;
+  cityStructures: () => Array<{ position: [number, number, number]; top: number; chunks: number }>;
+};
+
+const STORM_CONFIGS: Array<{ label: string; patch: Partial<Config> }> = [
+  { label: 'as configured', patch: {} },
+  { label: 'AO off', patch: { ao: false } },
+  { label: 'shadows off', patch: { shadows: false } },
+  { label: 'dust sprites', patch: { dust: 'sprites' } },
+  { label: 'dust fluid off', patch: { dustFluid: 'off' } },
+  { label: 'dpr cap 1.0', patch: { dprCap: 1 } },
+];
+
+const sleep = (ms: number) => new Promise<void>((resolve) => window.setTimeout(resolve, ms));
+
+export async function runStormSweep(rounds = 3, windowMs = 4000): Promise<StormSweepReport> {
+  const drive = (window as unknown as { __VIBE_DRIVE__?: DriveBridge }).__VIBE_DRIVE__;
+  const e2e = (window as unknown as { __VIBE_E2E__?: E2eBridge }).__VIBE_E2E__;
+  const { gpu } = describeGpu();
+  const report: StormSweepReport = {
+    profile: 'storm',
+    capturedAt: new Date().toISOString(),
+    userAgent: navigator.userAgent,
+    gpu,
+    presentPeriodMs: 0,
+    rounds,
+    windowMs,
+    impacts: [],
+    summary: [],
+    aborted: null,
+  };
+  if (!drive || !e2e) {
+    report.aborted = 'drive/e2e bridge not installed';
+    return report;
+  }
+  const original = currentConfig();
+  const storedBefore = snapshotStoredRenderSettings();
+  setGovernorPaused(true);
+  try {
+    // Present period: the shortest rAF interval over a quiet second.
+    let fastest = Infinity;
+    for (let i = 0; i < 60; i += 1) {
+      await nextFrame();
+      if (renderStats.frameTotalMs > 0 && renderStats.frameTotalMs < fastest) fastest = renderStats.frameTotalMs;
+    }
+    report.presentPeriodMs = Number.isFinite(fastest) ? fastest : 0;
+    e2e.setShotMode('meteor');
+    // Aim points: the largest structures, cycled, so successive rocks do not
+    // all land on ground an earlier one already cleared.
+    const structures = e2e.cityStructures().slice().sort((a, b) => b.chunks - a.chunks).slice(0, 6);
+    if (structures.length === 0) {
+      report.aborted = 'no city structures to aim at';
+      return report;
+    }
+    let shot = 0;
+    for (let round = 0; round < rounds; round += 1) {
+      const order = STORM_CONFIGS.slice();
+      for (let i = order.length - 1; i > 0; i -= 1) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [order[i], order[j]] = [order[j], order[i]];
+      }
+      for (const entry of order) {
+        applyConfig({ ...original, ...entry.patch });
+        // A dpr change resizes every target; let that settle before the shot.
+        await sleep(entry.patch.dprCap !== undefined ? 800 : 300);
+        const target = structures[shot % structures.length];
+        shot += 1;
+        // Halfway up the structure, jittered by a few metres so the same
+        // structure takes each rock somewhere new.
+        const jitter = () => (Math.random() - 0.5) * 8;
+        drive.lookAt(
+          target.position[0] + jitter(),
+          target.position[1] + (target.top - target.position[1]) * 0.5,
+          target.position[2] + jitter(),
+        );
+        await sleep(150);
+        const before = new Set(e2e.meteors().map((m) => m.bodyId));
+        drive.fire({ holdMs: 60 });
+        // Wait for the launch to come back, then for the rock to land.
+        let flight: { bodyId: number; ageS: number; flightTimeS: number } | undefined;
+        for (let waited = 0; waited < 4000 && !flight; waited += 100) {
+          await sleep(100);
+          flight = e2e.meteors().find((m) => !before.has(m.bodyId));
+        }
+        if (!flight) {
+          report.aborted = `no meteor launch came back for shot ${shot}`;
+          return report;
+        }
+        await sleep(Math.max(0, (flight.flightTimeS - flight.ageS) * 1000));
+        // The window: every frame from touchdown for `windowMs`.
+        const frames: number[] = [];
+        const cpu: number[] = [];
+        const gpuMs: number[] = [];
+        let awakeSum = 0;
+        let awakeN = 0;
+        let parcelSum = 0;
+        const startedAt = performance.now();
+        while (performance.now() - startedAt < windowMs) {
+          await nextFrame();
+          frames.push(renderStats.frameTotalMs);
+          cpu.push(renderStats.cpuFrameMs);
+          if (renderStats.gpuFrameMs > 0) gpuMs.push(renderStats.gpuFrameMs);
+          parcelSum += renderStats.dustParcelsLive;
+          if (frames.length % 15 === 0) {
+            const city = e2e.snapshot()?.city;
+            if (city) {
+              awakeSum += city.chunksAwake;
+              awakeN += 1;
+            }
+          }
+        }
+        report.impacts.push({
+          label: entry.label,
+          round: round + 1,
+          frameMs: stats(frames),
+          cpuMs: stats(cpu),
+          gpuMs: stats(gpuMs),
+          awakeMean: awakeN > 0 ? awakeSum / awakeN : 0,
+          parcelsMean: frames.length > 0 ? parcelSum / frames.length : 0,
+          backingStore: canvasBackingStore(),
+        });
+      }
+    }
+  } finally {
+    applyConfig(original);
+    restoreStoredRenderSettings(storedBefore);
+    setGovernorPaused(false);
+  }
+  const median = (values: number[]) => {
+    if (values.length === 0) return 0;
+    const sorted = values.slice().sort((a, b) => a - b);
+    return sorted[Math.floor(sorted.length / 2)];
+  };
+  for (const entry of STORM_CONFIGS) {
+    const mine = report.impacts.filter((impact) => impact.label === entry.label);
+    if (mine.length === 0) continue;
+    report.summary.push({
+      label: entry.label,
+      impacts: mine.length,
+      frameMedian: median(mine.map((impact) => impact.frameMs.median)),
+      frameP95: median(mine.map((impact) => impact.frameMs.p95)),
+      cpuMedian: median(mine.map((impact) => impact.cpuMs.median)),
+      awakeMean: median(mine.map((impact) => impact.awakeMean)),
+    });
+  }
+  return report;
+}
+
+export function formatStormSweep(report: StormSweepReport): string {
+  const lines: string[] = [];
+  lines.push(`# city storm cost — ${report.capturedAt}`);
+  lines.push(`gpu: ${report.gpu}`);
+  lines.push(`presented at: ${report.presentPeriodMs.toFixed(2)} ms at rest`);
+  lines.push(`${report.rounds} rounds, ${report.windowMs} ms measured after each impact`);
+  if (report.aborted) lines.push(`!! ABORTED: ${report.aborted}`);
+  lines.push('');
+  lines.push(`${'config'.padEnd(18)}${'impacts'.padStart(8)}${'frame med'.padStart(11)}${'frame p95'.padStart(11)}${'cpu med'.padStart(9)}${'awake'.padStart(8)}${'vs base'.padStart(9)}`);
+  const base = report.summary[0];
+  for (const row of report.summary) {
+    const delta = base && row !== base ? `${(row.frameMedian - base.frameMedian) >= 0 ? '+' : ''}${(row.frameMedian - base.frameMedian).toFixed(1)}` : '';
+    lines.push(`${row.label.padEnd(18)}${String(row.impacts).padStart(8)}${row.frameMedian.toFixed(2).padStart(11)}${row.frameP95.toFixed(2).padStart(11)}${row.cpuMedian.toFixed(2).padStart(9)}${Math.round(row.awakeMean).toString().padStart(8)}${delta.padStart(9)}`);
+  }
+  lines.push('');
+  lines.push('per impact:');
+  for (const impact of report.impacts) {
+    lines.push(`  r${impact.round} ${impact.label.padEnd(16)} frame ${impact.frameMs.median.toFixed(2)} / p95 ${impact.frameMs.p95.toFixed(2)}  cpu ${impact.cpuMs.median.toFixed(2)}  awake ${Math.round(impact.awakeMean)}  parcels ${Math.round(impact.parcelsMean)}  ${impact.backingStore}`);
+  }
+  return lines.join('\n');
+}

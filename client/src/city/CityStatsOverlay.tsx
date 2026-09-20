@@ -13,7 +13,7 @@
 
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { BODY_DEBUG_STATES, setBodyDebugEnabled, setBodyDebugStates } from './bodyDebugColors';
-import { formatPerfSweep, formatPerfSweepMobile, runPerfSweep } from './perfSweep';
+import { formatPerfSweep, formatPerfSweepMobile, formatStormSweep, runPerfSweep, runStormSweep } from './perfSweep';
 import { renderStats } from './renderStats';
 import { nextShotMode, onShotModeChange, setShotMode, shotMode, type ShotMode } from './shotMode';
 import { isTouchDevice } from '../device';
@@ -894,6 +894,44 @@ export function CityStatsOverlay({
           title="~40 s. Prices shadows, resolution and textures on THIS device, shows the answer on screen and sends it to the server"
         >
           {sweepState === 'running' ? 'MEASURING... (~40 s)' : 'MOBILE PERF BISECT'}
+        </button>
+      </div>
+
+      {/*
+        The one that measures inside the impact, because a settled city is
+        120 Hz and the frames that matter are the ones right after a rock
+        lands. Fires its own meteors: three rounds, six configurations each in
+        random order, four seconds measured after every touchdown. ~2.5 min.
+      */}
+      <div style={{ ...row, marginBottom: 2 }}>
+        <button
+          type="button"
+          disabled={sweepState === 'running'}
+          onClick={() => {
+            setSweepState('running');
+            setMobileReport(null);
+            void runStormSweep()
+              .then(async (report) => {
+                const text = formatStormSweep(report);
+                setMobileReport(text.split('\n'));
+                notePerfSweep(report, text);
+                try {
+                  setSentFolder(await sendDebugReport(matchId));
+                  setSendState('sent');
+                  window.setTimeout(() => setSendState('idle'), 4000);
+                } catch {
+                  setSendState('failed');
+                }
+                setSweepState('done');
+              })
+              .catch(() => setSweepState('failed'));
+          }}
+          style={{ ...toggleButton, position: 'static', width: '100%' }}
+          data-testid="city-perf-sweep-storm"
+          aria-label="Run the storm render cost sweep"
+          title="~2.5 min. Fires 18 meteors at the city, each under a different render configuration in random order, measures the 4 s after every impact, shows the medians and sends them to the server"
+        >
+          {sweepState === 'running' ? 'MEASURING... (~2.5 min)' : 'STORM PERF BISECT'}
         </button>
       </div>
 

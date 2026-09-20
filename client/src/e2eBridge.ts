@@ -41,6 +41,8 @@ import { setCapturePose } from './scene/captureCamera';
 import {
   formatPerfSweepMobile,
   runPerfSweep,
+  runStormSweep,
+  formatStormSweep,
   type PerfSweepProfile,
   type PerfSweepReport,
 } from './city/perfSweep';
@@ -463,6 +465,8 @@ export interface VibeE2EBridge {
    * has silently broken is worse than none.
    */
   runPerfSweep(profile?: PerfSweepProfile): Promise<unknown>;
+  /** The storm sweep: fires meteors and prices features inside the impact window. */
+  runStormSweep(rounds?: number, windowMs?: number): Promise<{ text: string; report: unknown }>;
 
   /** The phone-screen summary of a report, as an array of lines. */
   formatPerfSweepMobile(report: unknown): string[];
@@ -708,6 +712,10 @@ const bridge: VibeE2EBridge = {
     return 1;
   },
   runPerfSweep: (profile?: PerfSweepProfile) => runPerfSweep(profile),
+  runStormSweep: async (rounds?: number, windowMs?: number) => {
+    const report = await runStormSweep(rounds, windowMs);
+    return { text: formatStormSweep(report), report };
+  },
   formatPerfSweepMobile: (report: unknown) => formatPerfSweepMobile(report as PerfSweepReport),
   renderSettings: () => ({
     tier: qualityTier(),
