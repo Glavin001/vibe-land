@@ -390,13 +390,18 @@ fn asset_path() -> PathBuf {
     candidates[0].clone()
 }
 
+fn scene_payload() -> anyhow::Result<&'static Vec<u8>> {
+    static PAYLOAD: OnceLock<Result<Vec<u8>, String>> = OnceLock::new();
+    PAYLOAD.get_or_init(|| std::fs::read(asset_path()).map_err(|e| e.to_string()))
+        .as_ref().map_err(|e| anyhow::anyhow!("reading city scene: {e}"))
+}
+
 fn build_scene() -> anyhow::Result<CityScene> {
     let path = asset_path();
     // Binary bundles already contain the complete placement recipe. Preserve
     // instance boundaries instead of treating the whole town as one building.
-    let payload = std::fs::read(&path)
-        .with_context(|| format!("reading city scene {}", path.display()))?;
-    if payload.starts_with(b"VLSP") {
+    let payload = scene_payload()?;
+    if payload.starts_with(b"VLSP") || payload.starts_with(b"VLSW") {
         anyhow::ensure!(
             std::env::var("VIBE_CITY_GRID").map_or(true, |grid| grid == "1"),
             "VLSP town bundles already contain placements; use VIBE_CITY_GRID=1"
@@ -404,7 +409,6 @@ fn build_scene() -> anyhow::Result<CityScene> {
         return vibe_land_destruction::scene_binary::decode_city(&payload)
             .map_err(|error| anyhow::anyhow!("loading city bundle {}: {error}", path.display()));
     }
-    drop(payload);
     let pack = load_scene_pack_file(&path)
         .map_err(|error| anyhow::anyhow!("{error}"))
         .with_context(|| format!("loading city scene pack from {}", path.display()))?;
@@ -478,10 +482,12 @@ fn scene_stress_materials() -> Vec<vibe_land_destruction::scene_pack::StressLimi
         OnceLock::new();
     MATERIALS
         .get_or_init(|| {
-            load_scene_pack_file(&asset_path())
-                .ok()
-                .map(|pack| pack.materials)
-                .unwrap_or_default()
+            let parsed = scene_payload().ok().and_then(|payload| {
+                if payload.starts_with(b"VLSP") || payload.starts_with(b"VLSW") {
+                    vibe_land_destruction::scene_binary::decode(payload).ok()
+                } else { load_scene_pack_file(&asset_path()).ok() }
+            });
+            parsed.map(|pack| pack.materials).unwrap_or_default()
         })
         .clone()
 }
@@ -1239,6 +1245,23 @@ impl CityRuntime {
         );
         let backend = NativeCityDestruction::build(manifest.clone(), world, settings, sim_hz)
             .map_err(|error| anyhow::anyhow!("{error}"))?;
+        let payload = scene_payload()?;
+        if payload.starts_with(b"VLSW") {
+            use vibe_land_destruction::scene_warm;
+            let warm = scene_warm::decode(payload).map_err(|e| anyhow::anyhow!("{e}"))?;
+            let runtime = world.native_warm_runtime_path()
+                .ok().and_then(|path| std::fs::read(path).ok()).map(|bytes| scene_warm::sha256(&bytes));
+            let tolerance = std::env::var("VIBE_CITY_NATIVE_STRESS_TOLERANCE").ok()
+                .and_then(|s| s.parse::<f32>().ok()).filter(|v| *v > 0.).unwrap_or(1e-5);
+            if runtime.as_deref().map_or(false, |hash| warm.compatible(hash, [0.,-9.81,0.], 1./sim_hz as f32, tolerance)) {
+                anyhow::ensure!(manifest.structures.len() == warm.descriptor.structures.len(), "warm structure count mismatch");
+                world.native_import_warm_start(&warm.values).map_err(|e| anyhow::anyhow!("{e}"))?;
+                tracing::info!(baked_structures = warm.descriptor.structures.iter().filter(|r| r.baked).count(),
+                    complete = warm.descriptor.complete, "imported warm guesses; native convergence remains unverified until simulation");
+            } else {
+                tracing::warn!("warm cache runtime/settings mismatch or extension unavailable; starting scene cold");
+            }
+        }
         Ok(Self::from_parts(
             CityBackend::Native(backend),
             manifest,

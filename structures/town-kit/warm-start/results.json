@@ -1,0 +1,173 @@
+{
+  "scene": {
+    "buildings": 36,
+    "structures": 37,
+    "chunks": 84774,
+    "bonds": 178568,
+    "coldBytes": 7422944,
+    "warmBytes": 11715200,
+    "warmSha256": "27f8d7a3a77ec11fc3906b1a6c1c6b60b6ece025cf21d8d4496f400e13af63da"
+  },
+  "isolatedOriginalTown": {
+    "tested": 67,
+    "passed": 64,
+    "failed": [
+      "foundry-workshop-55",
+      "foundry-workshop-57",
+      "foundry-workshop-64"
+    ]
+  },
+  "cases": [
+    {
+      "firstConvergedTick": 62,
+      "firstStep": {
+        "converged": false,
+        "iterations": 16,
+        "milliseconds": 158.176358
+      },
+      "mode": "bake",
+      "passed": true,
+      "stability": {
+        "equilibriumTick": 70,
+        "idleSeconds": 30,
+        "passed": true,
+        "wallSeconds": 80.392100713,
+        "zeroSpontaneousDamage": true
+      },
+      "timing": {
+        "exclusiveGpu": false,
+        "medianMs": 34.416135,
+        "p95Ms": 42.889628,
+        "peakMs": 158.176358
+      },
+      "warmExport": {
+        "sha256": "3e38b71c37cc81a115c4f861af0e08005cbb7256a4c17cfb3ffbbc747a4b6e6f",
+        "values": 1071408
+      }
+    },
+    {
+      "firstConvergedTick": 58,
+      "firstStep": {
+        "converged": false,
+        "iterations": 16,
+        "milliseconds": 156.244532
+      },
+      "mode": "verify",
+      "passed": true,
+      "stability": {
+        "equilibriumTick": 57,
+        "idleSeconds": 30,
+        "passed": true,
+        "wallSeconds": 79.563139758,
+        "zeroSpontaneousDamage": true
+      },
+      "timing": {
+        "exclusiveGpu": false,
+        "medianMs": 34.367454,
+        "p95Ms": 40.031053,
+        "peakMs": 161.658245
+      },
+      "warmImported": true
+    },
+    {
+      "destruction": {
+        "brokenBonds": 3,
+        "otherBuildingsDamaged": false,
+        "restTicks": 677
+      },
+      "firstConvergedTick": 56,
+      "firstStep": {
+        "converged": false,
+        "iterations": 16,
+        "milliseconds": 71.615976
+      },
+      "mode": "damage",
+      "passed": true,
+      "stability": {
+        "equilibriumTick": 55,
+        "idleSeconds": 30,
+        "passed": true,
+        "wallSeconds": 36.836440788,
+        "zeroSpontaneousDamage": true
+      },
+      "timing": {
+        "exclusiveGpu": false,
+        "medianMs": 12.697255,
+        "p95Ms": 15.367166,
+        "peakMs": 71.615976
+      },
+      "warmImported": true
+    }
+  ],
+  "sceneSha256": "f8ee174156224b925cdc2a06f15cd47d06b4d4a18f49b64e122505856a1081c2",
+  "runtimeSha256": "d4284d2da42a4751e30548fb30f2ac44f7503efb75a9b40e6db017353327e36e",
+  "binarySha256": "aa14cf6df011cb2684070cf7e9e619421fcd532339d02c2262cd4f1aa29a01c3",
+  "exclusiveGpu": false,
+  "fullReport": "structures/town-kit/out/reviews/proven-36-1789960784070/review.json",
+  "codec": {
+    "passed": true,
+    "codecOnly": true,
+    "deterministic": true,
+    "crossLanguage": true,
+    "invalidCasesRejected": 12,
+    "placements": 2,
+    "rotationDegrees": 90,
+    "values": 48600
+  },
+  "sdkFrozenRegression": {
+    "simulationCompleted": true,
+    "frames": 600,
+    "chunks": 444,
+    "bonds": 896,
+    "brokenBonds": 199,
+    "frozenIdentityGatePassed": true,
+    "allStressStepsConverged": true,
+    "parserAdapter": "Private TWSTATE v3 reader skips the additional rendering-group u32. Physics assertions and golden unchanged.",
+    "goldenSha256": "25887814484a49c7db82f3a3e36f7adb408764c928a4f64236baf466871947da",
+    "fullReport": "out/reviews/warm-sdk-penetration-rendered/compatibility-quality.json"
+  },
+  "nativeRustIdParity": {
+    "passed": true,
+    "structures": 255,
+    "serialBoundaries": [
+      0,
+      1,
+      65535,
+      1048575
+    ]
+  },
+  "workshopCandidates": {
+    "tableShift15cm": {
+      "tested": 12,
+      "passed": 10,
+      "failed": [
+        "foundry-workshop-55",
+        "foundry-workshop-64"
+      ]
+    },
+    "floorWearingLayer45mm": {
+      "tested": 3,
+      "passed": 2,
+      "failed": [
+        "foundry-workshop-64"
+      ]
+    },
+    "promoted": false,
+    "workshop64Followup": {
+      "tested": 2,
+      "passed": 0,
+      "originalBudget32": {
+        "passed": false,
+        "spontaneousBrokenBonds": 16,
+        "failureTick": 1
+      },
+      "floor45mmTableShift15cm": {
+        "passed": false,
+        "awakeBodiesAtTimeout": 1,
+        "convergedAtTimeout": false
+      },
+      "fullReport": "out/reviews/workshop64-followup-1789965027633/review.json"
+    }
+  },
+  "sdkSourceCommit": "cc31f0e1"
+}

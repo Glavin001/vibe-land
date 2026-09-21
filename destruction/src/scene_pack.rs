@@ -580,7 +580,7 @@ pub fn load_scene_pack_file(path: &std::path::Path) -> Result<ScenePack, ScenePa
     let payload = std::fs::read(path).map_err(|error| {
         ScenePackError::Invalid(format!("could not read scene pack {}: {error}", path.display()))
     })?;
-    if payload.starts_with(b"VLSP") {
+    if payload.starts_with(b"VLSP") || payload.starts_with(b"VLSW") {
         return crate::scene_binary::decode(&payload);
     }
     let text = std::str::from_utf8(&payload)

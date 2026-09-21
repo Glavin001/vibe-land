@@ -100,6 +100,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             assert_eq!(manifest.structures.len(), scene.instances.len());
             println!("{}", serde_json::json!({"passed":true,"structures":counts,"chunks":chunk_ids.len(),"bonds":bond_ids.len(),"fingerprint":fingerprint(&rebuilt)}));
         }
+        Some("warm") => {
+            let bytes = std::fs::read(&args[2])?;
+            let warm = vibe_land_destruction::scene_warm::decode(&bytes)?;
+            let cold = vibe_land_destruction::scene_binary::decode(warm.scene)?;
+            compare(&cold, &load_scene_pack_file(Path::new(&args[2]))?);
+            assert!(warm.compatible(&warm.descriptor.runtime_sha256, [0.,-9.81,0.], 1./60., 1e-5));
+            assert!(!warm.compatible("wrong-runtime", [0.,-9.81,0.], 1./60., 1e-5));
+            assert!(!warm.compatible(&warm.descriptor.runtime_sha256, [0.,-1.,0.], 1./60., 1e-5));
+            assert!(!warm.compatible(&warm.descriptor.runtime_sha256, [0.,-9.81,0.], 1./30., 1e-5));
+            let raw: Vec<u8> = warm.values.iter().flat_map(|v| v.to_le_bytes()).collect();
+            println!("{}", serde_json::json!({"passed":true,"values":warm.values.len(),
+                "sha256":vibe_land_destruction::scene_warm::sha256(&raw),"structures":warm.descriptor.structures.len()}));
+        }
         Some("reject") => {
             assert!(load_scene_pack_file(Path::new(&args[2])).is_err());
             println!("rejected malformed bundle");

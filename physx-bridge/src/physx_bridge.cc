@@ -3714,6 +3714,16 @@ public:
     return native().configure(config);
   }
 
+  rust::String native_warm_runtime_path() { return native().warm_runtime_path(); }
+  rust::Vec<float> native_export_warm_start() {
+    require(!step_in_flight_, "warm export must run outside a step");
+    return native().export_warm_start();
+  }
+  void native_import_warm_start(rust::Slice<const float> values) {
+    require(!step_in_flight_, "warm import must run outside a step");
+    native().import_warm_start(values);
+  }
+
   FfiNativeStatus native_tick() {
     require(!step_in_flight_, "native_tick must run outside a step");
     return native().tick();
@@ -4210,6 +4220,14 @@ void World::native_create_destructible(
 
 FfiNativeConfigured World::native_configure(const FfiNativeConfig &config) {
   return impl_->native_configure(config);
+}
+
+rust::String World::native_warm_runtime_path() { return impl_->native_warm_runtime_path(); }
+rust::Vec<float> World::native_export_warm_start() {
+  return impl_->native_export_warm_start();
+}
+void World::native_import_warm_start(rust::Slice<const float> values) {
+  impl_->native_import_warm_start(values);
 }
 
 FfiNativeStatus World::native_tick() { return impl_->native_tick(); }

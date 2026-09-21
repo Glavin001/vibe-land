@@ -1427,6 +1427,26 @@ impl World {
             .map_err(operation_error)
     }
 
+    /// Identify the already-loaded optional warm-start runtime for cache binding.
+    #[cfg(feature = "native-destruction")]
+    pub fn native_warm_runtime_path(&mut self) -> Result<String, BridgeError> {
+        self.inner.pin_mut().native_warm_runtime_path().map_err(operation_error)
+    }
+
+    /// Export a pristine converged iterate as six physical f32 values per bond
+    /// (angular xyz, linear xyz), in native creation order. No solver flags.
+    #[cfg(feature = "native-destruction")]
+    pub fn native_export_warm_start(&mut self) -> Result<Vec<f32>, BridgeError> {
+        self.inner.pin_mut().native_export_warm_start().map_err(operation_error)
+    }
+
+    /// Seed a freshly configured scene before its first stress step. The next
+    /// step performs normal residual verification, contacts and destruction.
+    #[cfg(feature = "native-destruction")]
+    pub fn native_import_warm_start(&mut self, values: &[f32]) -> Result<(), BridgeError> {
+        self.inner.pin_mut().native_import_warm_start(values).map_err(operation_error)
+    }
+
     /// The stage's current status, consuming nothing. Use it to find out why a
     /// step was rejected, since a rejected step is never observed.
     #[cfg(feature = "native-destruction")]
@@ -2421,6 +2441,9 @@ mod ffi {
             self: Pin<&mut World>,
             config: &FfiNativeConfig,
         ) -> Result<FfiNativeConfigured>;
+        fn native_warm_runtime_path(self: Pin<&mut World>) -> Result<String>;
+        fn native_export_warm_start(self: Pin<&mut World>) -> Result<Vec<f32>>;
+        fn native_import_warm_start(self: Pin<&mut World>, values: &[f32]) -> Result<()>;
         fn native_tick(self: Pin<&mut World>) -> Result<FfiNativeStatus>;
         fn native_last_status(self: &World) -> Result<FfiNativeStatus>;
         fn native_fire_round(self: Pin<&mut World>, desc: &FfiRoundDesc) -> Result<u32>;

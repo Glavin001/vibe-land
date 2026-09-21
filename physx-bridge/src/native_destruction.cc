@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <numeric>
+#include <dlfcn.h>
 
 using namespace physx;
 
@@ -811,6 +812,46 @@ void NativeDestruction::State::release_rounds() {
     }
   }
   rounds.clear();
+}
+
+// Resolve only the already loaded runtime. Older SDKs still support cold
+// scenes; requesting an unsupported warm extension fails explicitly.
+static void* warm_entry(const char* name) {
+  void* handle = dlopen("libPhysXDestructionGpuRuntime_64.so", RTLD_NOW | RTLD_NOLOAD);
+  native_require(handle != nullptr, "native warm-start runtime is not loaded");
+  void* entry = dlsym(handle, name);
+  dlclose(handle);
+  native_require(entry != nullptr, "loaded SDK does not support warm-start v1");
+  return entry;
+}
+rust::String NativeDestruction::warm_runtime_path() {
+  void* entry = warm_entry("PxDestructionImportWarmStartV1");
+  Dl_info info{};
+  native_require(dladdr(entry, &info) != 0 && info.dli_fname != nullptr,
+                 "cannot identify loaded warm-start runtime");
+  return rust::String(info.dli_fname);
+}
+rust::Vec<float> NativeDestruction::export_warm_start() {
+  auto& s = *state_;
+  native_require(s.configured && s.bonds.size() <= UINT32_MAX / 6,
+                 "warm export requires configured bonds");
+  rust::Vec<float> values; values.reserve(s.bonds.size()*6);
+  for (size_t i=0;i<s.bonds.size()*6;++i) values.push_back(0);
+  using Fn = bool (*)(PxDestructionScene*, float*, PxU32);
+  auto fn = reinterpret_cast<Fn>(warm_entry("PxDestructionExportWarmStartV1"));
+  native_require(fn(&s.stage(), values.data(), static_cast<PxU32>(values.size())),
+                 "warm export requires observed pristine convergence");
+  return values;
+}
+void NativeDestruction::import_warm_start(rust::Slice<const float> values) {
+  auto& s = *state_;
+  native_require(s.configured && s.bonds.size() <= UINT32_MAX / 6
+                 && values.size() == s.bonds.size()*6, "warm bond count mismatch");
+  for (float v : values) native_require(std::isfinite(v), "non-finite warm value");
+  using Fn = bool (*)(PxDestructionScene*, const float*, PxU32);
+  auto fn = reinterpret_cast<Fn>(warm_entry("PxDestructionImportWarmStartV1"));
+  native_require(fn(&s.stage(), values.data(), static_cast<PxU32>(values.size())),
+                 "warm import requires a fresh configured native scene");
 }
 
 } // namespace vibe_land::physx_bridge

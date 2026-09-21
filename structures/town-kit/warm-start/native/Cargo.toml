@@ -1,0 +1,12 @@
+[package]
+name = "town-kit-warm-scene-review"
+version = "0.1.0"
+edition = "2021"
+publish = false
+[workspace]
+[dependencies]
+vibe-land-destruction = { path = "../../../../destruction", features = ["native-destruction"] }
+vibe-land-physx-bridge = { path = "../../../../physx-bridge", features = ["native-destruction"] }
+serde_json = "1"
+[profile.release]
+opt-level = 2

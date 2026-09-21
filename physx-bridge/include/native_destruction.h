@@ -79,6 +79,10 @@ public:
   /// scene once already: shape and body GPU identities do not exist until a
   /// completed simulate/fetchResults, and they are what the descriptor binds.
   FfiNativeConfigured configure(const FfiNativeConfig &config);
+  /// Physical angular xyz / linear xyz per authored bond. Initial guesses only.
+  rust::String warm_runtime_path();
+  rust::Vec<float> export_warm_start();
+  void import_warm_start(rust::Slice<const float> values);
 
   /// Observe the step that just completed. Idempotent within a frame.
   ///

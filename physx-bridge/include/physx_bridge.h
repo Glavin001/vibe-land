@@ -143,6 +143,9 @@ public:
                                   std::uint32_t collision_group,
                                   std::uint32_t collision_mask);
   FfiNativeConfigured native_configure(const FfiNativeConfig &config);
+  rust::String native_warm_runtime_path();
+  rust::Vec<float> native_export_warm_start();
+  void native_import_warm_start(rust::Slice<const float> values);
   FfiNativeStatus native_tick();
   FfiNativeStatus native_last_status() const;
   std::uint32_t native_fire_round(const FfiRoundDesc &desc);

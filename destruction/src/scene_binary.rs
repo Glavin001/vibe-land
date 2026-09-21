@@ -142,6 +142,7 @@ fn mapped(slot: u32, i: &Instance) -> R<u32> {
         .ok_or_else(|| bad("invalid material slot"))
 }
 pub fn decode(bytes: &[u8]) -> R<ScenePack> {
+    if bytes.starts_with(b"VLSW") { return decode(crate::scene_warm::decode(bytes)?.scene); }
     if bytes.len() < 64 || bytes.get(..4) != Some(b"VLSP") {
         return Err(bad("missing header"));
     }
@@ -361,6 +362,7 @@ pub fn decode(bytes: &[u8]) -> R<ScenePack> {
 /// Preserve authored placement boundaries when loading a complete town:
 /// each placement becomes one runtime structure, with independent local IDs.
 pub fn decode_city(bytes: &[u8]) -> R<crate::city::CityScene> {
+    if bytes.starts_with(b"VLSW") { return decode_city(crate::scene_warm::decode(bytes)?.scene); }
     use crate::city::{pack_height_m, BuildingInstance, CityScene, CitySceneDesc};
     use crate::ids::{MAX_BONDS_PER_STRUCTURE, MAX_NODES_PER_STRUCTURE, MAX_STRUCTURES};
     use crate::variants::BuildingVariant;

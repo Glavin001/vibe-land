@@ -93,12 +93,30 @@ fn run(pack:&Value, meta:&Value, mode:&str, report:&mut Value, rec:&mut Recorder
  world.step()?;
  let native_config=|iterations| NativeConfig {max_iterations:iterations,tolerance:1e-5,warm_start:true,damage_rate:2.,bend_gain_max:3.,fibre_bending:true,reserved_contact_pairs:(nodes.len()*6).max(4096) as u32,preserve_unchanged_contact_pairs:flag("TOWN_KIT_PRESERVE_CONTACTS"),gpu_island_repair:flag("TOWN_KIT_GPU_ISLAND_REPAIR"),verdict_sample_ticks:1};
  world.native_configure(native_config(std::env::var("TOWN_KIT_ITERATIONS").ok().and_then(|x|x.parse().ok()).unwrap_or(16)))?;
+ if std::env::var_os("TOWN_KIT_WARM_IN").is_some() || std::env::var_os("TOWN_KIT_WARM_OUT").is_some() {
+  let path=world.native_warm_runtime_path()?;
+  report["warmRuntime"]=json!({"sha256":format!("{:x}",Sha256::digest(fs::read(&path)?)),"path":path});
+ }
+ if let Ok(file)=std::env::var("TOWN_KIT_WARM_IN") {
+  let bytes=fs::read(&file)?;
+  if bytes.len()!=bonds.len()*24{return Err("warm input length does not match bonds".into());}
+  let values:Vec<f32>=bytes.chunks_exact(4).map(|b|f32::from_le_bytes(b.try_into().unwrap())).collect();
+  // Rejections must leave the initial state usable.
+  if world.native_import_warm_start(&values[..values.len()-1]).is_ok(){return Err("short warm input accepted".into());}
+  let mut bad=values.clone();bad[0]=f32::NAN;
+  if world.native_import_warm_start(&bad).is_ok(){return Err("non-finite warm input accepted".into());}
+  world.native_import_warm_start(&values)?;
+  if world.native_import_warm_start(&values).is_ok(){return Err("duplicate warm import accepted".into());}
+  report["warmStart"]=json!({"imported":true,"values":values.len(),"sha256":format!("{:x}",Sha256::digest(&bytes)),"invalidInputsRejected":true});
+ }
  let mut tick=0u32;let mut quiet=0;let mut idle=0;let mut timings=vec![];let mut all_broken=HashSet::new();
  // Rest is a measured state. 3600 ticks bounds failure; 1800 subsequent ticks
  // prove 30 simulated seconds of intact equilibrium, including loose furniture.
  loop {
   tick+=1;let started=Instant::now();if let Err(e)=world.step(){report["nativeFailure"]=json!(format!("{:?}",world.native_last_status()));return Err(e.into());}let st=world.native_tick()?;timings.push(started.elapsed().as_secs_f64()*1000.);
   report["lastStatus"]=json!({"tick":tick,"frame":st.frame,"error":st.error,"converged":st.converged,"observed":st.observed,"degraded":st.degraded,"iterations":st.iterations});
+  if tick==1 {report["firstStep"]=report["lastStatus"].clone();}
+  if st.converged&&report["firstConvergedTick"].is_null(){report["firstConvergedTick"]=json!(tick);}
   if st.error!=0||!st.observed||st.degraded||st.missed_frames!=0 { return Err(format!("rejected/unobserved native step: {}",report["lastStatus"]).into()); }
   let broken=world.native_take_broken_bonds()?;
   if !broken.is_empty()||st.broken_bonds>0||st.crushed_chunks>0||st.post_correction_broken_bonds>0 {
@@ -118,6 +136,14 @@ fn run(pack:&Value, meta:&Value, mode:&str, report:&mut Value, rec:&mut Recorder
   if tick>=5400 {return Err("failed to reach and retain intact equilibrium within 90 seconds".into());}
  }
  report["stability"]=json!({"passed":true,"gravity":9.81,"idleSeconds":30,"equilibriumTick":tick-1800,"brokenBonds":0,"crushedChunks":0});
+ if let Ok(file)=std::env::var("TOWN_KIT_WARM_OUT") {
+  let values=world.native_export_warm_start()?;
+  if values.len()!=bonds.len()*6||values.iter().any(|v|!v.is_finite()){return Err("invalid native warm export".into());}
+  let bytes:Vec<u8>=values.iter().flat_map(|v|v.to_le_bytes()).collect();
+  fs::write(&file,&bytes)?;
+  if world.native_import_warm_start(&values).is_ok(){return Err("late warm import accepted".into());}
+  report["warmExport"]=json!({"file":file,"sha256":format!("{:x}",Sha256::digest(&bytes)),"values":values.len(),"lateImportRejected":true});
+ }
  if mode=="traverse" {
   let route=meta["route"].as_array().ok_or("missing traversal route")?;
   let start=av(&route[0]["at"]);let id=0x20000001;

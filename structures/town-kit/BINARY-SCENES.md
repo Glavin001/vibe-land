@@ -162,3 +162,10 @@ V1 reuse is at complete-template granularity. Furniture inside two different
 building templates is still baked into each definition. A future hierarchical
 component format could remove more duplication, without changing these authoring
 recipes; that optimization is not claimed here.
+
+## Baked stress initialization
+
+The optional [VLSW workflow](warm-start/README.md) adds scene-bound physical
+bond-force guesses while embedding this VLSP unchanged. It includes the selected
+36-building scene, native bake/reload reviews and explicit cache rejection.
+Saved guesses never bypass native convergence or destruction checks.

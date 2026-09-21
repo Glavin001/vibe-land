@@ -35,6 +35,7 @@ pub mod packet;
 pub mod quant;
 pub mod scene_pack;
 pub mod scene_binary;
+pub mod scene_warm;
 pub mod scheduler;
 pub mod send_audit;
 pub mod settle;
