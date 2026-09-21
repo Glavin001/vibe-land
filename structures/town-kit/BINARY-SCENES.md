@@ -52,12 +52,17 @@ VIBE_CITY_DESTRUCTION=native
 
 The server recognizes a binary town as an already composed scene, with no floor
 truncation or additional grid replication (`VIBE_CITY_GRID=1`). Native chunks have
-16-bit local indices, so complete placements are grouped into bounded structures
-without cutting buildings or introducing bonds between placements. The current
-town uses three structures: 65,502 / 64,105 / 59,315 chunks. Material, collider,
-piece and bond data remain exact; structure-local endpoints are remapped and all
-network IDs remain distinct. A placement exceeding the per-structure limits is
-rejected. The existing VLCM network format remains unchanged.
+16-bit local indices. **Every placement is its own runtime structure**: 67
+buildings plus two ground/paving assemblies in the current town. Buildings are
+never batched to fill the chunk limit. Material, collider, piece and bond data
+remain exact; structure-local endpoints are remapped and all network IDs remain
+distinct. A single placement exceeding the per-structure limits is rejected.
+
+The body ID allocation now permits 255 structures, with 20 bits for each
+structure's monotonic body serial (1,048,576 values). Exhaustion fails explicitly;
+IDs are never wrapped or reused. Client and server must be rebuilt together for
+this allocation change. The VLCM packet layout is unchanged. The older deployed
+loader's three capacity-based groups are superseded by this building boundary.
 
 Binary generation itself does not deploy anything or qualify the town's outstanding
 physics failures. The loader expands templates into the existing ScenePack API;

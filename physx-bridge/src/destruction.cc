@@ -26,7 +26,7 @@ using namespace Nv::Blast;
 
 constexpr std::uint32_t kNsChunk = 0x8000'0000u;
 
-/// Must match destruction/src/ids.rs body_entity: 6 bits of structure, 22 of
+/// Must match destruction/src/ids.rs body_entity: 8 bits of structure, 20 of
 /// island serial. The serial is monotonic and never reused, so it is consumed
 /// by cumulative body creation and a 16-bit field exhausts in a long session.
 /// Reserved for a structure's intact kinematic support actor.
@@ -58,7 +58,9 @@ inline physx::PxVec3 com_world_position(const ExtStressPhysXBodySnapshot &body) 
 }
 
 std::uint32_t pack_body_entity(std::uint32_t structure_id, std::uint32_t serial) {
-  return kNsChunk | (structure_id << 22) | (serial & 0x003F'FFFFu);
+  if (structure_id >= 255u || serial >= (1u << 20))
+    throw std::runtime_error("destruction body identity space exhausted");
+  return kNsChunk | (structure_id << 20) | serial;
 }
 
 // Field widths must mirror destruction/src/ids.rs exactly: 16 bits of node,
@@ -1686,19 +1688,11 @@ void StressExecutor::run(std::size_t count,
 }
 
 std::uint32_t DestructionManager::next_serial(Slot &slot) {
-  if (slot.next_island_serial >= 0x003F'FFFFu) {
+  if (slot.next_island_serial >= (1u << 20)) {
     ++serial_wraps_;
-    std::fprintf(stderr,
-                 "[destruction] structure %u exhausted its 16-bit island serial "
-                 "space (wrap #%llu): ids are about to be reused while still "
-                 "live, which aliases distinct bodies onto one network id\n",
-                 slot.structure_id,
-                 static_cast<unsigned long long>(serial_wraps_));
+    throw std::runtime_error("destruction island serial space exhausted");
   }
   const std::uint32_t serial = slot.next_island_serial++;
-  if (slot.next_island_serial >= 0x0040'0000u) {
-    slot.next_island_serial = 1; // 0 is the kinematic-support sentinel
-  }
   if (serial > max_island_serial_) {
     max_island_serial_ = serial;
   }
@@ -2700,9 +2694,9 @@ DestructionManager::chunk_body_snapshots() const {
 
 void DestructionManager::sleep_chunk_body(std::uint32_t entity_id) {
   require((entity_id & 0xf000'0000u) == kNsChunk, "not a chunk entity");
-  // Must mirror pack_body_entity: 6 bits structure, 22 bits serial.
-  const std::uint32_t structure_id = (entity_id & 0x0fff'ffffu) >> 22;
-  const std::uint32_t serial = entity_id & 0x003f'ffffu;
+  // Must mirror pack_body_entity: 8 bits structure, 20 bits serial.
+  const std::uint32_t structure_id = (entity_id & 0x0fff'ffffu) >> 20;
+  const std::uint32_t serial = entity_id & 0x000f'ffffu;
   Slot *slot = find_slot(structure_id);
   require(slot != nullptr && slot->dest != nullptr, "unknown structure");
   std::vector<ExtStressPhysXBodySnapshot> bodies(slot->node_descs.size() + 64);
@@ -2726,14 +2720,14 @@ void DestructionManager::sleep_chunk_body(std::uint32_t entity_id) {
 namespace {
 
 /// Unpack a chunk body entity. Must mirror pack_body_entity and
-/// destruction/src/ids.rs: 6 bits of structure, 22 of island serial.
+/// destruction/src/ids.rs: 8 bits of structure, 20 of island serial.
 inline bool split_body_entity(std::uint32_t entity_id, std::uint32_t &structure_id,
                               std::uint32_t &serial) {
   if ((entity_id & 0xf000'0000u) != kNsChunk) {
     return false;
   }
-  structure_id = (entity_id & 0x0fff'ffffu) >> 22;
-  serial = entity_id & 0x003f'ffffu;
+  structure_id = (entity_id & 0x0fff'ffffu) >> 20;
+  serial = entity_id & 0x000f'ffffu;
   return true;
 }
 

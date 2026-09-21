@@ -289,7 +289,7 @@ fn every_body_is_announced_once_and_keeps_its_identity() {
     for (structure, serial) in [(0u32, 0u32), (0, 1), (3, 17), (63, 4_194_303)] {
         assert_eq!(
             vibe_land_physx_bridge::native_entity_id(structure, serial),
-            0x8000_0000 | (structure << 22) | serial,
+            0x8000_0000 | (structure << 20) | serial,
             "entity id layout drifted from ids.rs"
         );
     }

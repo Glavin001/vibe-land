@@ -1173,7 +1173,7 @@ export function CityChunksLayer({
       const debugColor = debugCode >= 0 ? bodyDebugColorForCode(debugCode) : null;
       // Settled rubble is dimmed, and live debris very slightly warmed, as the
       // per-chunk colour writes used to do.
-      const bodyIsSupport = (key & 0x3f_ffff) === 0;
+      const bodyIsSupport = (key & 0x0f_ffff) === 0;
       writeBodyPose(
         state,
         body,

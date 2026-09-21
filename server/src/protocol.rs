@@ -402,7 +402,7 @@ fn decode_resync_structures(buf: &mut impl Buf) -> Result<Vec<u32>> {
         return Ok(Vec::new());
     }
     let count = usize::from(buf.get_u8());
-    ensure!(count <= 64, "oversized resync structure list");
+    // The u8 count supports all 255 independently authored structures.
     ensure!(buf.remaining() >= count * 4, "short resync structure list");
     Ok((0..count).map(|_| buf.get_u32_le()).collect())
 }

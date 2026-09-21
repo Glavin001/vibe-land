@@ -5,18 +5,14 @@
 //!
 //! - chunk id     = (structure_id << 16) | node_index      (≤ 65536 nodes/structure)
 //! - bond id      = (structure_id << 20) | bond_index      (≤ 1048576 bonds/structure)
-//! - body entity  = NS_CHUNK | (structure_id << 22) | island_serial
+//! - body entity  = NS_CHUNK | (structure_id << 20) | island_serial
 //!
 //! Island serials are monotonic per structure and never reused within a match,
 //! so retired ids stay dead. Serial 0 is reserved for the intact support actor.
 //!
-//! Never reused means the serial space is consumed by *cumulative* body
-//! creation, not by how many bodies are live. At 16 bits a long session with
-//! continuous destruction can exhaust it, and past the wrap every new body
-//! aliases onto a live one -- distinct bodies sharing a network id, so the
-//! client draws both their chunk sets with a single pose. Hence 22 bits
-//! (4.19M) for the serial and 6 for the structure: we place 16 structures and
-//! will never place 64, whereas cumulative serials are genuinely unbounded.
+//! Body IDs reserve eight bits for independently authored structures and twenty
+//! for monotonic island serials. The current hash/repair packet count permits
+//! 255 structures. Serial exhaustion fails explicitly rather than reusing IDs.
 
 pub const NS_CHUNK: u32 = 0x8000_0000;
 pub const ID_MASK: u32 = 0x0fff_ffff;
@@ -40,9 +36,9 @@ pub const MAX_NODES_PER_STRUCTURE: u32 = 1 << 16;
 /// -- the index would have carried into the structure id and come back masked,
 /// silently renaming which bond a break referred to.
 pub const MAX_BONDS_PER_STRUCTURE: u32 = 1 << 20;
-pub const MAX_ISLAND_SERIALS: u32 = 1 << 22;
-/// Body entities pack the structure into 28 - 22 = 6 bits.
-pub const MAX_STRUCTURES: u32 = 1 << 6;
+pub const MAX_ISLAND_SERIALS: u32 = 1 << 20;
+/// Eight structure bits; reserve the last value to fit a u8 hash-list count.
+pub const MAX_STRUCTURES: u32 = 255;
 
 pub const SUPPORT_ISLAND_SERIAL: u32 = 0;
 
@@ -53,7 +49,10 @@ pub fn chunk_id(structure_id: u32, node_index: u32) -> u32 {
     // that fails fast and loudly. As debug_asserts they vanished from the
     // release build and the overflow instead corrupted island membership
     // silently for an entire match -- far worse than a crash on load.
-    assert!(structure_id < MAX_STRUCTURES, "structure {structure_id} exceeds id space");
+    assert!(
+        structure_id < MAX_STRUCTURES,
+        "structure {structure_id} exceeds id space"
+    );
     assert!(
         node_index < MAX_NODES_PER_STRUCTURE,
         "node {node_index} exceeds {MAX_NODES_PER_STRUCTURE} nodes/structure",
@@ -69,7 +68,10 @@ pub fn chunk_id_parts(chunk_id: u32) -> (u32, u32) {
 #[inline]
 pub fn bond_id(structure_id: u32, bond_index: u32) -> u32 {
     // Hard, for the same reason as chunk_id: silent overflow outlives a match.
-    assert!(structure_id < MAX_STRUCTURES, "structure {structure_id} exceeds id space");
+    assert!(
+        structure_id < MAX_STRUCTURES,
+        "structure {structure_id} exceeds id space"
+    );
     assert!(
         bond_index < MAX_BONDS_PER_STRUCTURE,
         "bond {bond_index} exceeds {MAX_BONDS_PER_STRUCTURE} bonds/structure",
@@ -84,9 +86,12 @@ pub fn bond_id_parts(bond_id: u32) -> (u32, u32) {
 
 #[inline]
 pub fn body_entity(structure_id: u32, island_serial: u32) -> u32 {
-    debug_assert!(structure_id < MAX_STRUCTURES);
-    debug_assert!(island_serial < MAX_ISLAND_SERIALS);
-    NS_CHUNK | (structure_id << 22) | island_serial
+    assert!(structure_id < MAX_STRUCTURES, "structure exceeds id space");
+    assert!(
+        island_serial < MAX_ISLAND_SERIALS,
+        "island serial space exhausted"
+    );
+    NS_CHUNK | (structure_id << 20) | island_serial
 }
 
 #[inline]
@@ -97,12 +102,31 @@ pub fn is_chunk_entity(entity: u32) -> bool {
 #[inline]
 pub fn body_entity_parts(entity: u32) -> (u32, u32) {
     debug_assert!(is_chunk_entity(entity));
-    ((entity & ID_MASK) >> 22, entity & (MAX_ISLAND_SERIALS - 1))
+    ((entity & ID_MASK) >> 20, entity & (MAX_ISLAND_SERIALS - 1))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn independent_town_body_ids_round_trip() {
+        let mut ids = std::collections::HashSet::new();
+        for structure in 0..MAX_STRUCTURES {
+            for serial in [0, 1, 65535, 65536, MAX_ISLAND_SERIALS - 1] {
+                let id = body_entity(structure, serial);
+                assert!(ids.insert(id));
+                assert_eq!(body_entity_parts(id), (structure, serial));
+                assert!(is_chunk_entity(id));
+            }
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "exhausted")]
+    fn body_serial_never_wraps() {
+        body_entity(1, MAX_ISLAND_SERIALS);
+    }
 
     #[test]
     fn chunk_ids_round_trip() {
@@ -122,7 +146,13 @@ mod tests {
         assert!(is_chunk_entity(entity));
         assert_eq!(body_entity_parts(entity), (15, 42));
         // Distinct from the existing NS_* namespaces (top nibble 0x1,2,4,6,7).
-        for ns in [0x1000_0000_u32, 0x2000_0000, 0x4000_0000, 0x6000_0000, 0x7000_0000] {
+        for ns in [
+            0x1000_0000_u32,
+            0x2000_0000,
+            0x4000_0000,
+            0x6000_0000,
+            0x7000_0000,
+        ] {
             assert!(!is_chunk_entity(ns | 42));
         }
     }
@@ -148,9 +178,21 @@ mod tests {
     /// there. Silent in release, because the guard was a debug_assert.
     #[test]
     fn district_sized_structures_round_trip() {
-        for node in [0, 1, 4_095, 4_096, 9_594, 15_917, MAX_NODES_PER_STRUCTURE - 1] {
+        for node in [
+            0,
+            1,
+            4_095,
+            4_096,
+            9_594,
+            15_917,
+            MAX_NODES_PER_STRUCTURE - 1,
+        ] {
             let id = chunk_id(0, node);
-            assert_eq!(chunk_id_parts(id), (0, node), "node {node} did not round-trip");
+            assert_eq!(
+                chunk_id_parts(id),
+                (0, node),
+                "node {node} did not round-trip"
+            );
         }
         // And the node index must never leak into the structure field.
         for structure in [0, 1, 5, MAX_STRUCTURES - 1] {
@@ -174,7 +216,11 @@ mod tests {
         }
         for bond in [65_535, 65_536, 74_542, MAX_BONDS_PER_STRUCTURE - 1] {
             assert_eq!(bond_id_parts(bond_id(0, bond)), (0, bond), "bond {bond}");
-            assert_eq!(bond_id_parts(bond_id(5, bond)), (5, bond), "bond {bond} @ structure 5");
+            assert_eq!(
+                bond_id_parts(bond_id(5, bond)),
+                (5, bond),
+                "bond {bond} @ structure 5"
+            );
         }
     }
 

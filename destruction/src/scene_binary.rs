@@ -358,9 +358,8 @@ pub fn decode(bytes: &[u8]) -> R<ScenePack> {
     Ok(pack)
 }
 
-/// Preserve authored placement boundaries when loading a complete town. The
-/// network has a bounded structure namespace, so adjacent placements are packed
-/// into batches without ever splitting a building or adding inter-instance bonds.
+/// Preserve authored placement boundaries when loading a complete town:
+/// each placement becomes one runtime structure, with independent local IDs.
 pub fn decode_city(bytes: &[u8]) -> R<crate::city::CityScene> {
     use crate::city::{pack_height_m, BuildingInstance, CityScene, CitySceneDesc};
     use crate::ids::{MAX_BONDS_PER_STRUCTURE, MAX_NODES_PER_STRUCTURE, MAX_STRUCTURES};
@@ -371,7 +370,7 @@ pub fn decode_city(bytes: &[u8]) -> R<crate::city::CityScene> {
     let header: Header =
         serde_json::from_slice(&bytes[64..64 + len]).map_err(|e| bad(format!("header: {e}")))?;
     let mut ranges = Vec::new();
-    let (mut ns, mut bs, mut ne, mut be) = (0usize, 0usize, 0usize, 0usize);
+    let (mut ns, mut bs) = (0usize, 0usize);
     for instance in &header.instances {
         let template = &header.templates[instance.template];
         if template.node_count == 0
@@ -380,18 +379,11 @@ pub fn decode_city(bytes: &[u8]) -> R<crate::city::CityScene> {
         {
             return Err(bad("one placement exceeds runtime structure limits"));
         }
-        if ne - ns + template.node_count > MAX_NODES_PER_STRUCTURE as usize
-            || be - bs + template.bond_count > MAX_BONDS_PER_STRUCTURE as usize
-        {
-            ranges.push((ns, ne, bs, be));
-            ns = ne;
-            bs = be;
-        }
-        ne += template.node_count;
-        be += template.bond_count;
-    }
-    if ne > ns {
+        let ne = ns + template.node_count;
+        let be = bs + template.bond_count;
         ranges.push((ns, ne, bs, be));
+        ns = ne;
+        bs = be;
     }
     if ranges.is_empty() || ranges.len() > MAX_STRUCTURES as usize {
         return Err(bad("scene exceeds runtime structure namespace"));

@@ -65,11 +65,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let mut rebuilt = original.clone();
             rebuilt.nodes.clear(); rebuilt.bonds.clear(); rebuilt.node_sizes.clear();
             rebuilt.node_colliders.clear(); rebuilt.node_types.clear(); rebuilt.node_pieces.clear();
+            let descriptor_len = u32::from_le_bytes(bytes[8..12].try_into().unwrap()) as usize;
+            let descriptor: serde_json::Value = serde_json::from_slice(&bytes[64..64+descriptor_len])?;
+            assert_eq!(scene.instances.len(), descriptor["instances"].as_array().unwrap().len(), "one runtime structure per placement");
+            let mut body_ids = std::collections::HashSet::new();
             let mut chunk_ids = std::collections::HashSet::new();
             let mut bond_ids = std::collections::HashSet::new();
             let mut counts = Vec::new();
             for instance in &scene.instances {
                 let p = &scene.variant_for(instance).pack;
+                for serial in [0, 1, vibe_land_destruction::ids::MAX_ISLAND_SERIALS - 1] {
+                    let entity = vibe_land_destruction::ids::body_entity(instance.structure_id, serial);
+                    assert!(body_ids.insert(entity));
+                    assert_eq!(vibe_land_destruction::ids::body_entity_parts(entity), (instance.structure_id, serial));
+                }
                 let base = rebuilt.nodes.len() as u32;
                 counts.push((p.nodes.len(), p.bonds.len()));
                 for n in 0..p.nodes.len() {

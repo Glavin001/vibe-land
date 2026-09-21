@@ -348,7 +348,7 @@ impl Args {
             bail!("--timings-out and --packets-out both select a timing destination; use one");
         }
         if grid == 0 || grid > 8 {
-            // 6 structure-id bits; grid 8 is 64 structures, the packing limit.
+            // The body-ID and hash-list limits apply to every trace.
             bail!(
                 "--grid must be 1..=8 ({} structures max)",
                 ids::MAX_STRUCTURES

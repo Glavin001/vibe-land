@@ -111,12 +111,12 @@ constexpr float kReferenceModulusPa = 30.0e9f;
 
 std::uint32_t NativeDestruction::entity_id(std::uint32_t structure_id,
                                            std::uint32_t island_serial) {
-  // Mirrors ids.rs: NS_CHUNK | structure << 22 | serial.
-  native_require(structure_id < (1u << 6),
-                 "structure id exceeds the 6-bit network field");
-  native_require(island_serial < (1u << 22),
+  // Mirrors ids.rs: NS_CHUNK | structure << 20 | serial.
+  native_require(structure_id < 255u,
+                 "structure id exceeds the 8-bit network field (255 structures)");
+  native_require(island_serial < (1u << 20),
                  "island serial space exhausted for this structure");
-  return 0x80000000u | (structure_id << 22) | island_serial;
+  return 0x80000000u | (structure_id << 20) | island_serial;
 }
 
 NativeDestruction::NativeDestruction(PxPhysics &physics, PxScene &scene,
@@ -195,7 +195,7 @@ void NativeDestruction::create_destructible(
   native_require(!s.configured,
                  "the native topology is immutable once configured; rebuild "
                  "the city to change it");
-  native_require(structure_id < (1u << 6) && s.next_serial.count(structure_id) == 0,
+  native_require(structure_id < 255u && s.next_serial.count(structure_id) == 0,
                  "duplicate or out-of-range structure id");
   native_require(!nodes.empty() && nodes.size() <= 65536,
                  "a structure must have 1..65536 authored nodes");
