@@ -360,8 +360,12 @@ describe('snapshot decode', () => {
   });
 });
 
-function buildSnapshotV2Binary(): Uint8Array {
-  const size = 1 + 4 + 2 + 4 + 4 + 4 + 1 + 1 + 1 + 1 + 12 + 19 + 20 + 30;
+/**
+ * Header (24), the full 33-byte self state, one remote player, one relative
+ * sphere, no boxes, one vehicle, and `absSpheres` absolute projectiles.
+ */
+function buildSnapshotV2Binary(absSpheres = 0): Uint8Array {
+  const size = 1 + 4 + 2 + 4 + 4 + 4 + 5 + 33 + 19 + 20 + 30 + absSpheres * 26;
   const buf = new Uint8Array(size);
   const view = new DataView(buf.buffer);
   let o = 0;
@@ -376,7 +380,9 @@ function buildSnapshotV2Binary(): Uint8Array {
   view.setUint8(o++, 1);
   view.setUint8(o++, 0);
   view.setUint8(o++, 1);
+  view.setUint8(o++, absSpheres);
 
+  // Self state: velocity, yaw, pitch, hp, flags, then the support block.
   view.setInt16(o, 100, true); o += 2;
   view.setInt16(o, 0, true); o += 2;
   view.setInt16(o, 0, true); o += 2;
@@ -384,6 +390,17 @@ function buildSnapshotV2Binary(): Uint8Array {
   view.setInt16(o, 0, true); o += 2;
   view.setUint8(o++, 100);
   view.setUint8(o++, 1);
+  view.setUint16(o, 0x8003, true); o += 2;
+  view.setInt16(o, 400, true); o += 2;
+  view.setInt16(o, -200, true); o += 2;
+  view.setInt16(o, 100, true); o += 2;
+  view.setInt16(o, 150, true); o += 2;
+  view.setInt16(o, 0, true); o += 2;
+  view.setInt16(o, -50, true); o += 2;
+  view.setUint8(o++, 1);
+  view.setInt16(o, 250, true); o += 2;
+  view.setInt16(o, -500, true); o += 2;
+  view.setInt16(o, 750, true); o += 2;
 
   view.setUint8(o++, 2);
   view.setInt16(o, 2000, true); o += 2;
@@ -426,6 +443,20 @@ function buildSnapshotV2Binary(): Uint8Array {
   view.setInt16(o, 0, true); o += 2;
   view.setInt16(o, 0, true); o += 2;
 
+  for (let i = 0; i < absSpheres; i += 1) {
+    // A meteor 300 m from the anchor, falling at 130 m/s.
+    view.setUint16(o, 40 + i, true); o += 2;
+    view.setInt32(o, 300_000, true); o += 4;
+    view.setInt32(o, 195_000, true); o += 4;
+    view.setInt32(o, -120_500, true); o += 4;
+    view.setInt16(o, -13_000, true); o += 2;
+    view.setInt16(o, -8_000, true); o += 2;
+    view.setInt16(o, 500, true); o += 2;
+    view.setInt16(o, 10, true); o += 2;
+    view.setInt16(o, -20, true); o += 2;
+    view.setInt16(o, 30, true); o += 2;
+  }
+
   return buf;
 }
 
@@ -443,29 +474,31 @@ describe('snapshot V2 decode', () => {
     expect(packet.vehicleStates).toHaveLength(1);
     expect(packet.vehicleStates[0].handle).toBe(3);
     expect(packet.vehicleStates[0].driverHandle).toBe(2);
+    expect(packet.absSphereStates).toEqual([]);
+  });
+
+  it('decodes the absolute projectile section after the vehicles', () => {
+    const packet = decodeServerDatagramPacket(buildSnapshotV2Binary(2));
+    expect(packet.type).toBe('snapshotV2');
+    expect(packet.vehicleStates).toHaveLength(1);
+    expect(packet.absSphereStates).toHaveLength(2);
+    expect(packet.absSphereStates[0]).toEqual({
+      handle: 40,
+      pxMm: 300_000,
+      pyMm: 195_000,
+      pzMm: -120_500,
+      vxCms: -13_000,
+      vyCms: -8_000,
+      vzCms: 500,
+      wxMrads: 10,
+      wyMrads: -20,
+      wzMrads: 30,
+    });
+    expect(packet.absSphereStates[1].handle).toBe(41);
   });
 
   it('decodes authoritative moving-support metadata', () => {
-    const legacy = buildSnapshotV2Binary();
-    const selfStateEnd = 35;
-    const binary = new Uint8Array(legacy.length + 21);
-    binary.set(legacy.subarray(0, selfStateEnd), 0);
-    binary.set(legacy.subarray(selfStateEnd), selfStateEnd + 21);
-    const view = new DataView(binary.buffer);
-    let o = selfStateEnd;
-    view.setUint16(o, 0x8003, true); o += 2;
-    view.setInt16(o, 400, true); o += 2;
-    view.setInt16(o, -200, true); o += 2;
-    view.setInt16(o, 100, true); o += 2;
-    view.setInt16(o, 150, true); o += 2;
-    view.setInt16(o, 0, true); o += 2;
-    view.setInt16(o, -50, true); o += 2;
-    view.setUint8(o++, 1);
-    view.setInt16(o, 250, true); o += 2;
-    view.setInt16(o, -500, true); o += 2;
-    view.setInt16(o, 750, true); o += 2;
-
-    const packet = decodeServerDatagramPacket(binary);
+    const packet = decodeServerDatagramPacket(buildSnapshotV2Binary());
     expect(packet.type).toBe('snapshotV2');
     expect(packet.selfState.supportHandle).toBe(0x8003);
     expect(packet.selfState.supportLocalPosition).toEqual([1, -0.5, 0.25]);
@@ -488,7 +521,7 @@ function buildPlayerRosterBinary(): Uint8Array {
 }
 
 function buildDynamicBodyMetaBinary(): Uint8Array {
-  const size = 1 + 2 + 13;
+  const size = 1 + 2 + 14;
   const buf = new Uint8Array(size);
   const view = new DataView(buf.buffer);
   let o = 0;
@@ -500,6 +533,7 @@ function buildDynamicBodyMetaBinary(): Uint8Array {
   view.setUint16(o, 30, true); o += 2;
   view.setUint16(o, 30, true); o += 2;
   view.setUint16(o, 30, true); o += 2;
+  view.setUint8(o++, 2);
   return buf;
 }
 
@@ -519,6 +553,7 @@ describe('V2 metadata decode', () => {
         bodyId: 7001,
         shapeType: 1,
         halfExtents: [0.3, 0.3, 0.3],
+        kind: 2,
       },
     ]);
   });

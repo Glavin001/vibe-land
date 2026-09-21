@@ -88,14 +88,10 @@ pub const PKT_CITY_DEBRIS: u8 = 125;
 /// Client -> server: bodies whose chains a lost packet poisoned; the server
 /// restates exactly these. The loss-heal cost scales with actual loss.
 pub const PKT_CITY_NACK: u8 = 126;
-/// Server -> clients: a meteor was launched. Carries the start, the launch
-/// velocity, the aimed point and the gravity it flies under, so a client can
-/// draw the whole flight itself: the body snapshot is relative to the viewer
-/// and quantised to +-82 m, so a rock launched 300 m out cannot be streamed
-/// until the last half second of its fall. Reliable, raw bytes, routed like
-/// the other city packets (127-129 are the destruction wire's, see
-/// `destruction/src/wire.rs`). Layout in `server/src/meteor.rs`.
-pub const PKT_METEOR_LAUNCHED: u8 = 130;
+// 130 was `PKT_METEOR_LAUNCHED`, the launch-arc packet the client drew a
+// meteor from until its body came within the snapshot's range. Retired when
+// projectiles began streaming from birth (see `DYNAMIC_BODY_KIND_*`); tapes
+// recorded before that still carry it, so the kind is not reused.
 // Chunk kinematic stream rate (sim ticks between sends: SIM_HZ / this).
 pub const CITY_CHUNK_STREAM_HZ: u16 = 30;
 pub const CITY_BASELINE_INTERVAL_MS: u16 = 1000;
@@ -142,6 +138,20 @@ pub const BLOCK_REMOVE: u8 = 2;
 // ── Shape types ─────────────────────────────────
 pub const SHAPE_BOX: u8 = 0;
 pub const SHAPE_SPHERE: u8 = 1;
+
+// ── Dynamic body kinds ──────────────────────────
+/// What a dynamic body is, beyond its shape, in the join-time metadata.
+///
+/// A body whose kind is not `PLAIN` is a fired projectile and is IMPORTANT:
+/// the server streams it to every client every snapshot from the moment it
+/// exists, wherever it is, with an absolute position -- the relative record
+/// cannot express a rock 300 m out, and a projectile is the one body a
+/// player is watching across the whole world. The client draws the meteor's
+/// burning rock on the `METEOR` kind and evicts any important body it stops
+/// hearing about within half a second, because silence means retired.
+pub const DYNAMIC_BODY_KIND_PLAIN: u8 = 0;
+pub const DYNAMIC_BODY_KIND_CANNONBALL: u8 = 1;
+pub const DYNAMIC_BODY_KIND_METEOR: u8 = 2;
 
 // ── Vehicle interaction ─────────────────────────
 pub const VEHICLE_INTERACT_RADIUS_M: f32 = 4.0;

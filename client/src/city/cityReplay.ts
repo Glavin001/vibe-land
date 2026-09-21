@@ -8,7 +8,14 @@
 
 import { CityClient } from './cityClient';
 import { fetchCityManifest, type LoadedCityManifest } from './manifest';
-import { PKT_CITY_BOOTSTRAP, PKT_METEOR_LAUNCHED } from '../net/sharedConstants';
+import { PKT_CITY_BOOTSTRAP } from '../net/sharedConstants';
+
+/**
+ * Tapes recorded before projectiles streamed from birth carry the meteor
+ * launch packet the client no longer decodes. Skipped, not fed to the city
+ * client, which never wanted it.
+ */
+const LEGACY_PKT_METEOR_LAUNCHED = 130;
 import type { CityTape } from './cityTape';
 
 export interface ReplayPlayer {
@@ -100,7 +107,7 @@ export async function createReplayPlayer(
       while (cursor < tape.packets.length && tape.times[cursor] - origin <= target) {
         const packet = tape.packets[cursor];
         cursor += 1;
-        if (packet[0] === PKT_METEOR_LAUNCHED) continue;
+        if (packet[0] === LEGACY_PKT_METEOR_LAUNCHED) continue;
         client.handlePacket(packet);
       }
       // Dust is born at the wall clock a packet is applied, so the burst just
@@ -117,9 +124,9 @@ export async function createReplayPlayer(
       while (cursor < tape.packets.length && tape.times[cursor] - origin <= now) {
         const packet = tape.packets[cursor];
         cursor += 1;
-        // Launch packets name a server clock the replay does not have; the
-        // rock's own body and the dust it raises are in the stream regardless.
-        if (packet[0] === PKT_METEOR_LAUNCHED) continue;
+        // Old tapes' launch packets: the rock's own body and the dust it
+        // raises are in the stream regardless.
+        if (packet[0] === LEGACY_PKT_METEOR_LAUNCHED) continue;
         client.handlePacket(packet);
       }
       if (cursor >= tape.packets.length) {

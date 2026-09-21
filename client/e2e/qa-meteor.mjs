@@ -1,13 +1,13 @@
 /**
  * Browser QA: join the city, select the meteor, fire at the city, and confirm
- * the launch came back and the rock was drawn.
+ * the rock was streamed from its first tick and drawn all the way down.
  *
  * The meteor is the one shot whose projectile does not start at the player,
  * so qa-shot.mjs's "did the ball leave the muzzle" frames say nothing about
- * it. What this checks instead: the launch packet arrived (the e2e bridge's
- * meteors() lists it), the arc is the length the server said, the streamed
- * body took over as it came inside the snapshot's range, and the city lost
- * bonds after it landed.
+ * it. What this checks instead: the body reached this client within a few
+ * frames of the fire (the e2e bridge's meteors() lists it, with a fresh
+ * sample), stayed listed while it fell, and the city lost bonds after it
+ * landed.
  *
  * Usage:
  *   node client/e2e/qa-meteor.mjs --page https://127.0.0.1:1111 --wt-port 4433 \
@@ -104,28 +104,35 @@ if (flights.length === 0) {
   process.exit(1);
 }
 const flight = flights[0];
-const startDist = Math.hypot(...flight.start.map((v, i) => v - flight.target[i]));
-console.log(`launch: body ${flight.bodyId}, ${startDist.toFixed(0)} m from target, ${flight.flightTimeS.toFixed(2)} s flight`
-  + `, start [${flight.start.map((v) => v.toFixed(0))}], target [${flight.target.map((v) => v.toFixed(1))}]`);
+const firstSpeed = flight.speed;
+console.log(`body ${flight.bodyId} streamed ${flight.ageS.toFixed(2)} s after the fire`
+  + `, sample age ${flight.sampleAgeMs.toFixed(0)} ms, at [${flight.position.map((v) => v.toFixed(0))}] doing ${firstSpeed.toFixed(0)} m/s`);
+if (flight.sampleAgeMs > 250) {
+  console.log('FAIL: the first sample was already stale; the body was not streamed from birth');
+}
 
-// Photograph the fall: quarter, half, three-quarters, landing, and after.
-const flightMs = flight.flightTimeS * 1000;
-let elapsed = 0;
-for (const frac of [0.25, 0.5, 0.75, 1.0]) {
-  const at = flightMs * frac;
-  await page.waitForTimeout(Math.max(0, at - elapsed));
-  elapsed = at;
-  await page.screenshot({ path: `${OUT}/01-flight-${Math.round(frac * 100)}.png` });
-  const live = await page.evaluate(() => window.__VIBE_E2E__.meteors());
+// Photograph the fall every half second until the rock comes to rest.
+let landedAtMs = null;
+for (let i = 0; i < 16; i += 1) {
+  await page.waitForTimeout(500);
+  await page.screenshot({ path: `${OUT}/01-flight-${String(i).padStart(2, '0')}.png` });
+  const live = (await page.evaluate(() => window.__VIBE_E2E__.meteors())).find((m) => m.bodyId === flight.bodyId);
   const stats = await page.evaluate(() => ({ live: window.__VIBE_E2E__.frameProfile().meteorsLive }));
-  console.log(`t=${(at / 1000).toFixed(2)}s: ${live.length} flight(s), streamed=${live[0]?.streamed ?? '-'}, drawn=${stats.live ?? '?'}`);
+  if (!live) {
+    console.log(`t=${((i + 1) * 0.5).toFixed(1)}s: body gone (retired)`);
+    break;
+  }
+  console.log(`t=${((i + 1) * 0.5).toFixed(1)}s: at [${live.position.map((v) => v.toFixed(0))}] ${live.speed.toFixed(0)} m/s, sample age ${live.sampleAgeMs.toFixed(0)} ms, drawn=${stats.live ?? '?'}`);
+  if (live.speed < 2 && landedAtMs === null) {
+    landedAtMs = (i + 1) * 500;
+    break;
+  }
 }
 await page.waitForTimeout(2500);
 await page.screenshot({ path: `${OUT}/99-after.png` });
 const after = await city(page);
-const streamed = (await page.evaluate(() => window.__VIBE_E2E__.meteors()))[0]?.streamed ?? false;
 console.log(`bonds ${before.brokenBonds ?? 0} -> ${after.brokenBonds ?? 0}`
   + ` | islands ${before.liveIslands ?? 0} -> ${after.liveIslands ?? 0}`
-  + ` | body streamed: ${streamed}`);
+  + ` | at rest after ${landedAtMs === null ? '>8 s' : `${(landedAtMs / 1000).toFixed(1)} s`}`);
 console.log(`screenshots in ${OUT}`);
 await browser.close();

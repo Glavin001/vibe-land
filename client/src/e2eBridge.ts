@@ -15,7 +15,7 @@ import { DEFAULT_STATS } from './ui/DebugOverlay';
 import { renderStats } from './city/renderStats';
 import { acquireCityDiagnostics } from './city/cityDiagnostics';
 import { setCannonballEnabled, setShotMode, type ShotMode } from './city/shotMode';
-import { meteorDrawn, meteorFlights } from './vfx/meteorFlights';
+import { listMeteorDrawn } from './vfx/meteorForensics';
 import {
   ambientOcclusionPreferred,
   cityTextureDetail,
@@ -434,23 +434,23 @@ export interface VibeE2EBridge {
    * read it as JSON. Empty outside a city match.
    */
   /**
-   * Meteors the server has announced and the client is drawing: which body,
-   * how far along its arc, and whether the streamed body has taken over.
-   * A driver fires a meteor and reads this to know the launch arrived.
+   * The meteors this client is drawing: one entry per streamed body of the
+   * meteor kind. A driver fires a meteor and reads this to know the body
+   * arrived, from the first tick, wherever it was born.
    */
   meteors(): Array<{
     bodyId: number;
-    shooterPlayerId: number;
+    /** Seconds since this client first drew the body. */
     ageS: number;
-    flightTimeS: number;
-    streamed: boolean;
-    start: [number, number, number];
-    target: [number, number, number];
-    /** What was drawn last frame and from which source, beside the arc and the raw snapshot. */
-    drawn: { position: [number, number, number]; source: string; arc: [number, number, number] } | null;
-    /** Latest raw snapshot position and velocity of the streamed body, or null. */
-    raw: { position: [number, number, number]; velocity: [number, number, number] } | null;
-    /** The interpolated body state the layer reads, or null. */
+    position: [number, number, number];
+    velocity: [number, number, number];
+    speed: number;
+    radius: number;
+    /** Age of the newest sample, ms. A body streamed every tick reads near zero. */
+    sampleAgeMs: number;
+    /** What was drawn last frame, beside the raw snapshot and the interpolated state. */
+    drawn: { position: [number, number, number] };
+    raw: { position: [number, number, number]; velocity: [number, number, number] };
     rendered: [number, number, number] | null;
     interpDelayMs: number;
   }>;
@@ -677,22 +677,19 @@ const bridge: VibeE2EBridge = {
   setCapturePose: (next) => setCapturePose(next),
   meteors: () => {
     const now = performance.now();
-    return meteorFlights(now).map((flight) => {
-      const drawn = meteorDrawn(flight.bodyId);
-      return {
-        bodyId: flight.bodyId,
-        shooterPlayerId: flight.shooterPlayerId,
-        ageS: (now - flight.launchedAtLocalMs) / 1000,
-        flightTimeS: flight.flightTimeS,
-        streamed: flight.lastStreamedAtMs > 0,
-        start: flight.start,
-        target: flight.target,
-        drawn: drawn ? { position: drawn.position, source: drawn.source, arc: drawn.arc } : null,
-        raw: drawn?.raw ?? null,
-        rendered: drawn?.rendered ?? null,
-        interpDelayMs: drawn?.interpDelayMs ?? 0,
-      };
-    });
+    return listMeteorDrawn().map((record) => ({
+      bodyId: record.bodyId,
+      ageS: (now - record.firstSeenMs) / 1000,
+      position: record.position,
+      velocity: record.raw.velocity,
+      speed: record.speed,
+      radius: record.radiusM,
+      sampleAgeMs: record.sampleAgeMs,
+      drawn: { position: record.position },
+      raw: record.raw,
+      rendered: record.rendered,
+      interpDelayMs: record.interpDelayMs,
+    }));
   },
   cityStructures: () => refs.cityStructures,
   dustBurst: (next) => {

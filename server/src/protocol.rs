@@ -154,6 +154,29 @@ pub struct DynamicSphereStateV2 {
     pub wz_mrads: i16,
 }
 
+/// A dynamic sphere with an ABSOLUTE position: a fired projectile, sent to
+/// every client every snapshot wherever it is.
+///
+/// The relative record is an i16 at 2.5 mm from the recipient, +-82 m, which
+/// is why the area of interest is 80 m. A meteor is born 300 m out and a
+/// cannonball rolls out of range in a second; both are the one body a player
+/// is watching across the whole world, so they carry their position in
+/// millimetres like the player's own state does. 26 bytes to the relative
+/// record's 20; bounded by the live-projectile cap, never by distance.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct DynamicSphereAbsStateV2 {
+    pub handle: u16,
+    pub px_mm: i32,
+    pub py_mm: i32,
+    pub pz_mm: i32,
+    pub vx_cms: i16,
+    pub vy_cms: i16,
+    pub vz_cms: i16,
+    pub wx_mrads: i16,
+    pub wy_mrads: i16,
+    pub wz_mrads: i16,
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 pub struct DynamicBoxStateV2 {
     pub handle: u16,
@@ -205,6 +228,8 @@ pub struct SnapshotV2Packet {
     pub sphere_states: Vec<DynamicSphereStateV2>,
     pub box_states: Vec<DynamicBoxStateV2>,
     pub vehicle_states: Vec<VehicleStateV2>,
+    /// Important bodies, absolute; see `DynamicSphereAbsStateV2`.
+    pub abs_sphere_states: Vec<DynamicSphereAbsStateV2>,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -226,6 +251,9 @@ pub struct DynamicBodyMetaEntry {
     pub hx_cm: u16,
     pub hy_cm: u16,
     pub hz_cm: u16,
+    /// `DYNAMIC_BODY_KIND_*`: plain, or a projectile the server streams from
+    /// birth and the client draws as a cannonball or a meteor.
+    pub kind: u8,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -561,6 +589,7 @@ pub fn encode_server_reliable(packet: &ServerReliablePacket) -> Vec<u8> {
                 out.put_u16_le(entry.hx_cm);
                 out.put_u16_le(entry.hy_cm);
                 out.put_u16_le(entry.hz_cm);
+                out.put_u8(entry.kind);
             }
         }
     }
@@ -637,6 +666,7 @@ pub fn encode_server_datagram(packet: &ServerDatagramPacket) -> Vec<u8> {
             out.put_u8(pkt.sphere_states.len() as u8);
             out.put_u8(pkt.box_states.len() as u8);
             out.put_u8(pkt.vehicle_states.len() as u8);
+            out.put_u8(pkt.abs_sphere_states.len() as u8);
 
             let s = &pkt.self_state;
             out.put_i16_le(s.vx_cms);
@@ -720,6 +750,19 @@ pub fn encode_server_datagram(packet: &ServerDatagramPacket) -> Vec<u8> {
                 out.put_i16_le(vehicle.wx_mrads);
                 out.put_i16_le(vehicle.wy_mrads);
                 out.put_i16_le(vehicle.wz_mrads);
+            }
+
+            for sphere in &pkt.abs_sphere_states {
+                out.put_u16_le(sphere.handle);
+                out.put_i32_le(sphere.px_mm);
+                out.put_i32_le(sphere.py_mm);
+                out.put_i32_le(sphere.pz_mm);
+                out.put_i16_le(sphere.vx_cms);
+                out.put_i16_le(sphere.vy_cms);
+                out.put_i16_le(sphere.vz_cms);
+                out.put_i16_le(sphere.wx_mrads);
+                out.put_i16_le(sphere.wy_mrads);
+                out.put_i16_le(sphere.wz_mrads);
             }
         }
     }
@@ -1177,11 +1220,65 @@ mod tests {
         });
         let encoded = encode_server_packet(&packet);
         assert_eq!(encoded[0], PKT_SNAPSHOT_V2);
-        assert_eq!(u16::from_le_bytes([encoded[35], encoded[36]]), 0x8003);
-        assert_eq!(encoded[49], 1);
-        assert_eq!(i16::from_le_bytes([encoded[50], encoded[51]]), 250);
-        assert_eq!(i16::from_le_bytes([encoded[52], encoded[53]]), -500);
-        assert_eq!(i16::from_le_bytes([encoded[54], encoded[55]]), 750);
+        // Header is 24 bytes (five counts), so the self state starts at 24.
+        assert_eq!(u16::from_le_bytes([encoded[36], encoded[37]]), 0x8003);
+        assert_eq!(encoded[50], 1);
+        assert_eq!(i16::from_le_bytes([encoded[51], encoded[52]]), 250);
+        assert_eq!(i16::from_le_bytes([encoded[53], encoded[54]]), -500);
+        assert_eq!(i16::from_le_bytes([encoded[55], encoded[56]]), 750);
+        assert_eq!(encoded.len(), 57);
+    }
+
+    #[test]
+    fn snapshot_v2_encodes_absolute_sphere_section() {
+        // One projectile 300 m from the anchor: the relative record could not
+        // say that, the absolute one carries millimetres.
+        let packet = ServerPacket::SnapshotV2(SnapshotV2Packet {
+            anchor_px_mm: 1_000,
+            abs_sphere_states: vec![DynamicSphereAbsStateV2 {
+                handle: 0x0102,
+                px_mm: 300_000,
+                py_mm: -2_500,
+                pz_mm: 42,
+                vx_cms: -13_000,
+                vy_cms: 500,
+                vz_cms: 7,
+                wx_mrads: 1,
+                wy_mrads: -2,
+                wz_mrads: 3,
+            }],
+            ..SnapshotV2Packet::default()
+        });
+        let encoded = encode_server_packet(&packet);
+        assert_eq!(encoded[23], 1, "fifth count byte is the absolute sphere count");
+        let record = 1 + 23 + 33;
+        assert_eq!(encoded.len(), record + 26);
+        let r = &encoded[record..];
+        assert_eq!(u16::from_le_bytes([r[0], r[1]]), 0x0102);
+        assert_eq!(i32::from_le_bytes([r[2], r[3], r[4], r[5]]), 300_000);
+        assert_eq!(i32::from_le_bytes([r[6], r[7], r[8], r[9]]), -2_500);
+        assert_eq!(i32::from_le_bytes([r[10], r[11], r[12], r[13]]), 42);
+        assert_eq!(i16::from_le_bytes([r[14], r[15]]), -13_000);
+        assert_eq!(i16::from_le_bytes([r[24], r[25]]), 3);
+    }
+
+    #[test]
+    fn dynamic_body_meta_carries_the_kind() {
+        let packet = ServerPacket::DynamicBodyMeta(DynamicBodyMetaPacket {
+            entries: vec![DynamicBodyMetaEntry {
+                handle: 7,
+                body_id: 25,
+                shape_type: 1,
+                hx_cm: 200,
+                hy_cm: 200,
+                hz_cm: 200,
+                kind: 2,
+            }],
+        });
+        let encoded = encode_server_packet(&packet);
+        // kind u8 + count u16 + one 14-byte entry.
+        assert_eq!(encoded.len(), 1 + 2 + 14);
+        assert_eq!(encoded[3 + 13], 2, "kind is the entry's last byte");
     }
 
     #[test]

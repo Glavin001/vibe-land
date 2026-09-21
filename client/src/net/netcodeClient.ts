@@ -1,4 +1,5 @@
 import { CITY_WIRE_VERSION } from '../city/wire';
+import { DYNAMIC_BODY_KIND_PLAIN } from './sharedConstants';
 import { GameSocket } from './gameSocket';
 import { NetDebugTelemetry, type LocalShotTelemetry } from './debugTelemetry';
 import { WebTransportGameClient, type SessionConfigResponse } from './webTransportClient';
@@ -87,6 +88,15 @@ export type NetcodeClientConfig = {
  */
 export class NetcodeClient {
   private static readonly DYNAMIC_BODY_STALE_TICKS = 240;
+  /**
+   * An important body (a fired projectile) is sent every snapshot from the
+   * tick it exists, so silence means it was retired -- not that it left the
+   * area of interest, which plain bodies do. Half a second: long enough to
+   * ride out a loss burst without blinking a rock in flight out and back,
+   * short enough that a retired rock does not stand there for the four
+   * seconds a plain body is given.
+   */
+  private static readonly IMPORTANT_BODY_STALE_TICKS = 30;
   private static readonly VEHICLE_STALE_TICKS = 180;
   static readonly MAX_DYNAMIC_BODY_INTERPOLATION_DELAY_MS = 16;
   static readonly REMOTE_PLAYER_BUFFER_RATIO = 0.5;
@@ -148,7 +158,7 @@ export class NetcodeClient {
   private readonly vehicleServerTimeUs = new Map<number, number>();
   private readonly playerIdByHandle = new Map<number, number>();
   private localDrivenVehicleId: number | null = null;
-  private readonly dynamicBodyMetaByHandle = new Map<number, { bodyId: number; shapeType: number; halfExtents: [number, number, number] }>();
+  private readonly dynamicBodyMetaByHandle = new Map<number, { bodyId: number; shapeType: number; halfExtents: [number, number, number]; kind: number }>();
   private readonly debugTelemetry = new NetDebugTelemetry();
 
   private socket: GameSocket | null = null;
@@ -488,6 +498,23 @@ export class NetcodeClient {
     }
   }
 
+  /** Forget bodies the snapshot has stopped carrying; see the two stale windows. */
+  private evictStaleDynamicBodies(serverTick: number): void {
+    for (const [id, lastSeenTick] of this.dynamicBodyLastSeenTick) {
+      const important = (this.dynamicBodies.get(id)?.kind ?? DYNAMIC_BODY_KIND_PLAIN)
+        !== DYNAMIC_BODY_KIND_PLAIN;
+      const staleTicks = important
+        ? NetcodeClient.IMPORTANT_BODY_STALE_TICKS
+        : NetcodeClient.DYNAMIC_BODY_STALE_TICKS;
+      if (serverTick - lastSeenTick > staleTicks) {
+        this.dynamicBodyLastSeenTick.delete(id);
+        this.dynamicBodies.delete(id);
+        this.dynamicBodyServerTimeUs.delete(id);
+        this.dynamicBodyInterpolator.remove(id);
+      }
+    }
+  }
+
   private applyDynamicBodyMeta(packet: DynamicBodyMetaPacket): void {
     this.dynamicBodyMetaByHandle.clear();
     for (const entry of packet.entries) {
@@ -495,6 +522,7 @@ export class NetcodeClient {
         bodyId: entry.bodyId,
         shapeType: entry.shapeType,
         halfExtents: entry.halfExtents,
+        kind: entry.kind,
       });
     }
   }
@@ -645,6 +673,7 @@ export class NetcodeClient {
       const meters: DynamicBodyStateMeters = {
         id: bodyId,
         shapeType: meta.shapeType,
+        kind: meta.kind,
         position,
         quaternion,
         halfExtents: meta.halfExtents,
@@ -672,6 +701,7 @@ export class NetcodeClient {
       const meters: DynamicBodyStateMeters = {
         id: bodyId,
         shapeType: meta.shapeType,
+        kind: meta.kind,
         position: [
           anchorPos[0] + q2_5mmToMeters(box.dxQ2_5mm),
           anchorPos[1] + q2_5mmToMeters(box.dyQ2_5mm),
@@ -700,14 +730,52 @@ export class NetcodeClient {
       });
       this.dynamicBodyLastSeenTick.set(bodyId, packet.serverTick);
     }
-    for (const [id, lastSeenTick] of this.dynamicBodyLastSeenTick) {
-      if (packet.serverTick - lastSeenTick > NetcodeClient.DYNAMIC_BODY_STALE_TICKS) {
-        this.dynamicBodyLastSeenTick.delete(id);
-        this.dynamicBodies.delete(id);
-        this.dynamicBodyServerTimeUs.delete(id);
-        this.dynamicBodyInterpolator.remove(id);
-      }
+    // Important bodies: every projectile alive, absolutely, wherever it is.
+    for (const sphere of packet.absSphereStates) {
+      const meta = this.dynamicBodyMetaByHandle.get(sphere.handle);
+      if (!meta) continue;
+      const bodyId = meta.bodyId;
+      seenDynamicIds.add(bodyId);
+      const position: [number, number, number] = [
+        sphere.pxMm / 1000,
+        sphere.pyMm / 1000,
+        sphere.pzMm / 1000,
+      ];
+      const velocity: [number, number, number] = [
+        sphere.vxCms / 100,
+        sphere.vyCms / 100,
+        sphere.vzCms / 100,
+      ];
+      const angularVelocity: [number, number, number] = [
+        sphere.wxMrads / 1000,
+        sphere.wyMrads / 1000,
+        sphere.wzMrads / 1000,
+      ];
+      const quaternion = this.predictSphereQuaternion(bodyId, packet.serverTimeUs, angularVelocity);
+      const meters: DynamicBodyStateMeters = {
+        id: bodyId,
+        shapeType: meta.shapeType,
+        kind: meta.kind,
+        position,
+        quaternion,
+        halfExtents: meta.halfExtents,
+        velocity,
+        angularVelocity,
+      };
+      this.dynamicBodies.set(bodyId, meters);
+      this.dynamicBodyServerTimeUs.set(bodyId, packet.serverTimeUs);
+      this.dynamicBodyInterpolator.push(bodyId, {
+        serverTimeUs: packet.serverTimeUs,
+        position,
+        quaternion,
+        halfExtents: meta.halfExtents,
+        velocity,
+        angularVelocity,
+        shapeType: meta.shapeType,
+      });
+      this.dynamicBodyLastSeenTick.set(bodyId, packet.serverTick);
     }
+    this.evictStaleDynamicBodies(packet.serverTick);
     this.debugTelemetry.observeAuthoritativeDynamicBodies(this.dynamicBodies);
     // Fire the local snapshot callback only after authoritative dynamic-body
     // state has been applied. Multiplayer vehicle reconcile depends on the
@@ -915,14 +983,7 @@ export class NetcodeClient {
           });
           this.dynamicBodyLastSeenTick.set(db.id, packet.serverTick);
         }
-        for (const [id, lastSeenTick] of this.dynamicBodyLastSeenTick) {
-          if (packet.serverTick - lastSeenTick > NetcodeClient.DYNAMIC_BODY_STALE_TICKS) {
-            this.dynamicBodyLastSeenTick.delete(id);
-            this.dynamicBodies.delete(id);
-            this.dynamicBodyServerTimeUs.delete(id);
-            this.dynamicBodyInterpolator.remove(id);
-          }
-        }
+        this.evictStaleDynamicBodies(packet.serverTick);
         this.debugTelemetry.observeAuthoritativeDynamicBodies(this.dynamicBodies);
 
         const knownIds = new Set<number>();

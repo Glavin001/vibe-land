@@ -86,7 +86,7 @@ function makePlayerRoster(entries: Array<{ handle: number; playerId: number }>):
 }
 
 function makeDynamicBodyMeta(
-  entries: Array<{ handle: number; bodyId: number; shapeType?: number; halfExtents?: [number, number, number] }>,
+  entries: Array<{ handle: number; bodyId: number; shapeType?: number; halfExtents?: [number, number, number]; kind?: number }>,
 ): DynamicBodyMetaPacket {
   return {
     type: 'dynamicBodyMeta',
@@ -95,6 +95,7 @@ function makeDynamicBodyMeta(
       bodyId: entry.bodyId,
       shapeType: entry.shapeType ?? 1,
       halfExtents: entry.halfExtents ?? [0.5, 0.5, 0.5],
+      kind: entry.kind ?? 0,
     })),
   };
 }
@@ -128,6 +129,12 @@ function makeSnapshotV2(opts: {
     handle: number;
     driverHandle?: number;
     offset: [number, number, number];
+    velocity?: [number, number, number];
+  }>;
+  /** Important bodies: absolute positions, metres. */
+  absSphereStates?: Array<{
+    handle: number;
+    position: [number, number, number];
     velocity?: [number, number, number];
   }>;
 }): SnapshotV2Packet {
@@ -207,6 +214,18 @@ function makeSnapshotV2(opts: {
       vxCms: Math.round((vehicle.velocity?.[0] ?? 0) * 100),
       vyCms: Math.round((vehicle.velocity?.[1] ?? 0) * 100),
       vzCms: Math.round((vehicle.velocity?.[2] ?? 0) * 100),
+      wxMrads: 0,
+      wyMrads: 0,
+      wzMrads: 0,
+    })),
+    absSphereStates: (opts.absSphereStates ?? []).map((body) => ({
+      handle: body.handle,
+      pxMm: metersToMm(body.position[0]),
+      pyMm: metersToMm(body.position[1]),
+      pzMm: metersToMm(body.position[2]),
+      vxCms: Math.round((body.velocity?.[0] ?? 0) * 100),
+      vyCms: Math.round((body.velocity?.[1] ?? 0) * 100),
+      vzCms: Math.round((body.velocity?.[2] ?? 0) * 100),
       wxMrads: 0,
       wyMrads: 0,
       wzMrads: 0,
@@ -563,6 +582,64 @@ describe('NetcodeClient', () => {
       expect(client.dynamicBodies.get(7001)?.position[0]).toBeCloseTo(13);
       expect(client.vehicles.has(3)).toBe(true);
       expect(client.vehicles.get(3)?.position[0]).toBeCloseTo(18);
+    });
+
+    it('places an important body at its absolute position, far outside the relative range', () => {
+      const client = new NetcodeClient({});
+      client.handlePacket(makeWelcome(1));
+      client.handlePacket(makeDynamicBodyMeta([
+        { handle: 40, bodyId: 25, shapeType: 1, halfExtents: [2, 2, 2], kind: 2 },
+      ]));
+
+      client.handlePacket(makeSnapshotV2({
+        serverTick: 25,
+        anchorPosition: [10, 2, -4],
+        absSphereStates: [{ handle: 40, position: [300, 195, -120.5], velocity: [-130, -80, 5] }],
+      }));
+
+      const body = client.dynamicBodies.get(25);
+      expect(body).toBeDefined();
+      expect(body?.position).toEqual([300, 195, -120.5]);
+      expect(body?.velocity[0]).toBeCloseTo(-130);
+      expect(body?.kind).toBe(2);
+      expect(body?.halfExtents).toEqual([2, 2, 2]);
+      expect(client.sampleRemoteDynamicBody(25)?.position[1]).toBeCloseTo(195);
+    });
+
+    it('drops an absolute record whose handle has no metadata', () => {
+      const client = new NetcodeClient({});
+      client.handlePacket(makeWelcome(1));
+      client.handlePacket(makeSnapshotV2({
+        serverTick: 25,
+        absSphereStates: [{ handle: 99, position: [300, 195, -120.5] }],
+      }));
+      expect(client.dynamicBodies.size).toBe(0);
+    });
+
+    it('evicts an important body half a second after it stops arriving, and a plain one after four', () => {
+      const client = new NetcodeClient({});
+      client.handlePacket(makeWelcome(1));
+      client.handlePacket(makeDynamicBodyMeta([
+        { handle: 40, bodyId: 25, shapeType: 1, halfExtents: [2, 2, 2], kind: 2 },
+        { handle: 7, bodyId: 7001, shapeType: 1, halfExtents: [0.3, 0.3, 0.3] },
+      ]));
+      client.handlePacket(makeSnapshotV2({
+        serverTick: 10,
+        absSphereStates: [{ handle: 40, position: [300, 195, -120.5] }],
+        sphereStates: [{ handle: 7, offset: [3, 0, -2] }],
+      }));
+      expect(client.dynamicBodies.has(25)).toBe(true);
+      expect(client.dynamicBodies.has(7001)).toBe(true);
+
+      // 31 ticks of silence: the projectile was retired; the plain body is
+      // merely out of range.
+      client.handlePacket(makeSnapshotV2({ serverTick: 41 }));
+      expect(client.dynamicBodies.has(25)).toBe(false);
+      expect(client.sampleRemoteDynamicBody(25)).toBeNull();
+      expect(client.dynamicBodies.has(7001)).toBe(true);
+
+      client.handlePacket(makeSnapshotV2({ serverTick: 251 }));
+      expect(client.dynamicBodies.has(7001)).toBe(false);
     });
 
     it('fires the V2 local snapshot callback after same-tick dynamic bodies are applied', () => {

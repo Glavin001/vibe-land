@@ -44,7 +44,8 @@ use tokio::sync::{mpsc, RwLock as AsyncRwLock};
 use tracing::{error, info, warn};
 use vibe_land_shared::constants::{
     DEFAULT_BATTERY_HEIGHT_M, DEFAULT_BATTERY_RADIUS_M, DYNAMIC_BODY_AOI_EXIT_RADIUS_M,
-    DYNAMIC_BODY_AOI_RADIUS_M, DYNAMIC_BODY_IMPULSE, FLAG_MELEEING, HITSCAN_MAX_DISTANCE_M,
+    DYNAMIC_BODY_AOI_RADIUS_M, DYNAMIC_BODY_IMPULSE, DYNAMIC_BODY_KIND_CANNONBALL,
+    DYNAMIC_BODY_KIND_METEOR, DYNAMIC_BODY_KIND_PLAIN, FLAG_MELEEING, HITSCAN_MAX_DISTANCE_M,
     MAX_PENDING_INPUTS, MELEE_COOLDOWN_MS, MELEE_DAMAGE, MELEE_ENERGY_COST,
     MAX_INPUT_FRAMES_PER_TICK,
     MELEE_FLAG_DURATION_TICKS, MELEE_HALF_CONE_COS, MELEE_HIT_RECOVERY_MS, MELEE_RANGE_M,
@@ -117,11 +118,14 @@ const SNAPSHOT_PLAYER_STATE_BYTES: usize = 29;
 const SNAPSHOT_DYNAMIC_BODY_STATE_BYTES: usize = 43;
 const SNAPSHOT_VEHICLE_STATE_BYTES: usize = 50;
 const STRICT_SNAPSHOT_RESERVED_VEHICLES: usize = 2;
-const SNAPSHOT_V2_HEADER_BYTES: usize = 23;
+/// Kind, tick, ack, three anchor coordinates, five counts.
+const SNAPSHOT_V2_HEADER_BYTES: usize = 24;
 const SNAPSHOT_V2_SELF_PLAYER_BYTES: usize = 33;
 const SNAPSHOT_V2_REMOTE_PLAYER_BYTES: usize = 19;
 const SNAPSHOT_V2_DYNAMIC_SPHERE_BYTES: usize = 20;
 const SNAPSHOT_V2_DYNAMIC_BOX_BYTES: usize = 28;
+/// A projectile's absolute record; see `protocol::DynamicSphereAbsStateV2`.
+const SNAPSHOT_V2_DYNAMIC_SPHERE_ABS_BYTES: usize = 26;
 const SNAPSHOT_V2_VEHICLE_BYTES: usize = 30;
 
 fn rifle_damage(zone: HitZone) -> u8 {
@@ -1128,6 +1132,15 @@ struct DynamicBodyMetaRuntime {
     handle: u16,
     shape_type: u8,
     half_extents_m: [f32; 3],
+    /// `DYNAMIC_BODY_KIND_*`. Not plain means important: streamed to every
+    /// client every snapshot, absolutely, wherever it is.
+    kind: u8,
+}
+
+impl DynamicBodyMetaRuntime {
+    fn important(&self) -> bool {
+        self.kind != DYNAMIC_BODY_KIND_PLAIN
+    }
 }
 
 enum DynamicBodySelection {
@@ -2235,8 +2248,8 @@ struct MeteorRequest {
 /// A player-fired meteor lands wherever the aim ray first meets the world,
 /// which is right for play and wrong for a measurement that wants to say
 /// "one rock per building": from any vantage point some roofs are behind
-/// other roofs. This is the same launch path (same arc planner, same pool,
-/// same `PKT_METEOR_LAUNCHED`), only the target is given instead of found.
+/// other roofs. This is the same launch path (same arc planner, same pool),
+/// only the target is given instead of found.
 async fn city_meteor_handler(
     Path(match_id): Path<String>,
     State(state): State<SharedAppState>,
@@ -2741,6 +2754,7 @@ async fn run_match_loop(
                     handle,
                     shape_type,
                     half_extents_m: half_extents,
+                    kind: DYNAMIC_BODY_KIND_PLAIN,
                 },
             )
         })
@@ -2761,6 +2775,7 @@ async fn run_match_loop(
                     handle: next_handle,
                     shape_type: SHAPE_SPHERE,
                     half_extents_m: [radius; 3],
+                    kind: DYNAMIC_BODY_KIND_CANNONBALL,
                 },
             );
             next_handle = next_handle.saturating_add(1);
@@ -2776,6 +2791,7 @@ async fn run_match_loop(
                     handle: next_handle,
                     shape_type: SHAPE_SPHERE,
                     half_extents_m: [meteor_radius; 3],
+                    kind: DYNAMIC_BODY_KIND_METEOR,
                 },
             );
             next_handle = next_handle.saturating_add(1);
@@ -3080,6 +3096,7 @@ impl MatchState {
                 hx_cm: (entry.half_extents_m[0] * 100.0).round() as u16,
                 hy_cm: (entry.half_extents_m[1] * 100.0).round() as u16,
                 hz_cm: (entry.half_extents_m[2] * 100.0).round() as u16,
+                kind: entry.kind,
             })
             .collect();
         entries.sort_by_key(|entry| entry.handle);
@@ -4081,9 +4098,8 @@ impl MatchState {
     ///
     /// The ray needs something solid to land on; aimed at the sky, nothing is
     /// launched, because a meteor through a point in the air is a meteor
-    /// nobody sees land. Every client is told the arc so it can draw the fall
-    /// from the start, which is well outside the range the body snapshot can
-    /// express (see `PKT_METEOR_LAUNCHED`).
+    /// nobody sees land. The rock is an important body (`DYNAMIC_BODY_KIND_METEOR`),
+    /// so every client streams it from this tick, wherever it starts.
     fn launch_meteor_at(
         &mut self,
         origin: glam::Vec3,
@@ -4123,20 +4139,6 @@ impl MatchState {
         ) else {
             return None;
         };
-        let packet = meteor::encode_meteor_launched(&meteor::MeteorLaunchedPacket {
-            body_id,
-            shooter_player_id: shooter,
-            server_launch_time_us: (self.server_tick as u64) * (1_000_000 / SIM_HZ as u64),
-            start: launch.start.to_array(),
-            velocity: launch.velocity.to_array(),
-            target: target.to_array(),
-            radius_m: tuning.radius_m,
-            gravity_ms2: -gravity.y,
-            flight_time_s: launch.flight_time_s,
-        });
-        for player in self.players.values() {
-            let _ = try_queue_packet(&player.tx, packet.clone(), &self.io);
-        }
         tracing::info!(
             match_id = %self.id,
             shooter,
@@ -6136,6 +6138,54 @@ impl MatchState {
             };
             budget_remaining = budget_remaining.saturating_sub(SNAPSHOT_V2_SELF_PLAYER_BYTES);
 
+            // Important bodies first: every fired projectile, to every client,
+            // from the tick it exists, absolutely, wherever it is. Not gated by
+            // the area of interest and not classified hot or cold -- a rock at
+            // rest must keep arriving or the client's short eviction retires
+            // it. They are BUDGETED, not exempted: a strict datagram over the
+            // MTU is dropped whole, and the support body gets away with
+            // bypassing the budget only because it is one record. The live
+            // cap is MAX_LIVE_LAUNCHED_BALLS, 24 x 26 bytes, which always fits
+            // in what the header and self state leave; whatever follows
+            // absorbs the squeeze, as it does for everything else.
+            let mut abs_sphere_states = Vec::new();
+            let mut important_ids: HashSet<u32> = HashSet::new();
+            {
+                let mut important: Vec<_> = dynamic_body_states
+                    .iter()
+                    .filter_map(|(body_id, pos, quat, state)| {
+                        let meta = self.dynamic_body_handles.get(body_id)?;
+                        if !meta.important() || meta.shape_type != SHAPE_SPHERE {
+                            return None;
+                        }
+                        Some((*body_id, distance_sq(*pos, *recipient_pos), *pos, *quat, meta.handle, state))
+                    })
+                    .collect();
+                important.sort_by(|a, b| a.1.total_cmp(&b.1));
+                for (body_id, _, pos, quat, handle, state) in important {
+                    if budget_remaining < SNAPSHOT_V2_DYNAMIC_SPHERE_ABS_BYTES {
+                        break;
+                    }
+                    abs_sphere_states.push(protocol::DynamicSphereAbsStateV2 {
+                        handle,
+                        px_mm: state.px_mm,
+                        py_mm: state.py_mm,
+                        pz_mm: state.pz_mm,
+                        vx_cms: state.vx_cms,
+                        vy_cms: state.vy_cms,
+                        vz_cms: state.vz_cms,
+                        wx_mrads: state.wx_mrads,
+                        wy_mrads: state.wy_mrads,
+                        wz_mrads: state.wz_mrads,
+                    });
+                    budget_remaining =
+                        budget_remaining.saturating_sub(SNAPSHOT_V2_DYNAMIC_SPHERE_ABS_BYTES);
+                    runtime.last_sent_dynamic_tick.insert(body_id, self.server_tick);
+                    runtime.last_sent_dynamic_body_pose.insert(body_id, (pos, quat));
+                    important_ids.insert(body_id);
+                }
+            }
+
             let mut reserved_vehicle_ids: HashSet<u32> = vehicle_states
                 .iter()
                 .filter(|(_, _, state)| state.driver_id == recipient_id)
@@ -6150,6 +6200,7 @@ impl MatchState {
                 .saturating_mul(SNAPSHOT_V2_VEHICLE_BYTES);
             budget_remaining = budget_remaining.saturating_sub(reserved_vehicle_budget);
             let reserved_support_dynamic_bytes = support_dynamic_id
+                .filter(|body_id| !important_ids.contains(body_id))
                 .and_then(|body_id| self.dynamic_body_handles.get(&body_id))
                 .map(|meta| {
                     if meta.shape_type == SHAPE_SPHERE {
@@ -6317,6 +6368,10 @@ impl MatchState {
             let mut dynamic_cold = Vec::new();
             for (body_id, pos, quat, state) in
                 dynamic_body_states.iter().filter(|(body_id, pos, _, _)| {
+                    // Already sent absolutely, above.
+                    if important_ids.contains(body_id) {
+                        return false;
+                    }
                     let visible = dynamic_body_within_aoi(
                         runtime.visible_dynamic_bodies.contains(body_id),
                         *pos,
@@ -6406,6 +6461,7 @@ impl MatchState {
                     .last_sent_dynamic_body_pose
                     .insert(*body_id, (*pos, *quat));
             }
+            all_visible_dynamic_bodies.extend(important_ids.iter().copied());
             runtime.visible_dynamic_bodies = all_visible_dynamic_bodies;
             dynamic_hot.sort_by(|a, b| a.1.total_cmp(&b.1));
             dynamic_cold.sort_by(|a, b| a.1.total_cmp(&b.1));
@@ -6421,7 +6477,8 @@ impl MatchState {
                     DynamicBodySelection::Sphere(_) => SNAPSHOT_V2_DYNAMIC_SPHERE_BYTES,
                     DynamicBodySelection::Box(_) => SNAPSHOT_V2_DYNAMIC_BOX_BYTES,
                 };
-                let reserved_support = support_dynamic_id == Some(body_id);
+                let reserved_support =
+                    support_dynamic_id == Some(body_id) && !important_ids.contains(&body_id);
                 if !reserved_support && budget_remaining < record_size {
                     continue;
                 }
@@ -6448,6 +6505,7 @@ impl MatchState {
                 sphere_states,
                 box_states,
                 vehicle_states: selected_vehicle_states,
+                abs_sphere_states,
             });
             let encoded = encode_server_packet(&packet);
             snapshot_bytes_this_tick += encoded.len();
@@ -6673,7 +6731,9 @@ fn packet_dynamic_body_count(packet: &ServerPacket) -> usize {
     match packet {
         ServerPacket::Snapshot(snapshot) => snapshot.dynamic_body_states.len(),
         ServerPacket::SnapshotV2(snapshot) => {
-            snapshot.sphere_states.len() + snapshot.box_states.len()
+            snapshot.sphere_states.len()
+                + snapshot.box_states.len()
+                + snapshot.abs_sphere_states.len()
         }
         _ => 0,
     }

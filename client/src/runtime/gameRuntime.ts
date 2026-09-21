@@ -46,10 +46,8 @@ import {
   PKT_CITY_MANIFEST,
   PKT_CITY_MANIFEST_REQUEST,
   PKT_MATCH_STATS,
-  PKT_METEOR_LAUNCHED,
 } from '../net/sharedConstants';
 import { decodeCityManifestPayload, fetchCityManifest } from '../city/manifest';
-import { decodeMeteorLaunched, registerMeteorFlight } from '../vfx/meteorFlights';
 import { cityTapeRecorder } from '../city/cityTape';
 import { hotspotWatch } from '../city/hotspotWatch';
 import { CLIENT_MAX_CATCHUP_STEPS, FIXED_DT } from './clientSimConstants';
@@ -1287,21 +1285,9 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
           }
         },
         onCityPacket: (bytes) => {
-          // Every inbound city packet, launches included, onto the tape when
-          // one is recording; /cityreplay plays it back into a CityClient.
+          // Every inbound city packet onto the tape when one is recording;
+          // /cityreplay plays it back into a CityClient.
           cityTapeRecorder.push(bytes);
-          if (bytes.length > 1 && bytes[0] === PKT_METEOR_LAUNCHED) {
-            // A launch, not geometry: the layer that draws meteors reads the
-            // store directly, the way the dust reads its shots.
-            const launch = decodeMeteorLaunched(bytes);
-            if (launch) {
-              registerMeteorFlight(
-                launch,
-                (serverTimeUs) => (serverTimeUs - this.serverClock.getOffsetUs()) / 1000,
-              );
-            }
-            return;
-          }
           if (bytes.length > 1 && bytes[0] === PKT_MATCH_STATS) {
             try {
               setMatchStats(JSON.parse(new TextDecoder().decode(bytes.subarray(1))));
@@ -1900,15 +1886,20 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
   }
 
   getRenderedDynamicBodyState(id: number): DynamicBodyStateMeters | null {
+    // The kind lives on the authoritative record; whichever branch answers
+    // carries it, so a layer can tell a meteor from a cannonball without
+    // looking the body up twice.
+    const kind = this.dynamicBodies.get(id)?.kind;
     const proxyBody = this.getDynamicBodyRenderState(id);
     if (proxyBody && this.hasRecentDynamicBodyInteraction(id)) {
-      return proxyBody;
+      return kind === undefined ? proxyBody : { ...proxyBody, kind };
     }
     const remoteSample = this.sampleRemoteDynamicBody(id, this.getDynamicBodyRenderTimeUs());
     if (remoteSample) {
       return {
         id,
         shapeType: remoteSample.shapeType,
+        kind,
         position: remoteSample.position,
         quaternion: remoteSample.quaternion,
         halfExtents: remoteSample.halfExtents,

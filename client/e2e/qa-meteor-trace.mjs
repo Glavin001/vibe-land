@@ -1,10 +1,10 @@
 /**
  * Browser forensics for one meteor flight: 20 Hz samples of what the layer
- * DREW against the arc and the streamed body, so a rock that visibly rewinds
- * or hangs can be read as numbers instead of described.
+ * DREW against the raw snapshot and the interpolated state, so a rock that
+ * visibly jumps or hangs can be read as numbers instead of described.
  *
  * Usage: node client/e2e/qa-meteor-trace.mjs --page https://127.0.0.1:1111 --wt-port 4433 --out /tmp/trace.json
- *   --impair lte   in-process link impairment (netlab profile), to see what a real link does to the handover
+ *   --impair lte   in-process link impairment (netlab profile), to see what a real link does
  */
 import { writeFileSync } from 'node:fs';
 import { openCity } from './helpers/qaSession.mjs';
@@ -32,7 +32,7 @@ while (Date.now() - t0 < 12000) {
   const f = bodyId == null ? list.find((m) => m.ageS < 3) : list.find((m) => m.bodyId === bodyId);
   if (f) {
     bodyId = f.bodyId;
-    samples.push({ tMs: Date.now() - t0, ageS: f.ageS, flightTimeS: f.flightTimeS, drawn: f.drawn, raw: f.raw, rendered: f.rendered, interpDelayMs: f.interpDelayMs, target: f.target });
+    samples.push({ tMs: Date.now() - t0, ageS: f.ageS, speed: f.speed, drawn: f.drawn, raw: f.raw, rendered: f.rendered, interpDelayMs: f.interpDelayMs, sampleAgeMs: f.sampleAgeMs });
   } else if (bodyId != null) {
     samples.push({ tMs: Date.now() - t0, gone: true });
     break;
@@ -46,9 +46,9 @@ for (const s of samples) {
   if (s.gone) { console.log(`${s.tMs}ms gone`); break; }
   if (!s.drawn) continue;
   const jump = last ? d(s.drawn.position, last.drawn.position) : 0;
-  console.log(`${String(s.tMs).padStart(5)}ms age ${s.ageS.toFixed(2)}s ${s.drawn.source.padEnd(6)} drawn=[${s.drawn.position.map((v) => v.toFixed(0))}] arc=[${s.drawn.arc.map((v) => v.toFixed(0))}] ` +
-    `raw=${s.raw ? '[' + s.raw.position.map((v) => v.toFixed(0)) + '] |v|=' + Math.hypot(...s.raw.velocity).toFixed(0) : '-'} ` +
-    `drawn-arc=${(d(s.drawn.position, s.drawn.arc) ?? 0).toFixed(1)}m step=${jump.toFixed(1)}m interp=${s.interpDelayMs.toFixed(0)}ms`);
+  console.log(`${String(s.tMs).padStart(5)}ms age ${s.ageS.toFixed(2)}s drawn=[${s.drawn.position.map((v) => v.toFixed(0))}] ` +
+    `raw=[${s.raw.position.map((v) => v.toFixed(0))}] |v|=${s.speed.toFixed(0)} ` +
+    `drawn-rendered=${(d(s.drawn.position, s.rendered) ?? 0).toFixed(1)}m step=${jump.toFixed(1)}m sample=${s.sampleAgeMs.toFixed(0)}ms interp=${s.interpDelayMs.toFixed(0)}ms`);
   last = s;
 }
 await browser.close();

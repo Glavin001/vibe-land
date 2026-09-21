@@ -9,13 +9,11 @@
 //! and the rock passes through the aimed point unless something is in the way.
 //! Something usually is; that is the point of a meteor.
 //!
-//! Everything here is pure so it can be tested without a scene, and so the
-//! client can draw the same arc from the same numbers (see
-//! `MeteorLaunchedPacket`).
+//! Everything here is pure so it can be tested without a scene. The client
+//! never sees these numbers: the rock is an important body, streamed to every
+//! client from the tick it is launched, wherever it starts.
 
-use bytes::BufMut;
 use glam::Vec3;
-use vibe_land_shared::constants::PKT_METEOR_LAUNCHED;
 
 /// Shape of the meteor shot. Read from the environment once per shot, like
 /// the cannonball's knobs, so a live server can be retuned without a rebuild.
@@ -170,61 +168,6 @@ impl Rng {
     }
 }
 
-/// What the server tells every client when a meteor is launched.
-///
-/// Wire layout, little-endian, after the `PKT_METEOR_LAUNCHED` kind byte:
-///
-/// ```text
-///   u32  body_id            dynamic body the client will later see streamed
-///   u32  shooter_player_id
-///   u64  server_launch_time_us
-///   f32  start x, y, z      m
-///   f32  velocity x, y, z   m/s
-///   f32  target x, y, z     m, the aimed point
-///   f32  radius             m
-///   f32  gravity            m/s^2, the scene's magnitude, downward
-///   f32  flight_time_s      launch to the aimed point, unobstructed
-/// ```
-///
-/// 65 bytes. Absolute floats rather than the snapshot's relative fixed point,
-/// because the whole reason this packet exists is that the start is outside
-/// the range the snapshot can express.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct MeteorLaunchedPacket {
-    pub body_id: u32,
-    pub shooter_player_id: u32,
-    pub server_launch_time_us: u64,
-    pub start: [f32; 3],
-    pub velocity: [f32; 3],
-    pub target: [f32; 3],
-    pub radius_m: f32,
-    pub gravity_ms2: f32,
-    pub flight_time_s: f32,
-}
-
-pub const METEOR_LAUNCHED_PACKET_LEN: usize = 1 + 4 + 4 + 8 + 12 + 12 + 12 + 4 + 4 + 4;
-
-pub fn encode_meteor_launched(packet: &MeteorLaunchedPacket) -> Vec<u8> {
-    let mut out = Vec::with_capacity(METEOR_LAUNCHED_PACKET_LEN);
-    out.put_u8(PKT_METEOR_LAUNCHED);
-    out.put_u32_le(packet.body_id);
-    out.put_u32_le(packet.shooter_player_id);
-    out.put_u64_le(packet.server_launch_time_us);
-    for value in packet
-        .start
-        .iter()
-        .chain(packet.velocity.iter())
-        .chain(packet.target.iter())
-    {
-        out.put_f32_le(*value);
-    }
-    out.put_f32_le(packet.radius_m);
-    out.put_f32_le(packet.gravity_ms2);
-    out.put_f32_le(packet.flight_time_s);
-    debug_assert_eq!(out.len(), METEOR_LAUNCHED_PACKET_LEN);
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -312,26 +255,5 @@ mod tests {
         // Half a step of velocity times the flight, roughly: a few metres at
         // most, and a 4 m rock. Good enough for the eye and for the solver.
         assert!(p.distance(target) < 5.0, "landed {} m off", p.distance(target));
-    }
-
-    #[test]
-    fn packet_has_the_documented_length() {
-        let encoded = encode_meteor_launched(&MeteorLaunchedPacket {
-            body_id: 9,
-            shooter_player_id: 2,
-            server_launch_time_us: 123_456,
-            start: [1.0, 2.0, 3.0],
-            velocity: [4.0, 5.0, 6.0],
-            target: [7.0, 8.0, 9.0],
-            radius_m: 2.0,
-            gravity_ms2: 9.81,
-            flight_time_s: 2.5,
-        });
-        assert_eq!(encoded.len(), METEOR_LAUNCHED_PACKET_LEN);
-        assert_eq!(encoded[0], PKT_METEOR_LAUNCHED);
-        assert_eq!(u32::from_le_bytes(encoded[1..5].try_into().unwrap()), 9);
-        assert_eq!(f32::from_le_bytes(encoded[17..21].try_into().unwrap()), 1.0);
-        assert_eq!(f32::from_le_bytes(encoded[57..61].try_into().unwrap()), 9.81);
-        assert_eq!(f32::from_le_bytes(encoded[61..65].try_into().unwrap()), 2.5);
     }
 }

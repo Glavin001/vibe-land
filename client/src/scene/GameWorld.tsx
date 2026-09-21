@@ -123,7 +123,7 @@ import { useWeatherAmbience } from '../graphics/weatherAudio';
 import { CityChunksLayer } from './CityChunksLayer';
 import { DustLayer } from '../vfx/DustLayer';
 import { MeteorLayer } from '../vfx/MeteorLayer';
-import { isMeteorBody } from '../vfx/meteorFlights';
+import { DYNAMIC_BODY_KIND_METEOR } from '../net/sharedConstants';
 import { registerDustShot } from '../vfx/dustShots';
 
 const VEHICLE_INTERACT_RADIUS = VEHICLE_INTERACT_RADIUS_M;
@@ -1269,6 +1269,8 @@ export function GameWorld({
   const selectedMaterialRef = useRef(2);
   const nextShotIdRef = useRef(1);
   const nextLocalFireMsRef = useRef(0);
+  /** Trigger state last frame, for the shots that fire on the press, not the hold. */
+  const fireHeldRef = useRef(false);
   const nextLocalMeleeMsRef = useRef(0);
   const nextSwingIdRef = useRef(1);
   const remoteLastMeleeingRef = useRef<Map<number, boolean>>(new Map());
@@ -2098,8 +2100,18 @@ export function GameWorld({
 
     const canUseAimActions = canUseAimControls;
 
+    // The rifle and the cannonball fire for as long as the trigger is held,
+    // at the rifle's cadence. The meteor fires once per press: a click is
+    // longer than that cadence, and a meteor per hundred milliseconds of it
+    // put two rocks on the same point a tenth of a second apart, which from
+    // the aiming end looked like one rock flying in twice. Tracked every
+    // frame, whether or not aiming is allowed, so the edge cannot be stale.
+    const firePressedEdge = resolvedInput.firePrimary && !fireHeldRef.current;
+    fireHeldRef.current = resolvedInput.firePrimary;
+    const wantsFire = shotMode() === 'meteor' ? firePressedEdge : resolvedInput.firePrimary;
+
     if (canUseAimActions) {
-      if (resolvedInput.firePrimary && client && now >= nextLocalFireMsRef.current) {
+      if (wantsFire && client && now >= nextLocalFireMsRef.current) {
         nextLocalFireMsRef.current = now + RIFLE_FIRE_INTERVAL_MS;
         const fireDir = aimDirectionFromAngles(yawRef.current, pitchRef.current);
         const aimOrigin: [number, number, number] = [camera.position.x, camera.position.y, camera.position.z];
@@ -3035,7 +3047,7 @@ export function GameWorld({
       for (const [id, body] of state.dynamicBodies) {
         // A meteor is drawn by its own layer as a burning rock; the sphere
         // the physics streams for it stays unrendered.
-        if (isMeteorBody(id)) continue;
+        if (body.kind === DYNAMIC_BODY_KIND_METEOR) continue;
         activeBodies.add(id);
         const renderBody = prediction.getRenderedDynamicBodyState(id) ?? body;
         let mesh = dynamicBodyMeshes.current.get(id);

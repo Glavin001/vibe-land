@@ -9,8 +9,9 @@ cratered basalt, emissive fissures, depth-aware raymarched fire, embers).
 ## Server
 
 - `shared/src/constants.rs` — `WEAPON_METEOR = 4` in the fire packet's
-  existing weapon byte; no fire-packet change. `PKT_METEOR_LAUNCHED = 130`
-  (127–129 are the destruction wire's, defined in `destruction/src/wire.rs`).
+  existing weapon byte; no fire-packet change. `DYNAMIC_BODY_KIND_{PLAIN,
+  CANNONBALL, METEOR}` in the join-time body metadata (130 was the retired
+  launch packet; not reused, old tapes carry it).
 - `server/src/meteor.rs` — the plan. The shooter's eye ray is cast against
   statics, chunks and loose bodies (`cast_solid_ray_point`; players are not
   solid, so the ray cannot stop on the shooter's own capsule). Aimed at the
@@ -28,33 +29,48 @@ cratered basalt, emissive fissures, depth-aware raymarched fire, embers).
   meteor through a cannonball's id would draw at cannonball size. The
   meteor keeps `SHAPE_SPHERE` on the physics path: the V2 snapshot's sphere
   record and the client's Rapier proxy both key on it.
-- `route_city_shots` (`main.rs`) launches and broadcasts the launch packet;
-  `process_hitscan` skips the meteor the way it skips the cannonball, so
-  the rock is not also resolved as an instant ray.
+- `route_city_shots` (`main.rs`) launches; `process_hitscan` skips the
+  meteor the way it skips the cannonball, so the rock is not also resolved
+  as an instant ray.
 
-## Why there is a launch packet
+## Why projectiles are streamed absolutely
 
 The V2 body snapshot is relative to the viewer and quantised to 2.5 mm in
-an i16: ±82 m, which is why the dynamic-body AOI is 80 m. A rock launched
-300 m out cannot be streamed until the last half second of its fall. So the
-server tells every client the start, velocity, aimed point, radius, gravity
-and flight time (65 bytes, reliable, raw bytes through the city-packet
-path), and the client draws the arc itself until the streamed body appears;
-the two agree to within quantisation until the rock hits something, so the
-handover is invisible -- provided the arc is evaluated in the body
-interpolator's own server-time base (`getDynamicBodyRenderTimeUs`). Mapping
-the launch onto the local clock through the estimator's offset instead put
-the arc tens of milliseconds ahead on a jittery link, 7 m at 147 m/s, and
-the rock visibly jumped back when the body took over ("it rewinds and
-comes in again"). Measured with `client/e2e/qa-meteor-trace.mjs` over the
-netlab `lte` profile: 7.2 m gap before, 0.14 m after.
+an i16: ±82 m, which is why the dynamic-body area of interest is 80 m. A
+rock launched 300 m out could not be sent until the last half second of its
+fall, and the first version drew the meteor from a launch-arc packet until
+its body came into range. Every visible fault the meteor had lived in that
+handover (a rewind when the clocks disagreed, a rock hanging where the
+stream stopped), and the owner's direction was that a meteor is a rigid
+body like the cannonball and must be synced by the same netcode.
 
-A body that stops arriving while it was moving has left the 80 m streaming
-range; the client keeps its last state in `dynamicBodies`, and drawing that
-is a rock hanging in the air where it last was. The layer treats a moving
-body with no sample for 250 ms as gone: held where it was, cold, forgotten
-within a second. Past the aimed point with no body ever seen, the rock is
-held at the aimed point for three seconds.
+So fired projectiles — cannonball and meteor, both reserved id rings — are
+**important bodies**: their metadata carries a `kind`, and a body whose kind
+is not plain is exempt from the area of interest, never hot/cold-classified,
+and sent to every client every snapshot from the tick it exists, in an
+absolute-position record (`DynamicSphereAbsStateV2`: handle, position in
+mm, velocity, angular velocity; 26 bytes). The snapshot header gained a
+fifth count byte and the section follows the vehicles; the self state is a
+fixed 33 bytes (the length sniff that admitted two older forms is gone).
+Important bodies are budgeted FIRST, nearest first — never exempted from the
+budget, because a strict datagram over the MTU is dropped whole; the live
+cap of 24 projectiles is 624 bytes, which always fits, and everything after
+absorbs the squeeze. The client evicts an important body it has not heard
+of for 30 ticks (500 ms): silence means retired, where a plain body's
+silence means out of range and gets four seconds.
+
+Measured on an isolated server: the body reaches the shooter's client 50 ms
+after the fire from 350 m out, and a second client 500 m away lists it in
+the same frame; it stays streamed while rolling off to 450 m. Over the
+netlab `lte` profile (90 ± 35 ms, 3% loss) the only visible step is the
+impact itself, where the interpolator's linear extrapolation runs on for the
+lost samples and snaps to the real post-impact state — the same behaviour
+every dynamic body has.
+
+The meteor fires once per trigger press; the rifle and cannonball keep their
+held cadence. A click is longer than the rifle's 100 ms interval, and a
+meteor per interval put two rocks on the same aimed point a tenth of a
+second apart, which from the aiming end read as one rock flying in twice.
 
 ## Client
 
@@ -62,10 +78,9 @@ held at the aimed point for three seconds.
   the overlay's SHOT button (`data-testid="city-cannonball-toggle"` kept),
   stored under `vibe.city.shotMode` (the old boolean key still reads as
   cannonball). `setShotMode` on the e2e bridge; `setCannonball` still works.
-- `client/src/vfx/meteorFlights.ts` — decoder and the store of live
-  flights, read by the layer the way the dust reads `dustShots`. The runtime
-  registers launches from `onCityPacket`, mapping the server stamp through
-  the clock estimator.
+- `client/src/net/netcodeClient.ts` — applies the absolute section like
+  the relative ones, carries `kind` on every `DynamicBodyStateMeters`, and
+  evicts important bodies on the short window.
 - `client/src/vfx/meteorRock.ts` — the rock (icosphere, 24 subdivisions,
   built once and scaled per meteor), the fissure material
   (`MeshStandardMaterial` with `onBeforeCompile`, so the sun and sky light
@@ -79,10 +94,12 @@ held at the aimed point for three seconds.
   `order`.
 - `client/src/vfx/MeteorLayer.tsx` — owns the rocks, two pooled point
   lights (a light added mid-game recompiles every material), and feeds the
-  stage. Position from the streamed body when it exists, else the arc at the
-  interpolation-delayed render time. Fire fades three seconds after the rock
-  stops moving. `GameWorld` skips the default sphere mesh for meteor bodies
-  and brings the frame pipeline up while the meteor shot is selected.
+  stage. One rock per streamed body of the meteor kind, at the same rendered
+  state the cannonball's mesh uses; nothing predicted, held or guessed. Fire
+  fades three seconds after the rock stops moving. `GameWorld` skips the
+  default sphere mesh for meteor bodies and brings the frame pipeline up
+  while the meteor shot is selected. `meteorForensics.ts` publishes what was
+  drawn for the e2e bridge's `meteors()`.
 
 ## The crashes it caused, and what they were
 
@@ -120,8 +137,8 @@ as a boolean; against those the bridge clamps to 1 and logs.
 - No muzzle tracer or entry-dust registration for the meteor: the impact
   makes its own dust like any falling body (`dustImpacts.ts`), and the
   streamed rock is a dust mover.
-- Remote players see the rock (the launch is broadcast) but nothing at the
-  shooter, since no `PKT_SHOT_FIRED` goes out for balls or meteors.
+- Remote players see the rock (its body streams to everyone) but nothing
+  at the shooter, since no `PKT_SHOT_FIRED` goes out for balls or meteors.
 - Build and deploy against the pinned SDK: `PHYSX_DESTRUCTION_SDK=/root/workspace/physx-2-deployed`
   (the live `physx-2` tree is another session's moving target).
 - The headless driver's fire used to be a level pulse that a busy frame could

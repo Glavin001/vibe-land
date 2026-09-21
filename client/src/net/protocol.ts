@@ -149,6 +149,12 @@ export type NetDynamicBodyState = {
 export type DynamicBodyStateMeters = {
   id: number;
   shapeType: number;
+  /**
+   * `DYNAMIC_BODY_KIND_*` from the join-time metadata: a projectile the
+   * server streams from birth, drawn as a cannonball or a meteor. Absent
+   * (plain) wherever there is no metadata, such as local practice.
+   */
+  kind?: number;
   position: [number, number, number];
   quaternion: [number, number, number, number]; // x, y, z, w
   halfExtents: [number, number, number];
@@ -227,6 +233,8 @@ export type DynamicBodyMetaEntry = {
   bodyId: number;
   shapeType: number;
   halfExtents: [number, number, number];
+  /** `DYNAMIC_BODY_KIND_*`. */
+  kind: number;
 };
 
 export type DynamicBodyMetaPacket = {
@@ -268,6 +276,25 @@ export type DynamicSphereStateV2 = {
   dxQ2_5mm: number;
   dyQ2_5mm: number;
   dzQ2_5mm: number;
+  vxCms: number;
+  vyCms: number;
+  vzCms: number;
+  wxMrads: number;
+  wyMrads: number;
+  wzMrads: number;
+};
+
+/**
+ * A fired projectile, with an ABSOLUTE position in millimetres. The relative
+ * record is +-82 m from the viewer; a meteor is born 300 m out and a
+ * cannonball rolls out of range in a second, and both are the body a player
+ * is watching across the whole world. Rust: `DynamicSphereAbsStateV2`.
+ */
+export type DynamicSphereAbsStateV2 = {
+  handle: number;
+  pxMm: number;
+  pyMm: number;
+  pzMm: number;
   vxCms: number;
   vyCms: number;
   vzCms: number;
@@ -326,6 +353,8 @@ export type SnapshotV2Packet = {
   sphereStates: DynamicSphereStateV2[];
   boxStates: DynamicBoxStateV2[];
   vehicleStates: VehicleStateV2[];
+  /** Important bodies, absolute; every projectile alive, wherever it is. */
+  absSphereStates: DynamicSphereAbsStateV2[];
 };
 
 export type ShotResultPacket = {
@@ -785,13 +814,12 @@ export function decodeSnapshotV2Packet(view: DataView, o: number): SnapshotV2Pac
   const sphereCount = view.getUint8(o++);
   const boxCount = view.getUint8(o++);
   const vehicleCount = view.getUint8(o++);
-  const entityBytes = remotePlayerCount * 19
-    + sphereCount * 20
-    + boxCount * 28
-    + vehicleCount * 30;
-  const hasAngularSupportMetadata = view.byteLength - o >= 33 + entityBytes;
-  const hasSupportMetadata = hasAngularSupportMetadata
-    || view.byteLength - o >= 27 + entityBytes;
+  const absSphereCount = view.getUint8(o++);
+  // The self state is always its full 33-byte form. It used to be sniffed
+  // from the remaining length to admit two older, shorter forms; with a
+  // fifth section after the vehicles that arithmetic would be ambiguous, and
+  // the server has written the full form for as long as any client here has
+  // existed.
 
   const selfState: SelfPlayerStateV2 = {
     vxCms: view.getInt16(o, true),
@@ -801,31 +829,25 @@ export function decodeSnapshotV2Packet(view: DataView, o: number): SnapshotV2Pac
     pitchI16: view.getInt16(o + 8, true),
     hp: view.getUint8(o + 10),
     flags: view.getUint8(o + 11),
-    supportHandle: hasSupportMetadata ? view.getUint16(o + 12, true) : 0,
-    supportLocalPosition: hasSupportMetadata
-      ? [
-          view.getInt16(o + 14, true) / 400,
-          view.getInt16(o + 16, true) / 400,
-          view.getInt16(o + 18, true) / 400,
-        ]
-      : [0, 0, 0],
-    supportVelocity: hasSupportMetadata
-      ? [
-          view.getInt16(o + 20, true) / 100,
-          view.getInt16(o + 22, true) / 100,
-          view.getInt16(o + 24, true) / 100,
-        ]
-      : [0, 0, 0],
-    supportFlags: hasSupportMetadata ? view.getUint8(o + 26) : 0,
-    supportAngularVelocity: hasAngularSupportMetadata
-      ? [
-          view.getInt16(o + 27, true) / 1000,
-          view.getInt16(o + 29, true) / 1000,
-          view.getInt16(o + 31, true) / 1000,
-        ]
-      : [0, 0, 0],
+    supportHandle: view.getUint16(o + 12, true),
+    supportLocalPosition: [
+      view.getInt16(o + 14, true) / 400,
+      view.getInt16(o + 16, true) / 400,
+      view.getInt16(o + 18, true) / 400,
+    ],
+    supportVelocity: [
+      view.getInt16(o + 20, true) / 100,
+      view.getInt16(o + 22, true) / 100,
+      view.getInt16(o + 24, true) / 100,
+    ],
+    supportFlags: view.getUint8(o + 26),
+    supportAngularVelocity: [
+      view.getInt16(o + 27, true) / 1000,
+      view.getInt16(o + 29, true) / 1000,
+      view.getInt16(o + 31, true) / 1000,
+    ],
   };
-  o += hasAngularSupportMetadata ? 33 : hasSupportMetadata ? 27 : 12;
+  o += 33;
 
   const remotePlayers: RemotePlayerStateV2[] = [];
   for (let i = 0; i < remotePlayerCount; i += 1) {
@@ -907,6 +929,23 @@ export function decodeSnapshotV2Packet(view: DataView, o: number): SnapshotV2Pac
     o += 30;
   }
 
+  const absSphereStates: DynamicSphereAbsStateV2[] = [];
+  for (let i = 0; i < absSphereCount; i += 1) {
+    absSphereStates.push({
+      handle: view.getUint16(o, true),
+      pxMm: view.getInt32(o + 2, true),
+      pyMm: view.getInt32(o + 6, true),
+      pzMm: view.getInt32(o + 10, true),
+      vxCms: view.getInt16(o + 14, true),
+      vyCms: view.getInt16(o + 16, true),
+      vzCms: view.getInt16(o + 18, true),
+      wxMrads: view.getInt16(o + 20, true),
+      wyMrads: view.getInt16(o + 22, true),
+      wzMrads: view.getInt16(o + 24, true),
+    });
+    o += 26;
+  }
+
   return {
     type: 'snapshotV2',
     serverTimeUs: serverTick * Math.round(1_000_000 / 60),
@@ -920,6 +959,7 @@ export function decodeSnapshotV2Packet(view: DataView, o: number): SnapshotV2Pac
     sphereStates,
     boxStates,
     vehicleStates,
+    absSphereStates,
   };
 }
 
@@ -949,8 +989,9 @@ function decodeDynamicBodyMetaPacket(view: DataView, o: number): DynamicBodyMeta
         view.getUint16(o + 9, true) / 100,
         view.getUint16(o + 11, true) / 100,
       ],
+      kind: view.getUint8(o + 13),
     });
-    o += 13;
+    o += 14;
   }
   return { type: 'dynamicBodyMeta', entries };
 }

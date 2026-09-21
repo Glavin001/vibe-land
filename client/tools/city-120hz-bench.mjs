@@ -238,9 +238,9 @@ for (const tier of TIERS) {
         await page.waitForTimeout(METEOR_GAP_MS);
       }
       console.log(`[${tier}] storm: ${seen}/${METEORS} meteor launches seen`);
-      // Under a heavy storm the client's frames are long and a launch packet
-    // can land after the 5 s watch; the rock still fell. Nine in ten is proof
-    // the storm happened.
+      // Under a heavy storm the client's frames are long and the body's first
+    // snapshot can land after the 5 s watch; the rock still fell. Nine in ten
+    // is proof the storm happened.
     if (seen < Math.ceil(METEORS * 0.9)) throw new Error(`only ${seen}/${METEORS} meteors launched`);
       await page.waitForTimeout(STORM_WAIT_MS);
     }

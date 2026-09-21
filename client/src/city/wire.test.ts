@@ -90,8 +90,8 @@ describe('city wire decoder', () => {
     expect(isCityPacketKind(112)).toBe(false);
     expect(isCityPacketKind(128)).toBe(true);
     expect(isCityPacketKind(129)).toBe(true);
-    // The meteor launch rides the same raw-bytes path.
-    expect(isCityPacketKind(130)).toBe(true);
+    // 130 was the meteor launch packet, retired; it is not a city kind.
+    expect(isCityPacketKind(130)).toBe(false);
     expect(isCityPacketKind(131)).toBe(false);
   });
 });

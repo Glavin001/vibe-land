@@ -1,12 +1,13 @@
 // The meteors, mounted in the game world beside the dust.
 //
-// Each launch the server announced gets a burning rock: the cratered basalt
-// from meteorRock with its embers and a light, positioned either from the
-// streamed dynamic body when the snapshot carries it (inside 80 m of the
-// viewer) or from the arc the launch packet described (everywhere else), and a
-// fire volume drawn by MeteorFireStage through the frame pipeline. The arc and
-// the body agree to within quantisation until the rock hits something, so the
-// handover is invisible; after impact only the body knows where the rock went.
+// A meteor is a rigid body like the cannonball, born far out and streamed to
+// every client from the tick it exists (an important body; see
+// `DYNAMIC_BODY_KIND_METEOR`). This layer draws a burning rock -- the
+// cratered basalt from meteorRock with its embers and a light, and a fire
+// volume through MeteorFireStage -- on every dynamic body of that kind, at
+// the same rendered state the cannonball's mesh uses. Nothing here predicts,
+// holds or guesses: the body is the truth, and when it is gone, so is the
+// rock.
 
 import { useFrame } from '@react-three/fiber';
 import { useEffect, useMemo, useRef } from 'react';
@@ -14,15 +15,10 @@ import * as THREE from 'three';
 
 import { renderStats } from '../city/renderStats';
 import { registerPipelineStage } from '../graphics/framePipelineStages';
+import { DYNAMIC_BODY_KIND_METEOR } from '../net/sharedConstants';
 import type { GameRuntimeClient } from '../runtime/gameRuntime';
 import { MeteorFireStage, type MeteorFireInstance } from './MeteorFireStage';
-import {
-  meteorFlights,
-  meteorPositionAt,
-  meteorVelocityAt,
-  recordMeteorDrawn,
-  type MeteorFlight,
-} from './meteorFlights';
+import { forgetMeteorDrawn, recordMeteorDrawn } from './meteorForensics';
 import {
   buildMeteorEmbers,
   buildMeteorGeometry,
@@ -45,36 +41,31 @@ type MeteorLayerProps = {
 const LIGHT_POOL = 2;
 
 /**
- * A moving body whose newest sample is older than this has left the
- * streaming range. Hot bodies are sent every tick the budget allows; a
- * quarter second is many missed sends, not one.
+ * The server's projectile ids are a ring: a new rock can arrive through an
+ * id whose old rock is still in the map for a frame. A body that moves this
+ * far in one frame is a different rock, and its burn state starts over.
  */
-const STALE_SAMPLE_MS = 250;
+const REUSE_JUMP_M = 100;
 
 interface LiveMeteor {
-  flight: MeteorFlight;
+  bodyId: number;
+  radiusM: number;
   group: THREE.Group;
   rock: THREE.Mesh;
   material: THREE.MeshStandardMaterial;
   surface: MeteorSurfaceUniforms;
   embers: MeteorEmbers;
-  /** Tumble, only while the arc is predicted; the body brings its own pose. */
-  spin: THREE.Quaternion;
-  spinAxis: THREE.Vector3;
-  /** Air speed last frame, m/s, for the fire to fade after impact. */
-  airSpeed: number;
   /** When the rock last moved fast enough to burn, local ms. */
   lastBurningMs: number;
   intensity: number;
   fire: MeteorFireInstance;
   distanceSq: number;
+  firstSeenMs: number;
+  lastPosition: THREE.Vector3;
 }
 
-const scratchPos: [number, number, number] = [0, 0, 0];
-const scratchVel: [number, number, number] = [0, 0, 0];
 const scratchDir = new THREE.Vector3();
 const scratchAxis = new THREE.Vector3();
-const scratchSpin = new THREE.Quaternion();
 const scratchInverse = new THREE.Quaternion();
 const BUOYANCY = new THREE.Vector3(0, 3, 0);
 
@@ -121,141 +112,95 @@ export function MeteorLayer({ getRuntime }: MeteorLayerProps) {
     if (!group) return;
     const nowMs = performance.now();
     const runtime = getRuntime();
-    const flights = meteorFlights(nowMs);
     const meteors = live.current;
     const step = Math.min(0.1, Math.max(0, dt));
-
-    // The arc is evaluated at the SERVER time the body interpolator renders
-    // at, in that time base, with no mapping through the local clock: the
-    // launch stamp and the snapshot stamps are the same tick clock, so the
-    // two coincide by construction when the body appears. Mapping the launch
-    // onto performance.now() through the clock estimator's offset put the
-    // arc tens of milliseconds ahead on a jittery link -- 7 m at 147 m/s --
-    // so the rock visibly jumped back when the body took over.
+    const bodies = runtime?.state?.dynamicBodies;
     const lagMs = runtime?.state?.dynamicBodyInterpolationDelayMs ?? 0;
-    const renderServerUs = runtime?.getDynamicBodyRenderTimeUs() ?? null;
 
     const seen = new Set<number>();
-    for (const flight of flights) {
-      seen.add(flight.bodyId);
-      let meteor = meteors.get(flight.bodyId);
-      if (!meteor || meteor.flight !== flight) {
-        if (meteor) retire(meteor);
-        meteor = spawn(flight, geometry);
-        group.add(meteor.group);
-        meteors.set(flight.bodyId, meteor);
-      }
-
-      const raw = runtime?.state?.dynamicBodies.get(flight.bodyId) ?? null;
-      // A body the snapshot has stopped carrying stays in the map with its
-      // last state. If it was moving when last seen and nothing has arrived
-      // since, it has left the streaming range, and drawing it where it was
-      // is a rock hanging in the air. A resting body is refreshed rarely on
-      // purpose and is genuinely where it was.
-      const sampleAgeMs = raw ? runtime!.getDynamicBodyObservedAgeMs(flight.bodyId) ?? 0 : 0;
-      const rawSpeed = raw ? Math.hypot(raw.velocity[0], raw.velocity[1], raw.velocity[2]) : 0;
-      const stale = raw !== null && sampleAgeMs > STALE_SAMPLE_MS && rawSpeed > 2;
-      const streamed = raw && !stale ? runtime!.getRenderedDynamicBodyState(flight.bodyId) ?? raw : null;
-      const forensics = {
-        raw: raw ? { position: raw.position, velocity: raw.velocity } : null,
-        rendered: streamed ? streamed.position : null,
-        interpDelayMs: lagMs,
-      };
-      let position: ArrayLike<number>;
-      let velocity: ArrayLike<number>;
-      let source: 'arc' | 'body' | 'hold' = 'arc';
-      const arcT = renderServerUs !== null
-        ? (renderServerUs - flight.serverLaunchTimeUs) / 1e6
-        : (nowMs - lagMs - flight.launchedAtLocalMs) / 1000;
-      const arcAt = meteorPositionAt(flight, arcT, [0, 0, 0]);
-      if (streamed) {
-        source = 'body';
-        flight.lastStreamedAtMs = nowMs;
-        position = streamed.position;
-        velocity = streamed.velocity;
-        meteor.group.quaternion.set(
-          streamed.quaternion[0],
-          streamed.quaternion[1],
-          streamed.quaternion[2],
-          streamed.quaternion[3],
-        );
-      } else if (flight.lastStreamedAtMs > 0) {
-        source = 'hold';
-        // The body was real and now is not: retired at its TTL, bounced out
-        // of the snapshot's range, or the viewer walked away from it. The
-        // arc knows nothing about where it went after impact -- falling back
-        // to it would teleport the rock to the aimed point and leave it
-        // hanging there -- so it stays where it was last seen, cold, until
-        // the store forgets it.
-        scratchPos[0] = meteor.group.position.x;
-        scratchPos[1] = meteor.group.position.y;
-        scratchPos[2] = meteor.group.position.z;
-        position = scratchPos;
-        scratchVel[0] = 0; scratchVel[1] = 0; scratchVel[2] = 0;
-        velocity = scratchVel;
-        meteor.lastBurningMs = Math.min(meteor.lastBurningMs, nowMs - 3000);
-      } else {
-        const t = arcT;
-        if (t < 0) {
-          // Announced but not yet launched on this clock: keep it off-screen
-          // rather than at the start point for a frame.
-          meteor.group.visible = false;
-          meteor.intensity = 0;
-          recordMeteorDrawn(flight.bodyId, { position: arcAt, source: 'hidden', arc: arcAt, ...forensics, atMs: nowMs });
-          continue;
+    if (bodies && runtime) {
+      for (const [bodyId, raw] of bodies) {
+        if (raw.kind !== DYNAMIC_BODY_KIND_METEOR) continue;
+        seen.add(bodyId);
+        let meteor = meteors.get(bodyId);
+        if (!meteor) {
+          meteor = spawn(bodyId, raw.halfExtents[0], geometry, nowMs);
+          group.add(meteor.group);
+          meteors.set(bodyId, meteor);
         }
-        position = meteorPositionAt(flight, t, scratchPos);
-        velocity = meteorVelocityAt(flight, t, scratchVel);
-        // Tumbling, slowly, the way the studio's rock does.
-        scratchSpin.setFromAxisAngle(meteor.spinAxis, step * 0.45);
-        meteor.spin.multiply(scratchSpin);
-        meteor.group.quaternion.copy(meteor.spin);
+        // The same source the cannonball's mesh draws from: the interpolated
+        // sample, or the local proxy for the moment after a shot touched it.
+        const rendered = runtime.getRenderedDynamicBodyState(bodyId);
+        const body = rendered ?? raw;
+        const position = body.position;
+        const velocity = body.velocity;
+        if (meteor.lastPosition.distanceTo(
+          scratchDir.set(position[0], position[1], position[2]),
+        ) > REUSE_JUMP_M) {
+          // A new rock through an old id.
+          meteor.lastBurningMs = nowMs;
+          meteor.intensity = 0;
+          meteor.firstSeenMs = nowMs;
+        }
+        meteor.lastPosition.set(position[0], position[1], position[2]);
+        meteor.group.visible = true;
+        meteor.group.position.set(position[0], position[1], position[2]);
+        meteor.group.quaternion.set(
+          body.quaternion[0],
+          body.quaternion[1],
+          body.quaternion[2],
+          body.quaternion[3],
+        );
+        meteor.group.updateMatrixWorld(true);
+
+        const airSpeed = Math.hypot(velocity[0], velocity[1], velocity[2]);
+        if (airSpeed > 12) meteor.lastBurningMs = nowMs;
+        // Burning while it flies; on the ground the fire dies over a few
+        // seconds and the fissures cool after it.
+        const sinceBurning = (nowMs - meteor.lastBurningMs) / 1000;
+        const target = airSpeed > 12 ? 1 : Math.max(0, 1 - sinceBurning / 3);
+        meteor.intensity += (target - meteor.intensity) * Math.min(1, step * 6);
+        meteor.surface.uTime.value += step;
+        meteor.surface.uGlow.value = 0.25 + 0.55 * meteor.intensity;
+
+        // Flames point against the motion, lifted by buoyancy.
+        scratchDir.set(-velocity[0], -velocity[1], -velocity[2]).add(BUOYANCY);
+        if (scratchDir.lengthSq() < 1e-4) scratchDir.set(0, 1, 0);
+        scratchDir.normalize();
+        // The embers live in the group's frame; the direction goes with them.
+        scratchAxis.copy(scratchDir).applyQuaternion(scratchInverse.copy(meteor.group.quaternion).invert());
+        layoutEmbers(meteor.embers, scratchAxis, meteor.surface.uTime.value, stage.trail, stage.turbulence);
+        meteor.embers.material.uniforms.uTime.value = meteor.surface.uTime.value;
+        meteor.embers.material.uniforms.uAmount.value = 0.65 * meteor.intensity;
+        meteor.embers.points.visible = meteor.intensity > 0.02;
+
+        meteor.fire.center.copy(meteor.group.position);
+        meteor.fire.direction.copy(scratchDir);
+        meteor.fire.airSpeed = airSpeed;
+        meteor.fire.intensity = meteor.intensity;
+        meteor.fire.inverseRock.copy(meteor.rock.matrixWorld).invert();
+        meteor.distanceSq = camera.position.distanceToSquared(meteor.group.position);
+
+        recordMeteorDrawn({
+          bodyId,
+          position: [position[0], position[1], position[2]],
+          raw: { position: raw.position, velocity: raw.velocity },
+          rendered: rendered ? rendered.position : null,
+          radiusM: meteor.radiusM,
+          speed: airSpeed,
+          interpDelayMs: lagMs,
+          sampleAgeMs: runtime.getDynamicBodyObservedAgeMs(bodyId) ?? 0,
+          firstSeenMs: meteor.firstSeenMs,
+          atMs: nowMs,
+        });
       }
-      meteor.group.visible = true;
-      meteor.group.position.set(position[0], position[1], position[2]);
-      meteor.group.updateMatrixWorld(true);
-      recordMeteorDrawn(flight.bodyId, {
-        position: [position[0], position[1], position[2]],
-        source,
-        arc: arcAt,
-        ...forensics,
-        atMs: nowMs,
-      });
-
-      const airSpeed = Math.hypot(velocity[0], velocity[1], velocity[2]);
-      meteor.airSpeed = airSpeed;
-      if (airSpeed > 12) meteor.lastBurningMs = nowMs;
-      // Burning while it flies; on the ground the fire dies over a few
-      // seconds and the fissures cool after it.
-      const sinceBurning = (nowMs - meteor.lastBurningMs) / 1000;
-      const target = airSpeed > 12 ? 1 : Math.max(0, 1 - sinceBurning / 3);
-      meteor.intensity += (target - meteor.intensity) * Math.min(1, step * 6);
-      meteor.surface.uTime.value += step;
-      meteor.surface.uGlow.value = 0.25 + 0.55 * meteor.intensity;
-
-      // Flames point against the motion, lifted by buoyancy.
-      scratchDir.set(-velocity[0], -velocity[1], -velocity[2]).add(BUOYANCY);
-      if (scratchDir.lengthSq() < 1e-4) scratchDir.set(0, 1, 0);
-      scratchDir.normalize();
-      // The embers live in the group's frame; the direction goes with them.
-      scratchAxis.copy(scratchDir).applyQuaternion(scratchInverse.copy(meteor.group.quaternion).invert());
-      layoutEmbers(meteor.embers, scratchAxis, meteor.surface.uTime.value, stage.trail, stage.turbulence);
-      meteor.embers.material.uniforms.uTime.value = meteor.surface.uTime.value;
-      meteor.embers.material.uniforms.uAmount.value = 0.65 * meteor.intensity;
-      meteor.embers.points.visible = meteor.intensity > 0.02;
-
-      meteor.fire.center.copy(meteor.group.position);
-      meteor.fire.direction.copy(scratchDir);
-      meteor.fire.radiusM = flight.radiusM;
-      meteor.fire.airSpeed = airSpeed;
-      meteor.fire.intensity = meteor.intensity;
-      meteor.fire.inverseRock.copy(meteor.rock.matrixWorld).invert();
-      meteor.distanceSq = camera.position.distanceToSquared(meteor.group.position);
     }
 
+    // A body the runtime no longer carries was retired on the server.
     for (const [bodyId, meteor] of meteors) {
       if (seen.has(bodyId)) continue;
       retire(meteor);
+      forgetMeteorDrawn(bodyId);
       meteors.delete(bodyId);
     }
 
@@ -270,7 +215,7 @@ export function MeteorLayer({ getRuntime }: MeteorLayerProps) {
         light.intensity = 0;
         return;
       }
-      const r = meteor.flight.radiusM;
+      const r = meteor.radiusM;
       light.position.copy(meteor.fire.direction).multiplyScalar(1.65 * r).add(meteor.group.position);
       light.distance = 14 * r;
       light.intensity = (2.8 + Math.sin(meteor.surface.uTime.value * 7) * 0.3) * meteor.intensity * r * r;
@@ -282,49 +227,46 @@ export function MeteorLayer({ getRuntime }: MeteorLayerProps) {
   return <group ref={groupRef} name="meteors" />;
 }
 
-function spawn(flight: MeteorFlight, geometry: THREE.BufferGeometry): LiveMeteor {
+function spawn(bodyId: number, radiusM: number, geometry: THREE.BufferGeometry, nowMs: number): LiveMeteor {
   const { material, uniforms } = buildMeteorMaterial();
-  uniforms.uSeed.value = 42 + flight.seed * 7.3;
+  // Seeded by the body id so two rocks in the air are not the same rock.
+  const seed = 42 + (bodyId % 97) * 7.3;
+  uniforms.uSeed.value = seed;
   const rock = new THREE.Mesh(geometry, material);
   rock.castShadow = true;
   rock.receiveShadow = true;
-  // The lab's rock sits in the group with its own slight lean; the tumble
-  // is applied to the group so the fire's hollow follows the mesh.
+  // The lab's rock sits in the group with its own slight lean; the body's
+  // pose goes on the group so the fire's hollow follows the mesh.
   rock.rotation.z = 0.18;
   const embers = buildMeteorEmbers();
   const group = new THREE.Group();
-  group.scale.setScalar(flight.radiusM);
+  group.scale.setScalar(radiusM);
   group.add(rock);
   group.add(embers.points);
   group.visible = false;
-  const spinAxis = new THREE.Vector3(
-    Math.sin(flight.seed * 12.9898),
-    0.6,
-    Math.cos(flight.seed * 78.233),
-  ).normalize();
   const fire: MeteorFireInstance = {
     center: new THREE.Vector3(),
     direction: new THREE.Vector3(0, 1, 0),
-    radiusM: flight.radiusM,
+    radiusM,
     airSpeed: 0,
     inverseRock: new THREE.Matrix4(),
-    seed: 42 + flight.seed * 7.3,
+    seed,
     intensity: 0,
   };
   return {
-    flight,
+    bodyId,
+    radiusM,
     group,
     rock,
     material,
     surface: uniforms,
     embers,
-    spin: new THREE.Quaternion(),
-    spinAxis,
-    airSpeed: 0,
-    lastBurningMs: performance.now(),
+    lastBurningMs: nowMs,
     intensity: 0,
     fire,
     distanceSq: Infinity,
+    firstSeenMs: nowMs,
+    lastPosition: new THREE.Vector3(Infinity, Infinity, Infinity),
   };
 }
 
