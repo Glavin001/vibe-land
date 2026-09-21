@@ -1,0 +1,1210 @@
+{
+  "sourceComparison": [
+    {
+      "checkout": "blast-stress-solver",
+      "file": "blast/source/sdk/extensions/authoring/NvBlastExtAuthoringBondGeneratorImpl.cpp",
+      "sha256": "fd6c51a72d00e012a95891fcf74dae2fa629f35ed995767a75fa528361db7170",
+      "lastChange": "f07ba77f 2024-05-31 Updating Blast SDK to 5.0.6"
+    },
+    {
+      "checkout": "blast-stress-solver",
+      "file": "blast/blast-stress-solver/src/three/autoBonding.ts",
+      "sha256": "39857335bbf4c5b98c2e32b61381aa6b7a5543e13fe1cfe6dae77c34cbe50a22",
+      "lastChange": "2364375f 2026-04-06 feat: add Rapier and Three.js integration layers to blast-stress-solver"
+    },
+    {
+      "checkout": "blast-stress-solver",
+      "file": "blast/blast-stress-solver/structures/verify-autobonds.mjs",
+      "sha256": "c76a30fbf546a621c12efd00e82f156cdbfabcc03311ff0f755bacd63507af94",
+      "lastChange": "97b28b8c 2026-08-28 Author seven hand-built structures with real material strength and geometry-shared fracture"
+    },
+    {
+      "checkout": "blast-stress-solver-2",
+      "file": "blast/source/sdk/extensions/authoring/NvBlastExtAuthoringBondGeneratorImpl.cpp",
+      "sha256": "fd6c51a72d00e012a95891fcf74dae2fa629f35ed995767a75fa528361db7170",
+      "lastChange": "f07ba77f 2024-05-31 Updating Blast SDK to 5.0.6"
+    },
+    {
+      "checkout": "blast-stress-solver-2",
+      "file": "blast/blast-stress-solver/src/three/autoBonding.ts",
+      "sha256": "39857335bbf4c5b98c2e32b61381aa6b7a5543e13fe1cfe6dae77c34cbe50a22",
+      "lastChange": "2364375f 2026-04-06 feat: add Rapier and Three.js integration layers to blast-stress-solver"
+    },
+    {
+      "checkout": "blast-stress-solver-2",
+      "file": "blast/blast-stress-solver/structures/verify-autobonds.mjs",
+      "sha256": "c76a30fbf546a621c12efd00e82f156cdbfabcc03311ff0f755bacd63507af94",
+      "lastChange": "97b28b8c 2026-08-28 Author seven hand-built structures with real material strength and geometry-shared fracture"
+    },
+    {
+      "checkout": "physx-2",
+      "file": "blast/source/sdk/extensions/authoring/NvBlastExtAuthoringBondGeneratorImpl.cpp",
+      "sha256": "fd6c51a72d00e012a95891fcf74dae2fa629f35ed995767a75fa528361db7170",
+      "lastChange": "f07ba77f 2024-05-31 Updating Blast SDK to 5.0.6"
+    },
+    {
+      "checkout": "physx-2",
+      "file": "blast/blast-stress-solver/src/three/autoBonding.ts",
+      "sha256": "39857335bbf4c5b98c2e32b61381aa6b7a5543e13fe1cfe6dae77c34cbe50a22",
+      "lastChange": "e0a93ea7 2026-09-05 Import destruction SDK and add GPU topology and motion foundations"
+    },
+    {
+      "checkout": "physx-2",
+      "file": "blast/blast-stress-solver/structures/verify-autobonds.mjs",
+      "sha256": "c76a30fbf546a621c12efd00e82f156cdbfabcc03311ff0f755bacd63507af94",
+      "lastChange": "e0a93ea7 2026-09-05 Import destruction SDK and add GPU topology and motion foundations"
+    },
+    {
+      "checkout": "physx-2-deployed",
+      "file": "blast/source/sdk/extensions/authoring/NvBlastExtAuthoringBondGeneratorImpl.cpp",
+      "sha256": "fd6c51a72d00e012a95891fcf74dae2fa629f35ed995767a75fa528361db7170",
+      "lastChange": "f07ba77f 2024-05-31 Updating Blast SDK to 5.0.6"
+    },
+    {
+      "checkout": "physx-2-deployed",
+      "file": "blast/blast-stress-solver/src/three/autoBonding.ts",
+      "sha256": "39857335bbf4c5b98c2e32b61381aa6b7a5543e13fe1cfe6dae77c34cbe50a22",
+      "lastChange": "e0a93ea7 2026-09-05 Import destruction SDK and add GPU topology and motion foundations"
+    },
+    {
+      "checkout": "physx-2-deployed",
+      "file": "blast/blast-stress-solver/structures/verify-autobonds.mjs",
+      "sha256": "c76a30fbf546a621c12efd00e82f156cdbfabcc03311ff0f755bacd63507af94",
+      "lastChange": "e0a93ea7 2026-09-05 Import destruction SDK and add GPU topology and motion foundations"
+    },
+    {
+      "checkout": "physx-2-vehicle",
+      "file": "blast/source/sdk/extensions/authoring/NvBlastExtAuthoringBondGeneratorImpl.cpp",
+      "sha256": "fd6c51a72d00e012a95891fcf74dae2fa629f35ed995767a75fa528361db7170",
+      "lastChange": "f07ba77f 2024-05-31 Updating Blast SDK to 5.0.6"
+    },
+    {
+      "checkout": "physx-2-vehicle",
+      "file": "blast/blast-stress-solver/src/three/autoBonding.ts",
+      "sha256": "39857335bbf4c5b98c2e32b61381aa6b7a5543e13fe1cfe6dae77c34cbe50a22",
+      "lastChange": "e0a93ea7 2026-09-05 Import destruction SDK and add GPU topology and motion foundations"
+    },
+    {
+      "checkout": "physx-2-vehicle",
+      "file": "blast/blast-stress-solver/structures/verify-autobonds.mjs",
+      "sha256": "c76a30fbf546a621c12efd00e82f156cdbfabcc03311ff0f755bacd63507af94",
+      "lastChange": "e0a93ea7 2026-09-05 Import destruction SDK and add GPU topology and motion foundations"
+    }
+  ],
+  "analyticContacts": {
+    "sourceRoot": "/root/workspace/physx-2/blast/blast-stress-solver",
+    "toleranceM": 1e-05,
+    "results": [
+      {
+        "offset": 0,
+        "diagonals": [
+          false,
+          false
+        ],
+        "expected": {
+          "centroid": {
+            "x": 0.5,
+            "y": 0,
+            "z": 0
+          },
+          "area": 1
+        },
+        "bonds": [
+          {
+            "node0": 0,
+            "node1": 1,
+            "centroid": {
+              "x": 0.5,
+              "y": -1.2417634698280722e-09,
+              "z": 0
+            },
+            "normal": {
+              "x": 1,
+              "y": 0,
+              "z": 0
+            },
+            "area": 1
+          }
+        ],
+        "centroidErrorM": 1.2417634698280722e-09,
+        "passed": true
+      },
+      {
+        "offset": 0,
+        "diagonals": [
+          true,
+          false
+        ],
+        "expected": {
+          "centroid": {
+            "x": 0.5,
+            "y": 0,
+            "z": 0
+          },
+          "area": 1
+        },
+        "bonds": [
+          {
+            "node0": 0,
+            "node1": 1,
+            "centroid": {
+              "x": 0.5,
+              "y": 0,
+              "z": 0
+            },
+            "normal": {
+              "x": 1,
+              "y": 0,
+              "z": 0
+            },
+            "area": 1
+          }
+        ],
+        "centroidErrorM": 0,
+        "passed": true
+      },
+      {
+        "offset": 0,
+        "diagonals": [
+          false,
+          true
+        ],
+        "expected": {
+          "centroid": {
+            "x": 0.5,
+            "y": 0,
+            "z": 0
+          },
+          "area": 1
+        },
+        "bonds": [
+          {
+            "node0": 0,
+            "node1": 1,
+            "centroid": {
+              "x": 0.5,
+              "y": 0,
+              "z": 0
+            },
+            "normal": {
+              "x": 1,
+              "y": 0,
+              "z": 0
+            },
+            "area": 1
+          }
+        ],
+        "centroidErrorM": 0,
+        "passed": true
+      },
+      {
+        "offset": 0,
+        "diagonals": [
+          true,
+          true
+        ],
+        "expected": {
+          "centroid": {
+            "x": 0.5,
+            "y": 0,
+            "z": 0
+          },
+          "area": 1
+        },
+        "bonds": [
+          {
+            "node0": 0,
+            "node1": 1,
+            "centroid": {
+              "x": 0.5,
+              "y": 1.2417634698280722e-09,
+              "z": 0
+            },
+            "normal": {
+              "x": 1,
+              "y": 0,
+              "z": 0
+            },
+            "area": 1
+          }
+        ],
+        "centroidErrorM": 1.2417634698280722e-09,
+        "passed": true
+      },
+      {
+        "offset": 0.25,
+        "diagonals": [
+          false,
+          false
+        ],
+        "expected": {
+          "centroid": {
+            "x": 0.5,
+            "y": 0.125,
+            "z": 0
+          },
+          "area": 0.75
+        },
+        "bonds": [
+          {
+            "node0": 0,
+            "node1": 1,
+            "centroid": {
+              "x": 0.5,
+              "y": 0.125,
+              "z": -0.0357142873108387
+            },
+            "normal": {
+              "x": 1,
+              "y": 0,
+              "z": 0
+            },
+            "area": 0.75
+          }
+        ],
+        "centroidErrorM": 0.0357142873108387,
+        "passed": false
+      },
+      {
+        "offset": 0.25,
+        "diagonals": [
+          true,
+          false
+        ],
+        "expected": {
+          "centroid": {
+            "x": 0.5,
+            "y": 0.125,
+            "z": 0
+          },
+          "area": 0.75
+        },
+        "bonds": [
+          {
+            "node0": 0,
+            "node1": 1,
+            "centroid": {
+              "x": 0.5,
+              "y": 0.125,
+              "z": 0
+            },
+            "normal": {
+              "x": 1,
+              "y": 0,
+              "z": 0
+            },
+            "area": 0.75
+          }
+        ],
+        "centroidErrorM": 0,
+        "passed": true
+      },
+      {
+        "offset": 0.25,
+        "diagonals": [
+          false,
+          true
+        ],
+        "expected": {
+          "centroid": {
+            "x": 0.5,
+            "y": 0.125,
+            "z": 0
+          },
+          "area": 0.75
+        },
+        "bonds": [
+          {
+            "node0": 0,
+            "node1": 1,
+            "centroid": {
+              "x": 0.5,
+              "y": 0.125,
+              "z": 0
+            },
+            "normal": {
+              "x": 1,
+              "y": 0,
+              "z": 0
+            },
+            "area": 0.75
+          }
+        ],
+        "centroidErrorM": 0,
+        "passed": true
+      },
+      {
+        "offset": 0.25,
+        "diagonals": [
+          true,
+          true
+        ],
+        "expected": {
+          "centroid": {
+            "x": 0.5,
+            "y": 0.125,
+            "z": 0
+          },
+          "area": 0.75
+        },
+        "bonds": [
+          {
+            "node0": 0,
+            "node1": 1,
+            "centroid": {
+              "x": 0.5,
+              "y": 0.125,
+              "z": 0.0357142873108387
+            },
+            "normal": {
+              "x": 1,
+              "y": 0,
+              "z": 0
+            },
+            "area": 0.75
+          }
+        ],
+        "centroidErrorM": 0.0357142873108387,
+        "passed": false
+      },
+      {
+        "offset": 0.5,
+        "diagonals": [
+          false,
+          false
+        ],
+        "expected": {
+          "centroid": {
+            "x": 0.5,
+            "y": 0.25,
+            "z": 0
+          },
+          "area": 0.5
+        },
+        "bonds": [
+          {
+            "node0": 0,
+            "node1": 1,
+            "centroid": {
+              "x": 0.5,
+              "y": 0.25,
+              "z": -0.1428571492433548
+            },
+            "normal": {
+              "x": 1,
+              "y": 0,
+              "z": 0
+            },
+            "area": 0.5
+          }
+        ],
+        "centroidErrorM": 0.1428571492433548,
+        "passed": false
+      },
+      {
+        "offset": 0.5,
+        "diagonals": [
+          true,
+          false
+        ],
+        "expected": {
+          "centroid": {
+            "x": 0.5,
+            "y": 0.25,
+            "z": 0
+          },
+          "area": 0.5
+        },
+        "bonds": [
+          {
+            "node0": 0,
+            "node1": 1,
+            "centroid": {
+              "x": 0.5,
+              "y": 0.25,
+              "z": 0
+            },
+            "normal": {
+              "x": 1,
+              "y": 0,
+              "z": 0
+            },
+            "area": 0.5
+          }
+        ],
+        "centroidErrorM": 0,
+        "passed": true
+      },
+      {
+        "offset": 0.5,
+        "diagonals": [
+          false,
+          true
+        ],
+        "expected": {
+          "centroid": {
+            "x": 0.5,
+            "y": 0.25,
+            "z": 0
+          },
+          "area": 0.5
+        },
+        "bonds": [
+          {
+            "node0": 0,
+            "node1": 1,
+            "centroid": {
+              "x": 0.5,
+              "y": 0.25,
+              "z": 0
+            },
+            "normal": {
+              "x": 1,
+              "y": 0,
+              "z": 0
+            },
+            "area": 0.5
+          }
+        ],
+        "centroidErrorM": 0,
+        "passed": true
+      },
+      {
+        "offset": 0.5,
+        "diagonals": [
+          true,
+          true
+        ],
+        "expected": {
+          "centroid": {
+            "x": 0.5,
+            "y": 0.25,
+            "z": 0
+          },
+          "area": 0.5
+        },
+        "bonds": [
+          {
+            "node0": 0,
+            "node1": 1,
+            "centroid": {
+              "x": 0.5,
+              "y": 0.25,
+              "z": 0.1428571492433548
+            },
+            "normal": {
+              "x": 1,
+              "y": 0,
+              "z": 0
+            },
+            "area": 0.5
+          }
+        ],
+        "centroidErrorM": 0.1428571492433548,
+        "passed": false
+      }
+    ]
+  },
+  "assets": [
+    {
+      "asset": "victorian",
+      "nodes": 6911,
+      "authoredBonds": 15125,
+      "nativeBonds": 15248,
+      "nativeUniquePairs": 15248,
+      "duplicateNativePairs": 0,
+      "matched": 15094,
+      "authoredOnly": 31,
+      "nativeOnly": 154,
+      "nativeOnlyAcrossGroups": 150,
+      "centroidShiftM": {
+        "count": 15094,
+        "min": 1.7881394143159923e-09,
+        "median": 0.005999717720163872,
+        "p95": 0.18527331090415286,
+        "max": 0.541825691694701
+      },
+      "shiftsOver1mm": 7827,
+      "normalAbsoluteDot": {
+        "count": 15094,
+        "min": 0.9999998501489759,
+        "median": 1,
+        "p95": 1,
+        "max": 1.0000004386591315
+      },
+      "areaRatiosNotApplied": {
+        "count": 15094,
+        "min": 0.09575063119803844,
+        "median": 0.9999997980360474,
+        "p95": 1.0000077026867957,
+        "max": 1.0007347442545917
+      },
+      "milliseconds": 3707.1683860000003,
+      "revisions": [
+        {
+          "checkout": "blast-stress-solver",
+          "revision": "ce6de3d3fc916b27c823fa26bbb5490450190c67",
+          "lastScriptChange": "e7f702fe 2026-08-28 Minas Tirith, and the authoring changes a walled city on a mountain needed",
+          "scriptSha256": "111d12292935c6f1a66f96abdfff28bc9bf2d773c17699806cfca2d279eabba9"
+        },
+        {
+          "checkout": "blast-stress-solver-2",
+          "revision": "a0a5af2d31ba18b0c1a8de2a8c321617727f634b",
+          "lastScriptChange": "e7f702fe 2026-08-28 Minas Tirith, and the authoring changes a walled city on a mountain needed",
+          "scriptSha256": "111d12292935c6f1a66f96abdfff28bc9bf2d773c17699806cfca2d279eabba9"
+        },
+        {
+          "checkout": "physx-2",
+          "revision": "8bc7aecb0cbcb011a374b98eee5faaeb5065e78c",
+          "lastScriptChange": "e0a93ea7 2026-09-05 Import destruction SDK and add GPU topology and motion foundations",
+          "scriptSha256": "111d12292935c6f1a66f96abdfff28bc9bf2d773c17699806cfca2d279eabba9"
+        },
+        {
+          "checkout": "physx-2-deployed",
+          "revision": "7e13c515a4b12d92b17d63d24d444c34e7a85330",
+          "lastScriptChange": "e0a93ea7 2026-09-05 Import destruction SDK and add GPU topology and motion foundations",
+          "scriptSha256": "111d12292935c6f1a66f96abdfff28bc9bf2d773c17699806cfca2d279eabba9"
+        },
+        {
+          "checkout": "physx-2-vehicle",
+          "revision": "8bc7aecb0cbcb011a374b98eee5faaeb5065e78c",
+          "lastScriptChange": "e0a93ea7 2026-09-05 Import destruction SDK and add GPU topology and motion foundations",
+          "scriptSha256": "111d12292935c6f1a66f96abdfff28bc9bf2d773c17699806cfca2d279eabba9"
+        }
+      ],
+      "dependencies": {
+        "dist/three.js": "a44e9d0bc8373fe79c17661c5aeb034e0ebddca9443973d6cfb074f75466a4c5",
+        "dist/stress_solver.cjs": "40d5224a0cb8ec71d0d3ec38023d898829cde10be9258513b36081fe0afd8d15",
+        "dist/stress_solver.wasm": "0b43ab9595cf4609c3c5f20eb277168f81afa36c19bc090387447089997e734a"
+      },
+      "sourceRoot": "/root/workspace/physx-2/blast/blast-stress-solver",
+      "candidates": [
+        {
+          "mode": "baseline",
+          "slug": "lab-autobond-victorian-baseline",
+          "bonds": 15125,
+          "sha256": "4d0805d3358a2cfe39e713c84da02dcc49ae456dad8dc1d6c2bb934c3f2f92c2",
+          "validation": {
+            "passed": true,
+            "chunks": 6911,
+            "bonds": 15125,
+            "components": 32,
+            "shapes": 73,
+            "overlapCount": 0,
+            "errors": [],
+            "warnings": []
+          }
+        },
+        {
+          "mode": "centroids",
+          "slug": "lab-autobond-victorian-centroids",
+          "bonds": 15125,
+          "sha256": "bbbd445e0d11b336fa11817747195d7d1fa564be514bfd25ff1ee1d6b4d27fd8",
+          "validation": {
+            "passed": true,
+            "chunks": 6911,
+            "bonds": 15125,
+            "components": 32,
+            "shapes": 73,
+            "overlapCount": 0,
+            "errors": [],
+            "warnings": []
+          }
+        },
+        {
+          "mode": "matched-topology",
+          "slug": "lab-autobond-victorian-matched-topology",
+          "bonds": 15094,
+          "sha256": "df5d086f10b36e6c102571da75fecd6f2a0266b1ddc7ee7188f4dfc51919af79",
+          "validation": {
+            "passed": true,
+            "chunks": 6911,
+            "bonds": 15094,
+            "components": 32,
+            "shapes": 73,
+            "overlapCount": 0,
+            "errors": [],
+            "warnings": []
+          }
+        }
+      ],
+      "cases": [
+        {
+          "mode": "baseline",
+          "passed": true,
+          "packSha256": "4d0805d3358a2cfe39e713c84da02dcc49ae456dad8dc1d6c2bb934c3f2f92c2",
+          "stability": {
+            "brokenBonds": 0,
+            "crushedChunks": 0,
+            "equilibriumTick": 99,
+            "gravity": 9.81,
+            "idleSeconds": 30,
+            "passed": true
+          },
+          "lastStatus": {
+            "converged": true,
+            "degraded": false,
+            "error": 0,
+            "frame": 1899,
+            "iterations": 4,
+            "observed": true,
+            "tick": 1899
+          },
+          "timing": {
+            "exclusiveGpu": false,
+            "medianMs": 14.412973000000001,
+            "p95Ms": 14.818349,
+            "samples": 1899
+          },
+          "solver": {
+            "bendGainMax": 3,
+            "damageRate": 2,
+            "fibreBending": true,
+            "gpuIslandRepair": true,
+            "gravity": 9.81,
+            "maxIterations": "16",
+            "preserveContactPairs": true,
+            "tolerance": 1e-05,
+            "warmStart": true
+          },
+          "gpuCapacity": {
+            "collisionStackBytes": 134217728,
+            "contacts": 1048576,
+            "heapBytes": 536870912,
+            "patches": 1048576
+          },
+          "sdkRevision": "8bc7aecb0cbcb011a374b98eee5faaeb5065e78c",
+          "sdkContentHash": "9b4f20232fd11d62748fb3803907b967c09a9700b135a2b21ef8174e976ca881",
+          "hardware": "NVIDIA GeForce RTX 4090, 595.71.05, 15861 MiB, 96 %",
+          "reviewBinarySha256": "0ff29e654039ab3131126cc158e4be2038cf0d278cafb5fc86756122f679a530"
+        },
+        {
+          "mode": "centroids",
+          "passed": true,
+          "packSha256": "bbbd445e0d11b336fa11817747195d7d1fa564be514bfd25ff1ee1d6b4d27fd8",
+          "stability": {
+            "brokenBonds": 0,
+            "crushedChunks": 0,
+            "equilibriumTick": 99,
+            "gravity": 9.81,
+            "idleSeconds": 30,
+            "passed": true
+          },
+          "lastStatus": {
+            "converged": true,
+            "degraded": false,
+            "error": 0,
+            "frame": 1899,
+            "iterations": 4,
+            "observed": true,
+            "tick": 1899
+          },
+          "timing": {
+            "exclusiveGpu": false,
+            "medianMs": 14.441125000000001,
+            "p95Ms": 14.847754,
+            "samples": 1899
+          },
+          "solver": {
+            "bendGainMax": 3,
+            "damageRate": 2,
+            "fibreBending": true,
+            "gpuIslandRepair": true,
+            "gravity": 9.81,
+            "maxIterations": "16",
+            "preserveContactPairs": true,
+            "tolerance": 1e-05,
+            "warmStart": true
+          },
+          "gpuCapacity": {
+            "collisionStackBytes": 134217728,
+            "contacts": 1048576,
+            "heapBytes": 536870912,
+            "patches": 1048576
+          },
+          "sdkRevision": "8bc7aecb0cbcb011a374b98eee5faaeb5065e78c",
+          "sdkContentHash": "9b4f20232fd11d62748fb3803907b967c09a9700b135a2b21ef8174e976ca881",
+          "hardware": "NVIDIA GeForce RTX 4090, 595.71.05, 15861 MiB, 96 %",
+          "reviewBinarySha256": "0ff29e654039ab3131126cc158e4be2038cf0d278cafb5fc86756122f679a530"
+        },
+        {
+          "mode": "matched-topology",
+          "passed": true,
+          "packSha256": "df5d086f10b36e6c102571da75fecd6f2a0266b1ddc7ee7188f4dfc51919af79",
+          "stability": {
+            "brokenBonds": 0,
+            "crushedChunks": 0,
+            "equilibriumTick": 99,
+            "gravity": 9.81,
+            "idleSeconds": 30,
+            "passed": true
+          },
+          "lastStatus": {
+            "converged": true,
+            "degraded": false,
+            "error": 0,
+            "frame": 1899,
+            "iterations": 4,
+            "observed": true,
+            "tick": 1899
+          },
+          "timing": {
+            "exclusiveGpu": false,
+            "medianMs": 14.428923,
+            "p95Ms": 14.812629000000001,
+            "samples": 1899
+          },
+          "solver": {
+            "bendGainMax": 3,
+            "damageRate": 2,
+            "fibreBending": true,
+            "gpuIslandRepair": true,
+            "gravity": 9.81,
+            "maxIterations": "16",
+            "preserveContactPairs": true,
+            "tolerance": 1e-05,
+            "warmStart": true
+          },
+          "gpuCapacity": {
+            "collisionStackBytes": 134217728,
+            "contacts": 1048576,
+            "heapBytes": 536870912,
+            "patches": 1048576
+          },
+          "sdkRevision": "8bc7aecb0cbcb011a374b98eee5faaeb5065e78c",
+          "sdkContentHash": "9b4f20232fd11d62748fb3803907b967c09a9700b135a2b21ef8174e976ca881",
+          "hardware": "NVIDIA GeForce RTX 4090, 595.71.05, 15861 MiB, 96 %",
+          "reviewBinarySha256": "0ff29e654039ab3131126cc158e4be2038cf0d278cafb5fc86756122f679a530"
+        }
+      ],
+      "largestShifts": [
+        {
+          "node0": 5536,
+          "node1": 5605,
+          "roles": [
+            "gable",
+            "roof"
+          ],
+          "groups": [
+            "building",
+            "building"
+          ],
+          "centroidShiftM": 0.541825691694701,
+          "normalAbsoluteDot": 1.0000004386591315,
+          "areaRatio": 0.9999992532217623,
+          "authoredCentroid": {
+            "x": 5,
+            "y": 10.463333,
+            "z": -7.91
+          },
+          "nativeCentroid": {
+            "x": 5.520771503448486,
+            "y": 10.31578254699707,
+            "z": -7.934514999389648
+          }
+        },
+        {
+          "node0": 5571,
+          "node1": 5615,
+          "roles": [
+            "roof",
+            "ridge-beam"
+          ],
+          "groups": [
+            "building",
+            "building"
+          ],
+          "centroidShiftM": 0.5214648808932474,
+          "normalAbsoluteDot": 1.000000374143332,
+          "areaRatio": 0.4470113830162626,
+          "authoredCentroid": {
+            "x": 0.063255,
+            "y": 11.862078,
+            "z": -4.9325
+          },
+          "nativeCentroid": {
+            "x": 0.030194688588380814,
+            "y": 11.87144660949707,
+            "z": -4.412168502807617
+          }
+        },
+        {
+          "node0": 5562,
+          "node1": 5615,
+          "roles": [
+            "roof",
+            "ridge-beam"
+          ],
+          "groups": [
+            "building",
+            "building"
+          ],
+          "centroidShiftM": 0.5214648804208887,
+          "normalAbsoluteDot": 1.000000374143332,
+          "areaRatio": 0.44701164073933036,
+          "authoredCentroid": {
+            "x": -0.063255,
+            "y": 11.862078,
+            "z": -4.9325
+          },
+          "nativeCentroid": {
+            "x": -0.03019469603896141,
+            "y": 11.87144660949707,
+            "z": -4.412168502807617
+          }
+        }
+      ]
+    },
+    {
+      "asset": "workshop",
+      "nodes": 3103,
+      "authoredBonds": 6568,
+      "nativeBonds": 6552,
+      "nativeUniquePairs": 6552,
+      "duplicateNativePairs": 0,
+      "matched": 6529,
+      "authoredOnly": 39,
+      "nativeOnly": 23,
+      "nativeOnlyAcrossGroups": 23,
+      "centroidShiftM": {
+        "count": 6529,
+        "min": 6.318092340973358e-09,
+        "median": 8.257211615612604e-07,
+        "p95": 0.21278070535114468,
+        "max": 0.3709837987898786
+      },
+      "shiftsOver1mm": 2695,
+      "normalAbsoluteDot": {
+        "count": 6529,
+        "min": 0.9999998663162589,
+        "median": 1,
+        "p95": 1,
+        "max": 1.0000001043177844
+      },
+      "areaRatiosNotApplied": {
+        "count": 6529,
+        "min": 0.09631379024884468,
+        "median": 1.0000003977513416,
+        "p95": 1.0000077026867957,
+        "max": 1.0002311696421047
+      },
+      "milliseconds": 1057.418302,
+      "revisions": [
+        {
+          "checkout": "blast-stress-solver",
+          "revision": "ce6de3d3fc916b27c823fa26bbb5490450190c67",
+          "lastScriptChange": "e7f702fe 2026-08-28 Minas Tirith, and the authoring changes a walled city on a mountain needed",
+          "scriptSha256": "111d12292935c6f1a66f96abdfff28bc9bf2d773c17699806cfca2d279eabba9"
+        },
+        {
+          "checkout": "blast-stress-solver-2",
+          "revision": "a0a5af2d31ba18b0c1a8de2a8c321617727f634b",
+          "lastScriptChange": "e7f702fe 2026-08-28 Minas Tirith, and the authoring changes a walled city on a mountain needed",
+          "scriptSha256": "111d12292935c6f1a66f96abdfff28bc9bf2d773c17699806cfca2d279eabba9"
+        },
+        {
+          "checkout": "physx-2",
+          "revision": "8bc7aecb0cbcb011a374b98eee5faaeb5065e78c",
+          "lastScriptChange": "e0a93ea7 2026-09-05 Import destruction SDK and add GPU topology and motion foundations",
+          "scriptSha256": "111d12292935c6f1a66f96abdfff28bc9bf2d773c17699806cfca2d279eabba9"
+        },
+        {
+          "checkout": "physx-2-deployed",
+          "revision": "7e13c515a4b12d92b17d63d24d444c34e7a85330",
+          "lastScriptChange": "e0a93ea7 2026-09-05 Import destruction SDK and add GPU topology and motion foundations",
+          "scriptSha256": "111d12292935c6f1a66f96abdfff28bc9bf2d773c17699806cfca2d279eabba9"
+        },
+        {
+          "checkout": "physx-2-vehicle",
+          "revision": "8bc7aecb0cbcb011a374b98eee5faaeb5065e78c",
+          "lastScriptChange": "e0a93ea7 2026-09-05 Import destruction SDK and add GPU topology and motion foundations",
+          "scriptSha256": "111d12292935c6f1a66f96abdfff28bc9bf2d773c17699806cfca2d279eabba9"
+        }
+      ],
+      "dependencies": {
+        "dist/three.js": "a44e9d0bc8373fe79c17661c5aeb034e0ebddca9443973d6cfb074f75466a4c5",
+        "dist/stress_solver.cjs": "40d5224a0cb8ec71d0d3ec38023d898829cde10be9258513b36081fe0afd8d15",
+        "dist/stress_solver.wasm": "0b43ab9595cf4609c3c5f20eb277168f81afa36c19bc090387447089997e734a"
+      },
+      "sourceRoot": "/root/workspace/physx-2/blast/blast-stress-solver",
+      "candidates": [
+        {
+          "mode": "baseline",
+          "slug": "lab-autobond-workshop-baseline",
+          "bonds": 6568,
+          "sha256": "2786ae2b32238a2075f03c57b8667266a222771f3aca9689b0e8059b474e4a59",
+          "validation": {
+            "passed": true,
+            "chunks": 3103,
+            "bonds": 6568,
+            "components": 5,
+            "shapes": 26,
+            "overlapCount": 0,
+            "errors": [],
+            "warnings": []
+          }
+        },
+        {
+          "mode": "centroids",
+          "slug": "lab-autobond-workshop-centroids",
+          "bonds": 6568,
+          "sha256": "a7aa886d4de458b0036f9372db5fde00f0a626524142321b173836d7691eecfa",
+          "validation": {
+            "passed": true,
+            "chunks": 3103,
+            "bonds": 6568,
+            "components": 5,
+            "shapes": 26,
+            "overlapCount": 0,
+            "errors": [],
+            "warnings": []
+          }
+        },
+        {
+          "mode": "matched-topology",
+          "slug": "lab-autobond-workshop-matched-topology",
+          "bonds": 6529,
+          "sha256": "6cf5e2d6f26ee826479514c73b35f576c09605e628410f33526123a3293c0fb8",
+          "validation": {
+            "passed": true,
+            "chunks": 3103,
+            "bonds": 6529,
+            "components": 5,
+            "shapes": 26,
+            "overlapCount": 0,
+            "errors": [],
+            "warnings": []
+          }
+        }
+      ],
+      "cases": [
+        {
+          "mode": "baseline",
+          "passed": true,
+          "packSha256": "2786ae2b32238a2075f03c57b8667266a222771f3aca9689b0e8059b474e4a59",
+          "stability": {
+            "brokenBonds": 0,
+            "crushedChunks": 0,
+            "equilibriumTick": 108,
+            "gravity": 9.81,
+            "idleSeconds": 30,
+            "passed": true
+          },
+          "lastStatus": {
+            "converged": true,
+            "degraded": false,
+            "error": 0,
+            "frame": 1908,
+            "iterations": 4,
+            "observed": true,
+            "tick": 1908
+          },
+          "timing": {
+            "exclusiveGpu": false,
+            "medianMs": 11.441277999999999,
+            "p95Ms": 11.878654000000001,
+            "samples": 1908
+          },
+          "solver": {
+            "bendGainMax": 3,
+            "damageRate": 2,
+            "fibreBending": true,
+            "gpuIslandRepair": true,
+            "gravity": 9.81,
+            "maxIterations": "16",
+            "preserveContactPairs": true,
+            "tolerance": 1e-05,
+            "warmStart": true
+          },
+          "gpuCapacity": {
+            "collisionStackBytes": 134217728,
+            "contacts": 1048576,
+            "heapBytes": 536870912,
+            "patches": 1048576
+          },
+          "sdkRevision": "8bc7aecb0cbcb011a374b98eee5faaeb5065e78c",
+          "sdkContentHash": "9b4f20232fd11d62748fb3803907b967c09a9700b135a2b21ef8174e976ca881",
+          "hardware": "NVIDIA GeForce RTX 4090, 595.71.05, 15861 MiB, 96 %",
+          "reviewBinarySha256": "0ff29e654039ab3131126cc158e4be2038cf0d278cafb5fc86756122f679a530"
+        },
+        {
+          "mode": "centroids",
+          "passed": true,
+          "packSha256": "a7aa886d4de458b0036f9372db5fde00f0a626524142321b173836d7691eecfa",
+          "stability": {
+            "brokenBonds": 0,
+            "crushedChunks": 0,
+            "equilibriumTick": 110,
+            "gravity": 9.81,
+            "idleSeconds": 30,
+            "passed": true
+          },
+          "lastStatus": {
+            "converged": true,
+            "degraded": false,
+            "error": 0,
+            "frame": 1910,
+            "iterations": 4,
+            "observed": true,
+            "tick": 1910
+          },
+          "timing": {
+            "exclusiveGpu": false,
+            "medianMs": 11.412654,
+            "p95Ms": 11.858597,
+            "samples": 1910
+          },
+          "solver": {
+            "bendGainMax": 3,
+            "damageRate": 2,
+            "fibreBending": true,
+            "gpuIslandRepair": true,
+            "gravity": 9.81,
+            "maxIterations": "16",
+            "preserveContactPairs": true,
+            "tolerance": 1e-05,
+            "warmStart": true
+          },
+          "gpuCapacity": {
+            "collisionStackBytes": 134217728,
+            "contacts": 1048576,
+            "heapBytes": 536870912,
+            "patches": 1048576
+          },
+          "sdkRevision": "8bc7aecb0cbcb011a374b98eee5faaeb5065e78c",
+          "sdkContentHash": "9b4f20232fd11d62748fb3803907b967c09a9700b135a2b21ef8174e976ca881",
+          "hardware": "NVIDIA GeForce RTX 4090, 595.71.05, 15861 MiB, 96 %",
+          "reviewBinarySha256": "0ff29e654039ab3131126cc158e4be2038cf0d278cafb5fc86756122f679a530"
+        },
+        {
+          "mode": "matched-topology",
+          "passed": true,
+          "packSha256": "6cf5e2d6f26ee826479514c73b35f576c09605e628410f33526123a3293c0fb8",
+          "stability": {
+            "brokenBonds": 0,
+            "crushedChunks": 0,
+            "equilibriumTick": 107,
+            "gravity": 9.81,
+            "idleSeconds": 30,
+            "passed": true
+          },
+          "lastStatus": {
+            "converged": true,
+            "degraded": false,
+            "error": 0,
+            "frame": 1907,
+            "iterations": 2,
+            "observed": true,
+            "tick": 1907
+          },
+          "timing": {
+            "exclusiveGpu": false,
+            "medianMs": 10.176835,
+            "p95Ms": 10.953315,
+            "samples": 1907
+          },
+          "solver": {
+            "bendGainMax": 3,
+            "damageRate": 2,
+            "fibreBending": true,
+            "gpuIslandRepair": true,
+            "gravity": 9.81,
+            "maxIterations": "16",
+            "preserveContactPairs": true,
+            "tolerance": 1e-05,
+            "warmStart": true
+          },
+          "gpuCapacity": {
+            "collisionStackBytes": 134217728,
+            "contacts": 1048576,
+            "heapBytes": 536870912,
+            "patches": 1048576
+          },
+          "sdkRevision": "8bc7aecb0cbcb011a374b98eee5faaeb5065e78c",
+          "sdkContentHash": "9b4f20232fd11d62748fb3803907b967c09a9700b135a2b21ef8174e976ca881",
+          "hardware": "NVIDIA GeForce RTX 4090, 595.71.05, 15861 MiB, 99 %",
+          "reviewBinarySha256": "0ff29e654039ab3131126cc158e4be2038cf0d278cafb5fc86756122f679a530"
+        }
+      ],
+      "largestShifts": [
+        {
+          "node0": 571,
+          "node1": 888,
+          "roles": [
+            "wall",
+            "siding"
+          ],
+          "groups": [
+            "building",
+            "building"
+          ],
+          "centroidShiftM": 0.3709837987898786,
+          "normalAbsoluteDot": 1,
+          "areaRatio": 0.9999909635746117,
+          "authoredCentroid": {
+            "x": -6.45,
+            "y": 4.3675,
+            "z": -6
+          },
+          "nativeCentroid": {
+            "x": -6.820981502532959,
+            "y": 4.366194725036621,
+            "z": -6.000000476837158
+          }
+        },
+        {
+          "node0": 574,
+          "node1": 889,
+          "roles": [
+            "wall",
+            "siding"
+          ],
+          "groups": [
+            "building",
+            "building"
+          ],
+          "centroidShiftM": 0.3642388271215424,
+          "normalAbsoluteDot": 1,
+          "areaRatio": 0.9999910576475992,
+          "authoredCentroid": {
+            "x": -5.36,
+            "y": 4.3675,
+            "z": -6
+          },
+          "nativeCentroid": {
+            "x": -5.724236488342285,
+            "y": 4.366194725036621,
+            "z": -6.000000476837158
+          }
+        },
+        {
+          "node0": 576,
+          "node1": 890,
+          "roles": [
+            "wall",
+            "siding"
+          ],
+          "groups": [
+            "building",
+            "building"
+          ],
+          "centroidShiftM": 0.3642384265809014,
+          "normalAbsoluteDot": 1,
+          "areaRatio": 0.9999909426695035,
+          "authoredCentroid": {
+            "x": -4.28,
+            "y": 4.3675,
+            "z": -6
+          },
+          "nativeCentroid": {
+            "x": -4.644236087799072,
+            "y": 4.366194725036621,
+            "z": -6.000000476837158
+          }
+        }
+      ]
+    }
+  ],
+  "exclusiveGpu": false,
+  "promoted": false
+}
