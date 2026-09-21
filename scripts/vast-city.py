@@ -268,7 +268,8 @@ def ready(process, port):
 
 # Knobs that identify which city is being served. These persist across a bare
 # redeploy; everything else comes from the invoking environment only.
-STICKY = ('VIBE_CITY_SCENE', 'VIBE_CITY_GRID', 'VIBE_CITY_DESTRUCTION')
+STICKY = ('VIBE_CITY_SCENE', 'VIBE_CITY_GRID', 'VIBE_CITY_DESTRUCTION',
+          'PHYSX_DESTRUCTION_RUNTIME_DIR')
 
 
 def deploy(d, binary, force=False):
@@ -333,7 +334,15 @@ def deploy(d, binary, force=False):
         # Architecture 89 is qualified on CUDA 12.8; see the destruction
         # runtime's CMakeLists in physx-2.
         env['CUDA_HOME'] = os.environ.get('CUDA_HOME', '/usr/local/cuda-12.8')
-        env['LD_LIBRARY_PATH'] = f'{env["CUDA_HOME"]}/lib64:{libdir}'
+        runtime_dir = os.environ.get('PHYSX_DESTRUCTION_RUNTIME_DIR',
+                                     env.get('PHYSX_DESTRUCTION_RUNTIME_DIR'))
+        if runtime_dir:
+            runtime_dir = str(Path(runtime_dir).resolve())
+            if not Path(runtime_dir, 'libPhysXDestructionGpuRuntime_64.so').is_file():
+                raise RuntimeError(f'No native destruction runtime in {runtime_dir}')
+            env['PHYSX_DESTRUCTION_RUNTIME_DIR'] = runtime_dir
+        env['LD_LIBRARY_PATH'] = ':'.join(p for p in
+            (runtime_dir, f'{env["CUDA_HOME"]}/lib64', libdir) if p)
     else:
         env['LD_LIBRARY_PATH'] = '/root/PhysX/physx/install/linux-clang/PhysX/bin/linux.x86_64/release'
     # Restart unless the running process already has this exact configuration.

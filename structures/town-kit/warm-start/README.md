@@ -98,6 +98,16 @@ partial coverage, mismatched settings and malformed-cache rejection. It uses the
 independent `binary-review` executable. `review.mjs BUILDING_ID` supports a single
 passing-building pilot; its output explicitly does not qualify the complete town.
 
+## Deployment runtime selection
+
+`vast-city.py` accepts `PHYSX_DESTRUCTION_RUNTIME_DIR` to select a private native
+runtime alongside the installed SDK libraries. This directory persists with the
+scene across bare redeploys. For the reviewed warm scene, stage the exact runtime
+whose hash is recorded in `results.json`, then set this variable and
+`VIBE_CITY_SCENE` to `out/bayline-proven-36.vlsw` when invoking the normal deployment
+helper. Confirm the server logs `imported warm guesses` for 37 structures; a
+runtime/settings mismatch is a cold fallback, not a successful warm deployment.
+
 ## VLSW v1 file contract
 
 The container embeds the unchanged VLSP scene plus six little-endian f32 values
