@@ -392,6 +392,19 @@ fn asset_path() -> PathBuf {
 
 fn build_scene() -> anyhow::Result<CityScene> {
     let path = asset_path();
+    // Binary bundles already contain the complete placement recipe. Preserve
+    // instance boundaries instead of treating the whole town as one building.
+    let payload = std::fs::read(&path)
+        .with_context(|| format!("reading city scene {}", path.display()))?;
+    if payload.starts_with(b"VLSP") {
+        anyhow::ensure!(
+            std::env::var("VIBE_CITY_GRID").map_or(true, |grid| grid == "1"),
+            "VLSP town bundles already contain placements; use VIBE_CITY_GRID=1"
+        );
+        return vibe_land_destruction::scene_binary::decode_city(&payload)
+            .map_err(|error| anyhow::anyhow!("loading city bundle {}: {error}", path.display()));
+    }
+    drop(payload);
     let pack = load_scene_pack_file(&path)
         .map_err(|error| anyhow::anyhow!("{error}"))
         .with_context(|| format!("loading city scene pack from {}", path.display()))?;

@@ -18,6 +18,8 @@ for(const kind of ['truncated','version','checksum','node-reference','shape-refe
 // The independent legacy assembly path supplies the baseline; it is never
 // reconstructed from the binary being tested. Temporary large JSON is removed.
 const baseline='out/binary-tests/fresh-baseline.json',report={fixture,malformedCases:6,build};
+report.partitionFixture=JSON.parse(run(reviewer,['partition','out/binary-tests/fixture.vlsp']));
+report.partitionTown=JSON.parse(run(reviewer,['partition',build.output]));
 try{
  writeFileSync(baseline,JSON.stringify(buildBaylineCivicTown().pack));
  report.equivalence=JSON.parse(run(reviewer,['compare',baseline,build.output]));

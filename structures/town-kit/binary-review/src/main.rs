@@ -58,6 +58,39 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 serde_json::json!({"passed":true,"chunks":b.nodes.len(),"bonds":b.bonds.len(),"fingerprint":fingerprint(&b)})
             );
         }
+        Some("partition") => {
+            let bytes = std::fs::read(&args[2])?;
+            let original = vibe_land_destruction::scene_binary::decode(&bytes)?;
+            let scene = vibe_land_destruction::scene_binary::decode_city(&bytes)?;
+            let mut rebuilt = original.clone();
+            rebuilt.nodes.clear(); rebuilt.bonds.clear(); rebuilt.node_sizes.clear();
+            rebuilt.node_colliders.clear(); rebuilt.node_types.clear(); rebuilt.node_pieces.clear();
+            let mut chunk_ids = std::collections::HashSet::new();
+            let mut bond_ids = std::collections::HashSet::new();
+            let mut counts = Vec::new();
+            for instance in &scene.instances {
+                let p = &scene.variant_for(instance).pack;
+                let base = rebuilt.nodes.len() as u32;
+                counts.push((p.nodes.len(), p.bonds.len()));
+                for n in 0..p.nodes.len() {
+                    assert!(chunk_ids.insert(vibe_land_destruction::ids::chunk_id(instance.structure_id, n as u32)));
+                }
+                for (j, bond) in p.bonds.iter().enumerate() {
+                    assert!(bond_ids.insert(vibe_land_destruction::ids::bond_id(instance.structure_id, j as u32)));
+                    assert!((bond.node0 as usize) < p.nodes.len() && (bond.node1 as usize) < p.nodes.len());
+                    let mut b = *bond; b.node0 += base; b.node1 += base; rebuilt.bonds.push(b);
+                }
+                rebuilt.nodes.extend_from_slice(&p.nodes);
+                rebuilt.node_sizes.extend_from_slice(&p.node_sizes);
+                rebuilt.node_colliders.extend_from_slice(&p.node_colliders);
+                rebuilt.node_types.extend_from_slice(&p.node_types);
+                rebuilt.node_pieces.extend_from_slice(&p.node_pieces);
+            }
+            compare(&original, &rebuilt);
+            let manifest = vibe_land_destruction::manifest::DestructionManifest::from_city(&scene);
+            assert_eq!(manifest.structures.len(), scene.instances.len());
+            println!("{}", serde_json::json!({"passed":true,"structures":counts,"chunks":chunk_ids.len(),"bonds":bond_ids.len(),"fingerprint":fingerprint(&rebuilt)}));
+        }
         Some("reject") => {
             assert!(load_scene_pack_file(Path::new(&args[2])).is_err());
             println!("rejected malformed bundle");
@@ -83,7 +116,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 serde_json::json!({"bytes":std::fs::metadata(&args[2])?.len(),"loadMilliseconds":ms,"peakMemory":rss,"chunks":p.nodes.len(),"bonds":p.bonds.len(),"hulls":hulls,"fingerprint":fingerprint(&p)})
             );
         }
-        _ => return Err("usage: compare JSON VLSP | measure FILE | reject FILE".into()),
+        _ => return Err("usage: compare JSON VLSP | measure FILE | partition VLSP | reject FILE".into()),
     }
     Ok(())
 }

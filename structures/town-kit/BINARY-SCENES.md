@@ -50,10 +50,19 @@ VIBE_CITY_VARIED_HEIGHTS=0
 VIBE_CITY_DESTRUCTION=native
 ```
 
-This implementation does not restart/redeploy the live server, change the VLCM
-network format, or qualify the town's outstanding physics failures. The loader
-expands templates into the existing ScenePack API; it is not a zero-copy physics
-engine and does not make intact buildings share mutable simulation state.
+The server recognizes a binary town as an already composed scene, with no floor
+truncation or additional grid replication (`VIBE_CITY_GRID=1`). Native chunks have
+16-bit local indices, so complete placements are grouped into bounded structures
+without cutting buildings or introducing bonds between placements. The current
+town uses three structures: 65,502 / 64,105 / 59,315 chunks. Material, collider,
+piece and bond data remain exact; structure-local endpoints are remapped and all
+network IDs remain distinct. A placement exceeding the per-structure limits is
+rejected. The existing VLCM network format remains unchanged.
+
+Binary generation itself does not deploy anything or qualify the town's outstanding
+physics failures. The loader expands templates into the existing ScenePack API;
+it is not a zero-copy physics engine and does not make intact buildings share
+mutable simulation state.
 
 ## Cross-language review
 

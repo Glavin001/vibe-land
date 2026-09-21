@@ -357,3 +357,93 @@ pub fn decode(bytes: &[u8]) -> R<ScenePack> {
     }
     Ok(pack)
 }
+
+/// Preserve authored placement boundaries when loading a complete town. The
+/// network has a bounded structure namespace, so adjacent placements are packed
+/// into batches without ever splitting a building or adding inter-instance bonds.
+pub fn decode_city(bytes: &[u8]) -> R<crate::city::CityScene> {
+    use crate::city::{pack_height_m, BuildingInstance, CityScene, CitySceneDesc};
+    use crate::ids::{MAX_BONDS_PER_STRUCTURE, MAX_NODES_PER_STRUCTURE, MAX_STRUCTURES};
+    use crate::variants::BuildingVariant;
+    let pack = decode(bytes)?;
+    // decode validated the descriptor, references, checksums and expanded ranges.
+    let len = u32_at(bytes, 8)? as usize;
+    let header: Header =
+        serde_json::from_slice(&bytes[64..64 + len]).map_err(|e| bad(format!("header: {e}")))?;
+    let mut ranges = Vec::new();
+    let (mut ns, mut bs, mut ne, mut be) = (0usize, 0usize, 0usize, 0usize);
+    for instance in &header.instances {
+        let template = &header.templates[instance.template];
+        if template.node_count == 0
+            || template.node_count > MAX_NODES_PER_STRUCTURE as usize
+            || template.bond_count > MAX_BONDS_PER_STRUCTURE as usize
+        {
+            return Err(bad("one placement exceeds runtime structure limits"));
+        }
+        if ne - ns + template.node_count > MAX_NODES_PER_STRUCTURE as usize
+            || be - bs + template.bond_count > MAX_BONDS_PER_STRUCTURE as usize
+        {
+            ranges.push((ns, ne, bs, be));
+            ns = ne;
+            bs = be;
+        }
+        ne += template.node_count;
+        be += template.bond_count;
+    }
+    if ne > ns {
+        ranges.push((ns, ne, bs, be));
+    }
+    if ranges.is_empty() || ranges.len() > MAX_STRUCTURES as usize {
+        return Err(bad("scene exceeds runtime structure namespace"));
+    }
+    let mut variants = Vec::with_capacity(ranges.len());
+    let mut instances = Vec::with_capacity(ranges.len());
+    for (index, (ns, ne, bs, be)) in ranges.into_iter().enumerate() {
+        let mut bonds = pack.bonds[bs..be].to_vec();
+        for bond in &mut bonds {
+            // A format instance cannot bond to another instance. Check this
+            // invariant here too, before converting global endpoints to local IDs.
+            if bond.node0 < ns as u32
+                || bond.node0 >= ne as u32
+                || bond.node1 < ns as u32
+                || bond.node1 >= ne as u32
+            {
+                return Err(bad("bond crosses runtime structure boundary"));
+            }
+            bond.node0 -= ns as u32;
+            bond.node1 -= ns as u32;
+        }
+        let part = ScenePack {
+            title: pack.title.clone(),
+            version: pack.version,
+            stress_limits: pack.stress_limits,
+            materials: pack.materials.clone(),
+            appearances: pack.appearances.clone(),
+            nodes: pack.nodes[ns..ne].to_vec(),
+            bonds,
+            node_sizes: pack.node_sizes[ns..ne].to_vec(),
+            node_colliders: pack.node_colliders[ns..ne].to_vec(),
+            node_types: pack.node_types[ns..ne].to_vec(),
+            node_pieces: pack.node_pieces[ns..ne].to_vec(),
+        };
+        variants.push(BuildingVariant {
+            height: pack_height_m(&part),
+            floors: 1,
+            pack: part,
+        });
+        instances.push(BuildingInstance {
+            structure_id: index as u32,
+            variant_index: index,
+            offset: Vec3::ZERO,
+        });
+    }
+    Ok(CityScene {
+        desc: CitySceneDesc {
+            grid: 1,
+            pitch_m: 0.0,
+            varied_heights: false,
+        },
+        variants,
+        instances,
+    })
+}
