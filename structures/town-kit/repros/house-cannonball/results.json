@@ -1,0 +1,2221 @@
+{
+  "qualification": "Experimental: no town promotion; intact and shot-specific results only",
+  "exclusiveGpu": false,
+  "caseRoot": "/root/workspace/vibe-land-4/structures/town-kit/out/reviews/house-cannonball",
+  "cases": [
+    {
+      "case": "bungalow",
+      "assetSha256": "87890cd779d39665d49e4c7a69c55f3e78210fba2d81b9b326de3b54a5a68baf",
+      "chunks": 1886,
+      "bonds": 3820,
+      "intact": {
+        "idleTicks": 1800,
+        "passed": true,
+        "ticks": 1835
+      },
+      "impact": {
+        "broken": 2203,
+        "escapedBodies": 0,
+        "last": {
+          "awake": 622,
+          "bodies": 630,
+          "broken": 2203,
+          "contacts": 17471,
+          "converged": false,
+          "crushed": 0,
+          "dynamicNodes": 1605,
+          "iterations": 16,
+          "ms": 2.139676,
+          "speed": 0.16512811183929443,
+          "tick": 1800
+        },
+        "maxAwake": 622,
+        "peakSpeedMs": 23.28371238708496,
+        "unconvergedTicks": 1796
+      },
+      "completed": true,
+      "error": null,
+      "stressTopologyFailure": null,
+      "runtime": {
+        "path": "/root/workspace/vibe-land-4/.certs/vast-city/warm-runtime/libPhysXDestructionGpuRuntime_64.so",
+        "sha256": "d4284d2da42a4751e30548fb30f2ac44f7503efb75a9b40e6db017353327e36e"
+      },
+      "brokenStructuralConnections": 218,
+      "structuralBreakExamples": [
+        {
+          "tick": 5,
+          "types": [
+            "ceiling",
+            "ceiling"
+          ],
+          "material": "timber-joint"
+        },
+        {
+          "tick": 5,
+          "types": [
+            "ceiling",
+            "ceiling"
+          ],
+          "material": "timber-joint"
+        },
+        {
+          "tick": 5,
+          "types": [
+            "ceiling",
+            "ceiling"
+          ],
+          "material": "timber-joint"
+        },
+        {
+          "tick": 5,
+          "types": [
+            "ceiling",
+            "ceiling"
+          ],
+          "material": "timber-joint"
+        },
+        {
+          "tick": 5,
+          "types": [
+            "ceiling",
+            "ceiling"
+          ],
+          "material": "timber-joint"
+        }
+      ],
+      "releasedArchitecture": {},
+      "convergedRestTicksAtEnd": 0,
+      "shotRestCheckPassed": false
+    },
+    {
+      "case": "bungalow-framed",
+      "assetSha256": "6485d3f6851a813566222898f0d9f770cfd2998b0b7dd715347d1735825d0fc7",
+      "chunks": 2198,
+      "bonds": 5242,
+      "intact": {
+        "idleTicks": 1800,
+        "passed": true,
+        "ticks": 1829
+      },
+      "impact": {
+        "broken": 2871,
+        "escapedBodies": 0,
+        "last": {
+          "awake": 0,
+          "bodies": 587,
+          "broken": 2871,
+          "contacts": 0,
+          "converged": false,
+          "crushed": 0,
+          "dynamicNodes": 1195,
+          "iterations": 16,
+          "ms": 2.397656,
+          "speed": 0.0,
+          "tick": 1800
+        },
+        "maxAwake": 575,
+        "peakSpeedMs": 55.45247268676758,
+        "unconvergedTicks": 1796
+      },
+      "completed": true,
+      "error": null,
+      "stressTopologyFailure": null,
+      "runtime": {
+        "path": "/root/workspace/vibe-land-4/.certs/vast-city/warm-runtime/libPhysXDestructionGpuRuntime_64.so",
+        "sha256": "d4284d2da42a4751e30548fb30f2ac44f7503efb75a9b40e6db017353327e36e"
+      },
+      "brokenStructuralConnections": 315,
+      "structuralBreakExamples": [
+        {
+          "tick": 5,
+          "types": [
+            "floor",
+            "floor"
+          ],
+          "material": "warm-oak"
+        },
+        {
+          "tick": 5,
+          "types": [
+            "floor",
+            "floor"
+          ],
+          "material": "warm-oak"
+        },
+        {
+          "tick": 5,
+          "types": [
+            "floor",
+            "floor"
+          ],
+          "material": "warm-oak"
+        },
+        {
+          "tick": 5,
+          "types": [
+            "floor",
+            "floor"
+          ],
+          "material": "warm-oak"
+        },
+        {
+          "tick": 5,
+          "types": [
+            "floor",
+            "floor"
+          ],
+          "material": "warm-oak"
+        }
+      ],
+      "releasedArchitecture": {
+        "floor": 1,
+        "frame-beam": 30,
+        "wall-infill": 229,
+        "siding": 520,
+        "glazing": 24,
+        "frame-post": 159,
+        "sill": 5,
+        "window-frame": 10,
+        "window-head": 5,
+        "sash": 5,
+        "bathroom-wall": 13,
+        "ceiling": 10,
+        "roof": 22,
+        "open-door": 3,
+        "porch-post": 3
+      },
+      "convergedRestTicksAtEnd": 0,
+      "shotRestCheckPassed": false
+    },
+    {
+      "case": "bungalow-framed-skeleton",
+      "assetSha256": "02d331984b31dd532846468bbe2baf1cb6c3042bf71718ea135f84ad7be33eb5",
+      "chunks": 1102,
+      "bonds": 1841,
+      "intact": {
+        "idleTicks": 743,
+        "passed": false,
+        "ticks": 5400
+      },
+      "impact": null,
+      "completed": false,
+      "error": "intact convergence/rest timeout",
+      "stressTopologyFailure": null,
+      "runtime": {
+        "path": "/root/workspace/vibe-land-4/.certs/vast-city/warm-runtime/libPhysXDestructionGpuRuntime_64.so",
+        "sha256": "d4284d2da42a4751e30548fb30f2ac44f7503efb75a9b40e6db017353327e36e"
+      }
+    },
+    {
+      "case": "bungalow-framed-v2",
+      "assetSha256": "bfc6480f251a6c27ccb17f5f3e5669bdf05f24595e9668df177b37b74cbbe2f0",
+      "chunks": 1944,
+      "bonds": 4764,
+      "intact": null,
+      "impact": null,
+      "completed": false,
+      "error": "PhysX operation failed: PhysX fetchResults failed",
+      "stressTopologyFailure": null,
+      "runtime": {
+        "path": "/root/workspace/vibe-land-4/.certs/vast-city/warm-runtime/libPhysXDestructionGpuRuntime_64.so",
+        "sha256": "d4284d2da42a4751e30548fb30f2ac44f7503efb75a9b40e6db017353327e36e"
+      }
+    },
+    {
+      "case": "bungalow-framed-v2-no-battens",
+      "assetSha256": "04e57af8786c66c5a61ade89f98f61f74099d2d27e437ddd49009149e6229d0b",
+      "chunks": 987,
+      "bonds": 1848,
+      "intact": null,
+      "impact": null,
+      "completed": false,
+      "error": "PhysX operation failed: PhysX fetchResults failed",
+      "stressTopologyFailure": null,
+      "runtime": {
+        "path": "/root/workspace/vibe-land-4/.certs/vast-city/warm-runtime/libPhysXDestructionGpuRuntime_64.so",
+        "sha256": "d4284d2da42a4751e30548fb30f2ac44f7503efb75a9b40e6db017353327e36e"
+      }
+    },
+    {
+      "case": "bungalow-framed-v2-no-roof",
+      "assetSha256": "4532297a6e7569cd8a0c5a0b671b6f1890393471098e00cbd03e69c0ee75863d",
+      "chunks": 738,
+      "bonds": 1179,
+      "intact": {
+        "idleTicks": 0,
+        "passed": false,
+        "ticks": 5400
+      },
+      "impact": null,
+      "completed": false,
+      "error": "intact convergence/rest timeout",
+      "stressTopologyFailure": null,
+      "runtime": {
+        "path": "/root/workspace/vibe-land-4/.certs/vast-city/warm-runtime/libPhysXDestructionGpuRuntime_64.so",
+        "sha256": "d4284d2da42a4751e30548fb30f2ac44f7503efb75a9b40e6db017353327e36e"
+      }
+    },
+    {
+      "case": "bungalow-framed-v2-skeleton",
+      "assetSha256": "ba49a1344336217c6dc087bc042bd67831a08ed89e46d666d2750905b39600aa",
+      "chunks": 999,
+      "bonds": 1860,
+      "intact": null,
+      "impact": null,
+      "completed": false,
+      "error": "PhysX operation failed: PhysX fetchResults failed",
+      "stressTopologyFailure": null,
+      "runtime": {
+        "path": "/root/workspace/vibe-land-4/.certs/vast-city/warm-runtime/libPhysXDestructionGpuRuntime_64.so",
+        "sha256": "d4284d2da42a4751e30548fb30f2ac44f7503efb75a9b40e6db017353327e36e"
+      }
+    },
+    {
+      "case": "bungalow-framed-v3",
+      "assetSha256": "3d159ab4ea9b203d7fc20023f2e4020506a8c57f92054027e1c47f93af90473e",
+      "chunks": 1944,
+      "bonds": 4764,
+      "intact": null,
+      "impact": null,
+      "completed": false,
+      "error": "PhysX operation failed: PhysX fetchResults failed",
+      "stressTopologyFailure": null,
+      "runtime": {
+        "path": "/root/workspace/vibe-land-4/.certs/vast-city/warm-runtime/libPhysXDestructionGpuRuntime_64.so",
+        "sha256": "d4284d2da42a4751e30548fb30f2ac44f7503efb75a9b40e6db017353327e36e"
+      }
+    },
+    {
+      "case": "bungalow-framed-v3-skeleton",
+      "assetSha256": "576cca81c72af60765503f4ab1ac6564c7987d0d19548b77ab2b0cddae5dfd85",
+      "chunks": 999,
+      "bonds": 1860,
+      "intact": null,
+      "impact": null,
+      "completed": false,
+      "error": "PhysX operation failed: PhysX fetchResults failed",
+      "stressTopologyFailure": null,
+      "runtime": {
+        "path": "/root/workspace/vibe-land-4/.certs/vast-city/warm-runtime/libPhysXDestructionGpuRuntime_64.so",
+        "sha256": "d4284d2da42a4751e30548fb30f2ac44f7503efb75a9b40e6db017353327e36e"
+      }
+    },
+    {
+      "case": "bungalow-framed-v4-diagnostic",
+      "assetSha256": "fff21f847206fc15459aab74672ef40de5c5e4738494ffcbab113793dcd81957",
+      "chunks": 952,
+      "bonds": 1751,
+      "intact": null,
+      "impact": null,
+      "completed": false,
+      "error": "PhysX operation failed: PhysX fetchResults failed",
+      "stressTopologyFailure": {
+        "acceptedSimulation": false,
+        "activeBonds": 1745,
+        "activeNodes": 942,
+        "cudaError": 0,
+        "error": 8,
+        "generation": 0,
+        "initialized": 1,
+        "islands": 9,
+        "rebuilds": 1,
+        "solvedGeneration": 0
+      },
+      "runtime": {
+        "path": "/root/workspace/vibe-land-4/.certs/vast-city/warm-runtime/libPhysXDestructionGpuRuntime_64.so",
+        "sha256": "d4284d2da42a4751e30548fb30f2ac44f7503efb75a9b40e6db017353327e36e"
+      }
+    },
+    {
+      "case": "bungalow-framed-v4-hierarchy-diagnostic",
+      "assetSha256": "fff21f847206fc15459aab74672ef40de5c5e4738494ffcbab113793dcd81957",
+      "chunks": 952,
+      "bonds": 1751,
+      "intact": null,
+      "impact": null,
+      "completed": false,
+      "error": "PhysX operation failed: PhysX fetchResults failed",
+      "stressTopologyFailure": {
+        "acceptedSimulation": false,
+        "activeBonds": 1745,
+        "activeNodes": 942,
+        "cudaError": 0,
+        "error": 8,
+        "generation": 0,
+        "initialized": 1,
+        "islands": 9,
+        "rebuilds": 1,
+        "solvedGeneration": 0
+      },
+      "runtime": {
+        "path": "/root/workspace/vibe-land-4/structures/town-kit/out/frame-diagnostic-runtime/native-runtime/libPhysXDestructionGpuRuntime_64.so",
+        "sha256": "76df303b0bb32752b8d6cd41c791123e3038a5879d6195afa0bda8990442c078"
+      }
+    },
+    {
+      "case": "bungalow-framed-v4-rebased",
+      "assetSha256": "89cf3b1e93da4432f4e7057d02e3e75c66e4dd425aada7bc36bd08eb73189ffb",
+      "chunks": 1897,
+      "bonds": 4655,
+      "intact": {
+        "idleTicks": 1800,
+        "passed": true,
+        "ticks": 1829
+      },
+      "impact": {
+        "broken": 1866,
+        "escapedBodies": 0,
+        "last": {
+          "awake": 0,
+          "bodies": 322,
+          "broken": 1866,
+          "contacts": 0,
+          "converged": true,
+          "crushed": 0,
+          "dynamicNodes": 542,
+          "iterations": 0,
+          "ms": 0.583646,
+          "speed": 0.0,
+          "tick": 1800
+        },
+        "maxAwake": 303,
+        "peakSpeedMs": 48.81697463989258,
+        "unconvergedTicks": 407
+      },
+      "completed": true,
+      "error": null,
+      "stressTopologyFailure": null,
+      "runtime": {
+        "path": "/root/workspace/vibe-land-4/.certs/vast-city/warm-runtime/libPhysXDestructionGpuRuntime_64.so",
+        "sha256": "d4284d2da42a4751e30548fb30f2ac44f7503efb75a9b40e6db017353327e36e"
+      },
+      "brokenStructuralConnections": 125,
+      "structuralBreakExamples": [
+        {
+          "tick": 5,
+          "types": [
+            "floor",
+            "floor"
+          ],
+          "material": "structure-timber"
+        },
+        {
+          "tick": 5,
+          "types": [
+            "floor",
+            "floor"
+          ],
+          "material": "structure-timber"
+        },
+        {
+          "tick": 5,
+          "types": [
+            "floor",
+            "floor"
+          ],
+          "material": "structure-timber"
+        },
+        {
+          "tick": 5,
+          "types": [
+            "floor",
+            "floor"
+          ],
+          "material": "structure-timber"
+        },
+        {
+          "tick": 5,
+          "types": [
+            "floor",
+            "floor"
+          ],
+          "material": "structure-timber"
+        }
+      ],
+      "releasedArchitecture": {
+        "floor": 6,
+        "siding": 277,
+        "frame-post": 18,
+        "wall-infill": 66,
+        "frame-beam": 1,
+        "sill": 1,
+        "window-frame": 2,
+        "window-head": 1,
+        "sash": 1,
+        "glazing": 4,
+        "bathroom-wall": 9,
+        "ceiling": 5,
+        "roof": 1
+      },
+      "convergedRestTicksAtEnd": 97,
+      "shotRestCheckPassed": true
+    },
+    {
+      "case": "bungalow-framed-v4-skeleton",
+      "assetSha256": "fff21f847206fc15459aab74672ef40de5c5e4738494ffcbab113793dcd81957",
+      "chunks": 952,
+      "bonds": 1751,
+      "intact": null,
+      "impact": null,
+      "completed": false,
+      "error": "PhysX operation failed: PhysX fetchResults failed",
+      "stressTopologyFailure": null,
+      "runtime": {
+        "path": "/root/workspace/vibe-land-4/.certs/vast-city/warm-runtime/libPhysXDestructionGpuRuntime_64.so",
+        "sha256": "d4284d2da42a4751e30548fb30f2ac44f7503efb75a9b40e6db017353327e36e"
+      }
+    },
+    {
+      "case": "bungalow-framed-v4-skeleton-rebased",
+      "assetSha256": "714f501ff2205bb3c4e5a94643c756afcd65f684a6142dd3df417de04dd41d9b",
+      "chunks": 952,
+      "bonds": 1751,
+      "intact": {
+        "idleTicks": 1800,
+        "passed": true,
+        "ticks": 4756
+      },
+      "impact": null,
+      "completed": true,
+      "error": null,
+      "stressTopologyFailure": null,
+      "runtime": {
+        "path": "/root/workspace/vibe-land-4/.certs/vast-city/warm-runtime/libPhysXDestructionGpuRuntime_64.so",
+        "sha256": "d4284d2da42a4751e30548fb30f2ac44f7503efb75a9b40e6db017353327e36e"
+      }
+    },
+    {
+      "case": "bungalow-framed-v5",
+      "assetSha256": "78f31b8d9b9de6ed1ae74e1ab97a591aba7ece3338066c62e4b205869ba32d0e",
+      "chunks": 1549,
+      "bonds": 4125,
+      "intact": {
+        "idleTicks": 1800,
+        "passed": true,
+        "ticks": 1828
+      },
+      "impact": {
+        "broken": 680,
+        "escapedBodies": 0,
+        "last": {
+          "awake": 0,
+          "bodies": 89,
+          "broken": 680,
+          "contacts": 0,
+          "converged": false,
+          "crushed": 0,
+          "dynamicNodes": 253,
+          "iterations": 16,
+          "ms": 4.8046299999999995,
+          "speed": 0.0,
+          "tick": 1800
+        },
+        "maxAwake": 74,
+        "peakSpeedMs": 19.508934020996094,
+        "unconvergedTicks": 1796
+      },
+      "completed": true,
+      "error": null,
+      "stressTopologyFailure": null,
+      "runtime": {
+        "path": "/root/workspace/vibe-land-4/.certs/vast-city/warm-runtime/libPhysXDestructionGpuRuntime_64.so",
+        "sha256": "d4284d2da42a4751e30548fb30f2ac44f7503efb75a9b40e6db017353327e36e"
+      },
+      "brokenStructuralConnections": 20,
+      "structuralBreakExamples": [
+        {
+          "tick": 5,
+          "types": [
+            "floor",
+            "floor"
+          ],
+          "material": "structure-timber"
+        },
+        {
+          "tick": 5,
+          "types": [
+            "floor",
+            "floor"
+          ],
+          "material": "structure-timber"
+        },
+        {
+          "tick": 5,
+          "types": [
+            "floor",
+            "floor"
+          ],
+          "material": "structure-timber"
+        },
+        {
+          "tick": 5,
+          "types": [
+            "floor",
+            "floor"
+          ],
+          "material": "structure-timber"
+        },
+        {
+          "tick": 5,
+          "types": [
+            "floor",
+            "frame-post"
+          ],
+          "material": "structure-timber"
+        }
+      ],
+      "releasedArchitecture": {
+        "floor": 1,
+        "frame-post": 6,
+        "wall-infill": 35,
+        "siding": 45,
+        "bathroom-wall": 3
+      },
+      "convergedRestTicksAtEnd": 0,
+      "shotRestCheckPassed": false
+    },
+    {
+      "case": "bungalow-framed-v5-panel-hulls",
+      "assetSha256": "dbc1ba4dc2a5c54e6f04a1d414dd2f589231b68c8291b55c6671cbe1d3cec509",
+      "chunks": 1549,
+      "bonds": 4125,
+      "intact": {
+        "idleTicks": 1800,
+        "passed": true,
+        "ticks": 1828
+      },
+      "impact": {
+        "broken": 643,
+        "escapedBodies": 1,
+        "last": {
+          "awake": 1,
+          "bodies": 79,
+          "broken": 643,
+          "contacts": 0,
+          "converged": true,
+          "crushed": 0,
+          "dynamicNodes": 235,
+          "iterations": 0,
+          "ms": 0.7742829999999999,
+          "speed": 289.0057678222656,
+          "tick": 1800
+        },
+        "maxAwake": 63,
+        "peakSpeedMs": 289.0057678222656,
+        "unconvergedTicks": 495
+      },
+      "completed": true,
+      "error": null,
+      "stressTopologyFailure": null,
+      "runtime": {
+        "path": "/root/workspace/vibe-land-4/.certs/vast-city/warm-runtime/libPhysXDestructionGpuRuntime_64.so",
+        "sha256": "d4284d2da42a4751e30548fb30f2ac44f7503efb75a9b40e6db017353327e36e"
+      },
+      "brokenStructuralConnections": 20,
+      "structuralBreakExamples": [
+        {
+          "tick": 5,
+          "types": [
+            "floor",
+            "floor"
+          ],
+          "material": "structure-timber"
+        },
+        {
+          "tick": 5,
+          "types": [
+            "floor",
+            "floor"
+          ],
+          "material": "structure-timber"
+        },
+        {
+          "tick": 5,
+          "types": [
+            "floor",
+            "floor"
+          ],
+          "material": "structure-timber"
+        },
+        {
+          "tick": 5,
+          "types": [
+            "floor",
+            "floor"
+          ],
+          "material": "structure-timber"
+        },
+        {
+          "tick": 5,
+          "types": [
+            "floor",
+            "frame-post"
+          ],
+          "material": "structure-timber"
+        }
+      ],
+      "releasedArchitecture": {
+        "floor": 1,
+        "frame-post": 6,
+        "wall-infill": 35,
+        "siding": 48,
+        "bathroom-wall": 3
+      },
+      "convergedRestTicksAtEnd": 0,
+      "shotRestCheckPassed": false
+    },
+    {
+      "case": "bungalow-fused-floors",
+      "assetSha256": "ab490d611c914b847d66ea576c611e416a570e00d7653f31f7a7e9719ffd0ddd",
+      "chunks": 1774,
+      "bonds": 3505,
+      "intact": {
+        "idleTicks": 1800,
+        "passed": true,
+        "ticks": 1829
+      },
+      "impact": {
+        "broken": 585,
+        "escapedBodies": 0,
+        "last": {
+          "awake": 92,
+          "bodies": 138,
+          "broken": 585,
+          "contacts": 2322,
+          "converged": false,
+          "crushed": 0,
+          "dynamicNodes": 343,
+          "iterations": 16,
+          "ms": 7.631822,
+          "speed": 0.07303683459758759,
+          "tick": 1800
+        },
+        "maxAwake": 110,
+        "peakSpeedMs": 27.695032119750977,
+        "unconvergedTicks": 1796
+      },
+      "completed": true,
+      "error": null,
+      "stressTopologyFailure": null,
+      "runtime": {
+        "path": "/root/workspace/vibe-land-4/.certs/vast-city/warm-runtime/libPhysXDestructionGpuRuntime_64.so",
+        "sha256": "d4284d2da42a4751e30548fb30f2ac44f7503efb75a9b40e6db017353327e36e"
+      },
+      "brokenStructuralConnections": 0,
+      "structuralBreakExamples": [],
+      "releasedArchitecture": {},
+      "convergedRestTicksAtEnd": 0,
+      "shotRestCheckPassed": false
+    },
+    {
+      "case": "bungalow-wood-joints",
+      "assetSha256": "7c0b0e8fe4f06762061286b2915f5e2010b9acd7e951d5608315ba6594392d2d",
+      "chunks": 1886,
+      "bonds": 3820,
+      "intact": {
+        "idleTicks": 1800,
+        "passed": true,
+        "ticks": 1842
+      },
+      "impact": {
+        "broken": 646,
+        "escapedBodies": 3,
+        "last": {
+          "awake": 3,
+          "bodies": 141,
+          "broken": 646,
+          "contacts": 0,
+          "converged": true,
+          "crushed": 0,
+          "dynamicNodes": 326,
+          "iterations": 0,
+          "ms": 0.793452,
+          "speed": 293.4833984375,
+          "tick": 1800
+        },
+        "maxAwake": 129,
+        "peakSpeedMs": 293.4833984375,
+        "unconvergedTicks": 287
+      },
+      "completed": true,
+      "error": null,
+      "stressTopologyFailure": null,
+      "runtime": {
+        "path": "/root/workspace/vibe-land-4/.certs/vast-city/warm-runtime/libPhysXDestructionGpuRuntime_64.so",
+        "sha256": "d4284d2da42a4751e30548fb30f2ac44f7503efb75a9b40e6db017353327e36e"
+      },
+      "brokenStructuralConnections": 35,
+      "structuralBreakExamples": [
+        {
+          "tick": 5,
+          "types": [
+            "floor",
+            "floor"
+          ],
+          "material": "ivory-trim"
+        },
+        {
+          "tick": 5,
+          "types": [
+            "floor",
+            "floor"
+          ],
+          "material": "ivory-trim"
+        },
+        {
+          "tick": 5,
+          "types": [
+            "floor",
+            "floor"
+          ],
+          "material": "ivory-trim"
+        },
+        {
+          "tick": 5,
+          "types": [
+            "floor",
+            "floor"
+          ],
+          "material": "ivory-trim"
+        },
+        {
+          "tick": 5,
+          "types": [
+            "floor",
+            "floor"
+          ],
+          "material": "ivory-trim"
+        }
+      ],
+      "releasedArchitecture": {},
+      "convergedRestTicksAtEnd": 0,
+      "shotRestCheckPassed": false
+    },
+    {
+      "case": "house-1story",
+      "assetSha256": "8e7336d8d7a1063cea5bdacab57a0c38cd2b91a5f9d7f9ee3176ff170b6bc52c",
+      "chunks": 319,
+      "bonds": 904,
+      "intact": {
+        "idleTicks": 1800,
+        "passed": true,
+        "ticks": 1807
+      },
+      "impact": {
+        "broken": 527,
+        "escapedBodies": 0,
+        "last": {
+          "awake": 0,
+          "bodies": 84,
+          "broken": 527,
+          "contacts": 0,
+          "converged": false,
+          "crushed": 0,
+          "dynamicNodes": 315,
+          "iterations": 16,
+          "ms": 1.4744039999999998,
+          "speed": 0.0,
+          "tick": 1800
+        },
+        "maxAwake": 83,
+        "peakSpeedMs": 60.897308349609375,
+        "unconvergedTicks": 1796
+      },
+      "completed": true,
+      "error": null,
+      "stressTopologyFailure": null,
+      "runtime": {
+        "path": "/root/workspace/vibe-land-4/.certs/vast-city/warm-runtime/libPhysXDestructionGpuRuntime_64.so",
+        "sha256": "d4284d2da42a4751e30548fb30f2ac44f7503efb75a9b40e6db017353327e36e"
+      },
+      "brokenStructuralConnections": 0,
+      "structuralBreakExamples": [],
+      "releasedArchitecture": {
+        "slab": 16,
+        "post": 16,
+        "beam": 10,
+        "wall": 239,
+        "glazing": 20,
+        "roof": 14
+      },
+      "convergedRestTicksAtEnd": 0,
+      "shotRestCheckPassed": false
+    },
+    {
+      "case": "house-2story",
+      "assetSha256": "6cb72215017a4effddf694a020052dfe76edf67b3d68d6537ffdd9d2907f5758",
+      "chunks": 599,
+      "bonds": 1714,
+      "intact": {
+        "idleTicks": 1800,
+        "passed": true,
+        "ticks": 1813
+      },
+      "impact": {
+        "broken": 57,
+        "escapedBodies": 0,
+        "last": {
+          "awake": 0,
+          "bodies": 7,
+          "broken": 57,
+          "contacts": 0,
+          "converged": true,
+          "crushed": 0,
+          "dynamicNodes": 7,
+          "iterations": 0,
+          "ms": 0.28937999999999997,
+          "speed": 0.0,
+          "tick": 1800
+        },
+        "maxAwake": 6,
+        "peakSpeedMs": 0.9623022079467773,
+        "unconvergedTicks": 29
+      },
+      "completed": true,
+      "error": null,
+      "stressTopologyFailure": null,
+      "runtime": {
+        "path": "/root/workspace/vibe-land-4/.certs/vast-city/warm-runtime/libPhysXDestructionGpuRuntime_64.so",
+        "sha256": "d4284d2da42a4751e30548fb30f2ac44f7503efb75a9b40e6db017353327e36e"
+      },
+      "brokenStructuralConnections": 0,
+      "structuralBreakExamples": [],
+      "releasedArchitecture": {
+        "wall": 3,
+        "glazing": 4
+      },
+      "convergedRestTicksAtEnd": 1754,
+      "shotRestCheckPassed": true
+    },
+    {
+      "case": "porch-house",
+      "assetSha256": "4d66f077491a439725d020ece9d11dd7f68d53bebefc019c8a660544108812d6",
+      "chunks": 3374,
+      "bonds": 6931,
+      "intact": {
+        "idleTicks": 1800,
+        "passed": true,
+        "ticks": 1838
+      },
+      "impact": {
+        "broken": 5114,
+        "escapedBodies": 0,
+        "last": {
+          "awake": 1805,
+          "bodies": 1932,
+          "broken": 5114,
+          "contacts": 40135,
+          "converged": false,
+          "crushed": 0,
+          "dynamicNodes": 3044,
+          "iterations": 16,
+          "ms": 3.537667,
+          "speed": 0.354252427816391,
+          "tick": 1800
+        },
+        "maxAwake": 1918,
+        "peakSpeedMs": 48.599220275878906,
+        "unconvergedTicks": 1796
+      },
+      "completed": true,
+      "error": null,
+      "stressTopologyFailure": null,
+      "runtime": {
+        "path": "/root/workspace/vibe-land-4/.certs/vast-city/warm-runtime/libPhysXDestructionGpuRuntime_64.so",
+        "sha256": "d4284d2da42a4751e30548fb30f2ac44f7503efb75a9b40e6db017353327e36e"
+      },
+      "brokenStructuralConnections": 351,
+      "structuralBreakExamples": [
+        {
+          "tick": 5,
+          "types": [
+            "floor",
+            "floor"
+          ],
+          "material": "ivory-trim"
+        },
+        {
+          "tick": 5,
+          "types": [
+            "floor",
+            "floor"
+          ],
+          "material": "ivory-trim"
+        },
+        {
+          "tick": 5,
+          "types": [
+            "floor",
+            "floor"
+          ],
+          "material": "ivory-trim"
+        },
+        {
+          "tick": 5,
+          "types": [
+            "floor",
+            "floor"
+          ],
+          "material": "ivory-trim"
+        },
+        {
+          "tick": 5,
+          "types": [
+            "floor",
+            "floor"
+          ],
+          "material": "ivory-trim"
+        }
+      ],
+      "releasedArchitecture": {},
+      "convergedRestTicksAtEnd": 0,
+      "shotRestCheckPassed": false
+    },
+    {
+      "case": "porch-house-framed",
+      "assetSha256": "f3a899b94cdd04b85ae593a2c12f9716085b965d3c634305e5e8062a64bed07c",
+      "chunks": 3882,
+      "bonds": 9583,
+      "intact": {
+        "idleTicks": 1800,
+        "passed": true,
+        "ticks": 1830
+      },
+      "impact": {
+        "broken": 2607,
+        "escapedBodies": 0,
+        "last": {
+          "awake": 133,
+          "bodies": 389,
+          "broken": 2607,
+          "contacts": 3505,
+          "converged": false,
+          "crushed": 0,
+          "dynamicNodes": 779,
+          "iterations": 16,
+          "ms": 10.679206,
+          "speed": 0.041835833340883255,
+          "tick": 1800
+        },
+        "maxAwake": 374,
+        "peakSpeedMs": 46.21683120727539,
+        "unconvergedTicks": 1796
+      },
+      "completed": true,
+      "error": null,
+      "stressTopologyFailure": null,
+      "runtime": {
+        "path": "/root/workspace/vibe-land-4/.certs/vast-city/warm-runtime/libPhysXDestructionGpuRuntime_64.so",
+        "sha256": "d4284d2da42a4751e30548fb30f2ac44f7503efb75a9b40e6db017353327e36e"
+      },
+      "brokenStructuralConnections": 334,
+      "structuralBreakExamples": [
+        {
+          "tick": 5,
+          "types": [
+            "floor",
+            "stair"
+          ],
+          "material": "timber-joint"
+        },
+        {
+          "tick": 5,
+          "types": [
+            "stair",
+            "stair"
+          ],
+          "material": "timber-joint"
+        },
+        {
+          "tick": 5,
+          "types": [
+            "stair",
+            "stair"
+          ],
+          "material": "timber-joint"
+        },
+        {
+          "tick": 5,
+          "types": [
+            "floor",
+            "frame-post"
+          ],
+          "material": "timber-joint"
+        },
+        {
+          "tick": 5,
+          "types": [
+            "stair",
+            "frame-post"
+          ],
+          "material": "timber-joint"
+        }
+      ],
+      "releasedArchitecture": {
+        "stair": 1,
+        "frame-post": 81,
+        "wall-infill": 191,
+        "siding": 342,
+        "frame-beam": 12,
+        "sill": 1,
+        "window-frame": 2,
+        "window-head": 1,
+        "sash": 1,
+        "glazing": 4,
+        "porch-post": 3
+      },
+      "convergedRestTicksAtEnd": 0,
+      "shotRestCheckPassed": false
+    },
+    {
+      "case": "porch-house-framed-skeleton",
+      "assetSha256": "7c38a4a591f51d5ebd1805ef26b651733f2e9526f0c703d7f7d7d11bffdd4600",
+      "chunks": 1603,
+      "bonds": 2705,
+      "intact": {
+        "idleTicks": 1800,
+        "passed": true,
+        "ticks": 2321
+      },
+      "impact": null,
+      "completed": true,
+      "error": null,
+      "stressTopologyFailure": null,
+      "runtime": {
+        "path": "/root/workspace/vibe-land-4/.certs/vast-city/warm-runtime/libPhysXDestructionGpuRuntime_64.so",
+        "sha256": "d4284d2da42a4751e30548fb30f2ac44f7503efb75a9b40e6db017353327e36e"
+      }
+    },
+    {
+      "case": "porch-house-framed-v2",
+      "assetSha256": "a74520f476b13721341fc9b1b8be2eeaffe7275f3d3c7208b2315673d64bd5db",
+      "chunks": 3408,
+      "bonds": 8658,
+      "intact": null,
+      "impact": null,
+      "completed": false,
+      "error": "PhysX operation failed: PhysX fetchResults failed",
+      "stressTopologyFailure": null,
+      "runtime": {
+        "path": "/root/workspace/vibe-land-4/.certs/vast-city/warm-runtime/libPhysXDestructionGpuRuntime_64.so",
+        "sha256": "d4284d2da42a4751e30548fb30f2ac44f7503efb75a9b40e6db017353327e36e"
+      }
+    },
+    {
+      "case": "porch-house-framed-v2-skeleton",
+      "assetSha256": "133bac44a3d66d424bbfcba43a238bb0e018974e720a4a17d7bbb91af49650cd",
+      "chunks": 1334,
+      "bonds": 2482,
+      "intact": null,
+      "impact": null,
+      "completed": false,
+      "error": "PhysX operation failed: PhysX fetchResults failed",
+      "stressTopologyFailure": null,
+      "runtime": {
+        "path": "/root/workspace/vibe-land-4/.certs/vast-city/warm-runtime/libPhysXDestructionGpuRuntime_64.so",
+        "sha256": "d4284d2da42a4751e30548fb30f2ac44f7503efb75a9b40e6db017353327e36e"
+      }
+    },
+    {
+      "case": "porch-house-framed-v3",
+      "assetSha256": "4d9fd441270ca0d7d52b1ad06e250b70f08c2b264c8a758fd10ba8069f4cca91",
+      "chunks": 3408,
+      "bonds": 8658,
+      "intact": null,
+      "impact": null,
+      "completed": false,
+      "error": "PhysX operation failed: PhysX fetchResults failed",
+      "stressTopologyFailure": null,
+      "runtime": {
+        "path": "/root/workspace/vibe-land-4/.certs/vast-city/warm-runtime/libPhysXDestructionGpuRuntime_64.so",
+        "sha256": "d4284d2da42a4751e30548fb30f2ac44f7503efb75a9b40e6db017353327e36e"
+      }
+    },
+    {
+      "case": "porch-house-framed-v3-skeleton",
+      "assetSha256": "f78c4e4ceb3c7a4d22bbb8afc8f1d94b7c5f78a48da2531f9516a4ca34cdc632",
+      "chunks": 1334,
+      "bonds": 2482,
+      "intact": null,
+      "impact": null,
+      "completed": false,
+      "error": "PhysX operation failed: PhysX fetchResults failed",
+      "stressTopologyFailure": null,
+      "runtime": {
+        "path": "/root/workspace/vibe-land-4/.certs/vast-city/warm-runtime/libPhysXDestructionGpuRuntime_64.so",
+        "sha256": "d4284d2da42a4751e30548fb30f2ac44f7503efb75a9b40e6db017353327e36e"
+      }
+    },
+    {
+      "case": "porch-house-framed-v4-rebased",
+      "assetSha256": "ace6fe5d748271b0bd55db939f67304e4f04c607705766f6b10d85d8bf02b806",
+      "chunks": 3361,
+      "bonds": 8549,
+      "intact": {
+        "idleTicks": 1800,
+        "passed": true,
+        "ticks": 1829
+      },
+      "impact": {
+        "broken": 748,
+        "escapedBodies": 0,
+        "last": {
+          "awake": 67,
+          "bodies": 99,
+          "broken": 748,
+          "contacts": 1646,
+          "converged": false,
+          "crushed": 0,
+          "dynamicNodes": 280,
+          "iterations": 16,
+          "ms": 10.704553,
+          "speed": 0.06121739372611046,
+          "tick": 1800
+        },
+        "maxAwake": 78,
+        "peakSpeedMs": 19.25482940673828,
+        "unconvergedTicks": 1796
+      },
+      "completed": true,
+      "error": null,
+      "stressTopologyFailure": null,
+      "runtime": {
+        "path": "/root/workspace/vibe-land-4/.certs/vast-city/warm-runtime/libPhysXDestructionGpuRuntime_64.so",
+        "sha256": "d4284d2da42a4751e30548fb30f2ac44f7503efb75a9b40e6db017353327e36e"
+      },
+      "brokenStructuralConnections": 15,
+      "structuralBreakExamples": [
+        {
+          "tick": 5,
+          "types": [
+            "floor",
+            "floor"
+          ],
+          "material": "structure-timber"
+        },
+        {
+          "tick": 5,
+          "types": [
+            "floor",
+            "stair"
+          ],
+          "material": "structure-timber"
+        },
+        {
+          "tick": 5,
+          "types": [
+            "stair",
+            "stair"
+          ],
+          "material": "structure-timber"
+        },
+        {
+          "tick": 5,
+          "types": [
+            "floor",
+            "frame-post"
+          ],
+          "material": "structure-timber"
+        },
+        {
+          "tick": 5,
+          "types": [
+            "floor",
+            "frame-post"
+          ],
+          "material": "structure-timber"
+        }
+      ],
+      "releasedArchitecture": {
+        "wall-infill": 50,
+        "frame-post": 2,
+        "siding": 90
+      },
+      "convergedRestTicksAtEnd": 0,
+      "shotRestCheckPassed": false
+    },
+    {
+      "case": "porch-house-framed-v4-skeleton",
+      "assetSha256": "443df6ef7292927c768f095336effed79849c89b8b0fc22744400129eb49d1d2",
+      "chunks": 1287,
+      "bonds": 2373,
+      "intact": null,
+      "impact": null,
+      "completed": false,
+      "error": "PhysX operation failed: PhysX fetchResults failed",
+      "stressTopologyFailure": null,
+      "runtime": {
+        "path": "/root/workspace/vibe-land-4/.certs/vast-city/warm-runtime/libPhysXDestructionGpuRuntime_64.so",
+        "sha256": "d4284d2da42a4751e30548fb30f2ac44f7503efb75a9b40e6db017353327e36e"
+      }
+    },
+    {
+      "case": "porch-house-framed-v4-skeleton-rebased",
+      "assetSha256": "f0dedbe1a17b51938171ac1cbc1d87af485e5c4c6a5900f32c2568a70a88d37b",
+      "chunks": 1287,
+      "bonds": 2373,
+      "intact": {
+        "idleTicks": 1800,
+        "passed": true,
+        "ticks": 5006
+      },
+      "impact": null,
+      "completed": true,
+      "error": null,
+      "stressTopologyFailure": null,
+      "runtime": {
+        "path": "/root/workspace/vibe-land-4/.certs/vast-city/warm-runtime/libPhysXDestructionGpuRuntime_64.so",
+        "sha256": "d4284d2da42a4751e30548fb30f2ac44f7503efb75a9b40e6db017353327e36e"
+      }
+    },
+    {
+      "case": "porch-house-framed-v5",
+      "assetSha256": "d24c42082f6875208754040b025a7ed74eb102c266722297adf4174e043a50a0",
+      "chunks": 2643,
+      "bonds": 7458,
+      "intact": {
+        "idleTicks": 1800,
+        "passed": true,
+        "ticks": 1828
+      },
+      "impact": {
+        "broken": 668,
+        "escapedBodies": 0,
+        "last": {
+          "awake": 44,
+          "bodies": 82,
+          "broken": 668,
+          "contacts": 1167,
+          "converged": false,
+          "crushed": 0,
+          "dynamicNodes": 235,
+          "iterations": 16,
+          "ms": 10.412927,
+          "speed": 0.15841107070446014,
+          "tick": 1800
+        },
+        "maxAwake": 68,
+        "peakSpeedMs": 14.880633354187012,
+        "unconvergedTicks": 1796
+      },
+      "completed": true,
+      "error": null,
+      "stressTopologyFailure": null,
+      "runtime": {
+        "path": "/root/workspace/vibe-land-4/.certs/vast-city/warm-runtime/libPhysXDestructionGpuRuntime_64.so",
+        "sha256": "d4284d2da42a4751e30548fb30f2ac44f7503efb75a9b40e6db017353327e36e"
+      },
+      "brokenStructuralConnections": 10,
+      "structuralBreakExamples": [
+        {
+          "tick": 5,
+          "types": [
+            "floor",
+            "floor"
+          ],
+          "material": "structure-timber"
+        },
+        {
+          "tick": 5,
+          "types": [
+            "floor",
+            "frame-post"
+          ],
+          "material": "structure-timber"
+        },
+        {
+          "tick": 5,
+          "types": [
+            "frame-post",
+            "frame-post"
+          ],
+          "material": "structure-timber"
+        },
+        {
+          "tick": 5,
+          "types": [
+            "floor",
+            "frame-post"
+          ],
+          "material": "structure-timber"
+        },
+        {
+          "tick": 5,
+          "types": [
+            "frame-post",
+            "frame-post"
+          ],
+          "material": "structure-timber"
+        }
+      ],
+      "releasedArchitecture": {
+        "wall-infill": 37,
+        "frame-post": 3,
+        "siding": 57
+      },
+      "convergedRestTicksAtEnd": 0,
+      "shotRestCheckPassed": false
+    },
+    {
+      "case": "porch-house-framed-v5-panel-hulls",
+      "assetSha256": "a9adbd2a579a8e0f59328945eae0b4ab7c862efec51addeff7d525bad8ec4bf8",
+      "chunks": 2643,
+      "bonds": 7458,
+      "intact": {
+        "idleTicks": 1800,
+        "passed": true,
+        "ticks": 1828
+      },
+      "impact": {
+        "broken": 644,
+        "escapedBodies": 0,
+        "last": {
+          "awake": 0,
+          "bodies": 73,
+          "broken": 644,
+          "contacts": 0,
+          "converged": true,
+          "crushed": 0,
+          "dynamicNodes": 225,
+          "iterations": 0,
+          "ms": 0.47665799999999997,
+          "speed": 0.0,
+          "tick": 1800
+        },
+        "maxAwake": 62,
+        "peakSpeedMs": 14.831295013427734,
+        "unconvergedTicks": 188
+      },
+      "completed": true,
+      "error": null,
+      "stressTopologyFailure": null,
+      "runtime": {
+        "path": "/root/workspace/vibe-land-4/.certs/vast-city/warm-runtime/libPhysXDestructionGpuRuntime_64.so",
+        "sha256": "d4284d2da42a4751e30548fb30f2ac44f7503efb75a9b40e6db017353327e36e"
+      },
+      "brokenStructuralConnections": 11,
+      "structuralBreakExamples": [
+        {
+          "tick": 5,
+          "types": [
+            "floor",
+            "floor"
+          ],
+          "material": "structure-timber"
+        },
+        {
+          "tick": 5,
+          "types": [
+            "floor",
+            "frame-post"
+          ],
+          "material": "structure-timber"
+        },
+        {
+          "tick": 5,
+          "types": [
+            "frame-post",
+            "frame-post"
+          ],
+          "material": "structure-timber"
+        },
+        {
+          "tick": 5,
+          "types": [
+            "floor",
+            "frame-post"
+          ],
+          "material": "structure-timber"
+        },
+        {
+          "tick": 5,
+          "types": [
+            "frame-post",
+            "frame-post"
+          ],
+          "material": "structure-timber"
+        }
+      ],
+      "releasedArchitecture": {
+        "wall-infill": 35,
+        "frame-post": 4,
+        "siding": 48
+      },
+      "convergedRestTicksAtEnd": 1474,
+      "shotRestCheckPassed": true
+    },
+    {
+      "case": "porch-house-framed-v5-post",
+      "assetSha256": "d24c42082f6875208754040b025a7ed74eb102c266722297adf4174e043a50a0",
+      "chunks": 2643,
+      "bonds": 7458,
+      "intact": {
+        "idleTicks": 1800,
+        "passed": true,
+        "ticks": 1828
+      },
+      "impact": {
+        "broken": 1258,
+        "escapedBodies": 0,
+        "last": {
+          "awake": 0,
+          "bodies": 109,
+          "broken": 1258,
+          "contacts": 0,
+          "converged": true,
+          "crushed": 0,
+          "dynamicNodes": 319,
+          "iterations": 0,
+          "ms": 0.49945100000000003,
+          "speed": 0.0,
+          "tick": 1800
+        },
+        "maxAwake": 98,
+        "peakSpeedMs": 17.962512969970703,
+        "unconvergedTicks": 262
+      },
+      "completed": true,
+      "error": null,
+      "stressTopologyFailure": null,
+      "runtime": {
+        "path": "/root/workspace/vibe-land-4/.certs/vast-city/warm-runtime/libPhysXDestructionGpuRuntime_64.so",
+        "sha256": "d4284d2da42a4751e30548fb30f2ac44f7503efb75a9b40e6db017353327e36e"
+      },
+      "brokenStructuralConnections": 41,
+      "structuralBreakExamples": [
+        {
+          "tick": 5,
+          "types": [
+            "floor",
+            "floor"
+          ],
+          "material": "structure-timber"
+        },
+        {
+          "tick": 5,
+          "types": [
+            "floor",
+            "floor"
+          ],
+          "material": "structure-timber"
+        },
+        {
+          "tick": 5,
+          "types": [
+            "floor",
+            "floor"
+          ],
+          "material": "structure-timber"
+        },
+        {
+          "tick": 5,
+          "types": [
+            "floor",
+            "floor"
+          ],
+          "material": "structure-timber"
+        },
+        {
+          "tick": 5,
+          "types": [
+            "floor",
+            "floor"
+          ],
+          "material": "structure-timber"
+        }
+      ],
+      "releasedArchitecture": {
+        "floor": 2,
+        "wall-infill": 60,
+        "siding": 86,
+        "frame-post": 5,
+        "frame-beam": 1,
+        "sill": 1,
+        "window-frame": 2,
+        "window-head": 1,
+        "sash": 1,
+        "glazing": 4,
+        "cornice": 10
+      },
+      "convergedRestTicksAtEnd": 1534,
+      "shotRestCheckPassed": true
+    },
+    {
+      "case": "porch-house-framed-v5-roof-post",
+      "assetSha256": "d24c42082f6875208754040b025a7ed74eb102c266722297adf4174e043a50a0",
+      "chunks": 2643,
+      "bonds": 7458,
+      "intact": {
+        "idleTicks": 1800,
+        "passed": true,
+        "ticks": 1828
+      },
+      "impact": {
+        "broken": 233,
+        "escapedBodies": 0,
+        "last": {
+          "awake": 0,
+          "bodies": 19,
+          "broken": 233,
+          "contacts": 0,
+          "converged": true,
+          "crushed": 0,
+          "dynamicNodes": 190,
+          "iterations": 0,
+          "ms": 0.424441,
+          "speed": 0.0,
+          "tick": 1800
+        },
+        "maxAwake": 6,
+        "peakSpeedMs": 6.857949256896973,
+        "unconvergedTicks": 237
+      },
+      "completed": true,
+      "error": null,
+      "stressTopologyFailure": null,
+      "runtime": {
+        "path": "/root/workspace/vibe-land-4/.certs/vast-city/warm-runtime/libPhysXDestructionGpuRuntime_64.so",
+        "sha256": "d4284d2da42a4751e30548fb30f2ac44f7503efb75a9b40e6db017353327e36e"
+      },
+      "brokenStructuralConnections": 0,
+      "structuralBreakExamples": [],
+      "releasedArchitecture": {
+        "gable-batten": 8,
+        "gable-infill": 2
+      },
+      "convergedRestTicksAtEnd": 1552,
+      "shotRestCheckPassed": true
+    },
+    {
+      "case": "porch-house-front",
+      "assetSha256": "4d66f077491a439725d020ece9d11dd7f68d53bebefc019c8a660544108812d6",
+      "chunks": 3374,
+      "bonds": 6931,
+      "intact": {
+        "idleTicks": 1800,
+        "passed": true,
+        "ticks": 1838
+      },
+      "impact": {
+        "broken": 6366,
+        "escapedBodies": 0,
+        "last": {
+          "awake": 2683,
+          "bodies": 2937,
+          "broken": 6366,
+          "contacts": 47797,
+          "converged": false,
+          "crushed": 0,
+          "dynamicNodes": 3132,
+          "iterations": 16,
+          "ms": 3.184857,
+          "speed": 0.6184695959091187,
+          "tick": 1800
+        },
+        "maxAwake": 2929,
+        "peakSpeedMs": 66.19896697998047,
+        "unconvergedTicks": 1800
+      },
+      "completed": true,
+      "error": null,
+      "stressTopologyFailure": null,
+      "runtime": {
+        "path": "/root/workspace/vibe-land-4/.certs/vast-city/warm-runtime/libPhysXDestructionGpuRuntime_64.so",
+        "sha256": "d4284d2da42a4751e30548fb30f2ac44f7503efb75a9b40e6db017353327e36e"
+      },
+      "brokenStructuralConnections": 394,
+      "structuralBreakExamples": [
+        {
+          "tick": 3,
+          "types": [
+            "floor",
+            "floor"
+          ],
+          "material": "timber-joint"
+        },
+        {
+          "tick": 3,
+          "types": [
+            "ceiling",
+            "ceiling"
+          ],
+          "material": "timber-joint"
+        },
+        {
+          "tick": 5,
+          "types": [
+            "stair",
+            "stair"
+          ],
+          "material": "timber-joint"
+        },
+        {
+          "tick": 5,
+          "types": [
+            "stair",
+            "stair"
+          ],
+          "material": "timber-joint"
+        },
+        {
+          "tick": 5,
+          "types": [
+            "stair",
+            "stair"
+          ],
+          "material": "timber-joint"
+        }
+      ],
+      "releasedArchitecture": {},
+      "convergedRestTicksAtEnd": 0,
+      "shotRestCheckPassed": false
+    },
+    {
+      "case": "porch-house-fused-ceilings-only",
+      "assetSha256": "25695b2ae0c199fed82ebed5fde53ea2e08dddae6ed1942e8d0111511b2ae667",
+      "chunks": 3318,
+      "bonds": 6778,
+      "intact": {
+        "idleTicks": 1800,
+        "passed": true,
+        "ticks": 1838
+      },
+      "impact": {
+        "broken": 2481,
+        "escapedBodies": 0,
+        "last": {
+          "awake": 471,
+          "bodies": 544,
+          "broken": 2481,
+          "contacts": 12296,
+          "converged": false,
+          "crushed": 0,
+          "dynamicNodes": 1060,
+          "iterations": 16,
+          "ms": 11.087251,
+          "speed": 0.2081432193517685,
+          "tick": 1800
+        },
+        "maxAwake": 519,
+        "peakSpeedMs": 47.27522659301758,
+        "unconvergedTicks": 1796
+      },
+      "completed": true,
+      "error": null,
+      "stressTopologyFailure": null,
+      "runtime": {
+        "path": "/root/workspace/vibe-land-4/.certs/vast-city/warm-runtime/libPhysXDestructionGpuRuntime_64.so",
+        "sha256": "d4284d2da42a4751e30548fb30f2ac44f7503efb75a9b40e6db017353327e36e"
+      },
+      "brokenStructuralConnections": 80,
+      "structuralBreakExamples": [
+        {
+          "tick": 5,
+          "types": [
+            "floor",
+            "floor"
+          ],
+          "material": "ivory-trim"
+        },
+        {
+          "tick": 5,
+          "types": [
+            "floor",
+            "floor"
+          ],
+          "material": "ivory-trim"
+        },
+        {
+          "tick": 5,
+          "types": [
+            "floor",
+            "floor"
+          ],
+          "material": "ivory-trim"
+        },
+        {
+          "tick": 5,
+          "types": [
+            "floor",
+            "floor"
+          ],
+          "material": "ivory-trim"
+        },
+        {
+          "tick": 5,
+          "types": [
+            "floor",
+            "floor"
+          ],
+          "material": "ivory-trim"
+        }
+      ],
+      "releasedArchitecture": {},
+      "convergedRestTicksAtEnd": 0,
+      "shotRestCheckPassed": false
+    },
+    {
+      "case": "porch-house-fused-floors",
+      "assetSha256": "b80443a2093c3c429bdcaf14d0b3e6a2f6fa1ea2425d2ae4ebb67f50c86736d3",
+      "chunks": 3188,
+      "bonds": 6409,
+      "intact": {
+        "idleTicks": 1800,
+        "passed": true,
+        "ticks": 1829
+      },
+      "impact": {
+        "broken": 549,
+        "escapedBodies": 0,
+        "last": {
+          "awake": 0,
+          "bodies": 102,
+          "broken": 549,
+          "contacts": 0,
+          "converged": true,
+          "crushed": 0,
+          "dynamicNodes": 264,
+          "iterations": 0,
+          "ms": 0.496687,
+          "speed": 0.0,
+          "tick": 1800
+        },
+        "maxAwake": 89,
+        "peakSpeedMs": 16.495759963989258,
+        "unconvergedTicks": 272
+      },
+      "completed": true,
+      "error": null,
+      "stressTopologyFailure": null,
+      "runtime": {
+        "path": "/root/workspace/vibe-land-4/.certs/vast-city/warm-runtime/libPhysXDestructionGpuRuntime_64.so",
+        "sha256": "d4284d2da42a4751e30548fb30f2ac44f7503efb75a9b40e6db017353327e36e"
+      },
+      "brokenStructuralConnections": 9,
+      "structuralBreakExamples": [
+        {
+          "tick": 5,
+          "types": [
+            "floor",
+            "stair"
+          ],
+          "material": "timber-joint"
+        },
+        {
+          "tick": 5,
+          "types": [
+            "stair",
+            "stair"
+          ],
+          "material": "timber-joint"
+        },
+        {
+          "tick": 5,
+          "types": [
+            "floor",
+            "floor"
+          ],
+          "material": "timber-joint"
+        },
+        {
+          "tick": 5,
+          "types": [
+            "floor",
+            "floor"
+          ],
+          "material": "timber-joint"
+        },
+        {
+          "tick": 5,
+          "types": [
+            "floor",
+            "floor"
+          ],
+          "material": "timber-joint"
+        }
+      ],
+      "releasedArchitecture": {},
+      "convergedRestTicksAtEnd": 1521,
+      "shotRestCheckPassed": true
+    },
+    {
+      "case": "porch-house-fused-floors-front",
+      "assetSha256": "b80443a2093c3c429bdcaf14d0b3e6a2f6fa1ea2425d2ae4ebb67f50c86736d3",
+      "chunks": 3188,
+      "bonds": 6409,
+      "intact": {
+        "idleTicks": 1800,
+        "passed": true,
+        "ticks": 1829
+      },
+      "impact": {
+        "broken": 1343,
+        "escapedBodies": 0,
+        "last": {
+          "awake": 138,
+          "bodies": 381,
+          "broken": 1343,
+          "contacts": 2449,
+          "converged": false,
+          "crushed": 0,
+          "dynamicNodes": 757,
+          "iterations": 16,
+          "ms": 9.551041999999999,
+          "speed": 0.0355372317135334,
+          "tick": 1800
+        },
+        "maxAwake": 358,
+        "peakSpeedMs": 65.97333526611328,
+        "unconvergedTicks": 1800
+      },
+      "completed": true,
+      "error": null,
+      "stressTopologyFailure": null,
+      "runtime": {
+        "path": "/root/workspace/vibe-land-4/.certs/vast-city/warm-runtime/libPhysXDestructionGpuRuntime_64.so",
+        "sha256": "d4284d2da42a4751e30548fb30f2ac44f7503efb75a9b40e6db017353327e36e"
+      },
+      "brokenStructuralConnections": 19,
+      "structuralBreakExamples": [
+        {
+          "tick": 3,
+          "types": [
+            "floor",
+            "floor"
+          ],
+          "material": "timber-joint"
+        },
+        {
+          "tick": 5,
+          "types": [
+            "floor",
+            "floor"
+          ],
+          "material": "timber-joint"
+        },
+        {
+          "tick": 5,
+          "types": [
+            "floor",
+            "floor"
+          ],
+          "material": "timber-joint"
+        },
+        {
+          "tick": 7,
+          "types": [
+            "floor",
+            "floor"
+          ],
+          "material": "timber-joint"
+        },
+        {
+          "tick": 7,
+          "types": [
+            "floor",
+            "floor"
+          ],
+          "material": "timber-joint"
+        }
+      ],
+      "releasedArchitecture": {},
+      "convergedRestTicksAtEnd": 0,
+      "shotRestCheckPassed": false
+    },
+    {
+      "case": "porch-house-fused-floors-only",
+      "assetSha256": "8b89784aa24c68dc406a03e3670e5a0a2c4292c20552b341f7e57c4e307c511f",
+      "chunks": 3244,
+      "bonds": 6562,
+      "intact": {
+        "idleTicks": 1800,
+        "passed": true,
+        "ticks": 1829
+      },
+      "impact": {
+        "broken": 515,
+        "escapedBodies": 0,
+        "last": {
+          "awake": 0,
+          "bodies": 105,
+          "broken": 515,
+          "contacts": 0,
+          "converged": true,
+          "crushed": 0,
+          "dynamicNodes": 264,
+          "iterations": 0,
+          "ms": 0.624406,
+          "speed": 0.0,
+          "tick": 1800
+        },
+        "maxAwake": 90,
+        "peakSpeedMs": 16.486221313476562,
+        "unconvergedTicks": 235
+      },
+      "completed": true,
+      "error": null,
+      "stressTopologyFailure": null,
+      "runtime": {
+        "path": "/root/workspace/vibe-land-4/.certs/vast-city/warm-runtime/libPhysXDestructionGpuRuntime_64.so",
+        "sha256": "d4284d2da42a4751e30548fb30f2ac44f7503efb75a9b40e6db017353327e36e"
+      },
+      "brokenStructuralConnections": 16,
+      "structuralBreakExamples": [
+        {
+          "tick": 5,
+          "types": [
+            "floor",
+            "stair"
+          ],
+          "material": "timber-joint"
+        },
+        {
+          "tick": 5,
+          "types": [
+            "stair",
+            "stair"
+          ],
+          "material": "timber-joint"
+        },
+        {
+          "tick": 5,
+          "types": [
+            "floor",
+            "floor"
+          ],
+          "material": "timber-joint"
+        },
+        {
+          "tick": 5,
+          "types": [
+            "floor",
+            "floor"
+          ],
+          "material": "timber-joint"
+        },
+        {
+          "tick": 5,
+          "types": [
+            "floor",
+            "floor"
+          ],
+          "material": "timber-joint"
+        }
+      ],
+      "releasedArchitecture": {},
+      "convergedRestTicksAtEnd": 1542,
+      "shotRestCheckPassed": true
+    },
+    {
+      "case": "porch-house-fused-floors-upper",
+      "assetSha256": "b80443a2093c3c429bdcaf14d0b3e6a2f6fa1ea2425d2ae4ebb67f50c86736d3",
+      "chunks": 3188,
+      "bonds": 6409,
+      "intact": {
+        "idleTicks": 1800,
+        "passed": true,
+        "ticks": 1829
+      },
+      "impact": {
+        "broken": 2772,
+        "escapedBodies": 0,
+        "last": {
+          "awake": 279,
+          "bodies": 567,
+          "broken": 2772,
+          "contacts": 9622,
+          "converged": false,
+          "crushed": 0,
+          "dynamicNodes": 2038,
+          "iterations": 16,
+          "ms": 3.9580290000000002,
+          "speed": 0.1746630072593689,
+          "tick": 1800
+        },
+        "maxAwake": 549,
+        "peakSpeedMs": 60.84272384643555,
+        "unconvergedTicks": 1796
+      },
+      "completed": true,
+      "error": null,
+      "stressTopologyFailure": null,
+      "runtime": {
+        "path": "/root/workspace/vibe-land-4/.certs/vast-city/warm-runtime/libPhysXDestructionGpuRuntime_64.so",
+        "sha256": "d4284d2da42a4751e30548fb30f2ac44f7503efb75a9b40e6db017353327e36e"
+      },
+      "brokenStructuralConnections": 63,
+      "structuralBreakExamples": [
+        {
+          "tick": 5,
+          "types": [
+            "floor",
+            "stair"
+          ],
+          "material": "timber-joint"
+        },
+        {
+          "tick": 5,
+          "types": [
+            "floor",
+            "floor"
+          ],
+          "material": "timber-joint"
+        },
+        {
+          "tick": 5,
+          "types": [
+            "floor",
+            "floor"
+          ],
+          "material": "timber-joint"
+        },
+        {
+          "tick": 5,
+          "types": [
+            "floor",
+            "floor"
+          ],
+          "material": "timber-joint"
+        },
+        {
+          "tick": 5,
+          "types": [
+            "floor",
+            "floor"
+          ],
+          "material": "timber-joint"
+        }
+      ],
+      "releasedArchitecture": {},
+      "convergedRestTicksAtEnd": 0,
+      "shotRestCheckPassed": false
+    },
+    {
+      "case": "porch-house-upper",
+      "assetSha256": "4d66f077491a439725d020ece9d11dd7f68d53bebefc019c8a660544108812d6",
+      "chunks": 3374,
+      "bonds": 6931,
+      "intact": {
+        "idleTicks": 1800,
+        "passed": true,
+        "ticks": 1838
+      },
+      "impact": {
+        "broken": 3832,
+        "escapedBodies": 0,
+        "last": {
+          "awake": 911,
+          "bodies": 933,
+          "broken": 3832,
+          "contacts": 25273,
+          "converged": false,
+          "crushed": 0,
+          "dynamicNodes": 3094,
+          "iterations": 16,
+          "ms": 3.9454770000000003,
+          "speed": 1.7832449674606323,
+          "tick": 1800
+        },
+        "maxAwake": 912,
+        "peakSpeedMs": 58.3781852722168,
+        "unconvergedTicks": 1796
+      },
+      "completed": true,
+      "error": null,
+      "stressTopologyFailure": null,
+      "runtime": {
+        "path": "/root/workspace/vibe-land-4/.certs/vast-city/warm-runtime/libPhysXDestructionGpuRuntime_64.so",
+        "sha256": "d4284d2da42a4751e30548fb30f2ac44f7503efb75a9b40e6db017353327e36e"
+      },
+      "brokenStructuralConnections": 268,
+      "structuralBreakExamples": [
+        {
+          "tick": 5,
+          "types": [
+            "stair",
+            "stair"
+          ],
+          "material": "timber-joint"
+        },
+        {
+          "tick": 5,
+          "types": [
+            "floor",
+            "floor"
+          ],
+          "material": "timber-joint"
+        },
+        {
+          "tick": 5,
+          "types": [
+            "floor",
+            "floor"
+          ],
+          "material": "timber-joint"
+        },
+        {
+          "tick": 5,
+          "types": [
+            "floor",
+            "floor"
+          ],
+          "material": "timber-joint"
+        },
+        {
+          "tick": 5,
+          "types": [
+            "floor",
+            "floor"
+          ],
+          "material": "timber-joint"
+        }
+      ],
+      "releasedArchitecture": {},
+      "convergedRestTicksAtEnd": 0,
+      "shotRestCheckPassed": false
+    },
+    {
+      "case": "porch-house-wood-joints",
+      "assetSha256": "c16df0e914924816b886604700de9f4d0dd8dc745143febc75e686fa9447b815",
+      "chunks": 3374,
+      "bonds": 6931,
+      "intact": {
+        "idleTicks": 1800,
+        "passed": true,
+        "ticks": 1844
+      },
+      "impact": {
+        "broken": 285,
+        "escapedBodies": 0,
+        "last": {
+          "awake": 0,
+          "bodies": 63,
+          "broken": 285,
+          "contacts": 0,
+          "converged": true,
+          "crushed": 0,
+          "dynamicNodes": 203,
+          "iterations": 0,
+          "ms": 0.407581,
+          "speed": 0.0,
+          "tick": 1800
+        },
+        "maxAwake": 52,
+        "peakSpeedMs": 21.979219436645508,
+        "unconvergedTicks": 267
+      },
+      "completed": true,
+      "error": null,
+      "stressTopologyFailure": null,
+      "runtime": {
+        "path": "/root/workspace/vibe-land-4/.certs/vast-city/warm-runtime/libPhysXDestructionGpuRuntime_64.so",
+        "sha256": "d4284d2da42a4751e30548fb30f2ac44f7503efb75a9b40e6db017353327e36e"
+      },
+      "brokenStructuralConnections": 0,
+      "structuralBreakExamples": [],
+      "releasedArchitecture": {},
+      "convergedRestTicksAtEnd": 1517,
+      "shotRestCheckPassed": true
+    }
+  ]
+}

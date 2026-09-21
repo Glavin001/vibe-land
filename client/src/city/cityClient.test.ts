@@ -163,6 +163,35 @@ function datagram(
 }
 
 describe('CityClient pose application', () => {
+  it.each([
+    [0, 0x8000_0007], [1, 0x8010_0007], [2, 0x8020_0007],
+    [3, 0x8030_0007], [64, 0x8400_0007], [254, 0x8fe0_0007],
+  ])('applies server motion IDs to structure %i independently', (structureId, wireId) => {
+    // Literal IDs from destruction/src/ids.rs, deliberately not bodyKey():
+    // using the same helper for both producer and consumer hid a 22/20-bit mismatch.
+    const source = loaded();
+    source.manifest.structures = [
+      {...manifest().structures[0], structureId},
+      {...manifest().structures[0], structureId: structureId === 0 ? 1 : 0},
+    ];
+    source.totalChunks = 8;
+    source.totalBonds = 6;
+    const client = new CityClient(source, () => {});
+    client.topology.apply({
+      topoSeq: 1, simTick: 10,
+      batches: [{structureId, brokenBondIndices: [], retiredIslandIds: [], migrations: [],
+        promotions: [{structureId, islandId: 7, nodes: [1], position: [0, 5, 0],
+          rotation: IDENTITY, linearVelocity: ZERO, angularVelocity: ZERO}]}],
+      settled: [], wakes: [],
+    });
+    internals(client).handleChunks(datagram(20, wireId, [0, 3, 0]));
+    expect(internals(client).bodies.has(wireId)).toBe(true);
+    client.samplePresentation(performance.now() + 5000);
+    expect(client.topology.body(wireId)?.position[1]).toBeCloseTo(3, 2);
+    const untouched = client.topology.slotOf(structureId === 0 ? 1 : 0, 1);
+    expect(client.topology.chunkWorldPose(untouched).position).toEqual([0, 1.5, 0]);
+  });
+
   it('ignores a reordered datagram that would rewind a body', () => {
     const { client } = makeClient();
     const key = bodyKey(0, 1);

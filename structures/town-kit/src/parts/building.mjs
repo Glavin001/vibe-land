@@ -1,5 +1,8 @@
 import {Builder,composeScene,nativeColliders} from '../geometry.mjs';
 import {createEnvelope} from './envelope.mjs';
+import {createFramedEnvelope,frameBondPolicy} from './framed-envelope.mjs';
+import {framedRoof} from './framed-roof.mjs';
+import {cornerReferencedHulls} from './hull-origins.mjs';
 import {townStaircase} from '../stairs.mjs';
 import {buildPropRaw} from '../props.mjs';
 import {attachBuiltins,weldFencePosts} from '../attachments.mjs';
@@ -12,14 +15,15 @@ export function breachShots(fromX,toX,{momentum=200000,radius=.4,z=0}={}){
  return shots;
 }
 export function building(key,bounds,options={},supportedStoreys=[2]){
- const C={storeys:2,furnished:true,mirrored:false,palette:'sage',...options},b=new Builder(key,C),e=createEnvelope(b,{floorBounds:bounds});
+ const C={storeys:2,furnished:true,mirrored:false,palette:'sage',...options},b=new Builder(key,C),e=(C.structuralSystem==='timber-frame'?createFramedEnvelope:createEnvelope)(b,{floorBounds:bounds});
+ if(C.structuralSystem==='timber-frame'&&!['porch-house','bungalow'].includes(key))throw Error('Experimental timber frame currently supports the two house layouts only');
  if(!supportedStoreys.includes(C.storeys))throw Error(`Supported storeys for ${key}: ${supportedStoreys.join(', ')}`);
  const placements=[],rooms=[],route=[],cameras={},entrances=[];const [x0,x1,z0,z1]=bounds;
  const prop=(type,x,y,z,yaw=0,extra={})=>placements.push({pack:buildPropRaw(type,{...C,...extra}).pack,position:[x,y,z],yaw,group:`${type}-${placements.length}`});
  const placeProp=(asset,position,yaw=0)=>placements.push({pack:asset.pack,position,yaw,group:`${asset.metadata?.type??'custom-prop'}-${placements.length}`});
  const point=(name,x,y,z)=>route.push({name,at:[x,y,z]});
  const room=(name,floor,lo,hi,position,target)=>{rooms.push({name,floor,bounds:[lo,hi]});cameras[name]={position,target};};
- const base=()=>{for(const [min,max] of [[[x0,-.45,z0],[x1,0,z0+.25]],[[x0,-.45,z1-.25],[x1,0,z1]],[[x0,-.45,z0+.25],[x0+.25,0,z1-.25]],[[x1-.25,-.45,z0+.25],[x1,0,z1-.25]]])b.box({min,max,material:M.footing,type:'foundation',fixed:true});e.slab(.18);};
+ const base=()=>{for(const [min,max] of [[[x0,-.45,z0],[x1,0,z0+.25]],[[x0,-.45,z1-.25],[x1,0,z1]],[[x0,-.45,z0+.25],[x0+.25,0,z1-.25]],[[x1-.25,-.45,z0+.25],[x1,0,z1-.25]]])b.box({min,max,material:M.footing,type:'foundation',fixed:true});if(C.structuralSystem==='timber-frame')b.box({min:[x0+.25,-.45,.9],max:[x1-.25,0,1.24],material:M.footing,type:'foundation',fixed:true});e.slab(.18);};
  const windowWall=(axis,at,a,c,y,top,openings,material=M.wall,siding=false)=>{if(siding)e.facade(axis,at,a,c,y,top,openings);else {e.wall(axis,at,a,c,y,top,openings,material);for(const o of openings)if(o[2]>y+.1)e.window(axis,at[0],...o);}};
  const door=(x,z,y,width=1.3)=>{e.B([x-width/2,y,z],[x-width/2+.055,y+2.3,z+.85],M.dark,'open-door',[1,3,1]);};
  function stairs(x,z,y0,y1){
@@ -51,6 +55,7 @@ export function building(key,bounds,options={},supportedStoreys=[2]){
  }
  function guard(fp,y){rail(fp.x0-.08,fp.z0-.08,fp.x0-.08,fp.z1+.08,y);rail(fp.x1+.08,fp.z0-.08,fp.x1+.08,fp.z1+.08,y);rail(fp.x0-.08,fp.z1+.15,fp.x1+.08,fp.z1+.15,y);}
  function roof(y,height=1.7){
+  if(C.structuralSystem==='timber-frame')return framedRoof(b,e,bounds,y,height);
   const mid=(x0+x1)/2,half=(x1-x0)/2,slope=x=>y+height*(1-Math.abs(x-mid)/half);
   // The ceiling ties the gables to the storey's perimeter bearing walls.
   const ceilingStart=b.s.nodes.length;e.slab(y);for(let i=ceilingStart;i<b.s.nodes.length;i++)b.s.nodeTypes[i]='ceiling';
@@ -61,10 +66,12 @@ export function building(key,bounds,options={},supportedStoreys=[2]){
  function finish(title,shots){
   route.push(...route.slice(0,-1).reverse().map(p=>({...p,name:`return-${p.name}`})));
   Object.assign(cameras,{hero:{position:[x0-12,9,z0-15],target:[0,3.4,0]},front:{position:[0,5,z0-23],target:[0,3,0]},right:{position:[x1+23,6,0],target:[0,3,0]},left:{position:[x0-23,6,0],target:[0,3,0]},rear:{position:[x1+13,9,z1+15],target:[0,3,0]},corner:{position:[x1+13,8,z0-16],target:[0,3,0]},aerial:{position:[-19,24,-20],target:[0,1.5,0]}});
-  let pack=attachBuiltins(weldFencePosts(composeScene([{pack:b.build()},...placements],{key,title})));
+  let pack=attachBuiltins(weldFencePosts(composeScene([{pack:C.structuralSystem==='timber-frame'?frameBondPolicy(b.build()):b.build()},...placements],{key,title})));
   const metadata={kind:'building',buildingType:key,options:C,entrances,rooms,route,cameras,shots,shotGroups:{glazing:'building',wall:'building',furniture:'table',fence:'fence',collapse:'building'}};
   if(C.mirrored){pack=composeScene([{pack,mirror:true}],{key:`${key}-mirror`,title});const flip=p=>[-p[0],p[1],p[2]];for(const p of [...route,...entrances])p.at=flip(p.at);for(const c of Object.values(cameras)){c.position=flip(c.position);c.target=flip(c.target);}for(const r of rooms){const [lo,hi]=r.bounds;r.bounds=[[-hi[0],lo[1],lo[2]],[-lo[0],hi[1],hi[2]]];}for(const ss of Object.values(shots))for(const s of ss){s.from=flip(s.from);s.to=flip(s.to);}}
-  return {pack:nativeColliders(pack),metadata};
+  pack=nativeColliders(pack);
+  if(C.structuralSystem==='timber-frame')pack=cornerReferencedHulls(pack);
+  return {pack,metadata};
  }
  const collapseShots=()=>{const shots=[];for(const x of [x0+1,x0+(x1-x0)/3,x0+2*(x1-x0)/3,x1-1])for(const side of [-1,1])shots.push(shot([x,1.1,side<0?z0-1.2:z1+1.2],[x,1.1,side<0?z1:z0],300000,.45,shots.length*18));for(const z of [z0+1,0,z1-1])for(const side of [-1,1])shots.push(shot([side<0?x0-1.2:x1+1.2,1.1,z],[side<0?x1:x0,1.1,z],300000,.45,shots.length*18));return shots;};
  return {C,b,...e,base,windowWall,door,prop,point,room,stairs,guard,rail,roof,finish,placeProp,collapseShots,route,cameras,entrances};

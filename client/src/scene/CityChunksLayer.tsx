@@ -1169,11 +1169,11 @@ export function CityChunksLayer({
           recordCityEvent('city_flicker', { body: key, deltaM: writeDeltaM, settling });
         }
       }
-      const debugCode = bodyDebug.enabled ? bodyDebugStateCode(key, false) : -1;
+      const bodyIsSupport = (key & 0x0f_ffff) === 0;
+      const debugCode = bodyDebug.enabled ? bodyDebugStateCode(key, bodyIsSupport) : -1;
       const debugColor = debugCode >= 0 ? bodyDebugColorForCode(debugCode) : null;
       // Settled rubble is dimmed, and live debris very slightly warmed, as the
       // per-chunk colour writes used to do.
-      const bodyIsSupport = (key & 0x0f_ffff) === 0;
       writeBodyPose(
         state,
         body,

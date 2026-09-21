@@ -1,0 +1,20 @@
+cmake_minimum_required(VERSION 3.24)
+project(TownKitFrameFailureDiagnostic LANGUAGES CXX CUDA)
+set(PHYSX_ROOT_DIR "/root/workspace/physx-2/physx")
+set(PHYSX_SOURCE_DIR "${PHYSX_ROOT_DIR}/source")
+add_subdirectory("${PHYSX_SOURCE_DIR}/gpudestruction/runtime" native-runtime)
+# Snapshot only the stress source subtree in the private build directory.
+# Never patch or regenerate the shared SDK. The only source change prints the
+# pre-existing hierarchy failure status; no solver setting/algorithm changes.
+set(STRESS_ORIGINAL "/root/workspace/physx-2/blast/source/sdk/extensions/stressgpu")
+set(STRESS_COPY "${CMAKE_BINARY_DIR}/snapshot/stressgpu")
+file(COPY "${STRESS_ORIGINAL}/" DESTINATION "${STRESS_COPY}")
+file(CREATE_LINK "/root/workspace/physx-2/blast/source/sdk/extensions/stress" "${CMAKE_BINARY_DIR}/snapshot/stress" SYMBOLIC)
+set(HEADER "${STRESS_COPY}/detail/StressNativeHierarchy.cuh")
+file(READ "${HEADER}" CODE)
+string(REPLACE "topology->error|=8u;" "{printf(\"TOWN_KIT_HIERARCHY_ERROR hierarchy=%u initialized=%u generation=%llu modes=%u modesInitialized=%u modesGeneration=%llu topologyGeneration=%llu\\n\",hierarchy->error,hierarchy->initialized,(unsigned long long)hierarchy->generation,modes->error,modes->initialized,(unsigned long long)modes->generation,(unsigned long long)topology->generation);topology->error|=8u;}" CODE "${CODE}")
+file(WRITE "${HEADER}" "${CODE}")
+get_target_property(SOURCES PhysXDestructionGpuRuntime SOURCES)
+list(FILTER SOURCES EXCLUDE REGEX "NvBlastExtStressGpu.cu$")
+list(APPEND SOURCES "${STRESS_COPY}/NvBlastExtStressGpu.cu")
+set_property(TARGET PhysXDestructionGpuRuntime PROPERTY SOURCES "${SOURCES}")

@@ -1030,6 +1030,8 @@ dependencies = [
 name = "town-kit-warm-scene-review"
 version = "0.1.0"
 dependencies = [
+ "cc",
+ "glam 0.27.0",
  "serde_json",
  "vibe-land-destruction",
  "vibe-land-physx-bridge",
