@@ -1,4 +1,5 @@
 #include "native_state.h"
+#include "solver_iterations.h"
 
 #include "extensions/PxMassProperties.h"
 
@@ -380,6 +381,8 @@ void NativeDestruction::create_destructible(
     // kinematic body here. The stage releases fragments from it as its bonds
     // break; the remnant stays kinematic for as long as it keeps an anchor.
     actor->setRigidBodyFlag(PxRigidBodyFlag::eKINEMATIC, supported);
+    actor->setSolverIterationCounts(dynamic_solver_position_iterations(),
+                                    dynamic_solver_velocity_iterations());
     actor->setLinearDamping(settings.linear_damping);
     actor->setAngularDamping(settings.angular_damping);
     // Inherited by every fragment of this cluster; see the helpers above.

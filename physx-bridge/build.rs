@@ -44,6 +44,7 @@ fn main() {
     println!("cargo:rerun-if-changed=src/physx_bridge.cc");
     println!("cargo:rerun-if-changed=src/destruction.cc");
     println!("cargo:rerun-if-changed=include/physx_bridge.h");
+    println!("cargo:rerun-if-changed=include/solver_iterations.h");
     println!("cargo:rerun-if-changed=include/destruction.h");
 
     println!("cargo:rerun-if-env-changed=PHYSX_DESTRUCTION_SDK");

@@ -1,6 +1,7 @@
 #include "vibe-land-physx-bridge/src/lib.rs.h"
 
 #include "PxPhysicsAPI.h"
+#include "solver_iterations.h"
 #include "PxNativeVehicle.h"
 
 #ifdef VIBE_LAND_DESTRUCTION
@@ -442,27 +443,6 @@ bool contact_persists_enabled() {
   return enabled;
 }
 
-
-/// Solver iteration counts for dynamic bodies.
-///
-/// VIBE_PHYSX_POSITION_ITERS / VIBE_PHYSX_VELOCITY_ITERS. Defaults match
-/// PhysX's own (4/1) so behaviour is unchanged unless asked; the stack-settling
-/// test sweeps them to locate the knee.
-std::uint32_t dynamic_solver_position_iterations() {
-  if (const char *raw = std::getenv("VIBE_PHYSX_POSITION_ITERS")) {
-    const long parsed = std::strtol(raw, nullptr, 10);
-    if (parsed > 0) return static_cast<std::uint32_t>(parsed);
-  }
-  return 4u;
-}
-
-std::uint32_t dynamic_solver_velocity_iterations() {
-  if (const char *raw = std::getenv("VIBE_PHYSX_VELOCITY_ITERS")) {
-    const long parsed = std::strtol(raw, nullptr, 10);
-    if (parsed > 0) return static_cast<std::uint32_t>(parsed);
-  }
-  return 1u;
-}
 
 PxFilterFlags simulation_filter(PxFilterObjectAttributes attributes0,
                                 PxFilterData filter0,
