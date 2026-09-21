@@ -233,6 +233,15 @@ pub struct NativeCityDestruction {
     /// First escape of each of the first few bodies to leave, with the state
     /// they left from. Bounded: this is evidence, not a log.
     escapes: Vec<EscapeSample>,
+    /// This tick's awake bodies, by chunk count and by speed. Published as
+    /// spans because "6,289 awake, none sleeping, nothing breaking" says
+    /// nothing about WHICH bodies those are: a carpet of single chunks that
+    /// jitter, or a few hundred large islands whose bond graphs the stress
+    /// solve re-runs every tick. The two have different fixes.
+    awake_by_nodes: [u32; 5],
+    awake_by_speed: [u32; 5],
+    awake_by_spin: [u32; 5],
+    awake_nodes_total: u64,
     /// Distinct bodies that have escaped, cumulative.
     escaped_bodies: u64,
     /// Sum and worst age-at-escape, in ticks.
@@ -486,6 +495,10 @@ materials={} reserved_pairs={} iterations={} tolerance={:e}",
             bodies_outside_world: 0,
             tracked: HashMap::new(),
             escapes: Vec::new(),
+            awake_by_nodes: [0; 5],
+            awake_by_speed: [0; 5],
+            awake_by_spin: [0; 5],
+            awake_nodes_total: 0,
             escaped_bodies: 0,
             escape_age_total: 0,
             escape_age_min: u64::MAX,
@@ -664,6 +677,10 @@ no observation this tick",
         self.encoder_input.reserve(snapshots.len());
         let bound = world_bound_m();
         self.born_this_tick.clear();
+        self.awake_by_nodes = [0; 5];
+        self.awake_by_speed = [0; 5];
+        self.awake_by_spin = [0; 5];
+        self.awake_nodes_total = 0;
         let mut settled: Vec<SettleEvent> = Vec::new();
         let mut wakes: Vec<(u32, u32)> = std::mem::take(&mut self.pending_wakes);
         for snap in snapshots {
@@ -772,6 +789,19 @@ no observation this tick",
                 snap.linear_velocity.y,
                 snap.linear_velocity.z,
             );
+            {
+                let n = snap.node_count;
+                let nb = if n <= 1 { 0 } else if n <= 4 { 1 } else if n <= 16 { 2 } else if n <= 64 { 3 } else { 4 };
+                // 0.32 m/s is the 0.05 m^2/s^2 sleep threshold expressed as a
+                // speed; a body under it for the wake counter's 0.4 s sleeps.
+                let sb = if speed < 0.05 { 0 } else if speed < 0.32 { 1 } else if speed < 1.0 { 2 } else if speed < 5.0 { 3 } else { 4 };
+                self.awake_by_nodes[nb] += 1;
+                self.awake_by_speed[sb] += 1;
+                let spin = speed_of(snap.angular_velocity.x, snap.angular_velocity.y, snap.angular_velocity.z);
+                let wb = if spin < 0.05 { 0 } else if spin < 0.32 { 1 } else if spin < 1.0 { 2 } else if spin < 5.0 { 3 } else { 4 };
+                self.awake_by_spin[wb] += 1;
+                self.awake_nodes_total += u64::from(n);
+            }
             match self.tracked.entry(entity) {
                 std::collections::hash_map::Entry::Occupied(mut slot) => {
                     let slot = slot.get_mut();
@@ -947,6 +977,33 @@ no observation this tick",
                 kind: span.kind,
             })
             .collect();
+
+        for (i, name) in ["1", "2_4", "5_16", "17_64", "65_plus"].iter().enumerate() {
+            self.extra_spans.push(NamedSpan {
+                name: format!("native_awake_nodes_{name}"),
+                value: f64::from(self.awake_by_nodes[i]),
+                kind: 2,
+            });
+        }
+        for (i, name) in ["lt0.05", "lt0.32", "lt1", "lt5", "ge5"].iter().enumerate() {
+            self.extra_spans.push(NamedSpan {
+                name: format!("native_awake_speed_{name}"),
+                value: f64::from(self.awake_by_speed[i]),
+                kind: 2,
+            });
+        }
+        for (i, name) in ["lt0.05", "lt0.32", "lt1", "lt5", "ge5"].iter().enumerate() {
+            self.extra_spans.push(NamedSpan {
+                name: format!("native_awake_spin_{name}"),
+                value: f64::from(self.awake_by_spin[i]),
+                kind: 2,
+            });
+        }
+        self.extra_spans.push(NamedSpan {
+            name: "native_awake_nodes_total".to_string(),
+            value: self.awake_nodes_total as f64,
+            kind: 2,
+        });
 
         // Published so a deployment can see the runaway fragments this filters
         // out. Should read 0; anything else is a server-side fault the client

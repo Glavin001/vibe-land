@@ -49,24 +49,23 @@ static unsigned correction_limit() {
 /// sleep and freeze thresholds, solver iterations), so this is the one place
 /// they need to be written and nothing is ever written on a fragment.
 ///
-/// The values are the Blast path's, which met the same failure first: a
-/// resting pile that never slept. Two mechanisms, both PhysX defaults:
+/// ALL OFF BY DEFAULT (zero leaves the PhysX default). The Blast values --
+/// depenetration 1.0 m/s, sleep 0.05, stabilization 0.02 -- were the default
+/// for one deployment on 2026-09-21. They did put piles to sleep (fractured
+/// town: awake 9,354 -> 887 within eight seconds of the last rock), and the
+/// owner pulled them the same day: bodies froze in visibly wrong poses,
+/// mid-lean and mid-slide, because the stabilization pass stops anything
+/// under ~0.2 m/s where it is and the sleep threshold parks anything under
+/// ~0.32 m/s after 0.4 s. Measured afterwards on bayline-proven-36: the
+/// depenetration cap alone, or with sleep at 0.01, does NOT let a pile sleep
+/// (about 1,000 bodies stayed awake for a minute in both arms), so there is
+/// no gentler setting of these three that buys the sleep without the look.
 ///
-///  - Depenetration is unbounded (1e32). A collapse leaves chunks overlapping,
-///    the solver pushes them apart at whatever speed closes the gap, and that
-///    kick resets sleep progress for the whole contact island. Measured on
-///    the Blast city as a resting pile spiking to 5 m/s every few seconds.
-///  - PhysX sleeps by ISLAND: every body in a contact island must sit under
-///    the sleep threshold for the wake counter's 0.4 s at once. One building's
-///    rubble is one island of thousands of bodies, and at the default
-///    0.005 m^2/s^2 one popping chunk keeps all of them awake. Observed live:
-///    awake held at exactly 19,533 for 300 consecutive ticks with nobody
-///    shooting, 0 new fractures, 0 corrections.
-///
-/// The stabilization threshold is PhysX's own pile-settling pass (the scene
-/// flag is already on): bodies under it are damped harder, which is what lets
-/// a pile relax instead of jitter. Zero or negative leaves the PhysX default,
-/// which is the A/B arm.
+/// What they were compensating for is real -- PhysX sleeps per contact
+/// island, and one popping chunk keeps thousands awake -- but the answer
+/// has to be one that does not change where things come to rest. Left as
+/// env knobs for measurement: VIBE_CITY_NATIVE_DEPEN_VELOCITY,
+/// VIBE_CITY_NATIVE_SLEEP_THRESHOLD, VIBE_CITY_NATIVE_STABILIZATION_THRESHOLD.
 static float native_env_f32(const char *name, float fallback) {
   const char *raw = std::getenv(name);
   if (raw == nullptr || *raw == '\0') return fallback;
@@ -76,16 +75,16 @@ static float native_env_f32(const char *name, float fallback) {
   return parsed;
 }
 static float native_depenetration_velocity() {
-  static const float value = native_env_f32("VIBE_CITY_NATIVE_DEPEN_VELOCITY", 1.0f);
+  static const float value = native_env_f32("VIBE_CITY_NATIVE_DEPEN_VELOCITY", 0.0f);
   return value;
 }
 static float native_sleep_threshold() {
-  static const float value = native_env_f32("VIBE_CITY_NATIVE_SLEEP_THRESHOLD", 0.05f);
+  static const float value = native_env_f32("VIBE_CITY_NATIVE_SLEEP_THRESHOLD", 0.0f);
   return value;
 }
 static float native_stabilization_threshold() {
   static const float value =
-      native_env_f32("VIBE_CITY_NATIVE_STABILIZATION_THRESHOLD", 0.02f);
+      native_env_f32("VIBE_CITY_NATIVE_STABILIZATION_THRESHOLD", 0.0f);
   return value;
 }
 
