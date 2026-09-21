@@ -1,0 +1,18 @@
+import {readFile,writeFile,mkdir} from 'node:fs/promises';
+import {gunzipSync} from 'node:zlib';
+import {createHash} from 'node:crypto';
+import {spawn} from 'node:child_process';
+import {fileURLToPath} from 'node:url';
+import path from 'node:path';
+const root=path.dirname(fileURLToPath(import.meta.url)),kit=path.resolve(root,'../..');
+const bytes=gunzipSync(await readFile(path.join(root,'shell.json.gz')));
+const metadata=await readFile(path.join(root,'shell.meta.json'));
+if(createHash('sha256').update(bytes).digest('hex')!==JSON.parse(metadata).assetSha256)throw Error('Reproduction asset hash mismatch');
+await mkdir(path.join(kit,'out'),{recursive:true});
+await writeFile(path.join(kit,'out/repro-rubble-shell.json'),bytes);
+await writeFile(path.join(kit,'out/repro-rubble-shell.meta.json'),metadata);
+const env={...process.env,TOWN_KIT_ITERATIONS:'64',TOWN_KIT_CONTACT_ITERATIONS:'16,4',TOWN_KIT_PRESERVE_CONTACTS:'1',TOWN_KIT_GPU_ISLAND_REPAIR:'1'};
+delete env.TOWN_KIT_CONTACT_OFFSET;delete env.TOWN_KIT_TILED_GROUND;
+const child=spawn(process.execPath,['scripts/review.mjs','repro-rubble-shell','stability','collapse'],{cwd:kit,env,stdio:'inherit'});
+child.on('error',error=>{console.error(error);process.exitCode=1;});
+child.on('exit',(code,signal)=>{if(signal)console.error(`Native reproduction terminated: ${signal}`);process.exitCode=code??1;});

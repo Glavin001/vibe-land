@@ -1,0 +1,4 @@
+out/
+native/target/
+node_modules/
+.vite/

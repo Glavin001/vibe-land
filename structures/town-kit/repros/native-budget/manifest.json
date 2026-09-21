@@ -1,0 +1,43 @@
+{
+  "assetSha256": "1b1937c3f3a372744c5abb6ccd8e2ac03d302c342d4aee84f543bb647985a31d",
+  "metadataSha256": "53a2b7534a8aa356a2648215c74d4317508b6162faee688ad03522ec64732fc0",
+  "chunks": 14,
+  "bonds": 14,
+  "gravity": 9.81,
+  "cases": [
+    {
+      "iterations": 16,
+      "passed": true,
+      "error": null,
+      "sdkRevision": "8bc7aecb0cbcb011a374b98eee5faaeb5065e78c",
+      "sdkContentHash": "9b4f20232fd11d62748fb3803907b967c09a9700b135a2b21ef8174e976ca881",
+      "binarySha256": "15768eb4af9d89142b6ca91d730ff4dc3775724d7fe630f5eb62b2720e94f98c",
+      "lastStatus": {
+        "converged": true,
+        "degraded": false,
+        "error": 0,
+        "frame": 1888,
+        "iterations": 0,
+        "observed": true,
+        "tick": 1888
+      }
+    },
+    {
+      "iterations": 2048,
+      "passed": false,
+      "error": "spontaneous destruction at tick 1: 8 broken, 0 crushed",
+      "sdkRevision": "8bc7aecb0cbcb011a374b98eee5faaeb5065e78c",
+      "sdkContentHash": "9b4f20232fd11d62748fb3803907b967c09a9700b135a2b21ef8174e976ca881",
+      "binarySha256": "15768eb4af9d89142b6ca91d730ff4dc3775724d7fe630f5eb62b2720e94f98c",
+      "lastStatus": {
+        "converged": false,
+        "degraded": false,
+        "error": 0,
+        "frame": 1,
+        "iterations": 2048,
+        "observed": true,
+        "tick": 1
+      }
+    }
+  ]
+}

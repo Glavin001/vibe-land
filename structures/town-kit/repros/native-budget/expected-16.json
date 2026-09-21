@@ -1,0 +1,75 @@
+{
+  "awakeBodies": 0,
+  "backend": "physx-2-native-gpu",
+  "bonds": 14,
+  "chunks": 14,
+  "contactSolver": {
+    "actors": 1,
+    "configuredBeforeFirstStep": false,
+    "contactOffsetMetres": [
+      0.019999999552965164,
+      0.019999999552965164
+    ],
+    "positionIterations": [
+      4,
+      4
+    ],
+    "requested": null,
+    "restOffsetsChanged": false,
+    "shapes": 15,
+    "sleepSettingsChanged": false,
+    "velocityIterations": [
+      1,
+      1
+    ]
+  },
+  "gpuCapacity": {
+    "collisionStackBytes": 536870912,
+    "contacts": 8388608,
+    "heapBytes": 2147483648,
+    "patches": 8388608
+  },
+  "ground": "single 10 km box, depth 1.5 m",
+  "lastStatus": {
+    "converged": true,
+    "degraded": false,
+    "error": 0,
+    "frame": 1888,
+    "iterations": 0,
+    "observed": true,
+    "tick": 1888
+  },
+  "metadataSha256": "53a2b7534a8aa356a2648215c74d4317508b6162faee688ad03522ec64732fc0",
+  "mode": "stability",
+  "nativeMappingValid": true,
+  "pack": "out/lab-budget-chair-16.json",
+  "packSha256": "1b1937c3f3a372744c5abb6ccd8e2ac03d302c342d4aee84f543bb647985a31d",
+  "passed": true,
+  "recordingEncoding": "gzip",
+  "solver": {
+    "bendGainMax": 3,
+    "damageRate": 2,
+    "fibreBending": true,
+    "gpuIslandRepair": true,
+    "gravity": 9.81,
+    "maxIterations": "16",
+    "preserveContactPairs": true,
+    "tolerance": 0.00001,
+    "warmStart": true
+  },
+  "stability": {
+    "brokenBonds": 0,
+    "crushedChunks": 0,
+    "equilibriumTick": 88,
+    "gravity": 9.81,
+    "idleSeconds": 30,
+    "passed": true
+  },
+  "timing": {
+    "exclusiveGpu": false,
+    "medianMs": 0.298657,
+    "p95Ms": 1.976939,
+    "samples": 1888
+  },
+  "wallTimeSeconds": 4.351414739
+}
