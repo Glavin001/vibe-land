@@ -4,6 +4,14 @@ An independent 67-building, 280 × 218 m scene that combines all nine building f
 
 There are 22 one-storey, 41 two-storey, and four three-storey buildings; 316 rooms; 42 reused templates; and six palettes. The scene contains 188,922 chunks and 405,404 bonds. Furniture and construction retain their authoring masses, colliders, and fragmentation. Building bond graphs are independent; this is not a measurement of runtime idle cost.
 
+## Binary build
+
+The preferred server artifact is now `out/bayline-civic-town.vlsp`. Generate it
+with `npm run build:binary` from the kit directory. The recipe, parameters and
+seed remain the single source of truth; JSON export is retained for compatibility.
+See [BINARY-SCENES.md](BINARY-SCENES.md) for the format, cache, load settings and
+cross-language validation. No live deployment has been changed.
+
 ## Preview
 
 With the isolated kit preview running on port 6174, open:

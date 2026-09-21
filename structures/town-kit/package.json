@@ -30,6 +30,8 @@
     "review:civic": "node scripts/review-civic.mjs",
     "check:civic:routes": "node scripts/check-civic-routes.mjs",
     "status:civic": "node scripts/civic-status.mjs",
-    "audit:civic": "node scripts/audit-rest.mjs --civic"
+    "audit:civic": "node scripts/audit-rest.mjs --civic",
+    "build:binary": "node scripts/build-binary.mjs",
+    "test:binary": "node scripts/verify-binary.mjs"
   }
 }

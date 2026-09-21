@@ -161,3 +161,11 @@ an Art Deco cinema with upholstered seats, and a two-storey brick fire station,
 plus reusable loose book stacks and cinema chairs. Each has its own builder,
 compressed ScenePack, mirrored variant, furnished rooms and review workflow.
 They remain independent candidates while native acceptance is pending.
+
+
+## Binary town export
+
+Use `npm run build:binary` to generate the reusable-template `.vlsp` server asset
+directly from the town recipe, without a flattened JSON intermediate.
+`npm run test:binary` checks JavaScript/Rust equivalence and load measurements.
+See [BINARY-SCENES.md](BINARY-SCENES.md).

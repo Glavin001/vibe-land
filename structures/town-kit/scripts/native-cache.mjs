@@ -4,8 +4,8 @@ import os from 'node:os';
 import {KIT} from '../src/dependencies.mjs';
 import {sha} from './provenance.mjs';
 /** Copy only locked cached packages/index entries. Never writes to the shared cache. */
-export async function prepareNativeCache(){
- const home=path.join(KIT,'out/cargo-home'),lock=await readFile(path.join(KIT,'native/Cargo.lock'),'utf8'),hash=sha(lock);
+export async function prepareNativeCache({workspace='native',cacheDirectory='cargo-home'}={}){
+ const home=path.join(KIT,'out',cacheDirectory),lock=await readFile(path.join(KIT,workspace,'Cargo.lock'),'utf8'),hash=sha(lock);
  try{if((await readFile(path.join(home,'source-lock.sha256'),'utf8'))===hash)return home;}catch{}
  await mkdir(home,{recursive:true});
  const sourceRoot=process.env.TOWN_KIT_CARGO_SOURCE_ROOT??path.join(process.env.CARGO_HOME??path.join(os.homedir(),'.cargo'),'registry/src');

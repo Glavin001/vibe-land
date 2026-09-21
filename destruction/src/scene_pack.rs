@@ -577,10 +577,15 @@ pub fn parse_scene_pack(payload: &str) -> Result<ScenePack, ScenePackError> {
 }
 
 pub fn load_scene_pack_file(path: &std::path::Path) -> Result<ScenePack, ScenePackError> {
-    let payload = std::fs::read_to_string(path).map_err(|error| {
+    let payload = std::fs::read(path).map_err(|error| {
         ScenePackError::Invalid(format!("could not read scene pack {}: {error}", path.display()))
     })?;
-    parse_scene_pack(&payload)
+    if payload.starts_with(b"VLSP") {
+        return crate::scene_binary::decode(&payload);
+    }
+    let text = std::str::from_utf8(&payload)
+        .map_err(|e| ScenePackError::Invalid(format!("scene pack is neither VLSP nor UTF-8 JSON: {e}")))?;
+    parse_scene_pack(text)
 }
 
 #[cfg(test)]

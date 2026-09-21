@@ -69,7 +69,7 @@ function ground(lots,assets){
  return composeScene(placements,{key:'small-town-ground'});
 }
 const transformBounds=(bounds,lot)=>{const p=bounds.map(v=>placementPoint(v,lot));return [p[0].map((x,k)=>Math.min(x,p[1][k])),p[0].map((x,k)=>Math.max(x,p[1][k]))];};
-export function buildBaylineSmallTown({furnished=true}={}){
+export function buildBaylineSmallTown({furnished=true,seed=20260920,assemble=true,resolveAsset=(_name,_options,build)=>build()}={}){
  const lots=townLots(),assets=new Map(),placements=[],instances=[],rooms=[],entrances=[],route=[],cameras={
   hero:{position:[-187,151,-164],target:[0,2,5]},aerial:{position:[162,196,-145],target:[0,0,9]},reverse:{position:[179,136,180],target:[0,2,12]},
   'shopping-row':{position:[-80,2.6,-1],target:[-54,2,-9]},'shopping-row-east':{position:[40,2.6,-1],target:[69,2,-9]},
@@ -82,9 +82,9 @@ export function buildBaylineSmallTown({furnished=true}={}){
  const add=(name,at)=>route.push({name,at});
  for(const lot of lots){
   lot.templateKey=JSON.stringify([lot.builder,{...lot.options,furnished}]);
-  if(!assets.has(lot.templateKey)){const a=builders[lot.builder]({...lot.options,furnished});assets.set(lot.templateKey,{...a,hash:hash(a.pack)});}
-  const a=assets.get(lot.templateKey),m=a.metadata,pack=structuredClone(a.pack),point=p=>placementPoint(p,lot);
-  pack.scenario.nodeGroups=pack.scenario.nodeGroups.map(g=>`${g}@${lot.id}`);placements.push({pack,position:lot.position,yaw:lot.yaw});
+  if(!assets.has(lot.templateKey)){const opts={...lot.options,furnished,seed},a=resolveAsset(lot.builder,opts,()=>builders[lot.builder](opts));assets.set(lot.templateKey,{...a,hash:a.hash??hash(a.pack)});}
+  const a=assets.get(lot.templateKey),m=a.metadata,pack=assemble?structuredClone(a.pack):a.pack,point=p=>placementPoint(p,lot);
+  if(assemble)pack.scenario.nodeGroups=pack.scenario.nodeGroups.map(g=>`${g}@${lot.id}`);placements.push({pack,position:lot.position,yaw:lot.yaw,...(!assemble?{groupSuffix:`@${lot.id}`}:{})});
   const start=point(m.route[0].at),side=Math.sign(lot.position[2]-lot.roadZ),sidewalk=lot.roadZ+side*5;
   if(previousRoad!==null&&previousRoad!==lot.roadZ){const via=AVENUES.reduce((a,x)=>Math.abs(x-previousX)<Math.abs(a-previousX)?x:a,AVENUES[0]);add('avenue-turn',[via,0,previousRoad]);add('avenue-arrival',[via,0,lot.roadZ]);}
   add(`${lot.id}/road`,[start[0],0,lot.roadZ]);add(`${lot.id}/sidewalk`,[start[0],0,sidewalk]);
@@ -96,10 +96,10 @@ export function buildBaylineSmallTown({furnished=true}={}){
   const local=[0,1].map(end=>[0,1,2].map(k=>(end?Math.max:Math.min)(...bs.map(b=>b[end][k]))));
   instances.push({...lot,options:m.options,sourceSha256:a.hash,nodeStart:offset,nodeCount:s.nodes.length,bondCount:s.bonds.length,bounds:transformBounds(local,lot)});offset+=s.nodes.length;
  }
- placements.push({pack:ground(lots,assets)});
- const pack=composeScene(placements,{key:SMALL_TOWN_KEY,title:'Bayline · A small town'});
+ placements.push({pack:resolveAsset('small-town-ground',{furnished,seed},()=>({pack:ground(lots,assets),metadata:{}})).pack});
+ const pack=assemble?composeScene(placements,{key:SMALL_TOWN_KEY,title:'Bayline · A small town'}):null;
  const metadata={kind:'scene',sceneLayout:true,buildingType:'small-town',options:{furnished},bounds:[[-140,-.5,-100],[140,14,118]],instances,rooms,entrances,route,cameras,shots:{},shotGroups:{},
   composition:{buildings:64,extentMetres:[280,218],areaSquareMetres:61040,templateCount:assets.size,maximumStoreys:3,zones:instances.reduce((a,i)=>(a[i.zone]=(a[i.zone]??0)+1,a),{}),storeyCounts:instances.reduce((a,i)=>(a[i.options.storeys??2]=(a[i.options.storeys??2]??0)+1,a),{}),palettes},
   acceptance:{readyForRelease:false,note:'Experimental 64-building town. Geometry/visual review and native acceptance are tracked independently; no idle-cost or complete destruction qualification is implied by independent bond graphs.'}};
- return {pack,metadata,templates:[...assets.entries()].map(([key,a])=>({key,...a}))};
+ return {pack,metadata,placements,templates:[...assets.entries()].map(([key,a])=>({key,...a}))};
 }
