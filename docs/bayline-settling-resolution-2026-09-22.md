@@ -73,6 +73,34 @@ Evidence: `structures/town-kit/out/reviews/house-cannonball/f-frag05-*`
 (qualified set), `q-depen05-*` (whole-body cap), `ab-*` (sweeps),
 `sdkaudit*`/`sdktrace*` (SDK audits), and the SDK's `evidence.json`.
 
+## Whole town, production arena
+
+`sustained_fire_survives_a_rejected_step` (the server's own bench: production
+arena, the deployed 36-building scene, 70,546 chunks) with the new
+`VIBE_CITY_BENCH_TARGET=-120,18` (the garden bungalow),
+`VIBE_CITY_BENCH_SHOT_GAP_TICKS=120` (a player's cadence),
+`VIBE_CITY_BENCH_SETTLE_TICKS=1800`, 12 cannonballs:
+
+| | Production (stab on, uncapped, `d80f5948`) | Stab off + fragment cap 0.5 (`05645289`) |
+| --- | ---: | ---: |
+| Broken bonds | 3,905 | 2,127 |
+| Chunk bodies | 1,390 | 658 |
+| Awake after 30 s | **1,060, flat** | 4 |
+| Bodies fallen through the ground | **40** | 4 |
+
+Intact town at rest, 10 s: 0 bonds broken, 0 error frames, on the fix.
+
+The stress cadence (18 balls 8 ticks apart) is the one place the fix looks
+worse on a metric: 16 fall-throughs of 780 bodies vs production's 3 of 537
+(both with zero awake above ground, because the freeze pass masks the
+deadlock under that volley). A fragment a ball drives deep into the ground is
+no longer ejected in one tick, and at that depth its contact can fail — the
+pre-existing "falls out of the world" family. The live server's own stats
+before it stopped read `min_body_y=0.0` after 74,004 breaks and
+`awake_bodies=15489` of 19,135: production play produced the pile, not the
+fall-through. Cap 2 m/s brings the deadlock back (275 awake); 1 m/s behaves
+like 0.5 with 11 fall-throughs under the stress volley.
+
 ## Not claimed / open
 
 - The stress solver keeps 16 iterations/tick running on a fully asleep damaged
@@ -82,3 +110,6 @@ Evidence: `structures/town-kit/out/reviews/house-cannonball/f-frag05-*`
 - Meteors still rebound off the deployed roof; `residential-v2` (which
   penetrates) is now qualifiable on settling but has not been promoted.
 - Debris still tunnels thin decks; the cap bounds what happens afterwards.
+- Fragments a projectile drives deep into the ground can still lose contact
+  and fall out of the world (pre-existing; 40 → 4 at play cadence, 3 → 16
+  under the 8-tick stress volley). The next engine item.

@@ -2456,7 +2456,16 @@ fn sustained_fire_survives_a_rejected_step() {
     // What the match does when it opens a native city.
     arena.set_tolerate_rejected_steps(city.backend_name() == "native");
 
-    let (tx, tz) = (-36.0f32, -36.0f32);
+    // VIBE_CITY_BENCH_TARGET=x,z aims the volley at a building of the loaded
+    // scene instead of the default downtown block; the town's houses are not
+    // where the high-rise was.
+    let (tx, tz) = std::env::var("VIBE_CITY_BENCH_TARGET")
+        .ok()
+        .and_then(|v| {
+            let mut it = v.split(',').map(|n| n.trim().parse::<f32>());
+            Some((it.next()?.ok()?, it.next()?.ok()?))
+        })
+        .unwrap_or((-36.0f32, -36.0f32));
     let origin = Vec3::new(tx, 1.6, tz - 26.0);
     let shots: u32 = std::env::var("VIBE_CITY_BENCH_SHOTS")
         .ok()
@@ -2497,7 +2506,13 @@ fn sustained_fire_survives_a_rejected_step() {
             let world = arena.physx_world_mut().expect("physx world");
             city.apply_shot_ray(origin, (target - origin).normalize(), Some(world));
         }
-        for _ in 0..8 {
+        // VIBE_CITY_BENCH_SHOT_GAP_TICKS spaces the volley; 8 is the stress
+        // cadence, 120 is roughly a player's.
+        let gap: u32 = std::env::var("VIBE_CITY_BENCH_SHOT_GAP_TICKS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(8);
+        for _ in 0..gap {
             // Production's entry point, including everything it does after the
             // step returns.
             let began = std::time::Instant::now();
@@ -2534,6 +2549,50 @@ fn sustained_fire_survives_a_rejected_step() {
         }
     }
 
+    // VIBE_CITY_BENCH_SETTLE_TICKS=n keeps stepping after the volley and
+    // reports the awake count every second: whether the rubble comes to rest
+    // is the question a live server answers over minutes, not eight ticks.
+    let settle: u32 = std::env::var("VIBE_CITY_BENCH_SETTLE_TICKS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+    if settle > 0 {
+        eprintln!("[native /city] settling {settle} ticks after the volley");
+        let mut settle_wall = 0.0f64;
+        for i in 0..settle {
+            let began = std::time::Instant::now();
+            arena.step_vehicles_and_dynamics(DT);
+            let world = arena.physx_world_mut().expect("physx world");
+            let _ = city.step(tick, DT, gravity(), Some(world));
+            settle_wall += f64::from(began.elapsed().as_secs_f32()) * 1000.0;
+            tick += 1;
+            if (i + 1) % 60 == 0 {
+                let spans = city.extra_spans();
+                let converged = spans.iter().find(|s| s.name == "native_stress_iterations").map(|s| s.value).unwrap_or(0.0) == 0.0;
+                let stats = city.stats();
+                eprintln!(
+                    "  settle {:>4} s: awake {:>6} of {:>6} bodies, broken {:>7}, stress converged {}, tick {:.2} ms",
+                    (i + 1) / 60, stats.awake_chunk_bodies, stats.chunk_bodies, stats.broken_bonds, converged, settle_wall / 60.0
+                );
+                settle_wall = 0.0;
+            }
+        }
+    }
+    if settle > 0 {
+        // Whatever is still awake after the settle window, by name.
+        let world = arena.physx_world_mut().expect("physx world");
+        if let Ok(bodies) = world.native_chunk_body_snapshots() {
+            for b in bodies.iter().filter(|b| !b.kinematic && !b.sleeping) {
+                let v = &b.linear_velocity;
+                let w = &b.angular_velocity;
+                eprintln!(
+                    "  still awake: body {:#x} chunks {} at ({:.2} {:.2} {:.2}) v {:.4} w {:.4}",
+                    b.entity_id, b.node_count, b.position.x, b.position.y, b.position.z,
+                    (v.x * v.x + v.y * v.y + v.z * v.z).sqrt(), (w.x * w.x + w.y * w.y + w.z * w.z).sqrt()
+                );
+            }
+        }
+    }
     eprintln!(
         "  {:>5} {:>8} {:>7} {:>7} {:>7} {:>11}",
         "shots", "bonds", "bodies", "tick_ms", "awake", "stress_ms"
