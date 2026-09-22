@@ -221,12 +221,36 @@ export class CityTopology {
    */
   readonly resyncStructures = new Set<number>();
   /**
-   * Settles refused because their pose would have teleported the body.
+   * Structures whose membership is KNOWN to disagree with the server's: the
+   * last topology hash check named them, or a migration named an island this
+   * client never received. Cleared when a hash check passes or the structure
+   * bootstrap lands. Only for these is a far settle a membership fault; for
+   * every other structure it is a body whose flight the stream could not
+   * carry (ceiling, interest radius, baseline granularity), and the settle
+   * pose is simply the truth arriving.
+   */
+  readonly membershipSuspect = new Set<number>();
+  /**
+   * Settles refused because their pose would have teleported a body whose
+   * structure is a membership suspect. Each one is escalated to a structure
+   * repair.
    *
-   * Must be 0. Each one is a body whose membership this client and the server
-   * disagree about, caught before it could be drawn in the wrong place.
+   * This used to fire on distance alone, on the theory that tens of metres of
+   * drift could only mean the two sides composed the pose from different
+   * member sets. Measured against the hash checks on a demolished town: 122
+   * rejects, 101 hash checks, 0 mismatches -- membership agreed every time,
+   * and every reject was a body that had flown out of the stream's budget and
+   * landed where the client had never seen it go. Each reject bought a
+   * 60-90 kB structure bootstrap every 3 s and a 50-150 ms frame applying it.
    */
   settleFrameRejects = 0;
+  /**
+   * Settles applied beyond SETTLE_MAX_DRIFT_M because membership was not in
+   * doubt; the presentation layer glides the correction. Worst distance kept
+   * so a report can say how far the stream had fallen behind.
+   */
+  settleRelocations = 0;
+  settleRelocationWorstM = 0;
   /**
    * Notified when a body's centre-of-mass frame shifts, with the body-local
    * delta. The pose stream is buffered for smoothing, so whoever holds that
@@ -647,12 +671,19 @@ export class CityTopology {
           settle.position[2] - body.position[2],
         );
         body.settled = true;
-        if (drift > SETTLE_MAX_DRIFT_M) {
+        if (drift > SETTLE_MAX_DRIFT_M && this.membershipSuspect.has(settle.structureId)) {
           this.settleFrameRejects += 1;
           // Membership disagreement in ONE structure; the stream position is
           // fine. Structure-scoped repair, not a world rebuild.
           this.resyncStructures.add(settle.structureId);
         } else {
+          if (drift > SETTLE_MAX_DRIFT_M) {
+            // Membership verified, pose far: the stream never carried this
+            // body's last stretch. The settle IS its final record; the same
+            // pose would have arrived in the next baseline, a second later.
+            this.settleRelocations += 1;
+            this.settleRelocationWorstM = Math.max(this.settleRelocationWorstM, drift);
+          }
           body.position = vClone(settle.position);
           body.rotation = [...settle.rotation] as Quat;
         }
@@ -967,6 +998,7 @@ export class CityTopology {
       // chunks composed against the wrong frame. One structure's content is
       // wrong; the stream position is not — structure-scoped repair.
       this.migrateAnomalies.missingDestination += 1;
+      this.membershipSuspect.add(structureId);
       this.resyncStructures.add(structureId);
       return;
     }
@@ -1189,6 +1221,7 @@ export class CityTopology {
     this.lastTopoSeq = message.topoSeq;
     this.needsResync = false;
     this.resyncStructures.clear();
+    this.membershipSuspect.clear();
     this.brokenBonds = 0;
     for (const structure of message.structures) {
       const bits = this.aliveBonds.get(structure.structureId);
@@ -1227,6 +1260,7 @@ export class CityTopology {
   applyStructureBootstrap(message: BootstrapMessage): void {
     for (const structureMessage of message.structures) {
       this.resyncStructures.delete(structureMessage.structureId);
+      this.membershipSuspect.delete(structureMessage.structureId);
       const manifestStructure = this.manifest.structures.find(
         (candidate) => candidate.structureId === structureMessage.structureId,
       );

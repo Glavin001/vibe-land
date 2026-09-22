@@ -853,12 +853,14 @@ describe('CityTopology settle cannot teleport a body', () => {
     expect(topology.settleFrameRejects).toBe(0);
   });
 
-  it('refuses a settle that would move the body across the map, and asks for repair', () => {
+  it('refuses a far settle only while the structure is a membership suspect, and asks for repair', () => {
     const topology = new CityTopology(manifest());
     topology.apply(fractureMessage(1));
     const slot = topology.slotOf(0, 2);
     const before = topology.chunkWorldPose(slot).position.slice() as number[];
     const body = topology.body(bodyKey(0, 1))!;
+    // The hash check named this structure: its member set differs from ours.
+    topology.membershipSuspect.add(0);
 
     topology.apply(settleMessage([body.position[0], body.position[1] - 74.8, body.position[2]]));
 
@@ -870,8 +872,29 @@ describe('CityTopology settle cannot teleport a body', () => {
     // And the real fault -- membership disagreement -- is escalated as a
     // STRUCTURE repair, not a world rebuild: the stream position is intact.
     expect(topology.settleFrameRejects).toBe(1);
+    expect(topology.settleRelocations).toBe(0);
     expect(topology.needsResync).toBe(false);
     expect([...topology.resyncStructures]).toEqual([0]);
+  });
+
+  it('applies a far settle when membership is not in doubt: the stream fell behind, the ledger did not', () => {
+    const topology = new CityTopology(manifest());
+    topology.apply(fractureMessage(1));
+    const body = topology.body(bodyKey(0, 1))!;
+    const rest = [body.position[0] + 30, body.position[1], body.position[2] + 5];
+
+    topology.apply(settleMessage(rest));
+
+    // Measured on a demolished town: 122 far settles, 101 hash checks, 0
+    // mismatches. Refusing these bought a structure bootstrap every 3 s and a
+    // 50-150 ms frame applying it, for bodies whose flight the byte ceiling
+    // had dropped. The settle is that body's final record.
+    expect(topology.body(bodyKey(0, 1))!.settled).toBe(true);
+    expect(topology.body(bodyKey(0, 1))!.position[0]).toBeCloseTo(rest[0], 4);
+    expect(topology.settleFrameRejects).toBe(0);
+    expect(topology.settleRelocations).toBe(1);
+    expect(topology.settleRelocationWorstM).toBeCloseTo(Math.hypot(30, 5), 3);
+    expect(topology.resyncStructures.size).toBe(0);
   });
 
   it('a missing migration destination asks for that structure, not the world', () => {

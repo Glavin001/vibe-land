@@ -155,6 +155,15 @@ const REST_ANGULAR_RPS: f32 = 0.05;
 const REST_POSE_EPSILON_M: f32 = 0.02;
 /// Re-evaluate a resting body on one send in this many, staggered by slot.
 const REST_EVAL_STRIDE: u32 = 8;
+/// A body at rest this far from the pose a client last received is a landing
+/// the client never saw: its flight was dropped by the ceiling or interest,
+/// and nothing else re-sends a resting body. Measured on a demolished town,
+/// these were 122 settle rejects per session -- the settle arriving 10-30 m
+/// from where the client held the body -- each buying a structure bootstrap.
+const LANDING_MIN_M: f32 = 0.5;
+/// Priority added to a landing record: above ordinary contact motion, below
+/// the hard deadline of a body the client is watching move.
+const LANDING_SCORE: f32 = 30.0;
 /// Records a single client ranks per send. Well above the ~350 the byte
 /// ceiling admits, so the selection still has room to choose.
 const MAX_EVAL_PER_CLIENT: usize = 1200;
@@ -851,7 +860,21 @@ impl ChunkStreamEncoder {
                 },
                 config.priority,
             );
-            if !priority.should_send {
+            // The landing record. Priority says Quiescent bodies are never
+            // worth a record, which is right for rubble sitting where the
+            // client already has it and wrong for a body that flew out of the
+            // budget and stopped somewhere else: it stays Quiescent, so it is
+            // never sent again, and the client learns where it landed from
+            // the next baseline (up to a second late) or the settle (which
+            // it used to refuse as a membership fault). One record closes
+            // that gap; RestUnchanged then keeps it from repeating.
+            let landed = shared_record.linear_speed <= REST_SPEED_MPS
+                && shared_record.angular_speed <= REST_ANGULAR_RPS
+                && body_state.last_sent.is_some_and(|(_, last_pose)| {
+                    shared_record.position.distance_squared(last_pose.position)
+                        > LANDING_MIN_M * LANDING_MIN_M
+                });
+            if !priority.should_send && !landed {
                 if let Some(audit) = audit.as_mut() {
                     note_outcome(
                         audit, shared, shared_record, body_state, SendOutcome::NotNewsworthy);
@@ -864,7 +887,7 @@ impl ChunkStreamEncoder {
             candidates.push(BudgetCandidate {
                 index,
                 cost_bytes: cost,
-                priority: priority.score,
+                priority: priority.score + if landed { LANDING_SCORE } else { 0.0 },
                 required: priority.hard_deadline || decision.entering,
             });
         }
@@ -1287,6 +1310,42 @@ mod tests {
         let datagram = crate::wire::decode_chunks_datagram(&packets[0]).expect("datagram");
         assert_eq!(datagram.records.len(), 1);
         assert_eq!(datagram.records[0].body_entity, ids::body_entity(0, 1));
+    }
+
+    /// A body the client last saw at A, now at rest at B: nothing about a
+    /// resting body is newsworthy, so it was never re-sent, and the client
+    /// learned B from the settle -- which it refused as a membership fault
+    /// because B was tens of metres from A. The landing record closes that
+    /// gap once, and the rest-unchanged gate keeps it from repeating.
+    #[test]
+    fn a_body_that_landed_out_of_the_stream_is_sent_once_more() {
+        let manifest = manifest();
+        let mut encoder = ChunkStreamEncoder::new(&manifest, EncoderConfig::validated(60));
+        encoder.add_client(1);
+        encoder.ingest_tick(10, &[snapshot(0.0)], &promotion_output(), &[]);
+        let shared = encoder.encode_send(10);
+        assert_eq!(encoder.client_datagrams(1, close_camera(), &shared).len(), 1, "first record");
+
+        // Its flight was dropped; it is next seen at rest 6 m away. Rest
+        // evaluation is strided by slot, so walk the stride: exactly one send
+        // must carry the landing, and none after it.
+        let landed = BodySnapshotInput {
+            position: [7.0, 2.0, 0.0],
+            linear_velocity: [0.0, 0.0, 0.0],
+            ..snapshot(0.0)
+        };
+        let mut sent = Vec::new();
+        for tick in (12..12 + 2 * REST_EVAL_STRIDE * 2).step_by(2) {
+            encoder.ingest_tick(tick, &[landed.clone()], &DestructionTickOutput::default(), &[]);
+            let shared = encoder.encode_send(tick);
+            let packets = encoder.client_datagrams(1, close_camera(), &shared);
+            if !packets.is_empty() {
+                let datagram = crate::wire::decode_chunks_datagram(&packets[0]).expect("datagram");
+                sent.push((tick, datagram.records[0].position));
+            }
+        }
+        assert_eq!(sent.len(), 1, "one landing record, then rest-unchanged: {sent:?}");
+        assert!((sent[0].1.x - 7.0).abs() < 1e-3, "the landing record carries the rest pose");
     }
 
     #[test]

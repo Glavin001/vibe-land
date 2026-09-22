@@ -134,9 +134,13 @@ export interface CityClientStats {
   hashMismatches: number;
   /** Targeted per-structure repairs applied (vs full bootstraps). */
   structureRepairs: number;
-  /// Settles refused because their pose would have teleported the body --
-  /// membership disagreement, caught before it could be drawn.
+  /// Settles refused because their pose would have teleported a body of a
+  /// structure whose membership is known to disagree with the server's.
   settleRejects: number;
+  /// Far settles applied because membership was verified: bodies whose last
+  /// stretch the stream could not carry. Worst distance in metres.
+  settleRelocations: number;
+  settleRelocationWorstM: number;
   /// Topology released by the wall-clock valve, ahead of the pose clock.
   valveApplies: number;
   valveTicksAhead: number;
@@ -1239,6 +1243,11 @@ export class CityClient {
           const ours = local.get(entry.structureId);
           if (ours && (ours.laneA !== entry.laneA || ours.laneB !== entry.laneB)) {
             mismatched.push(entry.structureId);
+            this.topology.membershipSuspect.add(entry.structureId);
+          } else if (ours) {
+            // Membership verified at this seq: a far settle on this structure
+            // is the stream catching up, not a ledger fault.
+            this.topology.membershipSuspect.delete(entry.structureId);
           }
         }
         if (mismatched.length > 0) {
@@ -2258,6 +2267,8 @@ export class CityClient {
       chunksSettled,
       bootstraps: this.bootstrapCount,
       settleRejects: this.topology.settleFrameRejects,
+      settleRelocations: this.topology.settleRelocations,
+      settleRelocationWorstM: this.topology.settleRelocationWorstM,
       valveApplies: this.topologyValveApplies,
       valveTicksAhead: this.topologyValveTicksAhead,
       brokenBonds: topologyStats.brokenBonds,

@@ -325,6 +325,14 @@ export async function decodeCityManifestPayload(
  * content-addressed, so a mismatched hash means the geometry does not match the
  * simulation and every chunk id that follows would refer to the wrong thing.
  */
+/** The same parse from bytes already in hand: offline tape replays. */
+export function parseCityManifestBytes(
+  bytes: ArrayBuffer,
+  expectedHashHex: string,
+): Promise<LoadedCityManifest> {
+  return parseCityManifest(bytes, expectedHashHex);
+}
+
 async function parseCityManifest(
   bytes: ArrayBuffer,
   expectedHashHex: string,
