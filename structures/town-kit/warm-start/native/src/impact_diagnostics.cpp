@@ -111,3 +111,56 @@ extern "C" unsigned town_kit_check_contact_iterations(std::uintptr_t ptr,unsigne
  for(auto* a:actors){PxU32 p,v;a->is<PxRigidDynamic>()->getSolverIterationCounts(p,v);if(p!=position||v!=velocity)++mismatches;}
  return mismatches;
 }
+
+// Chunk shapes captured before impact; their actor pointer follows each split.
+static std::vector<physx::PxShape*>& town_kit_chunk_shapes(){static std::vector<physx::PxShape*> shapes;return shapes;}
+
+// Read-only rest-state audit: the terms the GPU sleep check uses (wake counter,
+// per-body sleep/freeze thresholds, velocities) for every dynamic actor, so a
+// whole island that never sleeps can be traced to the member that keeps it up.
+extern "C" unsigned town_kit_sleep_snapshot(std::uintptr_t ptr,const char* path,unsigned tick){
+ using namespace physx;if(!ptr||!path)return 1;
+ auto& scene=*reinterpret_cast<PxScene*>(ptr);
+ std::ofstream out(path,std::ios::app);if(!out)return 3;out<<std::setprecision(9);
+ // Stage-split fragments are not in the scene's actor list; reach every body
+ // through the chunk shapes, whose actor pointer follows each split.
+ static std::vector<PxShape*>& tracked=town_kit_chunk_shapes();
+ if(tick==0){
+  tracked.clear();std::vector<PxActor*> initial(scene.getNbActors(PxActorTypeFlag::eRIGID_DYNAMIC));
+  scene.getActors(PxActorTypeFlag::eRIGID_DYNAMIC,initial.data(),initial.size());
+  for(auto* a:initial){auto* body=a->is<PxRigidDynamic>();std::vector<PxShape*> shapes(body->getNbShapes());body->getShapes(shapes.data(),shapes.size());
+   for(auto* shape:shapes)if(shape->getSimulationFilterData().word3&0x80000000u)tracked.push_back(shape);
+  }
+ }
+ std::vector<PxRigidActor*> actors;std::unordered_set<PxRigidActor*> seen;
+ for(auto* shape:tracked){auto* actor=shape->getActor();if(!actor)return 6;if(seen.insert(actor).second)actors.push_back(actor);}
+ out<<"{\"tick\":"<<tick<<",\"bodies\":[";bool comma=false;
+ for(auto* a:actors){auto* b=a->is<PxRigidDynamic>();if(!b||!b->userData)continue;
+  const auto entity=static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(b->userData))-1u;
+  const bool kinematic=b->getRigidBodyFlags().isSet(PxRigidBodyFlag::eKINEMATIC);
+  const auto v=b->getLinearVelocity(),w=b->getAngularVelocity(),inertia=b->getMassSpaceInertiaTensor();const auto pose=b->getGlobalPose();
+  if(comma)out<<",";comma=true;
+  out<<"{\"id\":"<<entity<<",\"gpu\":"<<b->getGPUIndex()<<",\"kinematic\":"<<unsigned(kinematic)<<",\"sleeping\":"<<unsigned(b->isSleeping())
+     <<",\"wakeCounter\":"<<b->getWakeCounter()<<",\"sleepThreshold\":"<<b->getSleepThreshold()<<",\"freezeThreshold\":"<<b->getStabilizationThreshold()
+     <<",\"mass\":"<<b->getMass()<<",\"inertia\":["<<inertia.x<<","<<inertia.y<<","<<inertia.z<<"],\"shapes\":"<<b->getNbShapes()
+     <<",\"v\":["<<v.x<<","<<v.y<<","<<v.z<<"],\"w\":["<<w.x<<","<<w.y<<","<<w.z<<"],\"p\":["<<pose.p.x<<","<<pose.p.y<<","<<pose.p.z<<"],\"q\":["<<pose.q.x<<","<<pose.q.y<<","<<pose.q.z<<","<<pose.q.w<<"]}";
+ }
+ out<<"]}\n";return 0;
+}
+
+// Diagnostic probe, never on the public scene: wake every awake, non-kinematic
+// body that reports motion, and list them. A body the CPU calls awake but the
+// GPU is not integrating starts moving again only if this re-registers it.
+extern "C" unsigned town_kit_wake_probe(std::uintptr_t ptr,const char* path,unsigned tick,float speed){
+ using namespace physx;if(!ptr||!path)return 1;
+ auto& scene=*reinterpret_cast<PxScene*>(ptr);
+ std::ofstream out(path,std::ios::app);if(!out)return 3;out<<std::setprecision(9);
+ const auto& shapes=town_kit_chunk_shapes();if(shapes.empty())return 7;
+ std::unordered_set<PxRigidActor*> seen;out<<"{\"tick\":"<<tick<<",\"woken\":[";bool comma=false;
+ for(auto* shape:shapes){auto* actor=shape->getActor();if(!actor||!seen.insert(actor).second)continue;auto* b=actor->is<PxRigidDynamic>();if(!b||!b->userData)continue;
+  if(b->getRigidBodyFlags().isSet(PxRigidBodyFlag::eKINEMATIC)||b->isSleeping())continue;
+  if(b->getLinearVelocity().magnitude()<speed&&b->getAngularVelocity().magnitude()<speed*10)continue;
+  b->wakeUp();if(comma)out<<",";comma=true;out<<(static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(b->userData))-1u);
+ }
+ out<<"]}\n";return 0;
+}

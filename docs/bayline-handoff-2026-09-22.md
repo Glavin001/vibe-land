@@ -89,6 +89,15 @@ it is a safe remedy. The requested >50% meteor destruction target remains unprov
   Shot `expectedContactIterations:[8,2]` verifies parents/fragments read-only;
   do not substitute the diagnostic iteration setter for production verification.
 
+## Update, later on 2026-09-22
+
+Next step 1 is done and the answer is neither rigid contacts nor stress
+nonconvergence: every failing settle case is one contact island held awake by
+a single fragment in a wrong SDK activity state (dead GPU body, or a CPU
+deactivate/re-wake cycle under stabilization). Measurements, the
+stabilization-off comparison on all four deployed cases, and what is ruled out
+are in [bayline-settling-zombie-bodies-2026-09-22.md](bayline-settling-zombie-bodies-2026-09-22.md).
+
 ## Next steps / cautions
 
 1. Reproduce the remaining bungalow cannonball case; distinguish persistent rigid

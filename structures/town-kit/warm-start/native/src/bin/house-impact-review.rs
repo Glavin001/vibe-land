@@ -19,6 +19,8 @@ extern "C" {
     fn town_kit_refilter_migrated(scene: usize, tick: u32) -> u32;
     fn town_kit_check_contact_iterations(scene: usize, position: u32, velocity: u32) -> u32;
     fn town_kit_contact_iterations(scene: usize, position: u32, velocity: u32) -> u32;
+    fn town_kit_sleep_snapshot(scene: usize, path: *const std::ffi::c_char, tick: u32) -> u32;
+    fn town_kit_wake_probe(scene: usize, path: *const std::ffi::c_char, tick: u32, speed: f32) -> u32;
 }
 fn check_contact_iterations(w: &World, shot: &Value, report: &mut Value, phase: &str) -> R<()> {
     if let Some(expected) = shot["expectedContactIterations"].as_array() {
@@ -90,10 +92,16 @@ fn run(asset: &Path, dir: &Path, report: &mut Value) -> R<()> {
     let shot: Value = serde_json::from_slice(&fs::read(dir.join("shot.json"))?)?;
     let collision_audit = shot["collisionAudit"].as_bool().unwrap_or(false);
     let collision_path = std::ffi::CString::new(dir.join("collision-shapes.ndjson").to_str().ok_or("collision path")?)?;
+    let sleep_audit = shot["sleepAudit"].as_bool().unwrap_or(false);
+    let sleep_path = std::ffi::CString::new(dir.join("sleep-state.ndjson").to_str().ok_or("sleep path")?)?;
     let audit = |w: &World, tick: u32| -> R<()> {
         if collision_audit {
             let error=unsafe { town_kit_collision_snapshot(w.scene_ptr()?,collision_path.as_ptr(),tick) };
             if error!=0 { return Err(format!("collision audit error {error}").into()); }
+        }
+        if sleep_audit {
+            let error=unsafe { town_kit_sleep_snapshot(w.scene_ptr()?,sleep_path.as_ptr(),tick) };
+            if error!=0 { return Err(format!("sleep audit error {error}").into()); }
         }
         Ok(())
     };
@@ -303,6 +311,13 @@ fn run(asset: &Path, dir: &Path, report: &mut Value) -> R<()> {
         series.push(json!({"projectile":projectile,"tick":t,"ms":ms,"broken":broken.len(),"awake":awake,"dynamicNodes":dynamic_nodes,"bodies":bodies.len(),"speed":max_speed,"converged":s.converged,"iterations":s.iterations,"contacts":s.normal_contacts,"crushed":s.crushed_chunks,"postCorrectionBrokenBonds":s.post_correction_broken_bonds,"correctionPasses":s.correction_passes,"stressPasses":s.stress_passes}));
         w.native_take_island_events()?;
         w.native_take_chunk_migrations()?;
+        // Diagnostic only: wake every moving awake body once, at the requested tick.
+        if shot["wakeProbeTick"].as_u64() == Some(t as u64) {
+            let path=std::ffi::CString::new(dir.join("wake-probe.json").to_str().ok_or("probe path")?)?;
+            let error=unsafe { town_kit_wake_probe(w.scene_ptr()?,path.as_ptr(),t,shot["wakeProbeSpeed"].as_f64().unwrap_or(0.02) as f32) };
+            if error!=0 { return Err(format!("wake probe failed {error}").into()); }
+            report["diagnosticWakeProbeTick"]=json!(t);
+        }
         if (sample_ticks > 0 && t % sample_ticks == 0) || t == duration_ticks || [1, 6, 15, 30, 60, 120, 300, 600, 1200, 1800].contains(&t) {
             frames.push(capture(&w, &manifest, t)?);
             audit(&w,t)?;

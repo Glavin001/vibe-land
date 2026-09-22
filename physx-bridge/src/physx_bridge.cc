@@ -3396,7 +3396,14 @@ private:
     scene_desc.cudaContextManager = &cuda_context;
     scene_desc.flags |= PxSceneFlag::eENABLE_GPU_DYNAMICS;
     scene_desc.flags |= PxSceneFlag::eENABLE_PCM;
-    scene_desc.flags |= PxSceneFlag::eENABLE_STABILIZATION;
+    // Stabilization freezes the pose of any body whose energy falls under a
+    // quarter of its stabilization threshold. VIBE_PHYSX_STABILIZATION=0 runs
+    // without it, so a rest-state fault can be attributed to the freeze pass
+    // or cleared of it by controlled comparison; the default is unchanged.
+    if (const char *raw = std::getenv("VIBE_PHYSX_STABILIZATION");
+        raw == nullptr || raw[0] != '0') {
+      scene_desc.flags |= PxSceneFlag::eENABLE_STABILIZATION;
+    }
     // GPU broadphase by default; VIBE_PHYSX_BROADPHASE=abp|pabp selects a CPU
     // one. A knob rather than a constant because the broadphase is the first
     // thing a GPU scene constructs, so it is also the first thing to fail when
