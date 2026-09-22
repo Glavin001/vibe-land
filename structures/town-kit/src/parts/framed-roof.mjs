@@ -3,10 +3,10 @@ import {M} from '../materials.mjs';
 /** Real roof load path: covering -> rafters/ridge -> heel seats/king posts ->
  * structural ceiling deck -> storey frame. Gables have clearance under rafters.
  */
-export function framedRoof(b,envelope,bounds,y,height){
+export function framedRoof(b,envelope,bounds,y,height,{coverThickness=.1,coverMaterial=M.roof}={}){
  const [x0,x1,z0,z1]=bounds,mid=(x0+x1)/2,half=(x1-x0)/2;
  const slope=x=>y+height*(1-Math.abs(x-mid)/half);
- const start=b.s.nodes.length;envelope.slab(y);for(let i=start;i<b.s.nodes.length;i++)b.s.nodeTypes[i]='ceiling';
+ const start=b.s.nodes.length;envelope.slab(y);for(let i=start;i<b.s.nodes.length;i++)if(b.s.nodeTypes[i]==='floor')b.s.nodeTypes[i]='ceiling';
  const B=(min,max,type,split=[1,1,1])=>b.box({min,max,material:M.frame,type,split});
  const ridgeHalf=.08;
  B([mid-ridgeHalf,y+height-.12,z0+.12],[mid+ridgeHalf,y+height+.12-height*ridgeHalf/half,z1-.12],'roof-ridge',[1,1,2]);
@@ -36,5 +36,5 @@ export function framedRoof(b,envelope,bounds,y,height){
   b.piece({axis:'z',lo:z,hi:z+.12,poly:[[a,low],[c,low],[c,high(c)],[a,high(a)]],material:M.siding,type:'gable-infill'});
  }
  const xs=[x0-.25,...Array.from({length:Math.ceil(half/1.4)-1},(_,i)=>x0+(i+1)*half/Math.ceil(half/1.4)),mid,...Array.from({length:Math.ceil(half/1.4)-1},(_,i)=>mid+(i+1)*half/Math.ceil(half/1.4)),x1+.25];
- for(let i=0;i<xs.length-1;i++)for(let z=z0-.25;z<z1+.249;z+=1.25){const a=xs[i],c=xs[i+1];b.piece({axis:'z',lo:z,hi:Math.min(z+1.25,z1+.25),poly:[[a,slope(a)+.12],[c,slope(c)+.12],[c,slope(c)+.22],[a,slope(a)+.22]],material:M.roof,type:'roof'});}
+ for(let i=0;i<xs.length-1;i++)for(let z=z0-.25;z<z1+.249;z+=1.25){const a=xs[i],c=xs[i+1];b.piece({axis:'z',lo:z,hi:Math.min(z+1.25,z1+.25),poly:[[a,slope(a)+.12],[c,slope(c)+.12],[c,slope(c)+.12+coverThickness],[a,slope(a)+.12+coverThickness]],material:coverMaterial,type:'roof'});}
 }

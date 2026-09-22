@@ -1,4 +1,9 @@
 fn main() {
+    let world="../../../../server/src/demo_world.rs";
+    println!("cargo:rerun-if-changed={world}");
+    let ground=std::fs::read_to_string(world).unwrap().lines().filter(|l|l.starts_with("const CITY_GROUND_")).map(|l|format!("pub {l}")).collect::<Vec<_>>().join("\n");
+    assert!(ground.contains("CITY_GROUND_THICKNESS_M") && ground.contains("CITY_GROUND_HALF_EXTENT_M"));
+    std::fs::write(std::path::Path::new(&std::env::var("OUT_DIR").unwrap()).join("city_ground.rs"),ground).unwrap();
     // Reuse the server's pure launch planner without its network packet encoder.
     let meteor = "../../../../server/src/meteor.rs";
     println!("cargo:rerun-if-changed={meteor}");

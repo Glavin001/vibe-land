@@ -13,7 +13,22 @@ use vibe_land_destruction::{
 };
 use vibe_land_physx_bridge::*;
 extern "C" {
+    fn town_kit_surface_snapshot(scene: usize, path: *const std::ffi::c_char, tick: u32, count: u32) -> u32;
     fn town_kit_impact_diagnostics(scene: usize, output: *mut u64) -> u32;
+    fn town_kit_collision_snapshot(scene: usize, path: *const std::ffi::c_char, tick: u32) -> u32;
+    fn town_kit_refilter_migrated(scene: usize, tick: u32) -> u32;
+    fn town_kit_check_contact_iterations(scene: usize, position: u32, velocity: u32) -> u32;
+    fn town_kit_contact_iterations(scene: usize, position: u32, velocity: u32) -> u32;
+}
+fn check_contact_iterations(w: &World, shot: &Value, report: &mut Value, phase: &str) -> R<()> {
+    if let Some(expected) = shot["expectedContactIterations"].as_array() {
+        let p = expected[0].as_u64().ok_or("invalid expected position iterations")? as u32;
+        let v = expected[1].as_u64().ok_or("invalid expected velocity iterations")? as u32;
+        let mismatches = unsafe { town_kit_check_contact_iterations(w.scene_ptr()?, p, v) };
+        report[phase] = json!({"expected":[p,v],"mismatches":mismatches});
+        if mismatches != 0 {return Err("production contact iteration inheritance failed".into());}
+    }
+    Ok(())
 }
 fn failed_step_diagnostics(w: &World, report: &mut Value) {
     let mut out = [0u64; 8];
@@ -24,7 +39,33 @@ fn failed_step_diagnostics(w: &World, report: &mut Value) {
 }
 #[allow(dead_code)]
 mod meteor { include!(concat!(env!("OUT_DIR"), "/meteor_planner.rs")); }
+mod city_ground { include!(concat!(env!("OUT_DIR"), "/city_ground.rs")); }
 type R<T> = Result<T, Box<dyn std::error::Error>>;
+// Match the collision ground used by this harness. A fast fragment can slide
+// hundreds of metres while remaining supported; 500 m was not the world edge.
+fn outside_review_ground(position: [f32; 3], ground_top: f32) -> bool {
+    let [x, y, z] = position;
+    !x.is_finite() || !y.is_finite() || !z.is_finite()
+        || y < ground_top - 10.0
+        || x.abs() > city_ground::CITY_GROUND_HALF_EXTENT_M
+        || z.abs() > city_ground::CITY_GROUND_HALF_EXTENT_M
+}
+#[cfg(test)]
+mod ground_gate_tests {
+    use super::*;
+    #[test]
+    fn meteor_fragment_on_the_actual_ground_is_not_an_escape() {
+        assert!(!outside_review_ground([170.503, 0.08, -505.163], 0.0));
+        assert!(!outside_review_ground([0.0, 0.08, -1999.0], 0.0));
+    }
+    #[test]
+    fn off_ground_below_ground_and_nonfinite_positions_fail() {
+        assert!(outside_review_ground([2001.0, 0.08, 0.0], 0.0));
+        assert!(outside_review_ground([0.0, -11.0, 0.0], 0.0));
+        assert!(outside_review_ground([f32::NAN, 0.0, 0.0], 0.0));
+    }
+}
+
 fn capture(w: &World, m: &DestructionManifest, t: u32) -> R<Value> {
     let bs = w.native_chunk_body_snapshots()?;
     let lookup: HashMap<_, _> = bs.iter().map(|b| (b.entity_id, b)).collect();
@@ -47,8 +88,23 @@ fn capture(w: &World, m: &DestructionManifest, t: u32) -> R<Value> {
 }
 fn run(asset: &Path, dir: &Path, report: &mut Value) -> R<()> {
     let shot: Value = serde_json::from_slice(&fs::read(dir.join("shot.json"))?)?;
+    let collision_audit = shot["collisionAudit"].as_bool().unwrap_or(false);
+    let collision_path = std::ffi::CString::new(dir.join("collision-shapes.ndjson").to_str().ok_or("collision path")?)?;
+    let audit = |w: &World, tick: u32| -> R<()> {
+        if collision_audit {
+            let error=unsafe { town_kit_collision_snapshot(w.scene_ptr()?,collision_path.as_ptr(),tick) };
+            if error!=0 { return Err(format!("collision audit error {error}").into()); }
+        }
+        Ok(())
+    };
     let ground_top = shot["groundTop"].as_f64().unwrap_or(0.) as f32;
     report["groundTopM"] = json!(ground_top);
+    let ground_depth=shot["groundDepthM"].as_f64().unwrap_or(city_ground::CITY_GROUND_THICKNESS_M as f64) as f32;
+    report["groundDepthM"]=json!(ground_depth);
+    report["groundHalfExtentM"]=json!(city_ground::CITY_GROUND_HALF_EXTENT_M);
+    report["groundSource"]=json!("server/src/demo_world.rs");
+    let refilter=shot["refilterMigrated"].as_bool().unwrap_or(false);
+    report["diagnosticRefilterMigrated"]=json!(refilter);
     let pack = load_scene_pack_file(asset)?;
     let manifest = Arc::new(DestructionManifest::from_city(&single_building_scene(
         &pack,
@@ -65,10 +121,10 @@ fn run(asset: &Path, dir: &Path, report: &mut Value) -> R<()> {
         entity_id: 0x10000001,
         user_id: 0,
         pose: Pose {
-            position: Vec3::new(0., ground_top - 0.75, 0.),
+            position: Vec3::new(0., ground_top - ground_depth*0.5, 0.),
             rotation: Quat::IDENTITY,
         },
-        half_extents: Vec3::new(500., 0.75, 500.),
+        half_extents: Vec3::new(city_ground::CITY_GROUND_HALF_EXTENT_M, ground_depth*0.5, city_ground::CITY_GROUND_HALF_EXTENT_M),
         collision_group: 1,
         collision_mask: 63,
     })?;
@@ -79,15 +135,27 @@ fn run(asset: &Path, dir: &Path, report: &mut Value) -> R<()> {
         60,
     )
     .map_err(|e| e.to_string())?;
+    if let Some(position)=shot["contactPositionIterations"].as_u64() {
+        let velocity=shot["contactVelocityIterations"].as_u64().unwrap_or(1);
+        let error=unsafe { town_kit_contact_iterations(w.scene_ptr()?,position as u32,velocity as u32) };
+        if error!=0 {return Err("invalid contact iteration counts".into());}
+        report["diagnosticContactIterations"]=json!([position,velocity]);
+    }
+    check_contact_iterations(&w, &shot, report, "parentContactIterations")?;
     let runtime = w.native_warm_runtime_path()?;
     report["runtime"] = json!({"path":runtime,"sha256":scene_warm::sha256(&fs::read(&runtime)?)});
     report["chunks"] = json!(pack.nodes.len());
     report["bonds"] = json!(pack.bonds.len());
     let mut quiet = 0;
     let mut tick = 0;
+    let mut intact_ms = Vec::<f64>::new();
     while quiet < 1800 && tick < 5400 {
         tick += 1;
-        if let Err(e) = w.step() {
+        let start = Instant::now();
+        let step_result = w.step();
+        intact_ms.push(start.elapsed().as_secs_f64()*1000.);
+        report["intactTimingMs"] = json!({"first":intact_ms[0],"maximum":intact_ms.iter().copied().fold(0.,f64::max),"mean":intact_ms.iter().sum::<f64>()/intact_ms.len() as f64,"steps":intact_ms.len(),"scope":"World::step including native completion; excludes observation reads","exclusiveGpu":false});
+        if let Err(e) = step_result {
             report["failedNativeStatus"] = json!(format!("{:?}", w.native_tick()));
             failed_step_diagnostics(&w, report);
             return Err(e.into());
@@ -96,8 +164,11 @@ fn run(asset: &Path, dir: &Path, report: &mut Value) -> R<()> {
         if s.error != 0 || !s.observed || s.degraded || s.missed_frames != 0 {
             return Err(format!("intact rejected step {s:?}").into());
         }
-        if !w.native_take_broken_bonds()?.is_empty() || s.broken_bonds != 0 || s.crushed_chunks != 0
+        let initial_breaks = w.native_take_broken_bonds()?;
+        if !initial_breaks.is_empty() || s.broken_bonds != 0 || s.crushed_chunks != 0
         {
+            report["intact"] = json!({"passed":false,"ticks":tick,"idleTicks":quiet,"brokenBondIds":initial_breaks.iter().map(|b| b.bond_id).collect::<Vec<_>>()});
+            fs::write(dir.join("initial-failure-poses.json"),serde_json::to_vec(&capture(&w,&manifest,tick)?)?)?;
             return Err(format!("spontaneous destruction at {tick}: {s:?}").into());
         }
         let awake = w
@@ -150,6 +221,8 @@ fn run(asset: &Path, dir: &Path, report: &mut Value) -> R<()> {
     };
     report["projectile"] = json!({"massKg":mass,"radiusM":radius,"velocity":velocity,"ttlTicks":ttl,"position":p,"api":"launch_dynamic_ball"});
     let mut frames = vec![capture(&w, &manifest, 0)?];
+    audit(&w,0)?;
+    if refilter { unsafe { town_kit_refilter_migrated(w.scene_ptr()?,0); } }
     w.launch_dynamic_ball(LaunchedBallDesc {
         entity_id: 0x200ffff0,
         user_id: 0xffff0,
@@ -179,9 +252,15 @@ fn run(asset: &Path, dir: &Path, report: &mut Value) -> R<()> {
             return Err(e.into());
         }
         let s = w.native_tick()?;
+        if refilter { let count=unsafe { town_kit_refilter_migrated(w.scene_ptr()?,t) };if count==u32::MAX { return Err("diagnostic refilter failed".into()); } }
         let ms = now.elapsed().as_secs_f64() * 1000.;
         if s.error != 0 || !s.observed || s.degraded || s.missed_frames != 0 {
             return Err(format!("damage rejected step {t} {s:?}").into());
+        }
+        if shot["loadAudit"].as_bool().unwrap_or(false) && t<=12 {
+            let path=std::ffi::CString::new(dir.join("surface-loads.ndjson").to_str().ok_or("loads path")?)?;
+            let error=unsafe { town_kit_surface_snapshot(w.scene_ptr()?,path.as_ptr(),t,pack.nodes.len() as u32) };
+            if error!=0 { return Err(format!("surface load audit failed {error}").into()); }
         }
         let newly = w.native_take_broken_bonds()?;
         for b in newly {
@@ -202,7 +281,7 @@ fn run(asset: &Path, dir: &Path, report: &mut Value) -> R<()> {
         for b in bodies {
             let v = &b.linear_velocity;
             max_speed = max_speed.max((v.x * v.x + v.y * v.y + v.z * v.z).sqrt());
-            if b.position.y < -10. || b.position.x.abs() > 500. || b.position.z.abs() > 500. {
+            if outside_review_ground([b.position.x, b.position.y, b.position.z], ground_top) {
                 escaped.insert(b.entity_id);
             }
         }
@@ -221,11 +300,12 @@ fn run(asset: &Path, dir: &Path, report: &mut Value) -> R<()> {
         let projectile = w.body_snapshots()?.into_iter().find(|b| b.entity_id == 0x200ffff0)
             .map(|b| json!({"position":[b.pose.position.x,b.pose.position.y,b.pose.position.z],
                 "velocity":[b.linear_velocity.x,b.linear_velocity.y,b.linear_velocity.z]}));
-        series.push(json!({"projectile":projectile,"tick":t,"ms":ms,"broken":broken.len(),"awake":awake,"dynamicNodes":dynamic_nodes,"bodies":bodies.len(),"speed":max_speed,"converged":s.converged,"iterations":s.iterations,"contacts":s.normal_contacts,"crushed":s.crushed_chunks,"correctionPasses":s.correction_passes,"stressPasses":s.stress_passes}));
+        series.push(json!({"projectile":projectile,"tick":t,"ms":ms,"broken":broken.len(),"awake":awake,"dynamicNodes":dynamic_nodes,"bodies":bodies.len(),"speed":max_speed,"converged":s.converged,"iterations":s.iterations,"contacts":s.normal_contacts,"crushed":s.crushed_chunks,"postCorrectionBrokenBonds":s.post_correction_broken_bonds,"correctionPasses":s.correction_passes,"stressPasses":s.stress_passes}));
         w.native_take_island_events()?;
         w.native_take_chunk_migrations()?;
         if (sample_ticks > 0 && t % sample_ticks == 0) || t == duration_ticks || [1, 6, 15, 30, 60, 120, 300, 600, 1200, 1800].contains(&t) {
             frames.push(capture(&w, &manifest, t)?);
+            audit(&w,t)?;
         }
         if t % 120 == 0 || t == 1 {
             eprintln!("impact {}", series.last().unwrap());
@@ -234,6 +314,7 @@ fn run(asset: &Path, dir: &Path, report: &mut Value) -> R<()> {
             w.remove_actor(0x200ffff0)?;
         }
     }
+    check_contact_iterations(&w, &shot, report, "fragmentContactIterations")?;
     report["impact"] = json!({"broken":broken.len(),"peakSpeedMs":peak_speed,"maxAwake":max_awake,"unconvergedTicks":nonconverged,"escapedBodies":escaped.len(),"convergedRestTicks":impact_quiet_ticks,"settledCasePassed":impact_quiet_ticks>=60 && escaped.is_empty() && !broken.is_empty(),"last":series.last()});
     fs::write(dir.join("series.json"), serde_json::to_vec(&series)?)?;
     fs::write(dir.join("events.json"), serde_json::to_vec(&events)?)?;
@@ -261,5 +342,8 @@ fn main() {
     println!("{report}");
     if report["completed"] != true {
         std::process::exit(1);
+    }
+    if report.get("impact").is_some() && report["impact"]["settledCasePassed"] != true {
+        std::process::exit(2);
     }
 }

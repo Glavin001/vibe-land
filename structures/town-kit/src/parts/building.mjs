@@ -2,6 +2,7 @@ import {Builder,composeScene,nativeColliders} from '../geometry.mjs';
 import {createEnvelope} from './envelope.mjs';
 import {createFramedEnvelope,frameBondPolicy} from './framed-envelope.mjs';
 import {framedRoof} from './framed-roof.mjs';
+import {residentialRoof} from './residential-roof.mjs';
 import {cornerReferencedHulls} from './hull-origins.mjs';
 import {townStaircase} from '../stairs.mjs';
 import {buildPropRaw} from '../props.mjs';
@@ -15,7 +16,8 @@ export function breachShots(fromX,toX,{momentum=200000,radius=.4,z=0}={}){
  return shots;
 }
 export function building(key,bounds,options={},supportedStoreys=[2]){
- const C={storeys:2,furnished:true,mirrored:false,palette:'sage',...options},b=new Builder(key,C),e=(C.structuralSystem==='timber-frame'?createFramedEnvelope:createEnvelope)(b,{floorBounds:bounds});
+ const C={storeys:2,furnished:true,mirrored:false,palette:'sage',...options},b=new Builder(key,C),e=(C.structuralSystem==='timber-frame'?createFramedEnvelope:createEnvelope)(b,{floorBounds:bounds,singleSkin:C.impactProfile==='residential-v2'});
+ if(C.impactProfile!==undefined&&(!['residential-v1','residential-v2'].includes(C.impactProfile)||C.structuralSystem!=='timber-frame'))throw Error('impactProfile requires a framed house and residential-v1 or residential-v2');
  if(C.structuralSystem==='timber-frame'&&!['porch-house','bungalow'].includes(key))throw Error('Experimental timber frame currently supports the two house layouts only');
  if(!supportedStoreys.includes(C.storeys))throw Error(`Supported storeys for ${key}: ${supportedStoreys.join(', ')}`);
  const placements=[],rooms=[],route=[],cameras={},entrances=[];const [x0,x1,z0,z1]=bounds;
@@ -55,7 +57,10 @@ export function building(key,bounds,options={},supportedStoreys=[2]){
  }
  function guard(fp,y){rail(fp.x0-.08,fp.z0-.08,fp.x0-.08,fp.z1+.08,y);rail(fp.x1+.08,fp.z0-.08,fp.x1+.08,fp.z1+.08,y);rail(fp.x0-.08,fp.z1+.15,fp.x1+.08,fp.z1+.15,y);}
  function roof(y,height=1.7){
-  if(C.structuralSystem==='timber-frame')return framedRoof(b,e,bounds,y,height);
+  if(C.structuralSystem==='timber-frame'){
+   if(['residential-v1','residential-v2'].includes(C.impactProfile))return residentialRoof(b,bounds,y,height);
+   return framedRoof(b,e,bounds,y,height);
+  }
   const mid=(x0+x1)/2,half=(x1-x0)/2,slope=x=>y+height*(1-Math.abs(x-mid)/half);
   // The ceiling ties the gables to the storey's perimeter bearing walls.
   const ceilingStart=b.s.nodes.length;e.slab(y);for(let i=ceilingStart;i<b.s.nodes.length;i++)b.s.nodeTypes[i]='ceiling';
@@ -66,7 +71,7 @@ export function building(key,bounds,options={},supportedStoreys=[2]){
  function finish(title,shots){
   route.push(...route.slice(0,-1).reverse().map(p=>({...p,name:`return-${p.name}`})));
   Object.assign(cameras,{hero:{position:[x0-12,9,z0-15],target:[0,3.4,0]},front:{position:[0,5,z0-23],target:[0,3,0]},right:{position:[x1+23,6,0],target:[0,3,0]},left:{position:[x0-23,6,0],target:[0,3,0]},rear:{position:[x1+13,9,z1+15],target:[0,3,0]},corner:{position:[x1+13,8,z0-16],target:[0,3,0]},aerial:{position:[-19,24,-20],target:[0,1.5,0]}});
-  let pack=attachBuiltins(weldFencePosts(composeScene([{pack:C.structuralSystem==='timber-frame'?frameBondPolicy(b.build()):b.build()},...placements],{key,title})));
+  let pack=attachBuiltins(weldFencePosts(composeScene([{pack:C.structuralSystem==='timber-frame'?frameBondPolicy(b.build(),{impactProfile:C.impactProfile}):b.build()},...placements],{key,title})));
   const metadata={kind:'building',buildingType:key,options:C,entrances,rooms,route,cameras,shots,shotGroups:{glazing:'building',wall:'building',furniture:'table',fence:'fence',collapse:'building'}};
   if(C.mirrored){pack=composeScene([{pack,mirror:true}],{key:`${key}-mirror`,title});const flip=p=>[-p[0],p[1],p[2]];for(const p of [...route,...entrances])p.at=flip(p.at);for(const c of Object.values(cameras)){c.position=flip(c.position);c.target=flip(c.target);}for(const r of rooms){const [lo,hi]=r.bounds;r.bounds=[[-hi[0],lo[1],lo[2]],[-lo[0],hi[1],hi[2]]];}for(const ss of Object.values(shots))for(const s of ss){s.from=flip(s.from);s.to=flip(s.to);}}
   pack=nativeColliders(pack);
