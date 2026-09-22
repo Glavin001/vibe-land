@@ -83,6 +83,21 @@ static float native_sleep_threshold() {
   static const float value = native_env_f32("VIBE_CITY_NATIVE_SLEEP_THRESHOLD", 0.0f);
   return value;
 }
+/// Depenetration cap for free fragments only, metres per second; zero (the
+/// default) inherits the parent's unbounded PhysX clamp. Measured 2026-09-22
+/// on the house harness: with the default, fast meteor debris that tunnels a
+/// deck and lands inside other pieces settles into a PGS fixed point -- pose
+/// never moves, reported velocity never zero, island never sleeps -- or a
+/// two-step 7 cm ping-pong. 3 m/s still deadlocks; 1 m/s and 0.5 m/s dissolve
+/// every stack. Applied on the GPU at fragment creation, so a projectile's
+/// trial contact with the anchored remnant keeps its unbounded impulses and
+/// fracture loads are unchanged (a whole-body cap made the cannonball bounce
+/// off the wall with a fifth of the damage).
+static float native_fragment_depenetration_velocity() {
+  static const float value =
+      native_env_f32("VIBE_CITY_NATIVE_FRAGMENT_DEPEN_VELOCITY", 0.0f);
+  return value;
+}
 static float native_stabilization_threshold() {
   static const float value =
       native_env_f32("VIBE_CITY_NATIVE_STABILIZATION_THRESHOLD", 0.0f);
@@ -488,6 +503,17 @@ FfiNativeConfigured NativeDestruction::configure(const FfiNativeConfig &config) 
   desc.reservedContactPairs = config.reserved_contact_pairs;
 #endif
   desc.gpuIslandRepair = config.gpu_island_repair;
+#if defined(VIBE_PHYSX_HAS_FRAGMENT_DEPENETRATION)
+  desc.fragmentMaxDepenetrationVelocity = native_fragment_depenetration_velocity();
+  if (desc.fragmentMaxDepenetrationVelocity > 0.0f) {
+    std::fprintf(stderr, "[destruction] fragment depenetration cap %.3g m/s\n",
+                 double(desc.fragmentMaxDepenetrationVelocity));
+  }
+#else
+  native_require(native_fragment_depenetration_velocity() <= 0.0f,
+                 "VIBE_CITY_NATIVE_FRAGMENT_DEPEN_VELOCITY needs an SDK with "
+                 "fragmentMaxDepenetrationVelocity (PxDestructionScene v18)");
+#endif
 
   native_require(api.configureStress(desc),
                  "native destruction configuration was rejected");

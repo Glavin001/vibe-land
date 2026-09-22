@@ -1,5 +1,16 @@
 # Why damaged Bayline houses never settle — 2026-09-22
 
+> **Correction, later the same day.** The "dead GPU body / SDK activity
+> bookkeeping" interpretation in this document was wrong. Tracing the stuck
+> bodies through the SDK showed every one of them is correctly listed,
+> solved and integrated each step; they are **contact deadlocks** — a light
+> fragment buried inside the ground with heavier debris buried inside it,
+> whose opposing unbounded depenetration biases reach a PGS fixed point
+> (pose static, velocity constant) or a two-pose cycle. The measurements
+> below stand; the inference in "Interpretation" items 1–2 does not. The fix,
+> its qualification and what was ruled out are in
+> [bayline-settling-resolution-2026-09-22.md](bayline-settling-resolution-2026-09-22.md).
+
 Follow-up to the [September 22 handoff](bayline-handoff-2026-09-22.md), item 1:
 "reproduce the remaining bungalow cannonball case; distinguish persistent rigid
 contacts from stress nonconvergence". It is neither. Everything below is from

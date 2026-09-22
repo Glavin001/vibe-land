@@ -3404,6 +3404,12 @@ private:
         raw == nullptr || raw[0] != '0') {
       scene_desc.flags |= PxSceneFlag::eENABLE_STABILIZATION;
     }
+    // VIBE_PHYSX_SOLVER=tgs selects the substepping solver; PGS (the PhysX
+    // default) stays the default here until it is measured on the city.
+    if (const char *raw = std::getenv("VIBE_PHYSX_SOLVER");
+        raw != nullptr && std::string(raw) == "tgs") {
+      scene_desc.solverType = PxSolverType::eTGS;
+    }
     // GPU broadphase by default; VIBE_PHYSX_BROADPHASE=abp|pabp selects a CPU
     // one. A knob rather than a constant because the broadphase is the first
     // thing a GPU scene constructs, so it is also the first thing to fail when

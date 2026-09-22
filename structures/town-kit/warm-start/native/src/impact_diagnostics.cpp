@@ -159,8 +159,10 @@ extern "C" unsigned town_kit_wake_probe(std::uintptr_t ptr,const char* path,unsi
  std::unordered_set<PxRigidActor*> seen;out<<"{\"tick\":"<<tick<<",\"woken\":[";bool comma=false;
  for(auto* shape:shapes){auto* actor=shape->getActor();if(!actor||!seen.insert(actor).second)continue;auto* b=actor->is<PxRigidDynamic>();if(!b||!b->userData)continue;
   if(b->getRigidBodyFlags().isSet(PxRigidBodyFlag::eKINEMATIC)||b->isSleeping())continue;
-  if(b->getLinearVelocity().magnitude()<speed&&b->getAngularVelocity().magnitude()<speed*10)continue;
-  b->wakeUp();if(comma)out<<",";comma=true;out<<(static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(b->userData))-1u);
+  const float threshold=speed<0?-speed:speed;
+  if(b->getLinearVelocity().magnitude()<threshold&&b->getAngularVelocity().magnitude()<threshold*10)continue;
+  if(speed<0){auto pose=b->getGlobalPose();pose.p.y+=1.0f;b->setGlobalPose(pose,true);}else b->wakeUp();
+  if(comma)out<<",";comma=true;out<<(static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(b->userData))-1u);
  }
  out<<"]}\n";return 0;
 }
