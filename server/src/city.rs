@@ -33,11 +33,11 @@ use vibe_netcode::destruction_backend::{DestructionBackend, DestructionStats};
 
 #[cfg(feature = "destruction")]
 use vibe_land_destruction::ids;
+#[cfg(feature = "physx-city")]
+use vibe_land_destruction::bridge_authoring::GROUP_CHUNK;
 #[cfg(feature = "destruction")]
 use vibe_land_destruction::runtime::CityDestruction;
-#[cfg(feature = "destruction")]
-use vibe_land_destruction::runtime::GROUP_CHUNK;
-#[cfg(feature = "destruction")]
+#[cfg(feature = "physx-city")]
 use vibe_land_physx_bridge::{RaycastRequest, Vec3 as BridgeVec3, World};
 
 pub const CITY_MATCH_PREFIX: &str = "city";
@@ -99,7 +99,7 @@ const CITY_HIT_NODE_RADIUS_M: f32 = 3.0;
 /// ```
 ///
 /// Override with VIBE_CITY_ROUND_MOMENTUM_NS.
-#[cfg(feature = "blast-core")]
+#[cfg(any(feature = "blast-core", feature = "native-destruction"))]
 fn city_round_momentum_ns() -> f32 {
     std::env::var("VIBE_CITY_ROUND_MOMENTUM_NS")
         .ok()
@@ -330,8 +330,12 @@ pub fn selected_backend() -> anyhow::Result<DestructionBackendKind> {
         None => {
             return Ok(if legacy_core {
                 DestructionBackendKind::BlastCore
-            } else {
+            } else if cfg!(feature = "destruction") || !cfg!(feature = "native-destruction") {
                 DestructionBackendKind::Blast
+            } else {
+                // Built without Blast: the native stage is the only PhysX
+                // backend there is, so it is the default rather than an error.
+                DestructionBackendKind::Native
             })
         }
         Some("blast") => DestructionBackendKind::Blast,
@@ -1273,10 +1277,10 @@ impl CityRuntime {
     /// `VIBE_CITY_SYNTHETIC=1`.
     pub fn open(
         sim_hz: u32,
-        #[cfg(feature = "destruction")] world: Option<&mut World>,
-        #[cfg(not(feature = "destruction"))] _world: Option<()>,
+        #[cfg(feature = "physx-city")] world: Option<&mut World>,
+        #[cfg(not(feature = "physx-city"))] _world: Option<()>,
     ) -> anyhow::Result<Self> {
-        #[cfg(feature = "destruction")]
+        #[cfg(feature = "physx-city")]
         {
             if !prefer_synthetic() {
                 if let Some(world) = world {
@@ -1284,7 +1288,14 @@ impl CityRuntime {
                     // unbuilt backend is a configuration error, not a reason to
                     // quietly run a different engine than the one asked for.
                     match selected_backend()? {
-                        DestructionBackendKind::Blast => return Self::physx(sim_hz, world),
+                        DestructionBackendKind::Blast => {
+                            #[cfg(feature = "destruction")]
+                            return Self::physx(sim_hz, world);
+                            #[cfg(not(feature = "destruction"))]
+                            anyhow::bail!(
+                                "VIBE_CITY_DESTRUCTION=blast needs the destruction feature"
+                            );
+                        }
                         DestructionBackendKind::BlastCore => {
                             #[cfg(feature = "blast-core")]
                             return Self::blast_core(sim_hz, world);
@@ -1337,11 +1348,11 @@ impl CityRuntime {
     pub fn reset(
         &mut self,
         sim_hz: u32,
-        #[cfg(feature = "destruction")] world: Option<&mut World>,
-        #[cfg(not(feature = "destruction"))] world: Option<()>,
+        #[cfg(feature = "physx-city")] world: Option<&mut World>,
+        #[cfg(not(feature = "physx-city"))] world: Option<()>,
     ) -> anyhow::Result<()> {
         let clients = self.encoder.clients();
-        #[cfg(feature = "destruction")]
+        #[cfg(feature = "physx-city")]
         let world = {
             // Each backend owns its own actors, so the release has to match the
             // one that built them. The native stage additionally owns the
@@ -1375,7 +1386,10 @@ impl CityRuntime {
                     }
                     #[cfg(feature = "blast-core")]
                     CityBackend::Core(_) => {}
+                    #[cfg(feature = "destruction")]
                     _ => world.clear_destructibles()?,
+                    #[cfg(not(feature = "destruction"))]
+                    _ => {}
                 }
                 Some(world)
             } else {
@@ -1484,8 +1498,8 @@ impl CityRuntime {
         &mut self,
         origin: Vec3,
         direction: Vec3,
-        #[cfg(feature = "destruction")] world: Option<&mut World>,
-        #[cfg(not(feature = "destruction"))] _world: Option<()>,
+        #[cfg(feature = "physx-city")] world: Option<&mut World>,
+        #[cfg(not(feature = "physx-city"))] _world: Option<()>,
     ) -> bool {
         let direction = direction.normalize_or_zero();
         if direction == Vec3::ZERO {
@@ -1730,11 +1744,14 @@ impl CityRuntime {
     /// 60 Hz step: destruction tick + encoder ingest.
     /// Take the fracture-frame resimulation capture, immediately before the
     /// host steps PhysX. No-op unless VIBE_CITY_RESIM_PASSES > 0.
-    #[cfg(feature = "destruction")]
+    #[cfg(feature = "physx-city")]
     pub fn pre_step(&mut self, world: Option<&mut World>) {
+        #[cfg(feature = "destruction")]
         if let (CityBackend::Physx(backend), Some(world)) = (&mut self.backend, world) {
             backend.pre_step(world);
         }
+        #[cfg(not(feature = "destruction"))]
+        let _ = world;
     }
 
     pub fn step(
@@ -1742,8 +1759,8 @@ impl CityRuntime {
         sim_tick: u32,
         dt: f32,
         gravity: [f32; 3],
-        #[cfg(feature = "destruction")] world: Option<&mut World>,
-        #[cfg(not(feature = "destruction"))] _world: Option<()>,
+        #[cfg(feature = "physx-city")] world: Option<&mut World>,
+        #[cfg(not(feature = "physx-city"))] _world: Option<()>,
     ) -> Vec<Vec<u8>> {
         let started = std::time::Instant::now();
         let mut reliable = Vec::new();
@@ -1932,8 +1949,8 @@ impl CityRuntime {
         sim_tick: u32,
         dt: f32,
         gravity: [f32; 3],
-        #[cfg(feature = "destruction")] world: Option<&mut World>,
-        #[cfg(not(feature = "destruction"))] world: Option<()>,
+        #[cfg(feature = "physx-city")] world: Option<&mut World>,
+        #[cfg(not(feature = "physx-city"))] world: Option<()>,
     ) -> (Vec<Vec<u8>>, Option<StagedCityTick>) {
         #[cfg(feature = "destruction")]
         {
@@ -2025,11 +2042,13 @@ impl CityRuntime {
     /// one tick later, against the ticket's retained output and the
     /// backend's still-untouched snapshot buffer. Makes no World calls by
     /// construction: it takes none.
-    #[cfg(feature = "destruction")]
+    #[cfg(feature = "physx-city")]
     pub fn flush_staged(&mut self, staged: StagedCityTick) -> Vec<Vec<u8>> {
         let started = std::time::Instant::now();
         let mut reliable = Vec::new();
         let sim_tick = staged.sim_tick;
+        // Only the Blast backend stages; the others never produce a ticket.
+        #[cfg(feature = "destruction")]
         if let CityBackend::Physx(backend) = &mut self.backend {
             let output = staged.output;
             let ingest_started = std::time::Instant::now();
@@ -2395,8 +2414,8 @@ impl CityRuntime {
         radius_m: f32,
         below_y: f32,
         max_rounds: usize,
-        #[cfg(feature = "destruction")] world: Option<&mut World>,
-        #[cfg(not(feature = "destruction"))] _world: Option<()>,
+        #[cfg(feature = "physx-city")] world: Option<&mut World>,
+        #[cfg(not(feature = "physx-city"))] _world: Option<()>,
     ) -> usize {
         #[cfg(feature = "native-destruction")]
         {
@@ -2451,8 +2470,8 @@ impl CityRuntime {
     pub fn drain_demolition(
         &mut self,
         per_tick: usize,
-        #[cfg(feature = "destruction")] world: Option<&mut World>,
-        #[cfg(not(feature = "destruction"))] _world: Option<()>,
+        #[cfg(feature = "physx-city")] world: Option<&mut World>,
+        #[cfg(not(feature = "physx-city"))] _world: Option<()>,
     ) -> usize {
         #[cfg(feature = "native-destruction")]
         {

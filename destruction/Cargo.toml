@@ -17,8 +17,9 @@ vibe-netcode = { path = "../netcode" }
 
 [features]
 default = []
-# Native PhysX-backed runtime (CityDestruction). Gated so the crate core stays
-# pure Rust and CI-safe on machines without PhysX/CUDA.
+# Native PhysX-backed runtime on the Blast stress solver (CityDestruction).
+# Gated so the crate core stays pure Rust and CI-safe on machines without
+# PhysX/CUDA.
 physx = ["dep:vibe-land-physx-bridge", "vibe-land-physx-bridge/destruction"]
 # The CUDA stress solver -- the one the match server runs.
 #
@@ -32,14 +33,24 @@ cuda-stress = ["physx", "vibe-land-physx-bridge/cuda-stress"]
 # the bespoke ExtStressPhysXDestructible path. Both can be built at once so the
 # two can be A/B'd against the same scene before the old path is retired.
 blast-core = ["physx", "dep:blast-stress-solver"]
-# PhysX-native GPU destruction (physx-2). Additive with the Blast features so
-# one binary carries every backend and `VIBE_CITY_DESTRUCTION` picks at runtime.
-native-destruction = ["physx", "vibe-land-physx-bridge/native-destruction"]
+# PhysX-native GPU destruction (physx-2). Needs no Blast checkout. Additive
+# with the Blast features so one binary can carry every backend and
+# `VIBE_CITY_DESTRUCTION` picks at runtime.
+native-destruction = ["dep:vibe-land-physx-bridge", "vibe-land-physx-bridge/native-destruction"]
 
 [dependencies.blast-stress-solver]
-# Same checkout as BLAST_ROOT in physx-bridge/build.rs: mixing two
-# solver trees in one binary is not a thing anyone wants to debug.
-path = "/root/workspace/blast-stress-solver-2/blast/blast-stress-solver-rs"
+# Cargo resolves every optional dependency of a workspace member, even when no
+# feature enables it, so this must be reachable from every machine: a missing
+# path here fails every cargo command. It is only fetched to resolve, and only
+# compiled under `blast-core`.
+#
+# Keep it on the revision BLAST_ROOT (physx-bridge/build.rs) is checked out at:
+# mixing two solver trees in one binary is not a thing anyone wants to debug.
+# To build against a local checkout instead, patch it in .cargo/config.toml:
+#   [patch."https://github.com/Glavin001/blast-stress-solver"]
+#   blast-stress-solver = { path = "<BLAST_ROOT>/blast-stress-solver-rs" }
+git = "https://github.com/Glavin001/blast-stress-solver"
+branch = "feature/physx-gpu-destruction-2"
 optional = true
 default-features = false
 features = ["physx", "scenarios"]
@@ -47,4 +58,8 @@ features = ["physx", "scenarios"]
 [dependencies.vibe-land-physx-bridge]
 path = "../physx-bridge"
 optional = true
-features = ["destruction"]
+
+# Audits a structure through the Blast rig; it has nothing to run without it.
+[[bin]]
+name = "structure-audit"
+required-features = ["physx"]

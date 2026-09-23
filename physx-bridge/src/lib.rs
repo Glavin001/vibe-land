@@ -1580,7 +1580,14 @@ impl World {
     /// immediately fail a step, and by the time one does the world has already
     /// been served to players as if it were simulating.
     pub fn gpu_context_lost(&self) -> bool {
-        self.inner.gpu_context_lost()
+        #[cfg(feature = "gpu")]
+        {
+            self.inner.gpu_context_lost()
+        }
+        #[cfg(not(feature = "gpu"))]
+        {
+            false
+        }
     }
 
     #[cfg(feature = "native-destruction")]
@@ -1588,6 +1595,7 @@ impl World {
         self.inner.native_configured().map_err(operation_error)
     }
 
+    #[cfg(feature = "gpu")]
     pub fn chunk_body_snapshots(&self) -> Result<&[ffi::FfiChunkBodySnapshot], BridgeError> {
         self.inner.chunk_body_snapshots().map_err(operation_error)
     }
@@ -1712,11 +1720,13 @@ impl World {
     /// scene, so the blast-stress-solver core attaches to this rather than
     /// standing up a second world. The pointer is valid for the lifetime of
     /// this `World`.
+    #[cfg(feature = "gpu")]
     pub fn scene_ptr(&self) -> Result<usize, BridgeError> {
         self.inner.scene_ptr().map_err(operation_error)
     }
 
     /// Raw `PxPhysics*` as an integer. See [`scene_ptr`](Self::scene_ptr).
+    #[cfg(feature = "gpu")]
     pub fn physics_ptr(&self) -> Result<usize, BridgeError> {
         self.inner.physics_ptr().map_err(operation_error)
     }
@@ -2797,7 +2807,7 @@ impl From<ffi::FfiContactEvent> for ContactEvent {
     }
 }
 
-#[cfg(feature = "destruction")]
+#[cfg(any(feature = "destruction", feature = "native-destruction"))]
 impl From<DestructibleSettings> for ffi::FfiDestructibleSettings {
     fn from(value: DestructibleSettings) -> Self {
         Self {
@@ -2828,7 +2838,7 @@ impl From<DestructibleSettings> for ffi::FfiDestructibleSettings {
     }
 }
 
-#[cfg(feature = "destruction")]
+#[cfg(any(feature = "destruction", feature = "native-destruction"))]
 impl From<ChunkNodeDesc> for ffi::FfiChunkNodeDesc {
     fn from(value: ChunkNodeDesc) -> Self {
         Self {
@@ -2847,7 +2857,7 @@ impl From<ChunkNodeDesc> for ffi::FfiChunkNodeDesc {
     }
 }
 
-#[cfg(feature = "destruction")]
+#[cfg(any(feature = "destruction", feature = "native-destruction"))]
 impl From<ChunkBondDesc> for ffi::FfiChunkBondDesc {
     fn from(value: ChunkBondDesc) -> Self {
         Self {
@@ -2862,7 +2872,7 @@ impl From<ChunkBondDesc> for ffi::FfiChunkBondDesc {
     }
 }
 
-#[cfg(feature = "destruction")]
+#[cfg(any(feature = "destruction", feature = "native-destruction"))]
 impl From<ffi::FfiBrokenBondEvent> for BrokenBondEvent {
     fn from(value: ffi::FfiBrokenBondEvent) -> Self {
         Self {
@@ -2872,7 +2882,7 @@ impl From<ffi::FfiBrokenBondEvent> for BrokenBondEvent {
     }
 }
 
-#[cfg(feature = "destruction")]
+#[cfg(any(feature = "destruction", feature = "native-destruction"))]
 impl From<ffi::FfiChunkMigrationEvent> for ChunkMigrationEvent {
     fn from(value: ffi::FfiChunkMigrationEvent) -> Self {
         Self {
@@ -3024,7 +3034,7 @@ impl From<RoundDesc> for ffi::FfiRoundDesc {
     }
 }
 
-#[cfg(feature = "destruction")]
+#[cfg(any(feature = "destruction", feature = "native-destruction"))]
 impl From<ffi::FfiIslandBodyEvent> for IslandBodyEvent {
     fn from(value: ffi::FfiIslandBodyEvent) -> Self {
         Self {
@@ -3060,7 +3070,7 @@ impl From<ffi::FfiChunkBodySnapshot> for ChunkBodySnapshot {
     }
 }
 
-#[cfg(feature = "destruction")]
+#[cfg(any(feature = "destruction", feature = "native-destruction"))]
 impl From<ffi::FfiDestructionStats> for DestructionStats {
     fn from(value: ffi::FfiDestructionStats) -> Self {
         Self {

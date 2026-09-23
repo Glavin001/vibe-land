@@ -21,6 +21,30 @@ const ALL: u32 = GROUP_STATIC | GROUP_CHUNK;
 /// A wall of 1 m cubes, `w` wide and `h` tall, standing on the ground.
 /// The bottom row is authored as support, which is what anchors it.
 fn wall(w: u32, h: u32) -> (Vec<ChunkNodeDesc>, Vec<ChunkBondDesc>) {
+    wall_of(w, h, false)
+}
+
+/// A bevelled, slightly irregular block as a convex hull in the chunk's own
+/// frame: the shape a fractured city chunk has, and the geometry the production
+/// city authors (`geom_kind` 1), unlike the cubes above.
+fn hull_block(seed: u32) -> Vec<Vec3> {
+    let (a, b) = (0.48f32, 0.36f32);
+    let jitter = |i: u32| ((seed.wrapping_mul(2654435761).wrapping_add(i * 40503) >> 16) % 100) as f32 * 0.0004;
+    let mut points = Vec::new();
+    for (i, &(x, y, z)) in [(a, b, b), (b, a, b), (b, b, a)].iter().enumerate() {
+        for sx in [-1.0f32, 1.0] {
+            for sy in [-1.0f32, 1.0] {
+                for sz in [-1.0f32, 1.0] {
+                    let d = 1.0 - jitter(i as u32 * 8 + points.len() as u32);
+                    points.push(Vec3::new(sx * x * d, sy * y * d, sz * z * d));
+                }
+            }
+        }
+    }
+    points
+}
+
+fn wall_of(w: u32, h: u32, hulls: bool) -> (Vec<ChunkNodeDesc>, Vec<ChunkBondDesc>) {
     let mut nodes = Vec::new();
     let mut bonds = Vec::new();
     let index = |x: u32, y: u32| y * w + x;
@@ -32,9 +56,9 @@ fn wall(w: u32, h: u32) -> (Vec<ChunkNodeDesc>, Vec<ChunkBondDesc>) {
                 // Zero mass is the authoring convention for a world anchor.
                 mass: if y == 0 { 0.0 } else { 400.0 },
                 volume: 1.0,
-                geom_kind: 0,
+                geom_kind: if hulls { 1 } else { 0 },
                 half_extents: Vec3::new(0.48, 0.48, 0.48),
-                convex_points: Vec::new(),
+                convex_points: if hulls { hull_block(index(x, y)) } else { Vec::new() },
             });
         }
     }
@@ -134,7 +158,11 @@ fn ground(world: &mut World) {
 
 /// Author the wall, step once so GPU identities exist, then configure.
 fn install(world: &mut World, w: u32, h: u32) -> u32 {
-    let (nodes, bonds) = wall(w, h);
+    install_wall(world, w, h, false)
+}
+
+fn install_wall(world: &mut World, w: u32, h: u32, hulls: bool) -> u32 {
+    let (nodes, bonds) = wall_of(w, h, hulls);
     let chunks = nodes.len() as u32;
     world.native_attach().expect("stage attach");
     world
@@ -237,6 +265,63 @@ fn the_wall_stands_until_it_is_hit_and_then_comes_apart() {
     assert!(
         world.native_validate_mappings().expect("audit"),
         "GPU ownership and the CPU mirror disagree after fracture"
+    );
+}
+
+/// The same wall built from convex hulls, the chunk geometry the production
+/// city uses: it stands under its own weight, a round breaks it, and the GPU
+/// and CPU records of who owns which chunk still agree afterwards. Nothing in
+/// the scene may report a PhysX error -- a kernel Metal cannot build, or a
+/// hull the GPU narrowphase rejects, surfaces there first.
+#[test]
+fn a_wall_of_convex_hulls_stands_until_it_is_hit_and_then_comes_apart() {
+    let mut world = World::new(WorldConfig::default()).expect("GPU scene");
+    let errors_before = world.stats().expect("stats").gpu_warning_count;
+    ground(&mut world);
+    install_wall(&mut world, 6, 6, true);
+
+    for _ in 0..60 {
+        let status = step_and_observe(&mut world);
+        assert!(status.converged, "stress solve did not converge at rest");
+    }
+    assert_eq!(
+        world.native_take_broken_bonds().expect("drain").len(),
+        0,
+        "the hull wall broke while standing still"
+    );
+
+    world
+        .native_fire_round(RoundDesc {
+            position: Vec3::new(0.0, 3.5, 1.2),
+            direction: Vec3::new(0.0, 0.0, -1.0),
+            momentum_ns: 3.0e5,
+            radius: 0.4,
+            speed: 20.0,
+            ttl_ticks: 20,
+        })
+        .expect("fire");
+    let mut broken = 0usize;
+    let mut promoted = 0usize;
+    for _ in 0..120 {
+        step_and_observe(&mut world);
+        broken += world.native_take_broken_bonds().expect("drain").len();
+        promoted += world
+            .native_take_island_events()
+            .expect("drain")
+            .iter()
+            .filter(|event| event.kind == 0)
+            .count();
+    }
+    assert!(broken > 0, "the round did not break a single hull bond");
+    assert!(promoted > 0, "nothing came loose from the hull wall");
+    assert!(
+        world.native_validate_mappings().expect("audit"),
+        "GPU ownership and the CPU mirror disagree after fracture"
+    );
+    assert_eq!(
+        world.stats().expect("stats").gpu_warning_count,
+        errors_before,
+        "PhysX reported errors while simulating the hull wall"
     );
 }
 

@@ -301,6 +301,7 @@ checksum = "843867be96c8daad0d758b57df9392b6d8d271134fce549de6ce169ff98a92af"
 [[package]]
 name = "blast-stress-solver"
 version = "0.1.1"
+source = "git+https://github.com/Glavin001/blast-stress-solver?branch=feature%2Fphysx-gpu-destruction-2#02db684aee41c7c502cba21215a487e270599f31"
 dependencies = [
  "cc",
  "serde",

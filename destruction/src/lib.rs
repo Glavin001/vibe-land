@@ -55,6 +55,10 @@ pub mod core_runtime;
 // pure-Rust CI-safe one this gate exists to protect.
 #[cfg(feature = "physx")]
 pub mod runtime;
+/// Collision groups and manifest conversions shared by the Blast and native
+/// PhysX backends.
+#[cfg(any(feature = "physx", feature = "native-destruction"))]
+pub mod bridge_authoring;
 /// PhysX's own GPU destruction stage. Behind a feature because it needs the
 /// physx-2 SDK; additive with the Blast paths so one binary carries all three.
 #[cfg(feature = "native-destruction")]

@@ -1,17 +1,9 @@
 #[cfg(feature = "gpu")]
 use std::{env, path::PathBuf};
 
-#[cfg(feature = "gpu")]
-const DEFAULT_PHYSX_ROOT: &str = "/root/PhysX/physx/install/linux-clang/PhysX";
-
-/// The PhysX fork whose GPU destruction stage runs inside `PxScene::simulate()`.
-///
-/// Only consulted under `native-destruction`, and only when `PHYSX_ROOT` is not
-/// set explicitly. The plain Blast builds keep `DEFAULT_PHYSX_ROOT`: an
-/// experiment must not silently move the baseline's SDK, which is exactly how an
-/// earlier attempt ended up comparing two different engines and calling it one.
-#[cfg(feature = "gpu")]
-const DEFAULT_PHYSX_DESTRUCTION_SDK: &str = "/root/workspace/physx-2";
+// DEFAULT_PHYSX_ROOT, DEFAULT_PHYSX_DESTRUCTION_SDK and the platform-aware
+// SDK lookup, shared with the destruction and server build scripts.
+include!("physx_sdk_location.rs");
 
 /// The native API revision this bridge is written against
 /// (`PxDestructionScene.h`). The header states that consumers are rebuilt
@@ -26,7 +18,7 @@ const NATIVE_DESTRUCTION_SCENE_VERSIONS: [&str; 3] = [
     "#define PX_DESTRUCTION_SCENE_VERSION 17",
 ];
 
-#[cfg(feature = "gpu")]
+#[cfg(feature = "destruction")]
 /// The production checkout is `blast-stress-solver-2`, and since the
 /// structural-realism merge (perf/full-tick) it carries BOTH lines of solver
 /// work: the GPU solve (node-space CGLS, delta upload, early exit) and the
@@ -39,6 +31,7 @@ const DEFAULT_BLAST_ROOT: &str = "/root/workspace/blast-stress-solver-2/blast";
 #[cfg(feature = "gpu")]
 fn main() {
     println!("cargo:rerun-if-env-changed=PHYSX_ROOT");
+    #[cfg(feature = "destruction")]
     println!("cargo:rerun-if-env-changed=BLAST_ROOT");
     println!("cargo:rerun-if-changed=src/lib.rs");
     println!("cargo:rerun-if-changed=src/physx_bridge.cc");
@@ -47,8 +40,8 @@ fn main() {
     println!("cargo:rerun-if-changed=include/destruction.h");
 
     println!("cargo:rerun-if-env-changed=PHYSX_DESTRUCTION_SDK");
-    let root = physx_root();
-    let include = root.join("include");
+    let root = physx_root_or_panic();
+    let include = physx_include(&root);
     // The activity SDK has a different CPU/GPU ABI. Select the module from
     // the header we compile against, never from whichever .so happens to be
     // present first on the library search path.
@@ -62,16 +55,13 @@ fn main() {
     } else {
         "PhysXGpu_64"
     };
-    let lib = [root.join("bin/linux.x86_64/release"), root.join("lib")]
-        .into_iter()
-        .find(|candidate| candidate.join("libPhysX_static_64.a").is_file())
-        .unwrap_or_else(|| {
-            panic!(
-                "PhysX libraries not found below PHYSX_ROOT={}; expected \
-             bin/linux.x86_64/release/libPhysX_static_64.a",
-                root.display()
-            )
-        });
+    let lib = physx_lib_dir(&root).unwrap_or_else(|| {
+        panic!(
+            "PhysX libraries not found below PHYSX_ROOT={}; expected \
+             bin/linux.x86_64/release/libPhysX_static_64.a (or lib/ in an install)",
+            root.display()
+        )
+    });
 
     for required in [
         include.join("PxPhysicsAPI.h"),
@@ -82,7 +72,7 @@ fn main() {
         lib.join("libPhysXCooking_static_64.a"),
         lib.join("libPhysXCharacterKinematic_static_64.a"),
         lib.join("libPhysXVehicle_static_64.a"),
-        lib.join(format!("lib{gpu_library}.so")),
+        lib.join(shared_library(gpu_library)),
     ] {
         assert!(
             required.is_file(),
@@ -102,7 +92,14 @@ fn main() {
         .flag_if_supported("-Wall")
         .flag_if_supported("-Wextra");
 
-    if cfg!(feature = "destruction") {
+    // PhysX exposes its GPU API on macOS only when built for CuMetal, the one
+    // GPU backend there.
+    if target_is_macos() {
+        build.define("PX_CUMETAL", "1");
+    }
+
+    #[cfg(feature = "destruction")]
+    {
         let blast =
             PathBuf::from(env::var_os("BLAST_ROOT").unwrap_or_else(|| DEFAULT_BLAST_ROOT.into()));
         let blast_sources = [
@@ -216,18 +213,32 @@ fn main() {
     // every GPU test to a skip.
     println!("cargo:rustc-link-arg=-Wl,-rpath,{}", lib.display());
     println!("cargo:rustc-link-lib=dylib={gpu_library}");
-    println!("cargo:rustc-link-lib=dylib=cuda");
-    // The .cu uses both the runtime API and the driver API (cuCtxPushCurrent);
-    // the native shim uses the driver API for its device reads.
-    #[cfg(any(feature = "cuda-stress", feature = "native-destruction"))]
-    if let Some(dir) = cuda_lib_dir() {
-        println!("cargo:rustc-link-lib=dylib=cudart");
-        println!("cargo:rustc-link-search=native={}", dir.display());
-        println!("cargo:rustc-link-arg=-Wl,-rpath,{}", dir.display());
+    if target_is_macos() {
+        // CuMetal implements the CUDA driver and runtime APIs in one library,
+        // and the SDK package ships it next to the GPU module.
+        assert!(
+            lib.join("libcumetal.dylib").is_file(),
+            "libcumetal.dylib missing from {}; install the PhysX SDK with \
+             build-destruction-sdk.py --preset macos-cumetal --stage sdk --install",
+            lib.display()
+        );
+        println!("cargo:rustc-link-lib=dylib=cumetal");
+    } else {
+        println!("cargo:rustc-link-lib=dylib=cuda");
+        // The .cu uses both the runtime API and the driver API (cuCtxPushCurrent);
+        // the native shim uses the driver API for its device reads.
+        #[cfg(any(feature = "cuda-stress", feature = "native-destruction"))]
+        if let Some(dir) = cuda_lib_dir() {
+            println!("cargo:rustc-link-lib=dylib=cudart");
+            println!("cargo:rustc-link-search=native={}", dir.display());
+            println!("cargo:rustc-link-arg=-Wl,-rpath,{}", dir.display());
+        }
     }
     println!("cargo:rustc-link-lib=dylib=dl");
     println!("cargo:rustc-link-lib=dylib=pthread");
-    println!("cargo:rustc-link-lib=dylib=rt");
+    if !target_is_macos() {
+        println!("cargo:rustc-link-lib=dylib=rt");
+    }
     println!("cargo:rustc-link-arg=-Wl,-rpath,{}", lib.display());
 }
 
@@ -240,9 +251,7 @@ fn main() {
 /// PhysX 5 tree, taken from whichever tree owns `PHYSX_ROOT` when it has them.
 #[cfg(feature = "gpu")]
 fn add_vehicle(build: &mut cc::Build, root: &std::path::Path) {
-    let sdk = PathBuf::from(
-        env::var_os("PHYSX_DESTRUCTION_SDK").unwrap_or_else(|| DEFAULT_PHYSX_DESTRUCTION_SDK.into()),
-    );
+    let sdk = physx_destruction_sdk();
     let vehicle = sdk.join("destruction/vehicle");
     let wrapper = vehicle.join("PxNativeVehicle.cpp");
     assert!(
@@ -274,38 +283,18 @@ fn add_vehicle(build: &mut cc::Build, root: &std::path::Path) {
     }
 }
 
-/// `PHYSX_ROOT` always wins, so an explicit override still selects any SDK.
-/// Otherwise `native-destruction` resolves the physx-2 checkout (whose headers
-/// carry `PxDestructionScene.h`) and every other build keeps the upstream
-/// install it has always used.
+/// The SDK this build compiles and links against; see `physx_root` in
+/// `physx_sdk_location.rs`.
 #[cfg(feature = "gpu")]
-fn physx_root() -> PathBuf {
-    if let Some(explicit) = env::var_os("PHYSX_ROOT") {
-        return PathBuf::from(explicit);
-    }
-    #[cfg(feature = "native-destruction")]
-    {
-        let sdk = PathBuf::from(
-            env::var_os("PHYSX_DESTRUCTION_SDK")
-                .unwrap_or_else(|| DEFAULT_PHYSX_DESTRUCTION_SDK.into()),
-        );
-        // The checkout keeps headers in physx/include and libraries in
-        // physx/bin; `out/install` is the same SDK relocated. Accept either so a
-        // packaged install works without a different variable.
-        for candidate in [sdk.join("physx"), sdk.join("out/install"), sdk.clone()] {
-            if candidate.join("include/PxDestructionScene.h").is_file() {
-                return candidate;
-            }
-        }
+fn physx_root_or_panic() -> PathBuf {
+    physx_root(cfg!(feature = "native-destruction")).unwrap_or_else(|| {
         panic!(
-            "native-destruction is enabled but no PxDestructionScene.h was found below \
-             PHYSX_DESTRUCTION_SDK={} (looked in physx/include and out/install/include); \
-             build it with tools/scripts/build-destruction-sdk.py",
-            sdk.display()
-        );
-    }
-    #[cfg(not(feature = "native-destruction"))]
-    PathBuf::from(DEFAULT_PHYSX_ROOT)
+            "no PhysX destruction SDK (PxDestructionScene.h and its libraries) below \
+             PHYSX_DESTRUCTION_SDK={}; build it with tools/scripts/build-destruction-sdk.py \
+             (on macOS: --preset macos-cumetal --stage sdk --install)",
+            physx_destruction_sdk().display()
+        )
+    })
 }
 
 /// Compiles the native destruction shim and checks the SDK really provides the
@@ -365,7 +354,7 @@ fn add_native_destruction(
          an upstream PhysX install",
         root.display()
     );
-    let runtime = lib.join("libPhysXDestructionGpuRuntime_64.so");
+    let runtime = lib.join(shared_library("PhysXDestructionGpuRuntime_64"));
     assert!(
         runtime.is_file(),
         "native destruction runtime missing: {}",
@@ -382,8 +371,11 @@ fn add_native_destruction(
         .file("src/native_destruction.cc")
         .file("src/native_observation.cc")
         .define("VIBE_LAND_NATIVE_DESTRUCTION", None);
-    // cuda.h for CUevent and the synchronous device reads of the committed view.
-    if let Some(dir) = cuda_lib_dir().and_then(|d| d.parent().map(|r| r.join("include"))) {
+    // cuda.h for CUevent and the synchronous device reads of the committed view:
+    // CuMetal's clean-room headers ship in the macOS SDK package.
+    if target_is_macos() {
+        build.include(root.join("include/cumetal"));
+    } else if let Some(dir) = cuda_lib_dir().and_then(|d| d.parent().map(|r| r.join("include"))) {
         build.include(dir);
     }
     // The SDK's own record of which sources produced these libraries; surfaced
@@ -456,7 +448,12 @@ fn assert_sdk_libraries_match_manifest(root: &std::path::Path, lib: &std::path::
         if !path.is_file() {
             continue;
         }
-        let Ok(output) = std::process::Command::new("sha256sum").arg(&path).output() else {
+        // sha256sum on Linux; macOS ships the same digest as `shasum -a 256`.
+        let output = std::process::Command::new("sha256sum")
+            .arg(&path)
+            .output()
+            .or_else(|_| std::process::Command::new("shasum").args(["-a", "256"]).arg(&path).output());
+        let Ok(output) = output else {
             println!("cargo:warning=sha256sum unavailable; SDK libraries not verified");
             return;
         };

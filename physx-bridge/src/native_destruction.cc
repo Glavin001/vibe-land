@@ -280,6 +280,7 @@ void NativeDestruction::create_destructible(
   const PxTransform world(native_px(pose.position),
                           PxQuat(pose.rotation.x, pose.rotation.y,
                                  pose.rotation.z, pose.rotation.w));
+  std::size_t hulls = 0, cpu_hulls = 0;
   for (const auto &component : components) {
     PxRigidDynamic *actor = s.physics.createRigidDynamic(world);
     native_require(actor != nullptr, "native parent body allocation failed");
@@ -318,6 +319,8 @@ void NativeDestruction::create_destructible(
         PxConvexMesh *mesh = PxCreateConvexMesh(
             params, desc, s.physics.getPhysicsInsertionCallback());
         native_require(mesh != nullptr, "native convex cooking failed");
+        ++hulls;
+        if (!mesh->isGpuCompatible()) ++cpu_hulls;
         shape = s.physics.createShape(PxConvexMeshGeometry(mesh), s.material,
                                       true);
         mesh->release();
@@ -398,6 +401,15 @@ void NativeDestruction::create_destructible(
     s.clusters.push_back(
         PxDestructionStressCluster{actor->getGPUIndex(),
                                    actor->getCMassLocalPose().p});
+  }
+
+  if (cpu_hulls != 0) {
+    // PhysX takes these silently to CPU contact generation. Say so once per
+    // structure: it is the difference between a GPU scene and a partly-CPU one.
+    std::fprintf(stderr,
+                 "native destruction: structure %u has %zu of %zu convex chunks "
+                 "that are not GPU compatible (CPU contact generation)\n",
+                 structure_id, cpu_hulls, hulls);
   }
 
   const std::size_t bond_base = s.bonds.size();
@@ -816,7 +828,11 @@ void NativeDestruction::State::release_rounds() {
 // Resolve only the already loaded runtime. Older SDKs still support cold
 // scenes; requesting an unsupported warm extension fails explicitly.
 static void* warm_entry(const char* name) {
+#ifdef __APPLE__
+  void* handle = dlopen("libPhysXDestructionGpuRuntime_64.dylib", RTLD_NOW | RTLD_NOLOAD);
+#else
   void* handle = dlopen("libPhysXDestructionGpuRuntime_64.so", RTLD_NOW | RTLD_NOLOAD);
+#endif
   native_require(handle != nullptr, "native warm-start runtime is not loaded");
   void* entry = dlsym(handle, name);
   dlclose(handle);

@@ -428,12 +428,12 @@ impl PhysxPhysicsArena {
         &self.config
     }
 
-    #[cfg(feature = "destruction")]
+    #[cfg(feature = "physx-city")]
     pub fn world_mut(&mut self) -> &mut bridge::World {
         &mut self.world
     }
 
-    #[cfg(feature = "destruction")]
+    #[cfg(feature = "physx-city")]
     pub fn world(&self) -> &bridge::World {
         &self.world
     }

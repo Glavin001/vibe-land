@@ -3323,10 +3323,15 @@ public:
 #endif
   }
   rust::Vec<FfiBondStressRow> bond_stress_rows(std::uint32_t structure_id) const {
+#ifdef VIBE_LAND_DESTRUCTION
     if (!destruction_) {
       return {};
     }
     return destruction_->bond_stress_rows(structure_id);
+#else
+    (void)structure_id;
+    return {};
+#endif
   }
 
 

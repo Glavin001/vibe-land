@@ -32,7 +32,7 @@ use crate::encoder::BodySnapshotInput;
 use crate::ids;
 use crate::manifest::DestructionManifest;
 use crate::types::NamedSpan;
-use crate::runtime::{
+use crate::bridge_authoring::{
     authored_structure, CityDestructionError, CHUNK_COLLISION_MASK, GROUP_CHUNK,
 };
 
@@ -409,7 +409,7 @@ impl NativeCityDestruction {
         sim_hz: u32,
     ) -> Result<Self, CityDestructionError> {
         let _ = sim_hz;
-        let ffi_settings = crate::runtime::ffi_settings(&settings);
+        let ffi_settings = crate::bridge_authoring::ffi_settings(&settings);
         let material_count = ffi_settings.materials.len() as u32;
         if let Some(bad) = manifest
             .structures

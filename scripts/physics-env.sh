@@ -19,6 +19,14 @@ export VIBE_PHYSICS_BACKEND=${VIBE_PHYSICS_BACKEND:-physx_gpu}
 # links the physx-2 SDK rather than the upstream install -- hence the library
 # path below, which must agree or the process loads a different engine than it
 # was built against.
+#
+# macOS (Apple Silicon, Metal via CuMetal) has only the native stage: the
+# binary is built with native-destruction alone. physx-bridge's build finds the
+# PhysX fork's macos-cumetal install in a sibling checkout and links it with an
+# rpath, so no SDK or library path is set here.
+if [ "$(uname -s)" = "Darwin" ]; then
+  export VIBE_CITY_DESTRUCTION=${VIBE_CITY_DESTRUCTION:-native}
+else
 export VIBE_CITY_DESTRUCTION=${VIBE_CITY_DESTRUCTION:-blast}
 export PHYSX_DESTRUCTION_SDK=${PHYSX_DESTRUCTION_SDK:-/root/workspace/physx-2}
 if [ "$VIBE_CITY_DESTRUCTION" = "native" ]; then
@@ -29,6 +37,7 @@ if [ "$VIBE_CITY_DESTRUCTION" = "native" ]; then
   export CUDA_HOME=${CUDA_HOME:-/usr/local/cuda-12.8}
 else
   export PHYSX_LIB_DIR=${PHYSX_LIB_DIR:-${PHYSX_ROOT:-/root/PhysX/physx/install/linux-clang/PhysX}/bin/linux.x86_64/release}
+fi
 fi
 # GPU capacities for a city-scale collapse.
 #

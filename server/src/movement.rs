@@ -134,12 +134,18 @@ impl PhysicsArena {
         }
     }
 
-    #[cfg(feature = "destruction")]
+    #[cfg(feature = "physx-city")]
     pub fn physx_world_mut(&mut self) -> Option<&mut vibe_land_physx_bridge::World> {
         match &mut self.backend {
             PhysicsBackend::Rapier(_) => None,
             PhysicsBackend::Physx(arena) => Some(arena.world_mut()),
         }
+    }
+
+    /// No PhysX world in this build; the city takes `Option<()>` instead.
+    #[cfg(not(feature = "physx-city"))]
+    pub fn physx_world_mut(&mut self) -> Option<()> {
+        None
     }
 
     pub fn set_spawn_areas(&mut self, areas: Vec<SpawnArea>) {

@@ -2,8 +2,10 @@ mod app_config;
 mod city;
 #[cfg(all(test, feature = "destruction"))]
 mod city_bench;
-#[cfg(all(test, feature = "destruction"))]
+#[cfg(all(test, feature = "physx-city"))]
 mod city_qa;
+#[cfg(all(test, feature = "native-destruction"))]
+mod perf_bench;
 mod demo_world;
 mod heartbeat;
 mod lag_comp;
@@ -1874,11 +1876,11 @@ struct HealthResponse {
 /// ran, including the one that spent hours on an engine which cannot construct
 /// a GPU scene on this card.
 fn linked_physx_sdk() -> String {
-    #[cfg(feature = "destruction")]
+    #[cfg(feature = "physx-city")]
     {
         vibe_land_physx_bridge::physx_sdk_identity()
     }
-    #[cfg(not(feature = "destruction"))]
+    #[cfg(not(feature = "physx-city"))]
     {
         "not linked".to_string()
     }
@@ -2798,9 +2800,9 @@ async fn run_match_loop(
         .collect();
 
     let city = if city::is_city_match(&match_id) {
-        #[cfg(feature = "destruction")]
+        #[cfg(feature = "physx-city")]
         let world = arena.physx_world_mut();
-        #[cfg(not(feature = "destruction"))]
+        #[cfg(not(feature = "physx-city"))]
         let world = None;
         match city::CityRuntime::open(SIM_HZ as u32, world) {
             Ok(mut runtime) => {
@@ -3763,7 +3765,7 @@ impl MatchState {
         // Fracture-frame resimulation capture. Must be immediately before the
         // step: taken any later, the destruction tick has already drained the
         // contact queue and the capture is against the wrong frame.
-        #[cfg(feature = "destruction")]
+        #[cfg(feature = "physx-city")]
         {
             let mut city = self.city.take();
             if let Some(city_ref) = city.as_mut() {
@@ -4053,9 +4055,9 @@ impl MatchState {
                 }
                 continue;
             }
-            #[cfg(feature = "destruction")]
+            #[cfg(feature = "physx-city")]
             let world = self.arena.physx_world_mut();
-            #[cfg(not(feature = "destruction"))]
+            #[cfg(not(feature = "physx-city"))]
             let world = None;
             if city.apply_shot_ray(origin, direction, world) {
                 hits += 1;
@@ -4193,9 +4195,9 @@ impl MatchState {
         let Some(staged) = self.staged_city.take() else {
             return;
         };
-        #[cfg(not(feature = "destruction"))]
+        #[cfg(not(feature = "physx-city"))]
         let _ = staged;
-        #[cfg(feature = "destruction")]
+        #[cfg(feature = "physx-city")]
         {
             let started = Instant::now();
             let staged_tick = staged.sim_tick;
@@ -4370,9 +4372,9 @@ impl MatchState {
             let world = self.arena.physx_world_mut();
             city.drain_demolition(per_tick, world);
         }
-        #[cfg(feature = "destruction")]
+        #[cfg(feature = "physx-city")]
         let world = self.arena.physx_world_mut();
-        #[cfg(not(feature = "destruction"))]
+        #[cfg(not(feature = "physx-city"))]
         let world = None;
         // Between steps is the only safe point to rebuild: the scene is not
         // mid-simulate, and the bootstrap we send afterwards describes the
@@ -4427,9 +4429,9 @@ impl MatchState {
                 }
             }
         }
-        #[cfg(feature = "destruction")]
+        #[cfg(feature = "physx-city")]
         let world = self.arena.physx_world_mut();
-        #[cfg(not(feature = "destruction"))]
+        #[cfg(not(feature = "physx-city"))]
         let world = None;
         let broken_before = city.stats().broken_bonds;
         let awake_before = city.stats().awake_chunk_bodies;

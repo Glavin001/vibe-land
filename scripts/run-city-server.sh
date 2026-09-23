@@ -83,7 +83,11 @@ if [[ ! -x "$BIN" ]]; then
   # runs on the CPU -- which cannot afford to converge. Measured on the dense
   # downtown: CPU broke 7,024 bonds where the GPU broke 3,283 on the same
   # scenario. The extra breakage is solver residual, not physics.
-  echo "build it with: cargo build${PROFILE:+ --$PROFILE} -p web-fps-server --features cuda-stress" >&2
+  if [[ "$(uname -s)" == "Darwin" ]]; then
+    echo "build it with: cargo build${PROFILE:+ --$PROFILE} -p web-fps-server --features native-destruction" >&2
+  else
+    echo "build it with: cargo build${PROFILE:+ --$PROFILE} -p web-fps-server --features cuda-stress" >&2
+  fi
   exit 1
 fi
 
