@@ -95,6 +95,15 @@ impl Default for RttEstimator {
 pub const RATE_WINDOW_US: f64 = 1_000_000.0;
 /// The rate is only measured over at least this much time.
 pub const RATE_MIN_SPAN_US: f64 = 250_000.0;
+/// With wall-clock stamps, the rate over this much of the server's recent wall
+/// time is taken when it is higher than the window's: a server back at pace
+/// after a stall is believed at once, a slowdown only over the whole window.
+/// With the window alone the output, which runs at most `MAX_CATCH_UP` times
+/// the rate, fell behind the arriving snapshots for as long as the stall
+/// stayed in the window: the render clock ran 190 ms behind the newest
+/// snapshot a second after a 0.8 s stall (2026-09-24 quick 3-client bench,
+/// c0), and the own avatar, drawn at that clock, 1.9 m behind the server.
+pub const RATE_RECOVERY_SPAN_US: f64 = 100_000.0;
 /// Time constant (local µs) smoothing a rate measured from arrivals, which
 /// carry the network's jitter. A rate measured from the server's wall-clock
 /// stamps is exact over its window and is used as measured.
@@ -374,7 +383,22 @@ impl ServerClockEstimator {
         if span_us < RATE_MIN_SPAN_US {
             return;
         }
-        let measured = ((last.server_us - first.server_us) / span_us).clamp(RATE_MIN, RATE_MAX);
+        let mut measured = ((last.server_us - first.server_us) / span_us).clamp(RATE_MIN, RATE_MAX);
+        if let (Some(_), Some(last_wall)) = (first.wall_us, last.wall_us) {
+            let recent_from = last_wall - RATE_RECOVERY_SPAN_US;
+            let recent = self
+                .samples
+                .iter()
+                .find(|s| s.arrival_us >= from && s.wall_us.is_some_and(|w| w >= recent_from))
+                .copied();
+            if let Some(recent) = recent {
+                let recent_wall = recent.wall_us.expect("filtered");
+                if last_wall - recent_wall >= RATE_RECOVERY_SPAN_US / 2.0 {
+                    let recent_rate = (last.server_us - recent.server_us) / (last_wall - recent_wall);
+                    measured = measured.max(recent_rate.min(RATE_MAX));
+                }
+            }
+        }
         if self.rate_measured {
             self.rate += (measured - self.rate) * smoothing;
         } else {
@@ -714,6 +738,31 @@ mod tests {
         for f in sim.frames.iter().filter(|f| f.0 > 3.4e6 && f.0 < 3.9e6) {
             assert!(f.1 <= f.2 + delay.max(40_000.0) + 1.0, "{f:?}");
         }
+    }
+
+    #[test]
+    fn server_back_at_pace_after_a_stall_is_followed_at_once() {
+        // 60 Hz, then 16 ticks 55 ms apart (a third of the rate for 0.9 s),
+        // then 60 Hz again: the 2026-09-24 quick 3-client bench's stall. With
+        // the rate over the whole window the output fell 143 ms behind the
+        // newest snapshot after the server was back at pace.
+        let mut sends = Vec::new();
+        let mut t = 1e6;
+        for i in 0..700 {
+            sends.push(t);
+            t += if (240..256).contains(&i) { 55_000.0 } else { TICK_US };
+        }
+        let sim = run(|i| sends[i], sends.len(), |_| 1_000.0, true);
+        assert_eq!(backward_steps(&sim), 0);
+        let resume = sends[256];
+        let worst_behind = sim
+            .frames
+            .iter()
+            .filter(|f| f.0 > resume && f.0 < resume + 1.5e6)
+            .map(|f| f.2 - f.1)
+            .fold(f64::MIN, f64::max);
+        assert!(worst_behind < 45_000.0, "behind the newest snapshot by {worst_behind} us");
+        assert!((sim.c.rate() - 1.0).abs() < 0.01, "rate={}", sim.c.rate());
     }
 
     #[test]

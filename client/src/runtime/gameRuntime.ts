@@ -1468,6 +1468,7 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
                 velocity: sample.velocity,
                 grounded: (sample.flags & FLAG_ON_GROUND) !== 0,
                 supportVelocity: client.localSupport?.velocity,
+                inVehicle: (sample.flags & FLAG_IN_VEHICLE) !== 0,
               },
               frameDeltaSec,
             );

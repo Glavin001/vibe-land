@@ -6,6 +6,13 @@ export type AuthoritativePresentationState = {
   velocity: [number, number, number];
   grounded: boolean;
   supportVelocity?: [number, number, number];
+  /**
+   * The player is driving: the walking inputs steer the vehicle, not the
+   * avatar, so there is nothing to mask and the pose is the authoritative
+   * one. Walking offsets applied in a vehicle put the (hidden) avatar the
+   * 0.35 m cap off its seat, in the camera's direction.
+   */
+  inVehicle?: boolean;
 };
 
 const MAX_PREDICTION_HORIZON_SEC = 0.05;
@@ -28,6 +35,7 @@ export class ThinAuthoritativePredictor {
   private predictedVelocity: [number, number, number] = [0, 0, 0];
   private grounded = false;
   private jumpConsumed = false;
+  private inVehicle = false;
 
   reset(): void {
     this.offset = [0, 0, 0];
@@ -37,6 +45,7 @@ export class ThinAuthoritativePredictor {
   }
 
   observeAuthoritative(state: AuthoritativePresentationState, dtSec: number): void {
+    this.inVehicle = state.inVehicle ?? false;
     this.grounded = state.grounded;
     if (state.grounded) {
       this.jumpConsumed = false;
@@ -62,6 +71,10 @@ export class ThinAuthoritativePredictor {
     frameDeltaSec: number,
     input: SemanticInputState,
   ): [number, number, number] {
+    if (this.inVehicle) {
+      this.offset = [0, 0, 0];
+      return [...authoritativePosition];
+    }
     const dt = Math.min(Math.max(frameDeltaSec, 0), MAX_PREDICTION_HORIZON_SEC);
     const moveLength = Math.hypot(input.moveX, input.moveY);
     const normalizedX = moveLength > 1 ? input.moveX / moveLength : input.moveX;

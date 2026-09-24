@@ -301,6 +301,14 @@ client draws, in every frame, against frozen truth**, per class and overall
 - **Render time** is each renderer's own: the player clock for players and
   vehicles, the dynamic-body clock for bodies and meteors, the city
   presentation's sample tick (`render_tick - playout_delay`) for chunks.
+  - A render time becomes a truth tick on the scored client's own tick
+    scale. The client stage writes it into the display header as
+    `serverTickUs`: the client's `SERVER_TICK_US`, which is the server's
+    16,666 µs, or 16,667 µs for a tree from before 2026-09-24.
+  - The scorer used `1e6 / sim_hz` before. That was 0.33 µs per tick off
+    such a client, 5.7 ms at tick 17,000, and 0.75 m on a 130 m/s meteor.
+  - Displays written before the header field existed keep the old rule, so
+    old runs score as they did.
 - **City chunks** are composed per chunk from the layer's tables
   (`drawn-chunks.bin`) exactly as the vertex shader composes them, and truth
   per chunk from the encoder tape and the manifest under the wire contract

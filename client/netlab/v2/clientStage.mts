@@ -134,9 +134,17 @@ const meteorPlacement = existsSync(placementPath) ? await import(pathToFileURL(p
 const optional = async (path: string) => (existsSync(join(clientRoot, path)) ? import(from(path)) : null);
 const entityPoses = await optional('src/scene/netEntityPoses.ts');
 const cityPoses = await optional('src/city/cityPoseStore.ts');
+// The tick length the client under test puts snapshot times on, so its render
+// clocks: protocol.ts SERVER_TICK_US (the server's 16 666 us at 60 Hz), or
+// for a tree before it, the 16 667 its SnapshotV2 decoder used. The scorer
+// turns render times into truth ticks with it (score.rs).
+const protocolModule = await import(from('src/net/protocol.ts'));
 
 const raw = decodeCityTape(new Uint8Array(readFileSync(tapePath)));
 const header = raw.header as Record<string, unknown> & { clockOriginMs?: number; simHz: number; manifestHash: string; wireVersion: number };
+const TICK_US: number = typeof protocolModule.SERVER_TICK_US === 'number'
+  ? protocolModule.SERVER_TICK_US
+  : Math.round(1_000_000 / header.simHz);
 // Put the tape back on the recording page's clock: the live client's local
 // time was performance.now(), i.e. tape time + clockOriginMs, and the live
 // clock probe was evaluated at exactly clockOriginMs + (float32 frame time).
@@ -219,6 +227,7 @@ displayFile.write(encodeDisplayHeader({
   framesMode,
   clockOriginMs: originMs,
   clock: 'page (tape ms + clockOriginMs)',
+  serverTickUs: TICK_US,
   wasm: { usesWasm: client.serverClock.usesWasm, ...wasmStaleness },
   meteorPlacement: meteorPlacement !== null,
   sharedPoses: { entities: entityPoses !== null, city: cityPoses !== null, meteorFrame: typeof meteorPlacement?.placeMeteorInFrame === 'function' },
@@ -340,7 +349,6 @@ function drawCity(nowMs: number, simTick: number): void {
   chunkStream.frames += 1;
 }
 
-const TICK_US = Math.round(1_000_000 / header.simHz);
 let sampled = 0;
 let skippedBeforeStart = 0;
 const realNow = () => Number(process.hrtime.bigint()) / 1e6;

@@ -116,7 +116,9 @@ destruction level (active bodies; broken-bond fraction).
     client's recorded clock);
   - meteors: backward on-screen motion, arc→body and hold→body handover
     jumps, drawn below ground while the server sample is above (calls
-    `placeMeteor`, the function `MeteorLayer` draws with);
+    `placeMeteor`, the function `MeteorLayer` draws with). See
+    [Meteor metrics](#meteor-metrics) for what the jump and backward counts
+    measure;
   - rendered vs server truth: what the renderers drew (`drawnWorld()`, 10 Hz;
     it also carries a rotating sample of city chunk poses from the city
     layer's own tables, which Netlab v2's calibration compares with the lab)
@@ -164,7 +166,7 @@ acceptance criteria of the session analysis' to-do list:
 | Lost packets; server drops | 0; 0 |
 | Send→arrive p99 | < 20 ms |
 | Structure repairs without loss | 0 |
-| Meteor arc→body / hold→body jump | < 1 m / < 2 m |
+| Meteor arc→body / hold→body jump | < 0.5 m / < 2 m |
 | Meteor backward frames; drawn below ground | 0; 0 |
 | Body render error p99 (at render time) | < 0.5 m |
 | Local player error p99 (now) | < 0.5 m |
@@ -174,6 +176,56 @@ acceptance criteria of the session analysis' to-do list:
 
 Tune a limit in the file; set `"enabled": false` to keep a budget visible
 but not gating. `display_period_ms` overrides the detected display period.
+
+### Meteor metrics
+
+Changed 2026-09-24 (the arc→body limit went from 1 m to 0.5 m with it):
+
+- **Arc→body jump** (`meteors.arc_to_body_jump_m`) is the step the rock
+  takes on screen in the frame it is first drawn from its body, less the
+  body's own motion over that step. `meteors.ts` writes the streamed body at
+  every frame's render time (`body_x/y/z` in `meteor_frames.csv`) for this.
+  Without those columns (a tape decoded by an older `meteors.ts`), the jump
+  falls back to the body against the arc at the same render time.
+  - A rock whose body was not streamed at the previous frame's render time
+    entered this client's stream after it hit something out of the client's
+    interest. The arc it was drawn on until then was a guess. That jump is
+    reported apart (`meteors.unstreamed_arc_to_body_jump_m`) and is not
+    gated. In the 2026-09-24 after-change systematic run, one rock was held
+    at its aimed point and then streamed in 79 m away.
+  - It used to be the step from the previous frame. That step includes the
+    rock's own flight over one frame, 1.0–1.3 m at 130 m/s and 120 fps, so a
+    perfect handover failed the 1 m budget. It is still reported as
+    `arc_to_body_frame_step_m`.
+  - The step also hid the real defect: in the 2026-09-24 systematic
+    baseline the arc ran ahead of the body, which cancelled the flight. On
+    that tape the step was 0.6/1.1 m p50/max, but the body was 1.27/2.37 m
+    behind the arc at the same render time. The body against the arc is not
+    used either, because a rock that bounces during the handover frame would
+    count its bounce.
+- **Backward frames** (`meteors.backward_frames`) count drawn steps of more
+  than 0.05 m that go more than 0.3 m back along the previous step. Where the
+  body columns exist, the step must also go more than 0.3 m back along the
+  streamed body's own motion over the same render interval. A rock that
+  contact pushes back is moving that way, and drawing it there is not the
+  drawing going backwards. The step right after a backward one is not
+  judged. Before this change, a rock
+  knocked back for one frame that then carried on was counted twice: the
+  step back, and the step forward again. On that systematic tape, 24 frames
+  were 13 events. A bouncing rock carries on along its step back and was
+  never counted twice.
+- **Tick scale** (the root cause of those jumps, fixed in the client): the
+  server stamps every time it sends as `tick * (1_000_000 / 60)` = 16,666
+  µs per tick. The client timed SnapshotV2 ticks at 16,667 µs. Snapshot
+  times therefore ran 1 µs per tick behind the meteor launch stamp, 17 ms at
+  tick 17,000, and the arc was drawn that much flight (up to 2.4 m) ahead of
+  its own body.
+  - Tapes now record the scale their client used (`serverTickUs` in the
+    header; absent means 16,667). `report.py` looks up render-time truth on
+    that scale; it used `1e6 / 60`, 0.33 µs per tick off, so 5.7 ms late at
+    tick 17,000.
+  - `meteors.ts` puts an older tape's recorded clock on the current scale
+    before setting it against launch times.
 
 ## Comparing runs
 
@@ -217,5 +269,34 @@ not on the tape.
   (`client/src/vfx/meteorPlacement.ts`); `--legacy-meteors` approximates
   the pre-2026-09-24 layer for comparisons with old tapes.
 - The render error depends on the client's recorded clock offset; the
-  mapping was checked on bodies in flight (0.0–0.2 m while streamed).
+  mapping was checked on bodies in flight (0.0–0.2 m while streamed). It is
+  put on the recording client's tick scale (`serverTickUs`, see
+  [Meteor metrics](#meteor-metrics)).
+- `net.snapshot_gap_p99` is the arrival gap, so it includes the server's own
+  tick-to-tick gaps. In the 2026-09-24 quick 3-client baseline its 56 ms
+  was the server: the server's tick-to-tick p99 was 53.5 ms, and the arrival
+  gap less the server's gap was 5 ms p99 on every client. The report prints
+  that remainder (`snapshots.interarrival_less_server_gap_ms`, not a budget)
+  next to the gaps; read the budget with the server tick budgets.
+- Each `drawnWorld()` sample is scored at the render time of the frame
+  that drew it, which is the last frame stamped at or before the sample.
+  The tape stamps a frame as it starts, and the renderers draw 0–0.2 ms
+  later. Until 2026-09-24 the report took the first frame stamped at or
+  after the sample, which is usually the next frame. Bodies were then
+  scored against truth one frame (8 ms) later than drawn, 0.5 m at
+  60 m/s: body render error p99 0.50 m on c2 of the after-change quick
+  run, 0.07 m with the drawing frame.
+- `net.self_error_p99` scores what the player sees of itself. On foot that
+  is the avatar's drawn position; while driving it is the driven vehicle's
+  mesh against the vehicle's truth, because the avatar is hidden and the
+  camera rides the vehicle (changed 2026-09-24). Before this change it
+  scored the hidden avatar while driving. That pose sat 0.35 m p50 from the
+  truth, the presentation offset's cap (quick 3-client baseline, c0, 151
+  driving samples), while the vehicle mesh was 1 mm p50 / 0.27 m p99. The
+  two parts are in `render_error.local_on_foot_now_m` and
+  `local_driving_now_m`.
+- `net.body_render_error_p99` and `net.self_error_p99` are p99s of the 10 Hz
+  `drawnWorld()` samples. A quick run's spectator draws few bodies (176
+  samples on c1 of the 2026-09-24 baseline), so its p99 is its second-worst
+  sample.
 - Headless Chromium frame pacing is not a display's vsync.

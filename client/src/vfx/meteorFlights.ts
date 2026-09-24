@@ -11,7 +11,7 @@
 // Module-level like the dust shots: written by the runtime's packet handler,
 // read by the layer that draws them, with nothing in between.
 
-import { PKT_METEOR_LAUNCHED } from '../net/sharedConstants';
+import { PKT_METEOR_LAUNCHED, SIM_HZ } from '../net/sharedConstants';
 
 export interface MeteorLaunchedPacket {
   bodyId: number;
@@ -220,9 +220,21 @@ export function meteorDrawn(bodyId: number): MeteorDrawn | undefined {
 }
 
 /**
+ * The server's physics step, s. The rock is stepped with semi-implicit Euler
+ * (velocity, then position, every tick), so after n steps of dt it is
+ * g*dt*t/2 below the closed-form parabola: y = y0 + vy*t - g*t^2/2 - g*dt*t/2.
+ * Measured on the 2026-09-24 systematic run (699 in-flight samples, 26
+ * flights): the closed form sits 0.21 m p50 / 0.27 m max from the streamed
+ * body, this 14 mm / 20 mm.
+ */
+export const METEOR_STEP_S = 1 / SIM_HZ;
+
+/**
  * Where the rock is `t` seconds after launch on the unobstructed arc, written
- * into `out`. Past the aimed point it is held there: with no streamed body to
- * say otherwise, the best guess is that it landed where it was aimed.
+ * into `out`: where the server's integrator puts it, not the closed-form
+ * parabola the launch was solved with (see `METEOR_STEP_S`). Past the planned
+ * landing it is held there: with no streamed body to say otherwise, the best
+ * guess is that it landed where it was aimed.
  */
 export function meteorPositionAt(
   flight: MeteorFlight,
@@ -231,7 +243,8 @@ export function meteorPositionAt(
 ): [number, number, number] {
   const clamped = Math.max(0, Math.min(t, flight.flightTimeS));
   out[0] = flight.start[0] + flight.velocity[0] * clamped;
-  out[1] = flight.start[1] + flight.velocity[1] * clamped - 0.5 * flight.gravityMs2 * clamped * clamped;
+  out[1] = flight.start[1] + flight.velocity[1] * clamped
+    - 0.5 * flight.gravityMs2 * clamped * (clamped + METEOR_STEP_S);
   out[2] = flight.start[2] + flight.velocity[2] * clamped;
   return out;
 }

@@ -17,7 +17,7 @@ import {
 } from './meteorPlacement';
 
 const G = 9.81;
-const TICK_US = Math.round(1_000_000 / 60);
+const TICK_US = METEOR_TICK_US;
 const LAUNCH_US = 5_000_000;
 
 /** A 147 m/s meteor on a 2.5 s arc onto (12, 0, -40). */
@@ -114,6 +114,25 @@ describe('placeMeteor', () => {
     }
     expect(prevSource).toBe('body');
     expect(maxGapToPrevSource).toBeLessThan(1);
+  });
+
+  // With an arc exact to 2 cm the body leaving it by 0.3 m is contact. Under
+  // the old 1.5 m tolerance a rock that grazed a roof edge was drawn on through
+  // it until it was 1.5 m off its body (the 0.22-0.24 m handover jumps left on
+  // the 2026-09-24 systematic run once the arc was right).
+  it('a rock that grazes something and leaves the arc by half a metre is drawn from its body', () => {
+    const f = flight();
+    const samples: DynamicBodySample[] = [];
+    let last = placeMeteor(f, f.track, { renderServerUs: LAUNCH_US + 2_000_000, samples, ticksSinceSeen: 0, tickUs: TICK_US, nowMs: 0 });
+    for (let us = LAUNCH_US + 2_000_000; us <= LAUNCH_US + 2_300_000; us += TICK_US) {
+      const t = (us - LAUNCH_US) / 1e6;
+      // Deflected sideways from 2.1 s, 5 m/s off its path.
+      samples.push(sampleAt(f, us, [0, 0, t > 2.1 ? (t - 2.1) * 5 : 0]));
+      last = placeMeteor(f, f.track, { renderServerUs: us - 30_000, samples, ticksSinceSeen: 0, tickUs: TICK_US, nowMs: 0 });
+    }
+    expect(last.source).toBe('body');
+    const body = samples[samples.length - 1];
+    expect(Math.abs(last.position[2] - meteorPositionAt(f, (body.serverTimeUs - 30_000 - LAUNCH_US) / 1e6, [0, 0, 0])[2])).toBeGreaterThan(0.5);
   });
 
   it('extrapolates a body past its newest snapshot without sinking below it', () => {
@@ -220,7 +239,8 @@ describe('placeMeteor', () => {
     // the stream: held at the aimed point.
     const held = place(landUs + NEVER_STREAMED_LANDED_HOLD_US / 2);
     expect(held.source).toBe('arc');
-    expect(dist(held.position, f.target)).toBeLessThan(1e-6);
+    expect(dist(held.position, meteorPositionAt(f, f.flightTimeS, [0, 0, 0]))).toBeLessThan(1e-6);
+    expect(dist(held.position, f.target)).toBeLessThan(0.25);
     // Past it, the rock is somewhere this client is not told about.
     expect(place(landUs + NEVER_STREAMED_LANDED_HOLD_US + 1).source).toBe('hidden');
     expect(place(landUs + 2_000_000).source).toBe('hidden');

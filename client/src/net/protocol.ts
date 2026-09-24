@@ -34,7 +34,20 @@ import {
   CLIENT_MOVEMENT_CAP_THIN_AUTHORITATIVE,
   CLIENT_MOVEMENT_FULL_PREDICTION,
   PHYSICS_BACKEND_RAPIER,
+  SIM_HZ,
 } from './sharedConstants';
+
+/**
+ * Microseconds per server tick, exactly as the server stamps time: every
+ * server-side time on the wire is `tick * (1_000_000 / SIM_HZ)` in integer
+ * arithmetic (server/src/main.rs: snapshots, the welcome, meteor launches,
+ * shots; shared/src/local_session.rs), i.e. 16 666 us at 60 Hz. SnapshotV2
+ * carries only the tick, so the client puts it on this same scale; the
+ * rounded 16 667 it used before put snapshot times 1 us per tick after every
+ * server-stamped time (17 ms at tick 17 000), and a meteor's arc, drawn from
+ * its server launch time, ran that far ahead of its own body.
+ */
+export const SERVER_TICK_US = Math.floor(1_000_000 / SIM_HZ);
 
 export type ClientHello = {
   matchId: string;
@@ -920,7 +933,7 @@ export function decodeSnapshotV2Packet(view: DataView, o: number): SnapshotV2Pac
 
   return {
     type: 'snapshotV2',
-    serverTimeUs: serverTick * Math.round(1_000_000 / 60),
+    serverTimeUs: serverTick * SERVER_TICK_US,
     serverTick,
     ackInputSeq,
     anchorPxMm,

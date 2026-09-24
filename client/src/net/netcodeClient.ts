@@ -240,6 +240,13 @@ export class NetcodeClient {
   private simHz = 60;
   private readonly vehicleLastSeenTick = new Map<number, number>();
   private readonly dynamicBodyServerTimeUs = new Map<number, number>();
+  /**
+   * Bodies the stream has dropped whose last snapshot the dynamic-body render
+   * clock has not reached yet: id -> that snapshot's server time. They are
+   * drawn up to it, never past it (no extrapolation of a body that is gone),
+   * and removed once the render time is there (`retireUnstreamedBodies`).
+   */
+  private readonly dynamicBodyLeaving = new Map<number, number>();
   private readonly vehicleServerTimeUs = new Map<number, number>();
   private readonly playerIdByHandle = new Map<number, number>();
   private localDrivenVehicleId: number | null = null;
@@ -772,7 +779,8 @@ export class NetcodeClient {
         angularVelocity,
         shapeType: meta.shapeType,
       });
-      this.dynamicBodyPresence.seen(bodyId, packet.serverTick, Math.hypot(...velocity));
+      this.dynamicBodyPresence.seen(bodyId, packet.serverTick, Math.hypot(...velocity), position, velocity);
+      this.dynamicBodyLeaving.delete(bodyId);
     }
     for (const box of packet.boxStates) {
       const meta = this.dynamicBodyMetaByHandle.get(box.handle);
@@ -808,9 +816,13 @@ export class NetcodeClient {
         angularVelocity: meters.angularVelocity,
         shapeType: meters.shapeType,
       });
-      this.dynamicBodyPresence.seen(bodyId, packet.serverTick, Math.hypot(...meters.velocity));
+      this.dynamicBodyPresence.seen(bodyId, packet.serverTick, Math.hypot(...meters.velocity), meters.position, meters.velocity);
+      this.dynamicBodyLeaving.delete(bodyId);
     }
-    this.retireUnstreamedBodies(packet.serverTick);
+    // The anchor is the recipient position the server selected this snapshot's
+    // bodies around (snapshot_builder.rs), so a moving body gone from it past
+    // the interest radius is out of the stream now (bodyPresence.ts).
+    this.retireUnstreamedBodies(packet.serverTick, packet.serverTimeUs, anchorPos);
     this.debugTelemetry.observeAuthoritativeDynamicBodies(this.dynamicBodies);
     // Fire the local snapshot callback only after authoritative dynamic-body
     // state has been applied. Multiplayer vehicle reconcile depends on the
@@ -1034,8 +1046,9 @@ export class NetcodeClient {
             shapeType: meters.shapeType,
           });
           this.dynamicBodyPresence.seen(db.id, packet.serverTick, Math.hypot(...meters.velocity));
+          this.dynamicBodyLeaving.delete(db.id);
         }
-        this.retireUnstreamedBodies(packet.serverTick);
+        this.retireUnstreamedBodies(packet.serverTick, packet.serverTimeUs);
         this.debugTelemetry.observeAuthoritativeDynamicBodies(this.dynamicBodies);
 
         const knownIds = new Set<number>();
@@ -1191,7 +1204,8 @@ export class NetcodeClient {
 
   sampleRemoteDynamicBody(id: number, renderTimeUs?: number): DynamicBodySample | null {
     const t = renderTimeUs ?? this.getDynamicBodyRenderTimeUs();
-    return this.dynamicBodyInterpolator.sample(id, t);
+    const lastUs = this.dynamicBodyLeaving.get(id);
+    return this.dynamicBodyInterpolator.sample(id, lastUs !== undefined ? Math.min(t, lastUs) : t);
   }
 
   /**
@@ -1242,13 +1256,37 @@ export class NetcodeClient {
    * to this client (retired by the server, or out of interest): see
    * bodyPresence.ts. They stop being drawn then, not 4 s later.
    */
-  private retireUnstreamedBodies(serverTick: number): void {
+  private retireUnstreamedBodies(
+    serverTick: number,
+    serverTimeUs: number,
+    recipient: [number, number, number] | null = null,
+  ): void {
     const intervalTicks = this.serverClock.getSnapshotIntervalMs() / (1000 / this.simHz);
-    for (const id of this.dynamicBodyPresence.endSnapshot(serverTick, intervalTicks)) {
-      this.dynamicBodies.delete(id);
-      this.dynamicBodyServerTimeUs.delete(id);
-      this.dynamicBodyInterpolator.remove(id);
+    // The render time is about this snapshot's time less the interpolation
+    // delay. A body that left the stream is removed once that has passed its
+    // last snapshot; until then it is drawn at most up to it. (A body known
+    // gone the moment it leaves the interest radius, bodyPresence.ts, still
+    // has a delay's worth of its track ahead of the render clock: removing it
+    // there drew nothing for those frames while truth had it in interest.)
+    const renderedUpToUs = serverTimeUs - this.dynamicBodyInterpolationDelayMs * 1000;
+    for (const id of this.dynamicBodyPresence.endSnapshot(serverTick, intervalTicks, recipient)) {
+      const lastUs = this.dynamicBodyServerTimeUs.get(id);
+      if (lastUs !== undefined && lastUs > renderedUpToUs) {
+        this.dynamicBodyLeaving.set(id, lastUs);
+      } else {
+        this.removeDynamicBody(id);
+      }
     }
+    for (const [id, lastUs] of this.dynamicBodyLeaving) {
+      if (lastUs <= renderedUpToUs) this.removeDynamicBody(id);
+    }
+  }
+
+  private removeDynamicBody(id: number): void {
+    this.dynamicBodies.delete(id);
+    this.dynamicBodyServerTimeUs.delete(id);
+    this.dynamicBodyInterpolator.remove(id);
+    this.dynamicBodyLeaving.delete(id);
   }
 
   /** A body's buffered snapshots, oldest first. */
@@ -1320,6 +1358,7 @@ export class NetcodeClient {
     this.dynamicBodies.clear();
     this.dynamicBodyMetaByHandle.clear();
     this.dynamicBodyServerTimeUs.clear();
+    this.dynamicBodyLeaving.clear();
     this.dynamicBodyPresence.clear();
     this.dynamicBodyInterpolator.retainOnly(new Set());
     this.vehicles.clear();

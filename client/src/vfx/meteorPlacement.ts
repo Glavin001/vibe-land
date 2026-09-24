@@ -5,8 +5,9 @@
 // a recorded session, so what is measured is what is drawn.
 //
 // The arc the launch packet describes is exact until the rock touches
-// something: a launched ball has no damping, and the server's positions sit
-// 0.1-0.4 m from it in flight. So the rock is drawn ON THE ARC, at the render
+// something: a launched ball has no damping, and stepped as the server steps
+// it (meteorFlights.ts `meteorPositionAt`) the server's positions sit within
+// 2 cm of it in flight. So the rock is drawn ON THE ARC, at the render
 // time, until a streamed snapshot shows it has left the arc (it hit something)
 // -- not from the first streamed snapshot. That removes the handover jump: a
 // body with one snapshot cannot be interpolated, and drawing it at that
@@ -28,6 +29,7 @@
 
 import { MOVING_BODY_SPEED_MS, MOVING_BODY_STALE_TICKS } from '../net/bodyPresence';
 import { sampleDynamicBodyTrack, type DynamicBodySample } from '../net/interpolation';
+import { SERVER_TICK_US } from '../net/protocol';
 import {
   meteorPositionAt,
   meteorVelocityAt,
@@ -37,8 +39,16 @@ import {
 
 export { meteorFlightForgotten, newMeteorTrack, type MeteorTrack } from './meteorFlights';
 
-/** A streamed sample this far from the arc at its own time means contact. */
-export const ON_ARC_TOLERANCE_M = 1.5;
+/**
+ * A streamed sample this far from the arc at its own time means contact. The
+ * arc follows the server's integrator (meteorFlights.ts `METEOR_STEP_S`) on
+ * the server's time scale (protocol.ts `SERVER_TICK_US`): in flight the body
+ * sits 14 mm p50 / 20 mm max from it (2026-09-24 systematic run, 699
+ * samples). The 1.5 m this was covered the old arc's 0.2-0.4 m error and its
+ * clock drift (up to 2.4 m), and drew a rock that grazed something on the arc,
+ * through it, until it was 1.5 m off.
+ */
+export const ON_ARC_TOLERANCE_M = 0.3;
 /** Snapshots without a moving body before it counts as out of the stream. */
 export const STALE_AFTER_TICKS = MOVING_BODY_STALE_TICKS;
 /** Below this speed a body missing from the stream is resting, not gone. */
@@ -50,7 +60,7 @@ const MAX_BODY_EXTRAPOLATION_US = 250_000;
  * arc ends: one staleness window, the time a body that is in this client's
  * stream takes to show up in it.
  */
-export const NEVER_STREAMED_LANDED_HOLD_US = STALE_AFTER_TICKS * 1_000_000 / 60;
+export const NEVER_STREAMED_LANDED_HOLD_US = STALE_AFTER_TICKS * SERVER_TICK_US;
 /** The rock's tumble on the arc, rad/s (the studio rock's). */
 export const ARC_TUMBLE_RADS = 0.45;
 /** 'hold' (held where last drawn) is no longer produced; tools still read it in older tapes. */
@@ -187,8 +197,8 @@ export function arcTumble(flight: MeteorFlight, t: number): [number, number, num
   return [ax * s, ay * s, az * s, Math.cos(half)];
 }
 
-/** The tick the meteor layer judges staleness in (the server's 60 Hz). */
-export const METEOR_TICK_US = Math.round(1_000_000 / 60);
+/** The tick the meteor layer judges staleness in: the server's, on its own time scale. */
+export const METEOR_TICK_US = SERVER_TICK_US;
 
 /** The streamed-body side of a meteor: the runtime (live), or the netcode client (replay, Netlab). */
 export interface MeteorBodyFeed {

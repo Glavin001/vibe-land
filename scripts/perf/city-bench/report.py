@@ -40,7 +40,18 @@ ROOT = os.path.normpath(os.path.join(HERE, "..", "..", ".."))
 sys.path.insert(0, os.path.join(ROOT, "scripts", "perf"))
 import session_bundle  # noqa: E402
 
-TICK_US = 1e6 / 60
+# Snapshot tick length (us) of a tape whose header has no serverTickUs: the
+# clients before 2026-09-24 timed SnapshotV2 ticks as 16 667 us (the server
+# stamps 16 666). client/src/city/cityTape.ts LEGACY_SNAPSHOT_TICK_US.
+LEGACY_SNAPSHOT_TICK_US = 16_667
+
+
+def snapshot_tick_us(header):
+    """The tick length the tape's recording client put server time on: its
+    clock samples (offset_us) are on that scale, so server ticks are
+    server_now_us / this. Dividing by 1e6/60 instead put the truth lookup
+    tick * 0.33 us late (5.7 ms at tick 17 000)."""
+    return (header or {}).get("serverTickUs") or LEGACY_SNAPSHOT_TICK_US
 KINDS = {101: "welcome", 102: "snapshot-v1", 103: "shot-result", 110: "ping", 112: "snapshot", 113: "roster",
          114: "body-meta", 115: "energy", 116: "battery", 117: "shot-fired", 118: "damage", 119: "city-chunks",
          120: "city-topology", 121: "city-baseline", 122: "city-bootstrap", 123: "city-manifest", 124: "match-stats",
@@ -347,11 +358,19 @@ def client_metrics(i, bundle, adir, run_dir, tl, budgets_cfg, server_ticks, leve
     stick = [int(r["tick"]) for r in S]
     gaps = [st[k + 1] - st[k] for k in range(len(st) - 1)]
     tick_span = (stick[-1] - stick[0]) if len(stick) > 1 else 0
+    # The network's part of each gap: the arrival gap less the server's own
+    # gap between producing those two ticks (ticks.jsonl, same wall clock).
+    # A server tick that takes 50 ms is a 50 ms arrival gap however good the
+    # link is; this is what is left.
+    tick_wall = {t["tick"]: t["unix_us"] / 1000 for t in server_ticks}
+    net_gaps = [gaps[k] - (tick_wall[stick[k + 1]] - tick_wall[stick[k]]) for k in range(len(gaps))
+                if stick[k] in tick_wall and stick[k + 1] in tick_wall]
     out["snapshots"] = {
         "count": len(S), "rate_hz": round(len(S) / ((st[-1] - st[0]) / 1000), 1) if len(st) > 1 else None,
         "per_server_tick": round((len(S) - 1) / tick_span, 3) if tick_span else None,
         "tick_deltas": dict(collections.Counter(str(stick[k + 1] - stick[k]) for k in range(len(stick) - 1)).most_common(6)),
         "interarrival_ms": q(gaps), "gaps_over_100ms": sum(1 for g in gaps if g > 100),
+        "interarrival_less_server_gap_ms": q(net_gaps),
         "sim_rate_seen": round(tick_span / 60 / ((st[-1] - st[0]) / 1000), 3) if len(st) > 1 else None,
     }
 
@@ -371,51 +390,7 @@ def client_metrics(i, bundle, adir, run_dir, tl, budgets_cfg, server_ticks, leve
     }
 
     # ── meteors (MeteorLayer reconstructed by meteors.ts; logic as analyse.py)
-    by = collections.defaultdict(list)
-    for r in M:
-        by[(int(r["body"]), fnum(r["launch_t_ms"]))].append(r)
-    backs_total = arc_j = 0
-    arc_jumps, hold_jumps, backs_m, below = [], [], [], 0
-    per_meteor_backward = []
-    for key, rs in by.items():
-        prev = prevd = None
-        nb = 0
-        for k, r in enumerate(rs):
-            if r["source"] == "hidden":
-                prev = None
-                continue
-            p = [fnum(r["draw_x"]), fnum(r["draw_y"]), fnum(r["draw_z"])]
-            if r["source"] == "body" and p[1] < -0.5 and fnum(r["raw_y"], 1.0) > -0.5:
-                below += 1
-            if prev:
-                d = [p[j] - prev[j] for j in range(3)]
-                dist = math.sqrt(sum(x * x for x in d))
-                if prevd and dist > 0.05:
-                    pn = math.sqrt(sum(x * x for x in prevd))
-                    along = sum(d[j] * prevd[j] for j in range(3)) / pn if pn > 0.05 else 0
-                    if along < -0.3:
-                        nb += 1
-                        backs_m.append(-along)
-                if r["source"] != rs[k - 1]["source"] and rs[k - 1]["source"] != "hidden":
-                    kind = rs[k - 1]["source"] + ">" + r["source"]
-                    if kind == "arc>body":
-                        arc_jumps.append(dist)
-                    elif kind == "hold>body":
-                        hold_jumps.append(dist)
-                if dist > 0.05:
-                    prevd = d
-            prev = p
-        backs_total += nb
-        per_meteor_backward.append(nb)
-    out["meteors"] = {
-        "meteors": len(by), "with_backward_motion": sum(1 for n in per_meteor_backward if n), "backward_frames": backs_total,
-        "max_backward_m": round(max(backs_m), 1) if backs_m else 0, "arc_to_body_jump_m": q(arc_jumps, 1),
-        "hold_to_body_jump_m": q(hold_jumps, 1), "drawn_below_ground_frames": below,
-    }
-    if not arc_jumps:
-        out["meteors"]["arc_to_body_jump_m"]["max"] = 0
-    if not hold_jumps:
-        out["meteors"]["hold_to_body_jump_m"]["max"] = 0
+    out["meteors"] = meteor_metrics(M)
 
     # ── bandwidth, per lane and per packet kind
     kind_bytes, kind_pkts, lane_bytes, lane_pkts = collections.Counter(), collections.Counter(), collections.Counter(), collections.Counter()
@@ -541,6 +516,140 @@ def client_metrics(i, bundle, adir, run_dir, tl, budgets_cfg, server_ticks, leve
                  "period": period, "stream": stream}
 
 
+def body_step(before, after):
+    """The streamed body's own motion between two meteor frames (the body_x/y/z
+    columns: the body at each frame's render time), or None without them."""
+    a = [fnum(before.get(c)) for c in ("body_x", "body_y", "body_z")]
+    b = [fnum(after.get(c)) for c in ("body_x", "body_y", "body_z")]
+    if None in a or None in b:
+        return None
+    return [b[j] - a[j] for j in range(3)]
+
+
+def meteor_metrics(M):
+    """Meteors as MeteorLayer drew them (meteor_frames.csv from meteors.ts).
+
+    arc->body jump: the step the rock takes on screen at the frame it is first
+    drawn from its body, less the body's own motion over that step (the
+    body_x/y/z columns: the streamed body at each frame's render time). That
+    is the discontinuity the handover adds: where the arc drew the rock the
+    frame before against where the body was then. The step alone, which this
+    used to be, adds the rock's flight over one frame (130 m/s x 8 ms: 1.0 m
+    at 120 Hz) and failed the 1 m budget on a perfect handover; it is kept as
+    arc_to_body_frame_step_m. Against the arc at the same render time instead,
+    a rock that hits something within that frame would count its bounce.
+    Tapes decoded before the body columns existed fall back to that (arc at
+    the same render time). A rock whose body was not streamed at the previous
+    frame's render time entered this client's stream after it hit something
+    out of its interest: the arc it was drawn on was a guess, and the jump to
+    where it really is (the arc's gap, same render time) is reported apart as
+    unstreamed_arc_to_body_jump_m, not gated. hold->body stays frame to frame:
+    a held rock does not move, so the step is the jump.
+
+    Backward frames: a drawn step of more than 0.05 m whose component along the
+    previous step is below -0.3 m and, where the body columns are there,
+    whose component along the streamed body's own motion over the same
+    render interval is too: the rock's own bounce is not the drawing going
+    backwards. The step straight after a backward one is not judged: a rock
+    knocked back for one frame that carries on was counted twice (the step
+    back, then the step forward again, which is 'backward' against the step
+    back); a rock that bounces carries on along its step back and was never
+    counted twice.
+    """
+    by = collections.defaultdict(list)
+    for r in M:
+        by[(int(r["body"]), fnum(r["launch_t_ms"]))].append(r)
+    backs_total = 0
+    arc_jumps, arc_steps, hold_jumps, backs_m, below = [], [], [], [], 0
+    unstreamed_jumps = []
+    per_meteor_backward = []
+    for key, rs in by.items():
+        prev = prevd = None
+        last_back = False
+        nb = 0
+        for k, r in enumerate(rs):
+            if r["source"] == "hidden":
+                prev = None
+                continue
+            p = [fnum(r["draw_x"]), fnum(r["draw_y"]), fnum(r["draw_z"])]
+            if r["source"] == "body" and p[1] < -0.5 and fnum(r["raw_y"], 1.0) > -0.5:
+                below += 1
+            if prev:
+                d = [p[j] - prev[j] for j in range(3)]
+                dist = math.sqrt(sum(x * x for x in d))
+                back = False
+                if prevd and dist > 0.05 and not last_back:
+                    pn = math.sqrt(sum(x * x for x in prevd))
+                    along = sum(d[j] * prevd[j] for j in range(3)) / pn if pn > 0.05 else 0
+                    # With the body columns: a step the streamed body itself
+                    # took over the same render interval (a bounce, contact
+                    # pushing it back) is not the drawing going backwards.
+                    own = body_step(rs[k - 1], r)
+                    on = math.sqrt(sum(x * x for x in own)) if own else 0
+                    along_own = sum(d[j] * own[j] for j in range(3)) / on if on > 0.05 else -math.inf
+                    if along < -0.3 and along_own < -0.3:
+                        nb += 1
+                        backs_m.append(-along)
+                        back = True
+                if r["source"] != rs[k - 1]["source"] and rs[k - 1]["source"] != "hidden":
+                    kind = rs[k - 1]["source"] + ">" + r["source"]
+                    if kind == "arc>body":
+                        body_now = [fnum(r.get("body_x")), fnum(r.get("body_y")), fnum(r.get("body_z"))]
+                        body_before = [fnum(rs[k - 1].get(c)) for c in ("body_x", "body_y", "body_z")]
+                        arc = [fnum(r["arc_x"]), fnum(r["arc_y"]), fnum(r["arc_z"])]
+                        arc_gap = math.sqrt(sum((p[j] - arc[j]) ** 2 for j in range(3))) if None not in arc else None
+                        if None not in body_now and None not in body_before:
+                            own = [body_now[j] - body_before[j] for j in range(3)]
+                            arc_jumps.append(math.sqrt(sum((d[j] - own[j]) ** 2 for j in range(3))))
+                        elif rs[k - 1].get("body_x") == "" and arc_gap is not None:
+                            # The body was not streamed at the previous frame's
+                            # render time: the rock entered this client's stream
+                            # after it hit something, and the arc it was drawn on
+                            # was a guess. Not a handover of a streamed rock.
+                            unstreamed_jumps.append(arc_gap)
+                        elif arc_gap is not None:
+                            arc_jumps.append(arc_gap)
+                        arc_steps.append(dist)
+                    elif kind == "hold>body":
+                        hold_jumps.append(dist)
+                if dist > 0.05:
+                    last_back = back
+                    prevd = d
+            prev = p
+        backs_total += nb
+        per_meteor_backward.append(nb)
+    m = {
+        "meteors": len(by), "with_backward_motion": sum(1 for n in per_meteor_backward if n), "backward_frames": backs_total,
+        "max_backward_m": round(max(backs_m), 1) if backs_m else 0, "arc_to_body_jump_m": q(arc_jumps, 2),
+        "arc_to_body_frame_step_m": q(arc_steps, 2),
+        "unstreamed_arc_to_body_jump_m": q(unstreamed_jumps, 2),
+        "hold_to_body_jump_m": q(hold_jumps, 1), "drawn_below_ground_frames": below,
+    }
+    for k, v in (("arc_to_body_jump_m", arc_jumps), ("arc_to_body_frame_step_m", arc_steps),
+                 ("unstreamed_arc_to_body_jump_m", unstreamed_jumps), ("hold_to_body_jump_m", hold_jumps)):
+        if not v:
+            m[k]["max"] = 0
+    return m
+
+
+# Frame times are float32 on the tape; a drawn sample stamped in the frame
+# may sit this far before its frame's rounded time.
+FRAME_TIME_SLACK_MS = 0.05
+
+
+def drawing_frame(ftimes, tape_ms):
+    """The frame that drew a drawnWorld() sample: the last frame stamped at or
+    before it. The tape stamps a frame (and samples its clock) as it starts;
+    the renderers draw, and the sample is stamped, 0-0.2 ms later in the same
+    frame. The first frame at or after the sample, which this used, is the
+    next one: its render time is a frame (8 ms at 120 fps) later, so every
+    body was scored against truth 8 ms ahead of where it was drawn -- 0.5 m
+    at 60 m/s (the 2026-09-24 after-change quick bench, c2: body render
+    error p99 0.50 m, 0.07 m with the drawing frame)."""
+    k = bisect.bisect_right(ftimes, tape_ms + FRAME_TIME_SLACK_MS) - 1
+    return k if k >= 0 else None
+
+
 def render_error(i, run_dir, bundle, hdr, F, notes, presence):
     """Drawn positions (client-<i>-drawn.jsonl) against world.bin.
 
@@ -560,18 +669,21 @@ def render_error(i, run_dir, bundle, hdr, F, notes, presence):
     tu = [x[0] for x in tick_unix]
     ftimes = [fnum(r["t_ms"]) for r in F]
     origin_perf, origin_wall = hdr["clockOriginMs"], hdr["wallClockOriginMs"]
+    tick_us = snapshot_tick_us(hdr)
     plan = []
     for d in drawn:
         tape_ms = d.get("tapeMs")
         if tape_ms is None:
             continue
-        k = min(len(ftimes) - 1, bisect.bisect_left(ftimes, tape_ms))
+        k = drawing_frame(ftimes, tape_ms)
+        if k is None:
+            continue
         fr = F[k]
         if fr.get("offset_us") in (None, ""):
             continue
         server_now_us = (tape_ms + origin_perf) * 1000 + fnum(fr["offset_us"])
-        dyn_tick = (server_now_us - fnum(fr["dyn_ms"]) * 1000) / TICK_US
-        ply_tick = (server_now_us - fnum(fr["interp_ms"]) * 1000) / TICK_US
+        dyn_tick = (server_now_us - fnum(fr["dyn_ms"]) * 1000) / tick_us
+        ply_tick = (server_now_us - fnum(fr["interp_ms"]) * 1000) / tick_us
         j = bisect.bisect_right(tu, origin_wall + tape_ms) - 1
         now_tick = tick_unix[j][1] if j >= 0 else None
         plan.append((d, dyn_tick, ply_tick, now_tick))
@@ -639,9 +751,24 @@ def render_error(i, run_dir, bundle, hdr, F, notes, presence):
             matched["players"] += 1
             err["remote_players_at_render_time_m"].append(dist(p["position"], t))
         if d.get("local") and now_t is not None:
-            t = truth.get(now_t, {}).get("p", {}).get(d.get("playerId"))
-            if t is not None:
-                err["local_now_m"].append(dist(d["local"], t))
+            # While the local player drives, its avatar is hidden and the
+            # camera rides the driven vehicle: what is on screen is that
+            # vehicle's mesh (prediction + smoothing), so that is scored
+            # against the vehicle's truth. The avatar's position there is the
+            # thin presentation pose, which nothing draws.
+            driven = next((v for v in d.get("vehicles") or [] if v.get("driverId") == d.get("playerId")), None)
+            if driven is not None:
+                t = truth.get(now_t, {}).get("v", {}).get(driven["id"])
+                if t is not None:
+                    e = dist(driven["position"], t)
+                    err["local_now_m"].append(e)
+                    err["local_driving_now_m"].append(e)
+            else:
+                t = truth.get(now_t, {}).get("p", {}).get(d.get("playerId"))
+                if t is not None:
+                    e = dist(d["local"], t)
+                    err["local_now_m"].append(e)
+                    err["local_on_foot_now_m"].append(e)
     out = {"samples": len(plan), "matched": dict(matched), "unmatched": dict(missing)}
     for k, v in err.items():
         out[k] = q(v, 3)
@@ -845,13 +972,18 @@ def write_md(report, path):
                  f"r(fps, server ticks/s) = {fmt(c.get('r_client_fps_vs_server_ticks_per_s'))}.")
         ia = n.get("interarrival_ms", {})
         L.append(f"- Snapshots: {fmt(n.get('rate_hz'), 1)} Hz, {fmt(n.get('per_server_tick'), 3)} per server tick; arrival gaps p50/p99/max "
-                 f"{fmt(ia.get('p50'))}/{fmt(ia.get('p99'))}/{fmt(ia.get('max'))} ms; {n.get('gaps_over_100ms')} gaps over 100 ms.")
+                 f"{fmt(ia.get('p50'))}/{fmt(ia.get('p99'))}/{fmt(ia.get('max'))} ms; {n.get('gaps_over_100ms')} gaps over 100 ms; "
+                 f"less the server's own tick gap p99/max {fmt((n.get('interarrival_less_server_gap_ms') or {}).get('p99'))}/"
+                 f"{fmt((n.get('interarrival_less_server_gap_ms') or {}).get('max'))} ms.")
         ld = it.get("lead_ms", {})
         L.append(f"- Interpolation: render lead over newest snapshot p50/p95/p99 {fmt(ld.get('p50'), 1)}/{fmt(ld.get('p95'), 1)}/{fmt(ld.get('p99'), 1)} ms; "
                  f"{fmt(it.get('pct_frames_extrapolating'))}% of frames extrapolating; render clock stepped back {it.get('render_clock_backward_steps')} times "
                  f"({fmt(it.get('render_clock_backward_total_ms'), 0)} ms); dyn delay p50 {fmt(it.get('dyn_delay_ms', {}).get('p50'))} ms.")
         L.append(f"- Meteors: {m.get('meteors')} drawn, {m.get('with_backward_motion')} moved backwards ({m.get('backward_frames')} frames, max {fmt(m.get('max_backward_m'), 1)} m); "
-                 f"arc→body jump p50/max {fmt(m.get('arc_to_body_jump_m', {}).get('p50'), 1)}/{fmt(m.get('arc_to_body_jump_m', {}).get('max'), 1)} m; "
+                 f"arc→body jump (step less the body's own motion) p50/max {fmt(m.get('arc_to_body_jump_m', {}).get('p50'), 2)}/{fmt(m.get('arc_to_body_jump_m', {}).get('max'), 2)} m "
+                 f"(frame step {fmt(m.get('arc_to_body_frame_step_m', {}).get('p50'), 1)}/{fmt(m.get('arc_to_body_frame_step_m', {}).get('max'), 1)} m; "
+                 f"rocks first streamed after impact {(m.get('unstreamed_arc_to_body_jump_m') or {}).get('n', 0)}, "
+                 f"max {fmt((m.get('unstreamed_arc_to_body_jump_m') or {}).get('max'), 1)} m from their arc); "
                  f"hold→body max {fmt(m.get('hold_to_body_jump_m', {}).get('max'), 1)} m; drawn below ground {m.get('drawn_below_ground_frames')} frames.")
         lat = tr.get("latency_ms") or {}
         L.append(f"- Transport: {tr.get('join_matched')} taped packets joined to sends; lost {tr.get('lost_packets')}, server drops {tr.get('server_drops')}; "

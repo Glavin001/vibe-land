@@ -9,7 +9,9 @@
 // What it does, briefly (clock_sync.rs has the long form): server time on the
 // wire is tick x 16.67 ms, and a server that cannot hold 60 Hz advances it
 // slower than wall time. The estimator measures that rate -- from the server's
-// wall-clock stamp when the snapshot carries one, from arrivals otherwise --
+// wall-clock stamp when the snapshot carries one (over 1 s, or over the last
+// 100 ms of stamps when that is higher: a server back at pace after a stall is
+// followed at once), from arrivals otherwise --
 // models server time as the newest sample advanced at the rate by at most one
 // snapshot interval, and follows the model with an output that never goes
 // backwards and never snaps backwards. The output is anchored at each snapshot
@@ -18,6 +20,7 @@
 
 export const RATE_WINDOW_US = 1_000_000;
 export const RATE_MIN_SPAN_US = 250_000;
+export const RATE_RECOVERY_SPAN_US = 100_000;
 export const RATE_SMOOTHING_TAU_US = 300_000;
 export const RATE_MIN = 0.02;
 export const RATE_MAX = 2.0;
@@ -220,7 +223,21 @@ export class TsServerClock implements ServerClockModel {
     const spanUs = byWall ? last.wallUs! - first.wallUs! : last.arrivalUs - first.arrivalUs;
     const smoothing = byWall ? 1 : 1 - Math.exp(-sinceLastUs / RATE_SMOOTHING_TAU_US);
     if (spanUs < RATE_MIN_SPAN_US) return;
-    const measured = Math.min(RATE_MAX, Math.max(RATE_MIN, (last.serverUs - first.serverUs) / spanUs));
+    let measured = Math.min(RATE_MAX, Math.max(RATE_MIN, (last.serverUs - first.serverUs) / spanUs));
+    if (byWall) {
+      // A server back at pace after a stall is believed over the last
+      // RATE_RECOVERY_SPAN_US of its wall clock, not the whole window: the
+      // window still holds the stall, and the output (which may run at most
+      // MAX_CATCH_UP times the rate) fell behind the arriving snapshots for as
+      // long as the stall stayed in it (clock_sync.rs `update_rate`). A
+      // slowdown is still believed only over the whole window.
+      const recentFrom = last.wallUs! - RATE_RECOVERY_SPAN_US;
+      const recent = this.samples.find((s) => s.arrivalUs >= from && s.wallUs !== null && s.wallUs >= recentFrom);
+      if (recent && last.wallUs! - recent.wallUs! >= RATE_RECOVERY_SPAN_US / 2) {
+        const recentRate = (last.serverUs - recent.serverUs) / (last.wallUs! - recent.wallUs!);
+        measured = Math.max(measured, Math.min(RATE_MAX, recentRate));
+      }
+    }
     if (this.rateMeasured) {
       this.rate += (measured - this.rate) * smoothing;
     } else {

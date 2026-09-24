@@ -18,7 +18,7 @@ import {
 import { ReplayNetWorld } from './replayWorld';
 import { createReplayPlayer } from './cityReplay';
 import type { LoadedCityManifest } from './manifest';
-import { clearMeteorFlights, meteorFlights, METEOR_LAUNCHED_PACKET_LEN } from '../vfx/meteorFlights';
+import { clearMeteorFlights, decodeMeteorLaunched, meteorFlights, meteorPositionAt, METEOR_LAUNCHED_PACKET_LEN, METEOR_STEP_S, newMeteorTrack } from '../vfx/meteorFlights';
 import { NetcodeClient } from '../net/netcodeClient';
 import { frameReliablePacket } from '../net/protocol';
 import {
@@ -35,6 +35,9 @@ import {
 } from '../net/sharedConstants';
 
 // ── Server packet builders (the server's wire layout) ─────────────────────
+
+/** Microseconds per tick as the server stamps them: `tick * (1_000_000 / SIM_HZ)`, integer. */
+const SERVER_STAMP_US = Math.floor(1_000_000 / 60);
 
 function setU64(view: DataView, o: number, value: number): void {
   view.setUint32(o, value % 0x100000000, true);
@@ -483,7 +486,7 @@ describe('replay world', () => {
     vi.spyOn(console, 'info').mockImplementation(() => {});
     // A ball flying at 12 m/s along x from (10, 5, -3), snapshotted every tick
     // (60 Hz); arrivals 40 ms after the server stamp, with jitter.
-    const tickUs = Math.round(1_000_000 / 60);
+    const tickUs = SERVER_STAMP_US;
     const firstTick = 1200;
     const ball = (tick: number): [number, number, number] => [10 + 12 * (tick - firstTick) / 60, 5, -3];
     const packets: Array<{ t: number; bytes: Uint8Array; channel: 'wt-reliable' | 'wt-datagram' }> = [
@@ -547,13 +550,79 @@ describe('replay world', () => {
     expect(again.getRenderedDynamicBodyState(9001)!.position).toEqual(expected);
   });
 
+  // The server stamps every time it sends as tick * (1_000_000 / 60) = tick *
+  // 16 666 us (meteor launches, shots, the welcome, V1 snapshots); SnapshotV2
+  // carries the tick alone, and the client put it at tick * 16 667. At tick
+  // 17 000 a snapshot then sat 17 ms after the launch stamp of the same
+  // instant, and the meteor's arc, drawn from the launch time, ran 17 ms of
+  // flight (2.4 m at 140 m/s) ahead of its own body (2026-09-24 systematic
+  // bench: 24 backward frames, the arc-body gap growing with server uptime).
+  it('puts snapshot times on the scale the server stamps its other times with', () => {
+    vi.spyOn(console, 'info').mockImplementation(() => {});
+    let clock = 0;
+    const world = new ReplayNetWorld(() => clock);
+    world.deliver(welcome(2, 100), 'wt-reliable');
+    world.deliver(bodyMeta([{ handle: 4, bodyId: 777, radiusCm: 150 }]), 'wt-reliable');
+    const launchTick = 17_000;
+    const launch = decodeMeteorLaunched(meteorLaunched(777, launchTick * SERVER_STAMP_US))!;
+    const flight = { ...launch, launchedAtLocalMs: 0, seed: 1, lastStreamedAtMs: 0, track: newMeteorTrack() };
+    // The server's rock, stepped as PhysX steps it (semi-implicit Euler at 1/60 s).
+    const pos: [number, number, number] = [...launch.start];
+    const vel: [number, number, number] = [...launch.velocity];
+    for (let k = 1; k <= 30; k += 1) {
+      vel[1] -= launch.gravityMs2 / 60;
+      for (let axis = 0; axis < 3; axis += 1) pos[axis] += vel[axis] / 60;
+      clock = k * 16.7;
+      world.deliver(snapshotV2(launchTick + k, [pos[0], pos[1] - 10, pos[2]], [{ handle: 4, position: [...pos], velocity: [...vel] }]), 'wt-datagram');
+    }
+    const samples = world.client.getDynamicBodySamples(777);
+    expect(samples.length).toBeGreaterThan(20);
+    expect(samples[samples.length - 1].serverTimeUs).toBe((launchTick + 30) * SERVER_STAMP_US);
+    for (const sample of samples) {
+      const t = (sample.serverTimeUs - flight.serverLaunchTimeUs) / 1e6;
+      const onArc = meteorPositionAt(flight, t, [0, 0, 0]);
+      const off = Math.hypot(...[0, 1, 2].map((axis) => sample.position[axis] - onArc[axis]));
+      expect(off).toBeLessThan(0.01);
+    }
+    expect(METEOR_STEP_S).toBeCloseTo(1 / 60, 12);
+  });
+
+  it('stops drawing a moving body as soon as a snapshot shows it gone past the interest radius', () => {
+    vi.spyOn(console, 'info').mockImplementation(() => {});
+    let clock = 0;
+    const world = new ReplayNetWorld(() => clock);
+    world.deliver(welcome(2, 100), 'wt-reliable');
+    world.deliver(bodyMeta([{ handle: 4, bodyId: 9001, radiusCm: 30 }]), 'wt-reliable');
+    // A cannonball 76.5 m from the recipient, flying away at 60 m/s.
+    const ball = (k: number): [number, number, number] => [76.5 + k, 1, 0];
+    for (let k = 0; k < 4; k += 1) {
+      clock = k * 16.7;
+      world.deliver(snapshotV2(600 + k, [0, 1, 0], [{ handle: 4, position: ball(k), velocity: [60, 0, 0] }]), 'wt-datagram');
+    }
+    expect(world.state.dynamicBodies.has(9001)).toBe(true);
+    // Tick 604: it would be 80.5 m out, and the server left it out. It is
+    // drawn at most up to its last snapshot (79.5 m), never extrapolated on,
+    // and gone once the render clock is there; the stale window used to draw
+    // it 15 more ticks, extrapolated through whatever it hit.
+    clock = 4 * 16.7;
+    world.deliver(snapshotV2(604, [0, 1, 0], []), 'wt-datagram');
+    const late = world.client.sampleRemoteDynamicBody(9001, 700 * 16_666);
+    expect(late === null || late.position[0] <= 79.5 + 1e-3).toBe(true);
+    for (let k = 5; k < 8; k += 1) {
+      clock = k * 16.7;
+      world.deliver(snapshotV2(600 + k, [0, 1, 0], []), 'wt-datagram');
+    }
+    expect(world.state.dynamicBodies.has(9001)).toBe(false);
+    expect(world.client.getDynamicBodySamples(9001).length).toBe(0);
+  });
+
   it('draws the recording player from its own snapshots and everyone\'s shot traces', () => {
     vi.spyOn(console, 'info').mockImplementation(() => {});
     let clock = 0;
     const world = new ReplayNetWorld(() => clock);
     world.deliver(welcome(3), 'wt-reliable');
     world.deliver(roster([[1, 3]]), 'wt-reliable');
-    const tickUs = Math.round(1_000_000 / 60);
+    const tickUs = SERVER_STAMP_US;
     for (let k = 0; k < 10; k += 1) {
       clock = k * 16.667;
       world.deliver(snapshotV2(500 + k, [4 + k * 0.1, 2, -7], []), 'wt-datagram');
@@ -613,7 +682,7 @@ describe('replay player', () => {
   it('routes a v2 tape: bodies at their seek times, meteors on the tape clock', async () => {
     vi.spyOn(console, 'info').mockImplementation(() => {});
     vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const tickUs = Math.round(1_000_000 / 60);
+    const tickUs = SERVER_STAMP_US;
     const firstTick = 3000;
     const offsetMs = firstTick * tickUs / 1000 - 50; // server ms minus tape ms
     const rock = (tick: number): [number, number, number] => [30 * (tick - firstTick) / 60, 60, 0];

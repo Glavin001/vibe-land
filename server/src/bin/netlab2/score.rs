@@ -193,7 +193,12 @@ fn pose_at_tick(tick: &TickTruth, kind: u8, id: u32) -> Option<TruthPose> {
 
 /// Truth at a server time (us), interpolated between the ticks around it.
 pub fn truth_at_server_us<T: TruthSource>(truth: &T, kind: u8, id: u32, server_us: f64) -> Option<TruthPose> {
-    let tick_us = 1e6 / f64::from(truth.sim_hz());
+    truth_at_client_us(truth, kind, id, server_us, 1e6 / f64::from(truth.sim_hz()))
+}
+
+/// Truth at a client render time (us on the client's snapshot scale, `tick_us`
+/// per tick: see `client_tick_us`), interpolated between the ticks around it.
+pub fn truth_at_client_us<T: TruthSource>(truth: &T, kind: u8, id: u32, server_us: f64, tick_us: f64) -> Option<TruthPose> {
     let tick_f = server_us / tick_us;
     if !tick_f.is_finite() || tick_f < 0.0 {
         return None;
@@ -216,6 +221,16 @@ pub fn truth_at_server_us<T: TruthSource>(truth: &T, kind: u8, id: u32, server_u
 
 pub fn truth_at_tick<T: TruthSource>(truth: &T, kind: u8, id: u32, tick: u32) -> Option<TruthPose> {
     truth.tick(tick).and_then(|t| pose_at_tick(t, kind, id))
+}
+
+/// The tick length (us) the scored client timed snapshots with, so its render
+/// times: `serverTickUs` in the display header (the client stage writes the
+/// client's `SERVER_TICK_US`, 16 666 at 60 Hz, the server's own scale; 16 667
+/// for a client before it). Older displays lack it and keep 1e6 / sim_hz,
+/// which puts the truth lookup tick * 0.33 us off a 16 667 client (5.7 ms at
+/// tick 17 000, 0.75 m on a 130 m/s meteor).
+pub fn client_tick_us(header: &serde_json::Value, sim_hz: u32) -> f64 {
+    header["serverTickUs"].as_f64().filter(|v| *v > 0.0).unwrap_or(1e6 / f64::from(sim_hz))
 }
 
 /// A body's class at a tick, from truth kinematics.
@@ -615,7 +630,7 @@ pub fn score_display_into<T: TruthSource>(
     // client stage with the shared pose functions only.
     let identity_bits = display.header["sharedPoses"]["entities"].as_bool().unwrap_or(false);
     let origin = display.header["clockOriginMs"].as_f64().unwrap_or(0.0);
-    let tick_us = 1e6 / f64::from(truth.sim_hz());
+    let tick_us = client_tick_us(&display.header, truth.sim_hz());
     let mut card = Card { frames: display.frames.len() as u64, ..Default::default() };
     if let (Some(first), Some(last)) = (display.frames.first(), display.frames.last()) {
         card.span_s = (last.t_ms - first.t_ms) / 1000.0;
@@ -708,7 +723,7 @@ pub fn score_display_into<T: TruthSource>(
             };
             let truth_kind = if entity.kind == KIND_METEOR { KIND_BODY } else { entity.kind };
             let shown = Vec3::from_array(entity.position);
-            let at_render = truth_at_server_us(truth, truth_kind, entity.id, render_us);
+            let at_render = truth_at_client_us(truth, truth_kind, entity.id, render_us, tick_us);
             if entity.kind == KIND_METEOR {
                 let source = match entity.flags {
                     0 => "arc",
@@ -757,7 +772,7 @@ pub fn score_display_into<T: TruthSource>(
                         handover.push(step.length());
                     }
                     if let (Some(a), Some(b)) =
-                        (truth_at_server_us(truth, KIND_BODY, entity.id, *prev_render_us), at_render)
+                        (truth_at_client_us(truth, KIND_BODY, entity.id, *prev_render_us, tick_us), at_render)
                     {
                         let travel = b.position - a.position;
                         if step.length() > REVERSAL_MIN_M && step.dot(travel) < 0.0 {
@@ -849,7 +864,7 @@ pub fn score_display_into<T: TruthSource>(
             if let Some((prev_pos, prev_render_us)) = last_drawn.get(&key) {
                 let step = shown - Vec3::from_array(*prev_pos);
                 if let (Some(a), Some(b)) =
-                    (truth_at_server_us(truth, truth_kind, entity.id, *prev_render_us), at_render)
+                    (truth_at_client_us(truth, truth_kind, entity.id, *prev_render_us, tick_us), at_render)
                 {
                     let travel = b.position - a.position;
                     let (s, tr) = (step.length(), travel.length());
@@ -1523,6 +1538,29 @@ mod tests {
         let mut meteors = HashSet::new();
         meteors.insert(9);
         assert_eq!(classify_body(&w, 9, 80, &meteors), "meteor_body_after_flight");
+    }
+
+    #[test]
+    fn render_times_become_ticks_on_the_clients_own_scale() {
+        // The client stage records the scored client's tick length; a display
+        // without it keeps the old 1e6 / sim_hz.
+        assert_eq!(client_tick_us(&serde_json::json!({"serverTickUs": 16_666}), 60), 16_666.0);
+        assert_eq!(client_tick_us(&serde_json::json!({"serverTickUs": 16_667}), 60), 16_667.0);
+        assert!((client_tick_us(&serde_json::json!({}), 60) - 1e6 / 60.0).abs() < 1e-9);
+        // A body moving 1 m a tick; a render time of exactly tick 250 on a
+        // 16 666 us client is tick 250 in truth, not 249.99.
+        let line = World {
+            ticks: (0..300u32)
+                .map(|t| TickTruth {
+                    tick: t,
+                    bodies: vec![BodyTruth { id: 9, position: [t as f32, 1.0, 0.0], ..Default::default() }],
+                    ..Default::default()
+                })
+                .collect(),
+        };
+        let at = |tick_us: f64| truth_at_client_us(&line, KIND_BODY, 9, 250.0 * 16_666.0, tick_us).unwrap().position.x;
+        assert!((at(16_666.0) - 250.0).abs() < 1e-3);
+        assert!((at(1e6 / 60.0) - 250.0).abs() > 0.009);
     }
 
     fn frame_at(w: &World, t_ms: f64, delay_ms: f32, shift: Vec3, jump: Option<Vec3>) -> DisplayFrame {

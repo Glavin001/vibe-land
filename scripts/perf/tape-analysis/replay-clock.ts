@@ -25,6 +25,7 @@ import { pathToFileURL } from 'url';
 import { decodeCityTape, inboundChannelOf, TAPE_CHANNEL_RTT } from '../../../client/src/city/cityTape';
 import { ReplayNetWorld } from '../../../client/src/city/replayWorld';
 import { isCityPacketKind } from '../../../client/src/city/wire';
+import { SERVER_TICK_US } from '../../../client/src/net/protocol';
 import { provideWasmClockSync } from '../../../client/src/net/interpolation';
 import { decodeMeteorLaunched, meteorPositionAt, type MeteorLaunchedPacket } from '../../../client/src/vfx/meteorFlights';
 
@@ -68,7 +69,8 @@ const rows = ['frame_t_ms,body,launch_t_ms,source,draw_x,draw_y,draw_z,arc_x,arc
 const clockRows = ['t_ms,render_dyn_us,server_now_us,latest_snapshot_us,lead_ms,offset_us,dyn_ms'];
 const playerRows = ['t_ms,render_player_us,latest_snapshot_us,lead_ms,interp_ms,x,y,z,srv_speed,self_lead_ms'];
 let latestSnapshotUs = 0;
-const tickUs = Math.round(1_000_000 / 60);
+// Snapshot times are decoded on this tree's scale (protocol.ts SERVER_TICK_US).
+const tickUs = SERVER_TICK_US;
 
 let pi = 0;
 for (let fi = 0; fi < f.times.length; fi++) {
@@ -243,6 +245,7 @@ const arcToBodyGaps: number[] = [];
 for (const rs of byFlight.values()) {
   let prev: Row | null = null;
   let prevd: number[] | null = null;
+  let lastBack = false;
   let any = false;
   for (const r of rs) {
     if (r.source === 'hidden') { prev = null; continue; }
@@ -251,19 +254,23 @@ for (const rs of byFlight.values()) {
     if (prev) {
       const d = [0, 1, 2].map((k) => r.p[k] - prev!.p[k]);
       const dist = Math.hypot(d[0], d[1], d[2]);
-      if (prevd && dist > 0.05) {
+      let back = false;
+      // The step right after a backward one is not judged: it is the rock
+      // carrying on (counted twice before) or bouncing on (report.py).
+      if (prevd && dist > 0.05 && !lastBack) {
         const pn = Math.hypot(prevd[0], prevd[1], prevd[2]);
         const along = pn > 0.05 ? (d[0] * prevd[0] + d[1] * prevd[1] + d[2] * prevd[2]) / pn : 0;
         if (along < -0.3) {
           backwardFrames++; any = true; backwardTotal += -along; maxBackward = Math.max(maxBackward, -along);
           if (r.source === 'arc') backwardOnArc++;
+          back = true;
         }
       }
       if (r.source !== prev.source) (handovers[`${prev.source}>${r.source}`] ??= []).push(r1(dist));
       if (prev.source === 'arc' && r.source === 'body') {
         arcToBodyGaps.push(Math.round(Math.hypot(r.p[0] - r.arc[0], r.p[1] - r.arc[1], r.p[2] - r.arc[2]) * 100) / 100);
       }
-      if (dist > 0.05) prevd = d;
+      if (dist > 0.05) { lastBack = back; prevd = d; }
     }
     prev = r;
   }

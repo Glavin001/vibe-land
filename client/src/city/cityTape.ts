@@ -45,7 +45,7 @@
 // the shared session id and clock samples taken against the server.
 
 import type { InboundChannel } from '../net/inbound';
-import { decodeServerReliablePacket } from '../net/protocol';
+import { decodeServerReliablePacket, SERVER_TICK_US } from '../net/protocol';
 import {
   PKT_BATTERY_SYNC,
   PKT_DYNAMIC_BODY_META,
@@ -186,6 +186,26 @@ export interface CityTapeHeader {
   pairing?: TapePairing;
   /** Which client build recorded this. */
   client?: { build: string; mode: string; origin: string };
+  /**
+   * The tick length (us) the recording client put snapshot times on, and so
+   * its clock samples (`frames.clock.offsetUs`): `SERVER_TICK_US`, the
+   * server's own scale. Absent: 16 667, what clients used before 2026-09-24
+   * (see `tapeSnapshotTickUs`).
+   */
+  serverTickUs?: number;
+}
+
+/** Snapshot tick length of a client that did not record `serverTickUs`. */
+export const LEGACY_SNAPSHOT_TICK_US = 16_667;
+
+/**
+ * The tick length the tape's recording client timed snapshots with. Tools
+ * that read its recorded clock (server time = page time + offset) and set it
+ * against snapshot or launch times decoded by this tree multiply by
+ * `SERVER_TICK_US / tapeSnapshotTickUs(header)` first.
+ */
+export function tapeSnapshotTickUs(header: Pick<CityTapeHeader, 'serverTickUs'>): number {
+  return header.serverTickUs ?? LEGACY_SNAPSHOT_TICK_US;
 }
 
 /** One rendered frame on the recording machine: when, and what it cost there. */
@@ -504,6 +524,7 @@ class CityTapeRecorder {
         wallClockOriginMs: performance.timeOrigin + clockOriginMs,
         ...(pairing ? { pairing } : {}),
         client: clientBuild(),
+        serverTickUs: SERVER_TICK_US,
       },
       times: Float64Array.from(this.times),
       packets: this.packets,

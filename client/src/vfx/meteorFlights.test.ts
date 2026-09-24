@@ -9,6 +9,7 @@ import {
   meteorFlights,
   meteorPositionAt,
   meteorVelocityAt,
+  METEOR_STEP_S,
   registerMeteorFlight,
   type MeteorLaunchedPacket,
 } from './meteorFlights';
@@ -79,17 +80,36 @@ describe('meteorFlights', () => {
     expect(decodeMeteorLaunched(other)).toBeNull();
   });
 
-  it('draws the arc through the aimed point and holds it there', () => {
+  it('draws the arc to the aimed point, as the server steps it, and holds it there', () => {
     const target: [number, number, number] = [12, 3.5, -40];
     const flight = registerMeteorFlight(plan([300, 260, 80], target, 3.1), (us) => us / 1000);
     const at = meteorPositionAt(flight, 3.1, [0, 0, 0]);
-    for (let i = 0; i < 3; i += 1) expect(at[i]).toBeCloseTo(target[i], 3);
+    // Semi-implicit Euler lands g*dt*T/2 below the closed-form parabola's aim.
+    expect(at[0]).toBeCloseTo(target[0], 3);
+    expect(at[1]).toBeCloseTo(target[1] - 0.5 * G * METEOR_STEP_S * 3.1, 3);
+    expect(at[2]).toBeCloseTo(target[2], 3);
     expect(meteorPositionAt(flight, 0, [0, 0, 0])).toEqual([300, 260, 80]);
     // Past the flight time it stays put, and stops moving.
     expect(meteorPositionAt(flight, 9, [0, 0, 0])).toEqual(at);
     expect(meteorVelocityAt(flight, 9, [0, 0, 0])).toEqual([0, 0, 0]);
     // Mid-flight it is descending.
     expect(meteorVelocityAt(flight, 3, [0, 0, 0])[1]).toBeLessThan(0);
+  });
+
+  // The server's ball is stepped by PhysX with semi-implicit Euler at the
+  // 60 Hz tick (velocity += g dt, then position += velocity dt). The closed-form
+  // parabola sat 0.21 m p50 / 0.27 m max off every streamed in-flight sample of
+  // the 2026-09-24 systematic run; the arc is drawn where the rock really is.
+  it('follows the server integrator tick by tick, not the closed-form parabola', () => {
+    const flight = registerMeteorFlight(plan([300, 260, 80], [12, 3.5, -40], 3.1), (us) => us / 1000);
+    const pos: [number, number, number] = [...flight.start];
+    const vel: [number, number, number] = [...flight.velocity];
+    for (let tick = 1; tick <= 180; tick += 1) {
+      vel[1] -= flight.gravityMs2 * METEOR_STEP_S;
+      for (let axis = 0; axis < 3; axis += 1) pos[axis] += vel[axis] * METEOR_STEP_S;
+      const drawn = meteorPositionAt(flight, tick * METEOR_STEP_S, [0, 0, 0]);
+      for (let axis = 0; axis < 3; axis += 1) expect(drawn[axis]).toBeCloseTo(pos[axis], 3);
+    }
   });
 
   it('maps the launch onto the local clock and forgets landed flights', () => {

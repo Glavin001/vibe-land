@@ -73,6 +73,22 @@ function varyingSends(): number[] {
 }
 const varying: Trace = { sends: varyingSends(), latencyUs: (i) => 1_000 + (i % 7) * 1_500, wall: false };
 
+/**
+ * The 2026-09-24 quick 3-client bench's stall (c0, 70.8-71.7 s): 60 Hz, then
+ * 0.9 s at a third of the rate (ticks 55 ms apart), then 60 Hz again;
+ * wall-stamped, 1 ms one way.
+ */
+function stallThenResumeSends(): number[] {
+  const sends: number[] = [];
+  let t = 1e6;
+  for (let i = 0; i < 700; i += 1) {
+    sends.push(t);
+    t += i >= 240 && i < 256 ? 55_000 : TICK_US;
+  }
+  return sends;
+}
+const stallThenResume: Trace = { sends: stallThenResumeSends(), latencyUs: () => 1_000, wall: true };
+
 /** A seeded uniform generator (for iid netem-style jitter). */
 function uniform(seed: number): () => number {
   let s = seed >>> 0;
@@ -176,6 +192,22 @@ describe('TsServerClock', () => {
     }
   });
 
+  // With the rate measured over the whole 1 s window, the stall stayed in it
+  // for a second after the server was back at 60 Hz; the output, held to
+  // MAX_CATCH_UP times that low rate, fell behind the arriving snapshots:
+  // the render clock ran 194 ms behind the newest snapshot, and the own
+  // avatar, drawn at it, 1.9 m behind the server.
+  it('a server back at pace after a stall: the clock keeps up with the snapshots', () => {
+    const clock = new TsServerClock(60);
+    const frames = run(clock, stallThenResume);
+    expect(backwardSteps(frames)).toBe(0);
+    const resumeUs = stallThenResume.sends[256];
+    const after = frames.filter((f) => f.local > resumeUs && f.local < resumeUs + 1.5e6);
+    const worstBehind = Math.max(...after.map((f) => f.newest - f.now));
+    expect(worstBehind).toBeLessThan(45_000);
+    expect(clock.getRate()).toBeCloseTo(1, 2);
+  });
+
   it('the delay follows the inter-arrival distribution', () => {
     // 60 Hz sends; every 10th snapshot arrives 12 ms late (still in order).
     const clock = new TsServerClock(60);
@@ -257,6 +289,7 @@ describe('TsServerClock matches clock_sync.rs (WasmClockSync)', () => {
     ['20-60 Hz with stalls, wall stamps', { ...varying, wall: true }],
     ['90 +- 35 ms jitter, wall stamps', jittered(90_000, 35_000, 1_200, 3)],
     ['25 +- 8 ms jitter, wall stamps', jittered(25_000, 8_000, 1_200, 5)],
+    ['a stall, then 60 Hz again, wall stamps', stallThenResume],
   ];
   for (const [name, trace] of traces) {
     it(name, () => {

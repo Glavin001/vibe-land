@@ -193,8 +193,9 @@ for r in M:
 met = []
 for (body, lt), rs in sorted(by.items(), key=lambda kv: kv[0][1]):
     src = [r['source'] for r in rs]
-    backs, jumps, handovers = [], [], []
+    backs, jumps, handovers, gaps = [], [], [], []
     prev = prevd = None
+    last_back = False
     for i, r in enumerate(rs):
         if r['source'] == 'hidden':
             prev = None
@@ -204,14 +205,30 @@ for (body, lt), rs in sorted(by.items(), key=lambda kv: kv[0][1]):
         if prev:
             d = [p[k] - prev[1][k] for k in range(3)]
             dist = math.sqrt(sum(x * x for x in d))
-            if prevd and dist > 0.05:
+            stepped_back = False
+            # The step right after a backward one is not judged (it is the
+            # rock carrying on, or bouncing on; see report.py meteor_metrics).
+            if prevd and dist > 0.05 and not last_back:
                 pn = math.sqrt(sum(x * x for x in prevd))
                 along = sum(d[k] * prevd[k] for k in range(3)) / pn if pn > 0.05 else 0
                 if along < -0.3:
                     backs.append((round(tt, 2), round(-along, 1), r['source']))
+                    stepped_back = True
             if r['source'] != rs[i - 1]['source'] and rs[i - 1]['source'] != 'hidden':
                 handovers.append((rs[i - 1]['source'] + '>' + r['source'], round(dist, 1), round(tt, 2)))
+                if rs[i - 1]['source'] == 'arc' and r['source'] == 'body':
+                    # The discontinuity: the step less the body's own motion over
+                    # it (city-bench report.py meteor_metrics); without the body
+                    # columns, the body against the arc at the same render time.
+                    if r.get('body_x') and rs[i - 1].get('body_x'):
+                        bn = [float(r['body_' + c]) for c in 'xyz']
+                        bp = [float(rs[i - 1]['body_' + c]) for c in 'xyz']
+                        gaps.append(round(math.sqrt(sum((d[k] - (bn[k] - bp[k])) ** 2 for k in range(3))), 2))
+                    elif r.get('arc_x'):
+                        arc = [float(r['arc_x']), float(r['arc_y']), float(r['arc_z'])]
+                        gaps.append(round(math.sqrt(sum((p[k] - arc[k]) ** 2 for k in range(3))), 2))
             if dist > 0.05:
+                last_back = stepped_back
                 prevd = d
         prev = (tt, p)
     seq = [src[0]] + [s for i, s in enumerate(src[1:], 1) if s != src[i - 1]]
@@ -220,7 +237,8 @@ for (body, lt), rs in sorted(by.items(), key=lambda kv: kv[0][1]):
                 'source_switches': len(seq) - 1, 'backward_frames': len(backs), 'backward_total_m': round(sum(b[1] for b in backs), 1),
                 'max_backward_m': max([b[1] for b in backs], default=0),
                 'backward_in_arc_frames': sum(1 for b in backs if b[2] == 'arc'),
-                'arc_to_body_jump_m': [h[1] for h in handovers if h[0] == 'arc>body'],
+                'arc_to_body_jump_m': gaps,
+                'arc_to_body_frame_step_m': [h[1] for h in handovers if h[0] == 'arc>body'],
                 'hold_to_body_jumps_m': [h[1] for h in handovers if h[0] == 'hold>body'],
                 'body_lead_ms_p50': round(pct(bl, 50), 1) if bl else None})
 summary['meteors'] = met
@@ -228,7 +246,7 @@ summary['meteor_totals'] = {
     'meteors': len(met), 'all_with_backward_frames': sum(1 for m in met if m['backward_frames'] > 0),
     'backward_frames': sum(m['backward_frames'] for m in met), 'backward_frames_while_on_arc': sum(m['backward_in_arc_frames'] for m in met),
     'arc_only_meteors': [m['launch_t_s'] for m in met if set(m['sources']) <= {'arc', 'hidden'}],
-    'arc_to_body_jump_m_p50_max': [pct([j for m in met for j in m['arc_to_body_jump_m']], 50), max(j for m in met for j in m['arc_to_body_jump_m'])],
+    'arc_to_body_jump_m_p50_max': [pct([j for m in met for j in m['arc_to_body_jump_m']], 50), max((j for m in met for j in m['arc_to_body_jump_m']), default=0)],
     'hold_to_body_jumps': sum(len(m['hold_to_body_jumps_m']) for m in met),
 }
 
