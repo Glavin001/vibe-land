@@ -186,6 +186,22 @@ impl Scene {
             )
             .expect("cannonball launched");
     }
+
+    /// A meteor, as the server fires one: the production tuning's rock
+    /// (`MeteorTuning::from_env`, so `VIBE_CITY_METEOR_*` retunes it) from a
+    /// planned start with a solved velocity. Returns its id.
+    fn meteor(&mut self, start: Vec3, velocity: Vec3) -> u32 {
+        let tuning = crate::meteor::MeteorTuning::from_env();
+        self.arena
+            .launch_meteor(
+                nalgebra::Vector3::new(start.x, start.y, start.z),
+                nalgebra::Vector3::new(velocity.x, velocity.y, velocity.z),
+                tuning.radius_m,
+                tuning.mass_kg,
+                tuning.ttl_ticks,
+            )
+            .expect("meteor launched")
+    }
 }
 
 /// The engine's own zones for this tick (`VIBE_PHYSX_PROFILE=1`), largest
@@ -476,6 +492,29 @@ fn perf_bench() {
         }
         scene.markers = false;
         report("city_rubble_awake", &measured);
+    }
+
+    // The live play session's first two meteors (session 20260924-213925-ondf3t,
+    // launch ticks 18284 and 18718), replayed with their logged start and
+    // velocity: the first into structure 13, the second 434 ticks later into
+    // structure 9. Every tick from the first launch is measured, so the flight,
+    // the first contact and the recovery are all in the trace. The rock's size
+    // follows `VIBE_CITY_METEOR_*`; the velocity is the live one either way.
+    // `VIBE_PERF_METEOR_AFTER_TICKS` (default 600) is how long the second
+    // impact is followed.
+    if wanted("meteor") {
+        let mut scene = Scene::city();
+        scene.run(120);
+        let after: u32 = std::env::var("VIBE_PERF_METEOR_AFTER_TICKS").ok().and_then(|v| v.parse().ok()).unwrap_or(600);
+        scene.markers = std::env::var("VIBE_PERF_MARKERS").is_ok();
+        let first = scene.tick;
+        scene.meteor(Vec3::new(322.0575, 187.02917, 75.24434), Vec3::new(-122.439, -53.863_537, -9.726_216));
+        let mut ticks = scene.run(434);
+        scene.meteor(Vec3::new(-53.245_647, 237.35829, 349.71442), Vec3::new(11.497_002, -65.89396, -114.31002));
+        ticks.extend(scene.run(173 + after));
+        scene.markers = false;
+        eprintln!("METEOR {{\"first_launch_tick\":{first},\"second_launch_tick\":{}}}", first + 434);
+        report("meteor_pair", &ticks);
     }
 
     if wanted("demolition") {

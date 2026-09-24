@@ -50,6 +50,21 @@ charts come from `svgplot.py` (no matplotlib).
 | `run-replay-perf.sh`, `replay-perf.mjs` | `replay_perf_<label>.json` | Server-less replay timing (GPU) |
 | `replay_compare.py` | `replay_compare_<label>.json`, `replay_vs_live_<label>.svg` | Live frames vs replay frames |
 | `replay-debug.mjs` | stdout | Loads `/cityreplay` offline and dumps status and console, for debugging the replay harness |
+| `meteor_impacts.py` | `impacts.csv`, `events.csv`, `impact_ticks.csv`, `aligned.csv`, `meteor_summary.json`, `server_timeline.svg`, `split_excess_vs_promos.svg`, `aligned_other_ticks.svg`, `client_frames_vs_server.svg` | Paired session bundles only. Finds each meteor's first contact: the first tick whose velocity change is not gravity alone. Groups impacts less than 60 ticks apart. Per impact it measures: bonds broken and new bodies (from the log and the tape's topology); awake bodies; tick cost, split into ticks that create bodies, ticks that only break bonds, and the rest; recovery (the trailing 30-tick mean under 16.7 ms for 60 ticks); sim rate; and the client's frames, snapshot gaps and bytes. Used for [the meteor impact analysis](../../../docs/meteor-impact-analysis-2026-09-24.md) |
+| `cannon_vs_meteor.py` | `cannon_vs_meteor.json`, `cannon_vs_meteor.svg` | Tick cost from the 300-tick `tick_ring` in a debug report's `server.json`, with new bodies per tick from a decoded 20 s tape beside the report. Compares cannonball and meteor windows from one server run |
+| `meteor-bench.sh` | `<out>/<arm>.log`, `<out>/<arm>/*.csv` | Uses the GPU. Runs perf_bench's `meteor` scenario (the 2026-09-24 session's first two meteors, replayed from their logged start and velocity) and `fracture_warm` under the machine-wide GPU lock. Arms: `timing`; `zones` (`VIBE_PHYSX_PROFILE=1`); `commits` (`CUMETAL_TRACE_COMMITS=1`); `small` (a 1 m rock); `nocorrect` (`VIBE_CITY_NATIVE_CORRECTION_LIMIT=0`) |
+
+To analyse meteor impacts in a paired session bundle (CPU only), first decode
+the bundle's `client.vltape` into `$OUT` with `decode.ts`, `dumpstats.ts` and
+`meteors.ts`. Then:
+
+```bash
+python3 scripts/perf/tape-analysis/meteor_impacts.py \
+  debug-reports/session-20260924-213925-ondf3t $OUT <server log> target/meteor-analysis/out
+python3 scripts/perf/tape-analysis/cannon_vs_meteor.py <server log> target/meteor-analysis/out \
+  "cannonballs=debug-reports/report-1790285739-city-default-tick6420:target/meteor-analysis/tape-1790285739" \
+  "first meteor=debug-reports/report-1790285874-city-default-tick14280:target/meteor-analysis/tape-1790285874"
+```
 
 `meteors.ts` and `replay-clock.ts` call the layer's own placement
 (`client/src/vfx/meteorPlacement.ts`), so they follow `MeteorLayer` without a
