@@ -1,14 +1,17 @@
 // /cityreplay: the render bench that draws what the game draws.
 //
 // A tape recorded on /city (RECORD TAPE in the panel) is played into a real
-// CityClient under the real renderer -- the same Canvas props, the same
-// RenderGovernor, the same CityEnvironment, chunk, dust and meteor layers,
-// the same stats panel -- with no server, no netcode and no physics. The
-// scene is deterministic, so REPLAY PERF BISECT can rewind the tape for every
-// configuration and measure the same seconds of the same storm each time.
+// CityClient and, for a v2 tape, a real netcode client, under the real
+// renderer -- the same Canvas props, the same RenderGovernor, the same
+// CityEnvironment, chunk, dust and meteor layers, the game's own player,
+// vehicle, dynamic-body and shot-trace renderers, the same stats panel --
+// with no server and no physics. The scene is deterministic, so REPLAY PERF
+// BISECT can rewind the tape for every configuration and measure the same
+// seconds of the same storm each time.
 //
 //   /cityreplay                     the last tape recorded in this browser
 //   /cityreplay?tape=<name>         a named one
+//   /cityreplay?src=<url>           a .vltape file by URL
 //   /cityreplay?cam=x,y,z,tx,ty,tz  starting camera pose (default: the spawn side)
 //   /cityreplay?loop=1              start over when the tape ends
 //   /cityreplay?auto=1              run the replay bisect on load and send it
@@ -40,6 +43,16 @@ import { setGovernorPaused, useDustFluid, useDustMode } from '../app/renderQuali
 import { CITY_WORLD_DOCUMENT } from '../world/cityWorld';
 import { decodeCityTape, listCityTapes, loadCityTape, type CityTape } from '../city/cityTape';
 import { createReplayPlayer, loadReplayAssets, type ReplayPlayer } from '../city/cityReplay';
+import { initSharedPhysics } from '../wasm/sharedPhysics';
+import {
+  BatteriesRenderer,
+  DynamicBodiesRenderer,
+  PLAYER_EYE_HEIGHT,
+  RemotePlayersRenderer,
+  VehiclesRenderer,
+} from '../scene/netEntityRenderers';
+import { ShotTracePool, createShotTracePool, updatePooledShotTraceVisuals } from '../scene/shotTraces';
+import { meteorDrawn, meteorFlights } from '../vfx/meteorFlights';
 import { formatPerfSweep, runReplaySweep } from '../city/perfSweep';
 import { notePerfSweep, sendDebugReport } from '../city/debugReport';
 
@@ -56,8 +69,163 @@ declare global {
       /** Jump to a tape time; backwards rewinds first. */
       seek: (ms: number) => Promise<void>;
       setSpeed: (speed: number) => void;
+      /** The recording's own clock (ms since it started): what `seek` minus `originMs` means. */
+      tapeTimeMs: () => number;
+      originMs: () => number;
+      /**
+       * What the replay drew last frame beyond the city: players, vehicles,
+       * dynamic bodies and meteors, with the tape time they were drawn at.
+       */
+      drawnWorld: () => ReplayDrawnWorld | null;
     };
   }
+}
+
+/** Positions of what the entity renderers placed last frame, for harnesses. */
+export interface ReplayDrawnWorld {
+  tapeMs: number;
+  playerId: number;
+  players: Array<{ id: number; position: [number, number, number] }>;
+  vehicles: Array<{ id: number; driverId: number; position: [number, number, number] }>;
+  bodies: Array<{ id: number; shapeType: number; position: [number, number, number] }>;
+  meteors: Array<{ bodyId: number; source: string; position: [number, number, number] | null; tapeMs: number | null }>;
+  shotTraces: number;
+  decodeErrors: number;
+  /** The replay's reconstructed clock state, and the recording client's at the nearest recorded frame. */
+  clock: { offsetUs: number; interpDelayMs: number; dynDelayMs: number };
+  recordedClock: { offsetUs: number; interpDelayMs: number; dynDelayMs: number } | null;
+}
+
+/** The recording client's clock state at the recorded frame nearest `tapeMs`. */
+function recordedClockAt(tape: CityTape, tapeMs: number): ReplayDrawnWorld['recordedClock'] {
+  const frames = tape.frames;
+  const clock = frames?.clock;
+  if (!frames || !clock || frames.times.length === 0) return null;
+  let lo = 0;
+  let hi = frames.times.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (frames.times[mid] < tapeMs) lo = mid + 1; else hi = mid;
+  }
+  const i = lo > 0 && Math.abs(frames.times[lo - 1] - tapeMs) < Math.abs(frames.times[lo] - tapeMs) ? lo - 1 : lo;
+  // The recording page's offset is against its own clock; the tape's starts
+  // at that page's clockOriginMs.
+  const originUs = (tape.header.clockOriginMs ?? 0) * 1000;
+  return { offsetUs: clock.offsetUs[i] + originUs, interpDelayMs: clock.interpDelayMs[i], dynDelayMs: clock.dynDelayMs[i] };
+}
+
+let lastDrawn: ReplayDrawnWorld | null = null;
+
+/**
+ * Everything the tape's netcode client knows, drawn by the game's own
+ * renderers on the tape clock: players (the recording player included, hidden
+ * while the camera is inside its head), vehicles, dynamic bodies and the shot
+ * trace pool. Runs after the ticker has dispatched the frame's packets.
+ */
+function ReplayNetLayers({ playerRef }: { playerRef: React.MutableRefObject<ReplayPlayer | null> }) {
+  const playersGroup = useRef<THREE.Group>(null);
+  const bodiesGroup = useRef<THREE.Group>(null);
+  const vehiclesGroup = useRef<THREE.Group>(null);
+  const batteriesGroup = useRef<THREE.Group>(null);
+  const tracePool = useRef(createShotTracePool());
+  const renderers = useMemo(() => ({
+    players: new RemotePlayersRenderer(),
+    bodies: new DynamicBodiesRenderer(),
+    vehicles: new VehiclesRenderer(),
+    batteries: new BatteriesRenderer(),
+  }), []);
+  const lastTapeMs = useRef<number | null>(null);
+  const settleUntil = useRef(0);
+  useEffect(() => () => renderers.players.dispose(), [renderers]);
+  useFrame(({ camera }, realDt) => {
+    const player = playerRef.current;
+    const world = player?.world ?? null;
+    if (!player || !world || !playersGroup.current || !bodiesGroup.current || !vehiclesGroup.current || !batteriesGroup.current) {
+      return;
+    }
+    const tapeMs = player.tapeTimeMs();
+    // Animation runs on the tape clock: still while paused, faster when fast.
+    const step = Math.min(0.1, Math.max(0, (tapeMs - (lastTapeMs.current ?? tapeMs)) / 1000));
+    // A character's pose only exists once its animation has advanced, so
+    // after a seek (or on a fresh page) the players get half a second of
+    // real time to settle into their poses before a pause freezes them.
+    const wallNow = performance.now();
+    if (tapeMs !== lastTapeMs.current) settleUntil.current = wallNow + 500;
+    const animationStep = step > 0 ? step : wallNow < settleUntil.current ? Math.min(0.1, realDt) : 0;
+    lastTapeMs.current = tapeMs;
+    const renderTimeUs = world.playerRenderTimeUs();
+    // The recording player's avatar would fill a camera that is following
+    // the recorded first-person view; it is drawn whenever the camera is not
+    // inside its head.
+    const hidden = new Set<number>();
+    const self = world.players.get(world.playerId);
+    if (self) {
+      const at = world.samplePlayer(world.playerId, renderTimeUs)?.position ?? self.position;
+      const dx = camera.position.x - at[0];
+      const dy = camera.position.y - (at[1] + PLAYER_EYE_HEIGHT);
+      const dz = camera.position.z - at[2];
+      if (dx * dx + dy * dy + dz * dz < 1.5 * 1.5) hidden.add(world.playerId);
+    }
+    renderers.players.update({
+      group: playersGroup.current,
+      players: world.players,
+      sample: (id, t) => world.samplePlayer(id, t),
+      renderTimeUs,
+      vehicles: world.vehicles,
+      sampleVehicle: (id, t) => world.sampleVehicle(id, t),
+      nowMs: tapeMs,
+      frameDelta: animationStep,
+      showDebugHelpers: false,
+      showPlayerIdLabels: false,
+      cosmeticDeathPhysicsEnabled: false,
+      hidden,
+    });
+    renderers.bodies.update(bodiesGroup.current, world.state.dynamicBodies, (id) => world.getRenderedDynamicBodyState(id));
+    renderers.batteries.update(batteriesGroup.current, world.batteries, tapeMs, null);
+    renderers.vehicles.update(vehiclesGroup.current, world.vehicles, step, (id, vs) => {
+      const sample = world.sampleVehicle(id, renderTimeUs);
+      return { position: sample?.position ?? vs.position, quaternion: sample?.quaternion ?? vs.quaternion, localDebug: null };
+    });
+    updatePooledShotTraceVisuals(world.shotTraces, tapeMs, tracePool.current);
+
+    const vector = (o: THREE.Object3D): [number, number, number] => [o.position.x, o.position.y, o.position.z];
+    lastDrawn = {
+      tapeMs,
+      playerId: world.playerId,
+      players: [...renderers.players.positions()].map(([id, position]) => ({ id, position })),
+      vehicles: [...renderers.vehicles.meshes].map(([id, mesh]) => ({
+        id,
+        driverId: world.vehicles.get(id)?.driverId ?? 0,
+        position: vector(mesh),
+      })),
+      bodies: [...renderers.bodies.meshes].map(([id, mesh]) => ({
+        id,
+        shapeType: world.state.dynamicBodies.get(id)?.shapeType ?? -1,
+        position: vector(mesh),
+      })),
+      meteors: meteorFlights(tapeMs).map((flight) => {
+        const drawn = meteorDrawn(flight.bodyId);
+        return { bodyId: flight.bodyId, source: drawn?.source ?? 'none', position: drawn?.position ?? null, tapeMs: drawn?.atMs ?? null };
+      }),
+      shotTraces: world.shotTraces.length,
+      decodeErrors: world.decodeErrors,
+      clock: {
+        offsetUs: world.client.serverClock.getOffsetUs(),
+        interpDelayMs: world.client.interpolationDelayMs,
+        dynDelayMs: world.client.dynamicBodyInterpolationDelayMs,
+      },
+      recordedClock: recordedClockAt(player.tape, tapeMs),
+    };
+  }, -40);
+  return (
+    <>
+      <group ref={playersGroup} name="replay-players" />
+      <group ref={bodiesGroup} name="replay-dynamic-bodies" />
+      <group ref={vehiclesGroup} name="replay-vehicles" />
+      <group ref={batteriesGroup} name="replay-batteries" />
+      <ShotTracePool poolRef={tracePool} />
+    </>
+  );
 }
 
 function parseCamera(): { position: [number, number, number]; target: [number, number, number] } {
@@ -87,6 +255,7 @@ function ReplayCamera({
   /** Follow the camera the tape recorded; any drag or key hands control to you. */
   follow: boolean;
   tape: CityTape | null;
+  /** The recording's clock, which the frame samples are on. */
   timeMs: () => number;
   onDetach: () => void;
 }) {
@@ -329,6 +498,17 @@ export function CityReplayPage() {
 
   useEffect(() => {
     void listCityTapes().then(setTapes).catch(() => {});
+    const src = params.get('src');
+    if (src) {
+      // A tape file by URL: one the server stored, or a harness's.
+      void fetch(src)
+        .then(async (response) => {
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          setTape(decodeCityTape(new Uint8Array(await response.arrayBuffer())));
+        })
+        .catch((error) => setStatus(`tape ${src} unreadable: ${String(error)}`));
+      return;
+    }
     void loadCityTape(params.get('tape') ?? 'last')
       .then((loaded) => {
         if (!loaded) setStatus('no tape in this browser — press RECORD TAPE on /city first, or drop a .vltape here');
@@ -342,8 +522,12 @@ export function CityReplayPage() {
     if (!tape) return;
     let cancelled = false;
     setStatus(`fetching manifest ${tape.header.manifestHash.slice(0, 8)}…`);
-    void loadReplayAssets(tape)
-      .then(async (assets) => {
+    // The server-clock estimator the live game runs is the shared-physics
+    // wasm's; without it the tape's clock would be reconstructed differently.
+    void Promise.all([loadReplayAssets(tape), initSharedPhysics().catch((error) => {
+      console.warn('[cityreplay] shared physics wasm unavailable; clock estimator falls back to TS', error);
+    })])
+      .then(async ([assets]) => {
         if (cancelled) return;
         const mount = async () => {
           const next = await createReplayPlayer(tape, assets);
@@ -386,6 +570,9 @@ export function CityReplayPage() {
             current.speed = speed;
             if (wasPlaying) current.play();
           },
+          tapeTimeMs: () => playerRef.current?.tapeTimeMs() ?? 0,
+          originMs: () => playerRef.current?.originMs ?? 0,
+          drawnWorld: () => lastDrawn,
         };
         setStatus('');
         if (params.get('auto') === '1' && !autoRan.current) {
@@ -477,7 +664,7 @@ export function CityReplayPage() {
           pose={pose}
           follow={followCamera && !!tape?.frames && tape.frames.camera.some((v) => v !== 0)}
           tape={tape}
-          timeMs={() => playerRef.current?.timeMs() ?? 0}
+          timeMs={() => playerRef.current?.tapeTimeMs() ?? 0}
           onDetach={detach}
         />
         <ReplayTicker playerRef={playerRef} />
@@ -494,10 +681,16 @@ export function CityReplayPage() {
             bury the towers and cost a terrain the game never pays for. */}
         <WorldTerrain world={CITY_WORLD_DOCUMENT} />
         <CityChunksLayer getCityClient={() => playerRef.current?.client ?? null} />
-        <MeteorLayer getRuntime={() => null} />
+        <ReplayNetLayers playerRef={playerRef} />
+        {/* The meteors on the tape clock: the streamed bodies when the tape
+            has the game stream, the launch arcs on a city-only tape. */}
+        <MeteorLayer
+          getRuntime={() => playerRef.current?.world ?? null}
+          getNowMs={() => playerRef.current?.tapeTimeMs() ?? performance.now()}
+        />
         <DustLayer
           getCityClient={() => playerRef.current?.client ?? null}
-          getDynamicBodies={() => null}
+          getDynamicBodies={() => playerRef.current?.world?.state.dynamicBodies.values() ?? null}
           mode={dustMode}
           fluid={dustFluid}
           fogColor={resolveFogColor(fog.color ?? undefined, fog.weather)}
@@ -531,6 +724,7 @@ export function CityReplayPage() {
           <span>
             {tape.header.capturedAt.slice(0, 19)} · {Math.round(tape.header.durationMs / 1000)} s ·{' '}
             {(tape.header.bytes / 1e6).toFixed(1)} MB · {tape.header.packets} packets
+            {tape.header.version === 2 ? ' · full world' : ' · city only (v1)'}
           </span>
         )}
         {player && (
@@ -567,7 +761,12 @@ export function CityReplayPage() {
             <label>
               <input type="checkbox" defaultChecked={player.loop} onChange={(event) => { player.loop = event.target.checked; }} /> loop
             </label>
-            <FrameStrip tape={tape!} timeMs={Math.min(clock.t, player.durationMs())} onSeek={(ms) => void window.__VIBE_REPLAY__?.seek(ms)} />
+            {/* The strip is on the recording's clock; the player's is from the bootstrap. */}
+            <FrameStrip
+              tape={tape!}
+              timeMs={player.originMs + Math.min(clock.t, player.durationMs())}
+              onSeek={(ms) => void window.__VIBE_REPLAY__?.seek(ms - player.originMs)}
+            />
             <button
               type="button"
               style={{ ...button, background: followCamera ? '#1a3a1a' : '#222' }}

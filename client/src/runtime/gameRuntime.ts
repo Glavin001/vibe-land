@@ -1286,10 +1286,12 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
             this.callbacks.onSnapshot?.();
           }
         },
+        // Every inbound packet, city or not, onto the tape when one is
+        // recording (and the session-state kinds always, for the next tape's
+        // prelude); /cityreplay routes each one back through these clients.
+        onRawPacket: (bytes, channel) => cityTapeRecorder.pushRaw(bytes, channel),
+        onRttSample: (rttMs) => cityTapeRecorder.noteRtt(rttMs),
         onCityPacket: (bytes) => {
-          // Every inbound city packet, launches included, onto the tape when
-          // one is recording; /cityreplay plays it back into a CityClient.
-          cityTapeRecorder.push(bytes);
           if (bytes.length > 1 && bytes[0] === PKT_METEOR_LAUNCHED) {
             // A launch, not geometry: the layer that draws meteors reads the
             // store directly, the way the dust reads its shots.
@@ -1344,6 +1346,16 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
       this.state.remotePlayers = client.remotePlayers;
       this.state.dynamicBodies = client.dynamicBodies;
       this.syncState();
+      cityTapeRecorder.describeSession({
+        transport: () => client.transport,
+        // What the renderer draws at, per recorded frame: the replay's own
+        // clock reconstruction is checked against it.
+        clock: () => ({
+          offsetUs: client.serverClock.getOffsetUs(),
+          interpDelayMs: client.interpolationDelayMs,
+          dynDelayMs: client.dynamicBodyInterpolationDelayMs,
+        }),
+      });
 
       const pendingPackets = this.pendingWorldPackets.splice(0);
       for (const packet of pendingPackets) {
@@ -1385,6 +1397,7 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
 
   disconnect(): void {
     hotspotWatch.disarm();
+    cityTapeRecorder.describeSession(null);
     this.client?.disconnect();
     this.client = null;
     this.prediction?.dispose();
@@ -1904,19 +1917,7 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
     if (proxyBody && this.hasRecentDynamicBodyInteraction(id)) {
       return proxyBody;
     }
-    const remoteSample = this.sampleRemoteDynamicBody(id, this.getDynamicBodyRenderTimeUs());
-    if (remoteSample) {
-      return {
-        id,
-        shapeType: remoteSample.shapeType,
-        position: remoteSample.position,
-        quaternion: remoteSample.quaternion,
-        halfExtents: remoteSample.halfExtents,
-        velocity: remoteSample.velocity,
-        angularVelocity: remoteSample.angularVelocity,
-      };
-    }
-    return this.dynamicBodies.get(id) ?? null;
+    return this.client?.getInterpolatedDynamicBodyState(id) ?? this.dynamicBodies.get(id) ?? null;
   }
 
   listDynamicBodyProxyStates(): Array<{

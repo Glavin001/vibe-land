@@ -1,8 +1,5 @@
 import {
-  PKT_PING,
   bytesFromHex,
-  decodeServerDatagramPacket,
-  decodeServerReliablePacket,
   encodeBlockEditPacket,
   encodeClientHello,
   encodeFirePacket,
@@ -23,7 +20,7 @@ import {
   type ServerReliablePacket,
   type WelcomePacket,
 } from './protocol';
-import { isCityPacketKind } from '../city/wire';
+import { routeInboundPacket, type RawPacketListener } from './inbound';
 
 type WebTransportHash = {
   algorithm: string;
@@ -86,6 +83,8 @@ export type WebTransportGameClientOptions = {
   onDatagramPacket?: (packet: ServerDatagramPacket, receivedLocalUs: number) => void;
   /** Raw city destruction packets (kinds 119-122), reliable or datagram. */
   onCityPacket?: (bytes: Uint8Array) => void;
+  /** Every inbound packet, city or not, as received and before routing (the city tape). */
+  onRawPacket?: RawPacketListener;
   onWelcome?: (packet: WelcomePacket) => void;
   onClose?: (reason?: unknown) => void;
 };
@@ -380,11 +379,14 @@ export class WebTransportGameClient {
           const parsed = parseFramedReliablePackets(buffer, value);
           buffer = parsed.buffer;
           for (const packetBytes of parsed.packets) {
-            if (packetBytes.length > 0 && isCityPacketKind(packetBytes[0])) {
+            this.options.onRawPacket?.(packetBytes, 'wt-reliable');
+            const routed = routeInboundPacket(packetBytes, 'wt-reliable');
+            if (routed.route === 'city') {
               this.options.onCityPacket?.(packetBytes);
               continue;
             }
-            const packet = decodeServerReliablePacket(packetBytes);
+            if (routed.route !== 'game') continue;
+            const packet = routed.packet as ServerReliablePacket;
             if (packet.type === 'welcome') {
               console.info('[webtransport] Welcome received — playerId:', packet.playerId, {
                 simHz: packet.simHz,
@@ -414,19 +416,21 @@ export class WebTransportGameClient {
           if (done) break;
           if (!value) continue;
 
+          this.options.onRawPacket?.(value, 'wt-datagram');
+          const routed = routeInboundPacket(value, 'wt-datagram');
           // Auto-respond to server-initiated latency pings (PKT_PING = 110)
-          if (value[0] === PKT_PING && value.length >= 5) {
+          if (routed.route === 'ping') {
             const nonce = new DataView(value.buffer, value.byteOffset, value.byteLength).getUint32(1, true);
             void this.datagramWriter?.write(encodePingPacket(nonce))?.catch(() => {});
             continue;
           }
 
-          if (isCityPacketKind(value[0])) {
+          if (routed.route === 'city') {
             this.options.onCityPacket?.(value);
             continue;
           }
 
-          const packet = decodeServerDatagramPacket(value);
+          const packet = routed.packet as ServerDatagramPacket;
           this.options.onDatagramPacket?.(packet, performance.now() * 1000);
         }
       } catch (error) {

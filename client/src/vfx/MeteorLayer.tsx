@@ -14,7 +14,7 @@ import * as THREE from 'three';
 
 import { renderStats } from '../city/renderStats';
 import { registerPipelineStage } from '../graphics/framePipelineStages';
-import type { GameRuntimeClient } from '../runtime/gameRuntime';
+import type { DynamicBodyStateMeters } from '../net/protocol';
 import { MeteorFireStage, type MeteorFireInstance } from './MeteorFireStage';
 import {
   meteorFlights,
@@ -32,8 +32,28 @@ import {
   type MeteorSurfaceUniforms,
 } from './meteorRock';
 
+/**
+ * Where the streamed meteor bodies come from: the live game runtime, or the
+ * netcode client /cityreplay runs on a tape.
+ */
+export type MeteorBodySource = {
+  state: {
+    dynamicBodies: Map<number, DynamicBodyStateMeters>;
+    dynamicBodyInterpolationDelayMs: number;
+  };
+  getDynamicBodyRenderTimeUs(): number;
+  getDynamicBodyObservedAgeMs(id: number): number | null;
+  getRenderedDynamicBodyState(id: number): DynamicBodyStateMeters | null;
+};
+
 type MeteorLayerProps = {
-  getRuntime: () => GameRuntimeClient | null;
+  getRuntime: () => MeteorBodySource | null;
+  /**
+   * The clock flights are registered on, ms; `performance.now()` unless
+   * given. The replay runs meteors on the tape's clock, so they pause, slow
+   * down and speed up with it.
+   */
+  getNowMs?: () => number;
 };
 
 /**
@@ -78,9 +98,10 @@ const scratchSpin = new THREE.Quaternion();
 const scratchInverse = new THREE.Quaternion();
 const BUOYANCY = new THREE.Vector3(0, 3, 0);
 
-export function MeteorLayer({ getRuntime }: MeteorLayerProps) {
+export function MeteorLayer({ getRuntime, getNowMs }: MeteorLayerProps) {
   const groupRef = useRef<THREE.Group>(null);
   const live = useRef(new Map<number, LiveMeteor>());
+  const lastNowMs = useRef<number | null>(null);
   const geometry = useMemo(() => buildMeteorGeometry(42, 24), []);
   const stage = useMemo(() => new MeteorFireStage(), []);
   const lights = useMemo(
@@ -119,11 +140,14 @@ export function MeteorLayer({ getRuntime }: MeteorLayerProps) {
   useFrame(({ camera }, dt) => {
     const group = groupRef.current;
     if (!group) return;
-    const nowMs = performance.now();
+    const nowMs = getNowMs ? getNowMs() : performance.now();
     const runtime = getRuntime();
     const flights = meteorFlights(nowMs);
     const meteors = live.current;
-    const step = Math.min(0.1, Math.max(0, dt));
+    // On a given clock the animation steps with it: still while it is paused.
+    const clockDt = getNowMs ? (nowMs - (lastNowMs.current ?? nowMs)) / 1000 : dt;
+    lastNowMs.current = nowMs;
+    const step = Math.min(0.1, Math.max(0, clockDt));
 
     // The arc is evaluated at the SERVER time the body interpolator renders
     // at, in that time base, with no mapping through the local clock: the
@@ -141,7 +165,7 @@ export function MeteorLayer({ getRuntime }: MeteorLayerProps) {
       let meteor = meteors.get(flight.bodyId);
       if (!meteor || meteor.flight !== flight) {
         if (meteor) retire(meteor);
-        meteor = spawn(flight, geometry);
+        meteor = spawn(flight, geometry, nowMs);
         group.add(meteor.group);
         meteors.set(flight.bodyId, meteor);
       }
@@ -282,7 +306,7 @@ export function MeteorLayer({ getRuntime }: MeteorLayerProps) {
   return <group ref={groupRef} name="meteors" />;
 }
 
-function spawn(flight: MeteorFlight, geometry: THREE.BufferGeometry): LiveMeteor {
+function spawn(flight: MeteorFlight, geometry: THREE.BufferGeometry, nowMs: number): LiveMeteor {
   const { material, uniforms } = buildMeteorMaterial();
   uniforms.uSeed.value = 42 + flight.seed * 7.3;
   const rock = new THREE.Mesh(geometry, material);
@@ -321,7 +345,7 @@ function spawn(flight: MeteorFlight, geometry: THREE.BufferGeometry): LiveMeteor
     spin: new THREE.Quaternion(),
     spinAxis,
     airSpeed: 0,
-    lastBurningMs: performance.now(),
+    lastBurningMs: nowMs,
     intensity: 0,
     fire,
     distanceSq: Infinity,

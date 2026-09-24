@@ -2,6 +2,7 @@ import { CITY_WIRE_VERSION } from '../city/wire';
 import { GameSocket } from './gameSocket';
 import { NetDebugTelemetry, type LocalShotTelemetry } from './debugTelemetry';
 import { WebTransportGameClient, type SessionConfigResponse } from './webTransportClient';
+import type { RawPacketListener } from './inbound';
 import { setTransportNote } from '../app/connectPhase';
 import { PacketImpairment } from '../loadtest/networkModel';
 import { resolveNetlabImpairment } from '../netlab/impairment';
@@ -68,6 +69,25 @@ export type NetcodeClientConfig = {
   onPacket?: (packet: ServerPacket) => void;
   /** Raw city destruction packets (kinds 119-122). WebTransport only. */
   onCityPacket?: (bytes: Uint8Array) => void;
+  /**
+   * Every inbound packet as the transport received it, with its channel,
+   * before any routing or decoding: what a city tape records.
+   */
+  onRawPacket?: RawPacketListener;
+  /** Each WebSocket round-trip sample the server clock is fed (the tape keeps them). */
+  onRttSample?: (rttMs: number) => void;
+  /**
+   * The local clock in ms, `performance.now()` unless given. /cityreplay runs
+   * a client on the tape's clock, so arrivals, clock-offset samples and render
+   * times all live on the time base the recording had.
+   */
+  nowMs?: () => number;
+  /**
+   * Spectating (the tape replay): the player the snapshots are about is drawn
+   * like any other player, from its interpolated snapshots, instead of being
+   * left to local prediction and a first-person camera.
+   */
+  spectateLocalPlayer?: boolean;
 };
 
 /**
@@ -192,6 +212,7 @@ export class NetcodeClient {
     };
   }
   private config: NetcodeClientConfig;
+  private readonly nowMs: () => number;
   private closedByClient = false;
 
   // Rolling accumulators for 1Hz debug stats report to server
@@ -209,6 +230,7 @@ export class NetcodeClient {
 
   constructor(config: NetcodeClientConfig) {
     this.config = config;
+    this.nowMs = config.nowMs ?? (() => performance.now());
     this.interpolator = new PlayerInterpolator();
     this.serverClock = new ServerClockEstimator();
     this.vehicleInterpolator = new VehicleInterpolator();
@@ -261,14 +283,15 @@ export class NetcodeClient {
     this.socket = new GameSocket({
       onPacket: (packet: ServerPacket) => this.deliverNetworkPacket(packet, 'websocket'),
       onCityPacket: (bytes) => this.deliverCityPacket(bytes),
+      onRawPacket: this.config.onRawPacket,
       onClose: (event) => {
         this.notifyDisconnect(
           `websocket closed (code=${event.code}${event.reason ? `, reason=${event.reason}` : ''})`,
         );
       },
       onRttUpdated: (rttMs: number) => {
-        this.rttMs = rttMs;
-        this.serverClock.observeRtt(rttMs);
+        this.config.onRttSample?.(rttMs);
+        this.observeRtt(rttMs);
       },
     });
     this.socket.connect(wsUrl);
@@ -309,6 +332,7 @@ export class NetcodeClient {
           onReliablePacket: (packet) => this.deliverNetworkPacket(packet as ServerPacket, 'wt-reliable'),
           onDatagramPacket: (packet) => this.deliverNetworkPacket(packet as ServerPacket, 'wt-datagram'),
           onCityPacket: (bytes) => this.deliverCityPacket(bytes),
+          onRawPacket: this.config.onRawPacket,
           onClose: (reason) => { this.notifyDisconnect(describeDisconnectReason('webtransport', reason)); },
         });
         this.wtClient = wt;
@@ -348,6 +372,12 @@ export class NetcodeClient {
 
     console.info('[netcode] connecting via WebSocket (TCP):', wsUrl);
     this.connect(wsUrl);
+  }
+
+  /** A round-trip sample for the server clock (WebSocket pongs; a tape's RTT records). */
+  observeRtt(rttMs: number): void {
+    this.rttMs = rttMs;
+    this.serverClock.observeRtt(rttMs);
   }
 
   ping(): void {
@@ -520,7 +550,7 @@ export class NetcodeClient {
     source: 'wt-datagram' | 'wt-reliable' | 'websocket' | 'local' | 'direct',
   ): void {
     this.latestServerTick = packet.serverTick;
-    this.serverClock.observe(packet.serverTimeUs, performance.now() * 1000);
+    this.serverClock.observe(packet.serverTimeUs, this.nowMs() * 1000);
     const adaptiveDelayMs = this.serverClock.getInterpolationDelayMs();
     if (adaptiveDelayMs > 0) {
       this.interpolationDelayMs = Math.round(
@@ -578,6 +608,9 @@ export class NetcodeClient {
         hp: meters.hp,
         flags: localState.flags,
       });
+    }
+    if (this.config.spectateLocalPlayer) {
+      this.spectateLocal(packet.serverTimeUs, localState, !this.usesThinAuthoritativeMovement);
     }
     const localPlayerInVehicle = (localState.flags & FLAG_IN_VEHICLE) !== 0;
     if (!localPlayerInVehicle) {
@@ -794,6 +827,33 @@ export class NetcodeClient {
     }
   }
 
+  /**
+   * The spectated player into the remote set: interpolated (unless thin
+   * authoritative movement has already pushed this sample) and listed.
+   */
+  private spectateLocal(serverTimeUs: number, state: NetPlayerState, push: boolean): void {
+    const m = netStateToMeters(state);
+    if (push) {
+      this.interpolator.push(this.playerId, {
+        serverTimeUs,
+        position: m.position,
+        velocity: m.velocity,
+        yaw: m.yaw,
+        pitch: m.pitch,
+        hp: m.hp,
+        flags: state.flags,
+      });
+    }
+    this.remotePlayers.set(this.playerId, {
+      id: this.playerId,
+      position: m.position,
+      yaw: m.yaw,
+      pitch: m.pitch,
+      hp: m.hp,
+      flags: state.flags,
+    });
+  }
+
   private predictSphereQuaternion(
     bodyId: number,
     serverTimeUs: number,
@@ -877,7 +937,7 @@ export class NetcodeClient {
           break;
         }
         this.latestServerTick = packet.serverTick;
-        this.serverClock.observe(packet.serverTimeUs, performance.now() * 1000);
+        this.serverClock.observe(packet.serverTimeUs, this.nowMs() * 1000);
         // Use adaptive interpolation delay from WASM when available (jitter*4 + 5ms).
         const adaptiveDelayMs = this.serverClock.getInterpolationDelayMs();
         if (adaptiveDelayMs > 0) {
@@ -933,6 +993,9 @@ export class NetcodeClient {
             this.localPlayerHp = ps.hp;
             this.localPlayerFlags = ps.flags;
             localPlayerState = ps;
+            if (this.config.spectateLocalPlayer) {
+              this.spectateLocal(packet.serverTimeUs, ps, !this.usesThinAuthoritativeMovement);
+            }
             if (this.usesThinAuthoritativeMovement) {
               const m = netStateToMeters(ps);
               this.interpolator.push(ps.id, {
@@ -1045,7 +1108,7 @@ export class NetcodeClient {
   }
 
   /** Get the render time for interpolating remote players. */
-  getRenderTimeUs(localTimeUs?: number): number {
+  getRenderTimeUs(localTimeUs = this.nowMs() * 1000): number {
     return this.serverClock.renderTimeUs(
       this.interpolationDelayMs * 1000,
       localTimeUs,
@@ -1064,7 +1127,7 @@ export class NetcodeClient {
     return this.vehicleInterpolator.sample(id, t);
   }
 
-  getVehicleObservedAgeMs(id: number, localTimeUs = performance.now() * 1000): number | null {
+  getVehicleObservedAgeMs(id: number, localTimeUs = this.nowMs() * 1000): number | null {
     const sampleServerTimeUs = this.vehicleServerTimeUs.get(id);
     if (sampleServerTimeUs == null) return null;
     return Math.max(0, (this.serverClock.serverNowUs(localTimeUs) - sampleServerTimeUs) / 1000);
@@ -1075,14 +1138,35 @@ export class NetcodeClient {
     return this.dynamicBodyInterpolator.sample(id, t);
   }
 
-  getDynamicBodyRenderTimeUs(localTimeUs?: number): number {
+  /**
+   * A streamed body as a spectator sees it: interpolated at the dynamic-body
+   * render time, else its latest state. The live runtime draws this for any
+   * body the local player is not interacting with; the tape replay, for all.
+   */
+  getInterpolatedDynamicBodyState(id: number): DynamicBodyStateMeters | null {
+    const sample = this.sampleRemoteDynamicBody(id, this.getDynamicBodyRenderTimeUs());
+    if (sample) {
+      return {
+        id,
+        shapeType: sample.shapeType,
+        position: sample.position,
+        quaternion: sample.quaternion,
+        halfExtents: sample.halfExtents,
+        velocity: sample.velocity,
+        angularVelocity: sample.angularVelocity,
+      };
+    }
+    return this.dynamicBodies.get(id) ?? null;
+  }
+
+  getDynamicBodyRenderTimeUs(localTimeUs = this.nowMs() * 1000): number {
     return this.serverClock.renderTimeUs(
       this.dynamicBodyInterpolationDelayMs * 1000,
       localTimeUs,
     );
   }
 
-  getDynamicBodyObservedAgeMs(id: number, localTimeUs = performance.now() * 1000): number | null {
+  getDynamicBodyObservedAgeMs(id: number, localTimeUs = this.nowMs() * 1000): number | null {
     const sampleServerTimeUs = this.dynamicBodyServerTimeUs.get(id);
     if (sampleServerTimeUs == null) return null;
     return Math.max(0, (this.serverClock.serverNowUs(localTimeUs) - sampleServerTimeUs) / 1000);

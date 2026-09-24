@@ -39,6 +39,7 @@ import { pushDebugDustSource } from './vfx/dustDebug';
 let dustBurstSerial = 1;
 import { setCapturePose } from './scene/captureCamera';
 import { cityTapeRecorder, saveCityTape } from './city/cityTape';
+import { uploadTape } from './city/hotspotWatch';
 import {
   formatPerfSweepMobile,
   runPerfSweep,
@@ -143,6 +144,27 @@ export interface GameE2ESnapshot {
 
   // Destructible city (null outside city-* matches)
   city: CityE2EStats | null;
+}
+
+/** Positions of what the world renderers drew; /cityreplay reports the same shape. */
+export interface E2EDrawnWorld {
+  /** The frame these were drawn in, on the tape clock while a tape records (else null). */
+  tapeMs: number | null;
+  /** That frame's performance.now(). */
+  atMs: number;
+  playerId: number;
+  local: [number, number, number] | null;
+  players: Array<{ id: number; position: [number, number, number] }>;
+  vehicles: Array<{ id: number; driverId: number; position: [number, number, number] }>;
+  bodies: Array<{ id: number; shapeType: number; position: [number, number, number] }>;
+  meteors: Array<{ bodyId: number; source: string; position: [number, number, number] | null; tapeMs: number | null }>;
+}
+
+let drawnWorldSource: (() => Omit<E2EDrawnWorld, 'meteors' | 'tapeMs'>) | null = null;
+
+/** GameWorld registers what its renderers drew; null on unmount. */
+export function setE2EDrawnWorldSource(source: (() => Omit<E2EDrawnWorld, 'meteors' | 'tapeMs'>) | null): void {
+  drawnWorldSource = source;
 }
 
 export interface CityE2EStats {
@@ -472,8 +494,19 @@ export interface VibeE2EBridge {
   runStormSweep(rounds?: number, windowMs?: number): Promise<{ text: string; report: unknown }>;
   /** /cityreplay only: the same rows of the same tape, one configuration each. */
   runReplaySweep(windowMs?: number, window?: { fromMs: number; toMs: number }): Promise<{ text: string; report: unknown }>;
-  /** Record the city stream for `seconds`, save it as the last tape, return its header. */
-  recordTape(seconds: number): Promise<unknown>;
+  /**
+   * Record every inbound channel for `seconds`, save it as the last tape,
+   * return its header (plus the server folder when `upload` sends it there).
+   */
+  recordTape(seconds: number, options?: { upload?: boolean }): Promise<unknown>;
+  /** While a tape records: ms since it started, the clock the tape's times are on; else null. */
+  tapeElapsedMs(): number | null;
+  /**
+   * What the game's entity renderers placed last frame -- dynamic bodies,
+   * vehicles, other players -- plus the local player and the meteors, for
+   * comparing a session with its replay.
+   */
+  drawnWorld(): E2EDrawnWorld | null;
 
   /** The phone-screen summary of a report, as an array of lines. */
   formatPerfSweepMobile(report: unknown): string[];
@@ -727,14 +760,35 @@ const bridge: VibeE2EBridge = {
     const report = await runReplaySweep(windowMs, window_);
     return { text: formatPerfSweep(report), report };
   },
-  recordTape: async (seconds: number) => {
+  recordTape: async (seconds: number, options?: { upload?: boolean }) => {
     const session = cityTapeRecorder.start('e2e');
     if (session === 0) return null;
     await new Promise((resolve) => window.setTimeout(resolve, seconds * 1000));
     const tape = cityTapeRecorder.stop(session);
     if (!tape) return null;
     await saveCityTape(`tape-${tape.header.capturedAt.replace(/[:.]/g, '-')}`, tape);
-    return tape.header;
+    if (!options?.upload) return tape.header;
+    const upload = await uploadTape(tape.header.matchId, tape);
+    return { ...tape.header, uploadFolder: upload.folder };
+  },
+  tapeElapsedMs: () => cityTapeRecorder.elapsedMs(),
+  drawnWorld: () => {
+    const drawn = drawnWorldSource?.();
+    if (!drawn) return null;
+    const now = performance.now();
+    return {
+      ...drawn,
+      tapeMs: cityTapeRecorder.elapsedMs(drawn.atMs),
+      meteors: meteorFlights(now).map((flight) => {
+        const record = meteorDrawn(flight.bodyId);
+        return {
+          bodyId: flight.bodyId,
+          source: record?.source ?? 'none',
+          position: record?.position ?? null,
+          tapeMs: record ? cityTapeRecorder.elapsedMs(record.atMs) : null,
+        };
+      }),
+    };
   },
   formatPerfSweepMobile: (report: unknown) => formatPerfSweepMobile(report as PerfSweepReport),
   renderSettings: () => ({

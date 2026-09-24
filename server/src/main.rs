@@ -2046,7 +2046,8 @@ async fn city_tape_handler(
     if !city::is_city_match(&match_id) {
         return (StatusCode::BAD_REQUEST, "not a city match").into_response();
     }
-    if body.len() < 8 || &body[..8] != b"VLTAPE01" {
+    // VLTAPE01: the city stream alone; VLTAPE02: every inbound channel.
+    if body.len() < 8 || !matches!(&body[..8], b"VLTAPE01" | b"VLTAPE02") {
         return (StatusCode::BAD_REQUEST, "not a city tape").into_response();
     }
     let stamp = std::time::SystemTime::now()
