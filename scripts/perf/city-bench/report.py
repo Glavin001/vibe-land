@@ -496,7 +496,8 @@ def client_metrics(i, bundle, adir, run_dir, tl, budgets_cfg, server_ticks, leve
         "client_counters_end": {k: last.get(k) for k in (
             "bootstraps", "structureRepairs", "hashChecks", "hashMismatches", "nacksSent", "nackBodiesSent",
             "resyncRequestsSent", "topoSeqGaps", "poseJumpsOver4m", "presentedJumpsOver4m", "drawnTeleports",
-            "clockRollbacks", "correctionSnaps", "implausibleJumps", "recordsOutsideWorld", "settleRejects")},
+            "clockRollbacks", "correctionSnaps", "implausibleJumps", "recordsOutsideWorld", "settleRejects",
+            "settlesAfterSilence", "settlesSuperseded")},
         "client_max": {k: mx(k) for k in ("chunksBelowGround", "orphanedChunks", "staleDrawnChunks", "chunksAwake")},
     }
     per_tick = collections.Counter()

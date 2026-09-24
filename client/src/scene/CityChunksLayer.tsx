@@ -1007,6 +1007,8 @@ export function CityChunksLayer({
         staleDrawnChunks,
         bootstraps: stats.bootstraps,
         settleRejects: stats.settleRejects,
+        settlesAfterSilence: stats.settlesAfterSilence,
+        settlesSuperseded: stats.settlesSuperseded,
         valveApplies: stats.valveApplies,
         valveTicksAhead: stats.valveTicksAhead,
         hashChecks: stats.hashChecks,

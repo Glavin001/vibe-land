@@ -142,6 +142,13 @@ export interface CityClientStats {
   /// Settles refused because their pose would have teleported the body --
   /// membership disagreement, caught before it could be drawn.
   settleRejects: number;
+  /// Settles applied although they moved the body more than the reject
+  /// distance, because the stream had stopped showing the body while it
+  /// moved (it left this client's interest). Not a fault.
+  settlesAfterSilence: number;
+  /// Settles older than a pose the stream had already shown (the reliable
+  /// message arrived after newer datagrams); the newer pose is kept.
+  settlesSuperseded: number;
   /// Topology released by the wall-clock valve, ahead of the pose clock.
   valveApplies: number;
   valveTicksAhead: number;
@@ -849,6 +856,18 @@ export class CityClient {
       if (settledAt !== undefined && sampleTick <= settledAt) {
         continue;
       }
+      // Wire v3 keeps the settle drift check as it was: a parked lane stays
+      // samplable while nothing is streamed to it, so a sample is not evidence
+      // that the stream is showing this body. Marking every sample as a fresh
+      // moving pose keeps the check armed whenever a lane is sampled.
+      this.topology.noteStreamedPose(
+        entity,
+        sampleTick,
+        this.samplePoses[index * 7],
+        this.samplePoses[index * 7 + 1],
+        this.samplePoses[index * 7 + 2],
+        true,
+      );
       const at = index * 7;
       // Epoch ordering in the decoder now guarantees a lane's samples belong
       // to its current tenant; the 5 m discontinuity hold that used to guard
@@ -2037,6 +2056,11 @@ export class CityClient {
     }
     state.lastTick = datagram.simTick;
     state.settledHint = (record.flags & RECORD_FLAG_SETTLED_HINT) !== 0;
+    // What the stream last showed of this body's motion, so a later settle
+    // can tell a pose this client has been shown from one it never was.
+    this.topology.noteStreamedMotion(
+      record.bodyEntity, datagram.simTick, position, record.linearVelocity, record.angularVelocity,
+    );
     const snapshot: MotionSnapshot = {
       tick: datagram.simTick,
       position,
@@ -2281,6 +2305,8 @@ export class CityClient {
       chunksSettled,
       bootstraps: this.bootstrapCount,
       settleRejects: this.topology.settleFrameRejects,
+      settlesAfterSilence: this.topology.settlesAfterSilence,
+      settlesSuperseded: this.topology.settlesSuperseded,
       valveApplies: this.topologyValveApplies,
       valveTicksAhead: this.topologyValveTicksAhead,
       brokenBonds: topologyStats.brokenBonds,

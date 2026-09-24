@@ -968,6 +968,123 @@ describe('CityTopology settle cannot teleport a body', () => {
   });
 });
 
+/**
+ * The drift check above assumes the stream has been showing the body. The
+ * server's per-client interest filter stops streaming a body that leaves this
+ * client's view and proximity radius, so a fragment thrown out of range keeps
+ * moving on the server while this ledger holds its last streamed pose, and
+ * its settle can land any distance away. That is not a membership
+ * disagreement, and asking for a repair for it was every structure repair of
+ * both 2026-09-24 sessions (to-do item 6 of
+ * docs/mac-metal-session-analysis-2026-09-24.md).
+ */
+describe('CityTopology settle after the stream went silent', () => {
+  const settleAt = (simTick: number, position: [number, number, number]): TopologyMessage => ({
+    topoSeq: 2,
+    simTick,
+    batches: [],
+    settled: [{ structureId: 0, islandId: 1, position, rotation: [0, 0, 0, 1] }],
+    wakes: [],
+  });
+  const far = (topology: CityTopology): [number, number, number] => {
+    const body = topology.body(bodyKey(0, 1))!;
+    return [body.position[0], body.position[1], body.position[2] + 65];
+  };
+
+  it('applies a far settle for a body last streamed moving, long ago', () => {
+    const topology = new CityTopology(manifest());
+    topology.apply(fractureMessage(1));
+    topology.noteStreamedMotion(bodyKey(0, 1), 40, [10, 2.5, 0], [0, 0, 50], [0, 0, 0]);
+    const target = far(topology);
+    topology.apply(settleAt(40 + 150, target));
+
+    const body = topology.body(bodyKey(0, 1))!;
+    expect(body.settled).toBe(true);
+    expect(body.position).toEqual(target);
+    expect(topology.settleFrameRejects).toBe(0);
+    expect(topology.settlesAfterSilence).toBe(1);
+    expect(topology.resyncStructures.size).toBe(0);
+    expect(topology.needsResync).toBe(false);
+  });
+
+  it('applies a far settle for a promoted body that was never streamed', () => {
+    const topology = new CityTopology(manifest());
+    topology.apply(fractureMessage(1)); // promoted at tick 10
+    topology.apply(settleAt(10 + 120, far(topology)));
+    expect(topology.settleFrameRejects).toBe(0);
+    expect(topology.settlesAfterSilence).toBe(1);
+    expect(topology.resyncStructures.size).toBe(0);
+  });
+
+  it('still refuses a far settle while the stream is showing the body', () => {
+    const topology = new CityTopology(manifest());
+    topology.apply(fractureMessage(1));
+    topology.noteStreamedMotion(bodyKey(0, 1), 100, [10, 2.5, 0], [0, 0, 3], [0, 0, 0]);
+    topology.apply(settleAt(110, far(topology)));
+    expect(topology.settleFrameRejects).toBe(1);
+    expect(topology.settlesAfterSilence).toBe(0);
+    expect([...topology.resyncStructures]).toEqual([0]);
+  });
+
+  it('still refuses a far settle for a body last streamed at rest', () => {
+    // At rest where the client has it is exactly when the encoder stops
+    // sending (`rest_unchanged`), so the pose is current however old it is.
+    const topology = new CityTopology(manifest());
+    topology.apply(fractureMessage(1));
+    topology.noteStreamedMotion(bodyKey(0, 1), 40, [10, 2.5, 0], [0, 0, 0], [0, 0, 0]);
+    topology.apply(settleAt(40 + 600, far(topology)));
+    expect(topology.settleFrameRejects).toBe(1);
+    expect([...topology.resyncStructures]).toEqual([0]);
+  });
+
+  it('ignores a record older than what it already knows', () => {
+    const topology = new CityTopology(manifest());
+    topology.apply(fractureMessage(1));
+    topology.noteStreamedMotion(bodyKey(0, 1), 50, [10, 2.5, 0], [0, 0, 0], [0, 0, 0]);
+    // A reordered pre-rest datagram must not make the body look in flight.
+    topology.noteStreamedMotion(bodyKey(0, 1), 48, [10, 2.5, 0], [0, 0, 20], [0, 0, 0]);
+    topology.apply(settleAt(400, far(topology)));
+    expect(topology.settleFrameRejects).toBe(1);
+  });
+
+  it('measures drift from the pose the server sent, not the presented pose', () => {
+    // On a slow link the presented pose trails the stream by the playout
+    // delay; a fast body is metres behind where the server last put it.
+    const topology = new CityTopology(manifest());
+    topology.apply(fractureMessage(1));
+    topology.noteStreamedMotion(bodyKey(0, 1), 100, [10, 2.5, 40], [0, 0, 20], [0, 0, 0]);
+    topology.updateBodyPose(bodyKey(0, 1), [10, 2.5, 25], [0, 0, 0, 1], 'presented');
+    topology.apply(settleAt(110, [10, 2.5, 42]));
+    expect(topology.settleFrameRejects).toBe(0);
+    expect(topology.body(bodyKey(0, 1))!.position).toEqual([10, 2.5, 42]);
+  });
+
+  it('keeps a newer streamed pose over a settle that arrived after it', () => {
+    // The reliable settle was delayed behind datagrams from after a wake.
+    const topology = new CityTopology(manifest());
+    topology.apply(fractureMessage(1));
+    topology.noteStreamedMotion(bodyKey(0, 1), 300, [10, 2.5, 80], [0, 0, 9], [0, 0, 0]);
+    topology.updateBodyPose(bodyKey(0, 1), [10, 2.5, 80], [0, 0, 0, 1], 'raw');
+    topology.apply(settleAt(60, [10, 2.5, 5]));
+    expect(topology.settleFrameRejects).toBe(0);
+    expect(topology.settlesSuperseded).toBe(1);
+    expect(topology.resyncStructures.size).toBe(0);
+    expect(topology.body(bodyKey(0, 1))!.position).toEqual([10, 2.5, 80]);
+  });
+
+  it('a wake makes the body free to move again', () => {
+    const topology = new CityTopology(manifest());
+    topology.apply(fractureMessage(1));
+    topology.noteStreamedMotion(bodyKey(0, 1), 40, [10, 2.5, 0], [0, 0, 0], [0, 0, 0]);
+    topology.apply({
+      topoSeq: 2, simTick: 60, batches: [], settled: [], wakes: [{ structureId: 0, islandSerial: 1 }],
+    });
+    topology.apply({ ...settleAt(60 + 300, far(topology)), topoSeq: 3 });
+    expect(topology.settleFrameRejects).toBe(0);
+    expect(topology.settlesAfterSilence).toBe(1);
+  });
+});
+
 describe('CityTopology frame rebasing', () => {
   // A body that still contains its zero-mass support node, which is the root
   // body of an intact structure -- the case a collapse spends most of its

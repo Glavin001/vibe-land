@@ -366,6 +366,9 @@ pub struct Card {
     /// The destruction scorer's card for city chunks (chunk-weighted).
     pub city: Option<serde_json::Value>,
     pub city_error: Option<String>,
+    /// The city client's ledger-sync counters (client-stats.json).
+    #[serde(default)]
+    pub city_sync: Option<CitySync>,
     /// Truth entities near the client (within 40 m) not drawn, per kind,
     /// sampled every 6th frame.
     pub missing_entity_frames: BTreeMap<String, u64>,
@@ -374,6 +377,43 @@ pub struct Card {
     /// Frames whose render time lies outside the captured truth (the tape
     /// opens a little before the server capture): clock-scored only.
     pub frames_outside_truth: u64,
+}
+
+/// Whether the client's destructible-structure ledger stayed in sync with the
+/// server's, from the city client's own counters. `repairs_asked` is what
+/// drives the server's structure bootstraps (a repair per request), so on a
+/// lossless link it must be 0.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct CitySync {
+    pub hash_checks: u64,
+    pub hash_mismatches: u64,
+    /// Settles refused as a membership disagreement (each asks for a repair).
+    pub settle_rejects: u64,
+    /// Far settles applied because the stream had stopped showing the body.
+    pub settles_after_silence: u64,
+    pub topo_seq_gaps: u64,
+    /// Resync / structure-repair requests the client sent upstream.
+    pub repairs_asked: u64,
+    /// Structure repairs the client applied (recorded, replayed open loop).
+    pub structure_repairs_applied: u64,
+    pub nacks_sent: u64,
+}
+
+impl CitySync {
+    pub fn from_client_stats(stats: &serde_json::Value) -> Option<Self> {
+        let city = stats.get("city")?;
+        let n = |key: &str| city[key].as_u64().unwrap_or(0);
+        Some(Self {
+            hash_checks: n("hashChecks"),
+            hash_mismatches: n("hashMismatches"),
+            settle_rejects: n("settleRejects"),
+            settles_after_silence: n("settlesAfterSilence"),
+            topo_seq_gaps: n("topoSeqGaps"),
+            repairs_asked: n("resyncRequestsSent"),
+            structure_repairs_applied: n("structureRepairs"),
+            nacks_sent: n("nacksSent"),
+        })
+    }
 }
 
 #[derive(Default)]
@@ -790,6 +830,10 @@ pub fn score_run(bundle: &Bundle, out: &Path, _stream: &StreamReport) -> std::io
     // The same timeline the client stage used (pace-consistent).
     let timeline = Timeline::read(&out.join("timeline.json")).unwrap_or_else(|_| Timeline::of(bundle));
     let mut card = score_display(bundle, &timeline, bundle.player, &display);
+    card.city_sync = std::fs::read(out.join("client-stats.json"))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        .and_then(|stats| CitySync::from_client_stats(&stats));
     let presented = out.join("presented.bin");
     if let (Some(city), true) = (&bundle.city, presented.is_file()) {
         use vibe_land_destruction::netlab::{cameras, score};

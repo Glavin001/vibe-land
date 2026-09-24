@@ -59,12 +59,14 @@ pub fn stream_summary(report: &StreamReport) -> String {
         report.stream.snapshot_interest_start
     ));
     s.push_str(&format!(
-        "  city: from tick {:?}, encoder {}, send every {} ticks, ceiling {} B, bootstraps {}\n",
+        "  city: from tick {:?}, encoder {}, send every {} ticks, ceiling {} B, bootstraps {}, recorded structure repairs replayed {} / withheld {}\n",
         report.stream.city_first_tick,
         report.stream.city_encoder_start,
         report.stream.city_send_interval_ticks,
         report.stream.city_ceiling_bytes,
-        report.stream.city_bootstraps
+        report.stream.city_bootstraps,
+        report.stream.city_structure_bootstraps_passed_through,
+        report.stream.city_structure_bootstraps_withheld
     ));
     s.push_str(&format!("  origins: {:?}\n", report.by_origin));
     for (lane, totals) in &report.lanes {
@@ -146,6 +148,9 @@ pub struct Headline {
     pub meteor_err_p99_m: f64,
     pub meteor_backward_frames: u64,
     pub meteor_handover_max_m: f64,
+    /// Repairs the city client asked for, and ledger-hash mismatches.
+    pub city_repairs_asked: u64,
+    pub city_hash_mismatches: u64,
     pub city_lever_p50_m: Option<f64>,
     pub city_lever_p99_m: Option<f64>,
     pub city_perceptible: Option<f64>,
@@ -207,6 +212,10 @@ pub fn headline(name: &str, stream: &StreamReport, card: &Card) -> Headline {
                 score.extrapolated_share,
             ),
         );
+    }
+    if let Some(sync) = &card.city_sync {
+        h.city_repairs_asked = sync.repairs_asked;
+        h.city_hash_mismatches = sync.hash_mismatches;
     }
     if let Some(city) = &card.city {
         h.city_lever_p50_m = city["overall"]["lever_m"]["p50"].as_f64();
@@ -287,6 +296,20 @@ pub fn card_summary(card: &Card) -> String {
             city["overall"]["lever_uncompensated_m"]["p50"].as_f64().unwrap_or(0.0),
             city["overall"]["visual"]["perceptible_fraction"].as_f64().unwrap_or(0.0) * 100.0,
             city["missing_moving_body_frames"].as_u64().unwrap_or(0)
+        );
+    }
+    if let Some(sync) = &card.city_sync {
+        let _ = writeln!(
+            s,
+            "  city sync: repairs asked {}, hash checks {} / mismatches {}, settle rejects {}, settles after silence {}, topo gaps {}, nacks {}, repairs applied {}",
+            sync.repairs_asked,
+            sync.hash_checks,
+            sync.hash_mismatches,
+            sync.settle_rejects,
+            sync.settles_after_silence,
+            sync.topo_seq_gaps,
+            sync.nacks_sent,
+            sync.structure_repairs_applied
         );
     }
     if let Some(error) = &card.city_error {
@@ -629,6 +652,8 @@ pub fn cmd_compare(args: &Args) {
         row("body delay p50 ms", ha.dyn_delay_p50_ms, hb.dyn_delay_p50_ms);
         row("drawn behind server p50 ms", ha.dyn_behind_now_p50_ms, hb.dyn_behind_now_p50_ms);
         row("render clock backsteps", ha.render_backsteps as f64, hb.render_backsteps as f64);
+        row("city repairs asked", ha.city_repairs_asked as f64, hb.city_repairs_asked as f64);
+        row("city hash mismatches", ha.city_hash_mismatches as f64, hb.city_hash_mismatches as f64);
         row("clock lag p50 ms", ha.clock_lag_p50_ms, hb.clock_lag_p50_ms);
         row("clock lag p99 ms", ha.clock_lag_p99_ms, hb.clock_lag_p99_ms);
         row("stale body frames", ha.stale_body_frames as f64, hb.stale_body_frames as f64);

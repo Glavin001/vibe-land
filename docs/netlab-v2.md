@@ -97,7 +97,7 @@ measurement that bounds it.
 | S3 | A capture starts mid-match. The snapshot interest memory comes from `snapshot-baseline.json` and the encoder from `encoder-checkpoint`. | These are the exact state at the first captured tick (see below). | City: 1,204/1,204 packets byte-identical. Negative control: without the baseline, the fixture test diverges. |
 | S4 | The city call sequence is mirrored: ingest, topology, baseline, hash, then `encode_send` / `client_datagrams`, with cameras in `cameras.jsonl` order and bootstraps at the ticks the send log shows. | This is only the order of calls. Every byte comes from the encoder. The observer pipeline (`VIBE_CITY_OBSERVER_PIPELINE`, Blast backend only) is not modelled. | 100% city bytes (rec1). |
 | S5 | Non-netcode packets (welcome, roster, body metadata, shots, match stats, meteor launches, pings, energy, batteries) pass through: recorded bytes at the recorded queue time. Packets from before the capture opened are sent at their arrival time minus the lane's median latency. | They are not optimisation targets, and their bytes and times are what the server produced. | Joined 10,207/10,207 by CRC32 and length (rec1). |
-| S6 | Client-to-server feedback is open loop. Resyncs, repairs and bootstraps happen at the recorded ticks; acks come from S2. | On a reliable stream the client asks for nothing new: the client stage reports `nacksSent` = `resyncRequestsSent` = 0 on every profile. | Counted in `client-stats.json`. |
+| S6 | Client-to-server feedback is open loop. Resyncs, repairs and bootstraps happen at the recorded ticks; acks come from S2. `--knob lab.recorded_repairs=0` withholds the recorded structure repairs, so the client's own counters show whether its ledger stays in sync without them. | On a reliable stream the client asks for nothing new: the client stage reports `nacksSent` = `resyncRequestsSent` = 0 on every profile. | Counted in `client-stats.json` and the report's `city sync` line. |
 | S7 | Packet timing inside a tick comes from `ticks.jsonl` phases: city at the end of `tick_city`, snapshot after it, bootstraps at the tick end. `--pace ideal` puts ticks exactly 1/60 s apart, with no server slowdown. | The recorded pace is the server's real timeline. Ideal pacing isolates netcode from server runtime. | Loopback lane latency p50 0.6 ms matches the live send-to-arrive p50 of 0.15–0.8 ms. |
 | S8 | **Client clock call schedule.** The lab reads the render clocks once per recorded frame, at its recorded time (the live clock probe's instant). The live page also reads them at other instants within the frame. Since the clock-fix change the server clock's output and the render clocks' delay slew depend on the snapshots and the local time only, not on when or how often they are read (`clock_sync.rs`, unit tests at 60 Hz, 240 Hz and arrival-only reads); before it the output was path dependent (its slew and hold clamps acted per call). | Exact for a client with the clock-fix change; for older clients exact whenever the server keeps pace. | rec1 (older client, recorded with it): clock offset vs live last 10 s p99 18 µs; whole run p50 135 µs, p99 8.9 ms, max 15.8 ms, all in the first 20 s (server stalls up to 608 ms). |
 | S9 | The client stage replays through `createReplayPlayer` (the /cityreplay page's player), not the WebTransport classes. `performance.now()` is the tape clock on the page origin, and each packet is handled at its arrival time. | Same `routeInboundPacket`, decoders and client objects. The transports only add sockets. | Lab vs the same code on the recorded tape: 0.000 m (rec1). |
@@ -193,6 +193,11 @@ These are the knobs production actually has, with their production defaults:
 | `city.proximity_m` | 120 | interest |
 | `city.max_eval` | 1200 | `VIBE_CITY_MAX_EVAL` |
 
+One lab-only knob, not a production setting: `lab.recorded_repairs` (default
+1). With 0 the structure repairs the live server sent this client
+(`PKT_CITY_STRUCTURE_BOOTSTRAP`) are not replayed (seam S6), and the stream
+summary counts them as withheld.
+
 ## Metrics
 
 - **Classes.** Bodies are classified from truth kinematics at the render tick:
@@ -236,6 +241,13 @@ These are the knobs production actually has, with their production defaults:
   (lost, sender-dropped, strict-drop, fallback), queue-to-arrival latency, HOL.
 - **Selection totals:** what the budget left out (from the builder and the
   encoder's summaries).
+- **City sync** (`city_sync`, from the city client's counters): repairs the
+  client asked for (`resyncRequestsSent`: each one is a structure or full
+  bootstrap from a live server), ledger-hash checks and mismatches, settle
+  rejects, settles applied after the stream went silent, topology sequence
+  gaps, NACKs, and the repairs it applied. On a lossless link repairs asked
+  must be 0 (item 6 of the 2026-09-24 session analysis); run it with
+  `lab.recorded_repairs=0` so the recorded repairs do not mask a divergence.
 
 ## Calibration (the proxy check)
 

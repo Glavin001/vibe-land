@@ -171,6 +171,8 @@ pub fn stream_config(pace: Pace, knobs: &BTreeMap<String, String>) -> StreamConf
             "city.burst_max_multiple" => config.city.burst_max_multiple = Some(f() as u32),
             "city.baseline_interval_ticks" => config.city.baseline_interval_ticks = Some(f() as u32),
             "city.proximity_m" => config.city.proximity_m = Some(f() as f32),
+            // Lab-only, not a production knob: see StreamConfig::recorded_repairs.
+            "lab.recorded_repairs" => config.recorded_repairs = f() != 0.0,
             "city.max_eval" => {
                 // Read once, from the environment, by the encoder itself.
                 std::env::set_var("VIBE_CITY_MAX_EVAL", value);

@@ -180,6 +180,11 @@ pub struct StreamConfig {
     /// Snapshot every N sim ticks (None: as the live match did).
     pub snapshot_interval_ticks: Option<u32>,
     pub city: CityKnobs,
+    /// Replay the structure repairs the live server sent (open loop, S6).
+    /// `false` (`--knob lab.recorded_repairs=0`) withholds them, so the
+    /// client's own counters say whether its ledger stays in sync without
+    /// them and how many repairs it would ask for.
+    pub recorded_repairs: bool,
 }
 
 impl Default for StreamConfig {
@@ -189,6 +194,7 @@ impl Default for StreamConfig {
             snapshot: SnapshotConfig::PRODUCTION,
             snapshot_interval_ticks: None,
             city: CityKnobs::default(),
+            recorded_repairs: true,
         }
     }
 }
@@ -208,6 +214,9 @@ pub struct StreamStats {
     pub city_ceiling_bytes: usize,
     pub city_bootstraps: u32,
     pub city_structure_bootstraps_passed_through: u32,
+    /// Recorded structure repairs withheld (`lab.recorded_repairs=0`).
+    #[serde(default)]
+    pub city_structure_bootstraps_withheld: u32,
     pub passthrough_by_kind: BTreeMap<u8, u32>,
     pub prepass_by_kind: BTreeMap<u8, u32>,
     pub lab_by_kind: BTreeMap<u8, u32>,
@@ -835,6 +844,10 @@ pub fn build(bundle: &Bundle, config: &StreamConfig) -> std::io::Result<Stream> 
                     continue;
                 }
                 if kind == PKT_CITY_STRUCTURE_BOOTSTRAP {
+                    if !config.recorded_repairs {
+                        stats.city_structure_bootstraps_withheld += 1;
+                        continue;
+                    }
                     stats.city_structure_bootstraps_passed_through += 1;
                 }
                 let queued = if record.queued_us == crate::send_log::QUEUED_BEFORE_CAPTURE {

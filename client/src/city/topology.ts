@@ -52,7 +52,21 @@ export interface LedgerBody {
   position: Vec3;
   rotation: Quat;
   settled: boolean;
+  /**
+   * The newest pose the server has told this client for the body, and its
+   * sim tick: from its promotion, a bootstrap, a streamed record, a settle or
+   * a wake. `motionKnownPosition` is that pose as sent, not the presented
+   * (interpolated) pose above. `moving` means the body was free to move at
+   * that tick, so without a newer record it may be anywhere now. See
+   * `settleVerdict`.
+   */
+  motionKnownTick?: number;
+  motionKnownMoving?: boolean;
+  motionKnownPosition?: Vec3;
 }
+
+/** What a settle does to the ledger; see `CityTopology.settleVerdict`. */
+export type SettleVerdict = 'apply' | 'afterSilence' | 'superseded' | 'reject';
 
 export interface CityTopologyStats {
   brokenBonds: number;
@@ -127,6 +141,29 @@ export interface CityTopologyStats {
  * lag; it is a different frame.
  */
 const SETTLE_MAX_DRIFT_M = 10;
+
+/**
+ * How long after the body's last streamed pose a settle can still be checked
+ * against it (0.5 s at 60 Hz): the playout delay plus a send interval and the
+ * encoder's rest stride, with room to spare.
+ *
+ * The drift check above assumes the stream has been showing the body. The
+ * server's per-client interest filter stops streaming a body that is outside
+ * this client's view and proximity, so debris thrown out of range keeps
+ * moving on the server while this ledger holds its last streamed pose. Its
+ * settle, which the reliable stream sends to every client, is then the first
+ * pose this client has had in seconds, and it can be any distance away. That
+ * is not a membership disagreement. Both 2026-09-24 sessions show it: all 17
+ * settle rejects were single-chunk (one 3-chunk) debris whose last record was
+ * ballistic, 155-537 ticks before the settle, 11-174 m away, with 0 ledger
+ * hash mismatches, and they caused every structure repair of both sessions
+ * (5 and 9, batched by the resync rate limit) on links with no loss.
+ */
+const SETTLE_FRESH_TICKS = 30;
+
+/** The encoder's rest thresholds (`REST_SPEED_MPS` / `REST_ANGULAR_RPS`). */
+const REST_SPEED_MPS = 0.05;
+const REST_ANGULAR_RPS = 0.05;
 
 export class CityTopology {
   /** Flat chunk addressing: slotOf[structureId][nodeIndex] -> global slot. */
@@ -227,6 +264,20 @@ export class CityTopology {
    * disagree about, caught before it could be drawn in the wrong place.
    */
   settleFrameRejects = 0;
+  /**
+   * Settles applied although they moved the body more than
+   * `SETTLE_MAX_DRIFT_M`, because the stream had not shown the body since it
+   * was last seen moving (it left this client's interest). Informational: the
+   * settle is the server's pose for a body whose motion this client was never
+   * sent. Membership is still checked by the periodic ledger hash.
+   */
+  settlesAfterSilence = 0;
+  /**
+   * Settles older than a pose the stream had already shown (a reliable
+   * message delayed behind newer datagrams on a slow link). Kept the newer
+   * pose. Informational.
+   */
+  settlesSuperseded = 0;
   /**
    * Notified when a body's centre-of-mass frame shifts, with the body-local
    * delta. The pose stream is buffered for smoothing, so whoever holds that
@@ -609,6 +660,14 @@ export class CityTopology {
           promotion.position,
           promotion.rotation,
         );
+        // A promoted island has just broken loose: free to move, whatever
+        // its velocity at the fracture tick.
+        const promoted = this.bodies.get(bodyKey(batch.structureId, promotion.islandId));
+        if (promoted) {
+          promoted.motionKnownTick = message.simTick;
+          promoted.motionKnownMoving = true;
+          promoted.motionKnownPosition = vClone(promotion.position);
+        }
       }
       // After promotions: a chunk can be promoted into a new island and then
       // migrate in the same batch, and the server orders it that way.
@@ -641,27 +700,43 @@ export class CityTopology {
         //
         // So: take the rest state, refuse the impossible pose, and repair the
         // real fault by rebuilding the ledger.
-        const drift = Math.hypot(
-          settle.position[0] - body.position[0],
-          settle.position[1] - body.position[1],
-          settle.position[2] - body.position[2],
-        );
+        //
+        // That reasoning needs a pose the server told this client recently,
+        // before the settle; `settleVerdict` says when there is one.
         body.settled = true;
-        if (drift > SETTLE_MAX_DRIFT_M) {
+        const verdict = this.settleVerdict(body, settle.position, message.simTick);
+        if (verdict === 'reject') {
           this.settleFrameRejects += 1;
           // Membership disagreement in ONE structure; the stream position is
           // fine. Structure-scoped repair, not a world rebuild.
           this.resyncStructures.add(settle.structureId);
+        } else if (verdict === 'superseded') {
+          // The stream has already shown the body after this settle (the
+          // reliable message was delayed behind newer datagrams, and the body
+          // has been woken since). Its pose is older than ours; keep ours.
+          this.settlesSuperseded += 1;
+          continue;
         } else {
+          if (verdict === 'afterSilence') {
+            this.settlesAfterSilence += 1;
+          }
           body.position = vClone(settle.position);
           body.rotation = [...settle.rotation] as Quat;
         }
+        body.motionKnownTick = message.simTick;
+        body.motionKnownMoving = false;
+        body.motionKnownPosition = vClone(settle.position);
       }
     }
     for (const wake of message.wakes) {
       const body = this.bodies.get(bodyKey(wake.structureId, wake.islandSerial));
       if (body) {
         body.settled = false;
+        if (body.motionKnownTick === undefined || message.simTick >= body.motionKnownTick) {
+          body.motionKnownTick = message.simTick;
+          body.motionKnownMoving = true;
+          body.motionKnownPosition ??= vClone(body.position);
+        }
       }
     }
 
@@ -691,6 +766,90 @@ export class CityTopology {
       }
     }
     return true;
+  }
+
+  /**
+   * Records that the pose stream showed `key` at sim `tick` at this pose and
+   * with these velocities (every applied record, whether or not it writes the
+   * ledger pose). Older ticks than the newest knowledge are ignored.
+   */
+  noteStreamedMotion(
+    key: number,
+    tick: number,
+    position: Vec3,
+    linearVelocity: Vec3,
+    angularVelocity: Vec3,
+  ): void {
+    this.noteStreamedPose(
+      key,
+      tick,
+      position[0],
+      position[1],
+      position[2],
+      Math.hypot(linearVelocity[0], linearVelocity[1], linearVelocity[2]) > REST_SPEED_MPS
+        || Math.hypot(angularVelocity[0], angularVelocity[1], angularVelocity[2]) > REST_ANGULAR_RPS,
+    );
+  }
+
+  /**
+   * `noteStreamedMotion` for a pose without velocities. Allocation-free once
+   * the body has a known pose: wire v3 calls it per sampled body per frame.
+   */
+  noteStreamedPose(key: number, tick: number, x: number, y: number, z: number, moving: boolean): void {
+    const body = this.bodies.get(key);
+    if (!body || (body.motionKnownTick !== undefined && tick < body.motionKnownTick)) {
+      return;
+    }
+    body.motionKnownTick = tick;
+    body.motionKnownMoving = moving;
+    const known = body.motionKnownPosition;
+    if (known) {
+      known[0] = x;
+      known[1] = y;
+      known[2] = z;
+    } else {
+      body.motionKnownPosition = [x, y, z];
+    }
+  }
+
+  /**
+   * What a settle at `tick` with pose `position` does to `body`.
+   *
+   * - `reject`: the server told this client where the body was, before the
+   *   settle and recently (at rest, or within `SETTLE_FRESH_TICKS`), and the
+   *   settle is more than `SETTLE_MAX_DRIFT_M` from it. Both sides derive
+   *   the pose from their own member set, so that is a membership
+   *   disagreement: refuse the pose and repair the structure.
+   * - `afterSilence`: the body was last shown moving, longer ago than that
+   *   (it left this client's interest), and the settle is far from where it
+   *   was shown. The settle is the first pose this client gets; apply it.
+   * - `superseded`: the stream has already shown the body after the settle's
+   *   tick (the reliable message arrived after newer datagrams). Keep the
+   *   newer pose.
+   * - `apply`: an ordinary settle.
+   *
+   * The drift is measured from the pose the server sent, not the presented
+   * pose, which trails it by the playout delay (hundreds of milliseconds on
+   * a slow link). A body with no recorded knowledge is compared with its
+   * ledger pose, as before this was tracked.
+   */
+  settleVerdict(body: LedgerBody, position: Vec3, tick: number): SettleVerdict {
+    const known = body.motionKnownTick;
+    const from = known === undefined ? body.position : (body.motionKnownPosition ?? body.position);
+    const drift = Math.hypot(position[0] - from[0], position[1] - from[1], position[2] - from[2]);
+    if (drift <= SETTLE_MAX_DRIFT_M) {
+      return 'apply';
+    }
+    if (known === undefined) {
+      return 'reject';
+    }
+    if (known > tick) {
+      return 'superseded';
+    }
+    if (body.motionKnownMoving && tick - known > SETTLE_FRESH_TICKS) {
+      return 'afterSilence';
+    }
+    return 'reject';
   }
 
   /**
@@ -1214,6 +1373,11 @@ export class CityTopology {
         position: vClone(island.position),
         rotation: [...island.rotation] as Quat,
         settled: island.settled,
+        // The bootstrap states the pose at its tick; an awake island may
+        // move on from it.
+        motionKnownTick: message.simTick,
+        motionKnownMoving: !island.settled,
+        motionKnownPosition: vClone(island.position),
       });
     }
   }
@@ -1281,6 +1445,11 @@ export class CityTopology {
         position: vClone(island.position),
         rotation: [...island.rotation] as Quat,
         settled: island.settled,
+        // The bootstrap states the pose at its tick; an awake island may
+        // move on from it.
+        motionKnownTick: message.simTick,
+        motionKnownMoving: !island.settled,
+        motionKnownPosition: vClone(island.position),
       });
     }
     // Recount rather than patch: the repaired structures' previous counts are

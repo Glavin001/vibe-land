@@ -245,6 +245,9 @@ export interface CityE2EStats {
   /// Ledger rebuilds this session, and settles refused for a frame mismatch.
   bootstraps: number;
   settleRejects: number;
+  /// Far settles applied after the stream went silent / kept a newer pose.
+  settlesAfterSilence: number;
+  settlesSuperseded: number;
   valveApplies: number;
   valveTicksAhead: number;
   /** Seq-aligned ledger-hash comparisons that ran (the desync detector). */

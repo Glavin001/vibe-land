@@ -298,6 +298,13 @@ because the server consumes a backlog when a slow tick finishes.
   snapshot tick was consecutive.
 - **Inferred cause.** Divergence without loss points to a client/server
   bookkeeping bug in topology or promotion handling, not the network.
+- **Cause (measured, item 6).** Nothing diverged. Every repair was asked for
+  by the client's settle check, which took a settle far from the body's last
+  streamed pose for a membership disagreement. The bodies were debris thrown
+  out of the client's interest: the encoder stops streaming them, and their
+  settle (reliable, sent to everyone) lands 11-174 m from the last pose the
+  client was sent. The ledger hashes, which compare bonds and membership,
+  matched at every check.
 
 ### (c) Client CPU spikes at fracture onset (measured)
 
@@ -449,7 +456,83 @@ paired) showing the acceptance criterion.
   - *Accept:* 0 bodies below y = −3 m in a session like this one.
   - *Evidence:* 14 chunk bodies and 2 meteor balls went below ground; 14
     "left the world" lines at y ≈ −999 m after about 14 s of free fall.
-- [ ] **6. Destruction sync: find why structure state diverges with zero loss.**
+- [x] **6. Destruction sync: find why structure state diverges with zero loss.**
+  - *Done (2026-09-24):* the state did not diverge. Every repair was asked
+    for by the client's settle check (`CityTopology.apply`,
+    `client/src/city/topology.ts`), not by the ledger hash. The check refuses
+    a settle more than 10 m from the body's pose and asks for a structure
+    repair, on the theory that the two sides disagree about the body's
+    members. That theory assumes the stream has been showing the body. The
+    encoder's per-client interest filter (view plus 120 m proximity) stops
+    streaming a body that leaves the client's interest, and the settle, which
+    the reliable stream sends to every client, then lands wherever physics
+    took the body. The check now compares the settle with the newest pose the
+    server sent (not the presented pose, which trails it) and applies a far
+    settle when that pose is older than the settle and was taken while the
+    body was moving more than 30 ticks earlier (`settleVerdict`; counter
+    `settlesAfterSilence`). A settle older than a pose the stream has already
+    shown (on a slow link the reliable message can arrive after newer
+    datagrams) keeps the newer pose (`settlesSuperseded`). A body last shown
+    at rest, or shown recently, is still checked as before. Membership is
+    still compared exactly by the ledger hash every 120 ticks.
+  - *Evidence, before (measured):* both sessions replayed through the client
+    (`client/netlab/v2/clientStage.mts` on the recorded tapes, with per-settle
+    logging): baseline systematic 5 settle rejects, 5 repair requests; owner
+    session 12 settle rejects, 8 requests (the tape has 9 repairs). All 17
+    rejects were single-chunk debris (one 3-chunk), last streamed in
+    ballistic flight 155-537 ticks before the settle, 11-174 m from it. Ledger
+    hash checks: 163 and 30, 0 mismatches. No settle with a record in the 30
+    ticks before it moved more than 0.45 m (2,394 settles).
+  - *Evidence, after (measured):*
+    - Recorded tapes through the fixed client: 0 settle rejects and 0 repair
+      requests on both (baseline 6 and owner 12 settles applied after
+      silence); hash mismatches 0.
+    - Netlab v2 on the baseline systematic capture (legacy capture: the
+      encoder starts fresh, so city bytes are not live-identical), with the
+      recorded repairs withheld (`--knob lab.recorded_repairs=0`), 337 s:
+
+      | Link | Datagrams lost | Repairs asked, before | Repairs asked, after | Hash mismatches (163 checks) |
+      |---|---:|---:|---:|---:|
+      | recorded, loopback, lan | 0 | 72 | 0 | 0 |
+      | wifi-good | 164 | 72 | 0 | 0 |
+      | lossy-wifi | 1,053 | 72 | 0 | 0 |
+      | lte | 1,016 | 72 | 0 | 0 |
+      | loss-burst | 1,591 | 72 | 0 | 0 |
+      | poor-mobile | 1,019 | 80 | 0 | 0 |
+
+      Before, the unrepaired structures re-ask every 3 s, hence 72. With the
+      recorded repairs replayed (open loop) the before client asks 5 on
+      every lossless link; the after client 0 on every link except lte and
+      poor-mobile, 1 each, where a recorded repair the client never asked
+      for arrives at a different stream position and falls back to the full
+      path (inferred from the counters: 5 replayed, 3 applied). City chunk
+      error is unchanged on every link (lever p99 0.292 m lossless).
+    - `netlab2 calibrate` on rec1 with this client change on the client that
+      recorded it: PASS, bytes 100%, lab vs recorded tape 0.000 m.
+    - City bench systematic, 1 client, live
+      (`target/structure-sync/city-bench/runs/20260924-103738-item6` against
+      `target/city-bench/runs/20260924-081316-baseline-systematic`): structure
+      repairs 5 → 0 (`net.repairs_without_loss` passes), 0 lost packets, 0
+      datagram and topology gaps, 166 hash checks with 0 mismatches; the one
+      resync request is the join bootstrap (`last_topo_seq=0`), as in the
+      baseline. Destruction reached 84.7% vs 84.3% of bonds. The run's
+      samples predate the `settlesAfterSilence` counter in the e2e export.
+  - *Tests:* `destruction/tests/settle_after_silence_wire.rs` drives the
+    production encoder with a fragment thrown out of the client's interest
+    and pins that its last streamed pose is 65 m from its settle; it writes
+    `client/src/city/fixtures/settle-after-silence.json`, which
+    `client/src/city/settleAfterSilence.test.ts` replays through `CityClient`
+    (0 requests, ledger at the settle pose, hashes equal to the server's).
+    `topology.test.ts` covers the verdicts. Mutation-checked: with the old
+    rule the fixture test and five of the new unit tests fail.
+  - *Netlab:* `--knob lab.recorded_repairs=0` withholds the recorded
+    repairs, and each run reports a `city sync` line (repairs asked, hash
+    checks and mismatches, settle rejects, settles after silence).
+  - *Risk (inferred):* a body last streamed at rest that is pushed more than
+    10 m while out of interest, without a wake, still costs one repair; none
+    occurred in either session. A genuine membership disagreement on a body
+    out of interest is now caught by the ledger hash instead of the settle,
+    up to 2 s later.
   - *Layer / owner:* server city encoder and client topology.
   - *Do:*
     - Capture per-structure hashes per update; the paired capture can carry
@@ -608,8 +691,10 @@ The next paired recording of a session like this one should confirm:
   server stalls from the client clock running ahead.
 - **Ground contact (item 5).** World truth per tick shows the first tick a
   body is below ground. It needs the contact state added to the capture.
-- **Structure hashes (item 6).** Once per-structure hashes are added per
-  update, the first divergent update and structure.
+- **Structure hashes (item 6).** Done without new capture fields: the
+  per-structure ledger hashes already go to every client every 120 ticks
+  (`city-topo-hash` on the tape), and the client stage's counters (Netlab's
+  `city sync` line) say which check asked for a repair.
 - **Input bursts.** Send-to-apply time for inputs during slow ticks.
 
 The [city bench](city-bench.md) (`scripts/perf/city-bench.sh`) produces such

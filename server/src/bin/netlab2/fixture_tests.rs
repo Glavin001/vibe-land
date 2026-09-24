@@ -23,7 +23,7 @@ use crate::snapshot_builder::{
     build_recipient_snapshot, BodyMeta, RecipientInput, RecipientInterest, SnapshotConfig, SnapshotWorld,
 };
 use crate::stream::{self, Pace, StreamConfig};
-use crate::vltape::{ClientTape, TapePacket, CHANNEL_WT_DATAGRAM, MAGIC_V2};
+use crate::vltape::{ClientTape, TapePacket, CHANNEL_WT_DATAGRAM, CHANNEL_WT_RELIABLE, MAGIC_V2};
 
 const PLAYER: u32 = 1;
 /// Off the 60-tick cold-refresh phase, so a cold (baseline-less) replay
@@ -126,6 +126,12 @@ fn live_snapshot(tick: u32, interest: &mut RecipientInterest, ack: u16) -> Vec<u
 
 /// Writes the bundle; returns its directory.
 fn write_bundle(name: &str, with_baseline: bool) -> PathBuf {
+    write_bundle_with(name, with_baseline, None)
+}
+
+/// `repair_at`: the live server also sent this client a structure repair
+/// (PKT_CITY_STRUCTURE_BOOTSTRAP, reliable) after that tick's snapshot.
+fn write_bundle_with(name: &str, with_baseline: bool, repair_at: Option<u32>) -> PathBuf {
     let dir = temp_dir(name);
     let server = dir.join("server");
     std::fs::write(
@@ -190,6 +196,22 @@ fn write_bundle(name: &str, with_baseline: bool) -> PathBuf {
             outcome: 0,
         });
         tape.push(TapePacket { t_ms: queued_us as f64 / 1000.0 + 0.5, channel: CHANNEL_WT_DATAGRAM, bytes });
+        if repair_at == Some(tick) {
+            let repair = vec![crate::stream::PKT_CITY_STRUCTURE_BOOTSTRAP, 2, 0, 0, 0, 0];
+            let queued_us = queued_us + 50;
+            records.push(SendRecord {
+                player: PLAYER,
+                tick,
+                queued_us,
+                sent_us: queued_us + 20,
+                size: repair.len() as u32,
+                crc32: crc32fast::hash(&repair),
+                kind: repair[0],
+                lane: 0,
+                outcome: 0,
+            });
+            tape.push(TapePacket { t_ms: queued_us as f64 / 1000.0 + 0.5, channel: CHANNEL_WT_RELIABLE, bytes: repair });
+        }
     }
     writer.finish().unwrap();
     if with_baseline {
@@ -305,3 +327,38 @@ fn simulated_links_are_deterministic_and_knobs_change_the_stream() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+
+/// Recorded structure repairs are replayed open loop (seam S6) unless the lab
+/// is told to withhold them (`lab.recorded_repairs=0`), which is how a run
+/// asks whether the client stays in sync without the repairs the live one got.
+#[test]
+fn recorded_structure_repairs_can_be_withheld() {
+    let dir = write_bundle_with("repair", true, Some(120));
+    let bundle = Bundle::open(&dir).unwrap();
+    let kind = crate::stream::PKT_CITY_STRUCTURE_BOOTSTRAP;
+    let replayed = stream::build(&bundle, &StreamConfig::default()).unwrap();
+    assert_eq!(replayed.stats.city_structure_bootstraps_passed_through, 1);
+    assert_eq!(replayed.packets.iter().filter(|p| p.kind == kind).count(), 1);
+    let knobs = BTreeMap::from([("lab.recorded_repairs".to_string(), "0".to_string())]);
+    let config = crate::stream_config(Pace::Recorded, &knobs);
+    assert!(!config.recorded_repairs);
+    let withheld = stream::build(&bundle, &config).unwrap();
+    assert_eq!(withheld.stats.city_structure_bootstraps_withheld, 1);
+    assert_eq!(withheld.stats.city_structure_bootstraps_passed_through, 0);
+    assert!(withheld.packets.iter().all(|p| p.kind != kind));
+    // Nothing else changes.
+    assert_eq!(withheld.packets.len() + 1, replayed.packets.len());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn city_sync_reads_the_client_counters() {
+    let stats = serde_json::json!({"city": {
+        "hashChecks": 163, "hashMismatches": 0, "settleRejects": 0, "settlesAfterSilence": 5,
+        "topoSeqGaps": 0, "resyncRequestsSent": 0, "structureRepairs": 5, "nacksSent": 0,
+    }});
+    let sync = crate::score::CitySync::from_client_stats(&stats).unwrap();
+    assert_eq!((sync.hash_checks, sync.settles_after_silence, sync.repairs_asked), (163, 5, 0));
+    assert_eq!(sync.structure_repairs_applied, 5);
+    assert!(crate::score::CitySync::from_client_stats(&serde_json::json!({})).is_none());
+}
