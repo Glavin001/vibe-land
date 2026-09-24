@@ -10,6 +10,7 @@ import { CityClient } from './cityClient';
 import { fetchCityManifest, type LoadedCityManifest } from './manifest';
 import { PKT_CITY_BOOTSTRAP, PKT_METEOR_LAUNCHED } from '../net/sharedConstants';
 import type { CityTape } from './cityTape';
+import { clearMeteorFlights, decodeMeteorLaunched, registerMeteorFlight } from '../vfx/meteorFlights';
 
 export interface ReplayPlayer {
   readonly tape: CityTape;
@@ -74,6 +75,22 @@ export async function createReplayPlayer(
   let pausedAt = 0;
   let playingNow = false;
   const durationMs = tape.times.length > 0 ? tape.times[tape.times.length - 1] - origin : 0;
+  // A fresh player (a rewind) starts with no rocks in the air.
+  clearMeteorFlights();
+
+  // The meteor's physics body travels in the game snapshots, which a tape
+  // does not carry; only its launch is on the city stream. The meteor layer
+  // draws a flight on its planned arc when no body is streamed, so each launch
+  // is registered as having left when its packet arrived, `lateMs` of tape
+  // ago (0 while playing; more when a fast-forward lands mid-flight). The arc
+  // runs on the local clock, so it keeps real time at other replay speeds.
+  const launchMeteor = (packet: Uint8Array, lateMs: number) => {
+    const launch = decodeMeteorLaunched(packet);
+    if (!launch) return;
+    if (lateMs / 1000 > launch.flightTimeS) return; // landed before the jump target
+    const launchedAtLocalMs = performance.now() - lateMs / player.speed;
+    registerMeteorFlight(launch, () => launchedAtLocalMs);
+  };
 
   const player: ReplayPlayer = {
     tape,
@@ -99,8 +116,12 @@ export async function createReplayPlayer(
       const target = Math.min(durationMs, Math.max(0, ms));
       while (cursor < tape.packets.length && tape.times[cursor] - origin <= target) {
         const packet = tape.packets[cursor];
+        const packetMs = tape.times[cursor] - origin;
         cursor += 1;
-        if (packet[0] === PKT_METEOR_LAUNCHED) continue;
+        if (packet[0] === PKT_METEOR_LAUNCHED) {
+          launchMeteor(packet, target - packetMs);
+          continue;
+        }
         client.handlePacket(packet);
       }
       // Dust is born at the wall clock a packet is applied, so the burst just
@@ -116,10 +137,12 @@ export async function createReplayPlayer(
       const now = player.timeMs();
       while (cursor < tape.packets.length && tape.times[cursor] - origin <= now) {
         const packet = tape.packets[cursor];
+        const packetMs = tape.times[cursor] - origin;
         cursor += 1;
-        // Launch packets name a server clock the replay does not have; the
-        // rock's own body and the dust it raises are in the stream regardless.
-        if (packet[0] === PKT_METEOR_LAUNCHED) continue;
+        if (packet[0] === PKT_METEOR_LAUNCHED) {
+          launchMeteor(packet, Math.max(0, now - packetMs));
+          continue;
+        }
         client.handlePacket(packet);
       }
       if (cursor >= tape.packets.length) {
@@ -127,6 +150,7 @@ export async function createReplayPlayer(
           // Looping means the SAME client sees the tape again from its
           // bootstrap, which re-bootstraps the ledger in place.
           cursor = first;
+          clearMeteorFlights();
           startedAt = performance.now();
           pausedAt = 0;
         } else {
