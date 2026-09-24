@@ -998,6 +998,9 @@ def main():
     report["budgets"] = evaluate_budgets(report, cfg)
     report["headline"] = headline(report)
     if a.baseline:
+        # Accept a run directory as well as its report.json.
+        if os.path.isdir(a.baseline):
+            a.baseline = os.path.join(a.baseline, "report.json")
         base = json.load(open(a.baseline))
         report["baseline"] = {"path": a.baseline, "rows": compare(report["headline"], base.get("headline") or headline(base))}
         br, cr = base.get("run") or {}, report["run"]

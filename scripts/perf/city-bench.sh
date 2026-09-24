@@ -11,7 +11,7 @@
 #     --intensity X         scales shots, meteors, demolition rounds (default 1)
 #     --seed N              aim/demolition randomness (default: the scenario's)
 #     --label NAME          run directory suffix (default: scenario-Nc)
-#     --baseline FILE       report.json of an earlier run: print and record deltas
+#     --baseline PATH       an earlier run (its directory or report.json): print and record deltas
 #     --budgets FILE        budgets (default scripts/perf/city-bench/budgets.json)
 #     --no-build            use the existing server binary as is
 #     --analyse DIR         only (re)analyse an existing run directory
