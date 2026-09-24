@@ -99,6 +99,7 @@ impl Scene {
         let world = self.arena.physx_world_mut().expect("physx world");
         let w = world.stats().expect("world stats");
         let n = world.native_stats().unwrap_or_default();
+        let ns = world.native_last_status().unwrap_or_default();
         let t = Tick {
             tick: self.tick,
             total_ms,
@@ -108,6 +109,11 @@ impl Scene {
             awake_rigid: w.active_dynamic_bodies,
             awake_chunks: stats.awake_chunk_bodies,
             broken_bonds: stats.broken_bonds,
+            native: format!(
+                "it {} conv {} contacts {} anchors {} clusters {} islands {} passes {} err {}",
+                ns.iterations, ns.converged as u8, ns.normal_contacts, ns.friction_anchors,
+                ns.cluster_count, ns.stress_island_count, ns.stress_passes, ns.error
+            ),
             stage: format!(
                 "bridge step {:.1} simulate {:.1} sim_wall {:.1} fetch_call {:.1} controller {:.1} | native readback {:.1} events {:.1}",
                 w.last_step_ms, w.last_simulate_ms, w.last_gpu_wait_ms, w.last_fetch_copy_ms,
@@ -190,9 +196,11 @@ fn zones(spans: Vec<vibe_land_destruction::types::NamedSpan>) -> String {
         let key = format!("{name}.calls");
         spans.iter().find(|s| s.kind == 2 && s.name == key).map_or(0.0, |s| s.value)
     };
-    let mut timed: Vec<_> = spans.iter().filter(|s| s.kind == 1 && s.value >= 0.3).collect();
+    let all = std::env::var("VIBE_PERF_ALL_TICKS").is_ok();
+    let (floor, limit) = if all { (0.02, 200) } else { (0.3, 16) };
+    let mut timed: Vec<_> = spans.iter().filter(|s| (s.kind == 1 || all && s.kind != 2) && s.value >= floor).collect();
     timed.sort_by(|a, b| b.value.total_cmp(&a.value));
-    timed.iter().take(16).map(|s| format!(" | {} {:.1} ({}x)", s.name, s.value, calls(&s.name))).collect()
+    timed.iter().take(limit).map(|s| format!(" | {} {:.1} ({}x)", s.name, s.value, calls(&s.name))).collect()
 }
 
 struct Tick {
@@ -204,6 +212,7 @@ struct Tick {
     awake_rigid: u32,
     awake_chunks: u32,
     broken_bonds: u32,
+    native: String,
     stage: String,
 }
 
@@ -245,6 +254,16 @@ fn report(name: &str, ticks: &[Tick]) {
         pct(&city, 50.0),
         pct(&city, 100.0),
     );
+    // Every tick with its stage line (`VIBE_PERF_ALL_TICKS=1`), for step-cost profiling.
+    if std::env::var("VIBE_PERF_ALL_TICKS").is_ok() {
+        for t in ticks {
+            eprintln!(
+                "TICK {{\"scenario\":\"{name}\",\"tick\":{},\"total\":{:.2},\"dyn\":{:.2},\"gpu_wait\":{:.2},\"city\":{:.2},\
+\"awake_rigid\":{},\"awake_chunks\":{},\"broken_bonds\":{},\"native\":\"{}\",\"stage\":\"{}\"}}",
+                t.tick, t.total_ms, t.dyn_ms, t.gpu_wait_ms, t.city_ms, t.awake_rigid, t.awake_chunks, t.broken_bonds, t.native, t.stage
+            );
+        }
+    }
     let mut worst: Vec<&Tick> = ticks.iter().filter(|t| t.total_ms > BUDGET_MS).collect();
     worst.sort_by(|a, b| b.total_ms.partial_cmp(&a.total_ms).unwrap());
     for t in worst.iter().take(8) {
@@ -417,6 +436,46 @@ fn perf_bench() {
         }
         scene.markers = false;
         report("debris_awake", &measured);
+    }
+
+    // The whole city demolished building by building, as the systematic city
+    // bench does, then measured at rest and with rubble kept awake: the
+    // destruction-active steady state whose fixed per-step cost is the target.
+    if wanted("city_rubble") {
+        let mut scene = Scene::city();
+        scene.run(120);
+        let (_, manifest, _) = crate::city::manifest_asset().expect("city manifest");
+        let buildings = vibe_land_destruction::buildings::enumerate_min(manifest, 20);
+        scene.city.set_demolition_shape(0.0, 50.0, 0.3);
+        for b in &buildings {
+            let world = scene.arena.physx_world_mut();
+            scene.city.demolish_supports([b.centre[0], b.centre[2]], b.radius + 1.0, b.bottom + 4.0, 48, world);
+            scene.run(90);
+        }
+        scene.run(settle_ticks().max(900));
+        let ticks: u32 = std::env::var("VIBE_PERF_IDLE_TICKS").ok().and_then(|v| v.parse().ok()).unwrap_or(300);
+        report("city_rubble_idle", &scene.measure(ticks));
+        scene.markers = std::env::var("VIBE_PERF_MARKERS").is_ok();
+        let mut measured = Vec::new();
+        for t in 0..ticks {
+            if t % 5 == 0 {
+                let b = &buildings[(t as usize / 5) % buildings.len()];
+                let k = (t / 5) as f32;
+                let (x, z) = (b.centre[0] - 6.0 + (k * 1.7) % 12.0, b.centre[2] - b.radius - 6.0);
+                scene
+                    .world()
+                    .launch_dynamic_ball(LaunchedBallDesc {
+                        entity_id: 0x3300_0000 | t, user_id: t,
+                        pose: Pose { position: BridgeVec3::new(x, 0.6, z), rotation: Quat::IDENTITY },
+                        radius: 0.5, mass: 40.0, linear_velocity: BridgeVec3::new(0.0, 0.0, 6.0),
+                        collision_group: u32::MAX, collision_mask: u32::MAX,
+                    })
+                    .expect("ball");
+            }
+            measured.extend(scene.run(1));
+        }
+        scene.markers = false;
+        report("city_rubble_awake", &measured);
     }
 
     if wanted("demolition") {
