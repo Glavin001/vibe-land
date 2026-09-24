@@ -1012,6 +1012,9 @@ export function CityChunksLayer({
         hashChecks: stats.hashChecks,
         hashMismatches: stats.hashMismatches,
         structureRepairs: stats.structureRepairs,
+        nacksSent: stats.nacksSent,
+        nackBodiesSent: stats.nackBodiesSent,
+        resyncRequestsSent: stats.resyncRequestsSent,
         deepest,
         diagnosticSweep: {
           performed: sweep !== null,

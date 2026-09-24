@@ -1,0 +1,24 @@
+{
+  "name": "quick",
+  "description": "The systematic scenario on the first four buildings, a short drive and a short idle: about two minutes, for multi-client fan-out runs and smoke tests.",
+  "seed": 1,
+  "intensity": 1,
+  "warmupS": 6,
+  "tapeMarginS": 3,
+  "buildings": { "order": "ring", "minChunks": 20, "max": 4 },
+  "intro": [
+    { "do": "idle", "slotS": 5 }
+  ],
+  "perBuilding": [
+    { "do": "walk", "slotS": 7, "standoffM": 10 },
+    { "do": "cannon", "slotS": 5, "shots": 3 },
+    { "do": "meteorShot", "slotS": 3, "shots": 1 },
+    { "do": "meteorAt", "slotS": 2, "count": 1 },
+    { "do": "demolish", "slotS": 5, "rounds": 48, "cutFraction": 0.3, "jitter": 0.25, "perTick": 8 }
+  ],
+  "tail": [
+    { "do": "settle", "phase": "settle", "slotS": 6 },
+    { "do": "drive", "phase": "drive", "slotS": 15, "waypoints": 3 },
+    { "do": "idle", "phase": "idle-end", "slotS": 5 }
+  ]
+}

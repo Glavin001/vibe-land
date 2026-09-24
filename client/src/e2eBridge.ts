@@ -253,6 +253,10 @@ export interface CityE2EStats {
   hashMismatches: number;
   /** Targeted per-structure repairs applied instead of full bootstraps. */
   structureRepairs: number;
+  /** Body NACKs sent upstream, the bodies they named, and ledger resync requests. */
+  nacksSent: number;
+  nackBodiesSent: number;
+  resyncRequestsSent: number;
   /** Cumulative chunks orphaned by a retire, including transient windows. */
   orphanedByRetire: number;
   /** Streamed pose writes that moved a body further than the stream could

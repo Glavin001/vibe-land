@@ -437,6 +437,15 @@ The next paired recording of a session like this one should confirm:
   update, the first divergent update and structure.
 - **Input bursts.** Send-to-apply time for inputs during slow ticks.
 
+The [city bench](city-bench.md) (`scripts/perf/city-bench.sh`) produces such
+a paired recording repeatably: scripted headless players destroy the whole
+city building by building, and its report measures every symptom above
+(server tick and sim-rate, client frames, render-clock rewinds, extrapolation
+lead, meteor handovers, repairs without loss, match-stats and energy
+traffic, bodies below ground) against budgets taken from the to-do list's
+acceptance criteria, per phase and against destruction level. Use it to
+accept or reject each to-do item, and `--baseline` to compare runs.
+
 ## Reproduce
 
 The scripts are in `scripts/perf/tape-analysis/`; see its `README.md`. In

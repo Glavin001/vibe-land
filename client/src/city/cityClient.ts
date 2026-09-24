@@ -39,6 +39,7 @@ import {
   PKT_CITY_BOOTSTRAP,
   PKT_CITY_CHUNKS,
   PKT_CITY_DEBRIS,
+  PKT_CITY_NACK,
   PKT_CITY_TOPOLOGY,
 } from '../net/sharedConstants';
 import { isCitySuspect, isRecording, recordCityEvent } from '../netlab/recorder';
@@ -134,6 +135,10 @@ export interface CityClientStats {
   hashMismatches: number;
   /** Targeted per-structure repairs applied (vs full bootstraps). */
   structureRepairs: number;
+  /** Body NACKs sent upstream, the bodies they named, and ledger resync requests. */
+  nacksSent: number;
+  nackBodiesSent: number;
+  resyncRequestsSent: number;
   /// Settles refused because their pose would have teleported the body --
   /// membership disagreement, caught before it could be drawn.
   settleRejects: number;
@@ -523,6 +528,14 @@ export class CityClient {
   /** Targeted per-structure repairs applied. */
   structureRepairs = 0;
   /**
+   * What this client asked the server to resend: body NACKs (and the bodies
+   * they named) and ledger resync requests. Upstream traffic is not on the
+   * tape, so these are the only record of it (scripts/perf/city-bench).
+   */
+  nacksSent = 0;
+  nackBodiesSent = 0;
+  resyncRequestsSent = 0;
+  /**
    * Topology messages released by the wall-clock valve rather than by the
    * sample clock reaching their tick, and how far ahead they were.
    *
@@ -549,7 +562,7 @@ export class CityClient {
 
   constructor(
     readonly manifest: LoadedCityManifest,
-    private readonly sendResync: (bytes: Uint8Array) => void,
+    private readonly sendUpstream: (bytes: Uint8Array) => void,
     v3?: { decoder: DebrisDecoder; simHz?: number },
   ) {
     this.debris = v3?.decoder ?? null;
@@ -2230,6 +2243,16 @@ export class CityClient {
     return this.bootstrapCount + this.structureRepairs;
   }
 
+  private sendResync(bytes: Uint8Array): void {
+    if (bytes[0] === PKT_CITY_NACK) {
+      this.nacksSent += 1;
+      this.nackBodiesSent += bytes.length >= 3 ? new DataView(bytes.buffer, bytes.byteOffset).getUint16(1, true) : 0;
+    } else {
+      this.resyncRequestsSent += 1;
+    }
+    this.sendUpstream(bytes);
+  }
+
   stats(): CityClientStats {
     const topologyStats = this.topology.stats();
     let windowBytes = 0;
@@ -2322,6 +2345,9 @@ export class CityClient {
       hashChecks: this.hashChecks,
       hashMismatches: this.hashMismatches,
       structureRepairs: this.structureRepairs,
+      nacksSent: this.nacksSent,
+      nackBodiesSent: this.nackBodiesSent,
+      resyncRequestsSent: this.resyncRequestsSent,
     };
   }
 }
