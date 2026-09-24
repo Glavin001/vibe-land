@@ -1,0 +1,12 @@
+vibe-land on a Mac
+
+PhysX 5 GPU rigid bodies + native destruction
+running on Apple Silicon (M3 Max) through Metal, via CuMetal
+
+Server: web-fps-server, VIBE_PHYSICS_BACKEND=physx_gpu
+Client: Chromium, WebGL on ANGLE/Metal, WebTransport
+
+Live capture of the real game client against the live server.
+An automated player walks, drives and fires; the city demolition
+is triggered through the server's debug endpoint. The physics
+itself is not scripted or pre-rendered.
