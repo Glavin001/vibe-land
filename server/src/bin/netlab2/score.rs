@@ -25,6 +25,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::bundle::Bundle;
 use crate::report::Pct;
+use crate::unified::{yaw_diff_deg, AllDraws, AllDrawsAcc, DrawErrors, FirstDrawAcc, JoinWindows, Sinks};
 use crate::session_capture::TickTruth;
 use crate::StreamReport;
 
@@ -377,6 +378,21 @@ pub struct Card {
     /// Frames whose render time lies outside the captured truth (the tape
     /// opens a little before the server capture): clock-scored only.
     pub frames_outside_truth: u64,
+    /// The headline: every rigid body drawn (players, vehicles, bodies,
+    /// meteors, every city chunk) vs truth, per class and overall
+    /// (unified.rs). Absent in reports from before it.
+    #[serde(default)]
+    pub all_draws: Option<AllDraws>,
+    /// The city chunk scorer's bookkeeping (chunks.rs).
+    #[serde(default)]
+    pub chunk_stats: Option<crate::chunks::ChunkStats>,
+    /// The all-draws metric over the join windows only: the first
+    /// `join_windows.seconds` after the client's first frame and after every
+    /// full city bootstrap it received.
+    #[serde(default)]
+    pub all_draws_join: Option<AllDraws>,
+    #[serde(default)]
+    pub join_windows: Option<JoinWindows>,
 }
 
 /// Whether the client's destructible-structure ledger stayed in sync with the
@@ -501,12 +517,103 @@ impl Timeline {
     }
 }
 
+/// Truth heading of a player at a tick (radians).
+fn player_yaw_at<T: TruthSource>(truth: &T, id: u32, tick: u32) -> Option<f32> {
+    truth.tick(tick)?.players.iter().find(|p| p.id == id).map(|p| p.yaw)
+}
+
+/// Truth shape code of a sphere (`BodyTruth::shape`, the client's `shapeType`).
+pub const SHAPE_SPHERE: u8 = vibe_land_shared::constants::SHAPE_SPHERE;
+
+/// Rotation error of one draw at a reference, degrees; None where the drawn
+/// orientation is not visible or not a pose: a plain ball is a uniformly
+/// coloured sphere (and SnapshotV2 carries no sphere orientation at all), and
+/// a meteor on its arc spins for show. A meteor drawn from its body is an
+/// irregular rock, so its orientation counts.
+fn rotation_error<T: TruthSource>(truth: &T, entity: &Entity, reference: Option<&TruthPose>, tick: u32) -> Option<f32> {
+    match entity.kind {
+        KIND_PLAYER => player_yaw_at(truth, entity.id, tick).map(|yaw| yaw_diff_deg(entity.quaternion[0], yaw)),
+        KIND_METEOR if entity.flags != 1 => None,
+        KIND_BODY
+            if truth
+                .tick(tick)
+                .and_then(|t| t.bodies.iter().find(|b| b.id == entity.id))
+                .is_some_and(|b| b.shape == SHAPE_SPHERE) =>
+        {
+            None
+        }
+        _ => reference.map(|t| quat_angle_deg(Quat::from_array(entity.quaternion).normalize(), t.rotation)),
+    }
+}
+
+/// The unified class of a drawn entity (unified.rs).
+fn draw_class<T: TruthSource>(truth: &T, entity: &Entity, player: u32, tick: u32) -> &'static str {
+    match entity.kind {
+        KIND_PLAYER if entity.id == player => "own_avatar",
+        KIND_PLAYER => "player",
+        KIND_VEHICLE => {
+            let driven = truth
+                .tick(tick)
+                .and_then(|t| t.vehicles.iter().find(|v| u32::from(v.handle) == entity.id))
+                .is_some_and(|v| v.driver == player && player != 0);
+            if driven { "vehicle_driven" } else { "vehicle" }
+        }
+        KIND_METEOR => "meteor",
+        _ => "body",
+    }
+}
+
 pub fn score_display<T: TruthSource>(
     truth: &T,
     timeline: &Timeline,
     player: u32,
     display: &Display,
 ) -> Card {
+    let mut all = AllDrawsAcc::default();
+    let mut card = score_display_into(truth, timeline, player, display, &mut all, None);
+    card.all_draws = Some(all.report());
+    card
+}
+
+/// A body counts as moving for first-draw coverage above this speed.
+pub const FIRST_DRAW_MOVING_MPS: f32 = TRANSITION_SPEED_MPS;
+
+/// The first tick each dynamic body moves (faster than
+/// `FIRST_DRAW_MOVING_MPS`) inside the recipient's dynamic-body interest.
+fn first_moving_ticks<T: TruthSource>(truth: &T, player: u32) -> HashMap<u32, u32> {
+    use vibe_land_shared::constants::DYNAMIC_BODY_AOI_RADIUS_M;
+    let (first, last) = truth.window();
+    let mut out = HashMap::new();
+    for tick in first..=last {
+        let Some(tt) = truth.tick(tick) else { continue };
+        let Some(me) = tt.players.iter().find(|p| p.id == player) else { continue };
+        let me = Vec3::from_array(me.position);
+        for body in &tt.bodies {
+            if !out.contains_key(&body.id)
+                && Vec3::from_array(body.velocity).length() > FIRST_DRAW_MOVING_MPS
+                && Vec3::from_array(body.position).distance(me) <= DYNAMIC_BODY_AOI_RADIUS_M
+            {
+                out.insert(body.id, tick);
+            }
+        }
+    }
+    out
+}
+
+/// `score_display`, feeding the all-draws metric into `all` (the city
+/// chunks are added to it afterwards by `score_run`), and into `join` for
+/// the frames inside a join window.
+pub fn score_display_into<T: TruthSource>(
+    truth: &T,
+    timeline: &Timeline,
+    player: u32,
+    display: &Display,
+    all: &mut AllDrawsAcc,
+    mut join: Option<(&mut AllDrawsAcc, &JoinWindows)>,
+) -> Card {
+    // Identity bits (shape / vehicle type in flags 4-7) are written by a
+    // client stage with the shared pose functions only.
+    let identity_bits = display.header["sharedPoses"]["entities"].as_bool().unwrap_or(false);
     let origin = display.header["clockOriginMs"].as_f64().unwrap_or(0.0);
     let tick_us = 1e6 / f64::from(truth.sim_hz());
     let mut card = Card { frames: display.frames.len() as u64, ..Default::default() };
@@ -531,6 +638,15 @@ pub fn score_display<T: TruthSource>(
     let (mut stale_ms, mut fast_stale, mut slow_stale, mut meteor_stale) =
         (Vec::new(), Vec::new(), Vec::new(), Vec::new());
     let mut stale_ids: HashSet<u32> = HashSet::new();
+    // First-draw coverage of dynamic bodies and meteors.
+    let tick_end: HashMap<u32, f64> = timeline.ends.iter().map(|(ms, tick)| (*tick, *ms)).collect();
+    let mut first_draw: BTreeMap<&'static str, FirstDrawAcc> = BTreeMap::new();
+    for (id, tick) in first_moving_ticks(truth, player) {
+        if let Some(ms) = tick_end.get(&tick) {
+            let class = if meteor_ids.contains(&id) { "meteor" } else { "body" };
+            first_draw.entry(class).or_default().moved(id, *ms);
+        }
+    }
 
     for frame in &display.frames {
         let tape_ms = frame.sample_ms - origin;
@@ -571,6 +687,18 @@ pub fn score_display<T: TruthSource>(
             card.frames_outside_truth += 1;
             continue;
         }
+        let in_join = join.as_ref().is_some_and(|(_, windows)| windows.contains(frame.sample_ms));
+        let mut sinks = Sinks { all: &mut *all, join: join.as_mut().map(|(acc, _)| &mut **acc), in_join };
+        sinks.frame();
+        let render_tick = (frame.render_us / tick_us).floor().max(0.0) as u32;
+        let dyn_tick = (frame.dyn_render_us / tick_us).floor().max(0.0) as u32;
+        missing_draws(truth, player, frame, render_tick, dyn_tick, &meteor_ids, &mut sinks, &mut first_draw);
+        for entity in &frame.entities {
+            if entity.kind == KIND_BODY || (entity.kind == KIND_METEOR && entity.flags != 3) {
+                let class = if meteor_ids.contains(&entity.id) { "meteor" } else { "body" };
+                first_draw.entry(class).or_default().drawn(entity.id, tape_ms);
+            }
+        }
 
         for entity in &frame.entities {
             let render_us = if entity.kind == KIND_BODY || entity.kind == KIND_METEOR {
@@ -592,6 +720,23 @@ pub fn score_display<T: TruthSource>(
                 *card.meteors.frames_by_source.entry(source.into()).or_default() += 1;
                 if entity.flags == 3 {
                     continue;
+                }
+                let render_tick = (render_us / tick_us).floor().max(0.0) as u32;
+                match at_render {
+                    None => sinks.extra("meteor", 1.0),
+                    Some(t) => {
+                        let now = now_tick.and_then(|tick| truth_at_tick(truth, KIND_BODY, entity.id, tick));
+                        sinks.draw(
+                            "meteor",
+                            DrawErrors {
+                                pos_render: Some(shown.distance(t.position)),
+                                rot_render: rotation_error(truth, entity, Some(&t), render_tick),
+                                pos_now: now.map(|n| shown.distance(n.position)),
+                                rot_now: now.as_ref().and_then(|n| rotation_error(truth, entity, Some(n), now_tick.unwrap_or(0))),
+                            },
+                            1.0,
+                        );
+                    }
                 }
                 if entity.flags == 1 || entity.flags == 2 {
                     let render_tick = (render_us / tick_us).floor().max(0.0) as u32;
@@ -629,6 +774,29 @@ pub fn score_display<T: TruthSource>(
                 KIND_VEHICLE => "vehicle",
                 _ => classify_body(truth, entity.id, (render_us / tick_us).round().max(0.0) as u32, &meteor_ids),
             };
+            {
+                let render_tick = (render_us / tick_us).floor().max(0.0) as u32;
+                let unified = draw_class(truth, entity, player, render_tick);
+                match at_render {
+                    None => sinks.extra(unified, 1.0),
+                    Some(t) => {
+                        let now = now_tick.and_then(|tick| truth_at_tick(truth, truth_kind, entity.id, tick));
+                        sinks.draw(
+                            unified,
+                            DrawErrors {
+                                pos_render: Some(shown.distance(t.position)),
+                                rot_render: rotation_error(truth, entity, Some(&t), render_tick),
+                                pos_now: now.map(|n| shown.distance(n.position)),
+                                rot_now: now.as_ref().and_then(|n| rotation_error(truth, entity, Some(n), now_tick.unwrap_or(0))),
+                            },
+                            1.0,
+                        );
+                        if identity_bits && wrong_identity(truth, entity, render_tick) {
+                            sinks.wrong_identity(unified, 1.0);
+                        }
+                    }
+                }
+            }
             if entity.kind == KIND_BODY {
                 card.stale.body_frames += 1;
                 let render_tick = (render_us / tick_us).floor().max(0.0) as u32;
@@ -702,6 +870,9 @@ pub fn score_display<T: TruthSource>(
             last_drawn.insert(key, (entity.position, render_us));
         }
     }
+    for (class, acc) in first_draw {
+        all.first_draw.insert(class, acc);
+    }
     card.clock.frames = display.frames.len() as u64;
     card.clock.interp_delay_ms = Pct::of(interp);
     card.clock.dyn_delay_ms = Pct::of(dyn_delay);
@@ -766,6 +937,89 @@ pub fn score_display<T: TruthSource>(
     card
 }
 
+/// Drawn as something truth says it is not: a body of another shape, a
+/// vehicle of another type (the flags' identity bits, clientStage.mts).
+fn wrong_identity<T: TruthSource>(truth: &T, entity: &Entity, tick: u32) -> bool {
+    let drawn = entity.flags >> 4;
+    let Some(tt) = truth.tick(tick) else { return false };
+    match entity.kind {
+        KIND_BODY => tt.bodies.iter().find(|b| b.id == entity.id).is_some_and(|b| b.shape & 0x0f != drawn),
+        KIND_VEHICLE => tt
+            .vehicles
+            .iter()
+            .find(|v| u32::from(v.handle) == entity.id)
+            .is_some_and(|v| v.vehicle_type & 0x0f != drawn),
+        _ => false,
+    }
+}
+
+/// Things in truth and in the recipient's interest at the render time that
+/// the frame does not draw: players (not driving: a driver's avatar is
+/// hidden by design, its vehicle is drawn) within PLAYER_AOI_RADIUS_M,
+/// vehicles within VEHICLE_AOI_RADIUS_M, dynamic bodies within
+/// DYNAMIC_BODY_AOI_RADIUS_M (a meteor's body counts as drawn when the meteor
+/// layer or the body renderer draws it).
+fn missing_draws<T: TruthSource>(
+    truth: &T,
+    player: u32,
+    frame: &DisplayFrame,
+    render_tick: u32,
+    dyn_tick: u32,
+    meteor_ids: &HashSet<u32>,
+    all: &mut Sinks<'_>,
+    first_draw: &mut BTreeMap<&'static str, FirstDrawAcc>,
+) {
+    use vibe_land_shared::constants::{
+        DYNAMIC_BODY_AOI_RADIUS_M, FLAG_IN_VEHICLE, PLAYER_AOI_RADIUS_M, VEHICLE_AOI_RADIUS_M,
+    };
+    let drawn = |kind: u8, id: u32| {
+        frame.entities.iter().any(|e| e.kind == kind && e.id == id && !(kind == KIND_METEOR && e.flags == 3))
+    };
+    if let Some(tt) = truth.tick(render_tick) {
+        if let Some(me) = tt.players.iter().find(|p| p.id == player) {
+            let me = Vec3::from_array(me.position);
+            for other in &tt.players {
+                if other.id != player
+                    && other.flags & FLAG_IN_VEHICLE == 0
+                    && Vec3::from_array(other.position).distance(me) <= PLAYER_AOI_RADIUS_M
+                    && !drawn(KIND_PLAYER, other.id)
+                {
+                    all.missing("player", 1.0);
+                }
+            }
+            for vehicle in &tt.vehicles {
+                if Vec3::from_array(vehicle.position).distance(me) <= VEHICLE_AOI_RADIUS_M
+                    && !drawn(KIND_VEHICLE, u32::from(vehicle.handle))
+                {
+                    let class = if vehicle.driver == player && player != 0 { "vehicle_driven" } else { "vehicle" };
+                    all.missing(class, 1.0);
+                }
+            }
+        }
+    }
+    if let Some(tt) = truth.tick(dyn_tick) {
+        if let Some(me) = tt.players.iter().find(|p| p.id == player) {
+            let me = Vec3::from_array(me.position);
+            for body in &tt.bodies {
+                if Vec3::from_array(body.position).distance(me) > DYNAMIC_BODY_AOI_RADIUS_M {
+                    continue;
+                }
+                if Vec3::from_array(body.velocity).length() > FIRST_DRAW_MOVING_MPS {
+                    let class = if meteor_ids.contains(&body.id) { "meteor" } else { "body" };
+                    first_draw.entry(class).or_default().moving_frame(body.id);
+                }
+                if meteor_ids.contains(&body.id) {
+                    if !drawn(KIND_METEOR, body.id) && !drawn(KIND_BODY, body.id) {
+                        all.missing("meteor", 1.0);
+                    }
+                } else if !drawn(KIND_BODY, body.id) {
+                    all.missing("body", 1.0);
+                }
+            }
+        }
+    }
+}
+
 /// A body counts as streamed to the recipient while truth has it within the
 /// dynamic-body interest exit radius of the recipient (the server's rule in
 /// `snapshot_builder::dynamic_body_within_aoi`, production radius).
@@ -824,16 +1078,73 @@ impl InterestTracker {
     }
 }
 
+/// Where join windows open (page-clock ms): the display's first frame, and
+/// every full city bootstrap the client received after it (the run's
+/// lab.vltape, else the bundle's recorded tape).
+fn join_window_starts(bundle: &Bundle, out: &Path, display: &Display) -> Vec<f64> {
+    let origin = display.header["clockOriginMs"].as_f64().unwrap_or(0.0);
+    let Some(first) = display.frames.first().map(|f| f.sample_ms) else { return Vec::new() };
+    let mut starts = vec![first];
+    let lab = crate::vltape::ClientTape::read(&out.join("lab.vltape")).ok();
+    let tape = lab.as_ref().unwrap_or(&bundle.tape);
+    for packet in &tape.packets {
+        let at = packet.t_ms + origin;
+        if packet.bytes.first() == Some(&vibe_land_shared::constants::PKT_CITY_BOOTSTRAP) && at > first {
+            starts.push(at);
+        }
+    }
+    starts
+}
+
 /// Scores a run directory: displayed.bin (+ presented.bin for the city).
 pub fn score_run(bundle: &Bundle, out: &Path, _stream: &StreamReport) -> std::io::Result<Card> {
     let display = read_display(&out.join("displayed.bin"))?;
     // The same timeline the client stage used (pace-consistent).
     let timeline = Timeline::read(&out.join("timeline.json")).unwrap_or_else(|_| Timeline::of(bundle));
-    let mut card = score_display(bundle, &timeline, bundle.player, &display);
+    // Join windows: the first N s after the client's first frame and after
+    // each full city bootstrap it received (NETLAB2_JOIN_WINDOW_S, default 10).
+    let windows = JoinWindows {
+        seconds: std::env::var("NETLAB2_JOIN_WINDOW_S").ok().and_then(|v| v.parse().ok()).unwrap_or(10.0),
+        starts_ms: join_window_starts(bundle, out, &display),
+    };
+    let mut all = AllDrawsAcc::default();
+    let mut join = AllDrawsAcc::default();
+    let mut card = score_display_into(bundle, &timeline, bundle.player, &display, &mut all, Some((&mut join, &windows)));
     card.city_sync = std::fs::read(out.join("client-stats.json"))
         .ok()
         .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
         .and_then(|stats| CitySync::from_client_stats(&stats));
+    all.city_sync = card.city_sync.clone();
+    // Every city chunk as CityChunksLayer draws it (chunks.rs).
+    let tick_end: HashMap<u32, f64> = timeline.ends.iter().map(|(ms, tick)| (*tick, *ms)).collect();
+    let chunks = out.join(crate::chunks::CHUNKS_FILE);
+    match (&bundle.city, chunks.is_file()) {
+        (Some(city), true) => match crate::chunks::score_chunks(
+            &chunks,
+            &city.dir.join(vibe_land_destruction::netlab::capture::TAPE_FILE),
+            &city.manifest,
+            city.checkpoint.as_ref(),
+            &mut all,
+            Some((&mut join, &windows)),
+            &tick_end,
+        ) {
+            Ok(stats) => card.chunk_stats = Some(stats),
+            Err(error) => all.notes.push(format!("city chunks not scored: {error}")),
+        },
+        (Some(_), false) => all.notes.push(
+            "city chunks not scored: no drawn-chunks.bin (a client tree without cityPoseStore.ts, or a run from before it)"
+                .into(),
+        ),
+        (None, _) => {}
+    }
+    join.notes.push(format!(
+        "frames within {} s of the client's first frame or a full city bootstrap ({} windows)",
+        windows.seconds,
+        windows.starts_ms.len()
+    ));
+    card.all_draws_join = Some(join.report());
+    card.join_windows = Some(windows);
+    card.all_draws = Some(all.report());
     let presented = out.join("presented.bin");
     if let (Some(city), true) = (&bundle.city, presented.is_file()) {
         use vibe_land_destruction::netlab::{cameras, score};
@@ -903,6 +1214,25 @@ pub struct ClientCalibration {
     /// Lab drawn positions vs the live renderers' samples.
     pub vs_live_m: BTreeMap<String, Pct>,
     pub live_samples: u64,
+    /// Lab city chunk tables vs the same client on the recorded tape
+    /// (every 30th common frame, every chunk), metres, and chunks drawn by
+    /// one and not the other.
+    #[serde(default)]
+    pub vs_reference_chunks_m: Option<Pct>,
+    #[serde(default)]
+    pub vs_reference_chunks_drawn_mismatch: u64,
+    /// Lab chunk poses vs the live city layer's samples (`city` in the drawn
+    /// samples; chunks.rs `city_vs_live`).
+    #[serde(default)]
+    pub city_vs_live: Option<crate::chunks::CityLiveCalibration>,
+    /// Same for the recorded-tape replay (separates the lab's link/server
+    /// stages from the client stage's own seams).
+    #[serde(default)]
+    pub reference_city_vs_live: Option<crate::chunks::CityLiveCalibration>,
+    /// All-draws classes the lab drew in this run (what the live comparison
+    /// has to cover).
+    #[serde(default)]
+    pub lab_classes_drawn: Vec<String>,
     pub notes: Vec<String>,
 }
 
@@ -980,6 +1310,25 @@ pub fn vs_live(display: &Display, live_samples: &Path) -> std::io::Result<(BTree
         }
         used += 1;
         let mine = by_key(frame);
+        // The meteor layer's own record of where it drew each rock (its
+        // source and position; hidden rocks are not drawn).
+        for item in world["meteors"].as_array().into_iter().flatten() {
+            let (Some(id), Some(pos)) = (item["bodyId"].as_u64(), item["position"].as_array()) else { continue };
+            if item["source"].as_str().is_some_and(|s| s == "hidden" || s == "none") {
+                continue;
+            }
+            let p: Vec<f32> = pos.iter().filter_map(|v| v.as_f64()).map(|v| v as f32).collect();
+            if p.len() != 3 {
+                continue;
+            }
+            if let Some(entity) = mine.get(&(KIND_METEOR, id as u32)) {
+                if entity.flags != 3 {
+                    live.entry("meteor".into())
+                        .or_default()
+                        .push(Vec3::from_array(entity.position).distance(Vec3::new(p[0], p[1], p[2])));
+                }
+            }
+        }
         for (field, kind) in [("bodies", KIND_BODY), ("vehicles", KIND_VEHICLE), ("players", KIND_PLAYER)] {
             for item in world[field].as_array().into_iter().flatten() {
                 let (Some(id), Some(pos)) = (item["id"].as_u64(), item["position"].as_array()) else { continue };
@@ -1065,12 +1414,32 @@ pub fn client_calibration(
     cal.vs_reference_m = diffs;
     cal.reference_entity_frames_missing_in_lab = missing_in_lab;
     cal.lab_entity_frames_missing_in_reference = missing_in_reference;
+    let (lab_chunks, reference_chunks) =
+        (lab_dir.join(crate::chunks::CHUNKS_FILE), reference_dir.join(crate::chunks::CHUNKS_FILE));
+    if lab_chunks.is_file() && reference_chunks.is_file() {
+        let (diff, mismatch) = crate::chunks::chunks_diff(&lab_chunks, &reference_chunks)?;
+        cal.vs_reference_chunks_m = Some(diff);
+        cal.vs_reference_chunks_drawn_mismatch = mismatch;
+    } else {
+        cal.notes.push("no drawn-chunks.bin (client tree without cityPoseStore.ts): city chunks not calibrated".into());
+    }
     if let Some(path) = live_samples {
         let (lab_live, used) = vs_live(&lab, path)?;
         let (reference_live, _) = vs_live(&reference, path)?;
         cal.vs_live_m = lab_live;
         cal.reference_vs_live_m = reference_live;
         cal.live_samples = used;
+        if lab_chunks.is_file() {
+            let city = crate::chunks::city_vs_live(&lab_chunks, path)?;
+            if city.samples == 0 {
+                cal.notes.push("the live samples carry no city chunk poses (recorded by a client before cityDrawnSample.ts)".into());
+            } else {
+                cal.city_vs_live = Some(city);
+                if reference_chunks.is_file() {
+                    cal.reference_city_vs_live = Some(crate::chunks::city_vs_live(&reference_chunks, path)?);
+                }
+            }
+        }
     } else {
         cal.notes.push("no live-samples.json beside the bundle: live renderer comparison skipped".into());
     }
@@ -1304,5 +1673,78 @@ mod tests {
         assert_eq!(f.entities[0].id, 42);
         assert_eq!(f.entities[0].position, [1.0, 2.0, 3.0]);
         assert_eq!(f.entities[0].age_ms, 12.5);
+    }
+
+    /// The all-draws metric on the entity classes: a perfect client scores
+    /// zero, and each fault (a wrong pose per class, a missing, an extra and
+    /// a wrong-identity draw) is detected where it belongs.
+    #[test]
+    fn all_draws_negative_controls_per_entity_class() {
+        let w = world();
+        let frames = |shift_player: Vec3, shift_body: Vec3, edit: &dyn Fn(&mut DisplayFrame)| -> Display {
+            let mut out = Vec::new();
+            for i in 60..200 {
+                let mut f = frame_at(&w, f64::from(i) * 1000.0 / 60.0, 50.0, Vec3::ZERO, None);
+                for e in &mut f.entities {
+                    let shift = if e.kind == KIND_PLAYER { shift_player } else { shift_body };
+                    e.position = (Vec3::from_array(e.position) + shift).to_array();
+                    if e.kind == KIND_BODY {
+                        e.flags |= SHAPE_SPHERE << 4;
+                    }
+                }
+                edit(&mut f);
+                out.push(f);
+            }
+            Display { header: serde_json::json!({"clockOriginMs": 0.0, "sharedPoses": {"entities": true}}), frames: out }
+        };
+        let score = |d: &Display| score_display(&w, &timeline(), 1, d).all_draws.unwrap();
+        let ok = score(&frames(Vec3::ZERO, Vec3::ZERO, &|_| {}));
+        for class in ["player", "body"] {
+            let c = &ok.classes[class];
+            assert!(c.scored > 100.0 && c.pos_render_m.max < 1e-3, "{class} {c:?}");
+            assert_eq!((c.missing, c.extra, c.wrong_identity), (0.0, 0.0, 0.0), "{class}");
+        }
+        // A wrong pose, per class.
+        let r = score(&frames(Vec3::new(1.0, 0.0, 0.0), Vec3::ZERO, &|_| {}));
+        assert!((r.classes["player"].pos_render_m.p50 - 1.0).abs() < 0.05);
+        assert!(r.classes["body"].pos_render_m.max < 1e-3);
+        let r = score(&frames(Vec3::ZERO, Vec3::new(0.0, 0.0, 0.4), &|_| {}));
+        assert!((r.classes["body"].pos_render_m.p50 - 0.4).abs() < 0.03);
+        assert!(r.classes["player"].pos_render_m.max < 1e-3);
+        // A meteor drawn from its body, 2 m off: its own class.
+        let r = score(&frames(Vec3::ZERO, Vec3::ZERO, &|f| {
+            for e in &mut f.entities {
+                if e.kind == KIND_BODY {
+                    e.kind = KIND_METEOR;
+                    e.flags = 1;
+                    e.position[1] += 2.0;
+                }
+            }
+        }));
+        assert!((r.classes["meteor"].pos_render_m.p50 - 2.0).abs() < 0.1);
+        assert!(!r.classes.contains_key("body") || r.classes["body"].scored == 0.0);
+        // Missing: the walking player is not drawn although in interest.
+        let r = score(&frames(Vec3::ZERO, Vec3::ZERO, &|f| f.entities.retain(|e| e.kind != KIND_PLAYER)));
+        assert_eq!(r.classes["player"].missing, 140.0);
+        // Extra: a body truth never had.
+        let r = score(&frames(Vec3::ZERO, Vec3::ZERO, &|f| {
+            f.entities.push(Entity { kind: KIND_BODY, flags: FLAG_SAMPLED, id: 77, position: [1.0, 1.0, 1.0], quaternion: [0.0, 0.0, 0.0, 1.0], age_ms: 0.0 });
+        }));
+        assert_eq!(r.classes["body"].extra, 140.0);
+        // Wrong identity: the body drawn as a box.
+        let r = score(&frames(Vec3::ZERO, Vec3::ZERO, &|f| {
+            for e in &mut f.entities {
+                if e.kind == KIND_BODY {
+                    e.flags = FLAG_SAMPLED | (2 << 4);
+                }
+            }
+        }));
+        assert_eq!(r.classes["body"].wrong_identity, 140.0);
+        // The spectated self is scored but kept out of the overall figure.
+        let r = score(&frames(Vec3::ZERO, Vec3::ZERO, &|f| {
+            f.entities.push(Entity { kind: KIND_PLAYER, flags: FLAG_SAMPLED, id: 1, position: [30.0, 0.0, 0.0], quaternion: [0.0; 4], age_ms: 0.0 });
+        }));
+        assert!(r.classes["own_avatar"].pos_render_m.p50 > 29.0);
+        assert!(r.overall.pos_render_m.max < 1e-3);
     }
 }

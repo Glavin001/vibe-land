@@ -117,7 +117,9 @@ destruction level (active bodies; broken-bond fraction).
   - meteors: backward on-screen motion, arc→body and hold→body handover
     jumps, drawn below ground while the server sample is above (calls
     `placeMeteor`, the function `MeteorLayer` draws with);
-  - rendered vs server truth: what the renderers drew (`drawnWorld()`, 10 Hz)
+  - rendered vs server truth: what the renderers drew (`drawnWorld()`, 10 Hz;
+    it also carries a rotating sample of city chunk poses from the city
+    layer's own tables, which Netlab v2's calibration compares with the lab)
     against `world.bin` at the client's render time (reconstruction error)
     and at the latest tick (what the player sees vs where things are).
     Bodies drawn after the server stopped streaming them are counted as stale

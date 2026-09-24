@@ -31,6 +31,7 @@ import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import zlib from 'node:zlib';
 
+import { openChunkStream } from './chunkFormat.ts';
 import {
   encodeDisplayFrame,
   encodeDisplayHeader,
@@ -58,6 +59,24 @@ const outDir = resolve(arg('out'));
 const framesMode = arg('frames', 'recorded');
 const clientRoot = resolve(arg('client-root', join(import.meta.dirname, '../..')));
 const label = arg('label', 'lab');
+// Negative control only (docs/netlab-v2.md "Calibration"): `--perturb
+// player=0.5,body=0.5,chunk_island=0.5,...` shifts what is recorded as drawn
+// by that many metres in x per class (player, vehicle, body, meteor,
+// chunk_intact, chunk_island), so a test can check the scorer catches a wrong
+// client in every class. Never set for a measurement; the display header
+// records it.
+const perturb: Record<string, number> = Object.fromEntries(
+  arg('perturb', '').split(',').filter(Boolean).map((kv) => {
+    const [k, v] = kv.split('=');
+    return [k.trim(), Number(v)];
+  }),
+);
+const shift = (entity: DisplayedEntity): DisplayedEntity => {
+  const name = ({ 1: 'player', 2: 'vehicle', 3: 'body', 4: 'meteor' } as Record<number, string>)[entity.kind];
+  const dx = perturb[name] ?? 0;
+  if (!dx) return entity;
+  return { ...entity, position: [entity.position[0] + dx, entity.position[1], entity.position[2]] };
+};
 
 // The client's own clock, driven by the tape. Everything that reads
 // performance.now() (the city client's arrival stamps and pacing valves)
@@ -109,6 +128,12 @@ const { createReplayPlayer } = await import(from('src/city/cityReplay.ts'));
 const meteorFlightsModule = await import(from('src/vfx/meteorFlights.ts'));
 const placementPath = join(clientRoot, 'src/vfx/meteorPlacement.ts');
 const meteorPlacement = existsSync(placementPath) ? await import(pathToFileURL(placementPath).href) : null;
+// The renderers' pose steps (docs/netlab-v2.md seam S10). A client tree that
+// predates them is measured through the replicated glue below and flagged in
+// the display header (`sharedPoses: false`).
+const optional = async (path: string) => (existsSync(join(clientRoot, path)) ? import(from(path)) : null);
+const entityPoses = await optional('src/scene/netEntityPoses.ts');
+const cityPoses = await optional('src/city/cityPoseStore.ts');
 
 const raw = decodeCityTape(new Uint8Array(readFileSync(tapePath)));
 const header = raw.header as Record<string, unknown> & { clockOriginMs?: number; simHz: number; manifestHash: string; wireVersion: number };
@@ -196,6 +221,8 @@ displayFile.write(encodeDisplayHeader({
   clock: 'page (tape ms + clockOriginMs)',
   wasm: { usesWasm: client.serverClock.usesWasm, ...wasmStaleness },
   meteorPlacement: meteorPlacement !== null,
+  sharedPoses: { entities: entityPoses !== null, city: cityPoses !== null, meteorFrame: typeof meteorPlacement?.placeMeteorInFrame === 'function' },
+  perturb,
 }));
 
 const presentedStream = await (async () => {
@@ -261,6 +288,58 @@ function writePresented(nowMs: number): void {
   presentedStream.write(frame);
 }
 
+// ── city chunks as CityChunksLayer draws them ─────────────────────────────
+// The layer's pose tables (cityPoseStore.ts), advanced every frame by the
+// layer's own step (`advanceCityPoses`, the distance stride left out: it is a
+// render-rate choice that lands on the same pose). What changed in the tables
+// is written to drawn-chunks.bin (VLCHNK01, gzip; see chunkFormat.ts); the
+// scorer composes every chunk the way the vertex shader does.
+const chunkStream = cityPoses ? await (async () => {
+  const count = city.topology.chunkCount;
+  const radii = new Float32Array(count);
+  const structures: Array<{ structureId: number; slotBase: number; chunks: number }> = [];
+  for (const structure of manifestJson.structures) {
+    const base = city.topology.slotOf(structure.structureId ?? structure.structure_id, 0);
+    structures.push({ structureId: structure.structureId ?? structure.structure_id, slotBase: base, chunks: structure.chunks.length });
+  }
+  const store = new cityPoses.CityPoseStore(count, radii);
+  store.trackChanges();
+  const intactShift = perturb.chunk_intact ?? 0;
+  const islandShift = perturb.chunk_island ?? 0;
+  const shiftX = intactShift || islandShift
+    ? (key: number) => ((key & 0x0f_ffff) === 0 ? intactShift : islandShift)
+    : null;
+  const writer = openChunkStream(join(outDir, 'drawn-chunks.bin'), {
+    format: 'VLCHNK01',
+    chunkCount: count,
+    structures,
+    simHz: header.simHz,
+    clockOriginMs: originMs,
+    stride: 'none (every body every frame)',
+    tables: 'CityPoseStore after advanceCityPoses: body index -> (key, pose), slot -> (body index, local offset, local rotation)',
+    perturb,
+  }, shiftX);
+  return { store, writer, state: null as null | { dirty: Set<number>; pendingRecords: Set<number>; lastLedgerEpoch: number }, radii, frames: 0 };
+})() : null;
+
+/** One frame of the city: the layer's pose step, then what changed in its tables. */
+function drawCity(nowMs: number, simTick: number): void {
+  if (!chunkStream || !cityPoses) {
+    city.samplePresentation(nowMs);
+    return;
+  }
+  const { store, radii } = chunkStream;
+  if (!chunkStream.state) {
+    // The layer builds its tables on its first frame with a client (buildCityMesh).
+    cityPoses.initCityPoses(store, city, radii);
+    chunkStream.state = cityPoses.newCityPoseFrameState(city);
+  }
+  cityPoses.advanceCityPoses(store, city, radii, chunkStream.state, nowMs, {});
+  const clock = city.presentationClock();
+  chunkStream.writer.frame(nowMs, simTick, clock.renderTick, clock.playoutDelayTicks, store, store.drainChanges());
+  chunkStream.frames += 1;
+}
+
 const TICK_US = Math.round(1_000_000 / header.simHz);
 let sampled = 0;
 let skippedBeforeStart = 0;
@@ -302,57 +381,92 @@ for (const [what, index] of events) {
   const renderUs = client.getRenderTimeUs(localUs);
   const dynRenderUs = client.getDynamicBodyRenderTimeUs(localUs);
   const entities: DisplayedEntity[] = [];
-  for (const id of client.remotePlayers.keys()) {
+  // Remote players, as RemotePlayersRenderer draws them: the pose step is
+  // netEntityPoses.ts `resolveRemotePlayerDraw`; a player in a vehicle (or
+  // hidden) is not drawn, its vehicle is.
+  for (const [id, latest] of client.remotePlayers) {
     const sample = client.sampleRemotePlayer(id, renderUs);
-    const latest = client.remotePlayers.get(id)!;
-    const position = sample?.position ?? latest.position;
+    if (entityPoses) {
+      const draw = entityPoses.resolveRemotePlayerDraw(
+        id, latest, sample, client.vehicles, (v: number, at: number) => client.sampleRemoteVehicle(v, at), renderUs,
+      );
+      if (!draw.visible) continue;
+      entities.push({
+        kind: KIND_PLAYER,
+        flags: draw.sampled ? FLAG_SAMPLED : 0,
+        id,
+        position: draw.position,
+        quaternion: [draw.yaw, sample?.pitch ?? latest.pitch, 0, 0],
+        ageMs: Number.NaN,
+      });
+      continue;
+    }
     entities.push({
       kind: KIND_PLAYER,
       flags: sample ? FLAG_SAMPLED : 0,
       id,
-      position,
+      position: sample?.position ?? latest.position,
       quaternion: [sample?.yaw ?? latest.yaw, sample?.pitch ?? latest.pitch, 0, 0],
       ageMs: Number.NaN,
     });
   }
+  // Vehicles (GameWorld's pose callback: netEntityPoses.ts `remoteVehicleDrawPose`).
+  // Flags: bit 0 sampled, bits 4-7 the vehicle type (identity).
   for (const [id, latest] of client.vehicles) {
     const sample = client.sampleRemoteVehicle(id, renderUs);
+    const pose = entityPoses
+      ? entityPoses.remoteVehicleDrawPose(latest, sample)
+      : { position: sample?.position ?? latest.position, quaternion: sample?.quaternion ?? latest.quaternion, sampled: sample !== null };
     entities.push({
       kind: KIND_VEHICLE,
-      flags: sample ? FLAG_SAMPLED : 0,
+      flags: (pose.sampled ? FLAG_SAMPLED : 0) | (((latest.vehicleType ?? 0) & 0x0f) << 4),
       id,
-      position: sample?.position ?? latest.position,
-      quaternion: sample?.quaternion ?? latest.quaternion,
+      position: pose.position,
+      quaternion: pose.quaternion,
       ageMs: client.getVehicleObservedAgeMs(id, localUs) ?? Number.NaN,
     });
   }
-  for (const id of client.dynamicBodies.keys()) {
-    // DynamicBodiesRenderer (netEntityRenderers.ts) skips meteor bodies: the
-    // meteor layer draws them (below).
-    if (meteorFlightsModule.isMeteorBody(id)) continue;
+  // Dynamic bodies, as DynamicBodiesRenderer draws them: netEntityPoses.ts
+  // `resolveDynamicBodyDraws` (meteor bodies skipped: the meteor layer draws
+  // them), with MultiplayerGameRuntime's rendered state for a player who is
+  // not touching the body: the interpolated state, else the latest.
+  // Flags: bit 0 sampled, bits 4-7 the shape type (identity).
+  const rendered = (id: number) => client.getInterpolatedDynamicBodyState(id);
+  const bodyDraws: Array<{ id: number; body: { position: number[]; quaternion: number[]; shapeType: number } }> = entityPoses
+    ? entityPoses.resolveDynamicBodyDraws(client.dynamicBodies, rendered)
+    : [...client.dynamicBodies.keys()]
+        .filter((id: number) => !meteorFlightsModule.isMeteorBody(id))
+        .map((id: number) => ({ id, body: rendered(id) }))
+        .filter((draw: { body: unknown }) => draw.body);
+  for (const { id, body } of bodyDraws) {
     const sampled_ = client.sampleRemoteDynamicBody(id, dynRenderUs);
-    const drawn = client.getInterpolatedDynamicBodyState(id);
-    if (!drawn) continue;
     entities.push({
       kind: KIND_BODY,
-      flags: sampled_ ? FLAG_SAMPLED : 0,
+      flags: (sampled_ ? FLAG_SAMPLED : 0) | ((body.shapeType & 0x0f) << 4),
       id,
-      position: drawn.position,
-      quaternion: drawn.quaternion,
+      position: body.position,
+      quaternion: body.quaternion,
       ageMs: client.getDynamicBodyObservedAgeMs(id, localUs) ?? Number.NaN,
     });
   }
-  // Meteors, as MeteorLayer places them (meteorPlacement.ts).
+  // Meteors, as MeteorLayer places them (meteorPlacement.ts `placeMeteorInFrame`).
   if (meteorPlacement) {
     const flights = meteorFlightsModule.meteorFlights(t, dynRenderUs);
     for (const flight of flights) {
-      const placed = meteorPlacement.placeMeteor(flight, flight.track, {
-        renderServerUs: dynRenderUs,
-        samples: client.getDynamicBodySamples(flight.bodyId),
-        ticksSinceSeen: client.getDynamicBodyTicksSinceSeen(flight.bodyId),
-        tickUs: TICK_US,
-        nowMs: t,
-      });
+      const placed = typeof meteorPlacement.placeMeteorInFrame === 'function'
+        ? meteorPlacement.placeMeteorInFrame(flight, client, {
+          renderServerUs: dynRenderUs,
+          lagMs: client.dynamicBodyInterpolationDelayMs,
+          nowMs: t,
+          tickUs: TICK_US,
+        })
+        : meteorPlacement.placeMeteor(flight, flight.track, {
+          renderServerUs: dynRenderUs,
+          samples: client.getDynamicBodySamples(flight.bodyId),
+          ticksSinceSeen: client.getDynamicBodyTicksSinceSeen(flight.bodyId),
+          tickUs: TICK_US,
+          nowMs: t,
+        });
       entities.push({
         kind: KIND_METEOR,
         flags: METEOR_SOURCE[placed.source] ?? 255,
@@ -363,7 +477,7 @@ for (const [what, index] of events) {
       });
     }
   }
-  city.samplePresentation(t);
+  drawCity(t, simTickAt(t));
   if (!probe) runProbe();
   const { offsetUs, dynDelayMs } = probe!;
   clientMs += realNow() - started;
@@ -375,7 +489,7 @@ for (const [what, index] of events) {
     dynDelayMs,
     renderUs,
     dynRenderUs,
-    entities,
+    entities: entities.map(shift),
   }));
   writePresented(t);
   sampled += 1;
@@ -385,6 +499,7 @@ await new Promise<void>((done, fail) => {
   displayFile.on('error', fail);
 });
 await presentedStream.end();
+if (chunkStream) await chunkStream.writer.end();
 
 const stats = {
   label,
@@ -399,6 +514,8 @@ const stats = {
   serverWallClock: client.serverClock.hasServerWallClock?.() ?? null,
   wasm: wasmStaleness,
   meteorPlacement: meteorPlacement !== null,
+  sharedPoses: { entities: entityPoses !== null, city: cityPoses !== null },
+  chunkFrames: chunkStream?.frames ?? 0,
   clientCpuMs: +clientMs.toFixed(1),
   city: city.stats(),
 };

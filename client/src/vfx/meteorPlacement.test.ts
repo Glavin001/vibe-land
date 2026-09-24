@@ -8,7 +8,7 @@ import {
   newMeteorTrack,
   type MeteorFlight,
 } from './meteorFlights';
-import { placeMeteor, STALE_AFTER_TICKS } from './meteorPlacement';
+import { METEOR_TICK_US, placeMeteor, placeMeteorInFrame, STALE_AFTER_TICKS } from './meteorPlacement';
 
 const G = 9.81;
 const TICK_US = Math.round(1_000_000 / 60);
@@ -177,5 +177,27 @@ describe('placeMeteor', () => {
     f.track.lastBodyUs = LAUNCH_US + 3_000_000;
     expect(meteorFlightForgotten(f, 0, LAUNCH_US + 3_700_000)).toBe(false);
     expect(meteorFlightForgotten(f, 0, LAUNCH_US + 3_800_000)).toBe(true);
+  });
+
+  it('placeMeteorInFrame is the layer\'s call: the frame\'s body render time, the feed\'s samples', () => {
+    const f = flight();
+    const renderServerUs = LAUNCH_US + 1_000_000;
+    const direct = placeMeteor(flight(), newMeteorTrack(), {
+      renderServerUs, samples: [], ticksSinceSeen: null, tickUs: METEOR_TICK_US, nowMs: 10,
+    });
+    const asked: number[] = [];
+    const feed = {
+      getDynamicBodySamples: (id: number) => { asked.push(id); return [] as DynamicBodySample[]; },
+      getDynamicBodyTicksSinceSeen: () => null,
+    };
+    const framed = placeMeteorInFrame(f, feed, { renderServerUs, lagMs: 20, nowMs: 10 });
+    expect(asked).toEqual([f.bodyId]);
+    expect(framed.source).toBe('arc');
+    expect(framed.position).toEqual(direct.position);
+    // Nothing connected yet: the arc runs on the local clock, a delay behind.
+    const local = placeMeteorInFrame(flight(), null, { renderServerUs: null, lagMs: 100, nowMs: 1100 });
+    const t = (1100 - 100) / 1000;
+    const expected = meteorPositionAt(f, t, [0, 0, 0]);
+    for (let k = 0; k < 3; k += 1) expect(local.position[k]).toBeCloseTo(expected[k], 6);
   });
 });

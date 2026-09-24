@@ -26,7 +26,7 @@ import {
   type VehicleStateMeters,
 } from '../net/protocol';
 import type { GameRuntimeClient } from '../runtime/gameRuntime';
-import { isMeteorBody } from '../vfx/meteorFlights';
+import { resolveDynamicBodyDraws, resolveRemotePlayerDraw } from './netEntityPoses';
 import { createRemotePlayer, type RemotePlayerHandle, type RemoteRenderState } from './characterAnim/CharacterFactory';
 import { STATE } from './characterAnim/types';
 import {
@@ -162,9 +162,11 @@ export class RemotePlayersRenderer {
       const idLabel = handle.root.getObjectByName('idLabel');
       if (idLabel) idLabel.visible = frame.showPlayerIdLabels && !hidden;
       const sample = frame.sample(id, renderTimeUs);
-      const remoteFlags = sample?.flags ?? (rp.hp <= 0 ? FLAG_DEAD : 0);
-      let position = sample?.position ?? rp.position;
-      let yaw = sample?.yaw ?? rp.yaw;
+      // Where it is drawn (netEntityPoses.ts, shared with Netlab v2).
+      const draw = resolveRemotePlayerDraw(id, rp, sample, frame.vehicles, frame.sampleVehicle, renderTimeUs, frame.hidden);
+      const remoteFlags = draw.flags;
+      const position = draw.position;
+      let yaw = draw.yaw;
       const replicatedHp = rp.hp;
       const previousHp = this.lastHp.get(id);
       if (previousHp != null && replicatedHp < previousHp) {
@@ -181,28 +183,21 @@ export class RemotePlayersRenderer {
         handle.playOneShot('Melee_Hook');
       }
       this.lastMeleeing.set(id, isMeleeing);
-      if (isInVehicle) {
-        for (const [vehicleId, vehicleState] of frame.vehicles) {
-          if (vehicleState.driverId !== id) continue;
-          const vehicleSample = frame.sampleVehicle(vehicleId, renderTimeUs);
-          const vehiclePosition = vehicleSample?.position ?? vehicleState.position;
-          const vehicleQuaternion = vehicleSample?.quaternion ?? vehicleState.quaternion;
-          position = [vehiclePosition[0], vehiclePosition[1] + 0.8, vehiclePosition[2]];
-          yaw = new THREE.Euler().setFromQuaternion(
-            new THREE.Quaternion(
-              vehicleQuaternion[0],
-              vehicleQuaternion[1],
-              vehicleQuaternion[2],
-              vehicleQuaternion[3],
-            ),
-            'YXZ',
-          ).y;
-          break;
-        }
+      const vehicleQuaternion = draw.vehicleQuaternion;
+      if (vehicleQuaternion) {
+        yaw = new THREE.Euler().setFromQuaternion(
+          new THREE.Quaternion(
+            vehicleQuaternion[0],
+            vehicleQuaternion[1],
+            vehicleQuaternion[2],
+            vehicleQuaternion[3],
+          ),
+          'YXZ',
+        ).y;
       }
       handle.root.position.set(position[0], position[1], position[2]);
       handle.root.rotation.y = yaw;
-      handle.setVisible(!isInVehicle && !hidden);
+      handle.setVisible(draw.visible);
       const debugHelper = handle.root.getObjectByName(PLAYER_DEBUG_HELPER_NAME);
       if (debugHelper) debugHelper.visible = frame.showDebugHelpers && !isInVehicle && !hidden;
 
@@ -311,12 +306,11 @@ export class DynamicBodiesRenderer {
     rendered: (id: number) => DynamicBodyStateMeters | null,
   ): void {
     const activeBodies = new Set<number>();
-    for (const [id, body] of bodies) {
-      // A meteor is drawn by its own layer as a burning rock; the sphere
-      // the physics streams for it stays unrendered.
-      if (isMeteorBody(id)) continue;
+    // Which bodies, at which pose (netEntityPoses.ts, shared with Netlab v2).
+    // A meteor is drawn by its own layer as a burning rock; the sphere the
+    // physics streams for it stays unrendered.
+    for (const { id, body: renderBody } of resolveDynamicBodyDraws(bodies, rendered)) {
       activeBodies.add(id);
-      const renderBody = rendered(id) ?? body;
       let mesh = this.meshes.get(id);
       if (!mesh) {
         let geom: THREE.BufferGeometry;

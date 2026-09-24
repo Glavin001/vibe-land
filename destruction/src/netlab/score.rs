@@ -388,9 +388,24 @@ pub struct Scorecard {
     pub by_size: BTreeMap<String, CellReport>,
     pub by_radius: BTreeMap<String, CellReport>,
     /// Truth bodies awake and moving that the client had no pose for at all
-    /// (chunk-weighted body-frames) -- coverage, not accuracy.
+    /// (chunk-weighted body-frames) -- coverage, not accuracy. Judged at the
+    /// server's CURRENT tick (`sim_tick`), so it also counts bodies promoted
+    /// after the tick the client is presenting, which no client can show yet
+    /// (the presentation runs a playout delay behind, and topology is held to
+    /// it): on a slow link this is mostly that. See the `_at_render` fields.
     pub missing_moving_weight: f32,
     pub missing_moving_body_frames: u64,
+    /// Of `missing_moving_body_frames`: bodies promoted after the presented
+    /// tick (`render_tick - playout_delay`) -- not yet showable.
+    #[serde(default)]
+    pub missing_moving_born_after_render_body_frames: u64,
+    /// Coverage judged at the presented tick: truth bodies that existed,
+    /// were not settled and were moving at the tick the client presents,
+    /// with no client pose. This is the real gap.
+    #[serde(default)]
+    pub missing_moving_at_render_weight: f32,
+    #[serde(default)]
+    pub missing_moving_at_render_body_frames: u64,
     /// Final presented pose vs truth settle pose for bodies truth settled.
     pub settle_pos_m: Pct,
     pub settle_lever_m: Pct,
@@ -423,6 +438,10 @@ struct TruthBody {
     free_run: u32,
     chunks: u32,
     radius: f32,
+    /// First tick truth had it (promotion, or first streamed sample).
+    born: u32,
+    /// Settle ticks, to judge "not settled at the presented tick".
+    settled_at: Option<u32>,
 }
 
 impl TruthBody {
@@ -551,6 +570,9 @@ pub fn score(
     let mut by_radius: BTreeMap<&'static str, Cell> = BTreeMap::new();
     let mut missing_moving_weight = 0.0f64;
     let mut missing_moving_body_frames = 0u64;
+    let mut missing_born_after_render = 0u64;
+    let mut missing_at_render_weight = 0.0f64;
+    let mut missing_at_render_body_frames = 0u64;
     let mut playout = WeightedHist::default();
     let mut free_fall_accel_sum = 0.0f64;
     let mut free_fall_accel_n = 0u64;
@@ -599,6 +621,8 @@ pub fn score(
                         free_run: 0,
                         chunks: 0,
                         radius,
+                        born: tick.tick,
+                        settled_at: None,
                     });
                     body.chunks = nodes.len() as u32;
                     body.radius = radius;
@@ -656,6 +680,8 @@ pub fn score(
                         free_run: 0,
                         chunks,
                         radius,
+                        born: tick.tick,
+                        settled_at: None,
                     }
                 });
                 body.settled = None;
@@ -695,6 +721,7 @@ pub fn score(
                 ledger.apply_settle(settle);
                 let key = ids::body_entity(settle.structure_id, settle.island_id);
                 if let Some(body) = truth.get_mut(&key) {
+                    body.settled_at = Some(tick.tick);
                     body.settled = Some(Pose {
                         position: Vec3::from_array(settle.position),
                         rotation: Quat::from_array(settle.rotation),
@@ -892,21 +919,33 @@ pub fn score(
             bodies_scored.insert(*key);
         }
 
-        // Coverage: truth bodies moving now that the client has never drawn.
+        // Coverage: truth bodies moving that the client has never drawn --
+        // at the server's current tick (the original figure) and at the tick
+        // the client presents (the real gap).
         for (key, truth_body) in &truth {
             let (_, serial) = ids::body_entity_parts(*key);
-            if serial == 0 || shown.contains_key(key) || truth_body.settled.is_some() {
+            if serial == 0 || shown.contains_key(key) {
                 continue;
             }
-            if let Some(latest) = truth_body.latest() {
-                if latest.pose.position.cmplt(escape_min).any()
-                    || latest.pose.position.cmpgt(escape_max).any()
-                {
-                    continue;
+            let Some(latest) = truth_body.latest() else { continue };
+            if latest.pose.position.cmplt(escape_min).any() || latest.pose.position.cmpgt(escape_max).any() {
+                continue;
+            }
+            if truth_body.settled.is_none() && latest.tick + 2 >= frame.sim_tick && latest.velocity.length() > REST_SPEED {
+                missing_moving_weight += f64::from(truth_body.chunks.max(1));
+                missing_moving_body_frames += 1;
+                if truth_body.born as f32 > sample_tick {
+                    missing_born_after_render += 1;
                 }
-                if latest.tick + 2 >= frame.sim_tick && latest.velocity.length() > REST_SPEED {
-                    missing_moving_weight += f64::from(truth_body.chunks.max(1));
-                    missing_moving_body_frames += 1;
+            }
+            if truth_body.born as f32 <= sample_tick {
+                let settled_then = truth_body.settled.is_some()
+                    && truth_body.settled_at.is_some_and(|at| at as f32 <= sample_tick);
+                if let (false, Some((_, velocity, _))) = (settled_then, truth_body.pose_at(sample_tick)) {
+                    if velocity.length() > REST_SPEED {
+                        missing_at_render_weight += f64::from(truth_body.chunks.max(1));
+                        missing_at_render_body_frames += 1;
+                    }
                 }
             }
         }
@@ -957,6 +996,9 @@ pub fn score(
         by_radius: by_radius.iter().map(|(k, v)| (k.to_string(), v.report())).collect(),
         missing_moving_weight: missing_moving_weight as f32,
         missing_moving_body_frames,
+        missing_moving_born_after_render_body_frames: missing_born_after_render,
+        missing_moving_at_render_weight: missing_at_render_weight as f32,
+        missing_moving_at_render_body_frames: missing_at_render_body_frames,
         settle_pos_m: settle_pos.summary(),
         settle_lever_m: settle_lever.summary(),
         settled_bodies,
@@ -1058,9 +1100,12 @@ pub fn markdown(card: &Scorecard) -> String {
     }
     let _ = writeln!(
         out,
-        "\nmissing moving: {:.0} chunk-frames ({} body-frames) · settled {} bodies: pos p95 {:.3} m max {:.3} · lever p95 {:.3} m · escaped the world: {} bodies ({} body-frames, excluded)\n",
+        "\nmissing moving at the server's tick: {:.0} chunk-frames ({} body-frames; {} promoted after the presented tick) · at the presented tick: {:.0} chunk-frames ({} body-frames) · settled {} bodies: pos p95 {:.3} m max {:.3} · lever p95 {:.3} m · escaped the world: {} bodies ({} body-frames, excluded)\n",
         card.missing_moving_weight,
         card.missing_moving_body_frames,
+        card.missing_moving_born_after_render_body_frames,
+        card.missing_moving_at_render_weight,
+        card.missing_moving_at_render_body_frames,
         card.settled_bodies,
         card.settle_pos_m.p95,
         card.settle_pos_m.max,
@@ -1069,4 +1114,123 @@ pub fn markdown(card: &Scorecard) -> String {
         card.escaped_body_frames
     );
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::city::{build_city_scene, CitySceneDesc};
+    use crate::encoder::BodySnapshotInput;
+    use crate::netlab::tape::{TapeCamera, TapeWriter};
+    use crate::scene_pack::parse_scene_pack;
+    use vibe_netcode::destruction_backend::{DestructionTickOutput, FractureBatch, IslandPromotion};
+
+    fn manifest() -> DestructionManifest {
+        let pack = parse_scene_pack(
+            r#"{
+            "version": 1, "title": "tiny",
+            "scenario": {
+                "nodes": [
+                    {"centroid": {"x": 0, "y": 0, "z": 0}, "mass": 0, "volume": 1},
+                    {"centroid": {"x": 0, "y": 1, "z": 0}, "mass": 10, "volume": 1}
+                ],
+                "bonds": [
+                    {"node0": 0, "node1": 1, "centroid": {"x": 0, "y": 0.5, "z": 0}, "normal": {"x": 0, "y": 1, "z": 0}, "area": 1.0}
+                ],
+                "nodeSizes": [{"x": 1, "y": 1, "z": 1}, {"x": 1, "y": 1, "z": 1}],
+                "nodeColliders": [
+                    {"kind": "cuboid", "halfExtents": {"x": 0.5, "y": 0.5, "z": 0.5}},
+                    {"kind": "cuboid", "halfExtents": {"x": 0.5, "y": 0.5, "z": 0.5}}
+                ]
+            }
+        }"#,
+        )
+        .expect("pack");
+        DestructionManifest::from_city(
+            &build_city_scene(&pack, CitySceneDesc { grid: 1, pitch_m: 10.0, varied_heights: false }).expect("city"),
+        )
+    }
+
+    /// Coverage judged at the server's tick counts a body the client cannot
+    /// have yet (promoted after the tick it presents); judged at the
+    /// presented tick it does not, and a body it should have drawn but did
+    /// not is still counted.
+    #[test]
+    fn coverage_is_judged_at_the_presented_tick_too() {
+        const PROMOTED: u32 = 20;
+        const DELAY: f32 = 6.0;
+        let dir = std::env::temp_dir().join(format!("netlab-cov-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let m = manifest();
+        let tape = dir.join("encoder.tape");
+        let camera = TapeCamera { eye: [0.0, 5.0, -20.0], direction: [0.0, 0.0, 1.0], fov_degrees: 60.0 };
+        let mut w = TapeWriter::create(&tape, 60, m.hash(), camera).unwrap();
+        let key = ids::body_entity(0, 1);
+        for tick in 0..=60u32 {
+            let mut output = DestructionTickOutput::default();
+            if tick == PROMOTED {
+                output.batches.push(FractureBatch {
+                    structure_id: 0,
+                    promoted_islands: vec![IslandPromotion {
+                        structure_id: 0,
+                        island_id: 1,
+                        chunks: vec![ids::chunk_id(0, 1)],
+                        position: [0.0, 1.0, 0.0],
+                        rotation: [0.0, 0.0, 0.0, 1.0],
+                        linear_velocity: [0.0, -3.0, 0.0],
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                });
+            }
+            let snapshots: Vec<BodySnapshotInput> = if tick > PROMOTED {
+                vec![BodySnapshotInput {
+                    body_entity: key,
+                    position: [0.0, 1.0 - 0.05 * (tick - PROMOTED) as f32, 0.0],
+                    rotation: [0.0, 0.0, 0.0, 1.0],
+                    linear_velocity: [0.0, -3.0, 0.0],
+                    angular_velocity: [0.0; 3],
+                    contacts: 0,
+                    flags: 0,
+                }]
+            } else {
+                vec![]
+            };
+            w.push(tick, &snapshots, &output).unwrap();
+        }
+        w.finish().unwrap();
+        // A client presenting DELAY ticks behind the server that never draws
+        // the island body at all.
+        let presented = dir.join("presented.bin");
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"VLPRES01");
+        for v in [60u32, 60, 0] {
+            bytes.extend_from_slice(&v.to_le_bytes());
+        }
+        for tick in 0..=60u32 {
+            bytes.extend_from_slice(&tick.to_le_bytes());
+            bytes.extend_from_slice(&(tick as f32).to_le_bytes());
+            bytes.extend_from_slice(&DELAY.to_le_bytes());
+            bytes.extend_from_slice(&0u32.to_le_bytes());
+            bytes.extend_from_slice(&0u32.to_le_bytes());
+        }
+        std::fs::write(&presented, bytes).unwrap();
+        let options = ScoreOptions {
+            camera: CameraSpec::parse("static:eye=0,5,-20;look=0,0,0").unwrap(),
+            profile: "test".into(),
+            window: None,
+            gravity: 9.81,
+            dump_worst: 0,
+        };
+        let card = score(&tape, &m, &PlayerTracks::from_samples(&[]), &presented, &options).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        // Moving at the server's tick: frames 20..=60 (41 frames, from the
+        // promotion on); the first DELAY of them were promoted after the
+        // presented tick.
+        assert_eq!(card.missing_moving_body_frames, 41);
+        assert_eq!(card.missing_moving_born_after_render_body_frames, 6);
+        // At the presented tick (tick - 6): the body exists and moves from
+        // presented tick 20 on, frames 26..=60.
+        assert_eq!(card.missing_moving_at_render_body_frames, 35);
+    }
 }

@@ -235,6 +235,12 @@ pub fn cmd_calibrate(args: &Args) {
     let client = crate::score::client_calibration(&bundle, &out, &reference, live_samples.as_deref())
         .unwrap_or_else(|e| die(&e.to_string()));
     let card = crate::score::score_run(&bundle, &out, &run.report).unwrap_or_else(|e| die(&e.to_string()));
+    let mut client = client;
+    client.lab_classes_drawn = card
+        .all_draws
+        .as_ref()
+        .map(|all| all.classes.iter().filter(|(_, c)| c.scored > 0.0).map(|(k, _)| k.clone()).collect())
+        .unwrap_or_default();
     crate::report::write_run_report(&out, &run.report, &card).unwrap();
     let verdict = crate::report::write_calibration(&out, &bytes, &client, args.get("strict").is_some())
         .unwrap_or_else(|e| die(&e.to_string()));

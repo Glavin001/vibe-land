@@ -29,16 +29,17 @@
 
 import * as THREE from 'three';
 
-/**
- * Depth below which a chunk cannot be poking through the flat y=0 ground no
- * matter its size or orientation, so drawing it is pure waste.
- */
-export const CHUNK_HIDE_Y_M = -4;
+import {
+  CHUNK_HIDE_Y_M,
+  CityPoseStore,
+  FLOATS_PER_BODY,
+  FLOATS_PER_CHUNK,
+  INITIAL_BODY_CAPACITY,
+} from '../city/cityPoseStore';
+
+export { CHUNK_HIDE_Y_M };
 
 export type CityRenderable = { kind: 'slots'; mesh: CitySlotMesh };
-
-const FLOATS_PER_BODY = 16;
-const FLOATS_PER_CHUNK = 8;
 
 function textureSideFor(texels: number): number {
   let size = Math.sqrt(Math.max(4, texels));
@@ -54,85 +55,38 @@ function makeFloatTexture(side: number): { data: Float32Array<ArrayBuffer>; text
 }
 
 /**
- * The two textures and the bookkeeping that keeps them true.
- *
- * Body indices are handed out as bodies are first written and given back only
- * once the body is gone AND no chunk record points at it any more, so a stale
- * record (a chunk orphaned by a retire, drawn at its last pose until it is
- * adopted -- the same behaviour the CPU path had) can never be read against
- * some other body that inherited the index.
+ * The pose tables (city/cityPoseStore.ts, shared with Netlab's headless
+ * client stage) backed by the two float textures the vertex shader reads.
  */
-export class CityGpuPoses {
-  readonly chunkCount: number;
-  readonly chunkData: Float32Array<ArrayBuffer>;
+export class CityGpuPoses extends CityPoseStore {
   readonly chunkTexture: THREE.DataTexture;
-  bodyData: Float32Array<ArrayBuffer>;
   bodyTexture: THREE.DataTexture;
-  bodyCapacity: number;
-  /** Slot -> body index its record names, or -1 before its first record. */
-  readonly bodyIndexOfSlot: Int32Array;
-  /** Slot -> |local offset| + chunk radius: how far a chunk can be from its body's origin. */
-  readonly reachOfSlot: Float32Array;
-  private readonly indexOfBody = new Map<number, number>();
-  private readonly bodyOfIndex: number[] = [];
-  private readonly recordsOnIndex: number[] = [];
-  private readonly freeIndices: number[] = [];
-  /** Indices whose body is gone; released once their record count reaches zero. */
-  private readonly retiringIndices = new Set<number>();
-  private nextIndex = 0;
-  private chunkDirty = false;
-  private bodyDirty = false;
   /** Materials hold the body texture as a uniform; a grown texture is a new object. */
   private readonly textureListeners = new Set<(texture: THREE.DataTexture) => void>();
   /** 1 while the debug palette colours bodies, so the shader fetches the colour texel. */
   readonly bodyColoursUniform = { value: 0 };
+  /** The texture a growth just allocated, until `bodiesGrown` adopts it. */
+  private grownTexture: THREE.DataTexture | null = null;
 
   constructor(chunkCount: number, radii: Float32Array) {
-    this.chunkCount = chunkCount;
-    const chunkSide = textureSideFor(chunkCount * (FLOATS_PER_CHUNK / 4));
-    const chunk = makeFloatTexture(chunkSide);
-    this.chunkData = chunk.data;
+    const chunk = makeFloatTexture(textureSideFor(chunkCount * (FLOATS_PER_CHUNK / 4)));
+    const body = makeFloatTexture(textureSideFor(INITIAL_BODY_CAPACITY * (FLOATS_PER_BODY / 4)));
+    super(chunkCount, radii, chunk.data, body.data, INITIAL_BODY_CAPACITY);
     this.chunkTexture = chunk.texture;
-    this.bodyCapacity = 4096;
-    const body = makeFloatTexture(textureSideFor(this.bodyCapacity * (FLOATS_PER_BODY / 4)));
-    this.bodyData = body.data;
     this.bodyTexture = body.texture;
-    this.bodyIndexOfSlot = new Int32Array(chunkCount).fill(-1);
-    this.reachOfSlot = new Float32Array(chunkCount);
-    for (let slot = 0; slot < chunkCount; slot += 1) this.reachOfSlot[slot] = radii[slot];
   }
 
-  /** The index a body writes at, allocating on first sight. */
-  bodyIndexFor(key: number): number {
-    const existing = this.indexOfBody.get(key);
-    if (existing !== undefined) return existing;
-    let index: number;
-    if (this.freeIndices.length > 0) {
-      index = this.freeIndices.pop()!;
-    } else {
-      index = this.nextIndex;
-      this.nextIndex += 1;
-      if (index >= this.bodyCapacity) this.growBodies();
-    }
-    this.indexOfBody.set(key, index);
-    this.bodyOfIndex[index] = key;
-    this.recordsOnIndex[index] = this.recordsOnIndex[index] ?? 0;
-    return index;
-  }
-
-  hasBody(key: number): boolean {
-    return this.indexOfBody.has(key);
-  }
-
-  private growBodies(): void {
-    const capacity = this.bodyCapacity * 2;
+  protected override allocateBodies(capacity: number): Float32Array {
     const grown = makeFloatTexture(textureSideFor(capacity * (FLOATS_PER_BODY / 4)));
-    grown.data.set(this.bodyData.subarray(0, this.bodyCapacity * FLOATS_PER_BODY));
+    this.grownTexture = grown.texture;
+    return grown.data;
+  }
+
+  protected override bodiesGrown(): void {
+    if (!this.grownTexture) return;
     this.bodyTexture.dispose();
-    this.bodyData = grown.data;
-    this.bodyTexture = grown.texture;
-    this.bodyCapacity = capacity;
-    this.bodyDirty = true;
+    this.bodyTexture = this.grownTexture;
+    this.grownTexture = null;
     for (const listener of this.textureListeners) listener(this.bodyTexture);
   }
 
@@ -141,119 +95,11 @@ export class CityGpuPoses {
     return () => this.textureListeners.delete(listener);
   }
 
-  /**
-   * A body the ledger no longer has. Its index is reused only once no chunk
-   * record names it.
-   */
-  releaseBody(key: number): void {
-    const index = this.indexOfBody.get(key);
-    if (index === undefined) return;
-    this.indexOfBody.delete(key);
-    this.bodyOfIndex[index] = -1;
-    if ((this.recordsOnIndex[index] ?? 0) > 0) this.retiringIndices.add(index);
-    else this.freeIndices.push(index);
-  }
-
-  writeBody(
-    index: number,
-    position: ArrayLike<number>,
-    rotation: ArrayLike<number>,
-    tint: number,
-    r: number,
-    g: number,
-    b: number,
-  ): void {
-    const at = index * FLOATS_PER_BODY;
-    const data = this.bodyData;
-    data[at] = position[0];
-    data[at + 1] = position[1];
-    data[at + 2] = position[2];
-    data[at + 3] = tint;
-    data[at + 4] = rotation[0];
-    data[at + 5] = rotation[1];
-    data[at + 6] = rotation[2];
-    data[at + 7] = rotation[3];
-    data[at + 8] = r;
-    data[at + 9] = g;
-    data[at + 10] = b;
-    data[at + 11] = 0;
-    this.bodyDirty = true;
-  }
-
-  /** Where the body at `index` was last written, for the sphere refresh. */
-  bodyPositionAt(index: number, out: Float32Array): void {
-    const at = index * FLOATS_PER_BODY;
-    out[0] = this.bodyData[at];
-    out[1] = this.bodyData[at + 1];
-    out[2] = this.bodyData[at + 2];
-  }
-
-  writeChunk(
-    slot: number,
-    bodyIndex: number,
-    local: Float32Array,
-    localRot: Float32Array,
-    radius: number,
-  ): void {
-    const previous = this.bodyIndexOfSlot[slot];
-    if (previous !== bodyIndex) {
-      if (previous >= 0) {
-        this.recordsOnIndex[previous] -= 1;
-        if (this.recordsOnIndex[previous] === 0 && this.retiringIndices.has(previous)) {
-          this.retiringIndices.delete(previous);
-          this.freeIndices.push(previous);
-        }
-      }
-      this.recordsOnIndex[bodyIndex] = (this.recordsOnIndex[bodyIndex] ?? 0) + 1;
-      this.bodyIndexOfSlot[slot] = bodyIndex;
-    }
-    const at = slot * FLOATS_PER_CHUNK;
-    const data = this.chunkData;
-    data[at] = bodyIndex;
-    data[at + 1] = local[0];
-    data[at + 2] = local[1];
-    data[at + 3] = local[2];
-    data[at + 4] = localRot[0];
-    data[at + 5] = localRot[1];
-    data[at + 6] = localRot[2];
-    data[at + 7] = localRot[3];
-    this.reachOfSlot[slot] = Math.sqrt(local[0] * local[0] + local[1] * local[1] + local[2] * local[2]) + radius;
-    this.chunkDirty = true;
-  }
-
-  /** Composes one chunk's drawn centre on the CPU, exactly as the shader does. Diagnostics only. */
-  chunkWorldPositionInto(slot: number, out: Float32Array, at = 0): boolean {
-    const index = this.bodyIndexOfSlot[slot];
-    if (index < 0) return false;
-    const c = slot * FLOATS_PER_CHUNK;
-    const b = index * FLOATS_PER_BODY;
-    const lx = this.chunkData[c + 1];
-    const ly = this.chunkData[c + 2];
-    const lz = this.chunkData[c + 3];
-    const qx = this.bodyData[b + 4];
-    const qy = this.bodyData[b + 5];
-    const qz = this.bodyData[b + 6];
-    const qw = this.bodyData[b + 7];
-    // v' = v + 2 * cross(q.xyz, cross(q.xyz, v) + q.w * v)
-    const cx = qy * lz - qz * ly + qw * lx;
-    const cy = qz * lx - qx * lz + qw * ly;
-    const cz = qx * ly - qy * lx + qw * lz;
-    out[at] = this.bodyData[b] + lx + 2 * (qy * cz - qz * cy);
-    out[at + 1] = this.bodyData[b + 1] + ly + 2 * (qz * cx - qx * cz);
-    out[at + 2] = this.bodyData[b + 2] + lz + 2 * (qx * cy - qy * cx);
-    return true;
-  }
-
   /** Flag whatever changed for upload. Once per frame, after all writes. */
-  upload(): void {
-    if (this.chunkDirty) {
-      this.chunkTexture.needsUpdate = true;
-      this.chunkDirty = false;
-    }
-    if (this.bodyDirty) {
-      this.bodyTexture.needsUpdate = true;
-      this.bodyDirty = false;
-    }
+  override upload(): void {
+    if (this.chunkDirty) this.chunkTexture.needsUpdate = true;
+    if (this.bodyDirty) this.bodyTexture.needsUpdate = true;
+    super.upload();
   }
 
   dispose(): void {

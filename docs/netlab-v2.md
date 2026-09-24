@@ -53,15 +53,18 @@ cell.
  ┌─ CLIENT STAGE (Node, client/netlab/v2/clientStage.mts) ──────────────────────┐
  │ cityTape.decodeCityTape → cityReplay.createReplayPlayer (routeInboundPacket, │
  │ NetcodeClient via replayWorld, CityClient) with the WASM clock_sync.rs clock │
- │ per frame: getRenderTimeUs / getDynamicBodyRenderTimeUs / sample* /         │
- │ getInterpolatedDynamicBodyState, meteorPlacement.placeMeteor,               │
- │ CityClient.samplePresentation                                               │
+ │ per frame: getRenderTimeUs / getDynamicBodyRenderTimeUs / sample*, then the │
+ │ renderers' own pose steps: netEntityPoses (players, bodies, vehicles),      │
+ │ meteorPlacement.placeMeteorInFrame, cityPoseStore.advanceCityPoses (the     │
+ │ city layer's chunk records and body poses, as the vertex shader reads them) │
  └──────────────────────────────────────────────────────────────────────────────┘
-        │ displayed.bin (VLDISP01), presented.bin (VLPRES01)
+        │ displayed.bin (VLDISP01), drawn-chunks.bin (VLCHNK01), presented.bin (VLPRES01)
         ▼
  ┌─ SCORER (Rust, netlab2::score + destruction::netlab::score) ─────────────────┐
- │ per class: error vs truth at render time and "now", staleness,              │
- │ extrapolation, artifact gates, clock back-steps, meteors, city chunks       │
+ │ ALL DRAWS (headline): every player, vehicle, body, meteor and city chunk     │
+ │ drawn, vs truth at render time and "now"; missing / extra / wrong identity  │
+ │ per class: staleness, extrapolation, artifact gates, clock back-steps,      │
+ │ meteors, city bodies (lever arm, perceptibility)                            │
  └──────────────────────────────────────────────────────────────────────────────┘
         ▼
  report.json / report.md per run; matrix.md, compare.md; calibration.md
@@ -77,7 +80,9 @@ cell.
 | Client decode, routing | `client/src/net/inbound.ts` `routeInboundPacket`, `protocol.ts` decoders | Through `cityReplay.ts`. |
 | Client state, clock, interpolation | `netcodeClient.ts`, `interpolation.ts` (`ServerClockEstimator`, `RenderClock`, interpolators), WASM `WasmClockSync` (`netcode/src/clock_sync.rs`) | Dynamic import from `--client-root`; the WASM class is registered exactly as `sharedPhysics.ts` does. The TypeScript fallback clock is never used, and the stage checks it isn't (`usesWasmClock`). |
 | City client | `cityClient.ts` | Through `cityReplay.ts`. |
-| Meteors | `vfx/meteorPlacement.ts` `placeMeteor`, `vfx/meteorFlights.ts` | Called per frame the way `MeteorLayer` calls them. |
+| Meteors | `vfx/meteorPlacement.ts` `placeMeteorInFrame` (→ `placeMeteor`), `vfx/meteorFlights.ts` | The call `MeteorLayer` makes per flight per frame, shared. |
+| Players, bodies, vehicles | `scene/netEntityPoses.ts` `resolveRemotePlayerDraw`, `resolveDynamicBodyDraws`, `remoteVehicleDrawPose` | The pose step of `RemotePlayersRenderer`, `DynamicBodiesRenderer` and GameWorld's vehicle callback, extracted; the renderers call them and keep only mesh work. |
+| City chunks | `city/cityPoseStore.ts` `CityPoseStore`, `initCityPoses`, `advanceCityPoses` | The chunk-record and body-pose tables the vertex shader composes (`citySlotMesh.ts` `CityGpuPoses` extends the store with its textures) and the per-frame step `CityChunksLayer` runs; the lab runs the same step and records what changed in the tables. |
 
 `--client-root <dir>` points the client stage at another checkout's `client/`
 (which needs its own `npm run build:wasm`). The stage checks that its WASM
@@ -97,12 +102,12 @@ measurement that bounds it.
 | S3 | A capture starts mid-match. The snapshot interest memory comes from `snapshot-baseline.json` and the encoder from `encoder-checkpoint`. | These are the exact state at the first captured tick (see below). | City: 1,204/1,204 packets byte-identical. Negative control: without the baseline, the fixture test diverges. |
 | S4 | The city call sequence is mirrored: ingest, topology, baseline, hash, then `encode_send` / `client_datagrams`, with cameras in `cameras.jsonl` order and bootstraps at the ticks the send log shows. | This is only the order of calls. Every byte comes from the encoder. The observer pipeline (`VIBE_CITY_OBSERVER_PIPELINE`, Blast backend only) is not modelled. | 100% city bytes (rec1). |
 | S5 | Non-netcode packets (welcome, roster, body metadata, shots, match stats, meteor launches, pings, energy, batteries) pass through: recorded bytes at the recorded queue time. Packets from before the capture opened are sent at their arrival time minus the lane's median latency. | They are not optimisation targets, and their bytes and times are what the server produced. | Joined 10,207/10,207 by CRC32 and length (rec1). |
-| S6 | Client-to-server feedback is open loop. Resyncs, repairs and bootstraps happen at the recorded ticks; acks come from S2. `--knob lab.recorded_repairs=0` withholds the recorded structure repairs, so the client's own counters show whether its ledger stays in sync without them. | On a reliable stream the client asks for nothing new: the client stage reports `nacksSent` = `resyncRequestsSent` = 0 on every profile. | Counted in `client-stats.json` and the report's `city sync` line. |
+| S6 | Client-to-server feedback is open loop. Resyncs, repairs and bootstraps happen at the recorded ticks; acks come from S2. `--knob lab.recorded_repairs=0` withholds the recorded structure repairs, so the client's own counters show whether its ledger stays in sync without them. | On a reliable stream the client asks for nothing new: the client stage reports `nacksSent` = `resyncRequestsSent` = 0 on every profile (rec1). A client that asks for repairs live gets them replayed at the recorded ticks: the 0a7d6ae5 systematic bundle's client asked for 21, and the lab client asks for the same 21 on the recorded link. | Counted in `client-stats.json`, the report's `city sync` line and the all-draws headline. |
 | S7 | Packet timing inside a tick comes from `ticks.jsonl` phases: city at the end of `tick_city`, snapshot after it, bootstraps at the tick end. `--pace ideal` puts ticks exactly 1/60 s apart, with no server slowdown. | The recorded pace is the server's real timeline. Ideal pacing isolates netcode from server runtime. | Loopback lane latency p50 0.6 ms matches the live send-to-arrive p50 of 0.15–0.8 ms. |
 | S8 | **Client clock call schedule.** The lab reads the render clocks once per recorded frame, at its recorded time (the live clock probe's instant). The live page also reads them at other instants within the frame. Since the clock-fix change the server clock's output and the render clocks' delay slew depend on the snapshots and the local time only, not on when or how often they are read (`clock_sync.rs`, unit tests at 60 Hz, 240 Hz and arrival-only reads); before it the output was path dependent (its slew and hold clamps acted per call). | Exact for a client with the clock-fix change; for older clients exact whenever the server keeps pace. | rec1 (older client, recorded with it): clock offset vs live last 10 s p99 18 µs; whole run p50 135 µs, p99 8.9 ms, max 15.8 ms, all in the first 20 s (server stalls up to 608 ms). |
 | S9 | The client stage replays through `createReplayPlayer` (the /cityreplay page's player), not the WebTransport classes. `performance.now()` is the tape clock on the page origin, and each packet is handled at its arrival time. | Same `routeInboundPacket`, decoders and client objects. The transports only add sockets. | Lab vs the same code on the recorded tape: 0.000 m (rec1). |
-| S10 | Renderers are not imported. The lab replicates two glue rules: `DynamicBodiesRenderer` skips meteor bodies, and `MeteorLayer`'s call into `placeMeteor`. The city layer's distance-based sample stride is not applied, because the stride lands on the same pose. | Positions are what the renderers are handed. | Lab vs live renderer samples. rec1: bodies p50 0.000 m, p99 0.53 m; vehicles p99 1.6 cm. Bench c0: bodies p99 5.7 cm, players 1.3 cm, vehicles 2.8 mm. |
-| S11 | The recording player is spectated. With no inputs there is no prediction. | Reported as `self_spectated` and excluded from conclusions. | – |
+| S10 | Renderers (three.js meshes) are not imported; their **pose steps are**: `netEntityPoses.ts` (which remote players, bodies and vehicles are drawn and where), `meteorPlacement.ts` `placeMeteorInFrame`, and `cityPoseStore.ts` `advanceCityPoses` (the city layer's chunk records and body poses, composed as the vertex shader composes them, hide rule included). Three things remain lab-side: (1) the dynamic-body `rendered` callback is `getInterpolatedDynamicBodyState`, the branch `MultiplayerGameRuntime.getRenderedDynamicBodyState` takes for any body the local player has not just touched (S11); (2) every draw is evaluated at the frame's time, where the live renderers each read `performance.now()` at their own instant in the frame; (3) the city layer's distance stride (`renderScheduling.ts`, 1-8 frames by camera distance) is not applied: it is a render-rate choice, and a deferred body is written later at that later frame's ledger pose, so it changes when a distant chunk is redrawn, never where. | Every drawn pose comes from the same functions the renderers call. | Lab vs live renderer samples, every class (calibration (d)), d1342419 systematic bundle c0 / c1, p99: players 1.4 / 1.3 cm, vehicles 0.2 / 0.3 cm, bodies 6.3 / 6.1 cm, meteors 10.3 / 9.3 cm (fast movers: (2) at ~50 m/s), intact chunks 0.00 mm, debris chunks 2.8 / 3.5 cm; chunk body keys agree on 99.9995% / 100% (6 of 1.29 M: one re-parent a frame apart, poses 7 mm apart), drawn / not drawn on 99.95%. |
+| S11 | The recording player is replayed without its inputs, so without local prediction. The own avatar (camera / debug capsule at `client.getPosition()`, predicted) and the vehicle it drives (`localVehicleVisualPose`: prediction + `vehicleLocalMeshPose.ts` smoothing) are drawn from prediction live; the lab draws them from snapshots. So are bodies it has just touched (the local proxy, `hasRecentDynamicBodyInteraction`). | Scored as classes `own_avatar` and `vehicle_driven`, **left out of the headline `overall`**; body-proxy frames are not identified. A spectator client's bundle (c1 of the systematic bundle) has none of these. | – |
 | S12 | The server capture clock is mapped to the tape clock with the pairing clock samples (NTP midpoint, median). | Loopback round trip is about 2 ms. | Spread 1.1–4.7 ms; lane latency p50 0.6 ms. |
 | S13 | The link model is simulated (below). | It follows quinn 0.11 as configured (see the list below). Not validated against netem yet (limits). | – |
 | S14 | The client starts cold at the tape's first city bootstrap. The live client had the session's history. | A newly joined client does the same. | Included in S8's early windows. |
@@ -129,6 +134,32 @@ state reproduces the live bytes, so the capture now writes it:
 Captures made before this change still load. The lab recovers acks from the
 tape, assumes no support, starts the encoder fresh, and marks every
 consequence in `warnings` (the "legacy" row below).
+
+## Every rigid body the client draws
+
+What the client draws, where its final render pose is resolved, and how the
+lab scores it. "Shared" means the lab calls the very function the renderer
+calls (imported from `--client-root`); "replicated" means the lab has its own
+copy of a rule. Everything drawn is scored at render time and against truth
+"now" (position; rotation where it is visible), and counted as missing, extra
+or wrong-identity (see [All draws](#all-draws-the-headline)).
+
+| Kind | Client chain to the final render pose | Lab | Scored as | Gap |
+|---|---|---|---|---|
+| Remote players | `NetcodeClient.getRenderTimeUs` → `remoteInterpolator.sample(id, t)` → `netEntityPoses.resolveRemotePlayerDraw` (sample or latest; a driver is lifted onto its vehicle and hidden) → `RemotePlayersRenderer` root position + yaw | Shared | `player`: position, yaw; missing = in truth within `PLAYER_AOI_RADIUS_M` (80 m) of the recipient, not driving, not drawn | Dead players' ragdolls are local cosmetic physics (only the root is scored). |
+| Own avatar | `client.getPosition()` (local prediction; thin-authoritative: `getLocalPlayerRenderTimeUs` samples) → camera / debug capsule | Not reproducible (no inputs): drawn from its snapshots | `own_avatar`, **not in `overall`** | Prediction is not replayed (S11); a spectator bundle has no avatar to predict. |
+| Remote vehicles | `getRenderTimeUs` → `sampleRemoteVehicle` → `netEntityPoses.remoteVehicleDrawPose` (sample or latest) → `VehiclesRenderer` chassis | Shared | `vehicle`: position, rotation; missing within `VEHICLE_AOI_RADIUS_M`; wrong identity = drawn vehicle type ≠ truth | Wheels are derived visuals (suspension), not scored. |
+| Driven vehicle | Prediction → `vehicleLocalMeshPose.updateLocalVehicleMeshPose` smoothing → `VehiclesRenderer` | Not reproducible: drawn from snapshots | `vehicle_driven`, **not in `overall`** | S11. |
+| Dynamic spheres / boxes (cannonballs, props) | `getDynamicBodyRenderTimeUs` → `MultiplayerGameRuntime.getRenderedDynamicBodyState` (local proxy if just touched, else `getInterpolatedDynamicBodyState`: interpolated, else latest) → `netEntityPoses.resolveDynamicBodyDraws` (meteor bodies skipped) → `DynamicBodiesRenderer` | Shared, with the non-interaction branch of `getRenderedDynamicBodyState` | `body`: position; rotation for boxes only (a plain ball is a uniformly coloured sphere, and SnapshotV2 carries no sphere orientation); missing within `DYNAMIC_BODY_AOI_RADIUS_M`; extra = drawn, not in truth; wrong identity = drawn shape ≠ truth shape | Bodies the recording player touches (local proxy) are drawn from snapshots in the lab. |
+| Meteors in flight and after impact | `meteorFlights` → `meteorPlacement.placeMeteorInFrame` (arc until contact, then the streamed body interpolated / ≤ 250 ms extrapolated, hidden once it leaves the stream) → `MeteorLayer` rock | Shared | `meteor`: position; rotation only when drawn from the body (on the arc the rock spins for show); hidden = not drawn; missing = meteor body in interest drawn by neither layer | The body's orientation is not streamed (sphere), so a body-drawn rock's rotation error is real but cosmetic. |
+| City: intact structure chunks | Ledger support body (serial 0) pose ∘ chunk rest offset, written by `cityPoseStore.initCityPoses` / `advanceCityPoses` into the chunk-record and body-pose tables → vertex shader `citySlotMatrix` | Shared (tables), composed in Rust exactly as the shader does | `chunk_intact`, per chunk | – |
+| City: live debris | `CityClient.samplePresentation` (presentation track at `render_tick - playout_delay`) → ledger island pose → `advanceCityPoses` body write (records rewritten when the ledger re-parents or rebases a chunk) → shader | Shared | `chunk_debris` (truth island moving at the presented tick) | The layer's distance stride is left out (S10). |
+| City: settled rubble | Settle record → ledger pose → one final body write → shader | Shared | `chunk_rubble` (truth island settled at the presented tick) | – |
+| City: support bodies | The support body itself is one pose per structure (kinematic, never moves); it is what every intact chunk rides | Shared | Through its chunks (`chunk_intact`); the body-level city scorer skips it | – |
+| City chunks hidden below ground | Shader collapses any chunk composed below `CHUNK_HIDE_Y_M` (-4 m), or with no record | Shared rule | Not drawn: missing if truth has it above -4 m; truth below -4 m (sunk, or retired at the 5 m floor) is not expected drawn | – |
+| Batteries | `BatteriesRenderer`, raycast to the ground | Not scored | – | Static pickups, not physics bodies, and not in `world.bin`. |
+| Shot traces | `shotTraces.tsx` pooled lines from shot events | Not scored | – | Not rigid bodies. |
+| Dust, weather, ragdolls, vehicle wheels | Local visual effects | Not scored | – | Not networked rigid bodies. |
 
 ## The link model
 
@@ -211,6 +242,76 @@ One lab-only knob, not a production setting: `lab.recorded_repairs` (default
 (`PKT_CITY_STRUCTURE_BOOTSTRAP`) are not replayed (seam S6), and the stream
 summary counts them as withheld.
 
+## All draws (the headline)
+
+`report.md` opens with it and `report.json` carries it as `all_draws` (first
+key; also `card.all_draws` and `headline.all_draws`): **every rigid body the
+client draws, in every frame, against frozen truth**, per class and overall
+(`server/src/bin/netlab2/unified.rs`; city chunks in `chunks.rs`).
+
+- **Classes:** `player`, `vehicle`, `body` (dynamic spheres and boxes),
+  `meteor`, `chunk_intact` (on its structure's support body), `chunk_debris`
+  (on an island truth has moving at the presented tick), `chunk_rubble` (on
+  an island truth has settled), and the two the lab cannot reproduce,
+  `own_avatar` and `vehicle_driven` (S11), which are reported but **not in
+  `overall`**.
+- **Weighting:** one draw of one thing in one frame weighs 1: every chunk is a
+  draw, every body is a draw. The bench city (16 structures, 3,258 chunks) is
+  3,258 draws a frame and a cannonball 1, so `overall` is chunk-dominated; the
+  class rows are the ones to read for bodies, vehicles and players.
+- **Per class:** position error (m) and rotation error (°) at the render time
+  and against truth now, p50 / p95 / p99 / max and mean (log histogram, 30
+  bins a decade, ~8% resolution on percentiles; max and mean exact); draw-frames
+  **missing** (in truth and in the recipient's interest at the render time, not
+  drawn), **extra** (drawn, not in truth then) and **wrong identity** (a body
+  drawn as the wrong shape, a vehicle as the wrong type, a chunk drawn on a
+  body truth never had it on between the presented tick and now).
+- **Render time** is each renderer's own: the player clock for players and
+  vehicles, the dynamic-body clock for bodies and meteors, the city
+  presentation's sample tick (`render_tick - playout_delay`) for chunks.
+- **City chunks** are composed per chunk from the layer's tables
+  (`drawn-chunks.bin`) exactly as the vertex shader composes them, and truth
+  per chunk from the encoder tape and the manifest under the wire contract
+  (`chunk_world = island_pose ∘ (rest_local - island_com)`, mass-weighted rest
+  com; a chunk on its structure at `structure_pose ∘ rest_local`; a chunk
+  whose island was retired is gone). A chunk's error only changes when its
+  drawn record or body or its truth island changes, so each chunk's measure is
+  kept and added with the number of frames it held (exact; a 337 s, 3,258
+  chunk, 38,899 frame run scores in about 10 s).
+- **First draw of a moving body** (`all_draws.first_draw`, per class
+  `body`, `meteor`, `island`). For every body truth has moving faster than
+  0.5 m/s, inside the recipient's dynamic-body interest (80 m) for dynamic
+  bodies, and anywhere for city islands, the metric records:
+  - the wall time from the server completing that first moving tick to the
+    first frame that drew it (p50/p90/p99/max ms). A body already drawn
+    before it moved counts as 0 and is counted separately;
+  - the bodies never drawn at all, and their moving body-frames: frames in
+    which truth had them moving at the render time.
+
+  An island counts as drawn once any chunk's record names it.
+- **Join window** (`all_draws_join`, a second table in report.md). This is the
+  same metric over the frames within `NETLAB2_JOIN_WINDOW_S` (default 10 s) of
+  the client's first frame and of every full city bootstrap it received. It
+  shows how the client behaves just after it joins.
+  - The lab client joins cold at the tape's first city bootstrap (S14), like a
+    newly joined client.
+  - Chunk scoring is split at window edges, so each held measure lies wholly
+    inside or outside a window.
+- **City sync** counters (repairs asked and applied, hash mismatches, settle
+  rejects, topology gaps) print under the table: a structure repair rebuilds a
+  structure's ledger, and that is where retired chunks come back drawn on the
+  intact body (see Findings).
+- Absent for a run whose client stage predates it (no `drawn-chunks.bin`: the
+  chunk classes are missing and a note says so; old `report.json` files still
+  load, `all_draws` is `null`).
+
+Metric names for comparisons (`netlab2 compare` rows): `ALL draws pos@render
+p50/p95/p99 m`, `ALL draws pos@now p50/p99 m`, `ALL draws missing / extra /
+wrong identity`, and `draws <class> pos@render p99 m` / `pos@now p99 m` per
+class. Nothing existing was renamed; the city scorer's line in the text summary
+now reads `city bodies:` (it scores island bodies, not chunks) and adds the
+render-time coverage fields below.
+
 ## Metrics
 
 - **Classes.** Bodies are classified from truth kinematics at the render tick:
@@ -224,9 +325,15 @@ summary counts them as withheld.
   - `no_truth`: not in truth at that tick.
   - Also `player`, `vehicle`, `self_spectated`.
   - Meteors as `MeteorLayer` places them, by source (arc, body, hold).
-  - City chunks, scored by `destruction::netlab::score` (chunk-weighted,
-    lever-arm error, perceptibility; see
-    [destruction-codec docs](city-v3-protocol-2026-08.md)).
+  - City bodies, scored by `destruction::netlab::score` (island bodies,
+    chunk-weighted, lever-arm error, perceptibility; see
+    [destruction-codec docs](city-v3-protocol-2026-08.md)). Its coverage
+    count `missing_moving_body_frames` is judged at the server's current
+    tick, so it also counts bodies promoted after the tick the client is
+    presenting, which no client can show yet; `missing_moving_at_render_*`
+    judges it at the presented tick (the real gap) and
+    `missing_moving_born_after_render_body_frames` counts the difference
+    (see "The missing moving body-frames" below).
 - **Per class:**
   - Error vs truth at the render time (interpolation and extrapolation).
   - Error vs truth "now" (the tick the server had completed at that wall
@@ -262,6 +369,42 @@ summary counts them as withheld.
   must be 0 (item 6 of the 2026-09-24 session analysis); run it with
   `lab.recorded_repairs=0` so the recorded repairs do not mask a divergence.
 
+## The missing moving body-frames (rec1 on LTE: 3,253)
+
+The city bodies line of rec1 runs reported `missing moving body-frames`: 11 on
+the recorded link, 3,253 on LTE (`det-1`). The check counted a truth island
+body as missing when it was moving at the server's **current** tick and the
+client had no pose for it. Re-scored with the presented tick split out
+(measured, rec1, same displayed/presented streams):
+
+| Link | At the server's tick (old figure) | of which promoted after the presented tick | At the presented tick |
+|---|---:|---:|---:|
+| recorded | 11 | 11 | 0 |
+| lte | 3,253 | 1,222 | 1,995 |
+
+- **1,222 are a scoring artifact.** They are bodies promoted after the tick
+  the client presents (`render_tick - playout_delay`). The client holds
+  topology to that tick (`cityClient.ts` `drainPendingTopology`), so no client
+  can show them yet. All 11 on the recorded link are this.
+- **1,995 are a real client gap on LTE.** At the presented tick these 162
+  bodies had existed for 1 to 17 ticks (p50 3.8), and the client had not
+  applied their promotion. The topology rides the reliable stream: on LTE its
+  latency is p50 123 ms, p90 297 ms, p99 446 ms, while the datagrams that
+  drive the city render clock arrive in 90 ms p50, 124 ms p99, and the
+  playout delay is 6 ticks (100 ms). So a promotion can reach the client up
+  to about 17 ticks after the pose stream says its body exists. Meanwhile the
+  chunks stay drawn on the body they left. In the all-draws metric those
+  chunk-frames are `chunk_debris` pose error plus `wrong_identity` (drawn on a
+  body truth had already left), not a missing draw, because the chunks are
+  drawn, only in the wrong place. (Mechanism inferred from these latencies;
+  the counts are measured.)
+
+The fix is in the scorer (`destruction/src/netlab/score.rs`, additive). The
+old field keeps its meaning. `missing_moving_born_after_render_body_frames`
+counts the artifact share. `missing_moving_at_render_body_frames` /
+`_weight` judge coverage at the presented tick, and that is the number to
+optimise. The client gap is left to the topology work (structure-sync).
+
 ## Calibration (the proxy check)
 
 `netlab2 calibrate --bundle <bundle>` uses the recorded link and pace, and
@@ -277,9 +420,27 @@ It exits 1 on failure.
     - delays: p99 ≤ 0.5 ms.
   - Lab drawn positions against the same client on the recorded tape:
     p99 ≤ 1 cm.
-  - Informational: lab drawn positions against the live renderers
-    (`live-samples.json` / `client-<n>-drawn.jsonl`).
+  - Lab city chunk tables against the same client on the recorded tape
+    (`chunks.rs` `chunks_diff`, every chunk every 30th frame): p99 ≤ 1 cm and
+    no chunk drawn by one and not the other.
 - **(c) Divergences.** Each one is named in `calibration.md`.
+- **(d) Every class against the live renderers** (`client-<n>-drawn.jsonl`,
+  10 Hz; `live-samples.json` for record.mjs bundles):
+  - position p99: players and vehicles ≤ 5 cm, bodies and meteors ≤ 15 cm,
+    intact chunks ≤ 1 mm, debris chunks ≤ 10 cm. The live renderers read the
+    clock at their own instant in the frame, up to about 2 ms from the lab's
+    frame time (S10): 12 cm at the ~60 m/s of the fastest cannonballs and
+    meteors, 1-3 cm at walking or driving speed, nothing for a standing chunk;
+  - coverage: players, vehicles, bodies, intact and debris chunks must all
+    have live samples;
+  - city chunks: the same body key for every sampled chunk, and drawn / not
+    drawn agreeing on ≥ 99.9%.
+  City chunk samples come from the city layer's own tables
+  (`scene/cityDrawnSample.ts`: a rotating sample of up to 400 chunks on
+  island bodies and 100 on support bodies, composed as the shader composes
+  them), matched to the lab frame nearest the layer's frame time (≤ 17 ms).
+  A bundle recorded before the sample existed has no city samples; the
+  checks say so and do not fail on it.
 
 Calibration checks the lab against a live recording, so it runs the client
 that made the recording (`--client-root` at that tree). A client whose clock
@@ -302,6 +463,25 @@ meteor, a demolition and a drive. PASS.
 | (b) lab vs same client on recorded tape | 0.000 m, every kind |
 | lab vs live renderer (727 samples), p50 / p99 | bodies 0.000 / 0.53 m, vehicles 0.000 / 0.016 m |
 
+**systematic-2c-d1342419** (the frozen destruction bundle; its README is in
+`target/netlab-v2/bundles/`): exact capture, 337 s, both clients, PASS with the
+d1342419 client.
+
+| Check | c0 (player) | c1 (spectator) |
+|---|---|---|
+| (a) snapshot_v2 / city_chunks / topology / baseline / topo_hash | 18,855 / 12,180 / 3,085 / 157 / 157, all byte-identical | 18,855 / 12,077 / 3,085 / 157 / 157, all byte-identical |
+| (b) clock offset vs live, p99 after warm-up / last 10 s | 96 / 8 µs | 122 / 95 µs |
+| (b) delays vs live, steady p99 | players 0.28 ms, bodies 0.10 ms | players 0.25 ms, bodies 0.10 ms |
+| (b) lab vs recorded tape, entities / chunk tables p99 | 0.000 m / 0.005 mm | 0.000 m / 0.009 mm |
+| (d) lab vs live p99: players / vehicles / bodies / meteors | 1.4 / 0.2 / 6.3 / 10.3 cm | 1.3 / 0.3 / 6.1 / 9.3 cm |
+| (d) lab vs live p99: intact / debris chunks | 0.00 mm / 2.8 cm (1.29 M chunk samples) | 0.00 mm / 3.5 cm (0.55 M) |
+| (d) chunk body keys / drawn agreement | 99.9995% / 99.95% | 100% / 99.95% |
+
+The same checks pass on the two earlier recordings of the scenario with the
+client each was recorded with (2c84b393; 0a7d6ae5 before the threshold on key
+agreement), and on `heavy-quick3-v2` c0 and c1 with the d1342419 client
+(that recording has no city chunk samples).
+
 **Legacy captures** (made before this change):
 
 - **paired-capture run1** (old server, old client). 4,402 of 5,658
@@ -317,6 +497,76 @@ meteor, a demolition and a drive. PASS.
 - **city-bench netcode-clock quick-3c c0** (the 0eb6f3fd client, a legacy
   server capture). Clock offset vs live: p50 0.5 ms, p99 3.2 ms. Lab vs live
   renderer: bodies p99 5.7 cm, players 1.3 cm, vehicles 2.8 mm.
+
+## Results: every draw, the systematic destruction bundle
+
+All figures below are measured. The bundle is `systematic-2c-d1342419`, run
+with the d1342419 client, production knobs, recorded pace and seed 1, and
+re-scored with the final scorer. `pos@render` is the position error against
+truth at the client's render time; `pos@now` is against the server's current
+tick. `overall` counts every intact, debris and rubble chunk, player, vehicle,
+body and meteor draw, and leaves out the own avatar and the driven vehicle.
+
+c1 (spectator):
+
+| Link | overall pos@render p50/p95/p99 m | overall pos@now p50/p95/p99 m | rot p99 render / now ° | missing | extra | wrong identity |
+|---|---|---|---|---:|---:|---:|
+| loopback | 0.003/0.012/0.036 | 0.003/0.014/0.118 | 1.29 / 3.10 | 174 | 202,361 | 0 |
+| lan | 0.003/0.012/0.036 | 0.003/0.014/0.118 | 1.29 / 3.10 | 171 | 202,360 | 227 |
+| lte | 0.003/0.015/0.091 | 0.003/0.016/0.163 | 2.91 / 4.43 | 777 | 3,918 | 61,092 |
+| poor-mobile | 0.003/0.016/0.118 | 0.003/0.019/0.390 | 3.89 / 9.63 | 330 | 65,166 | 139,139 |
+
+Per class, p99 position error at render / now (m), c1:
+
+| Link | player | vehicle | body | meteor | chunk intact | chunk debris | chunk rubble |
+|---|---|---|---|---|---|---|---|
+| loopback | 0.049 / 0.474 | 0.037 / 0.077 | 0.301 / 1.970 | 1.47 / 19.0 | 0 / 0 | 0.332 / 0.966 | 0.009 / 0.009 |
+| lan | 0.049 / 0.490 | 0.037 / 0.082 | 0.301 / 2.035 | 1.47 / 19.0 | 0 / 0 | 0.321 / 0.966 | 0.009 / 0.009 |
+| lte | 0.051 / 1.676 | 0.039 / 0.998 | 0.301 / 9.32 | 1.47 / 34.0 | 0 / 0 | 0.677 / 1.136 | 0.009 / 0.009 |
+| poor-mobile | 0.052 / 2.393 | 0.039 / 1.380 | 0.301 / 13.3 | 1.47 / 128 | 0 / 0 | 1.174 / 3.889 | 0.009 / 0.009 |
+
+First draw of a moving body, c1 (delay p50 / p99 from the server completing
+the first moving tick):
+
+| Link | bodies (24) | islands (2,132) | never drawn |
+|---|---|---|---|
+| loopback | 2 / 9 ms | 0 / 10 ms | 0 |
+| lan | 6 / 10 ms | 0 / 10 ms | 0 |
+| lte | 91 / 110 ms | 65 / 376 ms | 0 |
+| poor-mobile | 143 / 186 ms | 160 / 4,989 ms | 5 islands (433 moving frames) |
+
+On all eight meteors the arc was drawn from the launch packet before the body
+moved in interest, so their delay is 0.
+
+c0 (the player; own avatar and driven vehicle excluded):
+
+| Link | overall pos@render p50/p95/p99 m | overall pos@now p50/p95/p99 m | missing | extra | wrong identity | islands first draw p99 |
+|---|---|---|---:|---:|---:|---:|
+| loopback | 0.003/0.012/0.031 | 0.003/0.014/0.110 | 236 | 201,271 | 170 | 11 ms |
+| lan | 0.003/0.012/0.031 | 0.003/0.014/0.110 | 238 | 201,271 | 401 | 11 ms |
+| lte | 0.003/0.014/0.080 | 0.003/0.016/0.163 | 273 | 4,087 | 72,212 | 327 ms |
+| poor-mobile | 0.003/0.015/0.110 | 0.003/0.018/0.390 | 410 | 64,411 | 185,571 | 5,173 ms (4 never) |
+
+The join window (first 10 s) is 0.000 m on every link. On this bundle both
+clients join during the idle intro, before anything moves, and receive no
+later full bootstrap. The join window measures more on a capture that joins
+mid-destruction.
+
+- **Second bundle:** `heavy-quick3-v2` (the stream-tune agent's recording:
+  quick scenario, 3 clients, 122 s).
+  - c0 and c1 calibrate PASS with the current client.
+  - Its live samples carry no city chunks, so chunk classes are scored but not
+    live-calibrated.
+  - c1 overall pos@render p99 (m): loopback 0.122, lte 0.148, poor-mobile
+    1.174.
+  - Wrong-identity chunk-frames on poor-mobile: 751,832.
+  - Island first-draw p99 on poor-mobile: 8.9 s.
+- **Negative control** (end to end, c1, recorded link):
+  - The client stage shifted every class by 0.5 m in x
+    (`NETLAB2_CLIENT_ARGS="--perturb player=0.5,vehicle=0.5,body=0.5,meteor=0.5,chunk_intact=0.5,chunk_island=0.5"`).
+  - pos@render p50 moved to 0.506 m in every class: player, vehicle, body,
+    intact, debris, rubble and own avatar. Meteor went from 0.354 to 0.576;
+    overall went from 0.003 to 0.506.
 
 ## First results: rec1, all links, production knobs, recorded pace
 
@@ -373,6 +623,53 @@ client (1a35ecf8 tree, `--client-root`) against the 0eb6f3fd client.
 | poor-mobile | behind server p50 | 133 ms | 403 ms |
 
 ## Findings (measured in the lab, not yet confirmed live)
+
+From the all-draws metric on the systematic bundles. Counts are measured;
+mechanisms marked *inferred* are read from the data.
+
+1. **On lossy links, topology reaches the client later than the pose stream
+   drives its presentation.**
+   - Chunks stay drawn on the body they left. On c1 of the d1342419 bundle
+     that is 61k wrong-identity chunk-frames on LTE and 139k on poor-mobile.
+   - Island first-draw p99 is 376 ms on LTE and 5.0 s on poor-mobile, where 5
+     islands are never drawn.
+   - rec1 on LTE is the same effect: 1,995 of its 3,253 "missing moving
+     body-frames" (above).
+   - *Inferred mechanism:* topology rides the reliable stream (HOL-blocked on
+     loss), while the render clock follows the datagrams.
+2. **A structure repair resurrects retired chunks.** A repair rebuilds a
+   structure's ledger from the server's, and chunks the server had retired
+   come back on the intact support body at their rest pose.
+   - Measured on the 0a7d6ae5 bundle: 247,773 `chunk_intact` extra
+     chunk-frames. That client asked for 21 repairs on a lossless link;
+     2c84b393 fixed the spurious requests.
+   - The resurrection itself remains wherever a real repair happens
+     (structure-sync).
+3. **Chunks retired at the 5 m escape floor stay drawn at their last presented
+   pose.** That pose is 3.5-3.75 m below ground: above the shader's -4 m hide
+   depth, under the ground plane.
+   - This is most of the ~200k debris "extra" chunk-frames on loopback, from
+     5 chunks.
+   - The sinking itself is the PhysX vehicle bug another agent is fixing.
+4. **Debris error before and after 51ddcf48.** Debris pos@render p50 on
+   loopback was 0.174 m on the 2c84b393 bundle and is 0.008 m on the d1342419
+   bundle.
+   - Two recordings of the same scenario, so the truths differ.
+   - *Inferred:* before, resting-but-not-settled debris was drawn about 17 cm
+     low, consistently in the destruction scorer's "resting" phase (pos p50
+     0.168 m). 51ddcf48 makes the encoder judge the pose the client draws.
+5. **Meteor orientation is not streamed.** SnapshotV2 carries no sphere
+   orientation, so a rock drawn from its body has rotation error p99 172°.
+   The rock is irregular, so this is visible but cosmetic.
+6. **A meteor whose body never streams to a client stays on its arc.**
+   - Measured on `heavy-quick3-v2` c1: meteor pos@render p90 68 m, p99 157 m.
+     Two of seven flights end drawn on the arc.
+   - *Inferred mechanism:* no streamed sample, so no contact is detected.
+7. **Bodies are drawn after truth retired them for 7-8% of body draw-frames.**
+   Measured as `body` extra; see the `stale` fields for the detection window.
+
+Earlier findings on rec1 (fixed; kept for the record):
+
 
 All three are fixed (items 9-11 of the
 [2026-09-24 session analysis](mac-metal-session-analysis-2026-09-24.md));
@@ -446,24 +743,35 @@ $N compare --a <runOrMatrixDir> --b <runOrMatrixDir> --out <dir>
 $N run ... --link d90j35 --profiles <file>              # a profile table other than netemProfiles.json
 $N profiles
 
+# the frozen destruction bundle (README beside it): prefer its spectator, c1
+B=/Users/glavin/Development/vibe-land/target/netlab-v2/bundles/systematic-2c-d1342419/debug-reports
+$N matrix --bundle $B/session-netlab2-20260924-115042-systematic-2c-c1 --out <dir> --links loopback,lan,lte,poor-mobile
+
 # a new exact capture (GPU lock; ports 4501/4502/3503); needs the server built with
 # --features native-destruction into the same CARGO_TARGET_DIR
 client/netlab/v2/record-bundle.sh <outDir> [seconds]      # record.mjs session + live-samples.json
 client/netlab/v2/record-bench.sh <outDir> [scenario] [n]  # city-bench driver, n clients
+# (HTTP_PORT, WT_PORT, CLIENT_PORT, BIN and VITE_CACHE_DIR move it off the defaults.
+#  Do not touch the client tree while it records: its dev server serves that tree,
+#  and a changed file reloads the pages and loses the capture.)
 ```
 
 A run directory holds:
 
 - `lab.vltape`: what the client received.
 - `stream.json`: bytes, fates and selection totals.
-- `displayed.bin` and `presented.bin`.
+- `displayed.bin` (players, vehicles, bodies, meteors as drawn),
+  `drawn-chunks.bin` (the city layer's pose tables, VLCHNK01, gzip) and
+  `presented.bin` (city island bodies, for the city bodies scorer).
 - `client-stats.json`: WASM check, nacks, city client stats.
 - `report.json` / `report.md`.
 - `calibration.*`, when calibrating.
 
 `NETLAB2_CLIENT_ARGS` passes experiments to the client stage (`--frame-start
 after|cpu`: where in the frame the draw happens; `--frames 60|120`: a fixed
-cadence instead of the recorded frames).
+cadence instead of the recorded frames; `--perturb class=m,...`: the negative
+control, never for a measurement). `NETLAB2_JOIN_WINDOW_S` sets the join
+window (default 10 s).
 
 ## Known limits
 
@@ -477,15 +785,30 @@ cadence instead of the recorded frames).
   been calibrated on V2. PhysX GPU matches require V2.
 - **Client-to-server feedback is open loop (S6).** A link bad enough to make
   the client NACK or resync would not get the server's answers. The client
-  stage counts both, and they were 0 in every run here.
+  stage counts both, and they were 0 in every run on the d1342419 bundle.
 - **The congestion controller is the paced ideal.** There is no slow start or
   cwnd dynamics, and it has not yet been validated against the live netlab's
   netem runs on the same profile. Jitter is iid (netem's default), which
   over-reorders datagrams compared with real LTE.
 - **Seams S8 and S14:** the client clock diverges during server stalls and
   from a cold start by up to about 16 ms, measured.
-- **Budgets are not stressed by rec1.** A multi-client, high-destruction exact
-  capture is needed to price truncation.
+- **Budgets:** rec1 does not stress them. The systematic bundles (2 clients, 16
+  demolitions) and heavy-quick3-v2 (3 clients) are the captures to price
+  truncation on.
+- **Local prediction is not replayed (S11).** The own avatar, the driven
+  vehicle and a body the player has just touched are drawn from snapshots in
+  the lab. The first two are scored but left out of `overall`; the third is
+  not identified.
+- **Chunk truth relies on the wire contract's frame.** A chunk's truth pose is
+  the island pose composed with `rest_local - island_com` (mass-weighted rest
+  com), the rule the client also uses. A backend that broke that contract would
+  be wrong on both sides and invisible here. It is a physics-side contract
+  (`IslandPromotion` in `netcode/src/destruction_backend.rs`).
+- **The city layer's distance stride is left out (S10).** Live, a body 1-8
+  frames late on the stride is drawn at an older pose than the lab's. That
+  cost is a rendering choice and is not charged to the netcode.
+- **City chunk samples in the live recordings are a subset:** a rotating 500
+  chunks per 10 Hz sample.
 - **The capture additions are production changes.** Recording them costs one
   encoder clone at capture start, and per snapshot tick one small JSON line
   per recipient (off the tick thread).

@@ -50,10 +50,10 @@ import {
 import {
   buildCityMesh,
   refreshRenderableSphere,
-  writeBodyPose,
-  writeChunkRecord,
   type CityMeshState,
 } from './cityChunkMesh';
+import { advanceCityPoses, type CityPoseFrameState } from '../city/cityPoseStore';
+import { clearCityDrawn, noteCityDrawn } from './cityDrawnSample';
 import { loadCityTextures } from './cityTextures';
 import { updateCityE2E, updateCityStructuresE2E } from '../e2eBridge';
 import { POSE_SOURCES, poseTraceRecord, poseTraceWanted } from '../city/poseTrace';
@@ -478,11 +478,10 @@ export function CityChunksLayer({
   const stateRef = useRef<CityMeshState | null>(null);
   const bodyDebugVersionRef = useRef(-1);
   const clientRef = useRef<CityClient | null>(null);
-  const dirtyBodiesRef = useRef<Set<number>>(new Set());
+  /** The shared pose step's carry-over (dirty bodies, pending records, ledger epoch). */
+  const poseFrameRef = useRef<CityPoseFrameState>({ dirty: new Set(), pendingRecords: new Set(), lastLedgerEpoch: -1 });
   const frameCounterRef = useRef(0);
   const lastMigrateAnomaliesRef = useRef({ missingDestination: 0, emptyDestination: 0 });
-  /** Bootstraps + repairs seen, to spot a ledger the probe cannot compare across. */
-  const lastLedgerEpochRef = useRef(-1);
   const lastCamRef = useRef({
     pos: new THREE.Vector3(),
     quat: new THREE.Quaternion(),
@@ -491,8 +490,6 @@ export function CityChunksLayer({
   const teleportProbeRef = useRef<BodyTeleportProbe>(new BodyTeleportProbe());
   /** Set when the debug palette changed; every body is recoloured on the next frame. */
   const repaintBodiesRef = useRef(false);
-  /** Slots whose record could not be written yet (their body is not in the ledger). */
-  const pendingRecordsRef = useRef<Set<number>>(new Set());
   const recorderProbesRef = useRef(false);
   const buildFailedForRef = useRef<CityClient | null>(null);
   const updateSamplesRef = useRef<number[]>([]);
@@ -515,6 +512,8 @@ export function CityChunksLayer({
   // place when they land. Blocking the city on 5 MB of texture would trade a
   // visible delay for a cosmetic one.
   useEffect(loadCityTextures, []);
+  // The harness sample (cityDrawnSample.ts) must not outlive the layer.
+  useEffect(() => clearCityDrawn, []);
 
   // Applied to the live meshes rather than forcing a rebuild: castShadow is a
   // plain flag on the batch, and the shared material is one object swapped in
@@ -589,7 +588,7 @@ export function CityChunksLayer({
       }
       clientRef.current = client;
       buildFailedForRef.current = null;
-      dirtyBodiesRef.current.clear();
+      poseFrameRef.current.dirty.clear();
       // What a harness can aim at, from the manifest the client decoded.
       updateCityStructuresE2E(client.manifest.manifest.structures.map((structure) => ({
         structureId: structure.structureId,
@@ -717,7 +716,7 @@ export function CityChunksLayer({
       // headless rather than retrying a throwing build every frame.
       try {
         stateRef.current = buildCityMesh(client);
-        lastLedgerEpochRef.current = client.ledgerEpoch();
+        poseFrameRef.current.lastLedgerEpoch = client.ledgerEpoch();
         teleportProbe.reset();
         materialVariantRef.current = `${cityPbrLighting() ? 'pbr' : 'flat'}:${cityTextureDetail()}:${heroTilingEnabled() ? 'hero' : 'plain'}`;
         builtShareThresholdRef.current = instanceShareThresholdSetting();
@@ -1058,164 +1057,112 @@ export function CityChunksLayer({
       if (stride <= 1) return true;
       return shouldUpdateThisFrame(frameNow, key, stride);
     };
-    const sampleStartedAt = performance.now();
-    const live = client.samplePresentation(performance.now(), dueThisFrame);
-    renderStats.sampleMs = performance.now() - sampleStartedAt;
-    const dirty = dirtyBodiesRef.current;
-    for (const key of live) {
-      dirty.add(key);
-    }
-
-    // Ledger mutations that never stream (settles, promotions, migrations —
-    // and everything, after a bootstrap) still have to reach the screen. The
-    // dirty set only carries streaming bodies, so these ride a separate
-    // one-shot queue. Adding to `dirty` (not writing directly) reuses the
-    // normal write path; a repainted body that is not live gets the settling
-    // final-write and then costs nothing again.
-    const repaint = client.drainRepaint();
-    // The ledger was replaced wholesale; nothing written before it is
-    // comparable with anything written after. `repaint.all` catches most of
-    // it, and a bootstrap or a structure repair rewrites every body of a
-    // structure without necessarily setting it -- which left 24,105 events,
-    // one per chunk, in runs that had one, and those runs were the ones that
-    // looked catastrophic.
-    const ledgerEpoch = client.ledgerEpoch();
-    // A ledger replaced wholesale (a bootstrap) or a structure rewritten (a
-    // repair) means every chunk record and every body pose is suspect:
-    // rewrite them all. Otherwise the ledger names exactly the slots it
-    // reassigned since last frame.
-    const rebuildRecords = repaint.all || ledgerEpoch !== lastLedgerEpochRef.current;
-    if (rebuildRecords) {
-      lastLedgerEpochRef.current = ledgerEpoch;
-      teleportProbe.reset();
-    }
-    if (repaint.all || rebuildRecords || repaintBodiesRef.current) {
-      for (const body of client.topology.allBodies()) {
-        dirty.add(body.key);
-      }
-    } else {
-      for (const key of repaint.bodies) {
-        if (client.topology.body(key)) dirty.add(key);
-      }
-    }
-    const repaintBodies = repaintBodiesRef.current;
-    repaintBodiesRef.current = false;
-    state.poses.bodyColoursUniform.value = bodyDebug.enabled ? 1 : 0;
-    // Chunk records: which body each chunk rides and where it sits on it.
-    const recordStartedAt = performance.now();
+    // The pose step itself -- sample the presentation, rewrite reassigned
+    // chunk records and moved body poses -- is city/cityPoseStore.ts
+    // `advanceCityPoses`, shared with Netlab v2's headless client stage so the
+    // lab measures exactly what this layer hands the GPU. Everything below is
+    // this layer's own bookkeeping, hooked in around it.
     const touchedMeshes = new Set<number>();
-    let recordsWritten = 0;
-    if (rebuildRecords) {
-      const count = client.topology.chunkCount;
-      client.topology.drainSlotChanges();
-      pendingRecordsRef.current.clear();
-      for (let slot = 0; slot < count; slot += 1) {
-        if (!writeChunkRecord(state, client, slot)) pendingRecordsRef.current.add(slot);
-        recordsWritten += 1;
-      }
-      for (let index = 0; index < state.renderables.length; index += 1) touchedMeshes.add(index);
-    } else {
-      const pending = pendingRecordsRef.current;
-      for (const slot of client.topology.drainSlotChanges()) pending.add(slot);
-      for (const slot of pending) {
-        // A chunk whose body the ledger cannot name yet keeps drawing where
-        // it was; try again next frame.
-        if (!writeChunkRecord(state, client, slot)) continue;
-        pending.delete(slot);
-        recordsWritten += 1;
-        touchedMeshes.add(state.meshOfSlot[slot]);
-      }
-    }
-    renderStats.recordWrites = recordsWritten;
-    renderStats.recordWriteMs = performance.now() - recordStartedAt;
-
-    if (dirty.size === 0 && touchedMeshes.size === 0) {
-      renderStats.cityFrameMs = performance.now() - cityFrameStartedAt;
-      return;
-    }
-    // Body poses. Rewriting every moving body every frame is the client's
-    // per-frame cost once a demolition is large; distant bodies are written on
-    // a stride instead, staggered by cell so the deferred work spreads across
-    // frames rather than spiking on one.
-    //
-    // This is a render-rate decision only. The authoritative pose is whatever
-    // the ledger holds; deferring a write delays when a distant body is
-    // redrawn, it never changes where it is.
-    const updateStartedAt = performance.now();
-    const writeNowMs = updateStartedAt;
     // Chunks written this frame per mesh, so a culled cell can say how much
     // live geometry it was holding when it went off screen.
     const liveChunksPerMesh: number[] = [];
     let drawnThisFrame = 0;
-    for (const key of dirty) {
-      const body = client.topology.body(key);
-      if (!body) {
-        dirty.delete(key);
+    const repaintBodies = repaintBodiesRef.current;
+    repaintBodiesRef.current = false;
+    state.poses.bodyColoursUniform.value = bodyDebug.enabled ? 1 : 0;
+    const sampleStartedAt = performance.now();
+    let recordStartedAt = sampleStartedAt;
+    let updateStartedAt = sampleStartedAt;
+    let bodyPhaseStarted = false;
+    const startBodyPhase = (): void => {
+      if (bodyPhaseStarted) return;
+      bodyPhaseStarted = true;
+      updateStartedAt = performance.now();
+      renderStats.recordWriteMs = updateStartedAt - recordStartedAt;
+    };
+    const poseNowMs = performance.now();
+    const frame = advanceCityPoses(state.poses, client, state.radii, poseFrameRef.current, poseNowMs, {
+      due: dueThisFrame,
+      repaintBodies,
+      sampled: () => {
+        recordStartedAt = performance.now();
+        renderStats.sampleMs = recordStartedAt - sampleStartedAt;
+      },
+      recordsRebuilt: () => {
+        teleportProbe.reset();
+        for (let index = 0; index < state.renderables.length; index += 1) touchedMeshes.add(index);
+      },
+      recordWritten: (slot) => {
+        touchedMeshes.add(state.meshOfSlot[slot]);
+      },
+      bodyGone: (key) => {
+        startBodyPhase();
         if (state.poses.hasBody(key)) teleportProbe.forget(state.poses.bodyIndexFor(key));
-        state.poses.releaseBody(key);
-        continue;
-      }
-      // A body that stopped moving gets its final write unconditionally.
-      // Deferring that one would strand it at its second-to-last pose for
-      // good, since no further frame will list it as live.
-      const settling = !live.has(key);
-      if (!settling && !repaintBodies && !dueThisFrame(key, body.position)) {
-        continue;
-      }
-      // A body drawn while its pose came from the raw writer is being shown at
-      // the newest streamed tick rather than the interpolated one -- roughly an
-      // interpolation delay ahead of the frames around it. That is the
-      // two-writer flicker, and this is the only place it can be observed,
-      // because it depends on what the ledger holds at draw time. Recorder
-      // only: the lookup is per body per frame.
-      if (recording) {
-        const { source: writeSource, deltaM: writeDeltaM } = client.topology.poseSourceOf(key);
-        if (writeSource === 'raw' && writeDeltaM > 0) {
-          recordCityEvent('city_flicker', { body: key, deltaM: writeDeltaM, settling });
+      },
+      beforeBodyWrite: (key, settling) => {
+        startBodyPhase();
+        // A body drawn while its pose came from the raw writer is being shown
+        // at the newest streamed tick rather than the interpolated one --
+        // roughly an interpolation delay ahead of the frames around it. That
+        // is the two-writer flicker, and this is the only place it can be
+        // observed, because it depends on what the ledger holds at draw time.
+        // Recorder only: the lookup is per body per frame.
+        if (recording) {
+          const { source: writeSource, deltaM: writeDeltaM } = client.topology.poseSourceOf(key);
+          if (writeSource === 'raw' && writeDeltaM > 0) {
+            recordCityEvent('city_flicker', { body: key, deltaM: writeDeltaM, settling });
+          }
         }
-      }
-      const bodyIsSupport = (key & 0x0f_ffff) === 0;
-      const debugCode = bodyDebug.enabled ? bodyDebugStateCode(key, bodyIsSupport) : -1;
-      const debugColor = debugCode >= 0 ? bodyDebugColorForCode(debugCode) : null;
-      // Settled rubble is dimmed, and live debris very slightly warmed, as the
-      // per-chunk colour writes used to do.
-      writeBodyPose(
-        state,
-        body,
-        body.settled ? 0.75 : 1,
-        debugColor ?? (body.settled || bodyIsSupport ? null : TMP_COLOR.setRGB(1, 1, 0.9)),
-      );
-      teleportProbe.observe(state.poses.bodyIndexFor(key), body.position, writeNowMs, () => ({
-        bodyKey: key,
-        slot: body.chunkSlots[0] ?? -1,
-        settling,
-        bodySettled: body.settled,
-        source: client.topology.poseSourceOf(key).source,
-        bodySpeed: client.bodyPresentedSpeed(key),
-        // Was this body's island frame rebased in the last few batches? A
-        // rebase is supposed to leave every composed world pose untouched.
-        recentlyRebased:
-          client.topology.currentReoffsetSeq() - client.topology.reoffsetSeqOf(key) < 64
-          && client.topology.reoffsetSeqOf(key) >= 0,
-      }));
-      renderStats.instanceWrites += 1;
-      // The cells this body's chunks sit in: their culling spheres follow it.
-      // Support serial 0 is the intact structure, at rest by definition; its
-      // chunks are not counted as live geometry.
-      for (const slot of body.chunkSlots) {
-        const meshIndex = state.meshOfSlot[slot];
-        if (meshIndex < 0) continue;
-        touchedMeshes.add(meshIndex);
-        if (!bodyIsSupport) {
-          liveChunksPerMesh[meshIndex] = (liveChunksPerMesh[meshIndex] ?? 0) + 1;
-          drawnThisFrame += 1;
+      },
+      // Settled rubble is dimmed, and live debris very slightly warmed, as
+      // the per-chunk colour writes used to do.
+      appearance: (key, body, bodyIsSupport) => {
+        const debugCode = bodyDebug.enabled ? bodyDebugStateCode(key, bodyIsSupport) : -1;
+        const debugColor = debugCode >= 0 ? bodyDebugColorForCode(debugCode) : null;
+        return {
+          tint: body.settled ? 0.75 : 1,
+          colour: debugColor ?? (body.settled || bodyIsSupport ? null : TMP_COLOR.setRGB(1, 1, 0.9)),
+        };
+      },
+      bodyWritten: (key, body, settling, bodyIsSupport) => {
+        teleportProbe.observe(state.poses.bodyIndexFor(key), body.position, updateStartedAt, () => ({
+          bodyKey: key,
+          slot: body.chunkSlots[0] ?? -1,
+          settling,
+          bodySettled: body.settled,
+          source: client.topology.poseSourceOf(key).source,
+          bodySpeed: client.bodyPresentedSpeed(key),
+          // Was this body's island frame rebased in the last few batches? A
+          // rebase is supposed to leave every composed world pose untouched.
+          recentlyRebased:
+            client.topology.currentReoffsetSeq() - client.topology.reoffsetSeqOf(key) < 64
+            && client.topology.reoffsetSeqOf(key) >= 0,
+        }));
+        renderStats.instanceWrites += 1;
+        // The cells this body's chunks sit in: their culling spheres follow
+        // it. Support serial 0 is the intact structure, at rest by
+        // definition; its chunks are not counted as live geometry.
+        for (const slot of body.chunkSlots) {
+          const meshIndex = state.meshOfSlot[slot];
+          if (meshIndex < 0) continue;
+          touchedMeshes.add(meshIndex);
+          if (!bodyIsSupport) {
+            liveChunksPerMesh[meshIndex] = (liveChunksPerMesh[meshIndex] ?? 0) + 1;
+            drawnThisFrame += 1;
+          }
         }
-      }
-      if (!live.has(key)) {
-        dirty.delete(key);
-      }
+      },
+    });
+    renderStats.recordWrites = frame.recordsWritten;
+    if (!bodyPhaseStarted) {
+      updateStartedAt = performance.now();
+      renderStats.recordWriteMs = updateStartedAt - recordStartedAt;
     }
-    state.poses.upload();
+    noteCityDrawn(client, state.poses, poseNowMs);
+    if (frame.idle) {
+      renderStats.cityFrameMs = performance.now() - cityFrameStartedAt;
+      return;
+    }
     const writeEndedAt = performance.now();
     renderStats.dirtyWriteMs = writeEndedAt - updateStartedAt;
     // A cell is culled against its bounding sphere, and debris falls outside

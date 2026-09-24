@@ -154,6 +154,10 @@ pub struct Headline {
     pub city_lever_p50_m: Option<f64>,
     pub city_lever_p99_m: Option<f64>,
     pub city_perceptible: Option<f64>,
+    /// The headline metric: every rigid-body draw (players, vehicles, bodies,
+    /// meteors, every city chunk) vs truth, overall and per class
+    /// (unified.rs). None for runs from before it.
+    pub all_draws: Option<crate::unified::AllDraws>,
 }
 
 pub fn headline(name: &str, stream: &StreamReport, card: &Card) -> Headline {
@@ -217,6 +221,7 @@ pub fn headline(name: &str, stream: &StreamReport, card: &Card) -> Headline {
         h.city_repairs_asked = sync.repairs_asked;
         h.city_hash_mismatches = sync.hash_mismatches;
     }
+    h.all_draws = card.all_draws.clone();
     if let Some(city) = &card.city {
         h.city_lever_p50_m = city["overall"]["lever_m"]["p50"].as_f64();
         h.city_lever_p99_m = city["overall"]["lever_m"]["p99"].as_f64();
@@ -227,6 +232,23 @@ pub fn headline(name: &str, stream: &StreamReport, card: &Card) -> Headline {
 
 pub fn card_summary(card: &Card) -> String {
     let mut s = String::new();
+    if let Some(all) = &card.all_draws {
+        let o = &all.overall;
+        let _ = writeln!(
+            s,
+            "ALL DRAWS ({:.0} scored draw-frames): pos@render p50/p95/p99/max {:.3}/{:.3}/{:.3}/{:.2} m, rot@render p99 {:.2} deg, pos@now p50/p95/p99 {:.3}/{:.3}/{:.3} m | missing {:.0} extra {:.0} wrong identity {:.0}",
+            o.scored, o.pos_render_m.p50, o.pos_render_m.p95, o.pos_render_m.p99, o.pos_render_m.max,
+            o.rot_render_deg.p99, o.pos_now_m.p50, o.pos_now_m.p95, o.pos_now_m.p99, o.missing, o.extra, o.wrong_identity
+        );
+        for (class, c) in &all.classes {
+            let _ = writeln!(
+                s,
+                "  {:<16} {:>11.0} pos@render p50/p99 {:.3}/{:.3} m  pos@now p50/p99 {:.3}/{:.3} m  rot@render p99 {:>6.2} deg  missing {:.0} extra {:.0} wrong id {:.0}",
+                class, c.scored, c.pos_render_m.p50, c.pos_render_m.p99, c.pos_now_m.p50, c.pos_now_m.p99,
+                c.rot_render_deg.p99, c.missing, c.extra, c.wrong_identity
+            );
+        }
+    }
     let _ = writeln!(
         s,
         "frames {} ({:.1} s) | render backsteps {} (max {:.1} ms) / bodies {} (max {:.1} ms) | dyn delay p50 {:.1} ms | bodies drawn {:.1} ms behind the server (p50)",
@@ -290,12 +312,14 @@ pub fn card_summary(card: &Card) -> String {
     if let Some(city) = &card.city {
         let _ = writeln!(
             s,
-            "  city chunks: lever p50/p99 {:.3}/{:.3} m (uncompensated p50 {:.3} m), perceptible {:.2}%, missing moving body-frames {}",
+            "  city bodies: lever p50/p99 {:.3}/{:.3} m (uncompensated p50 {:.3} m), perceptible {:.2}%, missing moving body-frames {} at the server's tick ({} promoted after the presented tick), {} at the presented tick",
             city["overall"]["lever_m"]["p50"].as_f64().unwrap_or(0.0),
             city["overall"]["lever_m"]["p99"].as_f64().unwrap_or(0.0),
             city["overall"]["lever_uncompensated_m"]["p50"].as_f64().unwrap_or(0.0),
             city["overall"]["visual"]["perceptible_fraction"].as_f64().unwrap_or(0.0) * 100.0,
-            city["missing_moving_body_frames"].as_u64().unwrap_or(0)
+            city["missing_moving_body_frames"].as_u64().unwrap_or(0),
+            city["missing_moving_born_after_render_body_frames"].as_u64().unwrap_or(0),
+            city["missing_moving_at_render_body_frames"].as_u64().unwrap_or(0)
         );
     }
     if let Some(sync) = &card.city_sync {
@@ -338,6 +362,16 @@ pub fn run_markdown(stream: &StreamReport, card: &Card) -> String {
     for warning in &stream.warnings {
         let _ = writeln!(s, "- **warning**: {warning}");
     }
+    if let Some(all) = &card.all_draws {
+        s.push('\n');
+        s.push_str(&crate::unified::markdown(all));
+    }
+    if let (Some(join), Some(windows)) = (&card.all_draws_join, &card.join_windows) {
+        s.push_str(&crate::unified::markdown_titled(
+            join,
+            &format!("Join window: the first {} s after joining or a full city bootstrap", windows.seconds),
+        ));
+    }
     let _ = writeln!(s, "\n## Stream\n\n```\n{}```\n", stream_summary(stream));
     let _ = writeln!(s, "## What the client drew\n\n```\n{}```\n", card_summary(card));
     let _ = writeln!(s, "Bytes per kind (delivered):\n");
@@ -361,6 +395,9 @@ pub fn run_markdown(stream: &StreamReport, card: &Card) -> String {
 pub fn write_run_report(out: &Path, stream: &StreamReport, card: &Card) -> std::io::Result<()> {
     let name = out.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
     let report = serde_json::json!({
+        // The headline metric first (keys sort: all_draws, card, headline, stream).
+        "all_draws": card.all_draws,
+        "all_draws_join": card.all_draws_join,
         "stream": stream,
         "card": card,
         "headline": headline(&name, stream, card),
@@ -454,6 +491,87 @@ pub fn write_calibration(
         worst_reference <= 0.01,
         format!("{:?}", client.vs_reference_m.iter().map(|(k, p)| (k.clone(), p.p99)).collect::<BTreeMap<_, _>>()),
     ));
+    if let Some(chunks) = &client.vs_reference_chunks_m {
+        checks.push((
+            "(b) lab city chunk tables vs the recorded tape through the same client: p99 <= 1 cm, no draw differs".into(),
+            chunks.p99 <= 0.01 && client.vs_reference_chunks_drawn_mismatch == 0,
+            format!(
+                "p50 {:.6} m p99 {:.6} m max {:.4} m over {} chunk-frames; drawn by one only: {}",
+                chunks.p50, chunks.p99, chunks.max, chunks.n, client.vs_reference_chunks_drawn_mismatch
+            ),
+        ));
+    }
+    // (d) Every class the client draws, against what the live renderers drew
+    // (client-<n>-drawn.jsonl, 10 Hz). The live renderers each sample the
+    // clocks at their own instant inside the frame, up to ~2 ms from the
+    // lab's frame time (seam S8); at the ~60 m/s the fastest cannonballs and
+    // meteors reach that is 12 cm, at walking and driving speeds 1-3 cm. A
+    // standing chunk has nothing to move by.
+    if client.live_samples > 0 || client.city_vs_live.is_some() {
+        let mut live: Vec<(String, f64, f64, u64)> = Vec::new();
+        for (class, limit) in [("player", 0.05), ("vehicle", 0.05), ("body", 0.15), ("meteor", 0.15)] {
+            let p = client.vs_live_m.get(class).copied().unwrap_or_default();
+            live.push((class.into(), p.p99, limit, p.n));
+        }
+        if let Some(city) = &client.city_vs_live {
+            for (class, limit) in [("chunk_intact", 0.001), ("chunk_debris", 0.10)] {
+                let p = city.pos_m.get(class).copied().unwrap_or_default();
+                live.push((class.into(), p.p99, limit, p.n));
+            }
+        }
+        for (class, p99, limit, n) in &live {
+            // A class with no live sample cannot be judged; the coverage
+            // check below says whether that is acceptable.
+            checks.push((
+                format!("(d) lab vs live renderer, {class}: p99 <= {limit} m"),
+                *n == 0 || *p99 <= *limit,
+                if *n == 0 { "no live samples of this class".into() } else { format!("p99 {p99:.4} m over {n} samples") },
+            ));
+        }
+        // Every class the lab drew must have live samples to compare with;
+        // chunk classes only when the live samples carry city chunks (a
+        // recording from before cityDrawnSample.ts has none).
+        let drew = |class: &str| client.lab_classes_drawn.iter().any(|c| c == class);
+        let mut required: Vec<&str> = ["player", "vehicle", "body"].into_iter().filter(|c| drew(c)).collect();
+        if client.city_vs_live.is_some() {
+            if drew("chunk_intact") {
+                required.push("chunk_intact");
+            }
+            if drew("chunk_debris") || drew("chunk_rubble") {
+                required.push("chunk_debris");
+            }
+        }
+        let absent: Vec<&str> =
+            required.iter().copied().filter(|class| live.iter().all(|(c, _, _, n)| c != class || *n == 0)).collect();
+        checks.push((
+            "(d) live comparison covers every class the lab drew (players, vehicles, bodies, intact and debris chunks)".into(),
+            absent.is_empty(),
+            if absent.is_empty() {
+                format!("covered: {required:?}{}", if client.city_vs_live.is_none() { " (no city samples in this recording)" } else { "" })
+            } else {
+                format!("no live samples of {absent:?}")
+            },
+        ));
+        if let Some(city) = &client.city_vs_live {
+            // A re-parent or a hide can land one frame apart live and in the
+            // lab: topology is released against the page clock, and the live
+            // layer reads that clock a fraction of a millisecond after the
+            // lab's frame time (S10), and its distance stride delays a distant
+            // body's first write. The poses agree; the identity or the hide
+            // flips a frame early or late.
+            let share = city.drawn_mismatch as f64 / city.chunks_compared.max(1) as f64;
+            let key_share = city.key_mismatch as f64 / city.chunks_compared.max(1) as f64;
+            checks.push((
+                "(d) live city chunks: body key agrees on >= 99.99%, drawn/not drawn on >= 99.9%".into(),
+                key_share <= 0.0001 && share <= 0.001,
+                format!(
+                    "{} chunk samples in {} live samples ({} unmatched); key mismatches {} ({:.4}%); drawn mismatches {} ({:.3}%); frame offset p50 {:.2} ms p99 {:.2} ms",
+                    city.chunks_compared, city.samples, city.unmatched_samples, city.key_mismatch, key_share * 100.0,
+                    city.drawn_mismatch, share * 100.0, city.frame_offset_ms.p50, city.frame_offset_ms.p99
+                ),
+            ));
+        }
+    }
     let pass = checks.iter().all(|(_, ok, _)| *ok) && (exact_capture || !strict);
     let mut summary = format!(
         "CALIBRATION {} ({})\n",
@@ -502,6 +620,27 @@ fn matrix_markdown(rows: &[Headline]) -> String {
             r.run, r.link, if r.knobs.is_empty() { "production" } else { &r.knobs }, r.down_kbps, r.reliable_kbps,
             r.datagram_kbps, r.snapshot_kbps, r.city_kbps, r.datagrams_lost, r.retransmits, r.reliable_hol_p99_ms,
             r.dyn_delay_p50_ms, r.dyn_behind_now_p50_ms, r.render_backsteps
+        );
+    }
+    let _ = writeln!(s, "\n## All rigid-body draws (headline; unified.rs): position error m, missing / extra / wrong identity draw-frames\n");
+    let _ = writeln!(s, "| run | overall pos@render p50 / p95 / p99 | overall pos@now p50 / p95 / p99 | rot@render p99 ° | missing | extra | wrong id | per class pos@render p99 / pos@now p99 |");
+    let _ = writeln!(s, "|---|---|---|---:|---:|---:|---:|---|");
+    for r in rows {
+        let Some(all) = &r.all_draws else {
+            let _ = writeln!(s, "| {} | - | - | - | - | - | - | - |", r.run);
+            continue;
+        };
+        let o = &all.overall;
+        let classes: Vec<String> = all
+            .classes
+            .iter()
+            .map(|(k, c)| format!("{k} {:.3}/{:.3}", c.pos_render_m.p99, c.pos_now_m.p99))
+            .collect();
+        let _ = writeln!(
+            s,
+            "| {} | {:.3} / {:.3} / {:.3} | {:.3} / {:.3} / {:.3} | {:.2} | {:.0} | {:.0} | {:.0} | {} |",
+            r.run, o.pos_render_m.p50, o.pos_render_m.p95, o.pos_render_m.p99, o.pos_now_m.p50, o.pos_now_m.p95,
+            o.pos_now_m.p99, o.rot_render_deg.p99, o.missing, o.extra, o.wrong_identity, classes.join("; ")
         );
     }
     let _ = writeln!(s, "\n## Fidelity per class: error at render time p50 / p99 (m), error now p50 (m), artifacts/min, extrapolated %\n");
@@ -681,6 +820,22 @@ pub fn cmd_compare(args: &Args) {
         }
         if let (Some(x), Some(y)) = (ha.city_lever_p99_m, hb.city_lever_p99_m) {
             row("city lever p99 m", x, y);
+        }
+        if let (Some(x), Some(y)) = (&ha.all_draws, &hb.all_draws) {
+            row("ALL draws pos@render p50 m", x.overall.pos_render_m.p50, y.overall.pos_render_m.p50);
+            row("ALL draws pos@render p95 m", x.overall.pos_render_m.p95, y.overall.pos_render_m.p95);
+            row("ALL draws pos@render p99 m", x.overall.pos_render_m.p99, y.overall.pos_render_m.p99);
+            row("ALL draws pos@now p50 m", x.overall.pos_now_m.p50, y.overall.pos_now_m.p50);
+            row("ALL draws pos@now p99 m", x.overall.pos_now_m.p99, y.overall.pos_now_m.p99);
+            row("ALL draws missing", x.overall.missing, y.overall.missing);
+            row("ALL draws extra", x.overall.extra, y.overall.extra);
+            row("ALL draws wrong identity", x.overall.wrong_identity, y.overall.wrong_identity);
+            for (class, cx) in &x.classes {
+                if let Some(cy) = y.classes.get(class) {
+                    row(&format!("draws {class} pos@render p99 m"), cx.pos_render_m.p99, cy.pos_render_m.p99);
+                    row(&format!("draws {class} pos@now p99 m"), cx.pos_now_m.p99, cy.pos_now_m.p99);
+                }
+            }
         }
     }
     if let Some(out) = args.get("out") {

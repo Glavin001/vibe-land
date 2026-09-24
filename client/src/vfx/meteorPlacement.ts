@@ -139,3 +139,46 @@ export function placeMeteor(
   return { source: 'hidden', position: [...last], velocity: [0, 0, 0], quaternion: null, arc };
 }
 
+
+/** The tick the meteor layer judges staleness in (the server's 60 Hz). */
+export const METEOR_TICK_US = Math.round(1_000_000 / 60);
+
+/** The streamed-body side of a meteor: the runtime (live), or the netcode client (replay, Netlab). */
+export interface MeteorBodyFeed {
+  /** The body's buffered snapshots, oldest first. */
+  getDynamicBodySamples(id: number): readonly DynamicBodySample[];
+  /** Server ticks of snapshots since the body was last in one. */
+  getDynamicBodyTicksSinceSeen(id: number): number | null;
+}
+
+export interface MeteorFrame {
+  /** The dynamic-body render time this frame, server us; null before a runtime exists. */
+  renderServerUs: number | null;
+  /** The dynamic-body interpolation delay, ms (the arc's local-clock fallback). */
+  lagMs: number;
+  nowMs: number;
+  tickUs?: number;
+}
+
+/**
+ * One meteor, one frame, exactly as MeteorLayer places it: at the frame's
+ * dynamic-body render time (or, with nothing connected yet, on the local
+ * clock), from the flight's arc and its streamed body. Netlab v2's client
+ * stage calls this too, so what it scores is what the layer draws.
+ */
+export function placeMeteorInFrame(
+  flight: MeteorFlight,
+  feed: MeteorBodyFeed | null,
+  frame: MeteorFrame,
+): MeteorPlacement {
+  // Without a runtime (nothing connected yet) the arc runs on the local clock.
+  const renderUs = frame.renderServerUs
+    ?? flight.serverLaunchTimeUs + (frame.nowMs - frame.lagMs - flight.launchedAtLocalMs) * 1000;
+  return placeMeteor(flight, flight.track, {
+    renderServerUs: renderUs,
+    samples: feed?.getDynamicBodySamples(flight.bodyId) ?? [],
+    ticksSinceSeen: feed?.getDynamicBodyTicksSinceSeen(flight.bodyId) ?? null,
+    tickUs: frame.tickUs ?? METEOR_TICK_US,
+    nowMs: frame.nowMs,
+  });
+}

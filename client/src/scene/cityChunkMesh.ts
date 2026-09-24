@@ -40,6 +40,7 @@ import {
 } from '../app/renderQuality';
 import { CityGpuPoses, CitySlotMesh, SlotGeometryBuilder, type CityRenderable } from './citySlotMesh';
 import type { LedgerBody } from '../city/topology';
+import { initCityPoses, writeBodyPoseInto, writeChunkRecordInto } from '../city/cityPoseStore';
 import { renderStats } from '../city/renderStats';
 import { applyCityTriplanar } from './cityMaterialShader';
 import { bakeRestAnchors } from './cityTexAnchor';
@@ -352,25 +353,16 @@ type BuildSink = {
   totalVertices: number;
 };
 
-const TMP_LOCAL = new Float32Array(3);
-const TMP_LOCAL_ROT = new Float32Array(4);
-
 /**
  * Write one chunk's record: which body it rides and where it sits on it.
  * Called at build for every slot and afterwards for every slot the ledger
  * reassigns (`drainSlotChanges`). Returns false when the ledger cannot say
  * which body the chunk is on right now; the caller retries next frame and the
  * chunk keeps drawing where it was, which is the only correct thing to show.
+ * (city/cityPoseStore.ts, shared with Netlab.)
  */
 export function writeChunkRecord(state: CityMeshState, client: CityClient, slot: number): boolean {
-  const key = client.topology.chunkBody[slot];
-  const body = client.topology.body(key);
-  if (!body) return false;
-  const index = state.poses.bodyIndexFor(key);
-  client.topology.localOffsetInto(slot, TMP_LOCAL);
-  client.topology.localRotationInto(slot, TMP_LOCAL_ROT);
-  state.poses.writeChunk(slot, index, TMP_LOCAL, TMP_LOCAL_ROT, state.radii[slot]);
-  return true;
+  return writeChunkRecordInto(state.poses, client, state.radii, slot);
 }
 
 /**
@@ -383,16 +375,7 @@ export function writeBodyPose(
   tint: number,
   colour: THREE.Color | null,
 ): void {
-  const index = state.poses.bodyIndexFor(body.key);
-  state.poses.writeBody(
-    index,
-    body.position,
-    body.rotation,
-    tint,
-    colour ? colour.r : 1,
-    colour ? colour.g : 1,
-    colour ? colour.b : 1,
-  );
+  writeBodyPoseInto(state.poses, body, tint, colour);
 }
 
 /** One cell (one material): every member merged, one draw. */
@@ -552,11 +535,7 @@ export function buildCityMesh(client: CityClient): CityMeshState {
   // Every record and every body the ledger has, so the first frame draws the
   // city exactly as the ledger holds it -- intact, or mid-collapse for a late
   // join or a mid-game rebuild.
-  for (const body of client.topology.allBodies()) {
-    writeBodyPose(state, body, body.settled ? 0.75 : 1, null);
-  }
-  for (let slot = 0; slot < count; slot += 1) writeChunkRecord(state, client, slot);
-  poses.upload();
+  initCityPoses(poses, client, radii);
   for (const { mesh } of state.renderables) mesh.anchorSphere();
 
   console.info('[city] chunk meshes ready', {

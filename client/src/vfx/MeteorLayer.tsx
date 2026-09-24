@@ -17,7 +17,7 @@ import type { DynamicBodySample } from '../net/interpolation';
 import type { DynamicBodyStateMeters } from '../net/protocol';
 import { MeteorFireStage, type MeteorFireInstance } from './MeteorFireStage';
 import { meteorFlights, recordMeteorDrawn, type MeteorFlight } from './meteorFlights';
-import { placeMeteor } from './meteorPlacement';
+import { METEOR_TICK_US, placeMeteorInFrame } from './meteorPlacement';
 import {
   buildMeteorEmbers,
   buildMeteorGeometry,
@@ -63,7 +63,7 @@ type MeteorLayerProps = {
  */
 const LIGHT_POOL = 2;
 
-const TICK_US = Math.round(1_000_000 / 60);
+const TICK_US = METEOR_TICK_US;
 
 interface LiveMeteor {
   flight: MeteorFlight;
@@ -159,16 +159,8 @@ export function MeteorLayer({ getRuntime, getNowMs }: MeteorLayerProps) {
       }
 
       const raw = runtime?.state?.dynamicBodies.get(flight.bodyId) ?? null;
-      // Without a runtime (nothing connected yet) the arc runs on the local clock.
-      const renderUs = renderServerUs
-        ?? flight.serverLaunchTimeUs + (nowMs - lagMs - flight.launchedAtLocalMs) * 1000;
-      const placed = placeMeteor(flight, flight.track, {
-        renderServerUs: renderUs,
-        samples: runtime?.getDynamicBodySamples(flight.bodyId) ?? [],
-        ticksSinceSeen: runtime?.getDynamicBodyTicksSinceSeen(flight.bodyId) ?? null,
-        tickUs: TICK_US,
-        nowMs,
-      });
+      // Where it is drawn (meteorPlacement.ts, shared with Netlab v2).
+      const placed = placeMeteorInFrame(flight, runtime, { renderServerUs, lagMs, nowMs, tickUs: TICK_US });
       const forensics = {
         raw: raw ? { position: raw.position, velocity: raw.velocity } : null,
         rendered: placed.source === 'body' ? placed.position : null,

@@ -9,7 +9,8 @@
 # unchanged, with this worktree's ports and binary): <outDir>/debug-reports/
 # session-<run>-c<n> are the bundles, <outDir>/client-<n>-drawn.jsonl the live
 # renderers' samples that `netlab2 calibrate` compares against. Build first
-# (docs/netlab-v2.md).
+# (docs/netlab-v2.md). HTTP_PORT, WT_PORT, CLIENT_PORT, BIN and VITE_CACHE_DIR
+# move it off the defaults, so two worktrees can record without sharing them.
 set -u
 WT=$(cd "$(dirname "$0")/../../.." && pwd)
 OUT=${1:?outDir}; NAME=${2:-quick}; export CLIENTS=${3:-3}
@@ -24,8 +25,9 @@ mkdir -p "$OUT"; OUT=$(cd "$OUT" && pwd)
 if curl -s -m 2 "http://localhost:$CLIENT_PORT/" >/dev/null; then
   echo "something already answers on :$CLIENT_PORT" >&2; exit 11
 fi
+VITE_CACHE_DIR=${VITE_CACHE_DIR:-/Users/glavin/Development/vibe-land/target/netlab-v2/vite-cache}
 (cd "$WT/client" && CLIENT_PORT=$CLIENT_PORT SERVER_PORT=$HTTP_PORT SERVER_HOST=127.0.0.1 \
-  VITE_CACHE_DIR=/Users/glavin/Development/vibe-land/target/netlab-v2/vite-cache \
+  VITE_CACHE_DIR=$VITE_CACHE_DIR \
   exec npx vite --config e2e/city-bench/vite.bench.config.ts --port "$CLIENT_PORT" --strictPort) \
   > "$OUT/vite.log" 2>&1 &
 VITE=$!

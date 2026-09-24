@@ -27,6 +27,7 @@
 // this page -- a bench shows raw cost -- so its trims never hide a hot spot.
 // Space plays/pauses, arrows scrub 5 s, R rewinds.
 
+import { remoteVehicleDrawPose } from '../scene/netEntityPoses';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three';
@@ -183,8 +184,8 @@ function ReplayNetLayers({ playerRef }: { playerRef: React.MutableRefObject<Repl
     renderers.bodies.update(bodiesGroup.current, world.state.dynamicBodies, (id) => world.getRenderedDynamicBodyState(id));
     renderers.batteries.update(batteriesGroup.current, world.batteries, tapeMs, null);
     renderers.vehicles.update(vehiclesGroup.current, world.vehicles, step, (id, vs) => {
-      const sample = world.sampleVehicle(id, renderTimeUs);
-      return { position: sample?.position ?? vs.position, quaternion: sample?.quaternion ?? vs.quaternion, localDebug: null };
+      const remote = remoteVehicleDrawPose(vs, world.sampleVehicle(id, renderTimeUs));
+      return { position: remote.position, quaternion: remote.quaternion, localDebug: null };
     });
     updatePooledShotTraceVisuals(world.shotTraces, tapeMs, tracePool.current);
 

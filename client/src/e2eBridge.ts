@@ -10,6 +10,7 @@
  * - Versioned: bridge.version is bumped on breaking schema changes
  */
 
+import { sampleCityDrawn, type CityDrawnSample } from './scene/cityDrawnSample';
 import type { DebugStats } from './ui/DebugOverlay';
 import { DEFAULT_STATS } from './ui/DebugOverlay';
 import { renderStats } from './city/renderStats';
@@ -159,6 +160,12 @@ export interface E2EDrawnWorld {
   vehicles: Array<{ id: number; driverId: number; position: [number, number, number] }>;
   bodies: Array<{ id: number; shapeType: number; position: [number, number, number] }>;
   meteors: Array<{ bodyId: number; source: string; position: [number, number, number] | null; tapeMs: number | null }>;
+  /**
+   * City chunks as the city layer's pose tables compose them (a rotating
+   * subset; scene/cityDrawnSample.ts), at the layer's own frame time; null
+   * outside the city or before its first frame.
+   */
+  city?: (CityDrawnSample & { tapeMs: number | null }) | null;
 }
 
 let drawnWorldSource: (() => Omit<E2EDrawnWorld, 'meteors' | 'tapeMs'>) | null = null;
@@ -803,6 +810,10 @@ const bridge: VibeE2EBridge = {
     return {
       ...drawn,
       tapeMs: cityTapeRecorder.elapsedMs(drawn.atMs),
+      city: (() => {
+        const city = sampleCityDrawn();
+        return city ? { ...city, tapeMs: cityTapeRecorder.elapsedMs(city.atMs) } : null;
+      })(),
       meteors: currentMeteorFlights().map((flight) => {
         const record = meteorDrawn(flight.bodyId);
         return {

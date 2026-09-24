@@ -106,6 +106,7 @@ import { DEFAULT_FOG_SETTINGS } from '../graphics/fogSettings';
 import type { WeatherPreset } from '../graphics/weatherPresets';
 import { useWeatherAmbience } from '../graphics/weatherAudio';
 import { CityChunksLayer } from './CityChunksLayer';
+import { remoteVehicleDrawPose } from './netEntityPoses';
 import { DustLayer } from '../vfx/DustLayer';
 import { MeteorLayer } from '../vfx/MeteorLayer';
 import {
@@ -2848,7 +2849,9 @@ export function GameWorld({
           const sample = localAuthorityTransport
             ? null
             : client.sampleRemoteVehicle(id, renderTimeUs);
-          return { position: sample?.position ?? vs.position, quaternion: sample?.quaternion ?? vs.quaternion, localDebug: null };
+          // netEntityPoses.ts, shared with Netlab v2.
+          const remote = remoteVehicleDrawPose(vs, sample);
+          return { position: remote.position, quaternion: remote.quaternion, localDebug: null };
         },
         (id, vs, vehicleMeshGroup, placed) => {
           const isLocalVehicle = isDrivingNow && localVehiclePos !== null && drivenVehicleId === id;

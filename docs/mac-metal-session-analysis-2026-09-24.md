@@ -670,6 +670,34 @@ paired) showing the acceptance criterion.
   - *Accept:* the post-impact meteor body is drawn within 1 m of truth
     until it leaves interest, then removed.
 
+- [ ] **12. Client: chunks stay on the body they left while topology is late.**
+  - *Found by:* Netlab all-body scoring (docs/netlab-v2.md), bundle
+    `systematic-2c-d1342419`, c1.
+  - *Evidence (measured):* wrong-identity chunk draws 0 (loopback),
+    61,092 (LTE), 139,139 (poor-mobile). 1,995 moving body-frames on LTE were
+    for bodies whose topology had not arrived (1-17 ticks late). Inferred
+    cause: topology rides the reliable stream (LTE p90 297 ms) while the
+    city playout delay (100 ms) only covers the datagrams.
+  - *Accept:* wrong-identity chunk draws near 0 on LTE without raising the
+    playout delay for everything.
+- [ ] **13. Client: a real structure repair brings retired chunks back.**
+  - *Evidence (measured):* on the 0a7d6ae5 bundle a repair redrew retired
+    chunks on the intact building (247,773 chunk-frames, 0.66% of intact
+    draws). Item 6 removed the spurious repairs; a genuine one after loss
+    still does this.
+  - *Accept:* after a repair, no chunk the server retired is drawn.
+- [ ] **14. Client: floor-retired chunks stay drawn below ground.**
+  - *Evidence (measured):* chunks retired at the 5 m escape floor (item 5)
+    stay drawn 3.5-3.75 m below ground, above the -4 m hide depth; most of
+    the loopback "extra" draws (5 chunks).
+  - *Accept:* 0 draws of retired chunks.
+- [ ] **15. Meteor orientation is not streamed.**
+  - *Evidence (measured):* a meteor drawn from its body has rotation error
+    p99 172 degrees.
+- [ ] **16. Meteors whose body never streams stay on their arc.**
+  - *Evidence (measured):* heavy-quick3-v2, spectator: two meteors held on
+    the arc, p99 157 m from truth.
+
 ### Transport policy
 
 The WebSocket fallback is to be disabled: WebTransport only, unless
