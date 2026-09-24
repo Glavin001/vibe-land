@@ -110,11 +110,16 @@ fn env_f32(name: &str, default: f32) -> f32 {
 ///
 /// Override with VIBE_WORLD_GRAVITY (a positive magnitude).
 pub fn world_gravity_magnitude() -> f32 {
-    // Earth. Must match MoveConfig::default().gravity -- city_bench asserts
-    // they agree, because feeding the stress solver one gravity inside a PhysX
-    // scene integrating another is a combination production never runs.
-    env_f32("VIBE_WORLD_GRAVITY", 9.81).abs()
+    env_f32("VIBE_WORLD_GRAVITY", DEFAULT_WORLD_GRAVITY).abs()
 }
+
+/// Earth. The one default for world gravity. Must match
+/// MoveConfig::default().gravity: feeding the stress solver one gravity
+/// inside a PhysX scene integrating another is a combination production never
+/// runs. `tests/gravity_single_source.rs` asserts they agree. It also asserts
+/// that the C++ keeps no copy of this: destruction.cc reads the scene's
+/// gravity, which WorldConfig sets from here.
+pub const DEFAULT_WORLD_GRAVITY: f32 = 9.81;
 
 impl Default for WorldConfig {
     fn default() -> Self {

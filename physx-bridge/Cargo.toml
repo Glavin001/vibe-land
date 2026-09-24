@@ -28,3 +28,8 @@ cxx-build = { version = "1", optional = true }
 # Drives nvcc for the CUDA stress solver, and names the build type the vehicle
 # and native-destruction sources are added to.
 cc = { version = "1", optional = true }
+
+[dev-dependencies]
+# Only for tests/gravity_single_source.rs, which pins this crate's default
+# world gravity to the player's (MoveConfig).
+vibe-netcode = { path = "../netcode" }

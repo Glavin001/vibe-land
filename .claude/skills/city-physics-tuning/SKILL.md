@@ -40,7 +40,7 @@ native stage's own knobs are listed in
 
 | variable | default | what it actually controls |
 |---|---|---|
-| `VIBE_WORLD_GRAVITY` | 20.0 | world gravity, m/s^2 |
+| `VIBE_WORLD_GRAVITY` | 9.81 | world gravity, m/s^2. One source: physx-bridge `DEFAULT_WORLD_GRAVITY`; the C++ destruction path reads the scene's gravity |
 | `VIBE_WORLD_FRICTION` | 0.75 | contact friction (concrete ~0.6-0.8) |
 | `VIBE_WORLD_RESTITUTION` | 0.02 | rebound; concrete barely bounces |
 | `VIBE_CITY_STRESS_LIMIT_SCALE` | 0.6 | scales elastic **and** fatal together |
