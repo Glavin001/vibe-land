@@ -4,7 +4,27 @@ export const t0 = Date.now();
 export const mark = (what) => console.log(`[t=${((Date.now() - t0) / 1000).toFixed(1)}s] ${what}`);
 
 // Walk to a point, re-aiming every half second.
-export async function walkTo(page, x, z, { within = 2.5, sprint = true, timeoutMs = 40000 } = {}) {
+// The Vibe Jam exit portal (client/src/scene/Portals.tsx, EXIT_PORTAL_XZ)
+// navigates the page away when walked through; route around it.
+const PORTAL = [20, 0], PORTAL_CLEARANCE = 5;
+
+function passesPortal(from, x, z) {
+  const dx = x - from[0], dz = z - from[2], len2 = dx * dx + dz * dz;
+  const t = len2 > 0 ? Math.max(0, Math.min(1, ((PORTAL[0] - from[0]) * dx + (PORTAL[1] - from[2]) * dz) / len2)) : 0;
+  return Math.hypot(from[0] + t * dx - PORTAL[0], from[2] + t * dz - PORTAL[1]) < PORTAL_CLEARANCE;
+}
+
+export async function walkTo(page, x, z, options = {}) {
+  const s = await snap(page);
+  if (passesPortal(s.position, x, z)) {
+    // Detour on the side of the portal the walk starts from.
+    const side = s.position[2] >= PORTAL[1] ? 1 : -1;
+    await walkStraight(page, PORTAL[0], PORTAL[1] + side * (PORTAL_CLEARANCE + 3), { ...options, within: 3 });
+  }
+  return walkStraight(page, x, z, options);
+}
+
+async function walkStraight(page, x, z, { within = 2.5, sprint = true, timeoutMs = 40000 } = {}) {
   const end = Date.now() + timeoutMs;
   await page.evaluate((s) => window.__VIBE_DRIVE__.setSprint(s), sprint);
   let last = null, lastAt = Date.now(), side = 1;

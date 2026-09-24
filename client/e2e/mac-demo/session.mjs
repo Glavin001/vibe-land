@@ -50,6 +50,16 @@ export async function banner(page, title) {
       + 'background:rgba(0,0,0,.72);color:#fff;font:15px/1.35 Menlo,monospace;pointer-events:none';
     b.innerHTML = `<div style="font-weight:700;font-size:17px">${title}</div><div id="demo-line1"></div><div id="demo-line2"></div>`;
     document.body.appendChild(b);
+    // Client frame rate, once a second, for performance runs (see dumpFps).
+    window.__fpsLog = [];
+    let frames = 0, since = performance.now();
+    const tick = () => {
+      frames++;
+      const now = performance.now();
+      if (now - since >= 1000) { window.__fpsLog.push([Date.now(), frames * 1000 / (now - since)]); frames = 0; since = now; }
+      requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
   }, title);
 }
 
@@ -80,3 +90,10 @@ export function liveStats(page, matchId, extra = () => '') {
 
 export const snap = (page) => page.evaluate(() => window.__VIBE_E2E__.snapshot());
 export const drive = (page, fn, arg) => page.evaluate(([f, a]) => new Function('d', 'a', f)(window.__VIBE_DRIVE__, a), [fn.toString().replace(/^[^{]*{/, '').replace(/}\s*$/, ''), arg]);
+
+// Write the per-second frame rates to FPS_OUT, when set.
+export async function dumpFps(page) {
+  if (!process.env.FPS_OUT) return;
+  const log = await page.evaluate(() => window.__fpsLog || []);
+  (await import('node:fs')).writeFileSync(process.env.FPS_OUT, JSON.stringify(log));
+}

@@ -1,4 +1,5 @@
 import { open, banner, caption, liveStats, snap, sleep } from './session.mjs';
+import { dumpFps } from './session.mjs';
 import { mark, walkTo, driveTo, enterNearest } from './nav.mjs';
 const OUT = process.argv[2];
 const { browser, context, page, renderer } = await open({ path: '/play?match=default', record: OUT });
@@ -30,7 +31,8 @@ await sleep(5000);
 const final = await (await fetch('http://127.0.0.1:4001/match-stats/default')).json();
 mark(`final gpu_active=${final.physics_gpu_active} warnings=${final.physics_gpu_warning_count}`);
 stop();
+await dumpFps(page);
 const video = page.video();
 await context.close();
 await browser.close();
-console.log('video', await video.path());
+if (video) console.log('video', await video.path());
