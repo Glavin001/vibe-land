@@ -341,7 +341,14 @@ paired) showing the acceptance criterion.
     - Fit: 14.9 ms + 0.0197 ms per active body.
     - Client fps vs server rate r = 0.90.
     - Replay without a server: 113 fps; live: 71 fps.
-- [ ] **2. Client clock: model the server-time rate.**
+- [x] **2. Client clock: model the server-time rate.**
+  - *Done (2026-09-24):* `netcode/src/clock_sync.rs` estimates the rate
+    (from the item 4 wall stamps, else arrivals), never advances past the
+    newest snapshot by more than one interval, and slews; `RenderClock`
+    never steps back. Replayed through the new code
+    (`scripts/perf/tape-analysis/replay-clock.ts`): 296 → 0 backward steps,
+    playout rate equal to the server rate in every 5 s window. Live bench
+    (quick, 3 clients): 269–283 → 0 per client.
   - *Layer / owner:* client netcode, `netcode/src/clock_sync.rs`.
   - *Do:*
     - Estimate the server-time rate instead of assuming 1.0.
@@ -352,7 +359,17 @@ paired) showing the acceptance criterion.
     tracks the server rate.
   - *Evidence:* 297 backward steps, −20.5 s in total, up to −675 ms. 4
     meteors that never streamed a body still rewound.
-- [ ] **3. Client interpolation and meteor drawing.**
+- [x] **3. Client interpolation and meteor drawing.**
+  - *Done (2026-09-24):* the delay is the p95 of sim time between arrivals,
+    at least one snapshot interval, at most 250 ms; meteor placement is one
+    function (`client/src/vfx/meteorPlacement.ts`) used by the layer and the
+    tools; ballistic extrapolation for bodies in free fall; staleness in
+    server ticks. On this tape: extrapolating 90.7% → 0%, meteors moving
+    backwards 21 → 0, hold jumps 35 → 0, below-ground frames 215 → 0. The
+    arc→body frame-to-frame step is 1.1 m median / 2.2 m max, over the 1 m
+    criterion, because it includes one frame of flight at 150 m/s; the gap
+    to the arc at the same render time (the actual discontinuity) is
+    0.29 m median / 0.45 m max. Cost: body delay 5 ms → ~20 ms on loopback.
   - *Layer / owner:* client, `client/src/net/netcodeClient.ts`,
     `client/src/net/interpolation.ts`, `client/src/vfx/MeteorLayer.tsx`.
   - *Do:*
@@ -370,7 +387,12 @@ paired) showing the acceptance criterion.
     - Handover jump median 7.8 m, max 24.3 m.
     - 35 hold jumps up to 33 m.
     - Drawn down to y = −19.8 m.
-- [ ] **4. Server stream: let clients tell slow motion from network delay.**
+- [x] **4. Server stream: let clients tell slow motion from network delay.**
+  - *Done (2026-09-24):* SnapshotV2 carries a 4-byte trailer with the
+    server's wall clock (µs mod 2^32), detected by length so older clients
+    are unaffected; `PROTOCOL_VERSION` unchanged. Sim rate from the stamps
+    vs the server tick log over 120 one-second windows: 0.0006% median,
+    0.023% max error.
   - *Layer / owner:* server stream and protocol (`server/src/main.rs`,
     `shared/src`).
   - *Do:* send a wall-clock server time alongside the tick, or a "simulation

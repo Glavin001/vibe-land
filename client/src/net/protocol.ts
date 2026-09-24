@@ -326,6 +326,14 @@ export type SnapshotV2Packet = {
   sphereStates: DynamicSphereStateV2[];
   boxStates: DynamicBoxStateV2[];
   vehicleStates: VehicleStateV2[];
+  /**
+   * The server's wall clock when it produced this snapshot, us modulo 2^32
+   * (any origin), or null from a server that predates it. `serverTimeUs` is
+   * simulation time (tick x 16.67 ms); against this, the client measures how
+   * fast the simulation is running rather than inferring it from arrivals.
+   * A trailer after the vehicles: older clients never read it.
+   */
+  serverWallUs?: number | null;
 };
 
 export type ShotResultPacket = {
@@ -907,6 +915,9 @@ export function decodeSnapshotV2Packet(view: DataView, o: number): SnapshotV2Pac
     o += 30;
   }
 
+  // Trailer: the server's wall clock (u32 us). Absent from older servers.
+  const serverWallUs = view.byteLength - o >= 4 ? view.getUint32(o, true) : null;
+
   return {
     type: 'snapshotV2',
     serverTimeUs: serverTick * Math.round(1_000_000 / 60),
@@ -920,6 +931,7 @@ export function decodeSnapshotV2Packet(view: DataView, o: number): SnapshotV2Pac
     sphereStates,
     boxStates,
     vehicleStates,
+    serverWallUs,
   };
 }
 

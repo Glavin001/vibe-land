@@ -1439,7 +1439,7 @@ export function GameWorld({
     }
     const drivenVehicleId = client?.getDrivenVehicleId() ?? null;
     const drivenVehicleState = drivenVehicleId != null ? client?.vehicles.get(drivenVehicleId) ?? null : null;
-    const localVehicleRenderTimeUs = client?.serverClock.renderTimeUs((client?.interpolationDelayMs ?? 0) * 1000) ?? 0;
+    const localVehicleRenderTimeUs = client?.getRenderTimeUs() ?? 0;
     const localVehicleNowTimeUs = client?.serverClock.serverNowUs();
     const localVehicleAuthoritativeSample = client && drivenVehicleId != null
       ? client.sampleRemoteVehicle(drivenVehicleId, localVehicleRenderTimeUs)
@@ -2012,7 +2012,7 @@ export function GameWorld({
           fireDir,
           CROSSHAIR_MAX_DISTANCE,
         );
-        const renderTimeUs = state.serverClock.renderTimeUs(state.interpolationDelayMs * 1000);
+        const renderTimeUs = client.getRenderTimeUs();
         const remoteHits = collectRemoteShotHits(
           state.remotePlayers,
           state.remoteInterpolator,
@@ -2669,7 +2669,7 @@ export function GameWorld({
       for (const [id, rp] of state.remotePlayers) {
         const sample = state.remoteInterpolator.sample(
           id,
-          state.serverClock.renderTimeUs(state.interpolationDelayMs * 1000),
+          client.getRenderTimeUs(),
         );
         remoteSummaries.push({
           id,
@@ -2679,7 +2679,7 @@ export function GameWorld({
       const localAuthoritativeSample = state.playerId !== 0
         ? state.remoteInterpolator.sample(
             state.playerId,
-            state.serverClock.renderTimeUs(state.interpolationDelayMs * 1000),
+            client.getRenderTimeUs(),
           )
         : null;
       const authoritativePosition = localAuthoritativeSample?.position ?? pos;
@@ -2767,7 +2767,7 @@ export function GameWorld({
     if (!group) return;
 
     const currentRemote = state.remotePlayers;
-    const renderTimeUs = state.serverClock.renderTimeUs(state.interpolationDelayMs * 1000);
+    const renderTimeUs = client.getRenderTimeUs();
     let crosshairAimState: CrosshairAimState = 'idle';
     let closestAimDistance = Number.POSITIVE_INFINITY;
 

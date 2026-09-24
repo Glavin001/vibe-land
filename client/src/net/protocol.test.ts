@@ -473,6 +473,34 @@ describe('snapshot V2 decode', () => {
     expect(packet.selfState.supportAngularVelocity).toEqual([0.25, -0.5, 0.75]);
     expect(packet.selfState.supportFlags).toBe(1);
   });
+
+  it('has no server wall clock from a server that predates the trailer', () => {
+    const packet = decodeServerDatagramPacket(buildSnapshotV2Binary());
+    expect(packet.type).toBe('snapshotV2');
+    if (packet.type !== 'snapshotV2') return;
+    expect(packet.serverWallUs).toBeNull();
+  });
+
+  it('reads the server wall-clock trailer after the entities', () => {
+    // The layout server/src/protocol.rs writes: 33-byte self state, then the
+    // entities, then a u32 wall clock.
+    const legacy = buildSnapshotV2Binary();
+    const selfStateEnd = 35;
+    const binary = new Uint8Array(legacy.length + 21 + 4);
+    binary.set(legacy.subarray(0, selfStateEnd), 0);
+    binary.set(legacy.subarray(selfStateEnd), selfStateEnd + 21);
+    const view = new DataView(binary.buffer);
+    view.setUint32(binary.length - 4, 0xdeadbeef, true);
+
+    const packet = decodeServerDatagramPacket(binary);
+    expect(packet.type).toBe('snapshotV2');
+    if (packet.type !== 'snapshotV2') return;
+    expect(packet.serverWallUs).toBe(0xdeadbeef);
+    // The trailer does not disturb the entities before it.
+    expect(packet.remotePlayers[0].handle).toBe(2);
+    expect(packet.sphereStates[0].handle).toBe(7);
+    expect(packet.vehicleStates[0].handle).toBe(3);
+  });
 });
 
 function buildPlayerRosterBinary(): Uint8Array {

@@ -43,16 +43,26 @@ charts come from `svgplot.py` (no matplotlib).
 |---|---|---|
 | `decode.ts` | `header.json`, `frames.csv`, `packets.csv`, `snapshots.csv`, `chunks.csv`, `topology.json`, `events.json` | Flat tables of every frame and packet |
 | `dumpstats.ts` | `match_stats.json` | Match-stats JSON packets with arrival times |
-| `meteors.ts` | `meteor_frames.csv`, `meteor_raw.csv`, `render_clock.csv` | Replays the packets through `ReplayNetWorld` at their arrival times and, using the live client's recorded clock offset and interpolation delay, mirrors `MeteorLayer`'s arc/body/hold/hidden choice per frame |
+| `meteors.ts` | `meteor_frames.csv`, `meteor_raw.csv`, `render_clock.csv` | Replays the packets through `ReplayNetWorld` at their arrival times and, using the live client's recorded clock offset and interpolation delay, runs `MeteorLayer`'s placement (`placeMeteor`) per frame. `--legacy-meteors` mirrors the pre-2026-09-24 layer instead, for tapes recorded by that client |
+| `replay-clock.ts` | `render_clock.csv`, `meteor_frames.csv`, `player_clock.csv`, `replay_summary.json` | Judges the client code in this tree against a tape: the packets go through the current `NetcodeClient` at their arrival times and the render clocks, delays and meteor placement are the code's own, not the recording's. `--wasm <pkg dir>` runs the WASM clock estimator (what the live client runs; the TypeScript copy is kept identical); `--legacy-meteors` for an older tree. The summary has render-clock backward steps, extrapolating share and lead percentiles, playout rate per 5 s, the own avatar's stutter, and meteor backward motion, handovers and below-ground frames |
 | `below.ts` | stdout | Chunk bodies whose absolute-pose records are below y = -3 m |
 | `analyse.py` | `summary.json`, `match_stats.csv`, `per_second.csv`, `timeline.svg`, `render_clock.svg`, `frames.svg`, `bandwidth.svg`, `scaling_tick_vs_bodies.svg`, `meteor_<body>_<s>s.svg` | All derived numbers and charts |
 | `run-replay-perf.sh`, `replay-perf.mjs` | `replay_perf_<label>.json` | Server-less replay timing (GPU) |
 | `replay_compare.py` | `replay_compare_<label>.json`, `replay_vs_live_<label>.svg` | Live frames vs replay frames |
 | `replay-debug.mjs` | stdout | Loads `/cityreplay` offline and dumps status and console, for debugging the replay harness |
 
-`meteors.ts` reconstructs the client's drawing from its logic as mirrored in
-the script (250 ms stale rule, 0.75 s unstreamed linger, 3 s landed linger).
-If `client/src/vfx/MeteorLayer.tsx` changes, update the mirror.
+`meteors.ts` and `replay-clock.ts` call the layer's own placement
+(`client/src/vfx/meteorPlacement.ts`), so they follow `MeteorLayer` without a
+mirror to update. Their `--legacy-meteors` mode is a frozen mirror of the
+layer before 2026-09-24.
+
+Before/after for a clock or interpolation change, on one tape:
+
+```bash
+# the old tree's wasm, built and saved before the change
+npx tsx ../scripts/perf/tape-analysis/replay-clock.ts $TAPE $OUT/before --wasm <old pkg> --legacy-meteors
+npx tsx ../scripts/perf/tape-analysis/replay-clock.ts $TAPE $OUT/after --wasm src/wasm/pkg
+```
 
 ## Replay (uses the GPU)
 

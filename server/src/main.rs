@@ -123,6 +123,15 @@ const SNAPSHOT_DYNAMIC_BODY_STATE_BYTES: usize = 43;
 const SNAPSHOT_VEHICLE_STATE_BYTES: usize = 50;
 const STRICT_SNAPSHOT_RESERVED_VEHICLES: usize = 2;
 const SNAPSHOT_V2_HEADER_BYTES: usize = 23;
+
+/// The server's wall clock for snapshot stamps: µs since the first call,
+/// modulo 2^32. Clients only difference consecutive stamps, so the origin is
+/// arbitrary and the wrap (every ~71 minutes) is unwrapped on their side.
+fn server_wall_clock_us() -> u32 {
+    static ORIGIN: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+    let origin = *ORIGIN.get_or_init(Instant::now);
+    (origin.elapsed().as_micros() % (1u128 << 32)) as u32
+}
 const SNAPSHOT_V2_SELF_PLAYER_BYTES: usize = 33;
 const SNAPSHOT_V2_REMOTE_PLAYER_BYTES: usize = 19;
 const SNAPSHOT_V2_DYNAMIC_SPHERE_BYTES: usize = 20;
@@ -6296,6 +6305,9 @@ impl MatchState {
     fn broadcast_snapshot(&mut self) {
         let snapshot_started = Instant::now();
         let server_time_us = (self.server_tick as u64) * (1_000_000 / SIM_HZ as u64);
+        // When this tick's state became available: stamped on every SnapshotV2
+        // so clients can tell a slow simulation from a slow network.
+        let server_wall_us = server_wall_clock_us();
         let mut player_states = Vec::with_capacity(self.players.len());
         for &player_id in self.players.keys() {
             if let Some((pos, vel, yaw, pitch, hp, flags)) = self.arena.snapshot_player(player_id) {
@@ -6489,8 +6501,8 @@ impl MatchState {
             }
             let mut selection = session_capture::SnapshotSelection::default();
 
-            let mut budget_remaining =
-                STRICT_SNAPSHOT_DATAGRAM_TARGET_BYTES.saturating_sub(SNAPSHOT_V2_HEADER_BYTES);
+            let mut budget_remaining = STRICT_SNAPSHOT_DATAGRAM_TARGET_BYTES
+                .saturating_sub(SNAPSHOT_V2_HEADER_BYTES + protocol::SNAPSHOT_V2_TRAILER_BYTES);
 
             let support_state = self.arena.player_support(recipient_id);
             let support_dynamic_id = support_state
@@ -6879,6 +6891,7 @@ impl MatchState {
                 sphere_states,
                 box_states,
                 vehicle_states: selected_vehicle_states,
+                server_wall_us,
             });
             let encoded = encode_server_packet(&packet);
             snapshot_bytes_this_tick += encoded.len();

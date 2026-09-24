@@ -111,8 +111,8 @@ destruction level (active bodies; broken-bond fraction).
     extrapolating, render-clock backward steps (`meteors.ts` on the live
     client's recorded clock);
   - meteors: backward on-screen motion, arc→body and hold→body handover
-    jumps, drawn below ground while the server sample is above (mirrors
-    `MeteorLayer`);
+    jumps, drawn below ground while the server sample is above (calls
+    `placeMeteor`, the function `MeteorLayer` draws with);
   - rendered vs server truth: what the renderers drew (`drawnWorld()`, 10 Hz)
     against `world.bin` at the client's render time (reconstruction error)
     and at the latest tick (what the player sees vs where things are).
@@ -205,8 +205,9 @@ not on the tape.
 - PhysX step and GPU wait come from 1 Hz samples of the last step, not every
   tick; the per-tick breakdown has `dynamics_ms` (98% of the tick) but not
   its GPU-wait share.
-- `meteors.ts` mirrors `MeteorLayer`'s logic; when that file changes, the
-  mirror must follow or the meteor numbers describe the old client.
+- `meteors.ts` calls the client's own `placeMeteor`
+  (`client/src/vfx/meteorPlacement.ts`); `--legacy-meteors` approximates
+  the pre-2026-09-24 layer for comparisons with old tapes.
 - The render error depends on the client's recorded clock offset; the
   mapping was checked on bodies in flight (0.0–0.2 m while streamed).
 - Headless Chromium frame pacing is not a display's vsync.

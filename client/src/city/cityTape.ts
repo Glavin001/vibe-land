@@ -234,8 +234,14 @@ export type CityTapeOwner = 'manual' | 'hotspot' | 'e2e';
 /** What the live session can tell the recorder about itself. */
 export interface CityTapeSessionProbe {
   transport: () => string;
-  /** The clock state the renderer is drawing at, sampled every recorded frame. */
-  clock: () => { offsetUs: number; interpDelayMs: number; dynDelayMs: number } | null;
+  /**
+   * The clock state the renderer is drawing at, sampled every recorded frame.
+   * `nowMs` is the frame's time exactly as the tape stores it (performance.now()
+   * scale): an offset taken at that instant reconstructs the render time
+   * exactly, where a second performance.now() read would not (Chrome coarsens
+   * it to 100 us, and the tape keeps frame times as float32).
+   */
+  clock: (nowMs: number) => { offsetUs: number; interpDelayMs: number; dynDelayMs: number } | null;
 }
 
 /**
@@ -418,13 +424,14 @@ class CityTapeRecorder {
     camera: { position: { x: number; y: number; z: number }; quaternion: { x: number; y: number; z: number; w: number } },
   ): void {
     if (!this.recording || !(frameMs > 0)) return;
-    this.frameTimes.push(performance.now() - this.startedAtMs);
+    const frameTimeMs = Math.fround(performance.now() - this.startedAtMs);
+    this.frameTimes.push(frameTimeMs);
     this.frameMs.push(frameMs);
     this.frameCpuMs.push(cpuMs);
     this.frameAwake.push(this.lastAwake);
     const { position: p, quaternion: q } = camera;
     this.frameCamera.push(p.x, p.y, p.z, q.x, q.y, q.z, q.w);
-    const clock = this.probe?.clock() ?? null;
+    const clock = this.probe?.clock(this.startedAtMs + frameTimeMs) ?? null;
     this.frameClock.push(clock?.offsetUs ?? NaN, clock?.interpDelayMs ?? NaN, clock?.dynDelayMs ?? NaN);
   }
 

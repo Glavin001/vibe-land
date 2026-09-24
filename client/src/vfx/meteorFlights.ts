@@ -65,6 +65,25 @@ export function decodeMeteorLaunched(bytes: Uint8Array): MeteorLaunchedPacket | 
   };
 }
 
+/** What `placeMeteor` (meteorPlacement.ts) carries for a flight between frames. */
+export interface MeteorTrack {
+  /** Server time (us) of the first streamed snapshot off the arc; null while on it. */
+  contactUs: number | null;
+  /** Newest snapshot already checked against the arc. */
+  checkedUs: number;
+  /** Newest snapshot server time seen at all; 0 if none. */
+  lastSampleUs: number;
+  /** Whether the body has been drawn (so a later gap is a hold, not the arc). */
+  drawnBody: boolean;
+  /** Render time (server us) the body was last drawn at; 0 if never. */
+  lastBodyUs: number;
+  lastPosition: [number, number, number] | null;
+}
+
+export function newMeteorTrack(): MeteorTrack {
+  return { contactUs: null, checkedUs: -Infinity, lastSampleUs: 0, drawnBody: false, lastBodyUs: 0, lastPosition: null };
+}
+
 export interface MeteorFlight extends MeteorLaunchedPacket {
   /** Launch instant on the local performance.now() clock, ms. */
   launchedAtLocalMs: number;
@@ -72,21 +91,23 @@ export interface MeteorFlight extends MeteorLaunchedPacket {
   seed: number;
   /** When the streamed body was last seen, local ms; 0 if never. Set by the layer. */
   lastStreamedAtMs: number;
+  /** Arc/body placement state. */
+  track: MeteorTrack;
 }
 
 /**
  * A flight that never streamed is forgotten this long after it should have
  * landed: the rock is held at the aimed point meanwhile, which is a guess.
  */
-const LANDED_LINGER_S = 3;
+export const LANDED_LINGER_S = 3;
 /**
  * A flight whose body was streamed is forgotten this long after the body was
- * last seen. Short: the body is the truth, and without it the rock can only
+ * last drawn. Short: the body is the truth, and without it the rock can only
  * stand still where it was, which reads as floating if it stands too long.
  */
-const UNSTREAMED_LINGER_S = 0.75;
+export const UNSTREAMED_LINGER_S = 0.75;
 /** And this long after launch regardless, in case something went badly wrong. */
-const MAX_AGE_S = 60;
+export const MAX_AGE_S = 60;
 const MAX_FLIGHTS = 8;
 
 const flights: MeteorFlight[] = [];
@@ -109,23 +130,56 @@ export function registerMeteorFlight(
     launchedAtLocalMs: serverToLocalMs(packet.serverLaunchTimeUs),
     seed: nextSeed++,
     lastStreamedAtMs: 0,
+    track: newMeteorTrack(),
   };
   flights.push(flight);
   if (flights.length > MAX_FLIGHTS) flights.shift();
   return flight;
 }
 
-/** Live flights, oldest first. Sweeps the ones nobody can still see. */
-export function meteorFlights(nowMs: number): readonly MeteorFlight[] {
+/**
+ * Live flights, oldest first. Sweeps the ones nobody can still see.
+ * `renderServerUs`, the dynamic-body render time, puts the sweep on server
+ * time; without it the sweep runs on the local clock.
+ */
+export function meteorFlights(nowMs: number, renderServerUs: number | null = null): readonly MeteorFlight[] {
   for (let i = flights.length - 1; i >= 0; i -= 1) {
-    const flight = flights[i];
+    if (meteorFlightForgotten(flights[i], nowMs, renderServerUs)) flights.splice(i, 1);
+  }
+  return flights;
+}
+
+/**
+ * Live flights without sweeping: for readers (diagnostics, the e2e bridge)
+ * that must not forget flights on a clock other than the one the layer uses.
+ */
+export function currentMeteorFlights(): readonly MeteorFlight[] {
+  return flights;
+}
+
+/**
+ * Whether a flight can be forgotten. On server time when the render time is
+ * known: a slowed server takes longer on the wall clock to land a rock, and a
+ * wall-clock linger forgot rocks the server was still simulating. On the local
+ * clock otherwise.
+ */
+export function meteorFlightForgotten(
+  flight: MeteorFlight,
+  nowMs: number,
+  renderServerUs: number | null,
+): boolean {
+  if (renderServerUs === null) {
     const age = (nowMs - flight.launchedAtLocalMs) / 1000;
     const forgotten = flight.lastStreamedAtMs > 0
       ? nowMs - flight.lastStreamedAtMs > UNSTREAMED_LINGER_S * 1000
       : age > flight.flightTimeS + LANDED_LINGER_S;
-    if (age > MAX_AGE_S || forgotten) flights.splice(i, 1);
+    return age > MAX_AGE_S || forgotten;
   }
-  return flights;
+  const age = (renderServerUs - flight.serverLaunchTimeUs) / 1e6;
+  const forgotten = flight.track.lastBodyUs > 0
+    ? (renderServerUs - flight.track.lastBodyUs) / 1e6 > UNSTREAMED_LINGER_S
+    : age > flight.flightTimeS + LANDED_LINGER_S;
+  return age > MAX_AGE_S || forgotten;
 }
 
 export function isMeteorBody(bodyId: number): boolean {

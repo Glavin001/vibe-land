@@ -15,6 +15,7 @@ import { resolveNetlabImpairment } from '../netlab/impairment';
 import {
   DynamicBodyInterpolator,
   PlayerInterpolator,
+  RenderClock,
   ServerClockEstimator,
   VehicleInterpolator,
   type DynamicBodySample,
@@ -114,7 +115,15 @@ export type NetcodeClientConfig = {
 export class NetcodeClient {
   private static readonly DYNAMIC_BODY_STALE_TICKS = 240;
   private static readonly VEHICLE_STALE_TICKS = 180;
-  static readonly MAX_DYNAMIC_BODY_INTERPOLATION_DELAY_MS = 16;
+  /**
+   * The dynamic-body delay until snapshots have arrived to size it from. After
+   * that the delay is the server clock's recommendation: the 95th percentile
+   * of server time elapsing between snapshot arrivals, never less than one
+   * observed snapshot interval, at most 250 ms. (This was a 16 ms cap under
+   * a jitter*4+5 ms delay that collapsed to 5 ms on loopback, so bodies were
+   * drawn past their newest snapshot in 91% of frames on a slow server.)
+   */
+  static readonly INITIAL_DYNAMIC_BODY_INTERPOLATION_DELAY_MS = 16;
   static readonly REMOTE_PLAYER_BUFFER_RATIO = 0.5;
 
   readonly interpolator: PlayerInterpolator;
@@ -123,8 +132,20 @@ export class NetcodeClient {
   readonly dynamicBodyInterpolator: DynamicBodyInterpolator;
 
   playerId = 0;
-  interpolationDelayMs = 100;
-  dynamicBodyInterpolationDelayMs = NetcodeClient.MAX_DYNAMIC_BODY_INTERPOLATION_DELAY_MS;
+  /**
+   * Render clocks: server time minus an interpolation delay, slewed so the
+   * render time never goes backwards while the delay adapts. Remote players
+   * and vehicles use one; dynamic bodies, meteors and the driven car another.
+   */
+  private readonly playerRenderClock = new RenderClock();
+  private readonly dynamicBodyRenderClock = new RenderClock();
+  /**
+   * The local player's own avatar in thin-authoritative mode, which the camera
+   * follows: one observed snapshot interval behind, not the 95th-percentile
+   * gap, so the camera does not take on the remote players' buffer. A late
+   * snapshot holds it at the newest one for that long instead.
+   */
+  private readonly localPlayerRenderClock = new RenderClock();
   private baselineInterpolationDelayMs = 100;
   private minRemoteInterpolationDelayMs = 0;
   latestServerTick = 0;
@@ -145,6 +166,39 @@ export class NetcodeClient {
 
   get usesThinAuthoritativeMovement(): boolean {
     return this.clientMovementMode === CLIENT_MOVEMENT_THIN_AUTHORITATIVE;
+  }
+
+  /** The player/vehicle interpolation delay in use, ms of server time. */
+  get interpolationDelayMs(): number {
+    return this.playerRenderClock.delayMs;
+  }
+
+  /** The dynamic-body interpolation delay in use, ms of server time. */
+  get dynamicBodyInterpolationDelayMs(): number {
+    return this.dynamicBodyRenderClock.delayMs;
+  }
+
+  /** The player delay the render clock is slewing towards, ms. */
+  get targetInterpolationDelayMs(): number {
+    return this.playerRenderClock.targetDelayMs;
+  }
+
+  /** The dynamic-body delay the render clock is slewing towards, ms. */
+  get targetDynamicBodyInterpolationDelayMs(): number {
+    return this.dynamicBodyRenderClock.targetDelayMs;
+  }
+
+  /** Point the render clocks at the server clock's recommended delay. */
+  private adoptAdaptiveDelays(): void {
+    const adaptiveDelayMs = this.serverClock.getInterpolationDelayMs();
+    if (adaptiveDelayMs <= 0) return;
+    this.playerRenderClock.setTargetDelayMs(
+      Math.max(adaptiveDelayMs, this.minRemoteInterpolationDelayMs),
+    );
+    this.dynamicBodyRenderClock.setTargetDelayMs(adaptiveDelayMs);
+    this.localPlayerRenderClock.setTargetDelayMs(
+      Math.min(adaptiveDelayMs, this.serverClock.getSnapshotIntervalMs()),
+    );
   }
 
   private pushVehicleSample(
@@ -237,6 +291,9 @@ export class NetcodeClient {
   constructor(config: NetcodeClientConfig) {
     this.config = config;
     this.nowMs = config.nowMs ?? (() => performance.now());
+    this.playerRenderClock.setTargetDelayMs(this.baselineInterpolationDelayMs);
+    this.dynamicBodyRenderClock.setTargetDelayMs(NetcodeClient.INITIAL_DYNAMIC_BODY_INTERPOLATION_DELAY_MS);
+    this.localPlayerRenderClock.setTargetDelayMs(NetcodeClient.INITIAL_DYNAMIC_BODY_INTERPOLATION_DELAY_MS);
     this.interpolator = new PlayerInterpolator();
     this.serverClock = new ServerClockEstimator();
     this.vehicleInterpolator = new VehicleInterpolator();
@@ -557,16 +614,8 @@ export class NetcodeClient {
     source: 'wt-datagram' | 'wt-reliable' | 'websocket' | 'local' | 'direct',
   ): void {
     this.latestServerTick = packet.serverTick;
-    this.serverClock.observe(packet.serverTimeUs, this.nowMs() * 1000);
-    const adaptiveDelayMs = this.serverClock.getInterpolationDelayMs();
-    if (adaptiveDelayMs > 0) {
-      this.interpolationDelayMs = Math.round(
-        Math.max(adaptiveDelayMs, this.minRemoteInterpolationDelayMs) * 100,
-      ) / 100;
-      this.dynamicBodyInterpolationDelayMs = Math.round(
-        Math.min(adaptiveDelayMs, NetcodeClient.MAX_DYNAMIC_BODY_INTERPOLATION_DELAY_MS) * 100,
-      ) / 100;
-    }
+    this.serverClock.observe(packet.serverTimeUs, this.nowMs() * 1000, packet.serverWallUs);
+    this.adoptAdaptiveDelays();
     this.debugTelemetry.observeAcceptedSnapshot(
       source,
       packet.serverTick,
@@ -913,12 +962,12 @@ export class NetcodeClient {
         this.baselineInterpolationDelayMs = packet.interpolationDelayMs;
         this.minRemoteInterpolationDelayMs =
           (1000 / Math.max(packet.snapshotHz, 1)) * NetcodeClient.REMOTE_PLAYER_BUFFER_RATIO;
-        this.interpolationDelayMs = this.baselineInterpolationDelayMs;
-        this.dynamicBodyInterpolationDelayMs = Math.min(
-          packet.interpolationDelayMs,
-          NetcodeClient.MAX_DYNAMIC_BODY_INTERPOLATION_DELAY_MS,
+        // Until snapshots arrive to size the delays from.
+        this.playerRenderClock.setTargetDelayMs(this.baselineInterpolationDelayMs);
+        this.dynamicBodyRenderClock.setTargetDelayMs(
+          Math.min(packet.interpolationDelayMs, NetcodeClient.INITIAL_DYNAMIC_BODY_INTERPOLATION_DELAY_MS),
         );
-        // Tell the clock the server's tick rate so hysteresis thresholds are correct.
+        // The server's nominal tick rate: the clock's starting delay is one tick.
         this.serverClock.setSimHz(packet.simHz);
         // Don't seed clock from welcome — it arrives with unpredictable
         // latency (TLS handshake, etc.) and skews the initial offset.
@@ -945,19 +994,7 @@ export class NetcodeClient {
         }
         this.latestServerTick = packet.serverTick;
         this.serverClock.observe(packet.serverTimeUs, this.nowMs() * 1000);
-        // Use adaptive interpolation delay from WASM when available (jitter*4 + 5ms).
-        const adaptiveDelayMs = this.serverClock.getInterpolationDelayMs();
-        if (adaptiveDelayMs > 0) {
-          this.interpolationDelayMs = Math.round(
-            Math.max(adaptiveDelayMs, this.minRemoteInterpolationDelayMs) * 100,
-          ) / 100;
-          this.dynamicBodyInterpolationDelayMs = Math.round(
-            Math.min(
-              adaptiveDelayMs,
-              NetcodeClient.MAX_DYNAMIC_BODY_INTERPOLATION_DELAY_MS,
-            ) * 100,
-          ) / 100;
-        }
+        this.adoptAdaptiveDelays();
         this.debugTelemetry.observeAcceptedSnapshot(
           source,
           packet.serverTick,
@@ -1114,10 +1151,13 @@ export class NetcodeClient {
     this.config.onPacket?.(packet);
   }
 
-  /** Get the render time for interpolating remote players. */
+  /**
+   * The render time for players and vehicles: rate-aware server time minus the
+   * player delay. Never goes backwards.
+   */
   getRenderTimeUs(localTimeUs = this.nowMs() * 1000): number {
-    return this.serverClock.renderTimeUs(
-      this.interpolationDelayMs * 1000,
+    return this.playerRenderClock.renderTimeUs(
+      this.serverClock.serverNowUs(localTimeUs),
       localTimeUs,
     );
   }
@@ -1166,11 +1206,42 @@ export class NetcodeClient {
     return this.dynamicBodies.get(id) ?? null;
   }
 
-  getDynamicBodyRenderTimeUs(localTimeUs = this.nowMs() * 1000): number {
-    return this.serverClock.renderTimeUs(
-      this.dynamicBodyInterpolationDelayMs * 1000,
+  /**
+   * The render time for the local player's own avatar (thin-authoritative
+   * mode): one snapshot interval behind server time. Never goes backwards.
+   */
+  getLocalPlayerRenderTimeUs(localTimeUs = this.nowMs() * 1000): number {
+    return this.localPlayerRenderClock.renderTimeUs(
+      this.serverClock.serverNowUs(localTimeUs),
       localTimeUs,
     );
+  }
+
+  /**
+   * The render time for dynamic bodies (and meteors, and the driven car):
+   * rate-aware server time minus the dynamic-body delay. Never goes backwards.
+   */
+  getDynamicBodyRenderTimeUs(localTimeUs = this.nowMs() * 1000): number {
+    return this.dynamicBodyRenderClock.renderTimeUs(
+      this.serverClock.serverNowUs(localTimeUs),
+      localTimeUs,
+    );
+  }
+
+  /** A body's buffered snapshots, oldest first. */
+  getDynamicBodySamples(id: number): readonly DynamicBodySample[] {
+    return this.dynamicBodyInterpolator.samples(id);
+  }
+
+  /**
+   * How many server ticks of snapshots have arrived since this body was last
+   * in one; null if it is not known. Unlike an age measured against the
+   * estimated server clock, it does not grow while the server is stalled:
+   * a body is missing from the stream only if newer snapshots left it out.
+   */
+  getDynamicBodyTicksSinceSeen(id: number): number | null {
+    const lastSeen = this.dynamicBodyLastSeenTick.get(id);
+    return lastSeen == null ? null : Math.max(0, this.latestServerTick - lastSeen);
   }
 
   getDynamicBodyObservedAgeMs(id: number, localTimeUs = this.nowMs() * 1000): number | null {
@@ -1213,9 +1284,13 @@ export class NetcodeClient {
   reset(): void {
     this.playerId = 0;
     this.latestServerTick = 0;
-    this.interpolationDelayMs = 100;
-    this.dynamicBodyInterpolationDelayMs = NetcodeClient.MAX_DYNAMIC_BODY_INTERPOLATION_DELAY_MS;
     this.baselineInterpolationDelayMs = 100;
+    this.playerRenderClock.setTargetDelayMs(this.baselineInterpolationDelayMs);
+    this.playerRenderClock.reset();
+    this.dynamicBodyRenderClock.setTargetDelayMs(NetcodeClient.INITIAL_DYNAMIC_BODY_INTERPOLATION_DELAY_MS);
+    this.dynamicBodyRenderClock.reset();
+    this.localPlayerRenderClock.setTargetDelayMs(NetcodeClient.INITIAL_DYNAMIC_BODY_INTERPOLATION_DELAY_MS);
+    this.localPlayerRenderClock.reset();
     this.minRemoteInterpolationDelayMs = 0;
     this.remotePlayers.clear();
     this.playerIdByHandle.clear();

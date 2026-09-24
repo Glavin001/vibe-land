@@ -160,6 +160,12 @@ export interface GameRuntimeClient {
   getVehicleObservedAgeMs(id: number, localTimeUs?: number): number | null;
   sampleRemoteDynamicBody(id: number, renderTimeUs?: number): DynamicBodySample | null;
   getDynamicBodyRenderTimeUs(localTimeUs?: number): number;
+  /** Render time for players and vehicles; never goes backwards. */
+  getRenderTimeUs(localTimeUs?: number): number;
+  /** A dynamic body's buffered snapshots, oldest first. */
+  getDynamicBodySamples(id: number): readonly DynamicBodySample[];
+  /** Server ticks of snapshots since the body was last in one; null if unknown. */
+  getDynamicBodyTicksSinceSeen(id: number): number | null;
   getDynamicBodyObservedAgeMs(id: number, localTimeUs?: number): number | null;
   recordFrameDebugMetrics(
     playerCorrectionMagnitude: number,
@@ -418,6 +424,9 @@ abstract class BaseGameRuntime implements GameRuntimeClient {
   abstract getVehicleObservedAgeMs(id: number, localTimeUs?: number): number | null;
   abstract sampleRemoteDynamicBody(id: number, renderTimeUs?: number): DynamicBodySample | null;
   abstract getDynamicBodyRenderTimeUs(localTimeUs?: number): number;
+  abstract getRenderTimeUs(localTimeUs?: number): number;
+  abstract getDynamicBodySamples(id: number): readonly DynamicBodySample[];
+  abstract getDynamicBodyTicksSinceSeen(id: number): number | null;
   abstract getDynamicBodyObservedAgeMs(id: number, localTimeUs?: number): number | null;
   abstract recordFrameDebugMetrics(
     playerCorrectionMagnitude: number,
@@ -746,6 +755,18 @@ export class LocalGameRuntime extends BaseGameRuntime {
 
   getDynamicBodyRenderTimeUs(localTimeUs?: number): number {
     return this.client?.getDynamicBodyRenderTimeUs(localTimeUs) ?? 0;
+  }
+
+  getRenderTimeUs(localTimeUs?: number): number {
+    return this.serverClock.renderTimeUs(this.interpolationDelayMs * 1000, localTimeUs);
+  }
+
+  getDynamicBodySamples(_id: number): readonly DynamicBodySample[] {
+    return [];
+  }
+
+  getDynamicBodyTicksSinceSeen(_id: number): number | null {
+    return null;
   }
 
   getDynamicBodyObservedAgeMs(id: number, localTimeUs?: number): number | null {
@@ -1183,7 +1204,7 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
   }
 
   get dynamicBodyInterpolationDelayMs(): number {
-    return this.client?.dynamicBodyInterpolationDelayMs ?? NetcodeClient.MAX_DYNAMIC_BODY_INTERPOLATION_DELAY_MS;
+    return this.client?.dynamicBodyInterpolationDelayMs ?? NetcodeClient.INITIAL_DYNAMIC_BODY_INTERPOLATION_DELAY_MS;
   }
 
   get localPlayerHp(): number {
@@ -1348,12 +1369,21 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
       cityTapeRecorder.describeSession({
         transport: () => client.transport,
         // What the renderer draws at, per recorded frame: the replay's own
-        // clock reconstruction is checked against it.
-        clock: () => ({
-          offsetUs: client.serverClock.getOffsetUs(),
-          interpDelayMs: client.interpolationDelayMs,
-          dynDelayMs: client.dynamicBodyInterpolationDelayMs,
-        }),
+        // clock reconstruction is checked against it. The offset is taken
+        // from the dynamic-body render time at the frame's recorded time, so
+        // that `frame time + offset - dynDelayMs` is exactly what was drawn:
+        // the server clock no longer runs at wall rate between frames, and its
+        // last-read offset would overstate the lead.
+        clock: (nowMs) => {
+          const localUs = nowMs * 1000;
+          const renderUs = client.getDynamicBodyRenderTimeUs(localUs);
+          const dynDelayMs = client.dynamicBodyInterpolationDelayMs;
+          return {
+            offsetUs: renderUs + dynDelayMs * 1000 - localUs,
+            interpDelayMs: client.interpolationDelayMs,
+            dynDelayMs,
+          };
+        },
       });
 
       const pendingPackets = this.pendingWorldPackets.splice(0);
@@ -1427,7 +1457,7 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
       }
       const client = this.client;
       if (client && client.playerId !== 0) {
-        const renderTimeUs = client.serverClock.renderTimeUs(client.interpolationDelayMs * 1000);
+        const renderTimeUs = client.getLocalPlayerRenderTimeUs();
         const sample = client.interpolator.sample(client.playerId, renderTimeUs);
         if (sample) {
           if (THIN_PRESENTATION_PREDICTION_ENABLED) {
@@ -1499,7 +1529,7 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
       }
     }
 
-    const remoteVehicleRenderTimeUs = this.state.serverClock.renderTimeUs(this.state.interpolationDelayMs * 1000);
+    const remoteVehicleRenderTimeUs = client.getRenderTimeUs();
     let syncedRemoteVehicles = false;
     for (const [id, vs] of serverVehicles) {
       if (this.isInVehicle() && this.getDrivenVehicleId() === id) {
@@ -1571,6 +1601,18 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
 
   getDynamicBodyRenderTimeUs(localTimeUs?: number): number {
     return this.client?.getDynamicBodyRenderTimeUs(localTimeUs) ?? 0;
+  }
+
+  getRenderTimeUs(localTimeUs?: number): number {
+    return this.client?.getRenderTimeUs(localTimeUs) ?? 0;
+  }
+
+  getDynamicBodySamples(id: number): readonly DynamicBodySample[] {
+    return this.client?.getDynamicBodySamples(id) ?? [];
+  }
+
+  getDynamicBodyTicksSinceSeen(id: number): number | null {
+    return this.client?.getDynamicBodyTicksSinceSeen(id) ?? null;
   }
 
   getDynamicBodyObservedAgeMs(id: number, localTimeUs?: number): number | null {
@@ -1965,7 +2007,7 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
           : 0;
         const client = this.client;
         if (client && client.playerId !== 0) {
-          const renderTimeUs = client.serverClock.renderTimeUs(client.interpolationDelayMs * 1000);
+          const renderTimeUs = client.getLocalPlayerRenderTimeUs();
           const sample = client.interpolator.sample(client.playerId, renderTimeUs);
           if (sample) {
             stats.velocity = sample.velocity;

@@ -12,7 +12,7 @@
 
 import { NetcodeClient, type RemotePlayer } from '../net/netcodeClient';
 import { routeInboundPacket, type InboundChannel } from '../net/inbound';
-import type { PlayerSample, VehicleSample } from '../net/interpolation';
+import type { DynamicBodySample, PlayerSample, VehicleSample } from '../net/interpolation';
 import type {
   BatteryStateMeters,
   DynamicBodyStateMeters,
@@ -125,5 +125,13 @@ export class ReplayNetWorld implements MeteorBodySource {
 
   getRenderedDynamicBodyState(id: number): DynamicBodyStateMeters | null {
     return this.client.getInterpolatedDynamicBodyState(id);
+  }
+
+  getDynamicBodySamples(id: number): readonly DynamicBodySample[] {
+    return this.client.getDynamicBodySamples(id);
+  }
+
+  getDynamicBodyTicksSinceSeen(id: number): number | null {
+    return this.client.getDynamicBodyTicksSinceSeen(id);
   }
 }

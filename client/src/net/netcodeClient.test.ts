@@ -402,10 +402,10 @@ describe('NetcodeClient', () => {
         players: [makeNetState({ id: 1 })],
       }));
 
-      expect(client.interpolationDelayMs).toBeCloseTo((1000 / 30) * 0.5, 2);
+      expect(client.targetInterpolationDelayMs).toBeCloseTo((1000 / 30) * 0.5, 2);
     });
 
-    it('keeps dynamic body render delay responsive even when player interpolation stays buffered', () => {
+    it('uses the clock-recommended delay for dynamic bodies while players stay buffered', () => {
       const client = new NetcodeClient({});
       client.handlePacket(makeWelcome(1));
       vi.spyOn(client.serverClock, 'getInterpolationDelayMs').mockReturnValue(5);
@@ -416,8 +416,8 @@ describe('NetcodeClient', () => {
         dynamicBodyStates: [makeDynamicBodyState({ id: 7, position: [1, 0, 0] })],
       }));
 
-      expect(client.interpolationDelayMs).toBeCloseTo((1000 / 30) * 0.5, 2);
-      expect(client.dynamicBodyInterpolationDelayMs).toBe(5);
+      expect(client.targetInterpolationDelayMs).toBeCloseTo((1000 / 30) * 0.5, 2);
+      expect(client.targetDynamicBodyInterpolationDelayMs).toBe(5);
     });
 
     it('still uses larger adaptive delays when jitter requires more buffering', () => {
@@ -430,7 +430,8 @@ describe('NetcodeClient', () => {
         players: [makeNetState({ id: 1 })],
       }));
 
-      expect(client.interpolationDelayMs).toBe(48);
+      expect(client.targetInterpolationDelayMs).toBe(48);
+      expect(client.targetDynamicBodyInterpolationDelayMs).toBe(48);
     });
 
     it('ignores stale and duplicate snapshots', () => {
@@ -885,5 +886,103 @@ describe('NetcodeClient', () => {
       expect(client.remotePlayers.size).toBe(0);
       expect(client.latestServerTick).toBe(0);
     });
+  });
+});
+
+describe('NetcodeClient render clocks on a slowed server', () => {
+  const TICK_US = Math.round(1_000_000 / 60);
+
+  /**
+   * A server ticking at `hz(t)` ticks per wall second with occasional stalls,
+   * one SnapshotV2 per tick carrying body 7001 falling in a straight line; the
+   * client renders at 120 Hz on its own clock.
+   */
+  function drive(opts: { wall: boolean; seconds: number; hz: (wallS: number) => number; stallEvery?: number }) {
+    let nowMs = 0;
+    const client = new NetcodeClient({ nowMs: () => nowMs });
+    client.handlePacket(makeWelcome(1));
+    client.handlePacket(makeDynamicBodyMeta([{ handle: 7, bodyId: 7001 }]));
+    const sends: Array<{ atMs: number; tick: number; wallUs: number }> = [];
+    let t = 0;
+    for (let tick = 1; t < opts.seconds * 1000; tick += 1) {
+      t += 1000 / opts.hz(t / 1000);
+      if (opts.stallEvery && tick % opts.stallEvery === 0) t += 500;
+      sends.push({ atMs: t + 2 + (tick % 3) * 3, tick, wallUs: Math.round(t * 1000) });
+    }
+    const frames: Array<{ ms: number; dyn: number; player: number; self: number; newestUs: number; dynDelay: number }> = [];
+    let next = 0;
+    for (nowMs = sends[0].atMs; nowMs < sends[sends.length - 1].atMs; nowMs += 1000 / 120) {
+      while (next < sends.length && sends[next].atMs <= nowMs) {
+        const s = sends[next++];
+        const packet = makeSnapshotV2({
+          serverTick: s.tick,
+          sphereStates: [{ handle: 7, offset: [0, 50 - s.tick * 0.01, 0], velocity: [0, -0.6, 0] }],
+        });
+        client.handlePacket(opts.wall ? { ...packet, serverWallUs: s.wallUs } : packet);
+      }
+      frames.push({
+        ms: nowMs,
+        dyn: client.getDynamicBodyRenderTimeUs(),
+        player: client.getRenderTimeUs(),
+        self: client.getLocalPlayerRenderTimeUs(),
+        newestUs: client.latestServerTick * TICK_US,
+        dynDelay: client.dynamicBodyInterpolationDelayMs,
+      });
+    }
+    return { client, frames };
+  }
+
+  function backward(values: number[]): number {
+    let n = 0;
+    for (let i = 1; i < values.length; i += 1) if (values[i] < values[i - 1]) n += 1;
+    return n;
+  }
+
+  it('35 Hz with 500 ms stalls: no render clock ever steps back, playout follows the sim rate', () => {
+    for (const wall of [false, true]) {
+      const { client, frames } = drive({ wall, seconds: 20, hz: () => 35, stallEvery: 200 });
+      expect(backward(frames.map((f) => f.dyn))).toBe(0);
+      expect(backward(frames.map((f) => f.player))).toBe(0);
+      expect(backward(frames.map((f) => f.self))).toBe(0);
+      expect(client.serverClock.hasServerWallClock()).toBe(wall);
+      // Playout over 10 s tracks sim time over the same 10 s, stalls included.
+      const a = frames.find((f) => f.ms > 5000)!;
+      const b = frames.find((f) => f.ms > 15000)!;
+      const playout = (b.dyn - a.dyn) / ((b.ms - a.ms) * 1000);
+      const sim = (b.newestUs - a.newestUs) / ((b.ms - a.ms) * 1000);
+      expect(Math.abs(playout - sim) / sim).toBeLessThan(0.05);
+    }
+  });
+
+  it('keeps the dynamic-body delay at least one snapshot interval and mostly interpolates', () => {
+    const { frames } = drive({ wall: true, seconds: 20, hz: (s) => [60, 20, 45, 30][Math.floor(s) % 4] });
+    const settled = frames.filter((f) => f.ms > 2000);
+    for (const f of settled) expect(f.dynDelay).toBeGreaterThanOrEqual(16.6);
+    const extrapolating = settled.filter((f) => f.dyn > f.newestUs).length / settled.length;
+    expect(extrapolating).toBeLessThan(0.1);
+  });
+
+  it('steady 60 Hz: render delay about one tick, rate 1', () => {
+    const { client, frames } = drive({ wall: true, seconds: 10, hz: () => 60 });
+    expect(client.serverClock.getRate()).toBeCloseTo(1, 2);
+    const late = frames.filter((f) => f.ms > 3000);
+    for (const f of late) {
+      expect(f.dynDelay).toBeGreaterThanOrEqual(16.6);
+      expect(f.dynDelay).toBeLessThan(26);
+    }
+    expect(backward(frames.map((f) => f.dyn))).toBe(0);
+  });
+
+  it('counts a body stale in server ticks, not while the server is stalled', () => {
+    let nowMs = 0;
+    const client = new NetcodeClient({ nowMs: () => nowMs });
+    client.handlePacket(makeWelcome(1));
+    client.handlePacket(makeDynamicBodyMeta([{ handle: 7, bodyId: 7001 }]));
+    client.handlePacket(makeSnapshotV2({ serverTick: 10, sphereStates: [{ handle: 7, offset: [0, 5, 0], velocity: [0, -30, 0] }] }));
+    nowMs = 800; // a long server stall: nothing new arrived
+    expect(client.getDynamicBodyTicksSinceSeen(7001)).toBe(0);
+    client.handlePacket(makeSnapshotV2({ serverTick: 30 }));
+    expect(client.getDynamicBodyTicksSinceSeen(7001)).toBe(20);
+    expect(client.getDynamicBodySamples(7001)).toHaveLength(1);
   });
 });

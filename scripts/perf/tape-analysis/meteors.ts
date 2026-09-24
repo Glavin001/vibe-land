@@ -2,17 +2,33 @@
 // using the real NetcodeClient decode + DynamicBodyInterpolator (via
 // ReplayNetWorld) fed with the tape's packets at their arrival times, and the
 // LIVE client's recorded clock (server-clock offset and dynamic-body
-// interpolation delay, stored per frame in the v2 tape). The MeteorLayer
-// source logic (arc / body / hold / hidden, 250 ms stale rule, 0.75 s
-// unstreamed linger, 3 s landed linger) is mirrored here.
-//   (cd client && npx tsx ../scripts/perf/tape-analysis/meteors.ts <tape> <outdir>)
+// interpolation delay, stored per frame in the v2 tape). The placement is the
+// layer's own `placeMeteor` (client/src/vfx/meteorPlacement.ts: arc until a
+// snapshot shows contact, then the body; stale after 15 ticks without it; a
+// flight is forgotten on server time).
+//
+// --legacy-meteors mirrors the MeteorLayer of before 2026-09-24 instead (arc
+// until a body streams, then the body at render time, 250 ms stale rule on the
+// estimated server clock, lingers on the local clock): the logic the
+// recording client of an older tape actually ran.
+//   (cd client && npx tsx ../scripts/perf/tape-analysis/meteors.ts <tape> <outdir> [--legacy-meteors])
 import { readFileSync, writeFileSync } from 'fs';
 import { decodeCityTape, inboundChannelOf, TAPE_CHANNEL_RTT } from '../../../client/src/city/cityTape';
 import { ReplayNetWorld } from '../../../client/src/city/replayWorld';
-import { decodeMeteorLaunched, meteorPositionAt, type MeteorLaunchedPacket } from '../../../client/src/vfx/meteorFlights';
+import {
+  decodeMeteorLaunched,
+  meteorFlightForgotten,
+  meteorPositionAt,
+  newMeteorTrack,
+  type MeteorFlight,
+  type MeteorLaunchedPacket,
+  type MeteorTrack,
+} from '../../../client/src/vfx/meteorFlights';
+import { placeMeteor } from '../../../client/src/vfx/meteorPlacement';
 import { isCityPacketKind } from '../../../client/src/city/wire';
 
-const [tapePath, outDir] = process.argv.slice(2);
+const legacy = process.argv.includes('--legacy-meteors');
+const [tapePath, outDir] = process.argv.slice(2).filter((a) => !a.startsWith('--'));
 const tape = decodeCityTape(new Uint8Array(readFileSync(tapePath)));
 const origin = tape.header.clockOriginMs!;
 const f = tape.frames!;
@@ -20,7 +36,7 @@ let now = 0;
 const world = new ReplayNetWorld(() => now);
 const client: any = world.client;
 
-type Flight = MeteorLaunchedPacket & { arrivalMs: number; launchedAtLocalMs: number; lastStreamedAtMs: number; lastDrawn: number[] | null; lastSource: string };
+type Flight = MeteorLaunchedPacket & { arrivalMs: number; launchedAtLocalMs: number; lastStreamedAtMs: number; lastDrawn: number[] | null; lastSource: string; seed: number; track: MeteorTrack };
 const flights: Flight[] = [];
 const rows = ['frame_t_ms,body,launch_t_ms,source,draw_x,draw_y,draw_z,arc_x,arc_y,arc_z,raw_x,raw_y,raw_z,raw_speed,rend_x,rend_y,rend_z,arc_t_s,sample_age_ms,lead_ms,render_dyn_us,latest_sample_us'];
 const rawRows = ['arrival_t_ms,body,server_us,tick,x,y,z,vx,vy,vz'];
@@ -44,7 +60,7 @@ for (let fi = 0; fi < f.times.length; fi++) {
       const off = fi > 0 ? f.clock!.offsetUs[fi - 1] : f.clock!.offsetUs[0];
       const existing = flights.findIndex((x) => x.bodyId === m.bodyId);
       if (existing >= 0) flights.splice(existing, 1);
-      flights.push({ ...m, arrivalMs: now, launchedAtLocalMs: (m.serverLaunchTimeUs - off) / 1000, lastStreamedAtMs: 0, lastDrawn: null, lastSource: '' });
+      flights.push({ ...m, arrivalMs: now, launchedAtLocalMs: (m.serverLaunchTimeUs - off) / 1000, lastStreamedAtMs: 0, lastDrawn: null, lastSource: '', seed: 0, track: newMeteorTrack() });
       if (flights.length > 8) flights.shift();
     } else if (!isCityPacketKind(bytes[0])) {
       const channel = inboundChannelOf(ch);
@@ -71,14 +87,36 @@ for (let fi = 0; fi < f.times.length; fi++) {
   const renderDynUs = serverNowUs - dynMs * 1000;
   clockRows.push([ft.toFixed(2), renderDynUs.toFixed(0), serverNowUs.toFixed(0), latestSnapshotUs, ((renderDynUs - latestSnapshotUs) / 1000).toFixed(2), offsetUs.toFixed(0), dynMs.toFixed(2)].join(','));
 
-  // meteorFlights(nowMs) sweep, on the live local clock
+  // meteorFlights(nowMs[, renderServerUs]) sweep
   for (let i = flights.length - 1; i >= 0; i--) {
     const fl = flights[i];
+    if (!legacy) {
+      if (meteorFlightForgotten(fl as unknown as MeteorFlight, localMs, renderDynUs)) flights.splice(i, 1);
+      continue;
+    }
     const age = (localMs - fl.launchedAtLocalMs) / 1000;
     const forgotten = fl.lastStreamedAtMs > 0 ? localMs - fl.lastStreamedAtMs > 750 : age > fl.flightTimeS + 3;
     if (age > 60 || forgotten) flights.splice(i, 1);
   }
   for (const fl of flights) {
+    if (!legacy) {
+      const raw = client.dynamicBodies.get(fl.bodyId) ?? null;
+      const sUs = client.dynamicBodyServerTimeUs.get(fl.bodyId);
+      const ticksSinceSeen: number | null = client.getDynamicBodyTicksSinceSeen(fl.bodyId);
+      const placed = placeMeteor(fl as unknown as MeteorFlight, fl.track, {
+        renderServerUs: renderDynUs,
+        samples: client.getDynamicBodySamples(fl.bodyId),
+        ticksSinceSeen,
+        tickUs: Math.round(1_000_000 / 60),
+        nowMs: localMs,
+      });
+      if (placed.source === 'body') fl.lastStreamedAtMs = localMs;
+      const rawSpeed = raw ? Math.hypot(...(raw.velocity as [number, number, number])) : 0;
+      const n = (v: number[] | null) => (v ? v.map((x) => x.toFixed(3)) : ['', '', '']);
+      const rendered = placed.source === 'body' ? placed.position : null;
+      rows.push([ft.toFixed(2), fl.bodyId, fl.arrivalMs.toFixed(1), placed.source, ...n(placed.position), ...n(placed.arc), ...n(raw ? raw.position : null), rawSpeed.toFixed(2), ...n(rendered), ((renderDynUs - fl.serverLaunchTimeUs) / 1e6).toFixed(4), ((ticksSinceSeen ?? 0) * 1000 / 60).toFixed(1), sUs != null ? ((renderDynUs - sUs) / 1000).toFixed(2) : '', renderDynUs.toFixed(0), sUs ?? ''].join(','));
+      continue;
+    }
     const raw = client.dynamicBodies.get(fl.bodyId) ?? null;
     const sUs = client.dynamicBodyServerTimeUs.get(fl.bodyId);
     const sampleAgeMs = raw && sUs != null ? Math.max(0, (serverNowUs - sUs) / 1000) : 0;

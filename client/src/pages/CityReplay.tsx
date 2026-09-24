@@ -52,7 +52,7 @@ import {
   VehiclesRenderer,
 } from '../scene/netEntityRenderers';
 import { ShotTracePool, createShotTracePool, updatePooledShotTraceVisuals } from '../scene/shotTraces';
-import { meteorDrawn, meteorFlights } from '../vfx/meteorFlights';
+import { currentMeteorFlights, meteorDrawn } from '../vfx/meteorFlights';
 import { formatPerfSweep, runReplaySweep } from '../city/perfSweep';
 import { notePerfSweep, sendDebugReport } from '../city/debugReport';
 
@@ -203,7 +203,7 @@ function ReplayNetLayers({ playerRef }: { playerRef: React.MutableRefObject<Repl
         shapeType: world.state.dynamicBodies.get(id)?.shapeType ?? -1,
         position: vector(mesh),
       })),
-      meteors: meteorFlights(tapeMs).map((flight) => {
+      meteors: currentMeteorFlights().map((flight) => {
         const drawn = meteorDrawn(flight.bodyId);
         return { bodyId: flight.bodyId, source: drawn?.source ?? 'none', position: drawn?.position ?? null, tapeMs: drawn?.atMs ?? null };
       }),

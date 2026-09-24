@@ -3,6 +3,8 @@ import {
   PlayerInterpolator,
   ProjectileInterpolator,
   ServerClockEstimator,
+  sampleDynamicBodyTrack,
+  type DynamicBodySample,
   type PlayerSample,
 } from './interpolation';
 
@@ -11,58 +13,52 @@ import {
 // ──────────────────────────────────────────────
 
 describe('ServerClockEstimator', () => {
-  it('first observation sets offset directly', () => {
+  const TICK_US = Math.round(1_000_000 / 60);
+
+  it('first observation puts server time at the sample', () => {
     const clock = new ServerClockEstimator();
     clock.observe(1_000_000, 900_000);
     expect(clock.getOffsetUs()).toBe(100_000);
+    expect(clock.serverNowUs(900_000)).toBe(1_000_000);
   });
 
-  it('computes serverNowUs from observed offset', () => {
+  it('runs past the newest sample by at most one snapshot interval', () => {
     const clock = new ServerClockEstimator();
-    clock.observe(1_000_000, 900_000); // offset = 100_000
-    expect(clock.serverNowUs(950_000)).toBe(1_050_000);
+    clock.observe(1_000_000, 900_000);
+    // No second snapshot yet: the delay (and so the headroom) is one tick.
+    expect(clock.serverNowUs(905_000)).toBe(1_005_000);
+    expect(clock.serverNowUs(950_000)).toBe(1_000_000 + TICK_US);
+    // A server that stops sending has stopped: the estimate holds.
+    expect(clock.serverNowUs(2_000_000)).toBe(1_000_000 + TICK_US);
   });
 
   it('computes renderTimeUs with interpolation delay', () => {
     const clock = new ServerClockEstimator();
     clock.observe(1_000_000, 900_000);
-    expect(clock.renderTimeUs(100_000, 950_000)).toBe(950_000);
+    expect(clock.renderTimeUs(10_000, 905_000)).toBe(995_000);
   });
 
-  it('moves toward higher offset via EMA', () => {
+  it('getOffsetUs reads the estimate without advancing it', () => {
     const clock = new ServerClockEstimator();
-    clock.observe(1_000_000, 900_000); // offset = 100_000
-    clock.observe(1_200_000, 900_000); // sample offset = 300_000
-
-    // Symmetric EMA: 100_000 * 0.9 + 300_000 * 0.1 = 120_000
-    expect(clock.getOffsetUs()).toBe(120_000);
-  });
-
-  it('moves toward lower offset via EMA', () => {
-    const clock = new ServerClockEstimator();
-    clock.observe(1_000_000, 900_000); // offset = 100_000
-
-    // Observe a lower offset
-    clock.observe(1_000_000, 920_000); // sample offset = 80_000
-
-    // Symmetric EMA: 100_000 * 0.9 + 80_000 * 0.1 = 98_000
+    clock.observe(1_000_000, 900_000);
+    clock.serverNowUs(905_000);
     const offset = clock.getOffsetUs();
-    expect(offset).toBeCloseTo(98_000, -2);
+    expect(clock.getOffsetUs()).toBe(offset);
+    expect(clock.serverNowUs(905_000)).toBe(1_005_000);
   });
 
-  it('eventually converges after many lower observations', () => {
+  it('never goes backwards when samples arrive late and then early', () => {
     const clock = new ServerClockEstimator();
-    clock.observe(1_000_000, 900_000); // offset = 100_000
-
-    // Many observations with lower offset
-    for (let i = 0; i < 200; i++) {
-      clock.observe(1_000_000, 950_000); // sample offset = 50_000
+    let last = -Infinity;
+    for (let i = 0; i < 600; i += 1) {
+      const jitter = (i % 5) * 7_000;
+      clock.observe((i + 1) * TICK_US, i * TICK_US + jitter);
+      for (let f = 0; f < 2; f += 1) {
+        const now = clock.serverNowUs(i * TICK_US + jitter + f * 8_000);
+        expect(now).toBeGreaterThanOrEqual(last);
+        last = now;
+      }
     }
-
-    // Should have converged close to 50_000
-    const offset = clock.getOffsetUs();
-    expect(offset).toBeLessThan(55_000);
-    expect(offset).toBeGreaterThan(45_000);
   });
 });
 
@@ -293,5 +289,40 @@ describe('ProjectileInterpolator', () => {
   it('returns null for unknown entity', () => {
     const interp = new ProjectileInterpolator();
     expect(interp.sample(999, 1_000_000)).toBeNull();
+  });
+});
+
+// ──────────────────────────────────────────────
+// Dynamic body extrapolation
+// ──────────────────────────────────────────────
+
+describe('sampleDynamicBodyTrack extrapolation', () => {
+  const body = (us: number, position: [number, number, number], velocity: [number, number, number]): DynamicBodySample => ({
+    serverTimeUs: us,
+    position,
+    quaternion: [0, 0, 0, 1],
+    halfExtents: [0.3, 0.3, 0.3],
+    velocity,
+    angularVelocity: [0, 0, 0],
+    shapeType: 1,
+  });
+
+  it('is ballistic for a body the last two snapshots show in free fall', () => {
+    // A cannonball: 20 m/s forward, falling under 9.81 m/s^2.
+    const dt = 1 / 60;
+    const a = body(0, [0, 10, 0], [20, 0, 0]);
+    const b = body(16_667, [20 * dt, 10 - 0.5 * 9.81 * dt * dt, 0], [20, -9.81 * dt, 0]);
+    const s = sampleDynamicBodyTrack([a, b], 16_667 + 200_000)!;
+    const t = 0.2 + dt;
+    expect(s.position[0]).toBeCloseTo(20 * t, 3);
+    expect(s.position[1]).toBeCloseTo(10 - 0.5 * 9.81 * t * t, 2);
+  });
+
+  it('stays linear for a body at rest or sliding on the ground', () => {
+    const a = body(0, [0, 0.3, 0], [2, 0, 0]);
+    const b = body(16_667, [2 / 60, 0.3, 0], [2, 0, 0]);
+    const s = sampleDynamicBodyTrack([a, b], 16_667 + 200_000)!;
+    expect(s.position[1]).toBeCloseTo(0.3, 6);
+    expect(s.position[0]).toBeCloseTo(2 / 60 + 0.4, 6);
   });
 });

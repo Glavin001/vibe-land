@@ -977,23 +977,25 @@ describe('Category G: Interpolation Edge Cases', () => {
     expect(snapshot).toBeDefined();
   });
 
-  it('G24: server clock jump — offset converges via EMA', () => {
+  it('G24: server clock jump — followed forwards without stepping back', () => {
     const clock = new ServerClockEstimator();
+    const tick = Math.round(1_000_000 / 60);
 
-    // Normal observation
-    clock.observe(1_000_000, 900_000); // offset = +100_000
+    clock.observe(1_000_000, 900_000);
     expect(clock.getOffsetUs()).toBe(100_000);
+    let last = clock.serverNowUs(900_000);
 
-    // Server time jumps forward (clock correction)
-    clock.observe(1_500_000, 950_000); // sample offset = +550_000
-    // Symmetric EMA: 100_000 * 0.9 + 550_000 * 0.1 = 145_000
-    expect(clock.getOffsetUs()).toBe(145_000);
-
-    // After many observations at the new offset, it converges
-    for (let i = 0; i < 100; i++) {
-      clock.observe(1_500_000 + i * 33_333, 950_000 + i * 33_333);
+    // Server time jumps forward by 450 ms (a resync), then runs at 60 Hz.
+    for (let i = 0; i < 180; i++) {
+      const local = 916_667 + i * tick;
+      clock.observe(1_500_000 + i * tick, local);
+      const now = clock.serverNowUs(local);
+      expect(now).toBeGreaterThanOrEqual(last);
+      last = now;
     }
-    expect(clock.getOffsetUs()).toBeCloseTo(550_000, -4);
+    // Converged: tracking the new stream within a tick.
+    const local = 916_667 + 179 * tick;
+    expect(Math.abs(clock.serverNowUs(local) - (1_500_000 + 179 * tick))).toBeLessThan(tick);
   });
 
   it('G25: interpolation delay too short — holds at latest sample', () => {

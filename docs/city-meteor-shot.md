@@ -49,12 +49,26 @@ the rock visibly jumped back when the body took over ("it rewinds and
 comes in again"). Measured with `client/e2e/qa-meteor-trace.mjs` over the
 netlab `lte` profile: 7.2 m gap before, 0.14 m after.
 
+Since 2026-09-24 (`client/src/vfx/meteorPlacement.ts`, shared by the layer
+and the tape tools) the rock stays on the arc until a streamed snapshot is
+off it (more than 1.5 m from the arc at its own server time, or past the
+flight time): contact. Only then does the body take over. Handing over at
+the first streamed snapshot instead meant drawing a body with one sample --
+which cannot be interpolated -- at that sample's time while the arc was at
+the render time, a jump of lead x speed: 7.8 m median, 24 m worst on the
+2026-09-24 Mac session, where a slowed server made the lead large. After
+contact the body is interpolated at the render time and extrapolated for at
+most 250 ms, never below its newest snapshot.
+
 A body that stops arriving while it was moving has left the 80 m streaming
 range; the client keeps its last state in `dynamicBodies`, and drawing that
 is a rock hanging in the air where it last was. The layer treats a moving
-body with no sample for 250 ms as gone: held where it was, cold, forgotten
-within a second. Past the aimed point with no body ever seen, the rock is
-held at the aimed point for three seconds.
+body as gone once 15 ticks of snapshots have arrived without it (it was an
+age of 250 ms against the estimated server clock, which a stalled server
+tripped: the rock held, then jumped up to 33 m when snapshots resumed): held
+where it was, cold, forgotten 0.75 s of server time after it was last drawn.
+Past the aimed point with no body ever seen, the rock is held at the aimed
+point for three seconds of server time.
 
 ## Client
 

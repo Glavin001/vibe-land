@@ -205,7 +205,18 @@ pub struct SnapshotV2Packet {
     pub sphere_states: Vec<DynamicSphereStateV2>,
     pub box_states: Vec<DynamicBoxStateV2>,
     pub vehicle_states: Vec<VehicleStateV2>,
+    /// The server's wall clock when the snapshot was produced, µs modulo
+    /// 2^32 on a process-local origin. Encoded as a 4-byte trailer after the
+    /// vehicles: clients that predate it stop reading before it, and clients
+    /// that know it detect it by length. Server time on the wire is
+    /// `tick × 16.67 ms`, which runs slower than wall time whenever a tick
+    /// overruns; against this clock the client measures the simulation rate
+    /// instead of mistaking a slow server for network delay.
+    pub server_wall_us: u32,
 }
+
+/// Bytes the SnapshotV2 wall-clock trailer adds.
+pub const SNAPSHOT_V2_TRAILER_BYTES: usize = 4;
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct PlayerRosterEntry {
@@ -721,6 +732,7 @@ pub fn encode_server_datagram(packet: &ServerDatagramPacket) -> Vec<u8> {
                 out.put_i16_le(vehicle.wy_mrads);
                 out.put_i16_le(vehicle.wz_mrads);
             }
+            out.put_u32_le(pkt.server_wall_us);
         }
     }
     out.to_vec()
@@ -1177,11 +1189,29 @@ mod tests {
         });
         let encoded = encode_server_packet(&packet);
         assert_eq!(encoded[0], PKT_SNAPSHOT_V2);
+        // Header, 33-byte self state, no entities, wall-clock trailer.
+        assert_eq!(encoded.len(), 23 + 33 + SNAPSHOT_V2_TRAILER_BYTES);
         assert_eq!(u16::from_le_bytes([encoded[35], encoded[36]]), 0x8003);
         assert_eq!(encoded[49], 1);
         assert_eq!(i16::from_le_bytes([encoded[50], encoded[51]]), 250);
         assert_eq!(i16::from_le_bytes([encoded[52], encoded[53]]), -500);
         assert_eq!(i16::from_le_bytes([encoded[54], encoded[55]]), 750);
+    }
+
+    #[test]
+    fn snapshot_v2_wall_clock_trailer_follows_the_entities() {
+        let packet = ServerPacket::SnapshotV2(SnapshotV2Packet {
+            server_tick: 42,
+            vehicle_states: vec![VehicleStateV2::default()],
+            sphere_states: vec![DynamicSphereStateV2::default()],
+            server_wall_us: 0xDEAD_BEEF,
+            ..SnapshotV2Packet::default()
+        });
+        let encoded = encode_server_packet(&packet);
+        let entities = 20 + 30;
+        assert_eq!(encoded.len(), 23 + 33 + entities + SNAPSHOT_V2_TRAILER_BYTES);
+        let tail = &encoded[encoded.len() - 4..];
+        assert_eq!(u32::from_le_bytes([tail[0], tail[1], tail[2], tail[3]]), 0xDEAD_BEEF);
     }
 
     #[test]

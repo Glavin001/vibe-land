@@ -15,7 +15,7 @@ import { DEFAULT_STATS } from './ui/DebugOverlay';
 import { renderStats } from './city/renderStats';
 import { acquireCityDiagnostics } from './city/cityDiagnostics';
 import { setCannonballEnabled, setShotMode, type ShotMode } from './city/shotMode';
-import { meteorDrawn, meteorFlights } from './vfx/meteorFlights';
+import { currentMeteorFlights, meteorDrawn } from './vfx/meteorFlights';
 import {
   ambientOcclusionPreferred,
   cityTextureDetail,
@@ -717,7 +717,7 @@ const bridge: VibeE2EBridge = {
   setCapturePose: (next) => setCapturePose(next),
   meteors: () => {
     const now = performance.now();
-    return meteorFlights(now).map((flight) => {
+    return currentMeteorFlights().map((flight) => {
       const drawn = meteorDrawn(flight.bodyId);
       return {
         bodyId: flight.bodyId,
@@ -800,7 +800,7 @@ const bridge: VibeE2EBridge = {
     return {
       ...drawn,
       tapeMs: cityTapeRecorder.elapsedMs(drawn.atMs),
-      meteors: meteorFlights(now).map((flight) => {
+      meteors: currentMeteorFlights().map((flight) => {
         const record = meteorDrawn(flight.bodyId);
         return {
           bodyId: flight.bodyId,
