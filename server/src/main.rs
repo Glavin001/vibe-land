@@ -15,6 +15,9 @@ mod outbound;
 #[cfg(feature = "physx-gpu")]
 mod physx_runtime;
 mod protocol;
+mod send_log;
+mod session_capture;
+mod session_match;
 mod voxel_world;
 
 use std::{
@@ -724,6 +727,9 @@ struct MatchIoTelemetry {
     battery_sync_bytes_sent: std::sync::atomic::AtomicU64,
     dropped_outbound_packets: std::sync::atomic::AtomicU64,
     dropped_outbound_snapshots: std::sync::atomic::AtomicU64,
+    /// The match's send log: current tick, and the session capture's sink
+    /// while one runs. Shared with every connection's outbound queues.
+    send_hub: Arc<send_log::SendLogHub>,
 }
 
 impl MatchIoTelemetry {
@@ -1086,6 +1092,8 @@ enum MatchEvent {
         player_id: u32,
         packet: ClientPacket,
     },
+    /// Start or stop a paired session capture (HTTP, see `session_*_handler`).
+    Session(session_match::SessionCommand),
 }
 
 struct PlayerRuntime {
@@ -1230,6 +1238,9 @@ struct MatchState {
     /// step's halves, so neither dynamics_ms nor tick_city's bracket sees
     /// it; folded into city_total_ms so the tick residual stays honest.
     last_observer_flush_ms: f32,
+    /// The running paired session capture, if any; see `session_match`.
+    session_capture: Option<session_capture::ActiveCapture>,
+    session_max_us: u64,
 }
 
 #[tokio::main]
@@ -1446,6 +1457,15 @@ async fn main() -> Result<()> {
             post(city_tape_handler).layer(axum::extract::DefaultBodyLimit::max(512 * 1024 * 1024)),
         )
         .route("/match-stats/:match_id/bodies", get(match_body_states_handler))
+        // Paired client+server capture; see session_capture.rs. Under
+        // /match-stats for the same reason as the report routes above.
+        .route("/match-stats/:match_id/session/:session_id/start", post(session_start_handler))
+        .route("/match-stats/:match_id/session/:session_id/stop", post(session_stop_handler))
+        .route(
+            "/match-stats/:match_id/session/:session_id/tape",
+            post(session_tape_handler).layer(axum::extract::DefaultBodyLimit::max(512 * 1024 * 1024)),
+        )
+        .route("/match-stats/:match_id/session-clock", get(session_clock_handler))
         .route("/city-reset/:match_id", post(city_reset_handler))
         .route("/city-demolish/:match_id", post(city_demolish_handler))
         .route("/city-meteor/:match_id", post(city_meteor_handler))
@@ -2008,7 +2028,7 @@ async fn debug_report_handler(
         .map(|elapsed| elapsed.as_secs())
         .unwrap_or(0);
     let folder = format!("report-{stamp}-{match_id}-tick{}", stats.server_tick);
-    let dir = std::path::Path::new("debug-reports").join(&folder);
+    let dir = debug_reports_root().join(&folder);
     let server_json = match serde_json::to_vec_pretty(&stats) {
         Ok(json) => json,
         Err(error) => {
@@ -2033,12 +2053,22 @@ async fn debug_report_handler(
     (StatusCode::OK, Json(serde_json::json!({ "folder": folder }))).into_response()
 }
 
+/// Where debug reports, tapes and session bundles are written:
+/// `VIBE_DEBUG_REPORTS_DIR`, or `debug-reports` under the working directory.
+fn debug_reports_root() -> PathBuf {
+    std::env::var("VIBE_DEBUG_REPORTS_DIR")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("debug-reports"))
+}
+
 /// A city tape -- the inbound stream a client recorded, opened on a
 /// bootstrap -- stored beside the debug reports so the storm a player hit can
 /// be replayed into the renderer anywhere. A player's manual tape runs as long
 /// as they keep recording (tens to hundreds of megabytes), so it gets its own
 /// body limit rather than the report handler's. Not parsed: the client
-/// formats it (VLTAPE01) and the client reads it.
+/// formats it and the client reads it; only its magic is checked.
 async fn city_tape_handler(
     Path(match_id): Path<String>,
     body: axum::body::Bytes,
@@ -2046,8 +2076,9 @@ async fn city_tape_handler(
     if !city::is_city_match(&match_id) {
         return (StatusCode::BAD_REQUEST, "not a city match").into_response();
     }
-    // VLTAPE01: the city stream alone; VLTAPE02: every inbound channel.
-    if body.len() < 8 || !matches!(&body[..8], b"VLTAPE01" | b"VLTAPE02") {
+    // VLTAPE01: the city stream alone; VLCTAPE2 (and the first such tapes,
+    // written as VLTAPE02): every inbound channel.
+    if !session_capture::is_client_tape(&body) {
         return (StatusCode::BAD_REQUEST, "not a city tape").into_response();
     }
     let stamp = std::time::SystemTime::now()
@@ -2055,7 +2086,7 @@ async fn city_tape_handler(
         .map(|elapsed| elapsed.as_secs())
         .unwrap_or(0);
     let folder = format!("tape-{stamp}-{match_id}");
-    let dir = std::path::Path::new("debug-reports").join(&folder);
+    let dir = debug_reports_root().join(&folder);
     let write = std::fs::create_dir_all(&dir)
         .and_then(|()| std::fs::write(dir.join("city.vltape"), &body));
     if let Err(error) = write {
@@ -2067,6 +2098,257 @@ async fn city_tape_handler(
     }
     info!(%match_id, folder, bytes = body.len(), "city tape stored");
     (StatusCode::OK, Json(serde_json::json!({ "folder": folder }))).into_response()
+}
+
+// ── Paired session capture ──────────────────────────────────────────────────
+//
+// A client that starts a tape asks for a server capture under a session id it
+// chose; the match records until the client says stop (or leaves), then the
+// client uploads its tape into the same bundle. HTTP rather than a packet on
+// the game session: it needs no wire-protocol change on either side, a server
+// without the routes answers 404 and the client simply records standalone,
+// the e2e harness and curl can drive it, and every request gets a synchronous
+// answer carrying the server tick and clocks it started at -- which is itself
+// a clock sample for the client.
+
+#[derive(serde::Deserialize, Default)]
+struct SessionStartRequest {
+    player_id: Option<u32>,
+}
+
+async fn find_match(state: &SharedAppState, match_id: &str) -> Option<MatchHandle> {
+    state
+        .inner
+        .matches
+        .read()
+        .await
+        .get(match_id)
+        .filter(|handle| !handle.tx.is_closed())
+        .cloned()
+}
+
+fn session_reply_response(result: session_match::SessionReply) -> axum::response::Response {
+    match result {
+        Ok(value) => (StatusCode::OK, Json(value)).into_response(),
+        Err((code, message)) => (
+            StatusCode::from_u16(code).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+            message,
+        )
+            .into_response(),
+    }
+}
+
+async fn ask_match(
+    handle: &MatchHandle,
+    command: impl FnOnce(tokio::sync::oneshot::Sender<session_match::SessionReply>) -> session_match::SessionCommand,
+    wait: Duration,
+) -> session_match::SessionReply {
+    let (reply, answer) = tokio::sync::oneshot::channel();
+    if handle.tx.send(MatchEvent::Session(command(reply))).is_err() {
+        return Err((404, "match has ended".into()));
+    }
+    match tokio::time::timeout(wait, answer).await {
+        Ok(Ok(result)) => result,
+        Ok(Err(_)) => Err((500, "match dropped the request".into())),
+        Err(_) => Err((504, "match did not answer in time".into())),
+    }
+}
+
+fn server_build_identity(stats: Option<&MatchStatsSnapshot>) -> serde_json::Value {
+    serde_json::json!({
+        "server_build": server_build_stamp(),
+        "server_started": server_started_stamp(),
+        "profile": server_build_profile(),
+        "physics_backend": stats.map(|stats| stats.physics_backend.clone()),
+        "fingerprint": stats.and_then(|stats| serde_json::to_value(&stats.fingerprint).ok()),
+    })
+}
+
+async fn session_start_handler(
+    Path((match_id, session_id)): Path<(String, String)>,
+    State(state): State<SharedAppState>,
+    body: axum::body::Bytes,
+) -> impl IntoResponse {
+    if !session_capture::valid_session_id(&session_id) {
+        return (StatusCode::BAD_REQUEST, "session id must be 1-64 of [A-Za-z0-9_-]").into_response();
+    }
+    let request: SessionStartRequest = if body.is_empty() {
+        SessionStartRequest::default()
+    } else {
+        match serde_json::from_slice(&body) {
+            Ok(request) => request,
+            Err(error) => return (StatusCode::BAD_REQUEST, format!("bad request: {error}")).into_response(),
+        }
+    };
+    let Some(handle) = find_match(&state, &match_id).await else {
+        return (StatusCode::NOT_FOUND, "unknown match").into_response();
+    };
+    let bundle = session_capture::bundle_dir(&debug_reports_root(), &session_id);
+    let player_id = request.player_id;
+    let result = ask_match(
+        &handle,
+        |reply| session_match::SessionCommand::Start {
+            session_id: session_id.clone(),
+            player_id,
+            bundle: bundle.clone(),
+            reply,
+        },
+        Duration::from_secs(5),
+    )
+    .await;
+    let Ok(started) = result else {
+        return session_reply_response(result);
+    };
+    if !started["already_active"].as_bool().unwrap_or(false) {
+        let stats = state
+            .inner
+            .stats_registry
+            .read()
+            .expect("stats registry poisoned")
+            .get(&match_id)
+            .cloned();
+        if let Some(stats) = &stats {
+            if let Ok(bytes) = serde_json::to_vec_pretty(stats) {
+                let _ = std::fs::create_dir_all(&bundle);
+                let _ = std::fs::write(bundle.join(session_capture::STATS_START_FILE), bytes);
+            }
+        }
+        let dir = started["server_dir"].as_str().unwrap_or(session_capture::SERVER_DIR).to_string();
+        let file = |name: &str| format!("{dir}/{name}");
+        let patch = serde_json::json!({
+            "session_id": session_id,
+            "match_id": match_id,
+            "client_player_id": player_id,
+            "created_unix_us": session_capture::unix_us(),
+            "server": {
+                "dir": dir,
+                "capture_epoch_unix_us": started["capture_epoch_unix_us"],
+                "capture_start": started["capture_start"],
+                "start": started["start"],
+                "opened_capture": !started["joined"].as_bool().unwrap_or(false),
+                "opened_by": started["opened_by"],
+                "shared_with_at_start": started["shared_with"],
+                "sim_hz": started["sim_hz"],
+                "files": {
+                    "world": file(session_capture::WORLD_FILE),
+                    "send_log": file(session_capture::SEND_LOG_FILE),
+                    "ticks": file(session_capture::TICKS_FILE),
+                    "selections": file(session_capture::SELECTIONS_FILE),
+                    "capture_meta": file(session_capture::CAPTURE_META_FILE),
+                    "city_capture": file(session_capture::CITY_DIR),
+                },
+                "city_capture_at_start": started["city_capture"],
+                "build": server_build_identity(stats.as_ref()),
+            },
+            "stats": {"start": session_capture::STATS_START_FILE},
+        });
+        if let Err(error) = session_capture::merge_manifest(&bundle, patch) {
+            warn!(%error, session_id, "session manifest write failed");
+        }
+    }
+    (StatusCode::OK, Json(started)).into_response()
+}
+
+async fn session_stop_handler(
+    Path((match_id, session_id)): Path<(String, String)>,
+    State(state): State<SharedAppState>,
+) -> impl IntoResponse {
+    if !session_capture::valid_session_id(&session_id) {
+        return (StatusCode::BAD_REQUEST, "session id must be 1-64 of [A-Za-z0-9_-]").into_response();
+    }
+    let Some(handle) = find_match(&state, &match_id).await else {
+        return (StatusCode::NOT_FOUND, "unknown match").into_response();
+    };
+    // Generous: the last session out waits for the writers to drain.
+    let result = ask_match(
+        &handle,
+        |reply| session_match::SessionCommand::Stop { session_id: session_id.clone(), reply },
+        Duration::from_secs(120),
+    )
+    .await;
+    session_reply_response(result)
+}
+
+/// The client's tape, into its session's bundle.
+async fn session_tape_handler(
+    Path((match_id, session_id)): Path<(String, String)>,
+    body: axum::body::Bytes,
+) -> impl IntoResponse {
+    if !session_capture::valid_session_id(&session_id) {
+        return (StatusCode::BAD_REQUEST, "session id must be 1-64 of [A-Za-z0-9_-]").into_response();
+    }
+    let Some(header) = session_capture::client_tape_header(&body) else {
+        return (StatusCode::BAD_REQUEST, "not a client tape").into_response();
+    };
+    let bundle = session_capture::bundle_dir(&debug_reports_root(), &session_id);
+    let existed = bundle.join(session_capture::MANIFEST_FILE).exists();
+    let write = std::fs::create_dir_all(&bundle)
+        .and_then(|()| std::fs::write(bundle.join(session_capture::CLIENT_TAPE_FILE), &body));
+    if let Err(error) = write {
+        return (StatusCode::INTERNAL_SERVER_ERROR, format!("tape write failed: {error}")).into_response();
+    }
+    let keep = [
+        "version", "capturedAt", "matchId", "localPlayerId", "transport", "durationMs", "packets",
+        "bytes", "prelude", "channels", "frames", "clockOriginMs", "wallClockOriginMs", "pairing",
+        "userAgent", "client", "wireVersion", "manifestHash", "session",
+    ];
+    let summary: serde_json::Map<String, serde_json::Value> = keep
+        .iter()
+        .filter_map(|key| header.get(*key).map(|value| (key.to_string(), value.clone())))
+        .collect();
+    let patch = serde_json::json!({
+        "session_id": session_id,
+        "match_id": match_id,
+        "client": {
+            "tape": session_capture::CLIENT_TAPE_FILE,
+            "magic": String::from_utf8_lossy(&body[..8]),
+            "bytes": body.len(),
+            "uploaded_unix_us": session_capture::unix_us(),
+            "header": summary,
+        },
+        // A tape for a session this server never started (it restarted, or
+        // it predates session capture on a mixed deploy): kept, and said so.
+        "server_capture_missing": !existed,
+    });
+    let manifest = match session_capture::merge_manifest(&bundle, patch) {
+        Ok(manifest) => manifest,
+        Err(error) => {
+            return (StatusCode::INTERNAL_SERVER_ERROR, format!("manifest write failed: {error}"))
+                .into_response()
+        }
+    };
+    let folder = bundle.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
+    info!(%match_id, session_id, bytes = body.len(), folder, "session tape stored");
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "folder": folder,
+            "paired": manifest.get("server").is_some(),
+        })),
+    )
+        .into_response()
+}
+
+/// A clock sample: the match's current tick and the server's clocks, read
+/// without a trip through the match loop. The client brackets it with its own
+/// send and receive times.
+async fn session_clock_handler(
+    Path(match_id): Path<String>,
+    State(state): State<SharedAppState>,
+) -> impl IntoResponse {
+    let Some(handle) = find_match(&state, &match_id).await else {
+        return (StatusCode::NOT_FOUND, "unknown match").into_response();
+    };
+    let hub = &handle.telemetry.send_hub;
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "tick": hub.tick(),
+            "unix_us": session_capture::unix_us(),
+            "capture_mono_us": hub.now_us(),
+        })),
+    )
+        .into_response()
 }
 
 async fn match_stats_handler(
@@ -2413,7 +2695,10 @@ async fn handle_wt_session(app: Arc<AppState>, connection: Connection) -> Result
     let player_id = app.next_player_id.fetch_add(1, Ordering::Relaxed);
     let handle = get_or_create_match(app.clone(), hello.match_id.clone()).await;
 
-    let (out_tx, out_rx) = outbound::channel(PLAYER_OUTBOUND_QUEUE_CAPACITY);
+    let (out_tx, out_rx) = outbound::channel_with_tap(
+        PLAYER_OUTBOUND_QUEUE_CAPACITY,
+        Some(send_log::Tap::new(player_id, false, handle.telemetry.send_hub.clone())),
+    );
 
     handle.tx.send(MatchEvent::Connect(PlayerConnection {
         player_id,
@@ -2441,7 +2726,7 @@ async fn handle_wt_session(app: Arc<AppState>, connection: Connection) -> Result
                             ClientTransport::WebTransport,
                             is_snapshot_packet_kind(kind),
                         );
-                        true
+                        outbound::DatagramResult::Sent
                     }
                     OutboundDelivery::StrictDrop => {
                         telemetry.observe_strict_snapshot_drop(
@@ -2450,11 +2735,11 @@ async fn handle_wt_session(app: Arc<AppState>, connection: Connection) -> Result
                                 .map(strict_snapshot_drop_cause_from_send_error)
                                 .unwrap_or(StrictSnapshotDropCause::Other),
                         );
-                        true
+                        outbound::DatagramResult::Dropped
                     }
                     OutboundDelivery::ReliableFallback => {
                         telemetry.observe_datagram_fallback();
-                        false
+                        outbound::DatagramResult::Fallback
                     }
                     OutboundDelivery::Reliable => {
                         unreachable!("only datagram packets enter this lane")
@@ -2600,7 +2885,10 @@ async fn handle_socket(
     let handle = get_or_create_match(app.clone(), match_id.clone()).await;
 
     let (mut ws_tx, mut ws_rx) = socket.split();
-    let (out_tx, mut out_rx) = outbound::channel(PLAYER_OUTBOUND_QUEUE_CAPACITY);
+    let (out_tx, mut out_rx) = outbound::channel_with_tap(
+        PLAYER_OUTBOUND_QUEUE_CAPACITY,
+        Some(send_log::Tap::new(player_id, true, handle.telemetry.send_hub.clone())),
+    );
 
     handle.tx.send(MatchEvent::Connect(PlayerConnection {
         player_id,
@@ -2612,12 +2900,17 @@ async fn handle_socket(
     let telemetry = handle.telemetry.clone();
     let mut writer = tokio::spawn(async move {
         let mut failed = out_rx.failed.clone();
+        let tap = out_rx.tap();
         loop {
-            let packet = tokio::select! {
+            let outgoing = tokio::select! {
                 biased;
                 _ = outbound::failed(&mut failed) => break,
                 packet = out_rx.recv() => match packet { Some(packet) => packet, None => break },
             };
+            let pending = tap
+                .as_deref()
+                .and_then(|tap| tap.prepare(&outgoing.bytes, outgoing.tick, outgoing.queued));
+            let packet = outgoing.bytes;
             let packet_len = packet.len();
             let packet_kind = packet.first().copied().unwrap_or_default();
             let is_snapshot = packet.first().copied().is_some_and(is_snapshot_packet_kind);
@@ -2629,6 +2922,9 @@ async fn handle_socket(
             if let Err(err) = sent {
                 warn!(player_id, error = ?err, "websocket writer stopped");
                 break;
+            }
+            if let Some(pending) = pending {
+                pending.finish(send_log::Lane::WebSocket, send_log::Outcome::Sent);
             }
             telemetry.observe_outbound_reliable(
                 packet_len,
@@ -2876,6 +3172,8 @@ async fn run_match_loop(
         input_credit: 1.0,
         staged_city: None,
         last_observer_flush_ms: 0.0,
+        session_capture: None,
+        session_max_us: session_match::session_max_us(),
         next_player_handle: 1,
         reusable_player_handles: VecDeque::new(),
         free_player_handles: VecDeque::new(),
@@ -3100,6 +3398,7 @@ impl MatchState {
 
     fn handle_event(&mut self, event: MatchEvent) {
         match event {
+            MatchEvent::Session(command) => self.handle_session_command(command),
             MatchEvent::Connect(conn) => {
                 let Some(player_handle) = self.allocate_player_handle() else {
                     warn!(match_id = %self.id, player_id = conn.player_id, "player handle pool exhausted");
@@ -3494,6 +3793,9 @@ impl MatchState {
     fn tick(&mut self) {
         let tick_started = Instant::now();
         self.server_tick += 1;
+        // Every packet queued from here on is stamped with this tick.
+        self.io.send_hub.set_tick(self.server_tick);
+        self.poll_session_capture();
         self.reclaim_player_handles();
         let dt = 1.0 / SIM_HZ as f32;
         // How many 60 Hz input frames this tick is entitled to consume.
@@ -3922,6 +4224,12 @@ impl MatchState {
         while self.tick_ring.len() > TICK_RING_CAP {
             self.tick_ring.pop_front();
         }
+        self.record_session_tick(session_match::TickCosts {
+            total_ms,
+            city_ms: city_total_ms,
+            publish_ms: publish_tick_ms,
+            unattributed_ms: (total_ms - attributed).max(0.0),
+        });
     }
 
     /// Re-bootstrap clients whose ledger we know is holed.
@@ -4262,6 +4570,11 @@ impl MatchState {
                     for (player_id, camera) in cameras {
                         let packets =
                             city.client_datagrams(u64::from(player_id), camera, &shared);
+                        self.note_selection(session_capture::Selection {
+                            tick: staged_tick,
+                            player: player_id,
+                            kind: session_capture::SelectionKind::City(city.last_client_selection()),
+                        });
                         if let Some(runtime) = self.players.get(&player_id) {
                             for packet in packets {
                                 let _ = try_queue_packet(&runtime.tx, packet, &self.io);
@@ -4543,6 +4856,11 @@ impl MatchState {
             if !shared.records.is_empty() {
                 for (player_id, camera) in cameras {
                     let packets = city.client_datagrams(u64::from(player_id), camera, &shared);
+                    self.note_selection(session_capture::Selection {
+                        tick: self.server_tick,
+                        player: player_id,
+                        kind: session_capture::SelectionKind::City(city.last_client_selection()),
+                    });
                     if let Some(runtime) = self.players.get(&player_id) {
                         for packet in packets {
                             if !try_queue_packet(&runtime.tx, packet, &self.io) {
@@ -5975,6 +6293,10 @@ impl MatchState {
 
         let recipient_ids: Vec<u32> = self.players.keys().copied().collect();
 
+        // Per-recipient interest / budget decisions, kept only while a
+        // session capture runs (the counts themselves are free).
+        let capturing = self.session_capture_active();
+        let mut selections: Vec<session_capture::Selection> = Vec::new();
         let mut snapshot_bytes_this_tick = 0usize;
         for recipient_id in recipient_ids {
             let Some((_, recipient_pos, local_player_state)) = player_states
@@ -6080,9 +6402,34 @@ impl MatchState {
                 self.snapshot_stats
                     .vehicles_per_client
                     .record(packet_vehicle_count(&packet) as f32);
+                if capturing {
+                    // V1 has no byte budget: everything in the AOI is sent.
+                    let players = packet_player_count(&packet).saturating_sub(1) as u32;
+                    let vehicles = packet_vehicle_count(&packet) as u32;
+                    let bodies = packet_dynamic_body_count(&packet) as u32;
+                    selections.push(session_capture::Selection {
+                        tick: self.server_tick,
+                        player: recipient_id,
+                        kind: session_capture::SelectionKind::Snapshot(
+                            session_capture::SnapshotSelection {
+                                players_aoi: players,
+                                players_sent: players,
+                                vehicles_aoi: vehicles,
+                                vehicles_hot: vehicles,
+                                vehicles_sent: vehicles,
+                                bodies_aoi: bodies,
+                                bodies_hot: bodies,
+                                bodies_sent: bodies,
+                                bytes: encoded.len() as u32,
+                                ..Default::default()
+                            },
+                        ),
+                    });
+                }
                 let _ = try_queue_packet(&tx, encoded, &self.io);
                 continue;
             }
+            let mut selection = session_capture::SnapshotSelection::default();
 
             let mut budget_remaining =
                 STRICT_SNAPSHOT_DATAGRAM_TARGET_BYTES.saturating_sub(SNAPSHOT_V2_HEADER_BYTES);
@@ -6177,14 +6524,17 @@ impl MatchState {
             remote_player_candidates.sort_by(|a, b| {
                 distance_sq(a.1, *recipient_pos).total_cmp(&distance_sq(b.1, *recipient_pos))
             });
-            for (player_id, pos, state) in remote_player_candidates {
+            selection.players_aoi = remote_player_candidates.len() as u32;
+            for (index, (player_id, pos, state)) in remote_player_candidates.into_iter().enumerate() {
                 let Some(handle) = self.player_handles.get(player_id).copied() else {
                     continue;
                 };
                 let Some((dx, dy, dz)) = quantize_relative_vec_q2_5mm(*recipient_pos, *pos) else {
+                    selection.out_of_range += 1;
                     continue;
                 };
                 if budget_remaining < SNAPSHOT_V2_REMOTE_PLAYER_BYTES {
+                    selection.players_budget = (selection.players_aoi as usize - index) as u32;
                     break;
                 }
                 remote_player_states.push(protocol::RemotePlayerStateV2 {
@@ -6202,6 +6552,7 @@ impl MatchState {
                 });
                 budget_remaining = budget_remaining.saturating_sub(SNAPSHOT_V2_REMOTE_PLAYER_BYTES);
             }
+            selection.players_sent = remote_player_states.len() as u32;
 
             let mut selected_vehicle_states = Vec::new();
             for (vehicle_id, pos, state) in vehicle_states
@@ -6243,6 +6594,7 @@ impl MatchState {
                     .insert(*vehicle_id, self.server_tick);
             }
 
+            let reserved_vehicles_sent = selected_vehicle_states.len();
             let mut vehicle_hot = Vec::new();
             for (vehicle_id, pos, state) in vehicle_states.iter().filter(|(_, pos, state)| {
                 state.driver_id == recipient_id
@@ -6252,10 +6604,12 @@ impl MatchState {
                 if reserved_vehicle_ids.contains(vehicle_id) {
                     continue;
                 }
+                selection.vehicles_aoi += 1;
                 let Some(handle) = self.vehicle_handles.get(vehicle_id).copied() else {
                     continue;
                 };
                 let Some((dx, dy, dz)) = quantize_relative_vec_q2_5mm(*recipient_pos, *pos) else {
+                    selection.out_of_range += 1;
                     continue;
                 };
                 let driver_handle = self
@@ -6304,6 +6658,7 @@ impl MatchState {
                 }
             }
             vehicle_hot.sort_by(|a, b| a.1.total_cmp(&b.1));
+            let vehicle_hot_count = vehicle_hot.len();
 
             for (vehicle_id, _, record) in vehicle_hot {
                 if budget_remaining < SNAPSHOT_V2_VEHICLE_BYTES {
@@ -6315,6 +6670,11 @@ impl MatchState {
                 selected_vehicle_states.push(record);
                 budget_remaining = budget_remaining.saturating_sub(SNAPSHOT_V2_VEHICLE_BYTES);
             }
+            selection.vehicles_aoi += reserved_vehicles_sent as u32;
+            selection.vehicles_hot = (vehicle_hot_count + reserved_vehicles_sent) as u32;
+            selection.vehicles_sent = selected_vehicle_states.len() as u32;
+            selection.vehicles_budget =
+                (vehicle_hot_count + reserved_vehicles_sent).saturating_sub(selected_vehicle_states.len()) as u32;
 
             let mut all_visible_dynamic_bodies = HashSet::new();
             let mut dynamic_hot = Vec::new();
@@ -6334,6 +6694,7 @@ impl MatchState {
                     continue;
                 };
                 let Some((dx, dy, dz)) = quantize_relative_vec_q2_5mm(*recipient_pos, *pos) else {
+                    selection.out_of_range += 1;
                     continue;
                 };
                 let dist_sq = distance_sq(*pos, *recipient_pos);
@@ -6410,6 +6771,8 @@ impl MatchState {
                     .last_sent_dynamic_body_pose
                     .insert(*body_id, (*pos, *quat));
             }
+            selection.bodies_aoi = all_visible_dynamic_bodies.len() as u32;
+            selection.bodies_hot = (dynamic_hot.len() + dynamic_cold.len()) as u32;
             runtime.visible_dynamic_bodies = all_visible_dynamic_bodies;
             dynamic_hot.sort_by(|a, b| a.1.total_cmp(&b.1));
             dynamic_cold.sort_by(|a, b| a.1.total_cmp(&b.1));
@@ -6441,6 +6804,12 @@ impl MatchState {
                 }
             }
 
+            selection.bodies_sent = (sphere_states.len() + box_states.len()) as u32;
+            selection.bodies_budget = selection.bodies_hot.saturating_sub(selection.bodies_sent);
+            selection.bodies_unchanged = selection
+                .bodies_aoi
+                .saturating_sub(selection.bodies_hot)
+                .saturating_sub(selection.out_of_range);
             let packet = ServerPacket::SnapshotV2(protocol::SnapshotV2Packet {
                 server_tick: self.server_tick,
                 ack_input_seq,
@@ -6467,7 +6836,18 @@ impl MatchState {
             self.snapshot_stats
                 .vehicles_per_client
                 .record(packet_vehicle_count(&packet) as f32);
+            if capturing {
+                selection.bytes = encoded.len() as u32;
+                selections.push(session_capture::Selection {
+                    tick: self.server_tick,
+                    player: recipient_id,
+                    kind: session_capture::SelectionKind::Snapshot(selection),
+                });
+            }
             let _ = try_queue_packet(&tx, encoded, &self.io);
+        }
+        for selection in selections {
+            self.note_selection(selection);
         }
         self.snapshot_stats
             .bytes_per_tick
@@ -7134,7 +7514,7 @@ mod tests {
                 .load(std::sync::atomic::Ordering::Relaxed),
             1
         );
-        assert_eq!(rx.recv().await, Some(vec![PKT_PING, 1, 2, 3, 4]));
+        assert_eq!(rx.recv().await.map(|p| p.bytes), Some(vec![PKT_PING, 1, 2, 3, 4]));
     }
 
     #[tokio::test]

@@ -2,23 +2,58 @@
 //!
 //! A reliable queue overflow is a connection failure, never permission to
 //! continue an ordered topology stream after silently omitting a packet.
-use std::{future::pending, io};
+//!
+//! Each queued packet carries the server tick that queued it, and -- while a
+//! session capture is running -- when it was queued, so the connection's send
+//! log (see `send_log`) can say which tick produced every packet and how long
+//! it waited behind the others.
+use std::{future::pending, io, sync::Arc, time::Instant};
 use tokio::{
     io::{AsyncWrite, AsyncWriteExt},
     sync::{mpsc, watch},
 };
 
+use crate::send_log::{Lane, Outcome, Tap};
+
+/// One queued packet.
+#[derive(Debug)]
+pub(crate) struct Outgoing {
+    pub(crate) bytes: Vec<u8>,
+    /// The server tick during which it was queued (0 without a tap).
+    pub(crate) tick: u32,
+    /// When it was queued; only stamped while a capture is running.
+    pub(crate) queued: Option<Instant>,
+}
+
+impl PartialEq<Vec<u8>> for Outgoing {
+    fn eq(&self, other: &Vec<u8>) -> bool {
+        &self.bytes == other
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct Sender {
-    reliable: mpsc::Sender<Vec<u8>>,
-    datagrams: mpsc::Sender<Vec<u8>>,
+    reliable: mpsc::Sender<Outgoing>,
+    datagrams: mpsc::Sender<Outgoing>,
     failed: watch::Sender<bool>,
+    tap: Option<Arc<Tap>>,
 }
 
 pub(crate) struct Receiver {
-    reliable: mpsc::Receiver<Vec<u8>>,
-    datagrams: mpsc::Receiver<Vec<u8>>,
+    reliable: mpsc::Receiver<Outgoing>,
+    datagrams: mpsc::Receiver<Outgoing>,
     pub(crate) failed: watch::Receiver<bool>,
+    tap: Option<Arc<Tap>>,
+}
+
+/// What the transport did with a datagram-lane packet.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DatagramResult {
+    Sent,
+    /// Deliberately dropped (strict snapshot datagrams).
+    Dropped,
+    /// Refused; send it on the reliable stream instead.
+    Fallback,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -29,20 +64,30 @@ pub(crate) enum Enqueue {
     Closed,
 }
 
+#[cfg(test)]
 pub(crate) fn channel(capacity: usize) -> (Sender, Receiver) {
+    channel_with_tap(capacity, None)
+}
+
+/// A connection's queues; `tap` reports what happens to each packet to the
+/// match's send log.
+pub(crate) fn channel_with_tap(capacity: usize, tap: Option<Tap>) -> (Sender, Receiver) {
     let (reliable, reliable_rx) = mpsc::channel(capacity);
     let (datagrams, datagrams_rx) = mpsc::channel(capacity);
     let (failed, failed_rx) = watch::channel(false);
+    let tap = tap.map(Arc::new);
     (
         Sender {
             reliable,
             datagrams,
             failed,
+            tap: tap.clone(),
         },
         Receiver {
             reliable: reliable_rx,
             datagrams: datagrams_rx,
             failed: failed_rx,
+            tap,
         },
     )
 }
@@ -57,7 +102,13 @@ impl Sender {
     }
 
     pub(crate) fn enqueue(&self, packet: Vec<u8>, unreliable: bool) -> Enqueue {
+        let (tick, queued) = match &self.tap {
+            Some(tap) => (tap.hub.tick(), tap.hub.active().then(Instant::now)),
+            None => (0, None),
+        };
+        let packet = Outgoing { bytes: packet, tick, queued };
         if *self.failed.borrow() {
+            self.log_refused(&packet, unreliable, Outcome::Closed);
             return Enqueue::Closed;
         }
         let lane = if unreliable {
@@ -67,11 +118,26 @@ impl Sender {
         };
         match lane.try_send(packet) {
             Ok(()) => Enqueue::Queued,
-            Err(mpsc::error::TrySendError::Closed(_)) => Enqueue::Closed,
-            Err(mpsc::error::TrySendError::Full(_)) if unreliable => Enqueue::DatagramDropped,
-            Err(mpsc::error::TrySendError::Full(_)) => {
+            Err(mpsc::error::TrySendError::Closed(packet)) => {
+                self.log_refused(&packet, unreliable, Outcome::Closed);
+                Enqueue::Closed
+            }
+            Err(mpsc::error::TrySendError::Full(packet)) if unreliable => {
+                self.log_refused(&packet, unreliable, Outcome::QueueFull);
+                Enqueue::DatagramDropped
+            }
+            Err(mpsc::error::TrySendError::Full(packet)) => {
                 self.failed.send_replace(true);
+                self.log_refused(&packet, unreliable, Outcome::ReliableOverflow);
                 Enqueue::ReliableOverflow
+            }
+        }
+    }
+
+    fn log_refused(&self, packet: &Outgoing, unreliable: bool, outcome: Outcome) {
+        if let Some(tap) = &self.tap {
+            if let Some(pending) = tap.prepare(&packet.bytes, packet.tick, packet.queued) {
+                pending.finish(tap.intended_lane(unreliable), outcome);
             }
         }
     }
@@ -91,9 +157,14 @@ pub(crate) async fn failed(signal: &mut watch::Receiver<bool>) {
 }
 
 impl Receiver {
+    /// The send-log tap, for a writer that reports its own sends.
+    pub(crate) fn tap(&self) -> Option<Arc<Tap>> {
+        self.tap.clone()
+    }
+
     /// WebSocket has one ordered transport and must serialize both lanes.
     /// Fair selection avoids starving recoverable snapshots under reliable load.
-    pub(crate) async fn recv(&mut self) -> Option<Vec<u8>> {
+    pub(crate) async fn recv(&mut self) -> Option<Outgoing> {
         tokio::select! {
             packet = self.reliable.recv() => match packet {
                 Some(packet) => Some(packet),
@@ -107,8 +178,8 @@ impl Receiver {
     }
 }
 
-/// `datagram` returns true if it consumed the packet (sent or deliberately
-/// dropped), false to request the existing reliable fallback for that packet.
+/// `datagram` says whether it sent the packet, deliberately dropped it, or
+/// wants the existing reliable fallback for it.
 /// Only the recoverable lane can use fallback; a full fallback queue drops that
 /// recoverable packet without displacing or failing ordered state.
 pub(crate) async fn write_webtransport<W, D, S, L>(
@@ -120,7 +191,7 @@ pub(crate) async fn write_webtransport<W, D, S, L>(
 ) -> io::Result<()>
 where
     W: AsyncWrite + Unpin,
-    D: FnMut(&[u8]) -> bool,
+    D: FnMut(&[u8]) -> DatagramResult,
     S: FnMut(&[u8]),
     L: FnMut(&[u8]),
 {
@@ -128,28 +199,34 @@ where
         mut reliable,
         mut datagrams,
         failed: mut failure,
+        tap,
     } = receiver;
+    let datagram_tap = tap.clone();
     // Fallback stays separate too: oversized recoverable packets must never
     // consume capacity reserved for topology and other reliable state.
     let (fallback_tx, mut fallback_rx) = mpsc::channel(datagrams.max_capacity());
     let reliable_writer = async {
         let (mut state_open, mut fallback_open) = (true, true);
         loop {
-            let packet = tokio::select! {
+            let (outgoing, fallback) = tokio::select! {
                 biased;
                 packet = reliable.recv(), if state_open => match packet {
-                    Some(packet) => packet,
+                    Some(packet) => (packet, false),
                     None => { state_open = false; continue; }
                 },
                 packet = fallback_rx.recv(), if fallback_open => match packet {
-                    Some(packet) => packet,
+                    Some(packet) => (packet, true),
                     None => { fallback_open = false; continue; }
                 },
                 else => break,
             };
+            let packet = &outgoing.bytes;
             if packet.is_empty() {
                 continue;
             }
+            let pending = tap
+                .as_deref()
+                .and_then(|tap| tap.prepare(packet, outgoing.tick, outgoing.queued));
             let length = u32::try_from(packet.len()).map_err(|_| {
                 io::Error::new(
                     io::ErrorKind::InvalidData,
@@ -159,18 +236,44 @@ where
             // No extra packet-sized framing copy. One task owns the stream,
             // so the prefix and body cannot interleave with another frame.
             stream.write_all(&length.to_le_bytes()).await?;
-            stream.write_all(&packet).await?;
-            reliable_sent(&packet);
+            stream.write_all(packet).await?;
+            reliable_sent(packet);
+            if let Some(pending) = pending {
+                let outcome = if fallback { Outcome::SentFallback } else { Outcome::Sent };
+                pending.finish(Lane::WtReliable, outcome);
+            }
         }
         Ok::<(), io::Error>(())
     };
     let datagram_writer = async move {
         while let Some(packet) = datagrams.recv().await {
-            if packet.is_empty() || datagram(&packet) {
+            if packet.bytes.is_empty() {
                 continue;
             }
+            let pending = datagram_tap
+                .as_deref()
+                .and_then(|tap| tap.prepare(&packet.bytes, packet.tick, packet.queued));
+            match datagram(&packet.bytes) {
+                DatagramResult::Sent => {
+                    if let Some(pending) = pending {
+                        pending.finish(Lane::WtDatagram, Outcome::Sent);
+                    }
+                    continue;
+                }
+                DatagramResult::Dropped => {
+                    if let Some(pending) = pending {
+                        pending.finish(Lane::WtDatagram, Outcome::StrictDrop);
+                    }
+                    continue;
+                }
+                // Logged by the reliable writer when it goes out.
+                DatagramResult::Fallback => {}
+            }
             if let Err(mpsc::error::TrySendError::Full(packet)) = fallback_tx.try_send(packet) {
-                fallback_dropped(&packet);
+                fallback_dropped(&packet.bytes);
+                if let Some(pending) = pending {
+                    pending.finish(Lane::WtReliable, Outcome::FallbackDropped);
+                }
             }
         }
         Ok::<(), io::Error>(())
@@ -203,7 +306,7 @@ mod tests {
                 rx,
                 |p| {
                     output.lock().unwrap().push(p.to_vec());
-                    true
+                    DatagramResult::Sent
                 },
                 |_| {},
                 |_| {},
@@ -234,13 +337,82 @@ mod tests {
         assert_eq!(observed.lock().unwrap().len(), 12);
     }
 
+    /// The send log sees every packet's fate, stamped with the tick that
+    /// queued it: sent datagrams, strict drops, reliable fallbacks, reliable
+    /// writes, and datagrams dropped on a full queue at enqueue.
+    #[tokio::test]
+    async fn a_tapped_connection_logs_every_packet_with_its_tick_and_lane() {
+        use crate::send_log::{read_send_log, Lane, Outcome, SendLogHub, SendLogWriter};
+        let dir = std::env::temp_dir().join(format!("vl-outbound-tap-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let hub = Arc::new(SendLogHub::default());
+        let (log, sink) =
+            SendLogWriter::open(&dir.join("sendlog.bin"), std::time::Instant::now(), 0, 1024).unwrap();
+        hub.attach(sink);
+        let (tx, rx) = channel_with_tap(2, Some(Tap::new(9, false, hub.clone())));
+        hub.set_tick(100);
+        assert_eq!(tx.enqueue(vec![121, 1], false), Enqueue::Queued);
+        assert_eq!(tx.enqueue(vec![123, 1], true), Enqueue::Queued); // sent
+        assert_eq!(tx.enqueue(vec![123, 2], true), Enqueue::Queued); // strict drop
+        assert_eq!(tx.enqueue(vec![123, 3], true), Enqueue::DatagramDropped); // queue full
+        let (mut writer, mut reader) = tokio::io::duplex(1024);
+        hub.set_tick(101);
+        let task = tokio::spawn(async move {
+            write_webtransport(
+                &mut writer,
+                rx,
+                |p| match p[1] {
+                    1 => DatagramResult::Sent,
+                    2 => DatagramResult::Dropped,
+                    _ => DatagramResult::Fallback,
+                },
+                |_| {},
+                |_| {},
+            )
+            .await
+        });
+        // Wait until the writer drained the first datagrams, then one that
+        // the transport refuses and that goes out on the reliable stream.
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            while tx.datagrams.capacity() < 2 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(tx.enqueue(vec![123, 4], true), Enqueue::Queued);
+        drop(tx);
+        let mut bytes = Vec::new();
+        reader.read_to_end(&mut bytes).await.unwrap();
+        task.await.unwrap().unwrap();
+        hub.detach();
+        let summary = log.finish().unwrap();
+        assert_eq!(summary.dropped_records, 0);
+        let (_, mut records) = read_send_log(&dir.join("sendlog.bin")).unwrap();
+        records.sort_by_key(|r| (r.kind, r.size, r.crc32));
+        let fate = |payload: &[u8]| {
+            let crc = crc32fast::hash(payload);
+            let r = records.iter().find(|r| r.crc32 == crc).expect("logged");
+            (r.tick, r.lane, r.outcome, r.player)
+        };
+        assert_eq!(fate(&[121, 1]), (100, Lane::WtReliable as u8, Outcome::Sent as u8, 9));
+        assert_eq!(fate(&[123, 1]), (100, Lane::WtDatagram as u8, Outcome::Sent as u8, 9));
+        assert_eq!(fate(&[123, 2]), (100, Lane::WtDatagram as u8, Outcome::StrictDrop as u8, 9));
+        assert_eq!(fate(&[123, 3]), (100, Lane::WtDatagram as u8, Outcome::QueueFull as u8, 9));
+        assert_eq!(fate(&[123, 4]), (101, Lane::WtReliable as u8, Outcome::SentFallback as u8, 9));
+        assert_eq!(records.len(), 5);
+        assert!(records.iter().all(|r| r.queued_us <= r.sent_us));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[tokio::test]
     async fn datagram_pressure_cannot_evict_reliable_packets() {
         let (tx, mut rx) = channel(1);
         assert_eq!(tx.enqueue(vec![123, 1], true), Enqueue::Queued);
         assert_eq!(tx.enqueue(vec![123, 2], true), Enqueue::DatagramDropped);
         assert_eq!(tx.enqueue(vec![121, 3], false), Enqueue::Queued);
-        assert_eq!(rx.reliable.recv().await, Some(vec![121, 3]));
+        assert_eq!(rx.reliable.recv().await.map(|p| p.bytes), Some(vec![121, 3]));
         assert!(!*rx.failed.borrow());
     }
 
@@ -250,7 +422,7 @@ mod tests {
         let (mut writer, _unread) = tokio::io::duplex(1);
         assert_eq!(tx.enqueue(vec![121, 1], false), Enqueue::Queued);
         let task = tokio::spawn(async move {
-            write_webtransport(&mut writer, rx, |_| true, |_| {}, |_| {}).await
+            write_webtransport(&mut writer, rx, |_| DatagramResult::Sent, |_| {}, |_| {}).await
         });
         tokio::time::timeout(std::time::Duration::from_secs(1), async {
             while tx.capacity() == 0 {
@@ -281,8 +453,8 @@ mod tests {
         let mut reliable = Vec::new();
         let mut datagrams = 0;
         while let Some(p) = rx.recv().await {
-            if p[0] == 121 {
-                reliable.push(p[1]);
+            if p.bytes[0] == 121 {
+                reliable.push(p.bytes[1]);
             } else {
                 datagrams += 1;
             }
@@ -302,7 +474,7 @@ mod tests {
             write_webtransport(
                 &mut writer,
                 rx,
-                |_| false,
+                |_| DatagramResult::Fallback,
                 |_| {},
                 |_| {
                     observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -389,7 +561,7 @@ mod tests {
                     rx,
                     |p| {
                         writer_conn.send_datagram(p).unwrap();
-                        true
+                        DatagramResult::Sent
                     },
                     |_| {
                         observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);

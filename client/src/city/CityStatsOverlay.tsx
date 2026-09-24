@@ -219,11 +219,14 @@ import { lookTuning } from '../graphics/lookTuning';
 import { acquireCityDiagnostics } from './cityDiagnostics';
 import { notePerfSweep, sendDebugReport } from './debugReport';
 import { cityTapeRecorder, downloadCityTape, saveCityTape } from './cityTape';
+import { startPairedTape, stopPairedTape, uploadPairedTape, type PairedTape } from './sessionPairing';
 
-// The RECORD TAPE button's recording, if it has one. Module-level so the
-// overlay can close and reopen mid-recording and still stop its own tape.
-let manualTapeSession = 0;
-import { hotspotWatch, uploadTape } from './hotspotWatch';
+// The RECORD TAPE button's recording, if it has one, and its server half.
+// Module-level so the overlay can close and reopen mid-recording and still
+// stop its own tape.
+let manualTape: PairedTape | null = null;
+let manualTapeStarting = false;
+import { hotspotWatch } from './hotspotWatch';
 import {
   ambientOcclusionPreferred,
   dustFluidPreferred,
@@ -922,9 +925,12 @@ export function CityStatsOverlay({
         <button
           type="button"
           onClick={async () => {
-            if (cityTapeRecorder.currentOwner === 'manual') {
-              const tape = cityTapeRecorder.stop(manualTapeSession);
-              manualTapeSession = 0;
+            if (manualTapeStarting) return;
+            if (cityTapeRecorder.currentOwner === 'manual' && manualTape) {
+              const paired = manualTape;
+              manualTape = null;
+              setTapeState('STOPPING...');
+              const tape = await stopPairedTape(paired);
               if (tape) {
                 const name = `tape-${tape.header.capturedAt.replace(/[:.]/g, '-')}`;
                 const size = `${(tape.header.bytes / 1e6).toFixed(1)} MB, ${Math.round(tape.header.durationMs / 1000)} s`;
@@ -936,19 +942,30 @@ export function CityStatsOverlay({
                 }
                 downloadCityTape(tape);
                 setTapeState(`${saved ? 'SAVED' : 'SAVE FAILED'} ${size}, SENDING...`);
-                const upload = await uploadTape(matchId, tape);
-                setTapeState(`${saved ? 'SAVED' : 'SAVE FAILED'} ${size}, ${upload.uploaded ? `SENT ${upload.folder}` : 'NOT SENT (downloaded)'}`);
+                const upload = await uploadPairedTape(matchId, tape, paired.pairing);
+                setTapeState(`${saved ? 'SAVED' : 'SAVE FAILED'} ${size}, ${upload.uploaded
+                  ? `SENT ${upload.folder}${upload.paired ? ' (PAIRED)' : ''}`
+                  : 'NOT SENT (downloaded)'}`);
+              } else {
+                setTapeState(null);
               }
             } else {
               // Takes over an automatic hot-spot recording if one is running.
-              manualTapeSession = cityTapeRecorder.start('manual');
-              setTapeState(manualTapeSession ? null : 'BUSY');
+              // The server is asked to capture the same session first.
+              manualTapeStarting = true;
+              setTapeState('STARTING...');
+              try {
+                manualTape = await startPairedTape('manual', matchId);
+              } finally {
+                manualTapeStarting = false;
+              }
+              setTapeState(manualTape ? null : 'BUSY');
             }
           }}
           style={{ ...toggleButton, position: 'static', width: '100%' }}
           data-testid="city-tape-record"
           aria-label="Record the city stream to a tape"
-          title="Records every city packet from a fresh bootstrap until pressed again, then saves the tape in this browser for /cityreplay, downloads it and sends it to the server"
+          title="Records every inbound packet from a fresh bootstrap until pressed again, while the server captures the same session; then saves the tape in this browser for /cityreplay, downloads it and sends it to the server's session bundle"
         >
           {tapeStatus.owner === 'manual'
             ? `STOP TAPE (${Math.round(tapeStatus.seconds)} s, ${tapeStatus.megabytes.toFixed(1)} MB)`

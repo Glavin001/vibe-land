@@ -30,13 +30,19 @@
 //     `frameBytes` each -- [f32 tMs][f32 frameMs][f32 cpuMs][u32 awake]
 //     [f32 camera xyz][f32 camera quaternion xyzw] (16 bytes before the camera
 //     was added) -- then packets as [u32 tMs][u32 len][bytes], all city.
-//   VLTAPE02: the same layout with 60-byte frames, which append the recording
+//   VLCTAPE2: the same layout with 60-byte frames, which append the recording
 //     client's clock state [f64 clock offset us][f32 interpolation delay ms]
 //     [f32 dynamic-body interpolation delay ms], and packets as
 //     [f64 tMs][u32 len][u8 channel][bytes], `channel` one of TAPE_CHANNEL_*,
 //     with TAPE_CHANNEL_PRELUDE set on the prelude's copies.
+//   VLTAPE02: the first v2 tapes, byte for byte VLCTAPE2 under the magic the
+//     server's netlab encoder tape also uses. Still read; told apart from an
+//     encoder tape by the JSON header that follows (an encoder tape carries a
+//     u32 tick rate and a manifest hash there). Never written.
 // Tapes live in IndexedDB on the reporter's machine and can be downloaded as
-// files or uploaded to the server.
+// files or uploaded to the server. A tape recorded while the server captured
+// the same session (see sessionPairing.ts) carries `pairing` in its header:
+// the shared session id and clock samples taken against the server.
 
 import type { InboundChannel } from '../net/inbound';
 import { decodeServerReliablePacket } from '../net/protocol';
@@ -50,7 +56,9 @@ import {
 } from '../net/sharedConstants';
 
 const MAGIC_V1 = 'VLTAPE01';
-const MAGIC_V2 = 'VLTAPE02';
+export const MAGIC_V2 = 'VLCTAPE2';
+/** What v2 tapes were written as before the rename; read, never written. */
+const MAGIC_V2_LEGACY = 'VLTAPE02';
 const DB_NAME = 'vibe.city.tapes';
 const STORE = 'tapes';
 
@@ -95,6 +103,43 @@ export function inboundChannelOf(tapeChannel: number): InboundChannel | null {
   }
 }
 
+/**
+ * One clock sample against the server, bracketed by this page's clock:
+ * the request left at `sentPerfMs` and its answer arrived at
+ * `receivedPerfMs` (`performance.now()`; subtract the header's
+ * `clockOriginMs` for tape time), and the server read `serverTick` and its
+ * clocks somewhere in between.
+ */
+export interface TapeClockSample {
+  what: 'start' | 'clock' | 'stop';
+  sentPerfMs: number;
+  receivedPerfMs: number;
+  serverTick: number;
+  serverUnixUs: number;
+  /** Microseconds since the server capture's epoch; null when none ran. */
+  serverMonoUs: number | null;
+}
+
+/** The server half of a paired recording, as far as this client knows it. */
+export interface TapePairing {
+  sessionId: string;
+  /**
+   * 'paired': the server captured this session. 'unpaired': the server has no
+   * session capture (an older server; the tape is standalone). 'failed': it
+   * has one but refused or did not answer (`error` says why).
+   */
+  state: 'pending' | 'paired' | 'unpaired' | 'failed';
+  error?: string;
+  /** The server capture's directory, relative to the session bundle. */
+  serverDir?: string;
+  /** True when this session shared a capture another session opened. */
+  joined?: boolean;
+  startTick?: number;
+  stopTick?: number;
+  captureEpochUnixUs?: number;
+  clockSamples: TapeClockSample[];
+}
+
 /** The welcome's session parameters, as the recording client had them. */
 export interface CityTapeSession {
   simHz: number;
@@ -135,6 +180,12 @@ export interface CityTapeHeader {
    * to put them on the tape's.
    */
   clockOriginMs?: number;
+  /** Wall-clock ms (Unix epoch) at tape time 0, from `performance.timeOrigin`. */
+  wallClockOriginMs?: number;
+  /** The paired server capture, when there was one. */
+  pairing?: TapePairing;
+  /** Which client build recorded this. */
+  client?: { build: string; mode: string; origin: string };
 }
 
 /** One rendered frame on the recording machine: when, and what it cost there. */
@@ -215,6 +266,7 @@ class CityTapeRecorder {
   private meta: { matchId: string; manifestHash: string; wireVersion: number; simHz: number } | null = null;
   private requestResync: (() => void) | null = null;
   private probe: CityTapeSessionProbe | null = null;
+  private pairing: TapePairing | null = null;
   // The session state a recording opened later needs: the last copy of each
   // keyframe kind, and the battery set as a full resync plus its deltas.
   private readonly keyframes = new Map<number, { bytes: Uint8Array; channel: number }>();
@@ -248,6 +300,30 @@ class CityTapeRecorder {
     return this.recording ? this.owner : null;
   }
 
+  /** The match the city client described, if it has. */
+  get matchId(): string | null {
+    return this.meta?.matchId ?? null;
+  }
+
+  /** The player id the session was welcomed with, if it has been. */
+  localPlayerId(): number | null {
+    const welcome = this.keyframes.get(PKT_WELCOME);
+    if (!welcome) return null;
+    const packet = decodeServerReliablePacket(welcome.bytes);
+    return packet.type === 'welcome' ? packet.playerId : null;
+  }
+
+  /**
+   * Ties the recording `session` opened to a server capture. The object is
+   * kept by reference: clock samples pushed into it later still land in the
+   * tape's header.
+   */
+  attachPairing(session: number, pairing: TapePairing): boolean {
+    if (!this.recording || session === 0 || session !== this.session) return false;
+    this.pairing = pairing;
+    return true;
+  }
+
   /**
    * Opens a tape for `owner` on a fresh bootstrap and returns its session
    * token, or 0 when another owner's recording is in progress. The player
@@ -268,6 +344,7 @@ class CityTapeRecorder {
     }
     this.owner = owner;
     this.session += 1;
+    this.pairing = null;
     this.startedAtMs = performance.now();
     this.times = [];
     this.packets = [];
@@ -379,6 +456,8 @@ class CityTapeRecorder {
     if (!this.recording || session === 0 || session !== this.session) return null;
     const durationMs = performance.now() - this.startedAtMs;
     const clockOriginMs = this.startedAtMs;
+    const pairing = this.pairing;
+    this.pairing = null;
     this.startedAtMs = 0;
     this.owner = null;
     const meta = this.meta ?? { matchId: 'city-default', manifestHash: '', wireVersion: 3, simHz: 60 };
@@ -415,6 +494,9 @@ class CityTapeRecorder {
         prelude: this.preludeCount,
         channels: channelTotals(channels, this.packets),
         clockOriginMs,
+        wallClockOriginMs: performance.timeOrigin + clockOriginMs,
+        ...(pairing ? { pairing } : {}),
+        client: clientBuild(),
       },
       times: Float64Array.from(this.times),
       packets: this.packets,
@@ -458,6 +540,14 @@ class CityTapeRecorder {
 
 export const cityTapeRecorder = new CityTapeRecorder();
 
+function clientBuild(): { build: string; mode: string; origin: string } {
+  return {
+    build: typeof __CLIENT_BUILD__ === 'string' ? __CLIENT_BUILD__ : 'unknown',
+    mode: import.meta.env?.MODE ?? 'unknown',
+    origin: typeof location === 'undefined' ? '' : location.origin,
+  };
+}
+
 function channelTotals(channels: Uint8Array, packets: Uint8Array[]): Record<string, { packets: number; bytes: number }> {
   const totals: Record<string, { packets: number; bytes: number }> = {};
   channels.forEach((channel, index) => {
@@ -470,7 +560,7 @@ function channelTotals(channels: Uint8Array, packets: Uint8Array[]): Record<stri
 }
 
 /**
- * The tape as a file: VLTAPE02, unless it is a v1 tape (city packets only,
+ * The tape as a file: VLCTAPE2, unless it is a v1 tape (city packets only,
  * from a file or IndexedDB), which is written back as it was read.
  */
 export function encodeCityTape(tape: CityTape): Uint8Array {
@@ -527,15 +617,28 @@ export function encodeCityTape(tape: CityTape): Uint8Array {
   return out;
 }
 
+/** The tape format a file holds, or why it is not a client tape. */
+export function cityTapeMagic(bytes: Uint8Array): { magic: string; v1: boolean } {
+  const magic = String.fromCharCode(...bytes.subarray(0, MAGIC_V1.length));
+  if (magic === MAGIC_V1) return { magic, v1: true };
+  if (magic === MAGIC_V2) return { magic, v1: false };
+  if (magic === MAGIC_V2_LEGACY) {
+    // A client tape of the first v2 recorder has its JSON header here; the
+    // server's encoder tape (same magic) has a u32 tick rate and a hash.
+    if (bytes.length > 12 && bytes[12] === 0x7b) return { magic, v1: false };
+    throw new Error(`not a city tape (${magic} encoder tape: read it with the netlab tools)`);
+  }
+  throw new Error(`not a city tape (${magic})`);
+}
+
 export function decodeCityTape(bytes: Uint8Array): CityTape {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   let at = 0;
-  const magic = String.fromCharCode(...bytes.subarray(0, MAGIC_V1.length));
-  if (magic !== MAGIC_V1 && magic !== MAGIC_V2) throw new Error(`not a city tape (${magic})`);
-  const v1 = magic === MAGIC_V1;
+  const { v1 } = cityTapeMagic(bytes);
   at = MAGIC_V1.length;
   const headerLength = view.getUint32(at, true);
   at += 4;
+  if (at + headerLength > bytes.length) throw new Error('not a city tape (truncated header)');
   const header = JSON.parse(new TextDecoder().decode(bytes.subarray(at, at + headerLength))) as CityTapeHeader;
   header.version = v1 ? 1 : 2;
   at += headerLength;

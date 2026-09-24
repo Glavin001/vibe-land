@@ -4,6 +4,11 @@
 //   CLIENT=http://localhost:3103 API=http://127.0.0.1:4101 \
 //     node e2e/tape-replay/record.mjs <outDir> [seconds]
 //
+// PAIRED=1 records it the way the RECORD TAPE button does: the server
+// captures the same session and the tape uploads into its session bundle,
+// which is copied into <outDir>/bundle (REPORTS_DIR: the server's
+// VIBE_DEBUG_REPORTS_DIR, default <SERVER_CWD>/debug-reports).
+//
 // The session: cannonballs into a building, a meteor, a demolition, then a
 // walk to a car and a drive. Writes into <outDir>: live-samples.json (the
 // live renderers' positions on the tape clock, 10 Hz), live-*.png (with their
@@ -17,6 +22,8 @@ import { walkTo, driveTo, enterNearest } from '../mac-demo/nav.mjs';
 const CLIENT = process.env.CLIENT ?? 'http://localhost:3103';
 const API = process.env.API ?? 'http://127.0.0.1:4101';
 const SERVER_CWD = process.env.SERVER_CWD ?? process.cwd();
+const PAIRED = process.env.PAIRED === '1';
+const REPORTS_DIR = process.env.REPORTS_DIR ?? path.join(SERVER_CWD, 'debug-reports');
 const OUT = process.argv[2];
 const SECONDS = Number(process.argv[3] ?? 95);
 if (!OUT) throw new Error('usage: record.mjs <outDir> [seconds]');
@@ -41,7 +48,10 @@ mark('joined, city loaded');
 await sleep(3000);
 const snap = () => page.evaluate(() => window.__VIBE_E2E__.snapshot());
 
-const recording = page.evaluate((s) => window.__VIBE_E2E__.recordTape(s, { upload: true }), SECONDS);
+const recording = page.evaluate(
+  ([s, paired]) => window.__VIBE_E2E__.recordTape(s, { upload: true, paired }),
+  [SECONDS, PAIRED],
+);
 await sleep(300);
 const samples = [];
 let sampling = true;
@@ -147,8 +157,13 @@ fs.writeFileSync(path.join(OUT, 'live-samples.json'), JSON.stringify(samples));
 fs.writeFileSync(path.join(OUT, 'live-shots.json'), JSON.stringify(shots, null, 2));
 const manifest = await fetch(`${API}/city-manifest/${header.manifestHash}`);
 fs.writeFileSync(path.join(OUT, `manifest-${header.manifestHash}.bin`), Buffer.from(await manifest.arrayBuffer()));
-if (header.uploadFolder) {
-  const from = path.join(SERVER_CWD, 'debug-reports', header.uploadFolder, 'city.vltape');
+if (header.uploadFolder && header.uploadPaired) {
+  const from = path.join(REPORTS_DIR, header.uploadFolder);
+  fs.cpSync(from, path.join(OUT, 'bundle'), { recursive: true });
+  fs.copyFileSync(path.join(from, 'client.vltape'), path.join(OUT, 'tape.vltape'));
+  mark(`paired session bundle ${from} copied (pairing ${JSON.stringify(header.pairing?.state)})`);
+} else if (header.uploadFolder) {
+  const from = path.join(REPORTS_DIR, header.uploadFolder, 'city.vltape');
   fs.copyFileSync(from, path.join(OUT, 'tape.vltape'));
   mark(`uploaded tape ${from} copied`);
 } else {

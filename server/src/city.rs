@@ -1004,6 +1004,35 @@ fn open_capture(
     }
 }
 
+/// What opening an encoder capture needs from a running city, so it can be
+/// opened off the tick thread (it writes the whole manifest to disk first).
+#[derive(Clone)]
+pub struct CaptureSpec {
+    manifest: Arc<DestructionManifest>,
+    sim_hz: u32,
+    backend: &'static str,
+    wire: u8,
+}
+
+/// Open an encoder capture at `dir` for a city described by `spec`. Slow
+/// (manifest write); call it off the tick thread and hand the result to
+/// `CityRuntime::install_capture`.
+pub fn open_capture_at(spec: &CaptureSpec, dir: &std::path::Path) -> std::io::Result<NetlabCapture> {
+    let fingerprint = serde_json::to_value(
+        vibe_land_destruction::fingerprint::capture_with_build(cfg!(feature = "cuda-stress")),
+    )
+    .unwrap_or(serde_json::Value::Null);
+    NetlabCapture::open(
+        dir,
+        spec.sim_hz,
+        &spec.manifest,
+        &scene_file(),
+        spec.backend,
+        spec.wire,
+        fingerprint,
+    )
+}
+
 pub struct CityRuntime {
     /// Queued demolition targets, released a few per tick by
     /// `drain_demolition` so a building fails progressively rather than being
@@ -1434,6 +1463,37 @@ impl CityRuntime {
     /// True when this match is recording an encoder tape.
     pub fn capturing(&self) -> bool {
         self.capture.is_some()
+    }
+
+    pub fn capture_spec(&self) -> CaptureSpec {
+        CaptureSpec {
+            manifest: self.manifest.clone(),
+            sim_hz: self.sim_hz,
+            backend: self.backend_name(),
+            wire: self.wire_version(),
+        }
+    }
+
+    /// Start recording into a capture opened by `open_capture_at`. Refused
+    /// (and handed back) when a capture is already running.
+    pub fn install_capture(&mut self, capture: NetlabCapture) -> Result<(), NetlabCapture> {
+        if self.capture.is_some() {
+            return Err(capture);
+        }
+        tracing::info!(dir = %capture.dir().display(), "netlab capture recording (session)");
+        self.capture = Some(capture);
+        Ok(())
+    }
+
+    /// Stop recording and hand the capture back unfinished, so the caller can
+    /// finish it (drain the writer) off the tick thread.
+    pub fn take_capture(&mut self) -> Option<NetlabCapture> {
+        self.capture.take()
+    }
+
+    /// What the last `client_datagrams` call decided, per gate.
+    pub fn last_client_selection(&self) -> vibe_land_destruction::encoder::ClientSelectionSummary {
+        self.encoder.last_client_selection()
     }
 
     pub fn capture_cameras(&mut self, sim_tick: u32, cameras: &[(u32, Camera)]) {

@@ -40,6 +40,7 @@ let dustBurstSerial = 1;
 import { setCapturePose } from './scene/captureCamera';
 import { cityTapeRecorder, saveCityTape } from './city/cityTape';
 import { uploadTape } from './city/hotspotWatch';
+import { startPairedTape, stopPairedTape, uploadPairedTape } from './city/sessionPairing';
 import {
   formatPerfSweepMobile,
   runPerfSweep,
@@ -497,8 +498,10 @@ export interface VibeE2EBridge {
   /**
    * Record every inbound channel for `seconds`, save it as the last tape,
    * return its header (plus the server folder when `upload` sends it there).
+   * `paired` records it the way the RECORD TAPE button does: the server
+   * captures the same session and the tape uploads into its bundle.
    */
-  recordTape(seconds: number, options?: { upload?: boolean }): Promise<unknown>;
+  recordTape(seconds: number, options?: { upload?: boolean; paired?: boolean; sessionId?: string }): Promise<unknown>;
   /** While a tape records: ms since it started, the clock the tape's times are on; else null. */
   tapeElapsedMs(): number | null;
   /**
@@ -760,7 +763,21 @@ const bridge: VibeE2EBridge = {
     const report = await runReplaySweep(windowMs, window_);
     return { text: formatPerfSweep(report), report };
   },
-  recordTape: async (seconds: number, options?: { upload?: boolean }) => {
+  recordTape: async (seconds: number, options?: { upload?: boolean; paired?: boolean; sessionId?: string }) => {
+    if (options?.paired) {
+      // The RECORD TAPE button's path: the server captures the same session.
+      const matchId = cityTapeRecorder.matchId ?? 'city-default';
+      const paired = await startPairedTape('e2e', matchId, { sessionId: options.sessionId });
+      if (!paired) return null;
+      await new Promise((resolve) => window.setTimeout(resolve, seconds * 1000));
+      const tape = await stopPairedTape(paired);
+      if (!tape) return null;
+      await saveCityTape(`tape-${tape.header.capturedAt.replace(/[:.]/g, '-')}`, tape);
+      const upload = options.upload
+        ? await uploadPairedTape(matchId, tape, paired.pairing)
+        : { uploaded: false, folder: null, paired: false };
+      return { ...tape.header, uploadFolder: upload.folder, uploadPaired: upload.paired };
+    }
     const session = cityTapeRecorder.start('e2e');
     if (session === 0) return null;
     await new Promise((resolve) => window.setTimeout(resolve, seconds * 1000));

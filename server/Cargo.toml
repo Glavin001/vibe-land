@@ -34,6 +34,7 @@ vibe-land-shared = { path = "../shared", features = ["simd-stable"] }
 vibe-land-destruction = { path = "../destruction" }
 destruction-codec = { path = "../research/destruction-codec" }
 flate2 = "1"
+crc32fast = "1"
 glam = "0.27"
 vibe-land-physx-bridge = { path = "../physx-bridge", optional = true }
 anyhow = "1"

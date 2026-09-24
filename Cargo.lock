@@ -3244,6 +3244,7 @@ dependencies = [
  "axum",
  "axum-server",
  "bytes",
+ "crc32fast",
  "destruction-codec",
  "dotenvy",
  "flate2",

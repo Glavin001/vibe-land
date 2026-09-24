@@ -266,6 +266,36 @@ pub struct EncoderStats {
     pub duplicate_body_records: u64,
 }
 
+/// What one `client_datagrams` call decided, body by body, as counts: the
+/// gate each awake body stopped at on its way to (or short of) the wire.
+///
+/// Always kept -- a handful of integer increments per evaluated body -- so a
+/// session capture can say, per client and per send, how much of the stream
+/// was deferred by the byte ceiling versus held back by interest or policy,
+/// without switching on the offline audit.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ClientSelectionSummary {
+    /// Awake bodies with a shared record this send.
+    pub candidates: u32,
+    /// Never evaluated: beyond the per-client evaluation cap.
+    pub eval_cap: u32,
+    /// Resting, skipped by the evaluation stride this send.
+    pub rest_stride: u32,
+    /// At rest where the client already has it.
+    pub rest_unchanged: u32,
+    /// Outside this client's interest (frustum / distance).
+    pub not_relevant: u32,
+    /// Judged not worth a record by the priority gate.
+    pub not_newsworthy: u32,
+    /// Ranked and wanted, but did not fit the byte ceiling: deferred.
+    pub ceiling: u32,
+    /// Records sent.
+    pub sent: u32,
+    /// Bytes the ceiling allowed this send, and bytes the selection used.
+    pub allowance_bytes: u32,
+    pub used_bytes: u32,
+}
+
 pub struct ChunkStreamEncoder {
     config: EncoderConfig,
     manifest_hash: [u8; 32],
@@ -293,6 +323,8 @@ pub struct ChunkStreamEncoder {
     /// clients wants the cross-tab for a representative few, not a blend of
     /// every viewpoint into one table.
     audit_clients: Option<std::collections::HashSet<u64>>,
+    /// The last `client_datagrams` call's decisions; see ClientSelectionSummary.
+    last_selection: ClientSelectionSummary,
 }
 
 impl ChunkStreamEncoder {
@@ -330,7 +362,13 @@ impl ChunkStreamEncoder {
             duplicate_body_records: 0,
             audit: None,
             audit_clients: None,
+            last_selection: ClientSelectionSummary::default(),
         }
+    }
+
+    /// What the most recent `client_datagrams` call decided for its client.
+    pub fn last_client_selection(&self) -> ClientSelectionSummary {
+        self.last_selection
     }
 
     /// Begin recording send decisions. Measurement only; never on in a match.
@@ -705,6 +743,11 @@ impl ChunkStreamEncoder {
         // newsworthiness and is generous enough that per-client interest still
         // has real choice among them.
         let eval_limit = shared.eval_order.len().min(max_eval_per_client());
+        let mut summary = ClientSelectionSummary {
+            candidates: shared.eval_order.len() as u32,
+            eval_cap: (shared.eval_order.len() - eval_limit) as u32,
+            ..ClientSelectionSummary::default()
+        };
         if let Some(audit) = audit.as_mut() {
             audit.note_send();
             audit.note_eval_cap((shared.eval_order.len() - eval_limit) as u64);
@@ -771,6 +814,7 @@ impl ChunkStreamEncoder {
             if resting
                 && (send_index.wrapping_add(shared_record.slot)) % REST_EVAL_STRIDE != 0
             {
+                summary.rest_stride += 1;
                 if let Some(audit) = audit.as_mut() {
                     note_outcome(audit, shared, shared_record, body_state, SendOutcome::RestStride);
                 }
@@ -794,6 +838,7 @@ impl ChunkStreamEncoder {
                     && shared_record.position.distance_squared(last_pose.position)
                         <= REST_POSE_EPSILON_M * REST_POSE_EPSILON_M
                 {
+                    summary.rest_unchanged += 1;
                     if let Some(audit) = audit.as_mut() {
                         note_outcome(
                             audit, shared, shared_record, body_state, SendOutcome::RestUnchanged);
@@ -813,6 +858,7 @@ impl ChunkStreamEncoder {
                 config.interest,
             );
             if !decision.relevant {
+                summary.not_relevant += 1;
                 if let Some(audit) = audit.as_mut() {
                     note_outcome(audit, shared, shared_record, body_state, SendOutcome::NotRelevant);
                 }
@@ -852,6 +898,7 @@ impl ChunkStreamEncoder {
                 config.priority,
             );
             if !priority.should_send {
+                summary.not_newsworthy += 1;
                 if let Some(audit) = audit.as_mut() {
                     note_outcome(
                         audit, shared, shared_record, body_state, SendOutcome::NotNewsworthy);
@@ -890,6 +937,11 @@ impl ChunkStreamEncoder {
             (*tokens).min(cap)
         };
         let selection = select_with_ceiling(&mut candidates, Some(allowance), 0);
+        summary.sent = selection.selected_indices.len() as u32;
+        summary.ceiling = (candidates.len() - selection.selected_indices.len()) as u32;
+        summary.allowance_bytes = u32::try_from(allowance).unwrap_or(u32::MAX);
+        summary.used_bytes = u32::try_from(selection.used_bytes).unwrap_or(u32::MAX);
+        self.last_selection = summary;
         if let Some(tokens) = state.burst_tokens.as_mut() {
             *tokens = tokens.saturating_sub(selection.used_bytes);
         }
@@ -1305,6 +1357,30 @@ mod tests {
         let shared = encoder.encode_send(10);
         let packets = encoder.client_datagrams(1, away, &shared);
         assert!(packets.is_empty());
+        // The summary says why: the one candidate was out of interest.
+        let summary = encoder.last_client_selection();
+        assert_eq!(summary.candidates, 1);
+        assert_eq!(summary.not_relevant, 1);
+        assert_eq!(summary.sent, 0);
+    }
+
+    #[test]
+    fn selection_summary_accounts_for_every_candidate() {
+        let manifest = manifest();
+        let mut encoder = ChunkStreamEncoder::new(&manifest, EncoderConfig::validated(60));
+        encoder.add_client(1);
+        encoder.ingest_tick(10, &[snapshot(0.0)], &promotion_output(), &[]);
+        let shared = encoder.encode_send(10);
+        let packets = encoder.client_datagrams(1, close_camera(), &shared);
+        assert_eq!(packets.len(), 1);
+        let s = encoder.last_client_selection();
+        assert_eq!(s.sent, 1);
+        assert_eq!(
+            s.candidates,
+            s.eval_cap + s.rest_stride + s.rest_unchanged + s.not_relevant
+                + s.not_newsworthy + s.ceiling + s.sent
+        );
+        assert!(s.used_bytes > 0 && s.used_bytes <= s.allowance_bytes);
     }
 
     #[test]

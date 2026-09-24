@@ -214,7 +214,8 @@ describe('tape format', () => {
   it('round-trips a v2 tape with every channel tag, sub-ms times and clock samples', () => {
     const tape = sampleTape(2);
     const bytes = encodeCityTape(tape);
-    expect(String.fromCharCode(...bytes.subarray(0, 8))).toBe('VLTAPE02');
+    // Not VLTAPE02: that is the server's netlab encoder tape.
+    expect(String.fromCharCode(...bytes.subarray(0, 8))).toBe('VLCTAPE2');
     const back = decodeCityTape(bytes);
     expect(back.header.version).toBe(2);
     expect(back.header.localPlayerId).toBe(7);
@@ -276,6 +277,46 @@ describe('tape format', () => {
 
   it('refuses a file that is not a tape', () => {
     expect(() => decodeCityTape(new TextEncoder().encode('NOTATAPE1234'))).toThrow(/not a city tape/);
+  });
+
+  it('still reads a v2 tape written under the old VLTAPE02 magic', () => {
+    const tape = sampleTape(2);
+    const bytes = encodeCityTape(tape);
+    bytes.set(new TextEncoder().encode('VLTAPE02'), 0);
+    const back = decodeCityTape(bytes);
+    expect(back.header.version).toBe(2);
+    expect(Array.from(back.channels)).toEqual(Array.from(tape.channels));
+    expect(back.packets.map((p) => Array.from(p))).toEqual(tape.packets.map((p) => Array.from(p)));
+    // Written back under the new magic.
+    expect(String.fromCharCode(...encodeCityTape(back).subarray(0, 8))).toBe('VLCTAPE2');
+  });
+
+  it('refuses the server\'s netlab encoder tape, which shares the old magic', () => {
+    // VLTAPE02, u32 tick rate, 32-byte manifest hash, camera...
+    const encoder = new Uint8Array(8 + 4 + 32 + 28);
+    encoder.set(new TextEncoder().encode('VLTAPE02'), 0);
+    new DataView(encoder.buffer).setUint32(8, 60, true);
+    encoder.fill(0xab, 12, 44);
+    expect(() => decodeCityTape(encoder)).toThrow(/encoder tape/);
+  });
+
+  it('carries the pairing and the wall-clock origin through the file', () => {
+    const tape = sampleTape(2);
+    tape.header.wallClockOriginMs = 1_790_000_000_123.25;
+    tape.header.pairing = {
+      sessionId: '20260924-101112-ab12cd',
+      state: 'paired',
+      serverDir: 'server',
+      startTick: 1200,
+      stopTick: 4800,
+      clockSamples: [{
+        what: 'start', sentPerfMs: 10.5, receivedPerfMs: 12.25, serverTick: 1200,
+        serverUnixUs: 1_790_000_000_111_000, serverMonoUs: 0,
+      }],
+    };
+    const back = decodeCityTape(encodeCityTape(tape));
+    expect(back.header.pairing).toEqual(tape.header.pairing);
+    expect(back.header.wallClockOriginMs).toBe(1_790_000_000_123.25);
   });
 });
 
