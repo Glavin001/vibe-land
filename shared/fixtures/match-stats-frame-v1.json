@@ -1,0 +1,26 @@
+{
+  "comment": "One compact match-stats frame, encoded by server/src/match_stats_frame.rs and decoded by client/src/net/matchStatsFrame.ts; both tests use it, so the two sides cannot drift apart. Values are exact in f32.",
+  "server_tick": 4321,
+  "stats": {
+    "server_build": "10:59:11",
+    "server_started": "11:19:40",
+    "physics_backend": "physx_gpu",
+    "physics_gpu_active": true,
+    "player_count": 3,
+    "physics_last_step_ms": 11.5,
+    "physics_active_dynamic_bodies": 652,
+    "timings": { "total_ms": { "avg": 12.25, "p95": 27.5, "max": 52 } },
+    "spans": { "destruction/native_escaped_bodies": { "v": 2 } },
+    "city": {
+      "structures": 16,
+      "wire_version": 3,
+      "chunk_bodies": 977,
+      "awake_bodies": 84,
+      "broken_bonds": 3645,
+      "degraded": false,
+      "step_ms": 0.5,
+      "publish_ms": 1.25
+    }
+  },
+  "hex": "7c01e110000039000831303a35393a31310831313a31393a34300970687973785f6770750103000000000038410000c07f8c020000ffffffffffffffff000044410000dc41000050420000c07f0000c07f0000c07f000000400000c07f1000000003000000d103000054000000ffffffffffffffff3d0e0000ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff000000003f0000c07f0000c07f0000c07f0000c07f0000c07f0000c07f0000c07f0000c07f0000c07f0000c07f0000c07f0000c07f0000c07f0000c07f0000c07f0000c07f0000a03f0000c07f0000c07f"
+}

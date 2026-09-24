@@ -13,6 +13,7 @@ import {
   decodeTopologyHashes,
 } from '../../../client/src/city/wire';
 import { decodeMeteorLaunched } from '../../../client/src/vfx/meteorFlights';
+import { decodeMatchStatsPacket } from '../../../client/src/net/matchStatsFrame';
 
 const [tapePath, outDir] = process.argv.slice(2);
 mkdirSync(outDir, { recursive: true });
@@ -41,7 +42,6 @@ const snaps = ['t_ms,tick,ack,ax,ay,az,vx,vy,vz,yaw,pitch,hp,flags,remote,sphere
 const chunks = ['t_ms,seq,baseline,tick,records,abs,delta,motion_abs,motion_delta,ballistic,len'];
 const topo: any[] = [];
 const events: any[] = [];
-const dec = new TextDecoder();
 let errors = 0;
 tape.packets.forEach((p, i) => {
   const t = tape.times[i];
@@ -92,8 +92,7 @@ tape.packets.forEach((p, i) => {
       info = `body=${m.bodyId} target=${m.target.map((v) => v.toFixed(1)).join('|')} flight=${m.flightTimeS.toFixed(2)}`;
       events.push({ t, kind, ...m });
     } else if (kind === 124) {
-      const s = JSON.parse(dec.decode(p.subarray(1)));
-      tick = s.server_tick;
+      tick = (decodeMatchStatsPacket(p)?.server_tick as number | undefined) ?? '';
     } else if (kind === 113 || kind === 115 || kind === 101 || kind === 114 || kind === 116 || kind === 117 || kind === 103 || kind === 118) {
       const r: any = decodeServerReliablePacket(p);
       if (kind === 115) info = `energy=${r.energyCenti}`;

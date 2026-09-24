@@ -1,8 +1,11 @@
-// Extracts every match-stats packet (kind 124, JSON) from a tape, with its arrival time.
+// Extracts every match-stats packet (kind 124) from a tape, with its arrival time.
 //   npx tsx dumpstats.ts <tape> <outdir>/match_stats.json
-// analyse.py reads the result as match_stats.json.
+// analyse.py reads the result as match_stats.json. Older servers sent the whole
+// /match-stats snapshot as JSON; current ones send the compact frame (the
+// fields in shared/match-stats-frame.json). Both decode to the same shape.
 import { readFileSync, writeFileSync } from 'fs';
 import { decodeCityTape } from '../../../client/src/city/cityTape';
+import { decodeMatchStatsPacket } from '../../../client/src/net/matchStatsFrame';
 
 const [tapePath, outPath] = process.argv.slice(2);
 if (!tapePath || !outPath) {
@@ -10,10 +13,11 @@ if (!tapePath || !outPath) {
   process.exit(2);
 }
 const tape = decodeCityTape(new Uint8Array(readFileSync(tapePath)));
-const dec = new TextDecoder();
 const out: { t: number; s: any }[] = [];
 tape.packets.forEach((p, i) => {
-  if (p[0] === 124) out.push({ t: tape.times[i], s: JSON.parse(dec.decode(p.subarray(1))) });
+  if (p[0] !== 124) return;
+  const s = decodeMatchStatsPacket(p);
+  if (s) out.push({ t: tape.times[i], s });
 });
 writeFileSync(outPath, JSON.stringify(out));
 console.log(`match stats packets=${out.length}`);

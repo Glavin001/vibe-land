@@ -7,8 +7,10 @@ mod city_qa;
 #[cfg(all(test, feature = "native-destruction"))]
 mod perf_bench;
 mod demo_world;
+mod energy_stream;
 mod heartbeat;
 mod lag_comp;
+mod match_stats_frame;
 mod meteor;
 mod movement;
 mod outbound;
@@ -1139,7 +1141,8 @@ struct PlayerRuntime {
     visible_dynamic_bodies: HashSet<u32>,
     visible_batteries: HashSet<u32>,
     battery_full_resync_pending: bool,
-    last_sent_energy_centi: Option<u32>,
+    /// When this player's own energy is next worth sending.
+    energy_gate: energy_stream::EnergySendGate,
     last_sent_dynamic_body_pose: HashMap<u32, ([f32; 3], [f32; 4])>,
     last_sent_vehicle_tick: HashMap<u32, u32>,
     last_sent_dynamic_tick: HashMap<u32, u32>,
@@ -3524,7 +3527,7 @@ impl MatchState {
                         visible_dynamic_bodies: HashSet::new(),
                         visible_batteries: HashSet::new(),
                         battery_full_resync_pending: true,
-                        last_sent_energy_centi: None,
+                        energy_gate: crate::energy_stream::EnergySendGate::default(),
                         last_sent_dynamic_body_pose: HashMap::new(),
                         last_sent_vehicle_tick: HashMap::new(),
                         last_sent_dynamic_tick: HashMap::new(),
@@ -5484,20 +5487,20 @@ impl MatchState {
         let server_tick = self.server_tick;
         let snapshot_hz = self.physics.snapshot_hz();
         let published = match_stats.clone();
-        // The registry copy carries the tick ring; the client-pushed copy
-        // does not (serde skips the empty vec), keeping the 1 Hz packet lean.
+        // The registry copy carries the tick ring; the telemetry copy does not
+        // (serde skips the empty vec).
         let mut registry_copy = match_stats.clone();
         registry_copy.tick_ring = self.tick_ring.iter().cloned().collect();
         tokio::task::spawn_blocking(move || {
-            // Same snapshot the HTTP endpoint serves, pushed to the players it
-            // describes. Reliable rather than datagram: it is ~1 Hz and being
-            // truncated by an MTU would make it unparseable.
+            // The numbers the players' stats overlay shows, pushed to the
+            // players they describe as a ~250-byte datagram (see
+            // match_stats_frame). The full snapshot -- ~15 kB of JSON that
+            // used to go here, on the ordered stream in front of topology --
+            // stays on GET /match-stats/:id.
             if !player_txs.is_empty() {
-                match serde_json::to_vec(&published) {
+                match serde_json::to_value(&published) {
                     Ok(json) => {
-                        let mut packet = Vec::with_capacity(json.len() + 1);
-                        packet.push(vibe_land_shared::constants::PKT_MATCH_STATS);
-                        packet.extend_from_slice(&json);
+                        let packet = match_stats_frame::encode(server_tick, &json);
                         for tx in &player_txs {
                             let _ = try_queue_packet(tx, packet.clone(), &io);
                         }
@@ -5652,7 +5655,7 @@ impl MatchState {
                 runtime.last_ack_input_seq = runtime.last_received_input_seq.unwrap_or(0);
                 runtime.visible_batteries.clear();
                 runtime.battery_full_resync_pending = true;
-                runtime.last_sent_energy_centi = None;
+                runtime.energy_gate.force();
             }
             let _ = self.arena.respawn_player(player_id);
             self.activate_spawn_protection(player_id);
@@ -5725,7 +5728,7 @@ impl MatchState {
             runtime.respawn_at_ms = Some(server_time_ms.saturating_add(self.respawn_delay_ms));
             runtime.pending_inputs.clear();
             runtime.last_applied_input = InputCmd::default();
-            runtime.last_sent_energy_centi = None;
+            runtime.energy_gate.force();
         }
         self.clear_spawn_protection(player_id);
     }
@@ -5737,7 +5740,8 @@ impl MatchState {
         let Some(runtime) = self.players.get_mut(&player_id) else {
             return;
         };
-        if runtime.last_sent_energy_centi == Some(energy_centi) {
+        let tick = self.server_tick;
+        if !runtime.energy_gate.due(tick, energy_centi) {
             return;
         }
 
@@ -5746,7 +5750,7 @@ impl MatchState {
                 energy_centi,
             }));
         if try_queue_packet(&runtime.tx, packet, &self.io) {
-            runtime.last_sent_energy_centi = Some(energy_centi);
+            runtime.energy_gate.sent(tick, energy_centi);
         }
     }
 
@@ -7237,6 +7241,9 @@ fn wants_unreliable_delivery(kind: u8) -> bool {
         || kind == PKT_PING
         || kind == PKT_CITY_CHUNKS
         || kind == vibe_land_shared::constants::PKT_CITY_DEBRIS
+        // Latest-wins telemetry: a lost frame is replaced a second later, and
+        // it must never sit in front of topology on the ordered stream.
+        || kind == vibe_land_shared::constants::PKT_MATCH_STATS
 }
 
 fn strict_snapshot_drop_cause_from_send_error(err: &SendDatagramError) -> StrictSnapshotDropCause {
@@ -7510,7 +7517,7 @@ mod tests {
             visible_dynamic_bodies: HashSet::new(),
             visible_batteries: HashSet::new(),
             battery_full_resync_pending: true,
-            last_sent_energy_centi: None,
+            energy_gate: crate::energy_stream::EnergySendGate::default(),
             last_sent_dynamic_body_pose: HashMap::new(),
             last_sent_vehicle_tick: HashMap::new(),
             last_sent_dynamic_tick: HashMap::new(),
@@ -7740,6 +7747,71 @@ mod tests {
         assert_eq!(telemetry.dropped_outbound_packets.load(std::sync::atomic::Ordering::Relaxed), 2);
         assert_eq!(telemetry.dropped_outbound_snapshots.load(std::sync::atomic::Ordering::Relaxed), 1);
         assert!(!try_queue_packet(&tx, vec![vibe_land_shared::constants::PKT_CITY_TOPOLOGY, 4], &telemetry));
+    }
+
+    /// Match stats used to be a ~15 kB reliable packet; on a connection whose
+    /// ordered stream is backed up behind topology that was both a delay for
+    /// the topology behind it and a step towards a fatal reliable overflow.
+    /// Now they take the datagram lane and cannot touch either.
+    #[tokio::test]
+    async fn match_stats_stay_off_the_ordered_stream_while_topology_is_queued() {
+        let telemetry = MatchIoTelemetry::default();
+        let (tx, mut rx) = super::outbound::channel(1);
+        let topology = vec![vibe_land_shared::constants::PKT_CITY_TOPOLOGY, 1];
+        assert!(try_queue_packet(&tx, topology.clone(), &telemetry));
+        // The reliable queue is now full; a reliable stats packet would fail
+        // the connection.
+        let stats = super::match_stats_frame::encode(7, &serde_json::json!({ "player_count": 2 }));
+        assert!(try_queue_packet(&tx, stats.clone(), &telemetry));
+        assert!(!*rx.failed.borrow());
+        assert_eq!(telemetry.dropped_outbound_packets.load(std::sync::atomic::Ordering::Relaxed), 0);
+        drop(tx);
+        let mut got = Vec::new();
+        while let Some(p) = rx.recv().await {
+            got.push(p.bytes);
+        }
+        got.sort();
+        let mut want = vec![topology, stats];
+        want.sort();
+        assert_eq!(got, want);
+    }
+
+    /// Even when the peer refuses datagrams and the frame falls back to the
+    /// reliable stream, it is written after the topology already queued.
+    #[tokio::test]
+    async fn a_match_stats_fallback_is_written_behind_queued_topology() {
+        use tokio::io::AsyncReadExt;
+        let telemetry = MatchIoTelemetry::default();
+        let (tx, rx) = super::outbound::channel(8);
+        let topo_a = vec![vibe_land_shared::constants::PKT_CITY_TOPOLOGY, 1];
+        let topo_b = vec![vibe_land_shared::constants::PKT_CITY_TOPOLOGY, 2];
+        let stats = super::match_stats_frame::encode(7, &serde_json::json!({ "player_count": 2 }));
+        assert!(try_queue_packet(&tx, stats.clone(), &telemetry));
+        assert!(try_queue_packet(&tx, topo_a.clone(), &telemetry));
+        assert!(try_queue_packet(&tx, topo_b.clone(), &telemetry));
+        drop(tx);
+        let (mut writer, mut reader) = tokio::io::duplex(64 * 1024);
+        let task = tokio::spawn(async move {
+            super::outbound::write_webtransport(
+                &mut writer,
+                rx,
+                |_| super::outbound::DatagramResult::Fallback,
+                |_| {},
+                |_| panic!("fallback dropped"),
+            )
+            .await
+        });
+        let mut bytes = Vec::new();
+        reader.read_to_end(&mut bytes).await.unwrap();
+        task.await.unwrap().unwrap();
+        let mut frames = Vec::new();
+        let mut o = 0;
+        while o < bytes.len() {
+            let len = u32::from_le_bytes(bytes[o..o + 4].try_into().unwrap()) as usize;
+            frames.push(bytes[o + 4..o + 4 + len].to_vec());
+            o += 4 + len;
+        }
+        assert_eq!(frames, vec![topo_a, topo_b, stats]);
     }
 
     #[test]

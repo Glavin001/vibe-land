@@ -418,8 +418,25 @@ paired) showing the acceptance criterion.
     - Diff client and server at the first divergent update.
   - *Accept:* 0 structure-bootstrap repairs in a lossless session.
   - *Evidence:* 9 repairs (48 kB) with 0 datagram, topology or snapshot gaps.
-- [ ] **7. Server stream: move match stats off the ordered reliable stream,
+- [x] **7. Server stream: move match stats off the ordered reliable stream,
   and stop sending energy reliably every tick.**
+  - *Done (2026-09-24):* match stats are a ~246-byte binary frame of only
+    the ~57 fields the stats overlay and the tape analysis read
+    (`shared/match-stats-frame.json`, shared by `server/src/match_stats_frame.rs`
+    and `client/src/net/matchStatsFrame.ts`), sent once a second as a
+    datagram; the full snapshot stays on `GET /match-stats/:id`. Same kind
+    (124): clients still read old servers' JSON (`{` after the kind), and
+    `PROTOCOL_VERSION` is unchanged. Energy (`server/src/energy_stream.rs`)
+    goes when the HUD's integer changes, on a gain and on reaching zero, at
+    most every 6 ticks (10/s), with the exact value within 1 s; the client
+    (`client/src/net/energyDisplay.ts`) follows the measured drain between
+    messages without dropping below the integer the server sent. City bench
+    (quick, 3 clients, `target/stream-stats/city-bench/runs/20260924-090926-item7`
+    against `20260924-081934-fanout-quick`): match stats 31.3-34.4% of bytes
+    (1,779 kB, 111 reliable packets) -> 0.93-1.03% (26 kB, 106 datagrams);
+    energy 54.5 msg/s -> 1.3-1.9 msg/s (at most 5 in any second); the
+    reliable lane 18.1-18.2 kB/s and 63.8 packets/s -> 2.1-2.3 kB/s and
+    8.3-8.9 packets/s.
   - *Layer / owner:* server stream (`server/src/main.rs`).
   - *Do:*
     - Move match stats to their own stream, or compress them, or send them

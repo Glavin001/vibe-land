@@ -39,6 +39,7 @@ import { FixedInputBundler } from './fixedInputBundler';
 import { ThinAuthoritativePredictor } from '../physics/thinAuthoritativePredictor';
 import { FLAG_IN_VEHICLE, FLAG_ON_GROUND } from '../net/protocol';
 import { fetchSessionConfig, type SessionConfigResponse } from '../net/webTransportClient';
+import { decodeMatchStatsPacket } from '../net/matchStatsFrame';
 import { CityClient } from '../city/cityClient';
 import {
   PKT_CITY_BOOTSTRAP,
@@ -1325,11 +1326,11 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
             return;
           }
           if (bytes.length > 1 && bytes[0] === PKT_MATCH_STATS) {
-            try {
-              setMatchStats(JSON.parse(new TextDecoder().decode(bytes.subarray(1))));
-            } catch (error) {
-              console.warn('[stats] unreadable match stats packet', error);
-            }
+            // A compact frame (current servers, a datagram) or the whole
+            // snapshot as JSON (older servers); the same object either way.
+            const stats = decodeMatchStatsPacket(bytes);
+            if (stats) setMatchStats(stats);
+            else console.warn('[stats] unreadable match stats packet', bytes.length);
             return;
           }
           if (bytes.length > 1 && bytes[0] === PKT_CITY_MANIFEST) {

@@ -76,13 +76,19 @@ export const PKT_CITY_BOOTSTRAP = 122;
 ///
 /// So the client asks, and only when its fetch has actually failed.
 export const PKT_CITY_MANIFEST = 123;
-/// Per-match server telemetry as JSON, pushed roughly once a second.
+/// Per-match server telemetry for the stats overlay, pushed once a second.
 ///
 /// The overlay used to poll `/match-stats` over HTTP, which a browser cannot
 /// reach on a rented box for the same reason it cannot fetch the manifest.
 /// Sent on the session so the numbers describe the server actually being
 /// played on, rather than whichever one the page happens to share an origin
 /// with.
+///
+/// A ~250-byte datagram carrying only the fields in
+/// `shared/match-stats-frame.json` (`server/src/match_stats_frame.rs`). It
+/// used to be the whole snapshot as JSON, ~15 kB a second on the ordered
+/// reliable stream in front of topology; older servers still send that, and
+/// the client tells the two apart by the byte after the kind (`{` for JSON).
 export const PKT_MATCH_STATS = 124;
 
 /// Wire-v3 debris pose packet: self-healing datagram stream from the live

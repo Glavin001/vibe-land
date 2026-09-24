@@ -1,6 +1,7 @@
 import { SERVER_CLOSE_MARKER } from './disconnectReason';
 import { CITY_WIRE_VERSION } from '../city/wire';
 import { GameSocket } from './gameSocket';
+import { EnergyDisplay } from './energyDisplay';
 import { NetDebugTelemetry, type LocalShotTelemetry } from './debugTelemetry';
 import { WebTransportGameClient, type SessionConfigResponse } from './webTransportClient';
 import type { RawPacketListener } from './inbound';
@@ -152,7 +153,8 @@ export class NetcodeClient {
   latestServerTick = 0;
   rttMs = 0;
   localPlayerHp = 100;
-  localPlayerEnergy = 0;
+  /** Smoothed between the server's rate-limited energy messages. */
+  private readonly energyDisplay = new EnergyDisplay();
   localPlayerFlags = 0;
   protocolVersion = 1;
   physicsBackend = PHYSICS_BACKEND_RAPIER;
@@ -594,8 +596,13 @@ export class NetcodeClient {
     }
   }
 
+  /** The local player's energy for the HUD, smoothed between messages. */
+  get localPlayerEnergy(): number {
+    return this.energyDisplay.value(performance.now());
+  }
+
   private applyLocalPlayerEnergy(packet: LocalPlayerEnergyPacket): void {
-    this.localPlayerEnergy = packet.energyCenti / 100;
+    this.energyDisplay.onSample(packet.energyCenti / 100, performance.now());
   }
 
   private applyBatterySync(packet: BatterySyncPacket): void {
@@ -1304,7 +1311,7 @@ export class NetcodeClient {
     this.vehicleLastSeenTick.clear();
     this.vehicleInterpolator.retainOnly(new Set());
     this.batteries.clear();
-    this.localPlayerEnergy = 0;
+    this.energyDisplay.reset();
   }
 }
 

@@ -42,7 +42,7 @@ charts come from `svgplot.py` (no matplotlib).
 | Script | Writes | What |
 |---|---|---|
 | `decode.ts` | `header.json`, `frames.csv`, `packets.csv`, `snapshots.csv`, `chunks.csv`, `topology.json`, `events.json` | Flat tables of every frame and packet |
-| `dumpstats.ts` | `match_stats.json` | Match-stats JSON packets with arrival times |
+| `dumpstats.ts` | `match_stats.json` | Match-stats packets (JSON from older servers, the compact frame of `shared/match-stats-frame.json` from current ones) with arrival times |
 | `meteors.ts` | `meteor_frames.csv`, `meteor_raw.csv`, `render_clock.csv` | Replays the packets through `ReplayNetWorld` at their arrival times and, using the live client's recorded clock offset and interpolation delay, runs `MeteorLayer`'s placement (`placeMeteor`) per frame. `--legacy-meteors` mirrors the pre-2026-09-24 layer instead, for tapes recorded by that client |
 | `replay-clock.ts` | `render_clock.csv`, `meteor_frames.csv`, `player_clock.csv`, `replay_summary.json` | Judges the client code in this tree against a tape: the packets go through the current `NetcodeClient` at their arrival times and the render clocks, delays and meteor placement are the code's own, not the recording's. `--wasm <pkg dir>` runs the WASM clock estimator (what the live client runs; the TypeScript copy is kept identical); `--legacy-meteors` for an older tree. The summary has render-clock backward steps, extrapolating share and lead percentiles, playout rate per 5 s, the own avatar's stutter, and meteor backward motion, handovers and below-ground frames |
 | `below.ts` | stdout | Chunk bodies whose absolute-pose records are below y = -3 m |
