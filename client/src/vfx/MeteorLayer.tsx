@@ -72,9 +72,6 @@ interface LiveMeteor {
   material: THREE.MeshStandardMaterial;
   surface: MeteorSurfaceUniforms;
   embers: MeteorEmbers;
-  /** Tumble, only while the arc is predicted; the body brings its own pose. */
-  spin: THREE.Quaternion;
-  spinAxis: THREE.Vector3;
   /** Air speed last frame, m/s, for the fire to fade after impact. */
   airSpeed: number;
   /** When the rock last moved fast enough to burn, local ms. */
@@ -86,7 +83,6 @@ interface LiveMeteor {
 
 const scratchDir = new THREE.Vector3();
 const scratchAxis = new THREE.Vector3();
-const scratchSpin = new THREE.Quaternion();
 const scratchInverse = new THREE.Quaternion();
 const BUOYANCY = new THREE.Vector3(0, 3, 0);
 
@@ -177,14 +173,11 @@ export function MeteorLayer({ getRuntime, getNowMs }: MeteorLayerProps) {
       const { position, velocity } = placed;
       if (placed.source === 'body') {
         flight.lastStreamedAtMs = nowMs;
-        const q = placed.quaternion!;
-        meteor.group.quaternion.set(q[0], q[1], q[2], q[3]);
-      } else {
-        // On the arc: tumbling, slowly, the way the studio's rock does.
-        scratchSpin.setFromAxisAngle(meteor.spinAxis, step * 0.45);
-        meteor.spin.multiply(scratchSpin);
-        meteor.group.quaternion.copy(meteor.spin);
       }
+      // From the body, or the arc's tumble (meteorPlacement.ts `arcTumble`),
+      // which meets the body's orientation at the planned landing.
+      const q = placed.quaternion ?? [0, 0, 0, 1];
+      meteor.group.quaternion.set(q[0], q[1], q[2], q[3]);
       meteor.group.visible = true;
       meteor.group.position.set(position[0], position[1], position[2]);
       meteor.group.updateMatrixWorld(true);
@@ -271,11 +264,6 @@ function spawn(flight: MeteorFlight, geometry: THREE.BufferGeometry, nowMs: numb
   group.add(rock);
   group.add(embers.points);
   group.visible = false;
-  const spinAxis = new THREE.Vector3(
-    Math.sin(flight.seed * 12.9898),
-    0.6,
-    Math.cos(flight.seed * 78.233),
-  ).normalize();
   const fire: MeteorFireInstance = {
     center: new THREE.Vector3(),
     direction: new THREE.Vector3(0, 1, 0),
@@ -292,8 +280,6 @@ function spawn(flight: MeteorFlight, geometry: THREE.BufferGeometry, nowMs: numb
     material,
     surface: uniforms,
     embers,
-    spin: new THREE.Quaternion(),
-    spinAxis,
     airSpeed: 0,
     lastBurningMs: nowMs,
     intensity: 0,

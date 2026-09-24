@@ -264,6 +264,29 @@ export class CityPoseStore {
     }
   }
 
+  /**
+   * Stop drawing a chunk: its record names no body (index -1), which the
+   * shader collapses to a point. For a chunk the server retired -- it is gone,
+   * and its last pose is not somewhere it is.
+   */
+  hideChunk(slot: number): void {
+    const previous = this.bodyIndexOfSlot[slot];
+    if (previous < 0) return;
+    this.recordsOnIndex[previous] -= 1;
+    if (this.recordsOnIndex[previous] === 0 && this.retiringIndices.has(previous)) {
+      this.retiringIndices.delete(previous);
+      this.freeIndices.push(previous);
+    }
+    this.bodyIndexOfSlot[slot] = -1;
+    this.chunkData[slot * FLOATS_PER_CHUNK] = -1;
+    this.chunkDirty = true;
+    const changes = this.changes;
+    if (changes && changes.slotFlags[slot] === 0) {
+      changes.slotFlags[slot] = 1;
+      changes.slots.push(slot);
+    }
+  }
+
   /** Composes one chunk's drawn centre on the CPU, exactly as the shader does. */
   chunkWorldPositionInto(slot: number, out: Float32Array, at = 0): boolean {
     const index = this.bodyIndexOfSlot[slot];
@@ -362,6 +385,12 @@ const TMP_LOCAL_ROT = new Float32Array(4);
  * Returns false when the ledger cannot say which body the chunk is on right
  * now; the caller retries next frame and the chunk keeps drawing where it
  * was, which is the only correct thing to show.
+ *
+ * A chunk whose island the server retired is the exception: it is not on any
+ * body and never will be again (unless a later promotion adopts it, which
+ * rewrites this record). It is hidden, not left at its last pose -- a body
+ * retired at the escape floor was last presented 3.5-3.75 m under the ground,
+ * above the -4 m hide depth, and stayed drawn there for the rest of the match.
  */
 export function writeChunkRecordInto(
   store: CityPoseStore,
@@ -371,7 +400,14 @@ export function writeChunkRecordInto(
 ): boolean {
   const key = client.topology.chunkBody[slot];
   const body = client.topology.body(key);
-  if (!body) return false;
+  if (!body) {
+    // Hidden once the presentation reaches the retire; until then the chunk
+    // keeps drawing where it was, like any chunk whose body is not known.
+    if (!client.topology.isChunkRetired(slot)) return false;
+    if (client.presentedTick() < client.topology.chunkRetiredAtTick(slot)) return false;
+    store.hideChunk(slot);
+    return true;
+  }
   const index = store.bodyIndexFor(key);
   client.topology.localOffsetInto(slot, TMP_LOCAL);
   client.topology.localRotationInto(slot, TMP_LOCAL_ROT);

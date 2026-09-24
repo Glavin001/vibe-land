@@ -9,6 +9,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { CityClient } from './cityClient';
+import { advanceCityPoses, CityPoseStore, initCityPoses, newCityPoseFrameState } from './cityPoseStore';
 import type { LoadedCityManifest, CityManifest } from './manifest';
 import { bodyKey } from './topology';
 import { RecordMode } from './wire';
@@ -730,5 +731,206 @@ describe('CityClient kinetic set', () => {
     expect(moved).toBe(true);
     const pose = client.topology.body(key);
     expect(pose?.position[0]).toBeCloseTo(9, 0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Sync fidelity (docs/mac-metal-session-analysis-2026-09-24.md, items 12, 14).
+// A simulated server, link and frame loop on a fake clock: the server ticks at
+// `hz`, the city sends every second tick, each datagram arrives after
+// `transitMs` +- `jitterMs` (seeded), and frames sample the presentation at
+// 120 Hz.
+// ---------------------------------------------------------------------------
+
+function seeded(seed: number): () => number {
+  let state = seed >>> 0;
+  return () => {
+    state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
+    return state / 2 ** 32;
+  };
+}
+
+/** The simulated server's first tick (tick 0 never advances the client's anchor). */
+const TICK_BASE = 100;
+
+interface SimFrame { nowMs: number; presented: number; newestReceived: number; serverTick: number }
+
+function simulateLink(client: CityClient, opts: {
+  hz: number; transitMs: number; jitterMs: number; seconds: number;
+  /** [startMs, endMs): the server does not tick (a slow physics step). */
+  stall?: [number, number];
+  /** Extra records for a datagram of this tick. */
+  recordsAt?: (tick: number) => ChunksDatagram['records'];
+  /** Reliable packets: [arrivalMs, deliver]. */
+  reliable?: Array<[number, () => void]>;
+  onFrame?: (frame: SimFrame) => void;
+}): SimFrame[] {
+  const random = seeded(7);
+  const startMs = 1000;
+  const tickTimes: number[] = [];
+  for (let t = startMs; t < startMs + opts.seconds * 1000; t += 1000 / opts.hz) {
+    if (opts.stall && t >= opts.stall[0] && t < opts.stall[1]) continue;
+    tickTimes.push(t);
+  }
+  const events: Array<{ at: number; run: () => void }> = [];
+  let newestReceived = -1;
+  tickTimes.forEach((sentAt, tick) => {
+    if (tick % 2 !== 0) return;
+    const at = sentAt + opts.transitMs + (random() * 2 - 1) * opts.jitterMs;
+    events.push({
+      at,
+      run: () => {
+        const simTick = TICK_BASE + tick;
+        internals(client).handleChunks({ sequence: tick, baselineId: 0, simTick, records: opts.recordsAt?.(simTick) ?? [] });
+        newestReceived = Math.max(newestReceived, simTick);
+      },
+    });
+  });
+  for (const [at, run] of opts.reliable ?? []) events.push({ at, run });
+  const frames: SimFrame[] = [];
+  for (let at = startMs; at < startMs + opts.seconds * 1000; at += 1000 / 120) {
+    events.push({
+      at,
+      run: () => {
+        client.samplePresentation(at);
+        if (newestReceived < 0) return;
+        let serverTick = 0;
+        while (serverTick + 1 < tickTimes.length && tickTimes[serverTick + 1] <= at) serverTick += 1;
+        const frame = { nowMs: at, presented: client.presentedTick(), newestReceived, serverTick: TICK_BASE + serverTick };
+        frames.push(frame);
+        opts.onFrame?.(frame);
+      },
+    });
+  }
+  events.sort((a, b) => a.at - b.at);
+  const now = vi.spyOn(performance, 'now');
+  try {
+    for (const event of events) {
+      now.mockReturnValue(event.at);
+      event.run();
+    }
+  } finally {
+    now.mockRestore();
+  }
+  return frames;
+}
+
+const median = (values: number[]): number => [...values].sort((a, b) => a - b)[values.length >> 1];
+
+describe('CityClient presentation clock (item 12)', () => {
+  it('measures the server tick rate without the jitter bias, and presents behind the stream', () => {
+    // Netlab's LTE link: 90 +- 35 ms. The server runs slow, at 56 ticks/s.
+    const { client } = makeClient();
+    const frames = simulateLink(client, { hz: 56, transitMs: 90, jitterMs: 35, seconds: 20 }).slice(240);
+    const ahead = frames.filter((f) => f.presented > f.newestReceived).length;
+    // The presented tick never passes the newest datagram...
+    expect(ahead).toBe(0);
+    // ...and sits the playout delay (6 ticks) plus the fastest transit behind
+    // the server. The rate estimate's jitter bias had it at 3.5 behind.
+    expect(median(frames.map((f) => f.presented - f.serverTick))).toBeLessThan(-7);
+  });
+
+  it('stops at the newest streamed tick while the server stalls', () => {
+    const { client } = makeClient();
+    const stall: [number, number] = [6000, 6250];
+    const frames = simulateLink(client, { hz: 60, transitMs: 1, jitterMs: 0, seconds: 8, stall });
+    const during = frames.filter((f) => f.nowMs >= stall[0] && f.nowMs < stall[1]);
+    expect(during.length).toBeGreaterThan(25);
+    expect(Math.max(...during.map((f) => f.presented - f.newestReceived))).toBeLessThanOrEqual(0);
+    // And it never steps back.
+    for (let i = 1; i < frames.length; i += 1) expect(frames[i].presented).toBeGreaterThanOrEqual(frames[i - 1].presented);
+  });
+
+  it('holds behind a promotion the pose stream has shown before its topology arrives', () => {
+    const { client } = makeClient();
+    const now = vi.spyOn(performance, 'now').mockReturnValue(900);
+    bootstrap(client);
+    now.mockRestore();
+    const U = TICK_BASE + 300; // the first record for island 1: a promotion at U-1 or U
+    const topologyArrivesMs = 1000 + ((U - TICK_BASE) / 60) * 1000 + 400; // the reliable stream is 400 ms late
+    let appliedAt = Number.POSITIVE_INFINITY;
+    const frames = simulateLink(client, {
+      hz: 60, transitMs: 5, jitterMs: 0, seconds: 8,
+      recordsAt: (tick) => (tick >= U
+        ? datagram(tick, bodyKey(0, 1), [0, 10, 0]).records
+        : []),
+      reliable: [[topologyArrivesMs, () => {
+        client.handlePacket(encodeAsTopology({
+          topoSeq: 1,
+          simTick: U - 1,
+          batches: [{
+            structureId: 0,
+            brokenBondIndices: [1],
+            promotions: [{
+              structureId: 0, islandId: 1, nodes: [2, 3], position: [0, 10, 0], rotation: IDENTITY,
+              linearVelocity: ZERO, angularVelocity: ZERO,
+            }],
+            retiredIslandIds: [],
+            migrations: [],
+          }],
+          settled: [],
+          wakes: [],
+        } as unknown as TopologyMessage));
+        appliedAt = topologyArrivesMs;
+      }]],
+    });
+    const before = frames.filter((f) => f.nowMs < appliedAt);
+    // Never presents the promotion's tick without it: its chunks would be
+    // drawn on the body they left.
+    expect(Math.max(...before.map((f) => f.presented))).toBeLessThan(U - 1);
+    // Released once it lands, without stepping back.
+    expect(frames[frames.length - 1].presented).toBeGreaterThan(U + 60);
+    for (let i = 1; i < frames.length; i += 1) expect(frames[i].presented).toBeGreaterThanOrEqual(frames[i - 1].presented);
+    expect(client.stats().topologyHoldFrames).toBeGreaterThan(0);
+  });
+});
+
+describe('CityClient retired chunks (item 14)', () => {
+  it('stops drawing a retired island\'s chunks once the presentation reaches the retire', () => {
+    const { client } = makeClient();
+    const now = vi.spyOn(performance, 'now').mockReturnValue(900);
+    bootstrap(client);
+    client.handlePacket(encodeAsTopology({
+      topoSeq: 1,
+      simTick: 2,
+      batches: [{
+        structureId: 0, brokenBondIndices: [1],
+        promotions: [{ structureId: 0, islandId: 1, nodes: [2, 3], position: [0, 10, 0], rotation: IDENTITY, linearVelocity: ZERO, angularVelocity: ZERO }],
+        retiredIslandIds: [], migrations: [],
+      }],
+      settled: [], wakes: [],
+    } as unknown as TopologyMessage));
+    now.mockRestore();
+    const radii = new Float32Array(4).fill(0.87);
+    const store = new CityPoseStore(4, radii);
+    initCityPoses(store, client, radii);
+    const state = newCityPoseFrameState(client);
+    const slot = client.topology.slotOf(0, 3);
+    const RETIRE_TICK = TICK_BASE + 240; // retired at the escape floor, but drawn above the -4 m hide depth
+    const retireSentMs = 1000 + ((RETIRE_TICK - TICK_BASE) / 60) * 1000;
+    const pose = new Float32Array(7);
+    const drawnAt: Array<{ presented: number; drawn: boolean }> = [];
+    simulateLink(client, {
+      hz: 60, transitMs: 1, jitterMs: 0, seconds: 6,
+      recordsAt: (tick) => (tick < RETIRE_TICK ? datagram(tick, bodyKey(0, 1), [0, 10 - tick / 60, 0]).records : []),
+      reliable: [[retireSentMs + 1, () => {
+        client.handlePacket(encodeAsTopology({
+          topoSeq: 2, simTick: RETIRE_TICK,
+          batches: [{ structureId: 0, brokenBondIndices: [], promotions: [], retiredIslandIds: [1], migrations: [] }],
+          settled: [], wakes: [],
+        } as unknown as TopologyMessage));
+      }]],
+      onFrame: (frame) => {
+        advanceCityPoses(store, client, radii, state, frame.nowMs);
+        drawnAt.push({ presented: frame.presented, drawn: store.chunkWorldPoseInto(slot, pose) });
+      },
+    });
+    // Drawn until the presentation reaches the retire (v2 applies topology on
+    // arrival, a playout delay early), then gone for good.
+    expect(drawnAt.filter((f) => f.presented < RETIRE_TICK).every((f) => f.drawn)).toBe(true);
+    const after = drawnAt.filter((f) => f.presented >= RETIRE_TICK + 1);
+    expect(after.length).toBeGreaterThan(60);
+    expect(after.every((f) => !f.drawn)).toBe(true);
+    expect(store.bodyIndexOfSlot[slot]).toBe(-1);
   });
 });

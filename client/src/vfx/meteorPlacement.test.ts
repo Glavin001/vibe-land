@@ -8,7 +8,13 @@ import {
   newMeteorTrack,
   type MeteorFlight,
 } from './meteorFlights';
-import { METEOR_TICK_US, placeMeteor, placeMeteorInFrame, STALE_AFTER_TICKS } from './meteorPlacement';
+import {
+  METEOR_TICK_US,
+  NEVER_STREAMED_LANDED_HOLD_US,
+  placeMeteor,
+  placeMeteorInFrame,
+  STALE_AFTER_TICKS,
+} from './meteorPlacement';
 
 const G = 9.81;
 const TICK_US = Math.round(1_000_000 / 60);
@@ -200,4 +206,73 @@ describe('placeMeteor', () => {
     const expected = meteorPositionAt(f, t, [0, 0, 0]);
     for (let k = 0; k < 3; k += 1) expect(local.position[k]).toBeCloseTo(expected[k], 6);
   });
+
+  // Item 16 (docs/mac-metal-session-analysis-2026-09-24.md): a rock whose body
+  // never streams to this client landed out of its interest; it used to be
+  // held at the aimed point for the flight's whole 3 s linger while the real
+  // rock rolled away (157 m p99 in Netlab, heavy-quick3-v2 spectator).
+  it('a rock that never streamed is not drawn once its arc has ended', () => {
+    const f = flight();
+    const landUs = LAUNCH_US + f.flightTimeS * 1e6;
+    const place = (r: number) => placeMeteor(f, f.track, { renderServerUs: r, samples: [], ticksSinceSeen: null, tickUs: TICK_US, nowMs: 0 });
+    expect(place(landUs - 10_000).source).toBe('arc');
+    // Within one staleness window of landing it may still be on its way into
+    // the stream: held at the aimed point.
+    const held = place(landUs + NEVER_STREAMED_LANDED_HOLD_US / 2);
+    expect(held.source).toBe('arc');
+    expect(dist(held.position, f.target)).toBeLessThan(1e-6);
+    // Past it, the rock is somewhere this client is not told about.
+    expect(place(landUs + NEVER_STREAMED_LANDED_HOLD_US + 1).source).toBe('hidden');
+    expect(place(landUs + 2_000_000).source).toBe('hidden');
+  });
+
+  it('a rock whose body starts streaming after its arc ended is drawn from the body', () => {
+    const f = flight();
+    const landUs = LAUNCH_US + f.flightTimeS * 1e6;
+    const late = landUs + 1_000_000;
+    const samples = [
+      { ...sampleAt(f, late - TICK_US), position: [20, 3, -41] as [number, number, number], velocity: [5, 0, 0] as [number, number, number] },
+      { ...sampleAt(f, late), position: [20.1, 3, -41] as [number, number, number], velocity: [5, 0, 0] as [number, number, number] },
+    ];
+    const p = placeMeteor(f, f.track, { renderServerUs: late - TICK_US / 2, samples, ticksSinceSeen: 0, tickUs: TICK_US, nowMs: 0 });
+    expect(p.source).toBe('body');
+  });
+
+  // Item 15: the server's ball does not spin in flight, and its streamed
+  // orientation is integrated from the launch orientation. The arc's tumble
+  // passes through that orientation at the planned landing, so the rock does
+  // not turn through an arbitrary angle in the frame it meets its body.
+  it('the arc tumbles, and meets the body\'s orientation at the planned landing', () => {
+    const f = flight();
+    const at = (t: number) => placeMeteor(f, newMeteorTrack(), {
+      renderServerUs: LAUNCH_US + t * 1e6, samples: [], ticksSinceSeen: null, tickUs: TICK_US, nowMs: 0,
+    }).quaternion!;
+    const angleDeg = (q: number[], r: number[]) =>
+      (2 * Math.acos(Math.min(1, Math.abs(q[0] * r[0] + q[1] * r[1] + q[2] * r[2] + q[3] * r[3])))) * 180 / Math.PI;
+    // It tumbles on the arc (0.45 rad/s)...
+    expect(angleDeg(at(0.5), at(1.5))).toBeCloseTo(0.45 * 180 / Math.PI, 3);
+    // ...and is at the launch orientation where the body will take over.
+    expect(angleDeg(at(f.flightTimeS), [0, 0, 0, 1])).toBeLessThan(1e-3);
+
+    // Handover: arc frames, then the first body sample at contact (identity:
+    // the orientation the netcode client starts a sphere from).
+    const g = flight();
+    const contactUs = LAUNCH_US + (f.flightTimeS - 0.05) * 1e6;
+    const samples: DynamicBodySample[] = [];
+    let last: number[] | null = null;
+    let lastSource = '';
+    let step = 0;
+    for (let us = contactUs - 10 * TICK_US; us <= contactUs + 10 * TICK_US; us += TICK_US) {
+      const t = (us - LAUNCH_US) / 1e6;
+      samples.push(us < contactUs ? sampleAt(g, us) : { ...sampleAt(g, us, [0, 2, 0]), quaternion: [0, 0, 0, 1] });
+      const p = placeMeteor(g, g.track, { renderServerUs: us - 2 * TICK_US, samples, ticksSinceSeen: 0, tickUs: TICK_US, nowMs: t * 1000 });
+      if (last && lastSource === 'arc' && p.source === 'body') step = angleDeg(p.quaternion!, last);
+      last = p.quaternion!;
+      lastSource = p.source;
+    }
+    expect(lastSource).toBe('body');
+    // 0.45 rad/s over the ~0.08 s between the handover and the planned landing.
+    expect(step).toBeLessThan(3);
+  });
 });
+

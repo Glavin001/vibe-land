@@ -10,7 +10,7 @@
 // rigid, so offsets stay valid until the chunk migrates again.
 
 import type { CityManifest } from './manifest';
-import { bondCountOf } from './manifest';
+import { bondCountOf, bondEndpoints } from './manifest';
 import type { BootstrapMessage, TopologyMessage } from './wire';
 
 /** Which writer produced a body pose. See `updateBodyPose`. */
@@ -32,6 +32,9 @@ import {
 } from './vec';
 
 export const SUPPORT_SERIAL = 0;
+
+/** `chunkBody` of a chunk a bootstrap or repair found retired: no body has this key. */
+const RETIRED_BODY = -1;
 
 /** Matches destruction/src/ids.rs: namespace + 8 structure bits + 20 island bits. */
 export const bodyKey = (structureId: number, islandSerial: number): number =>
@@ -174,6 +177,9 @@ export class CityTopology {
 
   /** Per-slot current body and body-local offset. */
   readonly chunkBody: Float64Array;
+  /** 1 while a chunk's island has been retired and no body has adopted it since. */
+  private readonly retiredSlot: Uint8Array;
+  private readonly retiredAtTick: Float64Array;
   private readonly localPos: Float32Array;
   private readonly localRot: Float32Array;
   /**
@@ -296,6 +302,8 @@ export class CityTopology {
     this.slotStructure = new Uint32Array(total);
     this.slotNode = new Uint32Array(total);
     this.chunkBody = new Float64Array(total);
+    this.retiredSlot = new Uint8Array(total);
+    this.retiredAtTick = new Float64Array(total);
     this.localPos = new Float32Array(total * 3);
     this.localRot = new Float32Array(total * 4);
     this.slotChanged = new Uint8Array(total);
@@ -327,6 +335,7 @@ export class CityTopology {
         this.slotStructure[slot] = structure.structureId;
         this.slotNode[slot] = chunk.nodeIndex;
         this.chunkBody[slot] = supportKey;
+        this.retiredSlot[slot] = 0;
         this.localPos[slot * 3] = chunk.centroid[0];
         this.localPos[slot * 3 + 1] = chunk.centroid[1];
         this.localPos[slot * 3 + 2] = chunk.centroid[2];
@@ -680,7 +689,7 @@ export class CityTopology {
         );
       }
       for (const retired of batch.retiredIslandIds) {
-        this.retire(bodyKey(batch.structureId, retired));
+        this.retire(bodyKey(batch.structureId, retired), message.simTick);
       }
     }
     for (const settle of message.settled) {
@@ -1075,6 +1084,7 @@ export class CityTopology {
         }
       }
       this.chunkBody[slot] = key;
+      this.retiredSlot[slot] = 0;
       this.localPos[slot * 3] = this.restPos[slot * 3] - comX;
       this.localPos[slot * 3 + 1] = this.restPos[slot * 3 + 1] - comY;
       this.localPos[slot * 3 + 2] = this.restPos[slot * 3 + 2] - comZ;
@@ -1158,6 +1168,7 @@ export class CityTopology {
       destination.chunkSlots.push(slot);
     }
     this.chunkBody[slot] = destination.key;
+    this.retiredSlot[slot] = 0;
     this.localRot[slot * 4] = 0;
     this.localRot[slot * 4 + 1] = 0;
     this.localRot[slot * 4 + 2] = 0;
@@ -1315,7 +1326,7 @@ export class CityTopology {
     });
   }
 
-  private retire(key: number): void {
+  private retire(key: number, tick: number): void {
     const body = this.bodies.get(key);
     if (!body) {
       return;
@@ -1324,12 +1335,38 @@ export class CityTopology {
     // has no transform for them. Count every one, cumulatively — a 2 Hz
     // sample of the instantaneous orphan set misses short windows, and a
     // short window is still enough to freeze a wrong matrix on screen.
+    //
+    // They are also GONE: the server's ledger drops a retired island's nodes
+    // and nothing adopts them. Marked, so the renderer stops drawing them
+    // (their record is rewritten) and a structure repair does not hand them
+    // back to the intact building.
     for (const slot of body.chunkSlots) {
       if (this.chunkBody[slot] === key) {
         this.orphanedByRetire += 1;
+        this.retiredSlot[slot] = 1;
+        this.retiredAtTick[slot] = tick;
+        this.markSlotChanged(slot);
       }
     }
     this.bodies.delete(key);
+  }
+
+  /**
+   * The tick a retired chunk's island was retired at (0 when a bootstrap or a
+   * repair found it retired). Wire v2 applies topology when it arrives, a
+   * playout delay ahead of what is drawn, so the renderer hides the chunk only
+   * once the presentation reaches this tick.
+   */
+  chunkRetiredAtTick(slot: number): number {
+    return this.retiredAtTick[slot];
+  }
+
+  /**
+   * Whether the server retired this chunk's island and nothing has adopted
+   * the chunk since: it is not drawn anywhere.
+   */
+  isChunkRetired(slot: number): boolean {
+    return this.retiredSlot[slot] === 1;
   }
 
   /**
@@ -1380,6 +1417,84 @@ export class CityTopology {
         motionKnownPosition: vClone(island.position),
       });
     }
+    this.retireDetachedChunks(message.structures.map((structure) => structure.structureId), null);
+  }
+
+  /**
+   * After a bootstrap or a repair: take the chunks the server has retired off
+   * the support body again.
+   *
+   * The server's ledger drops a retired island's nodes, and a bootstrap lists
+   * only islands, so a retired chunk and an intact one look the same on the
+   * wire: in no island. Both used to land on the support body, and every chunk
+   * the escape floor or the stage had retired was drawn back on the intact
+   * building at its rest pose (Netlab, 0a7d6ae5 systematic bundle: 247,773
+   * extra chunk-frames after the recorded repairs).
+   *
+   * Two kinds of evidence, either sufficient:
+   * - this client saw it retired (`retiredBefore`, for a repair) and the
+   *   message did not put it in an island;
+   * - no alive bond path joins it to one of its structure's anchor nodes (the
+   *   manifest's zero-mass `support` nodes). The physics holds an anchored
+   *   component static and makes every unanchored component its own island,
+   *   so a chunk in no island and cut off from every anchor is not standing.
+   *   Structures with no anchor node are left alone.
+   */
+  private retireDetachedChunks(structureIds: number[], retiredBefore: Set<number> | null): void {
+    for (const structureId of structureIds) {
+      const structure = this.manifest.structures.find((candidate) => candidate.structureId === structureId);
+      const supportKey = bodyKey(structureId, SUPPORT_SERIAL);
+      const support = this.bodies.get(supportKey);
+      if (!structure || !support) {
+        continue;
+      }
+      const base = this.slotBase.get(structureId)!;
+      const count = structure.chunks.length;
+      const anchored = new Uint8Array(count);
+      const bits = this.aliveBonds.get(structureId);
+      const onSupport = (node: number): boolean => this.chunkBody[base + node] === supportKey;
+      let anchors = 0;
+      const queue: number[] = [];
+      for (const chunk of structure.chunks) {
+        if (chunk.support && onSupport(chunk.nodeIndex)) {
+          anchored[chunk.nodeIndex] = 1;
+          queue.push(chunk.nodeIndex);
+          anchors += 1;
+        }
+      }
+      if (anchors > 0 && bits) {
+        const { node0, node1 } = bondEndpoints(structure);
+        const adjacency: number[][] = Array.from({ length: count }, () => []);
+        for (let bond = 0; bond < node0.length; bond += 1) {
+          if ((bits[bond >> 3] & (1 << (bond & 7))) === 0) continue;
+          adjacency[node0[bond]].push(node1[bond]);
+          adjacency[node1[bond]].push(node0[bond]);
+        }
+        while (queue.length > 0) {
+          const node = queue.pop()!;
+          for (const next of adjacency[node]) {
+            if (anchored[next] === 0 && onSupport(next)) {
+              anchored[next] = 1;
+              queue.push(next);
+            }
+          }
+        }
+      }
+      const kept: number[] = [];
+      for (const slot of support.chunkSlots) {
+        const node = slot - base;
+        const detached = anchors > 0 && anchored[node] === 0;
+        if (detached || retiredBefore?.has(slot)) {
+          this.chunkBody[slot] = RETIRED_BODY;
+          this.retiredSlot[slot] = 1;
+          this.retiredAtTick[slot] = 0;
+          this.markSlotChanged(slot);
+        } else {
+          kept.push(slot);
+        }
+      }
+      support.chunkSlots = kept;
+    }
   }
 
   /**
@@ -1389,6 +1504,18 @@ export class CityTopology {
    * position both sides already agree on, it does not move the position.
    */
   applyStructureBootstrap(message: BootstrapMessage): void {
+    // What this client knows the server retired, before the rebuild forgets it.
+    const retiredBefore = new Set<number>();
+    for (const structureMessage of message.structures) {
+      const base = this.slotBase.get(structureMessage.structureId);
+      const manifestStructure = this.manifest.structures.find(
+        (candidate) => candidate.structureId === structureMessage.structureId,
+      );
+      if (base === undefined || !manifestStructure) continue;
+      for (let node = 0; node < manifestStructure.chunks.length; node += 1) {
+        if (this.retiredSlot[base + node] === 1) retiredBefore.add(base + node);
+      }
+    }
     for (const structureMessage of message.structures) {
       this.resyncStructures.delete(structureMessage.structureId);
       const manifestStructure = this.manifest.structures.find(
@@ -1413,6 +1540,8 @@ export class CityTopology {
         const slot = base + chunk.nodeIndex;
         slots.push(slot);
         this.chunkBody[slot] = supportKey;
+        this.retiredSlot[slot] = 0;
+        this.markSlotChanged(slot);
         this.localPos[slot * 3] = chunk.centroid[0];
         this.localPos[slot * 3 + 1] = chunk.centroid[1];
         this.localPos[slot * 3 + 2] = chunk.centroid[2];
@@ -1452,6 +1581,7 @@ export class CityTopology {
         motionKnownPosition: vClone(island.position),
       });
     }
+    this.retireDetachedChunks(message.structures.map((structure) => structure.structureId), retiredBefore);
     // Recount rather than patch: the repaired structures' previous counts are
     // exactly what we no longer trust.
     let broken = 0;

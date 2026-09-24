@@ -152,6 +152,12 @@ export interface CityClientStats {
   /// Topology released by the wall-clock valve, ahead of the pose clock.
   valveApplies: number;
   valveTicksAhead: number;
+  /// Frames the presentation was held behind a promotion the pose stream had
+  /// shown but the reliable stream had not delivered, the ticks of delay those
+  /// holds added, and evidence given up on (see HOLD_FOR_MISSING_TOPOLOGY).
+  topologyHoldFrames: number;
+  topologyHoldTicksAdded: number;
+  topologyHoldExpired: number;
   bytesReceived: number;
   bytesPerSecond: number;
   /// The playout delay in ticks actually applied this frame, and the network
@@ -287,6 +293,40 @@ const MONOTONIC_RENDER_CLOCK = (() => {
   }
 })();
 
+/**
+ * The window the city's tick rate is measured over, and the least span it is
+ * trusted at. Two seconds of a +-35 ms jitter is +-3.5% at worst, and the
+ * render clock's pull turns a rate error into a lead of (error / 2) ticks.
+ */
+const TICK_RATE_WINDOW_MS = 2000;
+const TICK_RATE_MIN_SPAN_MS = 250;
+
+/**
+ * Stop the v2 render clock one playout delay past the newest streamed tick,
+ * so the presented tick never passes the pose stream (see `renderTickNow`).
+ * /city?leadCap=0 restores the free-running clock.
+ */
+const RENDER_CLOCK_LEAD_CAP = (() => {
+  try {
+    return new URLSearchParams(globalThis.location?.search ?? '').get('leadCap') !== '0';
+  } catch {
+    return true;
+  }
+})();
+
+/**
+ * How long after the newest datagram the lead cap holds, ms. Slow ticks (a
+ * fracture's corrected re-solve) are 20-100 ms; a stream silent for longer has
+ * most likely gone quiet, and the clock then runs on through its pull.
+ */
+const RENDER_CLOCK_LEAD_CAP_MS = 300;
+
+/**
+ * How far behind the stream an idle clock may be before it jumps rather than
+ * catching up through the pull. Two snapshot sends: less is ordinary jitter.
+ */
+const RENDER_CLOCK_IDLE_JUMP_TICKS = 4;
+
 /** Floor on the playout delay: one flush window's worth, as shipped. */
 const MIN_SAMPLE_DELAY_TICKS = 6;
 
@@ -346,6 +386,52 @@ const SETTLE_GLIDE = (() => {
   }
 })();
 
+/**
+ * Hold the city's presented tick behind a promotion the pose stream has shown
+ * exists but the reliable stream has not delivered yet.
+ *
+ * Topology rides the ordered reliable stream and the poses ride datagrams. On
+ * a lossy link the reliable stream is head-of-line blocked (LTE: p50 123 ms,
+ * p90 297 ms, against 90 ms for datagrams), so a fracture's promotion can
+ * reach the client after the presentation has passed the fracture tick. Until
+ * it arrives the promoted chunks are drawn on the body they left -- in the
+ * wall, or riding the parent island -- which Netlab counts as wrong-identity
+ * chunk draws (61,092 chunk-frames on LTE, 139,139 on poor-mobile, systematic
+ * bundle, c1).
+ *
+ * A record for a body the ledger does not know is proof that such a promotion
+ * exists: the encoder only streams bodies it has promoted, and it streams a new
+ * body at the first send at or after the promotion tick (measured: first
+ * record tick minus promotion tick p50 0, p90 1). So the presentation is held
+ * one send before that record's tick until the promotion lands, then released
+ * through the usual slow delay shrink. Only on evidence: a link whose topology
+ * keeps up never holds, and the delay is not raised for everything.
+ * /city?topologyHold=0 turns it off.
+ */
+const HOLD_FOR_MISSING_TOPOLOGY = (() => {
+  try {
+    return new URLSearchParams(globalThis.location?.search ?? '').get('topologyHold') !== '0';
+  } catch {
+    return true;
+  }
+})();
+
+/**
+ * How long evidence of a missing promotion may hold the presentation, ms.
+ *
+ * The reliable stream delivers everything eventually, so this only bounds a
+ * record for a body the server will never promote to this client (a stale
+ * record from before a bootstrap, say). Same bound as the topology valve.
+ */
+const TOPOLOGY_HOLD_MAX_MS = 1000;
+
+/**
+ * Where the hold stops, relative to the first record's tick: the promotion is
+ * at that tick or the one before (the city sends every second tick), and the
+ * scorer's and the eye's "presented tick" is the whole tick below the sample.
+ */
+const TOPOLOGY_HOLD_TICKS_BEFORE_RECORD = 1;
+
 const ADAPTIVE_PLAYOUT_BUFFER = (() => {
   try {
     return new URLSearchParams(globalThis.location?.search ?? '').get('adaptiveBuffer') === '1';
@@ -383,6 +469,24 @@ export class CityClient {
   private readonly baselineGenerations: Map<number, Map<number, Vec3>> = new Map();
   /** Records referencing bodies the ledger doesn't know yet (topology in flight). */
   private pendingRecords: ChunksDatagram[] = [];
+  /**
+   * Bodies the pose stream named before the ledger had them: the tick of the
+   * first record seen for each, and when it arrived. Each is a promotion in
+   * flight on the reliable stream; see HOLD_FOR_MISSING_TOPOLOGY.
+   */
+  private readonly awaitingTopology: Map<number, { tick: number; atMs: number }> = new Map();
+  /**
+   * Whether the last sample presented nothing moving: no body in the per-frame
+   * walk. The render clock may jump forward then (see `renderTickNow`).
+   */
+  private presentationIdle = true;
+  /** The sample tick the presentation last used (v2), never decreasing. */
+  private lastSampleTick = -1;
+  /** Frames the presentation was held for missing topology, and ticks of delay the holds added. */
+  private topologyHoldFrames = 0;
+  private topologyHoldTicksAdded = 0;
+  /** Evidence given up on: the hold ran out before the promotion arrived. */
+  private topologyHoldExpired = 0;
   private datagramsReceived = 0;
   private recordsApplied = 0;
   private recordsBuffered = 0;
@@ -394,8 +498,13 @@ export class CityClient {
    *  sim rate under load (60 -> 20 Hz at heavy demolition); extrapolating
    *  the render clock at a hardcoded 60 made the clock outrun tick
    *  production and snap back ~10 ticks on every re-anchor -- visible as
-   *  rubber-banding of flying debris whenever the sim was below 60 Hz. */
-  private tickRateEma = 60;
+   *  rubber-banding of flying debris whenever the sim was below 60 Hz.
+   *
+   *  A ratio over a window of arrivals (see `observeSimTick`), not an average
+   *  of per-arrival ratios: under jitter the latter is biased high. */
+  private tickRate = 60;
+  /** Newest-tick advances in the rate window, oldest first. */
+  private readonly tickArrivals: Array<{ tick: number; atMs: number }> = [];
   /** Continuous render clock (tick units); follows the extrapolated anchor
    *  with a ~0.5 s pull so per-packet anchor jitter never steps it. */
   private renderClockTick = -1;
@@ -629,14 +738,38 @@ export class CityClient {
    * the same ledger slot the v2 path writes. Chains a lost packet poisoned are
    * drained here and nacked upstream, so the heal cost tracks actual loss.
    */
-  /** Fold a newest-seen sim tick into the anchor and the tick-rate EMA. */
+  /**
+   * Fold a newest-seen sim tick into the anchor and the tick rate.
+   *
+   * The rate is ticks over wall time across the window: (newest tick - tick at
+   * the window's start) / (time between their arrivals). It used to be an EMA
+   * of the ratio between CONSECUTIVE arrivals, and the mean of a ratio is not
+   * the ratio of the means: under jitter two datagrams arrive a few ms apart
+   * as often as a whole cadence apart, and the short gaps dominate. Measured
+   * on Netlab's LTE link (90 +- 35 ms): 69.3 ticks/s p50 (p90 81.9) against a
+   * server running at 55.9. The render clock's pull then holds it ahead of its
+   * anchor by (excess rate) / (pull rate), which put the presented city at
+   * 3.5 ticks behind the server instead of about 11 -- ahead of the datagrams
+   * it samples and of the topology that says which body each chunk is on
+   * (docs/mac-metal-session-analysis-2026-09-24.md, item 12). Over the window
+   * the jitter only enters at the two ends, and it does not scale with the
+   * arrival rate.
+   */
   private observeSimTick(tick: number): void {
     const now = performance.now();
-    if (this.latestSimTickAtMs > 0) {
-      const dtS = (now - this.latestSimTickAtMs) / 1000;
-      const rate = (tick - this.latestSimTick) / Math.max(1e-3, dtS);
+    const arrivals = this.tickArrivals;
+    arrivals.push({ tick, atMs: now });
+    // Keep the window at least TICK_RATE_WINDOW_MS long: drop the oldest only
+    // while the next one alone still spans it.
+    while (arrivals.length > 2 && now - arrivals[1].atMs >= TICK_RATE_WINDOW_MS) {
+      arrivals.shift();
+    }
+    const first = arrivals[0];
+    const spanS = (now - first.atMs) / 1000;
+    if (spanS >= TICK_RATE_MIN_SPAN_MS / 1000) {
+      const rate = (tick - first.tick) / spanS;
       if (rate > 0.5 && rate < 240) {
-        this.tickRateEma += (rate - this.tickRateEma) * 0.1;
+        this.tickRate = rate;
       }
     }
     this.latestSimTick = tick;
@@ -690,8 +823,9 @@ export class CityClient {
    *  tick rate, followed through a bounded pull. A >2 s discontinuity
    *  (join, reset, resync) snaps. */
   private renderTickNow(nowMs: number): number {
+    const previousClock = this.renderClockTick;
     const raw =
-      this.latestSimTick + ((nowMs - this.latestSimTickAtMs) / 1000) * this.tickRateEma;
+      this.latestSimTick + ((nowMs - this.latestSimTickAtMs) / 1000) * this.tickRate;
     if (this.renderClockTick < 0 || Math.abs(raw - this.renderClockTick) > 120) {
       // The re-anchor. Two seconds of discontinuity means a join, a reset or a
       // resync, and the clock has to jump to wherever the stream now is.
@@ -715,7 +849,7 @@ export class CityClient {
     } else {
       const dt = Math.max(0, (nowMs - this.renderClockMs) / 1000);
       const error = raw - this.renderClockTick;
-      const step = dt * this.tickRateEma + error * Math.min(1, dt * 2);
+      const step = dt * this.tickRate + error * Math.min(1, dt * 2);
       // Never backwards.
       //
       // The pull can outrun the forward term: at 60 fps the frame advances the
@@ -736,6 +870,41 @@ export class CityClient {
       // and it catches up on the other side. Time is allowed to stall; it is
       // not allowed to run backwards.
       this.renderClockTick += MONOTONIC_RENDER_CLOCK ? Math.max(0, step) : step;
+    }
+    if (
+      this.debris === null
+      && RENDER_CLOCK_LEAD_CAP
+      && nowMs - this.latestSimTickAtMs < RENDER_CLOCK_LEAD_CAP_MS
+    ) {
+      // Never present a tick the pose stream has not reached (wire v2).
+      //
+      // The pull above keeps the clock running at the measured rate however
+      // long the stream is silent, and the stream goes silent exactly when the
+      // server stalls: a fracture's corrected re-solve takes 20-100 ms instead
+      // of ~7. So the city was presented past ticks the server had not
+      // finished yet, and the fracture's topology, however fast it travelled,
+      // arrived after the presentation had passed it -- its chunks drawn on the
+      // body they left (Netlab, LTE: the presentation passed a promotion's tick
+      // p50 39 ms before the server finished simulating it). Stopping the clock
+      // one playout delay past the newest tick keeps the presented tick at or
+      // behind the newest datagram, as the netcode clock stops one interval
+      // past its newest snapshot. It stops; it never steps back.
+      //
+      // Only for RENDER_CLOCK_LEAD_CAP_MS after the newest datagram: longer
+      // than a slow tick, shorter than a stream that has gone quiet because
+      // nothing is moving, where a clock held still would leave every glide
+      // (a settle's, a late record's) unfinished until something moves again.
+      const cap = this.latestSimTick + MIN_SAMPLE_DELAY_TICKS;
+      if (this.renderClockTick > cap) {
+        this.renderClockTick = Math.max(previousClock, cap);
+      }
+      // A clock left behind by a quiet stream -- nothing moving, so nothing
+      // streamed -- would catch up through the pull, and the first second of
+      // the next fracture would play fast. With nothing moving on screen the
+      // jump is invisible, so take it.
+      if (this.presentationIdle && raw > this.renderClockTick + RENDER_CLOCK_IDLE_JUMP_TICKS) {
+        this.renderClockTick = Math.min(raw, cap);
+      }
     }
     this.renderClockMs = nowMs;
     return this.renderClockTick;
@@ -993,7 +1162,7 @@ export class CityClient {
     let leadMs = 0;
     if (this.renderClockTick >= 0) {
       const presentedTick = this.renderClockTick - this.sampleDelaySmooth;
-      leadMs = Math.min(500, Math.max(0, ((tick - presentedTick) / this.tickRateEma) * 1000));
+      leadMs = Math.min(500, Math.max(0, ((tick - presentedTick) / this.tickRate) * 1000));
     }
     const before = this.dustQueue.dropped;
     if (this.dustImpacts.noteVelocity(
@@ -1013,7 +1182,7 @@ export class CityClient {
     let leadMs = 0;
     if (this.renderClockTick >= 0) {
       const presentedTick = this.renderClockTick - this.sampleDelaySmooth;
-      leadMs = Math.max(0, ((message.simTick - presentedTick) / this.tickRateEma) * 1000);
+      leadMs = Math.max(0, ((message.simTick - presentedTick) / this.tickRate) * 1000);
       // A bootstrap or a valve release can put the tick far from the clock;
       // a puff a second late is a puff nobody connects to anything.
       leadMs = Math.min(leadMs, 500);
@@ -1206,6 +1375,8 @@ export class CityClient {
         this.bodies.clear();
         this.kinetic.clear();
         this.pendingRecords = [];
+        this.awaitingTopology.clear();
+        this.lastSampleTick = -1;
         // Drop every held topology message. A bootstrap is a complete state
         // snapshot, so anything queued before it is stale by construction --
         // and comparing sequence numbers across it is WRONG, because a city
@@ -1232,6 +1403,8 @@ export class CityClient {
         // Pose-stream clocks belong to the old world too.
         this.lastSpanTick = -1;
         this.spanTicksEma = 6;
+        // A reset restarts the tick count; the old arrivals say nothing.
+        this.tickArrivals.length = 0;
         this.sampleDelaySmooth = MIN_SAMPLE_DELAY_TICKS;
         this.renderClockTick = -1;
         // A new ledger: no body's last velocity is the same body's.
@@ -1327,6 +1500,9 @@ export class CityClient {
           }
         }
         this.topology.applyStructureBootstrap(message);
+        for (const key of this.awaitingTopology.keys()) {
+          if (this.topology.body(key)) this.awaitingTopology.delete(key);
+        }
         noteClientEvent('structureRepair', {
           topoSeq: message.topoSeq,
           structures: message.structures.map((structure) => structure.structureId),
@@ -1633,16 +1809,75 @@ export class CityClient {
   }
 
   private drainPending(): void {
+    // Evidence the ledger has now caught up with: the promotion landed.
+    for (const key of this.awaitingTopology.keys()) {
+      if (this.topology.body(key)) {
+        this.awaitingTopology.delete(key);
+      }
+    }
     if (this.pendingRecords.length === 0) {
       return;
     }
     const pending = this.pendingRecords;
     this.pendingRecords = [];
     for (const datagram of pending) {
+      let deferred = false;
       for (const record of datagram.records) {
-        this.applyRecord(datagram, record);
+        if (!this.applyRecord(datagram, record)) {
+          deferred = true;
+        }
+      }
+      // Still waiting on a later promotion: keep it, or its records are lost
+      // to whichever unrelated topology message happened to drain first.
+      // Re-applying the records that did resolve is a no-op (the per-body
+      // tick guard).
+      if (deferred) {
+        this.pendingRecords.push(datagram);
       }
     }
+    if (this.pendingRecords.length > 64) {
+      this.pendingRecords.splice(0, this.pendingRecords.length - 64);
+    }
+  }
+
+  /**
+   * A record named a body the ledger does not have: a promotion in flight.
+   *
+   * Only the first record counts (the promotion is at or just before it), and
+   * only while the presentation has not already passed it: holding a clock
+   * that is already beyond the fracture cannot put the chunks back on the
+   * right body, it would only stop everything else.
+   */
+  private noteAwaitingTopology(key: number, tick: number): void {
+    if (!HOLD_FOR_MISSING_TOPOLOGY || this.debris !== null || this.awaitingTopology.has(key)) {
+      return;
+    }
+    if (tick - TOPOLOGY_HOLD_TICKS_BEFORE_RECORD <= this.lastSampleTick) {
+      return;
+    }
+    this.awaitingTopology.set(key, { tick, atMs: performance.now() });
+  }
+
+  /**
+   * The latest tick the presentation may sample while promotions are in
+   * flight, or +Infinity. Expired evidence is dropped here.
+   */
+  private topologyHoldLimit(nowMs: number): number {
+    let limit = Number.POSITIVE_INFINITY;
+    for (const [key, entry] of this.awaitingTopology) {
+      if (nowMs - entry.atMs > TOPOLOGY_HOLD_MAX_MS) {
+        this.awaitingTopology.delete(key);
+        this.topologyHoldExpired += 1;
+        continue;
+      }
+      // Strictly below the tick before the record: the whole tick the
+      // presentation shows must be one the promotion had not happened in.
+      const cap = entry.tick - TOPOLOGY_HOLD_TICKS_BEFORE_RECORD - 1e-3;
+      if (cap < limit) {
+        limit = cap;
+      }
+    }
+    return limit;
   }
 
   /** Creates and registers a body's presentation track. */
@@ -1943,6 +2178,7 @@ export class CityClient {
     const body = this.topology.body(record.bodyEntity);
     if (!body) {
       this.recordsBuffered += 1;
+      this.noteAwaitingTopology(record.bodyEntity, datagram.simTick);
       return false;
     }
     // The settle arrived on the reliable channel carrying the authoritative
@@ -2170,7 +2406,24 @@ export class CityClient {
     // iteration is defined behaviour in JS.
     // v2 buffers inside each PresentationTrack, so the shared playout clock has
     // to be pushed into them rather than read out of one place.
-    const playoutDelay = this.advancePlayoutDelay(MIN_SAMPLE_DELAY_TICKS);
+    let playoutDelay = this.advancePlayoutDelay(MIN_SAMPLE_DELAY_TICKS);
+    // A promotion in flight: stop short of it rather than draw its chunks on
+    // the body they left. The delay grows by exactly what the hold costs and
+    // is then given back at the usual shrink rate, so neither the hold nor
+    // its release is a jump. Never backwards: evidence behind the clock was
+    // refused when it arrived.
+    const holdLimit = this.awaitingTopology.size > 0 ? this.topologyHoldLimit(nowMs) : Number.POSITIVE_INFINITY;
+    if (renderTick - playoutDelay > holdLimit) {
+      const target = Math.max(holdLimit, this.lastSampleTick);
+      const held = Math.min(MAX_SAMPLE_DELAY_TICKS, renderTick - target);
+      if (held > playoutDelay) {
+        this.topologyHoldFrames += 1;
+        this.topologyHoldTicksAdded += held - playoutDelay;
+        playoutDelay = held;
+        this.sampleDelaySmooth = held;
+      }
+    }
+    this.lastSampleTick = Math.max(this.lastSampleTick, renderTick - playoutDelay);
     this.drainPendingTopology(Math.max(0, Math.floor(renderTick - playoutDelay)), nowMs);
     for (const key of this.kinetic) {
       const state = this.bodies.get(key);
@@ -2243,6 +2496,7 @@ export class CityClient {
       this.topology.updateBodyPose(key, presented.position, presented.rotation, 'presented');
       live.add(key);
     }
+    this.presentationIdle = this.kinetic.size === 0;
     return live;
   }
 
@@ -2254,6 +2508,17 @@ export class CityClient {
    */
   presentationClock(): { renderTick: number; playoutDelayTicks: number } {
     return { renderTick: this.renderClockTick, playoutDelayTicks: this.sampleDelaySmooth };
+  }
+
+  /**
+   * The sim tick the last sample presented (render tick minus the playout
+   * delay); +Infinity before any pose stream, so nothing waits on a clock
+   * that does not exist yet.
+   */
+  presentedTick(): number {
+    return this.renderClockTick < 0
+      ? Number.POSITIVE_INFINITY
+      : this.renderClockTick - this.sampleDelaySmooth;
   }
 
   /**
@@ -2309,6 +2574,9 @@ export class CityClient {
       settlesSuperseded: this.topology.settlesSuperseded,
       valveApplies: this.topologyValveApplies,
       valveTicksAhead: this.topologyValveTicksAhead,
+      topologyHoldFrames: this.topologyHoldFrames,
+      topologyHoldTicksAdded: this.topologyHoldTicksAdded,
+      topologyHoldExpired: this.topologyHoldExpired,
       brokenBonds: topologyStats.brokenBonds,
       liveIslands: topologyStats.liveIslands,
       topoSeqGaps: topologyStats.topoSeqGaps,

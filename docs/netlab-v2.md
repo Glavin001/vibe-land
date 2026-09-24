@@ -152,7 +152,7 @@ or wrong-identity (see [All draws](#all-draws-the-headline)).
 | Remote vehicles | `getRenderTimeUs` → `sampleRemoteVehicle` → `netEntityPoses.remoteVehicleDrawPose` (sample or latest) → `VehiclesRenderer` chassis | Shared | `vehicle`: position, rotation; missing within `VEHICLE_AOI_RADIUS_M`; wrong identity = drawn vehicle type ≠ truth | Wheels are derived visuals (suspension), not scored. |
 | Driven vehicle | Prediction → `vehicleLocalMeshPose.updateLocalVehicleMeshPose` smoothing → `VehiclesRenderer` | Not reproducible: drawn from snapshots | `vehicle_driven`, **not in `overall`** | S11. |
 | Dynamic spheres / boxes (cannonballs, props) | `getDynamicBodyRenderTimeUs` → `MultiplayerGameRuntime.getRenderedDynamicBodyState` (local proxy if just touched, else `getInterpolatedDynamicBodyState`: interpolated, else latest) → `netEntityPoses.resolveDynamicBodyDraws` (meteor bodies skipped) → `DynamicBodiesRenderer` | Shared, with the non-interaction branch of `getRenderedDynamicBodyState` | `body`: position; rotation for boxes only (a plain ball is a uniformly coloured sphere, and SnapshotV2 carries no sphere orientation); missing within `DYNAMIC_BODY_AOI_RADIUS_M`; extra = drawn, not in truth; wrong identity = drawn shape ≠ truth shape | Bodies the recording player touches (local proxy) are drawn from snapshots in the lab. |
-| Meteors in flight and after impact | `meteorFlights` → `meteorPlacement.placeMeteorInFrame` (arc until contact, then the streamed body interpolated / ≤ 250 ms extrapolated, hidden once it leaves the stream) → `MeteorLayer` rock | Shared | `meteor`: position; rotation only when drawn from the body (on the arc the rock spins for show); hidden = not drawn; missing = meteor body in interest drawn by neither layer | The body's orientation is not streamed (sphere), so a body-drawn rock's rotation error is real but cosmetic. |
+| Meteors in flight and after impact | `meteorFlights` → `meteorPlacement.placeMeteorInFrame` (arc until contact, with the arc's tumble `arcTumble`; then the streamed body interpolated / ≤ 250 ms extrapolated, hidden once it leaves the stream; a rock never streamed is hidden one staleness window after its planned landing) → `MeteorLayer` rock | Shared | `meteor`: position; rotation only when drawn from the body (on the arc the rock spins for show); hidden = not drawn; missing = meteor body in interest drawn by neither layer | The body's orientation is not streamed (sphere): the client integrates the streamed spin from the launch orientation, so a body-drawn rock's rotation error vs truth is drift (p99 ~170°), real but cosmetic; its spin matches truth (item 15 of the session analysis). |
 | City: intact structure chunks | Ledger support body (serial 0) pose ∘ chunk rest offset, written by `cityPoseStore.initCityPoses` / `advanceCityPoses` into the chunk-record and body-pose tables → vertex shader `citySlotMatrix` | Shared (tables), composed in Rust exactly as the shader does | `chunk_intact`, per chunk | – |
 | City: live debris | `CityClient.samplePresentation` (presentation track at `render_tick - playout_delay`) → ledger island pose → `advanceCityPoses` body write (records rewritten when the ledger re-parents or rebases a chunk) → shader | Shared | `chunk_debris` (truth island moving at the presented tick) | The layer's distance stride is left out (S10). |
 | City: settled rubble | Settle record → ledger pose → one final body write → shader | Shared | `chunk_rubble` (truth island settled at the presented tick) | – |
@@ -465,7 +465,11 @@ differs from the recording's fails (b)'s convergence check by construction:
 the clock-fix client on rec1 is 2.9 ms p99 from the live probe in the last
 10 s (the old clock's output), with the lab still 0.000 m from the same
 client on the recorded tape. Calibrate a changed clock on a bundle recorded
-with it.
+with it. The same holds for the city clock and hide rules of items 12-14 of
+the session analysis: with that client the d1342419 bundle still passes every
+byte check (34,331/34,331) but fails (d) for debris chunks (p99 0.28 m) and
+drawn/not drawn (0.30%), by construction; the capture recorded with it
+(`20260924-131437-quick-3c-syncfix`) passes every check.
 
 **rec1**: exact capture, 75 s loopback, PhysX GPU, this tree's server and
 client (`client/netlab/v2/record-bundle.sh`). The session has cannonballs, a
@@ -643,6 +647,15 @@ client (1a35ecf8 tree, `--client-root`) against the 0eb6f3fd client.
 
 From the all-draws metric on the systematic bundles. Counts are measured;
 mechanisms marked *inferred* are read from the data.
+
+Findings 1, 2, 3, 5 and 6 are addressed by items 12-16 of the
+[2026-09-24 session analysis](mac-metal-session-analysis-2026-09-24.md),
+where the before/after tables are; the mechanism of finding 1 turned out to
+be the client's city render clock (a jitter-biased tick-rate estimate and a
+clock that ran through server stalls), not the reliable lane alone. They are
+confirmed on a live capture recorded with the fixed client (city bench
+quick, 3 clients, `target/sync-fidelity/city-bench/runs/20260924-131437-quick-3c-syncfix`,
+calibrates PASS).
 
 1. **On lossy links, topology reaches the client later than the pose stream
    drives its presentation.**

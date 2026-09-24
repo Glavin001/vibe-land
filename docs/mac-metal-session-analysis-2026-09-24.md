@@ -670,7 +670,65 @@ paired) showing the acceptance criterion.
   - *Accept:* the post-impact meteor body is drawn within 1 m of truth
     until it leaves interest, then removed.
 
-- [ ] **12. Client: chunks stay on the body they left while topology is late.**
+- [x] **12. Client: chunks stay on the body they left while topology is late.**
+  - *Done (2026-09-24):* the root cause was the city render clock, not the
+    topology lane. `CityClient` extrapolates its render tick from the newest
+    datagram at a measured tick rate, and that rate was an EMA of the ratio
+    between consecutive arrivals. Under jitter the mean of that ratio is
+    biased high (short gaps dominate): Netlab LTE 69.3 ticks/s p50 (p90 81.9)
+    against a server at 55.9. The clock's pull then held it ahead of its
+    anchor, so the presented city (render tick minus the 6-tick playout
+    delay) ran 2.9 ticks behind the server instead of about 10, ahead of the
+    newest datagram on most frames and ahead of the server's own tick on
+    18.2% of LTE frames (7.4% on loopback, where the server stalls at
+    fractures). Topology, however fast it travelled, arrived after the
+    presentation had passed it (252 of 285 promotion/migration messages
+    late on LTE, p50 6 ticks). Three changes in `client/src/city/cityClient.ts`
+    (wire v2 only, v3 untouched):
+    - the tick rate is ticks over time across a 2 s window of arrivals
+      (`observeSimTick`), which the jitter only enters at the ends;
+    - the render clock stops one playout delay past the newest streamed tick
+      for up to 300 ms after it (a slow tick is 20-100 ms), so the presented
+      tick never passes the pose stream during a server stall; a clock left
+      behind by a quiet stream jumps forward only while nothing is moving;
+    - a record for a body the ledger does not know is proof of a promotion in
+      flight (first record tick minus promotion tick: p50 0, p90 1), so the
+      presentation holds one tick before it until the promotion lands, at
+      most 1 s and 30 ticks of delay, released at the usual shrink rate
+      (`HOLD_FOR_MISSING_TOPOLOGY`; `topologyHold*` counters). Held records
+      now wait for their own promotion instead of being dropped by the next
+      unrelated topology message.
+    The playout delay constant is unchanged (6 ticks); the change restores
+    the delay the rate bias ate, and adds delay only while evidence says a
+    promotion is missing. `/city?leadCap=0` and `/city?topologyHold=0` turn
+    the last two off.
+  - *Rejected, with evidence:* holding records alone (the first try) moved
+    LTE wrong identity only 61,092 -> 59,979, because the presentation was
+    already past the records when they arrived (measured). Carrying
+    membership in the datagram would not help either: the presentation ran
+    ahead of the datagrams themselves, and 88 of the late promotions left
+    after the rate fix were passed a p50 39 ms before the server had
+    finished simulating their tick (measured). Adapting the delay to the
+    topology lane's latency would have raised it for every body on the link.
+  - *Evidence (Netlab v2, measured; `netlab2 compare` of the 3f3d891a client
+    against this one via `--client-root`, production knobs, seed 1):*
+    all-draws wrong-identity chunk-frames, systematic-2c-d1342419 c1:
+    loopback 0 -> 0, lan 227 -> 0, lte 61,092 -> 448, poor-mobile 139,139 ->
+    26,193. Attribution on LTE: rate fix alone 27,259, plus the hold 19,649,
+    plus the lead cap 58 (uncapped in time) / 448 (as landed, 300 ms bound).
+    heavy-quick3-v2 c1: lan 83 -> 0, lte 33,772 -> 122, poor-mobile
+    751,832 -> 631,125 (a 1 Mbit/s link whose reliable lane starves behind
+    the datagrams for seconds; 1,839 holds expired). Debris pos@render p99
+    lte 0.677 -> 0.114 m, loopback 0.332 -> 0.088 m.
+  - *Cost (measured):* the city is drawn later on jittery links: presented
+    tick minus server tick p50 loopback -4.8 -> -5.2, lte -2.9 -> -10.2,
+    poor-mobile -7.1 -> -14.1 ticks, so debris pos@now p99 rises (lte 1.136
+    -> 2.393 m, loopback 0.966 -> 1.521 m; p50 unchanged at 8-9 mm). The old
+    figure was bought by drawing ticks the stream had not delivered.
+  - *Tests:* `cityClient.test.ts` "CityClient presentation clock (item 12)":
+    unbiased rate and presentation behind the stream on a 90 +- 35 ms link,
+    no lead past the newest tick through a 250 ms server stall, the hold
+    behind a promotion delayed 400 ms. All three fail on 3f3d891a.
   - *Found by:* Netlab all-body scoring (docs/netlab-v2.md), bundle
     `systematic-2c-d1342419`, c1.
   - *Evidence (measured):* wrong-identity chunk draws 0 (loopback),
@@ -680,23 +738,118 @@ paired) showing the acceptance criterion.
     city playout delay (100 ms) only covers the datagrams.
   - *Accept:* wrong-identity chunk draws near 0 on LTE without raising the
     playout delay for everything.
-- [ ] **13. Client: a real structure repair brings retired chunks back.**
+- [x] **13. Client: a real structure repair brings retired chunks back.**
+  - *Done (2026-09-24):* the server's ledger drops a retired island's nodes,
+    and a bootstrap lists only islands, so a retired chunk and an intact one
+    look the same on the wire: in no island. `applyStructureBootstrap` (and
+    `applyBootstrap`) put both on the support body. `client/src/city/topology.ts`
+    now marks a retired island's chunks (`isChunkRetired`) and, after a
+    bootstrap or repair, takes a chunk in no island off the support body when
+    this client saw it retired or when no alive bond path joins it to one of
+    its structure's anchor nodes (the manifest's zero-mass `support` nodes;
+    structures without anchors are left alone). The second rule covers a
+    joiner, who saw no retire. Either rule alone gives the same result on
+    the 0a7d6ae5 bundle (measured).
+  - *Evidence (Netlab v2, systematic-2c-0a7d6ae5 c1, recorded repairs
+    replayed, 21 applied on loopback/lan, 13 lte, 8 poor-mobile; measured):*
+    chunk_intact extra 247,773 -> 0 (loopback, lan), 166,275 -> 0 (lte),
+    159,400 -> 0 (poor-mobile); chunk_intact missing 0 on every link (no
+    standing chunk hidden); hash mismatches 0.
+  - *Tests:* `topology.test.ts` "retired chunks across bootstraps and
+    repairs" (6 tests; all fail on 3f3d891a).
   - *Evidence (measured):* on the 0a7d6ae5 bundle a repair redrew retired
     chunks on the intact building (247,773 chunk-frames, 0.66% of intact
     draws). Item 6 removed the spurious repairs; a genuine one after loss
     still does this.
   - *Accept:* after a repair, no chunk the server retired is drawn.
-- [ ] **14. Client: floor-retired chunks stay drawn below ground.**
+- [x] **14. Client: floor-retired chunks stay drawn below ground.**
+  - *Done (2026-09-24):* a retired island's chunks were orphans the pose
+    tables kept drawing at their last pose by design ("drawn at its last pose
+    until it is adopted"). `writeChunkRecordInto`
+    (`client/src/city/cityPoseStore.ts`) now hides a retired chunk (record
+    index -1, which the shader collapses) once the presentation reaches the
+    retire tick: wire v2 applies topology a playout delay early, and hiding
+    at arrival turned the draws into missing ones (loopback missing 174 ->
+    308 on the first try, measured).
+  - *Evidence (Netlab v2, systematic-2c-d1342419 c1, measured):*
+    chunk_debris extra loopback 199,951 -> 152, lan 199,950 -> 153,
+    poor-mobile 61,316 -> 497; lte 31 -> 348 (a later presentation meets
+    the -4 m hide depth later; the item-12 clock). The remaining ~150 are
+    chunks sinking through -4 m, drawn a few frames above it.
+  - *Tests:* `cityClient.test.ts` "CityClient retired chunks (item 14)"
+    (fails on 3f3d891a).
   - *Evidence (measured):* chunks retired at the 5 m escape floor (item 5)
     stay drawn 3.5-3.75 m below ground, above the -4 m hide depth; most of
     the loopback "extra" draws (5 chunks).
   - *Accept:* 0 draws of retired chunks.
-- [ ] **15. Meteor orientation is not streamed.**
+- [x] **15. Meteor orientation is not streamed.**
+  - *Decision (2026-09-24): not streamed; a local spin, made continuous.*
+    Measured on systematic-2c-d1342419 c1 (9,224 body-drawn frames, 8
+    flights):
+    - the server's ball does not spin in flight: its orientation at the
+      first body sample is the launch orientation on every flight;
+    - the client integrates the streamed angular velocity from that start
+      (`predictSphereQuaternion`), so the drawn orientation error is p50
+      8.4 deg; p99 169 deg is drift, which grows with the rolling time;
+    - the drawn spin, which is what the eye reads off the rock, matches
+      truth: spin-vector error p50 0, p90 4.9, p99 8.4 rad/s at 30-40 rad/s.
+      Part of that is the wire's per-axis clamp at 32.767 rad/s (28% of
+      sampled frames exceed it); a rolling-spin fallback for clamped samples
+      changed none of these percentiles and was not kept;
+    - bytes are not the obstacle: a 32-bit orientation for meteor bodies is
+      roughly 5-6 B x 60 Hz over ~80 s of body-drawn time, ~28 kB per client
+      per 337 s session (~0.3% of netcode bytes; inferred from the frame
+      count). What it would buy is agreement between clients on the absolute
+      orientation of a sphere, which no player can compare, at the price of
+      a SnapshotV2 extension and capture gating for calibration.
+    The visible defect was a jump at contact: the layer's tumble accumulated
+    from spawn and the body starts at the launch orientation, so the rock
+    turned 47-83 deg (median ~64) in the handover frame (inferred from the
+    layer's rule on the recorded timeline). The tumble is now
+    `meteorPlacement.ts` `arcTumble`, a function of flight time phased to
+    pass through the launch orientation at the planned landing, and
+    `placeMeteor` returns it on the arc (so Netlab sees it). Measured
+    handover step 0.2-17.7 deg, median ~1.3 deg (larger where contact comes
+    before the planned landing: 0.45 rad/s times the difference).
+    Rotation error vs truth (p99 ~172 deg) is unchanged by design, and the
+    wire is unchanged.
+  - *Tests:* `meteorPlacement.test.ts` "the arc tumbles, and meets the
+    body's orientation at the planned landing" (fails on 3f3d891a).
   - *Evidence (measured):* a meteor drawn from its body has rotation error
     p99 172 degrees.
-- [ ] **16. Meteors whose body never streams stay on their arc.**
+- [x] **16. Meteors whose body never streams stay on their arc.**
+  - *Done (2026-09-24):* the two flights never streamed to the spectator
+    (their landing points were outside its 80 m interest) were drawn exactly
+    on the arc (<= 0.4 m) to the aimed point and then held there for the
+    flight's 3 s linger while the real rock rolled 100-157 m away (measured,
+    per flight). `placeMeteor` now leaves a never-streamed rock at its aimed
+    point for one staleness window (250 ms) and then hides it; a body that
+    starts streaming later is drawn from it as before.
+  - *Evidence (Netlab v2, heavy-quick3-v2 c1, measured):* meteor pos@render
+    p99 155.9 -> 18.4 m (loopback, lan, poor-mobile), 155.9 -> 19.0 m (lte);
+    meteor missing 0 -> 0. The new live capture (below): 132.6 -> 13.7 m.
+  - *Tests:* `meteorPlacement.test.ts` "a rock that never streamed is not
+    drawn once its arc has ended" (fails on 3f3d891a) and "... starts
+    streaming after its arc ended is drawn from the body".
   - *Evidence (measured):* heavy-quick3-v2, spectator: two meteors held on
     the arc, p99 157 m from truth.
+
+**Items 12-16, live check** (city bench quick, 3 clients,
+`target/sync-fidelity/city-bench/runs/20260924-131437-quick-3c-syncfix`,
+measured): the capture recorded with this client calibrates PASS on every
+`netlab2 calibrate` check (c1: bytes 100%, live debris chunks p99 5.8 cm,
+drawn/not drawn 0 mismatches), so the lab reproduces the live client. Scored
+through both clients (c1, `netlab2 compare`): wrong identity lan 100 -> 0,
+lte 23,654 -> 749, poor-mobile 160,096 -> 68,161; chunk_debris extra loopback
+41,537 -> 129; meteor pos@render p99 loopback 132.6 -> 13.7 m. Bench budgets:
+0 render-clock back-steps, 0 repairs without loss; the failing budgets are
+server tick/sim rate, below-ground (item 5), and meteor arc jump (11.2 m) and
+backward frames (5). The 3f3d891a client on the same server binary, run right
+after (`20260924-132210-quick-3c-base`), fails the same two meteor budgets
+(21.7 m, 2), so they predate this change; the two runs' destruction differs
+(33.3% vs 44.2% of bonds broken), so live counters are only indicative: city
+presented jumps over 4 m 84 / 147 / 90 -> 38 / 29 / 55 per client, correction
+snaps 37 / 53 / 38 -> 17 / 13 / 13.
 
 ### Transport policy
 

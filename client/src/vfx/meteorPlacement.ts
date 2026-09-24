@@ -45,6 +45,14 @@ export const STALE_AFTER_TICKS = MOVING_BODY_STALE_TICKS;
 const MOVING_SPEED_MS = MOVING_BODY_SPEED_MS;
 /** Longest the body is drawn past its newest snapshot. */
 const MAX_BODY_EXTRAPOLATION_US = 250_000;
+/**
+ * How long a rock that never streamed is left at its aimed point once the
+ * arc ends: one staleness window, the time a body that is in this client's
+ * stream takes to show up in it.
+ */
+export const NEVER_STREAMED_LANDED_HOLD_US = STALE_AFTER_TICKS * 1_000_000 / 60;
+/** The rock's tumble on the arc, rad/s (the studio rock's). */
+export const ARC_TUMBLE_RADS = 0.45;
 /** 'hold' (held where last drawn) is no longer produced; tools still read it in older tapes. */
 export type MeteorSource = 'arc' | 'body' | 'hold' | 'hidden';
 
@@ -63,7 +71,10 @@ export interface MeteorPlacement {
   source: MeteorSource;
   position: [number, number, number];
   velocity: [number, number, number];
-  /** The body's orientation when drawn from the body; null on the arc or held. */
+  /**
+   * The rock's orientation: from the body when drawn from it, the arc's
+   * tumble on the arc; null when hidden.
+   */
   quaternion: [number, number, number, number] | null;
   /** The arc at the render time (forensics). */
   arc: [number, number, number];
@@ -113,13 +124,23 @@ export function placeMeteor(
     if (arcT < 0) {
       return { source: 'hidden', position: arc, velocity: [0, 0, 0], quaternion: null, arc };
     }
-    return done({ source: 'arc', position: arc, velocity: meteorVelocityAt(flight, arcT, [0, 0, 0]), quaternion: null, arc });
+    // A rock that never streamed, past the end of its arc: it hit something
+    // this client is not streamed (it landed out of the recipient's interest),
+    // and where it went from there is unknown. Holding it at the aimed point
+    // for the flight's linger drew it up to 157 m from the rock rolling away
+    // (Netlab, heavy-quick3-v2 spectator). Past one staleness window it is not
+    // drawn, like any body that left the stream; a body that does start
+    // streaming is drawn from it (contact is then detected as usual).
+    if (newest === null && r - (flight.serverLaunchTimeUs + flight.flightTimeS * 1e6) > NEVER_STREAMED_LANDED_HOLD_US) {
+      return { source: 'hidden', position: arc, velocity: [0, 0, 0], quaternion: null, arc };
+    }
+    return done({ source: 'arc', position: arc, velocity: meteorVelocityAt(flight, arcT, [0, 0, 0]), quaternion: arcTumble(flight, arcT), arc });
   }
 
   if (newest && !stale) {
     // Before the first snapshot we hold, the rock was still on its arc.
     if (!track.drawnBody && r < samples[0].serverTimeUs) {
-      return done({ source: 'arc', position: arc, velocity: meteorVelocityAt(flight, arcT, [0, 0, 0]), quaternion: null, arc });
+      return done({ source: 'arc', position: arc, velocity: meteorVelocityAt(flight, arcT, [0, 0, 0]), quaternion: arcTumble(flight, arcT), arc });
     }
     const target = Math.min(r, newest.serverTimeUs + MAX_BODY_EXTRAPOLATION_US);
     const body = sampleDynamicBodyTrack(samples, target)!;
@@ -139,6 +160,32 @@ export function placeMeteor(
   return { source: 'hidden', position: [...last], velocity: [0, 0, 0], quaternion: null, arc };
 }
 
+
+/**
+ * The rock's orientation on its arc, `t` seconds after launch: a slow tumble
+ * about an axis of its own, phased to pass through the launch orientation
+ * (identity) at the planned landing.
+ *
+ * The server's ball does not spin in flight (its orientation at contact is
+ * the launch orientation; measured on every flight of the systematic bundle),
+ * and once it is streamed its orientation is integrated from that start
+ * (netcodeClient `predictSphereQuaternion`). The tumble used to accumulate
+ * from the rock's spawn, so the rock turned through an arbitrary angle in the
+ * frame it handed over to its body. Phased to meet it, the handover is
+ * continuous when contact comes at the planned landing, and off by the tumble
+ * over the difference when it comes earlier (0.45 rad/s: 13 degrees for half a
+ * second).
+ */
+export function arcTumble(flight: MeteorFlight, t: number): [number, number, number, number] {
+  let ax = Math.sin(flight.seed * 12.9898);
+  let ay = 0.6;
+  let az = Math.cos(flight.seed * 78.233);
+  const n = Math.hypot(ax, ay, az);
+  ax /= n; ay /= n; az /= n;
+  const half = (ARC_TUMBLE_RADS * (t - flight.flightTimeS)) / 2;
+  const s = Math.sin(half);
+  return [ax * s, ay * s, az * s, Math.cos(half)];
+}
 
 /** The tick the meteor layer judges staleness in (the server's 60 Hz). */
 export const METEOR_TICK_US = Math.round(1_000_000 / 60);

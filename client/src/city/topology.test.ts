@@ -1185,4 +1185,90 @@ describe('CityTopology frame rebasing', () => {
     expect(one.position[1]).toBeCloseTo(1.5, 5);
     expect(two.position[1]).toBeCloseTo(2.5, 5);
   });
+
+  // Item 13 (docs/mac-metal-session-analysis-2026-09-24.md): the server's
+  // ledger drops a retired island's nodes, so a bootstrap lists them in no
+  // island -- the same as the intact chunks -- and a repair used to hand them
+  // back to the support body, drawn on the standing building at rest.
+  describe('retired chunks across bootstraps and repairs', () => {
+    const retireMessage = (topoSeq: number): TopologyMessage => ({
+      topoSeq,
+      simTick: 40,
+      batches: [{ structureId: 0, brokenBondIndices: [], promotions: [], retiredIslandIds: [1], migrations: [] }],
+      settled: [],
+      wakes: [],
+    });
+    const repair = (islands: Parameters<CityTopology['applyStructureBootstrap']>[0]['islands'], alive = 0b01) => ({
+      simTick: 50,
+      manifestHashHex: '00',
+      baselineId: 0,
+      topoSeq: 2,
+      structures: [{ structureId: 0, bondCount: 2, aliveBonds: new Uint8Array([alive]) }],
+      islands,
+    });
+    const support = bodyKey(0, 0);
+
+    it('marks a retired island\'s chunks retired, and adoption clears it', () => {
+      const topology = new CityTopology(manifest());
+      topology.apply(fractureMessage(1));
+      expect(topology.isChunkRetired(2)).toBe(false);
+      topology.apply(retireMessage(2));
+      expect(topology.isChunkRetired(2)).toBe(true);
+      expect(topology.chunkRetiredAtTick(2)).toBe(40);
+      expect(topology.isChunkRetired(1)).toBe(false);
+    });
+
+    it('a structure repair keeps the chunks the server retired off the intact building', () => {
+      const topology = new CityTopology(manifest());
+      topology.apply(fractureMessage(1));
+      topology.apply(retireMessage(2));
+      topology.applyStructureBootstrap(repair([]));
+      expect(topology.chunkBodyKey(2)).not.toBe(support);
+      expect(topology.isChunkRetired(2)).toBe(true);
+      expect(topology.body(support)!.chunkSlots).toEqual([0, 1]);
+      // The intact chunks are where they were.
+      expect(topology.chunkBodyKey(0)).toBe(support);
+      expect(topology.chunkBodyKey(1)).toBe(support);
+    });
+
+    it('a chunk the repair puts in an island is not retired, whatever this client saw', () => {
+      const topology = new CityTopology(manifest());
+      topology.apply(fractureMessage(1));
+      topology.apply(retireMessage(2));
+      topology.applyStructureBootstrap(repair([
+        {
+          structureId: 0, islandId: 5, nodes: [2], position: [10, 0.5, 0], rotation: [0, 0, 0, 1],
+          linearVelocity: [0, 0, 0], angularVelocity: [0, 0, 0], settled: true,
+        },
+      ]));
+      expect(topology.isChunkRetired(2)).toBe(false);
+      expect(topology.chunkBodyKey(2)).toBe(bodyKey(0, 5));
+    });
+
+    it('a bootstrap takes chunks cut off from every anchor off the support body (a joiner saw no retire)', () => {
+      const topology = new CityTopology(manifest());
+      topology.applyBootstrap(repair([]));
+      // Bond 1 is broken, node 2 is in no island and no alive bond reaches an
+      // anchor from it: the server retired it.
+      expect(topology.isChunkRetired(2)).toBe(true);
+      expect(topology.chunkRetiredAtTick(2)).toBe(0);
+      expect(topology.body(support)!.chunkSlots).toEqual([0, 1]);
+    });
+
+    it('leaves every chunk on the support body while the bonds hold it to an anchor', () => {
+      const topology = new CityTopology(manifest());
+      topology.applyBootstrap(repair([], 0b11));
+      expect([0, 1, 2].map((slot) => topology.isChunkRetired(slot))).toEqual([false, false, false]);
+      expect(topology.body(support)!.chunkSlots).toEqual([0, 1, 2]);
+    });
+
+    it('leaves a structure with no anchor node alone', () => {
+      const unanchored = manifest();
+      for (const chunk of unanchored.structures[0].chunks) chunk.support = false;
+      const topology = new CityTopology(unanchored);
+      topology.applyBootstrap(repair([], 0b00));
+      expect([0, 1, 2].map((slot) => topology.isChunkRetired(slot))).toEqual([false, false, false]);
+    });
+  });
 });
+
