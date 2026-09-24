@@ -712,6 +712,12 @@ public:
                                  PxTolerancesScale(), false, nullptr);
       require(physics_ != nullptr, "PxCreatePhysics failed");
 
+#if defined(__APPLE__)
+      // CuMetal: keep the GPU out of its low-power state between 60 Hz ticks,
+      // which otherwise costs each tick about a millisecond of wake-up. Only
+      // while work is being submitted; the environment still overrides it.
+      setenv("CUMETAL_GPU_KEEPALIVE_US", "250", 0);
+#endif
       PxCudaContextManagerDesc cuda_desc;
       cuda_context_ = PxCreateCudaContextManager(*foundation_, cuda_desc,
                                                  PxGetProfilerCallback());
