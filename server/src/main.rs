@@ -2693,6 +2693,7 @@ async fn ws_stats_handler(
 struct QuicLinkProbe {
     connection: Connection,
     submitted: Arc<std::sync::atomic::AtomicU64>,
+    reliable_submitted: Arc<std::sync::atomic::AtomicU64>,
     epoch: Instant,
 }
 
@@ -2710,6 +2711,7 @@ impl link_rate::LinkProbe for QuicLinkProbe {
             lost_bytes: stats.path.lost_bytes,
             rtt_us: stats.path.rtt.as_micros() as u64,
             submitted_bytes: self.submitted.load(Ordering::Relaxed),
+            reliable_submitted_bytes: self.reliable_submitted.load(Ordering::Relaxed),
         })
     }
 }
@@ -2776,6 +2778,7 @@ async fn handle_wt_session(app: Arc<AppState>, connection: Connection) -> Result
     let link: Arc<dyn link_rate::LinkProbe> = Arc::new(QuicLinkProbe {
         connection: connection.clone(),
         submitted: out_tx.submitted_counter(),
+        reliable_submitted: out_tx.reliable_submitted_counter(),
         epoch: Instant::now(),
     });
     handle.tx.send(MatchEvent::Connect(PlayerConnection {
@@ -4693,22 +4696,20 @@ impl MatchState {
                 let shared = city.encode_shared(staged_tick);
                 let shared_ms = encode_started.elapsed().as_secs_f32() * 1000.0;
                 let datagrams_started = std::time::Instant::now();
-                if !shared.records.is_empty() {
-                    for (player_id, camera) in cameras {
-                        let Some(packets) =
-                            self.city_datagrams_for(&mut city, player_id, camera, &shared)
-                        else {
-                            continue;
-                        };
-                        self.note_selection(session_capture::Selection {
-                            tick: staged_tick,
-                            player: player_id,
-                            kind: session_capture::SelectionKind::City(city.last_client_selection()),
-                        });
-                        if let Some(runtime) = self.players.get(&player_id) {
-                            for packet in packets {
-                                let _ = try_queue_packet(&runtime.tx, packet, &self.io);
-                            }
+                let has_records = !shared.records.is_empty();
+                for (player_id, camera) in cameras {
+                    let Some(packets) = self.city_datagrams_for(
+                        &mut city,
+                        player_id,
+                        camera,
+                        has_records.then_some(&shared),
+                        staged_tick,
+                    ) else {
+                        continue;
+                    };
+                    if let Some(runtime) = self.players.get(&player_id) {
+                        for packet in packets {
+                            let _ = try_queue_packet(&runtime.tx, packet, &self.io);
                         }
                     }
                 }
@@ -4723,20 +4724,28 @@ impl MatchState {
         }
     }
 
-    /// One client's city datagrams for this send, under its link's rate
-    /// plan (`link_rate.rs`): the static ceiling while the link keeps up, a
-    /// smaller allowance when it does not, or no send at all (`None`) when
-    /// the budget is carried to the next send.
+    /// One client's city datagrams for this send: its pending topology
+    /// copies first (`EncoderConfig::topology_datagram_copies`), then its
+    /// pose records under its link's rate plan (`link_rate.rs`) -- the static
+    /// ceiling while the link keeps up, a smaller allowance (less what the
+    /// copies took) when it does not, or none when the budget is carried to
+    /// the next send. `shared` is `None` when no body has a record this send;
+    /// the copies still go. `None` when there is nothing to send.
     fn city_datagrams_for(
         &mut self,
         city: &mut city::CityRuntime,
         player_id: u32,
         camera: vibe_land_destruction::types::Camera,
-        shared: &vibe_land_destruction::encoder::SharedRecords,
+        shared: Option<&vibe_land_destruction::encoder::SharedRecords>,
+        tick: u32,
     ) -> Option<Vec<Vec<u8>>> {
+        let client = u64::from(player_id);
+        if shared.is_none() && !city.has_topology_copies(client) {
+            return None;
+        }
         let send_interval_s = f64::from(city.send_interval_ticks().max(1)) / f64::from(SIM_HZ);
         let ceiling = city.client_ceiling_bytes();
-        let plan = match self.players.get_mut(&player_id) {
+        let plan = shared.map(|_| match self.players.get_mut(&player_id) {
             Some(runtime) => match runtime.link.as_ref().and_then(|link| link.sample()) {
                 Some(sample) => {
                     let before = runtime.city_rate.state();
@@ -4757,19 +4766,33 @@ impl MatchState {
                 None => link_rate::SendPlan::Full,
             },
             None => link_rate::SendPlan::Full,
-        };
-        if plan == link_rate::SendPlan::Skip {
-            if let Some(runtime) = self.players.get_mut(&player_id) {
-                runtime.city_rate.sent(0, plan);
+        });
+        let mut packets = Vec::new();
+        let copies = city.add_topology_copies(client, tick, &mut packets);
+        match (plan, shared) {
+            (Some(plan), Some(shared)) if plan != link_rate::SendPlan::Skip => {
+                packets.extend(city.client_datagrams_within(
+                    client,
+                    camera,
+                    shared,
+                    plan.after_topology(copies).allowance(),
+                ));
+                self.note_selection(session_capture::Selection {
+                    tick,
+                    player: player_id,
+                    kind: session_capture::SelectionKind::City(city.last_client_selection()),
+                });
+                if let Some(runtime) = self.players.get_mut(&player_id) {
+                    runtime.city_rate.sent(packets.iter().map(Vec::len).sum(), plan);
+                }
             }
-            return None;
+            _ => {
+                if let Some(runtime) = self.players.get_mut(&player_id) {
+                    runtime.city_rate.sent_topology(copies);
+                }
+            }
         }
-        let packets =
-            city.client_datagrams_within(u64::from(player_id), camera, shared, plan.allowance());
-        if let Some(runtime) = self.players.get_mut(&player_id) {
-            runtime.city_rate.sent(packets.iter().map(Vec::len).sum(), plan);
-        }
-        Some(packets)
+        (!packets.is_empty()).then_some(packets)
     }
 
     fn tick_city(&mut self, dt: f32) {
@@ -5032,23 +5055,21 @@ impl MatchState {
             let shared = city.encode_shared(self.server_tick);
             let shared_ms = encode_started.elapsed().as_secs_f32() * 1000.0;
             let datagrams_started = std::time::Instant::now();
-            if !shared.records.is_empty() {
-                for (player_id, camera) in cameras {
-                    let Some(packets) =
-                        self.city_datagrams_for(&mut city, player_id, camera, &shared)
-                    else {
-                        continue;
-                    };
-                    self.note_selection(session_capture::Selection {
-                        tick: self.server_tick,
-                        player: player_id,
-                        kind: session_capture::SelectionKind::City(city.last_client_selection()),
-                    });
-                    if let Some(runtime) = self.players.get(&player_id) {
-                        for packet in packets {
-                            if !try_queue_packet(&runtime.tx, packet, &self.io) {
-                                outbound_drops += 1;
-                            }
+            let has_records = !shared.records.is_empty();
+            for (player_id, camera) in cameras {
+                let Some(packets) = self.city_datagrams_for(
+                    &mut city,
+                    player_id,
+                    camera,
+                    has_records.then_some(&shared),
+                    self.server_tick,
+                ) else {
+                    continue;
+                };
+                if let Some(runtime) = self.players.get(&player_id) {
+                    for packet in packets {
+                        if !try_queue_packet(&runtime.tx, packet, &self.io) {
+                            outbound_drops += 1;
                         }
                     }
                 }
@@ -7618,6 +7639,7 @@ mod quic_rate_tests {
         let probe = QuicLinkProbe {
             connection: server_conn.clone(),
             submitted: submitted.clone(),
+            reliable_submitted: Arc::new(AtomicU64::new(0)),
             epoch,
         };
         let mut controller = RateController::new(RateConfig { enabled: adapt, ..RateConfig::PRODUCTION });

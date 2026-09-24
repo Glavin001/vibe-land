@@ -249,6 +249,8 @@ pub struct LinkSignals {
     pub rtt_ms: f64,
     /// Application bytes queued on the connection (all lanes).
     pub submitted_bytes: u64,
+    /// Of those, the bytes queued on the reliable stream.
+    pub reliable_submitted_bytes: u64,
 }
 
 /// The simulated link as an incremental machine: `admit` packets in
@@ -282,6 +284,7 @@ pub struct LinkSim {
     losses_declared: u64,
     lost_bytes_declared: u64,
     submitted_bytes: u64,
+    reliable_submitted_bytes: u64,
     /// Network-queue profiles: when the bottleneck is next free.
     bottleneck_free_ms: f64,
     /// RTT samples, by when their ACK is back: (ack time, rtt).
@@ -312,6 +315,7 @@ impl LinkSim {
             losses_declared: 0,
             lost_bytes_declared: 0,
             submitted_bytes: 0,
+            reliable_submitted_bytes: 0,
             bottleneck_free_ms: f64::MIN,
             rtt_samples: VecDeque::new(),
             srtt_ms: rtt_ms,
@@ -462,6 +466,9 @@ impl LinkSim {
         let index = self.deliveries.len();
         self.deliveries.push(Delivery { arrive_ms: None, channel: 0, fate: Fate::Lost, hol_ms: 0.0 });
         self.submitted_bytes += len as u64;
+        if lane != Lane::Datagram {
+            self.reliable_submitted_bytes += len as u64;
+        }
         match lane {
             Lane::Datagram if len <= self.max_datagram => {
                 self.dgram_buf.push_back((index, len, depart_ms));
@@ -539,7 +546,14 @@ impl LinkSim {
             lost_bytes: self.lost_bytes_declared,
             rtt_ms: self.srtt_ms,
             submitted_bytes: self.submitted_bytes,
+            reliable_submitted_bytes: self.reliable_submitted_bytes,
         }
+    }
+
+    /// Stream bytes not yet transmitted (new data and retransmissions due),
+    /// for reports: what the controller's estimate aims at.
+    pub fn stream_backlog_bytes(&self) -> u64 {
+        self.chunks.iter().chain(self.retransmits.iter()).map(|c| c.bytes as u64).sum()
     }
 
     /// Drain the sender and resolve the ordered stream.
@@ -740,6 +754,7 @@ mod tests {
                         lost_bytes: s.lost_bytes,
                         rtt_us: (s.rtt_ms * 1000.0) as u64,
                         submitted_bytes: s.submitted_bytes,
+                        reliable_submitted_bytes: s.reliable_submitted_bytes,
                     };
                     let plan = controller.plan(sample, 1.0 / 30.0, 10_400);
                     let bytes = match plan {
@@ -789,6 +804,26 @@ mod tests {
         assert!((on.0 - 29.0).abs() < 10.0, "on p50 {:.0} ms (quinn 28.4-31.3)", on.0);
         assert!(on.1 < 160.0, "on p99 {:.0} ms (quinn 81-117)", on.1);
         assert!((capacity / 860.0 - 1.0).abs() < 0.15, "capacity {capacity:.0} kbit/s (quinn 780-930)");
+    }
+
+    /// The rate controller's reliable-backlog estimate reads the reliable
+    /// share of what the server queued; the model also reports its own
+    /// unsent stream bytes to check that estimate against.
+    #[test]
+    fn the_link_reports_reliable_bytes_and_the_stream_backlog() {
+        let profile = Profile { rate_mbit: Some(1.0), ..Profile::default() };
+        let mut sim = LinkSim::new(&profile, 1);
+        sim.admit(0.0, Lane::Datagram, 119, 1_000);
+        sim.admit(0.0, Lane::Reliable, 120, 3_000);
+        sim.admit(0.0, Lane::Datagram, 112, 500);
+        let signals = sim.signals(1.0);
+        assert_eq!(signals.submitted_bytes, 4_500);
+        assert_eq!(signals.reliable_submitted_bytes, 3_000);
+        // 1 ms at 1 Mbit/s is 125 B: the stream has not started (datagrams
+        // go first), so all of it (and its 4-byte frame header) is waiting.
+        assert_eq!(sim.stream_backlog_bytes(), 3_004);
+        sim.signals(200.0);
+        assert_eq!(sim.stream_backlog_bytes(), 0);
     }
 
     #[test]

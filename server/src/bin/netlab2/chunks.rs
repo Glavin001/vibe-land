@@ -667,6 +667,9 @@ struct Measure {
     missing: bool,
     extra: bool,
     wrong_identity: bool,
+    /// Drawn and truth body keys and the render tick, for the wrong-identity
+    /// dump (`NETLAB2_WRONG_ID_DUMP`).
+    keys: (u32, u32, f32),
 }
 
 impl Measure {
@@ -743,9 +746,35 @@ fn measure(tables: &DrawnTables, truth: &ChunkTruth, slot: u32, render: f32, now
                     rot_now: at_now.map(|n| angle_deg(d.rotation, n.rotation)),
                 }),
                 wrong_identity,
+                keys: (d.key, t.key, render),
                 ..Default::default()
             }
         }
+    }
+}
+
+/// `NETLAB2_WRONG_ID_DUMP=<file>`: one line per held wrong-identity measure
+/// (slot, drawn key, truth key, render tick when measured, frames held, sim
+/// tick at the end of the hold). A diagnostic, off by default.
+fn wrong_id_dump() -> Option<std::sync::MutexGuard<'static, std::io::BufWriter<std::fs::File>>> {
+    static DUMP: std::sync::OnceLock<Option<std::sync::Mutex<std::io::BufWriter<std::fs::File>>>> =
+        std::sync::OnceLock::new();
+    DUMP.get_or_init(|| {
+        let path = std::env::var("NETLAB2_WRONG_ID_DUMP").ok()?;
+        Some(std::sync::Mutex::new(std::io::BufWriter::new(std::fs::File::create(path).ok()?)))
+    })
+    .as_ref()
+    .map(|m| m.lock().unwrap())
+}
+
+fn dump_wrong_id(measure: &Measure, slot: usize, weight: u64, sim_tick: u32) {
+    if !measure.wrong_identity || weight == 0 {
+        return;
+    }
+    if let Some(mut out) = wrong_id_dump() {
+        use std::io::Write;
+        let (drawn, truth, render) = measure.keys;
+        let _ = writeln!(out, "{slot} {drawn} {truth} {render:.2} {weight} {sim_tick}");
     }
 }
 
@@ -868,6 +897,7 @@ pub fn score_chunks(
             let s = slot as usize;
             dirty[s] = false;
             let weight = counted - since[s];
+            dump_wrong_id(&current[s], s, weight, frame.sim_tick);
             current[s].add_to(acc, join.as_mut().map(|(j, _)| &mut **j), span_in_join, weight as f32);
             current[s] = measure(&tables, &truth, slot, render, frame.sim_tick);
             since[s] = counted;

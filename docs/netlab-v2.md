@@ -111,7 +111,7 @@ measurement that bounds it.
 | S12 | The server capture clock is mapped to the tape clock with the pairing clock samples (NTP midpoint, median). | Loopback round trip is about 2 ms. | Spread 1.1–4.7 ms; lane latency p50 0.6 ms. |
 | S13 | The link model is simulated (below). | It follows quinn 0.11 as configured (see the list below). Where the bottleneck queue forms is a profile choice: at the sender (every older profile, the paced ideal) or in the network (`bottleneckQueueMs`, the `*-nq` profiles), which is what quinn 0.11's BBR measurably does. Not validated against kernel netem (limits). | Network-queue model against real quinn 0.11 + BBR through a userspace 1 Mbit/s relay with a 200 ms drop-tail queue (`quic_rate_tests` in `server/src/main.rs`, same offered traffic, from 3 s on): without rate adaptation 44.3% of datagrams delivered vs 44.8–44.9% (3 runs), one-way p50 204 vs 206.3–206.6 ms. Quinn's datagram buffer peaked at 95 B there: the sender-queue model does not describe quinn's BBR on a slow path (`link::tests::the_network_queue_model_matches_quinn_through_a_paced_relay`). |
 | S14 | The client starts cold at the tape's first city bootstrap. The live client had the session's history. | A newly joined client does the same. | Included in S8's early windows. |
-| S15 | **Link feedback to the server stage** (closed loop, city rate adaptation). At each of the scored client's city sends the stage feeds the link model every packet departed so far (lab and pass-through, in the final run's order), reads it (`LinkSim::signals`), and passes that to the production controller (`server/src/link_rate.rs`, compiled in by `#[path]`), whose plan sets that send's allowance or skips it. The signals are what production reads from quinn: datagram-buffer occupancy (`datagram_send_buffer_space`), UDP bytes sent, packets sent/lost and lost bytes (losses declared RTT × 9/8 + jitter after the send), smoothed RTT (7/8 EWMA of ACKed packets, the network queue included), and the bytes the server queued. Not modelled: cwnd (production does not read it), quinn's ACK delay, and RTT jitter (the model's RTT samples carry the queue, not the path jitter). The deliveries are still computed by the open-loop `simulate` over the final packet list. On the recorded link, and with `city.rate_adapt=0`, the loop is open (the static ceiling). | Reading the link never changes it (`link::tests::reading_the_link_changes_nothing_and_reports_the_sender`: deliveries identical with and without reads). The controller is the production code. | Closed-loop model vs real quinn, same relay run with adaptation, from 3 s on: 100% vs 100% delivered, one-way p50 28.4 vs 28.4–31.3 ms, p99 137 vs 81–117 ms, capacity estimate at the end 916 vs 780–930 kbit/s (3 runs). Fast links (loopback, lan, cable, lte, lossy-wifi): byte-identical to the open loop on both bundles (the controller never leaves `Free`). Sensitivity to late feedback (`lab.rate_stale_ms`): see [netcode-tuning.md](netcode-tuning.md#rate-adaptation). |
+| S15 | **Link feedback to the server stage** (closed loop, city rate adaptation). At each of the scored client's city sends the stage feeds the link model every packet departed so far (lab and pass-through, in the final run's order), reads it (`LinkSim::signals`), and passes that to the production controller (`server/src/link_rate.rs`, compiled in by `#[path]`), whose plan sets that send's allowance or skips it. The signals are what production reads from quinn: datagram-buffer occupancy (`datagram_send_buffer_space`), UDP bytes sent, packets sent/lost and lost bytes (losses declared RTT × 9/8 + jitter after the send), smoothed RTT (7/8 EWMA of ACKed packets, the network queue included), and the bytes the server queued, all lanes and (since the city-latency round) the reliable lane's share. From those the controller estimates the reliable stream's unsent bytes (`reliable_backlog`); the model reports its own count beside it (`rate-trace.jsonl` `stream_backlog_bytes`). Not modelled: the server's own outbound queue and stream flow control, which production's estimate also sees (live, loopback: a waiting stream at joins made every link `Limited` until the estimate was barred from entering that state), cwnd (production does not read it), quinn's ACK delay, and RTT jitter (the model's RTT samples carry the queue, not the path jitter). The deliveries are still computed by the open-loop `simulate` over the final packet list. On the recorded link, and with `city.rate_adapt=0`, the loop is open (the static ceiling). | Reading the link never changes it (`link::tests::reading_the_link_changes_nothing_and_reports_the_sender`: deliveries identical with and without reads). The controller is the production code. | Closed-loop model vs real quinn, same relay run with adaptation, from 3 s on: 100% vs 100% delivered, one-way p50 28.4 vs 28.4–31.3 ms, p99 137 vs 81–117 ms, capacity estimate at the end 916 vs 780–930 kbit/s (3 runs). Fast links (loopback, lan, cable, lte, lossy-wifi): byte-identical to the open loop on both bundles (the controller never leaves `Free`). Sensitivity to late feedback (`lab.rate_stale_ms`): see [netcode-tuning.md](netcode-tuning.md#rate-adaptation). Reliable-backlog estimate vs the model's count, every constrained cell of the systematic and heavy bundles: estimate − truth p1 −0.3 to −1.1 kB, p50 0, p99 0, never over by more than 1.2 kB (the estimate errs low, as designed); it assumes 24 B of QUIC overhead per packet against the model's 32. |
 
 ### The mid-match start: decision
 
@@ -169,8 +169,9 @@ or wrong-identity (see [All draws](#all-draws-the-headline)).
 - **Simulated:** this models the production transport (`outbound.rs` +
   wtransport/quinn 0.11 as the server configures it).
   - **Lanes:** two, as `wants_unreliable_delivery` assigns them. Snapshots,
-    city chunks and pings go on datagrams; everything else goes on the
-    ordered reliable stream.
+    city chunks and pings go on datagrams. City chunks include the
+    record-less datagrams that carry topology copies. Everything else goes
+    on the ordered reliable stream.
   - **Sender:** one QUIC sender. On a profile without `bottleneckQueueMs`
     it is paced at the bottleneck rate (the ideal of the BBR controller the
     server selects), so queues build at the sender. With
@@ -245,12 +246,26 @@ These are the knobs production actually has, with their production defaults:
 | `city.baseline_lag_ticks` | 110 (0 in older captures) | deltas stay on the previous baseline this long |
 | `city.baseline_skip_quiescent` | 1 (0 in older captures) | quiescent bodies left out of baselines |
 | `city.rate_adapt` | 1 (`VIBE_CITY_RATE_ADAPT`) | per-link rate adaptation of the city stream (S15); simulated links only, the recorded link is always open loop |
+| `city.topology_copies` | 2 (0 in older captures) | datagram copies of each reliable topology message (`EncoderConfig::topology_datagram_copies`, [netcode-tuning.md](netcode-tuning.md#city-latency-and-topology-delivery)) |
+| `city.reliable_queue_ms`, `city.reliable_drain_ms` | 60, 150 (0 = off) | the rate controller's reliable-stream signal (`RateConfig`): on a limited link, reliable bytes that waited this long are given the path within the drain time |
 
 `city.baseline_interval_ticks` is 120 on new servers (60 before). A knob
 applies over the capture's encoder checkpoint, which carries the config the
 live encoder ran with, so a bundle recorded before these changes replays the
 old behaviour unless the knobs turn it on. The tuning round that added them
 is in [netcode-tuning.md](netcode-tuning.md).
+
+The client's adaptive playout delay is built and off in production
+(`/city?adaptiveDelay=1` turns it on). The client stage reads lab-only
+overrides from its environment:
+
+- `CITY_ADAPTIVE_DELAY=1` turns the delay on;
+- `CITY_PLAYOUT_Q` sets the quantile (default 0.99);
+- `CITY_PLAYOUT_MARGIN` sets the margin (ticks, default 0);
+- `CITY_PLAYOUT_FLOOR` sets the floor (ticks, default 3);
+- `CITY_PLAYOUT_WINDOW_MS` sets the window (default 4000).
+
+A browser has no such environment.
 
 Lab-only knobs, not production settings: `lab.rate_stale_ms` (default 0)
 makes the rate controller read the link as it was that many ms before each
@@ -471,6 +486,13 @@ byte check (34,331/34,331) but fails (d) for debris chunks (p99 0.28 m) and
 drawn/not drawn (0.30%), by construction; the capture recorded with it
 (`20260924-131437-quick-3c-syncfix`) passes every check.
 
+The city-latency client, with its adaptive delay off (the default), passes
+every check on that capture too. The capture recorded with the city-latency
+tree (`target/city-latency/city-bench/runs/20260924-162732-quick-3c-citylat4`)
+passes every check on all three clients. Its bytes (3,919 / 3,919 / 3,901
+city chunk packets) include the record-less datagrams carrying topology
+copies.
+
 **rec1**: exact capture, 75 s loopback, PhysX GPU, this tree's server and
 client (`client/netlab/v2/record-bundle.sh`). The session has cannonballs, a
 meteor, a demolition and a drive. PASS.
@@ -648,6 +670,16 @@ client (1a35ecf8 tree, `--client-root`) against the 0eb6f3fd client.
 From the all-draws metric on the systematic bundles. Counts are measured;
 mechanisms marked *inferred* are read from the data.
 
+Finding 1's remaining cost was measured again in the city-latency round
+([netcode-tuning.md](netcode-tuning.md#city-latency-and-topology-delivery)):
+
+- **Topology held on constrained and lossy links.** Topology copies on the
+  datagram lane and a reliable-stream signal in the rate controller address
+  it.
+- **The later presentation on LTE.** This is mostly the link's one-way
+  latency and jitter. A smaller playout delay trades it against
+  corrections drawn in view. It is built and off.
+
 Findings 1, 2, 3, 5 and 6 are addressed by items 12-16 of the
 [2026-09-24 session analysis](mac-metal-session-analysis-2026-09-24.md),
 where the before/after tables are; the mechanism of finding 1 turned out to
@@ -796,6 +828,11 @@ A run directory holds:
 - `client-stats.json`: WASM check, nacks, city client stats.
 - `report.json` / `report.md`.
 - `calibration.*`, when calibrating.
+
+`NETLAB2_WRONG_ID_DUMP=<file>` makes the scorer write one line per held
+wrong-identity chunk measure (slot, drawn body, truth body, presented tick,
+frames held, server tick): where the headline's wrong-identity count comes
+from. A diagnostic; it changes no score.
 
 `NETLAB2_CLIENT_ARGS` passes experiments to the client stage (`--frame-start
 after|cpu`: where in the frame the draw happens; `--frames 60|120`: a fixed

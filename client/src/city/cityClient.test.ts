@@ -434,6 +434,7 @@ function encodeAsTopology(message: TopologyMessage): Uint8Array {
 }
 let pendingTopology: TopologyMessage | null = null;
 let pendingBootstrap: import('./wire').BootstrapMessage | null = null;
+let pendingStructureBootstrap: import('./wire').BootstrapMessage | null = null;
 
 vi.mock('./wire', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./wire')>();
@@ -454,6 +455,14 @@ vi.mock('./wire', async (importOriginal) => {
         return message;
       }
       return actual.decodeBootstrap(bytes);
+    },
+    decodeStructureBootstrap: (bytes: Uint8Array) => {
+      if (pendingStructureBootstrap && bytes.length === 1) {
+        const message = pendingStructureBootstrap;
+        pendingStructureBootstrap = null;
+        return message;
+      }
+      return actual.decodeStructureBootstrap(bytes);
     },
   };
 });
@@ -763,6 +772,8 @@ function simulateLink(client: CityClient, opts: {
   recordsAt?: (tick: number) => ChunksDatagram['records'];
   /** Reliable packets: [arrivalMs, deliver]. */
   reliable?: Array<[number, () => void]>;
+  /** [startMs, endMs): no pose datagram is sent (the rate controller withholds them). */
+  suppress?: [number, number];
   onFrame?: (frame: SimFrame) => void;
 }): SimFrame[] {
   const random = seeded(7);
@@ -777,6 +788,7 @@ function simulateLink(client: CityClient, opts: {
   tickTimes.forEach((sentAt, tick) => {
     if (tick % 2 !== 0) return;
     const at = sentAt + opts.transitMs + (random() * 2 - 1) * opts.jitterMs;
+    if (opts.suppress && sentAt >= opts.suppress[0] && sentAt < opts.suppress[1]) return;
     events.push({
       at,
       run: () => {
@@ -932,5 +944,206 @@ describe('CityClient retired chunks (item 14)', () => {
     expect(after.length).toBeGreaterThan(60);
     expect(after.every((f) => !f.drawn)).toBe(true);
     expect(store.bodyIndexOfSlot[slot]).toBe(-1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Topology copies on the datagram lane (destruction/src/encoder.rs
+// `topology_datagram_copies`) and the adaptive playout delay.
+// ---------------------------------------------------------------------------
+
+function leb128(out: number[], value: number): void {
+  let v = value >>> 0;
+  for (;;) {
+    const byte = v & 0x7f;
+    v >>>= 7;
+    if (v === 0) {
+      out.push(byte);
+      return;
+    }
+    out.push(byte | 0x80);
+  }
+}
+
+/** A PKT_CITY_TOPOLOGY packet promoting `nodes` of structure 0 onto `islandId`. */
+function topologyBytes(topoSeq: number, simTick: number, islandId: number, nodes: number[], y = 5): Uint8Array {
+  const out: number[] = [120, 2];
+  const u32 = (v: number) => out.push(v & 0xff, (v >>> 8) & 0xff, (v >>> 16) & 0xff, (v >>> 24) & 0xff);
+  const i16 = (v: number) => out.push(v & 0xff, (v >> 8) & 0xff);
+  u32(topoSeq);
+  u32(simTick);
+  out.push(1, 0); // one section
+  out.push(1); // fracture
+  leb128(out, 0); // structure
+  leb128(out, 0); // no broken bonds
+  leb128(out, 1); // one promotion
+  leb128(out, islandId);
+  leb128(out, nodes.length);
+  nodes.forEach((node, i) => leb128(out, i === 0 ? node : node - nodes[i - 1]));
+  [0, 0, 0, 0, y * 100, 0].forEach(i16); // region, local (cm)
+  u32(3); // identity quaternion
+  [0, 0, 0, 0, 0, 0].forEach(i16); // velocities
+  leb128(out, 0); // retired
+  leb128(out, 0); // migrations
+  return new Uint8Array(out);
+}
+
+/** A record-less chunk datagram carrying topology parts, as the encoder sends them. */
+function copyDatagram(simTick: number, parts: Array<{ topoSeq: number; part: number; parts: number; bytes: Uint8Array }>): ChunksDatagram {
+  return { sequence: 0, baselineId: 0, simTick, records: [], topologyParts: parts };
+}
+
+describe('CityClient topology copies', () => {
+  it('applies a copy that beats its reliable message, once', () => {
+    const { client, resyncs } = makeClient();
+    bootstrap(client);
+    const bytes = topologyBytes(1, 10, 1, [2, 3]);
+    internals(client).handleChunks(copyDatagram(8, [{ topoSeq: 1, part: 0, parts: 1, bytes }]));
+    expect(client.topology.body(bodyKey(0, 1))?.chunkSlots.length).toBe(2);
+    expect(client.topology.lastSeq()).toBe(1);
+    // The reliable message lands later and changes nothing.
+    client.handlePacket(bytes);
+    expect(client.topology.lastSeq()).toBe(1);
+    const stats = client.stats();
+    expect(stats.topologyCopiesApplied).toBe(1);
+    expect(stats.topologyReliableAfterCopy).toBe(1);
+    expect(stats.topoSeqGaps).toBe(0);
+    expect(resyncs).toHaveLength(0);
+  });
+
+  it('holds a copy that is ahead of a missing message, then applies both in seq order', () => {
+    const { client, resyncs } = makeClient();
+    bootstrap(client);
+    const first = topologyBytes(1, 10, 1, [3]);
+    const second = topologyBytes(2, 12, 2, [2]);
+    internals(client).handleChunks(copyDatagram(10, [{ topoSeq: 2, part: 0, parts: 1, bytes: second }]));
+    expect(client.topology.lastSeq()).toBe(0);
+    expect(client.topology.body(bodyKey(0, 2))).toBeUndefined();
+    client.handlePacket(first); // the reliable stream delivers seq 1
+    expect(client.topology.lastSeq()).toBe(2);
+    expect(client.topology.body(bodyKey(0, 1))).toBeDefined();
+    expect(client.topology.body(bodyKey(0, 2))).toBeDefined();
+    client.handlePacket(second); // and seq 2, already applied
+    expect(client.stats().topoSeqGaps).toBe(0);
+    expect(resyncs).toHaveLength(0);
+  });
+
+  it('reassembles a copy split across datagrams, in any order', () => {
+    const { client } = makeClient();
+    bootstrap(client);
+    const bytes = topologyBytes(1, 10, 1, [2, 3]);
+    const cut = 9;
+    internals(client).handleChunks(copyDatagram(8, [{ topoSeq: 1, part: 1, parts: 2, bytes: bytes.subarray(cut) }]));
+    expect(client.topology.lastSeq()).toBe(0);
+    internals(client).handleChunks(copyDatagram(8, [{ topoSeq: 1, part: 0, parts: 2, bytes: bytes.subarray(0, cut) }]));
+    expect(client.topology.lastSeq()).toBe(1);
+    expect(client.topology.body(bodyKey(0, 1))).toBeDefined();
+  });
+
+  it('holds the presentation below a missing message whose first piece arrived', () => {
+    // A two-piece copy lost its second piece; the reliable stream brings the
+    // message 400 ms late. No record names the new body yet, so only the
+    // piece says a promotion is coming, and at which tick.
+    const { client } = makeClient();
+    const now = vi.spyOn(performance, 'now').mockReturnValue(900);
+    bootstrap(client);
+    now.mockRestore();
+    const U = TICK_BASE + 300;
+    const bytes = topologyBytes(1, U, 1, [2, 3]);
+    const sentMs = 1000 + ((U - TICK_BASE) / 60) * 1000;
+    const arrivesMs = sentMs + 400;
+    let appliedAt = Number.POSITIVE_INFINITY;
+    const frames = simulateLink(client, {
+      hz: 60, transitMs: 5, jitterMs: 0, seconds: 8,
+      reliable: [
+        [sentMs + 5, () => internals(client).handleChunks(copyDatagram(U, [{ topoSeq: 1, part: 0, parts: 2, bytes: bytes.subarray(0, 12) }]))],
+        [arrivesMs, () => { client.handlePacket(bytes); appliedAt = arrivesMs; }],
+      ],
+    });
+    const before = frames.filter((f) => f.nowMs < appliedAt);
+    expect(Math.max(...before.map((f) => f.presented))).toBeLessThan(U);
+    expect(frames[frames.length - 1].presented).toBeGreaterThan(U + 60);
+    for (let i = 1; i < frames.length; i += 1) expect(frames[i].presented).toBeGreaterThanOrEqual(frames[i - 1].presented);
+  });
+
+  it('keeps the lead cap while only topology copies arrive', () => {
+    // The rate controller withholds a slow link's pose records for a while
+    // but the copies keep coming: the presentation must stay at or behind
+    // the newest records it has, not run on past the 300 ms lapse.
+    const { client } = makeClient();
+    const now = vi.spyOn(performance, 'now').mockReturnValue(900);
+    bootstrap(client);
+    now.mockRestore();
+    const quietFrom = 5000;
+    const quietTo = 6500;
+    const dup = topologyBytes(0, 1, 1, [3]); // seq 0: already applied, ignored
+    const frames = simulateLink(client, {
+      hz: 60, transitMs: 20, jitterMs: 0, seconds: 8,
+      recordsAt: () => [],
+      reliable: Array.from({ length: 45 }, (_, i) => {
+        const at = quietFrom + i * 33.3;
+        const tick = TICK_BASE + Math.floor(((at - 20 - 1000) / 1000) * 60) - 2;
+        return [at, () => internals(client).handleChunks(copyDatagram(tick, [{ topoSeq: 0, part: 0, parts: 1, bytes: dup }]))] as [number, () => void];
+      }),
+      suppress: [quietFrom, quietTo],
+    });
+    const quiet = frames.filter((f) => f.nowMs >= quietFrom + 300 && f.nowMs < quietTo);
+    expect(quiet.length).toBeGreaterThan(100);
+    expect(Math.max(...quiet.map((f) => f.presented - f.newestReceived))).toBeLessThanOrEqual(0);
+  });
+});
+
+/** The adaptive playout delay is off by default (/city?adaptiveDelay=1). */
+function withAdaptiveDelay(client: CityClient): CityClient {
+  (client as unknown as { adaptiveDelay: boolean }).adaptiveDelay = true;
+  return client;
+}
+
+describe('CityClient adaptive playout delay', () => {
+  it('is off unless asked for: the fixed 6-tick delay', () => {
+    const { client } = makeClient();
+    simulateLink(client, { hz: 60, transitMs: 1, jitterMs: 0, seconds: 5 });
+    expect(client.presentationClock().playoutDelayTicks).toBe(6);
+  });
+
+  it('draws a steady link close to the newest datagram, never past it', () => {
+    const { client } = makeClient();
+    withAdaptiveDelay(client);
+    const frames = simulateLink(client, { hz: 60, transitMs: 1, jitterMs: 0, seconds: 10 }).slice(240);
+    expect(frames.filter((f) => f.presented > f.newestReceived)).toHaveLength(0);
+    // The fixed 6-tick delay put it 5-6 ticks behind the server here.
+    expect(median(frames.map((f) => f.presented - f.serverTick))).toBeGreaterThan(-3.5);
+  });
+
+  it('keeps a jittery link behind its newest datagram with a larger delay', () => {
+    const { client } = makeClient();
+    withAdaptiveDelay(client);
+    const frames = simulateLink(client, { hz: 60, transitMs: 90, jitterMs: 35, seconds: 20 }).slice(600);
+    expect(frames.filter((f) => f.presented > f.newestReceived)).toHaveLength(0);
+    expect(client.presentationClock().playoutDelayTicks).toBeGreaterThan(2);
+    expect(client.presentationClock().playoutDelayTicks).toBeLessThanOrEqual(6);
+  });
+});
+
+describe('CityClient repair behind topology copies', () => {
+  it('restates the structure, then re-applies what the copies applied after it', () => {
+    const { client, resyncs } = makeClient();
+    bootstrap(client);
+    internals(client).handleChunks(copyDatagram(8, [{ topoSeq: 1, part: 0, parts: 1, bytes: topologyBytes(1, 10, 1, [3]) }]));
+    expect(client.topology.lastSeq()).toBe(1);
+    // A repair the server queued at seq 0 arrives behind the copy.
+    pendingStructureBootstrap = {
+      simTick: 9,
+      manifestHashHex: 'a'.repeat(64),
+      baselineId: 1,
+      topoSeq: 0,
+      structures: [{ structureId: 0, bondCount: 3, aliveBonds: new Uint8Array([0b011]) }],
+      islands: [],
+    } as unknown as import('./wire').BootstrapMessage;
+    client.handlePacket(new Uint8Array([129]));
+    expect(resyncs).toHaveLength(0);
+    expect(client.topology.lastSeq()).toBe(1);
+    expect(client.topology.body(bodyKey(0, 1))?.chunkSlots.length).toBe(1);
+    expect(client.stats().repairsBehindCopies).toBe(1);
   });
 });

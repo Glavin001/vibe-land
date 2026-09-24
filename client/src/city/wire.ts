@@ -65,7 +65,25 @@ export interface ChunksDatagram {
   baselineId: number;
   simTick: number;
   records: DecodedBodyRecord[];
+  /**
+   * Datagram copies of reliable topology messages, in pieces (the trailer
+   * after the records; destruction/src/wire.rs CHUNKS_TRAILER_TOPOLOGY_PART).
+   * Absent when the datagram carries none.
+   */
+  topologyParts?: TopologyPart[];
 }
+
+/** One piece of a complete PKT_CITY_TOPOLOGY packet (kind byte included). */
+export interface TopologyPart {
+  topoSeq: number;
+  part: number;
+  parts: number;
+  bytes: Uint8Array;
+}
+
+/** Chunk-datagram trailer section tag: a topology message piece. */
+export const CHUNKS_TRAILER_TOPOLOGY_PART = 0xc7;
+const TOPOLOGY_PART_HEADER_BYTES = 1 + 4 + 1 + 1 + 2;
 
 export interface IslandPromotionMessage {
   structureId: number;
@@ -321,7 +339,27 @@ export function decodeChunksDatagram(bytes: Uint8Array): ChunksDatagram {
     }
     records.push({ bodyEntity, mode, flags, position, rotation, linearVelocity, angularVelocity });
   }
-  return { sequence, baselineId, simTick, records };
+  // The trailer: sections to the end. An unknown tag ends it.
+  let topologyParts: TopologyPart[] | undefined;
+  while (reader.remaining() >= TOPOLOGY_PART_HEADER_BYTES) {
+    if (reader.u8() !== CHUNKS_TRAILER_TOPOLOGY_PART) {
+      break;
+    }
+    const topoSeq = reader.u32();
+    const part = reader.u8();
+    const parts = reader.u8();
+    const length = reader.u16();
+    if (reader.remaining() < length) {
+      throw new Error('truncated topology part');
+    }
+    const bytes = reader.bytes32(length);
+    if (part < parts) {
+      (topologyParts ??= []).push({ topoSeq, part, parts, bytes });
+    }
+  }
+  return topologyParts
+    ? { sequence, baselineId, simTick, records, topologyParts }
+    : { sequence, baselineId, simTick, records };
 }
 
 export function decodeTopology(bytes: Uint8Array): TopologyMessage {

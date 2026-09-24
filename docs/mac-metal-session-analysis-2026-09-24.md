@@ -747,6 +747,14 @@ paired) showing the acceptance criterion.
     behind a promotion delayed 400 ms. All three fail on 3f3d891a.
   - *Found by:* Netlab all-body scoring (docs/netlab-v2.md), bundle
     `systematic-2c-d1342419`, c1.
+  - *Follow-up (city-latency round):* [netcode-tuning.md](netcode-tuning.md#city-latency-and-topology-delivery).
+    - Topology copies on the datagram lane and a reliable-stream signal in
+      the rate controller take constrained-link wrong identity to the
+      fast-link level: bw-capped 39,830 → 355 and poor-mobile 3,686 → 456
+      (measured, systematic c1, with rate adaptation on).
+    - The LTE lag this item added is mostly one-way latency and jitter
+      absorption. A smaller, adaptive playout delay trades it against
+      corrections drawn in view, so it is built and off.
   - *Evidence (measured):* wrong-identity chunk draws 0 (loopback),
     61,092 (LTE), 139,139 (poor-mobile). 1,995 moving body-frames on LTE were
     for bodies whose topology had not arrived (1-17 ticks late). Inferred

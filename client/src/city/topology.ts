@@ -599,6 +599,29 @@ export class CityTopology {
     return this.lastTopoSeq;
   }
 
+  /**
+   * Re-applies the part of an already-applied message that concerns
+   * `structures`, after a structure repair restated them at an earlier seq
+   * (the repair waited on the reliable stream behind this message's datagram
+   * copy). The sequence position does not move.
+   */
+  reapplyForStructures(message: TopologyMessage, structures: ReadonlySet<number>): void {
+    const filtered: TopologyMessage = {
+      topoSeq: message.topoSeq,
+      simTick: message.simTick,
+      batches: message.batches.filter((batch) => structures.has(batch.structureId)),
+      settled: message.settled.filter((settle) => structures.has(settle.structureId)),
+      wakes: message.wakes.filter((wake) => structures.has(wake.structureId)),
+    };
+    if (filtered.batches.length === 0 && filtered.settled.length === 0 && filtered.wakes.length === 0) {
+      return;
+    }
+    const last = this.lastTopoSeq;
+    this.lastTopoSeq = message.topoSeq - 1;
+    this.apply(filtered);
+    this.lastTopoSeq = last;
+  }
+
   /** Applies a reliable topology message. Returns false on a sequence gap. */
   apply(message: TopologyMessage): boolean {
     if (this.lastTopoSeq !== 0 && message.topoSeq !== this.lastTopoSeq + 1) {

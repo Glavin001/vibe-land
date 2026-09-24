@@ -152,6 +152,7 @@ pub struct CityKnobs {
     pub contact_target_age_ticks: Option<u32>,
     pub baseline_reference_lag_ticks: Option<u32>,
     pub baseline_skips_quiescent: Option<bool>,
+    pub topology_datagram_copies: Option<u32>,
 }
 
 impl CityKnobs {
@@ -203,6 +204,9 @@ impl CityKnobs {
         }
         if let Some(value) = self.baseline_skips_quiescent {
             config.baseline_skips_quiescent = value;
+        }
+        if let Some(value) = self.topology_datagram_copies {
+            config.topology_datagram_copies = value;
         }
     }
 
@@ -565,6 +569,10 @@ pub struct RateTraceRow {
     /// Bytes allowed (None: the static ceiling; 0: skipped).
     pub allowance_bytes: Option<usize>,
     pub used_bytes: usize,
+    /// The controller's reliable-stream backlog estimate, bytes, and the
+    /// link model's own count of unsent stream bytes.
+    pub reliable_backlog_bytes: f64,
+    pub stream_backlog_bytes: u64,
 }
 
 /// A packet as the feedback link sees it.
@@ -671,6 +679,7 @@ impl Feedback {
             lost_bytes: signals.lost_bytes,
             rtt_us: (signals.rtt_ms * 1000.0) as u64,
             submitted_bytes: signals.submitted_bytes,
+            reliable_submitted_bytes: signals.reliable_submitted_bytes,
         };
         self.samples.push_back((at_ms, sample));
         // A stale view (sensitivity probe): the newest sample at least
@@ -694,6 +703,8 @@ impl Feedback {
             capacity_kbit_s: self.controller.capacity_bytes_per_s() * 8.0 / 1000.0,
             other_kbit_s: self.controller.other_rate_bytes_per_s() * 8.0 / 1000.0,
             city_rate_kbit_s: self.controller.city_rate_bytes_per_s() * 8.0 / 1000.0,
+            reliable_backlog_bytes: self.controller.reliable_backlog_bytes(),
+            stream_backlog_bytes: self.sim.stream_backlog_bytes(),
             allowance_bytes: plan.allowance(),
             used_bytes: 0,
         });
@@ -705,6 +716,16 @@ impl Feedback {
         self.controller.sent(bytes, plan);
         if let Some(row) = self.trace.last_mut() {
             row.used_bytes = bytes;
+        }
+    }
+
+    /// Topology copies on a send with no plan (no records) or a skipped one.
+    fn sent_topology(&mut self, bytes: usize, planned: bool) {
+        self.controller.sent_topology(bytes);
+        if planned {
+            if let Some(row) = self.trace.last_mut() {
+                row.used_bytes = bytes;
+            }
         }
     }
 
@@ -1126,49 +1147,75 @@ pub fn build(bundle: &Bundle, config: &StreamConfig) -> std::io::Result<Stream> 
                     _ => latest_camera.iter().map(|(id, c)| (*id, *c)).collect(),
                 };
                 let shared = encoder.encode_send(tick);
-                if !shared.records.is_empty() {
-                    for (id, camera) in order {
-                        if id != player {
-                            encoder.client_datagrams(u64::from(id), camera, &shared);
-                            continue;
-                        }
-                        // As `MatchState::send_city_datagrams` does: the
-                        // plan first, then the send (or none), then what it
-                        // queued goes back to the controller.
-                        let plan = match feedback.as_mut() {
-                            Some(feedback) => feedback.plan(city_at, tick),
-                            None => SendPlan::Full,
-                        };
-                        if plan == SendPlan::Skip {
-                            if let Some(feedback) = feedback.as_mut() {
-                                feedback.sent(0, plan);
-                            }
-                            *stats.city_selection.entry("rate_skipped_sends".into()).or_default() += 1;
-                            continue;
-                        }
-                        let packets =
-                            encoder.client_datagrams_within(u64::from(id), camera, &shared, plan.allowance());
-                        let summary = encoder.last_client_selection();
-                        if let Some(feedback) = feedback.as_mut() {
-                            let bytes: usize = packets.iter().map(Vec::len).sum();
-                            feedback.sent(bytes, plan);
-                        }
-                        for (name, value) in [
-                            ("candidates", summary.candidates),
-                            ("eval_cap", summary.eval_cap),
-                            ("rest_stride", summary.rest_stride),
-                            ("rest_unchanged", summary.rest_unchanged),
-                            ("not_relevant", summary.not_relevant),
-                            ("not_newsworthy", summary.not_newsworthy),
-                            ("ceiling", summary.ceiling),
-                            ("sent", summary.sent),
-                            ("allowance_bytes", summary.allowance_bytes),
-                            ("used_bytes", summary.used_bytes),
-                        ] {
-                            *stats.city_selection.entry(name.into()).or_default() += u64::from(value);
-                        }
-                        datagrams = packets;
+                let has_records = !shared.records.is_empty();
+                for (id, camera) in order {
+                    let client = u64::from(id);
+                    // A send with no records still carries the client's
+                    // pending topology copies, ahead of any records
+                    // (`add_topology_copies`), as `MatchState::tick_city` does.
+                    if !has_records && !encoder.has_topology_copies(client) {
+                        continue;
                     }
+                    let mut packets = Vec::new();
+                    if id != player {
+                        encoder.add_topology_copies(client, tick, &mut packets);
+                        if has_records {
+                            encoder.client_datagrams(client, camera, &shared);
+                        }
+                        continue;
+                    }
+                    // As `MatchState::city_datagrams_for` does: the plan
+                    // first, then the topology copies, then the records under
+                    // what the copies left of the allowance (or none), then
+                    // what it queued goes back to the controller.
+                    let plan = match (has_records, feedback.as_mut()) {
+                        (true, Some(feedback)) => Some(feedback.plan(city_at, tick)),
+                        (true, None) => Some(SendPlan::Full),
+                        (false, _) => None,
+                    };
+                    let copies = encoder.add_topology_copies(client, tick, &mut packets);
+                    if copies > 0 {
+                        *stats.city_selection.entry("topology_copy_bytes".into()).or_default() += copies as u64;
+                    }
+                    match plan {
+                        Some(plan) if plan != SendPlan::Skip => {
+                            let records = encoder.client_datagrams_within(
+                                client,
+                                camera,
+                                &shared,
+                                plan.after_topology(copies).allowance(),
+                            );
+                            packets.extend(records);
+                            let summary = encoder.last_client_selection();
+                            if let Some(feedback) = feedback.as_mut() {
+                                let bytes: usize = packets.iter().map(Vec::len).sum();
+                                feedback.sent(bytes, plan);
+                            }
+                            for (name, value) in [
+                                ("candidates", summary.candidates),
+                                ("eval_cap", summary.eval_cap),
+                                ("rest_stride", summary.rest_stride),
+                                ("rest_unchanged", summary.rest_unchanged),
+                                ("not_relevant", summary.not_relevant),
+                                ("not_newsworthy", summary.not_newsworthy),
+                                ("ceiling", summary.ceiling),
+                                ("sent", summary.sent),
+                                ("allowance_bytes", summary.allowance_bytes),
+                                ("used_bytes", summary.used_bytes),
+                            ] {
+                                *stats.city_selection.entry(name.into()).or_default() += u64::from(value);
+                            }
+                        }
+                        skipped => {
+                            if skipped.is_some() {
+                                *stats.city_selection.entry("rate_skipped_sends".into()).or_default() += 1;
+                            }
+                            if let Some(feedback) = feedback.as_mut() {
+                                feedback.sent_topology(copies, skipped.is_some());
+                            }
+                        }
+                    }
+                    datagrams = packets;
                 }
             }
             if let Some(feedback) = feedback.as_mut() {

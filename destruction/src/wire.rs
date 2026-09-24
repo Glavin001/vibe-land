@@ -410,6 +410,57 @@ pub struct ChunksDatagram {
     pub baseline_id: u16,
     pub sim_tick: u32,
     pub records: Vec<DecodedBodyRecord>,
+    /// Datagram copies of reliable topology messages carried after the
+    /// records (see [`CHUNKS_TRAILER_TOPOLOGY_PART`]); empty on older servers.
+    pub topology_parts: Vec<TopologyPart>,
+}
+
+/// A chunk-datagram trailer section: one piece of a reliable
+/// `PKT_CITY_TOPOLOGY` message (its complete bytes, kind byte included),
+/// copied onto the datagram lane so a fracture's topology reaches the client
+/// with the poses instead of behind the reliable stream (head-of-line
+/// blocking on loss, or starved behind datagrams on a constrained link). The
+/// reliable message is still sent; the client applies whichever copy arrives
+/// first, in `topo_seq` order.
+///
+/// Length-detected: the trailer follows the `record_count` records, and every
+/// decoder before it (this crate's and the browser's) stops reading there,
+/// so older clients ignore it. A datagram may carry records, parts, or both.
+pub const CHUNKS_TRAILER_TOPOLOGY_PART: u8 = 0xC7;
+/// Tag, topo_seq u32, part u8, parts u8, length u16.
+pub const TOPOLOGY_PART_HEADER_BYTES: usize = 1 + 4 + 1 + 1 + 2;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TopologyPart {
+    pub topo_seq: u32,
+    pub part: u8,
+    pub parts: u8,
+    pub bytes: Vec<u8>,
+}
+
+pub fn write_topology_part(out: &mut Vec<u8>, topo_seq: u32, part: u8, parts: u8, bytes: &[u8]) {
+    debug_assert!(bytes.len() <= u16::MAX as usize && part < parts);
+    out.push(CHUNKS_TRAILER_TOPOLOGY_PART);
+    out.extend_from_slice(&topo_seq.to_le_bytes());
+    out.push(part);
+    out.push(parts);
+    out.extend_from_slice(&(bytes.len() as u16).to_le_bytes());
+    out.extend_from_slice(bytes);
+}
+
+/// The chunk-datagram header of a datagram that carries only trailer
+/// sections (no records).
+pub fn chunks_header(sequence: u32, baseline_id: u16, sim_tick: u32, record_count: u16) -> Vec<u8> {
+    let mut packet = Vec::with_capacity(crate::quant::MAX_DATAGRAM);
+    packet.push(PKT_CITY_CHUNKS);
+    packet.push(CITY_WIRE_VERSION);
+    packet.extend_from_slice(&sequence.to_le_bytes());
+    packet.extend_from_slice(&baseline_id.to_le_bytes());
+    packet.extend_from_slice(&sim_tick.to_le_bytes());
+    packet.extend_from_slice(&record_count.to_le_bytes());
+    packet.extend_from_slice(&[0, 0]);
+    debug_assert_eq!(packet.len(), CHUNKS_HEADER_BYTES);
+    packet
 }
 
 #[derive(Debug)]
@@ -709,11 +760,28 @@ pub fn decode_chunks_datagram(data: &[u8]) -> Result<ChunksDatagram, WireError> 
             angular_velocity,
         });
     }
+    // The trailer: sections until the end. An unknown tag ends it (a later
+    // server's section this decoder does not know).
+    let mut topology_parts = Vec::new();
+    while reader.remaining() >= TOPOLOGY_PART_HEADER_BYTES {
+        if reader.u8()? != CHUNKS_TRAILER_TOPOLOGY_PART {
+            break;
+        }
+        let topo_seq = reader.u32()?;
+        let part = reader.u8()?;
+        let parts = reader.u8()?;
+        let len = reader.u16()? as usize;
+        let bytes = reader.take(len)?.to_vec();
+        if part < parts {
+            topology_parts.push(TopologyPart { topo_seq, part, parts, bytes });
+        }
+    }
     Ok(ChunksDatagram {
         sequence,
         baseline_id,
         sim_tick,
         records,
+        topology_parts,
     })
 }
 
@@ -1208,6 +1276,26 @@ mod tests {
     }
 
     use super::*;
+
+    /// The topology-part trailer after a datagram's records. Decoders read
+    /// `record_count` records and older ones stop there, which is what makes
+    /// the trailer invisible to them.
+    #[test]
+    fn a_topology_part_trailer_follows_the_records() {
+        let mut packet = chunks_header(9, 3, 100, 0);
+        write_topology_part(&mut packet, 41, 1, 2, &[120, 2, 41, 0]);
+        let decoded = decode_chunks_datagram(&packet).expect("decode");
+        assert!(decoded.records.is_empty());
+        assert_eq!((decoded.sequence, decoded.baseline_id, decoded.sim_tick), (9, 3, 100));
+        assert_eq!(
+            decoded.topology_parts,
+            vec![TopologyPart { topo_seq: 41, part: 1, parts: 2, bytes: vec![120, 2, 41, 0] }]
+        );
+        // An unknown section tag ends the trailer rather than failing.
+        packet.extend_from_slice(&[0xEE; 12]);
+        assert_eq!(decode_chunks_datagram(&packet).expect("decode").topology_parts.len(), 1);
+    }
+
     use glam::Quat;
     use vibe_netcode::destruction_backend::IslandPromotion;
 

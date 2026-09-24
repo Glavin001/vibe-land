@@ -97,6 +97,8 @@ pub struct LinkSample {
     pub rtt_us: u64,
     /// Application bytes the server queued on this connection (all lanes).
     pub submitted_bytes: u64,
+    /// Of those, the bytes queued on the ordered reliable stream.
+    pub reliable_submitted_bytes: u64,
 }
 
 /// Something that can report a connection's `LinkSample`.
@@ -137,6 +139,15 @@ pub struct RateConfig {
     pub min_send_bytes: usize,
     /// The city's rate never goes below this, bytes/s.
     pub min_rate_bytes_per_s: f64,
+    /// Reliable-stream bytes waiting this long on a limited link make the
+    /// city give the backlog back within `reliable_drain_ms`, ms (0: not
+    /// read). They never make a link limited. See `reliable_backlog`.
+    pub reliable_queue_ms: f64,
+    pub reliable_drain_ms: f64,
+    /// Per-packet bytes the QUIC sender adds to what the server queued, as
+    /// assumed by the reliable-backlog estimate: a low bound (short header,
+    /// AEAD tag, frame header), so the estimate errs low.
+    pub packet_overhead_bytes: f64,
     /// Back to `Free` after the path has carried the static ceiling's rate
     /// plus the other traffic (with no standing queue) for this long, ms.
     pub release_ms: f64,
@@ -165,6 +176,9 @@ impl RateConfig {
         probe_gain_max: 2.5,
         min_send_bytes: 400,
         min_rate_bytes_per_s: 4_000.0,
+        reliable_queue_ms: 60.0,
+        reliable_drain_ms: 150.0,
+        packet_overhead_bytes: 24.0,
         release_ms: 5_000.0,
         policer_loss: 0.10,
         loss_window_ms: 2_000.0,
@@ -200,6 +214,20 @@ pub enum SendPlan {
 }
 
 impl SendPlan {
+    /// The plan for the pose records once `topology_bytes` of topology
+    /// copies have been taken out of it: topology goes first, whatever the
+    /// plan (it is what the poses mean), and in the limited state it is paid
+    /// for from the same allowance, so a fracture's burst of topology does
+    /// not push the connection past its rate.
+    pub fn after_topology(self, topology_bytes: usize) -> Self {
+        match self {
+            SendPlan::Limited { allowance_bytes } => {
+                SendPlan::Limited { allowance_bytes: allowance_bytes.saturating_sub(topology_bytes) }
+            }
+            plan => plan,
+        }
+    }
+
     /// The allowance to hand the encoder (`None`: its own ceiling).
     pub fn allowance(self) -> Option<usize> {
         match self {
@@ -242,6 +270,26 @@ pub struct RateController {
     capacity: f64,
     /// Non-city bytes the server queued, bytes/s (EWMA).
     other_rate: f64,
+    /// Estimated bytes queued on the reliable stream and not yet sent.
+    ///
+    /// The QUIC sender writes datagrams before stream data, so a link the
+    /// datagrams fill starves the stream without a byte waiting in the
+    /// datagram buffer: every send drains within its interval, and the stream
+    /// gets only the gaps. Measured in Netlab (1 Mbit/s, no loss): the link
+    /// stayed `Free` with 158-628 B buffered while topology waited 0.3-2.2 s
+    /// behind the pose stream. quinn does not report a stream's unsent bytes,
+    /// so this is what the server queued on the stream less what went on the
+    /// wire that was not datagrams (wire bytes, less `packet_overhead_bytes`
+    /// per packet, less the datagram bytes that left the buffer), floored at
+    /// zero each read. Retransmissions and an underestimated overhead make it
+    /// err low; it never throttles a link whose stream keeps moving.
+    reliable_backlog: f64,
+    /// Reliable bytes queued so far, and (estimated) sent, cumulative; and
+    /// when each read's new reliable bytes were queued (cumulative total
+    /// after them, read time), for the age of the oldest unsent byte.
+    reliable_queued_total: f64,
+    reliable_sent_total: f64,
+    reliable_marks: std::collections::VecDeque<(f64, u64)>,
     backlog_streak: u32,
     /// Windowed minimum RTT: (at_us, rtt_us), increasing rtt.
     min_rtt: std::collections::VecDeque<(u64, u64)>,
@@ -274,6 +322,10 @@ impl RateController {
             capacity_samples: Default::default(),
             capacity: 0.0,
             other_rate: 0.0,
+            reliable_backlog: 0.0,
+            reliable_queued_total: 0.0,
+            reliable_sent_total: 0.0,
+            reliable_marks: Default::default(),
             backlog_streak: 0,
             min_rtt: Default::default(),
             last_below_ceiling_us: 0,
@@ -341,13 +393,51 @@ impl RateController {
                 let alpha = (dt_s / 1.0).min(1.0);
                 self.other_rate += alpha * (other - self.other_rate);
             }
+            if config.reliable_queue_ms > 0.0 {
+                let submitted = sample.submitted_bytes.saturating_sub(last.submitted_bytes) as f64;
+                let reliable = sample
+                    .reliable_submitted_bytes
+                    .saturating_sub(last.reliable_submitted_bytes) as f64;
+                let datagrams_sent = (submitted - reliable)
+                    - (sample.datagram_buffered_bytes as f64 - last.datagram_buffered_bytes as f64);
+                let payload = sample.wire_bytes.saturating_sub(last.wire_bytes) as f64
+                    - config.packet_overhead_bytes
+                        * sample.sent_packets.saturating_sub(last.sent_packets) as f64;
+                let stream_sent = (payload - datagrams_sent).max(0.0);
+                self.reliable_queued_total += reliable;
+                self.reliable_sent_total =
+                    (self.reliable_sent_total + stream_sent).min(self.reliable_queued_total);
+                self.reliable_backlog = self.reliable_queued_total - self.reliable_sent_total;
+                if reliable > 0.0 {
+                    // Queued since the last read, stamped with this one: the
+                    // age errs short by up to one read interval, never long
+                    // (bytes queued the instant before a read, or across a
+                    // slow server tick, have not waited for the link).
+                    self.reliable_marks.push_back((self.reliable_queued_total, sample.at_us));
+                }
+                while self
+                    .reliable_marks
+                    .front()
+                    .is_some_and(|(total, _)| *total <= self.reliable_sent_total)
+                {
+                    self.reliable_marks.pop_front();
+                }
+            }
         }
         self.city_bytes_since_plan = 0;
 
         self.note_rtt(sample);
         let queued_in_network = self.rtt_inflation_ms(sample) >= config.rtt_queue_ms;
-        let backlogged =
-            sample.datagram_buffered_bytes >= config.backlog_bytes || queued_in_network;
+        let stream_wait_ms = self.reliable_wait_ms(sample.at_us);
+        let stream_starved = config.reliable_queue_ms > 0.0 && stream_wait_ms >= config.reliable_queue_ms;
+        // A waiting stream does not make a link count as constrained: live
+        // on loopback, stream bytes waited 60 ms at joins with nothing in
+        // the datagram buffer (the estimate cannot tell a starved stream
+        // from one that is flow-controlled, or from bytes still in the
+        // server's own queue), and the link went `Limited` for the whole
+        // session. Only a link the datagram or network-queue signals have
+        // found constrained gives its city share to a waiting stream.
+        let backlogged = sample.datagram_buffered_bytes >= config.backlog_bytes || queued_in_network;
         if backlogged {
             self.backlog_streak += 1;
         } else {
@@ -399,7 +489,20 @@ impl RateController {
         let excess = (queue_ms - self.target_queue_ms(sample)).max(0.0) / 1000.0 * self.capacity;
         let gain = self.gain(sample.at_us, sample.rtt_us);
         self.cycle_max_queue_ms = self.cycle_max_queue_ms.max(queue_ms - self.target_queue_ms(sample));
-        let rate = (gain * config.headroom * self.capacity - self.other_rate - excess / drain_s)
+        // Reliable bytes kept waiting behind the datagrams on a limited link:
+        // the city gives them the path until they are out, within
+        // `reliable_drain_ms`. Only once they have waited
+        // `reliable_queue_ms`: the estimate runs a read ahead of the wire
+        // (bytes the server queued that the connection has not taken yet).
+        let stream_yield = if stream_starved {
+            self.reliable_backlog / (config.reliable_drain_ms / 1000.0)
+        } else {
+            0.0
+        };
+        let rate = (gain * config.headroom * self.capacity
+            - self.other_rate
+            - excess / drain_s
+            - stream_yield)
             .max(config.min_rate_bytes_per_s);
         self.city_rate = rate;
         let nominal = rate * send_interval_s;
@@ -409,7 +512,7 @@ impl RateController {
         // through its quiet stretches, so the next burst is paced from its
         // first send instead of queueing for `enter_samples` sends first.
         let ceiling_rate = ceiling_bytes as f64 / send_interval_s.max(1e-3);
-        if self.capacity < ceiling_rate + self.other_rate || excess > 0.0 {
+        if self.capacity < ceiling_rate + self.other_rate || excess > 0.0 || stream_starved {
             self.last_below_ceiling_us = sample.at_us;
         } else if sample.at_us.saturating_sub(self.last_below_ceiling_us) as f64 / 1000.0
             >= config.release_ms
@@ -437,6 +540,16 @@ impl RateController {
         self.city_bytes_since_plan += city_bytes as u64;
         if let SendPlan::Limited { .. } = plan {
             self.tokens = (self.tokens - city_bytes as f64).max(0.0);
+        }
+    }
+
+    /// City bytes queued outside a plan: topology copies on a send with no
+    /// records, or one the plan skipped. They are city bytes, and in the
+    /// limited state they spend the budget the next records would have.
+    pub fn sent_topology(&mut self, bytes: usize) {
+        self.city_bytes_since_plan += bytes as u64;
+        if self.state == RateState::Limited {
+            self.tokens = (self.tokens - bytes as f64).max(0.0);
         }
     }
 
@@ -602,6 +715,19 @@ impl RateController {
         sender.max(self.rtt_inflation_ms(sample))
     }
 
+    /// How long the oldest reliable byte not yet sent has waited, ms.
+    fn reliable_wait_ms(&self, at_us: u64) -> f64 {
+        self.reliable_marks
+            .front()
+            .map_or(0.0, |(_, queued_us)| at_us.saturating_sub(*queued_us) as f64 / 1000.0)
+    }
+
+    /// The estimated reliable-stream backlog, bytes (reports).
+    #[allow(dead_code)] // reports (Netlab v2)
+    pub fn reliable_backlog_bytes(&self) -> f64 {
+        self.reliable_backlog
+    }
+
     /// Lost share of the wire bytes over the loss window so far.
     fn lost_byte_share(&self, sample: LinkSample) -> f64 {
         let Some(first) = self.loss_marks.front() else {
@@ -660,6 +786,15 @@ mod tests {
         lost_bytes: f64,
         submitted: f64,
         at_us: u64,
+        /// The reliable stream (sender-queue links): bytes queued per send,
+        /// served after the datagrams, as quinn does; its FIFO of (bytes left,
+        /// queued at us); what the server queued on it; the longest any
+        /// byte waited, us; and the QUIC bytes each packet adds on the wire.
+        reliable_per_send: Box<dyn FnMut(u64) -> f64>,
+        stream: std::collections::VecDeque<(f64, u64)>,
+        reliable_submitted: f64,
+        stream_wait_max_us: u64,
+        overhead_per_packet: f64,
     }
 
     impl Link {
@@ -677,6 +812,11 @@ mod tests {
                 lost_bytes: 0.0,
                 submitted: 0.0,
                 at_us: 1_000_000,
+                reliable_per_send: Box::new(|_| 0.0),
+                stream: Default::default(),
+                reliable_submitted: 0.0,
+                stream_wait_max_us: 0,
+                overhead_per_packet: 0.0,
             }
         }
 
@@ -698,6 +838,7 @@ mod tests {
                 lost_bytes: self.lost_bytes as u64,
                 rtt_us,
                 submitted_bytes: self.submitted as u64,
+                reliable_submitted_bytes: self.reliable_submitted as u64,
             }
         }
 
@@ -705,14 +846,37 @@ mod tests {
         fn step(&mut self, city_bytes: f64) {
             let queued = city_bytes + self.other_bytes_per_send;
             self.submitted += queued;
+            let reliable = (self.reliable_per_send)(self.at_us);
+            if reliable > 0.0 {
+                self.submitted += reliable;
+                self.reliable_submitted += reliable;
+                self.stream.push_back((reliable, self.at_us));
+            }
             let dt = 1.0 / SEND_HZ;
             match self.network_queue_ms {
                 None => {
+                    // Datagrams first; the stream gets what is left.
                     self.queue += queued;
-                    let drained = self.queue.min(self.rate_bytes_per_s * dt);
+                    let per_byte = 1.0 + self.overhead_per_packet / 1200.0;
+                    let capacity = self.rate_bytes_per_s * dt / per_byte;
+                    let drained = self.queue.min(capacity);
                     self.queue -= drained;
-                    self.wire += drained;
-                    let packets = drained / 1200.0;
+                    let mut left = capacity - drained;
+                    let mut stream_sent = 0.0;
+                    while left > 0.0 {
+                        let Some(front) = self.stream.front_mut() else { break };
+                        let take = front.0.min(left);
+                        front.0 -= take;
+                        left -= take;
+                        stream_sent += take;
+                        if front.0 <= 1e-9 {
+                            let (_, queued_at) = self.stream.pop_front().expect("front");
+                            let done_us = self.at_us + ((capacity - left) / capacity * dt * 1e6) as u64;
+                            self.stream_wait_max_us = self.stream_wait_max_us.max(done_us - queued_at);
+                        }
+                    }
+                    let packets = (drained + stream_sent) / 1200.0;
+                    self.wire += drained + stream_sent + packets * self.overhead_per_packet;
                     self.packets += packets;
                     self.lost += packets * self.loss;
                     self.lost_bytes += drained * self.loss;
@@ -755,6 +919,79 @@ mod tests {
 
     /// The city stream's worst case: every send wants the whole ceiling.
     const SATURATING: f64 = CEILING as f64;
+
+    /// On a limited link the city fills its share of the path, and the QUIC
+    /// sender serves datagrams before stream data, so a reliable burst (a
+    /// baseline, a fracture's topology) drains through what the datagrams
+    /// leave. The controller reads the stream's own backlog and gives it the
+    /// path.
+    #[test]
+    fn a_reliable_stream_on_a_limited_link_is_given_the_path() {
+        let run = |config: RateConfig| {
+            let mut controller = RateController::new(config);
+            let mut link = Link::new(1.0);
+            link.overhead_per_packet = 32.0;
+            // 6 kB on the stream every 2 s.
+            link.reliable_per_send = Box::new(|at_us| if (at_us / 33_333) % 60 == 5 { 6_000.0 } else { 0.0 });
+            for n in 0..(30.0 * SEND_HZ) as usize {
+                if n == (6.0 * SEND_HZ) as usize {
+                    // After the first bursts: the controller has learnt the path.
+                    link.stream_wait_max_us = 0;
+                }
+                send(&mut controller, &mut link, SATURATING);
+            }
+            assert_eq!(controller.state(), RateState::Limited);
+            link.stream_wait_max_us as f64 / 1000.0
+        };
+        let with = run(RateConfig::PRODUCTION);
+        let blind = run(RateConfig { reliable_queue_ms: 0.0, ..RateConfig::PRODUCTION });
+        assert!(with < 300.0, "reliable bytes waited {with:.0} ms");
+        assert!(blind > 2.0 * with, "without the signal: {blind:.0} ms, with: {with:.0} ms");
+    }
+
+    /// A waiting stream alone never makes a link limited: the backlog
+    /// estimate cannot tell a stream starved by datagrams from one that is
+    /// flow-controlled or still in the server's queue (live, loopback: the
+    /// links went limited at joins for the whole session).
+    #[test]
+    fn a_waiting_stream_alone_does_not_limit_a_link() {
+        let mut controller = RateController::new(RateConfig::PRODUCTION);
+        let mut link = Link::new(1.0);
+        link.overhead_per_packet = 32.0;
+        link.reliable_per_send = Box::new(|at_us| if (at_us / 33_333) % 60 == 5 { 6_000.0 } else { 0.0 });
+        // Demand just under what the path carries after the snapshots: the
+        // datagram buffer never holds a whole send, but the stream waits.
+        let demand = 125_000.0 / SEND_HZ - link.other_bytes_per_send - 150.0;
+        for n in 0..(20.0 * SEND_HZ) as usize {
+            let (plan, _) = send(&mut controller, &mut link, demand);
+            assert_eq!(plan, SendPlan::Full, "send {n} throttled");
+        }
+        assert!(link.stream_wait_max_us > 200_000, "the stream did wait: {} us", link.stream_wait_max_us);
+    }
+
+    /// The stream backlog never throttles a link whose stream keeps moving:
+    /// bursts of reliable bytes on fast paths, with loss.
+    #[test]
+    fn reliable_bursts_on_a_fast_link_are_not_throttled() {
+        for (rate_mbit, loss) in [(1000.0, 0.0), (50.0, 0.03), (5.0, 0.0)] {
+            let mut controller = RateController::new(RateConfig::PRODUCTION);
+            let mut link = Link::new(rate_mbit);
+            link.loss = loss;
+            link.overhead_per_packet = 32.0;
+            // A 32 kB baseline every 2 s and fracture topology bursts.
+            link.reliable_per_send = Box::new(|at_us| match (at_us / 33_333) % 60 {
+                5 => 32_000.0,
+                20 | 21 | 22 => 4_000.0,
+                _ => 0.0,
+            });
+            for n in 0..3_000 {
+                let demand = if n % 150 < 60 { SATURATING } else { 800.0 };
+                let (plan, _) = send(&mut controller, &mut link, demand);
+                assert_eq!(plan, SendPlan::Full, "{rate_mbit} Mbit/s, loss {loss}: send {n} throttled");
+            }
+            assert_eq!(controller.totals().entered_limited, 0);
+        }
+    }
 
     #[test]
     fn a_fast_link_is_never_throttled() {

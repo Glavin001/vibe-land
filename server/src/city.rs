@@ -2273,6 +2273,28 @@ impl CityRuntime {
         self.client_datagrams_within(client, camera, shared, None)
     }
 
+    /// Whether `client` has topology datagram copies waiting
+    /// (`EncoderConfig::topology_datagram_copies`).
+    pub fn has_topology_copies(&self, client: u64) -> bool {
+        self.encoder.has_topology_copies(client)
+    }
+
+    /// Append this send's topology datagram copies for `client` to its
+    /// datagrams; returns the bytes added.
+    pub fn add_topology_copies(
+        &mut self,
+        client: u64,
+        sim_tick: u32,
+        packets: &mut Vec<Vec<u8>>,
+    ) -> usize {
+        let before = packets.len();
+        let added = self.encoder.add_topology_copies(client, sim_tick, packets);
+        self.sent_packets += (packets.len() - before) as u64;
+        self.sent_bytes += added as u64;
+        self.total_sent_bytes += added as u64;
+        added
+    }
+
     /// `client_datagrams` under this client's link allowance (the rate
     /// controller's plan, `link_rate.rs`); `None` is the static ceiling.
     pub fn client_datagrams_within(

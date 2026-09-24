@@ -47,6 +47,8 @@ pub(crate) struct Sender {
     tap: Option<Arc<Tap>>,
     /// Bytes queued on this connection (both lanes), for rate adaptation.
     submitted: Arc<AtomicU64>,
+    /// Of `submitted`, the bytes queued on the reliable lane.
+    reliable_submitted: Arc<AtomicU64>,
 }
 
 pub(crate) struct Receiver {
@@ -93,6 +95,7 @@ pub(crate) fn channel_with_tap(capacity: usize, tap: Option<Tap>) -> (Sender, Re
             failed,
             tap: tap.clone(),
             submitted: Arc::new(AtomicU64::new(0)),
+            reliable_submitted: Arc::new(AtomicU64::new(0)),
         },
         Receiver {
             reliable: reliable_rx,
@@ -119,6 +122,12 @@ impl Sender {
         self.submitted.clone()
     }
 
+    /// Bytes queued on the reliable lane (a share of `submitted_counter`),
+    /// `link_rate::LinkSample::reliable_submitted_bytes`.
+    pub(crate) fn reliable_submitted_counter(&self) -> Arc<AtomicU64> {
+        self.reliable_submitted.clone()
+    }
+
     pub(crate) fn enqueue(&self, packet: Vec<u8>, unreliable: bool) -> Enqueue {
         let len = packet.len() as u64;
         let (tick, queued) = match &self.tap {
@@ -138,6 +147,9 @@ impl Sender {
         match lane.try_send(packet) {
             Ok(()) => {
                 self.submitted.fetch_add(len, Ordering::Relaxed);
+                if !unreliable {
+                    self.reliable_submitted.fetch_add(len, Ordering::Relaxed);
+                }
                 Enqueue::Queued
             }
             Err(mpsc::error::TrySendError::Closed(packet)) => {

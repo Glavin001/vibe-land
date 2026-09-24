@@ -151,6 +151,25 @@ pub struct EncoderConfig {
     /// Absent from older captures, where it reads as off (what they did).
     #[serde(default)]
     pub baseline_skips_quiescent: bool,
+    /// Copy each reliable topology message onto the datagram lane, at this
+    /// many consecutive sends (wire v2; 0 = none).
+    ///
+    /// Topology says which body every chunk is on, and it rides the ordered
+    /// reliable stream while the poses ride datagrams. The reliable stream
+    /// is head-of-line blocked on loss (Netlab, LTE 3%: topology p99 340 ms
+    /// against 124 ms for datagrams), and on a constrained link the sender
+    /// serves datagrams first, so it waits behind them (1 Mbit/s, no loss:
+    /// topology p99 799 ms). A fracture's chunks stay drawn on the body they
+    /// left until it lands. The copies travel with the poses; the reliable
+    /// message still goes, and the client applies whichever arrives first,
+    /// in `topo_seq` order (`client/src/city/cityClient.ts`). Carried in
+    /// chunk datagrams with no records, as a trailer
+    /// ([`crate::wire::CHUNKS_TRAILER_TOPOLOGY_PART`]) older clients ignore,
+    /// ahead of the send's records (`add_topology_copies`).
+    ///
+    /// Absent from older captures, where it reads as 0 (what they did).
+    #[serde(default)]
+    pub topology_datagram_copies: u32,
 }
 
 fn default_rest_eval_stride() -> u32 {
@@ -222,6 +241,8 @@ impl EncoderConfig {
             // 1.83 s behind the datagrams still costs no deltas.
             baseline_reference_lag_ticks: 2 * sim_hz - sim_hz / 6,
             baseline_skips_quiescent: true,
+            // Two: one lost copy (3% on LTE) is covered by the next send's.
+            topology_datagram_copies: 2,
         }
     }
 }
@@ -345,7 +366,29 @@ struct ClientState {
     /// the bootstrap, a delta is one the client must drop: send absolutes.
     #[serde(default)]
     deltas_from_generation: Option<u16>,
+    /// Topology messages still to be copied onto this client's datagrams
+    /// (`EncoderConfig::topology_datagram_copies`), oldest first.
+    #[serde(default)]
+    topology_copies: std::collections::VecDeque<TopologyCopy>,
 }
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+struct TopologyCopy {
+    topo_seq: u32,
+    bytes: Vec<u8>,
+    copies_left: u32,
+    /// Whether no copy has gone yet.
+    #[serde(default)]
+    unsent: bool,
+}
+
+/// Bytes of topology copies one client may have queued; beyond it the oldest
+/// are dropped (their reliable messages are still on the way).
+const TOPOLOGY_COPY_QUEUE_BYTES: usize = 64 * 1024;
+/// Largest piece of a topology message one datagram carries.
+const TOPOLOGY_PART_PAYLOAD_BYTES: usize = crate::quant::MAX_DATAGRAM
+    - crate::wire::CHUNKS_HEADER_BYTES
+    - crate::wire::TOPOLOGY_PART_HEADER_BYTES;
 
 /// A body slower than this, that has not moved from where a client last saw
 /// it, has nothing to send that client. Well under the sleep threshold, so a
@@ -877,8 +920,109 @@ impl ChunkStreamEncoder {
                 settled: output.settled.clone(),
                 wakes: wakes.to_vec(),
             };
-            self.staged_topology.push(encode_topology(&message));
+            let bytes = encode_topology(&message);
+            self.queue_topology_copies(self.topo_seq, &bytes);
+            self.staged_topology.push(bytes);
         }
+    }
+
+    /// Queue a staged topology message for every client's datagram copies.
+    fn queue_topology_copies(&mut self, topo_seq: u32, bytes: &[u8]) {
+        let copies = self.config.topology_datagram_copies;
+        if copies == 0 || self.config.wire_version == crate::wire::CITY_WIRE_V3 {
+            return;
+        }
+        let parts = bytes.len().div_ceil(TOPOLOGY_PART_PAYLOAD_BYTES);
+        if parts == 0 || parts > u8::MAX as usize {
+            return;
+        }
+        for state in self.clients.values_mut() {
+            state.topology_copies.push_back(TopologyCopy {
+                topo_seq,
+                bytes: bytes.to_vec(),
+                copies_left: copies,
+                unsent: true,
+            });
+            let mut queued: usize = state.topology_copies.iter().map(|c| c.bytes.len()).sum();
+            while queued > TOPOLOGY_COPY_QUEUE_BYTES {
+                let dropped = state.topology_copies.pop_front().expect("non-empty");
+                queued -= dropped.bytes.len();
+            }
+        }
+    }
+
+    /// Whether `client` has topology copies waiting for its next send.
+    pub fn has_topology_copies(&self, client: u64) -> bool {
+        self.clients.get(&client).is_some_and(|state| !state.topology_copies.is_empty())
+    }
+
+    /// Put this send's topology copies for `client` AHEAD of its datagrams,
+    /// in datagrams of their own (a chunk-datagram header with no records,
+    /// then the parts). Each queued message goes once per send until it has
+    /// gone `topology_datagram_copies` times; one larger than a datagram is
+    /// split into parts. Returns the bytes added.
+    ///
+    /// First, not last: on a slow link one send's datagrams arrive tens of ms
+    /// apart (1150 B is 18 ms at 0.5 Mbit/s), and the client's presentation
+    /// may reach the newest datagram's tick as soon as the first of them
+    /// lands; the promotion has to be there by then (Netlab trace,
+    /// bw-capped-nq: a promotion appended after its send's records landed
+    /// 18 ms after the first of them, with the presentation already at its
+    /// tick).
+    ///
+    /// Called at every send of a v2 stream, including sends with no records
+    /// and sends the rate controller skips: topology is small and it is what
+    /// the poses mean. Does nothing when copies are off.
+    pub fn add_topology_copies(
+        &mut self,
+        client: u64,
+        sim_tick: u32,
+        datagrams: &mut Vec<Vec<u8>>,
+    ) -> usize {
+        use crate::quant::MAX_DATAGRAM;
+        let baseline_id = self.baseline_id;
+        let Some(state) = self.clients.get_mut(&client) else {
+            return 0;
+        };
+        if state.topology_copies.is_empty() {
+            return 0;
+        }
+        let mut added = 0usize;
+        let mut copies: Vec<Vec<u8>> = Vec::new();
+        // Not newer than anything this client was sent before: a datagram
+        // with no records must not move the client's pose clock (older
+        // clients anchor it on every datagram's tick), or the presentation
+        // could reach this send's tick before its topology and records land.
+        let header_tick = sim_tick.saturating_sub(self.config.send_interval_ticks.max(1));
+        // First copies first, in seq order, then the repeats: the client
+        // applies in seq order, so a repeat of a large message must not
+        // queue ahead of the first copy of the next one.
+        let unsent: Vec<bool> = state.topology_copies.iter().map(|copy| copy.unsent).collect();
+        for first in [true, false] {
+            for (copy, &was_unsent) in state.topology_copies.iter_mut().zip(&unsent) {
+                if was_unsent != first {
+                    continue;
+                }
+                let parts = copy.bytes.len().div_ceil(TOPOLOGY_PART_PAYLOAD_BYTES);
+                let size = copy.bytes.len().div_ceil(parts);
+                for (index, piece) in copy.bytes.chunks(size).enumerate() {
+                    let need = crate::wire::TOPOLOGY_PART_HEADER_BYTES + piece.len();
+                    if !copies.last().is_some_and(|last| last.len() + need <= MAX_DATAGRAM) {
+                        copies.push(crate::wire::chunks_header(state.sequence, baseline_id, header_tick, 0));
+                        state.sequence += 1;
+                        added += crate::wire::CHUNKS_HEADER_BYTES;
+                    }
+                    let last = copies.last_mut().expect("pushed above");
+                    crate::wire::write_topology_part(last, copy.topo_seq, index as u8, parts as u8, piece);
+                    added += need;
+                }
+                copy.copies_left = copy.copies_left.saturating_sub(1);
+                copy.unsent = false;
+            }
+        }
+        state.topology_copies.retain(|copy| copy.copies_left > 0);
+        datagrams.splice(0..0, copies);
+        added
     }
 
     /// Build this tick's awake-body order, and (when `classify`) the per-body
@@ -1828,6 +1972,101 @@ mod tests {
         let datagram = crate::wire::decode_chunks_datagram(&packets[0]).expect("datagram");
         assert_eq!(datagram.records.len(), 1);
         assert_eq!(datagram.records[0].body_entity, ids::body_entity(0, 1));
+    }
+
+    /// Topology copies (`topology_datagram_copies`): each message rides the
+    /// datagram lane at the next two sends, ahead of that send's records, in
+    /// a record-less chunk datagram stamped no newer than the previous send,
+    /// and the bytes are exactly the reliable message's.
+    #[test]
+    fn topology_copies_go_ahead_of_the_records_at_two_sends() {
+        let manifest = manifest();
+        let mut encoder = ChunkStreamEncoder::new(&manifest, EncoderConfig::validated(60));
+        assert_eq!(encoder.config().topology_datagram_copies, 2);
+        encoder.add_client(1);
+        encoder.ingest_tick(10, &[snapshot(0.0)], &promotion_output(), &[]);
+        let reliable = encoder.take_topology_messages();
+        assert_eq!(reliable.len(), 1);
+        assert!(encoder.has_topology_copies(1));
+
+        let mut sends = Vec::new();
+        for tick in [10u32, 12, 14] {
+            let shared = encoder.encode_send(tick);
+            let mut packets = Vec::new();
+            let added = encoder.add_topology_copies(1, tick, &mut packets);
+            packets.extend(encoder.client_datagrams(1, close_camera(), &shared));
+            sends.push((tick, added, packets));
+        }
+        for (tick, added, packets) in &sends[..2] {
+            let first = crate::wire::decode_chunks_datagram(&packets[0]).expect("copy datagram");
+            assert!(first.records.is_empty(), "copies travel in their own datagram");
+            assert_eq!(first.sim_tick, tick - 2, "stamped no newer than the previous send");
+            assert_eq!(first.topology_parts.len(), 1);
+            let part = &first.topology_parts[0];
+            assert_eq!((part.topo_seq, part.part, part.parts), (1, 0, 1));
+            assert_eq!(part.bytes, reliable[0], "the reliable message's own bytes");
+            assert_eq!(*added, packets[0].len());
+            // The records follow, untouched.
+            let records = crate::wire::decode_chunks_datagram(&packets[1]).expect("records");
+            assert_eq!(records.records.len(), 1);
+            assert!(records.topology_parts.is_empty());
+        }
+        let (_, added, packets) = &sends[2];
+        assert_eq!(*added, 0, "two copies, then none");
+        assert!(!encoder.has_topology_copies(1));
+        assert!(crate::wire::decode_chunks_datagram(&packets[0]).expect("records").topology_parts.is_empty());
+    }
+
+    /// A message larger than a datagram is split into parts that reassemble
+    /// to its bytes; the repeat of an earlier message never queues ahead of
+    /// the first copy of a later one.
+    #[test]
+    fn large_topology_copies_are_split_and_first_copies_go_first() {
+        let manifest = manifest();
+        let mut encoder = ChunkStreamEncoder::new(&manifest, EncoderConfig::validated(60));
+        encoder.add_client(1);
+        let big: Vec<u8> = (0..3000u32).map(|i| (i % 251) as u8).collect();
+        encoder.queue_topology_copies(7, &big);
+        let mut first = Vec::new();
+        encoder.add_topology_copies(1, 10, &mut first);
+        let parts: Vec<_> = first
+            .iter()
+            .flat_map(|p| crate::wire::decode_chunks_datagram(p).expect("copy").topology_parts)
+            .collect();
+        assert_eq!(parts.len(), 3);
+        assert!(first.iter().all(|p| p.len() <= crate::quant::MAX_DATAGRAM));
+        let joined: Vec<u8> = parts.iter().flat_map(|p| p.bytes.clone()).collect();
+        assert_eq!(joined, big);
+        assert!(parts.iter().enumerate().all(|(i, p)| p.part as usize == i && p.parts == 3 && p.topo_seq == 7));
+
+        encoder.queue_topology_copies(8, &[120, 2, 8, 0, 0, 0]);
+        let mut second = Vec::new();
+        encoder.add_topology_copies(1, 12, &mut second);
+        let order: Vec<u32> = second
+            .iter()
+            .flat_map(|p| crate::wire::decode_chunks_datagram(p).expect("copy").topology_parts)
+            .map(|p| p.topo_seq)
+            .collect();
+        assert_eq!(order, vec![8, 7, 7, 7], "the new message's first copy, then the repeat");
+    }
+
+    /// Captures made before copies existed resume with them off, so their
+    /// replays stay byte-exact.
+    #[test]
+    fn an_older_checkpoint_resumes_without_topology_copies() {
+        let manifest = manifest();
+        let encoder = ChunkStreamEncoder::new(&manifest, EncoderConfig::validated(60));
+        let mut json = serde_json::to_value(encoder.checkpoint()).expect("json");
+        json["config"].as_object_mut().expect("config").remove("topology_datagram_copies");
+        let checkpoint: EncoderCheckpoint = serde_json::from_value(json).expect("older checkpoint");
+        let mut resumed = ChunkStreamEncoder::from_checkpoint(&manifest, checkpoint).expect("resume");
+        assert_eq!(resumed.config().topology_datagram_copies, 0);
+        resumed.add_client(1);
+        resumed.ingest_tick(10, &[snapshot(0.0)], &promotion_output(), &[]);
+        assert!(!resumed.has_topology_copies(1));
+        let mut packets = Vec::new();
+        assert_eq!(resumed.add_topology_copies(1, 10, &mut packets), 0);
+        assert!(packets.is_empty());
     }
 
     #[test]

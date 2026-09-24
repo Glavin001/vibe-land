@@ -26,6 +26,22 @@ const GOLDEN_CHUNKS =
   '770201000000020003000000010000000081808080080000000000006400c8002c0103000000';
 
 describe('city wire decoder', () => {
+  it('reads the topology-part trailer after the records, and only it', () => {
+    // The golden datagram, then one part (destruction/src/wire.rs
+    // write_topology_part: tag 0xC7, seq 41, part 1 of 2, 4 bytes) and a
+    // section tag this decoder does not know, which ends the trailer.
+    const withTrailer = fromHex(`${GOLDEN_CHUNKS}c729000000010204007802290000eeeeeeeeeeeeeeeeeeeeeeee`);
+    const datagram = decodeChunksDatagram(withTrailer);
+    expect(datagram.records).toHaveLength(1);
+    expect(datagram.records[0].bodyEntity).toBe(0x80000001);
+    expect(datagram.topologyParts).toHaveLength(1);
+    const part = datagram.topologyParts![0];
+    expect([part.topoSeq, part.part, part.parts]).toEqual([41, 1, 2]);
+    expect([...part.bytes]).toEqual([0x78, 0x02, 0x29, 0x00]);
+    // No trailer: no field, as before.
+    expect(decodeChunksDatagram(fromHex(GOLDEN_CHUNKS)).topologyParts).toBeUndefined();
+  });
+
   it('decodes the pinned chunks golden vector', () => {
     const datagram = decodeChunksDatagram(fromHex(GOLDEN_CHUNKS));
     expect(datagram.sequence).toBe(1);

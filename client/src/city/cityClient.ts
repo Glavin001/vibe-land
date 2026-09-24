@@ -17,6 +17,7 @@ import {
   BaselineMessage,
   ChunksDatagram,
   TopologyMessage,
+  type TopologyPart,
   RECORD_FLAG_SETTLED_HINT,
   RecordMode,
   decodeBaseline,
@@ -158,6 +159,18 @@ export interface CityClientStats {
   topologyHoldFrames: number;
   topologyHoldTicksAdded: number;
   topologyHoldExpired: number;
+  /// Topology messages applied from their datagram copy (it beat the reliable
+  /// stream), copies that arrived after the message was applied, reliable
+  /// messages that arrived after their copy, and repairs that arrived behind
+  /// a ledger the copies had advanced (see `acceptTopology`).
+  topologyCopiesApplied: number;
+  topologyCopiesLate: number;
+  topologyReliableAfterCopy: number;
+  repairsBehindCopies: number;
+  /// Frames in which the copies showed a topology message missing (a later
+  /// one, or a piece of it, had arrived); the presentation may be held below
+  /// its tick (see `topologyGapLimit`).
+  topologyGapHoldFrames: number;
   bytesReceived: number;
   bytesPerSecond: number;
   /// The playout delay in ticks actually applied this frame, and the network
@@ -330,6 +343,52 @@ const RENDER_CLOCK_IDLE_JUMP_TICKS = 4;
 /** Floor on the playout delay: one flush window's worth, as shipped. */
 const MIN_SAMPLE_DELAY_TICKS = 6;
 
+/** Lab-only overrides for tuning (Netlab's client stage runs under node). */
+const LAB_ENV = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env ?? {};
+const labNumber = (key: string, fallback: number): number => {
+  const value = Number(LAB_ENV[key]);
+  return LAB_ENV[key] !== undefined && Number.isFinite(value) ? value : fallback;
+};
+
+/**
+ * Size the wire-v2 playout delay from the measured stream, instead of
+ * holding it at MIN_SAMPLE_DELAY_TICKS. OFF: /city?adaptiveDelay=1.
+ *
+ * The presented tick (render tick minus the delay) must stay at or behind
+ * the newest streamed tick, and the lead cap enforces that by stopping the
+ * render clock one delay past it (`renderTickNow`). A delay smaller than the
+ * clock's usual lead over the newest tick makes the cap stop the clock on
+ * more frames: the city freezes and then catches up (measured in Netlab:
+ * sizing it from datagram arrivals instead took LTE from 4.2% to 7.6% of
+ * frames stopped). So the delay is a high quantile (PLAYOUT_QUANTILE) of
+ * that lead over the last PLAYOUT_WINDOW_MS, sampled at every frame before
+ * the cap: the cap then stops the clock on no more frames than the fixed
+ * delay did. Never above the fixed 6 ticks, never below 3; it slews like
+ * any delay change.
+ *
+ * Off because the latency it gives back is paid for in corrections. Every
+ * tick less leaves a record more chance to land after the presentation
+ * passed its tick, and fast debris is then corrected in view. Measured in
+ * Netlab on the 20260924-161728 capture (c1), delay 6 / 5 / 4 / 3 ticks on
+ * loopback: presented tick behind the server 5.2 / 4.2 / 3.2 / 2.3,
+ * presented jumps over 4 m 54 / 67 / 72 / 79, correction snaps
+ * 25 / 31 / 33 / 37, debris pos@render p99 0.134 / 0.143 / 0.153 / 0.163 m.
+ * On LTE, where the lead's tail keeps the adaptive delay near 5, it gains
+ * one tick for +18% jumps. docs/netcode-tuning.md#city-latency-and-topology-delivery.
+ */
+const ADAPTIVE_PLAYOUT_DELAY = (() => {
+  try {
+    if (LAB_ENV.CITY_ADAPTIVE_DELAY !== undefined) return LAB_ENV.CITY_ADAPTIVE_DELAY === '1';
+    return new URLSearchParams(globalThis.location?.search ?? '').get('adaptiveDelay') === '1';
+  } catch {
+    return false;
+  }
+})();
+const PLAYOUT_WINDOW_MS = labNumber('CITY_PLAYOUT_WINDOW_MS', 4000);
+const PLAYOUT_QUANTILE = labNumber('CITY_PLAYOUT_Q', 0.99);
+const PLAYOUT_MARGIN_TICKS = labNumber('CITY_PLAYOUT_MARGIN', 0);
+const PLAYOUT_FLOOR_TICKS = labNumber('CITY_PLAYOUT_FLOOR', 3);
+
 /**
  * How fast the arrival estimates forget.
  *
@@ -432,6 +491,13 @@ const TOPOLOGY_HOLD_MAX_MS = 1000;
  */
 const TOPOLOGY_HOLD_TICKS_BEFORE_RECORD = 1;
 
+/** Topology copies held for an earlier seq, and pieces in reassembly, at most. */
+const TOPOLOGY_AHEAD_MAX = 256;
+/** Where a PKT_CITY_TOPOLOGY packet states its sim tick: kind, version, u32 seq. */
+const TOPOLOGY_TICK_OFFSET = 6;
+/** Applied topology messages kept to re-apply after a repair behind them. */
+const TOPOLOGY_APPLIED_KEPT = 128;
+
 const ADAPTIVE_PLAYOUT_BUFFER = (() => {
   try {
     return new URLSearchParams(globalThis.location?.search ?? '').get('adaptiveBuffer') === '1';
@@ -487,6 +553,24 @@ export class CityClient {
   private topologyHoldTicksAdded = 0;
   /** Evidence given up on: the hold ran out before the promotion arrived. */
   private topologyHoldExpired = 0;
+  /**
+   * Datagram copies of topology messages (wire v2 trailer): pieces being
+   * reassembled, whole messages waiting for an earlier seq, and the newest
+   * seq the reliable stream itself has delivered. See `acceptTopology`.
+   */
+  private readonly topologyPieces: Map<number, { parts: number; got: Array<Uint8Array | undefined>; count: number; atMs: number }> = new Map();
+  private readonly topologyAhead: Map<number, { message: TopologyMessage; atMs: number }> = new Map();
+  /** The sim tick of the newest topology message applied. */
+  private lastAppliedTopoTick = -1;
+  /** Frames with a topology message the copies showed was missing. */
+  private topologyGapHoldFrames = 0;
+  private lastReliableTopoSeq = 0;
+  /** Recently applied messages by seq, to re-apply after a repair behind them. */
+  private readonly topologyApplied: TopologyMessage[] = [];
+  private topologyCopiesApplied = 0;
+  private topologyCopiesLate = 0;
+  private topologyReliableAfterCopy = 0;
+  private repairsBehindCopies = 0;
   private datagramsReceived = 0;
   private recordsApplied = 0;
   private recordsBuffered = 0;
@@ -494,6 +578,17 @@ export class CityClient {
   private bytesWindow: Array<{ at: number; bytes: number }> = [];
   private latestSimTick = 0;
   private latestSimTickAtMs = 0;
+  /**
+   * The last time a datagram showed the server streaming with nothing newer
+   * than `latestSimTick` to send: a send whose pose records the rate
+   * controller withheld, carrying topology copies only. The lead cap treats
+   * it like a records datagram; without it the cap lapsed after 300 ms and
+   * the clock ran on 30+ ticks past the server during a slow patch (Netlab,
+   * bw-capped-nq, measured).
+   */
+  private streamAliveAtMs = 0;
+  /** Whether the lead cap held the render clock this frame. */
+  private leadCapActive = false;
   /** Measured server tick rate (ticks per wall second). The server sheds
    *  sim rate under load (60 -> 20 Hz at heavy demolition); extrapolating
    *  the render clock at a hardcoded 60 made the clock outrun tick
@@ -570,6 +665,15 @@ export class CityClient {
   private arrivalLateness = 0;
   private arrivalLatenessAtMs = 0;
   private arrivalLatenessPeak = 0;
+  /**
+   * The render clock's lead over the newest streamed tick at each frame,
+   * over the last PLAYOUT_WINDOW_MS, and the delay it calls for (see
+   * ADAPTIVE_PLAYOUT_DELAY); NaN until measured.
+   */
+  private readonly clockLeads: Array<{ atMs: number; lead: number }> = [];
+  /** ADAPTIVE_PLAYOUT_DELAY, per instance (tests turn it on). */
+  private adaptiveDelay = ADAPTIVE_PLAYOUT_DELAY;
+  private playoutTarget = Number.NaN;
   /**
    * Deliberate presentation discontinuities, by kind.
    *
@@ -819,6 +923,38 @@ export class CityClient {
     }
   }
 
+  /**
+   * One frame's lead of the render clock over the newest streamed tick,
+   * before the lead cap: the delay that would keep the cap from stopping
+   * the clock this frame. A high quantile of it over the window is the
+   * delay; the cap then stops the clock on the remaining frames only.
+   */
+  private observeLead(nowMs: number, lead: number): void {
+    const samples = this.clockLeads;
+    samples.push({ atMs: nowMs, lead });
+    while (samples.length > 0 && nowMs - samples[0].atMs > PLAYOUT_WINDOW_MS) {
+      samples.shift();
+    }
+    this.leadSamplesSinceSort += 1;
+    if (this.leadSamplesSinceSort < 8 && Number.isFinite(this.playoutTarget)) {
+      return;
+    }
+    this.leadSamplesSinceSort = 0;
+    const sorted = samples.map((sample) => sample.lead).sort((a, b) => a - b);
+    const at = Math.min(sorted.length - 1, Math.floor(PLAYOUT_QUANTILE * (sorted.length - 1) + 0.5));
+    this.playoutTarget = sorted[at] + PLAYOUT_MARGIN_TICKS;
+  }
+
+  private leadSamplesSinceSort = 0;
+
+  /** The wire-v2 playout delay this frame asks for. */
+  private playoutDelayTarget(): number {
+    if (!this.adaptiveDelay || !Number.isFinite(this.playoutTarget)) {
+      return MIN_SAMPLE_DELAY_TICKS;
+    }
+    return Math.min(MIN_SAMPLE_DELAY_TICKS, Math.max(PLAYOUT_FLOOR_TICKS, this.playoutTarget));
+  }
+
   /** The render clock: the newest-tick anchor extrapolated at the MEASURED
    *  tick rate, followed through a bounded pull. A >2 s discontinuity
    *  (join, reset, resync) snaps. */
@@ -871,11 +1007,10 @@ export class CityClient {
       // not allowed to run backwards.
       this.renderClockTick += MONOTONIC_RENDER_CLOCK ? Math.max(0, step) : step;
     }
-    if (
-      this.debris === null
+    this.leadCapActive = this.debris === null
       && RENDER_CLOCK_LEAD_CAP
-      && nowMs - this.latestSimTickAtMs < RENDER_CLOCK_LEAD_CAP_MS
-    ) {
+      && nowMs - Math.max(this.latestSimTickAtMs, this.streamAliveAtMs) < RENDER_CLOCK_LEAD_CAP_MS;
+    if (this.leadCapActive) {
       // Never present a tick the pose stream has not reached (wire v2).
       //
       // The pull above keeps the clock running at the measured rate however
@@ -894,7 +1029,11 @@ export class CityClient {
       // than a slow tick, shorter than a stream that has gone quiet because
       // nothing is moving, where a clock held still would leave every glide
       // (a settle's, a late record's) unfinished until something moves again.
-      const cap = this.latestSimTick + MIN_SAMPLE_DELAY_TICKS;
+      // One playout delay past it: with the adaptive delay, the delay being
+      // applied (so the presented tick stays at or behind the newest tick).
+      this.observeLead(nowMs, this.renderClockTick - this.latestSimTick);
+      const cap = this.latestSimTick
+        + (this.adaptiveDelay ? this.sampleDelaySmooth : MIN_SAMPLE_DELAY_TICKS);
       if (this.renderClockTick > cap) {
         this.renderClockTick = Math.max(previousClock, cap);
       }
@@ -923,7 +1062,7 @@ export class CityClient {
         MAX_SAMPLE_DELAY_TICKS,
         Math.max(MIN_SAMPLE_DELAY_TICKS, spanFloor, Math.ceil(this.arrivalLateness) + 2),
       )
-      : Math.max(MIN_SAMPLE_DELAY_TICKS, spanFloor);
+      : this.debris === null ? spanFloor : Math.max(MIN_SAMPLE_DELAY_TICKS, spanFloor);
     if (this.sampleDelaySmooth < targetDelay) {
       this.sampleDelaySmooth = Math.min(
         targetDelay, this.sampleDelaySmooth + SAMPLE_DELAY_GROW_TICKS_PER_FRAME);
@@ -1348,7 +1487,7 @@ export class CityClient {
           this.pendingTopology.push({ message, receivedAtMs: performance.now() });
           break;
         }
-        this.applyTopologyMessage(message);
+        this.acceptTopology(message, false);
         break;
       }
       case PKT_CITY_BASELINE:
@@ -1389,6 +1528,12 @@ export class CityClient {
         // postdate the bootstrap arrive after it on the ordered reliable
         // channel; the seq-gap resync path covers the same-tick race.
         this.pendingTopology.length = 0;
+        // Copies belong to the stream position the bootstrap replaced.
+        this.topologyPieces.clear();
+        this.topologyAhead.clear();
+        this.topologyApplied.length = 0;
+        this.lastReliableTopoSeq = message.topoSeq;
+        this.lastAppliedTopoTick = message.simTick;
         // A bootstrap means the world was REPLACED (join, resync, or a city
         // reset). Every lane-keyed thing describes the old world: the server
         // rebuilds its encoder, so lane ids restart from zero and its epoch
@@ -1406,6 +1551,9 @@ export class CityClient {
         // A reset restarts the tick count; the old arrivals say nothing.
         this.tickArrivals.length = 0;
         this.sampleDelaySmooth = MIN_SAMPLE_DELAY_TICKS;
+        this.clockLeads.length = 0;
+        this.streamAliveAtMs = 0;
+        this.playoutTarget = Number.NaN;
         this.renderClockTick = -1;
         // A new ledger: no body's last velocity is the same body's.
         this.dustImpacts.clear();
@@ -1470,7 +1618,13 @@ export class CityClient {
         while (this.pendingTopology.length > 0) {
           this.applyTopologyMessage(this.pendingTopology.shift()!.message);
         }
-        if (message.topoSeq !== this.topology.lastSeq()) {
+        // Datagram copies may have carried the ledger past the seq the repair
+        // restates (it waited behind them on the reliable stream). Restate,
+        // then re-apply what the copies applied since, for those structures.
+        const replay = this.topologyAppliedAfter(message.topoSeq);
+        if (replay) {
+          this.repairsBehindCopies += 1;
+        } else if (message.topoSeq !== this.topology.lastSeq()) {
           // A real gap opened between request and repair; only the full path
           // can recover the stream position itself.
           if (!this.resyncRequested) {
@@ -1500,6 +1654,11 @@ export class CityClient {
           }
         }
         this.topology.applyStructureBootstrap(message);
+        if (replay) {
+          for (const later of replay) {
+            this.topology.reapplyForStructures(later, repaired);
+          }
+        }
         for (const key of this.awaitingTopology.keys()) {
           if (this.topology.body(key)) this.awaitingTopology.delete(key);
         }
@@ -1784,6 +1943,23 @@ export class CityClient {
 
   private handleChunks(datagram: ChunksDatagram): void {
     this.datagramsReceived += 1;
+    // Topology copies first: a promotion they carry is what this datagram's
+    // records for the new body resolve against.
+    if (datagram.topologyParts) {
+      for (const part of datagram.topologyParts) {
+        this.acceptTopologyPart(part);
+      }
+    }
+    // A datagram with no records carries only topology copies, stamped no
+    // newer than the previous send: it says nothing about the pose clock's
+    // rate or anchor. It does say the server is still streaming, so the lead
+    // cap keeps holding (see `streamAliveAtMs`).
+    if (datagram.records.length === 0 && datagram.topologyParts) {
+      if (datagram.simTick >= this.latestSimTick) {
+        this.streamAliveAtMs = performance.now();
+      }
+      return;
+    }
     // Re-anchoring the clock on a datagram that did not advance the tick --
     // a reordered packet, or the 2nd..Nth of one tick's MTU-split burst --
     // walks render time backwards, which `PresentationTrack.sample` is
@@ -1806,6 +1982,148 @@ export class CityClient {
         this.pendingRecords.shift();
       }
     }
+  }
+
+  /**
+   * One topology message, from the reliable stream (`copy` false) or a
+   * datagram copy (wire v2, `EncoderConfig::topology_datagram_copies`).
+   *
+   * The ledger must see every message once and in seq order. The reliable
+   * stream is ordered, so on its own it never skips; the copies are not, and
+   * either may arrive first. A message is applied when it is the next seq,
+   * held when an earlier one is still missing (the copy of it was lost and
+   * its reliable message is on the way), and dropped when already applied.
+   */
+  private acceptTopology(message: TopologyMessage, copy: boolean): void {
+    const last = this.topology.lastSeq();
+    if (!copy) {
+      if (message.topoSeq <= last && message.topoSeq > this.lastReliableTopoSeq && last !== 0) {
+        // Its copy got here first.
+        this.lastReliableTopoSeq = message.topoSeq;
+        this.topologyReliableAfterCopy += 1;
+        return;
+      }
+      this.lastReliableTopoSeq = message.topoSeq;
+      this.applyTopologyMessage(message);
+      this.recordApplied(message);
+      this.drainTopologyAhead();
+      return;
+    }
+    if (!this.bootstrapped || this.debris !== null || HOLD_TOPOLOGY_ON_V2) {
+      return;
+    }
+    // Bootstrapped, so `last` is the stream position even at 0 (a fresh
+    // world): a copy applies only as the very next seq.
+    if (message.topoSeq <= last) {
+      this.topologyCopiesLate += 1;
+      return;
+    }
+    if (message.topoSeq !== last + 1) {
+      if (this.topologyAhead.size < TOPOLOGY_AHEAD_MAX) {
+        this.topologyAhead.set(message.topoSeq, { message, atMs: performance.now() });
+      }
+      return;
+    }
+    this.topologyCopiesApplied += 1;
+    this.applyTopologyMessage(message);
+    this.recordApplied(message);
+    this.drainTopologyAhead();
+  }
+
+  /** Apply held copies that are now next in seq. */
+  private drainTopologyAhead(): void {
+    for (;;) {
+      const last = this.topology.lastSeq();
+      for (const seq of this.topologyAhead.keys()) {
+        if (seq <= last) this.topologyAhead.delete(seq);
+      }
+      for (const seq of this.topologyPieces.keys()) {
+        if (seq <= last) this.topologyPieces.delete(seq);
+      }
+      const next = this.topologyAhead.get(last + 1)?.message;
+      if (!next) return;
+      this.topologyAhead.delete(last + 1);
+      this.topologyCopiesApplied += 1;
+      this.applyTopologyMessage(next);
+      this.recordApplied(next);
+    }
+  }
+
+  private recordApplied(message: TopologyMessage): void {
+    this.lastAppliedTopoTick = message.simTick;
+    this.topologyApplied.push(message);
+    if (this.topologyApplied.length > TOPOLOGY_APPLIED_KEPT) {
+      this.topologyApplied.shift();
+    }
+  }
+
+  /**
+   * The messages applied after `seq`, oldest first, when the ledger is past
+   * it and every one of them is still kept; otherwise null.
+   */
+  private topologyAppliedAfter(seq: number): TopologyMessage[] | null {
+    const last = this.topology.lastSeq();
+    if (seq >= last) {
+      return null;
+    }
+    const after = this.topologyApplied.filter((message) => message.topoSeq > seq);
+    if (after.length !== last - seq || after[0].topoSeq !== seq + 1) {
+      return null;
+    }
+    return after;
+  }
+
+  /** One piece of a topology message's datagram copy. */
+  private acceptTopologyPart(part: TopologyPart): void {
+    if (!this.bootstrapped || this.debris !== null || HOLD_TOPOLOGY_ON_V2) {
+      return;
+    }
+    const last = this.topology.lastSeq();
+    if (part.topoSeq <= last) {
+      this.topologyPieces.delete(part.topoSeq);
+      this.topologyCopiesLate += part.parts === 1 ? 1 : 0;
+      return;
+    }
+    let bytes: Uint8Array | null = null;
+    if (part.parts === 1) {
+      bytes = part.bytes;
+    } else {
+      let entry = this.topologyPieces.get(part.topoSeq);
+      if (!entry || entry.parts !== part.parts) {
+        entry = { parts: part.parts, got: new Array(part.parts).fill(undefined), count: 0, atMs: performance.now() };
+        this.topologyPieces.set(part.topoSeq, entry);
+        if (this.topologyPieces.size > TOPOLOGY_AHEAD_MAX) {
+          const oldest = Math.min(...this.topologyPieces.keys());
+          this.topologyPieces.delete(oldest);
+        }
+      }
+      if (entry.got[part.part] === undefined) {
+        entry.got[part.part] = part.bytes;
+        entry.count += 1;
+      }
+      if (entry.count < entry.parts) {
+        return;
+      }
+      this.topologyPieces.delete(part.topoSeq);
+      const total = entry.got.reduce((sum, piece) => sum + piece!.length, 0);
+      bytes = new Uint8Array(total);
+      let at = 0;
+      for (const piece of entry.got) {
+        bytes.set(piece!, at);
+        at += piece!.length;
+      }
+    }
+    let message: TopologyMessage;
+    try {
+      message = decodeTopology(bytes);
+    } catch (error) {
+      recordCityEvent('city_suspect_record', { error: String(error), topologyCopy: part.topoSeq });
+      return;
+    }
+    if (message.topoSeq !== part.topoSeq) {
+      return;
+    }
+    this.acceptTopology(message, true);
   }
 
   private drainPending(): void {
@@ -1859,11 +2177,52 @@ export class CityClient {
   }
 
   /**
+   * The latest tick the presentation may sample while a topology message is
+   * known to be missing, or +Infinity.
+   *
+   * Datagram copies make a gap visible: a later message (or a piece of the
+   * missing one) arrived while the next seq did not. The missing message is
+   * no earlier than the tick after the last one applied, and its first piece,
+   * when it arrived, carries its tick exactly. Holding below that tick keeps
+   * its chunks from being drawn on the body they are leaving until the
+   * message (a repeat copy, or the reliable stream) lands. Bounded like the
+   * record evidence, by TOPOLOGY_HOLD_MAX_MS from the first sign of the gap.
+   */
+  private topologyGapLimit(nowMs: number): number {
+    if (this.topologyPieces.size === 0 && this.topologyAhead.size === 0) {
+      return Number.POSITIVE_INFINITY;
+    }
+    const last = this.topology.lastSeq();
+    let firstSeenMs = Number.POSITIVE_INFINITY;
+    for (const [seq, entry] of this.topologyPieces) {
+      if (seq > last) firstSeenMs = Math.min(firstSeenMs, entry.atMs);
+    }
+    for (const [seq, entry] of this.topologyAhead) {
+      if (seq > last) firstSeenMs = Math.min(firstSeenMs, entry.atMs);
+    }
+    if (!Number.isFinite(firstSeenMs) || nowMs - firstSeenMs > TOPOLOGY_HOLD_MAX_MS) {
+      return Number.POSITIVE_INFINITY;
+    }
+    // The missing message's tick: exact from its first piece (after the kind
+    // and version bytes and the u32 seq), else the least it can be.
+    let tick = this.lastAppliedTopoTick + 1;
+    const first = this.topologyPieces.get(last + 1)?.got[0];
+    if (first && first.length >= TOPOLOGY_TICK_OFFSET + 4) {
+      tick = new DataView(first.buffer, first.byteOffset, first.byteLength)
+        .getUint32(TOPOLOGY_TICK_OFFSET, true);
+    }
+    return tick - 1e-3;
+  }
+
+  /**
    * The latest tick the presentation may sample while promotions are in
    * flight, or +Infinity. Expired evidence is dropped here.
    */
   private topologyHoldLimit(nowMs: number): number {
-    let limit = Number.POSITIVE_INFINITY;
+    let limit = HOLD_FOR_MISSING_TOPOLOGY ? this.topologyGapLimit(nowMs) : Number.POSITIVE_INFINITY;
+    if (Number.isFinite(limit)) {
+      this.topologyGapHoldFrames += 1;
+    }
     for (const [key, entry] of this.awaitingTopology) {
       if (nowMs - entry.atMs > TOPOLOGY_HOLD_MAX_MS) {
         this.awaitingTopology.delete(key);
@@ -2406,13 +2765,28 @@ export class CityClient {
     // iteration is defined behaviour in JS.
     // v2 buffers inside each PresentationTrack, so the shared playout clock has
     // to be pushed into them rather than read out of one place.
-    let playoutDelay = this.advancePlayoutDelay(MIN_SAMPLE_DELAY_TICKS);
+    let playoutDelay = this.advancePlayoutDelay(this.playoutDelayTarget());
+    if (this.adaptiveDelay) {
+      // A delay that shrinks must not carry the presentation past the newest
+      // streamed tick while the lead cap holds (the cap used last frame's
+      // delay), and one that grows must not walk it back: the slew is spent
+      // only as far as the clock moved.
+      if (this.leadCapActive && renderTick - playoutDelay > this.latestSimTick) {
+        playoutDelay = renderTick - this.latestSimTick;
+      }
+      if (this.lastSampleTick >= 0 && renderTick - playoutDelay < this.lastSampleTick) {
+        playoutDelay = Math.max(0, renderTick - this.lastSampleTick);
+      }
+      this.sampleDelaySmooth = playoutDelay;
+    }
     // A promotion in flight: stop short of it rather than draw its chunks on
     // the body they left. The delay grows by exactly what the hold costs and
     // is then given back at the usual shrink rate, so neither the hold nor
     // its release is a jump. Never backwards: evidence behind the clock was
     // refused when it arrived.
-    const holdLimit = this.awaitingTopology.size > 0 ? this.topologyHoldLimit(nowMs) : Number.POSITIVE_INFINITY;
+    const holdLimit = this.awaitingTopology.size > 0 || this.topologyPieces.size > 0 || this.topologyAhead.size > 0
+      ? this.topologyHoldLimit(nowMs)
+      : Number.POSITIVE_INFINITY;
     if (renderTick - playoutDelay > holdLimit) {
       const target = Math.max(holdLimit, this.lastSampleTick);
       const held = Math.min(MAX_SAMPLE_DELAY_TICKS, renderTick - target);
@@ -2577,6 +2951,11 @@ export class CityClient {
       topologyHoldFrames: this.topologyHoldFrames,
       topologyHoldTicksAdded: this.topologyHoldTicksAdded,
       topologyHoldExpired: this.topologyHoldExpired,
+      topologyCopiesApplied: this.topologyCopiesApplied,
+      topologyCopiesLate: this.topologyCopiesLate,
+      topologyReliableAfterCopy: this.topologyReliableAfterCopy,
+      repairsBehindCopies: this.repairsBehindCopies,
+      topologyGapHoldFrames: this.topologyGapHoldFrames,
       brokenBonds: topologyStats.brokenBonds,
       liveIslands: topologyStats.liveIslands,
       topoSeqGaps: topologyStats.topoSeqGaps,

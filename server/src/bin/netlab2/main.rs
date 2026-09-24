@@ -157,7 +157,13 @@ pub fn run_spec(args: &Args) -> (RunSpec, StreamConfig) {
         config.rate_adapt = Some(stream::RateAdapt {
             profile: profile.clone(),
             seed,
-            config: link_rate::RateConfig::PRODUCTION,
+            config: link_rate::RateConfig {
+                reliable_queue_ms: knob("city.reliable_queue_ms")
+                    .unwrap_or(link_rate::RateConfig::PRODUCTION.reliable_queue_ms),
+                reliable_drain_ms: knob("city.reliable_drain_ms")
+                    .unwrap_or(link_rate::RateConfig::PRODUCTION.reliable_drain_ms),
+                ..link_rate::RateConfig::PRODUCTION
+            },
             stale_ms: knob("lab.rate_stale_ms").unwrap_or(0.0),
         });
     }
@@ -192,7 +198,7 @@ pub fn stream_config(pace: Pace, knobs: &BTreeMap<String, String>) -> StreamConf
             "lab.recorded_repairs" => config.recorded_repairs = f() != 0.0,
             // Read by run_spec: per-link rate adaptation (production: on,
             // `VIBE_CITY_RATE_ADAPT`), and a lab-only feedback delay probe.
-            "city.rate_adapt" | "lab.rate_stale_ms" => {
+            "city.rate_adapt" | "lab.rate_stale_ms" | "city.reliable_queue_ms" | "city.reliable_drain_ms" => {
                 f();
             }
             "city.client_model" => config.city.model_client_extrapolation = Some(f() != 0.0),
@@ -204,6 +210,7 @@ pub fn stream_config(pace: Pace, knobs: &BTreeMap<String, String>) -> StreamConf
             "city.contact_target_age_ticks" => config.city.contact_target_age_ticks = Some(f() as u32),
             "city.baseline_lag_ticks" => config.city.baseline_reference_lag_ticks = Some(f() as u32),
             "city.baseline_skip_quiescent" => config.city.baseline_skips_quiescent = Some(f() != 0.0),
+            "city.topology_copies" => config.city.topology_datagram_copies = Some(f() as u32),
             "city.max_eval" => {
                 // Read once, from the environment, by the encoder itself.
                 std::env::set_var("VIBE_CITY_MAX_EVAL", value);
