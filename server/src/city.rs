@@ -2255,6 +2255,11 @@ impl CityRuntime {
         (self.last_encode_shared_ms, self.last_client_datagrams_ms)
     }
 
+    /// The static per-client byte ceiling per send.
+    pub fn client_ceiling_bytes(&self) -> usize {
+        self.encoder.config().client_ceiling_bytes
+    }
+
     pub fn encode_shared(&mut self, sim_tick: u32) -> SharedRecords {
         self.encoder.encode_send(sim_tick)
     }
@@ -2265,7 +2270,20 @@ impl CityRuntime {
         camera: Camera,
         shared: &SharedRecords,
     ) -> Vec<Vec<u8>> {
-        let packets = self.encoder.client_datagrams(client, camera, shared);
+        self.client_datagrams_within(client, camera, shared, None)
+    }
+
+    /// `client_datagrams` under this client's link allowance (the rate
+    /// controller's plan, `link_rate.rs`); `None` is the static ceiling.
+    pub fn client_datagrams_within(
+        &mut self,
+        client: u64,
+        camera: Camera,
+        shared: &SharedRecords,
+        link_allowance_bytes: Option<usize>,
+    ) -> Vec<Vec<u8>> {
+        let packets =
+            self.encoder.client_datagrams_within(client, camera, shared, link_allowance_bytes);
         self.sent_packets += packets.len() as u64;
         let mut bytes = 0u64;
         let mut records = 0u64;

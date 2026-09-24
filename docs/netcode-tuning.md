@@ -49,8 +49,8 @@ links, with `lab.recorded_repairs=0`:
 city send rate are the two large levers left; see
 [the Pareto front](#pareto-front). A lower ceiling is the only knob that
 fixes the saturated 0.5–1 Mbit/s links, and it costs error on fast links. The
-real fix there is rate adaptation, [proposed](#proposals-not-implemented)
-below.
+fix there is per-link rate adaptation, now implemented: see
+[Rate adaptation](#rate-adaptation).
 
 ## Bundles
 
@@ -430,17 +430,262 @@ destroyed.
   both ways. Meteors are drawn by the client meteor layer from the snapshot
   stream, which this change does not touch.
 
+## Rate adaptation
+
+Each client's city stream now picks its own byte budget and send cadence from
+its measured link (`server/src/link_rate.rs`, on by default,
+`VIBE_CITY_RATE_ADAPT=0` turns it off). A link that keeps up gets the static
+ceiling, byte for byte as before. Only a link that cannot carry the stream is
+paced. The wire format and protocol version are unchanged, and WebSocket
+sessions are untouched.
+
+### Signals (what the server can read, per connection)
+
+| Signal | Source | Used for |
+|---|---|---|
+| Datagram send-buffer occupancy | quinn `datagram_send_buffer_space()` (1 MiB buffer, now set explicitly in `wt_transport_config`) | A queue at the sender |
+| RTT above its 10 s minimum | quinn `stats().path.rtt` | A queue in the network |
+| UDP bytes sent, lost bytes, packets sent / lost | quinn `stats().udp_tx`, `stats().path` | Delivery rate (the capacity samples); loss with a standing queue |
+| Bytes the server queued, all lanes | new counter in `outbound::Sender` | The share the city does not own (snapshots, topology, baselines) |
+| cwnd | quinn `stats().path.cwnd` | Not used: see below |
+| Client ACKs / NACKs | – | None exist for city datagrams (open loop) |
+
+**Where the queue forms** (measured, real transport, no privileges). The test
+`quic_rate_tests` in `server/src/main.rs` runs a WebTransport session through
+a userspace relay that paces the server-to-client direction at 1 Mbit/s, with
+a 200 ms drop-tail queue and 15 ms one way. The server is configured as in
+production (BBR), and the stream offers its worst case: the full ceiling on
+every send.
+
+- **quinn 0.11's BBR does not hold datagrams back.** Its window grew from
+  360 kB to 1.2 MB over 8 s while the path dropped 55%. The datagram buffer
+  never held more than 95 B.
+- **The queue formed in the network instead.** RTT rose to 208 ms, 44.9% of
+  datagrams were delivered, and one-way p50 was 206 ms.
+- **So the controller reads both queues.** The sender buffer (the lab's old
+  paced model; Cubic, or a pacing BBR) and RTT inflation (quinn's BBR today).
+- **cwnd is not used.** It says nothing a delivery rate does not, and here it
+  was plainly wrong.
+
+### Controller (delay-based, BBR-like)
+
+- **Free** (start state): the static ceiling, unchanged. The link becomes
+  **Limited** after 3 consecutive sends (~100 ms) with either ≥ 2.4 kB in
+  the datagram buffer or RTT ≥ 60 ms above its minimum. Loss alone never
+  throttles: random loss is not congestion, which is why the server runs BBR.
+- **Limited:** city rate = `gain × 0.9 × capacity − other traffic − standing
+  queue / drain time`.
+  - Standing queue: beyond 20 ms at the sender, or beyond 35 ms of RTT
+    inflation, which allows the send bursts' own queueing.
+  - Drain time: max(250 ms, 2 RTT).
+  - Capacity: the max over 1.5 s of delivery samples (200 ms spans of UDP
+    bytes less the lost share, less the growth of the network queue).
+    - Only spans whose queue held steady may raise it; a busy span may lower
+      it.
+    - It falls by at most 20% per 200 ms, unless there is loss > 10% with a
+      standing queue, which cuts it by 15% at once (at most once per 2 s).
+  - Probing: one 200 ms phase in eight offers 1.25× and the next 0.75×. A
+    probe that found ≥ 10% more with no queue makes the next one bolder (up
+    to 2.5×).
+- **Cadence:** the rate fills a token bucket (capped at 2 sends). A send
+  smaller than 400 B is skipped and its budget carried, so below ~100 kbit/s
+  of city share the send rate falls and each send gets bigger.
+- **Release:** back to Free once the path has carried the full-ceiling rate
+  plus the other traffic, with no standing queue, for 5 s. A constrained link
+  stays Limited through quiet stretches (the allowance does not bind then),
+  so the next collapse is paced from its first send.
+- **Priority under the budget is the encoder's own**
+  (`ChunkStreamEncoder::client_datagrams_within`). The allowance is a min with
+  the encoder's ceiling. The same ranking applies, required records first,
+  then error removed per byte, and only the cut line moves.
+
+### Netlab: the new seam (S15) and its bound
+
+The server stage now closes the loop on a simulated link. At each of the
+scored client's sends it feeds the link model every packet departed so far,
+reads the same signals production reads from quinn, and runs the production
+controller. The link model also gained the network-queue behaviour measured
+above (`bottleneckQueueMs`, the `*-nq` profiles). Details and bounds are in
+[netlab-v2.md](netlab-v2.md) (S13, S15).
+
+- **Relay run replayed through the model** (from 3 s on; quinn, 3 runs):
+  - without adaptation: 44.3% delivered vs 44.8–44.9%; one-way p50 204 vs
+    206 ms;
+  - with it: p50 28.4 vs 28.4–31.3 ms; p99 137 vs 81–117 ms; capacity
+    916 vs 780–930 kbit/s.
+- **Reading the link never changes it** (unit test). Every fast-link cell
+  below is byte-identical with and without the loop.
+- **Late feedback** (`lab.rate_stale_ms`): the controller reads the link 100 or 250 ms late, on 4 constrained links × 2 bundles (measured):
+  - it gets more conservative: netcode bytes −3% to −11%, and some sends are merged (skipped);
+  - datagram p99 moves by −15 to +26 ms;
+  - ALL draws pos@render p99 by at most +0.02 m, pos@now p99 by at most +0.12 m (v2c0 cap-1mbit-nq at 250 ms);
+  - moving island-frames never drawn: 0 → 91 on systematic poor-mobile at 250 ms, otherwise unchanged or lower.
+
+  The loop is not sensitive to the model's exact feedback timing at that scale.
+- `netlab2 calibrate` still passes on heavy-quick3-v2 c0 and c1 (the
+  recorded link is open loop). Measured, rebased on 3f3d891a:
+  - c0: 11,063/11,063 packets byte-identical, clock p99 96 µs;
+  - c1: 10,861/10,861 packets byte-identical.
+
+### Results (measured, lab)
+
+Frozen truth, no physics rerun. Arms: `off` = `city.rate_adapt=0` (identical
+to the 3f3d891a lab on every profile, checked on both bundles), `on` =
+production. Bundles: **systematic-2c-d1342419 c1** (spectator, 337 s,
+16 demolitions; production knobs) and **heavy-quick3-v2 c0** (122 s; the
+51ddcf48 defaults by knob, `lab.recorded_repairs=0`). Seed 1.
+
+- **Fast links, unchanged** (loopback, lan, cable, lte, lossy-wifi, both
+  bundles): the controller never left Free (0 limited sends), and every
+  number (bytes, latency, every all-draws class) is identical, as are the
+  lab tapes' packets.
+- **1 Mbit/s cap** (`cap-1mbit`, the sender-queue model) and **0.5 Mbit/s cap**
+  (`bw-capped`): below.
+
+**systematic-2c-d1342419 c1**, off → on:
+
+| Link | Netcode kbit/s | Datagram latency p50 / p99 ms | Reliable p99 ms | Datagrams lost | ALL draws pos@render p99 / pos@now p99 m | ALL missing draw-frames | Debris (chunk_debris) render p99 / now p99 m | Moving island-frames never drawn | Island first draw p99 ms |
+|---|---|---|---|---|---|---|---|---|---|
+| poor-mobile | 231 → 216 | 159 / 1,629 → 156 / 216 | 5,220 → 740 | 3.0% → 3.1% | 0.118 / 0.39 → 0.091 / 0.25 | 330 → 466 | 1.17 / 3.89 → 0.85 / 2.10 | 433 → 0 | 4,989 → 755 |
+| cap-1mbit | 238 → 223 | 35 / 1,507 → 35 / 79 | 5,064 → 732 | 0.0% → 0.0% | 0.052 / 0.27 → 0.039 / 0.16 | 222 → 212 | 0.66 / 3.10 → 0.42 / 1.34 | 0 → 0 | 4,556 → 436 |
+| bw-capped | 238 → 194 | 43 / 6,348 → 38 / 98 | 16,535 → 1,882 | 0.0% → 0.0% | 4.427 / 6.32 → 0.052 / 0.20 | 100,911 → 287 | 37.52 / 41.34 → 0.94 / 2.04 | 1,019 → 105 | 18,350 → 1,099 |
+| poor-mobile-nq | 220 → 215 | 158 / 356 → 157 / 255 | 906 → 611 | 5.1% → 3.0% | 0.103 / 0.28 → 0.097 / 0.26 | 640 → 656 | 1.14 / 2.64 → 0.94 / 2.17 | 0 → 0 | 1,021 → 1,343 |
+| cap-1mbit-nq | 226 → 220 | 35 / 225 → 35 / 100 | 323 → 106 | 2.2% → 0.0% | 0.043 / 0.17 → 0.040 / 0.15 | 212 → 210 | 0.54 / 1.85 → 0.40 / 1.29 | 0 → 0 | 197 → 108 |
+| bw-capped-nq | 200 → 187 | 38 / 241 → 38 / 204 | 512 → 277 | 8.2% → 0.2% | 0.080 / 0.28 → 0.054 / 0.19 | 643 → 213 | 1.52 / 3.31 → 0.56 / 1.57 | 0 → 0 | 339 → 175 |
+
+**heavy-quick3-v2 c0**, off → on:
+
+| Link | Netcode kbit/s | Datagram latency p50 / p99 ms | Reliable p99 ms | Datagrams lost | ALL draws pos@render p99 / pos@now p99 m | ALL missing draw-frames | Debris (chunk_debris) render p99 / now p99 m | Moving island-frames never drawn | Island first draw p99 ms |
+|---|---|---|---|---|---|---|---|---|---|
+| poor-mobile | 213 → 194 | 160 / 1,699 → 157 / 223 | 8,469 → 784 | 3.0% → 3.1% | 0.849 / 2.04 → 0.103 / 0.28 | 638 → 220 | 8.46 / 9.32 → 1.03 / 2.10 | 0 → 0 | 8,569 → 875 |
+| cap-1mbit | 219 → 199 | 35 / 1,580 → 34 / 88 | 8,202 → 437 | 0.0% → 0.0% | 0.634 / 1.73 → 0.080 / 0.19 | 352 → 169 | 7.93 / 9.03 → 0.52 / 1.52 | 0 → 0 | 8,445 → 575 |
+| bw-capped | 219 → 174 | 39 / 9,049 → 37 / 107 | 21,775 → 1,181 | 0.0% → 0.0% | 3.765 / 6.12 → 0.088 / 0.26 | 315 → 145 | 13.75 / 21.63 → 1.17 / 2.10 | 0 → 0 | 21,945 → 1,005 |
+| poor-mobile-nq | 200 → 185 | 158 / 354 → 156 / 313 | 770 → 752 | 5.7% → 3.3% | 0.107 / 0.31 → 0.118 / 0.30 | 150 → 267 | 1.03 / 2.55 → 1.29 / 2.55 | 0 → 0 | 789 → 764 |
+| cap-1mbit-nq | 206 → 189 | 35 / 226 → 34 / 88 | 300 → 124 | 2.7% → 0.0% | 0.088 / 0.23 → 0.088 / 0.20 | 115 → 161 | 0.54 / 1.79 → 0.72 / 1.62 | 0 → 0 | 303 → 203 |
+| bw-capped-nq | 180 → 170 | 37 / 236 → 37 / 148 | 446 → 164 | 7.7% → 0.0% | 0.122 / 0.37 → 0.088 / 0.24 | 168 → 159 | 2.64 / 3.42 → 1.06 / 1.97 | 0 → 0 | 594 → 187 |
+
+What it says (inferred from the tables):
+
+- **Latency falls on every constrained link.**
+  - Datagram p99: 1.5–9 s → 79–223 ms with the queue at the sender; 225–356
+    → 88–313 ms with it in the network.
+  - Reliable p99 (topology, baselines) falls 5–18× at the sender and 1.3–3×
+    in the network.
+- **Error falls where the link saturated.**
+  - bw-capped systematic: ALL draws pos@render p99 4.43 → 0.052 m, pos@now
+    p99 6.32 → 0.20 m, missing draw-frames 100,911 → 287.
+  - heavy-quick3-v2 on poor-mobile / 1 Mbit / 0.5 Mbit: debris render p99
+    8.5 / 7.9 / 13.8 m → 1.0 / 0.5 / 1.2 m.
+- **Moving debris never drawn** (`all_draws.first_draw`, islands):
+  - systematic poor-mobile: 433 → 0 frames;
+  - systematic bw-capped: 1,019 → 105 frames.
+  - The island first-draw p99 falls 5–20× at the sender.
+- **Loss falls with the queue in the network:** 7.7–8.2% → 0–0.2% on
+  bw-capped-nq, 2.2–2.7% → 0% on cap-1mbit-nq.
+- **Costs:**
+  - Bytes fall 2–20%, by design.
+  - With the queue in the network the capacity estimate sits below the path
+    (0.7–0.9 of it), so debris render p99 rises on two cells (v2c0
+    cap-1mbit-nq 0.54 → 0.72 m, poor-mobile-nq 1.03 → 1.29 m).
+  - systematic poor-mobile-nq island first-draw p99 rises 1,021 → 1,343 ms,
+    while its p50 and every error percentile are unchanged or lower.
+
+**Seed replicates** (seeds 2–3, constrained links): seed 2 on poor-mobile, cap-1mbit, bw-capped, cap-1mbit-nq and bw-capped-nq, both bundles: every direction above holds (for example, systematic bw-capped datagram p99 6,347 → 98 ms, never-drawn island-frames 1,019 → 103; v2c0 poor-mobile ALL pos@render p99 0.822 → 0.118 m). Runs: `target/rate-adapt/final/seed2-*`.
+
+### Live (measured)
+
+`scripts/perf/city-bench.sh --scenario quick --clients 3` on loopback (ports 5501/5502/3553, GPU lock, bench out `target/rate-adapt/city-bench`), with a second run of the same build with `VIBE_CITY_RATE_ADAPT=0` as an A/B:
+
+- `runs/20260924-125425-rate-adapt` (on);
+- `runs/20260924-132254-rate-adapt-off` (off).
+
+Both runs: 3/3 paired bundles, 0 errors.
+
+- **The controller never engaged on loopback.** It logged 0 state changes in the whole run (`city stream rate adaptation` lines in `server.log`), so every client got the static ceiling, as in the lab's fast-link cells.
+- **City encode cost:** step p95 0.167 ms, encode p95 0.160 ms (whole city 1.3% of the tick).
+
+| Metric (measured, live) | stream-tune-final (2c84b393 + tuning) | this, off | this, on |
+|---|---:|---:|---:|
+| Bonds broken / peak active bodies | 30.3% / 410 | 32.5% / 418 | 28.8% / 374 |
+| Server tick p95 / p99 ms | 25.8 / 44.0 | 32.4 / 53.1 | 23.4 / 42.0 |
+| Server % ticks over 16.7 ms | 8.8 | 14.5 | 11.6 |
+| kbit/s c0 / c1 / c2 | 197.8 / 190.1 / 188.7 | 192.5 / 176.2 / 172.8 | 189.3 / 181.4 / 180.2 |
+| Send→arrive p99 ms c0 / c1 / c2 | 4.24 / 4.18 / 4.16 | 3.96 / 3.97 / 3.73 | 4.10 / 3.68 / 3.60 |
+| Structure repairs | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 |
+| Body render error p99 m c0 / c1 / c2 | 0.08 / 0.26 / 0.08 | 0.16 / 1.89 / 0.32 | 0.13 / 2.15 / 0.35 |
+| Budgets failed (of 27) | 9 | 11 | 11 |
+
+Reading it:
+
+- **No regression is attributable to rate adaptation** (measured, A/B). Off and on fail the same 11 budgets.
+- **The body render error rise is not the controller's.**
+  - It rose against stream-tune-final (c1 0.26 → 2.15 m) and is present with adaptation off too (1.89 m).
+  - It is the dynamic-body snapshot class (146 matched samples on c1, so p99 is about the second-worst sample). The controller does not touch that stream.
+  - The run also uses the 3f3d891a client, whose drawn-world probe changed (inferred).
+- **Server tick variance is GPU physics** (dynamics 97.8% of the tick): each run broke a different share of the city.
+- **Constrained links were not run live.** The existing netem tooling (`scripts/netem.sh`, `--impair-mode netem`) needs CAP_NET_ADMIN / root, and the in-process impairment acts after QUIC, so it cannot create a bottleneck the sender sees. That leaves the real-transport relay test above (no privileges) as the live-stack check for constrained links.
+
+### Reproduce
+
+```bash
+N=target/rate-adapt/cargo/release/netlab2   # CARGO_TARGET_DIR of your build
+B=target/netlab-v2/bundles/systematic-2c-d1342419/debug-reports/session-netlab2-20260924-115042-systematic-2c-c1
+$N matrix --bundle $B --out <dir> --links loopback,lan,cable,lte,lossy-wifi,poor-mobile,cap-1mbit,bw-capped,poor-mobile-nq,cap-1mbit-nq,bw-capped-nq \
+   --knob-sets "off:lab.recorded_repairs=0,city.rate_adapt=0;on:lab.recorded_repairs=0"
+cargo test -p web-fps-server --bin web-fps-server -- --ignored rate_adaptation_on_real_quic --nocapture
+```
+
+### Tests
+
+- `server/src/link_rate.rs`: 8 unit tests on a fluid link model, both queue
+  locations.
+  - Negative test: `a_fast_link_is_never_throttled`. Loopback- to 5 Mbit-
+    class paths, collapse-burst demand, up to 20% random loss: every send
+    keeps the ceiling.
+  - Step response: 0.5 Mbit/s with the queue at the sender; 1 Mbit/s with a
+    200 ms and a 2 s network queue.
+  - Capacity drop and drain.
+  - Loss response: random loss is not congestion, loss with a queue is.
+  - Recovery: a faster path is found and released in 10.3 s.
+  - Cadence on a 96 kbit/s path; disabled means always Full.
+- `server/src/main.rs` `quic_rate_tests` (ignored, real time ~17 s): the
+  real-transport relay test above.
+- `destruction/src/encoder.rs`: `a_link_allowance_moves_only_the_cut_line`.
+- `server/src/outbound.rs`: `the_sender_counts_the_bytes_it_queued_on_both_lanes`.
+- `netlab2` `link.rs`: `reading_the_link_changes_nothing_and_reports_the_sender`,
+  `the_network_queue_model_matches_quinn_through_a_paced_relay`.
+
+### Risks
+
+- **The network-queue signal is RTT.**
+  - On a jittery path (real LTE), smoothed RTT can sit tens of ms above its
+    minimum with no queue. The entry needs 60 ms for 3 consecutive sends,
+    and the lab's RTT carries no jitter, so a false entry on a jittery fast
+    link is not ruled out by these runs (inferred).
+  - If one happens, the probes and the release rule bring the link back to
+    the ceiling (about 10 s in the unit test).
+- **The minimum RTT is windowed (10 s).** A link that stays queued for longer
+  loses its baseline. Limited links drain every probe cycle, so this should
+  not happen while adapting (inferred).
+- **A pure policer (no queue, loss only) is not detected.** Loss alone never
+  throttles, by design.
+- **Capacity with the queue in the network is conservative:** 0.7–0.9 of the
+  path in the lab, 780–930 of ~950 kbit/s through the relay. That trades a
+  little fidelity for latency.
+- **Only the scored client is closed-loop in the lab.** Other clients get
+  the static ceiling there, which does not change the scored client's bytes.
+- **quinn's BBR is the underlying problem.** It sends far above the path and
+  lets the network drop the rest. Adaptation keeps the offered load under the
+  path, which also removes the snapshots' share of that loss (relay test:
+  44.9% → 100% delivered). But the first ~100–200 ms of a collapse, before
+  the link counts as constrained, still overruns it. Pacing quinn (Cubic, or
+  a fixed BBR) is a separate decision.
+
 ## Proposals not implemented
 
 In order of expected value (inferred from the numbers above):
 
-1. **Rate adaptation.** Set each client's city ceiling from the QUIC path's
-   delivery rate or congestion window. This is server-only: quinn exposes
-   path stats. The lab shows a fixed 1.3–2.6 kB ceiling cures the saturated
-   links (bw-capped mean error 0.36 → 0.14 m, perceptible area 8× lower) but
-   costs 30–60% error on fast links. Only a per-link ceiling gets both.
-   The ceiling's allowance is already per client, so the rate would be the
-   only new input.
+1. ~~**Rate adaptation.**~~ Implemented: [Rate adaptation](#rate-adaptation).
 2. **Acknowledged delivery for the first record of a body.** The stream is
    open loop, so a lost first record is noticed only by the age deadline.
    Resending a body's first record once, one send later, would cost ~1% of
@@ -489,9 +734,9 @@ In order of expected value (inferred from the numbers above):
   - The link model is a paced ideal, with no slow start.
   - Feedback is open loop (seam S6).
   - One scored client per bundle.
-- **Saturated links are not fixed.** poor-mobile and bw-capped still
-  saturate at peaks with the new defaults (datagram p99 in seconds). Only a
-  lower ceiling or rate adaptation addresses that.
+- **Saturated links** were not fixed by the defaults above (datagram p99 in
+  seconds on poor-mobile and bw-capped). [Rate adaptation](#rate-adaptation)
+  fixes them.
 
 ## Reproduce
 

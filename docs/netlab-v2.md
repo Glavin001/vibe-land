@@ -109,8 +109,9 @@ measurement that bounds it.
 | S10 | Renderers (three.js meshes) are not imported; their **pose steps are**: `netEntityPoses.ts` (which remote players, bodies and vehicles are drawn and where), `meteorPlacement.ts` `placeMeteorInFrame`, and `cityPoseStore.ts` `advanceCityPoses` (the city layer's chunk records and body poses, composed as the vertex shader composes them, hide rule included). Three things remain lab-side: (1) the dynamic-body `rendered` callback is `getInterpolatedDynamicBodyState`, the branch `MultiplayerGameRuntime.getRenderedDynamicBodyState` takes for any body the local player has not just touched (S11); (2) every draw is evaluated at the frame's time, where the live renderers each read `performance.now()` at their own instant in the frame; (3) the city layer's distance stride (`renderScheduling.ts`, 1-8 frames by camera distance) is not applied: it is a render-rate choice, and a deferred body is written later at that later frame's ledger pose, so it changes when a distant chunk is redrawn, never where. | Every drawn pose comes from the same functions the renderers call. | Lab vs live renderer samples, every class (calibration (d)), d1342419 systematic bundle c0 / c1, p99: players 1.4 / 1.3 cm, vehicles 0.2 / 0.3 cm, bodies 6.3 / 6.1 cm, meteors 10.3 / 9.3 cm (fast movers: (2) at ~50 m/s), intact chunks 0.00 mm, debris chunks 2.8 / 3.5 cm; chunk body keys agree on 99.9995% / 100% (6 of 1.29 M: one re-parent a frame apart, poses 7 mm apart), drawn / not drawn on 99.95%. |
 | S11 | The recording player is replayed without its inputs, so without local prediction. The own avatar (camera / debug capsule at `client.getPosition()`, predicted) and the vehicle it drives (`localVehicleVisualPose`: prediction + `vehicleLocalMeshPose.ts` smoothing) are drawn from prediction live; the lab draws them from snapshots. So are bodies it has just touched (the local proxy, `hasRecentDynamicBodyInteraction`). | Scored as classes `own_avatar` and `vehicle_driven`, **left out of the headline `overall`**; body-proxy frames are not identified. A spectator client's bundle (c1 of the systematic bundle) has none of these. | – |
 | S12 | The server capture clock is mapped to the tape clock with the pairing clock samples (NTP midpoint, median). | Loopback round trip is about 2 ms. | Spread 1.1–4.7 ms; lane latency p50 0.6 ms. |
-| S13 | The link model is simulated (below). | It follows quinn 0.11 as configured (see the list below). Not validated against netem yet (limits). | – |
+| S13 | The link model is simulated (below). | It follows quinn 0.11 as configured (see the list below). Where the bottleneck queue forms is a profile choice: at the sender (every older profile, the paced ideal) or in the network (`bottleneckQueueMs`, the `*-nq` profiles), which is what quinn 0.11's BBR measurably does. Not validated against kernel netem (limits). | Network-queue model against real quinn 0.11 + BBR through a userspace 1 Mbit/s relay with a 200 ms drop-tail queue (`quic_rate_tests` in `server/src/main.rs`, same offered traffic, from 3 s on): without rate adaptation 44.3% of datagrams delivered vs 44.8–44.9% (3 runs), one-way p50 204 vs 206.3–206.6 ms. Quinn's datagram buffer peaked at 95 B there: the sender-queue model does not describe quinn's BBR on a slow path (`link::tests::the_network_queue_model_matches_quinn_through_a_paced_relay`). |
 | S14 | The client starts cold at the tape's first city bootstrap. The live client had the session's history. | A newly joined client does the same. | Included in S8's early windows. |
+| S15 | **Link feedback to the server stage** (closed loop, city rate adaptation). At each of the scored client's city sends the stage feeds the link model every packet departed so far (lab and pass-through, in the final run's order), reads it (`LinkSim::signals`), and passes that to the production controller (`server/src/link_rate.rs`, compiled in by `#[path]`), whose plan sets that send's allowance or skips it. The signals are what production reads from quinn: datagram-buffer occupancy (`datagram_send_buffer_space`), UDP bytes sent, packets sent/lost and lost bytes (losses declared RTT × 9/8 + jitter after the send), smoothed RTT (7/8 EWMA of ACKed packets, the network queue included), and the bytes the server queued. Not modelled: cwnd (production does not read it), quinn's ACK delay, and RTT jitter (the model's RTT samples carry the queue, not the path jitter). The deliveries are still computed by the open-loop `simulate` over the final packet list. On the recorded link, and with `city.rate_adapt=0`, the loop is open (the static ceiling). | Reading the link never changes it (`link::tests::reading_the_link_changes_nothing_and_reports_the_sender`: deliveries identical with and without reads). The controller is the production code. | Closed-loop model vs real quinn, same relay run with adaptation, from 3 s on: 100% vs 100% delivered, one-way p50 28.4 vs 28.4–31.3 ms, p99 137 vs 81–117 ms, capacity estimate at the end 916 vs 780–930 kbit/s (3 runs). Fast links (loopback, lan, cable, lte, lossy-wifi): byte-identical to the open loop on both bundles (the controller never leaves `Free`). Sensitivity to late feedback (`lab.rate_stale_ms`): see [netcode-tuning.md](netcode-tuning.md#rate-adaptation). |
 
 ### The mid-match start: decision
 
@@ -170,9 +171,15 @@ or wrong-identity (see [All draws](#all-draws-the-headline)).
   - **Lanes:** two, as `wants_unreliable_delivery` assigns them. Snapshots,
     city chunks and pings go on datagrams; everything else goes on the
     ordered reliable stream.
-  - **Sender:** one QUIC sender, paced at the bottleneck rate (the ideal of
-    the BBR controller the server selects). Queues build at the sender, where
-    quinn keeps them, not in the network.
+  - **Sender:** one QUIC sender. On a profile without `bottleneckQueueMs`
+    it is paced at the bottleneck rate (the ideal of the BBR controller the
+    server selects), so queues build at the sender. With
+    `bottleneckQueueMs` (the `*-nq` profiles) the sender does not hold back
+    and the bottleneck queues up to that many ms and drops the rest
+    (drop-tail); the queue then shows up as RTT and loss. That is what quinn
+    0.11's BBR does through a paced relay (measured, S13): its window grew
+    from 360 kB to 1.2 MB over 8 s while the path dropped 55%, and its
+    datagram buffer never held more than 95 B.
   - **Datagrams first:** within the sender, datagrams go before stream data;
     quinn writes DATAGRAM frames before STREAM frames.
   - **Datagram buffer:** 1 MiB, dropping the oldest when full (quinn's
@@ -193,17 +200,24 @@ or wrong-identity (see [All draws](#all-draws-the-headline)).
     outbound queue there and close the connection.
   - **Randomness:** a seeded splitmix64 RNG. The same seed gives the same
     bytes; `lab.vltape` is bit-identical across runs.
-- **No link feedback into the encoders:** production has none. The snapshot
-  budget (1100 B) and the city ceiling (10.4 kB per send) are fixed. The only
-  coupling is the outbound queue: a full datagram queue drops, and a full
-  reliable queue closes the connection.
+- **Link feedback into the city encoder (S15):** production adapts each
+  client's city allowance and send cadence to its link
+  (`server/src/link_rate.rs`, `VIBE_CITY_RATE_ADAPT`, on by default). On a
+  simulated link the lab closes the same loop: the controller reads the link
+  model at each of the scored client's sends. The snapshot budget (1100 B)
+  is fixed, and the city ceiling (10.4 kB per send) is the controller's
+  upper bound. The per-send trace is `rate-trace.jsonl` in the run
+  directory and the totals are `stream.city_rate` in `stream.json`.
 
 Profiles are read from `client/netlab/netemProfiles.json`, the live netlab's
 table: `loopback`, `lan`, `cable`, `wifi-good`, `wifi-bad`, `lossy-wifi`,
 `lte`, `poor-mobile`, `congested`, `loss-burst`, `bw-capped`. `netlab2
 profiles` lists them. `loopback`, `lan`, `cable`, `poor-mobile`, `lossy-wifi`
 and `bw-capped` were added for Netlab v2, using only the fields the live
-netlab already reads.
+netlab already reads. `cap-1mbit` (1 Mbit/s, 30 ms, no loss) and the
+network-queue variants `cap-1mbit-nq`, `bw-capped-nq` and `poor-mobile-nq`
+(200 ms bottleneck queue) were added for rate adaptation; `bottleneckQueueMs`
+is read by Netlab v2 only.
 
 ## Knobs (`--knob k=v`, comma-separated)
 
@@ -230,6 +244,7 @@ These are the knobs production actually has, with their production defaults:
 | `city.client_model` | 1 (0 in older captures) | judge against the client's extrapolated pose; rest corrections |
 | `city.baseline_lag_ticks` | 110 (0 in older captures) | deltas stay on the previous baseline this long |
 | `city.baseline_skip_quiescent` | 1 (0 in older captures) | quiescent bodies left out of baselines |
+| `city.rate_adapt` | 1 (`VIBE_CITY_RATE_ADAPT`) | per-link rate adaptation of the city stream (S15); simulated links only, the recorded link is always open loop |
 
 `city.baseline_interval_ticks` is 120 on new servers (60 before). A knob
 applies over the capture's encoder checkpoint, which carries the config the
@@ -237,7 +252,9 @@ live encoder ran with, so a bundle recorded before these changes replays the
 old behaviour unless the knobs turn it on. The tuning round that added them
 is in [netcode-tuning.md](netcode-tuning.md).
 
-One lab-only knob, not a production setting: `lab.recorded_repairs` (default
+Lab-only knobs, not production settings: `lab.rate_stale_ms` (default 0)
+makes the rate controller read the link as it was that many ms before each
+send, to bound S15's sensitivity to feedback delay; and `lab.recorded_repairs` (default
 1). With 0 the structure repairs the live server sent this client
 (`PKT_CITY_STRUCTURE_BOOTSTRAP`) are not replayed (seam S6), and the stream
 summary counts them as withheld.
@@ -786,10 +803,12 @@ window (default 10 s).
 - **Client-to-server feedback is open loop (S6).** A link bad enough to make
   the client NACK or resync would not get the server's answers. The client
   stage counts both, and they were 0 in every run on the d1342419 bundle.
-- **The congestion controller is the paced ideal.** There is no slow start or
-  cwnd dynamics, and it has not yet been validated against the live netlab's
-  netem runs on the same profile. Jitter is iid (netem's default), which
-  over-reorders datagrams compared with real LTE.
+- **The congestion controller is an ideal, at either end.** The sender-queue
+  profiles pace at the path rate; the network-queue profiles do not pace at
+  all. Real quinn BBR on a slow path matched the second through a userspace
+  relay (S13), with no slow start or cwnd dynamics modelled. Neither has been
+  validated against kernel netem, which needs privileges. Jitter is iid
+  (netem's default), which over-reorders datagrams compared with real LTE.
 - **Seams S8 and S14:** the client clock diverges during server stalls and
   from a cold start by up to about 16 ms, measured.
 - **Budgets:** rec1 does not stress them. The systematic bundles (2 clients, 16

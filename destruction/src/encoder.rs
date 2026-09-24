@@ -1099,6 +1099,21 @@ impl ChunkStreamEncoder {
         camera: Camera,
         shared: &SharedRecords,
     ) -> Vec<Vec<u8>> {
+        self.client_datagrams_within(client, camera, shared, None)
+    }
+
+    /// `client_datagrams` under a per-link byte allowance for this send (the
+    /// server's rate adaptation, `server/src/link_rate.rs`). The allowance
+    /// only lowers the cut line of the usual selection: the same records are
+    /// ranked the same way (required first, then error removed per byte), and
+    /// `None` is exactly `client_datagrams`.
+    pub fn client_datagrams_within(
+        &mut self,
+        client: u64,
+        camera: Camera,
+        shared: &SharedRecords,
+        link_allowance_bytes: Option<usize>,
+    ) -> Vec<Vec<u8>> {
         let config = self.config;
         // Moved out for the body of this function: `state` below borrows self
         // mutably, so the audit cannot also be reached through self. Put back
@@ -1349,6 +1364,7 @@ impl ChunkStreamEncoder {
             let cap = steady.saturating_mul(config.burst_max_multiple.max(1) as usize);
             (*tokens).min(cap)
         };
+        let allowance = link_allowance_bytes.map_or(allowance, |link| allowance.min(link));
         let selection = select_with_ceiling(&mut candidates, Some(allowance), 0);
         summary.sent = selection.selected_indices.len() as u32;
         summary.ceiling = (candidates.len() - selection.selected_indices.len()) as u32;
@@ -1933,6 +1949,72 @@ mod tests {
             })
             .sum();
         assert_eq!(total_records, 1, "ceiling must drop the lower-priority body");
+    }
+
+    /// The per-link allowance (server rate adaptation) moves only the cut
+    /// line: with none the bytes are exactly `client_datagrams`'s, and a
+    /// small one keeps the body the ceiling would keep.
+    #[test]
+    fn a_link_allowance_moves_only_the_cut_line() {
+        let manifest = manifest();
+        let mut config = EncoderConfig::validated(60);
+        config.burst_capacity_sends = 0;
+        let run = |allowance: Option<usize>, ceiling: usize| {
+            let mut config = config;
+            config.client_ceiling_bytes = ceiling;
+            let mut encoder = ChunkStreamEncoder::new(&manifest, config);
+            encoder.add_client(1);
+            let mut output = promotion_output();
+            output.batches[0].promoted_islands.push(IslandPromotion {
+                structure_id: 0,
+                island_id: 2,
+                chunks: vec![ids::chunk_id(0, 1)],
+                position: [0.0, 1.0, 0.0],
+                rotation: [0.0, 0.0, 0.0, 1.0],
+                linear_velocity: [0.5, 0.0, 0.0],
+                ..Default::default()
+            });
+            let snapshots = [
+                snapshot(0.0),
+                BodySnapshotInput {
+                    body_entity: ids::body_entity(0, 2),
+                    position: [0.5, 1.0, 0.0],
+                    rotation: [0.0, 0.0, 0.0, 1.0],
+                    linear_velocity: [0.5, 0.0, 0.0],
+                    angular_velocity: [0.0, 0.0, 0.0],
+                    contacts: 0,
+                    flags: 0,
+                },
+            ];
+            encoder.ingest_tick(10, &snapshots, &output, &[]);
+            let shared = encoder.encode_send(10);
+            let packets = match allowance {
+                Some(bytes) => encoder.client_datagrams_within(1, close_camera(), &shared, Some(bytes)),
+                None => encoder.client_datagrams(1, close_camera(), &shared),
+            };
+            let summary = encoder.last_client_selection();
+            (packets, summary)
+        };
+        let (plain, plain_summary) = run(None, 10_400);
+        let (unlimited, _) = run(Some(usize::MAX), 10_400);
+        assert_eq!(plain, unlimited, "an allowance above the ceiling changes nothing");
+        let records = |packets: &Vec<Vec<u8>>| -> Vec<u32> {
+            packets
+                .iter()
+                .flat_map(|p| crate::wire::decode_chunks_datagram(p).expect("decode").records)
+                .map(|r| r.body_entity)
+                .collect()
+        };
+        assert_eq!(records(&plain).len(), 2);
+        assert_eq!(plain_summary.allowance_bytes, 10_400);
+        let (link_cut, link_summary) = run(Some(40), 10_400);
+        let (ceiling_cut, _) = run(None, 40);
+        assert_eq!(records(&link_cut).len(), 1, "the allowance must drop the lower-priority body");
+        assert_eq!(link_cut, ceiling_cut, "same winner as a ceiling of the same size");
+        assert_eq!(link_summary.allowance_bytes, 40);
+        assert_eq!(link_summary.ceiling, 1, "the deferred body is counted as a ceiling drop");
+        let (nothing, _) = run(Some(0), 10_400);
+        assert!(nothing.is_empty(), "a zero allowance sends no packet");
     }
 
     #[test]

@@ -7,7 +7,15 @@
 //! session capture is running -- when it was queued, so the connection's send
 //! log (see `send_log`) can say which tick produced every packet and how long
 //! it waited behind the others.
-use std::{future::pending, io, sync::Arc, time::Instant};
+use std::{
+    future::pending,
+    io,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
+    time::Instant,
+};
 use tokio::{
     io::{AsyncWrite, AsyncWriteExt},
     sync::{mpsc, watch},
@@ -37,6 +45,8 @@ pub(crate) struct Sender {
     datagrams: mpsc::Sender<Outgoing>,
     failed: watch::Sender<bool>,
     tap: Option<Arc<Tap>>,
+    /// Bytes queued on this connection (both lanes), for rate adaptation.
+    submitted: Arc<AtomicU64>,
 }
 
 pub(crate) struct Receiver {
@@ -82,6 +92,7 @@ pub(crate) fn channel_with_tap(capacity: usize, tap: Option<Tap>) -> (Sender, Re
             datagrams,
             failed,
             tap: tap.clone(),
+            submitted: Arc::new(AtomicU64::new(0)),
         },
         Receiver {
             reliable: reliable_rx,
@@ -101,7 +112,15 @@ impl Sender {
         }
     }
 
+    /// Bytes queued on this connection so far (both lanes): the server's
+    /// own offered load, which the city rate controller reads
+    /// (`link_rate::LinkSample::submitted_bytes`).
+    pub(crate) fn submitted_counter(&self) -> Arc<AtomicU64> {
+        self.submitted.clone()
+    }
+
     pub(crate) fn enqueue(&self, packet: Vec<u8>, unreliable: bool) -> Enqueue {
+        let len = packet.len() as u64;
         let (tick, queued) = match &self.tap {
             Some(tap) => (tap.hub.tick(), tap.hub.active().then(Instant::now)),
             None => (0, None),
@@ -117,7 +136,10 @@ impl Sender {
             &self.reliable
         };
         match lane.try_send(packet) {
-            Ok(()) => Enqueue::Queued,
+            Ok(()) => {
+                self.submitted.fetch_add(len, Ordering::Relaxed);
+                Enqueue::Queued
+            }
             Err(mpsc::error::TrySendError::Closed(packet)) => {
                 self.log_refused(&packet, unreliable, Outcome::Closed);
                 Enqueue::Closed
@@ -404,6 +426,19 @@ mod tests {
         assert_eq!(records.len(), 5);
         assert!(records.iter().all(|r| r.queued_us <= r.sent_us));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn the_sender_counts_the_bytes_it_queued_on_both_lanes() {
+        let (tx, _rx) = channel(2);
+        let counter = tx.submitted_counter();
+        assert_eq!(tx.enqueue(vec![121, 1, 2], false), Enqueue::Queued);
+        assert_eq!(tx.enqueue(vec![123, 1], true), Enqueue::Queued);
+        assert_eq!(tx.enqueue(vec![123, 2], true), Enqueue::Queued);
+        // Refused packets were never offered to the link.
+        assert_eq!(tx.enqueue(vec![123, 3, 3, 3], true), Enqueue::DatagramDropped);
+        assert_eq!(counter.load(Ordering::Relaxed), 7);
+        assert_eq!(tx.clone().submitted_counter().load(Ordering::Relaxed), 7);
     }
 
     #[tokio::test]

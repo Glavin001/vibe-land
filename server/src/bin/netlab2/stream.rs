@@ -31,6 +31,8 @@ use vibe_land_shared::constants::{
 };
 
 use crate::bundle::Bundle;
+use crate::link::{LinkSim, Profile};
+use crate::link_rate::{LinkSample, RateConfig, RateController, SendPlan};
 use crate::protocol::{
     encode_server_packet, make_net_dynamic_body_state, make_net_player_state, NetVehicleState,
 };
@@ -221,6 +223,23 @@ pub struct StreamConfig {
     /// client's own counters say whether its ledger stays in sync without
     /// them and how many repairs it would ask for.
     pub recorded_repairs: bool,
+    /// Close the loop for the scored client's city stream: the production
+    /// rate controller (`server/src/link_rate.rs`) reads this link model as
+    /// the stream is built (seam S15). `None`: open loop, the static ceiling
+    /// (the recorded link, and `city.rate_adapt=0`).
+    pub rate_adapt: Option<RateAdapt>,
+}
+
+/// The link the controller reads, and its configuration.
+#[derive(Clone, Debug)]
+pub struct RateAdapt {
+    pub profile: Profile,
+    pub seed: u64,
+    pub config: RateConfig,
+    /// Feedback delay, ms: the controller reads the link as it was this long
+    /// before the send (0 = as production reads quinn). A sensitivity probe
+    /// for seam S15, not a production setting.
+    pub stale_ms: f64,
 }
 
 impl Default for StreamConfig {
@@ -231,8 +250,28 @@ impl Default for StreamConfig {
             snapshot_interval_ticks: None,
             city: CityKnobs::default(),
             recorded_repairs: true,
+            rate_adapt: None,
         }
     }
+}
+
+/// What the rate controller did for the scored client (closed loop only).
+#[derive(Clone, Debug, Default, Serialize, serde::Deserialize)]
+pub struct CityRateStats {
+    pub sends_full: u64,
+    pub sends_limited: u64,
+    pub sends_skipped: u64,
+    pub entered_limited: u64,
+    pub released: u64,
+    pub policer_cuts: u64,
+    /// Mean allowance of the limited sends, bytes.
+    pub mean_limited_allowance_bytes: f64,
+    /// Datagram-buffer bytes seen at the scored client's sends: p50 / p99 / max.
+    pub buffered_p50_bytes: u64,
+    pub buffered_p99_bytes: u64,
+    pub buffered_max_bytes: u64,
+    /// Capacity estimate at the end, kbit/s.
+    pub final_capacity_kbit_s: f64,
 }
 
 #[derive(Clone, Debug, Default, Serialize, serde::Deserialize)]
@@ -260,6 +299,9 @@ pub struct StreamStats {
     pub snapshot_selection: BTreeMap<String, u64>,
     /// City selection outcome totals for this client.
     pub city_selection: BTreeMap<String, u64>,
+    /// The rate controller's decisions (closed loop, seam S15).
+    #[serde(default)]
+    pub city_rate: Option<CityRateStats>,
 }
 
 /// Recorded tape packets joined to the send-log records that produced them,
@@ -510,10 +552,199 @@ fn recorded_acks(bundle: &Bundle) -> BTreeMap<u32, u16> {
     acks
 }
 
+/// One of the scored client's sends, as the controller saw and decided it.
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct RateTraceRow {
+    pub t_ms: f64,
+    pub tick: u32,
+    pub limited: bool,
+    pub buffered_bytes: u64,
+    pub capacity_kbit_s: f64,
+    pub other_kbit_s: f64,
+    pub city_rate_kbit_s: f64,
+    /// Bytes allowed (None: the static ceiling; 0: skipped).
+    pub allowance_bytes: Option<usize>,
+    pub used_bytes: usize,
+}
+
+/// A packet as the feedback link sees it.
+#[derive(Clone, Copy, Debug)]
+struct Pending {
+    depart_ms: f64,
+    lane: Lane,
+    kind: u8,
+    len: usize,
+}
+
+/// The closed loop of seam S15: the simulated link, fed every packet the
+/// scored client is sent in the order the final run sorts them (lab packets
+/// by tick phase, recorded ones by queue time, the lab's first at equal
+/// times), and the production rate controller reading it.
+struct Feedback {
+    sim: LinkSim,
+    pub controller: RateController,
+    stale_ms: f64,
+    pass: Vec<Pending>,
+    pass_next: usize,
+    lab: std::collections::VecDeque<Pending>,
+    last_admit_ms: f64,
+    origin_ms: Option<f64>,
+    /// Samples read so far (for a stale view).
+    samples: std::collections::VecDeque<(f64, LinkSample)>,
+    buffered: Vec<u64>,
+    send_interval_s: f64,
+    ceiling_bytes: usize,
+    trace: Vec<RateTraceRow>,
+}
+
+impl Feedback {
+    fn new(adapt: &RateAdapt, passed: &[Outgoing], send_interval_s: f64, ceiling_bytes: usize) -> Self {
+        let mut pass: Vec<Pending> = passed
+            .iter()
+            .map(|p| Pending { depart_ms: p.depart_ms, lane: p.lane, kind: p.kind, len: p.bytes.len() })
+            .collect();
+        // Stable: equal queue times keep tape order, as their sequence
+        // numbers do in the final sort.
+        pass.sort_by(|a, b| a.depart_ms.total_cmp(&b.depart_ms));
+        Self {
+            sim: LinkSim::new(&adapt.profile, adapt.seed),
+            controller: RateController::new(adapt.config),
+            stale_ms: adapt.stale_ms,
+            pass,
+            pass_next: 0,
+            lab: Default::default(),
+            last_admit_ms: f64::MIN,
+            origin_ms: None,
+            samples: Default::default(),
+            buffered: Vec::new(),
+            send_interval_s,
+            ceiling_bytes,
+            trace: Vec::new(),
+        }
+    }
+
+    fn push_lab(&mut self, depart_ms: f64, bytes: &[u8]) {
+        let kind = bytes[0];
+        self.lab.push_back(Pending { depart_ms, lane: Lane::of_kind(kind), kind, len: bytes.len() });
+    }
+
+    /// Admit everything that departs before `at_ms` (lab packets at `at_ms`
+    /// too: they precede this send in the final order).
+    fn feed_until(&mut self, at_ms: f64) {
+        loop {
+            let lab = self.lab.front().filter(|p| p.depart_ms <= at_ms).copied();
+            let pass = self.pass.get(self.pass_next).filter(|p| p.depart_ms < at_ms).copied();
+            let next = match (lab, pass) {
+                (Some(l), Some(p)) if l.depart_ms <= p.depart_ms => {
+                    self.lab.pop_front();
+                    l
+                }
+                (Some(_), Some(p)) | (None, Some(p)) => {
+                    self.pass_next += 1;
+                    p
+                }
+                (Some(l), None) => {
+                    self.lab.pop_front();
+                    l
+                }
+                (None, None) => break,
+            };
+            // Recorded tick phases can run a hair behind the previous tick's;
+            // the link admits in time order.
+            let depart = next.depart_ms.max(self.last_admit_ms);
+            self.sim.admit(depart, next.lane, next.kind, next.len);
+            self.last_admit_ms = depart;
+        }
+    }
+
+    fn plan(&mut self, at_ms: f64, tick: u32) -> SendPlan {
+        self.feed_until(at_ms);
+        let at_ms = at_ms.max(self.last_admit_ms);
+        let origin = *self.origin_ms.get_or_insert(at_ms - 1000.0);
+        let signals = self.sim.signals(at_ms);
+        let sample = LinkSample {
+            at_us: ((at_ms - origin) * 1000.0).max(0.0) as u64,
+            datagram_buffered_bytes: signals.datagram_buffered_bytes,
+            wire_bytes: signals.wire_bytes,
+            sent_packets: signals.sent_packets,
+            lost_packets: signals.lost_packets,
+            lost_bytes: signals.lost_bytes,
+            rtt_us: (signals.rtt_ms * 1000.0) as u64,
+            submitted_bytes: signals.submitted_bytes,
+        };
+        self.samples.push_back((at_ms, sample));
+        // A stale view (sensitivity probe): the newest sample at least
+        // `stale_ms` old, stamped when it was read.
+        let seen = if self.stale_ms > 0.0 {
+            while self.samples.len() > 1 && self.samples[1].0 <= at_ms - self.stale_ms {
+                self.samples.pop_front();
+            }
+            self.samples[0].1
+        } else {
+            self.samples.clear();
+            sample
+        };
+        self.buffered.push(sample.datagram_buffered_bytes);
+        let plan = self.controller.plan(seen, self.send_interval_s, self.ceiling_bytes);
+        self.trace.push(RateTraceRow {
+            t_ms: at_ms,
+            tick,
+            limited: self.controller.state() == crate::link_rate::RateState::Limited,
+            buffered_bytes: sample.datagram_buffered_bytes,
+            capacity_kbit_s: self.controller.capacity_bytes_per_s() * 8.0 / 1000.0,
+            other_kbit_s: self.controller.other_rate_bytes_per_s() * 8.0 / 1000.0,
+            city_rate_kbit_s: self.controller.city_rate_bytes_per_s() * 8.0 / 1000.0,
+            allowance_bytes: plan.allowance(),
+            used_bytes: 0,
+        });
+        plan
+    }
+
+    /// What the send queued, back to the controller.
+    fn sent(&mut self, bytes: usize, plan: SendPlan) {
+        self.controller.sent(bytes, plan);
+        if let Some(row) = self.trace.last_mut() {
+            row.used_bytes = bytes;
+        }
+    }
+
+    fn into_stats(mut self) -> (CityRateStats, Vec<RateTraceRow>) {
+        let totals = self.controller.totals();
+        self.buffered.sort_unstable();
+        let pick = |q: f64| -> u64 {
+            if self.buffered.is_empty() {
+                0
+            } else {
+                self.buffered[((self.buffered.len() - 1) as f64 * q).round() as usize]
+            }
+        };
+        let stats = CityRateStats {
+            sends_full: totals.sends_full,
+            sends_limited: totals.sends_limited,
+            sends_skipped: totals.sends_skipped,
+            entered_limited: totals.entered_limited,
+            released: totals.released,
+            policer_cuts: totals.policer_cuts,
+            mean_limited_allowance_bytes: if totals.sends_limited == 0 {
+                0.0
+            } else {
+                totals.limited_allowance_bytes as f64 / totals.sends_limited as f64
+            },
+            buffered_p50_bytes: pick(0.5),
+            buffered_p99_bytes: pick(0.99),
+            buffered_max_bytes: self.buffered.last().copied().unwrap_or(0),
+            final_capacity_kbit_s: self.controller.capacity_bytes_per_s() * 8.0 / 1000.0,
+        };
+        (stats, self.trace)
+    }
+}
+
 pub struct Stream {
     pub packets: Vec<Outgoing>,
     pub stats: StreamStats,
     pub join: Join,
+    /// The rate controller's per-send decisions (closed loop only).
+    pub rate_trace: Vec<RateTraceRow>,
 }
 
 pub fn build(bundle: &Bundle, config: &StreamConfig) -> std::io::Result<Stream> {
@@ -685,7 +916,104 @@ pub fn build(bundle: &Bundle, config: &StreamConfig) -> std::io::Result<Stream> 
         snapshots.insert(tick, bytes);
     }
 
+    // ── the windows the lab owns ─────────────────────────────────────────
+    let city_first = match &bundle.city {
+        Some(city) => {
+            let mut reader =
+                TapeReader::open(&city.dir.join(vibe_land_destruction::netlab::capture::TAPE_FILE))?;
+            reader.next_tick()?.map(|entry| entry.tick)
+        }
+        None => None,
+    };
+    let city_first_tick = city_first.unwrap_or(u32::MAX);
+    // The lab owns the snapshot stream over the whole captured window (not
+    // just the ticks it chose to send: a slower cadence must not let the
+    // live snapshots at its edges leak through).
+    let snapshot_window = if snapshots.is_empty() {
+        (u32::MAX, 0)
+    } else {
+        (bundle.first_tick(), bundle.last_tick())
+    };
+    let lab_covers = |tick: u32, kind: u8| -> bool {
+        if is_snapshot_kind(kind) {
+            tick >= snapshot_window.0 && tick <= snapshot_window.1
+        } else if kind == PKT_CITY_STRUCTURE_BOOTSTRAP {
+            false
+        } else if is_city_encoder_kind(kind) {
+            tick >= city_first_tick
+        } else {
+            false
+        }
+    };
+
+    // ── recorded packets around the lab's (sequence numbers assigned after
+    //    the lab's, below, so the final order is unchanged) ─────────────────
+    let mut passed: Vec<Outgoing> = Vec::new();
+    for (index, packet) in bundle.tape.packets.iter().enumerate() {
+        if packet.is_prelude() || packet.base_channel() == CHANNEL_RTT {
+            continue;
+        }
+        let kind = packet.kind();
+        match join.tape_to_record.get(&index) {
+            Some(&record_index) => {
+                let record = &bundle.sendlog[record_index];
+                if lab_covers(record.tick, kind) {
+                    continue;
+                }
+                if kind == PKT_CITY_STRUCTURE_BOOTSTRAP {
+                    if !config.recorded_repairs {
+                        stats.city_structure_bootstraps_withheld += 1;
+                        continue;
+                    }
+                    stats.city_structure_bootstraps_passed_through += 1;
+                }
+                let queued = if record.queued_us == crate::send_log::QUEUED_BEFORE_CAPTURE {
+                    record.sent_us
+                } else {
+                    record.queued_us
+                };
+                let depart = clock.retime(record.tick, bundle.server_to_tape_ms(queued));
+                *stats.passthrough_by_kind.entry(kind).or_default() += 1;
+                passed.push(Outgoing {
+                    depart_ms: depart,
+                    seq: 0,
+                    tick: record.tick,
+                    lane: Lane::of_kind(kind),
+                    kind,
+                    bytes: packet.bytes.clone(),
+                    origin: Origin::Pass,
+                    tape_index: Some(index),
+                    live_record: Some(record_index),
+                    ordinal: 0,
+                });
+            }
+            None => {
+                // Before the capture: only what precedes the lab's windows.
+                let lane = if packet.base_channel() == CHANNEL_WT_DATAGRAM {
+                    Lane::Datagram
+                } else {
+                    Lane::Reliable
+                };
+                let latency = join.median_latency_ms.get(&lane).copied().unwrap_or(0.5);
+                *stats.prepass_by_kind.entry(kind).or_default() += 1;
+                passed.push(Outgoing {
+                    depart_ms: packet.t_ms - latency,
+                    seq: 0,
+                    tick: 0,
+                    lane,
+                    kind,
+                    bytes: packet.bytes.clone(),
+                    origin: Origin::PrePass,
+                    tape_index: Some(index),
+                    live_record: None,
+                    ordinal: 0,
+                });
+            }
+        }
+    }
+
     // ── city stream ──────────────────────────────────────────────────────
+    let mut rate_trace: Vec<RateTraceRow> = Vec::new();
     let mut city_ticks: BTreeMap<u32, (Vec<Vec<u8>>, Vec<Vec<u8>>)> = BTreeMap::new();
     let mut city_after_tick: BTreeMap<u32, Vec<Vec<u8>>> = BTreeMap::new();
     if let Some(city) = &bundle.city {
@@ -717,6 +1045,18 @@ pub fn build(bundle: &Bundle, config: &StreamConfig) -> std::io::Result<Stream> 
         let encoder_config = encoder.config();
         stats.city_send_interval_ticks = encoder_config.send_interval_ticks;
         stats.city_ceiling_bytes = encoder_config.client_ceiling_bytes;
+        // Closed loop (seam S15): the link model, fed every packet as it
+        // departs, read by the production controller at each of the scored
+        // client's sends.
+        let mut feedback = config.rate_adapt.as_ref().map(|adapt| {
+            Feedback::new(
+                adapt,
+                &passed,
+                f64::from(encoder_config.send_interval_ticks.max(1)) / f64::from(encoder_config.sim_hz.max(1)),
+                encoder_config.client_ceiling_bytes,
+            )
+        });
+        let mut snapshots_fed_from = 0u32;
 
         // Cameras per send tick, in the live call order; and every player's
         // most recent camera for sends the live match never made.
@@ -750,6 +1090,14 @@ pub fn build(bundle: &Bundle, config: &StreamConfig) -> std::io::Result<Stream> 
         while let Some(entry) = reader.next_tick()? {
             let tick = entry.tick;
             first_city_tick.get_or_insert(tick);
+            let (_, city_at, snapshot_at, end_at) = clock.phases(tick);
+            if let Some(feedback) = feedback.as_mut() {
+                // Every snapshot of an earlier tick is on its way.
+                for (snap_tick, bytes) in snapshots.range(snapshots_fed_from..tick) {
+                    feedback.push_lab(clock.phases(*snap_tick).2, bytes);
+                }
+                snapshots_fed_from = snapshots_fed_from.max(tick);
+            }
             encoder.ingest_tick(tick, &entry.snapshots, &entry.output, &entry.output.wakes);
             let mut reliable = encoder.take_topology_messages();
             if let Some(baselines) = encoder.maybe_emit_baseline(tick) {
@@ -757,6 +1105,11 @@ pub fn build(bundle: &Bundle, config: &StreamConfig) -> std::io::Result<Stream> 
             }
             if tick % TOPO_HASH_INTERVAL_TICKS == 0 {
                 reliable.push(encoder.topology_hash_message());
+            }
+            if let Some(feedback) = feedback.as_mut() {
+                for bytes in &reliable {
+                    feedback.push_lab(city_at, bytes);
+                }
             }
             if let Some(list) = cameras_at.get(&tick) {
                 for (id, camera) in list {
@@ -775,27 +1128,57 @@ pub fn build(bundle: &Bundle, config: &StreamConfig) -> std::io::Result<Stream> 
                 let shared = encoder.encode_send(tick);
                 if !shared.records.is_empty() {
                     for (id, camera) in order {
-                        let packets = encoder.client_datagrams(u64::from(id), camera, &shared);
-                        if id == player {
-                            let summary = encoder.last_client_selection();
-                            for (name, value) in [
-                                ("candidates", summary.candidates),
-                                ("eval_cap", summary.eval_cap),
-                                ("rest_stride", summary.rest_stride),
-                                ("rest_unchanged", summary.rest_unchanged),
-                                ("not_relevant", summary.not_relevant),
-                                ("not_newsworthy", summary.not_newsworthy),
-                                ("ceiling", summary.ceiling),
-                                ("sent", summary.sent),
-                                ("allowance_bytes", summary.allowance_bytes),
-                                ("used_bytes", summary.used_bytes),
-                            ] {
-                                *stats.city_selection.entry(name.into()).or_default() += u64::from(value);
-                            }
-                            datagrams = packets;
+                        if id != player {
+                            encoder.client_datagrams(u64::from(id), camera, &shared);
+                            continue;
                         }
+                        // As `MatchState::send_city_datagrams` does: the
+                        // plan first, then the send (or none), then what it
+                        // queued goes back to the controller.
+                        let plan = match feedback.as_mut() {
+                            Some(feedback) => feedback.plan(city_at, tick),
+                            None => SendPlan::Full,
+                        };
+                        if plan == SendPlan::Skip {
+                            if let Some(feedback) = feedback.as_mut() {
+                                feedback.sent(0, plan);
+                            }
+                            *stats.city_selection.entry("rate_skipped_sends".into()).or_default() += 1;
+                            continue;
+                        }
+                        let packets =
+                            encoder.client_datagrams_within(u64::from(id), camera, &shared, plan.allowance());
+                        let summary = encoder.last_client_selection();
+                        if let Some(feedback) = feedback.as_mut() {
+                            let bytes: usize = packets.iter().map(Vec::len).sum();
+                            feedback.sent(bytes, plan);
+                        }
+                        for (name, value) in [
+                            ("candidates", summary.candidates),
+                            ("eval_cap", summary.eval_cap),
+                            ("rest_stride", summary.rest_stride),
+                            ("rest_unchanged", summary.rest_unchanged),
+                            ("not_relevant", summary.not_relevant),
+                            ("not_newsworthy", summary.not_newsworthy),
+                            ("ceiling", summary.ceiling),
+                            ("sent", summary.sent),
+                            ("allowance_bytes", summary.allowance_bytes),
+                            ("used_bytes", summary.used_bytes),
+                        ] {
+                            *stats.city_selection.entry(name.into()).or_default() += u64::from(value);
+                        }
+                        datagrams = packets;
                     }
                 }
+            }
+            if let Some(feedback) = feedback.as_mut() {
+                for bytes in &datagrams {
+                    feedback.push_lab(city_at, bytes);
+                }
+                if let Some(bytes) = snapshots.get(&tick) {
+                    feedback.push_lab(snapshot_at, bytes);
+                }
+                snapshots_fed_from = snapshots_fed_from.max(tick + 1);
             }
             city_ticks.insert(tick, (reliable, datagrams));
             // Between this tick and the next: joins and leaves (other
@@ -821,32 +1204,21 @@ pub fn build(bundle: &Bundle, config: &StreamConfig) -> std::io::Result<Stream> 
                     encoder.note_client_bootstrap(u64::from(player));
                     stats.city_bootstraps += 1;
                 }
+                if let Some(feedback) = feedback.as_mut() {
+                    for bytes in list.iter() {
+                        feedback.push_lab(end_at, bytes);
+                    }
+                }
             }
         }
         stats.city_first_tick = first_city_tick;
+        if let Some((rate, trace)) = feedback.map(Feedback::into_stats) {
+            stats.city_rate = Some(rate);
+            rate_trace = trace;
+        }
     }
 
     // ── assemble: lab packets in tick phase order, recorded packets around ─
-    let city_first = stats.city_first_tick.unwrap_or(u32::MAX);
-    // The lab owns the snapshot stream over the whole captured window (not
-    // just the ticks it chose to send: a slower cadence must not let the
-    // live snapshots at its edges leak through).
-    let snapshot_window = if snapshots.is_empty() {
-        (u32::MAX, 0)
-    } else {
-        (bundle.first_tick(), bundle.last_tick())
-    };
-    let lab_covers = |tick: u32, kind: u8| -> bool {
-        if is_snapshot_kind(kind) {
-            tick >= snapshot_window.0 && tick <= snapshot_window.1
-        } else if kind == PKT_CITY_STRUCTURE_BOOTSTRAP {
-            false
-        } else if is_city_encoder_kind(kind) {
-            tick >= city_first
-        } else {
-            false
-        }
-    };
     let mut ticks: Vec<u32> = snapshots.keys().chain(city_ticks.keys()).chain(city_after_tick.keys()).copied().collect();
     ticks.sort_unstable();
     ticks.dedup();
@@ -870,73 +1242,14 @@ pub fn build(bundle: &Bundle, config: &StreamConfig) -> std::io::Result<Stream> 
     for packet in &emit.out {
         *stats.lab_by_kind.entry(packet.kind).or_default() += 1;
     }
-
-    for (index, packet) in bundle.tape.packets.iter().enumerate() {
-        if packet.is_prelude() || packet.base_channel() == CHANNEL_RTT {
-            continue;
-        }
-        let kind = packet.kind();
-        match join.tape_to_record.get(&index) {
-            Some(&record_index) => {
-                let record = &bundle.sendlog[record_index];
-                if lab_covers(record.tick, kind) {
-                    continue;
-                }
-                if kind == PKT_CITY_STRUCTURE_BOOTSTRAP {
-                    if !config.recorded_repairs {
-                        stats.city_structure_bootstraps_withheld += 1;
-                        continue;
-                    }
-                    stats.city_structure_bootstraps_passed_through += 1;
-                }
-                let queued = if record.queued_us == crate::send_log::QUEUED_BEFORE_CAPTURE {
-                    record.sent_us
-                } else {
-                    record.queued_us
-                };
-                let depart = clock.retime(record.tick, bundle.server_to_tape_ms(queued));
-                *stats.passthrough_by_kind.entry(kind).or_default() += 1;
-                emit.out.push(Outgoing {
-                    depart_ms: depart,
-                    seq: emit.seq,
-                    tick: record.tick,
-                    lane: Lane::of_kind(kind),
-                    kind,
-                    bytes: packet.bytes.clone(),
-                    origin: Origin::Pass,
-                    tape_index: Some(index),
-                    live_record: Some(record_index),
-                    ordinal: 0,
-                });
-            }
-            None => {
-                // Before the capture: only what precedes the lab's windows.
-                let lane = if packet.base_channel() == CHANNEL_WT_DATAGRAM {
-                    Lane::Datagram
-                } else {
-                    Lane::Reliable
-                };
-                let latency = join.median_latency_ms.get(&lane).copied().unwrap_or(0.5);
-                *stats.prepass_by_kind.entry(kind).or_default() += 1;
-                emit.out.push(Outgoing {
-                    depart_ms: packet.t_ms - latency,
-                    seq: emit.seq,
-                    tick: 0,
-                    lane,
-                    kind,
-                    bytes: packet.bytes.clone(),
-                    origin: Origin::PrePass,
-                    tape_index: Some(index),
-                    live_record: None,
-                    ordinal: 0,
-                });
-            }
-        }
+    for mut packet in passed {
+        packet.seq = emit.seq;
         emit.seq += 1;
+        emit.out.push(packet);
     }
     let mut packets = emit.out;
     packets.sort_by(|a, b| a.depart_ms.total_cmp(&b.depart_ms).then(a.seq.cmp(&b.seq)));
-    Ok(Stream { packets, stats, join })
+    Ok(Stream { packets, stats, join, rate_trace })
 }
 
 #[cfg(test)]

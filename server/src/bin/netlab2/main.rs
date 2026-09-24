@@ -16,6 +16,8 @@
 
 #![allow(dead_code)]
 
+#[path = "../../link_rate.rs"]
+mod link_rate;
 #[path = "../../protocol.rs"]
 mod protocol;
 #[path = "../../send_log.rs"]
@@ -145,7 +147,20 @@ pub fn run_spec(args: &Args) -> (RunSpec, StreamConfig) {
             knobs.insert(k.trim().to_string(), v.trim().to_string());
         }
     }
-    let config = stream_config(pace, &knobs);
+    let mut config = stream_config(pace, &knobs);
+    // Rate adaptation is on in production; the lab closes the loop on a
+    // simulated link (seam S15). The recorded link carries the live
+    // server's own decisions, so there it stays open.
+    let knob = |key: &str| knobs.get(key).map(|v| v.parse::<f64>().unwrap_or_else(|_| die(&format!("knob {key}={v}: number"))));
+    let adapt = knob("city.rate_adapt").map_or(true, |v| v != 0.0);
+    if let (Some(profile), true) = (&profile, adapt) {
+        config.rate_adapt = Some(stream::RateAdapt {
+            profile: profile.clone(),
+            seed,
+            config: link_rate::RateConfig::PRODUCTION,
+            stale_ms: knob("lab.rate_stale_ms").unwrap_or(0.0),
+        });
+    }
     let frames = args.get("frames").unwrap_or("recorded").to_string();
     (RunSpec { link, profile, pace, seed, knobs, frames }, config)
 }
@@ -175,6 +190,11 @@ pub fn stream_config(pace: Pace, knobs: &BTreeMap<String, String>) -> StreamConf
             "city.proximity_m" => config.city.proximity_m = Some(f() as f32),
             // Lab-only, not a production knob: see StreamConfig::recorded_repairs.
             "lab.recorded_repairs" => config.recorded_repairs = f() != 0.0,
+            // Read by run_spec: per-link rate adaptation (production: on,
+            // `VIBE_CITY_RATE_ADAPT`), and a lab-only feedback delay probe.
+            "city.rate_adapt" | "lab.rate_stale_ms" => {
+                f();
+            }
             "city.client_model" => config.city.model_client_extrapolation = Some(f() != 0.0),
             "city.ballistic_free_fall" => config.city.ballistic_requires_free_fall = Some(f() != 0.0),
             "city.rest_stride" => config.city.rest_eval_stride = Some(f() as u32),
@@ -360,6 +380,15 @@ pub fn run_stream(bundle: &Bundle, spec: &RunSpec, config: &StreamConfig, out: &
         }
     }
     std::fs::write(out.join("stream.json"), serde_json::to_vec_pretty(&report)?)?;
+    if !built.rate_trace.is_empty() {
+        // The rate controller's per-send decisions (seam S15).
+        let mut lines = Vec::new();
+        for row in &built.rate_trace {
+            serde_json::to_writer(&mut lines, row)?;
+            lines.push(b'\n');
+        }
+        std::fs::write(out.join("rate-trace.jsonl"), lines)?;
+    }
     Ok(StreamRun { stream: built, deliveries, report })
 }
 

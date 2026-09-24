@@ -10,6 +10,7 @@ mod demo_world;
 mod energy_stream;
 mod heartbeat;
 mod lag_comp;
+mod link_rate;
 mod match_stats_frame;
 mod meteor;
 mod movement;
@@ -1087,6 +1088,9 @@ struct PlayerConnection {
     identity: String,
     transport: ClientTransport,
     tx: outbound::Sender,
+    /// What the city rate controller reads about this connection's link
+    /// (WebTransport only).
+    link: Option<Arc<dyn link_rate::LinkProbe>>,
 }
 
 enum MatchEvent {
@@ -1106,6 +1110,9 @@ struct PlayerRuntime {
     identity: String,
     transport: ClientTransport,
     tx: outbound::Sender,
+    link: Option<Arc<dyn link_rate::LinkProbe>>,
+    /// This client's city stream allowance and cadence, from its link.
+    city_rate: link_rate::RateController,
     pending_inputs: VecDeque<InputCmd>,
     /// Inputs dropped to stay current. Non-zero means the loop is behind.
     inputs_skipped_for_catchup: u64,
@@ -2681,6 +2688,32 @@ async fn ws_stats_handler(
     })
 }
 
+/// A WebTransport connection's link, as quinn reports it: the signals the
+/// city rate controller reads (`link_rate.rs`).
+struct QuicLinkProbe {
+    connection: Connection,
+    submitted: Arc<std::sync::atomic::AtomicU64>,
+    epoch: Instant,
+}
+
+impl link_rate::LinkProbe for QuicLinkProbe {
+    fn sample(&self) -> Option<link_rate::LinkSample> {
+        let quic = self.connection.quic_connection();
+        let stats = quic.stats();
+        let space = quic.datagram_send_buffer_space();
+        Some(link_rate::LinkSample {
+            at_us: self.epoch.elapsed().as_micros() as u64,
+            datagram_buffered_bytes: link_rate::QUIC_DATAGRAM_SEND_BUFFER_BYTES.saturating_sub(space) as u64,
+            wire_bytes: stats.udp_tx.bytes,
+            sent_packets: stats.path.sent_packets,
+            lost_packets: stats.path.lost_packets,
+            lost_bytes: stats.path.lost_bytes,
+            rtt_us: stats.path.rtt.as_micros() as u64,
+            submitted_bytes: self.submitted.load(Ordering::Relaxed),
+        })
+    }
+}
+
 async fn handle_wt_session(app: Arc<AppState>, connection: Connection) -> Result<()> {
     // Accept the client's first bidi stream which carries the framed ClientHello
     let (mut send_stream, mut recv_stream) = connection.accept_bi().await?;
@@ -2740,11 +2773,17 @@ async fn handle_wt_session(app: Arc<AppState>, connection: Connection) -> Result
         Some(send_log::Tap::new(player_id, false, handle.telemetry.send_hub.clone())),
     );
 
+    let link: Arc<dyn link_rate::LinkProbe> = Arc::new(QuicLinkProbe {
+        connection: connection.clone(),
+        submitted: out_tx.submitted_counter(),
+        epoch: Instant::now(),
+    });
     handle.tx.send(MatchEvent::Connect(PlayerConnection {
         player_id,
         identity: format!("wt-player-{player_id}"),
         transport: ClientTransport::WebTransport,
         tx: out_tx,
+        link: Some(link),
     }))?;
 
     // Independent writer lanes: a flow-controlled reliable stream must not
@@ -2977,6 +3016,7 @@ async fn handle_socket(
         identity: query.identity.clone(),
         transport: ClientTransport::WebSocket,
         tx: out_tx.clone(),
+        link: None,
     }))?;
 
     let telemetry = handle.telemetry.clone();
@@ -3500,6 +3540,8 @@ impl MatchState {
                         identity: conn.identity,
                         transport: conn.transport,
                         tx: conn.tx.clone(),
+                        link: conn.link.clone(),
+                        city_rate: link_rate::RateController::new(link_rate::RateConfig::configured()),
                         pending_inputs: VecDeque::new(),
                         inputs_skipped_for_catchup: 0,
                         last_applied_input: InputCmd::default(),
@@ -4653,8 +4695,11 @@ impl MatchState {
                 let datagrams_started = std::time::Instant::now();
                 if !shared.records.is_empty() {
                     for (player_id, camera) in cameras {
-                        let packets =
-                            city.client_datagrams(u64::from(player_id), camera, &shared);
+                        let Some(packets) =
+                            self.city_datagrams_for(&mut city, player_id, camera, &shared)
+                        else {
+                            continue;
+                        };
                         self.note_selection(session_capture::Selection {
                             tick: staged_tick,
                             player: player_id,
@@ -4676,6 +4721,55 @@ impl MatchState {
             self.repair_city_desyncs();
             self.last_observer_flush_ms = started.elapsed().as_secs_f32() * 1000.0;
         }
+    }
+
+    /// One client's city datagrams for this send, under its link's rate
+    /// plan (`link_rate.rs`): the static ceiling while the link keeps up, a
+    /// smaller allowance when it does not, or no send at all (`None`) when
+    /// the budget is carried to the next send.
+    fn city_datagrams_for(
+        &mut self,
+        city: &mut city::CityRuntime,
+        player_id: u32,
+        camera: vibe_land_destruction::types::Camera,
+        shared: &vibe_land_destruction::encoder::SharedRecords,
+    ) -> Option<Vec<Vec<u8>>> {
+        let send_interval_s = f64::from(city.send_interval_ticks().max(1)) / f64::from(SIM_HZ);
+        let ceiling = city.client_ceiling_bytes();
+        let plan = match self.players.get_mut(&player_id) {
+            Some(runtime) => match runtime.link.as_ref().and_then(|link| link.sample()) {
+                Some(sample) => {
+                    let before = runtime.city_rate.state();
+                    let plan = runtime.city_rate.plan(sample, send_interval_s, ceiling);
+                    let after = runtime.city_rate.state();
+                    if before != after {
+                        info!(
+                            match_id = %self.id,
+                            player_id,
+                            state = ?after,
+                            capacity_kbit_s = runtime.city_rate.capacity_bytes_per_s() * 8.0 / 1000.0,
+                            buffered_bytes = sample.datagram_buffered_bytes,
+                            "city stream rate adaptation"
+                        );
+                    }
+                    plan
+                }
+                None => link_rate::SendPlan::Full,
+            },
+            None => link_rate::SendPlan::Full,
+        };
+        if plan == link_rate::SendPlan::Skip {
+            if let Some(runtime) = self.players.get_mut(&player_id) {
+                runtime.city_rate.sent(0, plan);
+            }
+            return None;
+        }
+        let packets =
+            city.client_datagrams_within(u64::from(player_id), camera, shared, plan.allowance());
+        if let Some(runtime) = self.players.get_mut(&player_id) {
+            runtime.city_rate.sent(packets.iter().map(Vec::len).sum(), plan);
+        }
+        Some(packets)
     }
 
     fn tick_city(&mut self, dt: f32) {
@@ -4940,7 +5034,11 @@ impl MatchState {
             let datagrams_started = std::time::Instant::now();
             if !shared.records.is_empty() {
                 for (player_id, camera) in cameras {
-                    let packets = city.client_datagrams(u64::from(player_id), camera, &shared);
+                    let Some(packets) =
+                        self.city_datagrams_for(&mut city, player_id, camera, &shared)
+                    else {
+                        continue;
+                    };
                     self.note_selection(session_capture::Selection {
                         tick: self.server_tick,
                         player: player_id,
@@ -6674,6 +6772,9 @@ fn write_city_telemetry(tick: u32, stats: &MatchStatsSnapshot) {
 ///   VIBE_WT_CONGESTION=bbr|cubic
 fn wt_transport_config() -> wtransport::quinn::TransportConfig {
     let mut transport = wtransport::quinn::TransportConfig::default();
+    // quinn's default, stated: the city rate controller reads occupancy as
+    // this size minus `datagram_send_buffer_space()`.
+    transport.datagram_send_buffer_size(link_rate::QUIC_DATAGRAM_SEND_BUFFER_BYTES);
     let choice = std::env::var("VIBE_WT_CONGESTION").unwrap_or_else(|_| "bbr".to_string());
     match choice.as_str() {
         "cubic" => {
@@ -6948,6 +7049,8 @@ mod tests {
             identity: "test-player".to_string(),
             transport: super::ClientTransport::WebSocket,
             tx,
+            link: None,
+            city_rate: super::link_rate::RateController::new(super::link_rate::RateConfig::PRODUCTION),
             pending_inputs: VecDeque::new(),
             inputs_skipped_for_catchup: 0,
             last_applied_input: InputCmd::default(),
@@ -7397,5 +7500,243 @@ mod tests {
         assert!(!periodic_refresh_due(Some(100), 159, 60));
         assert!(periodic_refresh_due(Some(100), 160, 60));
         assert!(periodic_refresh_due(None, 1, 60));
+    }
+}
+
+/// The production signal path on the real transport, without privileges: a
+/// WebTransport session through a userspace relay that paces the
+/// server-to-client direction (a token-bucket bottleneck with a 200 ms drop-
+/// tail queue, like netem's `rate`), the server configured as in production
+/// (`wt_transport_config`, BBR), and the city stream's worst case offered:
+/// the full ceiling every send, plus snapshot-sized traffic at 60 Hz.
+#[cfg(test)]
+mod quic_rate_tests {
+    use super::link_rate::{LinkProbe, RateConfig, RateController, SendPlan};
+    use super::{wt_transport_config, QuicLinkProbe};
+    use std::net::SocketAddr;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::{Arc, Mutex};
+    use std::time::{Duration, Instant};
+    use tokio::net::UdpSocket;
+
+    #[derive(Debug)]
+    struct PacedRun {
+        /// (seconds since start when sent, one-way ms) per received datagram.
+        latency_ms: Vec<(f64, f64)>,
+        /// Seconds since start of every datagram sent.
+        sent_at: Vec<f64>,
+        sent: usize,
+        limited_sends: u64,
+        capacity_kbit_s: f64,
+        peak_buffered: u64,
+    }
+
+    fn pct(values: &[f64], q: f64) -> f64 {
+        let mut v = values.to_vec();
+        v.sort_by(f64::total_cmp);
+        v.get(((v.len().saturating_sub(1)) as f64 * q).round() as usize).copied().unwrap_or(f64::NAN)
+    }
+
+    async fn paced_session(adapt: bool, rate_mbit: f64, one_way_ms: u64, seconds: f64) -> PacedRun {
+        use wtransport::{ClientConfig, Endpoint, Identity, ServerConfig, VarInt};
+        let identity = Identity::self_signed(["localhost", "127.0.0.1"]).unwrap();
+        let hash = identity.certificate_chain().as_slice()[0].hash();
+        let mut config = ServerConfig::builder()
+            .with_bind_address("127.0.0.1:0".parse().unwrap())
+            .with_identity(identity)
+            .build();
+        config.quic_config_mut().transport_config(Arc::new(wt_transport_config()));
+        let server = Endpoint::server(config).unwrap();
+        let server_addr = server.local_addr().unwrap();
+
+        // The relay: client <-> front | back <-> server.
+        let front = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let back = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let relay_addr = front.local_addr().unwrap();
+        let client_addr: Arc<Mutex<Option<SocketAddr>>> = Arc::new(Mutex::new(None));
+        let (up_front, up_back, up_client) = (front.clone(), back.clone(), client_addr.clone());
+        let up = tokio::spawn(async move {
+            let mut buf = vec![0u8; 65_536];
+            while let Ok((n, from)) = up_front.recv_from(&mut buf).await {
+                *up_client.lock().unwrap() = Some(from);
+                let _ = up_back.send_to(&buf[..n], server_addr).await;
+            }
+        });
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(Instant, Vec<u8>)>();
+        let down_back = back.clone();
+        let down_in = tokio::spawn(async move {
+            let bytes_per_s = rate_mbit * 1e6 / 8.0;
+            let mut free_at = Instant::now();
+            let mut buf = vec![0u8; 65_536];
+            while let Ok((n, _)) = down_back.recv_from(&mut buf).await {
+                let now = Instant::now();
+                let start = free_at.max(now);
+                if start - now > Duration::from_millis(200) {
+                    continue; // the bottleneck queue is full: drop-tail
+                }
+                free_at = start + Duration::from_secs_f64((n + 28) as f64 / bytes_per_s);
+                let _ = tx.send((free_at + Duration::from_millis(one_way_ms), buf[..n].to_vec()));
+            }
+        });
+        let (down_front, down_client) = (front.clone(), client_addr.clone());
+        let down_out = tokio::spawn(async move {
+            while let Some((due, bytes)) = rx.recv().await {
+                tokio::time::sleep_until(due.into()).await;
+                let to = *down_client.lock().unwrap();
+                if let Some(to) = to {
+                    let _ = down_front.send_to(&bytes, to).await;
+                }
+            }
+        });
+
+        let client = Endpoint::client(
+            ClientConfig::builder()
+                .with_bind_default()
+                .with_server_certificate_hashes([hash])
+                .build(),
+        )
+        .unwrap();
+        let url = format!("https://{relay_addr}/rate-test");
+        let (server_conn, client_conn) = tokio::join!(
+            async { server.accept().await.await.unwrap().accept().await.unwrap() },
+            async { client.connect(url).await.unwrap() },
+        );
+        let epoch = Instant::now();
+        // The client: one-way latency of every datagram (same clock).
+        let receiver = tokio::spawn(async move {
+            let mut latency = Vec::new();
+            while let Ok(datagram) = client_conn.receive_datagram().await {
+                let payload = datagram.payload();
+                let sent_ns = u64::from_le_bytes(payload[..8].try_into().unwrap());
+                let now_ns = epoch.elapsed().as_nanos() as u64;
+                latency.push((sent_ns as f64 / 1e9, now_ns.saturating_sub(sent_ns) as f64 / 1e6));
+            }
+            latency
+        });
+
+        let submitted = Arc::new(AtomicU64::new(0));
+        let probe = QuicLinkProbe {
+            connection: server_conn.clone(),
+            submitted: submitted.clone(),
+            epoch,
+        };
+        let mut controller = RateController::new(RateConfig { enabled: adapt, ..RateConfig::PRODUCTION });
+        let max = server_conn.max_datagram_size().unwrap_or(1100).min(1100);
+        let sent_at = std::cell::RefCell::new(Vec::new());
+        let send = |bytes: usize| {
+            let mut left = bytes;
+            let mut sent = 0;
+            while left > 0 {
+                let size = left.min(max).max(16);
+                let mut payload = vec![0u8; size];
+                payload[..8].copy_from_slice(&(epoch.elapsed().as_nanos() as u64).to_le_bytes());
+                if server_conn.send_datagram(payload).is_ok() {
+                    sent += 1;
+                    sent_at.borrow_mut().push(epoch.elapsed().as_secs_f64());
+                }
+                submitted.fetch_add(size as u64, Ordering::Relaxed);
+                left = left.saturating_sub(size);
+            }
+            sent
+        };
+        let mut ticker = tokio::time::interval(Duration::from_micros(16_667));
+        let mut sent = 0;
+        let mut peak_buffered = 0;
+        let mut tick = 0u64;
+        while epoch.elapsed().as_secs_f64() < seconds {
+            ticker.tick().await;
+            tick += 1;
+            // Snapshot-sized traffic every tick (~45 kbit/s).
+            sent += send(94);
+            if tick % 2 == 0 {
+                let sample = probe.sample().unwrap();
+                if std::env::var("RATE_DEBUG").is_ok() && tick % 60 == 0 {
+                    let stats = server_conn.quic_connection().stats();
+                    eprintln!(
+                        "t {:.1}s adapt {adapt} cwnd {} rtt {:?} sent {} lost {} wire {} buffered {} state {:?} cap {:.0}",
+                        epoch.elapsed().as_secs_f64(), stats.path.cwnd, stats.path.rtt, stats.path.sent_packets,
+                        stats.path.lost_packets, stats.udp_tx.bytes, sample.datagram_buffered_bytes,
+                        controller.state(), controller.capacity_bytes_per_s() * 8.0 / 1000.0
+                    );
+                }
+                peak_buffered = peak_buffered.max(sample.datagram_buffered_bytes);
+                let plan = controller.plan(sample, 1.0 / 30.0, 10_400);
+                let bytes = match plan {
+                    SendPlan::Full => 10_400,
+                    SendPlan::Limited { allowance_bytes } => allowance_bytes.min(10_400),
+                    SendPlan::Skip => 0,
+                };
+                sent += send(bytes);
+                controller.sent(bytes, plan);
+            }
+        }
+        // Let what is in flight land, then close.
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        server_conn.close(VarInt::from_u32(0), b"done");
+        let latency = tokio::time::timeout(Duration::from_secs(5), receiver)
+            .await
+            .expect("client finished")
+            .unwrap();
+        for task in [up, down_in, down_out] {
+            task.abort();
+        }
+        PacedRun {
+            latency_ms: latency,
+            sent_at: sent_at.into_inner(),
+            sent,
+            limited_sends: controller.totals().sends_limited,
+            capacity_kbit_s: controller.capacity_bytes_per_s() * 8.0 / 1000.0,
+            peak_buffered,
+        }
+    }
+
+    /// Latency percentiles and delivered share of datagrams sent after `from_s`.
+    fn after(run: &PacedRun, from_s: f64) -> (f64, f64, f64) {
+        let latency: Vec<f64> =
+            run.latency_ms.iter().filter(|(t, _)| *t >= from_s).map(|(_, ms)| *ms).collect();
+        let sent = run.sent_at.iter().filter(|t| **t >= from_s).count().max(1);
+        (pct(&latency, 0.5), pct(&latency, 0.99), latency.len() as f64 / sent as f64)
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[ignore = "real time, ~20 s: cargo test --bin web-fps-server -- --ignored rate_adaptation_on_real_quic"]
+    async fn rate_adaptation_on_real_quic_through_a_paced_relay() {
+        let (rate_mbit, one_way_ms, seconds) = (1.0, 15, 8.0);
+        let off = paced_session(false, rate_mbit, one_way_ms, seconds).await;
+        let on = paced_session(true, rate_mbit, one_way_ms, seconds).await;
+        for (name, run) in [("off", &off), ("on", &on)] {
+            let (p50, p99, delivered) = after(run, 0.0);
+            let (s50, s99, settled) = after(run, 3.0);
+            eprintln!(
+                "adaptation {name}: sent {} datagrams; all: one-way p50 {p50:.1} p99 {p99:.1} ms, \
+                 delivered {:.1}%; from 3 s: p50 {s50:.1} p99 {s99:.1} ms, delivered {:.1}%; \
+                 peak quinn datagram buffer {} B; limited sends {}; capacity estimate {:.0} kbit/s",
+                run.sent,
+                100.0 * delivered,
+                100.0 * settled,
+                run.peak_buffered,
+                run.limited_sends,
+                run.capacity_kbit_s,
+            );
+        }
+        // Measured, quinn 0.11 + BBR: the sender does not hold datagrams
+        // back (its buffer stays empty); the bottleneck queue fills and the
+        // path drops what it cannot carry.
+        let (off50, _, off_delivered) = after(&off, 3.0);
+        assert!(off.peak_buffered < 10_000, "off: buffer {}", off.peak_buffered);
+        assert!(off50 > 150.0, "off: p50 {off50:.0} ms: the relay queue is full");
+        assert!(off_delivered < 0.6, "off: {:.0}% delivered", 100.0 * off_delivered);
+        // With adaptation: found from RTT and loss, the queue drains and
+        // nothing more is lost; the estimate lands on the relay's rate (QUIC
+        // payload is ~95% of the IP rate).
+        let (on50, on99, on_delivered) = after(&on, 3.0);
+        assert!(on.limited_sends > 0);
+        assert!(on50 < 60.0 && on99 < 200.0, "on: p50 {on50:.0} p99 {on99:.0} ms");
+        assert!(on_delivered > 0.98, "on: {:.1}% delivered", 100.0 * on_delivered);
+        assert!(
+            (on.capacity_kbit_s / (rate_mbit * 1000.0) - 0.95).abs() < 0.25,
+            "capacity {:.0} kbit/s",
+            on.capacity_kbit_s
+        );
     }
 }

@@ -1,5 +1,5 @@
 {
-  "comment": "Single source of truth for netlab impairment profiles. delayMs is ONE-WAY per direction: the in-process PacketImpairment applies it to each direction separately, and scripts/netem.sh applies it on lo egress which both directions traverse once. lossPct is per-packet. Netlab v2 (docs/netlab-v2.md) reads the same table for its seeded link model; loopback, lan, cable, poor-mobile, lossy-wifi and bw-capped were added for it.",
+  "comment": "Single source of truth for netlab impairment profiles. delayMs is ONE-WAY per direction: the in-process PacketImpairment applies it to each direction separately, and scripts/netem.sh applies it on lo egress which both directions traverse once. lossPct is per-packet. Netlab v2 (docs/netlab-v2.md) reads the same table for its seeded link model; loopback, lan, cable, poor-mobile, lossy-wifi and bw-capped were added for it; cap-1mbit and the *-nq profiles for rate adaptation. bottleneckQueueMs (Netlab v2 only) puts the bottleneck queue in the network instead of at the sender.",
   "profiles": {
     "wifi-good": { "delayMs": 25, "jitterMs": 8, "lossPct": 0.5 },
     "wifi-bad": { "delayMs": 40, "jitterMs": 20, "lossPct": 2, "reorderPct": 1 },
@@ -12,6 +12,10 @@
     "cable": { "delayMs": 12, "jitterMs": 3, "lossPct": 0.1, "rateMbit": 50 },
     "poor-mobile": { "delayMs": 150, "jitterMs": 40, "lossPct": 3, "rateMbit": 1 },
     "lossy-wifi": { "delayMs": 15, "jitterMs": 25, "lossPct": 1, "reorderPct": 0.5, "gemodelPct": { "p": 0.5, "r": 25 } },
-    "bw-capped": { "delayMs": 30, "jitterMs": 5, "lossPct": 0, "rateMbit": 0.5 }
+    "bw-capped": { "delayMs": 30, "jitterMs": 5, "lossPct": 0, "rateMbit": 0.5 },
+    "cap-1mbit": { "delayMs": 30, "jitterMs": 5, "lossPct": 0, "rateMbit": 1, "comment": "bw-capped at 1 Mbit/s: a clean rate cap, no loss (Netlab v2 rate adaptation)" },
+    "cap-1mbit-nq": { "delayMs": 30, "jitterMs": 5, "lossPct": 0, "rateMbit": 1, "bottleneckQueueMs": 200, "comment": "cap-1mbit with the queue in the network, as quinn's BBR behaves (Netlab v2 only: bottleneckQueueMs)" },
+    "bw-capped-nq": { "delayMs": 30, "jitterMs": 5, "lossPct": 0, "rateMbit": 0.5, "bottleneckQueueMs": 200, "comment": "bw-capped with the queue in the network (Netlab v2 only)" },
+    "poor-mobile-nq": { "delayMs": 150, "jitterMs": 40, "lossPct": 3, "rateMbit": 1, "bottleneckQueueMs": 200, "comment": "poor-mobile with the queue in the network (Netlab v2 only)" }
   }
 }
