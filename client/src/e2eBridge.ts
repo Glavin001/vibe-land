@@ -728,9 +728,10 @@ const bridge: VibeE2EBridge = {
     return { text: formatPerfSweep(report), report };
   },
   recordTape: async (seconds: number) => {
-    cityTapeRecorder.start();
+    const session = cityTapeRecorder.start('e2e');
+    if (session === 0) return null;
     await new Promise((resolve) => window.setTimeout(resolve, seconds * 1000));
-    const tape = cityTapeRecorder.stop();
+    const tape = cityTapeRecorder.stop(session);
     if (!tape) return null;
     await saveCityTape(`tape-${tape.header.capturedAt.replace(/[:.]/g, '-')}`, tape);
     return tape.header;

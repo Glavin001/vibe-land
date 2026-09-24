@@ -219,7 +219,11 @@ import { lookTuning } from '../graphics/lookTuning';
 import { acquireCityDiagnostics } from './cityDiagnostics';
 import { notePerfSweep, sendDebugReport } from './debugReport';
 import { cityTapeRecorder, downloadCityTape, saveCityTape } from './cityTape';
-import { hotspotWatch } from './hotspotWatch';
+
+// The RECORD TAPE button's recording, if it has one. Module-level so the
+// overlay can close and reopen mid-recording and still stop its own tape.
+let manualTapeSession = 0;
+import { hotspotWatch, uploadTape } from './hotspotWatch';
 import {
   ambientOcclusionPreferred,
   dustFluidPreferred,
@@ -918,31 +922,39 @@ export function CityStatsOverlay({
         <button
           type="button"
           onClick={async () => {
-            if (cityTapeRecorder.recording) {
-              const tape = cityTapeRecorder.stop();
+            if (cityTapeRecorder.currentOwner === 'manual') {
+              const tape = cityTapeRecorder.stop(manualTapeSession);
+              manualTapeSession = 0;
               if (tape) {
                 const name = `tape-${tape.header.capturedAt.replace(/[:.]/g, '-')}`;
+                const size = `${(tape.header.bytes / 1e6).toFixed(1)} MB, ${Math.round(tape.header.durationMs / 1000)} s`;
+                let saved = true;
                 try {
                   await saveCityTape(name, tape);
-                  setTapeState(`SAVED ${(tape.header.bytes / 1e6).toFixed(1)} MB, ${Math.round(tape.header.durationMs / 1000)} s`);
                 } catch {
-                  setTapeState('SAVE FAILED');
+                  saved = false;
                 }
                 downloadCityTape(tape);
+                setTapeState(`${saved ? 'SAVED' : 'SAVE FAILED'} ${size}, SENDING...`);
+                const upload = await uploadTape(matchId, tape);
+                setTapeState(`${saved ? 'SAVED' : 'SAVE FAILED'} ${size}, ${upload.uploaded ? `SENT ${upload.folder}` : 'NOT SENT (downloaded)'}`);
               }
             } else {
-              cityTapeRecorder.start();
-              setTapeState('RECORDING');
+              // Takes over an automatic hot-spot recording if one is running.
+              manualTapeSession = cityTapeRecorder.start('manual');
+              setTapeState(manualTapeSession ? null : 'BUSY');
             }
           }}
           style={{ ...toggleButton, position: 'static', width: '100%' }}
           data-testid="city-tape-record"
           aria-label="Record the city stream to a tape"
-          title="Records every city packet from a fresh bootstrap until pressed again, saves the tape in this browser for /cityreplay and downloads it"
+          title="Records every city packet from a fresh bootstrap until pressed again, then saves the tape in this browser for /cityreplay, downloads it and sends it to the server"
         >
-          {tapeStatus.recording
+          {tapeStatus.owner === 'manual'
             ? `STOP TAPE (${Math.round(tapeStatus.seconds)} s, ${tapeStatus.megabytes.toFixed(1)} MB)`
-            : tapeState ? `TAPE: ${tapeState}` : 'RECORD TAPE'}
+            : tapeStatus.owner === 'hotspot'
+              ? `RECORD TAPE (AUTO RECORDING ${Math.round(tapeStatus.seconds)} s, PRESS TO KEEP)`
+              : tapeState ? `TAPE: ${tapeState}` : 'RECORD TAPE'}
         </button>
       </div>
       <div style={{ ...row, marginBottom: 2 }}>

@@ -1443,7 +1443,7 @@ async fn main() -> Result<()> {
         .route("/match-stats/:match_id/report", post(debug_report_handler))
         .route(
             "/match-stats/:match_id/tape",
-            post(city_tape_handler).layer(axum::extract::DefaultBodyLimit::max(96 * 1024 * 1024)),
+            post(city_tape_handler).layer(axum::extract::DefaultBodyLimit::max(512 * 1024 * 1024)),
         )
         .route("/match-stats/:match_id/bodies", get(match_body_states_handler))
         .route("/city-reset/:match_id", post(city_reset_handler))
@@ -2035,8 +2035,9 @@ async fn debug_report_handler(
 
 /// A city tape -- the inbound stream a client recorded, opened on a
 /// bootstrap -- stored beside the debug reports so the storm a player hit can
-/// be replayed into the renderer anywhere. Tens of megabytes, so it gets its
-/// own body limit rather than the report handler's. Not parsed: the client
+/// be replayed into the renderer anywhere. A player's manual tape runs as long
+/// as they keep recording (tens to hundreds of megabytes), so it gets its own
+/// body limit rather than the report handler's. Not parsed: the client
 /// formats it (VLTAPE01) and the client reads it.
 async fn city_tape_handler(
     Path(match_id): Path<String>,

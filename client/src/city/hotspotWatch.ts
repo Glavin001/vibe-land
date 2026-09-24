@@ -103,9 +103,28 @@ class HotspotWatch {
       periodMs: this.periodMs,
       history: this.history.map(([t, ms]) => [Math.round(t - nowMs), Number(ms.toFixed(2))]),
     };
-    cityTapeRecorder.start();
+    const session = cityTapeRecorder.start('hotspot');
+    if (session === 0) {
+      // Someone else is recording; stand down without spending a tape.
+      this.fired -= 1;
+      this.state = 'idle';
+      this.busyUntilMs = 0;
+      this.notify();
+      return;
+    }
     await new Promise<void>((resolve) => window.setTimeout(resolve, TAPE_MS));
-    const tape = cityTapeRecorder.stop();
+    // Null when the player pressed RECORD and took this recording over: it is
+    // theirs now, to stop and send whenever they choose.
+    const tape = cityTapeRecorder.stop(session);
+    if (!tape) {
+      this.state = 'cooldown';
+      this.notify();
+      window.setTimeout(() => {
+        if (this.state === 'cooldown') this.state = 'idle';
+        this.notify();
+      }, COOLDOWN_MS);
+      return;
+    }
     this.state = 'sending';
     this.notify();
     let tapeName: string | null = null;

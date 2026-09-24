@@ -67,9 +67,20 @@ export interface CityTape {
   frames: CityTapeFrames | null;
 }
 
+/**
+ * Who opened the current recording. The RECORD TAPE button, the automatic
+ * hot-spot watch and the e2e bridge share one recorder; each stops only the
+ * recording it owns, so a timer from one can never cut another's tape.
+ */
+export type CityTapeOwner = 'manual' | 'hotspot' | 'e2e';
+
 /** The live recorder; one per page. */
 class CityTapeRecorder {
   private startedAtMs = 0;
+  private owner: CityTapeOwner | null = null;
+  // Increments whenever a recording starts or changes hands; a stale token
+  // (a hot-spot timer whose tape the player took over) stops nothing.
+  private session = 0;
   private times: number[] = [];
   private packets: Uint8Array[] = [];
   private bytes = 0;
@@ -96,9 +107,31 @@ class CityTapeRecorder {
     this.requestResync = requestResync;
   }
 
-  /** Opens the tape and asks the server for a fresh bootstrap to open it on. */
-  start(): void {
-    if (this.recording) return;
+  /** Who owns the recording in progress, if any. */
+  get currentOwner(): CityTapeOwner | null {
+    return this.recording ? this.owner : null;
+  }
+
+  /**
+   * Opens a tape for `owner` on a fresh bootstrap and returns its session
+   * token, or 0 when another owner's recording is in progress. The player
+   * pressing RECORD during an automatic hot-spot recording takes that
+   * recording over instead: it keeps what was captured so far (the tape
+   * already opens on a bootstrap), and the hot-spot's stop then finds its
+   * token stale and leaves the tape alone.
+   */
+  start(owner: CityTapeOwner): number {
+    if (this.recording) {
+      if (owner === 'manual' && this.owner === 'hotspot') {
+        this.owner = 'manual';
+        this.session += 1;
+        this.notify();
+        return this.session;
+      }
+      return 0;
+    }
+    this.owner = owner;
+    this.session += 1;
     this.startedAtMs = performance.now();
     this.times = [];
     this.packets = [];
@@ -110,6 +143,7 @@ class CityTapeRecorder {
     this.frameCamera = [];
     this.requestResync?.();
     this.notify();
+    return this.session;
   }
 
   /** Every inbound city packet passes through here; a copy is kept while recording. */
@@ -140,19 +174,22 @@ class CityTapeRecorder {
     this.lastAwake = awake;
   }
 
-  status(): { recording: boolean; seconds: number; packets: number; megabytes: number } {
+  status(): { recording: boolean; owner: CityTapeOwner | null; seconds: number; packets: number; megabytes: number } {
     return {
       recording: this.recording,
+      owner: this.currentOwner,
       seconds: this.recording ? (performance.now() - this.startedAtMs) / 1000 : 0,
       packets: this.packets.length,
       megabytes: this.bytes / 1e6,
     };
   }
 
-  stop(): CityTape | null {
-    if (!this.recording) return null;
+  /** Closes the recording `session` opened; null if it is not the one in progress. */
+  stop(session: number): CityTape | null {
+    if (!this.recording || session === 0 || session !== this.session) return null;
     const durationMs = performance.now() - this.startedAtMs;
     this.startedAtMs = 0;
+    this.owner = null;
     const meta = this.meta ?? { matchId: 'city-default', manifestHash: '', wireVersion: 3, simHz: 60 };
     const tape: CityTape = {
       header: {
