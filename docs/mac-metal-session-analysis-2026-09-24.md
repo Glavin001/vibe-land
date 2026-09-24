@@ -408,7 +408,23 @@ paired) showing the acceptance criterion.
     without inferring it from arrival times.
   - *Evidence:* sim rate 0.23–0.97x in 5 s windows; the client could only
     see ticks.
-- [ ] **5. Server physics: debris and meteors tunnel through the ground.**
+- [x] **5. Server physics: debris and meteors tunnel through the ground.**
+  - *Fixed (2026-09-24) in the PhysX fork, commit 0ece3f22 on
+    fix/correction-vehicle-ground; not yet in the installed package.* Two
+    fork GPU kernels (`setRigidDynamicGlobalPose`, used by the native sleep
+    commit, and `refreshReboundShapeBounds`, run by the corrected re-solve)
+    flagged every shape of a body as bounds-changed, including a Vehicle SDK
+    car's wheel shapes, which never enter the broad phase. The GPU SAP then
+    rewrote endpoint slots through those never-inserted handles (slot 0, the
+    ground slab's x start), the ground's box sorted to the far end of the x
+    axis, and the corrected pass never rediscovered resting bodies' ground
+    pairs. Fix: flag and write bounds only for broad-phase shapes, as
+    upstream does. Not CuMetal (every CuMetal toggle left it unchanged).
+    Measured with the fixed package: ground_contact repros pass, systematic
+    bench 0 bodies below -3 m in two runs (baseline 40), meteors drawn below
+    ground 150 -> 0. The car repro tests stay #[ignore]d until the installed
+    package includes the fix. CUDA was not run; the faulty code is backend
+    independent (inferred to affect CUDA too).
   - *Status (2026-09-24, not fixed):* the cause is in the PhysX fork's
     native destruction stage (or CuMetal's execution of it), not in
     vibe-land; reported to its owner.

@@ -24,11 +24,20 @@
 //! - Without the cars (with or without a player capsule): six corrected ticks,
 //!   nothing lost. Parked or driving makes no difference.
 //!
-//! So the trigger is the stage's corrected re-solve in a scene that holds a
-//! PhysX native vehicle (its suspension constraints), and the fault is inside
-//! the PhysX fork or its CuMetal execution, not in this bridge. The tests that
-//! show it are `#[ignore]`d so the suite stays green until the fork is fixed;
-//! run them with `--ignored`. The controls run normally.
+//! Root cause (PhysX fork, fixed in fork commit 0ece3f22 on
+//! fix/correction-vehicle-ground): a Vehicle SDK car owns
+//! wheel shapes that never enter the broad phase (no simulation, trigger or
+//! query flag). Two fork paths flagged every shape of a body as having changed
+//! broad-phase bounds -- the native sleep commit (its pose write goes through
+//! the Direct GPU API `setRigidDynamicGlobalPose` kernel) when a parked car
+//! falls asleep, and the corrected re-solve's bounds refresh of every live
+//! rigid shape while a car is awake. The GPU SAP then rewrote the endpoint
+//! slots of those never-inserted handles, which were the ground's, so the
+//! ground's box sorted to the far end of the x axis. Pairs that exist keep
+//! their contacts, but the corrected pass refilters resting bodies and
+//! fragments and relies on the broad phase to rediscover their pairs with the
+//! ground; against the corrupted box it never did, so they lost support. The
+//! fix flags only broad-phase shapes, as upstream's own bounds update does.
 //!
 //! Run with `--test-threads=1` on Metal, like the other GPU tests.
 
@@ -239,6 +248,11 @@ fn wall_x(i: u32) -> f32 {
 
 /// The scenario, with the stage's pair-reuse option as given.
 fn run(preserve_unchanged_contact_pairs: bool, cars: bool, player: bool) -> Outcome {
+    run_with(preserve_unchanged_contact_pairs, cars, player, false)
+}
+
+/// `driving` keeps the cars awake, circling in place, instead of parked.
+fn run_with(preserve_unchanged_contact_pairs: bool, cars: bool, player: bool, driving: bool) -> Outcome {
     let mut world = World::new(WorldConfig::default()).expect("GPU scene");
     city_ground(&mut world);
     // What the /city match has besides the buildings: two parked cars and a
@@ -315,7 +329,12 @@ fn run(preserve_unchanged_contact_pairs: bool, cars: bool, player: bool) -> Outc
     let mut observe = |world: &mut World, out: &mut Outcome, tick: u32| {
         if cars {
             for car in [0x6000_0001u32, 0x6000_0002] {
-                world.drive_vehicle(car, VehicleCommands::default()).expect("drive");
+                let commands = if driving {
+                    VehicleCommands { throttle: 0.35, steer: 1.0, ..VehicleCommands::default() }
+                } else {
+                    VehicleCommands::default()
+                };
+                world.drive_vehicle(car, commands).expect("drive");
             }
         }
         if player {
@@ -457,7 +476,7 @@ fn assert_nothing_went_through(out: &Outcome) {
 /// `destruction/src/native_runtime.rs` does, two parked cars, a player.
 /// Fails on the current PhysX fork; see the module docs.
 #[test]
-#[ignore = "reproduces a PhysX-fork fault (corrected pass + native vehicle drops ground contact); run with --ignored"]
+#[ignore = "needs a PhysX package with fork commit 0ece3f22 (fix/correction-vehicle-ground); the installed package predates it -- run with --ignored against PHYSX_ROOT=<fixed package>"]
 fn bodies_on_the_ground_stay_on_it_while_the_city_fractures() {
     let out = run(true, true, true);
     eprintln!("{out:#?}");
@@ -467,7 +486,7 @@ fn bodies_on_the_ground_stay_on_it_while_the_city_fractures() {
 /// The same with the stage's reference pair lifecycle
 /// (`preserveUnchangedContactPairs = false`): not the experimental pair reuse.
 #[test]
-#[ignore = "reproduces a PhysX-fork fault (corrected pass + native vehicle drops ground contact); run with --ignored"]
+#[ignore = "needs a PhysX package with fork commit 0ece3f22 (fix/correction-vehicle-ground); the installed package predates it -- run with --ignored against PHYSX_ROOT=<fixed package>"]
 fn bodies_on_the_ground_stay_on_it_with_the_reference_pair_lifecycle() {
     let out = run(false, true, true);
     eprintln!("{out:#?}");
@@ -476,9 +495,20 @@ fn bodies_on_the_ground_stay_on_it_with_the_reference_pair_lifecycle() {
 
 /// The cars alone are enough.
 #[test]
-#[ignore = "reproduces a PhysX-fork fault (corrected pass + native vehicle drops ground contact); run with --ignored"]
+#[ignore = "needs a PhysX package with fork commit 0ece3f22 (fix/correction-vehicle-ground); the installed package predates it -- run with --ignored against PHYSX_ROOT=<fixed package>"]
 fn bodies_on_the_ground_stay_on_it_with_cars_and_no_player() {
     let out = run(true, true, false);
+    eprintln!("{out:#?}");
+    assert_nothing_went_through(&out);
+}
+
+/// Cars driving in circles stay awake through every fracture, so the
+/// corrected pass's bounds refresh sees their wheel shapes instead of the
+/// sleep commit.
+#[test]
+#[ignore = "needs a PhysX package with fork commit 0ece3f22 (fix/correction-vehicle-ground); the installed package predates it -- run with --ignored against PHYSX_ROOT=<fixed package>"]
+fn bodies_on_the_ground_stay_on_it_with_driving_cars() {
+    let out = run_with(true, true, false, true);
     eprintln!("{out:#?}");
     assert_nothing_went_through(&out);
 }
