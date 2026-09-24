@@ -10,6 +10,7 @@ import {
   PresentationClass,
   PresentationTrack,
   PresentationConfig,
+  presentationConfig60Hz,
 } from './presentation';
 
 const config = (overrides: Partial<PresentationConfig> = {}): PresentationConfig => ({
@@ -284,5 +285,16 @@ describe('settled fast path', () => {
     const held = track.sample(4060);
     expect(held.position[0]).toBeCloseTo(last.position[0], 9);
     expect(held.positionCorrection).toEqual([0, 0, 0]);
+  });
+});
+
+describe('presentationConfig60Hz', () => {
+  // Ballistic records are extrapolated under this gravity; the world falls at
+  // Earth's (physx-bridge world_gravity_magnitude). At the 20 m/s^2 this used
+  // to be, a record's 133 ms extrapolation missed a real fall by 9 cm and sank
+  // a body lying on the ground by 18 cm. The server encoder models the same
+  // value (CLIENT_EXTRAPOLATION_GRAVITY_Y), and its test reads this file.
+  it('extrapolates ballistic records under the world gravity', () => {
+    expect(presentationConfig60Hz().gravity).toEqual([0, -9.81, 0]);
   });
 });

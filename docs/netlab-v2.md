@@ -192,6 +192,19 @@ These are the knobs production actually has, with their production defaults:
 | `city.baseline_interval_ticks` | encoder default | baselines |
 | `city.proximity_m` | 120 | interest |
 | `city.max_eval` | 1200 | `VIBE_CITY_MAX_EVAL` |
+| `city.rest_stride` | 8 | `EncoderConfig::rest_eval_stride` |
+| `city.linear_motion_mps`, `city.angular_motion_rps` | 0.05, 0.08 | priority motion thresholds |
+| `city.max_moving_age_ticks`, `city.contact_target_age_ticks` | 30, 5 | priority age targets |
+| `city.ballistic_free_fall` | 1 (0 in older captures) | ballistic record mode only in measured free fall |
+| `city.client_model` | 1 (0 in older captures) | judge against the client's extrapolated pose; rest corrections |
+| `city.baseline_lag_ticks` | 110 (0 in older captures) | deltas stay on the previous baseline this long |
+| `city.baseline_skip_quiescent` | 1 (0 in older captures) | quiescent bodies left out of baselines |
+
+`city.baseline_interval_ticks` is 120 on new servers (60 before). A knob
+applies over the capture's encoder checkpoint, which carries the config the
+live encoder ran with, so a bundle recorded before these changes replays the
+old behaviour unless the knobs turn it on. The tuning round that added them
+is in [netcode-tuning.md](netcode-tuning.md).
 
 One lab-only knob, not a production setting: `lab.recorded_repairs` (default
 1). With 0 the structure repairs the live server sent this client

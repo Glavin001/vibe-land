@@ -141,6 +141,15 @@ pub struct CityKnobs {
     pub burst_max_multiple: Option<u32>,
     pub baseline_interval_ticks: Option<u32>,
     pub proximity_m: Option<f32>,
+    pub model_client_extrapolation: Option<bool>,
+    pub ballistic_requires_free_fall: Option<bool>,
+    pub rest_eval_stride: Option<u32>,
+    pub linear_motion_threshold: Option<f32>,
+    pub angular_motion_threshold: Option<f32>,
+    pub max_moving_age_ticks: Option<u32>,
+    pub contact_target_age_ticks: Option<u32>,
+    pub baseline_reference_lag_ticks: Option<u32>,
+    pub baseline_skips_quiescent: Option<bool>,
 }
 
 impl CityKnobs {
@@ -165,6 +174,33 @@ impl CityKnobs {
         }
         if let Some(value) = self.proximity_m {
             config.interest.proximity_meters = value;
+        }
+        if let Some(value) = self.model_client_extrapolation {
+            config.model_client_extrapolation = value;
+        }
+        if let Some(value) = self.ballistic_requires_free_fall {
+            config.ballistic_requires_free_fall = value;
+        }
+        if let Some(value) = self.rest_eval_stride {
+            config.rest_eval_stride = value.max(1);
+        }
+        if let Some(value) = self.linear_motion_threshold {
+            config.priority.linear_motion_threshold = value;
+        }
+        if let Some(value) = self.angular_motion_threshold {
+            config.priority.angular_motion_threshold = value;
+        }
+        if let Some(value) = self.max_moving_age_ticks {
+            config.priority.max_moving_age_ticks = value.max(1);
+        }
+        if let Some(value) = self.contact_target_age_ticks {
+            config.priority.contact_target_age_ticks = value.max(1);
+        }
+        if let Some(value) = self.baseline_reference_lag_ticks {
+            config.baseline_reference_lag_ticks = value;
+        }
+        if let Some(value) = self.baseline_skips_quiescent {
+            config.baseline_skips_quiescent = value;
         }
     }
 
@@ -780,6 +816,9 @@ pub fn build(bundle: &Bundle, config: &StreamConfig) -> std::io::Result<Stream> 
                 let list = city_after_tick.entry(tick).or_default();
                 for _ in 0..count {
                     list.push(encoder.bootstrap_message(tick));
+                    // As the server does after a resync or repair bootstrap
+                    // (a no-op for captures made before the reference lag).
+                    encoder.note_client_bootstrap(u64::from(player));
                     stats.city_bootstraps += 1;
                 }
             }

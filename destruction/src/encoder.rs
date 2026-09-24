@@ -76,14 +76,122 @@ pub struct EncoderConfig {
     /// megabyte in one frame, arriving exactly when the client is busiest
     /// drawing the collapse, and on a link that is least able to take it.
     pub burst_max_multiple: u32,
+    /// Judge each body against where the client actually DRAWS it, not
+    /// against the pose it was last sent.
+    ///
+    /// The client does not hold a record's pose: it extrapolates the record's
+    /// velocity (and gravity, for a ballistic record) for up to
+    /// [`CLIENT_MAX_EXTRAPOLATION_TICKS`] and then holds that extrapolated
+    /// pose (`client/src/city/presentation.ts`). A body that decelerates into
+    /// rest after its last record is therefore drawn metres-per-second x
+    /// 133 ms past where it stopped, and the encoder -- comparing truth with
+    /// the last-sent pose, which is within the rest epsilon -- concluded the
+    /// client was already right and never corrected it. Measured in Netlab v2
+    /// (rec1, loopback): resting debris drawn 0.198 m from truth at p50 on
+    /// every link, 17% of its on-screen area perceptibly wrong.
+    ///
+    /// With this on, the rest-unchanged skip and the projected error use the
+    /// client's extrapolated pose, and a body at rest whose drawn pose is off
+    /// gets one correcting record even while quiescent.
+    ///
+    /// Absent from captures made before it existed, where it reads as off:
+    /// that is what those encoders did, so their replays stay byte-exact.
+    #[serde(default)]
+    pub model_client_extrapolation: bool,
+    /// Send the BALLISTIC record mode only for a body whose measured
+    /// acceleration is gravity's, i.e. one that is actually in free fall.
+    ///
+    /// The classifier calls a body ballistic when it reports no contacts, and
+    /// the native backend reports none, so every moving body -- rubble
+    /// sliding, rolling or lying on the ground -- was classed ballistic.
+    /// Measured on the city-bench quick capture: 78,403 of 80,028 records.
+    /// That costs twice: a ballistic record carries an absolute pose (6 B more
+    /// than a baseline delta), and the client extrapolates it under gravity,
+    /// so a body at rest on the ground is drawn sinking for the whole
+    /// extrapolation window and then held there.
+    ///
+    /// Absent from older captures, where it reads as off (what they did).
+    #[serde(default)]
+    pub ballistic_requires_free_fall: bool,
+    /// World gravity along y, m/s^2 (negative is down): what free fall is
+    /// measured against. The server sets it from the physics world.
+    #[serde(default = "default_world_gravity_y")]
+    pub world_gravity_y: f32,
+    /// Resting bodies are re-evaluated on one send in this many; see the
+    /// stride in `client_datagrams`. Older captures read today's value.
+    #[serde(default = "default_rest_eval_stride")]
+    pub rest_eval_stride: u32,
+    /// Keep encoding deltas against the PREVIOUS baseline generation for this
+    /// many ticks after emitting a new one.
+    ///
+    /// Baselines travel on the reliable stream and delta records on
+    /// datagrams, which a congested sender sends first; the client drops a
+    /// delta whose generation it has not received. Switching generations the
+    /// tick a baseline is emitted therefore throws away every delta sent
+    /// until the baseline arrives -- measured on the 0.5 Mbit/s link, where
+    /// that turned sliding debris into seconds-stale poses once deltas became
+    /// the common record. The client keeps the two newest generations
+    /// (`client/src/city/cityClient.ts`), so any lag below the baseline
+    /// interval is safe. Bodies awake only since the new baseline go
+    /// absolute meanwhile.
+    ///
+    /// 0 -- what captures made before it existed did -- switches at once.
+    #[serde(default)]
+    pub baseline_reference_lag_ticks: u32,
+    /// Leave quiescent bodies out of baselines.
+    ///
+    /// A baseline exists so that records can be deltas; a quiescent body
+    /// gets a record only when it wakes or needs a rest correction, so its
+    /// ~17 B baseline entry, repeated every baseline, buys nothing -- and a
+    /// demolished city is mostly quiescent rubble that has not crossed the
+    /// sleep threshold. Its rare records go absolute (6 B more, once).
+    /// The encoder only ever deltas against poses it put in a baseline, so
+    /// the client never gets a delta it cannot resolve.
+    ///
+    /// Absent from older captures, where it reads as off (what they did).
+    #[serde(default)]
+    pub baseline_skips_quiescent: bool,
 }
+
+fn default_rest_eval_stride() -> u32 {
+    REST_EVAL_STRIDE
+}
+
+fn default_world_gravity_y() -> f32 {
+    -9.81
+}
+
+/// A body is in free fall when its tick-to-tick acceleration is within this
+/// of gravity (m/s^2) -- the tolerance Netlab's truth model uses.
+const FREE_FALL_ACCEL_TOLERANCE: f32 = 3.0;
+/// ... for this many consecutive ticks, so one quiet tick on the ground does
+/// not flip a resting body into a falling one.
+const FREE_FALL_MIN_TICKS: u16 = 2;
+
+/// What the client does once a body's newest record is behind its render
+/// time (`client/src/city/presentation.ts`: `presentationConfig60Hz`
+/// `maxExtrapolationTicks` and `gravity`, `PresentationTrack.extrapolate`):
+/// it extrapolates the record's velocities, undamped, for at most this many
+/// ticks and then holds; a ballistic record also falls under this gravity.
+pub const CLIENT_MAX_EXTRAPOLATION_TICKS: u32 = 8;
+pub const CLIENT_EXTRAPOLATION_GRAVITY_Y: f32 = -9.81;
+/// A resting body drawn further than this from where it rests (position,
+/// plus rotation error times the body's radius) gets a correcting record.
+/// Twice the pose-agreement epsilon, so quantisation alone never triggers it.
+const REST_CORRECTION_M: f32 = 2.0 * REST_POSE_EPSILON_M;
 
 impl EncoderConfig {
     pub fn validated(sim_hz: u32) -> Self {
         Self {
             sim_hz,
             send_interval_ticks: 2,                       // 30 Hz at a 60 Hz sim
-            baseline_interval_ticks: sim_hz,              // 1000 ms
+            // 2 s, not 1: with deltas now the common record (see
+            // `ballistic_requires_free_fall`), a baseline delayed behind
+            // datagrams on a congested link cost every delta sent after it
+            // until it arrived. The longer interval allows the longer
+            // reference lag below and halves the baseline bytes. Measured in
+            // Netlab v2: see docs/netcode-tuning.md.
+            baseline_interval_ticks: 2 * sim_hz,
             client_ceiling_bytes: 10_400,                 // ≈ 2.5 Mbps at 30 Hz
             error_budget_px: 2.0,
             classifier: ClassifierConfig::default(),
@@ -106,6 +214,14 @@ impl EncoderConfig {
             // the strength of an argument that measurement did not support.
             burst_capacity_sends: 0,
             burst_max_multiple: 4,
+            model_client_extrapolation: true,
+            ballistic_requires_free_fall: true,
+            world_gravity_y: default_world_gravity_y(),
+            rest_eval_stride: REST_EVAL_STRIDE,
+            // The baseline interval less 1/6 s: a baseline delayed up to
+            // 1.83 s behind the datagrams still costs no deltas.
+            baseline_reference_lag_ticks: 2 * sim_hz - sim_hz / 6,
+            baseline_skips_quiescent: true,
         }
     }
 }
@@ -120,6 +236,13 @@ struct BodyTrack {
     last_velocity: Vec3,
     last_angular_velocity: Vec3,
     settled_hint: bool,
+    /// Velocity at the last ingested tick, and that tick: the per-tick
+    /// acceleration free-fall detection needs (`last_velocity` is per send).
+    #[serde(default)]
+    tick_velocity: Option<(u32, Vec3)>,
+    /// Consecutive ticks whose acceleration matched gravity.
+    #[serde(default)]
+    free_fall_ticks: u16,
 }
 
 /// Everything this client knows about one body.
@@ -133,6 +256,78 @@ struct ClientBodyState {
     track: InterestTrack,
     /// None until this body has actually been sent to this client.
     last_sent: Option<(u32, Pose)>,
+    /// The motion the last record carried, which the client extrapolates.
+    /// None for a record without velocities (and in older checkpoints).
+    #[serde(default)]
+    last_motion: Option<SentMotion>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+struct SentMotion {
+    linear: Vec3,
+    angular: Vec3,
+    ballistic: bool,
+}
+
+impl SentMotion {
+    fn of(record: &BodyRecord) -> Option<Self> {
+        record.mode.has_velocity().then(|| Self {
+            linear: record.linear_velocity,
+            angular: record.angular_velocity,
+            ballistic: record.mode == RecordMode::Ballistic,
+        })
+    }
+}
+
+impl ClientBodyState {
+    /// Where this client draws the body at `tick`, given what it was sent:
+    /// the last record's pose, extrapolated as the client extrapolates it.
+    /// None before the first record.
+    fn presented_at(&self, tick: u32, sim_hz: u32) -> Option<Pose> {
+        let (sent_tick, pose) = self.last_sent?;
+        let Some(motion) = self.last_motion else {
+            return Some(pose);
+        };
+        let ticks = tick.saturating_sub(sent_tick).min(CLIENT_MAX_EXTRAPOLATION_TICKS);
+        Some(extrapolate_like_the_client(pose, motion, ticks as f32 / sim_hz.max(1) as f32))
+    }
+}
+
+/// `PresentationTrack.extrapolate` with zero damping (the city tracks are
+/// built undamped): position by velocity (plus gravity when ballistic),
+/// rotation by the scaled angular-velocity axis applied on the left.
+fn extrapolate_like_the_client(pose: Pose, motion: SentMotion, seconds: f32) -> Pose {
+    let mut position = pose.position + motion.linear * seconds;
+    if motion.ballistic {
+        position.y += 0.5 * CLIENT_EXTRAPOLATION_GRAVITY_Y * seconds * seconds;
+    }
+    let turn = motion.angular * seconds;
+    let angle = turn.length();
+    let rotation = if angle > 1e-8 {
+        (glam::Quat::from_axis_angle(turn / angle, angle) * pose.rotation).normalize()
+    } else {
+        pose.rotation
+    };
+    Pose { position, rotation }
+}
+
+/// The same record without its baseline dependency: a delta mode becomes
+/// its absolute counterpart (the pose is carried whole either way).
+fn without_baseline(mut record: BodyRecord) -> BodyRecord {
+    record.mode = match record.mode {
+        RecordMode::Delta => RecordMode::Absolute,
+        RecordMode::MotionDelta => RecordMode::MotionAbsolute,
+        mode => mode,
+    };
+    record
+}
+
+/// Rigid-body pose disagreement bounded over a body of `radius`: the
+/// translation plus the arc the rotation error sweeps at the radius.
+fn pose_error_m(a: Pose, b: Pose, radius: f32) -> f32 {
+    let dot = a.rotation.dot(b.rotation).abs().min(1.0);
+    let angle = 2.0 * dot.acos();
+    a.position.distance(b.position) + angle * radius
 }
 
 #[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
@@ -144,6 +339,12 @@ struct ClientState {
     /// per body per send; grown on demand and reset when a slot is recycled.
     slots: Vec<ClientBodyState>,
     sequence: u32,
+    /// The first baseline generation this client can hold. A bootstrap
+    /// clears the client's generations and names the one in flight as
+    /// empty, so until the encoder references a generation emitted after
+    /// the bootstrap, a delta is one the client must drop: send absolutes.
+    #[serde(default)]
+    deltas_from_generation: Option<u16>,
 }
 
 /// A body slower than this, that has not moved from where a client last saw
@@ -253,6 +454,8 @@ pub struct SharedRecords {
     pub eval_order: Vec<usize>,
     pub sim_tick: u32,
     pub records: Vec<SharedRecord>,
+    /// The baseline generation this send's delta records are relative to.
+    pub baseline_id: u16,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -312,6 +515,9 @@ pub struct ChunkStreamEncoder {
     baseline_id: u16,
     baseline_poses: HashMap<u32, Pose>,
     last_baseline_tick: Option<u32>,
+    /// The generation before `baseline_id`, still referenced for
+    /// `baseline_reference_lag_ticks` after a new one is emitted.
+    previous_baseline: Option<(u16, HashMap<u32, Pose>)>,
     topo_seq: u32,
     staged_topology: Vec<Vec<u8>>,
     clients: HashMap<u64, ClientState>,
@@ -350,6 +556,8 @@ pub struct EncoderCheckpoint {
     baseline_id: u16,
     baseline_poses: HashMap<u32, Pose>,
     last_baseline_tick: Option<u32>,
+    #[serde(default)]
+    previous_baseline: Option<(u16, HashMap<u32, Pose>)>,
     topo_seq: u32,
     staged_topology: Vec<Vec<u8>>,
     clients: HashMap<u64, ClientState>,
@@ -398,6 +606,7 @@ impl ChunkStreamEncoder {
             baseline_id: 0,
             baseline_poses: HashMap::new(),
             last_baseline_tick: None,
+            previous_baseline: None,
             topo_seq: 0,
             staged_topology: Vec::new(),
             clients: HashMap::new(),
@@ -426,6 +635,7 @@ impl ChunkStreamEncoder {
             baseline_id: self.baseline_id,
             baseline_poses: self.baseline_poses.clone(),
             last_baseline_tick: self.last_baseline_tick,
+            previous_baseline: self.previous_baseline.clone(),
             topo_seq: self.topo_seq,
             staged_topology: self.staged_topology.clone(),
             clients: self.clients.clone(),
@@ -458,6 +668,7 @@ impl ChunkStreamEncoder {
         encoder.baseline_id = checkpoint.baseline_id;
         encoder.baseline_poses = checkpoint.baseline_poses;
         encoder.last_baseline_tick = checkpoint.last_baseline_tick;
+        encoder.previous_baseline = checkpoint.previous_baseline;
         encoder.topo_seq = checkpoint.topo_seq;
         encoder.staged_topology = checkpoint.staged_topology;
         encoder.clients = checkpoint.clients;
@@ -521,6 +732,25 @@ impl ChunkStreamEncoder {
 
     pub fn add_client(&mut self, client: u64) {
         self.clients.entry(client).or_default();
+        // A join is always followed by a bootstrap.
+        self.note_client_bootstrap(client);
+    }
+
+    /// `client` was just sent a bootstrap (join, resync, repair): it holds
+    /// no baseline poses until the next generation, so it gets absolute
+    /// records until the encoder references that one.
+    ///
+    /// With the reference lag off -- captures made before it -- this changes
+    /// nothing: deltas then switch to a generation the tick it is emitted,
+    /// and the stream is exactly what those encoders sent.
+    pub fn note_client_bootstrap(&mut self, client: u64) {
+        if self.config.baseline_reference_lag_ticks == 0 {
+            return;
+        }
+        let first = self.baseline_id.wrapping_add(1);
+        if let Some(state) = self.clients.get_mut(&client) {
+            state.deltas_from_generation = Some(first);
+        }
     }
 
     pub fn remove_client(&mut self, client: u64) {
@@ -549,7 +779,7 @@ impl ChunkStreamEncoder {
         wakes: &[(u32, u32)],
     ) {
         self.ingest_topology(sim_tick, output, wakes);
-        self.ingest_active(active, true);
+        self.ingest_active(sim_tick, active, true);
     }
 
     /// Wire v3: the same ledger/topology work -- v3's reliable topology
@@ -569,7 +799,7 @@ impl ChunkStreamEncoder {
         wakes: &[(u32, u32)],
     ) {
         self.ingest_topology(sim_tick, output, wakes);
-        self.ingest_active(active, false);
+        self.ingest_active(sim_tick, active, false);
     }
 
     fn ingest_topology(
@@ -601,6 +831,8 @@ impl ChunkStreamEncoder {
                             last_velocity: Vec3::from_array(promotion.linear_velocity),
                             last_angular_velocity: Vec3::from_array(promotion.angular_velocity),
                             settled_hint: false,
+                            tick_velocity: None,
+                            free_fall_ticks: 0,
                         },
                     );
                 }
@@ -618,6 +850,9 @@ impl ChunkStreamEncoder {
                     for client in self.clients.values_mut() {
                     }
                     self.baseline_poses.remove(&entity);
+                    if let Some((_, poses)) = self.previous_baseline.as_mut() {
+                        poses.remove(&entity);
+                    }
                 }
             }
             for settle in &output.settled {
@@ -648,7 +883,7 @@ impl ChunkStreamEncoder {
 
     /// Build this tick's awake-body order, and (when `classify`) the per-body
     /// tracks the v2 stream ranks with.
-    fn ingest_active(&mut self, active: &[BodySnapshotInput], classify: bool) {
+    fn ingest_active(&mut self, sim_tick: u32, active: &[BodySnapshotInput], classify: bool) {
         // Classifier updates from the delta/active-only export.
         self.active_order.clear();
         for snapshot in active {
@@ -685,8 +920,23 @@ impl ChunkStreamEncoder {
                 last_velocity: Vec3::ZERO,
                 last_angular_velocity: Vec3::ZERO,
                 settled_hint: false,
+                tick_velocity: None,
+                free_fall_ticks: 0,
             });
             track.class = track.classifier.update(state, config);
+            // Free fall is measured, not inferred from missing contacts:
+            // gravity's acceleration, tick over tick.
+            let free = match track.tick_velocity {
+                Some((previous_tick, previous)) if sim_tick > previous_tick => {
+                    let seconds = (sim_tick - previous_tick) as f32 / self.config.sim_hz.max(1) as f32;
+                    let acceleration = (state.linear_velocity - previous) / seconds;
+                    (acceleration - Vec3::new(0.0, self.config.world_gravity_y, 0.0)).length()
+                        < FREE_FALL_ACCEL_TOLERANCE
+                }
+                _ => false,
+            };
+            track.free_fall_ticks = if free { track.free_fall_ticks.saturating_add(1) } else { 0 };
+            track.tick_velocity = Some((sim_tick, state.linear_velocity));
             track.state = state;
             self.active_order.push(entity);
 
@@ -715,6 +965,26 @@ impl ChunkStreamEncoder {
     /// byte-identical for every client).
     pub fn encode_send(&mut self, sim_tick: u32) -> SharedRecords {
         let mut records = Vec::with_capacity(self.active_order.len());
+        // The generation deltas are relative to: the newest, or during the
+        // lag after an emission the one before it (none, if there was none:
+        // everything goes absolute). See `baseline_reference_lag_ticks`.
+        // Never as long as the interval: the client keeps two generations, so
+        // the previous one is gone once the next is emitted.
+        let lag = self
+            .config
+            .baseline_reference_lag_ticks
+            .min(self.config.baseline_interval_ticks.saturating_sub(1));
+        let lagging = lag > 0
+            && self.last_baseline_tick.is_some_and(|emitted| sim_tick < emitted.saturating_add(lag));
+        let empty = HashMap::new();
+        let (reference_id, reference) = if lagging {
+            match &self.previous_baseline {
+                Some((id, poses)) => (*id, poses),
+                None => (self.baseline_id, &empty),
+            }
+        } else {
+            (self.baseline_id, &self.baseline_poses)
+        };
         for &entity in &self.active_order {
             let Some(track) = self.bodies.get_mut(&entity) else {
                 continue;
@@ -729,8 +999,13 @@ impl ChunkStreamEncoder {
 
             let moving = state.linear_velocity.length() > 0.01
                 || state.angular_velocity.length() > 0.01;
-            let baseline = self.baseline_poses.get(&entity);
-            let mode = if class == PhysicalClass::Ballistic {
+            let baseline = reference.get(&entity);
+            // Ballistic only in measured free fall when configured: see
+            // `EncoderConfig::ballistic_requires_free_fall`.
+            let ballistic = class == PhysicalClass::Ballistic
+                && (!self.config.ballistic_requires_free_fall
+                    || track.free_fall_ticks >= FREE_FALL_MIN_TICKS);
+            let mode = if ballistic {
                 RecordMode::Ballistic
             } else {
                 match baseline {
@@ -813,6 +1088,7 @@ impl ChunkStreamEncoder {
             sim_tick,
             eval_order,
             records,
+            baseline_id: reference_id,
         }
     }
 
@@ -834,6 +1110,16 @@ impl ChunkStreamEncoder {
         let mut audit = if audited { self.audit.take() } else { None };
         let state = self.clients.entry(client).or_default();
         let view: InterestView = state.view.update(camera, config.interest);
+        // Deltas against a generation this client cannot hold go absolute.
+        let force_absolute = match state.deltas_from_generation {
+            Some(first) if (shared.baseline_id.wrapping_sub(first) as i16) < 0 => true,
+            Some(_) => {
+                state.deltas_from_generation = None;
+                false
+            }
+            None => false,
+        };
+        let for_client = |record: BodyRecord| if force_absolute { without_baseline(record) } else { record };
 
         // Camera basis built once, not re-derived inside every visibility test
         // for every body.
@@ -917,7 +1203,7 @@ impl ChunkStreamEncoder {
             // about bandwidth.
             let send_index = shared.sim_tick / config.send_interval_ticks.max(1);
             if resting
-                && (send_index.wrapping_add(shared_record.slot)) % REST_EVAL_STRIDE != 0
+                && (send_index.wrapping_add(shared_record.slot)) % config.rest_eval_stride.max(1) != 0
             {
                 summary.rest_stride += 1;
                 if let Some(audit) = audit.as_mut() {
@@ -936,13 +1222,27 @@ impl ChunkStreamEncoder {
             // With sleep miscalibrated most of a settled rubble field is
             // "awake" but motionless, so this is the bulk of the stream input:
             // ~10k bodies evaluated per client per send to ship ~350.
-            if let Some((_, last_pose)) = body_state.last_sent {
-                let at_rest = shared_record.linear_speed <= REST_SPEED_MPS
-                    && shared_record.angular_speed <= REST_ANGULAR_RPS;
-                if at_rest
-                    && shared_record.position.distance_squared(last_pose.position)
+            let at_rest = shared_record.linear_speed <= REST_SPEED_MPS
+                && shared_record.angular_speed <= REST_ANGULAR_RPS;
+            // Where the client draws the body now: the last record's pose, or
+            // (modelled) that pose as the client extrapolates it.
+            let drawn = if config.model_client_extrapolation {
+                body_state.presented_at(shared.sim_tick, config.sim_hz)
+            } else {
+                body_state.last_sent.map(|(_, pose)| pose)
+            };
+            // How far the drawn pose is from the truth, over the body.
+            let drawn_error_m = drawn.map(|pose| {
+                pose_error_m(shared_record.record.pose, pose, shared_record.radius)
+            });
+            if let Some(last_pose) = drawn {
+                let unchanged = if config.model_client_extrapolation {
+                    drawn_error_m.is_some_and(|error| error <= REST_CORRECTION_M)
+                } else {
+                    shared_record.position.distance_squared(last_pose.position)
                         <= REST_POSE_EPSILON_M * REST_POSE_EPSILON_M
-                {
+                };
+                if at_rest && unchanged {
                     summary.rest_unchanged += 1;
                     if let Some(audit) = audit.as_mut() {
                         note_outcome(
@@ -972,7 +1272,7 @@ impl ChunkStreamEncoder {
             let age_ticks = body_state
                 .last_sent
                 .map_or(u32::MAX / 2, |(last, _)| shared.sim_tick.saturating_sub(last));
-            let error_ratio = body_state.last_sent.map_or(4.0, |(_, last_pose)| {
+            let error_ratio = drawn.map_or(4.0, |last_pose| {
                 projected_error_pixels(
                     Pose {
                         position: shared_record.position,
@@ -1002,7 +1302,15 @@ impl ChunkStreamEncoder {
                 },
                 config.priority,
             );
-            if !priority.should_send {
+            // A body at rest that the client draws somewhere else -- it
+            // extrapolated the last record past where the body stopped --
+            // gets one correcting record, whatever its class: the priority
+            // gate never sends to a quiescent body, and nothing else would
+            // move it until the reliable settle, if one ever comes.
+            let rest_correction = config.model_client_extrapolation
+                && at_rest
+                && drawn_error_m.is_some_and(|error| error > REST_CORRECTION_M);
+            if !priority.should_send && !rest_correction {
                 summary.not_newsworthy += 1;
                 if let Some(audit) = audit.as_mut() {
                     note_outcome(
@@ -1012,7 +1320,7 @@ impl ChunkStreamEncoder {
             }
             // Packed cost estimate: logical bytes minus the 4-byte id plus a
             // typical 2-byte packet-local gap.
-            let cost = shared_record.record.body_bytes() - 4 + 2;
+            let cost = for_client(shared_record.record).body_bytes() - 4 + 2;
             candidates.push(BudgetCandidate {
                 index,
                 cost_bytes: cost,
@@ -1069,7 +1377,7 @@ impl ChunkStreamEncoder {
         let mut selected: Vec<BodyRecord> = selection
             .selected_indices
             .iter()
-            .map(|&index| shared.records[index].record)
+            .map(|&index| for_client(shared.records[index].record))
             .collect();
         selected.sort_unstable_by_key(|record| record.body_entity);
         // The wire format LEB128-encodes strictly increasing body-id gaps, so a
@@ -1098,11 +1406,12 @@ impl ChunkStreamEncoder {
             }
             state.slots[slot].last_sent =
                 Some((shared.sim_tick, shared_record.record.pose));
+            state.slots[slot].last_motion = SentMotion::of(&shared_record.record);
         }
         let datagrams = encode_chunks_datagrams(
             &selected,
             &mut state.sequence,
-            self.baseline_id,
+            shared.baseline_id,
             shared.sim_tick,
         );
         if audited {
@@ -1127,11 +1436,18 @@ impl ChunkStreamEncoder {
             return None;
         }
         self.last_baseline_tick = Some(sim_tick);
+        if self.config.baseline_reference_lag_ticks > 0 {
+            self.previous_baseline =
+                Some((self.baseline_id, std::mem::take(&mut self.baseline_poses)));
+        }
         self.baseline_id = self.baseline_id.wrapping_add(1);
         self.baseline_poses.clear();
         let mut records = Vec::with_capacity(self.active_order.len());
         for &entity in &self.active_order {
             if let Some(track) = self.bodies.get(&entity) {
+                if self.config.baseline_skips_quiescent && track.class == PhysicalClass::Quiescent {
+                    continue;
+                }
                 self.baseline_poses.insert(entity, track.state.pose);
                 records.push(BaselineRecord {
                     body_entity: entity,
@@ -1332,7 +1648,8 @@ mod tests {
         encoder.ingest_tick(12, &duplicated, &DestructionTickOutput::default(), &[]);
 
         // The baseline path has the same strictly-increasing requirement.
-        let baseline = encoder.maybe_emit_baseline(12 + 60).expect("baseline");
+        let interval = EncoderConfig::validated(60).baseline_interval_ticks;
+        let baseline = encoder.maybe_emit_baseline(10 + interval).expect("baseline");
         assert!(!baseline.is_empty());
 
         let shared = encoder.encode_send(12);
@@ -1542,7 +1859,10 @@ mod tests {
     #[test]
     fn deltas_flow_after_a_baseline_and_absolutes_before() {
         let manifest = manifest();
-        let mut encoder = ChunkStreamEncoder::new(&manifest, EncoderConfig::validated(60));
+        // Deltas against the newest generation at once: the lag is its own test.
+        let mut config = EncoderConfig::validated(60);
+        config.baseline_reference_lag_ticks = 0;
+        let mut encoder = ChunkStreamEncoder::new(&manifest, config);
         encoder.add_client(1);
         encoder.ingest_tick(10, &[snapshot(0.0)], &promotion_output(), &[]);
 
@@ -1679,6 +1999,431 @@ mod tests {
                 );
             }
         }
+    }
+
+    fn body_at(position: [f32; 3], velocity: [f32; 3]) -> BodySnapshotInput {
+        BodySnapshotInput {
+            body_entity: ids::body_entity(0, 1),
+            position,
+            rotation: [0.0, 0.0, 0.0, 1.0],
+            linear_velocity: velocity,
+            angular_velocity: [0.0, 0.0, 0.0],
+            // As the native backend reports them: never.
+            contacts: 0,
+            flags: 0,
+        }
+    }
+
+    /// Streams `ticks` of `motion(tick)` to one client looking through
+    /// `camera`, sending every other tick; returns every record the client
+    /// received, with its tick, delta records resolved against the baseline
+    /// generation their datagram names (as the client resolves them).
+    fn stream_to(
+        config: EncoderConfig,
+        ticks: std::ops::Range<u32>,
+        camera: Camera,
+        motion: impl Fn(u32) -> BodySnapshotInput,
+    ) -> Vec<(u32, crate::wire::DecodedBodyRecord)> {
+        let manifest = manifest();
+        let mut encoder = ChunkStreamEncoder::new(&manifest, config);
+        encoder.add_client(1);
+        let mut received = Vec::new();
+        let mut baselines: HashMap<u16, Vec3> = HashMap::new();
+        for tick in ticks.clone() {
+            let output = if tick == ticks.start { promotion_output() } else { DestructionTickOutput::default() };
+            encoder.ingest_tick(tick, &[motion(tick)], &output, &[]);
+            let _ = encoder.take_topology_messages();
+            for part in encoder.maybe_emit_baseline(tick).into_iter().flatten() {
+                let message = crate::wire::decode_baseline(&part).expect("baseline");
+                if let Some(record) = message.records.first() {
+                    baselines.insert(message.baseline_id, record.pose.position);
+                }
+            }
+            if tick % 2 == 0 {
+                let shared = encoder.encode_send(tick);
+                for packet in encoder.client_datagrams(1, camera, &shared) {
+                    let datagram = crate::wire::decode_chunks_datagram(&packet).expect("decode");
+                    for mut record in datagram.records {
+                        if record.mode.is_delta() {
+                            record.position += baselines[&datagram.baseline_id];
+                        }
+                        received.push((datagram.sim_tick, record));
+                    }
+                }
+            }
+        }
+        received
+    }
+
+    fn stream(
+        config: EncoderConfig,
+        ticks: std::ops::Range<u32>,
+        motion: impl Fn(u32) -> BodySnapshotInput,
+    ) -> Vec<(u32, crate::wire::DecodedBodyRecord)> {
+        stream_to(config, ticks, close_camera(), motion)
+    }
+
+    /// Debris sliding along the ground reports no contacts, so the
+    /// classifier calls it ballistic; it must not go out as a ballistic
+    /// record, which the client would pull down under gravity. A body that
+    /// is really falling still must.
+    #[test]
+    fn only_a_body_in_measured_free_fall_is_sent_ballistic() {
+        let dt = 1.0 / 60.0;
+        let sliding = |tick: u32| body_at([1.0 + tick as f32 * dt * 2.0, 0.5, 0.0], [2.0, 0.0, 0.0]);
+        let falling = |tick: u32| {
+            let t = (tick - 10) as f32 * dt;
+            body_at([1.0, 30.0 - 4.905 * t * t, 0.0], [0.0, -9.81 * t, 0.0])
+        };
+        let config = EncoderConfig::validated(60);
+        let slid = stream(config, 10..70, sliding);
+        assert!(!slid.is_empty());
+        assert!(
+            slid.iter().all(|(_, r)| r.mode != RecordMode::Ballistic),
+            "a body moving level at constant speed is not in free fall"
+        );
+        let fell = stream(config, 10..70, falling);
+        assert!(
+            fell.iter().skip(2).all(|(_, r)| r.mode == RecordMode::Ballistic),
+            "a falling body must keep the ballistic mode: {:?}",
+            fell.iter().map(|(_, r)| r.mode).collect::<Vec<_>>()
+        );
+
+        // And off -- as every capture made before the flag existed -- the old
+        // behaviour: no contacts means ballistic.
+        let mut old = config;
+        old.ballistic_requires_free_fall = false;
+        let slid_old = stream(old, 10..70, sliding);
+        assert!(slid_old.iter().skip(2).all(|(_, r)| r.mode == RecordMode::Ballistic));
+    }
+
+    /// The client extrapolates a record's velocity for a few ticks and then
+    /// holds; a body that coasts to a stop after its last record is drawn
+    /// past where it stopped. Judged against what the client draws, the
+    /// encoder must leave it drawn where it stopped, with at most one record
+    /// at rest.
+    #[test]
+    fn a_body_that_coasts_to_rest_is_left_drawn_where_it_stopped() {
+        let dt = 1.0 / 60.0;
+        // Friction: 3 m/s to rest at 6 m/s^2 (0.2 m/s per send), a change
+        // under the 0.25 m/s innovation gate, as sliding debris does.
+        let (v0, decel) = (3.0f32, 6.0f32);
+        let stop_s = v0 / decel;
+        let stop_x = 1.0 + v0 * stop_s - 0.5 * decel * stop_s * stop_s;
+        let motion = |tick: u32| {
+            let t = (tick - 10) as f32 * dt;
+            if t < stop_s {
+                body_at([1.0 + v0 * t - 0.5 * decel * t * t, 0.5, 0.0], [v0 - decel * t, 0.0, 0.0])
+            } else {
+                body_at([stop_x, 0.5, 0.0], [0.0, 0.0, 0.0])
+            }
+        };
+        // Where the client ends up drawing the body: its newest record,
+        // extrapolated through the window and held.
+        let drawn_at_rest = |records: &[(u32, crate::wire::DecodedBodyRecord)]| {
+            let (_, last) = records.last().expect("records");
+            let window = CLIENT_MAX_EXTRAPOLATION_TICKS as f32 * dt;
+            last.position.x + last.linear_velocity.x * window
+        };
+        let stop_tick = 10 + (stop_s / dt).ceil() as u32;
+        let far = Camera { eye: Vec3::new(0.0, 2.0, -40.0), direction: Vec3::Z, fov_degrees: 70.0 };
+        let run = |config: EncoderConfig| stream_to(config, 10..400, far, motion);
+
+        // Without the client model: the encoder compares truth with the pose
+        // it sent, finds the stopped body within the rest epsilon of it, and
+        // leaves the client drawing it where it extrapolated to.
+        let mut old = EncoderConfig::validated(60);
+        old.model_client_extrapolation = false;
+        let unfixed = run(old);
+        let unfixed_error = (drawn_at_rest(&unfixed) - stop_x).abs();
+        assert!(unfixed_error > REST_CORRECTION_M, "scenario must leave the old client off: {unfixed_error}");
+
+        let fixed = run(EncoderConfig::validated(60));
+        let fixed_error = (drawn_at_rest(&fixed) - stop_x).abs();
+        assert!(fixed_error <= REST_POSE_EPSILON_M, "drawn {fixed_error} m from rest");
+        let at_rest = fixed.iter().filter(|(tick, r)| *tick >= stop_tick && r.linear_velocity.length() < 0.01).count();
+        assert!(at_rest <= 1, "at most one correction at rest, then silence");
+        assert!(fixed.len() <= unfixed.len(), "modelling the client must not cost records here");
+    }
+
+    /// A body lying on the ground whose last record was ballistic -- the old
+    /// classification -- is drawn sinking under gravity for the whole
+    /// extrapolation window and then held there: 0.5 g t^2, 0.18 m at the
+    /// 20 m/s^2 the client used to extrapolate with, the resting-debris error
+    /// measured in Netlab. The client model must correct it once at rest.
+    #[test]
+    fn a_resting_body_drawn_sunk_is_corrected_once() {
+        let dt = 1.0 / 60.0;
+        let motion = |tick: u32| {
+            if tick < 30 {
+                body_at([1.0 + (tick - 10) as f32 * dt, 0.5, 0.0], [1.0, 0.0, 0.0])
+            } else {
+                // Stopped: a quarter-second of friction the gates cannot see.
+                let t = ((tick - 30) as f32 * dt).min(0.25);
+                body_at([1.0 + 20.0 * dt + t - 2.0 * t * t, 0.5, 0.0], [(1.0 - 4.0 * t).max(0.0), 0.0, 0.0])
+            }
+        };
+        let mut sunk = EncoderConfig::validated(60);
+        sunk.ballistic_requires_free_fall = false;
+        let mut uncorrected = sunk;
+        uncorrected.model_client_extrapolation = false;
+        let rest_y = 0.5;
+        let final_drawn_y = |records: &[(u32, crate::wire::DecodedBodyRecord)]| {
+            let (_, last) = records.last().expect("records");
+            let window = CLIENT_MAX_EXTRAPOLATION_TICKS as f32 * dt;
+            let gravity = if last.mode == RecordMode::Ballistic { 0.5 * CLIENT_EXTRAPOLATION_GRAVITY_Y * window * window } else { 0.0 };
+            last.position.y + last.linear_velocity.y * window + gravity
+        };
+        let old = stream(uncorrected, 10..300, motion);
+        // (The first record precedes the classifier's two-tick ballistic hold.)
+        assert!(old.iter().skip(1).all(|(_, r)| r.mode == RecordMode::Ballistic));
+        let window = CLIENT_MAX_EXTRAPOLATION_TICKS as f32 * dt;
+        let sink = 0.5 * CLIENT_EXTRAPOLATION_GRAVITY_Y.abs() * window * window;
+        assert!((final_drawn_y(&old) - rest_y).abs() > 0.9 * sink, "the old encoder leaves it sunk");
+
+        let fixed = stream(sunk, 10..300, motion);
+        assert!((final_drawn_y(&fixed) - rest_y).abs() <= REST_POSE_EPSILON_M, "corrected to where it rests");
+        let corrections = fixed.iter().skip(1).filter(|(_, r)| r.mode != RecordMode::Ballistic).count();
+        assert_eq!(corrections, 1, "one correction, then silence");
+    }
+
+    /// A new baseline travels on the reliable stream, behind the datagrams
+    /// that would reference it; for the lag after it is emitted, deltas must
+    /// stay on the generation before it, which the client already holds.
+    /// Every delta must decode against a generation the client has.
+    #[test]
+    fn deltas_keep_the_previous_baseline_until_the_new_one_can_have_arrived() {
+        let lag = 30;
+        let mut config = EncoderConfig::validated(60);
+        config.baseline_interval_ticks = 60;
+        config.baseline_reference_lag_ticks = lag;
+        config.ballistic_requires_free_fall = true;
+        let manifest = manifest();
+        let mut encoder = ChunkStreamEncoder::new(&manifest, config);
+        encoder.add_client(1);
+        let dt = 1.0 / 60.0;
+        let sliding = |tick: u32| body_at([1.0 + tick as f32 * dt * 2.0, 0.5, 0.0], [2.0, 0.0, 0.0]);
+        let mut emitted: Vec<(u32, u16)> = Vec::new();
+        let mut referenced: Vec<(u32, u16)> = Vec::new();
+        for tick in 10..200u32 {
+            let output = if tick == 10 { promotion_output() } else { DestructionTickOutput::default() };
+            encoder.ingest_tick(tick, &[sliding(tick)], &output, &[]);
+            let _ = encoder.take_topology_messages();
+            for part in encoder.maybe_emit_baseline(tick).into_iter().flatten() {
+                emitted.push((tick, crate::wire::decode_baseline(&part).expect("baseline").baseline_id));
+            }
+            if tick % 2 == 0 {
+                let shared = encoder.encode_send(tick);
+                for packet in encoder.client_datagrams(1, close_camera(), &shared) {
+                    let datagram = crate::wire::decode_chunks_datagram(&packet).expect("decode");
+                    if datagram.records.iter().any(|r| r.mode.is_delta()) {
+                        referenced.push((tick, datagram.baseline_id));
+                    }
+                }
+            }
+        }
+        assert!(emitted.len() >= 3 && !referenced.is_empty());
+        for (tick, id) in referenced {
+            let (emitted_at, _) = emitted.iter().find(|(_, e)| *e == id).expect("a generation that was sent");
+            assert!(
+                tick >= emitted_at + lag,
+                "tick {tick} referenced generation {id} only {} ticks after it was emitted",
+                tick - emitted_at
+            );
+            let newer = emitted.iter().filter(|(at, e)| *e != id && *at > *emitted_at && *at + lag <= tick).count();
+            assert_eq!(newer, 0, "tick {tick} kept generation {id} past its successor's lag");
+        }
+    }
+
+    /// Quiescent rubble is left out of baselines, and a body that is not in
+    /// the baseline is never sent as a delta against it.
+    #[test]
+    fn baselines_leave_out_quiescent_bodies_and_deltas_follow_the_baseline() {
+        let dt = 1.0 / 60.0;
+        // Moves, then lies still long past the classifier's 20-tick hold.
+        let motion = |tick: u32| {
+            if tick < 40 {
+                body_at([1.0 + (tick - 10) as f32 * dt, 0.5, 0.0], [1.0, 0.0, 0.0])
+            } else {
+                body_at([1.5, 0.5, 0.0], [0.0, 0.0, 0.0])
+            }
+        };
+        for skips in [false, true] {
+            let mut config = EncoderConfig::validated(60);
+            config.baseline_skips_quiescent = skips;
+            config.baseline_reference_lag_ticks = 0;
+            let manifest = manifest();
+            let mut encoder = ChunkStreamEncoder::new(&manifest, config);
+            encoder.add_client(1);
+            let mut last_baseline_records = None;
+            for tick in 10..400u32 {
+                let output = if tick == 10 { promotion_output() } else { DestructionTickOutput::default() };
+                encoder.ingest_tick(tick, &[motion(tick)], &output, &[]);
+                let _ = encoder.take_topology_messages();
+                if let Some(parts) = encoder.maybe_emit_baseline(tick) {
+                    let records: usize = parts
+                        .iter()
+                        .map(|part| crate::wire::decode_baseline(part).expect("baseline").records.len())
+                        .sum();
+                    last_baseline_records = Some(records);
+                }
+                if tick % 2 == 0 {
+                    let shared = encoder.encode_send(tick);
+                    for record in &shared.records {
+                        if record.record.mode.is_delta() {
+                            assert!(
+                                encoder.baseline_poses.contains_key(&record.record.body_entity),
+                                "a delta against a pose the baseline never carried"
+                            );
+                        }
+                    }
+                }
+            }
+            assert_eq!(last_baseline_records, Some(if skips { 0 } else { 1 }));
+        }
+    }
+
+    /// However it is configured, the lag never outlives the generation it
+    /// points at: the client drops a generation once the next one arrives.
+    #[test]
+    fn the_baseline_lag_is_clamped_below_the_interval() {
+        let mut config = EncoderConfig::validated(60);
+        config.baseline_interval_ticks = 20;
+        config.baseline_reference_lag_ticks = 500;
+        let manifest = manifest();
+        let mut encoder = ChunkStreamEncoder::new(&manifest, config);
+        encoder.add_client(1);
+        let dt = 1.0 / 60.0;
+        let mut current = 0u16;
+        for tick in 10..200u32 {
+            let output = if tick == 10 { promotion_output() } else { DestructionTickOutput::default() };
+            encoder.ingest_tick(tick, &[body_at([1.0 + tick as f32 * dt, 0.5, 0.0], [1.0, 0.0, 0.0])], &output, &[]);
+            let _ = encoder.take_topology_messages();
+            if let Some(parts) = encoder.maybe_emit_baseline(tick) {
+                current = crate::wire::decode_baseline(&parts[0]).expect("baseline").baseline_id;
+            }
+            let shared = encoder.encode_send(tick);
+            assert!(
+                shared.baseline_id == current || shared.baseline_id == current.wrapping_sub(1),
+                "tick {tick}: referenced {} with {current} current -- a generation the client dropped",
+                shared.baseline_id
+            );
+        }
+    }
+
+    /// The client model mirrors two constants of the client's presentation
+    /// config; if either side changes alone the encoder judges the client
+    /// against a pose it does not draw.
+    #[test]
+    fn the_client_model_matches_the_client_presentation_config() {
+        let client = include_str!("../../client/src/city/presentation.ts");
+        let config = &client[client.find("export function presentationConfig60Hz").expect("config fn")..];
+        let config = &config[..config.find("\n}").expect("fn end")];
+        assert!(
+            config.contains(&format!("maxExtrapolationTicks: {CLIENT_MAX_EXTRAPOLATION_TICKS},")),
+            "presentationConfig60Hz maxExtrapolationTicks != CLIENT_MAX_EXTRAPOLATION_TICKS"
+        );
+        assert!(
+            config.contains(&format!("gravity: [0, {CLIENT_EXTRAPOLATION_GRAVITY_Y}, 0],")),
+            "presentationConfig60Hz gravity != CLIENT_EXTRAPOLATION_GRAVITY_Y"
+        );
+    }
+
+    /// A client that joins (or is re-bootstrapped) mid-stream holds no
+    /// baseline until the next generation; with the reference lag that is
+    /// up to an interval plus the lag away. It must get absolute records
+    /// until the encoder references a generation it can hold -- and deltas
+    /// again after that. Other clients are unaffected.
+    #[test]
+    fn a_client_bootstrapped_mid_stream_gets_absolutes_until_it_can_hold_a_baseline() {
+        let config = EncoderConfig::validated(60);
+        let manifest = manifest();
+        let mut encoder = ChunkStreamEncoder::new(&manifest, config);
+        encoder.add_client(1);
+        let dt = 1.0 / 60.0;
+        let sliding = |tick: u32| body_at([1.0 + tick as f32 * dt, 0.5, 0.0], [1.0, 0.0, 0.0]);
+        let join_tick = 300u32;
+        let mut first_held: Option<u16> = None;
+        let (mut late_deltas_before, mut late_deltas_after, mut early_deltas) = (0, 0, 0);
+        for tick in 10..900u32 {
+            let output = if tick == 10 { promotion_output() } else { DestructionTickOutput::default() };
+            encoder.ingest_tick(tick, &[sliding(tick)], &output, &[]);
+            let _ = encoder.take_topology_messages();
+            for part in encoder.maybe_emit_baseline(tick).into_iter().flatten() {
+                let id = crate::wire::decode_baseline(&part).expect("baseline").baseline_id;
+                if tick > join_tick && first_held.is_none() {
+                    first_held = Some(id);
+                }
+            }
+            if tick == join_tick {
+                encoder.add_client(2);
+            }
+            if tick % 2 == 0 {
+                let shared = encoder.encode_send(tick);
+                for client in [1u64, 2] {
+                    if client == 2 && tick < join_tick {
+                        continue;
+                    }
+                    for packet in encoder.client_datagrams(client, close_camera(), &shared) {
+                        let datagram = crate::wire::decode_chunks_datagram(&packet).expect("decode");
+                        let deltas = datagram.records.iter().filter(|r| r.mode.is_delta()).count();
+                        if client == 1 {
+                            early_deltas += deltas;
+                        } else if first_held.is_some_and(|held| datagram.baseline_id >= held) {
+                            late_deltas_after += deltas;
+                        } else {
+                            late_deltas_before += deltas;
+                        }
+                    }
+                }
+            }
+        }
+        assert!(early_deltas > 0, "the established client keeps its deltas");
+        assert_eq!(late_deltas_before, 0, "a delta the joining client could not resolve");
+        assert!(late_deltas_after > 0, "the joining client must get deltas once it holds a baseline");
+    }
+
+    /// The model is the client's `PresentationTrack.extrapolate`: velocity
+    /// (and gravity, ballistic) for at most the extrapolation window.
+    #[test]
+    fn the_client_model_extrapolates_like_the_client_and_then_holds() {
+        let pose = Pose { position: Vec3::new(0.0, 10.0, 0.0), rotation: glam::Quat::IDENTITY };
+        let mut state = ClientBodyState {
+            last_sent: Some((100, pose)),
+            last_motion: Some(SentMotion { linear: Vec3::new(3.0, 0.0, 0.0), angular: Vec3::ZERO, ballistic: true }),
+            ..Default::default()
+        };
+        let window = CLIENT_MAX_EXTRAPOLATION_TICKS as f32 / 60.0;
+        let held = state.presented_at(100 + CLIENT_MAX_EXTRAPOLATION_TICKS, 60).expect("sent");
+        assert!((held.position.x - 3.0 * window).abs() < 1e-5);
+        assert!((held.position.y - (10.0 + 0.5 * CLIENT_EXTRAPOLATION_GRAVITY_Y * window * window)).abs() < 1e-5);
+        assert_eq!(state.presented_at(100 + 500, 60), Some(held), "past the window the client holds");
+        assert_eq!(state.presented_at(100, 60).map(|p| p.position), Some(pose.position));
+        state.last_motion = None;
+        assert_eq!(state.presented_at(100 + 500, 60), Some(pose), "no velocities: no extrapolation");
+    }
+
+    /// Captures made before these flags existed resume with them off --
+    /// what their encoders did -- so a replay stays byte-exact; a new server
+    /// has them on.
+    #[test]
+    fn older_checkpoints_read_the_new_flags_as_off() {
+        let config = EncoderConfig::validated(60);
+        assert!(config.model_client_extrapolation && config.ballistic_requires_free_fall);
+        let mut json = serde_json::to_value(config).expect("serialise");
+        let object = json.as_object_mut().expect("object");
+        object.remove("model_client_extrapolation");
+        object.remove("ballistic_requires_free_fall");
+        object.remove("world_gravity_y");
+        object.remove("rest_eval_stride");
+        object.remove("baseline_reference_lag_ticks");
+        object.remove("baseline_skips_quiescent");
+        let old: EncoderConfig = serde_json::from_value(json).expect("deserialise");
+        assert!(!old.model_client_extrapolation && !old.ballistic_requires_free_fall);
+        assert_eq!(old.world_gravity_y, -9.81);
+        assert_eq!(old.rest_eval_stride, REST_EVAL_STRIDE);
+        assert_eq!(old.baseline_reference_lag_ticks, 0);
+        assert!(!old.baseline_skips_quiescent);
     }
 
     /// Banking must be able to spend more than one ceiling in a burst -- that

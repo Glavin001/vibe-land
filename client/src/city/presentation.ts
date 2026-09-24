@@ -95,11 +95,14 @@ export function presentationConfig60Hz(): PresentationConfig {
     // smaller, and are unaffected in practice.
     correctionSeconds: 0.25,
     dt: 1 / 60,
-    // The world falls at 20 m/s^2 (matched to the player; see
-    // VIBE_WORLD_GRAVITY) — 9.81 predates that change, and extrapolating
-    // ballistic debris at half its real gravity is what made starved tracks
-    // sag behind truth and need the upward correction in the first place.
-    gravity: [0, -20.0, 0],
+    // The world's gravity: Earth's since the physics went back to 9.81
+    // (physx-bridge `world_gravity_magnitude`, VIBE_WORLD_GRAVITY). This was
+    // 20 while the world fell at 20; left there, every ballistic record was
+    // extrapolated at twice the gravity it falls at -- 9 cm off after the
+    // 133 ms window, as far off as not modelling gravity at all. The server
+    // encoder models this value (destruction/src/encoder.rs
+    // CLIENT_EXTRAPOLATION_GRAVITY_Y); change both together.
+    gravity: [0, -9.81, 0],
     snapDistanceMeters: 5,
   };
 }

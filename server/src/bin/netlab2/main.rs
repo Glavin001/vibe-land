@@ -173,6 +173,15 @@ pub fn stream_config(pace: Pace, knobs: &BTreeMap<String, String>) -> StreamConf
             "city.proximity_m" => config.city.proximity_m = Some(f() as f32),
             // Lab-only, not a production knob: see StreamConfig::recorded_repairs.
             "lab.recorded_repairs" => config.recorded_repairs = f() != 0.0,
+            "city.client_model" => config.city.model_client_extrapolation = Some(f() != 0.0),
+            "city.ballistic_free_fall" => config.city.ballistic_requires_free_fall = Some(f() != 0.0),
+            "city.rest_stride" => config.city.rest_eval_stride = Some(f() as u32),
+            "city.linear_motion_mps" => config.city.linear_motion_threshold = Some(f() as f32),
+            "city.angular_motion_rps" => config.city.angular_motion_threshold = Some(f() as f32),
+            "city.max_moving_age_ticks" => config.city.max_moving_age_ticks = Some(f() as u32),
+            "city.contact_target_age_ticks" => config.city.contact_target_age_ticks = Some(f() as u32),
+            "city.baseline_lag_ticks" => config.city.baseline_reference_lag_ticks = Some(f() as u32),
+            "city.baseline_skip_quiescent" => config.city.baseline_skips_quiescent = Some(f() != 0.0),
             "city.max_eval" => {
                 // Read once, from the environment, by the encoder itself.
                 std::env::set_var("VIBE_CITY_MAX_EVAL", value);

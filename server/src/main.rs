@@ -3842,6 +3842,7 @@ impl MatchState {
                                     "city topology resync requested; sending bootstrap"
                                 );
                                 let bootstrap = city.bootstrap(self.server_tick);
+                                city.note_client_bootstrap(u64::from(player_id));
                                 let _ = try_queue_packet(&runtime.tx, bootstrap, &self.io);
                             } else {
                                 // Scoped requests can report hash mismatch,
@@ -4353,6 +4354,7 @@ impl MatchState {
                 continue;
             };
             let bootstrap = city.bootstrap(self.server_tick);
+            city.note_client_bootstrap(u64::from(player_id));
             let lanes = city.full_lane_map();
             // The datagram half: every lane restates absolutely over the
             // coming spans, so poses match the freshly-bootstrapped ledger.

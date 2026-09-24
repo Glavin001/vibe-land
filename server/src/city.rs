@@ -1150,6 +1150,9 @@ impl CityRuntime {
             None => usize::from(vibe_land_shared::constants::CITY_CLIENT_CEILING_BYTES_PER_SEND),
         };
         config.interest.proximity_meters = 120.0;
+        // Free fall (the ballistic record mode) is measured against the
+        // physics world's own gravity.
+        config.world_gravity_y = vibe_netcode::movement::default_world_gravity()[1];
         let encoder = ChunkStreamEncoder::new(&manifest, config);
         let structure_centers = manifest
             .structures
@@ -2378,6 +2381,12 @@ impl CityRuntime {
 
     pub fn bootstrap(&self, sim_tick: u32) -> Vec<u8> {
         self.encoder.bootstrap_message(sim_tick)
+    }
+
+    /// `client` was just sent a bootstrap outside a join (resync, repair):
+    /// its baseline generations are gone until the next one.
+    pub fn note_client_bootstrap(&mut self, client: u64) {
+        self.encoder.note_client_bootstrap(client);
     }
 
     /// Wire v3: the full lane->entity map, sent beside every bootstrap. An
