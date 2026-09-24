@@ -23,13 +23,13 @@ pub struct NamedSpan {
     pub kind: u8,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Pose {
     pub position: Vec3,
     pub rotation: Quat,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Camera {
     pub eye: Vec3,
     pub direction: Vec3,
@@ -37,7 +37,7 @@ pub struct Camera {
 }
 
 /// Per-tick kinematic state of one streamed rigid body (an island actor).
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct BodyState {
     pub pose: Pose,
     pub linear_velocity: Vec3,

@@ -6,7 +6,7 @@
 
 use crate::classify::PhysicalClass;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 pub struct PriorityConfig {
     pub max_moving_age_ticks: u32,
     pub contact_target_age_ticks: u32,

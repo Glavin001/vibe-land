@@ -20,6 +20,7 @@ mod protocol;
 mod send_log;
 mod session_capture;
 mod session_match;
+mod snapshot_builder;
 mod voxel_world;
 
 use std::{
@@ -50,14 +51,13 @@ use sha2::{Digest, Sha256};
 use tokio::sync::{mpsc, RwLock as AsyncRwLock};
 use tracing::{error, info, warn};
 use vibe_land_shared::constants::{
-    DEFAULT_BATTERY_HEIGHT_M, DEFAULT_BATTERY_RADIUS_M, DYNAMIC_BODY_AOI_EXIT_RADIUS_M,
-    DYNAMIC_BODY_AOI_RADIUS_M, DYNAMIC_BODY_IMPULSE, FLAG_MELEEING, HITSCAN_MAX_DISTANCE_M,
+    DEFAULT_BATTERY_HEIGHT_M, DEFAULT_BATTERY_RADIUS_M, DYNAMIC_BODY_IMPULSE, FLAG_MELEEING, HITSCAN_MAX_DISTANCE_M,
     MAX_PENDING_INPUTS, MELEE_COOLDOWN_MS, MELEE_DAMAGE, MELEE_ENERGY_COST,
     MAX_INPUT_FRAMES_PER_TICK,
     MELEE_FLAG_DURATION_TICKS, MELEE_HALF_CONE_COS, MELEE_HIT_RECOVERY_MS, MELEE_RANGE_M,
     OUT_OF_BOUNDS_Y_M, PLAYER_AOI_RADIUS_M, PLAYER_EYE_HEIGHT_M, RIFLE_BODY_DAMAGE,
     RIFLE_FIRE_INTERVAL_MS, RIFLE_HEAD_DAMAGE, RIFLE_SHOT_ENERGY_COST, SHAPE_SPHERE, SIM_HZ,
-    SPAWN_PROTECTION_MS, VEHICLE_AOI_RADIUS_M, VEHICLE_INPUT_CATCHUP_THRESHOLD,
+    SPAWN_PROTECTION_MS, VEHICLE_INPUT_CATCHUP_THRESHOLD,
     VEHICLE_INTERACT_RADIUS_M, WEAPON_CANNONBALL, WEAPON_METEOR,
 };
 use wtransport::{error::SendDatagramError, Connection, Endpoint, Identity, ServerConfig};
@@ -68,12 +68,12 @@ use crate::{
     lag_comp::{HistoricalCapsule, HistoricalDynamicBody, HitZone, LagCompHistory},
     movement::{MoveConfig, PhysicsArena, PlayerDamageOutcome},
     protocol::{
-        client_datagram_to_packet, cms_to_mps, decode_client_datagram, decode_client_hello,
-        decode_client_packet, encode_server_packet, energy_to_centi, f32_to_snorm16,
+        client_datagram_to_packet, decode_client_datagram, decode_client_hello,
+        decode_client_packet, encode_server_packet, energy_to_centi,
         make_net_battery_state, make_net_dynamic_body_state, make_net_player_state,
         make_net_shot_fired, meters_to_mm, mm_to_meters, BatterySyncPacket, ClientPacket,
         DamageEventPacket, FireCmd, InputCmd, LocalPlayerEnergyPacket, MeleeCmd, NetBatteryState,
-        ServerPacket, ShotResultPacket, SnapshotPacket, WelcomePacket, BTN_JUMP, BTN_RELOAD,
+        ServerPacket, ShotResultPacket, WelcomePacket, BTN_JUMP, BTN_RELOAD,
         HIT_ZONE_BODY,
         HIT_ZONE_HEAD, HIT_ZONE_NONE, PKT_BATTERY_SYNC, PKT_CITY_CHUNKS, PKT_CITY_DEBRIS,
         PKT_LOCAL_PLAYER_ENERGY, PKT_PING, PKT_SNAPSHOT, PKT_SNAPSHOT_V2,
@@ -112,19 +112,16 @@ const MAX_CLIENT_HELLO_BYTES: usize = 4096;
 const MAX_CLIENT_STREAM_PACKET_BYTES: usize = 8192;
 const PLAYER_HANDLE_REUSE_COOLDOWN_TICKS: u32 = SIM_HZ as u32 * 10;
 const PLAYER_ROSTER_SYNC_INTERVAL_TICKS: u32 = SIM_HZ as u32 * 2;
-const COLD_VEHICLE_REFRESH_TICKS: u32 = SIM_HZ as u32 / 2;
-const COLD_DYNAMIC_REFRESH_TICKS: u32 = SIM_HZ as u32;
-const HOT_LINEAR_SPEED_THRESHOLD_MPS: f32 = 0.05;
-const HOT_ANGULAR_SPEED_THRESHOLD_RADPS: f32 = 0.05;
-const HOT_DYNAMIC_NEAR_RADIUS_M: f32 = 12.0;
+use snapshot_builder::HOT_DYNAMIC_NEAR_RADIUS_M;
+#[cfg(test)]
+use snapshot_builder::periodic_refresh_due;
+#[cfg(test)]
+use vibe_land_shared::constants::{DYNAMIC_BODY_AOI_EXIT_RADIUS_M, DYNAMIC_BODY_AOI_RADIUS_M};
 const MATCH_HEALTH_LOG_INTERVAL_TICKS: u32 = SIM_HZ as u32 * 10;
-const STRICT_SNAPSHOT_DATAGRAM_TARGET_BYTES: usize = 1100;
 const SNAPSHOT_HEADER_BYTES: usize = 23;
 const SNAPSHOT_PLAYER_STATE_BYTES: usize = 29;
 const SNAPSHOT_DYNAMIC_BODY_STATE_BYTES: usize = 43;
 const SNAPSHOT_VEHICLE_STATE_BYTES: usize = 50;
-const STRICT_SNAPSHOT_RESERVED_VEHICLES: usize = 2;
-const SNAPSHOT_V2_HEADER_BYTES: usize = 23;
 
 /// The server's wall clock for snapshot stamps: µs since the first call,
 /// modulo 2^32. Clients only difference consecutive stamps, so the origin is
@@ -134,11 +131,6 @@ fn server_wall_clock_us() -> u32 {
     let origin = *ORIGIN.get_or_init(Instant::now);
     (origin.elapsed().as_micros() % (1u128 << 32)) as u32
 }
-const SNAPSHOT_V2_SELF_PLAYER_BYTES: usize = 33;
-const SNAPSHOT_V2_REMOTE_PLAYER_BYTES: usize = 19;
-const SNAPSHOT_V2_DYNAMIC_SPHERE_BYTES: usize = 20;
-const SNAPSHOT_V2_DYNAMIC_BOX_BYTES: usize = 28;
-const SNAPSHOT_V2_VEHICLE_BYTES: usize = 30;
 
 fn rifle_damage(zone: HitZone) -> u8 {
     match zone {
@@ -1138,26 +1130,27 @@ struct PlayerRuntime {
     melee_flag_clear_tick: u32,
     spawn_protection_ends_at_tick: u32,
     respawn_at_ms: Option<u32>,
-    visible_dynamic_bodies: HashSet<u32>,
+    /// The snapshot selection's memory of this recipient (see snapshot_builder).
+    snapshot_interest: snapshot_builder::RecipientInterest,
     visible_batteries: HashSet<u32>,
     battery_full_resync_pending: bool,
     /// When this player's own energy is next worth sending.
     energy_gate: energy_stream::EnergySendGate,
-    last_sent_dynamic_body_pose: HashMap<u32, ([f32; 3], [f32; 4])>,
-    last_sent_vehicle_tick: HashMap<u32, u32>,
-    last_sent_dynamic_tick: HashMap<u32, u32>,
 }
 
-#[derive(Clone, Copy)]
-struct DynamicBodyMetaRuntime {
-    handle: u16,
-    shape_type: u8,
-    half_extents_m: [f32; 3],
-}
+type DynamicBodyMetaRuntime = snapshot_builder::BodyMeta;
 
-enum DynamicBodySelection {
-    Sphere(protocol::DynamicSphereStateV2),
-    Box(protocol::DynamicBoxStateV2),
+impl From<movement::PlayerSupportState> for snapshot_builder::SupportInput {
+    fn from(state: movement::PlayerSupportState) -> Self {
+        Self {
+            entity_id: state.entity_id,
+            is_vehicle: state.is_vehicle,
+            local_position: state.local_position,
+            velocity: state.velocity,
+            angular_velocity: state.angular_velocity,
+            flags: state.flags,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -3524,13 +3517,10 @@ impl MatchState {
                         melee_flag_clear_tick: 0,
                         spawn_protection_ends_at_tick: 0,
                         respawn_at_ms: None,
-                        visible_dynamic_bodies: HashSet::new(),
+                        snapshot_interest: Default::default(),
                         visible_batteries: HashSet::new(),
                         battery_full_resync_pending: true,
                         energy_gate: crate::energy_stream::EnergySendGate::default(),
-                        last_sent_dynamic_body_pose: HashMap::new(),
-                        last_sent_vehicle_tick: HashMap::new(),
-                        last_sent_dynamic_tick: HashMap::new(),
                     },
                 );
                 self.activate_spawn_protection(conn.player_id);
@@ -6385,537 +6375,47 @@ impl MatchState {
             .collect();
 
         let recipient_ids: Vec<u32> = self.players.keys().copied().collect();
+        let world = snapshot_builder::SnapshotWorld {
+            server_tick: self.server_tick,
+            server_time_us,
+            server_wall_us,
+            players: &player_states,
+            bodies: &dynamic_body_states,
+            vehicles: &vehicle_states,
+            player_handles: &self.player_handles,
+            vehicle_handles: &self.vehicle_handles,
+            body_meta: &self.dynamic_body_handles,
+        };
 
         // Per-recipient interest / budget decisions, kept only while a
         // session capture runs (the counts themselves are free).
-        let capturing = self.session_capture_active();
+        let capturing = self.session_capture.is_some();
         let mut selections: Vec<session_capture::Selection> = Vec::new();
+        let mut recipient_inputs: Vec<snapshot_builder::RecipientInput> = Vec::new();
         let mut snapshot_bytes_this_tick = 0usize;
         for recipient_id in recipient_ids {
-            let Some((_, recipient_pos, local_player_state)) = player_states
-                .iter()
-                .find(|(player_id, _, _)| *player_id == recipient_id)
-            else {
-                continue;
-            };
             let Some(runtime) = self.players.get_mut(&recipient_id) else {
                 continue;
             };
-            let tx = runtime.tx.clone();
-            let ack_input_seq = runtime.last_ack_input_seq;
-
-            if !self.strict_snapshot_datagrams {
-                let mut filtered_players: Vec<_> = player_states
-                    .iter()
-                    .filter(|(player_id, pos, _)| {
-                        *player_id == recipient_id
-                            || distance_sq(*pos, *recipient_pos)
-                                <= PLAYER_AOI_RADIUS_M * PLAYER_AOI_RADIUS_M
-                    })
-                    .collect();
-                filtered_players.sort_by(|a, b| {
-                    let a_self = a.0 == recipient_id;
-                    let b_self = b.0 == recipient_id;
-                    b_self.cmp(&a_self).then_with(|| {
-                        distance_sq(a.1, *recipient_pos)
-                            .total_cmp(&distance_sq(b.1, *recipient_pos))
-                    })
-                });
-
-                let mut filtered_dynamic_candidates: Vec<_> = dynamic_body_states
-                    .iter()
-                    .filter(|(body_id, pos, _, _)| {
-                        dynamic_body_within_aoi(
-                            runtime.visible_dynamic_bodies.contains(body_id),
-                            *pos,
-                            *recipient_pos,
-                        )
-                    })
-                    .collect();
-                filtered_dynamic_candidates.sort_by(|a, b| {
-                    distance_sq(a.1, *recipient_pos).total_cmp(&distance_sq(b.1, *recipient_pos))
-                });
-
-                let mut filtered_vehicle_candidates: Vec<_> = vehicle_states
-                    .iter()
-                    .filter(|(_, pos, state)| {
-                        state.driver_id == recipient_id
-                            || distance_sq(*pos, *recipient_pos)
-                                <= VEHICLE_AOI_RADIUS_M * VEHICLE_AOI_RADIUS_M
-                    })
-                    .collect();
-                filtered_vehicle_candidates.sort_by(|a, b| {
-                    let a_local = a.2.driver_id == recipient_id;
-                    let b_local = b.2.driver_id == recipient_id;
-                    b_local.cmp(&a_local).then_with(|| {
-                        distance_sq(a.1, *recipient_pos)
-                            .total_cmp(&distance_sq(b.1, *recipient_pos))
-                    })
-                });
-
-                let mut filtered_dynamic_bodies = Vec::new();
-                let mut next_visible_dynamic_bodies = HashSet::new();
-                let mut next_sent_dynamic_body_pose = HashMap::new();
-                for (body_id, pos, quat, state) in filtered_dynamic_candidates {
-                    next_visible_dynamic_bodies.insert(*body_id);
-                    filtered_dynamic_bodies.push(*state);
-                    next_sent_dynamic_body_pose.insert(*body_id, (*pos, *quat));
-                }
-                runtime.visible_dynamic_bodies = next_visible_dynamic_bodies;
-                runtime.last_sent_dynamic_body_pose = next_sent_dynamic_body_pose;
-
-                let filtered_vehicles = filtered_vehicle_candidates
-                    .into_iter()
-                    .map(|(_, _, state)| *state)
-                    .collect();
-
-                let packet = ServerPacket::Snapshot(SnapshotPacket {
-                    server_time_us,
-                    server_tick: self.server_tick,
-                    ack_input_seq,
-                    player_states: filtered_players
-                        .into_iter()
-                        .map(|(_, _, state)| *state)
-                        .collect(),
-                    projectile_states: Vec::new(),
-                    dynamic_body_states: filtered_dynamic_bodies,
-                    vehicle_states: filtered_vehicles,
-                });
-                let encoded = encode_server_packet(&packet);
-                snapshot_bytes_this_tick += encoded.len();
-                self.snapshot_stats
-                    .bytes_per_client
-                    .record(encoded.len() as f32);
-                self.snapshot_stats
-                    .players_per_client
-                    .record(packet_player_count(&packet) as f32);
-                self.snapshot_stats
-                    .dynamic_bodies_per_client
-                    .record(packet_dynamic_body_count(&packet) as f32);
-                self.snapshot_stats
-                    .vehicles_per_client
-                    .record(packet_vehicle_count(&packet) as f32);
-                if capturing {
-                    // V1 has no byte budget: everything in the AOI is sent.
-                    let players = packet_player_count(&packet).saturating_sub(1) as u32;
-                    let vehicles = packet_vehicle_count(&packet) as u32;
-                    let bodies = packet_dynamic_body_count(&packet) as u32;
-                    selections.push(session_capture::Selection {
-                        tick: self.server_tick,
-                        player: recipient_id,
-                        kind: session_capture::SelectionKind::Snapshot(
-                            session_capture::SnapshotSelection {
-                                players_aoi: players,
-                                players_sent: players,
-                                vehicles_aoi: vehicles,
-                                vehicles_hot: vehicles,
-                                vehicles_sent: vehicles,
-                                bodies_aoi: bodies,
-                                bodies_hot: bodies,
-                                bodies_sent: bodies,
-                                bytes: encoded.len() as u32,
-                                ..Default::default()
-                            },
-                        ),
-                    });
-                }
-                let _ = try_queue_packet(&tx, encoded, &self.io);
-                continue;
-            }
-            let mut selection = session_capture::SnapshotSelection::default();
-
-            let mut budget_remaining = STRICT_SNAPSHOT_DATAGRAM_TARGET_BYTES
-                .saturating_sub(SNAPSHOT_V2_HEADER_BYTES + protocol::SNAPSHOT_V2_TRAILER_BYTES);
-
-            let support_state = self.arena.player_support(recipient_id);
-            let support_dynamic_id = support_state
-                .filter(|support| !support.is_vehicle)
-                .map(|support| support.entity_id);
-            let support_vehicle_id = support_state
-                .filter(|support| support.is_vehicle)
-                .map(|support| support.entity_id);
-            let support = support_state.and_then(|support| {
-                let handle = if support.is_vehicle {
-                    self.vehicle_handles
-                        .get(&support.entity_id)
-                        .map(|handle| 0x8000 | u16::from(*handle))
+            let recipient = snapshot_builder::RecipientInput {
+                id: recipient_id,
+                ack_input_seq: runtime.last_ack_input_seq,
+                support: if self.strict_snapshot_datagrams {
+                    self.arena.player_support(recipient_id).map(Into::into)
                 } else {
-                    self.dynamic_body_handles
-                        .get(&support.entity_id)
-                        .map(|entry| entry.handle)
-                }?;
-                Some((
-                    handle,
-                    support.local_position.map(|value| {
-                        (value * 400.0)
-                            .round()
-                            .clamp(i16::MIN as f32, i16::MAX as f32) as i16
-                    }),
-                    support.velocity.map(|value| {
-                        (value * 100.0)
-                            .round()
-                            .clamp(i16::MIN as f32, i16::MAX as f32) as i16
-                    }),
-                    support.angular_velocity.map(|value| {
-                        (value * 1000.0)
-                            .round()
-                            .clamp(i16::MIN as f32, i16::MAX as f32) as i16
-                    }),
-                    support.flags,
-                ))
-            });
-            let self_state = protocol::SelfPlayerStateV2 {
-                vx_cms: local_player_state.vx_cms,
-                vy_cms: local_player_state.vy_cms,
-                vz_cms: local_player_state.vz_cms,
-                yaw_i16: local_player_state.yaw_i16,
-                pitch_i16: local_player_state.pitch_i16,
-                hp: local_player_state.hp,
-                flags: (local_player_state.flags & 0xff) as u8,
-                support_handle: support.map_or(0, |value| value.0),
-                support_local_q2_5mm: support.map_or([0; 3], |value| value.1),
-                support_velocity_cms: support.map_or([0; 3], |value| value.2),
-                support_angular_velocity_mrads: support.map_or([0; 3], |value| value.3),
-                support_flags: support.map_or(0, |value| value.4),
+                    None
+                },
             };
-            budget_remaining = budget_remaining.saturating_sub(SNAPSHOT_V2_SELF_PLAYER_BYTES);
-
-            let mut reserved_vehicle_ids: HashSet<u32> = vehicle_states
-                .iter()
-                .filter(|(_, _, state)| state.driver_id == recipient_id)
-                .take(STRICT_SNAPSHOT_RESERVED_VEHICLES)
-                .map(|(vehicle_id, _, _)| *vehicle_id)
-                .collect();
-            if let Some(vehicle_id) = support_vehicle_id {
-                reserved_vehicle_ids.insert(vehicle_id);
-            }
-            let reserved_vehicle_budget = reserved_vehicle_ids
-                .len()
-                .saturating_mul(SNAPSHOT_V2_VEHICLE_BYTES);
-            budget_remaining = budget_remaining.saturating_sub(reserved_vehicle_budget);
-            let reserved_support_dynamic_bytes = support_dynamic_id
-                .and_then(|body_id| self.dynamic_body_handles.get(&body_id))
-                .map(|meta| {
-                    if meta.shape_type == SHAPE_SPHERE {
-                        SNAPSHOT_V2_DYNAMIC_SPHERE_BYTES
-                    } else {
-                        SNAPSHOT_V2_DYNAMIC_BOX_BYTES
-                    }
-                })
-                .unwrap_or(0);
-            budget_remaining = budget_remaining.saturating_sub(reserved_support_dynamic_bytes);
-
-            let mut remote_player_states = Vec::new();
-            let mut remote_player_candidates: Vec<_> = player_states
-                .iter()
-                .filter(|(player_id, pos, _)| {
-                    *player_id != recipient_id
-                        && distance_sq(*pos, *recipient_pos)
-                            <= PLAYER_AOI_RADIUS_M * PLAYER_AOI_RADIUS_M
-                })
-                .collect();
-            remote_player_candidates.sort_by(|a, b| {
-                distance_sq(a.1, *recipient_pos).total_cmp(&distance_sq(b.1, *recipient_pos))
-            });
-            selection.players_aoi = remote_player_candidates.len() as u32;
-            for (index, (player_id, pos, state)) in remote_player_candidates.into_iter().enumerate() {
-                let Some(handle) = self.player_handles.get(player_id).copied() else {
-                    continue;
-                };
-                let Some((dx, dy, dz)) = quantize_relative_vec_q2_5mm(*recipient_pos, *pos) else {
-                    selection.out_of_range += 1;
-                    continue;
-                };
-                if budget_remaining < SNAPSHOT_V2_REMOTE_PLAYER_BYTES {
-                    selection.players_budget = (selection.players_aoi as usize - index) as u32;
-                    break;
-                }
-                remote_player_states.push(protocol::RemotePlayerStateV2 {
-                    handle,
-                    dx_q2_5mm: dx,
-                    dy_q2_5mm: dy,
-                    dz_q2_5mm: dz,
-                    vx_cms: state.vx_cms,
-                    vy_cms: state.vy_cms,
-                    vz_cms: state.vz_cms,
-                    yaw_i16: state.yaw_i16,
-                    pitch_i16: state.pitch_i16,
-                    hp: state.hp,
-                    flags: (state.flags & 0xff) as u8,
-                });
-                budget_remaining = budget_remaining.saturating_sub(SNAPSHOT_V2_REMOTE_PLAYER_BYTES);
-            }
-            selection.players_sent = remote_player_states.len() as u32;
-
-            let mut selected_vehicle_states = Vec::new();
-            for (vehicle_id, pos, state) in vehicle_states
-                .iter()
-                .filter(|(vehicle_id, _, _)| reserved_vehicle_ids.contains(vehicle_id))
-            {
-                let Some(handle) = self.vehicle_handles.get(vehicle_id).copied() else {
-                    continue;
-                };
-                let Some((dx, dy, dz)) = quantize_relative_vec_q2_5mm(*recipient_pos, *pos) else {
-                    continue;
-                };
-                let driver_handle = self
-                    .player_handles
-                    .get(&state.driver_id)
-                    .copied()
-                    .unwrap_or_default();
-                selected_vehicle_states.push(protocol::VehicleStateV2 {
-                    handle,
-                    vehicle_type: state.vehicle_type,
-                    driver_handle,
-                    flags: state.flags,
-                    dx_q2_5mm: dx,
-                    dy_q2_5mm: dy,
-                    dz_q2_5mm: dz,
-                    qx_snorm: state.qx_snorm,
-                    qy_snorm: state.qy_snorm,
-                    qz_snorm: state.qz_snorm,
-                    qw_snorm: state.qw_snorm,
-                    vx_cms: state.vx_cms,
-                    vy_cms: state.vy_cms,
-                    vz_cms: state.vz_cms,
-                    wx_mrads: state.wx_mrads,
-                    wy_mrads: state.wy_mrads,
-                    wz_mrads: state.wz_mrads,
-                });
-                runtime
-                    .last_sent_vehicle_tick
-                    .insert(*vehicle_id, self.server_tick);
-            }
-
-            let reserved_vehicles_sent = selected_vehicle_states.len();
-            let mut vehicle_hot = Vec::new();
-            for (vehicle_id, pos, state) in vehicle_states.iter().filter(|(_, pos, state)| {
-                state.driver_id == recipient_id
-                    || distance_sq(*pos, *recipient_pos)
-                        <= VEHICLE_AOI_RADIUS_M * VEHICLE_AOI_RADIUS_M
-            }) {
-                if reserved_vehicle_ids.contains(vehicle_id) {
-                    continue;
-                }
-                selection.vehicles_aoi += 1;
-                let Some(handle) = self.vehicle_handles.get(vehicle_id).copied() else {
-                    continue;
-                };
-                let Some((dx, dy, dz)) = quantize_relative_vec_q2_5mm(*recipient_pos, *pos) else {
-                    selection.out_of_range += 1;
-                    continue;
-                };
-                let driver_handle = self
-                    .player_handles
-                    .get(&state.driver_id)
-                    .copied()
-                    .unwrap_or_default();
-                let record = protocol::VehicleStateV2 {
-                    handle,
-                    vehicle_type: state.vehicle_type,
-                    driver_handle,
-                    flags: state.flags,
-                    dx_q2_5mm: dx,
-                    dy_q2_5mm: dy,
-                    dz_q2_5mm: dz,
-                    qx_snorm: state.qx_snorm,
-                    qy_snorm: state.qy_snorm,
-                    qz_snorm: state.qz_snorm,
-                    qw_snorm: state.qw_snorm,
-                    vx_cms: state.vx_cms,
-                    vy_cms: state.vy_cms,
-                    vz_cms: state.vz_cms,
-                    wx_mrads: state.wx_mrads,
-                    wy_mrads: state.wy_mrads,
-                    wz_mrads: state.wz_mrads,
-                };
-                let hot = state.driver_id == recipient_id
-                    || state.driver_id != 0
-                    || speed_sq3([
-                        cms_to_mps(state.vx_cms),
-                        cms_to_mps(state.vy_cms),
-                        cms_to_mps(state.vz_cms),
-                    ]) > HOT_LINEAR_SPEED_THRESHOLD_MPS * HOT_LINEAR_SPEED_THRESHOLD_MPS
-                    || speed_sq3([
-                        state.wx_mrads as f32 / 1000.0,
-                        state.wy_mrads as f32 / 1000.0,
-                        state.wz_mrads as f32 / 1000.0,
-                    ]) > HOT_ANGULAR_SPEED_THRESHOLD_RADPS * HOT_ANGULAR_SPEED_THRESHOLD_RADPS
-                    || periodic_refresh_due(
-                        runtime.last_sent_vehicle_tick.get(vehicle_id).copied(),
-                        self.server_tick,
-                        COLD_VEHICLE_REFRESH_TICKS,
-                    );
-                if hot {
-                    vehicle_hot.push((*vehicle_id, distance_sq(*pos, *recipient_pos), record));
-                }
-            }
-            vehicle_hot.sort_by(|a, b| a.1.total_cmp(&b.1));
-            let vehicle_hot_count = vehicle_hot.len();
-
-            for (vehicle_id, _, record) in vehicle_hot {
-                if budget_remaining < SNAPSHOT_V2_VEHICLE_BYTES {
-                    break;
-                }
-                runtime
-                    .last_sent_vehicle_tick
-                    .insert(vehicle_id, self.server_tick);
-                selected_vehicle_states.push(record);
-                budget_remaining = budget_remaining.saturating_sub(SNAPSHOT_V2_VEHICLE_BYTES);
-            }
-            selection.vehicles_aoi += reserved_vehicles_sent as u32;
-            selection.vehicles_hot = (vehicle_hot_count + reserved_vehicles_sent) as u32;
-            selection.vehicles_sent = selected_vehicle_states.len() as u32;
-            selection.vehicles_budget =
-                (vehicle_hot_count + reserved_vehicles_sent).saturating_sub(selected_vehicle_states.len()) as u32;
-
-            let mut all_visible_dynamic_bodies = HashSet::new();
-            let mut dynamic_hot = Vec::new();
-            let mut dynamic_cold = Vec::new();
-            for (body_id, pos, quat, state) in
-                dynamic_body_states.iter().filter(|(body_id, pos, _, _)| {
-                    let visible = dynamic_body_within_aoi(
-                        runtime.visible_dynamic_bodies.contains(body_id),
-                        *pos,
-                        *recipient_pos,
-                    );
-                    visible
-                })
-            {
-                all_visible_dynamic_bodies.insert(*body_id);
-                let Some(meta) = self.dynamic_body_handles.get(body_id).copied() else {
-                    continue;
-                };
-                let Some((dx, dy, dz)) = quantize_relative_vec_q2_5mm(*recipient_pos, *pos) else {
-                    selection.out_of_range += 1;
-                    continue;
-                };
-                let dist_sq = distance_sq(*pos, *recipient_pos);
-                let moving = speed_sq3([
-                    cms_to_mps(state.vx_cms),
-                    cms_to_mps(state.vy_cms),
-                    cms_to_mps(state.vz_cms),
-                ]) > HOT_LINEAR_SPEED_THRESHOLD_MPS * HOT_LINEAR_SPEED_THRESHOLD_MPS
-                    || speed_sq3([
-                        state.wx_mrads as f32 / 1000.0,
-                        state.wy_mrads as f32 / 1000.0,
-                        state.wz_mrads as f32 / 1000.0,
-                    ]) > HOT_ANGULAR_SPEED_THRESHOLD_RADPS * HOT_ANGULAR_SPEED_THRESHOLD_RADPS;
-                let needs_refresh = periodic_refresh_due(
-                    runtime.last_sent_dynamic_tick.get(body_id).copied(),
-                    self.server_tick,
-                    COLD_DYNAMIC_REFRESH_TICKS,
-                );
-
-                if meta.shape_type == SHAPE_SPHERE {
-                    let record = protocol::DynamicSphereStateV2 {
-                        handle: meta.handle,
-                        dx_q2_5mm: dx,
-                        dy_q2_5mm: dy,
-                        dz_q2_5mm: dz,
-                        vx_cms: state.vx_cms,
-                        vy_cms: state.vy_cms,
-                        vz_cms: state.vz_cms,
-                        wx_mrads: state.wx_mrads,
-                        wy_mrads: state.wy_mrads,
-                        wz_mrads: state.wz_mrads,
-                    };
-                    if support_dynamic_id == Some(*body_id)
-                        || moving
-                        || dist_sq <= HOT_DYNAMIC_NEAR_RADIUS_M * HOT_DYNAMIC_NEAR_RADIUS_M
-                        || needs_refresh
-                    {
-                        dynamic_hot.push((*body_id, dist_sq, DynamicBodySelection::Sphere(record)));
-                    } else if needs_refresh {
-                        dynamic_cold.push((
-                            *body_id,
-                            dist_sq,
-                            DynamicBodySelection::Sphere(record),
-                        ));
-                    }
-                } else {
-                    let record = protocol::DynamicBoxStateV2 {
-                        handle: meta.handle,
-                        dx_q2_5mm: dx,
-                        dy_q2_5mm: dy,
-                        dz_q2_5mm: dz,
-                        qx_snorm: f32_to_snorm16(quat[0]),
-                        qy_snorm: f32_to_snorm16(quat[1]),
-                        qz_snorm: f32_to_snorm16(quat[2]),
-                        qw_snorm: f32_to_snorm16(quat[3]),
-                        vx_cms: state.vx_cms,
-                        vy_cms: state.vy_cms,
-                        vz_cms: state.vz_cms,
-                        wx_mrads: state.wx_mrads,
-                        wy_mrads: state.wy_mrads,
-                        wz_mrads: state.wz_mrads,
-                    };
-                    if support_dynamic_id == Some(*body_id)
-                        || moving
-                        || dist_sq <= HOT_DYNAMIC_NEAR_RADIUS_M * HOT_DYNAMIC_NEAR_RADIUS_M
-                        || needs_refresh
-                    {
-                        dynamic_hot.push((*body_id, dist_sq, DynamicBodySelection::Box(record)));
-                    } else if needs_refresh {
-                        dynamic_cold.push((*body_id, dist_sq, DynamicBodySelection::Box(record)));
-                    }
-                }
-                runtime
-                    .last_sent_dynamic_body_pose
-                    .insert(*body_id, (*pos, *quat));
-            }
-            selection.bodies_aoi = all_visible_dynamic_bodies.len() as u32;
-            selection.bodies_hot = (dynamic_hot.len() + dynamic_cold.len()) as u32;
-            runtime.visible_dynamic_bodies = all_visible_dynamic_bodies;
-            dynamic_hot.sort_by(|a, b| a.1.total_cmp(&b.1));
-            dynamic_cold.sort_by(|a, b| a.1.total_cmp(&b.1));
-            if let Some(support_body_id) = support_dynamic_id {
-                dynamic_hot.sort_by_key(|(body_id, _, _)| *body_id != support_body_id);
-                dynamic_cold.sort_by_key(|(body_id, _, _)| *body_id != support_body_id);
-            }
-
-            let mut sphere_states = Vec::new();
-            let mut box_states = Vec::new();
-            for (body_id, _, selection) in dynamic_hot.into_iter().chain(dynamic_cold.into_iter()) {
-                let record_size = match &selection {
-                    DynamicBodySelection::Sphere(_) => SNAPSHOT_V2_DYNAMIC_SPHERE_BYTES,
-                    DynamicBodySelection::Box(_) => SNAPSHOT_V2_DYNAMIC_BOX_BYTES,
-                };
-                let reserved_support = support_dynamic_id == Some(body_id);
-                if !reserved_support && budget_remaining < record_size {
-                    continue;
-                }
-                match selection {
-                    DynamicBodySelection::Sphere(record) => sphere_states.push(record),
-                    DynamicBodySelection::Box(record) => box_states.push(record),
-                }
-                runtime
-                    .last_sent_dynamic_tick
-                    .insert(body_id, self.server_tick);
-                if !reserved_support {
-                    budget_remaining = budget_remaining.saturating_sub(record_size);
-                }
-            }
-
-            selection.bodies_sent = (sphere_states.len() + box_states.len()) as u32;
-            selection.bodies_budget = selection.bodies_hot.saturating_sub(selection.bodies_sent);
-            selection.bodies_unchanged = selection
-                .bodies_aoi
-                .saturating_sub(selection.bodies_hot)
-                .saturating_sub(selection.out_of_range);
-            let packet = ServerPacket::SnapshotV2(protocol::SnapshotV2Packet {
-                server_tick: self.server_tick,
-                ack_input_seq,
-                anchor_px_mm: local_player_state.px_mm,
-                anchor_py_mm: local_player_state.py_mm,
-                anchor_pz_mm: local_player_state.pz_mm,
-                self_state,
-                remote_players: remote_player_states,
-                sphere_states,
-                box_states,
-                vehicle_states: selected_vehicle_states,
-                server_wall_us,
-            });
+            let Some((packet, selection)) = snapshot_builder::build_recipient_snapshot(
+                &world,
+                &recipient,
+                &mut runtime.snapshot_interest,
+                self.strict_snapshot_datagrams,
+                &snapshot_builder::SnapshotConfig::PRODUCTION,
+            ) else {
+                continue;
+            };
+            let tx = runtime.tx.clone();
             let encoded = encode_server_packet(&packet);
             snapshot_bytes_this_tick += encoded.len();
             self.snapshot_stats
@@ -6923,25 +6423,30 @@ impl MatchState {
                 .record(encoded.len() as f32);
             self.snapshot_stats
                 .players_per_client
-                .record(packet_player_count(&packet) as f32);
+                .record(snapshot_builder::packet_player_count(&packet) as f32);
             self.snapshot_stats
                 .dynamic_bodies_per_client
-                .record(packet_dynamic_body_count(&packet) as f32);
+                .record(snapshot_builder::packet_dynamic_body_count(&packet) as f32);
             self.snapshot_stats
                 .vehicles_per_client
-                .record(packet_vehicle_count(&packet) as f32);
+                .record(snapshot_builder::packet_vehicle_count(&packet) as f32);
             if capturing {
+                let mut selection = selection;
                 selection.bytes = encoded.len() as u32;
                 selections.push(session_capture::Selection {
                     tick: self.server_tick,
                     player: recipient_id,
                     kind: session_capture::SelectionKind::Snapshot(selection),
                 });
+                recipient_inputs.push(recipient);
             }
             let _ = try_queue_packet(&tx, encoded, &self.io);
         }
         for selection in selections {
             self.note_selection(selection);
+        }
+        if capturing {
+            self.note_snapshot_inputs(server_wall_us, recipient_inputs);
         }
         self.snapshot_stats
             .bytes_per_tick
@@ -7097,72 +6602,16 @@ fn awake_dynamic_body_counts(arena: &PhysicsArena, player_centers: &[[f32; 3]]) 
     arena.awake_dynamic_body_counts(player_centers, HOT_DYNAMIC_NEAR_RADIUS_M)
 }
 
-fn distance_sq(a: [f32; 3], b: [f32; 3]) -> f32 {
-    let dx = a[0] - b[0];
-    let dy = a[1] - b[1];
-    let dz = a[2] - b[2];
-    dx * dx + dy * dy + dz * dz
-}
+use snapshot_builder::distance_sq;
 
-fn quantize_relative_q2_5mm(value_m: f32) -> Option<i16> {
-    let encoded = (value_m / 0.0025).round();
-    if !(i16::MIN as f32..=i16::MAX as f32).contains(&encoded) {
-        return None;
-    }
-    Some(encoded as i16)
-}
-
-fn quantize_relative_vec_q2_5mm(origin: [f32; 3], target: [f32; 3]) -> Option<(i16, i16, i16)> {
-    Some((
-        quantize_relative_q2_5mm(target[0] - origin[0])?,
-        quantize_relative_q2_5mm(target[1] - origin[1])?,
-        quantize_relative_q2_5mm(target[2] - origin[2])?,
-    ))
-}
-
-fn speed_sq3(v: [f32; 3]) -> f32 {
-    v[0] * v[0] + v[1] * v[1] + v[2] * v[2]
-}
-
-fn periodic_refresh_due(last_sent_tick: Option<u32>, current_tick: u32, interval: u32) -> bool {
-    last_sent_tick
-        .map(|last| current_tick.saturating_sub(last) >= interval)
-        .unwrap_or(true)
-}
-
+#[cfg(test)]
 fn dynamic_body_within_aoi(was_visible: bool, body_pos: [f32; 3], recipient_pos: [f32; 3]) -> bool {
-    let dist_sq = distance_sq(body_pos, recipient_pos);
-    if was_visible {
-        dist_sq <= DYNAMIC_BODY_AOI_EXIT_RADIUS_M * DYNAMIC_BODY_AOI_EXIT_RADIUS_M
-    } else {
-        dist_sq <= DYNAMIC_BODY_AOI_RADIUS_M * DYNAMIC_BODY_AOI_RADIUS_M
-    }
-}
-
-fn packet_player_count(packet: &ServerPacket) -> usize {
-    match packet {
-        ServerPacket::Snapshot(snapshot) => snapshot.player_states.len(),
-        ServerPacket::SnapshotV2(snapshot) => 1 + snapshot.remote_players.len(),
-        _ => 0,
-    }
-}
-
-fn packet_dynamic_body_count(packet: &ServerPacket) -> usize {
-    match packet {
-        ServerPacket::Snapshot(snapshot) => snapshot.dynamic_body_states.len(),
-        ServerPacket::SnapshotV2(snapshot) => {
-            snapshot.sphere_states.len() + snapshot.box_states.len()
-        }
-        _ => 0,
-    }
-}
-
-fn packet_vehicle_count(packet: &ServerPacket) -> usize {
-    match packet {
-        ServerPacket::Snapshot(snapshot) => snapshot.vehicle_states.len(),
-        ServerPacket::SnapshotV2(snapshot) => snapshot.vehicle_states.len(),
-        _ => 0,
-    }
+    snapshot_builder::dynamic_body_within_aoi(
+        &snapshot_builder::SnapshotConfig::PRODUCTION,
+        was_visible,
+        body_pos,
+        recipient_pos,
+    )
 }
 
 fn is_snapshot_packet_kind(kind: u8) -> bool {
@@ -7514,13 +6963,10 @@ mod tests {
             melee_flag_clear_tick: 0,
             spawn_protection_ends_at_tick: 0,
             respawn_at_ms: None,
-            visible_dynamic_bodies: HashSet::new(),
+            snapshot_interest: Default::default(),
             visible_batteries: HashSet::new(),
             battery_full_resync_pending: true,
             energy_gate: crate::energy_stream::EnergySendGate::default(),
-            last_sent_dynamic_body_pose: HashMap::new(),
-            last_sent_vehicle_tick: HashMap::new(),
-            last_sent_dynamic_tick: HashMap::new(),
         }
     }
 

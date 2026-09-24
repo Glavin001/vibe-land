@@ -12,7 +12,7 @@ use glam::{Quat, Vec3};
 
 use crate::types::{Camera, Pose};
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 pub struct InterestConfig {
     pub fov_margin_degrees: f32,
     pub lookahead_ticks: u32,
@@ -53,13 +53,13 @@ pub struct InterestView {
     pub predicted: Camera,
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct InterestTrack {
     relevant_until_tick: u32,
     was_relevant: bool,
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct InterestViewTrack {
     previous: Option<Camera>,
 }

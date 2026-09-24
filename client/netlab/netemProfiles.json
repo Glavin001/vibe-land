@@ -1,11 +1,17 @@
 {
-  "comment": "Single source of truth for netlab impairment profiles. delayMs is ONE-WAY per direction: the in-process PacketImpairment applies it to each direction separately, and scripts/netem.sh applies it on lo egress which both directions traverse once. lossPct is per-packet.",
+  "comment": "Single source of truth for netlab impairment profiles. delayMs is ONE-WAY per direction: the in-process PacketImpairment applies it to each direction separately, and scripts/netem.sh applies it on lo egress which both directions traverse once. lossPct is per-packet. Netlab v2 (docs/netlab-v2.md) reads the same table for its seeded link model; loopback, lan, cable, poor-mobile, lossy-wifi and bw-capped were added for it.",
   "profiles": {
     "wifi-good": { "delayMs": 25, "jitterMs": 8, "lossPct": 0.5 },
     "wifi-bad": { "delayMs": 40, "jitterMs": 20, "lossPct": 2, "reorderPct": 1 },
     "lte": { "delayMs": 90, "jitterMs": 35, "lossPct": 3 },
     "congested": { "delayMs": 60, "jitterMs": 15, "lossPct": 0, "rateMbit": 5, "limitPkts": 100 },
     "loss-burst": { "delayMs": 30, "jitterMs": 5, "lossPct": 0, "gemodelPct": { "p": 1, "r": 20 } },
-    "blackhole": { "delayMs": 0, "jitterMs": 0, "lossPct": 100 }
+    "blackhole": { "delayMs": 0, "jitterMs": 0, "lossPct": 100 },
+    "loopback": { "delayMs": 0.1, "jitterMs": 0, "lossPct": 0 },
+    "lan": { "delayMs": 1, "jitterMs": 0.3, "lossPct": 0, "rateMbit": 1000 },
+    "cable": { "delayMs": 12, "jitterMs": 3, "lossPct": 0.1, "rateMbit": 50 },
+    "poor-mobile": { "delayMs": 150, "jitterMs": 40, "lossPct": 3, "rateMbit": 1 },
+    "lossy-wifi": { "delayMs": 15, "jitterMs": 25, "lossPct": 1, "reorderPct": 0.5, "gemodelPct": { "p": 0.5, "r": 25 } },
+    "bw-capped": { "delayMs": 30, "jitterMs": 5, "lossPct": 0, "rateMbit": 0.5 }
   }
 }

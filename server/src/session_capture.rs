@@ -50,6 +50,14 @@ pub const WORLD_FILE: &str = "world.bin";
 pub const SEND_LOG_FILE: &str = "sendlog.bin";
 pub const TICKS_FILE: &str = "ticks.jsonl";
 pub const SELECTIONS_FILE: &str = "selections.jsonl";
+/// Per snapshot tick, each recipient's non-world snapshot inputs (acked
+/// input sequence, support, melee flag): with `world.bin` these are exactly
+/// what `snapshot_builder::build_recipient_snapshot` was called with.
+pub const SNAPSHOT_INPUTS_FILE: &str = "snapshot-inputs.jsonl";
+/// Written once when the capture opens: every connected player's snapshot
+/// interest memory and the match's handle tables, so an offline replay can
+/// start mid-match from the exact state the live selection was in.
+pub const SNAPSHOT_BASELINE_FILE: &str = "snapshot-baseline.json";
 pub const CAPTURE_META_FILE: &str = "session-capture.json";
 pub const CITY_DIR: &str = "city";
 pub const STATS_START_FILE: &str = "stats-start.json";
@@ -359,6 +367,34 @@ pub struct Selection {
     pub kind: SelectionKind,
 }
 
+/// One snapshot tick's recipient inputs (see `SNAPSHOT_INPUTS_FILE`).
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct SnapshotInputs {
+    pub tick: u32,
+    /// The SnapshotV2 wall-clock trailer stamped this tick.
+    #[serde(default)]
+    pub server_wall_us: Option<u32>,
+    pub recipients: Vec<crate::snapshot_builder::RecipientInput>,
+    /// Players whose snapshot flags carried FLAG_MELEEING this tick.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub meleeing: Vec<u32>,
+}
+
+/// The snapshot selection's state as the capture opened (see
+/// `SNAPSHOT_BASELINE_FILE`).
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct SnapshotBaseline {
+    /// The last completed tick when the capture opened; the first captured
+    /// tick is the next one.
+    pub tick: u32,
+    pub strict_snapshot_datagrams: bool,
+    pub snapshot_hz: u32,
+    pub interest: BTreeMap<u32, crate::snapshot_builder::RecipientInterest>,
+    pub player_handles: BTreeMap<u32, u8>,
+    pub vehicle_handles: BTreeMap<u32, u8>,
+    pub body_meta: BTreeMap<u32, crate::snapshot_builder::BodyMeta>,
+}
+
 /// Everything the tick hands the writer, once per tick.
 pub struct TickBundle {
     pub truth: TickTruth,
@@ -368,6 +404,7 @@ pub struct TickBundle {
 
 enum TickMessage {
     Tick(Box<TickBundle>),
+    SnapshotInputs(Box<SnapshotInputs>),
     Finish,
 }
 
@@ -375,6 +412,7 @@ struct TickFiles {
     world: BufWriter<std::fs::File>,
     ticks: BufWriter<std::fs::File>,
     selections: BufWriter<std::fs::File>,
+    snapshot_inputs: BufWriter<std::fs::File>,
 }
 
 /// The writer thread behind `world.bin`, `ticks.jsonl`, `selections.jsonl`.
@@ -385,6 +423,7 @@ pub struct TickWriter {
     pub dropped: u64,
     pub first_tick: Option<u32>,
     pub last_tick: Option<u32>,
+    pub dropped_inputs: u64,
 }
 
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -425,12 +464,21 @@ impl TickWriter {
             world,
             ticks: BufWriter::new(std::fs::File::create(dir.join(TICKS_FILE))?),
             selections: BufWriter::new(std::fs::File::create(dir.join(SELECTIONS_FILE))?),
+            snapshot_inputs: BufWriter::new(std::fs::File::create(dir.join(SNAPSHOT_INPUTS_FILE))?),
         };
         let (tx, rx) = sync_channel(capacity.max(1));
         let worker = std::thread::Builder::new()
             .name("session-capture".into())
             .spawn(move || run_tick_writer(files, rx))?;
-        Ok(Self { tx, worker: Some(worker), pushed: 0, dropped: 0, first_tick: None, last_tick: None })
+        Ok(Self {
+            tx,
+            worker: Some(worker),
+            pushed: 0,
+            dropped: 0,
+            first_tick: None,
+            last_tick: None,
+            dropped_inputs: 0,
+        })
     }
 
     /// Never blocks: a full queue drops the tick and counts it.
@@ -443,6 +491,16 @@ impl TickWriter {
                 self.last_tick = Some(tick);
             }
             Err(TrySendError::Full(_)) | Err(TrySendError::Disconnected(_)) => self.dropped += 1,
+        }
+    }
+
+    /// One snapshot tick's recipient inputs. Never blocks; a full queue
+    /// drops them and counts it (`dropped_inputs`), which makes the capture
+    /// unusable for byte-exact offline snapshot replay from that tick on.
+    pub fn push_snapshot_inputs(&mut self, inputs: SnapshotInputs) {
+        match self.tx.try_send(TickMessage::SnapshotInputs(Box::new(inputs))) {
+            Ok(()) => {}
+            Err(_) => self.dropped_inputs += 1,
         }
     }
 
@@ -480,12 +538,17 @@ fn run_tick_writer(mut files: TickFiles, rx: Receiver<TickMessage>) -> std::io::
                 }
                 written += 1;
             }
+            TickMessage::SnapshotInputs(inputs) => {
+                serde_json::to_writer(&mut files.snapshot_inputs, &*inputs)?;
+                files.snapshot_inputs.write_all(b"\n")?;
+            }
             TickMessage::Finish => break,
         }
     }
     files.world.flush()?;
     files.ticks.flush()?;
     files.selections.flush()?;
+    files.snapshot_inputs.flush()?;
     Ok(written)
 }
 
@@ -671,6 +734,7 @@ impl ActiveCapture {
         city: Option<vibe_land_destruction::netlab::capture::NetlabCapture>,
         stop: ServerMark,
     ) -> serde_json::Value {
+        let snapshot_inputs_dropped = self.ticks.dropped_inputs;
         let ticks = self.ticks.finish();
         let sends = self.send_log.finish();
         let city_meta = city.map(|capture| capture.finish());
@@ -683,6 +747,7 @@ impl ActiveCapture {
                 Ok(summary) => serde_json::to_value(summary).unwrap_or_default(),
                 Err(error) => serde_json::json!({"error": error.to_string()}),
             },
+            "snapshot_inputs_dropped": snapshot_inputs_dropped,
             "send_log": match &sends {
                 Ok(summary) => serde_json::to_value(summary).unwrap_or_default(),
                 Err(error) => serde_json::json!({"error": error.to_string()}),

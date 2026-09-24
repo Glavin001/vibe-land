@@ -43,7 +43,7 @@ pub struct BodySnapshotInput {
     pub flags: u8,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 pub struct EncoderConfig {
     pub sim_hz: u32,
     /// Chunk stream rate divider: encode/send every N sim ticks.
@@ -110,7 +110,7 @@ impl EncoderConfig {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 struct BodyTrack {
     classifier: Classifier,
     class: PhysicalClass,
@@ -128,14 +128,14 @@ struct BodyTrack {
 /// last_sent_pose). The packing loop visits every shared record for every
 /// client, so three maps meant three hashes of the same key per record per
 /// client -- at ~6800 bodies and 2 clients, ~40k lookups per send.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 struct ClientBodyState {
     track: InterestTrack,
     /// None until this body has actually been sent to this client.
     last_sent: Option<(u32, Pose)>,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
 struct ClientState {
     view: InterestViewTrack,
     /// Unspent ceiling banked for a burst, in bytes. Filled on the first send.
@@ -327,6 +327,51 @@ pub struct ChunkStreamEncoder {
     last_selection: ClientSelectionSummary,
 }
 
+/// The encoder's complete state, so an offline replay of a capture that
+/// began mid-match can resume the encoder exactly where the live one was
+/// (ledger, per-body classifiers, slots, baselines, topology sequence and
+/// every client's interest and sequence state) instead of starting it fresh
+/// and diverging on every byte that depends on history.
+///
+/// Excludes only what is derived from the manifest (per-structure chunk
+/// geometry) and the offline-only send audit.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub struct EncoderCheckpoint {
+    /// Bumped when the state layout changes.
+    pub format: u32,
+    pub config: EncoderConfig,
+    pub manifest_hash: [u8; 32],
+    ledger: CityLedger,
+    bodies: HashMap<u32, BodyTrack>,
+    entity_slots: HashMap<u32, u32>,
+    free_slots: Vec<u32>,
+    next_slot: u32,
+    active_order: Vec<u32>,
+    baseline_id: u16,
+    baseline_poses: HashMap<u32, Pose>,
+    last_baseline_tick: Option<u32>,
+    topo_seq: u32,
+    staged_topology: Vec<Vec<u8>>,
+    clients: HashMap<u64, ClientState>,
+    duplicate_body_records: u64,
+    last_selection: ClientSelectionSummary,
+}
+
+pub const ENCODER_CHECKPOINT_FORMAT: u32 = 1;
+
+impl EncoderCheckpoint {
+    /// Client ids the encoder was serving.
+    pub fn clients(&self) -> Vec<u64> {
+        let mut clients: Vec<u64> = self.clients.keys().copied().collect();
+        clients.sort_unstable();
+        clients
+    }
+
+    pub fn topo_seq(&self) -> u32 {
+        self.topo_seq
+    }
+}
+
 impl ChunkStreamEncoder {
     pub fn new(manifest: &DestructionManifest, config: EncoderConfig) -> Self {
         let structure_chunks = manifest
@@ -364,6 +409,66 @@ impl ChunkStreamEncoder {
             audit_clients: None,
             last_selection: ClientSelectionSummary::default(),
         }
+    }
+
+    /// A copy of the complete state; see [`EncoderCheckpoint`].
+    pub fn checkpoint(&self) -> EncoderCheckpoint {
+        EncoderCheckpoint {
+            format: ENCODER_CHECKPOINT_FORMAT,
+            config: self.config,
+            manifest_hash: self.manifest_hash,
+            ledger: self.ledger.clone(),
+            bodies: self.bodies.clone(),
+            entity_slots: self.entity_slots.clone(),
+            free_slots: self.free_slots.clone(),
+            next_slot: self.next_slot,
+            active_order: self.active_order.clone(),
+            baseline_id: self.baseline_id,
+            baseline_poses: self.baseline_poses.clone(),
+            last_baseline_tick: self.last_baseline_tick,
+            topo_seq: self.topo_seq,
+            staged_topology: self.staged_topology.clone(),
+            clients: self.clients.clone(),
+            duplicate_body_records: self.duplicate_body_records,
+            last_selection: self.last_selection,
+        }
+    }
+
+    /// The encoder a checkpoint describes, for the manifest it was taken on.
+    pub fn from_checkpoint(
+        manifest: &DestructionManifest,
+        checkpoint: EncoderCheckpoint,
+    ) -> Result<Self, String> {
+        if checkpoint.format != ENCODER_CHECKPOINT_FORMAT {
+            return Err(format!(
+                "encoder checkpoint format {} (this build reads {})",
+                checkpoint.format, ENCODER_CHECKPOINT_FORMAT
+            ));
+        }
+        if checkpoint.manifest_hash != manifest.hash() {
+            return Err("encoder checkpoint was taken against a different manifest".into());
+        }
+        let mut encoder = Self::new(manifest, checkpoint.config);
+        encoder.ledger = checkpoint.ledger;
+        encoder.bodies = checkpoint.bodies;
+        encoder.entity_slots = checkpoint.entity_slots;
+        encoder.free_slots = checkpoint.free_slots;
+        encoder.next_slot = checkpoint.next_slot;
+        encoder.active_order = checkpoint.active_order;
+        encoder.baseline_id = checkpoint.baseline_id;
+        encoder.baseline_poses = checkpoint.baseline_poses;
+        encoder.last_baseline_tick = checkpoint.last_baseline_tick;
+        encoder.topo_seq = checkpoint.topo_seq;
+        encoder.staged_topology = checkpoint.staged_topology;
+        encoder.clients = checkpoint.clients;
+        encoder.duplicate_body_records = checkpoint.duplicate_body_records;
+        encoder.last_selection = checkpoint.last_selection;
+        Ok(encoder)
+    }
+
+    /// The effective configuration (what `CityRuntime` built, env included).
+    pub fn config(&self) -> EncoderConfig {
+        self.config
     }
 
     /// What the most recent `client_datagrams` call decided for its client.
@@ -1313,6 +1418,57 @@ mod tests {
             !client.island(0, 1).expect("island is live").settled,
             "the client is still holding the body parked after a wake"
         );
+    }
+
+    /// A replay resumed from a checkpoint must emit exactly the bytes the
+    /// encoder it was taken from emits, message for message: that is what
+    /// lets Netlab v2 replay a capture that began mid-match.
+    #[test]
+    fn checkpoint_resumes_byte_identically() {
+        let manifest = manifest();
+        let mut live = ChunkStreamEncoder::new(&manifest, EncoderConfig::validated(60));
+        live.add_client(1);
+        live.ingest_tick(10, &[snapshot(0.0)], &promotion_output(), &[]);
+        let _ = live.take_topology_messages();
+        let _ = live.maybe_emit_baseline(10);
+        let shared = live.encode_send(10);
+        let _ = live.client_datagrams(1, close_camera(), &shared);
+
+        // Through the same serialisation the capture writes.
+        let json = serde_json::to_vec(&live.checkpoint()).expect("serialise");
+        let checkpoint: EncoderCheckpoint = serde_json::from_slice(&json).expect("deserialise");
+        assert_eq!(checkpoint.clients(), vec![1]);
+        let mut resumed =
+            ChunkStreamEncoder::from_checkpoint(&manifest, checkpoint).expect("restore");
+
+        for tick in 11..140u32 {
+            let input = [snapshot(tick as f32 * 0.05)];
+            for encoder in [&mut live, &mut resumed] {
+                encoder.ingest_tick(tick, &input, &DestructionTickOutput::default(), &[]);
+            }
+            assert_eq!(live.take_topology_messages(), resumed.take_topology_messages());
+            assert_eq!(live.maybe_emit_baseline(tick), resumed.maybe_emit_baseline(tick));
+            if tick % 2 == 0 {
+                let a = live.encode_send(tick);
+                let b = resumed.encode_send(tick);
+                assert_eq!(
+                    live.client_datagrams(1, close_camera(), &a),
+                    resumed.client_datagrams(1, close_camera(), &b),
+                    "datagrams diverged at tick {tick}"
+                );
+            }
+            assert_eq!(live.bootstrap_message(tick), resumed.bootstrap_message(tick));
+        }
+        assert_eq!(live.stats().topo_seq, resumed.stats().topo_seq);
+    }
+
+    #[test]
+    fn checkpoint_refuses_another_manifest() {
+        let manifest = manifest();
+        let encoder = ChunkStreamEncoder::new(&manifest, EncoderConfig::validated(60));
+        let mut checkpoint = encoder.checkpoint();
+        checkpoint.manifest_hash[0] ^= 1;
+        assert!(ChunkStreamEncoder::from_checkpoint(&manifest, checkpoint).is_err());
     }
 
     #[test]

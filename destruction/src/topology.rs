@@ -26,7 +26,7 @@ const FNV_PRIME: u32 = 16_777_619;
 const FNV_SEED_A: u32 = 0x811c_9dc5;
 const FNV_SEED_B: u32 = 0xdead_beef;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct LedgerIsland {
     /// Node indices within the structure, ascending.
     pub nodes: Vec<u32>,
@@ -36,7 +36,7 @@ pub struct LedgerIsland {
     pub settled: bool,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 struct LedgerStructure {
     bond_count: u32,
     /// Bit `i` set = bond index `i` alive.
@@ -44,7 +44,7 @@ struct LedgerStructure {
     islands: HashMap<u32, LedgerIsland>,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct CityLedger {
     structures: HashMap<u32, LedgerStructure>,
     broken_bonds_total: u64,

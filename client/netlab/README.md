@@ -1,5 +1,13 @@
 # netlab — netcode quality measurement harness
 
+> **Offline counterpart: [Netlab v2](../../docs/netlab-v2.md)** replays a paired
+> session bundle's frozen server truth through the production encoders, a
+> seeded link model (the profiles below, `netemProfiles.json`) and the
+> production client headless, and scores what the client would draw — same
+> data every run, no GPU, seconds per run. Its client stage lives in
+> [`v2/`](v2/). Use this harness (live, real Chrome + netem) to see a symptom
+> end to end; use Netlab v2 to price a netcode change on identical data.
+
 Turns "I see rubber-banding" into a reproducible run with numbers and a layer
 verdict: **frontend/render**, **network transport**, **backend/server sim**, or
 **client↔server sync logic**.

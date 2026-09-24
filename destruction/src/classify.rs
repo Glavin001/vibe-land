@@ -13,7 +13,7 @@ use crate::types::{
     FLAG_WAKE_EVENT,
 };
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize)]
 pub enum PhysicalClass {
     Quiescent,
     Ballistic,
@@ -21,7 +21,7 @@ pub enum PhysicalClass {
     ImpactBurst,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 pub struct ClassifierConfig {
     pub enter_ticks: u16,
     pub exit_ticks: u16,
@@ -54,7 +54,7 @@ impl Default for ClassifierConfig {
 /// and the send audit (which buckets them) read this, so the two cannot drift.
 pub const FRESH_FALL_TICKS: u16 = 30;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Classifier {
     class: PhysicalClass,
     quiet_ticks: u16,

@@ -157,6 +157,27 @@ impl MatchState {
                 }
             }
         };
+        // The snapshot selection's memory of every connected player, so an
+        // offline replay (Netlab v2) can resume it mid-match exactly.
+        let baseline = sc::SnapshotBaseline {
+            tick: self.server_tick,
+            strict_snapshot_datagrams: self.strict_snapshot_datagrams,
+            snapshot_hz: u32::from(self.physics.snapshot_hz()),
+            interest: self
+                .players
+                .iter()
+                .map(|(id, runtime)| (*id, runtime.snapshot_interest.clone()))
+                .collect(),
+            player_handles: self.player_handles.iter().map(|(k, v)| (*k, *v)).collect(),
+            vehicle_handles: self.vehicle_handles.iter().map(|(k, v)| (*k, *v)).collect(),
+            body_meta: self.dynamic_body_handles.iter().map(|(k, v)| (*k, *v)).collect(),
+        };
+        if let Err(error) = serde_json::to_vec(&baseline)
+            .map_err(std::io::Error::from)
+            .and_then(|bytes| std::fs::write(server_dir.join(sc::SNAPSHOT_BASELINE_FILE), bytes))
+        {
+            warn!(%error, "session capture: snapshot baseline not written");
+        }
         self.io.send_hub.attach(sink);
         let started = sc::ServerMark { tick: self.server_tick, unix_us: epoch_unix_us, mono_us: 0 };
         info!(
@@ -426,6 +447,32 @@ impl MatchState {
             })
             .collect();
         TickTruth { tick: self.server_tick, mono_us, unix_us, players, vehicles, bodies }
+    }
+
+    /// A snapshot tick's recipient inputs, if a capture is running.
+    pub(crate) fn note_snapshot_inputs(
+        &mut self,
+        server_wall_us: u32,
+        recipients: Vec<crate::snapshot_builder::RecipientInput>,
+    ) {
+        let tick = self.server_tick;
+        let meleeing: Vec<u32> = recipients
+            .iter()
+            .filter(|recipient| {
+                self.players
+                    .get(&recipient.id)
+                    .is_some_and(|runtime| tick < runtime.melee_flag_clear_tick)
+            })
+            .map(|recipient| recipient.id)
+            .collect();
+        if let Some(capture) = self.session_capture.as_mut() {
+            capture.ticks.push_snapshot_inputs(sc::SnapshotInputs {
+                tick,
+                server_wall_us: Some(server_wall_us),
+                recipients,
+                meleeing,
+            });
+        }
     }
 
     /// A send path's decision record for this tick, if a capture is running.

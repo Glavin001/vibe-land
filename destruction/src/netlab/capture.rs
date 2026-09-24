@@ -40,6 +40,10 @@ pub const META_FILE: &str = "capture.json";
 pub const CAMERAS_FILE: &str = "cameras.jsonl";
 pub const EVENTS_FILE: &str = "events.jsonl";
 pub const STATS_FILE: &str = "stats.jsonl";
+/// The encoder's state immediately before the first captured tick was
+/// ingested (zstd-compressed JSON of `EncoderCheckpoint`). With it a replay
+/// of a capture that began mid-match resumes the encoder exactly.
+pub const CHECKPOINT_FILE: &str = "encoder-checkpoint.json.zst";
 
 /// Ticks the writer may lag before the tick loop starts dropping samples:
 /// ten seconds at 60 Hz, ~6 GB of headroom at the largest tick size seen.
@@ -89,6 +93,7 @@ pub struct TickStats {
 
 enum Message {
     Tick { tick: u32, snapshots: Vec<BodySnapshotInput>, output: DestructionTickOutput },
+    Checkpoint(Box<crate::encoder::EncoderCheckpoint>),
     Cameras(String),
     Event(String),
     Stats(String),
@@ -96,6 +101,7 @@ enum Message {
 }
 
 struct Files {
+    dir: PathBuf,
     tape: TapeWriter,
     cameras: BufWriter<std::fs::File>,
     events: BufWriter<std::fs::File>,
@@ -113,6 +119,7 @@ pub struct NetlabCapture {
     /// Retry queue for sidecar lines when the channel is momentarily full;
     /// they are tiny and order matters more than immediacy.
     deferred: VecDeque<Message>,
+    checkpointed: bool,
 }
 
 impl NetlabCapture {
@@ -134,6 +141,7 @@ impl NetlabCapture {
         let overview = overview_camera(manifest);
         let tape = TapeWriter::create_zstd(&dir.join(TAPE_FILE), hz, manifest.hash(), overview)?;
         let files = Files {
+            dir: dir.to_path_buf(),
             tape,
             cameras: BufWriter::new(std::fs::File::create(dir.join(CAMERAS_FILE))?),
             events: BufWriter::new(std::fs::File::create(dir.join(EVENTS_FILE))?),
@@ -168,6 +176,7 @@ impl NetlabCapture {
             meta,
             pushed: 0,
             deferred: VecDeque::new(),
+            checkpointed: false,
         })
     }
 
@@ -230,6 +239,20 @@ impl NetlabCapture {
             line.push('\n');
             self.send_or_defer(Message::Event(line));
         }
+    }
+
+    /// The encoder state the first captured tick will be ingested into.
+    /// Call before the first `push_tick`; serialised on the writer thread.
+    /// A capture without one can only be replayed from a fresh encoder,
+    /// which is exact only when the capture began before the match did.
+    pub fn push_checkpoint(&mut self, checkpoint: crate::encoder::EncoderCheckpoint) {
+        self.checkpointed = true;
+        self.send_or_defer(Message::Checkpoint(Box::new(checkpoint)));
+    }
+
+    /// True until a checkpoint has been pushed.
+    pub fn needs_checkpoint(&self) -> bool {
+        !self.checkpointed
     }
 
     pub fn push_stats(&mut self, stats: &TickStats) {
@@ -311,6 +334,7 @@ fn run_writer(
             Message::Tick { tick, snapshots, output } => {
                 files.tape.push(tick, &snapshots, &output)?;
             }
+            Message::Checkpoint(checkpoint) => write_checkpoint(&files.dir, &checkpoint)?,
             Message::Cameras(lines) => files.cameras.write_all(lines.as_bytes())?,
             Message::Event(line) => files.events.write_all(line.as_bytes())?,
             Message::Stats(line) => files.stats.write_all(line.as_bytes())?,
@@ -321,6 +345,23 @@ fn run_writer(
     files.events.flush()?;
     files.stats.flush()?;
     files.tape.finish()
+}
+
+fn write_checkpoint(dir: &Path, checkpoint: &crate::encoder::EncoderCheckpoint) -> std::io::Result<()> {
+    let json = serde_json::to_vec(checkpoint)?;
+    let packed = zstd::encode_all(json.as_slice(), 3)?;
+    std::fs::write(dir.join(CHECKPOINT_FILE), packed)
+}
+
+/// Reads a capture's encoder checkpoint; `None` when it has none.
+pub fn read_checkpoint(dir: &Path) -> std::io::Result<Option<crate::encoder::EncoderCheckpoint>> {
+    let packed = match std::fs::read(dir.join(CHECKPOINT_FILE)) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    let json = zstd::decode_all(packed.as_slice())?;
+    Ok(Some(serde_json::from_slice(&json)?))
 }
 
 /// A camera looking down on the whole scene, for the tape header only.

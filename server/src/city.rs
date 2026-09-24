@@ -984,6 +984,12 @@ fn feed_encoder(
     output: &DestructionTickOutput,
 ) {
     if let Some(capture) = capture.as_mut() {
+        // Immediately before the first captured tick: the encoder's whole
+        // state, so an offline replay of a capture that began mid-match
+        // resumes the encoder exactly instead of starting it from nothing.
+        if capture.needs_checkpoint() {
+            capture.push_checkpoint(encoder.checkpoint());
+        }
         capture.push_tick(sim_tick, snapshots, output);
     }
     if live.is_some() {

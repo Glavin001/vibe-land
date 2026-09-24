@@ -6,7 +6,8 @@ description = "Destructible mini-city: scene assembly, manifest, and the streami
 publish = false
 
 [dependencies]
-glam = "0.27"
+# serde: the encoder checkpoint a mid-match netlab capture starts from.
+glam = { version = "0.27", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"

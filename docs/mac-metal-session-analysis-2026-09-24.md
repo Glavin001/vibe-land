@@ -451,6 +451,35 @@ paired) showing the acceptance criterion.
   - *Accept:* no CPU-bound frame > 33 ms at the first fracture of a session.
   - *Evidence:* CPU-bound frames at 4.6, 5.3, 9.1, 48.1 and 90.4 s.
 
+- [ ] **9. Client clock: lag grows with jitter and with how often it is read.**
+  - *Layer / owner:* client netcode, `netcode/src/clock_sync.rs` (item 2's
+    estimator).
+  - *Found by:* Netlab v2 (`docs/netlab-v2.md`), in the lab; not yet
+    confirmed live.
+  - *Evidence (measured in the lab):* on a 90 ms link the clock lags the
+    server by 84 ms with no jitter (expected), 141 ms with ±10 ms jitter read
+    every frame, 276 ms with ±35 ms (108 ms if read only on arrival). The
+    catch-up and hold are applied per read, not per unit of time.
+  - *Do:* make the slew and hold time-based so the result does not depend on
+    the read rate; re-run the Netlab jitter sweep.
+  - *Accept:* lag within one snapshot interval of the jitter-free lag at
+    ±35 ms jitter, independent of read rate; still 0 back-steps.
+- [ ] **10. Client: retired and out-of-range bodies stay drawn.**
+  - *Layer / owner:* client entity lifetime (`netcodeClient.ts`, the
+    dynamic-body renderers).
+  - *Evidence (measured, live renderer samples):* retired or out-of-range
+    cannonballs stay drawn at their last pose for up to 4 s; 60 of 759 live
+    body samples were bodies the server no longer had.
+  - *Accept:* no body drawn more than one staleness window after the server
+    stops having it.
+- [ ] **11. Client: a meteor's body after impact.**
+  - *Layer / owner:* `client/src/vfx/meteorPlacement.ts`, `MeteorLayer.tsx`.
+  - *Evidence (measured):* after impact the body rolls out of range while
+    the meteor layer holds it (43 m p99 from truth); once its flight is
+    forgotten the same body is drawn as a plain ball, 138 m p50 from truth.
+  - *Accept:* the post-impact meteor body is drawn within 1 m of truth
+    until it leaves interest, then removed.
+
 ### Transport policy
 
 The WebSocket fallback is to be disabled: WebTransport only, unless
