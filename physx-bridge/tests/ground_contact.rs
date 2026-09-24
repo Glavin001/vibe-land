@@ -476,7 +476,6 @@ fn assert_nothing_went_through(out: &Outcome) {
 /// `destruction/src/native_runtime.rs` does, two parked cars, a player.
 /// Fails on the current PhysX fork; see the module docs.
 #[test]
-#[ignore = "needs a PhysX package with fork commit 0ece3f22 (fix/correction-vehicle-ground); the installed package predates it -- run with --ignored against PHYSX_ROOT=<fixed package>"]
 fn bodies_on_the_ground_stay_on_it_while_the_city_fractures() {
     let out = run(true, true, true);
     eprintln!("{out:#?}");
@@ -486,7 +485,6 @@ fn bodies_on_the_ground_stay_on_it_while_the_city_fractures() {
 /// The same with the stage's reference pair lifecycle
 /// (`preserveUnchangedContactPairs = false`): not the experimental pair reuse.
 #[test]
-#[ignore = "needs a PhysX package with fork commit 0ece3f22 (fix/correction-vehicle-ground); the installed package predates it -- run with --ignored against PHYSX_ROOT=<fixed package>"]
 fn bodies_on_the_ground_stay_on_it_with_the_reference_pair_lifecycle() {
     let out = run(false, true, true);
     eprintln!("{out:#?}");
@@ -495,7 +493,6 @@ fn bodies_on_the_ground_stay_on_it_with_the_reference_pair_lifecycle() {
 
 /// The cars alone are enough.
 #[test]
-#[ignore = "needs a PhysX package with fork commit 0ece3f22 (fix/correction-vehicle-ground); the installed package predates it -- run with --ignored against PHYSX_ROOT=<fixed package>"]
 fn bodies_on_the_ground_stay_on_it_with_cars_and_no_player() {
     let out = run(true, true, false);
     eprintln!("{out:#?}");
@@ -506,7 +503,6 @@ fn bodies_on_the_ground_stay_on_it_with_cars_and_no_player() {
 /// corrected pass's bounds refresh sees their wheel shapes instead of the
 /// sleep commit.
 #[test]
-#[ignore = "needs a PhysX package with fork commit 0ece3f22 (fix/correction-vehicle-ground); the installed package predates it -- run with --ignored against PHYSX_ROOT=<fixed package>"]
 fn bodies_on_the_ground_stay_on_it_with_driving_cars() {
     let out = run_with(true, true, false, true);
     eprintln!("{out:#?}");

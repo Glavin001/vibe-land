@@ -410,7 +410,8 @@ paired) showing the acceptance criterion.
     see ticks.
 - [x] **5. Server physics: debris and meteors tunnel through the ground.**
   - *Fixed (2026-09-24) in the PhysX fork, commit 0ece3f22 on
-    fix/correction-vehicle-ground; not yet in the installed package.* Two
+    fix/correction-vehicle-ground, promoted as 63a60440 on
+    codex/cumetal-destruction and in the installed package.* Two
     fork GPU kernels (`setRigidDynamicGlobalPose`, used by the native sleep
     commit, and `refreshReboundShapeBounds`, run by the corrected re-solve)
     flagged every shape of a body as bounds-changed, including a Vehicle SDK
@@ -422,8 +423,7 @@ paired) showing the acceptance criterion.
     upstream does. Not CuMetal (every CuMetal toggle left it unchanged).
     Measured with the fixed package: ground_contact repros pass, systematic
     bench 0 bodies below -3 m in two runs (baseline 40), meteors drawn below
-    ground 150 -> 0. The car repro tests stay #[ignore]d until the installed
-    package includes the fix. CUDA was not run; the faulty code is backend
+    ground 150 -> 0. The car repro tests run in the default suite. CUDA was not run; the faulty code is backend
     independent (inferred to affect CUDA too).
   - *Status (2026-09-24, not fixed):* the cause is in the PhysX fork's
     native destruction stage (or CuMetal's execution of it), not in
