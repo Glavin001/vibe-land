@@ -113,6 +113,19 @@ void adapter_error(ExtStressPhysXError error, std::uint32_t node,
                message != nullptr ? message : "");
 }
 
+/// The gravity magnitude bodies in this scene actually fall under.
+///
+/// Read from the scene rather than from VIBE_WORLD_GRAVITY with a default of
+/// its own. The scene's gravity is WorldConfig::gravity, whose default is
+/// physx-bridge `world_gravity_magnitude()`. That is the single source. This
+/// file used to keep two copies of it, reading the env with a default of
+/// 20.0 each. They were "kept in sync" with the Rust side by hand, and they
+/// went stale when the world moved to 9.81. After that, every resting-load
+/// reference here (m*g*dt) was 2x the load bodies actually carry.
+float scene_gravity(const PxScene &scene) {
+  return scene.getGravity().magnitude();
+}
+
 } // namespace
 
 /// VIBE_CITY_QUIET_SKIP=0 forces the event diff to run every tick, so the
@@ -210,23 +223,12 @@ float contact_report_mass_ratio() {
 /// scene-wide value) is returned unchanged when the experiment is off, and is
 /// also the FLOOR when it is on: a featherweight shard must not end up with a
 /// threshold so low that it reports noise the flat value already suppressed.
-float chunk_contact_report_threshold(float mass, float flat) {
+/// `gravity` is the scene's (scene_gravity()).
+float chunk_contact_report_threshold(float mass, float flat, float gravity) {
   const float ratio = contact_report_mass_ratio();
   if (ratio <= 0.0f || !(mass > 0.0f)) {
     return flat;
   }
-  // Duplicated rather than calling world_gravity(), which is defined in a
-  // later translation-unit-local namespace; kept in sync by reading the same
-  // env with the same default.
-  static const float gravity = [] {
-    if (const char *raw = std::getenv("VIBE_WORLD_GRAVITY")) {
-      const float parsed = static_cast<float>(std::fabs(std::atof(raw)));
-      if (parsed > 0.0f) {
-        return parsed;
-      }
-    }
-    return 20.0f;
-  }();
   return std::max(flat, ratio * mass * gravity);
 }
 
@@ -1185,7 +1187,8 @@ void DestructionManager::register_filters(Slot &slot) {
       // experiment that can be turned off without a rebuild.
       body.body->setContactReportThreshold(
           chunk_contact_reports_
-              ? chunk_contact_report_threshold(body.mass, contact_report_threshold_)
+              ? chunk_contact_report_threshold(body.mass, contact_report_threshold_,
+                                               scene_gravity(scene_))
               : std::numeric_limits<float>::max());
       // Let debris go to sleep.
       //
@@ -3129,30 +3132,6 @@ constexpr float kContactSpikeRatio = 2.0f;
 /// impact does not get absorbed into the baseline before it can be detected.
 constexpr float kContactBaselineAlpha = 0.05f;
 
-/// World gravity, not Earth's.
-///
-/// Both halves of the resting-load model compare an impulse against what a body
-/// weighs at rest, so both have to use the gravity bodies actually fall under.
-/// note_contact_pair was fixed to read this and resolve_support_loads was not,
-/// so with the world at 20 m/s^2 the support side's reference load was 49% of
-/// the real one -- one load model, two gravities, differing by 2x.
-///
-/// The direction matters: too small a reference makes the weight-bearing gate
-/// fire on half the load it should, which makes a body carrying weight look
-/// unsupported, and an unsupported body is one freeze refuses to retire.
-float world_gravity() {
-  static const float value = [] {
-    if (const char *raw = std::getenv("VIBE_WORLD_GRAVITY")) {
-      const float parsed = static_cast<float>(std::fabs(std::atof(raw)));
-      if (parsed > 0.0f) {
-        return parsed;
-      }
-    }
-    return 20.0f;
-  }();
-  return value;
-}
-
 float contact_wake_ratio() {
   static const float value = [] {
     if (const char *raw = std::getenv("VIBE_CITY_CONTACT_WAKE_RATIO")) {
@@ -3212,7 +3191,9 @@ void DestructionManager::resolve_frozen_contact_wakes() {
     return;
   }
   const float ratio = contact_wake_ratio();
-  const float g_dt = world_gravity() * (last_dt_ > 0.0f ? last_dt_ : 1.0f / 60.0f);
+  // The scene's gravity, not a constant. See scene_gravity().
+  const float g_dt =
+      scene_gravity(scene_) * (last_dt_ > 0.0f ? last_dt_ : 1.0f / 60.0f);
   // Determinism costs a sort, but only over the entities that actually SPIKE.
   //
   // This used to collect every entity with contact load, sort it, and walk it
@@ -3421,8 +3402,14 @@ void DestructionManager::resolve_support_loads() {
     }
     return static_cast<std::uint64_t>(10);
   }();
-  // Was 9.81 while note_contact_pair used world gravity. See world_gravity().
-  const float g_dt = world_gravity() * (last_dt_ > 0.0f ? last_dt_ : 1.0f / 60.0f);
+  // Both halves of the resting-load model compare an impulse against what a
+  // body weighs at rest, so both use the gravity bodies actually fall under.
+  // This side once used 9.81 while note_contact_pair's side used the world's
+  // 20, so the support side's reference load was 49% of the real one. Too
+  // small a reference makes a body carrying weight look unsupported, and
+  // freeze refuses to retire an unsupported body. See scene_gravity().
+  const float g_dt =
+      scene_gravity(scene_) * (last_dt_ > 0.0f ? last_dt_ : 1.0f / 60.0f);
 
   // A/B switch for the lookup strategy. Same binary, same scene, same shot
   // plan -- the only way to compare these two honestly, because GPU
