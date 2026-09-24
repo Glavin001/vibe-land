@@ -402,6 +402,45 @@ paired) showing the acceptance criterion.
   - *Evidence:* sim rate 0.23–0.97x in 5 s windows; the client could only
     see ticks.
 - [ ] **5. Server physics: debris and meteors tunnel through the ground.**
+  - *Status (2026-09-24, not fixed):* the cause is in the PhysX fork's
+    native destruction stage (or CuMetal's execution of it), not in
+    vibe-land; reported to its owner.
+    - *Measured, bench world truth* (`20260924-081316-baseline-systematic`):
+      25 of the 27 below-ground balls were resting or rolling on the slab
+      (vy 0.000) and lost all support in one tick (vy -0.164 = -g*dt); the
+      other two went in while in flight. Of 46 ticks on which a resting ball
+      lost support, 42 were ticks whose physics step took 20-100 ms instead of
+      ~7 (a fracture's corrected re-solve; 2.9% of all ticks are that slow),
+      and balls hundreds of metres apart
+      often lost support on the same tick. No contact-buffer overflow (high
+      water 10,916 of 8.4 M contacts), no PhysX warnings.
+    - *Measured, isolated* (`physx-bridge/tests/ground_contact.rs`): the
+      city's slab, six hull walls, balls 30 m clear. With the city's two
+      parked cars present every awake ball on the slab loses support on
+      exactly the first corrected tick and falls to y = -300 m; sleeping
+      balls follow on later corrected ticks. Same with the stage's reference
+      pair lifecycle (`preserve_unchanged_contact_pairs = false`), which also
+      drops 20 fragments. Without the cars: six corrected ticks, nothing lost.
+      A player capsule alone does not trigger it; parked or driving cars do.
+    - *Measured, production scale* (systematic bench, same build): with the
+      cars (`20260924-100646-item5`) 55 bodies went below -3 m (27 balls, 28
+      chunk bodies); with `VIBE_CITY_VEHICLES=0`
+      (`20260924-101511-item5-nocars`) 0. So the chunk bodies are the same
+      fault. (Without cars the drive step does not run, so its settled-phase
+      numbers are not comparable.)
+    - *Measured, settled cost:* bodies retired at the floor are still
+      simulated by the stage. With `VIBE_CITY_NATIVE_SLEEP_THRESHOLD=0.05`
+      (`20260924-102225-item5-sleep005`) the idle phase has 12 awake bodies,
+      exactly the 12 retired below the floor, against 636 at the default;
+      still 0% of idle ticks with nothing awake, and idle tick p50 7.05 ms
+      against 7.74. The fallers are what stops the city sleeping completely;
+      whether the stage would then skip its pipeline is unmeasured.
+    - *Landed here:* the first below-ground tick of every chunk body and
+      fired ball/meteor is logged with velocity, the tick before, support,
+      static contact reports (balls) and the stage's frame/corrected passes;
+      bodies are retired at a floor 5 m under the lowest ground
+      (`VIBE_RETIRE_FLOOR_DEPTH_M`): chunk bodies as a retired island,
+      balls as an expired ball. The PhysX chunk body is left to the stage.
   - *Layer / owner:* server physics and native destruction.
   - *Do:*
     - Find why resting bodies sink at 8–10 m/s.

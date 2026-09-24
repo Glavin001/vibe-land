@@ -1100,6 +1100,10 @@ pub struct CityRuntime {
     /// what happened here.
     capture: Option<NetlabCapture>,
     sim_hz: u32,
+    /// Top of the scene's lowest static surface, which the backend measures
+    /// bodies going through the ground against. Kept here because a reset
+    /// replaces the backend and the new one must be told again.
+    ground_y: Option<f32>,
     backend: CityBackend,
     encoder: ChunkStreamEncoder,
     pub manifest: Arc<DestructionManifest>,
@@ -1177,6 +1181,7 @@ impl CityRuntime {
             demolition_seed: 0x5eed_1234_abcd_ef01,
             tick_window: CityTickWindow::default(),
             sim_hz,
+            ground_y: None,
             backend,
             encoder,
             manifest,
@@ -1427,6 +1432,17 @@ impl CityRuntime {
         self.encoder.wire_version()
     }
 
+    /// Where the ground is, for the backend's below-ground log and retire
+    /// floor (`vibe_land_destruction::ground_watch`). Only the native backend
+    /// uses it today; the others ignore it.
+    pub fn set_ground_reference(&mut self, ground_y: Option<f32>) {
+        self.ground_y = ground_y;
+        #[cfg(feature = "native-destruction")]
+        if let CityBackend::Native(backend) = &mut self.backend {
+            backend.set_ground(ground_y);
+        }
+    }
+
     /// Rebuild the city undamaged, preserving the client list.
     ///
     /// Every destructible and its PhysX actors are released before the scene is
@@ -1502,6 +1518,9 @@ impl CityRuntime {
         // never drawn: the city simply stops breaking, with no error, no
         // sequence gap and no dropped packet anywhere. Observed live.
         rebuilt.set_wire_version(self.wire_version());
+        // Likewise the ground: a rebuilt backend starts without one, and would
+        // stream bodies through the floor to the 1 km bound again.
+        rebuilt.set_ground_reference(self.ground_y);
         for client in clients {
             rebuilt.add_client(client);
         }

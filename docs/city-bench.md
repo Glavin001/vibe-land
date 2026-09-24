@@ -132,7 +132,9 @@ destruction level (active bodies; broken-bond fraction).
     snapshot bytes and unchanged snapshot bodies (`stream.ts`), the server's
     city selection (sent share of candidates, budget used).
 - **Physics sanity**: bodies below y = -3 m (meteors/cannonballs in
-  `world.bin`, city chunk bodies in the stream), "left the world" log lines.
+  `world.bin`, city chunk bodies in the stream), "left the world" log lines,
+  and the server's "went through the ground" (first below-ground tick) and
+  "retired at the floor" lines (5 m under the lowest ground).
 - **Build identity**: vibe-land commit, the server fingerprint, the PhysX SDK
   commit the server logs, the cuda-metal checkout head and the packaged
   `libcumetal.dylib` time, CuMetal warnings, machine, client renderer.

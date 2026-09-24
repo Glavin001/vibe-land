@@ -252,6 +252,12 @@ def server_metrics(server_dir, stats_samples, window, levels, tl, server_log_tex
     out["destruction"] = {**end, "peak_active_bodies": peak_active, "total_bonds": total_bonds,
                           "broken_bond_pct": pct(end.get("broken_bonds") or 0, total_bonds, 1) if total_bonds else None}
     out["left_the_world_log_lines"] = server_log_text.count("left the world")
+    # Bodies retired at the floor under the ground (item 5), and bodies whose
+    # first below-ground tick was logged: chunk bodies from the destruction
+    # runtime, fired balls and meteors from the arena. Both logs are bounded,
+    # so these are lower bounds past 32 of a kind.
+    out["retired_at_floor_log_lines"] = server_log_text.count("retired at the floor")
+    out["went_through_ground_log_lines"] = server_log_text.count("went through the ground")
     # Tick cost against destruction level.
     by_active, by_broken = collections.defaultdict(list), collections.defaultdict(list)
     for t in ticks:
@@ -806,7 +812,8 @@ def write_md(report, path):
     d = s.get("destruction") or {}
     L.append(f"- Destruction reached: {d.get('broken_bonds')} of {d.get('total_bonds')} bonds broken ({fmt(d.get('broken_bond_pct'), 1)}%), "
              f"{d.get('chunk_bodies')} chunk bodies, peak {d.get('peak_active_bodies')} active bodies; r(tick, active bodies) = {fmt(s.get('r_tick_vs_active_bodies'))}; "
-             f"bodies below -3 m: {s.get('bodies_below_ground')}; 'left the world' log lines: {s.get('left_the_world_log_lines')}.")
+             f"bodies below -3 m: {s.get('bodies_below_ground')}; 'left the world' log lines: {s.get('left_the_world_log_lines')}; "
+             f"went through the ground (first tick logged): {s.get('went_through_ground_log_lines')}; retired at the floor: {s.get('retired_at_floor_log_lines')}.")
     L += ["", "Tick cost against destruction level:", ""]
     L.append(table(s.get("by_destruction_level") or [], ["by", "bucket", "ticks", "tick_p50", "tick_p95", "tick_max", "pct_over_16_7ms"]))
     L += ["", "## Clients at a glance", ""]

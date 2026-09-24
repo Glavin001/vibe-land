@@ -3190,6 +3190,10 @@ async fn run_match_loop(
                 // the session config, so every client that joins has already
                 // agreed to this layout.
                 runtime.set_wire_version(city::city_wire_version(&match_id));
+                // Where the ground is, so bodies that go through it are logged
+                // and retired at a floor under it instead of falling to the
+                // 1 km world bound.
+                runtime.set_ground_reference(arena.lowest_ground_y());
                 // The engine may refuse a step only on the native stage, and
                 // the arena must learn that from the city it actually opened.
                 arena.set_tolerate_rejected_steps(runtime.backend_name() == "native");

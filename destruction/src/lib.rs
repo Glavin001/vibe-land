@@ -25,6 +25,7 @@ pub mod encoder;
 pub mod equilibrium;
 pub mod fingerprint;
 pub mod freeze;
+pub mod ground_watch;
 pub mod ids;
 pub mod interest;
 pub mod manifest;

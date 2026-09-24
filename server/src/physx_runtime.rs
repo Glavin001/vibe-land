@@ -313,6 +313,18 @@ pub struct PhysxPhysicsArena {
     launched_balls: VecDeque<LaunchedBall>,
     /// Radius the balls were launched with, for the travel clamp.
     ball_radius_m: f32,
+    /// Top of the lowest static surface authored into the world (terrain
+    /// sample or static box), if any. The ground bodies are measured against.
+    lowest_ground_y: Option<f32>,
+    /// Fired balls and meteors through the ground: first-tick forensics and
+    /// the retire floor. See `vibe_land_destruction::ground_watch`.
+    ball_ground: vibe_land_destruction::ground_watch::GroundWatch,
+    /// Each live fired ball's pose, velocity and whether it reported a contact
+    /// with static geometry, as of the last step: the "tick before" of a
+    /// below-ground report.
+    ball_ground_previous: HashMap<u32, ([f32; 3], [f32; 3], bool)>,
+    /// Below-ground and retire lines logged; bounded.
+    ball_ground_logged: u32,
     /// How many times a ball was held at a surface it would have skipped.
     balls_clamped: u64,
     /// Counts accepted steps, which is what a ball's lifetime is measured in.
@@ -382,6 +394,13 @@ impl PhysxPhysicsArena {
             next_static_id: 1,
             next_dynamic_id: 1,
             ball_radius_m: 0.0,
+            lowest_ground_y: None,
+            ball_ground: vibe_land_destruction::ground_watch::GroundWatch::new(
+                None,
+                vibe_land_destruction::ground_watch::retire_depth_m(),
+            ),
+            ball_ground_previous: HashMap::new(),
+            ball_ground_logged: 0,
             balls_clamped: 0,
             ball_pool: Vec::new(),
             ball_cursor: 0,
@@ -1134,6 +1153,7 @@ impl PhysxPhysicsArena {
             }
         }
         self.snapshots_valid = true;
+        self.watch_launched_balls_ground();
         let before_players = std::time::Instant::now();
         self.refresh_players();
         self.last_refresh_players_ms =
@@ -1512,6 +1532,9 @@ impl PhysxPhysicsArena {
             return None;
         }
         self.snapshots_valid = false;
+        // A pool id names a new ball now; its ground record starts clean.
+        self.ball_ground.forget(entity);
+        self.ball_ground_previous.remove(&id);
         self.dynamic.insert(
             id,
             DynamicMeta {
@@ -1719,6 +1742,120 @@ impl PhysxPhysicsArena {
                     "ball trace"
                 );
             }
+        }
+    }
+
+    /// Top of the lowest static surface in the world, if there is any.
+    pub fn lowest_ground_y(&self) -> Option<f32> {
+        self.lowest_ground_y
+    }
+
+    /// Below this a fired ball is retired: a few metres under the lowest
+    /// ground (`VIBE_RETIRE_FLOOR_DEPTH_M`, default 5). Negative infinity in a
+    /// world with no static geometry.
+    pub fn retire_floor_y(&self) -> f32 {
+        self.ball_ground.floor_y()
+    }
+
+    /// Fired balls and meteors retired at the floor, cumulative.
+    pub fn balls_retired_below_floor(&self) -> u64 {
+        self.ball_ground.retired_total
+    }
+
+    /// Distinct fired balls and meteors seen through the ground, cumulative.
+    pub fn balls_below_ground(&self) -> u64 {
+        self.ball_ground.below_ground_total
+    }
+
+    fn note_ground_surface(&mut self, top_y: f32) {
+        if !top_y.is_finite() {
+            return;
+        }
+        let lowest = self.lowest_ground_y.map_or(top_y, |y| y.min(top_y));
+        self.lowest_ground_y = Some(lowest);
+        self.ball_ground
+            .set_ground(Some(lowest), vibe_land_destruction::ground_watch::retire_depth_m());
+    }
+
+    /// Fired balls and meteors that went through the ground this step.
+    ///
+    /// The first tick one is through is logged with what tells the causes
+    /// apart: its velocity and the tick before's, whether it reported a contact
+    /// with static geometry on either tick, and the native stage's account of
+    /// the step (a corrected re-solve is the measured trigger on Metal; see
+    /// docs/mac-metal-session-analysis-2026-09-24.md, item 5). One that
+    /// crosses the retire floor is retired through the same path as a ball
+    /// whose lifetime ran out: removed from the scene and from the snapshot,
+    /// which is how every client learns a ball is gone.
+    fn watch_launched_balls_ground(&mut self) {
+        use vibe_land_destruction::ground_watch::GroundVerdict;
+        if self.launched_balls.is_empty() {
+            self.ball_ground_previous.clear();
+            return;
+        }
+        let mut retire: Vec<u32> = Vec::new();
+        let mut seen: Vec<u32> = Vec::with_capacity(self.launched_balls.len());
+        for ball in &self.launched_balls {
+            let entity = NS_DYNAMIC | (ball.id & ID_MASK);
+            let Some(body) = self.cached_body_snapshots.iter().find(|b| b.entity_id == entity) else {
+                continue;
+            };
+            seen.push(ball.id);
+            let p = body.pose.position;
+            let v = body.linear_velocity;
+            let touching_static = self.contact_events.iter().any(|event| {
+                (event.entity_a == entity && event.entity_b & 0xf000_0000 == NS_STATIC)
+                    || (event.entity_b == entity && event.entity_a & 0xf000_0000 == NS_STATIC)
+            });
+            let previous = self.ball_ground_previous.get(&ball.id).copied();
+            match self.ball_ground.observe(entity, p.y) {
+                GroundVerdict::Above | GroundVerdict::BelowGround { first: false } => {}
+                GroundVerdict::BelowGround { first: true } => {
+                    if self.ball_ground_logged < 32 {
+                        self.ball_ground_logged += 1;
+                        let radius = self.dynamic.get(&ball.id).map_or(0.0, |m| m.half_extents[0]);
+                        let (from, from_velocity, was_touching) = previous
+                            .map(|(pp, pv, t)| (format!("{pp:.2?}"), format!("{pv:.2?}"), t.to_string()))
+                            .unwrap_or_else(|| ("unseen".into(), "unseen".into(), "unknown".into()));
+                        tracing::warn!(
+                            id = ball.id,
+                            tick = self.launch_tick,
+                            radius,
+                            sleeping = body.sleeping,
+                            pos = ?[p.x, p.y, p.z],
+                            vel = ?[v.x, v.y, v.z],
+                            prev_pos = %from,
+                            prev_vel = %from_velocity,
+                            static_contact_now = touching_static,
+                            static_contact_before = %was_touching,
+                            stage = %stage_status_summary(&self.world),
+                            "fired ball went through the ground"
+                        );
+                    }
+                }
+                GroundVerdict::Retire => {
+                    if self.ball_ground_logged < 64 {
+                        self.ball_ground_logged += 1;
+                        tracing::warn!(
+                            id = ball.id,
+                            tick = self.launch_tick,
+                            floor = self.ball_ground.floor_y(),
+                            pos = ?[p.x, p.y, p.z],
+                            vel = ?[v.x, v.y, v.z],
+                            "fired ball retired at the floor under the ground"
+                        );
+                    }
+                    retire.push(ball.id);
+                }
+            }
+            self.ball_ground_previous
+                .insert(ball.id, ([p.x, p.y, p.z], [v.x, v.y, v.z], touching_static));
+        }
+        self.ball_ground_previous.retain(|id, _| seen.contains(id));
+        for id in retire {
+            self.launched_balls.retain(|ball| ball.id != id);
+            self.ball_ground_previous.remove(&id);
+            self.retire_launched_ball(id);
         }
     }
 
@@ -1935,6 +2072,8 @@ impl WorldDocumentArena for PhysxPhysicsArena {
                 physx_samples.push(heights[(z, x)]);
             }
         }
+        let lowest_sample = heights.iter().copied().fold(f32::INFINITY, f32::min);
+        self.note_ground_surface(center.y + lowest_sample);
         let corner = Vector3::new(center.x - scale.x * 0.5, center.y, center.z - scale.z * 0.5);
         self.world
             .add_heightfield(
@@ -1964,6 +2103,7 @@ impl WorldDocumentArena for PhysxPhysicsArena {
         half_extents: Vector3<f32>,
         _user_data: u128,
     ) {
+        self.note_ground_surface(center.y + box_top_extent(rotation, half_extents));
         let logical = self.next_static_id;
         self.next_static_id = self.next_static_id.saturating_add(1);
         self.world
@@ -2173,6 +2313,42 @@ fn env_u32(name: &str, default: u32) -> Result<u32> {
     }
 }
 
+/// Half the vertical extent of a box with these half extents, rotated by the
+/// quaternion `[x, y, z, w]`: how far its top face (or highest corner) rises
+/// above its centre.
+fn box_top_extent(rotation: [f32; 4], half_extents: Vector3<f32>) -> f32 {
+    let [x, y, z, w] = rotation;
+    let norm = (x * x + y * y + z * z + w * w).sqrt();
+    if !(norm > 0.0) {
+        return half_extents.y;
+    }
+    let (x, y, z, w) = (x / norm, y / norm, z / norm, w / norm);
+    // Second row of the rotation matrix: the world-y component of each local
+    // axis.
+    let r10 = 2.0 * (x * y + w * z);
+    let r11 = 1.0 - 2.0 * (x * x + z * z);
+    let r12 = 2.0 * (y * z - w * x);
+    r10.abs() * half_extents.x + r11.abs() * half_extents.y + r12.abs() * half_extents.z
+}
+
+/// The native stage's account of the last step, for forensics lines.
+#[cfg(feature = "native-destruction")]
+fn stage_status_summary(world: &bridge::World) -> String {
+    match world.native_last_status() {
+        Ok(status) if status.frame != 0 => format!(
+            "frame {} corrected_passes {} broken_bonds {} error {}",
+            status.frame, status.correction_passes, status.broken_bonds, status.error
+        ),
+        Ok(_) => "no native stage".to_string(),
+        Err(error) => format!("unreadable ({error})"),
+    }
+}
+
+#[cfg(not(feature = "native-destruction"))]
+fn stage_status_summary(_world: &bridge::World) -> String {
+    "no native stage".to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::{Mutex, MutexGuard, OnceLock};
@@ -2280,6 +2456,85 @@ mod tests {
 
     fn idle_input() -> InputCmd {
         InputCmd::default()
+    }
+
+    /// A fired ball that has gone through the ground is retired at the floor a
+    /// few metres under it, through the same removal as an expired ball: gone
+    /// from the scene and from the snapshot every client reads. Nothing above
+    /// the floor is retired -- not a ball resting on the ground, and not one
+    /// already under the ground but still above the floor.
+    #[test]
+    fn a_ball_through_the_ground_is_retired_at_the_floor_and_not_before() {
+        let _guard = gpu_test_guard();
+        let mut arena = PhysxPhysicsArena::new(MoveConfig::default()).unwrap();
+        // A slab 1 m thick, its top at y = 0, so a ball can be placed under it.
+        WorldDocumentArena::add_static_cuboid(
+            &mut arena,
+            Vector3::new(0.0, -0.5, 0.0),
+            [0.0, 0.0, 0.0, 1.0],
+            Vector3::new(50.0, 0.5, 50.0),
+            1,
+        );
+        assert_eq!(arena.lowest_ground_y(), Some(0.0));
+        let floor = arena.retire_floor_y();
+        let depth = vibe_land_destruction::ground_watch::retire_depth_m();
+        assert!((floor + depth).abs() < 1e-5, "floor {floor} is not {depth} m under the ground");
+
+        let resting = arena
+            .launch_meteor(Vector3::new(0.0, 0.5, 0.0), Vector3::zeros(), 0.5, 100.0, 100_000)
+            .unwrap();
+        // Under the slab (bottom at -1 m) and 2 m above the floor, falling.
+        let under = arena
+            .launch_meteor(Vector3::new(20.0, floor + 2.0, 0.0), Vector3::zeros(), 0.5, 100.0, 100_000)
+            .unwrap();
+        let ids = |arena: &PhysxPhysicsArena| -> Vec<u32> {
+            arena.snapshot_dynamic_bodies().iter().map(|body| body.0).collect()
+        };
+
+        // Negative: both are above the floor, so both are kept and published.
+        for _ in 0..5 {
+            arena.step_vehicles_and_dynamics(1.0 / 60.0);
+        }
+        let live = ids(&arena);
+        assert!(live.contains(&resting), "the resting ball was retired: {live:?}");
+        assert!(live.contains(&under), "a ball above the floor was retired: {live:?}");
+        assert_eq!(arena.balls_retired_below_floor(), 0);
+        assert_eq!(arena.balls_below_ground(), 1, "the ball under the slab is through the ground");
+
+        // 2 m of free fall is ~0.64 s. A second is past the floor for certain.
+        for _ in 0..60 {
+            arena.step_vehicles_and_dynamics(1.0 / 60.0);
+        }
+        let live = ids(&arena);
+        assert!(!live.contains(&under), "the ball below the floor is still published: {live:?}");
+        assert!(live.contains(&resting), "the resting ball was retired: {live:?}");
+        assert_eq!(arena.launched_ball_count(), 1);
+        assert_eq!(arena.balls_retired_below_floor(), 1);
+        let body = arena
+            .world
+            .body_snapshots()
+            .unwrap()
+            .into_iter()
+            .find(|body| body.entity_id == NS_DYNAMIC | (resting & ID_MASK))
+            .expect("resting ball");
+        assert!((body.pose.position.y - 0.5).abs() < 0.05, "the resting ball moved: {:?}", body.pose.position);
+        assert!(
+            arena.world.body_snapshots().unwrap().iter().all(|b| b.entity_id != NS_DYNAMIC | (under & ID_MASK)),
+            "the retired ball is still in the scene"
+        );
+    }
+
+    #[test]
+    fn a_box_top_is_measured_after_its_rotation() {
+        let half = Vector3::new(3.0, 0.5, 2.0);
+        assert!((box_top_extent([0.0, 0.0, 0.0, 1.0], half) - 0.5).abs() < 1e-5);
+        // 90 degrees about z: the local x axis points up.
+        let s = std::f32::consts::FRAC_1_SQRT_2;
+        assert!((box_top_extent([0.0, 0.0, s, s], half) - 3.0).abs() < 1e-4);
+        // 90 degrees about x: the local z axis points up.
+        assert!((box_top_extent([s, 0.0, 0.0, s], half) - 2.0).abs() < 1e-4);
+        // Yaw alone changes nothing.
+        assert!((box_top_extent([0.0, s, 0.0, s], half) - 0.5).abs() < 1e-4);
     }
 
     #[test]

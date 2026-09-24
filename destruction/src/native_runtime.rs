@@ -29,6 +29,7 @@ use vibe_netcode::destruction_backend::{
 };
 
 use crate::encoder::BodySnapshotInput;
+use crate::ground_watch::{GroundVerdict, GroundWatch};
 use crate::ids;
 use crate::manifest::DestructionManifest;
 use crate::types::NamedSpan;
@@ -267,6 +268,11 @@ pub struct NativeCityDestruction {
     /// rubble, not a fresh fragment. That is the victim. Whatever ejects it
     /// has to have arrived; this is the list to look in.
     born_this_tick: Vec<(u32, [f32; 3])>,
+    /// First below-ground tick of each body, and the retire floor under the
+    /// ground. See `ground_watch`.
+    ground: GroundWatch,
+    /// Below-ground and retire lines already logged; bounded like the escapes.
+    ground_logged: u32,
     /// Consecutive ticks the stage has rejected without ever reaching frame 1.
     ///
     /// The difference between "this tick did not complete" and "this stage
@@ -316,6 +322,66 @@ struct TrackedBody {
     last_tick: u64,
     position: [f32; 3],
     speed: f32,
+    /// Last tick's linear velocity: with this tick's, the vertical
+    /// acceleration says whether the body still had support.
+    velocity: [f32; 3],
+}
+
+/// The first tick a body's centre was through the ground, logged once per body
+/// and bounded by the caller. What distinguishes the candidate causes: a body
+/// that was resting (vertical velocity ~0 the tick before) and is now
+/// accelerating at gravity lost its support in place; one that arrived fast
+/// tunnelled; one that is young was created inside the ground. The stage's own
+/// account of the tick (a corrected pass, bonds broken) goes with it.
+#[allow(clippy::too_many_arguments)]
+fn log_below_ground(
+    entity: u32,
+    age_ticks: Option<u64>,
+    position: [f32; 3],
+    velocity: [f32; 3],
+    previous: Option<([f32; 3], [f32; 3])>,
+    node_count: u32,
+    ground_y: f32,
+    status: &NativeStatus,
+) {
+    let (from, from_velocity) = match previous {
+        Some((p, v)) => (
+            format!("({:.2}, {:.2}, {:.2})", p[0], p[1], p[2]),
+            format!("({:.2}, {:.2}, {:.2})", v[0], v[1], v[2]),
+        ),
+        None => ("unseen".to_string(), "unseen".to_string()),
+    };
+    let support = match previous {
+        Some((_, v)) => {
+            // One tick of gravity is 9.81/60 = 0.164 m/s.
+            let dvy = velocity[1] - v[1];
+            if v[1].abs() < 0.05 && dvy < -0.12 {
+                "lost this tick (was at rest, now in free fall)"
+            } else if dvy < -0.12 {
+                "none (accelerating at gravity)"
+            } else {
+                "still pushing back"
+            }
+        }
+        None => "unknown (first tick seen)",
+    };
+    eprintln!(
+        "[destruction] body {entity:#x} went through the ground (y {ground_y:.1}) at age {age} ticks: \
+         at ({:.2}, {:.2}, {:.2}) moving ({:.2}, {:.2}, {:.2}); the tick before at {from} moving \
+         {from_velocity}; support {support}; {node_count} chunk(s); stage frame {} corrected passes {} \
+         broken bonds {} contacts {}",
+        position[0],
+        position[1],
+        position[2],
+        velocity[0],
+        velocity[1],
+        velocity[2],
+        status.frame,
+        status.correction_passes,
+        status.broken_bonds,
+        status.normal_contacts,
+        age = age_ticks.map_or("?".to_string(), |a| a.to_string()),
+    );
 }
 
 /// The stage's own status on the tick a body was ejected.
@@ -507,8 +573,24 @@ materials={} reserved_pairs={} iterations={} tolerance={:e}",
             worst_velocity_jump: 0.0,
             explosions: Vec::new(),
             born_this_tick: Vec::new(),
+            ground: GroundWatch::new(None, crate::ground_watch::retire_depth_m()),
+            ground_logged: 0,
             stuck_at_frame_zero: 0,
         })
+    }
+
+    /// Tell the runtime where the ground is: the top of the scene's lowest
+    /// static surface, or None for no ground. Bodies whose centre goes below
+    /// it are logged once, and a body that falls a few metres further
+    /// (`VIBE_RETIRE_FLOOR_DEPTH_M`, default 5) is retired: announced to
+    /// clients as a retired island and never streamed again.
+    ///
+    /// The PhysX body itself is left alone. It belongs to the stage, and every
+    /// way of taking a stage-owned body out of the simulation has broken the
+    /// stage (see the bridge's `native_settle_ticks`). A retired body keeps
+    /// falling where nothing can meet it.
+    pub fn set_ground(&mut self, ground_y: Option<f32>) {
+        self.ground.set_ground(ground_y, crate::ground_watch::retire_depth_m());
     }
 
     /// Observe the step the host just completed and produce the tick's events.
@@ -613,6 +695,12 @@ no observation this tick",
             let entry = batches
                 .get_mut(&event.structure_id)
                 .expect("just inserted");
+            if event.kind == 0 {
+                // A promotion restates the body to clients, so a body retired
+                // at the floor under this id is judged afresh from here.
+                self.ground
+                    .forget(ids::body_entity(event.structure_id, event.island_id));
+            }
             match event.kind {
                 0 => entry.promoted_islands.push(IslandPromotion {
                     structure_id: event.structure_id,
@@ -704,6 +792,14 @@ no observation this tick",
             if snap.kinematic {
                 continue;
             }
+            // Retired at the floor: clients were told it is gone, and nothing
+            // about it -- pose, settle or wake -- is news to anyone.
+            if self
+                .ground
+                .is_retired(ids::body_entity(snap.structure_id, snap.island_id))
+            {
+                continue;
+            }
             if snap.flags == NATIVE_FLAG_SETTLED {
                 settled.push(SettleEvent {
                     structure_id: snap.structure_id,
@@ -725,6 +821,61 @@ no observation this tick",
             // already gone, above.)
             if snap.sleeping {
                 continue;
+            }
+            // Through the ground: logged on the first tick, retired at the
+            // floor. Checked before the world bound, which it replaces for
+            // everything that leaves downwards.
+            {
+                let entity = ids::body_entity(snap.structure_id, snap.island_id);
+                let position = [snap.position.x, snap.position.y, snap.position.z];
+                let velocity = [
+                    snap.linear_velocity.x,
+                    snap.linear_velocity.y,
+                    snap.linear_velocity.z,
+                ];
+                match self.ground.observe(entity, snap.position.y) {
+                    GroundVerdict::Above | GroundVerdict::BelowGround { first: false } => {}
+                    GroundVerdict::BelowGround { first: true } => {
+                        if self.ground_logged < 32 {
+                            self.ground_logged += 1;
+                            let previous = self.tracked.get(&entity);
+                            log_below_ground(
+                                entity,
+                                previous.map(|t| self.ticks.saturating_sub(t.first_tick)),
+                                position,
+                                velocity,
+                                previous.map(|t| (t.position, t.velocity)),
+                                snap.node_count,
+                                self.ground.ground_y().unwrap_or(0.0),
+                                &self.last_status,
+                            );
+                        }
+                    }
+                    GroundVerdict::Retire => {
+                        if self.ground_logged < 64 {
+                            self.ground_logged += 1;
+                            eprintln!(
+                                "[destruction] body {entity:#x} retired at the floor (y {:.1}): at \
+                                 ({:.1}, {:.1}, {:.1}) moving ({:.1}, {:.1}, {:.1})",
+                                self.ground.floor_y(),
+                                position[0],
+                                position[1],
+                                position[2],
+                                velocity[0],
+                                velocity[1],
+                                velocity[2],
+                            );
+                        }
+                        self.tracked.remove(&entity);
+                        batch(&mut batches, &mut order, snap.structure_id);
+                        batches
+                            .get_mut(&snap.structure_id)
+                            .expect("just inserted")
+                            .retired_island_ids
+                            .push(snap.island_id);
+                        continue;
+                    }
+                }
             }
             // A fragment that has left the world is not streamed.
             //
@@ -868,6 +1019,11 @@ no observation this tick",
                     }
                     slot.position = [px, py, pz];
                     slot.speed = speed;
+                    slot.velocity = [
+                        snap.linear_velocity.x,
+                        snap.linear_velocity.y,
+                        snap.linear_velocity.z,
+                    ];
                     slot.last_tick = self.ticks;
                 }
                 std::collections::hash_map::Entry::Vacant(slot) => {
@@ -877,6 +1033,11 @@ no observation this tick",
                         last_tick: self.ticks,
                         position: [px, py, pz],
                         speed,
+                        velocity: [
+                            snap.linear_velocity.x,
+                            snap.linear_velocity.y,
+                            snap.linear_velocity.z,
+                        ],
                     });
                 }
             }
@@ -1059,6 +1220,16 @@ no observation this tick",
             name: "native_bodies_outside_world".to_string(),
             value: self.bodies_outside_world as f64,
             kind: 2, // count
+        });
+        self.extra_spans.push(NamedSpan {
+            name: "native_bodies_below_ground".to_string(),
+            value: self.ground.below_ground_total as f64,
+            kind: 2,
+        });
+        self.extra_spans.push(NamedSpan {
+            name: "native_bodies_retired_below_floor".to_string(),
+            value: self.ground.retired_total as f64,
+            kind: 2,
         });
         let structures = self.manifest.structures.len() as u32;
         let total_ms = started.elapsed().as_secs_f32() * 1000.0;

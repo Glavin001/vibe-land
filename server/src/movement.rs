@@ -648,6 +648,17 @@ impl PhysicsArena {
         }
     }
 
+    /// Top of the lowest static surface authored into the world, if known:
+    /// what bodies going through the ground are measured against. Only the
+    /// PhysX backend tracks it.
+    pub fn lowest_ground_y(&self) -> Option<f32> {
+        match &self.backend {
+            PhysicsBackend::Rapier(_) => None,
+            #[cfg(feature = "physx-gpu")]
+            PhysicsBackend::Physx(arena) => arena.lowest_ground_y(),
+        }
+    }
+
     pub fn terrain_y_at(&self, x: f64, z: f64) -> f64 {
         self.cast_static_world_ray([x as f32, 40.0, z as f32], [0.0, -1.0, 0.0], 100.0, None)
             .map(|distance| 40.0 - distance as f64)
