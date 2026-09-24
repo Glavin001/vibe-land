@@ -1992,6 +1992,24 @@ impl PhysxPhysicsArena {
         self.world.take_world_spans()
     }
 
+    /// The last step's phases from the bridge plus this arena's own
+    /// post-step brackets. None if the bridge cannot answer.
+    pub fn step_phases(&self) -> Option<crate::movement::StepPhases> {
+        let step = self.world.step_phases().ok()?;
+        Some(crate::movement::StepPhases {
+            controller_ms: step.controller_ms,
+            submit_ms: step.simulate_ms,
+            fetch_ms: step.fetch_ms,
+            callbacks_ms: step.callbacks_ms,
+            gpu_wait_ms: step.gpu_wait_sampled.then_some(step.gpu_wait_ms),
+            readback_ms: self.last_readback_ms,
+            players_ms: self.last_refresh_players_ms,
+            awake_bodies: step.active_dynamic_bodies,
+            found_pairs: step.bp_new_pairs,
+            lost_pairs: step.bp_lost_pairs,
+        })
+    }
+
     pub fn health(&self) -> PhysicsHealth {
         let stats = self.world.stats().expect("PhysX stats readback failed");
         PhysicsHealth {

@@ -427,6 +427,38 @@ pub struct WorldStats {
     pub gpu_context_lost: bool,
 }
 
+/// The last completed step's phases and counts, for per-tick telemetry.
+///
+/// Everything here was already measured or counted by the step itself; this
+/// only copies it out. Unlike [`WorldStats`] it allocates nothing (no spans)
+/// and does not fall back to ring means, so each field is this step's own
+/// value and it is cheap enough to read every tick.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct StepPhases {
+    /// Vehicle model + character-controller interactions before `simulate`.
+    pub controller_ms: f32,
+    /// The `simulate()` call: with GPU dynamics this submits the step.
+    pub simulate_ms: f32,
+    /// `fetchResults`: waiting for the GPU (the destruction stage runs in
+    /// here too), PhysX's result copy and our contact callbacks.
+    pub fetch_ms: f32,
+    /// Our contact callbacks, which run inside `fetch_ms`.
+    pub callbacks_ms: f32,
+    /// Controller start to fetch end.
+    pub step_ms: f32,
+    /// Time blocked on the GPU inside the fetch; only measured on sampled
+    /// steps (`VIBE_PHYSX_GPU_SAMPLE_TICKS`, 1 in 16 by default) and 0 on the
+    /// rest. `gpu_wait_sampled` says which.
+    pub gpu_wait_ms: f32,
+    pub gpu_wait_sampled: bool,
+    pub active_dynamic_bodies: u32,
+    /// Broad-phase pairs found and lost this step. (PhysX's discrete
+    /// contact-pair count is left out: GPU dynamics never fills it.)
+    pub bp_new_pairs: u32,
+    pub bp_lost_pairs: u32,
+    pub completed_steps: u64,
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 #[repr(C)]
 pub struct ContactEvent {
@@ -1210,6 +1242,19 @@ impl World {
         }
     }
 
+    /// The last step's phases and counts (see [`StepPhases`]). Cheap: no
+    /// allocation, safe to call every tick outside a step.
+    pub fn step_phases(&self) -> Result<StepPhases, BridgeError> {
+        #[cfg(feature = "gpu")]
+        {
+            self.inner.step_phases().map(Into::into).map_err(operation_error)
+        }
+        #[cfg(not(feature = "gpu"))]
+        {
+            Err(stub_unavailable())
+        }
+    }
+
     pub fn take_contact_events(&mut self) -> Result<Vec<ContactEvent>, BridgeError> {
         #[cfg(feature = "gpu")]
         {
@@ -1947,6 +1992,21 @@ mod ffi {
         wheels_on_road: u8,
     }
 
+    /// See `StepPhases`.
+    struct FfiStepPhases {
+        controller_ms: f32,
+        simulate_ms: f32,
+        fetch_ms: f32,
+        callbacks_ms: f32,
+        step_ms: f32,
+        gpu_wait_ms: f32,
+        gpu_wait_sampled: bool,
+        active_dynamic_bodies: u32,
+        bp_new_pairs: u32,
+        bp_lost_pairs: u32,
+        completed_steps: u64,
+    }
+
     struct FfiWorldStats {
         extra_spans: Vec<FfiNamedSpan>,
         body_count: u32,
@@ -2380,6 +2440,7 @@ mod ffi {
         fn player_snapshots(self: &World) -> Result<Vec<FfiPlayerSnapshot>>;
         fn vehicle_snapshots(self: &World) -> Result<Vec<FfiVehicleSnapshot>>;
         fn stats(self: &World) -> Result<FfiWorldStats>;
+        fn step_phases(self: &World) -> Result<FfiStepPhases>;
         fn take_contact_events(self: Pin<&mut World>) -> Result<Vec<FfiContactEvent>>;
 
         fn create_destructible(
@@ -2766,6 +2827,25 @@ impl From<ffi::FfiVehicleSnapshot> for VehicleSnapshot {
             wheel_rotation_speed: value.wheel_rotation_speed,
             wheel_jounce: value.wheel_jounce,
             wheels_on_road: value.wheels_on_road,
+        }
+    }
+}
+
+#[cfg(feature = "gpu")]
+impl From<ffi::FfiStepPhases> for StepPhases {
+    fn from(v: ffi::FfiStepPhases) -> Self {
+        Self {
+            controller_ms: v.controller_ms,
+            simulate_ms: v.simulate_ms,
+            fetch_ms: v.fetch_ms,
+            callbacks_ms: v.callbacks_ms,
+            step_ms: v.step_ms,
+            gpu_wait_ms: v.gpu_wait_ms,
+            gpu_wait_sampled: v.gpu_wait_sampled,
+            active_dynamic_bodies: v.active_dynamic_bodies,
+            bp_new_pairs: v.bp_new_pairs,
+            bp_lost_pairs: v.bp_lost_pairs,
+            completed_steps: v.completed_steps,
         }
     }
 }

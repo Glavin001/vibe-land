@@ -303,12 +303,77 @@ const passesIssuedByFrame = new Map<number, number>();
 const dustRangeByFrame = new Map<number, Array<[number, number]>>();
 let dustStageStart = -1;
 
+/**
+ * Called with each frame's GPU time once every pass of it has resolved:
+ * `frame` is the serial the frame was drawn under (`currentGpuFrameSerial()`
+ * while it ran), `totalMs` the sum of its passes (`gpuFrameMs`), `maxPassMs`
+ * its longest pass. Frames lost to a disjoint or the backlog cap are never
+ * reported. The city tape recorder uses this to put each frame's own GPU time
+ * on the frame it belongs to, although it arrives a few frames later.
+ */
+export type GpuFrameListener = (frame: number, totalMs: number, maxPassMs: number) => void;
+const gpuFrameListeners = new Set<GpuFrameListener>();
+
+export function onGpuFrameResult(listener: GpuFrameListener): () => void {
+  gpuFrameListeners.add(listener);
+  return () => {
+    gpuFrameListeners.delete(listener);
+  };
+}
+
+/**
+ * Where GPU frame times went, cumulative since the page loaded: frames whose
+ * every pass resolved, disjoint events (each discards every result in
+ * flight) and the queries they threw away, frames that expired before their
+ * results arrived, and how many frames late the resolved ones landed. A tape
+ * records the change over its recording, so a tape with few timed frames
+ * says why.
+ */
+const gpuCounters = {
+  framesResolved: 0,
+  disjoints: 0,
+  queriesDiscarded: 0,
+  framesExpired: 0,
+  queriesRefused: 0,
+  lagFramesMax: 0,
+  lagFramesSum: 0,
+};
+export type GpuTimerCounters = typeof gpuCounters;
+
+export function gpuTimerCounters(): GpuTimerCounters {
+  return { ...gpuCounters };
+}
+
+/**
+ * How long a frame's GPU passes may take to resolve before the frame is
+ * given up on, in frames. Was 64 (0.5 s at 120 Hz); a GPU shared with the
+ * city server's step can hold results back longer than that, and a frame
+ * pruned from the issue table can never publish.
+ */
+const GPU_FRAME_WINDOW = 600;
+
+/** The serial of the frame being drawn now; the one that just ended is one less. */
+export function currentGpuFrameSerial(): number {
+  return frameSerial;
+}
+
+/**
+ * Whether frames get GPU times: 'unknown' until the renderer has been patched
+ * (its first frame), then the extension's name or 'unavailable'.
+ */
+export function gpuTimerStatus(): 'EXT_disjoint_timer_query_webgl2' | 'unavailable' | 'unknown' {
+  if (!patched) return 'unknown';
+  return timerExt ? 'EXT_disjoint_timer_query_webgl2' : 'unavailable';
+}
+
 function drainGpuQueries(): void {
   if (!gl2 || !timerExt) return;
   // A disjoint means the GPU was interrupted (clock change, context switch) and
   // every in-flight result is garbage. Throw them all away rather than report a
   // number that is wrong in an unknowable direction.
   if (gl2.getParameter(timerExt.GPU_DISJOINT_EXT)) {
+    gpuCounters.disjoints += 1;
+    gpuCounters.queriesDiscarded += pendingQueries.length;
     for (const entry of pendingQueries) freeQueries.push(entry.query);
     pendingQueries.length = 0;
     assembling = null;
@@ -327,11 +392,18 @@ function drainGpuQueries(): void {
     assembling.ms[entry.pass] = ms;
     if (assembling.ms.length >= assembling.issued && assembling.issued > 0) {
       let total = 0;
+      let maxPass = 0;
       const slots = [0, 0, 0, 0, 0, 0];
       assembling.ms.forEach((v, index) => {
         total += v || 0;
+        if ((v || 0) > maxPass) maxPass = v || 0;
         slots[Math.min(index, slots.length - 1)] += v || 0;
       });
+      gpuCounters.framesResolved += 1;
+      const lag = frameSerial - entry.frame;
+      gpuCounters.lagFramesSum += lag;
+      if (lag > gpuCounters.lagFramesMax) gpuCounters.lagFramesMax = lag;
+      for (const listener of gpuFrameListeners) listener(entry.frame, total, maxPass);
       renderStats.gpuPass0Ms = slots[0];
       renderStats.gpuPass1Ms = slots[1];
       renderStats.gpuPass2Ms = slots[2];
@@ -358,7 +430,10 @@ function drainGpuQueries(): void {
 function beginPassQuery(): WebGLQuery | null {
   if (!gl2 || !timerExt) return null;
   // Cap the backlog: if results stop arriving, stop allocating queries.
-  if (pendingQueries.length > 1024) return null;
+  if (pendingQueries.length > 1024) {
+    gpuCounters.queriesRefused += 1;
+    return null;
+  }
   const query = freeQueries.pop() ?? gl2.createQuery();
   if (!query) return null;
   gl2.beginQuery(timerExt.TIME_ELAPSED_EXT, query);
@@ -380,12 +455,15 @@ function startGpuFrame(): void {
   passesThisFrame = 0;
   // Frames that never resolved (a query lost to the backlog cap) would pin the
   // map forever; anything older than the pending window is gone.
-  if (passesIssuedByFrame.size > 128) {
+  if (passesIssuedByFrame.size > 2 * GPU_FRAME_WINDOW) {
     for (const key of passesIssuedByFrame.keys()) {
-      if (key < frameSerial - 64) passesIssuedByFrame.delete(key);
+      if (key < frameSerial - GPU_FRAME_WINDOW) {
+        passesIssuedByFrame.delete(key);
+        gpuCounters.framesExpired += 1;
+      }
     }
     for (const key of dustRangeByFrame.keys()) {
-      if (key < frameSerial - 64) dustRangeByFrame.delete(key);
+      if (key < frameSerial - GPU_FRAME_WINDOW) dustRangeByFrame.delete(key);
     }
   }
 }

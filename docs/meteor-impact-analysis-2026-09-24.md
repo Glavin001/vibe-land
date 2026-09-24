@@ -591,6 +591,12 @@ same windows.
      - `snapshot_ms` is stale on non-snapshot ticks.
    - **Acceptance.** The next paired capture attributes ≥ 90% of each split
      tick's `dynamics_ms` to named phases.
+   - **Status (2026-09-24).** Implemented: `ticks.jsonl` `timing_version` 2
+     (see [city-bench.md, Tick phases](city-bench.md#tick-phases)), with
+     `shots_ms` and a per-tick `snapshot_ms`. The stage's own phase times
+     need `VIBE_PHYSX_PROFILE=1` on the play server. The stage reports no
+     host-wait count; CuMetal's `CUMETAL_TRACE_SYNC` remains the source for
+     that.
 
 6. **Profile the first impact after a city reset in the client.** Owner:
    vibe-land client rendering.
@@ -606,6 +612,10 @@ same windows.
      machine.
    - **Acceptance.** Tape frames carry `gpuMs`, and long frames can be
      classified as CPU, GPU or wait.
+   - **Status (2026-09-24).** Implemented: 68-byte tape frames carry the
+     frame's GPU time (`frames.gpu`, NaN where there is none; header
+     `gpuTimer`), and `report.py` / `meteor_impacts.py` classify long frames
+     as cpu / gpu / wait / unknown.
 
 8. **Netcode: no action.** Watch the city ceiling in salvos: 28 of the 30
    near-ceiling sends were in E12.

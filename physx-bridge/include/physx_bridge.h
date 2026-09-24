@@ -25,6 +25,7 @@ struct FfiBodySnapshot;
 struct FfiPlayerSnapshot;
 struct FfiVehicleSnapshot;
 struct FfiWorldStats;
+struct FfiStepPhases;
 struct FfiContactEvent;
 struct FfiPose;
 struct FfiDestructibleSettings;
@@ -81,6 +82,8 @@ public:
   rust::Vec<FfiPlayerSnapshot> player_snapshots() const;
   rust::Vec<FfiVehicleSnapshot> vehicle_snapshots() const;
   FfiWorldStats stats() const;
+  /// The last step's phases and counts; allocation-free, for every tick.
+  FfiStepPhases step_phases() const;
   rust::Vec<FfiContactEvent> take_contact_events();
 
   void create_destructible(std::uint32_t structure_id, const FfiPose &pose,

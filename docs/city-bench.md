@@ -94,16 +94,31 @@ destruction level (active bodies; broken-bond fraction).
 
 - **Server real-time** (`ticks.jsonl` of the capture): tick p50/p95/p99/max,
   % over 16.7 and 33 ms, sim-rate (simulated seconds per wall second) overall
-  and worst 5 s, tick breakdown (dynamics / city / snapshot / player / …,
-  mean, p95 and share), city encoder step/encode ms and bytes per awake
-  body-tick (`city/stats.jsonl`), PhysX last step and GPU wait (the driver's
-  1 Hz `/match-stats` samples), input frames per tick, destruction reached,
-  r(tick, active bodies).
+  and worst 5 s, tick breakdown (dynamics / city / snapshot / player /
+  shots / …, mean, p95 and share), city encoder step/encode ms and bytes per
+  awake body-tick (`city/stats.jsonl`), PhysX last step and GPU wait (the
+  driver's 1 Hz `/match-stats` samples), input frames per tick, destruction
+  reached, r(tick, active bodies).
+- **Physics step phases, every tick** (`ticks.jsonl` from servers with
+  `timing_version` 2; see [Tick phases](#tick-phases)): by tick class --
+  split (the tick created bodies), break (broke bonds only), other -- the
+  tick and `dynamics_ms`, the share of `dynamics_ms` the named phases cover,
+  PhysX submit / overlap / fetch / sampled GPU wait / readback, the stage's
+  corrected re-solves, bodies promoted, bonds broken, contacts and solver
+  iterations, awake bodies and broad-phase pairs found and lost. With
+  `VIBE_PHYSX_PROFILE=1` also the destruction stage's own phase times
+  (stress, fracture, correction and its set-up, body allocation) and the
+  heaviest engine zones on split ticks. The cost of collecting them is
+  reported too.
 - **Client real-time** (tape frames): fps, frame and CPU p50/p95/p99, display
   period (median quiet frame, snapped to a refresh rate; headless Chromium
   runs rAF at 120 Hz here), % over 1.5x and 2x, hitches > 50/100 ms,
   CPU-bound frames > 33 ms, the worst hitches with phase and the server's
-  worst tick within 150 ms, r(client fps, server ticks/s).
+  worst tick within 150 ms, r(client fps, server ticks/s); the frame's own
+  GPU time (tapes since 2026-09-24, `gpuTimer` in the header) and frames
+  over 2 display periods by cause: `cpu` (JS took > 60% of the frame), `gpu`
+  (its own longest GPU pass did), `wait` (neither: a GPU shared with the
+  server, or the compositor), `unknown` (no GPU time for the frame).
 - **Netcode / streaming**:
   - bytes and packets per second per lane and per packet kind, share of
     bytes, peak second (tape);
@@ -227,6 +242,47 @@ Changed 2026-09-24 (the arc→body limit went from 1 m to 0.5 m with it):
   - `meteors.ts` puts an older tape's recorded clock on the current scale
     before setting it against launch times.
 
+## Tick phases
+
+Since 2026-09-24 every `ticks.jsonl` record (`timing_version` 2) carries,
+beside the brackets it always had (field names unchanged; readers of older
+captures keep working and see the new fields as absent):
+
+- `shots_ms`: routing the tick's shots, player-fired meteor launches
+  included (they used to land in `unattributed_ms`); `meteors_launched` and
+  `meteor_launch_ms` (inside `shots_ms`, or `city_ms` for `/city-meteor`).
+- `snapshot_ms` is this tick's own cost, 0 with `snapshot_sent` false on a
+  tick that sent no snapshot. Before, such a tick repeated the last snapshot
+  tick's value.
+- `physx`: `controller_ms`, `submit_ms` (the `simulate` call), `overlap_ms`
+  (server work inside the GPU window, counted in `city_ms`), `fetch_ms`
+  (the GPU wait, where the destruction stage runs, plus result copy and
+  callbacks), `callbacks_ms`, `gpu_wait_ms` (sampled ticks only),
+  `readback_ms`, `players_ms`, `awake_bodies`, `found_pairs`,
+  `lost_pairs` (PhysX's contact-pair count is not there: GPU dynamics never
+  fills it; `stage.contacts` is the contact load). `controller + submit + fetch + readback +
+  players` is `dynamics_ms` less a small remainder.
+- `stage` (native destruction): `iterations`, `converged`, `passes`,
+  `corrections`, `bonds_broken`, `bonds_broken_after_correction`,
+  `crushed_chunks`, `contacts`, `bodies_promoted`, `chunks_migrated`,
+  `observe_ms`, and with `VIBE_PHYSX_PROFILE=1` `zones`: `submit_ms`,
+  `finish_ms` and its `finish_gpu_wait_ms`, `stress_gpu_ms`,
+  `fracture_gpu_ms`, the trial solve's `trial_broadphase_ms` (with its
+  `trial_broadphase_wait_ms`), `trial_narrowphase_ms`, `trial_other_ms`,
+  `correction_ms`, `correction_prep_ms`, `correction_gpu_ms`,
+  `island_repair_ms`, `body_alloc_ms`, `other_ms`. Only the SDK's
+  `GpuDestruction.*` zones reach the profiler in the release package (its
+  `PX_PROFILE_ZONE` zones are compiled out), which is why there is no
+  whole-step PhysX breakdown here.
+- `engine_zones` (profiler only): the tick's 24 largest engine zones.
+- `phases_us`: what collecting all this cost the tick thread.
+
+`scripts/perf/tick_phases.py` reads them (classes, flat rows, summaries);
+`report.py` and `tape-analysis/meteor_impacts.py` use it. For a paired play
+capture that should explain its slow ticks, start the server with
+`VIBE_PHYSX_PROFILE=1`; the city bench passes the variable through
+(`VIBE_PHYSX_PROFILE=1 scripts/perf/city-bench.sh ...`).
+
 ## Comparing runs
 
 `--baseline <report.json>` records and prints deltas of the headline numbers
@@ -262,9 +318,21 @@ not on the tape.
 
 ## Limits
 
-- PhysX step and GPU wait come from 1 Hz samples of the last step, not every
-  tick; the per-tick breakdown has `dynamics_ms` (98% of the tick) but not
-  its GPU-wait share.
+- `server.physics_sampled` still comes from 1 Hz samples of the last step.
+  The per-tick phases (`server.phases`) replace it where the capture has
+  them. Their `gpu_wait_ms` is the bridge's own sample, 1 tick in 16 (it
+  polls, which costs a core); `fetch_ms` is measured every tick and is the
+  GPU wait plus the result copy and our callbacks.
+- The destruction stage publishes no timings of its own. Its phase times
+  exist only under `VIBE_PHYSX_PROFILE=1`, which also runs every PhysX
+  profile zone through the bridge profiler; run a timing baseline without
+  it. Its zones are CPU wall time per thread plus GPU time between CUDA
+  events, so they overlap and are compared, not summed.
+- On ANGLE/Metal a GPU timer query spans its command buffer (the passes of a
+  12 ms frame summed to 26-52 ms on an M3 Max), and on a GPU shared with
+  the server that window can include the server's work. A frame's `gpu`
+  class is therefore an upper bound on its own GPU cost; `wait` (neither CPU
+  nor GPU time explains it) is the clean signal.
 - `meteors.ts` calls the client's own `placeMeteor`
   (`client/src/vfx/meteorPlacement.ts`); `--legacy-meteors` approximates
   the pre-2026-09-24 layer for comparisons with old tapes.

@@ -1253,6 +1253,10 @@ struct MatchState {
     /// step's halves, so neither dynamics_ms nor tick_city's bracket sees
     /// it; folded into city_total_ms so the tick residual stays honest.
     last_observer_flush_ms: f32,
+    /// Meteors launched this tick and the time the launches took, for the
+    /// per-tick capture record. Reset at the top of every tick.
+    tick_meteors_launched: u32,
+    tick_meteor_launch_ms: f32,
     /// The running paired session capture, if any; see `session_match`.
     session_capture: Option<session_capture::ActiveCapture>,
     session_max_us: u64,
@@ -3301,6 +3305,8 @@ async fn run_match_loop(
         input_credit: 1.0,
         staged_city: None,
         last_observer_flush_ms: 0.0,
+        tick_meteors_launched: 0,
+        tick_meteor_launch_ms: 0.0,
         session_capture: None,
         session_max_us: session_match::session_max_us(),
         next_player_handle: 1,
@@ -3926,6 +3932,8 @@ impl MatchState {
         self.io.send_hub.set_tick(self.server_tick);
         self.poll_session_capture();
         self.reclaim_player_handles();
+        self.tick_meteors_launched = 0;
+        self.tick_meteor_launch_ms = 0.0;
         let dt = 1.0 / SIM_HZ as f32;
         // How many 60 Hz input frames this tick is entitled to consume.
         //
@@ -4276,7 +4284,11 @@ impl MatchState {
             self.kill_player_with_cause(player_id, server_time_ms, DeathCause::EnergyDepletion);
         }
 
+        // Its own bracket: a player-fired meteor launch (a raycast, a new
+        // actor, a packet to every client) used to land in unattributed.
+        let shots_started = Instant::now();
         self.route_city_shots();
+        let shots_ms = shots_started.elapsed().as_secs_f32() * 1000.0;
 
         let hitscan_started = Instant::now();
         self.process_hitscan(server_time_ms);
@@ -4296,8 +4308,15 @@ impl MatchState {
             + self.last_observer_flush_ms;
         self.timings.city_total_ms.record(city_total_ms);
 
-        if self.server_tick % (SIM_HZ as u32 / self.physics.snapshot_hz() as u32) == 0 {
+        // `timings.snapshot_ms` is a rolling record of snapshot ticks only, so
+        // its `last()` on any other tick is the previous snapshot tick's cost.
+        // This tick's own value is what the residual and the capture need.
+        let snapshot_sent =
+            self.server_tick % (SIM_HZ as u32 / self.physics.snapshot_hz() as u32) == 0;
+        let mut snapshot_tick_ms = 0.0f32;
+        if snapshot_sent {
             self.broadcast_snapshot();
+            snapshot_tick_ms = self.timings.snapshot_ms.last();
         }
 
         if self.server_tick % PLAYER_ROSTER_SYNC_INTERVAL_TICKS == 0 {
@@ -4325,8 +4344,9 @@ impl MatchState {
             + self.timings.vehicle_ms.last()
             + self.timings.dynamics_ms.last()
             + self.timings.hitscan_ms.last()
+            + shots_ms
             + city_total_ms
-            + self.timings.snapshot_ms.last()
+            + snapshot_tick_ms
             + publish_tick_ms;
         self.timings
             .tick_unattributed_ms
@@ -4358,6 +4378,12 @@ impl MatchState {
             city_ms: city_total_ms,
             publish_ms: publish_tick_ms,
             unattributed_ms: (total_ms - attributed).max(0.0),
+            snapshot_ms: snapshot_tick_ms,
+            snapshot_sent,
+            shots_ms,
+            meteors_launched: self.tick_meteors_launched,
+            meteor_launch_ms: self.tick_meteor_launch_ms,
+            overlap_ms: self.last_observer_flush_ms,
         });
     }
 
@@ -4546,6 +4572,20 @@ impl MatchState {
     /// Launch a meteor onto an exact world point. Returns the capture event
     /// describing the launch, or `None` if no rock left the sky.
     fn launch_meteor_at_point(
+        &mut self,
+        target: glam::Vec3,
+        shooter: u32,
+    ) -> Option<serde_json::Value> {
+        let started = Instant::now();
+        let event = self.plan_and_launch_meteor(target, shooter);
+        self.tick_meteor_launch_ms += started.elapsed().as_secs_f32() * 1000.0;
+        if event.is_some() {
+            self.tick_meteors_launched += 1;
+        }
+        event
+    }
+
+    fn plan_and_launch_meteor(
         &mut self,
         target: glam::Vec3,
         shooter: u32,

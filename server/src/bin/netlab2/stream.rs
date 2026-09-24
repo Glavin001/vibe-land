@@ -413,7 +413,9 @@ impl<'a> Clock<'a> {
         let end = self.bundle.server_to_tape_ms(t.mono_us);
         let start = end - f64::from(t.total_ms);
         let city = (start
-            + f64::from(t.player_sim_ms + t.vehicle_ms + t.dynamics_ms + t.hitscan_ms + t.city_ms))
+            + f64::from(
+                t.player_sim_ms + t.vehicle_ms + t.dynamics_ms + t.shots_ms + t.hitscan_ms + t.city_ms,
+            ))
             .min(end);
         let snapshot = (city + f64::from(t.snapshot_ms)).min(end);
         Some((start, city, snapshot, end))

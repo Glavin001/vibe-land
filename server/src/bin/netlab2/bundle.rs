@@ -35,6 +35,10 @@ pub struct TickTiming {
     pub dynamics_ms: f32,
     #[serde(default)]
     pub hitscan_ms: f32,
+    /// Shot routing, between dynamics and hitscan (captures since
+    /// 2026-09-24; before, it was inside the unattributed residual).
+    #[serde(default)]
+    pub shots_ms: f32,
     #[serde(default)]
     pub city_ms: f32,
     #[serde(default)]

@@ -204,6 +204,17 @@ fn world_bound_m() -> f32 {
 const NATIVE_FLAG_SETTLED: u32 = 1;
 const NATIVE_FLAG_WOKE: u32 = 2;
 
+/// Events one tick committed, counted as `post_step` takes them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct NativeTickCounts {
+    /// Bond-broken events.
+    pub bonds_broken: u32,
+    /// Chunks that moved to another body.
+    pub chunks_migrated: u32,
+    /// New bodies (island promotions). A tick with any is a split tick.
+    pub bodies_promoted: u32,
+}
+
 pub struct NativeCityDestruction {
     manifest: Arc<DestructionManifest>,
     encoder_input: Vec<BodySnapshotInput>,
@@ -214,6 +225,8 @@ pub struct NativeCityDestruction {
     /// frozen from that point; it is reported rather than papered over.
     degraded: bool,
     last_status: NativeStatus,
+    /// What the last `post_step` committed; see [`NativeTickCounts`].
+    tick_counts: NativeTickCounts,
     /// Wakes staged by shots between ticks, drained into the next output.
     pending_wakes: Vec<(u32, u32)>,
     /// Cumulative, for the stats shape. The stage reports per-tick deltas.
@@ -554,6 +567,7 @@ materials={} reserved_pairs={} iterations={} tolerance={:e}",
             ticks: 0,
             degraded: false,
             last_status: NativeStatus::default(),
+            tick_counts: NativeTickCounts::default(),
             pending_wakes: Vec::new(),
             migrations_total: 0,
             resettled_wakes: 0,
@@ -605,6 +619,7 @@ materials={} reserved_pairs={} iterations={} tolerance={:e}",
         let _ = dt;
         self.ticks += 1;
         let started = std::time::Instant::now();
+        self.tick_counts = NativeTickCounts::default();
 
         let status = world
             .native_tick()
@@ -651,6 +666,11 @@ no observation this tick",
         let islands = world
             .native_take_island_events()
             .map_err(|e| CityDestructionError::Bridge(e.to_string()))?;
+        self.tick_counts = NativeTickCounts {
+            bonds_broken: broken.len() as u32,
+            chunks_migrated: migrations.len() as u32,
+            bodies_promoted: islands.iter().filter(|event| event.kind == 0).count() as u32,
+        };
 
         let mut batches: HashMap<u32, FractureBatch> = HashMap::new();
         let mut order: Vec<u32> = Vec::new();
@@ -1311,6 +1331,12 @@ no observation this tick",
 
     pub fn last_status(&self) -> NativeStatus {
         self.last_status
+    }
+
+    /// What the last `post_step` committed: zero on a tick the stage did not
+    /// observe (rejected or already consumed).
+    pub fn tick_counts(&self) -> NativeTickCounts {
+        self.tick_counts
     }
 
     pub fn ticks(&self) -> u64 {

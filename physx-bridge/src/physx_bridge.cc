@@ -3126,6 +3126,30 @@ public:
     return out;
   }
 
+  /// The last step's own numbers, copied out with no allocation and no ring
+  /// fallback (stats() publishes ring means for the sampled GPU wait, which
+  /// is right for a 1 Hz panel and wrong for a per-tick record).
+  FfiStepPhases step_phases() const {
+    FfiStepPhases out{};
+    out.controller_ms = last_controller_ms_;
+    out.simulate_ms = last_simulate_ms_;
+    out.fetch_ms = last_fetch_ms_;
+    out.callbacks_ms = static_cast<float>(contact_callback_ms_);
+    out.step_ms = last_step_ms_;
+    out.gpu_wait_sampled = sim_wall_samples_ > 0;
+    out.gpu_wait_ms = out.gpu_wait_sampled ? last_gpu_wait_ms_ : 0.0f;
+    out.completed_steps = completed_steps_;
+    if (!step_in_flight_) {
+      // A host copy of counters the step already kept; no GPU access.
+      PxSimulationStatistics statistics;
+      scene_->getSimulationStatistics(statistics);
+      out.active_dynamic_bodies = statistics.nbActiveDynamicBodies;
+      out.bp_new_pairs = statistics.nbNewPairs;
+      out.bp_lost_pairs = statistics.nbLostPairs;
+    }
+    return out;
+  }
+
   rust::Vec<FfiContactEvent> take_contact_events() {
     rust::Vec<FfiContactEvent> output;
     output.reserve(contact_events_.size());
@@ -4119,6 +4143,7 @@ rust::Vec<FfiVehicleSnapshot> World::vehicle_snapshots() const {
 }
 
 FfiWorldStats World::stats() const { return impl_->stats(); }
+FfiStepPhases World::step_phases() const { return impl_->step_phases(); }
 
 rust::Vec<FfiContactEvent> World::take_contact_events() {
   return impl_->take_contact_events();

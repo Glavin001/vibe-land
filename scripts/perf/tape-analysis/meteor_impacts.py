@@ -25,8 +25,11 @@ import re
 import statistics as st
 import sys
 
+sys.dont_write_bytecode = True  # keep the source tree free of __pycache__
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import svgplot  # noqa: E402
+import tick_phases  # noqa: E402
 
 BUDGET_MS = 1000.0 / 60.0
 ANSI = re.compile(r'\x1b\[[0-9;]*m')
@@ -133,6 +136,8 @@ def main():
     fr_ms = [float(r['frame_ms']) for r in frames]
     fr_cpu = [float(r['cpu_ms']) for r in frames]
     fr_awake = [int(r['awake']) for r in frames]
+    # The frame's own GPU time (tapes since 2026-09-24); None where it has none.
+    fr_gpu = [tick_phases.fnum_or_none(r.get('gpu_max_pass_ms')) for r in frames]
     snaps = rows('snapshots.csv')
     sn_t = [float(r['t_ms']) / 1000 for r in snaps]
     sn_tick = [int(r['tick']) for r in snaps]
@@ -233,10 +238,19 @@ def main():
     def promos_in(a, b, k='promos'):
         return sum(topo_by_tick[t][k] for t in range(a, b + 1) if t in topo_by_tick)
 
+    # A capture with per-tick phases says itself which ticks split and broke
+    # (the stage's committed events); an older one is read off the tape's
+    # topology and the log's fracture lines.
     def is_split(t):
+        cls = tick_phases.tick_class(ticks[t]) if t in ticks else None
+        if cls is not None:
+            return cls == 'split'
         return topo_by_tick[t]['promos'] > 0
 
     def is_break(t):
+        cls = tick_phases.tick_class(ticks[t]) if t in ticks else None
+        if cls is not None:
+            return cls in ('split', 'break')
         return (t in fract and fract[t][0] > 0) or topo_by_tick[t]['broken'] > 0
 
     def tick_at_unix(u):
@@ -346,12 +360,16 @@ def main():
             d = ticks[t]
             cs = cstats.get(t, {})
             tp = topo_by_tick.get(t, collections.Counter())
-            per_tick_rows.append(dict(event=i + 1, tick=t, dt=t - it, wall_ms=r1((d['unix_us'] - u0) / 1000),
-                                      total_ms=r1(d['total_ms'], 2), dynamics_ms=r1(d['dynamics_ms'], 2),
-                                      city_ms=r1(d['city_ms'], 3), snapshot_ms=r1(d['snapshot_ms'], 3),
-                                      awake=d['awake_city_bodies'], broken=fract.get(t, (0,))[0],
-                                      promos=tp['promos'], promo_nodes=tp['promoNodes'], migr=tp['migr'],
-                                      encode_ms=r1(cs.get('encode_ms', 0), 3)))
+            row = dict(event=i + 1, tick=t, dt=t - it, wall_ms=r1((d['unix_us'] - u0) / 1000),
+                       total_ms=r1(d['total_ms'], 2), dynamics_ms=r1(d['dynamics_ms'], 2),
+                       city_ms=r1(d['city_ms'], 3), snapshot_ms=r1(d['snapshot_ms'], 3),
+                       awake=d['awake_city_bodies'], broken=fract.get(t, (0,))[0],
+                       promos=tp['promos'], promo_nodes=tp['promoNodes'], migr=tp['migr'],
+                       encode_ms=r1(cs.get('encode_ms', 0), 3))
+            # The step's phases (empty cells in a capture without them).
+            row.update({k: v for k, v in tick_phases.flat(d).items()
+                        if k not in ('tick', 'total_ms', 'dynamics_ms')})
+            per_tick_rows.append(row)
 
     # ---------------------------------------------------------------- whole capture accounting
     wall = (ticks[tick_list[-1]]['unix_us'] - ticks[tick_list[0]]['unix_us']) / 1e6
@@ -371,6 +389,9 @@ def main():
         excess_other_s=r1(total_excess - split_excess - break_excess, 2),
         split_ticks=sum(1 for t in tick_list if is_split(t)),
         break_ticks=sum(1 for t in tick_list if is_break(t)),
+        # Per-tick PhysX / destruction-stage phases by tick class (captures
+        # from servers with timing_version 2; empty for older ones).
+        phases=tick_phases.summary([ticks[t] for t in tick_list]),
     )
 
     # split-tick cost vs size: is it a fixed cost per split?
@@ -435,6 +456,10 @@ def main():
                     cpu_ms_p95=r1(pct(cpu, 95)), cpu_ms_max=r1(max(cpu)),
                     cpu_bound_long=sum(1 for k in long if fr_cpu[k] > 0.6 * fr_ms[k]),
                     gpu_or_wait_long=sum(1 for k in long if fr_cpu[k] <= 0.6 * fr_ms[k]),
+                    # With the frame's own GPU time on the tape: the long
+                    # frames split into cpu / gpu / wait (unknown without it).
+                    long_by_class=dict(collections.Counter(
+                        tick_phases.frame_class(fr_ms[k], fr_cpu[k], fr_gpu[k]) for k in long)),
                     awake_max=max(fr_awake[k] for k in idx))
 
     def snap_window(a, b):
@@ -489,6 +514,8 @@ def main():
         frames_in_capture=len(in_cap),
         long_frames_over_50=len(long_f),
         long_frames_cpu_bound=sum(1 for k in long_f if fr_cpu[k] > 0.6 * fr_ms[k]),
+        long_frames_by_class=dict(collections.Counter(
+            tick_phases.frame_class(fr_ms[k], fr_cpu[k], fr_gpu[k]) for k in long_f)),
         long_frames_with_server_tick_over_50=sum(1 for k in long_f if overlap[k] > 50),
         r_frame_ms_vs_server_tick_ms=r1(corr([fr_ms[k] for k in in_cap], [overlap[k] for k in in_cap]), 2),
         frames_over_50_when_server_tick_under_20=sum(1 for k in in_cap if fr_ms[k] > 50 and overlap[k] < 20),

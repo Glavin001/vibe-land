@@ -49,6 +49,14 @@ pub(crate) struct TickCosts {
     pub city_ms: f32,
     pub publish_ms: f32,
     pub unattributed_ms: f32,
+    /// This tick's own snapshot cost: 0 when it sent none.
+    pub snapshot_ms: f32,
+    pub snapshot_sent: bool,
+    pub shots_ms: f32,
+    pub meteors_launched: u32,
+    pub meteor_launch_ms: f32,
+    /// City work run inside the split step's GPU window.
+    pub overlap_ms: f32,
 }
 
 impl MatchState {
@@ -368,17 +376,74 @@ impl MatchState {
             dynamics_ms: self.timings.dynamics_ms.last(),
             hitscan_ms: self.timings.hitscan_ms.last(),
             city_ms: costs.city_ms,
-            snapshot_ms: self.timings.snapshot_ms.last(),
+            snapshot_ms: costs.snapshot_ms,
             publish_ms: costs.publish_ms,
             unattributed_ms: costs.unattributed_ms,
             players: self.players.len() as u32,
             awake_city_bodies: awake,
             capture_ms: 0.0,
+            timing_version: sc::TICK_TIMING_VERSION,
+            snapshot_sent: Some(costs.snapshot_sent),
+            shots_ms: costs.shots_ms,
+            meteors_launched: costs.meteors_launched,
+            meteor_launch_ms: costs.meteor_launch_ms,
+            ..TickTiming::default()
         };
+        let phases_started = Instant::now();
+        self.collect_step_phases(&mut timing, costs.overlap_ms);
+        timing.phases_us = phases_started.elapsed().as_secs_f32() * 1e6;
         let capture = self.session_capture.as_mut().expect("checked above");
         let selections = std::mem::take(&mut capture.selections);
         timing.capture_ms = started.elapsed().as_secs_f32() * 1000.0;
         capture.ticks.push(TickBundle { truth, timing, selections });
+    }
+
+    /// The PhysX step's phases and the destruction stage's tick, read from
+    /// what the step and the stage already measured. Copies and a scan of the
+    /// tick's spans; no allocation unless the engine profiler is on.
+    fn collect_step_phases(&self, timing: &mut TickTiming, overlap_ms: f32) {
+        if let Some(step) = self.arena.step_phases() {
+            timing.physx = Some(sc::PhysxPhases {
+                controller_ms: step.controller_ms,
+                submit_ms: step.submit_ms,
+                overlap_ms,
+                fetch_ms: step.fetch_ms,
+                callbacks_ms: step.callbacks_ms,
+                gpu_wait_ms: step.gpu_wait_ms,
+                readback_ms: step.readback_ms,
+                players_ms: step.players_ms,
+                awake_bodies: step.awake_bodies,
+                found_pairs: step.found_pairs,
+                lost_pairs: step.lost_pairs,
+            });
+        }
+        #[cfg(feature = "native-destruction")]
+        if let Some((status, counts, spans)) =
+            self.city.as_ref().and_then(|city| city.native_tick_view())
+        {
+            let observe_ms = spans
+                .iter()
+                .find(|span| span.name == "native_tick_ms")
+                .map_or(0.0, |span| span.value as f32);
+            let named = || spans.iter().map(|span| (span.name.as_str(), span.value, span.kind));
+            timing.stage = Some(sc::StagePhases {
+                frame: status.frame,
+                error: status.error,
+                iterations: status.iterations,
+                converged: status.converged,
+                passes: status.stress_passes,
+                corrections: status.correction_passes,
+                bonds_broken: counts.bonds_broken,
+                bonds_broken_after_correction: status.post_correction_broken_bonds,
+                crushed_chunks: status.crushed_chunks,
+                contacts: status.normal_contacts,
+                bodies_promoted: counts.bodies_promoted,
+                chunks_migrated: counts.chunks_migrated,
+                observe_ms,
+                zones: sc::StageZones::from_spans(named()),
+            });
+            timing.engine_zones = sc::engine_zones(named());
+        }
     }
 
     /// What the snapshots are built from, before interest or quantisation.

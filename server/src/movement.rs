@@ -76,6 +76,23 @@ pub struct PhysicsHealth {
     pub gpu_max_rigid_patches: u32,
 }
 
+/// The last physics step's phases, for the per-tick capture record. See
+/// `session_capture::PhysxPhases` for what each one covers.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct StepPhases {
+    pub controller_ms: f32,
+    pub submit_ms: f32,
+    pub fetch_ms: f32,
+    pub callbacks_ms: f32,
+    /// Only on the bridge's sampled steps.
+    pub gpu_wait_ms: Option<f32>,
+    pub readback_ms: f32,
+    pub players_ms: f32,
+    pub awake_bodies: u32,
+    pub found_pairs: u32,
+    pub lost_pairs: u32,
+}
+
 enum PhysicsBackend {
     Rapier(RapierPhysicsArena),
     #[cfg(feature = "physx-gpu")]
@@ -510,6 +527,15 @@ impl PhysicsArena {
             PhysicsBackend::Rapier(arena) => arena.exit_vehicle(player_id),
             #[cfg(feature = "physx-gpu")]
             PhysicsBackend::Physx(arena) => arena.exit_vehicle(player_id),
+        }
+    }
+
+    /// The last step's phases; None on Rapier, which has none to report.
+    pub fn step_phases(&self) -> Option<StepPhases> {
+        match &self.backend {
+            PhysicsBackend::Rapier(_) => None,
+            #[cfg(feature = "physx-gpu")]
+            PhysicsBackend::Physx(arena) => arena.step_phases(),
         }
     }
 

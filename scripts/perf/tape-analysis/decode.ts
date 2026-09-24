@@ -23,7 +23,11 @@ writeFileSync(`${outDir}/header.json`, JSON.stringify(tape.header, null, 1));
 // ---- frames
 {
   const f = tape.frames!;
-  const rows = ['t_ms,frame_ms,cpu_ms,awake,cx,cy,cz,qx,qy,qz,qw,offset_us,interp_ms,dyn_ms'];
+  // gpu_ms / gpu_max_pass_ms: the frame's own GPU time (tapes since
+  // 2026-09-24; header.gpuTimer says whether the browser could measure it).
+  // Empty where the frame has none, or the tape predates them.
+  const gpuCell = (v: number | undefined) => (v === undefined || Number.isNaN(v) ? '' : v.toFixed(3));
+  const rows = ['t_ms,frame_ms,cpu_ms,awake,cx,cy,cz,qx,qy,qz,qw,offset_us,interp_ms,dyn_ms,gpu_ms,gpu_max_pass_ms'];
   for (let i = 0; i < f.times.length; i++) {
     const c = f.camera.subarray(i * 7, i * 7 + 7);
     rows.push([
@@ -31,6 +35,7 @@ writeFileSync(`${outDir}/header.json`, JSON.stringify(tape.header, null, 1));
       ...Array.from(c, (v) => v.toFixed(4)),
       f.clock ? f.clock.offsetUs[i].toFixed(0) : '', f.clock ? f.clock.interpDelayMs[i].toFixed(2) : '',
       f.clock ? f.clock.dynDelayMs[i].toFixed(2) : '',
+      gpuCell(f.gpu?.ms[i]), gpuCell(f.gpu?.maxPassMs[i]),
     ].join(','));
   }
   writeFileSync(`${outDir}/frames.csv`, rows.join('\n'));

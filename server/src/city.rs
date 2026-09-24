@@ -2461,6 +2461,25 @@ impl CityRuntime {
         }
     }
 
+    /// The native stage's last tick without copying anything: its status,
+    /// what the server committed from it, and the tick's spans (engine zones
+    /// included when `VIBE_PHYSX_PROFILE` is on). None on other backends.
+    #[cfg(feature = "native-destruction")]
+    pub fn native_tick_view(
+        &self,
+    ) -> Option<(
+        vibe_land_physx_bridge::NativeStatus,
+        vibe_land_destruction::native_runtime::NativeTickCounts,
+        &[vibe_land_destruction::types::NamedSpan],
+    )> {
+        match &self.backend {
+            CityBackend::Native(backend) => {
+                Some((backend.last_status(), backend.tick_counts(), backend.extra_spans()))
+            }
+            _ => None,
+        }
+    }
+
     /// This tick's generic bridge spans (see NamedSpan); empty off physx.
     pub fn extra_spans(&self) -> Vec<vibe_land_destruction::types::NamedSpan> {
         match &self.backend {

@@ -209,6 +209,7 @@ function sampleTape(version: 1 | 2): CityTape {
             dynDelayMs: Float32Array.from([16, 16]),
           }
         : null,
+      gpu: null,
     },
   };
 }
@@ -276,6 +277,64 @@ describe('tape format', () => {
       expect(tape.frames!.camera[0]).toBe(frameBytes === 44 ? 7 : 0);
       expect(tape.frames!.camera[6]).toBe(frameBytes === 44 ? 0 : 1);
     }
+  });
+
+  it('round-trips each frame\'s GPU time, NaN where a frame has none', () => {
+    const tape = sampleTape(2);
+    tape.header.gpuTimer = 'EXT_disjoint_timer_query_webgl2';
+    tape.frames!.gpu = { ms: Float32Array.from([6.5, NaN]), maxPassMs: Float32Array.from([4.25, NaN]) };
+    const bytes = encodeCityTape(tape);
+    const back = decodeCityTape(bytes);
+    expect(back.header.frameBytes).toBe(68);
+    expect(back.header.gpuTimer).toBe('EXT_disjoint_timer_query_webgl2');
+    expect(back.frames!.gpu!.ms[0]).toBe(6.5);
+    expect(back.frames!.gpu!.maxPassMs[0]).toBe(4.25);
+    expect(Number.isNaN(back.frames!.gpu!.ms[1])).toBe(true);
+    expect(Number.isNaN(back.frames!.gpu!.maxPassMs[1])).toBe(true);
+    // Everything the 60-byte frame held is where it was.
+    expect(Array.from(back.frames!.cpuMs)).toEqual([3, 4]);
+    expect(Array.from(back.frames!.clock!.offsetUs)).toEqual(Array.from(tape.frames!.clock!.offsetUs));
+    expect(back.packets.map((p) => Array.from(p))).toEqual(tape.packets.map((p) => Array.from(p)));
+  });
+
+  it('writes 60-byte frames without GPU times, and reads them back with none', () => {
+    const tape = sampleTape(2);
+    const bytes = encodeCityTape(tape);
+    const back = decodeCityTape(bytes);
+    expect(back.header.frameBytes).toBe(60);
+    expect(back.header.gpuTimer).toBeUndefined();
+    expect(back.frames!.gpu).toBeNull();
+    expect(Array.from(back.frames!.frameMs)).toEqual([8, 9]);
+  });
+
+  it('lets a reader that only knows 60-byte frames skip the GPU times', () => {
+    // What every older reader does (this decoder before GPU times, netlab's
+    // vltape.rs, session_bundle.py): step `frameBytes` per frame and read the
+    // first 60. The packets after the frames must come out unchanged.
+    const tape = sampleTape(2);
+    tape.frames!.gpu = { ms: Float32Array.from([6.5, 7.5]), maxPassMs: Float32Array.from([4, 5]) };
+    const bytes = encodeCityTape(tape);
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    const headerLength = view.getUint32(8, true);
+    const header = JSON.parse(new TextDecoder().decode(bytes.subarray(12, 12 + headerLength)));
+    let at = 12 + headerLength;
+    const frameMs: number[] = [];
+    for (let i = 0; i < header.frames; i += 1) {
+      frameMs.push(view.getFloat32(at + 4, true));
+      at += header.frameBytes;
+    }
+    expect(frameMs).toEqual([8, 9]);
+    expect(view.getFloat64(at, true)).toBe(tape.times[0]);
+    expect(view.getUint32(at + 8, true)).toBe(tape.packets[0].length);
+  });
+
+  it('marks a tape from a browser without the GPU timer as unavailable, not zero', () => {
+    const tape = sampleTape(2);
+    tape.header.gpuTimer = 'unavailable';
+    tape.frames!.gpu = { ms: Float32Array.from([NaN, NaN]), maxPassMs: Float32Array.from([NaN, NaN]) };
+    const back = decodeCityTape(encodeCityTape(tape));
+    expect(back.header.gpuTimer).toBe('unavailable');
+    expect(Array.from(back.frames!.gpu!.ms).every(Number.isNaN)).toBe(true);
   });
 
   it('refuses a file that is not a tape', () => {

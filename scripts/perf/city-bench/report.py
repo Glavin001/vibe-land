@@ -39,6 +39,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.normpath(os.path.join(HERE, "..", "..", ".."))
 sys.path.insert(0, os.path.join(ROOT, "scripts", "perf"))
 import session_bundle  # noqa: E402
+import tick_phases  # noqa: E402
 
 # Snapshot tick length (us) of a tape whose header has no serverTickUs: the
 # clients before 2026-09-24 timed SnapshotV2 ticks as 16 667 us (the server
@@ -232,11 +233,17 @@ def server_metrics(server_dir, stats_samples, window, levels, tl, server_log_tex
         if len(b) > 1 and k < max(buckets):
             per5.append(round(len(b) / 5 / 60, 3))
     out["sim_rate_5s_min"] = min(per5) if per5 else None
-    comps = ["dynamics_ms", "city_ms", "snapshot_ms", "player_sim_ms", "vehicle_ms", "hitscan_ms", "publish_ms",
-             "unattributed_ms", "capture_ms"]
+    comps = ["dynamics_ms", "city_ms", "snapshot_ms", "player_sim_ms", "vehicle_ms", "hitscan_ms", "shots_ms",
+             "publish_ms", "unattributed_ms", "capture_ms"]
     tot = sum(total)
     out["breakdown"] = {c: {**q([t.get(c, 0.0) for t in ticks], 3),
                             "share_pct": pct(sum(t.get(c, 0.0) for t in ticks), tot, 1)} for c in comps}
+    # Before timing_version 2 a tick that sent no snapshot repeated the last
+    # snapshot tick's snapshot_ms (and shots were in unattributed_ms).
+    out["snapshot_ms_per_tick"] = tick_phases.snapshot_ms_is_per_tick(ticks)
+    # The PhysX step and the destruction stage, per tick (timing_version 2
+    # captures; empty for older ones).
+    out["phases"] = tick_phases.summary(ticks)
     # City encoder per tick.
     city = [c for c in read_jsonl(os.path.join(server_dir, "city", "stats.jsonl"))
             if ticks[0]["tick"] <= c["tick"] <= ticks[-1]["tick"]]
@@ -328,6 +335,9 @@ def client_metrics(i, bundle, adir, run_dir, tl, budgets_cfg, server_ticks, leve
     ft = [fnum(r["t_ms"]) for r in F]
     fms = [fnum(r["frame_ms"]) for r in F]
     fcpu = [fnum(r["cpu_ms"]) for r in F]
+    # The frame's own GPU time (tapes since 2026-09-24); None where it has none.
+    fgpu = [tick_phases.fnum_or_none(r.get("gpu_max_pass_ms")) for r in F]
+    fgpu_sum = [tick_phases.fnum_or_none(r.get("gpu_ms")) for r in F]
     period = budgets_cfg.get("display_period_ms")
     if not period and fms:
         # The display (rAF) period: the median frame while the scene is quiet
@@ -341,6 +351,7 @@ def client_metrics(i, bundle, adir, run_dir, tl, budgets_cfg, server_ticks, leve
             u = to_unix(ft[k])
             near = [t["total_ms"] for t in server_ticks if abs(t["unix_us"] / 1000 - u) < 150]
             hitches.append({"t_s": round((u - tl.t0) / 1000, 2), "phase": tl.phase_at(u), "frame_ms": ms, "cpu_ms": fcpu[k],
+                            "gpu_ms": fgpu[k], "class": tick_phases.frame_class(ms, fcpu[k], fgpu[k]),
                             "cpu_bound": fcpu[k] > 0.6 * ms, "server_tick_max_ms_near": round(max(near), 1) if near else None})
     out["frames"] = {
         "display_period_ms": period, "avg_fps": round(len(F) / dur_s, 1) if dur_s else None,
@@ -351,6 +362,19 @@ def client_metrics(i, bundle, adir, run_dir, tl, budgets_cfg, server_ticks, leve
         "hitches_over_50ms": sum(1 for x in fms if x > 50), "hitches_over_100ms": sum(1 for x in fms if x > 100),
         "cpu_bound_over_33ms": sum(1 for k, x in enumerate(fms) if x > 33.3 and fcpu[k] > 0.6 * x),
         "worst_hitches": sorted(hitches, key=lambda h: -h["frame_ms"])[:15],
+        # GPU time per frame: `gpu_timer` is the tape header's gpuTimer
+        # ('unavailable' when the browser has no timer extension; None on
+        # tapes from before GPU times were recorded).
+        "gpu_timer": hdr.get("gpuTimer"),
+        "gpu_frames_timed": sum(1 for x in fgpu if x is not None),
+        # Why frames lack a GPU time: disjoints, expired, lag (tape header).
+        "gpu_timer_stats": hdr.get("gpuTimerStats"),
+        "gpu_max_pass_ms": q([x for x in fgpu if x is not None]),
+        "gpu_sum_ms": q([x for x in fgpu_sum if x is not None]),
+        # Frames over 2 display periods, by why: cpu / gpu / wait / unknown
+        # (tick_phases.frame_class).
+        "long_frames_by_class": dict(collections.Counter(
+            tick_phases.frame_class(x, fcpu[k], fgpu[k]) for k, x in enumerate(fms) if x > 2 * period)) if period else {},
     }
 
     # ── snapshots (stream rate against the server's tick rate)
@@ -904,6 +928,57 @@ def table(rows, cols, heads=None):
     return "\n".join(out)
 
 
+def phase_md(s):
+    """The report's per-tick physics phases (timing_version 2 captures)."""
+    ph = s.get("phases") or {}
+    if not ph:
+        return ["- Per-tick physics phases: not in this capture (a server from before timing_version 2)."]
+    cu = ph.get("collect_us") or {}
+    L = [f"- Per-tick physics phases ({ph.get('ticks_with_phases')} ticks; engine profiler on {ph.get('profiled_ticks')} of them; "
+         f"GPU wait sampled on {ph.get('gpu_wait_sampled_ticks')}): collecting them cost p50/p90/max "
+         f"{fmt(cu.get('p50'), 1)}/{fmt(cu.get('p90'), 1)}/{fmt(cu.get('max'), 1)} us per tick. "
+         f"Meteors launched: {ph.get('meteors_launched')} (launch p50/max {fmt((ph.get('meteor_launch_ms') or {}).get('p50'), 3)}/"
+         f"{fmt((ph.get('meteor_launch_ms') or {}).get('max'), 3)} ms); shots bracket p50/max "
+         f"{fmt((ph.get('shots_ms') or {}).get('p50'), 3)}/{fmt((ph.get('shots_ms') or {}).get('max'), 3)} ms on ticks with shots.",
+         "", "Physics step by tick class (split: created bodies; break: broke bonds only), p50 / p90 (max for counts):", ""]
+    rows = []
+    for name, c in (ph.get("by_class") or {}).items():
+        g = lambda k, p="p50": (c.get(k) or {}).get(p)
+        rows.append({"class": name, "ticks": c.get("ticks"),
+                     "total": f"{fmt(g('total_ms'))} / {fmt(g('total_ms', 'p90'))}",
+                     "dynamics": f"{fmt(g('dynamics_ms'))} / {fmt(g('dynamics_ms', 'p90'))}",
+                     "named_%": fmt(g("named_dynamics_pct"), 1),
+                     "submit": fmt(g("physx.submit_ms")),
+                     "overlap": fmt(g("physx.overlap_ms")),
+                     "fetch": f"{fmt(g('physx.fetch_ms'))} / {fmt(g('physx.fetch_ms', 'p90'))}",
+                     "gpu_wait": fmt(g("physx.gpu_wait_ms")),
+                     "readback": fmt(g("physx.readback_ms")),
+                     "corrections": f"{fmt(g('stage.corrections'), 0)} / {fmt(g('stage.corrections', 'max'), 0)}",
+                     "promoted": f"{fmt(g('stage.bodies_promoted'), 0)} / {fmt(g('stage.bodies_promoted', 'max'), 0)}",
+                     "bonds": f"{fmt(g('stage.bonds_broken'), 0)} / {fmt(g('stage.bonds_broken', 'max'), 0)}",
+                     "contacts": fmt(g("stage.contacts"), 0),
+                     "iters": fmt(g("stage.iterations"), 0),
+                     "awake": fmt(g("physx.awake_bodies"), 0),
+                     "pairs_found/lost": f"{fmt(g('physx.found_pairs'), 0)}/{fmt(g('physx.lost_pairs'), 0)}"})
+    L.append(table(rows, list(rows[0].keys()) if rows else ["class"]))
+    zrows = []
+    for name, c in (ph.get("by_class") or {}).items():
+        if "zones.submit_ms" not in c:
+            continue
+        g = lambda k, p="p50": (c.get(k) or {}).get(p)
+        zrows.append({"class": name, **{k: f"{fmt(g('zones.' + k))} / {fmt(g('zones.' + k, 'p90'))}"
+                                        for k in tick_phases.ZONE_FIELDS}})
+    if zrows:
+        L += ["", "Destruction-stage phases from the engine profiler (VIBE_PHYSX_PROFILE=1), ms p50 / p90. CPU zones and "
+                  "GPU (`*_gpu`) times overlap, so they are phases to compare, not parts of a sum:", ""]
+        L.append(table(zrows, list(zrows[0].keys())))
+    if ph.get("split_tick_engine_zones"):
+        L += ["", "Heaviest engine zones on split ticks (summed over calls and threads):", ""]
+        L.append(table(ph["split_tick_engine_zones"][:10], ["zone", "ticks", "mean_ms_per_split_tick", "max_ms"]))
+    L.append("")
+    return L
+
+
 def write_md(report, path):
     s, run = report["server"], report["run"]
     L = [f"# City bench: {run['label']}", ""]
@@ -929,6 +1004,7 @@ def write_md(report, path):
     br = s.get("breakdown") or {}
     L.append("- Tick breakdown (mean ms, share): " + ", ".join(
         f"{k[:-3]} {fmt((v or {}).get('mean'), 2)} ({fmt((v or {}).get('share_pct'), 1)}%)" for k, v in br.items() if (v or {}).get("share_pct")))
+    L += phase_md(s)
     ps = s.get("physics_sampled") or {}
     L.append(f"- PhysX last step / GPU wait (1 Hz samples) p50/p95/max: "
              f"{fmt(ps.get('physics_last_step_ms', {}).get('p50'))}/{fmt(ps.get('physics_last_step_ms', {}).get('p95'))}/{fmt(ps.get('physics_last_step_ms', {}).get('max'))} ms, "
@@ -970,6 +1046,13 @@ def write_md(report, path):
                  f"{fmt(f.get('pct_over_2x_display'))}% over 2x; CPU p50/p95 {fmt(f.get('cpu_ms', {}).get('p50'))}/{fmt(f.get('cpu_ms', {}).get('p95'))} ms; "
                  f"hitches >100 ms: {f.get('hitches_over_100ms')}, CPU-bound >33 ms: {f.get('cpu_bound_over_33ms')}; "
                  f"r(fps, server ticks/s) = {fmt(c.get('r_client_fps_vs_server_ticks_per_s'))}.")
+        gm, gs = f.get("gpu_max_pass_ms") or {}, f.get("gpu_sum_ms") or {}
+        L.append(f"- Client GPU time ({f.get('gpu_timer') or 'not recorded on this tape'}; {f.get('gpu_frames_timed', 0)} frames timed): "
+                 f"longest pass p50/p95/max {fmt(gm.get('p50'))}/{fmt(gm.get('p95'))}/{fmt(gm.get('max'))} ms, "
+                 f"sum of passes p50/p95/max {fmt(gs.get('p50'))}/{fmt(gs.get('p95'))}/{fmt(gs.get('max'))} ms; "
+                 f"frames over 2 periods by cause: {json.dumps(f.get('long_frames_by_class') or {})}"
+                 + (f"; timer bookkeeping {json.dumps({k: v for k, v in f['gpu_timer_stats'].items() if k != 'lagFramesSum'})}"
+                    if f.get("gpu_timer_stats") else "") + ".")
         ia = n.get("interarrival_ms", {})
         L.append(f"- Snapshots: {fmt(n.get('rate_hz'), 1)} Hz, {fmt(n.get('per_server_tick'), 3)} per server tick; arrival gaps p50/p99/max "
                  f"{fmt(ia.get('p50'))}/{fmt(ia.get('p99'))}/{fmt(ia.get('max'))} ms; {n.get('gaps_over_100ms')} gaps over 100 ms; "
@@ -1007,7 +1090,7 @@ def write_md(report, path):
             if isinstance(v, dict) and v.get("n")))
         if f.get("worst_hitches"):
             L += ["", "Worst hitches:", ""]
-            L.append(table(f["worst_hitches"][:8], ["t_s", "phase", "frame_ms", "cpu_ms", "cpu_bound", "server_tick_max_ms_near"]))
+            L.append(table(f["worst_hitches"][:8], ["t_s", "phase", "frame_ms", "cpu_ms", "gpu_ms", "class", "server_tick_max_ms_near"]))
     L += ["", "## By phase", ""]
     cols = ["window", "dur_s", "server_tick_p95", "server_pct_over_16_7", "sim_rate", "active_bodies", "broken_bonds",
             "c0_frame_p95", "c0_pct_frames_over_2x", "c0_snapshots_per_s", "c0_lead_p95", "c0_pct_extrapolating", "c0_backward_steps", "c0_city_kB_s"]

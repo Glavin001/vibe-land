@@ -35,6 +35,14 @@
 //     [f32 dynamic-body interpolation delay ms], and packets as
 //     [f64 tMs][u32 len][u8 channel][bytes], `channel` one of TAPE_CHANNEL_*,
 //     with TAPE_CHANNEL_PRELUDE set on the prelude's copies.
+//     Since 2026-09-24 the recorder writes 68-byte frames (`frameBytes` 68):
+//     the 60 above, then the frame's own GPU time [f32 gpu ms, the sum of its
+//     timer-query passes][f32 longest pass ms], NaN where the frame has none
+//     (no timer extension -- the header's `gpuTimer` says 'unavailable' -- a
+//     disjoint, or a result that had not landed when the tape stopped).
+//     Every reader skips `frameBytes` per frame, so older readers read these
+//     tapes and this one reads 60-byte tapes with no GPU time (`frames.gpu`
+//     null).
 //   VLTAPE02: the first v2 tapes, byte for byte VLCTAPE2 under the magic the
 //     server's netlab encoder tape also uses. Still read; told apart from an
 //     encoder tape by the JSON header that follows (an encoder tape carries a
@@ -46,6 +54,7 @@
 
 import type { InboundChannel } from '../net/inbound';
 import { decodeServerReliablePacket, SERVER_TICK_US } from '../net/protocol';
+import { currentGpuFrameSerial, gpuTimerCounters, gpuTimerStatus, onGpuFrameResult, type GpuTimerCounters } from './renderStats';
 import {
   PKT_BATTERY_SYNC,
   PKT_DYNAMIC_BODY_META,
@@ -193,6 +202,20 @@ export interface CityTapeHeader {
    * (see `tapeSnapshotTickUs`).
    */
   serverTickUs?: number;
+  /**
+   * How the recording client timed its frames on the GPU:
+   * 'EXT_disjoint_timer_query_webgl2', or 'unavailable' when the browser
+   * lacks the extension (every frame's `gpu` is then NaN, never a guess).
+   * Absent on tapes from before GPU times were recorded.
+   */
+  gpuTimer?: 'EXT_disjoint_timer_query_webgl2' | 'unavailable' | 'unknown';
+  /**
+   * What happened to GPU frame times while this tape recorded (renderStats'
+   * counters, change over the recording): frames resolved, disjoints and
+   * the queries they discarded, frames that expired unresolved, queries
+   * refused by the backlog cap, and the resolved frames' lag in frames.
+   */
+  gpuTimerStats?: GpuTimerCounters & { lagFramesMean: number | null; framesTimedOnTape: number };
 }
 
 /** Snapshot tick length of a client that did not record `serverTickUs`. */
@@ -224,10 +247,24 @@ export interface CityTapeFrames {
    * at. Absent on v1 tapes.
    */
   clock: { offsetUs: Float64Array; interpDelayMs: Float32Array; dynDelayMs: Float32Array } | null;
+  /**
+   * Each frame's own GPU time from the timer queries (EXT_disjoint_timer_query_webgl2):
+   * `ms` the sum of its passes, `maxPassMs` the longest. NaN where the frame
+   * has none. Null on tapes recorded before GPU times were (60-byte frames).
+   *
+   * On ANGLE/Metal a pass's query reports something wider than the pass
+   * (command-buffer granularity: the passes of a 12 ms frame summed to
+   * 26-52 ms on an M3 Max), so `ms` can exceed the frame; `maxPassMs` is the
+   * tighter lower bound. Either way a long frame with a short GPU time was
+   * not GPU-bound, and one whose GPU time spans it waited on the GPU.
+   */
+  gpu: { ms: Float32Array; maxPassMs: Float32Array } | null;
 }
 
 const FRAME_BYTES_V1 = 44;
 const FRAME_BYTES_V2 = 60;
+/** v2 frames with the frame's GPU time appended. */
+const FRAME_BYTES_V2_GPU = 68;
 
 export interface CityTape {
   header: CityTapeHeader;
@@ -288,6 +325,18 @@ class CityTapeRecorder {
   private frameAwake: number[] = [];
   private frameCamera: number[] = [];
   private frameClock: number[] = [];
+  private frameGpuMs: number[] = [];
+  private frameGpuMaxPassMs: number[] = [];
+  /** GPU frame serial -> index of the tape frame that describes it, until its result lands. */
+  private gpuPending = new Map<number, number>();
+  /**
+   * Results that landed before their frame was noted: the timer can resolve a
+   * frame inside the next rAF's `markFrameStart`, which runs before the
+   * governor's hook notes that frame (lag 0 is the common case on ANGLE/Metal).
+   */
+  private gpuEarly = new Map<number, [number, number]>();
+  private unsubscribeGpu: (() => void) | null = null;
+  private gpuCountersAtStart: GpuTimerCounters | null = null;
   private lastAwake = 0;
   private meta: { matchId: string; manifestHash: string; wireVersion: number; simHz: number } | null = null;
   private requestResync: (() => void) | null = null;
@@ -382,6 +431,13 @@ class CityTapeRecorder {
     this.frameAwake = [];
     this.frameCamera = [];
     this.frameClock = [];
+    this.frameGpuMs = [];
+    this.frameGpuMaxPassMs = [];
+    this.gpuPending.clear();
+    this.gpuEarly.clear();
+    this.unsubscribeGpu?.();
+    this.unsubscribeGpu = onGpuFrameResult((frame, totalMs, maxPassMs) => this.noteGpuFrame(frame, totalMs, maxPassMs));
+    this.gpuCountersAtStart = gpuTimerCounters();
     // The prelude: session state from before this moment, at t=0, so every
     // snapshot on the tape can be read (whose handle is which body, which
     // player is the one recording).
@@ -453,6 +509,42 @@ class CityTapeRecorder {
     this.frameCamera.push(p.x, p.y, p.z, q.x, q.y, q.z, q.w);
     const clock = this.probe?.clock(this.startedAtMs + frameTimeMs) ?? null;
     this.frameClock.push(clock?.offsetUs ?? NaN, clock?.interpDelayMs ?? NaN, clock?.dynDelayMs ?? NaN);
+    // `frameMs` and `cpuMs` describe the frame that just ended, which ran
+    // under the previous GPU serial; its GPU time lands a few frames later.
+    this.frameGpuMs.push(NaN);
+    this.frameGpuMaxPassMs.push(NaN);
+    const serial = currentGpuFrameSerial() - 1;
+    const early = this.gpuEarly.get(serial);
+    if (early) {
+      this.gpuEarly.delete(serial);
+      this.frameGpuMs[this.frameGpuMs.length - 1] = early[0];
+      this.frameGpuMaxPassMs[this.frameGpuMaxPassMs.length - 1] = early[1];
+    } else {
+      this.gpuPending.set(serial, this.frameGpuMs.length - 1);
+    }
+    if (this.gpuEarly.size > 64) {
+      for (const key of this.gpuEarly.keys()) {
+        if (key < serial - 32) this.gpuEarly.delete(key);
+      }
+    }
+    if (this.gpuPending.size > 2048) {
+      for (const key of this.gpuPending.keys()) {
+        if (key < serial - 1200) this.gpuPending.delete(key);
+      }
+    }
+  }
+
+  /** A frame's GPU time has landed; put it on the tape frame that describes that frame. */
+  private noteGpuFrame(frame: number, totalMs: number, maxPassMs: number): void {
+    if (!this.recording) return;
+    const index = this.gpuPending.get(frame);
+    if (index === undefined) {
+      this.gpuEarly.set(frame, [totalMs, maxPassMs]);
+      return;
+    }
+    this.gpuPending.delete(frame);
+    this.frameGpuMs[index] = totalMs;
+    this.frameGpuMaxPassMs[index] = maxPassMs;
   }
 
   /** The city layer's 2 Hz telemetry reports how many chunks are awake. */
@@ -485,6 +577,12 @@ class CityTapeRecorder {
     const clockOriginMs = this.startedAtMs;
     const pairing = this.pairing;
     this.pairing = null;
+    this.unsubscribeGpu?.();
+    this.unsubscribeGpu = null;
+    this.gpuPending.clear();
+    this.gpuEarly.clear();
+    const gpuTimer = gpuTimerStatus();
+    const gpuTimerStats = gpuCountersSince(this.gpuCountersAtStart, gpuTimerCounters(), this.frameGpuMs);
     this.startedAtMs = 0;
     this.owner = null;
     const meta = this.meta ?? { matchId: 'city-default', manifestHash: '', wireVersion: 3, simHz: 60 };
@@ -525,6 +623,8 @@ class CityTapeRecorder {
         ...(pairing ? { pairing } : {}),
         client: clientBuild(),
         serverTickUs: SERVER_TICK_US,
+        gpuTimer,
+        gpuTimerStats,
       },
       times: Float64Array.from(this.times),
       packets: this.packets,
@@ -540,6 +640,7 @@ class CityTapeRecorder {
           interpDelayMs: Float32Array.from(this.frameClock.filter((_, i) => i % 3 === 1)),
           dynDelayMs: Float32Array.from(this.frameClock.filter((_, i) => i % 3 === 2)),
         },
+        gpu: { ms: Float32Array.from(this.frameGpuMs), maxPassMs: Float32Array.from(this.frameGpuMaxPassMs) },
       },
     };
     this.times = [];
@@ -552,6 +653,8 @@ class CityTapeRecorder {
     this.frameAwake = [];
     this.frameCamera = [];
     this.frameClock = [];
+    this.frameGpuMs = [];
+    this.frameGpuMaxPassMs = [];
     this.notify();
     return tape;
   }
@@ -567,6 +670,28 @@ class CityTapeRecorder {
 }
 
 export const cityTapeRecorder = new CityTapeRecorder();
+
+function gpuCountersSince(
+  start: GpuTimerCounters | null,
+  end: GpuTimerCounters,
+  frameGpuMs: number[],
+): CityTapeHeader['gpuTimerStats'] {
+  const base = start ?? { ...end, framesResolved: 0, disjoints: 0, queriesDiscarded: 0, framesExpired: 0, queriesRefused: 0, lagFramesMax: 0, lagFramesSum: 0 };
+  const framesResolved = end.framesResolved - base.framesResolved;
+  const lagFramesSum = end.lagFramesSum - base.lagFramesSum;
+  return {
+    framesResolved,
+    disjoints: end.disjoints - base.disjoints,
+    queriesDiscarded: end.queriesDiscarded - base.queriesDiscarded,
+    framesExpired: end.framesExpired - base.framesExpired,
+    queriesRefused: end.queriesRefused - base.queriesRefused,
+    // A page-lifetime maximum: the recording's own is at most this.
+    lagFramesMax: end.lagFramesMax,
+    lagFramesSum,
+    lagFramesMean: framesResolved > 0 ? lagFramesSum / framesResolved : null,
+    framesTimedOnTape: frameGpuMs.filter((ms) => !Number.isNaN(ms)).length,
+  };
+}
 
 function clientBuild(): { build: string; mode: string; origin: string } {
   return {
@@ -594,7 +719,10 @@ function channelTotals(channels: Uint8Array, packets: Uint8Array[]): Record<stri
 export function encodeCityTape(tape: CityTape): Uint8Array {
   const v1 = tape.header.version === 1 && tape.channels.every((channel) => channel === TAPE_CHANNEL_CITY);
   const magic = v1 ? MAGIC_V1 : MAGIC_V2;
-  const frameBytes = v1 ? FRAME_BYTES_V1 : FRAME_BYTES_V2;
+  // GPU times only on v2, and only when the tape has them: a tape read from
+  // a 60-byte file is written back as it was.
+  const gpu = v1 ? null : tape.frames?.gpu ?? null;
+  const frameBytes = v1 ? FRAME_BYTES_V1 : gpu ? FRAME_BYTES_V2_GPU : FRAME_BYTES_V2;
   const packetHeader = v1 ? 8 : 13;
   const frameCount = tape.frames ? tape.frames.times.length : 0;
   const header = new TextEncoder().encode(JSON.stringify({
@@ -625,6 +753,10 @@ export function encodeCityTape(tape: CityTape): Uint8Array {
         view.setFloat64(at + 44, clock?.offsetUs[i] ?? NaN, true);
         view.setFloat32(at + 52, clock?.interpDelayMs[i] ?? NaN, true);
         view.setFloat32(at + 56, clock?.dynDelayMs[i] ?? NaN, true);
+      }
+      if (gpu) {
+        view.setFloat32(at + 60, gpu.ms[i] ?? NaN, true);
+        view.setFloat32(at + 64, gpu.maxPassMs[i] ?? NaN, true);
       }
       at += frameBytes;
     }
@@ -675,6 +807,7 @@ export function decodeCityTape(bytes: Uint8Array): CityTape {
     const n = header.frames;
     const frameBytes = header.frameBytes ?? 16;
     const hasClock = frameBytes >= FRAME_BYTES_V2;
+    const hasGpu = !v1 && frameBytes >= FRAME_BYTES_V2_GPU;
     frames = {
       times: new Float32Array(n),
       frameMs: new Float32Array(n),
@@ -684,6 +817,7 @@ export function decodeCityTape(bytes: Uint8Array): CityTape {
       clock: hasClock
         ? { offsetUs: new Float64Array(n), interpDelayMs: new Float32Array(n), dynDelayMs: new Float32Array(n) }
         : null,
+      gpu: hasGpu ? { ms: new Float32Array(n), maxPassMs: new Float32Array(n) } : null,
     };
     for (let i = 0; i < n; i += 1) {
       frames.times[i] = view.getFloat32(at, true);
@@ -699,6 +833,10 @@ export function decodeCityTape(bytes: Uint8Array): CityTape {
         frames.clock.offsetUs[i] = view.getFloat64(at + 44, true);
         frames.clock.interpDelayMs[i] = view.getFloat32(at + 52, true);
         frames.clock.dynDelayMs[i] = view.getFloat32(at + 56, true);
+      }
+      if (frames.gpu) {
+        frames.gpu.ms[i] = view.getFloat32(at + 60, true);
+        frames.gpu.maxPassMs[i] = view.getFloat32(at + 64, true);
       }
       at += frameBytes;
     }

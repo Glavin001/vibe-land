@@ -20,7 +20,8 @@
 //!     world.bin           per-tick authoritative players, vehicles and
 //!                         dynamic bodies, before interest or quantisation
 //!     sendlog.bin         every packet sent to every client (send_log.rs)
-//!     ticks.jsonl         per-tick timings, with tick, monotonic and wall time
+//!     ticks.jsonl         per-tick timings, with tick, monotonic and wall time,
+//!                         and the physics step's phases (`TickTiming`)
 //!     selections.jsonl    per-client interest / byte-budget decisions
 //!     session-capture.json  writer metadata: ticks written and dropped
 //!     city/               the netlab encoder capture (city matches only)
@@ -323,6 +324,253 @@ pub struct TickTiming {
     /// The capture's own cost on the tick thread: building this tick's truth
     /// and selection records and handing them to the writer.
     pub capture_ms: f32,
+
+    // ---- Added 2026-09-24 (TICK_TIMING_VERSION 2). Every field below is
+    // absent from older captures and defaults when read; nothing above was
+    // renamed or re-typed. Readers that see `timing_version` >= 2 may rely on
+    // `snapshot_ms` being this tick's own value (0 on a tick that sent no
+    // snapshot); before it, a non-snapshot tick repeated the last snapshot
+    // tick's cost.
+    /// 0 in captures older than this field; `TICK_TIMING_VERSION` since.
+    #[serde(default)]
+    pub timing_version: u32,
+    /// Whether this tick broadcast the game snapshot (`snapshot_ms` is its cost).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot_sent: Option<bool>,
+    /// Routing the tick's queued shots into the city: meteor launches aimed
+    /// by players and cannonballs thrown. A top-level bracket, so it no longer
+    /// lands in `unattributed_ms`.
+    #[serde(default)]
+    pub shots_ms: f32,
+    /// Meteors launched this tick (player-fired and scripted), and the time
+    /// the launches took. The time is inside `shots_ms` (player-fired) or
+    /// `city_ms` (scripted `/city-meteor`), not an extra bracket.
+    #[serde(default)]
+    pub meteors_launched: u32,
+    #[serde(default)]
+    pub meteor_launch_ms: f32,
+    /// The PhysX step's phases (PhysX GPU backend only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub physx: Option<PhysxPhases>,
+    /// The native destruction stage's tick (native destruction only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stage: Option<StagePhases>,
+    /// The tick's largest engine profile zones (at or above
+    /// `ENGINE_ZONE_FLOOR_MS`, at most `ENGINE_ZONE_LIMIT`), by name
+    /// (`VIBE_PHYSX_PROFILE=1` only). Zone
+    /// times are summed over calls and threads, and the `cuda.*` ones are GPU
+    /// time from events, so they overlap and do not add up to a wall-clock
+    /// parent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub engine_zones: Option<BTreeMap<String, f32>>,
+    /// What collecting `physx`, `stage` and `engine_zones` cost the tick
+    /// thread, microseconds. Included in `capture_ms`.
+    #[serde(default)]
+    pub phases_us: f32,
+}
+
+/// `TickTiming::timing_version` of records this server writes.
+pub const TICK_TIMING_VERSION: u32 = 2;
+
+/// Engine zones below this are left out of `TickTiming::engine_zones`, and
+/// at most `ENGINE_ZONE_LIMIT` of the largest are kept, so a profiled
+/// half-hour capture stays tens of megabytes.
+pub const ENGINE_ZONE_FLOOR_MS: f32 = 0.05;
+pub const ENGINE_ZONE_LIMIT: usize = 24;
+
+/// The PhysX step, phase by phase, as the bridge timed it this tick.
+///
+/// `dynamics_ms` = `controller_ms` + `submit_ms` + `fetch_ms` +
+/// `readback_ms` + `players_ms` + a small remainder (bookkeeping between the
+/// brackets). With GPU dynamics `submit_ms` only dispatches; the simulation
+/// (and the native destruction stage inside it) runs while the server does
+/// `overlap_ms` of other work, and `fetch_ms` is the rest of the wait.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct PhysxPhases {
+    /// Vehicle model + character-controller interactions before `simulate`.
+    pub controller_ms: f32,
+    /// The `simulate()` call: the step's submission.
+    pub submit_ms: f32,
+    /// Server work run between submit and fetch (the deferred city observer
+    /// flush of the split step). Counted in `city_ms`, not `dynamics_ms`.
+    pub overlap_ms: f32,
+    /// `fetchResults`: the GPU wait (the destruction stage runs in here),
+    /// PhysX's result copy and our contact callbacks.
+    pub fetch_ms: f32,
+    /// Our contact callbacks, inside `fetch_ms`.
+    pub callbacks_ms: f32,
+    /// The pure GPU wait inside `fetch_ms`, on the bridge's sampled ticks
+    /// only (1 in 16 by default); absent on the others.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpu_wait_ms: Option<f32>,
+    /// Contact, body and vehicle readbacks after the fetch.
+    pub readback_ms: f32,
+    /// Refreshing the players from the scene after the fetch.
+    pub players_ms: f32,
+    /// PhysX's active dynamic bodies after the step.
+    pub awake_bodies: u32,
+    /// Broad-phase pairs found and lost this step.
+    pub found_pairs: u32,
+    pub lost_pairs: u32,
+}
+
+/// The native destruction stage's part of the tick.
+///
+/// The counts come from the stage's status and the events the server took
+/// this tick, so they are there on every tick. The stage publishes no timings
+/// of its own; its phase times (`zones`) exist only when the engine profiler
+/// runs (`VIBE_PHYSX_PROFILE=1`).
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct StagePhases {
+    pub frame: u64,
+    /// Engine error bits; non-zero means the step was rejected.
+    pub error: u32,
+    /// Stress solver iterations and whether the solve converged.
+    pub iterations: u32,
+    pub converged: bool,
+    /// Stress evaluations: the trial plus one per corrected re-solve.
+    pub passes: u32,
+    /// Corrected rigid re-solves run inside the step.
+    pub corrections: u32,
+    /// Bond-broken events committed this tick, and how many of the stage's
+    /// breaks came from the evaluations after a correction.
+    pub bonds_broken: u32,
+    pub bonds_broken_after_correction: u32,
+    pub crushed_chunks: u32,
+    /// Normal contacts the stage loaded the bond graph with.
+    pub contacts: u32,
+    /// New bodies (a split tick has at least one) and chunks that moved body.
+    pub bodies_promoted: u32,
+    pub chunks_migrated: u32,
+    /// The bridge's observation of the step on the host (`native_tick_ms`),
+    /// after the fetch. Inside `city_ms`.
+    pub observe_ms: f32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub zones: Option<StageZones>,
+}
+
+/// The stage's phase times from the engine profiler, grouped. CPU zones are
+/// wall time on the thread that ran them; `*_gpu_ms` are GPU time between
+/// CUDA events. They overlap each other (the CPU waits for the GPU inside
+/// `finish_ms`; task-thread zones run beside the step's own thread), so they
+/// are phases to compare, not parts of a sum.
+///
+/// Zones nested inside another (`finishDetail.*`, `detail.*`, the other
+/// `*Detail.*`) are not counted again in a group; the ones worth naming are
+/// broken out (`finish_gpu_wait_ms`, `trial_broadphase_wait_ms`) and every
+/// zone is also in `TickTiming::engine_zones`.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct StageZones {
+    /// `GpuDestruction.submit`: prepare, borrow the solved contacts, advance.
+    pub submit_ms: f32,
+    /// `GpuDestruction.finishAndReserve`: waits for the stage's GPU work and
+    /// reserves the new bodies; `finish_gpu_wait_ms` is its wait
+    /// (`finishDetail.waitForGpu`).
+    pub finish_ms: f32,
+    pub finish_gpu_wait_ms: f32,
+    /// Contact loads, stress solve and material update on the GPU.
+    pub stress_gpu_ms: f32,
+    /// Topology, split candidates and the commit on the GPU.
+    pub fracture_gpu_ms: f32,
+    /// The trial rigid solve's broad phase (`trialDetail.postBroadPhase`),
+    /// the wait for it inside that (`trialDetail.broadPhaseWait`), its
+    /// narrow phase, and its other detail zones.
+    pub trial_broadphase_ms: f32,
+    pub trial_broadphase_wait_ms: f32,
+    pub trial_narrowphase_ms: f32,
+    pub trial_other_ms: f32,
+    /// `GpuDestruction.correctedCollisionSolve`: the corrected rigid re-solve.
+    pub correction_ms: f32,
+    /// Host work that sets the correction up and accepts it: restore,
+    /// install, bindings, metadata, checkpoint, cache resets, acceptance.
+    pub correction_prep_ms: f32,
+    /// Rewinding state and installing the fragments and owners on the GPU.
+    pub correction_gpu_ms: f32,
+    /// `task.prepareIslandRepair`, on a task thread.
+    pub island_repair_ms: f32,
+    /// Native body allocation and its host compatibility records.
+    pub body_alloc_ms: f32,
+    /// Every other top-level `GpuDestruction.*` zone, summed (`task.*`,
+    /// publication, ...).
+    pub other_ms: f32,
+}
+
+impl StageZones {
+    /// Groups this tick's engine spans (`name`, `value`, `kind` as the bridge
+    /// publishes them: kind 1 is a zone total, kind 2 a count). None when no
+    /// `GpuDestruction.*` zone is present, i.e. the profiler is off.
+    pub fn from_spans<'a>(spans: impl IntoIterator<Item = (&'a str, f64, u8)>) -> Option<Self> {
+        let mut out = Self::default();
+        let mut any = false;
+        for (name, value, kind) in spans {
+            if kind != 1 {
+                continue;
+            }
+            let Some(zone) = name.strip_prefix("GpuDestruction.") else {
+                continue;
+            };
+            any = true;
+            let ms = value as f32;
+            let slot = match zone {
+                "submit" => &mut out.submit_ms,
+                "finishAndReserve" => &mut out.finish_ms,
+                "finishDetail.waitForGpu" => &mut out.finish_gpu_wait_ms,
+                "cuda.contactLoads" | "cuda.stress" | "cuda.materials" => &mut out.stress_gpu_ms,
+                "cuda.topologyAndCandidates" | "cuda.commitAndStressTopology" => {
+                    &mut out.fracture_gpu_ms
+                }
+                "trialDetail.postBroadPhase" => &mut out.trial_broadphase_ms,
+                "trialDetail.broadPhaseWait" => &mut out.trial_broadphase_wait_ms,
+                "trialDetail.postNarrowPhase" => &mut out.trial_narrowphase_ms,
+                zone if zone.starts_with("trialDetail.") => &mut out.trial_other_ms,
+                "correctedCollisionSolve" => &mut out.correction_ms,
+                "restoreInstall" | "preparationCompletion" | "applyBindings"
+                | "publishReservedMetadata" | "validatePreparation" | "checkpoint"
+                | "resetContactCaches" | "acceptCorrection" => &mut out.correction_prep_ms,
+                "cuda.rewindState" | "cuda.installFragments" | "cuda.installOwners"
+                | "cuda.finalSplitState" | "cuda.finalSplitFragments"
+                | "cuda.finalSplitOwners" => &mut out.correction_gpu_ms,
+                "task.prepareIslandRepair" => &mut out.island_repair_ms,
+                zone if zone.starts_with("cuda.allocationAndPreparation")
+                    || zone.starts_with("compatibility.") =>
+                {
+                    &mut out.body_alloc_ms
+                }
+                // Nested inside a zone counted above, or (`contactStress`,
+                // compiled out of release SDKs) the parent of them all: in
+                // engine_zones only.
+                "contactStress" => continue,
+                zone if zone.starts_with("detail.") || zone.contains("Detail.") => continue,
+                _ => &mut out.other_ms,
+            };
+            *slot += ms;
+        }
+        any.then_some(out)
+    }
+}
+
+/// The largest engine zones (kind 1) at or above `ENGINE_ZONE_FLOOR_MS`, at
+/// most `ENGINE_ZONE_LIMIT`, by name; None when there are none (the profiler
+/// is off).
+pub fn engine_zones<'a>(
+    spans: impl IntoIterator<Item = (&'a str, f64, u8)>,
+) -> Option<BTreeMap<String, f32>> {
+    let mut zones: Vec<(&str, f64)> = spans
+        .into_iter()
+        .filter(|&(_, value, kind)| kind == 1 && value as f32 >= ENGINE_ZONE_FLOOR_MS)
+        .map(|(name, value, _)| (name, value))
+        .collect();
+    if zones.is_empty() {
+        return None;
+    }
+    zones.sort_by(|a, b| b.1.total_cmp(&a.1));
+    zones.truncate(ENGINE_ZONE_LIMIT);
+    Some(
+        zones
+            .into_iter()
+            .map(|(name, value)| (name.to_string(), (value * 1000.0).round() as f32 / 1000.0))
+            .collect(),
+    )
 }
 
 /// What one client's snapshot left out, and why.
@@ -980,6 +1228,164 @@ mod tests {
         assert_eq!(selections[0]["bodies_budget"], 1);
         assert_eq!(selections[1]["stream"], "city");
         assert_eq!(selections[1]["tick"], 10);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A `ticks.jsonl` line as servers wrote it before the phase fields.
+    const OLD_TICK_LINE: &str = r#"{"tick":18450,"mono_us":1000,"unix_us":2000,"total_ms":146.2,"player_sim_ms":0.1,"vehicle_ms":0.0,"dynamics_ms":143.9,"hitscan_ms":0.0,"city_ms":1.2,"snapshot_ms":0.05,"publish_ms":0.0,"unattributed_ms":0.9,"players":1,"awake_city_bodies":275,"capture_ms":0.3}"#;
+
+    fn phased_timing() -> TickTiming {
+        TickTiming {
+            tick: 7,
+            total_ms: 120.0,
+            dynamics_ms: 118.0,
+            timing_version: TICK_TIMING_VERSION,
+            snapshot_sent: Some(false),
+            shots_ms: 0.4,
+            meteors_launched: 1,
+            meteor_launch_ms: 0.35,
+            physx: Some(PhysxPhases {
+                controller_ms: 0.1,
+                submit_ms: 0.6,
+                overlap_ms: 0.8,
+                fetch_ms: 116.5,
+                callbacks_ms: 0.2,
+                gpu_wait_ms: None,
+                readback_ms: 0.5,
+                players_ms: 0.05,
+                awake_bodies: 900,
+                found_pairs: 120,
+                lost_pairs: 80,
+            }),
+            stage: Some(StagePhases {
+                frame: 99,
+                iterations: 16,
+                passes: 2,
+                corrections: 1,
+                bonds_broken: 410,
+                bodies_promoted: 84,
+                chunks_migrated: 300,
+                contacts: 5000,
+                observe_ms: 0.9,
+                zones: Some(StageZones { correction_ms: 60.0, stress_gpu_ms: 1.4, ..Default::default() }),
+                ..Default::default()
+            }),
+            engine_zones: Some(BTreeMap::from([("GpuDestruction.correctedCollisionSolve".to_string(), 60.0)])),
+            phases_us: 4.0,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn old_tick_lines_still_parse_with_the_new_fields_defaulted() {
+        let old: TickTiming = serde_json::from_str(OLD_TICK_LINE).unwrap();
+        assert_eq!(old.tick, 18450);
+        assert_eq!(old.dynamics_ms, 143.9);
+        assert_eq!(old.timing_version, 0, "no version: the pre-phase format");
+        assert_eq!(old.snapshot_sent, None);
+        assert_eq!(old.shots_ms, 0.0);
+        assert!(old.physx.is_none() && old.stage.is_none() && old.engine_zones.is_none());
+    }
+
+    #[test]
+    fn phase_fields_round_trip_and_keep_every_old_key() {
+        let timing = phased_timing();
+        let line = serde_json::to_string(&timing).unwrap();
+        let back: TickTiming = serde_json::from_str(&line).unwrap();
+        assert_eq!(back, timing);
+        let value: serde_json::Value = serde_json::from_str(&line).unwrap();
+        let old: serde_json::Value = serde_json::from_str(OLD_TICK_LINE).unwrap();
+        for key in old.as_object().unwrap().keys() {
+            assert!(value.get(key).is_some(), "{key} was renamed or dropped");
+        }
+        assert_eq!(value["timing_version"], TICK_TIMING_VERSION);
+        assert_eq!(value["physx"]["fetch_ms"], 116.5);
+        assert_eq!(value["stage"]["bodies_promoted"], 84);
+        assert_eq!(value["stage"]["zones"]["correction_ms"], 60.0);
+        // Unsampled GPU wait is left out, not written as a zero.
+        assert!(value["physx"].get("gpu_wait_ms").is_none());
+    }
+
+    #[test]
+    fn a_tick_without_physx_or_stage_writes_no_empty_groups() {
+        let timing = TickTiming { timing_version: TICK_TIMING_VERSION, ..Default::default() };
+        let value = serde_json::to_value(&timing).unwrap();
+        for key in ["physx", "stage", "engine_zones", "snapshot_sent"] {
+            assert!(value.get(key).is_none(), "{key}");
+        }
+    }
+
+    #[test]
+    fn stage_zones_group_the_engine_spans() {
+        let spans = [
+            ("GpuDestruction.contactStress", 70.0, 1u8),
+            ("GpuDestruction.submit", 2.0, 1),
+            ("GpuDestruction.finishAndReserve", 5.0, 1),
+            ("GpuDestruction.finishDetail.waitForGpu", 4.5, 1),
+            ("GpuDestruction.cuda.contactLoads", 0.25, 1),
+            ("GpuDestruction.cuda.stress", 1.0, 1),
+            ("GpuDestruction.cuda.materials", 0.25, 1),
+            ("GpuDestruction.cuda.topologyAndCandidates", 0.5, 1),
+            ("GpuDestruction.cuda.commitAndStressTopology", 0.5, 1),
+            ("GpuDestruction.trialDetail.postBroadPhase", 3.0, 1),
+            ("GpuDestruction.trialDetail.broadPhaseWait", 2.5, 1),
+            ("GpuDestruction.trialDetail.postNarrowPhase", 1.5, 1),
+            ("GpuDestruction.trialDetail.updateDynamics", 0.25, 1),
+            ("GpuDestruction.correctedCollisionSolve", 55.0, 1),
+            ("GpuDestruction.correctedCollisionSolve.calls", 1.0, 2),
+            ("GpuDestruction.detail.postBroadPhase", 9.0, 1),
+            ("GpuDestruction.restoreInstall", 3.0, 1),
+            ("GpuDestruction.applyBindings", 1.0, 1),
+            ("GpuDestruction.cuda.rewindState", 0.5, 1),
+            ("GpuDestruction.cuda.finalSplitOwners", 0.5, 1),
+            ("GpuDestruction.task.prepareIslandRepair", 6.0, 1),
+            ("GpuDestruction.cuda.allocationAndPreparationRetry", 0.75, 1),
+            ("GpuDestruction.compatibility.allocateNativeBodies", 0.25, 1),
+            ("GpuDestruction.task.sleepCommit", 0.125, 1),
+            ("Sim.solveQueueTasks", 9.0, 1),
+            ("native_tick_ms", 0.9, 0),
+        ];
+        let zones = StageZones::from_spans(spans.iter().copied()).unwrap();
+        assert_eq!(zones.submit_ms, 2.0);
+        assert_eq!(zones.finish_ms, 5.0);
+        assert_eq!(zones.finish_gpu_wait_ms, 4.5);
+        assert_eq!(zones.stress_gpu_ms, 1.5);
+        assert_eq!(zones.fracture_gpu_ms, 1.0);
+        assert_eq!(zones.trial_broadphase_ms, 3.0);
+        assert_eq!(zones.trial_broadphase_wait_ms, 2.5);
+        assert_eq!(zones.trial_narrowphase_ms, 1.5);
+        assert_eq!(zones.trial_other_ms, 0.25);
+        assert_eq!(zones.correction_ms, 55.0, "the .calls count is not a time");
+        assert_eq!(zones.correction_prep_ms, 4.0);
+        assert_eq!(zones.correction_gpu_ms, 1.0);
+        assert_eq!(zones.island_repair_ms, 6.0);
+        assert_eq!(zones.body_alloc_ms, 1.0);
+        // Only sleepCommit: the parent contactStress and the nested
+        // detail.postBroadPhase are not counted twice.
+        assert_eq!(zones.other_ms, 0.125);
+        // The profiler off: no zones at all, and not a row of zeros.
+        assert!(StageZones::from_spans([("native_tick_ms", 0.9, 0u8)]).is_none());
+        let engine = engine_zones(spans.iter().copied()).unwrap();
+        assert_eq!(engine["Sim.solveQueueTasks"], 9.0);
+        assert!(!engine.contains_key("native_tick_ms"), "not a zone");
+        assert!(!engine.contains_key("GpuDestruction.correctedCollisionSolve.calls"));
+        assert!(engine_zones([("GpuDestruction.submit", 0.01, 1u8)]).is_none(), "below the floor");
+        let many: Vec<(String, f64, u8)> =
+            (0..100).map(|i| (format!("zone{i}"), 1.0 + i as f64, 1u8)).collect();
+        let kept = engine_zones(many.iter().map(|(n, v, k)| (n.as_str(), *v, *k))).unwrap();
+        assert_eq!(kept.len(), ENGINE_ZONE_LIMIT);
+        assert!(kept.contains_key("zone99") && !kept.contains_key("zone0"), "the largest are kept");
+    }
+
+    #[test]
+    fn the_writer_puts_phase_fields_in_ticks_jsonl() {
+        let dir = temp("phases");
+        let mut writer = TickWriter::open(&dir, 0, 60).unwrap();
+        writer.push(TickBundle { truth: truth(7), timing: phased_timing(), selections: Vec::new() });
+        writer.finish().unwrap();
+        let line = std::fs::read_to_string(dir.join(TICKS_FILE)).unwrap();
+        let back: TickTiming = serde_json::from_str(line.trim()).unwrap();
+        assert_eq!(back, phased_timing());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
