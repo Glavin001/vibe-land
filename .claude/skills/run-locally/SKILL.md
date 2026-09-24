@@ -157,9 +157,10 @@ npx playwright test --config e2e/playwright.config.ts city-frame-profile
 
 **To target a remote box, set `E2E_CITY_WT_URL=off`.** The default rewrites
 `/session-config` to `127.0.0.1:4434` for a local stack, which would point the
-run at nothing. The suite fails loudly if the session lands on WebSocket instead
-of WebTransport — the two differ in exactly the way that matters for the pose
-stream, and a whole investigation was once run against the wrong wire.
+run at nothing. The suite fails loudly if the session does not connect over
+WebTransport. The client has no WebSocket fallback (it is disabled; a whole
+investigation was once run against the wrong wire), so a WebTransport failure
+shows "WebTransport unavailable; WebSocket transport is disabled".
 
 ## netlab
 

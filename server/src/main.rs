@@ -1056,6 +1056,9 @@ struct SessionConfigQuery {
     match_id: String,
 }
 
+/// Where and how a client connects. WebTransport only: this deliberately
+/// carries no WebSocket URL, enabled or not, so nothing can discover or fall
+/// back to the WebSocket game route from it.
 #[derive(serde::Serialize)]
 struct SessionConfig {
     match_id: String,
@@ -1323,6 +1326,19 @@ async fn main() -> Result<()> {
             .ok()
             .as_deref(),
     );
+    let websocket_game_enabled =
+        websocket_game_transport_enabled(std::env::var(WEBSOCKET_GAME_TRANSPORT_ENV).ok().as_deref());
+    if websocket_game_enabled {
+        warn!(
+            "WebSocket game transport ENABLED by {}=1: /ws/:match_id accepts players",
+            WEBSOCKET_GAME_TRANSPORT_ENV
+        );
+    } else {
+        info!(
+            "WebSocket game transport disabled: /ws/:match_id refuses (set {}=1 to enable)",
+            WEBSOCKET_GAME_TRANSPORT_ENV
+        );
+    }
 
     info!(%wt_base_url, cert_hash = %cert_hash_hex, "WebTransport identity ready");
     info!(
@@ -1472,7 +1488,13 @@ async fn main() -> Result<()> {
         .route("/city-capture-stop/:match_id", post(city_capture_stop_handler))
         .route("/city-buildings", get(city_buildings_handler))
         .route("/ws/stats", get(ws_stats_handler))
-        .route("/ws/:match_id", get(ws_handler))
+        // The game's WebSocket transport. Disabled unless explicitly enabled;
+        // see `game_websocket_route`. `/ws/stats` above is the stats
+        // dashboard feed, not a game transport, and is unaffected.
+        .route(
+            "/ws/:match_id",
+            game_websocket_route(websocket_game_enabled, get(ws_handler)),
+        )
         .layer(tower_http::cors::CorsLayer::permissive())
         .with_state(state);
 
@@ -2857,6 +2879,42 @@ async fn handle_wt_session(app: Arc<AppState>, connection: Connection) -> Result
     let _ = tokio::join!(writer, reader);
     stream_reader.abort();
     Ok(())
+}
+
+/// Opt-in for the WebSocket game transport (`/ws/:match_id`). Off unless set
+/// to exactly `1`: the game is WebTransport-only, and a session on WebSocket
+/// plays over an ordered reliable stream instead of the lossy datagrams the
+/// pose and debris streams are designed and measured against.
+const WEBSOCKET_GAME_TRANSPORT_ENV: &str = "VIBE_ENABLE_WEBSOCKET";
+
+/// What `/ws/:match_id` answers while the WebSocket game transport is disabled.
+const WEBSOCKET_GAME_TRANSPORT_DISABLED: &str =
+    "WebSocket game transport is disabled; connect over WebTransport (/session-config). \
+     The server enables it only with VIBE_ENABLE_WEBSOCKET=1.";
+
+fn websocket_game_transport_enabled(value: Option<&str>) -> bool {
+    value == Some("1")
+}
+
+/// The `/ws/:match_id` route: the real handler when the WebSocket game
+/// transport is enabled, otherwise a refusal for every method -- decided before
+/// any upgrade is attempted, so a disabled server never opens a game socket.
+fn game_websocket_route<S>(
+    enabled: bool,
+    handler: axum::routing::MethodRouter<S>,
+) -> axum::routing::MethodRouter<S>
+where
+    S: Clone + Send + Sync + 'static,
+{
+    if enabled {
+        handler
+    } else {
+        axum::routing::any(websocket_game_transport_disabled_handler)
+    }
+}
+
+async fn websocket_game_transport_disabled_handler() -> (StatusCode, &'static str) {
+    (StatusCode::FORBIDDEN, WEBSOCKET_GAME_TRANSPORT_DISABLED)
 }
 
 async fn ws_handler(
@@ -7268,6 +7326,127 @@ mod tests {
     use std::collections::{HashMap, HashSet, VecDeque};
     use vibe_land_shared::seq::seq_is_newer;
     use wtransport::error::SendDatagramError;
+
+    mod websocket_gate {
+        use super::super::{
+            game_websocket_route, websocket_game_transport_enabled, SessionConfig,
+            WEBSOCKET_GAME_TRANSPORT_DISABLED,
+        };
+        use axum::{body::Body, http::Request, http::StatusCode, routing::get, Router};
+        use tower::ServiceExt;
+
+        #[test]
+        fn disabled_unless_exactly_one() {
+            assert!(!websocket_game_transport_enabled(None));
+            for value in ["", "0", "true", "yes", "on", "TRUE", " 1", "1 "] {
+                assert!(
+                    !websocket_game_transport_enabled(Some(value)),
+                    "{value:?} must not enable WebSocket"
+                );
+            }
+            assert!(websocket_game_transport_enabled(Some("1")));
+        }
+
+        fn router(enabled: bool) -> Router {
+            Router::new()
+                .route("/ws/stats", get(|| async { "stats" }))
+                .route(
+                    "/ws/:match_id",
+                    game_websocket_route(enabled, get(|| async { "game socket" })),
+                )
+        }
+
+        fn upgrade_request(path: &str) -> Request<Body> {
+            Request::builder()
+                .uri(path)
+                .header("connection", "upgrade")
+                .header("upgrade", "websocket")
+                .header("sec-websocket-version", "13")
+                .header("sec-websocket-key", "dGhlIHNhbXBsZSBub25jZQ==")
+                .body(Body::empty())
+                .unwrap()
+        }
+
+        async fn call(router: Router, request: Request<Body>) -> (StatusCode, String) {
+            let response = router.oneshot(request).await.unwrap();
+            let status = response.status();
+            let bytes = axum::body::to_bytes(response.into_body(), 64 * 1024)
+                .await
+                .unwrap();
+            (status, String::from_utf8(bytes.to_vec()).unwrap())
+        }
+
+        #[tokio::test]
+        async fn game_route_refuses_when_disabled() {
+            let (status, body) = call(
+                router(false),
+                upgrade_request("/ws/default?identity=p&token=t"),
+            )
+            .await;
+            assert_eq!(status, StatusCode::FORBIDDEN);
+            assert_eq!(body, WEBSOCKET_GAME_TRANSPORT_DISABLED);
+            assert!(body.contains("VIBE_ENABLE_WEBSOCKET=1"));
+
+            // Every method, not just the upgrade GET.
+            let post = Request::builder()
+                .method("POST")
+                .uri("/ws/city-default")
+                .body(Body::empty())
+                .unwrap();
+            assert_eq!(call(router(false), post).await.0, StatusCode::FORBIDDEN);
+        }
+
+        #[tokio::test]
+        async fn game_route_serves_the_handler_when_enabled() {
+            let (status, body) = call(router(true), upgrade_request("/ws/default")).await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(body, "game socket");
+        }
+
+        #[tokio::test]
+        async fn stats_stream_is_not_the_game_route() {
+            // `/ws/stats` is the dashboard feed and stays up either way.
+            for enabled in [false, true] {
+                let (status, body) = call(router(enabled), upgrade_request("/ws/stats")).await;
+                assert_eq!(status, StatusCode::OK);
+                assert_eq!(body, "stats");
+            }
+        }
+
+        #[test]
+        fn session_config_advertises_webtransport_only() {
+            let config = SessionConfig {
+                match_id: "default".to_string(),
+                url: "https://localhost:4002/game".to_string(),
+                server_certificate_hash_hex: "00".to_string(),
+                sim_hz: 60,
+                snapshot_hz: 60,
+                interpolation_delay_ms: 100,
+                protocol_version: 3,
+                physics_backend: 1,
+                client_movement_mode: 0,
+                city_world: false,
+                city_manifest_hash: None,
+                city_wire_version: 2,
+            };
+            let json = serde_json::to_value(&config).unwrap();
+            let object = json.as_object().unwrap();
+            for (key, value) in object {
+                let key = key.to_ascii_lowercase();
+                assert!(
+                    !key.contains("ws") && !key.contains("websocket"),
+                    "session config must not advertise a WebSocket field: {key}"
+                );
+                if let Some(text) = value.as_str() {
+                    assert!(
+                        !text.starts_with("ws:") && !text.starts_with("wss:") && !text.contains("/ws/"),
+                        "session config must not carry a WebSocket URL: {key}={text}"
+                    );
+                }
+            }
+            assert!(object["url"].as_str().unwrap().starts_with("https://"));
+        }
+    }
 
     fn runtime() -> PlayerRuntime {
         let (tx, _rx) = super::outbound::channel(PLAYER_OUTBOUND_QUEUE_CAPACITY);

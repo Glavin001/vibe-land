@@ -94,9 +94,12 @@ export const DEFAULT_SCENARIO: LoadTestScenario = {
   botCount: 100,
   seed: 42,
   inputHz: 20,
+  // WebTransport only: the game's WebSocket transport is disabled (see
+  // net/transportPolicy.ts). Only the WebSocket tooling (`simulate`) asks for
+  // WebSocket bots, explicitly, and it is itself gated on an opt-in.
   transportMix: {
-    websocket: 100,
-    webtransport: 0,
+    websocket: 0,
+    webtransport: 100,
   },
   spawnPattern: 'mixed',
   enableRecoveryLeash: true,
@@ -184,18 +187,21 @@ export function normalizeScenario(input: Partial<LoadTestScenario>): LoadTestSce
     })),
   };
 
+  // Unassigned bots go to WebTransport, never to WebSocket: a WebSocket bot is
+  // only ever one a scenario asked for by name.
   const totalTransport = merged.transportMix.websocket + merged.transportMix.webtransport;
   if (totalTransport <= 0) {
-    merged.transportMix.websocket = merged.botCount;
-    merged.transportMix.webtransport = 0;
+    merged.transportMix.websocket = 0;
+    merged.transportMix.webtransport = merged.botCount;
   }
   if (merged.botCount <= 0) {
     merged.botCount = totalTransport;
   }
   if (merged.transportMix.websocket + merged.transportMix.webtransport !== merged.botCount) {
-    const wt = Math.min(merged.transportMix.webtransport, merged.botCount);
-    merged.transportMix.webtransport = wt;
-    merged.transportMix.websocket = Math.max(0, merged.botCount - wt);
+    const wt = Math.min(Math.max(0, merged.transportMix.webtransport), merged.botCount);
+    const ws = Math.min(Math.max(0, merged.transportMix.websocket), merged.botCount - wt);
+    merged.transportMix.websocket = ws;
+    merged.transportMix.webtransport = merged.botCount - ws;
   }
   if (!merged.matchId) {
     merged.matchId = merged.name;

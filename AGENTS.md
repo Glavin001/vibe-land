@@ -52,7 +52,7 @@ make server
 ```
 
 - Config is loaded from `.env` in the repo root.
-- Listens on TCP `SERVER_PORT` (default 4001) for WebSocket and UDP `WT_BIND_ADDR` (default 4002) for WebTransport.
+- Listens on TCP `SERVER_PORT` (default 4001) for HTTP (session config, stats, `/ws/stats`) and UDP `WT_BIND_ADDR` (default 4002) for WebTransport. The WebSocket game route `/ws/:match_id` answers 403 unless the server is started with `VIBE_ENABLE_WEBSOCKET=1`.
 - `WT_PUBLIC_URL` optionally overrides the WebTransport URL advertised by `/session-config`; use it when the public host/port differs from the local bind address.
 - Health check: `curl http://localhost:4001/healthz`
 - Session config (WT URL + cert hash): `curl http://localhost:4001/session-config?match_id=default`
@@ -113,7 +113,7 @@ See `infra/WEBTRANSPORT_SETUP.md` for the full Hetzner VPS setup guide (DNS, fir
 
 ### WebTransport transport
 
-The client prefers WebTransport (QUIC/UDP) and falls back to WebSocket (TCP) automatically.
+The game is WebTransport-only (QUIC/UDP). **WebSocket is disabled**: the client never selects it or falls back to it -- when WebTransport fails the join fails with "WebTransport unavailable; WebSocket transport is disabled" -- and the server refuses `/ws/:match_id`. Re-enabling it takes two explicit opt-ins, both off by default: `VITE_ENABLE_WEBSOCKET=1` at client build/dev-server time (then WebSocket is used only after WebTransport fails; there is no URL/localStorage switch) and `VIBE_ENABLE_WEBSOCKET=1` for the server. The WebSocket-only tools (`npm run simulate`, benchmark WebSocket bots) also require `VIBE_ENABLE_WEBSOCKET=1`. See `client/src/net/transportPolicy.ts`.
 
 **Dev (self-signed cert):** Leave `WT_CERT_PEM`/`WT_KEY_PEM` unset. The server generates a self-signed cert and exposes its hash via `/session-config`. The client pins the hash via `serverCertificateHashes`. Only Chrome/Edge support this; the 14-day cert limit means it regenerates on each server restart.
 

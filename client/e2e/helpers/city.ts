@@ -88,11 +88,10 @@ export async function allStructureTargets(
  *
  * The server advertises its PUBLIC url in `/session-config`, and a runner on
  * the same host cannot hairpin UDP back through the NAT to reach it: the QUIC
- * handshake times out and the client quietly falls back to WebSocket. That
- * fallback is worse than a failure, because the suite then measures a
- * transport no player uses -- reliable and ordered, where the real one is
- * lossy datagrams. A whole investigation was run against the wrong wire
- * before this was noticed.
+ * handshake times out. (The client used to fall back to WebSocket here, and a
+ * whole investigation was run against that wrong wire before it was noticed;
+ * WebSocket is now disabled, so the join fails with "WebTransport
+ * unavailable; WebSocket transport is disabled" instead.)
  *
  * So the override is now the DEFAULT (the server always listens on 4434
  * locally), not an opt-in. `E2E_CITY_WT_URL` still overrides it for a remote
@@ -132,27 +131,27 @@ export async function routeWebTransportOverride(page: Page): Promise<void> {
   });
 }
 
+/** The client's join-failure text when WebTransport fails (net/transportPolicy.ts). */
+const WEBSOCKET_DISABLED_TEXT = 'WebSocket transport is disabled';
+
 /**
  * Fail loudly if the session did not end up on WebTransport.
  *
- * The client falls back to WebSocket by design when QUIC will not connect,
- * which is right for players and wrong for a test: the two transports differ
- * in exactly the way that matters for the pose stream (unreliable datagrams
- * versus an ordered reliable stream). Set E2E_ALLOW_WS=1 for the rare spec
- * that genuinely wants the fallback path.
+ * WebSocket is disabled in the game client, so a session is either on
+ * WebTransport or not connected at all; when WebTransport fails the page says
+ * so, and that text is surfaced here instead of a bare timeout.
  */
 async function assertRealTransport(page: Page): Promise<void> {
-  if (process.env.E2E_ALLOW_WS === '1') return;
-  const transport = await page.evaluate(
-    () => (window as unknown as { __VIBE_E2E__?: { snapshot: () => { transport: string } } })
+  const { transport, note } = await page.evaluate((disabledText) => ({
+    transport: (window as unknown as { __VIBE_E2E__?: { snapshot: () => { transport: string } } })
       .__VIBE_E2E__?.snapshot().transport ?? 'none',
-  );
+    note: document.body.innerText.split('\n').find((line) => line.includes(disabledText)) ?? null,
+  }), WEBSOCKET_DISABLED_TEXT);
   if (transport !== 'webtransport') {
     throw new Error(
-      `city spec is running over '${transport}', not WebTransport. The suite would `
-        + 'then exercise an ordered reliable stream while players get lossy datagrams. '
-        + 'Check the game server\'s UDP listener (4434) and E2E_CITY_WT_URL, or set '
-        + 'E2E_ALLOW_WS=1 if this spec really wants the fallback.',
+      `city spec did not connect over WebTransport (transport='${transport}'`
+        + `${note ? `, page says: ${note}` : ''}). `
+        + 'Check the game server\'s UDP listener (4434) and E2E_CITY_WT_URL.',
     );
   }
 }
@@ -171,15 +170,17 @@ export async function openCity(page: Page): Promise<void> {
   if (viewport) {
     await page.mouse.click(viewport.width / 2, viewport.height / 2);
   }
-  // Wait for the transport to be decided, then insist it is the real one.
+  // Wait for WebTransport, or for the client to report that it failed (there
+  // is no WebSocket fallback), then insist it is the real one.
   await page.waitForFunction(
-    () => {
+    (disabledText) => {
       const bridge = (window as unknown as {
         __VIBE_E2E__?: { snapshot: () => { transport: string } };
       }).__VIBE_E2E__;
       const transport = bridge?.snapshot().transport ?? 'none';
-      return transport === 'webtransport' || transport === 'websocket';
+      return transport === 'webtransport' || document.body.innerText.includes(disabledText);
     },
+    WEBSOCKET_DISABLED_TEXT,
     { timeout: 30_000 },
   );
   await assertRealTransport(page);

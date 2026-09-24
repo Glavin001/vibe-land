@@ -4,7 +4,7 @@ Browser-first multiplayer FPS prototype with:
 
 - Rust authoritative simulation server (Axum + Rapier3D)
 - Browser-side client-side prediction via shared WASM physics (wasm-pack)
-- WebTransport (QUIC/UDP) netcode with WebSocket fallback
+- WebTransport (QUIC/UDP) netcode; the WebSocket transport is disabled (opt-in only, see `AGENTS.md`)
 - Lag compensation and snapshot interpolation
 - three.js / React Three Fiber client
 

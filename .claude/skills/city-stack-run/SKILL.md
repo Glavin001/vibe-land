@@ -161,7 +161,7 @@ player directly away from the target, which reads as "movement is broken".
 | `city: null`, `bonds cli 0`, `chunks drawn 0` | the manifest never loaded; the city layer failed to initialise |
 | `broken bonds` climbing with nobody shooting | the structure is self-destructing -- see `city-physics-tuning` |
 | `chunks drawn > 0`, `chunks unplaced 0` | geometry is genuinely rendering |
-| `transport: websocket` | WebTransport failed; the city stream is datagram-only so the world will be empty |
+| "WebTransport unavailable; WebSocket transport is disabled" | WebTransport failed and there is no fallback; see the connect table below |
 
 An empty world is nearly always the bootstrap, not the network. Check
 `bootstraps` and `bonds cli/srv` before suspecting transport: a healthy
@@ -265,7 +265,7 @@ handing a URL over.
 | symptom | first thing to check |
 |---|---|
 | page loads, world empty, `transport: connecting` forever | `/session-config` url — count the `/game` segments |
-| page loads, `transport: websocket` | UDP never arrived; check the log for a non-loopback `WT connection attempt` |
+| page loads, "WebSocket transport is disabled" | UDP never arrived; check the log for a non-loopback `WT connection attempt` |
 | Chrome refuses the WT connection outright | cert span > 14 days, or not ECDSA P-256 |
 | overlay says `stress solver CPU` | built without `cuda-stress`; `strings target/release/web-fps-server \| grep -c ExtStressGpuSolver` |
 | solver change made with `BLAST_ROOT` has no effect | `.cu`-only edits relink the OLD kernel — `touch physx-bridge/src/lib.rs`, then confirm the `.o` mtime AND size moved |

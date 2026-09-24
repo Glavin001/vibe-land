@@ -17,6 +17,20 @@ describe('loadtest scenario', () => {
     expect(scenario.transportMix.websocket).toBe(2);
   });
 
+  it('never assigns bots to WebSocket that the scenario did not ask for', () => {
+    const defaults = normalizeScenario({});
+    expect(defaults.transportMix).toEqual({ websocket: 0, webtransport: defaults.botCount });
+
+    const unassigned = normalizeScenario({ botCount: 10, transportMix: { websocket: 0, webtransport: 0 } });
+    expect(unassigned.transportMix).toEqual({ websocket: 0, webtransport: 10 });
+
+    const short = normalizeScenario({ botCount: 10, transportMix: { websocket: 0, webtransport: 4 } });
+    expect(short.transportMix).toEqual({ websocket: 0, webtransport: 10 });
+
+    const explicit = normalizeScenario({ botCount: 10, transportMix: { websocket: 3, webtransport: 2 } });
+    expect(explicit.transportMix).toEqual({ websocket: 3, webtransport: 7 });
+  });
+
   it('chooses weighted profiles deterministically for a seed', () => {
     const scenario = normalizeScenario({
       networkProfiles: [

@@ -1,6 +1,5 @@
 import type { CityCameraDropCmd } from '../net/protocol';
 import { resolveMultiplayerBackend } from '../app/runtimeConfig';
-import { wantsWebSocketTransport } from '../net/transportPolicy';
 import { setActiveSession, setConnectPhase, setMatchStats } from '../app/connectPhase';
 import { initSharedPhysics, WasmSimWorld, type WasmDebugRenderBuffers, type WasmSimWorldInstance } from '../wasm/sharedPhysics';
 import { LocalPracticeClient, type PracticeBotHost } from '../net/localPracticeClient';
@@ -1370,13 +1369,12 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
       // clears the phase.
       setConnectPhase('waiting for server welcome');
       await client.connectWithFallback(this.matchId, wsUrl, this.backend.sessionConfigEndpoint, {
-        sessionConfig: this.options.sessionConfig,
         // WebTransport only. The two transports differ in exactly the property
         // the pose stream depends on -- unreliable datagrams versus an ordered
-        // reliable stream -- so a session that quietly lands on WebSocket is
-        // playing a different game from the one that gets tested and tuned.
-        // `?transport=ws` opts back in for debugging.
-        allowWsFallback: wantsWebSocketTransport(),
+        // reliable stream -- so WebSocket is disabled outright; the client
+        // re-enables it only for a build made with VITE_ENABLE_WEBSOCKET=1
+        // (see net/transportPolicy.ts).
+        sessionConfig: this.options.sessionConfig,
       });
       void this.initCityClient(client);
     } catch (error) {

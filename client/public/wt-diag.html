@@ -203,9 +203,8 @@ const results = {};
       }
     }
     // 4c. Which constructor option is the game passing that this browser
-    //     rejects? A browser that refuses one of these falls back to
-    //     WebSocket, quietly trading UDP for TCP while everything still
-    //     "works" -- the worst kind of failure, because nothing looks broken.
+    //     rejects? A browser that refuses one of these cannot join: the game
+    //     has no WebSocket fallback (it is disabled).
     if (results.wtPinned) {
       const hex = session.server_certificate_hash_hex || '';
       const pin = () => ({
@@ -245,8 +244,8 @@ const results = {};
     // 4d. Datagrams. Everything above uses streams, but the game sends input
     //     and receives 60 Hz snapshots as datagrams -- unreliable delivery is
     //     the entire reason for choosing WebTransport. A browser that opens the
-    //     session but cannot do datagrams throws here, and the client falls
-    //     back to WebSocket while looking perfectly healthy.
+    //     session but cannot do datagrams throws here, and the game will not
+    //     connect (there is no WebSocket fallback).
     if (results.wtPinned) {
       const dgRow = row('Datagrams (how the game actually streams)', 'pending', 'testing…');
       try {
@@ -315,33 +314,17 @@ const results = {};
       } catch (error) {
         results.datagrams = false;
         update(dgRow, 'fail',
-          describe(error) + '  — this is why the game drops to WebSocket');
+          describe(error) + '  — this is why the game cannot connect here');
       }
     }
   } else if (!hasWT) {
     row('WebTransport tests', 'warn', 'skipped — no WebTransport in this browser');
   }
 
-  // 5. The fallback. If WebTransport is unavailable this is the only way in,
-  //    and it fails against a self-signed origin even after the page loads.
-  const wsRow = row('WebSocket fallback', 'pending', 'connecting…');
-  try {
-    const scheme = location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = scheme + '//' + location.host + '/ws/' + encodeURIComponent(MATCH) +
-                  '?identity=diag&token=mvp-token';
-    await withTimeout(new Promise((resolve, reject) => {
-      const socket = new WebSocket(wsUrl);
-      socket.onopen = () => { resolve(); try { socket.close(); } catch (_) {} };
-      socket.onerror = () => reject(new Error('connection failed (' + wsUrl + ')'));
-      socket.onclose = (event) =>
-        reject(new Error('closed before open: code ' + event.code + ' ' + (event.reason || '')));
-    }), TIMEOUT_MS, 'websocket');
-    results.ws = true;
-    update(wsRow, 'pass', 'connected');
-  } catch (error) {
-    results.ws = false;
-    update(wsRow, 'fail', describe(error));
-  }
+  // 5. No fallback. The game's WebSocket transport is disabled (client and
+  //    server both refuse it unless explicitly opted in), so it is not probed:
+  //    WebTransport above is the only way in.
+  row('WebSocket', 'warn', 'disabled — the game has no WebSocket fallback; WebTransport is required');
 
   verdict();
 })();
@@ -349,7 +332,8 @@ const results = {};
 function verdict() {
   const lines = [];
   if (!results.hasWT) {
-    lines.push('This browser has no WebTransport. Playing here requires the WebSocket path.');
+    lines.push('This browser has no WebTransport, and the game has no WebSocket fallback, ' +
+               'so it cannot play here.');
   } else if (results.wtPinned) {
     lines.push('WebTransport works with a pinned certificate hash — this browser is fine as-is.');
   } else if (results.wtCa) {
@@ -362,22 +346,16 @@ function verdict() {
   if (results.datagramsRead && !results.datagramsWrite) {
     lines.push('Datagrams can be received but not sent. The 60 Hz world stream could still ' +
                'run over UDP, with only player input moved to a reliable stream — much better ' +
-               'than dropping the whole session to TCP.');
+               'than failing the whole session.');
   } else if (results.datagrams === false) {
-    lines.push('Datagrams are unavailable, which is why this device silently ends up on ' +
-               'WebSocket/TCP even though WebTransport itself works.');
+    lines.push('Datagrams are unavailable, which is why this device cannot join even though ' +
+               'WebTransport itself works (there is no WebSocket fallback).');
   }
   if (results.handshake === true) {
     lines.push('The game handshake completed — this server will let you play.');
   } else if (results.handshake === false) {
     lines.push('The tunnel opens but the game handshake never completes. That is the ' +
                '"Connecting…" hang, and it is a server-side bug, not a browser or network one.');
-  }
-  if (results.ws) {
-    lines.push('WebSocket fallback works, so this device can play over TCP.');
-  } else {
-    lines.push('WebSocket fallback also failed — with a self-signed page certificate that is ' +
-               'expected, and it is why the game sits on "Connecting…".');
   }
   if (!results.http) {
     lines.push('The plain HTTP request failed too, so check that the server is running before ' +

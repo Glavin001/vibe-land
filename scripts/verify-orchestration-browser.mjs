@@ -60,7 +60,7 @@ while (Date.now() < deadline) {
     break;
   }
   const failed = logs.find((line) =>
-    /WebTransport failed|WebSocket fallback is unavailable|control plane returned HTTP/i.test(line),
+    /WebTransport failed|WebSocket transport is disabled|control plane returned HTTP/i.test(line),
   );
   if (failed) {
     failure = failed;

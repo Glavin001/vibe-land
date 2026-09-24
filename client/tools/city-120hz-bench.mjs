@@ -144,7 +144,8 @@ for (const tier of TIERS) {
   await page.waitForFunction(() => !!window.__VIBE_E2E__, { timeout: 90_000 });
   await page.mouse.click(Math.floor(VW / 2), Math.floor(VH / 2));
   await page.waitForFunction(
-    () => ['webtransport', 'websocket'].includes(window.__VIBE_E2E__?.snapshot()?.transport ?? 'none'),
+    () => window.__VIBE_E2E__?.snapshot()?.transport === 'webtransport'
+      || document.body.innerText.includes('WebSocket transport is disabled'),
     { timeout: 30_000 });
   const transport = await page.evaluate(() => window.__VIBE_E2E__.snapshot().transport);
   if (transport !== 'webtransport') throw new Error(`profiling over ${transport}, not WebTransport`);

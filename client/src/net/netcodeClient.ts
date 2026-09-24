@@ -4,6 +4,12 @@ import { NetDebugTelemetry, type LocalShotTelemetry } from './debugTelemetry';
 import { WebTransportGameClient, type SessionConfigResponse } from './webTransportClient';
 import type { RawPacketListener } from './inbound';
 import { setTransportNote } from '../app/connectPhase';
+import {
+  browserSupportsWebTransport,
+  websocketTransportEnabled,
+  WebSocketTransportDisabledError,
+  WEBSOCKET_DISABLED_MESSAGE,
+} from './transportPolicy';
 import { PacketImpairment } from '../loadtest/networkModel';
 import { resolveNetlabImpairment } from '../netlab/impairment';
 import {
@@ -99,7 +105,7 @@ export type NetcodeClientConfig = {
  *
  * Usage:
  *   const client = new NetcodeClient({ onWelcome: ..., onLocalSnapshot: ... });
- *   client.connect(wsUrl);
+ *   await client.connectWithFallback(matchId, wsUrl, sessionConfigEndpoint);
  *   // each frame: sample remote players
  *   const sample = client.sampleRemotePlayer(id);
  *   // send inputs
@@ -278,7 +284,15 @@ export class NetcodeClient {
     this.config.onCityPacket?.(bytes);
   }
 
+  /**
+   * Open the game WebSocket. Refuses unless the build opted in with
+   * `VITE_ENABLE_WEBSOCKET=1` (see transportPolicy.ts): WebSocket is disabled,
+   * and this guard keeps any other caller from reaching it either.
+   */
   connect(wsUrl: string): void {
+    if (!websocketTransportEnabled()) {
+      throw new WebSocketTransportDisabledError('build with VITE_ENABLE_WEBSOCKET=1 to enable it');
+    }
     this.closedByClient = false;
     this.socket = new GameSocket({
       onPacket: (packet: ServerPacket) => this.deliverNetworkPacket(packet, 'websocket'),
@@ -298,30 +312,33 @@ export class NetcodeClient {
   }
 
   /**
-   * Try WebTransport first; fall back to WebSocket on failure or if unsupported.
-   */
-  /**
-   * Connect over WebTransport. WebSocket is opt-in, not a fallback.
+   * Connect over WebTransport. WebSocket is DISABLED: never selected, never a
+   * fallback.
    *
    * The two transports are not interchangeable for this game: WebTransport
    * carries poses on unreliable datagrams, WebSocket on an ordered reliable
    * stream. Falling back silently means the player is on a different wire from
    * the one the game is designed and measured against -- and it hides the real
-   * failure, which is that QUIC could not connect. `?transport=ws` opts in
-   * explicitly for debugging.
+   * failure, which is that QUIC could not connect. When WebTransport fails the
+   * player is told so ("WebTransport unavailable; WebSocket transport is
+   * disabled") and the error propagates.
+   *
+   * The single opt-in is the build-time `VITE_ENABLE_WEBSOCKET=1`; only then
+   * is `wsUrl` tried, and only after WebTransport has failed.
    */
   async connectWithFallback(
     matchId: string,
     wsUrl: string,
     sessionConfigEndpoint?: string,
-    options: { sessionConfig?: SessionConfigResponse; allowWsFallback?: boolean } = {},
+    options: { sessionConfig?: SessionConfigResponse } = {},
   ): Promise<void> {
     this.closedByClient = false;
-    const hasWebTransport = typeof window !== 'undefined' && 'WebTransport' in window;
-    // Default DENY: only an explicit opt-in reaches the WebSocket path.
-    const allowWs = options.allowWsFallback === true;
-    console.info('[netcode] connect', { matchId, browserSupportsWT: hasWebTransport, allowWs });
+    const hasWebTransport = browserSupportsWebTransport();
+    // Default DENY: only the build-time opt-in reaches the WebSocket path.
+    const allowWs = websocketTransportEnabled();
+    console.info('[netcode] connect', { matchId, browserSupportsWT: hasWebTransport, websocketEnabled: allowWs });
 
+    let wtFailure: string;
     if (hasWebTransport) {
       console.info('[netcode] attempting WebTransport (QUIC/UDP)...');
       try {
@@ -340,36 +357,26 @@ export class NetcodeClient {
         console.info('[netcode] ✓ connected via WebTransport (QUIC/UDP)', wt.sessionConfig.url);
         return;
       } catch (err) {
+        wtFailure = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
         if (!allowWs) {
-          // Rethrow rather than fail twice: the fallback targets the same
-          // untrusted-certificate origin and would only mask the real cause.
-          // The note is set first so the player sees the reason instead of
-          // being bounced silently back to the join screen.
-          setTransportNote(
-            'Could not reach the server (' +
-              (err instanceof Error ? `${err.name}: ${err.message}` : String(err)) +
-              ')',
-          );
-          console.error('[netcode] WebTransport failed and WebSocket fallback is unavailable', err);
-          throw err;
+          // No fallback. The note is set first so the player sees the reason
+          // instead of being bounced silently back to the join screen.
+          setTransportNote(`${WEBSOCKET_DISABLED_MESSAGE} (${wtFailure})`);
+          console.error('[netcode] WebTransport failed and WebSocket transport is disabled', err);
+          throw new WebSocketTransportDisabledError(wtFailure);
         }
-        setTransportNote(
-          'WebTransport unavailable (' +
-            (err instanceof Error ? `${err.name}: ${err.message}` : String(err)) +
-            ') — using WebSocket (?transport=ws)',
-        );
-        console.warn('[netcode] WebTransport failed — WebSocket opted in via ?transport=ws', err);
+        console.warn('[netcode] WebTransport failed -- WebSocket enabled by VITE_ENABLE_WEBSOCKET=1', err);
       }
     } else {
+      wtFailure = 'this browser does not support WebTransport';
       console.info('[netcode] WebTransport not supported in this browser');
       if (!allowWs) {
-        setTransportNote(
-          'This game requires WebTransport, which this browser does not support.',
-        );
-        throw new Error('This game requires WebTransport, which this browser does not support');
+        setTransportNote(`${WEBSOCKET_DISABLED_MESSAGE} (${wtFailure})`);
+        throw new WebSocketTransportDisabledError(wtFailure);
       }
     }
 
+    setTransportNote(`WebTransport unavailable (${wtFailure}) — using WebSocket (VITE_ENABLE_WEBSOCKET=1)`);
     console.info('[netcode] connecting via WebSocket (TCP):', wsUrl);
     this.connect(wsUrl);
   }

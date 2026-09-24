@@ -380,6 +380,7 @@ describe('recorder on the live transports', () => {
     stopAll();
     cityTapeRecorder.describeSession(null);
     vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
     vi.restoreAllMocks();
   });
 
@@ -437,6 +438,9 @@ describe('recorder on the live transports', () => {
     vi.spyOn(console, 'info').mockImplementation(() => {});
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     vi.stubGlobal('WebSocket', FakeWebSocket);
+    // WebSocket is disabled by default; this test is about the (opt-in)
+    // WebSocket lane of the tape, so it opts in the one way the client allows.
+    vi.stubEnv('VITE_ENABLE_WEBSOCKET', '1');
     const client = new NetcodeClient({
       onRawPacket: (bytes, channel) => cityTapeRecorder.pushRaw(bytes, channel),
       onRttSample: (rttMs) => cityTapeRecorder.noteRtt(rttMs),

@@ -104,12 +104,13 @@ await page.route('**/session-config*', async (route) => {
 await page.goto(`${PAGE}/city`, { waitUntil: 'domcontentloaded', timeout: 60_000 });
 await page.waitForFunction(() => !!window.__VIBE_E2E__, null, { timeout: 60_000 });
 await page.mouse.click(640, 360);                                   // trap 1: the join gesture
-await page.waitForFunction(
-  () => ['webtransport', 'websocket'].includes(window.__VIBE_E2E__.snapshot().transport),
+await page.waitForFunction(                                         // WT, or the no-fallback failure
+  () => window.__VIBE_E2E__.snapshot().transport === 'webtransport'
+    || document.body.innerText.includes('WebSocket transport is disabled'),
   null, { timeout: 60_000 });                                       // trap 2: arg, then options
 const opening = await page.evaluate(() => window.__VIBE_E2E__.snapshot());
 if (opening.transport !== 'webtransport') {
-  console.error(`FAIL transport=${opening.transport}; the city stream is datagram-only, so the world will be empty.`);
+  console.error(`FAIL transport=${opening.transport}: WebTransport did not connect and WebSocket is disabled.`);
   await browser.close();
   process.exit(1);
 }

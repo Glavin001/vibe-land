@@ -110,6 +110,6 @@ explicitly and the per-event table tags each artifact with its proximate cause.
   measure the thin-authoritative path.
 - `--stack attach`: measures whatever is already running. Note that an
   orchestrated server advertises its external address in `/session-config`,
-  which QUIC cannot hairpin back to from inside the box; the client then falls
-  back to WebSocket and you are no longer measuring WebTransport. The runner
-  records a `transport_change` event and the report flags it.
+  which QUIC cannot hairpin back to from inside the box; the join then fails
+  with "WebTransport unavailable; WebSocket transport is disabled" (there is no
+  WebSocket fallback).

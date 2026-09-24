@@ -79,8 +79,11 @@ export async function openCity(options = {}) {
   await page.goto(`${origin}/city${query}`, { waitUntil: 'domcontentloaded', timeout: 60_000 });
   await page.waitForFunction(() => !!window.__VIBE_E2E__, null, { timeout: 60_000 });
   await page.mouse.click(Math.floor(viewport.width / 2), Math.floor(viewport.height / 2));
+  // WebTransport, or the client's "WebSocket transport is disabled" failure
+  // (there is no WebSocket fallback), whichever comes first.
   await page.waitForFunction(
-    () => ['webtransport', 'websocket'].includes(window.__VIBE_E2E__.snapshot().transport),
+    () => window.__VIBE_E2E__.snapshot().transport === 'webtransport'
+      || document.body.innerText.includes('WebSocket transport is disabled'),
     null, { timeout: 60_000 });
   await page.waitForFunction(() => !!window.__VIBE_DRIVE__, null, { timeout: 60_000 });
 
@@ -88,7 +91,7 @@ export async function openCity(options = {}) {
   if (opening.transport !== 'webtransport') {
     await browser.close();
     throw new Error(
-      `transport=${opening.transport}; the city stream is datagram-only, so the world will be empty`);
+      `transport=${opening.transport}: WebTransport did not connect and WebSocket is disabled`);
   }
   // Say which renderer got picked, every time. A run that quietly dropped to
   // software still produces plausible output, and the numbers in it are wrong.

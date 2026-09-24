@@ -3,8 +3,8 @@
  *
  * Requires a running city-capable server (`--features destruction` for the real
  * PhysX/Blast backend, or `VIBE_CITY_SYNTHETIC=1` for the CI-safe backend) and
- * a WebTransport-capable browser: the city stream only rides datagrams, so the
- * WebSocket fallback yields a city-less match.
+ * a WebTransport-capable browser: the city stream only rides datagrams, and
+ * the client has no WebSocket fallback (it is disabled).
  *
  * Gated behind E2E_CITY=1. Set E2E_CITY_WT_URL when the advertised
  * WebTransport endpoint is not reachable from the test host.

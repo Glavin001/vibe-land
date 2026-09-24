@@ -41,7 +41,7 @@ while (Date.now() < deadline) {
     connected = true;
     break;
   }
-  if (logs.some((line) => /falling back to WebSocket|fallback is unavailable/i.test(line))) break;
+  if (logs.some((line) => /WebTransport failed|WebSocket transport is disabled/i.test(line))) break;
   await page.waitForTimeout(500);
 }
 
@@ -92,7 +92,7 @@ console.log(`  welcome received     : ${welcomed}`);
 console.log(`  server sees players  : ${server?.players ?? 0}`);
 
 const problems = [];
-if (!connected) problems.push('did not connect over WebTransport (fell back to WebSocket)');
+if (!connected) problems.push('did not connect over WebTransport (WebSocket is disabled; no fallback)');
 if (!usedStream) problems.push('did not take the forced stream uplink');
 if (!welcomed) problems.push('never received Welcome');
 if (!server || server.players < 1) problems.push('server never registered the player');

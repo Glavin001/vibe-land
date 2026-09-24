@@ -79,8 +79,8 @@ const page = await browser.newPage({ ignoreHTTPSErrors: true, viewport: { width:
 page.on('pageerror', (e) => console.log('PAGEERROR', String(e).slice(0, 200)));
 
 // The server advertises its PUBLIC WebTransport URL; a runner on this host
-// cannot hairpin UDP back through the NAT, and the silent WebSocket fallback
-// would profile a transport no player uses.
+// cannot hairpin UDP back through the NAT, and the join would fail (WebSocket
+// is disabled, so there is no fallback).
 await page.route('**/session-config*', async (route) => {
   const response = await route.fetch();
   const body = JSON.parse(await response.text());
@@ -93,7 +93,8 @@ await page.goto(`${BASE}/city`, { waitUntil: 'domcontentloaded', timeout: 60_000
 await page.waitForFunction(() => !!window.__VIBE_E2E__, { timeout: 30_000 });
 await page.mouse.click(640, 360);
 await page.waitForFunction(
-  () => ['webtransport', 'websocket'].includes(window.__VIBE_E2E__?.snapshot()?.transport ?? 'none'),
+  () => window.__VIBE_E2E__?.snapshot()?.transport === 'webtransport'
+      || document.body.innerText.includes('WebSocket transport is disabled'),
   { timeout: 30_000 });
 const transport = await page.evaluate(() => window.__VIBE_E2E__.snapshot().transport);
 if (transport !== 'webtransport') throw new Error(`profiling over ${transport}, not WebTransport`);
