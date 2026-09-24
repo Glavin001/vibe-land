@@ -7,6 +7,7 @@ import {
   subscribeConnectPhase,
 } from './app/connectPhase';
 import { isTouchDevice } from './device';
+import { serverCloseReason } from './net/disconnectReason';
 import { buildMatchHref, defaultMatchIdForPath, isCityMatchId, resolveRequestedMatchId } from './app/matchId';
 import type { PlayBenchmarkPageState, PlayWorkerResult } from './benchmark/contracts';
 import {
@@ -722,7 +723,10 @@ export function App({
   }, [benchmarkConfig, modeLabel, practiceMode, publishBenchmarkState, touchMode]);
 
   const handleDisconnect = useCallback((reason?: string) => {
-    setStatus(`${practiceMode ? `${modeLabel} stopped` : 'Disconnected'} — click to rejoin`);
+    const serverReason = serverCloseReason(reason);
+    setStatus(serverReason
+      ? `Server closed the connection: ${serverReason} — click to rejoin`
+      : `${practiceMode ? `${modeLabel} stopped` : 'Disconnected'} — click to rejoin`);
     setConnected(false);
     setPlayerId(0);
     setCrosshairState('idle');

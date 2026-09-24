@@ -1357,6 +1357,9 @@ async fn main() -> Result<()> {
         snapshot_hz = physics.snapshot_hz(),
         "server runtime policy loaded"
     );
+    if let Some(reason) = city::city_unavailable_reason(physics.backend) {
+        warn!(%reason, "/city matches will be refused");
+    }
 
     let (stats_tx, _stats_rx) = tokio::sync::watch::channel(GlobalStatsSnapshot::default());
     let stats_tx = Arc::new(stats_tx);
@@ -2723,6 +2726,16 @@ async fn handle_wt_session(app: Arc<AppState>, connection: Connection) -> Result
         );
     }
 
+    if city::is_city_match(&hello.match_id) {
+        if let Some(reason) = city::city_unavailable_reason(app.physics.backend) {
+            error!(match_id = %hello.match_id, %reason, "refusing city match");
+            // The client logs the close reason; without it the player would
+            // be connected to a city nothing can collide with.
+            connection.close(wtransport::VarInt::from_u32(2), reason.as_bytes());
+            anyhow::bail!("refused city match {}: {reason}", hello.match_id);
+        }
+    }
+
     let player_id = app.next_player_id.fetch_add(1, Ordering::Relaxed);
     let handle = get_or_create_match(app.clone(), hello.match_id.clone()).await;
 
@@ -2947,6 +2960,12 @@ async fn handle_socket(
     socket: WebSocket,
 ) -> Result<()> {
     app.verifier.verify(&query.identity, &query.token).await?;
+    if city::is_city_match(&match_id) {
+        if let Some(reason) = city::city_unavailable_reason(app.physics.backend) {
+            error!(%match_id, %reason, "refusing city match");
+            anyhow::bail!("refused city match {match_id}: {reason}");
+        }
+    }
 
     let player_id = app.next_player_id.fetch_add(1, Ordering::Relaxed);
     let handle = get_or_create_match(app.clone(), match_id.clone()).await;
@@ -3190,7 +3209,7 @@ async fn run_match_loop(
                 Some(runtime)
             }
             Err(error) => {
-                warn!(%match_id, %error, "destructible city unavailable for this match");
+                error!(%match_id, error = ?error, "destructible city unavailable for this match");
                 None
             }
         }

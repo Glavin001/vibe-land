@@ -1,9 +1,12 @@
 //! Destructible-city match runtime: destruction backend + stream encoder.
 //!
 //! A match whose id starts with `city` gets a 4×4 grid of destructible
-//! buildings. Default is the synthetic backend (CI-safe). With
-//! `--features destruction` and a PhysX GPU arena, `CityDestruction` drives
-//! real Blast/PhysX stress fracture unless `VIBE_CITY_SYNTHETIC=1`.
+//! buildings. The city needs PhysX: a `physx-city` build running
+//! `VIBE_PHYSICS_BACKEND=physx_gpu` drives real stress fracture. Anything else
+//! refuses city matches (see `city_unavailable_reason`) unless
+//! `VIBE_CITY_SYNTHETIC=1` asks for the physics-free synthetic backend, which
+//! streams the protocol for CI but has no colliders: shots, meteors and walls
+//! do nothing in it.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -254,6 +257,45 @@ pub fn shot_max_distance_m() -> f32 {
 
 pub fn is_city_match(match_id: &str) -> bool {
     match_id.starts_with(CITY_MATCH_PREFIX)
+}
+
+/// Why this server cannot host a real city, or None when it can (or when the
+/// synthetic city was asked for). Checked before a player joins a city match
+/// so a misconfigured server refuses loudly instead of serving a city with no
+/// physics behind it.
+pub fn city_unavailable_reason(
+    backend: vibe_netcode::physics_backend::PhysicsBackendKind,
+) -> Option<String> {
+    unavailable_reason(backend, prefer_synthetic(), cfg!(feature = "physx-city"))
+}
+
+fn unavailable_reason(
+    backend: vibe_netcode::physics_backend::PhysicsBackendKind,
+    synthetic: bool,
+    physx_city_built: bool,
+) -> Option<String> {
+    use vibe_netcode::physics_backend::PhysicsBackendKind;
+    if synthetic {
+        return None;
+    }
+    if !physx_city_built {
+        return Some(
+            "the destructible city needs a server built with PhysX city support \
+             (--features native-destruction, destruction or physx-city); \
+             set VIBE_CITY_SYNTHETIC=1 for the physics-free test city"
+                .to_string(),
+        );
+    }
+    if backend != PhysicsBackendKind::PhysxGpu {
+        return Some(format!(
+            "the destructible city needs VIBE_PHYSICS_BACKEND=physx_gpu, but this \
+             server runs {}; start it with scripts/run-city-server.sh or \
+             scripts/perf/play-server.sh, or set VIBE_CITY_SYNTHETIC=1 for the \
+             physics-free test city",
+            backend.name()
+        ));
+    }
+    None
 }
 
 /// Match ids starting with this opt into the v3 wire regardless of the env
@@ -1302,8 +1344,9 @@ impl CityRuntime {
         ))
     }
 
-    /// Prefer PhysX when the feature is on and a world is supplied, unless
-    /// `VIBE_CITY_SYNTHETIC=1`.
+    /// Open the PhysX-backed city, or the synthetic one when
+    /// `VIBE_CITY_SYNTHETIC=1`. Without a PhysX world (or a build without city
+    /// support) this fails rather than quietly serving a city with no physics.
     pub fn open(
         sim_hz: u32,
         #[cfg(feature = "physx-city")] world: Option<&mut World>,
@@ -1342,10 +1385,21 @@ impl CityRuntime {
                             );
                         }
                     }
+                } else {
+                    anyhow::bail!(
+                        "the destructible city needs a PhysX world \
+                         (VIBE_PHYSICS_BACKEND=physx_gpu); set VIBE_CITY_SYNTHETIC=1 \
+                         for the physics-free test city"
+                    );
                 }
             }
         }
-        let _ = prefer_synthetic();
+        if !prefer_synthetic() {
+            anyhow::bail!(
+                "this server was built without PhysX city support; set \
+                 VIBE_CITY_SYNTHETIC=1 for the physics-free test city"
+            );
+        }
         Self::synthetic(sim_hz)
     }
 
@@ -1425,7 +1479,13 @@ impl CityRuntime {
                 None
             }
         };
-        let mut rebuilt = Self::open(sim_hz, world)?;
+        // A synthetic city was asked for when it was opened; it rebuilds as
+        // one rather than re-deciding (and refusing) from the environment.
+        let mut rebuilt = if matches!(self.backend, CityBackend::Synthetic(_)) {
+            Self::synthetic(sim_hz)?
+        } else {
+            Self::open(sim_hz, world)?
+        };
         // The wire version is NOT part of `open`: it is chosen once at match
         // creation and announced in the session config. A rebuild that forgets
         // it silently downgrades the server to v2 while every joined client
@@ -2586,6 +2646,32 @@ impl CityRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A city on Rapier has no colliders: shots, meteors and walls silently
+    /// do nothing. It must be refused, not served.
+    #[test]
+    fn a_city_without_physx_is_refused_unless_synthetic_is_asked_for() {
+        use vibe_netcode::physics_backend::PhysicsBackendKind::{PhysxGpu, Rapier};
+        let rapier = unavailable_reason(Rapier, false, true).expect("rapier refused");
+        assert!(rapier.contains("VIBE_PHYSICS_BACKEND=physx_gpu"), "{rapier}");
+        assert!(rapier.contains("rapier"), "{rapier}");
+        let unbuilt = unavailable_reason(PhysxGpu, false, false).expect("no city build refused");
+        assert!(unbuilt.contains("VIBE_CITY_SYNTHETIC=1"), "{unbuilt}");
+        assert_eq!(unavailable_reason(PhysxGpu, false, true), None);
+        assert_eq!(unavailable_reason(Rapier, true, true), None);
+        assert_eq!(unavailable_reason(Rapier, true, false), None);
+    }
+
+    /// Opening the city with no PhysX world fails instead of falling back to
+    /// the synthetic backend.
+    #[test]
+    fn opening_a_city_without_a_physx_world_fails() {
+        if prefer_synthetic() {
+            return;
+        }
+        let error = CityRuntime::open(60, None).err().expect("open without a world fails");
+        assert!(error.to_string().contains("VIBE_CITY_SYNTHETIC=1"), "{error}");
+    }
 
     /// A sphere denser than any element is not a physics simulation.
     ///

@@ -1,3 +1,4 @@
+import { SERVER_CLOSE_MARKER } from './disconnectReason';
 import { CITY_WIRE_VERSION } from '../city/wire';
 import { GameSocket } from './gameSocket';
 import { NetDebugTelemetry, type LocalShotTelemetry } from './debugTelemetry';
@@ -1327,5 +1328,15 @@ function describeDisconnectReason(prefix: string, reason: unknown): string {
   if (reason instanceof Error) {
     return `${prefix} closed (${reason.message})`;
   }
+  // WebTransport's `closed` resolves with the server's close info; a server
+  // that refuses a session (e.g. a /city match it cannot host) says why here.
+  if (typeof reason === 'object' && typeof (reason as { reason?: unknown }).reason === 'string') {
+    const info = reason as { closeCode?: number; reason: string };
+    if (info.reason.length > 0) {
+      return `${prefix} ${SERVER_CLOSE_MARKER}${info.reason}`;
+    }
+    return `${prefix} closed (code ${info.closeCode ?? 0})`;
+  }
   return `${prefix} closed (${String(reason)})`;
 }
+

@@ -101,7 +101,10 @@ WT_STRICT_SNAPSHOT_DATAGRAMS=1 \
 ```
 
 Startup fails if the CUDA context or GPU scene cannot execute a validation
-step. `/healthz` reports the selected backend and required GPU status. PhysX
+step. The destructible `/city` needs this backend: a server on Rapier (or
+built without a city feature) refuses city matches with the reason in the log
+and in the client's status line. `VIBE_CITY_SYNTHETIC=1` opts into the
+physics-free synthetic city used for protocol tests; it has no colliders. `/healthz` reports the selected backend and required GPU status. PhysX
 sessions negotiate 60 Hz snapshots and thin-authoritative client movement;
 incompatible clients are rejected.
 
