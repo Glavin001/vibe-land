@@ -451,7 +451,36 @@ paired) showing the acceptance criterion.
   - *Accept:* no CPU-bound frame > 33 ms at the first fracture of a session.
   - *Evidence:* CPU-bound frames at 4.6, 5.3, 9.1, 48.1 and 90.4 s.
 
-- [ ] **9. Client clock: lag grows with jitter and with how often it is read.**
+- [x] **9. Client clock: lag grows with jitter and with how often it is read.**
+  - *Done (2026-09-24):* the output of `ServerClockEstimator`
+    (`netcode/src/clock_sync.rs`, and its TypeScript twin
+    `client/src/net/serverClockModel.ts`) is now a function of the snapshots
+    received and the local time only. At each snapshot it is anchored where
+    it stands and given a speed (the rate, plus the error to the uncapped
+    model over `SLEW_TAU_US`, between a stop and 1.5x); until the next
+    snapshot it runs at that speed and stops at the ceiling (newest sample +
+    one snapshot interval + RTT/2). The root cause was that the old output
+    re-slewed per read towards a model that stops at that ceiling between
+    snapshots: every read during a late snapshot's wait gave up ground that
+    only the 300 ms decay won back, so more reads and more jitter meant more
+    lag. `RenderClock` now takes the new target delay at the snapshot's
+    arrival (`retarget`), so its slew is per unit of server time too.
+    Kept from 0eb6f3fd: never steps back, never more than one snapshot
+    interval past the newest sample, rate from the wall-clock trailer,
+    a stall freezes it.
+  - *Evidence (Netlab v2, rec1, recorded pace, measured):* clock lag p50
+    (server tick now minus the clock's estimate) on a 90 ms link: no jitter
+    82.1 → 83.7 ms; ±10 ms 137.8 → 86.0 ms; ±35 ms 275.0 → 87.9 ms (4.2 ms
+    over the jitter-free lag, within one 16.7 ms interval). Read rate:
+    ±35 ms at 60 Hz / 120 Hz / recorded frames 190.1 / 278.1 / 275.0 ms
+    before, 89.2 / 87.9 / 87.9 ms after (the residue is where the frames
+    sample, not the clock: unit tests show identical outputs at 60 Hz,
+    240 Hz and on arrival only). lte 274.4 → 87.9 ms, poor-mobile 340.6 →
+    149.0 ms; bodies drawn behind the server p50 332.7 → 146.7 ms on lte.
+    Back-steps 0 on every link before and after. Cost: +1.6 ms clock lag
+    p50 on loopback/lan (12.4 → 13.9 ms behind the server), where the
+    server's own tick jitter now occasionally stops the output at its
+    ceiling; p99 falls 45.3 → 36.5 ms.
   - *Layer / owner:* client netcode, `netcode/src/clock_sync.rs` (item 2's
     estimator).
   - *Found by:* Netlab v2 (`docs/netlab-v2.md`), in the lab; not yet
@@ -464,7 +493,36 @@ paired) showing the acceptance criterion.
     the read rate; re-run the Netlab jitter sweep.
   - *Accept:* lag within one snapshot interval of the jitter-free lag at
     ±35 ms jitter, independent of read rate; still 0 back-steps.
-- [ ] **10. Client: retired and out-of-range bodies stay drawn.**
+- [x] **10. Client: retired and out-of-range bodies stay drawn.**
+  - *Done (2026-09-24):* the root cause was the client's only rule for a
+    body the stream stops carrying: drop it after 240 ticks (4 s) whatever
+    it was doing. The server never says a body is gone, so
+    `client/src/net/bodyPresence.ts` now reads its absence against the
+    snapshot builder's contract: a body last seen moving faster than 2 m/s
+    is in every snapshot while in interest, so it is dropped after 15
+    snapshot ticks without it (the meteor layer's stale window, now shared);
+    a body at rest is re-sent once a second, so it is dropped when the
+    snapshot that should have carried its refresh arrives without it
+    (deferred by one refresh when a snapshot in that window was lost).
+    `NetcodeClient` removes it from `dynamicBodies` and the interpolator,
+    so every renderer stops drawing it.
+  - *Evidence (Netlab v2, rec1, measured):* body frames drawn after the body
+    left truth or the recipient's 80 m interest radius, loopback: 6,017 of
+    9,294 (up to 3,983 ms after it left; 732 of them with no body in truth)
+    → 321 of 3,600 (up to 233 ms, 0 with no body in truth). lte 5,673
+    (3,767 ms) → 235 (200 ms); poor-mobile 5,681 (3,767 ms) → 230 (217 ms).
+    Fast projectiles: err@render p99 188.6 → 0.026 m and 66% → 11% of frames
+    extrapolated (loopback). rec1 has no resting body that is retired or
+    leaves interest, so the resting rule is covered by unit tests only.
+  - *Live check (city bench quick, 3 clients,
+    `target/clock-fix/city-bench/runs/20260924-101426-clock-fix` against
+    `target/netcode-clock/.../20260924-084654-netcode-clock-quick-3c-r2`,
+    measured):* stale body draws 298 / 148 / 112 → 20 / 9 / 6 per client;
+    render-clock back-steps 0 on every client; render lead p95 -5.3 →
+    -6.6 ms. The server budgets failed in both runs and were worse in this
+    one (tick p95 18.1 → 35.8 ms, peak active bodies 289 → 429, broken bonds
+    20.8 → 27.6%): a heavier destruction outcome, not this change, which
+    touches no server code (inferred).
   - *Layer / owner:* client entity lifetime (`netcodeClient.ts`, the
     dynamic-body renderers).
   - *Evidence (measured, live renderer samples):* retired or out-of-range
@@ -472,7 +530,17 @@ paired) showing the acceptance criterion.
     body samples were bodies the server no longer had.
   - *Accept:* no body drawn more than one staleness window after the server
     stops having it.
-- [ ] **11. Client: a meteor's body after impact.**
+- [x] **11. Client: a meteor's body after impact.**
+  - *Done (2026-09-24):* `placeMeteor` no longer holds a rock whose body has
+    left the stream where it was last drawn: it returns `hidden`, and the
+    netcode client drops the body by the same rule (item 10), so once the
+    flight is forgotten there is no stale body left to draw as a plain ball.
+    While the body is streamed the rock is drawn from it as before.
+  - *Evidence (Netlab v2, rec1, measured):* meteor err@render p99 43.3 →
+    0.18 m (loopback; lte 44.3 → 0.18 m, poor-mobile 42.8 → 0.29 m); meteor
+    body drawn as a plain ball after its flight: 366 frames at 138 m p50 →
+    0; meteor frames drawn from a body out of truth or interest 117 (up to
+    983 ms) → 26 (up to 233 ms, the detection window).
   - *Layer / owner:* `client/src/vfx/meteorPlacement.ts`, `MeteorLayer.tsx`.
   - *Evidence (measured):* after impact the body rolls out of range while
     the meteor layer holds it (43 m p99 from truth); once its flight is

@@ -18,7 +18,7 @@ type Trace = {
   wall: boolean;
 };
 
-type Frame = { local: number; now: number; newest: number; delayUs: number };
+type Frame = { local: number; now: number; newest: number; delayUs: number; atArrival?: boolean };
 
 /** Feed a trace into a model, reading the clock at 120 Hz. */
 function run(model: ServerClockModel, trace: Trace): Frame[] {
@@ -72,6 +72,59 @@ function varyingSends(): number[] {
   return sends;
 }
 const varying: Trace = { sends: varyingSends(), latencyUs: (i) => 1_000 + (i % 7) * 1_500, wall: false };
+
+/** A seeded uniform generator (for iid netem-style jitter). */
+function uniform(seed: number): () => number {
+  let s = seed >>> 0;
+  return () => {
+    s = (Math.imul(s, 1664525) + 1013904223) >>> 0;
+    return s / 2 ** 32;
+  };
+}
+
+/** 60 Hz, wall-stamped, `delayUs ± jitterUs` one way (iid, so it reorders). */
+function jittered(delayUs: number, jitterUs: number, count: number, seed: number): Trace {
+  const next = uniform(seed);
+  const latency = Array.from({ length: count }, () => delayUs + (next() * 2 - 1) * jitterUs);
+  return { sends: Array.from({ length: count }, (_, i) => 1e6 + i * TICK_US), latencyUs: (i) => latency[i], wall: true };
+}
+
+/**
+ * Feed a trace, reading the clock at each local time in `reads` (sorted) and,
+ * with `atArrivals`, right after every snapshot.
+ */
+function replay(model: ServerClockModel, trace: Trace, reads: number[], atArrivals: boolean): Frame[] {
+  const events = trace.sends
+    .map((sent, i) => ({ arrive: sent + trace.latencyUs(i), server: (i + 1) * TICK_US, sent }))
+    .sort((a, b) => a.arrive - b.arrive);
+  const frames: Frame[] = [];
+  let newest = 0;
+  let r = 0;
+  const read = (local: number, atArrival: boolean) =>
+    frames.push({ local, now: model.serverNowUs(local), newest, delayUs: model.getInterpolationDelayMs() * 1000, atArrival });
+  for (const e of events) {
+    while (r < reads.length && reads[r] < e.arrive) read(reads[r++], false);
+    if (trace.wall) model.observeServerTimeWithWall(e.server, Math.max(0, e.sent) % 2 ** 32, e.arrive);
+    else model.observeServerTime(e.server, e.arrive);
+    newest = Math.max(newest, e.server);
+    if (atArrivals) read(e.arrive, true);
+  }
+  return frames;
+}
+
+function grid(trace: Trace, hz: number): number[] {
+  const first = Math.min(...trace.sends.map((s, i) => s + trace.latencyUs(i)));
+  const last = Math.max(...trace.sends.map((s, i) => s + trace.latencyUs(i)));
+  const out: number[] = [];
+  for (let i = 0; first + (i * 1e6) / hz <= last; i += 1) out.push(first + (i * 1e6) / hz);
+  return out;
+}
+
+/** Truth minus the clock, ms, p50 over reads after `afterUs` (tick i + 1 is sent at 1 s + i ticks). */
+function lagP50Ms(frames: Frame[], afterUs: number): number {
+  const lags = frames.filter((f) => f.local > afterUs).map((f) => (f.local - 1e6 + TICK_US - f.now) / 1000).sort((a, b) => a - b);
+  return lags[Math.floor(lags.length / 2)];
+}
 
 describe('TsServerClock', () => {
   it('steady 60 Hz: rate 1, delay one tick, never past the newest snapshot', () => {
@@ -159,6 +212,32 @@ describe('TsServerClock', () => {
     }
   });
 
+  it('does not depend on how often it is read (90 +- 35 ms link)', () => {
+    const trace = jittered(90_000, 35_000, 1_800, 7);
+    const at60 = replay(new TsServerClock(60), trace, grid(trace, 60), false);
+    const at240 = replay(new TsServerClock(60), trace, grid(trace, 240), false).filter((_, i) => i % 4 === 0);
+    expect(at240.length).toBe(at60.length);
+    for (let i = 0; i < at60.length; i += 1) expect(Math.abs(at60[i].now - at240[i].now)).toBeLessThan(1e-6);
+    const onArrival = replay(new TsServerClock(60), trace, [], true);
+    const alsoFrames = replay(new TsServerClock(60), trace, grid(trace, 240), true).filter((f) => f.atArrival);
+    expect(alsoFrames.length).toBe(onArrival.length);
+    for (let i = 0; i < onArrival.length; i += 1) expect(Math.abs(onArrival[i].now - alsoFrames[i].now)).toBeLessThan(1e-6);
+  });
+
+  it('jitter costs at most one snapshot interval of lag, read per frame or per arrival', () => {
+    for (const atArrivals of [false, true]) {
+      const lag = (jitterUs: number) => {
+        const trace = jittered(90_000, jitterUs, 3_600, 11);
+        const frames = replay(new TsServerClock(60), trace, atArrivals ? [] : grid(trace, 120), atArrivals);
+        expect(backwardSteps(frames)).toBe(0);
+        return lagP50Ms(frames, 20e6);
+      };
+      const calm = lag(0);
+      expect(lag(10_000) - calm).toBeLessThanOrEqual(TICK_US / 1000);
+      expect(lag(35_000) - calm).toBeLessThanOrEqual(TICK_US / 1000);
+    }
+  });
+
   it('unwraps the u32 wall clock', () => {
     const base = 2 ** 32 - 500_000;
     const clock = new TsServerClock(60);
@@ -176,6 +255,8 @@ describe('TsServerClock matches clock_sync.rs (WasmClockSync)', () => {
     ['35 Hz, wall stamps', { ...slow35, wall: true }],
     ['20-60 Hz with stalls', varying],
     ['20-60 Hz with stalls, wall stamps', { ...varying, wall: true }],
+    ['90 +- 35 ms jitter, wall stamps', jittered(90_000, 35_000, 1_200, 3)],
+    ['25 +- 8 ms jitter, wall stamps', jittered(25_000, 8_000, 1_200, 5)],
   ];
   for (const [name, trace] of traces) {
     it(name, () => {
@@ -192,6 +273,16 @@ describe('TsServerClock matches clock_sync.rs (WasmClockSync)', () => {
       }
       expect(ts.getRate()).toBeCloseTo(wasm.getRate(), 9);
       expect(ts.hasWallClock()).toBe(wasm.hasWallClock());
+      expect(Math.abs(ts.getClockOffsetUs() - wasm.getClockOffsetUs())).toBeLessThan(1e-3);
+      wasm.free();
+    });
+    it(`${name}, read only on arrival`, () => {
+      const ts = new TsServerClock(60);
+      const wasm = new WasmClockSync(60) as unknown as ServerClockModel;
+      const a = replay(ts, trace, [], true);
+      const b = replay(wasm, trace, [], true);
+      expect(a.length).toBe(b.length);
+      for (let i = 0; i < a.length; i += 1) expect(Math.abs(a[i].now - b[i].now)).toBeLessThan(1e-3);
       wasm.free();
     });
   }
@@ -230,6 +321,36 @@ describe('RenderClock', () => {
       last = r;
     }
     expect(clock.delayMs).toBeCloseTo(20, 6);
+  });
+
+  it('with the server clock, the render time does not depend on the read rate', () => {
+    // NetcodeClient: the target delay follows the estimator at each snapshot,
+    // and the render clock is read every frame.
+    const trace = jittered(90_000, 35_000, 1_800, 13);
+    const events = trace.sends
+      .map((sent, i) => ({ arrive: sent + trace.latencyUs(i), server: (i + 1) * TICK_US, sent }))
+      .sort((a, b) => a.arrive - b.arrive);
+    const render = (hz: number) => {
+      const clock = new TsServerClock(60);
+      const rc = new RenderClock();
+      const reads = grid(trace, hz);
+      const out: number[] = [];
+      let r = 0;
+      for (const e of events) {
+        while (r < reads.length && reads[r] < e.arrive) {
+          out.push(rc.renderTimeUs(clock.serverNowUs(reads[r]), reads[r]));
+          r += 1;
+        }
+        clock.observeServerTimeWithWall(e.server, e.sent % 2 ** 32, e.arrive);
+        rc.retarget(clock.getInterpolationDelayMs(), clock.serverNowUs(e.arrive), e.arrive);
+      }
+      return out;
+    };
+    const at60 = render(60);
+    const at240 = render(240).filter((_, i) => i % 4 === 0);
+    let worst = 0;
+    for (let i = 0; i < at60.length; i += 1) worst = Math.max(worst, Math.abs(at60[i] - at240[i]));
+    expect(worst).toBeLessThan(1e-3);
   });
 
   it('a local clock seeking back starts over', () => {

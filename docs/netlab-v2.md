@@ -99,7 +99,7 @@ measurement that bounds it.
 | S5 | Non-netcode packets (welcome, roster, body metadata, shots, match stats, meteor launches, pings, energy, batteries) pass through: recorded bytes at the recorded queue time. Packets from before the capture opened are sent at their arrival time minus the lane's median latency. | They are not optimisation targets, and their bytes and times are what the server produced. | Joined 10,207/10,207 by CRC32 and length (rec1). |
 | S6 | Client-to-server feedback is open loop. Resyncs, repairs and bootstraps happen at the recorded ticks; acks come from S2. | On a reliable stream the client asks for nothing new: the client stage reports `nacksSent` = `resyncRequestsSent` = 0 on every profile. | Counted in `client-stats.json`. |
 | S7 | Packet timing inside a tick comes from `ticks.jsonl` phases: city at the end of `tick_city`, snapshot after it, bootstraps at the tick end. `--pace ideal` puts ticks exactly 1/60 s apart, with no server slowdown. | The recorded pace is the server's real timeline. Ideal pacing isolates netcode from server runtime. | Loopback lane latency p50 0.6 ms matches the live send-to-arrive p50 of 0.15–0.8 ms. |
-| S8 | **Client clock call schedule.** The lab reads the render clocks once per recorded frame, at its recorded time (the live clock probe's instant). The live page also reads them at other instants within the frame. The rate-aware clock's output is path dependent (its slew and hold clamps act per call). | Exact whenever the server keeps pace. | Clock offset vs live, rec1: last 10 s p99 18 µs; whole run p50 135 µs, p99 8.9 ms, max 15.8 ms, all in the first 20 s (server stalls up to 608 ms). |
+| S8 | **Client clock call schedule.** The lab reads the render clocks once per recorded frame, at its recorded time (the live clock probe's instant). The live page also reads them at other instants within the frame. Since the clock-fix change the server clock's output and the render clocks' delay slew depend on the snapshots and the local time only, not on when or how often they are read (`clock_sync.rs`, unit tests at 60 Hz, 240 Hz and arrival-only reads); before it the output was path dependent (its slew and hold clamps acted per call). | Exact for a client with the clock-fix change; for older clients exact whenever the server keeps pace. | rec1 (older client, recorded with it): clock offset vs live last 10 s p99 18 µs; whole run p50 135 µs, p99 8.9 ms, max 15.8 ms, all in the first 20 s (server stalls up to 608 ms). |
 | S9 | The client stage replays through `createReplayPlayer` (the /cityreplay page's player), not the WebTransport classes. `performance.now()` is the tape clock on the page origin, and each packet is handled at its arrival time. | Same `routeInboundPacket`, decoders and client objects. The transports only add sockets. | Lab vs the same code on the recorded tape: 0.000 m (rec1). |
 | S10 | Renderers are not imported. The lab replicates two glue rules: `DynamicBodiesRenderer` skips meteor bodies, and `MeteorLayer`'s call into `placeMeteor`. The city layer's distance-based sample stride is not applied, because the stride lands on the same pose. | Positions are what the renderers are handed. | Lab vs live renderer samples. rec1: bodies p50 0.000 m, p99 0.53 m; vehicles p99 1.6 cm. Bench c0: bodies p99 5.7 cm, players 1.3 cm, vehicles 2.8 mm. |
 | S11 | The recording player is spectated. With no inputs there is no prediction. | Reported as `self_spectated` and excluded from conclusions. | – |
@@ -222,6 +222,16 @@ These are the knobs production actually has, with their production defaults:
   - Render-time back-steps (count, total, max) for players and bodies.
   - Interpolation delays.
   - How far the body render time is behind the server.
+  - Clock lag (`clock.lag_ms`): the tick the server had completed at each
+    frame's probe minus the client's server-time estimate there, i.e. the
+    clock's own share of "behind the server", without the render delay.
+- **Stale draws** (`stale`): plain bodies drawn after truth stopped having
+  them or while they are outside the recipient's interest radius
+  (`DYNAMIC_BODY_AOI_EXIT_RADIUS_M`, production 80 m) at the render tick,
+  and how long after they left (render clock, split by the truth speed when
+  they left: over 2 m/s or not); and the same for meteors drawn from their
+  body. Bodies drawn before their first tick in truth (a render time behind
+  a new body's first snapshot) are not stale and are not counted.
 - **Bytes:** per lane and per kind: packets, bytes, kbit/s delivered, fates
   (lost, sender-dropped, strict-drop, fallback), queue-to-arrival latency, HOL.
 - **Selection totals:** what the budget left out (from the builder and the
@@ -245,6 +255,14 @@ It exits 1 on failure.
   - Informational: lab drawn positions against the live renderers
     (`live-samples.json` / `client-<n>-drawn.jsonl`).
 - **(c) Divergences.** Each one is named in `calibration.md`.
+
+Calibration checks the lab against a live recording, so it runs the client
+that made the recording (`--client-root` at that tree). A client whose clock
+differs from the recording's fails (b)'s convergence check by construction:
+the clock-fix client on rec1 is 2.9 ms p99 from the live probe in the last
+10 s (the old clock's output), with the lab still 0.000 m from the same
+client on the recorded tape. Calibrate a changed clock on a bundle recorded
+with it.
 
 **rec1**: exact capture, 75 s loopback, PhysX GPU, this tree's server and
 client (`client/netlab/v2/record-bundle.sh`). The session has cannonballs, a
@@ -331,6 +349,10 @@ client (1a35ecf8 tree, `--client-root`) against the 0eb6f3fd client.
 
 ## Findings (measured in the lab, not yet confirmed live)
 
+All three are fixed (items 9-11 of the
+[2026-09-24 session analysis](mac-metal-session-analysis-2026-09-24.md));
+the before/after on rec1 is below them.
+
 1. **The rate-aware clock lags much more than the link delay under jitter,
    and more the more often it is polled.** These are lab runs on bench-c0
    through the WASM clock; the polling decomposition uses its TypeScript copy,
@@ -360,6 +382,26 @@ client (1a35ecf8 tree, `--client-root`) against the 0eb6f3fd client.
    reappears as a plain ball after the flight is forgotten
    (`meteor_body_after_flight`, 138 m p50).
 
+**After the fix** (rec1, recorded pace, the b0502db9 client via
+`--client-root` against the clock-fix tree; `netlab2 compare`). The jitter
+probes are `--profiles` entries `d90` (90 ms), `d90j10`, `d90j35` and
+`d25j8` (one-way delay ± uniform jitter, no loss):
+
+| Link | Client | Clock lag p50 / p99 ms | Behind server p50 ms | Stale body frames (max ms after it left) | Meteor err p99 m | Meteor body as a ball, frames |
+|---|---|---:|---:|---:|---:|---:|
+| loopback | b0502db9 | -7.5 / 45.3 | 12.4 | 6,017 (3,983) | 43.28 | 366 |
+| loopback | clock-fix | -5.9 / 36.5 | 13.9 | 321 (233) | 0.18 | 0 |
+| lte | b0502db9 | 274.4 / 309.7 | 332.7 | 5,673 (3,767) | 44.28 | 369 |
+| lte | clock-fix | 87.9 / 125.6 | 146.7 | 235 (200) | 0.18 | 0 |
+| d90 | b0502db9 | 82.1 / 136.7 | 101.9 | 6,013 (3,983) | 43.33 | 367 |
+| d90 | clock-fix | 83.7 / 127.0 | 103.4 | 304 (233) | 0.18 | 0 |
+| d90j35 | b0502db9 | 275.0 / 306.5 | 333.8 | 5,683 (3,783) | 42.54 | 370 |
+| d90j35 | clock-fix | 87.9 / 118.9 | 146.6 | 230 (200) | 0.18 | 0 |
+
+Read-rate sweep, d90j35 clock lag p50 at `--frames 60` / `120` / recorded:
+190.1 / 278.1 / 275.0 ms before, 89.2 / 87.9 / 87.9 ms after. Back-steps: 0
+on every run.
+
 ## How to run
 
 ```bash
@@ -376,6 +418,7 @@ $N matrix --bundle <bundle> --out <dir> --links recorded,lan,lte,poor-mobile \
    --knob-sets 'production:;snap-30Hz:snapshot.interval_ticks=2;city-15Hz:city.send_hz=15'
 $N matrix ... --client-root /path/to/other/tree/client  # same frozen truth, other client
 $N compare --a <runOrMatrixDir> --b <runOrMatrixDir> --out <dir>
+$N run ... --link d90j35 --profiles <file>              # a profile table other than netemProfiles.json
 $N profiles
 
 # a new exact capture (GPU lock; ports 4501/4502/3503); needs the server built with

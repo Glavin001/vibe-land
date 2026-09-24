@@ -428,6 +428,19 @@ export class RenderClock {
     if (this.delayUs === null) this.delayUs = this.targetDelayUs;
   }
 
+  /**
+   * A new target delay as of (`serverNowUs`, `localTimeUs`): the clock is
+   * first advanced to that instant under the old target. The delay slews by a
+   * share of each step of server time, so with retargets committed where they
+   * happen the render time does not depend on how often it is read.
+   */
+  retarget(ms: number, serverNowUs: number, localTimeUs: number): void {
+    if (this.lastRenderUs !== -Infinity && localTimeUs >= this.lastLocalUs - 1_000_000) {
+      this.renderTimeUs(serverNowUs, localTimeUs);
+    }
+    this.setTargetDelayMs(ms);
+  }
+
   /** The delay the clock is moving towards, ms. */
   get targetDelayMs(): number {
     return this.targetDelayUs / 1000;

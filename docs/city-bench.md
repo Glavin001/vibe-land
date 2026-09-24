@@ -22,7 +22,11 @@ Options: `--scenario NAME|PATH`, `--clients N`, `--buildings N` (cap),
 `--intensity X` (scales shots, meteors and demolition rounds, not slot
 times), `--seed N`, `--label NAME`, `--budgets FILE`, `--baseline FILE`,
 `--no-build`. Exit status: 0 all budgets pass, 1 a budget failed, >1 the run
-itself failed (the reason is printed and in `bench.log`).
+itself failed (the reason is printed and in `bench.log`). The environment
+variables `HTTP_PORT`, `WT_PORT` and `CLIENT_PORT` move the server, its
+WebTransport port and the client dev server off 4301/4302/3303, and
+`CITY_BENCH_OUT` moves the output root (builds and runs) off
+`target/city-bench`, so a second worktree can bench without sharing either.
 
 What the wrapper does, in order:
 

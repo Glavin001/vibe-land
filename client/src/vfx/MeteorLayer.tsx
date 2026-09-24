@@ -175,8 +175,8 @@ export function MeteorLayer({ getRuntime, getNowMs }: MeteorLayerProps) {
         interpDelayMs: lagMs,
       };
       if (placed.source === 'hidden') {
-        // Announced but not yet launched on this clock: keep it off-screen
-        // rather than at the start point for a frame.
+        // Announced but not yet launched on this clock, or its body has left
+        // the stream: keep it off-screen rather than where it no longer is.
         meteor.group.visible = false;
         meteor.intensity = 0;
         recordMeteorDrawn(flight.bodyId, { position: placed.arc, source: 'hidden', arc: placed.arc, ...forensics, atMs: nowMs });
@@ -187,10 +187,6 @@ export function MeteorLayer({ getRuntime, getNowMs }: MeteorLayerProps) {
         flight.lastStreamedAtMs = nowMs;
         const q = placed.quaternion!;
         meteor.group.quaternion.set(q[0], q[1], q[2], q[3]);
-      } else if (placed.source === 'hold') {
-        // The body was real and now is not: it stays where it was last seen,
-        // cold, until the store forgets it.
-        meteor.lastBurningMs = Math.min(meteor.lastBurningMs, nowMs - 3000);
       } else {
         // On the arc: tumbling, slowly, the way the studio's rock does.
         scratchSpin.setFromAxisAngle(meteor.spinAxis, step * 0.45);

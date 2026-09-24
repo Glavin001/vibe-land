@@ -12,7 +12,9 @@
 // wall-clock stamp when the snapshot carries one, from arrivals otherwise --
 // models server time as the newest sample advanced at the rate by at most one
 // snapshot interval, and follows the model with an output that never goes
-// backwards and never snaps backwards.
+// backwards and never snaps backwards. The output is anchored at each snapshot
+// and runs at a set speed up to a ceiling until the next one, so it depends on
+// the snapshots and the local time only, not on how often it is read.
 
 export const RATE_WINDOW_US = 1_000_000;
 export const RATE_MIN_SPAN_US = 250_000;
@@ -42,6 +44,14 @@ export interface ServerClockModel {
   getSnapshotIntervalMs(): number;
   getRttMs(): number;
   free(): void;
+}
+
+/** The output's trajectory since the newest snapshot (clock_sync.rs `Anchor`). */
+type Anchor = { localUs: number; serverUs: number; speed: number; ceilingUs: number };
+
+function anchorAt(anchor: Anchor, localUs: number): number {
+  const dt = Math.max(0, localUs - anchor.localUs);
+  return Math.max(anchor.serverUs, Math.min(anchor.ceilingUs, anchor.serverUs + anchor.speed * dt));
 }
 
 type ClockSample = {
@@ -100,10 +110,8 @@ export class TsServerClock implements ServerClockModel {
   private readonly arrivals: Array<{ drain: number; step: number }> = [];
   private delayUs: number;
   private snapshotIntervalUs: number;
-  private outServerUs = 0;
-  private outTargetUs = 0;
-  private outLocalUs = 0;
-  private outInitialized = false;
+  private anchor: Anchor | null = null;
+  private lastRead: { localUs: number; value: number } | null = null;
 
   constructor(private readonly simHz = 60) {
     this.delayUs = this.tickUs();
@@ -166,12 +174,27 @@ export class TsServerClock implements ServerClockModel {
     }
 
     this.latest = sample;
-    if (!this.outInitialized) {
-      this.outServerUs = this.modelUs(localUs);
-      this.outTargetUs = this.outServerUs;
-      this.outLocalUs = localUs;
-      this.outInitialized = true;
-    }
+    this.reanchor(localUs);
+  }
+
+  /** A new snapshot: anchor the output where it stands, set its speed and ceiling. */
+  private reanchor(localUs: number): void {
+    const latest = this.latest;
+    if (!latest) return;
+    const model = this.modelUs(localUs);
+    let from = this.anchor && localUs >= this.anchor.localUs - RESET_BACKWARDS_US
+      ? anchorAt(this.anchor, localUs)
+      : model;
+    if (model - from > SNAP_FORWARD_US) from = model;
+    const halfRtt = this.rtt.rttUs() / 2;
+    const uncapped = latest.serverUs + Math.max(0, this.rate * (localUs - latest.producedUs)) + halfRtt;
+    const gain = 1 + (uncapped - from) / (this.rate * SLEW_TAU_US);
+    this.anchor = {
+      localUs,
+      serverUs: from,
+      speed: this.rate * Math.min(MAX_CATCH_UP, Math.max(0, gain)),
+      ceilingUs: latest.serverUs + this.snapshotIntervalUs + halfRtt,
+    };
   }
 
   private unwrapWall(raw: number): number {
@@ -220,7 +243,8 @@ export class TsServerClock implements ServerClockModel {
     this.wallOffsetUs = null;
     this.rate = 1;
     this.rateMeasured = false;
-    this.outInitialized = false;
+    this.anchor = null;
+    this.lastRead = null;
     this.delayUs = this.tickUs();
     this.snapshotIntervalUs = this.tickUs();
   }
@@ -234,32 +258,22 @@ export class TsServerClock implements ServerClockModel {
 
   serverNowUs(localUs: number): number {
     if (!this.latest) return localUs;
-    const target = this.modelUs(localUs);
-    if (!this.outInitialized || localUs < this.outLocalUs - RESET_BACKWARDS_US) {
-      this.outServerUs = target;
-      this.outTargetUs = target;
-      this.outLocalUs = localUs;
-      this.outInitialized = true;
-      return target;
+    if (!this.anchor || localUs < this.anchor.localUs - RESET_BACKWARDS_US) {
+      // The local clock went back (a replay seek): a new timeline.
+      this.lastRead = null;
+      this.reanchor(localUs);
     }
-    const dt = localUs - this.outLocalUs;
-    if (dt <= 0) return this.outServerUs;
-    const error = this.outServerUs - this.outTargetUs;
-    let next: number;
-    if (target - this.outServerUs > SNAP_FORWARD_US) {
-      next = target;
-    } else {
-      const followed = target + error * Math.exp(-dt / SLEW_TAU_US);
-      next = Math.min(this.outServerUs + this.rate * dt * MAX_CATCH_UP, Math.max(this.outServerUs, followed));
+    let value = anchorAt(this.anchor!, localUs);
+    if (this.lastRead && localUs >= this.lastRead.localUs - RESET_BACKWARDS_US) {
+      value = Math.max(value, this.lastRead.value);
     }
-    this.outServerUs = next;
-    this.outTargetUs = target;
-    this.outLocalUs = localUs;
-    return next;
+    this.lastRead = { localUs, value };
+    return value;
   }
 
   getClockOffsetUs(): number {
-    if (this.outInitialized) return this.outServerUs - this.outLocalUs;
+    if (this.lastRead) return this.lastRead.value - this.lastRead.localUs;
+    if (this.anchor) return this.anchor.serverUs - this.anchor.localUs;
     if (this.latest) return this.latest.serverUs - this.latest.arrivalUs;
     return 0;
   }

@@ -126,7 +126,20 @@ pub struct Headline {
     pub dyn_delay_p50_ms: f64,
     pub dyn_behind_now_p50_ms: f64,
     pub render_backsteps: u64,
+    /// Clock lag (server tick now minus the client's server-time estimate), ms.
+    pub clock_lag_p50_ms: f64,
+    pub clock_lag_p99_ms: f64,
+    /// Bodies drawn after they left truth or interest (see `StaleScore`).
+    pub stale_body_frames: u64,
+    pub stale_body_share: f64,
+    pub stale_body_max_ms: f64,
+    pub stale_fast_max_ms: f64,
+    pub stale_slow_max_ms: f64,
+    pub stale_meteor_frames: u64,
+    pub stale_meteor_max_ms: f64,
     pub classes: BTreeMap<String, (f64, f64, f64, f64, f64)>,
+    /// Entity-frames drawn per class.
+    pub class_frames: BTreeMap<String, u64>,
     /// Meteors as MeteorLayer draws them; 0 flights when the client tree has
     /// no meteorPlacement.ts (then these are not comparable).
     pub meteor_flights: u64,
@@ -166,6 +179,16 @@ pub fn headline(name: &str, stream: &StreamReport, card: &Card) -> Headline {
         dyn_delay_p50_ms: card.clock.dyn_delay_ms.p50,
         dyn_behind_now_p50_ms: card.clock.dyn_behind_now_ms.p50,
         render_backsteps: card.clock.render_backsteps + card.clock.dyn_backsteps,
+        clock_lag_p50_ms: card.clock.lag_ms.p50,
+        clock_lag_p99_ms: card.clock.lag_ms.p99,
+        stale_body_frames: card.stale.no_truth_frames + card.stale.out_of_interest_frames,
+        stale_body_share: (card.stale.no_truth_frames + card.stale.out_of_interest_frames) as f64
+            / card.stale.body_frames.max(1) as f64,
+        stale_body_max_ms: card.stale.stale_ms.max,
+        stale_fast_max_ms: card.stale.fast_stale_ms.max,
+        stale_slow_max_ms: card.stale.slow_stale_ms.max,
+        stale_meteor_frames: card.stale.meteor_frames,
+        stale_meteor_max_ms: card.stale.meteor_stale_ms.max,
         meteor_flights: card.meteors.flights,
         meteor_err_p99_m: card.meteors.err_render_m.p99,
         meteor_backward_frames: card.meteors.backward_frames,
@@ -173,6 +196,7 @@ pub fn headline(name: &str, stream: &StreamReport, card: &Card) -> Headline {
         ..Default::default()
     };
     for (class, score) in &card.classes {
+        h.class_frames.insert(class.clone(), score.entity_frames);
         h.classes.insert(
             class.clone(),
             (
@@ -205,6 +229,21 @@ pub fn card_summary(card: &Card) -> String {
         card.clock.dyn_backstep_max_ms,
         card.clock.dyn_delay_ms.p50,
         card.clock.dyn_behind_now_ms.p50
+    );
+    let _ = writeln!(
+        s,
+        "clock lag p50/p99/max {} ms | stale bodies: {} of {} frames ({} no truth, {} out of interest, {} ids), max {:.0} ms (fast {:.0}, slow {:.0}) | stale meteor frames {} (max {:.0} ms)",
+        fmt_pct(&card.clock.lag_ms, 1.0, 1),
+        card.stale.no_truth_frames + card.stale.out_of_interest_frames,
+        card.stale.body_frames,
+        card.stale.no_truth_frames,
+        card.stale.out_of_interest_frames,
+        card.stale.bodies,
+        card.stale.stale_ms.max,
+        card.stale.fast_stale_ms.max,
+        card.stale.slow_stale_ms.max,
+        card.stale.meteor_frames,
+        card.stale.meteor_stale_ms.max
     );
     let _ = writeln!(
         s,
@@ -590,6 +629,11 @@ pub fn cmd_compare(args: &Args) {
         row("body delay p50 ms", ha.dyn_delay_p50_ms, hb.dyn_delay_p50_ms);
         row("drawn behind server p50 ms", ha.dyn_behind_now_p50_ms, hb.dyn_behind_now_p50_ms);
         row("render clock backsteps", ha.render_backsteps as f64, hb.render_backsteps as f64);
+        row("clock lag p50 ms", ha.clock_lag_p50_ms, hb.clock_lag_p50_ms);
+        row("clock lag p99 ms", ha.clock_lag_p99_ms, hb.clock_lag_p99_ms);
+        row("stale body frames", ha.stale_body_frames as f64, hb.stale_body_frames as f64);
+        row("stale body max ms", ha.stale_body_max_ms, hb.stale_body_max_ms);
+        row("stale meteor frames", ha.stale_meteor_frames as f64, hb.stale_meteor_frames as f64);
         if ha.meteor_flights > 0 && hb.meteor_flights > 0 {
             row("meteor err p99 m", ha.meteor_err_p99_m, hb.meteor_err_p99_m);
             row("meteor backward frames", ha.meteor_backward_frames as f64, hb.meteor_backward_frames as f64);
@@ -603,6 +647,12 @@ pub fn cmd_compare(args: &Args) {
                 row(&format!("{class} artifacts/min"), *art, *artb);
                 row(&format!("{class} extrapolated share"), *extra, *extrab);
             }
+        }
+        let classes: std::collections::BTreeSet<&String> =
+            ha.class_frames.keys().chain(hb.class_frames.keys()).collect();
+        for class in classes {
+            let frames = |h: &Headline| h.class_frames.get(class).copied().unwrap_or(0) as f64;
+            row(&format!("{class} frames drawn"), frames(ha), frames(hb));
         }
         if let (Some(x), Some(y)) = (ha.city_lever_p99_m, hb.city_lever_p99_m) {
             row("city lever p99 m", x, y);

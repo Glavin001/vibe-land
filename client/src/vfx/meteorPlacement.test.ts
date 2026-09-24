@@ -128,7 +128,44 @@ describe('placeMeteor', () => {
     // The server is stalled: no newer snapshot at all, however long it takes.
     expect(placeMeteor(f, f.track, { renderServerUs: s[0].serverTimeUs, samples: s, ticksSinceSeen: 0, tickUs: TICK_US, nowMs: 900 }).source).toBe('body');
     // Newer snapshots arrive without the moving rock: it has left the stream.
-    expect(placeMeteor(f, f.track, { renderServerUs: s[0].serverTimeUs, samples: s, ticksSinceSeen: STALE_AFTER_TICKS + 1, tickUs: TICK_US, nowMs: 1000 }).source).toBe('hold');
+    expect(placeMeteor(f, f.track, { renderServerUs: s[0].serverTimeUs, samples: s, ticksSinceSeen: STALE_AFTER_TICKS + 1, tickUs: TICK_US, nowMs: 1000 }).source).toBe('hidden');
+  });
+
+  it('after impact: drawn on its body while streamed, then removed, never held where it was', () => {
+    // The rock lands and rolls away at 12 m/s; the stream carries it for
+    // 40 ticks, then it rolls out of interest.
+    const f = flight();
+    const landUs = LAUNCH_US + 2_500_000;
+    const samples: DynamicBodySample[] = [];
+    const truthAt = (us: number): [number, number, number] => [12 + 12 * (us - landUs) / 1e6, 1, -40];
+    const sources: string[] = [];
+    for (let k = 0; k <= 80; k += 1) {
+      const us = landUs + k * TICK_US;
+      if (k <= 40) {
+        samples.push({ ...sampleAt(f, landUs), serverTimeUs: us, position: truthAt(us), velocity: [12, 0, 0] });
+      }
+      // The render time trails the newest arrival by two ticks.
+      const render = us - 2 * TICK_US;
+      if (render < landUs) continue;
+      const p = placeMeteor(f, f.track, {
+        renderServerUs: render,
+        samples,
+        ticksSinceSeen: Math.max(0, k - Math.min(k, 40)),
+        tickUs: TICK_US,
+        nowMs: k * 16,
+      });
+      sources.push(p.source);
+      if (p.source === 'body') {
+        // Within 1 m of where the rock is at the render time.
+        expect(dist(p.position, truthAt(render))).toBeLessThan(1);
+      }
+      if (k > 40 + STALE_AFTER_TICKS) expect(p.source).toBe('hidden');
+    }
+    expect(sources).toContain('body');
+    expect(sources).not.toContain('hold');
+    // Once the netcode client has dropped the body there is nothing to draw it from.
+    const gone = placeMeteor(f, f.track, { renderServerUs: landUs + 90 * TICK_US, samples: [], ticksSinceSeen: null, tickUs: TICK_US, nowMs: 2000 });
+    expect(gone.source).toBe('hidden');
   });
 
   it('forgets flights on server time when the render time is known', () => {

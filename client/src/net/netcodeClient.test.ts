@@ -530,6 +530,46 @@ describe('NetcodeClient', () => {
       expect(client.sampleRemoteDynamicBody(7)).toBeNull();
     });
 
+    it('drops a moving body within the stale window once the stream stops carrying it', () => {
+      // A cannonball at 30 m/s is retired (or leaves interest) after tick 20.
+      let nowMs = 0;
+      const client = new NetcodeClient({ nowMs: () => nowMs });
+      client.handlePacket(makeWelcome(1));
+      client.handlePacket(makeDynamicBodyMeta([{ handle: 7, bodyId: 7001 }]));
+      const present: boolean[] = [];
+      for (let tick = 1; tick <= 60; tick += 1) {
+        nowMs = tick * (1000 / 60);
+        client.handlePacket(makeSnapshotV2({
+          serverTick: tick,
+          sphereStates: tick <= 20 ? [{ handle: 7, offset: [tick * 0.5, 2, 0], velocity: [30, 0, 0] }] : [],
+        }));
+        present[tick] = client.dynamicBodies.has(7001);
+      }
+      expect(present[35]).toBe(true);
+      expect(present[36]).toBe(false);
+      expect(client.getInterpolatedDynamicBodyState(7001)).toBeNull();
+    });
+
+    it('keeps a resting body until its refresh is due, then drops it', () => {
+      let nowMs = 0;
+      const client = new NetcodeClient({ nowMs: () => nowMs });
+      client.handlePacket(makeWelcome(1));
+      client.handlePacket(makeDynamicBodyMeta([{ handle: 7, bodyId: 7001 }]));
+      const present: boolean[] = [];
+      for (let tick = 1; tick <= 120; tick += 1) {
+        nowMs = tick * (1000 / 60);
+        client.handlePacket(makeSnapshotV2({
+          serverTick: tick,
+          sphereStates: tick <= 10 ? [{ handle: 7, offset: [3, 0.3, 0], velocity: [0, 0, 0] }] : [],
+        }));
+        present[tick] = client.dynamicBodies.has(7001);
+      }
+      // The server re-sends a body at rest once a second: absent until then is normal.
+      expect(present[69]).toBe(true);
+      // The snapshot that should have carried the refresh did not.
+      expect(present[70]).toBe(false);
+    });
+
     it('applies V2 roster, metadata, and relative snapshot state', () => {
       let localAck = -1;
       const client = new NetcodeClient({
@@ -981,8 +1021,12 @@ describe('NetcodeClient render clocks on a slowed server', () => {
     client.handlePacket(makeSnapshotV2({ serverTick: 10, sphereStates: [{ handle: 7, offset: [0, 5, 0], velocity: [0, -30, 0] }] }));
     nowMs = 800; // a long server stall: nothing new arrived
     expect(client.getDynamicBodyTicksSinceSeen(7001)).toBe(0);
-    client.handlePacket(makeSnapshotV2({ serverTick: 30 }));
-    expect(client.getDynamicBodyTicksSinceSeen(7001)).toBe(20);
+    client.handlePacket(makeSnapshotV2({ serverTick: 20 }));
+    expect(client.getDynamicBodyTicksSinceSeen(7001)).toBe(10);
     expect(client.getDynamicBodySamples(7001)).toHaveLength(1);
+    // Past the stale window the moving body is out of the stream, and dropped.
+    client.handlePacket(makeSnapshotV2({ serverTick: 26 }));
+    expect(client.getDynamicBodyTicksSinceSeen(7001)).toBeNull();
+    expect(client.getDynamicBodySamples(7001)).toHaveLength(0);
   });
 });

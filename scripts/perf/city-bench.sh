@@ -18,7 +18,8 @@
 #
 # Output: target/city-bench/runs/<date>-<label>/ (report.md, report.json,
 # bundles, logs). Ports: server 127.0.0.1:4301 + WebTransport :4302, client
-# dev server :3303. The GPU lock (scripts/perf/gpu-run.sh) is held only while
+# dev server :3303 (HTTP_PORT, WT_PORT, CLIENT_PORT override them; the output
+# root is CITY_BENCH_OUT). The GPU lock (scripts/perf/gpu-run.sh) is held only while
 # the server and the browsers run; building and analysis happen outside it.
 # Exit status: 0 all budgets pass, 1 a budget failed, >1 the run failed.
 set -u
@@ -81,7 +82,7 @@ if [ ! -d "$ROOT/client/src/wasm/pkg" ] || [ ! -d "$ROOT/client/src/wasm/debris-
     npm run build:wasm) > "$RUN_DIR/wasm-build.log" 2>&1 || { echo "FAIL: wasm build; see $RUN_DIR/wasm-build.log" >&2; exit 10; }
 fi
 
-export HTTP_PORT=4301 WT_PORT=4302 CLIENT_PORT=3303
+export HTTP_PORT=${HTTP_PORT:-4301} WT_PORT=${WT_PORT:-4302} CLIENT_PORT=${CLIENT_PORT:-3303}
 VITE=""
 cleanup() {
   if [ -n "$VITE" ]; then kill "$VITE" 2>/dev/null; pkill -P "$VITE" 2>/dev/null; fi

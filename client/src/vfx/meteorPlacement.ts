@@ -18,11 +18,15 @@
 // ground it is about to stop on.
 //
 // A body the stream stops carrying while it moves has left the streaming
-// range; it is held where it was last drawn. That is judged in server ticks
-// (snapshots that arrived without it), not against the estimated server clock:
-// while the server is stalled nothing arrives, and a rock is not stale because
-// the server is slow.
+// range (or been retired); from then on the rock is not drawn at all -- the
+// netcode client drops the body by the same rule (net/bodyPresence.ts), and a
+// rock held where it was last seen stood tens of metres from the rolling truth
+// (43 m p99 in Netlab v2, rec1). That is judged in server ticks (snapshots
+// that arrived without it), not against the estimated server clock: while the
+// server is stalled nothing arrives, and a rock is not stale because the
+// server is slow.
 
+import { MOVING_BODY_SPEED_MS, MOVING_BODY_STALE_TICKS } from '../net/bodyPresence';
 import { sampleDynamicBodyTrack, type DynamicBodySample } from '../net/interpolation';
 import {
   meteorPositionAt,
@@ -36,11 +40,12 @@ export { meteorFlightForgotten, newMeteorTrack, type MeteorTrack } from './meteo
 /** A streamed sample this far from the arc at its own time means contact. */
 export const ON_ARC_TOLERANCE_M = 1.5;
 /** Snapshots without a moving body before it counts as out of the stream. */
-export const STALE_AFTER_TICKS = 15;
+export const STALE_AFTER_TICKS = MOVING_BODY_STALE_TICKS;
 /** Below this speed a body missing from the stream is resting, not gone. */
-const MOVING_SPEED_MS = 2;
+const MOVING_SPEED_MS = MOVING_BODY_SPEED_MS;
 /** Longest the body is drawn past its newest snapshot. */
 const MAX_BODY_EXTRAPOLATION_US = 250_000;
+/** 'hold' (held where last drawn) is no longer produced; tools still read it in older tapes. */
 export type MeteorSource = 'arc' | 'body' | 'hold' | 'hidden';
 
 export interface MeteorPlacementInput {
@@ -127,8 +132,10 @@ export function placeMeteor(
     return done({ source: 'body', position, velocity: [...body.velocity], quaternion: [...body.quaternion], arc });
   }
 
-  // Streamed once, gone now: hold where it was last drawn.
-  const held = track.lastPosition ?? arc;
-  return done({ source: 'hold', position: [...held], velocity: [0, 0, 0], quaternion: null, arc });
+  // Streamed once, gone now (out of the stream, or dropped by the netcode
+  // client): not drawn. Holding it where it was last drawn put a rolling rock
+  // tens of metres from where it really was.
+  const last = track.lastPosition ?? arc;
+  return { source: 'hidden', position: [...last], velocity: [0, 0, 0], quaternion: null, arc };
 }
 

@@ -307,6 +307,40 @@ pub struct ClockScore {
     /// actually completed at each frame (the latency the player sees), ms;
     /// negative = drawing ahead of the server.
     pub dyn_behind_now_ms: Pct,
+    /// Clock lag: the tick the server had completed at each frame's probe
+    /// minus the client's server-time estimate there (render time plus the
+    /// delay in use), ms. The render delay is excluded: this is the clock's
+    /// own share of `dyn_behind_now_ms`.
+    #[serde(default)]
+    pub lag_ms: Pct,
+}
+
+/// Bodies drawn after the server stopped streaming them to this client:
+/// either gone from truth (retired) or outside the recipient's interest
+/// radius (`DYNAMIC_BODY_AOI_EXIT_RADIUS_M`) at the render tick. The time is
+/// measured on the render clock from the last tick the body was in truth and
+/// in interest, so a client that removes a body the moment it can know is
+/// charged the detection window only.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct StaleScore {
+    /// Plain body frames (not meteors) drawn at all.
+    pub body_frames: u64,
+    /// Of those: truth no longer has the body.
+    pub no_truth_frames: u64,
+    /// Of those: truth has it, outside the interest radius.
+    pub out_of_interest_frames: u64,
+    /// How long after it left, per stale frame, ms (render clock).
+    pub stale_ms: Pct,
+    /// Split by the body's truth speed when it left: > 2 m/s (it cannot have
+    /// come to rest unseen) or slower.
+    pub fast_stale_ms: Pct,
+    pub slow_stale_ms: Pct,
+    /// Distinct bodies drawn stale.
+    pub bodies: u64,
+    /// Meteors drawn from their body (source body or hold) while it is out
+    /// of truth or interest, and how long after it left, ms.
+    pub meteor_frames: u64,
+    pub meteor_stale_ms: Pct,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -335,6 +369,8 @@ pub struct Card {
     /// Truth entities near the client (within 40 m) not drawn, per kind,
     /// sampled every 6th frame.
     pub missing_entity_frames: BTreeMap<String, u64>,
+    #[serde(default)]
+    pub stale: StaleScore,
     /// Frames whose render time lies outside the captured truth (the tape
     /// opens a little before the server capture): clock-scored only.
     pub frames_outside_truth: u64,
@@ -450,6 +486,11 @@ pub fn score_display<T: TruthSource>(
     let mut meteor_err = Vec::new();
     let mut handover = Vec::new();
     let mut last_meteor: HashMap<u32, (u8, [f32; 3], f64)> = HashMap::new();
+    let mut lag = Vec::new();
+    let mut interest = InterestTracker::default();
+    let (mut stale_ms, mut fast_stale, mut slow_stale, mut meteor_stale) =
+        (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    let mut stale_ids: HashSet<u32> = HashSet::new();
 
     for frame in &display.frames {
         let tape_ms = frame.sample_ms - origin;
@@ -473,6 +514,11 @@ pub fn score_display<T: TruthSource>(
         dyn_delay.push(frame.dyn_delay_ms);
         if let Some(tick) = now_tick {
             behind.push(((f64::from(tick) * tick_us - frame.dyn_render_us) / 1000.0) as f32);
+        }
+        if let Some(tick) = timeline.tick_at(frame.t_ms - origin) {
+            // The probe's server-time estimate: page time + offset.
+            let estimate_us = frame.t_ms * 1000.0 + frame.offset_us;
+            lag.push(((f64::from(tick) * tick_us - estimate_us) / 1000.0) as f32);
         }
         // Entities are scored only while both render times fall inside the
         // captured truth (the tape starts a little before the capture).
@@ -507,6 +553,13 @@ pub fn score_display<T: TruthSource>(
                 if entity.flags == 3 {
                     continue;
                 }
+                if entity.flags == 1 || entity.flags == 2 {
+                    let render_tick = (render_us / tick_us).floor().max(0.0) as u32;
+                    if let Some(gone) = interest.stale(truth, player, entity.id, render_tick) {
+                        card.stale.meteor_frames += 1;
+                        meteor_stale.push((gone.ticks as f64 * tick_us / 1000.0) as f32);
+                    }
+                }
                 if let Some(t) = at_render {
                     meteor_err.push(shown.distance(t.position));
                     if shown.y < -0.5 && t.position.y > 0.0 {
@@ -536,6 +589,21 @@ pub fn score_display<T: TruthSource>(
                 KIND_VEHICLE => "vehicle",
                 _ => classify_body(truth, entity.id, (render_us / tick_us).round().max(0.0) as u32, &meteor_ids),
             };
+            if entity.kind == KIND_BODY {
+                card.stale.body_frames += 1;
+                let render_tick = (render_us / tick_us).floor().max(0.0) as u32;
+                if let Some(gone) = interest.stale(truth, player, entity.id, render_tick) {
+                    if gone.no_truth {
+                        card.stale.no_truth_frames += 1;
+                    } else {
+                        card.stale.out_of_interest_frames += 1;
+                    }
+                    let ms = (gone.ticks as f64 * tick_us / 1000.0) as f32;
+                    stale_ms.push(ms);
+                    if gone.fast { fast_stale.push(ms) } else { slow_stale.push(ms) }
+                    stale_ids.insert(entity.id);
+                }
+            }
             let acc = accs.entry(class).or_default();
             acc.entity_frames += 1;
             acc.ids.insert(entity.id);
@@ -598,6 +666,12 @@ pub fn score_display<T: TruthSource>(
     card.clock.interp_delay_ms = Pct::of(interp);
     card.clock.dyn_delay_ms = Pct::of(dyn_delay);
     card.clock.dyn_behind_now_ms = Pct::of(behind);
+    card.clock.lag_ms = Pct::of(lag);
+    card.stale.stale_ms = Pct::of(stale_ms);
+    card.stale.fast_stale_ms = Pct::of(fast_stale);
+    card.stale.slow_stale_ms = Pct::of(slow_stale);
+    card.stale.meteor_stale_ms = Pct::of(meteor_stale);
+    card.stale.bodies = stale_ids.len() as u64;
     card.meteors.flights = meteor_ids.len() as u64;
     card.meteors.err_render_m = Pct::of(meteor_err);
     card.meteors.handover_jump_m = Pct::of(handover);
@@ -650,6 +724,64 @@ pub fn score_display<T: TruthSource>(
     }
     card.missing_entity_frames = missing;
     card
+}
+
+/// A body counts as streamed to the recipient while truth has it within the
+/// dynamic-body interest exit radius of the recipient (the server's rule in
+/// `snapshot_builder::dynamic_body_within_aoi`, production radius).
+pub const INTEREST_RADIUS_M: f32 = vibe_land_shared::constants::DYNAMIC_BODY_AOI_EXIT_RADIUS_M;
+/// Longest look-back for the tick a stale body left, ticks.
+const STALE_LOOKBACK_TICKS: u32 = 3_600;
+/// A body faster than this when it left cannot have come to rest unseen.
+const STALE_FAST_MPS: f32 = 2.0;
+
+struct Gone {
+    no_truth: bool,
+    /// Ticks from the last tick in truth and in interest to the render tick.
+    ticks: u32,
+    fast: bool,
+}
+
+/// Per body: the last tick it was in truth and in interest, found by
+/// scanning back, cached so each tick is looked at once per body.
+#[derive(Default)]
+struct InterestTracker {
+    /// id -> (newest tick examined, last good tick at or before it, fast then)
+    seen: HashMap<u32, (u32, Option<(u32, bool)>)>,
+}
+
+impl InterestTracker {
+    fn good<T: TruthSource>(truth: &T, player: u32, id: u32, tick: u32) -> Option<bool> {
+        let tt = truth.tick(tick)?;
+        let body = tt.bodies.iter().find(|b| b.id == id)?;
+        let me = tt.players.iter().find(|p| p.id == player)?;
+        let d = Vec3::from_array(body.position).distance(Vec3::from_array(me.position));
+        (d <= INTEREST_RADIUS_M).then(|| Vec3::from_array(body.velocity).length() > STALE_FAST_MPS)
+    }
+
+    fn stale<T: TruthSource>(&mut self, truth: &T, player: u32, id: u32, tick: u32) -> Option<Gone> {
+        let (first, _) = truth.window();
+        if let Some(fast) = Self::good(truth, player, id, tick) {
+            self.seen.insert(id, (tick, Some((tick, fast))));
+            return None;
+        }
+        let no_truth = truth.tick(tick).is_some_and(|tt| !tt.bodies.iter().any(|b| b.id == id));
+        let (examined, mut last) = self.seen.get(&id).copied().unwrap_or((0, None));
+        if tick > examined {
+            let floor = examined.max(tick.saturating_sub(STALE_LOOKBACK_TICKS)).max(first);
+            let mut t = tick;
+            while t > floor {
+                t -= 1;
+                if let Some(fast) = Self::good(truth, player, id, t) {
+                    last = Some((t, fast));
+                    break;
+                }
+            }
+            self.seen.insert(id, (tick, last));
+        }
+        let (left, fast) = last?;
+        Some(Gone { no_truth, ticks: tick - left, fast })
+    }
 }
 
 /// Scores a run directory: displayed.bin (+ presented.bin for the city).
@@ -1063,6 +1195,39 @@ mod tests {
         let card = score_display(&w, &timeline(), 1, &display(frames));
         let flight = &card.classes["ballistic"];
         assert!(flight.extrapolated_share > 0.99);
+    }
+
+    #[test]
+    fn a_body_drawn_after_it_left_truth_or_interest_is_stale_and_timed() {
+        // Body 9 exists until tick 150; a client keeps drawing it at its last
+        // pose until tick 200. Then body 9 is moved 100 m away (out of interest).
+        let mut w = world();
+        for tick in 150..300usize {
+            w.ticks[tick].bodies.clear();
+        }
+        let last = w.ticks[149].bodies[0];
+        let frame = |tick: u32| {
+            let mut f = frame_at(&w, f64::from(tick) * 1000.0 / 60.0, 0.0, Vec3::ZERO, None);
+            f.entities.retain(|e| e.kind != KIND_BODY);
+            f.entities.push(Entity { kind: KIND_BODY, flags: 0, id: 9, position: last.position, quaternion: [0.0, 0.0, 0.0, 1.0], age_ms: 0.0 });
+            f
+        };
+        let card = score_display(&w, &timeline(), 1, &display((140..=200).map(frame).collect()));
+        assert_eq!(card.stale.no_truth_frames, 51);
+        assert_eq!(card.stale.out_of_interest_frames, 0);
+        // Drawn 51 ticks after its last tick in truth (149 -> 200).
+        assert!((card.stale.stale_ms.max - 51.0 * 1000.0 / 60.0).abs() < 1.0, "{:?}", card.stale);
+
+        let mut far = world();
+        for tick in 100..300usize {
+            far.ticks[tick].bodies[0].position = [100.0, 1.0, 0.0];
+        }
+        let frames = (90..=120).map(|tick| frame_at(&far, f64::from(tick) * 1000.0 / 60.0, 0.0, Vec3::ZERO, None)).collect();
+        let card = score_display(&far, &timeline(), 1, &display(frames));
+        assert_eq!(card.stale.no_truth_frames, 0);
+        assert!(card.stale.out_of_interest_frames >= 20, "{:?}", card.stale);
+        // The clock lag of a client whose estimate is the completed tick is ~0.
+        assert!(card.clock.lag_ms.max.abs() < 17.0, "{:?}", card.clock.lag_ms);
     }
 
     #[test]

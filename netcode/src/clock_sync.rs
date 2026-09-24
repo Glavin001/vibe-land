@@ -110,7 +110,8 @@ pub const ARRIVAL_HISTORY: usize = 128;
 pub const DELAY_QUANTILE: f64 = 0.95;
 /// Hard cap on the recommended delay (sim time).
 pub const MAX_DELAY_US: f64 = 250_000.0;
-/// Time constant of the output's pull towards the model (local time).
+/// Time constant of the output's pull towards the model (local time): an
+/// error of `e` changes the output's speed by `e / SLEW_TAU_US` of the rate.
 pub const SLEW_TAU_US: f64 = 300_000.0;
 /// The output may run at most this much faster than the modelled rate.
 pub const MAX_CATCH_UP: f64 = 1.5;
@@ -146,11 +147,24 @@ struct ClockSample {
 ///   does not run ahead of it. Capping at one step rather than at the delay
 ///   keeps the model continuous across arrivals: when the next snapshot comes
 ///   it lands where the model already is, however long it took.
-/// - **Output.** `server_now_us` moves with the model, and a step in the model
-///   decays over `SLEW_TAU_US` instead of being taken at once: the output
-///   speeds up by at most `MAX_CATCH_UP` and slows down, to a stop if need be,
-///   but never goes backwards. It jumps only forwards, and only when it is more
-///   than `SNAP_FORWARD_US` behind.
+/// - **Output.** `server_now_us` is a function of the snapshots received and
+///   of local time only -- never of how often or when it is read. At each new
+///   snapshot the output is anchored where it stands and given a speed: the
+///   server's rate, plus the error to the model (the newest sample advanced at
+///   the rate, not capped) over `SLEW_TAU_US`, between a stop and
+///   `MAX_CATCH_UP` times the rate. Until the next snapshot it runs at that
+///   speed and stops at the ceiling: one snapshot interval past the newest
+///   sample (plus the one-way latency). So a step in the model is slewed out,
+///   a stalled server freezes the output, and it never goes backwards. It jumps
+///   only forwards, and only when it is more than `SNAP_FORWARD_US` behind the
+///   model.
+///
+///   The catch-up and the hold are per unit of time. They used to be per
+///   read: each read re-slewed towards a model that stops at the ceiling
+///   between snapshots, so under jitter a clock read every frame lost ground
+///   at every late snapshot and made it back only by decay -- 276 ms behind
+///   the server on a 90 ± 35 ms link read at 120 Hz, 108 ms read only on
+///   arrival, against 84 ms without jitter (Netlab v2).
 /// - **Delay.** `recommended_delay_us` is the `DELAY_QUANTILE` of the sim time
 ///   that elapses between snapshot arrivals (arrival gap × rate), floored at
 ///   the observed snapshot interval and capped at `MAX_DELAY_US`.
@@ -167,12 +181,32 @@ pub struct ServerClockEstimator {
     arrivals: VecDeque<(f64, f64)>,
     delay_us: f64,
     snapshot_interval_us: f64,
-    out_server_us: f64,
-    /// The model's value at `out_local_us`: the output's error is measured
-    /// against it.
-    out_target_us: f64,
-    out_local_us: f64,
-    out_initialized: bool,
+    /// The output's trajectory since the newest snapshot: from
+    /// (`anchor_local_us`, `anchor_server_us`) at `anchor_speed` sim µs per
+    /// local µs, stopping at `anchor_ceiling_us`. Set only by snapshots.
+    anchor: Option<Anchor>,
+    /// The last value handed out, and when: a read for an earlier local time
+    /// gets it again. It never feeds back into the trajectory.
+    last_read: Option<(f64, f64)>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct Anchor {
+    local_us: f64,
+    server_us: f64,
+    speed: f64,
+    ceiling_us: f64,
+}
+
+impl Anchor {
+    /// The output at `local_us`: non-decreasing, at most the ceiling unless
+    /// the anchor is already above it (then it holds).
+    fn at(&self, local_us: f64) -> f64 {
+        let dt = (local_us - self.local_us).max(0.0);
+        (self.server_us + self.speed * dt)
+            .min(self.ceiling_us)
+            .max(self.server_us)
+    }
 }
 
 impl ServerClockEstimator {
@@ -191,10 +225,8 @@ impl ServerClockEstimator {
             arrivals: VecDeque::new(),
             delay_us: tick_us,
             snapshot_interval_us: tick_us,
-            out_server_us: 0.0,
-            out_target_us: 0.0,
-            out_local_us: 0.0,
-            out_initialized: false,
+            anchor: None,
+            last_read: None,
         }
     }
 
@@ -282,12 +314,39 @@ impl ServerClockEstimator {
         }
 
         self.latest = Some(sample);
-        if !self.out_initialized {
-            self.out_server_us = self.model_us(local_us);
-            self.out_target_us = self.out_server_us;
-            self.out_local_us = local_us;
-            self.out_initialized = true;
-        }
+        self.reanchor(local_us);
+    }
+
+    /// A new snapshot: anchor the output where it stands at `local_us` (on the
+    /// trajectory so far, whatever was read) and set its speed and ceiling
+    /// until the next one.
+    fn reanchor(&mut self, local_us: f64) {
+        let Some(latest) = self.latest else {
+            return;
+        };
+        let model = self.model_us(local_us);
+        let from = match self.anchor {
+            Some(anchor) if local_us >= anchor.local_us - RESET_BACKWARDS_US => anchor.at(local_us),
+            _ => model,
+        };
+        let from = if model - from > SNAP_FORWARD_US {
+            model
+        } else {
+            from
+        };
+        let half_rtt = self.rtt.rtt_us() / 2.0;
+        // The model without its one-interval cap: where the newest sample says
+        // the server is now. Steering to it (not to the capped model, which
+        // stops between snapshots) is what keeps jitter from costing lag.
+        let uncapped =
+            latest.server_us + (self.rate * (local_us - latest.produced_us)).max(0.0) + half_rtt;
+        let gain = 1.0 + (uncapped - from) / (self.rate * SLEW_TAU_US);
+        self.anchor = Some(Anchor {
+            local_us,
+            server_us: from,
+            speed: self.rate * gain.clamp(0.0, MAX_CATCH_UP),
+            ceiling_us: latest.server_us + self.snapshot_interval_us + half_rtt,
+        });
     }
 
     fn unwrap_wall(&mut self, raw: u32) -> f64 {
@@ -341,7 +400,8 @@ impl ServerClockEstimator {
         self.wall_offset_us = None;
         self.rate = 1.0;
         self.rate_measured = false;
-        self.out_initialized = false;
+        self.anchor = None;
+        self.last_read = None;
         self.delay_us = tick_us;
         self.snapshot_interval_us = tick_us;
     }
@@ -357,48 +417,40 @@ impl ServerClockEstimator {
     }
 
     /// Estimated server time (µs) at `local_us`: rate-aware, slewed, and
-    /// monotonic in `local_us`. Advances the estimator's output; a call for a
-    /// local time earlier than the previous call returns the previous value.
+    /// monotonic in `local_us`. A function of the snapshots received and of
+    /// `local_us`: reading it does not change what later reads return, except
+    /// that a read for a local time earlier than the previous read returns the
+    /// previous value.
     pub fn server_now_us(&mut self, local_us: f64) -> f64 {
         if self.latest.is_none() {
             return local_us;
         }
-        let target = self.model_us(local_us);
-        if !self.out_initialized || local_us < self.out_local_us - RESET_BACKWARDS_US {
-            self.out_server_us = target;
-            self.out_target_us = target;
-            self.out_local_us = local_us;
-            self.out_initialized = true;
-            return target;
-        }
-        let dt = local_us - self.out_local_us;
-        if dt <= 0.0 {
-            return self.out_server_us;
-        }
-        // Follow the model's own motion -- at the server's rate while snapshots
-        // flow, not at all once the model stops -- and let any step in it (a
-        // late or early snapshot, a new rate or delay) decay over SLEW_TAU_US.
-        let error = self.out_server_us - self.out_target_us;
-        let next = if target - self.out_server_us > SNAP_FORWARD_US {
-            target
-        } else {
-            let followed = target + error * (-dt / SLEW_TAU_US).exp();
-            followed.clamp(
-                self.out_server_us,
-                self.out_server_us + self.rate * dt * MAX_CATCH_UP,
-            )
+        let anchor = match self.anchor {
+            Some(anchor) if local_us >= anchor.local_us - RESET_BACKWARDS_US => anchor,
+            _ => {
+                // The local clock went back (a replay seek): a new timeline.
+                self.last_read = None;
+                self.reanchor(local_us);
+                self.anchor.expect("anchored above")
+            }
         };
-        self.out_server_us = next;
-        self.out_target_us = target;
-        self.out_local_us = local_us;
-        next
+        let mut value = anchor.at(local_us);
+        if let Some((read_local, read_value)) = self.last_read {
+            if local_us >= read_local - RESET_BACKWARDS_US {
+                value = value.max(read_value);
+            }
+        }
+        self.last_read = Some((local_us, value));
+        value
     }
 
-    /// `server_time ≈ local_time + offset` at the last evaluated point. Does
-    /// not advance the output.
+    /// `server_time ≈ local_time + offset` at the last read (the newest
+    /// snapshot's anchor before any). Does not advance the output.
     pub fn clock_offset_us(&self) -> f64 {
-        if self.out_initialized {
-            self.out_server_us - self.out_local_us
+        if let Some((local, value)) = self.last_read {
+            value - local
+        } else if let Some(anchor) = self.anchor {
+            anchor.server_us - anchor.local_us
         } else if let Some(latest) = self.latest {
             latest.server_us - latest.arrival_us
         } else {
@@ -698,6 +750,170 @@ mod tests {
         // One snapshot per 400 ms of wall time.
         let sim = run(|i| i as f64 * 400_000.0, 40, |_| 1_000.0, false);
         assert!(sim.c.recommended_delay_us() <= MAX_DELAY_US);
+    }
+
+    /// Snapshot `i` (tick `i + 1`) is sent at `i × TICK_US` of server wall time
+    /// and arrives `delay ± jitter` later (uniform, seeded, iid like netem),
+    /// wall-stamped. Sorted by arrival: (arrive, server, sent).
+    fn jittered(
+        delay_us: f64,
+        jitter_us: f64,
+        snapshots: usize,
+        seed: u64,
+    ) -> Vec<(f64, f64, f64)> {
+        let mut state = seed;
+        let mut uniform = move || {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (state >> 11) as f64 / (1u64 << 53) as f64
+        };
+        let mut events: Vec<(f64, f64, f64)> = (0..snapshots)
+            .map(|i| {
+                let sent = 1e6 + i as f64 * TICK_US;
+                let latency = delay_us + (uniform() * 2.0 - 1.0) * jitter_us;
+                (sent + latency, (i as f64 + 1.0) * TICK_US, sent)
+            })
+            .collect();
+        events.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+        events
+    }
+
+    struct Read {
+        local: f64,
+        now: f64,
+        /// Newest server time received.
+        newest: f64,
+        /// The largest snapshot interval the estimator has used so far.
+        interval: f64,
+        at_arrival: bool,
+    }
+
+    /// Replays `events`, reading the clock at every local time in `reads`
+    /// (sorted) and, with `at_arrivals`, right after every snapshot.
+    fn replay(events: &[(f64, f64, f64)], reads: &[f64], at_arrivals: bool) -> Vec<Read> {
+        let mut c = ServerClockEstimator::new(60.0);
+        let mut out = Vec::new();
+        let (mut newest, mut interval) = (0.0f64, 0.0f64);
+        let mut r = 0;
+        for &(arrive, server, sent) in events {
+            while r < reads.len() && reads[r] < arrive {
+                let now = c.server_now_us(reads[r]);
+                out.push(Read {
+                    local: reads[r],
+                    now,
+                    newest,
+                    interval,
+                    at_arrival: false,
+                });
+                r += 1;
+            }
+            c.observe_server_time_with_wall(server, (sent as u64 % (1u64 << 32)) as u32, arrive);
+            newest = newest.max(server);
+            interval = interval.max(c.snapshot_interval_us());
+            if at_arrivals {
+                let now = c.server_now_us(arrive);
+                out.push(Read {
+                    local: arrive,
+                    now,
+                    newest,
+                    interval,
+                    at_arrival: true,
+                });
+            }
+        }
+        out
+    }
+
+    fn grid(from: f64, to: f64, hz: f64) -> Vec<f64> {
+        let step = 1e6 / hz;
+        (0..)
+            .map(|i| from + i as f64 * step)
+            .take_while(|&t| t <= to)
+            .collect()
+    }
+
+    #[test]
+    fn output_does_not_depend_on_how_often_it_is_read() {
+        let events = jittered(90_000.0, 35_000.0, 1_800, 7);
+        let (from, to) = (events[0].0, events.last().unwrap().0);
+        // 60 Hz vs 240 Hz (every 4th read is a 60 Hz instant): same values there.
+        let slow = replay(&events, &grid(from, to, 60.0), false);
+        let fast = replay(&events, &grid(from, to, 240.0), false);
+        let fast_at_60: Vec<_> = fast.iter().step_by(4).collect();
+        assert_eq!(slow.len(), fast_at_60.len());
+        for (a, b) in slow.iter().zip(fast_at_60) {
+            assert!((a.local - b.local).abs() < 1e-6);
+            assert!(
+                (a.now - b.now).abs() < 1e-6,
+                "at {}: 60 Hz {} vs 240 Hz {}",
+                a.local,
+                a.now,
+                b.now
+            );
+        }
+        // Read only when snapshots arrive vs read at 240 Hz as well.
+        let arrivals = replay(&events, &[], true);
+        let both = replay(&events, &grid(from, to, 240.0), true);
+        let both_at_arrivals: Vec<_> = both.iter().filter(|f| f.at_arrival).collect();
+        assert_eq!(arrivals.len(), both_at_arrivals.len());
+        for (a, b) in arrivals.iter().zip(both_at_arrivals) {
+            assert!(
+                (a.now - b.now).abs() < 1e-6,
+                "at {}: arrivals {} vs 240 Hz {}",
+                a.local,
+                a.now,
+                b.now
+            );
+        }
+    }
+
+    fn lag_p50_ms(frames: &[Read], after_us: f64) -> f64 {
+        // Truth: the server has sent tick i + 1 at wall 1 s + i × TICK_US.
+        let mut lags: Vec<f64> = frames
+            .iter()
+            .filter(|f| f.local > after_us)
+            .map(|f| (f.local - 1e6 + TICK_US - f.now) / 1000.0)
+            .collect();
+        quantile(&mut lags, 0.5)
+    }
+
+    #[test]
+    fn jitter_costs_at_most_one_snapshot_interval_of_lag() {
+        for at_arrivals in [false, true] {
+            let run = |jitter_us: f64| {
+                let events = jittered(90_000.0, jitter_us, 3_600, 11);
+                let (from, to) = (events[0].0, events.last().unwrap().0);
+                let reads = if at_arrivals {
+                    Vec::new()
+                } else {
+                    grid(from, to, 120.0)
+                };
+                replay(&events, &reads, at_arrivals)
+            };
+            let calm = run(0.0);
+            let base = lag_p50_ms(&calm, 20e6);
+            for jitter_us in [10_000.0, 35_000.0] {
+                let frames = run(jitter_us);
+                let lag = lag_p50_ms(&frames, 20e6);
+                assert!(
+                    lag - base <= TICK_US / 1000.0,
+                    "±{} ms, read {}: lag {lag:.1} ms vs {base:.1} ms without jitter",
+                    jitter_us / 1000.0,
+                    if at_arrivals {
+                        "at arrivals"
+                    } else {
+                        "at 120 Hz"
+                    }
+                );
+                // Still never backwards, never more than one interval past the newest.
+                assert!(frames.windows(2).all(|w| w[1].now >= w[0].now));
+                assert!(frames
+                    .iter()
+                    .skip(60)
+                    .all(|f| f.now <= f.newest + f.interval + 1.0));
+            }
+        }
     }
 
     #[test]

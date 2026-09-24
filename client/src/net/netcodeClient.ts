@@ -2,6 +2,7 @@ import { SERVER_CLOSE_MARKER } from './disconnectReason';
 import { CITY_WIRE_VERSION } from '../city/wire';
 import { GameSocket } from './gameSocket';
 import { EnergyDisplay } from './energyDisplay';
+import { BodyStreamPresence } from './bodyPresence';
 import { NetDebugTelemetry, type LocalShotTelemetry } from './debugTelemetry';
 import { WebTransportGameClient, type SessionConfigResponse } from './webTransportClient';
 import type { RawPacketListener } from './inbound';
@@ -115,7 +116,6 @@ export type NetcodeClientConfig = {
  *   client.sendInputs(cmds);
  */
 export class NetcodeClient {
-  private static readonly DYNAMIC_BODY_STALE_TICKS = 240;
   private static readonly VEHICLE_STALE_TICKS = 180;
   /**
    * The dynamic-body delay until snapshots have arrived to size it from. After
@@ -191,16 +191,26 @@ export class NetcodeClient {
     return this.dynamicBodyRenderClock.targetDelayMs;
   }
 
-  /** Point the render clocks at the server clock's recommended delay. */
-  private adoptAdaptiveDelays(): void {
+  /**
+   * Point the render clocks at the server clock's recommended delay, as of a
+   * snapshot that arrived at `localTimeUs`. Each clock is first brought up to
+   * that instant under its old target, so its delay slews per unit of server
+   * time whether it is read once a frame or not at all.
+   */
+  private adoptAdaptiveDelays(localTimeUs: number): void {
     const adaptiveDelayMs = this.serverClock.getInterpolationDelayMs();
     if (adaptiveDelayMs <= 0) return;
-    this.playerRenderClock.setTargetDelayMs(
+    const serverNowUs = this.serverClock.serverNowUs(localTimeUs);
+    this.playerRenderClock.retarget(
       Math.max(adaptiveDelayMs, this.minRemoteInterpolationDelayMs),
+      serverNowUs,
+      localTimeUs,
     );
-    this.dynamicBodyRenderClock.setTargetDelayMs(adaptiveDelayMs);
-    this.localPlayerRenderClock.setTargetDelayMs(
+    this.dynamicBodyRenderClock.retarget(adaptiveDelayMs, serverNowUs, localTimeUs);
+    this.localPlayerRenderClock.retarget(
       Math.min(adaptiveDelayMs, this.serverClock.getSnapshotIntervalMs()),
+      serverNowUs,
+      localTimeUs,
     );
   }
 
@@ -225,7 +235,9 @@ export class NetcodeClient {
   readonly dynamicBodies = new Map<number, DynamicBodyStateMeters>();
   readonly vehicles = new Map<number, VehicleStateMeters>();
   readonly batteries = new Map<number, BatteryStateMeters>();
-  private readonly dynamicBodyLastSeenTick = new Map<number, number>();
+  /** Which streamed bodies are still in the stream (bodyPresence.ts). */
+  private readonly dynamicBodyPresence = new BodyStreamPresence();
+  private simHz = 60;
   private readonly vehicleLastSeenTick = new Map<number, number>();
   private readonly dynamicBodyServerTimeUs = new Map<number, number>();
   private readonly vehicleServerTimeUs = new Map<number, number>();
@@ -622,8 +634,9 @@ export class NetcodeClient {
     source: 'wt-datagram' | 'wt-reliable' | 'websocket' | 'local' | 'direct',
   ): void {
     this.latestServerTick = packet.serverTick;
-    this.serverClock.observe(packet.serverTimeUs, this.nowMs() * 1000, packet.serverWallUs);
-    this.adoptAdaptiveDelays();
+    const arrivedUs = this.nowMs() * 1000;
+    this.serverClock.observe(packet.serverTimeUs, arrivedUs, packet.serverWallUs);
+    this.adoptAdaptiveDelays(arrivedUs);
     this.debugTelemetry.observeAcceptedSnapshot(
       source,
       packet.serverTick,
@@ -759,7 +772,7 @@ export class NetcodeClient {
         angularVelocity,
         shapeType: meta.shapeType,
       });
-      this.dynamicBodyLastSeenTick.set(bodyId, packet.serverTick);
+      this.dynamicBodyPresence.seen(bodyId, packet.serverTick, Math.hypot(...velocity));
     }
     for (const box of packet.boxStates) {
       const meta = this.dynamicBodyMetaByHandle.get(box.handle);
@@ -795,16 +808,9 @@ export class NetcodeClient {
         angularVelocity: meters.angularVelocity,
         shapeType: meters.shapeType,
       });
-      this.dynamicBodyLastSeenTick.set(bodyId, packet.serverTick);
+      this.dynamicBodyPresence.seen(bodyId, packet.serverTick, Math.hypot(...meters.velocity));
     }
-    for (const [id, lastSeenTick] of this.dynamicBodyLastSeenTick) {
-      if (packet.serverTick - lastSeenTick > NetcodeClient.DYNAMIC_BODY_STALE_TICKS) {
-        this.dynamicBodyLastSeenTick.delete(id);
-        this.dynamicBodies.delete(id);
-        this.dynamicBodyServerTimeUs.delete(id);
-        this.dynamicBodyInterpolator.remove(id);
-      }
-    }
+    this.retireUnstreamedBodies(packet.serverTick);
     this.debugTelemetry.observeAuthoritativeDynamicBodies(this.dynamicBodies);
     // Fire the local snapshot callback only after authoritative dynamic-body
     // state has been applied. Multiplayer vehicle reconcile depends on the
@@ -977,6 +983,7 @@ export class NetcodeClient {
         );
         // The server's nominal tick rate: the clock's starting delay is one tick.
         this.serverClock.setSimHz(packet.simHz);
+        this.simHz = Math.max(1, packet.simHz);
         // Don't seed clock from welcome — it arrives with unpredictable
         // latency (TLS handshake, etc.) and skews the initial offset.
         // The first snapshot will initialize the estimator instead.
@@ -1001,8 +1008,9 @@ export class NetcodeClient {
           break;
         }
         this.latestServerTick = packet.serverTick;
-        this.serverClock.observe(packet.serverTimeUs, this.nowMs() * 1000);
-        this.adoptAdaptiveDelays();
+        const arrivedUs = this.nowMs() * 1000;
+        this.serverClock.observe(packet.serverTimeUs, arrivedUs);
+        this.adoptAdaptiveDelays(arrivedUs);
         this.debugTelemetry.observeAcceptedSnapshot(
           source,
           packet.serverTick,
@@ -1025,16 +1033,9 @@ export class NetcodeClient {
             angularVelocity: meters.angularVelocity,
             shapeType: meters.shapeType,
           });
-          this.dynamicBodyLastSeenTick.set(db.id, packet.serverTick);
+          this.dynamicBodyPresence.seen(db.id, packet.serverTick, Math.hypot(...meters.velocity));
         }
-        for (const [id, lastSeenTick] of this.dynamicBodyLastSeenTick) {
-          if (packet.serverTick - lastSeenTick > NetcodeClient.DYNAMIC_BODY_STALE_TICKS) {
-            this.dynamicBodyLastSeenTick.delete(id);
-            this.dynamicBodies.delete(id);
-            this.dynamicBodyServerTimeUs.delete(id);
-            this.dynamicBodyInterpolator.remove(id);
-          }
-        }
+        this.retireUnstreamedBodies(packet.serverTick);
         this.debugTelemetry.observeAuthoritativeDynamicBodies(this.dynamicBodies);
 
         const knownIds = new Set<number>();
@@ -1236,6 +1237,20 @@ export class NetcodeClient {
     );
   }
 
+  /**
+   * Drop the bodies the snapshot at `serverTick` shows are no longer streamed
+   * to this client (retired by the server, or out of interest): see
+   * bodyPresence.ts. They stop being drawn then, not 4 s later.
+   */
+  private retireUnstreamedBodies(serverTick: number): void {
+    const intervalTicks = this.serverClock.getSnapshotIntervalMs() / (1000 / this.simHz);
+    for (const id of this.dynamicBodyPresence.endSnapshot(serverTick, intervalTicks)) {
+      this.dynamicBodies.delete(id);
+      this.dynamicBodyServerTimeUs.delete(id);
+      this.dynamicBodyInterpolator.remove(id);
+    }
+  }
+
   /** A body's buffered snapshots, oldest first. */
   getDynamicBodySamples(id: number): readonly DynamicBodySample[] {
     return this.dynamicBodyInterpolator.samples(id);
@@ -1248,7 +1263,7 @@ export class NetcodeClient {
    * a body is missing from the stream only if newer snapshots left it out.
    */
   getDynamicBodyTicksSinceSeen(id: number): number | null {
-    const lastSeen = this.dynamicBodyLastSeenTick.get(id);
+    const lastSeen = this.dynamicBodyPresence.lastSeenTick(id);
     return lastSeen == null ? null : Math.max(0, this.latestServerTick - lastSeen);
   }
 
@@ -1305,7 +1320,7 @@ export class NetcodeClient {
     this.dynamicBodies.clear();
     this.dynamicBodyMetaByHandle.clear();
     this.dynamicBodyServerTimeUs.clear();
-    this.dynamicBodyLastSeenTick.clear();
+    this.dynamicBodyPresence.clear();
     this.dynamicBodyInterpolator.retainOnly(new Set());
     this.vehicles.clear();
     this.vehicleLastSeenTick.clear();
