@@ -159,8 +159,10 @@ def artifact_hash(artifact, kind):
 
 
 def build(blast, rebuild):
-    dependency = tomllib.loads((ROOT / 'destruction/Cargo.toml').read_text())['dependencies']['blast-stress-solver']['path']
-    if (ROOT / 'destruction' / dependency).resolve() != (blast / 'blast-stress-solver-rs').resolve():
+    # A git dependency is pinned by Cargo.lock; only a path dependency can
+    # disagree with BLAST_ROOT.
+    dependency = tomllib.loads((ROOT / 'destruction/Cargo.toml').read_text())['dependencies']['blast-stress-solver'].get('path')
+    if dependency and (ROOT / 'destruction' / dependency).resolve() != (blast / 'blast-stress-solver-rs').resolve():
         raise RuntimeError('BLAST_ROOT differs from destruction/Cargo.toml: align the Rust and native dependency paths first')
     cachefile = STATE / 'build.json'
     cache = json.loads(cachefile.read_text()) if cachefile.exists() else {}
