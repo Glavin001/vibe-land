@@ -413,6 +413,9 @@ pub struct ChunksDatagram {
     /// Datagram copies of reliable topology messages carried after the
     /// records (see [`CHUNKS_TRAILER_TOPOLOGY_PART`]); empty on older servers.
     pub topology_parts: Vec<TopologyPart>,
+    /// The predictive horizon (see [`CHUNKS_TRAILER_HORIZON`]), ticks; None
+    /// unless the server models a predictive client.
+    pub horizon_ticks: Option<f32>,
 }
 
 /// A chunk-datagram trailer section: one piece of a reliable
@@ -429,6 +432,24 @@ pub struct ChunksDatagram {
 pub const CHUNKS_TRAILER_TOPOLOGY_PART: u8 = 0xC7;
 /// Tag, topo_seq u32, part u8, parts u8, length u16.
 pub const TOPOLOGY_PART_HEADER_BYTES: usize = 1 + 4 + 1 + 1 + 2;
+
+/// A chunk-datagram trailer section: how far the server's present runs ahead
+/// of the client's arrival-anchored render clock, less the predictive
+/// back-off, in ticks (i16, 1/100 tick). A client drawing debris ahead of its
+/// playout delay (`client/src/city/cityClient.ts` PREDICTIVE_PRESENTATION)
+/// draws ballistic bodies at that horizon; the encoder models the same one
+/// (`EncoderConfig::predictive_client`). Sent only by an encoder that models
+/// a predictive client. Length-detected like the topology parts: decoders
+/// before it read no section shorter than a topology part header, so they
+/// never see it when it is the last section.
+pub const CHUNKS_TRAILER_HORIZON: u8 = 0xC8;
+pub const HORIZON_SECTION_BYTES: usize = 3;
+
+pub fn write_horizon(out: &mut Vec<u8>, horizon_ticks: f32) {
+    let value = (horizon_ticks * 100.0).round().clamp(i16::MIN as f32, i16::MAX as f32) as i16;
+    out.push(CHUNKS_TRAILER_HORIZON);
+    out.extend_from_slice(&value.to_le_bytes());
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TopologyPart {
@@ -763,8 +784,16 @@ pub fn decode_chunks_datagram(data: &[u8]) -> Result<ChunksDatagram, WireError> 
     // The trailer: sections until the end. An unknown tag ends it (a later
     // server's section this decoder does not know).
     let mut topology_parts = Vec::new();
-    while reader.remaining() >= TOPOLOGY_PART_HEADER_BYTES {
-        if reader.u8()? != CHUNKS_TRAILER_TOPOLOGY_PART {
+    let mut horizon_ticks = None;
+    while reader.remaining() >= HORIZON_SECTION_BYTES {
+        let tag = reader.u8()?;
+        if tag == CHUNKS_TRAILER_HORIZON {
+            horizon_ticks = Some(reader.u16()? as i16 as f32 / 100.0);
+            continue;
+        }
+        if tag != CHUNKS_TRAILER_TOPOLOGY_PART
+            || reader.remaining() < TOPOLOGY_PART_HEADER_BYTES - 1
+        {
             break;
         }
         let topo_seq = reader.u32()?;
@@ -782,6 +811,7 @@ pub fn decode_chunks_datagram(data: &[u8]) -> Result<ChunksDatagram, WireError> 
         sim_tick,
         records,
         topology_parts,
+        horizon_ticks,
     })
 }
 
@@ -1294,6 +1324,26 @@ mod tests {
         // An unknown section tag ends the trailer rather than failing.
         packet.extend_from_slice(&[0xEE; 12]);
         assert_eq!(decode_chunks_datagram(&packet).expect("decode").topology_parts.len(), 1);
+    }
+
+    /// The predictive horizon section: read after the records and after any
+    /// topology parts, absent on every datagram that does not carry it.
+    #[test]
+    fn a_horizon_trailer_follows_the_records_and_the_topology_parts() {
+        let mut packet = chunks_header(9, 3, 100, 0);
+        assert_eq!(decode_chunks_datagram(&packet).expect("decode").horizon_ticks, None);
+        write_topology_part(&mut packet, 41, 0, 1, &[120, 2, 41, 0]);
+        write_horizon(&mut packet, 5.37);
+        let decoded = decode_chunks_datagram(&packet).expect("decode");
+        assert_eq!(decoded.topology_parts.len(), 1);
+        assert_eq!(decoded.horizon_ticks, Some(5.37));
+        // Alone, and negative (a back-off longer than the latency).
+        let mut alone = chunks_header(9, 3, 100, 0);
+        write_horizon(&mut alone, -0.5);
+        assert_eq!(decode_chunks_datagram(&alone).expect("decode").horizon_ticks, Some(-0.5));
+        // A decoder from before it reads no section shorter than a topology
+        // part header, so the 3 bytes after the records are invisible to it.
+        assert!(HORIZON_SECTION_BYTES < TOPOLOGY_PART_HEADER_BYTES);
     }
 
     use glam::Quat;

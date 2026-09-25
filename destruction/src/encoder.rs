@@ -186,10 +186,70 @@ pub struct EncoderConfig {
     /// at the window's own cadence the scale is exactly 1.
     #[serde(default)]
     pub innovation_window_ticks: u32,
+    /// Model a client that draws debris AHEAD of its playout delay, at the
+    /// server's present as it estimates it: error-bounded dead reckoning
+    /// (`client/src/city/cityClient.ts` PREDICTIVE_PRESENTATION). OFF.
+    ///
+    /// With it on the encoder
+    /// 1. tells each client its horizon in a chunk-datagram trailer
+    ///    ([`crate::wire::CHUNKS_TRAILER_HORIZON`]): the one-way latency, half
+    ///    the link's smoothed RTT (`note_link_rtt`), times
+    ///    `predictive_latency_share`, less the back-off
+    ///    (`predictive_backoff_ticks`, `predictive_backoff_sends`);
+    /// 2. models that client's drawn pose with its longer extrapolation
+    ///    clamp (the lead is added to it); and
+    /// 3. with `predictive_horizon_error`, also judges each body at the
+    ///    horizon: a record goes when the pose the last record predicts
+    ///    there is off the pose the body's current state predicts there by
+    ///    more than the error budget.
+    ///
+    /// Measured in Netlab v2 (docs/netcode-tuning.md, "Predictive debris"):
+    /// debris pos@now p99 about halves on every link, but on LTE 1.6-3.7x
+    /// the corrections over 1 m are shown and bytes rise 6-10%. The client's
+    /// default (`data`) horizon needs none of this.
+    ///
+    /// Absent from older captures, where it reads as off.
+    #[serde(default)]
+    pub predictive_client: bool,
+    /// How far behind the server's present the predictive client draws:
+    /// this many ticks plus `predictive_backoff_sends` of the send's
+    /// interval (1 at 60 Hz, 2 on a link paced to 30 Hz). Both 0 is the
+    /// present; one send is "now minus one interval".
+    #[serde(default)]
+    pub predictive_backoff_ticks: f32,
+    #[serde(default)]
+    pub predictive_backoff_sends: f32,
+    /// The share of the one-way latency the horizon covers: 1 is the
+    /// server's present, 0 the newest data the client can have (the
+    /// back-off then counts from there). Older captures and the default:
+    /// 1 (`default_one`).
+    #[serde(default = "default_one")]
+    pub predictive_latency_share: f32,
+    /// The share of the lead the predictive client gives a body whose newest
+    /// record is not ballistic (its PREDICTIVE_CONTACT_SHARE).
+    #[serde(default)]
+    pub predictive_contact_share: f32,
+    /// See `predictive_client` (3).
+    #[serde(default)]
+    pub predictive_horizon_error: bool,
+    /// The predictive client's overshoot bound, metres (its
+    /// PREDICTIVE_MAX_OVERSHOOT_M; 0 = none).
+    #[serde(default)]
+    pub predictive_max_overshoot_m: f32,
+    /// For a record sent ballistic, leave out of the velocity-innovation test
+    /// the change gravity alone made since the previous send: a body in free
+    /// fall is then refreshed by its error, not at every innovation window.
+    /// OFF (older captures read it as off).
+    #[serde(default)]
+    pub ballistic_innovation_net_of_gravity: bool,
 }
 
 fn default_rest_eval_stride() -> u32 {
     REST_EVAL_STRIDE
+}
+
+fn default_one() -> f32 {
+    1.0
 }
 
 fn default_world_gravity_y() -> f32 {
@@ -210,6 +270,15 @@ const FREE_FALL_MIN_TICKS: u16 = 2;
 /// ticks and then holds; a ballistic record also falls under this gravity.
 pub const CLIENT_MAX_EXTRAPOLATION_TICKS: u32 = 8;
 pub const CLIENT_EXTRAPOLATION_GRAVITY_Y: f32 = -9.81;
+/// The predictive client's constants (`client/src/city/cityClient.ts`):
+/// its playout delay beyond the send interval, the render clock's lead over
+/// the completed tick, and the longest lead it draws at.
+pub const CLIENT_PLAYOUT_BEYOND_INTERVAL_TICKS: f32 = 4.0;
+pub const CLIENT_PREDICTIVE_CLOCK_BIAS_TICKS: f32 = 1.0;
+pub const CLIENT_PREDICTIVE_MAX_LEAD_TICKS: f32 = 20.0;
+/// The floor the predictive client's ballistic extrapolation stops at
+/// (`PresentationTrack.setLeadFloor`; cityClient PREDICTIVE_FLOOR_Y).
+pub const CLIENT_PREDICTIVE_FLOOR_Y: f32 = 0.1;
 /// A resting body drawn further than this from where it rests (position,
 /// plus rotation error times the body's radius) gets a correcting record.
 /// Twice the pose-agreement epsilon, so quantisation alone never triggers it.
@@ -267,6 +336,17 @@ impl EncoderConfig {
             topology_datagram_copies: 2,
             // 1/30 s: the span the 0.25 m/s perturbation test was tuned at.
             innovation_window_ticks: (sim_hz / 30).max(1),
+            // OFF: measured and left opt-in (docs/netcode-tuning.md,
+            // "Predictive debris"): it halves debris pos@now but corrects
+            // more in view. VIBE_CITY_PREDICTIVE turns it on.
+            predictive_client: false,
+            predictive_backoff_ticks: 0.0,
+            predictive_backoff_sends: 0.0,
+            predictive_latency_share: 1.0,
+            predictive_contact_share: 0.0,
+            predictive_horizon_error: true,
+            predictive_max_overshoot_m: 0.0,
+            ballistic_innovation_net_of_gravity: false,
         }
     }
 }
@@ -329,12 +409,55 @@ impl ClientBodyState {
     /// the last record's pose, extrapolated as the client extrapolates it.
     /// None before the first record.
     fn presented_at(&self, tick: u32, sim_hz: u32) -> Option<Pose> {
+        self.presented_at_ahead(tick as f32, sim_hz, None)
+    }
+
+    /// `presented_at` for a predictive client (`lead` is `Some`): at a
+    /// fractional tick, with the clamp lengthened by the lead the client
+    /// gives this record's class (`PresentationTrack.extrapolate`).
+    fn presented_at_ahead(&self, tick: f32, sim_hz: u32, lead: Option<Lead>) -> Option<Pose> {
         let (sent_tick, pose) = self.last_sent?;
         let Some(motion) = self.last_motion else {
             return Some(pose);
         };
-        let ticks = tick.saturating_sub(sent_tick).min(CLIENT_MAX_EXTRAPOLATION_TICKS);
-        Some(extrapolate_like_the_client(pose, motion, ticks as f32 / sim_hz.max(1) as f32))
+        let extra = lead.map_or(0.0, |lead| lead.for_motion(motion));
+        let ticks = (tick - sent_tick as f32)
+            .max(0.0)
+            .min(CLIENT_MAX_EXTRAPOLATION_TICKS as f32 + extra);
+        let mut drawn = extrapolate_like_the_client(pose, motion, ticks / sim_hz.max(1) as f32);
+        if extra > 0.0 && motion.ballistic && drawn.position.y < CLIENT_PREDICTIVE_FLOOR_Y {
+            drawn.position.y = pose.position.y.min(CLIENT_PREDICTIVE_FLOOR_Y);
+        }
+        Some(drawn)
+    }
+}
+
+/// The lead a predictive client draws a body at, ticks past its
+/// presentation tick: all of it for a ballistic record, a share otherwise.
+#[derive(Clone, Copy, Debug)]
+struct Lead {
+    ballistic: f32,
+    contact_share: f32,
+    /// The client's playout delay and its overshoot bound (metres, 0 =
+    /// none): `PresentationTrack.overshootBound`.
+    playout: f32,
+    max_overshoot_m: f32,
+    tick_s: f32,
+}
+
+impl Lead {
+    fn for_motion(self, motion: SentMotion) -> f32 {
+        let lead = if motion.ballistic {
+            self.ballistic
+        } else {
+            self.ballistic * self.contact_share
+        };
+        let speed = motion.linear.length();
+        if self.max_overshoot_m > 0.0 && speed > 1e-6 {
+            lead.min(self.playout + self.max_overshoot_m / (speed * self.tick_s))
+        } else {
+            lead
+        }
     }
 }
 
@@ -394,6 +517,9 @@ struct ClientState {
     /// (`EncoderConfig::topology_datagram_copies`), oldest first.
     #[serde(default)]
     topology_copies: std::collections::VecDeque<TopologyCopy>,
+    /// The link's smoothed RTT, ms (`note_link_rtt`); None until known.
+    #[serde(default)]
+    link_rtt_ms: Option<f32>,
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -1165,8 +1291,27 @@ impl ChunkStreamEncoder {
             };
             let state = track.state;
             let class = track.class;
-            let linear_innovation =
-                (state.linear_velocity - track.last_velocity).length() * innovation_scale;
+            // Ballistic only in measured free fall when configured: see
+            // `EncoderConfig::ballistic_requires_free_fall`.
+            let ballistic = class == PhysicalClass::Ballistic
+                && (!self.config.ballistic_requires_free_fall
+                    || track.free_fall_ticks >= FREE_FALL_MIN_TICKS);
+            // What gravity alone added since the previous send, for a record
+            // the client will extrapolate under it (see
+            // `EncoderConfig::ballistic_innovation_net_of_gravity`).
+            let gravity_change = if ballistic && self.config.ballistic_innovation_net_of_gravity {
+                Vec3::new(
+                    0.0,
+                    CLIENT_EXTRAPOLATION_GRAVITY_Y * self.config.send_interval_ticks.max(1) as f32
+                        / self.config.sim_hz.max(1) as f32,
+                    0.0,
+                )
+            } else {
+                Vec3::ZERO
+            };
+            let linear_innovation = (state.linear_velocity - track.last_velocity - gravity_change)
+                .length()
+                * innovation_scale;
             let angular_innovation =
                 (state.angular_velocity - track.last_angular_velocity).length() * innovation_scale;
             track.last_velocity = state.linear_velocity;
@@ -1175,11 +1320,6 @@ impl ChunkStreamEncoder {
             let moving = state.linear_velocity.length() > 0.01
                 || state.angular_velocity.length() > 0.01;
             let baseline = reference.get(&entity);
-            // Ballistic only in measured free fall when configured: see
-            // `EncoderConfig::ballistic_requires_free_fall`.
-            let ballistic = class == PhysicalClass::Ballistic
-                && (!self.config.ballistic_requires_free_fall
-                    || track.free_fall_ticks >= FREE_FALL_MIN_TICKS);
             let mode = if ballistic {
                 RecordMode::Ballistic
             } else {
@@ -1267,6 +1407,15 @@ impl ChunkStreamEncoder {
         }
     }
 
+    /// The link's smoothed round-trip time to `client`, ms, as the rate
+    /// controller reads it. Half of it is the one-way latency a predictive
+    /// client's horizon covers (`EncoderConfig::predictive_client`).
+    pub fn note_link_rtt(&mut self, client: u64, rtt_ms: f32) {
+        if rtt_ms.is_finite() && rtt_ms >= 0.0 {
+            self.clients.entry(client).or_default().link_rtt_ms = Some(rtt_ms);
+        }
+    }
+
     /// Per-client selection + packet composition from the shared records.
     pub fn client_datagrams(
         &mut self,
@@ -1303,6 +1452,27 @@ impl ChunkStreamEncoder {
         let mut audit = if audited { self.audit.take() } else { None };
         let state = self.clients.entry(client).or_default();
         let view: InterestView = state.view.update(camera, config.interest);
+        // A predictive client (`EncoderConfig::predictive_client`): its
+        // horizon past the render clock, the lead it draws at, and how far
+        // ahead a record sent now must hold.
+        let predictive = config.predictive_client.then(|| {
+            let tick_ms = 1000.0 / config.sim_hz.max(1) as f32;
+            let one_way_ticks = state.link_rtt_ms.unwrap_or(0.0) * 0.5 / tick_ms;
+            let interval = config.send_interval_ticks.saturating_mul(ceiling_sends.max(1)) as f32;
+            let horizon = one_way_ticks * config.predictive_latency_share.clamp(0.0, 1.0)
+                - config.predictive_backoff_ticks
+                - config.predictive_backoff_sends * interval;
+            let playout = interval.min(2.0) + CLIENT_PLAYOUT_BEYOND_INTERVAL_TICKS;
+            let lead = Lead {
+                ballistic: (playout + horizon - CLIENT_PREDICTIVE_CLOCK_BIAS_TICKS)
+                    .clamp(0.0, CLIENT_PREDICTIVE_MAX_LEAD_TICKS),
+                contact_share: config.predictive_contact_share.clamp(0.0, 1.0),
+                playout,
+                max_overshoot_m: config.predictive_max_overshoot_m.max(0.0),
+                tick_s: tick_ms / 1000.0,
+            };
+            (horizon, lead)
+        });
         // Deltas against a generation this client cannot hold go absolute.
         let force_absolute = match state.deltas_from_generation {
             Some(first) if (shared.baseline_id.wrapping_sub(first) as i16) < 0 => true,
@@ -1419,7 +1589,9 @@ impl ChunkStreamEncoder {
                 && shared_record.angular_speed <= REST_ANGULAR_RPS;
             // Where the client draws the body now: the last record's pose, or
             // (modelled) that pose as the client extrapolates it.
-            let drawn = if config.model_client_extrapolation {
+            let drawn = if let Some((_, lead)) = predictive {
+                body_state.presented_at_ahead(shared.sim_tick as f32, config.sim_hz, Some(lead))
+            } else if config.model_client_extrapolation {
                 body_state.presented_at(shared.sim_tick, config.sim_hz)
             } else {
                 body_state.last_sent.map(|(_, pose)| pose)
@@ -1478,6 +1650,46 @@ impl ChunkStreamEncoder {
                     config.interest.pane_height,
                 ) / config.error_budget_px.max(0.01)
             });
+            // Dead reckoning at the predictive client's horizon: where the
+            // last record puts the body by the time a record sent now can be
+            // drawn, against where its current state puts it then.
+            let error_ratio = match predictive {
+                Some((horizon, lead)) if config.predictive_horizon_error && horizon > 0.0 => {
+                    let ahead = body_state.presented_at_ahead(
+                        shared.sim_tick as f32 + horizon,
+                        config.sim_hz,
+                        Some(lead),
+                    );
+                    let expected = match SentMotion::of(&shared_record.record) {
+                        Some(motion) => {
+                            let pose = shared_record.record.pose;
+                            let mut ahead = extrapolate_like_the_client(
+                                pose,
+                                motion,
+                                horizon / config.sim_hz.max(1) as f32,
+                            );
+                            if motion.ballistic && ahead.position.y < CLIENT_PREDICTIVE_FLOOR_Y {
+                                ahead.position.y = pose.position.y.min(CLIENT_PREDICTIVE_FLOOR_Y);
+                            }
+                            ahead
+                        }
+                        None => shared_record.record.pose,
+                    };
+                    ahead.map_or(error_ratio, |ahead| {
+                        error_ratio.max(
+                            projected_error_pixels(
+                                expected,
+                                ahead,
+                                shared_record.radius,
+                                view.current,
+                                config.interest.pane_width,
+                                config.interest.pane_height,
+                            ) / config.error_budget_px.max(0.01),
+                        )
+                    })
+                }
+                _ => error_ratio,
+            };
             // A velocity perturbation counts at most once per innovation
             // window since this client's last record of the body: faster
             // sends judge the same acceleration (the scale in `encode_send`)
@@ -1618,12 +1830,20 @@ impl ChunkStreamEncoder {
                 Some((shared.sim_tick, shared_record.record.pose));
             state.slots[slot].last_motion = SentMotion::of(&shared_record.record);
         }
-        let datagrams = encode_chunks_datagrams(
+        let mut datagrams = encode_chunks_datagrams(
             &selected,
             &mut state.sequence,
             shared.baseline_id,
             shared.sim_tick,
         );
+        // The horizon trailer, on every records datagram with room for it.
+        if let Some((horizon, _)) = predictive {
+            for packet in &mut datagrams {
+                if packet.len() + crate::wire::HORIZON_SECTION_BYTES <= crate::quant::MAX_DATAGRAM {
+                    crate::wire::write_horizon(packet, horizon);
+                }
+            }
+        }
         if audited {
             self.audit = audit;
         }
@@ -2943,6 +3163,160 @@ mod tests {
             allowances.windows(2).all(|pair| pair[0] >= pair[1]),
             "the allowance must decay monotonically under sustained demand"
         );
+    }
+
+    /// Streams `motion` to one client whose link RTT is `rtt_ms` (None: the
+    /// encoder never hears it); returns (tick, record) and every records
+    /// datagram's horizon trailer.
+    fn stream_predictive(
+        config: EncoderConfig,
+        ticks: std::ops::Range<u32>,
+        camera: Camera,
+        rtt_ms: Option<f32>,
+        motion: impl Fn(u32) -> BodySnapshotInput,
+    ) -> (Vec<(u32, crate::wire::DecodedBodyRecord)>, Vec<Option<f32>>) {
+        let manifest = manifest();
+        let mut encoder = ChunkStreamEncoder::new(&manifest, config);
+        encoder.add_client(1);
+        let mut received = Vec::new();
+        let mut horizons = Vec::new();
+        for tick in ticks.clone() {
+            let output = if tick == ticks.start { promotion_output() } else { DestructionTickOutput::default() };
+            encoder.ingest_tick(tick, &[motion(tick)], &output, &[]);
+            let _ = encoder.take_topology_messages();
+            let _ = encoder.maybe_emit_baseline(tick);
+            if tick % config.send_interval_ticks.max(1) == 0 {
+                if let Some(rtt) = rtt_ms {
+                    encoder.note_link_rtt(1, rtt);
+                }
+                let shared = encoder.encode_send(tick);
+                for packet in encoder.client_datagrams(1, camera, &shared) {
+                    let datagram = crate::wire::decode_chunks_datagram(&packet).expect("decode");
+                    if !datagram.records.is_empty() {
+                        horizons.push(datagram.horizon_ticks);
+                    }
+                    for record in datagram.records {
+                        received.push((datagram.sim_tick, record));
+                    }
+                }
+            }
+        }
+        (received, horizons)
+    }
+
+    /// The predictive model is opt-in, and a capture made before it existed
+    /// resumes with it off.
+    #[test]
+    fn the_predictive_client_model_is_off_by_default_and_in_older_checkpoints() {
+        let config = EncoderConfig::validated(60);
+        assert!(!config.predictive_client && !config.ballistic_innovation_net_of_gravity);
+        let mut object = serde_json::to_value(config).expect("serialize");
+        let object_map = object.as_object_mut().expect("object");
+        for field in [
+            "predictive_client",
+            "predictive_backoff_ticks",
+            "predictive_backoff_sends",
+            "predictive_contact_share",
+            "predictive_horizon_error",
+            "predictive_max_overshoot_m",
+            "predictive_latency_share",
+            "ballistic_innovation_net_of_gravity",
+        ] {
+            assert!(object_map.remove(field).is_some(), "{field}");
+        }
+        let old: EncoderConfig = serde_json::from_value(object).expect("deserialize");
+        assert!(!old.predictive_client && !old.predictive_horizon_error);
+        assert_eq!((old.predictive_backoff_ticks, old.predictive_backoff_sends), (0.0, 0.0));
+        assert_eq!(old.predictive_latency_share, 1.0);
+    }
+
+    /// A predictive encoder tells the client its horizon -- half the link's
+    /// RTT in ticks, less the back-off -- on every records datagram; the
+    /// default encoder sends no such trailer.
+    #[test]
+    fn a_predictive_encoder_sends_the_horizon_and_the_default_does_not() {
+        let dt = 1.0 / 60.0;
+        // In view of the close camera for the whole half second.
+        let falling = |tick: u32| {
+            let t = (tick - 10) as f32 * dt;
+            body_at([1.0, 4.0 - 4.905 * t * t, 0.0], [0.0, -9.81 * t, 0.0])
+        };
+        let config = EncoderConfig::validated(60);
+        let (records, horizons) = stream_predictive(config, 10..40, close_camera(), Some(180.0), falling);
+        assert!(!records.is_empty());
+        assert!(horizons.iter().all(Option::is_none));
+
+        let mut predictive = config;
+        predictive.predictive_client = true;
+        let (_, horizons) = stream_predictive(predictive, 10..40, close_camera(), Some(180.0), falling);
+        assert!(!horizons.is_empty());
+        // 90 ms one way is 5.4 ticks.
+        assert!(horizons.iter().all(|h| h.is_some_and(|h| (h - 5.4).abs() < 0.01)), "{horizons:?}");
+        // "Now minus one send": one tick less at 60 Hz.
+        predictive.predictive_backoff_sends = 1.0;
+        let (_, horizons) = stream_predictive(predictive, 10..40, close_camera(), Some(180.0), falling);
+        assert!(horizons.iter().all(|h| h.is_some_and(|h| (h - 4.4).abs() < 0.01)), "{horizons:?}");
+        // Before any RTT is known the horizon is the back-off alone.
+        let (_, horizons) = stream_predictive(predictive, 10..40, close_camera(), None, falling);
+        assert!(horizons.iter().all(|h| h.is_some_and(|h| (h + 1.0).abs() < 0.01)), "{horizons:?}");
+    }
+
+    /// Judged at the horizon, a body whose velocity is drifting off its last
+    /// record is refreshed before the drift shows at the present: a sliding
+    /// body slowing at 6 m/s^2 (0.2 m/s per window, under the innovation
+    /// gate) gets more records, and its first refresh sooner, when the client
+    /// draws 10 ticks ahead of the data.
+    #[test]
+    fn the_horizon_error_refreshes_a_drifting_body_sooner() {
+        let dt = 1.0 / 60.0;
+        let (v0, decel) = (4.0f32, 6.0f32);
+        let sliding = |tick: u32| {
+            let t = ((tick - 10) as f32 * dt).min(v0 / decel);
+            body_at([1.0 + v0 * t - 0.5 * decel * t * t, 0.5, 0.0], [v0 - decel * t, 0.0, 0.0])
+        };
+        let far = Camera { eye: Vec3::new(0.0, 2.0, -40.0), direction: Vec3::Z, fov_degrees: 70.0 };
+        let mut predictive = EncoderConfig::validated(60);
+        predictive.predictive_client = true;
+        predictive.predictive_horizon_error = true;
+        let moving = |records: &[(u32, crate::wire::DecodedBodyRecord)]| {
+            records.iter().filter(|(tick, _)| *tick < 10 + (v0 / decel / dt) as u32).count()
+        };
+        let second = |records: &[(u32, crate::wire::DecodedBodyRecord)]| records.get(1).map(|(tick, _)| *tick);
+        // 333 ms RTT: a 10-tick horizon.
+        let (ahead, _) = stream_predictive(predictive, 10..120, far, Some(333.4), sliding);
+        let mut no_horizon = predictive;
+        no_horizon.predictive_horizon_error = false;
+        let (present, _) = stream_predictive(no_horizon, 10..120, far, Some(333.4), sliding);
+        assert!(moving(&ahead) > moving(&present), "{} vs {}", moving(&ahead), moving(&present));
+        assert!(second(&ahead) < second(&present), "{:?} vs {:?}", second(&ahead), second(&present));
+    }
+
+    /// The predictive client extrapolates a record as far past its tick as
+    /// its lead adds to the usual clamp, and a ballistic one no lower than
+    /// the floor; the classic model is unchanged.
+    #[test]
+    fn the_predictive_model_extends_the_clamp_and_stops_at_the_floor() {
+        let state = ClientBodyState {
+            last_sent: Some((100, Pose { position: Vec3::new(0.0, 1.0, 0.0), rotation: glam::Quat::IDENTITY })),
+            last_motion: Some(SentMotion { linear: Vec3::new(3.0, -10.0, 0.0), angular: Vec3::ZERO, ballistic: true }),
+            ..ClientBodyState::default()
+        };
+        let lead = Lead { ballistic: 10.0, contact_share: 0.0, playout: 5.0, max_overshoot_m: 0.0, tick_s: 1.0 / 60.0 };
+        let classic = state.presented_at(140, 60).expect("pose");
+        // Held at the 8-tick clamp, below the ground: the classic client draws that.
+        let t = CLIENT_MAX_EXTRAPOLATION_TICKS as f32 / 60.0;
+        assert!((classic.position.x - 3.0 * t).abs() < 1e-5);
+        assert!((classic.position.y - (1.0 - 10.0 * t + 0.5 * CLIENT_EXTRAPOLATION_GRAVITY_Y * t * t)).abs() < 1e-5);
+        let ahead = state.presented_at_ahead(140.0, 60, Some(lead)).expect("pose");
+        assert!((ahead.position.x - 3.0 * 18.0 / 60.0).abs() < 1e-5, "8 + 10 ticks: {ahead:?}");
+        assert_eq!(ahead.position.y, CLIENT_PREDICTIVE_FLOOR_Y);
+        // A record in contact gets the contact share of the lead (none here).
+        let contact = ClientBodyState {
+            last_motion: Some(SentMotion { linear: Vec3::new(3.0, 0.0, 0.0), angular: Vec3::ZERO, ballistic: false }),
+            ..state.clone()
+        };
+        let held = contact.presented_at_ahead(140.0, 60, Some(lead)).expect("pose");
+        assert!((held.position.x - 3.0 * t).abs() < 1e-5);
     }
 
 }

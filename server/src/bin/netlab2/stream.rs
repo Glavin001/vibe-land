@@ -154,6 +154,14 @@ pub struct CityKnobs {
     pub baseline_skips_quiescent: Option<bool>,
     pub topology_datagram_copies: Option<u32>,
     pub innovation_window_ticks: Option<u32>,
+    pub predictive_client: Option<bool>,
+    pub predictive_backoff_ticks: Option<f32>,
+    pub predictive_backoff_sends: Option<f32>,
+    pub predictive_latency_share: Option<f32>,
+    pub predictive_contact_share: Option<f32>,
+    pub predictive_horizon_error: Option<bool>,
+    pub predictive_max_overshoot_m: Option<f32>,
+    pub ballistic_innovation_net_of_gravity: Option<bool>,
 }
 
 impl CityKnobs {
@@ -211,6 +219,32 @@ impl CityKnobs {
         }
         if let Some(value) = self.topology_datagram_copies {
             config.topology_datagram_copies = value;
+        }
+        if let Some(value) = self.predictive_client {
+            config.predictive_client = value;
+            // On with the model unless a knob says otherwise.
+            config.predictive_horizon_error = true;
+        }
+        if let Some(value) = self.predictive_backoff_ticks {
+            config.predictive_backoff_ticks = value;
+        }
+        if let Some(value) = self.predictive_backoff_sends {
+            config.predictive_backoff_sends = value;
+        }
+        if let Some(value) = self.predictive_latency_share {
+            config.predictive_latency_share = value;
+        }
+        if let Some(value) = self.predictive_contact_share {
+            config.predictive_contact_share = value;
+        }
+        if let Some(value) = self.predictive_horizon_error {
+            config.predictive_horizon_error = value;
+        }
+        if let Some(value) = self.predictive_max_overshoot_m {
+            config.predictive_max_overshoot_m = value;
+        }
+        if let Some(value) = self.ballistic_innovation_net_of_gravity {
+            config.ballistic_innovation_net_of_gravity = value;
         }
     }
 
@@ -622,6 +656,8 @@ struct Feedback {
     send_interval_s: f64,
     ceiling_bytes: usize,
     trace: Vec<RateTraceRow>,
+    /// The smoothed RTT the newest plan read (`LinkSim::signals`).
+    last_rtt_ms: Option<f64>,
 }
 
 impl Feedback {
@@ -647,6 +683,7 @@ impl Feedback {
             send_interval_s,
             ceiling_bytes,
             trace: Vec::new(),
+            last_rtt_ms: None,
         }
     }
 
@@ -689,6 +726,7 @@ impl Feedback {
         let at_ms = at_ms.max(self.last_admit_ms);
         let origin = *self.origin_ms.get_or_insert(at_ms - 1000.0);
         let signals = self.sim.signals(at_ms);
+        self.last_rtt_ms = Some(signals.rtt_ms);
         let sample = LinkSample {
             at_us: ((at_ms - origin) * 1000.0).max(0.0) as u64,
             datagram_buffered_bytes: signals.datagram_buffered_bytes,
@@ -1204,6 +1242,11 @@ pub fn build(bundle: &Bundle, config: &StreamConfig) -> std::io::Result<Stream> 
                         (true, None) => Some(SendPlan::Full),
                         (false, _) => None,
                     };
+                    // The link's RTT as the controller just read it: a
+                    // predictive client's horizon (`note_link_rtt`).
+                    if let Some(rtt) = feedback.as_ref().and_then(|feedback| feedback.last_rtt_ms) {
+                        encoder.note_link_rtt(client, rtt as f32);
+                    }
                     let copies = encoder.add_topology_copies(client, tick, &mut packets);
                     if copies > 0 {
                         *stats.city_selection.entry("topology_copy_bytes".into()).or_default() += copies as u64;

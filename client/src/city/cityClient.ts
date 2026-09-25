@@ -90,6 +90,27 @@ export interface CityClientStats {
   clockRollbacks: number;
   implausibleJumps: number;
   presentationAnomalyMaxM: number;
+  /// Revision re-anchors (a record that moved a body's path under the pose on
+  /// screen), by the size of the correction then glided (or snapped): the
+  /// visible corrections. Counted whether or not the predictive lead is on.
+  correctionsOver0_25m: number;
+  correctionsOver1m: number;
+  correctionsOver4m: number;
+  /// Of the corrections over 1 m, those on a body drawn with a lead.
+  correctionsOver1mLeading: number;
+  /// Revisions a leading track met by giving up lead (presentation.ts
+  /// `warpToRevision`).
+  predictiveWarps: number;
+  /// Mean lead over frames with bodies in motion.
+  predictiveLeadMeanTicks: number;
+  correctionMetres: number;
+  /// Predictive presentation (PREDICTIVE_PRESENTATION): the newest horizon
+  /// the server sent (ticks; NaN before one), and the lead last applied.
+  predictiveHorizonTicks: number;
+  predictiveLeadTicks: number;
+  /// The newest-tick anchor's mean lead over a records datagram's tick at
+  /// arrival (`observeArrivalBehind`).
+  arrivalBehindTicks: number;
   /// Streamed poses refused for being outside the world. Must be 0.
   recordsOutsideWorld: number;
   /// Settles whose hard ledger write was put back so the track could glide it,
@@ -413,6 +434,106 @@ const ADAPTIVE_PLAYOUT_DELAY = (() => {
     return false;
   }
 })();
+/**
+ * Predictive debris presentation: bodies drawn ahead of the shared
+ * presentation tick (dead reckoning).
+ * docs/netcode-tuning.md#predictive-debris-dead-reckoning-ahead-of-the-playout-delay.
+ *
+ * A body whose newest record is ballistic -- the encoder sends that mode only
+ * for a body measured in free fall -- is drawn past the presentation tick, at
+ * a horizon reckoned from the newest-tick anchor (`observeArrivalBehind`):
+ *
+ * - `data`: the newest data this client can have, less
+ *   PREDICTIVE_DATA_BACKOFF_SENDS sends. It gives back the playout delay and
+ *   nothing of the link's latency, so it extrapolates no further past a
+ *   record than the stream's own cadence: the encoder's model of the client
+ *   is unchanged.
+ * - `server`: the server's present, from the horizon the server sends in the
+ *   chunk-datagram trailer (its one-way latency estimate less its back-off).
+ *   Needs a server that models it (VIBE_CITY_PREDICTIVE,
+ *   destruction/src/encoder.rs `EncoderConfig::predictive_client`), which
+ *   also sends a record whenever the model's prediction at that horizon
+ *   leaves its error budget. Without the trailer it is `data` with no
+ *   back-off.
+ *
+ * /city?predictive=0 | data | 1 (server); lab: CITY_PREDICTIVE=0 | data | 1.
+ * A body in contact gets PREDICTIVE_CONTACT_SHARE of the lead. The lead
+ * changes at bounded rates, as playback speed, never as a jump
+ * (presentation.ts `setLeadHorizon`), and a revision it ran ahead of is met
+ * by giving lead up (`warpToRevision`). Everything else -- the clock,
+ * topology holds, identity -- still runs on the shared presentation tick.
+ */
+type PredictiveMode = 'off' | 'data' | 'server';
+/**
+ * `data` by default: measured in Netlab v2 (3 captures x 5 links x 2 seeds),
+ * it cuts debris pos@now p99 by 34-36% on loopback and LAN with no more
+ * presented jumps, correction snaps or stopped frames, and the same bytes
+ * (the server is unchanged). The `server` horizon halves it but corrects
+ * more in view on jittery links, so it stays opt-in.
+ */
+const PREDICTIVE_DEFAULT_MODE: PredictiveMode = 'data';
+const PREDICTIVE_PRESENTATION: PredictiveMode = (() => {
+  const parse = (value: string | null | undefined): PredictiveMode | null => {
+    if (value === '0' || value === 'off') return 'off';
+    if (value === 'data') return 'data';
+    if (value === '1' || value === 'server') return 'server';
+    return null;
+  };
+  try {
+    return parse(LAB_ENV.CITY_PREDICTIVE)
+      ?? parse(new URLSearchParams(globalThis.location?.search ?? '').get('predictive'))
+      ?? PREDICTIVE_DEFAULT_MODE;
+  } catch {
+    return PREDICTIVE_DEFAULT_MODE;
+  }
+})();
+/** `data` horizon: this many sends behind the newest data. Measured in
+ *  Netlab: 2 draws debris about 2.2 ticks ahead of the presentation on
+ *  loopback with no more snaps or presented jumps; 1 (3.2 ticks) costs up to
+ *  13% more snaps and 19% more corrections over 1 m. */
+const PREDICTIVE_DATA_BACKOFF_SENDS = labNumber('CITY_PREDICTIVE_DATA_BACKOFF', 2);
+/** `data` horizon: how far past its own newest record a body may be drawn
+ *  (presentation.ts `setLeadDataCap`). 0: never extrapolated further than
+ *  its record by the lead. Measured in Netlab (0.5 Mbit/s, systematic c1):
+ *  without it, presented jumps over 4 m 305 -> 339; with it 307. */
+const PREDICTIVE_DATA_CAP_TICKS = labNumber('CITY_PREDICTIVE_DATA_CAP', 0);
+const PREDICTIVE_CONTACT_SHARE = (() => {
+  const lab = labNumber('CITY_PREDICTIVE_CONTACT', Number.NaN);
+  if (Number.isFinite(lab)) return lab;
+  try {
+    const value = Number(new URLSearchParams(globalThis.location?.search ?? '').get('predictiveContact'));
+    return Number.isFinite(value) ? value : 0;
+  } catch {
+    return 0;
+  }
+})();
+/** The render clock runs this far ahead of the tick the server has completed
+ *  (a datagram leaves during its tick): measured in Netlab, loopback. */
+const PREDICTIVE_CLOCK_BIAS_TICKS = labNumber('CITY_PREDICTIVE_BIAS', 1);
+/** Whether the lead subtracts the clock's mean lead over arrivals
+ *  (`observeArrivalBehind`). */
+const PREDICTIVE_ARRIVAL_CORRECTION = labNumber('CITY_PREDICTIVE_ARRIVAL', 1) !== 0;
+const ARRIVAL_BEHIND_TAU_MS = 2000;
+/**
+ * Whether the lead adds the render clock's lag behind the newest-tick anchor
+ * (`anchorLeadSmooth`). Always for the `server` horizon; for `data` only on a
+ * stream sent at every tick. A stream the rate controller has thinned is
+ * sparse per body and late in bursts, and it needs the playout buffer the
+ * gap would spend: Netlab, 0.5 Mbit/s, heavy c1, presented jumps over 4 m
+ * 85 -> 102 with it, 90 without.
+ */
+const PREDICTIVE_ANCHOR_GAP = labNumber('CITY_PREDICTIVE_ANCHOR', 1) !== 0;
+const PREDICTIVE_MAX_LEAD_TICKS = labNumber('CITY_PREDICTIVE_MAX_LEAD', 20);
+/** Metres an unforeseen stop may be overshot by (0: no bound); see
+ *  presentation.ts `overshootBound`. */
+const PREDICTIVE_MAX_OVERSHOOT_M = labNumber('CITY_PREDICTIVE_MAX_OVERSHOOT_M', 0);
+/** The floor a leading ballistic extrapolation stops at (m; the city ground
+ *  is flat y = 0). NaN: none. */
+const PREDICTIVE_FLOOR_Y = labNumber('CITY_PREDICTIVE_FLOOR_Y', 0.1);
+const PREDICTIVE_LEAD_RATES = {
+  rise: labNumber('CITY_PREDICTIVE_RISE', 0.5),
+  fall: labNumber('CITY_PREDICTIVE_FALL', 0.5),
+};
 const PLAYOUT_WINDOW_MS = labNumber('CITY_PLAYOUT_WINDOW_MS', 4000);
 const PLAYOUT_QUANTILE = labNumber('CITY_PLAYOUT_Q', 0.99);
 const PLAYOUT_MARGIN_TICKS = labNumber('CITY_PLAYOUT_MARGIN', 0);
@@ -725,6 +846,21 @@ export class CityClient {
     implausible_jump: 0,
   };
   private presentationAnomalyMaxM = 0;
+  private correctionsOver0_25m = 0;
+  private correctionsOver1m = 0;
+  private correctionsOver4m = 0;
+  private correctionsOver1mLeading = 0;
+  private predictiveWarps = 0;
+  private predictiveLeadSum = 0;
+  private predictiveLeadFrames = 0;
+  private correctionMetres = 0;
+  /** The newest horizon trailer (ticks past the render clock); NaN until one. */
+  private serverHorizonTicks = Number.NaN;
+  private serverHorizonTick = -1;
+  /** The predictive lead applied at the last sample, ticks. */
+  private predictiveLead = 0;
+  /** PREDICTIVE_PRESENTATION, per instance (tests set it). */
+  private predictive: PredictiveMode = PREDICTIVE_PRESENTATION;
   /**
    * Streamed poses refused for being outside the world.
    *
@@ -997,6 +1133,48 @@ export class CityClient {
       this.arrivalLatenessPeak = this.arrivalLateness;
     }
   }
+
+  /**
+   * How far the newest-tick anchor (the newest streamed tick plus the time
+   * since it arrived) is past a records datagram's tick when that datagram
+   * arrives, averaged over ARRIVAL_BEHIND_TAU_MS (ticks).
+   *
+   * The server's horizon is its mean one-way latency, but the anchor follows
+   * the NEWEST tick, which the fastest packets bring: on a jittery link it
+   * runs ahead of "server now minus the mean latency" by about this much
+   * (Netlab, LTE: 0.1-1.1 ticks). Each arrival says server-now = its tick +
+   * its latency, and the anchor = its tick + this, so the present is the
+   * anchor plus the mean latency less this mean.
+   */
+  private observeArrivalBehind(spanTick: number, nowMs: number): void {
+    if (this.renderClockTick < 0) {
+      return;
+    }
+    if (this.latestSimTickAtMs === 0) {
+      return;
+    }
+    // Against the newest-tick anchor itself, before this arrival moves it:
+    // unlike the render clock it is never held by the lead cap nor left
+    // behind by a quiet stream, so what it says holds when it is used.
+    const clock = this.latestSimTick + ((nowMs - this.latestSimTickAtMs) / 1000) * this.tickRate;
+    const behind = clock - spanTick;
+    if (!Number.isFinite(behind) || Math.abs(behind) > 120) {
+      return;
+    }
+    if (!Number.isFinite(this.arrivalBehindMean)) {
+      this.arrivalBehindMean = behind;
+    } else {
+      const alpha = 1 - Math.exp(-Math.max(0, nowMs - this.arrivalBehindAtMs) / ARRIVAL_BEHIND_TAU_MS);
+      this.arrivalBehindMean += alpha * (behind - this.arrivalBehindMean);
+    }
+    this.arrivalBehindAtMs = nowMs;
+  }
+
+  private arrivalBehindMean = Number.NaN;
+  /** The newest-tick anchor's lead over the render clock, smoothed (ticks). */
+  private anchorLeadSmooth = 0;
+  private anchorLeadAtMs = 0;
+  private arrivalBehindAtMs = 0;
 
   /**
    * One frame's lead of the render clock over the newest streamed tick,
@@ -2042,6 +2220,11 @@ export class CityClient {
     // a reordered packet, or the 2nd..Nth of one tick's MTU-split burst --
     // walks render time backwards, which `PresentationTrack.sample` is
     // documented not to accept. Advance the anchor only with the tick.
+    if (datagram.horizonTicks !== undefined && datagram.simTick >= this.serverHorizonTick) {
+      this.serverHorizonTicks = datagram.horizonTicks;
+      this.serverHorizonTick = datagram.simTick;
+    }
+    this.observeArrivalBehind(datagram.simTick, performance.now());
     this.observeArrival(datagram.simTick, performance.now());
     if (datagram.simTick > this.latestSimTick) {
       this.observeSimTick(datagram.simTick);
@@ -2354,6 +2537,18 @@ export class CityClient {
             : {}),
         },
       );
+    });
+    track.setCorrectionListener((metres, warped) => {
+      if (warped) this.predictiveWarps += 1;
+      if (metres > 0.25) {
+        this.correctionsOver0_25m += 1;
+        if (metres > 1) {
+          this.correctionsOver1m += 1;
+          if (track.currentLead() > 0.5) this.correctionsOver1mLeading += 1;
+          if (metres > 4) this.correctionsOver4m += 1;
+        }
+      }
+      this.correctionMetres += metres;
     });
     const state: BodyStreamState = { track, lastTick: 0, settledHint: false };
     // A body the ledger already knows is already ON SCREEN somewhere, so start
@@ -2877,6 +3072,42 @@ export class CityClient {
     }
     this.lastSampleTick = Math.max(this.lastSampleTick, renderTick - playoutDelay);
     this.drainPendingTopology(Math.max(0, Math.floor(renderTick - playoutDelay)), nowMs);
+    // Predictive: the lead from the presentation tick to the horizon. The
+    // horizon is reckoned from the newest-tick anchor (see
+    // `observeArrivalBehind`); the render clock trails it while it catches
+    // up, and that gap, smoothed, is added.
+    if (this.predictive !== 'off') {
+      const anchor = this.latestSimTick + ((nowMs - this.latestSimTickAtMs) / 1000) * this.tickRate;
+      const gap = Math.max(-PREDICTIVE_MAX_LEAD_TICKS, Math.min(PREDICTIVE_MAX_LEAD_TICKS, anchor - renderTick));
+      const dtMs = Math.max(0, nowMs - this.anchorLeadAtMs);
+      this.anchorLeadSmooth += (1 - Math.exp(-dtMs / 250)) * (gap - this.anchorLeadSmooth);
+      this.anchorLeadAtMs = nowMs;
+    }
+    const horizon = this.predictive === 'server'
+      ? (Number.isFinite(this.serverHorizonTicks) ? this.serverHorizonTicks : 0)
+      : -PREDICTIVE_DATA_BACKOFF_SENDS * this.streamIntervalTicks;
+    const lead = this.predictive !== 'off'
+      ? Math.min(
+        PREDICTIVE_MAX_LEAD_TICKS,
+        Math.max(
+          0,
+          playoutDelay
+            + horizon
+            - (PREDICTIVE_ARRIVAL_CORRECTION && Number.isFinite(this.arrivalBehindMean)
+              ? this.arrivalBehindMean
+              : 0)
+            + (PREDICTIVE_ANCHOR_GAP && (this.predictive === 'server' || this.streamIntervalTicks === 1)
+              ? this.anchorLeadSmooth
+              : 0)
+            - PREDICTIVE_CLOCK_BIAS_TICKS,
+        ),
+      )
+      : 0;
+    this.predictiveLead = lead;
+    if (this.predictive !== 'off' && this.kinetic.size > 0) {
+      this.predictiveLeadSum += lead;
+      this.predictiveLeadFrames += 1;
+    }
     for (const key of this.kinetic) {
       const state = this.bodies.get(key);
       if (!state) {
@@ -2888,6 +3119,14 @@ export class CityClient {
         continue;
       }
       state.track.setInterpolationDelayTicks(playoutDelay);
+      if (this.predictive !== 'off') {
+        state.track.setLeadHorizon(
+          lead, PREDICTIVE_CONTACT_SHARE, PREDICTIVE_LEAD_RATES, PREDICTIVE_MAX_OVERSHOOT_M,
+          // Only a server that models this client knows its clamp is longer.
+          this.predictive === 'server');
+        state.track.setLeadFloor(PREDICTIVE_FLOOR_Y);
+        state.track.setLeadDataCap(this.predictive === 'data' ? PREDICTIVE_DATA_CAP_TICKS : Number.NaN);
+      }
       const presented = state.track.sample(renderTick);
       if (state.track.lastSampleSettled) {
         this.kinetic.delete(key);
@@ -3060,6 +3299,16 @@ export class CityClient {
       clockRollbacks: this.presentationAnomalies.clock_rollback,
       implausibleJumps: this.presentationAnomalies.implausible_jump,
       presentationAnomalyMaxM: this.presentationAnomalyMaxM,
+      correctionsOver0_25m: this.correctionsOver0_25m,
+      correctionsOver1m: this.correctionsOver1m,
+      correctionsOver4m: this.correctionsOver4m,
+      correctionsOver1mLeading: this.correctionsOver1mLeading,
+      predictiveWarps: this.predictiveWarps,
+      predictiveLeadMeanTicks: this.predictiveLeadFrames > 0 ? this.predictiveLeadSum / this.predictiveLeadFrames : 0,
+      correctionMetres: this.correctionMetres,
+      predictiveHorizonTicks: this.serverHorizonTicks,
+      predictiveLeadTicks: this.predictiveLead,
+      arrivalBehindTicks: this.arrivalBehindMean,
       recordsOutsideWorld: this.recordsOutsideWorld,
       renderClockReanchorsRefused: this.renderClockReanchorsRefused,
       bootstrapPosesSeen: this.bootstrapPosesSeen,

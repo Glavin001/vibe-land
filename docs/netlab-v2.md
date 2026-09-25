@@ -273,6 +273,13 @@ These are the knobs production actually has, with their production defaults:
 | `city.topology_copies` | 2 (0 in older captures) | datagram copies of each reliable topology message (`EncoderConfig::topology_datagram_copies`, [netcode-tuning.md](netcode-tuning.md#city-latency-and-topology-delivery)) |
 | `city.limited_hz` | 30 (`VIBE_CITY_LIMITED_HZ`; 0 = every send) | the most city sends per second while the rate controller is `Limited`; each paced send may use the ceiling of the sends it stands for (`RateConfig::limited_send_interval_s`) |
 | `city.reliable_queue_ms`, `city.reliable_drain_ms` | 60, 150 (0 = off) | the rate controller's reliable-stream signal (`RateConfig`): on a limited link, reliable bytes that waited this long are given the path within the drain time |
+| `city.predictive` | 0 (`VIBE_CITY_PREDICTIVE`) | model a client that draws debris at the server's present: the horizon trailer, the drawn-pose model at that horizon (`EncoderConfig::predictive_client`, [netcode-tuning.md](netcode-tuning.md#predictive-debris-dead-reckoning-ahead-of-the-playout-delay)); pair it with the client stage's `CITY_PREDICTIVE=1` |
+| `city.predictive_backoff`, `city.predictive_backoff_sends` | 0, 0 (`now-1`: 1 send) | how far behind the present that client draws: ticks, plus sends of the send's interval |
+| `city.predictive_latency_share` | 1 | the share of the one-way latency the horizon covers (0: the newest data) |
+| `city.predictive_horizon_error` | 1 with `city.predictive` | also judge each body at the horizon |
+| `city.predictive_contact` | 0 | the share of the lead that client gives a body in contact (the client's `CITY_PREDICTIVE_CONTACT`) |
+| `city.predictive_overshoot_m` | 0 (none) | the client's speed bound on the lead (`CITY_PREDICTIVE_MAX_OVERSHOOT_M`) |
+| `city.ballistic_net_gravity` | 0 | leave gravity's own change out of a ballistic record's velocity-innovation test |
 
 The three snapshot options are recorded in `snapshot-baseline.json`
 (`compact_self`, `removals`, `idle_cold`); a capture without a field replays
@@ -300,9 +307,22 @@ overrides from its environment:
 - `CITY_PLAYOUT_Q` sets the quantile (default 0.99);
 - `CITY_PLAYOUT_MARGIN` sets the margin (ticks, default 0);
 - `CITY_PLAYOUT_FLOOR` sets the floor (ticks, default 3);
-- `CITY_PLAYOUT_WINDOW_MS` sets the window (default 4000).
+- `CITY_PLAYOUT_WINDOW_MS` sets the window (default 4000);
+- `CITY_PREDICTIVE=0 | data | 1` picks the predictive debris horizon
+  (`/city?predictive=`): off, the newest data less two sends (the default),
+  or the server's present from the horizon trailer
+  ([netcode-tuning.md](netcode-tuning.md#predictive-debris-dead-reckoning-ahead-of-the-playout-delay));
+  `CITY_PREDICTIVE_CONTACT` (the lead's share for a body in contact, 0),
+  `CITY_PREDICTIVE_DATA_BACKOFF` (sends, 2), `CITY_PREDICTIVE_DATA_CAP`
+  (ticks past a body's own newest record, 0), `CITY_PREDICTIVE_BIAS`
+  (ticks, 1), `CITY_PREDICTIVE_ARRIVAL` and `CITY_PREDICTIVE_ANCHOR` (1 = on),
+  `CITY_PREDICTIVE_FLOOR_Y` (m, 0.1), `CITY_PREDICTIVE_MAX_LEAD` (ticks, 20),
+  `CITY_PREDICTIVE_MAX_OVERSHOOT_M` (0 = none), `CITY_PREDICTIVE_RISE` and
+  `CITY_PREDICTIVE_FALL` (ticks per tick, 0.5) tune it.
 
-A browser has no such environment.
+A browser has no such environment. Runs made before the predictive default
+drew debris as `CITY_PREDICTIVE=0` does: set it to score an older client's
+presentation with this tree's client.
 
 Lab-only knobs, not production settings: `lab.rate_stale_ms` (default 0)
 makes the rate controller read the link as it was that many ms before each

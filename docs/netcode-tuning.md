@@ -50,6 +50,13 @@ links, with `lab.recorded_repairs=0`:
 a reliable-stream signal in the rate controller, both on; an adaptive
 playout delay, built and off.
 
+**Predictive debris** ([Predictive debris](#predictive-debris-dead-reckoning-ahead-of-the-playout-delay)):
+a body in free fall is drawn at the newest data less two sends instead of a
+playout delay behind it (client only, on by default: debris pos@now p99
+−34 to −36% on loopback and LAN with no more jumps or snaps); dead reckoning
+to the server's present, built and opt-in (`/city?predictive=1`,
+`VIBE_CITY_PREDICTIVE`): it halves pos@now and corrects more in view.
+
 **Scoreboard** ([Netcode scoreboard (2026-09-24)](#netcode-scoreboard-2026-09-24)):
 the pre-work netcode against HEAD on four bundles and eleven links, then the
 changes it pointed at: a compact self state and explicit removals, then late
@@ -857,7 +864,7 @@ wire change, no protocol bump:
 | Delay from datagram arrivals (p98 of render clock minus tick at arrival, + 1 tick) | LTE lag p50 −10.2 → −8.4, but frames with the presentation stopped 4.2% → 6.2% (−8.0 and 7.6% at p95). Arrivals are measured against a clock the cap already holds to the newest tick, so the estimate collapses to its floor. Exploratory runs, not kept. | replaced by the frame-lead estimate |
 | Frame-lead estimate at p95 / p97 / p99 (floor 2) | LTE lag p50 −8.7 / −8.5 / −9.1; stopped frames 4.5% / 4.9% / 4.0% (fixed: 4.2%). Exploratory runs, not kept. | p99 |
 | Delay floor 2 or 4 instead of 3 | the fixed-delay sweep above: every tick less costs corrections | 3, and the delay itself off |
-| Gravity-aware extrapolation of ballistic debris ahead of the presentation (4 / 8 ticks) | LTE debris pos@now p99 1.91 → 1.43 / 1.14 m, but pos@render p99 0.12 → 0.75 / 1.34 m, and presented jumps over 4 m 228 → 282 / 687: a body jumps by the lead whenever its class flips (`ahead4-sys`, `ahead8-sys`) | rejected |
+| Gravity-aware extrapolation of ballistic debris ahead of the presentation (4 / 8 ticks) | LTE debris pos@now p99 1.91 → 1.43 / 1.14 m, but pos@render p99 0.12 → 0.75 / 1.34 m, and presented jumps over 4 m 228 → 282 / 687: a body jumps by the lead whenever its class flips (`ahead4-sys`, `ahead8-sys`) | rejected; redone with the lead as playback speed in [Predictive debris](#predictive-debris-dead-reckoning-ahead-of-the-playout-delay) |
 | Holding only the affected bodies | with copies the hold runs on 275 of 39,845 LTE frames (0.7%), 0 on cap-1mbit and bw-capped-nq, and the p50 lag does not move with it | not built: it could touch under 1% of frames |
 | Gap hold only with the missing message's exact tick, or no gap hold (LTE, poor-mobile, 3 seeds) | identical lag and wrong identity with the exact-only variant; without the gap hold, poor-mobile seed 2 wrong identity 45 → 477 | kept as built |
 | One topology copy instead of two | LTE wrong identity 529 → 1,419, lag p1 −26.4 → −34.0; lossless constrained links unchanged (`c1-sys`) | two |
@@ -2545,6 +2552,424 @@ Runs: `target/net-cadence/runs/<bundle>/<arm>/seed<k>/<link>` (`sys`, `hq`,
 30 Hz), `lim0` (the same build with it off), and `m30` / `y30`, this tree
 at 30 Hz, identical to `base` on every cell). Calibration:
 `target/net-cadence/calibrate/*.log`.
+
+## Predictive debris (dead reckoning ahead of the playout delay)
+
+The city is presented about 4 ticks behind the server on loopback and 9 on
+LTE, and almost all of the debris "now" error is that latency: HEAD debris
+pos@now p99 is 1.29-1.79 m on loopback against pos@render p99 0.10-0.17 m.
+This round drew debris ahead of the shared presentation tick, toward where
+the server has it now, and measured what that costs in visible corrections.
+Base: 5dc95664. Every number is **measured** in Netlab v2 unless marked
+**inferred**.
+
+### Summary
+
+- **New default: the `data` horizon (client only).** A body whose newest
+  record is ballistic is drawn at the newest data the client can have, less
+  two sends (about 2.2 ticks past the presentation on loopback, 1.5-2.6 on
+  LTE), instead of at the presentation tick.
+  - Debris pos@now p99 on loopback and LAN: **−34 to −36%** (systematic
+    1.293 → 0.849 m, heavy 1.425 → 0.936, the 040411 live capture 1.788 →
+    1.136). LTE −15 to −25%, lte-fifo −12 to −18%, poor-mobile-nq −6 to −12%.
+  - Visible corrections on the fast links: presented jumps over 4 m 188 →
+    187, 41 → 41, 6 → 6; correction snaps 76 → 77, 17 → 17, 1 → 1;
+    corrections over 1 m 593 → 588, 111 → 103, 102 → 98. Frames stopped,
+    bytes and wrong identity are identical on every cell (the server is
+    unchanged).
+  - On LTE snaps rise by 0-9 (292 → 299, 89 → 97 on systematic), on
+    lte-fifo by 0-9 (78 → 87); jumps do not rise.
+  - Debris pos@render p99 rises 0.10-0.17 → 0.49-1.03 m. That is the lead
+    itself: the scorer compares with truth at the presentation tick, and the
+    body is drawn about 2.2 ticks later (inferred, see below).
+  - `/city?predictive=0` restores HEAD's presentation.
+- **Server-now dead reckoning: built, opt-in** (`/city?predictive=1` with
+  `VIBE_CITY_PREDICTIVE=1` or `now-1` on the server). The client draws
+  ballistic debris at the server's present; the encoder runs the same model
+  at that horizon and sends when it leaves the error budget.
+  - Debris pos@now p99 about halves on every link: loopback 1.293 → 0.699,
+    1.425 → 0.770, 1.788 → 0.936 m; LTE 2.553 → 1.252, 2.035 → 1.065,
+    2.813 → 1.425 m.
+  - It corrects more in view: on loopback snaps 76 → 96, 17 → 20, 1 → 2 and
+    corrections over 1 m +22% / +77% / +15%; on LTE corrections over 1 m
+    1.6-3.7×, snaps mixed by seed (systematic 292 / 89 → 317 / 355, heavy
+    126 / 124 → 20 / 128, live 2 / 3 → 9 / 28).
+  - +6-10% netcode bytes on LTE (the horizon error sends earlier), +0.5% on
+    loopback (the trailer).
+  - "now − 1 send" is between the two; "now − 2 sends" on loopback is the
+    `data` horizon.
+- **What made it viable** where the 4- and 8-tick attempts (`ahead4-sys`,
+  `ahead8-sys`) were not: the lead is a playback speed, never a jump; a
+  revision the lead ran ahead of is met by giving lead up (a warp in time,
+  not space); a floor under leading ballistic bodies; and a per-body cap in
+  the `data` horizon.
+
+### What was built
+
+**Client** (`client/src/city/presentation.ts`, `cityClient.ts`):
+
+- **A lead per track.** `PresentationTrack.setLeadHorizon` draws the body
+  `lead` ticks past the shared presentation tick while its newest record is
+  ballistic, and a share of it otherwise (`PREDICTIVE_CONTACT_SHARE`, 0 by
+  default). Everything else stays on the presentation tick: the render clock,
+  the lead cap, topology holds and identity.
+- **The lead moves as speed, not position.** It follows its target at 0.5
+  tick per tick up and down, so the body plays at 0.5-1.5× speed while it
+  changes and the drawn tick never goes back. The earlier attempt switched
+  it with the record class and jumped by the lead at every flip (presented
+  jumps over 4 m 228 → 687 at 8 ticks). A freshly seeded track (promotion,
+  wake, starved re-admission) takes its lead at once: its first sample
+  already glides from the pose on screen.
+- **Warp to a revision** (`warpToRevision`). A record that revises a leading
+  track by over 0.5 m is re-anchored where the revised path passes closest
+  to the pose on screen, between the presentation tick and the tick last
+  drawn, if that halves the correction; the lead drops by the difference and
+  is regained at the rise rate.
+  - The case is an impulse: a body at rest struck at tick b is drawn at rest
+    past b until its record arrives, and the revised path there is already
+    metres along. On the live capture on LTE those were 5.5-9.5 m, every one
+    a snap (bodies from 1-2 m/s to 50-80 m/s in two ticks). Met at b, the
+    body is where it is drawn and starts moving now.
+  - Measured (server-now, seed 1, `p2` → `w0`): systematic LTE jumps 315 →
+    198, snaps 440 → 312, corrections over 1 m 4,656 → 2,355; live LTE jumps
+    28 → 4, snaps 62 → 9.
+- **A floor under leading ballistic bodies** (`setLeadFloor`, y = 0.1 m; the
+  city ground is flat y = 0). Without it the server-now horizon carried
+  landing debris metres into the ground before the landing's record
+  arrived: 1,601 LTE debris chunk-frames hidden below −4 m (systematic,
+  `w0`), 52 with it (`now`).
+- **Two horizons**, reckoned from the newest-tick anchor (the render clock
+  plus its smoothed lag behind the anchor) less the anchor's mean lead over
+  a datagram's tick at arrival (`observeArrivalBehind`) and a 1-tick clock
+  bias (a datagram leaves during its tick):
+  - `data` (default): the playout delay less two sends. The body is never
+    drawn past its own newest record (`setLeadDataCap(0)`), and the anchor
+    lag is added only on a stream sent at every tick. The extrapolation
+    clamp is HEAD's, so the encoder's model of the client is unchanged.
+  - `server`: the server's horizon from the chunk-datagram trailer (below);
+    the extrapolation clamp is lengthened by the lead, as the encoder models.
+- `/city?predictive=0 | data | 1`; lab `CITY_PREDICTIVE=0 | data | 1` and the
+  lab-only tuning variables in [netlab-v2.md](netlab-v2.md#knobs---knob-kv-comma-separated).
+- **Stats:** `correctionsOver0_25m / 1m / 4m`, `correctionMetres` (every
+  revision re-anchor, by size: the visible corrections), `predictiveWarps`,
+  `predictiveLeadTicks` and `predictiveLeadMeanTicks`, `predictiveHorizonTicks`,
+  `arrivalBehindTicks`.
+
+**Server** (`destruction/src/encoder.rs`, `wire.rs`; `server/src/city.rs`,
+`main.rs`), all off unless `VIBE_CITY_PREDICTIVE` is set:
+
+- **The horizon trailer** (`CHUNKS_TRAILER_HORIZON` 0xC8, 3 B on every
+  records datagram with room): the one-way latency, half the link's smoothed
+  RTT as the rate controller reads it (`note_link_rtt`), times
+  `predictive_latency_share` (1: the present; 0: the data), less the
+  back-off (`predictive_backoff_ticks` + `predictive_backoff_sends` × the
+  send's interval).
+  Length-detected: older decoders read no section shorter than a topology
+  part header, so they never see it.
+- **The model at the horizon** (`predictive_horizon_error`): a record goes
+  when the pose the last record predicts at now + horizon is off the pose the
+  body's current state predicts there by more than the error budget. It
+  refreshes a drifting body before the drift shows (a body slowing at
+  6 m/s² gets its first refresh sooner at a 10-tick horizon: unit test). The
+  drawn-pose model gets the client's longer clamp and floor.
+- `VIBE_CITY_PREDICTIVE=1 | now | now-1`; lab knobs `city.predictive`,
+  `city.predictive_backoff`, `city.predictive_backoff_sends`,
+  `city.predictive_latency_share`, `city.predictive_contact`,
+  `city.predictive_horizon_error`, `city.predictive_overshoot_m`,
+  `city.ballistic_net_gravity`. Older captures read every field as off.
+
+### Arms
+
+One frozen truth per cell, production knobs of the 60 Hz round (`city.send_hz=60,
+city.ceiling_bytes=5200, city.innovation_window_ticks=2` plus the earlier set),
+recorded pace, `lab.recorded_repairs=0`. Bundles: systematic-2c-d1342419 c1,
+heavy-quick3-v2 c1, and the 040411 live capture c1 (recorded with the 60 Hz
+city). Links loopback, lan, lte, lte-fifo, poor-mobile-nq; seeds 1 and 2
+(loopback has no jitter, so both seeds are the same run there).
+
+- **HEAD**: this tree with `CITY_PREDICTIVE=0`. It reproduces a build of
+  5dc95664 exactly on the cells compared (systematic and live, loopback and
+  LTE: every stream byte, client counter and percentile; only float sums in
+  the scorer's means differ, in the 7th digit).
+- **data horizon (new default)**: client only; the server stream is
+  byte-identical to HEAD.
+- **server-now**, **now − 1 send**, **now − 2 sends**: `city.predictive=1`,
+  `city.predictive_backoff_sends` 0 / 1 / 2, client `CITY_PREDICTIVE=1`.
+- **now − 1, contact bodies too**: bodies in contact get the whole lead
+  (`CITY_PREDICTIVE_CONTACT=1`, `city.predictive_contact=1`).
+
+Snapshot classes (players, vehicles, bodies, meteors) are identical to HEAD
+in the `data` arm on every cell. The server arms send more city bytes, which
+moves the seeded link model's loss and jitter draws for every later packet,
+so their snapshot classes differ in both directions by link noise (e.g.
+systematic LTE vehicle pos@now p99 0.966 → 1.065 / 0.998 m).
+
+### Results
+
+"Corrections > 1 m" counts revision re-anchors whose correction exceeds
+1 m (glided, or snapped beyond 5 m). "Debris missing" counts debris
+chunk-frames truth has above −4 m at the presentation tick that are drawn
+hidden below it.
+
+**systematic-2c-d1342419 c1** (seed 1 / seed 2; `–` not run):
+
+| Link | Arm | Debris pos@now p50 m | Debris pos@now p99 m | Debris pos@render p99 m | Presented jumps > 4 m | Correction snaps | Corrections > 1 m | Frames stopped % | Netcode kbit/s | Debris wrong identity | Debris missing |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| loopback | HEAD (5dc95664) | 0.009 / 0.009 | 1.293 / 1.293 | 0.100 / 0.100 | 188 / 188 | 76 / 76 | 593 / 593 | 0.21 / 0.21 | 269.6 / 269.6 | 0 / 0 | 0 / 0 |
+| loopback | data horizon (new default) | 0.009 / 0.009 | 0.849 / 0.849 | 0.490 / 0.490 | 187 / 187 | 77 / 77 | 588 / 588 | 0.21 / 0.21 | 269.6 / 269.6 | 0 / 0 | 109 / 109 |
+| loopback | server-now | 0.009 / 0.009 | 0.699 / 0.699 | 0.796 / 0.796 | 182 / 182 | 96 / 96 | 722 / 722 | 0.21 / 0.21 | 271.2 / 271.2 | 0 / 0 | 74 / 74 |
+| loopback | now − 1 send | 0.009 / 0.009 | 0.770 / 0.770 | 0.655 / 0.655 | 183 / 183 | 86 / 86 | 664 / 664 | 0.21 / 0.21 | 271.1 / 271.1 | 0 / 0 | 129 / 129 |
+| loopback | now − 1, contact bodies too | 0.009 / 0.009 | 0.557 / 0.557 | 0.906 / 0.906 | 184 / 184 | 88 / 88 | 694 / 694 | 0.21 / 0.21 | 272.5 / 272.5 | 0 / 0 | 130 / 130 |
+| loopback | now − 2 sends | 0.009 / 0.009 | 0.849 / 0.849 | 0.522 / 0.522 | 185 / 185 | 76 / 76 | 607 / 607 | 0.21 / 0.21 | 271.1 / 271.1 | 0 / 0 | 127 / 127 |
+| lan | HEAD (5dc95664) | 0.009 / 0.009 | 1.293 / 1.293 | 0.100 / 0.100 | 189 / 189 | 76 / 76 | 593 / 593 | 0.24 / 0.24 | 269.6 / 269.6 | 0 / 0 | 0 / 0 |
+| lan | data horizon (new default) | 0.009 / 0.009 | 0.849 / 0.849 | 0.490 / 0.490 | 188 / 188 | 77 / 77 | 588 / 590 | 0.24 / 0.24 | 269.6 / 269.6 | 0 / 0 | 126 / 126 |
+| lan | server-now | 0.009 / 0.009 | 0.699 / 0.699 | 0.796 / 0.796 | 185 / 185 | 97 / 97 | 740 / 729 | 0.23 / 0.22 | 271.4 / 271.4 | 0 / 0 | 71 / 71 |
+| lan | now − 1 send | 0.009 / 0.009 | 0.770 / 0.770 | 0.655 / 0.655 | 186 / 186 | 90 / 90 | 680 / 680 | 0.23 / 0.24 | 271.1 / 271.1 | 0 / 0 | 143 / 146 |
+| lan | now − 1, contact bodies too | 0.009 / 0.009 | 0.557 / 0.557 | 0.906 / 0.906 | 184 / 184 | 90 / 90 | 691 / 684 | 0.23 / 0.22 | 272.5 / 272.5 | 0 / 0 | 126 / 126 |
+| lan | now − 2 sends | 0.009 / 0.009 | 0.849 / 0.849 | 0.522 / 0.522 | 185 / 185 | 76 / 76 | 628 / 639 | 0.22 / 0.23 | 271.1 / 271.1 | 0 / 0 | 130 / 113 |
+| lte | HEAD (5dc95664) | 0.009 / 0.009 | 2.553 / 2.102 | 0.126 / 0.110 | 219 / 198 | 292 / 89 | 1342 / 955 | 1.01 / 0.90 | 261.9 / 262.3 | 1128 / 145 | 0 / 0 |
+| lte | data horizon (new default) | 0.009 / 0.009 | 1.908 / 1.731 | 0.722 / 0.459 | 218 / 197 | 299 / 97 | 1179 / 809 | 1.01 / 0.90 | 261.9 / 262.3 | 1128 / 145 | 80 / 126 |
+| lte | server-now | 0.009 / 0.009 | 1.252 / 1.174 | 1.788 / 1.622 | 208 / 194 | 317 / 355 | 2176 / 2184 | 1.03 / 1.01 | 288.1 / 288.4 | 203 / 192 | 52 / 43 |
+| lte | now − 1 send | 0.009 / 0.009 | 1.212 / 1.380 | 1.472 / 1.676 | 206 / 197 | 157 / 355 | 1573 / 1900 | 1.08 / 1.19 | 283.8 / 283.1 | 291 / 66 | 94 / 81 |
+| lte | now − 1, contact bodies too | 0.009 / 0.009 | 0.722 / 0.770 | 1.847 / 2.035 | 198 / 210 | 152 / 384 | 2300 / 2524 | 0.95 / 0.87 | 286.9 / 287.6 | 118 / 78 | 159 / 90 |
+| lte | now − 2 sends | 0.009 / 0.009 | 1.252 / 1.380 | 1.336 / 1.521 | 208 / 189 | 164 / 97 | 1567 / 1364 | 0.94 / 1.03 | 279.3 / 279.2 | 205 / 120 | 81 / 81 |
+| lte-fifo | HEAD (5dc95664) | 0.009 / 0.009 | 2.243 / 2.243 | 0.107 / 0.103 | 197 / 199 | 78 / 79 | 580 / 603 | 0.60 / 0.62 | 261.9 / 262.3 | 340 / 20 | 0 / 0 |
+| lte-fifo | data horizon (new default) | 0.009 / 0.009 | 1.847 / 1.847 | 0.430 / 0.416 | 190 / 190 | 87 / 84 | 573 / 581 | 0.60 / 0.62 | 261.9 / 262.3 | 340 / 20 | 76 / 75 |
+| lte-fifo | server-now | 0.009 / 0.009 | 1.174 / 1.174 | 1.571 / 1.571 | 185 / 182 | 104 / 97 | 1796 / 1783 | 0.66 / 0.64 | 288.1 / 288.4 | 28 / 61 | 11 / 30 |
+| lte-fifo | now − 1 send | 0.009 / 0.009 | 1.252 / 1.212 | 1.425 / 1.425 | 198 / 181 | 107 / 97 | 1533 / 1561 | 0.63 / 0.63 | 283.8 / 283.1 | 35 / 20 | 27 / 8 |
+| lte-fifo | now − 1, contact bodies too | 0.009 / 0.009 | 0.849 / 0.849 | 1.788 / 1.788 | 180 / 172 | 99 / 103 | 2195 / 2108 | 0.63 / 0.62 | 286.9 / 287.6 | 28 / 20 | 23 / 23 |
+| lte-fifo | now − 2 sends | 0.009 / 0.009 | 1.293 / 1.293 | 1.252 / 1.252 | 188 / 185 | 100 / 98 | 1317 / 1327 | 0.59 / 0.62 | 279.3 / 279.2 | 36 / 20 | 5 / 13 |
+| poor-mobile-nq | HEAD (5dc95664) | 0.009 / 0.009 | 3.529 / 3.308 | 0.130 / 0.126 | 230 / 210 | 156 / 146 | 1148 / 1020 | 1.43 / 1.28 | 228.6 / 228.2 | 545 / 137 | 0 / 0 |
+| poor-mobile-nq | data horizon (new default) | 0.009 / 0.009 | 3.100 / 2.906 | 0.576 / 0.474 | 231 / 207 | 152 / 142 | 1010 / 903 | 1.43 / 1.28 | 228.6 / 228.2 | 545 / 137 | 89 / 103 |
+| poor-mobile-nq | server-now | 0.009 / 0.009 | 2.102 / 2.035 | 2.171 / 2.243 | 195 / 198 | 164 / 145 | 2856 / 2931 | 1.42 / 1.31 | 258.9 / 258.3 | 284 / 90 | 71 / 114 |
+| poor-mobile-nq | now − 1 send | 0.009 / 0.009 | 2.102 / 1.847 | 2.102 / 1.908 | 196 / 185 | 150 / 119 | 2488 / 2527 | 1.23 / 1.05 | 248.6 / 249.0 | 166 / 182 | 90 / 8 |
+| poor-mobile-nq | now − 1, contact bodies too | 0.010 / 0.010 | 1.571 / 1.521 | 2.724 / 2.724 | 162 / 168 | 113 / 128 | 3726 / 3358 | 1.36 / 1.32 | 247.0 / 248.0 | 243 / 114 | 116 / 176 |
+| poor-mobile-nq | now − 2 sends | 0.009 / 0.009 | 2.102 / 2.035 | 1.731 / 1.788 | 197 / 204 | 123 / 128 | 1966 / 2153 | 1.26 / 1.18 | 241.3 / 241.7 | 87 / 271 | 72 / 5 |
+
+**heavy-quick3-v2 c1** (seed 1 / seed 2; `–` not run):
+
+| Link | Arm | Debris pos@now p50 m | Debris pos@now p99 m | Debris pos@render p99 m | Presented jumps > 4 m | Correction snaps | Corrections > 1 m | Frames stopped % | Netcode kbit/s | Debris wrong identity | Debris missing |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| loopback | HEAD (5dc95664) | 0.011 / 0.011 | 1.425 / 1.425 | 0.153 / 0.153 | 41 / 41 | 17 / 17 | 111 / 111 | 0.10 / 0.10 | 228.6 / 228.6 | 0 / 0 | 0 / 0 |
+| loopback | data horizon (new default) | 0.011 / 0.011 | 0.936 / 0.936 | 0.614 / 0.614 | 41 / 41 | 17 / 17 | 103 / 103 | 0.10 / 0.10 | 228.6 / 228.6 | 0 / 0 | 23 / 23 |
+| loopback | server-now | 0.011 / 0.011 | 0.770 / 0.770 | 0.906 / 0.906 | 41 / 41 | 20 / 20 | 196 / 196 | 0.10 / 0.10 | 229.8 / 229.8 | 0 / 0 | 28 / 28 |
+| loopback | now − 1 send | 0.011 / 0.011 | 0.849 / 0.849 | 0.770 / 0.770 | 40 / 40 | 18 / 18 | 134 / 134 | 0.10 / 0.10 | 229.7 / 229.7 | 0 / 0 | 25 / 25 |
+| loopback | now − 1, contact bodies too | 0.011 / 0.011 | 0.614 / 0.614 | 0.998 / 0.998 | 38 / 38 | 17 / 17 | 154 / 154 | 0.10 / 0.10 | 230.1 / 230.1 | 0 / 0 | 25 / 25 |
+| loopback | now − 2 sends | 0.011 / 0.011 | 0.936 / 0.936 | 0.634 / 0.634 | 41 / 41 | 17 / 17 | 109 / 109 | 0.10 / 0.10 | 229.7 / 229.7 | 0 / 0 | 23 / 23 |
+| lan | HEAD (5dc95664) | 0.011 / 0.011 | 1.425 / 1.425 | 0.153 / 0.153 | 41 / 41 | 17 / 17 | 113 / 112 | 0.16 / 0.15 | 228.6 / 228.6 | 0 / 0 | 0 / 0 |
+| lan | data horizon (new default) | 0.011 / 0.011 | 0.936 / 0.936 | 0.614 / 0.614 | 41 / 41 | 17 / 17 | 106 / 105 | 0.16 / 0.15 | 228.6 / 228.6 | 0 / 0 | 22 / 23 |
+| lan | server-now | 0.011 / 0.011 | 0.770 / 0.770 | 0.906 / 0.906 | 41 / 41 | 20 / 20 | 204 / 198 | 0.18 / 0.15 | 229.9 / 229.9 | 0 / 0 | 28 / 28 |
+| lan | now − 1 send | 0.011 / 0.011 | 0.849 / 0.849 | 0.770 / 0.770 | 40 / 40 | 19 / 19 | 138 / 142 | 0.16 / 0.15 | 229.7 / 229.7 | 0 / 0 | 25 / 25 |
+| lan | now − 1, contact bodies too | 0.011 / 0.011 | 0.614 / 0.614 | 1.031 / 1.031 | 40 / 40 | 18 / 18 | 167 / 171 | 0.16 / 0.17 | 230.1 / 230.1 | 0 / 0 | 25 / 25 |
+| lan | now − 2 sends | 0.011 / 0.011 | 0.936 / 0.936 | 0.634 / 0.634 | 41 / 41 | 17 / 17 | 113 / 114 | 0.16 / 0.15 | 229.7 / 229.7 | 0 / 0 | 23 / 23 |
+| lte | HEAD (5dc95664) | 0.012 / 0.012 | 2.035 / 2.035 | 0.185 / 0.191 | 44 / 43 | 126 / 124 | 294 / 314 | 0.62 / 0.61 | 221.4 / 221.8 | 61 / 42 | 0 / 0 |
+| lte | data horizon (new default) | 0.012 / 0.012 | 1.676 / 1.622 | 0.595 / 0.595 | 45 / 43 | 128 / 125 | 299 / 318 | 0.62 / 0.61 | 221.4 / 221.8 | 61 / 42 | 21 / 21 |
+| lte | server-now | 0.012 / 0.012 | 1.065 / 1.065 | 1.731 / 1.731 | 38 / 45 | 20 / 128 | 582 / 707 | 0.70 / 0.58 | 234.1 / 232.8 | 45 / 27 | 35 / 23 |
+| lte | now − 1 send | 0.012 / 0.012 | 1.065 / 1.065 | 1.571 / 1.571 | 44 / 45 | 78 / 35 | 574 / 555 | 0.51 / 0.54 | 231.5 / 230.9 | 30 / 44 | 20 / 22 |
+| lte | now − 1, contact bodies too | 0.013 / 0.013 | 0.699 / 0.699 | 1.970 / 1.970 | 40 / 42 | 64 / 25 | 851 / 890 | 0.51 / 0.60 | 231.3 / 232.2 | 561 / 65 | 29 / 30 |
+| lte | now − 2 sends | 0.012 / 0.012 | 1.100 / 1.100 | 1.425 / 1.380 | 49 / 46 | 146 / 130 | 640 / 536 | 0.53 / 0.66 | 229.3 / 229.3 | 57 / 152 | 20 / 17 |
+| lte-fifo | HEAD (5dc95664) | 0.012 / 0.012 | 2.243 / 2.243 | 0.168 / 0.168 | 42 / 39 | 19 / 15 | 151 / 154 | 0.60 / 0.53 | 221.4 / 221.8 | 65 / 31 | 0 / 0 |
+| lte-fifo | data horizon (new default) | 0.012 / 0.012 | 1.847 / 1.847 | 0.595 / 0.595 | 41 / 39 | 19 / 15 | 160 / 154 | 0.60 / 0.53 | 221.4 / 221.8 | 65 / 31 | 21 / 22 |
+| lte-fifo | server-now | 0.012 / 0.012 | 1.174 / 1.174 | 1.731 / 1.731 | 38 / 39 | 20 / 19 | 602 / 521 | 0.58 / 0.53 | 234.1 / 232.8 | 35 / 27 | 23 / 23 |
+| lte-fifo | now − 1 send | 0.012 / 0.012 | 1.174 / 1.212 | 1.571 / 1.571 | 41 / 43 | 62 / 22 | 472 / 452 | 0.52 / 0.57 | 231.5 / 230.9 | 35 / 27 | 21 / 19 |
+| lte-fifo | now − 1, contact bodies too | 0.013 / 0.013 | 0.770 / 0.770 | 2.035 / 2.035 | 38 / 42 | 63 / 25 | 823 / 838 | 0.55 / 0.56 | 231.3 / 232.2 | 35 / 27 | 27 / 25 |
+| lte-fifo | now − 2 sends | 0.012 / 0.012 | 1.252 / 1.252 | 1.425 / 1.425 | 39 / 39 | 20 / 20 | 479 / 403 | 0.51 / 0.62 | 229.3 / 229.3 | 35 / 36 | 22 / 20 |
+| poor-mobile-nq | HEAD (5dc95664) | 0.013 / 0.013 | 2.906 / 2.906 | 0.211 / 0.211 | 46 / 45 | 129 / 22 | 296 / 270 | 0.67 / 0.67 | 188.6 / 190.6 | 41 / 85 | 0 / 0 |
+| poor-mobile-nq | data horizon (new default) | 0.013 / 0.013 | 2.637 / 2.637 | 0.474 / 0.474 | 46 / 45 | 129 / 22 | 302 / 288 | 0.67 / 0.67 | 188.6 / 190.6 | 41 / 85 | 1 / 13 |
+| poor-mobile-nq | server-now | 0.013 / 0.013 | 1.731 / 1.676 | 2.243 / 2.317 | 61 / 68 | 36 / 43 | 1257 / 1397 | 0.55 / 0.64 | 210.8 / 210.4 | 51 / 53 | 8 / 7 |
+| poor-mobile-nq | now − 1 send | 0.013 / 0.013 | 1.622 / 1.788 | 2.171 / 2.243 | 65 / 80 | 145 / 159 | 1269 / 1318 | 0.74 / 0.76 | 202.5 / 203.2 | 42 / 67 | 4 / 13 |
+| poor-mobile-nq | now − 1, contact bodies too | 0.014 / 0.014 | 1.252 / 1.252 | 2.813 / 2.724 | 52 / 59 | 141 / 46 | 1958 / 1729 | 0.78 / 0.73 | 202.3 / 201.5 | 47 / 41 | 22 / 81 |
+| poor-mobile-nq | now − 2 sends | 0.013 / 0.013 | 1.788 / 1.731 | 1.847 / 1.847 | 60 / 50 | 78 / 30 | 873 / 778 | 0.62 / 0.70 | 193.0 / 195.8 | 67 / 41 | 0 / 9 |
+
+**20260925-040411-net-cadence c1 (60 Hz city)** (seed 1 / seed 2; `–` not run):
+
+| Link | Arm | Debris pos@now p50 m | Debris pos@now p99 m | Debris pos@render p99 m | Presented jumps > 4 m | Correction snaps | Corrections > 1 m | Frames stopped % | Netcode kbit/s | Debris wrong identity | Debris missing |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| loopback | HEAD (5dc95664) | 0.012 / 0.012 | 1.788 / 1.788 | 0.168 / 0.168 | 6 / 6 | 1 / 1 | 102 / 102 | 0.84 / 0.84 | 155.4 / 155.4 | 0 / 0 | 0 / 0 |
+| loopback | data horizon (new default) | 0.012 / 0.012 | 1.136 / 1.136 | 0.998 / 0.998 | 6 / 6 | 1 / 1 | 98 / 98 | 0.84 / 0.84 | 155.4 / 155.4 | 0 / 0 | 0 / 0 |
+| loopback | server-now | 0.012 / 0.012 | 0.936 / 0.936 | 1.425 / 1.425 | 5 / 5 | 2 / 2 | 117 / 117 | 0.84 / 0.84 | 156.4 / 156.4 | 0 / 0 | 0 / 0 |
+| loopback | now − 1 send | 0.012 / 0.012 | 0.998 / 0.998 | 1.252 / 1.252 | 5 / 5 | 2 / 2 | 95 / 95 | 0.84 / 0.84 | 156.4 / 156.4 | 0 / 0 | 0 / 0 |
+| loopback | now − 1, contact bodies too | 0.013 / 0.013 | 0.699 / 0.699 | 1.425 / 1.425 | 6 / 6 | 3 / 3 | 89 / 89 | 0.83 / 0.83 | 156.7 / 156.7 | 0 / 0 | 0 / 0 |
+| loopback | now − 2 sends | 0.012 / 0.012 | 1.136 / 1.136 | 1.031 / 1.031 | 6 / 6 | 1 / 1 | 100 / 100 | 0.84 / 0.84 | 156.3 / 156.3 | 0 / 0 | 0 / 0 |
+| lan | HEAD (5dc95664) | 0.012 / 0.012 | 1.788 / 1.788 | 0.168 / 0.168 | 6 / 6 | 1 / 1 | 102 / 101 | 0.83 / 0.83 | 155.4 / 155.4 | 0 / 0 | 0 / 0 |
+| lan | data horizon (new default) | 0.012 / 0.012 | 1.136 / 1.136 | 1.031 / 1.031 | 6 / 6 | 1 / 1 | 98 / 98 | 0.83 / 0.83 | 155.4 / 155.4 | 0 / 0 | 0 / 0 |
+| lan | server-now | 0.012 / 0.012 | 0.936 / 0.936 | 1.472 / 1.425 | 5 / 5 | 2 / 2 | 123 / 124 | 0.82 / 0.82 | 156.5 / 156.5 | 0 / 0 | 0 / 0 |
+| lan | now − 1 send | 0.012 / 0.012 | 0.998 / 0.998 | 1.252 / 1.252 | 5 / 5 | 2 / 2 | 95 / 95 | 0.84 / 0.82 | 156.4 / 156.4 | 0 / 0 | 0 / 0 |
+| lan | now − 1, contact bodies too | 0.013 / 0.013 | 0.699 / 0.699 | 1.472 / 1.472 | 6 / 6 | 3 / 3 | 104 / 104 | 0.82 / 0.82 | 156.7 / 156.7 | 0 / 0 | 0 / 0 |
+| lan | now − 2 sends | 0.012 / 0.012 | 1.136 / 1.136 | 1.065 / 1.065 | 6 / 6 | 1 / 1 | 101 / 101 | 0.84 / 0.82 | 156.3 / 156.3 | 0 / 0 | 0 / 0 |
+| lte | HEAD (5dc95664) | 0.013 / 0.013 | 2.813 / 2.813 | 0.204 / 0.198 | 6 / 8 | 2 / 3 | 136 / 104 | 1.21 / 1.24 | 150.8 / 150.0 | 58 / 17 | 0 / 0 |
+| lte | data horizon (new default) | 0.013 / 0.013 | 2.393 / 2.393 | 0.906 / 0.877 | 6 / 8 | 3 / 4 | 130 / 99 | 1.21 / 1.24 | 150.8 / 150.0 | 58 / 17 | 0 / 0 |
+| lte | server-now | 0.014 / 0.014 | 1.425 / 1.380 | 2.472 / 2.472 | 4 / 5 | 9 / 28 | 339 / 386 | 1.19 / 1.20 | 161.6 / 161.6 | 25 / 17 | 0 / 0 |
+| lte | now − 1 send | 0.013 / 0.014 | 1.425 / 1.425 | 2.317 / 2.317 | 8 / 7 | 9 / 7 | 316 / 271 | 1.17 / 1.25 | 159.6 / 159.3 | 57 / 17 | 0 / 0 |
+| lte | now − 1, contact bodies too | 0.015 / 0.016 | 0.877 / 0.796 | 2.637 / 2.637 | 12 / 8 | 35 / 6 | 439 / 401 | 1.13 / 1.07 | 160.1 / 160.0 | 298 / 38 | 0 / 0 |
+| lte | now − 2 sends | 0.014 / 0.014 | 1.472 / 1.425 | 2.035 / 2.102 | 10 / 7 | 11 / 5 | 225 / 251 | 1.17 / 1.20 | 157.6 / 157.6 | 58 / 57 | 0 / 0 |
+| lte-fifo | HEAD (5dc95664) | 0.013 / 0.013 | 3.100 / 3.100 | 0.174 / 0.191 | 9 / 8 | 3 / 3 | 95 / 98 | 1.11 / 1.19 | 150.8 / 150.0 | 29 / 17 | 0 / 0 |
+| lte-fifo | data horizon (new default) | 0.013 / 0.013 | 2.724 / 2.637 | 0.936 / 0.936 | 9 / 8 | 4 / 4 | 98 / 89 | 1.11 / 1.19 | 150.8 / 150.0 | 29 / 17 | 0 / 0 |
+| lte-fifo | server-now | 0.014 / 0.014 | 1.571 / 1.521 | 2.472 / 2.472 | 4 / 6 | 3 / 4 | 312 / 327 | 1.14 / 1.13 | 161.6 / 161.6 | 29 / 21 | 0 / 0 |
+| lte-fifo | now − 1 send | 0.014 / 0.014 | 1.622 / 1.622 | 2.243 / 2.317 | 4 / 5 | 3 / 4 | 289 / 266 | 1.07 / 1.10 | 159.6 / 159.3 | 29 / 17 | 0 / 0 |
+| lte-fifo | now − 1, contact bodies too | 0.015 / 0.016 | 0.998 / 0.998 | 2.724 / 2.637 | 11 / 7 | 9 / 5 | 333 / 357 | 1.11 / 1.08 | 160.1 / 160.0 | 29 / 17 | 0 / 0 |
+| lte-fifo | now − 2 sends | 0.014 / 0.014 | 1.731 / 1.731 | 2.035 / 2.035 | 3 / 4 | 2 / 3 | 231 / 244 | 1.05 / 1.10 | 157.6 / 157.6 | 29 / 17 | 0 / 0 |
+| poor-mobile-nq | HEAD (5dc95664) | 0.015 / 0.016 | 4.878 / 4.878 | 0.256 / 0.265 | 11 / 6 | 8 / 3 | 109 / 146 | 1.42 / 1.42 | 135.6 / 135.1 | 105 / 80 | 0 / 0 |
+| poor-mobile-nq | data horizon (new default) | 0.015 / 0.016 | 4.573 / 4.573 | 0.746 / 0.699 | 11 / 9 | 8 / 5 | 103 / 139 | 1.42 / 1.42 | 135.6 / 135.1 | 105 / 80 | 0 / 0 |
+| poor-mobile-nq | server-now | 0.016 / 0.016 | 2.724 / 2.637 | 3.417 / 3.417 | 11 / 13 | 19 / 11 | 659 / 612 | 1.35 / 1.32 | 151.7 / 150.7 | 46 / 32 | 0 / 0 |
+| poor-mobile-nq | now − 1 send | 0.016 / 0.016 | 2.637 / 2.813 | 3.100 / 3.100 | 9 / 11 | 13 / 33 | 454 / 568 | 1.35 / 1.40 | 144.3 / 143.9 | 87 / 32 | 0 / 0 |
+| poor-mobile-nq | now − 1, contact bodies too | 0.020 / 0.019 | 2.102 / 1.908 | 3.645 / 3.645 | 13 / 17 | 52 / 60 | 810 / 706 | 1.38 / 1.42 | 144.4 / 142.5 | 53 / 32 | 0 / 3 |
+| poor-mobile-nq | now − 2 sends | 0.016 / 0.015 | 2.724 / 2.813 | 2.813 / 2.813 | 9 / 17 | 13 / 13 | 414 / 474 | 1.42 / 1.41 | 140.7 / 140.1 | 39 / 32 | 0 / 0 |
+
+**Other links, seed 1, HEAD → data horizon** (debris pos@now p99 m;
+presented jumps > 4 m; snaps; corrections > 1 m):
+
+| Bundle | cable | lossy-wifi | cap-1mbit-nq | bw-capped (0.5 Mbit/s) |
+|---|---|---|---|---|
+| systematic | 1.425 → 0.966; 192 → 189; 76 → 77; 635 → 611 | 1.788 → 1.212; 209 → 212; 140 → 144; 1117 → 985 | 1.908 → 1.622; 189 → 182; 83 → 85; 706 → 673 | 2.035 → 1.847; 305 → 304; 170 → 177; 1050 → 1057 |
+| heavy | 1.521 → 1.031; 43 → 43; 125 → 125; 223 → 215 | 1.472 → 1.031; 41 → 40; 17 → 18; 151 → 153 | 1.908 → 1.521; 44 → 44; 21 → 21; 153 → 152 | 2.243 → 2.035; 85 → 90; 58 → 62; 510 → 510 |
+| live 040411 | 1.970 → 1.293; 6 → 6; 1 → 1; 102 → 99 | 1.908 → 1.380; 5 → 4; 2 → 2; 91 → 98 | 3.100 → 2.553; 2 → 3; 1 → 0; 113 → 106 | 3.100 → 2.637; 2 → 3; 1 → 1; 137 → 140 |
+
+What it says (inferred from the tables):
+
+- **The playout delay's share of the latency comes back for free on a fast
+  link.** Drawn at the newest data less two sends, a debris body is mostly
+  interpolated between records it already has, so nothing it draws is a
+  guess, and the visible-correction counters do not move. One send less
+  (`now − 1` on loopback: lead 3.2 ticks) costs 13% more snaps on
+  systematic and 21% more corrections over 1 m on heavy; two is the knee.
+- **The link's share costs corrections.** Drawn at the server's present, a
+  body is extrapolated past its newest record by the one-way latency, and a
+  contact or an impulse in that window is shown late and corrected: on LTE
+  1.6-3.7× the corrections over 1 m. The encoder's horizon error sends
+  those bodies sooner (+6-10% bytes) but cannot see a contact before it
+  happens.
+- **Per class.** Bodies in contact extrapolate badly: giving them the lead
+  too cuts pos@now p99 further (systematic LTE 1.212 → 0.722 m) but adds
+  corrections (1,573 → 2,300 over 1 m) and, on two cells, wrong identity
+  (heavy LTE seed 1 30 → 561, live LTE seed 1 57 → 298). Ballistic-only is
+  kept.
+- **pos@render is not a correction measure here.** A leading body is drawn
+  at a later tick than the presentation, so its distance from truth at the
+  presentation tick grows with its speed times the lead, by design. The
+  counters that see the drawn pose step or be pulled back are the jumps,
+  snaps and corrections.
+- **Debris missing / extra move together.** On systematic, `data` shows
+  75-126 debris chunk-frames hidden below −4 m that HEAD draws (heavy
+  13-23, of 2.3-23 M debris chunk-frames), and 87-91 fewer drawn that truth
+  no longer has (loopback extra 128 → 41). These are
+  bodies falling through the ground in the server's own physics: the leading
+  body disappears when truth does, a few ticks before the presentation tick
+  reaches it (inferred; 0 on the live capture).
+- **Constrained links.** On the 0.5 Mbit/s sender-queue link the `data`
+  horizon was a regression until the per-body cap and the anchor gating
+  (heavy: jumps 85 → 103, snaps 58 → 75 without them; 90 and 62 with). A
+  thinned stream is sparse per body and late in bursts, and needs the buffer.
+  What remains there is 0-7% more snaps and jumps, seed 1 only.
+
+### Options tried and not kept (measured, systematic c1 seed 1 unless named)
+
+| Option | Result | Verdict |
+|---|---|---|
+| Server-now lead with no warp or floor (`p2`) | LTE jumps 219 → 315, snaps 292 → 440, corrections over 1 m 1,342 → 4,656, 1,752 debris chunk-frames hidden below −4 m; live LTE jumps 6 → 28, snaps 2 → 62 | warp and floor added |
+| Server-now horizon reckoned from the render clock alone, not the newest-tick anchor and the arrival correction (`p0`, no warp or floor either; against `p2`) | debris pos@now p99 loopback 0.966 against 0.699 m, LTE 1.336 against 1.136 m; the render clock trails the anchor by about a tick | anchor and arrival correction added |
+| Lead bounded by speed, the overshoot of an unforeseen stop ≤ 0.5 / 1 / 2 m (`o0.5`) | LTE snaps 440 → 398, corrections over 1 m 4,656 → 3,873, pos@now p99 1.136 → 1.380 m; the warp removed more at no pos@now cost | knob kept (`city.predictive_overshoot_m`), off |
+| Horizon error off, now − 1 (`g0b1n`) | LTE bytes 283.8 → 263.3 kbit/s, but pos@now p99 1.212 → 1.380 m, snaps 157 → 306, corrections over 1 m 1,573 → 1,896, wrong identity 291 → 1,128 | on with the server horizon |
+| Ballistic innovation net of gravity (records from the error alone while in free fall), HEAD client (`offng`) | city bytes −20% (loopback 240.5 → 191.1 kbit/s) but jumps 188 → 336, snaps 76 → 185, pos@now p99 1.293 → 1.380 m: a falling body's next record is its contact, and that correction is late | knob kept (`city.ballistic_net_gravity`), off |
+| `data` horizon without the anchor lag (`datac0a`) | loopback pos@now p99 0.849 → 1.136 m; the render clock trails the anchor by about a tick there | anchor lag kept on 60 Hz streams |
+| `data` horizon without the per-body cap and anchor gating (`data`) | 0.5 Mbit/s: systematic jumps 305 → 339, snaps 170 → 200; heavy 85 → 103, 58 → 75 | cap and gating added |
+
+### Live (measured)
+
+One run, `scripts/perf/city-bench.sh --scenario quick --clients 3` from this
+tree (ports 7101/7102/3713, GPU lock), server at its defaults, clients at the
+new default: `target/predictive/city-bench/runs/20260925-073947-predictive`.
+
+- **Run health:** 3/3 paired bundles, 0 errors, 23 of 27 budgets pass. The
+  failures are the server's tick and sim rate (tick p95 17.0 ms, 5.3% over
+  budget, sim rate 0.87; physics, as on every recent run) and 2 client frames
+  over 33 ms on c0. 0 packets lost, 0 server drops, 0 structure repairs.
+- **Calibration of this capture with this tree: PASS on all three clients.**
+  - Bytes 14,508 / 14,533 / 14,453 byte-identical (100%).
+  - Clock offset p99 in the last 10 s: 98 / 100 / 42 µs.
+  - Debris chunks against the live renderer p99 0.4 / 5.3 / 1.0 cm; body
+    keys and drawn / not drawn: 0 mismatches.
+  - Negative control: the same lab with `CITY_PREDICTIVE=0` fails check (d)
+    on c1 (debris p99 11.1 cm against the 10 cm bound). The live pages drew
+    with the lead, and the lab reproduces what they drew.
+- **The capture scored in the lab** (c1, seeds 1 / 2, HEAD → data horizon):
+  - loopback: debris pos@now p99 1.521 → 1.100 m (−28%); jumps 37 → 37;
+    snaps 17 → 17; corrections over 1 m 169 → 155;
+  - LTE: 2.637 / 2.553 → 2.393 / 2.317 m; jumps 39 / 35 → 40 / 36; snaps
+    38 / 18 → 39 / 19;
+  - lte-fifo 2.906 → 2.637 m, poor-mobile-nq 4.286 → 4.017 m (both seeds).
+- **Live counters** (c0 / c1 / c2): presented jumps over 4 m 26 / 48 / 35,
+  correction snaps 11 / 17 / 14. The 040411 run (HEAD's client) counted
+  4 / 4 / 28 and 1 / 0 / 6, the 162732 run 41 / 79 / 43 and 11 / 10 / 12. The
+  runs break different amounts (21.0% of bonds here, 25.7% and 24.9%), so
+  live counts compare only within one capture, as above. c0's one city clock
+  rollback is in the capture: the lab replays it with the lead off as well.
+
+### Tests
+
+- `destruction/src/wire.rs`: `a_horizon_trailer_follows_the_records_and_the_topology_parts`.
+- `destruction/src/encoder.rs`:
+  - `the_predictive_client_model_is_off_by_default_and_in_older_checkpoints` (guard);
+  - `a_predictive_encoder_sends_the_horizon_and_the_default_does_not`: 5.4
+    ticks at 180 ms RTT, 4.4 one send behind, none from the default encoder;
+  - `the_horizon_error_refreshes_a_drifting_body_sooner`;
+  - `the_predictive_model_extends_the_clamp_and_stops_at_the_floor`.
+- `server/src/city.rs`: `vibe_city_predictive_turns_the_predictive_model_on_and_is_off_unset`.
+- `client/src/city/presentationLead.test.ts` (7): no lead is HEAD exactly
+  (guard); a ballistic record drawn the lead ahead on its gravity path; the
+  contact share; a class flip changes speed, never position; an impulse the
+  lead ran ahead of is met in time, not with a snap; the floor, and only for
+  a leading track; a seeded track takes its lead at once and glides from the
+  seed.
+- `client/src/city/cityClient.test.ts`, "CityClient predictive presentation"
+  (5): off draws no lead (guard); the default draws a 60 Hz stream 1.5-3.5
+  ticks behind its newest datagram and ignores the trailer; a thinned stream
+  is never drawn past its data; the server horizon leads a fast link and a
+  jittery one (90 ± 35 ms) to within a tick of the server tick.
+- Suites: destruction 186, server 171 (+1 ignored), netlab2 95, client
+  `src/city` 268, `tsc -b` clean.
+
+### Risks
+
+- **The `data` default rests on one live run.** Its calibration passes and
+  its lab score agrees with the other three captures, but the lab runs the
+  production client on recorded frame times, so a frame-rate effect it does
+  not reproduce (the renderer's distance stride, seam S10) is not priced,
+  and constrained links were not run live (netem needs root).
+- **Bodies at different leads.** A ballistic body is drawn about 2.2 ticks
+  (37 ms) later than a body in contact next to it. Two moving pieces in
+  contact could briefly interpenetrate by their relative speed times that
+  (inferred; not measured, the scorer has no pairwise metric).
+- **The clock bias is a constant** (1 tick), calibrated on loopback. At the
+  server horizon the lead still overshoots the server tick by 0.4-0.8 tick at
+  p50 on LTE (lead 8.9-9.6 against presented − server −8.5 to −8.8).
+- **The server horizon needs the server's RTT.** The lab feeds the model's
+  smoothed RTT (seam S15); live, quinn's. The client never uses its own RTT
+  (the lab tape carries none).
+- **Server-now was not run live.**
+
+### Reproduce
+
+```bash
+N=<this tree's lab binary>
+P=lab.recorded_repairs=0,city.ballistic_free_fall=1,city.client_model=1,city.baseline_interval_ticks=120,city.baseline_lag_ticks=110,city.baseline_skip_quiescent=1,city.topology_copies=2,snapshot.compact_self=1,snapshot.removals=1,snapshot.idle_cold=1,city.send_hz=60,city.ceiling_bytes=5200,city.innovation_window_ticks=2
+CITY_PREDICTIVE=0    $N run --bundle <b> --out <dir> --link <link> --seed <k> --knob $P   # HEAD
+CITY_PREDICTIVE=data $N run ... --knob $P                                               # the new default
+CITY_PREDICTIVE=1    $N run ... --knob $P,city.predictive=1[,city.predictive_backoff_sends=1]
+scripts/perf/netlab2-scoreboard.py lag <runDir>   # presented lag and frames stopped, before pruning presented.bin
+```
+
+Runs: `target/predictive/runs/<sys|hq|live|pred>/<arm>/seed<k>/<link>`
+(`pred` is the new live capture, c1). Arms `base`, `dflt`, `now`, `now1`,
+`now1c`, `now2`; `data2` (the server horizon with latency share 0, i.e. the
+data horizon sent through the trailer, seed 1); the development arms named
+above (`p0`, `p2`, `o0.5`, `w0`, `g0b1n`, `offng`, `data`, `datac0` (the
+per-body cap without the anchor gating), `datac0a`); `head` (a pristine
+5dc95664 build) and `off` for the equivalence check; `basechk` and
+`nowchk`, HEAD and server-now re-run on the final build (identical to `base`
+and `now`). `runs/pred0/<0|data>/recorded` is the clock-rollback check.
+Calibration: `target/predictive/calibrate/`. The patch:
+`target/predictive/predictive.patch`.
 
 ## Proposals not implemented
 

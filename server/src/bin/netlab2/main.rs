@@ -223,6 +223,16 @@ pub fn stream_config(pace: Pace, knobs: &BTreeMap<String, String>) -> StreamConf
             "city.baseline_skip_quiescent" => config.city.baseline_skips_quiescent = Some(f() != 0.0),
             "city.topology_copies" => config.city.topology_datagram_copies = Some(f() as u32),
             "city.innovation_window_ticks" => config.city.innovation_window_ticks = Some(f() as u32),
+            "city.predictive" => config.city.predictive_client = Some(f() != 0.0),
+            "city.predictive_backoff" => config.city.predictive_backoff_ticks = Some(f() as f32),
+            "city.predictive_backoff_sends" => config.city.predictive_backoff_sends = Some(f() as f32),
+            "city.predictive_latency_share" => config.city.predictive_latency_share = Some(f() as f32),
+            "city.predictive_contact" => config.city.predictive_contact_share = Some(f() as f32),
+            "city.predictive_horizon_error" => config.city.predictive_horizon_error = Some(f() != 0.0),
+            "city.predictive_overshoot_m" => config.city.predictive_max_overshoot_m = Some(f() as f32),
+            "city.ballistic_net_gravity" => {
+                config.city.ballistic_innovation_net_of_gravity = Some(f() != 0.0)
+            }
             "city.max_eval" => {
                 // Read once, from the environment, by the encoder itself.
                 std::env::set_var("VIBE_CITY_MAX_EVAL", value);

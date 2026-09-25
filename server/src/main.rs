@@ -4914,6 +4914,7 @@ impl MatchState {
         let plan = shared.map(|_| match self.players.get_mut(&player_id) {
             Some(runtime) => match runtime.link.as_ref().and_then(|link| link.sample()) {
                 Some(sample) => {
+                    city.note_link_rtt(client, sample.rtt_us as f32 / 1000.0);
                     let before = runtime.city_rate.state();
                     let plan = runtime.city_rate.plan(sample, send_interval_s, ceiling);
                     let after = runtime.city_rate.state();

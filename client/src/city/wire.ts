@@ -71,6 +71,14 @@ export interface ChunksDatagram {
    * Absent when the datagram carries none.
    */
   topologyParts?: TopologyPart[];
+  /**
+   * The server's estimate of how far the present runs ahead of this
+   * client's arrival-anchored render clock, less the predictive back-off,
+   * in ticks (the horizon trailer; destruction/src/wire.rs
+   * CHUNKS_TRAILER_HORIZON). Absent unless the server models a predictive
+   * client.
+   */
+  horizonTicks?: number;
 }
 
 /** One piece of a complete PKT_CITY_TOPOLOGY packet (kind byte included). */
@@ -83,6 +91,8 @@ export interface TopologyPart {
 
 /** Chunk-datagram trailer section tag: a topology message piece. */
 export const CHUNKS_TRAILER_TOPOLOGY_PART = 0xc7;
+/** Chunk-datagram trailer section tag: the predictive horizon, i16 in 1/100 tick. */
+export const CHUNKS_TRAILER_HORIZON = 0xc8;
 const TOPOLOGY_PART_HEADER_BYTES = 1 + 4 + 1 + 1 + 2;
 
 export interface IslandPromotionMessage {
@@ -341,8 +351,14 @@ export function decodeChunksDatagram(bytes: Uint8Array): ChunksDatagram {
   }
   // The trailer: sections to the end. An unknown tag ends it.
   let topologyParts: TopologyPart[] | undefined;
-  while (reader.remaining() >= TOPOLOGY_PART_HEADER_BYTES) {
-    if (reader.u8() !== CHUNKS_TRAILER_TOPOLOGY_PART) {
+  let horizonTicks: number | undefined;
+  while (reader.remaining() >= 3) {
+    const tag = reader.u8();
+    if (tag === CHUNKS_TRAILER_HORIZON) {
+      horizonTicks = reader.i16() / 100;
+      continue;
+    }
+    if (tag !== CHUNKS_TRAILER_TOPOLOGY_PART || reader.remaining() < TOPOLOGY_PART_HEADER_BYTES - 1) {
       break;
     }
     const topoSeq = reader.u32();
@@ -357,9 +373,13 @@ export function decodeChunksDatagram(bytes: Uint8Array): ChunksDatagram {
       (topologyParts ??= []).push({ topoSeq, part, parts, bytes });
     }
   }
-  return topologyParts
+  const datagram: ChunksDatagram = topologyParts
     ? { sequence, baselineId, simTick, records, topologyParts }
     : { sequence, baselineId, simTick, records };
+  if (horizonTicks !== undefined) {
+    datagram.horizonTicks = horizonTicks;
+  }
+  return datagram;
 }
 
 export function decodeTopology(bytes: Uint8Array): TopologyMessage {

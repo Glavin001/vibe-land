@@ -1151,6 +1151,12 @@ impl CityRuntime {
             None => ceiling_bytes,
         };
         config.interest.proximity_meters = 120.0;
+        // VIBE_CITY_PREDICTIVE=1 models a client that draws debris at the
+        // server's present (`EncoderConfig::predictive_client`, with
+        // /city?predictive=1 on the client); `=now-1` one send behind it.
+        // Opt-in: measured in Netlab v2 (docs/netcode-tuning.md,
+        // "Predictive debris").
+        apply_predictive_env(&mut config, std::env::var("VIBE_CITY_PREDICTIVE").ok().as_deref());
         // Free fall (the ballistic record mode) is measured against the
         // physics world's own gravity.
         config.world_gravity_y = vibe_netcode::movement::default_world_gravity()[1];
@@ -2297,6 +2303,12 @@ impl CityRuntime {
         added
     }
 
+    /// The link's smoothed RTT to `client` (ms): a predictive client's
+    /// horizon (`ChunkStreamEncoder::note_link_rtt`).
+    pub fn note_link_rtt(&mut self, client: u64, rtt_ms: f32) {
+        self.encoder.note_link_rtt(client, rtt_ms);
+    }
+
     /// `client_datagrams` under this client's link allowance (the rate
     /// controller's plan, `link_rate.rs`); `None` is the static ceiling.
     pub fn client_datagrams_within(
@@ -2745,6 +2757,27 @@ impl CityRuntime {
 }
 
 /// The city stream's send interval (sim ticks) and per-send byte ceiling:
+/// `VIBE_CITY_PREDICTIVE`: unset, empty or `0` leaves the encoder as it is;
+/// `1` or `now` models a predictive client drawing at the present, `now-1`
+/// one send behind it. Anything else is ignored with a warning.
+fn apply_predictive_env(config: &mut EncoderConfig, value: Option<&str>) {
+    match value.map(str::trim) {
+        None | Some("") | Some("0") => {}
+        Some("1") | Some("now") => {
+            config.predictive_client = true;
+            config.predictive_horizon_error = true;
+        }
+        Some("now-1") => {
+            config.predictive_client = true;
+            config.predictive_horizon_error = true;
+            config.predictive_backoff_sends = 1.0;
+        }
+        Some(other) => {
+            tracing::warn!(value = other, "VIBE_CITY_PREDICTIVE: expected 0, 1, now or now-1; ignored");
+        }
+    }
+}
+
 /// `CITY_CHUNK_STREAM_HZ` (60) unless `VIBE_CITY_STREAM_HZ` names another
 /// rate, e.g. 30 to go back to the 30 Hz stream. The ceiling scales with the
 /// interval, so the byte-rate cap (~2.5 Mbit/s) is the same at any rate. The
@@ -2766,6 +2799,28 @@ fn stream_cadence(sim_hz: u32, override_hz: Option<&str>) -> (u32, usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn vibe_city_predictive_turns_the_predictive_model_on_and_is_off_unset() {
+        let base = EncoderConfig::validated(60);
+        let with = |value: Option<&str>| {
+            let mut config = base;
+            apply_predictive_env(&mut config, value);
+            config
+        };
+        for off in [None, Some(""), Some("0"), Some("sometimes")] {
+            let config = with(off);
+            assert!(!config.predictive_client, "{off:?}");
+        }
+        for now in [Some("1"), Some("now")] {
+            let config = with(now);
+            assert!(config.predictive_client && config.predictive_horizon_error);
+            assert_eq!(config.predictive_backoff_sends, 0.0);
+        }
+        let behind = with(Some("now-1"));
+        assert!(behind.predictive_client);
+        assert_eq!(behind.predictive_backoff_sends, 1.0);
+    }
+
     #[test]
     fn the_stream_runs_at_60_hz_and_vibe_city_stream_hz_goes_back_to_30() {
         use super::stream_cadence;

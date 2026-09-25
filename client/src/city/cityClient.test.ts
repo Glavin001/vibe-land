@@ -776,6 +776,8 @@ function simulateLink(client: CityClient, opts: {
   suppress?: [number, number];
   /** Ticks between sends (default 2, the 30 Hz stream), or per send time. */
   sendInterval?: number | ((sentAtMs: number) => number);
+  /** The predictive horizon trailer every datagram carries (ticks). */
+  horizonTicks?: number;
   onFrame?: (frame: SimFrame) => void;
 }): SimFrame[] {
   const random = seeded(7);
@@ -796,7 +798,10 @@ function simulateLink(client: CityClient, opts: {
       at,
       run: () => {
         const simTick = TICK_BASE + tick;
-        internals(client).handleChunks({ sequence: tick, baselineId: 0, simTick, records: opts.recordsAt?.(simTick) ?? [] });
+        internals(client).handleChunks({
+          sequence: tick, baselineId: 0, simTick, records: opts.recordsAt?.(simTick) ?? [],
+          ...(opts.horizonTicks !== undefined ? { horizonTicks: opts.horizonTicks } : {}),
+        });
         newestReceived = Math.max(newestReceived, simTick);
       },
     });
@@ -1159,6 +1164,76 @@ describe('CityClient playout delay and the send cadence', () => {
     });
     expect(client.stats().streamIntervalTicks).toBe(2);
     expect(client.presentationClock().playoutDelayTicks).toBe(6);
+  });
+});
+
+/** Predictive presentation is off by default (/city?predictive=1). */
+function withPredictive(client: CityClient, mode: 'data' | 'server' = 'server'): CityClient {
+  (client as unknown as { predictive: string }).predictive = mode;
+  return client;
+}
+
+describe('CityClient predictive presentation', () => {
+  it('off (/city?predictive=0) draws no lead and ignores the horizon trailer (guard)', () => {
+    const { client } = makeClient();
+    withPredictive(client, 'off');
+    simulateLink(client, { hz: 60, transitMs: 90, jitterMs: 35, seconds: 5, sendInterval: 1, horizonTicks: 5.4 });
+    expect(client.stats().predictiveLeadTicks).toBe(0);
+    expect(client.stats().predictiveHorizonTicks).toBe(5.4);
+  });
+
+  it('by default leads a 60 Hz stream to its newest data less two sends, and ignores the trailer', () => {
+    const { client } = makeClient();
+    const leads: number[] = [];
+    const frames = simulateLink(client, {
+      hz: 60, transitMs: 1, jitterMs: 0, seconds: 5, sendInterval: 1, horizonTicks: 5.4,
+      onFrame: (frame) => leads.push(frame.newestReceived - (frame.presented + client.stats().predictiveLeadTicks)),
+    }).slice(240);
+    expect(frames.length).toBeGreaterThan(0);
+    // Drawn two to three ticks behind the newest datagram, not past it.
+    const behindNewest = median(leads.slice(240));
+    expect(behindNewest).toBeGreaterThan(1.5);
+    expect(behindNewest).toBeLessThan(3.5);
+  });
+
+  it('by default draws a stream thinned to every other tick at no lead beyond its data', () => {
+    const { client } = makeClient();
+    const ahead: number[] = [];
+    simulateLink(client, {
+      hz: 60, transitMs: 30, jitterMs: 0, seconds: 6, sendInterval: 2,
+      onFrame: (frame) => ahead.push(frame.presented + client.stats().predictiveLeadTicks - frame.newestReceived),
+    });
+    expect(client.stats().streamIntervalTicks).toBe(2);
+    expect(Math.max(...ahead.slice(360))).toBeLessThanOrEqual(0);
+  });
+
+  it('leads a fast link to the server tick', () => {
+    const { client } = makeClient();
+    withPredictive(client);
+    const leads: number[] = [];
+    const frames = simulateLink(client, {
+      hz: 60, transitMs: 1, jitterMs: 0, seconds: 5, sendInterval: 1, horizonTicks: 0.06,
+      onFrame: () => leads.push(client.stats().predictiveLeadTicks),
+    }).slice(240);
+    const behind = median(frames.map((f) => f.presented - f.serverTick));
+    const lead = median(leads.slice(240));
+    // Presented about 4-5 ticks behind the server, and led back to it.
+    expect(behind).toBeLessThan(-3.5);
+    expect(Math.abs(behind + lead)).toBeLessThan(1);
+  });
+
+  it('leads a jittery link by the server\'s horizon to the server tick, where the delay alone leaves it 8-10 behind', () => {
+    const { client } = makeClient();
+    withPredictive(client);
+    const ahead: number[] = [];
+    const frames = simulateLink(client, {
+      hz: 60, transitMs: 90, jitterMs: 35, seconds: 20, sendInterval: 1, horizonTicks: 5.4,
+      onFrame: (frame) => ahead.push(frame.presented + client.stats().predictiveLeadTicks - frame.serverTick),
+    }).slice(600);
+    expect(median(frames.map((f) => f.presented - f.serverTick))).toBeLessThan(-7);
+    // Drawn at the server tick: the delay, the latency and the render
+    // clock's lead over the average arrival all accounted for.
+    expect(Math.abs(median(ahead.slice(600)))).toBeLessThan(1);
   });
 });
 
