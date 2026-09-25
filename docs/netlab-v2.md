@@ -117,6 +117,7 @@ measurement that bounds it.
 | S11 | The recording player is replayed without its inputs, so without local prediction. The own avatar (camera / debug capsule at `client.getPosition()`, predicted) and the vehicle it drives (`localVehicleVisualPose`: prediction + `vehicleLocalMeshPose.ts` smoothing) are drawn from prediction live; the lab draws them from snapshots. So are bodies it has just touched (the local proxy, `hasRecentDynamicBodyInteraction`). | Scored as classes `own_avatar` and `vehicle_driven`, **left out of the headline `overall`**; body-proxy frames are not identified. A spectator client's bundle (c1 of the systematic bundle) has none of these. | – |
 | S12 | The server capture clock is mapped to the tape clock with the pairing clock samples (NTP midpoint, median). | Loopback round trip is about 2 ms. | Spread 1.1–4.7 ms; lane latency p50 0.6 ms. |
 | S13 | The link model is simulated (below). | It follows quinn 0.11 as configured (see the list below). Where the bottleneck queue forms is a profile choice: at the sender (every older profile, the paced ideal) or in the network (`bottleneckQueueMs`, the `*-nq` profiles), which is what quinn 0.11's BBR measurably does. Not validated against kernel netem (limits). | Network-queue model against real quinn 0.11 + BBR through a userspace 1 Mbit/s relay with a 200 ms drop-tail queue (`quic_rate_tests` in `server/src/main.rs`, same offered traffic, from 3 s on): without rate adaptation 44.3% of datagrams delivered vs 44.8–44.9% (3 runs), one-way p50 204 vs 206.3–206.6 ms. Quinn's datagram buffer peaked at 95 B there: the sender-queue model does not describe quinn's BBR on a slow path (`link::tests::the_network_queue_model_matches_quinn_through_a_paced_relay`). |
+| S13a | **Order under jitter** (a choice of profile, added with the late-snapshot change). The eleven scoreboard links keep iid jitter, which over-reorders; `lte-fifo` and `poor-mobile-fifo` bound the other side (no reordering). | Real LTE sits between the two: its radio layers deliver in order (a HARQ retransmission holds the packets behind it), and reordering on the path beyond is rare. | Late snapshots, citylat4 c1 seed 1: `lte` 33.8% vs `lte-fifo` 0%; the client results on both are in netcode-tuning.md. |
 | S14 | The client starts cold at the tape's first city bootstrap. The live client had the session's history. | A newly joined client does the same. | Included in S8's early windows. |
 | S15 | **Link feedback to the server stage** (closed loop, city rate adaptation). At each of the scored client's city sends the stage feeds the link model every packet departed so far (lab and pass-through, in the final run's order), reads it (`LinkSim::signals`), and passes that to the production controller (`server/src/link_rate.rs`, compiled in by `#[path]`), whose plan sets that send's allowance or skips it. The signals are what production reads from quinn: datagram-buffer occupancy (`datagram_send_buffer_space`), UDP bytes sent, packets sent/lost and lost bytes (losses declared RTT × 9/8 + jitter after the send), smoothed RTT (7/8 EWMA of ACKed packets, the network queue included), and the bytes the server queued, all lanes and (since the city-latency round) the reliable lane's share. From those the controller estimates the reliable stream's unsent bytes (`reliable_backlog`); the model reports its own count beside it (`rate-trace.jsonl` `stream_backlog_bytes`). Not modelled: the server's own outbound queue and stream flow control, which production's estimate also sees (live, loopback: a waiting stream at joins made every link `Limited` until the estimate was barred from entering that state), cwnd (production does not read it), quinn's ACK delay, and RTT jitter (the model's RTT samples carry the queue, not the path jitter). The deliveries are still computed by the open-loop `simulate` over the final packet list. On the recorded link, and with `city.rate_adapt=0`, the loop is open (the static ceiling). | Reading the link never changes it (`link::tests::reading_the_link_changes_nothing_and_reports_the_sender`: deliveries identical with and without reads). The controller is the production code. | Closed-loop model vs real quinn, same relay run with adaptation, from 3 s on: 100% vs 100% delivered, one-way p50 28.4 vs 28.4–31.3 ms, p99 137 vs 81–117 ms, capacity estimate at the end 916 vs 780–930 kbit/s (3 runs). Fast links (loopback, lan, cable, lte, lossy-wifi): byte-identical to the open loop on both bundles (the controller never leaves `Free`). Sensitivity to late feedback (`lab.rate_stale_ms`): see [netcode-tuning.md](netcode-tuning.md#rate-adaptation). Reliable-backlog estimate vs the model's count, every constrained cell of the systematic and heavy bundles: estimate − truth p1 −0.3 to −1.1 kB, p50 0, p99 0, never over by more than 1.2 kB (the estimate errs low, as designed); it assumes 24 B of QUIC overhead per packet against the model's 32. |
 
@@ -203,6 +204,17 @@ or wrong-identity (see [All draws](#all-draws-the-headline)).
   - **Path:** `delayMs` one way, plus uniform jitter of ±`jitterMs`.
     `lossPct` Bernoulli loss or a `gemodelPct` Gilbert-Elliott burst model,
     and `reorderPct` stragglers. `rateMbit` sets the bottleneck.
+  - **Order under jitter:** by default each packet's jitter is drawn on its
+    own (netem's default queue), so packets sent closer together than the
+    jitter's width overtake each other freely: 34% of snapshots arrive after
+    a newer one on `lte` and 38% on `poor-mobile` (measured, citylat4 c1).
+    `inOrder: true` (Netlab v2 only; the `lte-fifo` and `poor-mobile-fifo`
+    profiles) keeps send order: a jittered packet holds the ones behind it,
+    as netem does with a pfifo child and as LTE delivers (RLC/PDCP in-order
+    delivery: delay varies, order holds), and only the `reorderPct`
+    stragglers overtake. The random draws are the same as the default
+    model's, so the two differ only in order and the delay that order adds
+    (seam S13a).
   - **Overflow:** a reliable backlog above quinn's 10 MB send window is
     reported (`send_window_overflows`). Production would fill the 256-deep
     outbound queue there and close the connection.
@@ -240,6 +252,8 @@ These are the knobs production actually has, with their production defaults:
 | `snapshot.hot_speed_mps`, `snapshot.hot_near_m` | 0.05, 12 | hot/cold split |
 | `snapshot.compact_self` | 1 (0 in older captures) | the self state without its support block when the support does not move (`SnapshotConfig::compact_self`) |
 | `snapshot.removals` | 1 (0 in older captures) | the removals section naming bodies and vehicles that left the recipient's stream, and three consecutive sends for an entity entering it (`SnapshotConfig::removals`) |
+| `snapshot.idle_cold` | 1 (0 in older captures) | remote players and vehicles sent only while their record changes, three times as they settle, then at their cold refresh; a standing player's record carries zero velocity (`SnapshotConfig::idle_cold`) |
+| `snapshot.cold_player_refresh_ticks` | 30 | an unchanged remote player's refresh, with `idle_cold` |
 | `city.send_hz` | 30 | `CITY_CHUNK_STREAM_HZ` |
 | `city.ceiling_bytes` | 10400 (0 = none) | `CITY_CLIENT_CEILING_BYTES_PER_SEND` |
 | `city.error_budget_px` | 2.0 | encoder |
@@ -258,9 +272,12 @@ These are the knobs production actually has, with their production defaults:
 | `city.topology_copies` | 2 (0 in older captures) | datagram copies of each reliable topology message (`EncoderConfig::topology_datagram_copies`, [netcode-tuning.md](netcode-tuning.md#city-latency-and-topology-delivery)) |
 | `city.reliable_queue_ms`, `city.reliable_drain_ms` | 60, 150 (0 = off) | the rate controller's reliable-stream signal (`RateConfig`): on a limited link, reliable bytes that waited this long are given the path within the drain time |
 
-The two snapshot options are recorded in `snapshot-baseline.json`
-(`compact_self`, `removals`); a capture without the fields replays with both
-off, byte for byte, and the knobs override what the capture says.
+The three snapshot options are recorded in `snapshot-baseline.json`
+(`compact_self`, `removals`, `idle_cold`); a capture without a field replays
+with that option off, byte for byte, and the knobs override what the capture
+says. `idle_cold` came a round later: captures from 2a601833 record the first
+two and not it
+([netcode-tuning.md](netcode-tuning.md#next-wins-late-snapshots-and-idle-players-and-vehicles)).
 [netcode-tuning.md](netcode-tuning.md#next-wins-compact-self-state-and-explicit-removals)
 has the round that added them.
 
@@ -881,7 +898,9 @@ window (default 10 s).
   all. Real quinn BBR on a slow path matched the second through a userspace
   relay (S13), with no slow start or cwnd dynamics modelled. Neither has been
   validated against kernel netem, which needs privileges. Jitter is iid
-  (netem's default), which over-reorders datagrams compared with real LTE.
+  (netem's default) on every profile but the `*-fifo` ones, which over-reorders
+  datagrams compared with real LTE (seam S13a); the `*-fifo` profiles reorder
+  nothing but their stragglers, which under-reorders.
 - **Seams S8 and S14:** the client clock diverges during server stalls and
   from a cold start by up to about 16 ms, measured.
 - **Budgets:** rec1 does not stress them. The systematic bundles (2 clients, 16

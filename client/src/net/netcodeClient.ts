@@ -21,6 +21,7 @@ import {
   RenderClock,
   ServerClockEstimator,
   VehicleInterpolator,
+  sampleDynamicBodyTrack,
   type DynamicBodySample,
   type PlayerSample,
   type VehicleSample,
@@ -118,6 +119,8 @@ export type NetcodeClientConfig = {
  */
 export class NetcodeClient {
   private static readonly VEHICLE_STALE_TICKS = 180;
+  /** How far back (ticks) a late snapshot's drop records are kept. */
+  private static readonly LATE_SNAPSHOT_HORIZON_TICKS = 600;
   /**
    * The dynamic-body delay until snapshots have arrived to size it from. After
    * that the delay is the server clock's recommendation: the 95th percentile
@@ -219,6 +222,7 @@ export class NetcodeClient {
     vehicleId: number,
     serverTimeUs: number,
     meters: VehicleStateMeters,
+    snapshotIntervalUs = 0,
   ): void {
     this.vehicleInterpolator.push(vehicleId, {
       serverTimeUs,
@@ -229,7 +233,35 @@ export class NetcodeClient {
       wheelData: meters.wheelData,
       driverPlayerId: meters.driverId,
       flags: meters.flags ?? 0,
-    });
+    }, snapshotIntervalUs);
+  }
+
+  /**
+   * The snapshot interval (server time) a rest hold is placed at: a player or
+   * vehicle that starts moving after a gap is held where it stood until the
+   * snapshot before the one it moved in (interpolation.ts `insertWithRestHold`).
+   */
+  private snapshotIntervalUs(): number {
+    return this.serverClock.getSnapshotIntervalMs() * 1000;
+  }
+
+  /**
+   * Whether the client has dropped this body (`dynamic`) or vehicle since the
+   * snapshot at `serverTick`: a late snapshot must not bring it back.
+   */
+  private droppedSince(kind: 'dynamic' | 'vehicle', id: number, serverTick: number): boolean {
+    const droppedAt = (kind === 'dynamic' ? this.dynamicBodyDroppedAtTick : this.vehicleDroppedAtTick).get(id);
+    return droppedAt !== undefined && droppedAt >= serverTick;
+  }
+
+  /** Forget drop records a late snapshot could no longer be older than. */
+  private pruneDropRecords(): void {
+    for (const records of [this.dynamicBodyDroppedAtTick, this.vehicleDroppedAtTick]) {
+      if (records.size < 64) continue;
+      for (const [id, tick] of records) {
+        if (this.latestServerTick - tick > NetcodeClient.LATE_SNAPSHOT_HORIZON_TICKS) records.delete(id);
+      }
+    }
   }
 
   readonly remotePlayers = new Map<number, RemotePlayer>();
@@ -256,6 +288,13 @@ export class NetcodeClient {
    */
   private readonly dynamicBodyRemovedAtUs = new Map<number, number>();
   private readonly vehicleRemovedAtUs = new Map<number, number>();
+  /**
+   * Bodies and vehicles the client dropped: id -> the newest snapshot tick
+   * then. A snapshot from before that tick that arrives late (out of order)
+   * does not bring them back.
+   */
+  private readonly dynamicBodyDroppedAtTick = new Map<number, number>();
+  private readonly vehicleDroppedAtTick = new Map<number, number>();
   private readonly vehicleServerTimeUs = new Map<number, number>();
   private readonly playerIdByHandle = new Map<number, number>();
   private localDrivenVehicleId: number | null = null;
@@ -735,7 +774,7 @@ export class NetcodeClient {
         pitch,
         hp: player.hp,
         flags: player.flags,
-      });
+      }, this.snapshotIntervalUs());
       this.remotePlayers.set(remotePlayerId, {
         id: remotePlayerId,
         position,
@@ -791,6 +830,7 @@ export class NetcodeClient {
       this.dynamicBodyPresence.seen(bodyId, packet.serverTick, Math.hypot(...velocity), position, velocity);
       this.dynamicBodyLeaving.delete(bodyId);
       this.dynamicBodyRemovedAtUs.delete(bodyId);
+      this.dynamicBodyDroppedAtTick.delete(bodyId);
     }
     for (const box of packet.boxStates) {
       const meta = this.dynamicBodyMetaByHandle.get(box.handle);
@@ -829,6 +869,7 @@ export class NetcodeClient {
       this.dynamicBodyPresence.seen(bodyId, packet.serverTick, Math.hypot(...meters.velocity), meters.position, meters.velocity);
       this.dynamicBodyLeaving.delete(bodyId);
       this.dynamicBodyRemovedAtUs.delete(bodyId);
+      this.dynamicBodyDroppedAtTick.delete(bodyId);
     }
     this.applyBodyRemovals(packet);
     // The anchor is the recipient position the server selected this snapshot's
@@ -883,6 +924,7 @@ export class NetcodeClient {
       };
       this.vehicles.set(vehicleId, meters);
       this.vehicleRemovedAtUs.delete(vehicleId);
+      this.vehicleDroppedAtTick.delete(vehicleId);
       this.vehicleLastSeenTick.set(vehicleId, packet.serverTick);
       this.vehicleServerTimeUs.set(vehicleId, packet.serverTimeUs);
       if (driverPlayerId === this.playerId && driverPlayerId !== 0) {
@@ -910,15 +952,9 @@ export class NetcodeClient {
         };
         this.config.onLocalVehicleSnapshot?.(localVehicleState, packet.ackInputSeq);
       }
-      this.pushVehicleSample(vehicleId, packet.serverTimeUs, meters);
+      this.pushVehicleSample(vehicleId, packet.serverTimeUs, meters, this.snapshotIntervalUs());
     }
-    for (const removal of packet.removals ?? []) {
-      if (!removal.vehicle || !this.vehicles.has(removal.handle)) continue;
-      const removedAtUs = removal.removedTick * SERVER_TICK_US;
-      // A sample from the removal tick on means it came back.
-      if ((this.vehicleServerTimeUs.get(removal.handle) ?? -Infinity) >= removedAtUs) continue;
-      this.vehicleRemovedAtUs.set(removal.handle, removedAtUs);
-    }
+    this.applyVehicleRemovals(packet);
     // Vehicles are drawn on the player render clock.
     const vehiclesRenderedUpToUs = packet.serverTimeUs - this.interpolationDelayMs * 1000;
     for (const [id, removedAtUs] of this.vehicleRemovedAtUs) {
@@ -929,9 +965,22 @@ export class NetcodeClient {
         this.removeVehicle(id);
       }
     }
+    this.pruneDropRecords();
+  }
+
+  /** The vehicles this snapshot's removals section names (`vehicleRemovedAtUs`). */
+  private applyVehicleRemovals(packet: SnapshotV2Packet): void {
+    for (const removal of packet.removals ?? []) {
+      if (!removal.vehicle || !this.vehicles.has(removal.handle)) continue;
+      const removedAtUs = removal.removedTick * SERVER_TICK_US;
+      // A sample from the removal tick on means it came back.
+      if ((this.vehicleServerTimeUs.get(removal.handle) ?? -Infinity) >= removedAtUs) continue;
+      this.vehicleRemovedAtUs.set(removal.handle, removedAtUs);
+    }
   }
 
   private removeVehicle(id: number): void {
+    this.vehicleDroppedAtTick.set(id, this.latestServerTick);
     this.vehicleLastSeenTick.delete(id);
     this.vehicles.delete(id);
     this.vehicleServerTimeUs.delete(id);
@@ -963,6 +1012,186 @@ export class NetcodeClient {
       const moving = Math.hypot(velocity[0], velocity[1], velocity[2]) > MOVING_BODY_SPEED_MS;
       this.dynamicBodyRemovedAtUs.set(bodyId, moving && lastUs !== undefined ? lastUs : removedAtUs);
     }
+  }
+
+  /**
+   * A snapshot older than the newest one applied: it arrived out of order.
+   * The client used to drop it whole, and a cold refresh it carried went with
+   * it (38% of snapshots on the lab's poor-mobile link, where vehicles at
+   * rest then went undrawn: docs/netcode-tuning.md, scoreboard gap 5). Now
+   * what it carries that is still news is applied, and nothing newer is
+   * undone:
+   *
+   * - a player, body or vehicle whose own newest sample is older than this
+   *   snapshot (one at rest, whose refresh this is, or one entering the
+   *   stream) is applied as the newest snapshot would apply it, unless the
+   *   client has dropped it since (`droppedSince`);
+   * - an entity with newer samples gets this one added to its interpolation
+   *   buffer, in order, filling the gap it left;
+   * - its removals are noted (each is checked against newer samples).
+   *
+   * The clocks, the local player's state and prediction, and the inference of
+   * bodies gone from the stream (bodyPresence.ts) follow only the newest
+   * snapshot, as before; the removals it notes take effect at the next one.
+   */
+  private applyLateSnapshotV2(packet: SnapshotV2Packet): void {
+    const tUs = packet.serverTimeUs;
+    const tick = packet.serverTick;
+    const intervalUs = this.snapshotIntervalUs();
+    const anchorPos: [number, number, number] = [
+      packet.anchorPxMm / 1000,
+      packet.anchorPyMm / 1000,
+      packet.anchorPzMm / 1000,
+    ];
+    const at = (dx: number, dy: number, dz: number): [number, number, number] => [
+      anchorPos[0] + q2_5mmToMeters(dx),
+      anchorPos[1] + q2_5mmToMeters(dy),
+      anchorPos[2] + q2_5mmToMeters(dz),
+    ];
+
+    if (this.usesThinAuthoritativeMovement || this.config.spectateLocalPlayer) {
+      const self = netStateToMeters({
+        id: this.playerId,
+        pxMm: packet.anchorPxMm,
+        pyMm: packet.anchorPyMm,
+        pzMm: packet.anchorPzMm,
+        vxCms: packet.selfState.vxCms,
+        vyCms: packet.selfState.vyCms,
+        vzCms: packet.selfState.vzCms,
+        yawI16: packet.selfState.yawI16,
+        pitchI16: packet.selfState.pitchI16,
+        hp: packet.selfState.hp,
+        flags: packet.selfState.flags,
+        energyCenti: 0,
+      });
+      this.interpolator.push(this.playerId, {
+        serverTimeUs: tUs,
+        position: self.position,
+        velocity: self.velocity,
+        yaw: self.yaw,
+        pitch: self.pitch,
+        hp: self.hp,
+        flags: packet.selfState.flags,
+      });
+    }
+
+    for (const player of packet.remotePlayers) {
+      const id = this.playerIdByHandle.get(player.handle);
+      // (A handle the roster no longer lists is a player that has left.)
+      if (id == null || id === this.playerId) continue;
+      const sample = {
+        serverTimeUs: tUs,
+        position: at(player.dxQ2_5mm, player.dyQ2_5mm, player.dzQ2_5mm),
+        velocity: [player.vxCms / 100, player.vyCms / 100, player.vzCms / 100] as [number, number, number],
+        yaw: (player.yawI16 & 0xffff) / 65535 * Math.PI * 2,
+        pitch: (player.pitchI16 & 0xffff) / 65535 * Math.PI * 2,
+        hp: player.hp,
+        flags: player.flags,
+      };
+      const newest = this.interpolator.latest(id);
+      this.interpolator.push(id, sample, intervalUs);
+      if (!newest || newest.serverTimeUs < tUs) {
+        this.remotePlayers.set(id, { id, position: sample.position, yaw: sample.yaw, pitch: sample.pitch, hp: sample.hp, flags: sample.flags });
+      }
+    }
+
+    const applyBody = (bodyId: number, body: DynamicBodyStateMeters): void => {
+      if (this.droppedSince('dynamic', bodyId, tick)) return;
+      const lastUs = this.dynamicBodyServerTimeUs.get(bodyId);
+      const sample = {
+        serverTimeUs: tUs,
+        position: body.position,
+        quaternion: body.quaternion,
+        halfExtents: body.halfExtents,
+        velocity: body.velocity,
+        angularVelocity: body.angularVelocity,
+        shapeType: body.shapeType,
+      };
+      if (lastUs !== undefined && lastUs >= tUs) {
+        if (this.dynamicBodies.has(bodyId)) this.dynamicBodyInterpolator.push(bodyId, sample);
+        return;
+      }
+      // Newer than anything the client has of this body.
+      this.dynamicBodies.set(bodyId, body);
+      this.dynamicBodyServerTimeUs.set(bodyId, tUs);
+      this.dynamicBodyInterpolator.push(bodyId, sample);
+      if ((this.dynamicBodyPresence.lastSeenTick(bodyId) ?? -Infinity) < tick) {
+        this.dynamicBodyPresence.seen(bodyId, tick, Math.hypot(...body.velocity), body.position, body.velocity);
+      }
+      // Leaving the stream (inferred or named after this snapshot): drawn up
+      // to this sample now, still not past it.
+      if (this.dynamicBodyLeaving.has(bodyId)) this.dynamicBodyLeaving.set(bodyId, tUs);
+      const removedAtUs = this.dynamicBodyRemovedAtUs.get(bodyId);
+      if (removedAtUs !== undefined && tUs >= removedAtUs) this.dynamicBodyRemovedAtUs.delete(bodyId);
+    };
+    for (const sphere of packet.sphereStates) {
+      const meta = this.dynamicBodyMetaByHandle.get(sphere.handle);
+      if (!meta) continue;
+      const bodyId = meta.bodyId;
+      const angularVelocity: [number, number, number] = [sphere.wxMrads / 1000, sphere.wyMrads / 1000, sphere.wzMrads / 1000];
+      const lastUs = this.dynamicBodyServerTimeUs.get(bodyId);
+      // A sphere's orientation is integrated, not streamed: from the newest
+      // sample when this one is newer, else where its track has it then.
+      const quaternion = lastUs === undefined || lastUs < tUs
+        ? this.predictSphereQuaternion(bodyId, tUs, angularVelocity)
+        : sampleDynamicBodyTrack(this.dynamicBodyInterpolator.samples(bodyId), tUs)?.quaternion ?? [0, 0, 0, 1];
+      applyBody(bodyId, {
+        id: bodyId,
+        shapeType: meta.shapeType,
+        position: at(sphere.dxQ2_5mm, sphere.dyQ2_5mm, sphere.dzQ2_5mm),
+        quaternion,
+        halfExtents: meta.halfExtents,
+        velocity: [sphere.vxCms / 100, sphere.vyCms / 100, sphere.vzCms / 100],
+        angularVelocity,
+      });
+    }
+    for (const box of packet.boxStates) {
+      const meta = this.dynamicBodyMetaByHandle.get(box.handle);
+      if (!meta) continue;
+      applyBody(meta.bodyId, {
+        id: meta.bodyId,
+        shapeType: meta.shapeType,
+        position: at(box.dxQ2_5mm, box.dyQ2_5mm, box.dzQ2_5mm),
+        quaternion: [box.qxSnorm / 32767, box.qySnorm / 32767, box.qzSnorm / 32767, box.qwSnorm / 32767],
+        halfExtents: meta.halfExtents,
+        velocity: [box.vxCms / 100, box.vyCms / 100, box.vzCms / 100],
+        angularVelocity: [box.wxMrads / 1000, box.wyMrads / 1000, box.wzMrads / 1000],
+      });
+    }
+    this.applyBodyRemovals(packet);
+
+    for (const vehicle of packet.vehicleStates) {
+      const vehicleId = vehicle.handle;
+      if (this.droppedSince('vehicle', vehicleId, tick)) continue;
+      const resolvedDriver = vehicle.driverHandle === 0 ? 0 : (this.playerIdByHandle.get(vehicle.driverHandle) ?? 0);
+      const meters: VehicleStateMeters = {
+        id: vehicleId,
+        vehicleType: vehicle.vehicleType,
+        flags: vehicle.flags,
+        driverId: resolvedDriver !== 0
+          ? resolvedDriver
+          : vehicle.driverHandle !== 0 && this.localDrivenVehicleId === vehicleId ? this.playerId : 0,
+        position: at(vehicle.dxQ2_5mm, vehicle.dyQ2_5mm, vehicle.dzQ2_5mm),
+        quaternion: [vehicle.qxSnorm / 32767, vehicle.qySnorm / 32767, vehicle.qzSnorm / 32767, vehicle.qwSnorm / 32767],
+        linearVelocity: [vehicle.vxCms / 100, vehicle.vyCms / 100, vehicle.vzCms / 100],
+        angularVelocity: [vehicle.wxMrads / 1000, vehicle.wyMrads / 1000, vehicle.wzMrads / 1000],
+        wheelData: [0, 0, 0, 0],
+      };
+      const lastUs = this.vehicleServerTimeUs.get(vehicleId);
+      if (lastUs !== undefined && lastUs >= tUs) {
+        if (this.vehicles.has(vehicleId)) this.pushVehicleSample(vehicleId, tUs, meters, intervalUs);
+        continue;
+      }
+      // Newer than anything the client has of this vehicle (a parked car's
+      // refresh, or its first sends): drawn from it, as if it were on time.
+      this.vehicles.set(vehicleId, meters);
+      this.vehicleServerTimeUs.set(vehicleId, tUs);
+      this.vehicleLastSeenTick.set(vehicleId, Math.max(tick, this.vehicleLastSeenTick.get(vehicleId) ?? -Infinity));
+      const removedAtUs = this.vehicleRemovedAtUs.get(vehicleId);
+      if (removedAtUs !== undefined && tUs >= removedAtUs) this.vehicleRemovedAtUs.delete(vehicleId);
+      this.pushVehicleSample(vehicleId, tUs, meters, intervalUs);
+    }
+    this.applyVehicleRemovals(packet);
   }
 
   /**
@@ -1195,6 +1424,7 @@ export class NetcodeClient {
       case 'snapshotV2': {
         if (packet.serverTick <= this.latestServerTick) {
           this.debugTelemetry.observeDroppedSnapshot(source, packet.serverTick, this.latestServerTick);
+          if (packet.serverTick < this.latestServerTick) this.applyLateSnapshotV2(packet);
           break;
         }
         this.applySnapshotV2(packet, source);
@@ -1345,6 +1575,7 @@ export class NetcodeClient {
   }
 
   private removeDynamicBody(id: number): void {
+    this.dynamicBodyDroppedAtTick.set(id, this.latestServerTick);
     this.dynamicBodies.delete(id);
     this.dynamicBodyServerTimeUs.delete(id);
     this.dynamicBodyInterpolator.remove(id);
@@ -1423,6 +1654,8 @@ export class NetcodeClient {
     this.dynamicBodyServerTimeUs.clear();
     this.dynamicBodyLeaving.clear();
     this.dynamicBodyRemovedAtUs.clear();
+    this.dynamicBodyDroppedAtTick.clear();
+    this.vehicleDroppedAtTick.clear();
     this.dynamicBodyPresence.clear();
     this.dynamicBodyInterpolator.retainOnly(new Set());
     this.vehicles.clear();

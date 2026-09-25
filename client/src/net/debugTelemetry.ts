@@ -194,7 +194,7 @@ export class NetDebugTelemetry {
     recordEvent('stale_drop', { source, incomingTick, latestTick });
     this.addEvent(
       performance.now(),
-      `dropped stale snapshot tick ${incomingTick} from ${source} (latest ${latestTick})`,
+      `late snapshot tick ${incomingTick} from ${source} (latest ${latestTick}), applied per entity`,
     );
   }
 

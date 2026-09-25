@@ -75,6 +75,13 @@ pub struct Profile {
     /// hold back, the bottleneck queues up to this many ms and drops the
     /// rest (drop-tail), and the queue shows up as round-trip time.
     pub bottleneck_queue_ms: Option<f64>,
+    /// In-order path (Netlab v2 only): jitter delays a packet but never lets
+    /// it overtake one sent before it, as netem does with a FIFO child queue
+    /// and as LTE delivers (RLC/PDCP in-order delivery: delay varies, order
+    /// holds); only the `reorderPct` stragglers still arrive out of order.
+    /// Off (every older profile): each packet's jitter is independent, so
+    /// packets sent closer together than the jitter's width swap freely.
+    pub in_order: Option<bool>,
     /// Free text.
     pub comment: Option<String>,
 }
@@ -177,6 +184,9 @@ struct Path {
     profile: Profile,
     rng: Rng,
     bad: bool,
+    /// In-order profiles: the latest arrival so far of a packet that was
+    /// not a straggler.
+    last_in_order_arrival_ms: f64,
 }
 
 impl Path {
@@ -196,15 +206,31 @@ impl Path {
         self.rng.unit() * 100.0 < self.profile.loss_pct
     }
 
-    fn transit_ms(&mut self) -> f64 {
+    fn transit_ms(&mut self) -> (f64, bool) {
         let jitter = (self.rng.unit() * 2.0 - 1.0) * self.profile.jitter_ms;
         let mut delay = (self.profile.delay_ms + jitter).max(0.0);
+        let mut straggler = false;
         if let Some(reorder) = self.profile.reorder_pct {
             if self.rng.unit() * 100.0 < reorder {
                 delay += self.profile.jitter_ms * 3.0;
+                straggler = true;
             }
         }
-        delay
+        (delay, straggler)
+    }
+
+    /// When a packet that leaves the sender (or the bottleneck) at
+    /// `leave_ms` arrives. The random draws are the same with and without
+    /// `inOrder`, so the two differ only in the order they deliver.
+    fn arrival_ms(&mut self, leave_ms: f64) -> f64 {
+        let (transit, straggler) = self.transit_ms();
+        let arrive = leave_ms + transit;
+        if self.profile.in_order != Some(true) || straggler {
+            return arrive;
+        }
+        let arrive = arrive.max(self.last_in_order_arrival_ms);
+        self.last_in_order_arrival_ms = arrive;
+        arrive
     }
 }
 
@@ -296,7 +322,7 @@ impl LinkSim {
     pub fn new(profile: &Profile, seed: u64) -> Self {
         let rtt_ms = 2.0 * profile.delay_ms.max(0.05);
         Self {
-            path: Path { profile: profile.clone(), rng: Rng::new(seed), bad: false },
+            path: Path { profile: profile.clone(), rng: Rng::new(seed), bad: false, last_in_order_arrival_ms: f64::MIN },
             bytes_per_ms: profile.rate_mbit.map(|mbit| mbit * 1e6 / 8.0 / 1000.0),
             max_datagram: profile.max_datagram_bytes.unwrap_or(DEFAULT_MAX_DATAGRAM_BYTES),
             rtt_ms,
@@ -339,7 +365,7 @@ impl LinkSim {
                 self.loss_declared_ms.push_back((done + self.detect_ms, wire));
                 return (done, None);
             }
-            let arrive = done + self.path.transit_ms();
+            let arrive = self.path.arrival_ms(done);
             self.rtt_samples.push_back((arrive + self.path.profile.delay_ms, self.rtt_ms));
             return (done, Some(arrive));
         };
@@ -356,7 +382,7 @@ impl LinkSim {
             self.loss_declared_ms.push_back((now + detect, wire));
             return (now, None);
         }
-        let arrive = leave + self.path.transit_ms();
+        let arrive = self.path.arrival_ms(leave);
         self.rtt_samples
             .push_back((arrive + self.path.profile.delay_ms, self.rtt_ms + (leave - now)));
         (now, Some(arrive))
@@ -900,6 +926,48 @@ mod tests {
         let (deliveries, _) = simulate(&packets, &profile, 5);
         let arrivals: Vec<f64> = deliveries.iter().map(|d| d.arrive_ms.unwrap()).collect();
         assert!(arrivals.windows(2).any(|w| w[1] < w[0]), "jitter must reorder datagrams");
+    }
+
+    /// `inOrder` (the LTE-like seam): the same draws as the iid path, so the
+    /// same packets are lost, but no packet overtakes one sent before it --
+    /// a jittered one holds the ones behind it -- except the `reorderPct`
+    /// stragglers.
+    #[test]
+    fn an_in_order_path_delays_but_never_reorders_except_stragglers() {
+        let iid = Profile { delay_ms: 90.0, jitter_ms: 35.0, loss_pct: 3.0, ..Default::default() };
+        let fifo = Profile { in_order: Some(true), ..iid.clone() };
+        let packets: Vec<_> = (0..3000).map(|i| packet(i as f64 * 8.0, Lane::Datagram, 112, 100, i)).collect();
+        let arrivals = |profile: &Profile| -> Vec<Option<f64>> {
+            simulate(&packets, profile, 7).0.iter().map(|d| d.arrive_ms).collect()
+        };
+        // Packets that arrive after one sent later (what a client drops as
+        // out of order).
+        let overtaken = |arrivals: &[Option<f64>]| {
+            let mut by_arrival: Vec<(f64, usize)> =
+                arrivals.iter().enumerate().filter_map(|(i, a)| a.map(|a| (a, i))).collect();
+            by_arrival.sort_by(|x, y| x.0.total_cmp(&y.0));
+            let mut newest = None;
+            let mut count = 0;
+            for (_, sent) in by_arrival {
+                if newest.is_some_and(|newest| sent < newest) {
+                    count += 1;
+                }
+                newest = newest.max(Some(sent));
+            }
+            count
+        };
+        let (a, b) = (arrivals(&iid), arrivals(&fifo));
+        assert_eq!(a.iter().map(Option::is_none).collect::<Vec<_>>(), b.iter().map(Option::is_none).collect::<Vec<_>>());
+        assert!(overtaken(&a) > 600, "iid jitter 4x the send interval reorders: {}", overtaken(&a));
+        assert_eq!(overtaken(&b), 0);
+        for (x, y) in a.iter().zip(&b) {
+            if let (Some(x), Some(y)) = (x, y) {
+                assert!(y >= x, "holding a packet back only delays it");
+            }
+        }
+        let stragglers = Profile { reorder_pct: Some(1.0), ..fifo };
+        let c = arrivals(&stragglers);
+        assert!((1..100).contains(&overtaken(&c)), "about 1% of packets straggle: {}", overtaken(&c));
     }
 
     #[test]

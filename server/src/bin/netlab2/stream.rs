@@ -224,6 +224,8 @@ pub struct StreamConfig {
     /// fields, so an older capture replays byte for byte.
     pub snapshot_compact_self: Option<bool>,
     pub snapshot_removals: Option<bool>,
+    /// `snapshot.idle_cold`, the same way.
+    pub snapshot_idle_cold: Option<bool>,
     /// Snapshot every N sim ticks (None: as the live match did).
     pub snapshot_interval_ticks: Option<u32>,
     pub city: CityKnobs,
@@ -258,6 +260,7 @@ impl Default for StreamConfig {
             snapshot: SnapshotConfig::PRODUCTION,
             snapshot_compact_self: None,
             snapshot_removals: None,
+            snapshot_idle_cold: None,
             snapshot_interval_ticks: None,
             city: CityKnobs::default(),
             recorded_repairs: true,
@@ -824,11 +827,12 @@ pub fn build(bundle: &Bundle, config: &StreamConfig) -> std::io::Result<Stream> 
             .snapshot_compact_self
             .unwrap_or_else(|| baseline.map_or(false, |b| b.compact_self)),
         removals: config.snapshot_removals.unwrap_or_else(|| baseline.map_or(false, |b| b.removals)),
+        idle_cold: config.snapshot_idle_cold.unwrap_or_else(|| baseline.map_or(false, |b| b.idle_cold)),
         ..config.snapshot
     };
     stats.snapshot_format = format!(
-        "compact_self {} removals {}",
-        snapshot_config.compact_self, snapshot_config.removals
+        "compact_self {} removals {} idle_cold {}",
+        snapshot_config.compact_self, snapshot_config.removals, snapshot_config.idle_cold
     );
     let mut interest: RecipientInterest = baseline
         .and_then(|b| b.interest.get(&player).cloned())

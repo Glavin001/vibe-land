@@ -1,5 +1,5 @@
 {
-  "comment": "Single source of truth for netlab impairment profiles. delayMs is ONE-WAY per direction: the in-process PacketImpairment applies it to each direction separately, and scripts/netem.sh applies it on lo egress which both directions traverse once. lossPct is per-packet. Netlab v2 (docs/netlab-v2.md) reads the same table for its seeded link model; loopback, lan, cable, poor-mobile, lossy-wifi and bw-capped were added for it; cap-1mbit and the *-nq profiles for rate adaptation. bottleneckQueueMs (Netlab v2 only) puts the bottleneck queue in the network instead of at the sender.",
+  "comment": "Single source of truth for netlab impairment profiles. delayMs is ONE-WAY per direction: the in-process PacketImpairment applies it to each direction separately, and scripts/netem.sh applies it on lo egress which both directions traverse once. lossPct is per-packet. Netlab v2 (docs/netlab-v2.md) reads the same table for its seeded link model; loopback, lan, cable, poor-mobile, lossy-wifi and bw-capped were added for it; cap-1mbit and the *-nq profiles for rate adaptation. bottleneckQueueMs (Netlab v2 only) puts the bottleneck queue in the network instead of at the sender. inOrder (Netlab v2 only) keeps packets in send order under jitter (only reorderPct stragglers overtake), as LTE delivers; the *-fifo profiles use it.",
   "profiles": {
     "wifi-good": { "delayMs": 25, "jitterMs": 8, "lossPct": 0.5 },
     "wifi-bad": { "delayMs": 40, "jitterMs": 20, "lossPct": 2, "reorderPct": 1 },
@@ -16,6 +16,8 @@
     "cap-1mbit": { "delayMs": 30, "jitterMs": 5, "lossPct": 0, "rateMbit": 1, "comment": "bw-capped at 1 Mbit/s: a clean rate cap, no loss (Netlab v2 rate adaptation)" },
     "cap-1mbit-nq": { "delayMs": 30, "jitterMs": 5, "lossPct": 0, "rateMbit": 1, "bottleneckQueueMs": 200, "comment": "cap-1mbit with the queue in the network, as quinn's BBR behaves (Netlab v2 only: bottleneckQueueMs)" },
     "bw-capped-nq": { "delayMs": 30, "jitterMs": 5, "lossPct": 0, "rateMbit": 0.5, "bottleneckQueueMs": 200, "comment": "bw-capped with the queue in the network (Netlab v2 only)" },
-    "poor-mobile-nq": { "delayMs": 150, "jitterMs": 40, "lossPct": 3, "rateMbit": 1, "bottleneckQueueMs": 200, "comment": "poor-mobile with the queue in the network (Netlab v2 only)" }
+    "poor-mobile-nq": { "delayMs": 150, "jitterMs": 40, "lossPct": 3, "rateMbit": 1, "bottleneckQueueMs": 200, "comment": "poor-mobile with the queue in the network (Netlab v2 only)" },
+    "lte-fifo": { "delayMs": 90, "jitterMs": 35, "lossPct": 3, "inOrder": true, "comment": "lte with in-order delivery: jitter delays, never reorders (Netlab v2 only: inOrder; netem with a pfifo child)" },
+    "poor-mobile-fifo": { "delayMs": 150, "jitterMs": 40, "lossPct": 3, "rateMbit": 1, "inOrder": true, "comment": "poor-mobile with in-order delivery (Netlab v2 only)" }
   }
 }

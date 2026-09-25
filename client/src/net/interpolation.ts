@@ -8,6 +8,8 @@ export type PlayerSample = {
   pitch: number;
   hp: number;
   flags: number;
+  /** A rest hold (`pushWithRestHold`), not a snapshot. */
+  held?: boolean;
 };
 
 export type VehicleSample = {
@@ -19,6 +21,8 @@ export type VehicleSample = {
   wheelData: [number, number, number, number];
   driverPlayerId: number;
   flags: number;
+  /** A rest hold (`pushWithRestHold`), not a snapshot. */
+  held?: boolean;
 };
 
 export type DynamicBodySample = {
@@ -33,15 +37,90 @@ export type DynamicBodySample = {
 
 const MAX_PLAYER_EXTRAPOLATION_US = 100_000;
 
+/** Speed (m/s, rad/s) at or under which a player's or vehicle's sample is at rest. */
+export const REST_SPEED = 0.05;
+/** Position change (m) past which a snapshot inside a rest hold's gap supersedes it. */
+const REST_HOLD_TOLERANCE_M = 0.01;
+
+type TimedSample = {
+  serverTimeUs: number;
+  position: [number, number, number];
+  held?: boolean;
+};
+
+/**
+ * Insert `sample` into `queue` (oldest first). With `snapshotIntervalUs`, a
+ * sample that follows a gap after a sample at rest (`atRest`) gets a rest
+ * hold: a copy of the resting sample one snapshot interval before it.
+ *
+ * A server that leaves out players and vehicles whose record has not changed
+ * (snapshot_builder.rs `idle_cold`) sends one again the first snapshot it
+ * moves in. Interpolating from its last resting sample, up to a cold refresh
+ * (0.5 s) back, would start it moving that long before it did; the hold keeps
+ * it where it stood until the snapshot before the one it moved in. A snapshot
+ * that turns up late inside that gap (out of order) and shows it elsewhere
+ * replaces the hold, and gets its own if it is now the first after the gap.
+ */
+function insertWithRestHold<T extends TimedSample>(
+  queue: T[],
+  sample: T,
+  snapshotIntervalUs: number,
+  atRest: (sample: T) => boolean,
+): void {
+  for (let i = queue.length - 1; i >= 0; i -= 1) {
+    const hold = queue[i];
+    if (!hold.held || hold.serverTimeUs < sample.serverTimeUs) continue;
+    if (hold.serverTimeUs === sample.serverTimeUs || distance3(hold.position, sample.position) > REST_HOLD_TOLERANCE_M) {
+      queue.splice(i, 1);
+    }
+  }
+  let at = queue.length;
+  while (at > 0 && queue[at - 1].serverTimeUs > sample.serverTimeUs) at -= 1;
+  queue.splice(at, 0, sample);
+  const previous = queue[at - 1];
+  if (
+    snapshotIntervalUs > 0
+    && previous
+    && sample.serverTimeUs - previous.serverTimeUs > 1.5 * snapshotIntervalUs
+    && atRest(previous)
+  ) {
+    queue.splice(at, 0, { ...previous, serverTimeUs: sample.serverTimeUs - snapshotIntervalUs, held: true });
+  }
+}
+
+function newestSnapshotSample<T extends TimedSample>(queue: readonly T[] | undefined): T | null {
+  if (!queue) return null;
+  for (let i = queue.length - 1; i >= 0; i -= 1) {
+    if (!queue[i].held) return queue[i];
+  }
+  return null;
+}
+
+function distance3(a: readonly number[], b: readonly number[]): number {
+  return Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+}
+
+function playerAtRest(sample: PlayerSample): boolean {
+  return Math.hypot(sample.velocity[0], sample.velocity[1], sample.velocity[2]) <= REST_SPEED;
+}
+
+function vehicleAtRest(sample: VehicleSample): boolean {
+  return Math.hypot(...sample.linearVelocity) <= REST_SPEED && Math.hypot(...sample.angularVelocity) <= REST_SPEED;
+}
+
 export class VehicleInterpolator {
   private readonly byEntity = new Map<number, VehicleSample[]>();
 
   constructor(private readonly maxSamples = 32) {}
 
-  push(entityId: number, sample: VehicleSample): void {
+  /**
+   * Add a snapshot's sample. With `snapshotIntervalUs`, a vehicle that starts
+   * moving after a gap is held at rest until the snapshot before this one
+   * (`insertWithRestHold`).
+   */
+  push(entityId: number, sample: VehicleSample, snapshotIntervalUs = 0): void {
     const queue = this.byEntity.get(entityId) ?? [];
-    queue.push(sample);
-    queue.sort((a, b) => a.serverTimeUs - b.serverTimeUs);
+    insertWithRestHold(queue, sample, snapshotIntervalUs, vehicleAtRest);
     while (queue.length > this.maxSamples) {
       queue.shift();
     }
@@ -62,6 +141,11 @@ export class VehicleInterpolator {
 
   ids(): number[] {
     return [...this.byEntity.keys()];
+  }
+
+  /** The newest snapshot sample of a vehicle (not a rest hold), or null. */
+  latest(entityId: number): VehicleSample | null {
+    return newestSnapshotSample(this.byEntity.get(entityId));
   }
 
   sample(entityId: number, targetTimeUs: number): VehicleSample | null {
@@ -484,10 +568,10 @@ export class PlayerInterpolator {
 
   constructor(private readonly maxSamples = 32) {}
 
-  push(entityId: number, sample: PlayerSample): void {
+  /** As `VehicleInterpolator.push`. */
+  push(entityId: number, sample: PlayerSample, snapshotIntervalUs = 0): void {
     const queue = this.byEntity.get(entityId) ?? [];
-    queue.push(sample);
-    queue.sort((a, b) => a.serverTimeUs - b.serverTimeUs);
+    insertWithRestHold(queue, sample, snapshotIntervalUs, playerAtRest);
     while (queue.length > this.maxSamples) {
       queue.shift();
     }
@@ -508,6 +592,11 @@ export class PlayerInterpolator {
 
   ids(): number[] {
     return [...this.byEntity.keys()];
+  }
+
+  /** The newest snapshot sample of a player (not a rest hold), or null. */
+  latest(entityId: number): PlayerSample | null {
+    return newestSnapshotSample(this.byEntity.get(entityId));
   }
 
   sample(entityId: number, targetTimeUs: number): PlayerSample | null {

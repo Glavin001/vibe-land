@@ -39,11 +39,18 @@ fn temp_dir(name: &str) -> PathBuf {
     dir
 }
 
-/// The world at `tick`: the client walking, a remote player, and bodies at
-/// several distances -- some resting (cold refresh), one rolling, one far
-/// beyond the AOI that walks into it.
+/// Ticks in which the remote player stands still (its controller reporting
+/// the -0.5 m/s ground snap), as an idle player does.
+const REMOTE_STANDS: std::ops::Range<u32> = 120..200;
+
+/// The world at `tick`: the client walking, a remote player walking then
+/// standing, and bodies at several distances -- some resting (cold refresh),
+/// one rolling, one far beyond the AOI that walks into it.
 fn truth(tick: u32) -> TickTruth {
     let t = tick as f32 / 60.0;
+    let remote_t = tick.min(REMOTE_STANDS.start) as f32 / 60.0
+        + tick.saturating_sub(REMOTE_STANDS.end) as f32 / 60.0;
+    let remote_velocity = if REMOTE_STANDS.contains(&tick) { [0.0, -0.5, 0.0] } else { [0.0, 0.0, 1.0] };
     let mut bodies = Vec::new();
     for (i, (x, z, moving)) in
         [(5.0, 0.0, false), (20.0, 3.0, false), (30.0, -4.0, true), (70.0, 10.0, false), (95.0 - t * 4.0, 0.0, true)]
@@ -75,7 +82,7 @@ fn truth(tick: u32) -> TickTruth {
                 velocity: [1.5, 0.0, 0.0],
                 ..Default::default()
             },
-            PlayerTruth { id: 2, handle: 2, hp: 90, position: [10.0, 0.0, 5.0 + t], velocity: [0.0, 0.0, 1.0], ..Default::default() },
+            PlayerTruth { id: 2, handle: 2, hp: 90, position: [10.0, 0.0, 5.0 + remote_t], velocity: remote_velocity, ..Default::default() },
         ],
         vehicles: Vec::new(),
         bodies,
@@ -92,7 +99,7 @@ fn body_meta(truth: &TickTruth) -> HashMap<u32, BodyMeta> {
 
 /// The live match's snapshot for the client at `tick` -- the same call the
 /// server's `broadcast_snapshot` makes.
-fn live_snapshot(tick: u32, interest: &mut RecipientInterest, ack: u16) -> Vec<u8> {
+fn live_snapshot(tick: u32, interest: &mut RecipientInterest, ack: u16, config: &SnapshotConfig) -> Vec<u8> {
     let truth = truth(tick);
     let players: Vec<_> = truth
         .players
@@ -120,7 +127,7 @@ fn live_snapshot(tick: u32, interest: &mut RecipientInterest, ack: u16) -> Vec<u
     };
     let recipient = RecipientInput { id: PLAYER, ack_input_seq: ack, support: None };
     let (packet, _) =
-        build_recipient_snapshot(&world, &recipient, interest, true, &SnapshotConfig::PRODUCTION).unwrap();
+        build_recipient_snapshot(&world, &recipient, interest, true, config).unwrap();
     encode_server_packet(&packet)
 }
 
@@ -132,6 +139,11 @@ fn write_bundle(name: &str, with_baseline: bool) -> PathBuf {
 /// `repair_at`: the live server also sent this client a structure repair
 /// (PKT_CITY_STRUCTURE_BOOTSTRAP, reliable) after that tick's snapshot.
 fn write_bundle_with(name: &str, with_baseline: bool, repair_at: Option<u32>) -> PathBuf {
+    write_bundle_live(name, with_baseline, repair_at, &SnapshotConfig::PRODUCTION)
+}
+
+/// `live`: the snapshot format the live server ran, which its capture records.
+fn write_bundle_live(name: &str, with_baseline: bool, repair_at: Option<u32>, live: &SnapshotConfig) -> PathBuf {
     let dir = temp_dir(name);
     let server = dir.join("server");
     std::fs::write(
@@ -160,12 +172,13 @@ fn write_bundle_with(name: &str, with_baseline: bool, repair_at: Option<u32>) ->
                 player_handles: BTreeMap::from([(1, 1), (2, 2)]),
                 vehicle_handles: BTreeMap::new(),
                 body_meta: body_meta(&truth(tick)).into_iter().collect(),
-                compact_self: SnapshotConfig::PRODUCTION.compact_self,
-                removals: SnapshotConfig::PRODUCTION.removals,
+                compact_self: live.compact_self,
+                removals: live.removals,
+                idle_cold: live.idle_cold,
             });
         }
         let ack = (tick / 3) as u16;
-        let bytes = live_snapshot(tick, &mut interest, ack);
+        let bytes = live_snapshot(tick, &mut interest, ack, live);
         if tick < CAPTURE_FROM {
             continue;
         }
@@ -283,6 +296,32 @@ fn a_mid_match_capture_replays_byte_for_byte_from_its_baseline() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A capture made before `idle_cold` (2a601833's format: compact self state
+/// and removals, every remote player every snapshot) records no `idle_cold`
+/// and replays with it off, byte for byte; the knob turns it on over such a
+/// capture, and then the standing player is left out.
+#[test]
+fn a_capture_from_before_idle_cold_replays_with_it_off() {
+    let before = SnapshotConfig { idle_cold: false, ..SnapshotConfig::PRODUCTION };
+    let dir = write_bundle_live("pre-idle", true, None, &before);
+    // The field is absent from such a capture's baseline, not false.
+    let path = dir.join("server").join(sc::SNAPSHOT_BASELINE_FILE);
+    let mut json: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    json.as_object_mut().unwrap().remove("idle_cold");
+    std::fs::write(&path, serde_json::to_vec(&json).unwrap()).unwrap();
+    let bundle = Bundle::open(&dir).unwrap();
+    let run = crate::run_stream(&bundle, &recorded_spec(), &StreamConfig::default(), &dir.join("run")).unwrap();
+    assert!(run.stream.stats.snapshot_format.ends_with("idle_cold false"), "{}", run.stream.stats.snapshot_format);
+    let snapshots = &crate::calibrate::byte_match(&bundle, &run.stream).kinds["snapshot_v2"];
+    assert_eq!(snapshots.matched, snapshots.lab);
+    let config = StreamConfig { snapshot_idle_cold: Some(true), ..StreamConfig::default() };
+    let on = crate::run_stream(&bundle, &recorded_spec(), &config, &dir.join("on")).unwrap();
+    let bytes = crate::calibrate::byte_match(&bundle, &on.stream);
+    let snapshots = &bytes.kinds["snapshot_v2"];
+    assert!(snapshots.mismatched > 0 && snapshots.matched > 0, "{snapshots:?}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn without_the_baseline_the_cold_selection_diverges_and_says_so() {
     let dir = write_bundle("cold", false);
@@ -294,6 +333,7 @@ fn without_the_baseline_the_cold_selection_diverges_and_says_so() {
     let config = StreamConfig {
         snapshot_compact_self: Some(SnapshotConfig::PRODUCTION.compact_self),
         snapshot_removals: Some(SnapshotConfig::PRODUCTION.removals),
+        snapshot_idle_cold: Some(SnapshotConfig::PRODUCTION.idle_cold),
         ..StreamConfig::default()
     };
     let run = crate::run_stream(&bundle, &recorded_spec(), &config, &dir.join("run")).unwrap();

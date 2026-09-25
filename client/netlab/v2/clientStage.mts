@@ -525,8 +525,19 @@ const stats = {
   sharedPoses: { entities: entityPoses !== null, city: cityPoses !== null },
   chunkFrames: chunkStream?.frames ?? 0,
   clientCpuMs: +clientMs.toFixed(1),
+  // Snapshots applied as the newest, and those that arrived after a newer
+  // one (dropped whole by clients before the late-snapshot change, applied
+  // per entity since).
+  snapshots: snapshotCounts(),
   city: city.stats(),
 };
+function snapshotCounts(): { newest: number; late: number } | null {
+  const telemetry = (client as { getDebugTelemetrySnapshot?: () => Record<string, number> }).getDebugTelemetrySnapshot?.();
+  if (!telemetry) return null;
+  const newest = ['datagramSnapshotsReceived', 'reliableSnapshotsReceived', 'localSnapshotsReceived', 'directSnapshotsReceived']
+    .reduce((sum, key) => sum + (telemetry[key] ?? 0), 0);
+  return { newest, late: telemetry.staleSnapshotsDropped ?? 0 };
+}
 writeFileSync(join(outDir, 'client-stats.json'), JSON.stringify(stats, null, 1));
 console.log(JSON.stringify({
   label,

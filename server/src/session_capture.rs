@@ -648,6 +648,9 @@ pub struct SnapshotBaseline {
     pub compact_self: bool,
     #[serde(default)]
     pub removals: bool,
+    /// `SnapshotConfig::idle_cold`, recorded the same way.
+    #[serde(default)]
+    pub idle_cold: bool,
 }
 
 /// Everything the tick hands the writer, once per tick.

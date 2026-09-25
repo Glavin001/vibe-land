@@ -189,6 +189,8 @@ pub fn stream_config(pace: Pace, knobs: &BTreeMap<String, String>) -> StreamConf
             "snapshot.interval_ticks" => config.snapshot_interval_ticks = Some(f() as u32),
             "snapshot.compact_self" => config.snapshot_compact_self = Some(f() != 0.0),
             "snapshot.removals" => config.snapshot_removals = Some(f() != 0.0),
+            "snapshot.idle_cold" => config.snapshot_idle_cold = Some(f() != 0.0),
+            "snapshot.cold_player_refresh_ticks" => config.snapshot.cold_player_refresh_ticks = f() as u32,
             "city.send_hz" => config.city.send_hz = Some(f() as u32),
             "city.ceiling_bytes" => config.city.ceiling_bytes = Some(f() as usize),
             "city.error_budget_px" => config.city.error_budget_px = Some(f() as f32),

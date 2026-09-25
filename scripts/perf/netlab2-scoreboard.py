@@ -14,6 +14,15 @@
       `<link>__<set>` as `netlab2 matrix` names them). Writes one headline
       table (before -> after per link) and a per-class detail table.
 
+  scripts/perf/netlab2-scoreboard.py arms --root <dir> --arms a,b,c
+      [--seeds 1,2,3] [--links a,b,...] [--title T] [--md out.md]
+      <dir>/<arm>/seed<k>/<link> run directories. Writes a per-link table of
+      the arms side by side for seed 1 (bytes, late snapshots, the headline
+      missing / extra, and the player, vehicle and body rows), and the sums
+      over every seed and link (seed-to-seed range per cell for vehicles).
+      Reads tape.json beside report.json when present (late snapshots: the
+      share of snapshots that arrived after a newer one).
+
 Nothing is re-scored: every number is read from what `netlab2 run` wrote
 (report.json, stream.json, client-stats.json) or from presented.bin.
 docs/netcode-tuning.md "Netcode scoreboard (2026-09-24)" is the table this
@@ -261,6 +270,114 @@ def cmd_table(args):
         print(dtext)
 
 
+def cls_get(ad, cls, key, q=None):
+    c = (ad.get("classes") or {}).get(cls) or {}
+    v = c.get(key)
+    if q is not None:
+        v = (v or {}).get(q)
+    return v
+
+
+def late_pct(run):
+    path = os.path.join(run, "tape.json")
+    if not os.path.exists(path):
+        return None
+    return json.load(open(path)).get("late_pct")
+
+
+def cmd_arms(args):
+    arms = args.arms.split(",")
+    seeds = args.seeds.split(",")
+    root = args.root
+    runs = {(arm, seed): find_runs(os.path.join(root, arm, f"seed{seed}")) for arm in arms for seed in seeds}
+    first = runs[(arms[0], seeds[0])]
+    links = args.links.split(",") if args.links else list(first)
+    loaded = {}
+    for (arm, seed), found in runs.items():
+        for link in links:
+            if link in found:
+                loaded[(arm, seed, link)] = load_run(found[link])
+                loaded[(arm, seed, link)]["late"] = late_pct(found[link])
+
+    def chain(values, d):
+        return " → ".join(fm(v, d) for v in values)
+
+    s1 = seeds[0]
+    md = []
+    if args.title:
+        md.append(f"**{args.title}**, seed {s1}, {' → '.join(arms)}:\n")
+    md.append("| Link | Netcode kbit/s | Late snapshots % | ALL missing / extra | Player pos@render / pos@now p99 m; missing "
+              "| Vehicle pos@render / pos@now p99 m; missing | Body pos@render p99 m; missing / extra |")
+    md.append("|---|---|---|---|---|---|---|")
+    for link in links:
+        rs = [loaded.get((arm, s1, link)) for arm in arms]
+        if any(r is None for r in rs):
+            continue
+        def cell(fn, d=3):
+            return chain([fn(r) for r in rs], d)
+        def row_cls(cls):
+            return " → ".join(
+                f"{fm(cls_get(r['ad'], cls, 'pos_render_m', 'p99'))} / {fm(cls_get(r['ad'], cls, 'pos_now_m', 'p99'))}; {fm(cls_get(r['ad'], cls, 'missing'), 0)}"
+                for r in rs)
+        md.append(
+            f"| {link} | {cell(lambda r: r['kbps_net'], 1)} | {cell(lambda r: r['late'], 1)} "
+            f"| {' → '.join(fm((r['ad'].get('overall') or {}).get('missing'), 0) + ' / ' + fm((r['ad'].get('overall') or {}).get('extra'), 0) for r in rs)} "
+            f"| {row_cls('player')} | {row_cls('vehicle')} "
+            f"| {' → '.join(fm(cls_get(r['ad'], 'body', 'pos_render_m', 'p99')) + '; ' + fm(cls_get(r['ad'], 'body', 'missing'), 0) + ' / ' + fm(cls_get(r['ad'], 'body', 'extra'), 0) for r in rs)} |")
+
+    # Sums over every seed and link.
+    md.append("")
+    md.append(f"Sums over seeds {','.join(seeds)} and {len(links)} links ({' → '.join(arms)}):\n")
+    md.append("| Metric | " + " | ".join(arms) + " |")
+    md.append("|---|" + "---|" * len(arms))
+    def total(arm, fn):
+        vals = [fn(loaded[(arm, seed, link)]) for seed in seeds for link in links if (arm, seed, link) in loaded]
+        vals = [v for v in vals if v is not None]
+        return sum(vals), len(vals)
+    metrics = [
+        ("ALL missing", lambda r: (r["ad"].get("overall") or {}).get("missing")),
+        ("ALL extra", lambda r: (r["ad"].get("overall") or {}).get("extra")),
+        ("ALL wrong identity", lambda r: (r["ad"].get("overall") or {}).get("wrong_identity")),
+        ("player missing", lambda r: cls_get(r["ad"], "player", "missing")),
+        ("vehicle missing", lambda r: cls_get(r["ad"], "vehicle", "missing")),
+        ("body missing", lambda r: cls_get(r["ad"], "body", "missing")),
+        ("body extra", lambda r: cls_get(r["ad"], "body", "extra")),
+        ("meteor missing", lambda r: cls_get(r["ad"], "meteor", "missing")),
+    ]
+    for name, fn in metrics:
+        md.append(f"| {name} | " + " | ".join(fm(total(arm, fn)[0], 0) for arm in arms) + " |")
+    def mean(arm, fn):
+        t, n = total(arm, fn)
+        return t / n if n else None
+    for name, fn in [
+        ("mean netcode kbit/s", lambda r: r["kbps_net"]),
+        ("mean player pos@render p99 m", lambda r: cls_get(r["ad"], "player", "pos_render_m", "p99")),
+        ("mean player pos@now p99 m", lambda r: cls_get(r["ad"], "player", "pos_now_m", "p99")),
+        ("mean vehicle pos@render p99 m", lambda r: cls_get(r["ad"], "vehicle", "pos_render_m", "p99")),
+        ("mean vehicle pos@now p99 m", lambda r: cls_get(r["ad"], "vehicle", "pos_now_m", "p99")),
+        ("mean body pos@render p99 m", lambda r: cls_get(r["ad"], "body", "pos_render_m", "p99")),
+        ("mean ALL pos@render p99 m", lambda r: pos(r["ad"], "overall", "pos_render_m", "p99")),
+        ("mean ALL pos@now p99 m", lambda r: pos(r["ad"], "overall", "pos_now_m", "p99")),
+    ]:
+        md.append(f"| {name} | " + " | ".join(fm(mean(arm, fn), 3) for arm in arms) + " |")
+    # Vehicle missing, seed range per link.
+    md.append("")
+    md.append("Vehicle missing draw-frames per link, min–max over the seeds:\n")
+    md.append("| Link | " + " | ".join(arms) + " |")
+    md.append("|---|" + "---|" * len(arms))
+    for link in links:
+        cells = []
+        for arm in arms:
+            vals = [cls_get(loaded[(arm, seed, link)]["ad"], "vehicle", "missing") for seed in seeds if (arm, seed, link) in loaded]
+            vals = [v for v in vals if v is not None]
+            cells.append(f"{int(min(vals)):,}–{int(max(vals)):,}" if vals else "-")
+        md.append(f"| {link} | " + " | ".join(cells) + " |")
+    text = "\n".join(md)
+    if args.md:
+        open(args.md, "w").write(text + "\n")
+    print(text)
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -275,9 +392,18 @@ def main():
     t.add_argument("--md")
     t.add_argument("--detail")
     t.add_argument("--json")
+    a = sub.add_parser("arms")
+    a.add_argument("--root", required=True)
+    a.add_argument("--arms", required=True)
+    a.add_argument("--seeds", default="1")
+    a.add_argument("--links")
+    a.add_argument("--title")
+    a.add_argument("--md")
     args = p.parse_args()
     if args.cmd == "lag":
         cmd_lag(args.runs)
+    elif args.cmd == "arms":
+        cmd_arms(args)
     else:
         cmd_table(args)
 

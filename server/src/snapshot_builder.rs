@@ -31,6 +31,9 @@ use vibe_land_shared::constants::{
 
 pub const COLD_VEHICLE_REFRESH_TICKS: u32 = SIM_HZ as u32 / 2;
 pub const COLD_DYNAMIC_REFRESH_TICKS: u32 = SIM_HZ as u32;
+/// With `SnapshotConfig::idle_cold`: a remote player whose record has not
+/// changed is resent at least this often (the vehicles' rate).
+pub const COLD_PLAYER_REFRESH_TICKS: u32 = SIM_HZ as u32 / 2;
 pub const HOT_LINEAR_SPEED_THRESHOLD_MPS: f32 = 0.05;
 pub const HOT_ANGULAR_SPEED_THRESHOLD_RADPS: f32 = 0.05;
 pub const HOT_DYNAMIC_NEAR_RADIUS_M: f32 = 12.0;
@@ -77,6 +80,21 @@ pub struct SnapshotConfig {
     /// vehicles). Recorded in captures like `compact_self`.
     #[serde(default)]
     pub removals: bool,
+    /// Remote players and vehicles whose record has not changed (standing
+    /// players, parked cars, occupied or not) are sent like resting bodies:
+    /// a few times as they come to rest, then once per cold refresh, and at
+    /// once when anything the client draws changes. Without it every remote
+    /// player in interest is sent every snapshot, and so is every vehicle
+    /// with a driver. Recorded in captures like `compact_self`.
+    #[serde(default)]
+    pub idle_cold: bool,
+    /// With `idle_cold`: an unchanged remote player is resent this often.
+    #[serde(default = "default_cold_player_refresh_ticks")]
+    pub cold_player_refresh_ticks: u32,
+}
+
+fn default_cold_player_refresh_ticks() -> u32 {
+    COLD_PLAYER_REFRESH_TICKS
 }
 
 impl SnapshotConfig {
@@ -94,12 +112,28 @@ impl SnapshotConfig {
         reserved_vehicles: STRICT_SNAPSHOT_RESERVED_VEHICLES,
         compact_self: true,
         removals: true,
+        idle_cold: true,
+        cold_player_refresh_ticks: COLD_PLAYER_REFRESH_TICKS,
     };
 
-    /// The selection as it was before `compact_self` and `removals`: what a
-    /// capture that does not record them was made with.
-    pub const LEGACY_FORMAT: Self = Self { compact_self: false, removals: false, ..Self::PRODUCTION };
+    /// The selection as it was before `compact_self`, `removals` and
+    /// `idle_cold`: what a capture that records none of them was made with.
+    pub const LEGACY_FORMAT: Self =
+        Self { compact_self: false, removals: false, idle_cold: false, ..Self::PRODUCTION };
 }
+
+/// Snapshots that carry a remote player or vehicle after its record stops
+/// changing (`SnapshotConfig::idle_cold`), before it goes cold: a client that
+/// loses one still gets the entity's resting state (a player's with zero
+/// velocity) within a tick or two, instead of extrapolating its last moving
+/// sample until the cold refresh.
+pub const SNAPSHOT_REST_SENDS: u8 = 3;
+/// Position change (mm, any axis) below which a player or vehicle record is
+/// unchanged; under the 2.5 mm wire quantum.
+pub const IDLE_POSITION_TOLERANCE_MM: i32 = 2;
+/// Orientation change (snorm16 units, any component) below which a vehicle
+/// record is unchanged (about 0.01 degrees).
+pub const IDLE_ROTATION_TOLERANCE_SNORM: i32 = 2;
 
 /// How many consecutive snapshots restate one removal. A client that loses
 /// all of them falls back to inferring the removal, as before.
@@ -192,6 +226,80 @@ pub struct RecipientInterest {
     pub entry_sends_bodies: HashMap<u32, u8>,
     #[serde(default)]
     pub entry_sends_vehicles: HashMap<u32, u8>,
+    /// With `SnapshotConfig::idle_cold`: each remote player's record as last
+    /// sent to this recipient (what "unchanged" is judged against).
+    #[serde(default)]
+    pub sent_players: HashMap<u32, SentRecord>,
+    /// With `idle_cold`: every player's position (mm) at the last snapshot
+    /// tick, to tell a player standing still (its record then carries zero
+    /// velocity) from one moving.
+    #[serde(default)]
+    pub player_positions_mm: HashMap<u32, [i32; 3]>,
+    /// With `idle_cold`: each vehicle's record as last sent.
+    #[serde(default)]
+    pub sent_vehicles: HashMap<u32, SentRecord>,
+}
+
+/// What a record looked like when it was last sent to one recipient, in the
+/// wire's absolute units (`SnapshotConfig::idle_cold`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SentRecord {
+    pub tick: u32,
+    pub position_mm: [i32; 3],
+    /// Everything else the client draws or keys on, exactly: a player's
+    /// yaw, pitch, hp, flags and whether it stood still; a vehicle's
+    /// orientation (compared with a tolerance), type, driver and flags.
+    pub rest: [i16; 4],
+    pub exact: [i32; 4],
+    /// Snapshots still to carry it although unchanged (`SNAPSHOT_REST_SENDS`).
+    /// A record seen for the first time counts as changed, so an entity
+    /// entering the stream is in its first `SNAPSHOT_REST_SENDS` snapshots.
+    pub rest_sends_left: u8,
+}
+
+impl SentRecord {
+    fn changed(&self, position_mm: [i32; 3], rest: [i16; 4], rest_tolerance: i32, exact: [i32; 4]) -> bool {
+        self.exact != exact
+            || (0..3).any(|i| (self.position_mm[i] - position_mm[i]).abs() > IDLE_POSITION_TOLERANCE_MM)
+            || (0..4).any(|i| (i32::from(self.rest[i]) - i32::from(rest[i])).abs() > rest_tolerance)
+    }
+}
+
+/// The idle-cold decision for one player or vehicle (`SnapshotConfig::idle_cold`):
+/// whether it is due this snapshot, and the record to remember if it is sent.
+fn idle_cold_due(
+    sent: Option<&SentRecord>,
+    tick: u32,
+    position_mm: [i32; 3],
+    rest: [i16; 4],
+    rest_tolerance: i32,
+    exact: [i32; 4],
+    refresh_ticks: u32,
+) -> (bool, SentRecord) {
+    let changed = sent.is_none_or(|s| s.changed(position_mm, rest, rest_tolerance, exact));
+    let rest_sends_left = match sent {
+        Some(s) if !changed => s.rest_sends_left,
+        _ => SNAPSHOT_REST_SENDS,
+    };
+    let due = changed
+        || rest_sends_left > 0
+        || periodic_refresh_due(sent.map(|s| s.tick), tick, refresh_ticks);
+    let record = SentRecord {
+        tick,
+        // An unchanged record keeps the pose it was judged against, so a
+        // slow drift is sent once it adds up to the tolerance.
+        position_mm: match sent {
+            Some(s) if !changed => s.position_mm,
+            _ => position_mm,
+        },
+        rest: match sent {
+            Some(s) if !changed => s.rest,
+            _ => rest,
+        },
+        exact,
+        rest_sends_left: rest_sends_left.saturating_sub(1),
+    };
+    (due, record)
 }
 
 /// Consecutive snapshots that carry an entity entering the stream
@@ -251,6 +359,34 @@ impl RecipientInterest {
         self.pending_removals.retain(|p| p.sends_left > 0);
         out
     }
+}
+
+/// `idle_cold_due` for a vehicle: its pose, and exactly its type, driver,
+/// flags and whether it moves (so the snapshot it stops in counts as a
+/// change, and is followed by the rest sends with zero velocity).
+fn vehicle_idle_cold_due(
+    interest: &RecipientInterest,
+    vehicle_id: u32,
+    tick: u32,
+    state: &NetVehicleState,
+    driver_handle: u8,
+    config: &SnapshotConfig,
+) -> (bool, SentRecord) {
+    let moving = state.vx_cms != 0
+        || state.vy_cms != 0
+        || state.vz_cms != 0
+        || state.wx_mrads != 0
+        || state.wy_mrads != 0
+        || state.wz_mrads != 0;
+    idle_cold_due(
+        interest.sent_vehicles.get(&vehicle_id),
+        tick,
+        [state.px_mm, state.py_mm, state.pz_mm],
+        [state.qx_snorm, state.qy_snorm, state.qz_snorm, state.qw_snorm],
+        IDLE_ROTATION_TOLERANCE_SNORM,
+        [i32::from(state.vehicle_type), i32::from(driver_handle), i32::from(state.flags), i32::from(moving)],
+        config.cold_vehicle_refresh_ticks,
+    )
 }
 
 enum DynamicBodySelection {
@@ -539,7 +675,12 @@ pub fn build_recipient_snapshot(
         distance_sq(a.1, recipient_pos).total_cmp(&distance_sq(b.1, recipient_pos))
     });
     selection.players_aoi = remote_player_candidates.len() as u32;
-    for (index, (player_id, pos, state)) in remote_player_candidates.into_iter().enumerate() {
+    // With `idle_cold`: only the players whose record changed, is settling
+    // (`SNAPSHOT_REST_SENDS`) or is due its refresh; a player standing still
+    // is sent with zero velocity (a grounded one reports the controller's
+    // -0.5 m/s ground snap, which a client would extrapolate).
+    let mut due_players = Vec::with_capacity(remote_player_candidates.len());
+    for (player_id, pos, state) in remote_player_candidates {
         let Some(handle) = world.player_handles.get(player_id).copied() else {
             continue;
         };
@@ -547,11 +688,7 @@ pub fn build_recipient_snapshot(
             selection.out_of_range += 1;
             continue;
         };
-        if budget_remaining < SNAPSHOT_V2_REMOTE_PLAYER_BYTES {
-            selection.players_budget = (selection.players_aoi as usize - index) as u32;
-            break;
-        }
-        remote_player_states.push(protocol::RemotePlayerStateV2 {
+        let mut record = protocol::RemotePlayerStateV2 {
             handle,
             dx_q2_5mm: dx,
             dy_q2_5mm: dy,
@@ -563,10 +700,66 @@ pub fn build_recipient_snapshot(
             pitch_i16: state.pitch_i16,
             hp: state.hp,
             flags: (state.flags & 0xff) as u8,
-        });
+        };
+        let mut remember = None;
+        if config.idle_cold {
+            let position_mm = [state.px_mm, state.py_mm, state.pz_mm];
+            let still = interest.player_positions_mm.get(player_id).is_some_and(|previous| {
+                (0..3).all(|i| (previous[i] - position_mm[i]).abs() <= 1)
+            });
+            if still {
+                (record.vx_cms, record.vy_cms, record.vz_cms) = (0, 0, 0);
+            }
+            let (due, sent) = idle_cold_due(
+                interest.sent_players.get(player_id),
+                world.server_tick,
+                position_mm,
+                [record.yaw_i16, record.pitch_i16, 0, 0],
+                0,
+                [i32::from(record.hp), i32::from(record.flags), i32::from(still), 0],
+                config.cold_player_refresh_ticks,
+            );
+            if !due {
+                continue;
+            }
+            remember = Some(sent);
+        }
+        due_players.push((*player_id, record, remember));
+    }
+    let due_player_count = due_players.len();
+    for (index, (player_id, record, remember)) in due_players.into_iter().enumerate() {
+        if budget_remaining < SNAPSHOT_V2_REMOTE_PLAYER_BYTES {
+            selection.players_budget = (due_player_count - index) as u32;
+            break;
+        }
+        if let Some(sent) = remember {
+            interest.sent_players.insert(player_id, sent);
+        }
+        remote_player_states.push(record);
         budget_remaining = budget_remaining.saturating_sub(SNAPSHOT_V2_REMOTE_PLAYER_BYTES);
     }
     selection.players_sent = remote_player_states.len() as u32;
+    if config.idle_cold {
+        // A player that leaves interest is sent at once (and settles again)
+        // when it comes back; every player's position is kept for the next
+        // snapshot's standing-still test.
+        let in_interest: HashSet<u32> = world
+            .players
+            .iter()
+            .filter(|(player_id, pos, _)| {
+                *player_id != recipient_id
+                    && distance_sq(*pos, recipient_pos)
+                        <= config.player_aoi_radius_m * config.player_aoi_radius_m
+            })
+            .map(|(player_id, _, _)| *player_id)
+            .collect();
+        interest.sent_players.retain(|player_id, _| in_interest.contains(player_id));
+        interest.player_positions_mm = world
+            .players
+            .iter()
+            .map(|(player_id, _, state)| (*player_id, [state.px_mm, state.py_mm, state.pz_mm]))
+            .collect();
+    }
 
     let mut selected_vehicle_states = Vec::new();
     for (vehicle_id, pos, state) in world
@@ -607,6 +800,10 @@ pub fn build_recipient_snapshot(
         interest
             .last_sent_vehicle_tick
             .insert(*vehicle_id, world.server_tick);
+        if config.idle_cold {
+            let (_, sent) = vehicle_idle_cold_due(interest, *vehicle_id, world.server_tick, state, driver_handle, config);
+            interest.sent_vehicles.insert(*vehicle_id, sent);
+        }
         if config.removals {
             let entered = interest.streamed_vehicles.insert(*vehicle_id, handle).is_none();
             note_entry_send(&mut interest.entry_sends_vehicles, *vehicle_id, entered);
@@ -656,38 +853,48 @@ pub fn build_recipient_snapshot(
             wy_mrads: state.wy_mrads,
             wz_mrads: state.wz_mrads,
         };
-        let hot = state.driver_id == recipient_id
-            || state.driver_id != 0
-            || speed_sq3([
-                cms_to_mps(state.vx_cms),
-                cms_to_mps(state.vy_cms),
-                cms_to_mps(state.vz_cms),
-            ]) > config.hot_linear_speed_mps * config.hot_linear_speed_mps
+        let moving = speed_sq3([
+            cms_to_mps(state.vx_cms),
+            cms_to_mps(state.vy_cms),
+            cms_to_mps(state.vz_cms),
+        ]) > config.hot_linear_speed_mps * config.hot_linear_speed_mps
             || speed_sq3([
                 state.wx_mrads as f32 / 1000.0,
                 state.wy_mrads as f32 / 1000.0,
                 state.wz_mrads as f32 / 1000.0,
-            ]) > config.hot_angular_speed_radps * config.hot_angular_speed_radps
-            || periodic_refresh_due(
-                interest.last_sent_vehicle_tick.get(vehicle_id).copied(),
-                world.server_tick,
-                config.cold_vehicle_refresh_ticks,
-            )
-            || (config.removals && interest.entry_sends_vehicles.contains_key(vehicle_id));
+            ]) > config.hot_angular_speed_radps * config.hot_angular_speed_radps;
+        let refresh = periodic_refresh_due(
+            interest.last_sent_vehicle_tick.get(vehicle_id).copied(),
+            world.server_tick,
+            config.cold_vehicle_refresh_ticks,
+        ) || (config.removals && interest.entry_sends_vehicles.contains_key(vehicle_id));
+        // Without `idle_cold` a vehicle with a driver is sent every snapshot,
+        // parked or not; with it, a vehicle is sent while it moves or its
+        // record changes (a driver getting in counts), then settles and goes
+        // cold like any other.
+        let (hot, remember) = if config.idle_cold {
+            let (due, sent) = vehicle_idle_cold_due(interest, *vehicle_id, world.server_tick, state, driver_handle, config);
+            (state.driver_id == recipient_id || moving || due || refresh, Some(sent))
+        } else {
+            (state.driver_id == recipient_id || state.driver_id != 0 || moving || refresh, None)
+        };
         if hot {
-            vehicle_hot.push((*vehicle_id, distance_sq(*pos, recipient_pos), record));
+            vehicle_hot.push((*vehicle_id, distance_sq(*pos, recipient_pos), record, remember));
         }
     }
     vehicle_hot.sort_by(|a, b| a.1.total_cmp(&b.1));
     let vehicle_hot_count = vehicle_hot.len();
 
-    for (vehicle_id, _, record) in vehicle_hot {
+    for (vehicle_id, _, record, remember) in vehicle_hot {
         if budget_remaining < SNAPSHOT_V2_VEHICLE_BYTES {
             break;
         }
         interest
             .last_sent_vehicle_tick
             .insert(vehicle_id, world.server_tick);
+        if let Some(sent) = remember {
+            interest.sent_vehicles.insert(vehicle_id, sent);
+        }
         if config.removals {
             let entered = interest.streamed_vehicles.insert(vehicle_id, record.handle).is_none();
             note_entry_send(&mut interest.entry_sends_vehicles, vehicle_id, entered);
@@ -698,6 +905,21 @@ pub fn build_recipient_snapshot(
     }
     selection.vehicles_aoi += reserved_vehicles_sent as u32;
     selection.vehicles_hot = (vehicle_hot_count + reserved_vehicles_sent) as u32;
+    if config.idle_cold {
+        // A vehicle that leaves interest is sent at once when it comes back.
+        let in_interest: HashSet<u32> = world
+            .vehicles
+            .iter()
+            .filter(|(vehicle_id, pos, state)| {
+                reserved_vehicle_ids.contains(vehicle_id)
+                    || state.driver_id == recipient_id
+                    || distance_sq(*pos, recipient_pos)
+                        <= config.vehicle_aoi_radius_m * config.vehicle_aoi_radius_m
+            })
+            .map(|(vehicle_id, _, _)| *vehicle_id)
+            .collect();
+        interest.sent_vehicles.retain(|vehicle_id, _| in_interest.contains(vehicle_id));
+    }
     selection.vehicles_sent = selected_vehicle_states.len() as u32;
     selection.vehicles_budget = (vehicle_hot_count + reserved_vehicles_sent)
         .saturating_sub(selected_vehicle_states.len()) as u32;
@@ -1150,15 +1372,131 @@ mod tests {
         assert_eq!(bytes[section + 4], 0);
     }
 
+    fn walker(id: u32, pos: [f32; 3], vel: [f32; 3], yaw: f32) -> (u32, [f32; 3], NetPlayerState) {
+        (id, pos, make_net_player_state(id, pos, vel, yaw, 0.0, 100, 0, 0.0))
+    }
+
+    /// Remote players and vehicles carried by each of `n` snapshots.
+    fn carried(scene: &mut Scene, interest: &mut RecipientInterest, config: &SnapshotConfig, n: usize) -> Vec<(usize, usize)> {
+        (0..n)
+            .map(|_| {
+                let p = scene.build(interest, config, None);
+                (p.remote_players.len(), p.vehicle_states.len())
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_standing_player_is_sent_until_it_settles_then_at_its_cold_refresh() {
+        let mut scene = Scene::new();
+        // Grounded and standing: the controller reports a -0.5 m/s ground snap.
+        scene.players.push(walker(2, [10.0, 1.0, 0.0], [0.0, -0.5, 0.0], 1.0));
+        scene.player_handles.insert(2, 2);
+        let mut interest = RecipientInterest::default();
+        let mut sent = Vec::new();
+        for _ in 0..40 {
+            let packet = scene.build(&mut interest, &SnapshotConfig::PRODUCTION, None);
+            sent.push(packet.remote_players.first().map(|p| p.vy_cms));
+        }
+        // New in interest (and not yet known to stand still): sent with its
+        // velocity; then standing still, with zero velocity, three times; then
+        // not until its refresh 30 ticks after the last send.
+        assert_eq!(&sent[..5], &[Some(-50), Some(0), Some(0), Some(0), None]);
+        let refreshes: Vec<usize> = (4..40).filter(|&i| sent[i].is_some()).collect();
+        assert_eq!(refreshes, vec![33]);
+        assert_eq!(sent[33], Some(0));
+        // Without it (the format before this change): every snapshot, as reported.
+        let mut interest = RecipientInterest::default();
+        let legacy = SnapshotConfig { idle_cold: false, ..SnapshotConfig::PRODUCTION };
+        assert!(carried(&mut scene, &mut interest, &legacy, 40).iter().all(|&(players, _)| players == 1));
+        let packet = scene.build(&mut interest, &legacy, None);
+        assert_eq!(packet.remote_players[0].vy_cms, -50);
+    }
+
+    #[test]
+    fn a_player_that_moves_or_turns_is_sent_at_once() {
+        let mut scene = Scene::new();
+        scene.players.push(walker(2, [10.0, 1.0, 0.0], [0.0, -0.5, 0.0], 1.0));
+        scene.player_handles.insert(2, 2);
+        let mut interest = RecipientInterest::default();
+        let config = SnapshotConfig::PRODUCTION;
+        carried(&mut scene, &mut interest, &config, 10);
+        assert_eq!(carried(&mut scene, &mut interest, &config, 1), vec![(0, 0)], "cold");
+        // It turns in place: sent the snapshot it does.
+        scene.players[1] = walker(2, [10.0, 1.0, 0.0], [0.0, -0.5, 0.0], 1.2);
+        let packet = scene.build(&mut interest, &config, None);
+        assert_eq!(packet.remote_players.len(), 1);
+        assert_eq!(packet.remote_players[0].vy_cms, 0, "standing, turning");
+        carried(&mut scene, &mut interest, &config, 5);
+        assert_eq!(carried(&mut scene, &mut interest, &config, 1), vec![(0, 0)], "cold again");
+        // It steps off: sent the first snapshot it has moved in, with its velocity.
+        scene.players[1] = walker(2, [10.05, 1.0, 0.0], [3.0, 0.0, 0.0], 1.2);
+        let packet = scene.build(&mut interest, &config, None);
+        assert_eq!(packet.remote_players.len(), 1);
+        assert_eq!(packet.remote_players[0].vx_cms, 300);
+        // A 1 mm shuffle is not a change (under the 2.5 mm wire quantum), but
+        // the settle sends still follow the step.
+        scene.players[1] = walker(2, [10.051, 1.0, 0.0], [0.0, -0.5, 0.0], 1.2);
+        assert_eq!(carried(&mut scene, &mut interest, &config, 5), vec![(1, 0), (1, 0), (1, 0), (0, 0), (0, 0)]);
+    }
+
+    #[test]
+    fn a_player_back_in_interest_is_sent_at_once() {
+        let mut scene = Scene::new();
+        scene.players.push(walker(2, [10.0, 1.0, 0.0], [0.0; 3], 0.0));
+        scene.player_handles.insert(2, 2);
+        let mut interest = RecipientInterest::default();
+        let config = SnapshotConfig::PRODUCTION;
+        carried(&mut scene, &mut interest, &config, 10);
+        scene.players[1] = walker(2, [100.0, 1.0, 0.0], [0.0; 3], 0.0);
+        assert_eq!(carried(&mut scene, &mut interest, &config, 1), vec![(0, 0)]);
+        scene.players[1] = walker(2, [10.0, 1.0, 0.0], [0.0; 3], 0.0);
+        assert_eq!(carried(&mut scene, &mut interest, &config, 1), vec![(1, 0)]);
+    }
+
+    #[test]
+    fn a_parked_car_with_a_driver_goes_cold_and_is_sent_when_it_moves() {
+        let mut scene = Scene::new();
+        let mut parked = car(40, [20.0, 0.5, 0.0]);
+        parked.2.driver_id = 2;
+        scene.vehicles.push(parked);
+        scene.vehicle_handles.insert(40, 2);
+        scene.players.push(walker(2, [20.0, 1.3, 0.0], [0.0; 3], 0.0));
+        scene.player_handles.insert(2, 2);
+        let mut interest = RecipientInterest::default();
+        let config = SnapshotConfig::PRODUCTION;
+        let seen: Vec<usize> = carried(&mut scene, &mut interest, &config, 40).iter().map(|c| c.1).collect();
+        assert_eq!(&seen[..4], &[1, 1, 1, 0], "sent as it enters the stream, then cold");
+        assert_eq!(seen.iter().sum::<usize>(), 4, "and once more at its 30-tick refresh");
+        // The driver pulls away: sent that snapshot.
+        scene.vehicles[0].2.vx_cms = 150;
+        scene.vehicles[0].2.px_mm += 25;
+        assert_eq!(carried(&mut scene, &mut interest, &config, 1)[0].1, 1);
+        // Stopped again: settles, then cold; the driver getting out is a change.
+        scene.vehicles[0].2.vx_cms = 0;
+        let seen: Vec<usize> = carried(&mut scene, &mut interest, &config, 5).iter().map(|c| c.1).collect();
+        assert_eq!(seen, vec![1, 1, 1, 0, 0]);
+        scene.vehicles[0].2.driver_id = 0;
+        assert_eq!(carried(&mut scene, &mut interest, &config, 1)[0].1, 1);
+        // Without it: a vehicle with a driver is sent every snapshot.
+        let mut interest = RecipientInterest::default();
+        scene.vehicles[0].2.driver_id = 2;
+        let legacy = SnapshotConfig { idle_cold: false, ..SnapshotConfig::PRODUCTION };
+        assert!(carried(&mut scene, &mut interest, &legacy, 40).iter().all(|c| c.1 == 1));
+    }
+
     #[test]
     fn an_older_interest_baseline_reads_the_new_fields_as_empty() {
         let old = r#"{"visible_dynamic_bodies":[3],"last_sent_dynamic_body_pose":{},"last_sent_vehicle_tick":{},"last_sent_dynamic_tick":{"3":10}}"#;
         let interest: RecipientInterest = serde_json::from_str(old).unwrap();
         assert!(interest.streamed_bodies.is_empty() && interest.pending_removals.is_empty());
+        assert!(interest.sent_players.is_empty() && interest.sent_vehicles.is_empty());
         let old_config = serde_json::to_value(SnapshotConfig::PRODUCTION).unwrap();
         let mut old_config = old_config.as_object().unwrap().clone();
         old_config.remove("compact_self");
         old_config.remove("removals");
+        old_config.remove("idle_cold");
+        old_config.remove("cold_player_refresh_ticks");
         let config: SnapshotConfig = serde_json::from_value(serde_json::Value::Object(old_config)).unwrap();
         assert_eq!(config, SnapshotConfig::LEGACY_FORMAT);
     }
