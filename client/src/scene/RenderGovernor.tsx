@@ -7,7 +7,7 @@
 // decided here and nowhere else.
 
 import { useFrame, useThree } from '@react-three/fiber';
-import { useEffect, useRef } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import { renderStats } from '../city/renderStats';
 import { cityTapeRecorder } from '../city/cityTape';
 import { hotspotWatch } from '../city/hotspotWatch';
@@ -27,6 +27,7 @@ import {
   setGovernorMsaaCap,
   setGovernorSampleScale,
 } from '../app/renderQuality';
+import { frameRateCapFps, useFrameRateCap } from './frameRateCap';
 
 /**
  * Canvas props from the quality tier. dpr is the multiplier on every fill
@@ -38,6 +39,8 @@ import {
 export function sceneCanvasProps() {
   return {
     shadows: true,
+    // `?maxFps=N` only (off by default): the cap's own loop advances R3F.
+    frameloop: (frameRateCapFps() === null ? 'always' : 'never') as 'always' | 'never',
     dpr: [1, maxDpr()] as [number, number],
     flat: flatToneMapping(),
     gl: { antialias: antialiasEnabled(), powerPreference: 'high-performance' as const },
@@ -55,6 +58,8 @@ export function sceneCanvasProps() {
  * toggle as a measurement instrument.
  */
 export function RenderGovernor(): null {
+  useFrameRateCap();
+  const fpsCap = useMemo(() => frameRateCapFps(), []);
   const setDpr = useThree((state) => state.setDpr);
   const gl = useThree((state) => state.gl);
   const camera = useThree((state) => state.camera);
@@ -144,7 +149,9 @@ export function RenderGovernor(): null {
       g.pacingMin = Infinity;
       g.pacingFrames = 0;
     }
-    const period = g.period || 8.33;
+    // A frame-rate cap (`?maxFps`) paces frames on purpose: its interval is the
+    // budget, or the governor would read the cap as GPU overload and trim pixels.
+    const period = Math.max(g.period || 8.33, fpsCap === null ? 0 : 1000 / fpsCap);
     renderStats.gpuBudgetMs = period;
     hotspotWatch.setPeriod(period);
     // Shadows at 60 Hz on a 120 Hz display. The shadow pass re-renders every

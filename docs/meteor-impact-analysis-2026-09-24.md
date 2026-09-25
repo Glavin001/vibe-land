@@ -718,3 +718,37 @@ Notes:
   part of the patch.
 - **Charts.** The charts in `meteor-impact-analysis-2026-09-24/` are the
   scripts' SVGs, copied from `$OUT/out/`.
+
+## Follow-up: GPU sharing with the browser (measured 2026-09-24 evening)
+
+Interleaved A/B, perf_bench `meteor` scenario (cuda-metal 780264d + PhysX
+63a60440), with headless Chromium replaying this session's tape through
+`/cityreplay` on the same M3 Max (`scripts/perf/gpu-contention/ab.sh`, data
+in `target/gpu-contention/s1`-`s6`). Post-impact window, 1,047 ticks:
+
+| Arm | tick p90 / p99 / max (ms) | excess over 16.7 ms | sim rate |
+|---|---|---|---|
+| server alone | 13 / 33 / 54 | 681 ms | 0.96 |
+| + browser, 2844x2275, ~88 fps | 45 / 93 / 182 | 7,882 ms | 0.69 |
+| + browser, no frame limit | 80 / 124 / 267 (333 worst) | 19,838 ms | 0.47 |
+| + browser at the user's governor floor (1536x1229) | 40 / 78 / 99 | 5,546 ms | 0.76 |
+| same + `?maxFps=30` | 17 / 36 / 81 | 969 ms | 0.94 |
+| + browser 1280x720 + `?maxFps=30` | 11 / 25 / 40 | 271 ms (alone: 245) | 0.98 |
+| synthetic Metal load, ~96% of the GPU | 89 / 222 / 277 | 63,818 ms | 0.21 |
+
+- The live 100-330 ms ticks and the 25-45 ms ordinary ticks after contact
+  are the server losing the GPU to the browser: the server alone does not
+  reproduce them; a rendering client does. The server yields: a saturating
+  load kept 59.4 of 60 fps while the server fell to 0.21x.
+- The GPU share the client keeps busy matters, nonlinearly: ~22% of the GPU
+  is harmless, ~48% moderate, ~96% catastrophic (the server's tick is a
+  chain of small command buffers, each queuing behind the browser's work;
+  inferred).
+- `?maxFps=N` (client, off unless set, `frameRateCap.ts`) plus the
+  existing `vibe.render.dprCap` setting is the local-play fix; measured on
+  `/cityreplay`, not yet in live play. `CUMETAL_BATCH_DISPATCHES=4096` did
+  nothing.
+- A remote server with its own GPU should behave like "server alone"
+  (inferred): tick p99 about 33 ms around impacts, split ticks about 15 ms
+  over their neighbours. The server-alone spikes are the PhysX correction
+  path and island repair (see the tick phases in docs/city-bench.md).
