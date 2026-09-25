@@ -162,6 +162,12 @@ pub fn run_spec(args: &Args) -> (RunSpec, StreamConfig) {
                     .unwrap_or(link_rate::RateConfig::PRODUCTION.reliable_queue_ms),
                 reliable_drain_ms: knob("city.reliable_drain_ms")
                     .unwrap_or(link_rate::RateConfig::PRODUCTION.reliable_drain_ms),
+                // `city.limited_hz`: the most city sends per second while
+                // limited (0: every send the stream makes).
+                limited_send_interval_s: knob("city.limited_hz").map_or(
+                    link_rate::RateConfig::PRODUCTION.limited_send_interval_s,
+                    |hz| if hz > 0.0 { 1.0 / hz } else { 0.0 },
+                ),
                 ..link_rate::RateConfig::PRODUCTION
             },
             stale_ms: knob("lab.rate_stale_ms").unwrap_or(0.0),
@@ -202,7 +208,8 @@ pub fn stream_config(pace: Pace, knobs: &BTreeMap<String, String>) -> StreamConf
             "lab.recorded_repairs" => config.recorded_repairs = f() != 0.0,
             // Read by run_spec: per-link rate adaptation (production: on,
             // `VIBE_CITY_RATE_ADAPT`), and a lab-only feedback delay probe.
-            "city.rate_adapt" | "lab.rate_stale_ms" | "city.reliable_queue_ms" | "city.reliable_drain_ms" => {
+            "city.rate_adapt" | "lab.rate_stale_ms" | "city.reliable_queue_ms" | "city.reliable_drain_ms"
+            | "city.limited_hz" => {
                 f();
             }
             "city.client_model" => config.city.model_client_extrapolation = Some(f() != 0.0),
@@ -215,6 +222,7 @@ pub fn stream_config(pace: Pace, knobs: &BTreeMap<String, String>) -> StreamConf
             "city.baseline_lag_ticks" => config.city.baseline_reference_lag_ticks = Some(f() as u32),
             "city.baseline_skip_quiescent" => config.city.baseline_skips_quiescent = Some(f() != 0.0),
             "city.topology_copies" => config.city.topology_datagram_copies = Some(f() as u32),
+            "city.innovation_window_ticks" => config.city.innovation_window_ticks = Some(f() as u32),
             "city.max_eval" => {
                 // Read once, from the environment, by the encoder itself.
                 std::env::set_var("VIBE_CITY_MAX_EVAL", value);

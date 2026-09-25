@@ -225,7 +225,7 @@ or wrong-identity (see [All draws](#all-draws-the-headline)).
   (`server/src/link_rate.rs`, `VIBE_CITY_RATE_ADAPT`, on by default). On a
   simulated link the lab closes the same loop: the controller reads the link
   model at each of the scored client's sends. The snapshot budget (1100 B)
-  is fixed, and the city ceiling (10.4 kB per send) is the controller's
+  is fixed, and the city ceiling (5.2 kB per 60 Hz send; 10.4 kB per 30 Hz send in older captures) is the controller's
   upper bound. The per-send trace is `rate-trace.jsonl` in the run
   directory and the totals are `stream.city_rate` in `stream.json`.
 
@@ -254,8 +254,9 @@ These are the knobs production actually has, with their production defaults:
 | `snapshot.removals` | 1 (0 in older captures) | the removals section naming bodies and vehicles that left the recipient's stream, and three consecutive sends for an entity entering it (`SnapshotConfig::removals`) |
 | `snapshot.idle_cold` | 1 (0 in older captures) | remote players and vehicles sent only while their record changes, three times as they settle, then at their cold refresh; a standing player's record carries zero velocity (`SnapshotConfig::idle_cold`) |
 | `snapshot.cold_player_refresh_ticks` | 30 | an unchanged remote player's refresh, with `idle_cold` |
-| `city.send_hz` | 30 | `CITY_CHUNK_STREAM_HZ` |
-| `city.ceiling_bytes` | 10400 (0 = none) | `CITY_CLIENT_CEILING_BYTES_PER_SEND` |
+| `city.send_hz` | 60 (30 in older captures) | `CITY_CHUNK_STREAM_HZ` |
+| `city.ceiling_bytes` | 5200 (10400 in older captures; 0 = none) | `CITY_CLIENT_CEILING_BYTES_PER_SEND` |
+| `city.innovation_window_ticks` | 2 (0 in older captures: per send) | the span the scheduler's velocity-perturbation test is judged over (`EncoderConfig::innovation_window_ticks`, [netcode-tuning.md](netcode-tuning.md#city-send-cadence-and-playout-delay)) |
 | `city.error_budget_px` | 2.0 | encoder |
 | `city.burst_capacity_sends`, `city.burst_max_multiple` | 0, 4 | encoder |
 | `city.baseline_interval_ticks` | encoder default | baselines |
@@ -270,6 +271,7 @@ These are the knobs production actually has, with their production defaults:
 | `city.baseline_skip_quiescent` | 1 (0 in older captures) | quiescent bodies left out of baselines |
 | `city.rate_adapt` | 1 (`VIBE_CITY_RATE_ADAPT`) | per-link rate adaptation of the city stream (S15); simulated links only, the recorded link is always open loop |
 | `city.topology_copies` | 2 (0 in older captures) | datagram copies of each reliable topology message (`EncoderConfig::topology_datagram_copies`, [netcode-tuning.md](netcode-tuning.md#city-latency-and-topology-delivery)) |
+| `city.limited_hz` | 30 (`VIBE_CITY_LIMITED_HZ`; 0 = every send) | the most city sends per second while the rate controller is `Limited`; each paced send may use the ceiling of the sends it stands for (`RateConfig::limited_send_interval_s`) |
 | `city.reliable_queue_ms`, `city.reliable_drain_ms` | 60, 150 (0 = off) | the rate controller's reliable-stream signal (`RateConfig`): on a limited link, reliable bytes that waited this long are given the path within the drain time |
 
 The three snapshot options are recorded in `snapshot-baseline.json`
@@ -291,6 +293,9 @@ The client's adaptive playout delay is built and off in production
 (`/city?adaptiveDelay=1` turns it on). The client stage reads lab-only
 overrides from its environment:
 
+- `CITY_PLAYOUT_DELAY=<ticks>` fixes the wire-v2 playout delay (by
+  default it is the stream's measured send interval plus 4: 6 ticks at
+  30 Hz sends, 5 at 60 Hz);
 - `CITY_ADAPTIVE_DELAY=1` turns the delay on;
 - `CITY_PLAYOUT_Q` sets the quantile (default 0.99);
 - `CITY_PLAYOUT_MARGIN` sets the margin (ticks, default 0);

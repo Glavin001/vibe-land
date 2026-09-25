@@ -774,6 +774,8 @@ function simulateLink(client: CityClient, opts: {
   reliable?: Array<[number, () => void]>;
   /** [startMs, endMs): no pose datagram is sent (the rate controller withholds them). */
   suppress?: [number, number];
+  /** Ticks between sends (default 2, the 30 Hz stream), or per send time. */
+  sendInterval?: number | ((sentAtMs: number) => number);
   onFrame?: (frame: SimFrame) => void;
 }): SimFrame[] {
   const random = seeded(7);
@@ -786,7 +788,8 @@ function simulateLink(client: CityClient, opts: {
   const events: Array<{ at: number; run: () => void }> = [];
   let newestReceived = -1;
   tickTimes.forEach((sentAt, tick) => {
-    if (tick % 2 !== 0) return;
+    const interval = typeof opts.sendInterval === 'function' ? opts.sendInterval(sentAt) : opts.sendInterval ?? 2;
+    if (tick % interval !== 0) return;
     const at = sentAt + opts.transitMs + (random() * 2 - 1) * opts.jitterMs;
     if (opts.suppress && sentAt >= opts.suppress[0] && sentAt < opts.suppress[1]) return;
     events.push({
@@ -1122,6 +1125,40 @@ describe('CityClient adaptive playout delay', () => {
     expect(frames.filter((f) => f.presented > f.newestReceived)).toHaveLength(0);
     expect(client.presentationClock().playoutDelayTicks).toBeGreaterThan(2);
     expect(client.presentationClock().playoutDelayTicks).toBeLessThanOrEqual(6);
+  });
+});
+
+describe('CityClient playout delay and the send cadence', () => {
+  const lag = (frames: SimFrame[]) => median(frames.map((f) => f.presented - f.serverTick));
+
+  it('presents a 60 Hz stream a tick nearer the server, never past its newest datagram', () => {
+    const at30 = makeClient().client;
+    const frames30 = simulateLink(at30, { hz: 60, transitMs: 1, jitterMs: 0, seconds: 5 }).slice(240);
+    const at60 = makeClient().client;
+    const frames60 = simulateLink(at60, { hz: 60, transitMs: 1, jitterMs: 0, seconds: 5, sendInterval: 1 }).slice(240);
+    expect(at30.presentationClock().playoutDelayTicks).toBe(6);
+    expect(at60.presentationClock().playoutDelayTicks).toBe(5);
+    expect(at60.stats().streamIntervalTicks).toBe(1);
+    expect(frames60.filter((f) => f.presented > f.newestReceived)).toHaveLength(0);
+    expect(lag(frames60) - lag(frames30)).toBeGreaterThan(0.8);
+  });
+
+  it('keeps a jittery 60 Hz link behind its newest datagram', () => {
+    const { client } = makeClient();
+    const frames = simulateLink(client, { hz: 60, transitMs: 90, jitterMs: 35, seconds: 20, sendInterval: 1 }).slice(600);
+    expect(client.presentationClock().playoutDelayTicks).toBe(5);
+    expect(frames.filter((f) => f.presented > f.newestReceived)).toHaveLength(0);
+  });
+
+  it('gives a 60 Hz stream thinned to every other tick the 30 Hz delay back', () => {
+    const { client } = makeClient();
+    // 60 Hz for 4 s, then the rate controller sends every other tick.
+    simulateLink(client, {
+      hz: 60, transitMs: 30, jitterMs: 0, seconds: 8,
+      sendInterval: (sentAtMs) => (sentAtMs < 5000 ? 1 : 2),
+    });
+    expect(client.stats().streamIntervalTicks).toBe(2);
+    expect(client.presentationClock().playoutDelayTicks).toBe(6);
   });
 });
 

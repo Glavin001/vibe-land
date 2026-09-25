@@ -509,7 +509,7 @@ export function CityStatsOverlay({
   const city = server?.city;
 
   // The children the server times inside its 60 Hz city step. The stream-encode
-  // pair is excluded on purpose: that is a separate 30 Hz pass.
+  // pair is excluded on purpose: that is a separate pass, once per send.
   // `tick_ffi_ms` is the host bracket around the whole native destruction tick
   // and is the PARENT of begin/solve/end, so it replaces them in the sum
   // rather than adding to them.
@@ -1607,11 +1607,11 @@ export function CityStatsOverlay({
         warn={(city?.city_desync_repairs ?? 0) > 0}
       />
       {/*
-        Below here is the SEPARATE 30 Hz stream pass, not part of city step.
+        Below here is the SEPARATE stream pass (every send), not part of city step.
         Listed flush with the step's children it invited adding the whole
         column, which double-counts across two tick rates.
       */}
-      <Stat label="— stream (30 Hz) —" value="" />
+      <Stat label="— stream (per send) —" value="" />
       <Stat
         label="stream encode"
         value={`${(city?.encode_shared_ms ?? 0).toFixed(1)} ms`}

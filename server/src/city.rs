@@ -1135,8 +1135,9 @@ pub struct CityRuntime {
 impl CityRuntime {
     fn from_parts(backend: CityBackend, manifest: Arc<DestructionManifest>, sim_hz: u32) -> Self {
         let mut config = EncoderConfig::validated(sim_hz);
-        config.send_interval_ticks =
-            (sim_hz / u32::from(vibe_land_shared::constants::CITY_CHUNK_STREAM_HZ)).max(1);
+        let (send_interval_ticks, ceiling_bytes) =
+            stream_cadence(sim_hz, std::env::var("VIBE_CITY_STREAM_HZ").ok().as_deref());
+        config.send_interval_ticks = send_interval_ticks;
         // VIBE_CITY_CEILING_BYTES overrides the per-client byte ceiling; 0
         // removes it entirely. Removing it is a diagnostic, not a shipping
         // setting: the ceiling is what keeps a client's downlink bounded when
@@ -1147,7 +1148,7 @@ impl CityRuntime {
         {
             Some(0) => usize::MAX,
             Some(bytes) => bytes,
-            None => usize::from(vibe_land_shared::constants::CITY_CLIENT_CEILING_BYTES_PER_SEND),
+            None => ceiling_bytes,
         };
         config.interest.proximity_meters = 120.0;
         // Free fall (the ballistic record mode) is measured against the
@@ -2245,7 +2246,7 @@ impl CityRuntime {
         self.encoder.structure_bootstrap_message(sim_tick, structures)
     }
 
-    /// Wall time of the last 30 Hz stream encode, split into the shared record
+    /// Wall time of the last stream encode (every send), split into the shared record
     /// build and the per-client interest/packing pass.
     pub fn record_encode_timings(&mut self, shared_ms: f32, datagrams_ms: f32) {
         self.last_encode_shared_ms = shared_ms;
@@ -2271,7 +2272,7 @@ impl CityRuntime {
         camera: Camera,
         shared: &SharedRecords,
     ) -> Vec<Vec<u8>> {
-        self.client_datagrams_within(client, camera, shared, None)
+        self.client_datagrams_within(client, camera, shared, None, 1)
     }
 
     /// Whether `client` has topology datagram copies waiting
@@ -2304,9 +2305,15 @@ impl CityRuntime {
         camera: Camera,
         shared: &SharedRecords,
         link_allowance_bytes: Option<usize>,
+        ceiling_sends: u32,
     ) -> Vec<Vec<u8>> {
-        let packets =
-            self.encoder.client_datagrams_within(client, camera, shared, link_allowance_bytes);
+        let packets = self.encoder.client_datagrams_within(
+            client,
+            camera,
+            shared,
+            link_allowance_bytes,
+            ceiling_sends,
+        );
         self.sent_packets += packets.len() as u64;
         let mut bytes = 0u64;
         let mut records = 0u64;
@@ -2737,9 +2744,40 @@ impl CityRuntime {
     }
 }
 
+/// The city stream's send interval (sim ticks) and per-send byte ceiling:
+/// `CITY_CHUNK_STREAM_HZ` (60) unless `VIBE_CITY_STREAM_HZ` names another
+/// rate, e.g. 30 to go back to the 30 Hz stream. The ceiling scales with the
+/// interval, so the byte-rate cap (~2.5 Mbit/s) is the same at any rate. The
+/// client sizes its playout delay from the cadence it sees (`cityClient.ts`).
+fn stream_cadence(sim_hz: u32, override_hz: Option<&str>) -> (u32, usize) {
+    let default_hz = u32::from(vibe_land_shared::constants::CITY_CHUNK_STREAM_HZ);
+    let hz = override_hz
+        .and_then(|value| value.trim().parse::<u32>().ok())
+        .filter(|hz| (1..=sim_hz.max(1)).contains(hz))
+        .unwrap_or(default_hz);
+    let interval = (sim_hz / hz.max(1)).max(1);
+    let default_interval = (sim_hz / default_hz.max(1)).max(1);
+    let ceiling = usize::from(vibe_land_shared::constants::CITY_CLIENT_CEILING_BYTES_PER_SEND)
+        * interval as usize
+        / default_interval as usize;
+    (interval, ceiling)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn the_stream_runs_at_60_hz_and_vibe_city_stream_hz_goes_back_to_30() {
+        use super::stream_cadence;
+        assert_eq!(stream_cadence(60, None), (1, 5_200));
+        // The 30 Hz stream as it was: every other tick, 10.4 kB per send.
+        assert_eq!(stream_cadence(60, Some("30")), (2, 10_400));
+        // Nonsense falls back to the default.
+        assert_eq!(stream_cadence(60, Some("0")), (1, 5_200));
+        assert_eq!(stream_cadence(60, Some("fast")), (1, 5_200));
+        assert_eq!(stream_cadence(60, Some("240")), (1, 5_200));
+    }
+
 
     /// A city on Rapier has no colliders: shots, meteors and walls silently
     /// do nothing. It must be refused, not served.

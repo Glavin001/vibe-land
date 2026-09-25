@@ -170,6 +170,22 @@ pub struct EncoderConfig {
     /// Absent from older captures, where it reads as 0 (what they did).
     #[serde(default)]
     pub topology_datagram_copies: u32,
+    /// The span, in sim ticks, a body's velocity innovation is judged over
+    /// (0 = one send interval, what captures made before it did).
+    ///
+    /// The scheduler sends a body whose velocity changed by 0.25 m/s (plus
+    /// 0.35 x its angular change) since the previous send
+    /// (`scheduler::compute_priority`). Measured per send, that threshold is
+    /// an acceleration that depends on the cadence: 7.5 m/s^2 at 30 Hz, so a
+    /// body falling or sliding under gravity is refreshed at every send, but
+    /// 15 m/s^2 at 60 Hz, where the same body waits for its error or age
+    /// gate. Measured in Netlab v2 (systematic c1, loopback, 60 Hz sends with
+    /// the per-send test): 18% fewer records, debris pos@render p99 0.088 ->
+    /// 0.110 m, presented jumps over 4 m 198 -> 322. With a window the change
+    /// is scaled to it, so the test is the same acceleration at any cadence;
+    /// at the window's own cadence the scale is exactly 1.
+    #[serde(default)]
+    pub innovation_window_ticks: u32,
 }
 
 fn default_rest_eval_stride() -> u32 {
@@ -203,7 +219,11 @@ impl EncoderConfig {
     pub fn validated(sim_hz: u32) -> Self {
         Self {
             sim_hz,
-            send_interval_ticks: 2,                       // 30 Hz at a 60 Hz sim
+            // 60 Hz: every tick at a 60 Hz sim. A record leaves the tick its
+            // body needs it rather than up to a tick later, and the client's
+            // playout delay can be a tick shorter (`cityClient.ts`). 30 Hz
+            // (2 ticks) before; captures record theirs in the checkpoint.
+            send_interval_ticks: (sim_hz / 60).max(1),
             // 2 s, not 1: with deltas now the common record (see
             // `ballistic_requires_free_fall`), a baseline delayed behind
             // datagrams on a congested link cost every delta sent after it
@@ -211,7 +231,7 @@ impl EncoderConfig {
             // reference lag below and halves the baseline bytes. Measured in
             // Netlab v2: see docs/netcode-tuning.md.
             baseline_interval_ticks: 2 * sim_hz,
-            client_ceiling_bytes: 10_400,                 // ≈ 2.5 Mbps at 30 Hz
+            client_ceiling_bytes: 5_200,                  // ≈ 2.5 Mbps at 60 Hz
             error_budget_px: 2.0,
             classifier: ClassifierConfig::default(),
             priority: PriorityConfig::from_hz(sim_hz),
@@ -242,7 +262,11 @@ impl EncoderConfig {
             baseline_reference_lag_ticks: 2 * sim_hz - sim_hz / 6,
             baseline_skips_quiescent: true,
             // Two: one lost copy (3% on LTE) is covered by the next send's.
+            // Kept at two with the 60 Hz stream (16 ms apart instead of 33):
+            // three was measured and was mixed (docs/netcode-tuning.md).
             topology_datagram_copies: 2,
+            // 1/30 s: the span the 0.25 m/s perturbation test was tuned at.
+            innovation_window_ticks: (sim_hz / 30).max(1),
         }
     }
 }
@@ -1105,7 +1129,7 @@ impl ChunkStreamEncoder {
         }
     }
 
-    /// 30 Hz encode-once: build the shared candidate set (record contents are
+    /// Encode-once per send: build the shared candidate set (record contents are
     /// byte-identical for every client).
     pub fn encode_send(&mut self, sim_tick: u32) -> SharedRecords {
         let mut records = Vec::with_capacity(self.active_order.len());
@@ -1129,15 +1153,22 @@ impl ChunkStreamEncoder {
         } else {
             (self.baseline_id, &self.baseline_poses)
         };
+        // Velocity innovation per `innovation_window_ticks`, not per send;
+        // exactly 1 at the window's cadence and when there is no window.
+        let innovation_scale = match self.config.innovation_window_ticks {
+            0 => 1.0,
+            window => window as f32 / self.config.send_interval_ticks.max(1) as f32,
+        };
         for &entity in &self.active_order {
             let Some(track) = self.bodies.get_mut(&entity) else {
                 continue;
             };
             let state = track.state;
             let class = track.class;
-            let linear_innovation = (state.linear_velocity - track.last_velocity).length();
+            let linear_innovation =
+                (state.linear_velocity - track.last_velocity).length() * innovation_scale;
             let angular_innovation =
-                (state.angular_velocity - track.last_angular_velocity).length();
+                (state.angular_velocity - track.last_angular_velocity).length() * innovation_scale;
             track.last_velocity = state.linear_velocity;
             track.last_angular_velocity = state.angular_velocity;
 
@@ -1243,20 +1274,23 @@ impl ChunkStreamEncoder {
         camera: Camera,
         shared: &SharedRecords,
     ) -> Vec<Vec<u8>> {
-        self.client_datagrams_within(client, camera, shared, None)
+        self.client_datagrams_within(client, camera, shared, None, 1)
     }
 
     /// `client_datagrams` under a per-link byte allowance for this send (the
     /// server's rate adaptation, `server/src/link_rate.rs`). The allowance
     /// only lowers the cut line of the usual selection: the same records are
     /// ranked the same way (required first, then error removed per byte), and
-    /// `None` is exactly `client_datagrams`.
+    /// `None` is exactly `client_datagrams`. `ceiling_sends` is how many of
+    /// the stream's sends this one stands for (a limited link paced to fewer
+    /// sends, `link_rate.rs`); the per-send ceiling is multiplied by it.
     pub fn client_datagrams_within(
         &mut self,
         client: u64,
         camera: Camera,
         shared: &SharedRecords,
         link_allowance_bytes: Option<usize>,
+        ceiling_sends: u32,
     ) -> Vec<Vec<u8>> {
         let config = self.config;
         // Moved out for the body of this function: `state` below borrows self
@@ -1444,6 +1478,14 @@ impl ChunkStreamEncoder {
                     config.interest.pane_height,
                 ) / config.error_budget_px.max(0.01)
             });
+            // A velocity perturbation counts at most once per innovation
+            // window since this client's last record of the body: faster
+            // sends judge the same acceleration (the scale in `encode_send`)
+            // as often as the 30 Hz stream did, not at every send. At 30 Hz
+            // every earlier record is at least a window old, so nothing
+            // changes there.
+            let perturbation_due = config.innovation_window_ticks == 0
+                || age_ticks >= config.innovation_window_ticks;
             let priority = compute_priority(
                 PriorityInput {
                     class: shared_record.class,
@@ -1452,8 +1494,16 @@ impl ChunkStreamEncoder {
                     contacts: shared_record.contacts,
                     linear_speed: shared_record.linear_speed,
                     angular_speed: shared_record.angular_speed,
-                    linear_velocity_innovation: shared_record.linear_innovation,
-                    angular_velocity_innovation: shared_record.angular_innovation,
+                    linear_velocity_innovation: if perturbation_due {
+                        shared_record.linear_innovation
+                    } else {
+                        0.0
+                    },
+                    angular_velocity_innovation: if perturbation_due {
+                        shared_record.angular_innovation
+                    } else {
+                        0.0
+                    },
                     contact_begin: shared_record.contact_begin,
                     joint_break: shared_record.joint_break,
                     wake: shared_record.wake,
@@ -1495,7 +1545,7 @@ impl ChunkStreamEncoder {
         // send. With the capacity at zero this is arithmetically identical to
         // the plain ceiling, which is what keeps the old behaviour one config
         // value away.
-        let steady = config.client_ceiling_bytes;
+        let steady = config.client_ceiling_bytes.saturating_mul(ceiling_sends.max(1) as usize);
         let allowance = if config.burst_capacity_sends == 0 {
             steady
         } else {
@@ -1990,7 +2040,8 @@ mod tests {
         assert!(encoder.has_topology_copies(1));
 
         let mut sends = Vec::new();
-        for tick in [10u32, 12, 14] {
+        let interval = encoder.config().send_interval_ticks;
+        for tick in [10u32, 10 + interval, 10 + 2 * interval] {
             let shared = encoder.encode_send(tick);
             let mut packets = Vec::new();
             let added = encoder.add_topology_copies(1, tick, &mut packets);
@@ -2000,17 +2051,20 @@ mod tests {
         for (tick, added, packets) in &sends[..2] {
             let first = crate::wire::decode_chunks_datagram(&packets[0]).expect("copy datagram");
             assert!(first.records.is_empty(), "copies travel in their own datagram");
-            assert_eq!(first.sim_tick, tick - 2, "stamped no newer than the previous send");
+            assert_eq!(first.sim_tick, tick - interval, "stamped no newer than the previous send");
             assert_eq!(first.topology_parts.len(), 1);
             let part = &first.topology_parts[0];
             assert_eq!((part.topo_seq, part.part, part.parts), (1, 0, 1));
             assert_eq!(part.bytes, reliable[0], "the reliable message's own bytes");
             assert_eq!(*added, packets[0].len());
             // The records follow, untouched.
-            let records = crate::wire::decode_chunks_datagram(&packets[1]).expect("records");
-            assert_eq!(records.records.len(), 1);
-            assert!(records.topology_parts.is_empty());
+            for packet in &packets[1..] {
+                let records = crate::wire::decode_chunks_datagram(packet).expect("records");
+                assert_eq!(records.records.len(), 1);
+                assert!(records.topology_parts.is_empty());
+            }
         }
+        assert_eq!(sends[0].2.len(), 2, "the first send carries the new body's record");
         let (_, added, packets) = &sends[2];
         assert_eq!(*added, 0, "two copies, then none");
         assert!(!encoder.has_topology_copies(1));
@@ -2228,7 +2282,7 @@ mod tests {
             encoder.ingest_tick(10, &snapshots, &output, &[]);
             let shared = encoder.encode_send(10);
             let packets = match allowance {
-                Some(bytes) => encoder.client_datagrams_within(1, close_camera(), &shared, Some(bytes)),
+                Some(bytes) => encoder.client_datagrams_within(1, close_camera(), &shared, Some(bytes), 1),
                 None => encoder.client_datagrams(1, close_camera(), &shared),
             };
             let summary = encoder.last_client_selection();
@@ -2336,7 +2390,7 @@ mod tests {
     }
 
     /// Streams `ticks` of `motion(tick)` to one client looking through
-    /// `camera`, sending every other tick; returns every record the client
+    /// `camera`, sending at the config's cadence; returns every record the client
     /// received, with its tick, delta records resolved against the baseline
     /// generation their datagram names (as the client resolves them).
     fn stream_to(
@@ -2360,7 +2414,7 @@ mod tests {
                     baselines.insert(message.baseline_id, record.pose.position);
                 }
             }
-            if tick % 2 == 0 {
+            if tick % config.send_interval_ticks.max(1) == 0 {
                 let shared = encoder.encode_send(tick);
                 for packet in encoder.client_datagrams(1, camera, &shared) {
                     let datagram = crate::wire::decode_chunks_datagram(&packet).expect("decode");
@@ -2382,6 +2436,112 @@ mod tests {
         motion: impl Fn(u32) -> BodySnapshotInput,
     ) -> Vec<(u32, crate::wire::DecodedBodyRecord)> {
         stream_to(config, ticks, close_camera(), motion)
+    }
+
+    /// A send that stands for two of the stream's sends (a limited link
+    /// paced to 30 Hz) may use two per-send ceilings, and no more.
+    #[test]
+    fn a_paced_send_may_use_the_ceiling_of_the_sends_it_stands_for() {
+        let manifest = manifest();
+        let mut config = EncoderConfig::validated(60);
+        // A ceiling one record fits in, and not two.
+        config.client_ceiling_bytes = 40;
+        let mut encoder = ChunkStreamEncoder::new(&manifest, config);
+        encoder.add_client(1);
+        encoder.ingest_tick(10, &[snapshot(0.0)], &promotion_output(), &[]);
+        let shared = encoder.encode_send(10);
+        let _ = encoder.client_datagrams_within(1, close_camera(), &shared, Some(10_000), 1);
+        assert_eq!(encoder.last_client_selection().allowance_bytes, 40);
+        let _ = encoder.client_datagrams_within(1, close_camera(), &shared, Some(10_000), 2);
+        assert_eq!(encoder.last_client_selection().allowance_bytes, 80);
+        let _ = encoder.client_datagrams_within(1, close_camera(), &shared, Some(50), 2);
+        assert_eq!(encoder.last_client_selection().allowance_bytes, 50, "the link allowance still binds");
+    }
+
+    /// The stream is sent every tick at a 60 Hz sim, and the per-send
+    /// ceiling is halved with it, so the byte-rate cap is what it was at
+    /// 30 Hz (10.4 kB per send).
+    #[test]
+    fn the_stream_is_sent_every_tick_under_the_same_byte_rate_cap() {
+        let config = EncoderConfig::validated(60);
+        assert_eq!(config.send_interval_ticks, 1);
+        assert_eq!(config.client_ceiling_bytes * 60, 10_400 * 30);
+        assert_eq!(config.innovation_window_ticks, 2);
+        assert_eq!(EncoderConfig::validated(30).send_interval_ticks, 1);
+        assert_eq!(EncoderConfig::validated(120).send_interval_ticks, 2);
+    }
+
+    /// Captures record their encoder's config. One made before the 60 Hz
+    /// stream resumes at its own 30 Hz cadence and ceiling, with no
+    /// innovation window, so its replay stays byte-exact.
+    #[test]
+    fn an_older_checkpoint_resumes_at_its_cadence_without_an_innovation_window() {
+        let manifest = manifest();
+        let mut config = EncoderConfig::validated(60);
+        config.send_interval_ticks = 2;
+        config.client_ceiling_bytes = 10_400;
+        let encoder = ChunkStreamEncoder::new(&manifest, config);
+        let mut json = serde_json::to_value(encoder.checkpoint()).expect("json");
+        json["config"].as_object_mut().expect("config").remove("innovation_window_ticks");
+        let checkpoint: EncoderCheckpoint = serde_json::from_value(json).expect("older checkpoint");
+        let resumed = ChunkStreamEncoder::from_checkpoint(&manifest, checkpoint).expect("resume");
+        assert_eq!(resumed.config().send_interval_ticks, 2);
+        assert_eq!(resumed.config().client_ceiling_bytes, 10_400);
+        assert_eq!(resumed.config().innovation_window_ticks, 0);
+    }
+
+    /// A body speeding up at 9 m/s^2 (debris sliding down a slope) changes
+    /// velocity by 0.3 m/s per 30 Hz send, over the 0.25 m/s perturbation
+    /// gate, so the 30 Hz stream refreshed it at every send. Judged per
+    /// send at 60 Hz the change is 0.15 m/s and the body waits for its
+    /// error or age gate instead: the window keeps the test the same
+    /// acceleration, refreshed as often as before.
+    #[test]
+    fn an_accelerating_body_is_refreshed_as_often_at_60_hz_as_at_30() {
+        let dt = 1.0 / 60.0;
+        let accel = 9.0f32;
+        let motion = |tick: u32| {
+            let t = (tick - 10) as f32 * dt;
+            body_at([1.0 + 0.5 * accel * t * t, 0.5, 0.0], [accel * t, 0.0, 0.0])
+        };
+        let far = Camera { eye: Vec3::new(0.0, 2.0, -40.0), direction: Vec3::Z, fov_degrees: 70.0 };
+        let count = |config: EncoderConfig| stream_to(config, 10..70, far, motion).len();
+        let mut at30 = EncoderConfig::validated(60);
+        at30.send_interval_ticks = 2;
+        let at60 = EncoderConfig::validated(60);
+        let mut per_send = at60;
+        per_send.innovation_window_ticks = 0;
+        let (n30, n60, n60_per_send) = (count(at30), count(at60), count(per_send));
+        assert!(n30 >= 25, "30 Hz refreshes it at every send: {n30} records in 60 ticks");
+        assert!(n60.abs_diff(n30) <= 2, "60 Hz with the window: {n60} records, 30 Hz: {n30}");
+        assert!(n60_per_send * 2 < n30, "judged per send at 60 Hz it is left to the other gates: {n60_per_send}");
+    }
+
+    /// At the window's own cadence the scale is exactly 1 and every record
+    /// is at least a window old: a 30 Hz stream sends the same records as
+    /// without it.
+    #[test]
+    fn at_30_hz_the_innovation_window_changes_no_record() {
+        let dt = 1.0 / 60.0;
+        let motion = |tick: u32| {
+            let t = (tick - 10) as f32 * dt;
+            let wobble = (t * 7.0).sin();
+            body_at([1.0 + 0.5 * 9.0 * t * t, 0.5 + 0.1 * wobble, 0.0], [9.0 * t, 0.7 * (t * 7.0).cos(), 0.0])
+        };
+        let mut with = EncoderConfig::validated(60);
+        with.send_interval_ticks = 2;
+        with.client_ceiling_bytes = 10_400;
+        let mut without = with;
+        without.innovation_window_ticks = 0;
+        let records = |config: EncoderConfig| {
+            stream(config, 10..200, motion)
+                .into_iter()
+                .map(|(tick, r)| (tick, r.position.to_array(), r.linear_velocity.to_array()))
+                .collect::<Vec<_>>()
+        };
+        let a = records(with);
+        assert!(!a.is_empty());
+        assert_eq!(a, records(without));
     }
 
     /// Debris sliding along the ground reports no contacts, so the

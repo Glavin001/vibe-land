@@ -393,7 +393,7 @@ struct CityStatsSnapshot {
     /// telemetry line). Lands entirely on one tick, so it shows up as a spike
     /// in the tick window rather than in any average.
     publish_ms: f32,
-    /// The 30 Hz stream encode: shared record build, then per-client interest
+    /// The stream encode (60 Hz; 30 Hz before): shared record build, then per-client interest
     /// and datagram packing.
     ///
     /// NOT part of `step_ms`. This is a separate pass at half the rate, so
@@ -4942,6 +4942,7 @@ impl MatchState {
                     camera,
                     shared,
                     plan.after_topology(copies).allowance(),
+                    plan.ceiling_sends(),
                 ));
                 self.note_selection(session_capture::Selection {
                     tick,
@@ -7858,7 +7859,7 @@ mod quic_rate_tests {
                 let plan = controller.plan(sample, 1.0 / 30.0, 10_400);
                 let bytes = match plan {
                     SendPlan::Full => 10_400,
-                    SendPlan::Limited { allowance_bytes } => allowance_bytes.min(10_400),
+                    SendPlan::Limited { allowance_bytes, .. } => allowance_bytes.min(10_400),
                     SendPlan::Skip => 0,
                 };
                 sent += send(bytes);

@@ -2,7 +2,8 @@
 //!
 //! The city encoder picks, per client and per send, the records that remove
 //! the most visible error per byte, under a byte allowance. Until now that
-//! allowance was one fixed ceiling (10.4 kB per send, ~2.5 Mbit/s at 30 Hz)
+//! allowance was one fixed ceiling (~2.5 Mbit/s: 10.4 kB per 30 Hz send,
+//! 5.2 kB per 60 Hz send since the stream sends every tick)
 //! for every client. A link slower than the stream's peaks could not carry
 //! it: the excess waited in the QUIC sender's datagram buffer (1 MiB,
 //! drop-oldest), and on a 0.5 Mbit/s link a pose arrived seconds after it
@@ -157,6 +158,15 @@ pub struct RateConfig {
     pub loss_window_ms: f64,
     /// A loss window with fewer packets sent says nothing.
     pub policer_min_packets: u64,
+    /// Least time between city sends while `Limited`, s (0: every send the
+    /// stream makes). A limited link at 60 Hz is paced to the same byte rate
+    /// as at 30 Hz, but cut into twice the sends, and the cut line falls on
+    /// every one: on the 0.5 Mbit/s lab link that drew more debris corrected
+    /// in view than the 30 Hz stream did (docs/netcode-tuning.md). At 1/30 s
+    /// a limited link gets the 30 Hz stream back: every other tick, each send
+    /// with the budget and the per-send ceiling of two (`SendPlan::Limited`
+    /// `sends`). Free links keep every tick.
+    pub limited_send_interval_s: f64,
 }
 
 impl RateConfig {
@@ -183,6 +193,7 @@ impl RateConfig {
         policer_loss: 0.10,
         loss_window_ms: 2_000.0,
         policer_min_packets: 60,
+        limited_send_interval_s: 1.0 / 30.0,
     };
 
     /// `VIBE_CITY_RATE_ADAPT=0` turns adaptation off (every client gets the
@@ -191,6 +202,10 @@ impl RateConfig {
         let mut config = Self::PRODUCTION;
         if let Ok(value) = std::env::var("VIBE_CITY_RATE_ADAPT") {
             config.enabled = !matches!(value.trim(), "0" | "off" | "false");
+        }
+        // `VIBE_CITY_LIMITED_HZ=0` sends a limited link at every tick too.
+        if let Some(hz) = std::env::var("VIBE_CITY_LIMITED_HZ").ok().and_then(|v| v.trim().parse::<f64>().ok()) {
+            config.limited_send_interval_s = if hz > 0.0 { 1.0 / hz } else { 0.0 };
         }
         config
     }
@@ -207,8 +222,11 @@ impl RateConfig {
 pub enum SendPlan {
     /// The static ceiling, unchanged: the link keeps up.
     Full,
-    /// At most this many record bytes.
-    Limited { allowance_bytes: usize },
+    /// At most this many record bytes, in a send that stands for `sends`
+    /// of the stream's nominal sends (the encoder's per-send ceiling is
+    /// multiplied by it; 1 unless `RateConfig::limited_send_interval_s`
+    /// paces a faster stream).
+    Limited { allowance_bytes: usize, sends: u32 },
     /// Not this send: the budget carries to the next one.
     Skip,
 }
@@ -221,9 +239,10 @@ impl SendPlan {
     /// not push the connection past its rate.
     pub fn after_topology(self, topology_bytes: usize) -> Self {
         match self {
-            SendPlan::Limited { allowance_bytes } => {
-                SendPlan::Limited { allowance_bytes: allowance_bytes.saturating_sub(topology_bytes) }
-            }
+            SendPlan::Limited { allowance_bytes, sends } => SendPlan::Limited {
+                allowance_bytes: allowance_bytes.saturating_sub(topology_bytes),
+                sends,
+            },
             plan => plan,
         }
     }
@@ -232,8 +251,17 @@ impl SendPlan {
     pub fn allowance(self) -> Option<usize> {
         match self {
             SendPlan::Full => None,
-            SendPlan::Limited { allowance_bytes } => Some(allowance_bytes),
+            SendPlan::Limited { allowance_bytes, .. } => Some(allowance_bytes),
             SendPlan::Skip => Some(0),
+        }
+    }
+
+    /// How many of the stream's nominal sends this one stands for: the
+    /// multiple of the encoder's per-send ceiling it may use.
+    pub fn ceiling_sends(self) -> u32 {
+        match self {
+            SendPlan::Limited { sends, .. } => sends.max(1),
+            _ => 1,
         }
     }
 }
@@ -308,6 +336,8 @@ pub struct RateController {
     /// City bytes queued since the previous plan (told through `sent`).
     city_bytes_since_plan: u64,
     last: Option<LinkSample>,
+    /// When the last limited send went out (for `limited_send_interval_s`).
+    last_limited_send_us: Option<u64>,
     /// The latest city rate in the limited state, bytes/s (reports).
     city_rate: f64,
     totals: RateTotals,
@@ -338,6 +368,7 @@ impl RateController {
             tokens: 0.0,
             city_bytes_since_plan: 0,
             last: None,
+            last_limited_send_us: None,
             city_rate: 0.0,
             totals: RateTotals::default(),
         }
@@ -505,7 +536,16 @@ impl RateController {
             - stream_yield)
             .max(config.min_rate_bytes_per_s);
         self.city_rate = rate;
-        let nominal = rate * send_interval_s;
+        // A limited link is sent no faster than `limited_send_interval_s`:
+        // each send then carries (and may use the ceiling of) this many of
+        // the stream's nominal sends.
+        let sends = if config.limited_send_interval_s > send_interval_s * 1.5 {
+            (config.limited_send_interval_s / send_interval_s.max(1e-6)).round().max(1.0) as u32
+        } else {
+            1
+        };
+        let paced_interval_s = send_interval_s * f64::from(sends);
+        let nominal = rate * paced_interval_s;
         // Back to the static ceiling only once the path has been measured
         // carrying it (the full-ceiling stream plus everything else, with no
         // standing queue), for a while. A constrained link stays limited
@@ -525,14 +565,21 @@ impl RateController {
         }
         let cap = (2.0 * nominal).max(config.min_send_bytes as f64);
         self.tokens = (self.tokens + rate * dt_s).min(cap);
-        if self.tokens < config.min_send_bytes as f64 {
+        // Half a nominal interval of slack: sends land on ticks, and a slow
+        // tick must not push the next paced send a whole interval later.
+        let too_soon = sends > 1
+            && self.last_limited_send_us.is_some_and(|last| {
+                (sample.at_us.saturating_sub(last) as f64 / 1e6) < paced_interval_s - 0.5 * send_interval_s
+            });
+        if too_soon || self.tokens < config.min_send_bytes as f64 {
             self.totals.sends_skipped += 1;
             return SendPlan::Skip;
         }
         let allowance_bytes = self.tokens.floor() as usize;
+        self.last_limited_send_us = Some(sample.at_us);
         self.totals.sends_limited += 1;
         self.totals.limited_allowance_bytes += allowance_bytes as u64;
-        SendPlan::Limited { allowance_bytes }
+        SendPlan::Limited { allowance_bytes, sends }
     }
 
     /// What the send queued (its city bytes), for the plan it was given.
@@ -795,16 +842,25 @@ mod tests {
         reliable_submitted: f64,
         stream_wait_max_us: u64,
         overhead_per_packet: f64,
+        /// The city stream's cadence and per-send ceiling.
+        send_hz: f64,
+        ceiling: usize,
     }
 
     impl Link {
         fn new(rate_mbit: f64) -> Self {
+            Self::at_cadence(rate_mbit, SEND_HZ, CEILING)
+        }
+
+        fn at_cadence(rate_mbit: f64, send_hz: f64, ceiling: usize) -> Self {
             Self {
+                send_hz,
+                ceiling,
                 rate_bytes_per_s: rate_mbit * 1e6 / 8.0,
                 loss: 0.0,
                 base_rtt_us: 60_000,
                 network_queue_ms: None,
-                other_bytes_per_send: 45_000.0 / 8.0 / SEND_HZ,
+                other_bytes_per_send: 45_000.0 / 8.0 / send_hz,
                 queue: 0.0,
                 wire: 0.0,
                 packets: 0.0,
@@ -852,7 +908,7 @@ mod tests {
                 self.reliable_submitted += reliable;
                 self.stream.push_back((reliable, self.at_us));
             }
-            let dt = 1.0 / SEND_HZ;
+            let dt = 1.0 / self.send_hz;
             match self.network_queue_ms {
                 None => {
                     // Datagrams first; the stream gets what is left.
@@ -906,10 +962,10 @@ mod tests {
 
     /// One send against `link` with a city demand of `demand` bytes.
     fn send(controller: &mut RateController, link: &mut Link, demand: f64) -> (SendPlan, f64) {
-        let plan = controller.plan(link.sample(), 1.0 / SEND_HZ, CEILING);
+        let plan = controller.plan(link.sample(), 1.0 / link.send_hz, link.ceiling);
         let bytes = match plan {
-            SendPlan::Full => demand.min(CEILING as f64),
-            SendPlan::Limited { allowance_bytes } => demand.min(allowance_bytes as f64),
+            SendPlan::Full => demand.min(link.ceiling as f64),
+            SendPlan::Limited { allowance_bytes, .. } => demand.min(allowance_bytes as f64),
             SendPlan::Skip => 0.0,
         };
         controller.sent(bytes as usize, plan);
@@ -1010,6 +1066,118 @@ mod tests {
             }
             assert_eq!(controller.state(), RateState::Free);
             assert_eq!(controller.totals().entered_limited, 0);
+        }
+    }
+
+    /// The stream sends every tick (60 Hz) with half the per-send ceiling:
+    /// the controller works in bytes per second, so a fast link keeps the
+    /// ceiling at every send, a slow one is paced to the same share and
+    /// queue as at 30 Hz, and a very slow one merges sends.
+    #[test]
+    fn the_controller_paces_a_60_hz_stream_as_it_paced_30_hz() {
+        const HZ: f64 = 60.0;
+        const HALF: usize = CEILING / 2;
+        for (rate_mbit, loss) in [(1000.0, 0.0), (50.0, 0.03), (20.0, 0.20), (5.0, 0.0)] {
+            let mut controller = RateController::new(RateConfig::PRODUCTION);
+            let mut link = Link::at_cadence(rate_mbit, HZ, HALF);
+            link.loss = loss;
+            for n in 0..6_000 {
+                let demand = if n % 300 < 120 { HALF as f64 } else { 400.0 };
+                let (plan, _) = send(&mut controller, &mut link, demand);
+                assert_eq!(plan, SendPlan::Full, "{rate_mbit} Mbit/s, loss {loss}: send {n} throttled");
+            }
+            assert_eq!(controller.totals().entered_limited, 0);
+        }
+        let mut controller = RateController::new(RateConfig::PRODUCTION);
+        let mut link = Link::at_cadence(0.5, HZ, HALF);
+        for _ in 0..120 {
+            send(&mut controller, &mut link, 150.0);
+        }
+        assert_eq!(controller.state(), RateState::Free, "a quiet stream fits");
+        let (mut city, mut delays) = (0.0, Vec::new());
+        for n in 0..600 {
+            let (_, bytes) = send(&mut controller, &mut link, HALF as f64);
+            if n >= 120 {
+                delays.push(link.queue_delay_ms());
+                city += bytes;
+            }
+        }
+        assert_eq!(controller.state(), RateState::Limited);
+        let worst = delays.iter().cloned().fold(0.0, f64::max);
+        let mean = delays.iter().sum::<f64>() / delays.len() as f64;
+        assert!(worst < 150.0, "queue delay reached {worst:.0} ms");
+        assert!(mean < 60.0, "mean queue delay {mean:.0} ms");
+        let city_rate = city / (480.0 / HZ);
+        assert!((40_000.0..56_000.0).contains(&city_rate), "city rate {city_rate:.0} B/s");
+        // 96 kbit/s: sends merge rather than go out as crumbs.
+        let mut controller = RateController::new(RateConfig::PRODUCTION);
+        let mut link = Link::at_cadence(0.096, HZ, HALF);
+        let mut skipped = 0;
+        for n in 0..1_800 {
+            let (plan, bytes) = send(&mut controller, &mut link, HALF as f64);
+            if n < 600 {
+                continue;
+            }
+            match plan {
+                SendPlan::Skip => skipped += 1,
+                SendPlan::Limited { .. } => {
+                    assert!(bytes >= RateConfig::PRODUCTION.min_send_bytes as f64, "a crumb: {bytes} B")
+                }
+                SendPlan::Full => panic!("send {n} unthrottled on a 96 kbit/s path"),
+            }
+        }
+        assert!(skipped > 600, "the cadence falls: {skipped} of 1,200 skipped");
+        assert!(link.queue_delay_ms() < 300.0, "queue {:.0} ms", link.queue_delay_ms());
+    }
+
+    /// A limited link is sent the 30 Hz stream: every other 60 Hz send, each
+    /// standing for two (the encoder's ceiling doubles with it), at the same
+    /// byte rate. Free links keep every tick. Off (0), a limited link is sent
+    /// at every tick, as before.
+    #[test]
+    fn a_limited_60_hz_link_is_sent_every_other_tick() {
+        const HZ: f64 = 60.0;
+        const HALF: usize = CEILING / 2;
+        let run = |config: RateConfig| {
+            let mut controller = RateController::new(config);
+            let mut link = Link::at_cadence(0.5, HZ, HALF);
+            let (mut plans, mut city) = (Vec::new(), 0.0);
+            for n in 0..900 {
+                let (plan, bytes) = send(&mut controller, &mut link, HALF as f64);
+                if n >= 300 {
+                    plans.push(plan);
+                    city += bytes;
+                }
+            }
+            assert_eq!(controller.state(), RateState::Limited);
+            (plans, city / (600.0 / HZ), link.queue_delay_ms())
+        };
+        let (paced, paced_rate, paced_queue) = run(RateConfig::PRODUCTION);
+        let sent: Vec<_> = paced.iter().filter(|p| matches!(p, SendPlan::Limited { .. })).collect();
+        assert!(sent.iter().all(|p| p.ceiling_sends() == 2), "each limited send stands for two");
+        assert!((290..=310).contains(&sent.len()), "{} of 600 sends", sent.len());
+        assert!(
+            paced.windows(2).all(|w| !(matches!(w[0], SendPlan::Limited { .. }) && matches!(w[1], SendPlan::Limited { .. }))),
+            "never two limited sends in consecutive ticks"
+        );
+        let (every, every_rate, _) = run(RateConfig { limited_send_interval_s: 0.0, ..RateConfig::PRODUCTION });
+        let every_sent = every.iter().filter(|p| matches!(p, SendPlan::Limited { .. })).count();
+        assert!(every_sent > 550, "off: {every_sent} of 600 sends");
+        assert!(every.iter().all(|p| p.ceiling_sends() == 1));
+        // The same share of the path, and the same short queue.
+        assert!((paced_rate / every_rate - 1.0).abs() < 0.1, "{paced_rate:.0} vs {every_rate:.0} B/s");
+        assert!(paced_queue < 150.0, "queue {paced_queue:.0} ms");
+        // A free link keeps every tick; a 30 Hz stream is untouched.
+        let mut controller = RateController::new(RateConfig::PRODUCTION);
+        let mut link = Link::at_cadence(50.0, HZ, HALF);
+        for n in 0..1_200 {
+            assert_eq!(send(&mut controller, &mut link, HALF as f64).0, SendPlan::Full, "send {n}");
+        }
+        let mut controller = RateController::new(RateConfig::PRODUCTION);
+        let mut link = Link::new(0.5);
+        for _ in 0..600 {
+            let (plan, _) = send(&mut controller, &mut link, SATURATING);
+            assert_eq!(plan.ceiling_sends(), 1);
         }
     }
 

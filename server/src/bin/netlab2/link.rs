@@ -785,7 +785,7 @@ mod tests {
                     let plan = controller.plan(sample, 1.0 / 30.0, 10_400);
                     let bytes = match plan {
                         SendPlan::Full => 10_400,
-                        SendPlan::Limited { allowance_bytes } => allowance_bytes.min(10_400),
+                        SendPlan::Limited { allowance_bytes, .. } => allowance_bytes.min(10_400),
                         SendPlan::Skip => 0,
                     };
                     let mut left = bytes;
