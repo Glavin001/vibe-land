@@ -232,6 +232,11 @@ displayFile.write(encodeDisplayHeader({
   meteorPlacement: meteorPlacement !== null,
   sharedPoses: { entities: entityPoses !== null, city: cityPoses !== null, meteorFrame: typeof meteorPlacement?.placeMeteorInFrame === 'function' },
   perturb,
+  // Every entity record carries the lead it was drawn at past the frame's
+  // render time (displayFormat.ts): 0 for players and vehicles, and for any
+  // client without a body lead.
+  entityLeadUs: true,
+  bodyLead: typeof client.dynamicBodyLeadConfig === 'function' ? client.dynamicBodyLeadConfig() : null,
 }));
 
 const presentedStream = await (async () => {
@@ -349,6 +354,24 @@ function drawCity(nowMs: number, simTick: number): void {
   chunkStream.frames += 1;
 }
 
+// Data revisions of drawn bodies: each frame, a plain body drawn last frame is
+// sampled again at the time it was drawn then, with what has arrived since.
+// The distance to what was drawn is the part of this frame's step that new
+// data caused -- the correction a viewer sees -- whatever the render time or
+// lead did. A body drawn from samples it already had (interpolated) is never
+// revised; one drawn past its newest sample is, when the next one disagrees.
+// `sampleDynamicBodyDraw` is the client's draw at an explicit draw time
+// (net/netcodeClient.ts); a client without it draws `sampleRemoteDynamicBody`
+// at the render time.
+const drawnBodies = new Map<number, { atUs: number; position: number[] }>();
+const revisions = { compared: 0, over0_05: 0, over0_25: 0, over1: 0, over4: 0, metres: 0, max: 0 };
+const sampleDraw = (id: number, atUs: number): { position: number[] } | null =>
+  typeof client.sampleDynamicBodyDraw === 'function'
+    ? client.sampleDynamicBodyDraw(id, atUs)
+    : client.sampleRemoteDynamicBody(id, atUs);
+const drawTimeUs = (id: number, renderUs: number): number =>
+  typeof client.dynamicBodyDrawTimeUs === 'function' ? client.dynamicBodyDrawTimeUs(id, renderUs) : renderUs;
+
 let sampled = 0;
 let skippedBeforeStart = 0;
 const realNow = () => Number(process.hrtime.bigint()) / 1e6;
@@ -446,8 +469,30 @@ for (const [what, index] of events) {
         .filter((id: number) => !meteorFlightsModule.isMeteorBody(id))
         .map((id: number) => ({ id, body: rendered(id) }))
         .filter((draw: { body: unknown }) => draw.body);
+  const drawnNow = new Set<number>();
   for (const { id, body } of bodyDraws) {
     const sampled_ = client.sampleRemoteDynamicBody(id, dynRenderUs);
+    const atUs = drawTimeUs(id, dynRenderUs);
+    const before = drawnBodies.get(id);
+    if (before) {
+      const again = sampleDraw(id, before.atUs);
+      if (again) {
+        const d = Math.hypot(
+          again.position[0] - before.position[0],
+          again.position[1] - before.position[1],
+          again.position[2] - before.position[2],
+        );
+        revisions.compared += 1;
+        revisions.metres += d;
+        revisions.max = Math.max(revisions.max, d);
+        if (d > 0.05) revisions.over0_05 += 1;
+        if (d > 0.25) revisions.over0_25 += 1;
+        if (d > 1) revisions.over1 += 1;
+        if (d > 4) revisions.over4 += 1;
+      }
+    }
+    drawnBodies.set(id, { atUs, position: [...body.position] });
+    drawnNow.add(id);
     entities.push({
       kind: KIND_BODY,
       flags: (sampled_ ? FLAG_SAMPLED : 0) | ((body.shapeType & 0x0f) << 4),
@@ -455,8 +500,10 @@ for (const [what, index] of events) {
       position: body.position,
       quaternion: body.quaternion,
       ageMs: client.getDynamicBodyObservedAgeMs(id, localUs) ?? Number.NaN,
+      leadUs: atUs - dynRenderUs,
     });
   }
+  for (const id of drawnBodies.keys()) if (!drawnNow.has(id)) drawnBodies.delete(id);
   // Meteors, as MeteorLayer places them (meteorPlacement.ts `placeMeteorInFrame`).
   if (meteorPlacement) {
     const flights = meteorFlightsModule.meteorFlights(t, dynRenderUs);
@@ -482,6 +529,7 @@ for (const [what, index] of events) {
         position: placed.position,
         quaternion: placed.quaternion ?? [0, 0, 0, 1],
         ageMs: Number.NaN,
+        leadUs: placed.leadUs ?? 0,
       });
     }
   }
@@ -498,7 +546,7 @@ for (const [what, index] of events) {
     renderUs,
     dynRenderUs,
     entities: entities.map(shift),
-  }));
+  }, true));
   writePresented(t);
   sampled += 1;
 }
@@ -529,6 +577,8 @@ const stats = {
   // one (dropped whole by clients before the late-snapshot change, applied
   // per entity since).
   snapshots: snapshotCounts(),
+  bodyRevisions: revisions,
+  bodyLead: typeof client.dynamicBodyLeadStats === 'function' ? client.dynamicBodyLeadStats() : null,
   city: city.stats(),
 };
 function snapshotCounts(): { newest: number; late: number } | null {

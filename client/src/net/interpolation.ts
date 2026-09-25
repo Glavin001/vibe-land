@@ -525,6 +525,11 @@ export class RenderClock {
     this.setTargetDelayMs(ms);
   }
 
+  /** Whether the clock has handed out a render time since it (re)started. */
+  get started(): boolean {
+    return this.lastRenderUs !== -Infinity;
+  }
+
   /** The delay the clock is moving towards, ms. */
   get targetDelayMs(): number {
     return this.targetDelayUs / 1000;

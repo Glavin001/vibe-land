@@ -159,8 +159,8 @@ or wrong-identity (see [All draws](#all-draws-the-headline)).
 | Own avatar | `client.getPosition()` (local prediction; thin-authoritative: `getLocalPlayerRenderTimeUs` samples) → camera / debug capsule | Not reproducible (no inputs): drawn from its snapshots | `own_avatar`, **not in `overall`** | Prediction is not replayed (S11); a spectator bundle has no avatar to predict. |
 | Remote vehicles | `getRenderTimeUs` → `sampleRemoteVehicle` → `netEntityPoses.remoteVehicleDrawPose` (sample or latest) → `VehiclesRenderer` chassis | Shared | `vehicle`: position, rotation; missing within `VEHICLE_AOI_RADIUS_M`; wrong identity = drawn vehicle type ≠ truth | Wheels are derived visuals (suspension), not scored. |
 | Driven vehicle | Prediction → `vehicleLocalMeshPose.updateLocalVehicleMeshPose` smoothing → `VehiclesRenderer` | Not reproducible: drawn from snapshots | `vehicle_driven`, **not in `overall`** | S11. |
-| Dynamic spheres / boxes (cannonballs, props) | `getDynamicBodyRenderTimeUs` → `MultiplayerGameRuntime.getRenderedDynamicBodyState` (local proxy if just touched, else `getInterpolatedDynamicBodyState`: interpolated, else latest) → `netEntityPoses.resolveDynamicBodyDraws` (meteor bodies skipped) → `DynamicBodiesRenderer` | Shared, with the non-interaction branch of `getRenderedDynamicBodyState` | `body`: position; rotation for boxes only (a plain ball is a uniformly coloured sphere, and SnapshotV2 carries no sphere orientation); missing within `DYNAMIC_BODY_AOI_RADIUS_M`; extra = drawn, not in truth; wrong identity = drawn shape ≠ truth shape | Bodies the recording player touches (local proxy) are drawn from snapshots in the lab. |
-| Meteors in flight and after impact | `meteorFlights` → `meteorPlacement.placeMeteorInFrame` (arc until contact, with the arc's tumble `arcTumble`; then the streamed body interpolated / ≤ 250 ms extrapolated, hidden once it leaves the stream; a rock never streamed is hidden one staleness window after its planned landing) → `MeteorLayer` rock | Shared | `meteor`: position; rotation only when drawn from the body (on the arc the rock spins for show); hidden = not drawn; missing = meteor body in interest drawn by neither layer | The body's orientation is not streamed (sphere): the client integrates the streamed spin from the launch orientation, so a body-drawn rock's rotation error vs truth is drift (p99 ~170°), real but cosmetic; its spin matches truth (item 15 of the session analysis). |
+| Dynamic spheres / boxes (cannonballs, props) | `getDynamicBodyRenderTimeUs` → `MultiplayerGameRuntime.getRenderedDynamicBodyState` (local proxy if just touched, else `getInterpolatedDynamicBodyState`: interpolated at the render time plus the body's lead while it is in free fall (`bodyLead.ts`), else latest) → `netEntityPoses.resolveDynamicBodyDraws` (meteor bodies skipped) → `DynamicBodiesRenderer` | Shared, with the non-interaction branch of `getRenderedDynamicBodyState` | `body`: position; rotation for boxes only (a plain ball is a uniformly coloured sphere, and SnapshotV2 carries no sphere orientation); missing within `DYNAMIC_BODY_AOI_RADIUS_M`; extra = drawn, not in truth; wrong identity = drawn shape ≠ truth shape | Bodies the recording player touches (local proxy) are drawn from snapshots in the lab. |
+| Meteors in flight and after impact | `meteorFlights` → `meteorPlacement.placeMeteorInFrame` (arc until contact, with the arc's tumble `arcTumble`; then the streamed body interpolated / ≤ 250 ms extrapolated, at the body lead while it is in free fall, hidden once it leaves the stream; a rock never streamed is hidden one staleness window after its planned landing) → `MeteorLayer` rock | Shared | `meteor`: position; rotation only when drawn from the body (on the arc the rock spins for show); hidden = not drawn; missing = meteor body in interest drawn by neither layer | The body's orientation is not streamed (sphere): the client integrates the streamed spin from the launch orientation, so a body-drawn rock's rotation error vs truth is drift (p99 ~170°), real but cosmetic; its spin matches truth (item 15 of the session analysis). |
 | City: intact structure chunks | Ledger support body (serial 0) pose ∘ chunk rest offset, written by `cityPoseStore.initCityPoses` / `advanceCityPoses` into the chunk-record and body-pose tables → vertex shader `citySlotMatrix` | Shared (tables), composed in Rust exactly as the shader does | `chunk_intact`, per chunk | – |
 | City: live debris | `CityClient.samplePresentation` (presentation track at `render_tick - playout_delay`) → ledger island pose → `advanceCityPoses` body write (records rewritten when the ledger re-parents or rebases a chunk) → shader | Shared | `chunk_debris` (truth island moving at the presented tick) | The layer's distance stride is left out (S10). |
 | City: settled rubble | Settle record → ledger pose → one final body write → shader | Shared | `chunk_rubble` (truth island settled at the presented tick) | – |
@@ -324,6 +324,17 @@ A browser has no such environment. Runs made before the predictive default
 drew debris as `CITY_PREDICTIVE=0` does: set it to score an older client's
 presentation with this tree's client.
 
+The snapshot-body lead (`client/src/net/bodyLead.ts`,
+[netcode-tuning.md](netcode-tuning.md#predictive-snapshot-bodies-the-debris-lead-for-cannonballs-and-meteors))
+reads `BODY_LEAD=0 | 1` (the page's `?bodyLead=`; on by default), and
+`BODY_LEAD_HORIZON=data | arrival`, `BODY_LEAD_Q` (0.1), `BODY_LEAD_WINDOW`
+(arrivals, 120), `BODY_LEAD_BACKOFF` (ticks, 0), `BODY_LEAD_CAP` (ticks past
+a body's newest sample, 1), `BODY_LEAD_OVERSHOOT_M` (0 = none),
+`BODY_LEAD_MAX` (ticks, 6), `BODY_LEAD_RISE` / `BODY_LEAD_FALL` (0.5),
+`BODY_LEAD_WARP` (1), `BODY_LEAD_WARP_GAIN` (0.8), `BODY_LEAD_TAU_MS` (the
+`arrival` smoothing, 500). A run made before it drew every body as
+`BODY_LEAD=0` does.
+
 Lab-only knobs, not production settings: `lab.rate_stale_ms` (default 0)
 makes the rate controller read the link as it was that many ms before each
 send, to bound S15's sensitivity to feedback delay; and `lab.recorded_repairs` (default
@@ -410,6 +421,32 @@ now reads `city bodies:` (it scores island bodies, not chunks) and adds the
 render-time coverage fields below.
 
 ## Metrics
+
+- **Drawn ahead of the render time** (a client with a body lead). The client
+  stage writes each entity's lead past the frame's render time into the
+  display stream (`entityLeadUs` in the header; a stream without it reads as
+  no lead). Per body class, and for meteors in `meteors`, the scorer adds:
+  - `err_draw_m`: the error against truth at the draw time (render time +
+    lead), i.e. the interpolation / extrapolation error with the lead taken
+    out;
+  - `draw_gates`: the freeze, reversal, snap and teleport gates judged over
+    the draw times, so a lead that changes as playback speed is not a snap
+    and a correction still is. A frame whose draw times are not inside the
+    body's life in truth is not judged there: truth would read as standing
+    still at its last tick. For a client with no lead these are the gates
+    below, but for that rule;
+  - `lead_ms` and `lead_speed_frames`: frames drawn at a playback speed off
+    1 by over a quarter, which is how a lead that chases the arrival
+    sawtooth shows (judder no positional gate sees).
+- `pos@render` rises with a lead by design: it is judged at the render time,
+  and the body is drawn later on its path.
+- **Revisions** (`client-stats.json` `bodyRevisions`). Each frame, the client
+  stage samples a plain body drawn last frame again at the time it was drawn
+  then, with what has arrived since. The distance is the part of the step
+  that new data caused, the correction a viewer sees, whatever the clock or
+  the lead did. It is counted over 0.05, 0.25, 1 and 4 m, with the total and
+  the maximum. A client without `sampleDynamicBodyDraw` is sampled with
+  `sampleRemoteDynamicBody` at the render time.
 
 - **Classes.** Bodies are classified from truth kinematics at the render tick:
   - `resting`: under 0.05 m/s and 0.05 rad/s.
@@ -893,6 +930,10 @@ A run directory holds:
 - `client-stats.json`: WASM check, nacks, city client stats.
 - `report.json` / `report.md`.
 - `calibration.*`, when calibrating.
+
+`NETLAB2_GATE_DUMP=1` makes the scorer print each meteor draw-time gate event
+(id, frame time, drawn step, truth travel, lead, source): a diagnostic that
+changes no score.
 
 `NETLAB2_WRONG_ID_DUMP=<file>` makes the scorer write one line per held
 wrong-identity chunk measure (slot, drawn body, truth body, presented tick,

@@ -5,6 +5,7 @@ import {
   encodeDisplayFrame,
   encodeDisplayHeader,
   ENTITY_BYTES,
+  ENTITY_LEAD_BYTES,
   eventOrder,
   FRAME_HEADER_BYTES,
   frameSchedule,
@@ -37,6 +38,31 @@ describe('VLDISP01', () => {
     expect(frames[0].entities[0].id).toBe(42);
     expect(Array.from(frames[0].entities[0].position)).toEqual([1, 2, 3]);
     expect(frames[0].entities[0].ageMs).toBe(12.5);
+    expect(frames[0].entities[0].leadUs).toBeUndefined();
+  });
+
+  it('carries each entity\'s lead when the header says so', () => {
+    const header = encodeDisplayHeader({ entityLeadUs: true });
+    const frame = encodeDisplayFrame({
+      tMs: 1,
+      sampleMs: 1,
+      offsetUs: 0,
+      interpDelayMs: 50,
+      dynDelayMs: 16,
+      renderUs: 1000,
+      dynRenderUs: 900,
+      entities: [
+        { kind: KIND_BODY, flags: 1, id: 7, position: [1, 2, 3], quaternion: [0, 0, 0, 1], ageMs: 3, leadUs: 12_500 },
+        { kind: KIND_BODY, flags: 1, id: 8, position: [4, 5, 6], quaternion: [0, 0, 0, 1], ageMs: 4 },
+      ],
+    }, true);
+    expect(frame.length).toBe(FRAME_HEADER_BYTES + 2 * ENTITY_LEAD_BYTES);
+    const bytes = new Uint8Array(header.length + frame.length);
+    bytes.set(header, 0);
+    bytes.set(frame, header.length);
+    const { frames } = decodeDisplay(bytes);
+    expect(frames[0].entities.map((e) => e.leadUs)).toEqual([12_500, 0]);
+    expect(Array.from(frames[0].entities[1].position)).toEqual([4, 5, 6]);
   });
 });
 

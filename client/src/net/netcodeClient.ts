@@ -4,6 +4,13 @@ import { CITY_WIRE_VERSION } from '../city/wire';
 import { GameSocket } from './gameSocket';
 import { EnergyDisplay } from './energyDisplay';
 import { BodyStreamPresence, MOVING_BODY_SPEED_MS } from './bodyPresence';
+import {
+  BODY_LEAD_CONFIG,
+  BodyLeadHorizon,
+  BodyLeadTrack,
+  type BodyLeadConfig,
+  type BodyLeadCounters,
+} from './bodyLead';
 import { NetDebugTelemetry, type LocalShotTelemetry } from './debugTelemetry';
 import { WebTransportGameClient, type SessionConfigResponse } from './webTransportClient';
 import type { RawPacketListener } from './inbound';
@@ -101,6 +108,8 @@ export type NetcodeClientConfig = {
    * left to local prediction and a first-person camera.
    */
   spectateLocalPlayer?: boolean;
+  /** Overrides of the predictive body lead's settings (bodyLead.ts); tests and tools. */
+  bodyLead?: Partial<BodyLeadConfig>;
 };
 
 /**
@@ -153,6 +162,17 @@ export class NetcodeClient {
    */
   private readonly playerRenderClock = new RenderClock();
   private readonly dynamicBodyRenderClock = new RenderClock();
+  /**
+   * Predictive snapshot bodies (bodyLead.ts): how far the newest snapshot
+   * runs ahead of the dynamic-body render time, and each drawn body's lead
+   * past it. A body whose last two samples show free fall is drawn up to that
+   * far ahead; every other body, and every body with the lead off, at the
+   * render time.
+   */
+  private readonly bodyLeadConfig: BodyLeadConfig;
+  private readonly bodyLeadHorizon: BodyLeadHorizon;
+  private readonly bodyLeads = new Map<number, BodyLeadTrack>();
+  private readonly bodyLeadCounters: BodyLeadCounters = { warps: 0, warpedMs: 0 };
   /**
    * The local player's own avatar in thin-authoritative mode, which the camera
    * follows: one observed snapshot interval behind, not the 95th-percentile
@@ -209,7 +229,7 @@ export class NetcodeClient {
    * that instant under its old target, so its delay slews per unit of server
    * time whether it is read once a frame or not at all.
    */
-  private adoptAdaptiveDelays(localTimeUs: number): void {
+  private adoptAdaptiveDelays(localTimeUs: number, newestServerUs: number): void {
     const adaptiveDelayMs = this.serverClock.getInterpolationDelayMs();
     if (adaptiveDelayMs <= 0) return;
     const serverNowUs = this.serverClock.serverNowUs(localTimeUs);
@@ -224,6 +244,14 @@ export class NetcodeClient {
       serverNowUs,
       localTimeUs,
     );
+    // The body lead's horizon: how far this snapshot runs ahead of the
+    // dynamic-body render time as it arrives. Read only once the clock has
+    // been read by a frame (retarget has just brought it to this instant, so
+    // the read changes nothing), and not at all with the lead off.
+    if (this.bodyLeadConfig.enabled && this.dynamicBodyRenderClock.started) {
+      const renderUs = this.dynamicBodyRenderClock.renderTimeUs(serverNowUs, localTimeUs);
+      this.bodyLeadHorizon.observeArrival(newestServerUs, renderUs, localTimeUs);
+    }
   }
 
   private pushVehicleSample(
@@ -369,6 +397,8 @@ export class NetcodeClient {
   constructor(config: NetcodeClientConfig) {
     this.config = config;
     this.nowMs = config.nowMs ?? (() => performance.now());
+    this.bodyLeadConfig = { ...BODY_LEAD_CONFIG, ...config.bodyLead };
+    this.bodyLeadHorizon = new BodyLeadHorizon(this.bodyLeadConfig);
     this.playerRenderClock.setTargetDelayMs(this.baselineInterpolationDelayMs);
     this.dynamicBodyRenderClock.setTargetDelayMs(NetcodeClient.INITIAL_DYNAMIC_BODY_INTERPOLATION_DELAY_MS);
     this.localPlayerRenderClock.setTargetDelayMs(NetcodeClient.INITIAL_DYNAMIC_BODY_INTERPOLATION_DELAY_MS);
@@ -699,7 +729,7 @@ export class NetcodeClient {
     this.latestServerTick = packet.serverTick;
     const arrivedUs = this.nowMs() * 1000;
     this.serverClock.observe(packet.serverTimeUs, arrivedUs, packet.serverWallUs);
-    this.adoptAdaptiveDelays(arrivedUs);
+    this.adoptAdaptiveDelays(arrivedUs, packet.serverTimeUs);
     this.debugTelemetry.observeAcceptedSnapshot(
       source,
       packet.serverTick,
@@ -1331,7 +1361,7 @@ export class NetcodeClient {
         this.latestServerTick = packet.serverTick;
         const arrivedUs = this.nowMs() * 1000;
         this.serverClock.observe(packet.serverTimeUs, arrivedUs);
-        this.adoptAdaptiveDelays(arrivedUs);
+        this.adoptAdaptiveDelays(arrivedUs, packet.serverTimeUs);
         this.debugTelemetry.observeAcceptedSnapshot(
           source,
           packet.serverTick,
@@ -1520,13 +1550,75 @@ export class NetcodeClient {
   }
 
   /**
+   * A body as it is drawn at server time `drawUs` (the render time plus its
+   * lead): its track there, never past its last sample once it is leaving
+   * the stream. Pure: the lead is not moved (`dynamicBodyDrawTimeUs` does).
+   */
+  sampleDynamicBodyDraw(id: number, drawUs: number): DynamicBodySample | null {
+    return this.sampleRemoteDynamicBody(id, drawUs);
+  }
+
+  /**
+   * The server time body `id` is drawn at for render time `renderUs`: the
+   * render time plus the body's lead (bodyLead.ts), moved toward its goal
+   * for this render time. The render time itself with the lead off, and for
+   * a body not in free fall once its lead has run out. Idempotent for one
+   * render time.
+   */
+  dynamicBodyDrawTimeUs(id: number, renderUs: number): number {
+    if (!this.bodyLeadConfig.enabled) return renderUs;
+    let track = this.bodyLeads.get(id);
+    if (!track) {
+      track = new BodyLeadTrack();
+      this.bodyLeads.set(id, track);
+    }
+    // A body leaving the stream is drawn up to its last sample and held
+    // there until it is removed (at the render time): it gives its lead up,
+    // so it is not held there that much longer.
+    const horizonUs = this.dynamicBodyLeaving.has(id) ? 0 : this.bodyLeadHorizon.horizonUs();
+    return track.advance(
+      renderUs,
+      this.dynamicBodyInterpolator.samples(id),
+      horizonUs,
+      this.bodyLeadConfig,
+      (t) => this.sampleDynamicBodyDraw(id, t)?.position ?? null,
+      this.bodyLeadCounters,
+    );
+  }
+
+  /** The lead a free-falling body is drawn at now, us (0 with the lead off). */
+  getDynamicBodyLeadHorizonUs(): number {
+    return this.bodyLeadConfig.enabled ? this.bodyLeadHorizon.horizonUs() : 0;
+  }
+
+  /** The body lead's settings (Netlab records them). */
+  dynamicBodyLeadConfig(): BodyLeadConfig {
+    return { ...this.bodyLeadConfig };
+  }
+
+  /** The body lead's counters (Netlab's client stats). */
+  dynamicBodyLeadStats(): { enabled: boolean; aheadMs: number; horizonMs: number; warps: number; warpedMs: number } {
+    return {
+      enabled: this.bodyLeadConfig.enabled,
+      aheadMs: this.bodyLeadHorizon.aheadUs / 1000,
+      horizonMs: this.getDynamicBodyLeadHorizonUs() / 1000,
+      ...this.bodyLeadCounters,
+    };
+  }
+
+  /**
    * A streamed body as a spectator sees it: interpolated at the dynamic-body
    * render time, else its latest state. The live runtime draws this for any
    * body the local player is not interacting with; the tape replay, for all.
+   * A body in free fall is drawn at its lead past the render time
+   * (`dynamicBodyDrawTimeUs`).
    */
   getInterpolatedDynamicBodyState(id: number): DynamicBodyStateMeters | null {
-    const sample = this.sampleRemoteDynamicBody(id, this.getDynamicBodyRenderTimeUs());
+    const renderUs = this.getDynamicBodyRenderTimeUs();
+    const drawUs = this.dynamicBodyDrawTimeUs(id, renderUs);
+    const sample = this.sampleDynamicBodyDraw(id, drawUs);
     if (sample) {
+      this.bodyLeads.get(id)?.drawn(sample.position);
       return {
         id,
         shapeType: sample.shapeType,
@@ -1600,6 +1692,7 @@ export class NetcodeClient {
   }
 
   private removeDynamicBody(id: number): void {
+    this.bodyLeads.delete(id);
     this.dynamicBodyDroppedAtTick.set(id, this.latestServerTick);
     this.dynamicBodies.delete(id);
     this.dynamicBodyServerTimeUs.delete(id);
@@ -1669,6 +1762,8 @@ export class NetcodeClient {
     this.playerRenderClock.reset();
     this.dynamicBodyRenderClock.setTargetDelayMs(NetcodeClient.INITIAL_DYNAMIC_BODY_INTERPOLATION_DELAY_MS);
     this.dynamicBodyRenderClock.reset();
+    this.bodyLeadHorizon.reset();
+    this.bodyLeads.clear();
     this.localPlayerRenderClock.setTargetDelayMs(NetcodeClient.INITIAL_DYNAMIC_BODY_INTERPOLATION_DELAY_MS);
     this.localPlayerRenderClock.reset();
     this.minRemoteInterpolationDelayMs = 0;

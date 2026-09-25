@@ -294,5 +294,53 @@ describe('placeMeteor', () => {
     // 0.45 rad/s over the ~0.08 s between the handover and the planned landing.
     expect(step).toBeLessThan(3);
   });
+
+  it('after contact, a rock bouncing in free fall is drawn ahead by the body lead; at handover it is not', () => {
+    // Contact at 2.0 s (the rock leaves the arc upward, a bounce), then free
+    // fall from there, streamed every tick; the snapshots run 1.2 ticks ahead
+    // of the render time and the feed offers a 1.2-tick lead.
+    const f = flight();
+    const contactUs = LAUNCH_US + 2_000_000;
+    const bounce = (us: number): DynamicBodySample => {
+      const t = (us - contactUs) / 1e6;
+      const p0 = meteorPositionAt(f, 2, [0, 0, 0]);
+      return {
+        serverTimeUs: us,
+        position: [p0[0] + 10 * t, p0[1] + 15 * t - 0.5 * G * t * t + 2, p0[2]],
+        quaternion: [0, 0, 0, 1],
+        halfExtents: [2, 2, 2],
+        velocity: [10, 15 - G * t, 0],
+        angularVelocity: [0, 0, 0],
+        shapeType: 1,
+      };
+    };
+    const samplesUpTo = (us: number) => {
+      const out: DynamicBodySample[] = [];
+      for (let k = Math.round((contactUs - 10 * TICK_US) / TICK_US); k * TICK_US <= us; k += 1) {
+        const at = k * TICK_US;
+        out.push(at < contactUs ? sampleAt(f, at) : bounce(at));
+      }
+      return out.slice(-16);
+    };
+    const horizon = 1.2 * TICK_US;
+    const leads: number[] = [];
+    let first: number | null = null;
+    for (let frame = 0; frame < 60; frame += 1) {
+      const render = contactUs + TICK_US + (frame * TICK_US) / 2;
+      const samples = samplesUpTo(render + horizon);
+      const placed = placeMeteor(f, f.track, { renderServerUs: render, samples, ticksSinceSeen: 0, tickUs: TICK_US, nowMs: 0, leadHorizonUs: horizon });
+      expect(placed.source).toBe('body');
+      first ??= placed.leadUs ?? 0;
+      leads.push(placed.leadUs ?? 0);
+    }
+    expect(first).toBe(0);
+    expect(leads[leads.length - 1]).toBeCloseTo(horizon, -1);
+    // Without the feed's horizon the rock is drawn at the render time, as before.
+    const g = flight();
+    const render = contactUs + 20 * TICK_US;
+    const placed = placeMeteor(g, g.track, { renderServerUs: render, samples: samplesUpTo(render + horizon), ticksSinceSeen: 0, tickUs: TICK_US, nowMs: 0 });
+    expect(placed.leadUs ?? 0).toBe(0);
+    expect(dist(placed.position, bounce(render).position)).toBeLessThan(0.01);
+  });
 });
 

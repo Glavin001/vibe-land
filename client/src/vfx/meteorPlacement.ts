@@ -27,6 +27,7 @@
 // server is stalled nothing arrives, and a rock is not stale because the
 // server is slow.
 
+import { BODY_LEAD_CONFIG, BodyLeadTrack } from '../net/bodyLead';
 import { MOVING_BODY_SPEED_MS, MOVING_BODY_STALE_TICKS } from '../net/bodyPresence';
 import { sampleDynamicBodyTrack, type DynamicBodySample } from '../net/interpolation';
 import { SERVER_TICK_US } from '../net/protocol';
@@ -75,6 +76,14 @@ export interface MeteorPlacementInput {
   ticksSinceSeen: number | null;
   tickUs: number;
   nowMs: number;
+  /**
+   * The lead a free-falling snapshot body is drawn at, us (the netcode
+   * client's `getDynamicBodyLeadHorizonUs`; net/bodyLead.ts). The rock drawn
+   * from its body after contact takes it while the body's last two samples
+   * show free fall (a bounce); on the arc it is not used. 0 or absent: drawn
+   * at the render time.
+   */
+  leadHorizonUs?: number;
 }
 
 export interface MeteorPlacement {
@@ -88,6 +97,27 @@ export interface MeteorPlacement {
   quaternion: [number, number, number, number] | null;
   /** The arc at the render time (forensics). */
   arc: [number, number, number];
+  /** How far past the render time it is drawn, us (the body lead; 0 on the arc). */
+  leadUs?: number;
+}
+
+/** Each flight's body lead (net/bodyLead.ts), from its first draw from the body. */
+const meteorLeads = new WeakMap<MeteorTrack, BodyLeadTrack>();
+
+/**
+ * The rock drawn from its body at server time `t`: interpolated, extrapolated
+ * at most a quarter second past the newest snapshot and, past it, never lower
+ * than it (a rock falling in the last snapshot is about to stop on whatever is
+ * under it).
+ */
+function bodyAt(samples: readonly DynamicBodySample[], t: number): DynamicBodySample {
+  const newest = samples[samples.length - 1];
+  const target = Math.min(t, newest.serverTimeUs + MAX_BODY_EXTRAPOLATION_US);
+  const body = sampleDynamicBodyTrack(samples, target)!;
+  if (target > newest.serverTimeUs) {
+    body.position = [body.position[0], Math.max(body.position[1], newest.position[1]), body.position[2]];
+  }
+  return body;
 }
 
 export function placeMeteor(
@@ -152,15 +182,22 @@ export function placeMeteor(
     if (!track.drawnBody && r < samples[0].serverTimeUs) {
       return done({ source: 'arc', position: arc, velocity: meteorVelocityAt(flight, arcT, [0, 0, 0]), quaternion: arcTumble(flight, arcT), arc });
     }
-    const target = Math.min(r, newest.serverTimeUs + MAX_BODY_EXTRAPOLATION_US);
-    const body = sampleDynamicBodyTrack(samples, target)!;
-    const position: [number, number, number] = [...body.position];
-    if (target > newest.serverTimeUs) {
-      // Past the newest snapshot: never lower than it. A rock falling in the
-      // last snapshot is about to stop on whatever is under it.
-      position[1] = Math.max(position[1], newest.position[1]);
+    // Drawn from its body: at the render time, or past it by the body lead
+    // while the body is in free fall. The lead starts at 0 on the first draw
+    // from the body, where the arc handed over at the render time.
+    let drawUs = r;
+    let lead = meteorLeads.get(track);
+    if (!lead && (input.leadHorizonUs ?? 0) > 0) {
+      lead = new BodyLeadTrack();
+      meteorLeads.set(track, lead);
     }
-    return done({ source: 'body', position, velocity: [...body.velocity], quaternion: [...body.quaternion], arc });
+    if (lead) {
+      drawUs = lead.advance(r, samples, input.leadHorizonUs ?? 0, BODY_LEAD_CONFIG, (t) => bodyAt(samples, t).position);
+    }
+    const body = bodyAt(samples, drawUs);
+    const position: [number, number, number] = [...body.position];
+    lead?.drawn(position);
+    return done({ source: 'body', position, velocity: [...body.velocity], quaternion: [...body.quaternion], arc, leadUs: drawUs - r });
   }
 
   // Streamed once, gone now (out of the stream, or dropped by the netcode
@@ -206,6 +243,8 @@ export interface MeteorBodyFeed {
   getDynamicBodySamples(id: number): readonly DynamicBodySample[];
   /** Server ticks of snapshots since the body was last in one. */
   getDynamicBodyTicksSinceSeen(id: number): number | null;
+  /** The lead a free-falling body is drawn at, us (net/bodyLead.ts); absent: none. */
+  getDynamicBodyLeadHorizonUs?(): number;
 }
 
 export interface MeteorFrame {
@@ -237,5 +276,6 @@ export function placeMeteorInFrame(
     ticksSinceSeen: feed?.getDynamicBodyTicksSinceSeen(flight.bodyId) ?? null,
     tickUs: frame.tickUs ?? METEOR_TICK_US,
     nowMs: frame.nowMs,
+    leadHorizonUs: frame.renderServerUs === null ? 0 : feed?.getDynamicBodyLeadHorizonUs?.() ?? 0,
   });
 }

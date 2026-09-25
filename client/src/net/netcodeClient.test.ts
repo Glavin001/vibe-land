@@ -1277,3 +1277,104 @@ describe('NetcodeClient render clocks on a slowed server', () => {
     expect(client.getDynamicBodySamples(7001)).toHaveLength(0);
   });
 });
+
+describe('NetcodeClient predictive snapshot bodies (bodyLead.ts)', () => {
+  const TICK_US = Math.round(1_000_000 / 60);
+  const G = -9.81;
+
+  /**
+   * One SnapshotV2 per 60 Hz tick, arriving `latencyMs` after the tick, with
+   * body 7001 (handle 7) thrown from 40 m at `v0` (exact free fall, as the
+   * server steps it) and body 7002 (handle 8) rolling on the ground at 3 m/s.
+   * Frames at 120 Hz. Returns per frame what was drawn and the truth.
+   */
+  function drive(opts: { bodyLead?: Record<string, unknown>; latencyMs?: number; jitterMs?: number; seconds?: number; v0?: [number, number, number] }) {
+    let nowMs = 0;
+    const client = new NetcodeClient({ nowMs: () => nowMs, bodyLead: opts.bodyLead });
+    client.handlePacket(makeWelcome(1));
+    client.handlePacket(makeDynamicBodyMeta([{ handle: 7, bodyId: 7001 }, { handle: 8, bodyId: 7002 }]));
+    const v0 = opts.v0 ?? [25, 12, 0];
+    const thrownAt = (tick: number) => {
+      const t = (tick * TICK_US) / 1e6;
+      return {
+        position: [v0[0] * t, 40 + v0[1] * t + 0.5 * G * t * t, v0[2] * t] as [number, number, number],
+        velocity: [v0[0], v0[1] + G * t, v0[2]] as [number, number, number],
+      };
+    };
+    const rollingAt = (tick: number) => [3 * (tick * TICK_US) / 1e6, 0.5, 5] as [number, number, number];
+    const latency = opts.latencyMs ?? 1;
+    // Arrival of tick k: its end plus the latency and a repeatable jitter, in order.
+    const jitter = opts.jitterMs ?? 0;
+    const arrivals: number[] = [0];
+    for (let k = 1; k < 2000; k += 1) {
+      const wobble = jitter * (((k * 7919) % 97) / 48 - 1);
+      arrivals.push(Math.max(arrivals[k - 1], (k * TICK_US) / 1000 + latency + wobble));
+    }
+    const frames: Array<{ renderUs: number; drawn: number[]; atRender: number[]; truthNow: number[]; rolling: number[]; rollingAtRender: number[] }> = [];
+    let tick = 1;
+    const endMs = (opts.seconds ?? 2) * 1000;
+    for (nowMs = latency; nowMs < endMs; nowMs += 1000 / 120) {
+      while (arrivals[tick] <= nowMs) {
+        const ball = thrownAt(tick);
+        client.handlePacket(makeSnapshotV2({
+          serverTick: tick,
+          sphereStates: [
+            { handle: 7, offset: ball.position, velocity: ball.velocity },
+            { handle: 8, offset: rollingAt(tick), velocity: [3, 0, 0] },
+          ],
+        }));
+        tick += 1;
+      }
+      if (tick < 3) continue;
+      const renderUs = client.getDynamicBodyRenderTimeUs();
+      const drawn = client.getInterpolatedDynamicBodyState(7001)!.position;
+      const atRender = client.sampleRemoteDynamicBody(7001, renderUs)!.position;
+      const serverNowTick = Math.floor((nowMs * 1000) / TICK_US);
+      frames.push({
+        renderUs,
+        drawn: [...drawn],
+        atRender: [...atRender],
+        truthNow: thrownAt(serverNowTick).position,
+        rolling: [...client.getInterpolatedDynamicBodyState(7002)!.position],
+        rollingAtRender: [...client.sampleRemoteDynamicBody(7002, renderUs)!.position],
+      });
+    }
+    return { client, frames };
+  }
+  const dist = (a: number[], b: number[]) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+  const mean = (xs: number[]) => xs.reduce((a, b) => a + b, 0) / xs.length;
+
+  it('draws a free-falling body ahead of the render time, from data it already has', () => {
+    // A 40 +- 15 ms link: the render clock sits a jitter's buffer behind the
+    // newest snapshot, and the lead gives most of that back.
+    const { client, frames } = drive({ bodyLead: { enabled: true, horizonMode: 'data' }, latencyMs: 40, jitterMs: 15, seconds: 4 });
+    const settled = frames.slice(240);
+    const nowErrDrawn = mean(settled.map((f) => dist(f.drawn, f.truthNow)));
+    const nowErrAtRender = mean(settled.map((f) => dist(f.atRender, f.truthNow)));
+    expect(nowErrDrawn).toBeLessThan(0.85 * nowErrAtRender);
+    expect(client.getDynamicBodyLeadHorizonUs()).toBeGreaterThan(5_000);
+  });
+
+  it('keeps a rolling body (not in free fall) at the render time exactly', () => {
+    const { frames } = drive({ bodyLead: { enabled: true, horizonMode: 'data' }, latencyMs: 40, jitterMs: 15 });
+    for (const f of frames) expect(f.rolling).toEqual(f.rollingAtRender);
+  });
+
+  it('changes the lead as playback speed: the drawn path never steps back or jumps', () => {
+    const { frames } = drive({ bodyLead: { enabled: true, horizonMode: 'data' }, latencyMs: 40, jitterMs: 15, seconds: 4 });
+    for (let i = 1; i < frames.length; i += 1) {
+      const step = frames[i].drawn[0] - frames[i - 1].drawn[0];
+      // 25 m/s along x, 1/120 s frames: 0.21 m; at most 1.5x while the lead
+      // rises. (The server clock holds while a late snapshot is awaited, so a
+      // step may be 0, as it is without the lead.)
+      expect(step).toBeGreaterThanOrEqual(0);
+      expect(step).toBeLessThan(1.5 * 25 / 120 + 0.02);
+    }
+  });
+
+  it('with the lead off draws every body at the render time (guard)', () => {
+    const { client, frames } = drive({ bodyLead: { enabled: false } });
+    for (const f of frames) expect(f.drawn).toEqual(f.atRender);
+    expect(client.getDynamicBodyLeadHorizonUs()).toBe(0);
+  });
+});

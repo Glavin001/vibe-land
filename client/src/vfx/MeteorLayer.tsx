@@ -43,6 +43,8 @@ export type MeteorBodySource = {
   getDynamicBodySamples(id: number): readonly DynamicBodySample[];
   /** Server ticks of snapshots since the body was last in one. */
   getDynamicBodyTicksSinceSeen(id: number): number | null;
+  /** The lead a free-falling body is drawn at past the render time, us (net/bodyLead.ts). */
+  getDynamicBodyLeadHorizonUs?(): number;
 };
 
 type MeteorLayerProps = {

@@ -57,6 +57,14 @@ playout delay behind it (client only, on by default: debris pos@now p99
 to the server's present, built and opt-in (`/city?predictive=1`,
 `VIBE_CITY_PREDICTIVE`): it halves pos@now and corrects more in view.
 
+**Predictive snapshot bodies** ([Predictive snapshot bodies](#predictive-snapshot-bodies-the-debris-lead-for-cannonballs-and-meteors)):
+a cannonball or meteor rock in free fall is drawn past the dynamic-body render
+time, up to the data the client already has (client only, on by default:
+fast_projectile and ballistic pos@now p50 −17 to −29% and p99 −6 to −15% on
+loopback and LAN, −18 to −30% on LTE, with every loopback and LAN correction
+counter equal; LTE corrects slightly more). `?bodyLead=0` turns it off;
+drawing past the data is opt-in and corrects more.
+
 **Scoreboard** ([Netcode scoreboard (2026-09-24)](#netcode-scoreboard-2026-09-24)):
 the pre-work netcode against HEAD on four bundles and eleven links, then the
 changes it pointed at: a compact self state and explicit removals, then late
@@ -2970,6 +2978,471 @@ per-body cap without the anchor gating), `datac0a`); `head` (a pristine
 and `now`). `runs/pred0/<0|data>/recorded` is the clock-rollback check.
 Calibration: `target/predictive/calibrate/`. The patch:
 `target/predictive/predictive.patch`.
+
+## Predictive snapshot bodies (the debris lead for cannonballs and meteors)
+
+The snapshot-stream dynamic bodies (cannonballs and other launched balls, and
+a meteor's rock once it has left its arc) are drawn at the dynamic-body
+render clock, 15-21 ms behind the server on loopback and 60-80 ms on LTE.
+[Predictive debris](#predictive-debris-dead-reckoning-ahead-of-the-playout-delay)
+drew free-falling city debris ahead of its presentation tick; this round does
+the same for these bodies and measures it per class. Base: 8c6e5d49. Every
+number is **measured** in Netlab v2 unless marked **inferred**.
+
+### Summary
+
+- **New default: the `data` lead (client only).** A body whose last two
+  samples show free fall is drawn past the render time by the lead at which
+  a body refreshed every snapshot is still drawn from data it already has:
+  the 10th percentile, over the last 120 arrivals, of how far the previous
+  snapshot ran ahead of the render time when the next arrived. That is 1-3 ms
+  on loopback and about 40 ms on LTE (measured, `horizonMs`).
+  - **Fast links (loopback, LAN; 3 bundles, 2 seeds):** pos@now p50
+    fast_projectile −17 to −29%, ballistic −21 to −29%; p99 −6 to −14% and
+    −8 to −15%.
+  - **LTE:** p50 −18 to −30%, p99 −18 to −29%. lte-fifo p99 −14 to −20%,
+    poor-mobile-nq p99 −12 to −18%.
+  - Colliding bodies are 0-15% better at p99 (inferred: a body classed
+    colliding at the render tick is often still giving its lead up through
+    the contact). Resting bodies, players,
+    vehicles, city chunks, bytes, stale and extra draws are identical on
+    every cell (15,746 compared leaves).
+  - Meteors: pos@now p50 is 3-12% lower on loopback and p99 is unchanged. The
+    lead applies after handover only, and meteor p99 is set on the arc
+    (inferred).
+- **Visible corrections, fast links:** unchanged. On every loopback and LAN
+  cell of the four bundles:
+  - revisions over 0.25 m are 0 → 0, and draw-time snaps and teleports are
+    equal;
+  - freeze frames are within ±1;
+  - draw-time reversals are equal but for systematic LAN, where one meteor
+    per seed (0.16 m back toward a stop, lead 6.8 ms) adds 1.
+- **Jittery links:** a small correction cost.
+  - LTE: revisions over 0.25 m 42 → 49 and over 1 m 25 → 25 (6 cells);
+    draw-time reversals 2 → 11; snaps 2 → 3; freeze frames 494 → 545.
+  - poor-mobile-nq: 53 → 59 and 32 → 32; reversals 4 → 9.
+  - The freezes are **inferred** to be bodies reaching the 250 ms
+    extrapolation clamp that much sooner while data stalls.
+- `?bodyLead=0` (lab `BODY_LEAD=0`) restores HEAD. It is identical to a pristine
+  8c6e5d49 client on all 30 cells: every body, meteor, player and vehicle
+  metric, byte and counter. Only the scorer's float sums in the chunk-rubble
+  means differ, at the 5th significant digit.
+- **What the fast links leave on the table.** The render clock is already
+  about one tick behind the newest snapshot on loopback, so almost all of
+  the remaining pos@now error there is the tick the client has not received
+  yet. Drawing into it is extrapolation, and every arm that does costs
+  corrections (below): the arrival horizon backed off 1 tick buys
+  fast_projectile p99 1.739 → 1.375 m on loopback, against 1.556 m for the
+  default, at 8 snaps and 12 reversals where the default has 2 and 0, and
+  on LTE 52 / 98.
+
+### What was built
+
+**Client** (`client/src/net/bodyLead.ts`, new; `netcodeClient.ts`,
+`vfx/meteorPlacement.ts`):
+
+- **`BodyLeadHorizon`.** At each newest snapshot's arrival
+  (`adoptAdaptiveDelays`, after the render clocks are retargeted, so the
+  read changes nothing) it records how far the previous snapshot was ahead
+  of the dynamic-body render time. `data` (default): the `quantile` (0.1) of
+  the last `window` (120) of those, less `backoffTicks` (0), within
+  [0, `maxLeadTicks` (6)]. `arrival` (opt-in): the smoothed lead of each
+  snapshot as it arrives (500 ms), which extrapolates up to a snapshot
+  interval past the data.
+- **`BodyLeadTrack`, one per drawn body.**
+  - Its goal is the horizon while `inFreeFall` (the last two samples:
+    interpolation.ts `freeFallAcceleration`), else 0. It is never more than
+    `capTicks` (1) past the body's own newest sample, or, with
+    `maxOvershootM`, more than that many metres at the body's speed (off).
+  - The lead follows its goal at `rise` / `fall` 0.5 tick per tick, the
+    debris rule, so a change is playback speed, never a jump.
+  - A new body starts at no lead.
+  - A body leaving the stream gets a goal of 0. It is held at its last sample
+    until the render time removes it, and a lead made that hold longer.
+    Freeze frames (bodies, 3 bundles × 2 seeds) on LTE: 202 without the fix,
+    112 with it, 65 for HEAD. Loopback: 64, 38, 36.
+  - `warp`: when new data moves the path under the pose on screen by over
+    0.1 m, the lead drops to where the revised path passes closest to it, if
+    that brings it within `warpGain` (0.8; the debris 0.5 rejected every
+    bounce in the unit test, 0.59 at best). With the `data` horizon it
+    fires 0-3 times a run.
+- **`NetcodeClient`.**
+  - `getInterpolatedDynamicBodyState` (what `DynamicBodiesRenderer` draws
+    for a body the player is not touching, and what the lab scores) samples
+    at `dynamicBodyDrawTimeUs(id, renderUs)`: the render time plus the lead.
+  - `sampleDynamicBodyDraw` is the pure draw at an explicit time.
+  - `getDynamicBodyLeadHorizonUs` goes to the meteor feed.
+  - The render clocks, the proxies of bodies the player touches,
+    `sampleRemoteDynamicBody`, retirement, players and vehicles are
+    unchanged.
+- **Meteors** (`placeMeteor`). A rock drawn from its body takes the same lead
+  from the feed's horizon, with its own track (a `WeakMap` on the flight's
+  track). It starts at 0 on the first draw from the body, where the arc
+  handed over at the render time. The arc is unchanged.
+- Settings: `?bodyLead=0|1`, `bodyLeadHorizon=data|arrival`, `bodyLeadQ`,
+  `bodyLeadWindow`, `bodyLeadBackoff`, `bodyLeadCap`, `bodyLeadOvershoot`,
+  `bodyLeadMax`, `bodyLeadRise`, `bodyLeadFall`, `bodyLeadWarp`,
+  `bodyLeadWarpGain`, `bodyLeadTauMs`. The lab reads the same settings as
+  `BODY_LEAD*` ([netlab-v2.md](netlab-v2.md#knobs---knob-kv-comma-separated)).
+
+**Lab** (`server/src/bin/netlab2/score.rs`, `client/netlab/v2/`):
+
+- The display stream carries each entity's lead (`entityLeadUs`; older
+  streams read as 0).
+- The scorer adds, per body class and for meteors:
+  - `err_draw_m`: error against truth at the draw time;
+  - `draw_gates`: freeze, reversal, snap and teleport over the draw times,
+    and not judged where a draw time is outside the body's life in truth,
+    whose last pose would read as no travel;
+  - `lead_ms`;
+  - `lead_speed_frames`: frames drawn at a playback speed off 1 by over a
+    quarter.
+- A lead that follows the arrival sawtooth, not a steady goal, shows up in
+  that counter as judder the positional gates cannot see.
+- The client stage counts **revisions**: each frame, a body drawn last frame
+  is sampled again at its last draw time with the data since. The distance
+  is the part of the step new data caused, the correction a viewer sees
+  (`client-stats.json` `bodyRevisions`).
+- `NETLAB2_GATE_DUMP=1` prints each meteor draw-gate event.
+
+"Draw snaps", "reversals", "teleports" and "freeze frames" below are the draw-time
+gates (fast_projectile, ballistic, colliding, resting and meteor summed);
+for a client with no lead they are the render-time gates. pos@render rises
+with the lead by design. It is judged at the render time, and the body is
+drawn later on its path.
+
+### Arms
+
+Production knobs of the 60 Hz round (as in [Predictive debris](#arms)),
+recorded pace, `lab.recorded_repairs=0`. Bundles: systematic-2c-d1342419
+c1, heavy-quick3-v2 c1, the 20260925-073947-predictive capture c1 (recorded
+with the debris-lead client), and this round's capture (below). Links:
+loopback, lan, lte, lte-fifo and poor-mobile-nq; seeds 1 and 2 (loopback has
+no jitter, so its two seeds are the same run).
+
+- **off**: this tree with `BODY_LEAD=0`, identical to a pristine 8c6e5d49
+  client (above).
+- **data (default)**: no settings.
+- **arrival − 1 tick**: `BODY_LEAD_HORIZON=arrival BODY_LEAD_BACKOFF=1`.
+- **data + 0.25 tick**: `BODY_LEAD_BACKOFF=-0.25`.
+
+### Results
+
+**Every arm, summed over the three bundles and both seeds** (pos@now p99: mean over the cells, m):
+
+| Arm | Link | fast_projectile pos@now p99 | ballistic pos@now p99 | meteor pos@now p99 | Draw snaps | Draw reversals | Freeze frames | Revisions > 0.25 / 1 m | Lead speed changes |
+|---|---|---:|---:|---:|---:|---:|---:|---|---:|
+| off (HEAD) | loopback | 1.739 | 0.445 | 12.00 | 2 | 0 | 510 | 0 / 0 | 0 |
+| off (HEAD) | lan | 1.782 | 0.455 | 12.00 | 2 | 1 | 505 | 0 / 0 | 0 |
+| off (HEAD) | lte | 9.935 | 2.638 | 24.90 | 2 | 2 | 494 | 42 / 25 | 0 |
+| off (HEAD) | lte-fifo | 9.980 | 2.630 | 25.17 | 2 | 0 | 488 | 0 / 0 | 0 |
+| off (HEAD) | poor-mobile-nq | 13.655 | 3.616 | 44.95 | 2 | 4 | 476 | 53 / 32 | 0 |
+| data (default) | loopback | 1.556 | 0.390 | 11.92 | 2 | 0 | 512 | 0 / 0 | 2930 |
+| data (default) | lan | 1.613 | 0.403 | 12.00 | 2 | 3 | 504 | 0 / 0 | 2962 |
+| data (default) | lte | 7.979 | 1.960 | 24.90 | 3 | 11 | 545 | 49 / 25 | 12088 |
+| data (default) | lte-fifo | 8.472 | 2.161 | 25.17 | 2 | 2 | 530 | 1 / 0 | 10192 |
+| data (default) | poor-mobile-nq | 11.799 | 3.006 | 44.95 | 4 | 9 | 521 | 59 / 32 | 12223 |
+| arrival − 1 tick | loopback | 1.375 | 0.298 | 11.92 | 8 | 12 | 532 | 0 / 0 | 5370 |
+| arrival − 1 tick | lan | 1.436 | 0.310 | 12.00 | 8 | 21 | 525 | 0 / 0 | 5447 |
+| arrival − 1 tick | lte | 7.866 | 1.696 | 24.90 | 52 | 98 | 608 | 123 / 42 | 18259 |
+| arrival − 1 tick | lte-fifo | 8.345 | 2.070 | 25.17 | 8 | 29 | 556 | 22 / 0 | 11976 |
+| arrival − 1 tick | poor-mobile-nq | 11.469 | 2.627 | 44.95 | 43 | 98 | 585 | 139 / 39 | 20281 |
+| data + 0.25 tick | loopback | 1.372 | 0.338 | 11.92 | 8 | 24 | 538 | 8 / 0 | 5054 |
+| data + 0.25 tick | lan | 1.425 | 0.350 | 12.00 | 3 | 24 | 534 | 8 / 0 | 5158 |
+| data + 0.25 tick | lte | 7.922 | 1.892 | 24.90 | 6 | 30 | 565 | 60 / 26 | 12908 |
+| data + 0.25 tick | lte-fifo | 8.383 | 2.099 | 25.17 | 4 | 17 | 550 | 11 / 0 | 11075 |
+| data + 0.25 tick | poor-mobile-nq | 11.761 | 2.939 | 44.95 | 4 | 24 | 536 | 63 / 32 | 12997 |
+
+**systematic-2c-d1342419 c1**, position error by class (m; seed 1, `base` → `lead`; pos@now p99 also seed 2):
+
+| Link | Class | draw-frames | pos@render p50 | pos@render p99 | pos@now p50 | pos@now p99 (s1) | pos@now p99 (s2) | lead p50 ms |
+|---|---|---:|---|---|---|---|---|---:|
+| loopback | fast_projectile | 6007 | 0.001 → 0.110 | 0.002 → 0.510 | 0.579 → 0.468 | 1.924 → 1.780 | 1.924 → 1.780 | 2.7 |
+| loopback | ballistic | 7350 | 0.001 → 0.023 | 0.002 → 0.080 | 0.103 → 0.081 | 0.456 → 0.414 | 0.456 → 0.414 | 3.5 |
+| loopback | colliding | 12425 | 0.001 → 0.001 | 0.002 → 0.029 | 0.037 → 0.036 | 0.298 → 0.282 | 0.298 → 0.282 | 0.0 |
+| loopback | resting | 420 | 0.003 → 0.003 | 0.019 → 0.019 | 0.003 → 0.003 | 0.019 → 0.019 | 0.019 → 0.019 | 0.0 |
+| loopback | meteor | 17961 | 0.002 → 0.011 | 0.017 → 1.031 | 1.676 → 1.472 | 7.676 → 7.432 | 7.676 → 7.432 | 0.0 |
+| lan | fast_projectile | 6001 | 0.001 → 0.110 | 0.002 → 0.523 | 0.620 → 0.507 | 1.976 → 1.848 | 1.973 → 1.829 | 2.7 |
+| lan | ballistic | 7349 | 0.001 → 0.023 | 0.002 → 0.076 | 0.110 → 0.086 | 0.463 → 0.422 | 0.465 → 0.426 | 3.5 |
+| lan | colliding | 12431 | 0.001 → 0.001 | 0.002 → 0.028 | 0.040 → 0.039 | 0.310 → 0.295 | 0.315 → 0.298 | 0.0 |
+| lan | resting | 421 | 0.003 → 0.003 | 0.019 → 0.019 | 0.003 → 0.003 | 0.019 → 0.019 | 0.019 → 0.019 | 0.0 |
+| lan | meteor | 17962 | 0.002 → 0.011 | 0.017 → 0.998 | 1.731 → 1.571 | 7.676 → 7.676 | 7.676 → 7.676 | 0.0 |
+| lte | fast_projectile | 5949 | 0.001 → 1.313 | 0.002 → 2.656 | 5.954 → 4.877 | 10.228 → 8.249 | 10.013 → 7.963 | 38.8 |
+| lte | ballistic | 7367 | 0.001 → 0.266 | 0.002 → 0.725 | 0.948 → 0.690 | 2.873 → 2.221 | 2.847 → 2.147 | 39.7 |
+| lte | colliding | 12407 | 0.001 → 0.001 | 0.002 → 0.259 | 0.394 → 0.389 | 2.172 → 1.951 | 2.128 → 1.966 | 0.0 |
+| lte | resting | 402 | 0.003 → 0.003 | 0.012 → 0.012 | 0.004 → 0.004 | 0.018 → 0.018 | 0.024 → 0.024 | 0.0 |
+| lte | meteor | 17846 | 0.002 → 0.012 | 0.017 → 4.573 | 13.311 → 12.887 | 24.627 → 24.627 | 25.437 → 25.437 | 0.0 |
+| lte-fifo | fast_projectile | 5944 | 0.001 → 1.091 | 0.002 → 2.118 | 6.014 → 5.192 | 10.126 → 8.726 | 9.946 → 8.553 | 28.5 |
+| lte-fifo | ballistic | 7349 | 0.001 → 0.203 | 0.002 → 0.548 | 0.987 → 0.787 | 2.871 → 2.382 | 2.860 → 2.353 | 29.4 |
+| lte-fifo | colliding | 12407 | 0.001 → 0.001 | 0.002 → 0.236 | 0.404 → 0.400 | 2.280 → 2.106 | 2.266 → 2.117 | 0.0 |
+| lte-fifo | resting | 410 | 0.003 → 0.003 | 0.015 → 0.015 | 0.004 → 0.004 | 0.023 → 0.023 | 0.024 → 0.024 | 0.0 |
+| lte-fifo | meteor | 17849 | 0.002 → 0.012 | 0.017 → 3.002 | 12.477 → 12.079 | 25.437 → 25.437 | 25.437 → 25.437 | 0.0 |
+| poor-mobile-nq | fast_projectile | 5948 | 0.001 → 1.420 | 0.002 → 3.127 | 8.010 → 7.065 | 14.789 → 12.661 | 14.969 → 12.888 | 40.9 |
+| poor-mobile-nq | ballistic | 7354 | 0.001 → 0.276 | 0.002 → 0.822 | 1.380 → 1.114 | 3.958 → 3.251 | 4.067 → 3.355 | 43.2 |
+| poor-mobile-nq | colliding | 12436 | 0.001 → 0.001 | 0.002 → 0.346 | 0.574 → 0.568 | 2.946 → 2.801 | 3.249 → 3.006 | 0.0 |
+| poor-mobile-nq | resting | 417 | 0.003 → 0.003 | 0.014 → 0.014 | 0.005 → 0.005 | 0.033 → 0.033 | 0.040 → 0.040 | 0.0 |
+| poor-mobile-nq | meteor | 17886 | 0.002 → 0.012 | 0.017 → 3.889 | 18.401 → 17.815 | 51.861 → 51.861 | 51.861 → 51.861 | 0.0 |
+
+**heavy-quick3-v2 c1**, position error by class (m; seed 1, `base` → `lead`; pos@now p99 also seed 2):
+
+| Link | Class | draw-frames | pos@render p50 | pos@render p99 | pos@now p50 | pos@now p99 (s1) | pos@now p99 (s2) | lead p50 ms |
+|---|---|---:|---|---|---|---|---|---:|
+| loopback | fast_projectile | 1510 | 0.001 → 0.219 | 0.039 → 0.397 | 0.673 → 0.475 | 1.565 → 1.343 | 1.565 → 1.343 | 5.6 |
+| loopback | ballistic | 2362 | 0.001 → 0.052 | 0.002 → 0.177 | 0.192 → 0.136 | 0.613 → 0.523 | 0.613 → 0.523 | 5.1 |
+| loopback | colliding | 1629 | 0.001 → 0.001 | 0.002 → 0.049 | 0.085 → 0.080 | 0.368 → 0.354 | 0.368 → 0.354 | 0.0 |
+| loopback | meteor | 4423 | 0.006 → 0.009 | 17.815 → 17.815 | 2.472 → 2.393 | 19.007 → 19.007 | 19.007 → 19.007 | 0.0 |
+| lan | fast_projectile | 1510 | 0.001 → 0.214 | 0.033 → 0.399 | 0.696 → 0.500 | 1.599 → 1.421 | 1.610 → 1.406 | 5.6 |
+| lan | ballistic | 2361 | 0.001 → 0.053 | 0.002 → 0.178 | 0.200 → 0.143 | 0.624 → 0.538 | 0.624 → 0.539 | 5.1 |
+| lan | colliding | 1629 | 0.001 → 0.001 | 0.002 → 0.049 | 0.089 → 0.085 | 0.367 → 0.354 | 0.378 → 0.362 | 0.0 |
+| lan | meteor | 4424 | 0.006 → 0.009 | 17.815 → 17.815 | 2.553 → 2.553 | 19.007 → 19.007 | 19.007 → 19.007 | 0.0 |
+| lte | fast_projectile | 1477 | 0.001 → 1.022 | 0.101 → 2.908 | 3.821 → 2.698 | 9.899 → 7.976 | 9.460 → 7.768 | 28.0 |
+| lte | ballistic | 2389 | 0.001 → 0.328 | 0.022 → 0.888 | 1.310 → 0.973 | 3.032 → 2.152 | 2.904 → 2.146 | 32.6 |
+| lte | colliding | 1614 | 0.001 → 0.001 | 0.002 → 0.211 | 0.651 → 0.637 | 1.402 → 1.383 | 1.379 → 1.343 | 0.0 |
+| lte | meteor | 4429 | 0.006 → 0.009 | 17.815 → 17.815 | 14.202 → 14.202 | 23.842 → 23.842 | 24.627 → 24.627 | 0.0 |
+| lte-fifo | fast_projectile | 1488 | 0.001 → 0.745 | 0.032 → 2.180 | 3.901 → 3.102 | 9.674 → 8.193 | 9.616 → 8.114 | 18.7 |
+| lte-fifo | ballistic | 2379 | 0.001 → 0.256 | 0.002 → 0.675 | 1.324 → 1.059 | 2.957 → 2.452 | 2.901 → 2.405 | 23.9 |
+| lte-fifo | colliding | 1622 | 0.001 → 0.001 | 0.002 → 0.163 | 0.623 → 0.617 | 1.504 → 1.472 | 1.404 → 1.396 | 0.0 |
+| lte-fifo | meteor | 4416 | 0.006 → 0.009 | 17.815 → 17.815 | 13.749 → 13.749 | 25.437 → 25.437 | 24.627 → 24.627 | 0.0 |
+| poor-mobile-nq | fast_projectile | 1492 | 0.001 → 1.134 | 0.499 → 3.147 | 5.356 → 4.365 | 12.470 → 10.596 | 12.169 → 10.475 | 30.8 |
+| poor-mobile-nq | ballistic | 2373 | 0.001 → 0.323 | 0.002 → 0.988 | 1.816 → 1.491 | 4.113 → 3.433 | 4.199 → 3.565 | 34.4 |
+| poor-mobile-nq | colliding | 1626 | 0.001 → 0.001 | 0.002 → 0.247 | 0.908 → 0.885 | 1.936 → 1.851 | 1.879 → 1.835 | 0.0 |
+| poor-mobile-nq | meteor | 4413 | 0.006 → 0.010 | 18.401 → 18.401 | 20.278 → 20.278 | 48.609 → 48.609 | 47.060 → 47.060 | 0.0 |
+
+**20260925-073947-predictive c1**, position error by class (m; seed 1, `base` → `lead`; pos@now p99 also seed 2):
+
+| Link | Class | draw-frames | pos@render p50 | pos@render p99 | pos@now p50 | pos@now p99 (s1) | pos@now p99 (s2) | lead p50 ms |
+|---|---|---:|---|---|---|---|---|---:|
+| loopback | fast_projectile | 1154 | 0.001 → 0.133 | 0.002 → 0.301 | 0.738 → 0.602 | 1.728 → 1.547 | 1.728 → 1.547 | 2.4 |
+| loopback | ballistic | 780 | 0.001 → 0.024 | 0.002 → 0.049 | 0.100 → 0.077 | 0.266 → 0.234 | 0.266 → 0.234 | 2.6 |
+| loopback | colliding | 2548 | 0.001 → 0.001 | 0.002 → 0.020 | 0.057 → 0.056 | 0.177 → 0.170 | 0.177 → 0.170 | 0.0 |
+| loopback | meteor | 2903 | 0.005 → 0.011 | 7.676 → 7.676 | 1.676 → 1.622 | 9.322 → 9.322 | 9.322 → 9.322 | 0.0 |
+| lan | fast_projectile | 1153 | 0.001 → 0.134 | 0.002 → 0.309 | 0.781 → 0.644 | 1.764 → 1.576 | 1.772 → 1.598 | 2.6 |
+| lan | ballistic | 778 | 0.001 → 0.024 | 0.002 → 0.046 | 0.106 → 0.083 | 0.274 → 0.243 | 0.279 → 0.252 | 2.7 |
+| lan | colliding | 2552 | 0.001 → 0.001 | 0.002 → 0.015 | 0.060 → 0.060 | 0.185 → 0.185 | 0.186 → 0.183 | 0.0 |
+| lan | meteor | 2903 | 0.005 → 0.011 | 7.432 → 7.432 | 1.788 → 1.731 | 9.322 → 9.322 | 9.322 → 9.322 | 0.0 |
+| lte | fast_projectile | 1129 | 0.001 → 1.784 | 0.002 → 2.533 | 6.730 → 5.063 | 9.822 → 7.814 | 10.186 → 8.106 | 38.5 |
+| lte | ballistic | 792 | 0.001 → 0.357 | 0.002 → 0.586 | 1.230 → 0.858 | 2.118 → 1.583 | 2.055 → 1.509 | 42.3 |
+| lte | colliding | 2545 | 0.001 → 0.001 | 0.004 → 0.361 | 0.583 → 0.576 | 1.290 → 1.099 | 1.319 → 1.192 | 0.0 |
+| lte | meteor | 2889 | 0.004 → 0.011 | 8.459 → 8.459 | 19.007 → 19.007 | 25.437 → 25.437 | 25.437 → 25.437 | 0.0 |
+| lte-fifo | fast_projectile | 1144 | 0.001 → 1.487 | 0.005 → 2.297 | 7.258 → 5.852 | 10.266 → 8.652 | 10.252 → 8.592 | 33.8 |
+| lte-fifo | ballistic | 784 | 0.001 → 0.295 | 0.002 → 0.474 | 1.332 → 1.030 | 2.132 → 1.716 | 2.059 → 1.661 | 35.1 |
+| lte-fifo | colliding | 2541 | 0.001 → 0.001 | 0.002 → 0.273 | 0.623 → 0.622 | 1.421 → 1.254 | 1.408 → 1.272 | 0.0 |
+| lte-fifo | meteor | 2891 | 0.004 → 0.011 | 8.738 → 8.738 | 20.278 → 20.278 | 25.437 → 25.437 | 24.627 → 24.627 | 0.0 |
+| poor-mobile-nq | fast_projectile | 1120 | 0.001 → 1.524 | 0.002 → 2.729 | 9.749 → 8.191 | 13.930 → 12.321 | 13.601 → 11.854 | 38.7 |
+| poor-mobile-nq | ballistic | 781 | 0.001 → 0.330 | 0.002 → 0.559 | 1.742 → 1.399 | 2.667 → 2.197 | 2.691 → 2.236 | 39.4 |
+| poor-mobile-nq | colliding | 2549 | 0.001 → 0.001 | 0.002 → 0.269 | 0.904 → 0.894 | 1.785 → 1.665 | 2.007 → 1.774 | 0.0 |
+| poor-mobile-nq | meteor | 2913 | 0.004 → 0.011 | 10.274 → 10.274 | 28.032 → 28.032 | 35.164 → 35.164 | 35.164 → 35.164 | 0.0 |
+
+**20260925-092056-bodylead c1 (this client, live)**, position error by class (m; seed 1, `base` → `lead`; pos@now p99 also seed 2):
+
+| Link | Class | draw-frames | pos@render p50 | pos@render p99 | pos@now p50 | pos@now p99 (s1) | pos@now p99 (s2) | lead p50 ms |
+|---|---|---:|---|---|---|---|---|---:|
+| loopback | fast_projectile | 956 | 0.001 → 0.158 | 0.068 → 0.295 | 0.653 → 0.516 | 1.661 → 1.568 | 1.661 → 1.568 | 3.2 |
+| loopback | ballistic | 370 | 0.001 → 0.012 | 0.002 → 0.021 | 0.056 → 0.045 | 0.146 → 0.142 | 0.146 → 0.142 | 3.0 |
+| loopback | colliding | 2191 | 0.001 → 0.001 | 0.002 → 0.014 | 0.047 → 0.047 | 0.149 → 0.148 | 0.149 → 0.148 | 0.0 |
+| loopback | meteor | 2505 | 0.006 → 0.009 | 0.110 → 0.595 | 1.908 → 1.847 | 6.120 → 6.120 | 6.120 → 6.120 | 0.0 |
+| lan | fast_projectile | 956 | 0.001 → 0.151 | 0.048 → 0.313 | 0.686 → 0.553 | 1.803 → 1.659 | 1.777 → 1.653 | 3.1 |
+| lan | ballistic | 369 | 0.001 → 0.012 | 0.002 → 0.022 | 0.060 → 0.050 | 0.154 → 0.144 | 0.150 → 0.144 | 3.0 |
+| lan | colliding | 2192 | 0.001 → 0.001 | 0.002 → 0.014 | 0.051 → 0.050 | 0.156 → 0.156 | 0.154 → 0.154 | 0.0 |
+| lan | meteor | 2505 | 0.006 → 0.009 | 0.103 → 0.540 | 1.970 → 1.970 | 6.120 → 6.120 | 6.120 → 6.120 | 0.0 |
+| lte | fast_projectile | 934 | 0.001 → 1.784 | 0.125 → 2.547 | 7.633 → 5.534 | 10.206 → 8.603 | 10.211 → 8.269 | 37.5 |
+| lte | ballistic | 372 | 0.001 → 0.123 | 0.003 → 0.264 | 0.580 → 0.460 | 1.070 → 0.897 | 1.051 → 0.884 | 34.1 |
+| lte | colliding | 2191 | 0.001 → 0.001 | 0.002 → 0.156 | 0.499 → 0.497 | 0.957 → 0.933 | 0.987 → 0.943 | 0.0 |
+| lte | meteor | 2503 | 0.006 → 0.009 | 0.019 → 3.417 | 19.632 → 19.632 | 25.437 → 25.437 | 24.627 → 24.627 | 0.0 |
+| lte-fifo | fast_projectile | 943 | 0.001 → 1.626 | 0.002 → 2.385 | 8.044 → 6.342 | 10.208 → 8.936 | 10.123 → 9.291 | 29.3 |
+| lte-fifo | ballistic | 369 | 0.001 → 0.101 | 0.002 → 0.262 | 0.621 → 0.517 | 1.090 → 0.909 | 1.071 → 0.867 | 26.4 |
+| lte-fifo | colliding | 2189 | 0.001 → 0.001 | 0.002 → 0.140 | 0.554 → 0.548 | 0.985 → 0.952 | 1.007 → 0.965 | 0.0 |
+| lte-fifo | meteor | 2504 | 0.006 → 0.010 | 0.019 → 3.002 | 20.946 → 20.946 | 26.274 → 26.274 | 26.274 → 26.274 | 0.0 |
+| poor-mobile-nq | fast_projectile | 941 | 0.001 → 2.066 | 0.196 → 3.216 | 10.563 → 8.460 | 14.332 → 12.800 | 13.929 → 12.433 | 44.2 |
+| poor-mobile-nq | ballistic | 371 | 0.001 → 0.153 | 0.002 → 0.285 | 0.868 → 0.725 | 1.456 → 1.345 | 1.536 → 1.317 | 42.7 |
+| poor-mobile-nq | colliding | 2197 | 0.001 → 0.001 | 0.002 → 0.155 | 0.779 → 0.776 | 1.394 → 1.345 | 1.356 → 1.314 | 0.0 |
+| poor-mobile-nq | meteor | 2550 | 0.006 → 0.010 | 0.019 → 3.529 | 28.032 → 28.032 | 36.321 → 36.321 | 35.164 → 35.164 | 0.0 |
+
+**systematic-2c-d1342419 c1**, corrections and coverage (seed 1 / seed 2):
+
+| Link | Arm | Draw snaps | Draw reversals | Teleports | Freeze frames | Revisions > 0.25 / 1 / 4 m | Lead speed changes | Stale body / meteor frames | Extra body / meteor | Snapshot kbit/s |
+|---|---|---|---|---|---|---|---|---|---|---|
+| loopback | base | 0 ; 0 | 0 ; 0 | 0 ; 0 | 5 ; 5 | 0/0/0 ; 0/0/0 | 0 ; 0 | 75/1 ; 75/1 | 125/3 ; 125/3 | 29.1 ; 29.1 |
+| loopback | lead | 0 ; 0 | 0 ; 0 | 0 ; 0 | 6 ; 6 | 0/0/0 ; 0/0/0 | 1081 ; 1081 | 75/1 ; 75/1 | 125/3 ; 125/3 | 29.1 ; 29.1 |
+| lan | base | 0 ; 0 | 0 ; 1 | 0 ; 0 | 4 ; 4 | 0/0/0 ; 0/0/0 | 0 ; 0 | 74/1 ; 75/1 | 122/3 ; 126/3 | 29.1 ; 29.1 |
+| lan | lead | 0 ; 0 | 1 ; 2 | 0 ; 0 | 5 ; 5 | 0/0/0 ; 0/0/0 | 1081 ; 1085 | 74/1 ; 75/1 | 122/3 ; 126/3 | 29.1 ; 29.1 |
+| lte | base | 0 ; 0 | 0 ; 0 | 0 ; 0 | 4 ; 3 | 16/9/0 ; 16/8/0 | 0 ; 0 | 211/0 ; 212/0 | 376/1 ; 411/0 | 28.2 ; 28.2 |
+| lte | lead | 0 ; 1 | 2 ; 3 | 0 ; 0 | 9 ; 11 | 17/9/0 ; 19/8/0 | 4385 ; 4754 | 211/0 ; 212/0 | 376/1 ; 411/0 | 28.2 ; 28.2 |
+| lte-fifo | base | 0 ; 0 | 0 ; 0 | 0 ; 0 | 7 ; 7 | 0/0/0 ; 0/0/0 | 0 ; 0 | 163/0 ; 176/0 | 302/0 ; 304/0 | 28.2 ; 28.2 |
+| lte-fifo | lead | 0 ; 0 | 0 ; 0 | 0 ; 0 | 6 ; 9 | 0/0/0 ; 0/0/0 | 3790 ; 3819 | 163/0 ; 176/0 | 302/0 ; 304/0 | 28.2 ; 28.2 |
+| poor-mobile-nq | base | 0 ; 0 | 1 ; 0 | 0 ; 0 | 1 ; 1 | 13/8/0 ; 21/13/0 | 0 ; 0 | 245/2 ; 233/0 | 451/3 ; 426/0 | 28.3 ; 28.2 |
+| poor-mobile-nq | lead | 0 ; 2 | 3 ; 1 | 0 ; 0 | 11 ; 4 | 16/8/0 ; 23/13/0 | 4639 ; 4606 | 245/2 ; 233/0 | 451/3 ; 426/0 | 28.3 ; 28.2 |
+
+**heavy-quick3-v2 c1**, corrections and coverage (seed 1 / seed 2):
+
+| Link | Arm | Draw snaps | Draw reversals | Teleports | Freeze frames | Revisions > 0.25 / 1 / 4 m | Lead speed changes | Stale body / meteor frames | Extra body / meteor | Snapshot kbit/s |
+|---|---|---|---|---|---|---|---|---|---|---|
+| loopback | base | 1 ; 1 | 0 ; 0 | 1 ; 1 | 214 ; 214 | 0/0/0 ; 0/0/0 | 0 ; 0 | 9/0 ; 9/0 | 31/0 ; 31/0 | 23.4 ; 23.4 |
+| loopback | lead | 1 ; 1 | 0 ; 0 | 1 ; 1 | 214 ; 214 | 0/0/0 ; 0/0/0 | 241 ; 241 | 9/0 ; 9/0 | 31/0 ; 31/0 | 23.4 ; 23.4 |
+| lan | base | 1 ; 1 | 0 ; 0 | 1 ; 1 | 212 ; 211 | 0/0/0 ; 0/0/0 | 0 ; 0 | 10/0 ; 10/0 | 33/0 ; 33/0 | 23.4 ; 23.4 |
+| lan | lead | 1 ; 1 | 0 ; 0 | 1 ; 1 | 210 ; 210 | 0/0/0 ; 0/0/0 | 250 ; 246 | 10/0 ; 10/0 | 33/0 ; 33/0 | 23.4 ; 23.4 |
+| lte | base | 1 ; 1 | 0 ; 1 | 1 ; 1 | 206 ; 211 | 4/3/0 ; 3/2/0 | 0 ; 0 | 25/0 ; 18/0 | 106/0 ; 100/0 | 22.7 ; 22.7 |
+| lte | lead | 1 ; 1 | 0 ; 2 | 1 ; 1 | 214 ; 227 | 4/3/0 ; 4/2/0 | 780 ; 826 | 25/0 ; 18/0 | 106/0 ; 100/0 | 22.7 ; 22.7 |
+| lte-fifo | base | 1 ; 1 | 0 ; 0 | 1 ; 1 | 200 ; 204 | 0/0/0 ; 0/0/0 | 0 ; 0 | 20/0 ; 11/0 | 88/0 ; 85/0 | 22.7 ; 22.7 |
+| lte-fifo | lead | 1 ; 1 | 0 ; 0 | 1 ; 1 | 206 ; 221 | 0/0/0 ; 0/0/0 | 693 ; 713 | 20/0 ; 11/0 | 88/0 ; 85/0 | 22.7 ; 22.7 |
+| poor-mobile-nq | base | 1 ; 1 | 1 ; 1 | 1 ; 1 | 203 ; 199 | 7/5/0 ; 2/1/0 | 0 ; 0 | 17/0 ; 20/0 | 102/0 ; 118/0 | 22.6 ; 22.6 |
+| poor-mobile-nq | lead | 1 ; 1 | 1 ; 2 | 1 ; 1 | 208 ; 217 | 7/5/0 ; 2/1/0 | 850 ; 776 | 17/0 ; 20/0 | 102/0 ; 118/0 | 22.6 ; 22.6 |
+
+**20260925-073947-predictive c1**, corrections and coverage (seed 1 / seed 2):
+
+| Link | Arm | Draw snaps | Draw reversals | Teleports | Freeze frames | Revisions > 0.25 / 1 / 4 m | Lead speed changes | Stale body / meteor frames | Extra body / meteor | Snapshot kbit/s |
+|---|---|---|---|---|---|---|---|---|---|---|
+| loopback | base | 0 ; 0 | 0 ; 0 | 0 ; 0 | 36 ; 36 | 0/0/0 ; 0/0/0 | 0 ; 0 | 5/0 ; 5/0 | 23/0 ; 23/0 | 27.1 ; 27.1 |
+| loopback | lead | 0 ; 0 | 0 ; 0 | 0 ; 0 | 36 ; 36 | 0/0/0 ; 0/0/0 | 143 ; 143 | 5/0 ; 5/0 | 23/0 ; 23/0 | 27.1 ; 27.1 |
+| lan | base | 0 ; 0 | 0 ; 0 | 0 ; 0 | 37 ; 37 | 0/0/0 ; 0/0/0 | 0 ; 0 | 6/0 ; 7/0 | 24/0 ; 24/0 | 27.1 ; 27.1 |
+| lan | lead | 0 ; 0 | 0 ; 0 | 0 ; 0 | 37 ; 37 | 0/0/0 ; 0/0/0 | 157 ; 143 | 6/0 ; 7/0 | 24/0 ; 24/0 | 27.1 ; 27.1 |
+| lte | base | 0 ; 0 | 1 ; 0 | 0 ; 0 | 33 ; 37 | 1/1/0 ; 2/2/0 | 0 ; 0 | 19/0 ; 20/0 | 95/0 ; 93/0 | 26.3 ; 26.3 |
+| lte | lead | 0 ; 0 | 1 ; 3 | 0 ; 0 | 43 ; 41 | 1/1/0 ; 4/2/0 | 688 ; 655 | 19/0 ; 20/0 | 95/0 ; 93/0 | 26.3 ; 26.3 |
+| lte-fifo | base | 0 ; 0 | 0 ; 0 | 0 ; 0 | 35 ; 35 | 0/0/0 ; 0/0/0 | 0 ; 0 | 13/0 ; 11/0 | 82/0 ; 74/0 | 26.3 ; 26.3 |
+| lte-fifo | lead | 0 ; 0 | 1 ; 1 | 0 ; 0 | 47 ; 41 | 1/0/0 ; 0/0/0 | 585 ; 592 | 13/0 ; 11/0 | 82/0 ; 74/0 | 26.3 ; 26.3 |
+| poor-mobile-nq | base | 0 ; 0 | 1 ; 0 | 0 ; 0 | 34 ; 38 | 4/1/0 ; 6/4/0 | 0 ; 0 | 17/0 ; 16/0 | 109/0 ; 92/0 | 26.3 ; 26.2 |
+| poor-mobile-nq | lead | 0 ; 0 | 1 ; 1 | 0 ; 0 | 38 ; 43 | 4/1/0 ; 7/4/0 | 668 ; 684 | 17/0 ; 16/0 | 109/0 ; 92/0 | 26.3 ; 26.2 |
+
+**20260925-092056-bodylead c1 (this client, live)**, corrections and coverage (seed 1 / seed 2):
+
+| Link | Arm | Draw snaps | Draw reversals | Teleports | Freeze frames | Revisions > 0.25 / 1 / 4 m | Lead speed changes | Stale body / meteor frames | Extra body / meteor | Snapshot kbit/s |
+|---|---|---|---|---|---|---|---|---|---|---|
+| loopback | base | 1 ; 1 | 0 ; 0 | 1 ; 1 | 24 ; 24 | 0/0/0 ; 0/0/0 | 0 ; 0 | 2/0 ; 2/0 | 22/0 ; 22/0 | 26.3 ; 26.3 |
+| loopback | lead | 1 ; 1 | 0 ; 0 | 1 ; 1 | 24 ; 24 | 0/0/0 ; 0/0/0 | 131 ; 131 | 2/0 ; 2/0 | 22/0 ; 22/0 | 26.3 ; 26.3 |
+| lan | base | 1 ; 1 | 0 ; 0 | 1 ; 1 | 25 ; 24 | 0/0/0 ; 0/0/0 | 0 ; 0 | 3/0 ; 3/0 | 21/0 ; 20/0 | 26.3 ; 26.3 |
+| lan | lead | 1 ; 1 | 0 ; 0 | 1 ; 1 | 25 ; 24 | 0/0/0 ; 0/0/0 | 138 ; 139 | 3/0 ; 3/0 | 21/0 ; 20/0 | 26.3 ; 26.3 |
+| lte | base | 1 ; 1 | 0 ; 0 | 1 ; 1 | 22 ; 21 | 1/1/0 ; 5/5/0 | 0 ; 0 | 12/0 ; 11/7 | 88/0 ; 97/0 | 25.5 ; 25.5 |
+| lte | lead | 1 ; 1 | 1 ; 1 | 1 ; 1 | 28 ; 37 | 2/1/0 ; 6/5/0 | 655 ; 643 | 12/0 ; 11/7 | 88/0 ; 97/0 | 25.5 ; 25.5 |
+| lte-fifo | base | 1 ; 1 | 0 ; 0 | 1 ; 1 | 20 ; 20 | 0/0/0 ; 0/0/0 | 0 ; 0 | 5/0 ; 7/0 | 79/0 ; 78/0 | 25.5 ; 25.5 |
+| lte-fifo | lead | 1 ; 1 | 0 ; 1 | 1 ; 1 | 30 ; 30 | 0/0/0 ; 0/0/0 | 611 ; 591 | 5/0 ; 7/0 | 79/0 ; 78/0 | 25.5 ; 25.5 |
+| poor-mobile-nq | base | 1 ; 1 | 0 ; 0 | 1 ; 1 | 20 ; 26 | 1/1/0 ; 3/2/0 | 0 ; 0 | 13/0 ; 12/24 | 114/0 ; 104/0 | 25.5 ; 25.5 |
+| poor-mobile-nq | lead | 1 ; 1 | 0 ; 5 | 1 ; 1 | 24 ; 37 | 1/1/0 ; 9/3/0 | 688 ; 631 | 13/0 ; 12/24 | 114/0 ; 104/0 | 25.5 ; 25.5 |
+
+### Options tried and not kept (measured, seed 1, systematic / heavy / predictive c1, loopback and LTE unless named)
+
+These development arms were scored before the scorer's last two changes (the speed counter, and draw-time gates not judged outside truth). Their revisions and positional numbers are unaffected.
+
+| Option | Result | Verdict |
+|---|---|---|
+| `arrival` horizon, cap 1 tick (the first cut) | systematic loopback fast_projectile pos@now p99 1.924 → 1.181 m, ballistic 0.456 → 0.272; but revisions over 0.25 m 0 → 40 (over 1 m 9), 25 snaps and 24 reversals where HEAD has none; full matrix revisions 95 → 737. Cannonballs extrapolated a tick into a wall: the warp met 1 of them (a head-on bounce's revised path comes no closer than 0.77 of the correction) | opt-in (`bodyLeadHorizon=arrival`) |
+| `arrival`, cap 0 (goal never past the body's own newest sample) | the best p50 (systematic loopback ballistic 0.103 → 0.015 m), but the cap binds on every arrival and the lead chases the sawtooth: 16,521 speed-change frames against 1,053, playback 0.5×/1.5× on alternate frames | rejected |
+| `arrival` with a speed bound on the overshoot, 0.25 / 0.1 m | revisions over 0.25 m on systematic loopback 31 / 18; reversals 34 / 23 | knob kept (`bodyLeadOvershoot`), off |
+| `arrival` backed off 1 tick | loopback revisions 0, but 8 snaps and 12 reversals over the matrix on loopback, LTE revisions 42 → 123 | opt-in setting |
+| `data` quantile 0.02 / 0.05 / 0.25 / 0.5 | 0.02 and 0.05 are within noise of 0.1 with less gain. 0.25 is +3% gain with more reversals (fast_projectile 13 → 33 over the matrix). 0.5 adds snaps on LTE (systematic 0 → 8) | 0.1 |
+| `data` + 0.25 tick | loopback fast_projectile p99 1.556 → 1.372 m, but revisions over 0.25 m 0 → 8 and reversals 0 → 24 on loopback | opt-in setting |
+| `data` + 0.5 tick with a 0.1 m overshoot bound (`dq10e50o10`) | loopback fast_projectile p99 systematic 1.924 → 1.479 m, heavy 1.565 → 1.044; reversals 8 / 9 where HEAD has 0, and 4,280 speed-change frames on systematic loopback | not kept |
+| `data`, cap 0 | the same as cap 1 within noise; more speed changes (1,256 against 1,053) | cap 1 |
+| No goal of 0 for a leaving body | freeze frames (bodies, 3 bundles × 2 seeds): LTE 202 (HEAD 65), loopback 64 (HEAD 36) | fixed |
+| Rise rate 0.25 | the same corrections; fast_projectile LTE p99 7.98 → 8.73 m (slower to take the lead) | 0.5 |
+| Warp gain 0.5 (the debris value) | a bounce's closest revised point is 0.59 of the correction (unit test): no warp | 0.8 |
+
+### Live (measured)
+
+One run, `scripts/perf/city-bench.sh --scenario quick --clients 3` from this
+tree (ports 7201/7202/3723, GPU lock), server at its defaults, clients at the
+new default: `target/body-lead/city-bench/runs/20260925-092056-bodylead`.
+
+- **Run health:** 3/3 paired bundles, 0 packets lost, 23 of 27 budgets pass.
+  The failures are the server's tick and sim rate (tick p95 16.75 ms, 5.1%
+  over budget, 5 s sim rate min 0.88; physics, as on the previous capture)
+  and 2 client frames over 33 ms on c0.
+- **Calibration of this capture with this tree: PASS on all three clients.**
+  - Bytes 16,051 / 16,163 / 16,049 byte-identical (100%).
+  - Clock offset p99 in the last 10 s: 100 / 100 / 100 µs.
+  - Against the live renderers, p99: bodies 7.5 / 6.8 / 6.6 cm, meteors
+    10.5 / 9.6 / 11.5 cm, players 1.1 / 0.9 / 1.1 cm, debris chunks 2.9 /
+    6.0 / 2.5 cm. Chunk keys and drawn / not drawn: 0 mismatches.
+  - Negative control: the same lab with `BODY_LEAD=0` fails check (d) on c0
+    and c1 (bodies p99 41 / 39 cm, meteors 75 / 41 cm, against the 15 cm
+    bound). The live pages drew with the lead, and the lab reproduces what
+    they drew.
+- **The capture scored in the lab** (c1, off → data, seed 1 / 2; the tables
+  above, "20260925-092056-bodylead"):
+  - loopback: fast_projectile pos@now p99 1.661 → 1.568 m, p50 0.653 →
+    0.516;
+  - LTE: 10.206 / 10.211 → 8.603 / 8.269 m;
+  - every loopback and LAN correction counter is equal.
+- **The live bench's `net.body_render_error_p99`** is a render-time error,
+  which the lead raises by design: 0.06 m on the previous capture, 0.38 m
+  here, against the 0.5 m budget. It passes on loopback; a run over a
+  jittery link would not (inferred from the lab's LTE fast_projectile
+  pos@render p99 of 2.5 m).
+
+### Tests
+
+Each new behaviour test fails without the change (checked by running them
+against 8c6e5d49's sources): `bodyLead.test.ts` cannot import, and the
+lead tests in `netcodeClient.test.ts` and `meteorPlacement.test.ts` fail.
+The guards pass on both.
+
+- `client/src/net/bodyLead.test.ts` (7):
+  - the horizon follows the data less the back-off; it is 0 when off, never
+    negative, and at most `maxLeadTicks`;
+  - a free-falling body takes the horizon as playback speed from no lead;
+  - it gives the lead up once the render time nears its newest sample plus
+    the cap (half speed, never a stop);
+  - a body not in free fall keeps no lead;
+  - a bounce inside the lead is met in time: the largest drawn step falls
+    below 0.7 of the unmet jump, with warps counted;
+  - no lead returns the render time exactly.
+- `client/src/net/netcodeClient.test.ts`, "NetcodeClient predictive snapshot
+  bodies" (4): a free-falling body on a 40 ± 15 ms link is drawn nearer
+  truth now, from data it has; a rolling body is drawn at the render time
+  exactly (guard); the drawn path never steps back or exceeds 1.5× (guard);
+  off draws every body at the render time.
+- `client/src/vfx/meteorPlacement.test.ts`: after contact, a bouncing rock
+  takes the lead from 0 at handover; without a feed horizon it is drawn at
+  the render time.
+- `client/netlab/v2/displayFormat.test.ts`: the lead round-trips, and a
+  stream without it reads none.
+- `server/src/bin/netlab2/score.rs`:
+  - `a_body_drawn_ahead_is_judged_at_its_draw_time`: a body drawn exactly at
+    a changing lead has no draw-time error or gates, and a 2 m correction
+    is a draw-time snap;
+  - `a_display_with_leads_reads_them_and_one_without_reads_zero`.
+- Suites: client 1,275 passed (4 skipped), `tsc -b` clean; netlab2 97.
+
+### Risks
+
+- **The default rests on the lab and one live run.** Its calibration
+  passes, but the lab runs the production client on recorded frame times.
+  Constrained and jittery links were not run live (netem needs root).
+- **Jittery links correct a little more** (LTE revisions over 0.25 m +17%,
+  reversals 2 → 11 over 6 cells). The `data` horizon's 10th percentile lets
+  a body pass its data on about one arrival in ten there (inferred from the
+  definition; not counted).
+- **Bodies at different leads.** A free-falling ball is drawn up to about
+  40 ms (LTE) later on its path than a rolling one beside it, and a meteor's
+  rock than the city debris it scatters. That is inferred; the scorer has no
+  pairwise metric.
+- **The live render-error budget is closer to its limit** (0.38 of 0.5 m),
+  because it judges at the render time.
+- **The gain on fast links is modest.** The render clock is already about a
+  tick behind the newest snapshot there. More needs extrapolation past the
+  data, which every arm tried paid for in corrections. The opt-in settings
+  are the arms above.
+
+### Reproduce
+
+```bash
+N=<this tree's lab binary>
+P=<the knob set in Predictive debris "Reproduce">
+BODY_LEAD=0 $N run --bundle <b> --out <dir> --link <link> --seed <k> --knob $P   # off (HEAD)
+            $N run ...                                                        # the default
+BODY_LEAD_HORIZON=arrival BODY_LEAD_BACKOFF=1 $N run ...                      # arrival − 1 tick
+BODY_LEAD_BACKOFF=-0.25 $N run ...                                            # data + 0.25 tick
+N=... $N calibrate --bundle <capture c_i> --out <dir>                         # the live capture
+```
+
+Runs: `target/body-lead/runs/<sys|hq|pred|bl>/<arm>/seed<k>/<link>` (big
+files pruned; `report.json`, `stream.json`, `client-stats.json` and
+`displayed.bin` kept). Arms `base` (off), `lead` (default), `arrb1`, `ext`,
+`head` (a pristine 8c6e5d49 client, for the equivalence check, scored before
+the draw-time gates), `off` (its lead-off twin), and the development arms
+named above (`b0c1`, `c0`, `c0s`, `b1`, `o25`, `o10`, `dq02`, `dq05L`, `dq10`,
+`dq10L`, `dq10Lr25`, `dq10c0`, `dq25`, `dq50`, `dq10e25`, `dq10e50o10`).
+Calibration: `target/body-lead/calibrate/`. The patch:
+`target/body-lead/body-lead.patch`.
 
 ## Proposals not implemented
 

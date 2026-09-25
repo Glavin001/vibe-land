@@ -66,6 +66,9 @@ pub struct Entity {
     pub position: [f32; 3],
     pub quaternion: [f32; 4],
     pub age_ms: f32,
+    /// How far past the frame's render time the client drew it, us (the
+    /// predictive body lead; 0 when the stream does not carry it).
+    pub lead_us: f32,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -89,13 +92,17 @@ pub struct Display {
 
 pub const FRAME_HEADER_BYTES: usize = 52;
 pub const ENTITY_BYTES: usize = 38;
+/// An entity record with the trailing `leadUs` (header `entityLeadUs: true`).
+pub const ENTITY_LEAD_BYTES: usize = ENTITY_BYTES + 4;
 
 pub fn parse_display(bytes: &[u8]) -> std::io::Result<Display> {
     if bytes.len() < 12 || &bytes[..8] != b"VLDISP01" {
         return Err(std::io::Error::other("not a VLDISP01 stream"));
     }
     let header_len = u32::from_le_bytes(bytes[8..12].try_into().unwrap()) as usize;
-    let header = serde_json::from_slice(&bytes[12..12 + header_len])?;
+    let header: serde_json::Value = serde_json::from_slice(&bytes[12..12 + header_len])?;
+    let with_lead = header["entityLeadUs"].as_bool() == Some(true);
+    let entity_bytes = if with_lead { ENTITY_LEAD_BYTES } else { ENTITY_BYTES };
     let mut at = 12 + header_len;
     let f64_at = |b: &[u8], o: usize| f64::from_le_bytes(b[o..o + 8].try_into().unwrap());
     let f32_at = |b: &[u8], o: usize| f32::from_le_bytes(b[o..o + 4].try_into().unwrap());
@@ -103,7 +110,7 @@ pub fn parse_display(bytes: &[u8]) -> std::io::Result<Display> {
     while at + FRAME_HEADER_BYTES <= bytes.len() {
         let b = &bytes[at..];
         let n = u32::from_le_bytes(b[48..52].try_into().unwrap()) as usize;
-        if FRAME_HEADER_BYTES + n * ENTITY_BYTES > b.len() {
+        if FRAME_HEADER_BYTES + n * entity_bytes > b.len() {
             break;
         }
         let mut frame = DisplayFrame {
@@ -125,8 +132,9 @@ pub fn parse_display(bytes: &[u8]) -> std::io::Result<Display> {
                 position: [f32_at(b, e + 6), f32_at(b, e + 10), f32_at(b, e + 14)],
                 quaternion: [f32_at(b, e + 18), f32_at(b, e + 22), f32_at(b, e + 26), f32_at(b, e + 30)],
                 age_ms: f32_at(b, e + 34),
+                lead_us: if with_lead { f32_at(b, e + 38) } else { 0.0 },
             });
-            e += ENTITY_BYTES;
+            e += entity_bytes;
         }
         at += e;
         frames.push(frame);
@@ -219,6 +227,19 @@ pub fn truth_at_client_us<T: TruthSource>(truth: &T, kind: u8, id: u32, server_u
     }
 }
 
+/// Whether truth has the entity on both ticks around a client time: a lookup
+/// there is an interpolation, not the pose held at the end of the entity's
+/// life (which would read as no travel at all).
+pub fn truth_spans<T: TruthSource>(truth: &T, kind: u8, id: u32, server_us: f64, tick_us: f64) -> bool {
+    let tick_f = server_us / tick_us;
+    if !tick_f.is_finite() || tick_f < 0.0 {
+        return false;
+    }
+    let t0 = tick_f.floor() as u32;
+    truth.tick(t0).and_then(|t| pose_at_tick(t, kind, id)).is_some()
+        && truth.tick(t0 + 1).and_then(|t| pose_at_tick(t, kind, id)).is_some()
+}
+
 pub fn truth_at_tick<T: TruthSource>(truth: &T, kind: u8, id: u32, tick: u32) -> Option<TruthPose> {
     truth.tick(tick).and_then(|t| pose_at_tick(t, kind, id))
 }
@@ -289,6 +310,30 @@ pub struct ClassScore {
     /// Drawn from the latest state because no interpolated sample existed.
     pub unsampled_share: f64,
     pub gates: Gates,
+    /// Displayed vs truth at the time it was drawn (render time + the
+    /// client's lead), metres: the interpolation / extrapolation error with
+    /// the lead taken out. Equal to `err_render_m` for a client with no lead.
+    #[serde(default)]
+    pub err_draw_m: Pct,
+    /// The gates judged against truth over the draw times (render time +
+    /// lead) rather than the render times: a body drawn ahead is compared
+    /// with where truth was when it is drawn, so a lead that changes as
+    /// playback speed is not a snap, and a correction still is. Frames whose
+    /// draw times are not inside the body's life in truth are not judged
+    /// (truth would read as standing still at its last tick). Otherwise equal
+    /// to `gates` for a client with no lead.
+    #[serde(default)]
+    pub draw_gates: Gates,
+    /// The lead each draw-frame was drawn at, ms.
+    #[serde(default)]
+    pub lead_ms: Pct,
+    /// Frames drawn at a playback speed off 1 by more than a quarter: the
+    /// lead changed by over 0.25 of the render-time step since the entity's
+    /// previous frame. A lead that follows a steady goal changes on a few
+    /// frames (rising into it, giving it up); one that chases the arrival
+    /// sawtooth changes on most (judder).
+    #[serde(default)]
+    pub lead_speed_frames: u64,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
@@ -370,6 +415,17 @@ pub struct MeteorScore {
     pub backward_frames: u64,
     /// Drawn below y = -0.5 m while truth is above ground.
     pub below_ground_frames: u64,
+    /// Every drawn meteor frame (not hidden) against truth at its draw time
+    /// (render time + lead), and the body-class gates over draw times; see
+    /// `ClassScore::draw_gates`. Handover steps count here too.
+    #[serde(default)]
+    pub err_draw_m: Pct,
+    #[serde(default)]
+    pub draw_gates: Gates,
+    #[serde(default)]
+    pub lead_ms: Pct,
+    #[serde(default)]
+    pub lead_speed_frames: u64,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -459,6 +515,37 @@ struct Acc {
     err_extra: Vec<f32>,
     unsampled: u64,
     gates: Gates,
+    err_draw: Vec<f32>,
+    draw_gates: Gates,
+    lead: Vec<f32>,
+    lead_speed_frames: u64,
+}
+
+/// Whether an entity drawn at `lead_us` past `render_us`, after `prev` (its
+/// previous frame's render time and lead), was drawn at a playback speed off
+/// 1 by more than a quarter.
+fn lead_speed_changed(prev: Option<&(f64, f32)>, render_us: f64, lead_us: f32) -> bool {
+    let Some((prev_render, prev_lead)) = prev else { return false };
+    let step = render_us - prev_render;
+    step > 0.0 && (f64::from(lead_us - prev_lead) / step).abs() > 0.25
+}
+
+/// One frame's step of a drawn entity against truth's travel over the same
+/// interval, into the gates.
+fn observe_gates(gates: &mut Gates, step: Vec3, travel: Vec3) {
+    let (s, tr) = (step.length(), travel.length());
+    if tr > FREEZE_TRUTH_MOVE_M && s < FREEZE_SHOWN_MOVE_M {
+        gates.freeze_frames += 1;
+    }
+    if s > REVERSAL_MIN_M && tr > 1e-4 && step.dot(travel) < -0.5 * s * tr {
+        gates.reversal_frames += 1;
+    }
+    if s > SNAP_MIN_M.max(SNAP_RATIO * tr) {
+        gates.snap_frames += 1;
+    }
+    if s > TELEPORT_M && tr < 1.0 {
+        gates.teleport_frames += 1;
+    }
 }
 
 fn quat_angle_deg(a: Quat, b: Quat) -> f32 {
@@ -648,6 +735,10 @@ pub fn score_display_into<T: TruthSource>(
     let mut meteor_err = Vec::new();
     let mut handover = Vec::new();
     let mut last_meteor: HashMap<u32, (u8, [f32; 3], f64)> = HashMap::new();
+    // The same, at the draw time (render time + lead), for the draw-time gates.
+    let mut last_drawn_at: HashMap<(u8, u32), ([f32; 3], f64)> = HashMap::new();
+    let (mut meteor_err_draw, mut meteor_lead) = (Vec::new(), Vec::new());
+    let mut last_lead: HashMap<(u8, u32), (f64, f32)> = HashMap::new();
     let mut lag = Vec::new();
     let mut interest = InterestTracker::default();
     let (mut stale_ms, mut fast_stale, mut slow_stale, mut meteor_stale) =
@@ -780,6 +871,42 @@ pub fn score_display_into<T: TruthSource>(
                         }
                     }
                 }
+                let draw_us = render_us + f64::from(entity.lead_us);
+                let at_draw = truth_at_client_us(truth, KIND_BODY, entity.id, draw_us, tick_us);
+                if let Some(t) = &at_draw {
+                    meteor_err_draw.push(shown.distance(t.position));
+                }
+                meteor_lead.push(entity.lead_us / 1000.0);
+                let key = (entity.kind, entity.id);
+                if lead_speed_changed(last_lead.get(&key), render_us, entity.lead_us) {
+                    card.meteors.lead_speed_frames += 1;
+                }
+                last_lead.insert(key, (render_us, entity.lead_us));
+                if let Some((prev_pos, prev_draw_us)) = last_drawn_at.get(&key).filter(|(_, prev)| {
+                    truth_spans(truth, KIND_BODY, entity.id, *prev, tick_us)
+                        && truth_spans(truth, KIND_BODY, entity.id, draw_us, tick_us)
+                }) {
+                    if let (Some(a), Some(b)) =
+                        (truth_at_client_us(truth, KIND_BODY, entity.id, *prev_draw_us, tick_us), &at_draw)
+                    {
+                        let step = shown - Vec3::from_array(*prev_pos);
+                        let before = card.meteors.draw_gates.clone();
+                        observe_gates(&mut card.meteors.draw_gates, step, b.position - a.position);
+                        if std::env::var_os("NETLAB2_GATE_DUMP").is_some() && card.meteors.draw_gates != before {
+                            eprintln!(
+                                "gate meteor id {} frame_ms {:.1} step {:.3} travel {:.3} lead_us {:.0} source {} {:?}",
+                                entity.id,
+                                frame.sample_ms,
+                                step.length(),
+                                (b.position - a.position).length(),
+                                entity.lead_us,
+                                entity.flags,
+                                card.meteors.draw_gates
+                            );
+                        }
+                    }
+                }
+                last_drawn_at.insert(key, (entity.position, draw_us));
                 last_meteor.insert(entity.id, (entity.flags, entity.position, render_us));
                 continue;
             }
@@ -866,23 +993,39 @@ pub fn score_display_into<T: TruthSource>(
                 if let (Some(a), Some(b)) =
                     (truth_at_client_us(truth, truth_kind, entity.id, *prev_render_us, tick_us), at_render)
                 {
-                    let travel = b.position - a.position;
-                    let (s, tr) = (step.length(), travel.length());
-                    if tr > FREEZE_TRUTH_MOVE_M && s < FREEZE_SHOWN_MOVE_M {
-                        acc.gates.freeze_frames += 1;
-                    }
-                    if s > REVERSAL_MIN_M && tr > 1e-4 && step.dot(travel) < -0.5 * s * tr {
-                        acc.gates.reversal_frames += 1;
-                    }
-                    if s > SNAP_MIN_M.max(SNAP_RATIO * tr) {
-                        acc.gates.snap_frames += 1;
-                    }
-                    if s > TELEPORT_M && tr < 1.0 {
-                        acc.gates.teleport_frames += 1;
-                    }
+                    observe_gates(&mut acc.gates, step, b.position - a.position);
                 }
             }
             last_drawn.insert(key, (entity.position, render_us));
+            // The same draw judged at its draw time (render time + lead).
+            let draw_us = render_us + f64::from(entity.lead_us);
+            let at_draw = if entity.lead_us == 0.0 {
+                at_render
+            } else {
+                truth_at_client_us(truth, truth_kind, entity.id, draw_us, tick_us)
+            };
+            if let Some(t) = &at_draw {
+                acc.err_draw.push(shown.distance(t.position));
+            }
+            if entity.kind == KIND_BODY {
+                acc.lead.push(entity.lead_us / 1000.0);
+                if lead_speed_changed(last_lead.get(&key), render_us, entity.lead_us) {
+                    acc.lead_speed_frames += 1;
+                }
+                last_lead.insert(key, (render_us, entity.lead_us));
+            }
+            if let Some((prev_pos, prev_draw_us)) = last_drawn_at.get(&key).filter(|(_, prev)| {
+                truth_spans(truth, truth_kind, entity.id, *prev, tick_us)
+                    && truth_spans(truth, truth_kind, entity.id, draw_us, tick_us)
+            }) {
+                let step = shown - Vec3::from_array(*prev_pos);
+                if let (Some(a), Some(b)) =
+                    (truth_at_client_us(truth, truth_kind, entity.id, *prev_draw_us, tick_us), &at_draw)
+                {
+                    observe_gates(&mut acc.draw_gates, step, b.position - a.position);
+                }
+            }
+            last_drawn_at.insert(key, (entity.position, draw_us));
         }
     }
     for (class, acc) in first_draw {
@@ -901,6 +1044,8 @@ pub fn score_display_into<T: TruthSource>(
     card.meteors.flights = meteor_ids.len() as u64;
     card.meteors.err_render_m = Pct::of(meteor_err);
     card.meteors.handover_jump_m = Pct::of(handover);
+    card.meteors.err_draw_m = Pct::of(meteor_err_draw);
+    card.meteors.lead_ms = Pct::of(meteor_lead);
     let frame_s = if card.frames > 1 { card.span_s / (card.frames - 1) as f64 } else { 1.0 / 60.0 };
     for (class, acc) in accs {
         let minutes = acc.entity_frames as f64 * frame_s / 60.0;
@@ -920,6 +1065,10 @@ pub fn score_display_into<T: TruthSource>(
                 err_extrapolated_m: Pct::of(acc.err_extra),
                 unsampled_share: acc.unsampled as f64 / acc.entity_frames.max(1) as f64,
                 gates,
+                err_draw_m: Pct::of(acc.err_draw),
+                draw_gates: acc.draw_gates,
+                lead_ms: Pct::of(acc.lead),
+                lead_speed_frames: acc.lead_speed_frames,
             },
         );
     }
@@ -1576,6 +1725,7 @@ mod tests {
                     position: p.to_array(),
                     quaternion: [0.0, 0.0, 0.0, 1.0],
                     age_ms: delay_ms,
+                    lead_us: 0.0,
                 });
             }
         }
@@ -1634,6 +1784,79 @@ mod tests {
     }
 
     #[test]
+    fn a_body_drawn_ahead_is_judged_at_its_draw_time() {
+        // A body drawn past the render time by a lead that changes at half a
+        // tick per tick (playback speed): exact at its draw time, so its
+        // draw-time error is 0 and its draw-time gates see nothing, while the
+        // lead shows up in the error at render time. A 2 m correction in one
+        // frame is a draw-time snap.
+        let w = world();
+        let tick_ms = 1000.0 / 60.0;
+        let drawn = |i: u32, jump: Option<Vec3>| {
+            let lead_ticks = (f64::from(i.saturating_sub(70)) * 0.5).min(3.0);
+            let mut f = frame_at(&w, f64::from(i) * tick_ms, 50.0, Vec3::ZERO, None);
+            let draw_us = f.dyn_render_us + lead_ticks * tick_ms * 1000.0;
+            f.entities.retain(|e| e.kind != KIND_BODY);
+            if let Some(t) = truth_at_server_us(&w, KIND_BODY, 9, draw_us) {
+                f.entities.push(Entity {
+                    kind: KIND_BODY,
+                    flags: FLAG_SAMPLED,
+                    id: 9,
+                    position: (t.position + jump.unwrap_or(Vec3::ZERO)).to_array(),
+                    quaternion: [0.0, 0.0, 0.0, 1.0],
+                    age_ms: 0.0,
+                    lead_us: (draw_us - f.dyn_render_us) as f32,
+                });
+            }
+            f
+        };
+        let card = score_display(&w, &timeline(), 1, &display((60..200).map(|i| drawn(i, None)).collect()));
+        let flight = &card.classes["ballistic"];
+        assert!(flight.err_draw_m.max < 1e-3, "{:?}", flight.err_draw_m);
+        assert!(flight.err_render_m.p50 > 0.1, "the lead is in the render-time error: {:?}", flight.err_render_m);
+        assert!((flight.lead_ms.max - 50.0).abs() < 0.01, "{:?}", flight.lead_ms);
+        let mut gates = Gates::default();
+        for class in card.classes.values() {
+            gates.snap_frames += class.draw_gates.snap_frames;
+            gates.reversal_frames += class.draw_gates.reversal_frames;
+            gates.teleport_frames += class.draw_gates.teleport_frames;
+        }
+        assert_eq!((gates.snap_frames, gates.reversal_frames, gates.teleport_frames), (0, 0, 0));
+
+        let frames = (60..200).map(|i| drawn(i, (i == 90).then(|| Vec3::new(2.0, 0.0, 0.0)))).collect();
+        let card = score_display(&w, &timeline(), 1, &display(frames));
+        let snaps: u64 = card.classes.values().map(|c| c.draw_gates.snap_frames).sum();
+        assert!(snaps >= 1, "{:?}", card.classes.keys().collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn a_display_with_leads_reads_them_and_one_without_reads_zero() {
+        let mut bytes = Vec::new();
+        let header = br#"{"entityLeadUs":true}"#;
+        bytes.extend_from_slice(b"VLDISP01");
+        bytes.extend_from_slice(&(header.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(header);
+        for v in [1.0f64, 1.0, 0.0] {
+            bytes.extend_from_slice(&v.to_le_bytes());
+        }
+        bytes.extend_from_slice(&50.0f32.to_le_bytes());
+        bytes.extend_from_slice(&16.0f32.to_le_bytes());
+        bytes.extend_from_slice(&1000.0f64.to_le_bytes());
+        bytes.extend_from_slice(&900.0f64.to_le_bytes());
+        bytes.extend_from_slice(&1u32.to_le_bytes());
+        bytes.push(KIND_BODY);
+        bytes.push(1);
+        bytes.extend_from_slice(&7u32.to_le_bytes());
+        for v in [1.0f32, 2.0, 3.0, 0.0, 0.0, 0.0, 1.0, 4.0, 12_500.0] {
+            bytes.extend_from_slice(&v.to_le_bytes());
+        }
+        let d = parse_display(&bytes).unwrap();
+        assert_eq!(d.frames.len(), 1);
+        assert_eq!(d.frames[0].entities[0].lead_us, 12_500.0);
+        assert_eq!(d.frames[0].entities[0].age_ms, 4.0);
+    }
+
+    #[test]
     fn a_stale_extrapolated_body_is_counted_as_extrapolating() {
         let w = world();
         let mut frames: Vec<DisplayFrame> =
@@ -1660,7 +1883,7 @@ mod tests {
         let frame = |tick: u32| {
             let mut f = frame_at(&w, f64::from(tick) * 1000.0 / 60.0, 0.0, Vec3::ZERO, None);
             f.entities.retain(|e| e.kind != KIND_BODY);
-            f.entities.push(Entity { kind: KIND_BODY, flags: 0, id: 9, position: last.position, quaternion: [0.0, 0.0, 0.0, 1.0], age_ms: 0.0 });
+            f.entities.push(Entity { kind: KIND_BODY, flags: 0, id: 9, position: last.position, quaternion: [0.0, 0.0, 0.0, 1.0], age_ms: 0.0, lead_us: 0.0 });
             f
         };
         let card = score_display(&w, &timeline(), 1, &display((140..=200).map(frame).collect()));
@@ -1766,7 +1989,7 @@ mod tests {
         assert_eq!(r.classes["player"].missing, 140.0);
         // Extra: a body truth never had.
         let r = score(&frames(Vec3::ZERO, Vec3::ZERO, &|f| {
-            f.entities.push(Entity { kind: KIND_BODY, flags: FLAG_SAMPLED, id: 77, position: [1.0, 1.0, 1.0], quaternion: [0.0, 0.0, 0.0, 1.0], age_ms: 0.0 });
+            f.entities.push(Entity { kind: KIND_BODY, flags: FLAG_SAMPLED, id: 77, position: [1.0, 1.0, 1.0], quaternion: [0.0, 0.0, 0.0, 1.0], age_ms: 0.0, lead_us: 0.0 });
         }));
         assert_eq!(r.classes["body"].extra, 140.0);
         // Wrong identity: the body drawn as a box.
@@ -1780,7 +2003,7 @@ mod tests {
         assert_eq!(r.classes["body"].wrong_identity, 140.0);
         // The spectated self is scored but kept out of the overall figure.
         let r = score(&frames(Vec3::ZERO, Vec3::ZERO, &|f| {
-            f.entities.push(Entity { kind: KIND_PLAYER, flags: FLAG_SAMPLED, id: 1, position: [30.0, 0.0, 0.0], quaternion: [0.0; 4], age_ms: 0.0 });
+            f.entities.push(Entity { kind: KIND_PLAYER, flags: FLAG_SAMPLED, id: 1, position: [30.0, 0.0, 0.0], quaternion: [0.0; 4], age_ms: 0.0, lead_us: 0.0 });
         }));
         assert!(r.classes["own_avatar"].pos_render_m.p50 > 29.0);
         assert!(r.overall.pos_render_m.max < 1e-3);

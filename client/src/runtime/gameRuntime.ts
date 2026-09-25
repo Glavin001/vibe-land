@@ -168,6 +168,8 @@ export interface GameRuntimeClient {
   getDynamicBodySamples(id: number): readonly DynamicBodySample[];
   /** Server ticks of snapshots since the body was last in one; null if unknown. */
   getDynamicBodyTicksSinceSeen(id: number): number | null;
+  /** The lead a free-falling body is drawn at past the render time, us (net/bodyLead.ts). */
+  getDynamicBodyLeadHorizonUs(): number;
   getDynamicBodyObservedAgeMs(id: number, localTimeUs?: number): number | null;
   recordFrameDebugMetrics(
     playerCorrectionMagnitude: number,
@@ -429,6 +431,7 @@ abstract class BaseGameRuntime implements GameRuntimeClient {
   abstract getRenderTimeUs(localTimeUs?: number): number;
   abstract getDynamicBodySamples(id: number): readonly DynamicBodySample[];
   abstract getDynamicBodyTicksSinceSeen(id: number): number | null;
+  abstract getDynamicBodyLeadHorizonUs(): number;
   abstract getDynamicBodyObservedAgeMs(id: number, localTimeUs?: number): number | null;
   abstract recordFrameDebugMetrics(
     playerCorrectionMagnitude: number,
@@ -769,6 +772,10 @@ export class LocalGameRuntime extends BaseGameRuntime {
 
   getDynamicBodyTicksSinceSeen(_id: number): number | null {
     return null;
+  }
+
+  getDynamicBodyLeadHorizonUs(): number {
+    return 0;
   }
 
   getDynamicBodyObservedAgeMs(id: number, localTimeUs?: number): number | null {
@@ -1622,6 +1629,10 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
 
   getDynamicBodyTicksSinceSeen(id: number): number | null {
     return this.client?.getDynamicBodyTicksSinceSeen(id) ?? null;
+  }
+
+  getDynamicBodyLeadHorizonUs(): number {
+    return this.client?.getDynamicBodyLeadHorizonUs() ?? 0;
   }
 
   getDynamicBodyObservedAgeMs(id: number, localTimeUs?: number): number | null {

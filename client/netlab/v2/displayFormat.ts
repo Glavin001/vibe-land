@@ -13,6 +13,12 @@
 // kind: 1 player, 2 vehicle, 3 body, 4 meteor (flags = source).
 // flags bit0: drawn from an interpolated sample (else the latest state);
 // ageMs: how old the newest server sample behind it is (NaN if unknown).
+// With `entityLeadUs: true` in the header every entity record carries one
+// more field, [f32 leadUs]: how far past the frame's render time (renderUs,
+// or dynRenderUs for bodies and meteors) the client drew it (the predictive
+// body lead, net/bodyLead.ts; 0 for a client without one). The scorer judges
+// the draw-time gates against truth at render time + lead. Streams without
+// the field read as lead 0.
 
 export const DISPLAY_MAGIC = 'VLDISP01';
 export const KIND_PLAYER = 1;
@@ -21,6 +27,8 @@ export const KIND_BODY = 3;
 export const FLAG_SAMPLED = 1;
 export const FRAME_HEADER_BYTES = 8 + 8 + 8 + 4 + 4 + 8 + 8 + 4;
 export const ENTITY_BYTES = 1 + 1 + 4 + 12 + 16 + 4;
+/** An entity record with the trailing lead (`entityLeadUs` header field). */
+export const ENTITY_LEAD_BYTES = ENTITY_BYTES + 4;
 
 export interface DisplayedEntity {
   kind: number;
@@ -29,6 +37,8 @@ export interface DisplayedEntity {
   position: ArrayLike<number>;
   quaternion: ArrayLike<number>;
   ageMs: number;
+  /** Drawn this far past the render time, us (`entityLeadUs` streams only). */
+  leadUs?: number;
 }
 
 export interface DisplayedFrame {
@@ -51,8 +61,10 @@ export function encodeDisplayHeader(header: Record<string, unknown>): Uint8Array
   return out;
 }
 
-export function encodeDisplayFrame(frame: DisplayedFrame): Uint8Array {
-  const out = new Uint8Array(FRAME_HEADER_BYTES + frame.entities.length * ENTITY_BYTES);
+/** One frame; `withLead` writes each entity's `leadUs` (header `entityLeadUs: true`). */
+export function encodeDisplayFrame(frame: DisplayedFrame, withLead = false): Uint8Array {
+  const entityBytes = withLead ? ENTITY_LEAD_BYTES : ENTITY_BYTES;
+  const out = new Uint8Array(FRAME_HEADER_BYTES + frame.entities.length * entityBytes);
   const view = new DataView(out.buffer);
   let at = 0;
   view.setFloat64(at, frame.tMs, true); at += 8;
@@ -70,6 +82,7 @@ export function encodeDisplayFrame(frame: DisplayedFrame): Uint8Array {
     for (let k = 0; k < 3; k += 1) { view.setFloat32(at, entity.position[k], true); at += 4; }
     for (let k = 0; k < 4; k += 1) { view.setFloat32(at, entity.quaternion[k] ?? 0, true); at += 4; }
     view.setFloat32(at, entity.ageMs, true); at += 4;
+    if (withLead) { view.setFloat32(at, entity.leadUs ?? 0, true); at += 4; }
   }
   return out;
 }
@@ -81,6 +94,7 @@ export function decodeDisplay(bytes: Uint8Array): { header: Record<string, unkno
   if (magic !== DISPLAY_MAGIC) throw new Error(`not a ${DISPLAY_MAGIC} stream (${magic})`);
   const headerLength = view.getUint32(8, true);
   const header = JSON.parse(new TextDecoder().decode(bytes.subarray(12, 12 + headerLength)));
+  const withLead = header.entityLeadUs === true;
   let at = 12 + headerLength;
   const frames: DisplayedFrame[] = [];
   while (at + FRAME_HEADER_BYTES <= bytes.length) {
@@ -111,8 +125,9 @@ export function decodeDisplay(bytes: Uint8Array): { header: Record<string, unkno
         position,
         quaternion,
         ageMs: view.getFloat32(at + 34, true),
+        ...(withLead ? { leadUs: view.getFloat32(at + 38, true) } : {}),
       });
-      at += ENTITY_BYTES;
+      at += withLead ? ENTITY_LEAD_BYTES : ENTITY_BYTES;
     }
     frames.push(frame);
   }

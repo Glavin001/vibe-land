@@ -134,4 +134,8 @@ export class ReplayNetWorld implements MeteorBodySource {
   getDynamicBodyTicksSinceSeen(id: number): number | null {
     return this.client.getDynamicBodyTicksSinceSeen(id);
   }
+
+  getDynamicBodyLeadHorizonUs(): number {
+    return this.client.getDynamicBodyLeadHorizonUs();
+  }
 }
