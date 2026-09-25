@@ -256,7 +256,21 @@ fn main() {
 #[cfg(feature = "gpu")]
 fn add_vehicle(build: &mut cc::Build, root: &std::path::Path) {
     let sdk = physx_destruction_sdk();
-    let vehicle = sdk.join("destruction/vehicle");
+    // Prefer the copy packaged with the install (`<PHYSX_ROOT>/destruction/
+    // vehicle`), so a build uses exactly the source the package was cut from.
+    // Falling back to the checkout compiles whatever is in its working tree --
+    // uncommitted edits included -- against a package built without them.
+    let packaged = root.join("destruction/vehicle");
+    let vehicle = if packaged.join("PxNativeVehicle.cpp").is_file() {
+        packaged
+    } else {
+        println!(
+            "cargo:warning=vehicle wrapper taken from the PhysX checkout {} (the install has none); \
+             uncommitted edits there are compiled in",
+            sdk.join("destruction/vehicle").display()
+        );
+        sdk.join("destruction/vehicle")
+    };
     let wrapper = vehicle.join("PxNativeVehicle.cpp");
     assert!(
         wrapper.is_file(),
