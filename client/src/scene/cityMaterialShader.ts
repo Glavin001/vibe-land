@@ -55,6 +55,7 @@
 // variation, it is a mistake.
 
 import * as THREE from 'three';
+import { cityGrassPaint } from './grass/GrassPaint';
 
 import {
   CITY_TEX_LAYERS,
@@ -772,7 +773,7 @@ ${hero ? HERO_UNIFORM_PARS + HERO_HELPERS : ''}
  * its weight is pinned, so a typical pixel pays one layer's taps; the
  * transition bands pay both, and they are exactly the places the money shows.
  */
-function groundMapFragment(surface: boolean, hero: boolean): string {
+function groundMapFragment(surface: boolean, hero: boolean, grassCover = false): string {
   const ga = GROUND_LAYER_START;
   const gb = GROUND_LAYER_START + (GROUND_LAYER_COUNT > 1 ? 1 : 0);
   const meanA = `cityTexMean[ ${ga} ]`;
@@ -782,6 +783,7 @@ vec2 groundDx = dFdx( vGroundPos );
 vec2 groundDy = dFdy( vGroundPos );
 float groundAM = cityTexMetres[ ${ga} ] * cityTexScale;
 float groundBM = cityTexMetres[ ${gb} ] * cityTexScale;
+${grassCover ? 'vec4 grassCoverSample = texture2D(grassCoverMap, (vGroundPos + 256.0) / 512.0);' : ''}
 ${hero ? `
 float groundHexFade = 1.0 - smoothstep( cityHexFadeStart, cityHexFadeEnd, length( vViewPosition ) );
 // A second, larger read of the macro field drives WHERE the dirt lives; the
@@ -790,6 +792,7 @@ float groundPatch = cityMacroField( vGroundPos * 0.31 );
 float groundDirt = clamp(
   vGroundW.y + vGroundW.z + vGroundW.w
   + smoothstep( groundDirtStart, groundDirtEnd, groundPatch ), 0.0, 1.0 );
+${grassCover ? 'groundDirt = max(groundDirt, 1.0 - grassCoverSample.a);' : ''}
 float groundMacro = cityMacroField( vGroundPos );
 
 CityPlane groundA = CityPlane( vec3( 0.0 ), vec2( 0.0 ), 0.0, 0.0 );
@@ -821,6 +824,7 @@ vec2 groundNxy = mix( groundA.nxy, groundB.nxy, groundDirt )
 ` : `
 // Plain variant (hero off, or the albedo tier): one tap per needed layer.
 float groundDirt = clamp( vGroundW.y + vGroundW.z + vGroundW.w, 0.0, 1.0 );
+${grassCover ? 'groundDirt = max(groundDirt, 1.0 - grassCoverSample.a);' : ''}
 vec4 groundTapA = texture( cityAlbedo, vec3( vGroundPos / groundAM, float( ${ga} ) ) );
 vec4 groundTapB = texture( cityAlbedo, vec3( vGroundPos / groundBM, float( ${gb} ) ) );
 diffuseColor.rgb *= cityTone * mix( groundTapA.rgb, groundTapB.rgb, groundDirt );
@@ -875,6 +879,7 @@ export function applyGroundTextures(
   material: THREE.Material,
   surface: boolean,
   heroRequested: boolean,
+  grassCover = false,
 ): void {
   // Like the city: the hero stack's detail-aware and normal work needs the
   // surface array, so the albedo tier keeps the plain path.
@@ -892,6 +897,7 @@ export function applyGroundTextures(
     shader.uniforms.cityTone = uniforms.cityTone;
     shader.uniforms.groundDirtStart = groundUniforms.groundDirtStart;
     shader.uniforms.groundDirtEnd = groundUniforms.groundDirtEnd;
+    if (grassCover) shader.uniforms.grassCoverMap = { value: cityGrassPaint.cover };
     if (surface) {
       shader.uniforms.citySurface = uniforms.citySurface;
       shader.uniforms.cityNormalScale = uniforms.cityNormalScale;
@@ -926,10 +932,15 @@ export function applyGroundTextures(
       '#include <begin_vertex>',
       '#include <begin_vertex>\n' + GROUND_VERTEX_BODY,
     );
-    shader.fragmentShader = groundFragmentPars(surface, hero) + shader.fragmentShader;
+    shader.fragmentShader = (grassCover ? 'uniform sampler2D grassCoverMap;\n' : '') + groundFragmentPars(surface, hero) + shader.fragmentShader;
     shader.fragmentShader = shader.fragmentShader.replace(
       '#include <map_fragment>',
-      groundMapFragment(surface, hero),
+      groundMapFragment(surface, hero, grassCover) + (grassCover ? `
+        // The photographed leafy_grass sheet is dry ochre. Match the living
+        // canopy while preserving its detail and the authored dirt patches.
+        vec3 canopyTint = grassCoverSample.rgb * 0.7 / vec3(0.3199, 0.2360, 0.1062);
+        diffuseColor.rgb *= mix(canopyTint, vec3(1.0), groundDirt);
+      ` : ''),
     );
     if (surface) {
       shader.fragmentShader = shader.fragmentShader
@@ -939,5 +950,5 @@ export function applyGroundTextures(
     }
   };
   material.customProgramCacheKey = () =>
-    `ground-${surface ? 'pbr' : 'albedo'}-${hero ? 'hero' : 'plain'}-v1`;
+    `ground-${surface ? 'pbr' : 'albedo'}-${hero ? 'hero' : 'plain'}-${grassCover ? 'canopy' : 'bare'}-v3`;
 }

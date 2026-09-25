@@ -24,6 +24,8 @@ import {
 
 type WorldTerrainProps = Omit<MeshProps, 'geometry' | 'material'> & {
   world: WorldDocument;
+  /** Living canopy colour in city grass areas, retained beyond the blade LOD. */
+  grassCover?: boolean;
 };
 
 type TerrainTileGeometry = {
@@ -34,7 +36,7 @@ type TerrainTileGeometry = {
 };
 
 export const WorldTerrain = forwardRef<THREE.Group, WorldTerrainProps>(function WorldTerrain(
-  { world, ...meshProps },
+  { world, grassCover = false, ...meshProps },
   ref,
 ) {
   const materials = useMemo(() => getTerrainMaterials(world), [world]);
@@ -46,8 +48,8 @@ export const WorldTerrain = forwardRef<THREE.Group, WorldTerrainProps>(function 
     terrainVariant,
   );
   const material = useMemo(
-    () => buildTerrainMaterial(materials, groundVariant),
-    [materials, groundVariant],
+    () => buildTerrainMaterial(materials, groundVariant, grassCover),
+    [materials, groundVariant, grassCover],
   );
   useEffect(loadCityTextures, []);
 
@@ -220,6 +222,7 @@ function terrainVariant(): string {
 function buildTerrainMaterial(
   materials: TerrainMaterial[],
   variant: string = terrainVariant(),
+  grassCover = false,
 ): THREE.MeshStandardMaterial {
   const avgRoughness = materials.length > 0
     ? materials.reduce((sum, m) => sum + m.roughness, 0) / materials.length
@@ -255,7 +258,7 @@ function buildTerrainMaterial(
   if (textured) {
     // Layered ON TOP of the slope-shade injection above (applyGroundTextures
     // chains the previous onBeforeCompile) and replaces the cache key.
-    applyGroundTextures(mat, detail === 'full' && variant.endsWith('pbr'), hero === 'hero');
+    applyGroundTextures(mat, detail === 'full' && variant.endsWith('pbr'), hero === 'hero', grassCover);
   }
   return mat;
 }

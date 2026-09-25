@@ -20,6 +20,7 @@ import {
   type KeyboardBindings,
 } from './input/bindings';
 import { usePointerLockEngagement } from './input/usePointerLockEngagement';
+import { getPointerMode, subscribePointerMode } from './input/pointerMode';
 import { GameScene } from './scene/GameScene';
 import type { CrosshairAimState } from './scene/aimTargeting';
 import type { DeviceFamily, InputFamilyMode, InputSample } from './input/types';
@@ -243,6 +244,7 @@ export function App({
   const { displayState: controlHintsState, updateInputFrame, isDesktop } = useControlHints();
   const { controller: damageFeedbackController, renderState: damageOverlayState } = useDamageFeedback();
   const touchMode = isTouchDevice();
+  const dragPointer = useSyncExternalStore(subscribePointerMode, getPointerMode, getPointerMode) === 'drag';
   // Which step of joining we are on, so a stalled connect names the step it
   // stalled on instead of just saying "Connecting..." forever.
   const connectPhase = useSyncExternalStore(subscribeConnectPhase, getConnectPhase, getConnectPhase);
@@ -251,7 +253,8 @@ export function App({
   const renderStatsParentRef = useRef<HTMLDivElement>(null);
 
   const getGameCanvas = useCallback(
-    () => document.querySelector<HTMLCanvasElement>('canvas[data-testid="game-canvas"]'),
+    // R3F puts Canvas props on its wrapper div, not the WebGL canvas.
+    () => document.querySelector<HTMLCanvasElement>('[data-testid="game-canvas"] canvas'),
     [],
   );
   usePointerLockEngagement({
@@ -1064,6 +1067,11 @@ export function App({
           </div>
         </div>
       )}
+      {connected && !touchMode && dragPointer && <div role="status" style={{
+        position: 'absolute', top: 58, left: '50%', transform: 'translateX(-50%)',
+        padding: '8px 12px', borderRadius: 8, background: 'rgba(7,11,16,0.78)',
+        color: 'white', fontSize: 12, zIndex: 9, pointerEvents: 'none', textAlign: 'center',
+      }}>Drag to look · Click to fire · Esc to release controls</div>}
       <ControlHintsOverlay
         bindings={inputBindings}
         state={controlHintsState}

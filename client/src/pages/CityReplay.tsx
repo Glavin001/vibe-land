@@ -34,6 +34,7 @@ import * as THREE from 'three';
 import { FrameClock } from '../scene/FrameClock';
 import { RenderGovernor, sceneCanvasProps } from '../scene/RenderGovernor';
 import { CityEnvironment, resolveFogColor } from '../scene/CityEnvironment';
+import { CityGrass } from '../scene/CityGrass';
 import { WorldTerrain } from '../scene/WorldTerrain';
 import { CityChunksLayer } from '../scene/CityChunksLayer';
 import { DustLayer } from '../vfx/DustLayer';
@@ -680,8 +681,14 @@ export function CityReplayPage() {
         />
         {/* The city's flat world, as /city draws it: the Demo World's hills would
             bury the towers and cost a terrain the game never pays for. */}
-        <WorldTerrain world={CITY_WORLD_DOCUMENT} />
+        <WorldTerrain world={CITY_WORLD_DOCUMENT} grassCover />
         <CityChunksLayer getCityClient={() => playerRef.current?.client ?? null} />
+        <CityGrass
+          getCityClient={() => playerRef.current?.client ?? null}
+          getActors={() => playerRef.current?.world?.client ?? null}
+          windStrengthMps={fog.windStrengthMps}
+          windDirectionDeg={fog.windDirectionDeg}
+        />
         <ReplayNetLayers playerRef={playerRef} />
         {/* The meteors on the tape clock: the streamed bodies when the tape
             has the game stream, the launch arcs on a city-only tape. */}

@@ -11,8 +11,10 @@ export class GameInputManager {
   private readonly touch: TouchInputSource = touchInputSource;
   private activeFamily: DeviceFamily | null = null;
 
-  attach() {
-    this.keyboardMouse.attach();
+  get hasPointerControl(): boolean { return this.keyboardMouse.hasPointerControl; }
+
+  attach(canvas?: HTMLElement) {
+    this.keyboardMouse.attach(canvas);
     this.touch.attach();
   }
 

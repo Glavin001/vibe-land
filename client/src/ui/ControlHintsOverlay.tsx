@@ -1,4 +1,5 @@
-import type { CSSProperties } from 'react';
+import { useSyncExternalStore, type CSSProperties } from 'react';
+import { getPointerMode, subscribePointerMode } from '../input/pointerMode';
 import {
   gamepadAxisLabel,
   gamepadButtonLabel,
@@ -47,6 +48,7 @@ function buildRows(
   context: InputContext,
   action: ActionSnapshot | null,
   bindings: InputBindings,
+  dragLook = false,
 ): RowSpec[] {
   if (context === 'vehicle') {
     if (family === 'gamepad') {
@@ -66,7 +68,7 @@ function buildRows(
       { command: 'Steer', binding: `${keyboardCodeLabel(keyboard.moveLeft)} / ${keyboardCodeLabel(keyboard.moveRight)}`, value: clamp01(Math.abs(action?.steer ?? action?.moveX ?? 0)) },
       { command: 'Throttle', binding: keyboardCodeLabel(keyboard.moveForward), value: clamp01(action?.throttle ?? 0) },
       { command: 'Brake / Reverse', binding: keyboardCodeLabel(keyboard.moveBackward), value: clamp01(action?.brake ?? 0) },
-      { command: 'Camera', binding: 'Mouse / Trackpad', value: axisStrength(action?.lookX ?? 0, action?.lookY ?? 0, 0.03) },
+      { command: 'Camera', binding: dragLook ? 'Drag to look' : 'Mouse / Trackpad', value: axisStrength(action?.lookX ?? 0, action?.lookY ?? 0, 0.03) },
       { command: 'Handbrake', binding: keyboardCodeLabel(keyboard.handbrake), value: boolValue(action?.handbrake ?? false), active: action?.handbrake ?? false },
       { command: 'Reset Vehicle', binding: keyboardCodeLabel(keyboard.resetVehicle), value: boolValue(action?.resetVehiclePressed ?? false), active: action?.resetVehiclePressed ?? false },
       { command: 'Exit Vehicle', binding: keyboardCodeLabel(keyboard.interact), value: boolValue(action?.interactPressed ?? false), active: action?.interactPressed ?? false },
@@ -93,7 +95,7 @@ function buildRows(
   const keyboard = bindings.keyboard;
   return [
     { command: 'Move', binding: formatKeyboardMoveBinding(keyboard), value: axisStrength(action?.moveX ?? 0, action?.moveY ?? 0) },
-    { command: 'Look', binding: 'Mouse / Trackpad', value: axisStrength(action?.lookX ?? 0, action?.lookY ?? 0, 0.03) },
+    { command: 'Look', binding: dragLook ? 'Drag to look' : 'Mouse / Trackpad', value: axisStrength(action?.lookX ?? 0, action?.lookY ?? 0, 0.03) },
     { command: 'Shoot', binding: mouseButtonLabel(keyboard.firePrimaryMouseButton), value: clamp01(action?.firePrimaryValue ?? 0), active: action?.firePrimary ?? false },
     { command: 'Melee', binding: keyboardCodeLabel(keyboard.melee), value: boolValue(action?.meleePressed ?? false), active: action?.meleePressed ?? false },
     { command: 'Jump', binding: keyboardCodeLabel(keyboard.jump), value: boolValue(action?.jump ?? false), active: action?.jump ?? false },
@@ -147,11 +149,12 @@ export function ControlHintsOverlay({
   inputFamilyMode,
   onInputFamilyModeChange,
 }: ControlHintsOverlayProps) {
+  const dragLook = useSyncExternalStore(subscribePointerMode, getPointerMode, getPointerMode) === 'drag';
   if (!visible) return null;
 
   const family = state.activeFamily ?? 'keyboardMouse';
   const context = state.context;
-  const rows = buildRows(family, context, state.action, bindings);
+  const rows = buildRows(family, context, state.action, bindings, dragLook);
   const title = `${family === 'gamepad' ? 'Gamepad' : 'Keyboard + Mouse'} · ${context === 'vehicle' ? 'Vehicle' : 'On Foot'}`;
 
   return (

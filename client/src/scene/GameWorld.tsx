@@ -5,6 +5,8 @@ import {
   useDustMode,
 } from '../app/renderQuality';
 import { CityEnvironment, resolveFogColor } from './CityEnvironment';
+import { CityGrass } from './CityGrass';
+import { CITY_WORLD_DOCUMENT } from '../world/cityWorld';
 import { applyCapturePose } from './captureCamera';
 import { advanceAerialPose, type AerialPose } from './aerialFlight';
 import { useFrame, useThree } from '@react-three/fiber';
@@ -1291,13 +1293,13 @@ export function GameWorld({
 
   useEffect(() => {
     const manager = new GameInputManager();
-    manager.attach();
+    manager.attach(gl.domElement);
     inputManagerRef.current = manager;
     return () => {
       manager.detach();
       inputManagerRef.current = null;
     };
-  }, []);
+  }, [gl]);
 
   useEffect(() => () => {
     onAimStateChangeRef.current?.('idle');
@@ -1816,6 +1818,7 @@ export function GameWorld({
     const suppressPlayerInput = aerialMode || pendingAerialDropRef.current !== null;
     const isDrivingNow = client.isInVehicle();
     const pointerLocked = document.pointerLockElement === gl.domElement;
+    const pointerActive = pointerLocked || !!inputManagerRef.current?.hasPointerControl;
     const inputSample = inputManagerRef.current?.sample(
       frameDelta,
       pointerLocked,
@@ -1829,7 +1832,7 @@ export function GameWorld({
     const editingControl = focusedElement instanceof HTMLElement
       && (focusedElement.isContentEditable || !!focusedElement.closest('input, textarea, select, button, [role="dialog"]'));
     const aerialAction = aerialMode && document.hasFocus() && !document.hidden && !editingControl
-      && (inputSample.activeFamily !== 'keyboardMouse' || pointerLocked)
+      && (inputSample.activeFamily !== 'keyboardMouse' || pointerActive)
       ? inputSample.action : null;
     // Neutral player input keeps camera exploration from moving, firing, or
     // interacting through the grounded player (including agent-drive input).
@@ -1851,7 +1854,7 @@ export function GameWorld({
 
     const canUseAimControls = canUseScopedAim(
       inputSample.activeFamily,
-      pointerLocked,
+      pointerActive,
       isDrivingNow,
       localDead,
       botAutopilotEnabled,
@@ -2891,7 +2894,7 @@ export function GameWorld({
         intensity={intensity}
         aerialMode={aerialMode}
       />
-      <WorldTerrain world={worldDocument} />
+      <WorldTerrain world={worldDocument} grassCover={worldDocument === CITY_WORLD_DOCUMENT} />
       <WorldStaticProps world={worldDocument} />
       <Portals runtimeRef={runtimeRef} />
 
@@ -2918,6 +2921,16 @@ export function GameWorld({
 
       {/* Destructible city chunks (instanced; only active in city-* matches) */}
       <CityChunksLayer getCityClient={() => runtimeRef.current?.getCityClient?.() ?? null} />
+      <CityGrass
+        getCityClient={() => runtimeRef.current?.getCityClient?.() ?? null}
+        getInteractionPosition={() => {
+          const runtime = runtimeRef.current;
+          return runtime && !runtime.isInVehicle() && !(runtime.localPlayerFlags & FLAG_DEAD) ? runtime.getPosition() : null;
+        }}
+        getActors={() => runtimeRef.current ?? null}
+        windStrengthMps={windStrengthMps}
+        windDirectionDeg={windDirectionDeg}
+      />
       {/* Destruction dust, fed by the city client's fracture stream */}
       <MeteorLayer getRuntime={() => runtimeRef.current ?? null} />
 

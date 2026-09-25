@@ -3,7 +3,6 @@ import { Canvas } from '@react-three/fiber';
 import { Suspense, type ReactNode } from 'react';
 import type { GameMode } from '../app/gameMode';
 import { RenderGovernor, sceneCanvasProps } from './RenderGovernor';
-import { isTouchDevice } from '../device';
 import type { InputBindings } from '../input/bindings';
 import { FrameClock } from './FrameClock';
 import { GameWorld } from './GameWorld';
@@ -90,7 +89,6 @@ export function GameScene({
   damageFeedback,
   sceneExtras,
 }: GameSceneProps) {
-  const touchMode = isTouchDevice();
   return (
     <Canvas
       style={{ width: '100%', height: '100%', touchAction: 'none' }}
@@ -98,10 +96,6 @@ export function GameScene({
       // the one function /cityreplay uses too. RenderGovernor handles dpr live.
       {...sceneCanvasProps()}
       data-testid="game-canvas"
-      onPointerDown={(e) => {
-        if (touchMode) return;
-        (e.target as HTMLCanvasElement).requestPointerLock();
-      }}
     >
       <RenderGovernor />
       <FrameClock />
