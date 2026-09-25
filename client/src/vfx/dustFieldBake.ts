@@ -105,6 +105,25 @@ export function buildTileableNoise(size = NOISE_SIZE, seed = 1234): Uint8Array<A
   return out;
 }
 
+const noiseCache = new Map<string, Uint8Array<ArrayBuffer>>();
+
+/**
+ * `buildTileableNoise`, built once per (size, seed) for the page. It is pure,
+ * and a 64³ build is 40-85 ms of main thread: every DustFieldBake used to
+ * rebuild it, i.e. every time the volumetric renderer was created -- and the
+ * render governor's dust-sprite rung and its recovery probe recreate it
+ * mid-storm. Callers must not write to the array (textures only read it).
+ */
+export function sharedTileableNoise(size = NOISE_SIZE, seed = 1234): Uint8Array<ArrayBuffer> {
+  const key = `${size}:${seed}`;
+  let noise = noiseCache.get(key);
+  if (!noise) {
+    noise = buildTileableNoise(size, seed);
+    noiseCache.set(key, noise);
+  }
+  return noise;
+}
+
 export class DustFieldBake {
   readonly noise: THREE.Data3DTexture;
   readonly field: THREE.WebGL3DRenderTarget;
@@ -119,7 +138,7 @@ export class DustFieldBake {
   private readonly quad: THREE.PlaneGeometry;
 
   constructor(sunElevationDeg: number) {
-    const data = buildTileableNoise();
+    const data = sharedTileableNoise();
     const noise = new THREE.Data3DTexture(data, NOISE_SIZE, NOISE_SIZE, NOISE_SIZE);
     noise.format = THREE.RedFormat;
     noise.type = THREE.UnsignedByteType;

@@ -28,6 +28,8 @@ import {
   setGovernorSampleScale,
 } from '../app/renderQuality';
 import { frameRateCapFps, useFrameRateCap } from './frameRateCap';
+import { framePipelineMounted, setFramePipelineResolutionScale } from '../graphics/framePipelineStages';
+import { canvasDprChanges, resolutionPlan } from './dynamicResolution';
 
 /**
  * Canvas props from the quality tier. dpr is the multiplier on every fill
@@ -64,6 +66,8 @@ export function RenderGovernor(): null {
   const gl = useThree((state) => state.gl);
   const camera = useThree((state) => state.camera);
   const scaleRef = useRef(1);
+  // Whether the last apply() scaled the frame pipeline (true) or the canvas.
+  const pipelineScaledRef = useRef<boolean | null>(null);
   const gov = useRef({
     frameEma: 0,
     cpuEma: 0,
@@ -80,10 +84,22 @@ export function RenderGovernor(): null {
     trial: null as null | { undo: () => void; framesLeft: number },
     frameIndex: 0,
   });
+  // Dynamic resolution (dynamicResolution.ts). With the frame pipeline
+  // mounted the canvas keeps the tier's pixel ratio and the pipeline renders
+  // at `scale` of it, so a trim resizes offscreen targets only; resizing the
+  // canvas reallocated the drawing buffer synchronously, 25-100 ms of main
+  // thread per step when the GPU was shared with the city server. Without a
+  // pipeline the canvas itself is scaled, as before. The canvas is resized
+  // only when its pixel ratio actually changes (a tier or cap change, or the
+  // pipeline coming or going).
   const apply = (scale: number) => {
     scaleRef.current = scale;
     renderStats.dprScale = scale;
-    setDpr(Math.min(window.devicePixelRatio, maxDpr()) * scale);
+    const inPipeline = framePipelineMounted();
+    pipelineScaledRef.current = inPipeline;
+    const plan = resolutionPlan(scale, Math.min(window.devicePixelRatio, maxDpr()), inPipeline);
+    setFramePipelineResolutionScale(plan.pipelineScale);
+    if (canvasDprChanges(gl.getPixelRatio(), plan.canvasDpr)) setDpr(plan.canvasDpr);
   };
   useEffect(
     () =>
@@ -111,6 +127,11 @@ export function RenderGovernor(): null {
   // cap of half a minute); if it holds, the trial sticks and the hold resets.
   useFrame(() => {
     const g = gov.current;
+    // The pipeline came or went under a trimmed scale: move the scale to
+    // whichever now does the scaling.
+    if (pipelineScaledRef.current !== null && pipelineScaledRef.current !== framePipelineMounted()) {
+      apply(scaleRef.current);
+    }
     if (cityTapeRecorder.recording) {
       cityTapeRecorder.noteFrame(renderStats.frameTotalMs, renderStats.cpuFrameMs, camera);
     }

@@ -353,6 +353,24 @@ export class DustVolumeRenderer implements PipelineStage {
     }
   }
 
+  /**
+   * Back in use after being parked (DustLayer keeps the renderer, unregistered,
+   * while the render governor draws the dust as sprites): everything a new
+   * renderer would start without is dropped -- live fluid bricks, the eased
+   * step counts, the last camera, the collider refresh clock, whatever the
+   * targets last held. What it keeps is what cost to make: the baked field,
+   * the targets and the compiled programs.
+   */
+  resume(): void {
+    for (const fluid of this.fluids) fluid.retire();
+    this.stepsEased.fill(0);
+    this.generation = this.store.generation;
+    this.lastCamera.set(0, 0, 0);
+    this.collidersRefreshedMs = 0;
+    this.outputHalf = false;
+    this.targetDirty = true;
+  }
+
   applyTuning(): void {
     const u = this.material.uniforms;
     u.uExtinction.value = this.tuning.extinction;

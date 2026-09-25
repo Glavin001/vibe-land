@@ -12,6 +12,16 @@
 // Environment: OUT (required), CLIENT, API, MATCH (city-default), SCENARIO,
 // CLIENTS (1), BUILDINGS (cap on buildings), INTENSITY (scales shots, meteors
 // and demolition rounds; not slot times), SEED, RUN_ID, WATCHDOG_S.
+// CITY_BENCH_PROFILE=<step kinds> (e.g. `demolish,walk`; off by default): a V8
+// CPU profile of client 0 over every run of consecutive steps of those kinds,
+// written to OUT/profiles/ with its busy stretches over 25 ms (the hitches and
+// what ran in them), plus OUT/client-0-long-frames.jsonl: the renderStats
+// phase breakdown of every client-0 frame over 12 ms CPU. Profiling costs the
+// client a little; do not compare a profiled run's frame times with an
+// unprofiled one's.
+// CITY_BENCH_GPU_LOAD=<N> (off by default): a GPU hog (helpers/gpuHog.mjs) in
+// its own browser for the whole run, N shader iterations per pixel per frame,
+// so the clients see a GPU shared as heavily as the worst live runs did.
 //
 // The scenario is a timed plan: every step has a slot (wall seconds). A step
 // runs until it is done or its slot ends, and the next step starts when the
@@ -34,6 +44,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { chromium } from 'playwright';
 import { walkTo, driveTo, enterNearest } from '../mac-demo/nav.mjs';
+import { busyStretches, mergeStretches } from '../helpers/cpuProfile.mjs';
+import { startGpuHog } from '../helpers/gpuHog.mjs';
 
 const OUT = process.env.OUT;
 if (!OUT) throw new Error('OUT is required');
@@ -46,6 +58,8 @@ const scenario = JSON.parse(fs.readFileSync(SCENARIO_PATH, 'utf8'));
 const INTENSITY = Number(process.env.INTENSITY ?? scenario.intensity ?? 1);
 const SEED = Number(process.env.SEED ?? scenario.seed ?? 1);
 const BUILDING_CAP = process.env.BUILDINGS ? Number(process.env.BUILDINGS) : (scenario.buildings?.max ?? Infinity);
+const GPU_LOAD = Number(process.env.CITY_BENCH_GPU_LOAD ?? 0);
+const PROFILE_STEPS = new Set((process.env.CITY_BENCH_PROFILE ?? '').split(',').map((s) => s.trim()).filter(Boolean));
 const RUN_ID = (process.env.RUN_ID ?? `bench-${Date.now()}`).replace(/[^A-Za-z0-9_-]/g, '-').slice(0, 56);
 fs.mkdirSync(OUT, { recursive: true });
 
@@ -61,6 +75,7 @@ const run = {
   format: 'city-bench-run/1', runId: RUN_ID, startedUnixMs: T0, client: CLIENT, api: API, match: MATCH,
   clients: CLIENTS, scenarioPath: SCENARIO_PATH, scenario, intensity: INTENSITY, seed: SEED,
   plan: [], phases: [], sessions: [], errors: [], events, status: 'running',
+  ...(GPU_LOAD > 0 ? { gpuLoad: GPU_LOAD } : {}),
 };
 const writeRun = () => fs.writeFileSync(path.join(OUT, 'run.json'), JSON.stringify(run, null, 1));
 
@@ -104,6 +119,66 @@ function fail(reason) {
 process.on('SIGTERM', () => { void fail('terminated (SIGTERM)'); });
 process.on('SIGINT', () => { void fail('interrupted (SIGINT)'); });
 process.on('unhandledRejection', (e) => { void fail(`unhandled rejection: ${e?.stack ?? e}`); });
+
+// ── CPU profiling of client 0 (CITY_BENCH_PROFILE) ────────────────────────
+async function startProfiler(client) {
+  const cdp = await client.context.newCDPSession(client.page);
+  await cdp.send('Profiler.enable');
+  await cdp.send('Profiler.setSamplingInterval', { interval: 250 });
+  // Every frame over 12 ms CPU, with the renderStats phases that frame
+  // published (the page's own module instance: Vite serves it once per URL).
+  await client.page.evaluate(async () => {
+    const mod = await import('/src/city/renderStats.ts');
+    const long = [];
+    window.__BENCH_LONG_FRAMES__ = long;
+    let lastStart = -1;
+    const loop = () => {
+      const start = mod.frameStartTime();
+      if (start !== lastStart && mod.renderStats.cpuFrameMs > 12) {
+        const row = { unixMs: performance.timeOrigin + performance.now() };
+        for (const [k, v] of Object.entries(mod.renderStats)) if (typeof v === 'number') row[k] = +v.toFixed(3);
+        long.push(row);
+      }
+      lastStart = start;
+      requestAnimationFrame(loop);
+    };
+    requestAnimationFrame(loop);
+  });
+  const dir = path.join(OUT, 'profiles');
+  fs.mkdirSync(dir, { recursive: true });
+  let running = null;
+  const all = [];
+  return {
+    running: () => running !== null,
+    async start(label) {
+      if (running) return;
+      await cdp.send('Profiler.start');
+      // The profile clock is not the page's: pair them once, at the start.
+      const pageMs = await client.page.evaluate(() => performance.timeOrigin + performance.now());
+      running = { label, pageUnixMs: pageMs };
+    },
+    async stop() {
+      if (!running) return;
+      const { profile } = await cdp.send('Profiler.stop');
+      const { label, pageUnixMs } = running;
+      running = null;
+      const toUnix = (profileMs) => profileMs - profile.startTime / 1000 + pageUnixMs;
+      const stretches = busyStretches(profile, { minMs: 25 }).map((s) => ({ ...s, unixMs: Math.round(toUnix(s.atMs)) }));
+      fs.writeFileSync(path.join(dir, `${label}.cpuprofile`), JSON.stringify(profile));
+      fs.writeFileSync(path.join(dir, `${label}.stretches.json`), JSON.stringify(stretches, null, 1));
+      all.push(...stretches.map((s) => ({ label, ...s })));
+      log(`profile ${label}: ${stretches.length} busy stretches >= 25 ms`);
+    },
+    async finish() {
+      await this.stop();
+      const long = await client.page.evaluate(() => window.__BENCH_LONG_FRAMES__ ?? []).catch(() => []);
+      fs.writeFileSync(path.join(OUT, 'client-0-long-frames.jsonl'), long.map((r) => JSON.stringify(r)).join('\n') + (long.length ? '\n' : ''));
+      fs.writeFileSync(path.join(dir, 'summary.json'), JSON.stringify({
+        steps: [...PROFILE_STEPS], longFrames: long.length, merged: mergeStretches(all), stretches: all.map(({ self, total, ...s }) => ({ ...s, top: self.slice(0, 6) })),
+      }, null, 1));
+    },
+  };
+}
 
 // ── clients ───────────────────────────────────────────────────────────────
 async function join(index) {
@@ -359,6 +434,10 @@ try {
   run.buildingsAll = allBuildings;
   log(`city has ${allBuildings.length} buildings`);
 
+  if (GPU_LOAD > 0) {
+    browsers.push(await startGpuHog(chromium, GPU_LOAD));
+    log(`GPU hog running: ${GPU_LOAD} iterations per pixel per frame`);
+  }
   const clients = [];
   for (let i = 0; i < CLIENTS; i++) clients.push(await join(i));
   run.clientInfo = clients.map((c) => ({ index: c.index, ...c.info }));
@@ -406,9 +485,14 @@ try {
   const spectators = clients.slice(1).map((c) => spectate(c, stop));
 
   const destroyed = [];
+  const profiler = PROFILE_STEPS.size > 0 ? await startProfiler(player) : null;
   for (const [i, step] of plan.entries()) {
     const b = step.building === null ? null : byId.get(step.building);
     if (b) current.building = b;
+    if (profiler) {
+      if (!PROFILE_STEPS.has(step.do)) await profiler.stop();
+      else if (!profiler.running()) await profiler.start(`${String(i).padStart(3, '0')}-${step.phase}-${step.do}`.replace(/[^A-Za-z0-9_-]/g, '-'));
+    }
     const t0 = Date.now();
     const deadline = t0 + step.slotS * 1000;
     let note = '', ok = true;
@@ -441,6 +525,7 @@ try {
     log(`${step.phase} ${step.do}: ${ok ? '' : 'FAILED '}${note}`);
     writeRun();
   }
+  if (profiler) await profiler.finish();
   const results = await Promise.all(recordings);
   run.recordEndUnixMs = Date.now();
   stop.done = true;

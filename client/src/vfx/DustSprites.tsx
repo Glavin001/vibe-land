@@ -126,6 +126,42 @@ const RIGHT = new THREE.Vector3();
 const UP = new THREE.Vector3();
 const SUN_VIEW = new THREE.Vector3();
 
+/**
+ * One sprite material for the page, never disposed. The layer mounts and
+ * unmounts with the render governor's sprite rung, and a material disposed on
+ * unmount releases its program: every return to sprites recompiled it, a
+ * 20-80 ms first-draw stall in the middle of the storm that caused the rung.
+ */
+let sharedMaterial: THREE.ShaderMaterial | null = null;
+
+function spriteMaterial(): THREE.ShaderMaterial {
+  sharedMaterial ??= new THREE.ShaderMaterial({
+    uniforms: {
+      uRight: { value: new THREE.Vector3(1, 0, 0) },
+      uUp: { value: new THREE.Vector3(0, 1, 0) },
+      uSunDirView: { value: new THREE.Vector3(0, 1, 0) },
+      uSunColor: { value: new THREE.Color() },
+      uSkyColor: { value: new THREE.Color() },
+      uGroundColor: { value: new THREE.Color() },
+      uAlbedo: { value: [
+        new THREE.Color(0xb3afa8).convertSRGBToLinear(),
+        new THREE.Color(0x8f7250).convertSRGBToLinear(),
+        new THREE.Color(0x66686c).convertSRGBToLinear(),
+      ] },
+      uFogColor: { value: new THREE.Color() },
+      uFogDensity: { value: 0 },
+    },
+    vertexShader: VERTEX,
+    fragmentShader: FRAGMENT,
+    transparent: true,
+    depthTest: true,
+    depthWrite: false,
+    blending: THREE.NormalBlending,
+    premultipliedAlpha: true,
+  });
+  return sharedMaterial;
+}
+
 export function DustSprites({ store, lighting, wind }: DustSpritesProps) {
   const meshRef = useRef<THREE.Mesh>(null);
   const evals = useMemo(() => newDustEval(), []);
@@ -151,35 +187,11 @@ export function DustSprites({ store, lighting, wind }: DustSpritesProps) {
     return { geometry, attrs };
   }, []);
 
-  const material = useMemo(() => new THREE.ShaderMaterial({
-    uniforms: {
-      uRight: { value: new THREE.Vector3(1, 0, 0) },
-      uUp: { value: new THREE.Vector3(0, 1, 0) },
-      uSunDirView: { value: new THREE.Vector3(0, 1, 0) },
-      uSunColor: { value: new THREE.Color() },
-      uSkyColor: { value: new THREE.Color() },
-      uGroundColor: { value: new THREE.Color() },
-      uAlbedo: { value: [
-        new THREE.Color(0xb3afa8).convertSRGBToLinear(),
-        new THREE.Color(0x8f7250).convertSRGBToLinear(),
-        new THREE.Color(0x66686c).convertSRGBToLinear(),
-      ] },
-      uFogColor: { value: new THREE.Color() },
-      uFogDensity: { value: 0 },
-    },
-    vertexShader: VERTEX,
-    fragmentShader: FRAGMENT,
-    transparent: true,
-    depthTest: true,
-    depthWrite: false,
-    blending: THREE.NormalBlending,
-    premultipliedAlpha: true,
-  }), []);
+  const material = useMemo(() => spriteMaterial(), []);
 
   useEffect(() => () => {
     geometry.dispose();
-    material.dispose();
-  }, [geometry, material]);
+  }, [geometry]);
 
   useEffect(() => {
     const u = material.uniforms;

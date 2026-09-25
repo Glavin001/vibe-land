@@ -10,7 +10,14 @@ import { useFrame, useThree } from '@react-three/fiber';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three';
 
-import { governorSampleScale, onRenderQualityChange, type DustFluid, type DustMode } from '../app/renderQuality';
+import {
+  dustModePreferred,
+  governorDustSprites,
+  governorSampleScale,
+  onRenderQualityChange,
+  type DustFluid,
+  type DustMode,
+} from '../app/renderQuality';
 import type { CityClient } from '../city/cityClient';
 import type { DustSource } from '../city/destructionEvents';
 import type { AtlasLayout } from './fluid/fluidAtlas';
@@ -36,6 +43,7 @@ import { clearDustShots } from './dustShots';
 import { drainDebugDustSources } from './dustDebug';
 import { dustParcels } from './dustParcelStore';
 import { DustVolumeRenderer, type DustLighting } from './DustVolumeRenderer';
+import { ParkingSlot } from './parkingSlot';
 import { voxelizeStaticChunks } from './fluid/fluidColliders';
 
 type DustLayerProps = {
@@ -50,6 +58,16 @@ type DustLayerProps = {
   sunElevationDeg?: number;
   sunAzimuthDeg?: number;
 };
+
+/**
+ * The volumetric renderer, kept while the render governor's sprite rung has
+ * the dust drawn as sprites. Disposing it there and building a new one when
+ * the governor's recovery probe gave the rung back rebaked the noise field
+ * and recompiled every dust and fluid program mid-storm: 20-120 ms hitches,
+ * once per rung change. Keyed by the sun it was baked for.
+ */
+const parkedVolume = new ParkingSlot<DustVolumeRenderer>();
+const volumeKey = (elevationDeg: number, azimuthDeg: number) => `${elevationDeg}:${azimuthDeg}`;
 
 export function DustLayer({
   getCityClient,
@@ -93,8 +111,22 @@ export function DustLayer({
     [windStrengthMps, windDirectionDeg],
   );
 
+  // Declared before the volume's effect so that on unmount its cleanup runs
+  // first (React runs them in order) and the volume's cleanup disposes.
+  const unmountingRef = useRef(false);
+  useEffect(() => {
+    unmountingRef.current = false;
+    return () => {
+      unmountingRef.current = true;
+      parkedVolume.clear();
+    };
+  }, []);
+
   const volume = useMemo(
-    () => (volumetric ? new DustVolumeRenderer(dustParcels, sunElevationDeg, sunAzimuthDeg) : null),
+    () => (volumetric
+      ? parkedVolume.take(volumeKey(sunElevationDeg, sunAzimuthDeg))
+        ?? new DustVolumeRenderer(dustParcels, sunElevationDeg, sunAzimuthDeg)
+      : null),
     [volumetric, sunElevationDeg, sunAzimuthDeg],
   );
 
@@ -103,7 +135,14 @@ export function DustLayer({
     const unregister = registerPipelineStage(volume);
     return () => {
       unregister();
-      volume.dispose();
+      // Only the governor's sprite rung parks it; any other reason to drop
+      // the volumetric renderer (the player's setting, the tier, the sun, the
+      // layer going away) disposes it as before.
+      if (!unmountingRef.current && governorDustSprites() && dustModePreferred() === 'volumetric') {
+        parkedVolume.park(volume, volumeKey(sunElevationDeg, sunAzimuthDeg));
+      } else {
+        volume.dispose();
+      }
     };
   }, [volume]);
 

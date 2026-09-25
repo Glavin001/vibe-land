@@ -284,6 +284,56 @@ capture that should explain its slow ticks, start the server with
 `VIBE_PHYSX_PROFILE=1`; the city bench passes the variable through
 (`VIBE_PHYSX_PROFILE=1 scripts/perf/city-bench.sh ...`).
 
+## Client hitches
+
+A CPU-bound client frame (`client.cpu_hitch_33ms`, the report's "Worst
+hitches" rows of class `cpu`) is main-thread work inside the frame. Two tools
+say what it was:
+
+- **Live**, `CITY_BENCH_PROFILE=<step kinds>` (e.g. `demolish,walk`) on
+  `scripts/perf/city-bench.sh` profiles client 0's main thread (V8 CPU
+  profile over the Chrome DevTools protocol) across every run of consecutive
+  steps of those kinds. It writes `profiles/<step>.cpuprofile` (open in
+  DevTools), `profiles/<step>.stretches.json` (busy stretches of at least
+  25 ms with their hottest functions, on the unix clock),
+  `profiles/summary.json`, and `client-0-long-frames.jsonl`: the
+  `renderStats` phase breakdown (`beforeCityMs`, `cityFrameMs`,
+  `glRenderMs`, `dprScale`, ...) of every frame over 12 ms of CPU. Profiling
+  costs the client a little: compare hitch counts only between unprofiled
+  runs.
+- **Replayed**, `client/e2e/tape-replay/profile-windows.mjs` plays a run's
+  tape through `/cityreplay` in headless Chromium around chosen `t_s` values
+  and reports per-frame CPU and, with `--profile`, where it went. Run it
+  under `scripts/perf/gpu-run.sh` (it renders). `/cityreplay` holds the
+  render governor and does not share the GPU with a server, so on its own it
+  reproduces only hitches that depend on the stream; `--governor` releases
+  the governor and `--gpu-load N` runs a GPU hog in a second browser, which
+  together reproduce the governor's response to a shared GPU.
+- **Contended live**, `CITY_BENCH_GPU_LOAD=<N>` runs the same GPU hog beside
+  a live run (`N` = 600 made the server's tick p95 about 35 ms), for A/B
+  runs of client behaviour under a shared GPU; compare only runs with the
+  same `N`.
+
+Found this way (2026-09-25, runs 20260925-001310-pkgb5b and
+20260925-003800-prof-base): nearly every CPU hitch over 33 ms in the
+demolitions was the render governor stepping the resolution (8% every 20
+frames while GPU-bound, so a train of hitches about 280 ms apart). Each step
+resized the canvas through R3F `setDpr`, and a canvas resize reallocates the
+WebGL drawing buffer synchronously: 25-100 ms of main thread per step while
+the GPU was shared with the server. The governor now scales the frame
+pipeline's offscreen targets and leaves the canvas alone
+(`scene/dynamicResolution.ts`). Measured: in the replay with a GPU hog the
+frames carrying a step went from a median of 66.9 ms CPU to 1.2 ms; on the
+live systematic run with `CITY_BENCH_GPU_LOAD=600` (both arms under the same
+hog) `client.cpu_hitch_33ms` went from 58 to 6 and client CPU p99.9 from
+35.1 to 5.6 ms, with no hitch trains left. Without the hog two runs had 1
+each: the steps need a contended GPU, and how contended a run is varies. The
+governor's dust-sprite rung also stopped rebuilding the volumetric renderer
+(noise bake, field bake, program compiles) and the sprite material each time
+it changed (`vfx/parkingSlot.ts`, `sharedTileableNoise`). Without a frame
+pipeline (the FAST tier, AO and volumetric dust off) the governor still
+resizes the canvas.
+
 ## Comparing runs
 
 `--baseline <report.json>` records and prints deltas of the headline numbers
@@ -308,6 +358,9 @@ comparison when the damage differs.
 | `client/e2e/city-bench/bench.mjs` | The driver (Playwright) |
 | `client/e2e/city-bench/scenarios/` | Scenarios |
 | `client/e2e/city-bench/vite.bench.config.ts` | The client config with a private dependency cache |
+| `client/e2e/tape-replay/profile-windows.mjs` | Replayed CPU profile of chosen tape windows (see Client hitches) |
+| `client/e2e/helpers/cpuProfile.mjs` | Busy stretches and hot functions from a V8 CPU profile |
+| `client/e2e/helpers/gpuHog.mjs` | The GPU hog behind `--gpu-load` and `CITY_BENCH_GPU_LOAD` |
 
 It reuses `client/e2e/mac-demo/nav.mjs` (walking, driving),
 `scripts/perf/session_bundle.py` (the paired join) and

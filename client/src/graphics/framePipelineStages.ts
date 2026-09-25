@@ -23,7 +23,7 @@ export interface PipelineStageContext {
   scene: THREE.Scene;
   /** The scene as rendered this frame. Its depthTexture is valid; do not draw into it. */
   beauty: THREE.WebGLRenderTarget;
-  /** Drawing-buffer size, px. */
+  /** The size the frame renders at, px: the drawing buffer times the resolution scale. */
   width: number;
   height: number;
   /** Seconds since the previous frame, clamped. */
@@ -89,5 +89,45 @@ export function onPipelineStagesChange(listener: () => void): () => void {
   listeners.add(listener);
   return () => {
     listeners.delete(listener);
+  };
+}
+
+// ── Resolution scale ────────────────────────────────────────────────────────
+//
+// The render governor's dynamic resolution, when the pipeline owns the frame.
+// The pipeline renders the scene and every stage at `scale` times the drawing
+// buffer and the composite lays the result up to the full canvas, so a trim
+// resizes only the offscreen targets. Resizing the canvas instead (R3F
+// `setDpr`) reallocates the WebGL drawing buffer synchronously, and with the
+// GPU shared with the city server that stalled the frame 25-100 ms per 8%
+// step, one step every 20 frames: the demolition hitch trains of the city
+// bench (docs/city-bench.md). Without a pipeline (nothing needs the depth)
+// the governor still scales the canvas (scene/dynamicResolution.ts).
+
+let resolutionScale = 1;
+let pipelinesMounted = 0;
+
+/** The fraction of the drawing buffer the pipeline renders at, (0, 1]. */
+export function framePipelineResolutionScale(): number {
+  return resolutionScale;
+}
+
+export function setFramePipelineResolutionScale(scale: number): void {
+  resolutionScale = Number.isFinite(scale) ? Math.min(1, Math.max(0.05, scale)) : 1;
+}
+
+/** Whether a frame pipeline is mounted (and so takes the resolution scale). */
+export function framePipelineMounted(): boolean {
+  return pipelinesMounted > 0;
+}
+
+/** The pipeline calls this while mounted; returns the release. */
+export function holdFramePipelineMounted(): () => void {
+  pipelinesMounted += 1;
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    pipelinesMounted = Math.max(0, pipelinesMounted - 1);
   };
 }

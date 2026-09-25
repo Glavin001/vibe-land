@@ -25,7 +25,13 @@ import {
   buildKernel,
   makeTarget,
 } from './aoPasses';
-import { pipelineStages, pipelineStageCount, type StageOutput } from './framePipelineStages';
+import {
+  framePipelineResolutionScale,
+  holdFramePipelineMounted,
+  pipelineStages,
+  pipelineStageCount,
+  type StageOutput,
+} from './framePipelineStages';
 import { lookTuning, subscribeLookTuning } from './lookTuning';
 
 type FramePipelineProps = {
@@ -131,6 +137,10 @@ export function FramePipeline({
     };
   }, [aoFadeStartM, aoFadeEndM]);
 
+  // While mounted, the governor's dynamic resolution is this pipeline's
+  // resolution scale rather than the canvas's pixel ratio.
+  useEffect(() => holdFramePipelineMounted(), []);
+
   useEffect(() => {
     return () => {
       passes.beauty?.dispose();
@@ -163,9 +173,13 @@ export function FramePipeline({
 
   // Priority 1: R3F hands the render loop over to this callback.
   useFrame(({ gl: renderer, scene, camera }) => {
+    // The governor's dynamic resolution (framePipelineStages.ts): the scene
+    // and the stages render at `scale` of the drawing buffer, and the
+    // composite below lays the result up to the full canvas.
     const drawing = renderer.getDrawingBufferSize(passes.size);
-    const width = Math.max(2, Math.floor(drawing.x));
-    const height = Math.max(2, Math.floor(drawing.y));
+    const scale = framePipelineResolutionScale();
+    const width = Math.max(2, Math.floor(drawing.x * scale));
+    const height = Math.max(2, Math.floor(drawing.y * scale));
     const halfWidth = Math.max(1, width >> 1);
     const halfHeight = Math.max(1, height >> 1);
 
