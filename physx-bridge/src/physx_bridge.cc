@@ -3166,8 +3166,41 @@ public:
   void clear_destructibles() {
 #ifdef VIBE_LAND_DESTRUCTION
     require(destruction_ != nullptr, "destruction manager missing");
-    destruction_->clear_destructibles();
+    try {
+      destruction_->clear_destructibles();
+    } catch (...) {
+      forget_released_city_bodies();
+      throw;
+    }
+    forget_released_city_bodies();
 #endif
+  }
+
+  /// Make every character controller forget the bodies it was touching.
+  ///
+  /// A controller keeps the body it stands on (the CCT's touched actor and
+  /// shape) so it can ride it, and at the start of its next move it calls
+  /// `getNbShapes()` on that body to check the shape is still attached. PhysX
+  /// clears that memory through a deletion listener when an actor is
+  /// `release()`d -- but the native stage's fragment bodies never are:
+  /// `clearStress` hands them straight back to the rigid-dynamic pool
+  /// (`NpDestructionBodyAllocator::discard`), and the chunk shapes they carried
+  /// are released afterwards, which notifies no one either. The player's next
+  /// move then made a virtual call through a freed body. That is the live
+  /// server's SIGBUS/SIGSEGV in `CapsuleController::move` on the first move
+  /// after a `/city-reset` (2026-09-24, pointer-authentication faults), and
+  /// `tests/reset_controller_cache.rs` reproduces it.
+  ///
+  /// `invalidateCache` drops the touched actor, shape and obstacle and empties
+  /// the cached neighbourhood without dereferencing any of them, so the next
+  /// move finds its support afresh. It costs one cache rebuild per controller,
+  /// and only when city bodies are released.
+  void forget_released_city_bodies() {
+    for (auto &entry : records_) {
+      if (entry.second.controller != nullptr) {
+        entry.second.controller->invalidateCache();
+      }
+    }
   }
 
   void destruction_tick(float dt, FfiVec3 gravity) {
@@ -3811,7 +3844,16 @@ public:
       // Recorded before clear() can throw: a refused clearStress still leaves
       // released actors behind, so the step is needed just as much.
       native_cleared_at_step_ = completed_steps_;
-      native_->clear();
+      // Likewise the controllers forget what they touched on either path: the
+      // stage's fragment bodies go back to PhysX's pool without a deletion
+      // notice (see forget_released_city_bodies).
+      try {
+        native_->clear();
+      } catch (...) {
+        forget_released_city_bodies();
+        throw;
+      }
+      forget_released_city_bodies();
     }
   }
   bool native_configured() const {

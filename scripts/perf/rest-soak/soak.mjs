@@ -316,9 +316,11 @@ try {
     });
     await stopCapture();
     if (soakElapsed() >= DURATION_S) break;
-    // Off the rubble before the reset: a reset with the player's capsule
-    // among chunk bodies crashed the server in CapsuleController::move (SIGBUS,
-    // 2026-09-24 21:50, the first on run), so the player waits on clear ground.
+    // Off the rubble before the reset. This was the workaround for the crash
+    // in CapsuleController::move (SIGBUS, 2026-09-24 21:50) when the player's
+    // controller still held a fragment the reset freed; the bridge now clears
+    // it (forget_released_city_bodies), and reset-soak.mjs covers resetting
+    // with the player on the rubble. Kept so this soak's cycles stay comparable.
     await leaveCar(page).catch(() => {});
     await step(`c${cycle} to spawn`, 25, (d) => walkTo(page, s0.position[0], s0.position[2], { within: 3, timeoutMs: Math.max(1000, d - Date.now() - 3000) })
       .then((end) => `${Math.hypot(end.position[0] - s0.position[0], end.position[2] - s0.position[2]).toFixed(1)} m from spawn`));

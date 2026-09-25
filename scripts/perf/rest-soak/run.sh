@@ -5,7 +5,8 @@
 #   scripts/perf/rest-soak/run.sh <on|off> [duration_s]
 # Environment: HTTP_PORT (6401), WT_PORT (6402), CLIENT_PORT (3643),
 # BIN (target/rest-soak/cargo/release/web-fps-server), OUT_ROOT
-# (target/rest-soak), CLIENT_DIR (the main checkout's client).
+# (target/rest-soak), CLIENT_DIR (the main checkout's client), DRIVER_JS
+# (soak.mjs; reset-soak.mjs resets with the player standing on rubble).
 set -u
 MODE=${1:?on|off}; DURATION_S=${2:-1860}
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -13,6 +14,7 @@ MAIN=/Users/glavin/Development/vibe-land
 OUT_ROOT=${OUT_ROOT:-$MAIN/target/rest-soak}
 BIN=${BIN:-$OUT_ROOT/cargo/release/web-fps-server}
 CLIENT_DIR=${CLIENT_DIR:-$MAIN/client}
+DRIVER_JS=${DRIVER_JS:-$HERE/soak.mjs}
 HTTP_PORT=${HTTP_PORT:-6401}; WT_PORT=${WT_PORT:-6402}; CLIENT_PORT=${CLIENT_PORT:-3643}
 RUN_DIR="$OUT_ROOT/runs/$(date +%Y%m%d-%H%M%S)-rest-$MODE"
 mkdir -p "$RUN_DIR/debug-reports"
@@ -64,7 +66,7 @@ locked() {
   [ "$up" = 1 ] || { echo "FAIL: no /healthz"; return 4; }
   echo "server up after ~$((i * 2)) s: $(curl -s http://127.0.0.1:$HTTP_PORT/healthz | head -c 300)"
   (cd "$CLIENT_DIR" && OUT="$RUN_DIR" CLIENT="http://localhost:$CLIENT_PORT" API="http://127.0.0.1:$HTTP_PORT" \
-    DURATION_S=$DURATION_S LABEL="$MODE" CLIENT_DIR="$CLIENT_DIR" exec node "$HERE/soak.mjs") > "$RUN_DIR/driver.log" 2>&1 &
+    DURATION_S=$DURATION_S LABEL="$MODE" CLIENT_DIR="$CLIENT_DIR" exec node "$DRIVER_JS") > "$RUN_DIR/driver.log" 2>&1 &
   DRIVER=$!
   local hard=$((DURATION_S + 900)) t=0 code
   while kill -0 "$DRIVER" 2>/dev/null; do
@@ -81,7 +83,7 @@ locked() {
   return $code
 }
 export -f locked kill_tree
-export MODE DURATION_S HERE MAIN RUN_DIR BIN CLIENT_DIR HTTP_PORT WT_PORT CLIENT_PORT
+export MODE DURATION_S HERE MAIN RUN_DIR BIN CLIENT_DIR DRIVER_JS HTTP_PORT WT_PORT CLIENT_PORT
 echo "waiting for the GPU lock (owner: $(cat $MAIN/target/perf-tools/gpu.lock/owner 2>/dev/null || echo none))"
 $MAIN/scripts/perf/gpu-run.sh "rest-soak-$MODE" bash -c 'SERVER=""; DRIVER=""; trap "[ -n \"\$DRIVER\" ] && kill_tree \$DRIVER; [ -n \"\$SERVER\" ] && kill \$SERVER 2>/dev/null" EXIT; locked'
 echo "exit $?"
