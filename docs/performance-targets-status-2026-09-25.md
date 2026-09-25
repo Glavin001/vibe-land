@@ -22,6 +22,34 @@ default as 99beab7) + PhysX b5b18ecb; vibe-land 3d96a192. Runs:
 | quick, 3 clients, #1 | 0.987 | 0.87 | 7.09 / 13.96 / 28.90 | 3.2% | 34% | 72 | 20.9% |
 | quick, 3 clients, #2 | 0.961 | 0.82 | 10.60 / 23.55 / 36.41 | 13.1% | 75% | 105 | 41.1% |
 
+### Server alone (no browser), latest package
+
+`perf_bench` replays scripted destruction with no client at all: what a
+dedicated server sees. Promoted package (PhysX 696c341f + cuda-metal
+07781e5: overhead cuts, cheaper split ticks) against the previous one
+(b5b18ecb + c4f528fc + 99beab7), vibe-land 67569d12, 60 Hz paced, three
+interleaved rounds (`target/srvalone/runs`); ranges are over the rounds.
+
+| scenario | package | tick p50 | p99 | max | ticks > 16.7 ms |
+|---|---|---|---|---|---|
+| cannonball fracture (670 ticks) | previous | 11.6-12.3 | 40.2-43.9 | 53.5-54.3 | 59-71 |
+| | **latest** | **7.6-9.0** | **26.6-28.5** | **33.8-40.2** | **33-36** |
+| user's two meteors (1,207 ticks) | previous | 9.9-11.6 | 28.5-38.1 | 50.6-57.6 | 55-95 |
+| | **latest** | **9.0-9.3** | **25.5-25.9** | **35.5-37.5** | **35-38** |
+| rubble, bodies awake | previous | 7.0-7.2 | 13.4-14.9 | 14.5-15.8 | 0 |
+| | **latest** | **5.0-5.8** | **10.1-11.5** | 11.6-21.2 | 0-1 |
+| rubble, idle | both | 1.8-2.3 | 3.0-3.9 (one 17 ms round) | | 0-1 |
+
+60 Hz holds except during impacts (3-5% of ticks over budget there); 120 Hz
+holds for settled and awake rubble (p50 5-6 ms), not yet for impacts (meteor
+p50 ~9 ms). What remains in an impact tick is mostly the corrected PhysX
+re-solve (a second broadphase, narrowphase and solver with ~13 host waits),
+a structural change in the PhysX fork.
+
+Client GPU load matters on a shared Mac: with the user's interactive grass
+client (6d08a3f1) the city-bench p50 sits 1-3 ms higher than on earlier
+commits at the same package (inferred: not isolated).
+
 Against the first measurement of the day (docs/city-bench-baselines/
 2026-09-24-systematic-1client.md: sim rate 0.97, worst 5 s 0.73, max 544 ms,
 40 bodies through the ground):
