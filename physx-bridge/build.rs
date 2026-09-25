@@ -261,6 +261,11 @@ fn add_vehicle(build: &mut cc::Build, root: &std::path::Path) {
     // Falling back to the checkout compiles whatever is in its working tree --
     // uncommitted edits included -- against a package built without them.
     let packaged = root.join("destruction/vehicle");
+    // Re-run when the package starts (or stops) shipping it: a directory
+    // path makes cargo rescan it, so an added wrapper is picked up without a
+    // clean build.
+    println!("cargo:rerun-if-changed={}", root.join("destruction").display());
+    println!("cargo:rerun-if-changed={}", root.join("snippets").display());
     let vehicle = if packaged.join("PxNativeVehicle.cpp").is_file() {
         packaged
     } else {
