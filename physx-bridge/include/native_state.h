@@ -72,6 +72,29 @@ struct NativeBody {
   /// so a body whose chunks just changed is always read in full once.
   FfiChunkBodySnapshot last_snapshot{};
   bool has_snapshot = false;
+  /// Where the body has been over the current rest window, and the means of
+  /// the last three windows it was awake through; see
+  /// `State::sleep_resting_islands`. Reset whenever the body sleeps, is
+  /// kinematic, or its record is rebuilt (membership changed).
+  struct RestTrack {
+    physx::PxVec3 sum{0.0f};
+    physx::PxVec4 quat_sum{0.0f};
+    physx::PxVec3 lo{PX_MAX_F32};
+    physx::PxVec3 hi{-PX_MAX_F32};
+    physx::PxQuat first{physx::PxIdentity};
+    float turn = 0.0f;
+    std::uint32_t samples = 0;
+    physx::PxVec3 means[3];
+    physx::PxQuat quat_means[3];
+    std::uint32_t windows = 0;
+    /// No net motion over the last three windows, inside a small envelope.
+    bool resting = false;
+    /// Windows left before this body may be rest-slept again, after the
+    /// engine woke it straight back up.
+    std::uint32_t cooldown = 0;
+    /// Tick it was last rest-slept, to tell an immediate re-wake.
+    std::uint64_t slept_tick = 0;
+  } rest;
 };
 
 /// A shot in flight. Owned here rather than by `World`, because every body in
@@ -153,6 +176,13 @@ struct NativeDestruction::State {
   /// visible rather than inferred from a falling body count.
   std::uint64_t debris_parked = 0;
   std::uint64_t debris_settled = 0;
+  /// Island sleep for rubble at true rest (`sleep_resting_islands`): bodies
+  /// put to sleep, clusters slept, clusters held awake by a moving member,
+  /// and rest-slept bodies the engine woke again within a second.
+  std::uint64_t rest_slept_bodies = 0;
+  std::uint64_t rest_slept_clusters = 0;
+  std::uint64_t rest_held_clusters = 0;
+  std::uint64_t rest_rewakes = 0;
 
   // --- sampled bond utilisation -------------------------------------------
   /// Per-bond verdicts are a whole-graph device read, so they are sampled on a
@@ -191,6 +221,11 @@ struct NativeDestruction::State {
       const std::vector<physx::PxDestructionChangedChunk> &changed,
       std::uint32_t cluster_count, bool full);
   void refresh_snapshots();
+  /// Put to sleep every cluster of touching awake chunk bodies in which no
+  /// body has gone anywhere for several seconds. `awake` pairs each awake
+  /// body with its row in `snapshots`.
+  void sleep_resting_islands(
+      std::vector<std::pair<NativeBody *, std::size_t>> &awake);
   void sample_bond_verdicts(const physx::PxDestructionDeviceView &view);
   void expire_rounds();
   void release_rounds();

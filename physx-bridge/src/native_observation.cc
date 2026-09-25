@@ -1,6 +1,7 @@
 #include "native_state.h"
 
 #include <algorithm>
+#include <cmath>
 
 using namespace physx;
 
@@ -300,9 +301,18 @@ static bool native_settle_freezes() {
 /// only continuous play reaches the state.
 ///
 /// These bodies belong to the destruction stage. Nothing outside it may decide
-/// when they stop simulating, and the fix for debris cost has to come from the
-/// stage itself. Set VIBE_CITY_NATIVE_SETTLE_TICKS to re-enable for
-/// investigation; it is not a tuning knob.
+/// when they stop simulating on a speed test, and the fix for debris cost has
+/// to come from the stage itself. Set VIBE_CITY_NATIVE_SETTLE_TICKS to
+/// re-enable for investigation; it is not a tuning knob.
+///
+/// `sleep_resting_islands` below is the one exception, and differs on both
+/// counts that made this one fail: it sleeps whole clusters, so the engine
+/// has nothing to wake them back into (this fired 27,043 times for 1,794
+/// bodies, about fifteen times each), and only bodies whose pose has not
+/// changed, never ones merely slow. Measured with it: 0 incomplete steps in a
+/// systematic city bench and in the rubble_sleep perf scenario. The live
+/// failure above took four minutes of continuous play to appear, so a long
+/// live session is still the test that has not been run.
 static std::uint32_t native_settle_ticks() {
   static const std::uint32_t ticks = [] {
     if (const char *raw = std::getenv("VIBE_CITY_NATIVE_SETTLE_TICKS")) {
@@ -316,9 +326,90 @@ static std::uint32_t native_settle_ticks() {
   return ticks;
 }
 
+/// Island sleep for rubble at true rest.
+///
+/// PhysX sleeps a contact island only when every member's own motion test
+/// passes, and after a city collapse hundreds of bodies stayed awake for good
+/// (measured 2026-09-24, systematic city bench: 162-502 at the end of every
+/// run, 0 of 41 settled samples at zero). From the bench's world truth, 95%
+/// of them had not moved at all -- the same pose, tick after tick, for 15 s --
+/// and each island was held awake by one to three thin chunks (0.15 m wall
+/// panels, 0.22 m floor slabs) rocking in an exact limit cycle: the same
+/// poses every 3, 8 or 24 ticks, 2-27 mm amplitude, zero net drift. They
+/// rock only under PhysX's stabilization (which damps a settling body and
+/// scales its gravity down, then back up once it moves): with it off for
+/// chunks the neighbourhoods sleep, but the rest of the pile creeps instead
+/// and 1,000 bodies stayed awake. Solver iterations (4,
+/// 8, 16), 4 velocity iterations, TGS and a 5 cm contact offset did not stop
+/// the rocking (physx-bridge/tests/rubble_rest.rs); a 1 m/s depenetration cap
+/// stopped it in one neighbourhood but left 347 of 489 bodies awake in the
+/// rubble_sleep perf scenario (server/src/perf_bench.rs).
+///
+/// So this sleeps islands by the one thing the rocking bodies share with the
+/// frozen ones: they are not going anywhere. The criterion is pose, never
+/// velocity -- the rocking bodies move at 0.1-0.4 m/s, well above any sleep
+/// threshold, and the owner's rule is that nothing may be stopped mid-lean or
+/// mid-slide. Every kRestWindowTicks an awake body closes a window: its mean
+/// position and rotation, the extent it moved within. It is resting when it
+/// was awake for the last three windows, the three means agree to within
+/// kRestDriftM and kRestDriftRad (a creep of 0.75 mm/s already fails), and it
+/// stayed inside kRestEnvelopeM / kRestEnvelopeRad. A cluster of touching
+/// awake bodies is put to sleep only when every member is resting, so no
+/// moving body is ever stopped and no island is split. A body the engine
+/// wakes straight back up is left alone for five windows.
+///
+/// What it can move: nothing that is still. A rocking body stops somewhere
+/// inside its own envelope (at most kRestEnvelopeM) instead of rocking there
+/// forever. Off by default until a long live session has run with it (an
+/// earlier, speed-based sleep of stage-owned bodies killed a live server
+/// after four minutes); VIBE_CITY_NATIVE_REST_SLEEP=1 turns it on.
+constexpr std::uint32_t kRestWindowTicks = 120;
+constexpr float kRestDriftM = 0.003f;
+constexpr float kRestDriftRad = 0.3f * 3.14159265f / 180.0f;
+constexpr float kRestEnvelopeM = 0.05f;
+constexpr float kRestEnvelopeRad = 10.0f * 3.14159265f / 180.0f;
+/// Bounds this far apart count as touching: PhysX's default contact offset.
+constexpr float kRestContactMarginM = 0.02f;
+
+static bool native_rest_sleep() {
+  static const bool enabled = [] {
+    const char *raw = std::getenv("VIBE_CITY_NATIVE_REST_SLEEP");
+    return raw != nullptr && raw[0] == '1';
+  }();
+  return enabled;
+}
+
+static float rest_angle(const PxQuat &a, const PxQuat &b) {
+  const float dot = std::min(1.0f, std::fabs(a.dot(b)));
+  return 2.0f * std::acos(dot);
+}
+
+static void rest_reset(NativeBody::RestTrack &r) {
+  const std::uint32_t cooldown = r.cooldown;
+  const std::uint64_t slept = r.slept_tick;
+  r = NativeBody::RestTrack{};
+  r.cooldown = cooldown;
+  r.slept_tick = slept;
+}
+
+static void rest_sample(NativeBody::RestTrack &r, const PxVec3 &p, PxQuat q) {
+  if (r.samples == 0) {
+    r.first = q;
+  } else if (q.dot(r.first) < 0.0f) {
+    q = -q; // one hemisphere, so the quaternion mean is meaningful
+  }
+  r.sum += p;
+  r.quat_sum += PxVec4(q.x, q.y, q.z, q.w);
+  r.lo = r.lo.minimum(p);
+  r.hi = r.hi.maximum(p);
+  r.turn = std::max(r.turn, rest_angle(q, r.first));
+  r.samples += 1;
+}
+
 void NativeDestruction::State::refresh_snapshots() {
   snapshots.clear();
   snapshots.reserve(bodies.size());
+  std::vector<std::pair<NativeBody *, std::size_t>> awake;
   const float floor_m = native_debris_floor_m();
   const float quiet_speed = native_settle_speed();
   const std::uint32_t quiet_limit = native_settle_ticks();
@@ -336,6 +427,9 @@ void NativeDestruction::State::refresh_snapshots() {
     // can change it without waking the body.
     if (body.sleeping && body.has_snapshot && (kinematic || actor.isSleeping())) {
       body.quiet_ticks = 0;
+      if (body.rest.samples != 0 || body.rest.windows != 0) {
+        rest_reset(body.rest);
+      }
       FfiChunkBodySnapshot &snap = body.last_snapshot;
       snap.kinematic = kinematic;
       snap.node_count = static_cast<std::uint32_t>(body.chunks.size());
@@ -404,6 +498,21 @@ void NativeDestruction::State::refresh_snapshots() {
       // "came to rest just now".
     } else if (!sleeping && body.sleeping) {
       resettled_wakes += 1;
+      if (body.rest.slept_tick != 0 && tick_index - body.rest.slept_tick <= 60) {
+        // The engine undid a rest sleep at once: something this pass cannot
+        // see (a ball, a car, a player) still touches the island. Back off
+        // rather than fight it every window.
+        rest_rewakes += 1;
+        body.rest.cooldown = 5;
+      }
+    }
+    if (sleeping) {
+      if (body.rest.samples != 0 || body.rest.windows != 0) {
+        rest_reset(body.rest);
+      }
+    } else {
+      rest_sample(body.rest, pose.transform(actor.getCMassLocalPose().p), pose.q);
+      awake.emplace_back(&body, snapshots.size());
     }
     FfiChunkBodySnapshot snap{};
     snap.entity_id = NativeDestruction::entity_id(body.structure, body.serial);
@@ -426,6 +535,122 @@ void NativeDestruction::State::refresh_snapshots() {
     body.last_snapshot = snap;
     body.has_snapshot = true;
     snapshots.push_back(snap);
+  }
+  if (native_rest_sleep() && tick_index % kRestWindowTicks == 0) {
+    sleep_resting_islands(awake);
+  }
+}
+
+void NativeDestruction::State::sleep_resting_islands(
+    std::vector<std::pair<NativeBody *, std::size_t>> &awake) {
+  // Close the window for every awake body and decide which are at rest.
+  for (auto &entry : awake) {
+    NativeBody::RestTrack &r = entry.first->rest;
+    const bool whole_window = r.samples + 1 >= kRestWindowTicks;
+    if (!whole_window) {
+      r.windows = 0;
+      r.resting = false;
+    } else {
+      const PxVec3 mean = r.sum / static_cast<float>(r.samples);
+      PxQuat quat(r.quat_sum.x, r.quat_sum.y, r.quat_sum.z, r.quat_sum.w);
+      quat.normalize();
+      r.means[2] = r.means[1];
+      r.means[1] = r.means[0];
+      r.means[0] = mean;
+      r.quat_means[2] = r.quat_means[1];
+      r.quat_means[1] = r.quat_means[0];
+      r.quat_means[0] = quat;
+      r.windows += 1;
+      const float envelope = (r.hi - r.lo).magnitude();
+      r.resting = r.windows >= 3 &&
+                  (r.means[0] - r.means[1]).magnitude() < kRestDriftM &&
+                  (r.means[0] - r.means[2]).magnitude() < kRestDriftM &&
+                  rest_angle(r.quat_means[0], r.quat_means[1]) < kRestDriftRad &&
+                  rest_angle(r.quat_means[0], r.quat_means[2]) < kRestDriftRad &&
+                  envelope < kRestEnvelopeM && r.turn < kRestEnvelopeRad;
+    }
+    if (r.cooldown != 0) {
+      r.cooldown -= 1;
+      r.resting = false;
+    }
+    r.sum = PxVec3(0.0f);
+    r.quat_sum = PxVec4(0.0f);
+    r.lo = PxVec3(PX_MAX_F32);
+    r.hi = PxVec3(-PX_MAX_F32);
+    r.turn = 0.0f;
+    r.samples = 0;
+  }
+
+  // Clusters of awake bodies whose bounds touch: a superset of each contact
+  // island, since an awake island's members are all awake (PhysX wakes
+  // whatever an awake body touches). Sweep on x, union on overlap.
+  const std::size_t n = awake.size();
+  if (n == 0) {
+    return;
+  }
+  std::vector<PxBounds3> bounds(n);
+  std::vector<std::uint32_t> order(n), parent(n);
+  for (std::size_t i = 0; i < n; ++i) {
+    bounds[i] = awake[i].first->actor->getWorldBounds(1.0f);
+    bounds[i].fattenFast(kRestContactMarginM);
+    order[i] = static_cast<std::uint32_t>(i);
+    parent[i] = static_cast<std::uint32_t>(i);
+  }
+  const auto find = [&parent](std::uint32_t v) {
+    while (parent[v] != v) {
+      parent[v] = parent[parent[v]];
+      v = parent[v];
+    }
+    return v;
+  };
+  std::sort(order.begin(), order.end(), [&bounds](std::uint32_t a, std::uint32_t b) {
+    return bounds[a].minimum.x < bounds[b].minimum.x;
+  });
+  for (std::size_t i = 0; i < n; ++i) {
+    const PxBounds3 &a = bounds[order[i]];
+    for (std::size_t j = i + 1; j < n && bounds[order[j]].minimum.x <= a.maximum.x; ++j) {
+      if (a.intersects(bounds[order[j]])) {
+        const std::uint32_t x = find(order[i]);
+        const std::uint32_t y = find(order[j]);
+        parent[std::max(x, y)] = std::min(x, y);
+      }
+    }
+  }
+  std::vector<std::uint8_t> moving(n, 0);
+  for (std::size_t i = 0; i < n; ++i) {
+    if (!awake[i].first->rest.resting) {
+      moving[find(static_cast<std::uint32_t>(i))] = 1;
+    }
+  }
+  std::vector<std::uint8_t> counted(n, 0);
+  for (std::size_t i = 0; i < n; ++i) {
+    const std::uint32_t root = find(static_cast<std::uint32_t>(i));
+    if (!counted[root]) {
+      counted[root] = 1;
+      if (moving[root]) {
+        rest_held_clusters += 1;
+      } else {
+        rest_slept_clusters += 1;
+      }
+    }
+    if (moving[root]) {
+      continue;
+    }
+    NativeBody &body = *awake[i].first;
+    body.actor->putToSleep();
+    body.rest.slept_tick = tick_index;
+    body.rest.windows = 0;
+    body.rest.resting = false;
+    rest_slept_bodies += 1;
+    FfiChunkBodySnapshot &snap = snapshots[awake[i].second];
+    // Same edge as an engine sleep: the wire publishes this pose as the
+    // body's settle, and it has not moved for three windows.
+    snap.sleeping = true;
+    snap.flags = 1u;
+    snap.linear_velocity = native_ffi(PxVec3(0.0f));
+    snap.angular_velocity = native_ffi(PxVec3(0.0f));
+    body.sleeping = true;
+    body.last_snapshot = snap;
   }
 }
 
@@ -578,6 +803,10 @@ FfiDestructionStats NativeDestruction::stats() const {
   span("native_rounds_ms", s.rounds_ms, 0);
   span("native_debris_parked", static_cast<double>(s.debris_parked), 2);
   span("native_debris_settled", static_cast<double>(s.debris_settled), 2);
+  span("native_rest_slept_bodies", static_cast<double>(s.rest_slept_bodies), 2);
+  span("native_rest_slept_clusters", static_cast<double>(s.rest_slept_clusters), 2);
+  span("native_rest_held_clusters", static_cast<double>(s.rest_held_clusters), 2);
+  span("native_rest_rewakes", static_cast<double>(s.rest_rewakes), 2);
   span("native_migrations_total", static_cast<double>(s.migration_total), 2);
   span("native_resettled_wakes", static_cast<double>(s.resettled_wakes), 2);
   span("native_splits", static_cast<double>(s.splits), 2);

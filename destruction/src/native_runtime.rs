@@ -16,8 +16,11 @@
 //!
 //! Three things the other backends do are *absent* here rather than disabled:
 //! there is no force injection (the stage takes loads only from real contacts,
-//! so a shot is a real body), no artificial freezing (the engine's own sleep is
-//! the settle signal), and no resimulation (the engine owns correction).
+//! so a shot is a real body), no artificial freezing (sleep is the settle
+//! signal: the engine's own, plus the bridge's island sleep for rubble that
+//! has provably stopped going anywhere -- `sleep_resting_islands` in
+//! physx-bridge/src/native_observation.cc), and no resimulation (the engine
+//! owns correction).
 
 use std::collections::HashMap;
 use std::sync::Arc;

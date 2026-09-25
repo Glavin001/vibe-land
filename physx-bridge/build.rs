@@ -10,12 +10,15 @@ include!("physx_sdk_location.rs");
 /// together with the SDK; a silent bump would change struct layouts under our
 /// device reads, so the build fails loudly instead.
 #[cfg(feature = "native-destruction")]
-const NATIVE_DESTRUCTION_SCENE_VERSIONS: [&str; 3] = [
+const NATIVE_DESTRUCTION_SCENE_VERSIONS: [&str; 4] = [
     "#define PX_DESTRUCTION_SCENE_VERSION 15",
     "#define PX_DESTRUCTION_SCENE_VERSION 16",
     // v17 changes no layout: `internalCorrectionLimit` stops being a boolean
     // and becomes the number of corrected solves one tick may run.
     "#define PX_DESTRUCTION_SCENE_VERSION 17",
+    // v18 appends `fragmentMaxDepenetrationVelocity` to the stress desc; the
+    // device views are unchanged.
+    "#define PX_DESTRUCTION_SCENE_VERSION 18",
 ];
 
 #[cfg(feature = "destruction")]
@@ -37,6 +40,7 @@ fn main() {
     println!("cargo:rerun-if-changed=src/physx_bridge.cc");
     println!("cargo:rerun-if-changed=src/destruction.cc");
     println!("cargo:rerun-if-changed=include/physx_bridge.h");
+    println!("cargo:rerun-if-changed=include/solver_iterations.h");
     println!("cargo:rerun-if-changed=include/destruction.h");
 
     println!("cargo:rerun-if-env-changed=PHYSX_DESTRUCTION_SDK");
@@ -314,7 +318,7 @@ fn add_native_destruction(
     let header = include.join("PxDestructionScene.h");
     let text = std::fs::read_to_string(&header)
         .unwrap_or_else(|e| panic!("cannot read {}: {e}", header.display()));
-    // The shim is written against v15 through v17. They differ only by additions
+    // The shim is written against v15 through v18. They differ only by additions
     // it guards, and the device views it reads are raw structs, so an unknown
     // version is a silent misread rather than a link error -- hence a hard stop.
     let version = NATIVE_DESTRUCTION_SCENE_VERSIONS
@@ -343,6 +347,7 @@ fn add_native_destruction(
     for (field, define) in [
         ("reservedContactPairs", "VIBE_PHYSX_HAS_RESERVED_CONTACT_PAIRS"),
         ("correctionBlockers", "VIBE_PHYSX_HAS_CORRECTION_BLOCKERS"),
+        ("fragmentMaxDepenetrationVelocity", "VIBE_PHYSX_HAS_FRAGMENT_DEPENETRATION"),
     ] {
         if text.contains(field) {
             build.define(define, None);

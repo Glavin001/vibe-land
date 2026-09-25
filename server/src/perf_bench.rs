@@ -517,6 +517,10 @@ fn perf_bench() {
         report("meteor_pair", &ticks);
     }
 
+    if wanted("rubble_sleep") {
+        rubble_sleep();
+    }
+
     if wanted("demolition") {
         let mut scene = Scene::city();
         scene.run(120);
@@ -527,4 +531,361 @@ fn perf_bench() {
         assert!(queued > 0, "the demolition queued nothing");
         report("demolition", &scene.run(600));
     }
+}
+
+/// Tilt of a box body: the smallest angle between any of its axes and world
+/// up. Zero is lying on a face or standing square; 54.7 degrees is balanced on
+/// a corner. Chunk shapes carry translation-only local poses, so a body's axes
+/// are its chunks' box axes.
+fn tilt_deg(q: glam::Quat) -> f32 {
+    [glam::Vec3::X, glam::Vec3::Y, glam::Vec3::Z]
+        .iter()
+        .map(|axis| (q * *axis).y.abs().clamp(0.0, 1.0).acos().to_degrees())
+        .fold(f32::MAX, f32::min)
+}
+
+/// One chunk body row, copied out of the bridge's snapshot table.
+struct RubbleRow {
+    entity: u32,
+    flags: u32,
+    sleeping: bool,
+    kinematic: bool,
+    nodes: u32,
+    p: glam::Vec3,
+    q: glam::Quat,
+}
+
+fn rubble_rows(scene: &mut Scene) -> Vec<RubbleRow> {
+    scene
+        .world()
+        .native_chunk_body_snapshots()
+        .expect("chunk snapshots")
+        .iter()
+        .map(|r| RubbleRow {
+            entity: r.entity_id,
+            flags: r.flags,
+            sleeping: r.sleeping,
+            kinematic: r.kinematic,
+            nodes: r.node_count,
+            p: glam::Vec3::new(r.position.x, r.position.y, r.position.z),
+            q: glam::Quat::from_xyzw(r.rotation.x, r.rotation.y, r.rotation.z, r.rotation.w).normalize(),
+        })
+        .collect()
+}
+
+fn angle_deg(a: glam::Quat, b: glam::Quat) -> f32 {
+    (2.0 * a.dot(b).abs().clamp(0.0, 1.0).acos()).to_degrees()
+}
+
+fn pcts(v: &mut Vec<f32>) -> [f32; 5] {
+    if v.is_empty() {
+        return [0.0; 5];
+    }
+    v.sort_by(|a, b| a.total_cmp(b));
+    let at = |p: f32| v[((p / 100.0) * (v.len() - 1) as f32).round() as usize];
+    [at(10.0), at(50.0), at(90.0), at(99.0), at(100.0)]
+}
+
+/// Per-body pose history for the rubble scenario.
+#[derive(Default)]
+struct RubbleTrack {
+    /// Last awake poses, newest last, with their tick.
+    history: std::collections::VecDeque<(u32, glam::Vec3, glam::Quat)>,
+    /// Final-window start pose and path, for bodies awake in that window.
+    window_start: Option<(glam::Vec3, glam::Quat)>,
+    window_path: f32,
+    window_turn: f32,
+    window_ticks: u32,
+    window_last: Option<(glam::Vec3, glam::Quat)>,
+    nodes: u32,
+}
+
+/// Rubble that never sleeps, and where rubble comes to rest.
+///
+/// Attacks every building the way the city bench does -- three cannonballs
+/// into the face, a meteor on the roof, then the footing demolished (48
+/// rounds, 25% jitter, straight drop and 50-degree wedge alternating), 15 s a
+/// building -- then leaves the city alone and watches it settle. What it answers:
+///
+/// - awake chunk bodies over the settle, the first tick with none awake, and
+///   the step cost once nothing is being destroyed (`RUBBLE`, `RUBBLE_SERIES`);
+/// - the bodies still awake at the end and whether they are going anywhere:
+///   path length against net displacement over the final window (`KEEPER`);
+/// - where everything came to rest: heights, tilt (smallest angle between a
+///   body axis and world up) and the fraction resting leaned (`REST`), and a
+///   per-body CSV (`VIBE_PERF_TRACE_DIR`) for comparing distributions;
+/// - whether anything was stopped while it was still moving: each sleep edge's
+///   displacement and turn over the 10 ticks before it (`RUBBLE`).
+///
+/// `VIBE_PERF_RUBBLE_BUILDINGS` caps the buildings (default all),
+/// `VIBE_PERF_RUBBLE_SETTLE_TICKS` sets the settle (default 3600).
+fn rubble_sleep() {
+    let env_u32 = |name: &str, default: u32| {
+        std::env::var(name).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
+    };
+    let max_buildings = env_u32("VIBE_PERF_RUBBLE_BUILDINGS", 64) as usize;
+    let settle_ticks = env_u32("VIBE_PERF_RUBBLE_SETTLE_TICKS", 3600);
+    let window = 300u32;
+    let label = std::env::var("VIBE_PERF_LABEL").unwrap_or_else(|_| "rubble_sleep".into());
+
+    let (_, manifest, _) = crate::city::manifest_asset().expect("city manifest");
+    let mut buildings: Vec<_> = vibe_land_destruction::buildings::enumerate(manifest)
+        .into_iter()
+        .filter(|b| b.chunks >= 20)
+        .collect();
+    buildings.sort_by_key(|b| b.id);
+    buildings.truncate(max_buildings);
+
+    let mut scene = Scene::city();
+    scene.run(120);
+    let mut tracks: std::collections::HashMap<u32, RubbleTrack> = Default::default();
+    let mut settle_disp: Vec<f32> = Vec::new();
+    let mut settle_turn: Vec<f32> = Vec::new();
+    let mut settle_edges = 0u32;
+    let mut wake_edges = 0u32;
+    let mut stopped_moving = 0u32;
+    let mut attack_dyn: Vec<f32> = Vec::new();
+
+    // One tick plus the bookkeeping; `phase_start` is the settle's first tick.
+    let mut observe = |scene: &mut Scene,
+                       tracks: &mut std::collections::HashMap<u32, RubbleTrack>,
+                       in_settle: bool,
+                       final_window: bool|
+     -> Tick {
+        let t = scene.run(1).pop().expect("one tick");
+        let tick = t.tick;
+        let rows = rubble_rows(scene);
+        for row in rows.iter().filter(|r| !r.kinematic) {
+            let (p, q) = (row.p, row.q);
+            let track = tracks.entry(row.entity).or_default();
+            track.nodes = row.nodes;
+            if row.flags == 1 && in_settle {
+                settle_edges += 1;
+                // Displacement over the last 10 awake ticks before the edge.
+                if let Some(&(t0, p0, q0)) = track.history.iter().rev().nth(9) {
+                    if tick - t0 <= 12 {
+                        let d = (p - p0).length();
+                        let r = angle_deg(q, q0);
+                        if d > 0.01 || r > 1.0 {
+                            stopped_moving += 1;
+                        }
+                        settle_disp.push(d);
+                        settle_turn.push(r);
+                    }
+                }
+            } else if row.flags == 2 && in_settle {
+                wake_edges += 1;
+            }
+            if !row.sleeping {
+                track.history.push_back((tick, p, q));
+                while track.history.len() > 11 {
+                    track.history.pop_front();
+                }
+                if final_window {
+                    if track.window_start.is_none() {
+                        track.window_start = Some((p, q));
+                    }
+                    if let Some((lp, lq)) = track.window_last {
+                        track.window_path += (p - lp).length();
+                        track.window_turn += angle_deg(q, lq);
+                    }
+                    track.window_last = Some((p, q));
+                    track.window_ticks += 1;
+                }
+            }
+        }
+        t
+    };
+
+    // `VIBE_PERF_RUBBLE_SEED` varies the meteors' arcs and the demolition
+    // headings: one seed replays identically, so distributions need several.
+    let seed = env_u32("VIBE_PERF_RUBBLE_SEED", 0);
+    let mut meteor_rng = crate::meteor::Rng::new(0x5eed + u64::from(seed));
+    let gravity = {
+        let g = vibe_netcode::movement::default_world_gravity();
+        Vec3::new(g[0], g[1], g[2])
+    };
+    for (i, b) in buildings.iter().enumerate() {
+        let height = b.top - b.bottom;
+        // The bench's attack on each building before the footing goes: three
+        // cannonballs into the face from a 10 m standoff, then a meteor on the
+        // roof. Rubble from these is what the demolition alone does not make.
+        let centre = Vec3::new(b.centre[0], 0.0, b.centre[2]);
+        let outward = {
+            let flat = Vec3::new(centre.x, 0.0, centre.z);
+            if flat.length() > 1.0 { flat.normalize() } else { Vec3::X }
+        };
+        let from = centre + outward * (b.radius + 10.0) + Vec3::new(0.0, 1.6, 0.0);
+        for k in 0..3 {
+            let aim = centre + Vec3::new(0.0, b.bottom.max(0.0) + height * (0.2 + 0.25 * k as f32), 0.0);
+            scene.cannonball(from, aim);
+            for _ in 0..60 {
+                attack_dyn.push(observe(&mut scene, &mut tracks, false, false).dyn_ms);
+            }
+        }
+        let tuning = crate::meteor::MeteorTuning::from_env();
+        let launch = crate::meteor::plan(Vec3::new(b.centre[0], b.top, b.centre[2]), gravity, &tuning, &mut meteor_rng);
+        let _ = scene.arena.launch_meteor(
+            nalgebra::Vector3::new(launch.start.x, launch.start.y, launch.start.z),
+            nalgebra::Vector3::new(launch.velocity.x, launch.velocity.y, launch.velocity.z),
+            tuning.radius_m,
+            tuning.mass_kg,
+            tuning.ttl_ticks,
+        );
+        for _ in 0..240 {
+            attack_dyn.push(observe(&mut scene, &mut tracks, false, false).dyn_ms);
+        }
+        let wedge = if i % 2 == 0 { 0.0 } else { 50.0 };
+        scene.city.set_demolition_shape(((i as u32 + seed * 7) as f32 * 137.0) % 360.0, wedge, 0.25);
+        let world = scene.arena.physx_world_mut();
+        let below = b.bottom.max(0.0) + (height * 0.3).clamp(2.0, 8.0);
+        scene.city.demolish_supports([b.centre[0], b.centre[2]], b.radius + 1.0, below, 48, world);
+        for _ in 0..300 {
+            attack_dyn.push(observe(&mut scene, &mut tracks, false, false).dyn_ms);
+        }
+    }
+
+    let start = scene.tick;
+    let mut first_zero: Option<u32> = None;
+    let mut min_awake = u32::MAX;
+    let mut idle_dyn: Vec<f32> = Vec::new();
+    let mut idle_total: Vec<f32> = Vec::new();
+    let mut all_dyn: Vec<f32> = Vec::new();
+    let mut bucket: Vec<Tick> = Vec::new();
+    let mut last_status = scene.world().native_last_status().ok();
+    let mut unconverged = 0u32;
+    let mut stage_errors = 0u32;
+    for k in 0..settle_ticks {
+        let final_window = k + window >= settle_ticks;
+        let t = observe(&mut scene, &mut tracks, true, final_window);
+        if let Ok(status) = scene.world().native_last_status() {
+            if status.iterations > 0 && !status.converged {
+                unconverged += 1;
+            }
+            if status.error != 0 {
+                stage_errors += 1;
+            }
+            last_status = Some(status);
+        }
+        if t.awake_chunks == 0 && first_zero.is_none() {
+            first_zero = Some(t.tick - start);
+        }
+        min_awake = min_awake.min(t.awake_chunks);
+        all_dyn.push(t.dyn_ms);
+        if k + 600 >= settle_ticks {
+            idle_dyn.push(t.dyn_ms);
+            idle_total.push(t.total_ms);
+        }
+        bucket.push(t);
+        if bucket.len() == 60 {
+            let awake_max = bucket.iter().map(|t| t.awake_chunks).max().unwrap_or(0);
+            let awake_min = bucket.iter().map(|t| t.awake_chunks).min().unwrap_or(0);
+            let dyn_mean = bucket.iter().map(|t| t.dyn_ms).sum::<f32>() / 60.0;
+            eprintln!(
+                "RUBBLE_SERIES {{\"label\":\"{label}\",\"s\":{:.0},\"awake_max\":{awake_max},\"awake_min\":{awake_min},\"dyn_mean\":{dyn_mean:.2},\"broken\":{}}}",
+                f64::from(k + 1) / 60.0,
+                bucket.last().map(|t| t.broken_bonds).unwrap_or(0)
+            );
+            bucket.clear();
+        }
+    }
+
+    // The city bench ends with the player sitting in the car it drove, and an
+    // occupied car never sleeps. Measured separately so the settled-rubble
+    // number above is not confused with the car's.
+    let mut car_dyn: Vec<f32> = Vec::new();
+    if scene.arena.vehicle_exists(crate::demo_world::CITY_VEHICLE_ID_CYBERTRUCK) {
+        scene.arena.enter_vehicle(1, crate::demo_world::CITY_VEHICLE_ID_CYBERTRUCK);
+        for _ in 0..60 {
+            scene.run(1);
+        }
+        for _ in 0..300 {
+            car_dyn.push(scene.run(1).pop().expect("one tick").dyn_ms);
+        }
+        scene.arena.exit_vehicle(1);
+    }
+    let car_d = pcts(&mut car_dyn);
+    let rows = rubble_rows(&mut scene);
+    let spans = scene.city.extra_spans();
+    let span = |name: &str| spans.iter().find(|s| s.name == name).map_or(0.0, |s| s.value);
+    let rest_sleep = format!(
+        "\"rest_slept_bodies\":{},\"rest_slept_clusters\":{},\"rest_held_clusters\":{},\"rest_rewakes\":{},\"stage_error_frames\":{}",
+        span("native_rest_slept_bodies"), span("native_rest_slept_clusters"), span("native_rest_held_clusters"),
+        span("native_rest_rewakes"), span("native_error_frames")
+    );
+    let broken = scene.city.stats().broken_bonds;
+    let final_awake = scene.city.stats().awake_chunk_bodies;
+
+    // Where things came to rest: every dynamic chunk body still in the world.
+    let mut ys = Vec::new();
+    let mut tilts = Vec::new();
+    let mut csv = String::from("entity,nodes,sleeping,x,y,z,tilt_deg\n");
+    let (mut bodies, mut sleeping, mut gt5, mut gt15, mut flat) = (0u32, 0u32, 0u32, 0u32, 0u32);
+    for row in rows.iter().filter(|r| !r.kinematic) {
+        let p = row.p;
+        if !p.is_finite() || p.y < -3.0 || p.y > 200.0 {
+            continue;
+        }
+        let tilt = tilt_deg(row.q);
+        bodies += 1;
+        sleeping += u32::from(row.sleeping);
+        gt5 += u32::from(tilt > 5.0);
+        gt15 += u32::from(tilt > 15.0);
+        flat += u32::from(tilt < 2.0);
+        ys.push(p.y);
+        tilts.push(tilt);
+        csv.push_str(&format!(
+            "{},{},{},{:.4},{:.4},{:.4},{:.3}\n",
+            row.entity, row.nodes, row.sleeping as u8, p.x, p.y, p.z, tilt
+        ));
+    }
+    if let Ok(dir) = std::env::var("VIBE_PERF_TRACE_DIR") {
+        std::fs::write(format!("{dir}/{label}-rest.csv"), csv).expect("write rest csv");
+    }
+    let frac = |n: u32| if bodies == 0 { 0.0 } else { f64::from(n) / f64::from(bodies) };
+    let y = pcts(&mut ys);
+    let tl = pcts(&mut tilts);
+    eprintln!(
+        "REST {{\"label\":\"{label}\",\"bodies\":{bodies},\"sleeping\":{sleeping},\"y_p10\":{:.3},\"y_p50\":{:.3},\"y_p90\":{:.3},\"y_p99\":{:.3},\
+\"tilt_p10\":{:.2},\"tilt_p50\":{:.2},\"tilt_p90\":{:.2},\"tilt_p99\":{:.2},\"flat_lt2\":{:.4},\"lean_gt5\":{:.4},\"lean_gt15\":{:.4}}}",
+        y[0], y[1], y[2], y[3], tl[0], tl[1], tl[2], tl[3], frac(flat), frac(gt5), frac(gt15)
+    );
+
+    // What is still awake, and whether it is going anywhere.
+    let mut keepers: Vec<(u32, &RubbleTrack)> = tracks
+        .iter()
+        .filter(|(_, t)| t.window_ticks + 10 >= window)
+        .map(|(e, t)| (*e, t))
+        .collect();
+    let awake_through = keepers.len();
+    let still = keepers.iter().filter(|(_, t)| t.window_path < 0.001 && t.window_turn < 0.5).count();
+    keepers.sort_by(|a, b| b.1.window_path.total_cmp(&a.1.window_path));
+    for (entity, t) in keepers.iter().take(16) {
+        let (p0, q0) = t.window_start.unwrap();
+        let (p1, q1) = t.window_last.unwrap();
+        eprintln!(
+            "KEEPER {{\"label\":\"{label}\",\"entity\":\"{entity:#x}\",\"nodes\":{},\"y\":{:.3},\"tilt\":{:.1},\"path_m\":{:.3},\"net_m\":{:.4},\"turn_deg\":{:.1},\"net_turn_deg\":{:.2}}}",
+            t.nodes, p1.y, tilt_deg(q1), t.window_path, (p1 - p0).length(), t.window_turn, angle_deg(q0, q1)
+        );
+    }
+    let dp = pcts(&mut settle_disp);
+    let tp = pcts(&mut settle_turn);
+    let idle_d = pcts(&mut idle_dyn);
+    let idle_t = pcts(&mut idle_total);
+    let all_d = pcts(&mut all_dyn);
+    let attack_d = pcts(&mut attack_dyn);
+    eprintln!(
+        "RUBBLE {{\"label\":\"{label}\",\"buildings\":{},\"broken_bonds\":{broken},\"bodies\":{bodies},\"settle_s\":{:.0},\
+\"first_zero_awake_s\":{},\"min_awake\":{min_awake},\"final_awake\":{final_awake},\"awake_through_window\":{awake_through},\
+\"awake_but_still\":{still},\"idle_dyn_p50\":{:.2},\"idle_dyn_p90\":{:.2},\"idle_total_p50\":{:.2},\"idle_total_p90\":{:.2},\
+\"settle_dyn_p50\":{:.2},\"settle_dyn_p90\":{:.2},\"attack_dyn_p50\":{:.2},\"attack_dyn_p90\":{:.2},\"occupied_car_dyn_p50\":{:.2},\"occupied_car_dyn_p90\":{:.2},\"unconverged_ticks\":{unconverged},\"last_iterations\":{},\
+\"sleep_edges\":{settle_edges},\"wake_edges\":{wake_edges},\"stopped_moving\":{stopped_moving},\"settle_stage_errors\":{stage_errors},{rest_sleep},\
+\"edge_disp_p50\":{:.4},\"edge_disp_p99\":{:.4},\"edge_disp_max\":{:.4},\"edge_turn_p99\":{:.2},\"edge_turn_max\":{:.2}}}",
+        buildings.len(),
+        f64::from(settle_ticks) / 60.0,
+        first_zero.map_or("null".to_string(), |t| format!("{:.1}", f64::from(t) / 60.0)),
+        idle_d[1], idle_d[2], idle_t[1], idle_t[2], all_d[1], all_d[2], attack_d[1], attack_d[2], car_d[1], car_d[2],
+        last_status.map_or(0, |s| s.iterations),
+        dp[1], dp[3], dp[4], tp[3], tp[4],
+    );
 }

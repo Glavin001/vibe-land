@@ -1,4 +1,5 @@
 #include "native_state.h"
+#include "solver_iterations.h"
 
 #include "extensions/PxMassProperties.h"
 
@@ -49,7 +50,7 @@ static unsigned correction_limit() {
 /// sleep and freeze thresholds, solver iterations), so this is the one place
 /// they need to be written and nothing is ever written on a fragment.
 ///
-/// ALL OFF BY DEFAULT (zero leaves the PhysX default). The Blast values --
+/// ALL LEFT AT THE PHYSX DEFAULTS unless set. The Blast values --
 /// depenetration 1.0 m/s, sleep 0.05, stabilization 0.02 -- were the default
 /// for one deployment on 2026-09-21. They did put piles to sleep (fractured
 /// town: awake 9,354 -> 887 within eight seconds of the last rock), and the
@@ -65,7 +66,11 @@ static unsigned correction_limit() {
 /// island, and one popping chunk keeps thousands awake -- but the answer
 /// has to be one that does not change where things come to rest. Left as
 /// env knobs for measurement: VIBE_CITY_NATIVE_DEPEN_VELOCITY,
-/// VIBE_CITY_NATIVE_SLEEP_THRESHOLD, VIBE_CITY_NATIVE_STABILIZATION_THRESHOLD.
+/// VIBE_CITY_NATIVE_SLEEP_THRESHOLD, VIBE_CITY_NATIVE_STABILIZATION_THRESHOLD,
+/// VIBE_CITY_NATIVE_FRAGMENT_DEPEN_VELOCITY (v18 SDKs). Solver iterations
+/// follow VIBE_PHYSX_POSITION_ITERS / VIBE_PHYSX_VELOCITY_ITERS like every
+/// other dynamic body (solver_iterations.h); raising them did not stop the
+/// rocking that kept rubble awake on 2026-09-24.
 static float native_env_f32(const char *name, float fallback) {
   const char *raw = std::getenv(name);
   if (raw == nullptr || *raw == '\0') return fallback;
@@ -82,12 +87,29 @@ static float native_sleep_threshold() {
   static const float value = native_env_f32("VIBE_CITY_NATIVE_SLEEP_THRESHOLD", 0.0f);
   return value;
 }
-static float native_stabilization_threshold() {
+/// Depenetration cap for free fragments only, metres per second; zero (the
+/// default) inherits the parent's unbounded PhysX clamp. Needs an SDK with
+/// PxDestructionStressDesc::fragmentMaxDepenetrationVelocity (scene v18).
+/// Measured 2026-09-22 on the house harness (docs on
+/// origin/claude/netlab-overnight, bayline-settling-resolution): fast meteor
+/// debris that tunnels a deck and lands inside other pieces settles into a
+/// PGS fixed point or a two-step 7 cm ping-pong under the unbounded clamp;
+/// 1 m/s and 0.5 m/s dissolve every stack. Applied on the GPU at fragment
+/// creation, so a projectile's trial contact with the anchored remnant keeps
+/// its unbounded impulses and fracture loads are unchanged (a whole-body cap
+/// made the cannonball bounce off the wall with a fifth of the damage).
+static float native_fragment_depenetration_velocity() {
   static const float value =
-      native_env_f32("VIBE_CITY_NATIVE_STABILIZATION_THRESHOLD", 0.0f);
+      native_env_f32("VIBE_CITY_NATIVE_FRAGMENT_DEPEN_VELOCITY", 0.0f);
   return value;
 }
-
+/// Stabilization ("freeze") threshold for stage-owned chunks. Unset leaves
+/// the PhysX default; any value >= 0 is written, zero meaning no freezing.
+static float native_stabilization_threshold() {
+  static const float value =
+      native_env_f32("VIBE_CITY_NATIVE_STABILIZATION_THRESHOLD", -1.0f);
+  return value;
+}
 namespace vibe_land::physx_bridge {
 namespace {
 
@@ -383,6 +405,8 @@ void NativeDestruction::create_destructible(
     // kinematic body here. The stage releases fragments from it as its bonds
     // break; the remnant stays kinematic for as long as it keeps an anchor.
     actor->setRigidBodyFlag(PxRigidBodyFlag::eKINEMATIC, supported);
+    actor->setSolverIterationCounts(dynamic_solver_position_iterations(),
+                                    dynamic_solver_velocity_iterations());
     actor->setLinearDamping(settings.linear_damping);
     actor->setAngularDamping(settings.angular_damping);
     // Inherited by every fragment of this cluster; see the helpers above.
@@ -392,7 +416,7 @@ void NativeDestruction::create_destructible(
     if (native_sleep_threshold() > 0.0f) {
       actor->setSleepThreshold(native_sleep_threshold());
     }
-    if (native_stabilization_threshold() > 0.0f) {
+    if (native_stabilization_threshold() >= 0.0f) {
       actor->setStabilizationThreshold(native_stabilization_threshold());
     }
     actor->userData = reinterpret_cast<void *>(
@@ -497,6 +521,17 @@ FfiNativeConfigured NativeDestruction::configure(const FfiNativeConfig &config) 
   desc.reservedContactPairs = config.reserved_contact_pairs;
 #endif
   desc.gpuIslandRepair = config.gpu_island_repair;
+#if defined(VIBE_PHYSX_HAS_FRAGMENT_DEPENETRATION)
+  desc.fragmentMaxDepenetrationVelocity = native_fragment_depenetration_velocity();
+  if (desc.fragmentMaxDepenetrationVelocity > 0.0f) {
+    std::fprintf(stderr, "[destruction] fragment depenetration cap %.3g m/s\n",
+                 double(desc.fragmentMaxDepenetrationVelocity));
+  }
+#else
+  native_require(native_fragment_depenetration_velocity() <= 0.0f,
+                 "VIBE_CITY_NATIVE_FRAGMENT_DEPEN_VELOCITY needs an SDK with "
+                 "fragmentMaxDepenetrationVelocity (PxDestructionScene v18)");
+#endif
 
   native_require(api.configureStress(desc),
                  "native destruction configuration was rejected");
