@@ -2922,6 +2922,7 @@ export function GameWorld({
       {/* Destructible city chunks (instanced; only active in city-* matches) */}
       <CityChunksLayer getCityClient={() => runtimeRef.current?.getCityClient?.() ?? null} />
       <CityGrass
+        getSharedLayoutUrl={() => runtimeRef.current?.grassLayoutUrl ?? null}
         getCityClient={() => runtimeRef.current?.getCityClient?.() ?? null}
         getInteractionPosition={() => {
           const runtime = runtimeRef.current;

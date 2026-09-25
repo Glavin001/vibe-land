@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { createGrassMaterial } from './grassMaterial';
 import { GrassInteraction } from './GrassInteraction';
-import { cityGrassPaint, type GrassPaint } from './GrassPaint';
+import { cityGrassPaint, GRASS_MAX_HEIGHT, type GrassPaint } from './GrassPaint';
 import {
   generateGrassPatch, grassDensityAtDistance, grassPatchDistance,
   GRASS_PATCH_SIZE, GRASS_PROFILES, GRASS_WORLD_HALF_EXTENT,
@@ -99,7 +99,7 @@ export class GrassField {
       .multiplyScalar(Math.max(0, Math.min(40, speed)));
   }
 
-  private setBounds(box: THREE.Box3, x: number, z: number, height = 2): THREE.Box3 {
+  private setBounds(box: THREE.Box3, x: number, z: number, height = GRASS_MAX_HEIGHT): THREE.Box3 {
     const reach = height * 3.5 + 0.1;
     box.min.set(x * GRASS_PATCH_SIZE - reach, 0, z * GRASS_PATCH_SIZE - reach);
     box.max.set((x + 1) * GRASS_PATCH_SIZE + reach, height + 0.05, (z + 1) * GRASS_PATCH_SIZE + reach);

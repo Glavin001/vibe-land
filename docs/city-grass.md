@@ -99,9 +99,29 @@ foliage materials; this change animates grass only.
 ## Painting
 
 Open `/grass` → **Paint grass**. Drag on the ground using Meadow, Lawn, Tall,
-Dry or Bare presets, or adjust density, maximum blade height (up to 2 m), leaf
+Person height, Vehicle height, Dry or Bare presets, or adjust density, maximum blade height (up to 4 m), leaf
 colour and brush radius independently. Finish painting to orbit again. On a
 small screen, open **Grass controls** to reveal the controls.
+
+Person height uses a 2.8 m blade-length ceiling and Vehicle height uses 4 m.
+Tall stands have a tighter height distribution, broader leaves and less initial
+lean; actual upright tips are lower than blade length because the leaves curve.
+The renderer keeps the same instance counts and triangle budgets. Taller leaves
+cover more pixels, so GPU fill cost can rise despite unchanged geometry counts.
+**Plant tall test patch** paints an 18 m radius patch around the demo car path;
+use **Paint grass → Undo** to restore the previous layout. To place the demo
+at a city location, open `/grass?x=0&z=55`, then plant the patch. Opening the
+link alone does not alter existing paint; coordinates are shown beside the button.
+
+Grounded vehicles also sweep a broad box through authored grass taller than
+1.5 m, holding it down for six seconds before normal recovery. Parked vehicles
+refresh that hold. Short grass keeps separate tyre tracks. This is a cheap
+canopy approximation from ground footprints, not stalk collisions.
+
+Tall grass provides local visual concealment only. Profile-dependent density,
+28/48 m draw distances and profile-dependent thinning mean it is not a fair,
+authoritative multiplayer stealth mechanic. It does not block bullets or AI
+visibility. Such gameplay still needs authoritative visibility rules.
 
 Paint uses sparse 8 m tiles with 0.5 m cells. Bilinear interpolation and a soft
 brush edge make tile boundaries continuous. Blades keep deterministic positions
@@ -110,13 +130,63 @@ patches through the existing build budget, and updates the distant ground tint.
 Zero density produces zero blades in fully painted regions. Density is a
 fraction of the selected profile's maximum, not a world-space blade count.
 
-Edits save to local storage and apply to `/city` and `/cityreplay` on the **same
-origin**, including other open tabs. Undo retains the last eight edits. Export
-and Import layout transfer versioned JSON; invalid imports leave the current
-layout intact. Storage-quota failures leave edits visible and offer export.
-These are local decorative layouts, not networked world state or part of the
-world-publishing protocol. The standalone editor's sample buildings are for
-previewing grass; paint coordinates are city world X/Z metres.
+Edits are private drafts saved to local storage. Undo retains the last eight
+edits. Export and Import layout transfer versioned JSON; invalid imports leave
+the current layout intact. Version 2 encodes 0–4 m height; version 1 imports
+retain their 0–2 m scale (within byte quantization). Existing local drafts migrate
+on load. Storage-quota failures leave edits visible and offer export.
+
+### Sharing a city layout
+
+The editor's **Shared city layout** panel loads the current server revision
+without overwriting your draft. Enter the server's grass editor key and choose
+**Publish to city** to share the whole draft. **Load shared** replaces the draft
+with the latest shared layout and adds an Undo entry. A concurrent publisher
+causes a conflict; your draft is preserved and must be reconciled before retrying.
+Use `?match=city-example` in both the editor and city to target another match.
+The editor uses the configured multiplayer HTTP origin, just like the game.
+
+`/city` ignores browser-local drafts, fetches the shared layout on entry, and
+polls every two seconds with `If-None-Match`. Unchanged layouts return 304 and
+cause no patch rebuilding. New layouts use the existing budgeted patch rebuilds.
+A small status label shows the shared content revision, or an explicit offline
+message. An outage keeps the last shared layout; an initial failure shows the
+default meadow. It never silently treats private paint as shared data.
+Blades, wind, contact stamping and recovery remain entirely client-side.
+
+The Rust API is `GET` / `PUT /match-stats/:match_id/grass`. Reads are public;
+writes require `Authorization: Bearer <VIBE_GRASS_EDIT_TOKEN>` and an `If-Match`
+revision. Without that environment variable publishing is disabled. Layouts are
+strictly validated (version, byte channels, tile bounds, duplicates, body size),
+written through a synced temporary file and atomic rename, and persist across
+server restarts. The default directory is `.data/grass/` in this checkout;
+`VIBE_GRASS_LAYOUT_DIR` overrides it. Back it up as authored world data. Only one
+process may own writes to a directory; route all grass requests to that process.
+The API caches at most eight match layouts.
+
+The game server mounts these routes automatically on its next build/restart.
+For local development without interrupting a running physics server:
+
+```sh
+scripts/run-grass-layout-server.sh
+# In .env.local for the Vite preview:
+# GRASS_SERVER_HOST=127.0.0.1
+# GRASS_SERVER_PORT=4183
+```
+
+This runs the same routes as a content-only process, bound to loopback by default.
+The script creates a private `.env.grass.local` containing the editor key; it is
+ignored by Git and is not a `VITE_` variable or part of the browser bundle. The
+editor holds a pasted key only in memory. Vite proxies only the grass route to
+this process; game traffic stays on its existing server. On deployment, use the
+integrated game-server routes or proxy this route to one supervised grass service,
+configure the directory/key on the host, and deploy the updated client as well.
+These are per-match decorative layouts, not yet part of the gallery WorldDocument
+publishing protocol. `/cityreplay` still uses the local draft; grass revisions
+are not yet recorded in tapes. Control-plane sessions with no reachable HTTP
+origin report unavailable rather than fetching from the wrong server.
+The editor's sample buildings are for previewing grass, not the actual city
+manifest; paint coordinates are city world X/Z metres.
 
 For authored environments, use the same API (no renderer required):
 
@@ -126,7 +196,7 @@ import { cityGrassPaint, GRASS_BRUSHES, saveCityGrassPaint } from './scene/grass
 cityGrassPaint.paint(20, -12, 7, GRASS_BRUSHES.tall); // An overgrown lawn.
 cityGrassPaint.paint(24, -10, 3, GRASS_BRUSHES.dry);
 cityGrassPaint.paint(17, -15, 2, GRASS_BRUSHES.bare); // An empty patch.
-saveCityGrassPaint();
+saveCityGrassPaint(); // Save draft; use Publish to city to share it.
 const layout = cityGrassPaint.export();
 ```
 
@@ -134,6 +204,17 @@ An independent `GrassPaint` can be supplied as the third `GrassField` constructo
 argument. Its `cover` texture is available for custom terrain integration.
 
 ## Verification
+
+Shared-layout checks:
+
+```sh
+cargo test -p web-fps-server --bin grass-layout-server
+cd client && npx vitest run src/scene/grass/GrassLayoutSync.test.ts
+```
+
+These cover two independent clients, revision polling, stale-editor conflicts,
+authorization, malformed layouts, match isolation, persistence after reopening
+the store, offline retention, and aborted requests after leaving a match.
 
 From `client/`:
 

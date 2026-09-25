@@ -38,6 +38,10 @@
   .grass-lab-panel[data-mobile-open=true] { display: block; }
   .grass-lab .grass-lab-controls-toggle { display: block; position: absolute; right: 24px; bottom: 89px; background: #15251df5; }
   .grass-lab-metrics { gap: 8px; }
-  .grass-lab-views { bottom: 20px; }
+  .grass-lab-views { bottom: 20px; width: max-content; max-width: calc(100vw - 24px); flex-wrap: wrap; justify-content: center; }
   .grass-lab-views button { font-size: 10px; padding: 9px; }
 }
+
+.grass-lab-key { display: block; margin: 14px 0; font-size: 11px; }
+.grass-lab-key input { display: block; box-sizing: border-box; width: 100%; margin-top: 7px; padding: 8px; color: inherit; background: #ffffff0a; border: 1px solid #ffffff30; border-radius: 6px; }
+.grass-lab button:disabled { opacity: .45; cursor: default; }

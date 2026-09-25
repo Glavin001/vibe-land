@@ -1,3 +1,4 @@
+mod grass_layout;
 mod app_config;
 mod city;
 #[cfg(all(test, feature = "destruction"))]
@@ -1480,6 +1481,7 @@ async fn main() -> Result<()> {
 
     let heartbeat_state = state.inner.clone();
     let app = Router::new()
+        .merge(grass_layout::router(grass_layout::GrassStore::from_env()))
         .route("/healthz", get(health_handler))
         .route("/session-config", get(session_config_handler))
         .route("/city-manifest/:hash", get(city_manifest_handler))

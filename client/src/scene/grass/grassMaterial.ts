@@ -44,7 +44,8 @@ float gust = texture2D(grassWindNoise, worldRoot.xz * 0.018 - grassWind * grassT
 float ripple = sin(dot(worldRoot.xz, windDir) * 1.7 - grassTime * (2.0 + windSpeed * 0.22)
   + grassShape.z * 6.28);
 vec2 bend = forward * grassShape.y + windDir * min(windSpeed * 0.055, 0.8)
-  * (0.3 + gust * 0.85 + ripple * 0.1);
+  * (0.3 + gust * 0.85 + ripple * 0.1)
+  * mix(1.0, 0.6, smoothstep(1.25, 2.5, grassRoot.z));
 vec2 away = worldRoot.xz - grassViewer.xz;
 float push = (1.0 - smoothstep(0.2, 1.15, length(away)))
   * (1.0 - smoothstep(2.0, 3.5, abs(grassViewer.y - worldRoot.y)));
@@ -132,6 +133,6 @@ export function createGrassMaterial(quality: GrassQuality, interaction: GrassInt
         #include <opaque_fragment>
       `);
   };
-  material.customProgramCacheKey = () => 'city-grass-v2-contacts';
+  material.customProgramCacheKey = () => 'city-grass-v3-tall';
   return { material, uniforms };
 }

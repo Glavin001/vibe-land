@@ -3,6 +3,7 @@ import type { CityManifest } from '../../city/manifest';
 import { bodyKey, CityTopology } from '../../city/topology';
 import { GrassBodyContacts, type GrassActorSource } from './GrassBodyContacts';
 import { GrassInteraction } from './GrassInteraction';
+import { GrassPaint, GRASS_BRUSHES } from './GrassPaint';
 
 describe('grass contact field', () => {
   it('sweeps tyre tracks, holds them briefly, and recovers after departure', () => {
@@ -70,6 +71,35 @@ describe('grass contact field', () => {
 });
 
 describe('city destruction contacts', () => {
+  it('sweeps a broad lane through tall grass, keeps it held under parked cars, and recovers', () => {
+    const manifest: CityManifest = { version: 1, structures: [] };
+    const paint = new GrassPaint();
+    paint.paint(0, 0, 18, GRASS_BRUSHES.vehicle);
+    const contacts = new GrassBodyContacts({ manifest: { manifest }, topology: new CityTopology(manifest) }, paint);
+    const field = new GrassInteraction();
+    let x = -2, y = 0.65;
+    const source = {
+      remotePlayers: new Map(), dynamicBodies: new Map(),
+      vehicles: new Map([[2, { id: 2, vehicleType: 0 }]]),
+      sampleRemoteVehicle: () => ({ position: [x, y, 0.25], quaternion: [0, 0, 0, 1] }),
+      getRenderTimeUs: () => 0, getDynamicBodyRenderTimeUs: () => 0,
+    } as unknown as GrassActorSource;
+    const update = (t: number) => { field.begin(t, 0, 0); contacts.update(field, t, 0, 0, source); };
+    update(0); x = 2; update(0.1);
+    expect(field.sample(0.25, 0.25)).toBeGreaterThan(0.9); // Between tyres and between frames.
+    for (let t = 1; t <= 12; t++) update(t);
+    expect(field.sample(2.25, 0.25)).toBeGreaterThan(0.9);
+    const vehicle = source.vehicles.get(2)!;
+    source.vehicles.clear(); field.begin(17, 0, 0);
+    expect(field.sample(2.25, 0.25)).toBeGreaterThan(0.9);
+    field.begin(30, 0, 0);
+    expect(field.sample(2.25, 0.25)).toBeLessThan(0.01);
+    field.clear(); source.vehicles.set(2, vehicle); y = 5;
+    update(31);
+    expect(field.sample(2.25, 0.25)).toBe(0);
+    field.dispose(); paint.dispose();
+  });
+
   it('follows presented player, wheel and object positions while rejecting airborne contacts', () => {
     const manifest: CityManifest = { version: 1, structures: [] };
     const contacts = new GrassBodyContacts({ manifest: { manifest }, topology: new CityTopology(manifest) });

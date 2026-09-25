@@ -121,6 +121,7 @@ export type GameRuntimeCallbacks = {
 };
 
 export interface GameRuntimeClient {
+  readonly grassLayoutUrl?: string;
   readonly usesLocalAuthority: boolean;
   readonly transport: string;
   readonly interpolator: PlayerInterpolator;
@@ -1031,6 +1032,7 @@ export type MultiplayerRuntimeOptions = {
 };
 
 export class MultiplayerGameRuntime extends BaseGameRuntime {
+  readonly grassLayoutUrl?: string;
   private client: NetcodeClient | null = null;
   private cityClient: CityClient | null = null;
   private pendingCityPackets: Uint8Array[] = [];
@@ -1158,6 +1160,11 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
     private readonly options: MultiplayerRuntimeOptions = {},
   ) {
     super(callbacks);
+    // Resolve once, not in the render loop. A matchmade session may have no
+    // reachable HTTP origin; do not substitute another server's layout.
+    if (!options.sessionConfig) {
+      this.grassLayoutUrl = new URL(`/match-stats/${encodeURIComponent(matchId)}/grass`, backend.httpOrigin).href;
+    }
   }
 
   get usesLocalAuthority(): boolean {

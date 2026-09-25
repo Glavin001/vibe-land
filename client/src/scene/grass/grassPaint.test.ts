@@ -1,10 +1,41 @@
 import { describe, expect, it } from 'vitest';
 import { Color, PerspectiveCamera } from 'three';
 import { GrassField } from './GrassField';
-import { GrassPaint, GRASS_BRUSHES } from './GrassPaint';
+import { GrassPaint, GRASS_BRUSHES, GRASS_MAX_HEIGHT } from './GrassPaint';
 import { generateGrassPatch } from './grassPlacement';
 
 describe('grass authoring', () => {
+  it('preserves old layout heights and round-trips four-metre stands', () => {
+    const paint = new GrassPaint();
+    const data = Array.from({ length: 16*16*5 }, (_, i) => i%5 === 1 ? 160 : 255);
+    paint.import({ version: 1, tiles: [{ x: 0, z: 0, data }] });
+    expect(paint.heightAt(4, 4)).toBeCloseTo(160/255*2, 2);
+    paint.paint(4, 4, 12, GRASS_BRUSHES.vehicle);
+    expect(paint.heightAt(4, 4)).toBe(4);
+    const doc = paint.export();
+    expect(doc.version).toBe(2);
+    paint.import(JSON.parse(JSON.stringify(doc)));
+    expect(paint.heightAt(4, 4)).toBe(4);
+    paint.dispose();
+  });
+
+  it('creates a dense tall canopy without adding blades or changing roots', () => {
+    const paint = new GrassPaint();
+    paint.paint(4, 4, 12, GRASS_BRUSHES.meadow);
+    const short = generateGrassPatch(0, 0, 'fast', [], paint);
+    paint.paint(4, 4, 12, GRASS_BRUSHES.vehicle);
+    const tall = generateGrassPatch(0, 0, 'fast', [], paint);
+    expect(tall.count).toBe(short.count);
+    for (let i = 0; i < tall.count; i++) {
+      expect(tall.roots[i*4]).toBe(short.roots[i*4]);
+      expect(tall.roots[i*4+1]).toBe(short.roots[i*4+1]);
+      expect(tall.roots[i*4+2]).toBeGreaterThan(2.5);
+      expect(tall.roots[i*4+2]).toBeLessThanOrEqual(GRASS_MAX_HEIGHT);
+      expect(tall.shapes[i*4]).toBeGreaterThan(short.shapes[i*4]);
+    }
+    paint.dispose();
+  });
+
   it('paints continuous density, height and linear colour across positive and negative tile borders', () => {
     const paint = new GrassPaint(), a: number[] = [], b: number[] = [];
     for (const border of [-8, 0, 8]) {
@@ -13,7 +44,7 @@ describe('grass authoring', () => {
       paint.sampler(border/8, 0)(0, 0, b);
       expect(a).toEqual(b);
       expect(a[0]).toBe(1);
-      expect(a[1]*2).toBeCloseTo(1.25, 2);
+      expect(a[1]*GRASS_MAX_HEIGHT).toBeCloseTo(1.25, 1);
       expect(a[2]).toBeCloseTo(new Color(GRASS_BRUSHES.tall.color).r, 2);
     }
     paint.dispose();

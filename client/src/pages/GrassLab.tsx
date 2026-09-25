@@ -6,11 +6,27 @@ import { Group, Mesh, Plane, Raycaster, Vector2, Vector3 } from 'three';
 import { CityEnvironment } from '../scene/CityEnvironment';
 import { WorldTerrain } from '../scene/WorldTerrain';
 import { CITY_WORLD_DOCUMENT } from '../world/cityWorld';
+import { grassVehicleCanopyContact } from '../scene/grass/GrassBodyContacts';
 import { GrassField, type GrassStats } from '../scene/grass/GrassField';
 import { grassExclusionsFromManifest, type GrassQuality } from '../scene/grass/grassPlacement';
 import type { CityManifest } from '../city/manifest';
 import './GrassLab.css';
-import { cityGrassPaint, GRASS_BRUSHES, saveCityGrassPaint, type GrassBrush, type GrassPaintDocument } from '../scene/grass/GrassPaint';
+import { resolveMultiplayerBackend } from '../app/runtimeConfig';
+import { resolveRequestedMatchId } from '../app/matchId';
+import { fetchSharedGrass, grassLayoutUrl, publishSharedGrass } from '../scene/grass/GrassLayoutSync';
+import { cityGrassPaint, GRASS_BRUSHES, GRASS_MAX_HEIGHT, saveCityGrassPaint, type GrassBrush, type GrassPaintDocument } from '../scene/grass/GrassPaint';
+
+// Optional world coordinates let the lab author a patch beside a city player.
+// Opening a link only moves the preview; planting remains an explicit action.
+const previewQuery = new URLSearchParams(window.location.search);
+const previewCoordinate = (key: string, fallback: number) => {
+  const raw = previewQuery.get(key), value = raw === null ? fallback : Number(raw);
+  return Number.isFinite(value) ? Math.max(-232, Math.min(232, value)) : fallback;
+};
+const SHARED_MATCH = resolveRequestedMatchId(window.location.search, 'city-default');
+const SHARED_URL = grassLayoutUrl(resolveMultiplayerBackend().httpOrigin, SHARED_MATCH);
+const PREVIEW_X = previewCoordinate('x', 0), PREVIEW_Z = previewCoordinate('z', 2);
+const PREVIEW_OFFSET = new Vector3(PREVIEW_X, 0, PREVIEW_Z-2);
 
 // A reproducible city-edge view, using the production field and ground, with no server.
 const BUILDINGS = [
@@ -54,18 +70,23 @@ function PreviewField({ quality, wind, enabled, paused, driving, rubble, clearTr
     grass.group.visible = enabled;
     grass.setWind(wind, 65);
     const time = performance.now()/1000;
-    const carX = ((time-demo.current.started)*4)%26-13;
+    const carX = PREVIEW_X+((time-demo.current.started)*4)%26-13;
     const stoneY = 0.3+Math.max(0, 6-4.9*(time-demo.current.drop)**2);
-    if (car.current) { car.current.visible = driving; car.current.position.set(carX, 0.65, 2); }
-    if (stone.current) { stone.current.visible = rubble > 0; stone.current.position.set(0, stoneY, 0); }
+    if (car.current) { car.current.visible = driving; car.current.position.set(carX, 0.65, PREVIEW_Z); }
+    if (stone.current) { stone.current.visible = rubble > 0; stone.current.position.set(PREVIEW_X, stoneY, PREVIEW_Z-2); }
     if (grass.interaction.begin(time, camera.position.x, camera.position.z)) {
       if (driving) for (const side of [-1,1]) for (const axle of [-1.1,1.1]) {
-        grass.interaction.stamp({ x:carX+axle, z:2+side*0.9, radiusX:0.5, radiusZ:0.35,
+        grass.interaction.stamp({ x:carX+axle, z:PREVIEW_Z+side*0.9, radiusX:0.5, radiusZ:0.35,
           fromX:Number.isFinite(demo.current.previousX) ? demo.current.previousX+axle : undefined,
-          fromZ:2+side*0.9, pressure:1, hold:1.6 });
+          fromZ:PREVIEW_Z+side*0.9, pressure:1, hold:1.6 });
+      }
+      if (driving) {
+        const canopy = grassVehicleCanopyContact(cityGrassPaint, carX, PREVIEW_Z, 0.9, 1.8, Math.PI/2);
+        if (canopy) grass.interaction.stamp({ ...canopy,
+          fromX: Number.isFinite(demo.current.previousX) ? demo.current.previousX : undefined, fromZ: PREVIEW_Z });
       }
       demo.current.previousX = carX;
-      if (rubble > 0 && stoneY < 1) grass.interaction.stamp({ x:0, z:0, radiusX:2.15, radiusZ:1.6, shape:'box', pressure:Math.min(1, 1.3-stoneY), hold:0.2 });
+      if (rubble > 0 && stoneY < 1) grass.interaction.stamp({ x:PREVIEW_X, z:PREVIEW_Z-2, radiusX:2.15, radiusZ:1.6, shape:'box', pressure:Math.min(1, 1.3-stoneY), hold:0.2 });
       grass.interaction.commit();
     }
     // Still air stops only the wind; patch streaming continues while exploring.
@@ -94,10 +115,10 @@ function ViewControls({ view, painting }: { view: number; painting: boolean }) {
   const camera = useThree(s => s.camera);
   const controls = useRef<OrbitControlsImpl>(null);
   useEffect(() => {
-    const positions = [[6, 1.4, 8], [13, 5, 15], [37, 27, 42]];
-    const targets = [[0, 0.45, -3], [0, 1, -7], [0, 0, -7]];
-    camera.position.fromArray(positions[view]);
-    controls.current?.target.fromArray(targets[view]);
+    const positions = [[6, 1.4, 8], [13, 5, 15], [37, 27, 42], [10, 12, 15]];
+    const targets = [[0, 0.45, -3], [0, 1, -7], [0, 0, -7], [0, 0, 2]];
+    camera.position.fromArray(positions[view]).add(PREVIEW_OFFSET);
+    controls.current?.target.fromArray(targets[view]).add(PREVIEW_OFFSET);
     controls.current?.update();
   }, [camera, view]);
   return <OrbitControls ref={controls} enabled={!painting} maxPolarAngle={Math.PI * 0.495} minDistance={0.5} maxDistance={130} />;
@@ -156,12 +177,44 @@ export function GrassLabPage() {
   const [view, setView] = useState(0);
   const [driving,setDriving] = useState(false), [rubble,setRubble] = useState(0), [clearTracks,setClearTracks] = useState(0);
   const [painting,setPainting] = useState(false), [brush,setBrush] = useState<GrassBrush>(GRASS_BRUSHES.meadow);
-  const [radius,setRadius] = useState(3), [paintStatus,setPaintStatus] = useState('Saved locally; shared with /city');
+  const [radius,setRadius] = useState(3), [paintStatus,setPaintStatus] = useState('Private draft — publish to share with city players');
   const undo = useRef<GrassPaintDocument[]>([]);
   const importInput = useRef<HTMLInputElement>(null);
   // Stable callbacks keep pointer capture intact while the metrics update.
   const beginPaint = useRef(() => { undo.current.push(cityGrassPaint.export()); if (undo.current.length>8) undo.current.shift(); }).current;
-  const savedPaint = useRef((ok:boolean) => setPaintStatus(ok ? 'Saved locally; shared with /city' : 'Storage full — export to keep this layout')).current;
+  const savedPaint = useRef((ok:boolean) => setPaintStatus(ok ? 'Draft saved locally — publish to share with city players' : 'Storage full — export to keep this layout')).current;
+  const [sharedRevision, setSharedRevision] = useState<string | null>(null);
+  const [editorKey, setEditorKey] = useState('');
+  const [sharing, setSharing] = useState(false);
+  const [sharedStatus, setSharedStatus] = useState('Checking shared city grass…');
+  useEffect(() => {
+    const abort = new AbortController();
+    void fetchSharedGrass(SHARED_URL, null, abort.signal).then(snapshot => {
+      if (!snapshot || abort.signal.aborted) return;
+      setSharedRevision(snapshot.revision);
+      setSharedStatus(`Shared layout ${snapshot.revision.slice(0,8)} · draft not published`);
+    }).catch(() => { if (!abort.signal.aborted) setSharedStatus('Shared grass server unavailable. Your draft is safe locally.'); });
+    return () => abort.abort();
+  }, []);
+  const loadShared = async () => {
+    setSharing(true);
+    try {
+      const snapshot = await fetchSharedGrass(SHARED_URL, null, AbortSignal.timeout(10_000));
+      if (!snapshot) return;
+      beginPaint(); cityGrassPaint.import(snapshot.layout); savedPaint(saveCityGrassPaint());
+      setSharedRevision(snapshot.revision); setSharedStatus(`Loaded shared layout ${snapshot.revision.slice(0,8)}`);
+    } catch (error) { setSharedStatus(error instanceof Error ? error.message : 'Could not load shared grass'); }
+    finally { setSharing(false); }
+  };
+  const publish = async () => {
+    if (!sharedRevision) return;
+    setSharing(true);
+    try {
+      const snapshot = await publishSharedGrass(SHARED_URL, sharedRevision, cityGrassPaint.export(), editorKey);
+      setSharedRevision(snapshot.revision); setSharedStatus(`Published ${snapshot.revision.slice(0,8)} — city players update automatically`);
+    } catch (error) { setSharedStatus(error instanceof Error ? error.message : 'Could not publish grass'); }
+    finally { setSharing(false); }
+  };
   const [stats, setStats] = useState<(GrassStats & { frameMs: number; pressedArea: number }) | null>(null);
   return <main className="grass-lab">
     <Canvas shadows dpr={[1, 1.5]} camera={{ fov: 55, near: 0.06, far: 450, position: [6, 1.4, 8] }}
@@ -217,11 +270,13 @@ export function GrassLabPage() {
         <button onClick={()=>{setRubble(0);setClearTracks(v=>v+1);}}>Clear tracks & rubble</button>
       </div>
       <div className="grass-lab-label grass-lab-section">PAINT THE GROUND</div>
+      <p className="grass-lab-note">Test patch centre: X {PREVIEW_X}, Z {PREVIEW_Z} m</p>
+      <button onClick={()=>{beginPaint();cityGrassPaint.paint(PREVIEW_X,PREVIEW_Z,18,GRASS_BRUSHES.vehicle);savedPaint(saveCityGrassPaint());setView(3);}}>Plant tall test patch</button>
       <button aria-pressed={painting} onClick={()=>{setPainting(v=>!v); if(!painting)setView(1);}}>{painting?'Finish painting':'Paint grass'}</button>
       {painting && <div className="grass-lab-paint">
-        <div className="grass-lab-palette">{Object.entries(GRASS_BRUSHES).map(([name,value])=><button key={name} onClick={()=>setBrush({...value})}>{name}</button>)}</div>
+        <div className="grass-lab-palette">{Object.entries(GRASS_BRUSHES).map(([name,value])=><button key={name} onClick={()=>setBrush({...value})}>{name === 'person' ? 'Person height' : name === 'vehicle' ? 'Vehicle height' : name}</button>)}</div>
         <label>Density <span>{Math.round(brush.density*100)}%</span><input aria-label="Grass density" type="range" min="0" max="1" step="0.05" value={brush.density} onChange={e=>setBrush({...brush,density:Number(e.target.value)})} /></label>
-        <label>Height <span>{brush.height.toFixed(2)} m</span><input aria-label="Grass height" type="range" min="0.1" max="2" step="0.05" value={brush.height} onChange={e=>setBrush({...brush,height:Number(e.target.value)})} /></label>
+        <label>Height <span>{brush.height.toFixed(2)} m</span><input aria-label="Grass height" type="range" min="0.1" max={GRASS_MAX_HEIGHT} step="0.05" value={brush.height} onChange={e=>setBrush({...brush,height:Number(e.target.value)})} /></label>
         <label>Brush radius <span>{radius} m</span><input aria-label="Brush radius" type="range" min="1" max="12" step="0.5" value={radius} onChange={e=>setRadius(Number(e.target.value))} /></label>
         <label>Leaf color <input aria-label="Leaf color" type="color" value={brush.color} onChange={e=>setBrush({...brush,color:e.target.value})} /></label>
         <div className="grass-lab-buttons"><button onClick={()=>{const last=undo.current.pop();if(last){cityGrassPaint.import(last);savedPaint(saveCityGrassPaint());}}}>Undo</button><button onClick={()=>{beginPaint();cityGrassPaint.clear();savedPaint(saveCityGrassPaint());}}>Reset paint</button></div>
@@ -231,14 +286,23 @@ export function GrassLabPage() {
         }}>Export layout</button><button onClick={()=>importInput.current?.click()}>Import layout</button></div>
         <input ref={importInput} type="file" accept="application/json,.json" hidden onChange={async e=>{
           const file=e.target.files?.[0];if(!file)return;
-          try { if(file.size>12_000_000)throw Error('Layout is too large');const value=JSON.parse(await file.text());beginPaint();cityGrassPaint.import(value);savedPaint(saveCityGrassPaint()); }
+          try { if(file.size>24*1024*1024)throw Error('Layout is too large');const value=JSON.parse(await file.text());beginPaint();cityGrassPaint.import(value);savedPaint(saveCityGrassPaint()); }
           catch(error){setPaintStatus(error instanceof Error?error.message:'Invalid layout');} e.target.value='';
         }} />
         <p role="status">{paintStatus}</p>
       </div>}
+      <div className="grass-lab-label grass-lab-section">SHARED CITY LAYOUT</div>
+      <p className="grass-lab-note">City: {SHARED_MATCH}. Painting edits your draft; publishing updates every player on this server.</p>
+      <label className="grass-lab-key">Editor key<input aria-label="Grass editor key" type="password" autoComplete="off"
+        value={editorKey} onChange={event=>setEditorKey(event.target.value)} /></label>
+      <div className="grass-lab-buttons">
+        <button disabled={sharing} onClick={()=>void loadShared()}>Load shared</button>
+        <button disabled={sharing || !sharedRevision || !editorKey} onClick={()=>void publish()}>Publish to city</button>
+      </div>
+      <p role="status" className="grass-lab-note">{sharedStatus}</p>
       <p className="grass-lab-note">Drag to look around · scroll to explore</p>
     </aside>
-    <nav className="grass-lab-views" aria-label="Camera view">{['Among the blades', 'City edge', 'Above the field'].map((label, i) =>
+    <nav className="grass-lab-views" aria-label="Camera view">{['Among the blades', 'City edge', 'Above the field', 'Canopy tracks'].map((label, i) =>
       <button key={label} aria-pressed={view === i} onClick={() => setView(i)}>{label}</button>)}</nav>
   </main>;
 }

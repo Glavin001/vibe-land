@@ -57,6 +57,10 @@ export default defineConfig(({ mode }) => {
         allow: ['..'],
       },
       proxy: {
+        // Optional content-only grass service for updating layouts without restarting physics.
+        ...(env.GRASS_SERVER_PORT ? {
+          '^/match-stats/[^/]+/grass(?:\\?|$)': { target: `http://${env.GRASS_SERVER_HOST || serverHost}:${env.GRASS_SERVER_PORT}` },
+        } : {}),
         '/ws': {
           target: `http://${serverHost}:${serverPort}`,
           ws: true,

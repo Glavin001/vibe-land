@@ -1,16 +1,19 @@
 import { Color, DataTexture, LinearFilter, RGBAFormat } from 'three';
 
 export const GRASS_PAINT_TILE_METRES = 8;
+export const GRASS_MAX_HEIGHT = 4;
 const CELLS = 16, CELL = 0.5, CHANNELS = 5, HALF = 256;
 export interface GrassBrush { density: number; height: number; color: string }
 export const GRASS_BRUSHES: Record<string, GrassBrush> = {
   meadow: { density: 1, height: 0.55, color: '#7e9c46' },
   lawn: { density: 0.95, height: 0.22, color: '#59813e' },
   tall: { density: 1, height: 1.25, color: '#8ba052' },
+  person: { density: 1, height: 2.8, color: '#809347' },
+  vehicle: { density: 1, height: 4, color: '#8d9c52' },
   dry: { density: 0.5, height: 0.6, color: '#b39a66' },
   bare: { density: 0, height: 0.3, color: '#92774c' },
 };
-export interface GrassPaintDocument { version: 1; tiles: Array<{ x: number; z: number; data: number[] }> }
+export interface GrassPaintDocument { version: 1 | 2; tiles: Array<{ x: number; z: number; data: number[] }> }
 export interface GrassPaintBounds { minX: number; minZ: number; maxX: number; maxZ: number }
 const color = new Color();
 const green = new Color('#7e9c46'), straw = new Color('#b39a66');
@@ -18,6 +21,7 @@ const clamp = (x: number, min = 0, max = 1) => Math.max(min, Math.min(max, x));
 
 /** Sparse 0.5 m authoring tiles. Only painted ground is stored. No blade edits. */
 export class GrassPaint {
+  private readonly heightSample: number[] = [];
   private readonly tiles = new Map<string, Uint8Array>();
   private readonly listeners = new Set<(bounds: GrassPaintBounds) => void>();
   revision = 0;
@@ -37,7 +41,7 @@ export class GrassPaint {
       + 0.18 * Math.cos(z * 0.097 + x * 0.031));
     const dry = clamp((0.4 - moisture) * 2);
     out[offset] = Math.round((0.6 + moisture * 0.4) * 255);
-    out[offset + 1] = Math.round((0.32 + moisture * 0.24) / 2 * 255);
+    out[offset + 1] = Math.round((0.32 + moisture * 0.24) / GRASS_MAX_HEIGHT * 255);
     out[offset + 2] = Math.round((green.r + (straw.r-green.r)*dry) * 255);
     out[offset + 3] = Math.round((green.g + (straw.g-green.g)*dry) * 255);
     out[offset + 4] = Math.round((green.b + (straw.b-green.b)*dry) * 255);
@@ -49,6 +53,18 @@ export class GrassPaint {
     if (!tile) { this.defaults((ix + 0.5) * CELL, (iz + 0.5) * CELL, out, offset); return; }
     const at = ((iz - tz * CELLS) * CELLS + ix - tx * CELLS) * CHANNELS;
     for (let c = 0; c < CHANNELS; c++) out[offset + c] = tile[at + c];
+  }
+
+  /** Cheap world-space height lookup for broad vehicle canopy contacts. */
+  heightAt(x: number, z: number): number {
+    const gx = x / CELL - 0.5, gz = z / CELL - 0.5;
+    const ix = Math.floor(gx), iz = Math.floor(gz), fx = gx-ix, fz = gz-iz;
+    let height = 0;
+    for (let dz = 0; dz < 2; dz++) for (let dx = 0; dx < 2; dx++) {
+      this.cell(ix+dx, iz+dz, this.heightSample);
+      height += this.heightSample[1] * (dx ? fx : 1-fx) * (dz ? fz : 1-fz);
+    }
+    return height / 255 * GRASS_MAX_HEIGHT;
   }
 
   /** Bake a tiny padded grid once per generated patch; sampling blades is allocation-free. */
@@ -74,7 +90,7 @@ export class GrassPaint {
     const bounds = { minX: Math.max(-HALF, x-radius), minZ: Math.max(-HALF, z-radius), maxX: Math.min(HALF, x+radius), maxZ: Math.min(HALF, z+radius) };
     if (bounds.minX >= bounds.maxX || bounds.minZ >= bounds.maxZ || strength <= 0) return;
     color.set(brush.color);
-    const target = [clamp(brush.density) * 255, clamp(brush.height, 0.05, 2) / 2 * 255, color.r * 255, color.g * 255, color.b * 255];
+    const target = [clamp(brush.density) * 255, clamp(brush.height, 0.05, GRASS_MAX_HEIGHT) / GRASS_MAX_HEIGHT * 255, color.r * 255, color.g * 255, color.b * 255];
     for (let iz = Math.floor(bounds.minZ / CELL); iz < Math.ceil(bounds.maxZ / CELL); iz++) {
       for (let ix = Math.floor(bounds.minX / CELL); ix < Math.ceil(bounds.maxX / CELL); ix++) {
         const distance = Math.hypot((ix+0.5)*CELL-x, (iz+0.5)*CELL-z) / radius;
@@ -117,19 +133,23 @@ export class GrassPaint {
     this.listeners.add(listener); return () => { this.listeners.delete(listener); };
   }
   export(): GrassPaintDocument {
-    return { version: 1, tiles: [...this.tiles].map(([key, data]) => {
+    return { version: 2, tiles: [...this.tiles].map(([key, data]) => {
       const [x,z] = key.split(',').map(Number); return { x, z, data: Array.from(data) };
     }) };
   }
   import(value: unknown): void {
     const doc = value as GrassPaintDocument;
-    if (!doc || doc.version !== 1 || !Array.isArray(doc.tiles) || doc.tiles.length > 4096) throw new Error('Invalid grass layout');
+    if (!doc || (doc.version !== 1 && doc.version !== 2) || !Array.isArray(doc.tiles) || doc.tiles.length > 4096) throw new Error('Invalid grass layout');
     const next = new Map<string, Uint8Array>();
     for (const tile of doc.tiles) {
       if (!tile || !Number.isInteger(tile.x) || !Number.isInteger(tile.z) || tile.x < -32 || tile.x >= 32 || tile.z < -32 || tile.z >= 32
         || !Array.isArray(tile.data) || tile.data.length !== CELLS*CELLS*CHANNELS
         || tile.data.some(v => !Number.isInteger(v) || v < 0 || v > 255)) throw new Error('Invalid grass tile');
-      next.set(`${tile.x},${tile.z}`, Uint8Array.from(tile.data));
+      if (next.has(`${tile.x},${tile.z}`)) throw new Error('Duplicate grass tile');
+      const data = Uint8Array.from(tile.data);
+      // v1 encoded heights over 0–2 m; retain existing lawns when loading v2.
+      if (doc.version === 1) for (let i = 1; i < data.length; i += CHANNELS) data[i] = Math.round(data[i] * 2 / GRASS_MAX_HEIGHT);
+      next.set(`${tile.x},${tile.z}`, data);
     }
     this.tiles.clear(); for (const [key,tile] of next) this.tiles.set(key,tile);
     this.changed({ minX: -HALF, minZ: -HALF, maxX: HALF, maxZ: HALF });
@@ -139,6 +159,11 @@ export class GrassPaint {
 }
 
 export const cityGrassPaint = new GrassPaint();
+let sharedCityReaders = 0;
+export function retainSharedCityGrass(): () => void {
+  sharedCityReaders++;
+  return () => { sharedCityReaders = Math.max(0, sharedCityReaders-1); };
+}
 const STORAGE_KEY = 'vibe.city.grassPaint.v1';
 export function saveCityGrassPaint(): boolean {
   try { localStorage.setItem(STORAGE_KEY, JSON.stringify(cityGrassPaint.export())); return true; } catch { return false; }
@@ -146,7 +171,7 @@ export function saveCityGrassPaint(): boolean {
 if (typeof window !== 'undefined') {
   try { const saved = localStorage.getItem(STORAGE_KEY); if (saved) cityGrassPaint.import(JSON.parse(saved)); } catch { /* Invalid stored layouts use defaults. */ }
   window.addEventListener('storage', event => {
-    if (event.key !== STORAGE_KEY) return;
+    if (event.key !== STORAGE_KEY || sharedCityReaders > 0) return;
     try { if (event.newValue) cityGrassPaint.import(JSON.parse(event.newValue)); else cityGrassPaint.clear(); } catch { /* Keep the last valid layout. */ }
   });
 }

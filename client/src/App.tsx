@@ -21,6 +21,7 @@ import {
 } from './input/bindings';
 import { usePointerLockEngagement } from './input/usePointerLockEngagement';
 import { getPointerMode, subscribePointerMode } from './input/pointerMode';
+import { getGrassSyncStatus, subscribeGrassSyncStatus } from './scene/grass/GrassLayoutSync';
 import { GameScene } from './scene/GameScene';
 import type { CrosshairAimState } from './scene/aimTargeting';
 import type { DeviceFamily, InputFamilyMode, InputSample } from './input/types';
@@ -244,6 +245,7 @@ export function App({
   const { displayState: controlHintsState, updateInputFrame, isDesktop } = useControlHints();
   const { controller: damageFeedbackController, renderState: damageOverlayState } = useDamageFeedback();
   const touchMode = isTouchDevice();
+  const grassSync = useSyncExternalStore(subscribeGrassSyncStatus, getGrassSyncStatus, getGrassSyncStatus);
   const dragPointer = useSyncExternalStore(subscribePointerMode, getPointerMode, getPointerMode) === 'drag';
   // Which step of joining we are on, so a stalled connect names the step it
   // stalled on instead of just saying "Connecting..." forever.
@@ -1072,6 +1074,11 @@ export function App({
         padding: '8px 12px', borderRadius: 8, background: 'rgba(7,11,16,0.78)',
         color: 'white', fontSize: 12, zIndex: 9, pointerEvents: 'none', textAlign: 'center',
       }}>Drag to look · Click to fire · Esc to release controls</div>}
+      {cityWorld && connected && grassSync.state !== 'idle' && <div role="status" style={{
+        position: 'absolute', top: dragPointer ? 98 : 58, left: '50%', transform: 'translateX(-50%)',
+        padding: '5px 10px', borderRadius: 6, background: 'rgba(7,11,16,0.78)',
+        color: grassSync.state === 'error' ? '#ffdc9c' : '#d9e8c6', fontSize: 11, zIndex: 9, pointerEvents: 'none',
+      }}>{grassSync.message}</div>}
       <ControlHintsOverlay
         bindings={inputBindings}
         state={controlHintsState}

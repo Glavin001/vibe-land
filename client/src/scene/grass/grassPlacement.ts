@@ -1,6 +1,6 @@
 import { Box3, Quaternion, Vector3 } from 'three';
 import type { CityManifest } from '../../city/manifest';
-import { cityGrassPaint, type GrassPaint } from './GrassPaint';
+import { cityGrassPaint, GRASS_MAX_HEIGHT, type GrassPaint } from './GrassPaint';
 
 export const GRASS_PATCH_SIZE = 8;
 export const GRASS_WORLD_HALF_EXTENT = 256;
@@ -114,12 +114,16 @@ export function generateGrassPatch(px: number, pz: number, quality: GrassQuality
     const fertility = 0.5 + 0.25 * Math.sin(wx * 0.23 + Math.sin(wz * 0.31))
       + 0.25 * Math.sin(wz * 0.49 + wx * 0.17);
     if (variation < 0.08 * (1 - fertility)) continue;
-    const bladeHeight = (0.35 + height * 0.65) * style[1] * 2 * (0.8 + fertility * 0.2);
+    const authoredHeight = style[1] * GRASS_MAX_HEIGHT;
+    const tallness = Math.max(0, Math.min(1, (authoredHeight-1.25)/1.25));
+    // Tall stands need a high canopy, not mostly ankle-height blades with a few giants.
+    const minimumHeight = 0.35 + tallness * 0.45;
+    const bladeHeight = (minimumHeight + height * (1-minimumHeight)) * authoredHeight * (0.8 + fertility * 0.2);
     maxHeight = Math.max(maxHeight, bladeHeight);
     colors.set([style[2]*255, style[3]*255, style[4]*255], accepted*3);
     const j = accepted++ * 4;
     roots.set([x, z, bladeHeight, yaw], j);
-    shapes.set([(0.009 + variation * 0.015) * 65535, (0.18 + lean * 0.6) * 65535, variation * 65535, 0], j);
+    shapes.set([(0.009 + variation * 0.015) * (1 + tallness*2) * 65535, (0.18 + lean * 0.6) * (1-tallness*0.65) * 65535, variation * 65535, 0], j);
   }
   // Rank tracks accepted indices, so culling exclusions never biases the LOD.
   for (let i = 0; i < accepted; i++) shapes[i * 4 + 3] = Math.floor(i / accepted * 65535);

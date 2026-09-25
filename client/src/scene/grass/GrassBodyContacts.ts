@@ -5,6 +5,14 @@ import type { GameRuntimeClient } from '../../runtime/gameRuntime';
 import { getSharedVehicleDefinition } from '../../wasm/sharedVehicleDefinitions';
 import { FLAG_DEAD, FLAG_IN_VEHICLE } from '../../net/protocol';
 import { GrassInteraction, type GrassContact } from './GrassInteraction';
+import { cityGrassPaint, type GrassPaint } from './GrassPaint';
+
+/** Grounded vehicles push tall canopy across their width; short lawns retain tyre tracks. */
+export function grassVehicleCanopyContact(paint: GrassPaint, x: number, z: number,
+  radiusX: number, radiusZ: number, yaw: number): GrassContact | null {
+  if (paint.heightAt(x, z) < 1.5) return null;
+  return { x, z, radiusX: radiusX+0.2, radiusZ: radiusZ+0.2, yaw, shape: 'box', pressure: 0.95, hold: 6 };
+}
 
 /** Optional presentation metadata; grass does not depend on the garage protocol. */
 type GrassVehicleContactMetadata = {
@@ -27,7 +35,8 @@ export class GrassBodyContacts {
   private current: LedgerBody | null = null;
   private chunk = 0;
 
-  constructor(private readonly city: { manifest: { manifest: CityManifest }; topology: CityTopology }) {
+  constructor(private readonly city: { manifest: { manifest: CityManifest }; topology: CityTopology },
+    private readonly paint: GrassPaint = cityGrassPaint) {
     this.bodies = city.topology.allBodies();
     this.chunkSizes = Float32Array.from(city.manifest.manifest.structures.flatMap(s => s.chunks.flatMap(c => c.size)));
   }
@@ -72,6 +81,7 @@ export class GrassBodyContacts {
         const custom = metadata.customVehicle?.configuration.dimensions;
         const radius = custom?.tireRadius ?? definition.wheelRadiusM;
         const yaw = Math.atan2(2*(this.rotation.w*this.rotation.y+this.rotation.x*this.rotation.z), 1-2*(this.rotation.y**2+this.rotation.z**2));
+        let grounded = false;
         for (let wheel = 0; wheel < 4; wheel++) {
           if (metadata.customRig && !metadata.customRig.wheels[wheel]?.grounded) continue;
           if (custom) this.point.set(wheel%2 ? custom.track/2 : -custom.track/2, -0.25, wheel<2 ? custom.wheelbase/2 : -custom.wheelbase/2);
@@ -79,8 +89,15 @@ export class GrassBodyContacts {
           this.point.applyQuaternion(this.rotation);
           const bottom = p[1]+this.point.y-radius;
           if (bottom > 0.55 || bottom < -1) continue;
+          grounded = true;
           this.track(field, `v${vehicle.id}w${wheel}`, { x: p[0]+this.point.x, z: p[2]+this.point.z,
             radiusX: 0.34, radiusZ: Math.max(0.45, radius), yaw, pressure: 1, hold: 1.6 }, time);
+        }
+        if (grounded) {
+          const canopy = grassVehicleCanopyContact(this.paint, p[0], p[2],
+            custom ? custom.track/2 : definition.chassisHalfExtents.x,
+            custom ? custom.wheelbase/2+radius : definition.chassisHalfExtents.z, yaw);
+          if (canopy) this.track(field, `v${vehicle.id}canopy`, canopy, time);
         }
       }
       actors = 0;
