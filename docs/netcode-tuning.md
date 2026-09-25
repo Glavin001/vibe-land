@@ -50,6 +50,10 @@ links, with `lab.recorded_repairs=0`:
 a reliable-stream signal in the rate controller, both on; an adaptive
 playout delay, built and off.
 
+**Scoreboard** ([Netcode scoreboard (2026-09-24)](#netcode-scoreboard-2026-09-24)):
+the pre-work netcode against HEAD on four bundles and eleven links, then two
+more changes it pointed at (a compact self state, explicit removals).
+
 **Not changed, stated as trade-offs:** the per-send byte ceiling and the
 city send rate are the two large levers left; see
 [the Pareto front](#pareto-front). A lower ceiling is the only knob that
@@ -1175,6 +1179,477 @@ Every one fails on 87b40c9e or does not compile there, except the guards.
   on real LTE. The remaining LTE holds, records overtaking their copy, may
   be fewer live (inferred).
 
+## Netcode scoreboard (2026-09-24)
+
+One table per bundle: the netcode as it was before today's work against
+HEAD (2fddb511), on the same frozen server truth, the same links and the
+same link seed. Every number is **measured** in Netlab v2 unless marked
+**inferred**. Per-class tables (p50/p95/p99 at render and now, missing /
+extra / wrong identity for players, vehicles, bodies, meteors and the three
+chunk classes) are in [netcode-scoreboard-2026-09-24.md](netcode-scoreboard-2026-09-24.md).
+The round that followed the scoreboard (compact self state, explicit
+removals) is [below](#next-wins-compact-self-state-and-explicit-removals).
+
+The commits scored: 0eb6f3fd (clock, interpolation, meteor handover),
+9b81c8c3 (match stats datagram), 91c814bb (read-rate-independent clock,
+stale bodies), 2c84b393 (settle check), 51ddcf48 (encoder models the drawn
+pose), 129e0dac (rate adaptation), 87b40c9e (city render clock, topology
+hold), 38d6f964 (topology copies), 28a7eb10 (tick scale, meteor arc,
+interest exits, stall recovery).
+
+### What "before" and "after" mean
+
+Netlab v2 landed after the first of these commits (b0502db9), so there is no
+pre-work lab. Both arms run one lab binary, built from 2fddb511; the old
+behaviour comes from the old client tree and from the knobs that gate every
+server change.
+
+| Stage | Before | After |
+|---|---|---|
+| Client (decode, clocks, interpolation, city client, pose steps) | **e3fdf5cc** (0eb6f3fd's parent) via `--client-root`. That tree predates the renderers' shared pose steps, so `scripts/perf/netlab2-prework/install.sh` adds them: `cityPoseStore.ts` and `netEntityPoses.ts` from 3f3d891a (the renderers' pose logic is unchanged from e3fdf5cc to 3f3d891a~1, checked by diff) and a `meteorPlacement.ts` that is e3fdf5cc `MeteorLayer`'s placement loop without the mesh work. Without them the lab scores no chunks and no meteors for this client. | HEAD 2fddb511 |
+| Snapshot builder | `snapshot_builder.rs` at HEAD: unchanged since b0502db9, byte-identical to the pre-refactor server (netlab-v2.md, legacy captures). The 4-byte wall-clock trailer (0eb6f3fd) is subtracted from the before arm's snapshot bytes (`--before-no-trailer`: 4 B per delivered snapshot, 1.9 kbit/s at 60 Hz). | HEAD |
+| City encoder | HEAD's encoder with every 51ddcf48 / 38d6f964 flag off: `city.ballistic_free_fall=0, city.client_model=0, city.baseline_interval_ticks=60, city.baseline_lag_ticks=0, city.baseline_skip_quiescent=0, city.topology_copies=0`. With these flags off the encoder is the pre-change one byte for byte (the heavy-quick3-v2 capture, recorded before 51ddcf48, calibrates 100%). | Production values set explicitly (`...=1, 120, 110, 1, 2`), so bundles recorded before a change get it too |
+| Rate adaptation | `city.rate_adapt=0` (static ceiling) | on (production) |
+| Match stats, energy, roster, meteor launches | Recorded bytes (pass-through, seam S5), the same in both arms. All four bundles were recorded after 9b81c8c3, so the before arm carries the new match-stats datagram: it **understates** the pre-work bytes. Measured live before that commit: match stats were 31-34% of bytes on the quick 3-client bench, 10.8% in the owner's session (session analysis item 7). | same |
+| Both | seed 1, recorded server pace, `lab.recorded_repairs=0` (the client's own repair requests are counted and never answered, seam S6) | same |
+
+The owner's-session cells were run again with the next round's lab binary
+(to leave out frames before its server capture opened from the lag); on
+captures that do not record the new snapshot options it replays the same
+bytes (11,502 / 11,503 packets with either binary, the odd one a lab-only
+snapshot after the capture closed).
+
+### Bundles and links
+
+- **systematic-2c-d1342419 c1**: the frozen destruction bundle (16 buildings,
+  337 s), spectator.
+- **heavy-quick3-v2 c1**: quick scenario, 3 clients, 122 s, spectator.
+- **20260924-162732-quick-3c-citylat4 c1**: the latest live city-bench capture
+  (recorded with the 38d6f964 tree), spectator.
+- **session-20260924-213925-ondf3t**: the owner's play session (server
+  ff84dec6 from target/play; the client predates 28a7eb10, **inferred** from
+  its tape header having no `serverTickUs`), the recording player, 78 s of
+  capture. Its own avatar and driven vehicle are left out of `overall` (S11).
+- Links: loopback, lan, cable, lte, lossy-wifi, poor-mobile(-nq),
+  cap-1mbit(-nq), bw-capped(-nq) (`netlab2 profiles`).
+
+Columns: netcode kbit/s is snapshots plus every city kind; "all kinds" adds
+the pass-through kinds. "Presented − server" is the city's presented tick
+(render tick minus playout delay) minus the tick the server had completed,
+per frame (p50 / p1; `netlab2-scoreboard.py lag`, frames before the server
+capture opened left out). "Bodies drawn behind server" is the dynamic-body
+render time's lag behind the server (negative: drawn ahead of it,
+extrapolated). First draw is from the server completing a body's first moving
+tick to the first frame that draws it. Clock back-steps count both render
+clocks. Repairs asked are the city repairs the client requested.
+
+### systematic-2c-d1342419 c1 (before → after)
+
+| Link | Netcode kbit/s (snapshot + city) | All kinds kbit/s | Presented − server tick p50 / p1 | Bodies drawn behind server p50 ms | Island first draw p50 / p99 ms | Body first draw p50 / p99 ms | ALL pos@render p50/p95/p99 m | ALL pos@now p50/p95/p99 m | Missing / extra / wrong identity | Clock back-steps | Repairs asked |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| loopback | 293.7 → 259.3 | 295.7 → 261.2 | -4.8 / -7.5 → -5.2 / -16.6 | -4.1 → 15.0 | 0 / 10 → 0 / 10 | 2 / 9 → 2 / 9 | 0.003/0.185/0.211 → 0.003/0.011/0.025 | 0.003/0.185/0.232 → 0.003/0.014/0.138 | 192 / 222,781 / 0 → 66 / 2,634 / 0 | 888 → 0 | 91 → 0 |
+| lan | 293.7 → 259.3 | 295.7 → 261.2 | -4.8 / -7.5 → -5.3 / -16.6 | -3.2 → 15.9 | 0 / 10 → 0 / 10 | 6 / 10 → 6 / 10 | 0.003/0.185/0.211 → 0.003/0.011/0.025 | 0.003/0.185/0.232 → 0.003/0.014/0.138 | 196 / 222,769 / 214 → 51 / 2,631 / 0 | 900 → 0 | 91 → 0 |
+| cable | 293.6 → 259.0 | 295.6 → 261.0 | -5.3 / -8.1 → -5.9 / -17.2 | 7.7 → 29.0 | 0 / 24 → 0 / 23 | 17 / 22 → 17 / 25 | 0.003/0.185/0.218 → 0.003/0.011/0.025 | 0.003/0.185/0.240 → 0.003/0.015/0.153 | 185 / 185,992 / 3,584 → 73 / 2,636 / 71 | 878 → 0 | 91 → 0 |
+| lte | 286.8 → 251.6 | 288.8 → 253.6 | -3.4 / -10.2 → -10.0 / -26.4 | 73.3 → 148.4 | 69 / 343 → 60 / 209 | 93 / 124 → 93 / 118 | 0.003/0.185/0.265 → 0.003/0.012/0.029 | 0.003/0.191/0.301 → 0.003/0.016/0.265 | 802 / 40,127 / 70,697 → 359 / 4,656 / 529 | 866 → 0 | 91 → 0 |
+| lossy-wifi | 286.5 → 251.7 | 288.5 → 253.7 | -0.6 / -6.6 → -6.0 / -31.2 | 6.3 → 64.9 | 0 / 46 → 0 / 41 | 19 / 39 → 16 / 41 | 0.003/0.185/0.248 → 0.003/0.012/0.028 | 0.003/0.185/0.256 → 0.003/0.015/0.168 | 475 / 46,561 / 17,520 → 247 / 3,910 / 106 | 932 → 0 | 91 → 0 |
+| poor-mobile | 287.0 → 233.3 | 289.0 → 235.3 | -6.8 / -96.8 → -13.8 / -33.0 | 135.4 → 214.0 | 155 / 5273 → 135 / 329 | 144 / 190 → 152 / 184 | 0.003/0.185/0.273 → 0.003/0.012/0.031 | 0.003/0.191/0.416 → 0.003/0.017/0.343 | 1,097 / 159,779 / 147,427 → 386 / 3,721 / 456 | 1,074 → 0 | 84 → 0 |
+| poor-mobile-nq | 272.3 → 234.0 | 274.3 → 235.9 | -7.3 / -20.5 → -13.8 / -36.0 | 136.4 → 215.0 | 152 / 590 → 129 / 336 | 157 / 193 → 150 / 186 | 0.003/0.185/0.273 → 0.003/0.012/0.030 | 0.003/0.191/0.366 → 0.003/0.016/0.354 | 916 / 59,771 / 115,390 → 272 / 4,392 / 425 | 926 → 0 | 89 → 0 |
+| cap-1mbit | 293.7 → 240.7 | 295.7 → 242.7 | -6.1 / -94.0 → -7.3 / -19.1 | 29.6 → 58.1 | 33 / 5123 → 26 / 151 | 38 / 53 → 36 / 53 | 0.003/0.185/0.218 → 0.003/0.011/0.027 | 0.003/0.185/0.301 → 0.003/0.015/0.198 | 296 / 84,973 / 62,515 → 89 / 2,864 / 250 | 1,194 → 0 | 84 → 0 |
+| cap-1mbit-nq | 277.9 → 239.9 | 279.9 → 241.9 | -5.6 / -16.7 → -7.4 / -22.4 | 30.5 → 58.9 | 31 / 201 → 22 / 99 | 36 / 62 → 39 / 49 | 0.003/0.185/0.225 → 0.003/0.011/0.027 | 0.003/0.185/0.273 → 0.003/0.015/0.204 | 311 / 58,439 / 20,786 → 89 / 3,098 / 284 | 1,144 → 0 | 91 → 0 |
+| bw-capped | 293.7 → 204.2 | 295.7 → 206.2 | -6.4 / -429.0 → -7.7 / -20.8 | 38.9 → 67.6 | 372 / 30182 → 37 / 226 | 43 / 5085 → 43 / 76 | 0.004/0.198/9.946 → 0.003/0.012/0.030 | 0.004/0.211/12.079 → 0.003/0.015/0.232 | 177,804 / 499,351 / 2,730,569 → 87 / 3,005 / 355 | 2,138 → 0 | 62 → 0 |
+| bw-capped-nq | 242.2 → 200.7 | 244.1 → 202.7 | -4.8 / -18.7 → -7.8 / -24.9 | 37.9 → 69.0 | 42 / 386 → 34 / 175 | 44 / 219 → 43 / 100 | 0.003/0.185/0.265 → 0.003/0.011/0.032 | 0.003/0.191/0.378 → 0.003/0.015/0.256 | 1,383 / 118,437 / 52,566 → 103 / 2,932 / 352 | 1,446 → 0 | 89 → 0 |
+
+### heavy-quick3-v2 c1 (before → after)
+
+| Link | Netcode kbit/s (snapshot + city) | All kinds kbit/s | Presented − server tick p50 / p1 | Bodies drawn behind server p50 ms | Island first draw p50 / p99 ms | Body first draw p50 / p99 ms | ALL pos@render p50/p95/p99 m | ALL pos@now p50/p95/p99 m | Missing / extra / wrong identity | Clock back-steps | Repairs asked |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| loopback | 230.7 → 217.8 | 232.5 → 219.6 | -4.7 / -9.0 → -5.2 / -16.9 | -7.7 → 16.5 | 0 / 9 → 0 / 9 | 4 / 7 → 4 / 7 | 0.000/0.179/0.218 → 0.000/0.012/0.039 | 0.000/0.179/0.248 → 0.000/0.017/0.174 | 187 / 2,631 / 0 → 30 / 244 / 0 | 1,348 → 0 | 25 → 0 |
+| lan | 230.7 → 217.8 | 232.5 → 219.6 | -4.8 / -9.0 → -5.3 / -16.9 | -6.8 → 17.3 | 0 / 9 → 0 / 9 | 4 / 7 → 4 / 7 | 0.000/0.179/0.218 → 0.000/0.012/0.039 | 0.000/0.179/0.248 → 0.000/0.017/0.174 | 183 / 2,631 / 83 → 29 / 246 / 0 | 1,330 → 0 | 25 → 0 |
+| cable | 230.4 → 217.6 | 232.2 → 219.4 | -5.2 / -9.6 → -5.9 / -17.5 | 4.1 → 28.9 | 0 / 22 → 0 / 22 | 19 / 22 → 19 / 22 | 0.000/0.179/0.218 → 0.000/0.012/0.040 | 0.000/0.179/0.256 → 0.000/0.017/0.185 | 187 / 2,636 / 1,151 → 31 / 249 / 6 | 1,290 → 0 | 25 → 0 |
+| lte | 224.8 → 211.4 | 226.5 → 213.2 | -3.7 / -10.7 → -9.8 / -21.7 | 67.0 → 140.3 | 71 / 356 → 61 / 129 | 94 / 113 → 88 / 121 | 0.000/0.185/0.265 → 0.000/0.013/0.049 | 0.000/0.185/0.311 → 0.000/0.019/0.273 | 308 / 2,628 / 25,050 → 182 / 308 / 32 | 1,274 → 0 | 25 → 0 |
+| lossy-wifi | 224.4 → 212.4 | 226.2 → 214.2 | -0.6 / -8.3 → -5.9 / -17.3 | 1.8 → 60.9 | 0 / 162 → 0 / 60 | 12 / 47 → 20 / 54 | 0.000/0.185/0.240 → 0.000/0.012/0.045 | 0.000/0.185/0.265 → 0.000/0.017/0.185 | 230 / 2,645 / 8,896 → 111 / 295 / 0 | 1,238 → 0 | 25 → 0 |
+| poor-mobile | 224.8 → 188.9 | 226.5 → 190.6 | -7.1 / -50.2 → -13.4 / -25.7 | 129.7 → 203.9 | 430 / 8887 → 131 / 220 | 162 / 171 → 155 / 171 | 0.000/0.185/1.136 → 0.000/0.013/0.054 | 0.000/0.191/2.317 → 0.000/0.020/0.366 | 269 / 2,914 / 758,676 → 128 / 312 / 60 | 1,086 → 0 | 22 → 0 |
+| poor-mobile-nq | 210.1 → 181.9 | 211.9 → 183.7 | -7.0 / -16.3 → -13.4 / -25.9 | 127.6 → 205.8 | 171 / 1323 → 139 / 323 | 155 / 195 → 153 / 196 | 0.000/0.185/0.282 → 0.000/0.013/0.058 | 0.000/0.185/0.378 → 0.000/0.020/0.390 | 213 / 2,631 / 84,667 → 175 / 309 / 51 | 1,080 → 0 | 24 → 0 |
+| cap-1mbit | 230.7 → 195.0 | 232.5 → 196.8 | -6.1 / -48.5 → -7.1 / -19.1 | 25.2 → 53.8 | 59 / 8769 → 19 / 71 | 37 / 53 → 37 / 52 | 0.000/0.185/0.906 → 0.000/0.013/0.045 | 0.000/0.185/2.171 → 0.000/0.017/0.232 | 128 / 2,903 / 721,414 → 44 / 258 / 10 | 1,240 → 0 | 22 → 0 |
+| cap-1mbit-nq | 215.4 → 181.6 | 217.2 → 183.4 | -5.6 / -13.1 → -7.1 / -19.3 | 24.4 → 54.1 | 45 / 312 → 21 / 174 | 38 / 62 → 41 / 54 | 0.000/0.179/0.232 → 0.000/0.013/0.056 | 0.000/0.185/0.292 → 0.000/0.017/0.248 | 160 / 2,648 / 10,969 → 46 / 255 / 12 | 1,282 → 0 | 25 → 0 |
+| bw-capped | 230.7 → 166.6 | 232.5 → 168.4 | -6.2 / -259.4 → -7.3 / -19.8 | 32.6 → 59.5 | 388 / 22349 → 35 / 120 | 46 / 7082 → 46 / 62 | 0.000/0.191/4.286 → 0.000/0.013/0.075 | 0.000/0.265/6.321 → 0.000/0.018/0.292 | 1,475 / 10,266 / 1,914,589 → 33 / 269 / 12 | 998 → 0 | 17 → 0 |
+| bw-capped-nq | 188.0 → 166.4 | 189.7 → 168.2 | -4.6 / -18.0 → -7.3 / -21.4 | 28.8 → 60.3 | 69 / 595 → 41 / 230 | 46 / 153 → 46 / 62 | 0.000/0.185/0.273 → 0.000/0.013/0.072 | 0.000/0.185/0.403 → 0.000/0.018/0.301 | 293 / 2,798 / 33,989 → 42 / 261 / 12 | 1,164 → 0 | 25 → 0 |
+
+### 20260924-162732-quick-3c-citylat4 c1 (before → after)
+
+| Link | Netcode kbit/s (snapshot + city) | All kinds kbit/s | Presented − server tick p50 / p1 | Bodies drawn behind server p50 ms | Island first draw p50 / p99 ms | Body first draw p50 / p99 ms | ALL pos@render p50/p95/p99 m | ALL pos@now p50/p95/p99 m | Missing / extra / wrong identity | Clock back-steps | Repairs asked |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| loopback | 172.2 → 165.0 | 174.2 → 167.0 | -4.8 / -7.7 → -5.3 / -20.3 | -4.3 → 16.1 | 0 / 8 → 0 / 8 | 4 / 8 → 4 / 8 | 0.000/0.008/0.191 → 0.000/0.007/0.016 | 0.000/0.010/0.198 → 0.000/0.007/0.038 | 0 / 2,900 / 0 → 16 / 593 / 0 | 324 → 0 | 5 → 0 |
+| lan | 172.2 → 165.0 | 174.2 → 167.0 | -4.9 / -7.8 → -5.4 / -20.4 | -3.4 → 17.0 | 0 / 9 → 0 / 9 | 8 / 9 → 8 / 9 | 0.000/0.008/0.191 → 0.000/0.007/0.016 | 0.000/0.010/0.198 → 0.000/0.007/0.038 | 1 / 2,900 / 7 → 12 / 591 / 0 | 330 → 0 | 5 → 0 |
+| cable | 172.0 → 164.7 | 174.0 → 166.8 | -5.4 / -8.4 → -6.1 / -21.2 | 7.6 → 29.7 | 0 / 23 → 0 / 23 | 18 / 21 → 16 / 19 | 0.000/0.008/0.191 → 0.000/0.007/0.016 | 0.000/0.011/0.198 → 0.000/0.007/0.042 | 1 / 2,901 / 859 → 16 / 597 / 17 | 334 → 0 | 5 → 0 |
+| lte | 167.6 → 160.3 | 169.6 → 162.3 | -3.2 / -9.5 → -10.1 / -27.4 | 73.8 → 147.6 | 64 / 313 → 64 / 119 | 76 / 108 → 91 / 126 | 0.000/0.011/0.211 → 0.000/0.007/0.017 | 0.000/0.015/0.225 → 0.000/0.007/0.058 | 12 / 2,912 / 15,154 → 101 / 1,261 / 36 | 220 → 0 | 5 → 0 |
+| lossy-wifi | 166.5 → 159.3 | 168.5 → 161.3 | -1.2 / -6.9 → -6.2 / -21.7 | 6.6 → 64.5 | 0 / 73 → 5 / 96 | 21 / 42 → 26 / 43 | 0.000/0.009/0.204 → 0.000/0.007/0.017 | 0.000/0.012/0.211 → 0.000/0.007/0.043 | 69 / 2,904 / 3,711 → 44 / 1,141 / 9 | 300 → 0 | 5 → 0 |
+| poor-mobile | 167.9 → 150.9 | 170.0 → 152.9 | -7.4 / -65.2 → -13.9 / -30.1 | 133.5 → 211.3 | 189 / 3198 → 131 / 237 | 158 / 181 → 149 / 183 | 0.000/0.011/0.211 → 0.000/0.007/0.017 | 0.000/0.019/0.256 → 0.000/0.007/0.068 | 318 / 3,029 / 42,934 → 135 / 826 / 422 | 380 → 0 | 5 → 0 |
+| poor-mobile-nq | 160.7 → 150.7 | 162.7 → 152.7 | -7.3 / -21.0 → -13.8 / -29.8 | 133.7 → 212.0 | 159 / 1042 → 139 / 245 | 158 / 183 → 155 / 183 | 0.000/0.012/0.211 → 0.000/0.007/0.018 | 0.000/0.016/0.240 → 0.000/0.007/0.070 | 260 / 2,945 / 27,248 → 46 / 1,607 / 57 | 252 → 0 | 5 → 0 |
+| cap-1mbit | 172.2 → 155.5 | 174.2 → 157.5 | -6.3 / -61.7 → -7.3 / -22.4 | 28.6 → 54.8 | 46 / 3057 → 24 / 96 | 37 / 43 → 35 / 43 | 0.000/0.008/0.191 → 0.000/0.007/0.016 | 0.000/0.013/0.211 → 0.000/0.007/0.046 | 215 / 3,020 / 28,989 → 22 / 600 / 12 | 416 → 0 | 5 → 0 |
+| cap-1mbit-nq | 165.0 → 155.5 | 167.0 → 157.5 | -6.2 / -17.3 → -7.3 / -22.4 | 28.8 → 55.1 | 35 / 221 → 23 / 104 | 38 / 43 → 40 / 43 | 0.000/0.008/0.191 → 0.000/0.007/0.016 | 0.000/0.012/0.204 → 0.000/0.007/0.048 | 49 / 2,930 / 6,454 → 26 / 598 / 23 | 334 → 0 | 5 → 0 |
+| bw-capped | 172.2 → 139.6 | 174.2 → 141.6 | -6.1 / -305.1 → -7.5 / -22.5 | 31.8 → 59.4 | 86 / 12395 → 38 / 273 | 50 / 1068 → 42 / 56 | 0.000/0.017/1.472 → 0.000/0.007/0.017 | 0.000/0.064/2.724 → 0.000/0.007/0.051 | 4 / 3,427 / 474,561 → 23 / 600 / 12 | 564 → 0 | 22 → 0 |
+| bw-capped-nq | 149.1 → 137.5 | 151.1 → 139.6 | -5.5 / -16.9 → -7.5 / -23.0 | 31.8 → 59.7 | 63 / 378 → 36 / 162 | 39 / 207 → 41 / 108 | 0.000/0.009/0.204 → 0.000/0.007/0.017 | 0.000/0.013/0.218 → 0.000/0.007/0.052 | 240 / 2,933 / 13,302 → 22 / 599 / 23 | 382 → 0 | 26 → 0 |
+
+### The owner's session, session-20260924-213925-ondf3t (before → after)
+
+| Link | Netcode kbit/s (snapshot + city) | All kinds kbit/s | Presented − server tick p50 / p1 | Bodies drawn behind server p50 ms | Island first draw p50 / p99 ms | Body first draw p50 / p99 ms | ALL pos@render p50/p95/p99 m | ALL pos@now p50/p95/p99 m | Missing / extra / wrong identity | Clock back-steps | Repairs asked |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| loopback | 592.8 → 567.1 | 594.5 → 568.8 | -4.5 / -29.6 → -5.4 / -18.2 | -5.3 → 20.8 | 0 / 105 → 0 / 105 | - / - → - / - | 0.000/0.185/0.366 → 0.000/0.014/0.066 | 0.000/0.204/1.252 → 0.000/0.091/2.035 | 79 / 0 / 83 → 117 / 0 / 0 | 188 → 0 | 20 → 0 |
+| lan | 592.8 → 567.1 | 594.5 → 568.8 | -4.6 / -29.9 → -5.4 / -18.2 | -4.4 → 21.5 | 0 / 105 → 0 / 105 | - / - → - / - | 0.000/0.185/0.366 → 0.000/0.014/0.064 | 0.000/0.204/1.252 → 0.000/0.091/2.035 | 84 / 0 / 100 → 89 / 0 / 174 | 190 → 0 | 20 → 0 |
+| cable | 592.6 → 566.6 | 594.3 → 568.3 | -5.0 / -30.6 → -6.1 / -18.8 | 6.6 → 33.2 | 0 / 105 → 0 / 105 | - / - → - / - | 0.000/0.191/0.366 → 0.000/0.014/0.062 | 0.000/0.211/1.336 → 0.000/0.097/2.171 | 63 / 0 / 462 → 84 / 0 / 184 | 206 → 0 | 20 → 0 |
+| lte | 576.1 → 551.1 | 577.8 → 552.7 | -2.5 / -12.5 → -10.2 / -24.2 | 72.0 → 146.2 | 96 / 333 → 74 / 226 | - / - → - / - | 0.000/0.204/0.796 → 0.000/0.015/0.070 | 0.000/0.240/1.571 → 0.000/0.130/2.724 | 311 / 1 / 16,407 → 32 / 0 / 98 | 212 → 0 | 20 → 0 |
+| lossy-wifi | 574.1 → 548.2 | 575.8 → 549.9 | -1.3 / -9.3 → -5.9 / -18.4 | 4.6 → 65.7 | 0 / 115 → 0 / 115 | - / - → - / - | 0.000/0.198/0.490 → 0.000/0.015/0.077 | 0.000/0.218/1.136 → 0.000/0.097/2.171 | 187 / 3 / 2,891 → 122 / 0 / 352 | 196 → 0 | 20 → 0 |
+| poor-mobile | 577.9 → 413.3 | 579.6 → 414.9 | -17.4 / -149.7 → -14.4 / -27.9 | 172.1 → 220.4 | 604 / 8365 → 165 / 315 | - / - → - / - | 0.000/0.248/9.629 → 0.000/0.017/0.094 | 0.000/1.252/14.202 → 0.000/0.179/3.645 | 400 / 0 / 309,598 → 36 / 0 / 419 | 362 → 0 | 15 → 0 |
+| poor-mobile-nq | 473.6 → 413.4 | 475.3 → 415.1 | -8.2 / -28.3 → -15.7 / -35.6 | 142.4 → 221.3 | 186 / 1682 → 164 / 335 | - / - → - / - | 0.000/0.225/2.035 → 0.000/0.017/0.100 | 0.000/0.332/4.286 → 0.000/0.204/3.889 | 294 / 2 / 52,315 → 30 / 0 / 278 | 230 → 0 | 19 → 0 |
+| cap-1mbit | 592.8 → 431.4 | 594.5 → 433.1 | -19.5 / -146.1 → -7.7 / -21.4 | 62.6 → 75.3 | 152 / 8186 → 41 / 134 | - / - → - / - | 0.000/0.218/9.322 → 0.000/0.015/0.082 | 0.000/1.065/13.749 → 0.000/0.118/2.553 | 398 / 0 / 282,842 → 102 / 0 / 961 | 530 → 0 | 16 → 0 |
+| cap-1mbit-nq | 482.0 → 411.9 | 483.7 → 413.6 | -5.7 / -29.9 → -7.8 / -25.1 | 34.8 → 76.5 | 51 / 390 → 41 / 171 | - / - → - / - | 0.000/0.204/1.252 → 0.000/0.016/0.100 | 0.000/0.265/3.100 → 0.000/0.130/2.813 | 145 / 7 / 8,533 → 104 / 0 / 959 | 258 → 0 | 20 → 0 |
+| bw-capped | 537.9 → 279.2 | 539.6 → 280.9 | -328.8 / -771.7 → -9.0 / -22.4 | 5489.4 → 90.6 | 32 / 213 → 58 / 235 | 7841 / 12171 → - / - | 0.000/17.815/76.488 → 0.000/0.023/0.256 | 0.000/25.437/109.215 → 0.000/0.153/3.002 | 39,977 / 0 / 3,910,819 → 97 / 0 / 1,154 | 520 → 0 | 4 → 0 |
+| bw-capped-nq | 325.7 → 258.1 | 327.4 → 259.8 | -14.2 / -30.0 → -9.7 / -27.8 | 127.0 → 92.8 | 143 / 637 → 68 / 360 | - / - → - / - | 0.000/0.282/6.321 → 0.000/0.028/0.390 | 0.000/0.614/7.929 → 0.000/0.179/3.308 | 184 / 4 / 22,248 → 99 / 0 / 1,167 | 238 → 0 | 21 → 0 |
+
+### Summary
+
+Measured unless marked:
+
+- **Bytes.** Netcode kbit/s falls on every cell: 4-12% on the fast links
+  (systematic 293.7 → 259.3 on LAN, heavy 230.7 → 217.8, citylat4 172.2 →
+  165.0, the owner's session 592.8 → 567.1), and 6-48% on the rate-limited
+  ones, where rate adaptation paces the city (systematic bw-capped 293.7 →
+  204.2, the owner's session 537.9 → 279.2). The before arm already has the
+  small match-stats datagram, so the real pre-work saving is larger
+  (**inferred** from item 7's live 31-34% share).
+- **Fidelity at the render time.** ALL draws pos@render p99 falls on every
+  cell: 5-12× on loopback, LAN, cable and LTE (LAN: 0.211 → 0.025 m, 0.218 →
+  0.039, 0.191 → 0.016, 0.366 → 0.064), 4-300× on the constrained links. The main contributors (per-class file): resting
+  debris drawn 17 cm low (chunk_debris pos@render p50 0.174 → 0.007-0.009 m),
+  retired cannonballs drawn for 4 s (body p95 161-172 m → 0.002 m), meteors
+  held after impact (meteor p99 37.5 → 0.017 m on the systematic bundle and
+  the owner's session; 49 → 18 m and 151 → 15 m on heavy and citylat4, where
+  rocks that never streamed stay on their arc for a staleness window, item 16).
+- **Identity.** Wrong-identity chunk-frames on LTE: 70,697 → 529
+  (systematic), 25,050 → 32, 15,154 → 36, 16,407 → 98; on poor-mobile
+  147,427 → 456 and 758,676 → 60; on bw-capped 2.73 M → 355 and 3.91 M →
+  1,154. Extra draw-frames on the systematic bundle's loopback: 222,781 →
+  2,634 (floor-retired chunks and stale bodies).
+- **Sync.** Clock back-steps 188-2,138 per run → 0 on every cell. Repairs
+  asked 4-91 → 0 on every cell.
+- **First draw.** Unchanged on fast links (island p99 8-24 ms, 105 ms on the
+  owner's session); on LTE island
+  p99 313-356 → 119-226 ms; on poor-mobile 3.2-8.9 s → 0.2-0.3 s.
+- **Latency is the cost.** The pre-work client drew ahead of the server
+  (bodies −4 to −8 ms behind on loopback, i.e. extrapolated, with hundreds
+  of back-steps) and presented the city ahead of its data (LTE −2.5 to −3.7
+  ticks). HEAD draws bodies 15-21 ms behind the server on loopback and
+  140-148 ms on LTE, and presents the city 5.2-5.4 ticks behind on
+  loopback and 9.8-10.2 on LTE. So **pos@now** (what a viewer comparing
+  screens sees) improves less: p99 0.232 → 0.138 m (systematic loopback),
+  0.198 → 0.038 (citylat4), and gets worse on the owner's session (1.25 →
+  2.04 m loopback, 1.57 → 2.72 m LTE), whose fast heavy debris is drawn later
+  (chunk_debris pos@now p99 5.4 → 8.7 m loopback) (**inferred**: the item-12
+  presentation delay; the old number was bought by drawing ticks that had not
+  arrived).
+
+### Remaining gaps (ranked, after HEAD)
+
+1. **Bodies drawn after the server retired them** (fast links too): 2,302-
+   2,306 body draw-frames on the systematic bundle's LAN, 9% of its body
+   draws; 591-593 on citylat4; 3,952 on LTE. The client infers a removal
+   (bodyPresence.ts) at the next missed cold refresh, up to 1 s late.
+   **Fixed below** (explicit removals).
+2. **Vehicles drawn up to 3 s after they left the stream**: the owner's
+   session, vehicle pos@render p95 / p99 16.2 / 17.8 m on every link, 333 of
+   1,385 vehicle draw-frames (a car pushed out of the 80 m interest radius,
+   held at its last pose by the 180-tick stale rule). **Fixed below.**
+3. **Snapshot fixed cost**: 60 B of every 60 Hz snapshot is fixed, 21 B of it
+   a support block that is zero or names a support that does not move on
+   every snapshot of all four bundles (**measured** from
+   `snapshot-inputs.jsonl`: a support on 48-70% of recipient-ticks, every
+   one `entity_id` 1 at zero velocity; see finding 1 below). **Fixed below** (compact self state).
+4. **LTE latency** (presented −10 ticks, bodies 140-148 ms behind). About 4
+   ticks are the one-way latency and the rest the playout delay the ±35 ms
+   jitter needs (city-latency round). Not changed: a smaller delay trades
+   corrections drawn in view (adaptive delay, built and off), and drawing
+   ahead of the data was rejected there.
+5. **Snapshots discarded as out of order.** The client drops a whole snapshot
+   older than the newest it has. On the lab's poor-mobile link that is 38% of
+   snapshots (measured on citylat4 c1, both arms), and a cold refresh
+   (vehicles at rest every 0.5 s, bodies every 1 s) goes with it; vehicle
+   missing draw-frames swing 0-662 per cell with the link seed. The lab's
+   iid jitter over-reorders compared with real LTE (known limit), so the
+   real share is unknown. Candidate: apply an older snapshot's entities whose
+   own newest sample is older (entity-level ordering).
+6. **Idle bytes**: with nothing moving the city stream is silent and the
+   snapshot is everything: 64.4 kbit/s on citylat4 c1 (2 remote players and
+   a car sent every tick though at rest; players have no hot/cold split).
+   The compact self state below takes 10 kbit/s of it.
+7. **Debris pos@now on heavy sessions** (the owner's: p99 8.7 m loopback): the
+   price of the presentation delay; unchanged.
+
+Finding 1 (**measured**, not fixed): the self state's support block names
+city structures as dynamic bodies. In all four bundles every recipient-tick
+with a support reports `entity_id` 1 (on citylat4 with local positions like
+(-32.7, 10.8, -6.5)), and snapshot handle 1 is a cannonball in `body_meta`.
+`physx_runtime.rs` `player_support` takes the bridge body's `user_id`,
+which for the city's kinematic structure bodies collides with the dynamic
+body ids (**inferred**). Harmless today: the client reads only the support's
+velocity, which is zero there.
+
+### Next wins: compact self state and explicit removals
+
+Gaps 1-3 above, fixed in the snapshot stream. Both are wire changes detected
+by length, with no protocol version bump, and both are on by default
+(`SnapshotConfig::PRODUCTION`). WebSocket stays disabled.
+
+**1. Compact self state** (`server/src/protocol.rs` `SnapshotV2Packet::compact_self`,
+`snapshot_builder.rs` `SnapshotConfig::compact_self`).
+
+- The self state's 21-byte support block (handle, local position, velocity,
+  flags, angular velocity) is left out, 33 → 12 bytes, when the support's
+  quantised velocity and angular velocity are zero.
+- The client reads only the support velocity (`gameRuntime.ts` passes
+  `localSupport?.velocity` to the thin predictor, which treats absent as
+  zero), so what it does is unchanged. Every client since before e3fdf5cc
+  already length-detects the block (`decodeSnapshotV2Packet`: 33, 27 or 12
+  bytes, from the bytes left after the entities), so older clients read the
+  compact form as "no support". A test decodes both forms to equal packets.
+- 21 B on every snapshot: about 10 kbit/s per client at 60 Hz, 20-25% of
+  the snapshot stream.
+
+**2. Explicit removals** (`SnapshotV2Packet::removals`, `SnapshotConfig::removals`,
+client `netcodeClient.ts` `applyBodyRemovals` and the vehicle removal).
+
+- The builder remembers, per recipient, which bodies and vehicles it has sent
+  and which are in the recipient's interest. When one leaves the interest
+  (or the world) after it was sent, the next 6 snapshots name it in a
+  section after the wall-clock trailer: tag `0xE7`, count, then per entry a
+  u16 handle (vehicles `0x8000 | handle`, the support handle's convention)
+  and a u8 age (ticks since the removal). At most 8 entries a snapshot; the
+  section is not charged to the byte budget (1,100 + 26 B stays under the
+  1,160 B datagram limit).
+- A snapshot that carries a removals section always carries the full 33-byte
+  self state, so older clients, which detect the self state by length, still
+  read it right, and never read past the trailer.
+- The client holds a named body at its last sample until its render time
+  reaches the removal tick, then drops it; a vehicle likewise on the player
+  render clock. A removal older than a sample the entity has had since is
+  ignored (it came back). A server without the section changes nothing: the
+  inference in bodyPresence.ts and the 180-tick vehicle rule still decide.
+- An entity that leaves is sent at once when it returns (its cold-refresh
+  clock is reset), and an entity entering the stream is carried in its first
+  3 snapshots whatever its hot/cold state (`SNAPSHOT_ENTRY_SENDS`). Without
+  that, a lost first send of a car at rest left it undrawn until its 0.5 s
+  refresh (first lab pass: systematic poor-mobile vehicle missing 222 → 491;
+  with it 222 → 63).
+- Cost: 3 B × 6 per removal plus the 21-byte support block that a snapshot
+  with a section carries: 0.17 kbit/s per client in the live run below (17
+  removals per client in 122 s).
+
+**Calibration.** Captures record which format their server ran
+(`SnapshotBaseline::compact_self` / `removals`, `snapshot-baseline.json`); a
+capture without the fields replays with both off, and the knobs
+`snapshot.compact_self` / `snapshot.removals` override. With this round's lab
+binary `netlab2 calibrate` passes every byte check on the older captures
+(measured): systematic c1 34,331 / 34,331, heavy c1 10,861 / 10,861,
+citylat4 c1 11,582 / 11,582, the owner's session 11,502 / 11,503 (one
+lab-only snapshot at the capture's end, the same with the HEAD lab binary).
+The new live capture below was recorded with both on.
+
+**Results** (measured, lab, seed 1): HEAD against HEAD plus this change,
+`snapshot.compact_self=1,snapshot.removals=1`, every other knob as the
+after arm above.
+
+
+**systematic-2c-d1342419 c1**, HEAD → this change:
+
+| Link | Netcode kbit/s | ALL missing / extra | Body missing / extra | Meteor missing / extra | Vehicle missing; pos@render p99 m | ALL pos@render / pos@now p99 m |
+|---|---|---|---|---|---|---|
+| loopback | 259.3 → 250.1 (-3.5%) | 66 / 2,634 → 94 / 280 | 12 / 2,306 → 38 / 125 | 41 / 176 → 43 / 3 | 0; 0.002 → 0; 0.002 | 0.025 / 0.138 → 0.025 / 0.138 |
+| lan | 259.3 → 250.1 (-3.5%) | 51 / 2,631 → 80 / 275 | 13 / 2,302 → 40 / 120 | 37 / 177 → 39 / 3 | 0; 0.002 → 0; 0.002 | 0.025 / 0.138 → 0.025 / 0.138 |
+| cable | 259.0 → 249.9 (-3.5%) | 73 / 2,636 → 101 / 290 | 19 / 2,305 → 45 / 133 | 43 / 177 → 44 / 3 | 0; 0.002 → 0; 0.002 | 0.025 / 0.153 → 0.025 / 0.153 |
+| lte | 251.6 → 242.8 (-3.5%) | 359 / 4,656 → 349 / 600 | 62 / 3,952 → 173 / 421 | 104 / 528 → 109 / 3 | 186; 0.002 → 60; 0.002 | 0.029 / 0.265 → 0.029 / 0.265 |
+| lossy-wifi | 251.7 → 242.9 (-3.5%) | 247 / 3,910 → 248 / 835 | 51 / 2,852 → 149 / 313 | 87 / 536 → 92 / 0 | 108; 0.002 → 6; 0.002 | 0.028 / 0.168 → 0.028 / 0.168 |
+| poor-mobile | 233.3 → 224.9 (-3.6%) | 386 / 3,721 → 323 / 781 | 78 / 3,115 → 176 / 449 | 83 / 144 → 84 / 7 | 222; 0.002 → 63; 0.005 | 0.031 / 0.343 → 0.031 / 0.343 |
+| poor-mobile-nq | 234.0 → 225.9 (-3.4%) | 272 / 4,392 → 563 / 919 | 59 / 3,803 → 152 / 442 | 97 / 163 → 121 / 0 | 115; 0.002 → 290; 0.003 | 0.030 / 0.354 → 0.029 / 0.378 |
+| cap-1mbit | 240.7 → 232.0 (-3.6%) | 89 / 2,864 → 143 / 429 | 29 / 2,506 → 83 / 172 | 59 / 175 → 58 / 2 | 0; 0.002 → 1; 0.002 | 0.027 / 0.198 → 0.027 / 0.198 |
+| cap-1mbit-nq | 239.9 → 231.3 (-3.6%) | 89 / 3,098 → 158 / 364 | 34 / 2,670 → 95 / 168 | 54 / 173 → 61 / 0 | 0; 0.002 → 1; 0.002 | 0.027 / 0.204 → 0.027 / 0.198 |
+| bw-capped | 204.2 → 196.2 (-3.9%) | 87 / 3,005 → 139 / 412 | 23 / 2,624 → 95 / 193 | 51 / 174 → 43 / 2 | 0; 0.002 → 0; 0.002 | 0.030 / 0.232 → 0.030 / 0.232 |
+| bw-capped-nq | 200.7 → 191.6 (-4.6%) | 103 / 2,932 → 137 / 501 | 28 / 2,543 → 66 / 219 | 57 / 170 → 59 / 6 | 0; 0.002 → 1; 0.002 | 0.032 / 0.256 → 0.031 / 0.256 |
+
+**heavy-quick3-v2 c1**, HEAD → this change:
+
+| Link | Netcode kbit/s | ALL missing / extra | Body missing / extra | Meteor missing / extra | Vehicle missing; pos@render p99 m | ALL pos@render / pos@now p99 m |
+|---|---|---|---|---|---|---|
+| loopback | 217.8 → 209.7 (-3.7%) | 30 / 244 → 30 / 31 | 14 / 244 → 14 / 31 | 15 / 0 → 15 / 0 | 0; 0.002 → 0; 0.002 | 0.039 / 0.174 → 0.039 / 0.174 |
+| lan | 217.8 → 209.7 (-3.7%) | 29 / 246 → 29 / 34 | 14 / 246 → 14 / 34 | 14 / 0 → 14 / 0 | 0; 0.002 → 0; 0.002 | 0.039 / 0.174 → 0.039 / 0.174 |
+| cable | 217.6 → 209.6 (-3.7%) | 31 / 249 → 31 / 37 | 16 / 249 → 16 / 37 | 14 / 0 → 14 / 0 | 0; 0.002 → 0; 0.002 | 0.040 / 0.185 → 0.040 / 0.185 |
+| lte | 211.4 → 203.6 (-3.7%) | 182 / 308 → 67 / 106 | 53 / 308 → 53 / 106 | 12 / 0 → 12 / 0 | 115; 0.002 → 0; 0.002 | 0.049 / 0.273 → 0.049 / 0.273 |
+| lossy-wifi | 212.4 → 204.6 (-3.7%) | 111 / 295 → 60 / 87 | 39 / 295 → 39 / 87 | 20 / 0 → 20 / 0 | 51; 0.002 → 0; 0.002 | 0.045 / 0.185 → 0.045 / 0.185 |
+| poor-mobile | 188.9 → 180.9 (-4.2%) | 128 / 312 → 92 / 104 | 58 / 312 → 63 / 104 | 20 / 0 → 28 / 0 | 50; 0.002 → 0; 0.002 | 0.054 / 0.366 → 0.056 / 0.366 |
+| poor-mobile-nq | 181.9 → 173.2 (-4.8%) | 175 / 309 → 129 / 105 | 48 / 309 → 53 / 105 | 11 / 0 → 17 / 0 | 115; 0.002 → 58; 0.002 | 0.058 / 0.390 → 0.058 / 0.390 |
+| cap-1mbit | 195.0 → 187.3 (-3.9%) | 44 / 258 → 39 / 49 | 25 / 258 → 25 / 49 | 18 / 0 → 13 / 0 | 0; 0.002 → 0; 0.002 | 0.045 / 0.232 → 0.045 / 0.232 |
+| cap-1mbit-nq | 181.6 → 175.4 (-3.4%) | 46 / 255 → 48 / 44 | 23 / 255 → 26 / 44 | 22 / 0 → 21 / 0 | 0; 0.002 → 0; 0.002 | 0.056 / 0.248 → 0.054 / 0.248 |
+| bw-capped | 166.6 → 159.1 (-4.5%) | 33 / 269 → 46 / 54 | 20 / 265 → 33 / 50 | 12 / 0 → 12 / 0 | 0; 0.002 → 0; 0.002 | 0.075 / 0.292 → 0.075 / 0.292 |
+| bw-capped-nq | 166.4 → 158.8 (-4.6%) | 42 / 261 → 34 / 55 | 28 / 257 → 25 / 51 | 13 / 0 → 8 / 0 | 0; 0.002 → 0; 0.002 | 0.072 / 0.301 → 0.070 / 0.301 |
+
+**20260924-162732-quick-3c-citylat4 c1**, HEAD → this change:
+
+| Link | Netcode kbit/s | ALL missing / extra | Body missing / extra | Meteor missing / extra | Vehicle missing; pos@render p99 m | ALL pos@render / pos@now p99 m |
+|---|---|---|---|---|---|---|
+| loopback | 165.0 → 155.6 (-5.7%) | 16 / 593 → 18 / 34 | 8 / 593 → 10 / 34 | 7 / 0 → 7 / 0 | 0; 0.002 → 0; 0.002 | 0.016 / 0.038 → 0.016 / 0.038 |
+| lan | 165.0 → 155.6 (-5.7%) | 12 / 591 → 14 / 33 | 5 / 591 → 7 / 33 | 6 / 0 → 6 / 0 | 0; 0.002 → 0; 0.002 | 0.016 / 0.038 → 0.016 / 0.038 |
+| cable | 164.7 → 155.3 (-5.7%) | 16 / 597 → 17 / 36 | 10 / 597 → 11 / 36 | 4 / 0 → 4 / 0 | 0; 0.002 → 0; 0.002 | 0.016 / 0.042 → 0.016 / 0.042 |
+| lte | 160.3 → 151.2 (-5.7%) | 101 / 1,261 → 105 / 102 | 23 / 1,261 → 27 / 102 | 20 / 0 → 20 / 0 | 57; 0.008 → 57; 0.008 | 0.017 / 0.058 → 0.017 / 0.058 |
+| lossy-wifi | 159.3 → 150.2 (-5.7%) | 44 / 1,141 → 46 / 74 | 25 / 1,141 → 27 / 74 | 19 / 0 → 19 / 0 | 0; 0.010 → 0; 0.010 | 0.017 / 0.043 → 0.017 / 0.043 |
+| poor-mobile | 150.9 → 142.4 (-5.6%) | 135 / 826 → 304 / 120 | 39 / 826 → 31 / 120 | 40 / 0 → 36 / 0 | 55; 0.003 → 237; 0.004 | 0.017 / 0.068 → 0.017 / 0.068 |
+| poor-mobile-nq | 150.7 → 142.4 (-5.5%) | 46 / 1,607 → 53 / 99 | 22 / 1,607 → 23 / 99 | 24 / 0 → 29 / 0 | 0; 0.009 → 0; 0.007 | 0.018 / 0.070 → 0.017 / 0.070 |
+| cap-1mbit | 155.5 → 146.3 (-5.9%) | 22 / 600 → 21 / 44 | 15 / 600 → 15 / 44 | 6 / 0 → 5 / 0 | 0; 0.002 → 0; 0.002 | 0.016 / 0.046 → 0.016 / 0.046 |
+| cap-1mbit-nq | 155.5 → 146.2 (-6.0%) | 26 / 598 → 27 / 46 | 20 / 598 → 21 / 46 | 5 / 0 → 5 / 0 | 0; 0.002 → 0; 0.002 | 0.016 / 0.048 → 0.016 / 0.048 |
+| bw-capped | 139.6 → 131.0 (-6.1%) | 23 / 600 → 26 / 53 | 13 / 600 → 19 / 53 | 9 / 0 → 7 / 0 | 0; 0.002 → 0; 0.002 | 0.017 / 0.051 → 0.017 / 0.051 |
+| bw-capped-nq | 137.5 → 125.8 (-8.5%) | 22 / 599 → 28 / 52 | 13 / 599 → 18 / 52 | 8 / 0 → 9 / 0 | 0; 0.002 → 0; 0.002 | 0.017 / 0.052 → 0.017 / 0.052 |
+
+**session-20260924-213925-ondf3t (the player)**, HEAD → this change:
+
+| Link | Netcode kbit/s | ALL missing / extra | Body missing / extra | Meteor missing / extra | Vehicle missing; pos@render p99 m | ALL pos@render / pos@now p99 m |
+|---|---|---|---|---|---|---|
+| loopback | 567.1 → 561.0 (-1.1%) | 117 / 0 → 117 / 0 | - / - → - / - | 20 / 0 → 20 / 0 | 0; 17.815 → 0; 0.020 | 0.066 / 2.035 → 0.064 / 2.035 |
+| lan | 567.1 → 561.0 (-1.1%) | 89 / 0 → 89 / 0 | - / - → - / - | 17 / 0 → 17 / 0 | 0; 17.815 → 0; 0.020 | 0.064 / 2.035 → 0.062 / 2.035 |
+| cable | 566.6 → 560.5 (-1.1%) | 84 / 0 → 87 / 0 | - / - → - / - | 17 / 0 → 19 / 0 | 0; 17.815 → 1; 0.020 | 0.062 / 2.171 → 0.062 / 2.171 |
+| lte | 551.1 → 545.1 (-1.1%) | 32 / 0 → 32 / 0 | - / - → - / - | 32 / 0 → 32 / 0 | 0; 17.815 → 0; 0.020 | 0.070 / 2.724 → 0.070 / 2.724 |
+| lossy-wifi | 548.2 → 542.3 (-1.1%) | 122 / 0 → 100 / 0 | - / - → - / - | 30 / 0 → 30 / 0 | 25; 18.401 → 3; 0.018 | 0.077 / 2.171 → 0.077 / 2.171 |
+| poor-mobile | 413.3 → 410.3 (-0.7%) | 36 / 0 → 36 / 0 | - / - → - / - | 36 / 0 → 34 / 0 | 0; 18.401 → 2; 0.023 | 0.094 / 3.645 → 0.094 / 3.529 |
+| poor-mobile-nq | 413.4 → 408.8 (-1.1%) | 30 / 0 → 32 / 0 | - / - → - / - | 30 / 0 → 31 / 0 | 0; 17.815 → 1; 0.027 | 0.100 / 3.889 → 0.097 / 4.017 |
+| cap-1mbit | 431.4 → 426.8 (-1.1%) | 102 / 0 → 103 / 0 | - / - → - / - | 20 / 0 → 19 / 0 | 0; 17.815 → 2; 0.020 | 0.082 / 2.553 → 0.082 / 2.553 |
+| cap-1mbit-nq | 411.9 → 419.3 (+1.8%) | 104 / 0 → 102 / 0 | - / - → - / - | 21 / 0 → 17 / 0 | 0; 17.815 → 2; 0.020 | 0.100 / 2.813 → 0.085 / 2.724 |
+| bw-capped | 279.2 → 275.6 (-1.3%) | 97 / 0 → 97 / 0 | - / - → - / - | 20 / 0 → 19 / 0 | 0; 17.815 → 1; 0.020 | 0.256 / 3.002 → 0.256 / 2.906 |
+| bw-capped-nq | 258.1 → 249.9 (-3.2%) | 99 / 0 → 98 / 0 | - / - → - / - | 22 / 0 → 19 / 0 | 0; 17.815 → 1; 0.020 | 0.390 / 3.308 → 0.506 / 3.417 |
+
+What it says:
+
+- **Bytes** fall 3.4-8.5% on every link of the three 60 Hz bundles (8-9.4
+  kbit/s per client on the fast links) and 1.1% (6.1 kbit/s) on the owner's
+  session, whose server ran at about 43 ticks/s and whose bytes are 95% city.
+  On a rate-limited link the controller can give the freed bytes to the city
+  (the owner's session on cap-1mbit-nq: +1.8%).
+- **Idle** (citylat4 c1, loopback, the capture's last 4 s with nothing
+  moving and the city stream silent): 64.4 → 54.3 kbit/s (−16%).
+- **Bodies drawn after they left the stream** (body extra) fall 66-95% on
+  every cell: LAN 2,302 → 120 (systematic), 246 → 34 (heavy), 591 → 33
+  (citylat4); LTE 3,952 → 421, 308 → 106, 1,261 → 102. Meteor extra on the
+  systematic bundle 177 → 3 (LAN), 528 → 3 (LTE).
+- **The cost is a few missing frames per removal of a moving body**: body
+  missing on the systematic bundle 12 → 38 (loopback), 62 → 173 (LTE); heavy
+  and citylat4 within +13 / −8. A moving body is held no longer than its last
+  sample (bodyPresence.ts's rule for a moving body, now applied when it is
+  named, not up to 15 ticks later), so a ball retired at tick T is hidden
+  from its last sample at T−1, up to a tick before truth drops it
+  (**inferred**). Holding it to T instead measured worse: heavy LTE body
+  pos@render p99 0.038 → 0.366 m (first lab pass).
+- **Vehicles**: the owner's session vehicle pos@render p99 17.8 → 0.020 m on
+  every link (pos@now p95 16.2 → 0.72 m on loopback); vehicle missing 0 →
+  0-3.
+- **Unchanged or lower**: ALL pos@render / pos@now p99 on every fast-link
+  cell (the owner's session LAN pos@render p99 0.064 → 0.062 m, the vehicles), latency (bodies drawn behind the server within
+  0.1 ms on fast links), wrong identity on fast links, clock back-steps (0).
+  Body pos@render p99 on the jittery links moves both ways by a few
+  centimetres at p99 (heavy poor-mobile 0.185 → 0.052 m, citylat4
+  poor-mobile 0.052 → 0.100 m). On the network-queue links, where the rate
+  controller re-spends the freed bytes, ALL p99 moves both ways too
+  (systematic poor-mobile-nq pos@now 0.354 → 0.378 m; the owner's session
+  bw-capped-nq pos@render 0.390 → 0.506 m, cap-1mbit-nq 0.100 → 0.085 m).
+- **Seeds 1-3** on lte, poor-mobile and poor-mobile-nq (systematic and
+  citylat4, 18 cells): body extra 44,206 → 4,792 (lower in all 18), body
+  missing 761 → 1,740, vehicle missing 4,012 → 2,478, ALL missing 5,869 →
+  5,444.
+- **Vehicle missing on the jittery links is seed noise** (gap 5): 0-662
+  draw-frames per cell in both arms. The cells that rose (citylat4
+  poor-mobile 55 → 237, systematic poor-mobile-nq 115 → 290) are a parked
+  car whose 0.5 s cold refreshes were discarded as out-of-order snapshots
+  several times running (inspected on citylat4: no removal named it; 38.4%
+  and 38.2% of snapshots arrived out of order in the two arms).
+
+Gaps 4-7 of the scoreboard remain; [proposals](#proposals-not-implemented)
+7 and 8 are the next two.
+
+**Live** (measured; `scripts/perf/city-bench.sh --scenario quick --clients 3`
+on this tree, ports 6501/6502/3653, GPU lock,
+`target/net-scoreboard/city-bench/runs/20260924-215619-scoreboard-new`,
+baseline the 162732 citylat4 capture):
+
+- 3/3 paired bundles, 0 errors. Budgets: 20 of 27 pass (citylat4: 17). The
+  failures are the server's tick and sim rate (tick p95 30.2 ms, sim rate
+  0.88, worst 5 s 0.43: GPU physics, a heavier run, 34.4% of bonds broken
+  against 24.9%), 4 client CPU hitches over 33 ms on c2, and c2's snapshot
+  gap p99 57.5 ms (the server's own tick gaps).
+- **The format is live**: 98.4% of snapshots carry the 12-byte self state on
+  every client; the fixed part of a snapshot is 39.4 B against 60.0 B in the
+  citylat4 capture; snapshot kbit/s 44.7-51.2 → 33.0-39.3 per client (the
+  runs' entities differ). 17 removals per client (one of c1's a vehicle),
+  each restated 6 times, 0.17 kbit/s in all, most of it the full self
+  state that a snapshot with a removals section carries.
+- **Fidelity**: body render error p99 0.15-0.21 → 0.04 m on every client;
+  stale body draws 0-2 → 0; render-clock back-steps 0; structure repairs 0;
+  0 packets lost; send → arrive p99 4.2-4.5 ms. kbit/s per client rose
+  167-179 → 201-213 with the heavier destruction (indicative only).
+- One city presentation clock rollback on c1 (0 in citylat4): the city
+  client is untouched by this change, and the run's server fell to 0.43 of
+  real time for 5 s (**inferred**: not this change).
+- **Calibration of this capture with this tree: PASS on all three
+  clients.** Bytes 11,788 / 11,788, 11,771 / 11,771 and 11,681 / 11,681
+  byte-identical, snapshots 6,432 / 6,432 each (compact self states and
+  removals sections included); clock offset p99 in the last 10 s 99-100 µs;
+  lab vs live renderer p99: players 0.9-1.3 cm, vehicles 0.2-0.6 cm,
+  bodies 5.0-6.1 cm, meteors 6.7-7.1 cm, intact chunks 0.00 mm, debris
+  chunks 3.2-6.4 cm.
+
+**Tests** (all fail or do not compile without the change, except the
+guards):
+
+- `server/src/snapshot_builder.rs` (new test module, 8):
+  `a_body_retired_after_it_was_sent_is_named_in_the_next_snapshots`,
+  `a_body_never_sent_is_never_named_and_one_that_returns_is_sent_at_once`,
+  `a_vehicle_that_leaves_interest_is_named_with_the_vehicle_bit`,
+  `an_entity_entering_the_stream_is_in_its_first_three_snapshots_even_at_rest`,
+  `the_support_block_is_left_out_unless_the_support_moves`,
+  `a_snapshot_with_removals_carries_the_full_self_state_then_the_section`
+  (the exact bytes), and the guards
+  `the_legacy_format_sends_no_removals_and_the_full_self_state` and
+  `an_older_interest_baseline_reads_the_new_fields_as_empty`.
+- `server/src/bin/netlab2/fixture_tests.rs`: the mid-match fixture now
+  records the production format and replays byte for byte; without the
+  recorded format (a legacy capture) no snapshot matches a production
+  server's, and with the knobs they converge as before.
+- `client/src/net/protocol.test.ts`: a 12-byte self state with the trailer
+  decodes to exactly what the 33-byte zero block does; the removals section
+  after the trailer, with the full self state before it; a snapshot without
+  the section has none.
+- `client/src/net/netcodeClient.test.ts`: a resting body named in a removals
+  section is drawn until the render time reaches the removal and then
+  dropped (not at the next cold refresh); a moving one is not held past its
+  last sample; a removal older than a newer sample is ignored; a named
+  vehicle is dropped one interpolation delay after its removal, where
+  without the section the 180-tick rule still keeps it (guard).
+- `scripts/perf/test_session_bundle.py`: the analysis decoder reads entities
+  after a 12- or 33-byte self state, with or without the trailer and section.
+- Suites: server 156 (+1 ignored) and netlab2 87 passing; client 1,172
+  passing (4 skipped); `tsc` clean.
+
+**Reproduce**
+
+```bash
+# the pre-work client, made scoreable (a worktree of e3fdf5cc)
+git worktree add .claude/worktrees/net-prework e3fdf5cc --detach
+scripts/perf/netlab2-prework/install.sh .claude/worktrees/net-prework
+(cd .claude/worktrees/net-prework/client && npm run build:wasm)   # CC/AR for wasm32 as in netlab-v2.md
+BEFORE=lab.recorded_repairs=0,city.ballistic_free_fall=0,city.client_model=0,city.baseline_interval_ticks=60,city.baseline_lag_ticks=0,city.baseline_skip_quiescent=0,city.topology_copies=0,city.rate_adapt=0
+AFTER=lab.recorded_repairs=0,city.ballistic_free_fall=1,city.client_model=1,city.baseline_interval_ticks=120,city.baseline_lag_ticks=110,city.baseline_skip_quiescent=1,city.topology_copies=2
+NEW=$AFTER,snapshot.compact_self=1,snapshot.removals=1
+$N run --bundle <bundle> --out <runs>/before/<link> --link <link> --seed 1 --knob $BEFORE \
+   --client-root .claude/worktrees/net-prework/client
+$N run --bundle <bundle> --out <runs>/after/<link> --link <link> --seed 1 --knob $AFTER    # HEAD's client
+scripts/perf/netlab2-scoreboard.py lag <runs>/*/*          # before pruning presented.bin
+scripts/perf/netlab2-scoreboard.py table --before <runs>/before --after <runs>/after --before-no-trailer
+```
+
 ## Proposals not implemented
 
 In order of expected value (inferred from the numbers above):
@@ -1195,15 +1670,19 @@ In order of expected value (inferred from the numbers above):
    sit ahead of topology on the one ordered stream; reliable HOL p99 is
    286 ms on LTE. Fractures would appear sooner. Transport change on both
    sides.
-5. **Snapshot self-state.** About 60 B of every snapshot is fixed (header,
-   self state, trailer): 29 kbit/s at 60 Hz. The 21 B support block could be
-   omitted when the player has no support, detected by a flag. Wire change.
-6. **An explicit "bodies removed" list** for the snapshot stream, replacing
-   the client's inference from the cold-refresh contract (bodyPresence.ts).
-   Measured on v2c0: 19 snapshot bodies leave the player's stream in 122 s,
-   one leave each. A length-detected trailer of 2-byte handles would add
-   under 0.01 kbit/s even when repeated three times for loss (inferred), and
-   nothing when empty.
+5. ~~**Snapshot self-state.**~~ Implemented without a flag, since every
+   client already length-detects the support block:
+   [compact self state](#next-wins-compact-self-state-and-explicit-removals).
+6. ~~**An explicit "bodies removed" list.**~~ Implemented, for vehicles too:
+   [explicit removals](#next-wins-compact-self-state-and-explicit-removals).
+7. **Entity-level ordering of late snapshots.** The client drops a whole
+   snapshot older than its newest, cold refreshes included (38% of snapshots
+   on the lab's poor-mobile; gap 5 of the scoreboard). Applying the entities
+   whose own newest sample is older would keep them.
+8. **Stationary players and vehicles at 60 Hz.** At idle the snapshot is the
+   whole stream (54 kbit/s on the citylat4 spectator after the compact self
+   state); remote players have no hot/cold split. Needs the client's
+   player interpolator to accept gaps.
 
 ## Risks and limits
 

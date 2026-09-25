@@ -28,6 +28,7 @@ import {
   BTN_SPRINT,
   PKT_SNAPSHOT,
   PKT_SNAPSHOT_V2,
+  SNAPSHOT_V2_REMOVALS_TAG,
   PKT_WELCOME,
   PKT_SHOT_FIRED,
   PKT_SHOT_RESULT,
@@ -500,6 +501,68 @@ describe('snapshot V2 decode', () => {
     expect(packet.remotePlayers[0].handle).toBe(2);
     expect(packet.sphereStates[0].handle).toBe(7);
     expect(packet.vehicleStates[0].handle).toBe(3);
+  });
+
+  // server/src/protocol.rs `compact_self`: the 12-byte self state (no support
+  // block) followed by the trailer, as a production server sends it whenever
+  // the player stands on nothing that moves.
+  it('reads a 12-byte self state with the trailer as no support', () => {
+    const legacy = buildSnapshotV2Binary(); // 12-byte self state, no trailer
+    const compact = new Uint8Array(legacy.length + 4);
+    compact.set(legacy, 0);
+    new DataView(compact.buffer).setUint32(compact.length - 4, 1234, true);
+    const full = new Uint8Array(legacy.length + 21 + 4);
+    full.set(legacy.subarray(0, 35), 0);
+    full.set(legacy.subarray(35), 35 + 21); // 21 zero bytes: no support
+    new DataView(full.buffer).setUint32(full.length - 4, 1234, true);
+
+    const a = decodeServerDatagramPacket(compact);
+    const b = decodeServerDatagramPacket(full);
+    expect(a.type).toBe('snapshotV2');
+    // What the client reads is identical either way.
+    expect(a).toEqual(b);
+    if (a.type !== 'snapshotV2') return;
+    expect(a.serverWallUs).toBe(1234);
+    expect(a.selfState.supportHandle).toBe(0);
+    expect(a.selfState.hp).toBe(100);
+    expect(a.vehicleStates[0].handle).toBe(3);
+  });
+
+  it('reads the removals section after the trailer; older layouts have none', () => {
+    const legacy = buildSnapshotV2Binary();
+    const selfStateEnd = 35;
+    const entries = [
+      { raw: 0x0123, age: 0 },
+      { raw: 0x8000 | 3, age: 4 },
+    ];
+    const binary = new Uint8Array(legacy.length + 21 + 4 + 2 + 3 * entries.length);
+    binary.set(legacy.subarray(0, selfStateEnd), 0);
+    binary.set(legacy.subarray(selfStateEnd), selfStateEnd + 21);
+    const view = new DataView(binary.buffer);
+    let o = legacy.length + 21;
+    view.setUint32(o, 0xdeadbeef, true); o += 4;
+    view.setUint8(o++, SNAPSHOT_V2_REMOVALS_TAG);
+    view.setUint8(o++, entries.length);
+    for (const entry of entries) {
+      view.setUint16(o, entry.raw, true); o += 2;
+      view.setUint8(o++, entry.age);
+    }
+
+    const packet = decodeServerDatagramPacket(binary);
+    expect(packet.type).toBe('snapshotV2');
+    if (packet.type !== 'snapshotV2') return;
+    // A server sends the section only with the full self state, so the
+    // length rule still finds the self state and the trailer.
+    expect(packet.serverWallUs).toBe(0xdeadbeef);
+    expect(packet.selfState.supportHandle).toBe(0);
+    expect(packet.vehicleStates[0].handle).toBe(3);
+    expect(packet.removals).toEqual([
+      { handle: 0x0123, vehicle: false, removedTick: 25 },
+      { handle: 3, vehicle: true, removedTick: 21 },
+    ]);
+    const older = decodeServerDatagramPacket(binary.slice(0, legacy.length + 21 + 4));
+    if (older.type !== 'snapshotV2') return;
+    expect(older.removals).toBeUndefined();
   });
 });
 

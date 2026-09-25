@@ -179,6 +179,8 @@ impl MatchState {
             player_handles: self.player_handles.iter().map(|(k, v)| (*k, *v)).collect(),
             vehicle_handles: self.vehicle_handles.iter().map(|(k, v)| (*k, *v)).collect(),
             body_meta: self.dynamic_body_handles.iter().map(|(k, v)| (*k, *v)).collect(),
+            compact_self: crate::snapshot_builder::SnapshotConfig::PRODUCTION.compact_self,
+            removals: crate::snapshot_builder::SnapshotConfig::PRODUCTION.removals,
         };
         if let Err(error) = serde_json::to_vec(&baseline)
             .map_err(std::io::Error::from)

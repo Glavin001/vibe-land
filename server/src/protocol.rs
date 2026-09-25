@@ -1,5 +1,6 @@
 use anyhow::{bail, ensure, Result};
 use bytes::{Buf, BufMut, BytesMut};
+use serde::{Deserialize, Serialize};
 
 // Re-export all shared types, constants, and utilities
 pub use vibe_land_shared::constants::*;
@@ -213,10 +214,43 @@ pub struct SnapshotV2Packet {
     /// overruns; against this clock the client measures the simulation rate
     /// instead of mistaking a slow server for network delay.
     pub server_wall_us: u32,
+    /// Leave the self state's 21-byte support block out (12 bytes instead of
+    /// 33). Every client since before 2026-09-24 length-detects the block
+    /// (`decodeSnapshotV2Packet`: 33, 27 or 12 bytes) and reads an absent one
+    /// as no support, so this is only set when the block says nothing the
+    /// client uses: no support, or a support that is not moving (the client
+    /// reads only the support velocity). Never set together with `removals`,
+    /// whose section follows the trailer: a 12-byte block is detected by the
+    /// bytes left after the entities, which the section would add to.
+    pub compact_self: bool,
+    /// Entities this recipient's stream has stopped carrying (retired by the
+    /// server, or out of its interest), each restated in a few consecutive
+    /// snapshots. Encoded after the wall-clock trailer as a section (tag
+    /// [`SNAPSHOT_V2_REMOVALS_TAG`], count, entries), which clients that
+    /// predate it never read.
+    pub removals: Vec<SnapshotRemoval>,
+}
+
+/// One entry of the SnapshotV2 removals section: `handle` is a dynamic body's
+/// handle, or `0x8000 | vehicle handle` (the convention of the self state's
+/// support handle); the entity was last in this recipient's stream before
+/// `server_tick - age_ticks`, and is not in it from that tick on.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SnapshotRemoval {
+    pub handle: u16,
+    pub age_ticks: u8,
 }
 
 /// Bytes the SnapshotV2 wall-clock trailer adds.
 pub const SNAPSHOT_V2_TRAILER_BYTES: usize = 4;
+/// Bytes of the self state without its support block (`compact_self`).
+pub const SNAPSHOT_V2_COMPACT_SELF_PLAYER_BYTES: usize = 12;
+/// First byte of the removals section after the trailer.
+pub const SNAPSHOT_V2_REMOVALS_TAG: u8 = 0xE7;
+/// Bytes of one removals entry (u16 handle, u8 age).
+pub const SNAPSHOT_V2_REMOVAL_BYTES: usize = 3;
+/// Handle bit marking a vehicle in a removals entry.
+pub const SNAPSHOT_V2_REMOVAL_VEHICLE_BIT: u16 = 0x8000;
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct PlayerRosterEntry {
@@ -657,16 +691,18 @@ pub fn encode_server_datagram(packet: &ServerDatagramPacket) -> Vec<u8> {
             out.put_i16_le(s.pitch_i16);
             out.put_u8(s.hp);
             out.put_u8(s.flags);
-            out.put_u16_le(s.support_handle);
-            for value in s.support_local_q2_5mm {
-                out.put_i16_le(value);
-            }
-            for value in s.support_velocity_cms {
-                out.put_i16_le(value);
-            }
-            out.put_u8(s.support_flags);
-            for value in s.support_angular_velocity_mrads {
-                out.put_i16_le(value);
+            if !pkt.compact_self || !pkt.removals.is_empty() {
+                out.put_u16_le(s.support_handle);
+                for value in s.support_local_q2_5mm {
+                    out.put_i16_le(value);
+                }
+                for value in s.support_velocity_cms {
+                    out.put_i16_le(value);
+                }
+                out.put_u8(s.support_flags);
+                for value in s.support_angular_velocity_mrads {
+                    out.put_i16_le(value);
+                }
             }
 
             for player in &pkt.remote_players {
@@ -733,6 +769,15 @@ pub fn encode_server_datagram(packet: &ServerDatagramPacket) -> Vec<u8> {
                 out.put_i16_le(vehicle.wz_mrads);
             }
             out.put_u32_le(pkt.server_wall_us);
+            if !pkt.removals.is_empty() {
+                let count = pkt.removals.len().min(u8::MAX as usize);
+                out.put_u8(SNAPSHOT_V2_REMOVALS_TAG);
+                out.put_u8(count as u8);
+                for removal in &pkt.removals[..count] {
+                    out.put_u16_le(removal.handle);
+                    out.put_u8(removal.age_ticks);
+                }
+            }
         }
     }
     out.to_vec()

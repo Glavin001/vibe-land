@@ -65,6 +65,18 @@ pub struct SnapshotConfig {
     pub hot_dynamic_near_radius_m: f32,
     /// Vehicles the recipient drives, reserved ahead of the budget.
     pub reserved_vehicles: usize,
+    /// Send the self state without its support block when the block carries
+    /// nothing the client uses (see `SnapshotV2Packet::compact_self`).
+    /// Captures record it (`SnapshotBaseline::compact_self`); a capture
+    /// without the field replays with it off, byte for byte.
+    #[serde(default)]
+    pub compact_self: bool,
+    /// Tell the recipient which bodies and vehicles its stream stopped
+    /// carrying (`SnapshotV2Packet::removals`), instead of leaving the client
+    /// to infer it (client/src/net/bodyPresence.ts, and a 3 s stale rule for
+    /// vehicles). Recorded in captures like `compact_self`.
+    #[serde(default)]
+    pub removals: bool,
 }
 
 impl SnapshotConfig {
@@ -80,8 +92,22 @@ impl SnapshotConfig {
         hot_angular_speed_radps: HOT_ANGULAR_SPEED_THRESHOLD_RADPS,
         hot_dynamic_near_radius_m: HOT_DYNAMIC_NEAR_RADIUS_M,
         reserved_vehicles: STRICT_SNAPSHOT_RESERVED_VEHICLES,
+        compact_self: true,
+        removals: true,
     };
+
+    /// The selection as it was before `compact_self` and `removals`: what a
+    /// capture that does not record them was made with.
+    pub const LEGACY_FORMAT: Self = Self { compact_self: false, removals: false, ..Self::PRODUCTION };
 }
+
+/// How many consecutive snapshots restate one removal. A client that loses
+/// all of them falls back to inferring the removal, as before.
+pub const SNAPSHOT_REMOVAL_REPEATS: u8 = 6;
+/// Removals entries per snapshot at most. The section (2 + 3 B each) is not
+/// charged to the byte budget: at this cap a full snapshot stays under the
+/// 1,160-byte datagram limit (1,100 + 26).
+pub const SNAPSHOT_REMOVALS_PER_PACKET: usize = 8;
 
 impl Default for SnapshotConfig {
     fn default() -> Self {
@@ -142,6 +168,89 @@ pub struct RecipientInterest {
     pub last_sent_dynamic_body_pose: HashMap<u32, ([f32; 3], [f32; 4])>,
     pub last_sent_vehicle_tick: HashMap<u32, u32>,
     pub last_sent_dynamic_tick: HashMap<u32, u32>,
+    /// With `SnapshotConfig::removals`: bodies sent to this recipient and
+    /// still in its interest, with the handle they were sent under.
+    #[serde(default)]
+    pub streamed_bodies: HashMap<u32, u16>,
+    /// With `SnapshotConfig::removals`: the same for vehicles.
+    #[serde(default)]
+    pub streamed_vehicles: HashMap<u32, u8>,
+    /// With `SnapshotConfig::removals`: vehicles in this recipient's interest
+    /// at the last snapshot (driven, or within the vehicle radius).
+    #[serde(default)]
+    pub visible_vehicles: HashSet<u32>,
+    /// Removals still to be restated.
+    #[serde(default)]
+    pub pending_removals: Vec<PendingRemoval>,
+    /// With `SnapshotConfig::removals`: bodies / vehicles that entered this
+    /// recipient's stream (first send, or back after a removal), and how many
+    /// more consecutive snapshots carry them whatever their hot/cold state.
+    /// A client drops what the server says it removed, so a lost first send
+    /// of an entity at rest would otherwise leave it undrawn until its cold
+    /// refresh (0.5-1 s).
+    #[serde(default)]
+    pub entry_sends_bodies: HashMap<u32, u8>,
+    #[serde(default)]
+    pub entry_sends_vehicles: HashMap<u32, u8>,
+}
+
+/// Consecutive snapshots that carry an entity entering the stream
+/// (`RecipientInterest::entry_sends_*`), the first send included.
+pub const SNAPSHOT_ENTRY_SENDS: u8 = 3;
+
+fn note_entry_send(map: &mut HashMap<u32, u8>, id: u32, entered: bool) {
+    if entered {
+        map.insert(id, SNAPSHOT_ENTRY_SENDS - 1);
+    } else if let Some(left) = map.get_mut(&id) {
+        *left = left.saturating_sub(1);
+        if *left == 0 {
+            map.remove(&id);
+        }
+    }
+}
+
+/// A removal the recipient has not been told often enough yet.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PendingRemoval {
+    /// The body or vehicle id (to cancel it if the entity comes back).
+    pub id: u32,
+    pub vehicle: bool,
+    /// The wire handle: a body's, or `0x8000 | vehicle handle`.
+    pub handle: u16,
+    /// The first snapshot tick that did not carry it.
+    pub tick: u32,
+    pub sends_left: u8,
+}
+
+impl RecipientInterest {
+    fn note_removed(&mut self, id: u32, vehicle: bool, handle: u16, tick: u32) {
+        self.pending_removals.retain(|p| !(p.id == id && p.vehicle == vehicle));
+        self.pending_removals.push(PendingRemoval {
+            id,
+            vehicle,
+            handle,
+            tick,
+            sends_left: SNAPSHOT_REMOVAL_REPEATS,
+        });
+    }
+
+    fn note_streamed(&mut self, id: u32, vehicle: bool) {
+        self.pending_removals.retain(|p| !(p.id == id && p.vehicle == vehicle));
+    }
+
+    /// This snapshot's removals section, oldest first.
+    fn take_removals(&mut self, tick: u32) -> Vec<protocol::SnapshotRemoval> {
+        let mut out = Vec::new();
+        for pending in self.pending_removals.iter_mut().take(SNAPSHOT_REMOVALS_PER_PACKET) {
+            out.push(protocol::SnapshotRemoval {
+                handle: pending.handle,
+                age_ticks: tick.saturating_sub(pending.tick).min(u32::from(u8::MAX)) as u8,
+            });
+            pending.sends_left = pending.sends_left.saturating_sub(1);
+        }
+        self.pending_removals.retain(|p| p.sends_left > 0);
+        out
+    }
 }
 
 enum DynamicBodySelection {
@@ -403,6 +512,19 @@ pub fn build_recipient_snapshot(
         .unwrap_or(0);
     budget_remaining = budget_remaining.saturating_sub(reserved_support_dynamic_bytes);
 
+    let mut current_visible_vehicles: HashSet<u32> = HashSet::new();
+    if config.removals {
+        for (vehicle_id, pos, state) in world.vehicles.iter() {
+            if reserved_vehicle_ids.contains(vehicle_id)
+                || state.driver_id == recipient_id
+                || distance_sq(*pos, recipient_pos)
+                    <= config.vehicle_aoi_radius_m * config.vehicle_aoi_radius_m
+            {
+                current_visible_vehicles.insert(*vehicle_id);
+            }
+        }
+    }
+
     let mut remote_player_states = Vec::new();
     let mut remote_player_candidates: Vec<_> = world
         .players
@@ -485,6 +607,11 @@ pub fn build_recipient_snapshot(
         interest
             .last_sent_vehicle_tick
             .insert(*vehicle_id, world.server_tick);
+        if config.removals {
+            let entered = interest.streamed_vehicles.insert(*vehicle_id, handle).is_none();
+            note_entry_send(&mut interest.entry_sends_vehicles, *vehicle_id, entered);
+            interest.note_streamed(*vehicle_id, true);
+        }
     }
 
     let reserved_vehicles_sent = selected_vehicle_states.len();
@@ -545,7 +672,8 @@ pub fn build_recipient_snapshot(
                 interest.last_sent_vehicle_tick.get(vehicle_id).copied(),
                 world.server_tick,
                 config.cold_vehicle_refresh_ticks,
-            );
+            )
+            || (config.removals && interest.entry_sends_vehicles.contains_key(vehicle_id));
         if hot {
             vehicle_hot.push((*vehicle_id, distance_sq(*pos, recipient_pos), record));
         }
@@ -560,6 +688,11 @@ pub fn build_recipient_snapshot(
         interest
             .last_sent_vehicle_tick
             .insert(vehicle_id, world.server_tick);
+        if config.removals {
+            let entered = interest.streamed_vehicles.insert(vehicle_id, record.handle).is_none();
+            note_entry_send(&mut interest.entry_sends_vehicles, vehicle_id, entered);
+            interest.note_streamed(vehicle_id, true);
+        }
         selected_vehicle_states.push(record);
         budget_remaining = budget_remaining.saturating_sub(SNAPSHOT_V2_VEHICLE_BYTES);
     }
@@ -603,7 +736,7 @@ pub fn build_recipient_snapshot(
             interest.last_sent_dynamic_tick.get(body_id).copied(),
             world.server_tick,
             config.cold_dynamic_refresh_ticks,
-        );
+        ) || (config.removals && interest.entry_sends_bodies.contains_key(body_id));
         let near = dist_sq <= config.hot_dynamic_near_radius_m * config.hot_dynamic_near_radius_m;
 
         if meta.shape_type == SHAPE_SPHERE {
@@ -653,7 +786,43 @@ pub fn build_recipient_snapshot(
     }
     selection.bodies_aoi = all_visible_dynamic_bodies.len() as u32;
     selection.bodies_hot = (dynamic_hot.len() + dynamic_cold.len()) as u32;
-    interest.visible_dynamic_bodies = all_visible_dynamic_bodies;
+    let previous_visible_bodies =
+        std::mem::replace(&mut interest.visible_dynamic_bodies, all_visible_dynamic_bodies);
+    if config.removals {
+        // Left this recipient's interest, or the world, since the last
+        // snapshot: say so, and send it at once should it come back.
+        let mut left: Vec<u32> = previous_visible_bodies
+            .difference(&interest.visible_dynamic_bodies)
+            .copied()
+            .collect();
+        left.sort_unstable();
+        for body_id in left {
+            interest.last_sent_dynamic_tick.remove(&body_id);
+            interest.entry_sends_bodies.remove(&body_id);
+            if let Some(handle) = interest.streamed_bodies.remove(&body_id) {
+                interest.note_removed(body_id, false, handle, world.server_tick);
+            }
+        }
+        let mut left: Vec<u32> = interest
+            .visible_vehicles
+            .difference(&current_visible_vehicles)
+            .copied()
+            .collect();
+        left.sort_unstable();
+        for vehicle_id in left {
+            interest.last_sent_vehicle_tick.remove(&vehicle_id);
+            interest.entry_sends_vehicles.remove(&vehicle_id);
+            if let Some(handle) = interest.streamed_vehicles.remove(&vehicle_id) {
+                interest.note_removed(
+                    vehicle_id,
+                    true,
+                    protocol::SNAPSHOT_V2_REMOVAL_VEHICLE_BIT | u16::from(handle),
+                    world.server_tick,
+                );
+            }
+        }
+        interest.visible_vehicles = current_visible_vehicles;
+    }
     dynamic_hot.sort_by(|a, b| a.1.total_cmp(&b.1));
     dynamic_cold.sort_by(|a, b| a.1.total_cmp(&b.1));
     if let Some(support_body_id) = support_dynamic_id {
@@ -671,6 +840,15 @@ pub fn build_recipient_snapshot(
         let reserved_support = support_dynamic_id == Some(body_id);
         if !reserved_support && budget_remaining < record_size {
             continue;
+        }
+        if config.removals {
+            let handle = match &choice {
+                DynamicBodySelection::Sphere(record) => record.handle,
+                DynamicBodySelection::Box(record) => record.handle,
+            };
+            let entered = interest.streamed_bodies.insert(body_id, handle).is_none();
+            note_entry_send(&mut interest.entry_sends_bodies, body_id, entered);
+            interest.note_streamed(body_id, false);
         }
         match choice {
             DynamicBodySelection::Sphere(record) => sphere_states.push(record),
@@ -690,6 +868,12 @@ pub fn build_recipient_snapshot(
         .bodies_aoi
         .saturating_sub(selection.bodies_hot)
         .saturating_sub(selection.out_of_range);
+    let removals = if config.removals { interest.take_removals(world.server_tick) } else { Vec::new() };
+    // The client reads only the support's velocity; a support that is not
+    // moving (the city's structures, the ground) says what no support says.
+    let compact_self = config.compact_self
+        && self_state.support_velocity_cms == [0; 3]
+        && self_state.support_angular_velocity_mrads == [0; 3];
     let packet = ServerPacket::SnapshotV2(protocol::SnapshotV2Packet {
         server_tick: world.server_tick,
         ack_input_seq,
@@ -702,6 +886,8 @@ pub fn build_recipient_snapshot(
         box_states,
         vehicle_states: selected_vehicle_states,
         server_wall_us: world.server_wall_us,
+        compact_self,
+        removals,
     });
     Some((packet, selection))
 }
@@ -729,5 +915,251 @@ pub fn packet_vehicle_count(packet: &ServerPacket) -> usize {
         ServerPacket::Snapshot(snapshot) => snapshot.vehicle_states.len(),
         ServerPacket::SnapshotV2(snapshot) => snapshot.vehicle_states.len(),
         _ => 0,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::protocol::{
+        encode_server_packet, make_net_dynamic_body_state, make_net_player_state, NetVehicleState,
+        SNAPSHOT_V2_REMOVALS_TAG, SNAPSHOT_V2_REMOVAL_VEHICLE_BIT, SNAPSHOT_V2_TRAILER_BYTES,
+    };
+
+    const RECIPIENT: u32 = 1;
+
+    struct Scene {
+        tick: u32,
+        players: Vec<(u32, [f32; 3], NetPlayerState)>,
+        bodies: Vec<(u32, [f32; 3], [f32; 4], NetDynamicBodyState)>,
+        vehicles: Vec<(u32, [f32; 3], NetVehicleState)>,
+        player_handles: HashMap<u32, u8>,
+        vehicle_handles: HashMap<u32, u8>,
+        body_meta: HashMap<u32, BodyMeta>,
+    }
+
+    fn player(id: u32, pos: [f32; 3]) -> (u32, [f32; 3], NetPlayerState) {
+        (id, pos, make_net_player_state(id, pos, [0.0; 3], 0.0, 0.0, 100, 0, 0.0))
+    }
+
+    fn ball(id: u32, pos: [f32; 3], vel: [f32; 3]) -> (u32, [f32; 3], [f32; 4], NetDynamicBodyState) {
+        let q = [0.0, 0.0, 0.0, 1.0];
+        (id, pos, q, make_net_dynamic_body_state(id, pos, q, [0.2; 3], vel, [0.0; 3], SHAPE_SPHERE))
+    }
+
+    fn car(id: u32, pos: [f32; 3]) -> (u32, [f32; 3], NetVehicleState) {
+        let state = NetVehicleState {
+            id,
+            px_mm: (pos[0] * 1000.0) as i32,
+            py_mm: (pos[1] * 1000.0) as i32,
+            pz_mm: (pos[2] * 1000.0) as i32,
+            qw_snorm: i16::MAX,
+            ..Default::default()
+        };
+        (id, pos, state)
+    }
+
+    impl Scene {
+        fn new() -> Self {
+            Scene {
+                tick: 100,
+                players: vec![player(RECIPIENT, [0.0, 1.0, 0.0])],
+                bodies: Vec::new(),
+                vehicles: Vec::new(),
+                player_handles: HashMap::from([(RECIPIENT, 1)]),
+                vehicle_handles: HashMap::new(),
+                body_meta: HashMap::new(),
+            }
+        }
+
+        fn add_ball(&mut self, id: u32, handle: u16, pos: [f32; 3], vel: [f32; 3]) {
+            self.bodies.push(ball(id, pos, vel));
+            self.body_meta
+                .insert(id, BodyMeta { handle, shape_type: SHAPE_SPHERE, half_extents_m: [0.2; 3] });
+        }
+
+        fn build(
+            &mut self,
+            interest: &mut RecipientInterest,
+            config: &SnapshotConfig,
+            support: Option<SupportInput>,
+        ) -> protocol::SnapshotV2Packet {
+            let world = SnapshotWorld {
+                server_tick: self.tick,
+                server_time_us: u64::from(self.tick) * 16_666,
+                server_wall_us: self.tick * 16_666,
+                players: &self.players,
+                bodies: &self.bodies,
+                vehicles: &self.vehicles,
+                player_handles: &self.player_handles,
+                vehicle_handles: &self.vehicle_handles,
+                body_meta: &self.body_meta,
+            };
+            let recipient = RecipientInput { id: RECIPIENT, ack_input_seq: 0, support };
+            let (packet, _) = build_recipient_snapshot(&world, &recipient, interest, true, config).unwrap();
+            self.tick += 1;
+            match packet {
+                ServerPacket::SnapshotV2(packet) => packet,
+                _ => unreachable!(),
+            }
+        }
+    }
+
+    #[test]
+    fn a_body_retired_after_it_was_sent_is_named_in_the_next_snapshots() {
+        let mut scene = Scene::new();
+        scene.add_ball(7, 3, [5.0, 1.0, 0.0], [10.0, 0.0, 0.0]);
+        let mut interest = RecipientInterest::default();
+        let first = scene.build(&mut interest, &SnapshotConfig::PRODUCTION, None);
+        assert_eq!(first.sphere_states.len(), 1);
+        assert!(first.removals.is_empty());
+        // Retired by the server: gone from the world.
+        scene.bodies.clear();
+        let retired_at = scene.tick;
+        let mut seen = Vec::new();
+        for _ in 0..(SNAPSHOT_REMOVAL_REPEATS as usize + 2) {
+            let packet = scene.build(&mut interest, &SnapshotConfig::PRODUCTION, None);
+            seen.push((packet.server_tick, packet.removals.clone()));
+        }
+        for (i, (tick, removals)) in seen.iter().enumerate() {
+            if i < SNAPSHOT_REMOVAL_REPEATS as usize {
+                assert_eq!(removals.len(), 1, "snapshot {tick}");
+                assert_eq!(removals[0].handle, 3);
+                assert_eq!(*tick - u32::from(removals[0].age_ticks), retired_at);
+            } else {
+                assert!(removals.is_empty(), "restated only {} times", SNAPSHOT_REMOVAL_REPEATS);
+            }
+        }
+    }
+
+    #[test]
+    fn a_body_never_sent_is_never_named_and_one_that_returns_is_sent_at_once() {
+        let mut scene = Scene::new();
+        let mut interest = RecipientInterest::default();
+        // In interest, never sent: a body the client never heard of.
+        scene.add_ball(7, 3, [5.0, 1.0, 0.0], [0.0; 3]);
+        interest.visible_dynamic_bodies.insert(7);
+        interest.last_sent_dynamic_tick.insert(7, scene.tick);
+        interest.last_sent_dynamic_body_pose.insert(7, ([5.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]));
+        scene.bodies.clear();
+        let packet = scene.build(&mut interest, &SnapshotConfig::PRODUCTION, None);
+        assert!(packet.removals.is_empty());
+
+        // Sent, leaves interest, comes back 10 ticks later at rest and far
+        // (cold, not near): sent at once, not a cold refresh later, and its
+        // pending removal is cancelled.
+        scene.add_ball(8, 4, [30.0, 1.0, 0.0], [0.0; 3]);
+        assert_eq!(scene.build(&mut interest, &SnapshotConfig::PRODUCTION, None).sphere_states.len(), 1);
+        scene.bodies[0].1 = [200.0, 1.0, 0.0];
+        let left = scene.build(&mut interest, &SnapshotConfig::PRODUCTION, None);
+        assert_eq!(left.removals.len(), 1);
+        scene.bodies[0].1 = [30.0, 1.0, 0.0];
+        let back = scene.build(&mut interest, &SnapshotConfig::PRODUCTION, None);
+        assert_eq!(back.sphere_states.len(), 1, "a body back in interest is sent at once");
+        assert!(back.removals.is_empty(), "its removal is withdrawn");
+    }
+
+    #[test]
+    fn a_vehicle_that_leaves_interest_is_named_with_the_vehicle_bit() {
+        let mut scene = Scene::new();
+        scene.vehicles.push(car(40, [10.0, 0.5, 0.0]));
+        scene.vehicle_handles.insert(40, 2);
+        let mut interest = RecipientInterest::default();
+        assert_eq!(scene.build(&mut interest, &SnapshotConfig::PRODUCTION, None).vehicle_states.len(), 1);
+        scene.vehicles[0].1 = [95.0, 0.5, 0.0];
+        let packet = scene.build(&mut interest, &SnapshotConfig::PRODUCTION, None);
+        assert!(packet.vehicle_states.is_empty());
+        assert_eq!(packet.removals.len(), 1);
+        assert_eq!(packet.removals[0].handle, SNAPSHOT_V2_REMOVAL_VEHICLE_BIT | 2);
+        assert_eq!(packet.removals[0].age_ticks, 0);
+    }
+
+    #[test]
+    fn an_entity_entering_the_stream_is_in_its_first_three_snapshots_even_at_rest() {
+        let mut scene = Scene::new();
+        scene.vehicles.push(car(40, [30.0, 0.5, 0.0]));
+        scene.vehicle_handles.insert(40, 2);
+        scene.add_ball(7, 3, [30.0, 1.0, 5.0], [0.0; 3]);
+        let mut interest = RecipientInterest::default();
+        let carried = |p: &protocol::SnapshotV2Packet| (p.vehicle_states.len(), p.sphere_states.len());
+        let mut seen = Vec::new();
+        for _ in 0..5 {
+            seen.push(carried(&scene.build(&mut interest, &SnapshotConfig::PRODUCTION, None)));
+        }
+        assert_eq!(seen, vec![(1, 1), (1, 1), (1, 1), (0, 0), (0, 0)]);
+        // The legacy format sends an entity at rest once, then at its refresh.
+        let mut interest = RecipientInterest::default();
+        let mut seen = Vec::new();
+        for _ in 0..3 {
+            seen.push(carried(&scene.build(&mut interest, &SnapshotConfig::LEGACY_FORMAT, None)));
+        }
+        assert_eq!(seen, vec![(1, 1), (0, 0), (0, 0)]);
+    }
+
+    #[test]
+    fn the_legacy_format_sends_no_removals_and_the_full_self_state() {
+        let mut scene = Scene::new();
+        scene.add_ball(7, 3, [5.0, 1.0, 0.0], [10.0, 0.0, 0.0]);
+        let mut interest = RecipientInterest::default();
+        let legacy = SnapshotConfig::LEGACY_FORMAT;
+        scene.build(&mut interest, &legacy, None);
+        scene.bodies.clear();
+        let packet = scene.build(&mut interest, &legacy, None);
+        assert!(packet.removals.is_empty());
+        assert!(!packet.compact_self);
+        let bytes = encode_server_packet(&ServerPacket::SnapshotV2(packet));
+        assert_eq!(bytes.len(), SNAPSHOT_V2_HEADER_BYTES + SNAPSHOT_V2_SELF_PLAYER_BYTES + SNAPSHOT_V2_TRAILER_BYTES);
+        assert!(interest.streamed_bodies.is_empty() && interest.pending_removals.is_empty());
+    }
+
+    #[test]
+    fn the_support_block_is_left_out_unless_the_support_moves() {
+        let mut scene = Scene::new();
+        let mut interest = RecipientInterest::default();
+        let still = SupportInput { entity_id: 99, ..Default::default() };
+        let size = |p: protocol::SnapshotV2Packet| encode_server_packet(&ServerPacket::SnapshotV2(p)).len();
+        let header_trailer = SNAPSHOT_V2_HEADER_BYTES + SNAPSHOT_V2_TRAILER_BYTES;
+        // No support, and a support standing still: 12-byte self state.
+        assert_eq!(size(scene.build(&mut interest, &SnapshotConfig::PRODUCTION, None)), header_trailer + 12);
+        assert_eq!(size(scene.build(&mut interest, &SnapshotConfig::PRODUCTION, Some(still))), header_trailer + 12);
+        // A moving support (a platform, a car): the whole block.
+        scene.add_ball(99, 5, [0.0, 0.0, 0.0], [0.0; 3]);
+        let moving = SupportInput { entity_id: 99, velocity: [1.0, 0.0, 0.0], ..Default::default() };
+        let packet = scene.build(&mut interest, &SnapshotConfig::PRODUCTION, Some(moving));
+        assert!(!packet.compact_self);
+        assert_eq!(packet.self_state.support_handle, 5);
+        let spinning = SupportInput { entity_id: 99, angular_velocity: [0.0, 0.5, 0.0], ..Default::default() };
+        assert!(!scene.build(&mut interest, &SnapshotConfig::PRODUCTION, Some(spinning)).compact_self);
+    }
+
+    #[test]
+    fn a_snapshot_with_removals_carries_the_full_self_state_then_the_section() {
+        let mut scene = Scene::new();
+        scene.add_ball(7, 0x0123, [5.0, 1.0, 0.0], [10.0, 0.0, 0.0]);
+        let mut interest = RecipientInterest::default();
+        scene.build(&mut interest, &SnapshotConfig::PRODUCTION, None);
+        scene.bodies.clear();
+        let packet = scene.build(&mut interest, &SnapshotConfig::PRODUCTION, None);
+        assert!(packet.compact_self && packet.removals.len() == 1);
+        let bytes = encode_server_packet(&ServerPacket::SnapshotV2(packet));
+        let section = SNAPSHOT_V2_HEADER_BYTES + SNAPSHOT_V2_SELF_PLAYER_BYTES + SNAPSHOT_V2_TRAILER_BYTES;
+        assert_eq!(bytes.len(), section + 2 + 3);
+        assert_eq!(bytes[section], SNAPSHOT_V2_REMOVALS_TAG);
+        assert_eq!(bytes[section + 1], 1);
+        assert_eq!(u16::from_le_bytes([bytes[section + 2], bytes[section + 3]]), 0x0123);
+        assert_eq!(bytes[section + 4], 0);
+    }
+
+    #[test]
+    fn an_older_interest_baseline_reads_the_new_fields_as_empty() {
+        let old = r#"{"visible_dynamic_bodies":[3],"last_sent_dynamic_body_pose":{},"last_sent_vehicle_tick":{},"last_sent_dynamic_tick":{"3":10}}"#;
+        let interest: RecipientInterest = serde_json::from_str(old).unwrap();
+        assert!(interest.streamed_bodies.is_empty() && interest.pending_removals.is_empty());
+        let old_config = serde_json::to_value(SnapshotConfig::PRODUCTION).unwrap();
+        let mut old_config = old_config.as_object().unwrap().clone();
+        old_config.remove("compact_self");
+        old_config.remove("removals");
+        let config: SnapshotConfig = serde_json::from_value(serde_json::Value::Object(old_config)).unwrap();
+        assert_eq!(config, SnapshotConfig::LEGACY_FORMAT);
     }
 }

@@ -219,6 +219,11 @@ impl CityKnobs {
 pub struct StreamConfig {
     pub pace: Pace,
     pub snapshot: SnapshotConfig,
+    /// `snapshot.compact_self` / `snapshot.removals` knobs. None: as the
+    /// capture recorded (`SnapshotBaseline`), off for a capture without the
+    /// fields, so an older capture replays byte for byte.
+    pub snapshot_compact_self: Option<bool>,
+    pub snapshot_removals: Option<bool>,
     /// Snapshot every N sim ticks (None: as the live match did).
     pub snapshot_interval_ticks: Option<u32>,
     pub city: CityKnobs,
@@ -251,6 +256,8 @@ impl Default for StreamConfig {
         Self {
             pace: Pace::Recorded,
             snapshot: SnapshotConfig::PRODUCTION,
+            snapshot_compact_self: None,
+            snapshot_removals: None,
             snapshot_interval_ticks: None,
             city: CityKnobs::default(),
             recorded_repairs: true,
@@ -287,6 +294,9 @@ pub struct StreamStats {
     pub strict_snapshots: bool,
     pub snapshot_inputs: String,
     pub snapshot_interest_start: String,
+    /// The SnapshotV2 format options the builder ran with.
+    #[serde(default)]
+    pub snapshot_format: String,
     pub city_first_tick: Option<u32>,
     pub city_encoder_start: String,
     pub city_send_interval_ticks: u32,
@@ -809,6 +819,17 @@ pub fn build(bundle: &Bundle, config: &StreamConfig) -> std::io::Result<Stream> 
         "empty"
     }
     .into();
+    let snapshot_config = SnapshotConfig {
+        compact_self: config
+            .snapshot_compact_self
+            .unwrap_or_else(|| baseline.map_or(false, |b| b.compact_self)),
+        removals: config.snapshot_removals.unwrap_or_else(|| baseline.map_or(false, |b| b.removals)),
+        ..config.snapshot
+    };
+    stats.snapshot_format = format!(
+        "compact_self {} removals {}",
+        snapshot_config.compact_self, snapshot_config.removals
+    );
     let mut interest: RecipientInterest = baseline
         .and_then(|b| b.interest.get(&player).cloned())
         .unwrap_or_default();
@@ -913,7 +934,7 @@ pub fn build(bundle: &Bundle, config: &StreamConfig) -> std::io::Result<Stream> 
             &recipient,
             &mut interest,
             live_strict,
-            &config.snapshot,
+            &snapshot_config,
         ) else {
             continue;
         };

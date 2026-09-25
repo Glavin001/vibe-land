@@ -104,5 +104,26 @@ class SessionBundle(unittest.TestCase):
         self.assertEqual(report["selections"]["snapshot"]["bodies_budget"], 1)
 
 
+
+
+class SnapshotSelfStateLength(unittest.TestCase):
+    """The self state is 33 bytes, or 12 without its support block (a
+    production server since the 2026-09-24 scoreboard round), with the 4-byte
+    wall-clock trailer and possibly a removals section after the entities."""
+
+    def test_entities_are_read_after_a_12_or_33_byte_self_state(self):
+        def packet(self_bytes, tail):
+            head = struct.pack("<BIHiiiBBBB", 112, 5, 0, 1000, 0, 0, 0, 1, 0, 0)
+            body = struct.pack("<Hhhh", 9, 400, 0, 0) + bytes(14)
+            return head + bytes(self_bytes) + body + tail
+
+        trailer = struct.pack("<I", 77)
+        removals = bytes([0xE7, 1, 3, 0, 0])
+        for self_bytes, tail in ((33, b""), (33, trailer), (12, trailer), (33, trailer + removals)):
+            out = session_bundle.decode_snapshot_v2(packet(self_bytes, tail))
+            self.assertEqual(list(out["bodies"]), [9], (self_bytes, tail))
+            self.assertAlmostEqual(out["bodies"][9][0], 2.0, places=6)
+
+
 if __name__ == "__main__":
     unittest.main()

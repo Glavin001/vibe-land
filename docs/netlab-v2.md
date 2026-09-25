@@ -23,7 +23,7 @@ cell.
  ├─ server/world.bin ............ authoritative players/vehicles/bodies per tick
  ├─ server/snapshot-inputs.jsonl  per snapshot tick: acked input seq, support,
  │                                melee flags, SnapshotV2 wall-clock stamp  [new]
- ├─ server/snapshot-baseline.json snapshot interest state + handles at capture open [new]
+ ├─ server/snapshot-baseline.json snapshot interest state + handles + format at capture open [new]
  ├─ server/city/encoder.tape .... what the city encoder was fed, per tick
  ├─ server/city/encoder-checkpoint.json.zst  encoder state before the 1st captured tick [new]
  ├─ server/city/cameras.jsonl ... every player's camera per send tick, in call order
@@ -89,6 +89,13 @@ cell.
 build is newer than every `netcode/` and `shared/` source it was built from,
 and refuses a stale build. That is how a before/after comparison measures
 exactly the client in each tree.
+
+A tree from before 3f3d891a has no shared pose steps, so the stage would
+score no city chunks or meteors for it. `scripts/perf/netlab2-prework/install.sh
+<worktree>` adds them to a worktree from before 0eb6f3fd (the netcode
+scoreboard's "before" client, e3fdf5cc): the 3f3d891a extractions, whose
+renderer code is unchanged back to e3fdf5cc, and that tree's own meteor
+placement rule lifted out of its `MeteorLayer`.
 
 ## Seams: where the lab substitutes something
 
@@ -231,6 +238,8 @@ These are the knobs production actually has, with their production defaults:
 | `snapshot.player_aoi_m`, `snapshot.vehicle_aoi_m`, `snapshot.dynamic_aoi_m`, `snapshot.dynamic_aoi_exit_m` | 80 each | `shared` constants |
 | `snapshot.cold_dynamic_refresh_ticks` / `snapshot.cold_vehicle_refresh_ticks` | 60 / 30 | resting-entity refresh |
 | `snapshot.hot_speed_mps`, `snapshot.hot_near_m` | 0.05, 12 | hot/cold split |
+| `snapshot.compact_self` | 1 (0 in older captures) | the self state without its support block when the support does not move (`SnapshotConfig::compact_self`) |
+| `snapshot.removals` | 1 (0 in older captures) | the removals section naming bodies and vehicles that left the recipient's stream, and three consecutive sends for an entity entering it (`SnapshotConfig::removals`) |
 | `city.send_hz` | 30 | `CITY_CHUNK_STREAM_HZ` |
 | `city.ceiling_bytes` | 10400 (0 = none) | `CITY_CLIENT_CEILING_BYTES_PER_SEND` |
 | `city.error_budget_px` | 2.0 | encoder |
@@ -248,6 +257,12 @@ These are the knobs production actually has, with their production defaults:
 | `city.rate_adapt` | 1 (`VIBE_CITY_RATE_ADAPT`) | per-link rate adaptation of the city stream (S15); simulated links only, the recorded link is always open loop |
 | `city.topology_copies` | 2 (0 in older captures) | datagram copies of each reliable topology message (`EncoderConfig::topology_datagram_copies`, [netcode-tuning.md](netcode-tuning.md#city-latency-and-topology-delivery)) |
 | `city.reliable_queue_ms`, `city.reliable_drain_ms` | 60, 150 (0 = off) | the rate controller's reliable-stream signal (`RateConfig`): on a limited link, reliable bytes that waited this long are given the path within the drain time |
+
+The two snapshot options are recorded in `snapshot-baseline.json`
+(`compact_self`, `removals`); a capture without the fields replays with both
+off, byte for byte, and the knobs override what the capture says.
+[netcode-tuning.md](netcode-tuning.md#next-wins-compact-self-state-and-explicit-removals)
+has the round that added them.
 
 `city.baseline_interval_ticks` is 120 on new servers (60 before). A knob
 applies over the capture's encoder checkpoint, which carries the config the

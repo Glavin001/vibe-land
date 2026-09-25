@@ -570,6 +570,103 @@ describe('NetcodeClient', () => {
       expect(present[70]).toBe(false);
     });
 
+    // SnapshotV2 removals (server/src/snapshot_builder.rs `removals`): the
+    // server names what its stream stopped carrying; nothing is inferred.
+    it('holds a body named in a removals section until the render time reaches the removal, then drops it', () => {
+      let nowMs = 0;
+      const client = new NetcodeClient({ nowMs: () => nowMs });
+      client.handlePacket(makeWelcome(1));
+      client.handlePacket(makeDynamicBodyMeta([{ handle: 7, bodyId: 7001 }]));
+      const present: boolean[] = [];
+      for (let tick = 1; tick <= 80; tick += 1) {
+        nowMs = tick * (1000 / 60);
+        const snapshot = makeSnapshotV2({
+          serverTick: tick,
+          sphereStates: tick <= 10 ? [{ handle: 7, offset: [3, 0.3, 0], velocity: [0, 0, 0] }] : [],
+        });
+        // Retired at tick 30 while at rest; restated in six snapshots.
+        const removals = tick >= 30 && tick < 36 ? [{ handle: 7, vehicle: false, removedTick: 30 }] : undefined;
+        client.handlePacket({ ...snapshot, ...(removals ? { removals } : {}) });
+        present[tick] = client.dynamicBodies.has(7001);
+      }
+      // Truth has it until tick 29: drawn while the render time is behind that.
+      expect(present[30]).toBe(true);
+      // Gone within a few ticks of the removal, not at the next cold refresh (tick 70).
+      expect(present.findIndex((p, tick) => tick > 30 && !p)).toBeLessThanOrEqual(33);
+      expect(present[40]).toBe(false);
+    });
+
+    it('does not hold a moving body named in a removals section past its last sample', () => {
+      let nowMs = 0;
+      const client = new NetcodeClient({ nowMs: () => nowMs });
+      client.handlePacket(makeWelcome(1));
+      client.handlePacket(makeDynamicBodyMeta([{ handle: 7, bodyId: 7001 }]));
+      const present: boolean[] = [];
+      for (let tick = 1; tick <= 40; tick += 1) {
+        nowMs = tick * (1000 / 60);
+        const snapshot = makeSnapshotV2({
+          serverTick: tick,
+          // Its samples after tick 20 were lost; the server retired it at 26.
+          sphereStates: tick <= 20 ? [{ handle: 7, offset: [tick * 0.5, 2, 0], velocity: [30, 0, 0] }] : [],
+        });
+        const removals = tick >= 26 && tick < 32 ? [{ handle: 7, vehicle: false, removedTick: 26 }] : undefined;
+        client.handlePacket({ ...snapshot, ...(removals ? { removals } : {}) });
+        present[tick] = client.dynamicBodies.has(7001);
+      }
+      // Not frozen at tick 20's pose until tick 26: gone as soon as it is named.
+      expect(present[26]).toBe(false);
+    });
+
+    it('ignores a removal older than a sample the body has had since', () => {
+      let nowMs = 0;
+      const client = new NetcodeClient({ nowMs: () => nowMs });
+      client.handlePacket(makeWelcome(1));
+      client.handlePacket(makeDynamicBodyMeta([{ handle: 7, bodyId: 7001 }]));
+      for (let tick = 1; tick <= 40; tick += 1) {
+        nowMs = tick * (1000 / 60);
+        const snapshot = makeSnapshotV2({
+          serverTick: tick,
+          sphereStates: [{ handle: 7, offset: [3, 0.3, 0], velocity: [0, 0, 0] }],
+        });
+        // It left at tick 20 and came straight back: a late copy of that removal.
+        const removals = tick >= 21 && tick < 27 ? [{ handle: 7, vehicle: false, removedTick: 20 }] : undefined;
+        client.handlePacket({ ...snapshot, ...(removals ? { removals } : {}) });
+      }
+      expect(client.dynamicBodies.has(7001)).toBe(true);
+    });
+
+    it('drops a vehicle named in a removals section, where it used to stay drawn for 3 s', () => {
+      let delayTicks = 0;
+      const run = (withRemovals: boolean): boolean[] => {
+        let nowMs = 0;
+        const client = new NetcodeClient({ nowMs: () => nowMs });
+        client.handlePacket(makeWelcome(1));
+        const present: boolean[] = [];
+        for (let tick = 1; tick <= 60; tick += 1) {
+          nowMs = tick * (1000 / 60);
+          const snapshot = makeSnapshotV2({
+            serverTick: tick,
+            vehicleStates: tick <= 10 ? [{ handle: 3, offset: [70 + tick, 0, 0], velocity: [20, 0, 0] }] : [],
+          });
+          const removals = withRemovals && tick >= 11 && tick < 17
+            ? [{ handle: 3, vehicle: true, removedTick: 11 }]
+            : undefined;
+          client.handlePacket({ ...snapshot, ...(removals ? { removals } : {}) });
+          present[tick] = client.vehicles.has(3);
+        }
+        delayTicks = Math.ceil(client.interpolationDelayMs / (1000 / 60));
+        return present;
+      };
+      const told = run(true);
+      // Drawn until the vehicle render clock (one interpolation delay behind)
+      // reaches the removal tick, then gone.
+      expect(told[11]).toBe(true);
+      expect(told[11 + delayTicks - 1]).toBe(true);
+      expect(told[11 + delayTicks + 1]).toBe(false);
+      // A server without the section: the 180-tick stale rule still decides.
+      expect(run(false)[60]).toBe(true);
+    });
+
     it('applies V2 roster, metadata, and relative snapshot state', () => {
       let localAck = -1;
       const client = new NetcodeClient({

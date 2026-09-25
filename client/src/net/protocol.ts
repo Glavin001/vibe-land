@@ -347,7 +347,30 @@ export type SnapshotV2Packet = {
    * A trailer after the vehicles: older clients never read it.
    */
   serverWallUs?: number | null;
+  /**
+   * Bodies and vehicles this client's stream no longer carries (retired, or
+   * out of its interest), from a server that sends them: a section after the
+   * wall-clock trailer (tag 0xE7, count, entries of u16 handle + u8 age),
+   * which older clients never read. Each entry is restated in a few
+   * consecutive snapshots.
+   */
+  removals?: SnapshotRemovalV2[];
 };
+
+/**
+ * One removals entry: a dynamic body's handle, or a vehicle's (`vehicle`),
+ * absent from this recipient's stream from `removedTick` on.
+ */
+export type SnapshotRemovalV2 = {
+  handle: number;
+  vehicle: boolean;
+  removedTick: number;
+};
+
+/** First byte of the SnapshotV2 removals section. */
+export const SNAPSHOT_V2_REMOVALS_TAG = 0xe7;
+/** Handle bit of a vehicle in a removals entry. */
+export const SNAPSHOT_V2_REMOVAL_VEHICLE_BIT = 0x8000;
 
 export type ShotResultPacket = {
   type: 'shotResult';
@@ -930,6 +953,29 @@ export function decodeSnapshotV2Packet(view: DataView, o: number): SnapshotV2Pac
 
   // Trailer: the server's wall clock (u32 us). Absent from older servers.
   const serverWallUs = view.byteLength - o >= 4 ? view.getUint32(o, true) : null;
+  // Removals section after the trailer. A server only sends it with the full
+  // 33-byte self state, so the self-state length detection above holds.
+  let removals: SnapshotRemovalV2[] | undefined;
+  if (serverWallUs !== null) {
+    let r = o + 4;
+    if (view.byteLength - r >= 2 && view.getUint8(r) === SNAPSHOT_V2_REMOVALS_TAG) {
+      const count = view.getUint8(r + 1);
+      r += 2;
+      if (view.byteLength - r >= count * 3) {
+        removals = [];
+        for (let i = 0; i < count; i += 1) {
+          const raw = view.getUint16(r, true);
+          const age = view.getUint8(r + 2);
+          r += 3;
+          removals.push({
+            handle: raw & ~SNAPSHOT_V2_REMOVAL_VEHICLE_BIT & 0xffff,
+            vehicle: (raw & SNAPSHOT_V2_REMOVAL_VEHICLE_BIT) !== 0,
+            removedTick: serverTick - age,
+          });
+        }
+      }
+    }
+  }
 
   return {
     type: 'snapshotV2',
@@ -945,6 +991,7 @@ export function decodeSnapshotV2Packet(view: DataView, o: number): SnapshotV2Pac
     boxStates,
     vehicleStates,
     serverWallUs,
+    ...(removals ? { removals } : {}),
   };
 }
 

@@ -160,6 +160,8 @@ fn write_bundle_with(name: &str, with_baseline: bool, repair_at: Option<u32>) ->
                 player_handles: BTreeMap::from([(1, 1), (2, 2)]),
                 vehicle_handles: BTreeMap::new(),
                 body_meta: body_meta(&truth(tick)).into_iter().collect(),
+                compact_self: SnapshotConfig::PRODUCTION.compact_self,
+                removals: SnapshotConfig::PRODUCTION.removals,
             });
         }
         let ack = (tick / 3) as u16;
@@ -286,11 +288,23 @@ fn without_the_baseline_the_cold_selection_diverges_and_says_so() {
     let dir = write_bundle("cold", false);
     let bundle = Bundle::open(&dir).unwrap();
     assert!(bundle.warnings.iter().any(|w| w.contains("snapshot-baseline.json")));
-    let run = crate::run_stream(&bundle, &recorded_spec(), &StreamConfig::default(), &dir.join("run")).unwrap();
+    // A capture without a baseline also has no record of the snapshot format
+    // (it replays as the legacy format); this one's live server ran
+    // production's, so the knobs say so.
+    let config = StreamConfig {
+        snapshot_compact_self: Some(SnapshotConfig::PRODUCTION.compact_self),
+        snapshot_removals: Some(SnapshotConfig::PRODUCTION.removals),
+        ..StreamConfig::default()
+    };
+    let run = crate::run_stream(&bundle, &recorded_spec(), &config, &dir.join("run")).unwrap();
     let bytes = crate::calibrate::byte_match(&bundle, &run.stream);
     let snapshots = &bytes.kinds["snapshot_v2"];
     assert!(snapshots.mismatched > 0, "empty interest memory must re-send cold bodies early");
     assert!(snapshots.matched > 0, "and converge once the cold refresh has cycled");
+    // Without the knobs the format is the legacy one: no snapshot matches.
+    let legacy = crate::run_stream(&bundle, &recorded_spec(), &StreamConfig::default(), &dir.join("legacy")).unwrap();
+    let bytes = crate::calibrate::byte_match(&bundle, &legacy.stream);
+    assert_eq!(bytes.kinds["snapshot_v2"].matched, 0, "a capture without the format fields replays the legacy format");
     let _ = std::fs::remove_dir_all(&dir);
 }
 

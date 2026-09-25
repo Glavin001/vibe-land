@@ -641,6 +641,13 @@ pub struct SnapshotBaseline {
     pub player_handles: BTreeMap<u32, u8>,
     pub vehicle_handles: BTreeMap<u32, u8>,
     pub body_meta: BTreeMap<u32, crate::snapshot_builder::BodyMeta>,
+    /// The SnapshotV2 format options the server ran with
+    /// (`SnapshotConfig::compact_self` / `removals`). A capture from before
+    /// they existed has neither field and replays with both off.
+    #[serde(default)]
+    pub compact_self: bool,
+    #[serde(default)]
+    pub removals: bool,
 }
 
 /// Everything the tick hands the writer, once per tick.

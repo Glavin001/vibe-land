@@ -2,7 +2,7 @@ import { SERVER_CLOSE_MARKER } from './disconnectReason';
 import { CITY_WIRE_VERSION } from '../city/wire';
 import { GameSocket } from './gameSocket';
 import { EnergyDisplay } from './energyDisplay';
-import { BodyStreamPresence } from './bodyPresence';
+import { BodyStreamPresence, MOVING_BODY_SPEED_MS } from './bodyPresence';
 import { NetDebugTelemetry, type LocalShotTelemetry } from './debugTelemetry';
 import { WebTransportGameClient, type SessionConfigResponse } from './webTransportClient';
 import type { RawPacketListener } from './inbound';
@@ -55,6 +55,7 @@ import {
   FLAG_IN_VEHICLE,
   CLIENT_MOVEMENT_THIN_AUTHORITATIVE,
   PHYSICS_BACKEND_RAPIER,
+  SERVER_TICK_US,
 } from './protocol';
 
 export type RemotePlayer = {
@@ -247,6 +248,14 @@ export class NetcodeClient {
    * and removed once the render time is there (`retireUnstreamedBodies`).
    */
   private readonly dynamicBodyLeaving = new Map<number, number>();
+  /**
+   * Bodies and vehicles the server said its stream stopped carrying
+   * (SnapshotV2 removals): id -> the server time of the first tick without
+   * them. Drawn until the render time reaches it, then removed. A server
+   * without the section leaves these empty and the inference above decides.
+   */
+  private readonly dynamicBodyRemovedAtUs = new Map<number, number>();
+  private readonly vehicleRemovedAtUs = new Map<number, number>();
   private readonly vehicleServerTimeUs = new Map<number, number>();
   private readonly playerIdByHandle = new Map<number, number>();
   private localDrivenVehicleId: number | null = null;
@@ -781,6 +790,7 @@ export class NetcodeClient {
       });
       this.dynamicBodyPresence.seen(bodyId, packet.serverTick, Math.hypot(...velocity), position, velocity);
       this.dynamicBodyLeaving.delete(bodyId);
+      this.dynamicBodyRemovedAtUs.delete(bodyId);
     }
     for (const box of packet.boxStates) {
       const meta = this.dynamicBodyMetaByHandle.get(box.handle);
@@ -818,7 +828,9 @@ export class NetcodeClient {
       });
       this.dynamicBodyPresence.seen(bodyId, packet.serverTick, Math.hypot(...meters.velocity), meters.position, meters.velocity);
       this.dynamicBodyLeaving.delete(bodyId);
+      this.dynamicBodyRemovedAtUs.delete(bodyId);
     }
+    this.applyBodyRemovals(packet);
     // The anchor is the recipient position the server selected this snapshot's
     // bodies around (snapshot_builder.rs), so a moving body gone from it past
     // the interest radius is out of the stream now (bodyPresence.ts).
@@ -870,6 +882,7 @@ export class NetcodeClient {
         wheelData: [0, 0, 0, 0],
       };
       this.vehicles.set(vehicleId, meters);
+      this.vehicleRemovedAtUs.delete(vehicleId);
       this.vehicleLastSeenTick.set(vehicleId, packet.serverTick);
       this.vehicleServerTimeUs.set(vehicleId, packet.serverTimeUs);
       if (driverPlayerId === this.playerId && driverPlayerId !== 0) {
@@ -899,13 +912,56 @@ export class NetcodeClient {
       }
       this.pushVehicleSample(vehicleId, packet.serverTimeUs, meters);
     }
+    for (const removal of packet.removals ?? []) {
+      if (!removal.vehicle || !this.vehicles.has(removal.handle)) continue;
+      const removedAtUs = removal.removedTick * SERVER_TICK_US;
+      // A sample from the removal tick on means it came back.
+      if ((this.vehicleServerTimeUs.get(removal.handle) ?? -Infinity) >= removedAtUs) continue;
+      this.vehicleRemovedAtUs.set(removal.handle, removedAtUs);
+    }
+    // Vehicles are drawn on the player render clock.
+    const vehiclesRenderedUpToUs = packet.serverTimeUs - this.interpolationDelayMs * 1000;
+    for (const [id, removedAtUs] of this.vehicleRemovedAtUs) {
+      if (removedAtUs <= vehiclesRenderedUpToUs) this.removeVehicle(id);
+    }
     for (const [id, lastSeenTick] of this.vehicleLastSeenTick) {
       if (packet.serverTick - lastSeenTick > NetcodeClient.VEHICLE_STALE_TICKS) {
-        this.vehicleLastSeenTick.delete(id);
-        this.vehicles.delete(id);
-        this.vehicleServerTimeUs.delete(id);
-        this.vehicleInterpolator.remove(id);
+        this.removeVehicle(id);
       }
+    }
+  }
+
+  private removeVehicle(id: number): void {
+    this.vehicleLastSeenTick.delete(id);
+    this.vehicles.delete(id);
+    this.vehicleServerTimeUs.delete(id);
+    this.vehicleInterpolator.remove(id);
+    this.vehicleRemovedAtUs.delete(id);
+  }
+
+  /**
+   * The bodies this snapshot's removals section names (a server that sends
+   * it): held at their last sample and removed once the render time reaches
+   * the first tick without them (`retireUnstreamedBodies`), instead of when
+   * bodyPresence.ts can infer it (up to a cold refresh, 1 s, later).
+   */
+  private applyBodyRemovals(packet: SnapshotV2Packet): void {
+    for (const removal of packet.removals ?? []) {
+      if (removal.vehicle) continue;
+      const bodyId = this.dynamicBodyMetaByHandle.get(removal.handle)?.bodyId;
+      if (bodyId === undefined || !this.dynamicBodies.has(bodyId)) continue;
+      const removedAtUs = removal.removedTick * SERVER_TICK_US;
+      const lastUs = this.dynamicBodyServerTimeUs.get(bodyId);
+      // A sample from the removal tick on means it came back.
+      if (lastUs !== undefined && lastUs >= removedAtUs) continue;
+      this.dynamicBodyPresence.delete(bodyId);
+      if (lastUs !== undefined) this.dynamicBodyLeaving.set(bodyId, lastUs);
+      // A body at rest is where it was last seen until it goes: drawn there
+      // until the removal tick. A moving one is not, and is held no longer
+      // than its last sample, as bodyPresence.ts's own verdict would.
+      const velocity = this.dynamicBodies.get(bodyId)?.velocity ?? [0, 0, 0];
+      const moving = Math.hypot(velocity[0], velocity[1], velocity[2]) > MOVING_BODY_SPEED_MS;
+      this.dynamicBodyRemovedAtUs.set(bodyId, moving && lastUs !== undefined ? lastUs : removedAtUs);
     }
   }
 
@@ -1278,7 +1334,13 @@ export class NetcodeClient {
       }
     }
     for (const [id, lastUs] of this.dynamicBodyLeaving) {
-      if (lastUs <= renderedUpToUs) this.removeDynamicBody(id);
+      // Named in a removals section: truth has it until that tick, so it is
+      // drawn (held at its last sample) until the render time is there.
+      const until = Math.max(lastUs, this.dynamicBodyRemovedAtUs.get(id) ?? -Infinity);
+      if (until <= renderedUpToUs) this.removeDynamicBody(id);
+    }
+    for (const [id, removedAtUs] of this.dynamicBodyRemovedAtUs) {
+      if (!this.dynamicBodyLeaving.has(id) && removedAtUs <= renderedUpToUs) this.removeDynamicBody(id);
     }
   }
 
@@ -1287,6 +1349,7 @@ export class NetcodeClient {
     this.dynamicBodyServerTimeUs.delete(id);
     this.dynamicBodyInterpolator.remove(id);
     this.dynamicBodyLeaving.delete(id);
+    this.dynamicBodyRemovedAtUs.delete(id);
   }
 
   /** A body's buffered snapshots, oldest first. */
@@ -1359,10 +1422,12 @@ export class NetcodeClient {
     this.dynamicBodyMetaByHandle.clear();
     this.dynamicBodyServerTimeUs.clear();
     this.dynamicBodyLeaving.clear();
+    this.dynamicBodyRemovedAtUs.clear();
     this.dynamicBodyPresence.clear();
     this.dynamicBodyInterpolator.retainOnly(new Set());
     this.vehicles.clear();
     this.vehicleLastSeenTick.clear();
+    this.vehicleRemovedAtUs.clear();
     this.vehicleInterpolator.retainOnly(new Set());
     this.batteries.clear();
     this.energyDisplay.reset();

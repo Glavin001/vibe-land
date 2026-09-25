@@ -155,7 +155,12 @@ def decode_snapshot_v2(b):
     """Positions of every entity in a SnapshotV2, in metres."""
     tick, _ack, ax, ay, az, nr, ns, nb, nv = struct.unpack_from("<IHiiiBBBB", b, 1)
     anchor = (ax / 1000.0, ay / 1000.0, az / 1000.0)
-    at = 23 + 33  # header, self state
+    # The self state is 33, 27 or 12 bytes, told apart by what is left after
+    # the entities (client/src/net/protocol.ts decodeSnapshotV2Packet): a
+    # server sends 12 when the player stands on nothing that moves.
+    entities = nr * 19 + ns * 20 + nb * 28 + nv * 30
+    rest = len(b) - 23 - entities
+    at = 23 + (33 if rest >= 33 else 27 if rest >= 27 else 12)
     rel = lambda d: tuple(anchor[i] + d[i] * 0.0025 for i in range(3))
     out = {"tick": tick, "self": anchor, "players": {}, "bodies": {}, "vehicles": {}}
     for _ in range(nr):
