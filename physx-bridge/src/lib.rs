@@ -300,6 +300,14 @@ pub struct VehicleDesc {
     pub collision_mask: u32,
 }
 
+/// One convex child of an authored vehicle part, in actor coordinates.
+#[derive(Clone, Debug)]
+pub struct VehiclePartShape {
+    pub part_index: u32,
+    pub position: Vec3,
+    pub points: Vec<Vec3>,
+}
+
 /// One frame of driver input for a vehicle. Throttle, brake and handbrake are
 /// in `0..=1`, steer in `-1..=1` (positive turns right).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -395,6 +403,7 @@ pub struct VehicleSnapshot {
     /// rear-left, rear-right.
     pub wheel_steer: [f32; 4],
     pub wheel_rotation_speed: [f32; 4],
+    pub wheel_rotation_angle: [f32; 4],
     pub wheel_jounce: [f32; 4],
     /// Bit `w` set when wheel `w`'s road query found ground.
     pub wheels_on_road: u8,
@@ -968,6 +977,20 @@ impl World {
             let _ = desc;
             Err(stub_unavailable())
         }
+    }
+
+    pub fn set_vehicle_shapes(&mut self, entity_id: u32, shapes: &[VehiclePartShape]) -> Result<(), BridgeError> {
+        #[cfg(feature = "gpu")]
+        {
+            let shapes: Vec<ffi::FfiVehiclePartShape> = shapes.iter().map(|shape| ffi::FfiVehiclePartShape {
+                part_index: shape.part_index,
+                position: shape.position.into(),
+                points: shape.points.iter().copied().map(Into::into).collect(),
+            }).collect();
+            self.inner.pin_mut().set_vehicle_shapes(entity_id, &shapes).map_err(operation_error)
+        }
+        #[cfg(not(feature = "gpu"))]
+        { let _ = (entity_id, shapes); Err(stub_unavailable()) }
     }
 
     pub fn add_vehicle(&mut self, desc: VehicleDesc) -> Result<(), BridgeError> {
@@ -1899,6 +1922,12 @@ mod ffi {
         collision_mask: u32,
     }
 
+    struct FfiVehiclePartShape {
+        part_index: u32,
+        position: FfiVec3,
+        points: Vec<FfiVec3>,
+    }
+
     struct FfiVehicleDesc {
         entity_id: u32,
         user_id: u32,
@@ -1988,6 +2017,7 @@ mod ffi {
         sleeping: bool,
         wheel_steer: [f32; 4],
         wheel_rotation_speed: [f32; 4],
+        wheel_rotation_angle: [f32; 4],
         wheel_jounce: [f32; 4],
         wheels_on_road: u8,
     }
@@ -2409,6 +2439,7 @@ mod ffi {
         fn set_body_pose(self: Pin<&mut World>, entity_id: u32, pose: &FfiPose) -> Result<()>;
         fn add_capsule_player(self: Pin<&mut World>, desc: &FfiCapsulePlayerDesc) -> Result<()>;
         fn add_vehicle(self: Pin<&mut World>, desc: &FfiVehicleDesc) -> Result<()>;
+        fn set_vehicle_shapes(self: Pin<&mut World>, entity_id: u32, shapes: &[FfiVehiclePartShape]) -> Result<()>;
         fn remove_actor(self: Pin<&mut World>, entity_id: u32) -> Result<()>;
         fn set_user_id(self: Pin<&mut World>, entity_id: u32, user_id: u32) -> Result<()>;
         fn apply_impulse(self: Pin<&mut World>, entity_id: u32, impulse: FfiVec3) -> Result<()>;
@@ -2825,6 +2856,7 @@ impl From<ffi::FfiVehicleSnapshot> for VehicleSnapshot {
             sleeping: value.sleeping,
             wheel_steer: value.wheel_steer,
             wheel_rotation_speed: value.wheel_rotation_speed,
+            wheel_rotation_angle: value.wheel_rotation_angle,
             wheel_jounce: value.wheel_jounce,
             wheels_on_road: value.wheels_on_road,
         }

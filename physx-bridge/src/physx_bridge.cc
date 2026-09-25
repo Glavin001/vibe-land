@@ -79,6 +79,7 @@ struct Record {
   PxController *controller = nullptr;
   // Owns the actor for RecordKind::VehicleChassis; released through it.
   physx::native::NativeVehicle *vehicle = nullptr;
+  bool vehicle_compound_installed = false;
   PxVec3 player_velocity{0.0f};
   bool grounded = false;
   float player_step_offset = 0.0f;
@@ -2413,6 +2414,93 @@ public:
     records_.emplace(desc.entity_id, record);
   }
 
+  void set_vehicle_shapes(std::uint32_t entity_id, rust::Slice<const FfiVehiclePartShape> shapes) {
+    Record &record = find(entity_id);
+    require(record.vehicle != nullptr && !shapes.empty(), "vehicle compound requires an existing vehicle and shapes");
+    require(!record.vehicle_compound_installed, "vehicle compound shapes are already installed");
+    PxRigidDynamic *actor = record.vehicle->actor();
+    std::vector<PxShape *> prepared;
+    try {
+      for (const auto &part : shapes) {
+        require(part.points.size() >= 4 && part.points.size() <= 64, "vehicle hull exceeds GPU limits");
+        std::vector<PxVec3> points;
+        for (const auto &point : part.points) {
+          const PxVec3 v = to_px(point);
+          require(v.isFinite(), "vehicle hull contains nonfinite vertices");
+          points.push_back(v);
+        }
+        // Cook in a well-conditioned local frame, then restore the exact
+        // authored geometry using PhysX's supported mesh scale and shape pose.
+        // GPU compatibility is checked on the cooked mesh (before scaling):
+        // https://docs.omniverse.nvidia.com/kit/docs/omni_physics/107.0/dev_guide/rigid_bodies_articulations/rigid_bodies.html
+        // This preserves every hull and its vertices; it neither fattens thin
+        // panels nor substitutes CPU collision for an incompatible GPU hull.
+        PxVec3 center(0.0f);
+        for (const PxVec3 &point : points) center += point;
+        center /= static_cast<float>(points.size());
+        PxVec3 longest(0.0f);
+        for (const PxVec3 &a : points) for (const PxVec3 &b : points)
+          if ((a-b).magnitudeSquared() > longest.magnitudeSquared()) longest = a-b;
+        require(longest.magnitudeSquared() > 1e-18f, "vehicle convex has no extent");
+        const PxVec3 x = longest.getNormalized();
+        PxVec3 widest(0.0f);
+        for (const PxVec3 &point : points) {
+          const PxVec3 relative = point-center;
+          const PxVec3 perpendicular = relative-x*relative.dot(x);
+          if (perpendicular.magnitudeSquared() > widest.magnitudeSquared()) widest=perpendicular;
+        }
+        require(widest.magnitudeSquared() > 1e-18f, "vehicle convex is a line");
+        const PxVec3 y = widest.getNormalized(), z = x.cross(y).getNormalized();
+        PxQuat rotation(PxMat33(x,y,z));rotation.normalize();
+        PxVec3 scale(0.0f);
+        for (PxVec3 &point : points) {
+          point = rotation.rotateInv(point-center);
+          scale = scale.maximum(point.abs());
+        }
+        require(scale.minElement() > 1e-9f, "vehicle convex has no volume");
+        for (std::size_t i=0;i<points.size();++i) {
+          points[i] = points[i].multiply(PxVec3(1.0f/scale.x,1.0f/scale.y,1.0f/scale.z));
+          const PxVec3 reconstructed = center+rotation.rotate(points[i].multiply(scale));
+          require((reconstructed-to_px(part.points[i])).magnitude() < 5e-6f,
+                  "vehicle hull transform changed authored vertices");
+        }
+        PxConvexMeshDesc desc;
+        desc.points.count = static_cast<PxU32>(points.size());
+        desc.points.stride = sizeof(PxVec3);
+        desc.points.data = points.data();
+        desc.flags = PxConvexFlag::eCOMPUTE_CONVEX;
+        desc.vertexLimit = 64;
+        PxCookingParams cooking(runtime_->physics().getTolerancesScale());
+        cooking.buildGPUData = true;
+        cooking.planeTolerance = 1e-7f;
+        cooking.areaTestEpsilon = 1e-10f;
+        PxConvexMesh *mesh = PxCreateConvexMesh(cooking, desc, runtime_->physics().getPhysicsInsertionCallback());
+        require(mesh != nullptr, "vehicle convex cooking failed");
+        if (!mesh->isGpuCompatible()) { mesh->release(); throw std::runtime_error("vehicle hull is not GPU compatible"); }
+        PxShape *shape = runtime_->physics().createShape(PxConvexMeshGeometry(mesh, PxMeshScale(scale)), *material_, true);
+        mesh->release();
+        require(shape != nullptr, "vehicle compound shape creation failed");
+        prepared.push_back(shape);
+        const PxVec3 position = to_px(part.position);
+        require(position.isFinite(), "vehicle part pose is nonfinite");
+        shape->setLocalPose(PxTransform(position+center,rotation));
+        shape->setRestOffset(0.0f);
+        shape->setContactOffset(0.002f);
+        configure_shape(*shape, entity_id, record.collision_group, record.collision_mask);
+        shape->userData = reinterpret_cast<void *>(static_cast<std::uintptr_t>(part.part_index) + 1u);
+      }
+      for (PxShape *shape : prepared) require(actor->attachShape(*shape), "vehicle compound attachment failed");
+      // Keep the controller's original shape alive, but it no longer participates.
+      record.vehicle->chassisShape()->setFlag(PxShapeFlag::eSIMULATION_SHAPE, false);
+      record.vehicle->chassisShape()->setFlag(PxShapeFlag::eSCENE_QUERY_SHAPE, false);
+      record.vehicle_compound_installed = true;
+    } catch (...) {
+      for (PxShape *shape : prepared) { if (shape->getActor() == actor) actor->detachShape(*shape); shape->release(); }
+      throw;
+    }
+    for (PxShape *shape : prepared) shape->release();
+  }
+
   void remove_actor(std::uint32_t entity_id) {
     auto iterator = records_.find(entity_id);
     require(iterator != records_.end(), "unknown entity id");
@@ -2900,6 +2988,8 @@ public:
       for (unsigned w = 0; w < 4; ++w) {
         snapshot.wheel_steer[w] = state.wheels[w].steerAngle;
         snapshot.wheel_rotation_speed[w] = state.wheels[w].rotationSpeed;
+        const PxQuat wheelPose = state.wheels[w].localPose.q;
+        snapshot.wheel_rotation_angle[w] = 2.0f * std::atan2(wheelPose.x, wheelPose.w);
         snapshot.wheel_jounce[w] = state.wheels[w].jounce;
         if (state.wheels[w].onRoad) {
           snapshot.wheels_on_road |= static_cast<std::uint8_t>(1U << w);
@@ -4141,6 +4231,10 @@ void World::apply_impulse_at_point(std::uint32_t entity_id, FfiVec3 impulse,
 
 std::uint32_t World::wake_bodies_near(FfiVec3 center, float radius) {
   return impl_->wake_bodies_near(center, radius);
+}
+
+void World::set_vehicle_shapes(std::uint32_t entity_id, rust::Slice<const FfiVehiclePartShape> shapes) {
+  impl_->set_vehicle_shapes(entity_id, shapes);
 }
 
 void World::drive_vehicle(std::uint32_t entity_id, const FfiVehicleCommands &commands) {

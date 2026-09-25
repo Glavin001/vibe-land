@@ -352,6 +352,7 @@ type FrameDebugCallback = (
 ) => void;
 
 type GameWorldProps = {
+  matchId?: string;
   aerialMode?: boolean;
   aerialSpeed?: number;
   aerialDropRequest?: number;
@@ -1026,7 +1027,7 @@ function resolveVehicleBenchmarkInput(
 }
 
 export function GameWorld({
-  mode,
+  matchId,  mode,
   worldDocument = DEFAULT_WORLD_DOCUMENT,
   onWelcome,
   onDisconnect,
@@ -1116,12 +1117,23 @@ export function GameWorld({
     localRenderSmoothingEnabled,
     (packet) => damageEventHandlerRef.current(packet),
     handleServerShotFired,
+    matchId,
   );
   runtimeRefForShotFired.current = runtimeRef.current;
   const { camera, gl } = useThree();
   const aerialPoseRef = useRef<AerialPose | null>(null);
   const lastAerialDropRequestRef = useRef(aerialDropRequest);
   const pendingAerialDropRef = useRef<{ pose: AerialPose; sentAt: number } | null>(null);
+  const garageArrivalRef = useRef(false);
+  const garageArrivalAsset = useMemo(() => {
+    if (window.location.pathname !== '/city') return null;
+    const query = new URLSearchParams(window.location.search);
+    const hash = query.get('garageVehicle');
+    const position = query.get('garagePosition')?.split(',').map(Number);
+    return hash && /^[a-f0-9]{64}$/.test(hash) && position?.length === 3
+      && position.every(v => Number.isFinite(v) && Math.abs(v) < 9990)
+      ? { hash, position: position as [number, number, number] } : null;
+  }, []);
   useEffect(() => {
     if (!aerialMode || !(camera instanceof THREE.PerspectiveCamera)) return;
     const previousFar = camera.far;
@@ -1191,6 +1203,7 @@ export function GameWorld({
   const dynamicBodiesRenderer = useMemo(() => new DynamicBodiesRenderer(), []);
   const batteriesRenderer = useMemo(() => new BatteriesRenderer(), []);
   const vehiclesRenderer = useMemo(() => new VehiclesRenderer(), []);
+  useEffect(() => () => vehiclesRenderer.dispose(), [vehiclesRenderer]);
   const renderersDrawnAtMs = useRef(0);
   useEffect(() => {
     const vector = (o: THREE.Object3D): [number, number, number] => [o.position.x, o.position.y, o.position.z];
@@ -1204,6 +1217,7 @@ export function GameWorld({
         vehicles: [...vehiclesRenderer.meshes].map(([id, mesh]) => ({
           id,
           driverId: client?.vehicles.get(id)?.driverId ?? 0,
+          assetHash: mesh.userData.assetHash as string | undefined,
           position: vector(mesh),
         })),
         bodies: [...dynamicBodiesRenderer.meshes].map(([id, mesh]) => ({
@@ -1805,6 +1819,20 @@ export function GameWorld({
       localVehicleRawJitterStateRef.current.wheelGroundObjectIds = [0, 0, 0, 0];
       localVehicleMeshMotionStateRef.current.vehicleId = null;
       localVehicleCameraMotionStateRef.current.vehicleId = null;
+    }
+    // A distant car is outside snapshot interest until arrival. The publish
+    // receipt supplies its location; prefer a live snapshot when available.
+    // The existing city arrival command still validates the player placement.
+    if (garageArrivalAsset && !garageArrivalRef.current && !client.isInVehicle()) {
+      const car = Array.from(client.vehicles.values()).find(v => v.customVehicle?.assetHash === garageArrivalAsset.hash);
+      const at = car?.position ?? garageArrivalAsset.position;
+      const pose: AerialPose = { position: [at[0] + 2.5, at[1] + 1, at[2]], yaw: -Math.PI / 2, pitch: -0.2 };
+      if (client.sendCityCameraDrop(pose)) {
+        garageArrivalRef.current = true;
+        yawRef.current = pose.yaw;
+        pitchRef.current = pose.pitch;
+        pendingAerialDropRef.current = { pose, sentAt: now };
+      }
     }
     if (lastAerialDropRequestRef.current !== aerialDropRequest) {
       lastAerialDropRequestRef.current = aerialDropRequest;
@@ -3137,4 +3165,3 @@ function createLocalShotTrace(
     expiresAtMs: nowMs + LOCAL_SHOT_TRACE_TTL_MS,
   };
 }
-

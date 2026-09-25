@@ -157,7 +157,7 @@ export interface E2EDrawnWorld {
   playerId: number;
   local: [number, number, number] | null;
   players: Array<{ id: number; position: [number, number, number] }>;
-  vehicles: Array<{ id: number; driverId: number; position: [number, number, number] }>;
+  vehicles: Array<{ id: number; driverId: number; position: [number, number, number]; assetHash?: string }>;
   bodies: Array<{ id: number; shapeType: number; position: [number, number, number] }>;
   meteors: Array<{ bodyId: number; source: string; position: [number, number, number] | null; tapeMs: number | null }>;
   /**

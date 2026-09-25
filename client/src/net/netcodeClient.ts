@@ -1,3 +1,4 @@
+import type { VehicleAsset, VehicleRigPacket } from '../vehicles/vehicleStream';
 import { SERVER_CLOSE_MARKER } from './disconnectReason';
 import { CITY_WIRE_VERSION } from '../city/wire';
 import { GameSocket } from './gameSocket';
@@ -118,6 +119,13 @@ export type NetcodeClientConfig = {
  *   client.sendInputs(cmds);
  */
 export class NetcodeClient {
+  private customVehicles = new Map<number, VehicleAsset>();
+  private vehicleRigs = new Map<number, VehicleRigPacket>();
+  private attachVehicleAsset(state: VehicleStateMeters): void {
+    state.customVehicle = this.customVehicles.get(state.id);
+    state.customRig = this.vehicleRigs.get(state.id);
+  }
+
   private static readonly VEHICLE_STALE_TICKS = 180;
   /** How far back (ticks) a late snapshot's drop records are kept. */
   private static readonly LATE_SNAPSHOT_HORIZON_TICKS = 600;
@@ -922,6 +930,7 @@ export class NetcodeClient {
         angularVelocity: [vehicle.wxMrads / 1000, vehicle.wyMrads / 1000, vehicle.wzMrads / 1000],
         wheelData: [0, 0, 0, 0],
       };
+      this.attachVehicleAsset(meters);
       this.vehicles.set(vehicleId, meters);
       this.vehicleRemovedAtUs.delete(vehicleId);
       this.vehicleDroppedAtTick.delete(vehicleId);
@@ -1184,6 +1193,7 @@ export class NetcodeClient {
       }
       // Newer than anything the client has of this vehicle (a parked car's
       // refresh, or its first sends): drawn from it, as if it were on time.
+      this.attachVehicleAsset(meters);
       this.vehicles.set(vehicleId, meters);
       this.vehicleServerTimeUs.set(vehicleId, tUs);
       this.vehicleLastSeenTick.set(vehicleId, Math.max(tick, this.vehicleLastSeenTick.get(vehicleId) ?? -Infinity));
@@ -1265,6 +1275,20 @@ export class NetcodeClient {
     source: 'wt-datagram' | 'wt-reliable' | 'websocket' | 'local' | 'direct' = 'direct',
   ): void {
     switch (packet.type) {
+      case 'vehicleAsset': {
+        this.customVehicles.set(packet.handle, packet.vehicle);
+        const vehicle = this.vehicles.get(packet.handle);
+        if (vehicle) this.attachVehicleAsset(vehicle);
+        break;
+      }
+      case 'vehicleRig': {
+        const previous = this.vehicleRigs.get(packet.handle);
+        if (previous && packet.serverTick <= previous.serverTick) break;
+        this.vehicleRigs.set(packet.handle, packet);
+        const vehicle = this.vehicles.get(packet.handle);
+        if (vehicle) this.attachVehicleAsset(vehicle);
+        break;
+      }
       case 'welcome':
         this.playerId = packet.playerId;
         this.protocolVersion = packet.protocolVersion;
@@ -1397,6 +1421,7 @@ export class NetcodeClient {
         for (const vs of packet.vehicleStates) {
           knownVehicleIds.add(vs.id);
           const m = netVehicleStateToMeters(vs);
+          this.attachVehicleAsset(m);
           this.vehicles.set(vs.id, m);
           this.vehicleLastSeenTick.set(vs.id, packet.serverTick);
           this.vehicleServerTimeUs.set(vs.id, packet.serverTimeUs);
@@ -1659,6 +1684,8 @@ export class NetcodeClient {
     this.dynamicBodyPresence.clear();
     this.dynamicBodyInterpolator.retainOnly(new Set());
     this.vehicles.clear();
+    this.customVehicles.clear();
+    this.vehicleRigs.clear();
     this.vehicleLastSeenTick.clear();
     this.vehicleRemovedAtUs.clear();
     this.vehicleInterpolator.retainOnly(new Set());

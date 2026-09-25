@@ -1,3 +1,5 @@
+mod vehicle_assets;
+mod garage;
 mod grass_layout;
 mod app_config;
 mod city;
@@ -1095,6 +1097,10 @@ struct PlayerConnection {
 }
 
 enum MatchEvent {
+    PublishVehicle {
+        asset: Arc<vehicle_assets::DrivableVehicle>,
+        reply: tokio::sync::oneshot::Sender<Result<CityVehicleResponse, (StatusCode, String)>>,
+    },
     Connect(PlayerConnection),
     Disconnect {
         player_id: u32,
@@ -1216,6 +1222,8 @@ struct MatchState {
     dynamic_body_handles: HashMap<u32, DynamicBodyMetaRuntime>,
     vehicle_handles: HashMap<u32, u8>,
     city: Option<city::CityRuntime>,
+    garage: Option<Arc<garage::Session>>,
+    custom_vehicles: HashMap<u32, Arc<vehicle_assets::DrivableVehicle>>,
     /// Where the next meteor comes from. Seeded per match so two matches do
     /// not rain from the same bearings in the same order.
     meteor_rng: meteor::Rng,
@@ -1484,6 +1492,11 @@ async fn main() -> Result<()> {
         .merge(grass_layout::router(grass_layout::GrassStore::from_env()))
         .route("/healthz", get(health_handler))
         .route("/session-config", get(session_config_handler))
+        .route("/vehicle-assets/session", post(garage_session_handler).layer(axum::extract::DefaultBodyLimit::max(8192)))
+        .route("/vehicle-assets/session/:id", axum::routing::delete(garage::close_handler))
+        .route("/vehicle-assets/prepare", post(vehicle_assets::prepare).layer(axum::extract::DefaultBodyLimit::max(8192)))
+        .route("/vehicle-assets/city", post(city_vehicle_handler).layer(axum::extract::DefaultBodyLimit::max(8192)))
+        .route("/vehicle-assets/:hash/:file", get(vehicle_assets::asset))
         .route("/city-manifest/:hash", get(city_manifest_handler))
         .route("/match-stats/:match_id", get(match_stats_handler))
         // Nested under /match-stats so the caddy proxy block that already
@@ -1995,6 +2008,44 @@ fn load_repo_env() {
         Ok(()) => info!(path = %repo_env.display(), "loaded repo .env"),
         Err(err) => warn!(path = %repo_env.display(), error = %err, "failed to load repo .env"),
     }
+}
+
+async fn garage_session_handler(
+    State(state): State<SharedAppState>, Json(request): Json<vehicle_assets::PrepareRequest>,
+) -> axum::response::Response {
+    if state.inner.physics.backend != vibe_netcode::physics_backend::PhysicsBackendKind::PhysxGpu {
+        return (StatusCode::SERVICE_UNAVAILABLE, "Test drives require a PhysX GPU server.").into_response();
+    }
+    garage::create(request).await.into_response()
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CityVehicleResponse {
+    match_id: String,
+    vehicle_id: u32,
+    position: [f32; 3],
+    vehicle: vehicle_assets::PreparedVehicle,
+}
+
+async fn city_vehicle_handler(
+    State(state): State<SharedAppState>, Json(request): Json<vehicle_assets::PrepareRequest>,
+) -> Result<Json<CityVehicleResponse>, (StatusCode, String)> {
+    if state.inner.physics.backend != vibe_netcode::physics_backend::PhysicsBackendKind::PhysxGpu {
+        return Err((StatusCode::SERVICE_UNAVAILABLE, "City vehicles require a PhysX GPU server.".into()));
+    }
+    if std::env::var("VIBE_CITY_VEHICLES").is_ok_and(|v| v == "0") {
+        return Err((StatusCode::FORBIDDEN, "Vehicles are disabled in this city.".into()));
+    }
+    let asset = Arc::new(vehicle_assets::prepare_drivable(request).await?);
+    let handle = get_or_create_match(state.inner.clone(), "city-default".into()).await;
+    let (reply, response) = tokio::sync::oneshot::channel();
+    handle.tx.send(MatchEvent::PublishVehicle { asset, reply })
+        .map_err(|_| (StatusCode::SERVICE_UNAVAILABLE, "The city is unavailable. Try again shortly.".into()))?;
+    tokio::time::timeout(Duration::from_secs(60), response).await
+        .map_err(|_| (StatusCode::GATEWAY_TIMEOUT, "The city did not finish loading. Try again shortly.".into()))?
+        .map_err(|_| (StatusCode::SERVICE_UNAVAILABLE, "The city stopped before the vehicle was added.".into()))?
+        .map(Json)
 }
 
 async fn session_config_handler(
@@ -3158,7 +3209,16 @@ async fn run_match_loop(
     let mut arena = PhysicsArena::new(MoveConfig::default(), physics.backend)
         .expect("selected authoritative physics backend should initialize");
     let world = VoxelWorld::new();
-    seed_world_for_match(&mut arena, &match_id).expect("world document should instantiate");
+    let garage = garage::lookup(&match_id);
+    if let Some(session) = &garage {
+        session.world.instantiate(&mut arena).expect("garage terrain should instantiate");
+        arena.set_spawn_areas(session.world.spawn_areas.clone());
+        if let Err(error) = arena.spawn_prepared_vehicle(garage::VEHICLE_ID, 0,
+            nalgebra::Vector3::new(0.0, session.geometry.origin_height + 0.15, 3.0), &session.geometry) {
+            error!(%error, "garage vehicle could not initialize"); return;
+        }
+    } else if garage::is_garage(&match_id) { return; }
+    else { seed_world_for_match(&mut arena, &match_id).expect("world document should instantiate"); }
     let mut dynamic_body_handles: HashMap<u32, DynamicBodyMetaRuntime> = arena
         .snapshot_dynamic_bodies()
         .into_iter()
@@ -3319,14 +3379,24 @@ async fn run_match_loop(
         vehicle_handles,
         meteor_rng: meteor::Rng::new(match_seed),
         city,
+        custom_vehicles: garage.as_ref().map(|session| [(garage::VEHICLE_ID, Arc::new(vehicle_assets::DrivableVehicle {
+            vehicle: session.vehicle.clone(), geometry: session.geometry.clone(),
+        }))].into_iter().collect()).unwrap_or_default(),
+        garage,
     };
 
     let mut tick = tokio::time::interval(Duration::from_secs_f64(1.0 / SIM_HZ as f64));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
+    let mut garage_last_occupied = Instant::now();
     loop {
         tokio::select! {
             _ = tick.tick() => {
+                if state.garage.is_some() {
+                    if state.garage.as_ref().is_some_and(|session|session.closing()) {break;}
+                    if !state.players.is_empty() {garage_last_occupied = Instant::now();}
+                    else if garage_last_occupied.elapsed() > Duration::from_secs(60) {break;}
+                }
                 state.tick();
             }
             Some(event) = rx.recv() => {
@@ -3336,6 +3406,7 @@ async fn run_match_loop(
         }
     }
 
+    if state.garage.is_some() {garage::close(&state.id);}
     {
         let mut registry = state
             .stats_registry
@@ -3424,6 +3495,48 @@ fn spawn_match_loop(
 }
 
 impl MatchState {
+    fn publish_city_vehicle(&mut self, asset: Arc<vehicle_assets::DrivableVehicle>) -> Result<CityVehicleResponse, (StatusCode, String)> {
+        if self.city.is_none() {
+            return Err((StatusCode::SERVICE_UNAVAILABLE, "The city is still unavailable on this server.".into()));
+        }
+        // Retrying a publish reuses its existing car rather than filling the city.
+        if let Some((&id, existing)) = self.custom_vehicles.iter().find(|(_, a)| a.vehicle.asset_hash == asset.vehicle.asset_hash) {
+            if let Some(car) = self.arena.snapshot_vehicles().iter().find(|car| car.id == id) {
+                return Ok(CityVehicleResponse { match_id: self.id.clone(), vehicle_id: id,
+                    position: [car.px_mm as f32 * 0.001, car.py_mm as f32 * 0.001, car.pz_mm as f32 * 0.001], vehicle: existing.vehicle.clone() });
+            }
+        }
+        const FIRST_ID: u32 = 20_000;
+        const CAPACITY: u32 = 8;
+        let cars = self.arena.snapshot_vehicles();
+        let slot = (0..CAPACITY).find(|slot| {
+            let id = FIRST_ID + slot;
+            let x = city::spawn_ring_radius_m() + 14.0;
+            let z = *slot as f32 * 8.0 - 28.0;
+            !self.arena.vehicle_exists(id)
+                && cars.iter().all(|car| (car.px_mm as f32 * 0.001 - x).hypot(car.pz_mm as f32 * 0.001 - z) > 6.0)
+                && self.players.keys().all(|player| self.arena.player_state(*player).is_none_or(|p|
+                    (p.position.x as f32 - x).hypot(p.position.z as f32 - z) > 6.0))
+        }).ok_or((StatusCode::CONFLICT, "The city's garage parking is full or occupied. Try an existing configuration or wait for a clear space.".into()))?;
+        let id = FIRST_ID + slot;
+        let handle = (1..=u8::MAX).find(|handle| !self.vehicle_handles.values().any(|v| v == handle))
+            .ok_or((StatusCode::CONFLICT, "The city has reached its vehicle limit.".into()))?;
+        let position = [city::spawn_ring_radius_m() + 14.0, asset.geometry.origin_height + 0.15, slot as f32 * 8.0 - 28.0];
+        self.arena.spawn_prepared_vehicle(id, 0, nalgebra::Vector3::from(position), &asset.geometry)
+            .map_err(|error| {
+                error!(%error, "city vehicle could not initialize");
+                (StatusCode::INTERNAL_SERVER_ERROR, "The vehicle could not be spawned in the city.".into())
+            })?;
+        self.vehicle_handles.insert(id, handle);
+        let packet = vehicle_assets::asset_packet(handle, &asset.vehicle);
+        for runtime in self.players.values() {
+            let _ = try_queue_packet(&runtime.tx, packet.clone(), &self.io);
+        }
+        let vehicle = asset.vehicle.clone();
+        self.custom_vehicles.insert(id, asset);
+        Ok(CityVehicleResponse { match_id: self.id.clone(), vehicle_id: id, position, vehicle })
+    }
+
     fn current_server_time_ms(&self) -> u32 {
         self.server_tick * (1000 / SIM_HZ as u32)
     }
@@ -3509,6 +3622,11 @@ impl MatchState {
     }
 
     fn send_initial_metadata(&self, tx: &outbound::Sender) {
+        for (id, asset) in &self.custom_vehicles {
+            if let Some(handle) = self.vehicle_handles.get(id) {
+                let _ = try_queue_packet(tx, vehicle_assets::asset_packet(*handle, &asset.vehicle), &self.io);
+            }
+        }
         let mut entries: Vec<_> = self
             .dynamic_body_handles
             .iter()
@@ -3535,6 +3653,12 @@ impl MatchState {
 
     fn handle_event(&mut self, event: MatchEvent) {
         match event {
+            MatchEvent::PublishVehicle { asset, reply } => {
+                if !reply.is_closed() {
+                    let result = self.publish_city_vehicle(asset);
+                    let _ = reply.send(result);
+                }
+            }
             MatchEvent::Session(command) => self.handle_session_command(command),
             MatchEvent::Connect(conn) => {
                 let Some(player_handle) = self.allocate_player_handle() else {
@@ -6484,6 +6608,11 @@ impl MatchState {
 
     fn broadcast_snapshot(&mut self) {
         let snapshot_started = Instant::now();
+        let vehicle_rigs: Vec<_> = self.custom_vehicles.iter().filter_map(|(id, asset)| {
+            let handle = *self.vehicle_handles.get(id)?;
+            let wheels = self.arena.vehicle_rig(*id, asset.geometry.neutral_jounce)?;
+            Some(vehicle_assets::rig_packet(self.server_tick, handle, wheels))
+        }).collect();
         let server_time_us = (self.server_tick as u64) * (1_000_000 / SIM_HZ as u64);
         // When this tick's state became available: stamped on every SnapshotV2
         // so clients can tell a slow simulation from a slow network.
@@ -6608,6 +6737,7 @@ impl MatchState {
                 recipient_inputs.push(recipient);
             }
             let _ = try_queue_packet(&tx, encoded, &self.io);
+            for rig in &vehicle_rigs {let _ = try_queue_packet(&tx, rig.clone(), &self.io);}
         }
         for selection in selections {
             self.note_selection(selection);
@@ -6857,6 +6987,7 @@ fn wt_transport_config() -> wtransport::quinn::TransportConfig {
 
 fn wants_unreliable_delivery(kind: u8) -> bool {
     is_snapshot_packet_kind(kind)
+        || kind == vibe_land_shared::constants::PKT_VEHICLE_RIG
         || kind == PKT_PING
         || kind == PKT_CITY_CHUNKS
         || kind == vibe_land_shared::constants::PKT_CITY_DEBRIS

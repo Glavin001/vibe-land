@@ -207,7 +207,9 @@ fn shape_vehicle_commands(
         let reverse = input.reverse > 0.0 && input.throttle <= 0.0;
         (if reverse { input.reverse } else { input.throttle }, 0.0, reverse)
     };
-    if reverse && forward_speed < -PHYSX_REVERSE_TOP_SPEED_M_S {
+    // Disengage drive while the handbrake is held. Otherwise the unbraked
+    // front axle keeps pulling this AWD vehicle against its locked rear axle.
+    if input.handbrake || (reverse && forward_speed < -PHYSX_REVERSE_TOP_SPEED_M_S) {
         throttle = 0.0;
     }
     bridge::VehicleCommands {
@@ -356,6 +358,92 @@ pub struct PhysxPhysicsArena {
 }
 
 impl PhysxPhysicsArena {
+    /// Installs fixed chassis geometry for the custom-vehicle integration.
+    /// This is not yet a destructible vehicle: native stress ownership, moving
+    /// part shapes, measured inertia/COM, and trailer constraints are pending.
+    /// The garage uses this for private drives; native stress coupling is pending.
+    pub fn spawn_vehicle_asset(&mut self, id:u32, vehicle_type:u8, position:Vector3<f32>, rotation:[f32;4], prepared:Option<&crate::vehicle_assets::PreparedGeometry>) -> Result<(), bridge::BridgeError> {
+        // The shared vehicle definition drives both backends: the same hull
+        // extents, wheel hard points, suspension rest and travel and wheel
+        // radius the Rapier controller and the client's meshes use. The
+        // vehicle SDK measures suspension from the chassis centre, so the
+        // attachment sits where the Rapier rest length ends up placing the
+        // wheel after its own static compression.
+        let definition = vehicle_definition(vehicle_type);
+        let [half_x, half_y, half_z] = prepared.map(|p| std::array::from_fn(|i| p.bounds.min[i].abs().max(p.bounds.max[i].abs()).max(0.01))).unwrap_or(definition.chassis_half_extents);
+        let [[wheel_x, _, front_z], _, [_, _, rear_z], _] = prepared.map(|p| p.wheel_centers).unwrap_or(definition.wheel_offsets);
+        let mass = prepared.map(|p| p.mass).unwrap_or(PHYSX_VEHICLE_MASS_KG);
+        let travel = prepared.map(|p| p.suspension_travel).unwrap_or(definition.suspension_travel_m);
+        // A quarter of the chassis on each corner; rest compression about a
+        // third of the travel, critically damped.
+        let sprung = mass / 4.0;
+        let rest_load = sprung * 9.81;
+        let stiffness = rest_load / prepared.map(|p| p.neutral_jounce).unwrap_or(travel / 3.0);
+        let damping = 2.0 * (stiffness * sprung).sqrt();
+        self.world
+            .add_vehicle(bridge::VehicleDesc {
+                entity_id: NS_VEHICLE | (id & ID_MASK),
+                user_id: id,
+                pose: pose(position, rotation),
+                chassis_half_extents: bridge::Vec3::new(half_x, half_y, half_z),
+                mass,
+                inertia: bridge::Vec3::new(0.0, 0.0, 0.0),
+                half_track: wheel_x.abs(),
+                suspension_attachment_y: prepared.map(|p| p.suspension_attachment_y).unwrap_or(-(definition.suspension_rest_length_m - travel * 2.0 / 3.0)),
+                front_axle_z: front_z.max(rear_z),
+                rear_axle_z: front_z.min(rear_z),
+                suspension_travel: travel,
+                suspension_stiffness: stiffness,
+                suspension_damping: damping,
+                wheel_radius: prepared.map(|p| p.origin_height - 0.25).unwrap_or(definition.wheel_radius_m),
+                wheel_half_width: prepared.map(|p| p.wheel_half_width).unwrap_or(0.15),
+                tyre_friction: PHYSX_TYRE_FRICTION,
+                front_lateral_stiffness: PHYSX_FRONT_LATERAL_STIFFNESS_PER_N * rest_load,
+                rear_lateral_stiffness: PHYSX_REAR_LATERAL_STIFFNESS_PER_N * rest_load,
+                longitudinal_stiffness: PHYSX_LONGITUDINAL_STIFFNESS_PER_N * rest_load,
+                com_offset_y: PHYSX_COM_OFFSET_Y_M,
+                angular_damping: PHYSX_ANGULAR_DAMPING,
+                max_steer_radians: prepared.map(|p| p.max_steer_radians).unwrap_or(VEHICLE_MAX_STEER_RAD),
+                drive_torque: PHYSX_DRIVE_TORQUE_PER_WHEEL_N_M * mass / PHYSX_VEHICLE_MASS_KG,
+                brake_torque: PHYSX_BRAKE_TORQUE_PER_WHEEL_N_M * mass / PHYSX_VEHICLE_MASS_KG,
+                handbrake_torque: 2.0 * PHYSX_BRAKE_TORQUE_PER_WHEEL_N_M * mass / PHYSX_VEHICLE_MASS_KG,
+                top_speed: PHYSX_TOP_SPEED_M_S,
+                rear_wheel_drive: false,
+                // Sweeps ride a cylinder over rubble; raycasts fall between chunks.
+                sweep_road_queries: true,
+                road_mask: GROUP_STATIC | GROUP_DYNAMIC | GROUP_CHUNK,
+                collision_group: GROUP_VEHICLE,
+                collision_mask: ALL_GROUPS,
+            })
+            ?;
+        if let Some(asset) = prepared {
+            let shapes: Vec<bridge::VehiclePartShape> = asset.parts.iter().enumerate()
+                .filter(|(_, part)| part.motion.is_none())
+                .flat_map(|(part_index, part)| part.shapes.iter().map(move |shape| bridge::VehiclePartShape {
+                    part_index: part_index as u32,
+                    position: bridge::Vec3::new(part.position[0]+shape.position[0], part.position[1]+shape.position[1], part.position[2]+shape.position[2]),
+                    points: shape.vertices.iter().map(|p| bridge::Vec3::new(p[0],p[1],p[2])).collect(),
+                })).collect();
+            if let Err(error) = self.world.set_vehicle_shapes(NS_VEHICLE | (id & ID_MASK), &shapes) {
+                let _ = self.world.remove_actor(NS_VEHICLE | (id & ID_MASK));
+                return Err(error);
+            }
+        }
+        self.snapshots_valid = false;
+        self.vehicles.insert(
+            id,
+            VehicleMeta {
+                vehicle_type,
+                driver_id: 0,
+                latest_input: InputCmd::default(),
+                steer_command: 0.0,
+                reset_cooldown_ticks: 0,
+                reset_held: false,
+            },
+        );
+        Ok(())
+    }
+
     pub fn new(config: MoveConfig) -> Result<Self> {
         let mut world_config = bridge::WorldConfig::default();
         world_config.gpu_max_rigid_contacts = env_u32(
@@ -1264,6 +1352,13 @@ impl PhysxPhysicsArena {
                 ))
             })
             .collect()
+    }
+
+    pub fn vehicle_rig(&self, id:u32, neutral_jounce:f32) -> Option<[[f32;4];4]> {
+        let snapshot = self.current_vehicle_snapshots().into_iter().find(|s|s.user_id == id)?;
+        Some(std::array::from_fn(|i| [snapshot.wheel_jounce[i]-neutral_jounce,
+            snapshot.wheel_steer[i], snapshot.wheel_rotation_angle[i],
+            if snapshot.wheels_on_road & (1 << i) != 0 {1.0} else {0.0}]))
     }
 
     pub fn snapshot_vehicles(&self) -> Vec<NetVehicleState> {
@@ -2188,78 +2283,8 @@ impl WorldDocumentArena for PhysxPhysicsArena {
         );
     }
 
-    fn spawn_vehicle_with_id(
-        &mut self,
-        id: u32,
-        vehicle_type: u8,
-        position: Vector3<f32>,
-        rotation: [f32; 4],
-    ) {
-        // The shared vehicle definition drives both backends: the same hull
-        // extents, wheel hard points, suspension rest and travel and wheel
-        // radius the Rapier controller and the client's meshes use. The
-        // vehicle SDK measures suspension from the chassis centre, so the
-        // attachment sits where the Rapier rest length ends up placing the
-        // wheel after its own static compression.
-        let definition = vehicle_definition(vehicle_type);
-        let [half_x, half_y, half_z] = definition.chassis_half_extents;
-        let [[wheel_x, _, front_z], _, [_, _, rear_z], _] = definition.wheel_offsets;
-        let mass = PHYSX_VEHICLE_MASS_KG;
-        // A quarter of the chassis on each corner; rest compression about a
-        // third of the travel, critically damped.
-        let sprung = mass / 4.0;
-        let rest_load = sprung * 9.81;
-        let stiffness = rest_load / (definition.suspension_travel_m / 3.0);
-        let damping = 2.0 * (stiffness * sprung).sqrt();
-        self.world
-            .add_vehicle(bridge::VehicleDesc {
-                entity_id: NS_VEHICLE | (id & ID_MASK),
-                user_id: id,
-                pose: pose(position, rotation),
-                chassis_half_extents: bridge::Vec3::new(half_x, half_y, half_z),
-                mass,
-                inertia: bridge::Vec3::new(0.0, 0.0, 0.0),
-                half_track: wheel_x.abs(),
-                suspension_attachment_y: -(definition.suspension_rest_length_m
-                    - definition.suspension_travel_m * 2.0 / 3.0),
-                front_axle_z: front_z.max(rear_z),
-                rear_axle_z: front_z.min(rear_z),
-                suspension_travel: definition.suspension_travel_m,
-                suspension_stiffness: stiffness,
-                suspension_damping: damping,
-                wheel_radius: definition.wheel_radius_m,
-                wheel_half_width: 0.15,
-                tyre_friction: PHYSX_TYRE_FRICTION,
-                front_lateral_stiffness: PHYSX_FRONT_LATERAL_STIFFNESS_PER_N * rest_load,
-                rear_lateral_stiffness: PHYSX_REAR_LATERAL_STIFFNESS_PER_N * rest_load,
-                longitudinal_stiffness: PHYSX_LONGITUDINAL_STIFFNESS_PER_N * rest_load,
-                com_offset_y: PHYSX_COM_OFFSET_Y_M,
-                angular_damping: PHYSX_ANGULAR_DAMPING,
-                max_steer_radians: VEHICLE_MAX_STEER_RAD,
-                drive_torque: PHYSX_DRIVE_TORQUE_PER_WHEEL_N_M,
-                brake_torque: PHYSX_BRAKE_TORQUE_PER_WHEEL_N_M,
-                handbrake_torque: 2.0 * PHYSX_BRAKE_TORQUE_PER_WHEEL_N_M,
-                top_speed: PHYSX_TOP_SPEED_M_S,
-                rear_wheel_drive: false,
-                // Sweeps ride a cylinder over rubble; raycasts fall between chunks.
-                sweep_road_queries: true,
-                road_mask: GROUP_STATIC | GROUP_DYNAMIC | GROUP_CHUNK,
-                collision_group: GROUP_VEHICLE,
-                collision_mask: ALL_GROUPS,
-            })
-            .expect("PhysX vehicle creation failed");
-        self.snapshots_valid = false;
-        self.vehicles.insert(
-            id,
-            VehicleMeta {
-                vehicle_type,
-                driver_id: 0,
-                latest_input: InputCmd::default(),
-                steer_command: 0.0,
-                reset_cooldown_ticks: 0,
-                reset_held: false,
-            },
-        );
+    fn spawn_vehicle_with_id(&mut self, id:u32, vehicle_type:u8, position:Vector3<f32>, rotation:[f32;4]) {
+        self.spawn_vehicle_asset(id, vehicle_type, position, rotation, None).expect("PhysX vehicle creation failed");
     }
 
     fn spawn_battery_with_id(
@@ -2451,6 +2476,52 @@ mod tests {
     }
 
     #[test]
+    fn garage_heightmap_supports_vehicle2_and_changes_suspension_travel() {
+        let _guard = gpu_test_guard();
+        let world = crate::demo_world::garage_test_world();
+        let mut arena = PhysxPhysicsArena::new(MoveConfig::default()).unwrap();
+        world.instantiate(&mut arena).unwrap();
+        for (x, z) in [(0.3, 40.7), (2.7, 44.1), (45.3, 45.7), (-80.4, -72.2)] {
+            let distance = arena.cast_static_world_ray([x, 20.0, z], [0.0, -1.0, 0.0], 30.0, None).unwrap();
+            let expected = world.sample_heightfield_surface_at_world_position(x, z);
+            assert!((20.0 - distance - expected).abs() < 0.02, "PhysX terrain mismatch at {x},{z}");
+        }
+        WorldDocumentArena::spawn_vehicle_with_id(&mut arena, 7, 0,
+            Vector3::new(0.0, 1.0, 3.0), [0.0, 0.0, 0.0, 1.0]);
+        arena.set_spawn_areas(world.spawn_areas.clone());
+        arena.spawn_player(10);
+        arena.enter_vehicle(10, 7);
+        assert_eq!(arena.player_vehicle_id(10), Some(7));
+        let mut min_jounce = f32::INFINITY;
+        let mut max_jounce = f32::NEG_INFINITY;
+        let mut reached_lane = false;
+        for tick in 0..900 {
+            let snapshot = arena.snapshot_vehicles()[0];
+            let z = snapshot.pz_mm as f32 * 0.001;
+            let mut input = InputCmd::default();
+            input.move_y = if tick < 120 { 0 } else if z < 70.0 { 90 } else { -127 };
+            arena.simulate_player_tick(10, &input, 1.0 / 60.0);
+            arena.step_vehicles_and_dynamics(1.0 / 60.0);
+            let snapshot = arena.current_vehicle_snapshots()[0];
+            let p = snapshot.pose.position;
+            assert!(p.x.is_finite() && p.y.is_finite() && p.z.is_finite());
+            assert!(p.y > world.sample_heightfield_surface_at_world_position(p.x, p.z) - 0.5,
+                "vehicle went below terrain at {},{},{}", p.x, p.y, p.z);
+            if (32.0..64.0).contains(&p.z) {
+                reached_lane = true;
+                for jounce in snapshot.wheel_jounce {
+                    min_jounce = min_jounce.min(jounce);
+                    max_jounce = max_jounce.max(jounce);
+                }
+            }
+            if p.z > 78.0 { break; }
+        }
+        assert!(reached_lane, "vehicle did not reach the suspension lane");
+        assert!(max_jounce - min_jounce > 0.03, "suspension did not respond: {min_jounce}..{max_jounce}");
+        eprintln!("Garage heightmap Vehicle2 travel range: {min_jounce}..{max_jounce} m");
+    }
+
+    #[test]
     fn dynamic_metadata_uses_shared_wire_shape_constants() {
         let _guard = gpu_test_guard();
         let mut arena = PhysxPhysicsArena::new(MoveConfig::default()).unwrap();
@@ -2612,6 +2683,87 @@ mod tests {
         let idle = VehicleInputCmd { throttle: 0.0, reverse: 0.0, steer: 0.0, handbrake: false };
         let cmd = shape_vehicle_commands(&idle, 12.0, &mut steer, dt);
         assert_eq!((cmd.throttle, cmd.brake, cmd.handbrake), (0.0, 0.0, 0.0));
+        for mut pedal in [w_key, s_key] {
+            pedal.handbrake = true;
+            let cmd = shape_vehicle_commands(&pedal, 0.0, &mut steer, dt);
+            assert_eq!((cmd.throttle, cmd.handbrake), (0.0, 1.0));
+        }
+    }
+
+    #[test]
+    fn handbrake_stops_vehicle_even_with_accelerator_held() {
+        let _guard = gpu_test_guard();
+        // A standard car and two custom chassis weights exercise the same
+        // authoring path as garage assets, without depending on a local cache.
+        for (mass, hold_throttle) in [(600.0, false), (600.0, true), (2500.0, true), (10000.0, true)] {
+            let mut arena = PhysxPhysicsArena::new(MoveConfig::default()).unwrap();
+            WorldDocumentArena::add_static_cuboid(&mut arena,
+                Vector3::new(0.0, -1.0, 0.0), [0.0, 0.0, 0.0, 1.0],
+                Vector3::new(200.0, 1.0, 200.0), 1);
+            // City publication adds a prepared car after simulation has begun,
+            // and the city uses the split dispatch/fetch path.
+            let step = |arena: &mut PhysxPhysicsArena| {
+                if mass == 2500.0 {
+                    arena.begin_dynamics();
+                    arena.finish_dynamics();
+                } else {
+                    arena.step_vehicles_and_dynamics(1.0 / 60.0);
+                }
+            };
+            for _ in 0..4 { step(&mut arena); }
+            let p = arena.spawn_player(10);
+            let definition = vehicle_definition(0);
+            let [x, y, z] = definition.chassis_half_extents;
+            let vertices: Vec<_> = [-x, x].into_iter().flat_map(|x|
+                [-y, y].into_iter().flat_map(move |y| [-z, z].into_iter().map(move |z| [x, y, z]))).collect();
+            let travel = definition.suspension_travel_m;
+            let prepared = crate::vehicle_assets::PreparedGeometry {
+                origin_height: definition.wheel_radius_m + 0.25,
+                wheel_centers: definition.wheel_offsets,
+                suspension_travel: travel,
+                neutral_jounce: travel / 3.0,
+                suspension_attachment_y: -(definition.suspension_rest_length_m - travel * 2.0 / 3.0),
+                wheel_half_width: 0.15,
+                max_steer_radians: VEHICLE_MAX_STEER_RAD,
+                mass,
+                bounds: crate::vehicle_assets::AssetBounds { min: [-x, -y, -z], max: [x, y, z] },
+                parts: vec![crate::vehicle_assets::AssetPart {
+                    id: "test-chassis".into(), motion: None, position: [0.0; 3],
+                    shapes: vec![crate::vehicle_assets::AssetShape { position: [0.0; 3], vertices }],
+                }],
+            };
+            arena.spawn_vehicle_asset(7, 0, Vector3::new(p.x as f32, p.y as f32, p.z as f32),
+                [0.0, 0.0, 0.0, 1.0], if mass == 600.0 { None } else { Some(&prepared) }).unwrap();
+            arena.enter_vehicle(10, 7);
+            let mut input = InputCmd::default();
+            input.move_y = 127;
+            for _ in 0..120 {
+                arena.simulate_player_tick(10, &input, 1.0 / 60.0);
+                step(&mut arena);
+            }
+            let before = arena.current_vehicle_snapshots()[0];
+            let (_, speed_before, _) = vehicle_heading(&before);
+            input.move_y = if hold_throttle { 127 } else { 0 };
+            input.buttons = BTN_JUMP;
+            for _ in 0..240 {
+                arena.simulate_player_tick(10, &input, 1.0 / 60.0);
+                step(&mut arena);
+            }
+            let after = arena.current_vehicle_snapshots()[0];
+            let (_, speed_after, _) = vehicle_heading(&after);
+            eprintln!("Handbrake mass={mass} throttle={hold_throttle}: {speed_before} -> {speed_after} m/s; wheel speeds {:?}", after.wheel_rotation_speed);
+            assert!(speed_before > 10.0);
+            assert!(speed_after.abs() < 0.5, "handbrake failed with throttle={hold_throttle}: {speed_after} m/s");
+            assert!(after.wheel_rotation_speed[2..].iter().all(|speed| speed.abs() < 0.1), "rear wheels did not lock");
+            // Releasing Space must restore the accelerator immediately.
+            input.buttons = 0;
+            input.move_y = 127;
+            for _ in 0..60 {
+                arena.simulate_player_tick(10, &input, 1.0 / 60.0);
+                step(&mut arena);
+            }
+            assert!(vehicle_heading(&arena.current_vehicle_snapshots()[0]).1 > 5.0);
+        }
     }
 
     #[test]

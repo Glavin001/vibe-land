@@ -18,6 +18,7 @@ struct FfiDynamicSphereDesc;
 struct FfiLaunchedBallDesc;
 struct FfiCapsulePlayerDesc;
 struct FfiVehicleDesc;
+struct FfiVehiclePartShape;
 struct FfiVehicleCommands;
 struct FfiRaycastRequest;
 struct FfiRaycastHit;
@@ -61,6 +62,7 @@ public:
   void set_body_pose(std::uint32_t entity_id, const FfiPose &pose);
   void add_capsule_player(const FfiCapsulePlayerDesc &desc);
   void add_vehicle(const FfiVehicleDesc &desc);
+  void set_vehicle_shapes(std::uint32_t entity_id, rust::Slice<const FfiVehiclePartShape> shapes);
   void remove_actor(std::uint32_t entity_id);
   void set_user_id(std::uint32_t entity_id, std::uint32_t user_id);
   void apply_impulse(std::uint32_t entity_id, FfiVec3 impulse);

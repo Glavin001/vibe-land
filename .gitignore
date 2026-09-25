@@ -50,5 +50,8 @@ scripts/__pycache__/
 autoresearch-results.tsv
 __pycache__/
 
+# Content-addressed procedural vehicle assets
+.cache/vehicle-assets/
+
 # Durable authored grass layouts (deployment data, not generated blades)
 .data/grass/

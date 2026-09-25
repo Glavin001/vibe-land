@@ -1,3 +1,4 @@
+import { VehicleVisual } from '../vehicles/VehicleVisual';
 // The networked world's entities as the game draws them: players (animated
 // characters with HP bars, spawn shields and id labels), dynamic bodies
 // (balls, boxes, cannonballs), batteries and vehicles.
@@ -497,6 +498,14 @@ export interface VehiclePose {
 /** Vehicles: the chassis and its wheels, per vehicle, at the pose the caller resolves. */
 export class VehiclesRenderer {
   readonly meshes = new Map<number, THREE.Group>();
+  private readonly customVisuals = new Map<number, VehicleVisual>();
+
+  dispose(): void {
+    for (const visual of this.customVisuals.values()) visual.dispose();
+    for (const mesh of this.meshes.values()) mesh.removeFromParent();
+    this.customVisuals.clear();
+    this.meshes.clear();
+  }
 
   update(
     group: THREE.Group,
@@ -510,11 +519,20 @@ export class VehiclesRenderer {
       activeVehicleIds.add(id);
       const vehicleType = vs.vehicleType ?? 0;
       let vehicleMeshGroup = this.meshes.get(id);
-      if (!vehicleMeshGroup || vehicleMeshGroup.userData.vehicleType !== vehicleType) {
+      if (!vehicleMeshGroup || vehicleMeshGroup.userData.vehicleType !== vehicleType || vehicleMeshGroup.userData.assetHash !== vs.customVehicle?.assetHash) {
         if (vehicleMeshGroup) {
           group.remove(vehicleMeshGroup);
         }
-        vehicleMeshGroup = createVehicleMesh(id, vehicleType);
+        this.customVisuals.get(id)?.dispose();
+        this.customVisuals.delete(id);
+        if (vs.customVehicle) {
+          vehicleMeshGroup = new THREE.Group();
+          const visual = new VehicleVisual(vs.customVehicle.configuration, true);
+          vehicleMeshGroup.add(visual.group);
+          vehicleMeshGroup.userData.vehicleType = vehicleType;
+          vehicleMeshGroup.userData.assetHash = vs.customVehicle.assetHash;
+          this.customVisuals.set(id, visual);
+        } else vehicleMeshGroup = createVehicleMesh(id, vehicleType);
         group.add(vehicleMeshGroup);
         this.meshes.set(id, vehicleMeshGroup);
       }
@@ -525,7 +543,9 @@ export class VehiclesRenderer {
       vehicleMeshGroup.position.set(vPos[0], vPos[1], vPos[2]);
       vehicleMeshGroup.quaternion.set(vQuat[0], vQuat[1], vQuat[2], vQuat[3]);
 
-      updateVehicleWheelVisuals(vehicleMeshGroup, vs, placed.localDebug, vPos, vQuat, frameDelta);
+      const custom = this.customVisuals.get(id);
+      if (custom) { if (vs.customRig) custom.setWheelState(vs.customRig.wheels); }
+      else updateVehicleWheelVisuals(vehicleMeshGroup, vs, placed.localDebug, vPos, vQuat, frameDelta);
       onPlaced?.(id, vs, vehicleMeshGroup, placed);
     }
 
@@ -533,6 +553,8 @@ export class VehiclesRenderer {
     for (const [id, mesh] of this.meshes) {
       if (!activeVehicleIds.has(id)) {
         group.remove(mesh);
+        this.customVisuals.get(id)?.dispose();
+        this.customVisuals.delete(id);
         this.meshes.delete(id);
       }
     }
@@ -1040,4 +1062,3 @@ function attachRemoteSpawnShield(parent: THREE.Object3D): RemoteSpawnShieldHandl
     },
   };
 }
-

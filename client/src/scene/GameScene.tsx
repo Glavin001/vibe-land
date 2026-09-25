@@ -11,6 +11,7 @@ import type { WorldDocument } from '../world/worldDocument';
 import type { WeatherPreset } from '../graphics/weatherPresets';
 
 type GameSceneProps = {
+  matchId?: string;
   aerialMode?: boolean;
   aerialSpeed?: number;
   aerialDropRequest?: number;
@@ -54,6 +55,7 @@ type GameWorldDebugFrame = React.ComponentProps<typeof GameWorld>['onDebugFrame'
 
 export function GameScene({
   mode,
+  matchId,
   onWelcome,
   onDisconnect,
   onAimStateChange,
@@ -109,6 +111,7 @@ export function GameScene({
         )}
         <GameWorld
           mode={mode}
+          matchId={matchId}
           worldDocument={worldDocument}
           onWelcome={onWelcome}
           onDisconnect={onDisconnect}

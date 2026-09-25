@@ -1,3 +1,5 @@
+import { decodeVehicleAsset, decodeVehicleRig, type VehicleAsset, type VehicleAssetPacket, type VehicleRigPacket } from '../vehicles/vehicleStream';
+import { PKT_VEHICLE_ASSET, PKT_VEHICLE_RIG } from './sharedConstants';
 // All protocol constants are generated from shared/src/constants.rs.
 // Regenerate with: node scripts/gen-constants.mjs
 export * from './sharedConstants';
@@ -203,6 +205,8 @@ export type NetVehicleState = {
 };
 
 export type VehicleStateMeters = {
+  customVehicle?: VehicleAsset;
+  customRig?: VehicleRigPacket;
   id: number;
   vehicleType: number;
   flags: number;
@@ -423,6 +427,8 @@ export type BatterySyncPacket = {
 };
 
 export type ServerReliablePacket =
+  | VehicleAssetPacket
+  | VehicleRigPacket
   | WelcomePacket
   | ShotResultPacket
   | ShotFiredPacket
@@ -436,12 +442,14 @@ export type ServerReliablePacket =
   | DynamicBodyMetaPacket
   | ServerPingPacket
   | PongPacket;
-export type ServerDatagramPacket = SnapshotPacket | SnapshotV2Packet;
+export type ServerDatagramPacket = SnapshotPacket | SnapshotV2Packet | VehicleRigPacket;
 
 export type ServerPingPacket = { type: 'serverPing'; value: number };
 export type PongPacket = { type: 'pong'; value: number };
 export type ServerWorldPacket = ChunkFullPacket | ChunkDiffPacket;
 export type ServerPacket =
+  | VehicleAssetPacket
+  | VehicleRigPacket
   | WelcomePacket
   | SnapshotPacket
   | SnapshotV2Packet
@@ -598,6 +606,8 @@ export function frameReliablePacket(payload: Uint8Array): Uint8Array {
 
 export function decodeServerReliablePacket(data: ArrayBuffer | Uint8Array): ServerReliablePacket {
   const bytes = toBytes(data);
+  if (bytes[0] === PKT_VEHICLE_RIG) return decodeVehicleRig(bytes);
+  if (bytes[0] === PKT_VEHICLE_ASSET) return decodeVehicleAsset(bytes);
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   let o = 0;
   const kind = view.getUint8(o++);
@@ -1076,6 +1086,7 @@ function decodeDamageEventPacket(view: DataView, o: number): DamageEventPacket {
 
 export function decodeServerDatagramPacket(data: ArrayBuffer | Uint8Array): ServerDatagramPacket {
   const bytes = toBytes(data);
+  if (bytes[0] === PKT_VEHICLE_RIG) return decodeVehicleRig(bytes);
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   let o = 0;
   const kind = view.getUint8(o++);
@@ -1400,6 +1411,8 @@ export function stringFromBytes(bytes: Uint8Array): string {
 
 export function decodeServerPacket(data: ArrayBuffer | Uint8Array): ServerPacket {
   const bytes = toBytes(data);
+  if (bytes[0] === PKT_VEHICLE_RIG) return decodeVehicleRig(bytes);
+  if (bytes[0] === PKT_VEHICLE_ASSET) return decodeVehicleAsset(bytes);
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const kind = view.getUint8(0);
 

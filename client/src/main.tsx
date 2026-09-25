@@ -23,6 +23,7 @@ import { installPoseTrace } from './city/poseTrace';
 // Agent drive: mutating look/move/shoot surface for browser agents.
 import './agentDrive';
 
+const GaragePage = lazy(() => import('./pages/Garage').then(m => ({default: m.GaragePage})));
 const GrassLabPage = lazy(() => import('./pages/GrassLab').then(m => ({ default: m.GrassLabPage })));
 
 const root = createRoot(document.getElementById('root')!);
@@ -53,6 +54,9 @@ const route = resolveAppRoute(window.location.pathname, window.location.search);
 switch (route.kind) {
   case 'grassLab':
     root.render(<Suspense fallback={<div>Opening grass preview…</div>}><GrassLabPage /></Suspense>);
+    break;
+  case 'garage':
+    root.render(<Suspense fallback={<div>Opening garage…</div>}><GaragePage /></Suspense>);
     break;
   case 'stats':
     root.render(<ServerStats />);

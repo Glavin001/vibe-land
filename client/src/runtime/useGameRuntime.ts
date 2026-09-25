@@ -22,20 +22,21 @@ export function useGameRuntime(
   localRenderSmoothingEnabled = true,
   onDamageEvent?: (packet: DamageEventPacket) => void,
   onShotFired?: (packet: ShotFiredPacket) => void,
+  explicitMatchId?: string,
 ) {
   const practiceMode = isPracticeMode(mode);
   const multiplayerBackend = useMemo(() => resolveMultiplayerBackend(), []);
   const multiplayerMatchId = useMemo(
     () =>
-      resolveRequestedMatchId(
+      explicitMatchId ?? resolveRequestedMatchId(
         window.location.search,
         defaultMatchIdForPath(window.location.pathname),
       ),
-    [],
+    [explicitMatchId],
   );
   // Null unless a control plane is configured, in which case the server to
   // play on is discovered at connect time instead of being baked into the build.
-  const controlPlane = useMemo(() => resolveControlPlane(window.location.search), []);
+  const controlPlane = useMemo(() => multiplayerMatchId.startsWith('garage-') ? null : resolveControlPlane(window.location.search), [multiplayerMatchId]);
   const runtimeRef = useRef<GameRuntimeClient | null>(null);
   const onWelcomeRef = useRef(onWelcome);
   const onDisconnectRef = useRef(onDisconnect);

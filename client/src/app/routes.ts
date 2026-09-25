@@ -2,6 +2,7 @@ import type { GameMode } from './gameMode';
 
 export type AppRoute =
   | { kind: 'launcher' }
+  | { kind: 'garage' }
   | { kind: 'grassLab' }
   | { kind: 'game'; mode: GameMode; matchFallback?: string }
   | { kind: 'sharedPractice'; id: string }
@@ -43,6 +44,8 @@ export function resolveAppRoute(pathname: string, search?: string): AppRoute {
     case '/':
     case '/index.html':
       return { kind: 'launcher' };
+    case '/garage':
+      return { kind: 'garage' };
     case '/grass':
       return { kind: 'grassLab' };
     case '/play':

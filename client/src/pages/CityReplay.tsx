@@ -138,7 +138,7 @@ function ReplayNetLayers({ playerRef }: { playerRef: React.MutableRefObject<Repl
   }), []);
   const lastTapeMs = useRef<number | null>(null);
   const settleUntil = useRef(0);
-  useEffect(() => () => renderers.players.dispose(), [renderers]);
+  useEffect(() => () => { renderers.players.dispose(); renderers.vehicles.dispose(); }, [renderers]);
   useFrame(({ camera }, realDt) => {
     const player = playerRef.current;
     const world = player?.world ?? null;

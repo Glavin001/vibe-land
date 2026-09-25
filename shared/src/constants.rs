@@ -234,3 +234,7 @@ pub const DEFAULT_BATTERY_HEIGHT_M: f32 = 0.8;
 /// Battery ids live in a separate range for easier debugging and to avoid
 /// collisions with other runtime entity ids.
 pub const BATTERY_ID_RANGE_START: u32 = 0x4000_0000;
+
+/// Custom vehicle configuration (reliable) and authoritative wheel poses (latest wins).
+pub const PKT_VEHICLE_ASSET: u8 = 140;
+pub const PKT_VEHICLE_RIG: u8 = 141;

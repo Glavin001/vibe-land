@@ -200,7 +200,7 @@ fn benchmark_vehicle_world(
     }
 }
 
-fn flat_vehicle_benchmark_world() -> WorldDocument {
+pub(crate) fn flat_vehicle_benchmark_world() -> WorldDocument {
     benchmark_vehicle_world(
         "Flat Vehicle Benchmark",
         "Flat multiplayer world used for deterministic local driver vehicle benchmarks.",
@@ -208,6 +208,54 @@ fn flat_vehicle_benchmark_world() -> WorldDocument {
         BENCHMARK_TERRAIN_HALF_EXTENT_M,
         vec![0.0; BENCHMARK_TERRAIN_GRID_SIZE * BENCHMARK_TERRAIN_GRID_SIZE],
     )
+}
+
+/// One sampled surface is serialized to the client and instantiated as the
+/// server heightfield. Keep the starting pad level for every garage wheelbase.
+pub(crate) fn garage_test_world() -> WorldDocument {
+    const GRID: usize = 257;
+    const HALF: f32 = 128.0;
+    fn smooth(a: f32, b: f32, value: f32) -> f32 {
+        let t = ((value - a) / (b - a)).clamp(0.0, 1.0);
+        t * t * (3.0 - 2.0 * t)
+    }
+    let heights = (0..GRID).flat_map(|row| (0..GRID).map(move |col| {
+        let x = col as f32 - HALF;
+        let z = row as f32 - HALF;
+        let pad = smooth(12.0, 24.0, x.hypot(z));
+        let edge = 1.0 - smooth(96.0, 116.0, x.abs().max(z.abs()));
+        let hills = 2.5 * (1.0 + (x / 19.0).sin() * (z / 23.0).cos());
+        let bank = 3.0 * (-((x - 45.0).powi(2) + (z - 45.0).powi(2)) / 500.0).exp();
+        // A gently staggered washboard lane flexes left and right suspension
+        // independently; its seven-metre waves resolve on the one-metre grid.
+        let lane = (1.0 - smooth(4.0, 10.0, x.abs()))
+            * smooth(24.0, 32.0, z) * (1.0 - smooth(64.0, 72.0, z));
+        let bumps = lane * 0.24 * (z * 2.0 * PI / 7.0 + x * 0.45).sin();
+        pad * edge * (hills + bank + bumps)
+    })).collect();
+    let mut world = benchmark_vehicle_world(
+        "Garage proving ground",
+        "Rolling hills, banked slopes and an uneven suspension lane around a flat starting pad.",
+        GRID, HALF, heights,
+    );
+    world.dynamic_entities.clear();
+    world.spawn_areas = vec![vibe_land_shared::world_document::SpawnArea {
+        id: 1, position: [2.5, 1.5, 3.0], radius: 0.1,
+    }];
+    // Physical, visible perimeter barriers keep driving inside the sampled
+    // surface. There is no coincident flat-ground collider under the terrain.
+    for (index, (position, half_extents)) in [
+        ([120.0, 2.0, 0.0], [1.0, 4.0, 121.0]),
+        ([-120.0, 2.0, 0.0], [1.0, 4.0, 121.0]),
+        ([0.0, 2.0, 120.0], [119.0, 4.0, 1.0]),
+        ([0.0, 2.0, -120.0], [119.0, 4.0, 1.0]),
+    ].into_iter().enumerate() {
+        world.static_props.push(StaticProp {
+            id: index as u32 + 1, kind: StaticPropKind::Cuboid,
+            position, rotation: [0.0, 0.0, 0.0, 1.0], half_extents, material: None,
+        });
+    }
+    world
 }
 
 fn vehicle_bumps_benchmark_world() -> WorldDocument {
@@ -245,6 +293,56 @@ mod tests {
     use super::*;
     use crate::movement::MoveConfig;
     use vibe_land_shared::world_document::SpawnArea;
+
+    #[test]
+    fn garage_heightmap_has_level_spawn_and_resolved_driving_features() {
+        let world = garage_test_world();
+        assert!(world.dynamic_entities.is_empty());
+        assert_eq!(world.terrain.tiles.len(), 1);
+        let side = usize::from(world.terrain.tile_grid_size);
+        let heights = &world.terrain.tiles[0].heights;
+        assert_eq!(heights.len(), side * side);
+        for z in -8..=8 {
+            for x in -8..=8 {
+                assert_eq!(world.sample_heightfield_surface_at_world_position(x as f32, z as f32), 0.0);
+            }
+        }
+        let mut max_height = 0.0f32;
+        let mut max_slope = 0.0f32;
+        for row in 0..side {
+            for col in 0..side {
+                let h = heights[row * side + col];
+                assert!(h.is_finite() && h >= 0.0);
+                max_height = max_height.max(h);
+                if row + 1 < side && col + 1 < side {
+                    let dx = heights[row * side + col + 1] - h;
+                    let dz = heights[(row + 1) * side + col] - h;
+                    max_slope = max_slope.max(dx.hypot(dz));
+                }
+            }
+        }
+        assert!(max_height > 5.0 && max_height < 8.0, "height {max_height}");
+        assert!(max_slope < 0.65, "slope {max_slope}");
+        assert!((world.sample_heightfield_surface_at_world_position(0.0, 40.0)
+            - world.sample_heightfield_surface_at_world_position(0.0, 43.0)).abs() > 0.15);
+        // A round trip exercises the exact document sent to the browser.
+        let wire = serde_json::to_vec(&world).unwrap();
+        let decoded: WorldDocument = serde_json::from_slice(&wire).unwrap();
+        assert_eq!(decoded.terrain.tiles[0].heights, *heights);
+    }
+
+    #[test]
+    fn garage_heightmap_rays_match_serialized_surface() {
+        let world = garage_test_world();
+        let mut arena = PhysicsArena::new_rapier(MoveConfig::default());
+        world.instantiate(&mut arena).expect("garage terrain");
+        arena.step_vehicles_and_dynamics(1.0 / 60.0);
+        for (x, z) in [(0.0, 3.0), (0.3, 40.7), (2.7, 44.1), (45.3, 45.7), (-80.4, -72.2)] {
+            let expected = world.sample_heightfield_surface_at_world_position(x, z);
+            let distance = arena.cast_static_world_ray([x, 20.0, z], [0.0, -1.0, 0.0], 30.0, None).unwrap();
+            assert!((20.0 - distance - expected).abs() < 0.001, "({x}, {z}): {} vs {expected}", 20.0 - distance);
+        }
+    }
 
     #[test]
     fn default_world_bootstrap_matches_expected_multiplayer_counts() {

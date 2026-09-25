@@ -107,6 +107,22 @@ pub struct PhysicsArena {
 }
 
 impl PhysicsArena {
+    pub fn vehicle_rig(&self, id:u32, neutral_jounce:f32) -> Option<[[f32;4];4]> {
+        match &self.backend {
+            #[cfg(feature="physx-gpu")]
+            PhysicsBackend::Physx(arena) => arena.vehicle_rig(id, neutral_jounce),
+            _ => None,
+        }
+    }
+
+    pub fn spawn_prepared_vehicle(&mut self, id:u32, vehicle_type:u8, position:Vector3<f32>, asset:&crate::vehicle_assets::PreparedGeometry) -> Result<(), String> {
+        match &mut self.backend {
+            #[cfg(feature="physx-gpu")]
+            PhysicsBackend::Physx(arena) => arena.spawn_vehicle_asset(id, vehicle_type, position, [0.0,0.0,0.0,1.0], Some(asset)).map_err(|e|e.to_string()),
+            _ => Err("Customized vehicles require the PhysX GPU backend".into()),
+        }
+    }
+
     pub fn new(config: MoveConfig, backend: PhysicsBackendKind) -> Result<Self> {
         let backend = match backend {
             PhysicsBackendKind::Rapier => PhysicsBackend::Rapier(RapierPhysicsArena::new(config)),

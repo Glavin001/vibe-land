@@ -85,6 +85,8 @@ type AppProps = {
   hideStatusBanner?: boolean;
   /** Default match id when none is in the query (e.g. 'city-default' for /city). */
   matchFallback?: string;
+  /** Explicit private session, unaffected by a stale URL match query. */
+  matchId?: string;
 };
 
 type BenchmarkConfig = {
@@ -154,10 +156,11 @@ export function App({
   hideTopNav = false,
   hideStatusBanner = false,
   matchFallback,
+  matchId,
 }: AppProps) {
   const practiceMode = isPracticeMode(mode);
   const modeLabel = gameModeLabel(mode);
-  const multiplayerMatchId = resolveRequestedMatchId(
+  const multiplayerMatchId = matchId ?? resolveRequestedMatchId(
     window.location.search,
     matchFallback ?? defaultMatchIdForPath(window.location.pathname),
   );
@@ -1227,6 +1230,7 @@ export function App({
         <GameScene
           key={sessionKey}
           mode={mode}
+          matchId={multiplayerMatchId}
           worldDocument={effectiveWorldDocument}
           aerialMode={cityWorld && aerialMode}
           aerialSpeed={aerialSpeed}

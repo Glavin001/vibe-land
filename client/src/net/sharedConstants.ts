@@ -236,3 +236,7 @@ export const DEFAULT_BATTERY_HEIGHT_M = 0.8;
 /// Battery ids live in a separate range for easier debugging and to avoid
 /// collisions with other runtime entity ids.
 export const BATTERY_ID_RANGE_START = 0x40000000;
+
+/// Custom vehicle configuration (reliable) and authoritative wheel poses (latest wins).
+export const PKT_VEHICLE_ASSET = 140;
+export const PKT_VEHICLE_RIG = 141;

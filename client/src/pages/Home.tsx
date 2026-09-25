@@ -107,6 +107,19 @@ export function HomePage() {
           />
         </div>
 
+        <div className="mb-3.5">
+          <NavCard
+            href="/garage"
+            tag="/garage"
+            title="Car Garage"
+            description="Choose from seven vehicles, adjust dimensions and finishes, and inspect every individual part. Save and share your custom configuration."
+            note="Live model preview · server assembly preparation."
+            accentClass="border-t-orange-400"
+            tagClass="text-orange-400/60"
+            noteClass="text-orange-300/75"
+          />
+        </div>
+
         {/* Gallery — full width */}
         <div className="mb-10">
           <NavCard
