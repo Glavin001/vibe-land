@@ -53,7 +53,8 @@ errors), `server.log`, `driver.log`, `server-stats.jsonl`,
 `timeline.svg`, `render_clock.svg`, `frames.svg`, `bandwidth.svg`).
 
 A fresh server per run is deliberate: `/city-reset` has been seen to kill the
-process, and a second run on the rubble of the first measures something else.
+process (the crash on the first move after a reset, fixed in 1425a742), and a
+second run on the rubble of the first measures something else.
 
 ## Scenarios
 

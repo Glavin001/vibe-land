@@ -1,9 +1,13 @@
 ---
 name: perf-measure
-description: Measure server tick performance without fooling yourself. The bench.sh scenario matrix, the wall-time tree that decomposes at every level, the cost-driver regression that says WHY a phase is expensive, and the thirteen traps that have each produced a wrong conclusion in this project. Use when profiling the city step, comparing builds or scenes, investigating a slow tick, or before claiming any performance number.
+description: Measure server tick performance without fooling yourself. The bench.sh scenario matrix, the wall-time tree that decomposes at every level, the cost-driver regression that says WHY a phase is expensive, the thirteen traps that have each produced a wrong conclusion in this project, and the Mac (Apple Silicon, Metal) toolset — city-bench, perf_bench, the meteor bench, Netlab v2, the rest soak — with its GPU lock and warm-up. Use when profiling the city step, comparing builds or scenes, investigating a slow tick, or before claiming any performance number.
 ---
 
 # Measuring server performance
+
+`bench.sh`, `profile.sh`, `record-city-trace` and `city_bench.rs` build the
+Blast `cuda-stress` path, so they run on Linux/NVIDIA only. On a Mac, read
+[On a Mac](#on-a-mac) first; the traps below still apply.
 
 ## The one command
 
@@ -341,3 +345,119 @@ whether the hardlink is intact.
 If a claim rests on an assumption, write the assumption down next to it. A
 conclusion whose assumption is later disproved should be **discarded, not
 patched**.
+
+## On a Mac
+
+Apple Silicon runs the native destruction stage on Metal through CuMetal (see
+[run-locally](../run-locally/SKILL.md#macos-apple-silicon) for the build, the
+package and the knobs). The Linux harnesses above do not build there. These
+do:
+
+| Tool | What it answers | Needs the GPU |
+| --- | --- | --- |
+| `scripts/perf/city-bench.sh` ([docs/city-bench.md](../../../docs/city-bench.md)) | End to end: scripted headless players destroy `/city` while a paired capture records it; did the server and every client stay real-time, and how well did the netcode stream it. Budgets gate the result. | yes (takes the lock itself) |
+| `perf_bench` (`server/src/perf_bench.rs`) | Server tick cost on fixed inputs, no browser or network: `fracture_cold`, `city_idle`, `city_walking`, `fracture_warm`, `debris_idle`, `debris_awake`, `city_rubble`, `meteor`, `rubble_sleep`, `demolition`. The Mac's `city_bench.rs`. | yes |
+| `scripts/perf/tape-analysis/meteor-bench.sh` | `perf_bench`'s meteor scenario in arms: `warmup`, `timing`, `zones`, `commits`, `small`, `nocorrect` | yes (takes the lock itself) |
+| Tick phases in `ticks.jsonl` | Every tick of a capture, split into PhysX submit, fetch, readback, the stage's passes and more ([Tick phases](../../../docs/city-bench.md#tick-phases)); `scripts/perf/tick_phases.py` reads them | no (reading) |
+| Netlab v2 ([docs/netlab-v2.md](../../../docs/netlab-v2.md)) | Netcode sync efficiency on a frozen session: what the encoders send, what a client on a given link would draw | no |
+| `scripts/perf/rest-soak/run.sh <on\|off> [seconds]` | Whether a server survives a long session of destroy, settle, hit and reset cycles, with and without `VIBE_CITY_NATIVE_REST_SLEEP` | yes (takes the lock itself) |
+| `scripts/perf/tape-analysis/` | Offline decode of a RECORD TAPE session: frames, packets, meteors, charts | no |
+
+Rules that apply to all of them:
+
+- **The GPU lock.** Anything that touches the GPU runs under the main
+  checkout's `scripts/perf/gpu-run.sh <label> <cmd>`; `city-bench.sh`,
+  `meteor-bench.sh` and `rest-soak/run.sh` take it themselves. Launch from
+  bash: zsh runs `&` jobs at nice +5. A worktree's own `gpu-run.sh` locks
+  nothing anyone else sees.
+- **A browser on the same GPU is a load.** The server yields to it: a
+  rendering browser multiplied post-impact tick overruns about 11×
+  (`docs/meteor-impact-analysis-2026-09-24.md`, follow-up). Numbers taken
+  while someone plays locally are not comparable with a headless run.
+- **Warm up first.** Run once untimed after a package change: first-use
+  costs and GPU clocks settle during it, and a package without a pipeline
+  archive (before PhysX 04ff3ac4) also compiles its Metal pipelines then.
+  Every harness sets
+  `CUMETAL_CACHE_DIR=/Users/glavin/Development/vibe-land/target/cumetal-cache`.
+- **Rebuild after a package change.** A binary built against an older PhysX
+  package crashes against the new one. Mind `--no-build` and `BENCH_BIN`.
+- **No `nvidia-smi`, no CUDA tools.** Attribution goes through CuMetal's
+  `CUMETAL_TRACE_COMMITS=1` (one line per command buffer) and
+  `CUMETAL_TRACE_SYNC=1` (one line per blocking host wait), and the stage's
+  own zones under `VIBE_PHYSX_PROFILE=1`. Both traces cost time: use them to
+  attribute, never to time.
+- **The keep-alive is part of the number.** The bridge sets
+  `CUMETAL_GPU_KEEPALIVE_US=250` on macOS.
+  `scripts/perf/gpu-run.sh idle scripts/perf/mac-idle.sh <tag> 0` measures
+  idle without it. `mac-idle.sh` and `mac-playtest.sh` run
+  `target/release/web-fps-server` on :4001/:4002, so they cannot run beside
+  the play server.
+
+### city-bench
+
+```bash
+scripts/perf/city-bench.sh --scenario quick --clients 3 --label mychange
+scripts/perf/city-bench.sh --label mychange --baseline target/city-bench/runs/<run>
+scripts/perf/city-bench.sh --analyse target/city-bench/runs/<run>       # no GPU
+```
+
+It builds into `target/city-bench/cargo` (`CITY_BENCH_OUT` moves the output
+root, so a worktree can bench without sharing it), serves on 4301/4302/3303
+(`HTTP_PORT`, `WT_PORT`, `CLIENT_PORT`), and holds the lock only while the
+server and browsers run. `--baseline` takes a run directory or its
+`report.json`. Destruction is not bit-reproducible: check
+`server.destruction` in both reports before reading a delta.
+Baselines are in `docs/city-bench-baselines/`.
+
+### perf_bench
+
+```bash
+CARGO_TARGET_DIR=<your dir> PHYSX_DESTRUCTION_SDK=/Users/glavin/Development/PhysX \
+  cargo test -p web-fps-server --release --features native-destruction --no-run
+# the "unittests src/main.rs" executable it prints is the bench binary
+cd server && bash -c '/Users/glavin/Development/vibe-land/scripts/perf/gpu-run.sh perf-bench env \
+  VIBE_PERF_SCENARIOS=city_idle VIBE_PERF_PACE=1 VIBE_PERF_ALL_TICKS=1 \
+  CUMETAL_CACHE_DIR=/Users/glavin/Development/vibe-land/target/cumetal-cache \
+  <bench binary> perf_bench --ignored --nocapture --test-threads=1'
+```
+
+Run it from `server/`: the scenes load assets relative to it. It prints one
+`PERF {...}` line per scenario and `SPIKE {...}` lines for the worst ticks.
+`VIBE_PERF_SCENARIOS` takes a comma-separated list of name prefixes,
+`VIBE_PERF_PACE=1` holds ticks to the server's 60 Hz period (back-to-back
+ticks keep the GPU clocked up, which the live server does not),
+`VIBE_PERF_ALL_TICKS=1` adds a `TICK {...}` line per tick with its stage line,
+and `VIBE_PERF_TRACE_DIR` writes a per-tick CSV.
+`meteor-bench.sh` wraps the meteor scenario: build as above, then
+`BENCH_BIN=<bench binary> scripts/perf/tape-analysis/meteor-bench.sh <out> [arms]`
+from bash.
+
+### The rest soak
+
+```bash
+scripts/perf/rest-soak/run.sh on 1860     # or off; ports 6401/6402/3643
+DRIVER_JS=$PWD/scripts/perf/rest-soak/reset-soak.mjs scripts/perf/rest-soak/run.sh on
+```
+
+`DRIVER_JS` must be absolute: the driver runs from the client directory.
+
+It expects its server at `target/rest-soak/cargo/release/web-fps-server`
+(`BIN` overrides) and does not build it. `reset-soak.mjs` walks the player
+onto the rubble before each reset, the case that crashed before 1425a742.
+`analyse.py` and `rewake.py` read the run afterwards.
+
+### A live session
+
+RECORD TAPE on the stats overlay writes a paired capture to
+`debug-reports/session-<id>/`. Its `server/ticks.jsonl` carries the tick
+phases (start the server with `VIBE_PHYSX_PROFILE=1` for the stage's zones);
+`client.vltape` feeds `scripts/perf/tape-analysis/` and Netlab v2.
+`scripts/perf/session_bundle.py` joins the two.
+
+Checked on this Mac on 2026-09-25: the `perf_bench` build and a paced
+`city_idle` run with `VIBE_PERF_ALL_TICKS=1` under the lock (600 `TICK`
+lines, p50 1.8 ms), `city-bench.sh --analyse` of a copied run with
+`--baseline <run dir>`, and a Netlab v2 `run` on the frozen systematic
+bundle. Not run while writing this: a full `city-bench.sh`,
+`meteor-bench.sh` and the rest soak (each holds the GPU for minutes to half
+an hour), and `mac-idle.sh` (it needs :4001).

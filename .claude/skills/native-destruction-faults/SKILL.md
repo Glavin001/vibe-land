@@ -1,6 +1,6 @@
 ---
 name: native-destruction-faults
-description: Diagnose the PhysX-native destruction backend's runtime faults — settled bodies ejected at kilometres per second, bodies leaving the world, CUDA error 700 restarts, and a stage stuck at frame zero. Includes the forensics already built, the hypotheses already killed and the evidence that killed them. Use when the city server restarts under load, when debris teleports or vanishes, or before spending a night on a theory this project has already tested.
+description: Diagnose the PhysX-native destruction backend's runtime faults — settled bodies ejected at kilometres per second, bodies leaving the world, CUDA error 700 restarts (and Metal page faults on the Mac), and a stage stuck at frame zero. Includes the forensics already built, the hypotheses already killed and the evidence that killed them. Use when the city server restarts under load, when debris teleports or vanishes, or before spending a night on a theory this project has already tested.
 ---
 
 # When the native destruction stage misbehaves
@@ -48,7 +48,8 @@ meteor ploughing through its own rubble ejects settled chunks on demand
 (arm P: 25 ejections in 4 launches; ~10 t never ejects anything), which
 makes it the fastest reproducer that fault has had.
 
-**How to get a real stack trace out of a 700, instead of guessing.** The
+**How to get a real stack trace out of a 700, instead of guessing** (Linux and
+NVIDIA; on a Mac see [On a Mac](#on-a-mac)). The
 error is asynchronous: the kernel that faults never reports, the next stream
 sync does, so every log line says `SynchronizeStreams` or `Synchronizing
 GPU Narrowphase` — the sync site, not the culprit. Build the smallest
@@ -182,4 +183,47 @@ never reaches frame 1 publishes nothing ever: the city cannot be broken,
 `clearStress` refuses because of that state so it cannot be reset either, and
 tick rate, player count and client agreement all look healthy. It ran for
 4,560 and 19,590 consecutive ticks on the live server before a human noticed
-the buildings had stopped falling down. `stuck_at_frame_zero` counts it.
+the buildings had stopped falling down. `stuck_at_frame_zero` counts it. A
+reset no longer gives up when `clearStress` refuses: since 98bf2285
+`CityRuntime::reset` rebuilds the city anyway and leaks what the stage kept.
+
+## On a Mac
+
+The forensics above live in `destruction/src/native_runtime.rs` and the bridge,
+so the log lines, spans and `stuck_at_frame_zero` are the same on Metal. The
+CUDA tooling is not.
+
+**What a GPU fault looks like.** A bad device address on Metal is a command
+buffer page fault. CuMetal prints `cumetal: MTL command buffer error: ...` on
+stderr and maps it to `cudaErrorIllegalAddress` (700), so PhysX's
+"previous CUDA errors" lines, the bridge's lost-context detection and exit 70
+follow as on Linux. The failure is reported when the command buffer
+completes, which is usually a later wait, not the launch of the kernel that
+faulted. There is no supervisor on the Mac: `play-server.sh` does
+not restart the server; it exits and releases the GPU lock.
+
+**Absence of a fault proves less on Metal.** `heightfield_edge`'s
+`a_ball_rolling_off_a_heightfield_edge_faults_the_gpu` prints "no fault: the
+heightfield edge did not reproduce it here" on Metal (2026-09-25, package
+b5b18ecb), yet the fork's `convexHeightfield.cu` still calls `getTriangle` on
+the boundary index unguarded. The out-of-range read presumably still happens
+and just did not land on an unmapped page (inferred, not traced). A
+reproducer that passes on Metal does not clear a kernel.
+
+**Instead of `compute-sanitizer` and `CUDA_LAUNCH_BLOCKING`** (neither exists
+here), CuMetal has:
+
+- `CUMETAL_SYNC_EACH_LAUNCH=1`: synchronize after every launch, so an error is
+  reported at the launch that caused it. The analogue of
+  `CUDA_LAUNCH_BLOCKING=1`, and just as slow. (Read from the cuda-metal
+  source; not exercised on a fault while writing this.)
+- `CUMETAL_TRACE_COMMITS=1`: a line per command buffer with the kernels in it,
+  so the buffer that failed names its candidates.
+- `CUMETAL_TRACE_SYNC=1`: a line per host wait that blocked, with its reason:
+  which sync reported the error.
+
+**Reproducers** are bridge tests, run under the GPU lock with
+`-- --ignored --nocapture --test-threads=1`; no library path is needed (the
+binary has an rpath into the package). `VIBE_CITY_BALL_TRACE=1` works the
+same. `VIBE_PHYSX_FAKE_CONTEXT_LOST=1` exercises the exit-70 path without a
+fault.

@@ -116,3 +116,43 @@ cargo test --release -p web-fps-server --features blast-core,cuda-stress \
 
 Pass the same env the live server runs, or you are back to measuring your own
 configuration. See [city-physics-tuning] for what each knob does.
+
+## On a Mac
+
+`city_bench.rs` compiles only with `--features destruction` (Blast), so none
+of it builds on a Mac, its native-path tests included, and the reproduction
+command above is Linux-only. The Mac's controlled harnesses are `perf_bench`
+(`server/src/perf_bench.rs`, `--features native-destruction`) and the bridge
+tests. The rule is the same.
+
+- **`perf_bench` already calls production.** Each scene is
+  `PhysicsArena::new(.., PhysxGpu)`, `seed_world_for_match(..,
+  CITY_MATCH_PREFIX)` and `CityRuntime::native(60, world)`, stepped as
+  `city.pre_step`, `step_vehicles_and_dynamics`, `city.step`, the server's
+  order. Keep new scenarios going through those calls. How to build and run
+  it is in [perf-measure](../perf-measure/SKILL.md#perf_bench).
+- **Production on the Mac is `play-server.sh`'s environment**:
+  `VIBE_PHYSICS_BACKEND=physx_gpu` and code defaults for everything else.
+  `scripts/physics-env.sh` (the vl4 box's grid 2, stress scale 0.45, 2 GB GPU
+  heap and raised capacities, freeze on) is sourced by neither
+  `play-server.sh` nor `city-bench.sh`, `perf_bench` or the rest soak. A Mac
+  measurement that sources it describes the Linux box's city, not the one
+  played here. Read the running server's env back with
+  `ps -E -ww -o command= -p <pid> | tr ' ' '\n' | grep -E 'VIBE_|CUMETAL_'`.
+- **Settling, A/B.** The Mac analogue of the reproduction is `perf_bench`'s
+  `rubble_sleep` scenario, which attacks every building and then watches the
+  city settle. Run it with `VIBE_PERF_TRACE_DIR` set in both arms and compare
+  the per-body rest-pose CSVs with
+  `scripts/perf/rubble-sleep/rest_compare.py A.csv B.csv`. Change one knob
+  per arm (`VIBE_CITY_NATIVE_REST_SLEEP`, `VIBE_PHYSX_STABILIZATION`, ...; see
+  [run-locally](../run-locally/SKILL.md#opt-in-knobs)).
+  `physx-bridge/tests/rubble_rest.rs` replays three neighbourhoods cut out of
+  bench captures and runs on Metal (ignored; `-- --ignored --test-threads=1`
+  under the GPU lock).
+- **The island trap applies unchanged.** The bench pile and the live city
+  differ in island structure on Metal as on CUDA.
+- **Two more ways a Mac run measures its own configuration**: a browser
+  rendering on the same GPU (the server yields to it), and a first run on a
+  new PhysX package (first-use costs; pipeline compiles too, for a package
+  without a pipeline archive). Hold the GPU lock, close the browser, and warm
+  up once before timing.

@@ -32,6 +32,16 @@ and a replay from elsewhere is a different question wearing the costume of a
 comparison. `--camera-eye/--camera-look` override it deliberately, and every
 line of output then says `OVERRIDDEN`.
 
+**On a Mac, the recording half does not build.** `record-city-trace` refuses
+to run without the Blast `cuda-stress` feature, which is Linux/NVIDIA-only, so
+tapes are recorded on a Linux box. The replay is CPU-only and builds on the
+Mac (`cargo build --release -p vibe-land-destruction --bin netlab-encoder`,
+into your own `CARGO_TARGET_DIR`); copy the tape and its `pkts/manifest.json`
+over. For a stream measurement recorded on the Mac itself, use Netlab v2
+(`docs/netlab-v2.md`), which replays a paired session bundle through the
+production encoders and records with `client/netlab/v2/record-bundle.sh`
+under the GPU lock.
+
 ## The scenario set, and why it is a set
 
 ```bash

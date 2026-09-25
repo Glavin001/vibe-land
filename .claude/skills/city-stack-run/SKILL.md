@@ -1,11 +1,13 @@
 ---
 name: city-stack-run
-description: Build, launch and headlessly verify the /city destruction stack on its own ports, including against a work-in-progress blast-stress-solver via BLAST_ROOT. Use when you need a playable /city URL, when running two builds side by side to compare them, or when a client connects but shows an empty world.
+description: Build, launch and headlessly verify the /city destruction stack on its own ports, including against a work-in-progress blast-stress-solver via BLAST_ROOT, and the Mac variant (native destruction on Metal, the GPU lock, no Caddy). Use when you need a playable /city URL, when running two builds side by side to compare them, or when a client connects but shows an empty world.
 ---
 
 # Running and verifying the /city stack
 
-For an ordinary deployment on the Vast instance you are already inside, use
+On a Mac, read [On a Mac](#on-a-mac) first: the build, ports, launch and
+stop steps differ. For an ordinary deployment on the Vast instance you are
+already inside, use
 `python3 scripts/vast-city.py up --browser --public` from the current checkout.
 For an existing URL, `python3 scripts/vast-city.py verify --browser --public`
 skips building and restarting. Read [vastai-deploy](../vastai-deploy/SKILL.md)
@@ -106,7 +108,7 @@ round of transport debugging.
 H=$(curl -sk "https://127.0.0.1:<port>/session-config?match_id=city-default" \
       | python3 -c "import json,sys; print(json.load(sys.stdin)['city_manifest_hash'])")
 
-curl -sk "https://127.0.0.1:<port>/city-manifest/$H" -o /tmp/m.bin \
+curl -sk --compressed "https://127.0.0.1:<port>/city-manifest/$H" -o /tmp/m.bin \
   -w "http=%{http_code} bytes=%{size_download}\n"
 
 python3 -c "
@@ -115,7 +117,9 @@ print('BINARY VLCM' if d[:4]==b'VLCM' else 'JSON -- the empty-world bug' if d[:1
 ```
 
 Expect `VLCM` and single-digit megabytes. Tens of megabytes, or a leading `{`,
-means JSON on the wire and a world that will render nothing.
+means JSON on the wire and a world that will render nothing. Keep
+`--compressed`: the route answers with `Content-Encoding: gzip`, and without
+it the file starts `1f8b` and the check prints hex whatever the payload is.
 
 Note the route is `/city-manifest/<hash>`, not `/city-manifest/<match>`; the
 match-shaped URL 404s and reads as "the endpoint is broken".
@@ -312,3 +316,56 @@ Reading the result: the GPU stress solve should be a small fraction of
 (see the `gpu-stress-perf` skill in blast-stress-solver). If `stress_solve_ms`
 is large while `gpu_stress_solve_ms` is small, the cost is in the work AROUND
 the solve -- support ingest, contact processing, readback -- not in the solver.
+
+## On a Mac
+
+Apple Silicon runs the stack with PhysX on Metal through CuMetal; the setup
+(package, GPU lock, play server) is in
+[run-locally](../run-locally/SKILL.md#macos-apple-silicon). What differs from
+the procedure above:
+
+- **Build `--features native-destruction`**, with no `BLAST_ROOT`: only
+  PhysX's native stage runs on Metal, and `blast-core`/`cuda-stress` do not
+  build there. The `ExtStressGpuSolver` strings check and the `.cu`-relink
+  trap do not apply. Confirm the engine from `/healthz` instead: it reports
+  `"destruction_backend":"native"` and
+  `"physx_sdk":"<PhysX revision> @ <package path>"`. In a worktree, set
+  `PHYSX_DESTRUCTION_SDK=/Users/glavin/Development/PhysX`. The overlay's
+  "stress solver" row reads `CUDA <n>/<n>` on Metal too (16/16 on the
+  default scene): it counts structures on the GPU solver, whatever runs it.
+- **Ports.** Use `lsof -nP -iTCP -sTCP:LISTEN` and `lsof -nP -iUDP` (there is
+  no `ss` or `/proc`). Already spoken for: 4001/4002 and the client on 3003
+  (the owner's play session: never touch them), 4301/4302/3303
+  (`city-bench.sh`), 6401/6402/3643 (the rest soak), 4501/4502/3503 (Netlab
+  v2 recording). Pick three others.
+- **No Caddy, no certificates.** The client's vite dev server serves the SPA
+  and proxies the HTTP routes to the server (`SERVER_HOST`, `SERVER_PORT`),
+  and the browser opens WebTransport straight to the server's UDP port.
+  `localhost` is a secure context and Chrome pins the server's self-signed
+  certificate by hash, so nothing needs minting. Leave `WT_PUBLIC_URL` unset
+  and set `WT_HOST=127.0.0.1`; the `/game` and certificate sections above only
+  matter if you set them.
+- **Launch under the GPU lock**, with all of `BIND_ADDR`, `WT_BIND_ADDR`,
+  `WT_HOST` and `WEB_BIND_ADDR=` (empty) set; the recipe is run-locally's "A
+  second instance". A binary built in a worktree reads no `.env`.
+- **Stop by port.** `pgrep -x web-fps-server` matches every server on
+  the machine, including the play server and running benches:
+  `kill $(lsof -tiTCP:<port> -sTCP:LISTEN)`. Read a running server's
+  environment with `ps -E -ww -o command= -p <pid> | tr ' ' '\n' | grep VIBE_CITY`.
+- **The manifest check** runs over plain HTTP on `BIND_ADDR`:
+  `curl -s "http://127.0.0.1:<port>/session-config?match_id=city-default"`,
+  then `curl -s --compressed http://127.0.0.1:<port>/city-manifest/$H`.
+  The default scene's manifest is 705 KB of `VLCM` (checked 2026-09-25).
+- **A player without a browser**: `city-bots --api http://127.0.0.1:<port>
+  --wt-port <wt port> --bots 1 --duration 30 --out <dir>` (built with
+  `cargo build --release -p web-fps-server --bin city-bots`), run from the
+  repo root because it reads `client/netlab/netemProfiles.json`. The first
+  join creates the match and builds the city.
+- **Headless Chromium renders on the server's GPU.** The city-bench driver
+  launches it with `--use-angle=metal --ignore-gpu-blocklist`, not
+  SwiftShader, and every browser counts as GPU load on the server's tick.
+  Keep browsers inside the lock too. For a scripted run, prefer
+  `scripts/perf/city-bench.sh` (see [perf-measure](../perf-measure/SKILL.md#on-a-mac))
+  over hand-driving Playwright.
+- **Resetting the city** does not need a restart:
+  `curl -X POST http://127.0.0.1:<port>/city-reset/city-default`.

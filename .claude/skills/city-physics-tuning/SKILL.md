@@ -27,6 +27,17 @@ all pass while the building falls over on its own.
 
 ## The knobs
 
+These are the Blast backend's knobs (Linux/NVIDIA). A Mac build runs only
+PhysX's native destruction stage, which has no force injection, no freezing
+and no resimulation (`destruction/src/native_runtime.rs`, module comment).
+`VIBE_CITY_CONTACT_WAKE_RATIO`, `VIBE_CITY_SLEEP_THRESHOLD` and
+`VIBE_CITY_GPU_STRESS` are read only by the Blast adapter
+(`physx-bridge/src/destruction.cc`), which a Mac build does not compile.
+`VIBE_CITY_STRESS_LIMIT_SCALE` still scales the material table the native
+stage is authored from, and the `VIBE_WORLD_*` values apply to both. The
+native stage's own knobs are listed in
+[run-locally](../run-locally/SKILL.md#opt-in-knobs).
+
 | variable | default | what it actually controls |
 |---|---|---|
 | `VIBE_WORLD_GRAVITY` | 20.0 | world gravity, m/s^2 |

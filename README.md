@@ -90,7 +90,8 @@ Production notes:
 ## PhysX GPU authoritative server
 
 PhysX is a process-start backend, not a per-match toggle. Build and run it on
-an NVIDIA host with the PhysX GPU SDK and CUDA driver available:
+an NVIDIA host with the PhysX GPU SDK and CUDA driver available (for Apple
+Silicon, see [Running on macOS](#running-on-macos-apple-silicon)):
 
 ```bash
 PHYSX_ROOT=/root/PhysX/physx/install/linux-clang/PhysX \
@@ -116,6 +117,54 @@ This is the correctness baseline for thin-predictor tuning.
 server and `libPhysXGpu_64.so`. Build `Dockerfile.physx-gpu` from that bundle
 and run it with the NVIDIA container runtime. Switching back to Rapier requires
 draining and restarting the process with `VIBE_PHYSICS_BACKEND=rapier`.
+
+## Running on macOS (Apple Silicon)
+
+The PhysX GPU server also runs on Apple Silicon: CuMetal runs PhysX's CUDA
+kernels on Metal. Only PhysX's native destruction stage runs there, with its
+GPU stress solver in FP32 at a tolerance of 1e-3; the Blast features
+(`destruction`, `cuda-stress`, `blast-core`) are Linux-only.
+
+It needs two checkouts beside this one: `../PhysX` (`Glavin001/PhysX`, branch
+`codex/cumetal-destruction`) with its macOS package built into
+`out/install/macos-cumetal/release` (see its `docs/destruction/BUILD.md`), and
+`cuda-metal` (branch `codex/physx-metal-integration`). The client's WASM build
+needs Homebrew's `llvm@21`, because Apple's clang has no wasm32 target.
+
+```bash
+scripts/perf/play-server.sh     # builds target/play, takes the GPU lock, serves :4001, WebTransport :4002
+cd client && CC_wasm32_unknown_unknown=/opt/homebrew/opt/llvm@21/bin/clang \
+  AR_wasm32_unknown_unknown=/opt/homebrew/opt/llvm@21/bin/llvm-ar npm run dev
+```
+
+Open `http://localhost:<CLIENT_PORT>/city` in Chrome. `CLIENT_PORT` comes from
+`.env` (`.env.example` sets 5555; with no `.env`, vite uses 3001).
+
+- **One GPU job at a time.** Every server, GPU test and benchmark on the Mac
+  runs under `scripts/perf/gpu-run.sh <label> <cmd>`, a machine-wide lock
+  (`play-server.sh` takes it as `user-play`). Launch from bash: zsh runs `&`
+  jobs at nice +5.
+- **The server and the browser share the GPU, and the server yields.** A
+  rendering browser multiplied the post-impact tick overruns about 11×
+  ([meteor impact analysis](docs/meteor-impact-analysis-2026-09-24.md),
+  follow-up section). The mitigation is `?maxFps=30` on the page URL plus a
+  lower DPR cap (the stats overlay's DPR CAP button, stored as
+  `vibe.render.dprCap`). It was measured on `/cityreplay`, not yet in live
+  play.
+- **After rebuilding the PhysX package, rebuild the server and every test
+  binary**; a stale one crashes. Do not time the first run on a new package.
+- **`scripts/run-city-server.sh` is Linux-only.** On a Mac it stops every
+  `web-fps-server` on the machine, including one started by `play-server.sh`
+  or a benchmark, and then fails because `PHYSX_LIB_DIR` is unset.
+- **Resetting the city** needs no restart: the stats overlay's RESET CITY
+  button, or `curl -X POST http://127.0.0.1:4001/city-reset/city-default`.
+
+Details: [physx-bridge/README.md](physx-bridge/README.md) (the package,
+rebuilds, tests on Metal),
+[run-locally](.claude/skills/run-locally/SKILL.md) (playing, the GPU lock,
+opt-in knobs, CuMetal diagnostics),
+[perf-measure](.claude/skills/perf-measure/SKILL.md) and
+[docs/city-bench.md](docs/city-bench.md) (measuring).
 
 ## Streaming world state over MoQ
 
