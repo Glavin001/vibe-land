@@ -25,6 +25,14 @@
 set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# Linux-only. On macOS it would first stop every web-fps-server on the machine
+# (play servers and benches included) and then fail on PHYSX_LIB_DIR. Use
+# scripts/perf/play-server.sh there (see README "Running on macOS").
+if [[ "$(uname -s)" == "Darwin" ]]; then
+  echo "run-city-server.sh is Linux-only; on macOS use scripts/perf/play-server.sh" >&2
+  exit 2
+fi
 LOG="${VIBE_CITY_LOG:-/tmp/city-physx-server.log}"
 PROFILE=release
 ACTION=restart

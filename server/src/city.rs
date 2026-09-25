@@ -1340,8 +1340,9 @@ impl CityRuntime {
             let warm = scene_warm::decode(payload).map_err(|e| anyhow::anyhow!("{e}"))?;
             let runtime = world.native_warm_runtime_path()
                 .ok().and_then(|path| std::fs::read(path).ok()).map(|bytes| scene_warm::sha256(&bytes));
-            let tolerance = std::env::var("VIBE_CITY_NATIVE_STRESS_TOLERANCE").ok()
-                .and_then(|s| s.parse::<f32>().ok()).filter(|v| *v > 0.).unwrap_or(1e-5);
+            // The tolerance the stage will actually solve at: a warm start baked
+            // at any other one is rejected rather than imported.
+            let tolerance = vibe_land_destruction::native_runtime::stress_tolerance();
             if runtime.as_deref().map_or(false, |hash| warm.compatible(hash, [0.,-9.81,0.], 1./sim_hz as f32, tolerance)) {
                 anyhow::ensure!(manifest.structures.len() == warm.descriptor.structures.len(), "warm structure count mismatch");
                 world.native_import_warm_start(&warm.values).map_err(|e| anyhow::anyhow!("{e}"))?;

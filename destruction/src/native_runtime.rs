@@ -94,7 +94,7 @@ fn stress_iterations() -> u32 {
 /// 25.5 ms dyn, 4 iterations a tick; 1e-3 -> 4.1 ms, 0 iterations, skipped.
 /// The stress this resolves is coarser by the same ratio; the owner accepted
 /// that on 2026-09-21. VIBE_CITY_NATIVE_STRESS_TOLERANCE overrides.
-fn stress_tolerance() -> f32 {
+pub fn stress_tolerance() -> f32 {
     std::env::var("VIBE_CITY_NATIVE_STRESS_TOLERANCE")
         .ok()
         .and_then(|v| v.parse::<f32>().ok())
