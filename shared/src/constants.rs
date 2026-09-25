@@ -103,10 +103,12 @@ pub const PKT_CITY_NACK: u8 = 126;
 /// `destruction/src/wire.rs`). Layout in `server/src/meteor.rs`.
 pub const PKT_METEOR_LAUNCHED: u8 = 130;
 // Chunk kinematic stream rate (sim ticks between sends: SIM_HZ / this).
-pub const CITY_CHUNK_STREAM_HZ: u16 = 30;
+// 60 Hz: every tick, as the snapshots (30 Hz before; captures record theirs).
+pub const CITY_CHUNK_STREAM_HZ: u16 = 60;
 pub const CITY_BASELINE_INTERVAL_MS: u16 = 1000;
-// Per-client byte ceiling per 30 Hz send (~2.5 Mbps); a cap, never a fill target.
-pub const CITY_CLIENT_CEILING_BYTES_PER_SEND: u16 = 10400;
+// Per-client byte ceiling per 60 Hz send (~2.5 Mbps, as 10400 B per 30 Hz
+// send was); a cap, never a fill target.
+pub const CITY_CLIENT_CEILING_BYTES_PER_SEND: u16 = 5200;
 
 // ── Protocol/runtime capabilities ───────────────
 pub const PROTOCOL_VERSION: u16 = 3;

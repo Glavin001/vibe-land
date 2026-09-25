@@ -53,10 +53,12 @@ playout delay, built and off.
 **Scoreboard** ([Netcode scoreboard (2026-09-24)](#netcode-scoreboard-2026-09-24)):
 the pre-work netcode against HEAD on four bundles and eleven links, then the
 changes it pointed at: a compact self state and explicit removals, then late
-snapshots applied per entity and idle players and vehicles sent cold.
+snapshots applied per entity and idle players and vehicles sent cold, then
+[the city stream at 60 Hz with a 5-tick playout delay](#city-send-cadence-and-playout-delay).
 
-**Not changed, stated as trade-offs:** the per-send byte ceiling and the
-city send rate are the two large levers left; see
+**Not changed then, stated as trade-offs:** the per-send byte ceiling and the
+city send rate were the two large levers left (the send rate has since gone
+to 60 Hz: [City send cadence and playout delay](#city-send-cadence-and-playout-delay)); see
 [the Pareto front](#pareto-front). A lower ceiling is the only knob that
 fixes the saturated 0.5–1 Mbit/s links, and it costs error on fast links. The
 fix there is per-link rate adaptation, now implemented: see
@@ -1190,7 +1192,8 @@ extra / wrong identity for players, vehicles, bodies, meteors and the three
 chunk classes) are in [netcode-scoreboard-2026-09-24.md](netcode-scoreboard-2026-09-24.md).
 The rounds that followed the scoreboard are below:
 [compact self state and explicit removals](#next-wins-compact-self-state-and-explicit-removals),
-then [late snapshots and idle players and vehicles](#next-wins-late-snapshots-and-idle-players-and-vehicles).
+then [late snapshots and idle players and vehicles](#next-wins-late-snapshots-and-idle-players-and-vehicles),
+then [city send cadence and playout delay](#city-send-cadence-and-playout-delay).
 
 The commits scored: 0eb6f3fd (clock, interpolation, meteor handover),
 9b81c8c3 (match stats datagram), 91c814bb (read-rate-independent clock,
@@ -1369,9 +1372,14 @@ Measured unless marked:
    one `entity_id` 1 at zero velocity; see finding 1 below). **Fixed below** (compact self state).
 4. **LTE latency** (presented −10 ticks, bodies 140-148 ms behind). About 4
    ticks are the one-way latency and the rest the playout delay the ±35 ms
-   jitter needs (city-latency round). Not changed: a smaller delay trades
+   jitter needs (city-latency round). A smaller delay trades
    corrections drawn in view (adaptive delay, built and off), and drawing
-   ahead of the data was rejected there.
+   ahead of the data was rejected there. **Partly fixed**
+   ([city send cadence and playout delay](#city-send-cadence-and-playout-delay)):
+   with the city stream at 60 Hz the delay is 5 ticks, and the city is
+   presented 0.9-1.3 ticks nearer the server on every fast link (LTE
+   −10.0 → −8.8). The snapshot stream's bodies (140-148 ms on LTE, 15-21 ms
+   on loopback) are unchanged.
 5. **Snapshots discarded as out of order.** **Fixed**
    ([late snapshots](#next-wins-late-snapshots-and-idle-players-and-vehicles)).
    The client drops a whole snapshot
@@ -2052,6 +2060,491 @@ The late-snapshot share (`late_pct`) was read from each run's `lab.vltape`
 | cap-1mbit-nq | 419.3 → 419.3 → 422.4 | 9.0 → 9.0 → 9.2 | 102 / 0 → 101 / 0 → 102 / 0 | - / -; - → - / -; - → - / -; - | 0.020 / 2.317; 2 → 0.020 / 2.317; 2 → 0.002 / 2.243; 1 | -; - / - → -; - / - → -; - / - |
 | bw-capped | 275.6 → 275.6 → 275.9 | 10.6 → 10.6 → 10.4 | 97 / 0 → 97 / 0 → 101 / 0 | - / -; - → - / -; - → - / -; - | 0.020 / 2.724; 1 → 0.020 / 2.724; 1 → 0.002 / 2.813; 1 | -; - / - → -; - / - → -; - / - |
 | bw-capped-nq | 249.9 → 249.9 → 254.4 | 7.3 → 7.3 → 7.4 | 98 / 0 → 97 / 0 → 105 / 0 | - / -; - → - / -; - → - / -; - | 0.020 / 2.553; 1 → 0.020 / 2.553; 1 → 0.002 / 2.553; 5 | -; - / - → -; - / - → -; - / - |
+
+### City send cadence and playout delay
+
+Gap 4 above (latency), and the "city send rate" lever the
+[Pareto front](#pareto-front) left as a trade-off. Base: 3d96a192. Every
+number is **measured** in Netlab v2 unless marked **inferred**.
+
+**What changed** (on by default):
+
+1. **The city stream sends every tick (60 Hz, was every other tick).**
+   `CITY_CHUNK_STREAM_HZ` 30 → 60 and `EncoderConfig::validated` →
+   `send_interval_ticks` 1.
+   - The per-send ceiling is halved, 10,400 → 5,200 B
+     (`CITY_CLIENT_CEILING_BYTES_PER_SEND`), so the byte-rate cap stays
+     ~2.5 Mbit/s.
+   - The rate controller works in bytes per second, so on a limited link
+     it paces a 60 Hz stream to the same share. Below ~190 kbit/s of city
+     share it skips sends (the 400 B minimum), so the cadence falls there by
+     itself.
+   - `VIBE_CITY_STREAM_HZ=30` puts a server back on the 30 Hz stream (the
+     ceiling scales with it), for a live A/B or a rollback.
+2. **The scheduler's perturbation test keeps its meaning at 60 Hz**
+   (`EncoderConfig::innovation_window_ticks`, 2).
+   - A body is sent when its velocity changed by 0.25 m/s (plus 0.35 × its
+     angular change) since the previous send. Per send, that is an
+     acceleration: 7.5 m/s² at 30 Hz, 15 m/s² at 60 Hz.
+   - With the per-send test, 60 Hz sent 18% fewer records than 30 Hz and
+     drew worse: systematic loopback 214.8 → 183.8 city kbit/s, debris
+     pos@render p99 0.088 → 0.110 m, presented jumps over 4 m 198 → 322,
+     correction snaps 77 → 179 (arm `h60`).
+   - Now the change is scaled to a 2-tick window, and a perturbation
+     counts at most once per window since the client's last record of the
+     body. At 30 Hz the scale is exactly 1 and every record is at least a
+     window old, so a 30 Hz stream is unchanged. Scaling alone
+     (arm `x60`) restored the fidelity but cost +66% bytes: a body
+     falling under gravity was then sent at every tick.
+3. **The client's playout delay follows the cadence** (`cityClient.ts`).
+   - The wire-v2 delay is the stream's send interval plus 4 ticks: 6 at
+     30 Hz, as shipped, and 5 at 60 Hz.
+   - The interval is the shortest advance of the newest streamed tick over
+     the last second, at most 2. So a 30 Hz server is presented exactly as
+     before (the 3d96a192 client and this one score identically on every
+     30 Hz cell). A 60 Hz stream that the rate controller thins to every
+     other tick gets 6 back.
+   - The lead cap follows the same delay. `CITY_PLAYOUT_DELAY` (lab only)
+     fixes the delay.
+
+**Format gating.** Captures carry their encoder config in the checkpoint
+(send interval, ceiling; `innovation_window_ticks` is absent and reads as 0,
+the per-send test). So every capture before this replays at 30 Hz, byte for
+byte:
+
+- `netlab2 calibrate` (a) with this tree: 100% of lab packets byte-identical
+  on all four bundles: net-next c1 12,282 / 12,282, scoreboard-new c1
+  11,771 / 11,771, heavy c1 10,861 / 10,861, systematic c1 34,331 / 34,331.
+- net-next c1 and scoreboard-new c1 pass every check with this client
+  (clock offset p99 in the last 10 s 96 / 100 µs).
+- Heavy c1 and systematic c1 fail the clock and live-renderer checks, as
+  before. The 3d96a192 build fails heavy c1 with the same numbers (last
+  window p99 6,551 µs, player 0.4237 m).
+- The lab knobs for a server with the new defaults are
+  `city.send_hz=60,city.ceiling_bytes=5200,city.innovation_window_ticks=2`.
+
+**Arms.** One frozen truth, link and seed per cell. Production knobs as in
+the previous round, plus `snapshot.idle_cold=1`, recorded pace,
+`lab.recorded_repairs=0`.
+
+- **base**: the 3d96a192 lab binary and client, 30 Hz, a 6-tick delay.
+- **this change**: this tree's binary and client, 60 Hz, window 2, the
+  delay from the cadence (5).
+- **30 Hz / 5**: 30 Hz with the delay fixed at 5 (`CITY_PLAYOUT_DELAY=5`).
+  This is the other way to get the tick back, and it separates the delay's
+  share from the cadence's.
+
+Also run on seed 1 only, 4 bundles × 12 links: 60 Hz with a 6-tick delay
+(`y60`), 60 Hz with 4 (`y60d4`), 30 Hz with 4 (`h30d4`), and 3 topology copies
+at 60 Hz (`cand3c`). The fixed-delay arm `y60d5` is the same stream and delay
+as "this change": on the sys and net-next cells both were run, they are
+identical to rounding.
+
+**Coverage, and where it is thin:**
+
+- Seed 1, every link, on all four bundles.
+- Seed 2 only on systematic (every link) and on net-next (poor-mobile-nq,
+  cap-1mbit-nq, bw-capped).
+- No seed 3.
+- The live bench is one run.
+
+**Headline** (seed 1 unless marked; "presented − server" is the city's
+presented tick against the server's completed tick, 1 tick = 16.7 ms):
+
+- **Latency: 0.9-1.3 ticks less on every fast link of every bundle.**
+  - loopback / lan: −5.2 to −5.5 → −4.1 to −4.4;
+  - LTE: −9.8 to −10.1 → −8.5 to −8.9;
+  - lte-fifo: −10.5 to −10.9 → −9.5 to −9.9;
+  - constrained links: 0.7-1.5 ticks less.
+  - The 30 Hz / 5 arm gets 0.8-1.0 tick of it without the cadence. The
+    60 Hz stream alone with a 6-tick delay (`y60`) gets 0.0-0.6 tick. So
+    the latency is the delay's, and what the cadence buys is that the
+    delay can shrink without the costs below.
+- **pos@now improves with it.**
+  - Debris pos@now p99 falls 12-15% on loopback: systematic 1.521 →
+    1.293 m, heavy 1.622 → 1.425, scoreboard-new 4.017 → 3.529, net-next
+    2.171 → 1.908. On LTE it falls 0-12% (systematic 2.553 → 2.553,
+    net-next 3.100 → 2.724).
+  - ALL draws pos@now p99 falls too: systematic loopback 0.138 → 0.114 m,
+    lte-fifo 0.273 → 0.240.
+  - Snapshot classes (players, vehicles, bodies, meteors) are unchanged
+    at render time. This is a city-only change: "bodies drawn behind
+    server" is 15.0 / 17.4 ms on loopback in both arms.
+- **Frames stopped by the lead cap** fall on the fast links (systematic
+  loopback 0.6 → 0.2%, lte-fifo 1.0 → 0.6%). With a 5-tick delay at 30 Hz
+  they rise instead (0.6 → 0.7%, 1.0 → 1.2%).
+- **Presented jumps over 4 m and correction snaps, against base:**
+  - fewer on systematic (loopback 198 → 188, snaps 77 → 76) and on net-next
+    (60 → 49, 44 → 36; LTE 47 → 22, 35 → 9);
+  - more on heavy (37 → 41, 14 → 17) and on scoreboard-new (43 → 46,
+    8 → 11).
+  - 30 Hz / 5 has more than base on all four (207, 64, 41, 47).
+- **Island first draw p99** falls on LTE (systematic 209 → 130 ms, net-next
+  155 → 138).
+- **Bytes: +5-11% netcode on the fast links.** loopback: systematic
+  243.9 → 269.6 kbit/s, heavy 205.3 → 228.6, scoreboard-new 190.5 → 204.9,
+  net-next 183.3 → 198.0. That is the per-datagram overhead of twice the
+  sends, plus the perturbation records a falling body still gets once per
+  2 ticks.
+- **Debris pos@render p99 is mixed on the fast links:**
+  - worse on systematic (0.088 → 0.100 m) and heavy (0.126 → 0.153);
+  - better on scoreboard-new (0.490 → 0.444) and net-next (0.292 → 0.265).
+- **Wrong identity (chunk-frames) is mixed on the jittery fast links:**
+  - systematic LTE 529 → 1,134 (seed 2: 446 → 149);
+  - heavy LTE 32 → 64, scoreboard-new LTE 36 → 90;
+  - net-next LTE 322 → 86;
+  - lte-fifo: systematic 580 → 348 (seed 2 262 → 24), net-next 350 → 27,
+    heavy 42 → 72.
+  - Topology copies now go out 16 ms apart instead of 33, so records sent
+    after both overtake them more often under the lab's iid jitter
+    (**inferred** from the hold counts: systematic LTE topology hold frames
+    275 → 851, records buffered for missing topology 3,803 → 19,425).
+  - Three copies at 60 Hz (the same 2-tick span, +3-4% bytes) fixed
+    systematic (LTE 1,134 → 119, lte-fifo 348 → 36, lossy-wifi seeds 1-2
+    256 → 68) but made net-next worse (LTE 86 → 208, lte-fifo 27 → 151).
+    It is not kept.
+
+**Constrained links** (the rate controller in the loop; `Limited` on nearly
+every send in both arms):
+
+- **Datagram latency is held.** Datagram p99:
+  - bw-capped 110.8 → 103.1 ms (systematic), 95.7 → 82.4 (net-next);
+  - cap-1mbit-nq 114.2 → 114.9 and 108.2 → 119.3;
+  - poor-mobile-nq 267.5 → 279.4 and 308.1 → 340.7 (seed 2: 275.4 → 287.3
+    and 301.5 → 342.9), the one cell class where it rises: +4-14%.
+- **Bytes rise 4-11%** (systematic bw-capped 190.9 → 204.3 kbit/s,
+  poor-mobile-nq 218.7 → 237.5). On these links the controller's allowance
+  does not bind on every send. The extra is demand that fits under the
+  allowance, not an overrun: no cell's datagram p50 moves by over 1 ms.
+- **Wrong identity falls sharply:**
+  - cap-1mbit-nq 250 → 12 (systematic, both seeds) and 138-157 → 31;
+  - bw-capped 355 → 15 and 155-161 → 23-44;
+  - poor-mobile-nq 415 → 214 and 346-543 → 124-168.
+  - One exception: systematic poor-mobile-nq seed 2, 54 → 229.
+- **ALL missing and extra fall**, e.g. net-next bw-capped missing 85 → 28.
+  Debris pos@now p99 falls 3-18%.
+- **The cost is on the sender-queue 0.5 Mbit/s link, systematic and
+  heavy:**
+  - presented jumps over 4 m 294 → 334 and 281 → 334 (systematic seeds
+    1-2), 75 → 95 (heavy);
+  - correction snaps 157 → 188 / 145 → 189, 48 → 68;
+  - debris pos@render p99 0.148 → 0.168 m / 0.138 → 0.168, 0.557 → 0.655.
+  - net-next bw-capped improves instead (80 → 70 jumps).
+  - Heavy poor-mobile-nq correction snaps 32 → 135 (seed 1 only).
+  - **Inferred:** a limited link now gets more, smaller sends. Each send's
+    allowance is cut from the same byte rate, so the cut line falls on
+    more sends. The fix measured next paces a limited link at 30 Hz.
+
+The constrained-link figures above are the 60 Hz stream on every link
+(`city.limited_hz=0`). The default now sends a limited link at 30 Hz.
+
+**Limited links at 30 Hz: kept, on**
+(`RateConfig::limited_send_interval_s` 1/30 s; `VIBE_CITY_LIMITED_HZ=0`, lab
+`city.limited_hz=0`, turns it off).
+
+- **What it does.** While a client's rate controller is `Limited`, its city
+  sends are at least 1/30 s apart (half a tick of slack). Each paced send
+  carries the budget of two and may use two per-send ceilings, 10,400 B
+  (`SendPlan::Limited` `sends`, the encoder's `ceiling_sends`).
+- **What it leaves alone.**
+  - Free links keep every tick.
+  - A 30 Hz stream is untouched, since its interval is already 1/30 s.
+  - The client sees tick advances of 2 and goes back to the 6-tick delay
+    after a second, as the cadence rule already does.
+  - The recorded link replays the live plans open loop, so no capture's
+    bytes change.
+  - Measured: with it off, the lab reproduces the previous arm exactly
+    (systematic bw-capped: every column equal).
+  - `netlab2 calibrate` with this build still passes net-next c1 and the new
+    live capture c1 (bytes 12,282 / 12,282 and 13,078 / 13,078).
+
+Seed 1 (seed 2 on the bw-capped links); base → 60 Hz everywhere → 60 Hz,
+limited links at 30 Hz:
+
+| Bundle | Link | Netcode kbit/s | Presented − server p50 | Jumps > 4 m | Snaps | Wrong identity | Debris pos@render / pos@now p99 m | Datagram p99 ms |
+|---|---|---|---|---|---|---|---|---|
+| systematic | loopback | 243.9 → 269.6 → 269.6 | -5.2 → -4.1 → -4.1 | 198 → 188 → 188 | 77 → 76 → 76 | 0 → 0 → 0 | 0.088 / 1.521 → 0.100 / 1.293 → 0.100 / 1.293 | 0.1 → 0.1 → 0.1 |
+| systematic | bw-capped | 190.9 → 204.3 → 197.3 | -7.7 → -6.4 → -7.4 | 294 → 334 → 305 | 157 → 188 → 170 | 355 → 15 → 15 | 0.148 / 2.171 → 0.168 / 1.970 → 0.148 / 2.035 | 111 → 103 → 116 |
+| systematic | bw-capped, seed 2 | 190.9 → 204.3 → 197.3 | -7.7 → -6.4 → -7.4 | 281 → 334 → 308 | 145 → 189 → 171 | 12 → 12 → 12 | 0.138 / 2.171 → 0.168 / 1.970 → 0.148 / 2.035 | 111 → 103 → 115 |
+| systematic | bw-capped-nq | 187.8 → 203.2 → 194.9 | -7.8 → -6.4 → -7.4 | 317 → 319 → 287 | 161 → 173 → 158 | 318 → 12 → 12 | 0.179 / 2.393 → 0.174 / 2.393 → 0.168 / 2.393 | 218 → 227 → 225 |
+| systematic | bw-capped-nq, seed 2 | 185.9 → 202.6 → 195.5 | -7.8 → -6.4 → -7.4 | 316 → 308 → 282 | 162 → 166 → 152 | 352 → 12 → 12 | 0.163 / 2.393 → 0.185 / 2.393 → 0.158 / 2.393 | 213 → 223 → 225 |
+| systematic | cap-1mbit-nq | 223.7 → 245.2 → 232.9 | -7.4 → -6.2 → -7.1 | 202 → 225 → 189 | 87 → 106 → 83 | 250 → 12 → 12 | 0.094 / 1.970 → 0.097 / 1.847 → 0.100 / 1.908 | 114 → 115 → 138 |
+| systematic | poor-mobile-nq | 218.7 → 237.5 → 228.6 | -14.0 → -12.5 → -13.8 | 231 → 267 → 230 | 150 → 131 → 156 | 415 → 214 → 558 | 0.126 / 3.308 → 0.122 / 3.002 → 0.130 / 3.529 | 268 → 279 → 319 |
+| heavy | loopback | 205.3 → 228.6 → 228.6 | -5.2 → -4.2 → -4.2 | 37 → 41 → 41 | 14 → 17 → 17 | 0 → 0 → 0 | 0.126 / 1.622 → 0.153 / 1.425 → 0.153 / 1.425 | 0.1 → 0.1 → 0.1 |
+| heavy | bw-capped | 155.0 → 169.3 → 166.4 | -7.3 → -6.2 → -7.1 | 75 → 95 → 85 | 48 → 68 → 58 | 12 → 12 → 12 | 0.557 / 2.472 → 0.655 / 2.243 → 0.522 / 2.243 | 106 → 98 → 103 |
+| heavy | bw-capped, seed 2 | 155.0 → 169.3 → 166.4 | -7.3 → -6.2 → -7.0 | 76 → 95 → 84 | 49 → 68 → 57 | 12 → 12 → 12 | 0.557 / 2.472 → 0.655 / 2.243 → 0.522 / 2.243 | 105 → 97 → 102 |
+| heavy | bw-capped-nq | 153.6 → 164.0 → 162.6 | -7.3 → -6.2 → -7.1 | 58 → 69 → 61 | 33 → 37 → 37 | 12 → 12 → 12 | 0.540 / 2.553 → 0.677 / 2.393 → 0.522 / 2.472 | 194 → 214 → 226 |
+| heavy | bw-capped-nq, seed 2 | 153.4 → 163.4 → 162.8 | -7.3 → -6.2 → -7.1 | 62 → 73 → 66 | 38 → 39 → 39 | 12 → 12 → 12 | 0.576 / 2.553 → 0.722 / 2.393 → 0.474 / 2.393 | 192 → 213 → 221 |
+| heavy | cap-1mbit-nq | 171.2 → 192.6 → 194.8 | -7.1 → -6.0 → -6.7 | 54 → 56 → 44 | 25 → 26 → 21 | 12 → 12 → 12 | 0.240 / 2.102 → 0.248 / 1.908 → 0.179 / 1.908 | 104 → 114 → 124 |
+| heavy | poor-mobile-nq | 165.0 → 187.8 → 188.6 | -13.5 → -12.1 → -13.0 | 60 → 56 → 46 | 32 → 135 → 129 | 51 → 51 → 51 | 0.343 / 3.100 → 0.301 / 2.813 → 0.211 / 2.906 | 298 → 267 → 322 |
+
+What it says (inferred from the table):
+
+- **Corrections: most of the 0.5 Mbit/s regression goes, but not all.**
+  - Jumps over 4 m on bw-capped: systematic 334 → 305 / 308 (base 294 /
+    281); heavy 95 → 85 / 84 (base 75 / 76). Snaps: 188 → 170, 68 → 58.
+  - Debris pos@render p99 is back at base or better on every bw-capped
+    cell (0.168 → 0.148 m; heavy 0.655 → 0.522, base 0.557).
+  - On bw-capped-nq and cap-1mbit-nq, jumps and snaps are at or below base
+    on both bundles.
+- **The limited links give their latency back.**
+  - Presented lag is within 0.3-0.4 tick of base (systematic bw-capped
+    −7.7 → −6.4 → −7.4), since the client's delay returns to 6.
+  - Datagram p99 rises 0-25 ms (cap-1mbit-nq 115 → 138 ms, poor-mobile-nq
+    279 → 319 ms): half as many sends, each twice the size.
+- **Wrong identity keeps the 60 Hz gains on bw-capped and cap-1mbit-nq**
+  (355 → 15, 250 → 12). But systematic poor-mobile-nq goes 214 → 558 against
+  base 415, with debris pos@now p99 3.00 → 3.53 m (base 3.31). That is one
+  seed; heavy poor-mobile-nq is unchanged (51).
+- **Bytes:** 1-5% below the unpaced arm; 3-8% above base on systematic.
+- **Kept on.** It trades the limited links' tick of latency for fewer
+  corrections, and those links were the ones with a regression. Whether
+  that is the better side of the trade is a judgment the numbers do not
+  settle. `VIBE_CITY_LIMITED_HZ=0` reverts it on a server.
+- **Evidence is thin:**
+  - seed 1 only on poor-mobile-nq and cap-1mbit-nq;
+  - two bundles;
+  - no LTE-class limited link, since LTE never enters `Limited` in the lab.
+
+**Verdict.** Kept as the default:
+
+- On the fast links it cuts the city's latency by a tick (17 ms) and
+  debris pos@now p99 by 12-15% on loopback, and frames stopped fall.
+  Jumps and snaps are at or below base on two of four captures, and 3-4
+  jumps and 3 snaps above it on the other two.
+- On constrained links identity, missing and extra improve. With limited
+  links paced at 30 Hz (the default, above), their lag is 0.3-0.4 tick
+  better than base, not 1 tick.
+- It is not a clean win:
+  - +5-11% bytes on fast links;
+  - more jumps and snaps on the 0.5 Mbit/s sender-queue link on two
+    captures: 3-13% above base with the 30 Hz pacing, 13-27% without it;
+  - wrong identity on iid-jitter LTE is mixed.
+- The 30 Hz / 5-tick alternative gets most of the latency at no byte cost,
+  but with more jumps than base on every capture, more stopped frames, and
+  none of the identity gains. It is available as `VIBE_CITY_STREAM_HZ=30`,
+  where the client then picks 6. Or `CITY_PLAYOUT_DELAY=5` in the lab.
+
+**Old client, new server** (the 3d96a192 client on the 60 Hz stream, seed 1,
+all four bundles). It keeps its 6-tick delay, so it draws what the 60 Hz stream
+with a 6-tick delay draws: no latency gain, and no breakage.
+
+- Systematic loopback: jumps 198 → 187, debris pos@now p99 1.521 → 1.472 m.
+- net-next LTE: wrong identity 322 → 86.
+- It has the 60 Hz stream's constrained-link costs, e.g. heavy bw-capped
+  jumps 75 → 90.
+- The web client is served with the server, so only a stale tab runs it
+  (**inferred**).
+
+**Delay sweep at 60 Hz** (seed 1, loopback / LTE; 6 → 5 → 4 ticks, then
+30 Hz with 4). Each tick less is a tick less lag. Four ticks costs little
+more in jumps than five on systematic (188 → 200) and net-next (49 → 49), but
+debris pos@render p99 keeps rising (systematic 0.100 → 0.103, heavy 0.153 →
+0.158 m), and it cuts into the margin beyond the send interval that the
+jitter needs; it was run on seed 1 only. Five is the default,
+the same margin beyond the send interval that 6 was at 30 Hz.
+
+| Bundle | Link | Presented − server p50 | Frames stopped % | Debris pos@render / pos@now p99 m | Jumps > 4 m | Snaps |
+|---|---|---|---|---|---|---|
+| systematic | loopback | -5.1 → -4.1 → -3.1; 30 Hz/4 -3.3 | 0.2 → 0.2 → 0.2; 0.8 | 0.097 / 1.472 → 0.100 / 1.293 → 0.103 / 1.136; 0.091 / 1.212 | 187 → 188 → 200; 216 | 74 → 76 → 80; 86 |
+| systematic | lte | -9.7 → -8.8 → -8.0; -8.6 | 0.9 → 1.0 → 1.2; 1.8 | 0.118 / 2.637 → 0.126 / 2.553 → 0.130 / 2.393; 0.130 / 2.317 | 212 → 219 → 229; 222 | 286 → 292 → 307; 338 |
+| net-next | loopback | -5.2 → -4.2 → -3.3; -3.4 | 0.9 → 1.0 → 1.1; 1.3 | 0.256 / 2.102 → 0.265 / 1.908 → 0.273 / 1.676; 0.301 / 1.788 | 45 → 49 → 49; 65 | 31 → 36 → 36; 47 |
+| net-next | lte | -9.8 → -8.9 → -8.2; -8.7 | 1.1 → 1.3 → 1.6; 2.2 | 0.191 / 3.002 → 0.211 / 2.724 → 0.232 / 2.553; 0.343 / 2.813 | 20 → 22 → 21; 50 | 8 → 9 → 9; 38 |
+
+**systematic-2c-d1342419 c1, seed 1** (base → 30 Hz with a 5-tick delay → this change):
+
+| Link | Netcode kbit/s | Datagram p50 ms | Datagram p99 ms | Presented − server p50 (ticks) | p1 | Frames stopped % | Island first draw p50 ms | p99 | ALL pos@render p99 m | ALL pos@now p99 m | Debris pos@render p99 m | Debris pos@now p99 m | ALL missing | ALL extra | Wrong identity | Presented jumps > 4 m | Correction snaps |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| loopback | 243.9 → 243.9 → 269.6 | 0.1 → 0.1 → 0.1 | 0.1 → 0.1 → 0.1 | -5.2 → -4.2 → -4.1 | -16.6 → -15.9 → -15.0 | 0.6 → 0.7 → 0.2 | 0 → 0 → 0 | 10 → 10 → 10 | 0.025 → 0.027 → 0.027 | 0.138 → 0.126 → 0.114 | 0.088 → 0.088 → 0.100 | 1.521 → 1.380 → 1.293 | 94 → 93 → 82 | 280 → 252 → 256 | 0 → 0 → 0 | 198 → 207 → 188 | 77 → 83 → 76 |
+| lan | 243.9 → 243.9 → 269.6 | 1.0 → 1.0 → 1.0 | 1.3 → 1.3 → 1.3 | -5.3 → -4.3 → -4.2 | -16.6 → -16.0 → -15.1 | 0.6 → 0.8 → 0.2 | 0 → 0 → 0 | 10 → 10 → 10 | 0.025 → 0.027 → 0.027 | 0.138 → 0.126 → 0.114 | 0.085 → 0.088 → 0.100 | 1.521 → 1.380 → 1.293 | 80 → 80 → 82 | 275 → 249 → 253 | 0 → 0 → 0 | 193 → 201 → 189 | 73 → 77 → 76 |
+| lte-fifo | 236.7 → 236.7 → 261.9 | 104.2 → 104.2 → 105.0 | 124.7 → 124.7 → 124.7 | -10.9 → -10.0 → -9.8 | -22.7 → -22.0 → -21.0 | 1.0 → 1.2 → 0.6 | 65 → 65 → 60 | 209 → 209 → 137 | 0.028 → 0.028 → 0.028 | 0.273 → 0.256 → 0.240 | 0.100 → 0.103 → 0.107 | 2.472 → 2.317 → 2.243 | 159 → 159 → 165 | 491 → 452 → 419 | 580 → 580 → 348 | 215 → 221 → 197 | 93 → 96 → 78 |
+| lte | 236.7 → 236.7 → 261.9 | 89.6 → 89.6 → 89.6 | 124.3 → 124.3 → 124.3 | -10.0 → -9.2 → -8.8 | -26.4 → -26.7 → -34.5 | 1.1 → 1.4 → 1.0 | 60 → 60 → 49 | 209 → 209 → 130 | 0.029 → 0.031 → 0.030 | 0.265 → 0.256 → 0.265 | 0.118 → 0.126 → 0.126 | 2.553 → 2.393 → 2.553 | 248 → 248 → 214 | 600 → 572 → 667 | 529 → 529 → 1,134 | 211 → 213 → 219 | 323 → 326 → 292 |
+| poor-mobile-nq | 218.7 → 218.7 → 237.5 | 158.0 → 158.0 → 157.2 | 267.5 → 267.5 → 279.4 | -14.0 → -13.2 → -12.5 | -39.0 → -39.2 → -38.0 | 1.5 → 1.8 → 1.3 | 129 → 129 → 128 | 272 → 272 → 250 | 0.029 → 0.031 → 0.029 | 0.390 → 0.378 → 0.343 | 0.126 → 0.134 → 0.122 | 3.308 → 3.202 → 3.002 | 271 → 271 → 249 | 982 → 997 → 881 | 415 → 423 → 214 | 231 → 243 → 267 | 150 → 158 → 131 |
+| cap-1mbit-nq | 223.7 → 223.7 → 245.2 | 34.6 → 34.6 → 34.4 | 114.2 → 114.2 → 114.9 | -7.4 → -6.4 → -6.2 | -20.0 → -19.2 → -18.6 | 1.0 → 1.2 → 0.6 | 22 → 22 → 17 | 99 → 99 → 108 | 0.027 → 0.027 → 0.027 | 0.198 → 0.185 → 0.168 | 0.094 → 0.097 → 0.097 | 1.970 → 1.847 → 1.847 | 144 → 147 → 106 | 329 → 288 → 285 | 250 → 250 → 12 | 202 → 216 → 225 | 87 → 95 → 106 |
+| bw-capped | 190.9 → 190.9 → 204.3 | 37.8 → 37.8 → 37.5 | 110.8 → 110.8 → 103.1 | -7.7 → -6.8 → -6.4 | -20.8 → -20.0 → -19.1 | 1.4 → 1.6 → 0.9 | 37 → 37 → 34 | 216 → 216 → 175 | 0.030 → 0.031 → 0.031 | 0.225 → 0.211 → 0.198 | 0.148 → 0.158 → 0.168 | 2.171 → 2.035 → 1.970 | 136 → 136 → 121 | 426 → 387 → 338 | 355 → 355 → 15 | 294 → 316 → 334 | 157 → 169 → 188 |
+
+**20260925-002127-net-next c1, seed 1** (base → 30 Hz with a 5-tick delay → this change):
+
+| Link | Netcode kbit/s | Datagram p50 ms | Datagram p99 ms | Presented − server p50 (ticks) | p1 | Frames stopped % | Island first draw p50 ms | p99 | ALL pos@render p99 m | ALL pos@now p99 m | Debris pos@render p99 m | Debris pos@now p99 m | ALL missing | ALL extra | Wrong identity | Presented jumps > 4 m | Correction snaps |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| loopback | 183.3 → 183.3 → 198.0 | 0.1 → 0.1 → 0.1 | 0.1 → 0.1 → 0.1 | -5.2 → -4.3 → -4.2 | -18.8 → -18.5 → -18.0 | 1.1 → 1.2 → 1.0 | 0 → 0 → 0 | 9 → 9 → 9 | 0.022 → 0.023 → 0.025 | 0.094 → 0.088 → 0.091 | 0.292 → 0.301 → 0.265 | 2.171 → 1.970 → 1.908 | 74 → 74 → 56 | 34 → 34 → 34 | 0 → 0 → 0 | 60 → 64 → 49 | 44 → 46 → 36 |
+| lan | 183.3 → 183.3 → 198.0 | 1.0 → 1.0 → 1.0 | 1.3 → 1.3 → 1.3 | -5.3 → -4.3 → -4.3 | -19.0 → -19.0 → -18.2 | 1.1 → 1.2 → 1.0 | 0 → 0 → 0 | 9 → 9 → 9 | 0.022 → 0.023 → 0.025 | 0.094 → 0.088 → 0.091 | 0.301 → 0.301 → 0.265 | 2.171 → 1.970 → 1.908 | 73 → 73 → 55 | 34 → 34 → 33 | 9 → 9 → 9 | 61 → 65 → 49 | 44 → 47 → 36 |
+| lte-fifo | 178.0 → 178.0 → 191.8 | 103.3 → 103.3 → 104.1 | 124.6 → 124.6 → 124.7 | -10.9 → -10.1 → -9.9 | -24.0 → -24.0 → -24.6 | 1.3 → 1.5 → 1.2 | 73 → 73 → 71 | 161 → 161 → 138 | 0.023 → 0.024 → 0.026 | 0.153 → 0.148 → 0.138 | 0.273 → 0.282 → 0.185 | 3.417 → 3.202 → 3.100 | 112 → 112 → 32 | 79 → 79 → 74 | 350 → 350 → 27 | 45 → 46 → 23 | 28 → 31 → 10 |
+| lte | 178.0 → 178.0 → 191.8 | 89.4 → 89.4 → 89.5 | 124.3 → 124.3 → 124.3 | -10.1 → -9.3 → -8.9 | -23.6 → -23.4 → -24.4 | 1.3 → 1.7 → 1.2 | 65 → 65 → 65 | 155 → 155 → 138 | 0.024 → 0.026 → 0.028 | 0.143 → 0.134 → 0.126 | 0.301 → 0.321 → 0.211 | 3.100 → 2.906 → 2.724 | 116 → 116 → 51 | 94 → 94 → 98 | 322 → 322 → 86 | 47 → 48 → 22 | 35 → 35 → 9 |
+| poor-mobile-nq | 157.3 → 157.3 → 175.1 | 155.2 → 155.2 → 156.0 | 308.1 → 308.1 → 340.7 | -13.7 → -13.0 → -12.5 | -27.0 → -27.0 → -29.5 | 1.4 → 1.8 → 1.5 | 151 → 151 → 141 | 344 → 344 → 258 | 0.027 → 0.029 → 0.030 | 0.198 → 0.191 → 0.185 | 0.540 → 0.595 → 0.366 | 4.573 → 4.427 → 4.427 | 130 → 130 → 116 | 118 → 118 → 119 | 346 → 352 → 168 | 47 → 49 → 33 | 33 → 35 → 19 |
+| cap-1mbit-nq | 163.7 → 163.7 → 175.6 | 33.5 → 33.5 → 33.4 | 108.2 → 108.2 → 119.3 | -7.3 → -6.3 → -6.2 | -21.0 → -20.7 → -20.0 | 1.2 → 1.4 → 1.1 | 34 → 34 → 30 | 166 → 166 → 74 | 0.024 → 0.026 → 0.027 | 0.122 → 0.114 → 0.110 | 0.416 → 0.474 → 0.354 | 2.906 → 2.724 → 2.724 | 76 → 76 → 26 | 47 → 47 → 43 | 138 → 138 → 31 | 43 → 48 → 24 | 30 → 33 → 13 |
+| bw-capped | 145.9 → 145.9 → 152.8 | 35.7 → 35.7 → 35.9 | 95.7 → 95.7 → 82.4 | -7.5 → -6.5 → -6.4 | -20.9 → -20.6 → -20.0 | 1.3 → 1.5 → 1.2 | 43 → 43 → 40 | 174 → 174 → 119 | 0.028 → 0.030 → 0.032 | 0.134 → 0.130 → 0.122 | 1.252 → 1.336 → 1.252 | 3.645 → 3.529 → 3.308 | 85 → 85 → 28 | 43 → 43 → 35 | 155 → 155 → 23 | 80 → 85 → 70 | 60 → 64 → 49 |
+
+
+**heavy-quick3-v2 c1, seed 1** (base → this change):
+
+| Link | Netcode kbit/s | Datagram p99 ms | Presented − server p50 (ticks) | Frames stopped % | Debris pos@render p99 m | Debris pos@now p99 m | Wrong identity | Presented jumps > 4 m | Correction snaps |
+|---|---|---|---|---|---|---|---|---|---|
+| loopback | 205.3 → 228.6 | 0.1 → 0.1 | -5.2 → -4.2 | 0.2 → 0.1 | 0.126 → 0.153 | 1.622 → 1.425 | 0 → 0 | 37 → 41 | 14 → 17 |
+| lan | 205.3 → 228.6 | 1.3 → 1.3 | -5.3 → -4.2 | 0.2 → 0.2 | 0.126 → 0.153 | 1.622 → 1.425 | 0 → 0 | 37 → 41 | 14 → 17 |
+| lte-fifo | 199.3 → 221.4 | 124.7 → 124.7 | -10.5 → -9.5 | 0.7 → 0.6 | 0.138 → 0.168 | 2.472 → 2.243 | 42 → 72 | 39 → 42 | 16 → 19 |
+| lte | 199.3 → 221.4 | 124.3 → 124.3 | -9.8 → -8.5 | 0.7 → 0.6 | 0.168 → 0.185 | 2.243 → 2.035 | 32 → 64 | 40 → 44 | 124 → 126 |
+| poor-mobile-nq | 165.0 → 187.8 | 297.7 → 266.9 | -13.5 → -12.1 | 0.9 → 0.7 | 0.343 → 0.301 | 3.100 → 2.813 | 51 → 51 | 60 → 56 | 32 → 135 |
+| cap-1mbit-nq | 171.2 → 192.6 | 104.3 → 113.6 | -7.1 → -6.0 | 0.5 → 0.5 | 0.240 → 0.248 | 2.102 → 1.908 | 12 → 12 | 54 → 56 | 25 → 26 |
+| bw-capped | 155.0 → 169.3 | 106.1 → 97.7 | -7.3 → -6.2 | 0.8 → 0.6 | 0.557 → 0.655 | 2.472 → 2.243 | 12 → 12 | 75 → 95 | 48 → 68 |
+
+**20260924-215619-scoreboard-new c1, seed 1** (base → this change):
+
+| Link | Netcode kbit/s | Datagram p99 ms | Presented − server p50 (ticks) | Frames stopped % | Debris pos@render p99 m | Debris pos@now p99 m | Wrong identity | Presented jumps > 4 m | Correction snaps |
+|---|---|---|---|---|---|---|---|---|---|
+| loopback | 190.5 → 204.9 | 0.1 → 0.1 | -5.4 → -4.4 | 0.7 → 0.6 | 0.490 → 0.444 | 4.017 → 3.529 | 0 → 0 | 43 → 46 | 8 → 11 |
+| lan | 190.5 → 204.9 | 1.3 → 1.3 | -5.5 → -4.5 | 0.7 → 0.6 | 0.506 → 0.459 | 4.149 → 3.645 | 3 → 3 | 43 → 46 | 8 → 12 |
+| lte-fifo | 186.0 → 198.9 | 124.7 → 124.7 | -10.7 → -9.8 | 1.0 → 0.9 | 0.522 → 0.490 | 5.925 → 5.376 | 36 → 36 | 44 → 49 | 10 → 17 |
+| lte | 186.0 → 198.9 | 124.3 → 124.3 | -9.9 → -8.7 | 1.1 → 1.1 | 0.595 → 0.522 | 5.376 → 4.878 | 36 → 90 | 46 → 50 | 11 → 27 |
+| poor-mobile-nq | 169.5 → 176.2 | 326.0 → 280.2 | -13.3 → -12.6 | 1.2 → 1.1 | 0.655 → 0.699 | 7.676 → 6.744 | 65 → 147 | 50 → 56 | 18 → 33 |
+| cap-1mbit-nq | 172.7 → 183.9 | 158.8 → 112.2 | -7.3 → -6.1 | 0.9 → 0.8 | 0.506 → 0.459 | 5.205 → 4.573 | 12 → 12 | 45 → 45 | 14 → 17 |
+| bw-capped | 142.9 → 150.0 | 110.9 → 95.2 | -7.3 → -6.5 | 1.1 → 1.0 | 1.031 → 1.252 | 5.736 → 5.205 | 12 → 12 | 59 → 73 | 30 → 37 |
+
+
+**systematic c1, seed 1, per class, base → this change** (pos@render p50 / p99; pos@now p50 / p99, m; missing / extra / wrong identity)
+
+| Link | Class | pos@render | pos@now | m / e / w |
+|---|---|---|---|---|
+| loopback | player | 0.001 / 0.002 → 0.001 / 0.002 | 0.001 / 0.292 → 0.001 / 0.292 | 1 / 0 / 0 → 1 / 0 / 0 |
+| loopback | vehicle | 0.001 / 0.002 → 0.001 / 0.002 | 0.001 / 0.077 → 0.001 / 0.077 | 0 / 0 / 0 → 0 / 0 / 0 |
+| loopback | body | 0.001 / 0.003 → 0.001 / 0.003 | 0.080 / 1.472 → 0.080 / 1.472 | 38 / 125 / 0 → 38 / 125 / 0 |
+| loopback | meteor | 0.002 / 0.017 → 0.002 / 0.017 | 1.676 / 7.676 → 1.676 / 7.676 | 43 / 3 / 0 → 43 / 3 / 0 |
+| loopback | chunk_intact | 0.000 / 0.000 → 0.000 / 0.000 | 0.000 / 0.000 → 0.000 / 0.000 | 0 / 0 / 0 → 0 / 0 / 0 |
+| loopback | chunk_debris | 0.007 / 0.088 → 0.008 / 0.100 | 0.008 / 1.521 → 0.009 / 1.293 | 12 / 152 / 0 → 0 / 128 / 0 |
+| loopback | chunk_rubble | 0.005 / 0.009 → 0.005 / 0.009 | 0.005 / 0.009 → 0.005 / 0.009 | 0 / 0 / 0 → 0 / 0 / 0 |
+| lte | player | 0.001 / 0.002 → 0.001 / 0.002 | 0.001 / 1.676 → 0.001 / 1.622 | 1 / 0 / 0 → 1 / 0 / 0 |
+| lte | vehicle | 0.001 / 0.002 → 0.001 / 0.002 | 0.001 / 0.998 → 0.001 / 1.031 | 1 / 0 / 0 → 5 / 0 / 0 |
+| lte | body | 0.001 / 0.003 → 0.001 / 0.003 | 0.746 / 9.629 → 0.746 / 9.629 | 146 / 421 / 0 → 128 / 376 / 0 |
+| lte | meteor | 0.002 / 0.017 → 0.002 / 0.017 | 12.887 / 24.627 → 13.311 / 24.627 | 95 / 3 / 0 → 80 / 1 / 0 |
+| lte | chunk_intact | 0.000 / 0.000 → 0.000 / 0.000 | 0.000 / 0.000 → 0.000 / 0.000 | 0 / 0 / 0 → 0 / 0 / 0 |
+| lte | chunk_debris | 0.008 / 0.118 → 0.008 / 0.126 | 0.009 / 2.553 → 0.009 / 2.553 | 5 / 176 / 523 → 0 / 290 / 1,128 |
+| lte | chunk_rubble | 0.005 / 0.009 → 0.005 / 0.009 | 0.005 / 0.009 → 0.005 / 0.009 | 0 / 0 / 6 → 0 / 0 / 6 |
+| bw-capped | player | 0.001 / 0.002 → 0.001 / 0.002 | 0.001 / 1.136 → 0.001 / 0.998 | 1 / 0 / 0 → 1 / 0 / 0 |
+| bw-capped | vehicle | 0.001 / 0.002 → 0.001 / 0.002 | 0.001 / 0.416 → 0.001 / 0.390 | 0 / 0 / 0 → 0 / 0 / 0 |
+| bw-capped | body | 0.001 / 0.002 → 0.001 / 0.003 | 0.366 / 5.553 → 0.332 / 5.205 | 80 / 205 / 0 → 70 / 168 / 0 |
+| bw-capped | meteor | 0.002 / 0.017 → 0.002 / 0.017 | 7.432 / 19.632 → 6.529 / 17.247 | 44 / 2 / 0 → 45 / 1 / 0 |
+| bw-capped | chunk_intact | 0.000 / 0.000 → 0.000 / 0.000 | 0.000 / 0.000 → 0.000 / 0.000 | 0 / 0 / 0 → 0 / 0 / 0 |
+| bw-capped | chunk_debris | 0.008 / 0.148 → 0.008 / 0.168 | 0.009 / 2.171 → 0.008 / 1.970 | 11 / 219 / 354 → 5 / 169 / 14 |
+| bw-capped | chunk_rubble | 0.005 / 0.009 → 0.005 / 0.009 | 0.005 / 0.009 → 0.005 / 0.009 | 0 / 0 / 1 → 0 / 0 / 1 |
+
+**net-next c1, seed 1, per class, base → this change** (pos@render p50 / p99; pos@now p50 / p99, m; missing / extra / wrong identity)
+
+| Link | Class | pos@render | pos@now | m / e / w |
+|---|---|---|---|---|
+| loopback | player | 0.001 / 0.002 → 0.001 / 0.002 | 0.001 / 0.273 → 0.001 / 0.273 | 1 / 0 / 0 → 1 / 0 / 0 |
+| loopback | vehicle | 0.001 / 0.002 → 0.001 / 0.002 | 0.001 / 0.174 → 0.001 / 0.174 | 0 / 0 / 0 → 0 / 0 / 0 |
+| loopback | body | 0.001 / 0.002 → 0.001 / 0.002 | 0.103 / 2.035 → 0.103 / 2.035 | 11 / 34 / 0 → 11 / 34 / 0 |
+| loopback | meteor | 0.006 / 14.202 → 0.006 / 14.202 | 2.637 / 16.698 → 2.637 / 16.698 | 11 / 0 / 0 → 11 / 0 / 0 |
+| loopback | chunk_intact | 0.000 / 0.000 → 0.000 / 0.000 | 0.000 / 0.000 → 0.000 / 0.000 | 0 / 0 / 0 → 0 / 0 / 0 |
+| loopback | chunk_debris | 0.008 / 0.292 → 0.008 / 0.265 | 0.011 / 2.171 → 0.011 / 1.908 | 51 / 0 / 0 → 33 / 0 / 0 |
+| loopback | chunk_rubble | 0.005 / 0.009 → 0.005 / 0.009 | 0.005 / 0.009 → 0.005 / 0.009 | 0 / 0 / 0 → 0 / 0 / 0 |
+| lte | player | 0.001 / 0.002 → 0.001 / 0.002 | 0.001 / 1.521 → 0.001 / 1.571 | 1 / 0 / 0 → 1 / 0 / 0 |
+| lte | vehicle | 0.001 / 0.002 → 0.001 / 0.002 | 0.001 / 1.571 → 0.001 / 1.472 | 0 / 0 / 0 → 0 / 0 / 0 |
+| lte | body | 0.001 / 0.002 → 0.001 / 0.003 | 0.614 / 9.946 → 0.614 / 9.946 | 36 / 94 / 0 → 33 / 98 / 0 |
+| lte | meteor | 0.006 / 13.749 → 0.006 / 15.152 | 17.815 / 25.437 → 18.401 / 26.274 | 17 / 0 / 0 → 17 / 0 / 0 |
+| lte | chunk_intact | 0.000 / 0.000 → 0.000 / 0.000 | 0.000 / 0.000 → 0.000 / 0.000 | 0 / 0 / 0 → 0 / 0 / 0 |
+| lte | chunk_debris | 0.008 / 0.301 → 0.008 / 0.211 | 0.012 / 3.100 → 0.012 / 2.724 | 62 / 0 / 318 → 0 / 0 / 82 |
+| lte | chunk_rubble | 0.005 / 0.009 → 0.005 / 0.009 | 0.005 / 0.009 → 0.005 / 0.009 | 0 / 0 / 4 → 0 / 0 / 4 |
+| bw-capped | player | 0.001 / 0.002 → 0.001 / 0.002 | 0.001 / 1.065 → 0.001 / 0.849 | 1 / 0 / 0 → 1 / 0 / 0 |
+| bw-capped | vehicle | 0.001 / 0.002 → 0.001 / 0.002 | 0.001 / 0.614 → 0.001 / 0.595 | 0 / 0 / 0 → 0 / 0 / 0 |
+| bw-capped | body | 0.001 / 0.002 → 0.001 / 0.002 | 0.321 / 5.376 → 0.292 / 5.039 | 21 / 43 / 0 → 17 / 35 / 0 |
+| bw-capped | meteor | 0.006 / 13.749 → 0.006 / 13.311 | 8.459 / 19.007 → 7.676 / 19.007 | 7 / 0 / 0 → 10 / 0 / 0 |
+| bw-capped | chunk_intact | 0.000 / 0.000 → 0.000 / 0.000 | 0.000 / 0.000 → 0.000 / 0.000 | 0 / 0 / 0 → 0 / 0 / 0 |
+| bw-capped | chunk_debris | 0.009 / 1.252 → 0.009 / 1.252 | 0.011 / 3.645 → 0.012 / 3.308 | 56 / 0 / 155 → 0 / 0 / 23 |
+| bw-capped | chunk_rubble | 0.005 / 0.009 → 0.005 / 0.009 | 0.005 / 0.009 → 0.005 / 0.009 | 0 / 0 / 0 → 0 / 0 / 0 |
+
+**Live** (measured; one run, `scripts/perf/city-bench.sh --scenario quick
+--clients 3` from this tree, ports 7001/7002/3703, GPU lock,
+`target/net-cadence/city-bench/runs/20260925-040411-net-cadence`). Another
+process was using the GPU during the run, so tick numbers are indicative
+only.
+
+- **Run health:** 3/3 paired bundles, 0 errors; 19 of 27 budgets pass (20 on
+  the net-next run).
+  - The server's tick and sim-rate budgets fail, as on every recent run:
+    tick p95 24.5 → 31.9 ms, dynamics mean 9.8 → 14.1 ms, GPU wait p95
+    19.3 → 28.2 ms. That is physics, on a busy GPU.
+  - Client c2 had 11 hitches over 100 ms and 15 CPU-bound over 33 ms.
+    Its send → arrive p99 is 117 ms against 4.1-4.5 ms on c0 and c1
+    (**inferred:** the receive timestamps of a stalled page, not the link;
+    0 packets lost, 0 server drops).
+- **City encoder:** encode p95 per send 0.168 → 0.227 ms, step p95 0.329 →
+  0.320 ms, now at every tick.
+- **Rate controller:** 0 state changes, so every loopback link stayed
+  `Free`.
+- **Wire and client health:** snapshot gap p99 49.1 ms, render-clock
+  back-steps 0, structure repairs 0, body render error p99 0.04 m.
+- **Bytes:** 165.8 / 157.3 / 159.8 kbit/s per client, against 200.3 / 185.3 /
+  193.8 on the net-next run. That run broke 35% of bonds, this one 25.7%,
+  so the comparison is indicative only.
+- **Calibration of this capture with this tree: PASS on all three clients.**
+  - Bytes 12,950 / 12,950, 13,078 / 13,078 and 12,874 / 12,874
+    byte-identical, 60 Hz city chunks included (5,820 / 5,948 / 5,744).
+  - Clock offset p99 in the last 10 s: 92-100 µs.
+  - Lab vs live renderer p99: players 1.1-1.2 cm, vehicles 0.1-0.3 cm,
+    bodies 5.3-6.7 cm, meteors 5.3-8.1 cm, intact chunks 0.00 mm, debris
+    chunks 0.7-4.6 cm.
+  - The replayed client ran the 60 Hz stream with the 5-tick delay
+    (`streamIntervalTicks` 1, `sampleDelayTicks` 5, c1).
+- **Not run live:** the `VIBE_CITY_STREAM_HZ` override was added after the
+  bench's build. The default path is the same constants.
+
+**Tests** (fail or do not compile before the change, except the guards):
+
+- `destruction/src/encoder.rs`:
+  - `the_stream_is_sent_every_tick_under_the_same_byte_rate_cap`;
+  - `an_older_checkpoint_resumes_at_its_cadence_without_an_innovation_window`;
+  - `an_accelerating_body_is_refreshed_as_often_at_60_hz_as_at_30`: a body
+    at 9 m/s² gets as many records at 60 Hz as at 30, and fewer than half
+    as many with the per-send test;
+  - `at_30_hz_the_innovation_window_changes_no_record` (guard).
+  - `topology_copies_go_ahead_of_the_records_at_two_sends` now reads the
+    cadence. The stream test helper sends at the config's interval.
+- `server/src/link_rate.rs`:
+  - `the_controller_paces_a_60_hz_stream_as_it_paced_30_hz` (guard). Fast
+    links are never throttled, 0.5 Mbit/s holds the 30 Hz queue and rate
+    bounds, and 96 kbit/s merges sends. The fluid model gained a cadence
+    and a ceiling.
+  - `a_limited_60_hz_link_is_sent_every_other_tick`: never two limited
+    sends in consecutive ticks, each standing for two, at the unpaced
+    arm's byte rate within 10%. Off, it sends every tick. Free links and
+    30 Hz streams are untouched.
+- `destruction/src/encoder.rs`:
+  `a_paced_send_may_use_the_ceiling_of_the_sends_it_stands_for`.
+- `server/src/city.rs`:
+  `the_stream_runs_at_60_hz_and_vibe_city_stream_hz_goes_back_to_30`.
+- `client/src/city/cityClient.test.ts`, "CityClient playout delay and the
+  send cadence":
+  - a 60 Hz stream is presented with a 5-tick delay, more than 0.8 tick
+    nearer the server than 30 Hz, and never past its newest datagram;
+  - a jittery 60 Hz link stays behind its newest datagram;
+  - a 60 Hz stream thinned to every other tick gets 6 back.
+  - All three fail on the 3d96a192 client (run there).
+- Suites:
+  - destruction 181 passing;
+  - server 163 (+1 ignored);
+  - netlab2 95;
+  - client 1,195 (4 skipped);
+  - `tsc -b` clean.
+
+**Reproduce**
+
+```bash
+N=<this tree's lab binary>; BASE=<a clean worktree of 3d96a192>
+P=lab.recorded_repairs=0,city.ballistic_free_fall=1,city.client_model=1,city.baseline_interval_ticks=120,city.baseline_lag_ticks=110,city.baseline_skip_quiescent=1,city.topology_copies=2,snapshot.compact_self=1,snapshot.removals=1,snapshot.idle_cold=1
+$BASE/target/.../netlab2 run --bundle <b> --out <runs>/base/seed<k>/<link> --link <link> --seed <k> --knob $P --client-root $BASE/client
+$N run --bundle <b> --out <runs>/cand/seed<k>/<link> --link <link> --seed <k> \
+   --knob $P,city.send_hz=60,city.ceiling_bytes=5200,city.innovation_window_ticks=2
+CITY_PLAYOUT_DELAY=5 $N run ... --knob $P          # 30 Hz with a 5-tick delay
+scripts/perf/netlab2-scoreboard.py lag <runDir>     # presented-lag.json, before pruning presented.bin
+```
+
+Runs: `target/net-cadence/runs/<bundle>/<arm>/seed<k>/<link>` (`sys`, `hq`,
+`new`, `nn`; arms `base`, `cand`, `h30d5`, `y60`, `y60d5`, `y60d4`,
+`h30d4`, `x60`, `h60`, `cand3c`, `candcompat`, `lim30` (limited links at
+30 Hz), `lim0` (the same build with it off), and `m30` / `y30`, this tree
+at 30 Hz, identical to `base` on every cell). Calibration:
+`target/net-cadence/calibrate/*.log`.
 
 ## Proposals not implemented
 

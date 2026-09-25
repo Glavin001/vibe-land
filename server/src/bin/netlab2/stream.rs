@@ -153,6 +153,7 @@ pub struct CityKnobs {
     pub baseline_reference_lag_ticks: Option<u32>,
     pub baseline_skips_quiescent: Option<bool>,
     pub topology_datagram_copies: Option<u32>,
+    pub innovation_window_ticks: Option<u32>,
 }
 
 impl CityKnobs {
@@ -204,6 +205,9 @@ impl CityKnobs {
         }
         if let Some(value) = self.baseline_skips_quiescent {
             config.baseline_skips_quiescent = value;
+        }
+        if let Some(value) = self.innovation_window_ticks {
+            config.innovation_window_ticks = value;
         }
         if let Some(value) = self.topology_datagram_copies {
             config.topology_datagram_copies = value;
@@ -1076,12 +1080,12 @@ pub fn build(bundle: &Bundle, config: &StreamConfig) -> std::io::Result<Stream> 
             None => {
                 // Mirrors CityRuntime::from_parts; used only for captures
                 // taken before the checkpoint existed.
+                // Those captures predate the 60 Hz stream: 30 Hz and 10.4 kB
+                // per send, whatever the shared constants now say.
                 let mut encoder_config = EncoderConfig::validated(reader.hz);
-                encoder_config.send_interval_ticks = (reader.hz
-                    / u32::from(vibe_land_shared::constants::CITY_CHUNK_STREAM_HZ))
-                .max(1);
-                encoder_config.client_ceiling_bytes =
-                    usize::from(vibe_land_shared::constants::CITY_CLIENT_CEILING_BYTES_PER_SEND);
+                encoder_config.send_interval_ticks = (reader.hz / 30).max(1);
+                encoder_config.client_ceiling_bytes = 10_400;
+                encoder_config.innovation_window_ticks = 0;
                 encoder_config.interest.proximity_meters = 120.0;
                 config.city.apply(&mut encoder_config);
                 stats.city_encoder_start = "fresh (no checkpoint; approximate)".into();
@@ -1211,6 +1215,7 @@ pub fn build(bundle: &Bundle, config: &StreamConfig) -> std::io::Result<Stream> 
                                 camera,
                                 &shared,
                                 plan.after_topology(copies).allowance(),
+                                plan.ceiling_sends(),
                             );
                             packets.extend(records);
                             let summary = encoder.last_client_selection();

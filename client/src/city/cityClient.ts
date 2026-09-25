@@ -178,6 +178,8 @@ export interface CityClientStats {
   /// are 6 and 0; on a jittery one the first must exceed the second or debris
   /// is sampled from a span that has not arrived.
   sampleDelayTicks: number;
+  /** The send interval the stream showed (ticks), which sizes the v2 playout delay. */
+  streamIntervalTicks: number;
   arrivalLatenessTicks: number;
   arrivalLatenessPeakTicks: number;
   manifestHash: string;
@@ -340,15 +342,42 @@ const RENDER_CLOCK_LEAD_CAP_MS = 300;
  */
 const RENDER_CLOCK_IDLE_JUMP_TICKS = 4;
 
-/** Floor on the playout delay: one flush window's worth, as shipped. */
-const MIN_SAMPLE_DELAY_TICKS = 6;
-
 /** Lab-only overrides for tuning (Netlab's client stage runs under node). */
 const LAB_ENV = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env ?? {};
 const labNumber = (key: string, fallback: number): number => {
   const value = Number(LAB_ENV[key]);
   return LAB_ENV[key] !== undefined && Number.isFinite(value) ? value : fallback;
 };
+
+/** Floor on the playout delay: one flush window's worth, as shipped. */
+const MIN_SAMPLE_DELAY_TICKS = 6;
+
+/**
+ * The wire-v2 playout delay: the stream's send interval plus this many ticks.
+ *
+ * The delay has to cover the wait for the next send as well as the link's
+ * jitter, and the wait is one send interval. At the 30 Hz stream (interval
+ * 2) that is the 6 ticks shipped since wire v2; at 60 Hz (interval 1,
+ * `EncoderConfig::validated`) the same margin beyond the interval is 5, a
+ * tick less latency. Measured in Netlab v2, 4 captures x 12 links: 60 Hz
+ * sends with the 5-tick delay present the city 1 tick nearer the server on
+ * every link, with no more presented jumps over 4 m than 30 Hz with 6 on 3
+ * of the 4 captures, and fewer frames stopped by the lead cap;
+ * docs/netcode-tuning.md#city-send-cadence-and-playout-delay.
+ * CITY_PLAYOUT_DELAY (lab only) fixes the whole delay instead.
+ */
+const PLAYOUT_BEYOND_INTERVAL_TICKS = 4;
+const FIXED_PLAYOUT_DELAY_TICKS = labNumber('CITY_PLAYOUT_DELAY', Number.NaN);
+/**
+ * The send interval assumed until the stream shows a shorter one, and the
+ * longest one used: the 30 Hz stream's. A server that sends at 30 Hz is
+ * therefore presented exactly as before, and a 60 Hz stream the rate
+ * controller thins to every other tick gets the 30 Hz delay back.
+ */
+const STREAM_INTERVAL_MAX_TICKS = 2;
+/** The span the send interval is measured over: the shortest advance of the
+ *  newest streamed tick seen in it. */
+const STREAM_INTERVAL_WINDOW_MS = 1000;
 
 /**
  * Size the wire-v2 playout delay from the measured stream, instead of
@@ -363,8 +392,8 @@ const labNumber = (key: string, fallback: number): number => {
  * frames stopped). So the delay is a high quantile (PLAYOUT_QUANTILE) of
  * that lead over the last PLAYOUT_WINDOW_MS, sampled at every frame before
  * the cap: the cap then stops the clock on no more frames than the fixed
- * delay did. Never above the fixed 6 ticks, never below 3; it slews like
- * any delay change.
+ * delay did. Never above the stream's delay (6 ticks at 30 Hz sends, 5 at
+ * 60 Hz), never below 3; it slews like any delay change.
  *
  * Off because the latency it gives back is paid for in corrections. Every
  * tick less leaves a record more chance to land after the presentation
@@ -600,6 +629,13 @@ export class CityClient {
   private tickRate = 60;
   /** Newest-tick advances in the rate window, oldest first. */
   private readonly tickArrivals: Array<{ tick: number; atMs: number }> = [];
+  /**
+   * The stream's send interval in ticks: the shortest advance of the newest
+   * streamed tick over the last STREAM_INTERVAL_WINDOW_MS, at most
+   * STREAM_INTERVAL_MAX_TICKS. Sizes the wire-v2 playout delay.
+   */
+  private streamIntervalTicks = STREAM_INTERVAL_MAX_TICKS;
+  private readonly tickAdvances: Array<{ ticks: number; atMs: number }> = [];
   /** Continuous render clock (tick units); follows the extrapolated anchor
    *  with a ~0.5 s pull so per-packet anchor jitter never steps it. */
   private renderClockTick = -1;
@@ -643,7 +679,7 @@ export class CityClient {
    * at 0.05 ticks/frame spreads a 100 ms change over ~2 s of imperceptible
    * clock drift.
    */
-  private sampleDelaySmooth = 6;
+  private sampleDelaySmooth = CityClient.initialPlayoutDelay();
   /**
    * Network arrival lateness in ticks, measured from the datagrams themselves.
    *
@@ -861,6 +897,9 @@ export class CityClient {
    */
   private observeSimTick(tick: number): void {
     const now = performance.now();
+    if (this.tickArrivals.length > 0 && tick > this.latestSimTick) {
+      this.observeStreamInterval(tick - this.latestSimTick, now);
+    }
     const arrivals = this.tickArrivals;
     arrivals.push({ tick, atMs: now });
     // Keep the window at least TICK_RATE_WINDOW_MS long: drop the oldest only
@@ -878,6 +917,42 @@ export class CityClient {
     }
     this.latestSimTick = tick;
     this.latestSimTickAtMs = now;
+  }
+
+  /**
+   * Fold one advance of the newest streamed tick into the send interval.
+   *
+   * The shortest advance in the window, not the latest: reordering and the
+   * rate controller's skipped sends only lengthen advances, so the shortest
+   * is the cadence the server sends at while it sends at all. A stream thinned
+   * to every other tick for a whole window reads 2.
+   */
+  private observeStreamInterval(ticks: number, nowMs: number): void {
+    const advances = this.tickAdvances;
+    advances.push({ ticks, atMs: nowMs });
+    while (advances.length > 0 && nowMs - advances[0].atMs > STREAM_INTERVAL_WINDOW_MS) {
+      advances.shift();
+    }
+    let shortest = STREAM_INTERVAL_MAX_TICKS;
+    for (const advance of advances) {
+      shortest = Math.min(shortest, advance.ticks);
+    }
+    this.streamIntervalTicks = Math.max(1, shortest);
+  }
+
+  /** The wire-v2 playout delay without the adaptive delay: see
+   *  PLAYOUT_BEYOND_INTERVAL_TICKS. */
+  private streamPlayoutDelay(): number {
+    return Number.isFinite(FIXED_PLAYOUT_DELAY_TICKS)
+      ? FIXED_PLAYOUT_DELAY_TICKS
+      : this.streamIntervalTicks + PLAYOUT_BEYOND_INTERVAL_TICKS;
+  }
+
+  /** The delay a new or reset stream starts at: the 30 Hz stream's. */
+  private static initialPlayoutDelay(): number {
+    return Number.isFinite(FIXED_PLAYOUT_DELAY_TICKS)
+      ? FIXED_PLAYOUT_DELAY_TICKS
+      : STREAM_INTERVAL_MAX_TICKS + PLAYOUT_BEYOND_INTERVAL_TICKS;
   }
 
   /**
@@ -949,10 +1024,11 @@ export class CityClient {
 
   /** The wire-v2 playout delay this frame asks for. */
   private playoutDelayTarget(): number {
+    const delay = this.streamPlayoutDelay();
     if (!this.adaptiveDelay || !Number.isFinite(this.playoutTarget)) {
-      return MIN_SAMPLE_DELAY_TICKS;
+      return delay;
     }
-    return Math.min(MIN_SAMPLE_DELAY_TICKS, Math.max(PLAYOUT_FLOOR_TICKS, this.playoutTarget));
+    return Math.min(delay, Math.max(PLAYOUT_FLOOR_TICKS, this.playoutTarget));
   }
 
   /** The render clock: the newest-tick anchor extrapolated at the MEASURED
@@ -1033,7 +1109,7 @@ export class CityClient {
       // applied (so the presented tick stays at or behind the newest tick).
       this.observeLead(nowMs, this.renderClockTick - this.latestSimTick);
       const cap = this.latestSimTick
-        + (this.adaptiveDelay ? this.sampleDelaySmooth : MIN_SAMPLE_DELAY_TICKS);
+        + (this.adaptiveDelay ? this.sampleDelaySmooth : this.streamPlayoutDelay());
       if (this.renderClockTick > cap) {
         this.renderClockTick = Math.max(previousClock, cap);
       }
@@ -1550,7 +1626,9 @@ export class CityClient {
         this.spanTicksEma = 6;
         // A reset restarts the tick count; the old arrivals say nothing.
         this.tickArrivals.length = 0;
-        this.sampleDelaySmooth = MIN_SAMPLE_DELAY_TICKS;
+        this.tickAdvances.length = 0;
+        this.streamIntervalTicks = STREAM_INTERVAL_MAX_TICKS;
+        this.sampleDelaySmooth = CityClient.initialPlayoutDelay();
         this.clockLeads.length = 0;
         this.streamAliveAtMs = 0;
         this.playoutTarget = Number.NaN;
@@ -3006,6 +3084,7 @@ export class CityClient {
       bytesReceived: this.bytesReceived,
       bytesPerSecond: windowSeconds > 0.25 ? windowBytes / windowSeconds : 0,
       sampleDelayTicks: this.sampleDelaySmooth,
+      streamIntervalTicks: this.streamIntervalTicks,
       arrivalLatenessTicks: this.arrivalLateness,
       arrivalLatenessPeakTicks: this.arrivalLatenessPeak,
       manifestHash: this.manifest.hashHex,
