@@ -419,6 +419,14 @@ fn add_native_destruction(
 /// Locate `<sdk>/out/sdk-artifacts.json` from the resolved SDK root, which is
 /// either `<sdk>/physx` or `<sdk>/out/install`.
 fn sdk_manifest(root: &std::path::Path) -> Option<std::path::PathBuf> {
+    // A package that carries its own manifest (`<prefix>/sdk-artifacts.json`,
+    // written by relocate-macos-sdk.py since PhysX 151905a5) describes itself
+    // wherever it sits -- a backup or private install next to a newer
+    // checkout manifest would otherwise be checked against the wrong one.
+    let own = root.join("sdk-artifacts.json");
+    if own.is_file() {
+        return Some(own);
+    }
     root.ancestors()
         .map(|dir| dir.join("out/sdk-artifacts.json"))
         .find(|candidate| candidate.is_file())
@@ -509,10 +517,7 @@ fn assert_sdk_libraries_match_manifest(root: &std::path::Path, lib: &std::path::
 fn assert_sdk_cuda_matches(root: &std::path::Path) {
     // `<sdk>/out/sdk-artifacts.json` records the exact compilers; the SDK root
     // is either `<sdk>/physx` or `<sdk>/out/install`.
-    let manifest = root
-        .ancestors()
-        .map(|dir| dir.join("out/sdk-artifacts.json"))
-        .find(|candidate| candidate.is_file());
+    let manifest = sdk_manifest(root);
     let Some(manifest) = manifest else {
         // Nothing recorded: an install that was relocated without its manifest.
         return;
