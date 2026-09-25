@@ -59,6 +59,14 @@ const INTENSITY = Number(process.env.INTENSITY ?? scenario.intensity ?? 1);
 const SEED = Number(process.env.SEED ?? scenario.seed ?? 1);
 const BUILDING_CAP = process.env.BUILDINGS ? Number(process.env.BUILDINGS) : (scenario.buildings?.max ?? Infinity);
 const GPU_LOAD = Number(process.env.CITY_BENCH_GPU_LOAD ?? 0);
+// CITY_BENCH_CLIENT_QUERY (e.g. `maxFps=30`) is appended to /city, and
+// CITY_BENCH_DPR_CAP sets the render DPR cap (the `vibe.render.dprCap`
+// setting) before the page loads. Together they model a remote player's
+// client: on a real server the browser does not share the server's GPU, and
+// an uncapped local client multiplies the server's tick overruns
+// (docs/meteor-impact-analysis-2026-09-24.md, follow-up). Off by default.
+const CLIENT_QUERY = process.env.CITY_BENCH_CLIENT_QUERY ?? '';
+const DPR_CAP = process.env.CITY_BENCH_DPR_CAP ?? '';
 const PROFILE_STEPS = new Set((process.env.CITY_BENCH_PROFILE ?? '').split(',').map((s) => s.trim()).filter(Boolean));
 const RUN_ID = (process.env.RUN_ID ?? `bench-${Date.now()}`).replace(/[^A-Za-z0-9_-]/g, '-').slice(0, 56);
 fs.mkdirSync(OUT, { recursive: true });
@@ -187,11 +195,14 @@ async function join(index) {
   });
   browsers.push(browser);
   const context = await browser.newContext({ ignoreHTTPSErrors: true, viewport: { width: 1280, height: 720 } });
+  if (DPR_CAP) {
+    await context.addInitScript((cap) => { try { localStorage.setItem('vibe.render.dprCap', cap); } catch {} }, DPR_CAP);
+  }
   const page = await context.newPage();
   const consoleLog = path.join(OUT, `client-${index}-console.log`);
   page.on('pageerror', (e) => fs.appendFileSync(consoleLog, `[pageerror] ${String(e).slice(0, 400)}\n`));
   page.on('console', (m) => { if (m.type() === 'error' || m.type() === 'warning') fs.appendFileSync(consoleLog, `[${m.type()}] ${m.text().slice(0, 400)}\n`); });
-  await page.goto(`${CLIENT}/city`, { waitUntil: 'domcontentloaded', timeout: 90000 });
+  await page.goto(`${CLIENT}/city${CLIENT_QUERY ? `?${CLIENT_QUERY}` : ''}`, { waitUntil: 'domcontentloaded', timeout: 90000 });
   await page.waitForFunction(() => !!window.__VIBE_E2E__, null, { timeout: 90000 });
   await page.mouse.click(640, 360);
   await page.waitForFunction(() => window.__VIBE_E2E__.snapshot().transport === 'webtransport', null, { timeout: 120000 });
