@@ -166,6 +166,13 @@ the explicit isolated runtime. `VIBE_VEHICLE_FRACTURE_REPORT` records per-model
 impact evidence; `VIBE_VEHICLE_CAPTURE_DIR` selects unique scenario/model
 equation-capture paths when using the separate diagnostic SDK module.
 
+The [operator revision checks](reports/vehicle-operator-epochs-2026-09-26/README.md)
+now separate native solver cache revisions from physical fracture generations.
+Both focused local GPU suites pass, including cache invalidation and an
+independent inverse oracle. The tests also exposed and fixed an exact-zero
+classification bug for subnormal loads. This is an isolated prerequisite;
+moving suspension geometry and its mass/momentum contract are still pending.
+
 Remaining requirements:
 
 1. Converged stress under nominal cannon and severe impacts on the full models;

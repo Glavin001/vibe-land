@@ -1,0 +1,4 @@
+-- NVIDIA compute-sanitizer tests are not registered for CuMetal; native memory/synchronization qualification remains separate
+-- Configuring done (0.2s)
+-- Generating done (0.4s)
+-- Build files have been written to: /Users/glavin/Development/PhysX/out/build/garage-multihull/package

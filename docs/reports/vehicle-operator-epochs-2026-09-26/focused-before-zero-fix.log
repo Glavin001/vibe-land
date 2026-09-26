@@ -1,0 +1,6 @@
+CUMETAL WARNING: CUMETAL_USE_METAL_DEVICE_ADDRESSES marks every live allocation read-write on every dispatch so kernels can follow raw device addresses; this removes cross-stream concurrency.
+GPU operator epochs: six readiness/publication cases preserve independent connectivity and cache revisions
+GPU inverse topology lifetime: 6 nodes, 5 bonds, shared support; six cold/unknown/stale/cut/repeated-cut cases passed
+GPU rigid inverse: 771 six-variable SPD blocks, cold/reuse/unknown/generation checks passed, scaled error 4.4408921e-15
+warm retirement mismatch cooperative=0 scenario=7 edge=0 expected_clear=0 load=9.9999461e-41 actual_angular=(0,0,0) expected_angular=(1,2,3)
+operator epochs: homogeneous warm retirement changed an uncertified bond or missed a fixed-first bond

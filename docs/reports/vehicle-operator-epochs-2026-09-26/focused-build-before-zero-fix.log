@@ -1,0 +1,7 @@
+-- NVIDIA compute-sanitizer tests are not registered for CuMetal; native memory/synchronization qualification remains separate
+-- Configuring done (0.2s)
+-- Generating done (0.4s)
+-- Build files have been written to: /Users/glavin/Development/PhysX/out/build/garage-multihull/package
+Generating cumetal/gpu_resident_operator_epoch_test/release/gpu_resident_motion_modes_test-a1db6b05874402c0.o
+Linking CXX executable gpu_resident_operator_epoch_test
+Built target gpu_resident_operator_epoch_test

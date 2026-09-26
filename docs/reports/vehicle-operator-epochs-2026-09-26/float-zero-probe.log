@@ -1,0 +1,7 @@
+CUMETAL WARNING: CUMETAL_USE_METAL_DEVICE_ADDRESSES marks every live allocation read-write on every dispatch so kernels can follow raw device addresses; this removes cross-stream concurrency.
+input=00000000 float_nonzero=0 bits_nonzero=0 observed=00000000
+input=80000000 float_nonzero=0 bits_nonzero=0 observed=80000000
+input=000116c2 float_nonzero=0 bits_nonzero=1 observed=000116c2
+input=800116c2 float_nonzero=0 bits_nonzero=1 observed=800116c2
+input=0da24260 float_nonzero=1 bits_nonzero=1 observed=0da24260
+input=3f000000 float_nonzero=1 bits_nonzero=1 observed=3f000000

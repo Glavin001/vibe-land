@@ -1,0 +1,7 @@
+[100%] Generating cumetal/gpu_resident_motion_modes_test/release/gpu_resident_motion_modes_test-a1db6b05874402c0.o
+cumetalc failed: cannot legalize CUDA generic pointers: private helper pointer field proof at blast/source/sdk/extensions/stressgpu/detail/StressNativeFineInverse.cuh:7:10: cannot default an unproved pointee: incoming path has no initializing pointer store
+cumetalc failed: native AOT device compilation failed
+make[3]: *** [reference/cumetal/gpu_resident_motion_modes_test/release/gpu_resident_motion_modes_test-a1db6b05874402c0.o] Error 1
+make[2]: *** [reference/CMakeFiles/gpu_resident_motion_modes_test.dir/all] Error 2
+make[1]: *** [reference/CMakeFiles/gpu_resident_motion_modes_test.dir/rule] Error 2
+make: *** [gpu_resident_motion_modes_test] Error 2

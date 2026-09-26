@@ -1,0 +1,35 @@
+{
+  "platform": "macOS arm64 / local CuMetal / native FP64",
+  "physx_operator_revision_commit": "0d3d14ae",
+  "live_runtime_replaced": false,
+  "cuda_vast_run": false,
+  "build_directory": "/Users/glavin/Development/PhysX/out/build/garage-multihull/package",
+  "cmake_options": {
+    "BLAST_STRESS_GPU_FP64": "ON",
+    "PX_CUMETAL_EXPLICIT_HIERARCHY_ROOT": "ON",
+    "PX_CUMETAL_EXPLICIT_MOTION_ROOT": "ON",
+    "PX_CUMETAL_EXPLICIT_AGGREGATE_ROOT": "ON",
+    "PX_CUMETAL_BLOCK_VOTED_TRAPS": "ON",
+    "PX_CUMETAL_PACK_BOND_STRESS_SCALARS": "ON"
+  },
+  "runtime_environment": {
+    "CUMETAL_USE_METAL_DEVICE_ADDRESSES": "1",
+    "CUMETAL_SYNC_EACH_LAUNCH": "0"
+  },
+  "initial_test_results": {
+    "gpu_resident_stress_test epochs": 0,
+    "gpu_resident_operator_epoch_test": 1
+  },
+  "initial_failure": "Preserved failure: subnormal warm-retirement scenario 7. Corrected separately by exact IEEE-zero classification; final tests pass.",
+  "physx_exact_zero_commit": "8d82c580",
+  "final_test_results": {
+    "gpu_resident_stress_test epochs": 0,
+    "gpu_resident_operator_epoch_test": 0
+  },
+  "artifact_hashes_after_run": {
+    "/Users/glavin/Development/PhysX/out/build/garage-multihull/package/reference/gpu_resident_stress_test": "bd4ef14811b43e7a21a37eed639b85ed32fa85ca85e67d40dad62b4fc5587f51",
+    "/Users/glavin/Development/PhysX/out/build/garage-multihull/package/reference/gpu_resident_operator_epoch_test": "552ae490b6069df0f616a7aa7f9b57371c3e5e803b36408156c91efbc6e7c049",
+    "/Users/glavin/Development/cuda-metal/out/build/macos-cumetal/release/cumetalc": "3df34e6b4016529b3e2c42d2ea9b29736deaf380737d2e0ca0420990264a7528",
+    "/Users/glavin/Development/cuda-metal/out/build/macos-cumetal/release/libcumetal.dylib": "a23b5855295580c1af564916797ce8bc231ffbac44cf69324306f96d09d58e65"
+  }
+}

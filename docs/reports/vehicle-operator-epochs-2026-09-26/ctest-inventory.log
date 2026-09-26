@@ -1,0 +1,6 @@
+Internal ctest changing into directory: /Users/glavin/Development/PhysX/out/build/garage-multihull/package
+Test project /Users/glavin/Development/PhysX/out/build/garage-multihull/package
+  Test #137: blast_stress_gpu_operator_epochs
+  Test #138: blast_stress_gpu_operator_epoch_integration
+
+Total Tests: 2

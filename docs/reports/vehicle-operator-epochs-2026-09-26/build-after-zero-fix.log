@@ -1,0 +1,9 @@
+[  0%] Generating cumetal/gpu_resident_stress_test_core/release/NvBlastExtStressGpu-e17310947a0cd059.o
+[  0%] Linking CXX static library libgpu_resident_stress_test_core.a
+[  0%] Built target gpu_resident_stress_test_core
+[  0%] Generating cumetal/gpu_resident_stress_test/release/gpu_resident_stress_test-e6ace6c353869e78.o
+[100%] Linking CXX executable gpu_resident_stress_test
+[100%] Built target gpu_resident_stress_test
+Generating cumetal/gpu_resident_operator_epoch_test/release/gpu_resident_motion_modes_test-a1db6b05874402c0.o
+Linking CXX executable gpu_resident_operator_epoch_test
+Built target gpu_resident_operator_epoch_test
