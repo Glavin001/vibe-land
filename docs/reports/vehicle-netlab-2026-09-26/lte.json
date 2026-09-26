@@ -1,0 +1,102 @@
+{
+  "withinTargets": false,
+  "clients": [
+    {
+      "client": 0,
+      "role": "driver",
+      "lostEvents": 0,
+      "lostFrames": 0,
+      "scores": [
+        {
+          "role": "driver",
+          "vehicleId": 1,
+          "seconds": 47.21490000000638,
+          "movingSeconds": 33.644399999976166,
+          "metrics": [
+            {
+              "label": "Reconciliation displacement p95",
+              "value": 0.2798679955499836,
+              "unit": "m",
+              "target": 0.15
+            },
+            {
+              "label": "Hard corrections / minute",
+              "value": 68.62240521529353,
+              "unit": "/min",
+              "target": 1
+            },
+            {
+              "label": "Input → predicted pose p95",
+              "value": 17.200000017881393,
+              "unit": "ms",
+              "target": 50
+            },
+            {
+              "label": "Prediction frozen",
+              "value": 0,
+              "unit": "%",
+              "target": 1
+            },
+            {
+              "label": "Frame time p95",
+              "value": 17.30000001192093,
+              "unit": "ms",
+              "target": 33.4
+            },
+            {
+              "label": "Motion residual p95",
+              "value": 0.0752195984488906,
+              "unit": "m"
+            }
+          ],
+          "verdict": "needs-work"
+        }
+      ]
+    },
+    {
+      "client": 1,
+      "role": "observer",
+      "lostEvents": 0,
+      "lostFrames": 0,
+      "scores": [
+        {
+          "role": "observer",
+          "vehicleId": 1,
+          "seconds": 46.96790000003657,
+          "movingSeconds": 33.58719999995831,
+          "metrics": [
+            {
+              "label": "Buffer underrun",
+              "value": 0,
+              "unit": "%",
+              "target": 5
+            },
+            {
+              "label": "Held while moving",
+              "value": 2.490234374843374,
+              "unit": "%",
+              "target": 1
+            },
+            {
+              "label": "Presentation delay p95",
+              "value": 67.20415062999726,
+              "unit": "ms"
+            },
+            {
+              "label": "Frame time p95",
+              "value": 17.099999994039536,
+              "unit": "ms",
+              "target": 33.4
+            },
+            {
+              "label": "Motion residual p95",
+              "value": 0.10331747044215123,
+              "unit": "m"
+            }
+          ],
+          "verdict": "needs-work"
+        }
+      ]
+    }
+  ]
+}
