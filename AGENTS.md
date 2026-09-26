@@ -7,6 +7,13 @@ and verifies. Use `verify --browser --public` instead of `up` when only checking
 a running deployment. Keep the user's current branches. Do not begin with fleet
 rental, Docker, a repo-wide skill dump, or hand-written PID/port discovery.
 
+## Stress solve not converging, or fracturing under ordinary load
+
+Check the authored graph before touching the solver. Read
+[.claude/skills/stress-convergence/SKILL.md](.claude/skills/stress-convergence/SKILL.md).
+The product runs in float (FP32). Double precision, extra iterations or a looser
+tolerance are diagnostics, never fixes.
+
 ## Cursor Cloud specific instructions
 
 ### Overview
