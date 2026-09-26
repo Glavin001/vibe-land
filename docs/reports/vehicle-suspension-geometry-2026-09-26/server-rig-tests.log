@@ -1,0 +1,35 @@
+test vehicle_assets::fracture::tests::authored_garage_fracture_data ... ignored, requires prepared garage assets through VIBE_VEHICLE_BUILD_FIXTURES
+test vehicle_assets::rig::tests::maps_vehicle2_wheels_to_source_corners_like_the_client ... ok
+test vehicle_assets::rig::tests::six_model_posed_mass_matches_integrated_solids ... ignored
+test vehicle_assets::tests::asset_paths_require_canonical_hashes ... ok
+test vehicle_assets::rig::tests::rebasing_a_mass_frame_conserves_momentum ... ok
+test vehicle_assets::tests::preparation_errors_keep_actionable_diagnostics_and_distinguish_worker_crashes ... ok
+test vehicle_assets::fracture::tests::retains_parallel_interfaces_and_grouped_visuals ... ok
+test vehicle_assets::fracture::tests::partial_ownership_removes_only_the_disconnected_corner ... ok
+test vehicle_assets::fracture::tests::native_conversion_preserves_mass_hulls_parallel_interfaces_and_material_units ... ok
+test vehicle_assets::fracture::tests::native_roles_are_authored_not_inferred_from_mass_or_order ... ok
+test vehicle_assets::fracture::tests::rejects_moving_functional_parts_duplicate_chassis_and_split_wheel_groups ... ok
+test vehicle_assets::fracture::tests::axle_bindings_follow_physical_corner_mapping_and_reject_missing_paths ... ok
+test vehicle_assets::fracture::tests::rejects_corrupt_mass_graph_material_and_visual_ownership ... ok
+test vehicle_assets::rig::tests::rejects_non_finite_input_and_reflections ... ok
+test vehicle_assets::rig::tests::rig_rates_give_the_hub_and_wheel_their_physical_velocities ... ok
+test vehicle_assets::rig::tests::matches_the_js_rig_golden ... ok
+test vehicle_assets::rig::tests::neutral_pose_is_identity_and_rigid_roles_stay_rigid ... ok
+test result: ok. 15 passed; 0 failed; 2 ignored; 0 measured; 201 filtered out; finished in 0.02s
+buggy: deltas 2.7e-15, mass centre 8.1e-15 m tensor 3.8e-14, rest 8.2e-16; joints {"lower-arm-pivot": (30, 2.482534153247273e-16), "lower-ball-joint": (12, 4.710277376051325e-16), "outer-cv": (4, 7.364386412590295e-16), "shock-eye": (6, 3.554447978966673e-16), "shock-top-mount": (16, 3.6821932062951477e-16), "spring-seat": (8, 5.85874444175896e-16), "steering-column": (1, 3.3766115072321297e-16), "tie-rod-end": (4, 4.972820174300706e-16), "upper-arm-pivot": (14, 2.2887833992611187e-16), "upper-ball-joint": (8, 3.469446951953614e-16), "wheel-bearing": (4, 6.843874359417885e-16)}
+trophy: deltas 3.5e-15, mass centre 1.2e-14 m tensor 4.0e-14, rest 9.0e-16; joints {"lower-arm-pivot": (30, 2.2591401799415137e-16), "lower-ball-joint": (12, 4.041272810440265e-16), "outer-cv": (4, 1.2037731057624424e-15), "shock-eye": (8, 4.1540741810552243e-16), "shock-top-mount": (16, 4.742874840267547e-16), "spring-seat": (8, 6.377745716588144e-16), "steering-column": (1, 2.2887833992611187e-16), "tie-rod-end": (4, 4.996003610813204e-16), "upper-arm-pivot": (14, 2.2929868617541516e-16), "upper-ball-joint": (8, 5.578801654593729e-16), "wheel-bearing": (4, 8.968100940422724e-16)}
+rally: deltas 2.9e-15, mass centre 5.8e-15 m tensor 4.3e-14, rest 7.1e-16; joints {"lower-arm-pivot": (30, 1.7772239894833365e-16), "lower-ball-joint": (12, 4.47545209131181e-16), "outer-cv": (4, 6.843874359417885e-16), "shock-eye": (4, 3.3306690738754696e-16), "shock-top-mount": (26, 4.965068306494546e-16), "spring-seat": (8, 6.667118051786499e-16), "steering-column": (1, 3.040470972244059e-16), "tie-rod-end": (4, 4.577566798522237e-16), "upper-arm-pivot": (12, 1.5700924586837752e-16), "upper-ball-joint": (8, 6.304854800243424e-16), "wheel-bearing": (4, 6.758924343478424e-16)}
+monster: deltas 6.2e-15, mass centre 2.1e-14 m tensor 5.6e-14, rest 1.2e-15; joints {"lower-arm-pivot": (30, 2.482534153247273e-16), "lower-ball-joint": (12, 4.847302891456678e-16), "outer-cv": (4, 9.42055475210265e-16), "shock-eye": (12, 4.996003610813204e-16), "shock-top-mount": (17, 5.978733960281817e-16), "spring-seat": (8, 8.89722066373406e-16), "steering-column": (1, 5.087681048627601e-16), "tie-rod-end": (4, 5.087681048627601e-16), "upper-arm-pivot": (14, 2.5476231888929306e-16), "upper-ball-joint": (8, 6.753223014464259e-16), "wheel-bearing": (4, 7.043575467574348e-16)}
+derby: deltas 3.1e-15, mass centre 7.1e-15 m tensor 4.7e-14, rest 6.4e-16; joints {"lower-arm-pivot": (30, 2.423651445728339e-16), "lower-ball-joint": (12, 4.47545209131181e-16), "outer-cv": (4, 9.155133597044475e-16), "shock-eye": (8, 3.3766115072321297e-16), "shock-top-mount": (22, 4.710277376051325e-16), "spring-seat": (8, 6.280369834735101e-16), "steering-column": (1, 2.830524433501838e-16), "tie-rod-end": (4, 5.33167196845001e-16), "upper-arm-pivot": (14, 2.2887833992611187e-16), "upper-ball-joint": (8, 4.996003610813204e-16), "wheel-bearing": (4, 5.978733960281817e-16)}
+sprint: deltas 3.4e-15, mass centre 6.9e-15 m tensor 2.8e-14, rest 6.6e-16; joints {"lower-arm-pivot": (30, 1.3092278833360675e-16), "lower-ball-joint": (12, 4.335559509131367e-16), "outer-cv": (4, 9.019494489765868e-16), "shock-eye": (6, 2.9893669801409083e-16), "shock-top-mount": (27, 4.47545209131181e-16), "spring-seat": (8, 6.187688364358555e-16), "steering-column": (1, 2.5438405243138006e-16), "tie-rod-end": (4, 4.062661642740952e-16), "upper-arm-pivot": (14, 1.2412670766236366e-16), "upper-ball-joint": (8, 4.577566798522237e-16), "wheel-bearing": (4, 6.206335383118183e-16)}
+test vehicle_assets::rig::tests::six_model_posed_mass_matches_integrated_solids ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 217 filtered out; finished in 4.23s
+test vehicle_assets::fracture::tests::retains_parallel_interfaces_and_grouped_visuals ... ok
+test vehicle_assets::fracture::tests::partial_ownership_removes_only_the_disconnected_corner ... ok
+test vehicle_assets::fracture::tests::native_conversion_preserves_mass_hulls_parallel_interfaces_and_material_units ... ok
+test vehicle_assets::fracture::tests::native_roles_are_authored_not_inferred_from_mass_or_order ... ok
+test vehicle_assets::fracture::tests::axle_bindings_follow_physical_corner_mapping_and_reject_missing_paths ... ok
+test vehicle_assets::fracture::tests::rejects_moving_functional_parts_duplicate_chassis_and_split_wheel_groups ... ok
+test vehicle_assets::fracture::tests::rejects_corrupt_mass_graph_material_and_visual_ownership ... ok
+test vehicle_assets::fracture::tests::authored_garage_fracture_data ... ok
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 210 filtered out; finished in 0.53s

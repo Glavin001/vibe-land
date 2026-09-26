@@ -439,7 +439,7 @@ impl PhysxPhysicsArena {
                 suspension_travel: travel,
                 suspension_stiffness: tune.map(|t| t.spring_stiffness).unwrap_or(stiffness),
                 suspension_damping: tune.map(|t| t.damping).unwrap_or(damping),
-                wheel_radius: prepared.map(|p| p.origin_height - 0.25).unwrap_or(definition.wheel_radius_m),
+                wheel_radius: prepared.map(|p| p.origin_height as f32 - 0.25).unwrap_or(definition.wheel_radius_m),
                 wheel_half_width: prepared.map(|p| p.wheel_half_width).unwrap_or(0.15),
                 tyre_friction: tune.map(|t| t.tyre_friction).unwrap_or(PHYSX_TYRE_FRICTION),
                 front_lateral_stiffness: PHYSX_FRONT_LATERAL_STIFFNESS_PER_N * rest_load,
@@ -2807,7 +2807,7 @@ mod tests {
         let mut arena=PhysxPhysicsArena::new(MoveConfig::default()).unwrap();
         WorldDocumentArena::add_static_cuboid(&mut arena,Vector3::new(0.0,-1.0,0.0),
             [0.0,0.0,0.0,1.0],Vector3::new(200.0,1.0,200.0),1);
-        arena.spawn_vehicle_asset(7,0,Vector3::new(0.0,geometry.origin_height+0.15,0.0),
+        arena.spawn_vehicle_asset(7,0,Vector3::new(0.0,geometry.origin_height as f32+0.15,0.0),
             [0.0,0.0,0.0,1.0],Some(&geometry)).unwrap();
         let mut idle_ms=Vec::new();
         for _ in 0..180 {
@@ -2872,7 +2872,7 @@ mod tests {
         WorldDocumentArena::add_static_cuboid(&mut arena,Vector3::new(0.0,-1.0,0.0),
             [0.0,0.0,0.0,1.0],Vector3::new(1000.0,1.0,1000.0),1);
         let spawn=arena.spawn_player(10);
-        arena.spawn_vehicle_asset(7,0,Vector3::new(spawn.x as f32,geometry.origin_height+0.15,spawn.z as f32),
+        arena.spawn_vehicle_asset(7,0,Vector3::new(spawn.x as f32,geometry.origin_height as f32+0.15,spawn.z as f32),
             [0.0,0.0,0.0,1.0],Some(&geometry)).unwrap();
         arena.enter_vehicle(10,7);
         let run=|arena:&mut PhysxPhysicsArena,ticks:u32,brake:bool| {
@@ -2932,7 +2932,7 @@ mod tests {
             WorldDocumentArena::add_static_cuboid(&mut arena, Vector3::new(0.0,-1.0,0.0),
                 [0.0,0.0,0.0,1.0],Vector3::new(1000.0,1.0,1000.0),1);
             let spawn = arena.spawn_player(10);
-            arena.spawn_vehicle_asset(7,0,Vector3::new(spawn.x as f32,geometry.origin_height+0.15,spawn.z as f32),
+            arena.spawn_vehicle_asset(7,0,Vector3::new(spawn.x as f32,geometry.origin_height as f32+0.15,spawn.z as f32),
                 [0.0,0.0,0.0,1.0],Some(&geometry)).unwrap();
             arena.enter_vehicle(10,7);
             assert_eq!(arena.player_vehicle_id(10),Some(7));
@@ -3000,7 +3000,7 @@ mod tests {
             };
             let prepared = crate::vehicle_assets::PreparedGeometry {
                 driving: None,
-                origin_height: definition.wheel_radius_m + 0.25,
+                origin_height: definition.wheel_radius_m as f64 + 0.25,
                 wheel_centers: definition.wheel_offsets,
                 suspension_travel: travel,
                 neutral_jounce: travel / 3.0,
@@ -3008,13 +3008,13 @@ mod tests {
                 wheel_half_width: 0.15,
                 max_steer_radians: VEHICLE_MAX_STEER_RAD,
                 mass,
-                mass_properties: box_mass.clone(), bonds: Vec::new(), fracture_layout: None,
+                mass_properties: box_mass.clone(), bonds: Vec::new(), fracture_layout: None, rig: None,
                 bounds: crate::vehicle_assets::AssetBounds { min: [-x, -y, -z], max: [x, y, z] },
                 parts: vec![crate::vehicle_assets::AssetPart {
                     id: "test-chassis".into(), motion: None, functionality: None, position: [0.0; 3],
                     visual_ids: vec!["test-chassis".into()], mass: mass as f64,
                     volume: (8.0*x*y*z) as f64, mass_properties: box_mass,
-                    shapes: vec![crate::vehicle_assets::AssetShape { position: [0.0; 3], vertices }],
+                    shapes: vec![crate::vehicle_assets::AssetShape { position: [0.0; 3], vertices }], visuals: Vec::new(),
                 }],
             };
             arena.spawn_vehicle_asset(7, 0, Vector3::new(p.x as f32, p.y as f32, p.z as f32),

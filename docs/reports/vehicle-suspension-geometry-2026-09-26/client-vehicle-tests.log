@@ -1,0 +1,130 @@
+ RUN  v4.1.2 /Users/glavin/Development/vibe-land/client
+ ✓ src/vehicles/strength-profile.test.ts > keeps structural joints stronger than sacrificial trim without making either unbreakable 2ms
+ ✓ src/vehicles/strength-profile.test.ts > does not qualify a model whose only attachment has zero area 0ms
+ ✓ src/vehicles/strength-profile.test.ts > preserves measured area and rejects zero-area contacts as structural joints 0ms
+ ✓ src/vehicles/fracture-groups.test.ts > functional fracture groups > rejects swallowed calipers, uprights and other corners in a wheel chunk 2ms
+ ✓ src/vehicles/fracture-groups.test.ts > functional fracture groups > preserves all geometry, visual ownership and external parallel bonds without mutating input 2ms
+ ✓ src/vehicles/fracture-groups.test.ts > functional fracture groups > retains each corner separately and never groups suspension or the axle into the wheel 0ms
+ ✓ src/vehicles/fracture-groups.test.ts > functional fracture groups > fails on missing or moving chassis, missing engine, and unmapped graph endpoints 1ms
+ ✓ src/vehicles/simple-physics.test.ts > Simple collision assembly > maps all tread visuals into one wheel without losing joint interfaces 2ms
+ ✓ src/vehicles/simple-physics.test.ts > Simple collision assembly > uses one 64-vertex wheel hull with the configured radius, width and axle 2ms
+ ✓ src/vehicles/simple-physics.test.ts > Simple collision assembly > preserves the authored box vertices and rejects oversized inspection envelopes 0ms
+ ✓ src/vehicles/hub-motion.test.ts > separate rotating hub visuals > shares the wheel rotation and suspension pose while the caliper only steers 6ms
+ ✓ src/vehicles/bond-surfaces.test.ts > measures the actual overlapping mating face 2ms
+ ✓ src/vehicles/bond-surfaces.test.ts > does not invent structural area for separated or edge contacts 0ms
+ ✓ src/vehicles/mechanical-joints.test.ts > mechanical attachment topology > retains the measured { id: 'hub', motion: { role: 'hub', component: 'hub', corner: 'fl' } } / { id: 'upright', motion: { role: 'upright', component: undefined, corner: 'fl' } } mounting interface in either order 2ms
+ ✓ src/vehicles/mechanical-joints.test.ts > mechanical attachment topology > retains the measured { id: 'hub', motion: { role: 'hub', component: 'hub', corner: 'fl' } } / { id: 'axle', motion: { role: 'axle', component: undefined, corner: 'fl' } } mounting interface in either order 0ms
+ ✓ src/vehicles/mechanical-joints.test.ts > mechanical attachment topology > retains the measured { id: 'hub', motion: { role: 'hub', component: 'hub', corner: 'fl' } } / { id: 'rotor', motion: { role: 'hub', component: 'rotor', corner: 'fl' } } mounting interface in either order 0ms
+ ✓ src/vehicles/mechanical-joints.test.ts > mechanical attachment topology > retains the measured { id: 'hub', motion: { role: 'hub', component: 'hub', corner: 'fl' } } / { id: 'tire', motion: { role: 'wheel', component: undefined, corner: 'fl' } } mounting interface in either order 0ms
+ ✓ src/vehicles/mechanical-joints.test.ts > mechanical attachment topology > retains the measured { id: 'tire', motion: { role: 'wheel', component: undefined, corner: 'fl' } } / { id: 'rim', motion: { role: 'wheel', component: undefined, corner: 'fl' } } mounting interface in either order 0ms
+ ✓ src/vehicles/mechanical-joints.test.ts > mechanical attachment topology > retains the measured { id: 'caliper', motion: { role: 'knuckle', component: 'caliper', corner: 'fl' } } / { id: 'upright', motion: { role: 'upright', component: undefined, corner: 'fl' } } mounting interface in either order 0ms
+ ✓ src/vehicles/mechanical-joints.test.ts > mechanical attachment topology > does not weld incidental contact between { id: 'rotor', motion: { role: 'hub', component: 'rotor', corner: 'fl' } } and { id: 'upright', motion: { role: 'upright', component: undefined, corner: 'fl' } } 0ms
+ ✓ src/vehicles/mechanical-joints.test.ts > mechanical attachment topology > does not weld incidental contact between { id: 'rotor', motion: { role: 'hub', component: 'rotor', corner: 'fl' } } and { id: 'caliper', motion: { role: 'knuckle', component: 'caliper', corner: 'fl' } } 0ms
+ ✓ src/vehicles/mechanical-joints.test.ts > mechanical attachment topology > does not weld incidental contact between { id: 'hub', motion: { role: 'hub', component: 'hub', corner: 'fl' } } and { id: 'caliper', motion: { role: 'knuckle', component: 'caliper', corner: 'fl' } } 0ms
+ ✓ src/vehicles/mechanical-joints.test.ts > mechanical attachment topology > does not weld incidental contact between { id: 'rotor', motion: { role: 'hub', component: 'rotor', corner: 'fl' } } and { id: 'tire', motion: { role: 'wheel', component: undefined, corner: 'fl' } } 0ms
+ ✓ src/vehicles/mechanical-joints.test.ts > mechanical attachment topology > does not weld incidental contact between { id: 'tire', motion: { role: 'wheel', component: undefined, corner: 'fl' } } and { id: 'axle', motion: { role: 'axle', component: undefined, corner: 'fl' } } 0ms
+ ✓ src/vehicles/mechanical-joints.test.ts > mechanical attachment topology > does not weld incidental contact between { id: 'tire', motion: { role: 'wheel', component: undefined, corner: 'fl' } } and { id: 'upright', motion: { role: 'upright', component: undefined, corner: 'fl' } } 0ms
+ ✓ src/vehicles/mechanical-joints.test.ts > mechanical attachment topology > does not weld incidental contact between { id: 'hub', motion: { role: 'hub', component: 'hub', corner: 'fl' } } and { id: 'arm', motion: { role: 'lowerArm', component: undefined, corner: 'fl' } } 0ms
+ ✓ src/vehicles/mechanical-joints.test.ts > mechanical attachment topology > does not weld incidental contact between { id: 'hub', motion: { role: 'hub', component: 'hub', corner: 'fl' } } and { id: 'eye', motion: { role: 'shockEye', component: undefined, corner: 'fl' } } 0ms
+ ✓ src/vehicles/mechanical-joints.test.ts > mechanical attachment topology > does not weld incidental contact between { id: 'hub', motion: { role: 'hub', component: 'hub', corner: 'fl' } } and { id: 'rod', motion: { role: 'tieRod', component: undefined, corner: 'fl' } } 0ms
+ ✓ src/vehicles/mechanical-joints.test.ts > mechanical attachment topology > does not weld incidental contact between { id: 'hub', motion: { role: 'hub', component: 'hub', corner: 'fl' } } and { id: 'boot', motion: { role: 'cvBoot', component: undefined, corner: 'fl' } } 0ms
+ ✓ src/vehicles/mechanical-joints.test.ts > mechanical attachment topology > does not weld incidental contact between { id: 'tire', motion: { role: 'wheel', component: undefined, corner: 'fl' } } and { id: 'fender', motion: { role: 'body', component: undefined, corner: 'fl' } } 0ms
+ ✓ src/vehicles/mechanical-joints.test.ts > mechanical attachment topology > does not weld incidental contact between { id: 'caliper', motion: { role: 'knuckle', component: 'caliper', corner: 'fl' } } and { id: 'arm', motion: { role: 'upperArm', component: undefined, corner: 'fl' } } 0ms
+ ✓ src/vehicles/mechanical-joints.test.ts > mechanical attachment topology > does not weld incidental contact between { id: 'hub', motion: { role: 'hub', component: 'hub', corner: 'fl' } } and { id: 'other-upright', motion: { role: 'upright', component: undefined, corner: 'fr' } } 0ms
+ ✓ src/vehicles/mechanical-joints.test.ts > mechanical attachment topology > does not weld incidental contact between { id: 'tire', motion: { role: 'wheel', component: undefined, corner: 'fl' } } and { id: 'other-wheel', motion: { role: 'wheel', component: undefined, corner: 'fr' } } 0ms
+ ✓ src/vehicles/mechanical-joints.test.ts > mechanical attachment topology > preserves unrelated structural interfaces and never creates a missing mount 1ms
+ ✓ src/vehicles/mechanical-joints.test.ts > rig-anchored joints between relatively moving chunks > moves a bushing interface onto the pivot axis and keeps its measurement 1ms
+ ✓ src/vehicles/mechanical-joints.test.ts > rig-anchored joints between relatively moving chunks > anchors a ball joint at its hardpoint 0ms
+ ✓ src/vehicles/mechanical-joints.test.ts > rig-anchored joints between relatively moving chunks > excludes contacts away from the joint, incidental pairs and cross-corner contacts 0ms
+ ✓ src/vehicles/mechanical-joints.test.ts > rig-anchored joints between relatively moving chunks > leaves interfaces within one motion untouched, including boots on their shaft 0ms
+stdout | src/vehicles/pose-deltas.test.ts > buggy physical suspension motion > keeps every rigid role rigid and keeps mechanical joints coincident
+buggy: worst joint 7.79e-16 m, worst CV plunge 138.32 mm
+stdout | src/vehicles/pose-deltas.test.ts > trophy physical suspension motion > keeps every rigid role rigid and keeps mechanical joints coincident
+trophy: worst joint 1.07e-15 m, worst CV plunge 181.55 mm
+stdout | src/vehicles/pose-deltas.test.ts > rally physical suspension motion > keeps every rigid role rigid and keeps mechanical joints coincident
+rally: worst joint 7.02e-16 m, worst CV plunge 109.12 mm
+stdout | src/vehicles/pose-deltas.test.ts > monster physical suspension motion > keeps every rigid role rigid and keeps mechanical joints coincident
+monster: worst joint 9.16e-16 m, worst CV plunge 164.26 mm
+stdout | src/vehicles/pose-deltas.test.ts > derby physical suspension motion > keeps every rigid role rigid and keeps mechanical joints coincident
+derby: worst joint 7.11e-16 m, worst CV plunge 153.11 mm
+ ✓ src/vehicles/customization.test.ts > personalized Vehicle2 builds > imports legacy configurations without invalidating existing geometry 2ms
+ ✓ src/vehicles/customization.test.ts > personalized Vehicle2 builds > preserves geometry when changing paint or personality, but changes shared identity 55ms
+ ✓ src/vehicles/customization.test.ts > personalized Vehicle2 builds > offers distinct builds with valid linkage, force budgets and suspension settings 14ms
+ ✓ src/vehicles/customization.test.ts > personalized Vehicle2 builds > drives only the selected axle with a two-wheel traction budget and unchanged geometry 2ms
+ ✓ src/vehicles/customization.test.ts > personalized Vehicle2 builds > rejects missing, out of range, nonfinite and unknown tuning fields 3ms
+stdout | src/vehicles/pose-deltas.test.ts > sprint physical suspension motion > keeps every rigid role rigid and keeps mechanical joints coincident
+sprint: worst joint 6.87e-16 m, worst CV plunge 133.47 mm
+ ✓ src/vehicles/pose-deltas.test.ts > buggy physical suspension motion > is exactly the identity at the neutral pose 2ms
+ ✓ src/vehicles/pose-deltas.test.ts > buggy physical suspension motion > keeps every rigid role rigid and keeps mechanical joints coincident 22ms
+ ✓ src/vehicles/pose-deltas.test.ts > trophy physical suspension motion > is exactly the identity at the neutral pose 0ms
+ ✓ src/vehicles/pose-deltas.test.ts > trophy physical suspension motion > keeps every rigid role rigid and keeps mechanical joints coincident 17ms
+ ✓ src/vehicles/pose-deltas.test.ts > rally physical suspension motion > is exactly the identity at the neutral pose 0ms
+ ✓ src/vehicles/pose-deltas.test.ts > rally physical suspension motion > keeps every rigid role rigid and keeps mechanical joints coincident 16ms
+ ✓ src/vehicles/pose-deltas.test.ts > monster physical suspension motion > is exactly the identity at the neutral pose 0ms
+ ✓ src/vehicles/pose-deltas.test.ts > monster physical suspension motion > keeps every rigid role rigid and keeps mechanical joints coincident 15ms
+ ✓ src/vehicles/pose-deltas.test.ts > derby physical suspension motion > is exactly the identity at the neutral pose 1ms
+ ✓ src/vehicles/pose-deltas.test.ts > derby physical suspension motion > keeps every rigid role rigid and keeps mechanical joints coincident 15ms
+ ✓ src/vehicles/pose-deltas.test.ts > sprint physical suspension motion > is exactly the identity at the neutral pose 0ms
+ ✓ src/vehicles/pose-deltas.test.ts > sprint physical suspension motion > keeps every rigid role rigid and keeps mechanical joints coincident 16ms
+ ✓ src/vehicles/mass-properties.test.ts > matches an analytic cuboid away from the origin 2ms
+ ✓ src/vehicles/mass-properties.test.ts > retains products of inertia for a rotated part 0ms
+ ✓ src/vehicles/mass-properties.test.ts > subtracts cavities and combines parts with the parallel-axis theorem 1ms
+ ✓ src/vehicles/mass-properties.test.ts > transforms COM and tensor into the collider actor frame 0ms
+ ✓ src/vehicles/mass-properties.test.ts > rejects invalid data instead of inventing mass 1ms
+ ✓ src/vehicles/vehicleStream.test.ts > routes authoritative rig poses through live and replay transport decoders 3ms
+ ✓ src/vehicles/vehicleStream.test.ts > rejects truncated, nonfinite and malformed poses and configurations 1ms
+ ✓ src/vehicles/vehicleStream.test.ts > keeps asset metadata and latest rig pose when datagrams arrive out of order 1ms
+ ✓ src/vehicles/configuration.test.ts > shared vehicle configuration > round trips every model and retains a unique customized vehicle 161ms
+ ✓ src/vehicles/mass-properties.test.ts > mass-preserving pose transforms of prepared suspension solids > matches integrated meshes under rigid rotation and translation 9ms
+ ✓ src/vehicles/mass-properties.test.ts > mass-preserving pose transforms of prepared suspension solids > conserves mass while a part compresses or extends along its own axis 20ms
+ ✓ src/vehicles/mass-properties.test.ts > mass-preserving pose transforms of prepared suspension solids > is exact for a general sheared affine map 7ms
+ ✓ src/vehicles/mass-properties.test.ts > mass-preserving pose transforms of prepared suspension solids > reproduces the fixed source-to-actor half-turn 1ms
+ ✓ src/vehicles/mass-properties.test.ts > mass-preserving pose transforms of prepared suspension solids > rejects reflections, degenerate maps and non-finite input 0ms
+ ✓ src/vehicles/configuration.test.ts > shared vehicle configuration > does not invalidate geometry for a finish change 0ms
+ ✓ src/vehicles/configuration.test.ts > shared vehicle configuration > validates versions, finite dimensions, ranges and unknown fields 1ms
+ ✓ src/vehicles/configuration.test.ts > shared vehicle configuration > uses the same supported dimensional boundaries as the source generator 24ms
+ ✓ src/vehicles/configuration.test.ts > shared vehicle configuration > converts with a proper rotation and applies the origin exactly once 0ms
+ ✓ src/vehicles/wheel-clearance.test.ts > simple wheel clearance > keeps buggy suspension space out of the tire proxy 95ms
+ ✓ src/vehicles/wheel-clearance.test.ts > simple wheel clearance > keeps trophy suspension space out of the tire proxy 67ms
+stdout | src/vehicles/pose-deltas.test.ts > prepared buggy solids under physical and visual motion > uses the visual transform exactly where it is already rigid, and reports beam stretch elsewhere
+max vertex distance, visual vs physical (mm): {
+  lowerArm: 15.958,
+  upperArm: 12.858,
+  upright: 27.638,
+  damper: 10.552,
+  piston: 158.695,
+  spring: 162.339,
+  topSeat: 19.211,
+  bottomSeat: 19.211,
+  shockEye: 32.779,
+  tieRod: 6.104,
+  axle: 6.415,
+  cvBoot: 44.66,
+  hub: 0,
+  knuckle: 0,
+  wheel: 0,
+  steering: 0
+}
+ ✓ src/vehicles/wheel-clearance.test.ts > simple wheel clearance > keeps rally suspension space out of the tire proxy 60ms
+ ✓ src/vehicles/wheel-clearance.test.ts > simple wheel clearance > keeps monster suspension space out of the tire proxy 63ms
+stdout | src/vehicles/pose-deltas.test.ts > prepared buggy solids under physical and visual motion > bounds the spring compression error against the regenerated visual coil
+spring affine vs regenerated coil: centre 0.000 mm, tensor 1.079% at length ratio 1.162
+ ✓ src/vehicles/pose-deltas.test.ts > prepared buggy solids under physical and visual motion > uses the visual transform exactly where it is already rigid, and reports beam stretch elsewhere 41ms
+ ✓ src/vehicles/pose-deltas.test.ts > prepared buggy solids under physical and visual motion > bounds the spring compression error against the regenerated visual coil 109ms
+ ✓ src/vehicles/wheel-clearance.test.ts > simple wheel clearance > keeps derby suspension space out of the tire proxy 59ms
+ ✓ src/vehicles/wheel-clearance.test.ts > simple wheel clearance > keeps sprint suspension space out of the tire proxy 52ms
+ ✓ src/vehicles/wheel-clearance.test.ts > simple wheel clearance > keeps semi suspension space out of the tire proxy 67ms
+ ✓ src/vehicles/wheel-clearance.test.ts > simple wheel clearance > retains buggy wheel and carrier ownership after collision cooking 15719ms
+ ✓ src/vehicles/validation.test.ts > shared garage assembly validation > checks the Sprint preset through collision, measured-joint and GPU-shape audits 17992ms
+ ✓ src/vehicles/validation.test.ts > shared garage assembly validation > rejects invalid dimensions before building geometry with an actionable field error 2ms
+ ✓ src/vehicles/validation.test.ts > shared garage assembly validation > explains disconnected geometry and offers exact preset recovery 1ms
+ ✓ src/vehicles/wheel-clearance.test.ts > simple wheel clearance > retains trophy wheel and carrier ownership after collision cooking 20283ms
+ ✓ src/vehicles/wheel-clearance.test.ts > simple wheel clearance > retains rally wheel and carrier ownership after collision cooking 19820ms
+ ✓ src/vehicles/wheel-clearance.test.ts > simple wheel clearance > retains monster wheel and carrier ownership after collision cooking 19728ms
+ ✓ src/vehicles/wheel-clearance.test.ts > simple wheel clearance > retains derby wheel and carrier ownership after collision cooking 19274ms
+ ✓ src/vehicles/wheel-clearance.test.ts > simple wheel clearance > retains sprint wheel and carrier ownership after collision cooking 16537ms
+ ✓ src/vehicles/wheel-clearance.test.ts > simple wheel clearance > retains semi wheel and carrier ownership after collision cooking 20237ms
+ Test Files  13 passed (13)
+      Tests  92 passed (92)
+   Start at  12:39:56
+   Duration  132.32s (transform 918ms, setup 0ms, import 1.48s, tests 150.94s, environment 1ms)

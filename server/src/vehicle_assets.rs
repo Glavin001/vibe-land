@@ -12,6 +12,8 @@ use std::{path::PathBuf, process::Stdio, sync::OnceLock};
 use tokio::{io::AsyncWriteExt, process::Command, sync::Semaphore};
 
 mod fracture;
+pub mod posed;
+pub mod rig;
 pub use fracture::{AssetBond, AssetFunction, AssetMassProperties, FractureLayout};
 
 type ApiError = (StatusCode, String);
@@ -244,7 +246,8 @@ mod tests {
 pub struct PreparedGeometry {
     #[serde(skip)]
     pub driving: Option<PreparedDriving>,
-    pub origin_height: f32,
+    /// Kept at authored precision: posed chunk frames conjugate through it.
+    pub origin_height: f64,
     pub wheel_centers: [[f32; 3]; 4],
     pub suspension_travel: f32,
     pub neutral_jounce: f32,
@@ -256,6 +259,9 @@ pub struct PreparedGeometry {
     pub bounds: AssetBounds,
     pub parts: Vec<AssetPart>,
     pub bonds: Vec<AssetBond>,
+    /// Source-frame suspension rig; absent from caches older than posed-5.
+    #[serde(default)]
+    pub rig: Option<rig::AssetRig>,
     /// Derived from validated authored identities, never supplied by the client.
     #[serde(skip)]
     pub fracture_layout: Option<FractureLayout>,
@@ -278,6 +284,16 @@ pub struct AssetPart {
     pub functionality: Option<AssetFunction>,
     pub position: [f32; 3],
     pub shapes: Vec<AssetShape>,
+    /// Individually bound solids; a posed chunk re-sums them (posed-5+).
+    #[serde(default)]
+    pub visuals: Vec<AssetVisual>,
+}
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AssetVisual {
+    pub id: String,
+    pub motion: Option<Value>,
+    pub mass_properties: AssetMassProperties,
 }
 #[derive(Clone, Debug, Deserialize)]
 pub struct AssetShape {

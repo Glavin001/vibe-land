@@ -52,6 +52,9 @@ pub struct AssetBond {
     pub normal: [f64; 3],
     pub validated_surface: bool,
     pub strength: AssetBondStrength,
+    /// Rig joint the interface acts at, between relatively moving chunks.
+    #[serde(default)]
+    pub joint: Option<String>,
 }
 
 #[derive(Clone, Debug)]

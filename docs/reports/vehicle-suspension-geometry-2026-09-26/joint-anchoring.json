@@ -1,0 +1,169 @@
+[
+ {
+  "name": "buggy",
+  "bondsBefore": 598,
+  "bondsAfter": 522,
+  "excluded": {
+   "rotating-hub-contact": 32,
+   "caliper-contact-without-mount": 8,
+   "relative-motion-contact": 60,
+   "contact-away-from-joint": 16
+  },
+  "anchoredJoints": 107,
+  "maxAnchorShiftMm": 77.1,
+  "medianAnchorShiftMm": 21.7,
+  "jointTopology": "rig-anchored-joints-3"
+ },
+ {
+  "name": "trophy",
+  "bondsBefore": 1044,
+  "bondsAfter": 962,
+  "excluded": {
+   "rotating-hub-contact": 32,
+   "caliper-contact-without-mount": 8,
+   "relative-motion-contact": 62,
+   "contact-away-from-joint": 20
+  },
+  "anchoredJoints": 109,
+  "maxAnchorShiftMm": 78.6,
+  "medianAnchorShiftMm": 19.9,
+  "jointTopology": "rig-anchored-joints-3"
+ },
+ {
+  "name": "rally",
+  "bondsBefore": 1046,
+  "bondsAfter": 963,
+  "excluded": {
+   "wheel-contact-without-mount": 24,
+   "rotating-hub-contact": 36,
+   "caliper-contact-without-mount": 8,
+   "relative-motion-contact": 58,
+   "contact-away-from-joint": 25
+  },
+  "anchoredJoints": 113,
+  "maxAnchorShiftMm": 79.2,
+  "medianAnchorShiftMm": 23.3,
+  "jointTopology": "rig-anchored-joints-3"
+ },
+ {
+  "name": "monster",
+  "bondsBefore": 1027,
+  "bondsAfter": 952,
+  "excluded": {
+   "rotating-hub-contact": 28,
+   "caliper-contact-without-mount": 8,
+   "relative-motion-contact": 56,
+   "contact-away-from-joint": 19
+  },
+  "anchoredJoints": 114,
+  "maxAnchorShiftMm": 75.3,
+  "medianAnchorShiftMm": 22.1,
+  "jointTopology": "rig-anchored-joints-3"
+ },
+ {
+  "name": "derby",
+  "bondsBefore": 988,
+  "bondsAfter": 904,
+  "excluded": {
+   "rotating-hub-contact": 32,
+   "caliper-contact-without-mount": 8,
+   "relative-motion-contact": 68,
+   "contact-away-from-joint": 16
+  },
+  "anchoredJoints": 115,
+  "maxAnchorShiftMm": 74.8,
+  "medianAnchorShiftMm": 27.6,
+  "jointTopology": "rig-anchored-joints-3"
+ },
+ {
+  "name": "sprint",
+  "bondsBefore": 726,
+  "bondsAfter": 649,
+  "excluded": {
+   "rotating-hub-contact": 32,
+   "caliper-contact-without-mount": 8,
+   "relative-motion-contact": 60,
+   "contact-away-from-joint": 17
+  },
+  "anchoredJoints": 118,
+  "maxAnchorShiftMm": 79.1,
+  "medianAnchorShiftMm": 34.8,
+  "jointTopology": "rig-anchored-joints-3"
+ },
+ {
+  "name": "trail",
+  "bondsBefore": 598,
+  "bondsAfter": 522,
+  "excluded": {
+   "rotating-hub-contact": 32,
+   "caliper-contact-without-mount": 8,
+   "relative-motion-contact": 60,
+   "contact-away-from-joint": 16
+  },
+  "anchoredJoints": 107,
+  "maxAnchorShiftMm": 77.1,
+  "medianAnchorShiftMm": 21.7,
+  "jointTopology": "rig-anchored-joints-3"
+ },
+ {
+  "name": "desert",
+  "bondsBefore": 1044,
+  "bondsAfter": 962,
+  "excluded": {
+   "rotating-hub-contact": 32,
+   "caliper-contact-without-mount": 8,
+   "relative-motion-contact": 62,
+   "contact-away-from-joint": 20
+  },
+  "anchoredJoints": 109,
+  "maxAnchorShiftMm": 78.6,
+  "medianAnchorShiftMm": 19.9,
+  "jointTopology": "rig-anchored-joints-3"
+ },
+ {
+  "name": "touge",
+  "bondsBefore": 1046,
+  "bondsAfter": 963,
+  "excluded": {
+   "wheel-contact-without-mount": 24,
+   "rotating-hub-contact": 36,
+   "caliper-contact-without-mount": 8,
+   "relative-motion-contact": 58,
+   "contact-away-from-joint": 25
+  },
+  "anchoredJoints": 113,
+  "maxAnchorShiftMm": 79.2,
+  "medianAnchorShiftMm": 23.3,
+  "jointTopology": "rig-anchored-joints-3"
+ },
+ {
+  "name": "drift",
+  "bondsBefore": 988,
+  "bondsAfter": 904,
+  "excluded": {
+   "rotating-hub-contact": 32,
+   "caliper-contact-without-mount": 8,
+   "relative-motion-contact": 68,
+   "contact-away-from-joint": 16
+  },
+  "anchoredJoints": 115,
+  "maxAnchorShiftMm": 74.8,
+  "medianAnchorShiftMm": 27.6,
+  "jointTopology": "rig-anchored-joints-3"
+ },
+ {
+  "name": "circuit",
+  "bondsBefore": 726,
+  "bondsAfter": 649,
+  "excluded": {
+   "rotating-hub-contact": 32,
+   "caliper-contact-without-mount": 8,
+   "relative-motion-contact": 60,
+   "contact-away-from-joint": 17
+  },
+  "anchoredJoints": 118,
+  "maxAnchorShiftMm": 79.1,
+  "medianAnchorShiftMm": 34.8,
+  "jointTopology": "rig-anchored-joints-3"
+ }
+]

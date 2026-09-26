@@ -199,3 +199,13 @@ PhysX `d82b4da7` adds the stress-only device geometry transaction and automated
 regressions. Both targeted executables build; GPU execution is pending while
 the user-requested city play server owns the GPU. This is unqualified WIP and
 is not installed in the live runtime. [Build evidence and remaining work](reports/vehicle-moving-geometry-2026-09-26/README.md).
+
+### Suspension-to-destruction mapping (2026-09-26)
+
+Vehicle2 wheel state now maps to posed chunk geometry on the server (`vehicle_assets/rig.rs`,
+`posed.rs`). The mapping uses the JS physical pose deltas and is pinned to them by a golden test.
+Mass/COM/inertia match integration of the moved final solids to about 1e-14.
+
+Preparation now anchors bonds between relatively moving chunks at rig joints and excludes incidental contacts. This changes the stress graph. Earlier full-model impact results must be re-run.
+
+CPU only; nothing native changed. [Evidence](reports/vehicle-suspension-geometry-2026-09-26/README.md).

@@ -5,7 +5,7 @@ import { visualOwners, groupJoints, simplePhysicsShape } from './simple-physics.
 import { deriveBondSurfaces } from './bond-surfaces.mjs';
 import { structuralBonds, requireConnectedAssembly } from './strength-profile.mjs';
 import { vehicleFractureGroups, validateWheelOwnership } from './fracture-groups.mjs';
-import { mechanicalJoints } from './mechanical-joints.mjs';
+import { mechanicalJoints, anchorRigJoints } from './mechanical-joints.mjs';
 
 /** Safe, actionable diagnostics shared by the browser worker and server worker. */
 export function preparationIssue(error, value) {
@@ -48,9 +48,10 @@ export async function validateVehicleAssembly(value, progress = () => {}) {
     const surfaces = deriveBondSurfaces(interfaces);
     const mechanical = mechanicalJoints(interfaces.parts, surfaces);
     const owners = visualOwners(collision.parts, interfaces.parts);
-    const bonds = groupJoints(structuralBonds(interfaces.parts, mechanical.joints), owners);
+    const rigJoints = anchorRigJoints(collision.parts, groupJoints(structuralBonds(interfaces.parts, mechanical.joints), owners), geometry.rig);
+    const bonds = rigJoints.bonds;
     requireConnectedAssembly(collision.parts, bonds);
-    return { geometry, collision, surfaces, bonds, excludedContacts: mechanical.excluded };
+    return { geometry, collision, surfaces, bonds, excludedContacts: [...mechanical.excluded, ...rigJoints.excluded] };
   } catch (error) {
     const issue = preparationIssue(error, value);
     throw Object.assign(new Error(`${issue.message} ${issue.recovery}`), { preparationIssue: issue });

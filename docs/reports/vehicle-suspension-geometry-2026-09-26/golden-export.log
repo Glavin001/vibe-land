@@ -1,0 +1,6 @@
+buggy: 19 poses, 198 chunks; transform vs integrated centre 8.15e-15 m, tensor 3.83e-14
+trophy: 19 poses, 340 chunks; transform vs integrated centre 1.19e-14 m, tensor 3.97e-14
+rally: 19 poses, 335 chunks; transform vs integrated centre 5.77e-15 m, tensor 4.27e-14
+monster: 19 poses, 340 chunks; transform vs integrated centre 2.05e-14 m, tensor 5.61e-14
+derby: 19 poses, 334 chunks; transform vs integrated centre 7.06e-15 m, tensor 4.72e-14
+sprint: 19 poses, 230 chunks; transform vs integrated centre 6.77e-15 m, tensor 2.79e-14

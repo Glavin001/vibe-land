@@ -13,6 +13,7 @@ import { validateVehicleAssembly, preparationIssue } from './validation.mjs';
 import { requireConnectedAssembly, STRENGTH_PROFILE_VERSION } from './strength-profile.mjs';
 import { meshMassProperties, massPropertiesToActor, combineMassProperties } from './mass-properties.mjs';
 import { encodeModel } from './dune/model-codec.mjs';
+import { requireChunkMotion } from './dune/pose-deltas.mjs';
 
 let submittedConfiguration;
 async function main() {
@@ -22,7 +23,7 @@ const request = JSON.parse(Buffer.concat(input).toString('utf8'));
 submittedConfiguration = request.configuration;
 const configuration = normalizeConfiguration(request.configuration);
 const root = resolve(process.argv[2]);
-const geometryHash = createHash('sha256').update(JSON.stringify({recipe:'vehicle-physics-functional-4',strength:STRENGTH_PROFILE_VERSION,geometry:geometryKey(configuration)})).digest('hex');
+const geometryHash = createHash('sha256').update(JSON.stringify({recipe:'vehicle-physics-posed-6',strength:STRENGTH_PROFILE_VERSION,geometry:geometryKey(configuration)})).digest('hex');
 const directory = join(root, geometryHash);
 let metadata;
 try { metadata = JSON.parse(await readFile(join(directory, 'metadata.json'), 'utf8')); }
@@ -37,6 +38,7 @@ catch (error) {
  const visuals = new Map(visual.parts.map(p => [p.id, p]));
  const massProperties = new Map(visual.parts.map(part => [part.id,
    massPropertiesToActor(meshMassProperties(part.position, part.indices, part.mass), geometry.originHeight)]));
+ for (const part of bundle.parts) requireChunkMotion(part, part.visualIds.map(id => visuals.get(id).motion));
  const parts = bundle.parts.map(part => ({
    id: part.id, visualIds: part.visualIds, name: part.name, system: part.system, material: part.material, motion: part.motion, functionality: part.functionality, sourcePartIds: part.sourcePartIds,
    // Collision proxies have larger volumes than the rendered solids. Inertia
@@ -44,6 +46,9 @@ catch (error) {
    mass: part.visualIds.reduce((n,id)=>n+visuals.get(id).mass,0),
    volume: part.visualIds.reduce((n,id)=>n+visuals.get(id).volume,0),
    massProperties: combineMassProperties(part.visualIds.map(id=>massProperties.get(id))),
+   // Each solid keeps its own binding so a posed chunk re-sums moved solids.
+   visuals: part.visualIds.map(id => { const m = visuals.get(id).motion;
+     return { id, motion: m?.role ? { role: m.role, corner: m.corner ?? null } : null, massProperties: massProperties.get(id) }; }),
    collisionVolume: part.volumeM3,
    position: sourceToActorPoint(part.position, geometry.originHeight),
    shapes: part.shapes.map(simplePhysicsShape),
@@ -61,13 +66,13 @@ catch (error) {
    maxSteerRadians: geometry.maxSteerRadians, partCount: parts.length,
    visualPartCount: visual.parts.length, colliderFidelity: 'simple',
    cylinderSegments: 32, jointSurfaceSource: 'individual-authored-interfaces',
-   jointTopology: 'mechanical-mounts-2',
+   jointTopology: 'rig-anchored-joints-3',
    excludedContacts: excludedContacts.map(({a,b,reason})=>({a,b,reason})),
    shapeCount: parts.reduce((n,p)=>n+p.shapes.length,0), bondCount: bonds.length, contactCount: surfaces.length,
    strengthProfileVersion: STRENGTH_PROFILE_VERSION, strengthQualification: 'pending-native-tests',
    mass: parts.reduce((n,p)=>n+p.mass,0), bounds,
    massProperties: combineMassProperties(parts.map(p=>p.massProperties)),
-   rig: geometry.rig, parts, bonds: bonds.map(b => ({...b,anchor:sourceToActorPoint(b.anchor,geometry.originHeight),centroid:sourceToActorPoint(b.centroid,geometry.originHeight),normal:b.normal?sourceToActorPoint(b.normal):null})),
+   rig: geometry.rig, parts, bonds: bonds.map(b => ({...b,anchor:sourceToActorPoint(b.anchor,geometry.originHeight),centroid:sourceToActorPoint(b.centroid,geometry.originHeight),...(b.measuredCentroid&&{measuredCentroid:sourceToActorPoint(b.measuredCentroid,geometry.originHeight)}),normal:b.normal?sourceToActorPoint(b.normal):null})),
    unresolvedContactCount: surfaces.filter(b => !b.validatedSurface).length,
    validation: { ...collision.report, buildMs: undefined },
  };

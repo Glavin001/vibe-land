@@ -1,0 +1,326 @@
+[
+  {
+    "joints": {
+      "lower-arm-pivot": {
+        "bonds": 30,
+        "maxGapM": 2.482534153247273e-16
+      },
+      "lower-ball-joint": {
+        "bonds": 12,
+        "maxGapM": 4.710277376051325e-16
+      },
+      "outer-cv": {
+        "bonds": 4,
+        "maxGapM": 7.364386412590295e-16
+      },
+      "shock-eye": {
+        "bonds": 6,
+        "maxGapM": 3.554447978966673e-16
+      },
+      "shock-top-mount": {
+        "bonds": 16,
+        "maxGapM": 3.6821932062951477e-16
+      },
+      "spring-seat": {
+        "bonds": 8,
+        "maxGapM": 5.85874444175896e-16
+      },
+      "steering-column": {
+        "bonds": 1,
+        "maxGapM": 3.3766115072321297e-16
+      },
+      "tie-rod-end": {
+        "bonds": 4,
+        "maxGapM": 4.972820174300706e-16
+      },
+      "upper-arm-pivot": {
+        "bonds": 14,
+        "maxGapM": 2.2887833992611187e-16
+      },
+      "upper-ball-joint": {
+        "bonds": 8,
+        "maxGapM": 3.469446951953614e-16
+      },
+      "wheel-bearing": {
+        "bonds": 4,
+        "maxGapM": 6.843874359417885e-16
+      }
+    },
+    "massCentreGapM": 8.132457662016764e-15,
+    "massTensorRelativeGap": 3.833341945147562e-14,
+    "model": "buggy",
+    "poses": 19,
+    "restGap": 8.208717282991813e-16,
+    "worstDeltaGap": 2.6645352591003757e-15
+  },
+  {
+    "joints": {
+      "lower-arm-pivot": {
+        "bonds": 30,
+        "maxGapM": 2.2591401799415137e-16
+      },
+      "lower-ball-joint": {
+        "bonds": 12,
+        "maxGapM": 4.041272810440265e-16
+      },
+      "outer-cv": {
+        "bonds": 4,
+        "maxGapM": 1.2037731057624424e-15
+      },
+      "shock-eye": {
+        "bonds": 8,
+        "maxGapM": 4.1540741810552243e-16
+      },
+      "shock-top-mount": {
+        "bonds": 16,
+        "maxGapM": 4.742874840267547e-16
+      },
+      "spring-seat": {
+        "bonds": 8,
+        "maxGapM": 6.377745716588144e-16
+      },
+      "steering-column": {
+        "bonds": 1,
+        "maxGapM": 2.2887833992611187e-16
+      },
+      "tie-rod-end": {
+        "bonds": 4,
+        "maxGapM": 4.996003610813204e-16
+      },
+      "upper-arm-pivot": {
+        "bonds": 14,
+        "maxGapM": 2.2929868617541516e-16
+      },
+      "upper-ball-joint": {
+        "bonds": 8,
+        "maxGapM": 5.578801654593729e-16
+      },
+      "wheel-bearing": {
+        "bonds": 4,
+        "maxGapM": 8.968100940422724e-16
+      }
+    },
+    "massCentreGapM": 1.1961590474701139e-14,
+    "massTensorRelativeGap": 3.9724116822182305e-14,
+    "model": "trophy",
+    "poses": 19,
+    "restGap": 8.958725749982186e-16,
+    "worstDeltaGap": 3.524958103184872e-15
+  },
+  {
+    "joints": {
+      "lower-arm-pivot": {
+        "bonds": 30,
+        "maxGapM": 1.7772239894833365e-16
+      },
+      "lower-ball-joint": {
+        "bonds": 12,
+        "maxGapM": 4.47545209131181e-16
+      },
+      "outer-cv": {
+        "bonds": 4,
+        "maxGapM": 6.843874359417885e-16
+      },
+      "shock-eye": {
+        "bonds": 4,
+        "maxGapM": 3.3306690738754696e-16
+      },
+      "shock-top-mount": {
+        "bonds": 26,
+        "maxGapM": 4.965068306494546e-16
+      },
+      "spring-seat": {
+        "bonds": 8,
+        "maxGapM": 6.667118051786499e-16
+      },
+      "steering-column": {
+        "bonds": 1,
+        "maxGapM": 3.040470972244059e-16
+      },
+      "tie-rod-end": {
+        "bonds": 4,
+        "maxGapM": 4.577566798522237e-16
+      },
+      "upper-arm-pivot": {
+        "bonds": 12,
+        "maxGapM": 1.5700924586837752e-16
+      },
+      "upper-ball-joint": {
+        "bonds": 8,
+        "maxGapM": 6.304854800243424e-16
+      },
+      "wheel-bearing": {
+        "bonds": 4,
+        "maxGapM": 6.758924343478424e-16
+      }
+    },
+    "massCentreGapM": 5.760602686678698e-15,
+    "massTensorRelativeGap": 4.2968005464770123e-14,
+    "model": "rally",
+    "poses": 19,
+    "restGap": 7.123436936289394e-16,
+    "worstDeltaGap": 2.886579864025407e-15
+  },
+  {
+    "joints": {
+      "lower-arm-pivot": {
+        "bonds": 30,
+        "maxGapM": 2.482534153247273e-16
+      },
+      "lower-ball-joint": {
+        "bonds": 12,
+        "maxGapM": 4.847302891456678e-16
+      },
+      "outer-cv": {
+        "bonds": 4,
+        "maxGapM": 9.42055475210265e-16
+      },
+      "shock-eye": {
+        "bonds": 12,
+        "maxGapM": 4.996003610813204e-16
+      },
+      "shock-top-mount": {
+        "bonds": 17,
+        "maxGapM": 5.978733960281817e-16
+      },
+      "spring-seat": {
+        "bonds": 8,
+        "maxGapM": 8.89722066373406e-16
+      },
+      "steering-column": {
+        "bonds": 1,
+        "maxGapM": 5.087681048627601e-16
+      },
+      "tie-rod-end": {
+        "bonds": 4,
+        "maxGapM": 5.087681048627601e-16
+      },
+      "upper-arm-pivot": {
+        "bonds": 14,
+        "maxGapM": 2.5476231888929306e-16
+      },
+      "upper-ball-joint": {
+        "bonds": 8,
+        "maxGapM": 6.753223014464259e-16
+      },
+      "wheel-bearing": {
+        "bonds": 4,
+        "maxGapM": 7.043575467574348e-16
+      }
+    },
+    "massCentreGapM": 2.0552699198170412e-14,
+    "massTensorRelativeGap": 5.6149420251023987e-14,
+    "model": "monster",
+    "poses": 19,
+    "restGap": 1.1845339046658439e-15,
+    "worstDeltaGap": 6.2450045135165055e-15
+  },
+  {
+    "joints": {
+      "lower-arm-pivot": {
+        "bonds": 30,
+        "maxGapM": 2.423651445728339e-16
+      },
+      "lower-ball-joint": {
+        "bonds": 12,
+        "maxGapM": 4.47545209131181e-16
+      },
+      "outer-cv": {
+        "bonds": 4,
+        "maxGapM": 9.155133597044475e-16
+      },
+      "shock-eye": {
+        "bonds": 8,
+        "maxGapM": 3.3766115072321297e-16
+      },
+      "shock-top-mount": {
+        "bonds": 22,
+        "maxGapM": 4.710277376051325e-16
+      },
+      "spring-seat": {
+        "bonds": 8,
+        "maxGapM": 6.280369834735101e-16
+      },
+      "steering-column": {
+        "bonds": 1,
+        "maxGapM": 2.830524433501838e-16
+      },
+      "tie-rod-end": {
+        "bonds": 4,
+        "maxGapM": 5.33167196845001e-16
+      },
+      "upper-arm-pivot": {
+        "bonds": 14,
+        "maxGapM": 2.2887833992611187e-16
+      },
+      "upper-ball-joint": {
+        "bonds": 8,
+        "maxGapM": 4.996003610813204e-16
+      },
+      "wheel-bearing": {
+        "bonds": 4,
+        "maxGapM": 5.978733960281817e-16
+      }
+    },
+    "massCentreGapM": 7.054558819298619e-15,
+    "massTensorRelativeGap": 4.688690946450305e-14,
+    "model": "derby",
+    "poses": 19,
+    "restGap": 6.354256452186255e-16,
+    "worstDeltaGap": 3.1086244689504383e-15
+  },
+  {
+    "joints": {
+      "lower-arm-pivot": {
+        "bonds": 30,
+        "maxGapM": 1.3092278833360675e-16
+      },
+      "lower-ball-joint": {
+        "bonds": 12,
+        "maxGapM": 4.335559509131367e-16
+      },
+      "outer-cv": {
+        "bonds": 4,
+        "maxGapM": 9.019494489765868e-16
+      },
+      "shock-eye": {
+        "bonds": 6,
+        "maxGapM": 2.9893669801409083e-16
+      },
+      "shock-top-mount": {
+        "bonds": 27,
+        "maxGapM": 4.47545209131181e-16
+      },
+      "spring-seat": {
+        "bonds": 8,
+        "maxGapM": 6.187688364358555e-16
+      },
+      "steering-column": {
+        "bonds": 1,
+        "maxGapM": 2.5438405243138006e-16
+      },
+      "tie-rod-end": {
+        "bonds": 4,
+        "maxGapM": 4.062661642740952e-16
+      },
+      "upper-arm-pivot": {
+        "bonds": 14,
+        "maxGapM": 1.2412670766236366e-16
+      },
+      "upper-ball-joint": {
+        "bonds": 8,
+        "maxGapM": 4.577566798522237e-16
+      },
+      "wheel-bearing": {
+        "bonds": 4,
+        "maxGapM": 6.206335383118183e-16
+      }
+    },
+    "massCentreGapM": 6.857874223836315e-15,
+    "massTensorRelativeGap": 2.794866651524791e-14,
+    "model": "sprint",
+    "poses": 19,
+    "restGap": 6.618802819069063e-16,
+    "worstDeltaGap": 3.3584246494910985e-15
+  }
+]

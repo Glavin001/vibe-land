@@ -3281,7 +3281,7 @@ async fn run_match_loop(
         session.world.instantiate(&mut arena).expect("garage terrain should instantiate");
         arena.set_spawn_areas(session.world.spawn_areas.clone());
         if let Err(error) = arena.spawn_prepared_vehicle(garage::VEHICLE_ID, 0,
-            nalgebra::Vector3::new(0.0, session.geometry.origin_height + 0.15, 3.0), &session.geometry) {
+            nalgebra::Vector3::new(0.0, session.geometry.origin_height as f32 + 0.15, 3.0), &session.geometry) {
             error!(%error, "garage vehicle could not initialize"); return;
         }
     } else if garage::is_garage(&match_id) { return; }
@@ -3613,7 +3613,7 @@ impl MatchState {
         let id = FIRST_ID + slot;
         let handle = (1..=u8::MAX).find(|handle| !self.vehicle_handles.values().any(|v| v == handle))
             .ok_or((StatusCode::CONFLICT, "The city has reached its vehicle limit.".into()))?;
-        let position = [city::spawn_ring_radius_m() + 14.0, asset.geometry.origin_height + 0.15, slot as f32 * 8.0 - 28.0];
+        let position = [city::spawn_ring_radius_m() + 14.0, asset.geometry.origin_height as f32 + 0.15, slot as f32 * 8.0 - 28.0];
         self.arena.spawn_prepared_vehicle(id, 0, nalgebra::Vector3::from(position), &asset.geometry)
             .map_err(|error| {
                 error!(%error, "city vehicle could not initialize");
