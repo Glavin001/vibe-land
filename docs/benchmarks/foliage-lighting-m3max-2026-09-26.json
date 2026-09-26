@@ -1,0 +1,295 @@
+{
+  "date": "2026-09-26",
+  "device": "Apple M3 Max / Codex in-app browser / ANGLE Metal",
+  "fixture": "client/benchmarks/foliage-lighting.html",
+  "method": "Forced near/far at identical camera and light for each pair. 640x480, ACES, production foliage shaders, procedural sky environment with ambient/hemisphere floor, directional sun, no fog. Mean displayed RGB luminance in central canopy region excluding black gaps; luminance rounded to whole 8-bit levels, ratios to 0.001. Sky/direct camera [0,7,17]; backlit camera opposite production sun; no shadow-map objects. Dry uses 2.8 m grass. This is appearance consistency, not pixel-identical geometry.",
+  "baselineSky": [
+    {
+      "preset": "corn",
+      "ratio": 0.518
+    },
+    {
+      "preset": "vehicle",
+      "ratio": 0.506
+    },
+    {
+      "preset": "ferns",
+      "ratio": 0.515
+    },
+    {
+      "preset": "wheat",
+      "ratio": 0.615
+    }
+  ],
+  "corrected": [
+    {
+      "preset": "corn",
+      "lighting": "sky",
+      "nearLuminance": 117,
+      "farLuminance": 119,
+      "farNearRatio": 1.017
+    },
+    {
+      "preset": "corn",
+      "lighting": "direct",
+      "nearLuminance": 85,
+      "farLuminance": 90,
+      "farNearRatio": 1.058
+    },
+    {
+      "preset": "corn",
+      "lighting": "backlit",
+      "nearLuminance": 112,
+      "farLuminance": 105,
+      "farNearRatio": 0.94
+    },
+    {
+      "preset": "vehicle",
+      "lighting": "sky",
+      "nearLuminance": 139,
+      "farLuminance": 137,
+      "farNearRatio": 0.985
+    },
+    {
+      "preset": "vehicle",
+      "lighting": "direct",
+      "nearLuminance": 95,
+      "farLuminance": 105,
+      "farNearRatio": 1.106
+    },
+    {
+      "preset": "vehicle",
+      "lighting": "backlit",
+      "nearLuminance": 123,
+      "farLuminance": 121,
+      "farNearRatio": 0.982
+    },
+    {
+      "preset": "ferns",
+      "lighting": "sky",
+      "nearLuminance": 89,
+      "farLuminance": 97,
+      "farNearRatio": 1.095
+    },
+    {
+      "preset": "ferns",
+      "lighting": "direct",
+      "nearLuminance": 64,
+      "farLuminance": 72,
+      "farNearRatio": 1.139
+    },
+    {
+      "preset": "ferns",
+      "lighting": "backlit",
+      "nearLuminance": 84,
+      "farLuminance": 86,
+      "farNearRatio": 1.02
+    },
+    {
+      "preset": "dry",
+      "lighting": "sky",
+      "nearLuminance": 121,
+      "farLuminance": 119,
+      "farNearRatio": 0.983
+    },
+    {
+      "preset": "dry",
+      "lighting": "direct",
+      "nearLuminance": 82,
+      "farLuminance": 91,
+      "farNearRatio": 1.115
+    },
+    {
+      "preset": "dry",
+      "lighting": "backlit",
+      "nearLuminance": 97,
+      "farLuminance": 99,
+      "farNearRatio": 1.019
+    },
+    {
+      "preset": "wheat",
+      "lighting": "sky",
+      "nearLuminance": 134,
+      "farLuminance": 141,
+      "farNearRatio": 1.059
+    },
+    {
+      "preset": "wheat",
+      "lighting": "direct",
+      "nearLuminance": 93,
+      "farLuminance": 109,
+      "farNearRatio": 1.167
+    },
+    {
+      "preset": "wheat",
+      "lighting": "backlit",
+      "nearLuminance": 110,
+      "farLuminance": 122,
+      "farNearRatio": 1.114
+    }
+  ],
+  "performance": {
+    "fixture": "client/benchmarks/foliage-lod.html?sky&timingOnly",
+    "resolution": [
+      1920,
+      1080
+    ],
+    "method": "48 valid paired on/off GPU timer query deltas per case, median rounded to 0.001 ms. All build queues drained. Sky environment enabled in addition to benchmark hemisphere/directional lights. Keep canvas above growing report to avoid offscreen throttling. Isolated grass pass, no city buildings, shadow maps or physics; not a full-city 120 Hz guarantee. Different lighting workload from the earlier unlit-environment benchmark.",
+    "cases": [
+      {
+        "preset": "vehicle",
+        "quality": "fast",
+        "distance": 12,
+        "gpuMedianMs": 1.094,
+        "gpuSamples": 48,
+        "pendingPatches": 0
+      },
+      {
+        "preset": "vehicle",
+        "quality": "fast",
+        "distance": 35,
+        "gpuMedianMs": 0.711,
+        "gpuSamples": 48,
+        "pendingPatches": 0
+      },
+      {
+        "preset": "vehicle",
+        "quality": "fast",
+        "distance": 110,
+        "gpuMedianMs": 0.169,
+        "gpuSamples": 48,
+        "pendingPatches": 0
+      },
+      {
+        "preset": "vehicle",
+        "quality": "pretty",
+        "distance": 12,
+        "gpuMedianMs": 3.127,
+        "gpuSamples": 48,
+        "pendingPatches": 0
+      },
+      {
+        "preset": "vehicle",
+        "quality": "pretty",
+        "distance": 35,
+        "gpuMedianMs": 2.401,
+        "gpuSamples": 48,
+        "pendingPatches": 0
+      },
+      {
+        "preset": "vehicle",
+        "quality": "pretty",
+        "distance": 110,
+        "gpuMedianMs": 0.976,
+        "gpuSamples": 48,
+        "pendingPatches": 0
+      },
+      {
+        "preset": "corn",
+        "quality": "fast",
+        "distance": 12,
+        "gpuMedianMs": 0.729,
+        "gpuSamples": 48,
+        "pendingPatches": 0
+      },
+      {
+        "preset": "corn",
+        "quality": "fast",
+        "distance": 35,
+        "gpuMedianMs": 0.389,
+        "gpuSamples": 48,
+        "pendingPatches": 0
+      },
+      {
+        "preset": "corn",
+        "quality": "fast",
+        "distance": 110,
+        "gpuMedianMs": 0.132,
+        "gpuSamples": 48,
+        "pendingPatches": 0
+      },
+      {
+        "preset": "corn",
+        "quality": "pretty",
+        "distance": 12,
+        "gpuMedianMs": 1.245,
+        "gpuSamples": 48,
+        "pendingPatches": 0
+      },
+      {
+        "preset": "corn",
+        "quality": "pretty",
+        "distance": 35,
+        "gpuMedianMs": 0.903,
+        "gpuSamples": 48,
+        "pendingPatches": 0
+      },
+      {
+        "preset": "corn",
+        "quality": "pretty",
+        "distance": 110,
+        "gpuMedianMs": 1.122,
+        "gpuSamples": 48,
+        "pendingPatches": 0
+      },
+      {
+        "preset": "wheat",
+        "quality": "fast",
+        "distance": 12,
+        "gpuMedianMs": 0.596,
+        "gpuSamples": 48,
+        "pendingPatches": 0
+      },
+      {
+        "preset": "wheat",
+        "quality": "fast",
+        "distance": 35,
+        "gpuMedianMs": 0.236,
+        "gpuSamples": 48,
+        "pendingPatches": 0
+      },
+      {
+        "preset": "wheat",
+        "quality": "fast",
+        "distance": 110,
+        "gpuMedianMs": 0.124,
+        "gpuSamples": 48,
+        "pendingPatches": 0
+      },
+      {
+        "preset": "wheat",
+        "quality": "pretty",
+        "distance": 12,
+        "gpuMedianMs": 1.165,
+        "gpuSamples": 48,
+        "pendingPatches": 0
+      },
+      {
+        "preset": "wheat",
+        "quality": "pretty",
+        "distance": 35,
+        "gpuMedianMs": 0.903,
+        "gpuSamples": 48,
+        "pendingPatches": 0
+      },
+      {
+        "preset": "wheat",
+        "quality": "pretty",
+        "distance": 110,
+        "gpuMedianMs": 1.117,
+        "gpuSamples": 48,
+        "pendingPatches": 0
+      }
+    ]
+  },
+  "contactRegression": {
+    "fixture": "client/benchmarks/foliage-lod.html?sky",
+    "result": "Completed all coverage/compaction checks with corrected shaders; timing samples from this combined run were discarded due to disjoint flags.",
+    "flattenedTargetPixels": {
+      "fast": 671,
+      "pretty": 670
+    },
+    "unoccludedTargetPixels": 840,
+    "geometriesAfterDisposal": 0
+  }
+}

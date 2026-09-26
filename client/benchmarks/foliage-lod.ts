@@ -1,4 +1,5 @@
 import * as T from 'three';
+import { createBenchmarkSky } from './foliage-sky';
 import { GrassField } from '../src/scene/grass/GrassField';
 import { GrassPaint, GRASS_BRUSHES } from '../src/scene/grass/GrassPaint';
 const status = document.querySelector('#status')!;
@@ -9,12 +10,16 @@ const median = (a:number[]) => a.length ? [...a].sort((a,b)=>a-b)[Math.floor(a.l
 button.onclick = async () => {
   button.disabled=true; output.textContent='';
   const renderer = new T.WebGLRenderer({antialias:true}); renderer.setSize(1920,1080);
-  document.body.append(renderer.domElement);
+  // Keep the measured canvas in view when the report grows. Offscreen canvases
+  // may be throttled by the browser and their GPU timers invalidated.
+  output.before(renderer.domElement);
+  const timingOnly=new URLSearchParams(location.search).has('timingOnly');
+  const environment=new URLSearchParams(location.search).has('sky')?createBenchmarkSky(renderer):null;
   const gl=renderer.getContext() as WebGL2RenderingContext;
   const timer=gl.getExtension('EXT_disjoint_timer_query_webgl2');
   const debug=gl.getExtension('WEBGL_debug_renderer_info');
-  const report:{device:unknown;cases:unknown[];coverage:unknown[];contacts:unknown[];geometriesAfterDisposal?:number}={device:debug?gl.getParameter(debug.UNMASKED_RENDERER_WEBGL):'unavailable',cases:[],coverage:[],contacts:[]};
-  const scene=new T.Scene();scene.background=new T.Color('#a8b5ba');
+  const report:{device:unknown;skyLighting:boolean;timingOnly:boolean;cases:unknown[];coverage:unknown[];contacts:unknown[];geometriesAfterDisposal?:number}={device:debug?gl.getParameter(debug.UNMASKED_RENDERER_WEBGL):'unavailable',skyLighting:!!environment,timingOnly,cases:[],coverage:[],contacts:[]};
+  const scene=new T.Scene();scene.background=new T.Color('#a8b5ba');scene.environment=environment?.texture??null;
   scene.add(new T.HemisphereLight('#ffffff','#526141',2));
   const sun=new T.DirectionalLight('#fff5d7',2);sun.position.set(30,50,20);scene.add(sun);
   const camera=new T.PerspectiveCamera(55,1920/1080,0.1,600);
@@ -53,6 +58,7 @@ button.onclick = async () => {
             if(q)gl.beginQuery(timer.TIME_ELAPSED_EXT,q);
             const before=performance.now();renderer.render(scene,camera);costs[on?1:0]=performance.now()-before;
             if(q){gl.endQuery(timer.TIME_ELAPSED_EXT);queries.push({q,on,pair:i});}
+
           }
           cpu.push(costs[1]-costs[0]);if(timer)drain();await frame();
         }
@@ -60,13 +66,15 @@ button.onclick = async () => {
         for(const q of queries)gl.deleteQuery(q.q);
         for(const pair of pairs.values())if(pair.on!==undefined&&pair.off!==undefined)gpu.push(pair.on-pair.off);
         field.group.visible=true;renderer.render(scene,camera);
+        if(!timingOnly){
         field.group.visible=false;const exposed=redPixels();field.group.visible=true;const hidden=redPixels();
         report.coverage.push({preset,quality,distance,exposed,hidden,hiddenFraction:exposed?1-hidden/exposed:null});
         if(!exposed || (preset!=='wheat' && hidden/exposed>0.2))throw new Error(`Concealment regression: ${preset}/${quality}/${distance}`);
+        }
         report.cases.push({preset,quality,distance,gpuMedianMs:median(gpu),gpuSamples:gpu.length,renderCpuMedianMs:median(cpu),updateCpuMedianMs:median(update),...field.stats});
         output.textContent=JSON.stringify(report,null,2);
       }
-      if(preset==='vehicle') {
+      if(!timingOnly&&preset==='vehicle') {
         camera.position.set(0,1.4,35);camera.lookAt(0,1.4,0);camera.updateMatrixWorld();
         const now=performance.now()/1000;
         field.interaction.begin(now,0,0);
@@ -83,5 +91,5 @@ button.onclick = async () => {
     report.geometriesAfterDisposal=renderer.info.memory.geometries;
     output.textContent=JSON.stringify(report,null,2);status.textContent='Complete';
   } catch(error){output.textContent=JSON.stringify(report,null,2);status.textContent=`Failed: ${String(error)}`;}
-  finally {field?.dispose();renderer.dispose();renderer.domElement.remove();button.disabled=false;}
+  finally {field?.dispose();environment?.dispose();renderer.dispose();renderer.domElement.remove();button.disabled=false;}
 };

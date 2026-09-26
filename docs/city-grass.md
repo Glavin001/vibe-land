@@ -373,3 +373,41 @@ in tall grass and corn. A flattened corridor revealed 670/840 and 673/840
 target pixels at 35 m; standing foliage hid all 840. All 18 cases drained
 their build queues; disposal left zero renderer geometries. The test scene
 does not include city geometry, shadow maps, physics or destruction.
+
+### Lighting across LODs
+
+Both near blades and distant clumps use the same rough Standard material,
+scene sky environment, shadow-aware transmission and root occlusion code in
+`foliageLighting.ts`. Previously the Lambert canopy ignored the sky environment,
+while sampling RGB from transparent-black silhouette mips also darkened it.
+The atlas now supplies **coverage only**; authored linear leaf color stays
+independent of alpha and mip level. Coarse normals approximate visible leaves
+rather than lighting all cards as horizontal ground, and cluster transmission
+uses the average leaf height rather than treating the whole cluster as tips.
+Dryness is packed with the species ID, keeping 32 bytes per clump and the same
+geometry, draw counts, atlas taps and interaction work. Standard sky shading
+adds GPU lighting work, so it is included in the performance check below.
+
+`/benchmarks/foliage-lighting.html` compares forced near/far representations with
+identical camera, paint and light. Five families cover sky, direct-only and
+backlit conditions; it fails if mean displayed canopy luminance differs by more
+than 15% with sky lighting or 20% in the other conditions. Black gaps are excluded
+from a fixed central image region; this tests average appearance, not identical
+individual leaves. The private fixture includes tall dry grass and never edits
+the user's draft. `/benchmarks/foliage-lod.html?sky` additionally prices sky IBL
+in the existing 1080p GPU, coverage and compaction benchmark.
+
+The recorded [lighting comparison](benchmarks/foliage-lighting-m3max-2026-09-26.json)
+shows sky-lit corn/tall grass going from about half brightness at distance to
+within 2% of the nearby representation. All five families are within 10% with
+sky lighting and 17% across the full lighting fixture. For isolated timing,
+append `&timingOnly` to the sky benchmark URL to omit pixel readbacks.
+Keep the benchmark canvas visible while measuring; the report is placed below
+it so growing results do not push the measured surface out of view. The normal run still verifies
+concealment and compaction separately. Invalid/disjoint timings remain null,
+not zero-cost samples.
+
+With the corrected materials and sky environment enabled, the isolated 1080p
+grass pass measured **0.12–3.13 ms GPU** across 18 cases (48 valid pairs each)
+on M3 Max. This includes sky shading absent from the earlier timing fixture;
+it is not a before/after cost comparison or a full-city frame-rate claim.

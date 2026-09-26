@@ -1,6 +1,6 @@
 import { FOLIAGE_HANDOFF } from './foliageLod';
 import * as THREE from 'three';
-import { sunDirection, skyGradient, sunIntensityFor } from '../../graphics/sunSky';
+import { FOLIAGE_SURFACE, foliageLightUniforms, foliageLightFragment } from './foliageLighting';
 import { GRASS_PROFILES, type GrassQuality } from './grassPlacement';
 import { cityMacroNoise } from '../cityTextures';
 import type { GrassInteraction } from './GrassInteraction';
@@ -152,7 +152,6 @@ if (seedHead) vGrassColor = mix(vGrassColor, vec3(0.52, 0.36, 0.12), species > 1
 
 export function createGrassMaterial(quality: GrassQuality, interaction: GrassInteraction) {
   const p = GRASS_PROFILES[quality];
-  const direction = sunDirection();
   const uniforms = {
     grassTime: { value: 0 },
     grassWind: { value: new THREE.Vector2(5.65, 5.65) },
@@ -165,11 +164,10 @@ export function createGrassMaterial(quality: GrassQuality, interaction: GrassInt
     grassContactBounds: { value: interaction.bounds },
     grassCanopies: { value: interaction.canopies }, grassCanopyCount: { value: 0 },
     grassImpulses: { value: interaction.impulses }, grassImpulseCount: { value: 0 },
-    grassSun: { value: new THREE.Vector3(direction.x, direction.y, direction.z) },
-    grassSunColor: { value: new THREE.Color(skyGradient('#c3d2e2').sunColor).multiplyScalar(sunIntensityFor()) },
+    ...foliageLightUniforms(),
   };
   const material = new THREE.MeshStandardMaterial({
-    color: 0xffffff, roughness: 0.88, metalness: 0, side: THREE.DoubleSide,
+    color: 0xffffff, ...FOLIAGE_SURFACE,
   });
   material.name = 'City grass · curved instanced blades';
   material.forceSinglePass = true;
@@ -206,14 +204,7 @@ export function createGrassMaterial(quality: GrassQuality, interaction: GrassInt
         normal = normalize(normal + grassUp * (0.45 - min(dot(normal, grassUp), 0.0)));
       `)
       .replace('#include <opaque_fragment>', `
-        // Thin leaves transmit sunlight. Respect the same building shadows as the ground.
-        vec3 grassView = normalize(cameraPosition - vGrassWorld);
-        float transmission = pow(max(dot(-grassView, grassSun), 0.0), 3.0);
-        if (transmission > 0.005) {
-          outgoingLight += vGrassColor * grassSunColor * transmission * mix(0.42, 0.12, vGrassDryness)
-            * smoothstep(0.05, 0.85, vGrassHeight) * getShadowMask();
-        }
-        outgoingLight *= mix(0.72, 1.0, smoothstep(0.0, 0.65, vGrassHeight));
+        ${foliageLightFragment('vGrassColor','vGrassWorld','vGrassHeight','vGrassDryness')}
         #include <opaque_fragment>
       `);
   };

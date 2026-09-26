@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { FOLIAGE_SURFACE, foliageLightUniforms, foliageLightFragment } from './foliageLighting';
 import type { GrassInteraction } from './GrassInteraction';
 import { GrassPaint, GRASS_MAX_HEIGHT } from './GrassPaint';
 import { createFoliageAtlas } from './foliageAtlas';
@@ -11,12 +12,12 @@ import type { GrassExclusion, GrassQuality } from './grassPlacement';
  * canopy coverage from aerial views. Neither is used for close-up plants. */
 export class FoliageCanopy {
   readonly group = new THREE.Group();
-  readonly material: THREE.MeshLambertMaterial;
-  readonly uniforms: { foliageTime: {value:number}; foliageWind: {value:THREE.Vector2}; foliageHandoff: {value:THREE.Vector2} };
+  readonly material: THREE.MeshStandardMaterial;
+  readonly uniforms: { foliageTime: {value:number}; foliageWind: {value:THREE.Vector2}; foliageHandoff: {value:THREE.Vector2} } & ReturnType<typeof foliageLightUniforms>;
   private readonly contactBlend = {value:1};
   private readonly atlas = createFoliageAtlas();
   private readonly template = new THREE.BufferGeometry();
-  private readonly chunks = new Map<string,THREE.Mesh<THREE.InstancedBufferGeometry,THREE.MeshLambertMaterial>>();
+  private readonly chunks = new Map<string,THREE.Mesh<THREE.InstancedBufferGeometry,THREE.MeshStandardMaterial>>();
   private readonly pending = new Set<string>();
   private readonly unsubscribe: () => void;
   private readonly box = new THREE.Box3();
@@ -41,8 +42,8 @@ export class FoliageCanopy {
     this.template.setAttribute('normal',new THREE.Float32BufferAttribute(normals,3));
     this.template.setAttribute('uv',new THREE.Float32BufferAttribute(uvs,2));
     this.template.setIndex(indices);
-    this.uniforms = {foliageTime:{value:0},foliageWind:{value:new THREE.Vector2()},foliageHandoff:{value:new THREE.Vector2(...FOLIAGE_HANDOFF[quality])}};
-    this.material = new THREE.MeshLambertMaterial({map:this.atlas,alphaTest:0.3,side:THREE.DoubleSide});
+    this.uniforms = {foliageTime:{value:0},foliageWind:{value:new THREE.Vector2()},foliageHandoff:{value:new THREE.Vector2(...FOLIAGE_HANDOFF[quality])},...foliageLightUniforms()};
+    this.material = new THREE.MeshStandardMaterial({map:this.atlas,alphaTest:0.3,...FOLIAGE_SURFACE});
     this.material.forceSinglePass=true;
     this.material.onBeforeCompile = shader => {
       Object.assign(shader.uniforms,this.uniforms,{
@@ -55,6 +56,8 @@ export class FoliageCanopy {
         varying vec3 vCanopyWorld;
         varying vec3 vCanopyTint;
         varying vec2 vCanopyUv;
+        varying float vCanopyHeight;
+        varying float vCanopyDryness;
         uniform float foliageTime;
         uniform vec2 foliageWind;
         uniform sampler2D canopyContacts;
@@ -80,26 +83,45 @@ export class FoliageCanopy {
         transformed.y*=1.0-pressure*0.91;
         transformed+=vec3(canopyRoot.x,0.006,canopyRoot.y);
         vCanopyWorld=(modelMatrix*vec4(transformed,1.0)).xyz;
-        vCanopyTint=canopyStyle.rgb*mix(0.38,1.0,position.z>2.5?0.8:position.y);
-        vCanopyUv=vec2((uv.x*0.984+0.008+canopyStyle.w)/5.0,(uv.y*0.984+0.008+(position.z>2.5?0.0:1.0))/2.0);
+        vCanopyHeight=position.z>2.5?0.8:position.y;
+        vCanopyDryness=fract(canopyStyle.w)/0.49;
+        vCanopyTint=canopyStyle.rgb*mix(0.30,1.05,pow(vCanopyHeight,0.75));
+        vCanopyTint=mix(vCanopyTint,vec3(0.34,0.22,0.08),vCanopyDryness*smoothstep(0.6,1.0,vCanopyHeight)*0.55);
+        vCanopyUv=vec2((uv.x*0.984+0.008+floor(canopyStyle.w))/5.0,(uv.y*0.984+0.008+(position.z>2.5?0.0:1.0))/2.0);
       `);
       shader.fragmentShader=shader.fragmentShader.replace('#include <common>',`#include <common>
         varying vec3 vCanopyWorld;
         varying vec3 vCanopyTint;
         varying vec2 vCanopyUv;
+        varying float vCanopyHeight;
+        varying float vCanopyDryness;
         uniform vec2 foliageHandoff;
+        uniform vec3 grassSun;
+        uniform vec3 grassSunColor;
       `).replace('#include <normal_fragment_begin>',`#include <normal_fragment_begin>
-        normal=normalize((viewMatrix*vec4(0.0,1.0,0.0,0.0)).xyz);
+        // Average of the visible, upward-biased leaf normals, not the flat
+        // card normal. Keeps front/back lighting comparable to the near mesh.
+        vec3 canopyView=normalize(cameraPosition-vCanopyWorld);
+        vec3 canopyNormal=normalize(vec3(canopyView.x*0.5,1.0,canopyView.z*0.5));
+        normal=normalize((viewMatrix*vec4(canopyNormal,0.0)).xyz);
       `).replace('#include <map_fragment>',`
         vec4 canopySample=texture2D(map,vCanopyUv);
-        diffuseColor*=canopySample;
+        // RGB contains filtered transparent-black texels. Multiplying it into
+        // albedo darkens sparse silhouettes/mips; this atlas is a coverage mask.
+        diffuseColor.a*=canopySample.a;
         diffuseColor.rgb*=vCanopyTint;
         float handoff=smoothstep(foliageHandoff.x,foliageHandoff.y,distance(cameraPosition,vCanopyWorld));
         float dither=fract(52.9829189*fract(dot(gl_FragCoord.xy,vec2(0.06711056,0.00583715))));
         if(dither>=handoff) discard;
-      `);
+      `).replace('#include <shadowmap_pars_fragment>', '#include <shadowmap_pars_fragment>\n#include <shadowmask_pars_fragment>')
+        .replace('#include <opaque_fragment>',`
+          // A cluster's visible leaves span the stalk. Treating its entire top
+          // card as blade tips overstates transmission and removes root occlusion.
+          ${foliageLightFragment('vCanopyTint','vCanopyWorld','vCanopyHeight*0.5','vCanopyDryness')}
+          #include <opaque_fragment>
+        `);
     };
-    this.material.customProgramCacheKey=()=> 'foliage-canopy-v1';
+    this.material.customProgramCacheKey=()=> 'foliage-canopy-v2-lit';
     const enqueue=(minX:number,minZ:number,maxX:number,maxZ:number)=>{
       for(let z=Math.max(-8,Math.floor(minZ/32));z<=Math.min(7,Math.floor(maxZ/32));z++)
         for(let x=Math.max(-8,Math.floor(minX/32));x<=Math.min(7,Math.floor(maxX/32));x++) this.pending.add(`${x},${z}`);
@@ -127,9 +149,10 @@ export class FoliageCanopy {
         const canopyHeight=height*(species===4?0.42:species===2?0.85:0.94);
         roots.push(wx-cx*32+(random-0.5)*0.3,wz-cz*32+(((hash>>>8)&255)/255-0.5)*0.3,canopyHeight*(0.96+random*0.08),random*Math.PI*2);
         const dry=sample[7],health=0.72+sample[6]*0.36;
+        // Pack dryness below the integer species ID; still 32 bytes per clump.
         styles.push((sample[2]*(1-dry*0.28)+0.46*dry*0.28)*health,
           (sample[3]*(1-dry*0.28)+0.33*dry*0.28)*health,
-          (sample[4]*(1-dry*0.28)+0.12*dry*0.28)*health,species);
+          (sample[4]*(1-dry*0.28)+0.12*dry*0.28)*health,species+dry*0.49);
       }
     }
     const key=`${cx},${cz}`,old=this.chunks.get(key);
