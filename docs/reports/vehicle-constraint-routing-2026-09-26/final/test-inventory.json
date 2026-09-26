@@ -1,0 +1,503 @@
+{
+  "backtraceGraph" : 
+  {
+    "commands" : 
+    [
+      "add_test"
+    ],
+    "files" : 
+    [
+      "/Users/glavin/Development/PhysX/demos/blast-stress-demo/CMakeLists.txt"
+    ],
+    "nodes" : 
+    [
+      {
+        "file" : 0
+      },
+      {
+        "command" : 0,
+        "file" : 0,
+        "line" : 929,
+        "parent" : 0
+      },
+      {
+        "file" : 0
+      },
+      {
+        "command" : 0,
+        "file" : 0,
+        "line" : 938,
+        "parent" : 2
+      },
+      {
+        "file" : 0
+      },
+      {
+        "command" : 0,
+        "file" : 0,
+        "line" : 939,
+        "parent" : 4
+      },
+      {
+        "file" : 0
+      },
+      {
+        "command" : 0,
+        "file" : 0,
+        "line" : 942,
+        "parent" : 6
+      },
+      {
+        "file" : 0
+      },
+      {
+        "command" : 0,
+        "file" : 0,
+        "line" : 943,
+        "parent" : 8
+      },
+      {
+        "file" : 0
+      },
+      {
+        "command" : 0,
+        "file" : 0,
+        "line" : 944,
+        "parent" : 10
+      },
+      {
+        "file" : 0
+      },
+      {
+        "command" : 0,
+        "file" : 0,
+        "line" : 967,
+        "parent" : 12
+      },
+      {
+        "file" : 0
+      },
+      {
+        "command" : 0,
+        "file" : 0,
+        "line" : 973,
+        "parent" : 14
+      },
+      {
+        "file" : 0
+      },
+      {
+        "command" : 0,
+        "file" : 0,
+        "line" : 979,
+        "parent" : 16
+      },
+      {
+        "file" : 0
+      },
+      {
+        "command" : 0,
+        "file" : 0,
+        "line" : 985,
+        "parent" : 18
+      },
+      {
+        "file" : 0
+      },
+      {
+        "command" : 0,
+        "file" : 0,
+        "line" : 986,
+        "parent" : 20
+      }
+    ]
+  },
+  "kind" : "ctestInfo",
+  "tests" : 
+  [
+    {
+      "backtrace" : 1,
+      "command" : 
+      [
+        "/Users/glavin/Development/PhysX/out/build/garage-multihull/package/reference/native_feature_reference_test"
+      ],
+      "name" : "physx_native_feature_reference",
+      "properties" : 
+      [
+        {
+          "name" : "ENVIRONMENT",
+          "value" : 
+          [
+            "CUMETAL_USE_METAL_DEVICE_ADDRESSES=1",
+            "CUMETAL_SYNC_EACH_LAUNCH=0"
+          ]
+        },
+        {
+          "name" : "RUN_SERIAL",
+          "value" : true
+        },
+        {
+          "name" : "WORKING_DIRECTORY",
+          "value" : "/Users/glavin/Development/PhysX/out/build/garage-multihull/package/reference"
+        }
+      ]
+    },
+    {
+      "backtrace" : 3,
+      "command" : 
+      [
+        "/Users/glavin/Development/PhysX/out/build/garage-multihull/package/reference/native_standard_scene_test",
+        "--post-correction"
+      ],
+      "name" : "physx_native_post_correction",
+      "properties" : 
+      [
+        {
+          "name" : "ENVIRONMENT",
+          "value" : 
+          [
+            "CUMETAL_USE_METAL_DEVICE_ADDRESSES=1",
+            "CUMETAL_SYNC_EACH_LAUNCH=0"
+          ]
+        },
+        {
+          "name" : "LABELS",
+          "value" : 
+          [
+            "gpu",
+            "integration"
+          ]
+        },
+        {
+          "name" : "RUN_SERIAL",
+          "value" : true
+        },
+        {
+          "name" : "TIMEOUT",
+          "value" : 120.0
+        },
+        {
+          "name" : "WORKING_DIRECTORY",
+          "value" : "/Users/glavin/Development/PhysX/out/build/garage-multihull/package/reference"
+        }
+      ]
+    },
+    {
+      "backtrace" : 5,
+      "command" : 
+      [
+        "/Users/glavin/Development/PhysX/out/build/garage-multihull/package/reference/native_standard_scene_test",
+        "--post-correction-pgs"
+      ],
+      "name" : "physx_native_post_correction_pgs",
+      "properties" : 
+      [
+        {
+          "name" : "ENVIRONMENT",
+          "value" : 
+          [
+            "CUMETAL_USE_METAL_DEVICE_ADDRESSES=1",
+            "CUMETAL_SYNC_EACH_LAUNCH=0"
+          ]
+        },
+        {
+          "name" : "LABELS",
+          "value" : 
+          [
+            "gpu",
+            "integration"
+          ]
+        },
+        {
+          "name" : "RUN_SERIAL",
+          "value" : true
+        },
+        {
+          "name" : "TIMEOUT",
+          "value" : 120.0
+        },
+        {
+          "name" : "WORKING_DIRECTORY",
+          "value" : "/Users/glavin/Development/PhysX/out/build/garage-multihull/package/reference"
+        }
+      ]
+    },
+    {
+      "backtrace" : 7,
+      "command" : 
+      [
+        "/Users/glavin/Development/PhysX/out/build/garage-multihull/package/reference/native_standard_scene_test",
+        "--multihull"
+      ],
+      "name" : "physx_native_multihull",
+      "properties" : 
+      [
+        {
+          "name" : "ENVIRONMENT",
+          "value" : 
+          [
+            "CUMETAL_USE_METAL_DEVICE_ADDRESSES=1",
+            "CUMETAL_SYNC_EACH_LAUNCH=0"
+          ]
+        },
+        {
+          "name" : "RUN_SERIAL",
+          "value" : true
+        },
+        {
+          "name" : "WORKING_DIRECTORY",
+          "value" : "/Users/glavin/Development/PhysX/out/build/garage-multihull/package/reference"
+        }
+      ]
+    },
+    {
+      "backtrace" : 9,
+      "command" : 
+      [
+        "/Users/glavin/Development/PhysX/out/build/garage-multihull/package/reference/native_standard_scene_test",
+        "--chunk-loads"
+      ],
+      "name" : "physx_native_chunk_loads",
+      "properties" : 
+      [
+        {
+          "name" : "ENVIRONMENT",
+          "value" : 
+          [
+            "CUMETAL_USE_METAL_DEVICE_ADDRESSES=1",
+            "CUMETAL_SYNC_EACH_LAUNCH=0"
+          ]
+        },
+        {
+          "name" : "RUN_SERIAL",
+          "value" : true
+        },
+        {
+          "name" : "WORKING_DIRECTORY",
+          "value" : "/Users/glavin/Development/PhysX/out/build/garage-multihull/package/reference"
+        }
+      ]
+    },
+    {
+      "backtrace" : 11,
+      "command" : 
+      [
+        "/Users/glavin/Development/PhysX/out/build/garage-multihull/package/reference/native_standard_scene_test",
+        "--parallel-bonds"
+      ],
+      "name" : "physx_native_parallel_bonds",
+      "properties" : 
+      [
+        {
+          "name" : "ENVIRONMENT",
+          "value" : 
+          [
+            "CUMETAL_USE_METAL_DEVICE_ADDRESSES=1",
+            "CUMETAL_SYNC_EACH_LAUNCH=0"
+          ]
+        },
+        {
+          "name" : "RUN_SERIAL",
+          "value" : true
+        },
+        {
+          "name" : "WORKING_DIRECTORY",
+          "value" : "/Users/glavin/Development/PhysX/out/build/garage-multihull/package/reference"
+        }
+      ]
+    },
+    {
+      "backtrace" : 13,
+      "command" : 
+      [
+        "/Users/glavin/Development/PhysX/out/build/garage-multihull/package/reference/native_vehicle_loads_test"
+      ],
+      "name" : "physx_native_vehicle_loads",
+      "properties" : 
+      [
+        {
+          "name" : "ENVIRONMENT",
+          "value" : 
+          [
+            "CUMETAL_USE_METAL_DEVICE_ADDRESSES=1",
+            "CUMETAL_SYNC_EACH_LAUNCH=0"
+          ]
+        },
+        {
+          "name" : "RUN_SERIAL",
+          "value" : true
+        },
+        {
+          "name" : "WORKING_DIRECTORY",
+          "value" : "/Users/glavin/Development/PhysX/out/build/garage-multihull/package/reference"
+        }
+      ]
+    },
+    {
+      "backtrace" : 15,
+      "command" : 
+      [
+        "/Users/glavin/Development/PhysX/out/build/garage-multihull/package/reference/native_vehicle_constraints_test"
+      ],
+      "name" : "physx_native_vehicle_constraints",
+      "properties" : 
+      [
+        {
+          "name" : "ENVIRONMENT",
+          "value" : 
+          [
+            "CUMETAL_USE_METAL_DEVICE_ADDRESSES=1",
+            "CUMETAL_SYNC_EACH_LAUNCH=0"
+          ]
+        },
+        {
+          "name" : "LABELS",
+          "value" : 
+          [
+            "gpu",
+            "integration",
+            "vehicle"
+          ]
+        },
+        {
+          "name" : "RUN_SERIAL",
+          "value" : true
+        },
+        {
+          "name" : "TIMEOUT",
+          "value" : 600.0
+        },
+        {
+          "name" : "WORKING_DIRECTORY",
+          "value" : "/Users/glavin/Development/PhysX/out/build/garage-multihull/package/reference"
+        }
+      ]
+    },
+    {
+      "backtrace" : 17,
+      "command" : 
+      [
+        "/Users/glavin/Development/PhysX/out/build/garage-multihull/package/reference/native_constraint_loads_test"
+      ],
+      "name" : "physx_native_constraint_loads",
+      "properties" : 
+      [
+        {
+          "name" : "ENVIRONMENT",
+          "value" : 
+          [
+            "CUMETAL_USE_METAL_DEVICE_ADDRESSES=1",
+            "CUMETAL_SYNC_EACH_LAUNCH=0"
+          ]
+        },
+        {
+          "name" : "LABELS",
+          "value" : 
+          [
+            "gpu",
+            "integration",
+            "vehicle"
+          ]
+        },
+        {
+          "name" : "RUN_SERIAL",
+          "value" : true
+        },
+        {
+          "name" : "TIMEOUT",
+          "value" : 600.0
+        },
+        {
+          "name" : "WORKING_DIRECTORY",
+          "value" : "/Users/glavin/Development/PhysX/out/build/garage-multihull/package/reference"
+        }
+      ]
+    },
+    {
+      "backtrace" : 19,
+      "command" : 
+      [
+        "/Users/glavin/Development/PhysX/out/build/garage-multihull/package/reference/native_constraint_fracture_test"
+      ],
+      "name" : "physx_native_constraint_fracture",
+      "properties" : 
+      [
+        {
+          "name" : "ENVIRONMENT",
+          "value" : 
+          [
+            "CUMETAL_USE_METAL_DEVICE_ADDRESSES=1",
+            "CUMETAL_SYNC_EACH_LAUNCH=0"
+          ]
+        },
+        {
+          "name" : "LABELS",
+          "value" : 
+          [
+            "gpu",
+            "integration",
+            "vehicle"
+          ]
+        },
+        {
+          "name" : "RUN_SERIAL",
+          "value" : true
+        },
+        {
+          "name" : "TIMEOUT",
+          "value" : 600.0
+        },
+        {
+          "name" : "WORKING_DIRECTORY",
+          "value" : "/Users/glavin/Development/PhysX/out/build/garage-multihull/package/reference"
+        }
+      ]
+    },
+    {
+      "backtrace" : 21,
+      "command" : 
+      [
+        "/Users/glavin/Development/PhysX/out/build/garage-multihull/package/reference/native_standard_scene_test",
+        "--chunk-torque"
+      ],
+      "name" : "physx_native_chunk_torque",
+      "properties" : 
+      [
+        {
+          "name" : "ENVIRONMENT",
+          "value" : 
+          [
+            "CUMETAL_USE_METAL_DEVICE_ADDRESSES=1",
+            "CUMETAL_SYNC_EACH_LAUNCH=0"
+          ]
+        },
+        {
+          "name" : "LABELS",
+          "value" : 
+          [
+            "gpu",
+            "integration",
+            "vehicle"
+          ]
+        },
+        {
+          "name" : "RUN_SERIAL",
+          "value" : true
+        },
+        {
+          "name" : "TIMEOUT",
+          "value" : 600.0
+        },
+        {
+          "name" : "WORKING_DIRECTORY",
+          "value" : "/Users/glavin/Development/PhysX/out/build/garage-multihull/package/reference"
+        }
+      ]
+    }
+  ],
+  "version" : 
+  {
+    "major" : 1,
+    "minor" : 0
+  }
+}

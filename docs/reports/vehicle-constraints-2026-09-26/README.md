@@ -35,14 +35,13 @@ The command observer still conserves the Vehicle2 command integration.
 
 Files: `native-wheel-constraints.wip.patch`, `command-loads.log`,
 `heightfield-driving.log`, and `corner-loads.log`.
-The patch includes earlier native functional-state work still uncommitted.
+The foundation is now checkpointed in PhysX commit `ab88dd85`.
 
-## Next native-engine scope requiring approval
+## Native-engine continuation approved
 
-Automatic approval review rejected the next cross-module edit before execution.
-The specific concern was the risk of corrupting physics through coordinated
-destruction ABI, simulation-controller, writeback and GPU stress changes, and
-the breadth of authorization for that scope.
+The user approved continuation on 2026-09-26 and required checkpoints before
+changes. Vibeland was committed as `352f9221`; PhysX as `ab88dd85`.
+Subsequent constraint routing and transactional ownership work is isolated.
 
 The proposed continuation is confined initially to the sibling PhysX source and
 its existing isolated `out/build/garage-multihull` build:
@@ -61,7 +60,7 @@ its existing isolated `out/build/garage-multihull` build:
 4. Integrate the qualified engine with the server's authored vehicle graph,
    functional state, authoritative fragment stream, visual groups and reset.
 
-No rejected edit has been applied. The installed ABI-18 SDK and running garage
+The installed ABI-18 SDK and running garage
 have not been replaced by this isolated work. No remote/Vast/CUDA run is proposed.
 Local CuMetal results are functional evidence, not CUDA or isolated performance
 qualification. Complete-step idle/impact performance and actual vehicle fracture

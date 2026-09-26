@@ -1,0 +1,9 @@
+CUMETAL WARNING: CUMETAL_USE_METAL_DEVICE_ADDRESSES marks every live allocation read-write on every dispatch so kernels can follow raw device addresses; this removes cross-stream concurrency.
+PASS PGS chunk 0 orientation (0,0,0,1), peak constraint force 19.62 N
+PASS PGS chunk 0 orientation (0,0,0.342898,0.939373), peak constraint force 19.62 N
+PASS PGS chunk 1 orientation (0,0,0,1), peak constraint force 19.62 N
+PASS PGS chunk 1 orientation (0,0,0.342898,0.939373), peak constraint force 19.62 N
+PASS TGS chunk 0 orientation (0,0,0,1), peak constraint force 19.62 N
+PASS TGS chunk 0 orientation (0,0,0.342898,0.939373), peak constraint force 19.62 N
+PASS TGS chunk 1 orientation (0,0,0,1), peak constraint force 19.62 N
+PASS TGS chunk 1 orientation (0,0,0.342898,0.939373), peak constraint force 19.62 N

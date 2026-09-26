@@ -1,0 +1,5 @@
+CUMETAL WARNING: CUMETAL_USE_METAL_DEVICE_ADDRESSES marks every live allocation read-write on every dispatch so kernels can follow raw device addresses; this removes cross-stream concurrency.
+CPU PGS corner constraints: 256 nonzero samples, peak 69197.8 N, velocity residual 1.1921e-07 m/s
+GPU PGS corner constraints: 256 nonzero samples, peak 69197.8 N, velocity residual 1.19213e-07 m/s
+CPU TGS corner constraints: 256 nonzero samples, peak 69159.3 N, velocity residual 6.14391e-08 m/s
+GPU TGS corner constraints: 256 nonzero samples, peak 69160.5 N, velocity residual 5.96046e-08 m/s

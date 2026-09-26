@@ -1,0 +1,86 @@
+{
+  "schema": 1,
+  "status": "passed",
+  "commands": [
+    {
+      "name": "build-engine",
+      "command": [
+        "cmake",
+        "--build",
+        "/Users/glavin/Development/PhysX/out/build/garage-multihull/physx",
+        "--target",
+        "PhysX",
+        "PhysXGpu",
+        "-j4"
+      ],
+      "log": "build-engine.log",
+      "exitCode": 0
+    },
+    {
+      "name": "build-tests",
+      "command": [
+        "cmake",
+        "--build",
+        "/Users/glavin/Development/PhysX/out/build/garage-multihull/package",
+        "--target",
+        "native_constraint_fracture_test",
+        "native_constraint_loads_test",
+        "native_vehicle_constraints_test",
+        "native_vehicle_loads_test",
+        "native_feature_reference_test",
+        "native_standard_scene_test",
+        "-j4"
+      ],
+      "log": "build-tests.log",
+      "exitCode": 0
+    },
+    {
+      "name": "native-tests",
+      "command": [
+        "ctest",
+        "--test-dir",
+        "/Users/glavin/Development/PhysX/out/build/garage-multihull/package",
+        "-R",
+        "^(physx_native_chunk_loads|physx_native_chunk_torque|physx_native_constraint_fracture|physx_native_constraint_loads|physx_native_feature_reference|physx_native_multihull|physx_native_parallel_bonds|physx_native_post_correction|physx_native_post_correction_pgs|physx_native_vehicle_constraints|physx_native_vehicle_loads)$",
+        "--no-tests=error",
+        "-V",
+        "-j1"
+      ],
+      "log": "native-tests.log",
+      "exitCode": 0
+    }
+  ],
+  "scope": "native Vehicle2 constraint fracture foundation",
+  "garageVehicleQualified": false,
+  "performanceQualified": false,
+  "remoteCudaQualified": false,
+  "physxRoot": "/Users/glavin/Development/PhysX",
+  "buildRoot": "/Users/glavin/Development/PhysX/out/build/garage-multihull",
+  "artifacts": {
+    "/Users/glavin/Development/PhysX/out/build/garage-multihull/package/reference/native_constraint_fracture_test": "5452e7804176c6cddbd8c86f6e8abe0702156dafa20e9906e57d1f1e1f722ec2",
+    "/Users/glavin/Development/PhysX/out/build/garage-multihull/package/reference/native_constraint_loads_test": "a941895120b0a7c2c5785732b124e90452520f229eac66cda40c198ca0c44544",
+    "/Users/glavin/Development/PhysX/out/build/garage-multihull/package/reference/native_vehicle_constraints_test": "5a68b6dd5cf88d0e8c694375f4a280910568ba2797b05a43e84c03e91b60baf3",
+    "/Users/glavin/Development/PhysX/out/build/garage-multihull/package/reference/native_vehicle_loads_test": "c542f48b85b56490a44836d7072ae2365a62db6309559050517c74671f6e1117",
+    "/Users/glavin/Development/PhysX/out/build/garage-multihull/package/reference/native_feature_reference_test": "810eada09beb5458e44602cec7e2add2eb459ad9474378b553334fb2777b2c19",
+    "/Users/glavin/Development/PhysX/out/build/garage-multihull/package/reference/native_standard_scene_test": "18927624a08092333d11c81380a228c5c035747ea6a96f11812a95184e22b559",
+    "/Users/glavin/Development/PhysX/out/build/garage-multihull/artifacts/bin/mac.arm64/release/libPhysXDestructionGpuRuntime_64.dylib": "47d176005e28f49f2e0d92337fc4a51e929824840d43c18a88a770f12f21fac8",
+    "/Users/glavin/Development/PhysX/out/build/garage-multihull/artifacts/bin/mac.arm64/release/libPhysXGpuActivity_64.dylib": "43fd5a29510011f65ee2d0f90cd48dacaecc8834e6dd27daa377e68acceefa03"
+  },
+  "publicAbi": 22,
+  "sourceCommit": "ab88dd854920bcb3077723f9a783821d96e66e50",
+  "passedTests": [
+    "physx_native_chunk_loads",
+    "physx_native_chunk_torque",
+    "physx_native_constraint_fracture",
+    "physx_native_constraint_loads",
+    "physx_native_feature_reference",
+    "physx_native_multihull",
+    "physx_native_parallel_bonds",
+    "physx_native_post_correction",
+    "physx_native_post_correction_pgs",
+    "physx_native_vehicle_constraints",
+    "physx_native_vehicle_loads"
+  ],
+  "verifiedSourceCommit": "7b59b7d8a4d8865cffff1aff348d765d46596184",
+  "sourceCommitNote": "The tested uncommitted changes were committed afterward as verifiedSourceCommit; artifacts were rehashed unchanged and the source checkout was clean."
+}

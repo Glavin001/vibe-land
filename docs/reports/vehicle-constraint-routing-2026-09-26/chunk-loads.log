@@ -1,0 +1,10 @@
+CUMETAL WARNING: CUMETAL_USE_METAL_DEVICE_ADDRESSES marks every live allocation read-write on every dispatch so kernels can follow raw device addresses; this removes cross-stream concurrency.
+[PhysX:32] Native GPU destruction stage failed; this simulation step is incomplete. (/Users/glavin/Development/PhysX/physx/source/gpusimulationcontroller/src/PxgSimulationController.cpp:1025)
+chunk command status: fetched=1 error=0 stage=0 broken=1 correction=1
+chunk command: rotated=0 mismatch=0 parallel=0 moving=0 passed
+chunk command status: fetched=1 error=0 stage=0 broken=1 correction=1
+chunk command: rotated=1 mismatch=0 parallel=0 moving=0 passed
+chunk command status: fetched=1 error=0 stage=0 broken=1 correction=1
+chunk command: rotated=1 mismatch=0 parallel=0 moving=1 passed
+chunk command status: fetched=0 error=1 stage=16424 broken=1 correction=0
+chunk command: rotated=0 mismatch=1 parallel=0 moving=0 passed

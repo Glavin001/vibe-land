@@ -1,0 +1,15 @@
+[100%] Built target native_constraint_fracture_test
+[100%] Built target native_constraint_loads_test
+[ 66%] Built target PhysXNativeVehicle
+[100%] Built target native_vehicle_constraints_test
+[ 66%] Built target PhysXNativeVehicle
+[ 66%] Building CXX object reference/CMakeFiles/native_vehicle_loads_test.dir/tests/native_vehicle_loads_test.cpp.o
+[100%] Linking CXX executable native_vehicle_loads_test
+[100%] Built target native_vehicle_loads_test
+[ 50%] Built target PhysXNativeVehicle
+[ 75%] Building CXX object reference/CMakeFiles/native_feature_reference_test.dir/physx_scene.cpp.o
+[ 75%] Building CXX object reference/CMakeFiles/native_feature_reference_test.dir/tests/native_feature_reference_test.cpp.o
+[100%] Linking CXX executable native_feature_reference_test
+ld: warning: duplicate -rpath '/Users/glavin/Development/PhysX/out/build/garage-multihull/artifacts/bin/mac.arm64/release' ignored
+[100%] Built target native_feature_reference_test
+[100%] Built target native_standard_scene_test

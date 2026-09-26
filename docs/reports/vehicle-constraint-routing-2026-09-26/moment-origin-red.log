@@ -1,0 +1,3 @@
+CUMETAL WARNING: CUMETAL_USE_METAL_DEVICE_ADDRESSES marks every live allocation read-write on every dispatch so kernels can follow raw device addresses; this removes cross-stream concurrency.
+static assembly has an unbalanced constraint moment: got (0,0,19.62), expected (0,0,0)
+FAIL: static assembly has an unbalanced constraint moment

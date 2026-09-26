@@ -1,0 +1,11 @@
+CUMETAL WARNING: CUMETAL_USE_METAL_DEVICE_ADDRESSES marks every live allocation read-write on every dispatch so kernels can follow raw device addresses; this removes cross-stream concurrency.
+shape publication: bindings=2 publications=1 failed=0
+post-stress limit=1 complete=1 error=0 stage=0 passes=2 correction=1 broken=2 second=1
+late fragment: position 10 5 0 velocity 0 0 0
+shape publication: bindings=2 publications=1 failed=0
+post-stress limit=1 complete=1 error=0 stage=0 passes=2 correction=1 broken=2 second=1
+late fragment: position 10 5 0 velocity 0 0 0
+post-correction support: limit=1 reports=1 minimum_y=5 / 180 ordinary steps passed
+post-correction limit=1: 4 chunks, 2 bonds, 2 columns, ordinary sentinel; both verdicts and one-time motion passed
+post-correction support: limit=1 reports=0 minimum_y=5 / 180 ordinary steps passed
+post-correction limit=1: 4 chunks, 2 bonds, 2 columns, ordinary sentinel; both verdicts and one-time motion passed
