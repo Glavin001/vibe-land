@@ -149,6 +149,14 @@ that capability. The full-model run converges but fails impact qualification:
 nominal shots do not break buggy/sprint bonds, and heavy shots do not detach
 the targeted wheel on any of the six models.
 
+The [separate hub update](reports/vehicle-authored-impact-2026-09-26/separate-hubs/README.md)
+keeps each tire/rim separate from its rotating hub/rotor, exposing the measured
+wheel mount. It preserves collision geometry and aggregate mass properties;
+49 client tests and all 11 builds' server layout checks pass. Full GPU impact
+qualification of this topology is pending. The impact inspector reports each
+target interface's peak load relative to its material limits without changing
+the acceptance gate.
+
 The full-model tests share fixture loading, registration and configuration in
 `server/src/physx_runtime/vehicle_fracture_tests.rs`. Run them serially against
 the explicit isolated runtime. `VIBE_VEHICLE_FRACTURE_REPORT` records per-model

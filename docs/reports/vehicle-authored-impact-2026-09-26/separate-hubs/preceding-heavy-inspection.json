@@ -1,0 +1,583 @@
+{
+  "scope": "diagnostic only; does not change the fracture qualification gate",
+  "reportPath": "/private/tmp/vehicle-mechanical-authored-verification/cannon-heavy.json",
+  "reportSha256": "5223d3e327431bf7324f166185070d7ee8721e1189fcb4d59f60edf6c0a3e667",
+  "models": [
+    {
+      "model": "buggy",
+      "target": "Front right wheel assembly",
+      "projectileMassKg": 300.0,
+      "speedMps": 120.0,
+      "error": null,
+      "recordedTicks": 120,
+      "rejectedTicks": [],
+      "firstDetachedTick": null,
+      "brokenBonds": 29,
+      "verdictTicks": 120,
+      "observedBonds": 594,
+      "totalBonds": 594,
+      "targetInterfaces": [
+        {
+          "bond": 579,
+          "parts": [
+            "Front right axle",
+            "Front right wheel assembly"
+          ],
+          "attachment": "drive-spline",
+          "areaM2": 0.020657886476765877,
+          "broken": false,
+          "samples": 120,
+          "peaks": {
+            "compressionPa": 20435484.0,
+            "tensionPa": 703900.875,
+            "shearPa": 1039208.0625,
+            "utilisation": 0.17029570043087006,
+            "damageArea": 0.0
+          },
+          "peakToElasticRatio": [
+            0.1702957,
+            0.005865840625,
+            0.014931150323275862
+          ],
+          "elasticPa": [
+            120000000,
+            120000000,
+            69600000
+          ]
+        },
+        {
+          "bond": 591,
+          "parts": [
+            "Front right upright",
+            "Front right wheel assembly"
+          ],
+          "attachment": "wheel-bearing",
+          "areaM2": 0.030049624495959826,
+          "broken": false,
+          "samples": 120,
+          "peaks": {
+            "compressionPa": 7267810.0,
+            "tensionPa": 1599052.25,
+            "shearPa": 34118068.0,
+            "utilisation": 0.4902021288871765,
+            "damageArea": 0.0
+          },
+          "peakToElasticRatio": [
+            0.06056508333333333,
+            0.013325435416666667,
+            0.4902021264367816
+          ],
+          "elasticPa": [
+            120000000,
+            120000000,
+            69600000
+          ]
+        }
+      ],
+      "attachments": {
+        "drive-spline": {
+          "total": 4,
+          "broken": 0,
+          "observed": 4
+        },
+        "fixed-contact": {
+          "total": 582,
+          "broken": 29,
+          "observed": 582
+        },
+        "wheel-bearing": {
+          "total": 4,
+          "broken": 0,
+          "observed": 4
+        },
+        "caliper-mount": {
+          "total": 4,
+          "broken": 0,
+          "observed": 4
+        }
+      },
+      "metadataPath": "/private/tmp/vibe-vehicle-mechanical-assets/f73ffbe0d778df6aa077babf009fe21ae9c1e6ee69d7de3c8f4d7fc89bc7f62b/metadata.json",
+      "metadataSha256": "c072677f9a84656ab5110b6eda239d84eda419a28e4ace8f7d8b90f24ca92fb4"
+    },
+    {
+      "model": "trophy",
+      "target": "Front right wheel assembly",
+      "projectileMassKg": 300.0,
+      "speedMps": 120.0,
+      "error": null,
+      "recordedTicks": 120,
+      "rejectedTicks": [],
+      "firstDetachedTick": null,
+      "brokenBonds": 49,
+      "verdictTicks": 120,
+      "observedBonds": 1040,
+      "totalBonds": 1040,
+      "targetInterfaces": [
+        {
+          "bond": 859,
+          "parts": [
+            "Front right axle",
+            "Front right wheel assembly"
+          ],
+          "attachment": "drive-spline",
+          "areaM2": 0.020657969251188884,
+          "broken": false,
+          "samples": 120,
+          "peaks": {
+            "compressionPa": 27563126.0,
+            "tensionPa": 191488.21875,
+            "shearPa": 624241.4375,
+            "utilisation": 0.2296927124261856,
+            "damageArea": 0.0
+          },
+          "peakToElasticRatio": [
+            0.22969271666666666,
+            0.00159573515625,
+            0.008968986170977012
+          ],
+          "elasticPa": [
+            120000000,
+            120000000,
+            69600000
+          ]
+        },
+        {
+          "bond": 1007,
+          "parts": [
+            "Front right upright",
+            "Front right wheel assembly"
+          ],
+          "attachment": "wheel-bearing",
+          "areaM2": 0.0300873966957956,
+          "broken": false,
+          "samples": 120,
+          "peaks": {
+            "compressionPa": 11423575.0,
+            "tensionPa": 0.0,
+            "shearPa": 48882752.0,
+            "utilisation": 0.7023383975028992,
+            "damageArea": 0.0
+          },
+          "peakToElasticRatio": [
+            0.09519645833333333,
+            0.0,
+            0.7023383908045977
+          ],
+          "elasticPa": [
+            120000000,
+            120000000,
+            69600000
+          ]
+        }
+      ],
+      "attachments": {
+        "fixed-contact": {
+          "total": 1028,
+          "broken": 49,
+          "observed": 1028
+        },
+        "drive-spline": {
+          "total": 4,
+          "broken": 0,
+          "observed": 4
+        },
+        "wheel-bearing": {
+          "total": 4,
+          "broken": 0,
+          "observed": 4
+        },
+        "caliper-mount": {
+          "total": 4,
+          "broken": 0,
+          "observed": 4
+        }
+      },
+      "metadataPath": "/private/tmp/vibe-vehicle-mechanical-assets/12a5e26efbcf429deeaeafb4b5bd964a71bd31a8ead5bf6dd3d777621e5c4193/metadata.json",
+      "metadataSha256": "bd8cb342792840d6bd716e262a6c0cb9007159a31c55537773df0db397e2f38f"
+    },
+    {
+      "model": "rally",
+      "target": "Front right wheel assembly",
+      "projectileMassKg": 300.0,
+      "speedMps": 120.0,
+      "error": null,
+      "recordedTicks": 120,
+      "rejectedTicks": [],
+      "firstDetachedTick": null,
+      "brokenBonds": 59,
+      "verdictTicks": 120,
+      "observedBonds": 1042,
+      "totalBonds": 1042,
+      "targetInterfaces": [
+        {
+          "bond": 919,
+          "parts": [
+            "Front right axle",
+            "Front right wheel assembly"
+          ],
+          "attachment": "drive-spline",
+          "areaM2": 0.020657970344944127,
+          "broken": false,
+          "samples": 120,
+          "peaks": {
+            "compressionPa": 34357904.0,
+            "tensionPa": 266797.4375,
+            "shearPa": 407974.8125,
+            "utilisation": 0.2863158583641052,
+            "damageArea": 0.0
+          },
+          "peakToElasticRatio": [
+            0.28631586666666664,
+            0.0022233119791666665,
+            0.005861707076149425
+          ],
+          "elasticPa": [
+            120000000,
+            120000000,
+            69600000
+          ]
+        },
+        {
+          "bond": 977,
+          "parts": [
+            "Front right upright",
+            "Front right wheel assembly"
+          ],
+          "attachment": "wheel-bearing",
+          "areaM2": 0.028924994974385256,
+          "broken": false,
+          "samples": 120,
+          "peaks": {
+            "compressionPa": 14025387.0,
+            "tensionPa": 457420.125,
+            "shearPa": 48491068.0,
+            "utilisation": 0.6967107653617859,
+            "damageArea": 0.0
+          },
+          "peakToElasticRatio": [
+            0.116878225,
+            0.003811834375,
+            0.6967107471264368
+          ],
+          "elasticPa": [
+            120000000,
+            120000000,
+            69600000
+          ]
+        }
+      ],
+      "attachments": {
+        "fixed-contact": {
+          "total": 1030,
+          "broken": 59,
+          "observed": 1030
+        },
+        "drive-spline": {
+          "total": 4,
+          "broken": 0,
+          "observed": 4
+        },
+        "wheel-bearing": {
+          "total": 4,
+          "broken": 0,
+          "observed": 4
+        },
+        "caliper-mount": {
+          "total": 4,
+          "broken": 0,
+          "observed": 4
+        }
+      },
+      "metadataPath": "/private/tmp/vibe-vehicle-mechanical-assets/9b2c2a6c13a64a4ac4305279327fd179cba6bd1fcae455eceb5f3a74560f0f79/metadata.json",
+      "metadataSha256": "920c6af303e436a188c089d042d21cbfc19a2f7c15eee07dd6f3ef3ef2934a51"
+    },
+    {
+      "model": "monster",
+      "target": "Front right wheel assembly",
+      "projectileMassKg": 300.0,
+      "speedMps": 120.0,
+      "error": null,
+      "recordedTicks": 120,
+      "rejectedTicks": [],
+      "firstDetachedTick": null,
+      "brokenBonds": 39,
+      "verdictTicks": 1,
+      "observedBonds": 1023,
+      "totalBonds": 1023,
+      "targetInterfaces": [
+        {
+          "bond": 636,
+          "parts": [
+            "Front right axle",
+            "Front right wheel assembly"
+          ],
+          "attachment": "drive-spline",
+          "areaM2": 0.02065796482292905,
+          "broken": false,
+          "samples": 1,
+          "peaks": {
+            "compressionPa": 22179444.0,
+            "tensionPa": 0.0,
+            "shearPa": 697232.5,
+            "utilisation": 0.18482869863510132,
+            "damageArea": 0.0
+          },
+          "peakToElasticRatio": [
+            0.1848287,
+            0.0,
+            0.010017708333333333
+          ],
+          "elasticPa": [
+            120000000,
+            120000000,
+            69600000
+          ]
+        },
+        {
+          "bond": 1020,
+          "parts": [
+            "Front right upright",
+            "Front right wheel assembly"
+          ],
+          "attachment": "wheel-bearing",
+          "areaM2": 0.030583727964598295,
+          "broken": false,
+          "samples": 1,
+          "peaks": {
+            "compressionPa": 4970476.0,
+            "tensionPa": 0.0,
+            "shearPa": 45779884.0,
+            "utilisation": 0.6577569246292114,
+            "damageArea": 0.0
+          },
+          "peakToElasticRatio": [
+            0.04142063333333333,
+            0.0,
+            0.6577569540229885
+          ],
+          "elasticPa": [
+            120000000,
+            120000000,
+            69600000
+          ]
+        }
+      ],
+      "attachments": {
+        "drive-spline": {
+          "total": 4,
+          "broken": 0,
+          "observed": 4
+        },
+        "fixed-contact": {
+          "total": 1011,
+          "broken": 39,
+          "observed": 1011
+        },
+        "wheel-bearing": {
+          "total": 4,
+          "broken": 0,
+          "observed": 4
+        },
+        "caliper-mount": {
+          "total": 4,
+          "broken": 0,
+          "observed": 4
+        }
+      },
+      "metadataPath": "/private/tmp/vibe-vehicle-mechanical-assets/d0ad0de1cd9ff762c1ec1e1485e8361d546c03fc41661dc04874de83b5ff1795/metadata.json",
+      "metadataSha256": "edff65fffe67103b5716f99ae1db6f181d0b158f7f9777ea3418777f964178a8"
+    },
+    {
+      "model": "derby",
+      "target": "Front right wheel assembly",
+      "projectileMassKg": 300.0,
+      "speedMps": 120.0,
+      "error": null,
+      "recordedTicks": 120,
+      "rejectedTicks": [],
+      "firstDetachedTick": null,
+      "brokenBonds": 43,
+      "verdictTicks": 120,
+      "observedBonds": 984,
+      "totalBonds": 984,
+      "targetInterfaces": [
+        {
+          "bond": 701,
+          "parts": [
+            "Front right axle",
+            "Front right wheel assembly"
+          ],
+          "attachment": "drive-spline",
+          "areaM2": 0.020657969019842876,
+          "broken": false,
+          "samples": 120,
+          "peaks": {
+            "compressionPa": 28158338.0,
+            "tensionPa": 175201.15625,
+            "shearPa": 536521.25,
+            "utilisation": 0.2346528172492981,
+            "damageArea": 0.0
+          },
+          "peakToElasticRatio": [
+            0.23465281666666668,
+            0.0014600096354166667,
+            0.007708638649425287
+          ],
+          "elasticPa": [
+            120000000,
+            120000000,
+            69600000
+          ]
+        },
+        {
+          "bond": 945,
+          "parts": [
+            "Front right upright",
+            "Front right wheel assembly"
+          ],
+          "attachment": "wheel-bearing",
+          "areaM2": 0.030587758202173063,
+          "broken": false,
+          "samples": 120,
+          "peaks": {
+            "compressionPa": 14110712.0,
+            "tensionPa": 379911.5,
+            "shearPa": 47233448.0,
+            "utilisation": 0.6786414980888367,
+            "damageArea": 0.0
+          },
+          "peakToElasticRatio": [
+            0.11758926666666666,
+            0.0031659291666666666,
+            0.6786414942528736
+          ],
+          "elasticPa": [
+            120000000,
+            120000000,
+            69600000
+          ]
+        }
+      ],
+      "attachments": {
+        "fixed-contact": {
+          "total": 972,
+          "broken": 43,
+          "observed": 972
+        },
+        "drive-spline": {
+          "total": 4,
+          "broken": 0,
+          "observed": 4
+        },
+        "wheel-bearing": {
+          "total": 4,
+          "broken": 0,
+          "observed": 4
+        },
+        "caliper-mount": {
+          "total": 4,
+          "broken": 0,
+          "observed": 4
+        }
+      },
+      "metadataPath": "/private/tmp/vibe-vehicle-mechanical-assets/ae3040a79dd691de61bcc85af424d54d3b97795fe14107ace19e971d1d1407a2/metadata.json",
+      "metadataSha256": "3677cd01f36a67154b30edc5c27a116b7aa9640381618860d77a5e37ebe91abe"
+    },
+    {
+      "model": "sprint",
+      "target": "Front right wheel assembly",
+      "projectileMassKg": 300.0,
+      "speedMps": 120.0,
+      "error": null,
+      "recordedTicks": 120,
+      "rejectedTicks": [],
+      "firstDetachedTick": null,
+      "brokenBonds": 34,
+      "verdictTicks": 120,
+      "observedBonds": 722,
+      "totalBonds": 722,
+      "targetInterfaces": [
+        {
+          "bond": 704,
+          "parts": [
+            "Front right axle",
+            "Front right wheel assembly"
+          ],
+          "attachment": "drive-spline",
+          "areaM2": 0.020657891715821972,
+          "broken": false,
+          "samples": 120,
+          "peaks": {
+            "compressionPa": 25038726.0,
+            "tensionPa": 428884.0625,
+            "shearPa": 969059.1875,
+            "utilisation": 0.20865604281425476,
+            "damageArea": 0.0
+          },
+          "peakToElasticRatio": [
+            0.20865605,
+            0.0035740338541666665,
+            0.01392326418821839
+          ],
+          "elasticPa": [
+            120000000,
+            120000000,
+            69600000
+          ]
+        },
+        {
+          "bond": 716,
+          "parts": [
+            "Front right upright",
+            "Front right wheel assembly"
+          ],
+          "attachment": "wheel-bearing",
+          "areaM2": 0.029426422207061282,
+          "broken": false,
+          "samples": 120,
+          "peaks": {
+            "compressionPa": 10614707.0,
+            "tensionPa": 1088441.0,
+            "shearPa": 42984192.0,
+            "utilisation": 0.6175889372825623,
+            "damageArea": 0.0
+          },
+          "peakToElasticRatio": [
+            0.08845589166666666,
+            0.009070341666666667,
+            0.6175889655172414
+          ],
+          "elasticPa": [
+            120000000,
+            120000000,
+            69600000
+          ]
+        }
+      ],
+      "attachments": {
+        "fixed-contact": {
+          "total": 710,
+          "broken": 34,
+          "observed": 710
+        },
+        "drive-spline": {
+          "total": 4,
+          "broken": 0,
+          "observed": 4
+        },
+        "wheel-bearing": {
+          "total": 4,
+          "broken": 0,
+          "observed": 4
+        },
+        "caliper-mount": {
+          "total": 4,
+          "broken": 0,
+          "observed": 4
+        }
+      },
+      "metadataPath": "/private/tmp/vibe-vehicle-mechanical-assets/78ff66b66243b9d864fdaf101d2fe46554b4d4471ba783cc919c8a855fb18f48/metadata.json",
+      "metadataSha256": "d7154f38fddb0a14b4cd93d636d0b0ba45a039bce2660b7b12f5a21313dd8bbb"
+    }
+  ]
+}

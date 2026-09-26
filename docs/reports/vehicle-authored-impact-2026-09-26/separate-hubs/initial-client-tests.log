@@ -1,0 +1,33 @@
+
+ RUN  v4.1.2 /Users/glavin/Development/vibe-land/client
+
+ ❯ src/vehicles/validation.test.ts (3 tests | 1 failed) 17818ms
+     × checks the Sprint preset through collision, measured-joint and GPU-shape audits 17816ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/vehicles/validation.test.ts > shared garage assembly validation > checks the Sprint preset through collision, measured-joint and GPU-shape audits
+AssertionError: expected false to be true // Object.is equality
+
+- Expected
++ Received
+
+- true
++ false
+
+ ❯ src/vehicles/validation.test.ts:39:108
+     38|       expect(centers.size).toBe(intact.size);
+     39|       const hubs = result.collision.parts.filter((p: any) => p.motion?…
+     40|       expect(hubs).toHaveLength(4);
+       |                    ^
+     41|       expect(hubs.every((hub: any) => hub.visualIds.length === 2)).toB…
+     42|       visual.inspect(1, false, undefined, centers);
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed | 3 passed (4)
+      Tests  1 failed | 41 passed (42)
+   Start at  10:15:48
+   Duration  130.23s (transform 201ms, setup 0ms, import 314ms, tests 147.86s, environment 0ms)
+
