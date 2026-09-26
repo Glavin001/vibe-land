@@ -10,7 +10,7 @@ include!("physx_sdk_location.rs");
 /// together with the SDK; a silent bump would change struct layouts under our
 /// device reads, so the build fails loudly instead.
 #[cfg(feature = "native-destruction")]
-const NATIVE_DESTRUCTION_SCENE_VERSIONS: [&str; 4] = [
+const NATIVE_DESTRUCTION_SCENE_VERSIONS: [&str; 5] = [
     "#define PX_DESTRUCTION_SCENE_VERSION 15",
     "#define PX_DESTRUCTION_SCENE_VERSION 16",
     // v17 changes no layout: `internalCorrectionLimit` stops being a boolean
@@ -19,6 +19,7 @@ const NATIVE_DESTRUCTION_SCENE_VERSIONS: [&str; 4] = [
     // v18 appends `fragmentMaxDepenetrationVelocity` to the stress desc; the
     // device views are unchanged.
     "#define PX_DESTRUCTION_SCENE_VERSION 18",
+    "#define PX_DESTRUCTION_SCENE_VERSION 22",
 ];
 
 #[cfg(feature = "destruction")]
@@ -337,7 +338,7 @@ fn add_native_destruction(
     let header = include.join("PxDestructionScene.h");
     let text = std::fs::read_to_string(&header)
         .unwrap_or_else(|e| panic!("cannot read {}: {e}", header.display()));
-    // The shim is written against v15 through v18. They differ only by additions
+    // The shim supports v15 through v18 and the coherent vehicle ABI v22. They differ only by additions
     // it guards, and the device views it reads are raw structs, so an unknown
     // version is a silent misread rather than a link error -- hence a hard stop.
     let version = NATIVE_DESTRUCTION_SCENE_VERSIONS
@@ -351,7 +352,7 @@ fn add_native_destruction(
                 NATIVE_DESTRUCTION_SCENE_VERSIONS
             )
         });
-    let version = 15 + version;
+    let version = [15, 16, 17, 18, 22][version];
     build.define("VIBE_PHYSX_DESTRUCTION_SCENE_VERSION", version.to_string().as_str());
     println!("cargo:rustc-env=VIBE_PHYSX_DESTRUCTION_SCENE_VERSION={version}");
     // From v17 the stage loops its correction: configureStress takes any

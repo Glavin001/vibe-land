@@ -324,6 +324,22 @@ pub struct VehiclePartShape {
     pub points: Vec<Vec3>,
 }
 
+/// One destructible collider group, using measured mass properties about its
+/// COM in actor axes. Hulls are selected by VehiclePartShape::part_index.
+#[derive(Clone, Debug)]
+pub struct VehicleFracturePart {
+    pub part_index: u32,
+    pub mass: f32,
+    pub volume: f32,
+    pub center: Vec3,
+    pub inertia_diagonal: Vec3,
+    /// Off-diagonal tensor terms xy, xz, yz (not negated products).
+    pub inertia_products: Vec3,
+    /// 0..3 for a functional wheel group, 255 for chassis/bodywork.
+    pub wheel: u8,
+    pub engine: bool,
+}
+
 /// One frame of driver input for a vehicle. Throttle, brake and handbrake are
 /// in `0..=1`, steer in `-1..=1` (positive turns right).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -1519,6 +1535,22 @@ impl World {
             .map_err(operation_error)
     }
 
+    /// Register an existing Vehicle2 compound with the native stress solver.
+    /// Chunk zero is the retained chassis; registration must precede configure.
+    #[cfg(feature = "native-destruction")]
+    pub fn native_register_vehicle(&mut self, entity_id: u32, structure_id: u32,
+        parts: &[VehicleFracturePart], bonds: &[ChunkBondDesc], settings: DestructibleSettings,
+    ) -> Result<(), BridgeError> {
+        let parts: Vec<ffi::FfiVehicleFracturePart> = parts.iter().map(|p| ffi::FfiVehicleFracturePart {
+            part_index:p.part_index, mass:p.mass, volume:p.volume, center:p.center.into(),
+            inertia_diagonal:p.inertia_diagonal.into(), inertia_products:p.inertia_products.into(),
+            wheel:p.wheel, engine:p.engine,
+        }).collect();
+        let bonds: Vec<ffi::FfiChunkBondDesc> = bonds.iter().cloned().map(Into::into).collect();
+        self.inner.pin_mut().native_register_vehicle(entity_id, structure_id, &parts, &bonds,
+            &settings.into()).map_err(operation_error)
+    }
+
     /// Hand the authored asset to the stage. The scene must already have
     /// completed one step, which is what gives chunks their GPU identities.
     #[cfg(feature = "native-destruction")]
@@ -1958,6 +1990,17 @@ mod ffi {
         slope_limit_radians: f32,
         collision_group: u32,
         collision_mask: u32,
+    }
+
+    struct FfiVehicleFracturePart {
+        part_index: u32,
+        mass: f32,
+        volume: f32,
+        center: FfiVec3,
+        inertia_diagonal: FfiVec3,
+        inertia_products: FfiVec3,
+        wheel: u8,
+        engine: bool,
     }
 
     struct FfiVehiclePartShape {
@@ -2587,6 +2630,8 @@ mod ffi {
         /// step: the stage is configured and observed between simulates,
         /// never during one.
         fn native_attach(self: Pin<&mut World>) -> Result<()>;
+        fn native_register_vehicle(self: Pin<&mut World>, entity_id: u32, structure_id: u32,
+            parts: &[FfiVehicleFracturePart], bonds: &[FfiChunkBondDesc], settings: &FfiDestructibleSettings) -> Result<()>;
         fn native_create_destructible(
             self: Pin<&mut World>,
             structure_id: u32,

@@ -10,11 +10,13 @@ class PxFilterData;
 class PxMaterial;
 class PxPhysics;
 class PxScene;
+namespace native { class NativeVehicle; }
 } // namespace physx
 
 namespace vibe_land::physx_bridge {
 
 struct FfiVec3;
+struct FfiVehicleFracturePart;
 struct FfiPose;
 struct FfiDestructibleSettings;
 struct FfiChunkNodeDesc;
@@ -74,6 +76,16 @@ public:
                            const FfiDestructibleSettings &settings,
                            std::uint32_t collision_group,
                            std::uint32_t collision_mask);
+
+  void register_vehicle(physx::native::NativeVehicle &vehicle, std::uint32_t structure_id,
+      rust::Slice<const FfiVehicleFracturePart> parts, rust::Slice<const FfiChunkBondDesc> bonds,
+      const FfiDestructibleSettings &settings);
+
+  /// Refresh functional state from accepted shape owners, before Vehicle2 runs.
+  void prepare_vehicles();
+  /// Submit the measured commands after Vehicle2 runs and before simulate.
+  void submit_vehicle_loads(float dt);
+  bool owns_vehicle(const physx::native::NativeVehicle *vehicle) const;
 
   /// Hand the authored asset to the stage. The caller must have stepped the
   /// scene once already: shape and body GPU identities do not exist until a

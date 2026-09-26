@@ -15,14 +15,14 @@ import sys
 
 TESTS = {
     "physx_native_constraint_fracture", "physx_native_constraint_loads",
-    "physx_native_vehicle_constraints", "physx_native_vehicle_loads",
+    "physx_native_vehicle_constraints", "physx_native_vehicle_loads", "physx_native_vehicle_mass",
     "physx_native_feature_reference", "physx_native_chunk_torque",
     "physx_native_chunk_loads", "physx_native_multihull",
     "physx_native_parallel_bonds", "physx_native_post_correction",
     "physx_native_post_correction_pgs",
 }
 TARGETS = ["native_constraint_fracture_test", "native_constraint_loads_test",
-           "native_vehicle_constraints_test", "native_vehicle_loads_test",
+           "native_vehicle_constraints_test", "native_vehicle_loads_test", "native_vehicle_mass_test",
            "native_feature_reference_test", "native_standard_scene_test"]
 
 

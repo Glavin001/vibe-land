@@ -1,5 +1,6 @@
 #include "native_state.h"
 #include "solver_iterations.h"
+#include "PxNativeVehicle.h"
 
 #include "extensions/PxMassProperties.h"
 
@@ -189,10 +190,17 @@ void NativeDestruction::clear() {
   // right side of that trade to be on.
   if (released) {
     for (PxRigidDynamic *parent : s.parents) {
-      if (parent != nullptr) {
+      if (parent != nullptr
+#if PX_DESTRUCTION_SCENE_VERSION >= 22
+          && !s.borrowed_parents.count(parent)
+#endif
+      ) {
         parent->release();
       }
     }
+#if PX_DESTRUCTION_SCENE_VERSION >= 22
+    for (const auto &extra : s.extra_shapes) extra.shape->release();
+#endif
     for (State::Chunk &chunk : s.chunks) {
       if (chunk.shape != nullptr) {
         chunk.shape->release();
@@ -205,6 +213,73 @@ void NativeDestruction::clear() {
   state_.reset(new State(physics, scene, material));
   native_require(released,
                  "cannot clear the active native destruction topology");
+}
+
+std::uint32_t NativeDestruction::State::append_materials(std::uint32_t structure_id,
+    const FfiDestructibleSettings &settings) {
+  State &s = *this;
+  const PxU32 material_base = static_cast<PxU32>(s.materials.size());
+  s.material_base[structure_id] = material_base;
+  for (const FfiStressMaterial &m : settings.materials) {
+    PxDestructionMaterial out;
+    // Authored limits are already resolved to Pa by the caller, and the stage
+    // reads negative tension/shear as "inherit compression" -- the same rule
+    // the Blast materials use, so one authored table drives both backends.
+    out.compressionElasticLimit = m.compression_elastic;
+    out.compressionFatalLimit = m.compression_fatal;
+    out.tensionElasticLimit = m.tension_elastic < 0 ? -1.0f : m.tension_elastic;
+    out.tensionFatalLimit = m.tension_fatal < 0 ? -1.0f : m.tension_fatal;
+    out.shearElasticLimit = m.shear_elastic < 0 ? -1.0f : m.shear_elastic;
+    out.shearFatalLimit = m.shear_fatal < 0 ? -1.0f : m.shear_fatal;
+    out.residualAreaFraction = m.residual_area_fraction;
+    s.materials.push_back(out);
+  }
+  return material_base;
+}
+
+void NativeDestruction::State::append_bonds(std::uint32_t structure_id, std::uint32_t base,
+    rust::Slice<const FfiChunkBondDesc> bonds, const FfiDestructibleSettings &settings) {
+  State &s = *this;
+  const PxU32 material_base = s.material_base.at(structure_id);
+  const std::size_t bond_base = s.bonds.size();
+  double log_weight = 0.0;
+  for (const FfiChunkBondDesc &b : bonds) {
+    // Bond normals are authored per pair; the stage wants them oriented from
+    // the lower chunk index to the higher, so flip when the authored order is
+    // reversed rather than trusting the sign.
+    const PxVec3 normal = native_px(b.normal) * (b.node0 < b.node1 ? 1.0f : -1.0f);
+    native_require(normal.isFinite() && normal.magnitudeSquared() > 1e-8f,
+                   "invalid bond normal");
+    const float distance = (s.nodes[base + b.node0].position -
+                            s.nodes[base + b.node1].position)
+                               .magnitude();
+    const float modulus = settings.materials[b.material].elastic_modulus;
+    const float weight =
+        std::sqrt((modulus > 0.0f ? modulus / kReferenceModulusPa : 1.0f) *
+                  std::max(b.area, 1e-4f) / std::max(distance, 0.05f));
+    log_weight += std::log(weight);
+
+    PxDestructionStressBond bond{};
+    bond.chunk0 = base + std::min(b.node0, b.node1);
+    bond.chunk1 = base + std::max(b.node0, b.node1);
+    bond.centroid = native_px(b.centroid);
+    bond.normal = normal.getNormalized();
+    bond.area = b.area;
+    // Native material health is remaining bonded area (m²), not a 0..1
+    // fraction. Starting every interface at 1 m² inflated small weld strength.
+    bond.health = b.area;
+    bond.complianceScale = weight;
+    bond.material = material_base + b.material;
+    s.bonds.push_back(bond);
+    s.bond_ids.emplace_back(structure_id, b.bond_index);
+  }
+  if (!bonds.empty()) {
+    const float mean =
+        std::exp(static_cast<float>(log_weight / static_cast<double>(bonds.size())));
+    for (std::size_t i = bond_base; i < s.bonds.size(); ++i) {
+      s.bonds[i].complianceScale /= mean;
+    }
+  }
 }
 
 void NativeDestruction::create_destructible(
@@ -225,22 +300,7 @@ void NativeDestruction::create_destructible(
                  "a structure with no material has no strength to solve for");
 
   const PxU32 base = static_cast<PxU32>(s.nodes.size());
-  const PxU32 material_base = static_cast<PxU32>(s.materials.size());
-  s.material_base[structure_id] = material_base;
-  for (const FfiStressMaterial &m : settings.materials) {
-    PxDestructionMaterial out;
-    // Authored limits are already resolved to Pa by the caller, and the stage
-    // reads negative tension/shear as "inherit compression" -- the same rule
-    // the Blast materials use, so one authored table drives both backends.
-    out.compressionElasticLimit = m.compression_elastic;
-    out.compressionFatalLimit = m.compression_fatal;
-    out.tensionElasticLimit = m.tension_elastic < 0 ? -1.0f : m.tension_elastic;
-    out.tensionFatalLimit = m.tension_fatal < 0 ? -1.0f : m.tension_fatal;
-    out.shearElasticLimit = m.shear_elastic < 0 ? -1.0f : m.shear_elastic;
-    out.shearFatalLimit = m.shear_fatal < 0 ? -1.0f : m.shear_fatal;
-    out.residualAreaFraction = m.residual_area_fraction;
-    s.materials.push_back(out);
-  }
+  const PxU32 material_base = s.append_materials(structure_id, settings);
 
   // Connected components of the authored bond graph. The stage requires the
   // initial cluster bindings to match them exactly, so this is the partition
@@ -436,43 +496,162 @@ void NativeDestruction::create_destructible(
                  structure_id, cpu_hulls, hulls);
   }
 
-  const std::size_t bond_base = s.bonds.size();
-  double log_weight = 0.0;
-  for (const FfiChunkBondDesc &b : bonds) {
-    // Bond normals are authored per pair; the stage wants them oriented from
-    // the lower chunk index to the higher, so flip when the authored order is
-    // reversed rather than trusting the sign.
-    const PxVec3 normal = native_px(b.normal) * (b.node0 < b.node1 ? 1.0f : -1.0f);
-    native_require(normal.isFinite() && normal.magnitudeSquared() > 1e-8f,
-                   "invalid bond normal");
-    const float distance = (s.nodes[base + b.node0].position -
-                            s.nodes[base + b.node1].position)
-                               .magnitude();
-    const float modulus = settings.materials[b.material].elastic_modulus;
-    const float weight =
-        std::sqrt((modulus > 0.0f ? modulus / kReferenceModulusPa : 1.0f) *
-                  std::max(b.area, 1e-4f) / std::max(distance, 0.05f));
-    log_weight += std::log(weight);
+  s.append_bonds(structure_id, base, bonds, settings);
+}
 
-    PxDestructionStressBond bond{};
-    bond.chunk0 = base + std::min(b.node0, b.node1);
-    bond.chunk1 = base + std::max(b.node0, b.node1);
-    bond.centroid = native_px(b.centroid);
-    bond.normal = normal.getNormalized();
-    bond.area = b.area;
-    bond.health = 1.0f;
-    bond.complianceScale = weight;
-    bond.material = material_base + b.material;
-    s.bonds.push_back(bond);
-    s.bond_ids.emplace_back(structure_id, b.bond_index);
+void NativeDestruction::register_vehicle(physx::native::NativeVehicle &vehicle,
+    std::uint32_t structure_id, rust::Slice<const FfiVehicleFracturePart> parts,
+    rust::Slice<const FfiChunkBondDesc> bonds, const FfiDestructibleSettings &settings) {
+#if PX_DESTRUCTION_SCENE_VERSION >= 22
+  State &s = *state_;
+  native_require(!s.configured, "vehicle registration must precede native configure");
+  native_require(structure_id < 255 && !s.next_serial.count(structure_id), "invalid or duplicate vehicle structure");
+  native_require(!parts.empty() && parts.size() <= 65536 && !settings.materials.empty(), "invalid vehicle fracture asset");
+  auto *actor = vehicle.actor();
+  native_require(actor && actor->getScene() == &s.scene && !owns_vehicle(&vehicle), "invalid vehicle actor ownership");
+  std::vector<std::vector<PxShape *>> hulls(parts.size());
+  std::vector<PxShape *> shapes(actor->getNbShapes());actor->getShapes(shapes.data(), PxU32(shapes.size()));
+  for (auto *shape : shapes) if (shape->userData) {
+    const auto part = reinterpret_cast<std::uintptr_t>(shape->userData) - 1;
+    native_require(part < parts.size(), "vehicle hull names unknown fracture part");
+    hulls[part].push_back(shape);
   }
-  if (!bonds.empty()) {
-    const float mean =
-        std::exp(static_cast<float>(log_weight / static_cast<double>(bonds.size())));
-    for (std::size_t i = bond_base; i < s.bonds.size(); ++i) {
-      s.bonds[i].complianceScale /= mean;
+  State::VehicleBinding binding{};binding.vehicle=&vehicle;
+  binding.base=PxU32(s.nodes.size());binding.count=PxU32(parts.size());
+  std::vector<PxMassProperties> physical;
+  std::vector<PxTransform> transforms(parts.size(), PxTransform(PxIdentity));
+  for (PxU32 i=0; i<parts.size(); ++i) {
+    const auto &part=parts[i];
+    const PxVec3 diagonal=native_px(part.inertia_diagonal), products=native_px(part.inertia_products);
+    const PxVec3 center=native_px(part.center);
+    native_require(part.part_index==i && !hulls[i].empty() && PxIsFinite(part.mass) && part.mass>0 &&
+        PxIsFinite(part.volume) && part.volume>0 && center.isFinite() && diagonal.isFinite() && products.isFinite(),
+        "invalid vehicle part mass or collider mapping");
+    const PxMat33 tensor(PxVec3(diagonal.x,products.x,products.y),
+        PxVec3(products.x,diagonal.y,products.z),PxVec3(products.y,products.z,diagonal.z));
+    PxQuat axes;const PxVec3 moments=PxMassProperties::getMassSpaceInertia(tensor, axes);
+    native_require(moments.minElement()>0 && 2*moments.maxElement()<=moments.x+moments.y+moments.z+1e-4f,
+        "vehicle inertia tensor is not physically realizable");
+    physical.emplace_back(part.mass,tensor,center);
+    if (part.wheel<4) binding.wheels[part.wheel].push_back(binding.base+i);
+    else native_require(part.wheel==255,"invalid wheel identity");
+    if (part.engine) binding.engines.push_back(binding.base+i);
+  }
+  native_require(parts[0].wheel==255,"vehicle chunk zero must be retained chassis");
+  for (auto &wheel : binding.wheels) native_require(wheel.size()==1,
+      "native vehicle requires one simple collider group per wheel");
+  std::vector<PxU32> roots(parts.size());std::iota(roots.begin(),roots.end(),0u);
+  const auto find=[&](PxU32 v){while(roots[v]!=v){roots[v]=roots[roots[v]];v=roots[v];}return v;};
+  for (const auto &bond:bonds) {
+    native_require(bond.node0<parts.size() && bond.node1<parts.size() && bond.node0!=bond.node1 &&
+        bond.material<settings.materials.size() && PxIsFinite(bond.area) && bond.area>0 &&
+        native_px(bond.centroid).isFinite() && native_px(bond.normal).isFinite() &&
+        native_px(bond.normal).magnitudeSquared()>1e-8f,"invalid vehicle bond");
+    const auto a=find(bond.node0),b=find(bond.node1);roots[PxMax(a,b)]=PxMin(a,b);
+  }
+  for (PxU32 i=0;i<parts.size();++i) native_require(find(i)==find(0),"vehicle bond graph is disconnected");
+  const PxMassProperties aggregate=PxMassProperties::sum(physical.data(),transforms.data(),PxU32(physical.size()));
+  PxQuat axes;const PxVec3 moments=PxMassProperties::getMassSpaceInertia(aggregate.inertiaTensor,axes);
+  actor->setMass(aggregate.mass);actor->setMassSpaceInertiaTensor(moments);
+  actor->setCMassLocalPose(PxTransform(aggregate.centerOfMass,axes));
+  const PxU32 material=s.append_materials(structure_id,settings),cluster=PxU32(s.clusters.size());
+  s.next_serial[structure_id]=1;
+  if(!s.round_mask) {
+    const auto filter=hulls[0][0]->getSimulationFilterData();
+    s.round_group=filter.word0;s.round_mask=filter.word1;
+  }
+  s.parents.push_back(actor);s.borrowed_parents.insert(actor);
+  s.clusters.push_back({actor->getGPUIndex(),aggregate.centerOfMass});
+  for (PxU32 i=0;i<parts.size();++i) {
+    const auto &part=parts[i];const auto &props=physical[i];
+    s.nodes.push_back({props.centerOfMass,props.mass,
+        (props.inertiaTensor[0][0]+props.inertiaTensor[1][1]+props.inertiaTensor[2][2])/3,
+        cluster,PX_INVALID_U32,part.volume,material});
+    PxDestructionChunkMassProperties mass{};mass.mass=props.mass;
+    for (PxU32 k=0;k<3;++k) {mass.center[k]=props.centerOfMass[k];mass.inertia[k]=props.inertiaTensor[k][k];}
+    mass.inertia[3]=props.inertiaTensor[1][0];mass.inertia[4]=props.inertiaTensor[2][0];mass.inertia[5]=props.inertiaTensor[2][1];
+    s.properties.push_back(mass);
+    s.chunks.push_back({hulls[i][0],structure_id,i,0,PX_INVALID_U32,0});
+    for (PxU32 h=0;h<hulls[i].size();++h) {
+      auto *shape=hulls[i][h];shape->acquireReference();
+      auto filter=shape->getSimulationFilterData();filter.word3|=kNativeChunkFilterBit;shape->setSimulationFilterData(filter);
+      if(h) s.extra_shapes.push_back({shape,binding.base+i});
     }
   }
+  s.append_bonds(structure_id,binding.base,bonds,settings);
+  for (PxU32 w=0;w<4;++w) {
+    auto *constraint=vehicle.wheelConstraint(w);native_require(constraint,"vehicle has no corner constraint");
+    s.constraints.push_back({constraint,binding.wheels[w][0],true,PxVec3(0),true,binding.base});
+  }
+  s.vehicles.push_back(std::move(binding));
+#else
+  PX_UNUSED(vehicle);PX_UNUSED(structure_id);PX_UNUSED(parts);PX_UNUSED(bonds);PX_UNUSED(settings);
+  throw std::runtime_error("vehicle destruction requires the matching PhysX ABI 22 SDK");
+#endif
+}
+
+bool NativeDestruction::owns_vehicle(const physx::native::NativeVehicle *vehicle) const {
+#if PX_DESTRUCTION_SCENE_VERSION >= 22
+  for (const auto &binding:state_->vehicles) if(binding.vehicle==vehicle) return true;
+#else
+  PX_UNUSED(vehicle);
+#endif
+  return false;
+}
+
+void NativeDestruction::prepare_vehicles() {
+#if PX_DESTRUCTION_SCENE_VERSION >= 22
+  State &s=*state_;if(!s.configured) return;
+  for(auto &binding:s.vehicles) {
+    auto *carrier=s.chunks[binding.base].shape->getActor();
+    native_require(carrier==binding.vehicle->actor(),"native vehicle carrier changed actor unexpectedly");
+    PxU32 mask=0;bool engine=true;
+    for(PxU32 w=0;w<4;++w) if(s.chunks[binding.wheels[w][0]].shape->getActor()==carrier) mask|=1u<<w;
+    for(PxU32 chunk:binding.engines) engine &= s.chunks[chunk].shape->getActor()==carrier;
+    if(mask!=binding.wheel_mask || engine!=binding.engine_connected) {
+      native_require(binding.vehicle->setFunctionalState(mask,engine),"vehicle functional state rejected");
+      binding.wheel_mask=mask;binding.engine_connected=engine;
+    }
+  }
+#endif
+}
+
+void NativeDestruction::submit_vehicle_loads(float dt) {
+#if PX_DESTRUCTION_SCENE_VERSION >= 22
+  State &s=*state_;if(!s.configured || s.vehicles.empty())return;
+  std::fill(s.loads.begin(),s.loads.end(),PxDestructionChunkLoad{});
+  for(const auto &binding:s.vehicles) {
+    auto *actor=binding.vehicle->actor();const auto command=binding.vehicle->stepLoads();
+    native_require(command.available,"Vehicle2 has no native command observer");
+    const auto com=actor->getGlobalPose()*actor->getCMassLocalPose();
+    const PxMat33 rotation(com.q);
+    const PxMat33 inertia=rotation*PxMat33::createDiagonal(actor->getMassSpaceInertiaTensor())*rotation.getTranspose();
+    std::set<PxRigidDynamic *> gravityBodies;
+    for(PxU32 i=binding.base;i<binding.base+binding.count;++i) {
+      auto *owner=s.chunks[i].shape->getActor()->is<PxRigidDynamic>();native_require(owner,"vehicle chunk lost rigid owner");
+      // Fragments may inherit disabled gravity from Vehicle2, or the SDK may
+      // enable ordinary gravity. Describe only commands actually submitted.
+      if(owner->getActorFlags().isSet(PxActorFlag::eDISABLE_GRAVITY) &&
+          (owner==actor ? command.substeps>0 : !owner->isSleeping())) {
+        s.loads[i].impulse=s.scene.getGravity()*(s.properties[i].mass*dt);
+        if(owner!=actor && gravityBodies.insert(owner).second)
+          owner->addForce(s.scene.getGravity(),PxForceMode::eACCELERATION);
+      }
+    }
+    native_require(command.externalImpulse.magnitudeSquared()<1e-12f && command.externalAngularImpulse.magnitudeSquared()<1e-12f,
+        "vehicle external command has no authored application chunk");
+    for(PxU32 w=0;w<4;++w) if(binding.wheel_mask&(1u<<w)) {
+      const PxU32 chunk=binding.wheels[w][0];const auto &wheel=command.wheels[w];
+      const PxVec3 impulse=wheel.suspensionImpulse+wheel.tireImpulse;
+      const PxVec3 center=actor->getGlobalPose().transform(s.nodes[chunk].position);
+      s.loads[chunk].impulse+=impulse;
+      s.loads[chunk].angularImpulse+=inertia*wheel.angularVelocityChange-(center-com.p).cross(impulse);
+    }
+  }
+  native_require(s.stage().setChunkLoads(s.loads.data(),PxU32(s.loads.size())),"native vehicle command submission rejected");
+#else
+  PX_UNUSED(dt);
+#endif
 }
 
 FfiNativeConfigured NativeDestruction::configure(const FfiNativeConfig &config) {
@@ -501,6 +680,20 @@ FfiNativeConfigured NativeDestruction::configure(const FfiNativeConfig &config) 
   desc.chunkMassProperties = s.properties.data();
   desc.materials = s.materials.data();
   desc.materialCount = static_cast<PxU32>(s.materials.size());
+#if PX_DESTRUCTION_SCENE_VERSION >= 22
+  std::vector<PxDestructionStressShape> extras;
+  for (const auto &extra : s.extra_shapes) {
+    const auto identity = api.getShapeContactIndex(*extra.shape);
+    native_require(identity != PX_INVALID_U32, "extra vehicle hull identity not allocated");
+    extras.push_back({extra.chunk, identity});
+  }
+  desc.additionalShapes = extras.data();
+  desc.additionalShapeCount = static_cast<PxU32>(extras.size());
+  desc.constraints = s.constraints.data();
+  desc.constraintCount = static_cast<PxU32>(s.constraints.size());
+  desc.enableChunkLoads = !s.vehicles.empty();
+  s.loads.resize(s.nodes.size());
+#endif
   desc.maxIterations = config.max_iterations;
   desc.tolerance = config.tolerance;
   desc.warmStart = config.warm_start;

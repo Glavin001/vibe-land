@@ -125,6 +125,25 @@ struct NativeDestruction::State {
     std::uint64_t generation = 0;
   };
 
+#if PX_DESTRUCTION_SCENE_VERSION >= 22
+  struct VehicleBinding {
+    physx::native::NativeVehicle *vehicle;
+    std::uint32_t base, count;
+    std::uint32_t wheel_mask=15;
+    bool engine_connected=true;
+    std::vector<std::uint32_t> wheels[4], engines;
+  };
+  std::vector<VehicleBinding> vehicles;
+  struct ExtraShape { physx::PxShape *shape; std::uint32_t chunk; };
+  std::vector<ExtraShape> extra_shapes;
+  std::vector<physx::PxDestructionStressConstraint> constraints;
+  std::vector<physx::PxDestructionChunkLoad> loads;
+  std::set<physx::PxRigidDynamic *> borrowed_parents;
+#endif
+  std::uint32_t append_materials(std::uint32_t structure, const FfiDestructibleSettings &settings);
+  void append_bonds(std::uint32_t structure, std::uint32_t base,
+      rust::Slice<const FfiChunkBondDesc> bonds, const FfiDestructibleSettings &settings);
+
   std::vector<Chunk> chunks;
   std::vector<physx::PxRigidDynamic *> parents;
   std::vector<physx::PxDestructionStressChunk> nodes;

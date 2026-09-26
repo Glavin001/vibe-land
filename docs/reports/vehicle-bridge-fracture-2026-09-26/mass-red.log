@@ -1,0 +1,3 @@
+COM change moved a chassis/wheel mount
+/Users/glavin/Development/PhysX/physx/source/foundation/FdFoundation.cpp (180) : invalid operation : Foundation destruction failed due to pending module references. Close/release all depending modules first.
+

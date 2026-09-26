@@ -1,0 +1,20 @@
+[  0%] Built target PhysXTask
+[  3%] Built target PhysXFoundation
+[  7%] Built target LowLevelAABB
+[ 10%] Built target LowLevel
+[ 12%] Built target SceneQuery
+[ 17%] Built target LowLevelDynamics
+[ 31%] Built target SimulationController
+[ 82%] Built target PhysXCommon
+[ 85%] Built target PhysXPvdSDK
+[100%] Built target PhysX
+[  5%] Built target PhysXBroadphaseGpu
+[  5%] Built target PhysXDestructionGpuRuntime
+[ 10%] Built target PhysXCommonGpu
+[ 10%] Built target PhysXCudaContextManager
+[ 10%] Built target PhysXArticulationGpu
+[ 30%] Built target PhysXGpuDependencies
+[ 45%] Built target PhysXSolverGpu
+[ 75%] Built target PhysXSimulationControllerGpu
+[ 95%] Built target PhysXNarrowphaseGpu
+[100%] Built target PhysXGpu

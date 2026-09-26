@@ -2574,6 +2574,9 @@ public:
     auto iterator = records_.find(entity_id);
     require(iterator != records_.end(), "unknown entity id");
     Record &record = iterator->second;
+#ifdef VIBE_LAND_NATIVE_DESTRUCTION
+    require(!native_ || !native_->owns_vehicle(record.vehicle),"clear native vehicle topology before removing its actor");
+#endif
     if (record.controller != nullptr) {
       record.controller->release();
       record.controller = nullptr;
@@ -2686,6 +2689,9 @@ public:
     Record &record = find(entity_id);
     require(record.kind == RecordKind::VehicleChassis && record.vehicle != nullptr,
             "entity is not a vehicle");
+#ifdef VIBE_LAND_NATIVE_DESTRUCTION
+    require(!native_ || !native_->owns_vehicle(record.vehicle),"destructible vehicle reset requires rebuilding its native asset");
+#endif
     PxRigidDynamic *dynamic = record.actor->is<PxRigidDynamic>();
     require(dynamic != nullptr, "vehicle lost its dynamic actor");
     const PxTransform target = to_px(pose);
@@ -2773,6 +2779,9 @@ public:
     }
     contact_callbacks_this_step_ = 0;
     step_start_ = std::chrono::steady_clock::now();
+#ifdef VIBE_LAND_NATIVE_DESTRUCTION
+    if (native_) native_->prepare_vehicles();
+#endif
     // The vehicle model runs on the CPU against last step's scene and writes
     // this step's accelerations before the scene integrates them. Idle input
     // applies nothing and wakes nothing.
@@ -2781,6 +2790,9 @@ public:
         entry.second.vehicle->step(kFixedTimestep);
       }
     }
+#ifdef VIBE_LAND_NATIVE_DESTRUCTION
+    if (native_) native_->submit_vehicle_loads(kFixedTimestep);
+#endif
     controller_manager_->computeInteractions(kFixedTimestep);
     const auto after_controllers = std::chrono::steady_clock::now();
     scene_->simulate(kFixedTimestep);
@@ -3926,6 +3938,15 @@ public:
     }
   }
 
+  void native_register_vehicle(std::uint32_t entity_id, std::uint32_t structure_id,
+      rust::Slice<const FfiVehicleFracturePart> parts, rust::Slice<const FfiChunkBondDesc> bonds,
+      const FfiDestructibleSettings &settings) {
+    require(!step_in_flight_, "vehicle registration requires a completed step");
+    auto &record=find(entity_id);
+    require(record.vehicle && record.vehicle_compound_installed,"vehicle compound is not prepared");
+    native().register_vehicle(*record.vehicle,structure_id,parts,bonds,settings);
+  }
+
   void native_create_destructible(std::uint32_t structure_id,
                                   const FfiPose &pose,
                                   rust::Slice<const FfiChunkNodeDesc> nodes,
@@ -4474,6 +4495,12 @@ bool World::resim_restore() { return impl_->resim_restore(); }
 
 #ifdef VIBE_LAND_NATIVE_DESTRUCTION
 void World::native_attach() { impl_->native_attach(); }
+
+void World::native_register_vehicle(std::uint32_t entity_id, std::uint32_t structure_id,
+    rust::Slice<const FfiVehicleFracturePart> parts, rust::Slice<const FfiChunkBondDesc> bonds,
+    const FfiDestructibleSettings &settings) {
+  impl_->native_register_vehicle(entity_id,structure_id,parts,bonds,settings);
+}
 
 void World::native_create_destructible(
     std::uint32_t structure_id, const FfiPose &pose,

@@ -19,6 +19,7 @@ struct FfiLaunchedBallDesc;
 struct FfiCapsulePlayerDesc;
 struct FfiVehicleDesc;
 struct FfiVehiclePartShape;
+struct FfiVehicleFracturePart;
 struct FfiVehicleCommands;
 struct FfiVehicleTuning;
 struct FfiRaycastRequest;
@@ -143,6 +144,9 @@ public:
 #ifdef VIBE_LAND_NATIVE_DESTRUCTION
   // --- PhysX's own GPU destruction stage ------------------------------------
   void native_attach();
+  void native_register_vehicle(std::uint32_t entity_id, std::uint32_t structure_id,
+      rust::Slice<const FfiVehicleFracturePart> parts, rust::Slice<const FfiChunkBondDesc> bonds,
+      const FfiDestructibleSettings &settings);
   void native_create_destructible(std::uint32_t structure_id,
                                   const FfiPose &pose,
                                   rust::Slice<const FfiChunkNodeDesc> nodes,
