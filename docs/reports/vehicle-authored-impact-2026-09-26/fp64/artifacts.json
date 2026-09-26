@@ -1,0 +1,9 @@
+{
+  "physxCommit": "623e99ca",
+  "precision": "BLAST_STRESS_GPU_FP64=ON",
+  "installedSdkChanged": false,
+  "hashes": {
+    "/tmp/vehicle-stress-fp64-libs/libPhysXDestructionGpuRuntime_64.dylib": "dd91afad2ce03864984d9c46cf66333424e3e07ae04638c7563d0eb8e97ad7a7",
+    "/tmp/vibe-vehicle-abi22-target/debug/deps/web_fps_server-a9f373fda0d7ae56": "34ea577ebf88431d13dc67f8758fbe38ffbfeab55f5409e44ca1f96207c2d33b"
+  }
+}

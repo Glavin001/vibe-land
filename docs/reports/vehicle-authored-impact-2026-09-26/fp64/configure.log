@@ -1,0 +1,11 @@
+Building for PUBLIC RELEASE
+PHYSX ROOT /Users/glavin/Development/PhysX/physx
+PhysX Build Platform: mac
+Using CXX Compiler: /usr/bin/clang++
+Forcing binary suffixes to 64 bit.
+Added PhysX
+Forcing binary suffixes to 64 bit.
+Added PhysX GPU
+-- Configuring done (0.1s)
+-- Generating done (0.8s)
+-- Build files have been written to: /Users/glavin/Development/PhysX/out/build/garage-multihull/physx

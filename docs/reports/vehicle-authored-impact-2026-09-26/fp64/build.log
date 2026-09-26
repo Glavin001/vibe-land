@@ -1,0 +1,5 @@
+Generating cumetal/PhysXDestructionGpuRuntime/release/NvBlastExtStressGpu-e17310947a0cd059.o
+Generating cumetal/PhysXDestructionGpuRuntime/release/PxgDestructionTopology-aefada5c62be1d6e.o
+Generating cumetal/PhysXDestructionGpuRuntime/release/PxgDestructionRuntime-8ab750bfa033b24a.o
+Linking CXX shared library /Users/glavin/Development/PhysX/out/build/garage-multihull/artifacts/bin/mac.arm64/release/libPhysXDestructionGpuRuntime_64.dylib
+Built target PhysXDestructionGpuRuntime
