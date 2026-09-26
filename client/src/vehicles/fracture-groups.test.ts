@@ -1,6 +1,6 @@
 import {describe, expect, it} from 'vitest';
 // @ts-expect-error shared browser/Node geometry module
-import {vehicleFractureGroups} from './fracture-groups.mjs';
+import {vehicleFractureGroups, validateWheelOwnership} from './fracture-groups.mjs';
 
 function fixture() {
   const part = (id: string, x: number, extra = {}) => ({id, name: id, position: [x,2,3],
@@ -21,6 +21,17 @@ function fixture() {
   ], report:{parts:5,shapes:5,components:1}};
 }
 describe('functional fracture groups', () => {
+  it('rejects swallowed calipers, uprights and other corners in a wheel chunk', () => {
+    const wheel={id:'wheel',visualIds:['tire','detail'],motion:{corner:'fl',role:'wheel'}};
+    const tire={id:'tire',name:'Tire',motion:{corner:'fl',role:'wheel'}};
+    const detail={id:'detail',name:'Tread',motion:{corner:'fl',role:'wheel'}};
+    expect(()=>validateWheelOwnership([wheel],[tire,detail])).not.toThrow();
+    for(const motion of [{corner:'fl',role:'knuckle'},{corner:'fl',role:'upright'},
+      {corner:'fr',role:'wheel'},null]) {
+      expect(()=>validateWheelOwnership([wheel],[tire,{...detail,motion}])).toThrow('incompatible');
+    }
+    expect(()=>validateWheelOwnership([wheel],[tire])).toThrow('incompatible');
+  });
   it('preserves all geometry, visual ownership and external parallel bonds without mutating input', () => {
     const original = fixture(), untouched = structuredClone(original);
     const result = vehicleFractureGroups(original);

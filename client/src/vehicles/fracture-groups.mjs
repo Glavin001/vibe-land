@@ -12,9 +12,9 @@ export function vehicleFractureGroups(collision) {
     groups.get(key).push(part);
   }
   const parts = [...groups.values()].map(members => {
-    // Retain the tire's identity and origin. Never expand the cylinder to swallow
-    // the hub: retain every clipped hull and its exact placement instead.
-    const root = members.find(p => p.source === 'cylinder' && p.name.endsWith('wheel assembly')) ?? members[0];
+    // Retain the tire's identity and origin, including its open-center compound.
+    // Keep the hub's own hulls and exact placement when combining the chunk.
+    const root = members.find(p => p.name.endsWith('wheel assembly')) ?? members[0];
     for (const member of members) owner.set(member.id, root.id);
     const functions = [...new Set(members.map(p => p.functionality).filter(Boolean))];
     if (functions.length > 1) throw Error('Incompatible functional collider groups');
@@ -48,4 +48,18 @@ export function vehicleFractureGroups(collision) {
     // The audit covers the same shapes in the same positions before grouping.
     functionalGrouping: 'one-wheel-per-corner',
   }};
+}
+
+/** A simplified proxy must never turn a stationary carrier into wheel debris.
+ * Check original visual motion roles after partitioning/aliasing, where an
+ * entirely covered caliper or upright could otherwise disappear into a tire. */
+export function validateWheelOwnership(parts, visuals) {
+  const byId=new Map(visuals.map(part=>[part.id,part]));
+  for(const wheel of parts.filter(part=>part.motion?.role==='wheel')) {
+    for(const id of wheel.visualIds??[wheel.id]) {
+      const visual=byId.get(id);
+      if(!visual || visual.motion?.role!=='wheel' || visual.motion.corner!==wheel.motion.corner)
+        throw Error(`Wheel collision group contains an incompatible part: ${visual?.name??id}`);
+    }
+  }
 }

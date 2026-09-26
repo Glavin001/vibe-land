@@ -4,7 +4,7 @@ import { finalizeSimpleColliders } from './dune/audit-simple-native.mjs';
 import { visualOwners, groupJoints, simplePhysicsShape } from './simple-physics.mjs';
 import { deriveBondSurfaces } from './bond-surfaces.mjs';
 import { structuralBonds, requireConnectedAssembly } from './strength-profile.mjs';
-import { vehicleFractureGroups } from './fracture-groups.mjs';
+import { vehicleFractureGroups, validateWheelOwnership } from './fracture-groups.mjs';
 
 /** Safe, actionable diagnostics shared by the browser worker and server worker. */
 export function preparationIssue(error, value) {
@@ -43,6 +43,7 @@ export async function validateVehicleAssembly(value, progress = () => {}) {
     const collision = vehicleFractureGroups(await finalizeSimpleColliders(buildColliders(geometry.parameters, colliderOptions('simple'), progress)));
     for (const part of collision.parts) for (const shape of part.shapes) simplePhysicsShape(shape);
     const interfaces = buildColliders(geometry.parameters, colliderOptions('balanced'), progress);
+    validateWheelOwnership(collision.parts, interfaces.parts);
     const surfaces = deriveBondSurfaces(interfaces);
     const owners = visualOwners(collision.parts, interfaces.parts);
     const bonds = groupJoints(structuralBonds(interfaces.parts, surfaces), owners);

@@ -1,7 +1,7 @@
 import {tireWidthScale} from './vehicle-catalog.mjs';
 import * as T from 'three';
 import {ColliderPrimitives} from './collider-primitives.mjs';
-import {hull} from './convex.mjs';
+import {hull,clip} from './convex.mjs';
 const vec=p=>new T.Vector3(...p);
 /** A circumscribed polygon protects the true cylinder during contact cutting.
  * The exported primitive stays analytic; the polygon is its conservative audit
@@ -11,8 +11,57 @@ function cylinder(radius,halfHeight,position,rotation){
  for(const y of [-halfHeight,halfHeight])for(let i=0;i<n;i++){const a=(i+.5)*2*Math.PI/n;points.push(new T.Vector3(r*Math.cos(a),y,r*Math.sin(a)).applyQuaternion(q).add(c).toArray())}
  return {pieces:[hull(points)],primitive:{type:'cylinder',radius,halfHeight,position,rotation},protectedPrimitive:true,source:'cylinder'};
 }
+/** Keep the inboard wheel cavity open for the upright and brake caliper.
+ * Eight annular wedges approximate the tire/rim with 32 outer facets. An
+ * outboard plate and short hub stem cover the spokes and extension. These are child
+ * shapes of a single wheel chunk, never individual tread or spoke bodies. */
+function wheelEnvelope(wheel,radius,halfHeight,position){
+ const barrel=wheel.find(p=>p.name.endsWith('rim barrel'));
+ if(!barrel)throw Error('Wheel has no rim clearance geometry');
+ const inner=barrel.clearanceRadius;
+ if(!(inner>0&&inner<radius))throw Error('Wheel rim clearance is invalid');
+ const pieces=[];
+ for(let sector=0;sector<8;sector++){
+  const points=[];
+  for(const x of [-halfHeight,halfHeight]){
+   for(let j=0;j<=4;j++){
+    const angle=(sector*4+j)*2*Math.PI/32;
+    points.push([position[0]+x,position[1]+radius*Math.cos(angle),position[2]+radius*Math.sin(angle)]);
+   }
+   for(const j of [0,4]){
+    const angle=(sector*4+j)*2*Math.PI/32;
+    points.push([position[0]+x,position[1]+inner*Math.cos(angle),position[2]+inner*Math.sin(angle)]);
+   }
+  }
+  pieces.push(hull(points));
+ }
+ const spokes=wheel.filter(p=>/ spoke \d+$/.test(p.name)),stem=wheel.find(p=>p.name.endsWith('hub extension'));
+ if(!spokes.length||!stem)throw Error('Wheel has no outboard hub connection');
+ const side=Math.sign(position[0]),along=spokes.flatMap(p=>p.pieces.flatMap(s=>s.vertices.map(v=>side*(v[0]-position[0]))));
+ const near=Math.min(...along),far=Math.max(...along),plate=[];
+ for(const x of [near,far])for(let i=0;i<8;i++){
+  const angle=i*2*Math.PI/8;
+  plate.push([position[0]+side*x,position[1]+inner*Math.cos(angle),position[2]+inner*Math.sin(angle)]);
+ }
+ // The octagonal plate exactly fills the annulus opening at the spokes.
+ // Clip the stem at its inboard face so child hulls share only boundaries.
+ pieces.push(hull(plate));
+ for(const piece of stem.pieces){
+  const part=clip(piece,{n:[side,0,0],d:side*position[0]+near});
+  if(part)pieces.push(part);
+ }
+ return {pieces,primitive:null,protectedPrimitive:true,source:'wheel-annulus'};
+}
 class SimpleRecipe extends ColliderPrimitives{
- ring=(outer,inner,length,c,rot=[0,90,0])=>this.cyl(outer,length,c,rot);
+ ring=(outer,inner,length,c,rot=[0,90,0])=>{
+  const solid=this.cyl(outer,length,c,rot);solid.primitive.clearanceRadius=inner;return solid;
+ };
+ add(...args){
+  const id=super.add(...args);
+  const part=this.parts[this.parts.length-1];
+  if(part.primitive?.clearanceRadius){part.clearanceRadius=part.primitive.clearanceRadius;delete part.primitive.clearanceRadius;}
+  return id;
+ }
  revolve(profile){return this.cyl(Math.max(...profile.map(p=>p[0])),Math.max(...profile.map(p=>p[1]))-Math.min(...profile.map(p=>p[1])),[0,0,0],[0,0,0])}
  spring(top,bottom){const d=vec(bottom).sub(vec(top)),L=d.length(),axis=d.normalize(),start=vec(top).addScaledVector(axis,-.009),end=vec(top).addScaledVector(axis,L*.68+.012);return this.beam(start.toArray(),end.toArray(),.071)}
 }
@@ -26,7 +75,7 @@ export function simpleRecipe(parameters){
   const x=(label.endsWith('left')?-1:1)*raw.parameters.track/2,y=raw.parameters.tireRadius,z=(label.startsWith('Front')?-1:1)*raw.parameters.wheelbase/2;
   const points=wheel.flatMap(p=>p.pieces.flatMap(s=>s.vertices));
   const lo=x-.183*tireWidthScale(raw.parameters),hi=x+.183*tireWidthScale(raw.parameters),radius=Math.max(...points.map(v=>Math.hypot(v[1]-y,v[2]-z)));
-  create(wheel.find(p=>p.name.endsWith('tire carcass')).id,wheel,cylinder(radius,(hi-lo)/2,[(lo+hi)/2,y,z],new T.Quaternion().setFromUnitVectors(vec([0,1,0]),vec([1,0,0])).toArray()),label+' wheel assembly');
+  create(wheel.find(p=>p.name.endsWith('tire carcass')).id,wheel,wheelEnvelope(wheel,radius,(hi-lo)/2,[(lo+hi)/2,y,z]),label+' wheel assembly');
   const spring=raw.parts.find(p=>p.name===label+' coil spring'),coil=raw.parts.filter(p=>p.name.startsWith(label+' ')&&/coil spring|damper body|spring seat/.test(p.name));
   const sp=spring.primitive,axis=vec([0,1,0]).applyQuaternion(new T.Quaternion(...sp.rotation));
   const radialX=Math.sqrt(1-axis.x*axis.x),inner=Math.abs(x)-.183*tireWidthScale(raw.parameters),maxCenterX=Math.abs(sp.position[0])+Math.abs(axis.x)*sp.halfHeight;

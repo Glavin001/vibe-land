@@ -79,7 +79,7 @@ export function buildColliders(parameters={},options=colliderDefaults,progress=(
   for(const part of parts)part.shapes=part.shapes.map(promoteBox);audit=auditColliders(result);
   keptVolume=parts.reduce((n,p)=>n+p.shapes.reduce((sum,s)=>sum+unpack(s,p.position).volume,0),0);
   result.report.proxyVolumeRetained=keptVolume/fullVolume;result.report.minimumPartVolumeRetained=.9;
-  result.report.detailPolicy='Wheel, spring/damper and steering assemblies use cylinders. Visual details map to shared collision groups. Minor contact fragments are omitted; at least 90% of each partitioned proxy volume is retained.';
+  result.report.detailPolicy='Wheels use simple convex compounds with central clearance for the upright and caliper; spring/damper and steering assemblies use cylinders. Visual details share collision groups. Minor contact fragments are omitted; at least 90% of each partitioned proxy volume is retained.';
  }
  Object.assign(result.report,audit.report);result.bonds=audit.bonds;if(simple)result.convexBonds=audit.convexBonds;result.report.repairs=repairs;result.report.shapes=parts.reduce((n,p)=>n+p.shapes.length,0);result.report.maxVertices=Math.max(...parts.flatMap(p=>p.shapes.map(s=>s.vertices.length)));result.report.shapeTypes=parts.flatMap(p=>p.shapes).reduce((counts,s)=>(counts[s.type]=(counts[s.type]??0)+1,counts),{});result.report.buildMs=performance.now()-started;
 

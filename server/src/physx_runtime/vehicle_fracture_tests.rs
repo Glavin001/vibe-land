@@ -97,6 +97,19 @@ fn authored_vehicle_native_registration_and_free_fall() {
 #[test]
 #[ignore = "requires local GPU, coherent ABI 22 SDK and VIBE_VEHICLE_BUILD_FIXTURES"]
 fn authored_vehicle_cannonball_localized_fracture() {
+    exercise_authored_impact(crate::garage_bombardment::BALL_MASS, 55., false);
+}
+
+/// A separate severe proof load targets the same physical wheel surface. The
+/// material law is unchanged, and throttle remains applied after separation.
+/// This checks functional loss in free fall, not surviving road handling.
+#[test]
+#[ignore = "requires local GPU, coherent ABI 22 SDK and VIBE_VEHICLE_BUILD_FIXTURES"]
+fn authored_vehicle_heavy_impact_disables_detached_wheel() {
+    exercise_authored_impact(300., 120., true);
+}
+
+fn exercise_authored_impact(projectile_mass: f32, speed: f32, require_wheel_loss: bool) {
     let _guard = gpu_test_guard();
     let mut reports = Vec::new();
     let mut failures = Vec::new();
@@ -112,12 +125,20 @@ fn authored_vehicle_cannonball_localized_fracture() {
             std::env::set_var("PHYSX_STRESS_PROBLEM_SOLVES", "0:200");
         }
         let mut scene = prepare(&geometry);
+        if require_wheel_loss {
+            scene.world.drive_vehicle(scene.entity, bridge::VehicleCommands {
+                throttle: 0.5, ..Default::default()
+            }).unwrap();
+        }
         for tick in 0..30 {
             checked_step(&mut scene.world, &name, tick);
             assert!(scene.world.native_take_broken_bonds().unwrap().is_empty());
         }
         let target = scene.parts.iter().position(|p| p.wheel == 0).unwrap() as u32;
         let car = scene.world.vehicle_snapshots().unwrap()[0];
+        if require_wheel_loss {
+            assert!(car.wheel_rotation_speed[0].abs()>0.1, "{name}: targeted wheel must be driven before impact");
+        }
         let q = car.pose.rotation;
         let rotation = nalgebra::UnitQuaternion::new_normalize(nalgebra::Quaternion::new(q.w,q.x,q.y,q.z));
         let direction = rotation * Vector3::x();
@@ -130,16 +151,18 @@ fn authored_vehicle_cannonball_localized_fracture() {
         assert!(ray.hit && ray.chunk_id == aim.chunk_id, "{name}: shot is obstructed or misses intended wheel: {ray:?}");
         let point = Vector3::new(ray.position.x,ray.position.y,ray.position.z);
         let position = point - direction * (crate::garage_bombardment::BALL_RADIUS + 0.001);
-        let velocity = direction * 55. + Vector3::new(car.linear_velocity.x,car.linear_velocity.y,car.linear_velocity.z);
+        let velocity = direction * speed + Vector3::new(car.linear_velocity.x,car.linear_velocity.y,car.linear_velocity.z);
         scene.world.launch_dynamic_ball(bridge::LaunchedBallDesc {
             entity_id: 2, user_id: 0, pose: bridge::Pose { position: v(position), rotation: bridge::Quat::IDENTITY },
-            radius: crate::garage_bombardment::BALL_RADIUS, mass: crate::garage_bombardment::BALL_MASS,
+            radius: crate::garage_bombardment::BALL_RADIUS, mass: projectile_mass,
             linear_velocity: v(velocity), collision_group: GROUP_DYNAMIC, collision_mask: ALL_GROUPS,
         }).unwrap();
         let mut broken = std::collections::BTreeSet::new();
         let mut frames = Vec::new();
         let mut impact_verdicts = Vec::new();
         let mut error = None;
+        let mut first_detached = None;
+        let mut disabled_ticks = 0;
         for tick in 0..120 {
             let step = scene.world.step();
             let status = scene.world.native_tick().unwrap();
@@ -151,6 +174,14 @@ fn authored_vehicle_cannonball_localized_fracture() {
             let chassis = scene.world.native_chunk_aim(STRUCTURE,0).unwrap();
             let corner = scene.world.native_chunk_aim(STRUCTURE,target).unwrap();
             let state = scene.world.vehicle_snapshots().unwrap()[0];
+            let attached = corner.entity_id == chassis.entity_id;
+            if !attached && first_detached.is_none() { first_detached = Some(tick); }
+            if first_detached.is_some_and(|first| tick > first) {
+                assert!(!attached, "{name}: detached wheel reattached without repair");
+                assert_eq!(state.wheels_on_road & 1, 0, "{name}: detached wheel has road support");
+                assert!(state.wheel_rotation_speed[0].abs()<1e-5, "{name}: Vehicle2 still drives detached wheel");
+                disabled_ticks += 1;
+            }
             frames.push(json!({"tick":tick,"contacts":status.normal_contacts,"broken":broken.len(),
                 "converged":status.converged,"iterations":status.iterations,"error":status.error,"targetAttached":corner.entity_id==chassis.entity_id,
                 "wheelSpeed":state.wheel_rotation_speed[0],"wheelsOnRoad":state.wheels_on_road}));
@@ -178,18 +209,27 @@ fn authored_vehicle_cannonball_localized_fracture() {
             assert!(scene.world.native_validate_mappings().unwrap());
         }
         let row = json!({"model":name,"chunks":scene.parts.len(),"hulls":scene.hulls,"bonds":scene.bonds.len(),
-            "target":target,"projectileMassKg":crate::garage_bombardment::BALL_MASS,"speedMps":55.,
+            "target":target,"projectileMassKg":projectile_mass,"speedMps":speed,
+            "requiresWheelLoss":require_wheel_loss,"disabledWheelTicks":disabled_ticks,
             "initialProjectileVelocity":[velocity.x,velocity.y,velocity.z],
             "initialChassisVelocity":[car.linear_velocity.x,car.linear_velocity.y,car.linear_velocity.z],
             "brokenBonds":broken,"error":error,"frames":frames,"impactVerdicts":impact_verdicts});
         eprintln!("Authored cannon {name}: {} broken / {} bonds; error={error:?}",broken.len(),scene.bonds.len());
         reports.push(row);
         // Persist each model before assertions so a native rejection remains evidence.
-        let report = std::env::var("VIBE_VEHICLE_FRACTURE_REPORT").unwrap_or_else(|_| "/tmp/authored-vehicle-cannon.json".into());
+        let mut report = std::path::PathBuf::from(std::env::var("VIBE_VEHICLE_FRACTURE_REPORT")
+            .unwrap_or_else(|_| "/tmp/authored-vehicle-cannon.json".into()));
+        if require_wheel_loss {
+            let stem = report.file_stem().unwrap().to_string_lossy();
+            report.set_file_name(format!("{stem}-heavy.json"));
+        }
         std::fs::write(report,serde_json::to_vec_pretty(&reports).unwrap()).unwrap();
         if let Some(error) = error { failures.push(format!("{name}: {error}")); }
         else if broken.is_empty() { failures.push(format!("{name}: real cannon contact produced no fracture")); }
         else if broken.len() * 4 >= scene.bonds.len() { failures.push(format!("{name}: cannon caused widespread fracture")); }
+        else if require_wheel_loss && disabled_ticks < 30 {
+            failures.push(format!("{name}: heavy impact did not produce sustained wheel loss"));
+        }
         scene.world.native_clear().unwrap();
         scene.world.remove_actor(scene.entity).unwrap();
     }
