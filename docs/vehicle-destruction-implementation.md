@@ -121,6 +121,13 @@ red. Single precision still fails convergence. A separate
 now rejects unconverged damage and passes 15 bridge regressions plus direct GPU
 material-state inspection. The candidates are not installed or performance-qualified.
 
+A [narrower mixed-precision experiment](reports/vehicle-authored-impact-2026-09-26/wide-solution/README.md)
+passed the analytical loads and initial impact for every model, but only rally
+completed the full aftermath. It was reverted with its patch and evidence saved.
+The same report records a mechanical attachment concern: the buggy wheel has
+measured bonds directly to control arms, shock eye and axle as well as its
+upright. Those interfaces need review before tuning wheel separation.
+
 The full-model tests share fixture loading, registration and configuration in
 `server/src/physx_runtime/vehicle_fracture_tests.rs`. Run them serially against
 the explicit isolated runtime. `VIBE_VEHICLE_FRACTURE_REPORT` records per-model

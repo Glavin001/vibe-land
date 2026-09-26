@@ -1,0 +1,8 @@
+{
+  "nativeBase": "6938aa7d",
+  "clientBase": "b457bb9e",
+  "files": {
+    "/tmp/vehicle-wide-solution-libs/libPhysXDestructionGpuRuntime_64.dylib": "31c5980098137c1196930fe1fba09cd7579b1c73d7afd54c6104de99ac6c360f",
+    "/tmp/vibe-vehicle-abi22-target/debug/deps/web_fps_server-a9f373fda0d7ae56": "ae82bbe5643e781737bf7eae612cbb70791a9781626e1fbb35337b46e8806d4b"
+  }
+}

@@ -1,0 +1,107 @@
+{
+  "model": "buggy",
+  "target": 4,
+  "wheelMassKg": 181.7360742377503,
+  "summedInterfaceAreaM2": 0.0652391008984523,
+  "interfaces": [
+    {
+      "bond": 383,
+      "otherPart": "suspension-0241",
+      "name": "Front right tie rod",
+      "role": "tieRod",
+      "areaM2": 7.309266493393807e-06,
+      "utilisation": 0.16990210115909576,
+      "damageArea": 0.0
+    },
+    {
+      "bond": 433,
+      "otherPart": "suspension-0223",
+      "name": "Front right lower wishbone",
+      "role": "lowerArm",
+      "areaM2": 0.0009924694895744324,
+      "utilisation": 0.04919104278087616,
+      "damageArea": 0.0
+    },
+    {
+      "bond": 438,
+      "otherPart": "suspension-0228",
+      "name": "Front right lower wishbone",
+      "role": "lowerArm",
+      "areaM2": 0.0007765149930492043,
+      "utilisation": 0.044144004583358765,
+      "damageArea": 0.0
+    },
+    {
+      "bond": 441,
+      "otherPart": "suspension-0226",
+      "name": "Front right upper wishbone",
+      "role": "upperArm",
+      "areaM2": 0.00011929193715332076,
+      "utilisation": 0.018742065876722336,
+      "damageArea": 0.0
+    },
+    {
+      "bond": 553,
+      "otherPart": "suspension-0231",
+      "name": "Front right upper wishbone",
+      "role": "upperArm",
+      "areaM2": 0.00047718751011416316,
+      "utilisation": 0.013314986601471901,
+      "damageArea": 0.0
+    },
+    {
+      "bond": 605,
+      "otherPart": "drivetrain-0242",
+      "name": "Front right axle",
+      "role": "axle",
+      "areaM2": 0.020657885819673538,
+      "utilisation": 0.009335612878203392,
+      "damageArea": 0.0
+    },
+    {
+      "bond": 614,
+      "otherPart": "suspension-0240",
+      "name": "Front right shock eye",
+      "role": "shockEye",
+      "areaM2": 0.00036728393752127886,
+      "utilisation": 0.06759048253297806,
+      "damageArea": 0.0
+    },
+    {
+      "bond": 617,
+      "otherPart": "drivetrain-0243",
+      "name": "Front right CV boot",
+      "role": "cvBoot",
+      "areaM2": 0.0029643396846950054,
+      "utilisation": 0.0007370876264758408,
+      "damageArea": 0.0
+    },
+    {
+      "bond": 621,
+      "otherPart": "suspension-0233",
+      "name": "Front right upright",
+      "role": "upright",
+      "areaM2": 0.030049623921513557,
+      "utilisation": 0.02172568067908287,
+      "damageArea": 0.0
+    },
+    {
+      "bond": 624,
+      "otherPart": "suspension-0233",
+      "name": "Front right upright",
+      "role": "upright",
+      "areaM2": 0.00360621209256351,
+      "utilisation": 0.007896644063293934,
+      "damageArea": 0.0
+    },
+    {
+      "bond": 625,
+      "otherPart": "suspension-0233",
+      "name": "Front right upright",
+      "role": "upright",
+      "areaM2": 0.0052209822461009026,
+      "utilisation": 0.01257116999477148,
+      "damageArea": 0.0
+    }
+  ]
+}
