@@ -4444,8 +4444,11 @@ impl MatchState {
                 .map(|car|(nalgebra::Vector3::new(car.px_mm as f32,car.py_mm as f32,car.pz_mm as f32)/1000.0,
                     nalgebra::Vector3::new(car.vx_cms as f32,car.vy_cms as f32,car.vz_cms as f32)/100.0));
             if let Some(shot)=self.bombardment.next_shot(self.server_tick,target) {
+                // Opt-in demo override (e.g. 300 kg); the default 30 kg ball rarely frees a part.
+                let mass = std::env::var("VIBE_GARAGE_BALL_MASS").ok().and_then(|v| v.parse::<f32>().ok())
+                    .filter(|m| m.is_finite() && *m > 0.0).unwrap_or(garage_bombardment::BALL_MASS);
                 if self.arena.launch_ball_from_muzzle(shot.origin,shot.velocity,garage_bombardment::BALL_RADIUS,
-                    garage_bombardment::BALL_MASS,garage_bombardment::BALL_TTL).is_some() {
+                    mass,garage_bombardment::BALL_TTL).is_some() {
                     self.bombardment.record_launch();
                 }
             }

@@ -24,6 +24,7 @@ pub struct GarageDestruction {
     configured: bool,
     pub broken_bonds: usize,
     pub rejected_steps: usize,
+    detached_count: usize,
 }
 
 impl GarageDestruction {
@@ -43,7 +44,7 @@ impl GarageDestruction {
             bridge::DestructibleSettings { materials: asset.materials, ..Default::default() })
             .map_err(|e| e.to_string())?;
         Ok(Self { entity, rig, wheel_parts, origin_height: geometry.origin_height,
-            neutral_jounce: geometry.neutral_jounce, configured: false, broken_bonds: 0, rejected_steps: 0 })
+            neutral_jounce: geometry.neutral_jounce, configured: false, broken_bonds: 0, rejected_steps: 0, detached_count: 0 })
     }
 
     /// Pose wheel and hub hulls from the last completed step's wheels.
@@ -94,6 +95,12 @@ impl GarageDestruction {
         }
         let _ = world.native_take_chunk_migrations();
         let _ = world.native_take_island_events();
+        let parts = world.native_detached_vehicle_parts(self.entity).unwrap_or_default();
+        if parts.len() != self.detached_count {
+            let list: Vec<String> = parts.iter().map(|p| format!("{}@({:.2},{:.2},{:.2})", p.part_index, p.position.x, p.position.y, p.position.z)).collect();
+            tracing::info!(detached = parts.len(), parts = %list.join(" "), "garage vehicle parts detached");
+            self.detached_count = parts.len();
+        }
     }
 
     pub fn neutral_jounce(&self) -> f32 { self.neutral_jounce }
