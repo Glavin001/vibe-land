@@ -1,0 +1,32 @@
+{
+  "status": "failing-regression",
+  "vehicleDestructionQualified": false,
+  "sceneError": 64,
+  "originalStressError": 8,
+  "detailedStressError": 34603016,
+  "detailDecoded": {
+    "hierarchy": 0,
+    "motionModes": 16,
+    "motionModesInitialized": false
+  },
+  "minimalReproduction": {
+    "chunks": 6,
+    "bonds": 5,
+    "engineComOffsetM": 1e-18,
+    "failureTick": 0
+  },
+  "fullModel": {
+    "name": "buggy",
+    "chunks": 190,
+    "hulls": 384,
+    "bonds": 626,
+    "failureTick": 0,
+    "contacts": 0
+  },
+  "diagnosticLibraries": {
+    "/tmp/vehicle-hierarchy-diagnostic-libs/libPhysXDestructionGpuRuntime_64.dylib": "0ba3cfeba84923a8331b0402090eb24174825e9426e4f3c489f69b083788c4c9",
+    "/tmp/vehicle-hierarchy-diagnostic-libs/libcumetal.dylib": "95d3752b609dd3e2005fc588b6b0d4e23d55dbb611c2976ef88283f43f4013d0",
+    "/tmp/vehicle-hierarchy-diagnostic-libs/libPhysXGpuActivity_64.dylib": "e8a98f14299dfc75938490906fb78307d9f2db8f11fe6b53eff51f8e7539ecd0"
+  },
+  "physxSourceBase": "5367866c7267a4cce3cdb965b10b5084aefbb19f"
+}

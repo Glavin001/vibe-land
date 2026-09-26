@@ -372,6 +372,41 @@ impl PhysxPhysicsArena {
     /// part shapes, measured inertia/COM, and trailer constraints are pending.
     /// The garage uses this for private drives; native stress coupling is pending.
     pub fn spawn_vehicle_asset(&mut self, id:u32, vehicle_type:u8, position:Vector3<f32>, rotation:[f32;4], prepared:Option<&crate::vehicle_assets::PreparedGeometry>) -> Result<(), bridge::BridgeError> {
+        let tune = prepared.and_then(|p| p.driving.as_ref());
+        let desc = Self::vehicle_asset_desc(id, vehicle_type, position, rotation, prepared);
+        self.world.add_vehicle(desc)?;
+        if let Some(asset) = prepared {
+            let shapes: Vec<bridge::VehiclePartShape> = asset.parts.iter().enumerate()
+                .filter(|(_, part)| part.motion.is_none())
+                .flat_map(|(part_index, part)| part.shapes.iter().map(move |shape| bridge::VehiclePartShape {
+                    part_index: part_index as u32,
+                    position: bridge::Vec3::new(part.position[0]+shape.position[0], part.position[1]+shape.position[1], part.position[2]+shape.position[2]),
+                    points: shape.vertices.iter().map(|p| bridge::Vec3::new(p[0],p[1],p[2])).collect(),
+                })).collect();
+            if let Err(error) = self.world.set_vehicle_shapes(NS_VEHICLE | (id & ID_MASK), &shapes) {
+                let _ = self.world.remove_actor(NS_VEHICLE | (id & ID_MASK));
+                return Err(error);
+            }
+        }
+        self.snapshots_valid = false;
+        self.vehicles.insert(
+            id,
+            VehicleMeta {
+                steering_response: tune.map(|t| t.steering_response).unwrap_or(1.0),
+                steering_geometry: tune.map(|t| ((desc.front_axle_z-desc.rear_axle_z).abs(), t.max_steer_radians, t.tyre_friction)),
+                vehicle_type,
+                driver_id: 0,
+                latest_input: InputCmd::default(),
+                steer_command: 0.0,
+                reset_cooldown_ticks: 0,
+                reset_held: false,
+            },
+        );
+        Ok(())
+    }
+
+    /// Shared descriptor for live driving and the full authored-asset native probe.
+    fn vehicle_asset_desc(id:u32, vehicle_type:u8, position:Vector3<f32>, rotation:[f32;4], prepared:Option<&crate::vehicle_assets::PreparedGeometry>) -> bridge::VehicleDesc {
         // The shared vehicle definition drives both backends: the same hull
         // extents, wheel hard points, suspension rest and travel and wheel
         // radius the Rapier controller and the client's meshes use. The
@@ -390,8 +425,7 @@ impl PhysxPhysicsArena {
         let rest_load = sprung * 9.81;
         let stiffness = rest_load / prepared.map(|p| p.neutral_jounce).unwrap_or(travel / 3.0);
         let damping = 2.0 * (stiffness * sprung).sqrt();
-        self.world
-            .add_vehicle(bridge::VehicleDesc {
+        bridge::VehicleDesc {
                 entity_id: NS_VEHICLE | (id & ID_MASK),
                 user_id: id,
                 pose: pose(position, rotation),
@@ -425,36 +459,7 @@ impl PhysxPhysicsArena {
                 road_mask: GROUP_STATIC | GROUP_DYNAMIC | GROUP_CHUNK,
                 collision_group: GROUP_VEHICLE,
                 collision_mask: ALL_GROUPS,
-            })
-            ?;
-        if let Some(asset) = prepared {
-            let shapes: Vec<bridge::VehiclePartShape> = asset.parts.iter().enumerate()
-                .filter(|(_, part)| part.motion.is_none())
-                .flat_map(|(part_index, part)| part.shapes.iter().map(move |shape| bridge::VehiclePartShape {
-                    part_index: part_index as u32,
-                    position: bridge::Vec3::new(part.position[0]+shape.position[0], part.position[1]+shape.position[1], part.position[2]+shape.position[2]),
-                    points: shape.vertices.iter().map(|p| bridge::Vec3::new(p[0],p[1],p[2])).collect(),
-                })).collect();
-            if let Err(error) = self.world.set_vehicle_shapes(NS_VEHICLE | (id & ID_MASK), &shapes) {
-                let _ = self.world.remove_actor(NS_VEHICLE | (id & ID_MASK));
-                return Err(error);
-            }
         }
-        self.snapshots_valid = false;
-        self.vehicles.insert(
-            id,
-            VehicleMeta {
-                steering_response: tune.map(|t| t.steering_response).unwrap_or(1.0),
-                steering_geometry: tune.map(|t| ((front_z-rear_z).abs(), t.max_steer_radians, t.tyre_friction)),
-                vehicle_type,
-                driver_id: 0,
-                latest_input: InputCmd::default(),
-                steer_command: 0.0,
-                reset_cooldown_ticks: 0,
-                reset_held: false,
-            },
-        );
-        Ok(())
     }
 
     pub fn new(config: MoveConfig) -> Result<Self> {
@@ -2777,6 +2782,72 @@ mod tests {
             let cmd = shape_vehicle_commands(&pedal, 0.0, &mut steer, dt);
             assert_eq!((cmd.throttle, cmd.handbrake), (0.0, 1.0));
         }
+    }
+
+    /// Full authored geometry must cook and bind to native stress without losing
+    /// parts, hulls, physical mass or materials. Free fall deliberately exercises
+    /// apportioned gravity with no road/impact load. This does NOT qualify the
+    /// unimplemented moving-collider or suspension/fracture integration.
+    #[cfg(feature = "native-destruction")]
+    #[test]
+    #[ignore = "requires local GPU, coherent ABI 22 SDK and VIBE_VEHICLE_BUILD_FIXTURES"]
+    fn authored_vehicle_native_registration_and_free_fall() {
+        let _guard = gpu_test_guard();
+        let fixtures: serde_json::Value = serde_json::from_slice(&std::fs::read(
+            std::env::var("VIBE_VEHICLE_BUILD_FIXTURES").expect("fixture manifest")
+        ).unwrap()).unwrap();
+        let mut checked = 0;
+        for fixture in fixtures.as_array().unwrap() {
+            // Editions share the same physical geometry; qualification uses all
+            // six drivable base models once, with their default tuning.
+            let name = fixture["name"].as_str().unwrap();
+            if !["buggy", "trophy", "rally", "monster", "derby", "sprint"].contains(&name) { continue; }
+            let mut geometry: crate::vehicle_assets::PreparedGeometry = serde_json::from_slice(
+                &std::fs::read(fixture["metadataPath"].as_str().unwrap()).unwrap()
+            ).unwrap();
+            geometry.driving = Some(serde_json::from_value(fixture["driving"].clone()).unwrap());
+            let asset = geometry.native_fracture_assembly().unwrap();
+            let mut world = bridge::World::new(bridge::WorldConfig::default()).unwrap();
+            let desc = PhysxPhysicsArena::vehicle_asset_desc(7, 0, Vector3::new(0.,20.,0.),
+                [0., 0.38268343, 0., 0.9238795], Some(&geometry));
+            world.add_vehicle(desc).unwrap();
+            world.set_vehicle_shapes(desc.entity_id, &asset.shapes).unwrap();
+            world.native_attach().unwrap();
+            world.native_register_vehicle(desc.entity_id, 200, &asset.parts, &asset.bonds,
+                bridge::DestructibleSettings {materials: asset.materials, ..Default::default()}).unwrap();
+            world.step().unwrap(); // GPU contact identities become available.
+            let configured = world.native_configure(bridge::NativeConfig {
+                max_iterations: 2048, tolerance: 1e-5, warm_start: true, damage_rate: 2.,
+                bend_gain_max: 3., fibre_bending: true, reserved_contact_pairs: 64,
+                preserve_unchanged_contact_pairs: false, gpu_island_repair: true,
+                verdict_sample_ticks: 1,
+            }).unwrap();
+            assert_eq!(configured.chunks as usize, asset.parts.len());
+            assert_eq!(configured.bonds as usize, asset.bonds.len());
+            let initial = world.vehicle_snapshots().unwrap()[0];
+            for tick in 0..30 {
+                if let Err(error) = world.step() {
+                    panic!("{name} tick {tick}: {error}; native {:?}", world.native_tick());
+                }
+                let status = world.native_tick().unwrap();
+                assert_eq!(status.error, 0, "{name} tick {tick}");
+                assert!(status.converged, "{name} tick {tick}: stress did not converge");
+                assert!(world.native_take_broken_bonds().unwrap().is_empty(), "{name} fractured in free fall");
+                assert!(world.native_validate_mappings().unwrap(), "{name} lost hull ownership");
+                let state = world.vehicle_snapshots().unwrap()[0];
+                assert_eq!(state.wheels_on_road, 0);
+                assert!(state.pose.position.y.is_finite());
+                assert!((state.pose.position.x-initial.pose.position.x).abs() < 1e-3);
+                assert!((state.pose.position.z-initial.pose.position.z).abs() < 1e-3);
+            }
+            let final_state = world.vehicle_snapshots().unwrap()[0];
+            assert!(final_state.pose.position.y < initial.pose.position.y - 1., "{name} did not fall");
+            eprintln!("Native authored vehicle {name}: {} chunks, {} hulls, {} bonds, 30 free-fall ticks, no fracture", asset.parts.len(), asset.shapes.len(), asset.bonds.len());
+            world.native_clear().unwrap();
+            world.remove_actor(desc.entity_id).unwrap();
+            checked += 1;
+        }
+        assert_eq!(checked, 6, "fixture manifest must include all six drivable base models");
     }
 
     /// Deterministic impact diagnostic using the production prepared compound,

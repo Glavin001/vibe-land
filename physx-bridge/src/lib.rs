@@ -2284,6 +2284,7 @@ mod ffi {
         /// Engine error bits. Non-zero means the step was not completed and
         /// nothing was observed from it.
         error: u32,
+        stress_topology_error: u32,
         iterations: u32,
         converged: bool,
         normal_contacts: u32,
@@ -3182,6 +3183,8 @@ impl From<ffi::FfiNativeConfigured> for NativeConfigured {
 pub struct NativeStatus {
     pub frame: u64,
     pub error: u32,
+    /// Detailed GPU stress-topology error, read only when that stage fails.
+    pub stress_topology_error: u32,
     pub iterations: u32,
     pub converged: bool,
     pub normal_contacts: u32,
@@ -3207,6 +3210,7 @@ impl From<ffi::FfiNativeStatus> for NativeStatus {
         Self {
             frame: v.frame,
             error: v.error,
+            stress_topology_error: v.stress_topology_error,
             iterations: v.iterations,
             converged: v.converged,
             normal_contacts: v.normal_contacts,

@@ -760,6 +760,15 @@ FfiNativeStatus NativeDestruction::tick() {
 
   out.frame = s.last.frame;
   out.error = s.last.error;
+  // Preserve the solver's specific reason instead of collapsing every native
+  // graph/operator failure into scene bit 64. Healthy frames add no readback.
+  if ((s.last.error & 64u) != 0) {
+    const auto view = s.stage().getDeviceView();
+    if (view.stressTopology) {
+      NativeReadback read(s.scene, view.readyEvent);
+      out.stress_topology_error = read.read(view.stressTopology, 1).front().error;
+    }
+  }
   out.iterations = s.last.iterations;
   out.converged = s.last.converged != 0;
   out.normal_contacts = s.last.normalContacts;

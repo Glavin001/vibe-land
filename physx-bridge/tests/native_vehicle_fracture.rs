@@ -21,6 +21,9 @@ fn cube(half: Vec3) -> Vec<Vec3> {
     out
 }
 fn setup(wheel_strength: f32) -> World {
+    setup_with_engine_offset(wheel_strength, 0.)
+}
+fn setup_with_engine_offset(wheel_strength: f32, engine_x: f32) -> World {
     let mut world = World::new(WorldConfig::default()).expect("required real GPU world");
     world
         .add_static_box(StaticBoxDesc {
@@ -80,7 +83,7 @@ fn setup(wheel_strength: f32) -> World {
         v(0.95, -0.1, 1.),
         v(-0.95, -0.1, -1.),
         v(0.95, -0.1, -1.),
-        v(0., 0.4, -0.7),
+        v(engine_x, 0.4, -0.7),
     ];
     let mut parts = Vec::new();
     let mut shapes = Vec::new();
@@ -194,6 +197,24 @@ fn setup(wheel_strength: f32) -> World {
     assert_eq!(configured.chunks, 6);
     assert_eq!(configured.bonds, 5);
     world
+}
+#[test]
+#[ignore = "requires isolated coherent PhysX ABI 22 GPU SDK"]
+fn native_vehicle_accepts_small_authored_com_offsets() {
+    // Closed-mesh integration leaves valid sub-nanometre COM components on
+    // nominal symmetry planes. Combining them with metre-scale forest offsets
+    // must not reject the graph merely because a sum exceeds binary64's
+    // significand. Do not round away inputs to make this test pass.
+    let mut world = setup_with_engine_offset(1e9, 1e-18);
+    for tick in 0..3 {
+        if let Err(error) = world.step() {
+            panic!("tick {tick}: {error}; native {:?}", world.native_tick());
+        }
+        let status = world.native_tick().unwrap();
+        assert_eq!(status.error, 0);
+        assert!(status.converged);
+        assert!(world.native_take_broken_bonds().unwrap().is_empty());
+    }
 }
 #[test]
 #[ignore = "requires isolated coherent PhysX ABI 22 GPU SDK"]
