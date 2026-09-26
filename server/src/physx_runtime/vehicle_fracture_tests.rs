@@ -7,6 +7,71 @@ use serde_json::json;
 const STRUCTURE: u32 = 200;
 const MODELS: [&str; 6] = ["buggy", "trophy", "rally", "monster", "derby", "sprint"];
 
+/// Optional native equation recording is process-global and write-once. Keep
+/// scenarios separate and restore the caller's environment when a scene ends,
+/// including on assertion failure. Callers hold the shared GPU test lock.
+struct EquationCapture(Vec<(&'static str, Option<std::ffi::OsString>)>);
+impl EquationCapture {
+    fn for_scene(model: &str, scenario: &str) -> Self {
+        let Some(directory) = std::env::var_os("VIBE_VEHICLE_CAPTURE_DIR") else {
+            return Self(Vec::new());
+        };
+        let directory = std::path::PathBuf::from(directory);
+        std::fs::create_dir_all(&directory).unwrap();
+        let prefix = format!("{scenario}-{model}");
+        let values = [
+            ("PHYSX_COMPONENT_WORK_OUTPUT", directory.join(format!("{prefix}.components.jsonl")).into_os_string()),
+            ("PHYSX_STRESS_PROBLEM_PREFIX", directory.join(prefix).into_os_string()),
+            ("PHYSX_STRESS_PROBLEM_SOLVES", "0:200".into()),
+        ];
+        let saved = values.iter().map(|(key, _)| (*key, std::env::var_os(key))).collect();
+        for (key, value) in values { std::env::set_var(key, value); }
+        Self(saved)
+    }
+}
+impl Drop for EquationCapture {
+    fn drop(&mut self) {
+        for (key, value) in self.0.drain(..) {
+            if let Some(value) = value { std::env::set_var(key, value); }
+            else { std::env::remove_var(key); }
+        }
+    }
+}
+
+#[test]
+fn equation_capture_separates_scenarios_and_restores_environment_on_failure() {
+    let _guard = gpu_test_guard();
+    let keys = ["VIBE_VEHICLE_CAPTURE_DIR", "PHYSX_COMPONENT_WORK_OUTPUT",
+        "PHYSX_STRESS_PROBLEM_PREFIX", "PHYSX_STRESS_PROBLEM_SOLVES"];
+    let _restore = EquationCapture(keys.into_iter().map(|key| (key, std::env::var_os(key))).collect());
+    std::env::remove_var("VIBE_VEHICLE_CAPTURE_DIR");
+    std::env::set_var("PHYSX_COMPONENT_WORK_OUTPUT", "original-components");
+    std::env::set_var("PHYSX_STRESS_PROBLEM_PREFIX", "original-prefix");
+    std::env::remove_var("PHYSX_STRESS_PROBLEM_SOLVES");
+    { let _capture = EquationCapture::for_scene("buggy", "nominal"); }
+    assert_eq!(std::env::var("PHYSX_STRESS_PROBLEM_PREFIX").unwrap(), "original-prefix");
+    let directory = std::env::temp_dir(); // No recording is performed by this CPU-only test.
+    std::env::set_var("VIBE_VEHICLE_CAPTURE_DIR", &directory);
+    let mut paths = std::collections::BTreeSet::new();
+    for scenario in ["nominal", "heavy", "free-fall"] {
+        {
+            let _capture = EquationCapture::for_scene("buggy", scenario);
+            let path = std::env::var_os("PHYSX_STRESS_PROBLEM_PREFIX").unwrap();
+            assert_eq!(std::path::PathBuf::from(&path), directory.join(format!("{scenario}-buggy")));
+            assert!(paths.insert(path));
+        }
+        assert_eq!(std::env::var("PHYSX_COMPONENT_WORK_OUTPUT").unwrap(), "original-components");
+        assert_eq!(std::env::var("PHYSX_STRESS_PROBLEM_PREFIX").unwrap(), "original-prefix");
+        assert!(std::env::var_os("PHYSX_STRESS_PROBLEM_SOLVES").is_none());
+    }
+    assert!(std::panic::catch_unwind(|| {
+        let _capture = EquationCapture::for_scene("buggy", "interrupted");
+        panic!("simulate a failed physics assertion");
+    }).is_err());
+    assert_eq!(std::env::var("PHYSX_STRESS_PROBLEM_PREFIX").unwrap(), "original-prefix");
+    assert!(std::env::var_os("PHYSX_STRESS_PROBLEM_SOLVES").is_none());
+}
+
 fn fixtures() -> Vec<(String, PreparedGeometry)> {
     let fixtures: serde_json::Value = serde_json::from_slice(&std::fs::read(
         std::env::var("VIBE_VEHICLE_BUILD_FIXTURES").expect("fixture manifest")
@@ -72,6 +137,7 @@ fn checked_step(world: &mut bridge::World, label: &str, tick: u32) -> bridge::Na
 fn authored_vehicle_native_registration_and_free_fall() {
     let _guard = gpu_test_guard();
     for (name, geometry) in fixtures() {
+        let _capture = EquationCapture::for_scene(&name, "free-fall");
         let mut scene = prepare(&geometry);
         let initial = scene.world.vehicle_snapshots().unwrap()[0];
         for tick in 0..30 {
@@ -114,16 +180,7 @@ fn exercise_authored_impact(projectile_mass: f32, speed: f32, require_wheel_loss
     let mut reports = Vec::new();
     let mut failures = Vec::new();
     for (name, geometry) in fixtures() {
-        // The SDK's optional equation recorder uses write-once paths. Give each
-        // scene a distinct path while retaining the complete six-model gate.
-        // This test holds the GPU lock and its documented invocation is serial.
-        if let Ok(directory) = std::env::var("VIBE_VEHICLE_CAPTURE_DIR") {
-            let directory = std::path::PathBuf::from(directory);
-            std::fs::create_dir_all(&directory).unwrap();
-            std::env::set_var("PHYSX_COMPONENT_WORK_OUTPUT", directory.join(format!("{name}.components.jsonl")));
-            std::env::set_var("PHYSX_STRESS_PROBLEM_PREFIX", directory.join(&name));
-            std::env::set_var("PHYSX_STRESS_PROBLEM_SOLVES", "0:200");
-        }
+        let _capture = EquationCapture::for_scene(&name, if require_wheel_loss { "heavy" } else { "nominal" });
         let mut scene = prepare(&geometry);
         if require_wheel_loss {
             scene.world.drive_vehicle(scene.entity, bridge::VehicleCommands {

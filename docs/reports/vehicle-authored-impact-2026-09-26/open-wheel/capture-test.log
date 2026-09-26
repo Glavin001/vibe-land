@@ -1,0 +1,10 @@
+
+running 1 test
+
+thread 'physx_runtime::vehicle_fracture_tests::equation_capture_separates_scenarios_and_restores_environment_on_failure' (15632216) panicked at server/src/physx_runtime/vehicle_fracture_tests.rs:69:9:
+simulate a failed physics assertion
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test physx_runtime::vehicle_fracture_tests::equation_capture_separates_scenarios_and_restores_environment_on_failure ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 209 filtered out; finished in 0.00s
+

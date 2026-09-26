@@ -1,0 +1,145 @@
+[
+  {
+    "model": "buggy",
+    "chunks": 194,
+    "hulls": 635,
+    "bonds": 634,
+    "massKg": 2487.9157450103767,
+    "wheelHulls": [
+      30,
+      30,
+      30,
+      30
+    ]
+  },
+  {
+    "model": "trophy",
+    "chunks": 336,
+    "hulls": 907,
+    "bonds": 1080,
+    "massKg": 5122.455129676742,
+    "wheelHulls": [
+      32,
+      32,
+      32,
+      31
+    ]
+  },
+  {
+    "model": "rally",
+    "chunks": 331,
+    "hulls": 773,
+    "bonds": 1110,
+    "massKg": 4079.3527464711565,
+    "wheelHulls": [
+      28,
+      28,
+      27,
+      27
+    ]
+  },
+  {
+    "model": "monster",
+    "chunks": 336,
+    "hulls": 911,
+    "bonds": 1059,
+    "massKg": 7895.506796399641,
+    "wheelHulls": [
+      29,
+      29,
+      29,
+      28
+    ]
+  },
+  {
+    "model": "derby",
+    "chunks": 330,
+    "hulls": 869,
+    "bonds": 1024,
+    "massKg": 4558.353788601915,
+    "wheelHulls": [
+      31,
+      30,
+      29,
+      29
+    ]
+  },
+  {
+    "model": "sprint",
+    "chunks": 226,
+    "hulls": 704,
+    "bonds": 762,
+    "massKg": 3684.562035270508,
+    "wheelHulls": [
+      29,
+      29,
+      30,
+      30
+    ]
+  },
+  {
+    "model": "trail",
+    "chunks": 194,
+    "hulls": 635,
+    "bonds": 634,
+    "massKg": 2487.9157450103767,
+    "wheelHulls": [
+      30,
+      30,
+      30,
+      30
+    ]
+  },
+  {
+    "model": "desert",
+    "chunks": 336,
+    "hulls": 907,
+    "bonds": 1080,
+    "massKg": 5122.455129676742,
+    "wheelHulls": [
+      32,
+      32,
+      32,
+      31
+    ]
+  },
+  {
+    "model": "touge",
+    "chunks": 331,
+    "hulls": 773,
+    "bonds": 1110,
+    "massKg": 4079.3527464711565,
+    "wheelHulls": [
+      28,
+      28,
+      27,
+      27
+    ]
+  },
+  {
+    "model": "drift",
+    "chunks": 330,
+    "hulls": 869,
+    "bonds": 1024,
+    "massKg": 4558.353788601915,
+    "wheelHulls": [
+      31,
+      30,
+      29,
+      29
+    ]
+  },
+  {
+    "model": "circuit",
+    "chunks": 226,
+    "hulls": 704,
+    "bonds": 762,
+    "massKg": 3684.562035270508,
+    "wheelHulls": [
+      29,
+      29,
+      30,
+      30
+    ]
+  }
+]

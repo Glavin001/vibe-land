@@ -1,0 +1,39 @@
+{
+  "scope": "Full unfiltered heavy-impact verdicts, retained locally; repository copy is explicitly filtered. All frame counters and ownership observations remain in the repository copy.",
+  "path": "/tmp/vehicle-open-wheel-impact-heavy.json.gz",
+  "bytes": 44530921,
+  "sha256": "861691b8909d39618ab1e3b8d6140f8ba239aff9c519f80ce0dea0e8bba79440",
+  "uncompressedPath": "/tmp/vehicle-open-wheel-impact-heavy.json",
+  "selections": [
+    {
+      "model": "buggy",
+      "retainedBonds": 69,
+      "totalBonds": 634
+    },
+    {
+      "model": "trophy",
+      "retainedBonds": 114,
+      "totalBonds": 1080
+    },
+    {
+      "model": "rally",
+      "retainedBonds": 137,
+      "totalBonds": 1110
+    },
+    {
+      "model": "monster",
+      "retainedBonds": 103,
+      "totalBonds": 1059
+    },
+    {
+      "model": "derby",
+      "retainedBonds": 87,
+      "totalBonds": 1024
+    },
+    {
+      "model": "sprint",
+      "retainedBonds": 85,
+      "totalBonds": 762
+    }
+  ]
+}

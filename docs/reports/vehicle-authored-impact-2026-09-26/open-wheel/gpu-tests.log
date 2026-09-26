@@ -1,0 +1,68 @@
+
+running 3 tests
+test physx_runtime::vehicle_fracture_tests::authored_vehicle_cannonball_localized_fracture ... CUMETAL WARNING: CUMETAL_USE_METAL_DEVICE_ADDRESSES marks every live allocation read-write on every dispatch so kernels can follow raw device addresses; this removes cross-stream concurrency.
+[destruction] native internalCorrectionLimit=1
+Authored cannon buggy: 0 broken / 634 bonds; error=None
+[destruction] native internalCorrectionLimit=1
+Authored cannon trophy: 10 broken / 1080 bonds; error=None
+[destruction] native internalCorrectionLimit=1
+Authored cannon rally: 6 broken / 1110 bonds; error=None
+[destruction] native internalCorrectionLimit=1
+Authored cannon monster: 8 broken / 1059 bonds; error=None
+[destruction] native internalCorrectionLimit=1
+Authored cannon derby: 2 broken / 1024 bonds; error=None
+[destruction] native internalCorrectionLimit=1
+Authored cannon sprint: 0 broken / 762 bonds; error=None
+
+thread 'physx_runtime::vehicle_fracture_tests::authored_vehicle_cannonball_localized_fracture' (15588070) panicked at server/src/physx_runtime/vehicle_fracture_tests.rs:236:5:
+authored vehicle impact failures: [
+    "buggy: real cannon contact produced no fracture",
+    "sprint: real cannon contact produced no fracture",
+]
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+test physx_runtime::vehicle_fracture_tests::authored_vehicle_heavy_impact_disables_detached_wheel ... [destruction] native internalCorrectionLimit=1
+Authored cannon buggy: 31 broken / 634 bonds; error=None
+[destruction] native internalCorrectionLimit=1
+Authored cannon trophy: 52 broken / 1080 bonds; error=None
+[destruction] native internalCorrectionLimit=1
+Authored cannon rally: 63 broken / 1110 bonds; error=None
+[destruction] native internalCorrectionLimit=1
+Authored cannon monster: 40 broken / 1059 bonds; error=None
+[destruction] native internalCorrectionLimit=1
+Authored cannon derby: 45 broken / 1024 bonds; error=None
+[destruction] native internalCorrectionLimit=1
+Authored cannon sprint: 34 broken / 762 bonds; error=None
+
+thread 'physx_runtime::vehicle_fracture_tests::authored_vehicle_heavy_impact_disables_detached_wheel' (15604091) panicked at server/src/physx_runtime/vehicle_fracture_tests.rs:236:5:
+authored vehicle impact failures: [
+    "buggy: heavy impact did not produce sustained wheel loss",
+    "trophy: heavy impact did not produce sustained wheel loss",
+    "rally: heavy impact did not produce sustained wheel loss",
+    "monster: heavy impact did not produce sustained wheel loss",
+    "derby: heavy impact did not produce sustained wheel loss",
+    "sprint: heavy impact did not produce sustained wheel loss",
+]
+FAILED
+test physx_runtime::vehicle_fracture_tests::authored_vehicle_native_registration_and_free_fall ... [destruction] native internalCorrectionLimit=1
+Native authored vehicle buggy: 194 chunks, 635 hulls, 634 bonds, 30 free-fall ticks, no fracture
+[destruction] native internalCorrectionLimit=1
+Native authored vehicle trophy: 336 chunks, 907 hulls, 1080 bonds, 30 free-fall ticks, no fracture
+[destruction] native internalCorrectionLimit=1
+Native authored vehicle rally: 331 chunks, 773 hulls, 1110 bonds, 30 free-fall ticks, no fracture
+[destruction] native internalCorrectionLimit=1
+Native authored vehicle monster: 336 chunks, 911 hulls, 1059 bonds, 30 free-fall ticks, no fracture
+[destruction] native internalCorrectionLimit=1
+Native authored vehicle derby: 330 chunks, 869 hulls, 1024 bonds, 30 free-fall ticks, no fracture
+[destruction] native internalCorrectionLimit=1
+Native authored vehicle sprint: 226 chunks, 704 hulls, 762 bonds, 30 free-fall ticks, no fracture
+ok
+
+failures:
+
+failures:
+    physx_runtime::vehicle_fracture_tests::authored_vehicle_cannonball_localized_fracture
+    physx_runtime::vehicle_fracture_tests::authored_vehicle_heavy_impact_disables_detached_wheel
+
+test result: FAILED. 1 passed; 2 failed; 0 ignored; 0 measured; 206 filtered out; finished in 708.63s
+

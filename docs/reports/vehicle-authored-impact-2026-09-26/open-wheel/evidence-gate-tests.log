@@ -1,0 +1,12 @@
+test_compilation_or_partial_test_selection_is_not_execution (test_vehicle_fracture_evidence.VehicleFractureEvidenceTests.test_compilation_or_partial_test_selection_is_not_execution) ... ok
+test_complete_converged_localized_impacts_and_functional_loss (test_vehicle_fracture_evidence.VehicleFractureEvidenceTests.test_complete_converged_localized_impacts_and_functional_loss) ... ok
+test_fabricated_shutdown_counter_cannot_pass (test_vehicle_fracture_evidence.VehicleFractureEvidenceTests.test_fabricated_shutdown_counter_cannot_pass) ... ok
+test_failed_repeated_or_missing_step_cannot_pass (test_vehicle_fracture_evidence.VehicleFractureEvidenceTests.test_failed_repeated_or_missing_step_cannot_pass) ... ok
+test_missing_and_duplicate_models_cannot_pass (test_vehicle_fracture_evidence.VehicleFractureEvidenceTests.test_missing_and_duplicate_models_cannot_pass) ... ok
+test_no_contact_damage_or_wrong_load_is_rejected (test_vehicle_fracture_evidence.VehicleFractureEvidenceTests.test_no_contact_damage_or_wrong_load_is_rejected) ... ok
+test_ownership_loss_must_disable_wheel_for_the_remaining_aftermath (test_vehicle_fracture_evidence.VehicleFractureEvidenceTests.test_ownership_loss_must_disable_wheel_for_the_remaining_aftermath) ... ok
+
+----------------------------------------------------------------------
+Ran 7 tests in 0.013s
+
+OK

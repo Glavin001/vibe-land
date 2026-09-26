@@ -1,0 +1,24 @@
+{
+  "vehicleSourceCommit": "782813b3",
+  "physxSourceCommit": "6938aa7da6ee8d05e5ab047d889262bbd1208bdc",
+  "note": "Observed artifact hashes during the isolated manual run. The verification command added afterward records before/after hashes for future runs.",
+  "sha256": {
+    "/tmp/vehicle-open-wheel-fixtures.json": "3e8566805d880804d27f4b6f84152029adf0620ae3006d84d69daa053370f7f2",
+    "/tmp/vibe-vehicle-abi22-target/debug/deps/web_fps_server-a9f373fda0d7ae56": "768803eb61f369ecd6bd1260ca5006f1e17d7f4e1ad078ef8e99712a014176c8",
+    "/tmp/vehicle-convergence-gate-libs/libPhysXDestructionGpuRuntime_64.dylib": "adf645bb9b40d062b0778d053d5fc21aac484480a5f0a424dd2ae9a5f77753dc",
+    "/tmp/vehicle-convergence-gate-libs/libcumetal.dylib": "95d3752b609dd3e2005fc588b6b0d4e23d55dbb611c2976ef88283f43f4013d0",
+    "/tmp/vehicle-convergence-gate-libs/libPhysXGpuActivity_64.dylib": "e8a98f14299dfc75938490906fb78307d9f2db8f11fe6b53eff51f8e7539ecd0",
+    "/tmp/vibe-vehicle-open-wheel-assets/a433e2343ccf1c5bc76117025e3e0c8a4693a6704f05aded5318faea1e7c4410/metadata.json": "736a4b4edcc3a0f1eb0d276309af0d064d435418dcb8f26981db56b375b58f3b",
+    "/tmp/vibe-vehicle-open-wheel-assets/a433e2343ccf1c5bc76117025e3e0c8a4693a6704f05aded5318faea1e7c4410/physics.json": "0f06291f2ae0550759e110192ff6293c48456a862700649b8e30072a308f5aeb",
+    "/tmp/vibe-vehicle-open-wheel-assets/e901e448dd788f265b34e2b2221c4e9ef58b2f9a056556b266e56d5204384804/metadata.json": "29f9fec2ac241dd82172eecc155e613013d822c6944893d7207c826d0f2f3534",
+    "/tmp/vibe-vehicle-open-wheel-assets/e901e448dd788f265b34e2b2221c4e9ef58b2f9a056556b266e56d5204384804/physics.json": "b354ab0965e22da5d4b0cae086b7c9524eb85f12d2e40b47ba197128b91dfc37",
+    "/tmp/vibe-vehicle-open-wheel-assets/349c15c8fcaf3b9ebd79690c061f18d5eac657678aff220940a4f75a7850a92f/metadata.json": "31d8d2267d2b87282c37e201b7b9c27d00c379707ec951702a6bce48da00a740",
+    "/tmp/vibe-vehicle-open-wheel-assets/349c15c8fcaf3b9ebd79690c061f18d5eac657678aff220940a4f75a7850a92f/physics.json": "1637a6a8e9e2c4e129b3ccdaf3d89f3d82b809e1a9835bb385aee1af1b5aef85",
+    "/tmp/vibe-vehicle-open-wheel-assets/252cac3892412c12e08e6a0c798013f739ce2239f45825738ab295ad75591473/metadata.json": "86f94a36932bc3aaafca3cde9330da97eaf7d2d0da16685a46a6216cc79d97fc",
+    "/tmp/vibe-vehicle-open-wheel-assets/252cac3892412c12e08e6a0c798013f739ce2239f45825738ab295ad75591473/physics.json": "b3c39d6fba34fb4efd25b8f69a0c0038c99a99c458e47039b114de159e719f41",
+    "/tmp/vibe-vehicle-open-wheel-assets/5a46bf047c81500df9d39a02e08105868199a30643d27658d4cce8082f8bbc39/metadata.json": "0192439a726ec54a4d86fe04bd729224bedf5c3d50f2cd9275e047abe94640d1",
+    "/tmp/vibe-vehicle-open-wheel-assets/5a46bf047c81500df9d39a02e08105868199a30643d27658d4cce8082f8bbc39/physics.json": "289fb51e8080cfbfee5d5194aaf233edfa06745cec32de4c52bcc7ff0163cc0c",
+    "/tmp/vibe-vehicle-open-wheel-assets/7c83e1d6abef2e737d0707096e7d4408816194709c56c185c6322ce798ec6a4d/metadata.json": "71a01e1201198ea40cc68a04e8b22928a719ade1400ac84fdd77a828f20c558a",
+    "/tmp/vibe-vehicle-open-wheel-assets/7c83e1d6abef2e737d0707096e7d4408816194709c56c185c6322ce798ec6a4d/physics.json": "16f4babce85a5d1d1d65c2d08f1a86ed3594d95e8eb3518af78b47341c8127a3"
+  }
+}

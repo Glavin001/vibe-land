@@ -1,0 +1,2386 @@
+[
+  {
+    "model": "buggy",
+    "targetIndex": 4,
+    "targetName": "Front right wheel assembly",
+    "targetMassKg": 181.26088679426653,
+    "targetHullCount": 30,
+    "interfaces": [
+      {
+        "bond": 387,
+        "otherPart": "Front right tie rod",
+        "otherMotion": {
+          "corner": "fr",
+          "role": "tieRod",
+          "endpoints": [
+            [
+              0.18,
+              0.465,
+              -1.21
+            ],
+            [
+              0.7899999999999999,
+              0.455,
+              -1.31
+            ]
+          ],
+          "radius": 0.012
+        },
+        "sourceVisuals": [
+          "Front right tie rod",
+          "Front right hub"
+        ],
+        "areaM2": 7.309266433792577e-06,
+        "centroid": [
+          -0.7353914724852865,
+          -0.19044430103460946,
+          1.2894981084319526
+        ],
+        "strength": {
+          "compressionElastic": 120000000,
+          "compressionFatal": 300000000,
+          "tensionElastic": 120000000,
+          "tensionFatal": 300000000,
+          "shearElastic": 69600000,
+          "shearFatal": 174000000,
+          "elasticModulus": 200000000000,
+          "residualAreaFraction": 0
+        },
+        "broken": true,
+        "peakTrialUtilisation": 0
+      },
+      {
+        "bond": 437,
+        "otherPart": "Front right lower wishbone",
+        "otherMotion": {
+          "corner": "fr",
+          "role": "lowerArm",
+          "endpoints": [
+            [
+              0.39,
+              0.525,
+              -1.54
+            ],
+            [
+              0.7899999999999999,
+              0.29500000000000004,
+              -1.31
+            ]
+          ],
+          "radius": 0.027
+        },
+        "sourceVisuals": [
+          "Front right lower wishbone",
+          "Front right hub"
+        ],
+        "areaM2": 0.0009924694337120957,
+        "centroid": [
+          -0.7449420125746614,
+          -0.29700708682217364,
+          1.345002538341147
+        ],
+        "strength": {
+          "compressionElastic": 120000000,
+          "compressionFatal": 300000000,
+          "tensionElastic": 120000000,
+          "tensionFatal": 300000000,
+          "shearElastic": 69600000,
+          "shearFatal": 174000000,
+          "elasticModulus": 200000000000,
+          "residualAreaFraction": 0
+        },
+        "broken": false,
+        "peakTrialUtilisation": 0.8201224207878113
+      },
+      {
+        "bond": 442,
+        "otherPart": "Front right lower wishbone",
+        "otherMotion": {
+          "corner": "fr",
+          "role": "lowerArm",
+          "endpoints": [
+            [
+              0.39,
+              0.525,
+              -1.08
+            ],
+            [
+              0.7899999999999999,
+              0.29500000000000004,
+              -1.31
+            ]
+          ],
+          "radius": 0.027
+        },
+        "sourceVisuals": [
+          "Front right lower wishbone",
+          "Front right hub"
+        ],
+        "areaM2": 0.0007765149662203797,
+        "centroid": [
+          -0.7462782159147489,
+          -0.2968399367196321,
+          1.2702133760389014
+        ],
+        "strength": {
+          "compressionElastic": 120000000,
+          "compressionFatal": 300000000,
+          "tensionElastic": 120000000,
+          "tensionFatal": 300000000,
+          "shearElastic": 69600000,
+          "shearFatal": 174000000,
+          "elasticModulus": 200000000000,
+          "residualAreaFraction": 0
+        },
+        "broken": false,
+        "peakTrialUtilisation": 0.5722585916519165
+      },
+      {
+        "bond": 609,
+        "otherPart": "Front right axle",
+        "otherMotion": {
+          "corner": "fr",
+          "role": "axle",
+          "endpoints": [
+            [
+              0,
+              0.395,
+              -1.31
+            ],
+            [
+              0.94,
+              0.395,
+              -1.31
+            ]
+          ],
+          "radius": 0.025
+        },
+        "sourceVisuals": [
+          "Front right axle",
+          "Front right hub"
+        ],
+        "areaM2": 0.020657886476765877,
+        "centroid": [
+          -0.8835172315487967,
+          -0.24989499467980136,
+          1.309998753073451
+        ],
+        "strength": {
+          "compressionElastic": 120000000,
+          "compressionFatal": 300000000,
+          "tensionElastic": 120000000,
+          "tensionFatal": 300000000,
+          "shearElastic": 69600000,
+          "shearFatal": 174000000,
+          "elasticModulus": 200000000000,
+          "residualAreaFraction": 0
+        },
+        "broken": false,
+        "peakTrialUtilisation": 0.16118834912776947
+      },
+      {
+        "bond": 618,
+        "otherPart": "Front right shock eye",
+        "otherMotion": {
+          "corner": "fr",
+          "role": "shockEye",
+          "endpoints": [
+            [
+              0.6808101121767961,
+              0.3689905909613227,
+              -1.2854936324714563
+            ],
+            [
+              0.7899999999999999,
+              0.29500000000000004,
+              -1.31
+            ]
+          ],
+          "radius": 0.023
+        },
+        "sourceVisuals": [
+          "Front right shock eye",
+          "Front right hub"
+        ],
+        "areaM2": 0.0003672839377758557,
+        "centroid": [
+          -0.7387035064589133,
+          -0.292638445719153,
+          1.3009589485597635
+        ],
+        "strength": {
+          "compressionElastic": 120000000,
+          "compressionFatal": 300000000,
+          "tensionElastic": 120000000,
+          "tensionFatal": 300000000,
+          "shearElastic": 69600000,
+          "shearFatal": 174000000,
+          "elasticModulus": 200000000000,
+          "residualAreaFraction": 0
+        },
+        "broken": false,
+        "peakTrialUtilisation": 0.8923600912094116
+      },
+      {
+        "bond": 621,
+        "otherPart": "Front right CV boot",
+        "otherMotion": {
+          "corner": "fr",
+          "role": "cvBoot"
+        },
+        "sourceVisuals": [
+          "Front right CV boot rib 1",
+          "Front right hub"
+        ],
+        "areaM2": 0.0029643396660696706,
+        "centroid": [
+          -0.738060291516645,
+          -0.2570152741710191,
+          1.310324532170185
+        ],
+        "strength": {
+          "compressionElastic": 2000000,
+          "compressionFatal": 12000000,
+          "tensionElastic": 2000000,
+          "tensionFatal": 12000000,
+          "shearElastic": 1400000,
+          "shearFatal": 8399999.999999998,
+          "elasticModulus": 10000000,
+          "residualAreaFraction": 0
+        },
+        "broken": false,
+        "peakTrialUtilisation": 0.013789425604045391
+      },
+      {
+        "bond": 625,
+        "otherPart": "Front right upright",
+        "otherMotion": {
+          "corner": "fr",
+          "role": "upright",
+          "endpoints": [
+            [
+              0.7899999999999999,
+              0.29500000000000004,
+              -1.31
+            ],
+            [
+              0.7699999999999999,
+              0.515,
+              -1.31
+            ]
+          ],
+          "radius": 0.045
+        },
+        "sourceVisuals": [
+          "Front right upright",
+          "Front right hub"
+        ],
+        "areaM2": 0.030049624495959826,
+        "centroid": [
+          -0.7857615123442171,
+          -0.24948894691106688,
+          1.3108581284861245
+        ],
+        "strength": {
+          "compressionElastic": 120000000,
+          "compressionFatal": 300000000,
+          "tensionElastic": 120000000,
+          "tensionFatal": 300000000,
+          "shearElastic": 69600000,
+          "shearFatal": 174000000,
+          "elasticModulus": 200000000000,
+          "residualAreaFraction": 0
+        },
+        "broken": false,
+        "peakTrialUtilisation": 0.37701982259750366
+      },
+      {
+        "bond": 629,
+        "otherPart": "Front right upright",
+        "otherMotion": {
+          "corner": "fr",
+          "role": "upright",
+          "endpoints": [
+            [
+              0.7899999999999999,
+              0.29500000000000004,
+              -1.31
+            ],
+            [
+              0.7699999999999999,
+              0.515,
+              -1.31
+            ]
+          ],
+          "radius": 0.045
+        },
+        "sourceVisuals": [
+          "Front right upright",
+          "Front right brake rotor"
+        ],
+        "areaM2": 0.005220982234083325,
+        "centroid": [
+          -0.8140755137769834,
+          -0.23249214951813507,
+          1.3094333712596398
+        ],
+        "strength": {
+          "compressionElastic": 120000000,
+          "compressionFatal": 300000000,
+          "tensionElastic": 120000000,
+          "tensionFatal": 300000000,
+          "shearElastic": 69600000,
+          "shearFatal": 174000000,
+          "elasticModulus": 200000000000,
+          "residualAreaFraction": 0
+        },
+        "broken": false,
+        "peakTrialUtilisation": 0.21601933240890503
+      },
+      {
+        "bond": 630,
+        "otherPart": "Front right brake caliper",
+        "otherMotion": {
+          "corner": "fr",
+          "role": "knuckle"
+        },
+        "sourceVisuals": [
+          "Front right hub",
+          "Front right brake caliper"
+        ],
+        "areaM2": 0.001076060739953916,
+        "centroid": [
+          -0.8320336460903718,
+          -0.179692698085947,
+          1.2930518429313302
+        ],
+        "strength": {
+          "compressionElastic": 8000000,
+          "compressionFatal": 35000000,
+          "tensionElastic": 8000000,
+          "tensionFatal": 35000000,
+          "shearElastic": 4000000,
+          "shearFatal": 17500000,
+          "elasticModulus": 4000000000,
+          "residualAreaFraction": 0
+        },
+        "broken": false,
+        "peakTrialUtilisation": 0.0814700648188591
+      },
+      {
+        "bond": 632,
+        "otherPart": "Front right brake caliper",
+        "otherMotion": {
+          "corner": "fr",
+          "role": "knuckle"
+        },
+        "sourceVisuals": [
+          "Front right brake caliper",
+          "Front right brake rotor"
+        ],
+        "areaM2": 0.008455388851084935,
+        "centroid": [
+          -0.8162197628458291,
+          -0.1369301905210062,
+          1.2822991736144946
+        ],
+        "strength": {
+          "compressionElastic": 8000000,
+          "compressionFatal": 35000000,
+          "tensionElastic": 8000000,
+          "tensionFatal": 35000000,
+          "shearElastic": 4000000,
+          "shearFatal": 17500000,
+          "elasticModulus": 4000000000,
+          "residualAreaFraction": 0
+        },
+        "broken": false,
+        "peakTrialUtilisation": 0.04642101004719734
+      }
+    ]
+  },
+  {
+    "model": "trophy",
+    "targetIndex": 4,
+    "targetName": "Front right wheel assembly",
+    "targetMassKg": 225.06328703281096,
+    "targetHullCount": 32,
+    "interfaces": [
+      {
+        "bond": 715,
+        "otherPart": "Front right lower wishbone",
+        "otherMotion": {
+          "corner": "fr",
+          "role": "lowerArm",
+          "endpoints": [
+            [
+              0.39,
+              0.5700000000000001,
+              -1.73
+            ],
+            [
+              0.9,
+              0.33999999999999997,
+              -1.5
+            ]
+          ],
+          "radius": 0.027
+        },
+        "sourceVisuals": [
+          "Front right lower wishbone",
+          "Front right hub"
+        ],
+        "areaM2": 0.0007112470323404856,
+        "centroid": [
+          -0.8536952484788685,
+          -0.3030509608123466,
+          1.5304276876021492
+        ],
+        "strength": {
+          "compressionElastic": 120000000,
+          "compressionFatal": 300000000,
+          "tensionElastic": 120000000,
+          "tensionFatal": 300000000,
+          "shearElastic": 69600000,
+          "shearFatal": 174000000,
+          "elasticModulus": 200000000000,
+          "residualAreaFraction": 0
+        },
+        "broken": false,
+        "peakTrialUtilisation": 1.2415462732315063
+      },
+      {
+        "bond": 721,
+        "otherPart": "Front right lower wishbone",
+        "otherMotion": {
+          "corner": "fr",
+          "role": "lowerArm",
+          "endpoints": [
+            [
+              0.39,
+              0.5700000000000001,
+              -1.27
+            ],
+            [
+              0.9,
+              0.33999999999999997,
+              -1.5
+            ]
+          ],
+          "radius": 0.027
+        },
+        "sourceVisuals": [
+          "Front right lower wishbone",
+          "Front right hub"
+        ],
+        "areaM2": 0.0005000195189226368,
+        "centroid": [
+          -0.8550656473381107,
+          -0.3038623634764706,
+          1.4644400957173338
+        ],
+        "strength": {
+          "compressionElastic": 120000000,
+          "compressionFatal": 300000000,
+          "tensionElastic": 120000000,
+          "tensionFatal": 300000000,
+          "shearElastic": 69600000,
+          "shearFatal": 174000000,
+          "elasticModulus": 200000000000,
+          "residualAreaFraction": 0
+        },
+        "broken": false,
+        "peakTrialUtilisation": 0.9641891121864319
+      },
+      {
+        "bond": 886,
+        "otherPart": "Front right axle",
+        "otherMotion": {
+          "corner": "fr",
+          "role": "axle",
+          "endpoints": [
+            [
+              0,
+              0.44,
+              -1.5
+            ],
+            [
+              1.05,
+              0.44,
+              -1.5
+            ]
+          ],
+          "radius": 0.025
+        },
+        "sourceVisuals": [
+          "Front right axle",
+          "Front right hub"
+        ],
+        "areaM2": 0.020657969251188884,
+        "centroid": [
+          -0.9935166569303412,
+          -0.24989497250420684,
+          1.4999988466782002
+        ],
+        "strength": {
+          "compressionElastic": 120000000,
+          "compressionFatal": 300000000,
+          "tensionElastic": 120000000,
+          "tensionFatal": 300000000,
+          "shearElastic": 69600000,
+          "shearFatal": 174000000,
+          "elasticModulus": 200000000000,
+          "residualAreaFraction": 0
+        },
+        "broken": false,
+        "peakTrialUtilisation": 0.2236555963754654
+      },
+      {
+        "bond": 1020,
+        "otherPart": "Front right shock eye",
+        "otherMotion": {
+          "corner": "fr",
+          "role": "shockEye",
+          "endpoints": [
+            [
+              0.7820476175619908,
+              0.41151553221341775,
+              -1.4750227722601612
+            ],
+            [
+              0.9,
+              0.33999999999999997,
+              -1.5
+            ]
+          ],
+          "radius": 0.023
+        },
+        "sourceVisuals": [
+          "Front right shock eye",
+          "Front right hub"
+        ],
+        "areaM2": 0.0003538134344019223,
+        "centroid": [
+          -0.8490670095052961,
+          -0.29605209851194053,
+          1.48910370793299
+        ],
+        "strength": {
+          "compressionElastic": 120000000,
+          "compressionFatal": 300000000,
+          "tensionElastic": 120000000,
+          "tensionFatal": 300000000,
+          "shearElastic": 69600000,
+          "shearFatal": 174000000,
+          "elasticModulus": 200000000000,
+          "residualAreaFraction": 0
+        },
+        "broken": false,
+        "peakTrialUtilisation": 1.743967056274414
+      },
+      {
+        "bond": 1030,
+        "otherPart": "Front right tie rod",
+        "otherMotion": {
+          "corner": "fr",
+          "role": "tieRod",
+          "endpoints": [
+            [
+              0.18,
+              0.51,
+              -1.4
+            ],
+            [
+              0.9,
+              0.5,
+              -1.5
+            ]
+          ],
+          "radius": 0.012
+        },
+        "sourceVisuals": [
+          "Front right tie rod",
+          "Front right hub"
+        ],
+        "areaM2": 6.12737591725656e-08,
+        "centroid": [
+          -0.8450341939786443,
+          -0.18953280862957178,
+          1.4803118183468977
+        ],
+        "strength": {
+          "compressionElastic": 120000000,
+          "compressionFatal": 300000000,
+          "tensionElastic": 120000000,
+          "tensionFatal": 300000000,
+          "shearElastic": 69600000,
+          "shearFatal": 174000000,
+          "elasticModulus": 200000000000,
+          "residualAreaFraction": 0
+        },
+        "broken": true,
+        "peakTrialUtilisation": 0
+      },
+      {
+        "bond": 1031,
+        "otherPart": "Front right CV boot",
+        "otherMotion": {
+          "corner": "fr",
+          "role": "cvBoot"
+        },
+        "sourceVisuals": [
+          "Front right CV boot rib 1",
+          "Front right hub"
+        ],
+        "areaM2": 0.0029692441074905223,
+        "centroid": [
+          -0.8480556665039402,
+          -0.257065589542818,
+          1.5003104897688173
+        ],
+        "strength": {
+          "compressionElastic": 2000000,
+          "compressionFatal": 12000000,
+          "tensionElastic": 2000000,
+          "tensionFatal": 12000000,
+          "shearElastic": 1400000,
+          "shearFatal": 8399999.999999998,
+          "elasticModulus": 10000000,
+          "residualAreaFraction": 0
+        },
+        "broken": false,
+        "peakTrialUtilisation": 0.009038914926350117
+      },
+      {
+        "bond": 1040,
+        "otherPart": "Front right upright",
+        "otherMotion": {
+          "corner": "fr",
+          "role": "upright",
+          "endpoints": [
+            [
+              0.9,
+              0.33999999999999997,
+              -1.5
+            ],
+            [
+              0.88,
+              0.56,
+              -1.5
+            ]
+          ],
+          "radius": 0.045
+        },
+        "sourceVisuals": [
+          "Front right upright",
+          "Front right hub"
+        ],
+        "areaM2": 0.0300873966957956,
+        "centroid": [
+          -0.8953524681299602,
+          -0.24985546407009263,
+          1.500111112824567
+        ],
+        "strength": {
+          "compressionElastic": 120000000,
+          "compressionFatal": 300000000,
+          "tensionElastic": 120000000,
+          "tensionFatal": 300000000,
+          "shearElastic": 69600000,
+          "shearFatal": 174000000,
+          "elasticModulus": 200000000000,
+          "residualAreaFraction": 0
+        },
+        "broken": false,
+        "peakTrialUtilisation": 0.5525664687156677
+      },
+      {
+        "bond": 1049,
+        "otherPart": "Front right upright",
+        "otherMotion": {
+          "corner": "fr",
+          "role": "upright",
+          "endpoints": [
+            [
+              0.9,
+              0.33999999999999997,
+              -1.5
+            ],
+            [
+              0.88,
+              0.56,
+              -1.5
+            ]
+          ],
+          "radius": 0.045
+        },
+        "sourceVisuals": [
+          "Front right upright",
+          "Front right brake rotor"
+        ],
+        "areaM2": 0.005014973419334516,
+        "centroid": [
+          -0.9240151986223067,
+          -0.2277580043039904,
+          1.4998654997532115
+        ],
+        "strength": {
+          "compressionElastic": 120000000,
+          "compressionFatal": 300000000,
+          "tensionElastic": 120000000,
+          "tensionFatal": 300000000,
+          "shearElastic": 69600000,
+          "shearFatal": 174000000,
+          "elasticModulus": 200000000000,
+          "residualAreaFraction": 0
+        },
+        "broken": false,
+        "peakTrialUtilisation": 0.3132398724555969
+      },
+      {
+        "bond": 1077,
+        "otherPart": "Front right brake caliper",
+        "otherMotion": {
+          "corner": "fr",
+          "role": "knuckle"
+        },
+        "sourceVisuals": [
+          "Front right brake caliper",
+          "Front right brake rotor"
+        ],
+        "areaM2": 0.00845538898016031,
+        "centroid": [
+          -0.9262197636908067,
+          -0.1369301934610322,
+          1.4722991749559164
+        ],
+        "strength": {
+          "compressionElastic": 8000000,
+          "compressionFatal": 35000000,
+          "tensionElastic": 8000000,
+          "tensionFatal": 35000000,
+          "shearElastic": 4000000,
+          "shearFatal": 17500000,
+          "elasticModulus": 4000000000,
+          "residualAreaFraction": 0
+        },
+        "broken": false,
+        "peakTrialUtilisation": 0.05672793835401535
+      },
+      {
+        "bond": 1078,
+        "otherPart": "Front right brake caliper",
+        "otherMotion": {
+          "corner": "fr",
+          "role": "knuckle"
+        },
+        "sourceVisuals": [
+          "Front right brake caliper",
+          "Front right hub"
+        ],
+        "areaM2": 0.0010760607314991213,
+        "centroid": [
+          -0.9420336476010078,
+          -0.1796926992245611,
+          1.4830518431866175
+        ],
+        "strength": {
+          "compressionElastic": 8000000,
+          "compressionFatal": 35000000,
+          "tensionElastic": 8000000,
+          "tensionFatal": 35000000,
+          "shearElastic": 4000000,
+          "shearFatal": 17500000,
+          "elasticModulus": 4000000000,
+          "residualAreaFraction": 0
+        },
+        "broken": false,
+        "peakTrialUtilisation": 0.09728652983903885
+      }
+    ]
+  },
+  {
+    "model": "rally",
+    "targetIndex": 4,
+    "targetName": "Front right wheel assembly",
+    "targetMassKg": 134.51647256613657,
+    "targetHullCount": 28,
+    "interfaces": [
+      {
+        "bond": 688,
+        "otherPart": "Front right tie rod",
+        "otherMotion": {
+          "corner": "fr",
+          "role": "tieRod",
+          "endpoints": [
+            [
+              0.18,
+              0.41000000000000003,
+              -1.0499999999999998
+            ],
+            [
+              0.71,
+              0.4,
+              -1.15
+            ]
+          ],
+          "radius": 0.012
+        },
+        "sourceVisuals": [
+          "Front right tie rod",
+          "Front right hub"
+        ],
+        "areaM2": 2.1656160341557418e-05,
+        "centroid": [
+          -0.6557801927230532,
+          -0.19012086579626053,
+          1.1284521728282515
+        ],
+        "strength": {
+          "compressionElastic": 120000000,
+          "compressionFatal": 300000000,
+          "tensionElastic": 120000000,
+          "tensionFatal": 300000000,
+          "shearElastic": 69600000,
+          "shearFatal": 174000000,
+          "elasticModulus": 200000000000,
+          "residualAreaFraction": 0
+        },
+        "broken": false,
+        "peakTrialUtilisation": 1.0482628345489502
+      },
+      {
+        "bond": 745,
+        "otherPart": "Front right lower wishbone",
+        "otherMotion": {
+          "corner": "fr",
+          "role": "lowerArm",
+          "endpoints": [
+            [
+              0.39,
+              0.47000000000000003,
+              -1.38
+            ],
+            [
+              0.71,
+              0.24000000000000002,
+              -1.15
+            ]
+          ],
+          "radius": 0.027
+        },
+        "sourceVisuals": [
+          "Front right lower wishbone",
+          "Front right hub"
+        ],
+        "areaM2": 0.0013961366604233767,
+        "centroid": [
+          -0.6663083544550734,
+          -0.29055147179564306,
+          1.1900325896410986
+        ],
+        "strength": {
+          "compressionElastic": 120000000,
+          "compressionFatal": 300000000,
+          "tensionElastic": 120000000,
+          "tensionFatal": 300000000,
+          "shearElastic": 69600000,
+          "shearFatal": 174000000,
+          "elasticModulus": 200000000000,
+          "residualAreaFraction": 0
+        },
+        "broken": false,
+        "peakTrialUtilisation": 0.5066544413566589
+      },
+      {
+        "bond": 834,
+        "otherPart": "Fender bracket",
+        "otherMotion": null,
+        "sourceVisuals": [
+          "Fender bracket",
+          "Front right tread 32.1"
+        ],
+        "areaM2": 1.442624682078229e-06,
+        "centroid": [
+          -0.7262899865303356,
+          0.1126038117335777,
+          1.2066807481732957
+        ],
+        "strength": {
+          "compressionElastic": 2000000,
+          "compressionFatal": 12000000,
+          "tensionElastic": 2000000,
+          "tensionFatal": 12000000,
+          "shearElastic": 1400000,
+          "shearFatal": 8399999.999999998,
+          "elasticModulus": 10000000,
+          "residualAreaFraction": 0
+        },
+        "broken": false,
+        "peakTrialUtilisation": 1.0049434900283813
+      },
+      {
+        "bond": 868,
+        "otherPart": "Front right lower wishbone",
+        "otherMotion": {
+          "corner": "fr",
+          "role": "lowerArm",
+          "endpoints": [
+            [
+              0.39,
+              0.47000000000000003,
+              -0.9199999999999999
+            ],
+            [
+              0.71,
+              0.24000000000000002,
+              -1.15
+            ]
+          ],
+          "radius": 0.027
+        },
+        "sourceVisuals": [
+          "Front right lower wishbone",
+          "Front right hub"
+        ],
+        "areaM2": 0.0011770352383686856,
+        "centroid": [
+          -0.6677965262072473,
+          -0.28961155269025296,
+          1.1058019891996924
+        ],
+        "strength": {
+          "compressionElastic": 120000000,
+          "compressionFatal": 300000000,
+          "tensionElastic": 120000000,
+          "tensionFatal": 300000000,
+          "shearElastic": 69600000,
+          "shearFatal": 174000000,
+          "elasticModulus": 200000000000,
+          "residualAreaFraction": 0
+        },
+        "broken": false,
+        "peakTrialUtilisation": 0.5474446415901184
+      },
+      {
+        "bond": 964,
+        "otherPart": "Front right axle",
+        "otherMotion": {
+          "corner": "fr",
+          "role": "axle",
+          "endpoints": [
+            [
+              0,
+              0.34,
+              -1.15
+            ],
+            [
+              0.86,
+              0.34,
+              -1.15
+            ]
+          ],
+          "radius": 0.025
+        },
+        "sourceVisuals": [
+          "Front right axle",
+          "Front right hub"
+        ],
+        "areaM2": 0.020657970344944127,
+        "centroid": [
+          -0.8035166559376977,
+          -0.2498949724957913,
+          1.1499988464300523
+        ],
+        "strength": {
+          "compressionElastic": 120000000,
+          "compressionFatal": 300000000,
+          "tensionElastic": 120000000,
+          "tensionFatal": 300000000,
+          "shearElastic": 69600000,
+          "shearFatal": 174000000,
+          "elasticModulus": 200000000000,
+          "residualAreaFraction": 0
+        },
+        "broken": false,
+        "peakTrialUtilisation": 0.2757509648799896
+      },
+      {
+        "bond": 976,
+        "otherPart": "Front right shock eye",
+        "otherMotion": {
+          "corner": "fr",
+          "role": "shockEye",
+          "endpoints": [
+            [
+              0.6070929905013309,
+              0.31523318047471205,
+              -1.1267439240106474
+            ],
+            [
+              0.71,
+              0.24000000000000002,
+              -1.15
+            ]
+          ],
+          "radius": 0.023
+        },
+        "sourceVisuals": [
+          "Front right shock eye",
+          "Front right hub"
+        ],
+        "areaM2": 0.00028357706734584247,
+        "centroid": [
+          -0.6590565706261728,
+          -0.29174331272488546,
+          1.1428764190312446
+        ],
+        "strength": {
+          "compressionElastic": 120000000,
+          "compressionFatal": 300000000,
+          "tensionElastic": 120000000,
+          "tensionFatal": 300000000,
+          "shearElastic": 69600000,
+          "shearFatal": 174000000,
+          "elasticModulus": 200000000000,
+          "residualAreaFraction": 0
+        },
+        "broken": false,
+        "peakTrialUtilisation": 1.1196959018707275
+      },
+      {
+        "bond": 1023,
+        "otherPart": "Front right CV boot",
+        "otherMotion": {
+          "corner": "fr",
+          "role": "cvBoot"
+        },
+        "sourceVisuals": [
+          "Front right CV boot rib 1",
+          "Front right hub"
+        ],
+        "areaM2": 0.002878809083335928,
+        "centroid": [
+          -0.6580866542287699,
+          -0.2561325855331778,
+          1.150640807079504
+        ],
+        "strength": {
+          "compressionElastic": 2000000,
+          "compressionFatal": 12000000,
+          "tensionElastic": 2000000,
+          "tensionFatal": 12000000,
+          "shearElastic": 1400000,
+          "shearFatal": 8399999.999999998,
+          "elasticModulus": 10000000,
+          "residualAreaFraction": 0
+        },
+        "broken": false,
+        "peakTrialUtilisation": 0.009466939605772495
+      },
+      {
+        "bond": 1026,
+        "otherPart": "Front right upright",
+        "otherMotion": {
+          "corner": "fr",
+          "role": "upright",
+          "endpoints": [
+            [
+              0.71,
+              0.24000000000000002,
+              -1.15
+            ],
+            [
+              0.69,
+              0.46,
+              -1.15
+            ]
+          ],
+          "radius": 0.045
+        },
+        "sourceVisuals": [
+          "Front right upright",
+          "Front right hub"
+        ],
+        "areaM2": 0.028924994974385256,
+        "centroid": [
+          -0.70665799419612,
+          -0.24795005346109206,
+          1.1501770693002147
+        ],
+        "strength": {
+          "compressionElastic": 120000000,
+          "compressionFatal": 300000000,
+          "tensionElastic": 120000000,
+          "tensionFatal": 300000000,
+          "shearElastic": 69600000,
+          "shearFatal": 174000000,
+          "elasticModulus": 200000000000,
+          "residualAreaFraction": 0
+        },
+        "broken": false,
+        "peakTrialUtilisation": 0.5394066572189331
+      },
+      {
+        "bond": 1033,
+        "otherPart": "Front right upright",
+        "otherMotion": {
+          "corner": "fr",
+          "role": "upright",
+          "endpoints": [
+            [
+              0.71,
+              0.24000000000000002,
+              -1.15
+            ],
+            [
+              0.69,
+              0.46,
+              -1.15
+            ]
+          ],
+          "radius": 0.045
+        },
+        "sourceVisuals": [
+          "Front right upright",
+          "Front right brake rotor"
+        ],
+        "areaM2": 0.005022267721529931,
+        "centroid": [
+          -0.7340081736311741,
+          -0.2276359033609357,
+          1.1498825075969188
+        ],
+        "strength": {
+          "compressionElastic": 120000000,
+          "compressionFatal": 300000000,
+          "tensionElastic": 120000000,
+          "tensionFatal": 300000000,
+          "shearElastic": 69600000,
+          "shearFatal": 174000000,
+          "elasticModulus": 200000000000,
+          "residualAreaFraction": 0
+        },
+        "broken": false,
+        "peakTrialUtilisation": 0.3146075904369354
+      },
+      {
+        "bond": 1060,
+        "otherPart": "Front right brake caliper",
+        "otherMotion": {
+          "corner": "fr",
+          "role": "knuckle"
+        },
+        "sourceVisuals": [
+          "Front right hub",
+          "Front right brake caliper"
+        ],
+        "areaM2": 0.0010760607441878246,
+        "centroid": [
+          -0.752033646047473,
+          -0.17969269933102866,
+          1.133051843006221
+        ],
+        "strength": {
+          "compressionElastic": 8000000,
+          "compressionFatal": 35000000,
+          "tensionElastic": 8000000,
+          "tensionFatal": 35000000,
+          "shearElastic": 4000000,
+          "shearFatal": 17500000,
+          "elasticModulus": 4000000000,
+          "residualAreaFraction": 0
+        },
+        "broken": false,
+        "peakTrialUtilisation": 0.12529005110263824
+      },
+      {
+        "bond": 1064,
+        "otherPart": "Front right brake caliper",
+        "otherMotion": {
+          "corner": "fr",
+          "role": "knuckle"
+        },
+        "sourceVisuals": [
+          "Front right brake caliper",
+          "Front right brake rotor"
+        ],
+        "areaM2": 0.008455388534024957,
+        "centroid": [
+          -0.7362197632965822,
+          -0.13693019259207673,
+          1.1222991734877161
+        ],
+        "strength": {
+          "compressionElastic": 8000000,
+          "compressionFatal": 35000000,
+          "tensionElastic": 8000000,
+          "tensionFatal": 35000000,
+          "shearElastic": 4000000,
+          "shearFatal": 17500000,
+          "elasticModulus": 4000000000,
+          "residualAreaFraction": 0
+        },
+        "broken": false,
+        "peakTrialUtilisation": 0.07461211085319519
+      }
+    ]
+  },
+  {
+    "model": "monster",
+    "targetIndex": 4,
+    "targetName": "Front right wheel assembly",
+    "targetMassKg": 883.7340163870354,
+    "targetHullCount": 29,
+    "interfaces": [
+      {
+        "bond": 654,
+        "otherPart": "Front right axle",
+        "otherMotion": {
+          "corner": "fr",
+          "role": "axle",
+          "endpoints": [
+            [
+              0,
+              0.72,
+              -1.5
+            ],
+            [
+              1.25,
+              0.72,
+              -1.5
+            ]
+          ],
+          "radius": 0.025
+        },
+        "sourceVisuals": [
+          "Front right axle",
+          "Front right hub"
+        ],
+        "areaM2": 0.02065796482292905,
+        "centroid": [
+          -1.1935167124915422,
+          -0.24989496480017892,
+          1.4999988445509944
+        ],
+        "strength": {
+          "compressionElastic": 120000000,
+          "compressionFatal": 300000000,
+          "tensionElastic": 120000000,
+          "tensionFatal": 300000000,
+          "shearElastic": 69600000,
+          "shearFatal": 174000000,
+          "elasticModulus": 200000000000,
+          "residualAreaFraction": 0
+        },
+        "broken": false,
+        "peakTrialUtilisation": 0.1712249368429184
+      },
+      {
+        "bond": 727,
+        "otherPart": "Front right lower wishbone",
+        "otherMotion": {
+          "corner": "fr",
+          "role": "lowerArm",
+          "endpoints": [
+            [
+              0.39,
+              0.85,
+              -1.73
+            ],
+            [
+              1.1,
+              0.62,
+              -1.5
+            ]
+          ],
+          "radius": 0.027
+        },
+        "sourceVisuals": [
+          "Front right lower wishbone",
+          "Front right hub"
+        ],
+        "areaM2": 0.0004531343766310024,
+        "centroid": [
+          -1.0518816579994832,
+          -0.3091831062067716,
+          1.525300480769317
+        ],
+        "strength": {
+          "compressionElastic": 120000000,
+          "compressionFatal": 300000000,
+          "tensionElastic": 120000000,
+          "tensionFatal": 300000000,
+          "shearElastic": 69600000,
+          "shearFatal": 174000000,
+          "elasticModulus": 200000000000,
+          "residualAreaFraction": 0
+        },
+        "broken": false,
+        "peakTrialUtilisation": 1.2982451915740967
+      },
+      {
+        "bond": 851,
+        "otherPart": "Front right lower wishbone",
+        "otherMotion": {
+          "corner": "fr",
+          "role": "lowerArm",
+          "endpoints": [
+            [
+              0.39,
+              0.85,
+              -1.27
+            ],
+            [
+              1.1,
+              0.62,
+              -1.5
+            ]
+          ],
+          "radius": 0.027
+        },
+        "sourceVisuals": [
+          "Front right lower wishbone",
+          "Front right hub"
+        ],
+        "areaM2": 0.0002557636237698103,
+        "centroid": [
+          -1.053408716569408,
+          -0.31121109575541683,
+          1.4689247701644252
+        ],
+        "strength": {
+          "compressionElastic": 120000000,
+          "compressionFatal": 300000000,
+          "tensionElastic": 120000000,
+          "tensionFatal": 300000000,
+          "shearElastic": 69600000,
+          "shearFatal": 174000000,
+          "elasticModulus": 200000000000,
+          "residualAreaFraction": 0
+        },
+        "broken": false,
+        "peakTrialUtilisation": 1.3823959827423096
+      },
+      {
+        "bond": 1042,
+        "otherPart": "Front right shock eye",
+        "otherMotion": {
+          "corner": "fr",
+          "role": "shockEye",
+          "endpoints": [
+            [
+              0.9708679077263193,
+              0.6877630815184765,
+              -1.4783203034242376
+            ],
+            [
+              1.1,
+              0.62,
+              -1.5
+            ]
+          ],
+          "radius": 0.023
+        },
+        "sourceVisuals": [
+          "Front right shock eye",
+          "Front right hub"
+        ],
+        "areaM2": 0.00037588816906172507,
+        "centroid": [
+          -1.049301744844279,
+          -0.30126271671313454,
+          1.488551011042966
+        ],
+        "strength": {
+          "compressionElastic": 120000000,
+          "compressionFatal": 300000000,
+          "tensionElastic": 120000000,
+          "tensionFatal": 300000000,
+          "shearElastic": 69600000,
+          "shearFatal": 174000000,
+          "elasticModulus": 200000000000,
+          "residualAreaFraction": 0
+        },
+        "broken": false,
+        "peakTrialUtilisation": 2.4633779525756836
+      },
+      {
+        "bond": 1046,
+        "otherPart": "Front right CV boot",
+        "otherMotion": {
+          "corner": "fr",
+          "role": "cvBoot"
+        },
+        "sourceVisuals": [
+          "Front right CV boot rib 1",
+          "Front right hub"
+        ],
+        "areaM2": 0.0029692442339778703,
+        "centroid": [
+          -1.0480556666452518,
+          -0.2570655871226397,
+          1.5003104855886524
+        ],
+        "strength": {
+          "compressionElastic": 2000000,
+          "compressionFatal": 12000000,
+          "tensionElastic": 2000000,
+          "tensionFatal": 12000000,
+          "shearElastic": 1400000,
+          "shearFatal": 8399999.999999998,
+          "elasticModulus": 10000000,
+          "residualAreaFraction": 0
+        },
+        "broken": false,
+        "peakTrialUtilisation": 0.006426764186471701
+      },
+      {
+        "bond": 1050,
+        "otherPart": "Front right upright",
+        "otherMotion": {
+          "corner": "fr",
+          "role": "upright",
+          "endpoints": [
+            [
+              1.1,
+              0.62,
+              -1.5
+            ],
+            [
+              1.08,
+              0.84,
+              -1.5
+            ]
+          ],
+          "radius": 0.045
+        },
+        "sourceVisuals": [
+          "Front right upright",
+          "Front right hub"
+        ],
+        "areaM2": 0.030583727964598295,
+        "centroid": [
+          -1.0947642094233698,
+          -0.2507711393326444,
+          1.5001153612439382
+        ],
+        "strength": {
+          "compressionElastic": 120000000,
+          "compressionFatal": 300000000,
+          "tensionElastic": 120000000,
+          "tensionFatal": 300000000,
+          "shearElastic": 69600000,
+          "shearFatal": 174000000,
+          "elasticModulus": 200000000000,
+          "residualAreaFraction": 0
+        },
+        "broken": false,
+        "peakTrialUtilisation": 0.5252089500427246
+      },
+      {
+        "bond": 1054,
+        "otherPart": "Front right upright",
+        "otherMotion": {
+          "corner": "fr",
+          "role": "upright",
+          "endpoints": [
+            [
+              1.1,
+              0.62,
+              -1.5
+            ],
+            [
+              1.08,
+              0.84,
+              -1.5
+            ]
+          ],
+          "radius": 0.045
+        },
+        "sourceVisuals": [
+          "Front right upright",
+          "Front right brake rotor"
+        ],
+        "areaM2": 0.005014828268038749,
+        "centroid": [
+          -1.1240142185294992,
+          -0.22775708083549961,
+          1.4998655523098652
+        ],
+        "strength": {
+          "compressionElastic": 120000000,
+          "compressionFatal": 300000000,
+          "tensionElastic": 120000000,
+          "tensionFatal": 300000000,
+          "shearElastic": 69600000,
+          "shearFatal": 174000000,
+          "elasticModulus": 200000000000,
+          "residualAreaFraction": 0
+        },
+        "broken": false,
+        "peakTrialUtilisation": 0.27759072184562683
+      },
+      {
+        "bond": 1055,
+        "otherPart": "Front right brake caliper",
+        "otherMotion": {
+          "corner": "fr",
+          "role": "knuckle"
+        },
+        "sourceVisuals": [
+          "Front right hub",
+          "Front right brake caliper"
+        ],
+        "areaM2": 0.001076060751236505,
+        "centroid": [
+          -1.142033646598797,
+          -0.17969269735340665,
+          1.48305184245447
+        ],
+        "strength": {
+          "compressionElastic": 8000000,
+          "compressionFatal": 35000000,
+          "tensionElastic": 8000000,
+          "tensionFatal": 35000000,
+          "shearElastic": 4000000,
+          "shearFatal": 17500000,
+          "elasticModulus": 4000000000,
+          "residualAreaFraction": 0
+        },
+        "broken": false,
+        "peakTrialUtilisation": 0.07652407884597778
+      },
+      {
+        "bond": 1057,
+        "otherPart": "Front right brake caliper",
+        "otherMotion": {
+          "corner": "fr",
+          "role": "knuckle"
+        },
+        "sourceVisuals": [
+          "Front right brake caliper",
+          "Front right brake rotor"
+        ],
+        "areaM2": 0.008455389014805574,
+        "centroid": [
+          -1.126219763164056,
+          -0.136930193359176,
+          1.472299174737614
+        ],
+        "strength": {
+          "compressionElastic": 8000000,
+          "compressionFatal": 35000000,
+          "tensionElastic": 8000000,
+          "tensionFatal": 35000000,
+          "shearElastic": 4000000,
+          "shearFatal": 17500000,
+          "elasticModulus": 4000000000,
+          "residualAreaFraction": 0
+        },
+        "broken": false,
+        "peakTrialUtilisation": 0.043416544795036316
+      }
+    ]
+  },
+  {
+    "model": "derby",
+    "targetIndex": 4,
+    "targetName": "Front right wheel assembly",
+    "targetMassKg": 150.67772635338525,
+    "targetHullCount": 30,
+    "interfaces": [
+      {
+        "bond": 683,
+        "otherPart": "Front right lower wishbone",
+        "otherMotion": {
+          "corner": "fr",
+          "role": "lowerArm",
+          "endpoints": [
+            [
+              0.39,
+              0.49,
+              -1.68
+            ],
+            [
+              0.83,
+              0.26,
+              -1.45
+            ]
+          ],
+          "radius": 0.027
+        },
+        "sourceVisuals": [
+          "Front right lower wishbone",
+          "Front right hub"
+        ],
+        "areaM2": 0.0008619932801789359,
+        "centroid": [
+          -0.7844869933481259,
+          -0.2994948421092408,
+          1.4832604451798308
+        ],
+        "strength": {
+          "compressionElastic": 120000000,
+          "compressionFatal": 300000000,
+          "tensionElastic": 120000000,
+          "tensionFatal": 300000000,
+          "shearElastic": 69600000,
+          "shearFatal": 174000000,
+          "elasticModulus": 200000000000,
+          "residualAreaFraction": 0
+        },
+        "broken": false,
+        "peakTrialUtilisation": 1.158996343612671
+      },
+      {
+        "bond": 687,
+        "otherPart": "Front right lower wishbone",
+        "otherMotion": {
+          "corner": "fr",
+          "role": "lowerArm",
+          "endpoints": [
+            [
+              0.39,
+              0.49,
+              -1.22
+            ],
+            [
+              0.83,
+              0.26,
+              -1.45
+            ]
+          ],
+          "radius": 0.027
+        },
+        "sourceVisuals": [
+          "Front right lower wishbone",
+          "Front right hub"
+        ],
+        "areaM2": 0.0006429988158531888,
+        "centroid": [
+          -0.7857203527905571,
+          -0.2996755531277891,
+          1.411872159667225
+        ],
+        "strength": {
+          "compressionElastic": 120000000,
+          "compressionFatal": 300000000,
+          "tensionElastic": 120000000,
+          "tensionFatal": 300000000,
+          "shearElastic": 69600000,
+          "shearFatal": 174000000,
+          "elasticModulus": 200000000000,
+          "residualAreaFraction": 0
+        },
+        "broken": false,
+        "peakTrialUtilisation": 0.8713078498840332
+      },
+      {
+        "bond": 724,
+        "otherPart": "Front right axle",
+        "otherMotion": {
+          "corner": "fr",
+          "role": "axle",
+          "endpoints": [
+            [
+              0,
+              0.36,
+              -1.45
+            ],
+            [
+              0.98,
+              0.36,
+              -1.45
+            ]
+          ],
+          "radius": 0.025
+        },
+        "sourceVisuals": [
+          "Front right axle",
+          "Front right hub"
+        ],
+        "areaM2": 0.020657969019842876,
+        "centroid": [
+          -0.9235166681273417,
+          -0.24989497247359477,
+          1.4499988475590753
+        ],
+        "strength": {
+          "compressionElastic": 120000000,
+          "compressionFatal": 300000000,
+          "tensionElastic": 120000000,
+          "tensionFatal": 300000000,
+          "shearElastic": 69600000,
+          "shearFatal": 174000000,
+          "elasticModulus": 200000000000,
+          "residualAreaFraction": 0
+        },
+        "broken": false,
+        "peakTrialUtilisation": 0.22195790708065033
+      },
+      {
+        "bond": 962,
+        "otherPart": "Front right shock eye",
+        "otherMotion": {
+          "corner": "fr",
+          "role": "shockEye",
+          "endpoints": [
+            [
+              0.7183204418682574,
+              0.3340179563593092,
+              -1.426640883736515
+            ],
+            [
+              0.83,
+              0.26,
+              -1.45
+            ]
+          ],
+          "radius": 0.023
+        },
+        "sourceVisuals": [
+          "Front right shock eye",
+          "Front right hub"
+        ],
+        "areaM2": 0.0003676091539990624,
+        "centroid": [
+          -0.7788986879745267,
+          -0.29294836318745493,
+          1.4396548531019826
+        ],
+        "strength": {
+          "compressionElastic": 120000000,
+          "compressionFatal": 300000000,
+          "tensionElastic": 120000000,
+          "tensionFatal": 300000000,
+          "shearElastic": 69600000,
+          "shearFatal": 174000000,
+          "elasticModulus": 200000000000,
+          "residualAreaFraction": 0
+        },
+        "broken": false,
+        "peakTrialUtilisation": 1.3537873029708862
+      },
+      {
+        "bond": 971,
+        "otherPart": "Front right CV boot",
+        "otherMotion": {
+          "corner": "fr",
+          "role": "cvBoot"
+        },
+        "sourceVisuals": [
+          "Front right CV boot rib 1",
+          "Front right hub"
+        ],
+        "areaM2": 0.0029739174411126663,
+        "centroid": [
+          -0.7780545314043998,
+          -0.25708059386518683,
+          1.4502549271393643
+        ],
+        "strength": {
+          "compressionElastic": 2000000,
+          "compressionFatal": 12000000,
+          "tensionElastic": 2000000,
+          "tensionFatal": 12000000,
+          "shearElastic": 1400000,
+          "shearFatal": 8399999.999999998,
+          "elasticModulus": 10000000,
+          "residualAreaFraction": 0
+        },
+        "broken": false,
+        "peakTrialUtilisation": 0.009430314414203167
+      },
+      {
+        "bond": 977,
+        "otherPart": "Front right upright",
+        "otherMotion": {
+          "corner": "fr",
+          "role": "upright",
+          "endpoints": [
+            [
+              0.83,
+              0.26,
+              -1.45
+            ],
+            [
+              0.8099999999999999,
+              0.48,
+              -1.45
+            ]
+          ],
+          "radius": 0.045
+        },
+        "sourceVisuals": [
+          "Front right upright",
+          "Front right hub"
+        ],
+        "areaM2": 0.030587758202173063,
+        "centroid": [
+          -0.8266563857906584,
+          -0.2505196455162837,
+          1.450985692373998
+        ],
+        "strength": {
+          "compressionElastic": 120000000,
+          "compressionFatal": 300000000,
+          "tensionElastic": 120000000,
+          "tensionFatal": 300000000,
+          "shearElastic": 69600000,
+          "shearFatal": 174000000,
+          "elasticModulus": 200000000000,
+          "residualAreaFraction": 0
+        },
+        "broken": false,
+        "peakTrialUtilisation": 0.529935359954834
+      },
+      {
+        "bond": 979,
+        "otherPart": "Front right upright",
+        "otherMotion": {
+          "corner": "fr",
+          "role": "upright",
+          "endpoints": [
+            [
+              0.83,
+              0.26,
+              -1.45
+            ],
+            [
+              0.8099999999999999,
+              0.48,
+              -1.45
+            ]
+          ],
+          "radius": 0.045
+        },
+        "sourceVisuals": [
+          "Front right upright",
+          "Front right brake rotor"
+        ],
+        "areaM2": 0.005115981363956668,
+        "centroid": [
+          -0.853921475797056,
+          -0.2304570380635762,
+          1.449840968790108
+        ],
+        "strength": {
+          "compressionElastic": 120000000,
+          "compressionFatal": 300000000,
+          "tensionElastic": 120000000,
+          "tensionFatal": 300000000,
+          "shearElastic": 69600000,
+          "shearFatal": 174000000,
+          "elasticModulus": 200000000000,
+          "residualAreaFraction": 0
+        },
+        "broken": false,
+        "peakTrialUtilisation": 0.3071252405643463
+      },
+      {
+        "bond": 980,
+        "otherPart": "Front right tie rod",
+        "otherMotion": {
+          "corner": "fr",
+          "role": "tieRod",
+          "endpoints": [
+            [
+              0.18,
+              0.43,
+              -1.3499999999999999
+            ],
+            [
+              0.83,
+              0.42,
+              -1.45
+            ]
+          ],
+          "radius": 0.012
+        },
+        "sourceVisuals": [
+          "Front right tie rod",
+          "Front right hub"
+        ],
+        "areaM2": 3.0831827880206212e-06,
+        "centroid": [
+          -0.7752419628390593,
+          -0.19023909077218876,
+          1.4298598358985475
+        ],
+        "strength": {
+          "compressionElastic": 120000000,
+          "compressionFatal": 300000000,
+          "tensionElastic": 120000000,
+          "tensionFatal": 300000000,
+          "shearElastic": 69600000,
+          "shearFatal": 174000000,
+          "elasticModulus": 200000000000,
+          "residualAreaFraction": 0
+        },
+        "broken": true,
+        "peakTrialUtilisation": 0
+      },
+      {
+        "bond": 986,
+        "otherPart": "Front right brake caliper",
+        "otherMotion": {
+          "corner": "fr",
+          "role": "knuckle"
+        },
+        "sourceVisuals": [
+          "Front right hub",
+          "Front right brake caliper"
+        ],
+        "areaM2": 0.0010760607876912464,
+        "centroid": [
+          -0.8720336468508272,
+          -0.17969269828415296,
+          1.4330518436303743
+        ],
+        "strength": {
+          "compressionElastic": 8000000,
+          "compressionFatal": 35000000,
+          "tensionElastic": 8000000,
+          "tensionFatal": 35000000,
+          "shearElastic": 4000000,
+          "shearFatal": 17500000,
+          "elasticModulus": 4000000000,
+          "residualAreaFraction": 0
+        },
+        "broken": false,
+        "peakTrialUtilisation": 0.10002496093511581
+      },
+      {
+        "bond": 989,
+        "otherPart": "Front right brake caliper",
+        "otherMotion": {
+          "corner": "fr",
+          "role": "knuckle"
+        },
+        "sourceVisuals": [
+          "Front right brake caliper",
+          "Front right brake rotor"
+        ],
+        "areaM2": 0.008455388975588816,
+        "centroid": [
+          -0.8562197635988901,
+          -0.1369301927085404,
+          1.422299176048266
+        ],
+        "strength": {
+          "compressionElastic": 8000000,
+          "compressionFatal": 35000000,
+          "tensionElastic": 8000000,
+          "tensionFatal": 35000000,
+          "shearElastic": 4000000,
+          "shearFatal": 17500000,
+          "elasticModulus": 4000000000,
+          "residualAreaFraction": 0
+        },
+        "broken": false,
+        "peakTrialUtilisation": 0.0594596341252327
+      }
+    ]
+  },
+  {
+    "model": "sprint",
+    "targetIndex": 4,
+    "targetName": "Front right wheel assembly",
+    "targetMassKg": 159.09559338116378,
+    "targetHullCount": 29,
+    "interfaces": [
+      {
+        "bond": 487,
+        "otherPart": "Front right tie rod",
+        "otherMotion": {
+          "corner": "fr",
+          "role": "tieRod",
+          "endpoints": [
+            [
+              0.18,
+              0.44,
+              -1.0999999999999999
+            ],
+            [
+              0.775,
+              0.43,
+              -1.2
+            ]
+          ],
+          "radius": 0.012
+        },
+        "sourceVisuals": [
+          "Front right tie rod",
+          "Front right hub"
+        ],
+        "areaM2": 9.340906082538228e-06,
+        "centroid": [
+          -0.7204563548782212,
+          -0.1904097609459483,
+          1.1793269007080989
+        ],
+        "strength": {
+          "compressionElastic": 120000000,
+          "compressionFatal": 300000000,
+          "tensionElastic": 120000000,
+          "tensionFatal": 300000000,
+          "shearElastic": 69600000,
+          "shearFatal": 174000000,
+          "elasticModulus": 200000000000,
+          "residualAreaFraction": 0
+        },
+        "broken": false,
+        "peakTrialUtilisation": 2.3948659896850586
+      },
+      {
+        "bond": 543,
+        "otherPart": "Front right lower wishbone",
+        "otherMotion": {
+          "corner": "fr",
+          "role": "lowerArm",
+          "endpoints": [
+            [
+              0.39,
+              0.5,
+              -1.43
+            ],
+            [
+              0.775,
+              0.27,
+              -1.2
+            ]
+          ],
+          "radius": 0.027
+        },
+        "sourceVisuals": [
+          "Front right lower wishbone",
+          "Front right hub"
+        ],
+        "areaM2": 0.0010474607491892914,
+        "centroid": [
+          -0.7301629827158569,
+          -0.29593183302723813,
+          1.2358682405060344
+        ],
+        "strength": {
+          "compressionElastic": 120000000,
+          "compressionFatal": 300000000,
+          "tensionElastic": 120000000,
+          "tensionFatal": 300000000,
+          "shearElastic": 69600000,
+          "shearFatal": 174000000,
+          "elasticModulus": 200000000000,
+          "residualAreaFraction": 0
+        },
+        "broken": false,
+        "peakTrialUtilisation": 0.8283735513687134
+      },
+      {
+        "bond": 680,
+        "otherPart": "Front right lower wishbone",
+        "otherMotion": {
+          "corner": "fr",
+          "role": "lowerArm",
+          "endpoints": [
+            [
+              0.39,
+              0.5,
+              -0.97
+            ],
+            [
+              0.775,
+              0.27,
+              -1.2
+            ]
+          ],
+          "radius": 0.027
+        },
+        "sourceVisuals": [
+          "Front right lower wishbone",
+          "Front right hub"
+        ],
+        "areaM2": 0.0008398875359365627,
+        "centroid": [
+          -0.7314866623472913,
+          -0.2956484532930741,
+          1.1595569476911671
+        ],
+        "strength": {
+          "compressionElastic": 120000000,
+          "compressionFatal": 300000000,
+          "tensionElastic": 120000000,
+          "tensionFatal": 300000000,
+          "shearElastic": 69600000,
+          "shearFatal": 174000000,
+          "elasticModulus": 200000000000,
+          "residualAreaFraction": 0
+        },
+        "broken": false,
+        "peakTrialUtilisation": 0.6190268397331238
+      },
+      {
+        "bond": 733,
+        "otherPart": "Front right axle",
+        "otherMotion": {
+          "corner": "fr",
+          "role": "axle",
+          "endpoints": [
+            [
+              0,
+              0.37,
+              -1.2
+            ],
+            [
+              0.925,
+              0.37,
+              -1.2
+            ]
+          ],
+          "radius": 0.025
+        },
+        "sourceVisuals": [
+          "Front right axle",
+          "Front right hub"
+        ],
+        "areaM2": 0.020657891715821972,
+        "centroid": [
+          -0.8685171836016498,
+          -0.2498949259651535,
+          1.1999987668348324
+        ],
+        "strength": {
+          "compressionElastic": 120000000,
+          "compressionFatal": 300000000,
+          "tensionElastic": 120000000,
+          "tensionFatal": 300000000,
+          "shearElastic": 69600000,
+          "shearFatal": 174000000,
+          "elasticModulus": 200000000000,
+          "residualAreaFraction": 0
+        },
+        "broken": false,
+        "peakTrialUtilisation": 0.19749879837036133
+      },
+      {
+        "bond": 738,
+        "otherPart": "Front right shock eye",
+        "otherMotion": {
+          "corner": "fr",
+          "role": "shockEye",
+          "endpoints": [
+            [
+              0.6671636274976201,
+              0.34448144692130744,
+              -1.176117721897509
+            ],
+            [
+              0.775,
+              0.27,
+              -1.2
+            ]
+          ],
+          "radius": 0.023
+        },
+        "sourceVisuals": [
+          "Front right shock eye",
+          "Front right hub"
+        ],
+        "areaM2": 0.0003171775872949827,
+        "centroid": [
+          -0.7238988911517725,
+          -0.2919001734582655,
+          1.1907719150755025
+        ],
+        "strength": {
+          "compressionElastic": 120000000,
+          "compressionFatal": 300000000,
+          "tensionElastic": 120000000,
+          "tensionFatal": 300000000,
+          "shearElastic": 69600000,
+          "shearFatal": 174000000,
+          "elasticModulus": 200000000000,
+          "residualAreaFraction": 0
+        },
+        "broken": false,
+        "peakTrialUtilisation": 0.9846124053001404
+      },
+      {
+        "bond": 746,
+        "otherPart": "Front right CV boot",
+        "otherMotion": {
+          "corner": "fr",
+          "role": "cvBoot"
+        },
+        "sourceVisuals": [
+          "Front right CV boot rib 1",
+          "Front right hub"
+        ],
+        "areaM2": 0.00294312990101615,
+        "centroid": [
+          -0.7230748415028554,
+          -0.25680071399102683,
+          1.2003987564211502
+        ],
+        "strength": {
+          "compressionElastic": 2000000,
+          "compressionFatal": 12000000,
+          "tensionElastic": 2000000,
+          "tensionFatal": 12000000,
+          "shearElastic": 1400000,
+          "shearFatal": 8399999.999999998,
+          "elasticModulus": 10000000,
+          "residualAreaFraction": 0
+        },
+        "broken": false,
+        "peakTrialUtilisation": 0.011617052368819714
+      },
+      {
+        "bond": 750,
+        "otherPart": "Front right upright",
+        "otherMotion": {
+          "corner": "fr",
+          "role": "upright",
+          "endpoints": [
+            [
+              0.775,
+              0.27,
+              -1.2
+            ],
+            [
+              0.755,
+              0.49,
+              -1.2
+            ]
+          ],
+          "radius": 0.045
+        },
+        "sourceVisuals": [
+          "Front right upright",
+          "Front right hub"
+        ],
+        "areaM2": 0.029426422207061282,
+        "centroid": [
+          -0.7711149354960943,
+          -0.24873804210169848,
+          1.2001424143441715
+        ],
+        "strength": {
+          "compressionElastic": 120000000,
+          "compressionFatal": 300000000,
+          "tensionElastic": 120000000,
+          "tensionFatal": 300000000,
+          "shearElastic": 69600000,
+          "shearFatal": 174000000,
+          "elasticModulus": 200000000000,
+          "residualAreaFraction": 0
+        },
+        "broken": false,
+        "peakTrialUtilisation": 0.4773225784301758
+      },
+      {
+        "bond": 755,
+        "otherPart": "Front right upright",
+        "otherMotion": {
+          "corner": "fr",
+          "role": "upright",
+          "endpoints": [
+            [
+              0.775,
+              0.27,
+              -1.2
+            ],
+            [
+              0.755,
+              0.49,
+              -1.2
+            ]
+          ],
+          "radius": 0.045
+        },
+        "sourceVisuals": [
+          "Front right upright",
+          "Front right brake rotor"
+        ],
+        "areaM2": 0.005014971943835002,
+        "centroid": [
+          -0.7990151990936127,
+          -0.22775797749262194,
+          1.1998655110929368
+        ],
+        "strength": {
+          "compressionElastic": 120000000,
+          "compressionFatal": 300000000,
+          "tensionElastic": 120000000,
+          "tensionFatal": 300000000,
+          "shearElastic": 69600000,
+          "shearFatal": 174000000,
+          "elasticModulus": 200000000000,
+          "residualAreaFraction": 0
+        },
+        "broken": false,
+        "peakTrialUtilisation": 0.27686187624931335
+      },
+      {
+        "bond": 756,
+        "otherPart": "Front right brake caliper",
+        "otherMotion": {
+          "corner": "fr",
+          "role": "knuckle"
+        },
+        "sourceVisuals": [
+          "Front right hub",
+          "Front right brake caliper"
+        ],
+        "areaM2": 0.001076060788900786,
+        "centroid": [
+          -0.8170336473053423,
+          -0.1796926979859242,
+          1.1830518437340325
+        ],
+        "strength": {
+          "compressionElastic": 8000000,
+          "compressionFatal": 35000000,
+          "tensionElastic": 8000000,
+          "tensionFatal": 35000000,
+          "shearElastic": 4000000,
+          "shearFatal": 17500000,
+          "elasticModulus": 4000000000,
+          "residualAreaFraction": 0
+        },
+        "broken": false,
+        "peakTrialUtilisation": 0.10116986930370331
+      },
+      {
+        "bond": 758,
+        "otherPart": "Front right brake caliper",
+        "otherMotion": {
+          "corner": "fr",
+          "role": "knuckle"
+        },
+        "sourceVisuals": [
+          "Front right brake caliper",
+          "Front right brake rotor"
+        ],
+        "areaM2": 0.008455388931168808,
+        "centroid": [
+          -0.8012197640295722,
+          -0.13693019208004847,
+          1.1722991741348217
+        ],
+        "strength": {
+          "compressionElastic": 8000000,
+          "compressionFatal": 35000000,
+          "tensionElastic": 8000000,
+          "tensionFatal": 35000000,
+          "shearElastic": 4000000,
+          "shearFatal": 17500000,
+          "elasticModulus": 4000000000,
+          "residualAreaFraction": 0
+        },
+        "broken": false,
+        "peakTrialUtilisation": 0.059170372784137726
+      }
+    ]
+  }
+]

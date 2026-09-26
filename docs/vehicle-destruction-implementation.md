@@ -128,11 +128,21 @@ The same report records a mechanical attachment concern: the buggy wheel has
 measured bonds directly to control arms, shock eye and axle as well as its
 upright. Those interfaces need review before tuning wheel separation.
 
+The subsequent [open-wheel correction and impact run](reports/vehicle-authored-impact-2026-09-26/open-wheel/README.md)
+keeps calipers and uprights out of the rotating wheel collision group. All seven
+base-model geometry audits and all 11 driving builds pass. Full-model nominal
+impacts now break 0/10/6/8/2/0 bonds; a separate 300 kg, 120 m/s wheel-loss probe
+breaks 31/52/63/40/45/34. Every impact aftermath converges, but no target wheel
+detaches. Both physical impact gates remain red. The wheel's geometric contact
+graph still includes mechanically questionable direct attachments, and needs
+review before strength tuning. The shared verification command now supports
+`--authored-fixtures` and checks complete impact evidence as well as test exit codes.
+
 The full-model tests share fixture loading, registration and configuration in
 `server/src/physx_runtime/vehicle_fracture_tests.rs`. Run them serially against
 the explicit isolated runtime. `VIBE_VEHICLE_FRACTURE_REPORT` records per-model
-impact evidence; `VIBE_VEHICLE_CAPTURE_DIR` selects unique equation-capture
-paths when using the separate diagnostic SDK module.
+impact evidence; `VIBE_VEHICLE_CAPTURE_DIR` selects unique scenario/model
+equation-capture paths when using the separate diagnostic SDK module.
 
 Remaining requirements:
 
