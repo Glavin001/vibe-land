@@ -7,13 +7,17 @@
 #   scripts/perf/garage-vehicle-server.sh [--no-build]
 #
 # VIBE_GARAGE_BALL_MASS (kg) overrides the 30 kg cannonball for demos.
-# VIBE_VEHICLE_SDK selects the install (default: the temporary FP64 stress
-# runtime, until float converges under road loads; see
-# docs/reports/vehicle-wheel-colliders-2026-09-26). The client is `npm run dev`.
+# VIBE_GARAGE_STRESS_ITERATIONS caps stress iterations per tick (default 128).
+# VIBE_VEHICLE_SDK selects the install (default: the float vehicle SDK).
+# Float does not yet converge under Vehicle2 road loads, so this demo sets
+# PX_DESTRUCTION_ALLOW_UNCONVERGED=1: unconverged stress steps are published
+# instead of rejected (fracture verdicts may be spurious). Double precision is
+# emulated on Apple GPUs (~0.5 s/tick) and is not usable for play.
+# The client is `npm run dev`.
 set -euo pipefail
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 cd "$ROOT"
-SDK=${VIBE_VEHICLE_SDK:-$ROOT/../PhysX/out/install/garage-multihull-fp64}
+SDK=${VIBE_VEHICLE_SDK:-$ROOT/../PhysX/out/install/garage-multihull}
 [ -f "$SDK/include/physx/PxDestructionScene.h" ] || { echo "vehicle SDK not found: $SDK" >&2; exit 1; }
 export PHYSX_ROOT="$SDK" CARGO_TARGET_DIR="$ROOT/target/garage-vehicles"
 if [ "${1:-}" != "--no-build" ]; then
@@ -28,6 +32,6 @@ LOG="$CARGO_TARGET_DIR/server-$(date +%Y%m%d-%H%M%S).log"
 echo "server log: $LOG (SDK $SDK)"
 exec scripts/perf/gpu-run.sh garage-vehicles env \
   VIBE_PHYSICS_BACKEND=physx_gpu VIBE_GARAGE_VEHICLE_DESTRUCTION=1 RUST_LOG=${RUST_LOG:-info} \
-  VIBE_GARAGE_BALL_MASS=${VIBE_GARAGE_BALL_MASS:-} \
+  VIBE_GARAGE_BALL_MASS=${VIBE_GARAGE_BALL_MASS:-} PX_DESTRUCTION_ALLOW_UNCONVERGED=${PX_DESTRUCTION_ALLOW_UNCONVERGED:-1} \
   CUMETAL_CACHE_DIR="$ROOT/target/cumetal-cache-vehicles" \
   "$CARGO_TARGET_DIR/release/web-fps-server" > "$LOG" 2>&1

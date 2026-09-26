@@ -67,11 +67,14 @@ impl GarageDestruction {
     /// After a completed step: configure once, then observe and drain events.
     pub fn after_step(&mut self, world: &mut bridge::World) {
         if !self.configured {
-            match world.native_configure(bridge::NativeConfig { max_iterations: 2048, tolerance: 1e-5,
+            // Each unconverged tick runs to the cap; bound it while float does not
+            // converge under road loads (VIBE_GARAGE_STRESS_ITERATIONS, default 128: ~15 ms/tick on M-series).
+            let max_iterations = std::env::var("VIBE_GARAGE_STRESS_ITERATIONS").ok().and_then(|v| v.parse().ok()).unwrap_or(128);
+            match world.native_configure(bridge::NativeConfig { max_iterations, tolerance: 1e-5,
                 warm_start: true, damage_rate: 2., bend_gain_max: 3., fibre_bending: true,
                 reserved_contact_pairs: 4096, preserve_unchanged_contact_pairs: false,
                 gpu_island_repair: true, verdict_sample_ticks: 1 }) {
-                Ok(_) => { self.configured = true; tracing::info!("garage vehicle destruction configured"); }
+                Ok(_) => { self.configured = true; tracing::info!(max_iterations, "garage vehicle destruction configured"); }
                 Err(error) => tracing::error!(%error, "garage vehicle destruction could not configure"),
             }
             return;
@@ -81,7 +84,7 @@ impl GarageDestruction {
                 self.rejected_steps += 1;
                 if self.rejected_steps % 60 == 1 {
                     tracing::warn!(error = status.error, converged = status.converged, iterations = status.iterations,
-                        rejected = self.rejected_steps, "garage vehicle stress step rejected");
+                        rejected = self.rejected_steps, "garage vehicle stress step did not converge (or was rejected)");
                 }
             }
             Ok(_) => {}
