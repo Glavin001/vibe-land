@@ -7,6 +7,7 @@ const DEFAULT_MATCH_ID = 'default';
  */
 export function defaultMatchIdForPath(pathname: string): string {
   const normalized = pathname.endsWith('/') && pathname !== '/' ? pathname.slice(0, -1) : pathname;
+  if (normalized === '/town-kit') return 'city-town-kit';
   return normalized === '/city' ? 'city-default' : DEFAULT_MATCH_ID;
 }
 

@@ -4,6 +4,7 @@ export type AppRoute =
   | { kind: 'launcher' }
   | { kind: 'garage' }
   | { kind: 'grassLab' }
+  | { kind: 'audioLab' }
   | { kind: 'game'; mode: GameMode; matchFallback?: string }
   | { kind: 'sharedPractice'; id: string }
   | { kind: 'stats' }
@@ -44,12 +45,16 @@ export function resolveAppRoute(pathname: string, search?: string): AppRoute {
     case '/':
     case '/index.html':
       return { kind: 'launcher' };
+    case '/audio':
+      return { kind: 'audioLab' };
     case '/garage':
       return { kind: 'garage' };
     case '/grass':
       return { kind: 'grassLab' };
     case '/play':
       return { kind: 'game', mode: 'multiplayer' };
+    case '/town-kit':
+      return { kind: 'game', mode: 'multiplayer', matchFallback: 'city-town-kit' };
     case '/city':
       // Destructible mini-city: same multiplayer game shell, but the default
       // match id carries the `city` prefix that makes the server build the

@@ -283,6 +283,13 @@ describe('entries and separation', () => {
 });
 
 describe('DustSourceQueue', () => {
+  it('lets an independent sound queue observe events after the visual queue fills',()=>{
+    const audio=new DustSourceQueue(8),visual=new DustSourceQueue(1,s=>audio.push(s));
+    const source:DustSource={kind:'fracture',structureId:1,simTick:3,ordinal:0,x:0,y:0,z:0,nx:0,ny:1,nz:0,vx:0,vy:0,vz:0,magnitude:1,count:1,material:2,atMs:100};
+    visual.push(source);visual.push({...source,ordinal:1});visual.push({...source,ordinal:2});
+    expect(drained(visual)).toHaveLength(1);
+    expect(drained(audio).map(s=>s.ordinal)).toEqual([0,1,2]);
+  });
   it('drops the newest when full and keeps count', () => {
     const q = new DustSourceQueue(2);
     const s = (x: number): DustSource => ({

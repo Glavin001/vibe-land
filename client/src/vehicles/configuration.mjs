@@ -1,9 +1,11 @@
 import { vehicles, vehicleById, vehicleFields } from './dune/vehicle-catalog.mjs';
+import { appearanceDefaults, drivingDefaults, normalizeAppearance, normalizeDriving, drivingSetup } from './customization.mjs';
+export { drivingFields } from './customization.mjs';
 import { defaults } from './dune/buggy.mjs';
 import { createRigDefinition } from './dune/vehicle-rig.mjs';
 
 export { vehicles, vehicleFields };
-export const CONFIGURATION_VERSION = 1;
+export const CONFIGURATION_VERSION = 2;
 export const GENERATOR_VERSION = 'dune-3';
 export const dimensionKeys = ['wheelbase', 'track', 'tireRadius', 'cageHeight'];
 
@@ -11,14 +13,15 @@ export function defaultConfiguration(model = 'buggy') {
   const preset = vehicleById(model);
   if (!preset) throw new Error('Unknown vehicle model');
   return { version: CONFIGURATION_VERSION, generatorVersion: GENERATOR_VERSION,
-    model, dimensions: { ...preset.parameters }, finish: preset.color };
+    model, dimensions: { ...preset.parameters }, finish: preset.color,
+    appearance: appearanceDefaults(preset.color), driving: {...drivingDefaults} };
 }
 
 /** Strict, canonical serialization is the contract shared by browser and server. */
 export function normalizeConfiguration(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Expected a vehicle configuration');
-  if (Object.keys(value).some(k => !['version', 'generatorVersion', 'model', 'dimensions', 'finish'].includes(k))) throw new Error('Unknown configuration field');
-  if (value.version !== CONFIGURATION_VERSION || value.generatorVersion !== GENERATOR_VERSION) throw new Error('Unsupported vehicle configuration version');
+  if (Object.keys(value).some(k => !['version', 'generatorVersion', 'model', 'dimensions', 'finish', ...(value.version === 2 ? ['appearance', 'driving'] : [])].includes(k))) throw new Error('Unknown configuration field');
+  if (![1, CONFIGURATION_VERSION].includes(value.version) || value.generatorVersion !== GENERATOR_VERSION) throw new Error('Unsupported vehicle configuration version');
   if (typeof value.model !== 'string' || !vehicleById(value.model)) throw new Error('Unknown vehicle model');
   if (!value.dimensions || Object.keys(value.dimensions).length !== dimensionKeys.length || Object.keys(value.dimensions).some(k => !dimensionKeys.includes(k))) throw new Error('Expected wheelbase, track, tireRadius and cageHeight');
   const dimensions = {};
@@ -29,12 +32,15 @@ export function normalizeConfiguration(value) {
   }
   if (typeof value.finish !== 'string' || !/^#[0-9a-f]{6}$/i.test(value.finish)) throw new Error('Expected a six-digit finish color');
   return { version: CONFIGURATION_VERSION, generatorVersion: GENERATOR_VERSION,
-    model: value.model, dimensions, finish: value.finish.toLowerCase() };
+    model: value.model, dimensions, finish: value.finish.toLowerCase(),
+    appearance: normalizeAppearance(value.version === 1 ? appearanceDefaults(value.finish) : value.appearance),
+    driving: normalizeDriving(value.version === 1 ? drivingDefaults : value.driving) };
 }
 export const serializeConfiguration = value => JSON.stringify(normalizeConfiguration(value));
 export function geometryKey(value) {
-  const { finish, ...geometry } = normalizeConfiguration(value);
-  return JSON.stringify(geometry);
+  const {generatorVersion, model, dimensions} = normalizeConfiguration(value);
+  // Preserve existing geometry caches; appearance and tuning never change solids.
+  return JSON.stringify({version:1, generatorVersion, model, dimensions});
 }
 export function modelParameters(value) {
   const c = normalizeConfiguration(value);
@@ -61,4 +67,9 @@ export function resolveVehicleGeometry(value) {
     suspensionAttachmentY: parameters.tireRadius - originHeight + compression,
     wheelHalfWidth: .15 * (configuration.model === 'monster' ? 1.5 : 1),
     maxSteerRadians: rig.steering.maxCentreRad };
+}
+
+export function resolveDrivingSetup(value, mass = 1000) {
+  const geometry = resolveVehicleGeometry(value);
+  return drivingSetup(geometry.configuration, geometry, mass);
 }

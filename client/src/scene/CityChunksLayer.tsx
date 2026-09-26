@@ -32,6 +32,8 @@
 // does not hold. Boxes are the 70% that can be instanced; hulls are the 30%
 // that genuinely need the batch.
 
+import {CityOutdoorLayer} from './CityOutdoorLayer';
+import {isTownKitPage} from '../city/townKitState';
 import { useFrame } from '@react-three/fiber';
 import { useEffect, useRef } from 'react';
 import * as THREE from 'three';
@@ -474,6 +476,8 @@ export function CityChunksLayer({
 }: {
   getCityClient: () => CityClient | null;
 }): React.JSX.Element {
+  const outdoorRef=useRef<CityOutdoorLayer|null>(null);
+  useEffect(()=>()=>outdoorRef.current?.dispose(),[]);
   const groupRef = useRef<THREE.Group>(null);
   const stateRef = useRef<CityMeshState | null>(null);
   const bodyDebugVersionRef = useRef(-1);
@@ -586,6 +590,7 @@ export function CityChunksLayer({
         stateRef.current.poses.dispose();
         stateRef.current = null;
       }
+      outdoorRef.current?.dispose();outdoorRef.current=isTownKitPage()?new CityOutdoorLayer(group,client.manifest.hashHex,client.topology.chunkCount):null;
       clientRef.current = client;
       buildFailedForRef.current = null;
       poseFrameRef.current.dirty.clear();
@@ -1159,6 +1164,7 @@ export function CityChunksLayer({
       renderStats.recordWriteMs = updateStartedAt - recordStartedAt;
     }
     noteCityDrawn(client, state.poses, poseNowMs);
+    outdoorRef.current?.update(state.poses,frameState.camera,frameState.clock.elapsedTime,client.topology);
     if (frame.idle) {
       renderStats.cityFrameMs = performance.now() - cityFrameStartedAt;
       return;

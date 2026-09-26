@@ -108,6 +108,7 @@ describe('city wire decoder', () => {
     expect(isCityPacketKind(129)).toBe(true);
     // The meteor launch rides the same raw-bytes path.
     expect(isCityPacketKind(130)).toBe(true);
-    expect(isCityPacketKind(131)).toBe(false);
+    expect(isCityPacketKind(131)).toBe(true); // Bounded audio contact summaries.
+    expect(isCityPacketKind(134)).toBe(false);
   });
 });

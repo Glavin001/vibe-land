@@ -20,6 +20,7 @@ struct FfiCapsulePlayerDesc;
 struct FfiVehicleDesc;
 struct FfiVehiclePartShape;
 struct FfiVehicleCommands;
+struct FfiVehicleTuning;
 struct FfiRaycastRequest;
 struct FfiRaycastHit;
 struct FfiBodySnapshot;
@@ -69,7 +70,9 @@ public:
   void apply_impulse_at_point(std::uint32_t entity_id, FfiVec3 impulse,
                               FfiVec3 point);
   std::uint32_t wake_bodies_near(FfiVec3 center, float radius);
+  void set_vehicle_functional_state(std::uint32_t entity_id, std::uint8_t wheel_mask, bool driveline_connected);
   void drive_vehicle(std::uint32_t entity_id, const FfiVehicleCommands &commands);
+  void tune_vehicle(std::uint32_t entity_id, const FfiVehicleTuning &tuning);
   void reset_vehicle(std::uint32_t entity_id, const FfiPose &pose);
   void move_player(std::uint32_t entity_id, FfiVec3 displacement,
                    float elapsed_time);

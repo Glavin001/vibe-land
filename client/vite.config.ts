@@ -49,6 +49,9 @@ export default defineConfig(({ mode }) => {
     ],
     envDir: '../',
     server: {
+      // The playable review range should not reconnect while other work in
+      // this checkout saves files. Opt back in when developing its client.
+      watch: env.TOWN_KIT_LIVE_RELOAD === '0' ? null : undefined,
       port: Number(env.CLIENT_PORT) || 3001,
       host: '0.0.0.0',
       https: httpsConfig,
@@ -74,6 +77,7 @@ export default defineConfig(({ mode }) => {
         '/vehicle-assets': {
           target: `http://${serverHost}:${serverPort}`,
         },
+        '/city-visuals': { target: `http://${serverHost}:${serverPort}` },
         '/city-manifest': {
           target: `http://${serverHost}:${serverPort}`,
         },

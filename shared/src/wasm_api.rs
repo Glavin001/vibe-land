@@ -543,6 +543,20 @@ impl WasmSimWorld {
 
     // ── Raycasting ───────────────────────────────────
 
+    /// Sweep a box (radius=0) or sphere against fixed, non-sensor world geometry.
+    /// Returns [fraction, normalX, normalY, normalZ]. Never changes gameplay state.
+    #[wasm_bindgen(js_name = sweepVehicleStatic)]
+    pub fn sweep_vehicle_static(&self, px:f32, py:f32, pz:f32,
+        qx:f32, qy:f32, qz:f32, qw:f32, dx:f32, dy:f32, dz:f32,
+        hx:f32, hy:f32, hz:f32, radius:f32) -> Box<[f32]> {
+        let q = Quaternion::new(qw,qx,qy,qz);
+        if !q.coords.iter().all(|v| v.is_finite()) || q.norm_squared() < 0.0001 { return Box::new([]); }
+        let pose = Isometry::from_parts(Translation::new(px,py,pz), UnitQuaternion::new_normalize(q));
+        match crate::vehicle_presentation::sweep_static(&self.sim, pose, vector![dx,dy,dz], vector![hx,hy,hz], radius) {
+            Some(hit) => Box::new(hit), None => Box::new([]),
+        }
+    }
+
     /// Cast a ray and return `[toi, nx, ny, nz]`, or empty array on miss.
     #[wasm_bindgen(js_name = castRayAndGetNormal)]
     pub fn cast_ray_and_get_normal(

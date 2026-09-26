@@ -81,7 +81,7 @@ export type NetcodeClientConfig = {
   onWelcome?: (playerId: number) => void;
   onDisconnect?: (reason?: string) => void;
   onLocalSnapshot?: (ackInputSeq: number, state: NetPlayerState) => void;
-  onLocalVehicleSnapshot?: (vehicleState: NetVehicleState, ackInputSeq: number) => void;
+  onLocalVehicleSnapshot?: (vehicleState: NetVehicleState, ackInputSeq: number, serverTimeUs: number) => void;
   onWorldPacket?: (packet: ServerWorldPacket) => void;
   onShotResult?: (packet: ServerPacket) => void;
   onDamageEvent?: (packet: DamageEventPacket) => void;
@@ -937,7 +937,7 @@ export class NetcodeClient {
         : (isRememberedLocalVehicle || shouldInferLocalDrivenVehicle)
           ? this.playerId
           : 0;
-      if (vehicle.driverHandle === 0 && this.localDrivenVehicleId === vehicleId) {
+      if (driverPlayerId !== this.playerId && this.localDrivenVehicleId === vehicleId) {
         this.localDrivenVehicleId = null;
       }
       const meters: VehicleStateMeters = {
@@ -989,7 +989,7 @@ export class NetcodeClient {
           wzMrads: vehicle.wzMrads,
           wheelData: [0, 0, 0, 0],
         };
-        this.config.onLocalVehicleSnapshot?.(localVehicleState, packet.ackInputSeq);
+        this.config.onLocalVehicleSnapshot?.(localVehicleState, packet.ackInputSeq, packet.serverTimeUs);
       }
       this.pushVehicleSample(vehicleId, packet.serverTimeUs, meters, this.snapshotIntervalUs());
     }
@@ -1019,6 +1019,7 @@ export class NetcodeClient {
   }
 
   private removeVehicle(id: number): void {
+    if(this.localDrivenVehicleId===id)this.localDrivenVehicleId=null;
     this.vehicleDroppedAtTick.set(id, this.latestServerTick);
     this.vehicleLastSeenTick.delete(id);
     this.vehicles.delete(id);
@@ -1459,8 +1460,8 @@ export class NetcodeClient {
           // Route local vehicle snapshot to driver-side prediction
           if (vs.driverId === this.playerId && vs.driverId !== 0) {
             this.localDrivenVehicleId = vs.id;
-            this.config.onLocalVehicleSnapshot?.(vs, packet.ackInputSeq);
-          } else if (vs.driverId === 0 && this.localDrivenVehicleId === vs.id) {
+            this.config.onLocalVehicleSnapshot?.(vs, packet.ackInputSeq, packet.serverTimeUs);
+          } else if (vs.driverId !== this.playerId && this.localDrivenVehicleId === vs.id) {
             this.localDrivenVehicleId = null;
           }
           this.pushVehicleSample(vs.id, packet.serverTimeUs, m);

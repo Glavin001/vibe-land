@@ -23,6 +23,10 @@ import { startServerStatsTap } from './serverStats';
 import { runDriveTimeline, startWatch, type DriveClientSpec, type DriveStep } from './drive';
 import { analyzeIteration, type IterationVerdict } from './analyze';
 import { renderReport, summaryLine } from './report';
+import { garageBuilds } from '../src/vehicles/builds.mjs';
+import { scoreVehicleLab } from '../src/netlab/vehicleLab';
+import { loadEvents } from './analyze';
+import type { RecorderEvent } from '../src/netlab/recorder';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIOS_DIR = path.join(__dirname, 'scenarios');
@@ -34,6 +38,8 @@ const NETEM_SH = path.join(REPO_ROOT, 'scripts', 'netem.sh');
 // ---------------------------------------------------------------------------
 
 interface Scenario {
+  /** Prepare one real Vehicle2 garage session; all clients join the same course. */
+  vehicleBuild?: string;
   name: string;
   description?: string;
   symptom?: string[];
@@ -126,6 +132,7 @@ function parseArgs(argv: string[]): { command: string; opts: CliOptions } {
 // ---------------------------------------------------------------------------
 
 function ensureDisplay(): { display: string; cleanup(): void } {
+  if (process.platform !== 'linux') return {display:'',cleanup:()=>{}};
   if (process.env.DISPLAY) {
     return { display: process.env.DISPLAY, cleanup: () => {} };
   }
@@ -221,6 +228,10 @@ async function drainOnce(page: Page, state: DrainState): Promise<void> {
   if (!drained) return;
 
   const { frames, events } = drained;
+  if(frames.nextIndex<state.frameCursor || events.nextSeq<state.eventCursor) {
+    state.lostFrames+=1;state.lostEvents+=1;
+    throw Error('Recorder restarted during capture (navigation or HMR). Use a built client for valid measurements.');
+  }
   if (frames.rows.length > 0 || !state.wroteHeader) {
     let chunk = '';
     if (!state.wroteHeader) {
@@ -295,7 +306,8 @@ async function runIteration(
   serverPid: number | null,
 ): Promise<void> {
   fs.mkdirSync(iterDir, { recursive: true });
-  const matchId = scenario.matchId.replace('{iter}', String(iteration));
+  let matchId = scenario.matchId.replace('{iter}', String(iteration));
+  let preparedVehicle:unknown=null;
   const statsTap = startServerStatsTap(serverHttpUrl, path.join(iterDir, 'server-stats.jsonl'));
 
   const contexts: BrowserContext[] = [];
@@ -305,6 +317,14 @@ async function runIteration(
   const consoleLogs: fs.WriteStream[] = [];
 
   try {
+    if(scenario.vehicleBuild) {
+      const build=garageBuilds.find(b=>b.id===scenario.vehicleBuild);
+      if(!build)throw Error(`Unknown vehicle build ${scenario.vehicleBuild}`);
+      const response=await fetch(`${serverHttpUrl}/vehicle-assets/session`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({configuration:build.configuration}),signal:AbortSignal.timeout(120000)});
+      if(!response.ok)throw Error(`Vehicle preparation: ${await response.text()}`);
+      const session=await response.json() as {matchId:string;vehicle:unknown};
+      matchId=session.matchId;preparedVehicle=session.vehicle;
+    }
     // -- Launch clients and get them connected ----------------------------
     // Clients carrying a joinDelayMs are launched later, concurrently with the
     // drive timelines already running, so a late joiner arrives at a world the
@@ -333,6 +353,9 @@ async function runIteration(
 
       const url = new URL(scenario.path.replace('{iter}', String(iteration)), clientUrl);
       url.searchParams.set('match', matchId);
+      if(scenario.vehicleBuild) {
+        url.pathname='/garage';url.searchParams.set('observe',matchId);url.searchParams.set('vehicleNetlab','1');
+      }
       if (opts.impair && opts.impairMode === 'inproc') {
         url.searchParams.set('netlab', '1');
         url.searchParams.set('impair', opts.impair);
@@ -387,6 +410,14 @@ async function runIteration(
       if (!scenario.clients[k].joinDelayMs) await launchClient(k);
     }
 
+    if(scenario.vehicleBuild) {
+      const driverIndex=scenario.clients.findIndex(c=>c.role==='driver');
+      if(driverIndex<0)throw Error('Vehicle scenario requires a driver');
+      const driver=pages[driverIndex];
+      await driver.waitForFunction(()=> (window as any).__VIBE_E2E__?.snapshot().nearestVehicleId != null,null,{timeout:30000});
+      await driver.evaluate(()=>(window as any).__VIBE_DRIVE__.interact());
+      await driver.waitForFunction(()=> (window as any).__VIBE_E2E__?.snapshot().drivenVehicleId != null,null,{timeout:15000});
+    }
     const gpuRenderer = await readGpuRenderer(pages[0]);
     if (/swiftshader/i.test(gpuRenderer)) {
       console.warn(`[netlab] WARNING: rendering on ${gpuRenderer} — frame timings are not GPU-representative`);
@@ -539,6 +570,7 @@ async function runIteration(
         lostFrames: drains[k]?.lostFrames ?? 0,
         lostEvents: drains[k]?.lostEvents ?? 0,
       })),
+      preparedVehicle,
       impairment: {
         profile: opts.impair,
         mode: opts.impair ? opts.impairMode : 'none',
@@ -560,6 +592,16 @@ async function runIteration(
     if (matchStats) {
       fs.writeFileSync(path.join(iterDir, 'match-stats.final.json'), JSON.stringify(matchStats, null, 2));
     }
+    if(scenario.vehicleBuild) {
+      const vehicleScores=scenario.clients.map((c,k)=>({client:k,role:c.role,
+        lostEvents:drains[k]?.lostEvents??0,lostFrames:drains[k]?.lostFrames??0,
+        scores:scoreVehicleLab(loadEvents(path.join(iterDir,`events.client${k}.jsonl`)) as RecorderEvent[])}));
+      const withinTargets=vehicleScores.every(c=>!c.lostEvents&&!c.lostFrames && c.scores.some(s=>s.role===c.role)
+        && c.scores.every(s=>s.verdict==='within-targets'));
+      const result={withinTargets,clients:vehicleScores};
+      fs.writeFileSync(path.join(iterDir,'vehicle-scores.json'),JSON.stringify(result,null,2));
+      console.log('[netlab] vehicle scores',JSON.stringify(result));
+    }
     console.log(`[netlab] iteration ${iteration} artifacts -> ${iterDir}`);
 
     try {
@@ -574,6 +616,7 @@ async function runIteration(
     await statsTap.close();
     for (const context of contexts) await context.close().catch(() => {});
     for (const log of consoleLogs) log.end();
+    if(preparedVehicle)await fetch(`${serverHttpUrl}/vehicle-assets/session/${encodeURIComponent(matchId)}`,{method:'DELETE',signal:AbortSignal.timeout(5000)}).catch(()=>{});
   }
 }
 
@@ -631,7 +674,7 @@ async function commandRun(opts: CliOptions): Promise<void> {
     browser = await chromium.launch({
       channel: 'chrome',
       headless: opts.headless,
-      args: GPU_ARGS,
+      args: process.platform==='darwin' ? [...GPU_ARGS.filter(arg=>!arg.includes('vulkan')&&!arg.includes('Vulkan')),'--use-angle=metal'] : GPU_ARGS,
       env: { ...process.env, DISPLAY: displayHandle.display },
     });
 

@@ -30,3 +30,6 @@ export {buildBookStack} from './book-stack.mjs';
 export {buildCinemaSeat} from './cinema-seat.mjs';
 
 export {buildBaylineCivicTown} from './bayline-civic-town.mjs';
+export {buildOutdoorProp,OUTDOOR_PROP_TYPES} from './outdoor-props.mjs';
+export {buildTree,TREE_FAMILIES} from './tree.mjs';
+export {buildOutdoorGallery,buildOutdoorEncounter,buildDressedBayline,buildTreeReuseFixture} from './outdoor-scenes.mjs';

@@ -21,6 +21,7 @@ fn sessions() -> &'static Mutex<HashMap<String, Arc<Session>>> {
 }
 pub struct Session {
     pub vehicle: PreparedVehicle,
+    pub current_vehicle: Mutex<PreparedVehicle>,
     pub geometry: PreparedGeometry,
     pub world: WorldDocument,
     created: Instant,
@@ -58,6 +59,15 @@ pub struct SessionResponse {
     vehicle: PreparedVehicle,
 }
 
+/// Reuse a prepared course for an independent observer. Possession of the
+/// unguessable session id grants the same join access as the multiplayer match.
+pub async fn inspect_handler(axum::extract::Path(id): axum::extract::Path<String>)
+    -> Result<Json<SessionResponse>, StatusCode> {
+    let session = lookup(&id).filter(|s| !s.closing()).ok_or(StatusCode::NOT_FOUND)?;
+    let vehicle = session.current_vehicle.lock().unwrap().clone();
+    Ok(Json(SessionResponse { match_id: id, world_document: session.world.clone(), vehicle }))
+}
+
 pub async fn create(
     request: PrepareRequest,
 ) -> Result<Json<SessionResponse>, (StatusCode, String)> {
@@ -88,6 +98,7 @@ pub async fn create(
         match_id.clone(),
         Arc::new(Session {
             vehicle: vehicle.clone(),
+            current_vehicle: Mutex::new(vehicle.clone()),
             geometry,
             world: world.clone(),
             created: Instant::now(),

@@ -1,0 +1,8 @@
+CUMETAL WARNING: CUMETAL_USE_METAL_DEVICE_ADDRESSES marks every live allocation read-write on every dispatch so kernels can follow raw device addresses; this removes cross-stream concurrency.
+heightfield sphere   worst depth cpu 0.0419 gpu 0.0419 m; rest gap cpu 0.0173 gpu 0.0173 m; speed cpu 1.3419 gpu 1.3419
+heightfield box      worst depth cpu 0.0171 gpu 0.0119 m; rest gap cpu -0.0954 gpu -0.0958 m; speed cpu 0.0000 gpu 0.0000
+heightfield capsule  worst depth cpu 0.0028 gpu 0.0028 m; rest gap cpu -0.0384 gpu -0.0389 m; speed cpu 1.4265 gpu 1.4208
+heightfield rock     worst depth cpu 0.0197 gpu 0.0197 m; rest gap cpu -0.0065 gpu -0.0231 m; speed cpu 1.1774 gpu 0.0000
+vehicle (4 constraints): lowest chassis cpu 0.5547 gpu 0.5547 m; max jounce cpu 0.2000 gpu 0.2000 m
+vehicle parked on 1 degree: crept cpu 2.0491 gpu 2.0794 m in 3 s; speed cpu 0.8753 gpu 0.8853 m/s
+PASS: heightfield contacts and vehicle constraints match the CPU pipeline

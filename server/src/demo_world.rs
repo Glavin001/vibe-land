@@ -157,6 +157,15 @@ fn city_world() -> WorldDocument {
             },
         )
         .collect();
+    // An authored test range can put its entrance beside the exhibits rather
+    // than at an arbitrary point on the surrounding city spawn ring.
+    if let (Ok(x), Ok(z)) = (std::env::var("VIBE_CITY_SPAWN_X"), std::env::var("VIBE_CITY_SPAWN_Z")) {
+        if let (Ok(x), Ok(z)) = (x.parse::<f32>(), z.parse::<f32>()) {
+            if x.is_finite() && z.is_finite() && x.abs() < 1000.0 && z.abs() < 1000.0 {
+                world.spawn_areas = vec![vibe_land_shared::world_document::SpawnArea {id:1,position:[x,0.5,z],radius:0.5}];
+            }
+        }
+    }
     world
 }
 
@@ -254,6 +263,22 @@ pub(crate) fn garage_test_world() -> WorldDocument {
             id: index as u32 + 1, kind: StaticPropKind::Cuboid,
             position, rotation: [0.0, 0.0, 0.0, 1.0], half_extents, material: None,
         });
+    }
+    // Shared positions are also the physical muzzle coordinates used by the
+    // scheduler. Each mount has a tower, cradle and inward-facing barrel.
+    for i in 0..crate::garage_bombardment::CANNON_COUNT {
+        let [x,y,z]=crate::garage_bombardment::mount(i);
+        let length=x.hypot(z); let outward=[x/length,0.0,z/length];
+        let yaw=(-x).atan2(-z);
+        let rotation=[0.0,(yaw*0.5).sin(),0.0,(yaw*0.5).cos()];
+        for (j,position,half_extents) in [
+            (0,[x+outward[0]*2.5,3.5,z+outward[2]*2.5],[1.8,4.0,1.8]),
+            (1,[x+outward[0]*2.5,8.0,z+outward[2]*2.5],[1.2,0.6,1.1]),
+            (2,[x+outward[0]*2.5,y,z+outward[2]*2.5],[0.35,0.35,2.2]),
+        ] {
+            world.static_props.push(StaticProp {id:100+i as u32*3+j,kind:StaticPropKind::Cuboid,
+                position,rotation,half_extents,material:None});
+        }
     }
     world
 }

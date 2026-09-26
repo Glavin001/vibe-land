@@ -39,6 +39,7 @@ import { WorldTerrain } from '../scene/WorldTerrain';
 import { CityChunksLayer } from '../scene/CityChunksLayer';
 import { DustLayer } from '../vfx/DustLayer';
 import { MeteorLayer } from '../vfx/MeteorLayer';
+import { GameAudioLayer } from '../audio/GameAudioLayer';
 import { CityStatsOverlay } from '../city/CityStatsOverlay';
 import { useFogSettings } from '../graphics/fogSettings';
 import { setGovernorPaused, useDustFluid, useDustMode } from '../app/renderQuality';
@@ -694,6 +695,12 @@ export function CityReplayPage() {
             has the game stream, the launch arcs on a city-only tape. */}
         <MeteorLayer
           getRuntime={() => playerRef.current?.world ?? null}
+          getNowMs={() => playerRef.current?.tapeTimeMs() ?? performance.now()}
+        />
+        <GameAudioLayer
+          getRuntime={() => playerRef.current?.world ?? null}
+          getCityClient={() => playerRef.current?.client ?? null}
+          isPlaying={() => playerRef.current?.playing() ?? false}
           getNowMs={() => playerRef.current?.tapeTimeMs() ?? performance.now()}
         />
         <DustLayer

@@ -44,6 +44,7 @@ fn smoke_vehicle(entity_id: u32, user_id: u32, pose: Pose) -> VehicleDesc {
         brake_torque: 700.0,
         handbrake_torque: 1_400.0,
         top_speed: 40.0,
+        front_wheel_drive: false,
         rear_wheel_drive: true,
         sweep_road_queries: true,
         // Its own group, and a road mask without it: the chassis answers
@@ -71,6 +72,7 @@ fn tuned_vehicle(entity_id: u32, user_id: u32, pose: Pose) -> VehicleDesc {
         brake_torque: 900.0,
         handbrake_torque: 1_800.0,
         top_speed: 30.0,
+        front_wheel_drive: false,
         rear_wheel_drive: false,
         ..smoke_vehicle(entity_id, user_id, pose)
     }
@@ -654,4 +656,114 @@ fn force_threshold_sums_loads_across_static_supports() {
     }
     assert!(distributed_reports > 0,
         "both supports must report a distributed load that exceeds the threshold only in aggregate");
+}
+
+/// With no road contact, only driven wheels can spin up. This distinguishes
+/// actual front axle torque from a label change or torque on all four wheels.
+#[test]
+fn front_drive_and_live_axle_switch_preserve_vehicle_state() {
+    use vibe_land_physx_bridge::VehicleTuning;
+    let mut world = World::new(WorldConfig::default()).expect("GPU scene");
+    let mut desc = tuned_vehicle(6, 106, pose(0.0, 100.0, 0.0));
+    desc.front_wheel_drive = true;
+    world.add_vehicle(desc).unwrap();
+    let run = |world: &mut World, ticks| {
+        for _ in 0..ticks {
+            world.drive_vehicle(6, VehicleCommands { throttle: 1.0, ..VehicleCommands::default() }).unwrap();
+            world.step().unwrap();
+        }
+        world.vehicle_snapshots().unwrap()[0]
+    };
+    let stop_wheels = |world: &mut World| {
+        // Resetting the chassis pose deliberately preserves wheel state. Use
+        // the service brake to remove existing angular momentum before probing
+        // which axle receives fresh torque.
+        for _ in 0..60 {
+            world.drive_vehicle(6, VehicleCommands { brake: 1.0, ..VehicleCommands::default() }).unwrap();
+            world.step().unwrap();
+        }
+        for speed in world.vehicle_snapshots().unwrap()[0].wheel_rotation_speed {
+            assert!(speed.abs() < 0.001);
+        }
+    };
+    let front = run(&mut world, 30);
+    for i in 0..2 { assert!(front.wheel_rotation_speed[i] > 1.0); }
+    for i in 2..4 { assert!(front.wheel_rotation_speed[i].abs() < 0.001); }
+    let mut tune = VehicleTuning {
+        suspension_stiffness: desc.suspension_stiffness,
+        suspension_damping: desc.suspension_damping,
+        tyre_friction: desc.tyre_friction,
+        max_steer_radians: desc.max_steer_radians,
+        drive_torque: desc.drive_torque,
+        brake_torque: desc.brake_torque,
+        handbrake_torque: desc.handbrake_torque,
+        top_speed: desc.top_speed,
+        front_wheel_drive: false,
+        rear_wheel_drive: true,
+    };
+    world.tune_vehicle(6, tune).unwrap();
+    assert_eq!(world.vehicle_snapshots().unwrap()[0], front);
+    run(&mut world, 15); // Finish the 0.2 second transition.
+    stop_wheels(&mut world);
+    world.reset_vehicle(6, desc.pose).unwrap();
+    let rear = run(&mut world, 30);
+    for i in 0..2 { assert!(rear.wheel_rotation_speed[i].abs() < 0.001); }
+    for i in 2..4 { assert!(rear.wheel_rotation_speed[i] > 1.0); }
+    tune.front_wheel_drive = true;
+    assert!(world.tune_vehicle(6, tune).is_err(), "conflicting axles must be rejected");
+    assert_eq!(world.vehicle_snapshots().unwrap()[0], rear);
+    tune.rear_wheel_drive = false;
+    world.tune_vehicle(6, tune).unwrap();
+    run(&mut world, 15);
+    stop_wheels(&mut world);
+    world.reset_vehicle(6, desc.pose).unwrap();
+    let restored = run(&mut world, 30);
+    for i in 0..2 { assert!(restored.wheel_rotation_speed[i] > 1.0); }
+    for i in 2..4 { assert!(restored.wheel_rotation_speed[i].abs() < 0.001); }
+    eprintln!("FWD {:?}; hot RWD {:?}; hot FWD {:?}", front.wheel_rotation_speed, rear.wheel_rotation_speed, restored.wheel_rotation_speed);
+}
+
+/// Functional damage oracle. Wheel removal is injected explicitly here; this
+/// qualifies the Vehicle2 response, not fracture detection or chunk ownership.
+#[test]
+fn disabled_corners_have_no_drive_suspension_or_sticky_constraints() {
+    let mut world = World::new(WorldConfig::default()).expect("GPU scene");
+    let desc=tuned_vehicle(6,106,pose(0.0,10.0,0.0));
+    world.add_vehicle(desc).unwrap();
+    world.set_vehicle_functional_state(6,0b1110,true).unwrap();
+    for _ in 0..30 {
+        world.drive_vehicle(6,VehicleCommands{throttle:1.0,..Default::default()}).unwrap();
+        world.step().unwrap();
+    }
+    let one=world.vehicle_snapshots().unwrap()[0];
+    assert_eq!(one.wheel_rotation_speed[0],0.0);
+    assert_eq!(one.wheel_rotation_angle[0],0.0);
+    assert_eq!(one.wheels_on_road & 1,0);
+    for i in 1..4 {assert!(one.wheel_rotation_speed[i]>1.0);}
+    assert!(world.set_vehicle_functional_state(6,16,true).is_err());
+    assert_eq!(world.vehicle_snapshots().unwrap()[0],one);
+    // Even with a brake commanded, zero wheels means no sticky constraints
+    // and no suspension forces supporting the body above the ground.
+    world.add_static_box(StaticBoxDesc{entity_id:1,user_id:1,pose:pose(0.0,-0.5,0.0),
+        half_extents:Vec3::new(100.0,0.5,100.0),collision_group:1,collision_mask:ALL}).unwrap();
+    world.set_vehicle_functional_state(6,0,false).unwrap();
+    world.reset_vehicle(6,pose(0.0,0.7,0.0)).unwrap();
+    for _ in 0..180 {
+        world.drive_vehicle(6,VehicleCommands{throttle:1.0,brake:1.0,..Default::default()}).unwrap();
+        world.step().unwrap();
+    }
+    let wreck=world.vehicle_snapshots().unwrap()[0];
+    assert!(wreck.pose.position.y<0.4,"chassis must bottom out without wheels: {:?}",wreck.pose.position);
+    assert!(wreck.wheel_rotation_speed.iter().all(|s|*s==0.0));
+    assert_eq!(wreck.wheels_on_road,0);
+    // Restoration is explicit, not a side effect of tuning or resetting pose.
+    world.set_vehicle_functional_state(6,15,false).unwrap();
+    world.reset_vehicle(6,pose(0.0,100.0,0.0)).unwrap();
+    for _ in 0..30 {
+        world.drive_vehicle(6,VehicleCommands{throttle:1.0,..Default::default()}).unwrap();world.step().unwrap();
+    }
+    assert!(world.vehicle_snapshots().unwrap()[0].wheel_rotation_speed.iter().all(|s|*s==0.0),"disconnected driveline must not power restored wheels");
+    world.set_vehicle_functional_state(6,15,true).unwrap();
+    for _ in 0..30 {world.step().unwrap();}
+    assert!(world.vehicle_snapshots().unwrap()[0].wheel_rotation_speed.iter().all(|s|*s>1.0));
 }

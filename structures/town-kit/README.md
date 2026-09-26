@@ -1,6 +1,63 @@
 # Bayline town kit
 
-An independent Victorian corner café, furnished apartments and reusable town props. The main `/city` application is untouched. This directory owns its generated assets, native Cargo workspace, preview service and review recordings.
+The [outdoor destruction kit](OUTDOOR-KIT.md) adds trees, street props, collapsible
+structures, three racing/combat encounters and a separate dressed Bayline scene.
+Use `npm run build:outdoor` and open `?asset=outdoor-gallery` in the independent preview.
+
+An independent Victorian corner café, furnished apartments and reusable town props. This directory owns its generated assets, native Cargo workspace, preview service and review recordings. The playable `/town-kit` route reuses `/city`'s client, server, WebTransport and native stress destruction.
+
+## Walk and shoot: live playground
+
+From the repository root:
+
+```sh
+npm --prefix structures/town-kit run play
+```
+
+Open **http://127.0.0.1:6180/town-kit?portal=true**. Click the scene, use WASD to
+walk, drag/move the mouse to aim, and click to fire. Aim above the rooted stump
+to fracture the trunk. N switches to the existing fly camera. Escape releases
+the mouse; **Reset playground** rebuilds every exhibit.
+
+The current playground has **24 labelled exhibits**: native-stable shade,
+street and ornamental trees, all 20 outdoor props, and a furnished Juniper
+porch house. The other 12 tree variants remain available in the authoring
+viewer but are excluded here because their native stress topology fails at
+startup. This is a live test range, not a release qualification for every impact.
+
+Cannonballs use the real server's 500 kg, 25 m/s physical projectile. Fracture
+comes from contact loads and the native stress solver; foliage follows the
+authoritative chunk transforms, including separated branches and reset poses.
+The visuals endpoint verifies the exact physics-pack SHA and manifest before
+serving the attachment data.
+
+Outdoor mortar, timber seams, welds and mounting joints are calibrated for
+this cannon. Bulk chunk strength, mass and stiffness are preserved; the damage
+still comes from the native stress solver. Shoot solid brickwork or a panel,
+or knock out a structure's supports. The street tree and house wall can need
+three hits; firing through a gap does not damage the surrounding structure.
+
+To repeat the cannon qualification, stop the playground, rebuild the native
+review harness for the installed SDK, then run `npm run check:playground:cannon`
+from this directory. It checks all 24 exhibits with the same weapon and stress
+settings as the live launcher. Every case must remain intact before firing,
+break at least one bond, and move a fractured chunk by more than 10 cm, without
+native errors or invalid chunk ownership. Recordings and a complete pass/fail
+matrix are written to `out/cannon-qualification/current/`. The final measured
+run for this change is in `out/cannon-qualification/final/`.
+
+This command builds the server with `native-destruction` into
+`target/town-kit-live`, then runs under the shared GPU lock. It requires the
+same PhysX SDK and prebuilt client WASM as local `/city`; see
+[`run-locally`](../../.claude/skills/run-locally/SKILL.md). It uses dedicated
+ports **6180 / 6181 / 6182** and refuses occupied ports. `TOWN_KIT_PORT` changes
+the client port; HTTP and WebTransport use the next two. Ctrl-C stops only this
+instance. Logs and owned process IDs are under `out/playground/`. Use
+`TOWN_KIT_LIVE_RELOAD=1` to opt into client hot reload while developing; it is
+off for the playable review so unrelated saves do not restart your session.
+Restart the launcher to pick up edits with live reload disabled. Use
+`npm --prefix structures/town-kit run play -- --no-build` only while the SDK and
+server sources are unchanged.
 
 **Release status:** work in review; see [measured blockers](REVIEW-NOTES.md). A generated pack is not an accepted asset. See `out/reviews/matrix.json`, each native `report.json`, and the visual contact sheets. Failed, stale or missing reviews must not be treated as passes. Assets are staged for later import only after every acceptance gate passes.
 

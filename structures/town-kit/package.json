@@ -3,6 +3,9 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "play": "node scripts/playground.mjs",
+    "build:playground": "node scripts/build-playground.mjs",
+    "check:playground:cannon": "../../scripts/perf/gpu-run.sh town-kit-cannon-check node scripts/check-playground-cannon.mjs",
     "build": "node scripts/build.mjs",
     "test": "node --test tests/*.test.mjs",
     "preview": "node scripts/preview.mjs",
@@ -32,6 +35,19 @@
     "status:civic": "node scripts/civic-status.mjs",
     "audit:civic": "node scripts/audit-rest.mjs --civic",
     "build:binary": "node scripts/build-binary.mjs",
-    "test:binary": "node scripts/verify-binary.mjs"
+    "test:binary": "node scripts/verify-binary.mjs",
+    "build:outdoor": "node scripts/build-outdoor.mjs --town",
+    "test:outdoor": "node --test tests/outdoor.test.mjs tests/preview-output.test.mjs && node scripts/check-outdoor-render.mjs",
+    "check:preview": "../../client/node_modules/.bin/tsc -p tsconfig.preview.json --noEmit",
+    "review:outdoor": "node scripts/review-outdoor.mjs",
+    "capture:outdoor": "node scripts/capture-outdoor.mjs",
+    "benchmark:outdoor": "node scripts/benchmark-outdoor.mjs",
+    "capture:tree-fracture": "node scripts/capture-tree-fracture.mjs",
+    "check:preview-assets": "node scripts/check-preview-assets.mjs",
+    "test:cannon": "node --test tests/cannon.test.mjs",
+    "build:bayline-gardens": "node scripts/build-gardens-market.mjs",
+    "play:bayline-gardens": "node scripts/playground.mjs --gardens-market",
+    "record:bayline-gardens": "../../scripts/perf/gpu-run.sh gardens-market-film node scripts/record-gardens-market.mjs",
+    "check:bayline-film": "node scripts/check-gardens-market-tour.mjs"
   }
 }

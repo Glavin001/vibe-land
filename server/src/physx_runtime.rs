@@ -117,6 +117,8 @@ fn physx_wheel_data(snapshot: &bridge::VehicleSnapshot) -> [u16; 4] {
 }
 
 struct VehicleMeta {
+    steering_response: f32,
+    steering_geometry: Option<(f32, f32, f32)>,
     vehicle_type: u8,
     driver_id: u32,
     latest_input: InputCmd,
@@ -188,13 +190,19 @@ fn shape_vehicle_commands(
     steer_command: &mut f32,
     dt: f32,
 ) -> bridge::VehicleCommands {
-    let target = input.steer.clamp(-1.0, 1.0) * steer_lock_fraction(forward_speed);
+    shape_tuned_vehicle_commands(input, forward_speed, steer_command, dt, 1.0, 1.0)
+}
+
+fn shape_tuned_vehicle_commands(
+    input: &VehicleInputCmd, forward_speed: f32, steer_command: &mut f32, dt: f32, response: f32, lock_limit: f32,
+) -> bridge::VehicleCommands {
+    let target = input.steer.clamp(-1.0, 1.0) * steer_lock_fraction(forward_speed).min(lock_limit);
     let rate = if target.abs() > steer_command.abs() {
         STEER_SLEW_IN_PER_S
     } else {
         STEER_SLEW_OUT_PER_S
     };
-    let step = rate * dt;
+    let step = rate * response * dt;
     *steer_command += (target - *steer_command).clamp(-step, step);
 
     let rolling_forward = forward_speed > PEDAL_DIRECTION_THRESHOLD_M_S;
@@ -341,6 +349,7 @@ pub struct PhysxPhysicsArena {
     gpu_max_rigid_contacts: u32,
     gpu_max_rigid_patches: u32,
     contact_events: Vec<bridge::ContactEvent>,
+    audio_contacts_ready: bool,
     cached_body_snapshots: Vec<bridge::BodySnapshot>,
     cached_vehicle_snapshots: Vec<bridge::VehicleSnapshot>,
     snapshots_valid: bool,
@@ -369,6 +378,7 @@ impl PhysxPhysicsArena {
         // vehicle SDK measures suspension from the chassis centre, so the
         // attachment sits where the Rapier rest length ends up placing the
         // wheel after its own static compression.
+        let tune = prepared.and_then(|p| p.driving.as_ref());
         let definition = vehicle_definition(vehicle_type);
         let [half_x, half_y, half_z] = prepared.map(|p| std::array::from_fn(|i| p.bounds.min[i].abs().max(p.bounds.max[i].abs()).max(0.01))).unwrap_or(definition.chassis_half_extents);
         let [[wheel_x, _, front_z], _, [_, _, rear_z], _] = prepared.map(|p| p.wheel_centers).unwrap_or(definition.wheel_offsets);
@@ -393,22 +403,23 @@ impl PhysxPhysicsArena {
                 front_axle_z: front_z.max(rear_z),
                 rear_axle_z: front_z.min(rear_z),
                 suspension_travel: travel,
-                suspension_stiffness: stiffness,
-                suspension_damping: damping,
+                suspension_stiffness: tune.map(|t| t.spring_stiffness).unwrap_or(stiffness),
+                suspension_damping: tune.map(|t| t.damping).unwrap_or(damping),
                 wheel_radius: prepared.map(|p| p.origin_height - 0.25).unwrap_or(definition.wheel_radius_m),
                 wheel_half_width: prepared.map(|p| p.wheel_half_width).unwrap_or(0.15),
-                tyre_friction: PHYSX_TYRE_FRICTION,
+                tyre_friction: tune.map(|t| t.tyre_friction).unwrap_or(PHYSX_TYRE_FRICTION),
                 front_lateral_stiffness: PHYSX_FRONT_LATERAL_STIFFNESS_PER_N * rest_load,
                 rear_lateral_stiffness: PHYSX_REAR_LATERAL_STIFFNESS_PER_N * rest_load,
                 longitudinal_stiffness: PHYSX_LONGITUDINAL_STIFFNESS_PER_N * rest_load,
                 com_offset_y: PHYSX_COM_OFFSET_Y_M,
                 angular_damping: PHYSX_ANGULAR_DAMPING,
-                max_steer_radians: prepared.map(|p| p.max_steer_radians).unwrap_or(VEHICLE_MAX_STEER_RAD),
-                drive_torque: PHYSX_DRIVE_TORQUE_PER_WHEEL_N_M * mass / PHYSX_VEHICLE_MASS_KG,
-                brake_torque: PHYSX_BRAKE_TORQUE_PER_WHEEL_N_M * mass / PHYSX_VEHICLE_MASS_KG,
-                handbrake_torque: 2.0 * PHYSX_BRAKE_TORQUE_PER_WHEEL_N_M * mass / PHYSX_VEHICLE_MASS_KG,
-                top_speed: PHYSX_TOP_SPEED_M_S,
-                rear_wheel_drive: false,
+                max_steer_radians: tune.map(|t| t.max_steer_radians).unwrap_or_else(|| prepared.map(|p| p.max_steer_radians).unwrap_or(VEHICLE_MAX_STEER_RAD)),
+                drive_torque: tune.map(|t| t.drive_torque).unwrap_or(PHYSX_DRIVE_TORQUE_PER_WHEEL_N_M * mass / PHYSX_VEHICLE_MASS_KG),
+                brake_torque: tune.map(|t| t.brake_torque).unwrap_or(PHYSX_BRAKE_TORQUE_PER_WHEEL_N_M * mass / PHYSX_VEHICLE_MASS_KG),
+                handbrake_torque: 2.0 * tune.map(|t| t.brake_torque).unwrap_or(PHYSX_BRAKE_TORQUE_PER_WHEEL_N_M * mass / PHYSX_VEHICLE_MASS_KG),
+                top_speed: tune.map(|t| t.top_speed).unwrap_or(PHYSX_TOP_SPEED_M_S),
+                front_wheel_drive: tune.is_some_and(|t| t.front_wheel_drive),
+                rear_wheel_drive: tune.is_some_and(|t| t.rear_wheel_drive),
                 // Sweeps ride a cylinder over rubble; raycasts fall between chunks.
                 sweep_road_queries: true,
                 road_mask: GROUP_STATIC | GROUP_DYNAMIC | GROUP_CHUNK,
@@ -433,6 +444,8 @@ impl PhysxPhysicsArena {
         self.vehicles.insert(
             id,
             VehicleMeta {
+                steering_response: tune.map(|t| t.steering_response).unwrap_or(1.0),
+                steering_geometry: tune.map(|t| ((front_z-rear_z).abs(), t.max_steer_radians, t.tyre_friction)),
                 vehicle_type,
                 driver_id: 0,
                 latest_input: InputCmd::default(),
@@ -499,6 +512,7 @@ impl PhysxPhysicsArena {
             next_battery_id: 1,
             material_field: None,
             contact_events: Vec::new(),
+            audio_contacts_ready: false,
             cached_body_snapshots: Vec::new(),
             cached_vehicle_snapshots: Vec::new(),
             snapshots_valid: false,
@@ -1052,6 +1066,22 @@ impl PhysxPhysicsArena {
         }
     }
 
+    pub fn tune_vehicle(&mut self,id:u32,tune:&crate::vehicle_assets::PreparedDriving)->Result<(),String> {
+        if !tune.is_valid() {return Err("Invalid vehicle tuning".into());}
+        let vehicle=self.vehicles.get_mut(&id).ok_or("Vehicle not found")?;
+        self.world.tune_vehicle(NS_VEHICLE | (id & ID_MASK),bridge::VehicleTuning {
+            suspension_stiffness:tune.spring_stiffness,suspension_damping:tune.damping,
+            tyre_friction:tune.tyre_friction,max_steer_radians:tune.max_steer_radians,
+            drive_torque:tune.drive_torque,brake_torque:tune.brake_torque,
+            handbrake_torque:2.0*tune.brake_torque,top_speed:tune.top_speed,front_wheel_drive:tune.front_wheel_drive,rear_wheel_drive:tune.rear_wheel_drive,
+        }).map_err(|e|e.to_string())?;
+        vehicle.steering_response=tune.steering_response;
+        if let Some((wheelbase,_,_))=vehicle.steering_geometry {
+            vehicle.steering_geometry=Some((wheelbase,tune.max_steer_radians,tune.tyre_friction));
+        }
+        Ok(())
+    }
+
     fn drive_vehicles(&mut self) {
         let vehicles_started = std::time::Instant::now();
         let dt = 1.0 / f32::from(vibe_land_shared::constants::SIM_HZ);
@@ -1099,7 +1129,13 @@ impl PhysxPhysicsArena {
                     }
                 }
                 let input = input_to_vehicle_cmd(&vehicle.latest_input);
-                shape_vehicle_commands(&input, forward_speed, &mut vehicle.steer_command, dt)
+                // Driver-assist input shaping, not a force/velocity clamp. Limit
+                // the requested cornering acceleration before Vehicle2 solves slip.
+                let lock_limit = vehicle.steering_geometry.map(|(wheelbase, lock, grip)| {
+                    let lateral_accel = (0.65 * grip * 9.81).min(7.5);
+                    (lateral_accel * wheelbase / forward_speed.powi(2).max(0.01)).atan() / lock
+                }).unwrap_or(1.0).min(1.0);
+                shape_tuned_vehicle_commands(&input, forward_speed, &mut vehicle.steer_command, dt, vehicle.steering_response, lock_limit)
             };
             self.world
                 .drive_vehicle(entity, cmd)
@@ -1217,6 +1253,7 @@ impl PhysxPhysicsArena {
             .world
             .take_contact_events()
             .expect("PhysX contact event readback failed");
+        self.audio_contacts_ready = true;
         self.cached_body_snapshots = self
             .world
             .body_snapshots()
@@ -1246,6 +1283,22 @@ impl PhysxPhysicsArena {
         self.refresh_players();
         self.last_refresh_players_ms =
             before_players.elapsed().as_secs_f32() * 1000.0;
+    }
+
+    /// Reuse the existing contact readback. Audio never walks the scene or
+    /// performs another GPU synchronization. The reducer bounds extraction.
+    pub fn reduce_audio_contacts(&mut self, reducer: &mut crate::contact_audio::ContactAudioReducer, tick: u32) {
+        if !std::mem::take(&mut self.audio_contacts_ready) { return; }
+        reducer.ingest(tick, self.contact_events.iter().map(|event| crate::contact_audio::ContactSample {
+            entity_a: event.entity_a,
+            entity_b: event.entity_b,
+            position: [event.point.x, event.point.y, event.point.z],
+            normal: [event.normal.x, event.normal.y, event.normal.z],
+            normal_speed: event.normal_speed,
+            tangent_speed: event.tangent_speed,
+            impulse: (event.impulse.x.powi(2) + event.impulse.y.powi(2) + event.impulse.z.powi(2)).sqrt(),
+            effective_mass: event.effective_mass,
+        }));
     }
 
     pub fn apply_vehicle_player_collisions(&mut self) -> Vec<u32> {
@@ -1650,6 +1703,13 @@ impl PhysxPhysicsArena {
             }
         }
         Some(id)
+    }
+
+    pub fn launch_ball_from_muzzle(&mut self, position: Vector3<f32>, velocity: Vector3<f32>, radius:f32, mass:f32, ttl_ticks:u32) -> Option<u32> {
+        if !position.iter().chain(velocity.iter()).all(|x|x.is_finite()) || !radius.is_finite() || radius<=0.0 || !mass.is_finite() || mass<=0.0 || ttl_ticks==0 {return None;}
+        let id=self.take_pool_id(Pool::Ball);
+        self.ball_radius_m=radius;
+        self.launch_body(id,position,velocity,radius,mass,ttl_ticks)
     }
 
     /// Throw a visible ball from `position` along `direction` and return its id.
@@ -2475,6 +2535,35 @@ mod tests {
         assert!((100.0 - hit_at_12 - 12.0).abs() < 0.02);
     }
 
+    /// Export an authoritative Vehicle2 trace for the browser proxy regression.
+    #[test]
+    #[ignore = "requires local GPU and VIBE_VEHICLE_NET_TRACE output path"]
+    fn export_vehicle_netcode_trace() {
+        let _guard=gpu_test_guard();
+        let path=std::env::var("VIBE_VEHICLE_NET_TRACE").unwrap();
+        let world=crate::demo_world::garage_test_world();
+        let mut arena=PhysxPhysicsArena::new(MoveConfig::default()).unwrap();
+        world.instantiate(&mut arena).unwrap();
+        WorldDocumentArena::spawn_vehicle_with_id(&mut arena,7,0,Vector3::new(0.0,1.0,3.0),[0.0,0.0,0.0,1.0]);
+        arena.set_spawn_areas(world.spawn_areas.clone());arena.spawn_player(10);arena.enter_vehicle(10,7);
+        assert_eq!(arena.player_vehicle_id(10),Some(7));
+        arena.world.reset_vehicle(NS_VEHICLE|7,pose(Vector3::new(0.0,4.0,3.0),[0.0,0.0,0.0,1.0])).unwrap();
+        let mut frames=Vec::new();
+        for tick in 0..720u32 {
+            let mut input=InputCmd::default();
+            input.move_y=if tick<100 {0} else if tick<550 {90} else {-127};
+            if (360..440).contains(&tick) {input.move_x=25;}
+            arena.simulate_player_tick(10,&input,1.0/60.0);
+            arena.step_vehicles_and_dynamics(1.0/60.0);
+            let car=arena.current_vehicle_snapshots()[0];
+            let p=car.pose.position;let q=car.pose.rotation;let v=car.linear_velocity;let w=car.angular_velocity;
+            frames.push(serde_json::json!({"input":{"seq":tick+1,"clientTick":tick,"moveX":input.move_x,"moveY":input.move_y,"buttons":input.buttons,"yaw":0,"pitch":0},
+                "sample":{"serverTimeUs":(tick+1) as f64*1e6/60.0,"position":[p.x,p.y,p.z],"quaternion":[q.x,q.y,q.z,q.w],
+                "linearVelocity":[v.x,v.y,v.z],"angularVelocity":[w.x,w.y,w.z],"wheelData":[0,0,0,0],"driverPlayerId":10,"flags":0}}));
+        }
+        std::fs::write(path,serde_json::to_vec(&serde_json::json!({"world":world,"frames":frames})).unwrap()).unwrap();
+    }
+
     #[test]
     fn garage_heightmap_supports_vehicle2_and_changes_suspension_travel() {
         let _guard = gpu_test_guard();
@@ -2690,6 +2779,185 @@ mod tests {
         }
     }
 
+    /// Deterministic impact diagnostic using the production prepared compound,
+    /// GPU scene, launch path and contact readback. This is not a fracture gate:
+    /// zero registered stress bonds is explicitly reported as unqualified.
+    #[cfg(feature = "native-destruction")]
+    #[test]
+    #[ignore = "requires local GPU and VIBE_VEHICLE_BUILD_FIXTURES; writes VIBE_VEHICLE_IMPACT_REPORT"]
+    fn garage_targeted_projectile_probe() {
+        let _guard=gpu_test_guard();
+        let fixtures:serde_json::Value=serde_json::from_slice(&std::fs::read(
+            std::env::var("VIBE_VEHICLE_BUILD_FIXTURES").expect("fixture file")).unwrap()).unwrap();
+        let index:usize=std::env::var("VIBE_VEHICLE_IMPACT_BUILD").ok().map(|s|s.parse().unwrap()).unwrap_or(0);
+        let fixture=&fixtures[index];
+        let bytes=std::fs::read(fixture["metadataPath"].as_str().expect("fixture metadataPath")).unwrap();
+        let metadata:serde_json::Value=serde_json::from_slice(&bytes).unwrap();
+        let mut geometry:crate::vehicle_assets::PreparedGeometry=serde_json::from_slice(&bytes).unwrap();
+        geometry.fracture_layout=Some(geometry.validate_fracture_layout().expect("invalid authored fracture graph"));
+        geometry.driving=Some(serde_json::from_value(fixture["driving"].clone()).unwrap());
+        let target_id=std::env::var("VIBE_VEHICLE_IMPACT_PART").ok();
+        let part=target_id.as_ref().map(|id|geometry.parts.iter().find(|p|&p.id==id).expect("unknown target part"));
+        let local=part.map(|p|p.position).unwrap_or([0.0,0.0,0.0]);
+        let mut arena=PhysxPhysicsArena::new(MoveConfig::default()).unwrap();
+        WorldDocumentArena::add_static_cuboid(&mut arena,Vector3::new(0.0,-1.0,0.0),
+            [0.0,0.0,0.0,1.0],Vector3::new(200.0,1.0,200.0),1);
+        arena.spawn_vehicle_asset(7,0,Vector3::new(0.0,geometry.origin_height+0.15,0.0),
+            [0.0,0.0,0.0,1.0],Some(&geometry)).unwrap();
+        let mut idle_ms=Vec::new();
+        for _ in 0..180 {
+            let start=std::time::Instant::now();arena.begin_dynamics();arena.finish_dynamics();
+            idle_ms.push(start.elapsed().as_secs_f64()*1000.0);
+        }
+        let before=arena.current_vehicle_snapshots()[0];
+        let q=before.pose.rotation;
+        let rotation=nalgebra::UnitQuaternion::new_normalize(nalgebra::Quaternion::new(q.w,q.x,q.y,q.z));
+        let target=Vector3::new(before.pose.position.x,before.pose.position.y,before.pose.position.z)+rotation*Vector3::from(local);
+        let origin=target+Vector3::new(-8.0,0.5,0.0);
+        let shot=crate::garage_bombardment::aimed_shot(origin,target,0.18);
+        let ball=arena.launch_ball_from_muzzle(shot.origin,shot.velocity,crate::garage_bombardment::BALL_RADIUS,
+            crate::garage_bombardment::BALL_MASS,crate::garage_bombardment::BALL_TTL).unwrap();
+        let ball_entity=NS_DYNAMIC|ball;
+        let mut contacts=Vec::new();let mut impact_ms=Vec::new();let mut trajectory=Vec::new();
+        for tick in 0..240 {
+            let start=std::time::Instant::now();arena.begin_dynamics();arena.finish_dynamics();
+            impact_ms.push(start.elapsed().as_secs_f64()*1000.0);
+            for e in &arena.contact_events {
+                if (e.entity_a==ball_entity && e.entity_b==(NS_VEHICLE|7)) || (e.entity_b==ball_entity && e.entity_a==(NS_VEHICLE|7)) {
+                    contacts.push(serde_json::json!({"tick":tick,"point":[e.point.x,e.point.y,e.point.z],"impulse":[e.impulse.x,e.impulse.y,e.impulse.z]}));
+                }
+            }
+            let car=arena.current_vehicle_snapshots()[0];
+            assert!(car.pose.position.x.is_finite() && car.pose.position.y.is_finite());
+            trajectory.push(serde_json::json!({"tick":tick,"position":[car.pose.position.x,car.pose.position.y,car.pose.position.z],
+                "wheelSpeeds":car.wheel_rotation_speed,"wheelsOnRoad":car.wheels_on_road}));
+        }
+        let stats=arena.world.native_stats();
+        let (structures,broken)=stats.as_ref().map(|s|(s.structures,s.broken_bonds)).unwrap_or((0,0));
+        let native_error=stats.as_ref().err().map(ToString::to_string);
+        let report=serde_json::json!({"build":fixture["name"],"targetPart":target_id,"target":local,
+            "authoredParts":geometry.parts.len(),"authoredBonds":metadata["bondCount"],
+            "authoredGraphValidated":geometry.fracture_layout.is_some(),
+            "registeredStructures":structures,"brokenBonds":broken,"nativeError":native_error,
+            "fractureQualified":false,"qualification":"physical contact probe only; native Vehicle2 constraint ownership is pending",
+            "projectile":{"massKg":crate::garage_bombardment::BALL_MASS,"radiusM":crate::garage_bombardment::BALL_RADIUS,
+                "origin":[shot.origin.x,shot.origin.y,shot.origin.z],"velocity":[shot.velocity.x,shot.velocity.y,shot.velocity.z]},
+            "contacts":contacts,"trajectory":trajectory,"idleCompleteStepMs":idle_ms,"impactCompleteStepMs":impact_ms});
+        let path=std::env::var("VIBE_VEHICLE_IMPACT_REPORT").expect("report output path");
+        std::fs::write(&path,serde_json::to_vec_pretty(&report).unwrap()).unwrap();
+        eprintln!("vehicle impact probe: {} contacts; report {}",contacts.len(),path);
+        assert!(!contacts.is_empty(),"targeted projectile did not contact the vehicle; inspect the report");
+        if std::env::var_os("VIBE_VEHICLE_REQUIRE_FRACTURE").is_some() {
+            assert!(structures>0 && broken>0,"fracture qualification failed: vehicle has no active native fracture graph");
+        }
+    }
+
+    #[test]
+    #[ignore = "requires native GPU and VIBE_VEHICLE_BUILD_FIXTURES"]
+    fn live_tuning_preserves_motion_and_changes_driving() {
+        let _guard=gpu_test_guard();
+        let fixtures:serde_json::Value=serde_json::from_slice(&std::fs::read(
+            std::env::var("VIBE_VEHICLE_BUILD_FIXTURES").unwrap()).unwrap()).unwrap();
+        let fixture=&fixtures[0];
+        let original:crate::vehicle_assets::PreparedDriving=serde_json::from_value(fixture["driving"].clone()).unwrap();
+        let mut geometry:crate::vehicle_assets::PreparedGeometry=serde_json::from_slice(
+            &std::fs::read(fixture["metadataPath"].as_str().unwrap()).unwrap()).unwrap();
+        geometry.driving=Some(original.clone());
+        let mut arena=PhysxPhysicsArena::new(MoveConfig::default()).unwrap();
+        WorldDocumentArena::add_static_cuboid(&mut arena,Vector3::new(0.0,-1.0,0.0),
+            [0.0,0.0,0.0,1.0],Vector3::new(1000.0,1.0,1000.0),1);
+        let spawn=arena.spawn_player(10);
+        arena.spawn_vehicle_asset(7,0,Vector3::new(spawn.x as f32,geometry.origin_height+0.15,spawn.z as f32),
+            [0.0,0.0,0.0,1.0],Some(&geometry)).unwrap();
+        arena.enter_vehicle(10,7);
+        let run=|arena:&mut PhysxPhysicsArena,ticks:u32,brake:bool| {
+            for _ in 0..ticks {
+                let mut input=InputCmd::default();input.move_y=127;
+                if brake {input.buttons=BTN_JUMP;}
+                arena.simulate_player_tick(10,&input,1.0/60.0);
+                arena.begin_dynamics();arena.finish_dynamics();
+                let car=arena.current_vehicle_snapshots()[0];
+                assert!(car.pose.position.y.is_finite() && vehicle_heading(&car).2>0.6);
+            }
+        };
+        run(&mut arena,480,false);
+        let before=arena.current_vehicle_snapshots()[0];
+        assert!(vehicle_heading(&before).1>20.0);
+        let mut tune=original.clone();
+        tune.top_speed=12.0;tune.drive_torque*=0.7;tune.brake_torque*=1.2;
+        tune.spring_stiffness*=1.3;tune.damping*=0.8;tune.tyre_friction=1.0;
+        tune.max_steer_radians*=0.8;tune.rear_wheel_drive=true;tune.steering_response=0.7;
+        arena.tune_vehicle(7,&tune).unwrap();
+        assert_eq!(arena.current_vehicle_snapshots()[0],before,"tuning must preserve every dynamic state field");
+        assert_eq!(arena.player_vehicle_id(10),Some(7));
+        let mut invalid=tune.clone();invalid.damping=f32::NAN;
+        assert!(arena.tune_vehicle(7,&invalid).is_err());
+        assert_eq!(arena.current_vehicle_snapshots()[0],before);
+        // Rear-wheel handbraking at the reduced grip needs more than four seconds from 30 m/s.
+        run(&mut arena,480,true);
+        let stopped=vehicle_heading(&arena.current_vehicle_snapshots()[0]).1;
+        assert!(stopped.abs()<0.5,"handbrake after retuning: {stopped}");
+        run(&mut arena,600,false);
+        let slow=vehicle_heading(&arena.current_vehicle_snapshots()[0]).1;
+        assert!(slow>7.0 && slow<13.0,"updated response curve must control speed: {slow}");
+        arena.tune_vehicle(7,&original).unwrap();
+        run(&mut arena,480,false);
+        let fast=vehicle_heading(&arena.current_vehicle_snapshots()[0]).1;
+        assert!(fast>24.0,"restoring setup must restore acceleration: {fast}");
+        assert_eq!(arena.player_vehicle_id(10),Some(7));
+        eprintln!("live tune: preserved moving state; RWD tune {slow:.2} m/s, restored AWD {fast:.2} m/s");
+    }
+
+    #[test]
+    #[ignore = "prepare fixtures with client/scripts/verify-vehicle-builds.mjs; set VIBE_VEHICLE_BUILD_FIXTURES"]
+    fn prepared_garage_builds_drive_turn_and_brake() {
+        let _guard = gpu_test_guard();
+        #[derive(serde::Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Fixture { name: String, metadata_path: String, driving: crate::vehicle_assets::PreparedDriving }
+        let path = std::env::var("VIBE_VEHICLE_BUILD_FIXTURES").expect("fixture path");
+        let fixtures: Vec<Fixture> = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        assert!(fixtures.len() >= 11);
+        for fixture in fixtures {
+            assert!(fixture.driving.is_valid());
+            let mut geometry: crate::vehicle_assets::PreparedGeometry = serde_json::from_slice(
+                &std::fs::read(fixture.metadata_path).unwrap()).unwrap();
+            geometry.driving = Some(fixture.driving.clone());
+            let mut arena = PhysxPhysicsArena::new(MoveConfig::default()).unwrap();
+            WorldDocumentArena::add_static_cuboid(&mut arena, Vector3::new(0.0,-1.0,0.0),
+                [0.0,0.0,0.0,1.0],Vector3::new(1000.0,1.0,1000.0),1);
+            let spawn = arena.spawn_player(10);
+            arena.spawn_vehicle_asset(7,0,Vector3::new(spawn.x as f32,geometry.origin_height+0.15,spawn.z as f32),
+                [0.0,0.0,0.0,1.0],Some(&geometry)).unwrap();
+            arena.enter_vehicle(10,7);
+            assert_eq!(arena.player_vehicle_id(10),Some(7));
+            let mut top_speed=0.0f32;
+            for tick in 0..1200 {
+                let mut input=InputCmd::default();
+                if tick>=120 { input.move_y=127; }
+                if (600..900).contains(&tick) {input.move_x=127;}
+                if tick>=900 {input.buttons=BTN_JUMP;}
+                arena.simulate_player_tick(10,&input,1.0/60.0);
+                arena.begin_dynamics(); arena.finish_dynamics();
+                let car=arena.current_vehicle_snapshots()[0];
+                let (_,speed,up)=vehicle_heading(&car);
+                assert!(speed.is_finite() && car.pose.position.y.is_finite(),"{} nonfinite at {tick}",fixture.name);
+                assert!(up>0.6,"{} rolled during flat-ground steering at {tick}: {up}",fixture.name);
+                assert!(car.pose.position.y>0.0,"{} fell through road",fixture.name);
+                if tick<900 {top_speed=top_speed.max(speed);}
+                for jounce in car.wheel_jounce {
+                    assert!(jounce>=-0.001 && jounce<=geometry.suspension_travel+0.001);
+                }
+            }
+            let car=arena.current_vehicle_snapshots()[0];
+            let speed=vehicle_heading(&car).1;
+            eprintln!("{}: {:.2} m/s peak -> {:.3} m/s handbrake",fixture.name,top_speed,speed);
+            assert!(top_speed>4.0,"{} failed to accelerate",fixture.name);
+            assert!(top_speed<fixture.driving.top_speed+2.0,"{} exceeded speed setup",fixture.name);
+            assert!(speed.abs()<0.5,"{} failed to brake: {speed}",fixture.name);
+        }
+    }
+
     #[test]
     fn handbrake_stops_vehicle_even_with_accelerator_held() {
         let _guard = gpu_test_guard();
@@ -2717,7 +2985,16 @@ mod tests {
             let vertices: Vec<_> = [-x, x].into_iter().flat_map(|x|
                 [-y, y].into_iter().flat_map(move |y| [-z, z].into_iter().map(move |z| [x, y, z]))).collect();
             let travel = definition.suspension_travel_m;
+            let box_mass = crate::vehicle_assets::AssetMassProperties {
+                mass: mass as f64, center: [0.0; 3],
+                inertia: [
+                    [(mass * (y*y + z*z) / 3.0) as f64, 0.0, 0.0],
+                    [0.0, (mass * (x*x + z*z) / 3.0) as f64, 0.0],
+                    [0.0, 0.0, (mass * (x*x + y*y) / 3.0) as f64],
+                ],
+            };
             let prepared = crate::vehicle_assets::PreparedGeometry {
+                driving: None,
                 origin_height: definition.wheel_radius_m + 0.25,
                 wheel_centers: definition.wheel_offsets,
                 suspension_travel: travel,
@@ -2726,9 +3003,12 @@ mod tests {
                 wheel_half_width: 0.15,
                 max_steer_radians: VEHICLE_MAX_STEER_RAD,
                 mass,
+                mass_properties: box_mass.clone(), bonds: Vec::new(), fracture_layout: None,
                 bounds: crate::vehicle_assets::AssetBounds { min: [-x, -y, -z], max: [x, y, z] },
                 parts: vec![crate::vehicle_assets::AssetPart {
                     id: "test-chassis".into(), motion: None, position: [0.0; 3],
+                    visual_ids: vec!["test-chassis".into()], mass: mass as f64,
+                    volume: (8.0*x*y*z) as f64, mass_properties: box_mass,
                     shapes: vec![crate::vehicle_assets::AssetShape { position: [0.0; 3], vertices }],
                 }],
             };

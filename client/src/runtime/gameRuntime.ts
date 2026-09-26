@@ -1,3 +1,6 @@
+import { recordEvent } from '../netlab/recorder';
+import { ingestAudioContacts, resetAudioContacts } from '../audio/contactStream';
+import {VehiclePresentationPredictor, extrapolateVehicle, vehicleProxy, type VehicleProxy} from '../physics/vehiclePresentation';
 import type { CityCameraDropCmd } from '../net/protocol';
 import { resolveMultiplayerBackend } from '../app/runtimeConfig';
 import { setActiveSession, setConnectPhase, setMatchStats } from '../app/connectPhase';
@@ -47,6 +50,7 @@ import {
   PKT_CITY_MANIFEST_REQUEST,
   PKT_MATCH_STATS,
   PKT_METEOR_LAUNCHED,
+  PKT_AUDIO_CONTACTS,
 } from '../net/sharedConstants';
 import { decodeCityManifestPayload, fetchCityManifest } from '../city/manifest';
 import { decodeMeteorLaunched, registerMeteorFlight } from '../vfx/meteorFlights';
@@ -146,6 +150,7 @@ export interface GameRuntimeClient {
   resetInputState(): void;
   /** Destructible-city client, when the match is a city world (server-authoritative). */
   getCityClient?(): CityClient | null;
+  isVehiclePredictionFrozen?(): boolean;
   submitInput(frameDeltaSec: number, input: SemanticInputState): void;
   peekNextInputSeq(): number;
   supportsBlockEditing(): boolean;
@@ -1061,6 +1066,9 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
     CLIENT_MAX_CATCHUP_STEPS,
   );
   private readonly thinPredictor = new ThinAuthoritativePredictor();
+  private readonly vehicleProxies = new Map<number,{key:string;proxy:VehicleProxy}>();
+  private readonly thinVehiclePredictor = new VehiclePresentationPredictor((p,q,d,h,r)=>
+    this.cosmeticWorld?.sweepVehicleStatic(p,q,d,h,r) ?? null, event=>{ const {type,...data}=event;recordEvent(type,data); });
   private thinAuthoritative = false;
   private thinPosition: [number, number, number] | null = null;
   private thinVoxelWorld: ClientVoxelWorld | null = null;
@@ -1303,8 +1311,15 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
             this.reconcile(ackInputSeq, state);
           }
         },
-        onLocalVehicleSnapshot: (vehicleState, ackInputSeq) => {
-          this.reconcileVehicle(vehicleState, ackInputSeq);
+        onLocalVehicleSnapshot: (vehicleState, ackInputSeq, serverTimeUs) => {
+          if(this.thinAuthoritative) {
+            const meters=this.client?.vehicles.get(vehicleState.id);
+            if(meters) this.thinVehiclePredictor.observe(meters.id, {
+              serverTimeUs,position:meters.position,quaternion:meters.quaternion,
+              linearVelocity:meters.linearVelocity,angularVelocity:meters.angularVelocity,
+              wheelData:meters.wheelData,driverPlayerId:meters.driverId,flags:meters.flags,
+            },ackInputSeq,this.getVehicleProxy(meters),performance.now());
+          } else this.reconcileVehicle(vehicleState, ackInputSeq);
         },
         onWorldPacket: (packet) => {
           this.applyWorldPacket(packet);
@@ -1327,6 +1342,10 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
         onRawPacket: (bytes, channel) => cityTapeRecorder.pushRaw(bytes, channel),
         onRttSample: (rttMs) => cityTapeRecorder.noteRtt(rttMs),
         onCityPacket: (bytes) => {
+          if (bytes[0] === PKT_AUDIO_CONTACTS) {
+            try { ingestAudioContacts(bytes); } catch { /* Optional effect packets never interrupt gameplay. */ }
+            return;
+          }
           if (bytes.length > 1 && bytes[0] === PKT_METEOR_LAUNCHED) {
             // A launch, not geometry: the layer that draws meteors reads the
             // store directly, the way the dust reads its shots.
@@ -1376,6 +1395,11 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
       });
 
       this.client = client;
+      if(this.thinAuthoritative) client.vehicleInterpolator.extrapolate=(id,sample,seconds)=>{
+        const state=client.vehicles.get(id);
+        return state?extrapolateVehicle(sample,seconds,this.getVehicleProxy(state),
+          (p,q,d,h,r)=>this.cosmeticWorld?.sweepVehicleStatic(p,q,d,h,r)??null):sample;
+      };
       this.state.remoteInterpolator = client.interpolator;
       this.state.serverClock = client.serverClock;
       this.state.remotePlayers = client.remotePlayers;
@@ -1439,6 +1463,7 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
   }
 
   disconnect(): void {
+    resetAudioContacts();
     hotspotWatch.disarm();
     cityTapeRecorder.describeSession(null);
     this.client?.disconnect();
@@ -1456,6 +1481,8 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
     this.thinAuthoritative = false;
     this.thinPosition = null;
     this.thinPredictor.reset();
+    this.thinVehiclePredictor.reset();
+    this.vehicleProxies.clear();
     this.authoritativeInputBundler.reset();
     this.thinVoxelWorld = null;
   }
@@ -1467,8 +1494,14 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
   submitInput(frameDeltaSec: number, input: SemanticInputState): void {
     if (this.thinAuthoritative) {
       const cmds = this.authoritativeInputBundler.produce(frameDeltaSec, input);
+      const driven=this.client?.getLocalDrivenVehicleId();
+      if(driven!=null) {
+        this.thinVehiclePredictor.record(driven,cmds);
+        this.thinVehiclePredictor.update(frameDeltaSec,performance.now());
+      } else if(this.thinVehiclePredictor.vehicleId!==null) this.thinVehiclePredictor.reset();
       if (cmds.length > 0) {
-        this.sendInputs(cmds);
+        const redundant=driven!=null?this.thinVehiclePredictor.resendWindow():[];
+        this.sendInputs(redundant.length?redundant:cmds);
       }
       const client = this.client;
       if (client && client.playerId !== 0) {
@@ -2022,6 +2055,16 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
     if (!prediction) {
       const stats = defaultDebugStats();
       if (this.thinAuthoritative) {
+        const vehicle=this.thinVehiclePredictor.debug(performance.now());
+        stats.vehiclePendingInputs=vehicle.pending;
+        stats.vehicleAckSeq=vehicle.ack;
+        stats.vehicleLatestLocalSeq=vehicle.latestSeq;
+        stats.vehicleAckBacklogMs=vehicle.pending*FIXED_DT*1000;
+        stats.vehicleResendWindow=Math.min(3,vehicle.pending);
+        stats.vehicleCorrectionMagnitude=vehicle.correction;
+        stats.vehicleReplayErrorM=vehicle.replayError;
+        stats.vehicleCorrectionAgeMs=vehicle.snapshotAge;
+        stats.physicsStepMs=vehicle.replayMs;
         stats.playerCorrectionMagnitude = THIN_PRESENTATION_PREDICTION_ENABLED
           ? this.thinPredictor.correctionMagnitude()
           : 0;
@@ -2210,15 +2253,28 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
     this.vehiclePrediction?.reconcile(vehicleState, ackInputSeq);
   }
 
+  isVehiclePredictionFrozen(): boolean { return this.thinVehiclePredictor.debug(performance.now()).stalled; }
+
+  private getVehicleProxy(state:VehicleStateMeters):VehicleProxy {
+    const key=state.customVehicle?.assetHash ?? String(state.vehicleType);
+    const existing=this.vehicleProxies.get(state.id);
+    if(existing?.key===key)return existing.proxy;
+    const proxy=vehicleProxy(state);
+    this.vehicleProxies.set(state.id,{key,proxy});
+    // Remote entities can stream in/out indefinitely during a city session.
+    if(this.vehicleProxies.size>256) for(const id of this.vehicleProxies.keys()) {
+      if(!this.client?.vehicles.has(id))this.vehicleProxies.delete(id);
+    }
+    return proxy;
+  }
+
   getVehiclePose(): { position: [number, number, number]; quaternion: [number, number, number, number] } | null {
     if (this.thinAuthoritative) {
       const vehicleId = this.client?.getLocalDrivenVehicleId();
       if (vehicleId == null || !this.client) return null;
-      // The driver's own car is drawn at the dynamic-body delay (16 ms and
-      // extrapolated on its velocities), like the rubble, not at the 100 ms
-      // the other players sit at: the steering wheel is in this player's
-      // hands and every millisecond between the key and the car turning on
-      // screen reads as a heavy car. Other cars stay on the long delay.
+      const predicted=this.thinVehiclePredictor.vehicleId===vehicleId?this.thinVehiclePredictor.pose(this.authoritativeInputBundler.remainderSec()):null;
+      if(predicted){this.thinVehiclePredictor.presented(performance.now());return predicted;}
+      // Before the first owning snapshot, use bounded collision-aware extrapolation.
       const renderTimeUs = this.client.getDynamicBodyRenderTimeUs();
       const sample = this.client.sampleRemoteVehicle(vehicleId, renderTimeUs);
       return sample

@@ -9,22 +9,31 @@ type R<T> = Result<T, Box<dyn std::error::Error>>;
 #[derive(Default)]
 struct ContactSettings { actors:u32, position_min:u32, position_max:u32, velocity_min:u32, velocity_max:u32, shapes:u32, contact_min:f32, contact_max:f32 }
 extern "C" {fn town_kit_contact_settings(scene:usize,position:u32,velocity:u32,contact_offset:f32,result:*mut ContactSettings)->u32;}
+extern "C" {fn town_kit_round_pose(scene:usize,result:*mut f32)->u32;}
 
 fn f(v: &Value, k: &str) -> f32 { v[k].as_f64().unwrap_or(0.0) as f32 }
 fn vec(v: &Value) -> Vec3 { Vec3::new(f(v,"x"), f(v,"y"), f(v,"z")) }
 fn av(v: &Value) -> Vec3 { Vec3::new(v[0].as_f64().unwrap() as f32,v[1].as_f64().unwrap() as f32,v[2].as_f64().unwrap() as f32) }
 fn arr(v: Vec3) -> [f32;3] { [v.x,v.y,v.z] }
 fn flag(name:&str)->bool { std::env::var(name).map(|v|v!="0").unwrap_or(true) }
+fn stress_tolerance()->f32 {std::env::var("TOWN_KIT_STRESS_TOLERANCE").ok().and_then(|v|v.parse::<f32>().ok()).filter(|v|v.is_finite()&&*v>0.).unwrap_or(1e-5)}
 fn norm(v: Vec3) -> f32 { (v.x*v.x+v.y*v.y+v.z*v.z).sqrt() }
 
-struct Recorder { frames: Vec<Value>, last: Vec<[f32;7]>, count: usize, entities:Vec<u32>, bodies:HashMap<u32,Value> }
+struct Recorder { cannon:bool, frames: Vec<Value>, last: Vec<[f32;7]>, count: usize, entities:Vec<u32>, bodies:HashMap<u32,Value>, body_poses:HashMap<u32,[f32;7]> }
 impl Recorder {
- fn new(count: usize) -> Self { Self { frames:vec![],last:vec![[f32::INFINITY;7];count],count,entities:vec![u32::MAX;count],bodies:HashMap::new() } }
+ fn new(count: usize) -> Self { Self { cannon:false, frames:vec![],last:vec![[f32::INFINITY;7];count],count,entities:vec![u32::MAX;count],bodies:HashMap::new(),body_poses:HashMap::new() } }
  fn capture(&mut self, world: &World, tick: u32, broken: &[u32]) -> R<()> {
   let bodies=world.native_chunk_body_snapshots()?;
   let rotations:HashMap<_,_>=bodies.iter().map(|b|(b.entity_id,[b.rotation.x,b.rotation.y,b.rotation.z,b.rotation.w])).collect();
+  let body_poses:HashMap<_,_>=bodies.iter().map(|b|(b.entity_id,[b.position.x,b.position.y,b.position.z,b.rotation.x,b.rotation.y,b.rotation.z,b.rotation.w])).collect();
+  // chunk_aim scans the native chunk ledger. Calling it for every stationary
+  // building at every frame made town recording quadratic in chunk count.
+  // A fracture or body-set change invalidates ownership and forces a full scan.
+  let refresh_all=!broken.is_empty()||body_poses.len()!=self.body_poses.len()||body_poses.keys().any(|id|!self.body_poses.contains_key(id));
+  let moved:HashSet<_>=body_poses.iter().filter(|(id,p)|self.body_poses.get(id)!=Some(p)).map(|(id,_)|*id).collect();
   let mut changed=vec![];
   for i in 0..self.count {
+   if !refresh_all&&self.entities[i]!=u32::MAX&&!moved.contains(&self.entities[i]) {continue;}
    let aim=world.native_chunk_aim(0,i as u32)?;
    if !aim.found { return Err(format!("missing chunk {i} in recording").into()); }
    let q=rotations.get(&aim.entity_id).copied().unwrap_or([0.,0.,0.,1.]);
@@ -38,7 +47,11 @@ impl Recorder {
   let changed_bodies:Vec<_>=current.iter().filter(|(id,v)|self.bodies.get(id)!=Some(v)).map(|(_,v)|v.clone()).collect();
   let removed:Vec<_>=self.bodies.keys().filter(|id|!current.contains_key(id)).copied().collect();
   self.frames.push(json!({"time":tick as f32/60.,"poses":changed,"broken":broken,"bodies":changed_bodies,"removedBodies":removed}));
+  if self.cannon {let mut round=[0f32;4];
+  let found=unsafe{town_kit_round_pose(world.scene_ptr()?,round.as_mut_ptr())}!=0;
+  self.frames.last_mut().unwrap()["round"]=if found{json!(round)}else{Value::Null};}
   self.bodies=current;
+  self.body_poses=body_poses;
   Ok(())
  }
 }
@@ -91,7 +104,7 @@ fn run(pack:&Value, meta:&Value, mode:&str, report:&mut Value, rec:&mut Recorder
  if unsafe{town_kit_contact_settings(world.scene_ptr()?,position,velocity,contact_offset,&mut contact)}==0{return Err("contact settings unavailable".into());}
  report["contactSolver"]=json!({"requested":requested,"actors":contact.actors,"positionIterations":[contact.position_min,contact.position_max],"velocityIterations":[contact.velocity_min,contact.velocity_max],"configuredBeforeFirstStep":position>0||contact_offset>0.,"shapes":contact.shapes,"contactOffsetMetres":[contact.contact_min,contact.contact_max],"restOffsetsChanged":false,"sleepSettingsChanged":false});
  world.step()?;
- let native_config=|iterations| NativeConfig {max_iterations:iterations,tolerance:1e-5,warm_start:true,damage_rate:2.,bend_gain_max:3.,fibre_bending:true,reserved_contact_pairs:(nodes.len()*6).max(4096) as u32,preserve_unchanged_contact_pairs:flag("TOWN_KIT_PRESERVE_CONTACTS"),gpu_island_repair:flag("TOWN_KIT_GPU_ISLAND_REPAIR"),verdict_sample_ticks:1};
+ let native_config=|iterations| NativeConfig {max_iterations:iterations,tolerance:stress_tolerance(),warm_start:true,damage_rate:2.,bend_gain_max:3.,fibre_bending:true,reserved_contact_pairs:(nodes.len()*6).max(4096) as u32,preserve_unchanged_contact_pairs:flag("TOWN_KIT_PRESERVE_CONTACTS"),gpu_island_repair:flag("TOWN_KIT_GPU_ISLAND_REPAIR"),verdict_sample_ticks:1};
  world.native_configure(native_config(std::env::var("TOWN_KIT_ITERATIONS").ok().and_then(|x|x.parse().ok()).unwrap_or(16)))?;
  if std::env::var_os("TOWN_KIT_WARM_IN").is_some() || std::env::var_os("TOWN_KIT_WARM_OUT").is_some() {
   let path=world.native_warm_runtime_path()?;
@@ -132,10 +145,11 @@ fn run(pack:&Value, meta:&Value, mode:&str, report:&mut Value, rec:&mut Recorder
   if tick==1||tick%120==0 {rec.capture(&world,tick,&[])?;}
   if tick%300==0 {eprintln!("{mode}: tick={tick} awake={awake} converged={} idle={idle}/1800",st.converged);}
   world.native_take_island_events()?;world.native_take_chunk_migrations()?;
-  if idle>=1800 {break;}
+  if idle>=if mode=="cannon" {60}else{1800} {break;}
   if tick>=5400 {return Err("failed to reach and retain intact equilibrium within 90 seconds".into());}
  }
- report["stability"]=json!({"passed":true,"gravity":9.81,"idleSeconds":30,"equilibriumTick":tick-1800,"brokenBonds":0,"crushedChunks":0});
+ let idle_ticks=if mode=="cannon" {60}else{1800};
+ report["stability"]=json!({"passed":true,"gravity":9.81,"idleSeconds":idle_ticks/60,"equilibriumTick":tick-idle_ticks,"brokenBonds":0,"crushedChunks":0});
  if let Ok(file)=std::env::var("TOWN_KIT_WARM_OUT") {
   let values=world.native_export_warm_start()?;
   if values.len()!=bonds.len()*6||values.iter().any(|v|!v.is_finite()){return Err("invalid native warm export".into());}
@@ -179,42 +193,67 @@ fn run(pack:&Value, meta:&Value, mode:&str, report:&mut Value, rec:&mut Recorder
  } else if mode!="stability" {
   let shots=meta["shots"][mode].as_array().ok_or("unknown destruction scenario")?;
   let last_shot=shots.iter().map(|s|s["tick"].as_u64().unwrap_or(0) as u32).max().unwrap_or(0);
-  let base_tick=tick;let mut pending=vec![];let mut events=vec![];let mut settled=0;let mut unconverged=0;let mut peak_utilisation=0f32;let mut status_samples=vec![];
-  for frame in 0..3600u32 {
+  let base_tick=tick;let mut pending=vec![];let mut events=vec![];let mut settled=0;let mut unconverged=0;let mut peak_utilisation=0f32;let mut status_samples=vec![];let mut fractures=vec![];let mut peak_rows=HashMap::<u32,f32>::new();
+  // A town tour contains spaced, individually aimed cannon shots. Retain the
+  // post-impact observation window after the last one rather than silently
+  // dropping shots beyond the single-asset 20-second limit.
+  if last_shot>35000 {return Err("cannon tour exceeds the 10-minute review budget".into());}
+  for frame in 0..if mode=="cannon" {1200u32.max(last_shot+900)}else{3600u32} {
    for shot in shots {
     if shot["tick"].as_u64().unwrap_or(0) as u32!=frame {continue;}
-    let p=av(&shot["from"]);let to=av(&shot["to"]);let d=Vec3::new(to.x-p.x,to.y-p.y,to.z-p.z);let len=norm(d);
-    let hit=world.native_raycast_chunk(p,Vec3::new(d.x/len,d.y/len,d.z/len),len+2.)?;
+    let p=av(&shot["from"]);let to=av(&shot["to"]);let d=if mode=="cannon" {av(&shot["direction"])}else{Vec3::new(to.x-p.x,to.y-p.y,to.z-p.z)};let len=norm(d);
+    let hit=world.native_raycast_chunk(p,Vec3::new(d.x/len,d.y/len,d.z/len),norm(Vec3::new(to.x-p.x,to.y-p.y,to.z-p.z))+2.)?;
     if report["shots"].is_null(){report["shots"]=json!([]);}
     report["shots"].as_array_mut().unwrap().push(json!({"tick":tick,"input":shot,"rayHit":hit.hit,"chunk":hit.chunk_id,"distance":hit.distance}));
-    world.native_fire_round(RoundDesc {position:p,direction:Vec3::new(d.x/len,d.y/len,d.z/len),momentum_ns:shot["momentum"].as_f64().unwrap_or(500.) as f32,radius:shot["radius"].as_f64().unwrap_or(0.08) as f32,speed:shot["speed"].as_f64().unwrap_or(8.) as f32,ttl_ticks:180})?;
+    world.native_fire_round(RoundDesc {position:p,direction:Vec3::new(d.x/len,d.y/len,d.z/len),momentum_ns:shot["momentum"].as_f64().unwrap_or(500.) as f32,radius:shot["radius"].as_f64().unwrap_or(0.08) as f32,speed:shot["speed"].as_f64().unwrap_or(8.) as f32,ttl_ticks:if mode=="cannon" {1260}else{180}})?;
+    if mode=="cannon" {rec.capture(&world,tick,&[])?;}
    }
    tick+=1;if let Err(e)=world.step(){report["nativeFailure"]=json!(format!("{:?}",world.native_last_status()));return Err(e.into());}let st=world.native_tick()?;
    report["lastStatus"]=json!({"tick":tick,"frame":st.frame,"error":st.error,"converged":st.converged,"observed":st.observed,"degraded":st.degraded});
    if st.error!=0||!st.observed||st.degraded||st.missed_frames!=0 {return Err(format!("native destruction step failed: {}",report["lastStatus"]).into());}
    if !st.converged {unconverged+=1;}
-   if frame<120 {for row in world.native_bond_stress_rows(0)? {if row.utilisation.is_finite(){peak_utilisation=peak_utilisation.max(row.utilisation);}}}
+   if frame<120 {for row in world.native_bond_stress_rows(0)? {if row.utilisation.is_finite(){peak_utilisation=peak_utilisation.max(row.utilisation);let peak=peak_rows.entry(row.bond_index).or_insert(0.);*peak=peak.max(row.utilisation);}}}
    let awake=world.native_chunk_body_snapshots()?.iter().filter(|b|!b.kinematic&&!b.sleeping).count();
    report["awakeBodies"]=json!(awake);
    if st.converged&&awake==0 {settled+=1;}else{settled=0;}
-   for b in world.native_take_broken_bonds()? {all_broken.insert(b.bond_id);pending.push(b.bond_id);}
+   let broken=world.native_take_broken_bonds()?;
+   if !broken.is_empty(){fractures.push(json!({"tick":tick,"bonds":broken.iter().map(|b|b.bond_id).collect::<Vec<_>>(),"solverBrokenBonds":st.broken_bonds,"postCorrectionBrokenBonds":st.post_correction_broken_bonds,"crushedChunks":st.crushed_chunks}));}
+   for b in broken {all_broken.insert(b.bond_id);pending.push(b.bond_id);}
    for e in world.native_take_island_events()? {events.push(json!({"tick":tick,"island":e.island_id,"kind":e.kind,"chunks":e.chunk_ids}));}
    world.native_take_chunk_migrations()?;
    if frame%60==0 {status_samples.push(json!({"second":frame/60,"converged":st.converged,"iterations":st.iterations,"awakeBodies":awake,"brokenBonds":all_broken.len()}));}
-   if frame%(if frame<900 {6}else{30})==0 {rec.capture(&world,tick,&pending)?;pending.clear();}
+   if frame%600==0 {eprintln!("{mode}: shot timeline {frame}/{} ticks, {} broken bonds",last_shot+900,all_broken.len());}
+   let film_stride=if meta["cannonTour"].is_object(){2}else{1};
+   if frame%(if mode=="cannon" {film_stride}else if frame<900 {if meta["kind"]=="tree" {1}else{6}}else{30})==0 {rec.capture(&world,tick,&pending)?;pending.clear();}
    if frame>=last_shot+899&&settled>=60 {rec.capture(&world,tick,&pending)?;break;}
   }
   rec.capture(&world,tick,&pending)?;
   report["nativeMappingValid"]=json!(world.native_validate_mappings()?);
   report["destruction"]=json!({"scenario":mode,"brokenBonds":all_broken.len(),"unconvergedTransientTicks":unconverged,"restConvergedTicks":settled,"peakUtilisation":peak_utilisation,"seconds":(tick-base_tick) as f32/60.,"statusSamples":status_samples,"events":events});
-  if all_broken.is_empty(){return Err("projectile scenario broke nothing".into());}
+  report["destruction"]["fractures"]=json!(fractures);
+  report["destruction"]["peakBondUtilisation"]=json!(peak_rows);
+  if meta["kind"]=="tree" {
+   let mut types=HashMap::<String,usize>::new();
+   for &id in &all_broken {let b=&bs[id as usize];let a=b["node0"].as_u64().unwrap() as usize;let c=b["node1"].as_u64().unwrap() as usize;
+    let kind=if s["nodeTypes"][a]=="foundation"||s["nodeTypes"][c]=="foundation" {"root"}else if s["nodeTypes"][a]=="trunk"&&s["nodeTypes"][c]=="trunk" {"trunk"}else{"branch"};
+    *types.entry(kind.into()).or_default()+=1;
+   }
+   report["destruction"]["treeFractures"]=json!(types);
+   if mode!="cannon" && !meta["fractureReview"].is_null(){
+    if types.get("root").copied().unwrap_or(0)>0 {return Err("tree uprooted instead of fracturing above its stump".into());}
+    if mode=="furniture"&&types.get("trunk").copied().unwrap_or(0)>0 {return Err("local branch impact also fractured the trunk".into());}
+    let expected=if mode=="collapse" {"trunk"}else{"branch"};
+    if types.get(expected).copied().unwrap_or(0)==0{return Err(format!("tree review did not fracture a {expected} bond").into());}
+   }
+  }
+  if mode!="cannon" && all_broken.is_empty(){return Err("projectile scenario broke nothing".into());}
   let target_group=meta["shotGroups"][mode].as_str().unwrap_or("building");
   let target_breaks=all_broken.iter().filter(|&&b| {
    ["node0","node1"].iter().any(|key|{let a=bs[b as usize][*key].as_u64().unwrap() as usize;
     s["nodeGroups"][a].as_str().unwrap_or("").contains(target_group)&&(mode!="glazing"||s["nodeTypes"][a]=="glazing")})
   }).count();
   report["destruction"]["targetBrokenBonds"]=json!(target_breaks);
-  if target_breaks==0 {return Err(format!("no damage to intended group {target_group}").into());}
+  if mode!="cannon" && target_breaks==0 {return Err(format!("no damage to intended group {target_group}").into());}
   if let Some(groups)=meta["protectedGroups"].as_array(){
    let protected:HashSet<usize>=s["nodeGroups"].as_array().unwrap().iter().enumerate().filter(|(_,g)|groups.contains(g)).map(|(i,_)|i).collect();
    for &b in &all_broken {if protected.contains(&(bs[b as usize]["node0"].as_u64().unwrap() as usize))||protected.contains(&(bs[b as usize]["node1"].as_u64().unwrap() as usize)){return Err("damage crossed into an independent protected instance".into());}}
@@ -281,8 +320,10 @@ fn run(pack:&Value, meta:&Value, mode:&str, report:&mut Value, rec:&mut Recorder
    // Single-storey assets have roof collapse, but no upper-floor furnishings.
    // Keep the same drop and convergence requirements; never accept an empty set.
    let single_storey=meta["options"]["storeys"].as_u64()==Some(1);
+   let selected=meta["collapseNodes"].as_array();
    let mut drops=vec![];
    for (i,n) in nodes.iter().enumerate().filter(|(i,n)|{
+    if let Some(ids)=selected { return n.mass>0. && ids.iter().any(|id|id.as_u64()==Some(*i as u64)); }
     let role=s["nodeTypes"][*i].as_str().unwrap_or("");
     let elevated=if single_storey {n.centroid.y>2.8 && matches!(role,"roof"|"ceiling"|"gable"|"portico-roof")} else {n.centroid.y>5.};
     elevated && s["nodeGroups"][*i].as_str().unwrap_or("")=="building"
@@ -301,7 +342,7 @@ fn run(pack:&Value, meta:&Value, mode:&str, report:&mut Value, rec:&mut Recorder
    if !single_storey && meta["options"]["furnished"]==true && furnishing_falls<4 {return Err("upper furnishings did not fall with destroyed floors".into());}
    if drops.is_empty() || fallen<(drops.len()+9)/10 {return Err("support-loss scenario did not produce significant elevated-construction collapse".into());}
   }
-  if settled<60 {return Err("damaged assembly did not reach observed, converged physical rest within 60 seconds".into());}
+  if mode!="cannon" && settled<60 {return Err("damaged assembly did not reach observed, converged physical rest within 60 seconds".into());}
  }
  if !world.native_validate_mappings()? {return Err("native chunk ownership mismatch".into());}
  timings.sort_by(|a,b|a.total_cmp(b));
@@ -314,9 +355,10 @@ fn main() -> R<()> {
  let bytes=fs::read(&args[1])?;let pack:Value=serde_json::from_slice(&bytes)?;
  let meta_path=Path::new(&args[1]).with_extension("meta.json");let meta_bytes=fs::read(meta_path)?;let meta:Value=serde_json::from_slice(&meta_bytes)?;
  let out=Path::new(&args[3]);fs::create_dir_all(out)?;
- let mut report=json!({"passed":false,"pack":args[1],"mode":args[2],"metadataSha256":format!("{:x}",Sha256::digest(&meta_bytes)),"packSha256":format!("{:x}",Sha256::digest(&bytes)),"chunks":pack["scenario"]["nodes"].as_array().unwrap().len(),"bonds":pack["scenario"]["bonds"].as_array().unwrap().len(),"backend":"physx-2-native-gpu","solver":{"maxIterations":std::env::var("TOWN_KIT_ITERATIONS").unwrap_or("16".into()),"tolerance":1e-5,"warmStart":true,"damageRate":2,"bendGainMax":3,"fibreBending":true,"preserveContactPairs":flag("TOWN_KIT_PRESERVE_CONTACTS"),"gpuIslandRepair":flag("TOWN_KIT_GPU_ISLAND_REPAIR"),"gravity":9.81}});
+ let mut report=json!({"passed":false,"pack":args[1],"mode":args[2],"metadataSha256":format!("{:x}",Sha256::digest(&meta_bytes)),"packSha256":format!("{:x}",Sha256::digest(&bytes)),"chunks":pack["scenario"]["nodes"].as_array().unwrap().len(),"bonds":pack["scenario"]["bonds"].as_array().unwrap().len(),"backend":"physx-2-native-gpu","solver":{"maxIterations":std::env::var("TOWN_KIT_ITERATIONS").unwrap_or("16".into()),"tolerance":stress_tolerance(),"warmStart":true,"damageRate":2,"bendGainMax":3,"fibreBending":true,"preserveContactPairs":flag("TOWN_KIT_PRESERVE_CONTACTS"),"gpuIslandRepair":flag("TOWN_KIT_GPU_ISLAND_REPAIR"),"gravity":9.81}});
  let run_started=Instant::now();
  let mut rec=Recorder::new(pack["scenario"]["nodes"].as_array().unwrap().len());
+ rec.cannon=args[2]=="cannon";
  match run(&pack,&meta,&args[2],&mut report,&mut rec) {Ok(())=>report["passed"]=json!(true),Err(e)=>report["error"]=json!(e.to_string())};
  report["wallTimeSeconds"]=json!(run_started.elapsed().as_secs_f64());
  // Stream lossless output instead of requiring a second large uncompressed

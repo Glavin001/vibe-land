@@ -1,3 +1,4 @@
+import { recordVehicleFrame } from '../netlab/vehicleTelemetry';
 import { useRef, useEffect, useMemo, useState, type MutableRefObject, type ReactNode, type RefObject } from 'react';
 
 import {
@@ -6,6 +7,7 @@ import {
 } from '../app/renderQuality';
 import { CityEnvironment, resolveFogColor } from './CityEnvironment';
 import { CityGrass } from './CityGrass';
+import { isTownKitPage } from '../city/townKitState';
 import { CITY_WORLD_DOCUMENT } from '../world/cityWorld';
 import { applyCapturePose } from './captureCamera';
 import { advanceAerialPose, type AerialPose } from './aerialFlight';
@@ -84,7 +86,7 @@ import type { BotIntent, ObservedPlayer, Vec3Tuple } from '../bots/types';
 import { anchorForBot, type LoadTestScenario, type PlayBenchmarkDriverProfile } from '../loadtest/scenario';
 import type { PracticeBotRuntime, PracticeBotShotVisual } from '../bots';
 import { BotsDebugOverlay } from './BotsDebugOverlay';
-import { Portals } from './Portals';
+// import { Portals } from './Portals';
 import { WorldTerrain } from './WorldTerrain';
 import { WorldStaticProps } from './WorldStaticProps';
 import {
@@ -111,6 +113,9 @@ import { CityChunksLayer } from './CityChunksLayer';
 import { remoteVehicleDrawPose } from './netEntityPoses';
 import { DustLayer } from '../vfx/DustLayer';
 import { MeteorLayer } from '../vfx/MeteorLayer';
+import { GameAudioLayer } from '../audio/GameAudioLayer';
+import { destructionAudio } from '../audio/engine';
+import { soundFromShot } from '../audio/gameEvents';
 import {
   BatteriesRenderer,
   DynamicBodiesRenderer,
@@ -1098,6 +1103,8 @@ export function GameWorld({
     if (!client) return;
     if (packet.shooterPlayerId === client.playerId) return;
     const nowMs = performance.now();
+    const sound=soundFromShot(packet,nowMs);
+    if(sound)destructionAudio().emit(sound);
     applyServerShotFired(
       packet,
       activeShotTracesRef.current,
@@ -1415,6 +1422,9 @@ export function GameWorld({
   useEffect(() => {
     if (!practiceBots || !practiceMode || !ready) return;
     return practiceBots.onShotVisual((shot: PracticeBotShotVisual) => {
+      const audioTime=performance.now();
+      destructionAudio().emit({id:`bot-shot:${shot.shooterId}:${audioTime}`,kind:'shot',material:'metal',
+        position:shot.origin,intensity:.3,size:.1,seed:Math.floor(audioTime),atMs:audioTime});
       pushActiveShotTrace(activeShotTracesRef.current, {
         id: nextShotTraceIdRef.current++,
         shooterId: shot.shooterId,
@@ -2173,6 +2183,9 @@ export function GameWorld({
         // the dust to read an entry from, because the rock arrives from the
         // sky and its impact makes its own dust the way any falling body does.
         if (mode !== 'meteor') {
+          destructionAudio().emit({id:`local-shot:${client.playerId}:${now}`,kind:'shot',material:'metal',
+            position:[camera.position.x,camera.position.y,camera.position.z],
+            intensity:mode==='cannonball'?.85:.3,size:mode==='cannonball'?1:.1,seed:Math.floor(now),atMs:now,protected:true});
           pushActiveShotTrace(
             activeShotTracesRef.current,
             createLocalShotTrace(
@@ -2886,6 +2899,15 @@ export function GameWorld({
         },
         (id, vs, vehicleMeshGroup, placed) => {
           const isLocalVehicle = isDrivingNow && localVehiclePos !== null && drivenVehicleId === id;
+          if(isRecording() && vs.driverId!==0) {
+            const ageMs=client.getVehicleObservedAgeMs(id);
+            const delayMs=Math.max(0,(client.serverClock.serverNowUs()-renderTimeUs)/1000);
+            recordVehicleFrame({assetHash:vs.customVehicle?.assetHash,configuration:vs.customVehicle?.configuration,vehicleId:id,role:isLocalVehicle?'driver':'observer',now,
+              dtMs:delta*1000,position:placed.position,quaternion:placed.quaternion,
+              speed:Math.hypot(...vs.linearVelocity),delayMs:isLocalVehicle?0:delayMs,
+              extrapolated:ageMs!==null && ageMs>delayMs,
+              frozen:isLocalVehicle && (client.isVehiclePredictionFrozen?.() ?? false)});
+          }
           updateVehicleSupportDebug(
             vehicleMeshGroup,
             isLocalVehicle ? localVehicleDebug : null,
@@ -2924,7 +2946,9 @@ export function GameWorld({
       />
       <WorldTerrain world={worldDocument} grassCover={worldDocument === CITY_WORLD_DOCUMENT} />
       <WorldStaticProps world={worldDocument} />
+      {/* Temporarily disabled to prevent accidental redirects to external games.
       <Portals runtimeRef={runtimeRef} />
+      */}
 
       {renderBlocks.map((block) => (
         <WorldBlock
@@ -2950,7 +2974,7 @@ export function GameWorld({
       {/* Destructible city chunks (instanced; only active in city-* matches) */}
       <CityChunksLayer getCityClient={() => runtimeRef.current?.getCityClient?.() ?? null} />
       <CityGrass
-        getSharedLayoutUrl={() => runtimeRef.current?.grassLayoutUrl ?? null}
+        getSharedLayoutUrl={isTownKitPage() ? undefined : () => runtimeRef.current?.grassLayoutUrl ?? null}
         getCityClient={() => runtimeRef.current?.getCityClient?.() ?? null}
         getInteractionPosition={() => {
           const runtime = runtimeRef.current;
@@ -2962,6 +2986,7 @@ export function GameWorld({
       />
       {/* Destruction dust, fed by the city client's fracture stream */}
       <MeteorLayer getRuntime={() => runtimeRef.current ?? null} />
+      <GameAudioLayer getRuntime={() => runtimeRef.current ?? null} getCityClient={() => runtimeRef.current?.getCityClient?.() ?? null} />
 
       <DustLayer
         getCityClient={() => runtimeRef.current?.getCityClient?.() ?? null}

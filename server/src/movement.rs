@@ -115,6 +115,14 @@ impl PhysicsArena {
         }
     }
 
+    pub fn tune_prepared_vehicle(&mut self,id:u32,tuning:&crate::vehicle_assets::PreparedDriving)->Result<(),String> {
+        match &mut self.backend {
+            #[cfg(feature="physx-gpu")]
+            PhysicsBackend::Physx(arena)=>arena.tune_vehicle(id,tuning),
+            _=>Err("Live tuning requires the PhysX GPU backend".into()),
+        }
+    }
+
     pub fn spawn_prepared_vehicle(&mut self, id:u32, vehicle_type:u8, position:Vector3<f32>, asset:&crate::vehicle_assets::PreparedGeometry) -> Result<(), String> {
         match &mut self.backend {
             #[cfg(feature="physx-gpu")]
@@ -278,6 +286,14 @@ impl PhysicsArena {
             PhysicsBackend::Physx(arena) => {
                 arena.launch_ball(position, direction, radius, mass, speed, ttl_ticks)
             }
+        }
+    }
+
+    pub fn launch_ball_from_muzzle(&mut self, position:Vec3, velocity:Vec3, radius:f32, mass:f32, ttl_ticks:u32) -> Option<u32> {
+        match &mut self.backend {
+            PhysicsBackend::Rapier(_) => None,
+            #[cfg(feature="physx-gpu")]
+            PhysicsBackend::Physx(arena) => arena.launch_ball_from_muzzle(position,velocity,radius,mass,ttl_ticks),
         }
     }
 
@@ -552,6 +568,15 @@ impl PhysicsArena {
             PhysicsBackend::Rapier(_) => None,
             #[cfg(feature = "physx-gpu")]
             PhysicsBackend::Physx(arena) => arena.step_phases(),
+        }
+    }
+
+    pub fn reduce_audio_contacts(&mut self, reducer: &mut crate::contact_audio::ContactAudioReducer, tick: u32) {
+        match &mut self.backend {
+            // Rapier currently supplies the client motion/destruction fallback.
+            PhysicsBackend::Rapier(_) => { let _ = (reducer, tick); }
+            #[cfg(feature = "physx-gpu")]
+            PhysicsBackend::Physx(arena) => arena.reduce_audio_contacts(reducer, tick),
         }
     }
 

@@ -1,8 +1,10 @@
 import path from 'node:path';
+import {existsSync} from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 export const KIT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 export const REPO = path.resolve(KIT, '../..');
-export const AUTHORING = process.env.TOWN_KIT_AUTHORING_ROOT ?? path.resolve(REPO, '../blast-stress-solver-2/blast/blast-stress-solver/structures');
+const defaultAuthoring=path.resolve(REPO,'../blast-stress-solver-2/blast/blast-stress-solver/structures');
+export const AUTHORING = process.env.TOWN_KIT_AUTHORING_ROOT ?? (existsSync(defaultAuthoring)?defaultAuthoring:path.resolve(REPO,'../PhysX/blast/blast-stress-solver/structures'));
 const read = p => import(pathToFileURL(path.join(AUTHORING,p)).href);
 export const geometry = await read('../scripts/export-fractured-city.mjs');
 export const { prismContact, prismVertices } = await read('lib/contact.mjs');

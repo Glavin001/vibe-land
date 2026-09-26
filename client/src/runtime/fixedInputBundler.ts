@@ -16,6 +16,9 @@ export class FixedInputBundler {
     this.nextSeq = nextSeq;
   }
 
+  /** Sub-tick render lead; never advances input sequence or server simulation. */
+  remainderSec(): number { return Math.max(0,Math.min(this.fixedDtSec,this.accumulatorSec)); }
+
   peekNextSeq(): number {
     return this.nextSeq & 0xffff;
   }

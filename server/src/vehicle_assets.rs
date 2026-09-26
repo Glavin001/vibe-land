@@ -11,6 +11,9 @@ use serde_json::Value;
 use std::{path::PathBuf, process::Stdio, sync::OnceLock};
 use tokio::{io::AsyncWriteExt, process::Command, sync::Semaphore};
 
+mod fracture;
+pub use fracture::{AssetBond, AssetMassProperties, FractureLayout};
+
 type ApiError = (StatusCode, String);
 static WORKERS: Semaphore = Semaphore::const_new(1);
 static ASSET_ROOT: OnceLock<PathBuf> = OnceLock::new();
@@ -34,6 +37,37 @@ pub struct PreparedVehicle {
     pub part_count: usize,
     pub shape_count: usize,
     pub bond_count: usize,
+    pub driving: PreparedDriving,
+}
+
+/// Derived by the shared server worker from validated settings and measured mass.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PreparedDriving {
+    pub acceleration: f32,
+    pub drive_torque: f32,
+    pub brake_torque: f32,
+    pub spring_stiffness: f32,
+    pub damping: f32,
+    pub tyre_friction: f32,
+    pub top_speed: f32,
+    pub max_steer_radians: f32,
+    #[serde(default)]
+    pub front_wheel_drive: bool,
+    pub rear_wheel_drive: bool,
+    pub steering_response: f32,
+}
+impl PreparedDriving {
+    pub fn is_valid(&self) -> bool {
+        [self.acceleration, self.drive_torque, self.brake_torque, self.spring_stiffness,
+         self.damping, self.tyre_friction, self.top_speed, self.max_steer_radians, self.steering_response]
+            .iter().all(|v| v.is_finite() && *v > 0.0)
+            && self.acceleration <= 9.0 && (12.0..=36.0).contains(&self.top_speed)
+            && (0.8..=1.6).contains(&self.tyre_friction)
+            && (0.6..=1.4).contains(&self.steering_response)
+            && self.max_steer_radians <= 0.65
+            && !(self.front_wheel_drive && self.rear_wheel_drive)
+    }
 }
 
 #[derive(Deserialize)]
@@ -125,6 +159,7 @@ pub async fn prepare(
     if !valid_hash(&result.asset_hash)
         || !valid_hash(&result.geometry_hash)
         || result.part_count == 0
+        || !result.driving.is_valid()
     {
         return Err((
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -207,6 +242,8 @@ mod tests {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PreparedGeometry {
+    #[serde(skip)]
+    pub driving: Option<PreparedDriving>,
     pub origin_height: f32,
     pub wheel_centers: [[f32; 3]; 4],
     pub suspension_travel: f32,
@@ -215,8 +252,13 @@ pub struct PreparedGeometry {
     pub wheel_half_width: f32,
     pub max_steer_radians: f32,
     pub mass: f32,
+    pub mass_properties: AssetMassProperties,
     pub bounds: AssetBounds,
     pub parts: Vec<AssetPart>,
+    pub bonds: Vec<AssetBond>,
+    /// Derived from validated authored identities, never supplied by the client.
+    #[serde(skip)]
+    pub fracture_layout: Option<FractureLayout>,
 }
 #[derive(Clone, Debug, Deserialize)]
 pub struct AssetBounds {
@@ -224,8 +266,13 @@ pub struct AssetBounds {
     pub max: [f32; 3],
 }
 #[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AssetPart {
     pub id: String,
+    pub visual_ids: Vec<String>,
+    pub mass: f64,
+    pub volume: f64,
+    pub mass_properties: AssetMassProperties,
     pub motion: Option<Value>,
     pub position: [f32; 3],
     pub shapes: Vec<AssetShape>,
@@ -250,8 +297,13 @@ pub async fn prepare_drivable(request: PrepareRequest) -> Result<DrivableVehicle
     }
     let bytes = tokio::fs::read(asset_root().join(&vehicle.geometry_hash).join("metadata.json"))
         .await.map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Prepared assembly is unavailable".into()))?;
-    let geometry = serde_json::from_slice(&bytes)
+    let mut geometry: PreparedGeometry = serde_json::from_slice(&bytes)
         .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Prepared assembly is invalid".into()))?;
+    geometry.fracture_layout = Some(geometry.validate_fracture_layout().map_err(|reason| {
+        tracing::error!(%reason, geometry_hash=%vehicle.geometry_hash, "invalid authored vehicle fracture data");
+        (StatusCode::INTERNAL_SERVER_ERROR, "Vehicle preparation produced inconsistent physical parts. Please report this configuration.".into())
+    })?);
+    geometry.driving = Some(vehicle.driving.clone());
     Ok(DrivableVehicle { vehicle, geometry })
 }
 

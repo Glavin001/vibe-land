@@ -1,3 +1,8 @@
+import { VehicleNetLab } from './netlab/VehicleNetLab';
+import { vehicleLabEnabled } from './netlab/vehicleLab';
+import { AudioSettingsPanel } from './audio/AudioSettingsPanel';
+import {TownKitControls} from './city/TownKitControls';
+import {isTownKitPage} from './city/townKitState';
 import { useState, useCallback, useEffect, useMemo, useRef, type CSSProperties, type ReactNode, useSyncExternalStore } from 'react';
 import { gameModeLabel, isPracticeMode, type GameMode } from './app/gameMode';
 import {
@@ -220,8 +225,9 @@ export function App({
     setAerialMode(active);
   };
   const [inputFamilyMode, setInputFamilyMode] = useState<InputFamilyMode>('auto');
-  const [controlsOverlayExpanded, setControlsOverlayExpanded] = useState(true);
+  const [controlsOverlayExpanded, setControlsOverlayExpanded] = useState(() => !isTownKitPage());
   const [controlsOpen, setControlsOpen] = useState(false);
+  const [soundOpen, setSoundOpen] = useState(false);
   const [localRenderSmoothingEnabled, setLocalRenderSmoothingEnabled] = useState(true);
   const [vehicleSmoothingEnabled, setVehicleSmoothingEnabled] = useState(false);
   const [cosmeticDeathPhysicsEnabled, setCosmeticDeathPhysicsEnabled] = useState(() => {
@@ -941,6 +947,9 @@ export function App({
           <a href={practiceMode ? buildMatchHref('/play', multiplayerMatchId) : '/practice'} style={navLinkStyle}>
             {practiceMode ? 'Multiplayer' : 'Firing range'}
           </a>
+          <button type="button" onClick={() => { document.exitPointerLock(); setSoundOpen(true); }} style={navButtonStyle}>
+            Sound
+          </button>
           <button type="button" onClick={() => setControlsOpen(true)} style={navButtonStyle}>
             Controls
           </button>
@@ -956,6 +965,7 @@ export function App({
         </div>
       )}
       {overlay}
+      {vehicleLabEnabled(window.location.search) && <VehicleNetLab matchId={multiplayerMatchId} />}
       {copyNotice && (
         <div
           style={{
@@ -1077,7 +1087,7 @@ export function App({
         padding: '8px 12px', borderRadius: 8, background: 'rgba(7,11,16,0.78)',
         color: 'white', fontSize: 12, zIndex: 9, pointerEvents: 'none', textAlign: 'center',
       }}>Drag to look · Click to fire · Esc to release controls</div>}
-      {cityWorld && connected && grassSync.state !== 'idle' && <div role="status" style={{
+      {cityWorld && connected && !isTownKitPage() && grassSync.state !== 'idle' && <div role="status" style={{
         position: 'absolute', top: dragPointer ? 98 : 58, left: '50%', transform: 'translateX(-50%)',
         padding: '5px 10px', borderRadius: 6, background: 'rgba(7,11,16,0.78)',
         color: grassSync.state === 'error' ? '#ffdc9c' : '#d9e8c6', fontSize: 11, zIndex: 9, pointerEvents: 'none',
@@ -1092,6 +1102,7 @@ export function App({
         onInputFamilyModeChange={setInputFamilyMode}
       />
       {connected && touchMode && <MobileHUD />}
+      <AudioSettingsPanel open={soundOpen} onClose={() => setSoundOpen(false)} />
       <ControlsSettingsPanel
         open={controlsOpen}
         bindings={inputBindings}
@@ -1154,11 +1165,13 @@ export function App({
         visible={connected}
       />
       <MeleeHUD visible={connected} />
+      {cityWorld && connected && isTownKitPage() && <TownKitControls matchId={activeSession?.matchId ?? multiplayerMatchId} baseUrl={activeSession?.statsBaseUrl ?? ''} />}
       {cityWorld && connected && (
         <CityFlightControls active={aerialMode} speed={aerialSpeed} onActiveChange={changeAerialMode} onSpeedChange={setAerialSpeed} bindings={inputBindings} touch={touchMode} />
       )}
       {cityWorld && connected && (
         <CityStatsOverlay
+          initiallyExpanded={!isTownKitPage() && !touchMode}
           matchId={activeSession?.matchId ?? multiplayerMatchId}
           statsBaseUrl={activeSession ? activeSession.statsBaseUrl : ''}
           getCityStats={() => window.__VIBE_E2E__?.snapshot().city ?? null}

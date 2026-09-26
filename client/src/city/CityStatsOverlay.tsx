@@ -263,6 +263,7 @@ export function CityStatsOverlay({
   getCityStats,
   transport,
   pingMs,
+  initiallyExpanded = !isTouchDevice(),
 }: {
   matchId: string;
   /** Origin serving this match's stats; null when unreachable from this page. */
@@ -287,11 +288,12 @@ export function CityStatsOverlay({
   } | null;
   transport: string;
   pingMs: number;
+  initiallyExpanded?: boolean;
 }) {
   // Collapsed by default on a phone: expanded, the panel covers most of a
   // small screen, and the pill it collapses to now carries the numbers worth
   // watching continuously. Desktop keeps the full panel open.
-  const [visible, setVisible] = useState(() => !isTouchDevice());
+  const [visible, setVisible] = useState(initiallyExpanded);
   const [resetState, setResetState] = useState<'idle' | 'sending' | 'sent' | 'failed'>('idle');
   // Snapshot of the FULL /match-stats payload, saved to a file. The panel
   // deliberately shows a curated subset -- every phase timer would not fit and
@@ -320,7 +322,10 @@ export function CityStatsOverlay({
   // The setting can also be changed from outside this component (the e2e
   // bridge does), and a button whose label disagrees with what the next shot
   // fires is worse than no button.
-  useEffect(() => onShotModeChange(() => setShot(shotMode())), []);
+  useEffect(() => {
+    setShot(shotMode());
+    return onShotModeChange(() => setShot(shotMode()));
+  }, []);
   const [cityTex, setCityTex] = useState<CityTextureDetail>(cityTextureDetail);
   const [skyIbl, setSkyIbl] = useState(skyIblEnabledSetting);
   const [skyDome, setSkyDome] = useState(skyDomeEnabled);

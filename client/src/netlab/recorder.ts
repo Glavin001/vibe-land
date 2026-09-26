@@ -92,6 +92,9 @@ const DEFAULT_MAX_FRAMES = 65536;
 const DEFAULT_MAX_EVENTS = 8192;
 
 export type RecorderEventType =
+  | 'vehicle_frame'
+  | 'vehicle_reconcile'
+  | 'vehicle_input_presented'
   | 'snapshot_received'
   | 'stale_drop'
   | 'correction'

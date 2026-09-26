@@ -143,7 +143,7 @@ export class DustSourceQueue {
     nx: 0, ny: 0, nz: 0, vx: 0, vy: 0, vz: 0, magnitude: 0, count: 0, material: 0, atMs: 0,
   };
 
-  constructor(capacity = 256) {
+  constructor(capacity = 256, private readonly observe?: (source: DustSource) => void) {
     this.capacity = capacity;
     this.kind = new Uint8Array(capacity);
     this.structureId = new Uint32Array(capacity);
@@ -160,6 +160,9 @@ export class DustSourceQueue {
   }
 
   push(s: DustSource): boolean {
+    // Independent consumers (audio) must still see events when the visual
+    // queue is full. They copy into their own bounded queues synchronously.
+    this.observe?.(s);
     if (this.length >= this.capacity) {
       this.dropped += 1;
       return false;

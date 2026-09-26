@@ -1,0 +1,14 @@
+.vehicle-net-lab { position:fixed; right:16px; top:70px; z-index:110; width:min(420px,calc(100vw - 32px)); color:#e9f2ee; background:rgba(16,30,29,.96); border:1px solid #57746b; border-radius:12px; box-shadow:0 12px 40px #0005; font:13px/1.45 system-ui; }
+.vehicle-lab-toggle { width:100%; text-align:left; font-weight:700; padding:12px!important; }
+.vehicle-lab-content { padding:0 14px 14px; max-height:calc(100vh - 150px); overflow:auto; }
+.vehicle-net-lab button { background:#2a423b; border:1px solid #57746b; border-radius:5px; color:inherit; padding:6px 9px; cursor:pointer; }
+.vehicle-net-lab button:disabled { opacity:.45; cursor:default; }
+.vehicle-net-lab a, .vehicle-lab-setup a { color:#9ddebb; }
+.vehicle-lab-actions { display:flex; flex-wrap:wrap; gap:6px; margin:10px 0; }
+.vehicle-net-lab table { width:100%; border-collapse:collapse; font-size:12px; font-variant-numeric:tabular-nums; }
+.vehicle-net-lab th,.vehicle-net-lab td { text-align:left; padding:5px 3px; border-bottom:1px solid #3a5049; }
+.vehicle-net-lab th { color:#b6cec4; }
+.vehicle-net-lab h3 { margin:12px 0 4px; }
+.vehicle-lab-verdict { font-weight:600; }.vehicle-lab-verdict.needs-work { color:#ffb991; }.vehicle-lab-verdict.within-targets { color:#9ddebb; }
+.vehicle-lab-note { color:#adc2b8; font-size:11px; }
+.vehicle-lab-setup select { display:block; width:100%; padding:9px; margin:8px 0; background:#253c36; color:#edf4ef; border:1px solid #759184; border-radius:4px; }

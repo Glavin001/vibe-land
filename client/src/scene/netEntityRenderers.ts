@@ -519,7 +519,7 @@ export class VehiclesRenderer {
       activeVehicleIds.add(id);
       const vehicleType = vs.vehicleType ?? 0;
       let vehicleMeshGroup = this.meshes.get(id);
-      if (!vehicleMeshGroup || vehicleMeshGroup.userData.vehicleType !== vehicleType || vehicleMeshGroup.userData.assetHash !== vs.customVehicle?.assetHash) {
+      if (!vehicleMeshGroup || vehicleMeshGroup.userData.vehicleType !== vehicleType || vehicleMeshGroup.userData.geometryHash !== vs.customVehicle?.geometryHash) {
         if (vehicleMeshGroup) {
           group.remove(vehicleMeshGroup);
         }
@@ -531,6 +531,7 @@ export class VehiclesRenderer {
           vehicleMeshGroup.add(visual.group);
           vehicleMeshGroup.userData.vehicleType = vehicleType;
           vehicleMeshGroup.userData.assetHash = vs.customVehicle.assetHash;
+          vehicleMeshGroup.userData.geometryHash = vs.customVehicle.geometryHash;
           this.customVisuals.set(id, visual);
         } else vehicleMeshGroup = createVehicleMesh(id, vehicleType);
         group.add(vehicleMeshGroup);
@@ -544,6 +545,10 @@ export class VehiclesRenderer {
       vehicleMeshGroup.quaternion.set(vQuat[0], vQuat[1], vQuat[2], vQuat[3]);
 
       const custom = this.customVisuals.get(id);
+      if (custom && vs.customVehicle && vehicleMeshGroup.userData.assetHash !== vs.customVehicle.assetHash) {
+        custom.configure(vs.customVehicle.configuration);
+        vehicleMeshGroup.userData.assetHash = vs.customVehicle.assetHash;
+      }
       if (custom) { if (vs.customRig) custom.setWheelState(vs.customRig.wheels); }
       else updateVehicleWheelVisuals(vehicleMeshGroup, vs, placed.localDebug, vPos, vQuat, frameDelta);
       onPlaced?.(id, vs, vehicleMeshGroup, placed);

@@ -1,0 +1,17 @@
+import {mkdir,writeFile} from 'node:fs/promises';
+import {gzipSync} from 'node:zlib';
+import path from 'node:path';
+import {createHash} from 'node:crypto';
+import {KIT} from '../src/dependencies.mjs';
+import {buildBaylineGardensMarket,GARDENS_MARKET_KEY} from '../src/bayline-gardens-market.mjs';
+import {validate} from '../src/validate.mjs';
+const a=buildBaylineGardensMarket(),out=path.join(KIT,'out'),hash=s=>createHash('sha256').update(s).digest('hex');
+await mkdir(out,{recursive:true});
+const validation=validate(a.pack);if(!validation.passed)throw Error(JSON.stringify(validation.errors));
+const bytes=JSON.stringify(a.pack),visual=JSON.stringify({...a.visuals,nodeCount:a.pack.scenario.nodes.length,labels:[],title:a.pack.title,description:'Six furnished buildings · gardens, market, bus stop and workshop yard',assetCount:a.metadata.dressing.length+6});
+const meta={...a.metadata,assetSha256:hash(bytes),validation,visuals:{version:1,file:`${GARDENS_MARKET_KEY}.visuals.json`,sha256:hash(visual)}};
+await writeFile(path.join(out,`${GARDENS_MARKET_KEY}.json`),bytes);
+await writeFile(path.join(out,`${GARDENS_MARKET_KEY}.visuals.json.gz`),gzipSync(visual));
+await writeFile(path.join(out,`${GARDENS_MARKET_KEY}.visuals.json`),visual);
+await writeFile(path.join(out,`${GARDENS_MARKET_KEY}.meta.json`),JSON.stringify(meta,null,2));
+console.log(JSON.stringify({name:GARDENS_MARKET_KEY,chunks:a.pack.scenario.nodes.length,bonds:a.pack.scenario.bonds.length,dressing:meta.dressing.length,chapters:meta.cannonTour.chapters.length,validation:validation.passed}));

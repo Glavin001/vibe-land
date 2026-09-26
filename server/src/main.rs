@@ -1,8 +1,11 @@
 mod vehicle_assets;
 mod garage;
+mod garage_bombardment;
+mod vehicle_tuning;
 mod grass_layout;
 mod app_config;
 mod city;
+mod contact_audio;
 #[cfg(all(test, feature = "destruction"))]
 mod city_bench;
 #[cfg(all(test, feature = "physx-city"))]
@@ -1097,6 +1100,12 @@ struct PlayerConnection {
 }
 
 enum MatchEvent {
+    GarageBombardment { enabled: bool, reply: tokio::sync::oneshot::Sender<Result<garage_bombardment::Status, (StatusCode, String)>> },
+    TuneGarageVehicle {
+        expected_asset_hash: String,
+        vehicle: vehicle_assets::PreparedVehicle,
+        reply: tokio::sync::oneshot::Sender<Result<vehicle_tuning::TuneResponse, (StatusCode, String)>>,
+    },
     PublishVehicle {
         asset: Arc<vehicle_assets::DrivableVehicle>,
         reply: tokio::sync::oneshot::Sender<Result<CityVehicleResponse, (StatusCode, String)>>,
@@ -1188,6 +1197,7 @@ struct QueuedMelee {
 struct MatchState {
     id: String,
     arena: PhysicsArena,
+    contact_audio: contact_audio::ContactAudioReducer,
     world: VoxelWorld,
     history: LagCompHistory,
     players: HashMap<u32, PlayerRuntime>,
@@ -1223,6 +1233,7 @@ struct MatchState {
     vehicle_handles: HashMap<u32, u8>,
     city: Option<city::CityRuntime>,
     garage: Option<Arc<garage::Session>>,
+    bombardment: garage_bombardment::Bombardment,
     custom_vehicles: HashMap<u32, Arc<vehicle_assets::DrivableVehicle>>,
     /// Where the next meteor comes from. Seeded per match so two matches do
     /// not rain from the same bearings in the same order.
@@ -1493,11 +1504,14 @@ async fn main() -> Result<()> {
         .route("/healthz", get(health_handler))
         .route("/session-config", get(session_config_handler))
         .route("/vehicle-assets/session", post(garage_session_handler).layer(axum::extract::DefaultBodyLimit::max(8192)))
-        .route("/vehicle-assets/session/:id", axum::routing::delete(garage::close_handler))
+        .route("/vehicle-assets/session/:id", axum::routing::delete(garage::close_handler).get(garage::inspect_handler))
+        .route("/vehicle-assets/session/:id/bombardment", post(garage_bombardment_handler).layer(axum::extract::DefaultBodyLimit::max(256)))
+        .route("/vehicle-assets/session/:id/tuning", post(garage_tuning_handler).layer(axum::extract::DefaultBodyLimit::max(8192)))
         .route("/vehicle-assets/prepare", post(vehicle_assets::prepare).layer(axum::extract::DefaultBodyLimit::max(8192)))
         .route("/vehicle-assets/city", post(city_vehicle_handler).layer(axum::extract::DefaultBodyLimit::max(8192)))
         .route("/vehicle-assets/:hash/:file", get(vehicle_assets::asset))
         .route("/city-manifest/:hash", get(city_manifest_handler))
+        .route("/city-visuals/:hash", get(city_visuals_handler))
         .route("/match-stats/:match_id", get(match_stats_handler))
         // Nested under /match-stats so the caddy proxy block that already
         // forwards that prefix needs no change for phones to reach it.
@@ -2026,6 +2040,45 @@ struct CityVehicleResponse {
     vehicle_id: u32,
     position: [f32; 3],
     vehicle: vehicle_assets::PreparedVehicle,
+}
+
+// The random private-session ID is the existing garage capability. This route
+// never accepts arbitrary city IDs, dimensions, mass, geometry or native torque.
+async fn garage_tuning_handler(
+    State(state): State<SharedAppState>, axum::extract::Path(id): axum::extract::Path<String>,
+    Json(request): Json<vehicle_tuning::TuneRequest>,
+) -> Result<Json<vehicle_tuning::TuneResponse>, (StatusCode, String)> {
+    let session=garage::lookup(&id).filter(|s|!s.closing())
+        .ok_or((StatusCode::NOT_FOUND,"This test drive has ended.".into()))?;
+    let current=session.current_vehicle.lock().unwrap().clone();
+    if current.asset_hash!=request.expected_asset_hash {
+        return Err((StatusCode::CONFLICT,"The vehicle setup changed. Reopen the test drive to synchronize.".into()));
+    }
+    let handle=find_match(&state,&id).await
+        .ok_or((StatusCode::CONFLICT,"Join the test drive before applying tuning.".into()))?;
+    let vehicle=vehicle_tuning::resolve(&current,request.driving,session.geometry.mass).await?;
+    let (reply,response)=tokio::sync::oneshot::channel();
+    handle.tx.send(MatchEvent::TuneGarageVehicle{expected_asset_hash:request.expected_asset_hash,vehicle,reply})
+        .map_err(|_|(StatusCode::SERVICE_UNAVAILABLE,"The test drive has ended.".into()))?;
+    tokio::time::timeout(Duration::from_secs(3),response).await
+        .map_err(|_|(StatusCode::GATEWAY_TIMEOUT,"Tuning acknowledgement timed out. Check the current setup before retrying.".into()))?
+        .map_err(|_|(StatusCode::SERVICE_UNAVAILABLE,"The test drive has ended.".into()))?.map(Json)
+}
+
+async fn garage_bombardment_handler(
+    State(state): State<SharedAppState>, axum::extract::Path(id): axum::extract::Path<String>,
+    Json(request): Json<garage_bombardment::Request>,
+) -> Result<Json<garage_bombardment::Status>, (StatusCode, String)> {
+    garage::lookup(&id).filter(|s|!s.closing())
+        .ok_or((StatusCode::NOT_FOUND,"This test drive has ended.".into()))?;
+    let handle=find_match(&state,&id).await
+        .ok_or((StatusCode::CONFLICT,"Join the test drive first.".into()))?;
+    let (reply,response)=tokio::sync::oneshot::channel();
+    handle.tx.send(MatchEvent::GarageBombardment{enabled:request.enabled,reply})
+        .map_err(|_|(StatusCode::SERVICE_UNAVAILABLE,"The test drive has ended.".into()))?;
+    tokio::time::timeout(Duration::from_secs(3),response).await
+        .map_err(|_|(StatusCode::GATEWAY_TIMEOUT,"Bombardment acknowledgement timed out.".into()))?
+        .map_err(|_|(StatusCode::SERVICE_UNAVAILABLE,"The test drive has ended.".into()))?.map(Json)
 }
 
 async fn city_vehicle_handler(
@@ -2719,6 +2772,20 @@ async fn city_manifest_handler(
     }
 }
 
+async fn city_visuals_handler(
+    axum::extract::Path(hash): axum::extract::Path<String>,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    if !city::manifest_asset().is_some_and(|(expected, _, _)| *expected == hash) {
+        return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error":"Unknown city manifest"}))).into_response();
+    }
+    match city::visual_asset() {
+        Ok(Some(data)) => ([(axum::http::header::CACHE_CONTROL, "no-store")], Json(data)).into_response(),
+        Ok(None) => (StatusCode::NOT_FOUND, Json(serde_json::json!({"error":"This server has no town-kit visuals configured"}))).into_response(),
+        Err(error) => (StatusCode::CONFLICT, Json(serde_json::json!({"error":error.to_string()}))).into_response(),
+    }
+}
+
 async fn ws_stats_handler(
     ws: WebSocketUpgrade,
     State(state): State<SharedAppState>,
@@ -3242,7 +3309,7 @@ async fn run_match_loop(
     // be dropped by the client as an unknown body, which is to say invisible --
     // and an invisible projectile is the exact thing this weapon exists to fix.
     {
-        let radius = city::city_ball_radius_m();
+        let radius = if garage.is_some() { garage_bombardment::BALL_RADIUS } else { city::city_ball_radius_m() };
         let mut next_handle = u16::try_from(dynamic_body_handles.len() + 1)
             .expect("snapshot V2 supports at most 65,535 dynamic bodies per match");
         for id in arena.reserve_ball_pool(CANNONBALL_POOL) {
@@ -3336,6 +3403,7 @@ async fn run_match_loop(
         arena,
         world,
         history: LagCompHistory::new(1000),
+        contact_audio: contact_audio::ContactAudioReducer::default(),
         players: HashMap::new(),
         queued_shots: Vec::new(),
         queued_melees: Vec::new(),
@@ -3383,6 +3451,7 @@ async fn run_match_loop(
             vehicle: session.vehicle.clone(), geometry: session.geometry.clone(),
         }))].into_iter().collect()).unwrap_or_default(),
         garage,
+        bombardment: Default::default(),
     };
 
     let mut tick = tokio::time::interval(Duration::from_secs_f64(1.0 / SIM_HZ as f64));
@@ -3495,6 +3564,29 @@ fn spawn_match_loop(
 }
 
 impl MatchState {
+    fn tune_garage_vehicle(&mut self, expected:&str, vehicle:vehicle_assets::PreparedVehicle)
+        -> Result<vehicle_tuning::TuneResponse,(StatusCode,String)> {
+        let session=self.garage.as_ref().filter(|s|!s.closing())
+            .ok_or((StatusCode::NOT_FOUND,"This test drive has ended.".into()))?;
+        let id=garage::VEHICLE_ID;
+        let existing=self.custom_vehicles.get(&id)
+            .ok_or((StatusCode::NOT_FOUND,"The test vehicle is unavailable.".into()))?;
+        if existing.vehicle.asset_hash!=expected || existing.vehicle.geometry_hash!=vehicle.geometry_hash {
+            return Err((StatusCode::CONFLICT,"The vehicle setup changed before this update could apply.".into()));
+        }
+        self.arena.tune_prepared_vehicle(id,&vehicle.driving)
+            .map_err(|error|(StatusCode::UNPROCESSABLE_ENTITY,error))?;
+        let mut geometry=existing.geometry.clone();
+        geometry.driving=Some(vehicle.driving.clone());
+        *session.current_vehicle.lock().unwrap()=vehicle.clone();
+        self.custom_vehicles.insert(id,Arc::new(vehicle_assets::DrivableVehicle{vehicle:vehicle.clone(),geometry}));
+        if let Some(&handle)=self.vehicle_handles.get(&id) {
+            let packet=vehicle_assets::asset_packet(handle,&vehicle);
+            for runtime in self.players.values() {let _=try_queue_packet(&runtime.tx,packet.clone(),&self.io);}
+        }
+        Ok(vehicle_tuning::TuneResponse{vehicle,server_tick:self.server_tick})
+    }
+
     fn publish_city_vehicle(&mut self, asset: Arc<vehicle_assets::DrivableVehicle>) -> Result<CityVehicleResponse, (StatusCode, String)> {
         if self.city.is_none() {
             return Err((StatusCode::SERVICE_UNAVAILABLE, "The city is still unavailable on this server.".into()));
@@ -3653,6 +3745,17 @@ impl MatchState {
 
     fn handle_event(&mut self, event: MatchEvent) {
         match event {
+            MatchEvent::GarageBombardment {enabled,reply} => {
+                if !reply.is_closed() {
+                    let result=if self.garage.as_ref().is_some_and(|session|!session.closing()) {
+                        Ok(self.bombardment.set_enabled(enabled,self.server_tick))
+                    } else { Err((StatusCode::NOT_FOUND,"This test drive has ended.".into())) };
+                    let _=reply.send(result);
+                }
+            }
+            MatchEvent::TuneGarageVehicle {expected_asset_hash,vehicle,reply} => {
+                if !reply.is_closed() {let _=reply.send(self.tune_garage_vehicle(&expected_asset_hash,vehicle));}
+            }
             MatchEvent::PublishVehicle { asset, reply } => {
                 if !reply.is_closed() {
                     let result = self.publish_city_vehicle(asset);
@@ -4329,6 +4432,18 @@ impl MatchState {
             .dead_players_skipped
             .record(dead_players_skipped);
 
+        if self.garage.is_some() {
+            let target=self.arena.snapshot_vehicles().iter().find(|car|car.id==garage::VEHICLE_ID && car.driver_id!=0)
+                .map(|car|(nalgebra::Vector3::new(car.px_mm as f32,car.py_mm as f32,car.pz_mm as f32)/1000.0,
+                    nalgebra::Vector3::new(car.vx_cms as f32,car.vy_cms as f32,car.vz_cms as f32)/100.0));
+            if let Some(shot)=self.bombardment.next_shot(self.server_tick,target) {
+                if self.arena.launch_ball_from_muzzle(shot.origin,shot.velocity,garage_bombardment::BALL_RADIUS,
+                    garage_bombardment::BALL_MASS,garage_bombardment::BALL_TTL).is_some() {
+                    self.bombardment.record_launch();
+                }
+            }
+        }
+
         // Fracture-frame resimulation capture. Must be immediately before the
         // step: taken any later, the destruction tick has already drained the
         // contact queue and the capture is against the wrong frame.
@@ -4353,6 +4468,17 @@ impl MatchState {
         } else {
             self.arena.step_vehicles_and_dynamics(dt)
         };
+        self.arena.reduce_audio_contacts(&mut self.contact_audio, self.server_tick);
+        if self.server_tick % (u32::from(SIM_HZ) / 20).max(1) == 0 {
+            for (&player_id, player) in &self.players {
+                if let Some((pos, ..)) = self.arena.snapshot_player(player_id) {
+                    if let Some(packet) = self.contact_audio.packet_for(self.server_tick, pos) {
+                        let _ = try_queue_packet(&player.tx, packet, &self.io);
+                    }
+                }
+            }
+            self.contact_audio.clear_window();
+        }
         for player_id in self.arena.apply_vehicle_player_collisions() {
             self.kill_player_with_cause(player_id, server_time_ms, DeathCause::VehicleCollision);
         }
@@ -6993,6 +7119,7 @@ fn wants_unreliable_delivery(kind: u8) -> bool {
         || kind == PKT_PING
         || kind == PKT_CITY_CHUNKS
         || kind == vibe_land_shared::constants::PKT_CITY_DEBRIS
+        || kind == vibe_land_shared::constants::PKT_AUDIO_CONTACTS
         // Latest-wins telemetry: a lost frame is replaced a second later, and
         // it must never sit in front of topology on the ordered stream.
         || kind == vibe_land_shared::constants::PKT_MATCH_STATS
@@ -7014,7 +7141,8 @@ fn classify_outbound_delivery(
     if datagram_send_ok {
         return OutboundDelivery::Datagram;
     }
-    if is_snapshot_packet_kind(kind) && strict_snapshot_datagrams {
+    if kind == vibe_land_shared::constants::PKT_AUDIO_CONTACTS
+        || (is_snapshot_packet_kind(kind) && strict_snapshot_datagrams) {
         return OutboundDelivery::StrictDrop;
     }
     if wants_unreliable_delivery(kind) {
@@ -7570,6 +7698,14 @@ mod tests {
         assert!(is_snapshot_packet_kind(PKT_SNAPSHOT));
         assert!(is_snapshot_packet_kind(PKT_SNAPSHOT_V2));
         assert!(!is_snapshot_packet_kind(PKT_PING));
+    }
+
+    #[test]
+    fn audio_contacts_never_block_the_reliable_state_stream() {
+        let kind = vibe_land_shared::constants::PKT_AUDIO_CONTACTS;
+        assert!(super::wants_unreliable_delivery(kind));
+        assert_eq!(classify_outbound_delivery(kind, false, false), OutboundDelivery::StrictDrop);
+        assert_eq!(classify_outbound_delivery(kind, true, true), OutboundDelivery::Datagram);
     }
 
     #[test]

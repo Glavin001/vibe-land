@@ -1,0 +1,621 @@
+{
+  "version": 3,
+  "sampleRate": 48000,
+  "generatorSha256": "1a8cafaf139426b96849fe67ccb2a40699af7b913a4b75f66ed579184d58ea32",
+  "sources": {
+    "kenney": {
+      "page": "https://kenney.nl/assets/impact-sounds",
+      "license": "CC0-1.0",
+      "archiveUrl": "https://kenney.nl/media/pages/assets/impact-sounds/87b4ddecda-1677589768/kenney_impact-sounds.zip",
+      "archiveSha256": "029d734af1582474edf3a694d1b0cebc97c1c152f2f39fa34d4c2bafc5de77f8"
+    },
+    "rubberduck": {
+      "page": "https://opengameart.org/content/75-cc0-breaking-falling-hit-sfx",
+      "license": "CC0-1.0",
+      "archiveUrl": "https://opengameart.org/sites/default/files/sfx_breaking_and_falling.zip",
+      "archiveSha256": "e6ee04d91c5f4d30cfda1260d2c9d1faf96fda36319287215fbd07bcb1a80451"
+    }
+  },
+  "clips": {
+    "concrete-impact-0": {
+      "url": "/audio/destruction/concrete-impact-0.mp3",
+      "duration": 1.616,
+      "loop": false,
+      "sha256": "90bc28162448a3be51e68d2889c1fcadf441a2c48f63cc7a35ac392fec84ac74"
+    },
+    "concrete-impact-1": {
+      "url": "/audio/destruction/concrete-impact-1.mp3",
+      "duration": 1.616,
+      "loop": false,
+      "sha256": "47408c69b01cb3c17e2bf34cdd1fb528fefb57f502be0a808a7b98f97143e232"
+    },
+    "concrete-impact-2": {
+      "url": "/audio/destruction/concrete-impact-2.mp3",
+      "duration": 1.616,
+      "loop": false,
+      "sha256": "570fd7bb13c24bc6558b8c89ee0c4106769a3cc5e27a622cf88a3682cf73b1b7"
+    },
+    "concrete-impact-3": {
+      "url": "/audio/destruction/concrete-impact-3.mp3",
+      "duration": 1.616,
+      "loop": false,
+      "sha256": "35dd7e2400dc34b60c30267d280b43aafb78a1f1ec940b9c743f4e31143d606d"
+    },
+    "concrete-impact-4": {
+      "url": "/audio/destruction/concrete-impact-4.mp3",
+      "duration": 1.616,
+      "loop": false,
+      "sha256": "f278e92ccb8acb1f9d01247d4f786bfe8f02894b6d19128ffe1690d99bf86071"
+    },
+    "concrete-fracture-0": {
+      "url": "/audio/destruction/concrete-fracture-0.mp3",
+      "duration": 2.816,
+      "loop": false,
+      "sha256": "fa6e042d074cfc2f7a202a9041790db05e460a67bba3467fcd56ff61faf4dda6"
+    },
+    "concrete-fracture-1": {
+      "url": "/audio/destruction/concrete-fracture-1.mp3",
+      "duration": 2.816,
+      "loop": false,
+      "sha256": "c4e9059b28e5bec4b858fe4f3c551f943f70c589fcbc476262551fbef9d3d103"
+    },
+    "concrete-fracture-2": {
+      "url": "/audio/destruction/concrete-fracture-2.mp3",
+      "duration": 2.816,
+      "loop": false,
+      "sha256": "033bf5061ddbc4a5982cfdaa9f3bce6e157d1fbfa7df5a596a671dc9da4bbb8c"
+    },
+    "concrete-scrape": {
+      "url": "/audio/destruction/concrete-scrape.wav",
+      "duration": 5,
+      "loop": true,
+      "sha256": "2bc10230663ce7bbb56e5d4a2c2acbb0f84030f56d6ee1ded562dcc1afeac0bd"
+    },
+    "concrete-roll": {
+      "url": "/audio/destruction/concrete-roll.wav",
+      "duration": 3.6,
+      "loop": true,
+      "sha256": "f59748c50cab7dee194d4d715d0411a5fceb47fd9a1d1b9289760ecbde120c00"
+    },
+    "stone-impact-0": {
+      "url": "/audio/destruction/stone-impact-0.mp3",
+      "duration": 1.616,
+      "loop": false,
+      "sha256": "16195f455ccd9e1af503f0cfe83afa5f0cb5303f0ab24f4a15117e451e033ea4"
+    },
+    "stone-impact-1": {
+      "url": "/audio/destruction/stone-impact-1.mp3",
+      "duration": 1.616,
+      "loop": false,
+      "sha256": "bdd1c960b438a0ba7c62fc20ad898f6389dbffc6b19045749ea374186cd5f48d"
+    },
+    "stone-impact-2": {
+      "url": "/audio/destruction/stone-impact-2.mp3",
+      "duration": 1.616,
+      "loop": false,
+      "sha256": "eb33f1c4bf1efe39996ed8b8f0b76c1fa81b4a921f55055caac944ed9ff63936"
+    },
+    "stone-impact-3": {
+      "url": "/audio/destruction/stone-impact-3.mp3",
+      "duration": 1.616,
+      "loop": false,
+      "sha256": "69ab62bfb5f1427a17915f2d3fe1f3f5773f01ea3d0af9b858511e19726d6e43"
+    },
+    "stone-impact-4": {
+      "url": "/audio/destruction/stone-impact-4.mp3",
+      "duration": 1.616,
+      "loop": false,
+      "sha256": "59a0a065b411c0e09bd211daced1ea928fce5255af6a9d6cab8c9d9879a006d7"
+    },
+    "stone-fracture-0": {
+      "url": "/audio/destruction/stone-fracture-0.mp3",
+      "duration": 2.816,
+      "loop": false,
+      "sha256": "e7b35e526dac2b5c85524b33bb4c334bda7a904af81cae79e08759df2fa2fa9d"
+    },
+    "stone-fracture-1": {
+      "url": "/audio/destruction/stone-fracture-1.mp3",
+      "duration": 2.816,
+      "loop": false,
+      "sha256": "f64b67e451fcf0659054c0ecaa6ea5f5085b5ae057c6bd0e9111d272e5f03c6b"
+    },
+    "stone-fracture-2": {
+      "url": "/audio/destruction/stone-fracture-2.mp3",
+      "duration": 2.816,
+      "loop": false,
+      "sha256": "a773fe46f538aac574afa7b35ce2ce7ea87d2d8b2688f7eeb76b0da4c04b6bbc"
+    },
+    "stone-scrape": {
+      "url": "/audio/destruction/stone-scrape.wav",
+      "duration": 5,
+      "loop": true,
+      "sha256": "b0f86e12618876e19a64e73cbcb6ed636840108b574973549dcf06abe3e331ef"
+    },
+    "stone-roll": {
+      "url": "/audio/destruction/stone-roll.wav",
+      "duration": 3.6,
+      "loop": true,
+      "sha256": "e7b8cc32675aa36e63ca9bd2e0bd5ead85a36fbdd33f1aa34d838385960f99f1"
+    },
+    "metal-impact-0": {
+      "url": "/audio/destruction/metal-impact-0.mp3",
+      "duration": 1.916,
+      "loop": false,
+      "sha256": "3eb7046141a9ce9932613b74cdb71ef9b339eb5bdef5172dd52db90875fd9654"
+    },
+    "metal-impact-1": {
+      "url": "/audio/destruction/metal-impact-1.mp3",
+      "duration": 1.916,
+      "loop": false,
+      "sha256": "1c0ce95f39fd95584e72fab8585ccc5db07ad6ab8472f4b9b3311b0f1b534d63"
+    },
+    "metal-impact-2": {
+      "url": "/audio/destruction/metal-impact-2.mp3",
+      "duration": 1.916,
+      "loop": false,
+      "sha256": "71e109d247f62733de71005d8a10e1653fff51e1932f5b22716e1fbc3ae63fb0"
+    },
+    "metal-impact-3": {
+      "url": "/audio/destruction/metal-impact-3.mp3",
+      "duration": 1.916,
+      "loop": false,
+      "sha256": "4141524141af8cb13449889ead618c14a98c1a1b92ad70f0be9a1958470de160"
+    },
+    "metal-impact-4": {
+      "url": "/audio/destruction/metal-impact-4.mp3",
+      "duration": 1.916,
+      "loop": false,
+      "sha256": "64aeb0f118ffba4602dbd3ad4d61c29b102460dd436d0fb9a2ce59c2df9b0cf3"
+    },
+    "metal-fracture-0": {
+      "url": "/audio/destruction/metal-fracture-0.mp3",
+      "duration": 2.816,
+      "loop": false,
+      "sha256": "4afb1a022d4c9f173e8566dc592a963aeab10f814f8a70d175ccac038efd93cd"
+    },
+    "metal-fracture-1": {
+      "url": "/audio/destruction/metal-fracture-1.mp3",
+      "duration": 2.816,
+      "loop": false,
+      "sha256": "3fae6c462344d12effb3ad50097edb028f3bc1a198a1a9d4202d84aed7965bb3"
+    },
+    "metal-fracture-2": {
+      "url": "/audio/destruction/metal-fracture-2.mp3",
+      "duration": 2.816,
+      "loop": false,
+      "sha256": "5819c4cb9a99787dfab9ed361d2285266e51333a682ee601c34ad37664a060e9"
+    },
+    "metal-scrape": {
+      "url": "/audio/destruction/metal-scrape.wav",
+      "duration": 5,
+      "loop": true,
+      "sha256": "d68083fe2f9197524582b7486a9274ec1ae2d4d28e1381353dd7fcd110fd0032"
+    },
+    "metal-roll": {
+      "url": "/audio/destruction/metal-roll.wav",
+      "duration": 3.6,
+      "loop": true,
+      "sha256": "2f8d100c037f4b9302be581221508525916f9bea7dfc1af6da9af37a6f8af5e9"
+    },
+    "sheet-impact-0": {
+      "url": "/audio/destruction/sheet-impact-0.mp3",
+      "duration": 1.916,
+      "loop": false,
+      "sha256": "179f98ffb176a62ffa36c5275288e9a03054ffde3d9eec6189c2e169992e8677"
+    },
+    "sheet-impact-1": {
+      "url": "/audio/destruction/sheet-impact-1.mp3",
+      "duration": 1.916,
+      "loop": false,
+      "sha256": "d1129a7ed86dc5a0a521cdc0d016dd5a5fdc464c193cf9fad06b532f7f679212"
+    },
+    "sheet-impact-2": {
+      "url": "/audio/destruction/sheet-impact-2.mp3",
+      "duration": 1.916,
+      "loop": false,
+      "sha256": "b48b6ecf7b172efa5a848c927edb17ab5d527d2c92dfa7d5e2d3cbcb1a68ab22"
+    },
+    "sheet-impact-3": {
+      "url": "/audio/destruction/sheet-impact-3.mp3",
+      "duration": 1.916,
+      "loop": false,
+      "sha256": "77bf3fa8f308e88a9b02792798f631ee305c5918722cf59fc39ddeff79b5ba2c"
+    },
+    "sheet-impact-4": {
+      "url": "/audio/destruction/sheet-impact-4.mp3",
+      "duration": 1.916,
+      "loop": false,
+      "sha256": "ee748b80a12698bd38a62f43fac6b10c62feef7196ca6a1465c9977567b35d09"
+    },
+    "sheet-fracture-0": {
+      "url": "/audio/destruction/sheet-fracture-0.mp3",
+      "duration": 2.816,
+      "loop": false,
+      "sha256": "06b55f3201cec05f9655f8fc1cb0c80e286ed9ea75b4aa53b468dd921e740a58"
+    },
+    "sheet-fracture-1": {
+      "url": "/audio/destruction/sheet-fracture-1.mp3",
+      "duration": 2.816,
+      "loop": false,
+      "sha256": "4291376089d6cd8843ab6bf4264c4f8d8501a84f5f8fa6eaf5992e16611a4ba8"
+    },
+    "sheet-fracture-2": {
+      "url": "/audio/destruction/sheet-fracture-2.mp3",
+      "duration": 2.816,
+      "loop": false,
+      "sha256": "a06d702a5de739d1fd7717c9c7987ec6f7e13afd2aa584eafb1f94a07ad6a5f7"
+    },
+    "sheet-scrape": {
+      "url": "/audio/destruction/sheet-scrape.wav",
+      "duration": 5,
+      "loop": true,
+      "sha256": "7c921af3fc5b46757d247e6793f4d6ade78f45259fff1c24dd090abbc4881a03"
+    },
+    "sheet-roll": {
+      "url": "/audio/destruction/sheet-roll.wav",
+      "duration": 3.6,
+      "loop": true,
+      "sha256": "ec598ad446c93c8acac4533bb6ad799bd304dda4596747b31198f068eb439cca"
+    },
+    "wood-impact-0": {
+      "url": "/audio/destruction/wood-impact-0.mp3",
+      "duration": 1.616,
+      "loop": false,
+      "sha256": "bf49bc032753925f37640962a2ab803665e24b76f5ba358cc26a70c04c53f4de"
+    },
+    "wood-impact-1": {
+      "url": "/audio/destruction/wood-impact-1.mp3",
+      "duration": 1.616,
+      "loop": false,
+      "sha256": "fd9dbc7c2ff0db293abada9636fe602c53bbc2f9f5a2f2db953d71732d29a12a"
+    },
+    "wood-impact-2": {
+      "url": "/audio/destruction/wood-impact-2.mp3",
+      "duration": 1.616,
+      "loop": false,
+      "sha256": "c74efec94ca1c9335f3bc7b046ef35f2113a2e66dc69a4e4687e5eb4b4716676"
+    },
+    "wood-impact-3": {
+      "url": "/audio/destruction/wood-impact-3.mp3",
+      "duration": 1.616,
+      "loop": false,
+      "sha256": "cb67d9d94eecc5766053976b108c89838b218006f0da9ff932bef52442669833"
+    },
+    "wood-impact-4": {
+      "url": "/audio/destruction/wood-impact-4.mp3",
+      "duration": 1.616,
+      "loop": false,
+      "sha256": "f86ed2533fef2b96ec05b9829bb0ff4ce4a2d414a09847b69dd1a9e3698c6171"
+    },
+    "wood-fracture-0": {
+      "url": "/audio/destruction/wood-fracture-0.mp3",
+      "duration": 2.816,
+      "loop": false,
+      "sha256": "55328590a2ad267f195d96c765be500fa43765e8cd7362e8e9325124ce733cad"
+    },
+    "wood-fracture-1": {
+      "url": "/audio/destruction/wood-fracture-1.mp3",
+      "duration": 2.816,
+      "loop": false,
+      "sha256": "c52c43694e38a1b7278d18afc5833efe2b9503e9f10fcdb3886a9db54bd357a4"
+    },
+    "wood-fracture-2": {
+      "url": "/audio/destruction/wood-fracture-2.mp3",
+      "duration": 2.816,
+      "loop": false,
+      "sha256": "dd8a2ef6daf382de3ed8665b82e22743243014151ff3244c11488ea9c35d0e70"
+    },
+    "wood-scrape": {
+      "url": "/audio/destruction/wood-scrape.wav",
+      "duration": 5,
+      "loop": true,
+      "sha256": "7be50f52ba7aebcdd349877dea9a426057f7530e066c6012de93449687acd2e3"
+    },
+    "wood-roll": {
+      "url": "/audio/destruction/wood-roll.wav",
+      "duration": 3.6,
+      "loop": true,
+      "sha256": "bdb0c178b129646d9b8699f5a959d18e46831a15ac27c81b95649a84822b970d"
+    },
+    "glass-impact-0": {
+      "url": "/audio/destruction/glass-impact-0.mp3",
+      "duration": 1.616,
+      "loop": false,
+      "sha256": "9ab5a3a77485928edd7801e7a42794d66b10cc8333e1c1ff2a40cd6f2827d70f"
+    },
+    "glass-impact-1": {
+      "url": "/audio/destruction/glass-impact-1.mp3",
+      "duration": 1.616,
+      "loop": false,
+      "sha256": "4035caaf6cef075421a944982f778d28129726c04499396c8f1781a5fc660a07"
+    },
+    "glass-impact-2": {
+      "url": "/audio/destruction/glass-impact-2.mp3",
+      "duration": 1.616,
+      "loop": false,
+      "sha256": "15a8e8073457a474ac271fbc569831205f2a1a870ed3b1459f148acad1832bd6"
+    },
+    "glass-impact-3": {
+      "url": "/audio/destruction/glass-impact-3.mp3",
+      "duration": 1.616,
+      "loop": false,
+      "sha256": "f2f152bffcfd16730298af44558d6a4f9990fb44a011187776947357555ff648"
+    },
+    "glass-impact-4": {
+      "url": "/audio/destruction/glass-impact-4.mp3",
+      "duration": 1.616,
+      "loop": false,
+      "sha256": "431aea18b0ec013a375c5560480db2cf263b7c47d0ed159a6bd85cdff468ccb7"
+    },
+    "glass-fracture-0": {
+      "url": "/audio/destruction/glass-fracture-0.mp3",
+      "duration": 2.816,
+      "loop": false,
+      "sha256": "487c9dd9437dc1c70a70723e250f65013811be000fbd1b7cd2ead10bcd166539"
+    },
+    "glass-fracture-1": {
+      "url": "/audio/destruction/glass-fracture-1.mp3",
+      "duration": 2.816,
+      "loop": false,
+      "sha256": "0eebeee0554ef0ec3a05a90a25ebc2241cc15660925e0c43236cd4a00d213a5c"
+    },
+    "glass-fracture-2": {
+      "url": "/audio/destruction/glass-fracture-2.mp3",
+      "duration": 2.816,
+      "loop": false,
+      "sha256": "6fb0ee84fc280f82fca24103aedeca205aa5c92d372b3fb56c0c81e985459ee7"
+    },
+    "glass-scrape": {
+      "url": "/audio/destruction/glass-scrape.wav",
+      "duration": 5,
+      "loop": true,
+      "sha256": "e456d5d6d6e4563f3f12760edc077e64e12d343e8154c8bde9f29d3889546fde"
+    },
+    "glass-roll": {
+      "url": "/audio/destruction/glass-roll.wav",
+      "duration": 3.6,
+      "loop": true,
+      "sha256": "b8d8d4cbb0220de43b35ebfe8ff16232a8bdcb17f649a43fe87f2cecf107017a"
+    },
+    "earth-impact-0": {
+      "url": "/audio/destruction/earth-impact-0.mp3",
+      "duration": 1.616,
+      "loop": false,
+      "sha256": "fcd12c8aadfbb319a4d8362588d7357a7fa02f1a3ae917bf3cb96b40ae4d028f"
+    },
+    "earth-impact-1": {
+      "url": "/audio/destruction/earth-impact-1.mp3",
+      "duration": 1.616,
+      "loop": false,
+      "sha256": "7fecac13340be21b1b3afe707609fc851a5cf2d6d7d6d939cb7caf0c0a2dfd02"
+    },
+    "earth-impact-2": {
+      "url": "/audio/destruction/earth-impact-2.mp3",
+      "duration": 1.616,
+      "loop": false,
+      "sha256": "5718d6efac49be3588115742bbf82a778c4108fa128aefe7d5affa339cba555c"
+    },
+    "earth-impact-3": {
+      "url": "/audio/destruction/earth-impact-3.mp3",
+      "duration": 1.616,
+      "loop": false,
+      "sha256": "3756b3260123dc1b1df8b3e2fd6435b61c6ae32b42146acab4c50ecb71f776f4"
+    },
+    "earth-impact-4": {
+      "url": "/audio/destruction/earth-impact-4.mp3",
+      "duration": 1.616,
+      "loop": false,
+      "sha256": "6772f090635e56fe3564edddee4537ebb90fc82786ee6a7ec89526453ce791e3"
+    },
+    "earth-fracture-0": {
+      "url": "/audio/destruction/earth-fracture-0.mp3",
+      "duration": 2.816,
+      "loop": false,
+      "sha256": "2b3e009724fce8ab0ee02e355ca89540033e0b600bb02bdd2307f4442037d9e5"
+    },
+    "earth-fracture-1": {
+      "url": "/audio/destruction/earth-fracture-1.mp3",
+      "duration": 2.816,
+      "loop": false,
+      "sha256": "02a6e56e279290844d494f065928ef128570fa48f07bfbc542be87ec5e8051ee"
+    },
+    "earth-fracture-2": {
+      "url": "/audio/destruction/earth-fracture-2.mp3",
+      "duration": 2.816,
+      "loop": false,
+      "sha256": "818a9c46ddf331c87a7ab45b34e8bd769df50e44563d1b62048f85400f50f68b"
+    },
+    "earth-scrape": {
+      "url": "/audio/destruction/earth-scrape.wav",
+      "duration": 5,
+      "loop": true,
+      "sha256": "33321f2778d14b3279b4a5b13d3c93d50e02a642bdba8b736a521c9e068b4bef"
+    },
+    "earth-roll": {
+      "url": "/audio/destruction/earth-roll.wav",
+      "duration": 3.6,
+      "loop": true,
+      "sha256": "dc2dcaadfbef45773f6209e4f850e54585cd3032cbcf185bc3663d69761ca15f"
+    },
+    "heavy-concrete": {
+      "url": "/audio/destruction/heavy-concrete.mp3",
+      "duration": 2.216,
+      "loop": false,
+      "sha256": "bffa803c8f3ee1c70d5e5250d6ad63529e35992ed74ef514dc2e8091be0d02f4"
+    },
+    "debris-concrete": {
+      "url": "/audio/destruction/debris-concrete.wav",
+      "duration": 6.4,
+      "loop": true,
+      "sha256": "de60f48dfe59805504e3ef4f610efce003b9abddecd85c6875a14487b605fbcc"
+    },
+    "heavy-stone": {
+      "url": "/audio/destruction/heavy-stone.mp3",
+      "duration": 2.216,
+      "loop": false,
+      "sha256": "1bad0eaa396ac7d94570ab03e74005ae18c8cc88cc08700b2560ac1a4172d2d4"
+    },
+    "debris-stone": {
+      "url": "/audio/destruction/debris-stone.wav",
+      "duration": 6.4,
+      "loop": true,
+      "sha256": "0a855b28083622c600de27a776da76d78a4bda046f3726b7a3334c7e516b1b44"
+    },
+    "heavy-metal": {
+      "url": "/audio/destruction/heavy-metal.mp3",
+      "duration": 2.216,
+      "loop": false,
+      "sha256": "c218d6686d66ec3581500818632218ecfa7992cdfe48e4d4a2e70f969a55efef"
+    },
+    "debris-metal": {
+      "url": "/audio/destruction/debris-metal.wav",
+      "duration": 6.4,
+      "loop": true,
+      "sha256": "99eef67d3a5b3d9f711c825270068b40067e02fce13acfd6ab49898de80e2506"
+    },
+    "heavy-sheet": {
+      "url": "/audio/destruction/heavy-sheet.mp3",
+      "duration": 2.216,
+      "loop": false,
+      "sha256": "9afdceb119c00af698eec1966d6d1161c95c75aa42d78e47c0c4c2a686a7a92a"
+    },
+    "debris-sheet": {
+      "url": "/audio/destruction/debris-sheet.wav",
+      "duration": 6.4,
+      "loop": true,
+      "sha256": "f6716c545816a9f39a3173981f85f5dba8766e92d69abe1eebe1cc79d709a16a"
+    },
+    "heavy-wood": {
+      "url": "/audio/destruction/heavy-wood.mp3",
+      "duration": 2.216,
+      "loop": false,
+      "sha256": "8b4505f84d2996cc8193f21bc3fc065cdd9812c7c2944b4e07950cf5ef89f4bd"
+    },
+    "debris-wood": {
+      "url": "/audio/destruction/debris-wood.wav",
+      "duration": 6.4,
+      "loop": true,
+      "sha256": "a48c0fa7aed6c8063857338da835837894e3209c6e606b4da5ddac3996751cc4"
+    },
+    "debris-glass": {
+      "url": "/audio/destruction/debris-glass.wav",
+      "duration": 6.4,
+      "loop": true,
+      "sha256": "9b64e6e0423763746d11f010ec8c66ee1f9fcc5635e78a73d81d7f140509ca49"
+    },
+    "heavy-earth": {
+      "url": "/audio/destruction/heavy-earth.mp3",
+      "duration": 2.216,
+      "loop": false,
+      "sha256": "c91fc55022b12a95b94600b6d8e8a8bcd1e633f249a8b56d2f7786d7d5083862"
+    },
+    "debris-earth": {
+      "url": "/audio/destruction/debris-earth.wav",
+      "duration": 6.4,
+      "loop": true,
+      "sha256": "35190487dc05336abf1cecdcd0530e056c085f68d1cab933c57e2fde72b8f8bc"
+    },
+    "collapse-0": {
+      "url": "/audio/destruction/collapse-0.mp3",
+      "duration": 4.816,
+      "loop": false,
+      "sha256": "eb8d3e6752b3cb3f0edcccf8697dc0a4443991f29d0ebad4ab2cfade2442d153"
+    },
+    "collapse-1": {
+      "url": "/audio/destruction/collapse-1.mp3",
+      "duration": 4.816,
+      "loop": false,
+      "sha256": "31ddcbcb43b831a457340ef2398d8b4a4d8b8b7ad96f3370d05191f23a4f9efa"
+    },
+    "collapse-2": {
+      "url": "/audio/destruction/collapse-2.mp3",
+      "duration": 4.816,
+      "loop": false,
+      "sha256": "e0a05338f358715e76894f55766efc55fe8b81a3e6f5fa21650d3a724155a436"
+    },
+    "collapse-3": {
+      "url": "/audio/destruction/collapse-3.mp3",
+      "duration": 4.816,
+      "loop": false,
+      "sha256": "ae3daae159f668e1d858e0cd45cfe39112ce9e87d5f066b4778994f995e2921b"
+    },
+    "air": {
+      "url": "/audio/destruction/air.wav",
+      "duration": 6,
+      "loop": true,
+      "sha256": "d5b32f6ee845c4e41a90176d4edefdc73d5f417f5a328d9e170d88351042e48c"
+    },
+    "rumble": {
+      "url": "/audio/destruction/rumble.wav",
+      "duration": 6,
+      "loop": true,
+      "sha256": "65a0c32bf4adee30ce95812d3b494d3651de517aa87821351a8577d1a3c0b38d"
+    },
+    "wind": {
+      "url": "/audio/destruction/wind.wav",
+      "duration": 6,
+      "loop": true,
+      "sha256": "f8937eb347b9bf22bbf1801d244affce44569c768a7dab5ff311da4aec46c660"
+    },
+    "flyby-0": {
+      "url": "/audio/destruction/flyby-0.mp3",
+      "duration": 1.166,
+      "loop": false,
+      "sha256": "adf3143db14c53f705941ae5e1b51822d2a36a9718061e4cdda0b263c149282f"
+    },
+    "flyby-1": {
+      "url": "/audio/destruction/flyby-1.mp3",
+      "duration": 1.166,
+      "loop": false,
+      "sha256": "0874a95a724f04aaef41f56422ed042dddc7da109d34180abc80e7339d427e58"
+    },
+    "flyby-2": {
+      "url": "/audio/destruction/flyby-2.mp3",
+      "duration": 1.166,
+      "loop": false,
+      "sha256": "0bb948aea7f536df672043911c8de6438f355e7ece13e52f4ff61955e354a52a"
+    },
+    "flyby-3": {
+      "url": "/audio/destruction/flyby-3.mp3",
+      "duration": 1.166,
+      "loop": false,
+      "sha256": "99e4ce92d134ef5dc182df37e98abf1873bdcf7b9720d9c67de46452f1aabde2"
+    },
+    "shot-rifle-0": {
+      "url": "/audio/destruction/shot-rifle-0.mp3",
+      "duration": 0.566,
+      "loop": false,
+      "sha256": "a97f7c32682345743df13083b4de48b38b15d02f684398409c889f4f7e8ff0d9"
+    },
+    "shot-rifle-1": {
+      "url": "/audio/destruction/shot-rifle-1.mp3",
+      "duration": 0.566,
+      "loop": false,
+      "sha256": "b9b43d684380d36accc46b5ef721d6b48a0921197e432b938aec194ae845e09c"
+    },
+    "shot-rifle-2": {
+      "url": "/audio/destruction/shot-rifle-2.mp3",
+      "duration": 0.566,
+      "loop": false,
+      "sha256": "8c72ec7345f7c5ec942c53efc8078345620c1b26b8f479a697c99851bffffbcb"
+    },
+    "shot-cannon-0": {
+      "url": "/audio/destruction/shot-cannon-0.mp3",
+      "duration": 1.716,
+      "loop": false,
+      "sha256": "2726dfe6a1ebfd71588d1d3723457765ab279a803e1cfa10757f87ed73d41497"
+    },
+    "shot-cannon-1": {
+      "url": "/audio/destruction/shot-cannon-1.mp3",
+      "duration": 1.716,
+      "loop": false,
+      "sha256": "bceb4f5fd28d6ccab6267ac97b2189a4d9c3b66bfecf372532521656fda3fe39"
+    },
+    "shot-cannon-2": {
+      "url": "/audio/destruction/shot-cannon-2.mp3",
+      "duration": 1.716,
+      "loop": false,
+      "sha256": "c8a909ba4aad054cf869c7927c7e2bb2f5b7d08c5501a0d3080ecbb0320e5f1f"
+    }
+  }
+}

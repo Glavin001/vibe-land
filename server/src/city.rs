@@ -442,6 +442,24 @@ fn scene_payload() -> anyhow::Result<&'static Vec<u8>> {
         .as_ref().map_err(|e| anyhow::anyhow!("reading city scene: {e}"))
 }
 
+/// Optional visual detail for a single authored scene. Bind it to both the
+/// exact source pack and the live manifest; authoring node indices are slots
+/// only for one untransformed instance.
+pub fn visual_asset() -> anyhow::Result<Option<serde_json::Value>> {
+    use sha2::{Digest, Sha256};
+    let Some(path) = std::env::var_os("VIBE_CITY_VISUALS") else { return Ok(None); };
+    let (hash, manifest, _) = manifest_asset().context("city manifest unavailable")?;
+    let mut data: serde_json::Value = serde_json::from_slice(&std::fs::read(path)?)?;
+    let source_hash = hex::encode(Sha256::digest(scene_payload()?));
+    anyhow::ensure!(data["physicsSha256"].as_str() == Some(source_hash.as_str()), "visuals do not match the physics pack");
+    anyhow::ensure!(manifest.structures.len() == 1, "visuals require one authored scene instance");
+    let structure = &manifest.structures[0];
+    anyhow::ensure!(structure.world_position == [0.0; 3] && structure.world_rotation == [0.0, 0.0, 0.0, 1.0], "visuals require an untransformed scene");
+    anyhow::ensure!(data["nodeCount"].as_u64() == Some(structure.chunks.len() as u64), "visual chunk count mismatch");
+    data["manifestHash"] = serde_json::json!(hash);
+    Ok(Some(data))
+}
+
 fn build_scene() -> anyhow::Result<CityScene> {
     let path = asset_path();
     // Binary bundles already contain the complete placement recipe. Preserve

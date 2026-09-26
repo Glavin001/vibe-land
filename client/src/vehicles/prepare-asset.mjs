@@ -5,7 +5,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { readFile, writeFile, mkdir, rename, rm } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
 import Module from 'manifold-3d';
-import { normalizeConfiguration, geometryKey, sourceToActorPoint } from './configuration.mjs';
+import { normalizeConfiguration, geometryKey, sourceToActorPoint, resolveDrivingSetup } from './configuration.mjs';
 import { buildBuggy } from './dune/buggy.mjs';
 import { visualOwners, simplePhysicsShape } from './simple-physics.mjs';
 import { physicsBundle } from './dune/physics-export.mjs';
@@ -79,8 +79,9 @@ catch (error) {
  } catch(error) { await rm(staging, {recursive:true,force:true});throw error; }
 }
 requireConnectedAssembly(metadata.parts, metadata.bonds);
-const assetHash = createHash('sha256').update(JSON.stringify({configuration,geometryHash})).digest('hex');
-process.stdout.write(JSON.stringify({ configuration, assetHash, geometryHash,
+const driving = resolveDrivingSetup(configuration, metadata.mass);
+const assetHash = createHash('sha256').update(JSON.stringify({configuration,geometryHash,driving})).digest('hex');
+process.stdout.write(JSON.stringify({ configuration, assetHash, geometryHash, driving,
   partCount: metadata.partCount, shapeCount: metadata.shapeCount, bondCount: metadata.bondCount }));
 
 }

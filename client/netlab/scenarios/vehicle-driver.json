@@ -1,0 +1,107 @@
+{
+  "name": "vehicle-driver",
+  "description": "Real Vehicle2 garage course: owning driver and independent spectator. Capture actual renderer poses and reconciliation events. Require both roles in vehicle-scores.json; missing entry is not a pass.",
+  "vehicleBuild": "buggy",
+  "path": "/garage?vehicleNetlab=1",
+  "matchId": "vehicle-lab-{iter}",
+  "durationMs": 45000,
+  "join": "auto",
+  "clients": [
+    {
+      "role": "driver",
+      "drive": [
+        {
+          "at": 3000,
+          "cmd": "mark",
+          "args": "idle"
+        },
+        {
+          "at": 5000,
+          "cmd": "move",
+          "args": {
+            "forward": 0.5,
+            "strafe": 0
+          }
+        },
+        {
+          "at": 8000,
+          "cmd": "move",
+          "args": {
+            "forward": -1,
+            "strafe": 0
+          }
+        },
+        {
+          "at": 11000,
+          "cmd": "stop"
+        },
+        {
+          "at": 15000,
+          "cmd": "move",
+          "args": {
+            "forward": 0.5,
+            "strafe": 0.6
+          }
+        },
+        {
+          "at": 20000,
+          "cmd": "move",
+          "args": {
+            "forward": -1,
+            "strafe": 0
+          }
+        },
+        {
+          "at": 23000,
+          "cmd": "stop"
+        },
+        {
+          "at": 26000,
+          "cmd": "move",
+          "args": {
+            "forward": 0.5,
+            "strafe": -0.6
+          }
+        },
+        {
+          "at": 31000,
+          "cmd": "move",
+          "args": {
+            "forward": -1,
+            "strafe": 0
+          }
+        },
+        {
+          "at": 34000,
+          "cmd": "stop"
+        },
+        {
+          "at": 37000,
+          "cmd": "move",
+          "args": {
+            "forward": 0.5,
+            "strafe": 0
+          }
+        },
+        {
+          "at": 40000,
+          "cmd": "jump",
+          "args": 2000
+        },
+        {
+          "at": 42000,
+          "cmd": "stop"
+        }
+      ]
+    },
+    {
+      "role": "observer",
+      "watch": "driver",
+      "drive": []
+    }
+  ],
+  "iterations": 1,
+  "serverEnv": {
+    "VIBE_PHYSICS_BACKEND": "physx_gpu"
+  }
+}

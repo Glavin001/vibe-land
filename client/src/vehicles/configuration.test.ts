@@ -29,7 +29,7 @@ describe('shared vehicle configuration', () => {
  });
  it('validates versions, finite dimensions, ranges and unknown fields', () => {
   const c=defaultConfiguration();
-  for(const invalid of [null, {...c,version:2}, {...c,model:'unknown'}, {...c,finish:'red'}, {...c,extra:1},
+  for(const invalid of [null, {...c,version:3}, {...c,model:'unknown'}, {...c,finish:'red'}, {...c,extra:1},
    {...c,dimensions:{...c.dimensions,wheelbase:NaN}}, {...c,dimensions:{...c.dimensions,track:100}},
    {...c,dimensions:{...c.dimensions,arbitraryMass:10}}]) expect(()=>normalizeConfiguration(invalid)).toThrow();
  });

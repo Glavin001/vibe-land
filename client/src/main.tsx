@@ -23,10 +23,15 @@ import { installPoseTrace } from './city/poseTrace';
 // Agent drive: mutating look/move/shoot surface for browser agents.
 import './agentDrive';
 
+const AudioLabPage = lazy(() => import('./pages/AudioLab').then(m => ({ default: m.AudioLabPage })));
 const GaragePage = lazy(() => import('./pages/Garage').then(m => ({default: m.GaragePage})));
 const GrassLabPage = lazy(() => import('./pages/GrassLab').then(m => ({ default: m.GrassLabPage })));
 
 const root = createRoot(document.getElementById('root')!);
+// The entry module can be replaced while tuning audio. Release old component
+// effects first so their animation frames and sound loops cannot keep running
+// behind a newly mounted review page.
+import.meta.hot?.dispose(() => root.unmount());
 
 // Backwards-compat: silently rewrite /godmode to /builder/world so the URL
 // matches the new canonical path. Do this before resolving the route so the
@@ -52,6 +57,9 @@ if (
 const route = resolveAppRoute(window.location.pathname, window.location.search);
 
 switch (route.kind) {
+  case 'audioLab':
+    root.render(<Suspense fallback={<div>Opening sound studio…</div>}><AudioLabPage /></Suspense>);
+    break;
   case 'grassLab':
     root.render(<Suspense fallback={<div>Opening grass preview…</div>}><GrassLabPage /></Suspense>);
     break;

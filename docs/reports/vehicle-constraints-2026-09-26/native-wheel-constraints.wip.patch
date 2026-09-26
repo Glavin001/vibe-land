@@ -1,0 +1,398 @@
+diff --git a/demos/blast-stress-demo/CMakeLists.txt b/demos/blast-stress-demo/CMakeLists.txt
+index 537c1b9d..0f768516 100644
+--- a/demos/blast-stress-demo/CMakeLists.txt
++++ b/demos/blast-stress-demo/CMakeLists.txt
+@@ -965,6 +965,13 @@ if(BLAST_ENABLE_CUDA_STRESS)
+     target_include_directories(native_vehicle_loads_test PRIVATE ${NATIVE_CHECKPOINT_TEST_INCLUDES})
+     target_link_libraries(native_vehicle_loads_test PRIVATE PhysXNativeVehicle ${PHYSX_VEHICLE} ${NATIVE_DESTRUCTION_TEST_LIBS})
+     add_test(NAME physx_native_vehicle_loads COMMAND native_vehicle_loads_test)
++    add_executable(native_vehicle_constraints_test tests/native_vehicle_constraints_test.cpp physx_scene.cpp)
++    target_compile_definitions(native_vehicle_constraints_test PRIVATE PX_PHYSX_STATIC_LIB NDEBUG PX_SUPPORT_PVD=0 PX_SUPPORT_OMNI_PVD=0)
++    target_include_directories(native_vehicle_constraints_test PRIVATE ${NATIVE_CHECKPOINT_TEST_INCLUDES})
++    target_link_options(native_vehicle_constraints_test PRIVATE "-Wl,-rpath,${PHYSX_LIB_DIR}")
++    target_link_libraries(native_vehicle_constraints_test PRIVATE PhysXNativeVehicle ${PHYSX_VEHICLE} ${NATIVE_DESTRUCTION_TEST_LIBS} ${PX_DESTRUCTION_GPU_DRIVER})
++    add_test(NAME physx_native_vehicle_constraints COMMAND native_vehicle_constraints_test)
++
+ 
+     add_executable(native_vehicle_wall_test tests/native_vehicle_wall_test.cpp physx_scene.cpp state_writer.cpp)
+     target_compile_definitions(native_vehicle_wall_test PRIVATE PX_PHYSX_STATIC_LIB NDEBUG PX_SUPPORT_PVD=0 PX_SUPPORT_OMNI_PVD=0)
+diff --git a/destruction/vehicle/PxNativeVehicle.cpp b/destruction/vehicle/PxNativeVehicle.cpp
+index 2f805d42..f1a0d2aa 100644
+--- a/destruction/vehicle/PxNativeVehicle.cpp
++++ b/destruction/vehicle/PxNativeVehicle.cpp
+@@ -106,11 +106,12 @@ void setBaseParams(const NativeVehicleDesc& d, BaseVehicleParams& p)
+     }
+ }
+ 
+-void setDriveParams(const NativeVehicleDesc& d, DirectDrivetrainParams& p)
++template<typename T>
++void setDriveParams(const T& d, DirectDrivetrainParams& p)
+ {
+     auto& t = p.directDriveThrottleResponseParams;
+     t.maxResponse = d.maxDriveTorque;
+-    for (PxU32 i = 0; i < 4; ++i) t.wheelResponseMultipliers[i] = (d.rearWheelDriveOnly && i < 2) ? 0.0f : 1.0f;
++    for (PxU32 i = 0; i < 4; ++i) t.wheelResponseMultipliers[i] = ((d.rearWheelDriveOnly && i < 2) || (d.frontWheelDriveOnly && i >= 2)) ? 0.0f : 1.0f;
+     t.nonlinearResponse.clear();
+     // Full torque up to a third of the top speed, then linearly to zero.
+     const PxReal throttles[5] = {0.0f, 0.25f, 0.5f, 0.75f, 1.0f};
+@@ -124,6 +125,48 @@ void setDriveParams(const NativeVehicleDesc& d, DirectDrivetrainParams& p)
+     }
+ }
+ 
++// One native constraint identity per wheel lets destruction attribute solved
++// suspension-limit/sticky loads without dividing an aggregate by guesswork.
++// Keep the SDK shader and its padded constant layout: only slot zero is active.
++// eOUTPUT_FORCE requests writeback; it does not change the constraint law.
++PxU32 wheelConstraintSolverPrep(Px1DConstraint* rows, PxVec3p& offset, PxU32 capacity,
++    PxConstraintInvMassScale& scale, const void* block, const PxTransform& a,
++    const PxTransform& b, bool extended, PxVec3p& ca, PxVec3p& cb)
++{
++    const PxU32 count = vehicleConstraintSolverPrep(rows, offset, capacity, scale, block, a, b, extended, ca, cb);
++    for (PxU32 i=0; i<count; ++i) rows[i].flags |= Px1DConstraintFlag::eOUTPUT_FORCE;
++    return count;
++}
++class WheelConstraintConnector final : public PxVehicleConstraintConnector {
++    PxVehiclePhysXConstraintState* mSource;
++    PxVehiclePhysXConstraintState mBlock[PxVehiclePhysXConstraintLimits::eNB_WHEELS_PER_PXCONSTRAINT];
++public:
++    explicit WheelConstraintConnector(PxVehiclePhysXConstraintState* source) : mSource(source) {
++        for (auto& state : mBlock) state.setToDefault();
++    }
++    void* prepareData() override { mBlock[0] = *mSource; return mBlock; }
++    const void* getConstantBlock() const override { return mBlock; }
++    PxConstraintSolverPrep getPrep() const override { return wheelConstraintSolverPrep; }
++};
++
++bool createWheelConstraints(PxPhysics& physics, PxRigidBody& actor, PxVehiclePhysXConstraints& constraints)
++{
++    static_assert(PxVehiclePhysXConstraintLimits::eNB_CONSTRAINTS_PER_VEHICLE >= 4,
++        "Native four-wheel wrapper needs four constraint slots");
++    PxVehicleConstraintsDestroy(constraints);
++    const PxConstraintShaderTable shaders = {wheelConstraintSolverPrep, visualiseVehicleConstraint, PxConstraintFlag::Enum(0)};
++    for (PxU32 w=0; w<4; ++w) {
++        void* memory = PX_ALLOC(sizeof(WheelConstraintConnector), "NativeVehicleWheelConstraint");
++        if (!memory) return false;
++        auto* connector = PX_PLACEMENT_NEW(memory, WheelConstraintConnector)(&constraints.constraintStates[w]);
++        constraints.constraintConnectors[w] = connector;
++        constraints.constraints[w] = physics.createConstraint(&actor, nullptr, *connector, shaders,
++            sizeof(PxVehiclePhysXConstraintState)*PxVehiclePhysXConstraintLimits::eNB_WHEELS_PER_PXCONSTRAINT);
++        if (!constraints.constraints[w]) return false;
++    }
++    return true;
++}
++
+ // The snippet vehicle discards the per-wheel query result; keep it so a
+ // consumer can see what each wheel is standing on.
+ class Car : public DirectDriveVehicle {
+@@ -200,6 +243,22 @@ public:
+ 
+     bool initialize(const PxCookingParams& cooking, const NativeVehicleDesc& desc, const PxTransform& pose, const char* name)
+     {
++        mTuning.frontStiffness = desc.frontStiffness;
++        mTuning.rearStiffness = desc.rearStiffness;
++        mTuning.frontDamping = desc.frontDamping;
++        mTuning.rearDamping = desc.rearDamping;
++        mTuning.tyreFriction = desc.tyreFriction;
++        mTuning.maxSteerRadians = desc.maxSteerRadians;
++        mTuning.maxDriveTorque = desc.maxDriveTorque;
++        mTuning.maxBrakeTorque = desc.maxBrakeTorque;
++        mTuning.maxHandbrakeTorque = desc.maxHandbrakeTorque;
++        mTuning.driveTopSpeed = desc.driveTopSpeed;
++        if (desc.frontWheelDriveOnly && desc.rearWheelDriveOnly) return false;
++        mTuning.frontWheelDriveOnly = desc.frontWheelDriveOnly;
++        mTuning.rearWheelDriveOnly = desc.rearWheelDriveOnly;
++        mTargetTuning = mTuning;
++        mFrontDrive = desc.rearWheelDriveOnly ? 0.0f : 1.0f;
++        mRearDrive = desc.frontWheelDriveOnly ? 0.0f : 1.0f;
+         setBaseParams(desc, mVehicle.mBaseParams);
+         setDriveParams(desc, mVehicle.mDirectDriveParams);
+         mFrictions[0].material = &mMaterial;
+@@ -218,6 +277,7 @@ public:
+ 
+         PxRigidDynamic* body = mVehicle.mPhysXState.physxActor.rigidBody->is<PxRigidDynamic>();
+         if (!body) return false;
++        if (desc.keepConstraints && !createWheelConstraints(mPhysics, *body, mVehicle.mPhysXState.physxConstraints)) return false;
+         PxShape* shapes[PxVehicleLimits::eMAX_NB_WHEELS + 1];
+         const PxU32 count = body->getShapes(shapes, PxVehicleLimits::eMAX_NB_WHEELS + 1);
+         for (PxU32 i = 0; i < count; ++i) {
+@@ -261,8 +321,94 @@ public:
+             : PxVehicleDirectDriveTransmissionCommandState::eFORWARD;
+     }
+ 
++    bool setTuning(const NativeVehicleTuning& tuning) override
++    {
++        if (!PxIsFinite(tuning.frontStiffness) || tuning.frontStiffness <= 0.0f) return false;
++        if (!PxIsFinite(tuning.rearStiffness) || tuning.rearStiffness <= 0.0f) return false;
++        if (!PxIsFinite(tuning.frontDamping) || tuning.frontDamping <= 0.0f) return false;
++        if (!PxIsFinite(tuning.rearDamping) || tuning.rearDamping <= 0.0f) return false;
++        if (!PxIsFinite(tuning.tyreFriction) || tuning.tyreFriction <= 0.0f) return false;
++        if (!PxIsFinite(tuning.maxSteerRadians) || tuning.maxSteerRadians <= 0.0f) return false;
++        if (!PxIsFinite(tuning.maxDriveTorque) || tuning.maxDriveTorque <= 0.0f) return false;
++        if (!PxIsFinite(tuning.maxBrakeTorque) || tuning.maxBrakeTorque <= 0.0f) return false;
++        if (!PxIsFinite(tuning.maxHandbrakeTorque) || tuning.maxHandbrakeTorque <= 0.0f) return false;
++        if (!PxIsFinite(tuning.driveTopSpeed) || tuning.driveTopSpeed <= 0.0f) return false;
++        if (tuning.maxSteerRadians > PxHalfPi) return false;
++        if (tuning.frontWheelDriveOnly && tuning.rearWheelDriveOnly) return false;
++        mTargetTuning = tuning;
++        mTuningRemaining = 0.2f;
++        actor()->wakeUp();
++        return true;
++    }
++
++    bool setFunctionalState(PxU32 wheelMask, bool drivelineConnected) override
++    {
++        if (wheelMask & ~15u) return false;
++        mWheelMask = wheelMask;
++        mDrivelineConnected = drivelineConnected;
++        auto& axles = mVehicle.mBaseParams.axleDescription;
++        axles.setToDefault();
++        for (PxU32 axle=0; axle<2; ++axle) {
++            PxU32 ids[2], count=0;
++            for (PxU32 w=2*axle; w<2*axle+2; ++w)
++                if (wheelMask & (1u<<w)) ids[count++]=w;
++            if (count) axles.addAxle(count, ids);
++        }
++        for (PxU32 w=0; w<4; ++w) if (!(wheelMask & (1u<<w))) {
++            auto& state=mVehicle.mBaseState;
++            state.wheelRigidBody1dStates[w].setToDefault();
++            state.roadGeomStates[w].setToDefault();
++            state.suspensionStates[w].setToDefault();
++            state.suspensionForces[w].setToDefault();
++            state.tireForces[w].setToDefault();
++            state.tireStickyStates[w].setToDefault();
++            mVehicle.mPhysXState.physxConstraints.constraintStates[w].setToDefault();
++        }
++        PxVehicleConstraintsDirtyStateUpdate(mVehicle.mPhysXState.physxConstraints);
++        actor()->wakeUp();
++        return true;
++    }
++
++    void advanceTuning(PxReal dt)
++    {
++        if (mTuningRemaining <= 0.0f || dt <= 0.0f) return;
++        const PxReal alpha = PxMin(1.0f, dt / mTuningRemaining);
++        mTuning.frontStiffness += (mTargetTuning.frontStiffness - mTuning.frontStiffness) * alpha;
++        mTuning.rearStiffness += (mTargetTuning.rearStiffness - mTuning.rearStiffness) * alpha;
++        mTuning.frontDamping += (mTargetTuning.frontDamping - mTuning.frontDamping) * alpha;
++        mTuning.rearDamping += (mTargetTuning.rearDamping - mTuning.rearDamping) * alpha;
++        mTuning.tyreFriction += (mTargetTuning.tyreFriction - mTuning.tyreFriction) * alpha;
++        mTuning.maxSteerRadians += (mTargetTuning.maxSteerRadians - mTuning.maxSteerRadians) * alpha;
++        mTuning.maxDriveTorque += (mTargetTuning.maxDriveTorque - mTuning.maxDriveTorque) * alpha;
++        mTuning.maxBrakeTorque += (mTargetTuning.maxBrakeTorque - mTuning.maxBrakeTorque) * alpha;
++        mTuning.maxHandbrakeTorque += (mTargetTuning.maxHandbrakeTorque - mTuning.maxHandbrakeTorque) * alpha;
++        mTuning.driveTopSpeed += (mTargetTuning.driveTopSpeed - mTuning.driveTopSpeed) * alpha;
++        mFrontDrive += ((mTargetTuning.rearWheelDriveOnly ? 0.0f : 1.0f) - mFrontDrive) * alpha;
++        mRearDrive += ((mTargetTuning.frontWheelDriveOnly ? 0.0f : 1.0f) - mRearDrive) * alpha;
++        mTuningRemaining = PxMax(0.0f, mTuningRemaining - dt);
++        auto& base = mVehicle.mBaseParams;
++        base.brakeResponseParams[0].maxResponse = mTuning.maxBrakeTorque;
++        base.brakeResponseParams[1].maxResponse = mTuning.maxHandbrakeTorque;
++        base.steerResponseParams.maxResponse = mTuning.maxSteerRadians;
++        mFrictions[0].friction = mTuning.tyreFriction;
++        for (PxU32 i = 0; i < 4; ++i) {
++            base.suspensionForceParams[i].stiffness = i < 2 ? mTuning.frontStiffness : mTuning.rearStiffness;
++            base.suspensionForceParams[i].damping = i < 2 ? mTuning.frontDamping : mTuning.rearDamping;
++            mVehicle.mPhysXParams.physxMaterialFrictionParams[i].defaultFriction = mTuning.tyreFriction;
++        }
++        setDriveParams(mTuning, mVehicle.mDirectDriveParams);
++        auto& throttle = mVehicle.mDirectDriveParams.directDriveThrottleResponseParams;
++        throttle.wheelResponseMultipliers[0] = throttle.wheelResponseMultipliers[1] = mFrontDrive;
++        throttle.wheelResponseMultipliers[2] = throttle.wheelResponseMultipliers[3] = mRearDrive;
++    }
++
+     void step(PxReal dt) override
+     {
++        advanceTuning(dt);
++        auto& throttle = mVehicle.mDirectDriveParams.directDriveThrottleResponseParams;
++        for (PxU32 w=0; w<4; ++w)
++            throttle.wheelResponseMultipliers[w] = mDrivelineConnected && (mWheelMask & (1u<<w))
++                ? (w<2 ? mFrontDrive : mRearDrive) : 0.0f;
+         mContext.gravity = mScene.getGravity();
+         mVehicle.loads = NativeVehicleStepLoads{};
+ #if defined(PX_VEHICLE_COMPONENT_REPLACEMENT_VERSION)
+@@ -309,6 +455,10 @@ public:
+         return count;
+     }
+ 
++    PxConstraint* wheelConstraint(PxU32 wheel) const override {
++        return wheel < 4 ? mVehicle.mPhysXState.physxConstraints.constraints[wheel] : nullptr;
++    }
++
+     void release() override { delete this; }
+ 
+ private:
+@@ -328,6 +478,12 @@ private:
+     PxVehiclePhysXMaterialFriction mFrictions[1];
+     PxConvexMesh* mSweepMesh = NULL;
+     PxShape* mChassis = NULL;
++    NativeVehicleTuning mTuning, mTargetTuning;
++    PxReal mTuningRemaining = 0.0f;
++    PxReal mFrontDrive = 1.0f;
++    PxReal mRearDrive = 1.0f;
++    PxU32 mWheelMask = 15;
++    bool mDrivelineConnected = true;
+     bool mInitialized = false;
+     bool mInScene = false;
+ };
+diff --git a/destruction/vehicle/PxNativeVehicle.h b/destruction/vehicle/PxNativeVehicle.h
+index ed8c6993..5a33cfda 100644
+--- a/destruction/vehicle/PxNativeVehicle.h
++++ b/destruction/vehicle/PxNativeVehicle.h
+@@ -15,6 +15,22 @@
+ namespace physx {
+ namespace native {
+ 
++// Geometry-free live parameters. Apply between steps; never resets dynamic state.
++struct NativeVehicleTuning {
++    PxReal frontStiffness = 1.0f;
++    PxReal rearStiffness = 1.0f;
++    PxReal frontDamping = 1.0f;
++    PxReal rearDamping = 1.0f;
++    PxReal tyreFriction = 1.0f;
++    PxReal maxSteerRadians = 1.0f;
++    PxReal maxDriveTorque = 1.0f;
++    PxReal maxBrakeTorque = 1.0f;
++    PxReal maxHandbrakeTorque = 1.0f;
++    PxReal driveTopSpeed = 1.0f;
++    bool frontWheelDriveOnly = false;
++    bool rearWheelDriveOnly = false;
++};
++
+ struct NativeVehicleDesc {
+     // Rigid body. The centre of mass sits above and ahead of the actor origin,
+     // which is at the rear axle, road level.
+@@ -58,6 +74,7 @@ struct NativeVehicleDesc {
+     PxReal maxHandbrakeTorque = 3000.0f;
+     PxReal maxDriveTorque = 750.0f;
+     PxReal driveTopSpeed = 60.0f;
++    bool frontWheelDriveOnly = false;
+     bool rearWheelDriveOnly = false;
+ 
+     // Road geometry. Sweeps ride a cylinder over rubble and kerbs; raycasts are
+@@ -137,6 +154,21 @@ public:
+     // Appended to retain existing virtual slot order; rebuild users for this API.
+     virtual NativeVehicleStepLoads stepLoads() const = 0;
+ 
++    // Transitions over 0.2 s. Invalid input leaves the previous target intact.
++    virtual bool setTuning(const NativeVehicleTuning& tuning) = 0;
++
++    // Connectivity result, applied between scene steps. Bit i enables corner i;
++    // a missing corner performs no road query, spring/tire force, constraint or
++    // wheel integration. Driveline loss cuts drive torque while brakes remain.
++    // This does not fracture shapes or restore missing geometry.
++    virtual bool setFunctionalState(PxU32 wheelMask, bool drivelineConnected) = 0;
++
++    // Stable, independently solved suspension/sticky constraint for corner i.
++    // Borrowed until release(); null for invalid indices or keepConstraints=false.
++    // Read solved force only after fetchResults. Native destruction consumes the
++    // corresponding GPU writeback in the same step, not a delayed force estimate.
++    virtual PxConstraint* wheelConstraint(PxU32 wheel) const = 0;
++
+ protected:
+     virtual ~NativeVehicle() {}
+ };
+diff --git a/physx/source/lowleveldynamics/src/DyConstraintSetup.cpp b/physx/source/lowleveldynamics/src/DyConstraintSetup.cpp
+index 62481340..ec46452c 100644
+--- a/physx/source/lowleveldynamics/src/DyConstraintSetup.cpp
++++ b/physx/source/lowleveldynamics/src/DyConstraintSetup.cpp
+@@ -649,6 +649,13 @@ PxReal simDt, PxReal recipSimDt, PxReal biasCoefficient)
+ {
+ 	if (prepDesc.numRows == 0)
+ 	{
++        // A dynamically disabled joint has no load this solve. Do not expose
++        // its previous nonzero wrench after its last row was removed.
++        if (prepDesc.writeback) {
++            auto* output = reinterpret_cast<ConstraintWriteback*>(prepDesc.writeback);
++            output->linearImpulse = PxVec3(0);
++            output->angularImpulse = PxVec3(0);
++        }
+ 		prepDesc.desc->constraint = NULL;
+ 		prepDesc.desc->writeBack = NULL;
+ 		prepDesc.desc->constraintLengthOver16 = 0;
+diff --git a/physx/source/lowleveldynamics/src/DyTGSContactPrep.cpp b/physx/source/lowleveldynamics/src/DyTGSContactPrep.cpp
+index a70d045c..24b41963 100644
+--- a/physx/source/lowleveldynamics/src/DyTGSContactPrep.cpp
++++ b/physx/source/lowleveldynamics/src/DyTGSContactPrep.cpp
+@@ -1945,6 +1945,13 @@ PxU32 setupSolverConstraintStep(
+ {
+ 	if (prepDesc.numRows == 0)
+ 	{
++        // A dynamically disabled joint has no load this solve. Do not expose
++        // its previous nonzero wrench after its last row was removed.
++        if (prepDesc.writeback) {
++            auto* output = reinterpret_cast<ConstraintWriteback*>(prepDesc.writeback);
++            output->linearImpulse = PxVec3(0);
++            output->angularImpulse = PxVec3(0);
++        }
+ 		prepDesc.desc->constraint = NULL;
+ 		prepDesc.desc->writeBack = NULL;
+ 		prepDesc.desc->constraintLengthOver16 = 0;
+diff --git a/demos/blast-stress-demo/tests/native_vehicle_constraints_test.cpp b/demos/blast-stress-demo/tests/native_vehicle_constraints_test.cpp
+new file mode 100644
+index 00000000..dea4e7e6
+--- /dev/null
++++ b/demos/blast-stress-demo/tests/native_vehicle_constraints_test.cpp
+@@ -0,0 +1,63 @@
++// Exact corner identities and solved wrench accounting; no fracture claim.
++#include "../physx_scene.h"
++#include "PxNativeVehicle.h"
++#include <cstdio>
++#include <stdexcept>
++#include <set>
++#include <memory>
++using namespace physx;
++static void require(bool value, const char* message) { if (!value) throw std::runtime_error(message); }
++static void run(blast_demo::PhysicsMode mode, PxSolverType::Enum solver) {
++    blast_demo::SceneCapacity capacity;
++    blast_demo::PhysXScene context(mode, mode==blast_demo::PhysicsMode::Gpu, capacity, nullptr, false, true, false, false, solver);
++    auto& scene=context.scene();
++    native::NativeVehicleDesc desc;
++    auto releaseCar=[](native::NativeVehicle* car){if(car)car->release();};
++    std::unique_ptr<native::NativeVehicle,decltype(releaseCar)> owner(native::NativeVehicle::create(context.physics(), scene, context.cookingParams(), context.material(), desc,
++        PxTransform(PxVec3(0,.15f,0))),releaseCar);
++    auto* car=owner.get();
++    require(car && car->constraintCount()==4, "expected one constraint per corner");
++    require(!car->wheelConstraint(4), "out-of-range corner returned a constraint");
++    std::set<PxConstraint*> identities;
++    for (PxU32 w=0;w<4;++w) require(identities.insert(car->wheelConstraint(w)).second,"corners share a constraint");
++    // Exclude ordinary chassis contacts from the force-conservation oracle.
++    car->chassisShape()->setFlag(PxShapeFlag::eSIMULATION_SHAPE,false);
++    // Momentum accounting excludes solver stabilization's independent velocity
++    // projection. The separate production-settings feature test keeps it on.
++    car->actor()->setStabilizationThreshold(0);
++    car->actor()->setLinearDamping(0);car->actor()->setAngularDamping(0);
++    car->actor()->setLinearVelocity(PxVec3(0,-5,0));
++    const float dt=1.0f/60;
++    unsigned observed=0;float peak=0,maxError=0;
++    for(unsigned tick=0;tick<120;++tick) {
++        if(tick==40) require(car->setFunctionalState(14,true),"disable one corner");
++        if(tick==80) require(car->setFunctionalState(0,false),"disable all corners");
++        const auto before=car->actor()->getLinearVelocity();
++        car->setCommands(0,1,0,0);car->step(dt);
++        const auto command=car->stepLoads();
++        require(command.available,"missing command load observer");
++        scene.simulate(dt);require(scene.fetchResults(true),"scene step");
++        PxVec3 total(0);
++        for(PxU32 w=0;w<4;++w) {
++            PxVec3 force,torque;car->wheelConstraint(w)->getForce(force,torque);
++            require(force.isFinite() && torque.isFinite(),"invalid solved wrench");
++            total+=force;
++            peak=PxMax(peak,force.magnitude());
++            if(force.magnitude()>1) ++observed;
++            if((tick>=80 || (tick>=40 && w==0)) && (force.magnitude()>1e-5f || torque.magnitude()>1e-5f)) std::fprintf(stderr,"disabled mode=%u tick=%u wheel=%u force=%g,%g,%g torque=%g,%g,%g\n",unsigned(mode),tick,w,force.x,force.y,force.z,torque.x,torque.y,torque.z);
++            if(tick>=80 || (tick>=40 && w==0)) require(force.magnitude()<1e-5f && torque.magnitude()<1e-5f,"disabled wheel retains solved constraint load");
++        }
++        const auto expected=before+command.actorLinearAcceleration*dt+total*(dt/desc.mass);
++        const float error=(expected-car->actor()->getLinearVelocity()).magnitude();
++        maxError=PxMax(maxError,error);
++        if(error>.02f) std::fprintf(stderr,"mode=%u tick=%u error=%g force=%g,%g,%g\n",unsigned(mode),tick,error,total.x,total.y,total.z);
++        require(error<.02f,"per-wheel solved forces do not conserve scene velocity");
++    }
++    require(observed>0 && peak>100,"fixture never loaded wheel constraints");
++    require(context.healthy(),"physics error");
++    std::printf("%s %s corner constraints: %u nonzero samples, peak %g N, velocity residual %g m/s\n",
++        mode==blast_demo::PhysicsMode::Gpu?"GPU":"CPU",solver==PxSolverType::eTGS?"TGS":"PGS",observed,peak,maxError);
++
++}
++int main() {try {for(auto solver:{PxSolverType::ePGS,PxSolverType::eTGS}) {run(blast_demo::PhysicsMode::Cpu,solver);run(blast_demo::PhysicsMode::Gpu,solver);}return 0;}
++ catch(const std::exception& e) {std::fprintf(stderr,"FAIL: %s\n",e.what());return 1;}}

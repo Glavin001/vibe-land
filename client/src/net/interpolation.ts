@@ -109,6 +109,8 @@ function vehicleAtRest(sample: VehicleSample): boolean {
 }
 
 export class VehicleInterpolator {
+  /** Optional collision-aware extrapolation, installed by the live physics runtime. */
+  extrapolate: ((id:number, sample:VehicleSample, seconds:number)=>VehicleSample) | null = null;
   private readonly byEntity = new Map<number, VehicleSample[]>();
 
   constructor(private readonly maxSamples = 32) {}
@@ -151,7 +153,7 @@ export class VehicleInterpolator {
   sample(entityId: number, targetTimeUs: number): VehicleSample | null {
     const queue = this.byEntity.get(entityId);
     if (!queue || queue.length === 0) return null;
-    if (queue.length === 1 || targetTimeUs <= queue[0].serverTimeUs) {
+    if (targetTimeUs <= queue[0].serverTimeUs) {
       return { ...queue[0] };
     }
 
@@ -182,6 +184,7 @@ export class VehicleInterpolator {
       maxExtrapolateSecs,
     );
     if (extrapolateSecs <= 0) return { ...latest };
+    if (this.extrapolate) return this.extrapolate(entityId, latest, extrapolateSecs);
 
     const lv = latest.linearVelocity;
     const av = latest.angularVelocity;

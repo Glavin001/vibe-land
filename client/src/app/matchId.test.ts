@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { buildMatchHref, resolveRequestedMatchId } from './matchId';
+import { buildMatchHref, resolveRequestedMatchId, defaultMatchIdForPath, isCityMatchId } from './matchId';
+
+it('keeps town-kit sessions on the real city simulation', () => {
+  expect(defaultMatchIdForPath('/town-kit/')).toBe('city-town-kit');
+  expect(isCityMatchId(defaultMatchIdForPath('/town-kit'))).toBe(true);
+  expect(defaultMatchIdForPath('/city')).toBe('city-default');
+});
 
 describe('resolveRequestedMatchId', () => {
   it('uses the match query parameter when present', () => {

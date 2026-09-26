@@ -1523,7 +1523,12 @@ export class CityClient {
   // drains the queue once per frame, so the policy's cost is inside the frame
   // and its stats, and several messages applied between frames arrive together.
   private dustContext: DustExtractContext;
-  private readonly dustQueue = new DustSourceQueue();
+  private readonly audioQueue = new DustSourceQueue(512);
+  private audioObserving = false;
+  private audioMotion: ((key:number,body:LedgerBody,tick:number,x:number,y:number,z:number,vx:number,vy:number,vz:number,mass:number,radius:number,atMs:number)=>void) | null = null;
+  private readonly dustQueue = new DustSourceQueue(256, source => {
+    if (this.audioObserving) this.audioQueue.push(source);
+  });
   private dustSourcesTotal = 0;
   private dustSourcesDroppedByCap = 0;
 
@@ -1539,7 +1544,7 @@ export class CityClient {
     key: number, body: LedgerBody, tick: number,
     x: number, y: number, z: number, vx: number, vy: number, vz: number,
   ): void {
-    if (!dustEnabled()) return;
+    if (!dustEnabled() && !this.audioObserving) return;
     let mass = 0;
     let radius = 0;
     const slots = body.chunkSlots;
@@ -1558,6 +1563,7 @@ export class CityClient {
       leadMs = Math.min(500, Math.max(0, ((tick - presentedTick) / this.tickRate) * 1000));
     }
     const before = this.dustQueue.dropped;
+    this.audioMotion?.(key,body,tick,x,y,z,vx,vy,vz,mass,radius,performance.now()+leadMs);
     if (this.dustImpacts.noteVelocity(
       key, body.structureId, tick, x, y, z, vx, vy, vz, mass, radius,
       performance.now() + leadMs, this.dustQueue,
@@ -1567,7 +1573,7 @@ export class CityClient {
   }
 
   private extractDust(message: TopologyMessage): void {
-    if (!dustEnabled()) return;
+    if (!dustEnabled() && !this.audioObserving) return;
     // How far this message's tick is ahead of what is on screen. Wire v3 and
     // holdTopology apply at the sample clock, so ~0; wire v2 applies at
     // arrival, a playout delay ahead. Born that far in the future, the puff
@@ -1593,6 +1599,18 @@ export class CityClient {
   drainDustSources(visit: (source: DustSource) => void): number {
     return this.dustQueue.drain(visit);
   }
+
+  observeAudio(enabled: boolean, motion: CityClient['audioMotion'] = null): void {
+    this.audioObserving = enabled;
+    this.audioMotion = enabled ? motion : null;
+    if (!enabled) this.audioQueue.clear();
+  }
+
+  drainAudioSources(visit: (source: DustSource) => void): number {
+    return this.audioQueue.drain(visit);
+  }
+
+  audioTickRate(): number { return this.tickRate; }
 
   /** Sources that arrived faster than frames drained them. Cumulative. */
   dustQueueDropped(): number {
@@ -1813,6 +1831,7 @@ export class CityClient {
         this.renderClockTick = -1;
         // A new ledger: no body's last velocity is the same body's.
         this.dustImpacts.clear();
+        this.audioQueue.clear();
         this.dustSamplePrev.clear();
         this.settledAtTick.clear();
         this.baselineGenerations.clear();

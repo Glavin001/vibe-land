@@ -146,7 +146,7 @@ export class LiveGeometry {
  * existing buffers; each instance still maps to a stable, selectable part ID. */
 export class LiveAssembly {
   constructor(group, materials) { this.group = group; this.materials = materials; this.batches = new Map(); this.meshes = []; }
-  update(model, explosion, hidden) {
+  update(model, explosion, hidden, explosionCenters) {
     const buckets = new Map();
     for (const part of model.parts) {
       const key = part.geometry.uuid + '|' + part.system + '|' + part.material;
@@ -166,7 +166,7 @@ export class LiveAssembly {
       mesh.count=parts.length;
       mesh.userData = { system: parts[0].system, material: parts[0].material, parts }; mesh.visible = !hidden.has(parts[0].system);
       for (let i = 0; i < parts.length; i++) {
-        matrix.copy(parts[i].matrix); const c = parts[i].center;
+        matrix.copy(parts[i].matrix); const c = explosionCenters?.get(parts[i].id) ?? parts[i].center;
         direction.set(c[0], c[1] - .65, c[2]); if (direction.lengthSq() < .01) direction.set(0, 1, 0);
         direction.normalize().multiplyScalar(explosion * .9); matrix.elements[12] += direction.x; matrix.elements[13] += direction.y; matrix.elements[14] += direction.z;
         mesh.setMatrixAt(i, matrix);

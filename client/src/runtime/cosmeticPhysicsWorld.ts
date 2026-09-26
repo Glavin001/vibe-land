@@ -26,6 +26,15 @@ export class CosmeticPhysicsWorld {
     return new CosmeticPhysicsWorld(sim);
   }
 
+  /** Read-only sweeps share the loaded terrain/props; exclude ragdolls and vehicles. */
+  sweepVehicleStatic(position: readonly number[], quaternion: readonly number[], delta: readonly number[],
+    halfExtents: readonly number[], radius = 0): {fraction:number; normal:[number,number,number]} | null {
+    const hit = this.sim.sweepVehicleStatic(...[
+      ...position, ...quaternion, ...delta, ...halfExtents, radius,
+    ] as [number,number,number,number,number,number,number,number,number,number,number,number,number,number]);
+    return hit.length === 4 ? {fraction:hit[0],normal:[hit[1],hit[2],hit[3]]} : null;
+  }
+
   dispose(): void {
     this.accumulatorSec = 0;
     this.activeRagdollBodyIds.clear();

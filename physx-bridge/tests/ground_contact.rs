@@ -211,6 +211,7 @@ fn city_car(entity_id: u32, x: f32, z: f32) -> VehicleDesc {
         brake_torque: 900.0,
         handbrake_torque: 1_800.0,
         top_speed: 30.0,
+        front_wheel_drive: false,
         rear_wheel_drive: false,
         sweep_road_queries: true,
         road_mask: ALL & !GROUP_VEHICLE,

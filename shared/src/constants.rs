@@ -102,6 +102,9 @@ pub const PKT_CITY_NACK: u8 = 126;
 /// the other city packets (127-129 are the destruction wire's, see
 /// `destruction/src/wire.rs`). Layout in `server/src/meteor.rs`.
 pub const PKT_METEOR_LAUNCHED: u8 = 130;
+/// Server -> client: bounded, listener-relevant impact and scrape summaries.
+/// Version 1 format lives in server/src/contact_audio.rs. Loss-tolerant.
+pub const PKT_AUDIO_CONTACTS: u8 = 131;
 // Chunk kinematic stream rate (sim ticks between sends: SIM_HZ / this).
 // 60 Hz: every tick, as the snapshots (30 Hz before; captures record theirs).
 pub const CITY_CHUNK_STREAM_HZ: u16 = 60;

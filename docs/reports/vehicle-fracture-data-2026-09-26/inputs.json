@@ -1,0 +1,46 @@
+[
+  {
+    "name": "buggy",
+    "metadataSha256": "9265657ba2b947b9c75a79eae58aa2fffdbf4a99a4da32290544e9956ef80acf"
+  },
+  {
+    "name": "trophy",
+    "metadataSha256": "bec92a50dbeaaed032fcce9c9fea0ea631f00352ff6d01f9fa7d6a3fe3598ff8"
+  },
+  {
+    "name": "rally",
+    "metadataSha256": "2568b28a344f98bc359853e33198f1342797efdbd275d18242fe634207a9acc2"
+  },
+  {
+    "name": "monster",
+    "metadataSha256": "c18737e1b6d04a37f2c9984f7a5a4f7c95983976045337e7757d16edba8356a0"
+  },
+  {
+    "name": "derby",
+    "metadataSha256": "aa81f3d02160867c9e4e042754a205647ab4c10a5f7a60745446abdaf6941ef9"
+  },
+  {
+    "name": "sprint",
+    "metadataSha256": "df0f5ac2cba82ed5bc57eade97433c0283b39b38cd151ef01e4e1dabf3808bef"
+  },
+  {
+    "name": "trail",
+    "metadataSha256": "9265657ba2b947b9c75a79eae58aa2fffdbf4a99a4da32290544e9956ef80acf"
+  },
+  {
+    "name": "desert",
+    "metadataSha256": "bec92a50dbeaaed032fcce9c9fea0ea631f00352ff6d01f9fa7d6a3fe3598ff8"
+  },
+  {
+    "name": "touge",
+    "metadataSha256": "2568b28a344f98bc359853e33198f1342797efdbd275d18242fe634207a9acc2"
+  },
+  {
+    "name": "drift",
+    "metadataSha256": "aa81f3d02160867c9e4e042754a205647ab4c10a5f7a60745446abdaf6941ef9"
+  },
+  {
+    "name": "circuit",
+    "metadataSha256": "df0f5ac2cba82ed5bc57eade97433c0283b39b38cd151ef01e4e1dabf3808bef"
+  }
+]

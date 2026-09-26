@@ -1,5 +1,30 @@
 # Custom vehicle qualification
 
+## Customization update (2026-09-26)
+
+The garage now offers twelve builds on seven chassis, including five additional
+appearance/handling editions. Eleven builds are drivable. Configuration v2 adds
+independent paint channels and validated Vehicle2 driving settings; old imports
+migrate and geometry caches remain reusable. See
+[the capability and functional-damage design](vehicle2-garage-design.md).
+
+All eleven drivable builds passed a local native test using their actual
+prepared Simple geometry: idle, full acceleration, sustained flat-ground turns,
+suspension bounds and W+Space stopping. This supersedes the earlier statement
+below that no native operating cases have been checked. It does not qualify
+stress bonds, impact destruction, every tuning combination or Vast/CUDA.
+
+Reproduce preparation with `cd client && node scripts/verify-vehicle-builds.mjs
+/tmp/vibe-vehicle-assets /tmp/vehicle-build-fixtures.json`, then from the root:
+
+```sh
+VIBE_VEHICLE_BUILD_FIXTURES=/tmp/vehicle-build-fixtures.json cargo test \
+  -p web-fps-server --features native-destruction --bin web-fps-server \
+  prepared_garage_builds_drive_turn_and_brake -- --ignored --nocapture
+```
+
+## Original geometry and integration qualification
+
 The garage is an in-progress integration. Preview and server preparation do
 not certify Vehicle2 driving or native stress destruction. Strength values in
 `strength-profile.mjs` are initial joint tuning inputs, not measured results.

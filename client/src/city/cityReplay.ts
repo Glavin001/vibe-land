@@ -1,3 +1,4 @@
+import { ingestAudioContacts, resetAudioContacts } from '../audio/contactStream';
 // Play a tape into the real clients, on the clock the tape was cut at.
 //
 // The replay page's whole difference from the game is here: the clients'
@@ -10,7 +11,7 @@
 
 import { CityClient } from './cityClient';
 import { fetchCityManifest, type LoadedCityManifest } from './manifest';
-import { PKT_CITY_BOOTSTRAP, PKT_METEOR_LAUNCHED } from '../net/sharedConstants';
+import { PKT_AUDIO_CONTACTS, PKT_CITY_BOOTSTRAP, PKT_METEOR_LAUNCHED } from '../net/sharedConstants';
 import { routeInboundPacket } from '../net/inbound';
 import {
   inboundChannelOf,
@@ -110,6 +111,7 @@ export async function createReplayPlayer(
   let world = newWorld();
   // A fresh player (a rewind) starts with no rocks in the air.
   clearMeteorFlights();
+  resetAudioContacts();
 
   // A meteor launch is on the city stream; its body is in the snapshots. Each
   // flight is registered on the tape clock: through the server-clock offset
@@ -146,6 +148,10 @@ export async function createReplayPlayer(
         return;
       }
       if (index < first && (channel & TAPE_CHANNEL_PRELUDE) === 0) return;
+      if (packet[0] === PKT_AUDIO_CONTACTS) {
+        ingestAudioContacts(packet, arrivedMs);
+        return;
+      }
       if (packet[0] === PKT_METEOR_LAUNCHED) {
         launchMeteor(packet, arrivedMs);
         return;
@@ -200,6 +206,7 @@ export async function createReplayPlayer(
       // the tape never had, thick enough to hide the city and to dominate a
       // measurement taken from here. The skipped past raises none.
       client.drainDustSources(() => {});
+      resetAudioContacts();
     },
     tick: () => {
       if (!playingNow) return;
@@ -212,6 +219,7 @@ export async function createReplayPlayer(
           // newest it has), so the rest of the world starts afresh.
           cursor = 0;
           clearMeteorFlights();
+          resetAudioContacts();
           world = newWorld();
           startedAt = performance.now();
           pausedAt = 0;

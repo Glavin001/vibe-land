@@ -487,7 +487,9 @@ PxFilterFlags simulation_filter(PxFilterObjectAttributes attributes0,
 #endif
   pair_flags = PxPairFlag::eCONTACT_DEFAULT |
                PxPairFlag::eNOTIFY_THRESHOLD_FORCE_FOUND |
-               PxPairFlag::eNOTIFY_CONTACT_POINTS;
+               PxPairFlag::eNOTIFY_CONTACT_POINTS |
+               PxPairFlag::ePRE_SOLVER_VELOCITY |
+               PxPairFlag::eCONTACT_EVENT_POSE;
   if (contact_persists_enabled()) {
     pair_flags |= PxPairFlag::eNOTIFY_THRESHOLD_FORCE_PERSISTS;
   }
@@ -891,6 +893,15 @@ public:
   /// lookups and two rigid-body mass reads. Both are read-only over state that
   /// nothing mutates during the drain, which is what lets them move off the
   /// serial walk.
+  // Copied while the callback stream is valid, including the deferred path.
+  // Contact-point motion includes rotation about the centre of mass.
+  struct ContactMotion {
+    bool has_pre = false;
+    PxVec3 linear[2] = {PxVec3(0.0f), PxVec3(0.0f)};
+    PxVec3 angular[2] = {PxVec3(0.0f), PxVec3(0.0f)};
+    PxVec3 center[2] = {PxVec3(0.0f), PxVec3(0.0f)};
+  };
+
   struct PairPrecomputed {
 #ifdef VIBE_LAND_DESTRUCTION
     DestructionManager::ContactTarget target0;
@@ -1009,7 +1020,8 @@ public:
                               const physx::PxContactPairPoint *points,
                               PxU32 extracted, PxU32 contact_count,
                               bool sample_subspans,
-                              const PairPrecomputed *pre = nullptr) {
+                              const PairPrecomputed *pre = nullptr,
+                              const ContactMotion *motion = nullptr) {
     const auto sub_now = [&]() {
       return sample_subspans ? cycle_now() : std::uint64_t{0};
     };
@@ -1231,9 +1243,48 @@ public:
       const auto events_started = sub_now();
       if (total_magnitude > 0.0f) {
         weighted_point /= total_magnitude;
+        if (contact_events_.size() >= 8192) {
+          // Preserve gameplay collision reports, but bound the extra audio
+          // velocity/mass work independently of the number of contacts.
+          contact_events_.push_back({entity_a, entity_b, from_px(total_impulse),
+                                    from_px(weighted_point), {}, 0.0f, 0.0f, 0.0f});
+        } else {
+        PxVec3 normal = extracted != 0 ? points[0].normal : PxVec3(0.0f, 1.0f, 0.0f);
+        if (normal.magnitudeSquared() > 1.0e-12f) normal.normalize();
+        PxVec3 velocity[2] = {PxVec3(0.0f), PxVec3(0.0f)};
+        float inverse_mass = 0.0f;
+        PxActor *actors[2] = {actor0, actor1};
+        for (unsigned side = 0; side < 2; ++side) {
+          const auto *body = actors[side] ? actors[side]->is<PxRigidBody>() : nullptr;
+          if (!body) continue;
+          if (!body->getRigidBodyFlags().isSet(PxRigidBodyFlag::eKINEMATIC)) {
+            inverse_mass += body->getInvMass();
+          }
+          if (motion && motion->has_pre) {
+            velocity[side] = motion->linear[side]
+                + motion->angular[side].cross(weighted_point - motion->center[side]);
+          } else {
+            const PxTransform center = body->getGlobalPose() * body->getCMassLocalPose();
+            velocity[side] = body->getLinearVelocity()
+                + body->getAngularVelocity().cross(weighted_point - center.p);
+          }
+        }
+        const PxVec3 relative = velocity[0] - velocity[1];
+        const float along_normal = relative.dot(normal);
+        float closing = std::max(0.0f, -along_normal);
+        if (!(motion && motion->has_pre)) {
+          // Direct GPU contact extraction has no callback extra-data. Undo
+          // the translational impulse as a bounded pre-impact proxy; the
+          // reducer's speed threshold rejects gravity support loads.
+          closing = std::max(closing, std::max(0.0f,
+              std::abs(total_impulse.dot(normal)) * inverse_mass - along_normal));
+        }
+        const float tangent = (relative - normal * along_normal).magnitude();
         contact_events_.push_back(
             {entity_a, entity_b, from_px(total_impulse),
-             from_px(weighted_point)});
+             from_px(weighted_point), from_px(normal), closing, tangent,
+             inverse_mass > 1.0e-8f ? 1.0f / inverse_mass : 0.0f});
+        }
       }
       if (sample_subspans) {
         cb_events_ms_ += 8.0 * sub_ms(events_started);
@@ -1530,7 +1581,7 @@ public:
                              rec.entity_a, rec.entity_b, rec.ev_persists,
                              rec.ev_found,
                              deferred_points_.data() + rec.point_begin,
-                             rec.point_count, rec.reported_count, sample, pre);
+                             rec.point_count, rec.reported_count, sample, pre, &rec.motion);
     }
     deferred_pairs_.clear();
     deferred_points_.clear();
@@ -1988,7 +2039,24 @@ public:
     if (sample_subspans) {
       cb_entity_ms_ += 8.0 * sub_ms(entity_started);
     }
+    PxContactPairExtraDataIterator extra(header.extraDataStream, header.extraDataStreamSize);
+    bool has_extra = extra.nextItemSet();
+    ContactMotion motion;
     for (PxU32 pair_index = 0; pair_index < pair_count; ++pair_index) {
+      while (has_extra && extra.contactPairIndex <= pair_index) {
+        motion.has_pre = extra.preSolverVelocity != nullptr;
+        if (motion.has_pre) {
+          for (unsigned side = 0; side < 2; ++side) {
+            motion.linear[side] = extra.preSolverVelocity->linearVelocity[side];
+            motion.angular[side] = extra.preSolverVelocity->angularVelocity[side];
+            const auto *actor = header.actors[side]->is<PxRigidActor>();
+            const auto *body = header.actors[side]->is<PxRigidBody>();
+            const PxTransform pose = extra.eventPose ? extra.eventPose->globalPose[side] : actor->getGlobalPose();
+            motion.center[side] = body ? (pose * body->getCMassLocalPose()).p : pose.p;
+          }
+        }
+        has_extra = extra.nextItemSet();
+      }
       const PxContactPair &pair = pairs[pair_index];
       if (pair.flags & (PxContactPairFlag::eREMOVED_SHAPE_0 |
                         PxContactPairFlag::eREMOVED_SHAPE_1)) {
@@ -2022,7 +2090,7 @@ public:
                                PxPairFlag::eNOTIFY_THRESHOLD_FORCE_PERSISTS),
              static_cast<bool>(pair.events &
                                (PxPairFlag::eNOTIFY_THRESHOLD_FORCE_FOUND |
-                                PxPairFlag::eNOTIFY_TOUCH_FOUND))});
+                                PxPairFlag::eNOTIFY_TOUCH_FOUND)), motion});
         if (sample_subspans) {
           cb_capture_ms_ += 8.0 * sub_ms(capture_started);
         }
@@ -2067,7 +2135,7 @@ public:
           static_cast<bool>(pair.events &
                             (PxPairFlag::eNOTIFY_THRESHOLD_FORCE_FOUND |
                              PxPairFlag::eNOTIFY_TOUCH_FOUND)),
-          contact_points_.data(), extracted, contact_count, sample_subspans);
+          contact_points_.data(), extracted, contact_count, sample_subspans, nullptr, &motion);
 
     }
     // Sum AND max. 526 ms of callback in one tick is either 11,710 callbacks
@@ -2386,6 +2454,7 @@ public:
     car.maxBrakeTorque = desc.brake_torque;
     car.maxHandbrakeTorque = desc.handbrake_torque;
     car.driveTopSpeed = desc.top_speed;
+    car.frontWheelDriveOnly = desc.front_wheel_drive;
     car.rearWheelDriveOnly = desc.rear_wheel_drive;
     car.sweepRoadQueries = desc.sweep_road_queries;
     // Wheels stand on whatever groups the mask names; PhysX's default query
@@ -2570,6 +2639,31 @@ public:
       ++woken;
     }
     return woken;
+  }
+
+  void tune_vehicle(std::uint32_t entity_id, const FfiVehicleTuning &tuning) {
+    require(!step_in_flight_, "vehicle tuning requires a completed physics step");
+    Record &record = find(entity_id);
+    require(record.kind == RecordKind::VehicleChassis && record.vehicle != nullptr, "entity is not a vehicle");
+    physx::native::NativeVehicleTuning value;
+    value.frontStiffness = value.rearStiffness = tuning.suspension_stiffness;
+    value.frontDamping = value.rearDamping = tuning.suspension_damping;
+    value.tyreFriction = tuning.tyre_friction;
+    value.maxSteerRadians = tuning.max_steer_radians;
+    value.maxDriveTorque = tuning.drive_torque;
+    value.maxBrakeTorque = tuning.brake_torque;
+    value.maxHandbrakeTorque = tuning.handbrake_torque;
+    value.driveTopSpeed = tuning.top_speed;
+    value.frontWheelDriveOnly = tuning.front_wheel_drive;
+    value.rearWheelDriveOnly = tuning.rear_wheel_drive;
+    require(record.vehicle->setTuning(value), "invalid vehicle tuning");
+  }
+
+  void set_vehicle_functional_state(std::uint32_t entity_id, std::uint8_t wheel_mask, bool driveline_connected) {
+    require(!step_in_flight_, "functional state requires a completed physics step");
+    Record &record = find(entity_id);
+    require(record.vehicle != nullptr, "entity is not a vehicle");
+    require(record.vehicle->setFunctionalState(wheel_mask, driveline_connected), "invalid wheel connectivity mask");
   }
 
   void drive_vehicle(std::uint32_t entity_id, const FfiVehicleCommands &commands) {
@@ -4091,6 +4185,7 @@ private:
     PxU32 reported_count;
     bool ev_persists;
     bool ev_found;
+    ContactMotion motion{};
   };
 #ifdef NVBLAST_ENABLE_CUDA_STRESS
   std::vector<DeferredContactPair> gpu_compact_reference_pairs_;
@@ -4235,6 +4330,14 @@ std::uint32_t World::wake_bodies_near(FfiVec3 center, float radius) {
 
 void World::set_vehicle_shapes(std::uint32_t entity_id, rust::Slice<const FfiVehiclePartShape> shapes) {
   impl_->set_vehicle_shapes(entity_id, shapes);
+}
+
+void World::tune_vehicle(std::uint32_t entity_id, const FfiVehicleTuning &tuning) {
+  impl_->tune_vehicle(entity_id, tuning);
+}
+
+void World::set_vehicle_functional_state(std::uint32_t entity_id, std::uint8_t wheel_mask, bool driveline_connected) {
+  impl_->set_vehicle_functional_state(entity_id, wheel_mask, driveline_connected);
 }
 
 void World::drive_vehicle(std::uint32_t entity_id, const FfiVehicleCommands &commands) {

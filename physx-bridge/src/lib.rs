@@ -291,6 +291,7 @@ pub struct VehicleDesc {
     pub handbrake_torque: f32,
     /// The drive response falls to zero at this forward speed (m/s).
     pub top_speed: f32,
+    pub front_wheel_drive: bool,
     pub rear_wheel_drive: bool,
     /// Sweep a wheel cylinder instead of casting a ray for the road.
     pub sweep_road_queries: bool,
@@ -298,6 +299,21 @@ pub struct VehicleDesc {
     pub road_mask: u32,
     pub collision_group: u32,
     pub collision_mask: u32,
+}
+
+/// Geometry-free parameters applied without recreating the actor or wheel state.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct VehicleTuning {
+    pub suspension_stiffness: f32,
+    pub suspension_damping: f32,
+    pub tyre_friction: f32,
+    pub max_steer_radians: f32,
+    pub drive_torque: f32,
+    pub brake_torque: f32,
+    pub handbrake_torque: f32,
+    pub top_speed: f32,
+    pub front_wheel_drive: bool,
+    pub rear_wheel_drive: bool,
 }
 
 /// One convex child of an authored vehicle part, in actor coordinates.
@@ -475,6 +491,12 @@ pub struct ContactEvent {
     pub entity_b: u32,
     pub impulse: Vec3,
     pub point: Vec3,
+    pub normal: Vec3,
+    /// Incoming contact-point speed, from pre-solver linear + angular velocity.
+    pub normal_speed: f32,
+    pub tangent_speed: f32,
+    /// Reduced translational mass, a perceptual scale proxy.
+    pub effective_mass: f32,
 }
 
 /// One entry of a destructible's stress material table. Strength is authored
@@ -1086,6 +1108,22 @@ impl World {
             let _ = (center, radius);
             Err(stub_unavailable())
         }
+    }
+
+    pub fn tune_vehicle(&mut self, entity_id: u32, tuning: VehicleTuning) -> Result<(), BridgeError> {
+        #[cfg(feature = "gpu")]
+        { self.inner.pin_mut().tune_vehicle(entity_id, &tuning.into()).map_err(operation_error) }
+        #[cfg(not(feature = "gpu"))]
+        { let _ = (entity_id, tuning); Err(stub_unavailable()) }
+    }
+
+    /// Apply a validated connectivity result without altering the other corners.
+    /// Geometry ownership is separate; this alone is not a fracture operation.
+    pub fn set_vehicle_functional_state(&mut self, entity_id:u32, wheel_mask:u8, driveline_connected:bool) -> Result<(), BridgeError> {
+        #[cfg(feature="gpu")]
+        { self.inner.pin_mut().set_vehicle_functional_state(entity_id,wheel_mask,driveline_connected).map_err(operation_error) }
+        #[cfg(not(feature="gpu"))]
+        { let _=(entity_id,wheel_mask,driveline_connected); Err(stub_unavailable()) }
     }
 
     pub fn drive_vehicle(
@@ -1955,11 +1993,25 @@ mod ffi {
         brake_torque: f32,
         handbrake_torque: f32,
         top_speed: f32,
+        front_wheel_drive: bool,
         rear_wheel_drive: bool,
         sweep_road_queries: bool,
         road_mask: u32,
         collision_group: u32,
         collision_mask: u32,
+    }
+
+    struct FfiVehicleTuning {
+        suspension_stiffness: f32,
+        suspension_damping: f32,
+        tyre_friction: f32,
+        max_steer_radians: f32,
+        drive_torque: f32,
+        brake_torque: f32,
+        handbrake_torque: f32,
+        top_speed: f32,
+        front_wheel_drive: bool,
+        rear_wheel_drive: bool,
     }
 
     struct FfiVehicleCommands {
@@ -2067,6 +2119,10 @@ mod ffi {
         entity_b: u32,
         impulse: FfiVec3,
         point: FfiVec3,
+        normal: FfiVec3,
+        normal_speed: f32,
+        tangent_speed: f32,
+        effective_mass: f32,
     }
 
     /// One entry of a destructible's stress material table.
@@ -2450,11 +2506,13 @@ mod ffi {
             point: FfiVec3,
         ) -> Result<()>;
         fn wake_bodies_near(self: Pin<&mut World>, center: FfiVec3, radius: f32) -> Result<u32>;
+        fn set_vehicle_functional_state(self: Pin<&mut World>, entity_id:u32, wheel_mask:u8, driveline_connected:bool) -> Result<()>;
         fn drive_vehicle(
             self: Pin<&mut World>,
             entity_id: u32,
             commands: &FfiVehicleCommands,
         ) -> Result<()>;
+        fn tune_vehicle(self: Pin<&mut World>, entity_id: u32, tuning: &FfiVehicleTuning) -> Result<()>;
         fn reset_vehicle(self: Pin<&mut World>, entity_id: u32, pose: &FfiPose) -> Result<()>;
         fn move_player(
             self: Pin<&mut World>,
@@ -2740,6 +2798,7 @@ impl_ffi_from!(
         brake_torque,
         handbrake_torque,
         top_speed,
+        front_wheel_drive,
         rear_wheel_drive,
         sweep_road_queries,
         road_mask,
@@ -2915,6 +2974,10 @@ impl From<ffi::FfiContactEvent> for ContactEvent {
             entity_b: value.entity_b,
             impulse: value.impulse.into(),
             point: value.point.into(),
+            normal: value.normal.into(),
+            normal_speed: value.normal_speed,
+            tangent_speed: value.tangent_speed,
+            effective_mass: value.effective_mass,
         }
     }
 }
@@ -3273,3 +3336,6 @@ pub fn physx_sdk_identity() -> String {
         "upstream PhysX (no destruction stage)".to_string()
     }
 }
+
+#[cfg(feature = "gpu")]
+impl_ffi_from!(VehicleTuning, ffi::FfiVehicleTuning { suspension_stiffness, suspension_damping, tyre_friction, max_steer_radians, drive_torque, brake_torque, handbrake_torque, top_speed, front_wheel_drive, rear_wheel_drive, });

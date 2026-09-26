@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
 import { geometryKey, type VehicleConfiguration } from './configuration.mjs';
 import type { PreparationIssue } from './validation.mjs';
-type Result = {key: string; complete: boolean; phase?: string; issue?: PreparationIssue | null};
+export type ExplosionGroup = {visualIds: string[]; position: number[]};
+type Result = {key: string; complete: boolean; phase?: string; issue?: PreparationIssue | null; explosionGroups?: ExplosionGroup[]};
 const cache = new Map<string, Result>();
 export function useVehicleValidation(configuration: VehicleConfiguration) {
   const key = geometryKey(configuration);
