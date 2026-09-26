@@ -1,0 +1,5099 @@
+{
+  "version": "vehicle-quality/1",
+  "scope": "pinned authority trace / receive-channel presentation, not closed-loop two-way simulation",
+  "sourceSha256": "4c4c371926ba1f37504ce59e1ab706030c07cd1cd28932010d261b70404967c3",
+  "wasmSha256": "e7db5847f3007864f49cdd2a2dae506f3526a119f08bcf679f966b6e33ff02f5",
+  "proxy": {
+    "half": [
+      0.9,
+      0.3,
+      1.8
+    ],
+    "wheels": [
+      [
+        -0.9,
+        -0.30333333333333334,
+        1.1
+      ],
+      [
+        0.9,
+        -0.30333333333333334,
+        1.1
+      ],
+      [
+        -0.9,
+        -0.30333333333333334,
+        -1.1
+      ],
+      [
+        0.9,
+        -0.30333333333333334,
+        -1.1
+      ]
+    ],
+    "radius": 0.35,
+    "wheelbase": 2.2,
+    "acceleration": 8.57,
+    "speed": 30,
+    "grip": 1.4,
+    "braking": 1,
+    "lock": 0.5,
+    "response": 1
+  },
+  "limits": {
+    "positionP95M": 0.15,
+    "positionMaxM": 0.5,
+    "orientationMaxDeg": 10,
+    "worstSecondPositionP95M": 0.25,
+    "visualErrorStepMaxM": 0.2,
+    "correctionMaxM": 0.35,
+    "hardCorrectionsPerMinute": 1,
+    "frozenRunTicks": 12,
+    "heldRunTicks": 6,
+    "staleRunTicks": 12,
+    "penetrationMaxM": 0.03,
+    "penetrationRunTicks": 2,
+    "detachedTractionN": 1,
+    "wheelTravelErrorM": 0.05,
+    "observerDelayTicks": 12
+  },
+  "seeds": [
+    7,
+    42,
+    1337
+  ],
+  "cases": [
+    {
+      "link": {
+        "id": "clean-60hz",
+        "delayTicks": 0,
+        "jitterTicks": 0,
+        "loss": 0,
+        "duplicate": 0,
+        "stride": 1,
+        "observerDelayTicks": 6
+      },
+      "seed": 7,
+      "evidenceFile": "clean-60hz-7.json",
+      "evidenceSha256": "2288ef3ca0cfd635326c8b64ee2d22d3445ebd0bd455283bf1ac83910faf1208",
+      "scheduleSha256": "cd727f236ad142217820b6906663c2795e2db2bf9f38bd1ba6a674a6d8bb725f",
+      "scores": [
+        {
+          "version": "vehicle-quality/1",
+          "scenario": "recorded-course",
+          "role": "driver",
+          "verdict": "fail",
+          "problems": [],
+          "metrics": [
+            {
+              "id": "position-p95",
+              "value": 0.08171187720472525,
+              "witnessTick": 602,
+              "limit": 0.15,
+              "unit": "m"
+            },
+            {
+              "id": "position-max",
+              "value": 0.2578979755083196,
+              "witnessTick": 577,
+              "limit": 0.5,
+              "unit": "m"
+            },
+            {
+              "id": "orientation-max",
+              "value": 2.0600223036597582,
+              "witnessTick": 334,
+              "limit": 10,
+              "unit": "deg"
+            },
+            {
+              "id": "worst-second-position-p95",
+              "value": 0.2547259882213061,
+              "witnessTick": 578,
+              "limit": 0.25,
+              "unit": "m"
+            },
+            {
+              "id": "visual-error-step-max",
+              "value": 0.06051685751998725,
+              "witnessTick": 49,
+              "limit": 0.2,
+              "unit": "m/tick"
+            },
+            {
+              "id": "missing-render-run",
+              "value": 0,
+              "limit": 0,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "held-moving-run",
+              "value": 0,
+              "limit": 6,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "prediction-frozen-run",
+              "value": 0,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "accepted-source-rollback",
+              "value": 0,
+              "limit": 0,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "stale-source-run",
+              "value": 0,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "correction-max",
+              "value": 0.317633243949487,
+              "witnessTick": 577,
+              "limit": 0.35,
+              "unit": "m"
+            },
+            {
+              "id": "hard-corrections-per-minute",
+              "value": 0,
+              "limit": 1,
+              "unit": "/min",
+              "witnessTick": 12
+            }
+          ]
+        },
+        {
+          "version": "vehicle-quality/1",
+          "scenario": "recorded-course",
+          "role": "observer",
+          "verdict": "pass",
+          "problems": [],
+          "metrics": [
+            {
+              "id": "position-p95",
+              "value": 0,
+              "witnessTick": 684,
+              "limit": 0.15,
+              "unit": "m"
+            },
+            {
+              "id": "position-max",
+              "value": 0,
+              "witnessTick": 12,
+              "limit": 0.5,
+              "unit": "m"
+            },
+            {
+              "id": "orientation-max",
+              "value": 0.030324156739410205,
+              "witnessTick": 526,
+              "limit": 10,
+              "unit": "deg"
+            },
+            {
+              "id": "worst-second-position-p95",
+              "value": 0,
+              "witnessTick": 68,
+              "limit": 0.25,
+              "unit": "m"
+            },
+            {
+              "id": "visual-error-step-max",
+              "value": 0,
+              "witnessTick": 13,
+              "limit": 0.2,
+              "unit": "m/tick"
+            },
+            {
+              "id": "missing-render-run",
+              "value": 0,
+              "limit": 0,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "held-moving-run",
+              "value": 0,
+              "limit": 6,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "prediction-frozen-run",
+              "value": 0,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "accepted-source-rollback",
+              "value": 0,
+              "limit": 0,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "stale-source-run",
+              "value": 0,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "hard-corrections-per-minute",
+              "value": 0,
+              "limit": 1,
+              "unit": "/min",
+              "witnessTick": 12
+            },
+            {
+              "id": "observer-buffer",
+              "value": 6,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 12
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "link": {
+        "id": "clean-60hz",
+        "delayTicks": 0,
+        "jitterTicks": 0,
+        "loss": 0,
+        "duplicate": 0,
+        "stride": 1,
+        "observerDelayTicks": 6
+      },
+      "seed": 42,
+      "evidenceFile": "clean-60hz-42.json",
+      "evidenceSha256": "2288ef3ca0cfd635326c8b64ee2d22d3445ebd0bd455283bf1ac83910faf1208",
+      "scheduleSha256": "cd727f236ad142217820b6906663c2795e2db2bf9f38bd1ba6a674a6d8bb725f",
+      "scores": [
+        {
+          "version": "vehicle-quality/1",
+          "scenario": "recorded-course",
+          "role": "driver",
+          "verdict": "fail",
+          "problems": [],
+          "metrics": [
+            {
+              "id": "position-p95",
+              "value": 0.08171187720472525,
+              "witnessTick": 602,
+              "limit": 0.15,
+              "unit": "m"
+            },
+            {
+              "id": "position-max",
+              "value": 0.2578979755083196,
+              "witnessTick": 577,
+              "limit": 0.5,
+              "unit": "m"
+            },
+            {
+              "id": "orientation-max",
+              "value": 2.0600223036597582,
+              "witnessTick": 334,
+              "limit": 10,
+              "unit": "deg"
+            },
+            {
+              "id": "worst-second-position-p95",
+              "value": 0.2547259882213061,
+              "witnessTick": 578,
+              "limit": 0.25,
+              "unit": "m"
+            },
+            {
+              "id": "visual-error-step-max",
+              "value": 0.06051685751998725,
+              "witnessTick": 49,
+              "limit": 0.2,
+              "unit": "m/tick"
+            },
+            {
+              "id": "missing-render-run",
+              "value": 0,
+              "limit": 0,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "held-moving-run",
+              "value": 0,
+              "limit": 6,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "prediction-frozen-run",
+              "value": 0,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "accepted-source-rollback",
+              "value": 0,
+              "limit": 0,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "stale-source-run",
+              "value": 0,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "correction-max",
+              "value": 0.317633243949487,
+              "witnessTick": 577,
+              "limit": 0.35,
+              "unit": "m"
+            },
+            {
+              "id": "hard-corrections-per-minute",
+              "value": 0,
+              "limit": 1,
+              "unit": "/min",
+              "witnessTick": 12
+            }
+          ]
+        },
+        {
+          "version": "vehicle-quality/1",
+          "scenario": "recorded-course",
+          "role": "observer",
+          "verdict": "pass",
+          "problems": [],
+          "metrics": [
+            {
+              "id": "position-p95",
+              "value": 0,
+              "witnessTick": 684,
+              "limit": 0.15,
+              "unit": "m"
+            },
+            {
+              "id": "position-max",
+              "value": 0,
+              "witnessTick": 12,
+              "limit": 0.5,
+              "unit": "m"
+            },
+            {
+              "id": "orientation-max",
+              "value": 0.030324156739410205,
+              "witnessTick": 526,
+              "limit": 10,
+              "unit": "deg"
+            },
+            {
+              "id": "worst-second-position-p95",
+              "value": 0,
+              "witnessTick": 68,
+              "limit": 0.25,
+              "unit": "m"
+            },
+            {
+              "id": "visual-error-step-max",
+              "value": 0,
+              "witnessTick": 13,
+              "limit": 0.2,
+              "unit": "m/tick"
+            },
+            {
+              "id": "missing-render-run",
+              "value": 0,
+              "limit": 0,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "held-moving-run",
+              "value": 0,
+              "limit": 6,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "prediction-frozen-run",
+              "value": 0,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "accepted-source-rollback",
+              "value": 0,
+              "limit": 0,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "stale-source-run",
+              "value": 0,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "hard-corrections-per-minute",
+              "value": 0,
+              "limit": 1,
+              "unit": "/min",
+              "witnessTick": 12
+            },
+            {
+              "id": "observer-buffer",
+              "value": 6,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 12
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "link": {
+        "id": "clean-60hz",
+        "delayTicks": 0,
+        "jitterTicks": 0,
+        "loss": 0,
+        "duplicate": 0,
+        "stride": 1,
+        "observerDelayTicks": 6
+      },
+      "seed": 1337,
+      "evidenceFile": "clean-60hz-1337.json",
+      "evidenceSha256": "2288ef3ca0cfd635326c8b64ee2d22d3445ebd0bd455283bf1ac83910faf1208",
+      "scheduleSha256": "cd727f236ad142217820b6906663c2795e2db2bf9f38bd1ba6a674a6d8bb725f",
+      "scores": [
+        {
+          "version": "vehicle-quality/1",
+          "scenario": "recorded-course",
+          "role": "driver",
+          "verdict": "fail",
+          "problems": [],
+          "metrics": [
+            {
+              "id": "position-p95",
+              "value": 0.08171187720472525,
+              "witnessTick": 602,
+              "limit": 0.15,
+              "unit": "m"
+            },
+            {
+              "id": "position-max",
+              "value": 0.2578979755083196,
+              "witnessTick": 577,
+              "limit": 0.5,
+              "unit": "m"
+            },
+            {
+              "id": "orientation-max",
+              "value": 2.0600223036597582,
+              "witnessTick": 334,
+              "limit": 10,
+              "unit": "deg"
+            },
+            {
+              "id": "worst-second-position-p95",
+              "value": 0.2547259882213061,
+              "witnessTick": 578,
+              "limit": 0.25,
+              "unit": "m"
+            },
+            {
+              "id": "visual-error-step-max",
+              "value": 0.06051685751998725,
+              "witnessTick": 49,
+              "limit": 0.2,
+              "unit": "m/tick"
+            },
+            {
+              "id": "missing-render-run",
+              "value": 0,
+              "limit": 0,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "held-moving-run",
+              "value": 0,
+              "limit": 6,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "prediction-frozen-run",
+              "value": 0,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "accepted-source-rollback",
+              "value": 0,
+              "limit": 0,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "stale-source-run",
+              "value": 0,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "correction-max",
+              "value": 0.317633243949487,
+              "witnessTick": 577,
+              "limit": 0.35,
+              "unit": "m"
+            },
+            {
+              "id": "hard-corrections-per-minute",
+              "value": 0,
+              "limit": 1,
+              "unit": "/min",
+              "witnessTick": 12
+            }
+          ]
+        },
+        {
+          "version": "vehicle-quality/1",
+          "scenario": "recorded-course",
+          "role": "observer",
+          "verdict": "pass",
+          "problems": [],
+          "metrics": [
+            {
+              "id": "position-p95",
+              "value": 0,
+              "witnessTick": 684,
+              "limit": 0.15,
+              "unit": "m"
+            },
+            {
+              "id": "position-max",
+              "value": 0,
+              "witnessTick": 12,
+              "limit": 0.5,
+              "unit": "m"
+            },
+            {
+              "id": "orientation-max",
+              "value": 0.030324156739410205,
+              "witnessTick": 526,
+              "limit": 10,
+              "unit": "deg"
+            },
+            {
+              "id": "worst-second-position-p95",
+              "value": 0,
+              "witnessTick": 68,
+              "limit": 0.25,
+              "unit": "m"
+            },
+            {
+              "id": "visual-error-step-max",
+              "value": 0,
+              "witnessTick": 13,
+              "limit": 0.2,
+              "unit": "m/tick"
+            },
+            {
+              "id": "missing-render-run",
+              "value": 0,
+              "limit": 0,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "held-moving-run",
+              "value": 0,
+              "limit": 6,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "prediction-frozen-run",
+              "value": 0,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "accepted-source-rollback",
+              "value": 0,
+              "limit": 0,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "stale-source-run",
+              "value": 0,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "hard-corrections-per-minute",
+              "value": 0,
+              "limit": 1,
+              "unit": "/min",
+              "witnessTick": 12
+            },
+            {
+              "id": "observer-buffer",
+              "value": 6,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 12
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "link": {
+        "id": "wifi-30hz",
+        "delayTicks": 3,
+        "jitterTicks": 1,
+        "loss": 0.01,
+        "duplicate": 0,
+        "stride": 2,
+        "observerDelayTicks": 6
+      },
+      "seed": 7,
+      "evidenceFile": "wifi-30hz-7.json",
+      "evidenceSha256": "faaf9bf4064f6dd64197a3d1a902fce31cd9baf6967b96c7d760a82a39fbd35a",
+      "scheduleSha256": "0b77d46917ae2ca0792707fa7d41ac1a2564800f7abad28aee1f0c8d3ee12ead",
+      "scores": [
+        {
+          "version": "vehicle-quality/1",
+          "scenario": "recorded-course",
+          "role": "driver",
+          "verdict": "fail",
+          "problems": [],
+          "metrics": [
+            {
+              "id": "position-p95",
+              "value": 0.14807191809659062,
+              "witnessTick": 602,
+              "limit": 0.15,
+              "unit": "m"
+            },
+            {
+              "id": "position-max",
+              "value": 0.4813681899076978,
+              "witnessTick": 576,
+              "limit": 0.5,
+              "unit": "m"
+            },
+            {
+              "id": "orientation-max",
+              "value": 11.030502133581804,
+              "witnessTick": 348,
+              "limit": 10,
+              "unit": "deg"
+            },
+            {
+              "id": "worst-second-position-p95",
+              "value": 0.4327643368631738,
+              "witnessTick": 573,
+              "limit": 0.25,
+              "unit": "m"
+            },
+            {
+              "id": "visual-error-step-max",
+              "value": 0.2985992334273601,
+              "witnessTick": 577,
+              "limit": 0.2,
+              "unit": "m/tick"
+            },
+            {
+              "id": "missing-render-run",
+              "value": 0,
+              "limit": 0,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "held-moving-run",
+              "value": 2,
+              "limit": 6,
+              "unit": "ticks",
+              "witnessTick": 50
+            },
+            {
+              "id": "prediction-frozen-run",
+              "value": 0,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "accepted-source-rollback",
+              "value": 0,
+              "limit": 0,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "stale-source-run",
+              "value": 0,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "correction-max",
+              "value": 0.35600823570385326,
+              "witnessTick": 577,
+              "limit": 0.35,
+              "unit": "m"
+            },
+            {
+              "id": "hard-corrections-per-minute",
+              "value": 5.084745762711864,
+              "limit": 1,
+              "unit": "/min",
+              "witnessTick": 577
+            }
+          ]
+        },
+        {
+          "version": "vehicle-quality/1",
+          "scenario": "recorded-course",
+          "role": "observer",
+          "verdict": "pass",
+          "problems": [],
+          "metrics": [
+            {
+              "id": "position-p95",
+              "value": 0.003089070812927861,
+              "witnessTick": 327,
+              "limit": 0.15,
+              "unit": "m"
+            },
+            {
+              "id": "position-max",
+              "value": 0.014672233645528642,
+              "witnessTick": 57,
+              "limit": 0.5,
+              "unit": "m"
+            },
+            {
+              "id": "orientation-max",
+              "value": 1.1967391981747284,
+              "witnessTick": 339,
+              "limit": 10,
+              "unit": "deg"
+            },
+            {
+              "id": "worst-second-position-p95",
+              "value": 0.005416357285244371,
+              "witnessTick": 319,
+              "limit": 0.25,
+              "unit": "m"
+            },
+            {
+              "id": "visual-error-step-max",
+              "value": 0.014672233645528642,
+              "witnessTick": 57,
+              "limit": 0.2,
+              "unit": "m/tick"
+            },
+            {
+              "id": "missing-render-run",
+              "value": 0,
+              "limit": 0,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "held-moving-run",
+              "value": 0,
+              "limit": 6,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "prediction-frozen-run",
+              "value": 0,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "accepted-source-rollback",
+              "value": 0,
+              "limit": 0,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "stale-source-run",
+              "value": 0,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "hard-corrections-per-minute",
+              "value": 0,
+              "limit": 1,
+              "unit": "/min",
+              "witnessTick": 12
+            },
+            {
+              "id": "observer-buffer",
+              "value": 6,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 12
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "link": {
+        "id": "wifi-30hz",
+        "delayTicks": 3,
+        "jitterTicks": 1,
+        "loss": 0.01,
+        "duplicate": 0,
+        "stride": 2,
+        "observerDelayTicks": 6
+      },
+      "seed": 42,
+      "evidenceFile": "wifi-30hz-42.json",
+      "evidenceSha256": "47434435963182acb8a1e2fbef045a773c6ab19da159e0511d8ac24dc55023eb",
+      "scheduleSha256": "33a42c3cc5475728be01ee4c223450127d9c4672047cb7d77fd100c5d2bc89ab",
+      "scores": [
+        {
+          "version": "vehicle-quality/1",
+          "scenario": "recorded-course",
+          "role": "driver",
+          "verdict": "fail",
+          "problems": [],
+          "metrics": [
+            {
+              "id": "position-p95",
+              "value": 0.16061203131968074,
+              "witnessTick": 566,
+              "limit": 0.15,
+              "unit": "m"
+            },
+            {
+              "id": "position-max",
+              "value": 0.48719276516450566,
+              "witnessTick": 579,
+              "limit": 0.5,
+              "unit": "m"
+            },
+            {
+              "id": "orientation-max",
+              "value": 9.673049670443344,
+              "witnessTick": 341,
+              "limit": 10,
+              "unit": "deg"
+            },
+            {
+              "id": "worst-second-position-p95",
+              "value": 0.4755087583338893,
+              "witnessTick": 580,
+              "limit": 0.25,
+              "unit": "m"
+            },
+            {
+              "id": "visual-error-step-max",
+              "value": 0.32247738523899916,
+              "witnessTick": 581,
+              "limit": 0.2,
+              "unit": "m/tick"
+            },
+            {
+              "id": "missing-render-run",
+              "value": 0,
+              "limit": 0,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "held-moving-run",
+              "value": 2,
+              "limit": 6,
+              "unit": "ticks",
+              "witnessTick": 50
+            },
+            {
+              "id": "prediction-frozen-run",
+              "value": 0,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "accepted-source-rollback",
+              "value": 0,
+              "limit": 0,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "stale-source-run",
+              "value": 0,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "correction-max",
+              "value": 0.37059046559789394,
+              "witnessTick": 581,
+              "limit": 0.35,
+              "unit": "m"
+            },
+            {
+              "id": "hard-corrections-per-minute",
+              "value": 5.084745762711864,
+              "limit": 1,
+              "unit": "/min",
+              "witnessTick": 581
+            }
+          ]
+        },
+        {
+          "version": "vehicle-quality/1",
+          "scenario": "recorded-course",
+          "role": "observer",
+          "verdict": "pass",
+          "problems": [],
+          "metrics": [
+            {
+              "id": "position-p95",
+              "value": 0.0027852872005576694,
+              "witnessTick": 581,
+              "limit": 0.15,
+              "unit": "m"
+            },
+            {
+              "id": "position-max",
+              "value": 0.014672233645528642,
+              "witnessTick": 57,
+              "limit": 0.5,
+              "unit": "m"
+            },
+            {
+              "id": "orientation-max",
+              "value": 1.1967391981747284,
+              "witnessTick": 339,
+              "limit": 10,
+              "unit": "deg"
+            },
+            {
+              "id": "worst-second-position-p95",
+              "value": 0.007889598478048526,
+              "witnessTick": 359,
+              "limit": 0.25,
+              "unit": "m"
+            },
+            {
+              "id": "visual-error-step-max",
+              "value": 0.014672233645528642,
+              "witnessTick": 57,
+              "limit": 0.2,
+              "unit": "m/tick"
+            },
+            {
+              "id": "missing-render-run",
+              "value": 0,
+              "limit": 0,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "held-moving-run",
+              "value": 0,
+              "limit": 6,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "prediction-frozen-run",
+              "value": 0,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "accepted-source-rollback",
+              "value": 0,
+              "limit": 0,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "stale-source-run",
+              "value": 0,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "hard-corrections-per-minute",
+              "value": 0,
+              "limit": 1,
+              "unit": "/min",
+              "witnessTick": 12
+            },
+            {
+              "id": "observer-buffer",
+              "value": 6,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 12
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "link": {
+        "id": "wifi-30hz",
+        "delayTicks": 3,
+        "jitterTicks": 1,
+        "loss": 0.01,
+        "duplicate": 0,
+        "stride": 2,
+        "observerDelayTicks": 6
+      },
+      "seed": 1337,
+      "evidenceFile": "wifi-30hz-1337.json",
+      "evidenceSha256": "262075b92f364e80c529233499257846762ea3279141098eff6baefcbe70babe",
+      "scheduleSha256": "4ed674124bc48e5b111759fc83be2ba4748640f3af7a1366666c622b684ee0a3",
+      "scores": [
+        {
+          "version": "vehicle-quality/1",
+          "scenario": "recorded-course",
+          "role": "driver",
+          "verdict": "fail",
+          "problems": [],
+          "metrics": [
+            {
+              "id": "position-p95",
+              "value": 0.15980022154684353,
+              "witnessTick": 566,
+              "limit": 0.15,
+              "unit": "m"
+            },
+            {
+              "id": "position-max",
+              "value": 0.4746089453825175,
+              "witnessTick": 574,
+              "limit": 0.5,
+              "unit": "m"
+            },
+            {
+              "id": "orientation-max",
+              "value": 11.131428453775925,
+              "witnessTick": 348,
+              "limit": 10,
+              "unit": "deg"
+            },
+            {
+              "id": "worst-second-position-p95",
+              "value": 0.4213413574437513,
+              "witnessTick": 572,
+              "limit": 0.25,
+              "unit": "m"
+            },
+            {
+              "id": "visual-error-step-max",
+              "value": 0.34634675720152125,
+              "witnessTick": 576,
+              "limit": 0.2,
+              "unit": "m/tick"
+            },
+            {
+              "id": "missing-render-run",
+              "value": 0,
+              "limit": 0,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "held-moving-run",
+              "value": 2,
+              "limit": 6,
+              "unit": "ticks",
+              "witnessTick": 50
+            },
+            {
+              "id": "prediction-frozen-run",
+              "value": 0,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "accepted-source-rollback",
+              "value": 0,
+              "limit": 0,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "stale-source-run",
+              "value": 0,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "correction-max",
+              "value": 0.4066254748348309,
+              "witnessTick": 576,
+              "limit": 0.35,
+              "unit": "m"
+            },
+            {
+              "id": "hard-corrections-per-minute",
+              "value": 5.084745762711864,
+              "limit": 1,
+              "unit": "/min",
+              "witnessTick": 576
+            }
+          ]
+        },
+        {
+          "version": "vehicle-quality/1",
+          "scenario": "recorded-course",
+          "role": "observer",
+          "verdict": "pass",
+          "problems": [],
+          "metrics": [
+            {
+              "id": "position-p95",
+              "value": 0.002833304605084925,
+              "witnessTick": 357,
+              "limit": 0.15,
+              "unit": "m"
+            },
+            {
+              "id": "position-max",
+              "value": 0.014672233645528642,
+              "witnessTick": 57,
+              "limit": 0.5,
+              "unit": "m"
+            },
+            {
+              "id": "orientation-max",
+              "value": 1.1967391981747284,
+              "witnessTick": 339,
+              "limit": 10,
+              "unit": "deg"
+            },
+            {
+              "id": "worst-second-position-p95",
+              "value": 0.006597141803972576,
+              "witnessTick": 631,
+              "limit": 0.25,
+              "unit": "m"
+            },
+            {
+              "id": "visual-error-step-max",
+              "value": 0.014672233645528642,
+              "witnessTick": 57,
+              "limit": 0.2,
+              "unit": "m/tick"
+            },
+            {
+              "id": "missing-render-run",
+              "value": 0,
+              "limit": 0,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "held-moving-run",
+              "value": 0,
+              "limit": 6,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "prediction-frozen-run",
+              "value": 0,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "accepted-source-rollback",
+              "value": 0,
+              "limit": 0,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "stale-source-run",
+              "value": 0,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "hard-corrections-per-minute",
+              "value": 0,
+              "limit": 1,
+              "unit": "/min",
+              "witnessTick": 12
+            },
+            {
+              "id": "observer-buffer",
+              "value": 6,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 12
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "link": {
+        "id": "mobile-30hz",
+        "delayTicks": 6,
+        "jitterTicks": 2,
+        "loss": 0.03,
+        "duplicate": 0,
+        "stride": 2,
+        "observerDelayTicks": 9
+      },
+      "seed": 7,
+      "evidenceFile": "mobile-30hz-7.json",
+      "evidenceSha256": "03506b6a68c3f755a993665fa27a18e0c947c4a9f09ca50f252d13f7572f746c",
+      "scheduleSha256": "da4c3f0982ec5ea1e907f49406c2465515d26628bc0abe4860696ccb3b264e31",
+      "scores": [
+        {
+          "version": "vehicle-quality/1",
+          "scenario": "recorded-course",
+          "role": "driver",
+          "verdict": "fail",
+          "problems": [],
+          "metrics": [
+            {
+              "id": "position-p95",
+              "value": 0.2512494261717103,
+              "witnessTick": 599,
+              "limit": 0.15,
+              "unit": "m"
+            },
+            {
+              "id": "position-max",
+              "value": 0.6234087211171251,
+              "witnessTick": 580,
+              "limit": 0.5,
+              "unit": "m"
+            },
+            {
+              "id": "orientation-max",
+              "value": 17.960932317239667,
+              "witnessTick": 351,
+              "limit": 10,
+              "unit": "deg"
+            },
+            {
+              "id": "worst-second-position-p95",
+              "value": 0.5889705592929724,
+              "witnessTick": 577,
+              "limit": 0.25,
+              "unit": "m"
+            },
+            {
+              "id": "visual-error-step-max",
+              "value": 0.36706607352974524,
+              "witnessTick": 581,
+              "limit": 0.2,
+              "unit": "m/tick"
+            },
+            {
+              "id": "missing-render-run",
+              "value": 0,
+              "limit": 0,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "held-moving-run",
+              "value": 2,
+              "limit": 6,
+              "unit": "ticks",
+              "witnessTick": 50
+            },
+            {
+              "id": "prediction-frozen-run",
+              "value": 0,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "accepted-source-rollback",
+              "value": 0,
+              "limit": 0,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "stale-source-run",
+              "value": 0,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "correction-max",
+              "value": 0.5434060944071385,
+              "witnessTick": 396,
+              "limit": 0.35,
+              "unit": "m"
+            },
+            {
+              "id": "hard-corrections-per-minute",
+              "value": 20.338983050847457,
+              "limit": 1,
+              "unit": "/min",
+              "witnessTick": 348
+            }
+          ]
+        },
+        {
+          "version": "vehicle-quality/1",
+          "scenario": "recorded-course",
+          "role": "observer",
+          "verdict": "pass",
+          "problems": [],
+          "metrics": [
+            {
+              "id": "position-p95",
+              "value": 0.0031817180134145716,
+              "witnessTick": 594,
+              "limit": 0.15,
+              "unit": "m"
+            },
+            {
+              "id": "position-max",
+              "value": 0.014672233645528642,
+              "witnessTick": 60,
+              "limit": 0.5,
+              "unit": "m"
+            },
+            {
+              "id": "orientation-max",
+              "value": 1.1967391981747284,
+              "witnessTick": 342,
+              "limit": 10,
+              "unit": "deg"
+            },
+            {
+              "id": "worst-second-position-p95",
+              "value": 0.005416357285244371,
+              "witnessTick": 322,
+              "limit": 0.25,
+              "unit": "m"
+            },
+            {
+              "id": "visual-error-step-max",
+              "value": 0.014672233645528642,
+              "witnessTick": 60,
+              "limit": 0.2,
+              "unit": "m/tick"
+            },
+            {
+              "id": "missing-render-run",
+              "value": 0,
+              "limit": 0,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "held-moving-run",
+              "value": 0,
+              "limit": 6,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "prediction-frozen-run",
+              "value": 0,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "accepted-source-rollback",
+              "value": 0,
+              "limit": 0,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "stale-source-run",
+              "value": 0,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "hard-corrections-per-minute",
+              "value": 0,
+              "limit": 1,
+              "unit": "/min",
+              "witnessTick": 12
+            },
+            {
+              "id": "observer-buffer",
+              "value": 9,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 12
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "link": {
+        "id": "mobile-30hz",
+        "delayTicks": 6,
+        "jitterTicks": 2,
+        "loss": 0.03,
+        "duplicate": 0,
+        "stride": 2,
+        "observerDelayTicks": 9
+      },
+      "seed": 42,
+      "evidenceFile": "mobile-30hz-42.json",
+      "evidenceSha256": "9f7b8c2e8b5349ed3ddf59dcd7b191968f125ea5d0b344521425bd27d9968205",
+      "scheduleSha256": "c77e7f4d658fd03d0d21f262769054d78c7c5cf6eb35ff582ab8b5bc3988739a",
+      "scores": [
+        {
+          "version": "vehicle-quality/1",
+          "scenario": "recorded-course",
+          "role": "driver",
+          "verdict": "fail",
+          "problems": [],
+          "metrics": [
+            {
+              "id": "position-p95",
+              "value": 0.2690232800556219,
+              "witnessTick": 601,
+              "limit": 0.15,
+              "unit": "m"
+            },
+            {
+              "id": "position-max",
+              "value": 0.6430129148927874,
+              "witnessTick": 581,
+              "limit": 0.5,
+              "unit": "m"
+            },
+            {
+              "id": "orientation-max",
+              "value": 18.25534807247834,
+              "witnessTick": 351,
+              "limit": 10,
+              "unit": "deg"
+            },
+            {
+              "id": "worst-second-position-p95",
+              "value": 0.627094685124011,
+              "witnessTick": 580,
+              "limit": 0.25,
+              "unit": "m"
+            },
+            {
+              "id": "visual-error-step-max",
+              "value": 0.48571265782333045,
+              "witnessTick": 349,
+              "limit": 0.2,
+              "unit": "m/tick"
+            },
+            {
+              "id": "missing-render-run",
+              "value": 0,
+              "limit": 0,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "held-moving-run",
+              "value": 0,
+              "limit": 6,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "prediction-frozen-run",
+              "value": 0,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "accepted-source-rollback",
+              "value": 0,
+              "limit": 0,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "stale-source-run",
+              "value": 0,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "correction-max",
+              "value": 0.7453487323480914,
+              "witnessTick": 349,
+              "limit": 0.35,
+              "unit": "m"
+            },
+            {
+              "id": "hard-corrections-per-minute",
+              "value": 10.169491525423728,
+              "limit": 1,
+              "unit": "/min",
+              "witnessTick": 349
+            }
+          ]
+        },
+        {
+          "version": "vehicle-quality/1",
+          "scenario": "recorded-course",
+          "role": "observer",
+          "verdict": "pass",
+          "problems": [],
+          "metrics": [
+            {
+              "id": "position-p95",
+              "value": 0.002805119632120688,
+              "witnessTick": 304,
+              "limit": 0.15,
+              "unit": "m"
+            },
+            {
+              "id": "position-max",
+              "value": 0.014672233645528642,
+              "witnessTick": 60,
+              "limit": 0.5,
+              "unit": "m"
+            },
+            {
+              "id": "orientation-max",
+              "value": 1.1967391981747284,
+              "witnessTick": 342,
+              "limit": 10,
+              "unit": "deg"
+            },
+            {
+              "id": "worst-second-position-p95",
+              "value": 0.007889598478048526,
+              "witnessTick": 362,
+              "limit": 0.25,
+              "unit": "m"
+            },
+            {
+              "id": "visual-error-step-max",
+              "value": 0.014672233645528642,
+              "witnessTick": 60,
+              "limit": 0.2,
+              "unit": "m/tick"
+            },
+            {
+              "id": "missing-render-run",
+              "value": 0,
+              "limit": 0,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "held-moving-run",
+              "value": 0,
+              "limit": 6,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "prediction-frozen-run",
+              "value": 0,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "accepted-source-rollback",
+              "value": 0,
+              "limit": 0,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "stale-source-run",
+              "value": 0,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "hard-corrections-per-minute",
+              "value": 0,
+              "limit": 1,
+              "unit": "/min",
+              "witnessTick": 12
+            },
+            {
+              "id": "observer-buffer",
+              "value": 9,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 12
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "link": {
+        "id": "mobile-30hz",
+        "delayTicks": 6,
+        "jitterTicks": 2,
+        "loss": 0.03,
+        "duplicate": 0,
+        "stride": 2,
+        "observerDelayTicks": 9
+      },
+      "seed": 1337,
+      "evidenceFile": "mobile-30hz-1337.json",
+      "evidenceSha256": "b96659a3be2e3c1c7b6e28da1f5000c846a5983bbf7bd954058eafb27ac90a2f",
+      "scheduleSha256": "3bee6212be7cda359665bd9c140aa870c94cfdba24d2f114df6265536ddb53e1",
+      "scores": [
+        {
+          "version": "vehicle-quality/1",
+          "scenario": "recorded-course",
+          "role": "driver",
+          "verdict": "fail",
+          "problems": [],
+          "metrics": [
+            {
+              "id": "position-p95",
+              "value": 0.2505126372572008,
+              "witnessTick": 379,
+              "limit": 0.15,
+              "unit": "m"
+            },
+            {
+              "id": "position-max",
+              "value": 0.6400225540011906,
+              "witnessTick": 577,
+              "limit": 0.5,
+              "unit": "m"
+            },
+            {
+              "id": "orientation-max",
+              "value": 18.16167985519517,
+              "witnessTick": 351,
+              "limit": 10,
+              "unit": "deg"
+            },
+            {
+              "id": "worst-second-position-p95",
+              "value": 0.5786888255812539,
+              "witnessTick": 574,
+              "limit": 0.25,
+              "unit": "m"
+            },
+            {
+              "id": "visual-error-step-max",
+              "value": 0.46585775866525797,
+              "witnessTick": 349,
+              "limit": 0.2,
+              "unit": "m/tick"
+            },
+            {
+              "id": "missing-render-run",
+              "value": 0,
+              "limit": 0,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "held-moving-run",
+              "value": 2,
+              "limit": 6,
+              "unit": "ticks",
+              "witnessTick": 50
+            },
+            {
+              "id": "prediction-frozen-run",
+              "value": 0,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "accepted-source-rollback",
+              "value": 0,
+              "limit": 0,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "stale-source-run",
+              "value": 0,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "correction-max",
+              "value": 0.7256854021349065,
+              "witnessTick": 349,
+              "limit": 0.35,
+              "unit": "m"
+            },
+            {
+              "id": "hard-corrections-per-minute",
+              "value": 10.169491525423728,
+              "limit": 1,
+              "unit": "/min",
+              "witnessTick": 349
+            }
+          ]
+        },
+        {
+          "version": "vehicle-quality/1",
+          "scenario": "recorded-course",
+          "role": "observer",
+          "verdict": "pass",
+          "problems": [],
+          "metrics": [
+            {
+              "id": "position-p95",
+              "value": 0.0031817180134145716,
+              "witnessTick": 594,
+              "limit": 0.15,
+              "unit": "m"
+            },
+            {
+              "id": "position-max",
+              "value": 0.014672233645528642,
+              "witnessTick": 60,
+              "limit": 0.5,
+              "unit": "m"
+            },
+            {
+              "id": "orientation-max",
+              "value": 1.1967391981747284,
+              "witnessTick": 342,
+              "limit": 10,
+              "unit": "deg"
+            },
+            {
+              "id": "worst-second-position-p95",
+              "value": 0.008762106659844641,
+              "witnessTick": 635,
+              "limit": 0.25,
+              "unit": "m"
+            },
+            {
+              "id": "visual-error-step-max",
+              "value": 0.014672233645528642,
+              "witnessTick": 60,
+              "limit": 0.2,
+              "unit": "m/tick"
+            },
+            {
+              "id": "missing-render-run",
+              "value": 0,
+              "limit": 0,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "held-moving-run",
+              "value": 0,
+              "limit": 6,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "prediction-frozen-run",
+              "value": 0,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "accepted-source-rollback",
+              "value": 0,
+              "limit": 0,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "stale-source-run",
+              "value": 0,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "hard-corrections-per-minute",
+              "value": 0,
+              "limit": 1,
+              "unit": "/min",
+              "witnessTick": 12
+            },
+            {
+              "id": "observer-buffer",
+              "value": 9,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 12
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "link": {
+        "id": "long-haul",
+        "delayTicks": 12,
+        "jitterTicks": 3,
+        "loss": 0.03,
+        "duplicate": 0,
+        "stride": 2,
+        "observerDelayTicks": 12
+      },
+      "seed": 7,
+      "evidenceFile": "long-haul-7.json",
+      "evidenceSha256": "14e2a2232515ae5a9544d7eee73aee841ad24f39940e357ae26d2fc78919593a",
+      "scheduleSha256": "5dc2dd587bbc9864c8f7c790978a94b887298983ad754060b019d5abaaf13ce6",
+      "scores": [
+        {
+          "version": "vehicle-quality/1",
+          "scenario": "recorded-course",
+          "role": "driver",
+          "verdict": "fail",
+          "problems": [],
+          "metrics": [
+            {
+              "id": "position-p95",
+              "value": 0.6407930655548981,
+              "witnessTick": 572,
+              "limit": 0.15,
+              "unit": "m"
+            },
+            {
+              "id": "position-max",
+              "value": 2.012638348940832,
+              "witnessTick": 402,
+              "limit": 0.5,
+              "unit": "m"
+            },
+            {
+              "id": "orientation-max",
+              "value": 39.31402419205281,
+              "witnessTick": 357,
+              "limit": 10,
+              "unit": "deg"
+            },
+            {
+              "id": "worst-second-position-p95",
+              "value": 1.5076304797710003,
+              "witnessTick": 400,
+              "limit": 0.25,
+              "unit": "m"
+            },
+            {
+              "id": "visual-error-step-max",
+              "value": 2.0967171027833778,
+              "witnessTick": 403,
+              "limit": 0.2,
+              "unit": "m/tick"
+            },
+            {
+              "id": "missing-render-run",
+              "value": 0,
+              "limit": 0,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "held-moving-run",
+              "value": 1,
+              "limit": 6,
+              "unit": "ticks",
+              "witnessTick": 51
+            },
+            {
+              "id": "prediction-frozen-run",
+              "value": 0,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "accepted-source-rollback",
+              "value": 0,
+              "limit": 0,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "stale-source-run",
+              "value": 0,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "correction-max",
+              "value": 2.3454304153195014,
+              "witnessTick": 403,
+              "limit": 0.35,
+              "unit": "m"
+            },
+            {
+              "id": "hard-corrections-per-minute",
+              "value": 132.20338983050848,
+              "limit": 1,
+              "unit": "/min",
+              "witnessTick": 294
+            }
+          ]
+        },
+        {
+          "version": "vehicle-quality/1",
+          "scenario": "recorded-course",
+          "role": "observer",
+          "verdict": "pass",
+          "problems": [],
+          "metrics": [
+            {
+              "id": "position-p95",
+              "value": 0.01754575880259214,
+              "witnessTick": 308,
+              "limit": 0.15,
+              "unit": "m"
+            },
+            {
+              "id": "position-max",
+              "value": 0.22105781413507467,
+              "witnessTick": 585,
+              "limit": 0.5,
+              "unit": "m"
+            },
+            {
+              "id": "orientation-max",
+              "value": 6.235882789290753,
+              "witnessTick": 402,
+              "limit": 10,
+              "unit": "deg"
+            },
+            {
+              "id": "worst-second-position-p95",
+              "value": 0.11804695289701782,
+              "witnessTick": 599,
+              "limit": 0.25,
+              "unit": "m"
+            },
+            {
+              "id": "visual-error-step-max",
+              "value": 0.1379469483553972,
+              "witnessTick": 587,
+              "limit": 0.2,
+              "unit": "m/tick"
+            },
+            {
+              "id": "missing-render-run",
+              "value": 0,
+              "limit": 0,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "held-moving-run",
+              "value": 0,
+              "limit": 6,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "prediction-frozen-run",
+              "value": 0,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "accepted-source-rollback",
+              "value": 0,
+              "limit": 0,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "stale-source-run",
+              "value": 0,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "hard-corrections-per-minute",
+              "value": 0,
+              "limit": 1,
+              "unit": "/min",
+              "witnessTick": 12
+            },
+            {
+              "id": "observer-buffer",
+              "value": 12,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 12
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "link": {
+        "id": "long-haul",
+        "delayTicks": 12,
+        "jitterTicks": 3,
+        "loss": 0.03,
+        "duplicate": 0,
+        "stride": 2,
+        "observerDelayTicks": 12
+      },
+      "seed": 42,
+      "evidenceFile": "long-haul-42.json",
+      "evidenceSha256": "e2e667987b4ffe4f6fd8ac53674d513fa242bf4929383f2329a84da2d3c9d6b3",
+      "scheduleSha256": "efa43e5c636253edf3810a49f06504336706ffffa5d972279978e20b18785883",
+      "scores": [
+        {
+          "version": "vehicle-quality/1",
+          "scenario": "recorded-course",
+          "role": "driver",
+          "verdict": "fail",
+          "problems": [],
+          "metrics": [
+            {
+              "id": "position-p95",
+              "value": 0.6037149782270363,
+              "witnessTick": 604,
+              "limit": 0.15,
+              "unit": "m"
+            },
+            {
+              "id": "position-max",
+              "value": 2.045053438892312,
+              "witnessTick": 354,
+              "limit": 0.5,
+              "unit": "m"
+            },
+            {
+              "id": "orientation-max",
+              "value": 38.01021272436837,
+              "witnessTick": 356,
+              "limit": 10,
+              "unit": "deg"
+            },
+            {
+              "id": "worst-second-position-p95",
+              "value": 1.0709525184353512,
+              "witnessTick": 327,
+              "limit": 0.25,
+              "unit": "m"
+            },
+            {
+              "id": "visual-error-step-max",
+              "value": 1.5653454911610638,
+              "witnessTick": 352,
+              "limit": 0.2,
+              "unit": "m/tick"
+            },
+            {
+              "id": "missing-render-run",
+              "value": 0,
+              "limit": 0,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "held-moving-run",
+              "value": 2,
+              "limit": 6,
+              "unit": "ticks",
+              "witnessTick": 50
+            },
+            {
+              "id": "prediction-frozen-run",
+              "value": 0,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "accepted-source-rollback",
+              "value": 0,
+              "limit": 0,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "stale-source-run",
+              "value": 0,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "correction-max",
+              "value": 1.7208392205838494,
+              "witnessTick": 355,
+              "limit": 0.35,
+              "unit": "m"
+            },
+            {
+              "id": "hard-corrections-per-minute",
+              "value": 137.28813559322035,
+              "limit": 1,
+              "unit": "/min",
+              "witnessTick": 293
+            }
+          ]
+        },
+        {
+          "version": "vehicle-quality/1",
+          "scenario": "recorded-course",
+          "role": "observer",
+          "verdict": "pass",
+          "problems": [],
+          "metrics": [
+            {
+              "id": "position-p95",
+              "value": 0.020318123859537542,
+              "witnessTick": 436,
+              "limit": 0.15,
+              "unit": "m"
+            },
+            {
+              "id": "position-max",
+              "value": 0.2045190015680109,
+              "witnessTick": 587,
+              "limit": 0.5,
+              "unit": "m"
+            },
+            {
+              "id": "orientation-max",
+              "value": 3.1423521872544473,
+              "witnessTick": 356,
+              "limit": 10,
+              "unit": "deg"
+            },
+            {
+              "id": "worst-second-position-p95",
+              "value": 0.12675957918914812,
+              "witnessTick": 588,
+              "limit": 0.25,
+              "unit": "m"
+            },
+            {
+              "id": "visual-error-step-max",
+              "value": 0.18844675000268613,
+              "witnessTick": 590,
+              "limit": 0.2,
+              "unit": "m/tick"
+            },
+            {
+              "id": "missing-render-run",
+              "value": 0,
+              "limit": 0,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "held-moving-run",
+              "value": 0,
+              "limit": 6,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "prediction-frozen-run",
+              "value": 0,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "accepted-source-rollback",
+              "value": 0,
+              "limit": 0,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "stale-source-run",
+              "value": 0,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "hard-corrections-per-minute",
+              "value": 0,
+              "limit": 1,
+              "unit": "/min",
+              "witnessTick": 12
+            },
+            {
+              "id": "observer-buffer",
+              "value": 12,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 12
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "link": {
+        "id": "long-haul",
+        "delayTicks": 12,
+        "jitterTicks": 3,
+        "loss": 0.03,
+        "duplicate": 0,
+        "stride": 2,
+        "observerDelayTicks": 12
+      },
+      "seed": 1337,
+      "evidenceFile": "long-haul-1337.json",
+      "evidenceSha256": "06047b1f3dd927db409da70d842cdd5ebad428aa3f74942c5dc67d8d994fa7dc",
+      "scheduleSha256": "28bd57e77bdb8f2f3b63675acc204e243bb3e28c3dd536aeb876078e04ff7f46",
+      "scores": [
+        {
+          "version": "vehicle-quality/1",
+          "scenario": "recorded-course",
+          "role": "driver",
+          "verdict": "fail",
+          "problems": [],
+          "metrics": [
+            {
+              "id": "position-p95",
+              "value": 0.6284824132296033,
+              "witnessTick": 323,
+              "limit": 0.15,
+              "unit": "m"
+            },
+            {
+              "id": "position-max",
+              "value": 2.2937478918126075,
+              "witnessTick": 355,
+              "limit": 0.5,
+              "unit": "m"
+            },
+            {
+              "id": "orientation-max",
+              "value": 41.57436615145541,
+              "witnessTick": 357,
+              "limit": 10,
+              "unit": "deg"
+            },
+            {
+              "id": "worst-second-position-p95",
+              "value": 1.5427910888459127,
+              "witnessTick": 352,
+              "limit": 0.25,
+              "unit": "m"
+            },
+            {
+              "id": "visual-error-step-max",
+              "value": 1.598826274326824,
+              "witnessTick": 356,
+              "limit": 0.2,
+              "unit": "m/tick"
+            },
+            {
+              "id": "missing-render-run",
+              "value": 0,
+              "limit": 0,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "held-moving-run",
+              "value": 1,
+              "limit": 6,
+              "unit": "ticks",
+              "witnessTick": 51
+            },
+            {
+              "id": "prediction-frozen-run",
+              "value": 0,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "accepted-source-rollback",
+              "value": 0,
+              "limit": 0,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "stale-source-run",
+              "value": 0,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "correction-max",
+              "value": 1.8472073113036669,
+              "witnessTick": 356,
+              "limit": 0.35,
+              "unit": "m"
+            },
+            {
+              "id": "hard-corrections-per-minute",
+              "value": 142.3728813559322,
+              "limit": 1,
+              "unit": "/min",
+              "witnessTick": 293
+            }
+          ]
+        },
+        {
+          "version": "vehicle-quality/1",
+          "scenario": "recorded-course",
+          "role": "observer",
+          "verdict": "pass",
+          "problems": [],
+          "metrics": [
+            {
+              "id": "position-p95",
+              "value": 0.020606354339946325,
+              "witnessTick": 406,
+              "limit": 0.15,
+              "unit": "m"
+            },
+            {
+              "id": "position-max",
+              "value": 0.15865379565294346,
+              "witnessTick": 582,
+              "limit": 0.5,
+              "unit": "m"
+            },
+            {
+              "id": "orientation-max",
+              "value": 5.3807726268524725,
+              "witnessTick": 357,
+              "limit": 10,
+              "unit": "deg"
+            },
+            {
+              "id": "worst-second-position-p95",
+              "value": 0.08037762441184694,
+              "witnessTick": 581,
+              "limit": 0.25,
+              "unit": "m"
+            },
+            {
+              "id": "visual-error-step-max",
+              "value": 0.151910136089129,
+              "witnessTick": 583,
+              "limit": 0.2,
+              "unit": "m/tick"
+            },
+            {
+              "id": "missing-render-run",
+              "value": 0,
+              "limit": 0,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "held-moving-run",
+              "value": 2,
+              "limit": 6,
+              "unit": "ticks",
+              "witnessTick": 62
+            },
+            {
+              "id": "prediction-frozen-run",
+              "value": 0,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "accepted-source-rollback",
+              "value": 0,
+              "limit": 0,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "stale-source-run",
+              "value": 0,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "hard-corrections-per-minute",
+              "value": 0,
+              "limit": 1,
+              "unit": "/min",
+              "witnessTick": 12
+            },
+            {
+              "id": "observer-buffer",
+              "value": 12,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 12
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "link": {
+        "id": "reorder-duplicates",
+        "delayTicks": 3,
+        "jitterTicks": 2,
+        "loss": 0.01,
+        "duplicate": 0.2,
+        "stride": 2,
+        "observerDelayTicks": 6,
+        "stragglerEvery": 7,
+        "stragglerTicks": 15
+      },
+      "seed": 7,
+      "evidenceFile": "reorder-duplicates-7.json",
+      "evidenceSha256": "7a880bd42d1fe2240bb7036903d9287d60797ef2e3fd319e55391d2e5a9ad803",
+      "scheduleSha256": "0237d8e92247a52efc04d470e72a24d4d9749a222531fd7438992a505a3504b8",
+      "scores": [
+        {
+          "version": "vehicle-quality/1",
+          "scenario": "recorded-course",
+          "role": "driver",
+          "verdict": "fail",
+          "problems": [],
+          "metrics": [
+            {
+              "id": "position-p95",
+              "value": 0.14776239531681928,
+              "witnessTick": 357,
+              "limit": 0.15,
+              "unit": "m"
+            },
+            {
+              "id": "position-max",
+              "value": 0.47592267720923664,
+              "witnessTick": 577,
+              "limit": 0.5,
+              "unit": "m"
+            },
+            {
+              "id": "orientation-max",
+              "value": 11.693366259454688,
+              "witnessTick": 341,
+              "limit": 10,
+              "unit": "deg"
+            },
+            {
+              "id": "worst-second-position-p95",
+              "value": 0.41494010772403317,
+              "witnessTick": 574,
+              "limit": 0.25,
+              "unit": "m"
+            },
+            {
+              "id": "visual-error-step-max",
+              "value": 0.36149771051089413,
+              "witnessTick": 578,
+              "limit": 0.2,
+              "unit": "m/tick"
+            },
+            {
+              "id": "missing-render-run",
+              "value": 0,
+              "limit": 0,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "held-moving-run",
+              "value": 1,
+              "limit": 6,
+              "unit": "ticks",
+              "witnessTick": 51
+            },
+            {
+              "id": "prediction-frozen-run",
+              "value": 0,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "accepted-source-rollback",
+              "value": 0,
+              "limit": 0,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "stale-source-run",
+              "value": 0,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "correction-max",
+              "value": 0.4141549028544701,
+              "witnessTick": 578,
+              "limit": 0.35,
+              "unit": "m"
+            },
+            {
+              "id": "hard-corrections-per-minute",
+              "value": 5.084745762711864,
+              "limit": 1,
+              "unit": "/min",
+              "witnessTick": 578
+            }
+          ]
+        },
+        {
+          "version": "vehicle-quality/1",
+          "scenario": "recorded-course",
+          "role": "observer",
+          "verdict": "pass",
+          "problems": [],
+          "metrics": [
+            {
+              "id": "position-p95",
+              "value": 0.007606867579267123,
+              "witnessTick": 607,
+              "limit": 0.15,
+              "unit": "m"
+            },
+            {
+              "id": "position-max",
+              "value": 0.026325645468046523,
+              "witnessTick": 356,
+              "limit": 0.5,
+              "unit": "m"
+            },
+            {
+              "id": "orientation-max",
+              "value": 1.3030794115279865,
+              "witnessTick": 341,
+              "limit": 10,
+              "unit": "deg"
+            },
+            {
+              "id": "worst-second-position-p95",
+              "value": 0.014870114293875133,
+              "witnessTick": 328,
+              "limit": 0.25,
+              "unit": "m"
+            },
+            {
+              "id": "visual-error-step-max",
+              "value": 0.03265711157152571,
+              "witnessTick": 356,
+              "limit": 0.2,
+              "unit": "m/tick"
+            },
+            {
+              "id": "missing-render-run",
+              "value": 0,
+              "limit": 0,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "held-moving-run",
+              "value": 0,
+              "limit": 6,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "prediction-frozen-run",
+              "value": 0,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "accepted-source-rollback",
+              "value": 0,
+              "limit": 0,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "stale-source-run",
+              "value": 0,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "hard-corrections-per-minute",
+              "value": 0,
+              "limit": 1,
+              "unit": "/min",
+              "witnessTick": 12
+            },
+            {
+              "id": "observer-buffer",
+              "value": 6,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 12
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "link": {
+        "id": "reorder-duplicates",
+        "delayTicks": 3,
+        "jitterTicks": 2,
+        "loss": 0.01,
+        "duplicate": 0.2,
+        "stride": 2,
+        "observerDelayTicks": 6,
+        "stragglerEvery": 7,
+        "stragglerTicks": 15
+      },
+      "seed": 42,
+      "evidenceFile": "reorder-duplicates-42.json",
+      "evidenceSha256": "817b29d76546591de4ccccb6f910b7444ba0414a3e0c2eb516f759396b2b3419",
+      "scheduleSha256": "9c84234585c04756ec09cbbd0dbca1b2b6bc45c588380650a8cdab87ea3f1092",
+      "scores": [
+        {
+          "version": "vehicle-quality/1",
+          "scenario": "recorded-course",
+          "role": "driver",
+          "verdict": "fail",
+          "problems": [],
+          "metrics": [
+            {
+              "id": "position-p95",
+              "value": 0.17077664488993494,
+              "witnessTick": 355,
+              "limit": 0.15,
+              "unit": "m"
+            },
+            {
+              "id": "position-max",
+              "value": 0.5541058697550809,
+              "witnessTick": 580,
+              "limit": 0.5,
+              "unit": "m"
+            },
+            {
+              "id": "orientation-max",
+              "value": 12.30085483440268,
+              "witnessTick": 370,
+              "limit": 10,
+              "unit": "deg"
+            },
+            {
+              "id": "worst-second-position-p95",
+              "value": 0.48519646679943335,
+              "witnessTick": 577,
+              "limit": 0.25,
+              "unit": "m"
+            },
+            {
+              "id": "visual-error-step-max",
+              "value": 0.40349420491932775,
+              "witnessTick": 581,
+              "limit": 0.2,
+              "unit": "m/tick"
+            },
+            {
+              "id": "missing-render-run",
+              "value": 0,
+              "limit": 0,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "held-moving-run",
+              "value": 2,
+              "limit": 6,
+              "unit": "ticks",
+              "witnessTick": 50
+            },
+            {
+              "id": "prediction-frozen-run",
+              "value": 0,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "accepted-source-rollback",
+              "value": 0,
+              "limit": 0,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "stale-source-run",
+              "value": 0,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "correction-max",
+              "value": 0.4509799630885693,
+              "witnessTick": 581,
+              "limit": 0.35,
+              "unit": "m"
+            },
+            {
+              "id": "hard-corrections-per-minute",
+              "value": 5.084745762711864,
+              "limit": 1,
+              "unit": "/min",
+              "witnessTick": 581
+            }
+          ]
+        },
+        {
+          "version": "vehicle-quality/1",
+          "scenario": "recorded-course",
+          "role": "observer",
+          "verdict": "pass",
+          "problems": [],
+          "metrics": [
+            {
+              "id": "position-p95",
+              "value": 0.007941440964894993,
+              "witnessTick": 341,
+              "limit": 0.15,
+              "unit": "m"
+            },
+            {
+              "id": "position-max",
+              "value": 0.13872217767575,
+              "witnessTick": 580,
+              "limit": 0.5,
+              "unit": "m"
+            },
+            {
+              "id": "orientation-max",
+              "value": 1.5379798895529395,
+              "witnessTick": 370,
+              "limit": 10,
+              "unit": "deg"
+            },
+            {
+              "id": "worst-second-position-p95",
+              "value": 0.018323751789360892,
+              "witnessTick": 370,
+              "limit": 0.25,
+              "unit": "m"
+            },
+            {
+              "id": "visual-error-step-max",
+              "value": 0.13590872388723668,
+              "witnessTick": 581,
+              "limit": 0.2,
+              "unit": "m/tick"
+            },
+            {
+              "id": "missing-render-run",
+              "value": 0,
+              "limit": 0,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "held-moving-run",
+              "value": 0,
+              "limit": 6,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "prediction-frozen-run",
+              "value": 0,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "accepted-source-rollback",
+              "value": 0,
+              "limit": 0,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "stale-source-run",
+              "value": 0,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "hard-corrections-per-minute",
+              "value": 0,
+              "limit": 1,
+              "unit": "/min",
+              "witnessTick": 12
+            },
+            {
+              "id": "observer-buffer",
+              "value": 6,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 12
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "link": {
+        "id": "reorder-duplicates",
+        "delayTicks": 3,
+        "jitterTicks": 2,
+        "loss": 0.01,
+        "duplicate": 0.2,
+        "stride": 2,
+        "observerDelayTicks": 6,
+        "stragglerEvery": 7,
+        "stragglerTicks": 15
+      },
+      "seed": 1337,
+      "evidenceFile": "reorder-duplicates-1337.json",
+      "evidenceSha256": "129c9c2224bbb2e96a02cc3dc4337f3748880828154395bdf4c75776c95d0549",
+      "scheduleSha256": "47e1eeb2433c8ac4946d4fbda22463651c7201e978c3692809b60076861ae55c",
+      "scores": [
+        {
+          "version": "vehicle-quality/1",
+          "scenario": "recorded-course",
+          "role": "driver",
+          "verdict": "fail",
+          "problems": [],
+          "metrics": [
+            {
+              "id": "position-p95",
+              "value": 0.16141789111520868,
+              "witnessTick": 328,
+              "limit": 0.15,
+              "unit": "m"
+            },
+            {
+              "id": "position-max",
+              "value": 0.5142803794960197,
+              "witnessTick": 578,
+              "limit": 0.5,
+              "unit": "m"
+            },
+            {
+              "id": "orientation-max",
+              "value": 13.5986896989277,
+              "witnessTick": 341,
+              "limit": 10,
+              "unit": "deg"
+            },
+            {
+              "id": "worst-second-position-p95",
+              "value": 0.475342793637473,
+              "witnessTick": 574,
+              "limit": 0.25,
+              "unit": "m"
+            },
+            {
+              "id": "visual-error-step-max",
+              "value": 0.34697538067415673,
+              "witnessTick": 579,
+              "limit": 0.2,
+              "unit": "m/tick"
+            },
+            {
+              "id": "missing-render-run",
+              "value": 0,
+              "limit": 0,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "held-moving-run",
+              "value": 2,
+              "limit": 6,
+              "unit": "ticks",
+              "witnessTick": 50
+            },
+            {
+              "id": "prediction-frozen-run",
+              "value": 0,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "accepted-source-rollback",
+              "value": 0,
+              "limit": 0,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "stale-source-run",
+              "value": 0,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "correction-max",
+              "value": 0.3971963344700208,
+              "witnessTick": 579,
+              "limit": 0.35,
+              "unit": "m"
+            },
+            {
+              "id": "hard-corrections-per-minute",
+              "value": 5.084745762711864,
+              "limit": 1,
+              "unit": "/min",
+              "witnessTick": 579
+            }
+          ]
+        },
+        {
+          "version": "vehicle-quality/1",
+          "scenario": "recorded-course",
+          "role": "observer",
+          "verdict": "pass",
+          "problems": [],
+          "metrics": [
+            {
+              "id": "position-p95",
+              "value": 0.0072706694743537624,
+              "witnessTick": 339,
+              "limit": 0.15,
+              "unit": "m"
+            },
+            {
+              "id": "position-max",
+              "value": 0.01744661436258217,
+              "witnessTick": 412,
+              "limit": 0.5,
+              "unit": "m"
+            },
+            {
+              "id": "orientation-max",
+              "value": 1.1967391981747284,
+              "witnessTick": 339,
+              "limit": 10,
+              "unit": "deg"
+            },
+            {
+              "id": "worst-second-position-p95",
+              "value": 0.012988027028948738,
+              "witnessTick": 341,
+              "limit": 0.25,
+              "unit": "m"
+            },
+            {
+              "id": "visual-error-step-max",
+              "value": 0.01947652130039476,
+              "witnessTick": 384,
+              "limit": 0.2,
+              "unit": "m/tick"
+            },
+            {
+              "id": "missing-render-run",
+              "value": 0,
+              "limit": 0,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "held-moving-run",
+              "value": 0,
+              "limit": 6,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "prediction-frozen-run",
+              "value": 0,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "accepted-source-rollback",
+              "value": 0,
+              "limit": 0,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "stale-source-run",
+              "value": 0,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "hard-corrections-per-minute",
+              "value": 0,
+              "limit": 1,
+              "unit": "/min",
+              "witnessTick": 12
+            },
+            {
+              "id": "observer-buffer",
+              "value": 6,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 12
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "link": {
+        "id": "landing-burst-loss",
+        "delayTicks": 3,
+        "jitterTicks": 0,
+        "loss": 0,
+        "duplicate": 0,
+        "stride": 2,
+        "observerDelayTicks": 6,
+        "blackout": [
+          24,
+          48
+        ]
+      },
+      "seed": 7,
+      "evidenceFile": "landing-burst-loss-7.json",
+      "evidenceSha256": "5a68d12231beafd5e569dafc079eef1f32322f685e7fb5cad9eccf544f595e1c",
+      "scheduleSha256": "ba4748cd9a0eb22167c22291e2cd2015a10c83a5d330f9292882b4ad15ada270",
+      "scores": [
+        {
+          "version": "vehicle-quality/1",
+          "scenario": "recorded-course",
+          "role": "driver",
+          "verdict": "fail",
+          "problems": [],
+          "metrics": [
+            {
+              "id": "position-p95",
+              "value": 0.1914070088436104,
+              "witnessTick": 566,
+              "limit": 0.15,
+              "unit": "m"
+            },
+            {
+              "id": "position-max",
+              "value": 0.5504869702295843,
+              "witnessTick": 48,
+              "limit": 0.5,
+              "unit": "m"
+            },
+            {
+              "id": "orientation-max",
+              "value": 8.321943420654655,
+              "witnessTick": 307,
+              "limit": 10,
+              "unit": "deg"
+            },
+            {
+              "id": "worst-second-position-p95",
+              "value": 0.45666253251920136,
+              "witnessTick": 573,
+              "limit": 0.25,
+              "unit": "m"
+            },
+            {
+              "id": "visual-error-step-max",
+              "value": 0.4746025773061951,
+              "witnessTick": 49,
+              "limit": 0.2,
+              "unit": "m/tick"
+            },
+            {
+              "id": "missing-render-run",
+              "value": 0,
+              "limit": 0,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "held-moving-run",
+              "value": 4,
+              "limit": 6,
+              "unit": "ticks",
+              "witnessTick": 45
+            },
+            {
+              "id": "prediction-frozen-run",
+              "value": 0,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "accepted-source-rollback",
+              "value": 0,
+              "limit": 0,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "stale-source-run",
+              "value": 0,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "correction-max",
+              "value": 0.5570161708003508,
+              "witnessTick": 49,
+              "limit": 0.35,
+              "unit": "m"
+            },
+            {
+              "id": "hard-corrections-per-minute",
+              "value": 10.169491525423728,
+              "limit": 1,
+              "unit": "/min",
+              "witnessTick": 49
+            }
+          ]
+        },
+        {
+          "version": "vehicle-quality/1",
+          "scenario": "recorded-course",
+          "role": "observer",
+          "verdict": "fail",
+          "problems": [],
+          "metrics": [
+            {
+              "id": "position-p95",
+              "value": 0.004035352383992711,
+              "witnessTick": 587,
+              "limit": 0.15,
+              "unit": "m"
+            },
+            {
+              "id": "position-max",
+              "value": 0.7834387850761413,
+              "witnessTick": 48,
+              "limit": 0.5,
+              "unit": "m"
+            },
+            {
+              "id": "orientation-max",
+              "value": 1.1967391981747284,
+              "witnessTick": 339,
+              "limit": 10,
+              "unit": "deg"
+            },
+            {
+              "id": "worst-second-position-p95",
+              "value": 0.44008849382400506,
+              "witnessTick": 45,
+              "limit": 0.25,
+              "unit": "m"
+            },
+            {
+              "id": "visual-error-step-max",
+              "value": 0.8774515773699831,
+              "witnessTick": 49,
+              "limit": 0.2,
+              "unit": "m/tick"
+            },
+            {
+              "id": "missing-render-run",
+              "value": 0,
+              "limit": 0,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "held-moving-run",
+              "value": 7,
+              "limit": 6,
+              "unit": "ticks",
+              "witnessTick": 42
+            },
+            {
+              "id": "prediction-frozen-run",
+              "value": 0,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "accepted-source-rollback",
+              "value": 0,
+              "limit": 0,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "stale-source-run",
+              "value": 0,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "hard-corrections-per-minute",
+              "value": 0,
+              "limit": 1,
+              "unit": "/min",
+              "witnessTick": 12
+            },
+            {
+              "id": "observer-buffer",
+              "value": 6,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 12
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "link": {
+        "id": "landing-burst-loss",
+        "delayTicks": 3,
+        "jitterTicks": 0,
+        "loss": 0,
+        "duplicate": 0,
+        "stride": 2,
+        "observerDelayTicks": 6,
+        "blackout": [
+          24,
+          48
+        ]
+      },
+      "seed": 42,
+      "evidenceFile": "landing-burst-loss-42.json",
+      "evidenceSha256": "5a68d12231beafd5e569dafc079eef1f32322f685e7fb5cad9eccf544f595e1c",
+      "scheduleSha256": "ba4748cd9a0eb22167c22291e2cd2015a10c83a5d330f9292882b4ad15ada270",
+      "scores": [
+        {
+          "version": "vehicle-quality/1",
+          "scenario": "recorded-course",
+          "role": "driver",
+          "verdict": "fail",
+          "problems": [],
+          "metrics": [
+            {
+              "id": "position-p95",
+              "value": 0.1914070088436104,
+              "witnessTick": 566,
+              "limit": 0.15,
+              "unit": "m"
+            },
+            {
+              "id": "position-max",
+              "value": 0.5504869702295843,
+              "witnessTick": 48,
+              "limit": 0.5,
+              "unit": "m"
+            },
+            {
+              "id": "orientation-max",
+              "value": 8.321943420654655,
+              "witnessTick": 307,
+              "limit": 10,
+              "unit": "deg"
+            },
+            {
+              "id": "worst-second-position-p95",
+              "value": 0.45666253251920136,
+              "witnessTick": 573,
+              "limit": 0.25,
+              "unit": "m"
+            },
+            {
+              "id": "visual-error-step-max",
+              "value": 0.4746025773061951,
+              "witnessTick": 49,
+              "limit": 0.2,
+              "unit": "m/tick"
+            },
+            {
+              "id": "missing-render-run",
+              "value": 0,
+              "limit": 0,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "held-moving-run",
+              "value": 4,
+              "limit": 6,
+              "unit": "ticks",
+              "witnessTick": 45
+            },
+            {
+              "id": "prediction-frozen-run",
+              "value": 0,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "accepted-source-rollback",
+              "value": 0,
+              "limit": 0,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "stale-source-run",
+              "value": 0,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "correction-max",
+              "value": 0.5570161708003508,
+              "witnessTick": 49,
+              "limit": 0.35,
+              "unit": "m"
+            },
+            {
+              "id": "hard-corrections-per-minute",
+              "value": 10.169491525423728,
+              "limit": 1,
+              "unit": "/min",
+              "witnessTick": 49
+            }
+          ]
+        },
+        {
+          "version": "vehicle-quality/1",
+          "scenario": "recorded-course",
+          "role": "observer",
+          "verdict": "fail",
+          "problems": [],
+          "metrics": [
+            {
+              "id": "position-p95",
+              "value": 0.004035352383992711,
+              "witnessTick": 587,
+              "limit": 0.15,
+              "unit": "m"
+            },
+            {
+              "id": "position-max",
+              "value": 0.7834387850761413,
+              "witnessTick": 48,
+              "limit": 0.5,
+              "unit": "m"
+            },
+            {
+              "id": "orientation-max",
+              "value": 1.1967391981747284,
+              "witnessTick": 339,
+              "limit": 10,
+              "unit": "deg"
+            },
+            {
+              "id": "worst-second-position-p95",
+              "value": 0.44008849382400506,
+              "witnessTick": 45,
+              "limit": 0.25,
+              "unit": "m"
+            },
+            {
+              "id": "visual-error-step-max",
+              "value": 0.8774515773699831,
+              "witnessTick": 49,
+              "limit": 0.2,
+              "unit": "m/tick"
+            },
+            {
+              "id": "missing-render-run",
+              "value": 0,
+              "limit": 0,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "held-moving-run",
+              "value": 7,
+              "limit": 6,
+              "unit": "ticks",
+              "witnessTick": 42
+            },
+            {
+              "id": "prediction-frozen-run",
+              "value": 0,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "accepted-source-rollback",
+              "value": 0,
+              "limit": 0,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "stale-source-run",
+              "value": 0,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "hard-corrections-per-minute",
+              "value": 0,
+              "limit": 1,
+              "unit": "/min",
+              "witnessTick": 12
+            },
+            {
+              "id": "observer-buffer",
+              "value": 6,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 12
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "link": {
+        "id": "landing-burst-loss",
+        "delayTicks": 3,
+        "jitterTicks": 0,
+        "loss": 0,
+        "duplicate": 0,
+        "stride": 2,
+        "observerDelayTicks": 6,
+        "blackout": [
+          24,
+          48
+        ]
+      },
+      "seed": 1337,
+      "evidenceFile": "landing-burst-loss-1337.json",
+      "evidenceSha256": "5a68d12231beafd5e569dafc079eef1f32322f685e7fb5cad9eccf544f595e1c",
+      "scheduleSha256": "ba4748cd9a0eb22167c22291e2cd2015a10c83a5d330f9292882b4ad15ada270",
+      "scores": [
+        {
+          "version": "vehicle-quality/1",
+          "scenario": "recorded-course",
+          "role": "driver",
+          "verdict": "fail",
+          "problems": [],
+          "metrics": [
+            {
+              "id": "position-p95",
+              "value": 0.1914070088436104,
+              "witnessTick": 566,
+              "limit": 0.15,
+              "unit": "m"
+            },
+            {
+              "id": "position-max",
+              "value": 0.5504869702295843,
+              "witnessTick": 48,
+              "limit": 0.5,
+              "unit": "m"
+            },
+            {
+              "id": "orientation-max",
+              "value": 8.321943420654655,
+              "witnessTick": 307,
+              "limit": 10,
+              "unit": "deg"
+            },
+            {
+              "id": "worst-second-position-p95",
+              "value": 0.45666253251920136,
+              "witnessTick": 573,
+              "limit": 0.25,
+              "unit": "m"
+            },
+            {
+              "id": "visual-error-step-max",
+              "value": 0.4746025773061951,
+              "witnessTick": 49,
+              "limit": 0.2,
+              "unit": "m/tick"
+            },
+            {
+              "id": "missing-render-run",
+              "value": 0,
+              "limit": 0,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "held-moving-run",
+              "value": 4,
+              "limit": 6,
+              "unit": "ticks",
+              "witnessTick": 45
+            },
+            {
+              "id": "prediction-frozen-run",
+              "value": 0,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "accepted-source-rollback",
+              "value": 0,
+              "limit": 0,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "stale-source-run",
+              "value": 0,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "correction-max",
+              "value": 0.5570161708003508,
+              "witnessTick": 49,
+              "limit": 0.35,
+              "unit": "m"
+            },
+            {
+              "id": "hard-corrections-per-minute",
+              "value": 10.169491525423728,
+              "limit": 1,
+              "unit": "/min",
+              "witnessTick": 49
+            }
+          ]
+        },
+        {
+          "version": "vehicle-quality/1",
+          "scenario": "recorded-course",
+          "role": "observer",
+          "verdict": "fail",
+          "problems": [],
+          "metrics": [
+            {
+              "id": "position-p95",
+              "value": 0.004035352383992711,
+              "witnessTick": 587,
+              "limit": 0.15,
+              "unit": "m"
+            },
+            {
+              "id": "position-max",
+              "value": 0.7834387850761413,
+              "witnessTick": 48,
+              "limit": 0.5,
+              "unit": "m"
+            },
+            {
+              "id": "orientation-max",
+              "value": 1.1967391981747284,
+              "witnessTick": 339,
+              "limit": 10,
+              "unit": "deg"
+            },
+            {
+              "id": "worst-second-position-p95",
+              "value": 0.44008849382400506,
+              "witnessTick": 45,
+              "limit": 0.25,
+              "unit": "m"
+            },
+            {
+              "id": "visual-error-step-max",
+              "value": 0.8774515773699831,
+              "witnessTick": 49,
+              "limit": 0.2,
+              "unit": "m/tick"
+            },
+            {
+              "id": "missing-render-run",
+              "value": 0,
+              "limit": 0,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "held-moving-run",
+              "value": 7,
+              "limit": 6,
+              "unit": "ticks",
+              "witnessTick": 42
+            },
+            {
+              "id": "prediction-frozen-run",
+              "value": 0,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "accepted-source-rollback",
+              "value": 0,
+              "limit": 0,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "stale-source-run",
+              "value": 0,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "hard-corrections-per-minute",
+              "value": 0,
+              "limit": 1,
+              "unit": "/min",
+              "witnessTick": 12
+            },
+            {
+              "id": "observer-buffer",
+              "value": 6,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 12
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "link": {
+        "id": "turn-blackout",
+        "delayTicks": 3,
+        "jitterTicks": 1,
+        "loss": 0,
+        "duplicate": 0,
+        "stride": 2,
+        "observerDelayTicks": 6,
+        "blackout": [
+          360,
+          408
+        ]
+      },
+      "seed": 7,
+      "evidenceFile": "turn-blackout-7.json",
+      "evidenceSha256": "3197d98c9f166a932eaeb00acdcc978c317b886edb5a0e2243ee7f44dd4fc440",
+      "scheduleSha256": "b2c556b5e9021f80f80775577730138b19a12e3f817fcc626d3287448055c3a9",
+      "scores": [
+        {
+          "version": "vehicle-quality/1",
+          "scenario": "recorded-course",
+          "role": "driver",
+          "verdict": "fail",
+          "problems": [],
+          "metrics": [
+            {
+              "id": "position-p95",
+              "value": 0.6951360305958557,
+              "witnessTick": 372,
+              "limit": 0.15,
+              "unit": "m"
+            },
+            {
+              "id": "position-max",
+              "value": 9.897695465084272,
+              "witnessTick": 407,
+              "limit": 0.5,
+              "unit": "m"
+            },
+            {
+              "id": "orientation-max",
+              "value": 33.964896115975,
+              "witnessTick": 400,
+              "limit": 10,
+              "unit": "deg"
+            },
+            {
+              "id": "worst-second-position-p95",
+              "value": 9.06120800180184,
+              "witnessTick": 404,
+              "limit": 0.25,
+              "unit": "m"
+            },
+            {
+              "id": "visual-error-step-max",
+              "value": 9.88563079147318,
+              "witnessTick": 408,
+              "limit": 0.2,
+              "unit": "m/tick"
+            },
+            {
+              "id": "missing-render-run",
+              "value": 0,
+              "limit": 0,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "held-moving-run",
+              "value": 27,
+              "limit": 6,
+              "unit": "ticks",
+              "witnessTick": 381
+            },
+            {
+              "id": "prediction-frozen-run",
+              "value": 18,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 390
+            },
+            {
+              "id": "accepted-source-rollback",
+              "value": 0,
+              "limit": 0,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "stale-source-run",
+              "value": 21,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 387
+            },
+            {
+              "id": "correction-max",
+              "value": 10.1657170170336,
+              "witnessTick": 408,
+              "limit": 0.35,
+              "unit": "m"
+            },
+            {
+              "id": "hard-corrections-per-minute",
+              "value": 10.169491525423728,
+              "limit": 1,
+              "unit": "/min",
+              "witnessTick": 408
+            }
+          ]
+        },
+        {
+          "version": "vehicle-quality/1",
+          "scenario": "recorded-course",
+          "role": "observer",
+          "verdict": "fail",
+          "problems": [],
+          "metrics": [
+            {
+              "id": "position-p95",
+              "value": 0.0873535213738981,
+              "witnessTick": 373,
+              "limit": 0.15,
+              "unit": "m"
+            },
+            {
+              "id": "position-max",
+              "value": 8.257201776850724,
+              "witnessTick": 407,
+              "limit": 0.5,
+              "unit": "m"
+            },
+            {
+              "id": "orientation-max",
+              "value": 29.772721073277026,
+              "witnessTick": 406,
+              "limit": 10,
+              "unit": "deg"
+            },
+            {
+              "id": "worst-second-position-p95",
+              "value": 7.4214389006858,
+              "witnessTick": 404,
+              "limit": 0.25,
+              "unit": "m"
+            },
+            {
+              "id": "visual-error-step-max",
+              "value": 8.27768590359119,
+              "witnessTick": 408,
+              "limit": 0.2,
+              "unit": "m/tick"
+            },
+            {
+              "id": "missing-render-run",
+              "value": 0,
+              "limit": 0,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "held-moving-run",
+              "value": 30,
+              "limit": 6,
+              "unit": "ticks",
+              "witnessTick": 378
+            },
+            {
+              "id": "prediction-frozen-run",
+              "value": 0,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "accepted-source-rollback",
+              "value": 0,
+              "limit": 0,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "stale-source-run",
+              "value": 21,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 387
+            },
+            {
+              "id": "hard-corrections-per-minute",
+              "value": 0,
+              "limit": 1,
+              "unit": "/min",
+              "witnessTick": 12
+            },
+            {
+              "id": "observer-buffer",
+              "value": 6,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 12
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "link": {
+        "id": "turn-blackout",
+        "delayTicks": 3,
+        "jitterTicks": 1,
+        "loss": 0,
+        "duplicate": 0,
+        "stride": 2,
+        "observerDelayTicks": 6,
+        "blackout": [
+          360,
+          408
+        ]
+      },
+      "seed": 42,
+      "evidenceFile": "turn-blackout-42.json",
+      "evidenceSha256": "0fa5c7503359326bef3d0bd0d03ba596993c23fad23c8b108251ec1ea64c42df",
+      "scheduleSha256": "e006b73f7fcfd03e5351b40c4242570a5f1127383eb77453a1a26313ccc3975d",
+      "scores": [
+        {
+          "version": "vehicle-quality/1",
+          "scenario": "recorded-course",
+          "role": "driver",
+          "verdict": "fail",
+          "problems": [],
+          "metrics": [
+            {
+              "id": "position-p95",
+              "value": 0.9390389151405948,
+              "witnessTick": 373,
+              "limit": 0.15,
+              "unit": "m"
+            },
+            {
+              "id": "position-max",
+              "value": 10.177644971161786,
+              "witnessTick": 408,
+              "limit": 0.5,
+              "unit": "m"
+            },
+            {
+              "id": "orientation-max",
+              "value": 33.96486481844447,
+              "witnessTick": 400,
+              "limit": 10,
+              "unit": "deg"
+            },
+            {
+              "id": "worst-second-position-p95",
+              "value": 9.339347515954254,
+              "witnessTick": 405,
+              "limit": 0.25,
+              "unit": "m"
+            },
+            {
+              "id": "visual-error-step-max",
+              "value": 10.1690887759095,
+              "witnessTick": 409,
+              "limit": 0.2,
+              "unit": "m/tick"
+            },
+            {
+              "id": "missing-render-run",
+              "value": 0,
+              "limit": 0,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "held-moving-run",
+              "value": 28,
+              "limit": 6,
+              "unit": "ticks",
+              "witnessTick": 381
+            },
+            {
+              "id": "prediction-frozen-run",
+              "value": 20,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 389
+            },
+            {
+              "id": "accepted-source-rollback",
+              "value": 0,
+              "limit": 0,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "stale-source-run",
+              "value": 22,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 387
+            },
+            {
+              "id": "correction-max",
+              "value": 10.449747794985274,
+              "witnessTick": 409,
+              "limit": 0.35,
+              "unit": "m"
+            },
+            {
+              "id": "hard-corrections-per-minute",
+              "value": 10.169491525423728,
+              "limit": 1,
+              "unit": "/min",
+              "witnessTick": 409
+            }
+          ]
+        },
+        {
+          "version": "vehicle-quality/1",
+          "scenario": "recorded-course",
+          "role": "observer",
+          "verdict": "fail",
+          "problems": [],
+          "metrics": [
+            {
+              "id": "position-p95",
+              "value": 0.10131586743051786,
+              "witnessTick": 410,
+              "limit": 0.15,
+              "unit": "m"
+            },
+            {
+              "id": "position-max",
+              "value": 8.53786606679475,
+              "witnessTick": 408,
+              "limit": 0.5,
+              "unit": "m"
+            },
+            {
+              "id": "orientation-max",
+              "value": 29.772721073277026,
+              "witnessTick": 406,
+              "limit": 10,
+              "unit": "deg"
+            },
+            {
+              "id": "worst-second-position-p95",
+              "value": 7.6991416225318146,
+              "witnessTick": 405,
+              "limit": 0.25,
+              "unit": "m"
+            },
+            {
+              "id": "visual-error-step-max",
+              "value": 8.570186126996154,
+              "witnessTick": 409,
+              "limit": 0.2,
+              "unit": "m/tick"
+            },
+            {
+              "id": "missing-render-run",
+              "value": 0,
+              "limit": 0,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "held-moving-run",
+              "value": 31,
+              "limit": 6,
+              "unit": "ticks",
+              "witnessTick": 378
+            },
+            {
+              "id": "prediction-frozen-run",
+              "value": 0,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "accepted-source-rollback",
+              "value": 0,
+              "limit": 0,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "stale-source-run",
+              "value": 22,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 387
+            },
+            {
+              "id": "hard-corrections-per-minute",
+              "value": 0,
+              "limit": 1,
+              "unit": "/min",
+              "witnessTick": 12
+            },
+            {
+              "id": "observer-buffer",
+              "value": 6,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 12
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "link": {
+        "id": "turn-blackout",
+        "delayTicks": 3,
+        "jitterTicks": 1,
+        "loss": 0,
+        "duplicate": 0,
+        "stride": 2,
+        "observerDelayTicks": 6,
+        "blackout": [
+          360,
+          408
+        ]
+      },
+      "seed": 1337,
+      "evidenceFile": "turn-blackout-1337.json",
+      "evidenceSha256": "3628f96650347f3652bab3031d554aee1dec1b983d5b6e30654d27ee96bbe754",
+      "scheduleSha256": "da424afe1e9fd2e100530d9e7e9645ecfa737c480f41fe3458028fe1ef0c2da4",
+      "scores": [
+        {
+          "version": "vehicle-quality/1",
+          "scenario": "recorded-course",
+          "role": "driver",
+          "verdict": "fail",
+          "problems": [],
+          "metrics": [
+            {
+              "id": "position-p95",
+              "value": 0.6954592240740528,
+              "witnessTick": 372,
+              "limit": 0.15,
+              "unit": "m"
+            },
+            {
+              "id": "position-max",
+              "value": 9.897695525561804,
+              "witnessTick": 407,
+              "limit": 0.5,
+              "unit": "m"
+            },
+            {
+              "id": "orientation-max",
+              "value": 33.96496000657662,
+              "witnessTick": 400,
+              "limit": 10,
+              "unit": "deg"
+            },
+            {
+              "id": "worst-second-position-p95",
+              "value": 9.061208112283248,
+              "witnessTick": 404,
+              "limit": 0.25,
+              "unit": "m"
+            },
+            {
+              "id": "visual-error-step-max",
+              "value": 9.885630853141675,
+              "witnessTick": 408,
+              "limit": 0.2,
+              "unit": "m/tick"
+            },
+            {
+              "id": "missing-render-run",
+              "value": 0,
+              "limit": 0,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "held-moving-run",
+              "value": 27,
+              "limit": 6,
+              "unit": "ticks",
+              "witnessTick": 381
+            },
+            {
+              "id": "prediction-frozen-run",
+              "value": 18,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 390
+            },
+            {
+              "id": "accepted-source-rollback",
+              "value": 0,
+              "limit": 0,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "stale-source-run",
+              "value": 21,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 387
+            },
+            {
+              "id": "correction-max",
+              "value": 10.165717078608838,
+              "witnessTick": 408,
+              "limit": 0.35,
+              "unit": "m"
+            },
+            {
+              "id": "hard-corrections-per-minute",
+              "value": 10.169491525423728,
+              "limit": 1,
+              "unit": "/min",
+              "witnessTick": 408
+            }
+          ]
+        },
+        {
+          "version": "vehicle-quality/1",
+          "scenario": "recorded-course",
+          "role": "observer",
+          "verdict": "fail",
+          "problems": [],
+          "metrics": [
+            {
+              "id": "position-p95",
+              "value": 0.0873535213738981,
+              "witnessTick": 373,
+              "limit": 0.15,
+              "unit": "m"
+            },
+            {
+              "id": "position-max",
+              "value": 8.257201776850724,
+              "witnessTick": 407,
+              "limit": 0.5,
+              "unit": "m"
+            },
+            {
+              "id": "orientation-max",
+              "value": 29.772721073277026,
+              "witnessTick": 406,
+              "limit": 10,
+              "unit": "deg"
+            },
+            {
+              "id": "worst-second-position-p95",
+              "value": 7.4214389006858,
+              "witnessTick": 404,
+              "limit": 0.25,
+              "unit": "m"
+            },
+            {
+              "id": "visual-error-step-max",
+              "value": 8.27768590359119,
+              "witnessTick": 408,
+              "limit": 0.2,
+              "unit": "m/tick"
+            },
+            {
+              "id": "missing-render-run",
+              "value": 0,
+              "limit": 0,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "held-moving-run",
+              "value": 30,
+              "limit": 6,
+              "unit": "ticks",
+              "witnessTick": 378
+            },
+            {
+              "id": "prediction-frozen-run",
+              "value": 0,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "accepted-source-rollback",
+              "value": 0,
+              "limit": 0,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "stale-source-run",
+              "value": 21,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 387
+            },
+            {
+              "id": "hard-corrections-per-minute",
+              "value": 0,
+              "limit": 1,
+              "unit": "/min",
+              "witnessTick": 12
+            },
+            {
+              "id": "observer-buffer",
+              "value": 6,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 12
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "link": {
+        "id": "sparse-10hz",
+        "delayTicks": 3,
+        "jitterTicks": 1,
+        "loss": 0.05,
+        "duplicate": 0,
+        "stride": 6,
+        "observerDelayTicks": 9
+      },
+      "seed": 7,
+      "evidenceFile": "sparse-10hz-7.json",
+      "evidenceSha256": "187ec009e9b45b0455f66820935e7a72031491a562a2ced37948a423d9f68bff",
+      "scheduleSha256": "54c0e0a0781621f6df1048549deaeb4c4d24a344cb88271c18a6a366541c4ab2",
+      "scores": [
+        {
+          "version": "vehicle-quality/1",
+          "scenario": "recorded-course",
+          "role": "driver",
+          "verdict": "fail",
+          "problems": [],
+          "metrics": [
+            {
+              "id": "position-p95",
+              "value": 0.18828887430618843,
+              "witnessTick": 407,
+              "limit": 0.15,
+              "unit": "m"
+            },
+            {
+              "id": "position-max",
+              "value": 0.710315295209751,
+              "witnessTick": 428,
+              "limit": 0.5,
+              "unit": "m"
+            },
+            {
+              "id": "orientation-max",
+              "value": 28.368546620232337,
+              "witnessTick": 411,
+              "limit": 10,
+              "unit": "deg"
+            },
+            {
+              "id": "worst-second-position-p95",
+              "value": 0.5429683670874565,
+              "witnessTick": 588,
+              "limit": 0.25,
+              "unit": "m"
+            },
+            {
+              "id": "visual-error-step-max",
+              "value": 0.7135959511051635,
+              "witnessTick": 429,
+              "limit": 0.2,
+              "unit": "m/tick"
+            },
+            {
+              "id": "missing-render-run",
+              "value": 0,
+              "limit": 0,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "held-moving-run",
+              "value": 2,
+              "limit": 6,
+              "unit": "ticks",
+              "witnessTick": 50
+            },
+            {
+              "id": "prediction-frozen-run",
+              "value": 0,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "accepted-source-rollback",
+              "value": 0,
+              "limit": 0,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "stale-source-run",
+              "value": 0,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "correction-max",
+              "value": 0.915320033248998,
+              "witnessTick": 429,
+              "limit": 0.35,
+              "unit": "m"
+            },
+            {
+              "id": "hard-corrections-per-minute",
+              "value": 25.423728813559322,
+              "limit": 1,
+              "unit": "/min",
+              "witnessTick": 412
+            }
+          ]
+        },
+        {
+          "version": "vehicle-quality/1",
+          "scenario": "recorded-course",
+          "role": "observer",
+          "verdict": "fail",
+          "problems": [],
+          "metrics": [
+            {
+              "id": "position-p95",
+              "value": 0.03654613869634677,
+              "witnessTick": 665,
+              "limit": 0.15,
+              "unit": "m"
+            },
+            {
+              "id": "position-max",
+              "value": 0.33817322217534085,
+              "witnessTick": 591,
+              "limit": 0.5,
+              "unit": "m"
+            },
+            {
+              "id": "orientation-max",
+              "value": 7.286006248099919,
+              "witnessTick": 411,
+              "limit": 10,
+              "unit": "deg"
+            },
+            {
+              "id": "worst-second-position-p95",
+              "value": 0.1727534558969452,
+              "witnessTick": 588,
+              "limit": 0.25,
+              "unit": "m"
+            },
+            {
+              "id": "visual-error-step-max",
+              "value": 0.3479733141570044,
+              "witnessTick": 592,
+              "limit": 0.2,
+              "unit": "m/tick"
+            },
+            {
+              "id": "missing-render-run",
+              "value": 0,
+              "limit": 0,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "held-moving-run",
+              "value": 0,
+              "limit": 6,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "prediction-frozen-run",
+              "value": 0,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "accepted-source-rollback",
+              "value": 0,
+              "limit": 0,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "stale-source-run",
+              "value": 0,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "hard-corrections-per-minute",
+              "value": 0,
+              "limit": 1,
+              "unit": "/min",
+              "witnessTick": 12
+            },
+            {
+              "id": "observer-buffer",
+              "value": 9,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 12
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "link": {
+        "id": "sparse-10hz",
+        "delayTicks": 3,
+        "jitterTicks": 1,
+        "loss": 0.05,
+        "duplicate": 0,
+        "stride": 6,
+        "observerDelayTicks": 9
+      },
+      "seed": 42,
+      "evidenceFile": "sparse-10hz-42.json",
+      "evidenceSha256": "37c71eefa080a3c92ecea447d7d280e88abccec17e39b1f5d9e039bdad22149e",
+      "scheduleSha256": "97517c698751fcf5b894b49581d0ebdc7bfaac4187b96993e501483835b1aae0",
+      "scores": [
+        {
+          "version": "vehicle-quality/1",
+          "scenario": "recorded-course",
+          "role": "driver",
+          "verdict": "fail",
+          "problems": [],
+          "metrics": [
+            {
+              "id": "position-p95",
+              "value": 0.17010695556842556,
+              "witnessTick": 579,
+              "limit": 0.15,
+              "unit": "m"
+            },
+            {
+              "id": "position-max",
+              "value": 0.5000493272329206,
+              "witnessTick": 595,
+              "limit": 0.5,
+              "unit": "m"
+            },
+            {
+              "id": "orientation-max",
+              "value": 17.411555871053324,
+              "witnessTick": 350,
+              "limit": 10,
+              "unit": "deg"
+            },
+            {
+              "id": "worst-second-position-p95",
+              "value": 0.46211615342093915,
+              "witnessTick": 571,
+              "limit": 0.25,
+              "unit": "m"
+            },
+            {
+              "id": "visual-error-step-max",
+              "value": 0.4697057347267634,
+              "witnessTick": 596,
+              "limit": 0.2,
+              "unit": "m/tick"
+            },
+            {
+              "id": "missing-render-run",
+              "value": 0,
+              "limit": 0,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "held-moving-run",
+              "value": 2,
+              "limit": 6,
+              "unit": "ticks",
+              "witnessTick": 50
+            },
+            {
+              "id": "prediction-frozen-run",
+              "value": 0,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "accepted-source-rollback",
+              "value": 0,
+              "limit": 0,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "stale-source-run",
+              "value": 0,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "correction-max",
+              "value": 0.5169408907183207,
+              "witnessTick": 596,
+              "limit": 0.35,
+              "unit": "m"
+            },
+            {
+              "id": "hard-corrections-per-minute",
+              "value": 15.254237288135593,
+              "limit": 1,
+              "unit": "/min",
+              "witnessTick": 572
+            }
+          ]
+        },
+        {
+          "version": "vehicle-quality/1",
+          "scenario": "recorded-course",
+          "role": "observer",
+          "verdict": "pass",
+          "problems": [],
+          "metrics": [
+            {
+              "id": "position-p95",
+              "value": 0.02508691074393413,
+              "witnessTick": 575,
+              "limit": 0.15,
+              "unit": "m"
+            },
+            {
+              "id": "position-max",
+              "value": 0.1729439463784523,
+              "witnessTick": 595,
+              "limit": 0.5,
+              "unit": "m"
+            },
+            {
+              "id": "orientation-max",
+              "value": 3.647179877180973,
+              "witnessTick": 291,
+              "limit": 10,
+              "unit": "deg"
+            },
+            {
+              "id": "worst-second-position-p95",
+              "value": 0.09890567059429956,
+              "witnessTick": 596,
+              "limit": 0.25,
+              "unit": "m"
+            },
+            {
+              "id": "visual-error-step-max",
+              "value": 0.19657924468693433,
+              "witnessTick": 596,
+              "limit": 0.2,
+              "unit": "m/tick"
+            },
+            {
+              "id": "missing-render-run",
+              "value": 0,
+              "limit": 0,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "held-moving-run",
+              "value": 0,
+              "limit": 6,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "prediction-frozen-run",
+              "value": 0,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "accepted-source-rollback",
+              "value": 0,
+              "limit": 0,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "stale-source-run",
+              "value": 0,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "hard-corrections-per-minute",
+              "value": 0,
+              "limit": 1,
+              "unit": "/min",
+              "witnessTick": 12
+            },
+            {
+              "id": "observer-buffer",
+              "value": 9,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 12
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "link": {
+        "id": "sparse-10hz",
+        "delayTicks": 3,
+        "jitterTicks": 1,
+        "loss": 0.05,
+        "duplicate": 0,
+        "stride": 6,
+        "observerDelayTicks": 9
+      },
+      "seed": 1337,
+      "evidenceFile": "sparse-10hz-1337.json",
+      "evidenceSha256": "d8cb48cbf4c869953648eb96259a01acec57ce2fa9615ff55480aa76e7564d32",
+      "scheduleSha256": "58d859b096561cd5de17053e8af865166ed1b875903f37d14107769af80f5f7e",
+      "scores": [
+        {
+          "version": "vehicle-quality/1",
+          "scenario": "recorded-course",
+          "role": "driver",
+          "verdict": "fail",
+          "problems": [],
+          "metrics": [
+            {
+              "id": "position-p95",
+              "value": 0.23430420336085683,
+              "witnessTick": 602,
+              "limit": 0.15,
+              "unit": "m"
+            },
+            {
+              "id": "position-max",
+              "value": 0.5360291572285809,
+              "witnessTick": 579,
+              "limit": 0.5,
+              "unit": "m"
+            },
+            {
+              "id": "orientation-max",
+              "value": 20.367474463597787,
+              "witnessTick": 351,
+              "limit": 10,
+              "unit": "deg"
+            },
+            {
+              "id": "worst-second-position-p95",
+              "value": 0.4790094642455083,
+              "witnessTick": 571,
+              "limit": 0.25,
+              "unit": "m"
+            },
+            {
+              "id": "visual-error-step-max",
+              "value": 0.3286756230442195,
+              "witnessTick": 580,
+              "limit": 0.2,
+              "unit": "m/tick"
+            },
+            {
+              "id": "missing-render-run",
+              "value": 0,
+              "limit": 0,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "held-moving-run",
+              "value": 2,
+              "limit": 6,
+              "unit": "ticks",
+              "witnessTick": 50
+            },
+            {
+              "id": "prediction-frozen-run",
+              "value": 0,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "accepted-source-rollback",
+              "value": 0,
+              "limit": 0,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "stale-source-run",
+              "value": 0,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "correction-max",
+              "value": 0.3874606586044865,
+              "witnessTick": 573,
+              "limit": 0.35,
+              "unit": "m"
+            },
+            {
+              "id": "hard-corrections-per-minute",
+              "value": 10.169491525423728,
+              "limit": 1,
+              "unit": "/min",
+              "witnessTick": 573
+            }
+          ]
+        },
+        {
+          "version": "vehicle-quality/1",
+          "scenario": "recorded-course",
+          "role": "observer",
+          "verdict": "fail",
+          "problems": [],
+          "metrics": [
+            {
+              "id": "position-p95",
+              "value": 0.023874034364719153,
+              "witnessTick": 324,
+              "limit": 0.15,
+              "unit": "m"
+            },
+            {
+              "id": "position-max",
+              "value": 0.3332142972698531,
+              "witnessTick": 58,
+              "limit": 0.5,
+              "unit": "m"
+            },
+            {
+              "id": "orientation-max",
+              "value": 3.2651146495214567,
+              "witnessTick": 342,
+              "limit": 10,
+              "unit": "deg"
+            },
+            {
+              "id": "worst-second-position-p95",
+              "value": 0.14891148716193078,
+              "witnessTick": 61,
+              "limit": 0.25,
+              "unit": "m"
+            },
+            {
+              "id": "visual-error-step-max",
+              "value": 0.325039252129657,
+              "witnessTick": 58,
+              "limit": 0.2,
+              "unit": "m/tick"
+            },
+            {
+              "id": "missing-render-run",
+              "value": 0,
+              "limit": 0,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "held-moving-run",
+              "value": 0,
+              "limit": 6,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "prediction-frozen-run",
+              "value": 0,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "accepted-source-rollback",
+              "value": 0,
+              "limit": 0,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "stale-source-run",
+              "value": 0,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 12
+            },
+            {
+              "id": "hard-corrections-per-minute",
+              "value": 0,
+              "limit": 1,
+              "unit": "/min",
+              "witnessTick": 12
+            },
+            {
+              "id": "observer-buffer",
+              "value": 9,
+              "limit": 12,
+              "unit": "ticks",
+              "witnessTick": 12
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "coverage": [
+    {
+      "id": "recorded-course",
+      "status": "replay-ready",
+      "required": [],
+      "capture": "Pinned native Vehicle2 drop, acceleration, steering and braking trace; judge trajectory only."
+    },
+    {
+      "id": "idle-slope",
+      "status": "needs-native-evidence",
+      "required": [
+        "clearance",
+        "wheels"
+      ],
+      "capture": "30 s stationary on level and banked surfaces; authoritative wheel travel plus signed collider clearance."
+    },
+    {
+      "id": "throttle-release",
+      "status": "needs-native-evidence",
+      "required": [
+        "input"
+      ],
+      "capture": "Sampled command id, accepted input tick, predicted application tick and physical response onset; include quick opposite inputs."
+    },
+    {
+      "id": "slalom-grip",
+      "status": "needs-native-evidence",
+      "required": [
+        "wheels",
+        "input"
+      ],
+      "capture": "Alternating ±steer, FWD/RWD/AWD, low/high grip, short/long wheelbase; capture four wheel states."
+    },
+    {
+      "id": "handbrake-release",
+      "status": "needs-native-evidence",
+      "required": [
+        "wheels",
+        "input"
+      ],
+      "capture": "Hold/release/reapply handbrake while turning; report axle traction and applied command ids."
+    },
+    {
+      "id": "crest-landing",
+      "status": "needs-native-evidence",
+      "required": [
+        "landing",
+        "clearance",
+        "wheels"
+      ],
+      "capture": "Confirmed takeoff/landing and signed clearance of simple colliders, including roof-first landing."
+    },
+    {
+      "id": "bridge-gap",
+      "status": "needs-native-evidence",
+      "required": [
+        "clearance",
+        "wheels"
+      ],
+      "capture": "Bridge with empty space below, underpass and sloping edge; oracle clearance comes from full geometry queries."
+    },
+    {
+      "id": "wall-glance",
+      "status": "needs-native-evidence",
+      "required": [
+        "impact",
+        "clearance"
+      ],
+      "capture": "Confirmed contact pair and impulse; angled wall, front bumper and side hits."
+    },
+    {
+      "id": "crossing-vehicles",
+      "status": "needs-native-evidence",
+      "required": [
+        "impact",
+        "clearance"
+      ],
+      "capture": "Two drivers plus observer, perpendicular and head-on courses; same-tick dynamic actor oracle for both clients."
+    },
+    {
+      "id": "cannon-wheel-loss",
+      "status": "needs-native-evidence",
+      "required": [
+        "detach",
+        "wheels",
+        "topology",
+        "impact"
+      ],
+      "capture": "Server-confirmed cannon hit, wheel topology epoch, force per wheel, post-damage steering and surviving rigid islands."
+    },
+    {
+      "id": "meteor-wreck",
+      "status": "needs-native-evidence",
+      "required": [
+        "topology",
+        "impact",
+        "wheels"
+      ],
+      "capture": "Server-confirmed impact, chunk membership epochs, body lifetime ids, missing-wheel functionality; full fracture convergence needs topology-specific oracle."
+    },
+    {
+      "id": "outage-recovery",
+      "status": "needs-native-evidence",
+      "required": [
+        "recovery",
+        "input"
+      ],
+      "capture": "Outage during a turn; recovery trigger starts at first usable authority after link restoration, then measure sustained convergence."
+    },
+    {
+      "id": "ownership-transfer",
+      "status": "needs-native-evidence",
+      "required": [
+        "ownership",
+        "input"
+      ],
+      "capture": "Entity generation plus owner epoch; transfer while delayed input/acks from the prior driver remain queued."
+    },
+    {
+      "id": "late-join-damaged",
+      "status": "needs-native-evidence",
+      "required": [
+        "topology",
+        "wheels"
+      ],
+      "capture": "Late join and interest-region exit/re-entry after wheel destruction; bootstrap/topology hashes and post-bootstrap poses."
+    }
+  ],
+  "withinMeasuredTargets": false,
+  "fullyQualified": false
+}

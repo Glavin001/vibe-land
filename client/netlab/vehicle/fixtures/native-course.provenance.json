@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "sourceSha256": "4c4c371926ba1f37504ce59e1ab706030c07cd1cd28932010d261b70404967c3",
+  "compressedSha256": "a3c548ca7647150542d66f0dadff0cde8c86c1d6e988e0dc146efb6d85a888f1",
+  "frames": 720,
+  "hz": 60,
+  "source": "export_vehicle_netcode_trace in server/src/physx_runtime.rs",
+  "capture": "Previously recorded local macOS PhysX GPU trace (2026-09-26), reused without starting GPU simulation.",
+  "scope": "Vehicle type 0, id 7, initial drop, coast, throttle, steering, brake; contact/topology events were not recorded. This is not proof of collision/damage correctness.",
+  "sdk": "696c341fb97a9e77480e01bfa153a2a9747ce75c (recorded build provenance from prior validation)",
+  "world": "Garage heightmap and static props embedded in source. Stock vehicle proxy is resolved from current shared definitions; candidate WASM and source revision must also be recorded."
+}

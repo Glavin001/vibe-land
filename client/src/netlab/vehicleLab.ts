@@ -3,7 +3,7 @@ import type { RecorderEvent } from './recorder';
 export const VEHICLE_LAB_PROFILES = ['baseline', 'wifi-good', 'wifi-bad', 'lte', 'poor-mobile', 'blackhole'] as const;
 export const VEHICLE_LAB_TARGETS = {
   durationSec: 30, movingSec: 5, correctionP95M: .15, hardSnapsPerMinute: 1,
-  inputPresentationP95Ms: 50, frozenPct: 1, observerExtrapolatedPct: 5, frameP95Ms: 33.4,
+  frozenPct: 1, observerExtrapolatedPct: 5,
 };
 export type VehicleLabRole = 'driver' | 'observer';
 export function vehicleLabEnabled(search: string): boolean {
@@ -48,15 +48,15 @@ export function scoreVehicleLab(events: readonly RecorderEvent[]): VehicleLabSco
     const metrics:VehicleLabMetric[] = role==='driver' ? [
       {label:'Reconciliation displacement p95',value:percentile(values(corrections,'errorM')),unit:'m',target:VEHICLE_LAB_TARGETS.correctionP95M},
       {label:'Hard corrections / minute',value:seconds?corrections.filter(e=>e.data.hard===true).length*60/seconds:null,unit:'/min',target:VEHICLE_LAB_TARGETS.hardSnapsPerMinute},
-      {label:'Input → predicted pose p95',value:percentile(values(responses,'delayMs')),unit:'ms',target:VEHICLE_LAB_TARGETS.inputPresentationP95Ms},
+      {label:'Input → predicted pose p95',value:percentile(values(responses,'delayMs')),unit:'ms'},
       {label:'Prediction frozen',value:percentage('frozen'),unit:'%',target:VEHICLE_LAB_TARGETS.frozenPct},
     ] : [
       {label:'Buffer underrun',value:percentage('extrapolated',true),unit:'%',target:VEHICLE_LAB_TARGETS.observerExtrapolatedPct},
       {label:'Held while moving',value:percentage('heldWhileMoving',true),unit:'%',target:VEHICLE_LAB_TARGETS.frozenPct},
-      {label:'Presentation delay p95',value:percentile(values(frames,'delayMs')),unit:'ms'},
+      {label:'Render buffer delay p95',value:percentile(values(frames,'delayMs')),unit:'ms'},
     ];
     metrics.push(
-      {label:'Frame time p95',value:percentile(values(frames,'dtMs')),unit:'ms',target:VEHICLE_LAB_TARGETS.frameP95Ms},
+      {label:'Frame time p95',value:percentile(values(frames,'dtMs')),unit:'ms'},
       {label:'Motion residual p95',value:percentile(values(frames,'residualM')),unit:'m'},
     );
     const sufficient=seconds>=VEHICLE_LAB_TARGETS.durationSec && movingSeconds>=VEHICLE_LAB_TARGETS.movingSec

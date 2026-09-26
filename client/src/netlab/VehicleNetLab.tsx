@@ -1,3 +1,4 @@
+import { VEHICLE_QUALITY_SCENARIOS } from '../../netlab/vehicle/scenarios';
 import { useEffect, useRef, useState } from 'react';
 import { getNetlabProfile, resolveNetlabImpairment } from './impairment';
 import { scoreVehicleLab, vehicleLabEnabled, vehicleLabHref, VEHICLE_LAB_PROFILES, type VehicleLabScore } from './vehicleLab';
@@ -6,6 +7,8 @@ import type { RecorderEvent } from './recorder';
 import './VehicleNetLab.css';
 
 export function VehicleNetLabSetup() {
+  const [contractId,setContractId]=useState('recorded-course');
+  const contract=VEHICLE_QUALITY_SCENARIOS.find(s=>s.id===contractId)!;
   const search=window.location.search, enabled=vehicleLabEnabled(search);
   const selected=resolveNetlabImpairment(search)?.name ?? 'baseline';
   return <section className="vehicle-lab-setup"><h2>Vehicle net lab</h2>
@@ -15,6 +18,14 @@ export function VehicleNetLabSetup() {
       {VEHICLE_LAB_PROFILES.map(name=><option key={name} value={name}>{name}{name==='blackhole'?' · 100% packet loss':name==='baseline'?' · no added delay':` · +${2*(getNetlabProfile(name)?.delayMs??0)} ms round trip`}</option>)}</select></label>
       <p>Choose Test drive below, then New capture. Network changes reload the garage; your saved build stays.</p></>:
       <a href={vehicleLabHref('baseline')}>Open vehicle net lab →</a>}
+    <details><summary>Quality scenario contracts · {VEHICLE_QUALITY_SCENARIOS.length} cases</summary>
+      <label>Inspect an evaluation contract<select aria-label="Vehicle quality scenario contract" value={contractId} onChange={e=>setContractId(e.target.value)}>
+        {VEHICLE_QUALITY_SCENARIOS.map(s=><option value={s.id} key={s.id}>{s.id}</option>)}
+      </select></label>
+      <strong>{contract.question}</strong><p>{contract.capture}</p>
+      <p>{contract.status==='replay-ready'?'Available in the CPU replay suite.':'Needs native evidence · cannot currently qualify this scenario.'}</p>
+      <p>Required evidence: {contract.required.join(', ')||'fixed-tick body poses and corrections'}. This selector explains the contract; it does not change the driving course. Runtime timings are reported separately from quality.</p>
+    </details>
   </section>;
 }
 
@@ -31,7 +42,7 @@ export function VehicleNetLab({matchId}:{matchId:string}) {
     }
     cursor.current=batch.nextSeq;
     lost.current+=batch.lostEvents;events.current.push(...batch.events);setCount(events.current.length);
-    setScores(scoreVehicleLab(events.current));
+    setScores(scoreVehicleLab(events.current).map(score=>lost.current?{...score,verdict:'insufficient'}:score));
   }
   function stop() {
     if(ownsRecording.current)window.__VIBE_RECORDER__?.stop();
@@ -80,7 +91,7 @@ export function VehicleNetLab({matchId}:{matchId:string}) {
         <p className={`vehicle-lab-verdict ${score.verdict}`}>{score.verdict==='insufficient'?'Need more evidence':score.verdict==='needs-work'?'Needs work':'Within provisional targets'} · {score.seconds.toFixed(0)} s captured / {score.movingSeconds.toFixed(0)} s moving</p>
         <table><thead><tr><th>Measurement</th><th>Observed</th><th>Target ≤</th></tr></thead><tbody>{score.metrics.map(m=><tr key={m.label}><td>{m.label}</td><td>{m.value===null?'—':`${m.value.toFixed(2)} ${m.unit}`}</td><td>{m.target??'—'}</td></tr>)}</tbody></table>
       </section>)}
-      <p className="vehicle-lab-note">Targets require 30 s of vehicle data and 5 s moving. Input timing measures input tick → predicted pose, not physical tire response or display latency. Motion residual includes real impacts; inspect marked segments. Spectator delay is intentional, not driver prediction error.</p>
+      <p className="vehicle-lab-note">Quality targets require 30 s of vehicle data and 5 s moving. Runtime timings are diagnostic and do not decide the verdict. Input timing measures input tick → predicted pose, not physical tire response or display latency. Motion residual includes real impacts; inspect marked segments. Spectator delay is intentional, not driver prediction error.</p>
       <p className="vehicle-lab-note">This simulates packet callbacks, not bandwidth or QUIC congestion. A green score is not proof of correct landings or dynamic collisions. Compare exported runs and video with the same build, route and seed.</p>
     </div>}
   </aside>;

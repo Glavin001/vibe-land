@@ -1,5 +1,7 @@
 # Vehicle net lab
 
+For deterministic, GPU-independent qualification, see [Vehicle netcode quality](vehicle-netcode-quality.md). Runtime timing is diagnostic and no longer affects the live quality verdict.
+
 The garage now has a Vehicle net lab entry. `/garage?vehicleNetlab=1&netlab=1&impairSeed=42`
 opens the lab with no added impairment. Choose network conditions, then Test drive.
 The driver still uses the real multiplayer transport, server Vehicle2 simulation,
@@ -38,14 +40,15 @@ probe (100% loss), not an automatically recovering mid-drive outage.
 | --- | --- | --- |
 | Driver | Reconciliation displacement p95, before smoothing or hard reset | ≤ 0.15 m |
 | Driver | Hard position/orientation corrections, counted once per accepted snapshot | ≤ 1/minute |
-| Driver | Input tick to first renderer-facing predicted pose containing it, p95 | ≤ 50 ms |
+| Driver | Input tick to first renderer-facing predicted pose containing it, p95 | Diagnostic only |
 | Driver | Exposure with owner prediction frozen awaiting authority | ≤ 1% |
 | Observer | Moving exposure beyond the latest buffered vehicle timestamp | ≤ 5% |
 | Observer | Stationary rendered pose while received velocity says moving | ≤ 1% |
-| Both | Render-frame duration p95 | ≤ 33.4 ms |
+| Both | Render-frame duration p95 | Diagnostic only |
 
-Spectator presentation delay is displayed separately, without a pass/fail gate:
-intentional buffering is useful. Motion residual estimates changes in frame-to-frame
+Spectator render-buffer delay is displayed separately, without a pass/fail gate:
+intentional buffering is useful. This uses the client’s estimated server clock; it
+is not total end-to-end age or the injected one-way network delay. Motion residual estimates changes in frame-to-frame
 velocity and is diagnostic, not a gate: genuine terrain and impact reactions also
 produce it. Poses are captured at the vehicle renderer's placement callback,
 not from the camera or player capsule. Corrections come directly from accepted

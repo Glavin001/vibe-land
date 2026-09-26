@@ -12,6 +12,10 @@ describe('vehicle net lab scoring',()=>{
     expect(scoreVehicleLab(driver().map(e=>e.type==='vehicle_frame'?{...e,data:{...e.data,speed:0}}:e))[0].verdict).toBe('insufficient');
     expect(scoreVehicleLab([])).toEqual([]);
   });
+  it('keeps runtime costs and frame latency out of quality gates',()=>{
+    const events=driver().map(e=>e.type==='vehicle_input_presented'?{...e,data:{...e.data,delayMs:500}}:e.type==='vehicle_frame'?{...e,data:{...e.data,dtMs:90}}:e);
+    expect(scoreVehicleLab(events)[0].verdict).toBe('within-targets');
+  });
   it('counts corrections once rather than at frame rate; fails rubberbanding',()=>{
     const good=scoreVehicleLab(driver())[0];expect(good.verdict).toBe('within-targets');
     const bad=scoreVehicleLab([...driver(),event('vehicle_reconcile',{vehicleId:7,errorM:1,hard:true})])[0];
@@ -21,7 +25,7 @@ describe('vehicle net lab scoring',()=>{
   it('separates spectators and driver; intentional delay alone is not failure',()=>{
     const scores=scoreVehicleLab([...driver(),...capture('observer')]);
     expect(scores).toHaveLength(2);expect(scores[1].verdict).toBe('within-targets');
-    expect(scores[1].metrics.find(m=>m.label==='Presentation delay p95')?.value).toBe(150);
+    expect(scores[1].metrics.find(m=>m.label==='Render buffer delay p95')?.value).toBe(150);
   });
   it('fails observer buffer underruns and driver outages',()=>{
     expect(scoreVehicleLab(capture('observer').map(e=>({...e,data:{...e.data,extrapolated:true}})))[0].verdict).toBe('needs-work');

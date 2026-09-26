@@ -31,7 +31,11 @@
     "benchmark:compare": "node --import=tsx/esm benchmark-compare.ts",
     "e2e": "npx playwright test --config e2e/playwright.config.ts",
     "e2e:headed": "npx playwright test --config e2e/playwright.config.ts --headed",
-    "e2e:ui": "npx playwright test --config e2e/playwright.config.ts --ui"
+    "e2e:ui": "npx playwright test --config e2e/playwright.config.ts --ui",
+    "netlab:vehicle:quality": "node --import=tsx/esm scripts/qualify-vehicle-netcode.mts",
+    "netlab:vehicle:heightfield": "node --import=tsx/esm scripts/qualify-vehicle-netcode.mts --scenario garage-fast-heightfield",
+    "netlab:vehicle:score": "node --import=tsx/esm scripts/score-vehicle-quality.mts",
+    "netlab:vehicle:compare": "node --import=tsx/esm scripts/compare-vehicle-quality.mts"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^2.0.74",
