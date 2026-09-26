@@ -316,7 +316,13 @@ fn authored_vehicle_wheel_colliders_follow_suspension() {
         if std::env::var("VIBE_WHEEL_MODELS").is_ok_and(|m| !m.split(',').any(|m| m == name)) { continue; }
         for variant in ["rest", "posed+road", "posed-road"] {
             if std::env::var("VIBE_WHEEL_VARIANTS").is_ok_and(|v| !v.split(',').any(|v| v == variant)) { continue; }
-            let asset = geometry.native_fracture_assembly().unwrap();
+            let mut asset = geometry.native_fracture_assembly().unwrap();
+            // Diagnostic: drop interfaces below a minimum area (m²).
+            if let Some(min) = std::env::var("VIBE_MIN_BOND_AREA").ok().map(|v| v.parse::<f32>().unwrap()) {
+                let before = asset.bonds.len();
+                asset.bonds.retain(|b| b.area >= min);
+                eprintln!("{name}: kept {} of {before} bonds with area >= {min} m²", asset.bonds.len());
+            }
             let mut world = bridge::World::new(bridge::WorldConfig::default()).unwrap();
             world.add_static_box(bridge::StaticBoxDesc { entity_id: 1, user_id: 0,
                 pose: bridge::Pose { position: bridge::Vec3::new(0., -0.5, 0.), rotation: bridge::Quat::IDENTITY },

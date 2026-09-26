@@ -53,3 +53,19 @@ Design, as agreed on 2026-09-26:
 - Separation pop and the fragment's mass-frame offset are **not yet measured validly**. The chunk-aim point is the chunk's first convex piece, not the wheel centre, and the violent shot's in-tick impulse dominates the velocity estimate.
 
 **Launch pitfall found.** `DYLD_LIBRARY_PATH` set in front of `scripts/perf/gpu-run.sh` is stripped by macOS SIP when `/bin/bash` starts. The tests then load the SDK's default single-precision runtime and fail on tick 0 (hierarchy error 8, non-converged). Pass it inside the wrapper (`gpu-run.sh label env DYLD_LIBRARY_PATH=... cargo ...`), as the Python verifier does. This cost a bisection: the archived commit failed identically when launched the same way.
+
+## Step 3: why four models break on settling
+
+**Cause.** `append_bonds` (`physx-bridge/src/native_destruction.cc`) sets each bond's stiffness weight from `max(area, 1e-4 m²)`, but its strength (`health`) from the true area. Every bond that broke on settling is a sliver interface:
+- area 2.6e-8 to about 5e-7 m²
+- a body panel or hood edge touching a cage tube
+- failure load: about 2 N for the smallest (`body-0957`/`frame-0007`: 1.9e-7 m², 12 MPa tension)
+
+Such a sliver is made up to about 500× stiffer than it really is, so it draws load like a 1 cm² interface while breaking at its true size. As whole parts, the attached panels could withstand about 6×10⁴ to 4×10⁵ g, so the panels themselves are not too weak. About 7–8% of bonds per model fall below the floor (trophy 73 of 962, monster 70 of 952).
+
+**Confirmation (`experiment-4-min-bond-area.*`).** Registering trophy and monster without bonds under 1e-4 m² (test-only `VIBE_MIN_BOND_AREA`):
+- Both settle and drive 300 ticks on the road with zero breaks. Previously they broke on ticks 2 and 0.
+- Jounce is at neutral (0.1419 against 0.1425; 0.2486 against 0.25).
+- The severe shot still detaches the targeted wheel on tick 0.
+
+This is a diagnostic filter, not the fix.
