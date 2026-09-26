@@ -9,7 +9,7 @@ import { simpleRecipe } from './dune/simple-colliders.mjs';
 import { dot } from './dune/convex.mjs';
 
 describe('simple wheel clearance', () => {
-  const models = ['buggy', 'trophy', 'rally', 'monster', 'derby', 'sprint'];
+  const models = ['buggy', 'trophy', 'rally', 'monster', 'derby', 'sprint', 'semi'];
   it.each(models)('keeps %s suspension space out of the tire proxy', model => {
     const recipe = simpleRecipe(modelParameters(defaultConfiguration(model)));
     const wheels = recipe.parts.filter((p: any) => p.name.endsWith('wheel assembly') && p.motion?.role === 'wheel');
