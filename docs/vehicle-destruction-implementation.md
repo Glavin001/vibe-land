@@ -1,6 +1,8 @@
 # Vehicle destruction work in progress — 2026-09-26
 
-Vehicle fracture is **not implemented or qualified**. The garage UI says so.
+Full garage/city vehicle fracture is **not integrated or qualified**. The garage UI says so.
+The isolated native bridge can fracture a controlled Vehicle2 fixture and disable
+a severed corner, but that result must not be generalized to complete models.
 The new bombardment mode is an impact test against the existing rigid vehicle.
 No hit-point damage, arbitrary detachments or invisible-wheel substitutions were
 introduced to make this look complete.
@@ -91,33 +93,48 @@ cargo test -p web-fps-server --bin web-fps-server --features native-destruction 
   vehicle_assets::fracture::tests -- --include-ignored --nocapture
 ```
 
-The isolated native per-corner constraint tests also pass on local CPU/GPU PGS
-and TGS. Their [review notes](reports/vehicle-constraints-2026-09-26/README.md)
-record the still-pending authorization for broader native constraint routing
-and fracture-time remapping. The rejected cross-module edit has not been applied.
+## Current native foundation and remaining gates
 
-The installed SDK uses destruction scene ABI 18. The isolated ABI 20 work in
-`PhysX/out/build/garage-multihull` provides multiple hulls per authored chunk and
-apportioned external loads, but explicitly does not support destruction-owned
-Vehicle2 constraints. Both versions retain the
-`eCONSTRAINT_ON_DESTRUCTION_BODY` correction blocker in
-`Sc::Scene::computeDestructionCorrectionBlockers`. It must not be bypassed.
+The user authorized the sibling PhysX work. The isolated ABI 22 build now
+supports multiple hulls per chunk, apportioned Vehicle2 loads, fracture-time
+constraint remapping, functional connectivity and mass-frame adaptation. The
+[bridge proof](reports/vehicle-bridge-fracture-2026-09-26/README.md) uses a
+six-chunk fixture and a 300 kg projectile, with a stronger-material control.
+It does not qualify the garage's 30 kg cannon or full suspension geometry.
 
-1. Register each suspension/sticky constraint row's chunk ownership and route
-   its actual solved impulse into stress; remap/disable rows before corrected
-   collision resolution, including changed COM/inertia and actor ownership.
-2. Bind measured compound mass properties, all simple hulls and individually
-   measured bond interfaces to the vehicle actor. Keep rig transforms and
-   collision identities synchronized without adding wheel-tread stress nodes.
-3. Feed the actual Vehicle2 substep force observations into the engine's
-   apportioned per-chunk inputs; retain the aggregate-conservation rejection.
-4. Consume committed connectivity to select the surviving chassis/engine and
-   call the functional-state API. Transfer detached wheel/chunk mass and
-   momentum to real fragments, then stream ownership and poses to clients.
-5. Reconstruct damage state on reset and late join. Run targeted weak/strong
-   interface, wheel-off, engine-off, severe-impact and no-impact operating-load
-   campaigns before declaring bond strengths or destruction ready.
+All six complete model graphs now register and complete free fall without
+solver errors, damage or lost hull ownership after an
+[exact-arithmetic correction](reports/vehicle-native-precision-2026-09-26/correction/README.md).
+The source models keep their authored values, measured mass tensors and all
+individual bond interfaces. Wheel visual groups remain coherent.
 
-The new API is in the sibling PhysX wrapper and its local packaged copy; those
-sources must accompany bridge builds elsewhere. Core SDK libraries and the
-experimental ABI 20 package were not replaced by this work.
+The next full-model test uses actual 30 kg, 0.20 m cannonballs at 55 m/s,
+positive initial gaps and ray-verified target wheels. All six models receive
+contacts but currently report **non-convergence on the first impact step**.
+That test must stay red until the actual stress solve succeeds. The frozen
+material strengths and solver tolerance are not changed to hide this failure.
+
+The full-model tests share fixture loading, registration and configuration in
+`server/src/physx_runtime/vehicle_fracture_tests.rs`. Run them serially against
+the explicit isolated runtime. `VIBE_VEHICLE_FRACTURE_REPORT` records per-model
+impact evidence; `VIBE_VEHICLE_CAPTURE_DIR` selects unique equation-capture
+paths when using the separate diagnostic SDK module.
+
+Remaining requirements:
+
+1. Converged stress under nominal cannon and severe impacts on the full models;
+   localized damage, strong-interface controls and a retained wreck after large
+   impacts. Do not treat a non-converged material verdict as qualification.
+2. A native contract for moving suspension geometry and chunk mass frames.
+   The stress graph currently assumes fixed chunk geometry. Merely moving
+   wheel visuals or leaving rest-pose wheel colliders fixed is insufficient.
+3. Actual full-model wheel/engine separation with correct fragment pose and
+   momentum, disabled disconnected functions, and changed surviving handling.
+4. Server registration and append/reset lifecycle that preserve existing city
+   damage; streamed committed membership, fragment poses and late-join state.
+5. Garage bombardment/reset and city integration verified in the browser,
+   no-impact operating-load tests, and complete-step idle/impact performance.
+
+The installed live SDK remains ABI 18 and has not been replaced. All new native
+qualification is isolated. CUDA/Vast validation remains deferred at the user's
+request; the exact-coordinate correction currently affects the CuMetal path.

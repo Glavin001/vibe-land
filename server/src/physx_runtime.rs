@@ -2463,7 +2463,7 @@ mod tests {
 
     use super::*;
 
-    fn gpu_test_guard() -> MutexGuard<'static, ()> {
+    pub(super) fn gpu_test_guard() -> MutexGuard<'static, ()> {
         static GPU_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         GPU_TEST_LOCK
             .get_or_init(|| Mutex::new(()))
@@ -2782,72 +2782,6 @@ mod tests {
             let cmd = shape_vehicle_commands(&pedal, 0.0, &mut steer, dt);
             assert_eq!((cmd.throttle, cmd.handbrake), (0.0, 1.0));
         }
-    }
-
-    /// Full authored geometry must cook and bind to native stress without losing
-    /// parts, hulls, physical mass or materials. Free fall deliberately exercises
-    /// apportioned gravity with no road/impact load. This does NOT qualify the
-    /// unimplemented moving-collider or suspension/fracture integration.
-    #[cfg(feature = "native-destruction")]
-    #[test]
-    #[ignore = "requires local GPU, coherent ABI 22 SDK and VIBE_VEHICLE_BUILD_FIXTURES"]
-    fn authored_vehicle_native_registration_and_free_fall() {
-        let _guard = gpu_test_guard();
-        let fixtures: serde_json::Value = serde_json::from_slice(&std::fs::read(
-            std::env::var("VIBE_VEHICLE_BUILD_FIXTURES").expect("fixture manifest")
-        ).unwrap()).unwrap();
-        let mut checked = 0;
-        for fixture in fixtures.as_array().unwrap() {
-            // Editions share the same physical geometry; qualification uses all
-            // six drivable base models once, with their default tuning.
-            let name = fixture["name"].as_str().unwrap();
-            if !["buggy", "trophy", "rally", "monster", "derby", "sprint"].contains(&name) { continue; }
-            let mut geometry: crate::vehicle_assets::PreparedGeometry = serde_json::from_slice(
-                &std::fs::read(fixture["metadataPath"].as_str().unwrap()).unwrap()
-            ).unwrap();
-            geometry.driving = Some(serde_json::from_value(fixture["driving"].clone()).unwrap());
-            let asset = geometry.native_fracture_assembly().unwrap();
-            let mut world = bridge::World::new(bridge::WorldConfig::default()).unwrap();
-            let desc = PhysxPhysicsArena::vehicle_asset_desc(7, 0, Vector3::new(0.,20.,0.),
-                [0., 0.38268343, 0., 0.9238795], Some(&geometry));
-            world.add_vehicle(desc).unwrap();
-            world.set_vehicle_shapes(desc.entity_id, &asset.shapes).unwrap();
-            world.native_attach().unwrap();
-            world.native_register_vehicle(desc.entity_id, 200, &asset.parts, &asset.bonds,
-                bridge::DestructibleSettings {materials: asset.materials, ..Default::default()}).unwrap();
-            world.step().unwrap(); // GPU contact identities become available.
-            let configured = world.native_configure(bridge::NativeConfig {
-                max_iterations: 2048, tolerance: 1e-5, warm_start: true, damage_rate: 2.,
-                bend_gain_max: 3., fibre_bending: true, reserved_contact_pairs: 64,
-                preserve_unchanged_contact_pairs: false, gpu_island_repair: true,
-                verdict_sample_ticks: 1,
-            }).unwrap();
-            assert_eq!(configured.chunks as usize, asset.parts.len());
-            assert_eq!(configured.bonds as usize, asset.bonds.len());
-            let initial = world.vehicle_snapshots().unwrap()[0];
-            for tick in 0..30 {
-                if let Err(error) = world.step() {
-                    panic!("{name} tick {tick}: {error}; native {:?}", world.native_tick());
-                }
-                let status = world.native_tick().unwrap();
-                assert_eq!(status.error, 0, "{name} tick {tick}");
-                assert!(status.converged, "{name} tick {tick}: stress did not converge");
-                assert!(world.native_take_broken_bonds().unwrap().is_empty(), "{name} fractured in free fall");
-                assert!(world.native_validate_mappings().unwrap(), "{name} lost hull ownership");
-                let state = world.vehicle_snapshots().unwrap()[0];
-                assert_eq!(state.wheels_on_road, 0);
-                assert!(state.pose.position.y.is_finite());
-                assert!((state.pose.position.x-initial.pose.position.x).abs() < 1e-3);
-                assert!((state.pose.position.z-initial.pose.position.z).abs() < 1e-3);
-            }
-            let final_state = world.vehicle_snapshots().unwrap()[0];
-            assert!(final_state.pose.position.y < initial.pose.position.y - 1., "{name} did not fall");
-            eprintln!("Native authored vehicle {name}: {} chunks, {} hulls, {} bonds, 30 free-fall ticks, no fracture", asset.parts.len(), asset.shapes.len(), asset.bonds.len());
-            world.native_clear().unwrap();
-            world.remove_actor(desc.entity_id).unwrap();
-            checked += 1;
-        }
-        assert_eq!(checked, 6, "fixture manifest must include all six drivable base models");
     }
 
     /// Deterministic impact diagnostic using the production prepared compound,
@@ -3342,3 +3276,7 @@ fn report_rejected_step(world: &vibe_land_physx_bridge::World, phase: &str, erro
         }
     }
 }
+
+#[cfg(all(test, feature = "native-destruction"))]
+#[path = "physx_runtime/vehicle_fracture_tests.rs"]
+mod vehicle_fracture_tests;

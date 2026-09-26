@@ -1,0 +1,145 @@
+[
+  {
+    "bonds": 626,
+    "brokenBonds": [],
+    "chunks": 190,
+    "error": "tick 0: NativeStatus { frame: 31, error: 0, stress_topology_error: 0, iterations: 735, converged: false, normal_contacts: 1, friction_anchors: 1, bond_commands: 0, broken_bonds: 0, crushed_chunks: 0, correction_passes: 0, stress_passes: 1, post_correction_broken_bonds: 0, committed_chunks: 0, committed_bonds: 0, cluster_count: 1, stress_island_count: 1, observed: true, degraded: false, missed_frames: 0 }",
+    "frames": [
+      {
+        "broken": 0,
+        "contacts": 1,
+        "converged": false,
+        "error": 0,
+        "targetAttached": true,
+        "tick": 0,
+        "wheelSpeed": 0.0,
+        "wheelsOnRoad": 0
+      }
+    ],
+    "hulls": 384,
+    "model": "buggy",
+    "projectileMassKg": 30.0,
+    "speedMps": 55.0,
+    "target": 4
+  },
+  {
+    "bonds": 1072,
+    "brokenBonds": [],
+    "chunks": 332,
+    "error": "tick 0: NativeStatus { frame: 31, error: 0, stress_topology_error: 0, iterations: 711, converged: false, normal_contacts: 1, friction_anchors: 1, bond_commands: 0, broken_bonds: 0, crushed_chunks: 0, correction_passes: 0, stress_passes: 1, post_correction_broken_bonds: 0, committed_chunks: 0, committed_bonds: 0, cluster_count: 1, stress_island_count: 1, observed: true, degraded: false, missed_frames: 0 }",
+    "frames": [
+      {
+        "broken": 0,
+        "contacts": 1,
+        "converged": false,
+        "error": 0,
+        "targetAttached": true,
+        "tick": 0,
+        "wheelSpeed": 0.0,
+        "wheelsOnRoad": 0
+      }
+    ],
+    "hulls": 674,
+    "model": "trophy",
+    "projectileMassKg": 30.0,
+    "speedMps": 55.0,
+    "target": 4
+  },
+  {
+    "bonds": 1102,
+    "brokenBonds": [],
+    "chunks": 327,
+    "error": "tick 0: NativeStatus { frame: 31, error: 0, stress_topology_error: 0, iterations: 711, converged: false, normal_contacts: 1, friction_anchors: 1, bond_commands: 0, broken_bonds: 0, crushed_chunks: 0, correction_passes: 0, stress_passes: 1, post_correction_broken_bonds: 0, committed_chunks: 0, committed_bonds: 0, cluster_count: 1, stress_island_count: 1, observed: true, degraded: false, missed_frames: 0 }",
+    "frames": [
+      {
+        "broken": 0,
+        "contacts": 1,
+        "converged": false,
+        "error": 0,
+        "targetAttached": true,
+        "tick": 0,
+        "wheelSpeed": 0.0,
+        "wheelsOnRoad": 0
+      }
+    ],
+    "hulls": 664,
+    "model": "rally",
+    "projectileMassKg": 30.0,
+    "speedMps": 55.0,
+    "target": 4
+  },
+  {
+    "bonds": 1039,
+    "brokenBonds": [
+      209715924
+    ],
+    "chunks": 328,
+    "error": "tick 0: NativeStatus { frame: 31, error: 0, stress_topology_error: 0, iterations: 659, converged: false, normal_contacts: 1, friction_anchors: 1, bond_commands: 1, broken_bonds: 1, crushed_chunks: 0, correction_passes: 0, stress_passes: 1, post_correction_broken_bonds: 0, committed_chunks: 0, committed_bonds: 1, cluster_count: 1, stress_island_count: 1, observed: true, degraded: false, missed_frames: 0 }",
+    "frames": [
+      {
+        "broken": 1,
+        "contacts": 1,
+        "converged": false,
+        "error": 0,
+        "targetAttached": true,
+        "tick": 0,
+        "wheelSpeed": 0.0,
+        "wheelsOnRoad": 0
+      }
+    ],
+    "hulls": 622,
+    "model": "monster",
+    "projectileMassKg": 30.0,
+    "speedMps": 55.0,
+    "target": 4
+  },
+  {
+    "bonds": 1016,
+    "brokenBonds": [
+      209715629,
+      209716051
+    ],
+    "chunks": 326,
+    "error": "tick 0: NativeStatus { frame: 31, error: 0, stress_topology_error: 0, iterations: 1123, converged: false, normal_contacts: 1, friction_anchors: 1, bond_commands: 2, broken_bonds: 2, crushed_chunks: 0, correction_passes: 0, stress_passes: 1, post_correction_broken_bonds: 0, committed_chunks: 0, committed_bonds: 2, cluster_count: 1, stress_island_count: 1, observed: true, degraded: false, missed_frames: 0 }",
+    "frames": [
+      {
+        "broken": 2,
+        "contacts": 1,
+        "converged": false,
+        "error": 0,
+        "targetAttached": true,
+        "tick": 0,
+        "wheelSpeed": 0.0,
+        "wheelsOnRoad": 0
+      }
+    ],
+    "hulls": 639,
+    "model": "derby",
+    "projectileMassKg": 30.0,
+    "speedMps": 55.0,
+    "target": 4
+  },
+  {
+    "bonds": 754,
+    "brokenBonds": [],
+    "chunks": 222,
+    "error": "tick 0: NativeStatus { frame: 31, error: 0, stress_topology_error: 0, iterations: 888, converged: false, normal_contacts: 1, friction_anchors: 1, bond_commands: 0, broken_bonds: 0, crushed_chunks: 0, correction_passes: 0, stress_passes: 1, post_correction_broken_bonds: 0, committed_chunks: 0, committed_bonds: 0, cluster_count: 1, stress_island_count: 1, observed: true, degraded: false, missed_frames: 0 }",
+    "frames": [
+      {
+        "broken": 0,
+        "contacts": 1,
+        "converged": false,
+        "error": 0,
+        "targetAttached": true,
+        "tick": 0,
+        "wheelSpeed": 0.0,
+        "wheelsOnRoad": 0
+      }
+    ],
+    "hulls": 461,
+    "model": "sprint",
+    "projectileMassKg": 30.0,
+    "speedMps": 55.0,
+    "target": 4
+  }
+]
