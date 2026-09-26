@@ -72,7 +72,7 @@ export function CityGrass({ getCityClient, getInteractionPosition, getActors, ge
       field.interaction.commit();
     }
     field.setWind(windStrengthMps, windDirectionDeg);
-    for (const patch of field.group.children) patch.receiveShadow = shadows;
+    field.setShadows(shadows);
     field.update(camera, clock.elapsedTime);
     if (getInteractionPosition) {
       if (position) field.shading.uniforms.grassViewer.value.fromArray(position);

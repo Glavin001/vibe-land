@@ -1,19 +1,29 @@
+import { foliageSpeciesId, type FoliageSpecies } from './foliageProfiles';
 import { Color, DataTexture, LinearFilter, RGBAFormat } from 'three';
 
 export const GRASS_PAINT_TILE_METRES = 8;
 export const GRASS_MAX_HEIGHT = 4;
-const CELLS = 16, CELL = 0.5, CHANNELS = 5, HALF = 256;
-export interface GrassBrush { density: number; height: number; color: string }
+const CELLS = 16, CELL = 0.5, CHANNELS = 12, HALF = 256;
+export interface GrassBrush {
+  density: number; height: number; color: string;
+  species?: FoliageSpecies; health?: number; dryness?: number; maturity?: number;
+  rowSpacing?: number; rowAngle?: number; stiffness?: number;
+}
 export const GRASS_BRUSHES: Record<string, GrassBrush> = {
   meadow: { density: 1, height: 0.55, color: '#7e9c46' },
   lawn: { density: 0.95, height: 0.22, color: '#59813e' },
   tall: { density: 1, height: 1.25, color: '#8ba052' },
   person: { density: 1, height: 2.8, color: '#809347' },
   vehicle: { density: 1, height: 4, color: '#8d9c52' },
-  dry: { density: 0.5, height: 0.6, color: '#b39a66' },
+  dry: { density: 0.5, height: 0.6, color: '#b39a66', health: 0.3, dryness: 0.9 },
+  lush: { density: 1, height: 0.45, color: '#43832d', health: 1, dryness: 0 },
+  reeds: { density: 1, height: 2.8, color: '#6c8741', species: 'reed', stiffness: 0.75 },
+  wheat: { density: 1, height: 1.3, color: '#bea65e', species: 'wheat', dryness: 0.55, rowSpacing: 0.4 },
+  corn: { density: 1, height: 3, color: '#59923b', species: 'corn', rowSpacing: 0.85, stiffness: 0.85 },
+  ferns: { density: 0.8, height: 0.85, color: '#427842', species: 'fern', stiffness: 0.35 },
   bare: { density: 0, height: 0.3, color: '#92774c' },
 };
-export interface GrassPaintDocument { version: 1 | 2; tiles: Array<{ x: number; z: number; data: number[] }> }
+export interface GrassPaintDocument { version: 1 | 2 | 3; tiles: Array<{ x: number; z: number; data: number[] }> }
 export interface GrassPaintBounds { minX: number; minZ: number; maxX: number; maxZ: number }
 const color = new Color();
 const green = new Color('#7e9c46'), straw = new Color('#b39a66');
@@ -45,6 +55,9 @@ export class GrassPaint {
     out[offset + 2] = Math.round((green.r + (straw.r-green.r)*dry) * 255);
     out[offset + 3] = Math.round((green.g + (straw.g-green.g)*dry) * 255);
     out[offset + 4] = Math.round((green.b + (straw.b-green.b)*dry) * 255);
+    out[offset + 5] = 0; // Species (categorical, not interpolated).
+    out[offset + 6] = 255; out[offset + 7] = 0; out[offset + 8] = 255;
+    out[offset + 9] = 0; out[offset + 10] = 0; out[offset + 11] = 128;
   }
 
   private cell(ix: number, iz: number, out: number[], offset = 0): void {
@@ -78,6 +91,10 @@ export class GrassPaint {
       const ix = Math.floor(gx), iz = Math.floor(gz), fx = gx - ix, fz = gz - iz;
       const a = (iz * stride + ix) * CHANNELS, b = a + CHANNELS, c = a + stride * CHANNELS, d = c + CHANNELS;
       for (let k = 0; k < CHANNELS; k++) {
+        if (k === 5 || k === 9 || k === 10) {
+          out[k] = grid[(fz < 0.5 ? (fx < 0.5 ? a : b) : (fx < 0.5 ? c : d)) + k]/255;
+          continue;
+        }
         out[k] = ((grid[a + k] * (1-fx) + grid[b + k] * fx) * (1-fz)
           + (grid[c + k] * (1-fx) + grid[d + k] * fx) * fz) / 255;
       }
@@ -85,12 +102,15 @@ export class GrassPaint {
   }
 
   paint(x: number, z: number, radius: number, brush: GrassBrush, strength = 1): void {
-    if (![x, z, radius, brush.density, brush.height, strength].every(Number.isFinite)) return;
+    if (![x, z, radius, brush.density, brush.height, strength, brush.health ?? 1, brush.dryness ?? 0, brush.maturity ?? 1, brush.rowSpacing ?? 0, brush.rowAngle ?? 0, brush.stiffness ?? 0.5].every(Number.isFinite)) return;
     radius = clamp(radius, 0.5, 24);
     const bounds = { minX: Math.max(-HALF, x-radius), minZ: Math.max(-HALF, z-radius), maxX: Math.min(HALF, x+radius), maxZ: Math.min(HALF, z+radius) };
     if (bounds.minX >= bounds.maxX || bounds.minZ >= bounds.maxZ || strength <= 0) return;
     color.set(brush.color);
-    const target = [clamp(brush.density) * 255, clamp(brush.height, 0.05, GRASS_MAX_HEIGHT) / GRASS_MAX_HEIGHT * 255, color.r * 255, color.g * 255, color.b * 255];
+    const target = [clamp(brush.density) * 255, clamp(brush.height, 0.05, GRASS_MAX_HEIGHT) / GRASS_MAX_HEIGHT * 255, color.r * 255, color.g * 255, color.b * 255,
+      foliageSpeciesId(brush.species), clamp(brush.health ?? 1)*255, clamp(brush.dryness ?? 0)*255,
+      clamp(brush.maturity ?? 1)*255, clamp(brush.rowSpacing ?? 0, 0, 4)/4*255,
+      (((brush.rowAngle ?? 0)%360+360)%360)/360*255, clamp(brush.stiffness ?? 0.5)*255];
     for (let iz = Math.floor(bounds.minZ / CELL); iz < Math.ceil(bounds.maxZ / CELL); iz++) {
       for (let ix = Math.floor(bounds.minX / CELL); ix < Math.ceil(bounds.maxX / CELL); ix++) {
         const distance = Math.hypot((ix+0.5)*CELL-x, (iz+0.5)*CELL-z) / radius;
@@ -107,7 +127,10 @@ export class GrassPaint {
         const edge = clamp((1-distance) / 0.35);
         const mix = edge * edge * (3-2*edge) * clamp(strength);
         const at = ((iz-tz*CELLS)*CELLS+ix-tx*CELLS)*CHANNELS;
-        for (let k = 0; k < CHANNELS; k++) tile[at+k] = Math.round(tile[at+k] + (target[k]-tile[at+k])*mix);
+        for (let k = 0; k < CHANNELS; k++) {
+          if (k === 5 || k === 9 || k === 10) { if (mix >= 0.5) tile[at+k] = Math.round(target[k]); }
+          else tile[at+k] = Math.round(tile[at+k] + (target[k]-tile[at+k])*mix);
+        }
       }
     }
     this.changed(bounds);
@@ -133,26 +156,49 @@ export class GrassPaint {
     this.listeners.add(listener); return () => { this.listeners.delete(listener); };
   }
   export(): GrassPaintDocument {
-    return { version: 2, tiles: [...this.tiles].map(([key, data]) => {
+    return { version: 3, tiles: [...this.tiles].map(([key, data]) => {
       const [x,z] = key.split(',').map(Number); return { x, z, data: Array.from(data) };
     }) };
   }
+  /** Only the 3×3 neighborhood needed for padded bilinear patch sampling. */
+  patchDocument(px: number, pz: number): GrassPaintDocument {
+    const tiles: GrassPaintDocument['tiles'] = [];
+    for (let z = pz-1; z <= pz+1; z++) for (let x = px-1; x <= px+1; x++) {
+      const data = this.tiles.get(`${x},${z}`);
+      if (data) tiles.push({ x, z, data: Array.from(data) });
+    }
+    return { version: 3, tiles };
+  }
+
   import(value: unknown): void {
     const doc = value as GrassPaintDocument;
-    if (!doc || (doc.version !== 1 && doc.version !== 2) || !Array.isArray(doc.tiles) || doc.tiles.length > 4096) throw new Error('Invalid grass layout');
+    if (!doc || (doc.version !== 1 && doc.version !== 2 && doc.version !== 3) || !Array.isArray(doc.tiles) || doc.tiles.length > 4096) throw new Error('Invalid grass layout');
     const next = new Map<string, Uint8Array>();
+    const channels = doc.version === 3 ? CHANNELS : 5;
     for (const tile of doc.tiles) {
       if (!tile || !Number.isInteger(tile.x) || !Number.isInteger(tile.z) || tile.x < -32 || tile.x >= 32 || tile.z < -32 || tile.z >= 32
-        || !Array.isArray(tile.data) || tile.data.length !== CELLS*CELLS*CHANNELS
+        || !Array.isArray(tile.data) || tile.data.length !== CELLS*CELLS*channels
         || tile.data.some(v => !Number.isInteger(v) || v < 0 || v > 255)) throw new Error('Invalid grass tile');
       if (next.has(`${tile.x},${tile.z}`)) throw new Error('Duplicate grass tile');
-      const data = Uint8Array.from(tile.data);
-      // v1 encoded heights over 0–2 m; retain existing lawns when loading v2.
-      if (doc.version === 1) for (let i = 1; i < data.length; i += CHANNELS) data[i] = Math.round(data[i] * 2 / GRASS_MAX_HEIGHT);
+      const data = new Uint8Array(CELLS*CELLS*CHANNELS);
+      for (let cell = 0; cell < CELLS*CELLS; cell++) {
+        const at = cell*CHANNELS;
+        data.set([0, 0, 0, 0, 0, 0, 255, 0, 255, 0, 0, 128], at);
+        data.set(tile.data.slice(cell*channels, (cell+1)*channels), at);
+        if (data[at+5] > 4) throw new Error('Invalid foliage species');
+        if (doc.version === 1) data[at+1] = Math.round(data[at+1]*2/GRASS_MAX_HEIGHT);
+      }
       next.set(`${tile.x},${tile.z}`, data);
     }
+    const changed: GrassPaintBounds[] = [];
+    for (const key of new Set([...this.tiles.keys(), ...next.keys()])) {
+      const before = this.tiles.get(key), after = next.get(key);
+      if (before && after && before.every((byte, i) => byte === after[i])) continue;
+      const [x,z] = key.split(',').map(Number);
+      changed.push({ minX: x*8, minZ: z*8, maxX: x*8+8, maxZ: z*8+8 });
+    }
     this.tiles.clear(); for (const [key,tile] of next) this.tiles.set(key,tile);
-    this.changed({ minX: -HALF, minZ: -HALF, maxX: HALF, maxZ: HALF });
+    for (const bounds of changed) this.changed(bounds);
   }
   clear(): void { this.import({ version: 1, tiles: [] }); }
   dispose(): void { this.cover.dispose(); this.listeners.clear(); }

@@ -7,6 +7,7 @@ import { CityEnvironment } from '../scene/CityEnvironment';
 import { WorldTerrain } from '../scene/WorldTerrain';
 import { CITY_WORLD_DOCUMENT } from '../world/cityWorld';
 import { grassVehicleCanopyContact } from '../scene/grass/GrassBodyContacts';
+import { FOLIAGE_PROFILES, FOLIAGE_SPECIES, type FoliageSpecies } from '../scene/grass/foliageProfiles';
 import { GrassField, type GrassStats } from '../scene/grass/GrassField';
 import { grassExclusionsFromManifest, type GrassQuality } from '../scene/grass/grassPlacement';
 import type { CityManifest } from '../city/manifest';
@@ -256,7 +257,7 @@ export function GrassLabPage() {
         <button aria-pressed={paused} onClick={() => setPaused(v => !v)}>{paused ? 'Resume breeze' : 'Still air'}</button>
       </div>
       <div className="grass-lab-metrics" aria-live="off">
-        <div><strong>{enabled && stats ? (stats.blades / 1000).toFixed(0) + 'k' : '0'}</strong><span>blades submitted</span></div>
+        <div><strong>{enabled && stats ? (stats.blades / 1000).toFixed(0) + 'k' : '0'}</strong><span>plants submitted</span></div>
         <div><strong>{enabled ? stats?.visiblePatches ?? '—' : 0}</strong><span>grass draw calls</span></div>
         <div><strong>{stats?.frameMs.toFixed(1) ?? '—'}<small> ms</small></strong><span>frame interval</span></div>
         <div><strong data-testid="grass-pressed-area">{stats?.pressedArea.toFixed(1) ?? '0'}<small> m²</small></strong><span>pressed grass</span></div>
@@ -271,10 +272,26 @@ export function GrassLabPage() {
       </div>
       <div className="grass-lab-label grass-lab-section">PAINT THE GROUND</div>
       <p className="grass-lab-note">Test patch centre: X {PREVIEW_X}, Z {PREVIEW_Z} m</p>
+      <div className="grass-lab-palette" aria-label="Plant a sample field">
+        {(['lush', 'dry', 'wheat', 'corn', 'ferns'] as const).map(name => <button key={name} onClick={()=>{
+          beginPaint(); cityGrassPaint.paint(PREVIEW_X, PREVIEW_Z, 18, GRASS_BRUSHES[name]);
+          setBrush({...GRASS_BRUSHES[name]}); savedPaint(saveCityGrassPaint()); setView(name === 'corn' ? 3 : 0);
+        }}>Plant {name}</button>)}
+      </div>
       <button onClick={()=>{beginPaint();cityGrassPaint.paint(PREVIEW_X,PREVIEW_Z,18,GRASS_BRUSHES.vehicle);savedPaint(saveCityGrassPaint());setView(3);}}>Plant tall test patch</button>
       <button aria-pressed={painting} onClick={()=>{setPainting(v=>!v); if(!painting)setView(1);}}>{painting?'Finish painting':'Paint grass'}</button>
       {painting && <div className="grass-lab-paint">
         <div className="grass-lab-palette">{Object.entries(GRASS_BRUSHES).map(([name,value])=><button key={name} onClick={()=>setBrush({...value})}>{name === 'person' ? 'Person height' : name === 'vehicle' ? 'Vehicle height' : name}</button>)}</div>
+        <label>Plant family <select aria-label="Plant family" value={brush.species ?? 'grass'} onChange={e=>setBrush({...brush,species:e.target.value as FoliageSpecies})}>
+          {FOLIAGE_SPECIES.map(species=><option key={species} value={species}>{FOLIAGE_PROFILES[species].label}</option>)}
+        </select></label>
+        {(['health', 'dryness', 'maturity', 'stiffness'] as const).map(property=><label key={property}>
+          {property} <span>{Math.round((brush[property] ?? (property === 'dryness' ? 0 : property === 'stiffness' ? 0.5 : 1))*100)}%</span>
+          <input aria-label={`Plant ${property}`} type="range" min="0" max="1" step="0.05"
+            value={brush[property] ?? (property === 'dryness' ? 0 : property === 'stiffness' ? 0.5 : 1)} onChange={e=>setBrush({...brush,[property]:Number(e.target.value)})} />
+        </label>)}
+        <label>Row spacing <span>{(brush.rowSpacing ?? 0).toFixed(2)} m · 0 = wild</span><input aria-label="Row spacing" type="range" min="0" max="4" step="0.05" value={brush.rowSpacing ?? 0} onChange={e=>setBrush({...brush,rowSpacing:Number(e.target.value)})} /></label>
+        <label>Row angle <span>{brush.rowAngle ?? 0}°</span><input aria-label="Row angle" type="range" min="0" max="355" step="5" value={brush.rowAngle ?? 0} onChange={e=>setBrush({...brush,rowAngle:Number(e.target.value)})} /></label>
         <label>Density <span>{Math.round(brush.density*100)}%</span><input aria-label="Grass density" type="range" min="0" max="1" step="0.05" value={brush.density} onChange={e=>setBrush({...brush,density:Number(e.target.value)})} /></label>
         <label>Height <span>{brush.height.toFixed(2)} m</span><input aria-label="Grass height" type="range" min="0.1" max={GRASS_MAX_HEIGHT} step="0.05" value={brush.height} onChange={e=>setBrush({...brush,height:Number(e.target.value)})} /></label>
         <label>Brush radius <span>{radius} m</span><input aria-label="Brush radius" type="range" min="1" max="12" step="0.5" value={radius} onChange={e=>setRadius(Number(e.target.value))} /></label>

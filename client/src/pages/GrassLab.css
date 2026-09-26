@@ -45,3 +45,5 @@
 .grass-lab-key { display: block; margin: 14px 0; font-size: 11px; }
 .grass-lab-key input { display: block; box-sizing: border-box; width: 100%; margin-top: 7px; padding: 8px; color: inherit; background: #ffffff0a; border: 1px solid #ffffff30; border-radius: 6px; }
 .grass-lab button:disabled { opacity: .45; cursor: default; }
+
+.grass-lab-paint select { display: block; margin-top: 8px; padding: 7px; width: 100%; background: #20362a; color: inherit; border: 1px solid #ffffff30; border-radius: 5px; }

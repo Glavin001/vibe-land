@@ -13,7 +13,7 @@ describe('grass authoring', () => {
     paint.paint(4, 4, 12, GRASS_BRUSHES.vehicle);
     expect(paint.heightAt(4, 4)).toBe(4);
     const doc = paint.export();
-    expect(doc.version).toBe(2);
+    expect(doc.version).toBe(3);
     paint.import(JSON.parse(JSON.stringify(doc)));
     expect(paint.heightAt(4, 4)).toBe(4);
     paint.dispose();

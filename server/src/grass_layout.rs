@@ -32,13 +32,14 @@ pub struct Layout {
 impl Layout {
     fn validate(&self) -> Result<(), ApiError> {
         let mut seen = HashSet::new();
-        if self.version != 2 || self.tiles.len() > 4096 {
-            return Err(bad("Expected grass layout version 2"));
+        if ![2, 3].contains(&self.version) || self.tiles.len() > 4096 {
+            return Err(bad("Expected grass layout version 2 or 3"));
         }
         for tile in &self.tiles {
             if !(-32..32).contains(&tile.x)
                 || !(-32..32).contains(&tile.z)
-                || tile.data.len() != 1280
+                || tile.data.len() != if self.version == 3 { 3072 } else { 1280 }
+                || (self.version == 3 && tile.data.chunks_exact(12).any(|cell| cell[5] > 4))
                 || !seen.insert((tile.x, tile.z))
             {
                 return Err(bad("Invalid or duplicate grass tile"));
@@ -295,6 +296,20 @@ mod tests {
             .await
             .unwrap()
     }
+    #[test]
+    fn accepts_legacy_and_foliage_tiles_but_rejects_unknown_species() {
+        let mut layout = Layout { version: 3, tiles: vec![Tile { x: 0, z: 0, data: vec![0; 3072] }] };
+        layout.tiles[0].data[5] = 4;
+        assert!(layout.validate().is_ok());
+        layout.tiles[0].data[5] = 5;
+        assert!(layout.validate().is_err());
+        layout.version = 2;
+        layout.tiles[0].data = vec![255; 1280];
+        assert!(layout.validate().is_ok());
+        layout.version = 3;
+        assert!(layout.validate().is_err());
+    }
+
     #[tokio::test]
     async fn two_clients_conflicts_validation_and_restart() {
         let (dir, store) = setup();

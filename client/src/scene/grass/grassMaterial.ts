@@ -10,6 +10,7 @@ attribute vec4 grassRoot;
 attribute vec4 grassShape;
 attribute float grassBirth;
 attribute vec3 grassTint;
+attribute vec4 grassTraits;
 uniform float grassTime;
 uniform vec2 grassWind;
 uniform vec3 grassLod;
@@ -20,16 +21,30 @@ uniform vec4 grassContactBounds;
 varying vec3 vGrassColor;
 varying float vGrassHeight;
 varying vec3 vGrassWorld;
+varying float vGrassDryness;
+vec3 grassArc(float t, float h, float base, float curve, vec2 axis) {
+  float a = base + curve*t;
+  vec2 arc = vec2(cos(base)-cos(a), sin(a)-sin(base))/curve;
+  return vec3(axis.x*arc.x, arc.y, axis.y*arc.x)*h;
+}
 
 `;
 
 const BLADE = /* glsl */ `
 float t = position.y;
+float species = floor(grassTraits.w*255.0+0.5);
+float health = grassTraits.x, dryness = grassTraits.y, stiffness = grassTraits.z;
+float part = position.z;
+bool broadLeaf = species >= 3.0 && part > 0.5;
+bool seedHead = species > 0.5 && species < 2.5 && part > 0.5;
+if (seedHead) t = 0.85+position.y*0.15;
+if (broadLeaf) t = species > 3.5 ? 0.12 : 0.16+part*0.105;
 vec3 root = vec3(grassRoot.x, 0.006, grassRoot.y);
 vec3 worldRoot = (modelMatrix * vec4(root, 1.0)).xyz;
 float distanceToEye = distance(cameraPosition, worldRoot);
 float density = (1.0 - 0.55 * smoothstep(grassLod.x * 0.5, grassLod.x, distanceToEye))
   * (1.0 - 0.65 * smoothstep(grassLod.y * 0.65, grassLod.y, distanceToEye));
+density = max(density, species >= 3.0 ? 0.65 : grassRoot.z > 1.5 ? 0.32 : 0.0);
 float growth = (1.0 - smoothstep(density - 0.065, density, grassShape.w))
   * (1.0 - smoothstep(grassLod.z * 0.8, grassLod.z, distanceToEye))
   * smoothstep(grassBirth, grassBirth + 0.35, grassTime);
@@ -43,8 +58,8 @@ vec2 windDir = grassWind / max(windSpeed, 0.001);
 float gust = texture2D(grassWindNoise, worldRoot.xz * 0.018 - grassWind * grassTime * 0.003).r;
 float ripple = sin(dot(worldRoot.xz, windDir) * 1.7 - grassTime * (2.0 + windSpeed * 0.22)
   + grassShape.z * 6.28);
-vec2 bend = forward * grassShape.y + windDir * min(windSpeed * 0.055, 0.8)
-  * (0.3 + gust * 0.85 + ripple * 0.1)
+vec2 bend = forward * (grassShape.y + dryness*0.18) + windDir * min(windSpeed * 0.055, 0.8)
+  * (0.3 + gust * 0.85 + ripple * 0.1) * (1.2-stiffness*0.65)
   * mix(1.0, 0.6, smoothstep(1.25, 2.5, grassRoot.z));
 vec2 away = worldRoot.xz - grassViewer.xz;
 float push = (1.0 - smoothstep(0.2, 1.15, length(away)))
@@ -53,7 +68,7 @@ bend += away / max(length(away), 0.01) * push * 1.5;
 vec2 contactUv = (worldRoot.xz - grassContactBounds.xy) / grassContactBounds.zw;
 vec4 contact = texture2D(grassContacts, clamp(contactUv, 0.0, 1.0));
 float contactEdge = smoothstep(0.0, 0.04, min(min(contactUv.x, contactUv.y), min(1.0-contactUv.x, 1.0-contactUv.y)));
-contact.r = max(contact.r, contact.a * 0.8) * contactEdge;
+contact.r = max(contact.r, contact.a * mix(0.35, 0.95, max(dryness, 1.0-health))) * contactEdge;
 vec2 contactDirection = (contact.gb * 255.0 - 128.0) / 127.0 * contactEdge;
 bend = bend * (1.0-contact.r*0.65) + contactDirection * 1.6;
 push = max(push, contact.r * 1.48);
@@ -65,13 +80,30 @@ vec2 bendAxis = bendLength > 0.001 ? bend/bendLength : forward;
 float baseAngle = compression * 1.46;
 float curvature = mix(clamp(bendLength, 0.02, 1.5), 0.06, compression);
 float angle = baseAngle + curvature*t;
-vec2 arc = vec2(cos(baseAngle)-cos(angle), sin(angle)-sin(baseAngle)) / curvature;
-vec3 centre = vec3(bendAxis.x*arc.x, arc.y, bendAxis.y*arc.x) * h;
+vec3 centre = grassArc(t, h, baseAngle, curvature, bendAxis);
 vec3 tangent = vec3(bendAxis.x*sin(angle), cos(angle), bendAxis.y*sin(angle));
 // Fold and twist the ribbon without extra vertices or texture fetches.
 float twist = (grassShape.z-0.5)*0.65*t;
 side = normalize(side + vec3(forward.x, 0.0, forward.y)*twist);
 float width = grassShape.x * (1.0 - t * t) * growth;
+if (seedHead) {
+  float heading = grassRoot.w+part*1.5708;
+  side = vec3(cos(heading), 0.0, -sin(heading));
+  width = h * (species > 1.5 ? 0.024 : 0.02) * sin(position.y*3.14159)*(0.8+0.2*cos(position.y*50.0));
+} else if (broadLeaf) {
+  float leafT = position.y;
+  float heading = grassRoot.w+part*2.39996;
+  vec2 leafAxis = vec2(sin(heading), cos(heading));
+  float leafLength = h*(species > 3.5 ? 0.85 : 0.48);
+  float flutter = sin(grassTime*(3.0-dryness)+grassShape.z*6.28+part)*windSpeed*0.0015;
+  centre += vec3(leafAxis.x*leafT, (sin(leafT*3.14159)*0.32+flutter*leafT)*(1.0-compression), leafAxis.y*leafT)*leafLength;
+  side = vec3(leafAxis.y, 0.0, -leafAxis.x);
+  tangent = vec3(leafAxis.x, cos(leafT*3.14159)*(1.0-compression), leafAxis.y);
+  width = leafLength*(species > 3.5 ? 0.25 : 0.15)*sin(leafT*3.14159);
+  if (species > 3.5) width *= 0.65+0.35*abs(sin(leafT*28.0));
+} else if (species > 0.5) {
+  width *= species > 2.5 ? 0.22 : 0.45;
+}
 // Broaden sparse far blades slightly to preserve meadow coverage.
 width *= mix(1.0, 1.65, smoothstep(grassLod.x, grassLod.y, distanceToEye));
 vec3 grassPosition = root + centre + side * position.x * width;
@@ -80,9 +112,14 @@ vec3 objectNormal = normalize(cross(side, tangent + vec3(0, 0.00001, 0)));
 objectNormal = normalize(objectNormal + side * position.x * 0.5 + vec3(0, 0.35, 0));
 vGrassWorld = (modelMatrix * vec4(grassPosition, 1.0)).xyz;
 vGrassHeight = t;
-vec3 base = grassTint * mix(0.22, 0.38, grassShape.z);
-vec3 tip = grassTint * mix(0.85, 1.25, grassShape.z);
+vGrassDryness = dryness;
+vec3 leafTint = mix(grassTint, vec3(0.46, 0.33, 0.12), dryness*0.28);
+leafTint *= mix(0.72, 1.08, health);
+vec3 base = leafTint * mix(0.22, 0.38, grassShape.z);
+vec3 tip = leafTint * mix(0.85, 1.25, grassShape.z);
 vGrassColor = mix(base, tip, pow(t, 0.75));
+vGrassColor = mix(vGrassColor, vec3(0.34, 0.22, 0.08), dryness*smoothstep(0.6, 1.0, position.y)*0.55);
+if (seedHead) vGrassColor = mix(vGrassColor, vec3(0.52, 0.36, 0.12), species > 1.5 ? 0.65 : 0.8);
 `;
 
 export function createGrassMaterial(quality: GrassQuality, interaction: GrassInteraction) {
@@ -115,6 +152,7 @@ export function createGrassMaterial(quality: GrassQuality, interaction: GrassInt
         varying vec3 vGrassColor;
         varying float vGrassHeight;
         varying vec3 vGrassWorld;
+        varying float vGrassDryness;
         uniform vec3 grassSun;
         uniform vec3 grassSunColor;
       `)
@@ -131,13 +169,13 @@ export function createGrassMaterial(quality: GrassQuality, interaction: GrassInt
         vec3 grassView = normalize(cameraPosition - vGrassWorld);
         float transmission = pow(max(dot(-grassView, grassSun), 0.0), 3.0);
         if (transmission > 0.005) {
-          outgoingLight += vGrassColor * grassSunColor * transmission * 0.42
+          outgoingLight += vGrassColor * grassSunColor * transmission * mix(0.42, 0.12, vGrassDryness)
             * smoothstep(0.05, 0.85, vGrassHeight) * getShadowMask();
         }
         outgoingLight *= mix(0.72, 1.0, smoothstep(0.0, 0.65, vGrassHeight));
         #include <opaque_fragment>
       `);
   };
-  material.customProgramCacheKey = () => 'city-grass-v4-arc';
+  material.customProgramCacheKey = () => 'city-foliage-v5';
   return { material, uniforms };
 }

@@ -77,6 +77,15 @@ try {
   await page.getByRole('button', { name: 'Close controls', exact: true }).click();
   assert.equal(errors.length, 0, errors.join('\n'));
 
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await page.getByRole('button', { name: 'Full detail', exact: true }).click();
+  for (const preset of ['lush', 'dry', 'wheat', 'corn', 'ferns']) {
+    await page.getByRole('button', { name: `Plant ${preset}`, exact: true }).click();
+    await page.waitForTimeout(2200);
+    await page.screenshot({ path: `${output}/${preset}.png` });
+  }
+  assert.equal(errors.length, 0, errors.join('\n'));
+
   // Same renderer in an isolated canvas for stable A/B measurements. No second
   // app renderer competing for the GPU, no physics, no synthetic blade shader.
   await page.route('**/grass-benchmark-harness', route => route.fulfill({
@@ -86,6 +95,7 @@ try {
   const report = await page.evaluate(async ({ width, height }) => {
     const THREE = await import('/node_modules/.vite/deps/three.js');
     const { GrassField } = await import('/src/scene/grass/GrassField.ts');
+    const { GrassPaint, GRASS_BRUSHES } = await import('/src/scene/grass/GrassPaint.ts');
     const { GrassBodyContacts } = await import('/src/scene/grass/GrassBodyContacts.ts');
     const { CityTopology } = await import('/src/city/topology.ts');
     const scene = new THREE.Scene();
@@ -114,11 +124,18 @@ try {
     const median = values => values.length ? values.sort((a,b) => a-b)[Math.floor(values.length / 2)] : null;
     const percentile = (values, p) => values.length ? values.slice().sort((a,b) => a-b)[Math.floor((values.length-1)*p)] : null;
     const results = [];
-    for (const quality of ['pretty', 'fast']) {
-      const field = new GrassField(quality);
+    for (const [quality, preset] of [['pretty','meadow'], ['fast','meadow'], ['pretty','wheat'], ['pretty','corn'], ['pretty','ferns'], ['pretty','vehicle']]) {
+      const paint = new GrassPaint();
+      if (preset !== 'meadow') paint.paint(0, 0, 24, GRASS_BRUSHES[preset]);
+      const field = new GrassField(quality, [], paint);
       field.setWind(5, 65);
       scene.add(field.group);
-      for (let i = 0; i < 150; i++) { field.update(camera, i / 30); renderer.render(scene, camera); await frame(); }
+      let stable = 0;
+      for (let i = 0; i < 900 && stable < 20; i++) {
+        field.update(camera, i / 60); renderer.render(scene, camera); await frame();
+        stable = field.stats.pendingPatches === 0 ? stable+1 : 0;
+      }
+      if (stable < 20) throw new Error('Grass patch streaming did not settle');
       const stats = { ...field.stats };
       // Saturate the 192-stamp budget with a player and dense object contacts:
       // rasterization, recovery and quantization, independent of display pacing.
@@ -144,7 +161,7 @@ try {
       for (let i = 0; i < 120; i++) {
         await frame();
         const startUpdate = performance.now();
-        field.update(camera, 6 + i / 60);
+        field.update(camera, 20 + i / 60);
         updateMs.push(performance.now() - startUpdate);
         const pair = {};
         pairs.push(pair);
@@ -184,9 +201,9 @@ try {
       camera.position.y = 1.4;
       camera.updateMatrixWorld();
       scene.remove(field.group);
-      field.dispose();
+      field.dispose(); paint.dispose();
       renderer.render(scene, camera);
-      results.push({ quality, stats, timings, aerialBlades, geometriesAfterDisposal: renderer.info.memory.geometries });
+      results.push({ quality, preset, stats, timings, aerialBlades, geometriesAfterDisposal: renderer.info.memory.geometries });
     }
     const shaderErrors = (renderer.info.programs ?? []).filter(p => p.diagnostics && !p.diagnostics.runnable).length;
     renderer.dispose();

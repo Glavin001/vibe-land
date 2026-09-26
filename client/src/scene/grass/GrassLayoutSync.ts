@@ -16,7 +16,7 @@ export async function fetchSharedGrass(url: string, revision?: string | null, si
   if (response.status === 304) return null;
   if (!response.ok) throw new Error(`Shared grass unavailable (${response.status})`);
   const value = await response.json() as SharedGrassSnapshot;
-  if (!value || !/^[a-f0-9]{64}$/.test(value.revision) || value.layout?.version !== 2) throw new Error('Invalid shared grass response');
+  if (!value || !/^[a-f0-9]{64}$/.test(value.revision) || ![2, 3].includes(value.layout?.version)) throw new Error('Invalid shared grass response');
   // Validate before acknowledging a revision or replacing the visible layout.
   const validator = new GrassPaint();
   try { validator.import(value.layout); } finally { validator.dispose(); }
