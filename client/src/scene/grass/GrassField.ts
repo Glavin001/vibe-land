@@ -1,5 +1,6 @@
 import { FoliageCanopy } from './FoliageCanopy';
 import { FOLIAGE_HANDOFF } from './foliageLod';
+import { attachFoliageTemplate } from './foliageBuffers';
 import { GrassPatchWorker } from './GrassPatchWorker';
 import { FOLIAGE_SPECIES } from './foliageProfiles';
 import * as THREE from 'three';
@@ -95,6 +96,7 @@ export class GrassField {
   private cellX = Infinity;
   private cellZ = Infinity;
   private lastCandidates = -Infinity;
+  private shadows = true;
   private readonly dirtyPatches = new Set<string>();
   private readonly unsubscribePaint: () => void;
 
@@ -114,6 +116,8 @@ export class GrassField {
   }
 
   setShadows(enabled: boolean): void {
+    if (this.shadows === enabled) return;
+    this.shadows = enabled;
     this.canopy.setShadows(enabled);
     for (const patch of this.patches.values()) for (const part of patch.parts) part.mesh.receiveShadow = enabled;
   }
@@ -155,16 +159,18 @@ export class GrassField {
       const colors = whole ? data.colors : new Uint8Array(members.length*3), traits = whole ? data.traits : new Uint8Array(members.length*4);
       for (let j = 0; !whole && j < members.length; j++) {
         const i = members[j];
-        roots.set(data.roots.subarray(i*4, i*4+4), j*4);
-        shapes.set(data.shapes.subarray(i*4, i*4+4), j*4);
+        // No temporary typed-array views per plant: a mixed patch can otherwise
+        // allocate tens of thousands of short-lived objects on its install frame.
+        for (let k = 0; k < 4; k++) {
+          roots[j*4+k] = data.roots[i*4+k];
+          shapes[j*4+k] = data.shapes[i*4+k];
+          traits[j*4+k] = data.traits[i*4+k];
+        }
         shapes[j*4+3] = Math.floor(j/members.length*65535);
-        colors.set(data.colors.subarray(i*3, i*3+3), j*3);
-        traits.set(data.traits.subarray(i*4, i*4+4), j*4);
+        for (let k = 0; k < 3; k++) colors[j*3+k] = data.colors[i*3+k];
       }
       const geometry = new THREE.InstancedBufferGeometry(), template = this.templates[species].geometry;
-      geometry.setIndex(template.index);
-      geometry.setAttribute('position', template.getAttribute('position'));
-      geometry.setAttribute('normal', template.getAttribute('normal'));
+      attachFoliageTemplate(geometry, template);
       geometry.setAttribute('grassRoot', new THREE.InstancedBufferAttribute(roots, 4));
       geometry.setAttribute('grassShape', new THREE.InstancedBufferAttribute(shapes, 4, true));
       geometry.setAttribute('grassTint', new THREE.InstancedBufferAttribute(colors, 3, true));
@@ -172,7 +178,7 @@ export class GrassField {
       geometry.setAttribute('grassBirth', new THREE.InstancedBufferAttribute(new Float32Array([previous ? time-1 : time]), 1, false, members.length));
       geometry.instanceCount = members.length;
       const plant = new THREE.Mesh(geometry, this.shading.material);
-      plant.receiveShadow = true; plant.frustumCulled = false;
+      plant.receiveShadow = this.shadows; plant.frustumCulled = false;
       plant.matrixAutoUpdate = false; plant.updateMatrix(); plant.raycast = () => {};
       mesh.add(plant); parts.push({ species, count: members.length, canopy, mesh: plant });
       bytes += roots.byteLength+shapes.byteLength+colors.byteLength+traits.byteLength+4;
@@ -236,8 +242,10 @@ export class GrassField {
     if (result) {
       if (result.revision === this.paint.revision && grassPatchDistance(x, y, z, result.x, result.z) < profile.distance) {
         this.build(result.x, result.z, time, result.data);
+      } else {
+        // Retry rejected work; successful results leave the remaining queue valid.
+        this.lastCandidates = -Infinity;
       }
-      this.lastCandidates = -Infinity;
     }
     const started = performance.now();
     for (let built = 0; built < 2 && this.candidates.length && performance.now() - started < 2; built++) {

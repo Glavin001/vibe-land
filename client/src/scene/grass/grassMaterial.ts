@@ -59,6 +59,12 @@ density = vGrassCanopy > 0.5 ? 1.0 : density;
 float growth = (1.0 - smoothstep(density - 0.065, density, grassShape.w))
   * (vGrassCanopy > 0.5 ? 1.0 : (1.0 - smoothstep(grassLod.z * 0.8, grassLod.z, distanceToEye)))
   * smoothstep(grassBirth, grassBirth + 0.35, grassTime);
+// These instances already collapse to zero-area geometry. Clip them before
+// wind/contact texture reads and leaf deformation; visible density is unchanged.
+if (growth <= 0.0) {
+  gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+  return;
+}
 float h = grassRoot.z * growth;
 vec2 forward = vec2(sin(grassRoot.w), cos(grassRoot.w));
 vec3 side = vec3(forward.y, 0.0, -forward.x);
@@ -208,6 +214,6 @@ export function createGrassMaterial(quality: GrassQuality, interaction: GrassInt
         #include <opaque_fragment>
       `);
   };
-  material.customProgramCacheKey = () => 'city-foliage-v8-canopy';
+  material.customProgramCacheKey = () => 'city-foliage-v9-zero-growth';
   return { material, uniforms };
 }

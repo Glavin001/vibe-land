@@ -411,3 +411,53 @@ With the corrected materials and sky environment enabled, the isolated 1080p
 grass pass measured **0.12–3.13 ms GPU** across 18 cases (48 valid pairs each)
 on M3 Max. This includes sky shading absent from the earlier timing fixture;
 it is not a before/after cost comparison or a full-city frame-rate claim.
+
+### Streaming and performance review
+
+The next [recorded performance review](benchmarks/foliage-performance-review-m3max-2026-09-26.json)
+adds p95 timings, 96 GPU pairs per case, and a private
+`/benchmarks/foliage-stress.html` fixture. It runs cold loading, rapid 72 m travel,
+and 256 attempted contacts per tick through the production contact budgets.
+GPU elapsed time, CPU updates/submission, browser frame intervals and resident
+geometry bytes are reported separately. Run in a static build when other work
+is changing the Vite project, so HMR does not invalidate a measurement.
+
+This pass fixes GPU buffer ownership: Three does not reference-count shared
+BufferAttributes when a geometry is disposed. Each disposable patch now owns
+its attribute wrappers/GPU buffers while sharing immutable CPU template arrays.
+Eviction can no longer delete a neighboring patch's buffers. This costs extra
+GPU template storage: approximately 0.5–1.5 MB in the mixed-field fixture,
+included in its resident-buffer total. LOD changes still only switch draw ranges.
+Shadow toggles now do work only when the setting changes, and newly streamed
+plants inherit that setting. Successful worker results retain the existing
+candidate queue; rejected/stale results still trigger retries. Mixed-patch
+installation copies scalar values without allocating four temporary typed-array
+views per plant. Zero-growth blades leave the vertex shader before wind/contact
+sampling; these already had zero visible area. Density, LOD distances, lighting
+and canopy silhouettes are unchanged.
+
+On M3 Max at 1080p with sky lighting, isolated grass GPU medians were
+**0.31–2.73 ms**, with p95 values up to **3.80 ms**. All 18 cases had 96 valid
+GPU pairs. The steady CPU update p95 was **0.1 ms**. In two final mixed-field
+stress runs, pretty-tier travel updates had **0.8 ms p95**, versus **1.7 ms** in
+the initial baseline. Full mixed-scene GPU medians during travel were
+**3.01/4.33 ms**; p95 was **3.78/6.79 ms**. Max recorded resident geometry
+payload at a phase boundary was **23.16 MB**, and every disposal left zero
+renderer geometries. Contact ticks ran at 20 Hz, with p95 **1.1/1.2 ms** on
+pretty and **2.1/2.5 ms** on fast, including first-use costs.
+
+The first final stress run had 8.3 ms median frame intervals. The repeat ranged
+from 8.9 to 10.7 ms, with cold-start spikes up to 47.1 ms and one GPU timing
+outlier of 26.36 ms. Other applications were active; neither these observations
+nor the small scene establish a locked 120 Hz city. The record includes the
+baseline and an intermediate run that still hit large spikes, rather than
+discarding unfavorable measurements. The remaining validation is a controlled
+full-city capture including shadows, physics and destruction on target hardware.
+
+All 15 near/far lighting comparisons, 18 concealment cases and both compaction
+checks passed after optimization. Tall grass/corn hid the target at every range;
+flattening revealed 673/840 and 671/840 target pixels. The 46 focused tests,
+benchmark type check and production build passed. The client type check passed
+earlier in the review, but the final rerun encountered two errors in concurrent
+AudioLab work (`activityEmitters` and `rms` missing from `AudioDiagnostics`).
+Those files are outside this grass change and were left untouched.

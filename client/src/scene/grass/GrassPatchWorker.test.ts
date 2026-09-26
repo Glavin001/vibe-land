@@ -63,4 +63,33 @@ describe('bounded foliage worker', () => {
     expect(worker.available).toBe(false);
     expect(worker.take()).toBeNull(); worker.dispose();
   });
+
+  it('drains successful work without losing or repeatedly requesting patches', () => {
+    let job: GrassPatchRequest | undefined;
+    let fake: FakeWorker;
+    class FakeWorker {
+      onmessage: ((event: { data: unknown }) => void) | null = null;
+      constructor() { fake = this; }
+      postMessage(value: GrassPatchRequest) { job = value; }
+      terminate() {}
+    }
+    vi.stubGlobal('Worker', FakeWorker);
+    const paint = new GrassPaint(), field = new GrassField('fast', [], paint);
+    const camera = new PerspectiveCamera(60, 1.6, .1, 300);
+    camera.position.set(4, 2, 12); camera.lookAt(4, 0, 0); camera.updateMatrixWorld();
+    const requested = new Set<string>();
+    try {
+      field.update(camera, 0);
+      for (let i = 1; job && i < 200; i++) {
+        const current = job; job = undefined;
+        const key = `${current.x},${current.z}`;
+        expect(requested.has(key)).toBe(false); requested.add(key);
+        fake!.onmessage!({ data: { ...current, data: generateGrassPatch(current.x, current.z, 'fast', [], paint) } });
+        field.update(camera, i / 120);
+      }
+      expect(requested.size).toBeGreaterThan(30);
+      expect(field.stats.patches).toBe(requested.size);
+      expect(field.stats.pendingPatches).toBe(0);
+    } finally { field.dispose(); paint.dispose(); }
+  });
 });

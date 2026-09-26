@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { attachFoliageTemplate } from './foliageBuffers';
 import { FOLIAGE_SURFACE, foliageLightUniforms, foliageLightFragment } from './foliageLighting';
 import type { GrassInteraction } from './GrassInteraction';
 import { GrassPaint, GRASS_MAX_HEIGHT } from './GrassPaint';
@@ -24,7 +25,7 @@ export class FoliageCanopy {
   private readonly frustum = new THREE.Frustum();
   private readonly matrix = new THREE.Matrix4();
   private shadows = true;
-  setShadows(enabled:boolean):void {this.shadows=enabled;for(const mesh of this.chunks.values())mesh.receiveShadow=enabled;}
+  setShadows(enabled:boolean):void {if(this.shadows===enabled)return;this.shadows=enabled;for(const mesh of this.chunks.values())mesh.receiveShadow=enabled;}
   visibleClumps = 0; draws = 0; instanceBytes = 0;
   get pendingChunks(): number { return this.pending.size; }
 
@@ -159,8 +160,7 @@ export class FoliageCanopy {
     if(old){this.group.remove(old);this.instanceBytes-=old.geometry.instanceCount*32;old.geometry.dispose();this.chunks.delete(key);}
     if(!roots.length)return;
     const geometry=new THREE.InstancedBufferGeometry();
-    geometry.setIndex(this.template.index);
-    for(const name of ['position','normal','uv'])geometry.setAttribute(name,this.template.getAttribute(name));
+    attachFoliageTemplate(geometry,this.template);
     geometry.setAttribute('canopyRoot',new THREE.InstancedBufferAttribute(Float32Array.from(roots),4));
     geometry.setAttribute('canopyStyle',new THREE.InstancedBufferAttribute(Float32Array.from(styles),4));
     geometry.instanceCount=roots.length/4;

@@ -6,6 +6,7 @@ const status = document.querySelector('#status')!;
 const output = document.querySelector('#report')!;
 const button = document.querySelector<HTMLButtonElement>('#run')!;
 const frame = () => new Promise<void>(resolve=>requestAnimationFrame(()=>resolve()));
+const percentile=(a:number[],p:number)=>a.length?[...a].sort((a,b)=>a-b)[Math.floor((a.length-1)*p)]:null;
 const median = (a:number[]) => a.length ? [...a].sort((a,b)=>a-b)[Math.floor(a.length/2)] : null;
 button.onclick = async () => {
   button.disabled=true; output.textContent='';
@@ -40,8 +41,9 @@ button.onclick = async () => {
       for(const distance of [12,35,110]) {
         status.textContent=`Measuring ${preset} / ${quality} / ${distance} m`;
         camera.position.set(0,1.4,distance);camera.lookAt(0,1.4,0);camera.updateMatrixWorld();
+        const streaming:number[]=[];
         for(let i=0;i<600;i++){
-          field.update(camera,performance.now()/1000);renderer.render(scene,camera);await frame();
+          const start=performance.now();field.update(camera,start/1000);streaming.push(performance.now()-start);renderer.render(scene,camera);await frame();
           if(i>=100&&field.stats.pendingPatches===0)break;
         }
         const gpu:number[]=[],cpu:number[]=[],update:number[]=[],queries:{q:WebGLQuery;on:boolean;pair:number}[]=[],pairs=new Map<number,{on?:number;off?:number}>();
@@ -50,7 +52,7 @@ button.onclick = async () => {
             const result=pairs.get(pair)??{};result[on?'on':'off']=gl.getQueryParameter(q,gl.QUERY_RESULT)/1e6;pairs.set(pair,result);
           }gl.deleteQuery(q);
         }};
-        for(let i=0;i<48;i++){
+        for(let i=0;i<96;i++){
           const start=performance.now();field.update(camera,start/1000);update.push(performance.now()-start);
           const costs:number[]=[];
           for(const on of i%2?[true,false]:[false,true]){
@@ -71,7 +73,7 @@ button.onclick = async () => {
         report.coverage.push({preset,quality,distance,exposed,hidden,hiddenFraction:exposed?1-hidden/exposed:null});
         if(!exposed || (preset!=='wheat' && hidden/exposed>0.2))throw new Error(`Concealment regression: ${preset}/${quality}/${distance}`);
         }
-        report.cases.push({preset,quality,distance,gpuMedianMs:median(gpu),gpuSamples:gpu.length,renderCpuMedianMs:median(cpu),updateCpuMedianMs:median(update),...field.stats});
+        report.cases.push({preset,quality,distance,gpuMedianMs:median(gpu),gpuSamples:gpu.length,gpuP95Ms:percentile(gpu,.95),streamingUpdateP95Ms:percentile(streaming,.95),streamingUpdateMaxMs:Math.max(...streaming),renderCpuP95Ms:percentile(cpu,.95),updateCpuP95Ms:percentile(update,.95),renderCpuMedianMs:median(cpu),updateCpuMedianMs:median(update),...field.stats});
         output.textContent=JSON.stringify(report,null,2);
       }
       if(!timingOnly&&preset==='vehicle') {
