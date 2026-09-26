@@ -1,0 +1,50 @@
+native history id=0 nodes=4 iteration=1 residual2=12.4357 tolerance2=1.45262e-09 gamma=2.94169 direction_energy=25.3013 failed=0
+native history id=0 nodes=4 iteration=2 residual2=4.06541 tolerance2=1.45262e-09 gamma=1.12374 direction_energy=13.1053 failed=0
+native history id=0 nodes=4 iteration=4 residual2=0.000237481 tolerance2=1.45262e-09 gamma=0.0121557 direction_energy=23.106 failed=0
+native history id=0 nodes=4 iteration=1 residual2=17.3881 tolerance2=1.48426e-09 gamma=3.17973 direction_energy=32.8398 failed=0
+native history id=0 nodes=4 iteration=2 residual2=15.8751 tolerance2=1.48426e-09 gamma=1.39909 direction_energy=13.7583 failed=0
+native history id=0 nodes=4 iteration=4 residual2=0.00620724 tolerance2=1.48426e-09 gamma=0.038882 direction_energy=36.7413 failed=0
+native history id=0 nodes=4 iteration=1 residual2=9.97631 tolerance2=8.29829e-10 gamma=2.37755 direction_energy=33.7007 failed=0
+native history id=0 nodes=4 iteration=2 residual2=7.92618 tolerance2=8.29829e-10 gamma=0.97935 direction_energy=12.9589 failed=0
+native history id=0 nodes=4 iteration=4 residual2=0.00111945 tolerance2=8.29829e-10 gamma=0.0150387 direction_energy=37.7346 failed=0
+indeterminate graph, stretched (metric differs, not asserted): frozen-vs-fresh linear gap 0.0527458
+native history id=0 nodes=4 iteration=1 residual2=14.5882 tolerance2=1.48426e-09 gamma=3.36053 direction_energy=29.4606 failed=0
+native history id=0 nodes=4 iteration=2 residual2=2.21718 tolerance2=1.48426e-09 gamma=1.152 direction_energy=15.4057 failed=0
+native history id=0 nodes=4 iteration=4 residual2=0.000181855 tolerance2=1.48426e-09 gamma=0.0097989 direction_energy=19.4364 failed=0
+native history id=0 nodes=4 iteration=1 residual2=14.5882 tolerance2=1.48426e-09 gamma=3.36053 direction_energy=29.4606 failed=0
+native history id=0 nodes=4 iteration=2 residual2=2.21718 tolerance2=1.48426e-09 gamma=1.152 direction_energy=15.4057 failed=0
+native history id=0 nodes=4 iteration=4 residual2=0.000181855 tolerance2=1.48426e-09 gamma=0.0097989 direction_energy=19.4364 failed=0
+native history id=0 nodes=4 iteration=1 residual2=10.6483 tolerance2=1.52855e-09 gamma=3.43294 direction_energy=16.9468 failed=0
+native history id=0 nodes=4 iteration=2 residual2=4.34272 tolerance2=1.52855e-09 gamma=1.73764 direction_energy=9.64978 failed=0
+native history id=0 nodes=4 iteration=4 residual2=0.00482279 tolerance2=1.52855e-09 gamma=0.0444927 direction_energy=8.599 failed=0
+native history id=0 nodes=4 iteration=8 residual2=3.75727e-09 tolerance2=1.52855e-09 gamma=7.44299e-05 direction_energy=18.2319 failed=0
+native history id=0 nodes=4 iteration=1 residual2=10.6483 tolerance2=1.52855e-09 gamma=3.43294 direction_energy=16.9468 failed=0
+native history id=0 nodes=4 iteration=2 residual2=4.34272 tolerance2=1.52855e-09 gamma=1.73764 direction_energy=9.64978 failed=0
+native history id=0 nodes=4 iteration=4 residual2=0.00482279 tolerance2=1.52855e-09 gamma=0.0444927 direction_energy=8.599 failed=0
+native history id=0 nodes=4 iteration=8 residual2=3.75727e-09 tolerance2=1.52855e-09 gamma=7.44299e-05 direction_energy=18.2319 failed=0
+GPU moving geometry: 4 dynamic nodes / 6 bonds, deformation+inertia, six atomic rejections, stale/rejected/repeated revisions and cut preservation passed; fresh-solver error 0
+native history id=1 nodes=3 iteration=1 residual2=6.3971 tolerance2=1.7363e-09 gamma=6.14552 direction_energy=0.801402 failed=0
+native history id=1 nodes=3 iteration=2 residual2=230.597 tolerance2=1.7363e-09 gamma=5.65311 direction_energy=0.349317 failed=0
+native history id=1 nodes=3 iteration=4 residual2=773.279 tolerance2=1.7363e-09 gamma=12.0434 direction_energy=1.95493 failed=0
+native history id=1 nodes=3 iteration=8 residual2=0.0612462 tolerance2=1.7363e-09 gamma=0.0608273 direction_energy=0.792758 failed=0
+native history id=1 nodes=3 iteration=1 residual2=5.81255 tolerance2=1.1705e-09 gamma=5.10096 direction_energy=1.10389 failed=0
+native history id=1 nodes=3 iteration=2 residual2=236.383 tolerance2=1.1705e-09 gamma=3.78883 direction_energy=0.234342 failed=0
+native history id=1 nodes=3 iteration=4 residual2=339.748 tolerance2=1.1705e-09 gamma=9.52485 direction_energy=1.89636 failed=0
+native history id=1 nodes=3 iteration=8 residual2=0.0550206 tolerance2=1.1705e-09 gamma=0.110219 direction_energy=4.53233 failed=0
+native history id=1 nodes=3 iteration=1 residual2=8.72219 tolerance2=1.77445e-09 gamma=6.28055 direction_energy=1.09268 failed=0
+native history id=1 nodes=3 iteration=2 residual2=341.968 tolerance2=1.77445e-09 gamma=4.27663 direction_energy=0.189786 failed=0
+native history id=1 nodes=3 iteration=4 residual2=628.212 tolerance2=1.77445e-09 gamma=13.4406 direction_energy=1.57274 failed=0
+native history id=1 nodes=3 iteration=8 residual2=0.309608 tolerance2=1.77445e-09 gamma=0.267592 direction_energy=4.4997 failed=0
+GPU moving determinate tree: stretched support chain matches a fresh solver; error 1.80698e-06
+native history id=1 nodes=1 iteration=1 residual2=0.7181 tolerance2=6.4296e-11 gamma=0.85728 direction_energy=1.27662 failed=0
+native history id=1 nodes=1 iteration=2 residual2=7.85057 tolerance2=6.4296e-11 gamma=0.7767 direction_energy=0.937502 failed=0
+native history id=1 nodes=1 iteration=1 residual2=0.182544 tolerance2=7.144e-12 gamma=0.28576 direction_energy=2.92071 failed=0
+native history id=1 nodes=1 iteration=2 residual2=22.2602 tolerance2=7.144e-12 gamma=0.263838 direction_energy=0.65605 failed=0
+native history id=1 nodes=1 iteration=1 residual2=0.7181 tolerance2=6.4296e-11 gamma=0.85728 direction_energy=1.27662 failed=0
+native history id=1 nodes=1 iteration=2 residual2=352.248 tolerance2=6.4296e-11 gamma=0.800102 direction_energy=0.117171 failed=0
+native history id=1 nodes=1 iteration=1 residual2=0.201103 tolerance2=7.144e-12 gamma=0.28576 direction_energy=3.21764 failed=0
+native history id=1 nodes=1 iteration=2 residual2=26.2769 tolerance2=7.144e-12 gamma=0.263923 direction_energy=0.641852 failed=0
+native history id=1 nodes=1 iteration=1 residual2=0.196073 tolerance2=6.72376e-12 gamma=0.277228 direction_energy=3.33324 failed=0
+native history id=1 nodes=1 iteration=2 residual2=25.1842 tolerance2=6.72376e-12 gamma=0.256067 direction_energy=0.660589 failed=0
+supported geometry equilibrium component 4: actual 0.0619998 expected magnitude 0.538
+resident geometry: moving support violates independent force/moment equilibrium

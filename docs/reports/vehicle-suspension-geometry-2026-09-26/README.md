@@ -101,3 +101,17 @@ VIBE_RIG_GOLDEN=/tmp/rig-golden/manifest.json cargo test -p web-fps-server --bin
 - Re-running impact qualification on the anchored graph.
 - Live garage destruction, fragment streaming and performance.
 - Trailer kinematics. The semi passes through unchanged and is not fracturable.
+
+## Phase E: GPU qualification of PhysX `d82b4da7` → `deb09714`
+
+The play server was stopped with the user's approval. Tests ran serially under `gpu-run.sh`, on local CuMetal FP64 (`garage-multihull` package). This is functional evidence, not CUDA or performance qualification.
+
+- `blast_stress_gpu_operator_epochs` and `..._integration` passed on the first run (`gpu-geometry-epochs.log`).
+- `blast_stress_gpu_resident_geometry` failed on its first execution: the updated solver differed from a fresh one by 5.27%. The cause was the oracle. The 4-node/6-bond graph is statically indeterminate, so its minimum-norm solution depends on the length normalization, which the update keeps at rest-pose values by design. The rewritten test (`gpu-geometry-final.log`) passes:
+  - rigid motion vs a fresh solver: error 0
+  - stretched determinate supported tree: 1.8e-6
+  - the stretched indeterminate gap (5.27%) is printed, not asserted
+- The independent support-equilibrium oracle then failed in the reversed endpoint order. A GPU experiment showed Blast's operator uses opposite-handed angular coordinates. Production already negates its angular inputs (`PxgDestructionRuntime`: `inputs.angular = -torque/inertia`), so **live loads are consistent**. The oracle was corrected, and a new regression pins the convention: a shear bond is recovered exactly from Blast-convention inputs (moment 9e-10), and not from un-negated ones (0.04 N instead of 1 N).
+- Consequence: in a redundant bond graph, how load is shared between parallel bonds is fixed by the rest-pose metric while the suspension moves.
+
+Artifact: `gpu_resident_geometry_test` sha256 `c67d5dd9…6ec2`, built from the working tree before `deb09714`. The only later change to the source is a message string.

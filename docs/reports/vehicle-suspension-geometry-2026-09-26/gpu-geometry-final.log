@@ -1,0 +1,17 @@
+Internal ctest changing into directory: /Users/glavin/Development/PhysX/out/build/garage-multihull/package
+Test project /Users/glavin/Development/PhysX/out/build/garage-multihull/package
+    Start 139: blast_stress_gpu_resident_geometry
+1/1 Test #139: blast_stress_gpu_resident_geometry ...   Passed    0.64 sec
+
+100% tests passed, 0 tests failed out of 1
+
+Label Time Summary:
+gpu    =   0.64 sec*proc (1 test)
+
+Total Test time (real) =   0.65 sec
+angular input in Blast convention: converged=1 bond linear=(0,-1,0) angular=(0,0,-9.39333e-10)
+angular input un-negated (not Blast): converged=1 bond linear=(0,-0.04,0) angular=(0,0,-0.12)
+indeterminate graph, stretched (metric differs, not asserted): frozen-vs-fresh linear gap 0.0527458
+GPU moving geometry: 4 dynamic nodes / 6 bonds, deformation+inertia, six atomic rejections, stale/rejected/repeated revisions and cut preservation passed; fresh-solver error 0
+GPU moving determinate tree: stretched support chain matches a fresh solver; error 1.80698e-06
+GPU moving support: both endpoint orders preserve centroid moments and fixed classification
