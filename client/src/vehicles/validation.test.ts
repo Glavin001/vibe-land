@@ -13,7 +13,7 @@ describe('shared garage assembly validation', () => {
     const wheels = result.collision.parts.filter((p: any) => p.motion?.role === 'wheel');
     expect(wheels).toHaveLength(4);
     expect(new Set(wheels.map((p: any) => p.motion.corner)).size).toBe(4);
-    expect(wheels.every((p: any) => p.sourcePartIds.length >= 2)).toBe(true);
+    expect(wheels.every((p: any) => p.visualIds.length >= 100)).toBe(true);
     expect(result.collision.parts.some((p: any) => p.functionality === 'engine')).toBe(true);
     expect(result.collision.report.penetratingPairs).toBe(0);
     expect(result.bonds.length).toBeGreaterThan(result.collision.parts.length);
@@ -36,7 +36,9 @@ describe('shared garage assembly validation', () => {
     try {
       const intact = translations();
       expect(centers.size).toBe(intact.size);
-      expect(result.collision.parts.some((group: {visualIds: string[]}) => group.visualIds.length >= 149)).toBe(true);
+      const hubs = result.collision.parts.filter((p: any) => p.motion?.role === 'hub');
+      expect(hubs).toHaveLength(4);
+      expect(hubs.every((hub: any) => hub.visualIds.length === 2)).toBe(true);
       visual.inspect(1, false, undefined, centers);
       for (const [id, position] of translations()) {
         const [x,y,z] = centers.get(id)!;

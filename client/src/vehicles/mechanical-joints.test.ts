@@ -6,7 +6,7 @@ import {requireConnectedAssembly} from './strength-profile.mjs';
 
 const part = (id: string, role: string, component?: string, corner='fl') =>
   ({id, motion:{role, component, corner}});
-const hub=part('hub','wheel','hub'), rotor=part('rotor','wheel','rotor');
+const hub=part('hub','hub','hub'), rotor=part('rotor','hub','rotor');
 const tire=part('tire','wheel'), upright=part('upright','upright');
 const axle=part('axle','axle'), caliper=part('caliper','knuckle','caliper');
 const contact=(a: string,b: string)=>({a,b,area:.002,normal:[1,0,0],centroid:[1,2,3],validatedSurface:true});
@@ -14,7 +14,8 @@ const contact=(a: string,b: string)=>({a,b,area:.002,normal:[1,0,0],centroid:[1,
 describe('mechanical attachment topology',()=>{
   it.each([
     [hub,upright,'wheel-bearing'], [hub,axle,'drive-spline'],
-    [hub,rotor,'wheel-internal'], [hub,tire,'wheel-internal'],
+    [hub,rotor,'hub-internal'], [hub,tire,'wheel-mount'],
+    [tire,part('rim','wheel'),'wheel-internal'],
     [caliper,upright,'caliper-mount'],
   ])('retains the measured %s / %s mounting interface in either order', (a,b,attachment)=>{
     for(const [first,second] of [[a,b],[b,a]] as any[][]){
@@ -26,7 +27,8 @@ describe('mechanical attachment topology',()=>{
     }
   });
   it.each([
-    [rotor,upright], [rotor,caliper], [hub,caliper],
+    [rotor,upright], [rotor,caliper], [hub,caliper], [rotor,tire],
+    [tire,axle], [tire,upright],
     [hub,part('arm','lowerArm')], [hub,part('eye','shockEye')],
     [hub,part('rod','tieRod')], [hub,part('boot','cvBoot')],
     [tire,part('fender','body')], [caliper,part('arm','upperArm')],

@@ -62,7 +62,7 @@ pub struct FractureLayout {
     /// Authored order, including parallel interfaces between the same chunks.
     pub bond_chunks: Vec<[u32; 2]>,
     /// Native Vehicle2 corner order, derived from actor-space wheel positions.
-    /// All wheel-role groups (e.g. tire and hub) must remain connected to drive.
+    /// The coherent tire/rim owns traction. Rotating hubs are separate chunks.
     pub wheel_chunks: [Vec<u32>; 4],
     /// Authored shafts for each corner. These gate drive torque separately
     /// from physical wheel presence, so a shaftless wheel can roll and brake.
@@ -586,6 +586,15 @@ mod tests {
             .validate_vehicle2_fracture_layout()
             .unwrap_err()
             .contains("one complete"));
+        // A separate rotating hub is not a second traction wheel. Its mass and
+        // visual ownership stay in the fracture graph, without duplicating
+        // the Vehicle2 wheel registration.
+        asset.parts.last_mut().unwrap().motion = Some(json!({"role":"hub","corner":"fl"}));
+        let layout = asset.validate_vehicle2_fracture_layout().unwrap();
+        assert_eq!(layout.wheel_chunks, [vec![1], vec![2], vec![3], vec![4]]);
+        assert_eq!(layout.visual_chunks["hub"], 6);
+        #[cfg(feature = "native-destruction")]
+        assert_eq!(asset.native_fracture_assembly().unwrap().parts[6].wheel, 255);
     }
 
     #[cfg(feature = "native-destruction")]

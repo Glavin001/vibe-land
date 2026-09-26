@@ -22,7 +22,7 @@ const request = JSON.parse(Buffer.concat(input).toString('utf8'));
 submittedConfiguration = request.configuration;
 const configuration = normalizeConfiguration(request.configuration);
 const root = resolve(process.argv[2]);
-const geometryHash = createHash('sha256').update(JSON.stringify({recipe:'vehicle-physics-functional-3',strength:STRENGTH_PROFILE_VERSION,geometry:geometryKey(configuration)})).digest('hex');
+const geometryHash = createHash('sha256').update(JSON.stringify({recipe:'vehicle-physics-functional-4',strength:STRENGTH_PROFILE_VERSION,geometry:geometryKey(configuration)})).digest('hex');
 const directory = join(root, geometryHash);
 let metadata;
 try { metadata = JSON.parse(await readFile(join(directory, 'metadata.json'), 'utf8')); }
@@ -61,7 +61,7 @@ catch (error) {
    maxSteerRadians: geometry.maxSteerRadians, partCount: parts.length,
    visualPartCount: visual.parts.length, colliderFidelity: 'simple',
    cylinderSegments: 32, jointSurfaceSource: 'individual-authored-interfaces',
-   jointTopology: 'mechanical-mounts-1',
+   jointTopology: 'mechanical-mounts-2',
    excludedContacts: excludedContacts.map(({a,b,reason})=>({a,b,reason})),
    shapeCount: parts.reduce((n,p)=>n+p.shapes.length,0), bondCount: bonds.length, contactCount: surfaces.length,
    strengthProfileVersion: STRENGTH_PROFILE_VERSION, strengthQualification: 'pending-native-tests',

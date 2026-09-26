@@ -22,12 +22,24 @@ export function mechanicalJoints(parts, contacts) {
         reason = 'wheel-contact-without-mount';
       } else if (other.role === 'wheel') {
         attachment = 'wheel-internal';
-      } else if (wheel.component === 'hub' && other.role === 'upright') {
-        attachment = 'wheel-bearing';
-      } else if (wheel.component === 'hub' && other.role === 'axle') {
-        attachment = 'drive-spline';
+      } else if (other.role === 'hub' && other.component === 'hub') {
+        attachment = 'wheel-mount';
       } else {
         reason = 'rotating-wheel-contact';
+      }
+    } else if (A?.role === 'hub' || B?.role === 'hub') {
+      const hub = A?.role === 'hub' ? A : B;
+      const other = hub === A ? B : A;
+      if (!hub.corner || hub.corner !== other?.corner) {
+        reason = 'hub-contact-without-mount';
+      } else if (other.role === 'hub') {
+        attachment = 'hub-internal';
+      } else if (hub.component === 'hub' && other.role === 'upright') {
+        attachment = 'wheel-bearing';
+      } else if (hub.component === 'hub' && other.role === 'axle') {
+        attachment = 'drive-spline';
+      } else {
+        reason = 'rotating-hub-contact';
       }
     } else if (A?.component === 'caliper' || B?.component === 'caliper') {
       const caliper = A?.component === 'caliper' ? A : B;

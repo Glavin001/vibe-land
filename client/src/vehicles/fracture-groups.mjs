@@ -1,19 +1,22 @@
 /** Group already audited hulls without changing their world geometry. Vehicle2
- * owns one functional wheel per corner: the tire, rim and rotating hub form one
- * fracture chunk. Axles, uprights, calipers and suspension stay independent.
+ * owns one functional tire/rim chunk per corner. The rotating hub and rotor
+ * form a separate chunk so the rim can break away at its measured mount.
+ * Axles, uprights, calipers and suspension stay independent.
  * This is also the browser's exploded-view grouping, not a second server recipe.
  */
 export function vehicleFractureGroups(collision) {
   const groups = new Map(), owner = new Map();
   for (const part of collision.parts) {
-    const key = part.motion?.role === 'wheel' ? `wheel:${part.motion.corner}` : part.id;
-    if (key === 'wheel:undefined') throw Error('Wheel collider has no corner');
+    const role = part.motion?.role;
+    const grouped = role === 'wheel' || role === 'hub';
+    if (grouped && !part.motion.corner) throw Error('Rotating collider has no corner');
+    const key = grouped ? `${role}:${part.motion.corner}` : part.id;
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push(part);
   }
   const parts = [...groups.values()].map(members => {
     // Retain the tire's identity and origin, including its open-center compound.
-    // Keep the hub's own hulls and exact placement when combining the chunk.
+    // Group hub/rotor independently, retaining their own hulls and placement.
     const root = members.find(p => p.name.endsWith('wheel assembly')) ?? members[0];
     for (const member of members) owner.set(member.id, root.id);
     const functions = [...new Set(members.map(p => p.functionality).filter(Boolean))];
@@ -46,7 +49,7 @@ export function vehicleFractureGroups(collision) {
   return {...collision, parts, bonds, report: {...collision.report,
     ungroupedParts: collision.report.parts, parts: parts.length, bonds: bonds.length,
     // The audit covers the same shapes in the same positions before grouping.
-    functionalGrouping: 'one-wheel-per-corner',
+    functionalGrouping: 'separate-wheel-and-hub-per-corner',
   }};
 }
 
@@ -55,10 +58,10 @@ export function vehicleFractureGroups(collision) {
  * entirely covered caliper or upright could otherwise disappear into a tire. */
 export function validateWheelOwnership(parts, visuals) {
   const byId=new Map(visuals.map(part=>[part.id,part]));
-  for(const wheel of parts.filter(part=>part.motion?.role==='wheel')) {
+  for(const wheel of parts.filter(part=>['wheel','hub'].includes(part.motion?.role))) {
     for(const id of wheel.visualIds??[wheel.id]) {
       const visual=byId.get(id);
-      if(!visual || visual.motion?.role!=='wheel' || visual.motion.corner!==wheel.motion.corner)
+      if(!visual || visual.motion?.role!==wheel.motion.role || visual.motion.corner!==wheel.motion.corner)
         throw Error(`Wheel collision group contains an incompatible part: ${visual?.name??id}`);
     }
   }

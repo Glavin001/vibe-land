@@ -48,18 +48,23 @@ describe('simple wheel clearance', () => {
     expect(wheels).toHaveLength(4);
     for (const wheel of wheels) {
       const joints = result.bonds.filter((b: any) => b.a===wheel.id || b.b===wheel.id);
-      expect(joints.some((b: any) => b.attachment==='wheel-bearing')).toBe(true);
-      expect(joints.some((b: any) => b.attachment==='drive-spline')).toBe(true);
+      expect(joints.length).toBeGreaterThan(0);
+      expect(joints.every((b: any) => b.attachment==='wheel-mount')).toBe(true);
       for (const joint of joints) {
         const other=groups.get(joint.a===wheel.id ? joint.b : joint.a) as any;
-        expect(['upright','axle']).toContain(other.motion?.role);
+        expect(other.motion?.role).toBe('hub');
         expect(other.motion.corner).toBe(wheel.motion.corner);
       }
       for (const id of wheel.visualIds) {
         expect(visuals.get(id).motion?.role, visuals.get(id).name).toBe('wheel');
         expect(visuals.get(id).motion.corner).toBe(wheel.motion.corner);
       }
-      for (const role of ['upright','knuckle']) {
+      const hub = result.collision.parts.find((p: any) => p.motion?.role==='hub' && p.motion.corner===wheel.motion.corner);
+      expect(hub).toBeDefined();
+      const hubJoints = result.bonds.filter((b: any) => b.a===hub.id || b.b===hub.id);
+      expect(hubJoints.some((b: any) => b.attachment==='wheel-bearing')).toBe(true);
+      expect(hubJoints.some((b: any) => b.attachment==='drive-spline')).toBe(true);
+      for (const role of ['hub','upright','knuckle']) {
         const part = raw.parts.find((p: any) => p.motion?.corner === wheel.motion.corner && p.motion.role === role);
         expect(part).toBeDefined();
         expect(owners.get(part.id).id, part.name).not.toBe(wheel.id);

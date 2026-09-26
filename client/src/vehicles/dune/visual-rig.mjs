@@ -82,7 +82,7 @@ export class VisualRig {
     if (m.role === 'steering') return this.result.multiplyMatrices(this.steeringDelta, part.matrix);
     const s = this.states[m.corner], { h } = s;
     switch (m.role) {
-      case 'wheel': return this.result.multiplyMatrices(s.wheel, part.matrix);
+      case 'hub': case 'wheel': return this.result.multiplyMatrices(s.wheel, part.matrix);
       case 'knuckle': return this.result.multiplyMatrices(s.steer, part.matrix);
       case 'lowerArm': return this.beam(this.a.fromArray(m.endpoints[0]), s.lower, m.radius);
       case 'upperArm': return this.beam(this.a.fromArray(m.endpoints[0]), s.upper, m.radius);
