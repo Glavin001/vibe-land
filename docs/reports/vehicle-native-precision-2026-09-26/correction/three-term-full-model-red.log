@@ -1,0 +1,18 @@
+
+running 1 test
+test physx_runtime::tests::authored_vehicle_native_registration_and_free_fall ... CUMETAL WARNING: CUMETAL_USE_METAL_DEVICE_ADDRESSES marks every live allocation read-write on every dispatch so kernels can follow raw device addresses; this removes cross-stream concurrency.
+[destruction] native internalCorrectionLimit=1
+PhysX[32] Native GPU destruction stage failed; this simulation step is incomplete. (/Users/glavin/Development/PhysX/physx/source/gpusimulationcontroller/src/PxgSimulationController.cpp:1030)
+
+thread 'physx_runtime::tests::authored_vehicle_native_registration_and_free_fall' (15242168) panicked at server/src/physx_runtime.rs:2830:21:
+buggy tick 0: PhysX operation failed: PhysX fetchResults failed; native Ok(NativeStatus { frame: 1, error: 64, stress_topology_error: 34603016, iterations: 2048, converged: false, normal_contacts: 0, friction_anchors: 0, bond_commands: 0, broken_bonds: 0, crushed_chunks: 0, correction_passes: 0, stress_passes: 1, post_correction_broken_bonds: 0, committed_chunks: 0, committed_bonds: 0, cluster_count: 0, stress_island_count: 0, observed: false, degraded: false, missed_frames: 0 })
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+
+failures:
+
+failures:
+    physx_runtime::tests::authored_vehicle_native_registration_and_free_fall
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 206 filtered out; finished in 0.33s
+

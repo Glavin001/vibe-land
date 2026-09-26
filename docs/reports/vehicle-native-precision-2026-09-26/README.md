@@ -1,5 +1,9 @@
 # Full vehicle native stress failure: regression before correction
 
+Follow-up: the [local exact-arithmetic correction](correction/README.md) passes
+the original tiny-COM regression and all six complete-model free-fall cases.
+This document preserves the original failing evidence.
+
 The new `authored_vehicle_native_registration_and_free_fall` test cooks and
 registers complete authored models through the same Vehicle2 descriptor used by
 live driving. It requires all six drivable base models, each with 30 converged

@@ -1,0 +1,134 @@
+Generating cumetal/gpu_resident_motion_modes_test/release/gpu_resident_motion_modes_test-a1db6b05874402c0.o
+/Users/glavin/Development/PhysX/demos/blast-stress-demo/tests/gpu_resident_motion_modes_test.cu:45:29: error: non-constant-expression cannot be narrowed from type 'double' to 'float' in initializer list [-Wc++11-narrowing]
+   45 | Vector pack(Six v){return {{double(v[0]),double(v[1]),double(v[2])},{double(v[3]),double(v[4]),double(v[5])}};}
+      |                             ^~~~~~~~~~~~
+/Users/glavin/Development/PhysX/demos/blast-stress-demo/tests/gpu_resident_motion_modes_test.cu:45:29: note: insert an explicit cast to silence this issue
+   45 | Vector pack(Six v){return {{double(v[0]),double(v[1]),double(v[2])},{double(v[3]),double(v[4]),double(v[5])}};}
+      |                             ^~~~~~~~~~~~
+      |                             static_cast<float>( )
+/Users/glavin/Development/PhysX/demos/blast-stress-demo/tests/gpu_resident_motion_modes_test.cu:45:42: error: non-constant-expression cannot be narrowed from type 'double' to 'float' in initializer list [-Wc++11-narrowing]
+   45 | Vector pack(Six v){return {{double(v[0]),double(v[1]),double(v[2])},{double(v[3]),double(v[4]),double(v[5])}};}
+      |                                          ^~~~~~~~~~~~
+/Users/glavin/Development/PhysX/demos/blast-stress-demo/tests/gpu_resident_motion_modes_test.cu:45:42: note: insert an explicit cast to silence this issue
+   45 | Vector pack(Six v){return {{double(v[0]),double(v[1]),double(v[2])},{double(v[3]),double(v[4]),double(v[5])}};}
+      |                                          ^~~~~~~~~~~~
+      |                                          static_cast<float>( )
+/Users/glavin/Development/PhysX/demos/blast-stress-demo/tests/gpu_resident_motion_modes_test.cu:45:55: error: non-constant-expression cannot be narrowed from type 'double' to 'float' in initializer list [-Wc++11-narrowing]
+   45 | Vector pack(Six v){return {{double(v[0]),double(v[1]),double(v[2])},{double(v[3]),double(v[4]),double(v[5])}};}
+      |                                                       ^~~~~~~~~~~~
+/Users/glavin/Development/PhysX/demos/blast-stress-demo/tests/gpu_resident_motion_modes_test.cu:45:55: note: insert an explicit cast to silence this issue
+   45 | Vector pack(Six v){return {{double(v[0]),double(v[1]),double(v[2])},{double(v[3]),double(v[4]),double(v[5])}};}
+      |                                                       ^~~~~~~~~~~~
+      |                                                       static_cast<float>( )
+/Users/glavin/Development/PhysX/demos/blast-stress-demo/tests/gpu_resident_motion_modes_test.cu:45:70: error: non-constant-expression cannot be narrowed from type 'double' to 'float' in initializer list [-Wc++11-narrowing]
+   45 | Vector pack(Six v){return {{double(v[0]),double(v[1]),double(v[2])},{double(v[3]),double(v[4]),double(v[5])}};}
+      |                                                                      ^~~~~~~~~~~~
+/Users/glavin/Development/PhysX/demos/blast-stress-demo/tests/gpu_resident_motion_modes_test.cu:45:70: note: insert an explicit cast to silence this issue
+   45 | Vector pack(Six v){return {{double(v[0]),double(v[1]),double(v[2])},{double(v[3]),double(v[4]),double(v[5])}};}
+      |                                                                      ^~~~~~~~~~~~
+      |                                                                      static_cast<float>( )
+/Users/glavin/Development/PhysX/demos/blast-stress-demo/tests/gpu_resident_motion_modes_test.cu:45:83: error: non-constant-expression cannot be narrowed from type 'double' to 'float' in initializer list [-Wc++11-narrowing]
+   45 | Vector pack(Six v){return {{double(v[0]),double(v[1]),double(v[2])},{double(v[3]),double(v[4]),double(v[5])}};}
+      |                                                                                   ^~~~~~~~~~~~
+/Users/glavin/Development/PhysX/demos/blast-stress-demo/tests/gpu_resident_motion_modes_test.cu:45:83: note: insert an explicit cast to silence this issue
+   45 | Vector pack(Six v){return {{double(v[0]),double(v[1]),double(v[2])},{double(v[3]),double(v[4]),double(v[5])}};}
+      |                                                                                   ^~~~~~~~~~~~
+      |                                                                                   static_cast<float>( )
+/Users/glavin/Development/PhysX/demos/blast-stress-demo/tests/gpu_resident_motion_modes_test.cu:45:96: error: non-constant-expression cannot be narrowed from type 'double' to 'float' in initializer list [-Wc++11-narrowing]
+   45 | Vector pack(Six v){return {{double(v[0]),double(v[1]),double(v[2])},{double(v[3]),double(v[4]),double(v[5])}};}
+      |                                                                                                ^~~~~~~~~~~~
+/Users/glavin/Development/PhysX/demos/blast-stress-demo/tests/gpu_resident_motion_modes_test.cu:45:96: note: insert an explicit cast to silence this issue
+   45 | Vector pack(Six v){return {{double(v[0]),double(v[1]),double(v[2])},{double(v[3]),double(v[4]),double(v[5])}};}
+      |                                                                                                ^~~~~~~~~~~~
+      |                                                                                                static_cast<float>( )
+In file included from /Users/glavin/Development/PhysX/demos/blast-stress-demo/tests/gpu_resident_motion_modes_test.cu:192:
+/Users/glavin/Development/PhysX/demos/blast-stress-demo/tests/native_warm_range_test.cuh:52:49: error: no matching function for call to 'cudaLaunchCooperativeKernel'
+   52 |         if(cooperative){void* args[]={&a};check(cudaLaunchCooperativeKernel(reinterpret_cast<const void*>(retireWarmGrid),2,1,args));}
+      |                                                 ^~~~~~~~~~~~~~~~~~~~~~~~~~~
+/Users/glavin/Development/cuda-metal/runtime/api/cuda_runtime.h:1133:13: note: candidate function not viable: requires 6 arguments, but 4 were provided
+ 1133 | cudaError_t cudaLaunchCooperativeKernel(const void* func,
+      |             ^                           ~~~~~~~~~~~~~~~~~
+ 1134 |                                          dim3 gridDim,
+      |                                          ~~~~~~~~~~~~~
+ 1135 |                                          dim3 blockDim,
+      |                                          ~~~~~~~~~~~~~~
+ 1136 |                                          void** args,
+      |                                          ~~~~~~~~~~~~
+ 1137 |                                          size_t sharedMem,
+      |                                          ~~~~~~~~~~~~~~~~~
+ 1138 |                                          cudaStream_t stream);
+      |                                          ~~~~~~~~~~~~~~~~~~~
+In file included from /Users/glavin/Development/PhysX/demos/blast-stress-demo/tests/gpu_resident_motion_modes_test.cu:194:
+/Users/glavin/Development/PhysX/demos/blast-stress-demo/tests/native_fine_inverse_test.cuh:16:56: error: incompatible pointer types assigning to 'StressReal *' (aka 'float *') from 'double *'
+   16 |     CycleLevel level{};level.diagonal.diagonal=factors.data;levels.put({level});
+      |                                                ~~~~~~~~^~~~
+/Users/glavin/Development/PhysX/demos/blast-stress-demo/tests/native_fine_inverse_test.cuh:18:27: error: incompatible pointer types assigning to 'StressReal *' (aka 'float *') from 'double *'
+   18 |     h.fineInverse=inverse.data;h.inverseValid=valid.data;h.inverseGeneration=generation.data;
+      |                   ~~~~~~~~^~~~
+In file included from /Users/glavin/Development/PhysX/demos/blast-stress-demo/tests/gpu_resident_motion_modes_test.cu:195:
+/Users/glavin/Development/PhysX/demos/blast-stress-demo/tests/native_rigid_inverse_test.cuh:16:56: error: incompatible pointer types assigning to 'StressReal *' (aka 'float *') from 'double *'
+   16 |     CycleLevel level{};level.diagonal.diagonal=factors.data;levels.put({level});
+      |                                                ~~~~~~~~^~~~
+/Users/glavin/Development/PhysX/demos/blast-stress-demo/tests/native_rigid_inverse_test.cuh:18:27: error: incompatible pointer types assigning to 'StressReal *' (aka 'float *') from 'double *'
+   18 |     h.fineInverse=inverse.data;h.inverseValid=valid.data;h.inverseGeneration=generation.data;
+      |                   ~~~~~~~~^~~~
+In file included from /Users/glavin/Development/PhysX/demos/blast-stress-demo/tests/gpu_resident_motion_modes_test.cu:196:
+/Users/glavin/Development/PhysX/demos/blast-stress-demo/tests/native_polynomial_test.cuh:6:33: error: non-constant-expression cannot be narrowed from type 'double' to 'float' in initializer list [-Wc++11-narrowing]
+    6 |         a.hierarchy.rhs[node]={{x[0],x[1],x[2]},{x[3],x[4],x[5]}};}
+      |                                 ^~~~
+/Users/glavin/Development/PhysX/demos/blast-stress-demo/tests/native_polynomial_test.cuh:6:33: note: insert an explicit cast to silence this issue
+    6 |         a.hierarchy.rhs[node]={{x[0],x[1],x[2]},{x[3],x[4],x[5]}};}
+      |                                 ^~~~
+      |                                 static_cast<float>( )
+/Users/glavin/Development/PhysX/demos/blast-stress-demo/tests/native_polynomial_test.cuh:6:38: error: non-constant-expression cannot be narrowed from type 'double' to 'float' in initializer list [-Wc++11-narrowing]
+    6 |         a.hierarchy.rhs[node]={{x[0],x[1],x[2]},{x[3],x[4],x[5]}};}
+      |                                      ^~~~
+/Users/glavin/Development/PhysX/demos/blast-stress-demo/tests/native_polynomial_test.cuh:6:38: note: insert an explicit cast to silence this issue
+    6 |         a.hierarchy.rhs[node]={{x[0],x[1],x[2]},{x[3],x[4],x[5]}};}
+      |                                      ^~~~
+      |                                      static_cast<float>( )
+/Users/glavin/Development/PhysX/demos/blast-stress-demo/tests/native_polynomial_test.cuh:6:43: error: non-constant-expression cannot be narrowed from type 'double' to 'float' in initializer list [-Wc++11-narrowing]
+    6 |         a.hierarchy.rhs[node]={{x[0],x[1],x[2]},{x[3],x[4],x[5]}};}
+      |                                           ^~~~
+/Users/glavin/Development/PhysX/demos/blast-stress-demo/tests/native_polynomial_test.cuh:6:43: note: insert an explicit cast to silence this issue
+    6 |         a.hierarchy.rhs[node]={{x[0],x[1],x[2]},{x[3],x[4],x[5]}};}
+      |                                           ^~~~
+      |                                           static_cast<float>( )
+/Users/glavin/Development/PhysX/demos/blast-stress-demo/tests/native_polynomial_test.cuh:6:50: error: non-constant-expression cannot be narrowed from type 'double' to 'float' in initializer list [-Wc++11-narrowing]
+    6 |         a.hierarchy.rhs[node]={{x[0],x[1],x[2]},{x[3],x[4],x[5]}};}
+      |                                                  ^~~~
+/Users/glavin/Development/PhysX/demos/blast-stress-demo/tests/native_polynomial_test.cuh:6:50: note: insert an explicit cast to silence this issue
+    6 |         a.hierarchy.rhs[node]={{x[0],x[1],x[2]},{x[3],x[4],x[5]}};}
+      |                                                  ^~~~
+      |                                                  static_cast<float>( )
+/Users/glavin/Development/PhysX/demos/blast-stress-demo/tests/native_polynomial_test.cuh:6:55: error: non-constant-expression cannot be narrowed from type 'double' to 'float' in initializer list [-Wc++11-narrowing]
+    6 |         a.hierarchy.rhs[node]={{x[0],x[1],x[2]},{x[3],x[4],x[5]}};}
+      |                                                       ^~~~
+/Users/glavin/Development/PhysX/demos/blast-stress-demo/tests/native_polynomial_test.cuh:6:55: note: insert an explicit cast to silence this issue
+    6 |         a.hierarchy.rhs[node]={{x[0],x[1],x[2]},{x[3],x[4],x[5]}};}
+      |                                                       ^~~~
+      |                                                       static_cast<float>( )
+/Users/glavin/Development/PhysX/demos/blast-stress-demo/tests/native_polynomial_test.cuh:6:60: error: non-constant-expression cannot be narrowed from type 'double' to 'float' in initializer list [-Wc++11-narrowing]
+    6 |         a.hierarchy.rhs[node]={{x[0],x[1],x[2]},{x[3],x[4],x[5]}};}
+      |                                                            ^~~~
+/Users/glavin/Development/PhysX/demos/blast-stress-demo/tests/native_polynomial_test.cuh:6:60: note: insert an explicit cast to silence this issue
+    6 |         a.hierarchy.rhs[node]={{x[0],x[1],x[2]},{x[3],x[4],x[5]}};}
+      |                                                            ^~~~
+      |                                                            static_cast<float>( )
+/Users/glavin/Development/PhysX/demos/blast-stress-demo/tests/native_polynomial_test.cuh:47:217: error: incompatible pointer types assigning to 'StressReal *' (aka 'float *') from 'double *'
+   47 |         PersistentStressArgs args{};args.hierarchy.cycle.levels=level.data;args.hierarchy.cycle.intermediate=scratch.data;args.hierarchy.rhs=rhs.data;args.hierarchy.result=out.data;args.hierarchy.fineInverse=factors.data;args.hierarchy.inverseStride=n;
+      |                                                                                                                                                                                                                 ~~~~~~~~^~~~
+In file included from /Users/glavin/Development/PhysX/demos/blast-stress-demo/tests/gpu_resident_motion_modes_test.cu:197:
+/Users/glavin/Development/PhysX/demos/blast-stress-demo/tests/native_normalization_test.cuh:9:30: error: no matching function for call to 'nativeComponentMaximum'
+    9 |     double inverse;magnitude=nativeComponentMaximum(magnitude,inverse);
+      |                              ^~~~~~~~~~~~~~~~~~~~~~
+/Users/glavin/Development/PhysX/blast/source/sdk/extensions/stressgpu/detail/StressNativePreconditioner.cuh:40:39: note: candidate function not viable: no known conversion from 'double' to 'StressReal &' (aka 'float &') for 2nd argument
+   40 | __device__ __forceinline__ StressReal nativeComponentMaximum(StressReal value,StressReal& inverse){
+      |                                       ^                                       ~~~~~~~~~~~~~~~~~~~
+fatal error: too many errors emitted, stopping now [-ferror-limit=]
+20 errors generated when compiling for host.
+cumetalc failed: CUDA compilation of "/Users/glavin/Development/PhysX/demos/blast-stress-demo/tests/gpu_resident_motion_modes_test.cu" failed
+make[3]: *** [reference/cumetal/gpu_resident_motion_modes_test/release/gpu_resident_motion_modes_test-a1db6b05874402c0.o] Error 1
+make[2]: *** [reference/CMakeFiles/gpu_resident_motion_modes_test.dir/all] Error 2
+make[1]: *** [reference/CMakeFiles/gpu_resident_motion_modes_test.dir/rule] Error 2
+make: *** [gpu_resident_motion_modes_test] Error 2

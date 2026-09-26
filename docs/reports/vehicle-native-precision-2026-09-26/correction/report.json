@@ -1,0 +1,54 @@
+{
+  "status": "local-correctness-passed-with-qualification-gaps",
+  "backend": "CuMetal",
+  "fullGarageDestructionQualified": false,
+  "performanceQualified": false,
+  "remoteCudaQualified": false,
+  "passed": {
+    "exactRationalChecks": 90100,
+    "gpuExpansionPredicates": 12,
+    "nativeRegressions": 12,
+    "bridgeRegressions": 12,
+    "fullModelFreeFall": {
+      "models": [
+        "buggy",
+        "trophy",
+        "rally",
+        "monster",
+        "derby",
+        "sprint"
+      ],
+      "ticksPerModel": 30,
+      "fractures": 0
+    }
+  },
+  "limits": [
+    "CUDA motion forest still uses its original checked binary64 arithmetic; no NVIDIA run or change in this correction.",
+    "Legacy motion-mode parity target does not compile in this FP32 CuMetal configuration (double/float test types and cooperative-launch signature).",
+    "Frozen penetration harness requires Linux /proc runtime inspection and a native demo binary absent from this isolated package; no frozen penetration qualification.",
+    "Full-model test covers registration and free fall, not suspension, ground driving or full-model fracture.",
+    "Targeted wheel-impact proof uses a six-chunk fixture and a 300 kg projectile, not the 30 kg gameplay cannon.",
+    "Eight-term motion coordinates increase transient forest storage; complete-step performance remains unqualified."
+  ],
+  "artifacts": {
+    "/tmp/vehicle-motion-wide-libs/libPhysXDestructionGpuRuntime_64.dylib": "f388f23f56e2dfb32803ed1d46fda2e810e79e2972392b6c492c8a5de316ce31",
+    "/tmp/vehicle-motion-wide-libs/libcumetal.dylib": "95d3752b609dd3e2005fc588b6b0d4e23d55dbb611c2976ef88283f43f4013d0",
+    "/tmp/vehicle-motion-wide-libs/libPhysXGpuActivity_64.dylib": "e8a98f14299dfc75938490906fb78307d9f2db8f11fe6b53eff51f8e7539ecd0",
+    "/Users/glavin/Development/PhysX/out/build/garage-multihull/package/reference/gpu_motion_expansion_test": "69fd0346430b146f7f0af20ee8128b08ad93414a9cd47dd3fc79a0244c144c42",
+    "/Users/glavin/Development/PhysX/out/build/garage-multihull/package/reference/native_constraint_fracture_test": "5452e7804176c6cddbd8c86f6e8abe0702156dafa20e9906e57d1f1e1f722ec2",
+    "/Users/glavin/Development/PhysX/out/build/garage-multihull/package/reference/native_constraint_loads_test": "a941895120b0a7c2c5785732b124e90452520f229eac66cda40c198ca0c44544",
+    "/Users/glavin/Development/PhysX/out/build/garage-multihull/package/reference/native_vehicle_constraints_test": "ca28eb119b70b63cae010eb173cad466511ce9ee5391d725be65d350fde19ce5",
+    "/Users/glavin/Development/PhysX/out/build/garage-multihull/package/reference/native_vehicle_loads_test": "3227467b7040c7bd87792755eeeafea4a0702a3956ee87665a5086aa54509afa",
+    "/Users/glavin/Development/PhysX/out/build/garage-multihull/package/reference/native_vehicle_mass_test": "188d94e4adc3e5726a0d9c82c855c0e38d72450aa49b6703777c8ec8da182b65",
+    "/Users/glavin/Development/PhysX/out/build/garage-multihull/package/reference/native_feature_reference_test": "fc0ccd1681cf6da13d7deb6d90649040384f47071089af2b9897e90ff2abdebd",
+    "/Users/glavin/Development/PhysX/out/build/garage-multihull/package/reference/native_standard_scene_test": "18927624a08092333d11c81380a228c5c035747ea6a96f11812a95184e22b559"
+  },
+  "sourceFiles": {
+    "blast/source/sdk/extensions/stressgpu/detail/StressMotionPair.cuh": "cd0884591819468477fa0fe797cb67b1a38fd91900f48f2300a5e79e57d471ab",
+    "blast/source/sdk/extensions/stressgpu/detail/StressMotionPairForest.cuh": "65114ed2439e8c613d7bfe76147ccc6785026bbcd265ada2c5fdda06130805c3",
+    "demos/blast-stress-demo/tests/gpu_motion_expansion_test.cu": "251d819f428072502f053a2e8a8baffed7ddaf6363a0d57b00b9af1e86fe2a7f",
+    "tools/tests/test-motion-exact.py": "7bd59673da9c2fbbf69c97769e067c51d84ac59a780bb381516b432ce9da4306"
+  },
+  "physxBase": "f82e3fbdbb4bc06ab3c2884a59a57411383b2aec",
+  "physxCommit": "df66f3a60f60daa29b0c625fa47b53cc80c35896"
+}

@@ -1,0 +1,24 @@
+{
+  "command": [
+    "ctest",
+    "--test-dir",
+    "/Users/glavin/Development/PhysX/out/build/garage-multihull/package",
+    "-R",
+    "^(physx_native_chunk_loads|physx_native_chunk_torque|physx_native_constraint_fracture|physx_native_constraint_loads|physx_native_feature_reference|physx_native_multihull|physx_native_parallel_bonds|physx_native_post_correction|physx_native_post_correction_pgs|physx_native_vehicle_constraints|physx_native_vehicle_loads|physx_native_vehicle_mass)$"
+  ],
+  "exitCode": 0,
+  "tests": [
+    "physx_native_chunk_loads",
+    "physx_native_chunk_torque",
+    "physx_native_constraint_fracture",
+    "physx_native_constraint_loads",
+    "physx_native_feature_reference",
+    "physx_native_multihull",
+    "physx_native_parallel_bonds",
+    "physx_native_post_correction",
+    "physx_native_post_correction_pgs",
+    "physx_native_vehicle_constraints",
+    "physx_native_vehicle_loads",
+    "physx_native_vehicle_mass"
+  ]
+}

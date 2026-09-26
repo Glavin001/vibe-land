@@ -1,0 +1,19 @@
+
+running 1 test
+test physx_runtime::tests::authored_vehicle_native_registration_and_free_fall ... CUMETAL WARNING: CUMETAL_USE_METAL_DEVICE_ADDRESSES marks every live allocation read-write on every dispatch so kernels can follow raw device addresses; this removes cross-stream concurrency.
+[destruction] native internalCorrectionLimit=1
+Native authored vehicle buggy: 190 chunks, 384 hulls, 626 bonds, 30 free-fall ticks, no fracture
+[destruction] native internalCorrectionLimit=1
+Native authored vehicle trophy: 332 chunks, 674 hulls, 1072 bonds, 30 free-fall ticks, no fracture
+[destruction] native internalCorrectionLimit=1
+Native authored vehicle rally: 327 chunks, 664 hulls, 1102 bonds, 30 free-fall ticks, no fracture
+[destruction] native internalCorrectionLimit=1
+Native authored vehicle monster: 328 chunks, 622 hulls, 1039 bonds, 30 free-fall ticks, no fracture
+[destruction] native internalCorrectionLimit=1
+Native authored vehicle derby: 326 chunks, 639 hulls, 1016 bonds, 30 free-fall ticks, no fracture
+[destruction] native internalCorrectionLimit=1
+Native authored vehicle sprint: 222 chunks, 461 hulls, 754 bonds, 30 free-fall ticks, no fracture
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 206 filtered out; finished in 20.18s
+
