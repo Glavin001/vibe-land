@@ -1,0 +1,20 @@
+
+running 2 tests
+test native_bond_observation_includes_bending_and_material_verdict ... CUMETAL WARNING: CUMETAL_USE_METAL_DEVICE_ADDRESSES marks every live allocation read-write on every dispatch so kernels can follow raw device addresses; this removes cross-stream concurrency.
+[destruction] native internalCorrectionLimit=1
+[destruction] native internalCorrectionLimit=1
+ok
+test native_bond_stress_respects_unequal_authored_masses ... [destruction] native internalCorrectionLimit=1
+
+thread 'native_bond_stress_respects_unequal_authored_masses' (15464851) panicked at physx-bridge/tests/native_gameplay.rs:95:9:
+assertion failed: step_and_observe(&mut world).converged
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+
+failures:
+
+failures:
+    native_bond_stress_respects_unequal_authored_masses
+
+test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.33s
+

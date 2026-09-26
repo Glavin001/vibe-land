@@ -152,7 +152,7 @@ fn authored_vehicle_cannonball_localized_fracture() {
             let corner = scene.world.native_chunk_aim(STRUCTURE,target).unwrap();
             let state = scene.world.vehicle_snapshots().unwrap()[0];
             frames.push(json!({"tick":tick,"contacts":status.normal_contacts,"broken":broken.len(),
-                "converged":status.converged,"error":status.error,"targetAttached":corner.entity_id==chassis.entity_id,
+                "converged":status.converged,"iterations":status.iterations,"error":status.error,"targetAttached":corner.entity_id==chassis.entity_id,
                 "wheelSpeed":state.wheel_rotation_speed[0],"wheelsOnRoad":state.wheels_on_road}));
             if status.error != 0 || !status.converged { error = Some(format!("tick {tick}: {status:?}")); break; }
             if status.normal_contacts > 0 {
@@ -169,12 +169,18 @@ fn authored_vehicle_cannonball_localized_fracture() {
                         "elasticPa":[strength.compression_elastic,strength.tension_elastic,strength.shear_elastic],
                         "fatalPa":[strength.compression_fatal,strength.tension_fatal,strength.shear_fatal]})
                 }).collect();
-                impact_verdicts.push(json!({"tick":tick,"bonds":rows}));
+                let ball = scene.world.body_snapshots().unwrap().into_iter()
+                    .find(|body| body.entity_id == 2).unwrap();
+                impact_verdicts.push(json!({"tick":tick,"bonds":rows,
+                    "projectileVelocity":[ball.linear_velocity.x,ball.linear_velocity.y,ball.linear_velocity.z],
+                    "chassisVelocity":[state.linear_velocity.x,state.linear_velocity.y,state.linear_velocity.z]}));
             }
             assert!(scene.world.native_validate_mappings().unwrap());
         }
         let row = json!({"model":name,"chunks":scene.parts.len(),"hulls":scene.hulls,"bonds":scene.bonds.len(),
             "target":target,"projectileMassKg":crate::garage_bombardment::BALL_MASS,"speedMps":55.,
+            "initialProjectileVelocity":[velocity.x,velocity.y,velocity.z],
+            "initialChassisVelocity":[car.linear_velocity.x,car.linear_velocity.y,car.linear_velocity.z],
             "brokenBonds":broken,"error":error,"frames":frames,"impactVerdicts":impact_verdicts});
         eprintln!("Authored cannon {name}: {} broken / {} bonds; error={error:?}",broken.len(),scene.bonds.len());
         reports.push(row);

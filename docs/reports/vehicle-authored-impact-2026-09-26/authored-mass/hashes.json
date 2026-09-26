@@ -1,0 +1,6 @@
+{
+  "/tmp/vehicle-authored-mass-libs/libPhysXDestructionGpuRuntime_64.dylib": "453bd3f87cf48a265efe7de0b2ac93bbf25f149f55fb6614120cd3ccb088992f",
+  "/tmp/vehicle-authored-mass-fp32-libs/libPhysXDestructionGpuRuntime_64.dylib": "34d6624b0ec8dd85d8678dcbbb8c0351fd94ffd0f2dbe253146efe062411c51c",
+  "/tmp/vibe-vehicle-abi22-target/debug/deps/web_fps_server-a9f373fda0d7ae56": "b797055135ba4f6f87f8428fb3ce6dae7621834f987a39b62d34e5357b55cec9",
+  "server/src/physx_runtime/vehicle_fracture_tests.rs": "ffe8a50ce64d494a3e073c5fccb1e35c0b0063b4c36b88831d9555e8302bd5ba"
+}

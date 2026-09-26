@@ -1,0 +1,44 @@
+
+running 2 tests
+test physx_runtime::vehicle_fracture_tests::authored_vehicle_cannonball_localized_fracture ... CUMETAL WARNING: CUMETAL_USE_METAL_DEVICE_ADDRESSES marks every live allocation read-write on every dispatch so kernels can follow raw device addresses; this removes cross-stream concurrency.
+[destruction] native internalCorrectionLimit=1
+Authored cannon buggy: 0 broken / 626 bonds; error=None
+[destruction] native internalCorrectionLimit=1
+Authored cannon trophy: 9 broken / 1072 bonds; error=None
+[destruction] native internalCorrectionLimit=1
+Authored cannon rally: 6 broken / 1102 bonds; error=None
+[destruction] native internalCorrectionLimit=1
+Authored cannon monster: 8 broken / 1039 bonds; error=None
+[destruction] native internalCorrectionLimit=1
+Authored cannon derby: 2 broken / 1016 bonds; error=None
+[destruction] native internalCorrectionLimit=1
+Authored cannon sprint: 0 broken / 754 bonds; error=None
+
+thread 'physx_runtime::vehicle_fracture_tests::authored_vehicle_cannonball_localized_fracture' (15450891) panicked at server/src/physx_runtime/vehicle_fracture_tests.rs:196:5:
+authored vehicle impact failures: [
+    "buggy: real cannon contact produced no fracture",
+    "sprint: real cannon contact produced no fracture",
+]
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+test physx_runtime::vehicle_fracture_tests::authored_vehicle_native_registration_and_free_fall ... [destruction] native internalCorrectionLimit=1
+Native authored vehicle buggy: 190 chunks, 384 hulls, 626 bonds, 30 free-fall ticks, no fracture
+[destruction] native internalCorrectionLimit=1
+Native authored vehicle trophy: 332 chunks, 674 hulls, 1072 bonds, 30 free-fall ticks, no fracture
+[destruction] native internalCorrectionLimit=1
+Native authored vehicle rally: 327 chunks, 664 hulls, 1102 bonds, 30 free-fall ticks, no fracture
+[destruction] native internalCorrectionLimit=1
+Native authored vehicle monster: 328 chunks, 622 hulls, 1039 bonds, 30 free-fall ticks, no fracture
+[destruction] native internalCorrectionLimit=1
+Native authored vehicle derby: 326 chunks, 639 hulls, 1016 bonds, 30 free-fall ticks, no fracture
+[destruction] native internalCorrectionLimit=1
+Native authored vehicle sprint: 222 chunks, 461 hulls, 754 bonds, 30 free-fall ticks, no fracture
+ok
+
+failures:
+
+failures:
+    physx_runtime::vehicle_fracture_tests::authored_vehicle_cannonball_localized_fracture
+
+test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 206 filtered out; finished in 253.16s
+

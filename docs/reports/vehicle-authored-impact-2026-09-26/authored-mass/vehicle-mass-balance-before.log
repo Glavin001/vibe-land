@@ -1,0 +1,17 @@
+
+running 1 test
+test native_bond_stress_respects_unequal_authored_masses ... CUMETAL WARNING: CUMETAL_USE_METAL_DEVICE_ADDRESSES marks every live allocation read-write on every dispatch so kernels can follow raw device addresses; this removes cross-stream concurrency.
+[destruction] native internalCorrectionLimit=1
+
+thread 'native_bond_stress_respects_unequal_authored_masses' (15432888) panicked at physx-bridge/tests/native_gameplay.rs:102:13:
+authored masses [1.0, 100.0], joint 0: observed shear force 196.20001 N, expected 990.81006 N
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+
+failures:
+
+failures:
+    native_bond_stress_respects_unequal_authored_masses
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.39s
+

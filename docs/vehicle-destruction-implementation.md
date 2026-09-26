@@ -108,15 +108,17 @@ solver errors, damage or lost hull ownership after an
 The source models keep their authored values, measured mass tensors and all
 individual bond interfaces. Wheel visual groups remain coherent.
 
-The next full-model test uses actual 30 kg, 0.20 m cannonballs at 55 m/s,
-positive initial gaps and ray-verified target wheels. All six models receive
-contacts but the single-precision runtime reports **non-convergence on the
-first impact step**. An [isolated double-precision experiment](reports/vehicle-authored-impact-2026-09-26/fp64/README.md)
-now converges through all 120 aftermath steps for every model, at the unchanged
-tolerance and strengths, and passes all 12 existing bridge regressions. The
-authored impact test remains red: four models break no bonds, the other two
-break only one/two bonds, and no target wheel detaches. The precision candidate
-is not installed or performance-qualified.
+The full-model test uses actual 30 kg, 0.20 m cannonballs at 55 m/s,
+positive initial gaps and ray-verified target wheels. An independent force-balance
+regression exposed incorrect equalized mass weighting in the native equations.
+The [authored-mass correction and evidence](reports/vehicle-authored-impact-2026-09-26/authored-mass/README.md)
+now reproduce analytical loads and pass all 14 bridge regressions with an
+isolated double-precision runtime. All six full models converge through 120
+impact-aftermath steps; trophy/rally/monster/derby break 9/6/8/2 bonds, while
+buggy and sprint break none. No targeted wheel detaches. The impact gate remains
+red. Single precision still fails convergence, and those runs expose a separate
+bug where unconverged solves can commit damage. The candidates are not installed
+or performance-qualified.
 
 The full-model tests share fixture loading, registration and configuration in
 `server/src/physx_runtime/vehicle_fracture_tests.rs`. Run them serially against

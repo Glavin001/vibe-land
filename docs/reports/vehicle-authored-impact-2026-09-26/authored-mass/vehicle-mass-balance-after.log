@@ -1,0 +1,9 @@
+
+running 1 test
+test native_bond_stress_respects_unequal_authored_masses ... CUMETAL WARNING: CUMETAL_USE_METAL_DEVICE_ADDRESSES marks every live allocation read-write on every dispatch so kernels can follow raw device addresses; this removes cross-stream concurrency.
+[destruction] native internalCorrectionLimit=1
+[destruction] native internalCorrectionLimit=1
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.41s
+

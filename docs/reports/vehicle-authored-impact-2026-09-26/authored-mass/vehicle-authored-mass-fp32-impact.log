@@ -1,0 +1,48 @@
+
+running 2 tests
+test physx_runtime::vehicle_fracture_tests::authored_vehicle_cannonball_localized_fracture ... CUMETAL WARNING: CUMETAL_USE_METAL_DEVICE_ADDRESSES marks every live allocation read-write on every dispatch so kernels can follow raw device addresses; this removes cross-stream concurrency.
+[destruction] native internalCorrectionLimit=1
+Authored cannon buggy: 0 broken / 626 bonds; error=Some("tick 0: NativeStatus { frame: 31, error: 0, stress_topology_error: 0, iterations: 839, converged: false, normal_contacts: 1, friction_anchors: 1, bond_commands: 10, broken_bonds: 0, crushed_chunks: 0, correction_passes: 0, stress_passes: 1, post_correction_broken_bonds: 0, committed_chunks: 0, committed_bonds: 0, cluster_count: 1, stress_island_count: 1, observed: true, degraded: false, missed_frames: 0 }")
+[destruction] native internalCorrectionLimit=1
+Authored cannon trophy: 9 broken / 1072 bonds; error=Some("tick 0: NativeStatus { frame: 31, error: 0, stress_topology_error: 0, iterations: 1485, converged: false, normal_contacts: 1, friction_anchors: 1, bond_commands: 12, broken_bonds: 9, crushed_chunks: 0, correction_passes: 0, stress_passes: 1, post_correction_broken_bonds: 0, committed_chunks: 0, committed_bonds: 9, cluster_count: 1, stress_island_count: 1, observed: true, degraded: false, missed_frames: 0 }")
+[destruction] native internalCorrectionLimit=1
+Authored cannon rally: 6 broken / 1102 bonds; error=Some("tick 0: NativeStatus { frame: 31, error: 0, stress_topology_error: 0, iterations: 863, converged: false, normal_contacts: 1, friction_anchors: 1, bond_commands: 12, broken_bonds: 6, crushed_chunks: 0, correction_passes: 0, stress_passes: 1, post_correction_broken_bonds: 0, committed_chunks: 0, committed_bonds: 6, cluster_count: 1, stress_island_count: 1, observed: true, degraded: false, missed_frames: 0 }")
+[destruction] native internalCorrectionLimit=1
+Authored cannon monster: 8 broken / 1039 bonds; error=Some("tick 0: NativeStatus { frame: 31, error: 0, stress_topology_error: 0, iterations: 1052, converged: false, normal_contacts: 1, friction_anchors: 1, bond_commands: 13, broken_bonds: 8, crushed_chunks: 0, correction_passes: 0, stress_passes: 1, post_correction_broken_bonds: 0, committed_chunks: 0, committed_bonds: 8, cluster_count: 1, stress_island_count: 1, observed: true, degraded: false, missed_frames: 0 }")
+[destruction] native internalCorrectionLimit=1
+Authored cannon derby: 2 broken / 1016 bonds; error=Some("tick 0: NativeStatus { frame: 31, error: 0, stress_topology_error: 0, iterations: 1053, converged: false, normal_contacts: 1, friction_anchors: 1, bond_commands: 8, broken_bonds: 2, crushed_chunks: 0, correction_passes: 0, stress_passes: 1, post_correction_broken_bonds: 0, committed_chunks: 0, committed_bonds: 2, cluster_count: 1, stress_island_count: 1, observed: true, degraded: false, missed_frames: 0 }")
+[destruction] native internalCorrectionLimit=1
+Authored cannon sprint: 0 broken / 754 bonds; error=Some("tick 0: NativeStatus { frame: 31, error: 0, stress_topology_error: 0, iterations: 915, converged: false, normal_contacts: 1, friction_anchors: 1, bond_commands: 5, broken_bonds: 0, crushed_chunks: 0, correction_passes: 0, stress_passes: 1, post_correction_broken_bonds: 0, committed_chunks: 0, committed_bonds: 0, cluster_count: 1, stress_island_count: 1, observed: true, degraded: false, missed_frames: 0 }")
+
+thread 'physx_runtime::vehicle_fracture_tests::authored_vehicle_cannonball_localized_fracture' (15467810) panicked at server/src/physx_runtime/vehicle_fracture_tests.rs:196:5:
+authored vehicle impact failures: [
+    "buggy: tick 0: NativeStatus { frame: 31, error: 0, stress_topology_error: 0, iterations: 839, converged: false, normal_contacts: 1, friction_anchors: 1, bond_commands: 10, broken_bonds: 0, crushed_chunks: 0, correction_passes: 0, stress_passes: 1, post_correction_broken_bonds: 0, committed_chunks: 0, committed_bonds: 0, cluster_count: 1, stress_island_count: 1, observed: true, degraded: false, missed_frames: 0 }",
+    "trophy: tick 0: NativeStatus { frame: 31, error: 0, stress_topology_error: 0, iterations: 1485, converged: false, normal_contacts: 1, friction_anchors: 1, bond_commands: 12, broken_bonds: 9, crushed_chunks: 0, correction_passes: 0, stress_passes: 1, post_correction_broken_bonds: 0, committed_chunks: 0, committed_bonds: 9, cluster_count: 1, stress_island_count: 1, observed: true, degraded: false, missed_frames: 0 }",
+    "rally: tick 0: NativeStatus { frame: 31, error: 0, stress_topology_error: 0, iterations: 863, converged: false, normal_contacts: 1, friction_anchors: 1, bond_commands: 12, broken_bonds: 6, crushed_chunks: 0, correction_passes: 0, stress_passes: 1, post_correction_broken_bonds: 0, committed_chunks: 0, committed_bonds: 6, cluster_count: 1, stress_island_count: 1, observed: true, degraded: false, missed_frames: 0 }",
+    "monster: tick 0: NativeStatus { frame: 31, error: 0, stress_topology_error: 0, iterations: 1052, converged: false, normal_contacts: 1, friction_anchors: 1, bond_commands: 13, broken_bonds: 8, crushed_chunks: 0, correction_passes: 0, stress_passes: 1, post_correction_broken_bonds: 0, committed_chunks: 0, committed_bonds: 8, cluster_count: 1, stress_island_count: 1, observed: true, degraded: false, missed_frames: 0 }",
+    "derby: tick 0: NativeStatus { frame: 31, error: 0, stress_topology_error: 0, iterations: 1053, converged: false, normal_contacts: 1, friction_anchors: 1, bond_commands: 8, broken_bonds: 2, crushed_chunks: 0, correction_passes: 0, stress_passes: 1, post_correction_broken_bonds: 0, committed_chunks: 0, committed_bonds: 2, cluster_count: 1, stress_island_count: 1, observed: true, degraded: false, missed_frames: 0 }",
+    "sprint: tick 0: NativeStatus { frame: 31, error: 0, stress_topology_error: 0, iterations: 915, converged: false, normal_contacts: 1, friction_anchors: 1, bond_commands: 5, broken_bonds: 0, crushed_chunks: 0, correction_passes: 0, stress_passes: 1, post_correction_broken_bonds: 0, committed_chunks: 0, committed_bonds: 0, cluster_count: 1, stress_island_count: 1, observed: true, degraded: false, missed_frames: 0 }",
+]
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+test physx_runtime::vehicle_fracture_tests::authored_vehicle_native_registration_and_free_fall ... [destruction] native internalCorrectionLimit=1
+Native authored vehicle buggy: 190 chunks, 384 hulls, 626 bonds, 30 free-fall ticks, no fracture
+[destruction] native internalCorrectionLimit=1
+Native authored vehicle trophy: 332 chunks, 674 hulls, 1072 bonds, 30 free-fall ticks, no fracture
+[destruction] native internalCorrectionLimit=1
+Native authored vehicle rally: 327 chunks, 664 hulls, 1102 bonds, 30 free-fall ticks, no fracture
+[destruction] native internalCorrectionLimit=1
+Native authored vehicle monster: 328 chunks, 622 hulls, 1039 bonds, 30 free-fall ticks, no fracture
+[destruction] native internalCorrectionLimit=1
+Native authored vehicle derby: 326 chunks, 639 hulls, 1016 bonds, 30 free-fall ticks, no fracture
+[destruction] native internalCorrectionLimit=1
+Native authored vehicle sprint: 222 chunks, 461 hulls, 754 bonds, 30 free-fall ticks, no fracture
+ok
+
+failures:
+
+failures:
+    physx_runtime::vehicle_fracture_tests::authored_vehicle_cannonball_localized_fracture
+
+test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 206 filtered out; finished in 2.67s
+
