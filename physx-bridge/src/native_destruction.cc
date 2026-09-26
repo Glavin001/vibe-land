@@ -582,6 +582,7 @@ void NativeDestruction::register_vehicle(physx::native::NativeVehicle &vehicle,
     for (PxU32 h=0;h<hulls[i].size();++h) {
       auto *shape=hulls[i][h];shape->acquireReference();
       auto filter=shape->getSimulationFilterData();filter.word3|=kNativeChunkFilterBit;shape->setSimulationFilterData(filter);
+      binding.hulls.push_back({shape,i,shape->getLocalPose(),filter});
       if(h) s.extra_shapes.push_back({shape,binding.base+i});
     }
   }
@@ -606,12 +607,46 @@ bool NativeDestruction::owns_vehicle(const physx::native::NativeVehicle *vehicle
   return false;
 }
 
+std::uint32_t NativeDestruction::pose_vehicle_parts(physx::native::NativeVehicle &vehicle,
+    rust::Slice<const FfiVehiclePartPose> poses, std::uint32_t exclude_mask) {
+#if PX_DESTRUCTION_SCENE_VERSION >= 22
+  State &s=*state_;
+  auto binding=std::find_if(s.vehicles.begin(),s.vehicles.end(),[&](const State::VehicleBinding &b){return b.vehicle==&vehicle;});
+  native_require(binding!=s.vehicles.end(),"vehicle is not registered for native destruction");
+  std::vector<PxTransform> deltas(binding->count);std::vector<bool> posed(binding->count,false);
+  for(const auto &pose:poses) {
+    native_require(pose.part_index<binding->count && !posed[pose.part_index],"invalid or duplicate vehicle part pose");
+    const PxQuat q(pose.rotation.x,pose.rotation.y,pose.rotation.z,pose.rotation.w);
+    const PxTransform delta(native_px(pose.position),q);
+    native_require(delta.isSane(),"vehicle part pose must be a finite rigid transform");
+    deltas[pose.part_index]=delta;posed[pose.part_index]=true;
+  }
+  auto *carrier=vehicle.actor();std::uint32_t moved=0;
+  for(auto &hull:binding->hulls) {
+    if(!posed[hull.part] || hull.shape->getActor()!=carrier) continue; // fragments keep their frames
+    hull.shape->setLocalPose(deltas[hull.part]*hull.rest);
+    PxFilterData filter=hull.filter;filter.word1&=~exclude_mask;
+    if(!(filter==hull.shape->getSimulationFilterData())) hull.shape->setSimulationFilterData(filter);
+    ++moved;
+  }
+  return moved;
+#else
+  PX_UNUSED(vehicle);PX_UNUSED(poses);PX_UNUSED(exclude_mask);
+  throw std::runtime_error("vehicle part poses require the matching PhysX ABI 22 SDK");
+#endif
+}
+
 void NativeDestruction::prepare_vehicles() {
 #if PX_DESTRUCTION_SCENE_VERSION >= 22
   State &s=*state_;if(!s.configured) return;
   for(auto &binding:s.vehicles) {
     auto *carrier=s.chunks[binding.base].shape->getActor();
     native_require(carrier==binding.vehicle->actor(),"native vehicle carrier changed actor unexpectedly");
+    // A hull that left the carrier collides as authored again (e.g. a loose
+    // wheel must meet the road that the intact wheel's Vehicle2 query owned).
+    for(auto &hull:binding.hulls)
+      if(hull.shape->getActor()!=carrier && !(hull.shape->getSimulationFilterData()==hull.filter))
+        hull.shape->setSimulationFilterData(hull.filter);
     PxU32 mask=0,driveMask=15;bool engine=true;
     for(PxU32 w=0;w<4;++w) if(s.chunks[binding.wheels[w][0]].shape->getActor()==carrier) mask|=1u<<w;
     for(PxU32 w=0;w<4;++w) for(PxU32 chunk:binding.drives[w])

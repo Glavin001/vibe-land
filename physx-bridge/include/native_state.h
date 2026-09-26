@@ -133,6 +133,11 @@ struct NativeDestruction::State {
     std::uint32_t wheel_mask=15, drive_mask=15;
     bool engine_connected=true;
     std::vector<std::uint32_t> wheels[4], drives[4], engines;
+    /// Every hull at registration: its authored local pose and filter.
+    /// Posed hulls move on the carrier; a migrated hull keeps its own frame
+    /// and gets its authored filter back (see pose_vehicle_parts).
+    struct Hull { physx::PxShape *shape; std::uint32_t part; physx::PxTransform rest; physx::PxFilterData filter; };
+    std::vector<Hull> hulls;
   };
   std::vector<VehicleBinding> vehicles;
   struct ExtraShape { physx::PxShape *shape; std::uint32_t chunk; };

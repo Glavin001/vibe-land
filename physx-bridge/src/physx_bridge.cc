@@ -3959,6 +3959,14 @@ public:
     native().register_vehicle(*record.vehicle,structure_id,parts,bonds,settings);
   }
 
+  std::uint32_t native_pose_vehicle_parts(std::uint32_t entity_id,
+      rust::Slice<const FfiVehiclePartPose> poses, std::uint32_t exclude_mask) {
+    require(!step_in_flight_, "vehicle part poses must be set between steps");
+    auto &record=find(entity_id);
+    require(record.vehicle && record.vehicle_compound_installed,"vehicle compound is not prepared");
+    return native().pose_vehicle_parts(*record.vehicle,poses,exclude_mask);
+  }
+
   void native_create_destructible(std::uint32_t structure_id,
                                   const FfiPose &pose,
                                   rust::Slice<const FfiChunkNodeDesc> nodes,
@@ -4512,6 +4520,11 @@ void World::native_register_vehicle(std::uint32_t entity_id, std::uint32_t struc
     rust::Slice<const FfiVehicleFracturePart> parts, rust::Slice<const FfiChunkBondDesc> bonds,
     const FfiDestructibleSettings &settings) {
   impl_->native_register_vehicle(entity_id,structure_id,parts,bonds,settings);
+}
+
+std::uint32_t World::native_pose_vehicle_parts(std::uint32_t entity_id,
+    rust::Slice<const FfiVehiclePartPose> poses, std::uint32_t exclude_mask) {
+  return impl_->native_pose_vehicle_parts(entity_id,poses,exclude_mask);
 }
 
 void World::native_create_destructible(

@@ -293,3 +293,133 @@ fn exercise_authored_impact(projectile_mass: f32, speed: f32, require_wheel_loss
     }
     assert!(failures.is_empty(), "authored vehicle impact failures: {failures:#?}");
 }
+
+/// Wheel/hub hulls posed from Vehicle2's suspension each step, on a road.
+/// Stress geometry and mass frames stay at rest by design. Compares authored
+/// rest hulls, posed hulls touching the road, and posed hulls excluded from
+/// the road Vehicle2 drives on; checks normal driving, that a shot at the
+/// posed wheel hits it, and where a severed wheel starts and settles.
+#[test]
+#[ignore = "requires local GPU, coherent ABI 22 SDK and VIBE_VEHICLE_BUILD_FIXTURES"]
+fn authored_vehicle_wheel_colliders_follow_suspension() {
+    use crate::vehicle_assets::rig::{inputs_from_vehicle2, source_to_actor, Binding, Motion};
+    let _guard = gpu_test_guard();
+    let v = |a: Vector3<f32>| bridge::Vec3::new(a.x, a.y, a.z);
+    let mut report = Vec::new();
+    for (name, geometry) in fixtures() {
+        let rig = geometry.rig.clone().expect("fixtures carry the source rig");
+        let wheel_parts: Vec<(usize, u32)> = geometry.parts.iter().enumerate().filter_map(|(i, p)|
+            match Binding::from_motion(p.motion.as_ref()).unwrap() {
+                Binding::Corner(corner, Motion::Wheel) => Some((corner, i as u32)), _ => None }).collect();
+        assert!(wheel_parts.len() >= 8, "{name}: expected tyre and hub chunks per corner");
+        for variant in ["rest", "posed+road", "posed-road"] {
+            let asset = geometry.native_fracture_assembly().unwrap();
+            let mut world = bridge::World::new(bridge::WorldConfig::default()).unwrap();
+            world.add_static_box(bridge::StaticBoxDesc { entity_id: 1, user_id: 0,
+                pose: bridge::Pose { position: bridge::Vec3::new(0., -0.5, 0.), rotation: bridge::Quat::IDENTITY },
+                half_extents: bridge::Vec3::new(200., 0.5, 200.), collision_group: super::GROUP_STATIC, collision_mask: ALL_GROUPS }).unwrap();
+            let desc = PhysxPhysicsArena::vehicle_asset_desc(7, 0,
+                Vector3::new(0., geometry.origin_height as f32 + 0.15, 0.), [0., 0., 0., 1.], Some(&geometry));
+            world.add_vehicle(desc).unwrap();
+            world.set_vehicle_shapes(desc.entity_id, &asset.shapes).unwrap();
+            world.native_attach().unwrap();
+            world.native_register_vehicle(desc.entity_id, STRUCTURE, &asset.parts, &asset.bonds,
+                bridge::DestructibleSettings { materials: asset.materials.clone(), ..Default::default() }).unwrap();
+            world.step().unwrap();
+            world.native_configure(bridge::NativeConfig { max_iterations: 2048, tolerance: 1e-5, warm_start: true,
+                damage_rate: 2., bend_gain_max: 3., fibre_bending: true, reserved_contact_pairs: 4096,
+                preserve_unchanged_contact_pairs: false, gpu_island_repair: true, verdict_sample_ticks: 1 }).unwrap();
+            let exclude = if variant == "posed-road" { desc.road_mask } else { 0 };
+            // One step of lag: poses come from the last completed step's wheels.
+            let pose_wheels = |world: &mut bridge::World| -> u32 {
+                if variant == "rest" { return 0; }
+                let car = world.vehicle_snapshots().unwrap()[0];
+                let wheels: [[f32; 4]; 4] = std::array::from_fn(|i| [car.wheel_jounce[i] - geometry.neutral_jounce,
+                    car.wheel_steer[i], car.wheel_rotation_angle[i], 0.]);
+                let deltas = rig.deltas(&inputs_from_vehicle2(&wheels), None).unwrap();
+                let poses: Vec<bridge::VehiclePartPose> = wheel_parts.iter().map(|&(corner, part)| {
+                    let m = source_to_actor(&deltas.get(Binding::Corner(corner, Motion::Wheel)), geometry.origin_height);
+                    let r = nalgebra::UnitQuaternion::from_matrix(&m.fixed_view::<3, 3>(0, 0).into_owned());
+                    bridge::VehiclePartPose { part_index: part,
+                        position: bridge::Vec3::new(m[(0, 3)] as f32, m[(1, 3)] as f32, m[(2, 3)] as f32),
+                        rotation: bridge::Quat { x: r.i as f32, y: r.j as f32, z: r.k as f32, w: r.w as f32 } }
+                }).collect();
+                world.native_pose_vehicle_parts(desc.entity_id, &poses, exclude).unwrap()
+            };
+            let (mut heights, mut jounce, mut contacts, mut on_road) = (Vec::new(), Vec::new(), 0u64, 0u32);
+            let mut error = None;
+            for tick in 0..300u32 {
+                let (throttle, steer) = match tick { 0..=59 => (0., 0.), 60..=179 => (0.6, 0.5), _ => (0.4, -0.5) };
+                world.drive_vehicle(desc.entity_id, bridge::VehicleCommands { throttle, steer, ..Default::default() }).unwrap();
+                pose_wheels(&mut world);
+                if let Err(e) = world.step() { error = Some(format!("tick {tick}: {e}")); break; }
+                let status = world.native_tick().unwrap();
+                if status.error != 0 || !status.converged { error = Some(format!("tick {tick}: {status:?}")); break; }
+                let broken = world.native_take_broken_bonds().unwrap();
+                if !broken.is_empty() { error = Some(format!("tick {tick}: normal driving broke {} bonds", broken.len())); break; }
+                let car = world.vehicle_snapshots().unwrap()[0];
+                if tick >= 30 { heights.push(car.pose.position.y); jounce.extend(car.wheel_jounce); contacts += status.normal_contacts as u64; on_road += car.wheels_on_road.count_ones(); }
+            }
+            let mean = |x: &[f32]| x.iter().sum::<f32>() / x.len().max(1) as f32;
+            let mut row = json!({"model": name, "variant": variant, "error": error,
+                "meanChassisY": mean(&heights), "minChassisY": heights.iter().cloned().fold(f32::INFINITY, f32::min),
+                "meanJounce": mean(&jounce), "neutralJounce": geometry.neutral_jounce,
+                "destructibleContacts": contacts, "meanWheelsOnRoad": on_road as f32 / heights.len().max(1) as f32});
+            if error.is_none() {
+                // Shoot horizontally at the posed front-left tyre, through its hull centre.
+                let target = wheel_parts.iter().find(|&&(c, p)| c == 0 && asset.parts[p as usize].wheel < 4).unwrap().1;
+                pose_wheels(&mut world);
+                let aim = world.native_chunk_aim(STRUCTURE, target).unwrap();
+                let car = world.vehicle_snapshots().unwrap()[0];
+                let q = car.pose.rotation;
+                let rotation = nalgebra::UnitQuaternion::new_normalize(nalgebra::Quaternion::new(q.w, q.x, q.y, q.z));
+                let (center, side) = (Vector3::new(aim.center.x, aim.center.y, aim.center.z), rotation * Vector3::x());
+                let origin = center + side * (if (center - Vector3::new(car.pose.position.x, car.pose.position.y, car.pose.position.z)).dot(&side) > 0. { 3. } else { -3. });
+                let direction = (center - origin).normalize();
+                let ray = world.native_raycast_chunk(v(origin), v(direction), 6.).unwrap();
+                row["shotHitsPosedWheel"] = json!(ray.hit && ray.chunk_id == aim.chunk_id);
+                row["rayHitChunk"] = json!(ray.chunk_id);
+                if variant == "posed-road" {
+                    let point = Vector3::new(ray.position.x, ray.position.y, ray.position.z);
+                    world.launch_dynamic_ball(bridge::LaunchedBallDesc { entity_id: 2, user_id: 0,
+                        pose: bridge::Pose { position: v(point - direction * (crate::garage_bombardment::BALL_RADIUS + 0.001)), rotation: bridge::Quat::IDENTITY },
+                        radius: crate::garage_bombardment::BALL_RADIUS, mass: 300.,
+                        linear_velocity: v(direction * 120. + Vector3::new(car.linear_velocity.x, car.linear_velocity.y, car.linear_velocity.z)),
+                        collision_group: GROUP_DYNAMIC, collision_mask: ALL_GROUPS }).unwrap();
+                    let before = center;
+                    let (mut detached_at, mut start_jump, mut settled_y) = (None, None, f32::NAN);
+                    let mut last = before;
+                    for tick in 0..240u32 {
+                        world.drive_vehicle(desc.entity_id, bridge::VehicleCommands::default()).unwrap();
+                        pose_wheels(&mut world);
+                        if let Err(e) = world.step() { row["impactError"] = json!(format!("tick {tick}: {e}")); break; }
+                        let _ = world.native_tick().unwrap();
+                        let _ = world.native_take_broken_bonds().unwrap();
+                        let chassis = world.native_chunk_aim(STRUCTURE, 0).unwrap();
+                        let wheel = world.native_chunk_aim(STRUCTURE, target).unwrap();
+                        let now = Vector3::new(wheel.center.x, wheel.center.y, wheel.center.z);
+                        if detached_at.is_none() && wheel.entity_id != chassis.entity_id {
+                            detached_at = Some(tick);
+                            // Distance from the posed hull's last on-car position.
+                            start_jump = Some((now - last).norm());
+                            if let Some(body) = world.native_chunk_body_snapshots().unwrap().iter().find(|b| b.entity_id == wheel.entity_id) {
+                                row["fragmentBodyToHullM"] = json!((Vector3::new(body.position.x, body.position.y, body.position.z) - now).norm());
+                            }
+                        }
+                        last = now; settled_y = now.y;
+                    }
+                    row["detachedTick"] = json!(detached_at);
+                    row["firstFragmentStepM"] = json!(start_jump);
+                    row["looseWheelFinalY"] = json!(settled_y);
+                    row["wheelRadius"] = json!(geometry.origin_height - 0.25);
+                }
+            }
+            eprintln!("wheel colliders {name} {variant}: {row}");
+            report.push(row);
+            let path = std::env::var("VIBE_VEHICLE_WHEEL_REPORT").unwrap_or("/tmp/vehicle-wheel-colliders.json".into());
+            std::fs::write(path, serde_json::to_vec_pretty(&report).unwrap()).unwrap();
+            world.native_clear().unwrap();
+            world.remove_actor(desc.entity_id).unwrap();
+        }
+    }
+}

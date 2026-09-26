@@ -17,6 +17,7 @@ namespace vibe_land::physx_bridge {
 
 struct FfiVec3;
 struct FfiVehicleFracturePart;
+struct FfiVehiclePartPose;
 struct FfiPose;
 struct FfiDestructibleSettings;
 struct FfiChunkNodeDesc;
@@ -81,6 +82,11 @@ public:
       rust::Slice<const FfiVehicleFracturePart> parts, rust::Slice<const FfiChunkBondDesc> bonds,
       const FfiDestructibleSettings &settings);
 
+  /// Move the carrier's hulls of the given parts to delta * authored pose
+  /// (actor frame), optionally excluding `exclude_mask` from their contacts.
+  /// Stress geometry and mass stay at rest. Call between steps.
+  std::uint32_t pose_vehicle_parts(physx::native::NativeVehicle &vehicle,
+      rust::Slice<const FfiVehiclePartPose> poses, std::uint32_t exclude_mask);
   /// Refresh functional state from accepted shape owners, before Vehicle2 runs.
   void prepare_vehicles();
   /// Submit the measured commands after Vehicle2 runs and before simulate.

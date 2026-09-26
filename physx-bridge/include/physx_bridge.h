@@ -19,6 +19,7 @@ struct FfiLaunchedBallDesc;
 struct FfiCapsulePlayerDesc;
 struct FfiVehicleDesc;
 struct FfiVehiclePartShape;
+struct FfiVehiclePartPose;
 struct FfiVehicleFracturePart;
 struct FfiVehicleCommands;
 struct FfiVehicleTuning;
@@ -147,6 +148,8 @@ public:
   void native_register_vehicle(std::uint32_t entity_id, std::uint32_t structure_id,
       rust::Slice<const FfiVehicleFracturePart> parts, rust::Slice<const FfiChunkBondDesc> bonds,
       const FfiDestructibleSettings &settings);
+  std::uint32_t native_pose_vehicle_parts(std::uint32_t entity_id,
+      rust::Slice<const FfiVehiclePartPose> poses, std::uint32_t exclude_mask);
   void native_create_destructible(std::uint32_t structure_id,
                                   const FfiPose &pose,
                                   rust::Slice<const FfiChunkNodeDesc> nodes,

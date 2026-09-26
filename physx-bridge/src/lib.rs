@@ -324,6 +324,14 @@ pub struct VehiclePartShape {
     pub points: Vec<Vec3>,
 }
 
+/// A rigid actor-frame delta for one authored vehicle part's hulls.
+#[derive(Clone, Copy, Debug)]
+pub struct VehiclePartPose {
+    pub part_index: u32,
+    pub position: Vec3,
+    pub rotation: Quat,
+}
+
 /// One destructible collider group, using measured mass properties about its
 /// COM in actor axes. Hulls are selected by VehiclePartShape::part_index.
 #[derive(Clone, Debug)]
@@ -1557,6 +1565,21 @@ impl World {
             &settings.into()).map_err(operation_error)
     }
 
+    /// Move a registered vehicle's hulls for the given parts to `delta *
+    /// authored pose` (actor frame), e.g. wheels following the suspension.
+    /// Stress geometry and mass frames stay at rest. `exclude_mask` removes
+    /// collision groups from the posed hulls while they stay on the car (a
+    /// wheel hull must not also stand on the road Vehicle2 drives on); a hull
+    /// that breaks off regains its authored filter. Returns hulls moved.
+    #[cfg(feature = "native-destruction")]
+    pub fn native_pose_vehicle_parts(&mut self, entity_id: u32, poses: &[VehiclePartPose],
+        exclude_mask: u32) -> Result<u32, BridgeError> {
+        let poses: Vec<ffi::FfiVehiclePartPose> = poses.iter().map(|p| ffi::FfiVehiclePartPose {
+            part_index: p.part_index, position: p.position.into(), rotation: p.rotation.into(),
+        }).collect();
+        self.inner.pin_mut().native_pose_vehicle_parts(entity_id, &poses, exclude_mask).map_err(operation_error)
+    }
+
     /// Hand the authored asset to the stage. The scene must already have
     /// completed one step, which is what gives chunks their GPU identities.
     #[cfg(feature = "native-destruction")]
@@ -2014,6 +2037,12 @@ mod ffi {
         part_index: u32,
         position: FfiVec3,
         points: Vec<FfiVec3>,
+    }
+
+    struct FfiVehiclePartPose {
+        part_index: u32,
+        position: FfiVec3,
+        rotation: FfiQuat,
     }
 
     struct FfiVehicleDesc {
@@ -2649,6 +2678,8 @@ mod ffi {
         fn native_attach(self: Pin<&mut World>) -> Result<()>;
         fn native_register_vehicle(self: Pin<&mut World>, entity_id: u32, structure_id: u32,
             parts: &[FfiVehicleFracturePart], bonds: &[FfiChunkBondDesc], settings: &FfiDestructibleSettings) -> Result<()>;
+        fn native_pose_vehicle_parts(self: Pin<&mut World>, entity_id: u32,
+            poses: &[FfiVehiclePartPose], exclude_mask: u32) -> Result<u32>;
         fn native_create_destructible(
             self: Pin<&mut World>,
             structure_id: u32,
