@@ -18,16 +18,24 @@ export function isInputControl(target: EventTarget | null): boolean {
     && (target.isContentEditable || !!target.closest('button, a, input, textarea, select, summary, [role="button"], [role="dialog"]'));
 }
 
+/** Only an explicitly unsupported API should change the player's controls. */
+export function handlePointerCaptureFailure(error: unknown): void {
+  // Escape's unlock cooldown, a lost gesture, or focus changes can reject a
+  // perfectly supported request. Keep capture armed for the next gesture.
+  if (typeof error === 'object' && error !== null && 'name' in error
+    && error.name === 'NotSupportedError') setPointerMode('drag');
+}
+
 /** One request at a time. Handles absent APIs, synchronous throws and rejections. */
 export function createPointerCaptureRequest() {
   let pending = false;
   return (canvas: HTMLElement) => {
     if (pending || getPointerMode() === 'drag' || document.pointerLockElement) return;
     pending = true;
-    const failed = () => { pending = false; setPointerMode('drag'); };
+    const failed = (error: unknown) => { pending = false; handlePointerCaptureFailure(error); };
     try {
-      if (typeof canvas.requestPointerLock !== 'function') { failed(); return; }
+      if (typeof canvas.requestPointerLock !== 'function') { pending = false; setPointerMode('drag'); return; }
       Promise.resolve(canvas.requestPointerLock()).then(() => { pending = false; }, failed);
-    } catch { failed(); }
+    } catch (error) { failed(error); }
   };
 }

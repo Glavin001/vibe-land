@@ -31,18 +31,15 @@ export function usePointerLockEngagement({ enabled, getCanvas }: Options): void 
     const onPointerLockChange = (): void => {
       if (document.pointerLockElement === getCanvas()) setPointerMode('capture');
     };
-    const onPointerLockError = () => setPointerMode('drag');
 
     document.addEventListener('keydown', onGesture, true);
     document.addEventListener('pointerdown', onGesture, true);
     document.addEventListener('pointerlockchange', onPointerLockChange);
-    document.addEventListener('pointerlockerror', onPointerLockError);
 
     return () => {
       document.removeEventListener('keydown', onGesture, true);
       document.removeEventListener('pointerdown', onGesture, true);
       document.removeEventListener('pointerlockchange', onPointerLockChange);
-      document.removeEventListener('pointerlockerror', onPointerLockError);
     };
   }, [enabled, getCanvas]);
 }

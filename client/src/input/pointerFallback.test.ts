@@ -35,7 +35,7 @@ describe('pointer capture fallback', () => {
     const capture = createPointerCaptureRequest();
     capture(canvas); capture(canvas);
     expect(request).toHaveBeenCalledTimes(1);
-    reject(new Error('Embedded browser cannot capture')); await Promise.resolve();
+    reject(new DOMException('Embedded browser cannot capture', 'NotSupportedError')); await Promise.resolve();
     expect(getPointerMode()).toBe('drag');
     capture(canvas); expect(request).toHaveBeenCalledTimes(1);
   });
@@ -44,8 +44,37 @@ describe('pointer capture fallback', () => {
     createPointerCaptureRequest()({} as HTMLElement);
     expect(getPointerMode()).toBe('drag');
     setPointerMode('capture');
-    createPointerCaptureRequest()({ requestPointerLock: () => { throw Error('Unsupported'); } } as unknown as HTMLElement);
+    createPointerCaptureRequest()({ requestPointerLock: () => { throw new DOMException('Unsupported', 'NotSupportedError'); } } as unknown as HTMLElement);
     expect(getPointerMode()).toBe('drag');
+  });
+
+  it.each(['NotAllowedError', 'SecurityError', 'AbortError', 'UnknownError'])(
+    'retries normal mouse capture after a temporary %s when returning from the shot selector', async (name) => {
+      const request = vi.fn()
+        .mockRejectedValueOnce(new DOMException('Capture temporarily unavailable', name))
+        .mockResolvedValueOnce(undefined);
+      const canvas = { requestPointerLock: request } as unknown as HTMLElement;
+      const capture = createPointerCaptureRequest();
+      capture(canvas);
+      await Promise.resolve();
+      expect(getPointerMode()).toBe('capture');
+      capture(canvas);
+      await Promise.resolve();
+      expect(request).toHaveBeenCalledTimes(2);
+      expect(getPointerMode()).toBe('capture');
+    },
+  );
+
+  it('retries after a synchronous temporary failure', async () => {
+    const request = vi.fn().mockImplementationOnce(() => { throw Error('Lost focus'); })
+      .mockResolvedValueOnce(undefined);
+    const capture = createPointerCaptureRequest();
+    const canvas = { requestPointerLock: request } as unknown as HTMLElement;
+    capture(canvas);
+    expect(getPointerMode()).toBe('capture');
+    capture(canvas);
+    await Promise.resolve();
+    expect(request).toHaveBeenCalledTimes(2);
   });
 
   it('keeps normal capture after success and permits another gesture after Escape', async () => {
