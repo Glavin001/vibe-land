@@ -306,20 +306,23 @@ fn authored_vehicle_wheel_colliders_follow_suspension() {
     let _guard = gpu_test_guard();
     let v = |a: Vector3<f32>| bridge::Vec3::new(a.x, a.y, a.z);
     let mut report = Vec::new();
+    let mut failures = Vec::new();
     for (name, geometry) in fixtures() {
         let rig = geometry.rig.clone().expect("fixtures carry the source rig");
         let wheel_parts: Vec<(usize, u32)> = geometry.parts.iter().enumerate().filter_map(|(i, p)|
             match Binding::from_motion(p.motion.as_ref()).unwrap() {
                 Binding::Corner(corner, Motion::Wheel) => Some((corner, i as u32)), _ => None }).collect();
         assert!(wheel_parts.len() >= 8, "{name}: expected tyre and hub chunks per corner");
+        if std::env::var("VIBE_WHEEL_MODELS").is_ok_and(|m| !m.split(',').any(|m| m == name)) { continue; }
         for variant in ["rest", "posed+road", "posed-road"] {
+            if std::env::var("VIBE_WHEEL_VARIANTS").is_ok_and(|v| !v.split(',').any(|v| v == variant)) { continue; }
             let asset = geometry.native_fracture_assembly().unwrap();
             let mut world = bridge::World::new(bridge::WorldConfig::default()).unwrap();
             world.add_static_box(bridge::StaticBoxDesc { entity_id: 1, user_id: 0,
                 pose: bridge::Pose { position: bridge::Vec3::new(0., -0.5, 0.), rotation: bridge::Quat::IDENTITY },
                 half_extents: bridge::Vec3::new(200., 0.5, 200.), collision_group: super::GROUP_STATIC, collision_mask: ALL_GROUPS }).unwrap();
             let desc = PhysxPhysicsArena::vehicle_asset_desc(7, 0,
-                Vector3::new(0., geometry.origin_height as f32 + 0.15, 0.), [0., 0., 0., 1.], Some(&geometry));
+                Vector3::new(0., geometry.origin_height as f32 + 0.15, 0.), [0., 0.38268343, 0., 0.9238795], Some(&geometry));
             world.add_vehicle(desc).unwrap();
             world.set_vehicle_shapes(desc.entity_id, &asset.shapes).unwrap();
             world.native_attach().unwrap();
@@ -329,7 +332,8 @@ fn authored_vehicle_wheel_colliders_follow_suspension() {
             world.native_configure(bridge::NativeConfig { max_iterations: 2048, tolerance: 1e-5, warm_start: true,
                 damage_rate: 2., bend_gain_max: 3., fibre_bending: true, reserved_contact_pairs: 4096,
                 preserve_unchanged_contact_pairs: false, gpu_island_repair: true, verdict_sample_ticks: 1 }).unwrap();
-            let exclude = if variant == "posed-road" { desc.road_mask } else { 0 };
+            // Only terrain: projectiles, props and debris must still hit wheels.
+            let exclude = if variant == "posed-road" { super::GROUP_STATIC } else { 0 };
             // One step of lag: poses come from the last completed step's wheels.
             let pose_wheels = |world: &mut bridge::World| -> u32 {
                 if variant == "rest" { return 0; }
@@ -352,11 +356,15 @@ fn authored_vehicle_wheel_colliders_follow_suspension() {
                 let (throttle, steer) = match tick { 0..=59 => (0., 0.), 60..=179 => (0.6, 0.5), _ => (0.4, -0.5) };
                 world.drive_vehicle(desc.entity_id, bridge::VehicleCommands { throttle, steer, ..Default::default() }).unwrap();
                 pose_wheels(&mut world);
-                if let Err(e) = world.step() { error = Some(format!("tick {tick}: {e}")); break; }
+                if let Err(e) = world.step() { error = Some(format!("tick {tick}: {e}; native {:?}", world.native_tick())); break; }
                 let status = world.native_tick().unwrap();
                 if status.error != 0 || !status.converged { error = Some(format!("tick {tick}: {status:?}")); break; }
                 let broken = world.native_take_broken_bonds().unwrap();
-                if !broken.is_empty() { error = Some(format!("tick {tick}: normal driving broke {} bonds", broken.len())); break; }
+                if !broken.is_empty() {
+                    let parts: Vec<_> = broken.iter().map(|b| { let bond = &asset.bonds[(b.bond_id & ((1 << 20) - 1)) as usize]; let [a, c] = [bond.node0, bond.node1];
+                        format!("{}-{}", geometry.parts[a as usize].id, geometry.parts[c as usize].id) }).collect();
+                    error = Some(format!("tick {tick}: normal driving broke {parts:?}")); break;
+                }
                 let car = world.vehicle_snapshots().unwrap()[0];
                 if tick >= 30 { heights.push(car.pose.position.y); jounce.extend(car.wheel_jounce); contacts += status.normal_contacts as u64; on_road += car.wheels_on_road.count_ones(); }
             }
@@ -387,9 +395,9 @@ fn authored_vehicle_wheel_colliders_follow_suspension() {
                         linear_velocity: v(direction * 120. + Vector3::new(car.linear_velocity.x, car.linear_velocity.y, car.linear_velocity.z)),
                         collision_group: GROUP_DYNAMIC, collision_mask: ALL_GROUPS }).unwrap();
                     let before = center;
-                    let (mut detached_at, mut start_jump, mut settled_y) = (None, None, f32::NAN);
+                    let (mut detached_at, mut min_loose_y, mut settled_y) = (None::<u32>, f32::INFINITY, f32::NAN);
                     let mut last = before;
-                    for tick in 0..240u32 {
+                    for tick in 0..600u32 {
                         world.drive_vehicle(desc.entity_id, bridge::VehicleCommands::default()).unwrap();
                         pose_wheels(&mut world);
                         if let Err(e) = world.step() { row["impactError"] = json!(format!("tick {tick}: {e}")); break; }
@@ -398,28 +406,41 @@ fn authored_vehicle_wheel_colliders_follow_suspension() {
                         let chassis = world.native_chunk_aim(STRUCTURE, 0).unwrap();
                         let wheel = world.native_chunk_aim(STRUCTURE, target).unwrap();
                         let now = Vector3::new(wheel.center.x, wheel.center.y, wheel.center.z);
-                        if detached_at.is_none() && wheel.entity_id != chassis.entity_id {
-                            detached_at = Some(tick);
-                            // Distance from the posed hull's last on-car position.
-                            start_jump = Some((now - last).norm());
-                            if let Some(body) = world.native_chunk_body_snapshots().unwrap().iter().find(|b| b.entity_id == wheel.entity_id) {
-                                row["fragmentBodyToHullM"] = json!((Vector3::new(body.position.x, body.position.y, body.position.z) - now).norm());
+                        if wheel.entity_id != chassis.entity_id {
+                            if detached_at.is_none() {
+                                detached_at = Some(tick);
+                                // Separation pop: the hull's first detached displacement
+                                // less the displacement its own body velocity explains.
+                                if let Some(body) = world.native_chunk_body_snapshots().unwrap().iter().find(|b| b.entity_id == wheel.entity_id) {
+                                    let com = Vector3::new(body.position.x, body.position.y, body.position.z);
+                                    let (lin, ang) = (Vector3::new(body.linear_velocity.x, body.linear_velocity.y, body.linear_velocity.z),
+                                        Vector3::new(body.angular_velocity.x, body.angular_velocity.y, body.angular_velocity.z));
+                                    let predicted = (lin + ang.cross(&(now - com))) / 60.;
+                                    row["separationPopM"] = json!(((now - last) - predicted).norm());
+                                    row["firstFragmentStepM"] = json!((now - last).norm());
+                                    row["fragmentComToHullM"] = json!((com - now).norm());
+                                    row["fragmentChunks"] = json!(body.node_count);
+                                }
                             }
+                            min_loose_y = min_loose_y.min(now.y);
                         }
                         last = now; settled_y = now.y;
                     }
                     row["detachedTick"] = json!(detached_at);
-                    row["firstFragmentStepM"] = json!(start_jump);
+                    row["looseWheelMinY"] = json!(min_loose_y);
                     row["looseWheelFinalY"] = json!(settled_y);
                     row["wheelRadius"] = json!(geometry.origin_height - 0.25);
                 }
             }
             eprintln!("wheel colliders {name} {variant}: {row}");
+            let failed = row["error"].as_str().map(str::to_owned);
             report.push(row);
             let path = std::env::var("VIBE_VEHICLE_WHEEL_REPORT").unwrap_or("/tmp/vehicle-wheel-colliders.json".into());
             std::fs::write(path, serde_json::to_vec_pretty(&report).unwrap()).unwrap();
             world.native_clear().unwrap();
             world.remove_actor(desc.entity_id).unwrap();
+            if let Some(failed) = failed { failures.push(format!("{name} {variant}: {failed}")); }
         }
     }
+    assert!(failures.is_empty(), "wheel collider scenes failed: {failures:#?}");
 }
