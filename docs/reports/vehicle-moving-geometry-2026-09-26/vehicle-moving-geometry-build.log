@@ -1,0 +1,7 @@
+[  0%] Generating cumetal/gpu_resident_stress_test_core/release/NvBlastExtStressGpu-e17310947a0cd059.o
+cumetalc failed: blast/source/sdk/extensions/stressgpu/detail/StressGeometryUpdate.cuh:36:5: LLVM insertvalue cannot materialize poison or undef fields
+cumetalc failed: native AOT device compilation failed
+make[3]: *** [reference/cumetal/gpu_resident_stress_test_core/release/NvBlastExtStressGpu-e17310947a0cd059.o] Error 1
+make[2]: *** [reference/CMakeFiles/gpu_resident_stress_test_core.dir/all] Error 2
+make[1]: *** [reference/CMakeFiles/gpu_resident_geometry_test.dir/rule] Error 2
+make: *** [gpu_resident_geometry_test] Error 2

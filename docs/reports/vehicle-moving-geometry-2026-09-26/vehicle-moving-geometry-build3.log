@@ -1,0 +1,14 @@
+-- NVIDIA compute-sanitizer tests are not registered for CuMetal; native memory/synchronization qualification remains separate
+-- Configuring done (0.3s)
+-- Generating done (0.5s)
+-- Build files have been written to: /Users/glavin/Development/PhysX/out/build/garage-multihull/package
+[  0%] Generating cumetal/gpu_resident_stress_test_core/release/NvBlastExtStressGpu-e17310947a0cd059.o
+[ 50%] Linking CXX static library libgpu_resident_stress_test_core.a
+[ 50%] Built target gpu_resident_stress_test_core
+[ 50%] Building CXX object reference/CMakeFiles/gpu_resident_geometry_test.dir/tests/gpu_resident_geometry_test.cpp.o
+[100%] Linking CXX executable gpu_resident_geometry_test
+[100%] Built target gpu_resident_geometry_test
+[ 50%] Built target gpu_resident_stress_test_core
+[100%] Generating cumetal/gpu_resident_stress_test/release/gpu_resident_stress_test-e6ace6c353869e78.o
+[100%] Linking CXX executable gpu_resident_stress_test
+[100%] Built target gpu_resident_stress_test

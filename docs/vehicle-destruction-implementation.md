@@ -191,3 +191,11 @@ Remaining requirements:
 The installed live SDK remains ABI 18 and has not been replaced. All new native
 qualification is isolated. CUDA/Vast validation remains deferred at the user's
 request; the exact-coordinate correction currently affects the CuMetal path.
+
+
+### Moving-geometry checkpoint (2026-09-26)
+
+PhysX `d82b4da7` adds the stress-only device geometry transaction and automated
+regressions. Both targeted executables build; GPU execution is pending while
+the user-requested city play server owns the GPU. This is unqualified WIP and
+is not installed in the live runtime. [Build evidence and remaining work](reports/vehicle-moving-geometry-2026-09-26/README.md).

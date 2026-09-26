@@ -1,0 +1,26 @@
+{
+  "physx_commit": "d82b4da7",
+  "qualification": "build only; GPU tests NOT run",
+  "artifacts": [
+    {
+      "path": "/Users/glavin/Development/PhysX/out/build/garage-multihull/package/reference/gpu_resident_geometry_test",
+      "sha256": "d1eb4ce184e31f56d52793997ce7457d9729a6c6ab443c968059245a81e576e1",
+      "size": 7470472
+    },
+    {
+      "path": "/Users/glavin/Development/PhysX/out/build/garage-multihull/package/reference/gpu_resident_stress_test",
+      "sha256": "f3031531b92eaa67e6d00d2f608b6b4253cb7dba5505cb2e05fc07c5fe3378ef",
+      "size": 7556920
+    },
+    {
+      "path": "/Users/glavin/Development/PhysX/out/build/garage-multihull/package/reference/libgpu_resident_stress_test_core.a",
+      "sha256": "f3164092d3315809ec1dc288c42ffdc708a1c311a33374843c91eeb7de98fc1c",
+      "size": 7580568
+    },
+    {
+      "path": "/Users/glavin/Development/PhysX/out/build/garage-multihull/package/CMakeCache.txt",
+      "sha256": "8d1cd54616702f1367801c5308b197face2b74a09f00cda7fd47324d3de2c669",
+      "size": 25182
+    }
+  ]
+}
