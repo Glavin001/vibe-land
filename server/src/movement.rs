@@ -107,6 +107,25 @@ pub struct PhysicsArena {
 }
 
 impl PhysicsArena {
+    /// Opt-in native destruction of a spawned prepared vehicle (garage only).
+    pub fn enable_vehicle_destruction(&mut self, id:u32, asset:&crate::vehicle_assets::PreparedGeometry) -> Result<(), String> {
+        match &mut self.backend {
+            #[cfg(feature="native-destruction")]
+            PhysicsBackend::Physx(arena) => arena.enable_vehicle_destruction(id, asset),
+            _ => { let _ = (id, asset); Err("vehicle destruction requires the native PhysX destruction backend".into()) }
+        }
+    }
+
+    /// (part index, world position, world rotation) of a destructible vehicle's detached parts.
+    pub fn vehicle_detached_parts(&mut self, id:u32) -> Vec<(u16, [f32;3], [f32;4])> {
+        match &mut self.backend {
+            #[cfg(feature="native-destruction")]
+            PhysicsBackend::Physx(arena) => arena.vehicle_detached_parts(id).into_iter()
+                .map(|p| (p.part_index as u16, [p.position.x, p.position.y, p.position.z], [p.rotation.x, p.rotation.y, p.rotation.z, p.rotation.w])).collect(),
+            _ => { let _ = id; Vec::new() }
+        }
+    }
+
     pub fn vehicle_rig(&self, id:u32, neutral_jounce:f32) -> Option<[[f32;4];4]> {
         match &self.backend {
             #[cfg(feature="physx-gpu")]

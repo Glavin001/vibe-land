@@ -150,6 +150,7 @@ public:
       const FfiDestructibleSettings &settings);
   std::uint32_t native_pose_vehicle_parts(std::uint32_t entity_id,
       rust::Slice<const FfiVehiclePartPose> poses, std::uint32_t exclude_mask);
+  rust::Vec<FfiVehiclePartPose> native_detached_vehicle_parts(std::uint32_t entity_id);
   void native_create_destructible(std::uint32_t structure_id,
                                   const FfiPose &pose,
                                   rust::Slice<const FfiChunkNodeDesc> nodes,

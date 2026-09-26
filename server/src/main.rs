@@ -3284,6 +3284,13 @@ async fn run_match_loop(
             nalgebra::Vector3::new(0.0, session.geometry.origin_height as f32 + 0.15, 3.0), &session.geometry) {
             error!(%error, "garage vehicle could not initialize"); return;
         }
+        #[cfg(feature = "native-destruction")]
+        if std::env::var("VIBE_GARAGE_VEHICLE_DESTRUCTION").as_deref() == Ok("1") {
+            match arena.enable_vehicle_destruction(garage::VEHICLE_ID, &session.geometry) {
+                Ok(()) => info!("garage vehicle is destructible (VIBE_GARAGE_VEHICLE_DESTRUCTION=1)"),
+                Err(error) => warn!(%error, "garage vehicle destruction unavailable; driving intact"),
+            }
+        }
     } else if garage::is_garage(&match_id) { return; }
     else { seed_world_for_match(&mut arena, &match_id).expect("world document should instantiate"); }
     let mut dynamic_body_handles: HashMap<u32, DynamicBodyMetaRuntime> = arena
@@ -6739,7 +6746,8 @@ impl MatchState {
         let vehicle_rigs: Vec<_> = self.custom_vehicles.iter().filter_map(|(id, asset)| {
             let handle = *self.vehicle_handles.get(id)?;
             let wheels = self.arena.vehicle_rig(*id, asset.geometry.neutral_jounce)?;
-            Some(vehicle_assets::rig_packet(self.server_tick, handle, wheels))
+            let detached = self.arena.vehicle_detached_parts(*id);
+            Some(vehicle_assets::rig_packet_with_parts(self.server_tick, handle, wheels, &detached))
         }).collect();
         let server_time_us = (self.server_tick as u64) * (1_000_000 / SIM_HZ as u64);
         // When this tick's state became available: stamped on every SnapshotV2

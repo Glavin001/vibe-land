@@ -636,6 +636,29 @@ std::uint32_t NativeDestruction::pose_vehicle_parts(physx::native::NativeVehicle
 #endif
 }
 
+rust::Vec<FfiVehiclePartPose> NativeDestruction::detached_vehicle_parts(
+    const physx::native::NativeVehicle &vehicle) const {
+  rust::Vec<FfiVehiclePartPose> out;
+#if PX_DESTRUCTION_SCENE_VERSION >= 22
+  const State &s=*state_;
+  auto binding=std::find_if(s.vehicles.begin(),s.vehicles.end(),[&](const State::VehicleBinding &b){return b.vehicle==&vehicle;});
+  native_require(binding!=s.vehicles.end(),"vehicle is not registered for native destruction");
+  const auto *carrier=vehicle.actor();
+  std::vector<bool> seen(binding->count,false);
+  for(const auto &hull:binding->hulls) {
+    if(seen[hull.part]) continue;
+    seen[hull.part]=true; // the first hull of a part stands for its rigid chunk
+    const auto *actor=hull.shape->getActor();
+    if(!actor || actor==carrier) continue;
+    const PxTransform world=actor->getGlobalPose()*hull.shape->getLocalPose()*hull.rest.getInverse();
+    out.push_back(FfiVehiclePartPose{hull.part,native_ffi(world.p),FfiQuat{world.q.x,world.q.y,world.q.z,world.q.w}});
+  }
+#else
+  PX_UNUSED(vehicle);
+#endif
+  return out;
+}
+
 void NativeDestruction::prepare_vehicles() {
 #if PX_DESTRUCTION_SCENE_VERSION >= 22
   State &s=*state_;if(!s.configured) return;

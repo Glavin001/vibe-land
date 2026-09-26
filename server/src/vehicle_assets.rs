@@ -324,6 +324,21 @@ pub fn asset_packet(handle: u8, vehicle: &PreparedVehicle) -> Vec<u8> {
 }
 
 /// One wheel state is twelve bytes of floats plus an on-road byte.
+/// Detached parts ride after the fixed 58-byte rig record: `[n u8]` then per
+/// part `[index u16][position f32 x3][rotation xyzw f32 x4]`, each mapping the
+/// part's authored actor-frame geometry to the world. Capped to fit a datagram.
+pub const RIG_PACKET_MAX_DETACHED: usize = 36;
+pub fn rig_packet_with_parts(tick: u32, handle: u8, wheels: [[f32; 4]; 4], detached: &[(u16, [f32; 3], [f32; 4])]) -> Vec<u8> {
+    let mut bytes = rig_packet(tick, handle, wheels);
+    if detached.is_empty() { return bytes; }
+    let parts = &detached[..detached.len().min(RIG_PACKET_MAX_DETACHED)];
+    bytes.push(parts.len() as u8);
+    for (index, position, rotation) in parts {
+        bytes.extend(index.to_le_bytes());
+        for value in position.iter().chain(rotation) { bytes.extend(value.to_le_bytes()); }
+    }
+    bytes
+}
 pub fn rig_packet(tick: u32, handle: u8, wheels: [[f32; 4]; 4]) -> Vec<u8> {
     let mut bytes = vec![vibe_land_shared::constants::PKT_VEHICLE_RIG];
     bytes.extend(tick.to_le_bytes());

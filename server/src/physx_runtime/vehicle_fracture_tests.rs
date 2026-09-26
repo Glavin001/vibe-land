@@ -317,6 +317,22 @@ fn authored_vehicle_wheel_colliders_follow_suspension() {
         for variant in ["rest", "posed+road", "posed-road"] {
             if std::env::var("VIBE_WHEEL_VARIANTS").is_ok_and(|v| !v.split(',').any(|v| v == variant)) { continue; }
             let mut asset = geometry.native_fracture_assembly().unwrap();
+            // Diagnostic: floor the stiffness modulus (strength is unchanged).
+            if let Some(min) = std::env::var("VIBE_MIN_MODULUS").ok().map(|v| v.parse::<f32>().unwrap()) {
+                for material in &mut asset.materials { material.elastic_modulus = material.elastic_modulus.max(min); }
+                eprintln!("{name}: stiffness modulus floored at {min:e} Pa");
+            }
+            // Diagnostic: cap chunk mass at N x median (inertia scaled alike).
+            if let Some(cap) = std::env::var("VIBE_MASS_CAP_MEDIAN").ok().map(|v| v.parse::<f32>().unwrap()) {
+                let mut masses: Vec<f32> = asset.parts.iter().map(|p| p.mass).collect();
+                masses.sort_by(f32::total_cmp);
+                let limit = masses[masses.len() / 2] * cap;
+                let mut capped = 0;
+                for part in &mut asset.parts { if part.mass > limit { let k = limit / part.mass; part.mass = limit;
+                    part.inertia_diagonal = bridge::Vec3::new(part.inertia_diagonal.x * k, part.inertia_diagonal.y * k, part.inertia_diagonal.z * k);
+                    part.inertia_products = bridge::Vec3::new(part.inertia_products.x * k, part.inertia_products.y * k, part.inertia_products.z * k); capped += 1; } }
+                eprintln!("{name}: capped {capped} chunks at {limit:.1} kg ({cap} x median)");
+            }
             // Diagnostic: drop interfaces below a minimum area (m²).
             if let Some(min) = std::env::var("VIBE_MIN_BOND_AREA").ok().map(|v| v.parse::<f32>().unwrap()) {
                 let before = asset.bonds.len();

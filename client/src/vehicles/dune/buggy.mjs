@@ -55,7 +55,11 @@ export function buildBuggy(wasm, input={}, progress=(phase="",percent=0)=>{}, au
   const id=`${system.toLowerCase()}-${String(parts.length).padStart(4,'0')}`, bounds=solid.boundingBox(); const contacts=[];
   for(let i=0;!preview&&i<solids.length;i++)if(overlap(bounds,parts[i].bounds)){
    candidates++; const cut=solid.intersect(originals[i]??solids[i]),volume=cut.volume();
-   if(volume>1e-12){const b=cut.boundingBox(); contacts.push({a:parts[i].id,b:id,anchor:b.min.map((x,k)=>(x+b.max[k])/2),kind:system==='Suspension'?'mechanical':'fixed',overlapRemovedM3:volume});const next=solid.subtract(originals[i]??solids[i]);solid.delete();solid=next;trims++;} cut.delete();
+   if(volume>1e-12){const b=cut.boundingBox(),other=originals[i]??solids[i],next=solid.subtract(other);
+    // Exact shared surface of the two solids: (|A| + |B'| - |A u B'|) / 2.
+    // Bond areas come from this, not from coplanar faces of simplified hulls.
+    const union=other.add(next),interfaceAreaM2=Math.max(0,(other.surfaceArea()+next.surfaceArea()-union.surfaceArea())/2);union.delete();
+    contacts.push({a:parts[i].id,b:id,anchor:b.min.map((x,k)=>(x+b.max[k])/2),kind:system==='Suspension'?'mechanical':'fixed',overlapRemovedM3:volume,interfaceAreaM2});solid.delete();solid=next;trims++;} cut.delete();
   }
   if(solid.isEmpty()||solid.volume()<1e-12){skipped.push(name);solid.delete();original?.delete();return null;}
   const volume=solid.volume(), mesh=solid.getMesh(), pos=new Float32Array(mesh.numVert*3);

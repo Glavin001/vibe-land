@@ -4,7 +4,9 @@ import { PKT_VEHICLE_ASSET, PKT_VEHICLE_RIG } from '../net/sharedConstants';
 export type VehicleAsset = { configuration:VehicleConfiguration; assetHash:string; geometryHash:string };
 export type WheelPose = {travelM:number; steeringRad:number; rotationRad:number; grounded:boolean};
 export type VehicleAssetPacket = {type:'vehicleAsset'; handle:number; vehicle:VehicleAsset};
-export type VehicleRigPacket = {type:'vehicleRig'; handle:number; serverTick:number; wheels:WheelPose[]};
+/** A part that left the car: maps its authored actor-frame geometry to the world. */
+export type DetachedPart = {part:number; position:[number,number,number]; rotation:[number,number,number,number]};
+export type VehicleRigPacket = {type:'vehicleRig'; handle:number; serverTick:number; wheels:WheelPose[]; detached:DetachedPart[]};
 
 export function decodeVehicleAsset(bytes:Uint8Array):VehicleAssetPacket {
   if(bytes.length<2 || bytes.length>8192 || bytes[0]!==PKT_VEHICLE_ASSET)throw Error('Invalid vehicle asset packet');
@@ -15,12 +17,20 @@ export function decodeVehicleAsset(bytes:Uint8Array):VehicleAssetPacket {
   return {type:'vehicleAsset',handle:value.handle,vehicle:{configuration:normalizeConfiguration(vehicle.configuration),assetHash:vehicle.assetHash,geometryHash:vehicle.geometryHash}};
 }
 export function decodeVehicleRig(bytes:Uint8Array):VehicleRigPacket {
-  if(bytes.length!==58||bytes[0]!==PKT_VEHICLE_RIG||bytes[5]===0)throw Error('Invalid vehicle rig packet');
+  const tail=bytes.length>58?bytes[58]:0;
+  if((bytes.length!==58&&bytes.length!==59+tail*30)||bytes[0]!==PKT_VEHICLE_RIG||bytes[5]===0)throw Error('Invalid vehicle rig packet');
   const view=new DataView(bytes.buffer,bytes.byteOffset,bytes.byteLength),wheels:WheelPose[]=[];
   for(let i=0;i<4;i++) {
     const offset=6+i*13,travelM=view.getFloat32(offset,true),steeringRad=view.getFloat32(offset+4,true),rotationRad=view.getFloat32(offset+8,true),grounded=bytes[offset+12];
     if(![travelM,steeringRad,rotationRad].every(Number.isFinite)||grounded>1)throw Error('Invalid wheel pose');
     wheels.push({travelM,steeringRad,rotationRad,grounded:grounded===1});
   }
-  return {type:'vehicleRig',handle:bytes[5],serverTick:view.getUint32(1,true),wheels};
+  const detached:DetachedPart[]=[];
+  for(let i=0;i<tail;i++) {
+    const o=59+i*30,f=(k:number)=>view.getFloat32(o+2+k*4,true);
+    const position:[number,number,number]=[f(0),f(1),f(2)],rotation:[number,number,number,number]=[f(3),f(4),f(5),f(6)];
+    if(![...position,...rotation].every(Number.isFinite))throw Error('Invalid detached part pose');
+    detached.push({part:view.getUint16(o,true),position,rotation});
+  }
+  return {type:'vehicleRig',handle:bytes[5],serverTick:view.getUint32(1,true),wheels,detached};
 }

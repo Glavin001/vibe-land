@@ -1580,6 +1580,16 @@ impl World {
         self.inner.pin_mut().native_pose_vehicle_parts(entity_id, &poses, exclude_mask).map_err(operation_error)
     }
 
+    /// World transforms of a registered vehicle's detached parts: each maps
+    /// the part's authored actor-frame geometry to its current world pose.
+    #[cfg(feature = "native-destruction")]
+    pub fn native_detached_vehicle_parts(&mut self, entity_id: u32) -> Result<Vec<VehiclePartPose>, BridgeError> {
+        Ok(self.inner.pin_mut().native_detached_vehicle_parts(entity_id).map_err(operation_error)?
+            .into_iter().map(|p| VehiclePartPose { part_index: p.part_index,
+                position: Vec3::new(p.position.x, p.position.y, p.position.z),
+                rotation: Quat { x: p.rotation.x, y: p.rotation.y, z: p.rotation.z, w: p.rotation.w } }).collect())
+    }
+
     /// Hand the authored asset to the stage. The scene must already have
     /// completed one step, which is what gives chunks their GPU identities.
     #[cfg(feature = "native-destruction")]
@@ -2680,6 +2690,7 @@ mod ffi {
             parts: &[FfiVehicleFracturePart], bonds: &[FfiChunkBondDesc], settings: &FfiDestructibleSettings) -> Result<()>;
         fn native_pose_vehicle_parts(self: Pin<&mut World>, entity_id: u32,
             poses: &[FfiVehiclePartPose], exclude_mask: u32) -> Result<u32>;
+        fn native_detached_vehicle_parts(self: Pin<&mut World>, entity_id: u32) -> Result<Vec<FfiVehiclePartPose>>;
         fn native_create_destructible(
             self: Pin<&mut World>,
             structure_id: u32,

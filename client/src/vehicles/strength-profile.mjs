@@ -35,6 +35,10 @@ export function jointStrength(a, b) {
   return Object.fromEntries(Object.keys(first).map(key=>[key, Math.min(first[key], second[key])]));
 }
 
+/** physx-bridge append_bonds floors bond stiffness at this area (m²); smaller
+ * interfaces cannot be represented consistently and are excluded as grazes. */
+export const SOLVER_MIN_BOND_AREA_M2 = 1e-4;
+
 export function structuralBonds(parts, contacts) {
   const byId=new Map(parts.map(part=>[part.id,part]));
   return contacts.filter(contact=>contact.validatedSurface && contact.area>0).map(contact=>{

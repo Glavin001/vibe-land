@@ -18,6 +18,9 @@ export class VehicleVisual {
   private key = '';
   private configuration!: VehicleConfiguration;
   private hidden = new Set<string>();
+  /** Visual part ids per native fracture part index (metadata.json parts[].visualIds). */
+  private fractureGroups: string[][] | null = null;
+  private readonly partMatrix = new Map<string, THREE.Matrix4>();
   private explosion = 0;
   constructor(configuration: VehicleConfiguration, private readonly actorSpace = false) {
     this.configure(configuration);
@@ -66,6 +69,23 @@ export class VehicleVisual {
       if (mesh.userData.system === "Body" && mesh.userData.material === "frame") mesh.material = this.bodyPaint;
       if (mesh.userData.system === "Wheels" && mesh.userData.material === "alloy") mesh.material = this.wheelPaint;
     }
+  }
+  setFractureGroups(groups: string[][]): void { this.fractureGroups = groups; }
+  /** Draw parts that broke off at their server world poses. Call after setWheelState. */
+  setDetached(detached: {part:number; position:[number,number,number]; rotation:[number,number,number,number]}[]): void {
+    if (!this.fractureGroups || !detached.length) return;
+    this.group.updateWorldMatrix(true, false);
+    const toLocal = this.group.matrixWorld.clone().invert(), actor = this.group.matrix;
+    if (!this.partMatrix.size) for (const part of this.model.parts) this.partMatrix.set(part.id, part.matrix);
+    const world = new THREE.Matrix4(), quat = new THREE.Quaternion(), pos = new THREE.Vector3(), one = new THREE.Vector3(1, 1, 1);
+    const matrices = new Map<string, THREE.Matrix4>();
+    for (const d of detached) {
+      const ids = this.fractureGroups[d.part]; if (!ids) continue;
+      world.compose(pos.set(...d.position), quat.set(...d.rotation), one);
+      const base = toLocal.clone().multiply(world).multiply(actor);
+      for (const id of ids) { const m = this.partMatrix.get(id); if (m) matrices.set(id, base.clone().multiply(m)); }
+    }
+    this.assembly.setDetached(matrices);
   }
   setWheelState(wheels: {travelM: number; steeringRad: number; rotationRad: number; grounded: boolean}[]): void {
     if (wheels.length !== 4) return;

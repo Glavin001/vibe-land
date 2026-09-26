@@ -292,6 +292,9 @@ pub struct PhysxPhysicsArena {
     /// rejected step went down the path that reads a scene which never
     /// finished stepping.
     tolerate_rejected_steps: bool,
+    /// Opt-in native destruction of the garage car (VIBE_GARAGE_VEHICLE_DESTRUCTION=1).
+    #[cfg(feature = "native-destruction")]
+    garage_destruction: Option<garage_destruction::GarageDestruction>,
     world: bridge::World,
     config: MoveConfig,
     players: HashMap<u32, PlayerState>,
@@ -376,8 +379,14 @@ impl PhysxPhysicsArena {
         let desc = Self::vehicle_asset_desc(id, vehicle_type, position, rotation, prepared);
         self.world.add_vehicle(desc)?;
         if let Some(asset) = prepared {
+            // A destructible car needs every chunk's hulls, moving parts included;
+            // the wheel and hub hulls are then posed each step.
+            #[cfg(feature = "native-destruction")]
+            let destructible = garage_destruction::requested() && asset.rig.is_some();
+            #[cfg(not(feature = "native-destruction"))]
+            let destructible = false;
             let shapes: Vec<bridge::VehiclePartShape> = asset.parts.iter().enumerate()
-                .filter(|(_, part)| part.motion.is_none())
+                .filter(|(_, part)| destructible || part.motion.is_none())
                 .flat_map(|(part_index, part)| part.shapes.iter().map(move |shape| bridge::VehiclePartShape {
                     part_index: part_index as u32,
                     position: bridge::Vec3::new(part.position[0]+shape.position[0], part.position[1]+shape.position[1], part.position[2]+shape.position[2]),
@@ -488,6 +497,8 @@ impl PhysxPhysicsArena {
             .context("failed to initialize required PhysX GPU scene")?;
         Ok(Self {
             tolerate_rejected_steps: false,
+            #[cfg(feature = "native-destruction")]
+            garage_destruction: None,
             world,
             config,
             players: HashMap::new(),
@@ -1125,7 +1136,13 @@ impl PhysxPhysicsArena {
                 vehicle.reset_held = reset_down;
                 if let Some(snapshot) = snapshot {
                     let stuck = up < 0.5 || forward_speed.abs() < 0.5;
-                    if reset_edge && stuck && vehicle.reset_cooldown_ticks == 0 {
+                    #[cfg(feature = "native-destruction")]
+                    let destructible = self.garage_destruction.as_ref().is_some_and(|g| g.entity == entity);
+                    #[cfg(not(feature = "native-destruction"))]
+                    let destructible = false;
+                    // A destructible car cannot be reset in place (its native asset
+                    // would have to be rebuilt); leave it where it lies.
+                    if reset_edge && stuck && vehicle.reset_cooldown_ticks == 0 && !destructible {
                         self.world
                             .reset_vehicle(entity, vehicle_reset_pose(snapshot))
                             .expect("PhysX vehicle reset failed");
@@ -1145,6 +1162,13 @@ impl PhysxPhysicsArena {
             self.world
                 .drive_vehicle(entity, cmd)
                 .expect("PhysX vehicle control failed");
+        }
+        #[cfg(feature = "native-destruction")]
+        if let Some(garage) = &self.garage_destruction {
+            let wheels = self.current_vehicle_snapshots().into_iter()
+                .find(|s| NS_VEHICLE | (s.user_id & ID_MASK) == garage.entity)
+                .map(|s| std::array::from_fn(|i| [s.wheel_jounce[i] - garage.neutral_jounce(), s.wheel_steer[i], s.wheel_rotation_angle[i], 0.]));
+            garage.pose_wheels(&mut self.world, wheels);
         }
         self.last_vehicle_control_ms =
             vehicles_started.elapsed().as_secs_f32() * 1000.0;
@@ -1284,6 +1308,8 @@ impl PhysxPhysicsArena {
         }
         self.snapshots_valid = true;
         self.watch_launched_balls_ground();
+        #[cfg(feature = "native-destruction")]
+        if let Some(garage) = &mut self.garage_destruction { garage.after_step(&mut self.world); }
         let before_players = std::time::Instant::now();
         self.refresh_players();
         self.last_refresh_players_ms =
@@ -1410,6 +1436,26 @@ impl PhysxPhysicsArena {
                 ))
             })
             .collect()
+    }
+
+    /// Register the already-spawned garage car with the native stage.
+    #[cfg(feature = "native-destruction")]
+    pub fn enable_vehicle_destruction(&mut self, id: u32, geometry: &crate::vehicle_assets::PreparedGeometry) -> Result<(), String> {
+        if self.garage_destruction.is_some() { return Err("a destructible vehicle is already registered".into()); }
+        let entity = NS_VEHICLE | (id & ID_MASK);
+        self.garage_destruction = Some(garage_destruction::GarageDestruction::register(&mut self.world, entity, geometry)?);
+        self.tolerate_rejected_steps = true;
+        Ok(())
+    }
+
+    /// Detached parts of the destructible car: authored actor-frame geometry to world.
+    #[cfg(feature = "native-destruction")]
+    pub fn vehicle_detached_parts(&mut self, id: u32) -> Vec<bridge::VehiclePartPose> {
+        let entity = NS_VEHICLE | (id & ID_MASK);
+        match &self.garage_destruction {
+            Some(garage) if garage.entity == entity => garage.detached_parts(&mut self.world),
+            _ => Vec::new(),
+        }
     }
 
     pub fn vehicle_rig(&self, id:u32, neutral_jounce:f32) -> Option<[[f32;4];4]> {
@@ -3277,6 +3323,8 @@ fn report_rejected_step(world: &vibe_land_physx_bridge::World, phase: &str, erro
     }
 }
 
+#[cfg(feature = "native-destruction")]
+mod garage_destruction;
 #[cfg(all(test, feature = "native-destruction"))]
 #[path = "physx_runtime/vehicle_fracture_tests.rs"]
 mod vehicle_fracture_tests;

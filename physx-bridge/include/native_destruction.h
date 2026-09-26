@@ -87,6 +87,9 @@ public:
   /// Stress geometry and mass stay at rest. Call between steps.
   std::uint32_t pose_vehicle_parts(physx::native::NativeVehicle &vehicle,
       rust::Slice<const FfiVehiclePartPose> poses, std::uint32_t exclude_mask);
+  /// World transforms, from each part's authored actor-frame pose, of the
+  /// parts whose hulls have left the vehicle's carrier (detached fragments).
+  rust::Vec<FfiVehiclePartPose> detached_vehicle_parts(const physx::native::NativeVehicle &vehicle) const;
   /// Refresh functional state from accepted shape owners, before Vehicle2 runs.
   void prepare_vehicles();
   /// Submit the measured commands after Vehicle2 runs and before simulate.

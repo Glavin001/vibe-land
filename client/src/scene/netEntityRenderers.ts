@@ -1,4 +1,5 @@
 import { VehicleVisual } from '../vehicles/VehicleVisual';
+import { resolveMultiplayerBackend } from '../app/runtimeConfig';
 // The networked world's entities as the game draws them: players (animated
 // characters with HP bars, spawn shields and id labels), dynamic bodies
 // (balls, boxes, cannonballs), batteries and vehicles.
@@ -533,6 +534,11 @@ export class VehiclesRenderer {
           vehicleMeshGroup.userData.assetHash = vs.customVehicle.assetHash;
           vehicleMeshGroup.userData.geometryHash = vs.customVehicle.geometryHash;
           this.customVisuals.set(id, visual);
+          // Native part index -> visual ids, for drawing parts that break off.
+          fetch(`${resolveMultiplayerBackend().httpOrigin}/vehicle-assets/${vs.customVehicle.geometryHash}/metadata.json`)
+            .then(r => r.ok ? r.json() : null)
+            .then(m => { if (Array.isArray(m?.parts)) visual.setFractureGroups(m.parts.map((p: {visualIds: string[]}) => p.visualIds)); })
+            .catch(() => {});
         } else vehicleMeshGroup = createVehicleMesh(id, vehicleType);
         group.add(vehicleMeshGroup);
         this.meshes.set(id, vehicleMeshGroup);
@@ -549,7 +555,7 @@ export class VehiclesRenderer {
         custom.configure(vs.customVehicle.configuration);
         vehicleMeshGroup.userData.assetHash = vs.customVehicle.assetHash;
       }
-      if (custom) { if (vs.customRig) custom.setWheelState(vs.customRig.wheels); }
+      if (custom) { if (vs.customRig) { custom.setWheelState(vs.customRig.wheels); custom.setDetached(vs.customRig.detached ?? []); } }
       else updateVehicleWheelVisuals(vehicleMeshGroup, vs, placed.localDebug, vPos, vQuat, frameDelta);
       onPlaced?.(id, vs, vehicleMeshGroup, placed);
     }

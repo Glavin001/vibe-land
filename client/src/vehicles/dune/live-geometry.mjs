@@ -188,5 +188,17 @@ export class LiveAssembly {
       mesh.instanceMatrix.needsUpdate = true;
     }
   }
+  /** Override instances of detached visual parts: `matrices` maps a visual
+   * part id to its group-local matrix (already including part.matrix). */
+  setDetached(matrices) {
+    for (const mesh of this.meshes) {
+      const parts = mesh.userData.parts; let changed = false;
+      for (let index = 0; index < parts.length; index++) {
+        const m = matrices.get(parts[index].id); if (!m) continue;
+        mesh.setMatrixAt(index, m); changed = true;
+      }
+      if (changed) mesh.instanceMatrix.needsUpdate = true;
+    }
+  }
   dispose() { for (const mesh of this.meshes) { this.group.remove(mesh); mesh.dispose(); } this.batches.clear(); this.meshes = []; }
 }
