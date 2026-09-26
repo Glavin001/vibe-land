@@ -337,6 +337,9 @@ pub struct VehicleFracturePart {
     pub inertia_products: Vec3,
     /// 0..3 for a functional wheel group, 255 for chassis/bodywork.
     pub wheel: u8,
+    /// 0..3 for a shaft required to power that corner, 255 otherwise.
+    /// Losing this chunk cuts drive torque but preserves a surviving wheel.
+    pub drive_wheel: u8,
     pub engine: bool,
 }
 
@@ -439,6 +442,9 @@ pub struct VehicleSnapshot {
     pub wheel_jounce: [f32; 4],
     /// Bit `w` set when wheel `w`'s road query found ground.
     pub wheels_on_road: u8,
+    /// Surviving engine-to-wheel power paths, independent of configured FWD/RWD.
+    /// 255 means this SDK does not expose the observation.
+    pub drive_connection_mask: u8,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -1544,7 +1550,7 @@ impl World {
         let parts: Vec<ffi::FfiVehicleFracturePart> = parts.iter().map(|p| ffi::FfiVehicleFracturePart {
             part_index:p.part_index, mass:p.mass, volume:p.volume, center:p.center.into(),
             inertia_diagonal:p.inertia_diagonal.into(), inertia_products:p.inertia_products.into(),
-            wheel:p.wheel, engine:p.engine,
+            wheel:p.wheel, drive_wheel:p.drive_wheel, engine:p.engine,
         }).collect();
         let bonds: Vec<ffi::FfiChunkBondDesc> = bonds.iter().cloned().map(Into::into).collect();
         self.inner.pin_mut().native_register_vehicle(entity_id, structure_id, &parts, &bonds,
@@ -2000,6 +2006,7 @@ mod ffi {
         inertia_diagonal: FfiVec3,
         inertia_products: FfiVec3,
         wheel: u8,
+        drive_wheel: u8,
         engine: bool,
     }
 
@@ -2115,6 +2122,7 @@ mod ffi {
         wheel_rotation_angle: [f32; 4],
         wheel_jounce: [f32; 4],
         wheels_on_road: u8,
+        drive_connection_mask: u8,
     }
 
     /// See `StepPhases`.
@@ -2972,6 +2980,7 @@ impl From<ffi::FfiVehicleSnapshot> for VehicleSnapshot {
             wheel_rotation_angle: value.wheel_rotation_angle,
             wheel_jounce: value.wheel_jounce,
             wheels_on_road: value.wheels_on_road,
+            drive_connection_mask: value.drive_connection_mask,
         }
     }
 }

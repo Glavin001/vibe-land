@@ -535,6 +535,13 @@ void NativeDestruction::register_vehicle(physx::native::NativeVehicle &vehicle,
     physical.emplace_back(part.mass,tensor,center);
     if (part.wheel<4) binding.wheels[part.wheel].push_back(binding.base+i);
     else native_require(part.wheel==255,"invalid wheel identity");
+    if (part.drive_wheel<4) {
+#if defined(PX_NATIVE_VEHICLE_DRIVE_MASK_VERSION)
+      binding.drives[part.drive_wheel].push_back(binding.base+i);
+#else
+      native_require(false,"authored axles require a Vehicle2 SDK with drive connectivity masks");
+#endif
+    } else native_require(part.drive_wheel==255,"invalid drive wheel identity");
     if (part.engine) binding.engines.push_back(binding.base+i);
   }
   native_require(parts[0].wheel==255,"vehicle chunk zero must be retained chassis");
@@ -605,13 +612,21 @@ void NativeDestruction::prepare_vehicles() {
   for(auto &binding:s.vehicles) {
     auto *carrier=s.chunks[binding.base].shape->getActor();
     native_require(carrier==binding.vehicle->actor(),"native vehicle carrier changed actor unexpectedly");
-    PxU32 mask=0;bool engine=true;
+    PxU32 mask=0,driveMask=15;bool engine=true;
     for(PxU32 w=0;w<4;++w) if(s.chunks[binding.wheels[w][0]].shape->getActor()==carrier) mask|=1u<<w;
+    for(PxU32 w=0;w<4;++w) for(PxU32 chunk:binding.drives[w])
+      if(s.chunks[chunk].shape->getActor()!=carrier) driveMask &= ~(1u<<w);
     for(PxU32 chunk:binding.engines) engine &= s.chunks[chunk].shape->getActor()==carrier;
     if(mask!=binding.wheel_mask || engine!=binding.engine_connected) {
       native_require(binding.vehicle->setFunctionalState(mask,engine),"vehicle functional state rejected");
       binding.wheel_mask=mask;binding.engine_connected=engine;
     }
+#if defined(PX_NATIVE_VEHICLE_DRIVE_MASK_VERSION)
+    if(driveMask!=binding.drive_mask) {
+      native_require(binding.vehicle->setDriveConnectionMask(driveMask),"vehicle drive connectivity rejected");
+      binding.drive_mask=driveMask;
+    }
+#endif
   }
 #endif
 }

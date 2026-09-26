@@ -391,6 +391,7 @@ fn add_native_destruction(
     println!("cargo:rerun-if-changed=src/native_destruction.cc");
     println!("cargo:rerun-if-changed=src/native_observation.cc");
     println!("cargo:rerun-if-changed=include/native_destruction.h");
+    println!("cargo:rerun-if-changed=include/native_state.h");
 
     build
         .file("src/native_destruction.cc")

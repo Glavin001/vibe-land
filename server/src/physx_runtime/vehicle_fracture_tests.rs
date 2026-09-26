@@ -241,7 +241,8 @@ fn exercise_authored_impact(projectile_mass: f32, speed: f32, require_wheel_loss
             }
             frames.push(json!({"tick":tick,"contacts":status.normal_contacts,"broken":broken.len(),
                 "converged":status.converged,"iterations":status.iterations,"error":status.error,"targetAttached":corner.entity_id==chassis.entity_id,
-                "wheelSpeed":state.wheel_rotation_speed[0],"wheelsOnRoad":state.wheels_on_road}));
+                "wheelSpeed":state.wheel_rotation_speed[0],"wheelsOnRoad":state.wheels_on_road,
+                "driveConnectionMask":state.drive_connection_mask}));
             if status.error != 0 || !status.converged { error = Some(format!("tick {tick}: {status:?}")); break; }
             if status.normal_contacts > 0 {
                 let rows = scene.world.native_bond_stress_rows(STRUCTURE).unwrap();

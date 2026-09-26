@@ -3098,6 +3098,11 @@ public:
       snapshot.angular_velocity = from_px(record->actor->is<PxRigidDynamic>()->getAngularVelocity());
       snapshot.sleeping = state.sleeping;
       snapshot.wheels_on_road = 0;
+#if defined(PX_NATIVE_VEHICLE_DRIVE_MASK_VERSION)
+      snapshot.drive_connection_mask = static_cast<std::uint8_t>(state.driveConnectionMask);
+#else
+      snapshot.drive_connection_mask = 255;
+#endif
       for (unsigned w = 0; w < 4; ++w) {
         snapshot.wheel_steer[w] = state.wheels[w].steerAngle;
         snapshot.wheel_rotation_speed[w] = state.wheels[w].rotationSpeed;

@@ -130,9 +130,9 @@ struct NativeDestruction::State {
   struct VehicleBinding {
     physx::native::NativeVehicle *vehicle;
     std::uint32_t base, count;
-    std::uint32_t wheel_mask=15;
+    std::uint32_t wheel_mask=15, drive_mask=15;
     bool engine_connected=true;
-    std::vector<std::uint32_t> wheels[4], engines;
+    std::vector<std::uint32_t> wheels[4], drives[4], engines;
   };
   std::vector<VehicleBinding> vehicles;
   struct ExtraShape { physx::PxShape *shape; std::uint32_t chunk; };

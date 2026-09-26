@@ -64,6 +64,9 @@ pub struct FractureLayout {
     /// Native Vehicle2 corner order, derived from actor-space wheel positions.
     /// All wheel-role groups (e.g. tire and hub) must remain connected to drive.
     pub wheel_chunks: [Vec<u32>; 4],
+    /// Authored shafts for each corner. These gate drive torque separately
+    /// from physical wheel presence, so a shaftless wheel can roll and brake.
+    pub drive_chunks: [Vec<u32>; 4],
     pub chassis_chunk: Option<u32>,
     /// Loss of any of these functions disconnects power from the wheels.
     pub powertrain_chunks: Vec<u32>,
@@ -155,6 +158,8 @@ impl PreparedGeometry {
                         .position(|w| w[0] == index as u32)
                         .map_or(255, |w| w as u8),
                     engine: layout.powertrain_chunks.contains(&(index as u32)),
+                    drive_wheel: layout.drive_chunks.iter().position(|chunks| chunks.contains(&(index as u32)))
+                        .map_or(255, |wheel| wheel as u8),
                 }
             })
             .collect();
@@ -329,6 +334,19 @@ impl PreparedGeometry {
         if wheel_chunks.iter().any(Vec::is_empty) {
             return Err("missing authored wheel collision group".into());
         }
+        let mut drive_chunks: [Vec<u32>; 4] = std::array::from_fn(|_| Vec::new());
+        for (index, part) in self.parts.iter().enumerate() {
+            let Some(motion) = part.motion.as_ref().filter(|m| m["role"] == "axle") else { continue; };
+            let corner = motion["corner"].as_str().ok_or("axle has no authored corner")?;
+            let matches: Vec<_> = wheel_chunks.iter().enumerate().filter(|(_, chunks)| chunks.iter().any(|&chunk|
+                self.parts[chunk as usize].motion.as_ref().is_some_and(|m| m["corner"].as_str() == Some(corner))
+            )).map(|(wheel, _)| wheel).collect();
+            if matches.len() != 1 { return Err("axle does not map to exactly one physical wheel".into()); }
+            drive_chunks[matches[0]].push(index as u32);
+        }
+        if drive_chunks.iter().any(|chunks| !chunks.is_empty()) && drive_chunks.iter().any(Vec::is_empty) {
+            return Err("incomplete authored per-wheel drivetrain".into());
+        }
         let center = weighted_center / total_mass;
         let mut inertia = Matrix3::zeros();
         for part in &self.parts {
@@ -402,6 +420,7 @@ impl PreparedGeometry {
             visual_chunks,
             bond_chunks,
             wheel_chunks,
+            drive_chunks,
             chassis_chunk,
             powertrain_chunks,
         })
@@ -470,6 +489,41 @@ mod tests {
             asset.mass_properties.inertia[i][i] += 1.;
         }
         asset
+    }
+
+    #[cfg(feature = "native-destruction")]
+    #[test]
+    fn axle_bindings_follow_physical_corner_mapping_and_reject_missing_paths() {
+        let mut asset = functional_assembly();
+        // Deliberately reflected names: labels must not determine Vehicle2 order.
+        for (i, corner) in ["fr", "fl", "rr", "rl"].into_iter().enumerate() {
+            let wheel = &mut asset.parts[i+1];
+            wheel.motion = Some(json!({"role":"wheel","corner":corner}));
+            wheel.mass *= 0.5;
+            wheel.mass_properties.mass *= 0.5;
+            for row in &mut wheel.mass_properties.inertia { for v in row { *v *= 0.5; } }
+            let mut shaft = wheel.clone();
+            shaft.id = format!("shaft-{corner}");
+            shaft.visual_ids = vec![shaft.id.clone()];
+            shaft.motion = Some(json!({"role":"axle","corner":corner}));
+            let mut bond = asset.bonds[0].clone();
+            bond.b = shaft.id.clone();
+            asset.bonds.push(bond);
+            asset.parts.push(shaft);
+        }
+        let native = asset.native_fracture_assembly().unwrap();
+        assert_eq!(native.parts.iter().map(|p| p.drive_wheel).collect::<Vec<_>>(),
+            [255,255,255,255,255,255,0,1,2,3]);
+        assert_eq!(asset.validate_vehicle2_fracture_layout().unwrap().drive_chunks,
+            [vec![6],vec![7],vec![8],vec![9]]);
+        for motion in [json!({"role":"axle"}), json!({"role":"axle","corner":"unknown"}),
+            json!({"role":"axle","corner":"fl"}), json!({"role":"body"})] {
+            let mut bad = asset.clone();
+            bad.parts[6].motion = Some(motion);
+            assert!(bad.validate_vehicle2_fracture_layout().is_err());
+        }
+        asset.parts[2].motion = Some(json!({"role":"wheel","corner":"fr"}));
+        assert!(asset.validate_vehicle2_fracture_layout().unwrap_err().contains("exactly one"));
     }
 
     #[test]
@@ -659,6 +713,7 @@ mod tests {
             let layout = geometry
                 .validate_vehicle2_fracture_layout()
                 .unwrap_or_else(|e| panic!("{}: {e}", fixture["name"]));
+            assert!(layout.drive_chunks.iter().all(|chunks| chunks.len()==1));
             #[cfg(feature = "native-destruction")]
             {
                 let native = geometry.native_fracture_assembly().unwrap();
@@ -668,6 +723,9 @@ mod tests {
                 );
                 assert_eq!(native.bonds.len(), geometry.bonds.len());
                 assert_eq!(native.parts.len(), geometry.parts.len());
+                for (wheel, chunks) in layout.drive_chunks.iter().enumerate() {
+                    assert_eq!(native.parts[chunks[0] as usize].drive_wheel, wheel as u8);
+                }
                 for (source, node) in geometry.parts.iter().zip(&native.parts) {
                     let inertia = &source.mass_properties.inertia;
                     assert_eq!(node.mass, source.mass as f32);

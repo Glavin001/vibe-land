@@ -97,6 +97,9 @@ def main():
     header = sdk / 'include/physx/PxDestructionScene.h'
     if not header.is_file() or '#define PX_DESTRUCTION_SCENE_VERSION 22' not in header.read_text():
         parser.error('--sdk must contain the matching packaged ABI 22 headers')
+    vehicle_header = sdk / 'destruction/vehicle/PxNativeVehicle.h'
+    if not vehicle_header.is_file() or '#define PX_NATIVE_VEHICLE_DRIVE_MASK_VERSION 1' not in vehicle_header.read_text():
+        parser.error('--sdk must include the packaged Vehicle2 wrapper with per-wheel drive connectivity (version 1)')
     if output.exists():
         parser.error('--output must be a new evidence directory')
     fixtures = args.authored_fixtures.resolve() if args.authored_fixtures else None
@@ -108,6 +111,10 @@ def main():
     output.mkdir(parents=True)
     root = Path(__file__).resolve().parents[1]
     paths = [manifest, *sorted((sdk / 'lib').glob('*'))]
+    # The bridge compiles this wrapper and the packaged snippets directly;
+    # hashing only static libraries would miss a changed Vehicle2 implementation.
+    paths.extend(p for folder in ('destruction/vehicle', 'snippets/snippetvehiclecommon')
+                 for p in (sdk / folder).rglob('*') if p.suffix in ('.h', '.cpp'))
     if fixtures:
         paths.append(fixtures)
         for fixture in json.loads(fixtures.read_text()):
@@ -154,6 +161,8 @@ def main():
               'sourceDiffSha256': hashlib.sha256(subprocess.check_output(['git', 'diff', '--binary', 'HEAD', '--', 'physx-bridge'], cwd=root)).hexdigest(),
               'fixture': {'chunks': 6, 'bonds': 5, 'projectileMassKg': 300,
                           'idleTicks': 180, 'drivingTicks': 120, 'impactTicks': 120},
+              'axleFixture': {'chunks': 7, 'bonds': 6, 'projectileMassKg': 300,
+                              'freeFallTicks': 30, 'impactTicks': 120, 'brakeTicks': 10},
               'garageVehicleQualified': False, 'remoteCudaQualified': False, 'performanceQualified': False}
     report['sourceFiles'] = {str(p.relative_to(root)): digest(p)
         for p in (root / 'physx-bridge').rglob('*')
@@ -177,11 +186,13 @@ def main():
     # Fail if selection drifted, tests were merely compiled, or a gate disappeared.
     detached = re.search(r'broken=1, disabled-wheel ticks=(\d+)', log)
     inventory_ok = ('test result: ok. 13 passed; 0 failed; 0 ignored;' in log
-                    and 'test result: ok. 2 passed; 0 failed; 0 ignored;' in log
+                    and 'test result: ok. 3 passed; 0 failed; 0 ignored;' in log
                     and 'test native_vehicle_accepts_small_authored_com_offsets ...' in log
                     and 'test native_bond_observation_includes_bending_and_material_verdict ...' in log
                     and 'test native_bond_stress_respects_unequal_authored_masses ...' in log
                     and 'test native_unconverged_stress_rejects_weak_material_damage ...' in log
+                    and 'test native_axle_fracture_cuts_only_its_wheel_torque_while_wheel_can_brake ...' in log
+                    and 'wheel retained, brake verified=true' in log
                     and detached is not None and int(detached[1]) > 30
                     and 'broken=0, disabled-wheel ticks=0' in log)
     evidence_errors = []

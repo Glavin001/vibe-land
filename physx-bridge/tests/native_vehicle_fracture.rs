@@ -24,8 +24,11 @@ fn setup(wheel_strength: f32) -> World {
     setup_with_engine_offset(wheel_strength, 0.)
 }
 fn setup_with_engine_offset(wheel_strength: f32, engine_x: f32) -> World {
+    setup_scene(wheel_strength, engine_x, false, false)
+}
+fn setup_scene(wheel_strength: f32, engine_x: f32, axle: bool, free_fall: bool) -> World {
     let mut world = World::new(WorldConfig::default()).expect("required real GPU world");
-    world
+    if !free_fall { world
         .add_static_box(StaticBoxDesc {
             entity_id: 1,
             user_id: 0,
@@ -37,17 +40,17 @@ fn setup_with_engine_offset(wheel_strength: f32, engine_x: f32) -> World {
             collision_group: STATIC,
             collision_mask: u32::MAX,
         })
-        .unwrap();
+        .unwrap(); }
     world
         .add_vehicle(VehicleDesc {
             entity_id: CAR,
             user_id: 0,
             pose: Pose {
-                position: v(0., 0.9, 0.),
+                position: v(0., if free_fall {20.} else {0.9}, 0.),
                 rotation: Quat::IDENTITY,
             },
             chassis_half_extents: v(0.6, 0.2, 1.3),
-            mass: 920.,
+            mass: if axle {940.} else {920.},
             inertia: v(0., 0., 0.),
             half_track: 0.95,
             suspension_attachment_y: 0.15,
@@ -77,7 +80,7 @@ fn setup_with_engine_offset(wheel_strength: f32, engine_x: f32) -> World {
             collision_mask: u32::MAX,
         })
         .unwrap();
-    let positions = [
+    let mut positions = vec![
         v(0., 0., 0.),
         v(-0.95, -0.1, 1.),
         v(0.95, -0.1, 1.),
@@ -85,9 +88,10 @@ fn setup_with_engine_offset(wheel_strength: f32, engine_x: f32) -> World {
         v(0.95, -0.1, -1.),
         v(engine_x, 0.4, -0.7),
     ];
+    if axle { positions.push(v(-1.6,0.4,1.)); }
     let mut parts = Vec::new();
     let mut shapes = Vec::new();
-    for (i, center) in positions.into_iter().enumerate() {
+    for (i, center) in positions.iter().copied().enumerate() {
         let mass = if i == 0 {
             800.
         } else if i == 5 {
@@ -117,6 +121,7 @@ fn setup_with_engine_offset(wheel_strength: f32, engine_x: f32) -> World {
                 255
             },
             engine: i == 5,
+            drive_wheel: if i==6 {0} else {255},
         });
         // Two chassis hulls still represent one authored chunk and its one
         // measured mass tensor. This also exercises borrowed extra-shape refs.
@@ -138,7 +143,7 @@ fn setup_with_engine_offset(wheel_strength: f32, engine_x: f32) -> World {
     }
     world.set_vehicle_shapes(CAR, &shapes).unwrap();
     world.native_attach().unwrap();
-    let bonds: Vec<_> = (1..6)
+    let bonds: Vec<_> = (1..positions.len() as u32)
         .map(|i| ChunkBondDesc {
             bond_index: i - 1,
             node0: 0,
@@ -154,7 +159,7 @@ fn setup_with_engine_offset(wheel_strength: f32, engine_x: f32) -> World {
                 v(1., 0., 0.)
             },
             area: 0.01,
-            material: if i == 1 { 0 } else { 1 },
+            material: if i == if axle {6} else {1} { 0 } else { 1 },
         })
         .collect();
     let material = |elastic| StressMaterialDesc {
@@ -194,9 +199,73 @@ fn setup_with_engine_offset(wheel_strength: f32, engine_x: f32) -> World {
             verdict_sample_ticks: 1,
         })
         .unwrap();
-    assert_eq!(configured.chunks, 6);
-    assert_eq!(configured.bonds, 5);
+    assert_eq!(configured.chunks as usize, positions.len());
+    assert_eq!(configured.bonds as usize, positions.len()-1);
     world
+}
+
+#[test]
+#[ignore = "requires isolated coherent PhysX ABI 22 GPU SDK with drive mask support"]
+fn native_axle_fracture_cuts_only_its_wheel_torque_while_wheel_can_brake() {
+    for (strength, expect_fracture) in [(20e6,true),(1e9,false)] {
+        let mut world=setup_scene(strength,0.,true,true);
+        let mut broken=Vec::new();
+        let mut detached=false;
+        let mut coast_ticks=0;
+        let mut contacted=false;
+        for tick in 0..150 {
+            world.drive_vehicle(CAR,VehicleCommands { throttle:0.35,..Default::default() }).unwrap();
+            if tick==30 {
+                let aim=world.native_chunk_aim(STRUCTURE,6).unwrap();
+                let ray=world.native_raycast_chunk(v(aim.center.x-0.28,aim.center.y,aim.center.z),v(1.,0.,0.),1.).unwrap();
+                assert!(ray.hit && ray.chunk_id==aim.chunk_id);
+                let velocity=world.vehicle_snapshots().unwrap()[0].linear_velocity;
+                world.launch_dynamic_ball(LaunchedBallDesc {
+                    entity_id:2,user_id:0,pose:Pose {position:v(aim.center.x-0.28,aim.center.y,aim.center.z),rotation:Quat::IDENTITY},
+                    radius:0.12,mass:300.,linear_velocity:v(30.+velocity.x,velocity.y,velocity.z),
+                    collision_group:VEHICLE,collision_mask:u32::MAX,
+                }).unwrap();
+            }
+            let before=world.vehicle_snapshots().unwrap()[0];
+            world.step().unwrap();
+            let status=world.native_tick().unwrap();
+            assert_eq!(status.error,0);
+            assert!(status.converged);
+            contacted |= status.normal_contacts>0;
+            broken.extend(world.native_take_broken_bonds().unwrap());
+            if tick<30 {assert!(broken.is_empty());}
+            let chassis=world.native_chunk_aim(STRUCTURE,0).unwrap();
+            for part in 1..6 {
+                assert_eq!(world.native_chunk_aim(STRUCTURE,part).unwrap().entity_id,chassis.entity_id);
+            }
+            let after=world.vehicle_snapshots().unwrap()[0];
+            if detached {
+                assert_eq!(after.drive_connection_mask,14);
+                assert!(after.wheel_rotation_speed[0].abs()<=before.wheel_rotation_speed[0].abs()+1e-4,
+                    "shaftless wheel still accelerates under throttle");
+                assert!(after.wheel_rotation_speed[1]>before.wheel_rotation_speed[1],
+                    "the other powered wheel must continue accelerating");
+                coast_ticks+=1;
+            }
+            detached |= world.native_chunk_aim(STRUCTURE,6).unwrap().entity_id!=chassis.entity_id;
+            assert!(world.native_validate_mappings().unwrap());
+        }
+        assert!(contacted);
+        assert_eq!(detached,expect_fracture);
+        assert_eq!(broken.len(),usize::from(expect_fracture));
+        if expect_fracture {
+            assert!(coast_ticks>30);
+            let spinning=world.vehicle_snapshots().unwrap()[0].wheel_rotation_speed[0].abs();
+            assert!(spinning>0.1,"shaft loss must not erase the surviving wheel's inertia");
+            world.drive_vehicle(CAR,VehicleCommands {brake:1.,..Default::default()}).unwrap();
+            for _ in 0..10 {world.step().unwrap();}
+            assert!(world.vehicle_snapshots().unwrap()[0].wheel_rotation_speed[0].abs()<spinning*0.1,
+                "a surviving wheel must retain its brake");
+        } else {assert_eq!(world.vehicle_snapshots().unwrap()[0].drive_connection_mask,15);}
+        eprintln!("Vehicle2 axle proof: strength={strength}, broken={}, coasting-wheel ticks={coast_ticks}, wheel retained, brake verified={expect_fracture}",broken.len());
+        world.native_clear().unwrap();
+        world.remove_actor(CAR).unwrap();
+    }
 }
 #[test]
 #[ignore = "requires isolated coherent PhysX ABI 22 GPU SDK"]
