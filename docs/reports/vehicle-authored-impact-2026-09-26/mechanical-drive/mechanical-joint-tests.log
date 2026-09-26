@@ -1,0 +1,9 @@
+
+ RUN  v4.1.2 /Users/glavin/Development/vibe-land/client
+
+
+ Test Files  2 passed (2)
+      Tests  31 passed (31)
+   Start at  09:42:55
+   Duration  126.09s (transform 89ms, setup 0ms, import 140ms, tests 125.91s, environment 0ms)
+

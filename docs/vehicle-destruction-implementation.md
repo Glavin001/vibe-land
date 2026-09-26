@@ -138,6 +138,15 @@ graph still includes mechanically questionable direct attachments, and needs
 review before strength tuning. The shared verification command now supports
 `--authored-fixtures` and checks complete impact evidence as well as test exit codes.
 
+The [mechanical graph and axle-connectivity update](reports/vehicle-authored-impact-2026-09-26/mechanical-drive/README.md)
+removes incidental rotating/stationary contacts while retaining the measured
+mounts and unchanged geometry, masses and material strengths. A real GPU
+projectile regression now proves that a detached axle cuts only its wheel's
+drive torque, preserving the attached wheel's inertia and brake. All 16 bridge
+regressions pass. This uses the derived `/tmp/vehicle-drive-mask-sdk22` wrapper
+with per-wheel drive connectivity; the preceding frozen wrapper does not expose
+that capability. Full authored-model impact qualification is still in progress.
+
 The full-model tests share fixture loading, registration and configuration in
 `server/src/physx_runtime/vehicle_fracture_tests.rs`. Run them serially against
 the explicit isolated runtime. `VIBE_VEHICLE_FRACTURE_REPORT` records per-model

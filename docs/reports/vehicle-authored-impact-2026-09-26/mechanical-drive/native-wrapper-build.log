@@ -1,0 +1,3 @@
+[  0%] Building CXX object vehicle/CMakeFiles/PhysXNativeVehicle.dir/PxNativeVehicle.cpp.o
+[ 50%] Linking CXX static library libPhysXNativeVehicle_static_64.a
+[100%] Built target PhysXNativeVehicle

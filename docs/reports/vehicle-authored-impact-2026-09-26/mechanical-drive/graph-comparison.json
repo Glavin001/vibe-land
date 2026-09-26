@@ -1,0 +1,101 @@
+[
+  {
+    "model": "buggy",
+    "chunks": 194,
+    "hulls": 635,
+    "oldBonds": 634,
+    "newBonds": 594,
+    "geometryAndMassUnchanged": true,
+    "retainedInterfaceAreasAndMaterialsUnchanged": true
+  },
+  {
+    "model": "trophy",
+    "chunks": 336,
+    "hulls": 907,
+    "oldBonds": 1080,
+    "newBonds": 1040,
+    "geometryAndMassUnchanged": true,
+    "retainedInterfaceAreasAndMaterialsUnchanged": true
+  },
+  {
+    "model": "rally",
+    "chunks": 331,
+    "hulls": 773,
+    "oldBonds": 1110,
+    "newBonds": 1042,
+    "geometryAndMassUnchanged": true,
+    "retainedInterfaceAreasAndMaterialsUnchanged": true
+  },
+  {
+    "model": "monster",
+    "chunks": 336,
+    "hulls": 911,
+    "oldBonds": 1059,
+    "newBonds": 1023,
+    "geometryAndMassUnchanged": true,
+    "retainedInterfaceAreasAndMaterialsUnchanged": true
+  },
+  {
+    "model": "derby",
+    "chunks": 330,
+    "hulls": 869,
+    "oldBonds": 1024,
+    "newBonds": 984,
+    "geometryAndMassUnchanged": true,
+    "retainedInterfaceAreasAndMaterialsUnchanged": true
+  },
+  {
+    "model": "sprint",
+    "chunks": 226,
+    "hulls": 704,
+    "oldBonds": 762,
+    "newBonds": 722,
+    "geometryAndMassUnchanged": true,
+    "retainedInterfaceAreasAndMaterialsUnchanged": true
+  },
+  {
+    "model": "trail",
+    "chunks": 194,
+    "hulls": 635,
+    "oldBonds": 634,
+    "newBonds": 594,
+    "geometryAndMassUnchanged": true,
+    "retainedInterfaceAreasAndMaterialsUnchanged": true
+  },
+  {
+    "model": "desert",
+    "chunks": 336,
+    "hulls": 907,
+    "oldBonds": 1080,
+    "newBonds": 1040,
+    "geometryAndMassUnchanged": true,
+    "retainedInterfaceAreasAndMaterialsUnchanged": true
+  },
+  {
+    "model": "touge",
+    "chunks": 331,
+    "hulls": 773,
+    "oldBonds": 1110,
+    "newBonds": 1042,
+    "geometryAndMassUnchanged": true,
+    "retainedInterfaceAreasAndMaterialsUnchanged": true
+  },
+  {
+    "model": "drift",
+    "chunks": 330,
+    "hulls": 869,
+    "oldBonds": 1024,
+    "newBonds": 984,
+    "geometryAndMassUnchanged": true,
+    "retainedInterfaceAreasAndMaterialsUnchanged": true
+  },
+  {
+    "model": "circuit",
+    "chunks": 226,
+    "hulls": 704,
+    "oldBonds": 762,
+    "newBonds": 722,
+    "geometryAndMassUnchanged": true,
+    "retainedInterfaceAreasAndMaterialsUnchanged": true
+  }
+]

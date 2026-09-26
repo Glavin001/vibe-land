@@ -1,0 +1,24 @@
+
+running 8 tests
+test vehicle_assets::fracture::tests::retains_parallel_interfaces_and_grouped_visuals ... ok
+test vehicle_assets::fracture::tests::partial_ownership_removes_only_the_disconnected_corner ... ok
+test vehicle_assets::fracture::tests::rejects_moving_functional_parts_duplicate_chassis_and_split_wheel_groups ... ok
+test vehicle_assets::fracture::tests::native_conversion_preserves_mass_hulls_parallel_interfaces_and_material_units ... ok
+test vehicle_assets::fracture::tests::native_roles_are_authored_not_inferred_from_mass_or_order ... ok
+test vehicle_assets::fracture::tests::axle_bindings_follow_physical_corner_mapping_and_reject_missing_paths ... ok
+test vehicle_assets::fracture::tests::rejects_corrupt_mass_graph_material_and_visual_ownership ... ok
+"buggy": 194 chunks, 594 interfaces, 927 visuals, wheel chunks [[4], [1], [10], [7]]
+"trophy": 336 chunks, 1040 interfaces, 1069 visuals, wheel chunks [[4], [1], [10], [7]]
+"rally": 331 chunks, 1042 interfaces, 1064 visuals, wheel chunks [[4], [1], [10], [7]]
+"monster": 336 chunks, 1023 interfaces, 1069 visuals, wheel chunks [[4], [1], [10], [7]]
+"derby": 330 chunks, 984 interfaces, 1063 visuals, wheel chunks [[4], [1], [10], [7]]
+"sprint": 226 chunks, 722 interfaces, 959 visuals, wheel chunks [[4], [1], [10], [7]]
+"trail": 194 chunks, 594 interfaces, 927 visuals, wheel chunks [[4], [1], [10], [7]]
+"desert": 336 chunks, 1040 interfaces, 1069 visuals, wheel chunks [[4], [1], [10], [7]]
+"touge": 331 chunks, 1042 interfaces, 1064 visuals, wheel chunks [[4], [1], [10], [7]]
+"drift": 330 chunks, 984 interfaces, 1063 visuals, wheel chunks [[4], [1], [10], [7]]
+"circuit": 226 chunks, 722 interfaces, 959 visuals, wheel chunks [[4], [1], [10], [7]]
+test vehicle_assets::fracture::tests::authored_garage_fracture_data ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 203 filtered out; finished in 0.42s
+
