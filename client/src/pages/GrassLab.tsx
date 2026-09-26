@@ -55,9 +55,9 @@ function PreviewField({ quality, wind, enabled, paused, driving, rubble, clearTr
   const clock = useRef({ report: 0, frameMs: 16.7 });
   const car = useRef<Group>(null);
   const stone = useRef<Mesh>(null);
-  const demo = useRef({ started: 0, drop: 0, previousX: NaN });
+  const demo = useRef({ started: 0, drop: 0, previousX: NaN, impacted: false });
   useEffect(() => { demo.current.started = performance.now()/1000; demo.current.previousX = NaN; }, [driving]);
-  useEffect(() => { demo.current.drop = performance.now()/1000; }, [rubble]);
+  useEffect(() => { demo.current.drop = performance.now()/1000; demo.current.impacted = false; }, [rubble]);
   useEffect(() => { field.current?.interaction.clear(); }, [clearTracks]);
   useEffect(() => {
     const next = new GrassField(quality, EXCLUSIONS);
@@ -87,6 +87,10 @@ function PreviewField({ quality, wind, enabled, paused, driving, rubble, clearTr
           fromX: Number.isFinite(demo.current.previousX) ? demo.current.previousX : undefined, fromZ: PREVIEW_Z });
       }
       demo.current.previousX = carX;
+      if (rubble > 0) grass.interaction.canopy(PREVIEW_X,stoneY,PREVIEW_Z-2,1.6);
+      if (rubble > 0 && stoneY < 1 && !demo.current.impacted) {
+        demo.current.impacted = true; grass.interaction.impulse(PREVIEW_X,PREVIEW_Z-2,time,1);
+      }
       if (rubble > 0 && stoneY < 1) grass.interaction.stamp({ x:PREVIEW_X, z:PREVIEW_Z-2, radiusX:2.15, radiusZ:1.6, shape:'box', pressure:Math.min(1, 1.3-stoneY), hold:0.2 });
       grass.interaction.commit();
     }
@@ -282,6 +286,9 @@ export function GrassLabPage() {
       <button aria-pressed={painting} onClick={()=>{setPainting(v=>!v); if(!painting)setView(1);}}>{painting?'Finish painting':'Paint grass'}</button>
       {painting && <div className="grass-lab-paint">
         <div className="grass-lab-palette">{Object.entries(GRASS_BRUSHES).map(([name,value])=><button key={name} onClick={()=>setBrush({...value})}>{name === 'person' ? 'Person height' : name === 'vehicle' ? 'Vehicle height' : name}</button>)}</div>
+        <label>Paint affects <select aria-label="Paint affects" value={brush.mode ?? 'all'} onChange={e=>setBrush({...brush,mode:e.target.value as 'all' | 'appearance'})}>
+          <option value="all">All plant properties</option><option value="appearance">Color, health and dryness only</option>
+        </select></label>
         <label>Plant family <select aria-label="Plant family" value={brush.species ?? 'grass'} onChange={e=>setBrush({...brush,species:e.target.value as FoliageSpecies})}>
           {FOLIAGE_SPECIES.map(species=><option key={species} value={species}>{FOLIAGE_PROFILES[species].label}</option>)}
         </select></label>

@@ -10,8 +10,8 @@ visible beyond the blade draw distance.
 ## Rendering
 
 - Original, asset-free blade implementation for the existing Three.js WebGL2
-  renderer. No packages, server changes, network messages or physics bodies.
-- Cubic Bezier leaves with analytic bent normals, variation in height, width,
+  renderer. No extra packages or per-plant physics bodies. Only authored layout metadata is shared by the server.
+- Circular-arc leaves with length-preserving deformation and analytic bent normals, variation in height, width,
   lean and color, rounded leaf lighting and shadow-aware sun transmission.
 - World-space gusts sample the city's existing procedural noise texture; a
   faster wave adds tip flutter. Weather wind speed and compass direction drive
@@ -28,11 +28,12 @@ visible beyond the blade draw distance.
   Randomly ordered deterministic placement keeps every prefix spread throughout
   the patch. Per-blade growth transitions hide density and range changes; newly
   streamed patches grow in over 0.35 s. Roots never follow the camera.
-- Patch creation is limited to two patches per frame, stopping after a 2 ms
-  budget (an individual patch build is synchronous). Only uniforms, visibility,
+- A single worker generates one patch at a time and transfers typed buffers.
+  At most one result is installed per frame. CSP/worker failures use a synchronous
+  fallback capped at two builds and a soft 2 ms budget (one build may exceed it). Only uniforms, visibility,
   draw ranges and instance counts change in steady state.
-- Instance data uses **27 bytes per blade**: float root/height/yaw, normalized
-  16-bit width/lean/variation/rank, and normalized 8-bit linear RGB. A camera-local cache evicts distant patches and
+- Instance data uses **31 bytes per plant**: float root/height/yaw, normalized
+  16-bit width/lean/variation/rank, normalized 8-bit linear RGB, and four trait bytes. A camera-local cache evicts distant patches and
   releases geometry/material resources on teardown and quality changes.
 
 | Grass profile | Maximum candidates/m² | Geometry distances | Blade range |
@@ -67,8 +68,8 @@ ring where individual grass blades disappear.
 ## Contact and recovery
 
 `GrassInteraction` owns a scrolling **128×128 RGBA8 texture over 64×64 m**.
-R stores compression, GB store bend direction. Blades sample it once in the
-vertex shader; their curve flattens towards the ground and bends away from the
+R stores elastic compression, GB store bend direction, A stores lasting creases. The shader interpolates current/previous field samples at render frequency
+(two cached taps); each plant’s curve flattens towards the ground and bends away from the
 contact. There are no blade physics objects or per-blade CPU updates.
 
 The field ticks at at most 20 Hz, decays exponentially over about 1.8 seconds
@@ -76,8 +77,11 @@ after a contact-specific hold, and retains existing world-space tracks as it
 scrolls in 8 m steps. Tyres sweep between previous/current positions; teleports
 over 12 m do not draw a trail. Resting objects refresh their holds. Frame work
 is capped at 192 footprint stamps and 32,768 cell visits; a dirty tick uploads
-64 KiB. The field fades out near its edges. It is an approximate visual effect,
-not authoritative destruction or persistent environmental damage.
+two 64 KiB textures. The field fades out near its edges. It is an approximate visual effect,
+not authoritative destruction. Creases decay over 180 seconds; a bounded 256 KiB
+cache retains them across camera travel within the session. Healthy plants show
+less lasting deformation than dry plants. History is not synchronized or saved
+to disk and clears when the field is disposed.
 
 `GrassBodyContacts` reads existing client poses:
 
@@ -93,8 +97,16 @@ The rubble reader resumes a bounded scan (up to 512 chunk poses / 1,024 body
 entries per tick) and retains pressure for four seconds between visits.
 Extreme debris counts can delay new contacts. Footprint radii are capped at
 8 m; interaction is limited to the camera-local field. Original building
-foundations remain excluded after demolition. The field can be reused for other
-foliage materials; this change animates grass only.
+foundations remain excluded after demolition. The field is reused for other
+foliage families, including reeds, wheat, corn and ferns.
+
+The two nearest canopy bodies additionally part plants taller than their lower
+bounds, without flattening short plants underneath airborne objects. Falling
+objects crossing ground level can launch at most two 1.6-second radial wind
+waves. These use presented poses and a bounded recent-body cache. The editor's
+falling slab exercises both paths. Contact texture changes interpolate over
+50 ms, avoiding visible 20 Hz stepping; camera scroll and clear operations reset
+both samples to prevent ghost trails.
 
 ## Painting
 
@@ -106,8 +118,8 @@ small screen, open **Grass controls** to reveal the controls.
 Person height uses a 2.8 m blade-length ceiling and Vehicle height uses 4 m.
 Tall stands have a tighter height distribution, broader leaves and less initial
 lean; actual upright tips are lower than blade length because the leaves curve.
-The renderer keeps the same instance counts and triangle budgets. Taller leaves
-cover more pixels, so GPU fill cost can rise despite unchanged geometry counts.
+Tall stands retain more instances at distance to preserve canopy coverage. Taller
+leaves also cover more pixels, so their GPU cost is higher than a short lawn.
 **Plant tall test patch** paints an 18 m radius patch around the demo car path;
 use **Paint grass → Undo** to restore the previous layout. To place the demo
 at a city location, open `/grass?x=0&z=55`, then plant the patch. Opening the
@@ -132,9 +144,39 @@ fraction of the selected profile's maximum, not a world-space blade count.
 
 Edits are private drafts saved to local storage. Undo retains the last eight
 edits. Export and Import layout transfer versioned JSON; invalid imports leave
-the current layout intact. Version 2 encodes 0–4 m height; version 1 imports
+the current layout intact. Version 3 adds species, health, dryness, maturity, row spacing/angle and stiffness.
+Version 2 encodes 0–4 m height; version 1 imports
 retain their 0–2 m scale (within byte quantization). Existing local drafts migrate
 on load. Storage-quota failures leave edits visible and offer export.
+
+### Foliage families
+
+The sample buttons plant an 18 m patch at the selected world coordinates. The
+paint panel offers family, health, dryness, maturity, stiffness and planting-row
+controls in addition to density, height and color. Appearance-only painting
+changes color/health/dryness without moving or replacing existing plants. Zero row spacing means wild
+placement. Rows use world coordinates, so they continue across patch boundaries.
+
+| Family | PRETTY candidates accepted/m² before authored density/rows | Shape |
+| --- | ---: | --- |
+| Grass | 150 | Curved ribbon |
+| Reeds | 28 | Stem and crossed seed head |
+| Wheat | 55 | Stem and serrated golden head |
+| Corn | 3 | Stalk and six broad leaves |
+| Ferns | 5 | Six radial fronds |
+
+Plants share wind, contact, recovery and lighting, with species stiffness and
+independent leaf flutter. Dryness reduces transmission and browns tips; maturity
+changes size without moving roots. Each occupied family uses one instanced draw
+per patch. Mixed boundaries can add draws, but no per-plant objects are created.
+Crop roots are identical across quality tiers. Broad-leaf LOD retains at least 65% of instances and tall blades at least 32%
+before the final range fade. This improves canopy coverage; it is not a gameplay
+visibility guarantee. The 7/3/1 triangle figures above apply to grass only.
+
+Version 3 needs the updated grass service and client. Old v1/v2 drafts migrate
+on import; the server continues to read existing v2 layouts. Older clients cannot
+read v3, so deploy clients and service together. The existing 24 MiB request cap
+still applies; very large fully painted layouts may require smaller authored areas.
 
 ### Sharing a city layout
 
@@ -148,7 +190,8 @@ The editor uses the configured multiplayer HTTP origin, just like the game.
 
 `/city` ignores browser-local drafts, fetches the shared layout on entry, and
 polls every two seconds with `If-None-Match`. Unchanged layouts return 304 and
-cause no patch rebuilding. New layouts use the existing budgeted patch rebuilds.
+cause no patch rebuilding. New layouts compare tile bytes and invalidate only
+changed neighborhoods before budgeted rebuilding.
 A small status label shows the shared content revision, or an explicit offline
 message. An outage keeps the last shared layout; an initial failure shows the
 default meadow. It never silently treats private paint as shared data.
@@ -243,27 +286,39 @@ viewport screenshots are layout checks, not measurements of phone hardware.
 The preview's frame interval is whole-frame wall time and includes display
 pacing; it must not be interpreted as grass GPU time.
 
-Local validation (2026-09-25): TypeScript and the Vite production bundle passed;
-21 tests passed, including swept contacts, recovery, scrolling, settled topology
-poses, local vehicle presentation, paint continuity, import validation and patch
-invalidation. Chrome/ANGLE Metal on an Apple M3 Max reported no browser or shader
-errors. The isolated camera submitted 136,792 blades in 45 draws on PRETTY
-(28.1 MB resident instance data), and 16,251 blades in 23 draws on FAST (2.45 MB).
-Both submitted zero blades from 100 m altitude and
-returned renderer geometry counts to zero on disposal.
+Local validation (2026-09-26): TypeScript, 39 foliage/city-world tests, three
+server layout tests, and the Vite production bundle passed. The bundle reused
+existing WASM and skipped unrelated scene packs. Browser checks exercised all
+plant families, mobile controls, painting/undo/import, driving and falling rubble
+with no browser or shader errors. Every profile culled all plants from 100 m
+altitude and returned geometry counts to zero on disposal.
 
-At 720p, paired median grass GPU increments varied from 0.91–2.64 ms PRETTY and
-0.09–0.23 ms FAST on this shared machine. Saturating the contact budget measured
-0.3 ms median / 0.5 ms p95 CPU per contact tick (at 20 Hz); steady-state field
-updates measured 0.1–0.2 ms p95 per frame. A subsequent 1920×1080 run with active
-contacts measured paired GPU increments of 0.77 ms PRETTY / 0.06 ms FAST; its
-report and screenshots were saved to `/tmp/vibe-grass-1080`. GPU timer results on ANGLE Metal
-are indicative and can vary with other work. They are not a phone or live-city
-FPS guarantee. **120 Hz requires the entire city frame to fit within 8.33 ms**;
-this harness isolates the additional grass cost. Re-run it on the target
-hardware and profile the full city before making that claim. The production
-bundle check reused existing WASM and skipped the unrelated large scene packs;
-no Rust/WASM or live deployment changes were required for this client feature.
+[Recorded benchmark](benchmarks/foliage-m3max-2026-09-26.json): Chrome/ANGLE Metal,
+Apple M3 Max, 1920×1080, DPR 1, MSAA. Patch streaming completed before measurement;
+two canopy contacts and two impact waves exercised the bounded interaction path.
+
+| Preset | Paired median GPU increment | Moving update CPU p95 |
+| --- | ---: | ---: |
+| PRETTY meadow | 0.64 ms | 0.40 ms |
+| FAST meadow | 0.08 ms | 0.20 ms |
+| Wheat | 0.73 ms | 0.30 ms |
+| Corn | 0.48 ms | 0.30 ms |
+| Ferns | 0.83 ms | 0.20 ms |
+| Four-metre grass | 1.40 ms | 0.20 ms |
+
+Steady field-update CPU p95 was 0.1–0.2 ms. Saturating the contact budget took
+0.3–0.4 ms median / 0.4–0.5 ms p95 at 20 Hz. Measured moving-update maxima were
+0.3–0.7 ms. The optional `GRASS_BENCH_GPU_BUDGET_MS` asserts the paired median
+increment; it is not a bound on individual frames. GPU p95 deltas ranged from
+0.88 to 2.98 ms in this run, with substantial background/ANGLE timing noise.
+
+These measurements are not a phone or live-city FPS guarantee. **120 Hz requires
+the entire city frame to fit within 8.33 ms**. This harness isolates additional
+foliage cost; test full-city destruction and target hardware before certifying
+120 Hz. The lab's frame interval includes display pacing (headless Chrome here
+runs at about 60 Hz). Shared layouts are supported; trample history remains
+local, temporary cosmetic state. Permanent networked vegetation destruction,
+AI concealment, harvest/growth simulation and foliage audio are not implemented.
 
 ## References
 

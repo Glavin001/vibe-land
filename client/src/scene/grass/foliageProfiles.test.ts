@@ -38,6 +38,20 @@ describe('foliage authoring and budgets', () => {
     paint.dispose();
   });
 
+  it('keeps crop roots identical across quality tiers and supports appearance-only painting', () => {
+    const paint = new GrassPaint();
+    paint.paint(4,4,12,GRASS_BRUSHES.corn);
+    const a = generateGrassPatch(0,0,'pretty',[],paint);
+    const fast = generateGrassPatch(0,0,'fast',[],paint);
+    expect(fast.roots).toEqual(a.roots);
+    paint.paint(4,4,12,{...GRASS_BRUSHES.dry, mode:'appearance'});
+    const b = generateGrassPatch(0,0,'pretty',[],paint);
+    expect(b.roots).toEqual(a.roots);
+    expect(b.colors).not.toEqual(a.colors);
+    expect(b.traits[3]).toBe(3);
+    paint.dispose();
+  });
+
   it('validates species atomically and invalidates only changed tiles on shared imports', () => {
     const a = new GrassPaint(), b = new GrassPaint();
     a.paint(4, 4, 2, GRASS_BRUSHES.corn);

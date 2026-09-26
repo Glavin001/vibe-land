@@ -85,7 +85,9 @@ export interface GrassPatchData {
 /** Random order is intentional: every instanceCount prefix covers the WHOLE patch.
  * Positions and appearance are stable when leaving, returning or changing LOD. */
 export function generateGrassPatch(px: number, pz: number, quality: GrassQuality, exclusions: readonly GrassExclusion[], paint: GrassPaint = cityGrassPaint): GrassPatchData {
-  const count = Math.round(GRASS_PROFILES[quality].density * GRASS_PATCH_SIZE ** 2);
+  // Fixed candidate sequence keeps crop positions identical across quality tiers.
+  const count = Math.round(GRASS_PROFILES.pretty.density * GRASS_PATCH_SIZE ** 2);
+  const grassLimit = GRASS_PROFILES[quality].density * GRASS_PATCH_SIZE ** 2;
   const roots = new Float32Array(count * 4);
   // Normalized 16-bit attributes: widths retain ~0.015 mm precision and save
   // 25% of resident instance memory versus two float vec4s.
@@ -116,7 +118,8 @@ export function generateGrassPatch(px: number, pz: number, quality: GrassQuality
     const speciesId = Math.round(style[5]*255);
     const species = FOLIAGE_SPECIES[speciesId] ?? 'grass';
     const profile = FOLIAGE_PROFILES[species];
-    const densityScale = Math.min(1, profile.density/GRASS_PROFILES[quality].density);
+    if (species === 'grass' && i >= grassLimit) continue;
+    const densityScale = Math.min(1, profile.density/GRASS_PROFILES.pretty.density);
     if (coverage >= style[0]*densityScale) continue;
     const spacing = style[9]*4;
     if (spacing > 0.1) {

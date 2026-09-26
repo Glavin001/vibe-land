@@ -48,10 +48,10 @@ function createPlantLods(species: number) {
     const start = indices.length;
     const parts = species >= 3 ? 7 : species > 0 ? 3 : 1;
     for (let partIndex = 0; partIndex < parts; partIndex++) {
-      const part = createBladeGeometry(partIndex > 0 && species <= 2 ? Math.max(2, segments*2) : partIndex > 0 && species >= 3 && segments === 4 ? 6 : segments);
+      const part = createBladeGeometry(partIndex > 0 && species === 4 ? segments*6 : partIndex > 0 && species <= 2 ? Math.max(2, segments*2) : partIndex > 0 && species >= 3 && segments === 4 ? 6 : segments);
       const offset = positions.length / 3;
       const points = part.getAttribute('position').array;
-      for (let i = 0; i < points.length; i+=3) positions.push(points[i], points[i+1], partIndex);
+      for (let i = 0; i < points.length; i+=3) positions.push(points[i] * (species === 4 && partIndex > 0 && (i/6)%2 === 1 ? 0.12 : 1), points[i+1], partIndex);
       indices.push(...Array.from(part.index!.array, i => i + offset));
       part.dispose();
     }
@@ -190,6 +190,9 @@ export class GrassField {
     this.projection.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
     this.frustum.setFromProjectionMatrix(this.projection);
     this.shading.uniforms.grassTime.value = time;
+    this.shading.uniforms.grassContactBlend.value = this.interaction.blendAt(time);
+    this.shading.uniforms.grassCanopyCount.value = this.interaction.canopyCount;
+    this.shading.uniforms.grassImpulseCount.value = this.interaction.impulseCount;
     const { x, y, z } = this.eye;
     const cx = Math.floor(x / GRASS_PATCH_SIZE), cz = Math.floor(z / GRASS_PATCH_SIZE);
     if (cx !== this.cellX || cz !== this.cellZ || time - this.lastCandidates > 0.25) {

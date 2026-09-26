@@ -298,7 +298,14 @@ mod tests {
     }
     #[test]
     fn accepts_legacy_and_foliage_tiles_but_rejects_unknown_species() {
-        let mut layout = Layout { version: 3, tiles: vec![Tile { x: 0, z: 0, data: vec![0; 3072] }] };
+        let mut layout = Layout {
+            version: 3,
+            tiles: vec![Tile {
+                x: 0,
+                z: 0,
+                data: vec![0; 3072],
+            }],
+        };
         layout.tiles[0].data[5] = 4;
         assert!(layout.validate().is_ok());
         layout.tiles[0].data[5] = 5;
@@ -308,6 +315,53 @@ mod tests {
         assert!(layout.validate().is_ok());
         layout.version = 3;
         assert!(layout.validate().is_err());
+    }
+
+    #[tokio::test]
+    async fn foliage_profiles_survive_publishing_and_store_restart() {
+        let (dir, store) = setup();
+        let app = router(store);
+        let initial = request(
+            app.clone(),
+            "GET",
+            "city-foliage-test",
+            None,
+            "",
+            serde_json::Value::Null,
+        )
+        .await;
+        let rev = initial.headers()[header::ETAG].to_str().unwrap().to_owned();
+        let mut data = vec![0u8; 3072];
+        for cell in data.chunks_exact_mut(12) {
+            cell[5] = 3;
+            cell[6] = 255;
+            cell[8] = 200;
+        }
+        let layout = serde_json::json!({"version":3,"tiles":[{"x":2,"z":-1,"data":data}]});
+        let saved = request(
+            app,
+            "PUT",
+            "city-foliage-test",
+            Some(&rev),
+            "editor-key",
+            layout.clone(),
+        )
+        .await;
+        assert_eq!(saved.status(), StatusCode::OK);
+        let fresh = router(GrassStore::new(dir.clone(), None));
+        let read = request(
+            fresh,
+            "GET",
+            "city-foliage-test",
+            None,
+            "",
+            serde_json::Value::Null,
+        )
+        .await;
+        let body: serde_json::Value =
+            serde_json::from_slice(&to_bytes(read.into_body(), MAX_BYTES).await.unwrap()).unwrap();
+        assert_eq!(body["layout"], layout);
+        tokio::fs::remove_dir_all(dir).await.unwrap();
     }
 
     #[tokio::test]

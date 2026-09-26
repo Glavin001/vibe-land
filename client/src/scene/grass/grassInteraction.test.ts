@@ -6,6 +6,31 @@ import { GrassInteraction } from './GrassInteraction';
 import { GrassPaint, GRASS_BRUSHES } from './GrassPaint';
 
 describe('grass contact field', () => {
+  it('interpolates committed contacts without reintroducing stale history after scrolling or clearing', () => {
+    const field = new GrassInteraction(); field.begin(0,0,0);
+    field.stamp({ x: 0.25, z: 0.25, radiusX: 1, radiusZ: 1 }); field.commit();
+    expect(field.blendAt(0.025)).toBeCloseTo(0.5);
+    expect(field.blendAt(0.1)).toBe(1);
+    field.begin(0.2,80,80); field.commit();
+    expect(field.previousTexture.image.data).toEqual(field.texture.image.data);
+    field.clear(); expect(field.previousTexture.image.data).toEqual(field.texture.image.data);
+    field.begin(0.3,80,80); field.commit();
+    expect(field.blendAt(0.3)).toBe(1);
+    field.dispose();
+  });
+
+  it('bounds canopy contacts and expires impact gusts', () => {
+    const field = new GrassInteraction(); field.begin(0,0,0);
+    field.canopy(8,2,0,1); field.canopy(12,2,0,1); field.canopy(1,2,0,1);
+    expect(field.canopyCount).toBe(2);
+    expect([field.canopies[0],field.canopies[4]].sort((a,b)=>a-b)).toEqual([1,8]);
+    for (let i=0;i<100;i++) field.impulse(0,0,i*0.001,0.8);
+    expect(field.impulseCount).toBe(2);
+    field.begin(2,0,0);
+    expect(field.impulseCount).toBe(0); expect(field.canopyCount).toBe(0);
+    field.dispose();
+  });
+
   it('combs moving contacts along travel and retains a bounded, slowly recovering crease', () => {
     const field = new GrassInteraction();
     field.begin(0, 0, 0);
@@ -22,12 +47,17 @@ describe('grass contact field', () => {
     expect(field.historyBytes).toBeGreaterThan(0);
     field.begin(32, 0, 0); field.commit();
     expect(field.data[index+3]).toBeGreaterThan(100);
+    const untouched = (70*128+70)*4;
+    expect(field.data[untouched+1]).toBe(128);
+    expect(field.data[untouched+2]).toBe(128);
+    field.begin(2000,0,0); field.commit();
+    expect(field.data[index+1]).toBe(128); expect(field.data[index+2]).toBe(128);
     for (let i = 0; i < 280; i++) {
-      field.begin(33+i, i*64, 0);
+      field.begin(2001+i, i*64, 0);
       field.stamp({ x: i*64+0.25, z: 0.25, radiusX: 1, radiusZ: 1, damage: 1 });
     }
     expect(field.historyBytes).toBeLessThanOrEqual(256*1024);
-    field.clear(); field.begin(400, 0, 0); field.commit();
+    field.clear(); field.begin(2500, 0, 0); field.commit();
     expect(field.data[index+3]).toBe(0);
     field.dispose();
   });

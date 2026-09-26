@@ -161,6 +161,10 @@ try {
       for (let i = 0; i < 120; i++) {
         await frame();
         const startUpdate = performance.now();
+        // Exercise the bounded expensive path too: tall-canopy bodies and two live impact waves.
+        field.interaction.canopy(1,1.5,-1,1.2);
+        field.interaction.canopy(-2,2,1,1.5);
+        if (i%60 === 0) { field.interaction.impulse(0,0,20+i/60,1); field.interaction.impulse(4,2,20+i/60,0.8); }
         field.update(camera, 20 + i / 60);
         updateMs.push(performance.now() - startUpdate);
         const pair = {};
@@ -192,7 +196,21 @@ try {
       timings.updateCpuP95Ms = percentile(updateMs, 0.95);
       timings.contactTickCpuMedianMs = median(contactCpuMs);
       timings.contactTickCpuP95Ms = percentile(contactCpuMs, 0.95);
+      const deltas = pairs.filter(p => p.on != null && p.off != null).map(p => p.on-p.off);
+      timings.pairedGpuDeltaP95Ms = percentile(deltas, 0.95);
       timings.pairedGpuDeltaMedianMs = median(pairs.filter(p => p.on != null && p.off != null).map(p => p.on - p.off));
+      const movingUpdates = [];
+      for (let i = 0; i < 120; i++) {
+        await frame();
+        camera.position.set(6+i*0.25,1.4,8);
+        camera.lookAt(i*0.25,0.45,-3); camera.updateMatrixWorld();
+        const start = performance.now(); field.update(camera,24+i/120);
+        movingUpdates.push(performance.now()-start);
+        renderer.render(scene,camera);
+      }
+      timings.movingUpdateCpuP95Ms = percentile(movingUpdates,0.95);
+      timings.movingUpdateCpuMaxMs = Math.max(...movingUpdates);
+      camera.position.set(6,1.4,8); camera.lookAt(0,0.45,-3); camera.updateMatrixWorld();
       // Distant cameras must submit no grass at all.
       camera.position.y = 100;
       camera.updateMatrixWorld();
@@ -215,6 +233,10 @@ try {
     assert.ok(result.stats.blades > 1000);
     assert.equal(result.aerialBlades, 0);
     assert.equal(result.geometriesAfterDisposal, 0);
+    const budget = Number(process.env.GRASS_BENCH_GPU_BUDGET_MS);
+    if (budget > 0 && result.timings.pairedGpuDeltaMedianMs !== null) {
+      assert.ok(result.timings.pairedGpuDeltaMedianMs <= budget, `${result.preset} exceeds ${budget} ms GPU budget`);
+    }
   }
   await writeFile(`${output}/report.json`, JSON.stringify(report, null, 2));
   console.log(JSON.stringify(report, null, 2));

@@ -10,7 +10,13 @@ import { cityGrassPaint, type GrassPaint } from './GrassPaint';
 /** Grounded vehicles push tall canopy across their width; short lawns retain tyre tracks. */
 export function grassVehicleCanopyContact(paint: GrassPaint, x: number, z: number,
   radiusX: number, radiusZ: number, yaw: number): GrassContact | null {
-  if (paint.heightAt(x, z) < 1.5) return null;
+  // Include the leading/side edges so the hood does not wait for its centre to
+  // enter a tall stand before parting it.
+  const c = Math.cos(yaw), s = Math.sin(yaw);
+  const height = Math.max(paint.heightAt(x,z), paint.heightAt(x+c*radiusX,z-s*radiusX),
+    paint.heightAt(x-c*radiusX,z+s*radiusX), paint.heightAt(x+s*radiusZ,z+c*radiusZ),
+    paint.heightAt(x-s*radiusZ,z-c*radiusZ));
+  if (height < 1.5) return null;
   return { x, z, radiusX: radiusX+0.2, radiusZ: radiusZ+0.2, yaw, shape: 'box', pressure: 0.95, hold: 6, damage: 0.65 };
 }
 
@@ -26,6 +32,7 @@ export type GrassActorSource = Pick<GameRuntimeClient, 'vehicles' | 'dynamicBodi
 
 /** Reads existing presented poses. Never steps physics or drains destruction events. */
 export class GrassBodyContacts {
+  private readonly falling = new Map<string, { bottom: number; time: number }>();
   private readonly previous = new Map<string, { x: number; z: number; time: number }>();
   private readonly pose = new Float32Array(7);
   private readonly rotation = new Quaternion();
@@ -51,6 +58,8 @@ export class GrassBodyContacts {
 
   update(field: GrassInteraction, time: number, cameraX: number, cameraZ: number,
     source: GrassActorSource | null, localPlayer?: readonly number[] | null): void {
+    for (const [key, value] of this.falling) if (time-value.time > 2) this.falling.delete(key);
+    if (localPlayer) field.canopy(localPlayer[0], localPlayer[1]+0.2, localPlayer[2], 0.65);
     for (const [key, value] of this.previous) if (time-value.time > 1) this.previous.delete(key);
     if (localPlayer && localPlayer[1] < 2.2 && localPlayer[1] > -1) {
       this.track(field, 'local', { x: localPlayer[0], z: localPlayer[2], radiusX: 0.55, radiusZ: 0.55, pressure: 0.8, hold: 0.25 }, time);
@@ -63,6 +72,7 @@ export class GrassBodyContacts {
         if (player.flags & (FLAG_DEAD | FLAG_IN_VEHICLE)) continue;
         const p = source.interpolator.sample(player.id, renderTime)?.position ?? player.position;
         if (p[1] > 2.2 || p[1] < -1 || Math.abs(p[0]-cameraX) > 40 || Math.abs(p[2]-cameraZ) > 40) continue;
+        field.canopy(p[0], p[1]+0.2, p[2], 0.65);
         this.track(field, `p${player.id}`, { x: p[0], z: p[2], radiusX: 0.55, radiusZ: 0.55, pressure: 0.8, hold: 0.25 }, time);
       }
       actors = 0;
@@ -94,6 +104,7 @@ export class GrassBodyContacts {
             radiusX: 0.34, radiusZ: Math.max(0.45, radius), yaw, pressure: 1, hold: 1.6, damage: 0.8 }, time);
         }
         if (grounded) {
+          field.canopy(p[0],p[1],p[2], custom ? custom.track/2 : definition.chassisHalfExtents.x);
           const canopy = grassVehicleCanopyContact(this.paint, p[0], p[2],
             custom ? custom.track/2 : definition.chassisHalfExtents.x,
             custom ? custom.wheelbase/2+radius : definition.chassisHalfExtents.z, yaw);
@@ -125,7 +136,7 @@ export class GrassBodyContacts {
       if (!this.city.topology.chunkWorldPoseInto(slot, this.current, this.pose, 0)) continue;
       const at = slot*3;
       this.stampBox(field, this.pose, this.pose.subarray(3),
-        [this.chunkSizes[at]*0.5, this.chunkSizes[at+1]*0.5, this.chunkSizes[at+2]*0.5], time, null, 4);
+        [this.chunkSizes[at]*0.5, this.chunkSizes[at+1]*0.5, this.chunkSizes[at+2]*0.5], time, `s${slot}`, 4);
     }
   }
 
@@ -137,6 +148,16 @@ export class GrassBodyContacts {
     const hy = Math.abs(2*(x*y+z*w))*half[0]+Math.abs(1-2*(x*x+z*z))*half[1]+Math.abs(2*(y*z-x*w))*half[2];
     const hz = Math.abs(2*(x*z-y*w))*half[0]+Math.abs(2*(y*z+x*w))*half[1]+Math.abs(1-2*(x*x+y*y))*half[2];
     const bottom = p[1]-hy;
+    field.canopy(p[0], Math.max(0,p[1]), p[2], Math.max(hx,hz));
+    if (key) {
+      const last = this.falling.get(key);
+      if (last && bottom < 0.75 && last.bottom >= 0.75 && time > last.time && time-last.time < 0.5) {
+        const speed = (last.bottom-bottom)/(time-last.time);
+        if (speed > 2) field.impulse(p[0],p[2],time,Math.min(1,speed/12)*Math.min(1,Math.sqrt(hx*hz)));
+      }
+      if (last) { last.bottom = bottom; last.time = time; }
+      else if (this.falling.size < 512) this.falling.set(key, { bottom, time });
+    }
     if (bottom > 0.75 || p[1]+hy < -0.05) return;
     const contact: GrassContact = { x:p[0], z:p[2], radiusX:hx+0.65, radiusZ:hz+0.65, shape:'box',
       pressure: Math.min(1, Math.max(0, (0.85-bottom)/0.7)), hold };

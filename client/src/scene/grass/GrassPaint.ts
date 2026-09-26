@@ -6,6 +6,7 @@ export const GRASS_MAX_HEIGHT = 4;
 const CELLS = 16, CELL = 0.5, CHANNELS = 12, HALF = 256;
 export interface GrassBrush {
   density: number; height: number; color: string;
+  mode?: 'all' | 'appearance';
   species?: FoliageSpecies; health?: number; dryness?: number; maturity?: number;
   rowSpacing?: number; rowAngle?: number; stiffness?: number;
 }
@@ -21,6 +22,7 @@ export const GRASS_BRUSHES: Record<string, GrassBrush> = {
   wheat: { density: 1, height: 1.3, color: '#bea65e', species: 'wheat', dryness: 0.55, rowSpacing: 0.4 },
   corn: { density: 1, height: 3, color: '#59923b', species: 'corn', rowSpacing: 0.85, stiffness: 0.85 },
   ferns: { density: 0.8, height: 0.85, color: '#427842', species: 'fern', stiffness: 0.35 },
+  scorched: { density: 0.3, height: 0.3, color: '#493d25', health: 0, dryness: 1 },
   bare: { density: 0, height: 0.3, color: '#92774c' },
 };
 export interface GrassPaintDocument { version: 1 | 2 | 3; tiles: Array<{ x: number; z: number; data: number[] }> }
@@ -128,6 +130,7 @@ export class GrassPaint {
         const mix = edge * edge * (3-2*edge) * clamp(strength);
         const at = ((iz-tz*CELLS)*CELLS+ix-tx*CELLS)*CHANNELS;
         for (let k = 0; k < CHANNELS; k++) {
+          if (brush.mode === 'appearance' && ![2,3,4,6,7].includes(k)) continue;
           if (k === 5 || k === 9 || k === 10) { if (mix >= 0.5) tile[at+k] = Math.round(target[k]); }
           else tile[at+k] = Math.round(tile[at+k] + (target[k]-tile[at+k])*mix);
         }

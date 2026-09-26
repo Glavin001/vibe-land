@@ -23,6 +23,10 @@ export class GrassInteraction {
   readonly texel = this.span / this.size;
   readonly data = new Uint8Array(this.size * this.size * 4);
   readonly texture = new DataTexture(this.data, this.size, this.size, RGBAFormat);
+  private readonly previousData = new Uint8Array(this.data.length);
+  readonly previousTexture = new DataTexture(this.previousData, this.size, this.size, RGBAFormat);
+  private scrolled = true;
+  private committedAt = -1;
   readonly bounds = new Vector4(-32, -32, 64, 64);
   readonly pressure = new Float32Array(this.size * this.size);
   private readonly dx = new Float32Array(this.pressure.length);
@@ -33,6 +37,10 @@ export class GrassInteraction {
   // Packed 8 m history tiles. Bounded to 256 KiB plus map overhead; local cosmetic
   // history survives camera travel, but never becomes authoritative gameplay state.
   private readonly history = new Map<string, { data: Uint8Array; time: number }>();
+  readonly canopies = new Float32Array(8);
+  canopyCount = 0;
+  readonly impulses = new Float32Array(8);
+  impulseCount = 0;
   private lastTime = -1;
   private stampCount = 0;
   private visits = 0;
@@ -47,6 +55,9 @@ export class GrassInteraction {
     this.texture.minFilter = this.texture.magFilter = LinearFilter;
     this.texture.wrapS = this.texture.wrapT = ClampToEdgeWrapping;
     this.texture.generateMipmaps = false;
+    this.previousTexture.minFilter = this.previousTexture.magFilter = LinearFilter;
+    this.previousTexture.wrapS = this.previousTexture.wrapT = ClampToEdgeWrapping;
+    this.previousTexture.generateMipmaps = false;
     this.commit();
   }
 
@@ -55,7 +66,13 @@ export class GrassInteraction {
     if (this.lastTime >= 0 && time - this.lastTime < 0.05) return false;
     const dt = this.lastTime < 0 ? 0 : Math.max(0, time - this.lastTime);
     this.lastTime = time;
-    this.stampCount = this.visits = 0;
+    this.stampCount = this.visits = this.canopyCount = 0;
+    for (let i = this.impulseCount-1; i >= 0; i--) {
+      if (time-this.impulses[i*4+2] > 1.6) {
+        this.impulses.copyWithin(i*4, (i+1)*4, this.impulseCount*4);
+        this.impulseCount--;
+      }
+    }
     this.scroll(Math.floor(cameraX / 8) * 8 - 32, Math.floor(cameraZ / 8) * 8 - 32);
     const decay = Math.exp(-dt / 1.8);
     const damageDecay = Math.exp(-dt / 180);
@@ -65,7 +82,12 @@ export class GrassInteraction {
         if (this.damage[i] < 0.003) this.damage[i] = 0;
         this.dirty = true;
       }
-      if (this.pressure[i] === 0) continue;
+      if (this.pressure[i] === 0) {
+        if (this.damage[i] === 0 && (this.dx[i] !== 0 || this.dz[i] !== 0)) {
+          this.dx[i] = this.dz[i] = 0; this.dirty = true;
+        }
+        continue;
+      }
       const held = this.hold[i];
       this.hold[i] = Math.max(0, held - dt);
       if (held < dt) {
@@ -86,6 +108,7 @@ export class GrassInteraction {
     const sx = Math.round((x - this.bounds.x) / this.texel);
     const sz = Math.round((z - this.bounds.y) / this.texel);
     if (!sx && !sz) return;
+    this.scrolled = true;
     this.archive();
     for (const channel of [this.pressure, this.dx, this.dz, this.hold, this.damage]) {
       this.scratch.set(channel);
@@ -108,12 +131,36 @@ export class GrassInteraction {
         const ix = tx*16+rx, iz = tz*16+rz;
         if (ix+sx >= 0 && ix+sx < this.size && iz+sz >= 0 && iz+sz < this.size) continue;
         const i = iz*this.size+ix, j = (rz*16+rx)*4;
+        if (!tile.data[j]) continue;
         this.damage[i] = tile.data[j]/255*decay;
         this.dx[i] = (tile.data[j+1]-128)/127;
         this.dz[i] = (tile.data[j+2]-128)/127;
       }
     }
     this.dirty = true;
+  }
+
+  /** Keep only the two closest canopy bodies. Grass shorter than the body is unaffected. */
+  canopy(x: number, y: number, z: number, radius: number): void {
+    if (![x,y,z,radius].every(Number.isFinite) || radius <= 0) return;
+    const distance = (x-this.bounds.x-32)**2+(z-this.bounds.y-32)**2;
+    if (distance > 16*16) return;
+    let slot = this.canopyCount;
+    if (slot >= 2) {
+      const d0 = (this.canopies[0]-this.bounds.x-32)**2+(this.canopies[2]-this.bounds.y-32)**2;
+      const d1 = (this.canopies[4]-this.bounds.x-32)**2+(this.canopies[6]-this.bounds.y-32)**2;
+      slot = d0 > d1 ? 0 : 1;
+      if (distance >= Math.max(d0,d1)) return;
+    } else this.canopyCount++;
+    this.canopies.set([x,y,z,Math.min(3,radius)], slot*4);
+  }
+
+  /** At most two one-shot radial wind waves; no particle or physics allocation. */
+  impulse(x: number, z: number, time: number, strength: number): void {
+    if (![x,z,time,strength].every(Number.isFinite) || strength <= 0
+      || Math.hypot(x-this.bounds.x-32,z-this.bounds.y-32) > 24) return;
+    const slot = this.impulseCount < 2 ? this.impulseCount++ : (this.impulses[2] < this.impulses[6] ? 0 : 1);
+    this.impulses.set([x,z,time,Math.min(1,strength)],slot*4);
   }
 
   private archive(): void {
@@ -201,8 +248,12 @@ export class GrassInteraction {
     }
   }
 
+  blendAt(time: number): number { return Math.max(0, Math.min(1, (time-this.committedAt)/0.05)); }
+
   commit(): void {
     if (!this.dirty) return;
+    this.previousData.set(this.data);
+    this.committedAt = this.lastTime;
     this.activeCells = 0;
     for (let i = 0; i < this.pressure.length; i++) {
       this.data[i * 4] = Math.round(this.pressure[i] * 255);
@@ -211,6 +262,8 @@ export class GrassInteraction {
       this.data[i * 4 + 3] = Math.round(this.damage[i] * 255);
       if (this.pressure[i] > 0.01) this.activeCells++;
     }
+    if (this.scrolled) { this.previousData.set(this.data); this.scrolled = false; }
+    this.previousTexture.needsUpdate = true;
     this.texture.needsUpdate = true;
     this.dirty = false;
   }
@@ -221,8 +274,8 @@ export class GrassInteraction {
   }
 
   clear(): void {
-    this.pressure.fill(0); this.dx.fill(0); this.dz.fill(0); this.hold.fill(0); this.damage.fill(0); this.history.clear();
-    this.dirty = true; this.commit();
+    this.pressure.fill(0); this.dx.fill(0); this.dz.fill(0); this.hold.fill(0); this.damage.fill(0); this.history.clear(); this.canopyCount = this.impulseCount = 0;
+    this.scrolled = true; this.dirty = true; this.commit();
   }
-  dispose(): void { this.texture.dispose(); }
+  dispose(): void { this.texture.dispose(); this.previousTexture.dispose(); }
 }
