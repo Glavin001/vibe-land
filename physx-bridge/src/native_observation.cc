@@ -7,6 +7,25 @@ using namespace physx;
 
 namespace vibe_land::physx_bridge {
 
+namespace {
+// Observe the same outer-fibre stresses as the native material law. Ignoring
+// bending here makes a failed joint look safely below its elastic limit.
+// The native-only bridge deliberately requires no Blast source dependency.
+struct ObservedBondStress { float compression, tension, utilisation; };
+ObservedBondStress observe_bond_stress(const PxDestructionBondVerdict &v,
+                                     const PxDestructionMaterial &m, bool fibres) {
+  const float normal = fibres ? v.stressNormal
+                             : v.stressNormal + std::copysign(v.stressBend, v.stressNormal);
+  const float bend = fibres ? v.stressBend : 0.0f;
+  const float compression = std::max(0.0f, bend - normal);
+  const float tension = std::max(0.0f, normal + bend);
+  const float tension_limit = m.tensionElasticLimit < 0 ? m.compressionElasticLimit : m.tensionElasticLimit;
+  const float shear_limit = m.shearElasticLimit < 0 ? m.compressionElasticLimit : m.shearElasticLimit;
+  return {compression, tension, std::max({compression / m.compressionElasticLimit,
+                                       tension / tension_limit, v.stressShear / shear_limit})};
+}
+}
+
 void NativeDestruction::State::observe_topology(
     const PxDestructionDeviceView &view) {
   const PxDestructionCommittedChangesView &changes = view.committedChanges;
@@ -669,13 +688,7 @@ void NativeDestruction::State::sample_bond_verdicts(
   for (std::size_t i = 0; i < bonds.size(); ++i) {
     const PxDestructionMaterial &m = materials[bonds[i].material];
     const PxDestructionBondVerdict &v = verdicts[i];
-    const float tension = m.tensionElasticLimit < 0 ? m.compressionElasticLimit
-                                                    : m.tensionElasticLimit;
-    const float shear =
-        m.shearElasticLimit < 0 ? m.compressionElasticLimit : m.shearElasticLimit;
-    const float utilisation = std::max(
-        {std::max(0.0f, -v.stressNormal) / m.compressionElasticLimit,
-         std::max(0.0f, v.stressNormal) / tension, v.stressShear / shear});
+    const float utilisation = observe_bond_stress(v, m, fibre_bending).utilisation;
     worst = std::max(worst, utilisation);
     if (utilisation >= 0.5f) {
       above_half += 1;
@@ -742,16 +755,17 @@ NativeDestruction::bond_stress_rows(std::uint32_t structure_id) const {
     row.material =
         base == s.material_base.end() ? bond.material : bond.material - base->second;
     row.area = bond.area;
-    row.compression = std::max(0.0f, -v.stressNormal);
-    row.tension = std::max(0.0f, v.stressNormal);
+    const auto stresses = observe_bond_stress(v, m, s.fibre_bending);
+    row.compression = stresses.compression;
+    row.tension = stresses.tension;
     row.shear = v.stressShear;
-    const float tension = m.tensionElasticLimit < 0 ? m.compressionElasticLimit
-                                                    : m.tensionElasticLimit;
-    const float shear =
-        m.shearElasticLimit < 0 ? m.compressionElasticLimit : m.shearElasticLimit;
-    row.utilisation =
-        std::max({row.compression / m.compressionElasticLimit,
-                  row.tension / tension, row.shear / shear});
+    row.utilisation = stresses.utilisation;
+    row.native_verdict_available = true;
+    row.stress_normal = v.stressNormal;
+    row.stress_bend = v.stressBend;
+    row.damage = v.damage;
+    row.remaining_area = v.health;
+    row.broken = v.broken != 0;
     out.push_back(row);
   }
   return out;

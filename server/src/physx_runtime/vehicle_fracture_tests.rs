@@ -138,6 +138,7 @@ fn authored_vehicle_cannonball_localized_fracture() {
         }).unwrap();
         let mut broken = std::collections::BTreeSet::new();
         let mut frames = Vec::new();
+        let mut impact_verdicts = Vec::new();
         let mut error = None;
         for tick in 0..120 {
             let step = scene.world.step();
@@ -154,11 +155,27 @@ fn authored_vehicle_cannonball_localized_fracture() {
                 "converged":status.converged,"error":status.error,"targetAttached":corner.entity_id==chassis.entity_id,
                 "wheelSpeed":state.wheel_rotation_speed[0],"wheelsOnRoad":state.wheels_on_road}));
             if status.error != 0 || !status.converged { error = Some(format!("tick {tick}: {status:?}")); break; }
+            if status.normal_contacts > 0 {
+                let rows = scene.world.native_bond_stress_rows(STRUCTURE).unwrap();
+                assert_eq!(rows.len(), scene.bonds.len());
+                let rows: Vec<_> = rows.iter().map(|row| {
+                    assert!(row.native_verdict_available);
+                    let strength = &geometry.bonds[row.bond_index as usize].strength;
+                    json!({"bond":row.bond_index,"node0":row.node0,"node1":row.node1,
+                        "part0":geometry.parts[row.node0 as usize].id,"part1":geometry.parts[row.node1 as usize].id,
+                        "area":row.area,"normalPa":row.stress_normal,"bendingPa":row.stress_bend,
+                        "compressionPa":row.compression,"tensionPa":row.tension,"shearPa":row.shear,
+                        "utilisation":row.utilisation,"damageArea":row.damage,"remainingArea":row.remaining_area,"broken":row.broken,
+                        "elasticPa":[strength.compression_elastic,strength.tension_elastic,strength.shear_elastic],
+                        "fatalPa":[strength.compression_fatal,strength.tension_fatal,strength.shear_fatal]})
+                }).collect();
+                impact_verdicts.push(json!({"tick":tick,"bonds":rows}));
+            }
             assert!(scene.world.native_validate_mappings().unwrap());
         }
         let row = json!({"model":name,"chunks":scene.parts.len(),"hulls":scene.hulls,"bonds":scene.bonds.len(),
             "target":target,"projectileMassKg":crate::garage_bombardment::BALL_MASS,"speedMps":55.,
-            "brokenBonds":broken,"error":error,"frames":frames});
+            "brokenBonds":broken,"error":error,"frames":frames,"impactVerdicts":impact_verdicts});
         eprintln!("Authored cannon {name}: {} broken / {} bonds; error={error:?}",broken.len(),scene.bonds.len());
         reports.push(row);
         // Persist each model before assertions so a native rejection remains evidence.

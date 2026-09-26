@@ -18,6 +18,94 @@ const GROUP_STATIC: u32 = 1 << 0;
 const GROUP_CHUNK: u32 = 1 << 5;
 const ALL: u32 = GROUP_STATIC | GROUP_CHUNK;
 
+/// A supported horizontal cantilever has shear and bending under gravity,
+/// even though its axial normal stress is nearly zero. Its readout must show
+/// the same outer-fibre overload used by the native material verdict.
+#[test]
+#[ignore = "requires real native GPU destruction SDK"]
+fn native_bond_observation_includes_bending_and_material_verdict() {
+    for fibres in [false, true] {
+        let mut world = World::new(WorldConfig::default()).unwrap();
+        world.native_attach().unwrap();
+        let (mut nodes, mut bonds) = wall(2, 1);
+        nodes[1].mass = 400.;
+        let mut material = settings();
+        material.materials[0] = StressMaterialDesc {
+            compression_elastic: 3e7, compression_fatal: 6e7,
+            tension_elastic: 2e7, tension_fatal: 4e7,
+            shear_elastic: 1e7, shear_fatal: 2e7,
+            elastic_modulus: 3e10, residual_area_fraction: 0.,
+        };
+        bonds[0].area = 0.92;
+        world.native_create_destructible(0,
+            Pose {position: Vec3::new(0.,10.,0.), rotation: Quat::IDENTITY},
+            &nodes, &bonds, material, GROUP_CHUNK, ALL).unwrap();
+        world.step().unwrap();
+        let mut config = native_config(2);
+        config.fibre_bending = fibres;
+        world.native_configure(config).unwrap();
+        let status = step_and_observe(&mut world);
+        assert!(status.converged);
+        let rows = world.native_bond_stress_rows(0).unwrap();
+        assert_eq!(rows.len(), 1);
+        let row = &rows[0];
+        assert!(row.native_verdict_available && !row.broken);
+        assert_eq!(row.damage, 0.);
+        assert_eq!(row.remaining_area, row.area);
+        assert!(row.stress_bend > 1000. && row.shear > 1000., "cantilever did not exercise bending/shear: {row:?}");
+        assert!(row.stress_normal.abs() < row.stress_bend * 0.01);
+        if fibres {
+            assert!((row.tension - row.stress_bend - row.stress_normal).abs() < 0.01);
+            assert!((row.compression - row.stress_bend + row.stress_normal).abs() < 0.01);
+        } else {
+            assert_eq!(row.compression.min(row.tension), 0.);
+            assert!((row.compression + row.tension - row.stress_normal.abs() - row.stress_bend).abs() < 0.01);
+        }
+        let expected = (row.compression / 3e7).max(row.tension / 2e7).max(row.shear / 1e7);
+        assert_eq!(row.utilisation, expected);
+        assert_eq!(world.native_stats().unwrap().bond_utilisation_max, expected);
+        world.native_clear().unwrap();
+    }
+}
+
+/// Static force balance is known independently of the stress solver: the
+/// distal joint supports the end mass, and the root supports both masses.
+/// Swapping 1 kg and 100 kg must change the distal load, not replace both
+/// authored masses with their geometric mean.
+#[test]
+#[ignore = "requires real native GPU destruction SDK"]
+fn native_bond_stress_respects_unequal_authored_masses() {
+    for masses in [[1.,100.], [100.,1.]] {
+        let mut world = World::new(WorldConfig::default()).unwrap();
+        world.native_attach().unwrap();
+        let (mut nodes, bonds) = wall(3, 1);
+        nodes[1].mass = masses[0]; nodes[2].mass = masses[1];
+        let mut material = settings();
+        material.materials[0] = StressMaterialDesc {
+            compression_elastic: 1e8, compression_fatal: 2e8,
+            tension_elastic: 1e8, tension_fatal: 2e8,
+            shear_elastic: 1e8, shear_fatal: 2e8,
+            elastic_modulus: 3e10, residual_area_fraction: 0.,
+        };
+        world.native_create_destructible(0,
+            Pose {position: Vec3::new(0.,10.,0.), rotation: Quat::IDENTITY},
+            &nodes, &bonds, material, GROUP_CHUNK, ALL).unwrap();
+        world.step().unwrap();
+        world.native_configure(native_config(3)).unwrap();
+        assert!(step_and_observe(&mut world).converged);
+        let rows = world.native_bond_stress_rows(0).unwrap();
+        assert_eq!(rows.len(), 2);
+        for row in rows {
+            let supported = if row.node0 == 0 {masses[0]+masses[1]} else {masses[1]};
+            let expected = supported * 9.81;
+            let force = row.shear * row.area;
+            assert!((force-expected).abs() <= expected * 1e-4,
+                "authored masses {masses:?}, joint {}: observed shear force {force} N, expected {expected} N",row.bond_index);
+        }
+        world.native_clear().unwrap();
+    }
+}
+
 /// A wall of 1 m cubes, `w` wide and `h` tall, standing on the ground.
 /// The bottom row is authored as support, which is what anchors it.
 fn wall(w: u32, h: u32) -> (Vec<ChunkNodeDesc>, Vec<ChunkBondDesc>) {

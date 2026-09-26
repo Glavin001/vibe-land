@@ -77,9 +77,11 @@ def main():
     log = (output / 'tests.log').read_text()
     # Fail if selection drifted, tests were merely compiled, or a gate disappeared.
     detached = re.search(r'broken=1, disabled-wheel ticks=(\d+)', log)
-    inventory_ok = ('test result: ok. 10 passed; 0 failed; 0 ignored;' in log
+    inventory_ok = ('test result: ok. 12 passed; 0 failed; 0 ignored;' in log
                     and 'test result: ok. 2 passed; 0 failed; 0 ignored;' in log
                     and 'test native_vehicle_accepts_small_authored_com_offsets ...' in log
+                    and 'test native_bond_observation_includes_bending_and_material_verdict ...' in log
+                    and 'test native_bond_stress_respects_unequal_authored_masses ...' in log
                     and detached is not None and int(detached[1]) > 30
                     and 'broken=0, disabled-wheel ticks=0' in log)
     unchanged = all(digest(Path(p)) == expected for p, expected in artifacts.items())

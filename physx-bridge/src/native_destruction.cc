@@ -729,6 +729,7 @@ FfiNativeConfigured NativeDestruction::configure(const FfiNativeConfig &config) 
   native_require(api.configureStress(desc),
                  "native destruction configuration was rejected");
   s.configured = true;
+  s.fibre_bending = config.fibre_bending;
   s.verdict_sample_interval = std::max(1u, config.verdict_sample_ticks);
 
   FfiNativeConfigured out{};

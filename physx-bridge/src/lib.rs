@@ -2518,6 +2518,14 @@ mod ffi {
         compression: f32,
         tension: f32,
         shear: f32,
+        /// Native material verdict details. The legacy Blast query does not
+        /// expose these fields; check availability before interpreting them.
+        native_verdict_available: bool,
+        stress_normal: f32,
+        stress_bend: f32,
+        damage: f32,
+        remaining_area: f32,
+        broken: bool,
     }
 
     unsafe extern "C++" {

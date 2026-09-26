@@ -111,6 +111,7 @@ struct NativeDestruction::State {
   physx::PxMaterial &material;
 
   bool configured = false;
+  bool fibre_bending = true;
   bool degraded = false;
   std::uint64_t tick_index = 0;
   std::uint64_t observed_frame = 0;

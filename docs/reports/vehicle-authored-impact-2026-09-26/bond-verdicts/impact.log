@@ -1,0 +1,33 @@
+
+running 1 test
+test physx_runtime::vehicle_fracture_tests::authored_vehicle_cannonball_localized_fracture ... CUMETAL WARNING: CUMETAL_USE_METAL_DEVICE_ADDRESSES marks every live allocation read-write on every dispatch so kernels can follow raw device addresses; this removes cross-stream concurrency.
+[destruction] native internalCorrectionLimit=1
+Authored cannon buggy: 0 broken / 626 bonds; error=None
+[destruction] native internalCorrectionLimit=1
+Authored cannon trophy: 0 broken / 1072 bonds; error=None
+[destruction] native internalCorrectionLimit=1
+Authored cannon rally: 0 broken / 1102 bonds; error=None
+[destruction] native internalCorrectionLimit=1
+Authored cannon monster: 1 broken / 1039 bonds; error=None
+[destruction] native internalCorrectionLimit=1
+Authored cannon derby: 2 broken / 1016 bonds; error=None
+[destruction] native internalCorrectionLimit=1
+Authored cannon sprint: 0 broken / 754 bonds; error=None
+
+thread 'physx_runtime::vehicle_fracture_tests::authored_vehicle_cannonball_localized_fracture' (15418730) panicked at server/src/physx_runtime/vehicle_fracture_tests.rs:190:5:
+authored vehicle impact failures: [
+    "buggy: real cannon contact produced no fracture",
+    "trophy: real cannon contact produced no fracture",
+    "rally: real cannon contact produced no fracture",
+    "sprint: real cannon contact produced no fracture",
+]
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+
+failures:
+
+failures:
+    physx_runtime::vehicle_fracture_tests::authored_vehicle_cannonball_localized_fracture
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 207 filtered out; finished in 172.57s
+
