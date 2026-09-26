@@ -1,0 +1,463 @@
+{
+  "scope": "diagnostic only; does not change the fracture qualification gate",
+  "reportPath": "/private/tmp/vehicle-anchored-authored-verification/cannon.json",
+  "reportSha256": "bac7e5d21030e079dcc413c270677d23206cba211757ca37464176f0aa24ceee",
+  "models": [
+    {
+      "model": "buggy",
+      "target": "Front right wheel assembly",
+      "stressScope": "accepted, unbroken snapshots only; initial-trial fracture peaks are unavailable",
+      "projectileMassKg": 30.0,
+      "speedMps": 55.0,
+      "error": null,
+      "recordedTicks": 120,
+      "rejectedTicks": [],
+      "firstDetachedTick": null,
+      "brokenBonds": 2,
+      "verdictTicks": 1,
+      "observedBonds": 522,
+      "totalBonds": 522,
+      "targetInterfaces": [
+        {
+          "bond": 520,
+          "parts": [
+            "Front right hub",
+            "Front right wheel assembly"
+          ],
+          "attachment": "wheel-mount",
+          "areaM2": 0.0036750000851866974,
+          "broken": false,
+          "samples": 1,
+          "stressSamples": 1,
+          "postBreakSamples": 0,
+          "peaks": {
+            "compressionPa": 23931166.0,
+            "tensionPa": 0.0,
+            "shearPa": 1787499.0,
+            "utilisation": 0.19942638278007507,
+            "damageArea": 0.0
+          },
+          "peakToElasticRatio": [
+            0.19942638333333335,
+            0.0,
+            0.025682456896551725
+          ],
+          "elasticPa": [
+            120000000,
+            120000000,
+            69600000
+          ]
+        }
+      ],
+      "attachments": {
+        "wheel-mount": {
+          "total": 4,
+          "broken": 0,
+          "observed": 4
+        },
+        "drive-spline": {
+          "total": 4,
+          "broken": 0,
+          "observed": 4
+        },
+        "wheel-bearing": {
+          "total": 4,
+          "broken": 0,
+          "observed": 4
+        },
+        "fixed-contact": {
+          "total": 506,
+          "broken": 2,
+          "observed": 506
+        },
+        "caliper-mount": {
+          "total": 4,
+          "broken": 0,
+          "observed": 4
+        }
+      },
+      "metadataPath": "/private/tmp/vibe-vehicle-assets/867fafb899fce7341bfd18e0c536c6ff48c5421b838a5f08519146736b876825/metadata.json",
+      "metadataSha256": "336017371a4e50fb672bd48ac056da6bf427bdbae5bb9a78826d763af736ca0f"
+    },
+    {
+      "model": "trophy",
+      "target": "Front right wheel assembly",
+      "stressScope": "accepted, unbroken snapshots only; initial-trial fracture peaks are unavailable",
+      "projectileMassKg": 30.0,
+      "speedMps": 55.0,
+      "error": null,
+      "recordedTicks": 120,
+      "rejectedTicks": [],
+      "firstDetachedTick": null,
+      "brokenBonds": 7,
+      "verdictTicks": 1,
+      "observedBonds": 962,
+      "totalBonds": 962,
+      "targetInterfaces": [
+        {
+          "bond": 960,
+          "parts": [
+            "Front right hub",
+            "Front right wheel assembly"
+          ],
+          "attachment": "wheel-mount",
+          "areaM2": 0.003675000085186708,
+          "broken": false,
+          "samples": 1,
+          "stressSamples": 1,
+          "postBreakSamples": 0,
+          "peaks": {
+            "compressionPa": 26473064.0,
+            "tensionPa": 0.0,
+            "shearPa": 1289428.5,
+            "utilisation": 0.22060886025428772,
+            "damageArea": 0.0
+          },
+          "peakToElasticRatio": [
+            0.22060886666666665,
+            0.0,
+            0.01852627155172414
+          ],
+          "elasticPa": [
+            120000000,
+            120000000,
+            69600000
+          ]
+        }
+      ],
+      "attachments": {
+        "wheel-mount": {
+          "total": 4,
+          "broken": 0,
+          "observed": 4
+        },
+        "fixed-contact": {
+          "total": 946,
+          "broken": 7,
+          "observed": 946
+        },
+        "drive-spline": {
+          "total": 4,
+          "broken": 0,
+          "observed": 4
+        },
+        "wheel-bearing": {
+          "total": 4,
+          "broken": 0,
+          "observed": 4
+        },
+        "caliper-mount": {
+          "total": 4,
+          "broken": 0,
+          "observed": 4
+        }
+      },
+      "metadataPath": "/private/tmp/vibe-vehicle-assets/4c2da440bef402d0753510028f1bfa9036753d7ea506bb97418a52238849cf19/metadata.json",
+      "metadataSha256": "cfff2e08e6fd04e92c0dcf246be1b966dbef7142b126122d25e1285703042546"
+    },
+    {
+      "model": "rally",
+      "target": "Front right wheel assembly",
+      "stressScope": "accepted, unbroken snapshots only; initial-trial fracture peaks are unavailable",
+      "projectileMassKg": 30.0,
+      "speedMps": 55.0,
+      "error": null,
+      "recordedTicks": 120,
+      "rejectedTicks": [],
+      "firstDetachedTick": null,
+      "brokenBonds": 6,
+      "verdictTicks": 1,
+      "observedBonds": 963,
+      "totalBonds": 963,
+      "targetInterfaces": [
+        {
+          "bond": 961,
+          "parts": [
+            "Front right hub",
+            "Front right wheel assembly"
+          ],
+          "attachment": "wheel-mount",
+          "areaM2": 0.0036750000851866996,
+          "broken": false,
+          "samples": 1,
+          "stressSamples": 1,
+          "postBreakSamples": 0,
+          "peaks": {
+            "compressionPa": 27148550.0,
+            "tensionPa": 0.0,
+            "shearPa": 839165.0,
+            "utilisation": 0.2262379229068756,
+            "damageArea": 0.0
+          },
+          "peakToElasticRatio": [
+            0.22623791666666668,
+            0.0,
+            0.012056968390804598
+          ],
+          "elasticPa": [
+            120000000,
+            120000000,
+            69600000
+          ]
+        }
+      ],
+      "attachments": {
+        "fixed-contact": {
+          "total": 947,
+          "broken": 6,
+          "observed": 947
+        },
+        "wheel-mount": {
+          "total": 4,
+          "broken": 0,
+          "observed": 4
+        },
+        "drive-spline": {
+          "total": 4,
+          "broken": 0,
+          "observed": 4
+        },
+        "wheel-bearing": {
+          "total": 4,
+          "broken": 0,
+          "observed": 4
+        },
+        "caliper-mount": {
+          "total": 4,
+          "broken": 0,
+          "observed": 4
+        }
+      },
+      "metadataPath": "/private/tmp/vibe-vehicle-assets/79e9767982d14e277798869e8eda3968d065175224f441a6bdbcfbddf0911e3e/metadata.json",
+      "metadataSha256": "de15731256af0b4df4a7f686a28ed42d5749cb4378920a0f1abc2717cbd8968a"
+    },
+    {
+      "model": "monster",
+      "target": "Front right wheel assembly",
+      "stressScope": "accepted, unbroken snapshots only; initial-trial fracture peaks are unavailable",
+      "projectileMassKg": 30.0,
+      "speedMps": 55.0,
+      "error": null,
+      "recordedTicks": 120,
+      "rejectedTicks": [],
+      "firstDetachedTick": null,
+      "brokenBonds": 6,
+      "verdictTicks": 1,
+      "observedBonds": 952,
+      "totalBonds": 952,
+      "targetInterfaces": [
+        {
+          "bond": 950,
+          "parts": [
+            "Front right hub",
+            "Front right wheel assembly"
+          ],
+          "attachment": "wheel-mount",
+          "areaM2": 0.0036750000851867005,
+          "broken": false,
+          "samples": 1,
+          "stressSamples": 1,
+          "postBreakSamples": 0,
+          "peaks": {
+            "compressionPa": 24389116.0,
+            "tensionPa": 0.0,
+            "shearPa": 2510700.5,
+            "utilisation": 0.20324262976646423,
+            "damageArea": 0.0
+          },
+          "peakToElasticRatio": [
+            0.20324263333333334,
+            0.0,
+            0.03607328304597701
+          ],
+          "elasticPa": [
+            120000000,
+            120000000,
+            69600000
+          ]
+        }
+      ],
+      "attachments": {
+        "wheel-mount": {
+          "total": 4,
+          "broken": 0,
+          "observed": 4
+        },
+        "drive-spline": {
+          "total": 4,
+          "broken": 0,
+          "observed": 4
+        },
+        "wheel-bearing": {
+          "total": 4,
+          "broken": 0,
+          "observed": 4
+        },
+        "fixed-contact": {
+          "total": 936,
+          "broken": 6,
+          "observed": 936
+        },
+        "caliper-mount": {
+          "total": 4,
+          "broken": 0,
+          "observed": 4
+        }
+      },
+      "metadataPath": "/private/tmp/vibe-vehicle-assets/04593da7448eb93a68a57263e7b3a764361667ceef338eda356d611c5f8854f9/metadata.json",
+      "metadataSha256": "b19555d24a9b55f08bf1e3d92b83a1671529d29baec7055028d4514a5d0dbd5b"
+    },
+    {
+      "model": "derby",
+      "target": "Front right wheel assembly",
+      "stressScope": "accepted, unbroken snapshots only; initial-trial fracture peaks are unavailable",
+      "projectileMassKg": 30.0,
+      "speedMps": 55.0,
+      "error": null,
+      "recordedTicks": 120,
+      "rejectedTicks": [],
+      "firstDetachedTick": null,
+      "brokenBonds": 2,
+      "verdictTicks": 1,
+      "observedBonds": 904,
+      "totalBonds": 904,
+      "targetInterfaces": [
+        {
+          "bond": 902,
+          "parts": [
+            "Front right hub",
+            "Front right wheel assembly"
+          ],
+          "attachment": "wheel-mount",
+          "areaM2": 0.003675000085186705,
+          "broken": false,
+          "samples": 1,
+          "stressSamples": 1,
+          "postBreakSamples": 0,
+          "peaks": {
+            "compressionPa": 27077992.0,
+            "tensionPa": 0.0,
+            "shearPa": 965271.9375,
+            "utilisation": 0.22564993798732758,
+            "damageArea": 0.0
+          },
+          "peakToElasticRatio": [
+            0.22564993333333333,
+            0.0,
+            0.013868849676724138
+          ],
+          "elasticPa": [
+            120000000,
+            120000000,
+            69600000
+          ]
+        }
+      ],
+      "attachments": {
+        "fixed-contact": {
+          "total": 888,
+          "broken": 2,
+          "observed": 888
+        },
+        "wheel-mount": {
+          "total": 4,
+          "broken": 0,
+          "observed": 4
+        },
+        "drive-spline": {
+          "total": 4,
+          "broken": 0,
+          "observed": 4
+        },
+        "wheel-bearing": {
+          "total": 4,
+          "broken": 0,
+          "observed": 4
+        },
+        "caliper-mount": {
+          "total": 4,
+          "broken": 0,
+          "observed": 4
+        }
+      },
+      "metadataPath": "/private/tmp/vibe-vehicle-assets/34b7c8b62fdbd42d82658aaa7599c58de17e1f27ac05cd1e067660141a46e176/metadata.json",
+      "metadataSha256": "42739e4abdf73ccdb13353b110fdc725beaf5bf1bbf47a0b5acbbc64ca309863"
+    },
+    {
+      "model": "sprint",
+      "target": "Front right wheel assembly",
+      "stressScope": "accepted, unbroken snapshots only; initial-trial fracture peaks are unavailable",
+      "projectileMassKg": 30.0,
+      "speedMps": 55.0,
+      "error": null,
+      "recordedTicks": 120,
+      "rejectedTicks": [],
+      "firstDetachedTick": null,
+      "brokenBonds": 0,
+      "verdictTicks": 1,
+      "observedBonds": 649,
+      "totalBonds": 649,
+      "targetInterfaces": [
+        {
+          "bond": 645,
+          "parts": [
+            "Front right hub",
+            "Front right wheel assembly"
+          ],
+          "attachment": "wheel-mount",
+          "areaM2": 0.0036750000851867083,
+          "broken": false,
+          "samples": 1,
+          "stressSamples": 1,
+          "postBreakSamples": 0,
+          "peaks": {
+            "compressionPa": 25887054.0,
+            "tensionPa": 0.0,
+            "shearPa": 1250171.625,
+            "utilisation": 0.21572545170783997,
+            "damageArea": 0.0
+          },
+          "peakToElasticRatio": [
+            0.21572545,
+            0.0,
+            0.017962235991379312
+          ],
+          "elasticPa": [
+            120000000,
+            120000000,
+            69600000
+          ]
+        }
+      ],
+      "attachments": {
+        "fixed-contact": {
+          "total": 633,
+          "broken": 0,
+          "observed": 633
+        },
+        "wheel-mount": {
+          "total": 4,
+          "broken": 0,
+          "observed": 4
+        },
+        "drive-spline": {
+          "total": 4,
+          "broken": 0,
+          "observed": 4
+        },
+        "wheel-bearing": {
+          "total": 4,
+          "broken": 0,
+          "observed": 4
+        },
+        "caliper-mount": {
+          "total": 4,
+          "broken": 0,
+          "observed": 4
+        }
+      },
+      "metadataPath": "/private/tmp/vibe-vehicle-assets/be9f3285cfdb33cbd582deb8538a95e2208eb42da2d36d8732d8585a87c90cb7/metadata.json",
+      "metadataSha256": "c1a286004235dd360a9aeea9efddad44e1a5f008fe18b57064aac05382d27496"
+    }
+  ]
+}

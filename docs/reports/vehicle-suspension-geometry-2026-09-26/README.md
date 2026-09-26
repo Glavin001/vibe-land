@@ -115,3 +115,13 @@ The play server was stopped with the user's approval. Tests ran serially under `
 - Consequence: in a redundant bond graph, how load is shared between parallel bonds is fixed by the rest-pose metric while the suspension moves.
 
 Artifact: `gpu_resident_geometry_test` sha256 `c67d5dd9…6ec2`, built from the working tree before `deb09714`. The only later change to the source is a message string.
+
+## Impact re-qualification on the anchored graph
+
+This run used the same isolated SDK (`/tmp/vehicle-drive-mask-sdk22`) and the same runtime overlay (`/tmp/vehicle-convergence-gate-libs`) as the last qualified run, with `--authored-fixtures /tmp/vehicle-posed-fixtures.json`. See `impact/`.
+
+- **Severe hits (300 kg at 120 m/s): pass on all six models.** The targeted wheel detaches on tick 0 and stays disabled. Bonds broken: 36/55/61/64/67/66 on buggy/trophy/rally/monster/derby/sprint (previously 30/48/55/56/49/44). Every step converged; there were no rejected ticks.
+- **Free-fall controls: pass on all six.** 30 ticks with no fracture.
+- **Nominal hits (30 kg at 55 m/s): the gate is still red, failing only on sprint.** Bonds broken: 2/7/6/6/2/0 (previously 0/7/6/8/2/0). The target wheel mount peaks at 20–23% of its elastic compression limit on every model. Materials and loads are unchanged; whether a nominal shot should fracture sprint is an open strength/gameplay decision.
+
+This graph still runs at the rest pose only: moving geometry is not yet committed natively.
