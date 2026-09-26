@@ -5,7 +5,7 @@ Grass is enabled automatically when `/city` or `/cityreplay` has a city manifest
 with wind, quality, driving, falling-rubble and painting controls. It needs no
 server. Add `?grass=off` to the city/replay URL
 to disable the blade renderer for comparisons. The green ground cover remains
-visible beyond the blade draw distance.
+visible beyond the blade draw distance. Authored tall stands and crop/fern families also retain a distant canopy.
 
 ## Rendering
 
@@ -24,7 +24,7 @@ visible beyond the blade draw distance.
 - 8 m patches, conservative wind/interaction bounds and frustum culling. Three
   blade topologies share one small vertex/index buffer: **7, 3 and 1 triangle**.
   LOD changes only the draw range, with hysteresis at segment boundaries.
-- Instance-count reduction submits progressively fewer blades at distance.
+- Short meadow grass uses instance-count reduction to submit fewer blades at distance.
   Randomly ordered deterministic placement keeps every prefix spread throughout
   the patch. Per-blade growth transitions hide density and range changes; newly
   streamed patches grow in over 0.35 s. Roots never follow the camera.
@@ -43,7 +43,33 @@ visible beyond the blade draw distance.
 
 Distances use the closest point on each patch, including camera altitude.
 Density ramps down before topology changes, reaching about 16% of the nearby
-value before the final fade. Rendering stops entirely above the range.
+value before the final fade. These limits apply to short meadow blades; tall grass and other foliage hand off to a persistent canopy instead.
+
+### Canopy-preserving LOD
+
+Grass at least 0.75 m tall, reeds, wheat, corn and ferns keep their height and
+instance density until a screen-door crossfade into distant clumps. PRETTY hands
+off over **22–36 m**, FAST over **12–22 m**. The two passes use complementary
+dither thresholds and write real depth; there is no transparent sorting. Corn
+leaves retain at least two segments, so their middle width survives the cheapest
+geometry LOD. Mixed short/tall grass is batched separately.
+
+Distant clumps use **8 triangles, 32 instance bytes, at most one clump/m²**.
+Three intersecting side cutouts and an overhead cutout retain the field silhouette
+and top coverage. An original generated atlas covers five families and both views.
+Colors, maturity, density and building exclusions come from the authored paint.
+These are approximate clusters, not one-to-one replacements for individual plants
+or planting rows. Fine geometry still handles close views.
+
+The full authored 512 m world is represented in 32 m batches with frustum culling
+and **no camera-distance cutoff**. Both quality tiers use the same distant layout.
+Only edited neighborhoods rebuild, at one coarse batch per frame; a batch scans
+at most 1,024 samples. Worst case is 256 batches / 262,144 clumps across a fully
+authored world, before frustum culling. Wind, building shadows and the existing
+interpolated contact field also affect the clumps. Contact deformation remains
+limited to the active 64 m field; this does not expand interaction/history range.
+No new body queries, collision simulations or per-clump frame updates are added.
+The preview reports distant clumps and includes their draws in its draw count.
 
 ## Placement and integration
 
@@ -118,7 +144,7 @@ small screen, open **Grass controls** to reveal the controls.
 Person height uses a 2.8 m blade-length ceiling and Vehicle height uses 4 m.
 Tall stands have a tighter height distribution, broader leaves and less initial
 lean; actual upright tips are lower than blade length because the leaves curve.
-Tall stands retain more instances at distance to preserve canopy coverage. Taller
+Tall stands hand off to a cheaper persistent canopy at distance. Taller
 leaves also cover more pixels, so their GPU cost is higher than a short lawn.
 **Plant tall test patch** paints an 18 m radius patch around the demo car path;
 use **Paint grass → Undo** to restore the previous layout. To place the demo
@@ -130,10 +156,10 @@ Grounded vehicles also sweep a broad box through authored grass taller than
 refresh that hold. Short grass keeps separate tyre tracks. This is a cheap
 canopy approximation from ground footprints, not stalk collisions.
 
-Tall grass provides local visual concealment only. Profile-dependent density,
-28/48 m draw distances and profile-dependent thinning mean it is not a fair,
-authoritative multiplayer stealth mechanic. It does not block bullets or AI
-visibility. Such gameplay still needs authoritative visibility rules.
+Tall grass provides local visual concealment, including beyond the near geometry
+range. Distant coverage is identical across quality tiers, but this is still a
+client-side approximation rather than an authoritative multiplayer stealth
+mechanic. It does not block bullets or AI visibility; those require gameplay rules.
 
 Paint uses sparse 8 m tiles with 0.5 m cells. Bilinear interpolation and a soft
 brush edge make tile boundaries continuous. Blades keep deterministic positions
@@ -169,9 +195,9 @@ Plants share wind, contact, recovery and lighting, with species stiffness and
 independent leaf flutter. Dryness reduces transmission and browns tips; maturity
 changes size without moving roots. Each occupied family uses one instanced draw
 per patch. Mixed boundaries can add draws, but no per-plant objects are created.
-Crop roots are identical across quality tiers. Broad-leaf LOD retains at least 65% of instances and tall blades at least 32%
-before the final range fade. This improves canopy coverage; it is not a gameplay
-visibility guarantee. The 7/3/1 triangle figures above apply to grass only.
+Crop roots are identical across quality tiers. Tall/crop geometry keeps its
+instances until the canopy crossfade described above. The 7/3/1 triangle figures
+apply to grass only; corn leaves use at least two segments at every LOD.
 
 Version 3 needs the updated grass service and client. Old v1/v2 drafts migrate
 on import; the server continues to read existing v2 layouts. Older clients cannot
@@ -328,3 +354,22 @@ wind/interaction discussion in
 [boona13 / threejs-grass-water-shaders](https://github.com/boona13/threejs-grass-water-shaders).
 No source files or assets from those projects were copied. Both identify their
 code as MIT. The implementation stays on the project's existing WebGL renderer.
+
+### Canopy LOD benchmark
+
+With Vite running, open `/benchmarks/foliage-lod.html` and click **Run benchmark**.
+This isolated harness creates private in-memory paint and never touches the editor
+draft or server layout. It measures paired grass-on/off GPU timer queries at
+1920×1080, CPU submission/update cost, all three ranges (12/35/110 m), both
+quality tiers, and tall grass/corn/wheat. Pixel readback measures a red target
+behind each stand; a separate contact check flattens the tall field. Renderer
+resource counts are checked after disposal. This measures the grass pass, not
+full-city frame rate, and the 120 Hz total budget remains 8.33 ms.
+
+Recorded results: [`foliage-lod-m3max-2026-09-26.json`](benchmarks/foliage-lod-m3max-2026-09-26.json).
+On an M3 Max, the isolated grass pass measured **0.12–1.90 ms GPU** across
+18 cases (48 valid pairs each). Both tiers hid the test target at 35 and 110 m
+in tall grass and corn. A flattened corridor revealed 670/840 and 673/840
+target pixels at 35 m; standing foliage hid all 840. All 18 cases drained
+their build queues; disposal left zero renderer geometries. The test scene
+does not include city geometry, shadow maps, physics or destruction.

@@ -53,7 +53,7 @@ describe('bounded foliage worker', () => {
     paint.paint(old.x*8+4,old.z*8+4,12,GRASS_BRUSHES.bare);
     fake!.onmessage!({data:{x:old.x,z:old.z,revision:old.revision,data}});
     field.update(camera,0.1);
-    expect(field.group.children).toHaveLength(0);
+    expect(field.group.children.filter(child=>child.name.startsWith('Grass patch'))).toHaveLength(0);
     field.dispose(); paint.dispose();
   });
 

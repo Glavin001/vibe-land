@@ -163,6 +163,11 @@ export class GrassPaint {
       const [x,z] = key.split(',').map(Number); return { x, z, data: Array.from(data) };
     }) };
   }
+  /** Visit authored tile coordinates without copying their paint payloads. */
+  forEachTile(visit: (x: number, z: number) => void): void {
+    for (const key of this.tiles.keys()) { const [x,z] = key.split(',').map(Number); visit(x,z); }
+  }
+
   /** Only the 3×3 neighborhood needed for padded bilinear patch sampling. */
   patchDocument(px: number, pz: number): GrassPaintDocument {
     const tiles: GrassPaintDocument['tiles'] = [];

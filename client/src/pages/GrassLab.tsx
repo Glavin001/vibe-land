@@ -261,8 +261,8 @@ export function GrassLabPage() {
         <button aria-pressed={paused} onClick={() => setPaused(v => !v)}>{paused ? 'Resume breeze' : 'Still air'}</button>
       </div>
       <div className="grass-lab-metrics" aria-live="off">
-        <div><strong>{enabled && stats ? (stats.blades / 1000).toFixed(0) + 'k' : '0'}</strong><span>plants submitted</span></div>
-        <div><strong>{enabled ? stats?.visiblePatches ?? '—' : 0}</strong><span>grass draw calls</span></div>
+        <div><strong>{enabled && stats ? (stats.blades / 1000).toFixed(0) + 'k' : '0'}</strong><span>nearby plants · {enabled ? stats?.canopyClumps ?? 0 : 0} distant clumps</span></div>
+        <div><strong>{enabled ? stats ? stats.visiblePatches + stats.canopyDraws : '—' : 0}</strong><span>grass draw calls</span></div>
         <div><strong>{stats?.frameMs.toFixed(1) ?? '—'}<small> ms</small></strong><span>frame interval</span></div>
         <div><strong data-testid="grass-pressed-area">{stats?.pressedArea.toFixed(1) ?? '0'}<small> m²</small></strong><span>pressed grass</span></div>
       </div>

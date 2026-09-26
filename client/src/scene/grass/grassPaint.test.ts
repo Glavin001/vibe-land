@@ -91,7 +91,7 @@ describe('grass authoring', () => {
     const camera = new PerspectiveCamera(60, 1.6, 0.1, 300);
     camera.position.set(4, 2, 12); camera.lookAt(4, 0, 0); camera.updateMatrixWorld();
     for (let i = 0; i < 60; i++) field.update(camera, i/20);
-    const patch = () => field.group.children.find(mesh => mesh.position.x === 0 && mesh.position.z === 0)!;
+    const patch = () => field.group.children.find(mesh => mesh.name.startsWith('Grass patch') && mesh.position.x === 0 && mesh.position.z === 0)!;
     expect(patch()).toBeDefined();
     const before = patch();
     paint.paint(4, 4, 12, GRASS_BRUSHES.bare);

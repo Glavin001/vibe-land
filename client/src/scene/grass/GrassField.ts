@@ -1,3 +1,5 @@
+import { FoliageCanopy } from './FoliageCanopy';
+import { FOLIAGE_HANDOFF } from './foliageLod';
 import { GrassPatchWorker } from './GrassPatchWorker';
 import { FOLIAGE_SPECIES } from './foliageProfiles';
 import * as THREE from 'three';
@@ -17,6 +19,9 @@ export interface GrassStats {
   triangles: number;
   instanceBytes: number;
   pendingPatches: number;
+  canopyClumps: number;
+  canopyDraws: number;
+  canopyBytes: number;
 }
 
 /** Tapered strip: 7 / 3 / 1 triangles. One tip vertex, no alpha texture or overdraw quad. */
@@ -48,7 +53,7 @@ function createPlantLods(species: number) {
     const start = indices.length;
     const parts = species >= 3 ? 7 : species > 0 ? 3 : 1;
     for (let partIndex = 0; partIndex < parts; partIndex++) {
-      const part = createBladeGeometry(partIndex > 0 && species === 4 ? segments*6 : partIndex > 0 && species <= 2 ? Math.max(2, segments*2) : partIndex > 0 && species >= 3 && segments === 4 ? 6 : segments);
+      const part = createBladeGeometry(partIndex > 0 && species === 4 ? segments*6 : partIndex > 0 && species <= 2 ? Math.max(2, segments*2) : partIndex > 0 && species >= 3 ? Math.max(2, segments === 4 ? 6 : segments) : segments);
       const offset = positions.length / 3;
       const points = part.getAttribute('position').array;
       for (let i = 0; i < points.length; i+=3) positions.push(points[i] * (species === 4 && partIndex > 0 && (i/6)%2 === 1 ? 0.12 : 1), points[i+1], partIndex);
@@ -64,7 +69,7 @@ function createPlantLods(species: number) {
   return { geometry, ranges };
 }
 
-type Part = { species: number; count: number; mesh: THREE.Mesh<THREE.InstancedBufferGeometry, THREE.MeshStandardMaterial> };
+type Part = { species: number; count: number; canopy: boolean; mesh: THREE.Mesh<THREE.InstancedBufferGeometry, THREE.MeshStandardMaterial> };
 type Patch = {
   x: number; z: number; count: number; lod: number; bytes: number; height: number;
   mesh: THREE.Group; parts: Part[];
@@ -76,8 +81,9 @@ const disposePatch = (patch: Patch) => { for (const part of patch.parts) part.me
 export class GrassField {
   readonly group = new THREE.Group();
   readonly interaction = new GrassInteraction();
+  readonly canopy: FoliageCanopy;
   readonly shading: ReturnType<typeof createGrassMaterial>;
-  readonly stats: GrassStats = { patches: 0, visiblePatches: 0, blades: 0, triangles: 0, instanceBytes: 0, pendingPatches: 0 };
+  readonly stats: GrassStats = { patches: 0, visiblePatches: 0, blades: 0, triangles: 0, instanceBytes: 0, pendingPatches: 0, canopyClumps: 0, canopyDraws: 0, canopyBytes: 0 };
   private readonly generator = new GrassPatchWorker();
   private readonly patches = new Map<string, Patch>();
   private readonly templates = FOLIAGE_SPECIES.map((_, i) => createPlantLods(i));
@@ -93,6 +99,8 @@ export class GrassField {
   private readonly unsubscribePaint: () => void;
 
   constructor(readonly quality: GrassQuality, readonly exclusions: readonly GrassExclusion[] = [], readonly paint: GrassPaint = cityGrassPaint) {
+    this.canopy = new FoliageCanopy(paint,quality,exclusions,this.interaction);
+    this.group.add(this.canopy.group);
     this.shading = createGrassMaterial(quality, this.interaction);
     this.group.name = 'City grass (client only)';
     this.group.userData.grassStats = this.stats;
@@ -106,6 +114,7 @@ export class GrassField {
   }
 
   setShadows(enabled: boolean): void {
+    this.canopy.setShadows(enabled);
     for (const patch of this.patches.values()) for (const part of patch.parts) part.mesh.receiveShadow = enabled;
   }
 
@@ -130,13 +139,16 @@ export class GrassField {
       this.dirtyPatches.delete(key);
     }
     const mesh = new THREE.Group();
+    mesh.name = `Grass patch ${x},${z}`;
     mesh.position.set(x * GRASS_PATCH_SIZE, 0, z * GRASS_PATCH_SIZE);
     mesh.matrixAutoUpdate = false; mesh.updateMatrix();
     const parts: Part[] = [];
     let bytes = 0;
-    for (let species = 0; species < FOLIAGE_SPECIES.length; species++) {
+    for (let family = 0; family <= FOLIAGE_SPECIES.length; family++) {
+      const species = family % FOLIAGE_SPECIES.length;
+      const canopy = family !== 0;
       const members: number[] = [];
-      for (let i = 0; i < data.count; i++) if (data.traits[i*4+3] === species) members.push(i);
+      for (let i = 0; i < data.count; i++) if (data.traits[i*4+3] === species && (species > 0 || (data.roots[i*4+2]>=0.75) === canopy)) members.push(i);
       if (!members.length) continue;
       const whole = members.length === data.count;
       const roots = whole ? data.roots : new Float32Array(members.length*4), shapes = whole ? data.shapes : new Uint16Array(members.length*4);
@@ -162,7 +174,7 @@ export class GrassField {
       const plant = new THREE.Mesh(geometry, this.shading.material);
       plant.receiveShadow = true; plant.frustumCulled = false;
       plant.matrixAutoUpdate = false; plant.updateMatrix(); plant.raycast = () => {};
-      mesh.add(plant); parts.push({ species, count: members.length, mesh: plant });
+      mesh.add(plant); parts.push({ species, count: members.length, canopy, mesh: plant });
       bytes += roots.byteLength+shapes.byteLength+colors.byteLength+traits.byteLength+4;
     }
     const patch: Patch = { x, z, count: data.count, lod: -1, bytes, height: data.maxHeight,
@@ -187,6 +199,7 @@ export class GrassField {
   update(camera: THREE.Camera, time: number): void {
     const profile = GRASS_PROFILES[this.quality];
     camera.getWorldPosition(this.eye);
+    this.canopy.update(camera,time,this.shading.uniforms.grassWind.value);
     this.projection.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
     this.frustum.setFromProjectionMatrix(this.projection);
     this.shading.uniforms.grassTime.value = time;
@@ -237,7 +250,10 @@ export class GrassField {
           paint: this.paint.patchDocument(next.x, next.z) });
       } else this.build(next.x, next.z, time);
     }
-    this.stats.pendingPatches = this.candidates.length + Number(this.generator.busy);
+    this.stats.pendingPatches = this.candidates.length + Number(this.generator.busy) + this.canopy.pendingChunks;
+    this.stats.canopyClumps = this.canopy.visibleClumps;
+    this.stats.canopyDraws = this.canopy.draws;
+    this.stats.canopyBytes = this.canopy.instanceBytes;
     this.stats.patches = this.patches.size;
     this.stats.visiblePatches = this.stats.blades = this.stats.triangles = 0;
     for (const patch of this.patches.values()) {
@@ -251,7 +267,9 @@ export class GrassField {
       if (patch.lod === 2 && distance > profile.middle - 1) lod = 2;
       this.setLod(patch, lod);
       for (const part of patch.parts) {
-        const density = Math.max(part.species >= 3 ? 0.65 : patch.height > 1.5 ? 0.32 : 0,
+        part.mesh.visible = !part.canopy || distance < FOLIAGE_HANDOFF[this.quality][1] + patch.height * 1.6;
+        if (!part.mesh.visible) continue;
+        const density = part.canopy ? 1 : Math.max(part.species >= 3 ? 0.65 : patch.height > 1.5 ? 0.32 : 0,
           grassDensityAtDistance(distance, this.quality));
         const count = Math.ceil(part.count * density);
         part.mesh.geometry.instanceCount = count;
@@ -265,6 +283,7 @@ export class GrassField {
   dispose(): void {
     this.unsubscribePaint();
     this.generator.dispose();
+    this.canopy.dispose();
     this.interaction.dispose();
     for (const patch of this.patches.values()) disposePatch(patch);
     this.patches.clear();

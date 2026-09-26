@@ -1,3 +1,4 @@
+import { FOLIAGE_HANDOFF } from './foliageLod';
 import * as THREE from 'three';
 import { sunDirection, skyGradient, sunIntensityFor } from '../../graphics/sunSky';
 import { GRASS_PROFILES, type GrassQuality } from './grassPlacement';
@@ -14,6 +15,7 @@ attribute vec4 grassTraits;
 uniform float grassTime;
 uniform vec2 grassWind;
 uniform vec3 grassLod;
+uniform vec2 grassCanopyHandoff;
 uniform vec3 grassViewer;
 uniform sampler2D grassWindNoise;
 uniform sampler2D grassContacts;
@@ -28,6 +30,7 @@ varying vec3 vGrassColor;
 varying float vGrassHeight;
 varying vec3 vGrassWorld;
 varying float vGrassDryness;
+varying float vGrassCanopy;
 vec3 grassArc(float t, float h, float base, float curve, vec2 axis) {
   float a = base + curve*t;
   vec2 arc = vec2(cos(base)-cos(a), sin(a)-sin(base))/curve;
@@ -51,9 +54,10 @@ vec3 worldRoot = (modelMatrix * vec4(root, 1.0)).xyz;
 float distanceToEye = distance(cameraPosition, worldRoot);
 float density = (1.0 - 0.55 * smoothstep(grassLod.x * 0.5, grassLod.x, distanceToEye))
   * (1.0 - 0.65 * smoothstep(grassLod.y * 0.65, grassLod.y, distanceToEye));
-density = max(density, species >= 3.0 ? 0.65 : grassRoot.z > 1.5 ? 0.32 : 0.0);
+vGrassCanopy = species > 0.5 || grassRoot.z >= 0.75 ? 1.0 : 0.0;
+density = vGrassCanopy > 0.5 ? 1.0 : density;
 float growth = (1.0 - smoothstep(density - 0.065, density, grassShape.w))
-  * (1.0 - smoothstep(grassLod.z * 0.8, grassLod.z, distanceToEye))
+  * (vGrassCanopy > 0.5 ? 1.0 : (1.0 - smoothstep(grassLod.z * 0.8, grassLod.z, distanceToEye)))
   * smoothstep(grassBirth, grassBirth + 0.35, grassTime);
 float h = grassRoot.z * growth;
 vec2 forward = vec2(sin(grassRoot.w), cos(grassRoot.w));
@@ -129,7 +133,7 @@ if (seedHead) {
   width *= species > 2.5 ? 0.22 : 0.45;
 }
 // Broaden sparse far blades slightly to preserve meadow coverage.
-width *= mix(1.0, 1.65, smoothstep(grassLod.x, grassLod.y, distanceToEye));
+width *= mix(1.0, vGrassCanopy > 0.5 ? 1.0 : 1.65, smoothstep(grassLod.x, grassLod.y, distanceToEye));
 vec3 grassPosition = root + centre + side * position.x * width;
 vec3 objectNormal = normalize(cross(side, tangent + vec3(0, 0.00001, 0)));
 // A rounded leaf catches skylight without a billboard's dark edge-on stripes.
@@ -152,6 +156,7 @@ export function createGrassMaterial(quality: GrassQuality, interaction: GrassInt
   const uniforms = {
     grassTime: { value: 0 },
     grassWind: { value: new THREE.Vector2(5.65, 5.65) },
+    grassCanopyHandoff: { value: new THREE.Vector2(...FOLIAGE_HANDOFF[quality]) },
     grassLod: { value: new THREE.Vector3(p.near, p.middle, p.distance) },
     grassViewer: { value: new THREE.Vector3(0, 1000, 0) },
     grassWindNoise: { value: cityMacroNoise() },
@@ -180,11 +185,20 @@ export function createGrassMaterial(quality: GrassQuality, interaction: GrassInt
         varying float vGrassHeight;
         varying vec3 vGrassWorld;
         varying float vGrassDryness;
+        varying float vGrassCanopy;
+        uniform vec2 grassCanopyHandoff;
         uniform vec3 grassSun;
         uniform vec3 grassSunColor;
       `)
       .replace('#include <shadowmap_pars_fragment>', '#include <shadowmap_pars_fragment>\n#include <shadowmask_pars_fragment>')
-      .replace('#include <color_fragment>', '#include <color_fragment>\ndiffuseColor.rgb *= vGrassColor;')
+      .replace('#include <color_fragment>', `#include <color_fragment>
+        if (vGrassCanopy > 0.5) {
+          float handoff=smoothstep(grassCanopyHandoff.x,grassCanopyHandoff.y,distance(cameraPosition,vGrassWorld));
+          float dither=fract(52.9829189*fract(dot(gl_FragCoord.xy,vec2(0.06711056,0.00583715))));
+          if(dither<handoff) discard;
+        }
+        diffuseColor.rgb *= vGrassColor;
+      `)
       .replace('#include <normal_fragment_begin>', `#include <normal_fragment_begin>
         // DoubleSide flips the leaf normal, including its upward bias. Restore
         // the canopy's skylight response on BOTH sides instead of black backs.
@@ -203,6 +217,6 @@ export function createGrassMaterial(quality: GrassQuality, interaction: GrassInt
         #include <opaque_fragment>
       `);
   };
-  material.customProgramCacheKey = () => 'city-foliage-v7';
+  material.customProgramCacheKey = () => 'city-foliage-v8-canopy';
   return { material, uniforms };
 }
