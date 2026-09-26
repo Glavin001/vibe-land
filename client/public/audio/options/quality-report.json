@@ -1,0 +1,152 @@
+{
+  "clips": {
+    "masonryImpact-natural": {
+      "duration": 0.5891875,
+      "origin": "recorded",
+      "peakDb": -6.12245238163306,
+      "rmsDb": -20.552823520325987,
+      "activeRmsDb": -17.992847937056275,
+      "activeSeconds": 0.32,
+      "dc": -0.000013037494392215622,
+      "edgeJump": 0
+    },
+    "masonryImpact-designed": {
+      "duration": 1.55,
+      "origin": "hybrid",
+      "peakDb": -2.803409972464863,
+      "rmsDb": -21.43185670100502,
+      "activeRmsDb": -17.992853158877654,
+      "activeSeconds": 0.68,
+      "dc": -0.000009022784489457325,
+      "edgeJump": 0
+    },
+    "masonryCollapse-natural": {
+      "duration": 6.4,
+      "origin": "recorded",
+      "peakDb": -1.1105995842560359,
+      "rmsDb": -27.36332455150783,
+      "activeRmsDb": -21.775923469311465,
+      "activeSeconds": 1.68,
+      "dc": 1.3808409372965494e-8,
+      "edgeJump": 0
+    },
+    "masonryCollapse-designed": {
+      "duration": 6.4,
+      "origin": "hybrid",
+      "peakDb": -5.506504095823038,
+      "rmsDb": -25.50880851754149,
+      "activeRmsDb": -21.775925726675688,
+      "activeSeconds": 2.5,
+      "dc": 5.6624412536621094e-9,
+      "edgeJump": 0
+    },
+    "metalImpact-natural": {
+      "duration": 0.31945833333333334,
+      "origin": "recorded",
+      "peakDb": -2.8750837168401784,
+      "rmsDb": -19.604872466126203,
+      "activeRmsDb": -17.992840337102972,
+      "activeSeconds": 0.22,
+      "dc": -0.000006669127709461002,
+      "edgeJump": 0
+    },
+    "metalImpact-designed": {
+      "duration": 1.15,
+      "origin": "hybrid",
+      "peakDb": -1.9761885524287393,
+      "rmsDb": -22.15070700478932,
+      "activeRmsDb": -17.992850400925057,
+      "activeSeconds": 0.44,
+      "dc": -2.2335328917572463e-7,
+      "edgeJump": 0
+    },
+    "metalCollapse-natural": {
+      "duration": 6.4,
+      "origin": "recorded",
+      "peakDb": -1.1105995842560359,
+      "rmsDb": -22.931376646517833,
+      "activeRmsDb": -20.699103471612645,
+      "activeSeconds": 3.74,
+      "dc": 2.3345152537027995e-8,
+      "edgeJump": 0.000030517578125
+    },
+    "metalCollapse-designed": {
+      "duration": 6.4,
+      "origin": "hybrid",
+      "peakDb": -4.65791584215831,
+      "rmsDb": -22.531371348442853,
+      "activeRmsDb": -20.699100634345626,
+      "activeSeconds": 4.12,
+      "dc": -2.4338563283284505e-8,
+      "edgeJump": 0.0003662109375
+    },
+    "projectileFlyby-natural": {
+      "duration": 0.58,
+      "origin": "recorded",
+      "peakDb": -6.458764709124334,
+      "rmsDb": -29.589044781202723,
+      "activeRmsDb": -17.99284257706059,
+      "activeSeconds": 0.04,
+      "dc": -0.000006727240551477191,
+      "edgeJump": 0,
+      "passAtSeconds": 0.23
+    },
+    "projectileFlyby-designed": {
+      "duration": 0.72,
+      "origin": "hybrid",
+      "peakDb": -6.874469626129736,
+      "rmsDb": -28.74543655175398,
+      "activeRmsDb": -17.992846923130152,
+      "activeSeconds": 0.06,
+      "dc": 0.000003968344794379341,
+      "edgeJump": 0,
+      "passAtSeconds": 0.23
+    },
+    "debrisFlyby-natural": {
+      "duration": 0.82,
+      "origin": "recorded",
+      "peakDb": -9.634895669837315,
+      "rmsDb": -28.081813314261012,
+      "activeRmsDb": -17.99284207360082,
+      "activeSeconds": 0.08,
+      "dc": -0.000008110883759289252,
+      "edgeJump": 0,
+      "passAtSeconds": 0.27
+    },
+    "debrisFlyby-designed": {
+      "duration": 0.95,
+      "origin": "hybrid",
+      "peakDb": -6.007885751988161,
+      "rmsDb": -26.288795780504724,
+      "activeRmsDb": -17.992852402897796,
+      "activeSeconds": 0.14,
+      "dc": 8.27856231154057e-7,
+      "edgeJump": 0,
+      "passAtSeconds": 0.27
+    },
+    "massiveFlyby-natural": {
+      "duration": 1.02,
+      "origin": "recorded",
+      "peakDb": -11.236703865381548,
+      "rmsDb": -27.27397057643246,
+      "activeRmsDb": -17.99286331043559,
+      "activeSeconds": 0.12,
+      "dc": -0.00001094668519263174,
+      "edgeJump": 0,
+      "passAtSeconds": 0.31
+    },
+    "massiveFlyby-designed": {
+      "duration": 1.3,
+      "origin": "hybrid",
+      "peakDb": -9.1831009576698,
+      "rmsDb": -23.78211983441851,
+      "activeRmsDb": -17.99285165834581,
+      "activeSeconds": 0.34,
+      "dc": -0.000001189403044871795,
+      "edgeJump": 0,
+      "passAtSeconds": 0.31
+    }
+  },
+  "transferBytes": 3322086,
+  "decodedBytes": 6642940
+}

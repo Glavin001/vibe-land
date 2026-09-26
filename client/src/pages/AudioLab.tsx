@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { SoundPalettePanel } from '../audio/SoundPalettePanel';
+import type { PaletteSlot, PaletteChoice } from '../audio/soundPalette';
 import { AudioMixControls, MIX_LABELS } from '../audio/AudioSettingsPanel';
 import { destructionAudio, installAudioLifecycle, type AudioDiagnostics } from '../audio/engine';
 import { MATERIALS, type AcousticMaterial, type SoundEvent, type Vec3 } from '../audio/model';
@@ -94,6 +96,7 @@ export function AudioLabPage() {
     try {
       if (!audioSettings().enabled) setAudioSettings({ enabled: true });
       await engine.start(); if (generation.current !== token) return;
+      engine.stop(); // A source preview must not bleed into a scene comparison.
       if (restart || run.current.elapsed >= scenario.durationMs) seek(0);
       run.current.base = performance.now() - run.current.elapsed; run.current.playing = true; setPlaying(true);
     } catch (error) { setNotice(`Sound could not start: ${error instanceof Error ? error.message : String(error)}`); }
@@ -152,6 +155,14 @@ export function AudioLabPage() {
     try { if (!audioSettings().enabled) setAudioSettings({ enabled: true }); await engine.start(); if (generation.current !== token) return; const atMs = performance.now(); engine.emit(createMaterialAudition(material, scale, seed, atMs)); setNotice(`${scale === 'heavy' ? 'Heavy' : 'Small'} ${MATERIAL_NAMES[material].toLowerCase()} · same intensity, six meters ahead.`); }
     catch { setNotice('Unable to start the material audition.'); }
   }
+  async function auditionPalette(slot: PaletteSlot, choice: PaletteChoice, options: { reflections: boolean }) {
+    const token = ++generation.current;
+    if (!audioSettings().enabled) setAudioSettings({ enabled: true });
+    await engine.start();
+    if (token !== generation.current) throw new DOMException('Preview cancelled', 'AbortError');
+    await engine.auditionPalette(slot, choice, options);
+    if (token !== generation.current) throw new DOMException('Preview cancelled', 'AbortError');
+  }
   async function toggleRecording() {
     if (recordingRef.current) {
       const blob = await engine.endRecording(); recordingRef.current = false; setRecording(false);
@@ -169,6 +180,15 @@ export function AudioLabPage() {
     <header className="audio-lab-nav"><a href="/" className="audio-lab-brand"><span aria-hidden="true">◒</span> vibe-land <span className="audio-lab-divider">/</span> <strong>Sound studio</strong></a><div><span className="audio-lab-status"><i className={playing ? 'is-playing' : ''} />{loading ? 'Loading palette' : diagnostics.state === 'Ready' ? 'Audio ready' : playing ? 'Playing' : 'Listening lab'}</span><a href="/city" target="_blank" rel="noreferrer">Open the city ↗</a></div></header>
     <main className="audio-lab-main">
       <section className="audio-lab-intro"><div><p className="audio-lab-eyebrow">DESTRUCTION / LISTENING ROOM 01</p><h1>Feel every close call.</h1><p>One scene. Every detail. Find the mix that puts you there.</p></div><div className="audio-lab-session"><span>REPEATABLE PERFORMANCE</span><strong>Seed {seed}</strong><small>Scripted audio · no server required</small></div></section>
+      <SoundPalettePanel
+        choices={settings.palette}
+        onChoose={(slot, choice) => { setAudioSettings({ palette: { ...audioSettings().palette, [slot]: choice } }); setActiveSlot(null); }}
+        onAudition={auditionPalette}
+        onStop={pause}
+        reflections={settings.acoustics === 'reflections'}
+        onReflectionsChange={enabled => setAudioSettings({ acoustics: enabled ? 'reflections' : 'dry' })}
+        onPlayScene={() => void play(true)}
+      />
       <div className="audio-lab-workspace">
         <aside className="audio-lab-scenes" aria-label="Listening scenes"><div className="audio-section-heading">01 <h2>Choose a scene</h2><span>{REVIEW_SCENARIOS.length}</span></div><div className="audio-scene-list">{REVIEW_SCENARIOS.map((s, i) => <button type="button" key={s.id} className={scenarioId === s.id ? 'selected' : ''} aria-pressed={scenarioId === s.id} onClick={() => { pause(); setScenarioId(s.id); }}><span className="audio-scene-number">0{i + 1}</span><span><strong>{s.title}</strong><small>{s.subtitle}</small></span><span className="audio-scene-duration">{Math.round(s.durationMs / 1000)}s</span></button>)}</div><div className="audio-scene-note"><span>LISTEN FOR</span><p>{meta.listenFor}</p></div><label className="audio-seed">Variation seed<input type="number" aria-label="Variation seed" value={seed} min="1" max="2147483647" onChange={e => { const next = Number(e.target.value); if (Number.isInteger(next) && next > 0 && next <= 2147483647) { pause(); setSeed(next); } }} /></label></aside>
         <section className="audio-lab-player" aria-label="Scene player">

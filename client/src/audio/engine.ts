@@ -4,7 +4,10 @@ import { audioSettings, subscribeAudioSettings } from './settings';
 import type { AudioSettings, OutputMode } from './settings';
 import { azimuthOf, channelCount, resolveOutput, speakerGains } from './spatial';
 import { DestructionActivity } from './destructionActivity';
-import { eventMix, sourceAttenuation, voiceImportance, type VoiceRole } from './destructionMix';
+import { eventMix, propagationDelayMs, sourceAttenuation, voiceImportance, type VoiceRole } from './destructionMix';
+import { DEFAULT_PALETTE, PALETTE_SLOTS, paletteClipId, paletteSlotFor, type PaletteSlot,type PaletteChoice } from './soundPalette';
+import { PaletteBank,referenceGain } from './paletteBank';
+import { flybyMotion,flybyPose,type FlybyMotion } from './flyby';
 
 interface Catalog { clips: Record<string,{url:string;duration:number}>; }
 interface Voice {
@@ -13,6 +16,7 @@ interface Voice {
   position:Vec3; intensity:number; occlusion:number; protected:boolean;
   end:number; loopId?:string; lastUpdate:number; kind:string; baseRate:number;
   size:number; started:number; role:VoiceRole;
+  flight?:FlybyMotion;attackUntil:number;fadeAt?:number;
 }
 export interface AudioDiagnostics {
   state:string; output:OutputMode; requestedOutput:OutputMode; maxChannels:number;
@@ -56,6 +60,11 @@ async function loadBank(ctx:BaseAudioContext):Promise<void>{
 export class DestructionAudio {
   readonly director=new AudioDirector();
   private activity=new DestructionActivity();
+  private options:PaletteBank|null=null;
+  private paletteSignature='';
+  private auditionGeneration=0;
+  private roomRevision=0;
+  private previewReflections:boolean|null=null;
   context:AudioContext|null=null;
   private master:GainNode|null=null;
   private output:AudioNode|null=null;
@@ -67,6 +76,8 @@ export class DestructionAudio {
   private reflections:ConvolverNode|null=null;
   private graph:AudioNode[]=[];
   private voices=new Set<Voice>();
+  private retiring=new Set<Voice>();
+  private activitySlots=0;
   private loops=new Map<string,Voice>();
   private listener:Vec3=[0,0,0];
   private forward:Vec3=[0,0,-1];
@@ -86,21 +97,31 @@ export class DestructionAudio {
   constructor(){subscribeAudioSettings(()=>this.applySettings());}
 
   async start():Promise<void>{
-    if(!this.context){this.context=new AudioContext({latencyHint:'interactive'});}
+    if(!this.context){this.context=new AudioContext({latencyHint:'interactive',sampleRate:48000});this.options=new PaletteBank(this.context);}
     // Resume on the gesture's stack, before fetching assets or worklet code.
     const resumed=this.context.resume();
-    if(this.startPromise){await resumed;return this.startPromise;}
+    if(this.startPromise){await resumed;await this.startPromise;await this.warmPalette();return;}
     this.startPromise=(async()=>{
       this.stats.state='Loading sound palette…';await resumed;
       try{await this.context!.audioWorklet.addModule('/audio/destruction-limiter.js?v=body-2');this.limiterLoaded=true;}catch{this.limiterLoaded=false;}
-      this.buildGraph();await loadBank(this.context!);
+      this.buildGraph();await loadBank(this.context!);await this.warmPalette();
       this.running=true;this.stats.state=bankFailures.length?'Ready · some clips unavailable':'Ready';
     })().catch(error=>{this.stats.state=String(error);this.startPromise=null;throw error;});
     return this.startPromise;
   }
+  private async warmPalette():Promise<void>{
+    if(!this.options)return;
+    const selected=audioSettings().palette??DEFAULT_PALETTE;
+    await Promise.allSettled(PALETTE_SLOTS.filter(slot=>selected[slot]!=='original').map(slot=>this.options!.load(slot,selected[slot])));
+  }
+  private selectedClip(slot:PaletteSlot|null):string|null{
+    if(!slot)return null;const choice=(audioSettings().palette??DEFAULT_PALETTE)[slot];
+    if(choice==='original')return null;
+    const id=paletteClipId(slot,choice);return this.options?.get(id)?id:null;
+  }
   private buildGraph():void{
     const ctx=this.context;if(!ctx)return;
-    this.stop(false);this.graph.forEach(n=>n.disconnect());this.graph=[];
+    this.stop(false,false);this.graph.forEach(n=>n.disconnect());this.graph=[];
     this.mode=resolveOutput(audioSettings().output,ctx.destination.maxChannelCount||2);
     const channels=channelCount(this.mode);ctx.destination.channelCount=channels;ctx.destination.channelInterpretation='discrete';
     this.master=discrete(ctx,channels);this.world=discrete(ctx,channels);this.threats=discrete(ctx,channels);this.detail=discrete(ctx,channels);
@@ -134,11 +155,14 @@ export class DestructionAudio {
   }
   private applySettings():void{
     const next=audioSettings(),ctx=this.context;
+    if(next.acoustics!==this.lastSettings.acoustics){this.roomRevision++;this.previewReflections=null;}
     if(ctx&&this.master){
       const mode=resolveOutput(next.output,ctx.destination.maxChannelCount||2);
       if(mode!==this.mode){this.lastSettings=next;this.buildGraph();return;}
       this.master.gain.setTargetAtTime(next.enabled?next.master:0,ctx.currentTime,.03);
-      this.wet?.gain.setTargetAtTime(next.space*.36,ctx.currentTime,.06);
+      this.wet?.gain.setTargetAtTime((this.previewReflections??(next.acoustics==='reflections'))?next.space*.36:0,ctx.currentTime,.03);
+      const signature=JSON.stringify(next.palette);
+      if(signature!==this.paletteSignature){this.paletteSignature=signature;void this.warmPalette();}
       if(this.voices.size>next.maxVoices){
         const excess=[...this.voices].sort((a,b)=>Number(a.protected)-Number(b.protected)||a.intensity-b.intensity);
         for(let i=0;i<excess.length-next.maxVoices;i++)this.removeVoice(excess[i]);
@@ -158,58 +182,73 @@ export class DestructionAudio {
   }
   emit(event:SoundEvent):void{
     if(!audioSettings().enabled||!this.running||this.context?.state!=='running')return;
-    this.activity.add(event,this.listener,performance.now());this.director.enqueue(event);
+    this.activity.add({...event,atMs:event.atMs+propagationDelayMs(distance(event.position,this.listener))},this.listener,performance.now());this.director.enqueue(event);
   }
-  update(nowMs=performance.now()):void{
+  update(nowMs=performance.now(),occlusionAt?:(position:Vec3)=>number):void{
     const started=performance.now(),ctx=this.context;
     if(!ctx||!this.running||ctx.state!=='running')return;
-    this.director.drain(nowMs,e=>this.play(e));
     const active=this.activity.sample(nowMs,this.listener),ids=new Set(active.map(e=>e.id)),s=audioSettings();
+    this.activitySlots=active.length;
     for(const v of this.loops.values())if(v.role==='activity'&&!ids.has(v.loopId!))this.release(v,.14);
+    this.director.drain(nowMs,e=>this.play(e));
     for(const e of active){
+      const occlusion=clamp(occlusionAt?.(e.position)??e.occlusion);
       let v=this.loops.get(e.id);
       // Density drives a continuous crushing texture, with independent body
       // and texture controls. Four such voices cover the surrounding regions.
       const amount=e.intensity*(s.dynamicRange==='night'?.65:1.25)*(.45*s.detail+.55*s.bass);
       if(amount<.015){if(v)this.release(v,.12);continue;}
-      if(!v)v=this.voice(`debris-${e.material}`,e.position,amount,.88,false,undefined,e.id,e.occlusion,5,'activity')??undefined;
-      if(v){v.position=e.position;v.intensity=amount;v.occlusion=e.occlusion;v.lastUpdate=nowMs;this.placeVoice(v);}
+      const selected=this.selectedClip(paletteSlotFor('collapse',e.material,5)),clip=selected??`debris-${e.material}`;
+      if(v&&v.kind!==clip){this.release(v,.06);v=undefined;}
+      if(!v)v=this.voice(clip,e.position,amount,selected?1:.88,false,undefined,e.id,occlusion,5,'activity')??undefined;
+      if(v){v.position=e.position;v.intensity=amount;v.occlusion=occlusion;v.lastUpdate=nowMs;this.placeVoice(v);}
     }
     for(const voice of this.voices){
+      if(voice.flight)this.placeVoice(voice);
       if(voice.loopId&&nowMs-voice.lastUpdate>220)this.release(voice,.08);
     }
     this.stats.updateMs=performance.now()-started;
   }
   private placeVoice(v:Voice,initial=false):void{
     if(v.end===-Infinity)return;
-    const ctx=this.context!;const t=ctx.currentTime,d=distance(v.position,this.listener);
+    const ctx=this.context!;const t=ctx.currentTime;
+    if(v.flight){
+      const pose=flybyPose(v.flight,Math.max(t,v.started),this.listener);v.position=pose.position;
+      if(initial)v.source.playbackRate.setValueAtTime(pose.rate,v.started);
+      else if(t>=v.started)v.source.playbackRate.setTargetAtTime(pose.rate,t,.012);
+    }
+    const d=distance(v.position,this.listener);
     const attenuation=sourceAttenuation(d,v.size),body=v.role==='body'||v.role==='activity';
     const level=v.intensity*attenuation*(1-v.occlusion*(body?.4:.68));
     const cutoff=Math.max(body?1000:650,19000/(1+d*.009)*(1-v.occlusion*.89));
-    if(initial&&!v.loopId){v.gain.gain.setValueAtTime(level,t);v.filter.frequency.setValueAtTime(cutoff,t);}
-    else{v.gain.gain.setTargetAtTime(level,t,v.role==='activity'?.07:.018);v.filter.frequency.setTargetAtTime(cutoff,t,.04);}
+    if(initial&&!v.loopId){
+      if(v.attackUntil>0){v.gain.gain.setValueAtTime(0,t);v.gain.gain.setValueAtTime(0,v.started);v.gain.gain.linearRampToValueAtTime(level,v.attackUntil);}
+      else v.gain.gain.setValueAtTime(level,t);
+      v.filter.frequency.setValueAtTime(cutoff,t);
+    }else{if(t>=v.attackUntil&&(v.fadeAt===undefined||t<v.fadeAt))v.gain.gain.setTargetAtTime(level,v.loopId?Math.max(t,v.started):t,v.role==='activity'?.07:.018);v.filter.frequency.setTargetAtTime(cutoff,t,.04);}
     if(v.panner){
       [v.panner.positionX,v.panner.positionY,v.panner.positionZ].forEach((p,i)=>initial?p.setValueAtTime(v.position[i],t):p.setTargetAtTime(v.position[i],t,.012));
     }else if(v.channels){const gains=speakerGains(azimuthOf(v.position,this.listener,this.forward),this.mode);v.channels.forEach((n,i)=>initial?n.gain.setValueAtTime(gains[i],t):n.gain.setTargetAtTime(gains[i],t,.012));}
   }
-  private voice(clip:string,position:Vec3,intensity:number,rate:number,isProtected=false,at?:number,loopId?:string,occlusion=0,size=1,role:VoiceRole=loopId?'continuous':'impact'):Voice|null{
-    const ctx=this.context,s=audioSettings(),buffer=BANK.get(clip);
+  private voice(clip:string,position:Vec3,intensity:number,rate:number,isProtected=false,at?:number,loopId?:string,occlusion=0,size=1,role:VoiceRole=loopId?'continuous':'impact',flight?:FlybyMotion):Voice|null{
+    const ctx=this.context,s=audioSettings(),buffer=this.options?.get(clip)??BANK.get(clip);
     if(!ctx||!this.master||!buffer||!s.enabled||intensity<.005)return null;
-    const limit=isProtected?s.maxVoices:Math.max(8,s.maxVoices-12);
+    const beds=[...this.loops.values()].filter(v=>v.role==='activity').length;
+    const reserve=Math.max(0,this.activitySlots-beds);
+    const limit=role==='activity'?s.maxVoices:isProtected?s.maxVoices-reserve:Math.max(8,s.maxVoices-12);
     if(this.voices.size>=limit){
       const priority=(v:Voice)=>v.end===-Infinity?0:voiceImportance(v.intensity,distance(v.position,this.listener),v.size,ctx.currentTime-v.started,v.role);
-      const victim=[...this.voices].filter(v=>!v.protected||(isProtected&&clip.startsWith('flyby-')&&!v.kind.startsWith('flyby-')))
+      const victim=[...this.voices].filter(v=>v.role!=='activity'&&(!v.protected||((isProtected||role==='activity')&&!v.flight&&!v.kind.startsWith('flyby-')&&!v.kind.includes('Flyby-'))))
         .sort((a,b)=>Number(a.protected)-Number(b.protected)||priority(a)-priority(b))[0];
       const incoming=voiceImportance(intensity,distance(position,this.listener),size,0,role);
-      if(victim&&(isProtected||incoming>priority(victim)*1.15))this.removeVoice(victim);
-      else{this.stats.droppedVoices++;return null;}
+      if(!victim||(!isProtected&&incoming<=priority(victim)*1.15)||!this.retireVoice(victim)){this.stats.droppedVoices++;return null;}
     }
     const source=ctx.createBufferSource(),gain=mono(ctx),filter=ctx.createBiquadFilter();
     source.buffer=buffer;source.playbackRate.value=rate;source.loop=Boolean(loopId);
     filter.type='lowpass';filter.Q.value=.45;gain.gain.value=0;
     source.connect(filter).connect(gain);
     const when=Math.max(ctx.currentTime+.006,at??0);
-    const v:Voice={source,gain,filter,nodes:[source,filter,gain],position:[...position],intensity,protected:isProtected,end:when+buffer.duration/rate,loopId,lastUpdate:performance.now(),kind:clip,baseRate:rate,occlusion:clamp(occlusion),size,started:when,role};
+    const v:Voice={source,gain,filter,nodes:[source,filter,gain],position:[...position],intensity,protected:isProtected,end:when+(buffer.duration-(flight?.offset??0))/rate,loopId,lastUpdate:performance.now(),kind:clip,baseRate:rate,occlusion:clamp(occlusion),size,started:when,role,flight,attackUntil:flight?when+.008:0};
     const output=isProtected?this.threats!:role==='detail'?this.detail!:this.world!;
     const spatialCount=[...this.voices].filter(n=>n.panner).length;
     if(this.mode==='headphones'&&spatialCount<(isProtected?28:22)){
@@ -222,22 +261,35 @@ export class DestructionAudio {
     }
     const send=mono(ctx);send.gain.value=isProtected?.18:.28;gain.connect(send).connect(this.wetInput!);v.nodes.push(send);
     this.voices.add(v);if(loopId)this.loops.set(loopId,v);
-    source.onended=()=>{v.nodes.forEach(n=>n.disconnect());this.voices.delete(v);if(loopId&&this.loops.get(loopId)===v)this.loops.delete(loopId);};
-    this.placeVoice(v,true);source.start(when,loopId?(Math.abs(hash(loopId))%1000)/1000*buffer.duration:0);
+    source.onended=()=>{v.nodes.forEach(n=>n.disconnect());this.voices.delete(v);this.retiring.delete(v);if(loopId&&this.loops.get(loopId)===v)this.loops.delete(loopId);};
+    this.placeVoice(v,true);source.start(when,flight?.offset??(loopId?(Math.abs(hash(loopId))%1000)/1000*buffer.duration:0));
     this.stats.peakVoices=Math.max(this.stats.peakVoices,this.voices.size);return v;
   }
   private play(e:SoundEvent):void{
     const ctx=this.context;if(!ctx)return;const s=audioSettings(),r=seedRandom(e.seed),d=distance(e.position,this.listener);
     const intensity=clamp(e.intensity),mix=eventMix(e,s);
-    const time=ctx.currentTime+Math.max(0,(e.atMs-performance.now())/1000)+(d>35?Math.min(.65,(d-35)/343):0);
+    const time=ctx.currentTime+Math.max(0,(e.atMs+propagationDelayMs(d)-performance.now())/1000);
     const rate=clamp(1.04-Math.log1p(Math.max(0,e.size))*.065+(r()-.5)*.13,.57,1.2);
     const variant=Math.floor(r()*5);
     const protectedSound=Boolean(e.protected)||e.kind==='flyby';
     if(e.kind==='flyby'){
-      this.voice('flyby-'+variant%4,e.position,(.15+intensity*.85)*s.flyby,clamp(rate*1.2,.8,1.5),true,time,undefined,e.occlusion,e.size,'threat');
+      const selected=this.selectedClip(paletteSlotFor('flyby',e.material,e.size)),clip=selected??'flyby-'+variant%4;
+      const buffer=this.options?.get(clip)??BANK.get(clip);
+      const passTime=ctx.currentTime+(e.atMs+propagationDelayMs(d)-performance.now())/1000;
+      const start=Math.max(ctx.currentTime+.006,passTime-.04);
+      const flight=flybyMotion(e,start,this.options?.clip(clip)?.passAtSeconds??(.228+variant%4*.015),buffer?.duration??1.15,false,passTime,this.listener)??undefined;
+      if(e.velocity&&!flight)return; // A late, exhausted pass must not restart at its beginning.
+      this.voice(clip,e.position,(selected ? .2+intensity*1.45 : .15+intensity*.85)*s.flyby,flight?.rate??clamp(rate*1.2,.8,1.5),true,flight?start:time,undefined,e.occlusion,e.size,'threat',flight);
       // Briefly make room in the bright detail only. Heavy impacts and the
       // surrounding collapse keep their weight through the near miss.
       if(d<12&&ctx.currentTime-this.lastDuck>.3){const g=this.detail!.gain;this.lastDuck=ctx.currentTime;g.cancelScheduledValues(ctx.currentTime);g.setValueAtTime(.68,ctx.currentTime);g.setTargetAtTime(1,ctx.currentTime+.08,.12);}
+      return;
+    }
+    const selected=e.kind!=='shot'&&(mix.weight>.25||e.kind==='fracture'||e.kind==='collapse')?this.selectedClip(paletteSlotFor('impact',e.material,e.size)):null;
+    if(selected){
+      // A cast recording replaces the body recipe; keeping the old synthetic
+      // layers underneath would hide the material character being compared.
+      this.voice(selected,e.position,mix.hit+mix.body*.55,clamp(rate,.8,1.15),protectedSound,time,undefined,e.occlusion,e.size,'body');
       return;
     }
     if(e.kind==='collapse'||e.kind==='shot'){
@@ -266,7 +318,7 @@ export class DestructionAudio {
         const score=(kind:string,intensity:number,position:Vec3)=>(kind==='air'?2:0)+intensity/(1+distance(position,this.listener));
         const victim=continuous.sort((a,b)=>score(a.kind,a.intensity,a.position)-score(b.kind,b.intensity,b.position))[0];
         if(!victim||score(e.kind,e.intensity*.32,e.position)<=score(victim.kind,victim.intensity,victim.position)*1.25)return;
-        this.removeVoice(victim);
+        if(!this.retireVoice(victim))return;
       }
       const clip=e.kind==='air'?'air':e.kind==='engine'?'rumble':e.kind==='wind'?'wind':`${e.material}-${e.kind==='roll'?'roll':'scrape'}`;
       v=this.voice(clip,e.position,e.intensity*.3,rate,e.kind==='air',undefined,e.id,e.occlusion)??undefined;
@@ -278,9 +330,19 @@ export class DestructionAudio {
     if(v.end===-Infinity)return;v.end=-Infinity;v.loopId&&this.loops.delete(v.loopId);
     const t=this.context!.currentTime;v.gain.gain.cancelScheduledValues(t);v.gain.gain.setTargetAtTime(0,t,seconds/4);try{v.source.stop(t+seconds);}catch{/* Already stopped. */}
   }
-  private removeVoice(v:Voice):void{try{v.source.stop();}catch{}v.nodes.forEach(n=>n.disconnect());this.voices.delete(v);if(v.loopId&&this.loops.get(v.loopId)===v)this.loops.delete(v.loopId);}
-  stop(clearReflections=true):void{
-    this.director.clear();this.activity.clear();for(const v of this.voices)this.removeVoice(v);
+  private retireVoice(v:Voice):boolean{
+    // Replacements start at least 6 ms from now. Fade the outgoing source
+    // within 5 ms, so it finishes before its replacement begins. Keep a small
+    // explicit node reserve until onended performs the disconnect.
+    if(this.retiring.size>=8)return false;
+    this.release(v,.005);this.voices.delete(v);this.retiring.add(v);return true;
+  }
+  private removeVoice(v:Voice):void{try{v.source.stop();}catch{}v.nodes.forEach(n=>n.disconnect());this.voices.delete(v);this.retiring.delete(v);if(v.loopId&&this.loops.get(v.loopId)===v)this.loops.delete(v.loopId);}
+  stop(clearReflections=true,cancelAudition=true):void{
+    if(cancelAudition)this.auditionGeneration++;
+    this.previewReflections=null;
+    if(this.context)this.wet?.gain.setTargetAtTime(audioSettings().acoustics==='reflections'?audioSettings().space*.36:0,this.context.currentTime,.03);
+    this.director.clear();this.activity.clear();this.activitySlots=0;for(const v of [...this.voices,...this.retiring])this.removeVoice(v);
     for(const [source,nodes] of this.transients){try{source.stop();}catch{}nodes.forEach(n=>n.disconnect());}this.transients.clear();
     this.lastDuck=-Infinity;this.lastRing=-Infinity;
     if(this.context&&this.detail){this.detail.gain.cancelScheduledValues(this.context.currentTime);this.detail.gain.value=1;}
@@ -296,8 +358,29 @@ export class DestructionAudio {
   }
   async suspend():Promise<void>{this.stop();await this.context?.suspend();}
   async resume():Promise<void>{if(this.running)await this.context?.resume();}
+  async auditionPalette(slot:PaletteSlot,choice:PaletteChoice,{reflections}:{reflections:boolean}):Promise<void>{
+    this.stop();const generation=++this.auditionGeneration,roomRevision=this.roomRevision;
+    await this.start();if(generation!==this.auditionGeneration)throw new DOMException('Preview cancelled','AbortError');
+    const clip=paletteClipId(slot,choice);
+    const buffer=choice==='original'?BANK.get(clip):await this.options!.load(slot,choice);
+    if(generation!==this.auditionGeneration)throw new DOMException('Preview cancelled','AbortError');
+    if(!buffer)throw new Error('This sound is unavailable. Please try another take.');
+    const ctx=this.context!;
+    this.previewReflections=roomRevision===this.roomRevision?reflections:audioSettings().acoustics==='reflections';this.applySettings();
+    const flying=slot.endsWith('Flyby'),speed=slot==='projectileFlyby'?100:slot==='massiveFlyby'?45:30;
+    const position:Vec3=flying?[this.listener[0],this.listener[1]+1.1,this.listener[2]]:[this.listener[0]+this.forward[0]*6,this.listener[1]-.5,this.listener[2]+this.forward[2]*6];
+    const event:SoundEvent={id:'reference',kind:'flyby',position,material:'metal',size:slot==='massiveFlyby'?4:.5,intensity:.8,seed:2026,atMs:performance.now(),velocity:[-this.forward[2]*speed,0,this.forward[0]*speed]};
+    const start=ctx.currentTime+.015;
+    const flight=flying?flybyMotion(event,start,this.options?.clip(clip)?.passAtSeconds??.25,buffer.duration,true,undefined,this.listener)??undefined:undefined;
+    const v=this.voice(clip,position,referenceGain(buffer),flight?.rate??1,true,start,undefined,0,1,'threat',flight);
+    if(v&&!flying&&slot.endsWith('Collapse')){
+      // The dry reference plays one finite take; it never leaves a loop behind.
+      v.attackUntil=start+.02;v.gain.gain.cancelScheduledValues(ctx.currentTime);this.placeVoice(v,true);
+      const end=start+buffer.duration;v.fadeAt=end-.05;v.gain.gain.setTargetAtTime(0,v.fadeAt,.012);v.source.stop(end);
+    }
+  }
   diagnostics():AudioDiagnostics{
-    const ctx=this.context,s=audioSettings();return {...this.stats,...this.director.stats,state:ctx?.state==='suspended'?'Sound suspended':this.stats.state,output:this.mode,requestedOutput:s.output,maxChannels:ctx?.destination.maxChannelCount??2,voices:this.voices.size,spatialVoices:[...this.voices].filter(v=>v.panner).length,activityEmitters:[...this.loops.values()].filter(v=>v.role==='activity').length,loaded:BANK.size,total:bankTotal,failures:[...bankFailures],queued:this.director.queued,sampleRate:ctx?.sampleRate??0,latencyMs:ctx?((ctx.baseLatency??0)+(ctx.outputLatency??0)+256/ctx.sampleRate)*1000:0};
+    const ctx=this.context,s=audioSettings();return {...this.stats,...this.director.stats,state:ctx?.state==='suspended'?'Sound suspended':this.stats.state,output:this.mode,requestedOutput:s.output,maxChannels:ctx?.destination.maxChannelCount??2,voices:this.voices.size,spatialVoices:[...this.voices].filter(v=>v.panner).length,activityEmitters:[...this.loops.values()].filter(v=>v.role==='activity').length,loaded:BANK.size,total:bankTotal,failures:[...bankFailures,...this.options?.failures.keys()??[]],queued:this.director.queued,sampleRate:ctx?.sampleRate??0,latencyMs:ctx?((ctx.baseLatency??0)+(ctx.outputLatency??0)+256/ctx.sampleRate)*1000:0};
   }
   /** Isolated output routing test bypasses spatial panning, not the limiter. */
   testChannel(channel:number):void{

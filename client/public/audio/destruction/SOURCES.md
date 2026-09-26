@@ -1,8 +1,9 @@
 # Destruction sound palette
 
-87 mono sounds at 48 kHz. Designed for spatial playback: 35 material impacts,
+100 mono sounds at 48 kHz. Designed for spatial playback: 35 material impacts,
 21 fractures, seven friction loops, seven rolling loops, four large collapses,
-four near misses, six weapon reports and three air/rumble/wind loops. The runtime controls scale and loudness independently.
+four near misses, six weapon reports, three air/rumble/wind loops, six heavy-body
+impact layers and seven sustained material debris beds. The runtime controls scale and loudness independently.
 
 ## Source recordings and permission
 
@@ -59,8 +60,16 @@ and imposes a 20-second timeout on each FFmpeg process.
 - Wood has short resonances and recorded fiber-like cracking.
 - Glass layers sharp breakage and small, bright fragments.
 - Earth uses a soft attack, subdued resonance and granular movement.
-- Collapses combine a firm opening, low-frequency pressure, rock breakage and
-  irregular falling fragments with a decaying tail.
+- Collapses combine a firm opening, audible low-mid pressure, rock breakage and
+  irregular falling fragments. Broad body and smooth compression retain 7–10 dB
+  more whole-clip RMS than the first palette without raising their output peaks.
+- `heavy-concrete`, `heavy-stone`, `heavy-metal`, `heavy-sheet`, `heavy-wood`,
+  and `heavy-earth` add slab/chassis-sized weight behind the varied main impact.
+  Most energy is in 80–1000 Hz, so the body survives playback without a subwoofer.
+  Glass keeps its existing sharp contact/fracture layers.
+- `debris-<material>` provides a separate 6.4-second seamless regional bed for
+  each of the seven materials. Dense recorded grains and continuous irregular
+  pressure sustain a collapse; the runtime controls its density and lifetime.
 - Flybys use a short moving-air envelope with a restrained downward tonal sweep.
 - Rifle reports have short, bright muzzle attacks and a small mechanical layer.
   Cannon reports use a broader attack, deeper pressure and longer decaying body.
@@ -84,7 +93,11 @@ environment response.
 
 `quality-report.json` contains decoded measurements for every shipped clip,
 including peak, RMS, crest factor, DC, duration, boundary continuity and checksum.
-The verifier checks all 87 required IDs, decode success, distinct variation
+The heavy-body revision adds calibrated FFT band-energy checks, first-750 ms
+active RMS, and 200 ms window RMS floors for sustained debris. Heavy layers are
+required to carry audible low-mid energy with restrained sub-bass/treble; glass
+debris retains a bright fragment spectrum.
+The verifier checks all 100 required IDs, decode success, distinct variation
 hashes, no clipped/silent clips, quiet one-shot tails, loop joins, and bounded
 file and decoded-memory sizes. Loop joins are compared with the texture's normal
 sample-to-sample change, rather than requiring a naturally nonzero waveform to

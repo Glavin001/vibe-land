@@ -155,3 +155,44 @@ test('compares small and heavy material impacts at the same position and intensi
   await page.getByRole('button', { name: 'Metal', exact: true }).click();
   await expect(page.getByText('Heavy metal · same intensity, six meters ahead.', { exact: true })).toBeVisible();
 });
+
+test('previews sound casting options without choosing them, then persists the chosen role', async ({ page }) => {
+  const casting = page.getByRole('region', { name: 'Sound casting' });
+  await expect(casting).toBeVisible();
+  await expect(casting.getByRole('button', { name: 'Preview Original layer', exact: true })).toBeVisible();
+  await expect(casting.getByRole('button', { name: 'Dry', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.getByRole('combobox', { name: 'Reflections mode' })).toHaveValue('dry');
+  await casting.getByRole('button', { name: 'Preview Recording focus', exact: true }).click();
+  await expect(casting.getByText('Previewed', { exact: true })).toBeVisible();
+  await expect(casting.getByRole('button', { name: 'Use Recording focus in mix', exact: true })).toHaveAttribute('aria-pressed', 'false');
+  await casting.getByRole('button', { name: 'Use Recording focus in mix', exact: true }).click();
+  await expect(casting.getByRole('button', { name: 'Use Recording focus in mix', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await casting.getByRole('button', { name: 'With reflections', exact: true }).click();
+  await expect(casting.getByRole('button', { name: 'With reflections', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.getByRole('combobox', { name: 'Reflections mode' })).toHaveValue('reflections');
+  await casting.getByRole('button', { name: 'Stop preview', exact: true }).click();
+  await page.reload();
+  await expect(casting.getByRole('button', { name: 'Use Recording focus in mix', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await expect(casting.getByRole('button', { name: 'With reflections', exact: true })).toHaveAttribute('aria-pressed', 'true');
+});
+
+test('cancels an uncached preview with Escape without marking it heard', async ({ page }) => {
+  let release!: () => void;
+  let requested!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const requestStarted = new Promise<void>(resolve => { requested = resolve; });
+  await page.route('**/audio/options/masonryImpact-natural.wav*', async route => {
+    requested();
+    await gate;
+    await route.continue();
+  });
+  const casting = page.getByRole('region', { name: 'Sound casting' });
+  try {
+    await casting.getByRole('button', { name: 'Preview Recording focus', exact: true }).click();
+    await requestStarted;
+    await page.keyboard.press('Escape');
+  } finally { release(); }
+  await expect(casting.getByText('Preview cancelled.', { exact: true })).toBeVisible();
+  await expect(casting.getByText('Previewed', { exact: true })).toHaveCount(0);
+  await expect(casting.getByRole('button', { name: 'Preview Recording focus', exact: true })).toHaveAttribute('aria-busy', 'false');
+});

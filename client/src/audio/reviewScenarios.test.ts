@@ -22,6 +22,30 @@ describe('repeatable audio review sequences', () => {
     expect(createReviewScenario('stress').events).toHaveLength(10_000);
     expect(createReviewScenario('stress').events.some(e => e.kind === 'flyby' && e.protected)).toBe(true);
   });
+  it('gives every authored flyby a coherent world trajectory and closest-pass distance',()=>{
+    const listener=[0,1.7,0];
+    for(const meta of REVIEW_SCENARIOS){
+      for(const event of createReviewScenario(meta.id).events.filter(e=>e.kind==='flyby')){
+        expect(event.velocity).toBeDefined();
+        expect(event.velocity!.every(Number.isFinite)).toBe(true);
+        expect(Math.hypot(...event.velocity!)).toBeGreaterThan(14);
+        const offset=event.position.map((p,i)=>p-listener[i]);
+        expect(event.missDistance).toBeCloseTo(Math.hypot(...offset));
+        expect(offset.reduce((sum,p,i)=>sum+p*event.velocity![i],0)).toBeCloseTo(0,5);
+      }
+    }
+  });
+  it('places cannonball and meteor/debris passes on their continuous flight paths',()=>{
+    for(const id of ['hero','cannonball'] as const){
+      const scenario=createReviewScenario(id);
+      for(const event of scenario.events.filter(e=>e.kind==='flyby')){
+        const emitter=sampleReviewEmitters(scenario,event.atMs).find(e=>e.material===event.material&&e.kind==='air');
+        expect(emitter).toBeDefined();
+        event.position.forEach((value,i)=>expect(value).toBeCloseTo(emitter!.position[i]));
+        event.velocity!.forEach((value,i)=>expect(value).toBeCloseTo(emitter!.velocity![i]));
+      }
+    }
+  });
   it('puts the listener inside a sustained heavy collapse before the settling tail', () => {
     expect(REVIEW_SCENARIOS[0].id).toBe('interior');
     const scene = createReviewScenario('interior', 421);

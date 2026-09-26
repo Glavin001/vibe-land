@@ -1,5 +1,6 @@
 import { useSyncExternalStore } from 'react';
 import { clamp } from './model';
+import { DEFAULT_PALETTE, sanitizePalette, type PaletteChoices } from './soundPalette';
 export type OutputMode = 'headphones' | 'stereo' | 'surround51' | 'surround71';
 export type MixPreset = 'cinematic' | 'natural' | 'clarity';
 export type DynamicRange = 'cinematic' | 'balanced' | 'night';
@@ -16,13 +17,15 @@ export interface AudioSettings {
   flyby: number;
   ringing: number;
   maxVoices: number;
+  palette: PaletteChoices;
+  acoustics: 'dry'|'reflections';
 }
 export const MIXES: Record<MixPreset, Pick<AudioSettings, 'impact' | 'detail' | 'bass' | 'space' | 'flyby'>> = {
   cinematic: { impact: 1, detail: .8, bass: .9, space: .65, flyby: 1 },
   natural: { impact: .88, detail: 1, bass: .48, space: .42, flyby: .78 },
   clarity: { impact: .86, detail: .58, bass: .5, space: .3, flyby: 1.1 },
 };
-export const DEFAULT_AUDIO: AudioSettings = {enabled:true,master:.65,output:'headphones',preset:'cinematic',dynamicRange:'balanced',...MIXES.cinematic,ringing:0,maxVoices:64};
+export const DEFAULT_AUDIO: AudioSettings = {enabled:true,master:.65,output:'headphones',preset:'cinematic',dynamicRange:'balanced',...MIXES.cinematic,ringing:0,maxVoices:64,palette:{...DEFAULT_PALETTE},acoustics:'dry'};
 const KEY='vibe.audio.v1';
 export function sanitizeSettings(raw: Partial<AudioSettings>): AudioSettings {
   const s={...DEFAULT_AUDIO,...raw};
@@ -32,6 +35,8 @@ export function sanitizeSettings(raw: Partial<AudioSettings>): AudioSettings {
   s.enabled=typeof raw.enabled==='boolean'?raw.enabled:true;
   for(const k of ['master','impact','detail','bass','space','flyby','ringing'] as const) s[k]=clamp(Number(s[k]),0,k==='master'||k==='ringing'?1:1.5);
   s.maxVoices=Math.round(clamp(Number(s.maxVoices),24,96));
+  s.palette=sanitizePalette(raw.palette);
+  s.acoustics=raw.acoustics==='reflections'?'reflections':'dry';
   return s;
 }
 function load(): AudioSettings {try{return sanitizeSettings(JSON.parse(localStorage.getItem(KEY)??'{}'));}catch{return {...DEFAULT_AUDIO};}}

@@ -1,0 +1,234 @@
+{
+  "version": 1,
+  "sampleRate": 48000,
+  "channels": 1,
+  "generatorSha256": "e697fc99592f8b843dd69f9995921e5915b378f4fb23528b0762a14c44f0337f",
+  "clips": {
+    "masonryImpact-natural": {
+      "url": "/audio/options/masonryImpact-natural.wav",
+      "duration": 0.5891875,
+      "loop": false,
+      "sha256": "4640b1af21ae202ce6f2f05e467b07faf50c75ea74b0cba4b3fd854fa848df97",
+      "origin": "recorded",
+      "sources": [
+        "bricks"
+      ],
+      "description": "Close brick-on-brick crack; source recording with minimal cleanup."
+    },
+    "masonryImpact-designed": {
+      "url": "/audio/options/masonryImpact-designed.wav",
+      "duration": 1.55,
+      "loop": false,
+      "sha256": "4bd84d10cc261d92b3f8323ad69f0a0ca398c9c0d294a7af3b8964a28c8550e8",
+      "origin": "hybrid",
+      "sources": [
+        "bricks",
+        "rocks"
+      ],
+      "description": "Brick crack with heavy stone chunks and a short low-mid body."
+    },
+    "masonryCollapse-natural": {
+      "url": "/audio/options/masonryCollapse-natural.wav",
+      "duration": 6.4,
+      "loop": true,
+      "sha256": "ac31db11fe57317f0baf340a1dbd965e529cbc9f250b8793092345aeec51ee0a",
+      "origin": "recorded",
+      "sources": [
+        "rockslide"
+      ],
+      "description": "Recorded rock slide with individual chunks and natural gaps."
+    },
+    "masonryCollapse-designed": {
+      "url": "/audio/options/masonryCollapse-designed.wav",
+      "duration": 6.4,
+      "loop": true,
+      "sha256": "2a0c38217ca490ee9b0ece267995901d926442f60a131bcee333074f3dc0ab98",
+      "origin": "hybrid",
+      "sources": [
+        "rocks",
+        "bricks"
+      ],
+      "description": "Dense dry stones tumbling and colliding, with large brick accents."
+    },
+    "metalImpact-natural": {
+      "url": "/audio/options/metalImpact-natural.wav",
+      "duration": 0.31945833333333334,
+      "loop": false,
+      "sha256": "add43ac7f6dfae3355f21a974dc1cf52ef57b789a12f2a22d8c1a8edc2a4ffee",
+      "origin": "recorded",
+      "sources": [
+        "metalwood"
+      ],
+      "description": "Dry metal strike with the recording’s own short resonance."
+    },
+    "metalImpact-designed": {
+      "url": "/audio/options/metalImpact-designed.wav",
+      "duration": 1.15,
+      "loop": false,
+      "sha256": "db28235efd0067bbf52fc3889e394da804564bc0d1a90b13110b226953061d69",
+      "origin": "hybrid",
+      "sources": [
+        "metalwood"
+      ],
+      "description": "Heavier metal slam and flexing plate with a compact body."
+    },
+    "metalCollapse-natural": {
+      "url": "/audio/options/metalCollapse-natural.wav",
+      "duration": 6.4,
+      "loop": true,
+      "sha256": "e59bb0cdb9a6dceb7439833d17448146a0578655f6758c6e14953cd0c9d0224a",
+      "origin": "recorded",
+      "sources": [
+        "metalwood"
+      ],
+      "description": "Unpitched falling metal pieces with sparse clatters."
+    },
+    "metalCollapse-designed": {
+      "url": "/audio/options/metalCollapse-designed.wav",
+      "duration": 6.4,
+      "loop": true,
+      "sha256": "e62563927b8969eda89718585ebeb56f01b54ac1327aa5a2e429bae36684f915",
+      "origin": "hybrid",
+      "sources": [
+        "metalwood"
+      ],
+      "description": "Dense, lower metal tumble with intermittent plate flex."
+    },
+    "projectileFlyby-natural": {
+      "url": "/audio/options/projectileFlyby-natural.wav",
+      "duration": 0.58,
+      "loop": false,
+      "sha256": "4c2ecb7a898477c1b4f6a68982a70db8dc2e42dffa0919dcf9ca5c5eab1dc87d",
+      "origin": "recorded",
+      "sources": [
+        "swishes"
+      ],
+      "description": "Very short recorded swish: sharp, close and dry.",
+      "passAtSeconds": 0.23
+    },
+    "projectileFlyby-designed": {
+      "url": "/audio/options/projectileFlyby-designed.wav",
+      "duration": 0.72,
+      "loop": false,
+      "sha256": "f24490eedf7cf649bc2b3f420ef5c30172356b214c33f6f2ab6da17c187fd7a3",
+      "origin": "hybrid",
+      "sources": [
+        "swishes",
+        "metalwood"
+      ],
+      "description": "Fast swish with a brief mechanical zing.",
+      "passAtSeconds": 0.23
+    },
+    "debrisFlyby-natural": {
+      "url": "/audio/options/debrisFlyby-natural.wav",
+      "duration": 0.82,
+      "loop": false,
+      "sha256": "07f2109ccf488395a577cd2c3dc410528175f51f59eb97e293f180dd2bc61bd2",
+      "origin": "recorded",
+      "sources": [
+        "swishes"
+      ],
+      "description": "Rougher recorded object sweep with a broader passing motion.",
+      "passAtSeconds": 0.27
+    },
+    "debrisFlyby-designed": {
+      "url": "/audio/options/debrisFlyby-designed.wav",
+      "duration": 0.95,
+      "loop": false,
+      "sha256": "7a01ae96df497fa0ad2618aa95807315233fa9c4416dd1effdd94f934db533c1",
+      "origin": "hybrid",
+      "sources": [
+        "swishes",
+        "bricks",
+        "metalwood"
+      ],
+      "description": "Tumbling sweep with granular brick and vibrating shard texture.",
+      "passAtSeconds": 0.27
+    },
+    "massiveFlyby-natural": {
+      "url": "/audio/options/massiveFlyby-natural.wav",
+      "duration": 1.02,
+      "loop": false,
+      "sha256": "101e88fb40c2200787aff04019e1aba3a51735c5882ee8fbd706c7681d9f8a58",
+      "origin": "recorded",
+      "sources": [
+        "swishes"
+      ],
+      "description": "Slowed recorded heavy swish, retaining a dry physical sweep.",
+      "passAtSeconds": 0.31
+    },
+    "massiveFlyby-designed": {
+      "url": "/audio/options/massiveFlyby-designed.wav",
+      "duration": 1.3,
+      "loop": false,
+      "sha256": "27e75a380f24966756e539076e5bec5def2453a5fe303055062944a4d16ffc61",
+      "origin": "hybrid",
+      "sources": [
+        "swishes",
+        "metalwood",
+        "rocks"
+      ],
+      "description": "Broad passing pressure with flexing metal and heavy debris texture.",
+      "passAtSeconds": 0.31
+    }
+  },
+  "sources": [
+    {
+      "id": "bricks",
+      "title": "Bricks.wav",
+      "creator": "cejordi84",
+      "url": "https://freesound.org/people/cejordi84/sounds/232396/",
+      "license": "CC0 1.0",
+      "format": "Public HQ MP3 preview of the recording",
+      "download": "https://cdn.freesound.org/previews/232/232396_3270296-hq.mp3",
+      "file": "bricks.mp3",
+      "sha256": "43860aaa1bb1eadf0a588276a2e6ca66709abd03e773f6ba8b44e69a85e6159b"
+    },
+    {
+      "id": "rockslide",
+      "title": "rock slide.wav",
+      "creator": "21100495",
+      "url": "https://freesound.org/people/21100495/sounds/655368/",
+      "license": "CC0 1.0",
+      "format": "Public HQ MP3 preview of recorded rock layers",
+      "download": "https://cdn.freesound.org/previews/655/655368_13723333-hq.mp3",
+      "file": "rockslide.mp3",
+      "sha256": "fa9331415d4a31d11b6615faaf0e70decac8c8eaea33224ab3b8cae7109e0e1e"
+    },
+    {
+      "id": "rocks",
+      "title": "rockfall2a.wav",
+      "creator": "AlanCat",
+      "url": "https://freesound.org/people/AlanCat/sounds/389303/",
+      "license": "CC0 1.0",
+      "format": "Public HQ MP3 preview; real cliff rockfall, background-noise cleanup only",
+      "download": "https://cdn.freesound.org/previews/389/389303_5486695-hq.mp3",
+      "file": "cliff.mp3",
+      "sha256": "db15885029d027756ef2b90114c202f4837f10a128371f493904b4886818ffcd"
+    },
+    {
+      "id": "swishes",
+      "title": "Swishes Sound Pack",
+      "creator": "artisticdude",
+      "url": "https://opengameart.org/content/swishes-sound-pack",
+      "license": "CC0 1.0",
+      "format": "Original WAV pack; hanger and wood swung past microphone",
+      "download": "https://opengameart.org/sites/default/files/swishes.zip",
+      "file": "swishes.zip",
+      "sha256": "7980215241b739a787dcf26f660ce510bb237900968789395a86911619795693",
+      "extract": "swishes"
+    },
+    {
+      "id": "metalwood",
+      "title": "100 CC0 metal and wood SFX",
+      "creator": "rubberduck",
+      "url": "https://opengameart.org/content/100-cc0-metal-and-wood-sfx",
+      "license": "CC0 1.0",
+      "format": "Original OGG pack",
+      "download": "https://opengameart.org/sites/default/files/100-CC0-wood-metal-SFX.zip",
+      "file": "metalwood.zip",
+      "sha256": "be6eba63b03409ac0c77787a956b1503a7c186403d04aef9725c52644a4b7878",
+      "extract": "metalwood"
+    }
+  ]
+}

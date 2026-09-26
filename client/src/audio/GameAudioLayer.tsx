@@ -135,7 +135,7 @@ export function GameAudioLayer({getRuntime,getCityClient,isPlaying,getNowMs}:Pro
       if(speed>.7)engine.continuous({id:`vehicle:${id}`,kind:'engine',material:'metal',position:v.position,speed,intensity:clamp(.08+speed/55)},now);
       s.motion.note({id:`vehicle:${id}`,position:v.position,velocity:v.linearVelocity,nowMs:now,material:'metal',size:2,mass:1200,authoritative:hasRecentAudioContacts(contactNow,contactEntityId('vehicle',id))},s.listener,emit);
     }
-    s.motion.prune(now);engine.update(now);
+    s.motion.prune(now);engine.update(now,position=>s.occlusion?.sample(s.listener,position,now)??0);
   });
   return null;
 }

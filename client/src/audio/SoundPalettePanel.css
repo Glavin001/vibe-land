@@ -1,0 +1,52 @@
+.sound-casting { border: 1px solid var(--al-line, #30372b); border-radius: 10px; background: #151b13; margin: 0 0 24px; overflow: hidden; }
+.sound-casting-heading { padding: 23px 24px; border-bottom: 1px solid #333e2a; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 20px; }
+.sound-casting-eyebrow { font: 9px/1.5 ui-monospace, monospace; color: #a1b784; letter-spacing: .12em; }
+.sound-casting-heading h2 { margin: 7px 0 7px; font-weight: 450; font-size: 24px; letter-spacing: -.035em; }
+.sound-casting-heading p { margin: 0; font-size: 11px; color: #a3b291; }
+.sound-casting-tools { display: flex; gap: 9px; align-items: center; flex-wrap: wrap; }
+.sound-casting-tools button { font-size: 10px; padding: 8px 11px; border: 1px solid #465b34; border-radius: 5px; color: #bfd1a8; background: #1a2414; }
+.sound-casting-room { display: flex; border: 1px solid #50683b; border-radius: 5px; overflow: hidden; }
+.sound-casting-room button { border: 0; border-radius: 0; color: #8fa776; }
+.sound-casting-room button[aria-pressed="true"] { background: #c4de94; color: #1e2b11; }
+.sound-casting-tools .sound-casting-scene { background: #2b3b1d; color: #d0e6ae; border-color: #7d9757; }
+.sound-casting-tools .sound-casting-stop { color: #aaae95; border-color: #414c33; }
+.sound-casting-body { display: grid; grid-template-columns: 230px minmax(0, 1fr); }
+.sound-casting-roles { border-right: 1px solid #303e25; padding: 12px; display: grid; gap: 4px; align-content: start; background: #12190f; }
+.sound-casting-roles button { display: flex; justify-content: space-between; gap: 9px; align-items: center; text-align: left; padding: 11px 12px; border-radius: 5px; border: 1px solid transparent; color: #b9cba7; background: transparent; }
+.sound-casting-roles button:hover { background: #223118; }
+.sound-casting-roles button[aria-pressed="true"] { border-color: #819957; background: #2b3a1e; color: #e5f0d4; }
+.sound-casting-roles strong { font-size: 11px; font-weight: 500; display: block; }
+.sound-casting-roles small { font-size: 9px; color: #91a77b; display: block; margin-top: 3px; }
+.sound-role-previewed { color: #a5c281; font: 14px ui-monospace, monospace; }
+.sound-casting-options { padding: 22px; min-width: 0; }
+.sound-casting-role-heading { display: flex; gap: 25px; align-items: flex-end; margin-bottom: 21px; }
+.sound-casting-role-heading h3 { margin: 5px 0 0; font-size: 20px; font-weight: 450; letter-spacing: -.025em; white-space: nowrap; }
+.sound-casting-role-heading p { margin: 0 0 2px; max-width: 430px; font-size: 11px; color: #9fae8f; line-height: 1.7; }
+.sound-casting-cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.sound-casting-card { border: 1px solid #3e4d30; border-radius: 7px; background: #192214; padding: 16px; min-width: 0; display: flex; flex-direction: column; }
+.sound-casting-card.is-selected { border-color: #91ad64; background: #222e18; box-shadow: inset 0 3px #9db97a; }
+.sound-casting-card-top { display: flex; justify-content: space-between; gap: 8px; font: 8px/1.5 ui-monospace, monospace; color: #a0b184; }
+.sound-casting-card-top > span:last-child { color: #c4d5a9; }
+.sound-casting-card h4 { font-size: 16px; font-weight: 500; letter-spacing: -.025em; margin: 17px 0 10px; color: #dde9c8; }
+.sound-casting-card-description { font-size: 11px; line-height: 1.8; color: #afbe9d; margin: 0 0 17px; min-height: 59px; }
+.sound-casting-source { margin-top: auto; padding-bottom: 18px; font-size: 9px; color: #9faf8b; display: grid; gap: 9px; }
+.sound-casting-source > span { color: #bdcdae; border: 1px solid #465d33; border-radius: 4px; padding: 3px 6px; width: fit-content; max-width: 100%; }
+.sound-casting-source a { color: #b7cba2; text-decoration: underline; text-decoration-color: #526a3a; text-underline-offset: 3px; line-height: 1.8; }
+.sound-casting-source ul { list-style: none; padding: 0; margin: 0; display: grid; gap: 7px; }
+.sound-casting-source small { display: block; font-size: 8px; color: #8da479; }
+.sound-casting-card-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }
+.sound-casting-card-actions button { font-size: 10px; padding: 8px 6px; border: 1px solid #526b3c; border-radius: 4px; background: #26371b; color: #d0e3b6; }
+.sound-casting-card-actions button:hover { border-color: #afca88; background: #344b23; }
+.sound-casting-card-actions .sound-casting-use { background: transparent; color: #b0c798; }
+.sound-casting-card-actions .sound-casting-use[aria-pressed="true"] { color: #d5e7ba; border-color: #93ab72; }
+.sound-preview-mark { margin-left: 6px; color: #bdd491; }
+.sound-casting-footer { display: flex; gap: 16px; justify-content: space-between; align-items: baseline; margin-top: 18px; font-size: 9px; color: #8b9f73; }
+.sound-casting-footer p { color: #b2c59b; margin: 0; line-height: 1.7; }
+.sound-casting-footer > span { white-space: nowrap; }
+.sound-casting-provenance { border-top: 1px solid #344327; padding: 14px 24px; color: #9eb589; font-size: 10px; }
+.sound-casting-provenance summary { cursor: pointer; }
+.sound-casting-provenance p { max-width: 1100px; line-height: 1.9; color: #a9bb97; margin: 11px 0 0; }
+.sound-casting-provenance a { text-decoration: underline; text-underline-offset: 3px; color: #c4dba7; }
+@media (max-width: 1100px) { .sound-casting-body { grid-template-columns: 195px minmax(0, 1fr); } .sound-casting-options { padding: 18px; } .sound-casting-cards { gap: 9px; } .sound-casting-card { padding: 12px; } .sound-casting-card-actions { grid-template-columns: 1fr; } .sound-casting-role-heading { display: block; } .sound-casting-role-heading p { margin-top: 9px; max-width: none; } .sound-casting-footer { flex-wrap: wrap; gap: 7px; } }
+@media (max-width: 800px) { .sound-casting-body { display: block; } .sound-casting-roles { display: flex; overflow-x: auto; border-right: 0; border-bottom: 1px solid #303e25; padding: 12px; } .sound-casting-roles button { min-width: 160px; } .sound-casting-role-heading { display: flex; } .sound-casting-card-actions { grid-template-columns: 1fr; } }
+@media (max-width: 600px) { .sound-casting-heading { padding: 20px 17px; } .sound-casting-heading h2 { font-size: 24px; } .sound-casting-tools { gap: 7px; } .sound-casting-tools button { padding: 8px 9px; font-size: 9px; } .sound-casting-options { padding: 18px 15px; } .sound-casting-role-heading { display: block; } .sound-casting-role-heading h3 { white-space: normal; } .sound-casting-cards { grid-template-columns: 1fr; } .sound-casting-card { padding: 17px; } .sound-casting-card-actions { grid-template-columns: 1fr 1fr; } .sound-casting-card-description { min-height: 0; } .sound-casting-source { padding-bottom: 15px; } .sound-casting-provenance { padding: 14px 17px; } }

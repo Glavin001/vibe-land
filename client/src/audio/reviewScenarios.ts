@@ -1,4 +1,4 @@
-import { MATERIALS, seedRandom, type AcousticMaterial, type ContinuousSound, type SoundEvent, type Vec3 } from './model';
+import { closestPass, distance, MATERIALS, seedRandom, type AcousticMaterial, type ContinuousSound, type SoundEvent, type Vec3 } from './model';
 import { sanitizeSettings, type AudioSettings } from './settings';
 
 export type ReviewScenarioId = 'interior' | 'hero' | 'mailbox' | 'cannonball' | 'materials' | 'scrape' | 'vehicle' | 'stress';
@@ -35,8 +35,28 @@ export interface ReviewScenario {
 export function createReviewScenario(id: ReviewScenarioId, seed = 2026): ReviewScenario {
   const meta = REVIEW_SCENARIOS.find(s => s.id === id) ?? REVIEW_SCENARIOS[0];
   const random = seedRandom(seed), events: SoundEvent[] = [], emitters: ReviewEmitter[] = [], markers: ReviewMarker[] = [];
+  const closeListener:Vec3=[0,1.7,0];
   const add = (atMs: number, kind: SoundEvent['kind'], material: AcousticMaterial, position: Vec3, intensity: number, size: number, protectedSound = false) => {
-    events.push({ id: `${id}-${events.length}`, atMs, kind, material, position, intensity, size, seed: Math.floor(random() * 2147483647), protected: protectedSound });
+    const event:SoundEvent={ id: `${id}-${events.length}`, atMs, kind, material, position, intensity, size, seed: Math.floor(random() * 2147483647), protected: protectedSound };
+    events.push(event);return event;
+  };
+  // A continuous approach and its one-shot pass describe the same trajectory,
+  // rather than separate authored positions that jump at the near-miss beat.
+  const flight=(emitter:Omit<ReviewEmitter,'speed'|'endSpeed'>,intensity:number,size:number)=>{
+    const velocity=emitter.to.map((v,i)=>(v-emitter.from[i])*1000/(emitter.endMs-emitter.startMs)) as unknown as Vec3;
+    const speed=Math.hypot(...velocity);emitters.push({...emitter,speed,endSpeed:speed});
+    const pass=closestPass(emitter.from,emitter.to,closeListener,closeListener);
+    const event=add(emitter.startMs+pass.fraction*(emitter.endMs-emitter.startMs),'flyby',emitter.material,pass.position,intensity,size,true);
+    event.velocity=velocity;event.missDistance=pass.distance;
+  };
+  const debrisPass=(atMs:number,material:AcousticMaterial,position:Vec3,intensity:number,size:number,direction:Vec3,speed:number)=>{
+    const offset=position.map((p,i)=>p-closeListener[i]);
+    const distanceSquared=offset.reduce((sum,p)=>sum+p*p,0);
+    const projection=offset.reduce((sum,p,i)=>sum+p*direction[i],0)/Math.max(1e-9,distanceSquared);
+    const tangent=direction.map((v,i)=>v-offset[i]*projection),length=Math.hypot(...tangent);
+    const event=add(atMs,'flyby',material,position,intensity,size,true);
+    event.velocity=tangent.map(v=>v*speed/length) as unknown as Vec3;
+    event.missDistance=distance(position,closeListener);
   };
   const debris = (count: number, start: number, span: number, material: AcousticMaterial, center: Vec3, radius: number, strength = .6) => {
     for (let i = 0; i < count; i++) {
@@ -70,23 +90,21 @@ export function createReviewScenario(id: ReviewScenarioId, seed = 2026): ReviewS
       const material: AcousticMaterial = i % 9 === 0 ? 'metal' : i % 3 === 0 ? 'stone' : 'concrete';
       add(t, i % 7 === 0 ? 'fracture' : 'impact', material, [Math.cos(angle) * radius, i % 7 === 0 ? 3 + random() * 5 : .15 + random() * 1.2, Math.sin(angle) * radius], .26 + random() * .42, .8 + random() * 4.2);
     }
-    add(3700, 'flyby', 'concrete', [-1.1, 2.2, .5], .94, 2.5, true);
-    add(7500, 'flyby', 'metal', [1.3, 2.5, -.6], .92, 1.5, true);
+    debrisPass(3700,'concrete',[-1.1,2.2,.5],.94,2.5,[1,-.3,1],46);
+    debrisPass(7500,'metal',[1.3,2.5,-.6],.92,1.5,[-1,-.2,-1],64);
     for (let i = 0; i < 80; i++) {
       const fraction = random(), t = 11500 + fraction * 3500, angle = random() * Math.PI * 2;
       add(t, 'impact', i % 3 === 0 ? 'stone' : 'concrete', [Math.cos(angle) * (2 + random() * 5), .1, Math.sin(angle) * (2 + random() * 5)], .07 + .19 * (1 - fraction), .08 + .6 * (1 - fraction));
     }
   } else if (id === 'hero') {
-    emitters.push({ id: 'meteor-approach', kind: 'air', material: 'stone', from: [-38, 45, -48], to: [11, 0, -14], startMs: 150, endMs: 2400, intensity: .2, endIntensity: .95, speed: 24, endSpeed: 38 });
+    flight({ id: 'meteor-approach', kind: 'air', material: 'stone', from: [-38, 45, 48], to: [11, 0, -14], startMs: 150, endMs: 2400, intensity: .2, endIntensity: .95 },.72,3);
     marker(0, 'Approach'); marker(2400, 'Impact'); marker(4100, 'Close debris'); marker(8500, 'Aftermath');
-    add(1950, 'flyby', 'stone', [3, 8, -8], .72, 3, true);
     add(2400, 'collapse', 'earth', [11, .2, -14], 1, 30);
     add(2680, 'fracture', 'concrete', [15, 8, -18], .9, 14);
     add(2920, 'fracture', 'glass', [13, 6, -15], .7, 3);
     add(3300, 'collapse', 'concrete', [17, 5, -17], .95, 20);
     add(3700, 'fracture', 'metal', [16, 4, -12], .65, 5);
-    emitters.push({ id: 'near-slab', kind: 'air', material: 'concrete', from: [14, 8, -16], to: [-9, .3, 9], startMs: 3650, endMs: 4550, intensity: .35, endIntensity: .2, speed: 35 });
-    add(4120, 'flyby', 'concrete', [1.1, 2, -1], .97, 2, true);
+    flight({ id: 'near-slab', kind: 'air', material: 'concrete', from: [14, 8, -16], to: [-9, .3, 9], startMs: 3650, endMs: 4550, intensity: .35, endIntensity: .2 },.97,2);
     add(4570, 'impact', 'concrete', [-9, .2, 9], .83, 6);
     debris(220, 2850, 6500, 'concrete', [15, .2, -16], 13, .62);
     debris(48, 3300, 3000, 'glass', [12, .2, -12], 7, .3);
@@ -101,8 +119,7 @@ export function createReviewScenario(id: ReviewScenarioId, seed = 2026): ReviewS
   } else if (id === 'cannonball') {
     marker(250, 'Distant shot'); marker(1200, 'Near miss'); marker(2050, 'Landing');
     add(250, 'shot', 'metal', [35, 2, -40], .95, 5);
-    emitters.push({ id: 'ball-flight', kind: 'air', material: 'metal', from: [28, 3.6, -28], to: [-28, .5, 30], startMs: 350, endMs: 2000, intensity: .4, endIntensity: .4, speed: 42 });
-    add(1180, 'flyby', 'metal', [1.2, 2, .3], .98, .5, true);
+    flight({ id: 'ball-flight', kind: 'air', material: 'metal', from: [28, 3.6, -28], to: [-28, .5, 30], startMs: 350, endMs: 2000, intensity: .4, endIntensity: .4 },.98,.5);
     add(2050, 'impact', 'concrete', [-28, .2, 30], .86, 7);
     debris(28, 2250, 2200, 'stone', [-27, .2, 30], 5, .5);
   } else if (id === 'materials') {
@@ -132,8 +149,8 @@ export function createReviewScenario(id: ReviewScenarioId, seed = 2026): ReviewS
     marker(400, 'Left collapse'); marker(1400, 'Right collapse'); marker(3800, 'Close pass'); marker(7100, 'Second pass'); marker(10500, 'Tail');
     add(400, 'collapse', 'concrete', [-28, 6, -24], .94, 25);
     add(1400, 'collapse', 'concrete', [28, 6, -24], .94, 25);
-    add(3800, 'flyby', 'metal', [-1.2, 1.8, 0], .95, .5, true);
-    add(7100, 'flyby', 'concrete', [1.2, 2.1, 0], .95, 1, true);
+    debrisPass(3800,'metal',[-1.2,1.8,0],.95,.5,[0,0,1],95);
+    debrisPass(7100,'concrete',[1.2,2.1,0],.95,1,[0,-.2,-1],50);
     debris(4998, 450, 10000, 'concrete', [-28, .2, -24], 14, .8);
     debris(4998, 1450, 9000, 'stone', [28, .2, -24], 14, .8);
   }

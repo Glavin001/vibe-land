@@ -35,6 +35,9 @@ vi.mock('../vfx/meteorFlights', () => ({ currentMeteorFlights: () => harness.fli
 
 import { GameAudioLayer } from './GameAudioLayer';
 import { contactEntityId, drainAudioContacts, ingestAudioContacts, resetAudioContacts } from './contactStream';
+import { CityImpactAudioQueue } from './cityImpactSources';
+import { DustImpactDetector } from '../city/dustImpacts';
+import { DustSourceQueue } from '../city/destructionEvents';
 
 type LayerProps = Parameters<typeof GameAudioLayer>[0];
 type World = NonNullable<ReturnType<LayerProps['getRuntime']>>;
@@ -88,6 +91,43 @@ beforeEach(() => {
 afterEach(() => { harness.cleanup?.(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 describe('game audio integration', () => {
+  it('keeps a city closest pass on its future presentation clock exactly once',()=>{
+    const {city,key,observe}=fakeCity();mount(world(),city);frame();
+    const motion=observe.mock.calls.at(-1)![1];
+    motion(key,{structureId:0,chunkSlots:[3]},60,-8,1,0,160,0,0,1000,3,1100);
+    harness.now=1050;
+    motion(key,{structureId:0,chunkSlots:[3]},66,8,1,0,160,0,0,1000,3,1200);
+    expect(emitted()).toEqual([expect.objectContaining({kind:'flyby',atMs:1150,position:[0,1,0],velocity:[160,0,0],material:'wood',size:3})]);
+  });
+  it('hears city impacts beyond the flyby budget with physical weight, true material and presentation time',()=>{
+    const {city,observe,drain}=fakeCity(),queue=new CityImpactAudioQueue(),detector=new DustImpactDetector(),dust=new DustSourceQueue(1);
+    drain.mockImplementation(visit=>queue.drain(visit));
+    mount(world(),city);frame();
+    const motion=observe.mock.calls.at(-1)![1];
+    // Saturate the independent 256-body near-miss tracker. The impact source
+    // below arrives from the detector that already sees every city body.
+    for(let i=0;i<300;i++)motion(0x80000000+i,{structureId:0,chunkSlots:[3]},60,4,4,0,0,-6,0,1000,3,1100);
+    const observer=(source:Parameters<CityImpactAudioQueue['noteImpact']>[0],evidence:Parameters<CityImpactAudioQueue['noteImpact']>[1])=>queue.noteImpact(source,evidence,60,1);
+    detector.noteVelocity(0x80000300,0,60,4,4,0,0,-6,0,1000,3,1100,dust,observer);
+    detector.noteVelocity(0x80000300,0,63,4,3.7,0,0,0,0,1000,3,1150,dust,observer);
+    frame(1050);
+    expect(emitted()).toEqual([expect.objectContaining({kind:'impact',material:'wood',size:3,atMs:1150,protected:true})]);
+    expect(emitted()[0].intensity).toBeGreaterThan(.8);
+    const nextMotion=observe.mock.calls.at(-1)![1];
+    for(let i=0;i<300;i++)nextMotion(0x80000000+i,{structureId:0,chunkSlots:[3]},63,4,3.7,0,0,0,0,1000,3,1150);
+    expect(emitted()).toHaveLength(1); // City motion may add flybys, never a second impact.
+  });
+
+  it.each([true,false])('suppresses a city velocity impact only for its matching authoritative body (%s)',matching=>{
+    const {city,key,drain}=fakeCity();
+    drain.mockImplementation(visit=>visit({kind:'impact',structureId:0,simTick:60,ordinal:7,x:10,y:0,z:-10,nx:0,ny:1,nz:0,vx:0,vy:0,vz:0,magnitude:1.5,count:1,material:0,atMs:1100},
+      {entityId:key,material:1,mass:1000,size:3,intensity:.86,energy:18000}));
+    ingestAudioContacts(contact(60,matching?key:key+1),1000);
+    mount(world(),city);frame();
+    expect(emitted().filter(e=>e.id.startsWith('break:'))).toHaveLength(matching?0:1);
+    expect(emitted().filter(e=>e.id.startsWith('contact:'))).toHaveLength(1);
+  });
+
   it('uses namespaced vehicle contacts without suppressing a dynamic body with the same user ID', () => {
     const w = world(); w.state.dynamicBodies.set(7, body([10, 0, 0])); w.vehicles!.set(7, vehicle([10, 0, 0]));
     mount(w); frame();
