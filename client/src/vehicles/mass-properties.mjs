@@ -44,19 +44,3 @@ export function massPropertiesToActor(p,originHeight) {
   const sign=[-1,1,-1];
   return {...p,center:p.center.map((v,i)=>sign[i]*v-(i===1?originHeight:0)),inertia:p.inertia.map((row,i)=>row.map((v,j)=>sign[i]*sign[j]*v))};
 }
-/** Mass-preserving affine map x' = L x + t of a solid (rigid motion, axial
- * compression, shear). Mass is unchanged; density follows det L. Exact because
- * the second moment C = ∫ρ(x-c)(x-c)ᵀ maps as L C Lᵀ and I = tr(C)·1 - C.
- */
-export function transformMassProperties(p,linear,translation) {
-  const L=linear,det=L[0][0]*(L[1][1]*L[2][2]-L[1][2]*L[2][1])-L[0][1]*(L[1][0]*L[2][2]-L[1][2]*L[2][0])+L[0][2]*(L[1][0]*L[2][1]-L[1][1]*L[2][0]);
-  if(!Number.isFinite(p.mass)||p.mass<=0||![...L.flat(),...translation,...p.center,...p.inertia.flat()].every(Number.isFinite)||!(det>0))throw Error('Invalid mass transform');
-  const half=(p.inertia[0][0]+p.inertia[1][1]+p.inertia[2][2])/2;
-  const C=p.inertia.map((row,i)=>row.map((v,j)=>(i===j?half:0)-v));
-  const LC=L.map(row=>[0,1,2].map(j=>row.reduce((s,v,k)=>s+v*C[k][j],0)));
-  const moved=LC.map(row=>[0,1,2].map(j=>row.reduce((s,v,k)=>s+v*L[j][k],0)));
-  const trace=moved[0][0]+moved[1][1]+moved[2][2];
-  return {...p,...(p.volume===undefined?{}:{volume:p.volume*det}),
-    center:L.map((row,i)=>row.reduce((s,v,k)=>s+v*p.center[k],translation[i])),
-    inertia:moved.map((row,i)=>row.map((v,j)=>(i===j?trace:0)-v))};
-}

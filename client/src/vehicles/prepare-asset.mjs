@@ -23,7 +23,7 @@ const request = JSON.parse(Buffer.concat(input).toString('utf8'));
 submittedConfiguration = request.configuration;
 const configuration = normalizeConfiguration(request.configuration);
 const root = resolve(process.argv[2]);
-const geometryHash = createHash('sha256').update(JSON.stringify({recipe:'vehicle-physics-posed-6',strength:STRENGTH_PROFILE_VERSION,geometry:geometryKey(configuration)})).digest('hex');
+const geometryHash = createHash('sha256').update(JSON.stringify({recipe:'vehicle-physics-rig-7',strength:STRENGTH_PROFILE_VERSION,geometry:geometryKey(configuration)})).digest('hex');
 const directory = join(root, geometryHash);
 let metadata;
 try { metadata = JSON.parse(await readFile(join(directory, 'metadata.json'), 'utf8')); }
@@ -46,9 +46,6 @@ catch (error) {
    mass: part.visualIds.reduce((n,id)=>n+visuals.get(id).mass,0),
    volume: part.visualIds.reduce((n,id)=>n+visuals.get(id).volume,0),
    massProperties: combineMassProperties(part.visualIds.map(id=>massProperties.get(id))),
-   // Each solid keeps its own binding so a posed chunk re-sums moved solids.
-   visuals: part.visualIds.map(id => { const m = visuals.get(id).motion;
-     return { id, motion: m?.role ? { role: m.role, corner: m.corner ?? null } : null, massProperties: massProperties.get(id) }; }),
    collisionVolume: part.volumeM3,
    position: sourceToActorPoint(part.position, geometry.originHeight),
    shapes: part.shapes.map(simplePhysicsShape),

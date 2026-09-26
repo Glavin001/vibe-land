@@ -2,7 +2,6 @@
 //! source-frame motion of every authored suspension role, driven by Vehicle2
 //! wheel state. A golden exported from the JS rig (`export-rig-golden.mjs`)
 //! pins the two implementations together; change them only as a pair.
-use super::fracture::AssetMassProperties;
 use nalgebra::{Matrix3, Matrix4, Unit, UnitQuaternion, Vector3};
 use serde::Deserialize;
 use std::collections::BTreeMap;
@@ -19,18 +18,16 @@ pub enum Motion {
     Wheel,
     Damper,
     Piston,
-    Spring,
     TieRod,
     Axle,
 }
-pub const MOTIONS: [Motion; 9] = [
+pub const MOTIONS: [Motion; 8] = [
     Motion::LowerArm,
     Motion::UpperArm,
     Motion::Steer,
     Motion::Wheel,
     Motion::Damper,
     Motion::Piston,
-    Motion::Spring,
     Motion::TieRod,
     Motion::Axle,
 ];
@@ -43,14 +40,9 @@ impl Motion {
             Motion::Wheel => "wheel",
             Motion::Damper => "damper",
             Motion::Piston => "piston",
-            Motion::Spring => "spring",
             Motion::TieRod => "tieRod",
             Motion::Axle => "axle",
         }
-    }
-    /// Only these deform (mass-preserving axial maps); all others are rigid.
-    pub fn deforms(self) -> bool {
-        matches!(self, Motion::Spring | Motion::Axle)
     }
     pub fn for_role(role: &str) -> Option<Motion> {
         Some(match role {
@@ -58,9 +50,9 @@ impl Motion {
             "upperArm" => Motion::UpperArm,
             "upright" | "knuckle" => Motion::Steer,
             "hub" | "wheel" => Motion::Wheel,
-            "damper" | "topSeat" => Motion::Damper,
+            // The coil-over rides with its damper about the top mount.
+            "damper" | "topSeat" | "spring" => Motion::Damper,
             "piston" | "bottomSeat" => Motion::Piston,
-            "spring" => Motion::Spring,
             "tieRod" => Motion::TieRod,
             // Rubber bellows ribs grip the plunging shaft and telescope with it.
             "axle" | "cvBoot" => Motion::Axle,
@@ -108,7 +100,6 @@ pub struct RigCorner {
     pub tie_inner: [f64; 3],
     pub tie_outer: [f64; 3],
     pub neutral_angle: f64,
-    pub shock_length: f64,
     pub min_angle: f64,
     pub max_angle: f64,
     pub min_travel: f64,
@@ -184,10 +175,6 @@ fn between(a: &V, b: &V) -> UnitQuaternion<f64> {
 }
 fn carry(from: &V, to: &V, a: &V, b: &V) -> Matrix4<f64> {
     translation(to) * rotation(&between(a, b)) * translation(&-from)
-}
-fn axial_scale(p: &V, d: &V, k: f64) -> Matrix4<f64> {
-    let linear = Matrix3::identity() + d * d.transpose() * (k - 1.0);
-    translation(p) * linear.to_homogeneous() * translation(&-p)
 }
 fn apply(m: &Matrix4<f64>, p: &V) -> V {
     m.transform_point(&(*p).into()).coords
@@ -266,7 +253,6 @@ struct CornerState {
     top: V,
     bottom: V,
     shock_dir: V,
-    coil_length: f64,
     tie_inner: V,
     tie_outer: V,
     rotation: f64,
@@ -284,7 +270,6 @@ fn corner_state(h: &RigCorner, input: CornerInput) -> Result<CornerState, String
     let arm = (k.angle - h.neutral_angle) * h.side;
     let bottom = axis_angle(&V::z(), arm) * (v(h.shock_bottom) - v(h.lower_pivot)) + v(h.lower_pivot);
     let top = v(h.shock_top);
-    let length = (bottom - top).norm();
     let tie_outer = apply(&steer, &v(h.tie_outer));
     let mut tie_inner = v(h.tie_inner);
     let rod = (v(h.tie_outer) - tie_inner).norm();
@@ -297,7 +282,6 @@ fn corner_state(h: &RigCorner, input: CornerInput) -> Result<CornerState, String
         top,
         bottom,
         shock_dir: (bottom - top).normalize(),
-        coil_length: length - 0.32 * h.shock_length,
         tie_inner,
         tie_outer,
         rotation: input.rotation,
@@ -308,7 +292,7 @@ fn corner_state(h: &RigCorner, input: CornerInput) -> Result<CornerState, String
 /// Source-frame maps from each neutral solid to its posed solid.
 #[derive(Clone, Debug)]
 pub struct PoseDeltas {
-    pub corners: [[Matrix4<f64>; 9]; 4],
+    pub corners: [[Matrix4<f64>; 8]; 4],
     pub steering: Matrix4<f64>,
 }
 impl PoseDeltas {
@@ -336,7 +320,7 @@ impl AssetRig {
         if inputs.iter().any(|i| !(i.travel.is_finite() && i.steering.is_finite() && i.rotation.is_finite())) {
             return Err("non-finite rig input".into());
         }
-        let mut corners = [[Matrix4::identity(); 9]; 4];
+        let mut corners = [[Matrix4::identity(); 8]; 4];
         for (index, id) in CORNER_IDS.iter().enumerate() {
             let h = self.corner(id)?;
             let s = corner_state(h, inputs[index])?;
@@ -351,15 +335,13 @@ impl AssetRig {
             let wheel = s.wheel * inverse(&n.wheel)?;
             let damper = carry(&n.top, &s.top, &n.shock_dir, &s.shock_dir);
             let piston = carry(&n.bottom, &s.bottom, &n.shock_dir, &s.shock_dir);
-            let spring = damper * axial_scale(&n.top, &n.shock_dir, s.coil_length / n.coil_length);
             let rod = |x: &CornerState| (x.tie_outer - x.tie_inner).normalize();
             let tie_rod = carry(&n.tie_inner, &s.tie_inner, &rod(&n), &rod(&s));
             let inner = v(h.axle_inner);
             let axle_dir0 = (n.hub - inner).normalize();
             let axle = carry(&inner, &inner, &axle_dir0, &(s.hub - inner).normalize())
-                * axial_scale(&inner, &axle_dir0, (s.hub - inner).norm() / (n.hub - inner).norm())
                 * about(&inner, &axis_angle(&axle_dir0, s.rotation * side));
-            corners[index] = [lower, upper, steer, wheel, damper, piston, spring, tie_rod, axle];
+            corners[index] = [lower, upper, steer, wheel, damper, piston, tie_rod, axle];
         }
         let neutral = self.column(0.0, 0.0, None);
         let steering = self.column(inputs[0].steering, inputs[1].steering, steering_wheel)
@@ -376,45 +358,10 @@ pub fn source_to_actor(m: &Matrix4<f64>, origin_height: f64) -> Matrix4<f64> {
     p * m * p.try_inverse().expect("proper rigid frame")
 }
 
-impl AssetMassProperties {
-    /// Mass-preserving affine map x' = L x + t (`transformMassProperties`).
-    pub fn transformed(&self, linear: &Matrix3<f64>, offset: &V) -> Result<AssetMassProperties, String> {
-        let inertia = Matrix3::from_fn(|r, c| self.inertia[r][c]);
-        if !(linear.determinant() > 0.0)
-            || linear.iter().chain(offset.iter()).any(|x| !x.is_finite())
-            || !self.mass.is_finite()
-            || self.mass <= 0.0
-        {
-            return Err("invalid mass transform".into());
-        }
-        let second = Matrix3::identity() * (inertia.trace() / 2.0) - inertia;
-        let moved = linear * second * linear.transpose();
-        let posed = Matrix3::identity() * moved.trace() - moved;
-        Ok(AssetMassProperties {
-            mass: self.mass,
-            center: (linear * v(self.center) + offset).into(),
-            inertia: std::array::from_fn(|r| std::array::from_fn(|c| posed[(r, c)])),
-        })
-    }
-    pub fn transformed_by(&self, m: &Matrix4<f64>) -> Result<AssetMassProperties, String> {
-        self.transformed(&m.fixed_view::<3, 3>(0, 0).into_owned(), &m.fixed_view::<3, 1>(0, 3).into_owned())
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::vehicle_assets::posed::{rebase_momentum, PosedGeometry};
-    use crate::vehicle_assets::PreparedGeometry;
 
-    #[derive(Deserialize)]
-    #[serde(rename_all = "camelCase")]
-    struct GoldenChunk {
-        id: String,
-        mass: f64,
-        center: [f64; 3],
-        inertia: [[f64; 3]; 3],
-    }
     #[derive(Deserialize)]
     #[serde(rename_all = "camelCase")]
     struct GoldenPose {
@@ -423,14 +370,11 @@ mod tests {
         steering_wheel: Option<f64>,
         deltas: BTreeMap<String, BTreeMap<String, Vec<f64>>>,
         steering: Vec<f64>,
-        #[serde(default)]
-        chunks: Vec<GoldenChunk>,
     }
     #[derive(Deserialize)]
     #[serde(rename_all = "camelCase")]
     struct Golden {
         rig: Option<AssetRig>,
-        metadata_path: Option<String>,
         poses: Vec<GoldenPose>,
     }
     fn inputs(pose: &GoldenPose) -> [CornerInput; 4] {
@@ -477,7 +421,7 @@ mod tests {
         for pose in &golden.poses {
             let d = rig.deltas(&inputs(pose), pose.steering_wheel).unwrap();
             for corner in &d.corners {
-                for motion in MOTIONS.into_iter().filter(|m| !m.deforms()) {
+                for motion in MOTIONS {
                     let l = corner[motion as usize].fixed_view::<3, 3>(0, 0).into_owned();
                     assert!((l.transpose() * l - Matrix3::identity()).abs().max() < 1e-12);
                     assert!((l.determinant() - 1.0).abs() < 1e-12);
@@ -523,87 +467,9 @@ mod tests {
     }
 
     #[test]
-    fn rebasing_a_mass_frame_conserves_momentum() {
-        let old = AssetMassProperties { mass: 900.0, center: [0.1, 0.4, -0.2], inertia: [[500.0, 3.0, -2.0], [3.0, 700.0, 5.0], [-2.0, 5.0, 400.0]] };
-        let new = AssetMassProperties { mass: 900.0, center: [0.12, 0.38, -0.25], inertia: [[510.0, 1.0, -2.0], [1.0, 690.0, 4.0], [-2.0, 4.0, 405.0]] };
-        let (v, omega) = (V::new(3.0, -0.5, 12.0), V::new(0.2, -1.1, 0.4));
-        let (v1, omega1) = rebase_momentum(&old, &new, &v, &omega).unwrap();
-        let l = |p: &AssetMassProperties, v: &V, w: &V| Matrix3::from_fn(|r, c| p.inertia[r][c]) * w + V::from(p.center).cross(&(v * p.mass));
-        assert!((v1 * new.mass - v * old.mass).norm() < 1e-9);
-        assert!((l(&new, &v1, &omega1) - l(&old, &v, &omega)).norm() < 1e-9);
-        let (_, same) = rebase_momentum(&old, &old, &v, &omega).unwrap();
-        assert!((same - omega).norm() < 1e-12);
-        assert!(rebase_momentum(&old, &AssetMassProperties { mass: 901.0, ..new }, &v, &omega).is_err());
-    }
-
-    #[test]
-    fn rejects_non_finite_input_and_reflections() {
+    fn rejects_non_finite_input() {
         let golden = checked_in();
         let rig = golden.rig.as_ref().unwrap();
         assert!(rig.deltas(&[CornerInput { travel: f64::NAN, ..Default::default() }; 4], None).is_err());
-        let p = AssetMassProperties { mass: 1.0, center: [0.0; 3], inertia: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]] };
-        assert!(p.transformed(&Matrix3::from_diagonal(&V::new(-1.0, 1.0, 1.0)), &V::zeros()).is_err());
-    }
-
-    /// VIBE_RIG_GOLDEN=/tmp/rig-golden/manifest.json (export-rig-golden.mjs).
-    #[test]
-    #[ignore]
-    fn six_model_posed_mass_matches_integrated_solids() {
-        #[derive(Deserialize)]
-        struct Entry { name: String, path: String }
-        let manifest: Vec<Entry> = serde_json::from_str(&std::fs::read_to_string(std::env::var("VIBE_RIG_GOLDEN").unwrap()).unwrap()).unwrap();
-        assert_eq!(manifest.len(), 6);
-        let mut report = Vec::new();
-        for entry in manifest {
-            let golden: Golden = serde_json::from_str(&std::fs::read_to_string(&entry.path).unwrap()).unwrap();
-            let geometry: PreparedGeometry = serde_json::from_str(&std::fs::read_to_string(golden.metadata_path.as_ref().unwrap()).unwrap()).unwrap();
-            let rig = geometry.rig.clone().expect("posed-5 metadata has a rig");
-            let layout = geometry.validate_vehicle2_fracture_layout().unwrap();
-            let worst_delta = worst_delta_gap(&rig, &golden);
-            let (mut centre, mut tensor, mut rest) = (0.0f64, 0.0f64, 0.0f64);
-            let mut gaps = vec![0.0f64; geometry.bonds.len()];
-            for pose in &golden.poses {
-                let posed: PosedGeometry = geometry.posed_geometry(&rig.deltas(&inputs(pose), pose.steering_wheel).unwrap(), &layout.bond_chunks).unwrap();
-                assert_eq!(posed.chunks.len(), pose.chunks.len());
-                for ((chunk, expected), part) in posed.chunks.iter().zip(&pose.chunks).zip(&geometry.parts) {
-                    assert_eq!(expected.id, part.id);
-                    assert!((chunk.mass.mass - expected.mass).abs() <= expected.mass * 1e-12);
-                    centre = centre.max((V::from(chunk.mass.center) - V::from(expected.center)).norm());
-                    let (a, b) = (Matrix3::from_fn(|r, c| chunk.mass.inertia[r][c]), Matrix3::from_fn(|r, c| expected.inertia[r][c]));
-                    tensor = tensor.max((a - b).norm() / b.norm());
-                    if pose.name == "neutral" {
-                        let authored = Matrix3::from_fn(|r, c| part.mass_properties.inertia[r][c]);
-                        rest = rest.max((a - authored).norm() / authored.norm()).max((V::from(chunk.mass.center) - V::from(part.mass_properties.center)).norm());
-                    }
-                }
-                for (gap, bond) in gaps.iter_mut().zip(&posed.bonds) {
-                    *gap = gap.max(bond.endpoint_gap);
-                }
-            }
-            assert!(centre < 1e-9 && tensor < 1e-9, "{}: posed mass vs integrated {centre} m, {tensor}", entry.name);
-            assert!(rest < 1e-12, "{}: neutral pose differs from the rest assembly by {rest}", entry.name);
-            let bindings = geometry.chunk_bindings().unwrap();
-            let mut joints: BTreeMap<String, (usize, f64)> = BTreeMap::new();
-            for (i, gap) in gaps.iter().enumerate() {
-                let [a, b] = layout.bond_chunks[i];
-                let joint = geometry.bonds[i].joint.clone();
-                if bindings[a as usize] == bindings[b as usize] {
-                    assert!(*gap == 0.0 && joint.is_none(), "{}: bond {i} inside one motion", entry.name);
-                    continue;
-                }
-                let joint = joint.unwrap_or_else(|| panic!("{}: bond {i} spans relative motion without a rig joint", entry.name));
-                // The rack end slides with steering; every other joint is a
-                // point or axis both sides' motions keep coincident.
-                let limit = if joint == "steering-rack" { 0.05 } else { 1e-9 };
-                assert!(*gap <= limit, "{}: {joint} bond {i} opens {gap} m", entry.name);
-                let e = joints.entry(joint).or_default();
-                *e = (e.0 + 1, e.1.max(*gap));
-            }
-            eprintln!("{}: deltas {worst_delta:.1e}, mass centre {centre:.1e} m tensor {tensor:.1e}, rest {rest:.1e}; joints {:?}", entry.name, joints);
-            report.push(serde_json::json!({"model": entry.name, "poses": golden.poses.len(), "worstDeltaGap": worst_delta, "massCentreGapM": centre,
-                "massTensorRelativeGap": tensor, "restGap": rest, "joints": joints.iter().map(|(k, (n, g))| (k.clone(), serde_json::json!({"bonds": n, "maxGapM": g}))).collect::<serde_json::Map<_, _>>()}));
-        }
-        let path = std::env::var("VIBE_RIG_POSED_REPORT").unwrap_or("/tmp/vehicle-posed-report.json".into());
-        std::fs::write(path, serde_json::to_string_pretty(&report).unwrap()).unwrap();
     }
 }

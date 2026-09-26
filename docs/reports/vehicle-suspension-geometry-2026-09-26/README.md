@@ -1,5 +1,13 @@
 # Suspension-to-destruction mapping (CPU reference)
 
+> **Partly superseded (2026-09-26).** The chosen design keeps rigid, rest-pose stress
+> geometry and moves only the wheel/hub colliders. The posed chunk mass, posed bonds,
+> momentum rebase, mass-preserving transform, per-solid `visuals` export and the axial
+> spring/shaft deformations below were removed on branch `vehicle/wheel-colliders`.
+> They are preserved on `vehicle/posed-geometry-archive` (`8aef12a9`). The rigid rig
+> port, its golden, joint anchoring and the impact re-qualification remain current.
+> See [vehicle-wheel-colliders](../vehicle-wheel-colliders-2026-09-26/README.md).
+
 Vehicle2 wheel state now maps to the posed actor-frame geometry of every
 fracture chunk: hull transform, mass/COM/full inertia tensor, scalar stress-node
 inertia, and bond centroid/normal. This is CPU reference data for the native

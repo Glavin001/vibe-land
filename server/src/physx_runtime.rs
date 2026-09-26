@@ -3014,7 +3014,7 @@ mod tests {
                     id: "test-chassis".into(), motion: None, functionality: None, position: [0.0; 3],
                     visual_ids: vec!["test-chassis".into()], mass: mass as f64,
                     volume: (8.0*x*y*z) as f64, mass_properties: box_mass,
-                    shapes: vec![crate::vehicle_assets::AssetShape { position: [0.0; 3], vertices }], visuals: Vec::new(),
+                    shapes: vec![crate::vehicle_assets::AssetShape { position: [0.0; 3], vertices }],
                 }],
             };
             arena.spawn_vehicle_asset(7, 0, Vector3::new(p.x as f32, p.y as f32, p.z as f32),

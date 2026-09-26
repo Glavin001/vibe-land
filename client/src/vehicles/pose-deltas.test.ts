@@ -5,11 +5,9 @@ import {defaultConfiguration,modelParameters} from './configuration.mjs';
 import {VisualRig} from './dune/visual-rig.mjs';
 import {cornerIds,neutralPose} from './dune/vehicle-rig.mjs';
 // @ts-expect-error Shared geometry authoring module.
-import {PoseDeltas,motionNames,roleMotion,deformingMotions} from './dune/pose-deltas.mjs';
+import {PoseDeltas,motionNames,roleMotion} from './dune/pose-deltas.mjs';
 // @ts-expect-error Shared geometry authoring module.
 import {buildBuggy} from './dune/buggy.mjs';
-// @ts-expect-error Server worker module is dependency-free JS.
-import {meshMassProperties,transformMassProperties} from './mass-properties.mjs';
 
 const models=['buggy','trophy','rally','monster','derby','sprint'];
 const at=(m:Matrix4,p:number[]|Vector3)=>(Array.isArray(p)?new Vector3(...p):p.clone()).applyMatrix4(m);
@@ -39,7 +37,7 @@ describe.each(models)('%s physical suspension motion',model=>{
       pd.applyPose(pose);
       for(const id of cornerIds){
         const c=pd.corners[id],s=pd.rig.states[id],n=pd.neutral.states[id],h=s.h;
-        for(const name of motionNames.filter((x:string)=>!deformingMotions.includes(x))){
+        for(const name of motionNames){
           const L=linearOf(c[name]),e=[0,1,2].flatMap(i=>[0,1,2].map(j=>L[i].reduce((sum:number,_:number,k:number)=>sum+L[k][i]*L[k][j],0)-(i===j?1:0)));
           expect(Math.max(...e.map(Math.abs)),`${id}/${name} orthonormal`).toBeLessThan(1e-12);
           expect(c[name].determinant(),`${id}/${name}`).toBeCloseTo(1,12);
@@ -52,16 +50,14 @@ describe.each(models)('%s physical suspension motion',model=>{
           ['shock eye on arm',at(c.lowerArm,h.shockBottom),s.bottom],
           ['piston at shock eye',at(c.piston,n.bottom),s.bottom],
           ['damper top mount',at(c.damper,n.top),s.top],
-          ['spring top seat',at(c.spring,n.top),s.top],
-          ['spring bottom seat on piston',at(c.spring,n.top.clone().addScaledVector(n.shockDir,n.coilLength)),at(c.piston,n.top.clone().addScaledVector(n.shockDir,n.coilLength))],
           ['tie rod outer on knuckle',at(c.tieRod,n.tieOuter),at(c.steer,h.tieOuter)],
           ['tie rod inner on rack',at(c.tieRod,n.tieInner),s.tieInner],
           ['hub on knuckle',at(c.wheel,h.hub),at(c.steer,h.hub)],
           ['axle inner joint',at(c.axle,h.axleInner),new Vector3(...h.axleInner)],
-          ['axle outer joint at hub',at(c.axle,n.hub),s.hub],
         ];
         for(const [name,a,b] of joints){const d=a.distanceTo(b);worstJoint=Math.max(worstJoint,d);expect(d,`${model} ${id} ${name}`).toBeLessThan(1e-9);}
-        worstPlunge=Math.max(worstPlunge,Math.abs(s.hub.distanceTo(new Vector3(...h.axleInner))-n.hub.distanceTo(new Vector3(...h.axleInner))));
+        // A rigid shaft cannot follow the hub exactly (the real CV plunges).
+        worstPlunge=Math.max(worstPlunge,at(c.axle,n.hub).distanceTo(s.hub));
       }
     }
     console.log(`${model}: worst joint ${worstJoint.toExponential(2)} m, worst CV plunge ${(worstPlunge*1000).toFixed(2)} mm`);
@@ -87,32 +83,5 @@ describe('prepared buggy solids under physical and visual motion',()=>{
     }
     console.log('max vertex distance, visual vs physical (mm):',Object.fromEntries(Object.entries(worst).map(([k,v])=>[k,+(v*1000).toFixed(3)])));
     for(const role of ['hub','wheel','knuckle','steering'])expect(worst[role],role).toBeLessThan(1e-9);
-  });
-  it('bounds the spring compression error against the regenerated visual coil',()=>{
-    const pd=new PoseDeltas(parameters);
-    // Same construction as VisualRig.updateSpring, closed with centre fans.
-    const coil=(length:number,m:Matrix4)=>{
-      const pitch=.059*Math.PI*20,inv=1/Math.hypot(length,pitch),positions:number[]=[],indices:number[]=[];
-      for(let i=0;i<=320;i++){const a=i/320*Math.PI*20,ca=Math.cos(a),sa=Math.sin(a),t=i/320;for(let j=0;j<=8;j++){const cv=Math.cos(j/8*Math.PI*2),sv=Math.sin(j/8*Math.PI*2);
-        const nx=ca*cv+length*sa*inv*sv,ny=-sa*cv+length*ca*inv*sv,nz=pitch*inv*sv,p=new Vector3(.059*ca+.009*nx,-.059*sa+.009*ny,t*length+.009*nz).applyMatrix4(m);positions.push(p.x,p.y,p.z);}}
-      for(let j=1;j<=320;j++)for(let i=1;i<=8;i++){const a=9*(j-1)+i-1,b=9*j+i-1,c=9*j+i,d=9*(j-1)+i;indices.push(a,b,d,b,c,d);}
-      for(const [ring,flip] of [[0,true],[320,false]] as const){const centre=new Vector3(.059*Math.cos(ring/320*Math.PI*20),-.059*Math.sin(ring/320*Math.PI*20),ring/320*length).applyMatrix4(m),k=positions.length/3;positions.push(centre.x,centre.y,centre.z);
-        for(let i=0;i<8;i++){const a=ring*9+i,b=ring*9+i+1;indices.push(...(flip?[k,a,b]:[k,b,a]));}}
-      let signed=0;try{signed=meshMassProperties(positions,indices,1).volume;}catch{signed=-1;}
-      if(signed<0)for(let t=0;t<indices.length;t+=3)[indices[t+1],indices[t+2]]=[indices[t+2],indices[t+1]];
-      return meshMassProperties(positions,indices,.8);
-    };
-    pd.applyPose(neutralPose());
-    const base=coil(pd.neutral.states.fl.coilLength,pd.neutral.states.fl.springMatrix);
-    let centre=0,tensor=0,worstLength=0;
-    for(const pose of sweep(pd)){
-      pd.applyPose(pose);const s=pd.rig.states.fl,delta=pd.corners.fl.spring;
-      const predicted=transformMassProperties(base,linearOf(delta),[delta.elements[12],delta.elements[13],delta.elements[14]]),measured=coil(s.coilLength,s.springMatrix);
-      const c=Math.hypot(...predicted.center.map((x:number,i:number)=>x-measured.center[i]));
-      const t=Math.hypot(...predicted.inertia.flat().map((x:number,i:number)=>x-measured.inertia.flat()[i]))/Math.hypot(...measured.inertia.flat());
-      if(t>tensor){tensor=t;worstLength=s.coilLength/pd.neutral.states.fl.coilLength;}centre=Math.max(centre,c);
-    }
-    console.log(`spring affine vs regenerated coil: centre ${(centre*1000).toFixed(3)} mm, tensor ${(tensor*100).toFixed(3)}% at length ratio ${worstLength.toFixed(3)}`);
-    expect(centre).toBeLessThan(2e-3);expect(tensor).toBeLessThan(.02);
   });
 });
