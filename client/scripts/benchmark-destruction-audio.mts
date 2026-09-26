@@ -97,6 +97,19 @@ function benchmarkActivity() {
   }
   return {eventCount:BURST,addAndSample:summarize(timings),regions,emitters};
 }
+function benchmarkActivityFrames() {
+  const activity=new DestructionActivity(),timings:number[]=[],input=events('normal').slice(0,167);
+  let peakEmitters=0;
+  for(let frame=0;frame<frames+30;frame++){
+    const now=1000+frame*1000/60;
+    const next=input.map((e,i)=>({...e,id:`${frame}:${i}`,atMs:now}));
+    const started=performance.now();
+    for(const e of next)activity.add(e,listener,now);
+    peakEmitters=Math.max(peakEmitters,activity.sample(now,listener).length);
+    if(frame>=30)timings.push(performance.now()-started);
+  }
+  return {eventsPerFrame:167,eventsPerSecond:10020,perFrame:summarize(timings),peakEmitters};
+}
 
 const report = {
   scope: 'CPU control logic only; not browser audio rendering, audio-thread work, sound quality, GPU performance, or network cost.',
@@ -106,6 +119,7 @@ const report = {
   director: [benchmarkDirector('normal'), benchmarkDirector('increasing'), benchmarkDirector('decreasing')],
   motion: benchmarkMotion(),
   activity: benchmarkActivity(),
+  activityFrames: benchmarkActivityFrames(),
 };
 if (args.has('--json')) console.log(JSON.stringify(report, null, 2));
 else {
@@ -114,4 +128,5 @@ else {
   console.table(report.director.map(r => ({ workload: `${r.eventCount} ${r.order}`, enqueueMedianMs: r.enqueue.medianMs, enqueueP95Ms: r.enqueue.p95Ms, drainMedianMs: r.drain.medianMs, queued: r.final?.queued, played: r.final?.selected })));
   console.log(`${BODIES} bodies, ${frames} repeated frames after 30 warmups: median ${report.motion.perFrame.medianMs} ms/frame, p95 ${report.motion.perFrame.p95Ms} ms/frame; ${report.motion.emitted} detected events.`);
   console.log(`${BURST} raw destruction events to ${report.activity.emitters} beds / ${report.activity.regions} regions: median ${report.activity.addAndSample.medianMs} ms, p95 ${report.activity.addAndSample.p95Ms} ms.`);
+  console.log(`Activity at ${report.activityFrames.eventsPerSecond} events/sec: median ${report.activityFrames.perFrame.medianMs} ms/frame, p95 ${report.activityFrames.perFrame.p95Ms} ms/frame.`);
 }

@@ -14,6 +14,15 @@
 
 import { DustSourceQueue, type DustSource } from './destructionEvents';
 
+/** Optional audio evidence. It keeps entity identity and physical quantities
+ * out of the visual dust payload, whose ordinal is only a source counter. */
+export interface DustImpactEvidence {
+  entityId:number; mass:number; size:number; previousTick:number; tick:number;
+  previousPosition:readonly [number,number,number]; position:readonly [number,number,number];
+  previousVelocity:readonly [number,number,number]; velocity:readonly [number,number,number];
+}
+export type DustImpactObserver=(source:DustSource,evidence:DustImpactEvidence)=>void;
+
 export interface DustImpactOptions {
   /** A body slower than this before the change cannot have hit anything worth dust. */
   minSpeedMps: number;
@@ -53,6 +62,7 @@ interface BodyMotion {
   vy: number;
   vz: number;
   lastImpactMs: number;
+  lastAudioImpactMs: number;
 }
 
 interface WaveCell {
@@ -76,6 +86,7 @@ export class DustImpactDetector {
   private readonly bodies = new Map<number, BodyMotion>();
   private readonly waves = new Map<number, WaveCell>();
   private ordinal = 0;
+  private audioOrdinal = 0;
   /** Telemetry. */
   impacts = 0;
   wavesRaised = 0;
@@ -107,16 +118,18 @@ export class DustImpactDetector {
     key: number, structureId: number, tick: number,
     x: number, y: number, z: number, vx: number, vy: number, vz: number,
     mass: number, radius: number, atMs: number, out: DustSourceQueue,
+    observe?: DustImpactObserver,
   ): boolean {
     const previous = this.bodies.get(key);
     if (!previous) {
-      this.bodies.set(key, { tick, x, y, z, vx, vy, vz, lastImpactMs: -Infinity });
+      this.bodies.set(key, { tick, x, y, z, vx, vy, vz, lastImpactMs: -Infinity,lastAudioImpactMs:-Infinity });
       return false;
     }
     if (tick <= previous.tick) return false;
     const pvx = previous.vx;
     const pvy = previous.vy;
     const pvz = previous.vz;
+    const previousTick=previous.tick,px=previous.x,py=previous.y,pz=previous.z;
     previous.tick = tick;
     previous.x = x;
     previous.y = y;
@@ -125,7 +138,6 @@ export class DustImpactDetector {
     previous.vy = vy;
     previous.vz = vz;
     const speedBefore = Math.hypot(pvx, pvy, pvz);
-    if (speedBefore < this.options.minSpeedMps) return false;
     const dvx = vx - pvx;
     const dvy = vy - pvy;
     const dvz = vz - pvz;
@@ -133,9 +145,17 @@ export class DustImpactDetector {
     // Only losing speed counts; a kick that speeds a body up is the other
     // side of someone else's impact.
     const speedAfter = Math.hypot(vx, vy, vz);
-    if (delta < this.options.minDeltaMps || speedAfter > speedBefore) return false;
-    if (atMs - previous.lastImpactMs < this.options.cooldownMs) return false;
-    previous.lastImpactMs = atMs;
+    const visualImpact=speedBefore>=this.options.minSpeedMps&&delta>=this.options.minDeltaMps
+      &&speedAfter<=speedBefore&&atMs-previous.lastImpactMs>=this.options.cooldownMs;
+    // The same history can reveal a massive, slow collision that raises no
+    // visible dust. Audio gets its own threshold, cooldown and ordinal; the
+    // visual stream's timing and identity do not depend on audio being enabled.
+    const heavy=mass>=250;
+    const audioImpact=observe!==undefined&&speedBefore>=(heavy?1.5:this.options.minSpeedMps)
+      &&delta>=(heavy?1.2:this.options.minDeltaMps)&&speedAfter<speedBefore*.85
+      &&atMs-previous.lastAudioImpactMs>=300;
+    if(!visualImpact&&!audioImpact)return false;
+    if(visualImpact)previous.lastImpactMs=atMs;
     const impulse = mass * delta;
     // The contact is on the side the stop came from: back along Δv.
     const ux = dvx / delta;
@@ -149,7 +169,7 @@ export class DustImpactDetector {
     s.kind = 'impact';
     s.structureId = structureId;
     s.simTick = tick;
-    s.ordinal = (this.ordinal = (this.ordinal + 1) & 0xffff);
+    s.ordinal = visualImpact?(this.ordinal = (this.ordinal + 1) & 0xffff):0;
     s.x = cx;
     s.y = ground ? 0.3 : cy;
     s.z = cz;
@@ -164,10 +184,19 @@ export class DustImpactDetector {
     s.count = 1;
     s.material = 0;
     s.atMs = atMs;
-    this.impacts += 1;
-    out.push(s);
-    this.noteWave(structureId, cx, s.y, cz, impulse, atMs, tick, out);
-    return true;
+    if(visualImpact){this.impacts+=1;out.push(s);}
+    // Independent of the visual queue's capacity. The audio consumer further
+    // validates timing, gravity and displacement before producing any sound.
+    if(audioImpact){
+      previous.lastAudioImpactMs=atMs;
+      const visualOrdinal=s.ordinal;
+      s.ordinal=(this.audioOrdinal=(this.audioOrdinal+1)&0xffff);
+      observe!(s,{entityId:key,mass,size:radius,previousTick,tick,
+        previousPosition:[px,py,pz],position:[x,y,z],previousVelocity:[pvx,pvy,pvz],velocity:[vx,vy,vz]});
+      s.ordinal=visualOrdinal;
+    }
+    if(visualImpact)this.noteWave(structureId, cx, s.y, cz, impulse, atMs, tick, out);
+    return visualImpact;
   }
 
   private noteWave(

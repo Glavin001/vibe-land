@@ -15,13 +15,18 @@ function hash(key:string):number {let n=2166136261;for(let i=0;i<key.length;i++)
 export class DestructionActivity {
   private regions:(Region|undefined)[]=new Array(SLOTS);
   private recent=new Map<string,number>();
+  private history:({id:string;time:number}|undefined)[]=new Array(2048);
+  private historyIndex=0;
   private selected=new Set<string>();
   add(e:SoundEvent,listener:Vec3,nowMs:number):void {
     if(e.kind!=='impact'&&e.kind!=='fracture'&&e.kind!=='collapse')return;
     if(!Number.isFinite(e.atMs)||!Number.isFinite(e.size)||!Number.isFinite(e.intensity)||!e.position.every(Number.isFinite))return;
-    if(e.atMs<nowMs-300||e.atMs>nowMs+750||distance(e.position,listener)>120||e.intensity<.2||this.recent.has(e.id))return;
+    const previous=this.recent.get(e.id);
+    if(e.atMs<nowMs-300||e.atMs>nowMs+750||distance(e.position,listener)>120||e.intensity<.2||(previous!==undefined&&nowMs-previous<3000))return;
+    const old=this.history[this.historyIndex];
+    if(old&&this.recent.get(old.id)===old.time)this.recent.delete(old.id);
     this.recent.set(e.id,e.atMs);
-    if(this.recent.size>2048)this.recent.delete(this.recent.keys().next().value!);
+    this.history[this.historyIndex]={id:e.id,time:e.atMs};this.historyIndex=(this.historyIndex+1)%2048;
     const contribution=clamp(e.intensity)**2*Math.min(2.5,.2+Math.sqrt(Math.max(0,e.size))*.7)*(e.kind==='collapse'?1.7:e.kind==='fracture'?1.25:1);
     const key=`${e.material}:${Math.floor(e.position[0]/10)}:${Math.floor(e.position[1]/10)}:${Math.floor(e.position[2]/10)}`;
     const h=hash(key),a=h%SLOTS,b=(a+1+((h>>>8)%(SLOTS-1)))%SLOTS;
@@ -39,7 +44,8 @@ export class DestructionActivity {
     const blend=Math.min(.25,contribution/(region.energy+contribution+1));
     region.position=region.position.map((v,i)=>v+(e.position[i]-v)*blend) as [number,number,number];
     region.occlusion+=(clamp(e.occlusion??0)-region.occlusion)*blend;
-    region.lastEvent=Math.max(region.lastEvent,e.atMs);region.strength=Math.max(region.strength,strength);
+    region.strength=Math.max(region.strength*Math.exp(-Math.max(0,e.atMs-region.lastEvent)/DECAY_MS),strength);
+    region.lastEvent=Math.max(region.lastEvent,e.atMs);
     const due=e.atMs,slot=((Math.floor(due/BIN_MS)%BINS)+BINS)%BINS;
     if(region.due[slot]!==0&&Math.abs(region.due[slot]-due)>BIN_MS)region.pending[slot]=0;
     region.pending[slot]=Math.min(20,region.pending[slot]+contribution);
@@ -62,9 +68,8 @@ export class DestructionActivity {
     candidates.sort((a,b)=>b.score-a.score||a.id.localeCompare(b.id));
     const result=candidates.slice(0,4);
     this.selected=new Set(result.map(r=>r.id.slice('debris-bed:'.length)));
-    for(const [id,time] of this.recent)if(nowMs-time>3000)this.recent.delete(id);
     return result;
   }
-  clear():void {this.regions=new Array(SLOTS);this.recent.clear();this.selected.clear();}
+  clear():void {this.regions=new Array(SLOTS);this.recent.clear();this.history=new Array(2048);this.historyIndex=0;this.selected.clear();}
   get regionCount():number {return this.regions.filter(Boolean).length;}
 }

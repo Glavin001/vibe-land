@@ -55,6 +55,7 @@ import {
 } from './destructionEvents';
 import { dustEnabled } from './dustSettings';
 import { DustImpactDetector } from './dustImpacts';
+import { CityImpactAudioQueue, type CityAudioImpact } from '../audio/cityImpactSources';
 import { matchDustShot } from '../vfx/dustShots';
 
 export interface CityClientStats {
@@ -1523,11 +1524,11 @@ export class CityClient {
   // drains the queue once per frame, so the policy's cost is inside the frame
   // and its stats, and several messages applied between frames arrive together.
   private dustContext: DustExtractContext;
-  private readonly audioQueue = new DustSourceQueue(512);
+  private readonly audioQueue = new CityImpactAudioQueue();
   private audioObserving = false;
   private audioMotion: ((key:number,body:LedgerBody,tick:number,x:number,y:number,z:number,vx:number,vy:number,vz:number,mass:number,radius:number,atMs:number)=>void) | null = null;
   private readonly dustQueue = new DustSourceQueue(256, source => {
-    if (this.audioObserving) this.audioQueue.push(source);
+    if (this.audioObserving) this.audioQueue.pushDestruction(source);
   });
   private dustSourcesTotal = 0;
   private dustSourcesDroppedByCap = 0;
@@ -1567,6 +1568,12 @@ export class CityClient {
     if (this.dustImpacts.noteVelocity(
       key, body.structureId, tick, x, y, z, vx, vy, vz, mass, radius,
       performance.now() + leadMs, this.dustQueue,
+      this.audioObserving ? (source,evidence)=>{
+        const slot=body.chunkSlots[0],node=slot===undefined?undefined:this.topology.chunkNode(slot);
+        const structure=this.dustContext.structureById.get(body.structureId);
+        const material=node===undefined?0:structure?.chunks[node]?.material??0;
+        this.audioQueue.noteImpact(source,evidence,this.tickRate,material);
+      } : undefined,
     )) {
       this.dustSourcesTotal += 1 + (this.dustQueue.dropped - before);
     }
@@ -1606,7 +1613,7 @@ export class CityClient {
     if (!enabled) this.audioQueue.clear();
   }
 
-  drainAudioSources(visit: (source: DustSource) => void): number {
+  drainAudioSources(visit: (source: DustSource,impact?:CityAudioImpact) => void): number {
     return this.audioQueue.drain(visit);
   }
 

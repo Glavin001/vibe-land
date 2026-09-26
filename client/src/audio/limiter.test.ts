@@ -11,6 +11,28 @@ function processor() {
   return new Processor();
 }
 describe('shipping multichannel limiter processor',()=>{
+  it('recovers after a large hit even while the following rubble still needs mild limiting',()=>{
+    const p=processor();let latePeak=0;
+    for(let block=0;block<1200;block++){
+      const input=[new Float32Array(128).fill(block===0?8:1)],output=[new Float32Array(128)];
+      p.process([input],[output]);
+      if(block>1100)for(const sample of output[0])latePeak=Math.max(latePeak,Math.abs(sample));
+      for(const sample of output[0])expect(Math.abs(sample)).toBeLessThanOrEqual(.890001);
+    }
+    expect(latePeak).toBeGreaterThan(.85);
+  });
+  it('meters sustained post-limiter power across channels, including silent frames',()=>{
+    const p=processor(),reports:{rms:number;peak:number}[]=[];
+    p.port.postMessage=(report:{rms:number;peak:number})=>reports.push(report);
+    for(let block=0;block<128;block++){
+      const input=[new Float32Array(128).fill(.2),new Float32Array(128).fill(.4)];
+      p.process([input],[[new Float32Array(128),new Float32Array(128)]]);
+    }
+    expect(reports.at(-1)!.rms).toBeCloseTo(Math.sqrt((.2**2+.4**2)/2),6);
+    expect(reports.at(-1)!.peak).toBeCloseTo(.4,6);
+    for(let block=0;block<128;block++)p.process([[]],[[new Float32Array(128),new Float32Array(128)]]);
+    expect(reports.at(-1)!.rms).toBe(0);
+  });
   it('bounds repeated overload impulses on all eight channels and preserves their ratio',()=>{
     const p=processor();let peak=0,nonzero=0;
     for(let block=0;block<100;block++){

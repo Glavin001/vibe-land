@@ -21,6 +21,15 @@ describe('game audio event adapter',()=>{
     expect(soundFromDestruction({...source,kind:'shed'},'stone')).toBeNull();
     expect(soundFromDestruction({...source,kind:'wave'},'stone')!.kind).toBe('collapse');
   });
+  it('renders validated physical impacts with their real size and severity',()=>{
+    const e=soundFromDestruction({...source,kind:'impact',magnitude:1.5},'stone',{intensity:.86,size:3})!;
+    expect(e).toMatchObject({kind:'impact',material:'stone',intensity:.86,size:3,atMs:500});
+  });
+  it('makes substantial structural breaks powerful while retaining small-break contrast',()=>{
+    expect(soundFromDestruction(source,'concrete')!.intensity).toBeGreaterThan(.65);
+    expect(soundFromDestruction({...source,magnitude:.05},'concrete')!.intensity).toBeLessThan(.25);
+    expect(soundFromDestruction({...source,magnitude:100},'concrete')!.intensity).toBeGreaterThan(.9);
+  });
   it('aligns contacts with the city presentation clock with a bounded wait',()=>{
     expect(contactPresentationTime(130,124,1000,60)).toBe(1100);
     expect(contactPresentationTime(130,Infinity,1000,60)).toBe(1000);

@@ -12,6 +12,11 @@ export interface SoundEvent {
   size: number;
   seed: number;
   atMs: number;
+  /** Flybys: world-space velocity in metres/second. Position and atMs identify
+   * the closest pass, so the renderer can move the source along this path. */
+  velocity?: Vec3;
+  /** Flybys: distance to the listener at the closest observed/authored pass. */
+  missDistance?: number;
   protected?: boolean;
   occlusion?: number;
 }
@@ -38,9 +43,12 @@ export function acousticMaterial(name = '', metalness = 0): AcousticMaterial {
 export const clamp = (n: number, lo = 0, hi = 1): number => Math.max(lo, Math.min(hi, Number.isFinite(n) ? n : lo));
 export const distance = (a: Vec3, b: Vec3): number => Math.hypot(a[0]-b[0], a[1]-b[1], a[2]-b[2]);
 export function physicalIntensity(impulse: number, mass = 20): number {
-  // Compress the enormous mass range into useful variation. Resting loads must
-  // be rejected by the contact classifier before reaching this mapping.
-  return clamp(Math.log1p(Math.max(0, impulse) / Math.sqrt(Math.max(1, mass))) / 9);
+  if (!Number.isFinite(impulse) || !Number.isFinite(mass) || impulse <= 0 || mass <= 0) return 0;
+  // The caller supplies an equivalent impulse for the kinetic energy lost.
+  // Compress joules perceptually: a tonne stopping at 6 m/s should carry much
+  // more weight than a loose chip, even though neither is moving exceptionally fast.
+  const energy = impulse * impulse / (2 * mass);
+  return clamp(1 - Math.exp(-Math.pow(energy / 2500, .35)), 0, .98);
 }
 export function seedRandom(seed: number): () => number {
   let state = seed | 0 || 1;

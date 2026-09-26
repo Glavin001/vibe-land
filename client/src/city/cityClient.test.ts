@@ -15,6 +15,8 @@ import { bodyKey } from './topology';
 import { RecordMode } from './wire';
 import type { ChunksDatagram, TopologyMessage, BaselineMessage } from './wire';
 import type { Quat, Vec3 } from './vec';
+import type { CityAudioImpact } from '../audio/cityImpactSources';
+import type { DustSource } from './destructionEvents';
 
 const IDENTITY: Quat = [0, 0, 0, 1];
 const ZERO: Vec3 = [0, 0, 0];
@@ -162,6 +164,36 @@ function datagram(
     ],
   };
 }
+
+describe('CityClient audio observations',()=>{
+  it.each([[6,1000,.8,1],[2,5000,.75,0]])('carries a %sm/s stop from actual decoded city motion into the independent audio queue',(speed,mass,minIntensity,dustCount)=>{
+    const source=loaded();
+    Object.assign(source.manifest.structures[0].chunks[1],{mass,radius:2,material:1});
+    const client=new CityClient(source,()=>{}),key=bodyKey(0,1);
+    promote(client,1,1,[1],[4,4,0]);
+    client.observeAudio(true);
+    internals(client).handleChunks(datagram(20,key,[4,4,0],{linearVelocity:[0,-speed,0]}));
+    internals(client).handleChunks(datagram(23,key,[4,3.7,0],{linearVelocity:[0,0,0]}));
+    const heard:Array<{source:DustSource;impact?:CityAudioImpact}>=[];
+    client.drainAudioSources((source,impact)=>heard.push({source:{...source},impact}));
+    expect(heard).toHaveLength(1);
+    expect(heard[0].source).toMatchObject({kind:'impact',simTick:23,structureId:0});
+    expect(heard[0].impact).toMatchObject({entityId:key,mass,size:3,material:1});
+    expect(heard[0].impact!.intensity).toBeGreaterThan(minIntensity);
+    expect(client.drainDustSources(()=>{})).toBe(dustCount);
+    expect(client.drainAudioSources(()=>{})).toBe(0);
+  });
+  it('clears queued physical evidence when audio observation is disabled',()=>{
+    const {client}=makeClient(),key=bodyKey(0,1);
+    promote(client,1,1,[1],[4,4,0]);
+    client.observeAudio(true);
+    internals(client).handleChunks(datagram(20,key,[4,4,0],{linearVelocity:[0,-6,0]}));
+    internals(client).handleChunks(datagram(23,key,[4,3.7,0],{linearVelocity:[0,0,0]}));
+    client.observeAudio(false);
+    client.observeAudio(true);
+    expect(client.drainAudioSources(()=>{})).toBe(0);
+  });
+});
 
 describe('CityClient pose application', () => {
   it.each([

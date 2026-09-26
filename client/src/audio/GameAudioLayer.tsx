@@ -74,14 +74,22 @@ export function GameAudioLayer({getRuntime,getCityClient,isPlaying,getNowMs}:Pro
     city?.observeAudio(enabled,(key,body,tick,x,y,z,vx,vy,vz,mass,radius,atMs)=>{
       const dx=x-s.listener[0],dy=y-s.listener[1],dz=z-s.listener[2];
       if(dx*dx+dy*dy+dz*dz>120*120||s.motionBudget++>=256)return;
-      s.motion.note({id:`city:${key}`,position:[x,y,z],velocity:[vx,vy,vz],nowMs:performance.now(),sampleTimeMs:tick*1000/city.audioTickRate(),
-        material:bodyMaterial(body),mass,size:radius,authoritative:hasRecentAudioContacts(contactNow,key)},s.listener,
-        event=>emit({...event,atMs}));
+      s.motion.note({id:`city:${key}`,position:[x,y,z],velocity:[vx,vy,vz],nowMs:atMs,sampleTimeMs:tick*1000/city.audioTickRate(),
+        // All-body city impacts arrive through the validated source queue.
+        // This smaller nearby motion budget is only for swept near misses.
+        material:bodyMaterial(body),mass,size:radius,impacts:false},s.listener,emit);
     });
     s.motionBudget=0;
     if(!enabled){if(!s.paused){engine.stop();s.motion.clear();s.meteorPrevious.clear();}s.paused=true;drainAudioContacts(contactNow);return;}
     s.paused=false;
-    city?.drainAudioSources(source=>{const event=soundFromDestruction(source,materialAt(source.material));if(event)emit(event);});
+    city?.drainAudioSources((source,impact)=>{
+      if(impact&&hasRecentAudioContacts(contactNow,impact.entityId))return;
+      const event=soundFromDestruction(source,materialAt(impact?.material??source.material),impact);
+      if(event){
+        if(impact)event.protected=impact.mass>=500&&impact.energy>=3000&&distance(event.position,s.listener)<=25;
+        emit(event);
+      }
+    });
     const flights=currentMeteorFlights(),meteors=new Set(flights.map(f=>f.bodyId));
     for(const contact of drainAudioContacts(contactNow)){
       const body=city?.topology.body(contact.entityA)??city?.topology.body(contact.entityB);

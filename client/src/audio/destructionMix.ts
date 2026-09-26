@@ -2,6 +2,7 @@ import { clamp, type SoundEvent } from './model';
 import type { AudioSettings } from './settings';
 
 export type VoiceRole='impact'|'body'|'detail'|'activity'|'threat'|'continuous';
+export const propagationDelayMs=(distance:number):number=>distance>35?Math.min(650,(distance-35)/343*1000):0;
 
 /** Authored gain staging before the shared output limiter. Size adds body,
  * not merely a pitch change; quiet contacts retain a quiet floor. */

@@ -1,7 +1,7 @@
 # Destruction audio: CPU control performance
 
 Measured September 26, 2026 on an Apple M3 Max, macOS arm64, Node v22.1.0.
-These measurements cover event selection and motion tracking only. They do **not** measure browser audio rendering, the audio thread, sound quality, asset decoding, occlusion raycasts, networking, or GPU physics. The machine was not reserved exclusively for this benchmark.
+These measurements cover event selection, motion tracking and destruction activity aggregation only. They do **not** measure browser audio rendering, the audio thread, sound quality, asset decoding, occlusion raycasts, networking, or GPU physics. The machine was not reserved exclusively for this benchmark.
 
 ## Reproduce
 
@@ -38,3 +38,25 @@ This is a stress test of the control code. Live physics contacts are reduced on 
 ## Regression coverage
 
 Tests verify the selected strongest events, bounded score-evaluation count, listener movement between insertions, grouping updates, copied positions, deterministic ties, partial drains, clearing, and agreement with a simple sorted reference over 2,000 events and repeated listener moves. Engine and game-layer integration tests exercise playback budgets, suspension, material/entity mapping, replay scheduling, and lifecycle cleanup separately.
+
+## Heavy-collapse revision: activity cost
+
+The richer mix adds at most four spatial material-debris loops. A fixed 64-region
+field accumulates energy from impact and fracture events before the director
+groups or drops individual sounds. It has 2,048 bounded duplicate-history entries,
+32 scheduled energy bins per region, and constant-cost two-choice admission.
+The loops share the existing playback-voice budget.
+
+Measured in the same environment at 05:02 on September 26:
+
+| Workload | Median | p95 |
+| --- | ---: | ---: |
+| Activity: 10,000 events in one burst plus selection | 5.273 ms | 6.120 ms |
+| Activity: 10,020 events/second, 167 per 60 Hz frame | 0.110 ms/frame | 0.353 ms/frame |
+| Director: 10,000 mixed events, enqueue only | 2.546 ms | 3.185 ms |
+
+The burst includes aggregation only; director and renderer costs are additional.
+Do not interpret the sustained result as a promise that 10,000 events arriving
+in one frame cost 0.11 ms. Both cases produced at most four active beds and
+64 retained regions. Browser checks separately showed four beds and no more
+than 52 ordinary voices with the default 64-voice budget.

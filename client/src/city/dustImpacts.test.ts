@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { DustSourceQueue, type DustSource } from './destructionEvents';
-import { DustImpactDetector } from './dustImpacts';
+import { DustImpactDetector, type DustImpactEvidence } from './dustImpacts';
 
 function drained(queue: DustSourceQueue): DustSource[] {
   const out: DustSource[] = [];
@@ -10,6 +10,19 @@ function drained(queue: DustSourceQueue): DustSource[] {
 }
 
 describe('DustImpactDetector', () => {
+  it('exposes stable physical evidence for audio even when the visual queue is full', () => {
+    const detector=new DustImpactDetector(),queue=new DustSourceQueue(1);
+    const observed:Array<{source:DustSource;evidence:DustImpactEvidence}>=[];
+    const observe=(source:DustSource,evidence:DustImpactEvidence)=>observed.push({source:{...source},evidence});
+    for(let id=0;id<2;id++){
+      detector.noteVelocity(0x80000000+id,7,10,id,4,0,0,-8,0,1000,2,100,queue,observe);
+      detector.noteVelocity(0x80000000+id,7,13,id,3.6,0,0,0,0,1000,2,150,queue,observe);
+    }
+    expect(drained(queue)).toHaveLength(1);
+    expect(observed).toHaveLength(2);
+    expect(observed[0].evidence).toMatchObject({entityId:0x80000000,mass:1000,size:2,previousTick:10,tick:13,previousPosition:[0,4,0],position:[0,3.6,0],previousVelocity:[0,-8,0],velocity:[0,0,0]});
+    expect(observed[0].source).toMatchObject({kind:'impact',structureId:7,atMs:150});
+  });
   it('raises an impact where a falling body was stopped, on its underside', () => {
     const d = new DustImpactDetector();
     const q = new DustSourceQueue();

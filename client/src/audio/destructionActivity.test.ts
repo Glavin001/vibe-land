@@ -53,6 +53,26 @@ describe('bounded spatial destruction activity',()=>{
     const fewer=new DestructionActivity();fewer.add(event(0),[0,0,0],1000);
     expect(busy.sample(1000,[0,0,0])[0].intensity).toBeGreaterThan(fewer.sample(1000,[0,0,0])[0]?.intensity??0);
   });
+  it('lets new destruction replace old loud regions kept alive only by quiet contacts',()=>{
+    const field=new DestructionActivity(),listener=[0,1.7,0] as const;
+    // These separated regions contend for admission in the bounded field.
+    // Exercise only public add/sample behavior: historical loudness must not
+    // reserve storage forever when the current contacts are nearly silent.
+    const old=[
+      {material:'concrete' as const,position:[1,1,-39] as const},
+      {material:'earth' as const,position:[-19,1,-39] as const},
+    ];
+    let id=0;
+    for(const source of old)field.add(event(id++,{...source,kind:'collapse',intensity:1,size:30}),listener,1000);
+    field.sample(1000,listener);
+    for(let atMs=1100;atMs<=13000;atMs+=100){
+      for(const source of old)field.add(event(id++,{...source,atMs,intensity:.21,size:.01}),listener,atMs);
+      field.sample(atMs,listener);
+    }
+    expect(field.sample(13000,listener)).toEqual([]);
+    field.add(event(id++,{atMs:13000,material:'sheet',position:[-49,1,-9],intensity:.8,size:12}),listener,13000);
+    expect(field.sample(13000,listener).map(b=>b.material)).toEqual(['sheet']);
+  });
   it('stays spatially stable between frames and rejects malformed values',()=>{
     const field=new DestructionActivity();
     for(let i=0;i<30;i++)field.add(event(i,{position:[i%5*11-22,1,-4]}),[0,0,0],1000);

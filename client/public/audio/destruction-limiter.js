@@ -7,11 +7,12 @@ class DestructionLimiter extends AudioWorkletProcessor {
     for(let i=0;i<output[0].length;i++){
       let peak=0;for(let c=0;c<output.length;c++)peak=Math.max(peak,Math.abs(input[c]?.[i]??0));
       const target=peak>.89?.89/peak:1;
-      if(target<this.gain)this.gain=target;
-      // Equal peaks must refresh the hold too: otherwise the gain starts
-      // recovering while an equally loud delayed sample is still in flight.
-      if(target<1)this.hold=this.delay+96;
-      else if(this.hold>0)this.hold--;else this.gain+=(1-this.gain)*.00022;
+      // Only an equal/stronger peak renews the hold. Renewing for every
+      // mildly over-threshold sample would pin the whole rubble tail at the
+      // deepest reduction caused by an earlier explosion.
+      if(target<=this.gain){this.gain=target;if(target<1)this.hold=this.delay+96;}
+      else if(this.hold>0)this.hold--;
+      else this.gain=Math.min(target,this.gain+(1-this.gain)*.00022);
       this.reduction=Math.max(this.reduction,1-this.gain);
       for(let c=0;c<output.length;c++){
         const delayed=this.buffers[c][this.index];this.buffers[c][this.index]=input[c]?.[i]??0;

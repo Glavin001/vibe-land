@@ -11,15 +11,19 @@ export function soundFromShot(packet:ShotFiredPacket,nowMs:number):SoundEvent|nu
     intensity:cannon?.85:.3,size:cannon?1:.1,seed:packet.shotId,atMs:nowMs};
 }
 
-export function soundFromDestruction(source: DustSource, material: AcousticMaterial): SoundEvent|null {
-  // Impacts have their own motion/contact path. A new island on its own is
-  // not an audible collision; sounding both doubles every fracture.
-  if(source.kind==='impact'||source.kind==='shed')return null;
-  const kind=source.kind==='wave'?'collapse':'fracture';
+export interface DestructionImpact { intensity:number; size:number; }
+export function soundFromDestruction(source: DustSource, material: AcousticMaterial, impact?:DestructionImpact): SoundEvent|null {
+  // Island release is not a collision. A dust impact is audible only when its
+  // physical evidence has also passed the audio motion classifier.
+  if(source.kind==='shed'||(source.kind==='impact'&&!impact))return null;
+  const kind=source.kind==='impact'?'impact':source.kind==='wave'?'collapse':'fracture';
+  const magnitude=Math.max(0,source.magnitude);
   return {id:`break:${source.structureId}:${source.simTick}:${source.ordinal}:${source.kind}`,
     kind, material, position:[source.x,source.y,source.z],
-    intensity:clamp(Math.log1p(source.magnitude)/5.5,.08,1),
-    size:Math.max(.2,Math.cbrt(source.magnitude)),
+    // Fracture magnitude is three times broken bond area (entry is doubled).
+    // It is not mass or impulse. Keep this authoring curve separate from impacts.
+    intensity:impact?clamp(impact.intensity):clamp(.12+.86*(1-Math.exp(-Math.sqrt(magnitude)/2.5)),.08,.98),
+    size:impact?Math.max(.1,impact.size):Math.max(.2,Math.cbrt(magnitude)),
     seed:(Math.imul(source.simTick,997)^Math.imul(source.structureId,65537)^source.ordinal)>>>0,
     atMs:source.atMs};
 }
