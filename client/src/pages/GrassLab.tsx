@@ -78,7 +78,7 @@ function PreviewField({ quality, wind, enabled, paused, driving, rubble, clearTr
       if (driving) for (const side of [-1,1]) for (const axle of [-1.1,1.1]) {
         grass.interaction.stamp({ x:carX+axle, z:PREVIEW_Z+side*0.9, radiusX:0.5, radiusZ:0.35,
           fromX:Number.isFinite(demo.current.previousX) ? demo.current.previousX+axle : undefined,
-          fromZ:PREVIEW_Z+side*0.9, pressure:1, hold:1.6 });
+          fromZ:PREVIEW_Z+side*0.9, pressure:1, hold:1.6, damage:0.8 });
       }
       if (driving) {
         const canopy = grassVehicleCanopyContact(cityGrassPaint, carX, PREVIEW_Z, 0.9, 1.8, Math.PI/2);

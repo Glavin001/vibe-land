@@ -6,6 +6,40 @@ import { GrassInteraction } from './GrassInteraction';
 import { GrassPaint, GRASS_BRUSHES } from './GrassPaint';
 
 describe('grass contact field', () => {
+  it('combs moving contacts along travel and retains a bounded, slowly recovering crease', () => {
+    const field = new GrassInteraction();
+    field.begin(0, 0, 0);
+    field.stamp({ x: 2.25, z: 0.25, fromX: -2.25, fromZ: 0.25,
+      radiusX: 1, radiusZ: 1, damage: 0.8 });
+    field.commit();
+    const index = (64*128+64)*4;
+    expect(field.data[index+1]).toBeGreaterThan(220); // +X, including both sides of the track.
+    expect(field.data[index+3]).toBeGreaterThan(150);
+    field.begin(30, 0, 0); field.commit();
+    expect(field.sample(0.25, 0.25)).toBe(0); // Elastic pressure has recovered.
+    expect(field.data[index+3]).toBeGreaterThan(100); // Crease remains.
+    field.begin(31, 100, 100);
+    expect(field.historyBytes).toBeGreaterThan(0);
+    field.begin(32, 0, 0); field.commit();
+    expect(field.data[index+3]).toBeGreaterThan(100);
+    for (let i = 0; i < 280; i++) {
+      field.begin(33+i, i*64, 0);
+      field.stamp({ x: i*64+0.25, z: 0.25, radiusX: 1, radiusZ: 1, damage: 1 });
+    }
+    expect(field.historyBytes).toBeLessThanOrEqual(256*1024);
+    field.clear(); field.begin(400, 0, 0); field.commit();
+    expect(field.data[index+3]).toBe(0);
+    field.dispose();
+  });
+
+  it('covers the corners of a rotated box without exceeding the work budget', () => {
+    const field = new GrassInteraction();
+    field.begin(0, 0, 0);
+    field.stamp({ x: 0, z: 0, radiusX: 4, radiusZ: 4, yaw: Math.PI/4, shape: 'box' });
+    expect(field.sample(0.25, 4.75)).toBeGreaterThan(0.5);
+    field.dispose();
+  });
+
   it('sweeps tyre tracks, holds them briefly, and recovers after departure', () => {
     const field = new GrassInteraction();
     field.begin(0, 0, 0);

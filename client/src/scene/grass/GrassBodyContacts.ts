@@ -11,7 +11,7 @@ import { cityGrassPaint, type GrassPaint } from './GrassPaint';
 export function grassVehicleCanopyContact(paint: GrassPaint, x: number, z: number,
   radiusX: number, radiusZ: number, yaw: number): GrassContact | null {
   if (paint.heightAt(x, z) < 1.5) return null;
-  return { x, z, radiusX: radiusX+0.2, radiusZ: radiusZ+0.2, yaw, shape: 'box', pressure: 0.95, hold: 6 };
+  return { x, z, radiusX: radiusX+0.2, radiusZ: radiusZ+0.2, yaw, shape: 'box', pressure: 0.95, hold: 6, damage: 0.65 };
 }
 
 /** Optional presentation metadata; grass does not depend on the garage protocol. */
@@ -91,7 +91,7 @@ export class GrassBodyContacts {
           if (bottom > 0.55 || bottom < -1) continue;
           grounded = true;
           this.track(field, `v${vehicle.id}w${wheel}`, { x: p[0]+this.point.x, z: p[2]+this.point.z,
-            radiusX: 0.34, radiusZ: Math.max(0.45, radius), yaw, pressure: 1, hold: 1.6 }, time);
+            radiusX: 0.34, radiusZ: Math.max(0.45, radius), yaw, pressure: 1, hold: 1.6, damage: 0.8 }, time);
         }
         if (grounded) {
           const canopy = grassVehicleCanopyContact(this.paint, p[0], p[2],

@@ -51,21 +51,26 @@ float push = (1.0 - smoothstep(0.2, 1.15, length(away)))
   * (1.0 - smoothstep(2.0, 3.5, abs(grassViewer.y - worldRoot.y)));
 bend += away / max(length(away), 0.01) * push * 1.5;
 vec2 contactUv = (worldRoot.xz - grassContactBounds.xy) / grassContactBounds.zw;
-vec3 contact = texture2D(grassContacts, clamp(contactUv, 0.0, 1.0)).rgb;
+vec4 contact = texture2D(grassContacts, clamp(contactUv, 0.0, 1.0));
 float contactEdge = smoothstep(0.0, 0.04, min(min(contactUv.x, contactUv.y), min(1.0-contactUv.x, 1.0-contactUv.y)));
-contact.r *= contactEdge;
+contact.r = max(contact.r, contact.a * 0.8) * contactEdge;
 vec2 contactDirection = (contact.gb * 255.0 - 128.0) / 127.0 * contactEdge;
 bend = bend * (1.0-contact.r*0.65) + contactDirection * 1.6;
 push = max(push, contact.r * 1.48);
-// Cubic Bezier centreline, with a derivative for the actual bent leaf normal.
-vec3 p1 = vec3(0, h * 0.38, 0);
-vec3 p2 = vec3(bend.x * h * 0.45, h * (0.8 - push * 0.25), bend.y * h * 0.45);
-vec3 p3 = vec3(bend.x * h, h * (0.86 - push * 0.55), bend.y * h);
-float u = 1.0 - t;
-vec3 centre = 3.0*u*u*t*p1 + 3.0*u*t*t*p2 + t*t*t*p3;
-vec3 tangent = 3.0*u*u*p1 + 6.0*u*t*(p2-p1) + 3.0*t*t*(p3-p2);
-centre.y *= 1.0 - contact.r * 0.92;
-tangent.y *= 1.0 - contact.r * 0.92;
+// Circular centreline: arc length is exactly h*t. Contact rotates the base
+// toward the ground rather than scaling the leaf into a stretching accordion.
+float compression = max(contact.r, push * 0.55);
+float bendLength = length(bend);
+vec2 bendAxis = bendLength > 0.001 ? bend/bendLength : forward;
+float baseAngle = compression * 1.46;
+float curvature = mix(clamp(bendLength, 0.02, 1.5), 0.06, compression);
+float angle = baseAngle + curvature*t;
+vec2 arc = vec2(cos(baseAngle)-cos(angle), sin(angle)-sin(baseAngle)) / curvature;
+vec3 centre = vec3(bendAxis.x*arc.x, arc.y, bendAxis.y*arc.x) * h;
+vec3 tangent = vec3(bendAxis.x*sin(angle), cos(angle), bendAxis.y*sin(angle));
+// Fold and twist the ribbon without extra vertices or texture fetches.
+float twist = (grassShape.z-0.5)*0.65*t;
+side = normalize(side + vec3(forward.x, 0.0, forward.y)*twist);
 float width = grassShape.x * (1.0 - t * t) * growth;
 // Broaden sparse far blades slightly to preserve meadow coverage.
 width *= mix(1.0, 1.65, smoothstep(grassLod.x, grassLod.y, distanceToEye));
@@ -133,6 +138,6 @@ export function createGrassMaterial(quality: GrassQuality, interaction: GrassInt
         #include <opaque_fragment>
       `);
   };
-  material.customProgramCacheKey = () => 'city-grass-v3-tall';
+  material.customProgramCacheKey = () => 'city-grass-v4-arc';
   return { material, uniforms };
 }

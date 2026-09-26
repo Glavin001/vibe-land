@@ -34,9 +34,9 @@
 @media (max-width: 700px) {
   .grass-lab-title { top: 22px; left: 22px; }
   .grass-lab-title h1 { margin-top: 16px; }
-  .grass-lab-panel { display: none; top: 155px; bottom: 138px; right: 15px; left: 15px; width: auto; max-height: none; padding: 17px; }
+  .grass-lab-panel { display: none; top: 155px; bottom: 160px; right: 15px; left: 15px; width: auto; max-height: none; padding: 17px; }
   .grass-lab-panel[data-mobile-open=true] { display: block; }
-  .grass-lab .grass-lab-controls-toggle { display: block; position: absolute; right: 24px; bottom: 89px; background: #15251df5; }
+  .grass-lab .grass-lab-controls-toggle { display: block; position: absolute; right: 24px; bottom: 115px; background: #15251df5; }
   .grass-lab-metrics { gap: 8px; }
   .grass-lab-views { bottom: 20px; width: max-content; max-width: calc(100vw - 24px); flex-wrap: wrap; justify-content: center; }
   .grass-lab-views button { font-size: 10px; padding: 9px; }
