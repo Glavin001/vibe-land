@@ -44,8 +44,17 @@ describe('simple wheel clearance', () => {
     }
     expect(owners.size).toBe(raw.parts.length);
     const wheels = result.collision.parts.filter((p: any) => p.motion?.role === 'wheel');
+    const groups = new Map(result.collision.parts.map((p: any) => [p.id,p]));
     expect(wheels).toHaveLength(4);
     for (const wheel of wheels) {
+      const joints = result.bonds.filter((b: any) => b.a===wheel.id || b.b===wheel.id);
+      expect(joints.some((b: any) => b.attachment==='wheel-bearing')).toBe(true);
+      expect(joints.some((b: any) => b.attachment==='drive-spline')).toBe(true);
+      for (const joint of joints) {
+        const other=groups.get(joint.a===wheel.id ? joint.b : joint.a) as any;
+        expect(['upright','axle']).toContain(other.motion?.role);
+        expect(other.motion.corner).toBe(wheel.motion.corner);
+      }
       for (const id of wheel.visualIds) {
         expect(visuals.get(id).motion?.role, visuals.get(id).name).toBe('wheel');
         expect(visuals.get(id).motion.corner).toBe(wheel.motion.corner);

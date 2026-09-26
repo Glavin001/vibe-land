@@ -134,10 +134,11 @@ export function buildBuggy(wasm, input={}, progress=(phase="",percent=0)=>{}, au
   b(`${label} axle`,[0,y,z],[wx,y,z],'steel',.025,'Drivetrain',false);
   motion(corner,'cvBoot');
   for(let i=0;i<6;i++)add(`${label} CV boot rib ${i+1}`,'Drivetrain','rubber',cyl(.047-Math.abs(i-2.5)*.003,.017,[wx-s*(.21+i*.017),y,z],[0,90,0]));
-  motion(corner,'wheel');
+  motion(corner,'wheel',{component:'hub'});
   add(`${label} hub`,'Wheels','dark',cyl(.075,.21,[wx-s*.1,y,z],[0,90,0]));
+  motion(corner,'wheel',{component:'rotor'});
   add(`${label} brake rotor`,'Wheels','steel',ring(.151,.068,.013,[wx-s*.125,y,z]));
-  motion(corner,'knuckle');
+  motion(corner,'knuckle',{component:'caliper'});
   box(`${label} brake caliper`,[.07,.1,.06],[wx-s*.13,y+.115,z+.025],'red','Wheels');
   motion(corner,'wheel');
   // Hollow rim, six independent spokes, beadlock rings, lug nuts.

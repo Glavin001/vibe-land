@@ -22,14 +22,14 @@ const request = JSON.parse(Buffer.concat(input).toString('utf8'));
 submittedConfiguration = request.configuration;
 const configuration = normalizeConfiguration(request.configuration);
 const root = resolve(process.argv[2]);
-const geometryHash = createHash('sha256').update(JSON.stringify({recipe:'vehicle-physics-functional-2',strength:STRENGTH_PROFILE_VERSION,geometry:geometryKey(configuration)})).digest('hex');
+const geometryHash = createHash('sha256').update(JSON.stringify({recipe:'vehicle-physics-functional-3',strength:STRENGTH_PROFILE_VERSION,geometry:geometryKey(configuration)})).digest('hex');
 const directory = join(root, geometryHash);
 let metadata;
 try { metadata = JSON.parse(await readFile(join(directory, 'metadata.json'), 'utf8')); }
 catch (error) {
  if (error.code !== 'ENOENT') throw error;
  const progress = (phase, percent) => process.stderr.write(`${percent}% ${phase}\n`);
- const { geometry, collision, surfaces, bonds } = await validateVehicleAssembly(configuration, progress);
+ const { geometry, collision, surfaces, bonds, excludedContacts } = await validateVehicleAssembly(configuration, progress);
  const wasm = await Module(); wasm.setup();
  const visual = buildBuggy(wasm, geometry.parameters, progress);
  const bundle = physicsBundle(collision, visual);
@@ -61,6 +61,8 @@ catch (error) {
    maxSteerRadians: geometry.maxSteerRadians, partCount: parts.length,
    visualPartCount: visual.parts.length, colliderFidelity: 'simple',
    cylinderSegments: 32, jointSurfaceSource: 'individual-authored-interfaces',
+   jointTopology: 'mechanical-mounts-1',
+   excludedContacts: excludedContacts.map(({a,b,reason})=>({a,b,reason})),
    shapeCount: parts.reduce((n,p)=>n+p.shapes.length,0), bondCount: bonds.length, contactCount: surfaces.length,
    strengthProfileVersion: STRENGTH_PROFILE_VERSION, strengthQualification: 'pending-native-tests',
    mass: parts.reduce((n,p)=>n+p.mass,0), bounds,
