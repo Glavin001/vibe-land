@@ -145,7 +145,9 @@ projectile regression now proves that a detached axle cuts only its wheel's
 drive torque, preserving the attached wheel's inertia and brake. All 16 bridge
 regressions pass. This uses the derived `/tmp/vehicle-drive-mask-sdk22` wrapper
 with per-wheel drive connectivity; the preceding frozen wrapper does not expose
-that capability. Full authored-model impact qualification is still in progress.
+that capability. The full-model run converges but fails impact qualification:
+nominal shots do not break buggy/sprint bonds, and heavy shots do not detach
+the targeted wheel on any of the six models.
 
 The full-model tests share fixture loading, registration and configuration in
 `server/src/physx_runtime/vehicle_fracture_tests.rs`. Run them serially against

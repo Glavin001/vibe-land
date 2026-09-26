@@ -75,10 +75,13 @@ python3 scripts/verify-vehicle-bridge-fracture.py \
 
 The complete authored-vehicle run uses the same command with
 `--authored-fixtures /tmp/vehicle-mechanical-fixtures.json` and a new output
-directory. The ongoing run is `/tmp/vehicle-mechanical-authored-verification`.
-It is not yet a passing gate: completed nominal shots still produce no broken
-bonds on buggy and sprint, and completed heavy cases have not detached the
-target wheel. Resume its existing process rather than starting a duplicate.
+directory. The completed run is `/tmp/vehicle-mechanical-authored-verification`.
+Its integrity checks pass, but the full-model qualification fails. Nominal shots
+break 0/7/6/8/2/0 bonds on buggy/trophy/rally/monster/derby/sprint; heavy shots
+break 29/49/59/39/43/34. Every impact completes 120 converged steps, yet none
+detaches the targeted wheel. All six 30-step free-fall controls pass without
+fracture. See `authored-report.json` and `authored-tests.log`; full per-frame raw
+reports are retained locally with hashes in `authored-raw-evidence.json`.
 
 The next attachment review is the distinction between a removable rim/tire
 assembly and its rotating hub/rotor. The current coherent wheel combines all

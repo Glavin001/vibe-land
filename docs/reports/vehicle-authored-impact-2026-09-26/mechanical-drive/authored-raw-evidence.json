@@ -1,0 +1,14 @@
+[
+  {
+    "path": "/tmp/vehicle-mechanical-cannon.json.gz",
+    "sha256": "9c55b4ba54e96ef176e07614912701f94ae695c53c86d658081790908618b443",
+    "bytes": 422830,
+    "uncompressedPath": "/tmp/vehicle-mechanical-authored-verification/cannon.json"
+  },
+  {
+    "path": "/tmp/vehicle-mechanical-cannon-heavy.json.gz",
+    "sha256": "a8fc6f3bff64a7f3795626b3f583b7e4be4c93f13726a79b35be6c289ec20e41",
+    "bytes": 39223171,
+    "uncompressedPath": "/tmp/vehicle-mechanical-authored-verification/cannon-heavy.json"
+  }
+]
