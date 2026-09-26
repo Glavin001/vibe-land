@@ -1,4 +1,5 @@
-import { FOLIAGE_HANDOFF } from './foliageLod';
+import { FOLIAGE_HANDOFF, GRASS_CANOPY_DENSITY } from './foliageLod';
+import { FOLIAGE_SPECIES } from './foliageProfiles';
 import * as THREE from 'three';
 import { FOLIAGE_SURFACE, foliageLightUniforms, foliageLightFragment } from './foliageLighting';
 import { GRASS_PROFILES, type GrassQuality } from './grassPlacement';
@@ -6,16 +7,22 @@ import { cityMacroNoise } from '../cityTextures';
 import type { GrassInteraction } from './GrassInteraction';
 
 // Original implementation. Technique references are documented in docs/city-grass.md.
+export const GRASS_DENSITY_SHADER = /* glsl */ `
+density = vGrassCanopy > 0.5 ? (grassBirth.y > 0.5
+  ? mix(1.0, grassCanopyDensity.z, smoothstep(grassCanopyDensity.x, grassCanopyDensity.y, distanceToEye)) : 1.0) : density;
+`;
+export const GRASS_WIDTH_SHADER = 'if (grassBirth.y > 0.5) width /= density;';
 const VERTEX_PARS = /* glsl */ `
 attribute vec4 grassRoot;
 attribute vec4 grassShape;
-attribute float grassBirth;
+attribute vec2 grassBirth;
 attribute vec3 grassTint;
 attribute vec4 grassTraits;
 uniform float grassTime;
 uniform vec2 grassWind;
 uniform vec3 grassLod;
 uniform vec2 grassCanopyHandoff;
+uniform vec3 grassCanopyDensity;
 uniform vec3 grassViewer;
 uniform sampler2D grassWindNoise;
 uniform sampler2D grassContacts;
@@ -55,10 +62,11 @@ float distanceToEye = distance(cameraPosition, worldRoot);
 float density = (1.0 - 0.55 * smoothstep(grassLod.x * 0.5, grassLod.x, distanceToEye))
   * (1.0 - 0.65 * smoothstep(grassLod.y * 0.65, grassLod.y, distanceToEye));
 vGrassCanopy = species > 0.5 || grassRoot.z >= 0.75 ? 1.0 : 0.0;
-density = vGrassCanopy > 0.5 ? 1.0 : density;
-float growth = (1.0 - smoothstep(density - 0.065, density, grassShape.w))
+${GRASS_DENSITY_SHADER}
+float densityBand = grassBirth.y > 0.5 ? density*0.065 : 0.065;
+float growth = (1.0 - smoothstep(density - densityBand, density, grassShape.w))
   * (vGrassCanopy > 0.5 ? 1.0 : (1.0 - smoothstep(grassLod.z * 0.8, grassLod.z, distanceToEye)))
-  * smoothstep(grassBirth, grassBirth + 0.35, grassTime);
+  * smoothstep(grassBirth.x, grassBirth.x + 0.35, grassTime);
 // These instances already collapse to zero-area geometry. Clip them before
 // wind/contact texture reads and leaf deformation; visible density is unchanged.
 if (growth <= 0.0) {
@@ -140,6 +148,9 @@ if (seedHead) {
 }
 // Broaden sparse far blades slightly to preserve meadow coverage.
 width *= mix(1.0, vGrassCanopy > 0.5 ? 1.0 : 1.65, smoothstep(grassLod.x, grassLod.y, distanceToEye));
+// Conserve projected ribbon area as fine grass instances thin. Roots/height,
+// bends and contacts remain unchanged; width changes continuously with range.
+${GRASS_WIDTH_SHADER}
 vec3 grassPosition = root + centre + side * position.x * width;
 vec3 objectNormal = normalize(cross(side, tangent + vec3(0, 0.00001, 0)));
 // A rounded leaf catches skylight without a billboard's dark edge-on stripes.
@@ -162,6 +173,7 @@ export function createGrassMaterial(quality: GrassQuality, interaction: GrassInt
     grassTime: { value: 0 },
     grassWind: { value: new THREE.Vector2(5.65, 5.65) },
     grassCanopyHandoff: { value: new THREE.Vector2(...FOLIAGE_HANDOFF[quality]) },
+    grassCanopyDensity: { value: new THREE.Vector3(GRASS_CANOPY_DENSITY.near, GRASS_CANOPY_DENSITY.far, GRASS_CANOPY_DENSITY.minimum) },
     grassLod: { value: new THREE.Vector3(p.near, p.middle, p.distance) },
     grassViewer: { value: new THREE.Vector3(0, 1000, 0) },
     grassWindNoise: { value: cityMacroNoise() },
@@ -214,6 +226,26 @@ export function createGrassMaterial(quality: GrassQuality, interaction: GrassInt
         #include <opaque_fragment>
       `);
   };
-  material.customProgramCacheKey = () => 'city-foliage-v9-zero-growth';
-  return { material, uniforms };
+  material.customProgramCacheKey = () => 'city-foliage-v11-specialized-reference';
+  // Patches already batch by species. Tell the compiler that species is constant
+  // so unused seed-head/fern/corn branches and their registers disappear.
+  const specialize = (species: number, merge: boolean) => {
+    const specialized = material.clone();
+    specialized.name = `City foliage ${species}${merge ? ' · merged ribbons' : ''}`;
+    specialized.onBeforeCompile = (shader, renderer) => {
+      material.onBeforeCompile(shader, renderer);
+      shader.vertexShader = shader.vertexShader.replace(
+        'float species = floor(grassTraits.w*255.0+0.5);', `float species = ${species}.0;`,
+      );
+      if (merge) shader.vertexShader = shader.vertexShader.split('grassBirth.y > 0.5').join('true');
+      else shader.vertexShader = shader.vertexShader
+        .replace(GRASS_DENSITY_SHADER, 'density = vGrassCanopy > 0.5 ? 1.0 : density;')
+        .replace(GRASS_WIDTH_SHADER, '')
+        .replace('grassBirth.y > 0.5 ? density*0.065 : 0.065', '0.065');
+    };
+    specialized.customProgramCacheKey = () => `city-foliage-v11-species-${species}-merge-${merge}`;
+    return specialized;
+  };
+  const materials = FOLIAGE_SPECIES.map((_, species) => specialize(species, false));
+  return { material, materials, denseMaterial: specialize(0, true), uniforms };
 }

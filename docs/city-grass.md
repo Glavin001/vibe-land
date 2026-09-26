@@ -461,3 +461,59 @@ benchmark type check and production build passed. The client type check passed
 earlier in the review, but the final rerun encountered two errors in concurrent
 AudioLab work (`activityEmitters` and `rms` missing from `AudioDiagnostics`).
 Those files are outside this grass change and were left untouched.
+
+### Grass-only GPU budget
+
+The 8.3 ms preview frame interval is a display cadence, not an 8.3 ms grass
+allowance. The grass pass targets 1–2 ms, leaving the remaining frame budget
+for city geometry, effects, physics and other systems.
+
+Dense narrow grass now keeps full detail within 8 m, then smoothly reduces its
+instance population to 40% by 24 m. Retained ribbons widen by the reciprocal
+density, preserving expected projected leaf area. The fading fraction scales
+with density to avoid making the remaining population progressively shorter.
+CPU submission uses the nearest point of each patch, so it cannot discard a
+plant the per-root shader would retain. This changes individual blades in the
+middle distance, rather than removing the stand. Authored heights, the shared
+contact field, PBR lighting and distant canopy remain in place. Sparse stands
+and broad-leaf crops are exempt. The extra per-patch flag adds four bytes per
+species batch, not per plant.
+
+Each existing species batch now uses a shader with a constant species ID.
+The compiler can remove irrelevant corn, fern and seed-head branches; no extra
+geometry passes or draws are introduced. All variants share the wind/contact
+uniforms and are disposed with the field.
+
+`/benchmarks/foliage-budget.html?shadows` compares this version with the previous
+full-density, unspecialized shader in the same scene. It includes a 2048px
+PCF-soft shadow map, alternates one variant per display frame, and repeats the
+baseline as a control. Each variant collects 96 paired grass-on/off GPU samples.
+Its image checks compare coverage and brightness before and after extreme wind
+and compaction. The small close-up stand also checks almost exact pixel parity.
+
+The [recorded shadowed comparison](benchmarks/foliage-gpu-budget-m3max-2026-09-26.json)
+on M3 Max at 1080p measured tall grass at **2.48 → 2.19 ms**, the farther stand
+at **2.15 → 1.69 ms**, and backlit tall grass at **2.87 → 2.24 ms**. Ferns and
+wheat improved from **1.75 → 1.47 ms** and **2.00 → 1.69 ms**. Seven of ten
+shadowed cases had medians below 2 ms. **This is not a strict 2 ms cap:** the
+heaviest medians reached 2.35 ms and p95 reached 4.38 ms. A separate 18-case
+non-shadowed sweep ranged from 0.27 to 2.47 ms. Other active applications affect
+GPU scheduling, so the paired comparison is stronger evidence than comparing
+absolute numbers from different runs.
+
+Across 20 shadowed image comparisons, coverage stayed within 0.07% of the
+reference and mean foliage brightness within 0.09%. The close-up case differed
+at at most 4 of 518,400 pixels. All 15 lighting comparisons and 18 concealment
+cases passed; tall grass and corn still fully hid the target at every range.
+Flattening revealed 672/840 and 673/840 target pixels. The record includes the
+over-budget cases. Experiments with extra frustum tests, depth prepasses,
+opaque variants, approximate bending and cheaper sky lighting were discarded
+when they failed to provide reliable gains.
+
+The final mixed-field stress test measured CPU update p95 of 0.6–1.2 ms,
+with contact-tick p95 of 1.5–1.7 ms at 20 Hz. Whole isolated-scene GPU medians
+ranged from 1.73 to 3.67 ms. Median frame intervals were 8.3 ms, but travel
+spikes reached 104.8 ms; these results do not establish smooth 120 Hz in the
+full game. Both quality tiers disposed to zero renderer geometries, and the
+browser reported no errors. All 48 focused tests, client and benchmark type
+checks, and the production build passed on the retained version.

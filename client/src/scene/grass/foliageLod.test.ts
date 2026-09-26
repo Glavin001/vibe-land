@@ -1,10 +1,43 @@
 import { describe, expect, it } from 'vitest';
-import { PerspectiveCamera } from 'three';
+import { InstancedBufferGeometry, Mesh, PerspectiveCamera } from 'three';
 import { GrassPaint, GRASS_BRUSHES } from './GrassPaint';
 import { GrassField } from './GrassField';
-import { foliageHandoff } from './foliageLod';
+import { foliageHandoff, grassCanopyDensity } from './foliageLod';
 
 describe('foliage silhouette LOD',()=>{
+  it('keeps full close detail and reduces dense narrow-blade submissions without changing canopy height',()=>{
+    const paint=new GrassPaint();paint.paint(4,4,12,GRASS_BRUSHES.vehicle);
+    const field=new GrassField('pretty',[],paint),camera=new PerspectiveCamera(60,1.6,.1,300);
+    try {
+      camera.position.set(4,2,4);camera.lookAt(4,1,0);camera.updateMatrixWorld();
+      for(let i=0;i<100;i++)field.update(camera,i/60);
+      const patch=field.group.children.find(c=>c.name==='Grass patch 0,0')!;
+      const plant=patch.children.find(c=>(c as Mesh<InstancedBufferGeometry>).geometry.getAttribute('grassBirth').getY(0)===1) as Mesh<InstancedBufferGeometry>;
+      expect(plant).toBeDefined();
+      const geometry=plant.geometry,roots=geometry.getAttribute('grassRoot'),count=roots.count;
+      const heights=Array.from({length:count},(_,i)=>roots.getZ(i));
+      expect(geometry.instanceCount).toBe(count);
+      camera.position.set(4,2,24);camera.lookAt(4,1,4);camera.updateMatrixWorld();field.update(camera,2);
+      expect(geometry.instanceCount).toBeLessThan(count*.8);
+      expect(Array.from({length:count},(_,i)=>roots.getZ(i))).toEqual(heights);
+      expect(field.stats.canopyClumps).toBeGreaterThan(100);
+      expect(grassCanopyDensity(8)).toBe(1);
+      expect(grassCanopyDensity(100)).toBeCloseTo(.4);
+    }finally{field.dispose();paint.dispose();}
+  });
+  it('does not merge sparse grass or broad-leaf plants',()=>{
+    for(const brush of [{...GRASS_BRUSHES.vehicle,density:.1},GRASS_BRUSHES.corn,GRASS_BRUSHES.ferns]) {
+      const paint=new GrassPaint();paint.paint(4,4,12,brush);
+      const field=new GrassField('pretty',[],paint),camera=new PerspectiveCamera(60,1.6,.1,300);
+      camera.position.set(4,2,24);camera.lookAt(4,1,4);camera.updateMatrixWorld();
+      try {
+        for(let i=0;i<100;i++)field.update(camera,i/60);
+        field.group.traverse(o=>{
+          if(o instanceof Mesh && o.geometry.hasAttribute('grassBirth'))expect(o.geometry.getAttribute('grassBirth').getY(0)).toBe(0);
+        });
+      }finally{field.dispose();paint.dispose();}
+    }
+  });
   it('hands off gradually with complementary coverage',()=>{
     for(const quality of ['fast','pretty'] as const) {
       let previous=0;

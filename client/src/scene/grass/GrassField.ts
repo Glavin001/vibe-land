@@ -1,5 +1,5 @@
 import { FoliageCanopy } from './FoliageCanopy';
-import { FOLIAGE_HANDOFF } from './foliageLod';
+import { FOLIAGE_HANDOFF, grassCanopyDensity } from './foliageLod';
 import { attachFoliageTemplate } from './foliageBuffers';
 import { GrassPatchWorker } from './GrassPatchWorker';
 import { FOLIAGE_SPECIES } from './foliageProfiles';
@@ -70,7 +70,7 @@ function createPlantLods(species: number) {
   return { geometry, ranges };
 }
 
-type Part = { species: number; count: number; canopy: boolean; mesh: THREE.Mesh<THREE.InstancedBufferGeometry, THREE.MeshStandardMaterial> };
+type Part = { species: number; count: number; canopy: boolean; mergeBlades: boolean; mesh: THREE.Mesh<THREE.InstancedBufferGeometry, THREE.MeshStandardMaterial> };
 type Patch = {
   x: number; z: number; count: number; lod: number; bytes: number; height: number;
   mesh: THREE.Group; parts: Part[];
@@ -154,6 +154,8 @@ export class GrassField {
       const members: number[] = [];
       for (let i = 0; i < data.count; i++) if (data.traits[i*4+3] === species && (species > 0 || (data.roots[i*4+2]>=0.75) === canopy)) members.push(i);
       if (!members.length) continue;
+      // Preserve individually readable plants in sparse paint and crop rows.
+      const mergeBlades = canopy && species === 0 && members.length > GRASS_PATCH_SIZE ** 2 * 32;
       const whole = members.length === data.count;
       const roots = whole ? data.roots : new Float32Array(members.length*4), shapes = whole ? data.shapes : new Uint16Array(members.length*4);
       const colors = whole ? data.colors : new Uint8Array(members.length*3), traits = whole ? data.traits : new Uint8Array(members.length*4);
@@ -175,13 +177,13 @@ export class GrassField {
       geometry.setAttribute('grassShape', new THREE.InstancedBufferAttribute(shapes, 4, true));
       geometry.setAttribute('grassTint', new THREE.InstancedBufferAttribute(colors, 3, true));
       geometry.setAttribute('grassTraits', new THREE.InstancedBufferAttribute(traits, 4, true));
-      geometry.setAttribute('grassBirth', new THREE.InstancedBufferAttribute(new Float32Array([previous ? time-1 : time]), 1, false, members.length));
+      geometry.setAttribute('grassBirth', new THREE.InstancedBufferAttribute(new Float32Array([previous ? time-1 : time, Number(mergeBlades)]), 2, false, members.length));
       geometry.instanceCount = members.length;
-      const plant = new THREE.Mesh(geometry, this.shading.material);
+      const plant = new THREE.Mesh(geometry, mergeBlades ? this.shading.denseMaterial : this.shading.materials[species]);
       plant.receiveShadow = this.shadows; plant.frustumCulled = false;
       plant.matrixAutoUpdate = false; plant.updateMatrix(); plant.raycast = () => {};
-      mesh.add(plant); parts.push({ species, count: members.length, canopy, mesh: plant });
-      bytes += roots.byteLength+shapes.byteLength+colors.byteLength+traits.byteLength+4;
+      mesh.add(plant); parts.push({ species, count: members.length, canopy, mergeBlades, mesh: plant });
+      bytes += roots.byteLength+shapes.byteLength+colors.byteLength+traits.byteLength+8;
     }
     const patch: Patch = { x, z, count: data.count, lod: -1, bytes, height: data.maxHeight,
       mesh, parts, bounds: this.setBounds(new THREE.Box3(), x, z, data.maxHeight) };
@@ -277,7 +279,7 @@ export class GrassField {
       for (const part of patch.parts) {
         part.mesh.visible = !part.canopy || distance < FOLIAGE_HANDOFF[this.quality][1] + patch.height * 1.6;
         if (!part.mesh.visible) continue;
-        const density = part.canopy ? 1 : Math.max(part.species >= 3 ? 0.65 : patch.height > 1.5 ? 0.32 : 0,
+        const density = part.canopy ? (part.mergeBlades ? grassCanopyDensity(distance) : 1) : Math.max(part.species >= 3 ? 0.65 : patch.height > 1.5 ? 0.32 : 0,
           grassDensityAtDistance(distance, this.quality));
         const count = Math.ceil(part.count * density);
         part.mesh.geometry.instanceCount = count;
@@ -298,5 +300,7 @@ export class GrassField {
     this.group.clear();
     for (const template of this.templates) template.geometry.dispose();
     this.shading.material.dispose();
+    for (const material of this.shading.materials) material.dispose();
+    this.shading.denseMaterial.dispose();
   }
 }
