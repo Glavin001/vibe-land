@@ -54,6 +54,9 @@ def main():
                '--test', 'native_vehicle_fracture', '--test', 'native_gameplay', '--',
                '--include-ignored', '--nocapture', '--test-threads=1']
     env = dict(os.environ, PHYSX_ROOT=str(sdk), CARGO_TARGET_DIR=str(args.target_dir.resolve()))
+    # Exercise the nonblocking fetch path on the deliberate rejection too.
+    # An error must terminate polling rather than masquerade as "not ready".
+    env['VIBE_PHYSX_GPU_SAMPLE_TICKS'] = '1'
     if sys.platform == 'darwin':
         env.update(CUMETAL_USE_METAL_DEVICE_ADDRESSES='1', CUMETAL_SYNC_EACH_LAUNCH='0')
         if overlay:
@@ -62,6 +65,7 @@ def main():
             parser.error('use --runtime-overlay instead of an unrecorded DYLD_LIBRARY_PATH')
     report = {'status': 'running', 'command': command, 'sdk': str(sdk), 'artifacts': artifacts,
               'runtimeOverlay': str(overlay) if overlay else None,
+              'gpuSampleTicks': 1,
               'sourceCommit': subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=root, text=True).strip(),
               'sourceDiffSha256': hashlib.sha256(subprocess.check_output(['git', 'diff', '--binary', 'HEAD', '--', 'physx-bridge'], cwd=root)).hexdigest(),
               'fixture': {'chunks': 6, 'bonds': 5, 'projectileMassKg': 300,
@@ -77,11 +81,12 @@ def main():
     log = (output / 'tests.log').read_text()
     # Fail if selection drifted, tests were merely compiled, or a gate disappeared.
     detached = re.search(r'broken=1, disabled-wheel ticks=(\d+)', log)
-    inventory_ok = ('test result: ok. 12 passed; 0 failed; 0 ignored;' in log
+    inventory_ok = ('test result: ok. 13 passed; 0 failed; 0 ignored;' in log
                     and 'test result: ok. 2 passed; 0 failed; 0 ignored;' in log
                     and 'test native_vehicle_accepts_small_authored_com_offsets ...' in log
                     and 'test native_bond_observation_includes_bending_and_material_verdict ...' in log
                     and 'test native_bond_stress_respects_unequal_authored_masses ...' in log
+                    and 'test native_unconverged_stress_rejects_weak_material_damage ...' in log
                     and detached is not None and int(detached[1]) > 30
                     and 'broken=0, disabled-wheel ticks=0' in log)
     unchanged = all(digest(Path(p)) == expected for p, expected in artifacts.items())

@@ -1,0 +1,17 @@
+
+running 1 test
+test native_unconverged_stress_rejects_weak_material_damage ... CUMETAL WARNING: CUMETAL_USE_METAL_DEVICE_ADDRESSES marks every live allocation read-write on every dispatch so kernels can follow raw device addresses; this removes cross-stream concurrency.
+[destruction] native internalCorrectionLimit=1
+
+thread 'native_unconverged_stress_rejects_weak_material_damage' (15482730) panicked at physx-bridge/tests/native_gameplay.rs:47:5:
+unconverged stress was accepted: NativeStatus { frame: 1, error: 0, stress_topology_error: 0, iterations: 1, converged: false, normal_contacts: 0, friction_anchors: 0, bond_commands: 1, broken_bonds: 1, crushed_chunks: 0, correction_passes: 1, stress_passes: 2, post_correction_broken_bonds: 0, committed_chunks: 4, committed_bonds: 1, cluster_count: 2, stress_island_count: 1, observed: true, degraded: false, missed_frames: 0 }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+
+failures:
+
+failures:
+    native_unconverged_stress_rejects_weak_material_damage
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 12 filtered out; finished in 0.39s
+

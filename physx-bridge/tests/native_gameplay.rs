@@ -18,6 +18,91 @@ const GROUP_STATIC: u32 = 1 << 0;
 const GROUP_CHUNK: u32 = 1 << 5;
 const ALL: u32 = GROUP_STATIC | GROUP_CHUNK;
 
+/// Deliberately insufficient iterations must reject the material transaction.
+/// Weak joints ensure that a test using only unbreakably strong material cannot
+/// accidentally pass while the runtime still commits unconverged damage.
+#[test]
+#[ignore = "requires real native GPU destruction SDK"]
+fn native_unconverged_stress_rejects_weak_material_damage() {
+    for max_iterations in [1, 2048] {
+        let mut world = World::new(WorldConfig::default()).unwrap();
+        world.native_attach().unwrap();
+        let (mut nodes, bonds) = wall(4, 1);
+        for (i, node) in nodes.iter_mut().enumerate().skip(1) {
+            node.mass = i as f32;
+        }
+        let mut material = settings();
+        material.materials[0] = StressMaterialDesc {
+            compression_elastic: 1.,
+            compression_fatal: 2.,
+            tension_elastic: 1.,
+            tension_fatal: 2.,
+            shear_elastic: 1.,
+            shear_fatal: 2.,
+            elastic_modulus: 3e10,
+            residual_area_fraction: 0.,
+        };
+        world
+            .native_create_destructible(
+                0,
+                Pose {
+                    position: Vec3::new(0., 10., 0.),
+                    rotation: Quat::IDENTITY,
+                },
+                &nodes,
+                &bonds,
+                material,
+                GROUP_CHUNK,
+                ALL,
+            )
+            .unwrap();
+        world.step().unwrap();
+        let mut config = native_config(4);
+        config.max_iterations = max_iterations;
+        world.native_configure(config).unwrap();
+        let result = world.step();
+        let status = world.native_tick().unwrap();
+        if max_iterations == 1 {
+            assert!(
+                !status.converged && status.iterations == 1,
+                "fixture did not exhaust its budget: {status:?}"
+            );
+            assert!(
+                result.is_err(),
+                "unconverged stress was accepted: {status:?}"
+            );
+            assert_ne!(
+                status.error & 4096,
+                0,
+                "missing convergence error: {status:?}"
+            );
+            assert_eq!(status.bond_commands, 0);
+            assert_eq!(status.broken_bonds, 0);
+            assert_eq!(status.crushed_chunks, 0);
+            assert_eq!(status.committed_bonds, 0);
+            assert_eq!(status.committed_chunks, 0);
+            assert!(world.native_take_broken_bonds().unwrap().is_empty());
+            assert!(!status.observed, "rejected state must not be published");
+            assert!(
+                world.native_bond_stress_rows(0).unwrap().is_empty(),
+                "first rejected step must not publish material verdicts"
+            );
+        } else {
+            result.unwrap();
+            assert!(
+                status.converged && status.error == 0,
+                "positive control did not converge: {status:?}"
+            );
+            assert!(
+                status.broken_bonds > 0 && status.committed_bonds > 0,
+                "same weak material must break with a converged solve: {status:?}"
+            );
+            assert!(!world.native_take_broken_bonds().unwrap().is_empty());
+        }
+        world.native_clear().unwrap();
+    }
+}
+
 /// A supported horizontal cantilever has shear and bending under gravity,
 /// even though its axial normal stress is nearly zero. Its readout must show
 /// the same outer-fibre overload used by the native material verdict.

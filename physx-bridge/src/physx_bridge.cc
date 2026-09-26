@@ -2844,7 +2844,14 @@ public:
       bool ready = false;
       while (!ready) {
         last_call_start = std::chrono::steady_clock::now();
-        ready = scene_->fetchResults(false);
+        PxU32 fetch_error = 0;
+        ready = scene_->fetchResults(false, &fetch_error);
+        if (fetch_error != 0) {
+          // false also means a completed, rejected native step. Retrying
+          // that result as "not ready" would spin forever on sampled ticks.
+          step_in_flight_ = false;
+          require(false, "PhysX fetchResults failed");
+        }
         if (!ready) {
           // Yield between probes. The original loop spun flat out, which is
           // what made per-tick sampling cost ~0.91 ms: not the timestamps

@@ -116,9 +116,10 @@ now reproduce analytical loads and pass all 14 bridge regressions with an
 isolated double-precision runtime. All six full models converge through 120
 impact-aftermath steps; trophy/rally/monster/derby break 9/6/8/2 bonds, while
 buggy and sprint break none. No targeted wheel detaches. The impact gate remains
-red. Single precision still fails convergence, and those runs expose a separate
-bug where unconverged solves can commit damage. The candidates are not installed
-or performance-qualified.
+red. Single precision still fails convergence. A separate
+[convergence transaction fix](reports/vehicle-authored-impact-2026-09-26/convergence-gate/README.md)
+now rejects unconverged damage and passes 15 bridge regressions plus direct GPU
+material-state inspection. The candidates are not installed or performance-qualified.
 
 The full-model tests share fixture loading, registration and configuration in
 `server/src/physx_runtime/vehicle_fracture_tests.rs`. Run them serially against

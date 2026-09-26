@@ -784,9 +784,8 @@ FfiNativeStatus NativeDestruction::tick() {
   s.stress_iterations_peak =
       std::max(s.stress_iterations_peak, s.last.iterations);
 
-  // A solve that ran out of iterations is not an error. It is a partial answer
-  // that the solver keeps and refines on the next tick, exactly as the Blast
-  // stress solver did, so it is counted and otherwise ignored.
+  // Count exhausted solves even when native error 4096 rejects the step.
+  // A partial iterate cannot authorize material or topology changes.
   if (s.last.converged == 0) {
     s.unconverged_frames += 1;
   }
