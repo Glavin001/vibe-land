@@ -152,8 +152,11 @@ the targeted wheel on any of the six models.
 The [separate hub update](reports/vehicle-authored-impact-2026-09-26/separate-hubs/README.md)
 keeps each tire/rim separate from its rotating hub/rotor, exposing the measured
 wheel mount. It preserves collision geometry and aggregate mass properties;
-49 client tests and all 11 builds' server layout checks pass. Full GPU impact
-qualification of this topology is pending. The impact inspector reports each
+49 client tests and all 11 builds' server layout checks pass. Severe GPU impacts
+now detach the targeted wheel on all six models and keep it disabled for 119
+further steps under throttle; free-fall controls also pass. The full gate still
+fails nominal wheel hits on buggy and sprint, whose mounts remain below their
+material limits. The impact inspector reports each
 target interface's peak load relative to its material limits without changing
 the acceptance gate.
 

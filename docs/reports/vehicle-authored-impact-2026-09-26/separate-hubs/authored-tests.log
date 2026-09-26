@@ -1,0 +1,847 @@
+   Compiling vibe-land-physx-bridge v0.1.0 (/Users/glavin/Development/vibe-land/physx-bridge)
+   Compiling vibe-land-destruction v0.1.0 (/Users/glavin/Development/vibe-land/destruction)
+warning: unused import: `ActorState`
+  --> research/destruction-codec/src/debris_tracks.rs:42:20
+   |
+42 | use crate::trace::{ActorState, Camera, Pose, TraceReader};
+   |                    ^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `exp_bucket`
+  --> research/destruction-codec/src/residual_coder.rs:16:5
+   |
+16 |     exp_bucket, unzigzag, zigzag, AdaptiveModel, RansDecoder, RansEncoder, EXP_SYMBOLS,
+   |     ^^^^^^^^^^
+
+warning: unreachable pattern
+   --> research/destruction-codec/src/debris_tracks.rs:365:17
+    |
+365 |                 _ => {}
+    |                 ^ no value can reach this
+    |
+note: multiple earlier patterns match some of the same values
+   --> research/destruction-codec/src/debris_tracks.rs:365:17
+    |
+355 |                 (Tier::Coarse, _) | (_, None) => {
+    |                 ----------------------------- matches some of the same values
+...
+358 |                 (_, Some(cell)) => {
+    |                 --------------- matches some of the same values
+...
+365 |                 _ => {}
+    |                 ^ collectively making this unreachable
+    = note: `#[warn(unreachable_patterns)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `block_ticks`
+    --> research/destruction-codec/src/debris_tracks.rs:1080:5
+     |
+1080 |     block_ticks: u32,
+     |     ^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_block_ticks`
+     |
+     = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `keyframe_ticks`
+    --> research/destruction-codec/src/debris_tracks.rs:1081:5
+     |
+1081 |     keyframe_ticks: u32,
+     |     ^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_keyframe_ticks`
+
+warning: type `RootSegment` is more private than the item `TopologyState::last_segments`
+   --> research/destruction-codec/src/hierarchy.rs:503:5
+    |
+503 |     pub(crate) last_segments: BTreeMap<u32, RootSegment>,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ field `TopologyState::last_segments` is reachable at visibility `pub(crate)`
+    |
+note: but type `RootSegment` is only usable at visibility `pub(self)`
+   --> research/destruction-codec/src/hierarchy.rs:364:1
+    |
+364 | struct RootSegment {
+    | ^^^^^^^^^^^^^^^^^^
+    = note: `#[warn(private_interfaces)]` on by default
+
+warning: variant `Mid` is never constructed
+  --> research/destruction-codec/src/debris_tracks.rs:71:5
+   |
+65 | pub(crate) enum Tier {
+   |                 ---- variant in this enum
+...
+71 |     Mid,
+   |     ^^^
+   |
+   = note: `Tier` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `compact` is never read
+    --> research/destruction-codec/src/hierarchy.rs:1805:9
+     |
+1799 |     struct Candidate {
+     |            --------- field in this struct
+...
+1805 |         compact: Pose,
+     |         ^^^^^^^
+
+warning: field `base_bound_m` is never read
+    --> research/destruction-codec/src/hierarchy.rs:2214:5
+     |
+2205 | struct FitContext<'a> {
+     |        ---------- field in this struct
+...
+2214 |     base_bound_m: f32,
+     |     ^^^^^^^^^^^^
+
+warning: method `symbol_count` is never used
+   --> research/destruction-codec/src/rans.rs:343:19
+    |
+309 | impl RansEncoder {
+    | ---------------- method in this implementation
+...
+343 |     pub(crate) fn symbol_count(&self) -> usize {
+    |                   ^^^^^^^^^^^^
+
+warning: use of deprecated method `rapier3d::dynamics::RigidBodyBuilder::position`: renamed to `RigidBodyBuilder::pose`
+    --> shared/src/local_session.rs:1129:14
+     |
+1129 |             .position(Isometry3::from_parts(Translation3::new(px, py, pz), iso))
+     |              ^^^^^^^^
+     |
+     = note: `#[warn(deprecated)]` on by default
+
+warning: `destruction-codec` (lib) generated 10 warnings (run `cargo fix --lib -p destruction-codec` to apply 4 suggestions)
+warning: `vibe-land-shared` (lib) generated 1 warning
+   Compiling web-fps-server v0.1.0 (/Users/glavin/Development/vibe-land/server)
+warning: vibe-land-physx-bridge@0.1.0: In file included from /private/tmp/vehicle-drive-mask-sdk22/destruction/vehicle/PxNativeVehicle.cpp:2:
+warning: vibe-land-physx-bridge@0.1.0: In file included from /private/tmp/vehicle-drive-mask-sdk22/destruction/vehicle/PxNativeVehicle.h:14:
+warning: vibe-land-physx-bridge@0.1.0: In file included from /private/tmp/vehicle-drive-mask-sdk22/include/physx/PxPhysicsAPI.h:96:
+warning: vibe-land-physx-bridge@0.1.0: In file included from /private/tmp/vehicle-drive-mask-sdk22/include/physx/foundation/PxVecMath.h:1352:
+warning: vibe-land-physx-bridge@0.1.0: /private/tmp/vehicle-drive-mask-sdk22/include/physx/foundation/PxVecQuat.h:335:9: warning: use of bitwise '&' with boolean operands [-Wbitwise-instead-of-logical]
+warning: vibe-land-physx-bridge@0.1.0:         return isFiniteVec4V(q) & (BAllEqTTTT(con) == 1);
+warning: vibe-land-physx-bridge@0.1.0:                ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+warning: vibe-land-physx-bridge@0.1.0:                                 &&
+warning: vibe-land-physx-bridge@0.1.0: /private/tmp/vehicle-drive-mask-sdk22/include/physx/foundation/PxVecQuat.h:335:9: note: cast one or both operands to int to silence this warning
+warning: vibe-land-physx-bridge@0.1.0: /private/tmp/vehicle-drive-mask-sdk22/include/physx/foundation/PxVecQuat.h:343:9: warning: use of bitwise '&' with boolean operands [-Wbitwise-instead-of-logical]
+warning: vibe-land-physx-bridge@0.1.0:         return isFiniteVec4V(q) & (BAllEqTTTT(con) == 1);
+warning: vibe-land-physx-bridge@0.1.0:                ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+warning: vibe-land-physx-bridge@0.1.0:                                 &&
+warning: vibe-land-physx-bridge@0.1.0: /private/tmp/vehicle-drive-mask-sdk22/include/physx/foundation/PxVecQuat.h:343:9: note: cast one or both operands to int to silence this warning
+warning: vibe-land-physx-bridge@0.1.0: In file included from /private/tmp/vehicle-drive-mask-sdk22/destruction/vehicle/PxNativeVehicle.cpp:2:
+warning: vibe-land-physx-bridge@0.1.0: In file included from /private/tmp/vehicle-drive-mask-sdk22/destruction/vehicle/PxNativeVehicle.h:14:
+warning: vibe-land-physx-bridge@0.1.0: In file included from /private/tmp/vehicle-drive-mask-sdk22/include/physx/PxPhysicsAPI.h:98:
+warning: vibe-land-physx-bridge@0.1.0: /private/tmp/vehicle-drive-mask-sdk22/include/physx/foundation/PxVecTransform.h:135:10: warning: use of bitwise '&' with boolean operands [-Wbitwise-instead-of-logical]
+warning: vibe-land-physx-bridge@0.1.0:                 return isFiniteVec3V(p) & isFiniteQuatV(q) & isValidQuatV(q);
+warning: vibe-land-physx-bridge@0.1.0:                        ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+warning: vibe-land-physx-bridge@0.1.0:                                                            &&
+warning: vibe-land-physx-bridge@0.1.0: /private/tmp/vehicle-drive-mask-sdk22/include/physx/foundation/PxVecTransform.h:135:10: note: cast one or both operands to int to silence this warning
+warning: vibe-land-physx-bridge@0.1.0: /private/tmp/vehicle-drive-mask-sdk22/include/physx/foundation/PxVecTransform.h:135:10: warning: use of bitwise '&' with boolean operands [-Wbitwise-instead-of-logical]
+warning: vibe-land-physx-bridge@0.1.0:                 return isFiniteVec3V(p) & isFiniteQuatV(q) & isValidQuatV(q);
+warning: vibe-land-physx-bridge@0.1.0:                        ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+warning: vibe-land-physx-bridge@0.1.0:                                         &&
+warning: vibe-land-physx-bridge@0.1.0: /private/tmp/vehicle-drive-mask-sdk22/include/physx/foundation/PxVecTransform.h:135:10: note: cast one or both operands to int to silence this warning
+warning: vibe-land-physx-bridge@0.1.0: /private/tmp/vehicle-drive-mask-sdk22/include/physx/foundation/PxVecTransform.h:146:10: warning: use of bitwise '&' with boolean operands [-Wbitwise-instead-of-logical]
+warning: vibe-land-physx-bridge@0.1.0:                 return isFinite() & isSaneQuatV(q);
+warning: vibe-land-physx-bridge@0.1.0:                        ^~~~~~~~~~~~~~~~~~~~~~~~~~~
+warning: vibe-land-physx-bridge@0.1.0:                                   &&
+warning: vibe-land-physx-bridge@0.1.0: /private/tmp/vehicle-drive-mask-sdk22/include/physx/foundation/PxVecTransform.h:146:10: note: cast one or both operands to int to silence this warning
+warning: vibe-land-physx-bridge@0.1.0: /private/tmp/vehicle-drive-mask-sdk22/include/physx/foundation/PxVecTransform.h:155:10: warning: use of bitwise '&' with boolean operands [-Wbitwise-instead-of-logical]
+warning: vibe-land-physx-bridge@0.1.0:                 return isFiniteVec3V(p) & isFiniteQuatV(q);
+warning: vibe-land-physx-bridge@0.1.0:                        ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+warning: vibe-land-physx-bridge@0.1.0:                                         &&
+warning: vibe-land-physx-bridge@0.1.0: /private/tmp/vehicle-drive-mask-sdk22/include/physx/foundation/PxVecTransform.h:155:10: note: cast one or both operands to int to silence this warning
+warning: vibe-land-physx-bridge@0.1.0: In file included from /private/tmp/vehicle-drive-mask-sdk22/snippets/snippetvehiclecommon/base/Base.cpp:29:
+warning: vibe-land-physx-bridge@0.1.0: In file included from /private/tmp/vehicle-drive-mask-sdk22/snippets/snippetvehiclecommon/base/Base.h:31:
+warning: vibe-land-physx-bridge@0.1.0: In file included from /private/tmp/vehicle-drive-mask-sdk22/include/physx/vehicle/PxVehicleAPI.h:40:
+warning: vibe-land-physx-bridge@0.1.0: In file included from /private/tmp/vehicle-drive-mask-sdk22/include/physx/vehicle/braking/PxVehicleBrakingFunctions.h:37:
+warning: vibe-land-physx-bridge@0.1.0: /private/tmp/vehicle-drive-mask-sdk22/include/physx/vehicle/braking/../drivetrain/PxVehicleDrivetrainParams.h:960:10: warning: variable 'count' set but not used [-Wunused-but-set-variable]
+warning: vibe-land-physx-bridge@0.1.0:                         PxU32 count = 0;
+warning: vibe-land-physx-bridge@0.1.0:                               ^
+warning: vibe-land-physx-bridge@0.1.0: In file included from /private/tmp/vehicle-drive-mask-sdk22/snippets/snippetvehiclecommon/directdrivetrain/DirectDrivetrain.cpp:29:
+warning: vibe-land-physx-bridge@0.1.0: In file included from /private/tmp/vehicle-drive-mask-sdk22/snippets/snippetvehiclecommon/directdrivetrain/DirectDrivetrain.h:31:
+warning: vibe-land-physx-bridge@0.1.0: In file included from /private/tmp/vehicle-drive-mask-sdk22/include/physx/vehicle/PxVehicleAPI.h:40:
+warning: vibe-land-physx-bridge@0.1.0: In file included from /private/tmp/vehicle-drive-mask-sdk22/include/physx/vehicle/braking/PxVehicleBrakingFunctions.h:37:
+warning: vibe-land-physx-bridge@0.1.0: /private/tmp/vehicle-drive-mask-sdk22/include/physx/vehicle/braking/../drivetrain/PxVehicleDrivetrainParams.h:960:10: warning: variable 'count' set but not used [-Wunused-but-set-variable]
+warning: vibe-land-physx-bridge@0.1.0:                         PxU32 count = 0;
+warning: vibe-land-physx-bridge@0.1.0:                               ^
+warning: vibe-land-physx-bridge@0.1.0: In file included from /private/tmp/vehicle-drive-mask-sdk22/snippets/snippetvehiclecommon/physxintegration/PhysXIntegration.cpp:29:
+warning: vibe-land-physx-bridge@0.1.0: In file included from /private/tmp/vehicle-drive-mask-sdk22/snippets/snippetvehiclecommon/physxintegration/PhysXIntegration.h:32:
+warning: vibe-land-physx-bridge@0.1.0: In file included from /private/tmp/vehicle-drive-mask-sdk22/include/physx/vehicle/PxVehicleAPI.h:40:
+warning: vibe-land-physx-bridge@0.1.0: In file included from /private/tmp/vehicle-drive-mask-sdk22/include/physx/vehicle/braking/PxVehicleBrakingFunctions.h:37:
+warning: vibe-land-physx-bridge@0.1.0: /private/tmp/vehicle-drive-mask-sdk22/include/physx/vehicle/braking/../drivetrain/PxVehicleDrivetrainParams.h:960:10: warning: variable 'count' set but not used [-Wunused-but-set-variable]
+warning: vibe-land-physx-bridge@0.1.0:                         PxU32 count = 0;
+warning: vibe-land-physx-bridge@0.1.0:                               ^
+warning: vibe-land-physx-bridge@0.1.0: In file included from src/physx_bridge.cc:3:
+warning: vibe-land-physx-bridge@0.1.0: In file included from /private/tmp/vehicle-drive-mask-sdk22/include/physx/PxPhysicsAPI.h:96:
+warning: vibe-land-physx-bridge@0.1.0: In file included from /private/tmp/vehicle-drive-mask-sdk22/include/physx/foundation/PxVecMath.h:1352:
+warning: vibe-land-physx-bridge@0.1.0: /private/tmp/vehicle-drive-mask-sdk22/include/physx/foundation/PxVecQuat.h:335:9: warning: use of bitwise '&' with boolean operands [-Wbitwise-instead-of-logical]
+warning: vibe-land-physx-bridge@0.1.0:         return isFiniteVec4V(q) & (BAllEqTTTT(con) == 1);
+warning: vibe-land-physx-bridge@0.1.0:                ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+warning: vibe-land-physx-bridge@0.1.0:                                 &&
+warning: vibe-land-physx-bridge@0.1.0: /private/tmp/vehicle-drive-mask-sdk22/include/physx/foundation/PxVecQuat.h:335:9: note: cast one or both operands to int to silence this warning
+warning: vibe-land-physx-bridge@0.1.0: /private/tmp/vehicle-drive-mask-sdk22/include/physx/foundation/PxVecQuat.h:343:9: warning: use of bitwise '&' with boolean operands [-Wbitwise-instead-of-logical]
+warning: vibe-land-physx-bridge@0.1.0:         return isFiniteVec4V(q) & (BAllEqTTTT(con) == 1);
+warning: vibe-land-physx-bridge@0.1.0:                ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+warning: vibe-land-physx-bridge@0.1.0:                                 &&
+warning: vibe-land-physx-bridge@0.1.0: /private/tmp/vehicle-drive-mask-sdk22/include/physx/foundation/PxVecQuat.h:343:9: note: cast one or both operands to int to silence this warning
+warning: vibe-land-physx-bridge@0.1.0: In file included from src/physx_bridge.cc:3:
+warning: vibe-land-physx-bridge@0.1.0: In file included from /private/tmp/vehicle-drive-mask-sdk22/include/physx/PxPhysicsAPI.h:98:
+warning: vibe-land-physx-bridge@0.1.0: /private/tmp/vehicle-drive-mask-sdk22/include/physx/foundation/PxVecTransform.h:135:10: warning: use of bitwise '&' with boolean operands [-Wbitwise-instead-of-logical]
+warning: vibe-land-physx-bridge@0.1.0:                 return isFiniteVec3V(p) & isFiniteQuatV(q) & isValidQuatV(q);
+warning: vibe-land-physx-bridge@0.1.0:                        ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+warning: vibe-land-physx-bridge@0.1.0:                                                            &&
+warning: vibe-land-physx-bridge@0.1.0: /private/tmp/vehicle-drive-mask-sdk22/include/physx/foundation/PxVecTransform.h:135:10: note: cast one or both operands to int to silence this warning
+warning: vibe-land-physx-bridge@0.1.0: /private/tmp/vehicle-drive-mask-sdk22/include/physx/foundation/PxVecTransform.h:135:10: warning: use of bitwise '&' with boolean operands [-Wbitwise-instead-of-logical]
+warning: vibe-land-physx-bridge@0.1.0:                 return isFiniteVec3V(p) & isFiniteQuatV(q) & isValidQuatV(q);
+warning: vibe-land-physx-bridge@0.1.0:                        ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+warning: vibe-land-physx-bridge@0.1.0:                                         &&
+warning: vibe-land-physx-bridge@0.1.0: /private/tmp/vehicle-drive-mask-sdk22/include/physx/foundation/PxVecTransform.h:135:10: note: cast one or both operands to int to silence this warning
+warning: vibe-land-physx-bridge@0.1.0: /private/tmp/vehicle-drive-mask-sdk22/include/physx/foundation/PxVecTransform.h:146:10: warning: use of bitwise '&' with boolean operands [-Wbitwise-instead-of-logical]
+warning: vibe-land-physx-bridge@0.1.0:                 return isFinite() & isSaneQuatV(q);
+warning: vibe-land-physx-bridge@0.1.0:                        ^~~~~~~~~~~~~~~~~~~~~~~~~~~
+warning: vibe-land-physx-bridge@0.1.0:                                   &&
+warning: vibe-land-physx-bridge@0.1.0: /private/tmp/vehicle-drive-mask-sdk22/include/physx/foundation/PxVecTransform.h:146:10: note: cast one or both operands to int to silence this warning
+warning: vibe-land-physx-bridge@0.1.0: /private/tmp/vehicle-drive-mask-sdk22/include/physx/foundation/PxVecTransform.h:155:10: warning: use of bitwise '&' with boolean operands [-Wbitwise-instead-of-logical]
+warning: vibe-land-physx-bridge@0.1.0:                 return isFiniteVec3V(p) & isFiniteQuatV(q);
+warning: vibe-land-physx-bridge@0.1.0:                        ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+warning: vibe-land-physx-bridge@0.1.0:                                         &&
+warning: vibe-land-physx-bridge@0.1.0: /private/tmp/vehicle-drive-mask-sdk22/include/physx/foundation/PxVecTransform.h:155:10: note: cast one or both operands to int to silence this warning
+warning: vibe-land-physx-bridge@0.1.0: In file included from src/native_destruction.cc:1:
+warning: vibe-land-physx-bridge@0.1.0: In file included from include/native_state.h:9:
+warning: vibe-land-physx-bridge@0.1.0: In file included from /private/tmp/vehicle-drive-mask-sdk22/include/physx/PxPhysicsAPI.h:96:
+warning: vibe-land-physx-bridge@0.1.0: In file included from /private/tmp/vehicle-drive-mask-sdk22/include/physx/foundation/PxVecMath.h:1352:
+warning: vibe-land-physx-bridge@0.1.0: /private/tmp/vehicle-drive-mask-sdk22/include/physx/foundation/PxVecQuat.h:335:9: warning: use of bitwise '&' with boolean operands [-Wbitwise-instead-of-logical]
+warning: vibe-land-physx-bridge@0.1.0:         return isFiniteVec4V(q) & (BAllEqTTTT(con) == 1);
+warning: vibe-land-physx-bridge@0.1.0:                ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+warning: vibe-land-physx-bridge@0.1.0:                                 &&
+warning: vibe-land-physx-bridge@0.1.0: /private/tmp/vehicle-drive-mask-sdk22/include/physx/foundation/PxVecQuat.h:335:9: note: cast one or both operands to int to silence this warning
+warning: vibe-land-physx-bridge@0.1.0: /private/tmp/vehicle-drive-mask-sdk22/include/physx/foundation/PxVecQuat.h:343:9: warning: use of bitwise '&' with boolean operands [-Wbitwise-instead-of-logical]
+warning: vibe-land-physx-bridge@0.1.0:         return isFiniteVec4V(q) & (BAllEqTTTT(con) == 1);
+warning: vibe-land-physx-bridge@0.1.0:                ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+warning: vibe-land-physx-bridge@0.1.0:                                 &&
+warning: vibe-land-physx-bridge@0.1.0: /private/tmp/vehicle-drive-mask-sdk22/include/physx/foundation/PxVecQuat.h:343:9: note: cast one or both operands to int to silence this warning
+warning: vibe-land-physx-bridge@0.1.0: In file included from src/native_destruction.cc:1:
+warning: vibe-land-physx-bridge@0.1.0: In file included from include/native_state.h:9:
+warning: vibe-land-physx-bridge@0.1.0: In file included from /private/tmp/vehicle-drive-mask-sdk22/include/physx/PxPhysicsAPI.h:98:
+warning: vibe-land-physx-bridge@0.1.0: /private/tmp/vehicle-drive-mask-sdk22/include/physx/foundation/PxVecTransform.h:135:10: warning: use of bitwise '&' with boolean operands [-Wbitwise-instead-of-logical]
+warning: vibe-land-physx-bridge@0.1.0:                 return isFiniteVec3V(p) & isFiniteQuatV(q) & isValidQuatV(q);
+warning: vibe-land-physx-bridge@0.1.0:                        ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+warning: vibe-land-physx-bridge@0.1.0:                                                            &&
+warning: vibe-land-physx-bridge@0.1.0: /private/tmp/vehicle-drive-mask-sdk22/include/physx/foundation/PxVecTransform.h:135:10: note: cast one or both operands to int to silence this warning
+warning: vibe-land-physx-bridge@0.1.0: /private/tmp/vehicle-drive-mask-sdk22/include/physx/foundation/PxVecTransform.h:135:10: warning: use of bitwise '&' with boolean operands [-Wbitwise-instead-of-logical]
+warning: vibe-land-physx-bridge@0.1.0:                 return isFiniteVec3V(p) & isFiniteQuatV(q) & isValidQuatV(q);
+warning: vibe-land-physx-bridge@0.1.0:                        ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+warning: vibe-land-physx-bridge@0.1.0:                                         &&
+warning: vibe-land-physx-bridge@0.1.0: /private/tmp/vehicle-drive-mask-sdk22/include/physx/foundation/PxVecTransform.h:135:10: note: cast one or both operands to int to silence this warning
+warning: vibe-land-physx-bridge@0.1.0: /private/tmp/vehicle-drive-mask-sdk22/include/physx/foundation/PxVecTransform.h:146:10: warning: use of bitwise '&' with boolean operands [-Wbitwise-instead-of-logical]
+warning: vibe-land-physx-bridge@0.1.0:                 return isFinite() & isSaneQuatV(q);
+warning: vibe-land-physx-bridge@0.1.0:                        ^~~~~~~~~~~~~~~~~~~~~~~~~~~
+warning: vibe-land-physx-bridge@0.1.0:                                   &&
+warning: vibe-land-physx-bridge@0.1.0: /private/tmp/vehicle-drive-mask-sdk22/include/physx/foundation/PxVecTransform.h:146:10: note: cast one or both operands to int to silence this warning
+warning: vibe-land-physx-bridge@0.1.0: /private/tmp/vehicle-drive-mask-sdk22/include/physx/foundation/PxVecTransform.h:155:10: warning: use of bitwise '&' with boolean operands [-Wbitwise-instead-of-logical]
+warning: vibe-land-physx-bridge@0.1.0:                 return isFiniteVec3V(p) & isFiniteQuatV(q);
+warning: vibe-land-physx-bridge@0.1.0:                        ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+warning: vibe-land-physx-bridge@0.1.0:                                         &&
+warning: vibe-land-physx-bridge@0.1.0: /private/tmp/vehicle-drive-mask-sdk22/include/physx/foundation/PxVecTransform.h:155:10: note: cast one or both operands to int to silence this warning
+warning: vibe-land-physx-bridge@0.1.0: In file included from src/native_destruction.cc:1:
+warning: vibe-land-physx-bridge@0.1.0: In file included from include/native_state.h:9:
+warning: vibe-land-physx-bridge@0.1.0: In file included from /private/tmp/vehicle-drive-mask-sdk22/include/physx/PxPhysicsAPI.h:129:
+warning: vibe-land-physx-bridge@0.1.0: In file included from /private/tmp/vehicle-drive-mask-sdk22/include/physx/geometry/PxGeometryHelpers.h:43:
+warning: vibe-land-physx-bridge@0.1.0: In file included from /private/tmp/vehicle-drive-mask-sdk22/include/physx/geometry/PxParticleSystemGeometry.h:35:
+warning: vibe-land-physx-bridge@0.1.0: In file included from /private/tmp/vehicle-drive-mask-sdk22/include/physx/PxParticleSystem.h:33:
+warning: vibe-land-physx-bridge@0.1.0: In file included from /private/tmp/vehicle-drive-mask-sdk22/include/physx/PxPBDParticleSystem.h:37:
+warning: vibe-land-physx-bridge@0.1.0: /private/tmp/vehicle-drive-mask-sdk22/include/physx/PxFiltering.h:365:1: warning: 'PxFilterData' defined as a struct here but previously declared as a class; this is valid, but may result in linker errors under the Microsoft C++ ABI [-Wmismatched-tags]
+warning: vibe-land-physx-bridge@0.1.0: struct PxFilterData
+warning: vibe-land-physx-bridge@0.1.0: ^
+warning: vibe-land-physx-bridge@0.1.0: include/native_destruction.h:9:1: note: did you mean struct here?
+warning: vibe-land-physx-bridge@0.1.0: class PxFilterData;
+warning: vibe-land-physx-bridge@0.1.0: ^~~~~
+warning: vibe-land-physx-bridge@0.1.0: struct
+warning: vibe-land-physx-bridge@0.1.0: In file included from src/native_observation.cc:1:
+warning: vibe-land-physx-bridge@0.1.0: In file included from include/native_state.h:9:
+warning: vibe-land-physx-bridge@0.1.0: In file included from /private/tmp/vehicle-drive-mask-sdk22/include/physx/PxPhysicsAPI.h:96:
+warning: vibe-land-physx-bridge@0.1.0: In file included from /private/tmp/vehicle-drive-mask-sdk22/include/physx/foundation/PxVecMath.h:1352:
+warning: vibe-land-physx-bridge@0.1.0: /private/tmp/vehicle-drive-mask-sdk22/include/physx/foundation/PxVecQuat.h:335:9: warning: use of bitwise '&' with boolean operands [-Wbitwise-instead-of-logical]
+warning: vibe-land-physx-bridge@0.1.0:         return isFiniteVec4V(q) & (BAllEqTTTT(con) == 1);
+warning: vibe-land-physx-bridge@0.1.0:                ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+warning: vibe-land-physx-bridge@0.1.0:                                 &&
+warning: vibe-land-physx-bridge@0.1.0: /private/tmp/vehicle-drive-mask-sdk22/include/physx/foundation/PxVecQuat.h:335:9: note: cast one or both operands to int to silence this warning
+warning: vibe-land-physx-bridge@0.1.0: /private/tmp/vehicle-drive-mask-sdk22/include/physx/foundation/PxVecQuat.h:343:9: warning: use of bitwise '&' with boolean operands [-Wbitwise-instead-of-logical]
+warning: vibe-land-physx-bridge@0.1.0:         return isFiniteVec4V(q) & (BAllEqTTTT(con) == 1);
+warning: vibe-land-physx-bridge@0.1.0:                ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+warning: vibe-land-physx-bridge@0.1.0:                                 &&
+warning: vibe-land-physx-bridge@0.1.0: /private/tmp/vehicle-drive-mask-sdk22/include/physx/foundation/PxVecQuat.h:343:9: note: cast one or both operands to int to silence this warning
+warning: vibe-land-physx-bridge@0.1.0: In file included from src/native_observation.cc:1:
+warning: vibe-land-physx-bridge@0.1.0: In file included from include/native_state.h:9:
+warning: vibe-land-physx-bridge@0.1.0: In file included from /private/tmp/vehicle-drive-mask-sdk22/include/physx/PxPhysicsAPI.h:98:
+warning: vibe-land-physx-bridge@0.1.0: /private/tmp/vehicle-drive-mask-sdk22/include/physx/foundation/PxVecTransform.h:135:10: warning: use of bitwise '&' with boolean operands [-Wbitwise-instead-of-logical]
+warning: vibe-land-physx-bridge@0.1.0:                 return isFiniteVec3V(p) & isFiniteQuatV(q) & isValidQuatV(q);
+warning: vibe-land-physx-bridge@0.1.0:                        ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+warning: vibe-land-physx-bridge@0.1.0:                                                            &&
+warning: vibe-land-physx-bridge@0.1.0: /private/tmp/vehicle-drive-mask-sdk22/include/physx/foundation/PxVecTransform.h:135:10: note: cast one or both operands to int to silence this warning
+warning: vibe-land-physx-bridge@0.1.0: /private/tmp/vehicle-drive-mask-sdk22/include/physx/foundation/PxVecTransform.h:135:10: warning: use of bitwise '&' with boolean operands [-Wbitwise-instead-of-logical]
+warning: vibe-land-physx-bridge@0.1.0:                 return isFiniteVec3V(p) & isFiniteQuatV(q) & isValidQuatV(q);
+warning: vibe-land-physx-bridge@0.1.0:                        ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+warning: vibe-land-physx-bridge@0.1.0:                                         &&
+warning: vibe-land-physx-bridge@0.1.0: /private/tmp/vehicle-drive-mask-sdk22/include/physx/foundation/PxVecTransform.h:135:10: note: cast one or both operands to int to silence this warning
+warning: vibe-land-physx-bridge@0.1.0: /private/tmp/vehicle-drive-mask-sdk22/include/physx/foundation/PxVecTransform.h:146:10: warning: use of bitwise '&' with boolean operands [-Wbitwise-instead-of-logical]
+warning: vibe-land-physx-bridge@0.1.0:                 return isFinite() & isSaneQuatV(q);
+warning: vibe-land-physx-bridge@0.1.0:                        ^~~~~~~~~~~~~~~~~~~~~~~~~~~
+warning: vibe-land-physx-bridge@0.1.0:                                   &&
+warning: vibe-land-physx-bridge@0.1.0: /private/tmp/vehicle-drive-mask-sdk22/include/physx/foundation/PxVecTransform.h:146:10: note: cast one or both operands to int to silence this warning
+warning: vibe-land-physx-bridge@0.1.0: /private/tmp/vehicle-drive-mask-sdk22/include/physx/foundation/PxVecTransform.h:155:10: warning: use of bitwise '&' with boolean operands [-Wbitwise-instead-of-logical]
+warning: vibe-land-physx-bridge@0.1.0:                 return isFiniteVec3V(p) & isFiniteQuatV(q);
+warning: vibe-land-physx-bridge@0.1.0:                        ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+warning: vibe-land-physx-bridge@0.1.0:                                         &&
+warning: vibe-land-physx-bridge@0.1.0: /private/tmp/vehicle-drive-mask-sdk22/include/physx/foundation/PxVecTransform.h:155:10: note: cast one or both operands to int to silence this warning
+warning: vibe-land-physx-bridge@0.1.0: In file included from src/native_observation.cc:1:
+warning: vibe-land-physx-bridge@0.1.0: In file included from include/native_state.h:9:
+warning: vibe-land-physx-bridge@0.1.0: In file included from /private/tmp/vehicle-drive-mask-sdk22/include/physx/PxPhysicsAPI.h:129:
+warning: vibe-land-physx-bridge@0.1.0: In file included from /private/tmp/vehicle-drive-mask-sdk22/include/physx/geometry/PxGeometryHelpers.h:43:
+warning: vibe-land-physx-bridge@0.1.0: In file included from /private/tmp/vehicle-drive-mask-sdk22/include/physx/geometry/PxParticleSystemGeometry.h:35:
+warning: vibe-land-physx-bridge@0.1.0: In file included from /private/tmp/vehicle-drive-mask-sdk22/include/physx/PxParticleSystem.h:33:
+warning: vibe-land-physx-bridge@0.1.0: In file included from /private/tmp/vehicle-drive-mask-sdk22/include/physx/PxPBDParticleSystem.h:37:
+warning: vibe-land-physx-bridge@0.1.0: /private/tmp/vehicle-drive-mask-sdk22/include/physx/PxFiltering.h:365:1: warning: 'PxFilterData' defined as a struct here but previously declared as a class; this is valid, but may result in linker errors under the Microsoft C++ ABI [-Wmismatched-tags]
+warning: vibe-land-physx-bridge@0.1.0: struct PxFilterData
+warning: vibe-land-physx-bridge@0.1.0: ^
+warning: vibe-land-physx-bridge@0.1.0: include/native_destruction.h:9:1: note: did you mean struct here?
+warning: vibe-land-physx-bridge@0.1.0: class PxFilterData;
+warning: vibe-land-physx-bridge@0.1.0: ^~~~~
+warning: vibe-land-physx-bridge@0.1.0: struct
+warning: vibe-land-physx-bridge@0.1.0: In file included from /private/tmp/vehicle-drive-mask-sdk22/destruction/vehicle/PxNativeVehicle.cpp:2:
+warning: vibe-land-physx-bridge@0.1.0: In file included from /private/tmp/vehicle-drive-mask-sdk22/destruction/vehicle/PxNativeVehicle.h:14:
+warning: vibe-land-physx-bridge@0.1.0: In file included from /private/tmp/vehicle-drive-mask-sdk22/include/physx/PxPhysicsAPI.h:215:
+warning: vibe-land-physx-bridge@0.1.0: In file included from /private/tmp/vehicle-drive-mask-sdk22/include/physx/vehicle/PxVehicleAPI.h:40:
+warning: vibe-land-physx-bridge@0.1.0: In file included from /private/tmp/vehicle-drive-mask-sdk22/include/physx/vehicle/braking/PxVehicleBrakingFunctions.h:37:
+warning: vibe-land-physx-bridge@0.1.0: /private/tmp/vehicle-drive-mask-sdk22/include/physx/vehicle/braking/../drivetrain/PxVehicleDrivetrainParams.h:960:10: warning: variable 'count' set but not used [-Wunused-but-set-variable]
+warning: vibe-land-physx-bridge@0.1.0:                         PxU32 count = 0;
+warning: vibe-land-physx-bridge@0.1.0:                               ^
+warning: vibe-land-physx-bridge@0.1.0: 1 warning generated.
+warning: vibe-land-physx-bridge@0.1.0: 1 warning generated.
+warning: vibe-land-physx-bridge@0.1.0: 1 warning generated.
+warning: vibe-land-physx-bridge@0.1.0: In file included from src/physx_bridge.cc:3:
+warning: vibe-land-physx-bridge@0.1.0: In file included from /private/tmp/vehicle-drive-mask-sdk22/include/physx/PxPhysicsAPI.h:215:
+warning: vibe-land-physx-bridge@0.1.0: In file included from /private/tmp/vehicle-drive-mask-sdk22/include/physx/vehicle/PxVehicleAPI.h:40:
+warning: vibe-land-physx-bridge@0.1.0: In file included from /private/tmp/vehicle-drive-mask-sdk22/include/physx/vehicle/braking/PxVehicleBrakingFunctions.h:37:
+warning: vibe-land-physx-bridge@0.1.0: /private/tmp/vehicle-drive-mask-sdk22/include/physx/vehicle/braking/../drivetrain/PxVehicleDrivetrainParams.h:960:10: warning: variable 'count' set but not used [-Wunused-but-set-variable]
+warning: vibe-land-physx-bridge@0.1.0:                         PxU32 count = 0;
+warning: vibe-land-physx-bridge@0.1.0:                               ^
+warning: vibe-land-physx-bridge@0.1.0: In file included from src/physx_bridge.cc:13:
+warning: vibe-land-physx-bridge@0.1.0: include/native_destruction.h:9:1: warning: class 'PxFilterData' was previously declared as a struct; this is valid, but may result in linker errors under the Microsoft C++ ABI [-Wmismatched-tags]
+warning: vibe-land-physx-bridge@0.1.0: class PxFilterData;
+warning: vibe-land-physx-bridge@0.1.0: ^
+warning: vibe-land-physx-bridge@0.1.0: /private/tmp/vehicle-drive-mask-sdk22/include/physx/PxFiltering.h:365:8: note: previous use is here
+warning: vibe-land-physx-bridge@0.1.0: struct PxFilterData
+warning: vibe-land-physx-bridge@0.1.0:        ^
+warning: vibe-land-physx-bridge@0.1.0: include/native_destruction.h:9:1: note: did you mean struct here?
+warning: vibe-land-physx-bridge@0.1.0: class PxFilterData;
+warning: vibe-land-physx-bridge@0.1.0: ^~~~~
+warning: vibe-land-physx-bridge@0.1.0: struct
+warning: vibe-land-physx-bridge@0.1.0: In file included from src/native_destruction.cc:1:
+warning: vibe-land-physx-bridge@0.1.0: In file included from include/native_state.h:9:
+warning: vibe-land-physx-bridge@0.1.0: In file included from /private/tmp/vehicle-drive-mask-sdk22/include/physx/PxPhysicsAPI.h:215:
+warning: vibe-land-physx-bridge@0.1.0: In file included from /private/tmp/vehicle-drive-mask-sdk22/include/physx/vehicle/PxVehicleAPI.h:40:
+warning: vibe-land-physx-bridge@0.1.0: In file included from /private/tmp/vehicle-drive-mask-sdk22/include/physx/vehicle/braking/PxVehicleBrakingFunctions.h:37:
+warning: vibe-land-physx-bridge@0.1.0: /private/tmp/vehicle-drive-mask-sdk22/include/physx/vehicle/braking/../drivetrain/PxVehicleDrivetrainParams.h:960:10: warning: variable 'count' set but not used [-Wunused-but-set-variable]
+warning: vibe-land-physx-bridge@0.1.0:                         PxU32 count = 0;
+warning: vibe-land-physx-bridge@0.1.0:                               ^
+warning: vibe-land-physx-bridge@0.1.0: In file included from src/native_observation.cc:1:
+warning: vibe-land-physx-bridge@0.1.0: In file included from include/native_state.h:9:
+warning: vibe-land-physx-bridge@0.1.0: In file included from /private/tmp/vehicle-drive-mask-sdk22/include/physx/PxPhysicsAPI.h:215:
+warning: vibe-land-physx-bridge@0.1.0: In file included from /private/tmp/vehicle-drive-mask-sdk22/include/physx/vehicle/PxVehicleAPI.h:40:
+warning: vibe-land-physx-bridge@0.1.0: In file included from /private/tmp/vehicle-drive-mask-sdk22/include/physx/vehicle/braking/PxVehicleBrakingFunctions.h:37:
+warning: vibe-land-physx-bridge@0.1.0: /private/tmp/vehicle-drive-mask-sdk22/include/physx/vehicle/braking/../drivetrain/PxVehicleDrivetrainParams.h:960:10: warning: variable 'count' set but not used [-Wunused-but-set-variable]
+warning: vibe-land-physx-bridge@0.1.0:                         PxU32 count = 0;
+warning: vibe-land-physx-bridge@0.1.0:                               ^
+warning: vibe-land-physx-bridge@0.1.0: 7 warnings generated.
+warning: vibe-land-physx-bridge@0.1.0: src/physx_bridge.cc:1017:40: warning: unused parameter 'shape0' [-Wunused-parameter]
+warning: vibe-land-physx-bridge@0.1.0:                               PxShape *shape0, PxShape *shape1,
+warning: vibe-land-physx-bridge@0.1.0:                                        ^
+warning: vibe-land-physx-bridge@0.1.0: src/physx_bridge.cc:1017:57: warning: unused parameter 'shape1' [-Wunused-parameter]
+warning: vibe-land-physx-bridge@0.1.0:                               PxShape *shape0, PxShape *shape1,
+warning: vibe-land-physx-bridge@0.1.0:                                                         ^
+warning: vibe-land-physx-bridge@0.1.0: src/physx_bridge.cc:1023:54: warning: unused parameter 'pre' [-Wunused-parameter]
+warning: vibe-land-physx-bridge@0.1.0:                               const PairPrecomputed *pre = nullptr,
+warning: vibe-land-physx-bridge@0.1.0:                                                      ^
+warning: vibe-land-physx-bridge@0.1.0: src/physx_bridge.cc:314:6: warning: unused function 'contact_fastpath_enabled' [-Wunused-function]
+warning: vibe-land-physx-bridge@0.1.0: bool contact_fastpath_enabled() {
+warning: vibe-land-physx-bridge@0.1.0:      ^
+warning: vibe-land-physx-bridge@0.1.0: src/physx_bridge.cc:382:6: warning: unused function 'bondless_hoist_enabled' [-Wunused-function]
+warning: vibe-land-physx-bridge@0.1.0: bool bondless_hoist_enabled() {
+warning: vibe-land-physx-bridge@0.1.0:      ^
+warning: vibe-land-physx-bridge@0.1.0: src/physx_bridge.cc:415:6: warning: unused function 'frozen_hoist_verify' [-Wunused-function]
+warning: vibe-land-physx-bridge@0.1.0: bool frozen_hoist_verify() {
+warning: vibe-land-physx-bridge@0.1.0:      ^
+warning: vibe-land-physx-bridge@0.1.0: src/physx_bridge.cc:423:6: warning: unused function 'frozen_hoist_enabled' [-Wunused-function]
+warning: vibe-land-physx-bridge@0.1.0: bool frozen_hoist_enabled() {
+warning: vibe-land-physx-bridge@0.1.0:      ^
+warning: vibe-land-physx-bridge@0.1.0: 8 warnings generated.
+warning: vibe-land-physx-bridge@0.1.0: 15 warnings generated.
+warning: vibe-land-physx-bridge@0.1.0: 8 warnings generated.
+warning: vibe-land-physx-bridge@0.1.0: /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/ar: illegal option -- D
+warning: vibe-land-physx-bridge@0.1.0: usage:  ar -d [-TLsv] archive file ...
+warning: vibe-land-physx-bridge@0.1.0: 	ar -m [-TLsv] archive file ...
+warning: vibe-land-physx-bridge@0.1.0: 	ar -m [-abiTLsv] position archive file ...
+warning: vibe-land-physx-bridge@0.1.0: 	ar -p [-TLsv] archive [file ...]
+warning: vibe-land-physx-bridge@0.1.0: 	ar -q [-cTLsv] archive file ...
+warning: vibe-land-physx-bridge@0.1.0: 	ar -r [-cuTLsv] archive file ...
+warning: vibe-land-physx-bridge@0.1.0: 	ar -r [-abciuTLsv] position archive file ...
+warning: vibe-land-physx-bridge@0.1.0: 	ar -t [-TLsv] archive [file ...]
+warning: vibe-land-physx-bridge@0.1.0: 	ar -x [-ouTLsv] archive [file ...]
+warning: multiple methods are never used
+    --> physx-bridge/src/lib.rs:2595:12
+     |
+1890 | #[cxx::bridge(namespace = "vibe_land::physx_bridge")]
+     | ----------------------------------------------------- methods in this implementation
+...
+2595 |         fn create_destructible(
+     |            ^^^^^^^^^^^^^^^^^^^
+...
+2605 |         fn clear_destructibles(self: Pin<&mut World>) -> Result<()>;
+     |            ^^^^^^^^^^^^^^^^^^^
+2606 |         fn destruction_tick(self: Pin<&mut World>, dt: f32, gravity: FfiVec3) -> Result<()>;
+     |            ^^^^^^^^^^^^^^^^
+2607 |         fn queue_chunk_damage(
+     |            ^^^^^^^^^^^^^^^^^^
+...
+2614 |         fn apply_destruction_explosion(
+     |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+2620 |         fn apply_destruction_blast(
+     |            ^^^^^^^^^^^^^^^^^^^^^^^
+...
+2628 |         fn take_broken_bonds(self: Pin<&mut World>) -> Result<Vec<FfiBrokenBondEvent>>;
+     |            ^^^^^^^^^^^^^^^^^
+2629 |         fn take_chunk_migrations(self: Pin<&mut World>) -> Result<Vec<FfiChunkMigrationEvent>>;
+     |            ^^^^^^^^^^^^^^^^^^^^^
+2630 |         fn take_island_events(self: Pin<&mut World>) -> Result<Vec<FfiIslandBodyEvent>>;
+     |            ^^^^^^^^^^^^^^^^^^
+2631 |         fn chunk_body_snapshots(self: &World) -> Result<&[FfiChunkBodySnapshot]>;
+2632 |         fn sleep_chunk_body(self: Pin<&mut World>, entity_id: u32) -> Result<()>;
+     |            ^^^^^^^^^^^^^^^^
+2633 |         fn freeze_chunk_bodies(self: Pin<&mut World>, entity_ids: &[u32]) -> Result<u32>;
+     |            ^^^^^^^^^^^^^^^^^^^
+2634 |         fn unfreeze_chunk_bodies(self: Pin<&mut World>, entity_ids: &[u32]) -> Result<u32>;
+     |            ^^^^^^^^^^^^^^^^^^^^^
+2635 |         fn take_frozen_contact_wakes(self: Pin<&mut World>) -> Result<Vec<u32>>;
+     |            ^^^^^^^^^^^^^^^^^^^^^^^^^
+2636 |         fn take_support_sets(self: Pin<&mut World>) -> Result<Vec<FfiSupportSet>>;
+     |            ^^^^^^^^^^^^^^^^^
+2637 |         fn take_support_rows(self: Pin<&mut World>) -> Result<Vec<FfiSupportRow>>;
+     |            ^^^^^^^^^^^^^^^^^
+2638 |         fn bond_stress_rows(self: &World, structure_id: u32) -> Result<Vec<FfiBondStressRow>>;
+     |            ^^^^^^^^^^^^^^^^
+2639 |         fn destruction_stats(self: &World) -> Result<FfiDestructionStats>;
+     |            ^^^^^^^^^^^^^^^^^
+2640 |         fn validate_destruction_mappings(self: &World) -> Result<bool>;
+     |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+2641 |         fn split_count(self: &World) -> Result<u64>;
+     |            ^^^^^^^^^^^
+2642 |         fn resim_needed(self: &World) -> Result<bool>;
+     |            ^^^^^^^^^^^^
+2643 |         fn resim_capture(self: Pin<&mut World>) -> Result<u32>;
+     |            ^^^^^^^^^^^^^
+2644 |         fn resim_restore(self: Pin<&mut World>) -> Result<bool>;
+     |            ^^^^^^^^^^^^^
+     |
+     = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `vibe-land-physx-bridge` (lib) generated 1 warning
+warning: unused variable: `client`
+    --> destruction/src/encoder.rs:1043:25
+     |
+1043 |                     for client in self.clients.values_mut() {
+     |                         ^^^^^^ help: if this is intentional, prefix it with an underscore: `_client`
+     |
+     = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `entity`
+    --> destruction/src/encoder.rs:1511:17
+     |
+1511 |             let entity = shared_record.record.body_entity;
+     |                 ^^^^^^ help: if this is intentional, prefix it with an underscore: `_entity`
+
+warning: variable does not need to be mutable
+   --> destruction/src/wire.rs:665:9
+    |
+665 |     let mut current: Vec<u8> = Vec::new();
+    |         ----^^^^^^^
+    |         |
+    |         help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `nodes` is never read
+  --> destruction/src/synthetic.rs:58:5
+   |
+57 | struct SynthIsland {
+   |        ----------- field in this struct
+58 |     nodes: Vec<u32>,
+   |     ^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: fields `entity`, `age_ticks`, `from`, `from_speed`, `to`, and `to_speed` are never read
+   --> destruction/src/native_runtime.rs:445:5
+    |
+444 | struct ExplosionSample {
+    |        --------------- fields in this struct
+445 |     entity: u32,
+    |     ^^^^^^
+446 |     age_ticks: u64,
+    |     ^^^^^^^^^
+447 |     from: [f32; 3],
+    |     ^^^^
+448 |     from_speed: f32,
+    |     ^^^^^^^^^^
+449 |     to: [f32; 3],
+    |     ^^
+450 |     to_speed: f32,
+    |     ^^^^^^^^
+    |
+    = note: `ExplosionSample` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+
+warning: fields `entity`, `age_ticks`, `from`, `to`, and `to_speed` are never read
+   --> destruction/src/native_runtime.rs:472:5
+    |
+471 | struct EscapeSample {
+    |        ------------ fields in this struct
+472 |     entity: u32,
+    |     ^^^^^^
+473 |     age_ticks: u64,
+    |     ^^^^^^^^^
+474 |     from: [f32; 3],
+    |     ^^^^
+475 |     from_speed: f32,
+476 |     to: [f32; 3],
+    |     ^^
+477 |     to_speed: f32,
+    |     ^^^^^^^^
+    |
+    = note: `EscapeSample` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+
+warning: `vibe-land-destruction` (lib) generated 6 warnings (run `cargo fix --lib -p vibe-land-destruction` to apply 3 suggestions)
+warning: unused import: `PKT_CITY_DEBRIS`
+  --> server/src/main.rs:85:74
+   |
+85 |         HIT_ZONE_HEAD, HIT_ZONE_NONE, PKT_BATTERY_SYNC, PKT_CITY_CHUNKS, PKT_CITY_DEBRIS,
+   |                                                                          ^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `backend`
+    --> server/src/city.rs:2673:37
+     |
+2673 |             let CityBackend::Native(backend) = &mut self.backend else {
+     |                                     ^^^^^^^ help: if this is intentional, prefix it with an underscore: `_backend`
+     |
+     = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: constant `SNAPSHOT_HEADER_BYTES` is never used
+   --> server/src/main.rs:128:7
+    |
+128 | const SNAPSHOT_HEADER_BYTES: usize = 23;
+    |       ^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: constant `SNAPSHOT_PLAYER_STATE_BYTES` is never used
+   --> server/src/main.rs:129:7
+    |
+129 | const SNAPSHOT_PLAYER_STATE_BYTES: usize = 29;
+    |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: constant `SNAPSHOT_DYNAMIC_BODY_STATE_BYTES` is never used
+   --> server/src/main.rs:130:7
+    |
+130 | const SNAPSHOT_DYNAMIC_BODY_STATE_BYTES: usize = 43;
+    |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: constant `SNAPSHOT_VEHICLE_STATE_BYTES` is never used
+   --> server/src/main.rs:131:7
+    |
+131 | const SNAPSHOT_VEHICLE_STATE_BYTES: usize = 50;
+    |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: field `inputs_skipped_for_catchup` is never read
+    --> server/src/main.rs:1134:5
+     |
+1125 | struct PlayerRuntime {
+     |        ------------- field in this struct
+...
+1134 |     inputs_skipped_for_catchup: u64,
+     |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: constant `LATCHED_BUTTONS` is never used
+    --> server/src/main.rs:6889:7
+     |
+6889 | const LATCHED_BUTTONS: u16 = BTN_JUMP | BTN_RELOAD;
+     |       ^^^^^^^^^^^^^^^
+
+warning: function `physx_shot_stress_impulse` is never used
+  --> server/src/city.rs:51:4
+   |
+51 | fn physx_shot_stress_impulse() -> f32 {
+   |    ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `physx_shot_push_impulse` is never used
+  --> server/src/city.rs:65:4
+   |
+65 | fn physx_shot_push_impulse() -> f32 {
+   |    ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `shot_push_radius_m` is never used
+   --> server/src/city.rs:230:4
+    |
+230 | fn shot_push_radius_m() -> f32 {
+    |    ^^^^^^^^^^^^^^^^^^
+
+warning: function `shot_blast_depth_m` is never used
+   --> server/src/city.rs:239:4
+    |
+239 | fn shot_blast_depth_m() -> f32 {
+    |    ^^^^^^^^^^^^^^^^^^
+
+warning: constant `SHOT_BLAST_RADIUS_M` is never used
+   --> server/src/city.rs:243:7
+    |
+243 | const SHOT_BLAST_RADIUS_M: f32 = 2.5;
+    |       ^^^^^^^^^^^^^^^^^^^
+
+warning: constant `SHOT_PUSH_RADIUS_M` is never used
+   --> server/src/city.rs:246:7
+    |
+246 | const SHOT_PUSH_RADIUS_M: f32 = 4.0;
+    |       ^^^^^^^^^^^^^^^^^^
+
+warning: constant `SHOT_BLAST_DEPTH_M` is never used
+   --> server/src/city.rs:249:7
+    |
+249 | const SHOT_BLAST_DEPTH_M: f32 = 0.5;
+    |       ^^^^^^^^^^^^^^^^^^
+
+warning: function `shot_max_distance_m` is never used
+   --> server/src/city.rs:254:8
+    |
+254 | pub fn shot_max_distance_m() -> f32 {
+    |        ^^^^^^^^^^^^^^^^^^^
+
+warning: fields `output`, `post_step_ms`, and `snapshot_ms` are never read
+   --> server/src/city.rs:594:5
+    |
+592 | pub struct StagedCityTick {
+    |            -------------- fields in this struct
+593 |     pub sim_tick: u32,
+594 |     output: DestructionTickOutput,
+    |     ^^^^^^
+595 |     post_step_ms: f32,
+    |     ^^^^^^^^^^^^
+596 |     snapshot_ms: f32,
+    |     ^^^^^^^^^^^
+
+warning: methods `client_datagrams` and `last_v3_span_encode_ms` are never used
+    --> server/src/city.rs:2293:12
+     |
+1153 | impl CityRuntime {
+     | ---------------- methods in this implementation
+...
+2293 |     pub fn client_datagrams(
+     |            ^^^^^^^^^^^^^^^^
+...
+2453 |     pub fn last_v3_span_encode_ms(&self) -> f32 {
+     |            ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: struct `StepOutcome` is never constructed
+  --> server/src/city_qa.rs:35:12
+   |
+35 | pub struct StepOutcome {
+   |            ^^^^^^^^^^^
+
+warning: struct `QaReport` is never constructed
+  --> server/src/city_qa.rs:44:12
+   |
+44 | pub struct QaReport {
+   |            ^^^^^^^^
+
+warning: methods `failed` and `render` are never used
+  --> server/src/city_qa.rs:55:12
+   |
+54 | impl QaReport {
+   | ------------- methods in this implementation
+55 |     pub fn failed(&self) -> bool {
+   |            ^^^^^^
+...
+61 |     pub fn render(&self) -> String {
+   |            ^^^^^^
+
+warning: function `look_angles_at` is never used
+  --> server/src/city_qa.rs:82:8
+   |
+82 | pub fn look_angles_at(eye: Vec3, target: Vec3) -> (f32, f32) {
+   |        ^^^^^^^^^^^^^^
+
+warning: function `aim_direction` is never used
+  --> server/src/city_qa.rs:88:8
+   |
+88 | pub fn aim_direction(yaw: f32, pitch: f32) -> Vec3 {
+   |        ^^^^^^^^^^^^^
+
+warning: enum `Step` is never used
+  --> server/src/city_qa.rs:98:10
+   |
+98 | pub enum Step {
+   |          ^^^^
+
+warning: function `parse` is never used
+   --> server/src/city_qa.rs:119:8
+    |
+119 | pub fn parse(script: &str) -> Result<Vec<(usize, String, Step)>, String> {
+    |        ^^^^^
+
+warning: function `walk_input` is never used
+   --> server/src/city_qa.rs:156:8
+    |
+156 | pub fn walk_input(seq: u16, yaw: f32, pitch: f32, forward: f32, strafe: f32) -> InputCmd {
+    |        ^^^^^^^^^^
+
+warning: function `eye_of` is never used
+   --> server/src/city_qa.rs:179:8
+    |
+179 | pub fn eye_of(feet: vibe_netcode::movement::Vec3d) -> Vec3 {
+    |        ^^^^^^
+
+warning: method `balls_clamped` is never used
+   --> server/src/movement.rs:355:12
+    |
+109 | impl PhysicsArena {
+    | ----------------- method in this implementation
+...
+355 |     pub fn balls_clamped(&self) -> u64 {
+    |            ^^^^^^^^^^^^^
+
+warning: methods `world` and `balls_clamped` are never used
+    --> server/src/physx_runtime.rs:563:12
+     |
+ 369 | impl PhysxPhysicsArena {
+     | ---------------------- methods in this implementation
+...
+ 563 |     pub fn world(&self) -> &bridge::World {
+     |            ^^^^^
+...
+1758 |     pub fn balls_clamped(&self) -> u64 {
+     |            ^^^^^^^^^^^^^
+
+warning: variants `Welcome`, `ShotResult`, `ChunkFull`, and `ChunkDiff` are never constructed
+   --> server/src/protocol.rs:95:5
+    |
+ 94 | pub enum ServerReliablePacket {
+    |          -------------------- variants in this enum
+ 95 |     Welcome(WelcomePacket),
+    |     ^^^^^^^
+ 96 |     ShotResult(ShotResultPacket),
+    |     ^^^^^^^^^^
+...
+101 |     ChunkFull(ChunkFullPacket),
+    |     ^^^^^^^^^
+102 |     ChunkDiff(ChunkDiffPacket),
+    |     ^^^^^^^^^
+    |
+    = note: `ServerReliablePacket` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+
+warning: variant `Snapshot` is never constructed
+   --> server/src/protocol.rs:109:5
+    |
+108 | pub enum ServerDatagramPacket {
+    |          -------------------- variant in this enum
+109 |     Snapshot(SnapshotPacket),
+    |     ^^^^^^^^
+    |
+    = note: `ServerDatagramPacket` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+
+warning: constant `SNAPSHOT_V2_COMPACT_SELF_PLAYER_BYTES` is never used
+   --> server/src/protocol.rs:247:11
+    |
+247 | pub const SNAPSHOT_V2_COMPACT_SELF_PLAYER_BYTES: usize = 12;
+    |           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: constant `SNAPSHOT_V2_REMOVAL_BYTES` is never used
+   --> server/src/protocol.rs:251:11
+    |
+251 | pub const SNAPSHOT_V2_REMOVAL_BYTES: usize = 3;
+    |           ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: method `session_capture_active` is never used
+  --> server/src/session_match.rs:63:19
+   |
+62 | impl MatchState {
+   | --------------- method in this implementation
+63 |     pub(crate) fn session_capture_active(&self) -> bool {
+   |                   ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: method `set_block` is never used
+   --> server/src/voxel_world.rs:266:8
+    |
+ 33 | impl VoxelWorld {
+    | --------------- method in this implementation
+...
+266 |     fn set_block(
+    |        ^^^^^^^^^
+
+warning: `web-fps-server` (bin "web-fps-server" test) generated 35 warnings (run `cargo fix --bin "web-fps-server" -p web-fps-server --tests` to apply 2 suggestions)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 8.01s
+     Running unittests src/main.rs (/private/tmp/vibe-vehicle-drive-mask-target/debug/deps/web_fps_server-a9f373fda0d7ae56)
+
+running 3 tests
+test physx_runtime::vehicle_fracture_tests::authored_vehicle_cannonball_localized_fracture ... CUMETAL WARNING: CUMETAL_USE_METAL_DEVICE_ADDRESSES marks every live allocation read-write on every dispatch so kernels can follow raw device addresses; this removes cross-stream concurrency.
+[destruction] native internalCorrectionLimit=1
+Authored cannon buggy: 0 broken / 598 bonds; error=None
+[destruction] native internalCorrectionLimit=1
+Authored cannon trophy: 7 broken / 1044 bonds; error=None
+[destruction] native internalCorrectionLimit=1
+Authored cannon rally: 6 broken / 1046 bonds; error=None
+[destruction] native internalCorrectionLimit=1
+Authored cannon monster: 8 broken / 1027 bonds; error=None
+[destruction] native internalCorrectionLimit=1
+Authored cannon derby: 2 broken / 988 bonds; error=None
+[destruction] native internalCorrectionLimit=1
+Authored cannon sprint: 0 broken / 726 bonds; error=None
+
+thread 'physx_runtime::vehicle_fracture_tests::authored_vehicle_cannonball_localized_fracture' (15755937) panicked at server/src/physx_runtime/vehicle_fracture_tests.rs:294:5:
+authored vehicle impact failures: [
+    "buggy: real cannon contact produced no fracture",
+    "sprint: real cannon contact produced no fracture",
+]
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+test physx_runtime::vehicle_fracture_tests::authored_vehicle_heavy_impact_disables_detached_wheel ... [destruction] native internalCorrectionLimit=1
+Authored cannon buggy: 30 broken / 598 bonds; error=None
+[destruction] native internalCorrectionLimit=1
+Authored cannon trophy: 48 broken / 1044 bonds; error=None
+[destruction] native internalCorrectionLimit=1
+Authored cannon rally: 55 broken / 1046 bonds; error=None
+[destruction] native internalCorrectionLimit=1
+Authored cannon monster: 56 broken / 1027 bonds; error=None
+[destruction] native internalCorrectionLimit=1
+Authored cannon derby: 49 broken / 988 bonds; error=None
+[destruction] native internalCorrectionLimit=1
+Authored cannon sprint: 44 broken / 726 bonds; error=None
+ok
+test physx_runtime::vehicle_fracture_tests::authored_vehicle_native_registration_and_free_fall ... [destruction] native internalCorrectionLimit=1
+Native authored vehicle buggy: 198 chunks, 635 hulls, 598 bonds, 30 free-fall ticks, no fracture
+[destruction] native internalCorrectionLimit=1
+Native authored vehicle trophy: 340 chunks, 907 hulls, 1044 bonds, 30 free-fall ticks, no fracture
+[destruction] native internalCorrectionLimit=1
+Native authored vehicle rally: 335 chunks, 773 hulls, 1046 bonds, 30 free-fall ticks, no fracture
+[destruction] native internalCorrectionLimit=1
+Native authored vehicle monster: 340 chunks, 911 hulls, 1027 bonds, 30 free-fall ticks, no fracture
+[destruction] native internalCorrectionLimit=1
+Native authored vehicle derby: 334 chunks, 869 hulls, 988 bonds, 30 free-fall ticks, no fracture
+[destruction] native internalCorrectionLimit=1
+Native authored vehicle sprint: 230 chunks, 704 hulls, 726 bonds, 30 free-fall ticks, no fracture
+ok
+
+failures:
+
+failures:
+    physx_runtime::vehicle_fracture_tests::authored_vehicle_cannonball_localized_fracture
+
+test result: FAILED. 2 passed; 1 failed; 0 ignored; 0 measured; 208 filtered out; finished in 726.18s
+
+error: test failed, to rerun pass `-p web-fps-server --bin web-fps-server`

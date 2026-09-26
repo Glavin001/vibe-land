@@ -48,8 +48,18 @@ def inspect_impact(report, asset):
             values = {field: row[field] for field in fields}
             if any(not math.isfinite(v) or v < 0 for v in values.values()):
                 raise ValueError('Invalid native verdict value')
-            entry = observations.setdefault(index, {'samples': 0, 'peaks': dict.fromkeys(fields, 0.)})
+            if not isinstance(row['broken'], bool):
+                raise ValueError('Invalid broken state')
+            entry = observations.setdefault(index, {'samples': 0, 'stressSamples': 0,
+                'postBreakSamples': 0, 'peaks': dict.fromkeys(fields, 0.)})
             entry['samples'] += 1
+            # Reports sample the accepted solve after correction. A bond cut in
+            # the intact trial may already have zeroed stress rows by then. Its
+            # fracture event is evidence, but zero is NOT its fracture load.
+            if row['broken']:
+                entry['postBreakSamples'] += 1
+                continue
+            entry['stressSamples'] += 1
             for field, value in values.items():
                 entry['peaks'][field] = max(entry['peaks'][field], value)
     broken = set()
@@ -73,17 +83,20 @@ def inspect_impact(report, asset):
         thresholds = [strength[k] for k in ('compressionElastic', 'tensionElastic', 'shearElastic')]
         entry = observations.get(index)
         ratios = None
-        if entry:
+        if entry and entry['stressSamples']:
             if any(not math.isfinite(v) or v <= 0 for v in thresholds):
                 raise ValueError('Invalid authored elastic strength')
             ratios = [entry['peaks'][k] / limit for k, limit in zip(fields[:3], thresholds)]
         interfaces.append(dict(bond=index, parts=[names[bond['a']], names[bond['b']]],
             attachment=attachment, areaM2=bond['area'], broken=index in broken,
             samples=entry['samples'] if entry else 0,
-            peaks=entry['peaks'] if entry else None,
+            stressSamples=entry['stressSamples'] if entry else 0,
+            postBreakSamples=entry['postBreakSamples'] if entry else 0,
+            peaks=entry['peaks'] if entry and entry['stressSamples'] else None,
             peakToElasticRatio=ratios, elasticPa=thresholds))
     frames = report['frames']
     return dict(model=report['model'], target=parts[target]['name'],
+        stressScope='accepted, unbroken snapshots only; initial-trial fracture peaks are unavailable',
         projectileMassKg=report['projectileMassKg'], speedMps=report['speedMps'],
         error=report['error'], recordedTicks=len(frames),
         rejectedTicks=[f['tick'] for f in frames if f['error'] or not f['converged']],

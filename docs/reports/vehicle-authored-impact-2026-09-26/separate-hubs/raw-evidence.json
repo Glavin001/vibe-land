@@ -1,0 +1,14 @@
+[
+  {
+    "path": "/tmp/vehicle-separate-hub-cannon.json.gz",
+    "sha256": "ec04042fa8d928bb85e38374ad1f16ec5af46abaff46476cbce98a189ae071b9",
+    "bytes": 424515,
+    "uncompressedPath": "/tmp/vehicle-separate-hub-authored-verification/cannon.json"
+  },
+  {
+    "path": "/tmp/vehicle-separate-hub-cannon-heavy.json.gz",
+    "sha256": "c0ff268d9cb327f159658a6aeaa5512e8d7fe39f07019db57dc097c262bce61d",
+    "bytes": 47795295,
+    "uncompressedPath": "/tmp/vehicle-separate-hub-authored-verification/cannon-heavy.json"
+  }
+]

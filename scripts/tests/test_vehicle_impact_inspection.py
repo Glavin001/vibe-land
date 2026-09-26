@@ -13,7 +13,7 @@ def fixture():
         compressionElastic=100., tensionElastic=50., shearElastic=25.))
     asset = dict(parts=[dict(id='wheel', name='Tire'), dict(id='hub', name='Hub')], bonds=[bond])
     verdict = dict(bond=0, part0='hub', part1='wheel', area=.002, compressionPa=20.,
-        tensionPa=30., shearPa=10., utilisation=.6, damageArea=0.)
+        tensionPa=30., shearPa=10., utilisation=.6, damageArea=0., broken=False)
     report = dict(model='buggy', chunks=2, bonds=1, target=0, projectileMassKg=30, speedMps=55,
         error=None, brokenBonds=[], impactVerdicts=[dict(tick=0, bonds=[verdict])],
         frames=[dict(tick=0, error=0, converged=True, targetAttached=True)])
@@ -44,6 +44,18 @@ class ImpactInspectionTests(unittest.TestCase):
         self.assertIsNone(result['targetInterfaces'][0]['peaks'])
         self.assertIsNone(result['targetInterfaces'][0]['peakToElasticRatio'])
         self.assertEqual(result['observedBonds'], 0)
+
+    def test_corrected_broken_row_is_not_a_zero_fracture_load(self):
+        asset, report = fixture()
+        row = report['impactVerdicts'][0]['bonds'][0]
+        row.update(broken=True, compressionPa=0., tensionPa=0., shearPa=0., utilisation=0.)
+        report['brokenBonds'] = [200 << 20]
+        result = inspection.inspect_impact(report, asset)['targetInterfaces'][0]
+        self.assertTrue(result['broken'])
+        self.assertEqual(result['postBreakSamples'], 1)
+        self.assertEqual(result['stressSamples'], 0)
+        self.assertIsNone(result['peaks'])
+        self.assertIsNone(result['peakToElasticRatio'])
 
     def test_rejected_steps_remain_visible(self):
         asset, report = fixture()
