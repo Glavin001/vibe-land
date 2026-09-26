@@ -1,0 +1,387 @@
+[
+  {
+    "name": "buggy",
+    "metadataPath": "/tmp/vibe-vehicle-functional-assets/283ecdd3ca7e3de4f59595bde95fd937396cc4455ef6fc5247b32dd3e7d864af/metadata.json",
+    "driving": {
+      "acceleration": 7.5,
+      "driveTorque": 1842.6125986483107,
+      "brakeTorque": 3731.8736175155655,
+      "springStiffness": 82776.70600481544,
+      "damping": 14350.660966989477,
+      "tyreFriction": 1.4,
+      "topSpeed": 30,
+      "maxSteerRadians": 0.4363323129985824,
+      "frontWheelDrive": false,
+      "rearWheelDrive": false,
+      "steeringResponse": 1
+    },
+    "metadataSha256": "ed663eaeebfede09acc01349e2a0221955308e5cc98bbcba04c6cc58609a18d0",
+    "chunks": 190,
+    "hulls": 384,
+    "bonds": 626,
+    "functions": [
+      {
+        "id": "frame-0035",
+        "function": "chassis"
+      },
+      {
+        "id": "drivetrain-0826",
+        "function": "engine"
+      },
+      {
+        "id": "drivetrain-0825",
+        "function": "driveline"
+      }
+    ]
+  },
+  {
+    "name": "trophy",
+    "metadataPath": "/tmp/vibe-vehicle-functional-assets/708af0f3221160e095faa8c0c09d65dd4950f2f044454709517b128942615a24/metadata.json",
+    "driving": {
+      "acceleration": 7.5,
+      "driveTorque": 4226.025481983313,
+      "brakeTorque": 7683.682694515113,
+      "springStiffness": 88155.41770509919,
+      "damping": 21250.227566599875,
+      "tyreFriction": 1.4,
+      "topSpeed": 30,
+      "maxSteerRadians": 0.4363323129985824,
+      "frontWheelDrive": false,
+      "rearWheelDrive": false,
+      "steeringResponse": 1
+    },
+    "metadataSha256": "f8a5ca7190a6e3cdcb480172b03c4abcf6064d7e8b605f8b036c35f7b60f06c8",
+    "chunks": 332,
+    "hulls": 674,
+    "bonds": 1072,
+    "functions": [
+      {
+        "id": "frame-0035",
+        "function": "chassis"
+      },
+      {
+        "id": "drivetrain-0826",
+        "function": "engine"
+      },
+      {
+        "id": "drivetrain-0825",
+        "function": "driveline"
+      }
+    ]
+  },
+  {
+    "name": "rally",
+    "metadataPath": "/tmp/vibe-vehicle-functional-assets/0c760baee2a430bc218d9563acf68fcdf4ae84d8ab1c3a0a25294e4a8dde02ed/metadata.json",
+    "driving": {
+      "acceleration": 7.5,
+      "driveTorque": 2600.5873758753623,
+      "brakeTorque": 6119.0291197067345,
+      "springStiffness": 300525.3954100894,
+      "damping": 35013.55590554148,
+      "tyreFriction": 1.4,
+      "topSpeed": 30,
+      "maxSteerRadians": 0.5235987755982988,
+      "frontWheelDrive": false,
+      "rearWheelDrive": false,
+      "steeringResponse": 1
+    },
+    "metadataSha256": "76620ed74852a9df0dee6d5042e842b8617db51a6480e83ccccb7319e86de1cf",
+    "chunks": 327,
+    "hulls": 664,
+    "bonds": 1102,
+    "functions": [
+      {
+        "id": "frame-0035",
+        "function": "chassis"
+      },
+      {
+        "id": "drivetrain-0826",
+        "function": "engine"
+      },
+      {
+        "id": "drivetrain-0825",
+        "function": "driveline"
+      }
+    ]
+  },
+  {
+    "name": "monster",
+    "metadataPath": "/tmp/vibe-vehicle-functional-assets/a0e08231a28fcc13f64f4a00d2ef85717074809eb744acb64b7b7655fe35edd4/metadata.json",
+    "driving": {
+      "acceleration": 7.5,
+      "driveTorque": 10658.934175139511,
+      "brakeTorque": 11843.260194599457,
+      "springStiffness": 77454.92167268046,
+      "damping": 24729.45329927959,
+      "tyreFriction": 1.4,
+      "topSpeed": 30,
+      "maxSteerRadians": 0.3839724354387525,
+      "frontWheelDrive": false,
+      "rearWheelDrive": false,
+      "steeringResponse": 1
+    },
+    "metadataSha256": "2e90f0f761f4d4b4cf2114155cbdcc10133bec0dc8a904cd390f90d96d1548d5",
+    "chunks": 328,
+    "hulls": 622,
+    "bonds": 1039,
+    "functions": [
+      {
+        "id": "frame-0035",
+        "function": "chassis"
+      },
+      {
+        "id": "drivetrain-0826",
+        "function": "engine"
+      },
+      {
+        "id": "drivetrain-0825",
+        "function": "driveline"
+      }
+    ]
+  },
+  {
+    "name": "derby",
+    "metadataPath": "/tmp/vibe-vehicle-functional-assets/9a8b2a16ebfd3c7b49b233b528f981dd98833ce30d15055ff7fbee29377cabb9/metadata.json",
+    "driving": {
+      "acceleration": 7.5,
+      "driveTorque": 3076.888807306293,
+      "brakeTorque": 6837.530682902874,
+      "springStiffness": 116748.26552700716,
+      "damping": 23069.02465380224,
+      "tyreFriction": 1.4,
+      "topSpeed": 30,
+      "maxSteerRadians": 0.47123889803846897,
+      "frontWheelDrive": false,
+      "rearWheelDrive": false,
+      "steeringResponse": 1
+    },
+    "metadataSha256": "2bb105b3d4d7c628df47ae717265b6289c20d064c7bc9e177ff3c9a6a2b8ae2f",
+    "chunks": 326,
+    "hulls": 639,
+    "bonds": 1016,
+    "functions": [
+      {
+        "id": "frame-0035",
+        "function": "chassis"
+      },
+      {
+        "id": "drivetrain-0826",
+        "function": "engine"
+      },
+      {
+        "id": "drivetrain-0825",
+        "function": "driveline"
+      }
+    ]
+  },
+  {
+    "name": "sprint",
+    "metadataPath": "/tmp/vibe-vehicle-functional-assets/5f805eb3dd5d8e68aacd62765c14421324718ddff02a323b89555ec2c6ff477f/metadata.json",
+    "driving": {
+      "acceleration": 7.5,
+      "driveTorque": 2556.1649119689155,
+      "brakeTorque": 5526.843052905763,
+      "springStiffness": 138701.21299416345,
+      "damping": 22606.48631796333,
+      "tyreFriction": 1.4,
+      "topSpeed": 30,
+      "maxSteerRadians": 0.4363323129985824,
+      "frontWheelDrive": false,
+      "rearWheelDrive": false,
+      "steeringResponse": 1
+    },
+    "metadataSha256": "aeba1c2c4997a0ee7855a1626179a88e9252bc3acebf7767f77fa4b161c46730",
+    "chunks": 222,
+    "hulls": 461,
+    "bonds": 754,
+    "functions": [
+      {
+        "id": "frame-0035",
+        "function": "chassis"
+      },
+      {
+        "id": "drivetrain-0826",
+        "function": "engine"
+      },
+      {
+        "id": "drivetrain-0825",
+        "function": "driveline"
+      }
+    ]
+  },
+  {
+    "name": "trail",
+    "metadataPath": "/tmp/vibe-vehicle-functional-assets/283ecdd3ca7e3de4f59595bde95fd937396cc4455ef6fc5247b32dd3e7d864af/metadata.json",
+    "driving": {
+      "acceleration": 4,
+      "driveTorque": 982.726719279099,
+      "brakeTorque": 3731.8736175155655,
+      "springStiffness": 70360.20010409312,
+      "damping": 14553.721245436695,
+      "tyreFriction": 1.5,
+      "topSpeed": 16,
+      "maxSteerRadians": 0.4363323129985824,
+      "frontWheelDrive": false,
+      "rearWheelDrive": false,
+      "steeringResponse": 0.8
+    },
+    "metadataSha256": "ed663eaeebfede09acc01349e2a0221955308e5cc98bbcba04c6cc58609a18d0",
+    "chunks": 190,
+    "hulls": 384,
+    "bonds": 626,
+    "functions": [
+      {
+        "id": "frame-0035",
+        "function": "chassis"
+      },
+      {
+        "id": "drivetrain-0826",
+        "function": "engine"
+      },
+      {
+        "id": "drivetrain-0825",
+        "function": "driveline"
+      }
+    ]
+  },
+  {
+    "name": "desert",
+    "metadataPath": "/tmp/vibe-vehicle-functional-assets/708af0f3221160e095faa8c0c09d65dd4950f2f044454709517b128942615a24/metadata.json",
+    "driving": {
+      "acceleration": 7,
+      "driveTorque": 3944.290449851091,
+      "brakeTorque": 7683.682694515113,
+      "springStiffness": 79339.87593458928,
+      "damping": 23183.696368036803,
+      "tyreFriction": 1.25,
+      "topSpeed": 34,
+      "maxSteerRadians": 0.34906585039886595,
+      "frontWheelDrive": false,
+      "rearWheelDrive": false,
+      "steeringResponse": 1
+    },
+    "metadataSha256": "f8a5ca7190a6e3cdcb480172b03c4abcf6064d7e8b605f8b036c35f7b60f06c8",
+    "chunks": 332,
+    "hulls": 674,
+    "bonds": 1072,
+    "functions": [
+      {
+        "id": "frame-0035",
+        "function": "chassis"
+      },
+      {
+        "id": "drivetrain-0826",
+        "function": "engine"
+      },
+      {
+        "id": "drivetrain-0825",
+        "function": "driveline"
+      }
+    ]
+  },
+  {
+    "name": "touge",
+    "metadataPath": "/tmp/vibe-vehicle-functional-assets/0c760baee2a430bc218d9563acf68fcdf4ae84d8ab1c3a0a25294e4a8dde02ed/metadata.json",
+    "driving": {
+      "acceleration": 7.5,
+      "driveTorque": 2600.5873758753623,
+      "brakeTorque": 7342.834943648081,
+      "springStiffness": 360630.4744921073,
+      "damping": 38355.42877586658,
+      "tyreFriction": 1.55,
+      "topSpeed": 30,
+      "maxSteerRadians": 0.5235987755982988,
+      "frontWheelDrive": false,
+      "rearWheelDrive": false,
+      "steeringResponse": 1.2
+    },
+    "metadataSha256": "76620ed74852a9df0dee6d5042e842b8617db51a6480e83ccccb7319e86de1cf",
+    "chunks": 327,
+    "hulls": 664,
+    "bonds": 1102,
+    "functions": [
+      {
+        "id": "frame-0035",
+        "function": "chassis"
+      },
+      {
+        "id": "drivetrain-0826",
+        "function": "engine"
+      },
+      {
+        "id": "drivetrain-0825",
+        "function": "driveline"
+      }
+    ]
+  },
+  {
+    "name": "drift",
+    "metadataPath": "/tmp/vibe-vehicle-functional-assets/9a8b2a16ebfd3c7b49b233b528f981dd98833ce30d15055ff7fbee29377cabb9/metadata.json",
+    "driving": {
+      "acceleration": 4.1202000000000005,
+      "driveTorque": 3380.639270363571,
+      "brakeTorque": 6837.530682902874,
+      "springStiffness": 134260.50535605822,
+      "damping": 21027.956941835513,
+      "tyreFriction": 1.05,
+      "topSpeed": 28,
+      "maxSteerRadians": 0.47123889803846897,
+      "frontWheelDrive": false,
+      "rearWheelDrive": true,
+      "steeringResponse": 0.85
+    },
+    "metadataSha256": "2bb105b3d4d7c628df47ae717265b6289c20d064c7bc9e177ff3c9a6a2b8ae2f",
+    "chunks": 326,
+    "hulls": 639,
+    "bonds": 1016,
+    "functions": [
+      {
+        "id": "frame-0035",
+        "function": "chassis"
+      },
+      {
+        "id": "drivetrain-0826",
+        "function": "engine"
+      },
+      {
+        "id": "drivetrain-0825",
+        "function": "driveline"
+      }
+    ]
+  },
+  {
+    "name": "circuit",
+    "metadataPath": "/tmp/vibe-vehicle-functional-assets/5f805eb3dd5d8e68aacd62765c14421324718ddff02a323b89555ec2c6ff477f/metadata.json",
+    "driving": {
+      "acceleration": 6.278400000000001,
+      "driveTorque": 4279.633542214838,
+      "brakeTorque": 6632.211663486915,
+      "springStiffness": 187246.63754212068,
+      "damping": 28892.999858493476,
+      "tyreFriction": 1.6,
+      "topSpeed": 36,
+      "maxSteerRadians": 0.34906585039886595,
+      "frontWheelDrive": false,
+      "rearWheelDrive": true,
+      "steeringResponse": 1.35
+    },
+    "metadataSha256": "aeba1c2c4997a0ee7855a1626179a88e9252bc3acebf7767f77fa4b161c46730",
+    "chunks": 222,
+    "hulls": 461,
+    "bonds": 754,
+    "functions": [
+      {
+        "id": "frame-0035",
+        "function": "chassis"
+      },
+      {
+        "id": "drivetrain-0826",
+        "function": "engine"
+      },
+      {
+        "id": "drivetrain-0825",
+        "function": "driveline"
+      }
+    ]
+  }
+]

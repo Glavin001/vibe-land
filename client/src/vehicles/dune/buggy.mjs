@@ -46,9 +46,9 @@ export function buildBuggy(wasm, input={}, progress=(phase="",percent=0)=>{}, au
  const fromGeom=(geo)=>{const a=geo;const mesh=new Mesh({numProp:3,vertProperties:new Float32Array(a.attributes.position.array),triVerts:a.index?new Uint32Array(a.index.array):Uint32Array.from({length:a.attributes.position.count},(_,i)=>i)});mesh.merge();const s=new M(mesh);geo.dispose();return s;};
  let binding=null;
  const motion=(corner,role,extra={})=>{binding=role?{corner,role,...extra}:null};
- const add=(name,system,mat,solid,meta=binding)=>{
+ const add=(name,system,mat,solid,meta=binding,functionality=null)=>{
   if(lift){const shifted=solid.translate([0,lift,0]);solid.delete();solid=shifted;if(meta?.endpoints)meta={...meta,endpoints:meta.endpoints.map(a=>[a[0],a[1]+lift,a[2]])};}
-  if(live)return live.add(name,system,mat,solid,meta);
+  if(live)return live.add(name,system,mat,solid,meta,functionality);
   // S\(A∪B) equals (S\A)\B: uncut tools give the same partition
   // without re-intersecting fragile, already-cut thin panel surfaces.
   const original=parameters.vehicle&&parameters.vehicle!=='buggy'?solid.translate([0,0,0]):null;
@@ -61,10 +61,10 @@ export function buildBuggy(wasm, input={}, progress=(phase="",percent=0)=>{}, au
   const volume=solid.volume(), mesh=solid.getMesh(), pos=new Float32Array(mesh.numVert*3);
   for(let i=0;i<mesh.numVert;i++)for(let k=0;k<3;k++)pos[i*3+k]=mesh.vertProperties[i*mesh.numProp+k];
   const box=solid.boundingBox(), center=box.min.map((x,i)=>(x+box.max[i])/2);
-  parts.push({id,name,system,material:mat,motion:meta,position:pos,indices:new Uint32Array(mesh.triVerts),bounds:box,center,volume,mass:volume*materials[mat].density});if(preview){solid.delete();original?.delete()}else{solids.push(solid);originals.push(original)}joints.push(...contacts);return id;
+  parts.push({id,name,system,material:mat,motion:meta,functionality,position:pos,indices:new Uint32Array(mesh.triVerts),bounds:box,center,volume,mass:volume*materials[mat].density});if(preview){solid.delete();original?.delete()}else{solids.push(solid);originals.push(original)}joints.push(...contacts);return id;
  };
- const b=(name,a,z,mat='frame',rad=tr,system='Frame',hollow=true)=>add(name,system,mat,beam(a,z,rad,hollow),binding?{...binding,endpoints:[a,z],radius:rad}:null);
- const box=(name,size,c,mat='dark',system='Cabin',rot)=>add(name,system,mat,cube(size,c,rot,mat==='seat'?.035:0));
+ const b=(name,a,z,mat='frame',rad=tr,system='Frame',hollow=true,functionality=null)=>add(name,system,mat,beam(a,z,rad,hollow),binding?{...binding,endpoints:[a,z],radius:rad}:null,functionality);
+ const box=(name,size,c,mat='dark',system='Cabin',rot,functionality=null)=>add(name,system,mat,cube(size,c,rot,mat==='seat'?.035:0),binding,functionality);
  const bolt=(name,c,rot=[90,0,0],system='Hardware',rad=.012)=>add(name,system,'steel',cyl(rad,.012,c,rot,6));
  // Split cage and chassis: every rail, diagonal and crossmember is its own tube.
  for(const s of [-1,1]){
@@ -78,7 +78,7 @@ export function buildBuggy(wasm, input={}, progress=(phase="",percent=0)=>{}, au
   b(`${label} hood rail`,A,E);b(`${label} front bumper upright`,A,[s*.43,.91,f-.3]);
 
  }
- for(const [z,height,width,label] of [[f-.26,floor+.06,.43,'Front chassis'],[f+.43,floor,w,'Pedal bulkhead'],[-.1,floor,w,'Seat front'],[.58,floor,w,'Seat rear'],[.72,1.02,w,'Harness bar'],[.72,roof,.54,'Rear roof'],[-.23,roof,.54,'Front roof'],[r+.35,floor+.11,.5,'Rear chassis'],[r+.22,1.2,.5,'Engine upper'],[f-.3,.91,.43,'Front bumper']]) b(`${label} crossmember`,[-width,height,z],[width,height,z]);
+ for(const [z,height,width,label] of [[f-.26,floor+.06,.43,'Front chassis'],[f+.43,floor,w,'Pedal bulkhead'],[-.1,floor,w,'Seat front'],[.58,floor,w,'Seat rear'],[.72,1.02,w,'Harness bar'],[.72,roof,.54,'Rear roof'],[-.23,roof,.54,'Front roof'],[r+.35,floor+.11,.5,'Rear chassis'],[r+.22,1.2,.5,'Engine upper'],[f-.3,.91,.43,'Front bumper']]) b(`${label} crossmember`,[-width,height,z],[width,height,z],'frame',tr,'Frame',true,label==='Seat rear'?'chassis':null);
  b('Roof diagonal',[-.54,roof,-.23],[.54,roof,.72]);
  b('Rear firewall diagonal',[-w,floor,.58],[w,1.02,.72]);
  b('Rear bumper',[-.57,.71,r+.46],[.57,.71,r+.46]);
@@ -208,8 +208,8 @@ export function buildBuggy(wasm, input={}, progress=(phase="",percent=0)=>{}, au
  b('Gear lever',[.025,floor,.05],[.025,.8,-.1],'steel',.012,'Cabin',false);const knob=live?live.sphere(.032,32):M.sphere(.032,32);add('Gear knob','Cabin','rubber',knob.translate([.025,.8,-.1]));knob.delete();
  progress('Engine & details',72);
  // Rear-mounted boxer-style engine: block, individual cooling fins, heads and exhaust.
- box('Transmission case',[.25,.23,.55],[0,floor+.08,r-.16],'alloy','Drivetrain');
- box('Engine crankcase',[.45,.32,.34],[0,floor+.23,r+.12],'dark','Drivetrain');
+ box('Transmission case',[.25,.23,.55],[0,floor+.08,r-.16],'alloy','Drivetrain',undefined,'driveline');
+ box('Engine crankcase',[.45,.32,.34],[0,floor+.23,r+.12],'dark','Drivetrain',undefined,'engine');
  for(const s of [-1,1]){
   b('Engine mounting strut',[s*.18,floor+.06,r],[s*.5,floor+.11,r+.35],'steel',.025,'Drivetrain');
   for(let bank=0;bank<2;bank++){

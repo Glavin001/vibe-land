@@ -27,12 +27,16 @@ for(const model of vehicles.map(v=>v.id).concat('custom-buggy')) {
  assert.equal(ids.length,metadata.visualPartCount);
  assert.ok(Math.abs(metadata.massProperties.mass-metadata.mass)<1e-8);
  requireConnectedAssembly(metadata.parts,metadata.bonds);
+ assert.equal(metadata.parts[0].functionality,'chassis');
+ assert.equal(metadata.parts.filter(p=>p.functionality==='engine').length,1);
+ assert.equal(metadata.parts.filter(p=>p.motion?.role==='wheel').length,4);
  for(const part of metadata.parts) {
   for(const shape of part.shapes)assert.ok(shape.vertices.length<=64);
   if(part.motion?.role==='wheel'&&part.name.endsWith('wheel assembly')) {
-   assert.equal(part.shapes.length,1);
-   assert.equal(part.shapes[0].type,'cylinder');
-   assert.equal(part.shapes[0].vertices.length,64);
+   const tire=part.shapes.find(s=>s.type==='cylinder');
+   assert.ok(tire);
+   assert.equal(tire.vertices.length,64);
+   assert.ok(part.sourcePartIds.length>=1);
   }
  }
  console.log(JSON.stringify({model,visuals:metadata.visualPartCount,groups:metadata.partCount,shapes:metadata.shapeCount,bonds:metadata.bondCount,geometryHash:asset.geometryHash}));

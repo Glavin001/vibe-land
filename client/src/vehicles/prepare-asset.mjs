@@ -22,7 +22,7 @@ const request = JSON.parse(Buffer.concat(input).toString('utf8'));
 submittedConfiguration = request.configuration;
 const configuration = normalizeConfiguration(request.configuration);
 const root = resolve(process.argv[2]);
-const geometryHash = createHash('sha256').update(JSON.stringify({recipe:'vehicle-physics-simple-3',strength:STRENGTH_PROFILE_VERSION,geometry:geometryKey(configuration)})).digest('hex');
+const geometryHash = createHash('sha256').update(JSON.stringify({recipe:'vehicle-physics-functional-1',strength:STRENGTH_PROFILE_VERSION,geometry:geometryKey(configuration)})).digest('hex');
 const directory = join(root, geometryHash);
 let metadata;
 try { metadata = JSON.parse(await readFile(join(directory, 'metadata.json'), 'utf8')); }
@@ -38,7 +38,7 @@ catch (error) {
  const massProperties = new Map(visual.parts.map(part => [part.id,
    massPropertiesToActor(meshMassProperties(part.position, part.indices, part.mass), geometry.originHeight)]));
  const parts = bundle.parts.map(part => ({
-   id: part.id, visualIds: part.visualIds, name: part.name, system: part.system, material: part.material, motion: visuals.get(part.id).motion,
+   id: part.id, visualIds: part.visualIds, name: part.name, system: part.system, material: part.material, motion: part.motion, functionality: part.functionality, sourcePartIds: part.sourcePartIds,
    // Collision proxies have larger volumes than the rendered solids. Inertia
    // and gravitational load must use the actual authored material mass.
    mass: part.visualIds.reduce((n,id)=>n+visuals.get(id).mass,0),

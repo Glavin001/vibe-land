@@ -43,9 +43,9 @@ export class ColliderPrimitives{
   for(let i=0;i<this.springSegments;i++){const points=[];for(const ring of [i,i+1])for(let j=0;j<6;j++){const index=ring*7+j;points.push([position.getX(index),position.getY(index),position.getZ(index)])}pieces.push(points)}g.dispose();
   return new Solid(pieces,new T.Matrix4().compose(v(top),orientation,new T.Vector3(1,1,1)),'spring');
  }
- add(name,system,material,solid){
+ add(name,system,material,solid,motion=null,functionality=null){
   const id=`${system.toLowerCase()}-${String(this.parts.length).padStart(4,'0')}`,pieces=solid.pieces.map(points=>hull(points.map(p=>v(p).applyMatrix4(solid.matrix).toArray()))).filter(Boolean);
-  let primitive=null;if(solid.primitive){const position=new T.Vector3(),rotation=new T.Quaternion(),scale=new T.Vector3();solid.matrix.decompose(position,rotation,scale);if(solid.primitive.type==='cylinder')rotation.multiply(new T.Quaternion().setFromUnitVectors(new T.Vector3(0,1,0),Z));primitive={...solid.primitive,position:position.toArray(),rotation:rotation.toArray()};}this.parts.push({id,name,system,material,source:solid.source,pieces,primitive});return id;
+  let primitive=null;if(solid.primitive){const position=new T.Vector3(),rotation=new T.Quaternion(),scale=new T.Vector3();solid.matrix.decompose(position,rotation,scale);if(solid.primitive.type==='cylinder')rotation.multiply(new T.Quaternion().setFromUnitVectors(new T.Vector3(0,1,0),Z));primitive={...solid.primitive,position:position.toArray(),rotation:rotation.toArray()};}this.parts.push({id,name,system,material,motion,functionality,source:solid.source,pieces,primitive});return id;
  }
  finish(parameters){return {parameters,parts:this.parts}}
  build(parameters){return buildBuggy(null,parameters,undefined,false,{live:this})}

@@ -3006,7 +3006,7 @@ mod tests {
                 mass_properties: box_mass.clone(), bonds: Vec::new(), fracture_layout: None,
                 bounds: crate::vehicle_assets::AssetBounds { min: [-x, -y, -z], max: [x, y, z] },
                 parts: vec![crate::vehicle_assets::AssetPart {
-                    id: "test-chassis".into(), motion: None, position: [0.0; 3],
+                    id: "test-chassis".into(), motion: None, functionality: None, position: [0.0; 3],
                     visual_ids: vec!["test-chassis".into()], mass: mass as f64,
                     volume: (8.0*x*y*z) as f64, mass_properties: box_mass,
                     shapes: vec![crate::vehicle_assets::AssetShape { position: [0.0; 3], vertices }],

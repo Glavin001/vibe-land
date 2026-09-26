@@ -12,7 +12,7 @@ use std::{path::PathBuf, process::Stdio, sync::OnceLock};
 use tokio::{io::AsyncWriteExt, process::Command, sync::Semaphore};
 
 mod fracture;
-pub use fracture::{AssetBond, AssetMassProperties, FractureLayout};
+pub use fracture::{AssetBond, AssetFunction, AssetMassProperties, FractureLayout};
 
 type ApiError = (StatusCode, String);
 static WORKERS: Semaphore = Semaphore::const_new(1);
@@ -274,6 +274,8 @@ pub struct AssetPart {
     pub volume: f64,
     pub mass_properties: AssetMassProperties,
     pub motion: Option<Value>,
+    /// Recipe-authored function, independent of part order, paint and mass.
+    pub functionality: Option<AssetFunction>,
     pub position: [f32; 3],
     pub shapes: Vec<AssetShape>,
 }
@@ -299,7 +301,7 @@ pub async fn prepare_drivable(request: PrepareRequest) -> Result<DrivableVehicle
         .await.map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Prepared assembly is unavailable".into()))?;
     let mut geometry: PreparedGeometry = serde_json::from_slice(&bytes)
         .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Prepared assembly is invalid".into()))?;
-    geometry.fracture_layout = Some(geometry.validate_fracture_layout().map_err(|reason| {
+    geometry.fracture_layout = Some(geometry.validate_vehicle2_fracture_layout().map_err(|reason| {
         tracing::error!(%reason, geometry_hash=%vehicle.geometry_hash, "invalid authored vehicle fracture data");
         (StatusCode::INTERNAL_SERVER_ERROR, "Vehicle preparation produced inconsistent physical parts. Please report this configuration.".into())
     })?);

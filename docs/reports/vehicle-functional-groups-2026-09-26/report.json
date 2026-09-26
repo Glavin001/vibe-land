@@ -1,0 +1,28 @@
+{
+  "status": "passed",
+  "qualification": "authored geometry and native conversion only",
+  "clientTests": 32,
+  "serverTests": 7,
+  "baseModels": 7,
+  "customGeometryBuilds": 1,
+  "drivablePresets": 11,
+  "clientTypecheck": "passed",
+  "browserVerified": false,
+  "fullGarageGpuDestructionQualified": false,
+  "nativeSdk": "/tmp/vehicle-fracture-sdk22",
+  "sourceBaseCommit": "bc1f695d4db73092cc03a9b2cefe22d4a3e67148",
+  "sourceFiles": {
+    "client/scripts/verify-vehicle-assets.mjs": "993bfee51544a3661a8ce974c3de38d392b2241ac18486ca9504455f70d88081",
+    "client/src/vehicles/dune/buggy.mjs": "563d3a1889a6232f7c2001c11df3544339f09c6b19af206166ed20e7757b7c73",
+    "client/src/vehicles/dune/collider-primitives.mjs": "81dd827da61f520d6f6be9309ac5a5512f5254789a400885c20e1b7f7b28bf88",
+    "client/src/vehicles/dune/colliders.mjs": "9ce87fb4e6ded86b62a97529581afc53c90944beab0921537c9dcf7a6ff1fbb2",
+    "client/src/vehicles/prepare-asset.mjs": "b2a7462ab03c223997fc3ec9174e296772d54e645c6feb0aac3ceb0f0becbf80",
+    "client/src/vehicles/validation.mjs": "340ee3483d3d8591209e6d7be8cd51bb912adcaed18af20f8c7878409840ea00",
+    "client/src/vehicles/validation.test.ts": "9e92dc7e6ca00ab83e1225d88aaa1ca36f718311e4bdf67dcfaff3e47e05907c",
+    "server/src/physx_runtime.rs": "09efa5976b3dca030693397260f002b9f44bc1f8789ef21ef399de705848da9a",
+    "server/src/vehicle_assets.rs": "20d251111e404c273b56ef6be576cd1041f936493ea3628c75f3b431b025a3b5",
+    "server/src/vehicle_assets/fracture.rs": "5d5850954ecf3bce954daff60ed0f9d32a37946b5bac3011a1c491c7f4010c2e",
+    "client/src/vehicles/fracture-groups.mjs": "adffd85e01e9bab5938ded0e3bf6f921806f12d7bf9a16234b3d7181ec97d599",
+    "client/src/vehicles/fracture-groups.test.ts": "5f3712db1ea668792164a54db750372c7e326f3ca621cae41333a495325bba87"
+  }
+}

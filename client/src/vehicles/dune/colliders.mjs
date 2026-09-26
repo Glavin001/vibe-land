@@ -45,7 +45,7 @@ export function buildColliders(parameters={},options=colliderDefaults,progress=(
    const proxy=part.pieces[0],lookup=new Map(proxy.vertices.map((v,i)=>[v.join(','),i]));
    shapes[0].vertices=proxy.vertices.map(v=>v.map((x,k)=>Math.fround(x-position[k])));shapes[0].faces=proxy.faces.map(f=>f.map(v=>lookup.get(v.join(','))));
   }
-  return {visualIds:part.visualIds,id:part.id,name:part.name,system:part.system,material:part.material,source:part.source,position:origin,rotation:[0,0,0,1],shapes,volumeM3:volume,massKg:volume*materials[part.material].density,bounds};
+  return {visualIds:part.visualIds,id:part.id,name:part.name,system:part.system,material:part.material,motion:part.motion,functionality:part.functionality,source:part.source,position:origin,rotation:[0,0,0,1],shapes,volumeM3:volume,massKg:volume*materials[part.material].density,bounds};
  });
  const result={version:1,parameters:raw.parameters,options,units:'metres',axes:{up:'+Y',front:'-Z'},parts,bonds:[],report:{visualParts:raw.visualPartCount??parts.length,parts:parts.length,shapes:parts.reduce((n,p)=>n+p.shapes.length,0),triangles:0,maxVertices:Math.max(...completed.map(p=>p.shape.vertices.length)),cuts,discardedVolumeM3:discardedVolume,minFragmentThicknessM:2e-4,buildMs:performance.now()-started},engineHints:{geometry:simple?'primitives-and-convex':'convex-only',contactSkin:0,restOffset:0,contactToleranceM:2e-6,partOrigins:'independent collider-local origins; visual.localTranslation supplied by export bundle',compound:'Keep a connected bonded cluster in one rigid body; retain part IDs on its child convex colliders. Recluster on break. Never create rigid bodies per convex fragment.'}};
  progress('Auditing collider contacts',85);
