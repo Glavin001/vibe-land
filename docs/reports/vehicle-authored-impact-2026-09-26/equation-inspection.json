@@ -1,0 +1,330 @@
+{
+  "scope": "independent equation and conditioning diagnostic",
+  "solverQualified": false,
+  "captures": [
+    {
+      "capture": "/tmp/vehicle-stress-problems3/buggy.solve-30.json",
+      "solve": 30,
+      "components": [
+        {
+          "component": 0,
+          "nodes": 190,
+          "bonds": 626,
+          "anchored": false,
+          "nativeThresholdSquared": 0.0008788218256086111,
+          "initialGradientSquared": 3287483449.3410044,
+          "warmResidualScaledDiscrepancy": 0.0,
+          "inertiaWeightsMin": 1.0,
+          "inertiaWeightsMax": 1.0,
+          "diagonalMin": 0.001105747162423204,
+          "diagonalMax": 1205.2195218512443,
+          "smallestEigenvalues": [
+            -1.9178162450304836e-14,
+            -1.4251791090431734e-14,
+            -1.177856971776118e-15,
+            5.632628859220187e-15,
+            3.565392575857324e-14,
+            7.505153042926875e-14,
+            3.422445870984564e-05,
+            3.461597195198461e-05,
+            3.574321782531425e-05,
+            3.594080780509003e-05,
+            0.00018536879047053274,
+            0.00018560012179459843
+          ],
+          "largestEigenvalue": 1318.0503578162038,
+          "diagonalScaledSmallestEigenvalues": [
+            -3.445270490664321e-15,
+            -1.7276062159784727e-15,
+            -5.729386366373498e-16,
+            -3.173259210686188e-16,
+            -7.722147082644554e-17,
+            5.0012999327619356e-15,
+            0.0010967436754138393,
+            0.001133396365608208,
+            0.0015552624092013945,
+            0.001566522563698668,
+            0.001580904131665086,
+            0.001624613407011002
+          ],
+          "diagonalScaledLargestEigenvalue": 2.6681750458509894
+        }
+      ],
+      "hashes": {
+        "/tmp/vehicle-stress-problems3/buggy.solve-30.json": "96afea22fe9ed78d3cce0079dfc568446d7c8202b5a25af10ed63c934c148859",
+        "/tmp/vehicle-stress-problems3/buggy.solve-30.nodes.bin": "d030311891c3f3a14039d354650c2993e9baf00d2db66ea00d584ddcb2ca7ecf",
+        "/tmp/vehicle-stress-problems3/buggy.solve-30.bonds.bin": "1f74582c5b694859a44f16e18fc003472e522702d445ef25d3af61a161e99743"
+      }
+    },
+    {
+      "capture": "/tmp/vehicle-stress-problems3/derby.solve-30.json",
+      "solve": 30,
+      "components": [
+        {
+          "component": 0,
+          "nodes": 326,
+          "bonds": 1016,
+          "anchored": false,
+          "nativeThresholdSquared": 0.0010647332528606057,
+          "initialGradientSquared": 2585399585.9271774,
+          "warmResidualScaledDiscrepancy": 0.0,
+          "inertiaWeightsMin": 1.0,
+          "inertiaWeightsMax": 1.0,
+          "diagonalMin": 0.0006129086645624594,
+          "diagonalMax": 3075.1015554743876,
+          "smallestEigenvalues": [
+            -4.998671493910805e-14,
+            -2.7341333916308768e-14,
+            -1.0183558974766241e-14,
+            1.1997160946115036e-15,
+            9.427827063711145e-15,
+            3.3349795004741045e-14,
+            2.4789149606864734e-05,
+            2.493506500520319e-05,
+            2.5360112010543935e-05,
+            2.5365794230759192e-05,
+            0.00012009267396879732,
+            0.000120164853319656
+          ],
+          "largestEigenvalue": 4618.913135970393,
+          "diagonalScaledSmallestEigenvalues": [
+            -2.666737762324382e-15,
+            -2.342770675636036e-15,
+            -1.927701019214299e-15,
+            -1.4348113396748563e-15,
+            1.4997011574375362e-16,
+            7.049517586120707e-16,
+            0.0006975389202883399,
+            0.0010258030121346436,
+            0.001273444297009951,
+            0.0022331296764799375,
+            0.0022546954346423665,
+            0.00240371860105105
+          ],
+          "diagonalScaledLargestEigenvalue": 2.609527397189316
+        }
+      ],
+      "hashes": {
+        "/tmp/vehicle-stress-problems3/derby.solve-30.json": "7bdead02edb77099402fae49ebd0e3bd1208d25a3e88d2a05b54ab1f78669c54",
+        "/tmp/vehicle-stress-problems3/derby.solve-30.nodes.bin": "758717eb8f829b3a747d9170844ce2df2d79770a659c4c01a1e1cc945ca1dde7",
+        "/tmp/vehicle-stress-problems3/derby.solve-30.bonds.bin": "50785895b706397a268cb357fd011c00ae1ef7da5c2a23ad23cc60f00c11b8a8"
+      }
+    },
+    {
+      "capture": "/tmp/vehicle-stress-problems3/monster.solve-30.json",
+      "solve": 30,
+      "components": [
+        {
+          "component": 0,
+          "nodes": 328,
+          "bonds": 1039,
+          "anchored": false,
+          "nativeThresholdSquared": 7.103797543095425e-05,
+          "initialGradientSquared": 12848523.334947402,
+          "warmResidualScaledDiscrepancy": 0.0,
+          "inertiaWeightsMin": 1.0,
+          "inertiaWeightsMax": 1.0,
+          "diagonalMin": 0.0007110165759883907,
+          "diagonalMax": 2968.4841997448175,
+          "smallestEigenvalues": [
+            -2.6925782187488316e-14,
+            -1.1981233907946772e-14,
+            -4.7419452555905505e-15,
+            3.708200055560294e-15,
+            1.1812058912610411e-14,
+            2.5226797783283425e-14,
+            3.0902001122952e-05,
+            3.1044717369539385e-05,
+            3.1562856956803994e-05,
+            3.1569161372071944e-05,
+            0.00013015999537690766,
+            0.00013025287111692287
+          ],
+          "largestEigenvalue": 4928.201304180818,
+          "diagonalScaledSmallestEigenvalues": [
+            -5.529340045557392e-15,
+            -3.435479815145901e-15,
+            -2.62619773508732e-15,
+            -1.271358359137736e-15,
+            -3.2538997177065106e-16,
+            2.237119194852611e-15,
+            0.0012100920862383848,
+            0.0017142566120968913,
+            0.001885933372376204,
+            0.0021350091055063703,
+            0.002311505426241508,
+            0.002575032149417975
+          ],
+          "diagonalScaledLargestEigenvalue": 2.8315587519765586
+        }
+      ],
+      "hashes": {
+        "/tmp/vehicle-stress-problems3/monster.solve-30.json": "05bbbd2731eafcb8c51a6c96c5301ad3d209bf0758f19b0ff28a248080e27b3c",
+        "/tmp/vehicle-stress-problems3/monster.solve-30.nodes.bin": "ae57e9499cfdc60545cb5ad67a2f6fd59ff51d9b0ca3262a209c759eabdcf788",
+        "/tmp/vehicle-stress-problems3/monster.solve-30.bonds.bin": "28bdd78c5782658290f095fa9396d0c5494d189a9fd87857e46fcbcb848bd99b"
+      }
+    },
+    {
+      "capture": "/tmp/vehicle-stress-problems3/rally.solve-30.json",
+      "solve": 30,
+      "components": [
+        {
+          "component": 0,
+          "nodes": 327,
+          "bonds": 1102,
+          "anchored": false,
+          "nativeThresholdSquared": 0.0013008719542995095,
+          "initialGradientSquared": 3771625109.4982314,
+          "warmResidualScaledDiscrepancy": 0.0,
+          "inertiaWeightsMin": 1.0,
+          "inertiaWeightsMax": 1.0,
+          "diagonalMin": 0.00013013420402399958,
+          "diagonalMax": 7960.821472967564,
+          "smallestEigenvalues": [
+            -3.8349149998913206e-14,
+            -2.903985306296172e-14,
+            -2.0088101464895165e-15,
+            4.0036644044162596e-14,
+            9.061758636452709e-14,
+            1.2796077645223717e-13,
+            2.9602219373381286e-05,
+            2.976481203571785e-05,
+            3.0294178411638583e-05,
+            3.0301896043823263e-05,
+            6.96248393969084e-05,
+            6.964508329615688e-05
+          ],
+          "largestEigenvalue": 13998.673372859641,
+          "diagonalScaledSmallestEigenvalues": [
+            -3.855807960808569e-15,
+            -1.8769440496622987e-15,
+            7.715349118214739e-17,
+            1.6144596994468236e-16,
+            4.0206851568518384e-16,
+            6.256433243934414e-15,
+            0.0016358511218725802,
+            0.0018718049555940257,
+            0.0023274275799374062,
+            0.0029042728632668177,
+            0.00294006422868176,
+            0.00299708314977616
+          ],
+          "diagonalScaledLargestEigenvalue": 2.6148283333848577
+        }
+      ],
+      "hashes": {
+        "/tmp/vehicle-stress-problems3/rally.solve-30.json": "ad181e0b6dadd6fef9867fd13a613434b14980a047d760ab401581b21e7c1c95",
+        "/tmp/vehicle-stress-problems3/rally.solve-30.nodes.bin": "9f60e953dc15e19b866c2f01a67828bf69ffeaade5d7144ebf31e42046bdb4ea",
+        "/tmp/vehicle-stress-problems3/rally.solve-30.bonds.bin": "09e3add4809c6672dc90c3c8c65fa6136f8aba44773eac6f420c98149d79403e"
+      }
+    },
+    {
+      "capture": "/tmp/vehicle-stress-problems3/sprint.solve-30.json",
+      "solve": 30,
+      "components": [
+        {
+          "component": 0,
+          "nodes": 222,
+          "bonds": 754,
+          "anchored": false,
+          "nativeThresholdSquared": 0.0010904447408393025,
+          "initialGradientSquared": 3143747061.6452494,
+          "warmResidualScaledDiscrepancy": 0.0,
+          "inertiaWeightsMin": 1.0,
+          "inertiaWeightsMax": 1.0,
+          "diagonalMin": 0.0008555410055109403,
+          "diagonalMax": 4143.125578965708,
+          "smallestEigenvalues": [
+            -5.700856938418051e-14,
+            -3.6995309608233725e-14,
+            -1.2804561415527446e-14,
+            9.407310435508558e-16,
+            1.786361579723377e-14,
+            3.1219557691848927e-14,
+            2.7267255939366795e-05,
+            2.7522310190466295e-05,
+            2.8230775601868184e-05,
+            2.8254395628152754e-05,
+            0.00014328371781750906,
+            0.00014344965243549617
+          ],
+          "largestEigenvalue": 6954.552909799755,
+          "diagonalScaledSmallestEigenvalues": [
+            -1.961200861604117e-15,
+            -8.608677309043665e-17,
+            3.037212105867081e-16,
+            5.729092827236942e-16,
+            9.263780110223989e-16,
+            5.395757332709379e-15,
+            0.0010948958542602713,
+            0.001257275152592106,
+            0.0019180284394918683,
+            0.002052736199146569,
+            0.0024476789972060994,
+            0.0037901186222568093
+          ],
+          "diagonalScaledLargestEigenvalue": 2.824196024788023
+        }
+      ],
+      "hashes": {
+        "/tmp/vehicle-stress-problems3/sprint.solve-30.json": "18f43ae99c184025a4011c43d9ed2ae6b8b6a9e28e32bb496a2a491dfe9c415f",
+        "/tmp/vehicle-stress-problems3/sprint.solve-30.nodes.bin": "f7166700bbf4b95d4a19a9bda578b693ab88d83113ed51ea6f51015d787a9b8b",
+        "/tmp/vehicle-stress-problems3/sprint.solve-30.bonds.bin": "4f112177ba90fa851ac3518d381612e3ff090c00d0af4b56a1ebd9d31ac94854"
+      }
+    },
+    {
+      "capture": "/tmp/vehicle-stress-problems3/trophy.solve-30.json",
+      "solve": 30,
+      "components": [
+        {
+          "component": 0,
+          "nodes": 332,
+          "bonds": 1072,
+          "anchored": false,
+          "nativeThresholdSquared": 0.00044130999594926834,
+          "initialGradientSquared": 977942172.6207286,
+          "warmResidualScaledDiscrepancy": 0.0,
+          "inertiaWeightsMin": 1.0,
+          "inertiaWeightsMax": 1.0,
+          "diagonalMin": 0.0007353249168039462,
+          "diagonalMax": 2946.049146064588,
+          "smallestEigenvalues": [
+            -4.418541818009474e-14,
+            -1.4016070793151293e-14,
+            -9.330159518558732e-15,
+            6.699576218396659e-15,
+            2.4441945121514403e-14,
+            3.092670683859356e-14,
+            2.8283827456401595e-05,
+            2.8484948494468528e-05,
+            2.8910703324984023e-05,
+            2.895957430989122e-05,
+            0.0001250653473984313,
+            0.00012514663134471855
+          ],
+          "largestEigenvalue": 4670.795211749356,
+          "diagonalScaledSmallestEigenvalues": [
+            -3.576579916907338e-15,
+            -9.621483503080716e-16,
+            -3.251982648718253e-16,
+            7.177888181813298e-16,
+            2.8534373284331997e-15,
+            5.940891939352561e-15,
+            0.0009994168571154584,
+            0.001389456106868189,
+            0.0016429756411776852,
+            0.0026710882473034757,
+            0.0027933181459612,
+            0.0028882245107185586
+          ],
+          "diagonalScaledLargestEigenvalue": 2.470894198158281
+        }
+      ],
+      "hashes": {
+        "/tmp/vehicle-stress-problems3/trophy.solve-30.json": "c50db45e4c41db3234bc0b05538737a204a23219a3eb797c5ee41ecfafc9679a",
+        "/tmp/vehicle-stress-problems3/trophy.solve-30.nodes.bin": "86c4396d0f51f9aca4552332ad6b325cad2b76368d69d7597daeb7a6a5aa6fbb",
+        "/tmp/vehicle-stress-problems3/trophy.solve-30.bonds.bin": "e77f684b653b1bd2a3774d087558a738c611a37bc6185482bc157fda71632ded"
+      }
+    }
+  ]
+}

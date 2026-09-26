@@ -53,3 +53,17 @@ equations and reports their spectra. Its analytic tests cover free and anchored
 chains, lever-arm signs, nonzero warm impulses and corrupted residual rejection.
 Equation capture uses the separate diagnostic runtime and unique output paths;
 its execution times cannot qualify production performance.
+
+The repaired CuMetal recorder (PhysX `623e99ca`) captures all six impact
+equations at solve 30. [Independent reconstruction](equation-inspection.json)
+matches every captured warm residual exactly. The first six near-zero spectral
+values are consistent with free rigid motion; the remaining spectrum spans
+roughly 3.8e7–4.7e8. This suggests a conditioning/precision investigation,
+not a diagnosis by itself. Diagonal scaling substantially narrows the spectrum.
+
+[Raw impact equations and component records](impact-equations.tar.gz),
+[capture log](capture.log) and [capture hashes](capture-artifacts.json) preserve
+that diagnostic run. Cycle timings are explicitly unavailable. The diagnostic
+module reproduces non-convergence on every model, but its iteration counts
+differ from the normal runtime; do not present this as bitwise parity or a
+performance comparison. The normal-runtime evidence above remains authoritative.
