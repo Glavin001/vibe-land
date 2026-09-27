@@ -1123,6 +1123,21 @@ enum MatchEvent {
     Session(session_match::SessionCommand),
 }
 
+impl MatchEvent {
+    fn kind(&self) -> &'static str {
+        match self {
+            MatchEvent::GarageDebug { .. } => "garage_debug",
+            MatchEvent::GarageBombardment { .. } => "garage_bombardment",
+            MatchEvent::TuneGarageVehicle { .. } => "tune_garage_vehicle",
+            MatchEvent::PublishVehicle { .. } => "publish_vehicle",
+            MatchEvent::Connect(_) => "connect",
+            MatchEvent::Disconnect { .. } => "disconnect",
+            MatchEvent::Packet { .. } => "packet",
+            MatchEvent::Session(_) => "session",
+        }
+    }
+}
+
 struct PlayerRuntime {
     identity: String,
     transport: ClientTransport,
@@ -3490,6 +3505,10 @@ async fn run_match_loop(
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     let mut garage_last_occupied = Instant::now();
+    // Wall time the loop spends outside tick(): tick_ms only covers tick(), so
+    // a stall in event handling shows up to clients but not in the health line.
+    let mut last_tick_start: Option<Instant> = None;
+    let (mut events_ms, mut events, mut worst_event) = (0.0f32, 0u32, (0.0f32, ""));
     loop {
         tokio::select! {
             _ = tick.tick() => {
@@ -3498,10 +3517,25 @@ async fn run_match_loop(
                     if !state.players.is_empty() {garage_last_occupied = Instant::now();}
                     else if garage_last_occupied.elapsed() > Duration::from_secs(60) {break;}
                 }
+                let started = Instant::now();
                 state.tick();
+                let tick_ms = started.elapsed().as_secs_f32() * 1000.0;
+                let gap_ms = last_tick_start.map_or(0.0, |t| started.duration_since(t).as_secs_f32() * 1000.0);
+                if gap_ms > 100.0 || tick_ms > 100.0 {
+                    warn!(match_id = %state.id, tick = state.server_tick, gap_ms, tick_ms, events, events_ms,
+                        worst_event = worst_event.1, worst_event_ms = worst_event.0, "slow match loop iteration");
+                }
+                last_tick_start = Some(started);
+                (events_ms, events, worst_event) = (0.0, 0, (0.0, ""));
             }
             Some(event) = rx.recv() => {
+                let kind = event.kind();
+                let started = Instant::now();
                 state.handle_event(event);
+                let ms = started.elapsed().as_secs_f32() * 1000.0;
+                events_ms += ms;
+                events += 1;
+                if ms > worst_event.0 {worst_event = (ms, kind);}
             }
             else => break,
         }
@@ -4655,6 +4689,13 @@ impl MatchState {
         self.timings
             .tick_unattributed_ms
             .record((total_ms - attributed).max(0.0));
+        if total_ms > 50.0 {
+            warn!(match_id = %self.id, tick = self.server_tick, total_ms,
+                player_sim_ms = self.timings.player_sim_ms.last(), vehicle_ms = self.timings.vehicle_ms.last(),
+                dynamics_ms = self.timings.dynamics_ms.last(), hitscan_ms = self.timings.hitscan_ms.last(), shots_ms,
+                city_ms = city_total_ms, snapshot_ms = snapshot_tick_ms, publish_ms = publish_tick_ms,
+                unattributed_ms = total_ms - attributed, "slow tick");
+        }
         let city_stats = self.city.as_ref().map(|city| city.stats());
         self.tick_ring.push_back(TickRingEntry {
             t: self.server_tick,

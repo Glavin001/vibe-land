@@ -710,7 +710,10 @@ fn garage_vehicle_destruction_is_rigid_body_correct() {
 
 /// Where the impact tick's time goes: the meteor scenario with no debug
 /// readbacks, each step timed, and PhysX's own zones (VIBE_PHYSX_PROFILE) for
-/// the slow ticks. Writes target/meteor-tick-profile.json.
+/// the slow ticks. The live server aims each meteor from its own RNG, and the
+/// approach decides how much breaks, so VIBE_PROFILE_SEEDS (default "7") runs
+/// one scene per seed; VIBE_PROFILE_TERRAIN=1 uses the garage heightfield.
+/// Writes target/meteor-tick-profile.json.
 #[test]
 #[ignore = "requires local GPU, coherent ABI 22 SDK and VIBE_VEHICLE_BUILD_FIXTURES"]
 fn garage_meteor_impact_tick_profile() {
@@ -718,37 +721,51 @@ fn garage_meteor_impact_tick_profile() {
     std::env::set_var("VIBE_PHYSX_PROFILE", "1");
     let (_, geometry) = fixtures().into_iter().next().expect("buggy fixture");
     let heightfield = std::env::var("VIBE_PROFILE_TERRAIN").is_ok_and(|v| v == "1");
-    let mut scene = Scene::new(&geometry, heightfield);
+    let seeds: Vec<u64> = std::env::var("VIBE_PROFILE_SEEDS").unwrap_or("7".into())
+        .split(',').map(|s| s.trim().parse().expect("VIBE_PROFILE_SEEDS: comma-separated integers")).collect();
     let mut rows = Vec::new();
-    let mut step = |scene: &mut Scene, label: &str| {
-        let started = std::time::Instant::now();
-        let (vehicle_ms, dynamics_ms) = scene.arena.step_vehicles_and_dynamics(DT);
-        let step_ms = started.elapsed().as_secs_f64() * 1000.;
-        let detached_started = std::time::Instant::now();
-        let detached = scene.arena.vehicle_detached_parts(CAR).len();
-        let detached_ms = detached_started.elapsed().as_secs_f64() * 1000.;
-        scene.tick += 1;
-        let _ = scene.arena.world.native_stats();
-        let mut spans: Vec<(String, f64)> = scene.arena.world.take_destruction_spans().into_iter()
-            .filter(|s| s.kind != 2 && s.value > 0.05).map(|s| (s.name, s.value)).collect();
-        spans.sort_by(|a, b| b.1.total_cmp(&a.1));
-        rows.push(json!({"tick": scene.tick, "phase": label, "stepMs": step_ms, "vehicleMs": vehicle_ms, "dynamicsMs": dynamics_ms,
-            "detachedPartsMs": detached_ms, "detached": detached, "spans": spans}));
-    };
-    for _ in 0..120 { step(&mut scene, "settle"); }
-    let car = scene.arena.current_vehicle_snapshots()[0].pose.position;
-    let tuning = crate::meteor::MeteorTuning::from_env();
-    let launch = crate::meteor::plan(glam::Vec3::new(car.x, car.y, car.z), glam::Vec3::new(0., -G, 0.), &tuning, &mut crate::meteor::Rng::new(7));
-    scene.arena.launch_meteor(Vector3::new(launch.start.x, launch.start.y, launch.start.z),
-        Vector3::new(launch.velocity.x, launch.velocity.y, launch.velocity.z), tuning.radius_m, tuning.mass_kg, tuning.ttl_ticks);
-    for _ in 0..((launch.flight_time_s * 60.) as u32 + 240) { step(&mut scene, "meteor"); }
-    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../target/meteor-tick-profile.json");
-    std::fs::write(path, serde_json::to_vec_pretty(&rows).unwrap()).unwrap();
-    let mut worst: Vec<&serde_json::Value> = rows.iter().collect();
-    worst.sort_by(|a, b| b["stepMs"].as_f64().unwrap().total_cmp(&a["stepMs"].as_f64().unwrap()));
-    for row in worst.iter().take(6) {
-        eprintln!("tick {} step {:.1} ms (vehicle {:.1}, dynamics {:.1}, detached read {:.2}) detached {}: {:?}", row["tick"], row["stepMs"].as_f64().unwrap(),
-            row["vehicleMs"].as_f64().unwrap(), row["dynamicsMs"].as_f64().unwrap(), row["detachedPartsMs"].as_f64().unwrap(), row["detached"],
-            row["spans"].as_array().unwrap().iter().take(14).collect::<Vec<_>>());
+    let mut summary = Vec::new();
+    for seed in seeds {
+        let mut scene = Scene::new(&geometry, heightfield);
+        let first = rows.len();
+        let mut step = |scene: &mut Scene, label: &str| {
+            let started = std::time::Instant::now();
+            let (vehicle_ms, dynamics_ms) = scene.arena.step_vehicles_and_dynamics(DT);
+            let step_ms = started.elapsed().as_secs_f64() * 1000.;
+            let detached_started = std::time::Instant::now();
+            let detached = scene.arena.vehicle_detached_parts(CAR).len();
+            let detached_ms = detached_started.elapsed().as_secs_f64() * 1000.;
+            scene.tick += 1;
+            let _ = scene.arena.world.native_stats();
+            let mut spans: Vec<(String, f64)> = scene.arena.world.take_destruction_spans().into_iter()
+                .filter(|s| s.kind != 2 && s.value > 0.05).map(|s| (s.name, s.value)).collect();
+            spans.sort_by(|a, b| b.1.total_cmp(&a.1));
+            rows.push(json!({"seed": seed, "tick": scene.tick, "phase": label, "stepMs": step_ms, "vehicleMs": vehicle_ms, "dynamicsMs": dynamics_ms,
+                "detachedPartsMs": detached_ms, "detached": detached, "spans": spans}));
+        };
+        for _ in 0..120 { step(&mut scene, "settle"); }
+        let car = scene.arena.current_vehicle_snapshots()[0].pose.position;
+        let tuning = crate::meteor::MeteorTuning::from_env();
+        let launch = crate::meteor::plan(glam::Vec3::new(car.x, car.y, car.z), glam::Vec3::new(0., -G, 0.), &tuning, &mut crate::meteor::Rng::new(seed));
+        scene.arena.launch_meteor(Vector3::new(launch.start.x, launch.start.y, launch.start.z),
+            Vector3::new(launch.velocity.x, launch.velocity.y, launch.velocity.z), tuning.radius_m, tuning.mass_kg, tuning.ttl_ticks);
+        for _ in 0..((launch.flight_time_s * 60.) as u32 + 240) { step(&mut scene, "meteor"); }
+        let bodies = scene.arena.vehicle_destruction_debug(CAR).ok().map(|d| d["actors"].as_array().map_or(0, |a| a.len()));
+        let meteor: Vec<f64> = rows[first..].iter().filter(|r| r["phase"] == "meteor").map(|r| r["stepMs"].as_f64().unwrap()).collect();
+        let mut sorted = meteor.clone();
+        sorted.sort_by(f64::total_cmp);
+        summary.push(json!({"seed": seed, "worstMs": sorted.last(), "overBudget": meteor.iter().filter(|&&m| m > 1000. / 60.).count(),
+            "over50": meteor.iter().filter(|&&m| m > 50.).count(), "medianMs": sorted[sorted.len() / 2],
+            "detached": rows.last().unwrap()["detached"], "bodies": bodies}));
+        let mut worst: Vec<&serde_json::Value> = rows[first..].iter().collect();
+        worst.sort_by(|a, b| b["stepMs"].as_f64().unwrap().total_cmp(&a["stepMs"].as_f64().unwrap()));
+        for row in worst.iter().take(4) {
+            eprintln!("seed {seed} tick {} step {:.1} ms (vehicle {:.1}, dynamics {:.1}, detached read {:.2}) detached {}: {:?}", row["tick"], row["stepMs"].as_f64().unwrap(),
+                row["vehicleMs"].as_f64().unwrap(), row["dynamicsMs"].as_f64().unwrap(), row["detachedPartsMs"].as_f64().unwrap(), row["detached"],
+                row["spans"].as_array().unwrap().iter().take(14).collect::<Vec<_>>());
+        }
     }
+    for s in &summary { eprintln!("summary {s}"); }
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../target/meteor-tick-profile.json");
+    std::fs::write(path, serde_json::to_vec_pretty(&json!({"summary": summary, "rows": rows})).unwrap()).unwrap();
 }

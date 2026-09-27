@@ -119,7 +119,9 @@ try {
   if (!meteorOnly) { await page.keyboard.down('KeyW'); await sleep(1100); await page.keyboard.up('KeyW'); }
   await fetch(`${api}/range`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ballMass: mass, ballSpeed: speed }) });
   const telemetry = [];
-  let sampling = true;
+  // TELEMETRY=0: no debug polling (each poll reads every hull and bond back
+  // from the GPU, which the server pays for), for timings a player would see.
+  let sampling = process.env.TELEMETRY !== '0';
   const sampler = (async () => {
     while (sampling) {
       const started = Date.now();
