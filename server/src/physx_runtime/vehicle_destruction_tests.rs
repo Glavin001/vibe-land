@@ -566,6 +566,42 @@ fn run_progressive(geometry: &PreparedGeometry, layout: &FractureLayout, targets
         "looseBodies": checks.tracks.len(), "freeFlightTicks": checks.free_flight_ticks, "violations": checks.report(), "warnings": checks.warnings(), "failed": !checks.violations.is_empty()})
 }
 
+/// The city's meteor (same tuning, arc and body) dropped on the parked car.
+fn run_meteor(geometry: &PreparedGeometry, layout: &FractureLayout, heightfield: bool) -> serde_json::Value {
+    let mut scene = Scene::new(geometry, heightfield);
+    let mut checks = Checks::new(geometry, layout);
+    if heightfield { checks.terrain = Some(crate::demo_world::garage_test_world()); }
+    let observe = |scene: &mut Scene, checks: &mut Checks| {
+        scene.step();
+        let streamed = scene.arena.vehicle_detached_parts(CAR);
+        let d = scene.observe();
+        checks.sample(scene.tick, d, &streamed)
+    };
+    for _ in 0..90 { observe(&mut scene, &mut checks); }
+    let car = scene.arena.current_vehicle_snapshots()[0].pose.position;
+    let tuning = crate::meteor::MeteorTuning::from_env();
+    let launch = crate::meteor::plan(glam::Vec3::new(car.x, car.y, car.z), glam::Vec3::new(0., -G, 0.), &tuning, &mut crate::meteor::Rng::new(7));
+    let meteor = scene.arena.launch_meteor(Vector3::new(launch.start.x, launch.start.y, launch.start.z),
+        Vector3::new(launch.velocity.x, launch.velocity.y, launch.velocity.z), tuning.radius_m, tuning.mass_kg, tuning.ttl_ticks);
+    let flight = (launch.flight_time_s * 60.) as u32;
+    let mut closest = f32::INFINITY;
+    for _ in 0..flight + 480 {
+        observe(&mut scene, &mut checks);
+        if let Some(b) = scene.arena.snapshot_dynamic_bodies().into_iter().find(|b| Some(b.0) == meteor) {
+            closest = closest.min((v3(b.1) - Vector3::new(car.x, car.y, car.z)).norm());
+        }
+    }
+    checks.finish(0.5 * tuning.mass_kg * launch.velocity.length_squared());
+    let bonds = layout.bond_chunks.len();
+    let on_car = checks.last.as_ref().map_or(0, |d| d.hulls.iter().filter(|h| h.actor == 0).map(|h| h.part).collect::<BTreeSet<_>>().len());
+    if meteor.is_none() || closest > tuning.radius_m + 3.0 { checks.fail("the meteor did not reach the car", format!("closest {closest:.1} m")); }
+    json!({"scenario": if heightfield { "meteor on terrain" } else { "meteor" }, "meteorMassKg": tuning.mass_kg, "meteorSpeed": launch.velocity.length(),
+        "closestToCarM": closest, "brokenBondCount": checks.broken.len(), "bondCount": bonds,
+        "brokenFraction": checks.broken.len() as f32 / bonds as f32, "partsLeftOnCar": on_car, "parts": geometry.parts.len(),
+        "looseBodies": checks.tracks.len(), "freeFlightTicks": checks.free_flight_ticks,
+        "violations": checks.report(), "warnings": checks.warnings(), "failed": !checks.violations.is_empty()})
+}
+
 #[test]
 #[ignore = "requires local GPU, coherent ABI 22 SDK with fragmentGravity and VIBE_VEHICLE_BUILD_FIXTURES"]
 fn garage_vehicle_destruction_is_rigid_body_correct() {
@@ -602,6 +638,9 @@ fn garage_vehicle_destruction_is_rigid_body_correct() {
             for heightfield in [false, true] {
                 run("progressive".into(), run_progressive(&geometry, &layout, &sequence, heightfield));
             }
+        }
+        if wanted("meteor") {
+            for heightfield in [false, true] { run("meteor".into(), run_meteor(&geometry, &layout, heightfield)); }
         }
         let mut free_flight = 0;
         let mut shots = 0;

@@ -126,6 +126,15 @@ impl PhysicsArena {
         }
     }
 
+    /// World centre of one part of a destructible vehicle.
+    pub fn vehicle_part_center(&self, id:u32, part:u32) -> Option<[f32;3]> {
+        match &self.backend {
+            #[cfg(feature="native-destruction")]
+            PhysicsBackend::Physx(arena) => arena.vehicle_part_center(id, part),
+            _ => { let _ = (id, part); None }
+        }
+    }
+
     /// (origin, direction, clear) of a shot at one part of a destructible vehicle.
     pub fn vehicle_clear_shot(&self, id:u32, part:u32, from:Option<Vec3>) -> Option<(Vec3, Vec3, bool)> {
         match &self.backend {

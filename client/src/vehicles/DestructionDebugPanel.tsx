@@ -58,6 +58,12 @@ export function DestructionDebugPanel({ matchId, geometryHash, range, onReset }:
       if (!r.ok) throw Error(await r.text());
     } catch (e) { setError(String(e instanceof Error ? e.message : e)); }
   }
+  async function meteor() {
+    try {
+      const r = await fetch(`${session}/range/meteor`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(selectedPart === null ? {} : { part: selectedPart }) });
+      if (!r.ok) throw Error(await r.text());
+    } catch (e) { setError(String(e instanceof Error ? e.message : e)); }
+  }
   const partName = (i: number) => assembly?.parts[i] ? `${assembly.parts[i].name ?? assembly.parts[i].id} #${i}` : `#${i}`;
   const hullsByActor = new Map<number, Set<number>>();
   data?.hulls.forEach(h => { const s = hullsByActor.get(h.actor) ?? new Set(); s.add(h.part); hullsByActor.set(h.actor, s); });
@@ -74,6 +80,7 @@ export function DestructionDebugPanel({ matchId, geometryHash, range, onReset }:
           {assembly?.parts.map((p, i) => p.shapes.length ? <option key={i} value={i}>{p.name ?? p.id} #{i}</option> : null)}
         </select></label>
         <button disabled={selectedPart === null || !data} onClick={() => void fireAt()}>Fire at part</button>
+        <button title="Drop the city's meteor (2 m, 110 t, 140 m/s) on the selected part, or the car" onClick={() => void meteor()}>Meteor</button>
         {onReset && <button onClick={onReset}>Reset car</button>}
       </>}
       {LAYERS.map(([key, label, title]) => <button key={key} title={title} aria-pressed={layers[key]} onClick={() => updateDebug({ layers: { ...layers, [key]: !layers[key] } })}>{label}</button>)}

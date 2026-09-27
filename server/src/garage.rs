@@ -58,6 +58,8 @@ pub struct Session {
     pub range: Mutex<RangeSettings>,
     /// Parts to fire the range cannon at, along a clear line.
     pub aimed_shots: Mutex<Vec<u32>>,
+    /// Meteors to drop on the car (a part, or the car's centre when None).
+    pub meteors: Mutex<Vec<Option<u32>>>,
     pub vehicle: PreparedVehicle,
     pub current_vehicle: Mutex<PreparedVehicle>,
     pub geometry: PreparedGeometry,
@@ -144,6 +146,7 @@ pub async fn create(
             mode,
             range: Mutex::new(RangeSettings::default()),
             aimed_shots: Mutex::new(Vec::new()),
+            meteors: Mutex::new(Vec::new()),
             vehicle: vehicle.clone(),
             current_vehicle: Mutex::new(vehicle.clone()),
             geometry,
@@ -185,6 +188,25 @@ pub async fn fire_handler(axum::extract::Path(id): axum::extract::Path<String>, 
     let mut shots = session.aimed_shots.lock().unwrap();
     if shots.len() >= 8 { return Err((StatusCode::TOO_MANY_REQUESTS, "Shots are still queued.".into())); }
     shots.push(request.part);
+    Ok(StatusCode::ACCEPTED)
+}
+
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct MeteorRequest { #[serde(default)] part: Option<u32> }
+
+/// Drop the city's meteor on the range car: the same rock, arc and physics.
+pub async fn meteor_handler(axum::extract::Path(id): axum::extract::Path<String>, body: Option<Json<MeteorRequest>>)
+    -> Result<StatusCode, (StatusCode, String)> {
+    let session = lookup(&id).filter(|s| !s.closing() && s.mode == SessionMode::Range)
+        .ok_or((StatusCode::NOT_FOUND, "No destruction range session.".to_string()))?;
+    let part = body.map(|Json(b)| b.part).unwrap_or(None);
+    if part.is_some_and(|p| p as usize >= session.geometry.parts.len()) {
+        return Err((StatusCode::BAD_REQUEST, "No such part.".into()));
+    }
+    let mut meteors = session.meteors.lock().unwrap();
+    if meteors.len() >= 2 { return Err((StatusCode::TOO_MANY_REQUESTS, "A meteor is already queued.".into())); }
+    meteors.push(part);
     Ok(StatusCode::ACCEPTED)
 }
 

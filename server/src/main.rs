@@ -1507,6 +1507,7 @@ async fn main() -> Result<()> {
         .route("/vehicle-assets/session", post(garage_session_handler).layer(axum::extract::DefaultBodyLimit::max(8192)))
         .route("/vehicle-assets/session/:id", axum::routing::delete(garage::close_handler).get(garage::inspect_handler))
         .route("/vehicle-assets/session/:id/bombardment", post(garage_bombardment_handler).layer(axum::extract::DefaultBodyLimit::max(256)))
+        .route("/vehicle-assets/session/:id/range/meteor", post(garage::meteor_handler).layer(axum::extract::DefaultBodyLimit::max(256)))
         .route("/vehicle-assets/session/:id/range/fire", post(garage::fire_handler).layer(axum::extract::DefaultBodyLimit::max(256)))
         .route("/vehicle-assets/session/:id/range", post(garage::range_handler).layer(axum::extract::DefaultBodyLimit::max(256)))
         .route("/vehicle-assets/session/:id/debug", get(garage_debug_handler))
@@ -4751,6 +4752,12 @@ impl MatchState {
         let Some(session)=self.garage.clone().filter(|s|s.mode==garage::SessionMode::Range) else { return };
         let settings=*session.range.lock().unwrap();
         let aimed=std::mem::take(&mut *session.aimed_shots.lock().unwrap());
+        for part in std::mem::take(&mut *session.meteors.lock().unwrap()) {
+            let target = part.and_then(|p| self.arena.vehicle_part_center(garage::VEHICLE_ID, p))
+                .or_else(|| self.arena.snapshot_vehicles().iter().find(|car| car.id == garage::VEHICLE_ID)
+                    .map(|car| [car.px_mm as f32 / 1000.0, car.py_mm as f32 / 1000.0, car.pz_mm as f32 / 1000.0]));
+            if let Some(target) = target { self.launch_meteor_at_point(glam::Vec3::from_array(target), 0); }
+        }
         let eye=self.players.keys().filter_map(|id|self.arena.player_state(*id)).find(|s|!s.dead)
             .map(|s|nalgebra::Vector3::new(s.position.x as f32,s.position.y as f32+PLAYER_EYE_HEIGHT_M,s.position.z as f32));
         let mut shots: Vec<(nalgebra::Vector3<f32>, nalgebra::Vector3<f32>)> = aimed.into_iter()

@@ -23,7 +23,9 @@ const mass = Number(process.env.BALL_MASS ?? 3000), speed = Number(process.env.B
 const gap = Number(process.env.SHOT_GAP_MS ?? 2200);
 // Telemetry beside the video: <out>.telemetry.jsonl, one line per ~50 ms.
 const telemetryPath = out.replace(/\.mp4$/, '') + '.telemetry.jsonl';
-const targets = ['Front left wheel assembly', 'Headlight housing', 'Nose panel', 'Front right wheel assembly',
+// METEOR=1: stand back and drop the city's meteor on the car instead of shooting.
+const meteorOnly = process.env.METEOR === '1';
+const targets = meteorOnly ? [] : ['Front left wheel assembly', 'Headlight housing', 'Nose panel', 'Front right wheel assembly',
   'Headlight housing', 'Rear left wheel assembly', 'Fuel tank', 'Rear right wheel assembly', 'Mirror housing',
   'Left cage member 5', 'Right cage member 5', 'Front roof crossmember', 'Seat back', 'Steering wheel assembly',
   'Rear bumper', 'Exhaust muffler', 'Fire extinguisher'];
@@ -98,7 +100,7 @@ try {
   await page.locator('.garage-debug-bar select').nth(1).selectOption(String(speed)).catch(() => {});
   await page.evaluate(() => (document.activeElement)?.blur?.());
   rangeStarted = Date.now();
-  await page.keyboard.down('KeyW'); await sleep(1100); await page.keyboard.up('KeyW');
+  if (!meteorOnly) { await page.keyboard.down('KeyW'); await sleep(1100); await page.keyboard.up('KeyW'); }
   await fetch(`${api}/range`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ballMass: mass, ballSpeed: speed }) });
   const telemetry = [];
   let sampling = true;
@@ -123,6 +125,14 @@ try {
     const after = await (await fetch(`${api}/debug`)).json();
     const off = new Set(after.hulls.filter(h => h.actor !== 0).map(h => h.part)).size;
     console.log(`fired at ${name} #${part}: ${after.brokenBonds} bonds broken, ${off} parts off the car, ${after.actors.length} bodies`);
+  }
+  if (meteorOnly) {
+    telemetry.push({ t: Date.now() - rangeStarted, shot: { part: -1, name: 'meteor' } });
+    await fetch(`${api}/range/meteor`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    await sleep(12000);
+    const after = await (await fetch(`${api}/debug`)).json();
+    const off = new Set(after.hulls.filter(h => h.actor !== 0).map(h => h.part)).size;
+    console.log(`meteor: ${after.brokenBonds} of ${after.bonds.length} bonds broken, ${off} parts off the car, ${after.actors.length} bodies`);
   }
   await sleep(4000);
   sampling = false; await sampler;

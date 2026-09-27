@@ -1458,6 +1458,15 @@ impl PhysxPhysicsArena {
         }
     }
 
+    /// World centre of one part of the destructible car (its primary hull).
+    #[cfg(feature = "native-destruction")]
+    pub fn vehicle_part_center(&self, id: u32, part: u32) -> Option<[f32; 3]> {
+        let entity = NS_VEHICLE | (id & ID_MASK);
+        self.garage_destruction.as_ref().filter(|g| g.entity == entity)?;
+        let aim = self.world.native_chunk_aim(garage_destruction::STRUCTURE, part).ok().filter(|a| a.found)?;
+        Some([aim.center.x, aim.center.y, aim.center.z])
+    }
+
     /// A clear shot at a part of the destructible car (see `GarageDestruction::clear_shot`).
     #[cfg(feature = "native-destruction")]
     pub fn vehicle_clear_shot(&self, id: u32, part: u32, from: Option<Vector3<f32>>) -> Option<(Vector3<f32>, Vector3<f32>, bool)> {
