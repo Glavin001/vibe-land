@@ -48,3 +48,23 @@ constant velocity" (`report-buggy-without-fragment-gravity.json`).
   by the suspension travel).
 - Mass authoring elsewhere uses solid steel volumes (buggy 2.49 t; the engine
   crankcase is a 385 kg block welded to the frame and survives any shot).
+
+## Range recording analysis (2026-09-27)
+
+`scripts/perf/garage-destruction-video.mjs` now writes telemetry beside the
+video; `scripts/perf/analyze-destruction-telemetry.py` summarises it
+(`range-before-fix.analysis.txt`, `range-after-fix.analysis.txt`).
+
+Fixed from it: a lost wheel reported jounce FLT_MAX, which posed its hub at a
+travel clamp and was streamed to clients; that corner's hulls stayed excluded
+from terrain; changed filters did not re-filter existing pairs (hubs rested
+0.17-0.43 m in the ground); new fragments kept the exclusion one step; thin and
+fast loose pieces (a headlamp bracket, a harness clip, a tie rod) passed
+through the heightfield and fell out of the world.
+
+Remaining: a hull pushed below the heightfield by more than its thickness gets
+no contacts (a heightfield has no volume). Seen as a front tyre posed below
+ground by Vehicle2 at the moment it detaches (~0.25 m, pinned under the car),
+and the 2.5 cm rear axle stub when a wheel-less corner drops (6.6-10 cm, test
+warning). Solver iterations (16) and larger car-hull offsets were measured and
+do not fix it (larger offsets also distort fracture).

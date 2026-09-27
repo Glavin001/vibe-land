@@ -626,7 +626,7 @@ std::uint32_t NativeDestruction::pose_vehicle_parts(physx::native::NativeVehicle
     if(!posed[hull.part] || hull.shape->getActor()!=carrier) continue; // fragments keep their frames
     hull.shape->setLocalPose(deltas[hull.part]*hull.rest);
     PxFilterData filter=hull.filter;filter.word1&=~exclude_mask;
-    if(!(filter==hull.shape->getSimulationFilterData())) hull.shape->setSimulationFilterData(filter);
+    if(!(filter==hull.shape->getSimulationFilterData())) refilter(*hull.shape,filter);
     ++moved;
   }
   return moved;
@@ -705,17 +705,64 @@ FfiVehicleDebug NativeDestruction::vehicle_debug(const physx::native::NativeVehi
   return out;
 }
 
+void NativeDestruction::restore_detached_hull_filters() {
+#if PX_DESTRUCTION_SCENE_VERSION >= 22
+  State &s=*state_;if(!s.configured) return;
+  // A hull that left the carrier collides as authored again (e.g. a loose
+  // wheel must meet the road that the intact wheel's Vehicle2 query owned).
+  // Run right after the step that split it and again before the next one.
+  for(auto &binding:s.vehicles) {
+    const auto *carrier=binding.vehicle->actor();
+    // Loose pieces are often thin (brackets, tie rods); with the compound's
+    // 2 mm offset one falling at a few m/s passes a heightfield, which has
+    // no thickness, between ticks. Only pieces off the car get the larger
+    // offset, so the car's own contacts and fracture loads are unchanged.
+    // 0.01-0.04 m stop a falling bracket and leave shot results unchanged;
+    // 0.06 m let a separating tyre load its hub (5 -> 37 bonds broken).
+    // A fast piece gets an offset that covers its travel in one step (a
+    // flung harness clip moved 13 cm per tick and left the world), updated
+    // only when it changes by more than a quarter.
+    static const float loose=native_env_f32("VIBE_VEHICLE_LOOSE_CONTACT_OFFSET",0.02f);
+    // The car's own hulls keep their offset: scaling them too (measured)
+    // multiplied the bonds a shot breaks and still left a thin axle sunk.
+    for(auto &hull:binding.hulls) {
+      auto *owner=hull.shape->getActor();
+      if(owner==carrier) continue;
+      float offset=loose;
+      if(const auto *body=owner?owner->is<PxRigidDynamic>():nullptr) {
+        const float reach=body->getLinearVelocity().magnitude()+body->getAngularVelocity().magnitude()*owner->getWorldBounds().getExtents().magnitude();
+        offset=PxClamp(reach*(1.25f/60.0f),offset,0.5f);
+      }
+      const float current=hull.shape->getContactOffset();
+      if(offset>current*1.25f || offset<current*0.75f) hull.shape->setContactOffset(offset);
+      if(!(hull.shape->getSimulationFilterData()==hull.filter)) refilter(*hull.shape,hull.filter);
+    }
+  }
+#endif
+}
+
+void NativeDestruction::refilter(physx::PxShape &shape, const physx::PxFilterData &filter) {
+  shape.setSimulationFilterData(filter);
+  // Re-run filtering for pairs that already overlap: a hull that was kept out
+  // of terrain contacts while it rested in it must meet it now, not only once
+  // its bounds leave and re-enter the terrain's.
+  if(auto *actor=shape.getActor()) {
+    physx::PxShape *shapes[]={&shape};
+    if(!state_->scene.resetFiltering(*actor,shapes,1)) {
+      static int reported=0;
+      if(reported++<20) std::fprintf(stderr,"[destruction] resetFiltering refused for hull of %s actor (scene %p)\n",
+          actor->getScene()?"an in-scene":"an out-of-scene",static_cast<void*>(actor->getScene()));
+    }
+  }
+}
+
 void NativeDestruction::prepare_vehicles() {
 #if PX_DESTRUCTION_SCENE_VERSION >= 22
   State &s=*state_;if(!s.configured) return;
+  restore_detached_hull_filters();
   for(auto &binding:s.vehicles) {
     auto *carrier=s.chunks[binding.base].shape->getActor();
     native_require(carrier==binding.vehicle->actor(),"native vehicle carrier changed actor unexpectedly");
-    // A hull that left the carrier collides as authored again (e.g. a loose
-    // wheel must meet the road that the intact wheel's Vehicle2 query owned).
-    for(auto &hull:binding.hulls)
-      if(hull.shape->getActor()!=carrier && !(hull.shape->getSimulationFilterData()==hull.filter))
-        hull.shape->setSimulationFilterData(hull.filter);
     PxU32 mask=0,driveMask=15;bool engine=true;
     for(PxU32 w=0;w<4;++w) if(s.chunks[binding.wheels[w][0]].shape->getActor()==carrier) mask|=1u<<w;
     for(PxU32 w=0;w<4;++w) for(PxU32 chunk:binding.drives[w])
@@ -885,6 +932,7 @@ FfiNativeStatus NativeDestruction::tick() {
   }
   const double started = now_ms();
   s.tick_index += 1;
+  restore_detached_hull_filters();
 
   const double status_started = now_ms();
   s.last = s.stage().getLastStatus();

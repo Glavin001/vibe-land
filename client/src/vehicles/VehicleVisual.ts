@@ -91,7 +91,9 @@ export class VehicleVisual {
     if (wheels.length !== 4) return;
     const pose = { chassis: { position: [0,0,0], rotation: [0,0,0,1] },
       wheels: Object.fromEntries(sourceCornerForWheel.map((id, i) => [id, {
-        ...wheels[i], rotationRad: -wheels[i].rotationRad,
+        // A wheel the server no longer simulates arrives at neutral travel;
+        // clamp anyway so a bad value can never throw parts metres away.
+        ...wheels[i], travelM: Math.max(-1, Math.min(1, Number.isFinite(wheels[i].travelM) ? wheels[i].travelM : 0)), rotationRad: -wheels[i].rotationRad,
       }])) };
     this.rig!.applyPose(pose);
     this.assembly.applyMotion(this.rig);

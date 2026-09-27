@@ -7,6 +7,7 @@
 
 namespace physx {
 class PxFilterData;
+class PxShape;
 class PxMaterial;
 class PxPhysics;
 class PxScene;
@@ -95,6 +96,10 @@ public:
   FfiVehicleDebug vehicle_debug(const physx::native::NativeVehicle &vehicle) const;
   /// Refresh functional state from accepted shape owners, before Vehicle2 runs.
   void prepare_vehicles();
+  /// Give hulls that left a vehicle carrier their authored filter back.
+  void restore_detached_hull_filters();
+  /// Set a hull's filter and re-filter the pairs it already has.
+  void refilter(physx::PxShape &shape, const physx::PxFilterData &filter);
   /// Submit the measured commands after Vehicle2 runs and before simulate.
   void submit_vehicle_loads(float dt);
   bool owns_vehicle(const physx::native::NativeVehicle *vehicle) const;

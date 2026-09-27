@@ -1167,7 +1167,7 @@ impl PhysxPhysicsArena {
         if let Some(garage) = &self.garage_destruction {
             let wheels = self.current_vehicle_snapshots().into_iter()
                 .find(|s| NS_VEHICLE | (s.user_id & ID_MASK) == garage.entity)
-                .map(|s| std::array::from_fn(|i| [s.wheel_jounce[i] - garage.neutral_jounce(), s.wheel_steer[i], s.wheel_rotation_angle[i], 0.]));
+                .map(|s| rig_from_snapshot(&s, garage.neutral_jounce()));
             garage.pose_wheels(&mut self.world, wheels);
         }
         self.last_vehicle_control_ms =
@@ -1477,9 +1477,7 @@ impl PhysxPhysicsArena {
 
     pub fn vehicle_rig(&self, id:u32, neutral_jounce:f32) -> Option<[[f32;4];4]> {
         let snapshot = self.current_vehicle_snapshots().into_iter().find(|s|s.user_id == id)?;
-        Some(std::array::from_fn(|i| [snapshot.wheel_jounce[i]-neutral_jounce,
-            snapshot.wheel_steer[i], snapshot.wheel_rotation_angle[i],
-            if snapshot.wheels_on_road & (1 << i) != 0 {1.0} else {0.0}]))
+        Some(rig_from_snapshot(&snapshot, neutral_jounce))
     }
 
     pub fn snapshot_vehicles(&self) -> Vec<NetVehicleState> {
@@ -3338,6 +3336,19 @@ fn report_rejected_step(world: &vibe_land_physx_bridge::World, phase: &str, erro
             ),
         }
     }
+}
+
+/// Per Vehicle2 wheel: [travel from neutral, steer, rotation angle, state],
+/// state 1 on the road, 0 in the air, -1 no wheel. A wheel Vehicle2 no longer
+/// simulates (its tyre broke off) reports the unspecified jounce FLT_MAX; it
+/// is sent and posed at neutral travel, never at a clamp of 3.4e38 m.
+pub(crate) fn rig_from_snapshot(snapshot: &bridge::VehicleSnapshot, neutral_jounce: f32) -> [[f32; 4]; 4] {
+    std::array::from_fn(|i| {
+        let jounce = snapshot.wheel_jounce[i];
+        if !(jounce.abs() < 100.0) { return [0.0, 0.0, 0.0, -1.0]; }
+        [jounce - neutral_jounce, snapshot.wheel_steer[i], snapshot.wheel_rotation_angle[i],
+            if snapshot.wheels_on_road & (1 << i) != 0 { 1.0 } else { 0.0 }]
+    })
 }
 
 #[cfg(feature = "native-destruction")]

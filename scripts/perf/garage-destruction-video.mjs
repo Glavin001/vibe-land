@@ -10,7 +10,7 @@
 // BALL_SPEED (20 m/s; faster balls pass through thin parts), SHOT_GAP_MS.
 import { createRequire } from 'node:module';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
+import { mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join, resolve, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -21,10 +21,53 @@ const out = resolve(process.argv[2] ?? join(root, 'target/garage-destruction.mp4
 const base = process.env.GARAGE_URL ?? 'http://localhost:3003';
 const mass = Number(process.env.BALL_MASS ?? 3000), speed = Number(process.env.BALL_SPEED ?? 20);
 const gap = Number(process.env.SHOT_GAP_MS ?? 2200);
+// Telemetry beside the video: <out>.telemetry.jsonl, one line per ~50 ms.
+const telemetryPath = out.replace(/\.mp4$/, '') + '.telemetry.jsonl';
 const targets = ['Front left wheel assembly', 'Headlight housing', 'Nose panel', 'Front right wheel assembly',
   'Headlight housing', 'Rear left wheel assembly', 'Fuel tank', 'Rear right wheel assembly', 'Mirror housing',
   'Left cage member 5', 'Right cage member 5', 'Front roof crossmember', 'Seat back', 'Steering wheel assembly',
   'Rear bumper', 'Exhaust muffler', 'Fire extinguisher'];
+
+const qmul = (a, b) => [a[3]*b[0]+a[0]*b[3]+a[1]*b[2]-a[2]*b[1], a[3]*b[1]-a[0]*b[2]+a[1]*b[3]+a[2]*b[0], a[3]*b[2]+a[0]*b[1]-a[1]*b[0]+a[2]*b[3], a[3]*b[3]-a[0]*b[0]-a[1]*b[1]-a[2]*b[2]];
+const qrot = (q, v) => { const t = qmul(qmul(q, [v[0], v[1], v[2], 0]), [-q[0], -q[1], -q[2], q[3]]); return [t[0], t[1], t[2]]; };
+const qinv = q => [-q[0], -q[1], -q[2], q[3]];
+/** Part pose = hull world * rest^-1, as [position, rotation]. */
+function partPose(h) {
+  const ri = qinv(h.restRotation), q = qmul(h.rotation, ri), r = qrot(q, h.rest);
+  return [[h.position[0] - r[0], h.position[1] - r[1], h.position[2] - r[2]], q];
+}
+/** Bilinear terrain height from the session's world document. */
+function terrainSampler(world) {
+  const t = world.terrain, n = t.tileGridSize, half = t.tileHalfExtentM, tile = t.tiles?.[0];
+  if (!tile || n < 2) return () => 0;
+  return (x, z) => {
+    const col = Math.min(Math.max((x + half) / (2 * half) * (n - 1), 0), n - 1), row = Math.min(Math.max((z + half) / (2 * half) * (n - 1), 0), n - 1);
+    const c = Math.min(Math.floor(col), n - 2), r = Math.min(Math.floor(row), n - 2), u = col - c, v = row - r, h = tile.heights;
+    return (h[r*n+c]*(1-u) + h[r*n+c+1]*u)*(1-v) + (h[(r+1)*n+c]*(1-u) + h[(r+1)*n+c+1]*u)*v;
+  };
+}
+function summarise(d, assembly, terrain) {
+  const bodies = new Map();
+  for (const h of d.hulls) {
+    const part = assembly.parts[h.part], shape = part.shapes[h.ordinal], [p, q] = partPose(h);
+    const o = [part.position[0]+shape.position[0], part.position[1]+shape.position[1], part.position[2]+shape.position[2]];
+    const b = bodies.get(h.actor) ?? { parts: new Set(), minY: Infinity, penetration: -Infinity, excludedPenetration: -Infinity, at: null };
+    b.parts.add(h.part);
+    for (const v of shape.vertices) {
+      const w = qrot(q, [o[0]+v[0], o[1]+v[1], o[2]+v[2]]); w[0] += p[0]; w[1] += p[1]; w[2] += p[2];
+      const depth = terrain(w[0], w[2]) - w[1];
+      b.minY = Math.min(b.minY, w[1]);
+      if (h.terrainExcluded) b.excludedPenetration = Math.max(b.excludedPenetration, depth);
+      else if (depth > b.penetration) { b.penetration = depth; b.at = { part: h.part, name: part.name, point: w.map(x => +x.toFixed(3)) }; }
+    }
+    bodies.set(h.actor, b);
+  }
+  return { tick: d.serverTick, brokenBonds: d.brokenBonds, rejectedSteps: d.rejectedSteps, lastStatus: d.lastStatus,
+    vehicle: d.vehicle, vehicle2: d.vehicle2,
+    bodies: d.actors.map(a => { const b = bodies.get(a.actor);
+      return { actor: a.actor, parts: b ? b.parts.size : 0, mass: a.mass, com: a.centerOfMass, v: a.linearVelocity, w: a.angularVelocity,
+        sleeping: a.sleeping, gravityDisabled: a.gravityDisabled, minY: b?.minY, penetration: b?.penetration, excludedPenetration: b?.excludedPenetration, deepest: b?.at }; }) };
+}
 
 const videoDir = mkdtempSync(join(tmpdir(), 'garage-video-'));
 const browser = await chromium.launch({ headless: true, args: ['--use-angle=metal', '--ignore-gpu-blocklist', '--enable-gpu'] });
@@ -40,7 +83,8 @@ try {
   for (let i = 0; i < 120 && !(await button.isEnabled()); i++) await sleep(500);
   const session = page.waitForResponse(r => r.url().endsWith('/vehicle-assets/session') && r.request().method() === 'POST', { timeout: 120_000 });
   await button.click();
-  const { matchId, vehicle } = await (await session).json();
+  const { matchId, vehicle, worldDocument } = await (await session).json();
+  const terrain = terrainSampler(worldDocument);
   const origin = new URL(page.url()).origin.replace(/:\d+$/, ':4001');
   const api = `${origin}/vehicle-assets/session/${encodeURIComponent(matchId)}`;
   const assembly = await (await fetch(`${origin}/vehicle-assets/${vehicle.geometryHash}/metadata.json`)).json();
@@ -56,6 +100,15 @@ try {
   rangeStarted = Date.now();
   await page.keyboard.down('KeyW'); await sleep(1100); await page.keyboard.up('KeyW');
   await fetch(`${api}/range`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ballMass: mass, ballSpeed: speed }) });
+  const telemetry = [];
+  let sampling = true;
+  const sampler = (async () => {
+    while (sampling) {
+      const started = Date.now();
+      try { const r = await fetch(`${api}/debug`); if (r.ok) telemetry.push({ t: started - rangeStarted, ...summarise(await r.json(), assembly, terrain) }); } catch {}
+      await sleep(Math.max(0, 50 - (Date.now() - started)));
+    }
+  })();
   await sleep(1500);
   const used = new Set();
   for (const name of targets) {
@@ -64,6 +117,7 @@ try {
     const part = assembly.parts.findIndex((p, i) => p.name === name && !used.has(i) && onCar.has(i));
     if (part < 0) { console.log(`skip ${name}: not on the car`); continue; }
     used.add(part);
+    telemetry.push({ t: Date.now() - rangeStarted, shot: { part, name } });
     await fetch(`${api}/range/fire`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ part }) });
     await sleep(gap);
     const after = await (await fetch(`${api}/debug`)).json();
@@ -71,6 +125,9 @@ try {
     console.log(`fired at ${name} #${part}: ${after.brokenBonds} bonds broken, ${off} parts off the car, ${after.actors.length} bodies`);
   }
   await sleep(4000);
+  sampling = false; await sampler;
+  writeFileSync(telemetryPath, telemetry.map(x => JSON.stringify(x)).join('\n') + '\n');
+  console.log(`telemetry: ${telemetryPath} (${telemetry.length} samples)`);
 } finally {
   await context.close();
   await browser.close();

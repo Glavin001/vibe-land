@@ -5,7 +5,7 @@
 //! drives on), so hits land where the wheel is drawn. See
 //! docs/reports/vehicle-wheel-colliders-2026-09-26.
 use super::bridge;
-use crate::vehicle_assets::rig::{inputs_from_vehicle2, source_to_actor, AssetRig, Binding, Motion};
+use crate::vehicle_assets::rig::{inputs_from_vehicle2, source_to_actor, AssetRig, Binding, Motion, SOURCE_CORNER_FOR_WHEEL};
 use crate::vehicle_assets::PreparedGeometry;
 use std::collections::VecDeque;
 
@@ -58,20 +58,32 @@ impl GarageDestruction {
             steps: 0, broken: Default::default(), last_status: None, events: VecDeque::new() })
     }
 
-    /// Pose wheel and hub hulls from the last completed step's wheels.
+    /// Pose wheel and hub hulls from the last completed step's wheels. Hulls of
+    /// a wheel Vehicle2 drives are excluded from terrain (its road query
+    /// stands on it); a corner whose wheel is gone (state -1) sits at neutral
+    /// and collides with terrain like any other part.
     pub fn pose_wheels(&self, world: &mut bridge::World, wheels: Option<[[f32; 4]; 4]>) {
         let Some(wheels) = wheels else { return };
-        let wheels: [[f32; 4]; 4] = std::array::from_fn(|i| [wheels[i][0], wheels[i][1], wheels[i][2], 0.]);
-        let Ok(deltas) = self.rig.deltas(&inputs_from_vehicle2(&wheels), None) else { return };
-        let poses: Vec<bridge::VehiclePartPose> = self.wheel_parts.iter().map(|&(corner, part)| {
+        let inputs: [[f32; 4]; 4] = std::array::from_fn(|i| [wheels[i][0], wheels[i][1], wheels[i][2], 0.]);
+        let Ok(deltas) = self.rig.deltas(&inputs_from_vehicle2(&inputs), None) else { return };
+        let driven: [bool; 4] = std::array::from_fn(|corner| {
+            let wheel = SOURCE_CORNER_FOR_WHEEL.iter().position(|&c| c == corner).unwrap();
+            wheels[wheel][3] >= 0.0
+        });
+        let pose = |corner: usize, part: u32| {
             let m = source_to_actor(&deltas.get(Binding::Corner(corner, Motion::Wheel)), self.origin_height);
             let r = nalgebra::UnitQuaternion::from_matrix(&m.fixed_view::<3, 3>(0, 0).into_owned());
             bridge::VehiclePartPose { part_index: part,
                 position: bridge::Vec3::new(m[(0, 3)] as f32, m[(1, 3)] as f32, m[(2, 3)] as f32),
                 rotation: bridge::Quat { x: r.i as f32, y: r.j as f32, z: r.k as f32, w: r.w as f32 } }
-        }).collect();
-        if let Err(error) = world.native_pose_vehicle_parts(self.entity, &poses, super::GROUP_STATIC) {
-            tracing::warn!(%error, "garage wheel hulls could not be posed");
+        };
+        for (on_road, exclude) in [(true, super::GROUP_STATIC), (false, 0)] {
+            let poses: Vec<_> = self.wheel_parts.iter().filter(|&&(corner, _)| driven[corner] == on_road)
+                .map(|&(corner, part)| pose(corner, part)).collect();
+            if poses.is_empty() { continue; }
+            if let Err(error) = world.native_pose_vehicle_parts(self.entity, &poses, exclude) {
+                tracing::warn!(%error, "garage wheel hulls could not be posed");
+            }
         }
     }
 
@@ -185,13 +197,22 @@ impl GarageDestruction {
                 "broken": self.broken.contains(&b.bond_index), "verdictBroken": b.broken,
             })).collect()
         } else { Vec::new() };
+        // Vehicle2's own view of the car: where it thinks the body and wheels are.
+        let vehicle2 = world.vehicle_snapshots().ok().and_then(|cars| cars.into_iter().find(|c| c.entity_id == self.entity)).map(|c| json!({
+            "position": [c.pose.position.x, c.pose.position.y, c.pose.position.z],
+            "rotation": [c.pose.rotation.x, c.pose.rotation.y, c.pose.rotation.z, c.pose.rotation.w],
+            "linearVelocity": [c.linear_velocity.x, c.linear_velocity.y, c.linear_velocity.z],
+            "angularVelocity": [c.angular_velocity.x, c.angular_velocity.y, c.angular_velocity.z],
+            "sleeping": c.sleeping, "wheelJounce": c.wheel_jounce, "wheelSteer": c.wheel_steer,
+            "wheelRotationSpeed": c.wheel_rotation_speed, "wheelsOnRoad": c.wheels_on_road, "driveConnectionMask": c.drive_connection_mask,
+        }));
         let events: Vec<_> = self.events.iter().rev().map(|(step, text)| json!({"step": step, "text": text})).collect();
         Ok(json!({
             "configured": self.configured, "steps": self.steps, "rejectedSteps": self.rejected_steps,
             "brokenBonds": self.broken_bonds,
             "lastStatus": self.last_status.map(|(error, converged, iterations)| json!({"error": error, "converged": converged, "iterations": iterations})),
             "vehicle": {"wheelMask": vehicle.wheel_mask, "driveMask": vehicle.drive_mask, "engineConnected": vehicle.engine_connected},
-            "hulls": hulls, "actors": actors, "bonds": bonds, "events": events,
+            "vehicle2": vehicle2, "hulls": hulls, "actors": actors, "bonds": bonds, "events": events,
         }))
     }
 
