@@ -680,7 +680,7 @@ FfiVehicleDebug NativeDestruction::vehicle_debug(const physx::native::NativeVehi
     const PxTransform world=actor?actor->getGlobalPose()*hull.shape->getLocalPose():hull.shape->getLocalPose();
     const PxFilterData filter=hull.shape->getSimulationFilterData();
     out.hulls.push_back(FfiVehicleHullDebug{hull.part,ordinals[hull.part]++,actor?key:0xffffffffu,native_ffi(hull.rest.p),
-      native_ffi(world.p),FfiQuat{world.q.x,world.q.y,world.q.z,world.q.w},filter.word0,filter.word1,hull.filter.word1});
+      native_ffi(hull.rest.q),native_ffi(world.p),FfiQuat{world.q.x,world.q.y,world.q.z,world.q.w},filter.word0,filter.word1,hull.filter.word1});
   }
   for(std::uint32_t key=0;key<actors.size();++key) {
     const PxRigidActor *actor=actors[key];
@@ -837,7 +837,9 @@ FfiNativeConfigured NativeDestruction::configure(const FfiNativeConfig &config) 
   // Vehicle2 carriers are weightless (Vehicle2 integrates their gravity) and
   // fragments inherit their source's settings on the GPU, so without this a
   // part broken off a car floats. Structures with gravity are unaffected.
-  desc.fragmentGravity = !s.vehicles.empty();
+  // VIBE_NATIVE_FRAGMENT_GRAVITY=0 reproduces the weightless-debris bug, so
+  // the destruction tests can show they catch it.
+  desc.fragmentGravity = !s.vehicles.empty() && native_env_f32("VIBE_NATIVE_FRAGMENT_GRAVITY", 1.0f) != 0.0f;
 #elif PX_DESTRUCTION_SCENE_VERSION >= 22
   native_require(s.vehicles.empty(),
                  "destructible vehicles need an SDK with fragmentGravity: their "

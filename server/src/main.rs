@@ -4754,11 +4754,13 @@ impl MatchState {
         let eye=self.players.keys().filter_map(|id|self.arena.player_state(*id)).find(|s|!s.dead)
             .map(|s|nalgebra::Vector3::new(s.position.x as f32,s.position.y as f32+PLAYER_EYE_HEIGHT_M,s.position.z as f32));
         let mut shots: Vec<(nalgebra::Vector3<f32>, nalgebra::Vector3<f32>)> = aimed.into_iter()
-            .filter_map(|t| eye.map(|e| {
-                // Lead the drop so the ball arrives at the point, not below it.
-                let d=nalgebra::Vector3::from(t)-e; let time=d.norm()/settings.ball_speed;
-                (e, d+nalgebra::Vector3::new(0.0,4.905*time*time,0.0))
-            })).collect();
+            .filter_map(|part| {
+                let (origin, direction, clear) = self.arena.vehicle_clear_shot(garage::VEHICLE_ID, part, eye)?;
+                if !clear { tracing::warn!(part, "no clear line to the part; firing along the eye line"); }
+                // Lead the drop so the ball arrives at the part, not below it.
+                let time = 8.0 / settings.ball_speed;
+                Some((origin, direction * 8.0 + nalgebra::Vector3::new(0.0, 4.905 * time * time, 0.0)))
+            }).collect();
         shots.extend(self.queued_shots.iter()
             .filter(|queued| queued.cmd.weapon == WEAPON_CANNONBALL)
             .filter(|queued| self.players.get(&queued.player_id).is_some_and(|runtime| {
@@ -4767,11 +4769,13 @@ impl MatchState {
             .filter_map(|queued| {
                 let state=self.arena.player_state(queued.player_id).filter(|s|!s.dead)?;
                 let [x,y,z]=queued.cmd.dir;
-                Some((nalgebra::Vector3::new(state.position.x as f32,state.position.y as f32+PLAYER_EYE_HEIGHT_M,state.position.z as f32),
-                    nalgebra::Vector3::new(x,y,z)))
+                let direction=nalgebra::Vector3::new(x,y,z);
+                // Leave the muzzle clear of the shooter's own capsule.
+                Some((nalgebra::Vector3::new(state.position.x as f32,state.position.y as f32+PLAYER_EYE_HEIGHT_M,state.position.z as f32)
+                    +direction.normalize()*0.6, direction))
             }));
         for (origin,direction) in shots {
-            let launched=self.arena.launch_ball(origin+direction.normalize()*0.6,direction,garage_bombardment::BALL_RADIUS,
+            let launched=self.arena.launch_ball(origin,direction,garage_bombardment::BALL_RADIUS,
                 settings.ball_mass,settings.ball_speed,garage_bombardment::BALL_TTL);
             if launched.is_some() {
                 tracing::info!(match_id=%self.id, origin=?[origin.x,origin.y,origin.z], direction=?[direction.x,direction.y,direction.z],

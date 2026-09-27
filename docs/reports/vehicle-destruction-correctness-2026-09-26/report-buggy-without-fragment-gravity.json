@@ -1,0 +1,261 @@
+[
+  {
+    "model": "buggy",
+    "result": {
+      "ballClosestToTargetM": 0.10717093199491501,
+      "ballSpeedAfter": 11.174627304077148,
+      "breakWithin75cmOfTarget": true,
+      "breaks": [
+        {
+          "broke": [
+            "frame-0033 - suspension-0229",
+            "suspension-0223 - frame-0016"
+          ],
+          "tick": 114
+        }
+      ],
+      "brokenBondCount": 2,
+      "carrierCom": {
+        "parts": [
+          5.228856480243849e-6,
+          0.10890007019042969,
+          -0.49875426292419434
+        ],
+        "physx": [
+          5.253846666164463e-6,
+          0.04092460870742798,
+          -0.49875473976135254
+        ]
+      },
+      "clearLine": true,
+      "direction": [
+        1.0,
+        5.258242254058132e-6,
+        -0.00003126731826341711
+      ],
+      "expectBreak": true,
+      "failed": false,
+      "firstBreakFromBallM": 0.9929923415184021,
+      "freeFlightTicks": 0,
+      "looseBodies": [],
+      "maxLooseKineticJ": 0.0,
+      "origin": [
+        -8.9212064743042,
+        0.717000424861908,
+        4.184873104095459
+      ],
+      "rejectedSteps": 443,
+      "scenario": "shot front-left tyre",
+      "target": "wheels-0302#4",
+      "targetBondBroken": false,
+      "targetDetached": false,
+      "violations": []
+    }
+  },
+  {
+    "model": "buggy",
+    "result": {
+      "ballClosestToTargetM": 0.027887381613254547,
+      "ballSpeedAfter": 9.5170259475708,
+      "breakWithin75cmOfTarget": true,
+      "breaks": [
+        {
+          "broke": [
+            "wheels-0478 - wheels-0425",
+            "suspension-0409 - suspension-0407",
+            "suspension-0404 - suspension-0408",
+            "frame-0002 - suspension-0410",
+            "suspension-0408 - suspension-0406"
+          ],
+          "tick": 114
+        }
+      ],
+      "brokenBondCount": 5,
+      "carrierCom": {
+        "parts": [
+          5.228856480243849e-6,
+          0.10890007019042969,
+          -0.49875426292419434
+        ],
+        "physx": [
+          5.253846666164463e-6,
+          0.04092460870742798,
+          -0.49875473976135254
+        ]
+      },
+      "clearLine": true,
+      "direction": [
+        -1.0,
+        -5.258242254058132e-6,
+        0.00003126731826341711
+      ],
+      "expectBreak": true,
+      "failed": true,
+      "firstBreakFromBallM": 0.7114989161491394,
+      "freeFlightTicks": 279,
+      "looseBodies": [
+        {
+          "massKg": 156.19728534486524,
+          "parts": [
+            "wheels-0478#7"
+          ]
+        }
+      ],
+      "maxLooseKineticJ": 13815.806640625,
+      "origin": [
+        8.961498260498047,
+        0.7133467793464661,
+        1.5552066564559937
+      ],
+      "rejectedSteps": 443,
+      "scenario": "shot rear-right tyre",
+      "target": "wheels-0478#7",
+      "targetBondBroken": true,
+      "targetDetached": true,
+      "violations": [
+        {
+          "check": "loose body does not fall at g",
+          "count": 1,
+          "example": "[\"wheels-0478#7\"]: median a_y 0.00 over 279 airborne ticks"
+        },
+        {
+          "check": "loose body drifts at constant velocity",
+          "count": 1,
+          "example": "[\"wheels-0478#7\"] at 5.50 m/s"
+        },
+        {
+          "check": "loose body still in the air at the end",
+          "count": 1,
+          "example": "[\"wheels-0478#7\"] 5.50 m/s"
+        }
+      ]
+    }
+  },
+  {
+    "model": "buggy",
+    "result": {
+      "ballClosestToTargetM": 0.026646696031093597,
+      "ballSpeedAfter": 5.535490036010742,
+      "breakWithin75cmOfTarget": false,
+      "breaks": [],
+      "brokenBondCount": 0,
+      "carrierCom": {
+        "parts": [
+          5.228856480243849e-6,
+          0.10890007019042969,
+          -0.49875426292419434
+        ],
+        "physx": [
+          5.253846666164463e-6,
+          0.04092460870742798,
+          -0.49875473976135254
+        ]
+      },
+      "clearLine": true,
+      "direction": [
+        0.00003117332744295709,
+        0.017014486715197563,
+        0.9998552203178406
+      ],
+      "expectBreak": false,
+      "failed": false,
+      "firstBreakFromBallM": null,
+      "freeFlightTicks": 0,
+      "looseBodies": [],
+      "maxLooseKineticJ": 0.0,
+      "origin": [
+        -0.00022782021551392972,
+        0.57572340965271,
+        -6.4169087409973145
+      ],
+      "rejectedSteps": 443,
+      "scenario": "shot engine",
+      "target": "drivetrain-0826#14",
+      "targetBondBroken": false,
+      "targetDetached": false,
+      "violations": []
+    }
+  },
+  {
+    "model": "buggy",
+    "result": {
+      "ballClosestToTargetM": 0.161932572722435,
+      "ballSpeedAfter": 11.761985778808594,
+      "breakWithin75cmOfTarget": true,
+      "breaks": [
+        {
+          "broke": [
+            "body-0908 - body-0907",
+            "body-0791 - body-0907"
+          ],
+          "tick": 115
+        }
+      ],
+      "brokenBondCount": 2,
+      "carrierCom": {
+        "parts": [
+          5.228856480243849e-6,
+          0.10890007019042969,
+          -0.49875426292419434
+        ],
+        "physx": [
+          5.253846666164463e-6,
+          0.04092460870742798,
+          -0.49875473976135254
+        ]
+      },
+      "clearLine": true,
+      "direction": [
+        -1.0,
+        -5.258242254058132e-6,
+        0.00003126731826341711
+      ],
+      "expectBreak": true,
+      "failed": true,
+      "firstBreakFromBallM": 0.2957985997200012,
+      "freeFlightTicks": 567,
+      "looseBodies": [
+        {
+          "massKg": 1.910053611472046,
+          "parts": [
+            "body-0908#24"
+          ]
+        },
+        {
+          "massKg": 0.36468247871121295,
+          "parts": [
+            "body-0907#193"
+          ]
+        }
+      ],
+      "maxLooseKineticJ": 361.0551452636719,
+      "origin": [
+        8.02295970916748,
+        0.9970437288284302,
+        4.204860687255859
+      ],
+      "rejectedSteps": 443,
+      "scenario": "shot body panel",
+      "target": "body-0791#18",
+      "targetBondBroken": true,
+      "targetDetached": false,
+      "violations": [
+        {
+          "check": "loose body does not fall at g",
+          "count": 2,
+          "example": "[\"body-0908#24\"]: median a_y 0.00 over 317 airborne ticks"
+        },
+        {
+          "check": "loose body drifts at constant velocity",
+          "count": 2,
+          "example": "[\"body-0908#24\"] at 16.74 m/s"
+        },
+        {
+          "check": "loose body still in the air at the end",
+          "count": 2,
+          "example": "[\"body-0908#24\"] 16.74 m/s"
+        }
+      ]
+    }
+  }
+]

@@ -14,7 +14,7 @@ function profile(elastic, fatal, shearRatio, modulus) {
     elasticModulus: modulus * MPa, residualAreaFraction: 0,
   });
 }
-export const STRENGTH_PROFILE_VERSION = 'vehicle-joints-1';
+export const STRENGTH_PROFILE_VERSION = 'vehicle-joints-2';
 export const jointMaterials = Object.freeze({
   steel: profile(120, 300, .58, 200000),
   alloy: profile(55, 140, .58, 69000),
@@ -25,8 +25,10 @@ export const jointMaterials = Object.freeze({
   glazing: profile(3, 12, .6, 70000),
 });
 const categories = Object.freeze({ frame:'steel', orange:'steel', steel:'steel', dark:'steel',
-  alloy:'alloy', rubber:'rubber', seat:'upholstery', belt:'belt', red:'composite',
-  glass:'glazing', lens:'glazing', race:'composite' });
+  // A seat is a shell bolted to its rails; its upholstery carries no joint
+  // load. As upholstery, the seat tore off at 2 kN under any impact.
+  alloy:'alloy', rubber:'rubber', seat:'composite', belt:'belt', red:'composite',
+  glass:'glazing', lens:'glazing', race:'composite', housing:'composite' });
 
 /** A dissimilar joint is limited by its weaker constituent in each mode. */
 export function jointStrength(a, b) {

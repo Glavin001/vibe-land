@@ -41,7 +41,9 @@ pub struct RangeSettings {
     pub ball_speed: f32,
 }
 impl Default for RangeSettings {
-    fn default() -> Self { Self { ball_mass: 300.0, ball_speed: 60.0 } }
+    // Above ~24 m/s the 0.4 m ball can pass through a thin part between 60 Hz
+    // ticks (the destruction stage forbids sweep CCD).
+    fn default() -> Self { Self { ball_mass: 1000.0, ball_speed: 20.0 } }
 }
 impl RangeSettings {
     pub fn validate(self) -> Result<Self, String> {
@@ -54,8 +56,8 @@ impl RangeSettings {
 pub struct Session {
     pub mode: SessionMode,
     pub range: Mutex<RangeSettings>,
-    /// World points to fire the range cannon at (from the shooter's eye).
-    pub aimed_shots: Mutex<Vec<[f32; 3]>>,
+    /// Parts to fire the range cannon at, along a clear line.
+    pub aimed_shots: Mutex<Vec<u32>>,
     pub vehicle: PreparedVehicle,
     pub current_vehicle: Mutex<PreparedVehicle>,
     pub geometry: PreparedGeometry,
@@ -169,20 +171,20 @@ pub async fn range_handler(axum::extract::Path(id): axum::extract::Path<String>,
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct AimedShot { target: [f32; 3] }
+pub struct AimedShot { part: u32 }
 
-/// Fire the range cannon from the player's eye at a world point, e.g. a
-/// chosen part's centre: a repeatable hit without mouse aim.
+/// Fire the range cannon at a chosen part along a clear line (the shooter's
+/// eye line when nothing else is in the way): a repeatable hit without aim.
 pub async fn fire_handler(axum::extract::Path(id): axum::extract::Path<String>, Json(request): Json<AimedShot>)
     -> Result<StatusCode, (StatusCode, String)> {
     let session = lookup(&id).filter(|s| !s.closing() && s.mode == SessionMode::Range)
         .ok_or((StatusCode::NOT_FOUND, "No destruction range session.".to_string()))?;
-    if !request.target.iter().all(|v| v.is_finite() && v.abs() < 1000.0) {
-        return Err((StatusCode::BAD_REQUEST, "Target must be a finite world point.".into()));
+    if request.part as usize >= session.geometry.parts.len() {
+        return Err((StatusCode::BAD_REQUEST, "No such part.".into()));
     }
     let mut shots = session.aimed_shots.lock().unwrap();
     if shots.len() >= 8 { return Err((StatusCode::TOO_MANY_REQUESTS, "Shots are still queued.".into())); }
-    shots.push(request.target);
+    shots.push(request.part);
     Ok(StatusCode::ACCEPTED)
 }
 

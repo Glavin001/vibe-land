@@ -11,6 +11,9 @@ export const materials = {
   alloy:{color:'#b0afa4',metalness:.9,roughness:.27,density:2700},
   steel:{color:'#69737a',metalness:.92,roughness:.25,density:7850},
   dark:{color:'#242a2d',metalness:.65,roughness:.45,density:7850},
+  // Lamp and mirror bodies are moulded shells, not solid steel: a solid
+  // 'dark' lamp weighed 12 kg on a 1 cm tube (see vehicle destruction tests).
+  housing:{color:'#242a2d',metalness:.35,roughness:.5,density:1000},
   seat:{color:'#242729',metalness:0,roughness:.93,density:140},
   belt:{color:'#d96b35',metalness:0,roughness:.9,density:1200},
   red:{color:'#b62e25',metalness:.25,roughness:.38,density:1800},
@@ -244,11 +247,13 @@ export function buildBuggy(wasm, input={}, progress=(phase="",percent=0)=>{}, au
  // Lamps, mirrors and extinguisher are actual geometry, each with its own mount.
  for(const s of [-1,1]){
   const lampLift=parameters.vehicle&&parameters.vehicle!=='buggy'?.13:0;
-  b('Headlamp bracket',[s*.37,.93,f-.21],[s*.40,1.01+lampLift,f-.21],'steel',.013,'Body',false);
-  add('Headlight housing','Body','dark',cyl(.087,.065,[s*.40,1.075+lampLift,f-.23],[0,0,0],48));
+  // The bracket starts inside the nose panel (its top is ~.927 here), so it
+  // is welded to it rather than grazing it 3 mm above.
+  b('Headlamp bracket',[s*.37,.915,f-.21],[s*.40,1.01+lampLift,f-.21],'steel',.013,'Body',false);
+  add('Headlight housing','Body','housing',cyl(.087,.065,[s*.40,1.075+lampLift,f-.23],[0,0,0],48));
   add('Headlight lens','Body','lens',cyl(.075,.011,[s*.40,1.075+lampLift,f-.266],[0,0,0],48));
   b('Mirror stalk',[s*.65,1.04,f+.58],[s*.81,1.2,f+.63],'steel',.012,'Body',false);
-  box('Mirror housing',[.135,.09,.047],[s*.82,1.22,f+.64],'dark','Body',[0,s*15,0]);
+  box('Mirror housing',[.135,.09,.047],[s*.82,1.22,f+.64],'housing','Body',[0,s*15,0]);
   box('Mirror glass',[.119,.074,.008],[s*.823,1.22,f+.666],'steel','Body',[0,s*15,0]);
   box('Rear lamp mount',[.12,.06,.025],[s*.49,.75,r+.45],'dark','Body');
   box('Rear lamp lens',[.09,.032,.02],[s*.49,.75,r+.469],'red','Body');

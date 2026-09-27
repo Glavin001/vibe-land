@@ -2069,8 +2069,10 @@ mod ffi {
         ordinal: u32,
         /// 0 is the Vehicle2 carrier; fragments follow in first-seen order.
         actor: u32,
-        /// Authored actor-frame position of the hull (its rest local pose).
+        /// The hull's rest local pose on the car (as installed, which may be
+        /// re-framed from the authored vertices): part pose = world * rest^-1.
         rest: FfiVec3,
+        rest_rotation: FfiQuat,
         /// World pose of the shape: actor global pose * shape local pose.
         position: FfiVec3,
         rotation: FfiQuat,

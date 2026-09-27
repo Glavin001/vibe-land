@@ -1458,6 +1458,13 @@ impl PhysxPhysicsArena {
         }
     }
 
+    /// A clear shot at a part of the destructible car (see `GarageDestruction::clear_shot`).
+    #[cfg(feature = "native-destruction")]
+    pub fn vehicle_clear_shot(&self, id: u32, part: u32, from: Option<Vector3<f32>>) -> Option<(Vector3<f32>, Vector3<f32>, bool)> {
+        let entity = NS_VEHICLE | (id & ID_MASK);
+        self.garage_destruction.as_ref().filter(|g| g.entity == entity)?.clear_shot(&self.world, part, from)
+    }
+
     /// Debug readback of the destructible car (see `GarageDestruction::debug`).
     #[cfg(feature = "native-destruction")]
     pub fn vehicle_destruction_debug(&mut self, id: u32) -> Result<serde_json::Value, String> {
@@ -3338,3 +3345,6 @@ mod garage_destruction;
 #[cfg(all(test, feature = "native-destruction"))]
 #[path = "physx_runtime/vehicle_fracture_tests.rs"]
 mod vehicle_fracture_tests;
+#[cfg(all(test, feature = "native-destruction"))]
+#[path = "physx_runtime/vehicle_destruction_tests.rs"]
+mod vehicle_destruction_tests;

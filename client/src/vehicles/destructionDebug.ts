@@ -6,7 +6,7 @@ import { useSyncExternalStore } from 'react';
 
 export type V3 = [number, number, number];
 export type Q4 = [number, number, number, number];
-export interface DebugHull { part: number; ordinal: number; actor: number; rest: V3; position: V3; rotation: Q4; filter: [number, number]; authoredWord1: number; terrainExcluded: boolean }
+export interface DebugHull { part: number; ordinal: number; actor: number; rest: V3; restRotation: Q4; position: V3; rotation: Q4; filter: [number, number]; authoredWord1: number; terrainExcluded: boolean }
 export interface DebugActor { actor: number; position: V3; rotation: Q4; centerOfMass: V3; mass: number; linearVelocity: V3; angularVelocity: V3; sleeping: boolean; kinematic: boolean; gravityDisabled: boolean; shapes: number }
 export interface DebugBond { index: number; a: number; b: number; area: number; utilisation: number; compression: number; tension: number; shear: number; damage: number; remainingArea: number; broken: boolean }
 export interface DestructionDebug {

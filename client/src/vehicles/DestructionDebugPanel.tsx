@@ -1,13 +1,13 @@
 // Garage destruction controls: the range cannon (ball mass/speed), bombardment,
 // reset, and the debug readback of what PhysX holds for the car.
 import { useEffect, useRef, useState } from 'react';
-import * as THREE from 'three';
 import { resolveMultiplayerBackend } from '../app/runtimeConfig';
 import { setShotMode, shotMode } from '../city/shotMode';
 import { actorColor, anyDebugLayer, updateDebug, useDebugState, type Assembly, type DebugLayers } from './destructionDebug';
 
 const MASSES = [30, 100, 300, 1000, 3000];
-const SPEEDS = [20, 40, 60, 100];
+// Above ~24 m/s the 0.4 m ball can pass through a thin part between ticks.
+const SPEEDS = [10, 20, 40, 60];
 const LAYERS: [keyof DebugLayers, string, string][] = [
   ['colliders', 'Colliders', 'PhysX hulls at their server pose, coloured by owning body (green = car, orange = wheel hull excluded from terrain)'],
   ['bonds', 'Bonds', 'Intact bonds: part centre → bond centroid → part centre, green to red by stress utilisation; red across two bodies = graph/body mismatch'],
@@ -18,7 +18,7 @@ const LAYERS: [keyof DebugLayers, string, string][] = [
 export function DestructionDebugPanel({ matchId, geometryHash, range, onReset }: { matchId: string; geometryHash: string; range: boolean; onReset?: () => void }) {
   const { layers, data, assembly, selectedPart } = useDebugState();
   const origin = resolveMultiplayerBackend().httpOrigin, session = `${origin}/vehicle-assets/session/${encodeURIComponent(matchId)}`;
-  const [mass, setMass] = useState(300), [speed, setSpeed] = useState(60), [error, setError] = useState(''), [open, setOpen] = useState(true);
+  const [mass, setMass] = useState(1000), [speed, setSpeed] = useState(20), [error, setError] = useState(''), [open, setOpen] = useState(true);
   const polling = useRef(false);
 
   useEffect(() => {
@@ -50,16 +50,11 @@ export function DestructionDebugPanel({ matchId, geometryHash, range, onReset }:
     return () => clearInterval(timer);
   }, [session, active]);
 
-  // Aim at the chosen part's current centre of mass, as PhysX has it.
+  // The server picks a clear line to the part (eye line first).
   async function fireAt() {
-    const hull = selectedPart === null ? undefined : data?.hulls.find(h => h.part === selectedPart);
-    const part = selectedPart === null ? undefined : assembly?.parts[selectedPart];
-    if (!hull || !part) return;
-    const c = part.massProperties.center;
-    const target = new THREE.Vector3(c[0] - hull.rest[0], c[1] - hull.rest[1], c[2] - hull.rest[2])
-      .applyQuaternion(new THREE.Quaternion(...hull.rotation)).add(new THREE.Vector3(...hull.position)).toArray();
+    if (selectedPart === null) return;
     try {
-      const r = await fetch(`${session}/range/fire`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ target }) });
+      const r = await fetch(`${session}/range/fire`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ part: selectedPart }) });
       if (!r.ok) throw Error(await r.text());
     } catch (e) { setError(String(e instanceof Error ? e.message : e)); }
   }
@@ -73,7 +68,7 @@ export function DestructionDebugPanel({ matchId, geometryHash, range, onReset }:
     <div className="garage-debug-bar">
       {range && <>
         <label>Ball <select value={mass} onChange={e => setMass(Number(e.target.value))}>{MASSES.map(m => <option key={m} value={m}>{m} kg</option>)}</select></label>
-        <label><select value={speed} onChange={e => setSpeed(Number(e.target.value))}>{SPEEDS.map(s => <option key={s} value={s}>{s} m/s</option>)}</select></label>
+        <label title="Above ~24 m/s the ball can pass through thin parts between physics ticks"><select value={speed} onChange={e => setSpeed(Number(e.target.value))}>{SPEEDS.map(s => <option key={s} value={s}>{s} m/s</option>)}</select></label>
         <label>Target <select value={selectedPart ?? ''} onChange={e => updateDebug({ selectedPart: e.target.value === '' ? null : Number(e.target.value) })}>
           <option value="">(pick a part)</option>
           {assembly?.parts.map((p, i) => p.shapes.length ? <option key={i} value={i}>{p.name ?? p.id} #{i}</option> : null)}

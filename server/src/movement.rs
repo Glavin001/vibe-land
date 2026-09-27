@@ -126,6 +126,15 @@ impl PhysicsArena {
         }
     }
 
+    /// (origin, direction, clear) of a shot at one part of a destructible vehicle.
+    pub fn vehicle_clear_shot(&self, id:u32, part:u32, from:Option<Vec3>) -> Option<(Vec3, Vec3, bool)> {
+        match &self.backend {
+            #[cfg(feature="native-destruction")]
+            PhysicsBackend::Physx(arena) => arena.vehicle_clear_shot(id, part, from),
+            _ => { let _ = (id, part, from); None }
+        }
+    }
+
     /// Debug readback of a destructible vehicle's hulls, actors and bonds.
     pub fn vehicle_destruction_debug(&mut self, id:u32) -> Result<serde_json::Value, String> {
         match &mut self.backend {

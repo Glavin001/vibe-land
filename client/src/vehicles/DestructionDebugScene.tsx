@@ -16,13 +16,20 @@ function pose(position: number[], rotation: number[], out = new THREE.Matrix4())
   return out.compose(new THREE.Vector3(...position), new THREE.Quaternion(...rotation), new THREE.Vector3(1, 1, 1));
 }
 
-/** Edges of each authored hull in its shape frame, keyed part:ordinal. */
+/** A part's authored actor frame in the world: hull world * rest^-1. The
+ * installed hull may be re-framed from the authored vertices, so the rest
+ * pose (not part.position + shape.position) is what relates the two. */
+function partPoseOf(hull: DebugHull) {
+  return pose(hull.position, hull.rotation).multiply(pose(hull.rest, hull.restRotation).invert());
+}
+/** Edges of each authored hull in its part's actor frame, keyed part:ordinal. */
 function hullEdges(assembly: Assembly) {
-  const edges = new Map<string, { geometry: THREE.BufferGeometry; rest: THREE.Vector3 }>();
+  const edges = new Map<string, { geometry: THREE.BufferGeometry }>();
   assembly.parts.forEach((part, index) => part.shapes.forEach((shape, ordinal) => {
     try {
-      const convex = new ConvexGeometry(shape.vertices.map(v => new THREE.Vector3(...v)));
-      edges.set(`${index}:${ordinal}`, { geometry: new THREE.EdgesGeometry(convex, 20), rest: new THREE.Vector3(...part.position).add(new THREE.Vector3(...shape.position)) });
+      const origin = new THREE.Vector3(...part.position).add(new THREE.Vector3(...shape.position));
+      const convex = new ConvexGeometry(shape.vertices.map(v => new THREE.Vector3(...v).add(origin)));
+      edges.set(`${index}:${ordinal}`, { geometry: new THREE.EdgesGeometry(convex, 20) });
       convex.dispose();
     } catch { /* degenerate hull: nothing to outline */ }
   }));
@@ -46,12 +53,8 @@ export function DestructionDebugScene() {
     });
     group.clear();
     if (!data || !assembly || !edges) return;
-    // Part pose = hull world * rest^-1 (rests are pure translations).
     const partPose = new Map<number, { matrix: THREE.Matrix4; actor: number }>();
-    for (const hull of data.hulls) if (!partPose.has(hull.part)) {
-      const m = pose(hull.position, hull.rotation).multiply(new THREE.Matrix4().makeTranslation(-hull.rest[0], -hull.rest[1], -hull.rest[2]));
-      partPose.set(hull.part, { matrix: m, actor: hull.actor });
-    }
+    for (const hull of data.hulls) if (!partPose.has(hull.part)) partPose.set(hull.part, { matrix: partPoseOf(hull), actor: hull.actor });
     if (layers.colliders) {
       const byColor = new Map<string, THREE.LineBasicMaterial>();
       const material = (hull: DebugHull) => {
@@ -65,7 +68,7 @@ export function DestructionDebugScene() {
         const e = edges.get(`${hull.part}:${hull.ordinal}`);
         if (!e) continue;
         const lines = new THREE.LineSegments(e.geometry, material(hull));
-        lines.matrixAutoUpdate = false; lines.matrix.copy(pose(hull.position, hull.rotation)); lines.renderOrder = 999;
+        lines.matrixAutoUpdate = false; lines.matrix.copy(partPoseOf(hull)); lines.renderOrder = 999;
         group.add(lines);
       }
     }

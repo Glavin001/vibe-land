@@ -30,6 +30,9 @@ pub struct GarageDestruction {
     pub rejected_steps: usize,
     detached_count: usize,
     steps: u64,
+    /// Authored bond indices broken so far (from fracture events; the stress
+    /// readback's own flag is a per-step verdict, not persistent state).
+    broken: std::collections::BTreeSet<u32>,
     last_status: Option<(u32, bool, u32)>,
     events: VecDeque<(u64, String)>,
 }
@@ -52,7 +55,7 @@ impl GarageDestruction {
             .map_err(|e| e.to_string())?;
         Ok(Self { entity, rig, wheel_parts, origin_height: geometry.origin_height,
             neutral_jounce: geometry.neutral_jounce, configured: false, broken_bonds: 0, rejected_steps: 0, detached_count: 0,
-            steps: 0, last_status: None, events: VecDeque::new() })
+            steps: 0, broken: Default::default(), last_status: None, events: VecDeque::new() })
     }
 
     /// Pose wheel and hub hulls from the last completed step's wheels.
@@ -105,6 +108,7 @@ impl GarageDestruction {
             if !broken.is_empty() {
                 self.broken_bonds += broken.len();
                 let ids: Vec<String> = broken.iter().map(|b| (b.bond_id & ((1 << 20) - 1)).to_string()).collect();
+                self.broken.extend(broken.iter().filter(|b| b.structure_id == STRUCTURE).map(|b| b.bond_id & ((1 << 20) - 1)));
                 self.log(format!("broke {} bond(s): {}", broken.len(), ids.join(" ")));
                 tracing::info!(broken = broken.len(), total = self.broken_bonds, "garage vehicle bonds broke");
             }
@@ -123,6 +127,31 @@ impl GarageDestruction {
 
     pub fn neutral_jounce(&self) -> f32 { self.neutral_jounce }
 
+    /// A clear shot at one part: a line whose first stage chunk is that part.
+    /// Tries `from` (e.g. the shooter's eye) first, then from 8 m out along the
+    /// car's sides, front, back and from above. Returns (origin, unit
+    /// direction, whether the line is clear); an unclear line is the eye line.
+    pub fn clear_shot(&self, world: &bridge::World, part: u32, from: Option<nalgebra::Vector3<f32>>)
+        -> Option<(nalgebra::Vector3<f32>, nalgebra::Vector3<f32>, bool)> {
+        use nalgebra::{UnitQuaternion, Quaternion, Vector3};
+        let aim = world.native_chunk_aim(STRUCTURE, part).ok().filter(|a| a.found)?;
+        let target = Vector3::new(aim.center.x, aim.center.y, aim.center.z);
+        let car = world.vehicle_snapshots().ok()?.into_iter().find(|v| v.entity_id == self.entity)?;
+        let q = car.pose.rotation;
+        let rotation = UnitQuaternion::new_normalize(Quaternion::new(q.w, q.x, q.y, q.z));
+        let mut lines: Vec<Vector3<f32>> = from.map(|e| target - e).filter(|d| d.norm() > 0.5).map(|d| d.normalize()).into_iter().collect();
+        lines.extend([Vector3::x(), -Vector3::x(), Vector3::z(), -Vector3::z()].map(|axis| -(rotation * axis)));
+        lines.push(-Vector3::y());
+        for direction in &lines {
+            let origin = target - direction * 8.0;
+            let ray = world.native_raycast_chunk(bridge::Vec3::new(origin.x, origin.y, origin.z),
+                bridge::Vec3::new(direction.x, direction.y, direction.z), 9.0).ok()?;
+            if ray.hit && ray.chunk_id == aim.chunk_id { return Some((origin, *direction, true)); }
+        }
+        let direction = lines[0];
+        Some((target - direction * 8.0, direction, false))
+    }
+
     fn log(&mut self, text: String) {
         if self.events.len() == EVENT_LOG { self.events.pop_front(); }
         self.events.push_back((self.steps, text));
@@ -137,7 +166,7 @@ impl GarageDestruction {
         macro_rules! q4 { ($q:expr) => {{ let q = &$q; [q.x, q.y, q.z, q.w] }} }
         let vehicle = world.native_vehicle_debug(self.entity).map_err(|e| e.to_string())?;
         let hulls: Vec<_> = vehicle.hulls.iter().map(|h| json!({
-            "part": h.part_index, "ordinal": h.ordinal, "actor": h.actor, "rest": v3!(h.rest),
+            "part": h.part_index, "ordinal": h.ordinal, "actor": h.actor, "rest": v3!(h.rest), "restRotation": q4!(h.rest_rotation),
             "position": v3!(h.position), "rotation": q4!(h.rotation),
             "filter": [h.filter_word0, h.filter_word1], "authoredWord1": h.authored_word1,
             "terrainExcluded": h.authored_word1 & super::GROUP_STATIC != 0 && h.filter_word1 & super::GROUP_STATIC == 0,
@@ -152,7 +181,8 @@ impl GarageDestruction {
             world.native_bond_stress_rows(STRUCTURE).unwrap_or_default().iter().map(|b| json!({
                 "index": b.bond_index, "a": b.node0, "b": b.node1, "area": b.area,
                 "utilisation": b.utilisation, "compression": b.compression, "tension": b.tension, "shear": b.shear,
-                "damage": b.damage, "remainingArea": b.remaining_area, "broken": b.broken,
+                "damage": b.damage, "remainingArea": b.remaining_area,
+                "broken": self.broken.contains(&b.bond_index), "verdictBroken": b.broken,
             })).collect()
         } else { Vec::new() };
         let events: Vec<_> = self.events.iter().rev().map(|(step, text)| json!({"step": step, "text": text})).collect();
