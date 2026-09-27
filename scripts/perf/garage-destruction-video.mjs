@@ -94,6 +94,9 @@ await page.addInitScript(() => {
 const recordingStarted = Date.now();
 let rangeStarted = recordingStarted;
 const sleep = ms => new Promise(r => setTimeout(r, ms));
+// Closed on exit: an abandoned session keeps simulating its wreck for 60 s on
+// the same GPU and slows whatever runs next (seen as interleaved slow ticks).
+let sessionApi = null;
 try {
   await page.goto(`${base}/garage`);
   const button = page.getByRole('button', { name: 'Destruction range' });
@@ -105,6 +108,7 @@ try {
   const terrain = terrainSampler(worldDocument);
   const origin = new URL(page.url()).origin.replace(/:\d+$/, ':4001');
   const api = `${origin}/vehicle-assets/session/${encodeURIComponent(matchId)}`;
+  sessionApi = api;
   const assembly = await (await fetch(`${origin}/vehicle-assets/${vehicle.geometryHash}/metadata.json`)).json();
   await page.getByRole('button', { name: 'Details' }).waitFor({ timeout: 60_000 });
   // Wait for the stage to configure, then walk to ~6 m from the car.
@@ -164,6 +168,7 @@ try {
 } finally {
   await context.close();
   await browser.close();
+  if (sessionApi) await fetch(sessionApi, { method: 'DELETE' }).catch(() => {});
 }
 const [webm] = readdirSync(videoDir).filter(f => f.endsWith('.webm'));
 const skip = Math.max(0, (rangeStarted - recordingStarted) / 1000 - 0.5).toFixed(2);

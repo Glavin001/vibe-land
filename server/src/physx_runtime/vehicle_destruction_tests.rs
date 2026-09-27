@@ -724,13 +724,29 @@ fn garage_meteor_impact_tick_profile() {
     let seeds: Vec<u64> = std::env::var("VIBE_PROFILE_SEEDS").unwrap_or("7".into())
         .split(',').map(|s| s.trim().parse().expect("VIBE_PROFILE_SEEDS: comma-separated integers")).collect();
     // Ticks simulated after the meteor lands (VIBE_PROFILE_HOLD_TICKS, default 240).
+    // VIBE_PROFILE_PACE=1 steps on a 60 Hz wall clock, as the server does,
+    // instead of back to back. On this Mac pacing alone doubled the same work
+    // (idle car 6.5 -> 16.6 ms, GPU wait 4.9 -> 11.7 ms); "spin" busy-waits
+    // the gap and restored 6.8 ms, so the idle gap itself costs, not the load.
+    // User-interactive QoS and taskpolicy -t 0 -l 0 did not change it.
+    let pace = std::env::var("VIBE_PROFILE_PACE").is_ok_and(|v| v == "1" || v == "spin");
+    let spin = std::env::var("VIBE_PROFILE_PACE").is_ok_and(|v| v == "spin");
     let hold: u32 = std::env::var("VIBE_PROFILE_HOLD_TICKS").ok().and_then(|v| v.parse().ok()).unwrap_or(240);
     let mut rows = Vec::new();
     let mut summary = Vec::new();
     for seed in seeds {
         let mut scene = Scene::new(&geometry, heightfield);
         let first = rows.len();
+        let mut next = std::time::Instant::now();
         let mut step = |scene: &mut Scene, label: &str| {
+            if pace {
+                // Tick on the 60 Hz clock like the server, idling in between.
+                next += std::time::Duration::from_secs_f32(DT);
+                // "spin" busy-waits instead: the CPU stays awake, the GPU still idles.
+                if spin { while std::time::Instant::now() < next { std::hint::spin_loop(); } }
+                else if let Some(wait) = next.checked_duration_since(std::time::Instant::now()) { std::thread::sleep(wait); }
+                else { next = std::time::Instant::now(); }
+            }
             let started = std::time::Instant::now();
             let (vehicle_ms, dynamics_ms) = scene.arena.step_vehicles_and_dynamics(DT);
             let step_ms = started.elapsed().as_secs_f64() * 1000.;
