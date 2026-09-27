@@ -659,6 +659,52 @@ rust::Vec<FfiVehiclePartPose> NativeDestruction::detached_vehicle_parts(
   return out;
 }
 
+FfiVehicleDebug NativeDestruction::vehicle_debug(const physx::native::NativeVehicle &vehicle) const {
+  FfiVehicleDebug out{};
+#if PX_DESTRUCTION_SCENE_VERSION >= 22
+  const State &s=*state_;
+  auto binding=std::find_if(s.vehicles.begin(),s.vehicles.end(),[&](const State::VehicleBinding &b){return b.vehicle==&vehicle;});
+  native_require(binding!=s.vehicles.end(),"vehicle is not registered for native destruction");
+  out.wheel_mask=binding->wheel_mask;out.drive_mask=binding->drive_mask;out.engine_connected=binding->engine_connected;
+  const PxRigidActor *carrier=vehicle.actor();
+  std::vector<const PxRigidActor *> actors{carrier};
+  std::vector<std::uint32_t> ordinals(binding->count,0);
+  for(const auto &hull:binding->hulls) {
+    const PxRigidActor *actor=hull.shape->getActor();
+    std::uint32_t key=0;
+    if(actor) {
+      auto found=std::find(actors.begin(),actors.end(),actor);
+      key=static_cast<std::uint32_t>(found-actors.begin());
+      if(found==actors.end()) actors.push_back(actor);
+    }
+    const PxTransform world=actor?actor->getGlobalPose()*hull.shape->getLocalPose():hull.shape->getLocalPose();
+    const PxFilterData filter=hull.shape->getSimulationFilterData();
+    out.hulls.push_back(FfiVehicleHullDebug{hull.part,ordinals[hull.part]++,actor?key:0xffffffffu,native_ffi(hull.rest.p),
+      native_ffi(world.p),FfiQuat{world.q.x,world.q.y,world.q.z,world.q.w},filter.word0,filter.word1,hull.filter.word1});
+  }
+  for(std::uint32_t key=0;key<actors.size();++key) {
+    const PxRigidActor *actor=actors[key];
+    const PxTransform pose=actor->getGlobalPose();
+    FfiVehicleActorDebug row{};
+    row.actor=key;row.position=native_ffi(pose.p);row.rotation=FfiQuat{pose.q.x,pose.q.y,pose.q.z,pose.q.w};
+    row.center_of_mass=native_ffi(pose.p);row.shapes=actor->getNbShapes();
+    row.gravity_disabled=actor->getActorFlags().isSet(PxActorFlag::eDISABLE_GRAVITY);
+    if(const PxRigidBody *body=actor->is<PxRigidBody>()) {
+      row.center_of_mass=native_ffi(pose.transform(body->getCMassLocalPose().p));
+      row.mass=body->getMass();
+      row.linear_velocity=native_ffi(body->getLinearVelocity());
+      row.angular_velocity=native_ffi(body->getAngularVelocity());
+      row.kinematic=body->getRigidBodyFlags().isSet(PxRigidBodyFlag::eKINEMATIC);
+    }
+    if(const PxRigidDynamic *dynamic=actor->is<PxRigidDynamic>()) row.sleeping=dynamic->isSleeping();
+    out.actors.push_back(row);
+  }
+#else
+  PX_UNUSED(vehicle);
+#endif
+  return out;
+}
+
 void NativeDestruction::prepare_vehicles() {
 #if PX_DESTRUCTION_SCENE_VERSION >= 22
   State &s=*state_;if(!s.configured) return;
@@ -787,6 +833,16 @@ FfiNativeConfigured NativeDestruction::configure(const FfiNativeConfig &config) 
   desc.reservedContactPairs = config.reserved_contact_pairs;
 #endif
   desc.gpuIslandRepair = config.gpu_island_repair;
+#if defined(VIBE_PHYSX_HAS_FRAGMENT_GRAVITY)
+  // Vehicle2 carriers are weightless (Vehicle2 integrates their gravity) and
+  // fragments inherit their source's settings on the GPU, so without this a
+  // part broken off a car floats. Structures with gravity are unaffected.
+  desc.fragmentGravity = !s.vehicles.empty();
+#elif PX_DESTRUCTION_SCENE_VERSION >= 22
+  native_require(s.vehicles.empty(),
+                 "destructible vehicles need an SDK with fragmentGravity: their "
+                 "fragments would inherit the Vehicle2 carrier's disabled gravity");
+#endif
 #if defined(VIBE_PHYSX_HAS_FRAGMENT_DEPENETRATION)
   desc.fragmentMaxDepenetrationVelocity = native_fragment_depenetration_velocity();
   if (desc.fragmentMaxDepenetrationVelocity > 0.0f) {

@@ -47,17 +47,23 @@ it('keeps asset metadata and latest rig pose when datagrams arrive out of order'
 });
 
 describe('detached vehicle parts', () => {
-  it('decodes the optional detached-part tail of a rig packet', async () => {
+  it('decodes one page of detached parts grouped by shared body pose', async () => {
     const { PKT_VEHICLE_RIG } = await import('../net/sharedConstants');
     const { decodeVehicleRig } = await import('./vehicleStream');
-    const bytes = new Uint8Array(58 + 1 + 30), view = new DataView(bytes.buffer);
-    bytes[0] = PKT_VEHICLE_RIG; view.setUint32(1, 77, true); bytes[5] = 3; bytes[58] = 1;
-    view.setUint16(59, 12, true);
+    // Two parts on one body: one pose, two part indices.
+    const bytes = new Uint8Array(58 + 3 + 29 + 4), view = new DataView(bytes.buffer);
+    bytes[0] = PKT_VEHICLE_RIG; view.setUint32(1, 77, true); bytes[5] = 3;
+    bytes[58] = 1; bytes[59] = 2; bytes[60] = 1;
     [1, 2, 3, 0, 0, 0, 1].forEach((v, i) => view.setFloat32(61 + i * 4, v, true));
+    bytes[89] = 2; view.setUint16(90, 12, true); view.setUint16(92, 40, true);
     const packet = decodeVehicleRig(bytes);
-    expect(packet.detached).toEqual([{ part: 12, position: [1, 2, 3], rotation: [0, 0, 0, 1] }]);
+    expect(packet.page).toBe(1); expect(packet.pages).toBe(2);
+    expect(packet.detached).toEqual([
+      { part: 12, position: [1, 2, 3], rotation: [0, 0, 0, 1] },
+      { part: 40, position: [1, 2, 3], rotation: [0, 0, 0, 1] },
+    ]);
     expect(decodeVehicleRig(bytes.subarray(0, 58)).detached).toEqual([]);
-    expect(() => decodeVehicleRig(bytes.subarray(0, 70))).toThrow();
+    expect(() => decodeVehicleRig(bytes.subarray(0, 92))).toThrow();
   });
   it('draws a detached part at its world pose independent of the chassis', async () => {
     const THREE = await import('three');

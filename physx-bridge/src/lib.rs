@@ -1590,6 +1590,13 @@ impl World {
                 rotation: Quat { x: p.rotation.x, y: p.rotation.y, z: p.rotation.z, w: p.rotation.w } }).collect())
     }
 
+    /// Debug readback of a registered vehicle: every hull's actual world pose,
+    /// owning actor and filter, and each owning actor's mass frame.
+    #[cfg(feature = "native-destruction")]
+    pub fn native_vehicle_debug(&mut self, entity_id: u32) -> Result<ffi::FfiVehicleDebug, BridgeError> {
+        self.inner.pin_mut().native_vehicle_debug(entity_id).map_err(operation_error)
+    }
+
     /// Hand the authored asset to the stage. The scene must already have
     /// completed one step, which is what gives chunks their GPU identities.
     #[cfg(feature = "native-destruction")]
@@ -2053,6 +2060,46 @@ mod ffi {
         part_index: u32,
         position: FfiVec3,
         rotation: FfiQuat,
+    }
+
+    /// One registered vehicle hull as PhysX has it now (debug readback).
+    struct FfiVehicleHullDebug {
+        part_index: u32,
+        /// Order of this hull among its part's hulls.
+        ordinal: u32,
+        /// 0 is the Vehicle2 carrier; fragments follow in first-seen order.
+        actor: u32,
+        /// Authored actor-frame position of the hull (its rest local pose).
+        rest: FfiVec3,
+        /// World pose of the shape: actor global pose * shape local pose.
+        position: FfiVec3,
+        rotation: FfiQuat,
+        filter_word0: u32,
+        filter_word1: u32,
+        authored_word1: u32,
+    }
+
+    struct FfiVehicleActorDebug {
+        actor: u32,
+        position: FfiVec3,
+        rotation: FfiQuat,
+        /// World centre of mass.
+        center_of_mass: FfiVec3,
+        mass: f32,
+        linear_velocity: FfiVec3,
+        angular_velocity: FfiVec3,
+        sleeping: bool,
+        kinematic: bool,
+        gravity_disabled: bool,
+        shapes: u32,
+    }
+
+    struct FfiVehicleDebug {
+        wheel_mask: u32,
+        drive_mask: u32,
+        engine_connected: bool,
+        hulls: Vec<FfiVehicleHullDebug>,
+        actors: Vec<FfiVehicleActorDebug>,
     }
 
     struct FfiVehicleDesc {
@@ -2691,6 +2738,7 @@ mod ffi {
         fn native_pose_vehicle_parts(self: Pin<&mut World>, entity_id: u32,
             poses: &[FfiVehiclePartPose], exclude_mask: u32) -> Result<u32>;
         fn native_detached_vehicle_parts(self: Pin<&mut World>, entity_id: u32) -> Result<Vec<FfiVehiclePartPose>>;
+        fn native_vehicle_debug(self: Pin<&mut World>, entity_id: u32) -> Result<FfiVehicleDebug>;
         fn native_create_destructible(
             self: Pin<&mut World>,
             structure_id: u32,

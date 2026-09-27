@@ -1,7 +1,7 @@
 //! Private test drives reuse the multiplayer match, terrain and transport.
 use crate::vehicle_assets::{self, PrepareRequest, PreparedGeometry, PreparedVehicle};
 use axum::{http::StatusCode, Json};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
     io::Read,
@@ -19,7 +19,43 @@ static SESSIONS: OnceLock<Mutex<HashMap<String, Arc<Session>>>> = OnceLock::new(
 fn sessions() -> &'static Mutex<HashMap<String, Arc<Session>>> {
     SESSIONS.get_or_init(Default::default)
 }
+/// `drive` is the proving-ground test drive. `range` parks the car on the
+/// flat pad with the player on foot 12 m away and a cannon (click to fire)
+/// whose ball mass and speed the page sets: a repeatable destruction bench.
+#[derive(Deserialize, Serialize, Default, Clone, Copy, PartialEq, Eq, Debug)]
+#[serde(rename_all = "camelCase")]
+pub enum SessionMode { #[default] Drive, Range }
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionRequest {
+    configuration: serde_json::Value,
+    #[serde(default)]
+    mode: SessionMode,
+}
+
+#[derive(Deserialize, Serialize, Clone, Copy, Debug)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RangeSettings {
+    pub ball_mass: f32,
+    pub ball_speed: f32,
+}
+impl Default for RangeSettings {
+    fn default() -> Self { Self { ball_mass: 300.0, ball_speed: 60.0 } }
+}
+impl RangeSettings {
+    pub fn validate(self) -> Result<Self, String> {
+        if !(1.0..=20_000.0).contains(&self.ball_mass) { return Err("Ball mass must be 1-20000 kg.".into()); }
+        if !(5.0..=200.0).contains(&self.ball_speed) { return Err("Ball speed must be 5-200 m/s.".into()); }
+        Ok(self)
+    }
+}
+
 pub struct Session {
+    pub mode: SessionMode,
+    pub range: Mutex<RangeSettings>,
+    /// World points to fire the range cannon at (from the shooter's eye).
+    pub aimed_shots: Mutex<Vec<[f32; 3]>>,
     pub vehicle: PreparedVehicle,
     pub current_vehicle: Mutex<PreparedVehicle>,
     pub geometry: PreparedGeometry,
@@ -57,6 +93,7 @@ pub struct SessionResponse {
     match_id: String,
     world_document: WorldDocument,
     vehicle: PreparedVehicle,
+    mode: SessionMode,
 }
 
 /// Reuse a prepared course for an independent observer. Possession of the
@@ -65,13 +102,14 @@ pub async fn inspect_handler(axum::extract::Path(id): axum::extract::Path<String
     -> Result<Json<SessionResponse>, StatusCode> {
     let session = lookup(&id).filter(|s| !s.closing()).ok_or(StatusCode::NOT_FOUND)?;
     let vehicle = session.current_vehicle.lock().unwrap().clone();
-    Ok(Json(SessionResponse { match_id: id, world_document: session.world.clone(), vehicle }))
+    Ok(Json(SessionResponse { match_id: id, world_document: session.world.clone(), vehicle, mode: session.mode }))
 }
 
 pub async fn create(
-    request: PrepareRequest,
+    request: SessionRequest,
 ) -> Result<Json<SessionResponse>, (StatusCode, String)> {
-    let asset = vehicle_assets::prepare_drivable(request).await?;
+    let mode = request.mode;
+    let asset = vehicle_assets::prepare_drivable(PrepareRequest::new(request.configuration)).await?;
     let vehicle = asset.vehicle;
     let geometry = asset.geometry;
     let mut token = [0u8; 24];
@@ -84,7 +122,11 @@ pub async fn create(
             )
         })?;
     let match_id = format!("{PREFIX}{}", hex::encode(token));
-    let world = crate::demo_world::garage_test_world();
+    let mut world = crate::demo_world::garage_test_world();
+    if mode == SessionMode::Range {
+        // On foot, 12 m in front of the parked car (spawned at z = 3).
+        world.spawn_areas = vec![vibe_land_shared::world_document::SpawnArea { id: 1, position: [0.0, 1.5, -9.0], radius: 0.1 }];
+    }
     let mut registry = sessions().lock().unwrap();
     registry
         .retain(|_, s| Arc::strong_count(s) > 1 || s.created.elapsed() < Duration::from_secs(900));
@@ -97,6 +139,9 @@ pub async fn create(
     registry.insert(
         match_id.clone(),
         Arc::new(Session {
+            mode,
+            range: Mutex::new(RangeSettings::default()),
+            aimed_shots: Mutex::new(Vec::new()),
             vehicle: vehicle.clone(),
             current_vehicle: Mutex::new(vehicle.clone()),
             geometry,
@@ -109,7 +154,36 @@ pub async fn create(
         match_id,
         world_document: world,
         vehicle,
+        mode,
     }))
+}
+
+/// Range cannon settings; takes effect on the next shot.
+pub async fn range_handler(axum::extract::Path(id): axum::extract::Path<String>, Json(request): Json<RangeSettings>)
+    -> Result<Json<RangeSettings>, (StatusCode, String)> {
+    let session = lookup(&id).filter(|s| !s.closing()).ok_or((StatusCode::NOT_FOUND, "This session has ended.".to_string()))?;
+    let settings = request.validate().map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+    *session.range.lock().unwrap() = settings;
+    Ok(Json(settings))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AimedShot { target: [f32; 3] }
+
+/// Fire the range cannon from the player's eye at a world point, e.g. a
+/// chosen part's centre: a repeatable hit without mouse aim.
+pub async fn fire_handler(axum::extract::Path(id): axum::extract::Path<String>, Json(request): Json<AimedShot>)
+    -> Result<StatusCode, (StatusCode, String)> {
+    let session = lookup(&id).filter(|s| !s.closing() && s.mode == SessionMode::Range)
+        .ok_or((StatusCode::NOT_FOUND, "No destruction range session.".to_string()))?;
+    if !request.target.iter().all(|v| v.is_finite() && v.abs() < 1000.0) {
+        return Err((StatusCode::BAD_REQUEST, "Target must be a finite world point.".into()));
+    }
+    let mut shots = session.aimed_shots.lock().unwrap();
+    if shots.len() >= 8 { return Err((StatusCode::TOO_MANY_REQUESTS, "Shots are still queued.".into())); }
+    shots.push(request.target);
+    Ok(StatusCode::ACCEPTED)
 }
 
 #[cfg(test)]
@@ -134,6 +208,32 @@ mod tests {
             }
             assert_eq!(packet[6 + i * 13 + 12], wheel[3] as u8);
         }
+    }
+
+    #[test]
+    fn detached_parts_group_by_body_and_page_within_a_datagram() {
+        let wheels = [[0.0; 4]; 4];
+        // 40 parts on one body share a pose; 150 more each on their own body.
+        let mut detached: Vec<(u16, [f32; 3], [f32; 4])> = (0..40).map(|i| (i, [1.0, 2.0, 3.0], [0.0, 0.0, 0.0, 1.0])).collect();
+        detached.extend((40..190).map(|i| (i, [i as f32, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0])));
+        let mut seen = std::collections::BTreeSet::new();
+        let pages = vehicle_assets::rig_packet_with_parts(0, 1, wheels, &detached)[59] as u32;
+        assert!(pages > 1);
+        for tick in 0..pages {
+            let packet = vehicle_assets::rig_packet_with_parts(tick, 1, wheels, &detached);
+            assert!(packet.len() <= vehicle_assets::RIG_PACKET_BUDGET);
+            assert_eq!(packet[58] as u32, tick);
+            let mut o = 61;
+            for _ in 0..packet[60] {
+                let count = packet[o + 28] as usize; o += 29;
+                for _ in 0..count { seen.insert(u16::from_le_bytes([packet[o], packet[o + 1]])); o += 2; }
+            }
+            assert_eq!(o, packet.len());
+        }
+        assert_eq!(seen.len(), 190);
+        // The shared body is one group: 29 + 80 bytes, not 40 x 30.
+        let first = vehicle_assets::rig_packet_with_parts(0, 1, wheels, &detached[..40]);
+        assert_eq!(first.len(), 58 + 3 + 29 + 80);
     }
 
     #[test]

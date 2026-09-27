@@ -11,6 +11,8 @@ import { useVehicleValidation, type ExplosionGroup } from '../vehicles/useVehicl
 import {garageBuilds} from '../vehicles/builds.mjs';
 import {DrivingControls} from '../vehicles/DrivingControls';
 import {LiveVehicleTuning} from '../vehicles/LiveVehicleTuning';
+import {DestructionDebugPanel} from '../vehicles/DestructionDebugPanel';
+import {DestructionDebugScene} from '../vehicles/DestructionDebugScene';
 import './Garage.css';
 
 const STORAGE_KEY = 'vibe-land/garage/configuration-v1';
@@ -61,7 +63,7 @@ function GarageWorkshop() {
   const [configuration,setConfiguration]=useState(initialConfiguration);
   const [tab,setTab]=useState<'build'|'style'|'drive'|'inspect'>('build');
   const [travel,setTravel]=useState(0),[steer,setSteer]=useState(0);
-  const [drive,setDrive]=useState<{matchId:string;world:WorldDocument}|null>(null);
+  const [drive,setDrive]=useState<{matchId:string;world:WorldDocument;mode:'drive'|'range'}|null>(null);
   const [explosion,setExplosion]=useState(0),[wireframe,setWireframe]=useState(false),[parts,setParts]=useState(0);
   const [pending,setPending]=useState(false),[error,setError]=useState(''),[prepared,setPrepared]=useState<Prepared|null>(null);
   const [cityVehicle,setCityVehicle]=useState<{matchId:string;vehicleId:number;position:number[]}|null>(null);
@@ -80,13 +82,13 @@ function GarageWorkshop() {
       setPending(false);setPrepared(null);setCityVehicle(null);setError('');setConfiguration(next);
     } catch(e){setError(String(e instanceof Error?e.message:e));}
   }
-  async function prepare(destination: 'prepare' | 'session' | 'city' = 'prepare') {
+  async function prepare(destination: 'prepare' | 'session' | 'city' = 'prepare', mode: 'drive' | 'range' = 'drive') {
     if(!validation.complete||validation.issue)return;
     request.current?.abort();const controller=new AbortController();request.current=controller;
     const current=revision.current;setPending(true);setError('');
     try {
       const origin=resolveMultiplayerBackend().httpOrigin;
-      const response=await fetch(`${origin}/vehicle-assets/${destination}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({configuration}),signal:controller.signal});
+      const response=await fetch(`${origin}/vehicle-assets/${destination}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(destination==='session'?{configuration,mode}:{configuration}),signal:controller.signal});
       if(!response.ok)throw new Error(await response.text());
       const payload=await response.json();
       const result:Prepared=destination==='prepare'?payload:payload.vehicle;
@@ -94,7 +96,7 @@ function GarageWorkshop() {
       if(controller.signal.aborted||revision.current!==current)return;
       if(serializeConfiguration(result.configuration)!==serializeConfiguration(configuration))throw new Error('The server prepared a different configuration. Please try again.');
       setPrepared(result);
-      if(destination==='session')setDrive({matchId:payload.matchId,world:parseWorldDocument(payload.worldDocument)});
+      if(destination==='session')setDrive({matchId:payload.matchId,world:parseWorldDocument(payload.worldDocument),mode});
       if(destination==='city')setCityVehicle({matchId:payload.matchId,vehicleId:payload.vehicleId,position:payload.position});
     } catch(e){if(!controller.signal.aborted)setError(e instanceof Error?e.message:String(e));}
     finally{if(revision.current===current&&!controller.signal.aborted)setPending(false);}
@@ -108,9 +110,16 @@ function GarageWorkshop() {
     try {if(file.size>8192)throw new Error('This configuration file is too large.');configure(normalizeConfiguration(JSON.parse(await file.text())));}
     catch(e){setError(e instanceof Error?e.message:String(e));}
   }
-  if(drive)return <App mode="multiplayer" matchId={drive.matchId} worldDocument={drive.world} autoConnect sessionKey={1} hideTopNav
-    overlay={prepared && <LiveVehicleTuning matchId={drive.matchId} vehicle={prepared}
-      onBack={()=>setDrive(null)} onApplied={vehicle=>{setPrepared(vehicle);setConfiguration(vehicle.configuration);}}/>}/>;
+  if(drive)return <App key={drive.matchId} mode="multiplayer" matchId={drive.matchId} worldDocument={drive.world} autoConnect sessionKey={1} hideTopNav
+    sceneExtras={<DestructionDebugScene/>}
+    overlay={prepared && <>
+      {drive.mode==='drive'
+        ? <LiveVehicleTuning matchId={drive.matchId} vehicle={prepared} onBack={()=>setDrive(null)} onApplied={vehicle=>{setPrepared(vehicle);setConfiguration(vehicle.configuration);}}/>
+        : <div className="garage-drive-controls"><button disabled={pending} onClick={()=>setDrive(null)}>← Back to garage</button>
+            <span role="status">{pending?'Resetting…':'Destruction range · click to fire a cannonball · car parked 12 m ahead'}</span></div>}
+      <DestructionDebugPanel matchId={drive.matchId} geometryHash={prepared.geometryHash} range={drive.mode==='range'}
+        onReset={drive.mode==='range'?()=>void prepare('session','range'):undefined}/>
+    </>}/>;
   return <main className="garage-page">
     <header className="garage-header"><a href="/">VIBELAND <span>/ GARAGE</span></a><nav><a href="/city">Return to city ↗</a></nav></header>
     <aside className="garage-sidebar">
@@ -150,6 +159,7 @@ function GarageWorkshop() {
         </div>}
         <button className="garage-primary" disabled={pending||!validation.complete||!!validation.issue} onClick={()=>void prepare()}>{pending?'Preparing your vehicle…':'Prepare on server'}</button>
         <button className="garage-primary" disabled={pending||!validation.complete||!!validation.issue||configuration.model==='semi'} onClick={()=>void prepare('session')}>Test drive</button>
+        <button className="garage-primary" disabled={pending||!validation.complete||!!validation.issue||configuration.model==='semi'} onClick={()=>void prepare('session','range')}>Destruction range</button>
         <button className="garage-primary" disabled={pending||!validation.complete||!!validation.issue||configuration.model==='semi'} onClick={()=>void prepare('city')}>Send to city</button>
         {cityVehicle&&prepared&&<div role="status" className="garage-prepared"><strong>Your vehicle is in the city</strong><p>Everyone in this city can see and drive it. Open the city beside your vehicle, then press E to enter.</p><a href={`/city?match=${encodeURIComponent(cityVehicle.matchId)}&garageVehicle=${prepared.assetHash}&garagePosition=${encodeURIComponent(cityVehicle.position.join(','))}`}>Open city beside your vehicle ↗</a><p>The vehicle stays until the city server restarts. Destruction is still being integrated.</p></div>}
         {configuration.model==='semi'&&<p className="garage-note">Trailer driving is being integrated. Preview and configuration are available.</p>}

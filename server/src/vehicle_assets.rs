@@ -76,6 +76,9 @@ impl PreparedDriving {
 pub struct PrepareRequest {
     configuration: Value,
 }
+impl PrepareRequest {
+    pub fn new(configuration: Value) -> Self { Self { configuration } }
+}
 
 pub fn valid_hash(value: &str) -> bool {
     value.len() == 64
@@ -327,15 +330,48 @@ pub fn asset_packet(handle: u8, vehicle: &PreparedVehicle) -> Vec<u8> {
 /// Detached parts ride after the fixed 58-byte rig record: `[n u8]` then per
 /// part `[index u16][position f32 x3][rotation xyzw f32 x4]`, each mapping the
 /// part's authored actor-frame geometry to the world. Capped to fit a datagram.
-pub const RIG_PACKET_MAX_DETACHED: usize = 36;
+/// Datagram budget for one rig packet (the path MTU is ~1200 bytes).
+pub const RIG_PACKET_BUDGET: usize = 1150;
+/// Detached parts, grouped by identical world pose: parts carried by one
+/// fragment body at their authored offset share its pose exactly, so a body
+/// is sent once with its part list. Tail after the 58-byte wheel rig:
+/// `[page u8][pages u8][groups u8]` then per group
+/// `[position f32x3][rotation f32x4][count u8][part u16 x count]`.
+/// When every group does not fit one datagram, groups are split into pages
+/// and `tick` picks the page; the client merges pages into its detached set
+/// (parts never re-attach within a session).
 pub fn rig_packet_with_parts(tick: u32, handle: u8, wheels: [[f32; 4]; 4], detached: &[(u16, [f32; 3], [f32; 4])]) -> Vec<u8> {
     let mut bytes = rig_packet(tick, handle, wheels);
     if detached.is_empty() { return bytes; }
-    let parts = &detached[..detached.len().min(RIG_PACKET_MAX_DETACHED)];
-    bytes.push(parts.len() as u8);
-    for (index, position, rotation) in parts {
-        bytes.extend(index.to_le_bytes());
+    let mut groups: Vec<([f32; 3], [f32; 4], Vec<u16>)> = Vec::new();
+    for (part, position, rotation) in detached {
+        let same = |g: &&mut ([f32; 3], [f32; 4], Vec<u16>)| g.0.map(f32::to_bits) == position.map(f32::to_bits)
+            && g.1.map(f32::to_bits) == rotation.map(f32::to_bits) && g.2.len() < 255;
+        match groups.iter_mut().find(|g| same(g)) {
+            Some(group) => group.2.push(*part),
+            None => groups.push((*position, *rotation, vec![*part])),
+        }
+    }
+    let mut pages: Vec<Vec<usize>> = vec![Vec::new()];
+    let mut used = bytes.len() + 3;
+    for (index, group) in groups.iter().enumerate() {
+        let size = 29 + 2 * group.2.len();
+        let page = pages.last_mut().unwrap();
+        if used + size > RIG_PACKET_BUDGET && !page.is_empty() || page.len() == 255 {
+            pages.push(Vec::new());
+            used = bytes.len() + 3;
+        }
+        pages.last_mut().unwrap().push(index);
+        used += size;
+    }
+    let pages = &pages[..pages.len().min(255)];
+    let page = tick as usize % pages.len();
+    bytes.extend([page as u8, pages.len() as u8, pages[page].len() as u8]);
+    for &index in &pages[page] {
+        let (position, rotation, parts) = &groups[index];
         for value in position.iter().chain(rotation) { bytes.extend(value.to_le_bytes()); }
+        bytes.push(parts.len() as u8);
+        for part in parts { bytes.extend(part.to_le_bytes()); }
     }
     bytes
 }

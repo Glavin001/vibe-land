@@ -1458,6 +1458,16 @@ impl PhysxPhysicsArena {
         }
     }
 
+    /// Debug readback of the destructible car (see `GarageDestruction::debug`).
+    #[cfg(feature = "native-destruction")]
+    pub fn vehicle_destruction_debug(&mut self, id: u32) -> Result<serde_json::Value, String> {
+        let entity = NS_VEHICLE | (id & ID_MASK);
+        match &self.garage_destruction {
+            Some(garage) if garage.entity == entity => garage.debug(&mut self.world),
+            _ => Err("this vehicle is not destructible".into()),
+        }
+    }
+
     pub fn vehicle_rig(&self, id:u32, neutral_jounce:f32) -> Option<[[f32;4];4]> {
         let snapshot = self.current_vehicle_snapshots().into_iter().find(|s|s.user_id == id)?;
         Some(std::array::from_fn(|i| [snapshot.wheel_jounce[i]-neutral_jounce,

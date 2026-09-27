@@ -1,4 +1,5 @@
 import { VehicleVisual } from '../vehicles/VehicleVisual';
+import { debugState } from '../vehicles/destructionDebug';
 import { resolveMultiplayerBackend } from '../app/runtimeConfig';
 // The networked world's entities as the game draws them: players (animated
 // characters with HP bars, spawn shields and id labels), dynamic bodies
@@ -555,6 +556,7 @@ export class VehiclesRenderer {
         custom.configure(vs.customVehicle.configuration);
         vehicleMeshGroup.userData.assetHash = vs.customVehicle.assetHash;
       }
+      if (custom) vehicleMeshGroup.visible = !debugState().layers.hideVisuals;
       if (custom) { if (vs.customRig) { custom.setWheelState(vs.customRig.wheels); custom.setDetached(vs.customRig.detached ?? []); } }
       else updateVehicleWheelVisuals(vehicleMeshGroup, vs, placed.localDebug, vPos, vQuat, frameDelta);
       onPlaced?.(id, vs, vehicleMeshGroup, placed);

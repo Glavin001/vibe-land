@@ -83,6 +83,8 @@ type AppProps = {
   mode: GameMode;
   worldDocument?: WorldDocument;
   overlay?: ReactNode;
+  /** Extra three.js content rendered inside the game scene. */
+  sceneExtras?: ReactNode;
   routeLabel?: string;
   autoConnect?: boolean;
   sessionKey?: number;
@@ -155,6 +157,7 @@ export function App({
   mode,
   worldDocument = DEFAULT_WORLD_DOCUMENT,
   overlay,
+  sceneExtras,
   routeLabel,
   autoConnect = false,
   sessionKey = 0,
@@ -1278,7 +1281,7 @@ export function App({
           windDirectionDeg={fogSettings.windDirectionDeg}
           intensity={fogSettings.intensity}
           damageFeedback={damageFeedbackController}
-          sceneExtras={calibrationSceneExtras}
+          sceneExtras={<>{calibrationSceneExtras}{sceneExtras}</>}
         />
       )}
     </div>

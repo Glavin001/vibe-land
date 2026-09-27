@@ -130,6 +130,8 @@ export type NetcodeClientConfig = {
 export class NetcodeClient {
   private customVehicles = new Map<number, VehicleAsset>();
   private vehicleRigs = new Map<number, VehicleRigPacket>();
+  /** Detached parts per vehicle handle, merged across rig pages. */
+  private vehicleDetached = new Map<number, Map<number, VehicleRigPacket['detached'][number]>>();
   private attachVehicleAsset(state: VehicleStateMeters): void {
     state.customVehicle = this.customVehicles.get(state.id);
     state.customRig = this.vehicleRigs.get(state.id);
@@ -1315,7 +1317,10 @@ export class NetcodeClient {
       case 'vehicleRig': {
         const previous = this.vehicleRigs.get(packet.handle);
         if (previous && packet.serverTick <= previous.serverTick) break;
-        this.vehicleRigs.set(packet.handle, packet);
+        let detached = this.vehicleDetached.get(packet.handle);
+        if (!detached) this.vehicleDetached.set(packet.handle, detached = new Map());
+        for (const part of packet.detached) detached.set(part.part, part);
+        this.vehicleRigs.set(packet.handle, {...packet, detached: [...detached.values()]});
         const vehicle = this.vehicles.get(packet.handle);
         if (vehicle) this.attachVehicleAsset(vehicle);
         break;
@@ -1782,6 +1787,7 @@ export class NetcodeClient {
     this.vehicles.clear();
     this.customVehicles.clear();
     this.vehicleRigs.clear();
+    this.vehicleDetached.clear();
     this.vehicleLastSeenTick.clear();
     this.vehicleRemovedAtUs.clear();
     this.vehicleInterpolator.retainOnly(new Set());

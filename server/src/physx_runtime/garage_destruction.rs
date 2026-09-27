@@ -7,6 +7,10 @@
 use super::bridge;
 use crate::vehicle_assets::rig::{inputs_from_vehicle2, source_to_actor, AssetRig, Binding, Motion};
 use crate::vehicle_assets::PreparedGeometry;
+use std::collections::VecDeque;
+
+/// Debug event log length (see `debug`).
+const EVENT_LOG: usize = 64;
 
 /// Native structure id of the garage car; must be below 255.
 pub const STRUCTURE: u32 = 200;
@@ -25,6 +29,9 @@ pub struct GarageDestruction {
     pub broken_bonds: usize,
     pub rejected_steps: usize,
     detached_count: usize,
+    steps: u64,
+    last_status: Option<(u32, bool, u32)>,
+    events: VecDeque<(u64, String)>,
 }
 
 impl GarageDestruction {
@@ -44,7 +51,8 @@ impl GarageDestruction {
             bridge::DestructibleSettings { materials: asset.materials, ..Default::default() })
             .map_err(|e| e.to_string())?;
         Ok(Self { entity, rig, wheel_parts, origin_height: geometry.origin_height,
-            neutral_jounce: geometry.neutral_jounce, configured: false, broken_bonds: 0, rejected_steps: 0, detached_count: 0 })
+            neutral_jounce: geometry.neutral_jounce, configured: false, broken_bonds: 0, rejected_steps: 0, detached_count: 0,
+            steps: 0, last_status: None, events: VecDeque::new() })
     }
 
     /// Pose wheel and hub hulls from the last completed step's wheels.
@@ -79,7 +87,10 @@ impl GarageDestruction {
             }
             return;
         }
-        match world.native_tick() {
+        self.steps += 1;
+        let tick = world.native_tick();
+        if let Ok(status) = &tick { self.last_status = Some((status.error, status.converged, status.iterations)); }
+        match tick {
             Ok(status) if status.error != 0 || !status.converged => {
                 self.rejected_steps += 1;
                 if self.rejected_steps % 60 == 1 {
@@ -93,6 +104,8 @@ impl GarageDestruction {
         if let Ok(broken) = world.native_take_broken_bonds() {
             if !broken.is_empty() {
                 self.broken_bonds += broken.len();
+                let ids: Vec<String> = broken.iter().map(|b| (b.bond_id & ((1 << 20) - 1)).to_string()).collect();
+                self.log(format!("broke {} bond(s): {}", broken.len(), ids.join(" ")));
                 tracing::info!(broken = broken.len(), total = self.broken_bonds, "garage vehicle bonds broke");
             }
         }
@@ -101,12 +114,56 @@ impl GarageDestruction {
         let parts = world.native_detached_vehicle_parts(self.entity).unwrap_or_default();
         if parts.len() != self.detached_count {
             let list: Vec<String> = parts.iter().map(|p| format!("{}@({:.2},{:.2},{:.2})", p.part_index, p.position.x, p.position.y, p.position.z)).collect();
+            let parts_now: Vec<String> = parts.iter().map(|p| p.part_index.to_string()).collect();
+            self.log(format!("{} part(s) off the carrier: {}", parts.len(), parts_now.join(" ")));
             tracing::info!(detached = parts.len(), parts = %list.join(" "), "garage vehicle parts detached");
             self.detached_count = parts.len();
         }
     }
 
     pub fn neutral_jounce(&self) -> f32 { self.neutral_jounce }
+
+    fn log(&mut self, text: String) {
+        if self.events.len() == EVENT_LOG { self.events.pop_front(); }
+        self.events.push_back((self.steps, text));
+    }
+
+    /// Everything PhysX and the stress stage hold for this car right now:
+    /// each hull's world pose, owning actor and filter, each actor's mass
+    /// frame, every bond's verdict, and recent events. Read between steps.
+    pub fn debug(&self, world: &mut bridge::World) -> Result<serde_json::Value, String> {
+        use serde_json::json;
+        macro_rules! v3 { ($v:expr) => {{ let v = &$v; [v.x, v.y, v.z] }} }
+        macro_rules! q4 { ($q:expr) => {{ let q = &$q; [q.x, q.y, q.z, q.w] }} }
+        let vehicle = world.native_vehicle_debug(self.entity).map_err(|e| e.to_string())?;
+        let hulls: Vec<_> = vehicle.hulls.iter().map(|h| json!({
+            "part": h.part_index, "ordinal": h.ordinal, "actor": h.actor, "rest": v3!(h.rest),
+            "position": v3!(h.position), "rotation": q4!(h.rotation),
+            "filter": [h.filter_word0, h.filter_word1], "authoredWord1": h.authored_word1,
+            "terrainExcluded": h.authored_word1 & super::GROUP_STATIC != 0 && h.filter_word1 & super::GROUP_STATIC == 0,
+        })).collect();
+        let actors: Vec<_> = vehicle.actors.iter().map(|a| json!({
+            "actor": a.actor, "position": v3!(a.position), "rotation": q4!(a.rotation),
+            "centerOfMass": v3!(a.center_of_mass), "mass": a.mass,
+            "linearVelocity": v3!(a.linear_velocity), "angularVelocity": v3!(a.angular_velocity),
+            "sleeping": a.sleeping, "kinematic": a.kinematic, "gravityDisabled": a.gravity_disabled, "shapes": a.shapes,
+        })).collect();
+        let bonds: Vec<_> = if self.configured {
+            world.native_bond_stress_rows(STRUCTURE).unwrap_or_default().iter().map(|b| json!({
+                "index": b.bond_index, "a": b.node0, "b": b.node1, "area": b.area,
+                "utilisation": b.utilisation, "compression": b.compression, "tension": b.tension, "shear": b.shear,
+                "damage": b.damage, "remainingArea": b.remaining_area, "broken": b.broken,
+            })).collect()
+        } else { Vec::new() };
+        let events: Vec<_> = self.events.iter().rev().map(|(step, text)| json!({"step": step, "text": text})).collect();
+        Ok(json!({
+            "configured": self.configured, "steps": self.steps, "rejectedSteps": self.rejected_steps,
+            "brokenBonds": self.broken_bonds,
+            "lastStatus": self.last_status.map(|(error, converged, iterations)| json!({"error": error, "converged": converged, "iterations": iterations})),
+            "vehicle": {"wheelMask": vehicle.wheel_mask, "driveMask": vehicle.drive_mask, "engineConnected": vehicle.engine_connected},
+            "hulls": hulls, "actors": actors, "bonds": bonds, "events": events,
+        }))
+    }
 
     /// Parts no longer on the car: (part index, world position, world rotation)
     /// of the map from each part's authored actor-frame geometry to the world.

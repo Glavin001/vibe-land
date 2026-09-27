@@ -126,6 +126,15 @@ impl PhysicsArena {
         }
     }
 
+    /// Debug readback of a destructible vehicle's hulls, actors and bonds.
+    pub fn vehicle_destruction_debug(&mut self, id:u32) -> Result<serde_json::Value, String> {
+        match &mut self.backend {
+            #[cfg(feature="native-destruction")]
+            PhysicsBackend::Physx(arena) => arena.vehicle_destruction_debug(id),
+            _ => { let _ = id; Err("vehicle destruction requires the native PhysX destruction backend".into()) }
+        }
+    }
+
     pub fn vehicle_rig(&self, id:u32, neutral_jounce:f32) -> Option<[[f32;4];4]> {
         match &self.backend {
             #[cfg(feature="physx-gpu")]

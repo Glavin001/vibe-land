@@ -12,3 +12,19 @@
 .garage-error button{border:1px solid #dba192;border-radius:5px;padding:9px 12px;color:#ffded6;background:#513932;cursor:pointer}.garage-primary:disabled{cursor:not-allowed}
 .garage-color-control,.garage-select{display:flex;justify-content:space-between;align-items:center;gap:12px;margin:18px 0;font-size:13px;color:#cbd5cf}.garage-color-control input{width:46px;height:32px;border:1px solid #71877d;background:#203b38;border-radius:5px;cursor:pointer}.garage-select select{max-width:190px;padding:8px;border:1px solid #71877d;border-radius:5px;color:#f3f2e9;background:#203b38;font:inherit}
 .garage-tabs{position:sticky;top:0;z-index:3;display:flex;padding:8px 12px;gap:4px;background:#162626;border-bottom:1px solid #ffffff20}.garage-tabs button{flex:1;border:0;border-radius:5px;padding:12px 4px;color:#aec2b8;background:transparent;font:600 12px system-ui;text-transform:capitalize;cursor:pointer}.garage-tabs button[aria-pressed=true]{background:#3d5750;color:#fff}.garage-personalities{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:16px 0}.garage-personalities button,.garage-secondary{padding:10px 8px;border:1px solid #698479;border-radius:5px;background:transparent;color:#d4dfd6;font:12px system-ui;cursor:pointer}.garage-personalities button[aria-pressed=true]{border-color:#ed915b;background:#3d5750}.garage-details{border-top:1px solid #ffffff20;padding-top:18px;margin-top:20px}.garage-details summary{cursor:pointer;font-size:12px;color:#b4c5bd}.garage-build-badges{display:flex;gap:6px;margin-top:14px}.garage-build-badges span{background:#ffffffba;border:1px solid #b8c7bd;border-radius:20px;padding:6px 10px;font-size:10px;letter-spacing:.03em}
+
+.garage-debug{position:fixed;top:72px;left:16px;z-index:100;display:flex;flex-direction:column;gap:8px;align-items:flex-start;color:#fff;font:12px system-ui;pointer-events:none}
+.garage-debug>*{pointer-events:auto}
+.garage-debug-bar{display:flex;flex-wrap:wrap;gap:6px;align-items:center;background:#162626dc;padding:8px;border-radius:6px}
+.garage-debug-bar button,.garage-debug-bar select{border:1px solid #b1c9b8;border-radius:4px;padding:6px 10px;background:#344a4b;color:#fff;cursor:pointer;font:inherit}
+.garage-debug-bar button[aria-pressed=true]{background:#ed915b;border-color:#ed915b;color:#162626}
+.garage-debug-panel{width:min(420px,calc(100vw - 32px));max-height:calc(100vh - 220px);overflow:auto;background:#162626ee;border:1px solid #60796c;border-radius:8px;padding:10px 12px;font:11px ui-monospace,monospace;line-height:1.5}
+.garage-debug-panel h3{margin:10px 0 4px;font:600 12px system-ui;color:#f6b476}
+.garage-debug-panel p{margin:2px 0}
+.garage-debug-panel table{border-collapse:collapse;width:100%}
+.garage-debug-panel td,.garage-debug-panel th{padding:1px 6px 1px 0;text-align:left;white-space:nowrap}
+.garage-debug-panel tr.warn{color:#ff8a8a}
+.garage-debug-panel i{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:5px}
+.garage-debug-panel ul{margin:0;padding-left:14px}
+.garage-debug-panel li button{background:none;border:0;padding:0;color:#9fd7ff;cursor:pointer;font:inherit;text-decoration:underline dotted}
+.garage-debug-events{max-height:160px;overflow:auto}

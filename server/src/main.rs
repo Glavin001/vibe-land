@@ -1100,6 +1100,7 @@ struct PlayerConnection {
 }
 
 enum MatchEvent {
+    GarageDebug { reply: tokio::sync::oneshot::Sender<Result<serde_json::Value, (StatusCode, String)>> },
     GarageBombardment { enabled: bool, reply: tokio::sync::oneshot::Sender<Result<garage_bombardment::Status, (StatusCode, String)>> },
     TuneGarageVehicle {
         expected_asset_hash: String,
@@ -1506,6 +1507,9 @@ async fn main() -> Result<()> {
         .route("/vehicle-assets/session", post(garage_session_handler).layer(axum::extract::DefaultBodyLimit::max(8192)))
         .route("/vehicle-assets/session/:id", axum::routing::delete(garage::close_handler).get(garage::inspect_handler))
         .route("/vehicle-assets/session/:id/bombardment", post(garage_bombardment_handler).layer(axum::extract::DefaultBodyLimit::max(256)))
+        .route("/vehicle-assets/session/:id/range/fire", post(garage::fire_handler).layer(axum::extract::DefaultBodyLimit::max(256)))
+        .route("/vehicle-assets/session/:id/range", post(garage::range_handler).layer(axum::extract::DefaultBodyLimit::max(256)))
+        .route("/vehicle-assets/session/:id/debug", get(garage_debug_handler))
         .route("/vehicle-assets/session/:id/tuning", post(garage_tuning_handler).layer(axum::extract::DefaultBodyLimit::max(8192)))
         .route("/vehicle-assets/prepare", post(vehicle_assets::prepare).layer(axum::extract::DefaultBodyLimit::max(8192)))
         .route("/vehicle-assets/city", post(city_vehicle_handler).layer(axum::extract::DefaultBodyLimit::max(8192)))
@@ -2025,7 +2029,7 @@ fn load_repo_env() {
 }
 
 async fn garage_session_handler(
-    State(state): State<SharedAppState>, Json(request): Json<vehicle_assets::PrepareRequest>,
+    State(state): State<SharedAppState>, Json(request): Json<garage::SessionRequest>,
 ) -> axum::response::Response {
     if state.inner.physics.backend != vibe_netcode::physics_backend::PhysicsBackendKind::PhysxGpu {
         return (StatusCode::SERVICE_UNAVAILABLE, "Test drives require a PhysX GPU server.").into_response();
@@ -2079,6 +2083,23 @@ async fn garage_bombardment_handler(
     tokio::time::timeout(Duration::from_secs(3),response).await
         .map_err(|_|(StatusCode::GATEWAY_TIMEOUT,"Bombardment acknowledgement timed out.".into()))?
         .map_err(|_|(StatusCode::SERVICE_UNAVAILABLE,"The test drive has ended.".into()))?.map(Json)
+}
+
+/// Destruction debug readback of the session's car (hull poses, actors,
+/// bond verdicts, event log). Read by the garage debug overlay.
+async fn garage_debug_handler(
+    State(state): State<SharedAppState>, axum::extract::Path(id): axum::extract::Path<String>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    garage::lookup(&id).filter(|s|!s.closing())
+        .ok_or((StatusCode::NOT_FOUND,"This session has ended.".into()))?;
+    let handle=find_match(&state,&id).await
+        .ok_or((StatusCode::CONFLICT,"Join the session first.".into()))?;
+    let (reply,response)=tokio::sync::oneshot::channel();
+    handle.tx.send(MatchEvent::GarageDebug{reply})
+        .map_err(|_|(StatusCode::SERVICE_UNAVAILABLE,"The session has ended.".into()))?;
+    tokio::time::timeout(Duration::from_secs(3),response).await
+        .map_err(|_|(StatusCode::GATEWAY_TIMEOUT,"Debug readback timed out.".into()))?
+        .map_err(|_|(StatusCode::SERVICE_UNAVAILABLE,"The session has ended.".into()))?.map(Json)
 }
 
 async fn city_vehicle_handler(
@@ -3752,6 +3773,18 @@ impl MatchState {
 
     fn handle_event(&mut self, event: MatchEvent) {
         match event {
+            MatchEvent::GarageDebug {reply} => {
+                if !reply.is_closed() {
+                    let result=if self.garage.as_ref().is_some_and(|session|!session.closing()) {
+                        self.arena.vehicle_destruction_debug(garage::VEHICLE_ID).map(|mut debug| {
+                            debug["serverTick"]=self.server_tick.into();
+                            debug["bombardment"]=serde_json::to_value(self.bombardment.status).unwrap_or_default();
+                            debug
+                        }).map_err(|e|(StatusCode::CONFLICT,e))
+                    } else { Err((StatusCode::NOT_FOUND,"This session has ended.".into())) };
+                    let _=reply.send(result);
+                }
+            }
             MatchEvent::GarageBombardment {enabled,reply} => {
                 if !reply.is_closed() {
                     let result=if self.garage.as_ref().is_some_and(|session|!session.closing()) {
@@ -4440,7 +4473,8 @@ impl MatchState {
             .record(dead_players_skipped);
 
         if self.garage.is_some() {
-            let target=self.arena.snapshot_vehicles().iter().find(|car|car.id==garage::VEHICLE_ID && car.driver_id!=0)
+            let range=self.garage.as_ref().is_some_and(|session|session.mode==garage::SessionMode::Range);
+            let target=self.arena.snapshot_vehicles().iter().find(|car|car.id==garage::VEHICLE_ID && (car.driver_id!=0 || range))
                 .map(|car|(nalgebra::Vector3::new(car.px_mm as f32,car.py_mm as f32,car.pz_mm as f32)/1000.0,
                     nalgebra::Vector3::new(car.vx_cms as f32,car.vy_cms as f32,car.vz_cms as f32)/100.0));
             if let Some(shot)=self.bombardment.next_shot(self.server_tick,target) {
@@ -4550,6 +4584,7 @@ impl MatchState {
         // actor, a packet to every client) used to land in unattributed.
         let shots_started = Instant::now();
         self.route_city_shots();
+        self.route_garage_range_shots();
         let shots_ms = shots_started.elapsed().as_secs_f32() * 1000.0;
 
         let hitscan_started = Instant::now();
@@ -4705,6 +4740,42 @@ impl MatchState {
                 // Still congested -- try again next tick rather than leaving
                 // the client holed.
                 self.city_desync_players.insert(player_id);
+            }
+        }
+    }
+
+    /// In a garage range session a cannonball shot leaves the shooter's eye
+    /// at the range's configured mass and speed; contacts do the rest.
+    /// (`process_hitscan` then applies the fire rate and skips the ray.)
+    fn route_garage_range_shots(&mut self) {
+        let Some(session)=self.garage.clone().filter(|s|s.mode==garage::SessionMode::Range) else { return };
+        let settings=*session.range.lock().unwrap();
+        let aimed=std::mem::take(&mut *session.aimed_shots.lock().unwrap());
+        let eye=self.players.keys().filter_map(|id|self.arena.player_state(*id)).find(|s|!s.dead)
+            .map(|s|nalgebra::Vector3::new(s.position.x as f32,s.position.y as f32+PLAYER_EYE_HEIGHT_M,s.position.z as f32));
+        let mut shots: Vec<(nalgebra::Vector3<f32>, nalgebra::Vector3<f32>)> = aimed.into_iter()
+            .filter_map(|t| eye.map(|e| {
+                // Lead the drop so the ball arrives at the point, not below it.
+                let d=nalgebra::Vector3::from(t)-e; let time=d.norm()/settings.ball_speed;
+                (e, d+nalgebra::Vector3::new(0.0,4.905*time*time,0.0))
+            })).collect();
+        shots.extend(self.queued_shots.iter()
+            .filter(|queued| queued.cmd.weapon == WEAPON_CANNONBALL)
+            .filter(|queued| self.players.get(&queued.player_id).is_some_and(|runtime| {
+                runtime.last_processed_shot_id.is_none_or(|last| queued.cmd.shot_id > last)
+            }))
+            .filter_map(|queued| {
+                let state=self.arena.player_state(queued.player_id).filter(|s|!s.dead)?;
+                let [x,y,z]=queued.cmd.dir;
+                Some((nalgebra::Vector3::new(state.position.x as f32,state.position.y as f32+PLAYER_EYE_HEIGHT_M,state.position.z as f32),
+                    nalgebra::Vector3::new(x,y,z)))
+            }));
+        for (origin,direction) in shots {
+            let launched=self.arena.launch_ball(origin+direction.normalize()*0.6,direction,garage_bombardment::BALL_RADIUS,
+                settings.ball_mass,settings.ball_speed,garage_bombardment::BALL_TTL);
+            if launched.is_some() {
+                tracing::info!(match_id=%self.id, origin=?[origin.x,origin.y,origin.z], direction=?[direction.x,direction.y,direction.z],
+                    mass=settings.ball_mass, speed=settings.ball_speed, "garage range shot");
             }
         }
     }

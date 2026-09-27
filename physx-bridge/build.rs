@@ -368,6 +368,7 @@ fn add_native_destruction(
         ("reservedContactPairs", "VIBE_PHYSX_HAS_RESERVED_CONTACT_PAIRS"),
         ("correctionBlockers", "VIBE_PHYSX_HAS_CORRECTION_BLOCKERS"),
         ("fragmentMaxDepenetrationVelocity", "VIBE_PHYSX_HAS_FRAGMENT_DEPENETRATION"),
+        ("fragmentGravity", "VIBE_PHYSX_HAS_FRAGMENT_GRAVITY"),
     ] {
         if text.contains(field) {
             build.define(define, None);

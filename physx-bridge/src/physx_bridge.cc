@@ -3966,6 +3966,13 @@ public:
     return native().detached_vehicle_parts(*record.vehicle);
   }
 
+  FfiVehicleDebug native_vehicle_debug(std::uint32_t entity_id) {
+    require(!step_in_flight_, "vehicle debug state must be read between steps");
+    auto &record=find(entity_id);
+    require(record.vehicle && record.vehicle_compound_installed,"vehicle compound is not prepared");
+    return native().vehicle_debug(*record.vehicle);
+  }
+
   std::uint32_t native_pose_vehicle_parts(std::uint32_t entity_id,
       rust::Slice<const FfiVehiclePartPose> poses, std::uint32_t exclude_mask) {
     require(!step_in_flight_, "vehicle part poses must be set between steps");
@@ -4531,6 +4538,10 @@ void World::native_register_vehicle(std::uint32_t entity_id, std::uint32_t struc
 
 rust::Vec<FfiVehiclePartPose> World::native_detached_vehicle_parts(std::uint32_t entity_id) {
   return impl_->native_detached_vehicle_parts(entity_id);
+}
+
+FfiVehicleDebug World::native_vehicle_debug(std::uint32_t entity_id) {
+  return impl_->native_vehicle_debug(entity_id);
 }
 
 std::uint32_t World::native_pose_vehicle_parts(std::uint32_t entity_id,

@@ -18,6 +18,7 @@ namespace vibe_land::physx_bridge {
 struct FfiVec3;
 struct FfiVehicleFracturePart;
 struct FfiVehiclePartPose;
+struct FfiVehicleDebug;
 struct FfiPose;
 struct FfiDestructibleSettings;
 struct FfiChunkNodeDesc;
@@ -90,6 +91,8 @@ public:
   /// World transforms, from each part's authored actor-frame pose, of the
   /// parts whose hulls have left the vehicle's carrier (detached fragments).
   rust::Vec<FfiVehiclePartPose> detached_vehicle_parts(const physx::native::NativeVehicle &vehicle) const;
+  /// Debug readback: every hull's world pose, owner and filter; owners' mass frames.
+  FfiVehicleDebug vehicle_debug(const physx::native::NativeVehicle &vehicle) const;
   /// Refresh functional state from accepted shape owners, before Vehicle2 runs.
   void prepare_vehicles();
   /// Submit the measured commands after Vehicle2 runs and before simulate.
