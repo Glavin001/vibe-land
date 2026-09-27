@@ -616,6 +616,7 @@ fn run_meteor(geometry: &PreparedGeometry, layout: &FractureLayout, heightfield:
         observe(&mut scene, &mut checks);
         if let Some(b) = scene.arena.snapshot_dynamic_bodies().into_iter().find(|b| Some(b.0) == meteor) {
             closest = closest.min((v3(b.1) - Vector3::new(car.x, car.y, car.z)).norm());
+            if checks.tracing { if let Some(last) = checks.trace.last_mut() { last["meteor"] = json!({"p": b.1, "v": b.4}); } }
         }
     }
     checks.finish(0.5 * tuning.mass_kg * launch.velocity.length_squared());

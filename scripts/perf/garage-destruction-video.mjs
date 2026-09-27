@@ -75,7 +75,22 @@ const videoDir = mkdtempSync(join(tmpdir(), 'garage-video-'));
 const browser = await chromium.launch({ headless: true, args: ['--use-angle=metal', '--ignore-gpu-blocklist', '--enable-gpu'] });
 const context = await browser.newContext({ viewport: { width: 1280, height: 720 }, recordVideo: { dir: videoDir, size: { width: 1280, height: 720 } } });
 const page = await context.newPage();
-await page.addInitScript(() => { globalThis.__VIBE_VEHICLE_TRACE__ = []; });
+await page.addInitScript(() => {
+  globalThis.__VIBE_VEHICLE_TRACE__ = [];
+  // Per frame: every meteor as drawn (source: arc, streamed body, hold) with
+  // the arc position and the raw streamed body for comparison.
+  const frame = () => {
+    const bridge = globalThis.__VIBE_E2E__, trace = globalThis.__VIBE_VEHICLE_TRACE__;
+    try {
+      const meteors = bridge?.meteors?.() ?? [];
+      const world = bridge?.drawnWorld?.();
+      const bodies = (world?.bodies ?? []).filter(b => b.shapeType !== undefined);
+      if ((meteors.length || bodies.length) && trace.length < 40000) trace.push({ kind: 'meteor', t: performance.now(), meteors, bodies });
+    } catch {}
+    requestAnimationFrame(frame);
+  };
+  requestAnimationFrame(frame);
+});
 const recordingStarted = Date.now();
 let rangeStarted = recordingStarted;
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -108,7 +123,7 @@ try {
   const sampler = (async () => {
     while (sampling) {
       const started = Date.now();
-      try { const r = await fetch(`${api}/debug`); if (r.ok) telemetry.push({ t: started - rangeStarted, ...summarise(await r.json(), assembly, terrain) }); } catch {}
+      try { const r = await fetch(`${api}/debug`); if (r.ok) { const d = await r.json(); telemetry.push({ t: started - rangeStarted, serverBodies: d.bodies, ...summarise(d, assembly, terrain) }); } } catch {}
       await sleep(Math.max(0, 50 - (Date.now() - started)));
     }
   })();

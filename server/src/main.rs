@@ -3782,6 +3782,9 @@ impl MatchState {
                     let result=if self.garage.as_ref().is_some_and(|session|!session.closing()) {
                         self.arena.vehicle_destruction_debug(garage::VEHICLE_ID).map(|mut debug| {
                             debug["serverTick"]=self.server_tick.into();
+                            // Large loose bodies (meteors) as the server has them.
+                            debug["bodies"]=self.arena.snapshot_dynamic_bodies().into_iter().filter(|b| b.3[0] >= 1.0)
+                                .map(|b| serde_json::json!({"id": b.0, "position": b.1, "velocity": b.4, "radius": b.3[0]})).collect();
                             debug["bombardment"]=serde_json::to_value(self.bombardment.status).unwrap_or_default();
                             debug
                         }).map_err(|e|(StatusCode::CONFLICT,e))

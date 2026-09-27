@@ -322,6 +322,21 @@ describe('TsServerClock matches clock_sync.rs (WasmClockSync)', () => {
 });
 
 describe('RenderClock', () => {
+  it('starts over when server time moves to a new base far behind it', () => {
+    // Read before the first snapshot: the "server" clock is the local clock,
+    // 13 s after page load. The match then starts at tick 1 (16 ms).
+    const clock = new RenderClock();
+    clock.setTargetDelayMs(16);
+    clock.renderTimeUs(13_000_000, 13_000_000);
+    const early = clock.renderTimeUs(16_667, 13_020_000);
+    // It follows the new clock at once instead of holding 13 s ahead.
+    expect(early).toBeLessThan(16_667);
+    expect(early).toBeGreaterThan(-100_000);
+    // A genuine stall (server time not advancing) still never goes back.
+    const stalled = clock.renderTimeUs(16_667, 13_050_000);
+    expect(stalled).toBeGreaterThanOrEqual(early);
+  });
+
   it('never goes backwards while the delay grows and the server clock is frozen', () => {
     const clock = new RenderClock();
     clock.setTargetDelayMs(20);

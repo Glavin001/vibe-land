@@ -546,6 +546,13 @@ export class RenderClock {
   renderTimeUs(serverNowUs: number, localTimeUs: number): number {
     if (this.delayUs === null) this.delayUs = this.targetDelayUs;
     if (localTimeUs < this.lastLocalUs - 1_000_000) this.reset();
+    // Server time a second behind what was already handed out is a new time
+    // base, not a stall: a read before the first snapshot synced the server
+    // clock (it is still the local clock, e.g. 13 s after page load), or a new
+    // match. Holding the old render time froze every body's clock until the
+    // server caught up, drawing them all at the extrapolation cap ahead of
+    // their data (a meteor passed through the car it had not yet hit).
+    else if (this.lastRenderUs !== -Infinity && serverNowUs < this.lastRenderUs - 1_000_000) this.reset();
     if (this.lastRenderUs === -Infinity) {
       this.lastServerNowUs = serverNowUs;
       this.delayUs = this.targetDelayUs;

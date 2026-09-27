@@ -856,6 +856,9 @@ export class NetcodeClient {
         velocity,
         angularVelocity,
       };
+      const trace = (globalThis as { __VIBE_VEHICLE_TRACE__?: unknown[] }).__VIBE_VEHICLE_TRACE__;
+      if (Array.isArray(trace) && trace.length < 40000 && meta.halfExtents[0] >= 1)
+        trace.push({ kind: 'body', t: performance.now(), id: bodyId, tick: packet.serverTick, position, velocity });
       this.dynamicBodies.set(bodyId, meters);
       this.dynamicBodyServerTimeUs.set(bodyId, packet.serverTimeUs);
       this.dynamicBodyInterpolator.push(bodyId, {
@@ -1154,6 +1157,9 @@ export class NetcodeClient {
         return;
       }
       // Newer than anything the client has of this body.
+      const trace = (globalThis as { __VIBE_VEHICLE_TRACE__?: unknown[] }).__VIBE_VEHICLE_TRACE__;
+      if (Array.isArray(trace) && trace.length < 40000 && body.halfExtents[0] >= 1)
+        trace.push({ kind: 'body', t: performance.now(), id: bodyId, tick, position: body.position, velocity: body.velocity });
       this.dynamicBodies.set(bodyId, body);
       this.dynamicBodyServerTimeUs.set(bodyId, tUs);
       this.dynamicBodyInterpolator.push(bodyId, sample);
@@ -1324,8 +1330,13 @@ export class NetcodeClient {
         for (const part of packet.detached) detached.set(part.part, part);
         // Opt-in diagnostics (the garage range recorder sets the flag).
         const trace = (globalThis as { __VIBE_VEHICLE_TRACE__?: unknown[] }).__VIBE_VEHICLE_TRACE__;
-        if (Array.isArray(trace) && trace.length < 20000) trace.push({ kind: 'rig', t: performance.now(), tick: packet.serverTick,
-          page: packet.page, pages: packet.pages, parts: packet.detached.length, merged: detached.size });
+        if (Array.isArray(trace) && trace.length < 40000) {
+          const localUs = performance.now() * 1000;
+          trace.push({ kind: 'rig', t: performance.now(), tick: packet.serverTick,
+            page: packet.page, pages: packet.pages, parts: packet.detached.length, merged: detached.size,
+            serverNowUs: this.serverClock.serverNowUs(localUs), bodyRenderUs: this.getDynamicBodyRenderTimeUs(),
+            bodyDelayMs: this.dynamicBodyInterpolationDelayMs });
+        }
         this.vehicleRigs.set(packet.handle, {...packet, detached: [...detached.values()]});
         const vehicle = this.vehicles.get(packet.handle);
         if (vehicle) this.attachVehicleAsset(vehicle);
