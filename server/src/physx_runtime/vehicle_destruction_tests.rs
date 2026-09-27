@@ -133,6 +133,7 @@ struct Checks<'a> {
     sunk_ticks: u32,
     /// Each part's centre at the previous sample, with the tick.
     part_centers: HashMap<u32, (u32, Vector3<f32>)>,
+    part_speeds: HashMap<u32, f32>,
     /// Per-tick trace (part centres by body) while `tracing` is set.
     trace: Vec<serde_json::Value>,
     tracing: bool,
@@ -145,7 +146,7 @@ impl<'a> Checks<'a> {
         let posed = geometry.parts.iter().enumerate().filter(|(_, p)|
             matches!(Binding::from_motion(p.motion.as_ref()), Ok(Binding::Corner(_, Motion::Wheel)))).map(|(i, _)| i as u32).collect();
         Self { geometry, layout, posed, violations: BTreeMap::new(), warnings: BTreeMap::new(), locals: HashMap::new(), tracks: BTreeMap::new(),
-            broken: BTreeSet::new(), last_break: None, max_loose_energy: 0., last: None, carrier_com: None, wheel_mask_mismatch: [0; 4], free_flight_ticks: 0, flat_ground: true, streamed_cache: Vec::new(), sunk_ticks: 0, part_centers: HashMap::new(), trace: Vec::new(), tracing: false, terrain: None }
+            broken: BTreeSet::new(), last_break: None, max_loose_energy: 0., last: None, carrier_com: None, wheel_mask_mismatch: [0; 4], free_flight_ticks: 0, flat_ground: true, streamed_cache: Vec::new(), sunk_ticks: 0, part_centers: HashMap::new(), part_speeds: HashMap::new(), trace: Vec::new(), tracing: false, terrain: None }
     }
     fn warn(&mut self, kind: &str, detail: String) {
         let entry = self.warnings.entry(kind.to_owned()).or_insert((0, detail));
@@ -237,12 +238,20 @@ impl<'a> Checks<'a> {
             centers.push((h.part, h.actor, (h.part_pose() * Point3::new(c[0], c[1], c[2])).coords));
         }
         for &(part, actor, now) in &centers {
-            if let (Some(&(t0, before)), Some(a)) = (self.part_centers.get(&part), actors.get(&actor)) {
+            let Some(a) = actors.get(&actor) else { continue };
+            let r = (now - v3(a.center_of_mass)).norm();
+            let speed_now = v3(a.linear_velocity).norm() + v3(a.angular_velocity).norm() * r;
+            // A contact inside the tick changes velocity at once: bound by the
+            // faster of the part's body before and after it.
+            let speed = self.part_speeds.insert(part, speed_now).map_or(speed_now, |s| s.max(speed_now));
+            if let Some(&(t0, before)) = self.part_centers.get(&part) {
                 let dt = (tick - t0) as f32 * DT;
-                let r = (now - v3(a.center_of_mass)).norm();
-                let allowed = (v3(a.linear_velocity).norm() + v3(a.angular_velocity).norm() * r) * dt * 2.0 + 0.05;
+                let allowed = speed * dt * 2.0 + 0.05;
                 let moved = (now - before).norm();
-                if moved > allowed.max(0.05) && moved > 0.25 {
+                // Contact depenetration moves a body in position, which its
+                // velocity does not show: a few cm per tick against terrain.
+                // The check is for jumps (the snap-back was metres).
+                if moved > allowed && moved > 0.5 {
                     self.fail("part teleported", format!("{} moved {moved:.2} m in {} tick(s) (body allows {allowed:.2} m) at tick {tick}", self.name(part), tick - t0));
                 }
             }
@@ -696,4 +705,49 @@ fn garage_vehicle_destruction_is_rigid_body_correct() {
     let failed: Vec<_> = report.iter().filter(|r| r["result"]["failed"] == true)
         .map(|r| format!("{} {}: {}", r["model"], r["result"]["scenario"], r["result"]["violations"])).collect();
     assert!(failed.is_empty(), "destruction invariants failed (report {path}):\n{}", failed.join("\n"));
+}
+
+/// Where the impact tick's time goes: the meteor scenario with no debug
+/// readbacks, each step timed, and PhysX's own zones (VIBE_PHYSX_PROFILE) for
+/// the slow ticks. Writes target/meteor-tick-profile.json.
+#[test]
+#[ignore = "requires local GPU, coherent ABI 22 SDK and VIBE_VEHICLE_BUILD_FIXTURES"]
+fn garage_meteor_impact_tick_profile() {
+    let _guard = gpu_test_guard();
+    std::env::set_var("VIBE_PHYSX_PROFILE", "1");
+    let (_, geometry) = fixtures().into_iter().next().expect("buggy fixture");
+    let heightfield = std::env::var("VIBE_PROFILE_TERRAIN").is_ok_and(|v| v == "1");
+    let mut scene = Scene::new(&geometry, heightfield);
+    let mut rows = Vec::new();
+    let mut step = |scene: &mut Scene, label: &str| {
+        let started = std::time::Instant::now();
+        let (vehicle_ms, dynamics_ms) = scene.arena.step_vehicles_and_dynamics(DT);
+        let step_ms = started.elapsed().as_secs_f64() * 1000.;
+        let detached_started = std::time::Instant::now();
+        let detached = scene.arena.vehicle_detached_parts(CAR).len();
+        let detached_ms = detached_started.elapsed().as_secs_f64() * 1000.;
+        scene.tick += 1;
+        let _ = scene.arena.world.native_stats();
+        let mut spans: Vec<(String, f64)> = scene.arena.world.take_destruction_spans().into_iter()
+            .filter(|s| s.kind != 2 && s.value > 0.05).map(|s| (s.name, s.value)).collect();
+        spans.sort_by(|a, b| b.1.total_cmp(&a.1));
+        rows.push(json!({"tick": scene.tick, "phase": label, "stepMs": step_ms, "vehicleMs": vehicle_ms, "dynamicsMs": dynamics_ms,
+            "detachedPartsMs": detached_ms, "detached": detached, "spans": spans}));
+    };
+    for _ in 0..120 { step(&mut scene, "settle"); }
+    let car = scene.arena.current_vehicle_snapshots()[0].pose.position;
+    let tuning = crate::meteor::MeteorTuning::from_env();
+    let launch = crate::meteor::plan(glam::Vec3::new(car.x, car.y, car.z), glam::Vec3::new(0., -G, 0.), &tuning, &mut crate::meteor::Rng::new(7));
+    scene.arena.launch_meteor(Vector3::new(launch.start.x, launch.start.y, launch.start.z),
+        Vector3::new(launch.velocity.x, launch.velocity.y, launch.velocity.z), tuning.radius_m, tuning.mass_kg, tuning.ttl_ticks);
+    for _ in 0..((launch.flight_time_s * 60.) as u32 + 240) { step(&mut scene, "meteor"); }
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../target/meteor-tick-profile.json");
+    std::fs::write(path, serde_json::to_vec_pretty(&rows).unwrap()).unwrap();
+    let mut worst: Vec<&serde_json::Value> = rows.iter().collect();
+    worst.sort_by(|a, b| b["stepMs"].as_f64().unwrap().total_cmp(&a["stepMs"].as_f64().unwrap()));
+    for row in worst.iter().take(6) {
+        eprintln!("tick {} step {:.1} ms (vehicle {:.1}, dynamics {:.1}, detached read {:.2}) detached {}: {:?}", row["tick"], row["stepMs"].as_f64().unwrap(),
+            row["vehicleMs"].as_f64().unwrap(), row["dynamicsMs"].as_f64().unwrap(), row["detachedPartsMs"].as_f64().unwrap(), row["detached"],
+            row["spans"].as_array().unwrap().iter().take(14).collect::<Vec<_>>());
+    }
 }

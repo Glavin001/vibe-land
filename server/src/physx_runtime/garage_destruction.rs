@@ -91,12 +91,20 @@ impl GarageDestruction {
     pub fn after_step(&mut self, world: &mut bridge::World) {
         if !self.configured {
             // Each unconverged tick runs to the cap; bound it while float does not
-            // converge under road loads (VIBE_GARAGE_STRESS_ITERATIONS, default 128: ~15 ms/tick on M-series).
-            let max_iterations = std::env::var("VIBE_GARAGE_STRESS_ITERATIONS").ok().and_then(|v| v.parse().ok()).unwrap_or(128);
+            // converge (VIBE_GARAGE_STRESS_ITERATIONS). Measured on the meteor
+            // profile (garage_meteor_impact_tick_profile, M-series): 128 kept
+            // 238 ticks over the 16.7 ms budget once the car was in pieces
+            // (post-split median 19.4 ms, idle 10.8 ms); 64 kept 8 (14.0 ms,
+            // idle 6.3 ms). Preserving unchanged contact pairs cut the split
+            // tick from ~140 to 97 ms.
+            let max_iterations = std::env::var("VIBE_GARAGE_STRESS_ITERATIONS").ok().and_then(|v| v.parse().ok()).unwrap_or(64);
+            let flag = |name: &str, default: bool| std::env::var(name).map_or(default, |v| v == "1");
             match world.native_configure(bridge::NativeConfig { max_iterations, tolerance: 1e-5,
                 warm_start: true, damage_rate: 2., bend_gain_max: 3., fibre_bending: true,
-                reserved_contact_pairs: 4096, preserve_unchanged_contact_pairs: false,
-                gpu_island_repair: true, verdict_sample_ticks: 1 }) {
+                reserved_contact_pairs: 4096,
+                preserve_unchanged_contact_pairs: flag("VIBE_GARAGE_PRESERVE_PAIRS", true),
+                gpu_island_repair: flag("VIBE_GARAGE_GPU_ISLAND_REPAIR", true),
+                verdict_sample_ticks: std::env::var("VIBE_GARAGE_VERDICT_TICKS").ok().and_then(|v| v.parse().ok()).unwrap_or(1) }) {
                 Ok(_) => { self.configured = true; tracing::info!(max_iterations, "garage vehicle destruction configured"); }
                 Err(error) => tracing::error!(%error, "garage vehicle destruction could not configure"),
             }

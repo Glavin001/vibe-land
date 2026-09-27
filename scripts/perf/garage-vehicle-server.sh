@@ -7,7 +7,7 @@
 #   scripts/perf/garage-vehicle-server.sh [--no-build]
 #
 # VIBE_GARAGE_BALL_MASS (kg) overrides the 30 kg cannonball for demos.
-# VIBE_GARAGE_STRESS_ITERATIONS caps stress iterations per tick (default 128).
+# VIBE_GARAGE_STRESS_ITERATIONS caps stress iterations per tick (default 64).
 # VIBE_VEHICLE_SDK selects the install (default: the float vehicle SDK).
 # Float does not yet converge under Vehicle2 road loads, so this demo sets
 # PX_DESTRUCTION_ALLOW_UNCONVERGED=1: unconverged stress steps are published
