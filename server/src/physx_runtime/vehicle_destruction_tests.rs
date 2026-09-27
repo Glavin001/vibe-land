@@ -389,7 +389,8 @@ impl<'a> Checks<'a> {
             let mut accel: Vec<f32> = s.windows(2).filter(|w| w[1].0 == w[0].0 + 1 && w[0].4 && w[1].4 && !w[0].2)
                 .map(|w| (w[1].1.y - w[0].1.y) / DT).collect();
             self.free_flight_ticks += accel.len();
-            if accel.len() >= 4 {
+            // A median of fewer samples is decided by a single contact tick.
+            if accel.len() >= 8 {
                 accel.sort_by(f32::total_cmp);
                 let median = accel[accel.len() / 2];
                 if (median + G).abs() > 1.5 { self.fail("loose body does not fall at g", format!("{label}: median a_y {median:.2} over {} airborne ticks", accel.len())); }

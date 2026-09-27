@@ -730,8 +730,16 @@ void NativeDestruction::restore_detached_hull_filters() {
       if(owner==carrier) continue;
       float offset=loose;
       if(const auto *body=owner?owner->is<PxRigidDynamic>():nullptr) {
-        const float reach=body->getLinearVelocity().magnitude()+body->getAngularVelocity().magnitude()*owner->getWorldBounds().getExtents().magnitude();
-        offset=PxClamp(reach*(1.25f/60.0f),offset,0.5f);
+        // Only motion toward the ground can carry a piece through it (the
+        // terrain is below): downward speed plus what spin sweeps. Scaling by
+        // total speed inflated every piece of a fresh debris cloud flying out
+        // and up, ~24k contact pairs and a 100 ms tick after a meteor strike.
+        static const bool downward=native_env_f32("VIBE_VEHICLE_LOOSE_OFFSET_TOTAL_SPEED",0.0f)==0.0f;
+        const PxVec3 v=body->getLinearVelocity();
+        const float linear=downward?PxMax(0.0f,-v.y):v.magnitude();
+        const float reach=linear+body->getAngularVelocity().magnitude()*owner->getWorldBounds().getExtents().magnitude();
+        static const float cap=native_env_f32("VIBE_VEHICLE_LOOSE_CONTACT_OFFSET_MAX",0.5f);
+        offset=PxClamp(reach*(1.25f/60.0f),offset,PxMax(offset,cap));
       }
       const float current=hull.shape->getContactOffset();
       if(offset>current*1.25f || offset<current*0.75f) hull.shape->setContactOffset(offset);
@@ -894,6 +902,13 @@ FfiNativeConfigured NativeDestruction::configure(const FfiNativeConfig &config) 
 #endif
 #if defined(VIBE_PHYSX_HAS_FRAGMENT_DEPENETRATION)
   desc.fragmentMaxDepenetrationVelocity = native_fragment_depenetration_velocity();
+#if PX_DESTRUCTION_SCENE_VERSION >= 22
+  // A car's pieces start inside each other's contact range and sometimes part
+  // under the heightfield; pushed out unbounded, a tyre left at 196 m/s with
+  // 8x the meteor's energy (vehicle destruction tests). 2 m/s bounds it.
+  if (desc.fragmentMaxDepenetrationVelocity <= 0.0f && !s.vehicles.empty())
+    desc.fragmentMaxDepenetrationVelocity = 2.0f;
+#endif
   if (desc.fragmentMaxDepenetrationVelocity > 0.0f) {
     std::fprintf(stderr, "[destruction] fragment depenetration cap %.3g m/s\n",
                  double(desc.fragmentMaxDepenetrationVelocity));
