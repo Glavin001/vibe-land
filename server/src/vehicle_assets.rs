@@ -335,14 +335,22 @@ pub const RIG_PACKET_BUDGET: usize = 1150;
 /// Detached parts, grouped by identical world pose: parts carried by one
 /// fragment body at their authored offset share its pose exactly, so a body
 /// is sent once with its part list. Tail after the 58-byte wheel rig:
-/// `[page u8][pages u8][groups u8]` then per group
+/// `[packet u8][packets u8][groups u8]` then per group
 /// `[position f32x3][rotation f32x4][count u8][part u16 x count]`.
-/// When every group does not fit one datagram, groups are split into pages
-/// and `tick` picks the page; the client merges pages into its detached set
-/// (parts never re-attach within a session).
-pub fn rig_packet_with_parts(tick: u32, handle: u8, wheels: [[f32; 4]; 4], detached: &[(u16, [f32; 3], [f32; 4])]) -> Vec<u8> {
+/// One packet per call; see `RigStream` for a tick's complete set.
+fn rig_packet_with_groups(tick: u32, handle: u8, wheels: [[f32; 4]; 4], groups: &[&([f32; 3], [f32; 4], Vec<u16>)], index: usize, count: usize) -> Vec<u8> {
     let mut bytes = rig_packet(tick, handle, wheels);
-    if detached.is_empty() { return bytes; }
+    if groups.is_empty() && count == 0 { return bytes; }
+    bytes.extend([index as u8, count as u8, groups.len() as u8]);
+    for (position, rotation, parts) in groups {
+        for value in position.iter().chain(rotation) { bytes.extend(value.to_le_bytes()); }
+        bytes.push(parts.len() as u8);
+        for part in parts { bytes.extend(part.to_le_bytes()); }
+    }
+    bytes
+}
+
+fn group_detached(detached: &[(u16, [f32; 3], [f32; 4])]) -> Vec<([f32; 3], [f32; 4], Vec<u16>)> {
     let mut groups: Vec<([f32; 3], [f32; 4], Vec<u16>)> = Vec::new();
     for (part, position, rotation) in detached {
         let same = |g: &&mut ([f32; 3], [f32; 4], Vec<u16>)| g.0.map(f32::to_bits) == position.map(f32::to_bits)
@@ -352,28 +360,50 @@ pub fn rig_packet_with_parts(tick: u32, handle: u8, wheels: [[f32; 4]; 4], detac
             None => groups.push((*position, *rotation, vec![*part])),
         }
     }
-    let mut pages: Vec<Vec<usize>> = vec![Vec::new()];
-    let mut used = bytes.len() + 3;
-    for (index, group) in groups.iter().enumerate() {
+    groups
+}
+
+fn paginate<'a>(base: usize, groups: impl Iterator<Item = &'a ([f32; 3], [f32; 4], Vec<u16>)>) -> Vec<Vec<&'a ([f32; 3], [f32; 4], Vec<u16>)>> {
+    let mut pages: Vec<Vec<_>> = Vec::new();
+    let mut used = 0;
+    for group in groups {
         let size = 29 + 2 * group.2.len();
-        let page = pages.last_mut().unwrap();
-        if used + size > RIG_PACKET_BUDGET && !page.is_empty() || page.len() == 255 {
+        if pages.is_empty() || used + size > RIG_PACKET_BUDGET || pages.last().is_some_and(|p| p.len() == 255) {
             pages.push(Vec::new());
-            used = bytes.len() + 3;
+            used = base + 3;
         }
-        pages.last_mut().unwrap().push(index);
+        pages.last_mut().unwrap().push(group);
         used += size;
     }
-    let pages = &pages[..pages.len().min(255)];
-    let page = tick as usize % pages.len();
-    bytes.extend([page as u8, pages.len() as u8, pages[page].len() as u8]);
-    for &index in &pages[page] {
-        let (position, rotation, parts) = &groups[index];
-        for value in position.iter().chain(rotation) { bytes.extend(value.to_le_bytes()); }
-        bytes.push(parts.len() as u8);
-        for part in parts { bytes.extend(part.to_le_bytes()); }
+    pages
+}
+
+/// Streams a vehicle's detached parts. Every tick it sends every group whose
+/// pose changed since it was last sent -- as many datagrams as that takes --
+/// so a part never lingers drawn on the car after it left it, and moving
+/// pieces are never stale. Unchanged groups are resent one page per tick,
+/// round-robin, for loss recovery and late joiners.
+#[derive(Default)]
+pub struct RigStream { sent: std::collections::HashMap<Vec<u16>, [u32; 7]> }
+impl RigStream {
+    pub fn packets(&mut self, tick: u32, handle: u8, wheels: [[f32; 4]; 4], detached: &[(u16, [f32; 3], [f32; 4])]) -> Vec<Vec<u8>> {
+        let groups = group_detached(detached);
+        if groups.is_empty() { self.sent.clear(); return vec![rig_packet(tick, handle, wheels)]; }
+        let key = |g: &([f32; 3], [f32; 4], Vec<u16>)| { let mut k = [0u32; 7]; for (i, v) in g.0.iter().chain(&g.1).enumerate() { k[i] = v.to_bits(); } k };
+        let (changed, unchanged): (Vec<_>, Vec<_>) = groups.iter().partition(|g| self.sent.get(&g.2) != Some(&key(g)));
+        self.sent = groups.iter().map(|g| (g.2.clone(), key(g))).collect();
+        let base = rig_packet(tick, handle, wheels).len();
+        let mut pages = paginate(base, changed.into_iter());
+        let refresh = paginate(base, unchanged.into_iter());
+        if !refresh.is_empty() { pages.push(refresh[tick as usize % refresh.len()].clone()); }
+        let pages = &pages[..pages.len().min(255)];
+        pages.iter().enumerate().map(|(i, page)| rig_packet_with_groups(tick, handle, wheels, page, i, pages.len())).collect()
     }
-    bytes
+}
+
+/// Every detached group in the fewest packets (tests and tools).
+pub fn rig_packets_with_parts(tick: u32, handle: u8, wheels: [[f32; 4]; 4], detached: &[(u16, [f32; 3], [f32; 4])]) -> Vec<Vec<u8>> {
+    RigStream::default().packets(tick, handle, wheels, detached)
 }
 pub fn rig_packet(tick: u32, handle: u8, wheels: [[f32; 4]; 4]) -> Vec<u8> {
     let mut bytes = vec![vibe_land_shared::constants::PKT_VEHICLE_RIG];

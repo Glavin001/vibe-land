@@ -49,3 +49,20 @@ for shot, end in zip(shots, bounds[1:]):
 print("* = Vehicle2 reported the unspecified (FLT_MAX) jounce for a wheel")
 for name, (depth, where, t) in worst:
     print(f"deepest after {name}: {where['name']} {depth:.3f} m under the terrain at t={t / 1000:.1f} s {where['point']}")
+
+# Client vs server: how long after the server had N parts off the car did the
+# client draw them as detached (the rest are drawn on the car body)?
+frames = [r['client'] for r in rows if 'client' in r and r['client']['kind'] == 'frame']
+if frames:
+    drawn_by_tick = {}
+    for f in frames:
+        if f['rigTick'] is not None: drawn_by_tick[f['rigTick']] = max(drawn_by_tick.get(f['rigTick'], 0), f['detached'])
+    lags = []
+    for s in samples:
+        off = sum(b['parts'] for b in s['bodies'] if b['actor'] != 0)
+        if not off: continue
+        later = [t for t, n in drawn_by_tick.items() if t >= s['tick'] and n >= off]
+        lags.append((min(later) - s['tick']) if later else None)
+    missing = sum(1 for l in lags if l is None)
+    known = [l for l in lags if l is not None]
+    print(f"client drew detached parts: {len(known)} samples matched, worst lag {max(known, default=0)} ticks, never drawn {missing}")

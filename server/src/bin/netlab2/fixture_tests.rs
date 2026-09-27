@@ -124,6 +124,7 @@ fn live_snapshot(tick: u32, interest: &mut RecipientInterest, ack: u16, config: 
         player_handles: &player_handles,
         vehicle_handles: &HashMap::new(),
         body_meta: &body_meta(&truth),
+        vehicle_extents: &std::collections::HashMap::new(),
     };
     let recipient = RecipientInput { id: PLAYER, ack_input_seq: ack, support: None };
     let (packet, _) =

@@ -1235,6 +1235,8 @@ struct MatchState {
     city: Option<city::CityRuntime>,
     garage: Option<Arc<garage::Session>>,
     bombardment: garage_bombardment::Bombardment,
+    /// Detached-part streams of custom vehicles, by vehicle id.
+    rig_streams: HashMap<u32, vehicle_assets::RigStream>,
     custom_vehicles: HashMap<u32, Arc<vehicle_assets::DrivableVehicle>>,
     /// Where the next meteor comes from. Seeded per match so two matches do
     /// not rain from the same bearings in the same order.
@@ -3481,6 +3483,7 @@ async fn run_match_loop(
         }))].into_iter().collect()).unwrap_or_default(),
         garage,
         bombardment: Default::default(),
+        rig_streams: HashMap::new(),
     };
 
     let mut tick = tokio::time::interval(Duration::from_secs_f64(1.0 / SIM_HZ as f64));
@@ -6828,12 +6831,20 @@ impl MatchState {
 
     fn broadcast_snapshot(&mut self) {
         let snapshot_started = Instant::now();
-        let vehicle_rigs: Vec<_> = self.custom_vehicles.iter().filter_map(|(id, asset)| {
-            let handle = *self.vehicle_handles.get(id)?;
-            let wheels = self.arena.vehicle_rig(*id, asset.geometry.neutral_jounce)?;
+        let mut vehicle_rigs: Vec<Vec<u8>> = Vec::new();
+        let mut vehicle_extents: HashMap<u32, ([f32; 3], [f32; 3])> = HashMap::new();
+        for (id, asset) in &self.custom_vehicles {
+            let Some(&handle) = self.vehicle_handles.get(id) else { continue };
+            let Some(wheels) = self.arena.vehicle_rig(*id, asset.geometry.neutral_jounce) else { continue };
             let detached = self.arena.vehicle_detached_parts(*id);
-            Some(vehicle_assets::rig_packet_with_parts(self.server_tick, handle, wheels, &detached))
-        }).collect();
+            // Each detached pose is its piece's authored car frame, so it
+            // lies within a car length of the piece: close enough for interest.
+            for (_, p, _) in &detached {
+                let e = vehicle_extents.entry(*id).or_insert((*p, *p));
+                for k in 0..3 { e.0[k] = e.0[k].min(p[k]); e.1[k] = e.1[k].max(p[k]); }
+            }
+            vehicle_rigs.extend(self.rig_streams.entry(*id).or_default().packets(self.server_tick, handle, wheels, &detached));
+        }
         let server_time_us = (self.server_tick as u64) * (1_000_000 / SIM_HZ as u64);
         // When this tick's state became available: stamped on every SnapshotV2
         // so clients can tell a slow simulation from a slow network.
@@ -6902,6 +6913,7 @@ impl MatchState {
             player_handles: &self.player_handles,
             vehicle_handles: &self.vehicle_handles,
             body_meta: &self.dynamic_body_handles,
+            vehicle_extents: &vehicle_extents,
         };
 
         // Per-recipient interest / budget decisions, kept only while a

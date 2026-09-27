@@ -185,6 +185,23 @@ pub struct SnapshotWorld<'a> {
     pub player_handles: &'a HashMap<u32, u8>,
     pub vehicle_handles: &'a HashMap<u32, u8>,
     pub body_meta: &'a HashMap<u32, BodyMeta>,
+    /// World bounds of a vehicle's pieces that broke off, by vehicle id. A
+    /// wrecked car is in interest while any of its pieces is, so its loose
+    /// parts do not vanish when the remnant slides out of range.
+    pub vehicle_extents: &'a HashMap<u32, ([f32; 3], [f32; 3])>,
+}
+
+/// Squared distance from a recipient to a vehicle: to its body, or to the
+/// nearest point of its detached pieces' bounds when that is closer.
+fn vehicle_distance_sq(world: &SnapshotWorld, id: u32, pos: [f32; 3], recipient: [f32; 3]) -> f32 {
+    let body = distance_sq(pos, recipient);
+    match world.vehicle_extents.get(&id) {
+        Some((lo, hi)) => {
+            let nearest = std::array::from_fn(|k| recipient[k].clamp(lo[k], hi[k]));
+            body.min(distance_sq(nearest, recipient))
+        }
+        None => body,
+    }
 }
 
 /// One recipient's inputs this tick that are not world state.
@@ -501,9 +518,9 @@ pub fn build_recipient_snapshot(
         let mut filtered_vehicle_candidates: Vec<_> = world
             .vehicles
             .iter()
-            .filter(|(_, pos, state)| {
+            .filter(|(id, pos, state)| {
                 state.driver_id == recipient_id
-                    || distance_sq(*pos, recipient_pos)
+                    || vehicle_distance_sq(world, *id, *pos, recipient_pos)
                         <= config.vehicle_aoi_radius_m * config.vehicle_aoi_radius_m
             })
             .collect();
@@ -653,7 +670,7 @@ pub fn build_recipient_snapshot(
         for (vehicle_id, pos, state) in world.vehicles.iter() {
             if reserved_vehicle_ids.contains(vehicle_id)
                 || state.driver_id == recipient_id
-                || distance_sq(*pos, recipient_pos)
+                || vehicle_distance_sq(world, *vehicle_id, *pos, recipient_pos)
                     <= config.vehicle_aoi_radius_m * config.vehicle_aoi_radius_m
             {
                 current_visible_vehicles.insert(*vehicle_id);
@@ -813,9 +830,9 @@ pub fn build_recipient_snapshot(
 
     let reserved_vehicles_sent = selected_vehicle_states.len();
     let mut vehicle_hot = Vec::new();
-    for (vehicle_id, pos, state) in world.vehicles.iter().filter(|(_, pos, state)| {
+    for (vehicle_id, pos, state) in world.vehicles.iter().filter(|(id, pos, state)| {
         state.driver_id == recipient_id
-            || distance_sq(*pos, recipient_pos)
+            || vehicle_distance_sq(world, *id, *pos, recipient_pos)
                 <= config.vehicle_aoi_radius_m * config.vehicle_aoi_radius_m
     }) {
         if reserved_vehicle_ids.contains(vehicle_id) {
@@ -913,7 +930,7 @@ pub fn build_recipient_snapshot(
             .filter(|(vehicle_id, pos, state)| {
                 reserved_vehicle_ids.contains(vehicle_id)
                     || state.driver_id == recipient_id
-                    || distance_sq(*pos, recipient_pos)
+                    || vehicle_distance_sq(world, *vehicle_id, *pos, recipient_pos)
                         <= config.vehicle_aoi_radius_m * config.vehicle_aoi_radius_m
             })
             .map(|(vehicle_id, _, _)| *vehicle_id)
@@ -1216,6 +1233,7 @@ mod tests {
                 player_handles: &self.player_handles,
                 vehicle_handles: &self.vehicle_handles,
                 body_meta: &self.body_meta,
+                vehicle_extents: &HashMap::new(),
             };
             let recipient = RecipientInput { id: RECIPIENT, ack_input_seq: 0, support };
             let (packet, _) = build_recipient_snapshot(&world, &recipient, interest, true, config).unwrap();

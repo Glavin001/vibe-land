@@ -71,6 +71,7 @@ export class VehicleVisual {
     }
   }
   setFractureGroups(groups: string[][]): void { this.fractureGroups = groups; }
+  hasFractureGroups(): boolean { return !!this.fractureGroups; }
   /** Draw parts that broke off at their server world poses. Call after setWheelState. */
   setDetached(detached: {part:number; position:[number,number,number]; rotation:[number,number,number,number]}[]): void {
     if (!this.fractureGroups || !detached.length) return;

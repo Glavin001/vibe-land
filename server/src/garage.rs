@@ -235,29 +235,40 @@ mod tests {
     }
 
     #[test]
-    fn detached_parts_group_by_body_and_page_within_a_datagram() {
+    fn detached_parts_stream_every_changed_group_each_tick() {
         let wheels = [[0.0; 4]; 4];
         // 40 parts on one body share a pose; 150 more each on their own body.
         let mut detached: Vec<(u16, [f32; 3], [f32; 4])> = (0..40).map(|i| (i, [1.0, 2.0, 3.0], [0.0, 0.0, 0.0, 1.0])).collect();
         detached.extend((40..190).map(|i| (i, [i as f32, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0])));
-        let mut seen = std::collections::BTreeSet::new();
-        let pages = vehicle_assets::rig_packet_with_parts(0, 1, wheels, &detached)[59] as u32;
-        assert!(pages > 1);
-        for tick in 0..pages {
-            let packet = vehicle_assets::rig_packet_with_parts(tick, 1, wheels, &detached);
-            assert!(packet.len() <= vehicle_assets::RIG_PACKET_BUDGET);
-            assert_eq!(packet[58] as u32, tick);
-            let mut o = 61;
-            for _ in 0..packet[60] {
-                let count = packet[o + 28] as usize; o += 29;
-                for _ in 0..count { seen.insert(u16::from_le_bytes([packet[o], packet[o + 1]])); o += 2; }
+        let decode = |packets: &[Vec<u8>]| {
+            let mut seen = std::collections::BTreeSet::new();
+            for packet in packets {
+                assert!(packet.len() <= vehicle_assets::RIG_PACKET_BUDGET);
+                let mut o = 61;
+                for _ in 0..packet[60] {
+                    let count = packet[o + 28] as usize; o += 29;
+                    for _ in 0..count { seen.insert(u16::from_le_bytes([packet[o], packet[o + 1]])); o += 2; }
+                }
+                assert_eq!(o, packet.len());
             }
-            assert_eq!(o, packet.len());
-        }
-        assert_eq!(seen.len(), 190);
+            seen
+        };
+        let mut stream = vehicle_assets::RigStream::default();
+        // The tick they break off: every part, in several datagrams at once.
+        let first = stream.packets(0, 1, wheels, &detached);
+        assert!(first.len() > 1);
+        assert_eq!(decode(&first).len(), 190);
+        // Nothing moved: one refresh page only.
+        assert_eq!(stream.packets(1, 1, wheels, &detached).len(), 1);
+        // One body moved: it goes out this tick, plus one refresh page.
+        detached[45].1[1] += 0.5;
+        let moved = stream.packets(2, 1, wheels, &detached);
+        assert_eq!(moved.len(), 2);
+        assert!(decode(&moved[..1]).contains(&45));
         // The shared body is one group: 29 + 80 bytes, not 40 x 30.
-        let first = vehicle_assets::rig_packet_with_parts(0, 1, wheels, &detached[..40]);
-        assert_eq!(first.len(), 58 + 3 + 29 + 80);
+        let one = vehicle_assets::rig_packets_with_parts(0, 1, wheels, &detached[..40]);
+        assert_eq!(one.len(), 1);
+        assert_eq!(one[0].len(), 58 + 3 + 29 + 80);
     }
 
     #[test]

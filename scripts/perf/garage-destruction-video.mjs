@@ -75,6 +75,7 @@ const videoDir = mkdtempSync(join(tmpdir(), 'garage-video-'));
 const browser = await chromium.launch({ headless: true, args: ['--use-angle=metal', '--ignore-gpu-blocklist', '--enable-gpu'] });
 const context = await browser.newContext({ viewport: { width: 1280, height: 720 }, recordVideo: { dir: videoDir, size: { width: 1280, height: 720 } } });
 const page = await context.newPage();
+await page.addInitScript(() => { globalThis.__VIBE_VEHICLE_TRACE__ = []; });
 const recordingStarted = Date.now();
 let rangeStarted = recordingStarted;
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -136,6 +137,11 @@ try {
   }
   await sleep(4000);
   sampling = false; await sampler;
+  // The client's own view: rig packets received and car frames drawn.
+  const clientTrace = await page.evaluate(() => globalThis.__VIBE_VEHICLE_TRACE__ ?? []);
+  const offset = await page.evaluate(() => performance.timeOrigin);
+  for (const row of clientTrace) telemetry.push({ client: row, t: Math.round(offset + row.t - rangeStarted) });
+  telemetry.sort((a, b) => a.t - b.t);
   writeFileSync(telemetryPath, telemetry.map(x => JSON.stringify(x)).join('\n') + '\n');
   console.log(`telemetry: ${telemetryPath} (${telemetry.length} samples)`);
 } finally {

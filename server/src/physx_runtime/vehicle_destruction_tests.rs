@@ -57,7 +57,7 @@ fn hull_points<'g>(geometry: &'g PreparedGeometry, h: &Hull) -> impl Iterator<It
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Actor { actor: u32, position: [f32; 3], rotation: [f32; 4], center_of_mass: [f32; 3], mass: f32,
-    linear_velocity: [f32; 3], sleeping: bool, gravity_disabled: bool }
+    linear_velocity: [f32; 3], angular_velocity: [f32; 3], sleeping: bool, gravity_disabled: bool }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Bond { index: u32, a: u32, b: u32, broken: bool }
@@ -131,6 +131,11 @@ struct Checks<'a> {
     flat_ground: bool,
     streamed_cache: Vec<(u16, [f32; 3], [f32; 4])>,
     sunk_ticks: u32,
+    /// Each part's centre at the previous sample, with the tick.
+    part_centers: HashMap<u32, (u32, Vector3<f32>)>,
+    /// Per-tick trace (part centres by body) while `tracing` is set.
+    trace: Vec<serde_json::Value>,
+    tracing: bool,
     /// Terrain the scene stands on (None: the plane y = 0).
     terrain: Option<vibe_land_shared::world_document::WorldDocument>,
 }
@@ -140,7 +145,7 @@ impl<'a> Checks<'a> {
         let posed = geometry.parts.iter().enumerate().filter(|(_, p)|
             matches!(Binding::from_motion(p.motion.as_ref()), Ok(Binding::Corner(_, Motion::Wheel)))).map(|(i, _)| i as u32).collect();
         Self { geometry, layout, posed, violations: BTreeMap::new(), warnings: BTreeMap::new(), locals: HashMap::new(), tracks: BTreeMap::new(),
-            broken: BTreeSet::new(), last_break: None, max_loose_energy: 0., last: None, carrier_com: None, wheel_mask_mismatch: [0; 4], free_flight_ticks: 0, flat_ground: true, streamed_cache: Vec::new(), sunk_ticks: 0, terrain: None }
+            broken: BTreeSet::new(), last_break: None, max_loose_energy: 0., last: None, carrier_com: None, wheel_mask_mismatch: [0; 4], free_flight_ticks: 0, flat_ground: true, streamed_cache: Vec::new(), sunk_ticks: 0, part_centers: HashMap::new(), trace: Vec::new(), tracing: false, terrain: None }
     }
     fn warn(&mut self, kind: &str, detail: String) {
         let entry = self.warnings.entry(kind.to_owned()).or_insert((0, detail));
@@ -225,6 +230,29 @@ impl<'a> Checks<'a> {
             flat && clearance.get(&a).is_some_and(|c| *c > 0.05) && bounds.iter().filter(|(b, _)| **b != a).all(|(_, (l, h))|
                 (0..3).any(|k| lo[k] > h[k] + 0.05 || l[k] > hi[k] + 0.05))
         };
+        // No part may move further in one tick than its body's motion allows.
+        let mut centers: Vec<(u32, u32, Vector3<f32>)> = Vec::new();
+        for h in d.hulls.iter().filter(|h| h.ordinal == 0) {
+            let c = self.geometry.parts[h.part as usize].mass_properties.center.map(|x| x as f32);
+            centers.push((h.part, h.actor, (h.part_pose() * Point3::new(c[0], c[1], c[2])).coords));
+        }
+        for &(part, actor, now) in &centers {
+            if let (Some(&(t0, before)), Some(a)) = (self.part_centers.get(&part), actors.get(&actor)) {
+                let dt = (tick - t0) as f32 * DT;
+                let r = (now - v3(a.center_of_mass)).norm();
+                let allowed = (v3(a.linear_velocity).norm() + v3(a.angular_velocity).norm() * r) * dt * 2.0 + 0.05;
+                let moved = (now - before).norm();
+                if moved > allowed.max(0.05) && moved > 0.25 {
+                    self.fail("part teleported", format!("{} moved {moved:.2} m in {} tick(s) (body allows {allowed:.2} m) at tick {tick}", self.name(part), tick - t0));
+                }
+            }
+            self.part_centers.insert(part, (tick, now));
+        }
+        if self.tracing {
+            self.trace.push(json!({"tick": tick, "bodies": d.actors.iter().map(|a| json!({"actor": a.actor, "com": a.center_of_mass,
+                "v": a.linear_velocity, "w": a.angular_velocity})).collect::<Vec<_>>(),
+                "parts": centers.iter().map(|(p, a, c)| json!([p, a, [c.x, c.y, c.z]])).collect::<Vec<_>>()}));
+        }
         // Mass, centre of mass, gravity, rigidity, energy, rest support.
         let mut loose_energy = 0.;
         for (a, set) in &members {
@@ -283,14 +311,12 @@ impl<'a> Checks<'a> {
         let off: BTreeSet<u32> = part_actor.iter().enumerate().filter(|(_, a)| **a != Some(0)).map(|(i, _)| i as u32).collect();
         let streamed: BTreeSet<u32> = streamed.iter().map(|p| p.part_index).collect();
         if off != streamed { self.fail("streamed detached parts differ from bodies", format!("{} off the car, {} streamed", off.len(), streamed.len())); }
-        // Through the wire: every page of the rig packet, merged as the client does.
+        // Through the wire: one tick's packets from a fresh stream, merged as the client does.
         let tuples: Vec<(u16, [f32; 3], [f32; 4])> = streamed_poses(&self.streamed_cache);
         if !tuples.is_empty() {
             let wheels = [[0.; 4]; 4];
-            let pages = crate::vehicle_assets::rig_packet_with_parts(0, 1, wheels, &tuples)[59] as u32;
             let mut received = BTreeSet::new();
-            for page in 0..pages {
-                let packet = crate::vehicle_assets::rig_packet_with_parts(page, 1, wheels, &tuples);
+            for packet in crate::vehicle_assets::rig_packets_with_parts(0, 1, wheels, &tuples) {
                 if packet.len() > crate::vehicle_assets::RIG_PACKET_BUDGET { self.fail("rig packet over the datagram budget", format!("{} bytes", packet.len())); }
                 let mut o = 61;
                 for _ in 0..packet[60] { let n = packet[o + 28] as usize; o += 29; for _ in 0..n { received.insert(u16::from_le_bytes([packet[o], packet[o + 1]]) as u32); o += 2; } }
@@ -585,13 +611,16 @@ fn run_meteor(geometry: &PreparedGeometry, layout: &FractureLayout, heightfield:
         Vector3::new(launch.velocity.x, launch.velocity.y, launch.velocity.z), tuning.radius_m, tuning.mass_kg, tuning.ttl_ticks);
     let flight = (launch.flight_time_s * 60.) as u32;
     let mut closest = f32::INFINITY;
-    for _ in 0..flight + 480 {
+    for i in 0..flight + 480 {
+        checks.tracing = i + 30 >= flight && i <= flight + 150;
         observe(&mut scene, &mut checks);
         if let Some(b) = scene.arena.snapshot_dynamic_bodies().into_iter().find(|b| Some(b.0) == meteor) {
             closest = closest.min((v3(b.1) - Vector3::new(car.x, car.y, car.z)).norm());
         }
     }
     checks.finish(0.5 * tuning.mass_kg * launch.velocity.length_squared());
+    let trace_path = format!(concat!(env!("CARGO_MANIFEST_DIR"), "/../target/meteor-trace{}.json"), if heightfield { "-terrain" } else { "" });
+    std::fs::write(&trace_path, serde_json::to_vec(&checks.trace).unwrap()).unwrap();
     let bonds = layout.bond_chunks.len();
     let on_car = checks.last.as_ref().map_or(0, |d| d.hulls.iter().filter(|h| h.actor == 0).map(|h| h.part).collect::<BTreeSet<_>>().len());
     if meteor.is_none() || closest > tuning.radius_m + 3.0 { checks.fail("the meteor did not reach the car", format!("closest {closest:.1} m")); }

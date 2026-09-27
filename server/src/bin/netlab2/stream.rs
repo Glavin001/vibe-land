@@ -965,6 +965,7 @@ pub fn build(bundle: &Bundle, config: &StreamConfig) -> std::io::Result<Stream> 
             player_handles: &player_handles,
             vehicle_handles: &vehicle_handles,
             body_meta: &body_meta,
+            vehicle_extents: &std::collections::HashMap::new(),
         };
         let recipient = match inputs.and_then(|i| i.recipients.iter().find(|r| r.id == player)) {
             Some(recorded) => *recorded,

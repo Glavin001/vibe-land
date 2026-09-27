@@ -1316,10 +1316,16 @@ export class NetcodeClient {
       }
       case 'vehicleRig': {
         const previous = this.vehicleRigs.get(packet.handle);
-        if (previous && packet.serverTick <= previous.serverTick) break;
+        // A tick may arrive in several packets (all detached groups that
+        // moved); merge them. Only strictly older ticks are stale.
+        if (previous && packet.serverTick < previous.serverTick) break;
         let detached = this.vehicleDetached.get(packet.handle);
         if (!detached) this.vehicleDetached.set(packet.handle, detached = new Map());
         for (const part of packet.detached) detached.set(part.part, part);
+        // Opt-in diagnostics (the garage range recorder sets the flag).
+        const trace = (globalThis as { __VIBE_VEHICLE_TRACE__?: unknown[] }).__VIBE_VEHICLE_TRACE__;
+        if (Array.isArray(trace) && trace.length < 20000) trace.push({ kind: 'rig', t: performance.now(), tick: packet.serverTick,
+          page: packet.page, pages: packet.pages, parts: packet.detached.length, merged: detached.size });
         this.vehicleRigs.set(packet.handle, {...packet, detached: [...detached.values()]});
         const vehicle = this.vehicles.get(packet.handle);
         if (vehicle) this.attachVehicleAsset(vehicle);
