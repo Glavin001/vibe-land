@@ -725,11 +725,17 @@ void NativeDestruction::restore_detached_hull_filters() {
     static const float loose=native_env_f32("VIBE_VEHICLE_LOOSE_CONTACT_OFFSET",0.02f);
     // The car's own hulls keep their offset: scaling them too (measured)
     // multiplied the bonds a shot breaks and still left a thin axle sunk.
+    // One offset per actor: a piece's world bounds walk every vertex of every
+    // hull it owns, and computing them once per hull made this quadratic in a
+    // big loose piece (~10 ms a tick after a meteor split, sampled).
+    std::vector<std::pair<const PxRigidActor *,float>> offsets;
     for(auto &hull:binding.hulls) {
       auto *owner=hull.shape->getActor();
       if(owner==carrier) continue;
       float offset=loose;
-      if(const auto *body=owner?owner->is<PxRigidDynamic>():nullptr) {
+      auto known=std::find_if(offsets.begin(),offsets.end(),[&](const auto &o){return o.first==owner;});
+      if(known!=offsets.end()) offset=known->second;
+      else if(const auto *body=owner?owner->is<PxRigidDynamic>():nullptr) {
         // Only motion toward the ground can carry a piece through it (the
         // terrain is below): downward speed plus what spin sweeps. Scaling by
         // total speed inflated every piece of a fresh debris cloud flying out
@@ -737,9 +743,12 @@ void NativeDestruction::restore_detached_hull_filters() {
         static const bool downward=native_env_f32("VIBE_VEHICLE_LOOSE_OFFSET_TOTAL_SPEED",0.0f)==0.0f;
         const PxVec3 v=body->getLinearVelocity();
         const float linear=downward?PxMax(0.0f,-v.y):v.magnitude();
-        const float reach=linear+body->getAngularVelocity().magnitude()*owner->getWorldBounds().getExtents().magnitude();
+        // A piece that is not spinning sweeps nothing; skip its bounds.
+        const float spin=body->getAngularVelocity().magnitude();
+        const float reach=linear+(spin>0.0f?spin*owner->getWorldBounds().getExtents().magnitude():0.0f);
         static const float cap=native_env_f32("VIBE_VEHICLE_LOOSE_CONTACT_OFFSET_MAX",0.5f);
         offset=PxClamp(reach*(1.25f/60.0f),offset,PxMax(offset,cap));
+        offsets.emplace_back(owner,offset);
       }
       const float current=hull.shape->getContactOffset();
       if(offset>current*1.25f || offset<current*0.75f) hull.shape->setContactOffset(offset);

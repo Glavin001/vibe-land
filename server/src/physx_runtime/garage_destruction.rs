@@ -102,8 +102,10 @@ impl GarageDestruction {
             match world.native_configure(bridge::NativeConfig { max_iterations, tolerance: 1e-5,
                 warm_start: true, damage_rate: 2., bend_gain_max: 3., fibre_bending: true,
                 // A car split into ~50 bodies holds ~24k contact pairs; growing
-                // the graph mid-impact waited 78 ms on the GPU (measured).
-                reserved_contact_pairs: 32768,
+                // the graph mid-impact waited 78 ms on the GPU (measured). Meteor
+                // splits on terrain reached 37-41k pairs (PX_DESTRUCTION_LOG_GRAPH_GROWTH,
+                // seeds 1 and 4), still growing on the worst tick at 32768.
+                reserved_contact_pairs: 65536,
                 preserve_unchanged_contact_pairs: flag("VIBE_GARAGE_PRESERVE_PAIRS", true),
                 gpu_island_repair: flag("VIBE_GARAGE_GPU_ISLAND_REPAIR", true),
                 verdict_sample_ticks: std::env::var("VIBE_GARAGE_VERDICT_TICKS").ok().and_then(|v| v.parse().ok()).unwrap_or(1) }) {

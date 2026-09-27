@@ -723,6 +723,8 @@ fn garage_meteor_impact_tick_profile() {
     let heightfield = std::env::var("VIBE_PROFILE_TERRAIN").is_ok_and(|v| v == "1");
     let seeds: Vec<u64> = std::env::var("VIBE_PROFILE_SEEDS").unwrap_or("7".into())
         .split(',').map(|s| s.trim().parse().expect("VIBE_PROFILE_SEEDS: comma-separated integers")).collect();
+    // Ticks simulated after the meteor lands (VIBE_PROFILE_HOLD_TICKS, default 240).
+    let hold: u32 = std::env::var("VIBE_PROFILE_HOLD_TICKS").ok().and_then(|v| v.parse().ok()).unwrap_or(240);
     let mut rows = Vec::new();
     let mut summary = Vec::new();
     for seed in seeds {
@@ -749,7 +751,7 @@ fn garage_meteor_impact_tick_profile() {
         let launch = crate::meteor::plan(glam::Vec3::new(car.x, car.y, car.z), glam::Vec3::new(0., -G, 0.), &tuning, &mut crate::meteor::Rng::new(seed));
         scene.arena.launch_meteor(Vector3::new(launch.start.x, launch.start.y, launch.start.z),
             Vector3::new(launch.velocity.x, launch.velocity.y, launch.velocity.z), tuning.radius_m, tuning.mass_kg, tuning.ttl_ticks);
-        for _ in 0..((launch.flight_time_s * 60.) as u32 + 240) { step(&mut scene, "meteor"); }
+        for _ in 0..((launch.flight_time_s * 60.) as u32 + hold) { step(&mut scene, "meteor"); }
         let bodies = scene.arena.vehicle_destruction_debug(CAR).ok().map(|d| d["actors"].as_array().map_or(0, |a| a.len()));
         let meteor: Vec<f64> = rows[first..].iter().filter(|r| r["phase"] == "meteor").map(|r| r["stepMs"].as_f64().unwrap()).collect();
         let mut sorted = meteor.clone();
