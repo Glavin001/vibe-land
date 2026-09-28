@@ -14,6 +14,10 @@ use std::{
 use vibe_land_shared::world_document::WorldDocument;
 
 pub const VEHICLE_ID: u32 = 1001;
+/// Cars a destruction range can park (ids VEHICLE_ID..). A test drive has one.
+pub const MAX_RANGE_CARS: u32 = 4;
+/// Sideways spacing of range cars: room to drive one into another.
+const RANGE_CAR_SPACING_M: f32 = 5.5;
 const PREFIX: &str = "garage-";
 static SESSIONS: OnceLock<Mutex<HashMap<String, Arc<Session>>>> = OnceLock::new();
 fn sessions() -> &'static Mutex<HashMap<String, Arc<Session>>> {
@@ -32,6 +36,9 @@ pub struct SessionRequest {
     configuration: serde_json::Value,
     #[serde(default)]
     mode: SessionMode,
+    /// Range only: how many copies of the car to park (1..=MAX_RANGE_CARS).
+    #[serde(default)]
+    cars: Option<u32>,
 }
 
 #[derive(Deserialize, Serialize, Clone, Copy, Debug)]
@@ -55,11 +62,13 @@ impl RangeSettings {
 
 pub struct Session {
     pub mode: SessionMode,
+    /// Copies of the car in this session, ids VEHICLE_ID..VEHICLE_ID+cars.
+    pub cars: u32,
     pub range: Mutex<RangeSettings>,
-    /// Parts to fire the range cannon at, along a clear line.
-    pub aimed_shots: Mutex<Vec<u32>>,
-    /// Meteors to drop on the car (a part, or the car's centre when None).
-    pub meteors: Mutex<Vec<Option<u32>>>,
+    /// (car, part) to fire the range cannon at, along a clear line.
+    pub aimed_shots: Mutex<Vec<(u32, u32)>>,
+    /// Meteors to drop: (car, a part or the car's centre when None).
+    pub meteors: Mutex<Vec<(u32, Option<u32>)>>,
     pub vehicle: PreparedVehicle,
     pub current_vehicle: Mutex<PreparedVehicle>,
     pub geometry: PreparedGeometry,
@@ -70,6 +79,24 @@ pub struct Session {
 impl Session {
     pub fn closing(&self) -> bool {
         self.closing.load(Ordering::Relaxed)
+    }
+    pub fn vehicle_ids(&self) -> impl Iterator<Item = u32> {
+        (0..self.cars).map(|i| VEHICLE_ID + i)
+    }
+    /// Vehicle id of car `index` (0 when omitted), if the session has it.
+    pub fn car_id(&self, index: Option<u32>) -> Result<u32, (StatusCode, String)> {
+        let index = index.unwrap_or(0);
+        if index < self.cars { Ok(VEHICLE_ID + index) }
+        else { Err((StatusCode::BAD_REQUEST, format!("This session has {} car(s).", self.cars))) }
+    }
+    /// Where car `index` parks, x and z (the height comes from the asset). The
+    /// first car keeps its place in front of the player; the others fill in
+    /// +x, -x, +x again, which the range player (facing +z) sees as left,
+    /// right, left.
+    pub fn car_position(index: u32) -> [f32; 2] {
+        let slot = (index + 1) / 2;
+        let side = if index % 2 == 1 { 1.0 } else { -1.0 };
+        [side * slot as f32 * RANGE_CAR_SPACING_M, 3.0]
     }
 }
 pub fn is_garage(id: &str) -> bool {
@@ -98,6 +125,7 @@ pub struct SessionResponse {
     world_document: WorldDocument,
     vehicle: PreparedVehicle,
     mode: SessionMode,
+    cars: u32,
 }
 
 /// Reuse a prepared course for an independent observer. Possession of the
@@ -106,13 +134,19 @@ pub async fn inspect_handler(axum::extract::Path(id): axum::extract::Path<String
     -> Result<Json<SessionResponse>, StatusCode> {
     let session = lookup(&id).filter(|s| !s.closing()).ok_or(StatusCode::NOT_FOUND)?;
     let vehicle = session.current_vehicle.lock().unwrap().clone();
-    Ok(Json(SessionResponse { match_id: id, world_document: session.world.clone(), vehicle, mode: session.mode }))
+    Ok(Json(SessionResponse { match_id: id, world_document: session.world.clone(), vehicle, mode: session.mode, cars: session.cars }))
 }
 
 pub async fn create(
     request: SessionRequest,
 ) -> Result<Json<SessionResponse>, (StatusCode, String)> {
     let mode = request.mode;
+    let cars = match (mode, request.cars) {
+        (SessionMode::Range, Some(n)) if (1..=MAX_RANGE_CARS).contains(&n) => n,
+        (SessionMode::Range, Some(_)) => return Err((StatusCode::BAD_REQUEST, format!("A range holds 1-{MAX_RANGE_CARS} cars."))),
+        (SessionMode::Drive, Some(n)) if n != 1 => return Err((StatusCode::BAD_REQUEST, "A test drive has one car.".into())),
+        _ => 1,
+    };
     let asset = vehicle_assets::prepare_drivable(PrepareRequest::new(request.configuration)).await?;
     let vehicle = asset.vehicle;
     let geometry = asset.geometry;
@@ -144,6 +178,7 @@ pub async fn create(
         match_id.clone(),
         Arc::new(Session {
             mode,
+            cars,
             range: Mutex::new(RangeSettings::default()),
             aimed_shots: Mutex::new(Vec::new()),
             meteors: Mutex::new(Vec::new()),
@@ -160,6 +195,7 @@ pub async fn create(
         world_document: world,
         vehicle,
         mode,
+        cars,
     }))
 }
 
@@ -174,7 +210,7 @@ pub async fn range_handler(axum::extract::Path(id): axum::extract::Path<String>,
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct AimedShot { part: u32 }
+pub struct AimedShot { part: u32, #[serde(default)] car: Option<u32> }
 
 /// Fire the range cannon at a chosen part along a clear line (the shooter's
 /// eye line when nothing else is in the way): a repeatable hit without aim.
@@ -186,27 +222,29 @@ pub async fn fire_handler(axum::extract::Path(id): axum::extract::Path<String>, 
         return Err((StatusCode::BAD_REQUEST, "No such part.".into()));
     }
     let mut shots = session.aimed_shots.lock().unwrap();
+    let car = session.car_id(request.car)?;
     if shots.len() >= 8 { return Err((StatusCode::TOO_MANY_REQUESTS, "Shots are still queued.".into())); }
-    shots.push(request.part);
+    shots.push((car, request.part));
     Ok(StatusCode::ACCEPTED)
 }
 
 #[derive(Deserialize, Default)]
 #[serde(deny_unknown_fields)]
-pub struct MeteorRequest { #[serde(default)] part: Option<u32> }
+pub struct MeteorRequest { #[serde(default)] part: Option<u32>, #[serde(default)] car: Option<u32> }
 
 /// Drop the city's meteor on the range car: the same rock, arc and physics.
 pub async fn meteor_handler(axum::extract::Path(id): axum::extract::Path<String>, body: Option<Json<MeteorRequest>>)
     -> Result<StatusCode, (StatusCode, String)> {
     let session = lookup(&id).filter(|s| !s.closing() && s.mode == SessionMode::Range)
         .ok_or((StatusCode::NOT_FOUND, "No destruction range session.".to_string()))?;
-    let part = body.map(|Json(b)| b.part).unwrap_or(None);
+    let (part, car) = body.map(|Json(b)| (b.part, b.car)).unwrap_or((None, None));
+    let car = session.car_id(car)?;
     if part.is_some_and(|p| p as usize >= session.geometry.parts.len()) {
         return Err((StatusCode::BAD_REQUEST, "No such part.".into()));
     }
     let mut meteors = session.meteors.lock().unwrap();
     if meteors.len() >= 2 { return Err((StatusCode::TOO_MANY_REQUESTS, "A meteor is already queued.".into())); }
-    meteors.push(part);
+    meteors.push((car, part));
     Ok(StatusCode::ACCEPTED)
 }
 

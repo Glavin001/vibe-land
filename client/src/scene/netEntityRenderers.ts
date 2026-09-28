@@ -556,7 +556,11 @@ export class VehiclesRenderer {
         custom.configure(vs.customVehicle.configuration);
         vehicleMeshGroup.userData.assetHash = vs.customVehicle.assetHash;
       }
-      if (custom) vehicleMeshGroup.visible = !debugState().layers.hideVisuals;
+      if (custom) {
+        // Hide the car the debug overlay is drawing (every car until it has read one back).
+        const { layers, data } = debugState();
+        vehicleMeshGroup.visible = !(layers.hideVisuals && (data?.handle == null || data.handle === id));
+      }
       if (custom) { if (vs.customRig) { custom.setWheelState(vs.customRig.wheels); custom.setDetached(vs.customRig.detached ?? []); } }
       if (custom) {
         const trace = (globalThis as { __VIBE_VEHICLE_TRACE__?: unknown[] }).__VIBE_VEHICLE_TRACE__;

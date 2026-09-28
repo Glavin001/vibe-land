@@ -63,7 +63,9 @@ function GarageWorkshop() {
   const [configuration,setConfiguration]=useState(initialConfiguration);
   const [tab,setTab]=useState<'build'|'style'|'drive'|'inspect'>('build');
   const [travel,setTravel]=useState(0),[steer,setSteer]=useState(0);
-  const [drive,setDrive]=useState<{matchId:string;world:WorldDocument;mode:'drive'|'range'}|null>(null);
+  const [drive,setDrive]=useState<{matchId:string;world:WorldDocument;mode:'drive'|'range';cars:number}|null>(null);
+  // Cars the destruction range parks side by side (the range toolbar sets it).
+  const [rangeCars,setRangeCars]=useState(1);
   const [explosion,setExplosion]=useState(0),[wireframe,setWireframe]=useState(false),[parts,setParts]=useState(0);
   const [pending,setPending]=useState(false),[error,setError]=useState(''),[prepared,setPrepared]=useState<Prepared|null>(null);
   const [cityVehicle,setCityVehicle]=useState<{matchId:string;vehicleId:number;position:number[]}|null>(null);
@@ -82,13 +84,13 @@ function GarageWorkshop() {
       setPending(false);setPrepared(null);setCityVehicle(null);setError('');setConfiguration(next);
     } catch(e){setError(String(e instanceof Error?e.message:e));}
   }
-  async function prepare(destination: 'prepare' | 'session' | 'city' = 'prepare', mode: 'drive' | 'range' = 'drive') {
+  async function prepare(destination: 'prepare' | 'session' | 'city' = 'prepare', mode: 'drive' | 'range' = 'drive', cars = rangeCars) {
     if(!validation.complete||validation.issue)return;
     request.current?.abort();const controller=new AbortController();request.current=controller;
     const current=revision.current;setPending(true);setError('');
     try {
       const origin=resolveMultiplayerBackend().httpOrigin;
-      const response=await fetch(`${origin}/vehicle-assets/${destination}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(destination==='session'?{configuration,mode}:{configuration}),signal:controller.signal});
+      const response=await fetch(`${origin}/vehicle-assets/${destination}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(destination==='session'?(mode==='range'?{configuration,mode,cars}:{configuration,mode}):{configuration}),signal:controller.signal});
       if(!response.ok)throw new Error(await response.text());
       const payload=await response.json();
       const result:Prepared=destination==='prepare'?payload:payload.vehicle;
@@ -96,7 +98,7 @@ function GarageWorkshop() {
       if(controller.signal.aborted||revision.current!==current)return;
       if(serializeConfiguration(result.configuration)!==serializeConfiguration(configuration))throw new Error('The server prepared a different configuration. Please try again.');
       setPrepared(result);
-      if(destination==='session')setDrive({matchId:payload.matchId,world:parseWorldDocument(payload.worldDocument),mode});
+      if(destination==='session')setDrive({matchId:payload.matchId,world:parseWorldDocument(payload.worldDocument),mode,cars:payload.cars??1});
       if(destination==='city')setCityVehicle({matchId:payload.matchId,vehicleId:payload.vehicleId,position:payload.position});
     } catch(e){if(!controller.signal.aborted)setError(e instanceof Error?e.message:String(e));}
     finally{if(revision.current===current&&!controller.signal.aborted)setPending(false);}
@@ -116,9 +118,10 @@ function GarageWorkshop() {
       {drive.mode==='drive'
         ? <LiveVehicleTuning matchId={drive.matchId} vehicle={prepared} onBack={()=>setDrive(null)} onApplied={vehicle=>{setPrepared(vehicle);setConfiguration(vehicle.configuration);}}/>
         : <div className="garage-drive-controls"><button disabled={pending} onClick={()=>setDrive(null)}>← Back to garage</button>
-            <span role="status">{pending?'Resetting…':'Destruction range · click to fire a cannonball · car parked 12 m ahead'}</span></div>}
+            <span role="status">{pending?'Resetting…':drive.cars>1?`Destruction range · click to fire a cannonball · ${drive.cars} cars parked 12 m ahead · E to drive one`:'Destruction range · click to fire a cannonball · car parked 12 m ahead'}</span></div>}
       <DestructionDebugPanel matchId={drive.matchId} geometryHash={prepared.geometryHash} range={drive.mode==='range'}
-        onReset={drive.mode==='range'?()=>void prepare('session','range'):undefined}/>
+        onReset={drive.mode==='range'?()=>void prepare('session','range'):undefined}
+        cars={drive.cars} onCars={drive.mode==='range'?n=>{setRangeCars(n);void prepare('session','range',n);}:undefined}/>
     </>}/>;
   return <main className="garage-page">
     <header className="garage-header"><a href="/">VIBELAND <span>/ GARAGE</span></a><nav><a href="/city">Return to city ↗</a></nav></header>

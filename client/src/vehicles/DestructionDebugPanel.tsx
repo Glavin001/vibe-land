@@ -15,8 +15,20 @@ const LAYERS: [keyof DebugLayers, string, string][] = [
   ['hideVisuals', 'Hide visuals', 'Hide the rendered vehicle to see only what the server simulates'],
 ];
 
-export function DestructionDebugPanel({ matchId, geometryHash, range, onReset }: { matchId: string; geometryHash: string; range: boolean; onReset?: () => void }) {
+// A range can park several copies of the car (the server's MAX_RANGE_CARS).
+const MAX_CARS = 4;
+
+export function DestructionDebugPanel({ matchId, geometryHash, range, onReset, cars = 1, onCars }: {
+  matchId: string; geometryHash: string; range: boolean; onReset?: () => void;
+  /** Cars in this session, and a request for a fresh range with another count. */
+  cars?: number; onCars?: (cars: number) => void;
+}) {
   const { layers, data, assembly, selectedPart } = useDebugState();
+  // The car the debug readback, part shots and meteor are for. Sides are as
+  // the range player sees them, facing +z: +x is on the left.
+  const [car, setCar] = useState(0);
+  useEffect(() => { if (car >= cars) setCar(0); }, [car, cars]);
+  useEffect(() => { updateDebug({ data: null }); }, [car]);
   const origin = resolveMultiplayerBackend().httpOrigin, session = `${origin}/vehicle-assets/session/${encodeURIComponent(matchId)}`;
   const [mass, setMass] = useState(1000), [speed, setSpeed] = useState(20), [error, setError] = useState(''), [open, setOpen] = useState(true);
   const polling = useRef(false);
@@ -44,23 +56,23 @@ export function DestructionDebugPanel({ matchId, geometryHash, range, onReset }:
     const timer = setInterval(() => {
       if (polling.current) return;
       polling.current = true;
-      fetch(`${session}/debug`).then(async r => { if (!r.ok) throw Error(await r.text()); updateDebug({ data: await r.json() }); setError(''); })
+      fetch(`${session}/debug?car=${car}`).then(async r => { if (!r.ok) throw Error(await r.text()); updateDebug({ data: await r.json() }); setError(''); })
         .catch(e => setError(String(e instanceof Error ? e.message : e))).finally(() => { polling.current = false; });
     }, 100);
     return () => clearInterval(timer);
-  }, [session, active]);
+  }, [session, active, car]);
 
   // The server picks a clear line to the part (eye line first).
   async function fireAt() {
     if (selectedPart === null) return;
     try {
-      const r = await fetch(`${session}/range/fire`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ part: selectedPart }) });
+      const r = await fetch(`${session}/range/fire`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ part: selectedPart, car }) });
       if (!r.ok) throw Error(await r.text());
     } catch (e) { setError(String(e instanceof Error ? e.message : e)); }
   }
   async function meteor() {
     try {
-      const r = await fetch(`${session}/range/meteor`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(selectedPart === null ? {} : { part: selectedPart }) });
+      const r = await fetch(`${session}/range/meteor`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(selectedPart === null ? { car } : { part: selectedPart, car }) });
       if (!r.ok) throw Error(await r.text());
     } catch (e) { setError(String(e instanceof Error ? e.message : e)); }
   }
@@ -73,6 +85,10 @@ export function DestructionDebugPanel({ matchId, geometryHash, range, onReset }:
   return <div className="garage-debug">
     <div className="garage-debug-bar">
       {range && <>
+        {onCars && <label title="Park this many copies of the car side by side (resets the range)">Cars <select value={cars} onChange={e => onCars(Number(e.target.value))}>
+          {Array.from({ length: MAX_CARS }, (_, i) => i + 1).map(n => <option key={n} value={n}>{n}</option>)}</select></label>}
+        {cars > 1 && <label title="The car the debug readback, part shots and meteor are for">Car <select value={car} onChange={e => setCar(Number(e.target.value))}>
+          {Array.from({ length: cars }, (_, i) => <option key={i} value={i}>{i === 0 ? '1 (centre)' : `${i + 1} (${i % 2 ? 'left' : 'right'})`}</option>)}</select></label>}
         <label>Ball <select value={mass} onChange={e => setMass(Number(e.target.value))}>{MASSES.map(m => <option key={m} value={m}>{m} kg</option>)}</select></label>
         <label title="Above ~24 m/s the ball can pass through thin parts between physics ticks"><select value={speed} onChange={e => setSpeed(Number(e.target.value))}>{SPEEDS.map(s => <option key={s} value={s}>{s} m/s</option>)}</select></label>
         <label>Target <select value={selectedPart ?? ''} onChange={e => updateDebug({ selectedPart: e.target.value === '' ? null : Number(e.target.value) })}>
@@ -81,7 +97,7 @@ export function DestructionDebugPanel({ matchId, geometryHash, range, onReset }:
         </select></label>
         <button disabled={selectedPart === null || !data} onClick={() => void fireAt()}>Fire at part</button>
         <button title="Drop the city's meteor (2 m, 110 t, 140 m/s) on the selected part, or the car" onClick={() => void meteor()}>Meteor</button>
-        {onReset && <button onClick={onReset}>Reset car</button>}
+        {onReset && <button onClick={onReset}>{cars > 1 ? 'Reset cars' : 'Reset car'}</button>}
       </>}
       {LAYERS.map(([key, label, title]) => <button key={key} title={title} aria-pressed={layers[key]} onClick={() => updateDebug({ layers: { ...layers, [key]: !layers[key] } })}>{label}</button>)}
       <button aria-expanded={open} onClick={() => setOpen(!open)}>Details</button>
@@ -89,7 +105,7 @@ export function DestructionDebugPanel({ matchId, geometryHash, range, onReset }:
     {open && <aside className="garage-debug-panel" aria-label="Destruction debug">
       {error && <p role="alert" className="garage-error">{error}</p>}
       {!data ? <p>Waiting for the server…</p> : <>
-        <p>tick {data.serverTick} · stress steps {data.steps} · rejected {data.rejectedSteps} · last {data.lastStatus ? `${data.lastStatus.converged ? 'converged' : 'NOT converged'} in ${data.lastStatus.iterations} it, error ${data.lastStatus.error}` : '—'}</p>
+        <p>{cars > 1 && `car ${car + 1} · `}tick {data.serverTick} · stress steps {data.steps} · rejected {data.rejectedSteps} · last {data.lastStatus ? `${data.lastStatus.converged ? 'converged' : 'NOT converged'} in ${data.lastStatus.iterations} it, error ${data.lastStatus.error}` : '—'}</p>
         <p>broken bonds {data.brokenBonds} / {data.bonds.length} · wheels {wheels} · engine {data.vehicle.engineConnected ? 'on' : 'off'}</p>
         <h3>Bodies ({data.actors.length})</h3>
         <table><thead><tr><th/><th>parts</th><th>mass</th><th>|v|</th><th>v.y</th><th>state</th></tr></thead><tbody>

@@ -11,6 +11,8 @@ export interface DebugActor { actor: number; position: V3; rotation: Q4; centerO
 export interface DebugBond { index: number; a: number; b: number; area: number; utilisation: number; compression: number; tension: number; shear: number; damage: number; remainingArea: number; broken: boolean }
 export interface DestructionDebug {
   configured: boolean; steps: number; rejectedSteps: number; brokenBonds: number; serverTick: number;
+  /** Which of the session's cars this is, and its network handle (the client's vehicle id). */
+  car?: number; handle?: number | null;
   lastStatus: { error: number; converged: boolean; iterations: number } | null;
   vehicle: { wheelMask: number; driveMask: number; engineConnected: boolean };
   hulls: DebugHull[]; actors: DebugActor[]; bonds: DebugBond[]; events: { step: number; text: string }[];

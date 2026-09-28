@@ -294,7 +294,7 @@ pub struct PhysxPhysicsArena {
     tolerate_rejected_steps: bool,
     /// Opt-in native destruction of the garage car (VIBE_GARAGE_VEHICLE_DESTRUCTION=1).
     #[cfg(feature = "native-destruction")]
-    garage_destruction: Option<garage_destruction::GarageDestruction>,
+    garage_destruction: Vec<garage_destruction::GarageDestruction>,
     world: bridge::World,
     config: MoveConfig,
     players: HashMap<u32, PlayerState>,
@@ -498,7 +498,7 @@ impl PhysxPhysicsArena {
         Ok(Self {
             tolerate_rejected_steps: false,
             #[cfg(feature = "native-destruction")]
-            garage_destruction: None,
+            garage_destruction: Vec::new(),
             world,
             config,
             players: HashMap::new(),
@@ -1137,7 +1137,7 @@ impl PhysxPhysicsArena {
                 if let Some(snapshot) = snapshot {
                     let stuck = up < 0.5 || forward_speed.abs() < 0.5;
                     #[cfg(feature = "native-destruction")]
-                    let destructible = self.garage_destruction.as_ref().is_some_and(|g| g.entity == entity);
+                    let destructible = self.garage_destruction.iter().any(|g| g.entity == entity);
                     #[cfg(not(feature = "native-destruction"))]
                     let destructible = false;
                     // A destructible car cannot be reset in place (its native asset
@@ -1164,11 +1164,14 @@ impl PhysxPhysicsArena {
                 .expect("PhysX vehicle control failed");
         }
         #[cfg(feature = "native-destruction")]
-        if let Some(garage) = &self.garage_destruction {
-            let wheels = self.current_vehicle_snapshots().into_iter()
-                .find(|s| NS_VEHICLE | (s.user_id & ID_MASK) == garage.entity)
-                .map(|s| rig_from_snapshot(&s, garage.neutral_jounce()));
-            garage.pose_wheels(&mut self.world, wheels);
+        if !self.garage_destruction.is_empty() {
+            let snapshots = self.current_vehicle_snapshots();
+            for garage in &self.garage_destruction {
+                let wheels = snapshots.iter()
+                    .find(|s| NS_VEHICLE | (s.user_id & ID_MASK) == garage.entity)
+                    .map(|s| rig_from_snapshot(s, garage.neutral_jounce()));
+                garage.pose_wheels(&mut self.world, wheels);
+            }
         }
         self.last_vehicle_control_ms =
             vehicles_started.elapsed().as_secs_f32() * 1000.0;
@@ -1309,7 +1312,7 @@ impl PhysxPhysicsArena {
         self.snapshots_valid = true;
         self.watch_launched_balls_ground();
         #[cfg(feature = "native-destruction")]
-        if let Some(garage) = &mut self.garage_destruction { garage.after_step(&mut self.world); }
+        garage_destruction::after_step(&mut self.garage_destruction, &mut self.world);
         let before_players = std::time::Instant::now();
         self.refresh_players();
         self.last_refresh_players_ms =
@@ -1441,9 +1444,14 @@ impl PhysxPhysicsArena {
     /// Register the already-spawned garage car with the native stage.
     #[cfg(feature = "native-destruction")]
     pub fn enable_vehicle_destruction(&mut self, id: u32, geometry: &crate::vehicle_assets::PreparedGeometry) -> Result<(), String> {
-        if self.garage_destruction.is_some() { return Err("a destructible vehicle is already registered".into()); }
         let entity = NS_VEHICLE | (id & ID_MASK);
-        self.garage_destruction = Some(garage_destruction::GarageDestruction::register(&mut self.world, entity, geometry)?);
+        if self.garage_destruction.iter().any(|g| g.entity == entity) { return Err("this vehicle is already destructible".into()); }
+        // The stage configures once for every car, on the first completed step.
+        if self.garage_destruction.iter().any(|g| g.configured()) { return Err("destructible vehicles must all be registered before the stage configures".into()); }
+        if self.garage_destruction.len() >= garage_destruction::MAX_CARS { return Err("too many destructible vehicles".into()); }
+        let structure = garage_destruction::STRUCTURE + self.garage_destruction.len() as u32;
+        let car = garage_destruction::GarageDestruction::register(&mut self.world, entity, structure, geometry)?;
+        self.garage_destruction.push(car);
         self.tolerate_rejected_steps = true;
         Ok(())
     }
@@ -1452,9 +1460,9 @@ impl PhysxPhysicsArena {
     #[cfg(feature = "native-destruction")]
     pub fn vehicle_detached_parts(&mut self, id: u32) -> Vec<bridge::VehiclePartPose> {
         let entity = NS_VEHICLE | (id & ID_MASK);
-        match &self.garage_destruction {
-            Some(garage) if garage.entity == entity => garage.detached_parts(&mut self.world),
-            _ => Vec::new(),
+        match self.garage_destruction.iter().find(|g| g.entity == entity) {
+            Some(garage) => garage.detached_parts(&mut self.world),
+            None => Vec::new(),
         }
     }
 
@@ -1462,8 +1470,8 @@ impl PhysxPhysicsArena {
     #[cfg(feature = "native-destruction")]
     pub fn vehicle_part_center(&self, id: u32, part: u32) -> Option<[f32; 3]> {
         let entity = NS_VEHICLE | (id & ID_MASK);
-        self.garage_destruction.as_ref().filter(|g| g.entity == entity)?;
-        let aim = self.world.native_chunk_aim(garage_destruction::STRUCTURE, part).ok().filter(|a| a.found)?;
+        let structure = self.garage_destruction.iter().find(|g| g.entity == entity)?.structure;
+        let aim = self.world.native_chunk_aim(structure, part).ok().filter(|a| a.found)?;
         Some([aim.center.x, aim.center.y, aim.center.z])
     }
 
@@ -1471,16 +1479,16 @@ impl PhysxPhysicsArena {
     #[cfg(feature = "native-destruction")]
     pub fn vehicle_clear_shot(&self, id: u32, part: u32, from: Option<Vector3<f32>>) -> Option<(Vector3<f32>, Vector3<f32>, bool)> {
         let entity = NS_VEHICLE | (id & ID_MASK);
-        self.garage_destruction.as_ref().filter(|g| g.entity == entity)?.clear_shot(&self.world, part, from)
+        self.garage_destruction.iter().find(|g| g.entity == entity)?.clear_shot(&self.world, part, from)
     }
 
     /// Debug readback of the destructible car (see `GarageDestruction::debug`).
     #[cfg(feature = "native-destruction")]
     pub fn vehicle_destruction_debug(&mut self, id: u32) -> Result<serde_json::Value, String> {
         let entity = NS_VEHICLE | (id & ID_MASK);
-        match &self.garage_destruction {
-            Some(garage) if garage.entity == entity => garage.debug(&mut self.world),
-            _ => Err("this vehicle is not destructible".into()),
+        match self.garage_destruction.iter().find(|g| g.entity == entity) {
+            Some(garage) => garage.debug(&mut self.world),
+            None => Err("this vehicle is not destructible".into()),
         }
     }
 

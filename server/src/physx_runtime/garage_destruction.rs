@@ -12,8 +12,11 @@ use std::collections::VecDeque;
 /// Debug event log length (see `debug`).
 const EVENT_LOG: usize = 64;
 
-/// Native structure id of the garage car; must be below 255.
+/// Native structure id of the first garage car; each further car takes the
+/// next id. Ids must be below 255.
 pub const STRUCTURE: u32 = 200;
+/// Destructible cars one scene can hold (structure ids 200..=254).
+pub const MAX_CARS: usize = 55;
 
 pub fn requested() -> bool {
     std::env::var("VIBE_GARAGE_VEHICLE_DESTRUCTION").as_deref() == Ok("1")
@@ -21,6 +24,8 @@ pub fn requested() -> bool {
 
 pub struct GarageDestruction {
     pub entity: u32,
+    /// Native structure id of this car's bond graph.
+    pub structure: u32,
     rig: AssetRig,
     wheel_parts: Vec<(usize, u32)>,
     origin_height: f64,
@@ -38,9 +43,10 @@ pub struct GarageDestruction {
 }
 
 impl GarageDestruction {
-    /// Register a car whose complete hull set is already installed.
-    /// Configuration follows the next completed step (GPU identities).
-    pub fn register(world: &mut bridge::World, entity: u32, geometry: &PreparedGeometry) -> Result<Self, String> {
+    /// Register a car whose complete hull set is already installed, as native
+    /// structure `structure`. Every car must be registered before the first
+    /// completed step, which configures the stage for all of them.
+    pub fn register(world: &mut bridge::World, entity: u32, structure: u32, geometry: &PreparedGeometry) -> Result<Self, String> {
         let rig = geometry.rig.clone().ok_or("prepared vehicle has no suspension rig")?;
         let asset = geometry.native_fracture_assembly()?;
         let wheel_parts = geometry.parts.iter().enumerate().filter_map(|(i, p)| {
@@ -50,10 +56,10 @@ impl GarageDestruction {
             }
         }).collect();
         world.native_attach().map_err(|e| e.to_string())?;
-        world.native_register_vehicle(entity, STRUCTURE, &asset.parts, &asset.bonds,
+        world.native_register_vehicle(entity, structure, &asset.parts, &asset.bonds,
             bridge::DestructibleSettings { materials: asset.materials, ..Default::default() })
             .map_err(|e| e.to_string())?;
-        Ok(Self { entity, rig, wheel_parts, origin_height: geometry.origin_height,
+        Ok(Self { entity, structure, rig, wheel_parts, origin_height: geometry.origin_height,
             neutral_jounce: geometry.neutral_jounce, configured: false, broken_bonds: 0, rejected_steps: 0, detached_count: 0,
             steps: 0, broken: Default::default(), last_status: None, events: VecDeque::new() })
     }
@@ -87,69 +93,19 @@ impl GarageDestruction {
         }
     }
 
-    /// After a completed step: configure once, then observe and drain events.
-    pub fn after_step(&mut self, world: &mut bridge::World) {
-        if !self.configured {
-            // Each unconverged tick runs to the cap; bound it while float does not
-            // converge (VIBE_GARAGE_STRESS_ITERATIONS). Measured on the meteor
-            // profile (garage_meteor_impact_tick_profile, M-series): 128 kept
-            // 238 ticks over the 16.7 ms budget once the car was in pieces
-            // (post-split median 19.4 ms, idle 10.8 ms); 64 kept 8 (14.0 ms,
-            // idle 6.3 ms). Preserving unchanged contact pairs cut the split
-            // tick from ~140 to 97 ms.
-            let max_iterations = std::env::var("VIBE_GARAGE_STRESS_ITERATIONS").ok().and_then(|v| v.parse().ok()).unwrap_or(64);
-            let flag = |name: &str, default: bool| std::env::var(name).map_or(default, |v| v == "1");
-            match world.native_configure(bridge::NativeConfig { max_iterations, tolerance: 1e-5,
-                warm_start: true, damage_rate: 2., bend_gain_max: 3., fibre_bending: true,
-                // A car split into ~50 bodies holds ~24k contact pairs; growing
-                // the graph mid-impact waited 78 ms on the GPU (measured). Meteor
-                // splits on terrain reached 37-41k pairs (PX_DESTRUCTION_LOG_GRAPH_GROWTH,
-                // seeds 1 and 4), still growing on the worst tick at 32768.
-                reserved_contact_pairs: 65536,
-                preserve_unchanged_contact_pairs: flag("VIBE_GARAGE_PRESERVE_PAIRS", true),
-                gpu_island_repair: flag("VIBE_GARAGE_GPU_ISLAND_REPAIR", true),
-                verdict_sample_ticks: std::env::var("VIBE_GARAGE_VERDICT_TICKS").ok().and_then(|v| v.parse().ok()).unwrap_or(1) }) {
-                Ok(_) => { self.configured = true; tracing::info!(max_iterations, "garage vehicle destruction configured"); }
-                Err(error) => tracing::error!(%error, "garage vehicle destruction could not configure"),
-            }
-            return;
-        }
-        self.steps += 1;
-        let tick = world.native_tick();
-        if let Ok(status) = &tick { self.last_status = Some((status.error, status.converged, status.iterations)); }
-        match tick {
-            Ok(status) if status.error != 0 || !status.converged => {
-                self.rejected_steps += 1;
-                if self.rejected_steps % 60 == 1 {
-                    tracing::warn!(error = status.error, converged = status.converged, iterations = status.iterations,
-                        rejected = self.rejected_steps, "garage vehicle stress step did not converge (or was rejected)");
-                }
-            }
-            Ok(_) => {}
-            Err(error) => { tracing::error!(%error, "garage vehicle native tick failed"); return; }
-        }
-        if let Ok(broken) = world.native_take_broken_bonds() {
-            if !broken.is_empty() {
-                self.broken_bonds += broken.len();
-                let ids: Vec<String> = broken.iter().map(|b| (b.bond_id & ((1 << 20) - 1)).to_string()).collect();
-                self.broken.extend(broken.iter().filter(|b| b.structure_id == STRUCTURE).map(|b| b.bond_id & ((1 << 20) - 1)));
-                self.log(format!("broke {} bond(s): {}", broken.len(), ids.join(" ")));
-                tracing::info!(broken = broken.len(), total = self.broken_bonds, "garage vehicle bonds broke");
-            }
-        }
-        let _ = world.native_take_chunk_migrations();
-        let _ = world.native_take_island_events();
+    fn observe_detached(&mut self, world: &mut bridge::World) {
         let parts = world.native_detached_vehicle_parts(self.entity).unwrap_or_default();
         if parts.len() != self.detached_count {
             let list: Vec<String> = parts.iter().map(|p| format!("{}@({:.2},{:.2},{:.2})", p.part_index, p.position.x, p.position.y, p.position.z)).collect();
             let parts_now: Vec<String> = parts.iter().map(|p| p.part_index.to_string()).collect();
             self.log(format!("{} part(s) off the carrier: {}", parts.len(), parts_now.join(" ")));
-            tracing::info!(detached = parts.len(), parts = %list.join(" "), "garage vehicle parts detached");
+            tracing::info!(structure = self.structure, detached = parts.len(), parts = %list.join(" "), "garage vehicle parts detached");
             self.detached_count = parts.len();
         }
     }
 
     pub fn neutral_jounce(&self) -> f32 { self.neutral_jounce }
+    pub fn configured(&self) -> bool { self.configured }
 
     /// A clear shot at one part: a line whose first stage chunk is that part.
     /// Tries `from` (e.g. the shooter's eye) first, then from 8 m out along the
@@ -158,7 +114,7 @@ impl GarageDestruction {
     pub fn clear_shot(&self, world: &bridge::World, part: u32, from: Option<nalgebra::Vector3<f32>>)
         -> Option<(nalgebra::Vector3<f32>, nalgebra::Vector3<f32>, bool)> {
         use nalgebra::{UnitQuaternion, Quaternion, Vector3};
-        let aim = world.native_chunk_aim(STRUCTURE, part).ok().filter(|a| a.found)?;
+        let aim = world.native_chunk_aim(self.structure, part).ok().filter(|a| a.found)?;
         let target = Vector3::new(aim.center.x, aim.center.y, aim.center.z);
         let car = world.vehicle_snapshots().ok()?.into_iter().find(|v| v.entity_id == self.entity)?;
         let q = car.pose.rotation;
@@ -202,7 +158,7 @@ impl GarageDestruction {
             "sleeping": a.sleeping, "kinematic": a.kinematic, "gravityDisabled": a.gravity_disabled, "shapes": a.shapes,
         })).collect();
         let bonds: Vec<_> = if self.configured {
-            world.native_bond_stress_rows(STRUCTURE).unwrap_or_default().iter().map(|b| json!({
+            world.native_bond_stress_rows(self.structure).unwrap_or_default().iter().map(|b| json!({
                 "index": b.bond_index, "a": b.node0, "b": b.node1, "area": b.area,
                 "utilisation": b.utilisation, "compression": b.compression, "tension": b.tension, "shear": b.shear,
                 "damage": b.damage, "remainingArea": b.remaining_area,
@@ -234,4 +190,69 @@ impl GarageDestruction {
         if !self.configured { return Vec::new(); }
         world.native_detached_vehicle_parts(self.entity).unwrap_or_default()
     }
+}
+
+/// After a completed step, for every destructible car in the scene: configure
+/// the stage once (all cars share it), then tick it once and hand each car
+/// its own broken bonds and detached parts.
+pub fn after_step(cars: &mut [GarageDestruction], world: &mut bridge::World) {
+    let Some(first) = cars.first() else { return };
+    if !first.configured {
+        // Each unconverged tick runs to the cap; bound it while float does not
+        // converge (VIBE_GARAGE_STRESS_ITERATIONS). Measured on the meteor
+        // profile (garage_meteor_impact_tick_profile, M-series): 128 kept
+        // 238 ticks over the 16.7 ms budget once the car was in pieces
+        // (post-split median 19.4 ms, idle 10.8 ms); 64 kept 8 (14.0 ms,
+        // idle 6.3 ms). Preserving unchanged contact pairs cut the split
+        // tick from ~140 to 97 ms.
+        let max_iterations = std::env::var("VIBE_GARAGE_STRESS_ITERATIONS").ok().and_then(|v| v.parse().ok()).unwrap_or(64);
+        let flag = |name: &str, default: bool| std::env::var(name).map_or(default, |v| v == "1");
+        match world.native_configure(bridge::NativeConfig { max_iterations, tolerance: 1e-5,
+            warm_start: true, damage_rate: 2., bend_gain_max: 3., fibre_bending: true,
+            // A car split into ~50 bodies holds ~24k contact pairs; growing
+            // the graph mid-impact waited 78 ms on the GPU (measured). Meteor
+            // splits on terrain reached 37-41k pairs (PX_DESTRUCTION_LOG_GRAPH_GROWTH,
+            // seeds 1 and 4), still growing on the worst tick at 32768.
+            reserved_contact_pairs: 65536,
+            preserve_unchanged_contact_pairs: flag("VIBE_GARAGE_PRESERVE_PAIRS", true),
+            gpu_island_repair: flag("VIBE_GARAGE_GPU_ISLAND_REPAIR", true),
+            verdict_sample_ticks: std::env::var("VIBE_GARAGE_VERDICT_TICKS").ok().and_then(|v| v.parse().ok()).unwrap_or(1) }) {
+            Ok(_) => {
+                for car in cars.iter_mut() { car.configured = true; }
+                tracing::info!(max_iterations, cars = cars.len(), "garage vehicle destruction configured");
+            }
+            Err(error) => tracing::error!(%error, "garage vehicle destruction could not configure"),
+        }
+        return;
+    }
+    let tick = world.native_tick();
+    for car in cars.iter_mut() {
+        car.steps += 1;
+        if let Ok(status) = &tick { car.last_status = Some((status.error, status.converged, status.iterations)); }
+    }
+    match tick {
+        Ok(status) if status.error != 0 || !status.converged => {
+            for car in cars.iter_mut() { car.rejected_steps += 1; }
+            if cars[0].rejected_steps % 60 == 1 {
+                tracing::warn!(error = status.error, converged = status.converged, iterations = status.iterations,
+                    rejected = cars[0].rejected_steps, "garage vehicle stress step did not converge (or was rejected)");
+            }
+        }
+        Ok(_) => {}
+        Err(error) => { tracing::error!(%error, "garage vehicle native tick failed"); return; }
+    }
+    if let Ok(broken) = world.native_take_broken_bonds() {
+        for car in cars.iter_mut() {
+            let mine: Vec<u32> = broken.iter().filter(|b| b.structure_id == car.structure).map(|b| b.bond_id & ((1 << 20) - 1)).collect();
+            if mine.is_empty() { continue; }
+            car.broken_bonds += mine.len();
+            car.broken.extend(mine.iter().copied());
+            let ids: Vec<String> = mine.iter().map(|b| b.to_string()).collect();
+            car.log(format!("broke {} bond(s): {}", mine.len(), ids.join(" ")));
+            tracing::info!(structure = car.structure, broken = mine.len(), total = car.broken_bonds, "garage vehicle bonds broke");
+        }
+    }
+    let _ = world.native_take_chunk_migrations();
+    let _ = world.native_take_island_events();
+    for car in cars.iter_mut() { car.observe_detached(world); }
 }

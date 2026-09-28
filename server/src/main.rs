@@ -1102,7 +1102,7 @@ struct PlayerConnection {
 }
 
 enum MatchEvent {
-    GarageDebug { reply: tokio::sync::oneshot::Sender<Result<serde_json::Value, (StatusCode, String)>> },
+    GarageDebug { car: u32, reply: tokio::sync::oneshot::Sender<Result<serde_json::Value, (StatusCode, String)>> },
     GarageBombardment { request: garage_bombardment::Request, reply: tokio::sync::oneshot::Sender<Result<garage_bombardment::Status, (StatusCode, String)>> },
     TuneGarageVehicle {
         expected_asset_hash: String,
@@ -2107,15 +2107,20 @@ async fn garage_bombardment_handler(
 
 /// Destruction debug readback of the session's car (hull poses, actors,
 /// bond verdicts, event log). Read by the garage debug overlay.
+#[derive(serde::Deserialize)]
+struct GarageDebugQuery { car: Option<u32> }
+
 async fn garage_debug_handler(
     State(state): State<SharedAppState>, axum::extract::Path(id): axum::extract::Path<String>,
+    axum::extract::Query(query): axum::extract::Query<GarageDebugQuery>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
-    garage::lookup(&id).filter(|s|!s.closing())
+    let session=garage::lookup(&id).filter(|s|!s.closing())
         .ok_or((StatusCode::NOT_FOUND,"This session has ended.".into()))?;
+    let car=session.car_id(query.car)?;
     let handle=find_match(&state,&id).await
         .ok_or((StatusCode::CONFLICT,"Join the session first.".into()))?;
     let (reply,response)=tokio::sync::oneshot::channel();
-    handle.tx.send(MatchEvent::GarageDebug{reply})
+    handle.tx.send(MatchEvent::GarageDebug{car,reply})
         .map_err(|_|(StatusCode::SERVICE_UNAVAILABLE,"The session has ended.".into()))?;
     tokio::time::timeout(Duration::from_secs(3),response).await
         .map_err(|_|(StatusCode::GATEWAY_TIMEOUT,"Debug readback timed out.".into()))?
@@ -3321,15 +3326,20 @@ async fn run_match_loop(
     if let Some(session) = &garage {
         session.world.instantiate(&mut arena).expect("garage terrain should instantiate");
         arena.set_spawn_areas(session.world.spawn_areas.clone());
-        if let Err(error) = arena.spawn_prepared_vehicle(garage::VEHICLE_ID, 0,
-            nalgebra::Vector3::new(0.0, session.geometry.origin_height as f32 + 0.15, 3.0), &session.geometry) {
-            error!(%error, "garage vehicle could not initialize"); return;
-        }
-        #[cfg(feature = "native-destruction")]
-        if std::env::var("VIBE_GARAGE_VEHICLE_DESTRUCTION").as_deref() == Ok("1") {
-            match arena.enable_vehicle_destruction(garage::VEHICLE_ID, &session.geometry) {
-                Ok(()) => info!("garage vehicle is destructible (VIBE_GARAGE_VEHICLE_DESTRUCTION=1)"),
-                Err(error) => warn!(%error, "garage vehicle destruction unavailable; driving intact"),
+        // Every car is spawned and registered before the first step: the
+        // destruction stage configures once, for all of them.
+        for (index, id) in session.vehicle_ids().enumerate() {
+            let [x, z] = garage::Session::car_position(index as u32);
+            if let Err(error) = arena.spawn_prepared_vehicle(id, 0,
+                nalgebra::Vector3::new(x, session.geometry.origin_height as f32 + 0.15, z), &session.geometry) {
+                error!(%error, "garage vehicle could not initialize"); return;
+            }
+            #[cfg(feature = "native-destruction")]
+            if std::env::var("VIBE_GARAGE_VEHICLE_DESTRUCTION").as_deref() == Ok("1") {
+                match arena.enable_vehicle_destruction(id, &session.geometry) {
+                    Ok(()) => info!(id, "garage vehicle is destructible (VIBE_GARAGE_VEHICLE_DESTRUCTION=1)"),
+                    Err(error) => warn!(%error, id, "garage vehicle destruction unavailable; driving intact"),
+                }
             }
         }
     } else if garage::is_garage(&match_id) { return; }
@@ -3495,9 +3505,10 @@ async fn run_match_loop(
         vehicle_handles,
         meteor_rng: meteor::Rng::new(match_seed),
         city,
-        custom_vehicles: garage.as_ref().map(|session| [(garage::VEHICLE_ID, Arc::new(vehicle_assets::DrivableVehicle {
-            vehicle: session.vehicle.clone(), geometry: session.geometry.clone(),
-        }))].into_iter().collect()).unwrap_or_default(),
+        custom_vehicles: garage.as_ref().map(|session| {
+            let asset = Arc::new(vehicle_assets::DrivableVehicle { vehicle: session.vehicle.clone(), geometry: session.geometry.clone() });
+            session.vehicle_ids().map(|id| (id, asset.clone())).collect()
+        }).unwrap_or_default(),
         garage,
         bombardment: Default::default(),
         rig_streams: HashMap::new(),
@@ -3813,11 +3824,14 @@ impl MatchState {
 
     fn handle_event(&mut self, event: MatchEvent) {
         match event {
-            MatchEvent::GarageDebug {reply} => {
+            MatchEvent::GarageDebug {car,reply} => {
                 if !reply.is_closed() {
                     let result=if self.garage.as_ref().is_some_and(|session|!session.closing()) {
-                        self.arena.vehicle_destruction_debug(garage::VEHICLE_ID).map(|mut debug| {
+                        self.arena.vehicle_destruction_debug(car).map(|mut debug| {
                             debug["serverTick"]=self.server_tick.into();
+                            // Which car this is, and its network handle (the client's vehicle id).
+                            debug["car"]=(car-garage::VEHICLE_ID).into();
+                            debug["handle"]=self.vehicle_handles.get(&car).copied().into();
                             // Large loose bodies (meteors) as the server has them.
                             debug["bodies"]=self.arena.snapshot_dynamic_bodies().into_iter().filter(|b| b.3[0] >= 1.0)
                                 .map(|b| serde_json::json!({"id": b.0, "position": b.1, "velocity": b.4, "radius": b.3[0]})).collect();
@@ -4517,7 +4531,11 @@ impl MatchState {
 
         if self.garage.is_some() {
             let range=self.garage.as_ref().is_some_and(|session|session.mode==garage::SessionMode::Range);
-            let target=self.arena.snapshot_vehicles().iter().find(|car|car.id==garage::VEHICLE_ID && (car.driver_id!=0 || range))
+            // The car someone is driving; on the range, the first car otherwise.
+            let cars=self.arena.snapshot_vehicles();
+            let session_car=|id:u32|self.garage.as_ref().is_some_and(|s|s.vehicle_ids().any(|v|v==id));
+            let target=cars.iter().find(|car|session_car(car.id) && car.driver_id!=0)
+                .or_else(||cars.iter().find(|car|car.id==garage::VEHICLE_ID && range))
                 .map(|car|(nalgebra::Vector3::new(car.px_mm as f32,car.py_mm as f32,car.pz_mm as f32)/1000.0,
                     nalgebra::Vector3::new(car.vx_cms as f32,car.vy_cms as f32,car.vz_cms as f32)/100.0));
             for shot in self.bombardment.next_shots(self.server_tick,target) {
@@ -4807,17 +4825,17 @@ impl MatchState {
         let Some(session)=self.garage.clone().filter(|s|s.mode==garage::SessionMode::Range) else { return };
         let settings=*session.range.lock().unwrap();
         let aimed=std::mem::take(&mut *session.aimed_shots.lock().unwrap());
-        for part in std::mem::take(&mut *session.meteors.lock().unwrap()) {
-            let target = part.and_then(|p| self.arena.vehicle_part_center(garage::VEHICLE_ID, p))
-                .or_else(|| self.arena.snapshot_vehicles().iter().find(|car| car.id == garage::VEHICLE_ID)
+        for (car_id, part) in std::mem::take(&mut *session.meteors.lock().unwrap()) {
+            let target = part.and_then(|p| self.arena.vehicle_part_center(car_id, p))
+                .or_else(|| self.arena.snapshot_vehicles().iter().find(|car| car.id == car_id)
                     .map(|car| [car.px_mm as f32 / 1000.0, car.py_mm as f32 / 1000.0, car.pz_mm as f32 / 1000.0]));
             if let Some(target) = target { self.launch_meteor_at_point(glam::Vec3::from_array(target), 0); }
         }
         let eye=self.players.keys().filter_map(|id|self.arena.player_state(*id)).find(|s|!s.dead)
             .map(|s|nalgebra::Vector3::new(s.position.x as f32,s.position.y as f32+PLAYER_EYE_HEIGHT_M,s.position.z as f32));
         let mut shots: Vec<(nalgebra::Vector3<f32>, nalgebra::Vector3<f32>)> = aimed.into_iter()
-            .filter_map(|part| {
-                let (origin, direction, clear) = self.arena.vehicle_clear_shot(garage::VEHICLE_ID, part, eye)?;
+            .filter_map(|(car, part)| {
+                let (origin, direction, clear) = self.arena.vehicle_clear_shot(car, part, eye)?;
                 if !clear { tracing::warn!(part, "no clear line to the part; firing along the eye line"); }
                 // Lead the drop so the ball arrives at the part, not below it.
                 let time = 8.0 / settings.ball_speed;

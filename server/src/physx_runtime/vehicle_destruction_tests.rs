@@ -787,3 +787,102 @@ fn garage_meteor_impact_tick_profile() {
     let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../target/meteor-tick-profile.json");
     std::fs::write(path, serde_json::to_vec_pretty(&json!({"summary": summary, "rows": rows})).unwrap()).unwrap();
 }
+
+/// Two copies of the car in one scene, as a destruction range with two cars
+/// parks them (garage::Session::car_position): one stage configures for both,
+/// each keeps its own bond graph. A ball through the first car's front-left
+/// tyre breaks bonds of the first car only; the second car stays whole and
+/// its readback is its own.
+#[test]
+#[ignore = "requires local GPU, coherent ABI 22 SDK and VIBE_VEHICLE_BUILD_FIXTURES"]
+fn garage_cars_in_one_scene_break_independently() {
+    let _guard = gpu_test_guard();
+    std::env::set_var("VIBE_GARAGE_VEHICLE_DESTRUCTION", "1");
+    std::env::set_var("PX_DESTRUCTION_ALLOW_UNCONVERGED", "1");
+    let (_, geometry) = fixtures().into_iter().next().expect("buggy fixture");
+    let layout = geometry.validate_vehicle2_fracture_layout().unwrap();
+    let mut arena = PhysxPhysicsArena::new(MoveConfig::default()).unwrap();
+    WorldDocumentArena::add_static_cuboid(&mut arena, Vector3::new(0., -0.5, 0.), [0., 0., 0., 1.], Vector3::new(100., 0.5, 100.), 1);
+    let cars = [CAR, CAR + 1];
+    for (index, id) in cars.iter().enumerate() {
+        let [x, z] = crate::garage::Session::car_position(index as u32);
+        arena.spawn_vehicle_asset(*id, 0, Vector3::new(x, geometry.origin_height as f32 + 0.15, z), [0., 0., 0., 1.], Some(&geometry)).unwrap();
+        arena.enable_vehicle_destruction(*id, &geometry).unwrap();
+    }
+    arena.reserve_ball_pool(8);
+    let broken = |arena: &mut PhysxPhysicsArena, id: u32| arena.vehicle_destruction_debug(id).unwrap()["brokenBonds"].as_u64().unwrap();
+    for _ in 0..90 { arena.step_vehicles_and_dynamics(DT); }
+    for id in cars {
+        let debug = arena.vehicle_destruction_debug(id).unwrap();
+        assert_eq!(debug["configured"], true, "car {id} configured");
+        assert_eq!(debug["brokenBonds"], 0, "car {id} broke at rest");
+        assert_eq!(debug["actors"].as_array().unwrap().len(), 1, "car {id} is one body at rest");
+    }
+    // Both readbacks are distinct cars, parked where they were put.
+    let x = |arena: &mut PhysxPhysicsArena, id: u32| arena.vehicle_destruction_debug(id).unwrap()["actors"][0]["position"][0].as_f64().unwrap();
+    assert!((x(&mut arena, CAR + 1) - x(&mut arena, CAR) - 5.5).abs() < 0.2, "second car is 5.5 m to the side");
+    let tyre = layout.wheel_chunks[0][0];
+    let (origin, direction, clear) = arena.vehicle_clear_shot(CAR, tyre, None).expect("tyre is on the first car");
+    assert!(clear, "a clear line to the first car's tyre (not through the second car)");
+    let time = 8.0 / BALL_SPEED;
+    arena.launch_ball_from_muzzle(origin, direction * BALL_SPEED + Vector3::new(0., 0.5 * G * time, 0.),
+        crate::garage_bombardment::BALL_RADIUS, BALL_MASS, 600).expect("ball launched");
+    for _ in 0..SHOT_TICKS { arena.step_vehicles_and_dynamics(DT); }
+    let first = broken(&mut arena, CAR);
+    let second = broken(&mut arena, CAR + 1);
+    eprintln!("two cars: first car broke {first} bond(s), second car {second}; first car detached {} part(s)",
+        arena.vehicle_detached_parts(CAR).len());
+    assert!(first > 0, "the shot broke the first car");
+    assert_eq!(second, 0, "the second car was not hit and must not break");
+    assert!(arena.vehicle_detached_parts(CAR + 1).is_empty(), "no part of the second car is loose");
+}
+
+/// Car into car: a destructible car driven from where the player can enter it
+/// at full throttle into the tail of another parked 15 m ahead. The two must collide (the parked car is
+/// shoved forward) and never pass through each other; what breaks is printed.
+#[test]
+#[ignore = "requires local GPU, coherent ABI 22 SDK and VIBE_VEHICLE_BUILD_FIXTURES"]
+fn garage_car_crashes_into_car() {
+    let _guard = gpu_test_guard();
+    std::env::set_var("VIBE_GARAGE_VEHICLE_DESTRUCTION", "1");
+    std::env::set_var("PX_DESTRUCTION_ALLOW_UNCONVERGED", "1");
+    let (_, geometry) = fixtures().into_iter().next().expect("buggy fixture");
+    let mut arena = PhysxPhysicsArena::new(MoveConfig::default()).unwrap();
+    WorldDocumentArena::add_static_cuboid(&mut arena, Vector3::new(0., -0.5, 0.), [0., 0., 0., 1.], Vector3::new(100., 0.5, 100.), 1);
+    let (parked, rammer) = (CAR, CAR + 1);
+    for (id, z) in [(parked, 18.), (rammer, 3.)] {
+        arena.spawn_vehicle_asset(id, 0, Vector3::new(0., geometry.origin_height as f32 + 0.15, z), [0., 0., 0., 1.], Some(&geometry)).unwrap();
+        arena.enable_vehicle_destruction(id, &geometry).unwrap();
+    }
+    let pose = |arena: &PhysxPhysicsArena, id: u32| {
+        let car = arena.current_vehicle_snapshots().into_iter().find(|s| s.user_id == id).unwrap();
+        (car.pose.position, (car.linear_velocity.x.powi(2) + car.linear_velocity.z.powi(2)).sqrt())
+    };
+    // Beside the rammer, where the garage world spawns its driver.
+    arena.set_spawn_areas(vec![vibe_land_shared::world_document::SpawnArea { id: 1, position: [2.5, 1.5, 3.0], radius: 0.1 }]);
+    arena.spawn_player(42);
+    for _ in 0..30 { arena.step_vehicles_and_dynamics(DT); }
+    arena.enter_vehicle(42, rammer);
+    assert_eq!(arena.player_vehicle_id(42), Some(rammer), "driving the second car");
+    let start = pose(&arena, parked).0;
+    let (mut top_speed, mut contact_speed, mut min_gap) = (0f32, None, f32::INFINITY);
+    for _ in 0..360 {
+        let mut input = InputCmd::default();
+        input.move_y = 100;
+        arena.simulate_player_tick(42, &input, DT);
+        arena.step_vehicles_and_dynamics(DT);
+        let ((p, _), (r, speed)) = (pose(&arena, parked), pose(&arena, rammer));
+        top_speed = top_speed.max(speed);
+        min_gap = min_gap.min(p.z - r.z);
+        if contact_speed.is_none() && (p.z - start.z > 0.05 || p.x - start.x > 0.05) { contact_speed = Some(speed); }
+    }
+    let end = pose(&arena, parked).0;
+    let broken = |arena: &mut PhysxPhysicsArena, id: u32| arena.vehicle_destruction_debug(id).unwrap()["brokenBonds"].as_u64().unwrap();
+    let (parked_broken, rammer_broken) = (broken(&mut arena, parked), broken(&mut arena, rammer));
+    eprintln!("car into car: top speed {top_speed:.1} m/s, parked car first moved at rammer speed {contact_speed:?} m/s, shoved {:.2} m, \
+        closest centres {min_gap:.2} m apart; bonds broken: parked {parked_broken}, rammer {rammer_broken}",
+        end.z - start.z);
+    assert!(top_speed > 5., "the rammer got up to speed ({top_speed:.1} m/s)");
+    assert!(end.z - start.z > 0.5, "the parked car was shoved by the impact ({:.2} m)", end.z - start.z);
+    assert!(min_gap > 1.0, "the cars passed into each other (centres {min_gap:.2} m apart)");
+}
