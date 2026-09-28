@@ -101,7 +101,9 @@ const NEARBY_PLAYER_RADIUS_M: f32 = 12.0;
 /// Matches the arena's own live-ball ceiling: the ids are a ring, so this is
 /// both the number of balls that can be in the air and the number of handles
 /// the join-time metadata has to carry.
-const CANNONBALL_POOL: usize = 24;
+// A full bombardment volley is 16 rounds every 2.5 s; rounds fly at most
+// 3.2 s, so 48 ids never recycle a ball still in the air.
+const CANNONBALL_POOL: usize = 48;
 /// How many meteors a match reserves ids and client metadata for. A ring, like
 /// the cannonball's: the ninth launch retires the first. Eight is more than
 /// anyone can watch fall at once.
@@ -1101,7 +1103,7 @@ struct PlayerConnection {
 
 enum MatchEvent {
     GarageDebug { reply: tokio::sync::oneshot::Sender<Result<serde_json::Value, (StatusCode, String)>> },
-    GarageBombardment { enabled: bool, reply: tokio::sync::oneshot::Sender<Result<garage_bombardment::Status, (StatusCode, String)>> },
+    GarageBombardment { request: garage_bombardment::Request, reply: tokio::sync::oneshot::Sender<Result<garage_bombardment::Status, (StatusCode, String)>> },
     TuneGarageVehicle {
         expected_asset_hash: String,
         vehicle: vehicle_assets::PreparedVehicle,
@@ -2096,7 +2098,7 @@ async fn garage_bombardment_handler(
     let handle=find_match(&state,&id).await
         .ok_or((StatusCode::CONFLICT,"Join the test drive first.".into()))?;
     let (reply,response)=tokio::sync::oneshot::channel();
-    handle.tx.send(MatchEvent::GarageBombardment{enabled:request.enabled,reply})
+    handle.tx.send(MatchEvent::GarageBombardment{request,reply})
         .map_err(|_|(StatusCode::SERVICE_UNAVAILABLE,"The test drive has ended.".into()))?;
     tokio::time::timeout(Duration::from_secs(3),response).await
         .map_err(|_|(StatusCode::GATEWAY_TIMEOUT,"Bombardment acknowledgement timed out.".into()))?
@@ -3826,10 +3828,10 @@ impl MatchState {
                     let _=reply.send(result);
                 }
             }
-            MatchEvent::GarageBombardment {enabled,reply} => {
+            MatchEvent::GarageBombardment {request,reply} => {
                 if !reply.is_closed() {
                     let result=if self.garage.as_ref().is_some_and(|session|!session.closing()) {
-                        Ok(self.bombardment.set_enabled(enabled,self.server_tick))
+                        Ok(self.bombardment.configure(&request,self.server_tick))
                     } else { Err((StatusCode::NOT_FOUND,"This test drive has ended.".into())) };
                     let _=reply.send(result);
                 }
@@ -4518,7 +4520,7 @@ impl MatchState {
             let target=self.arena.snapshot_vehicles().iter().find(|car|car.id==garage::VEHICLE_ID && (car.driver_id!=0 || range))
                 .map(|car|(nalgebra::Vector3::new(car.px_mm as f32,car.py_mm as f32,car.pz_mm as f32)/1000.0,
                     nalgebra::Vector3::new(car.vx_cms as f32,car.vy_cms as f32,car.vz_cms as f32)/100.0));
-            if let Some(shot)=self.bombardment.next_shot(self.server_tick,target) {
+            for shot in self.bombardment.next_shots(self.server_tick,target) {
                 // Opt-in demo override (e.g. 300 kg); the default 30 kg ball rarely frees a part.
                 let mass = std::env::var("VIBE_GARAGE_BALL_MASS").ok().and_then(|v| v.parse::<f32>().ok())
                     .filter(|m| m.is_finite() && *m > 0.0).unwrap_or(garage_bombardment::BALL_MASS);
@@ -4526,6 +4528,12 @@ impl MatchState {
                     mass,garage_bombardment::BALL_TTL).is_some() {
                     self.bombardment.record_launch();
                 }
+            }
+            // Meteors in the mix: the city's meteor, aimed where the car will be.
+            if let Some((position,velocity))=self.bombardment.next_meteor(self.server_tick,target) {
+                let at=glam::Vec3::new(position.x,position.y,position.z);
+                let lead=glam::Vec3::new(velocity.x,0.0,velocity.z);
+                if self.launch_meteor_leading(at,lead,0).is_some() {self.bombardment.record_meteor();}
             }
         }
 
@@ -4974,6 +4982,24 @@ impl MatchState {
             self.tick_meteors_launched += 1;
         }
         event
+    }
+
+    /// A meteor at a moving target: aimed where `target` will be after the
+    /// flight, moving at `velocity`. The same draw decides the arc either way
+    /// (start offset, and so flight time, do not depend on the aim point).
+    fn launch_meteor_leading(
+        &mut self,
+        target: glam::Vec3,
+        velocity: glam::Vec3,
+        shooter: u32,
+    ) -> Option<serde_json::Value> {
+        let gravity = {
+            let g = vibe_netcode::movement::default_world_gravity();
+            glam::Vec3::new(g[0], g[1], g[2])
+        };
+        let tuning = meteor::MeteorTuning::from_env();
+        let flight = meteor::plan(target, gravity, &tuning, &mut self.meteor_rng.clone()).flight_time_s;
+        self.launch_meteor_at_point(target + velocity * flight, shooter)
     }
 
     fn plan_and_launch_meteor(

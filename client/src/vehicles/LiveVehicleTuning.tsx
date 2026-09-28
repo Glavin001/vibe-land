@@ -11,17 +11,26 @@ export function LiveVehicleTuning({matchId,vehicle,onApplied,onBack}:{matchId:st
   const inFlight=useRef(false);
   const [bombardment,setBombardment]=useState(false),[bombPending,setBombPending]=useState(false),[bombError,setBombError]=useState('');
   const bombInFlight=useRef(false);
-  async function toggleBombardment() {
+  // Towers firing in each volley (of 16 on the ring) and meteors in the mix.
+  const [towers,setTowers]=useState(6),[meteors,setMeteors]=useState(false);
+  async function updateBombardment(enabled:boolean,next={towers,meteors}) {
     if(bombInFlight.current)return;
     bombInFlight.current=true;setBombPending(true);setBombError('');
     try {
       const response=await fetch(`${resolveMultiplayerBackend().httpOrigin}/vehicle-assets/session/${encodeURIComponent(matchId)}/bombardment`,{
-        method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:!bombardment}),
+        method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled,towers:next.towers,meteors:next.meteors}),
       });
       if(!response.ok)throw Error(await response.text());
       const result=await response.json();setBombardment(result.enabled===true);
+      if(typeof result.towers==='number')setTowers(result.towers);
+      if(typeof result.meteors==='boolean')setMeteors(result.meteors);
     } catch(cause) {setBombError(cause instanceof Error?cause.message:String(cause));}
     finally {bombInFlight.current=false;setBombPending(false);}
+  }
+  // Changed while firing: applied at once. Otherwise sent with the next start.
+  function setOption(next:{towers:number;meteors:boolean}) {
+    setTowers(next.towers);setMeteors(next.meteors);
+    if(bombardment)void updateBombardment(true,next);
   }
   const dirty=serializeConfiguration(draft)!==serializeConfiguration(vehicle.configuration);
   async function apply(configuration=draft) {
@@ -45,8 +54,11 @@ export function LiveVehicleTuning({matchId,vehicle,onApplied,onBack}:{matchId:st
   return <>
     <div className="garage-drive-controls"><button disabled={pending} onClick={onBack}>← Back to garage</button>
       <button aria-expanded={open} aria-controls="live-vehicle-tuning" onClick={()=>{document.exitPointerLock?.();setOpen(!open);}}>Tune driving</button>
-      <button aria-pressed={bombardment} disabled={bombPending} onClick={()=>void toggleBombardment()}>{bombPending?'Updating…':bombardment?'Stop bombardment':'Start bombardment'}</button>
-      <span role="status">{bombardment?'Incoming fire · fires while you are driving · dodge by changing course':'Test drive · E to enter · WASD to drive'}</span>
+      <button aria-pressed={bombardment} disabled={bombPending} onClick={()=>void updateBombardment(!bombardment)}>{bombPending?'Updating…':bombardment?'Stop bombardment':'Start bombardment'}</button>
+      <label>Towers <select value={towers} disabled={bombPending} onChange={e=>setOption({towers:Number(e.target.value),meteors})}>
+        {[1,2,4,6,8,12,16].map(n=><option key={n} value={n}>{n}</option>)}</select></label>
+      <label><input type="checkbox" checked={meteors} disabled={bombPending} onChange={e=>setOption({towers,meteors:e.target.checked})}/> Meteors</label>
+      <span role="status">{bombardment?`Incoming fire · ${towers} tower${towers===1?'':'s'} per volley${meteors?' · meteors every 10 s':''} · fires while you are driving · dodge by changing course`:'Test drive · E to enter · WASD to drive'}</span>
       <span>Impact testing · vehicle fracture pending</span>
       {bombError && <span role="alert">{bombError}</span>}
     </div>
