@@ -26,6 +26,9 @@ pub struct GarageDestruction {
     pub entity: u32,
     /// Native structure id of this car's bond graph.
     pub structure: u32,
+    /// The stage is configured and ticked by another owner (the city); this
+    /// car only reads its own parts back.
+    pub external: bool,
     rig: AssetRig,
     wheel_parts: Vec<(usize, u32)>,
     origin_height: f64,
@@ -59,7 +62,7 @@ impl GarageDestruction {
         world.native_register_vehicle(entity, structure, &asset.parts, &asset.bonds,
             bridge::DestructibleSettings { materials: asset.materials, ..Default::default() })
             .map_err(|e| e.to_string())?;
-        Ok(Self { entity, structure, rig, wheel_parts, origin_height: geometry.origin_height,
+        Ok(Self { entity, structure, external: false, rig, wheel_parts, origin_height: geometry.origin_height,
             neutral_jounce: geometry.neutral_jounce, configured: false, broken_bonds: 0, rejected_steps: 0, detached_count: 0,
             steps: 0, broken: Default::default(), last_status: None, events: VecDeque::new() })
     }
@@ -106,6 +109,7 @@ impl GarageDestruction {
 
     pub fn neutral_jounce(&self) -> f32 { self.neutral_jounce }
     pub fn configured(&self) -> bool { self.configured }
+    pub fn mark_configured(&mut self) { self.configured = true; }
 
     /// A clear shot at one part: a line whose first stage chunk is that part.
     /// Tries `from` (e.g. the shooter's eye) first, then from 8 m out along the
@@ -197,6 +201,12 @@ impl GarageDestruction {
 /// its own broken bonds and detached parts.
 pub fn after_step(cars: &mut [GarageDestruction], world: &mut bridge::World) {
     let Some(first) = cars.first() else { return };
+    if first.external {
+        // The owner ticks the stage and drains its events; ticking or draining
+        // here would take the frame from it. Only this car's parts are read.
+        for car in cars.iter_mut().filter(|c| c.configured) { car.steps += 1; car.observe_detached(world); }
+        return;
+    }
     if !first.configured {
         // Each unconverged tick runs to the cap; bound it while float does not
         // converge (VIBE_GARAGE_STRESS_ITERATIONS). Measured on the meteor

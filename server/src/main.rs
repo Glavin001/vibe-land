@@ -1,6 +1,7 @@
 mod vehicle_assets;
 mod garage;
 mod garage_bombardment;
+mod city_fleet;
 mod vehicle_tuning;
 mod grass_layout;
 mod app_config;
@@ -1255,6 +1256,8 @@ struct MatchState {
     /// Detached-part streams of custom vehicles, by vehicle id.
     rig_streams: HashMap<u32, vehicle_assets::RigStream>,
     custom_vehicles: HashMap<u32, Arc<vehicle_assets::DrivableVehicle>>,
+    /// The city's destructible cars (city_fleet), respawned on a city reset.
+    fleet: Option<Arc<city_fleet::Fleet>>,
     /// Where the next meteor comes from. Seeded per match so two matches do
     /// not rain from the same bearings in the same order.
     meteor_rng: meteor::Rng,
@@ -1557,6 +1560,7 @@ async fn main() -> Result<()> {
         .route("/city-reset/:match_id", post(city_reset_handler))
         .route("/city-demolish/:match_id", post(city_demolish_handler))
         .route("/city-meteor/:match_id", post(city_meteor_handler))
+        .route("/city-vehicle-debug/:match_id", get(city_vehicle_debug_handler))
         .route("/city-capture-stop/:match_id", post(city_capture_stop_handler))
         .route("/city-buildings", get(city_buildings_handler))
         .route("/ws/stats", get(ws_stats_handler))
@@ -2716,6 +2720,22 @@ struct MeteorRequest {
 /// "one rock per building": from any vantage point some roofs are behind
 /// other roofs. This is the same launch path (same arc planner, same pool,
 /// same `PKT_METEOR_LAUNCHED`), only the target is given instead of found.
+/// Destruction readback of one of the city's destructible cars (city_fleet),
+/// the garage debug view: `?car=N` is the fleet index (0 when omitted).
+async fn city_vehicle_debug_handler(
+    State(state): State<SharedAppState>, Path(match_id): Path<String>,
+    axum::extract::Query(query): axum::extract::Query<GarageDebugQuery>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    if !city::is_city_match(&match_id) { return Err((StatusCode::BAD_REQUEST, "not a city match".into())); }
+    let handle=find_match(&state,&match_id).await.ok_or((StatusCode::NOT_FOUND,"The city is not running.".into()))?;
+    let (reply,response)=tokio::sync::oneshot::channel();
+    handle.tx.send(MatchEvent::GarageDebug{car:city_fleet::FIRST_ID+query.car.unwrap_or(0),reply})
+        .map_err(|_|(StatusCode::SERVICE_UNAVAILABLE,"The city has ended.".into()))?;
+    tokio::time::timeout(Duration::from_secs(3),response).await
+        .map_err(|_|(StatusCode::GATEWAY_TIMEOUT,"Debug readback timed out.".into()))?
+        .map_err(|_|(StatusCode::SERVICE_UNAVAILABLE,"The city has ended.".into()))?.map(Json)
+}
+
 async fn city_meteor_handler(
     Path(match_id): Path<String>,
     State(state): State<SharedAppState>,
@@ -3319,6 +3339,13 @@ async fn run_match_loop(
     meteor_requests: Arc<StdRwLock<HashMap<String, Vec<[f32; 3]>>>>,
     capture_stop_requests: Arc<StdRwLock<HashSet<String>>>,
 ) {
+    // Destructible cars for the city (opt-in), prepared before anything is
+    // built: they join the city's native stage, whose topology is fixed once
+    // the city opens.
+    let fleet = match (city::is_city_match(&match_id), city_fleet::requested()) {
+        (true, Some(builds)) => Some(city_fleet::prepare(&builds).await).filter(|f| !f.cars.is_empty()),
+        _ => None,
+    };
     let mut arena = PhysicsArena::new(MoveConfig::default(), physics.backend)
         .expect("selected authoritative physics backend should initialize");
     let world = VoxelWorld::new();
@@ -3343,7 +3370,10 @@ async fn run_match_loop(
             }
         }
     } else if garage::is_garage(&match_id) { return; }
-    else { seed_world_for_match(&mut arena, &match_id).expect("world document should instantiate"); }
+    else {
+        seed_world_for_match(&mut arena, &match_id).expect("world document should instantiate");
+        if let Some(fleet) = &fleet { city_fleet::spawn(&mut arena, fleet); }
+    }
     let mut dynamic_body_handles: HashMap<u32, DynamicBodyMetaRuntime> = arena
         .snapshot_dynamic_bodies()
         .into_iter()
@@ -3431,6 +3461,8 @@ async fn run_match_loop(
                 // The engine may refuse a step only on the native stage, and
                 // the arena must learn that from the city it actually opened.
                 arena.set_tolerate_rejected_steps(runtime.backend_name() == "native");
+                // The city configured the stage its destructible cars are in.
+                if fleet.is_some() { arena.mark_vehicle_destruction_configured(); }
                 info!(
                     %match_id,
                     structures = runtime.manifest.structures.len(),
@@ -3508,7 +3540,9 @@ async fn run_match_loop(
         custom_vehicles: garage.as_ref().map(|session| {
             let asset = Arc::new(vehicle_assets::DrivableVehicle { vehicle: session.vehicle.clone(), geometry: session.geometry.clone() });
             session.vehicle_ids().map(|id| (id, asset.clone())).collect()
-        }).unwrap_or_default(),
+        }).or_else(|| fleet.as_ref().map(|fleet| fleet.cars.iter().map(|(id, _, asset)| (*id, asset.clone())).collect()))
+            .unwrap_or_default(),
+        fleet,
         garage,
         bombardment: Default::default(),
         rig_streams: HashMap::new(),
@@ -3826,12 +3860,22 @@ impl MatchState {
         match event {
             MatchEvent::GarageDebug {car,reply} => {
                 if !reply.is_closed() {
-                    let result=if self.garage.as_ref().is_some_and(|session|!session.closing()) {
+                    let result=if self.garage.as_ref().is_some_and(|session|!session.closing()) || self.fleet.is_some() {
                         self.arena.vehicle_destruction_debug(car).map(|mut debug| {
                             debug["serverTick"]=self.server_tick.into();
                             // Which car this is, and its network handle (the client's vehicle id).
                             debug["car"]=(car-garage::VEHICLE_ID).into();
                             debug["handle"]=self.vehicle_handles.get(&car).copied().into();
+                            // What interest sees: the snapshot pose and the box the loose parts span.
+                            let parts=self.arena.vehicle_detached_parts(car);
+                            debug["detachedParts"]=parts.len().into();
+                            if let Some(first)=parts.first() {
+                                let (mut lo,mut hi)=(first.1,first.1);
+                                for (_,p,_) in &parts { for k in 0..3 { lo[k]=lo[k].min(p[k]); hi[k]=hi[k].max(p[k]); } }
+                                debug["detachedExtents"]=serde_json::json!([lo,hi]);
+                            }
+                            debug["snapshot"]=self.arena.snapshot_vehicles().into_iter().find(|v|v.id==car)
+                                .map(|v|serde_json::json!({"position":[mm_to_meters(v.px_mm),mm_to_meters(v.py_mm),mm_to_meters(v.pz_mm)],"driver":v.driver_id})).into();
                             // Large loose bodies (meteors) as the server has them.
                             debug["bodies"]=self.arena.snapshot_dynamic_bodies().into_iter().filter(|b| b.3[0] >= 1.0)
                                 .map(|b| serde_json::json!({"id": b.0, "position": b.1, "velocity": b.4, "radius": b.3[0]})).collect();
@@ -5392,7 +5436,29 @@ impl MatchState {
             reset_requested = true;
         }
         if reset_requested {
-            match city.reset(SIM_HZ as u32, world) {
+            // Destructible cars live in the stage the reset rebuilds: out once it
+            // lets go of them, back (registered) before it configures again.
+            let fleet = self.fleet.clone();
+            let reset = match &fleet {
+                Some(fleet) => city.reset_with(SIM_HZ as u32, &mut self.arena, |arena| {
+                    city_fleet::remove(arena, fleet);
+                    city_fleet::spawn(arena, fleet);
+                }),
+                None => city.reset(SIM_HZ as u32, world),
+            };
+            if let (Ok(()), Some(fleet)) = (&reset, &fleet) {
+                self.arena.mark_vehicle_destruction_configured();
+                // Fresh cars: a new asset packet tells clients to drop the old
+                // cars' loose parts, and the part streams start over.
+                for (id, _, asset) in &fleet.cars {
+                    self.rig_streams.remove(id);
+                    if let Some(&handle) = self.vehicle_handles.get(id) {
+                        let packet = vehicle_assets::asset_packet(handle, &asset.vehicle);
+                        for runtime in self.players.values() { let _ = try_queue_packet(&runtime.tx, packet.clone(), &self.io); }
+                    }
+                }
+            }
+            match reset {
                 Ok(()) => {
                     // The client ledger still describes the demolished city and
                     // no incremental topology event can say "start over", so

@@ -18,6 +18,24 @@
         "VIBE_GARAGE_BALL_MASS=${VIBE_GARAGE_BALL_MASS:-1000} exec scripts/perf/garage-vehicle-server.sh --no-build"
       ],
       "port": 4001
+    },
+    {
+      "name": "garage-vehicle-server-debug",
+      "runtimeExecutable": "bash",
+      "runtimeArgs": [
+        "-c",
+        "RUST_LOG=info,web_fps_server::snapshot_builder=debug VIBE_GARAGE_BALL_MASS=${VIBE_GARAGE_BALL_MASS:-1000} exec scripts/perf/garage-vehicle-server.sh --no-build"
+      ],
+      "port": 4001
+    },
+    {
+      "name": "garage-vehicle-server-stock-city",
+      "runtimeExecutable": "bash",
+      "runtimeArgs": [
+        "-c",
+        "VIBE_CITY_DESTRUCTIBLE_VEHICLES=0 VIBE_GARAGE_BALL_MASS=${VIBE_GARAGE_BALL_MASS:-1000} exec scripts/perf/garage-vehicle-server.sh --no-build"
+      ],
+      "port": 4001
     }
   ]
 }

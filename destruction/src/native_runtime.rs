@@ -220,6 +220,10 @@ pub struct NativeTickCounts {
 
 pub struct NativeCityDestruction {
     manifest: Arc<DestructionManifest>,
+    /// Structure ids this city built. The stage can hold other structures
+    /// too (destructible cars registered before the city configured it);
+    /// their bonds, pieces and bodies are theirs, not city debris.
+    own: std::collections::HashSet<u32>,
     encoder_input: Vec<BodySnapshotInput>,
     stats: DestructionStats,
     extra_spans: Vec<NamedSpan>,
@@ -560,6 +564,7 @@ materials={} reserved_pairs={} iterations={} tolerance={:e}",
         );
 
         Ok(Self {
+            own: manifest.structures.iter().map(|s| s.structure_id).collect(),
             stats: DestructionStats {
                 structures: manifest.structures.len() as u32,
                 ..DestructionStats::default()
@@ -669,6 +674,9 @@ no observation this tick",
         let islands = world
             .native_take_island_events()
             .map_err(|e| CityDestructionError::Bridge(e.to_string()))?;
+        let broken: Vec<_> = broken.into_iter().filter(|e| self.own.contains(&e.structure_id)).collect();
+        let migrations: Vec<_> = migrations.into_iter().filter(|e| self.own.contains(&e.structure_id)).collect();
+        let islands: Vec<_> = islands.into_iter().filter(|e| self.own.contains(&e.structure_id)).collect();
         self.tick_counts = NativeTickCounts {
             bonds_broken: broken.len() as u32,
             chunks_migrated: migrations.len() as u32,
@@ -794,6 +802,7 @@ no observation this tick",
         self.awake_nodes_total = 0;
         let mut settled: Vec<SettleEvent> = Vec::new();
         let mut wakes: Vec<(u32, u32)> = std::mem::take(&mut self.pending_wakes);
+        let snapshots: Vec<_> = snapshots.into_iter().filter(|snap| self.own.contains(&snap.structure_id)).collect();
         for snap in snapshots {
             // The anchored remnant is not an island and has no business on the
             // wire.

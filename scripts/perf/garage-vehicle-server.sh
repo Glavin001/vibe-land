@@ -7,6 +7,9 @@
 #   scripts/perf/garage-vehicle-server.sh [--no-build]
 #
 # VIBE_GARAGE_BALL_MASS (kg) overrides the 30 kg cannonball for demos.
+# /city fields destructible garage builds instead of its stock cars
+# (VIBE_CITY_DESTRUCTIBLE_VEHICLES, default 1 = server/src/city_fleet.rs
+# DEFAULT_FLEET here; a comma list of build ids picks others; 0 = stock cars).
 # VIBE_GARAGE_STRESS_ITERATIONS caps stress iterations per tick (default 64).
 # VIBE_VEHICLE_SDK selects the install (default: the float vehicle SDK).
 # Float does not yet converge under Vehicle2 road loads, so this demo sets
@@ -33,5 +36,6 @@ echo "server log: $LOG (SDK $SDK)"
 exec scripts/perf/gpu-run.sh garage-vehicles env \
   VIBE_PHYSICS_BACKEND=physx_gpu VIBE_GARAGE_VEHICLE_DESTRUCTION=1 RUST_LOG=${RUST_LOG:-info} \
   VIBE_GARAGE_BALL_MASS=${VIBE_GARAGE_BALL_MASS:-} PX_DESTRUCTION_ALLOW_UNCONVERGED=${PX_DESTRUCTION_ALLOW_UNCONVERGED:-1} \
+  VIBE_CITY_DESTRUCTIBLE_VEHICLES=${VIBE_CITY_DESTRUCTIBLE_VEHICLES:-1} \
   CUMETAL_CACHE_DIR="$ROOT/target/cumetal-cache-vehicles" \
   "$CARGO_TARGET_DIR/release/web-fps-server" > "$LOG" 2>&1

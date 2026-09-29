@@ -21,6 +21,8 @@ export class VehicleVisual {
   /** Visual part ids per native fracture part index (metadata.json parts[].visualIds). */
   private fractureGroups: string[][] | null = null;
   private readonly partMatrix = new Map<string, THREE.Matrix4>();
+  /** Visual ids drawn loose last frame, so a part back on the car is restored. */
+  private detachedIds = new Set<string>();
   private explosion = 0;
   constructor(configuration: VehicleConfiguration, private readonly actorSpace = false) {
     this.configure(configuration);
@@ -74,7 +76,7 @@ export class VehicleVisual {
   hasFractureGroups(): boolean { return !!this.fractureGroups; }
   /** Draw parts that broke off at their server world poses. Call after setWheelState. */
   setDetached(detached: {part:number; position:[number,number,number]; rotation:[number,number,number,number]}[]): void {
-    if (!this.fractureGroups || !detached.length) return;
+    if (!this.fractureGroups || (!detached.length && !this.detachedIds.size)) return;
     this.group.updateWorldMatrix(true, false);
     const toLocal = this.group.matrixWorld.clone().invert(), actor = this.group.matrix;
     if (!this.partMatrix.size) for (const part of this.model.parts) this.partMatrix.set(part.id, part.matrix);
@@ -86,6 +88,10 @@ export class VehicleVisual {
       const base = toLocal.clone().multiply(world).multiply(actor);
       for (const id of ids) { const m = this.partMatrix.get(id); if (m) matrices.set(id, base.clone().multiply(m)); }
     }
+    // Parts back on the car (a respawned car): their rest matrices again.
+    const loose = new Set(matrices.keys());
+    for (const id of this.detachedIds) if (!loose.has(id)) { const m = this.partMatrix.get(id); if (m) matrices.set(id, m.clone()); }
+    this.detachedIds = loose;
     this.assembly.setDetached(matrices);
   }
   setWheelState(wheels: {travelM: number; steeringRad: number; rotationRad: number; grounded: boolean}[]): void {

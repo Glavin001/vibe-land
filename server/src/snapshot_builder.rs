@@ -1049,6 +1049,10 @@ pub fn build_recipient_snapshot(
             .collect();
         left.sort_unstable();
         for vehicle_id in left {
+            if let Some((_, pos, _)) = world.vehicles.iter().find(|(id, _, _)| *id == vehicle_id) {
+                tracing::debug!(vehicle_id, recipient_id, body_m = distance_sq(*pos, recipient_pos).sqrt(),
+                    extents = ?world.vehicle_extents.get(&vehicle_id), recipient = ?recipient_pos, "vehicle left interest");
+            }
             interest.last_sent_vehicle_tick.remove(&vehicle_id);
             interest.entry_sends_vehicles.remove(&vehicle_id);
             if let Some(handle) = interest.streamed_vehicles.remove(&vehicle_id) {

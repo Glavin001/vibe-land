@@ -1456,6 +1456,37 @@ impl PhysxPhysicsArena {
         Ok(())
     }
 
+    /// A destructible car in a native stage someone else configures and ticks
+    /// (the city): registered now, before that owner configures; after that
+    /// only its own parts are read back (see `garage_destruction::after_step`).
+    #[cfg(feature = "native-destruction")]
+    pub fn enable_external_vehicle_destruction(&mut self, id: u32, geometry: &crate::vehicle_assets::PreparedGeometry) -> Result<(), String> {
+        if self.garage_destruction.iter().any(|g| !g.external) { return Err("this scene's vehicle destruction owns its stage".into()); }
+        self.enable_vehicle_destruction(id, geometry)?;
+        self.garage_destruction.last_mut().expect("just registered").external = true;
+        Ok(())
+    }
+
+    /// The external owner configured the stage.
+    #[cfg(feature = "native-destruction")]
+    pub fn mark_vehicle_destruction_configured(&mut self) {
+        for car in self.garage_destruction.iter_mut().filter(|g| g.external) { car.mark_configured(); }
+    }
+
+    /// Take a vehicle out of the scene; its driver steps out first. A
+    /// destructible one must already be released by its stage (a cleared city).
+    pub fn remove_vehicle(&mut self, id: u32) -> Result<(), String> {
+        let driver = self.vehicles.get(&id).ok_or("unknown vehicle")?.driver_id;
+        if driver != 0 { self.exit_vehicle(driver); }
+        let entity = NS_VEHICLE | (id & ID_MASK);
+        self.world.remove_actor(entity).map_err(|e| e.to_string())?;
+        #[cfg(feature = "native-destruction")]
+        self.garage_destruction.retain(|g| g.entity != entity);
+        self.vehicles.remove(&id);
+        self.snapshots_valid = false;
+        Ok(())
+    }
+
     /// Detached parts of the destructible car: authored actor-frame geometry to world.
     #[cfg(feature = "native-destruction")]
     pub fn vehicle_detached_parts(&mut self, id: u32) -> Vec<bridge::VehiclePartPose> {

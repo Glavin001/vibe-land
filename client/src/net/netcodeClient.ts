@@ -1024,6 +1024,8 @@ export class NetcodeClient {
   }
 
   private removeVehicle(id: number): void {
+    const trace = (globalThis as { __VIBE_VEHICLE_TRACE__?: unknown[] }).__VIBE_VEHICLE_TRACE__;
+    if (Array.isArray(trace) && trace.length < 40000) trace.push({ kind: 'vehicleRemoved', t: performance.now(), id, tick: this.latestServerTick });
     if(this.localDrivenVehicleId===id)this.localDrivenVehicleId=null;
     this.vehicleDroppedAtTick.set(id, this.latestServerTick);
     this.vehicleLastSeenTick.delete(id);
@@ -1208,8 +1210,11 @@ export class NetcodeClient {
     }
     this.applyBodyRemovals(packet);
 
+    const vehicleTrace = (globalThis as { __VIBE_VEHICLE_TRACE__?: unknown[] }).__VIBE_VEHICLE_TRACE__;
     for (const vehicle of packet.vehicleStates) {
       const vehicleId = vehicle.handle;
+      if (Array.isArray(vehicleTrace) && vehicleTrace.length < 40000) vehicleTrace.push({ kind: 'v2vehicle', t: performance.now(), id: vehicleId, tick,
+        dropped: this.droppedSince('vehicle', vehicleId, tick) });
       if (this.droppedSince('vehicle', vehicleId, tick)) continue;
       const resolvedDriver = vehicle.driverHandle === 0 ? 0 : (this.playerIdByHandle.get(vehicle.driverHandle) ?? 0);
       const meters: VehicleStateMeters = {
@@ -1232,6 +1237,9 @@ export class NetcodeClient {
       }
       // Newer than anything the client has of this vehicle (a parked car's
       // refresh, or its first sends): drawn from it, as if it were on time.
+      const trace = (globalThis as { __VIBE_VEHICLE_TRACE__?: unknown[] }).__VIBE_VEHICLE_TRACE__;
+      if (Array.isArray(trace) && trace.length < 40000) trace.push({ kind: 'vehicleState', t: performance.now(), id: vehicleId, tick,
+        position: meters.position });
       this.attachVehicleAsset(meters);
       this.vehicles.set(vehicleId, meters);
       this.vehicleServerTimeUs.set(vehicleId, tUs);
@@ -1316,6 +1324,11 @@ export class NetcodeClient {
     switch (packet.type) {
       case 'vehicleAsset': {
         this.customVehicles.set(packet.handle, packet.vehicle);
+        // An asset packet is a fresh car (e.g. respawned by a city reset): it
+        // has no loose parts until its rig stream says so.
+        this.vehicleDetached.delete(packet.handle);
+        const rig = this.vehicleRigs.get(packet.handle);
+        if (rig) this.vehicleRigs.set(packet.handle, {...rig, detached: []});
         const vehicle = this.vehicles.get(packet.handle);
         if (vehicle) this.attachVehicleAsset(vehicle);
         break;
@@ -1471,6 +1484,8 @@ export class NetcodeClient {
 
         // Handle vehicle states
         const knownVehicleIds = new Set<number>();
+        const legacyTrace = (globalThis as { __VIBE_VEHICLE_TRACE__?: unknown[] }).__VIBE_VEHICLE_TRACE__;
+        if (Array.isArray(legacyTrace) && legacyTrace.length < 40000) legacyTrace.push({ kind: 'snapVehicles', t: performance.now(), tick: packet.serverTick, ids: packet.vehicleStates.map(v => v.id) });
         for (const vs of packet.vehicleStates) {
           knownVehicleIds.add(vs.id);
           const m = netVehicleStateToMeters(vs);
@@ -1491,6 +1506,8 @@ export class NetcodeClient {
         // Keep last-known vehicle state briefly when a strict-budget snapshot omits it.
         for (const [id, lastSeenTick] of this.vehicleLastSeenTick) {
           if (packet.serverTick - lastSeenTick > NetcodeClient.VEHICLE_STALE_TICKS) {
+            const trace = (globalThis as { __VIBE_VEHICLE_TRACE__?: unknown[] }).__VIBE_VEHICLE_TRACE__;
+            if (Array.isArray(trace) && trace.length < 40000) trace.push({ kind: 'vehicleStale', t: performance.now(), id, tick: packet.serverTick, lastSeenTick });
             this.vehicleLastSeenTick.delete(id);
             this.vehicles.delete(id);
             this.vehicleServerTimeUs.delete(id);

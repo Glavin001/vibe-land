@@ -85,7 +85,10 @@ fn city_world() -> WorldDocument {
     world.dynamic_entities.clear();
     // VIBE_CITY_VEHICLES=0 seeds none: an operator's switch for a match that
     // should not have cars, and the A/B for anything the cars are suspected of.
-    let vehicles_enabled = std::env::var("VIBE_CITY_VEHICLES").map_or(true, |v| v != "0");
+    // A destructible fleet (VIBE_CITY_DESTRUCTIBLE_VEHICLES, see city_fleet)
+    // replaces these stock cars; the match spawns it before the city opens.
+    let vehicles_enabled = std::env::var("VIBE_CITY_VEHICLES").map_or(true, |v| v != "0")
+        && crate::city_fleet::requested().is_none();
     let ring = if vehicles_enabled { crate::city::spawn_ring_radius_m() } else { 0.0 };
     // Off the spawn area's 6 m radius so nobody spawns inside a car.
     let cars = [(CITY_VEHICLE_ID_DELOREAN, 0u8, ring, 8.0f32), (CITY_VEHICLE_ID_CYBERTRUCK, 1u8, -ring, -8.0)];

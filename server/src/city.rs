@@ -1370,9 +1370,14 @@ impl CityRuntime {
             let tolerance = vibe_land_destruction::native_runtime::stress_tolerance();
             if runtime.as_deref().map_or(false, |hash| warm.compatible(hash, [0.,-9.81,0.], 1./sim_hz as f32, tolerance)) {
                 anyhow::ensure!(manifest.structures.len() == warm.descriptor.structures.len(), "warm structure count mismatch");
-                world.native_import_warm_start(&warm.values).map_err(|e| anyhow::anyhow!("{e}"))?;
-                tracing::info!(baked_structures = warm.descriptor.structures.iter().filter(|r| r.baked).count(),
-                    complete = warm.descriptor.complete, "imported warm guesses; native convergence remains unverified until simulation");
+                // The guesses cover the city's bonds only; a stage that also holds
+                // destructible cars (city_fleet) has more, and the import refuses.
+                // That costs convergence speed, not correctness: start cold.
+                match world.native_import_warm_start(&warm.values) {
+                    Ok(_) => tracing::info!(baked_structures = warm.descriptor.structures.iter().filter(|r| r.baked).count(),
+                        complete = warm.descriptor.complete, "imported warm guesses; native convergence remains unverified until simulation"),
+                    Err(error) => tracing::warn!(%error, "warm guesses do not fit this stage (other structures registered?); starting scene cold"),
+                }
             } else {
                 tracing::warn!("warm cache runtime/settings mismatch or extension unavailable; starting scene cold");
             }
@@ -1485,9 +1490,31 @@ impl CityRuntime {
         #[cfg(feature = "physx-city")] world: Option<&mut World>,
         #[cfg(not(feature = "physx-city"))] world: Option<()>,
     ) -> anyhow::Result<()> {
-        let clients = self.encoder.clients();
         #[cfg(feature = "physx-city")]
-        let world = {
+        let world = self.release_stage(world)?;
+        self.rebuild(sim_hz, world)
+    }
+
+    /// A reset with work between releasing the old stage and building the
+    /// new one: the city's destructible cars are native structures in the
+    /// stage, so they are taken out once it has let go of them and put back
+    /// (registered) before the rebuilt stage configures. See `city_fleet`.
+    pub fn reset_with(
+        &mut self,
+        sim_hz: u32,
+        arena: &mut crate::movement::PhysicsArena,
+        between: impl FnOnce(&mut crate::movement::PhysicsArena),
+    ) -> anyhow::Result<()> {
+        #[cfg(feature = "physx-city")]
+        { self.release_stage(arena.physx_world_mut())?; }
+        between(arena);
+        self.rebuild(sim_hz, arena.physx_world_mut())
+    }
+
+    /// Release what the current backend built (first half of a reset).
+    #[cfg(feature = "physx-city")]
+    fn release_stage<'w>(&mut self, world: Option<&'w mut World>) -> anyhow::Result<Option<&'w mut World>> {
+        {
             // Each backend owns its own actors, so the release has to match the
             // one that built them. The native stage additionally owns the
             // fragment bodies it created, and `clearStress` is the only thing
@@ -1525,11 +1552,22 @@ impl CityRuntime {
                     #[cfg(not(feature = "destruction"))]
                     _ => {}
                 }
-                Some(world)
+                Ok(Some(world))
             } else {
-                None
+                Ok(None)
             }
-        };
+        }
+    }
+
+    /// Build a fresh city in place of this one (second half of a reset),
+    /// keeping its wire version, ground and clients.
+    fn rebuild(
+        &mut self,
+        sim_hz: u32,
+        #[cfg(feature = "physx-city")] world: Option<&mut World>,
+        #[cfg(not(feature = "physx-city"))] world: Option<()>,
+    ) -> anyhow::Result<()> {
+        let clients = self.encoder.clients();
         // A synthetic city was asked for when it was opened; it rebuilds as
         // one rather than re-deciding (and refusing) from the environment.
         let mut rebuilt = if matches!(self.backend, CityBackend::Synthetic(_)) {

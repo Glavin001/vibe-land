@@ -116,6 +116,31 @@ impl PhysicsArena {
         }
     }
 
+    /// Native destruction of a spawned prepared vehicle in a stage another
+    /// owner (the city) configures and ticks. See `city_fleet`.
+    pub fn enable_external_vehicle_destruction(&mut self, id:u32, asset:&crate::vehicle_assets::PreparedGeometry) -> Result<(), String> {
+        match &mut self.backend {
+            #[cfg(feature="native-destruction")]
+            PhysicsBackend::Physx(arena) => arena.enable_external_vehicle_destruction(id, asset),
+            _ => { let _ = (id, asset); Err("vehicle destruction requires the native PhysX destruction backend".into()) }
+        }
+    }
+
+    /// The external owner configured the stage: destructible vehicles are live.
+    pub fn mark_vehicle_destruction_configured(&mut self) {
+        #[cfg(feature="native-destruction")]
+        if let PhysicsBackend::Physx(arena) = &mut self.backend { arena.mark_vehicle_destruction_configured(); }
+    }
+
+    /// Take a prepared vehicle out of the world (its driver steps out first).
+    pub fn remove_prepared_vehicle(&mut self, id:u32) -> Result<(), String> {
+        match &mut self.backend {
+            #[cfg(feature="physx-gpu")]
+            PhysicsBackend::Physx(arena) => arena.remove_vehicle(id),
+            _ => { let _ = id; Err("Customized vehicles require the PhysX GPU backend".into()) }
+        }
+    }
+
     /// (part index, world position, world rotation) of a destructible vehicle's detached parts.
     pub fn vehicle_detached_parts(&mut self, id:u32) -> Vec<(u16, [f32;3], [f32;4])> {
         match &mut self.backend {
@@ -166,6 +191,14 @@ impl PhysicsArena {
             #[cfg(feature="physx-gpu")]
             PhysicsBackend::Physx(arena)=>arena.tune_vehicle(id,tuning),
             _=>Err("Live tuning requires the PhysX GPU backend".into()),
+        }
+    }
+
+    pub fn spawn_prepared_vehicle_at(&mut self, id:u32, vehicle_type:u8, position:Vector3<f32>, rotation:[f32;4], asset:&crate::vehicle_assets::PreparedGeometry) -> Result<(), String> {
+        match &mut self.backend {
+            #[cfg(feature="physx-gpu")]
+            PhysicsBackend::Physx(arena) => arena.spawn_vehicle_asset(id, vehicle_type, position, rotation, Some(asset)).map_err(|e|e.to_string()),
+            _ => { let _ = (id, vehicle_type, position, rotation, asset); Err("Customized vehicles require the PhysX GPU backend".into()) }
         }
     }
 
