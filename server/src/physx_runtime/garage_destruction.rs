@@ -220,7 +220,11 @@ pub fn after_step(cars: &mut [GarageDestruction], world: &mut bridge::World) {
         // tick from ~140 to 97 ms.
         let max_iterations = std::env::var("VIBE_GARAGE_STRESS_ITERATIONS").ok().and_then(|v| v.parse().ok()).unwrap_or(64);
         let flag = |name: &str, default: bool| std::env::var(name).map_or(default, |v| v == "1");
-        let tolerance = std::env::var("VIBE_GARAGE_STRESS_TOLERANCE").ok().and_then(|v| v.parse().ok()).unwrap_or(1e-5);
+        // The city's tolerance (1e-3, native_runtime::stress_tolerance, owner
+        // decision 2026-09-21); this stage had kept the old 1e-5.
+        // VIBE_GARAGE_STRESS_TOLERANCE overrides for A/B.
+        let tolerance = std::env::var("VIBE_GARAGE_STRESS_TOLERANCE").ok().and_then(|v| v.parse().ok())
+            .unwrap_or_else(vibe_land_destruction::native_runtime::stress_tolerance);
         match world.native_configure(bridge::NativeConfig { max_iterations, tolerance,
             warm_start: true, damage_rate: 2., bend_gain_max: 3., fibre_bending: true,
             // A car split into ~50 bodies holds ~24k contact pairs; growing
