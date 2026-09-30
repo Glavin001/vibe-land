@@ -138,6 +138,9 @@ struct NativeDestruction::State {
     /// and gets its authored filter back (see pose_vehicle_parts).
     struct Hull { physx::PxShape *shape; std::uint32_t part; physx::PxTransform rest; physx::PxFilterData filter; };
     std::vector<Hull> hulls;
+    /// The last wheel commands submitted as chunk loads (forces, N / N m).
+    struct WheelLoad { physx::PxVec3 suspension, tire, couple; bool submitted=false; };
+    WheelLoad loads[4];
   };
   std::vector<VehicleBinding> vehicles;
   struct ExtraShape { physx::PxShape *shape; std::uint32_t chunk; };

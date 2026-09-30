@@ -3426,3 +3426,6 @@ mod vehicle_fracture_tests;
 #[cfg(all(test, feature = "native-destruction"))]
 #[path = "physx_runtime/vehicle_destruction_tests.rs"]
 mod vehicle_destruction_tests;
+#[cfg(all(test, feature = "native-destruction"))]
+#[path = "physx_runtime/vehicle_lab.rs"]
+mod vehicle_lab;

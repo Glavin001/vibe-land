@@ -27,9 +27,9 @@ use serde::Deserialize;
 use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-const CAR: u32 = 1001;
-const DT: f32 = 1.0 / 60.0;
-const G: f32 = 9.81;
+pub(super) const CAR: u32 = 1001;
+pub(super) const DT: f32 = 1.0 / 60.0;
+pub(super) const G: f32 = 9.81;
 /// 20 m/s moves the 0.4 m ball 0.33 m per 60 Hz tick, so it cannot pass
 /// through a thin part between ticks (the stage forbids sweep CCD, and a
 /// speculative contact delivers no fracture load). 3000 kg keeps the momentum
@@ -40,14 +40,14 @@ const SHOT_TICKS: u32 = 360;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct Hull { part: u32, ordinal: u32, actor: u32, rest: [f32; 3], rest_rotation: [f32; 4], position: [f32; 3], rotation: [f32; 4], terrain_excluded: bool }
+pub(super) struct Hull { pub(super) part: u32, pub(super) ordinal: u32, pub(super) actor: u32, rest: [f32; 3], rest_rotation: [f32; 4], position: [f32; 3], rotation: [f32; 4], pub(super) terrain_excluded: bool }
 impl Hull {
     /// World pose of the part's authored actor frame: hull world * rest^-1.
     fn part_pose(&self) -> Isometry3<f32> { iso(self.position, self.rotation) * iso(self.rest, self.rest_rotation).inverse() }
 }
 /// World points of a hull's authored vertices (authored in the part frame at
 /// part.position + shape.position).
-fn hull_points<'g>(geometry: &'g PreparedGeometry, h: &Hull) -> impl Iterator<Item = Vector3<f32>> + 'g {
+pub(super) fn hull_points<'g>(geometry: &'g PreparedGeometry, h: &Hull) -> impl Iterator<Item = Vector3<f32>> + 'g {
     let pose = h.part_pose();
     let part = &geometry.parts[h.part as usize];
     let shape = &part.shapes[h.ordinal as usize];
@@ -73,20 +73,33 @@ fn iso(p: [f32; 3], q: [f32; 4]) -> Isometry3<f32> {
 }
 fn v3(v: [f32; 3]) -> Vector3<f32> { Vector3::new(v[0], v[1], v[2]) }
 
-fn fixtures() -> Vec<(String, PreparedGeometry)> {
+pub(super) fn fixtures() -> Vec<(String, PreparedGeometry)> {
     let manifest: serde_json::Value = serde_json::from_slice(&std::fs::read(
         std::env::var("VIBE_VEHICLE_BUILD_FIXTURES").expect("VIBE_VEHICLE_BUILD_FIXTURES fixture manifest")).unwrap()).unwrap();
     let models = std::env::var("VIBE_DESTRUCTION_MODELS").unwrap_or("buggy".into());
     manifest.as_array().unwrap().iter().filter(|f| models.split(',').any(|m| m == f["name"].as_str().unwrap())).map(|f| {
         let mut geometry: PreparedGeometry = serde_json::from_slice(&std::fs::read(f["metadataPath"].as_str().unwrap()).unwrap()).unwrap();
         geometry.driving = Some(serde_json::from_value(f["driving"].clone()).unwrap());
+        // VIBE_TEST_MASS_SCALE (A/B): every part's mass and inertia, and the
+        // driving setup derived from mass (customization.mjs drivingSetup),
+        // scaled together.
+        if let Some(k) = std::env::var("VIBE_TEST_MASS_SCALE").ok().and_then(|v| v.parse::<f64>().ok()) {
+            for part in &mut geometry.parts {
+                part.mass *= k; part.mass_properties.mass *= k;
+                for row in &mut part.mass_properties.inertia { for x in row { *x *= k; } }
+            }
+            geometry.mass *= k as f32; geometry.mass_properties.mass *= k;
+            for row in &mut geometry.mass_properties.inertia { for x in row { *x *= k; } }
+            let d = geometry.driving.as_mut().unwrap();
+            d.drive_torque *= k as f32; d.brake_torque *= k as f32; d.spring_stiffness *= k as f32; d.damping *= k as f32;
+        }
         (f["name"].as_str().unwrap().to_owned(), geometry)
     }).collect()
 }
 
-struct Scene { arena: PhysxPhysicsArena, tick: u32 }
+pub(super) struct Scene { pub(super) arena: PhysxPhysicsArena, pub(super) tick: u32 }
 impl Scene {
-    fn new(geometry: &PreparedGeometry, garage_world: bool) -> Self {
+    pub(super) fn new(geometry: &PreparedGeometry, garage_world: bool) -> Self {
         // The garage's own switches: all hulls installed, unconverged steps published.
         std::env::set_var("VIBE_GARAGE_VEHICLE_DESTRUCTION", "1");
         std::env::set_var("PX_DESTRUCTION_ALLOW_UNCONVERGED", "1");
@@ -103,7 +116,7 @@ impl Scene {
         arena.reserve_ball_pool(8);
         Self { arena, tick: 0 }
     }
-    fn step(&mut self) { self.arena.step_vehicles_and_dynamics(DT); self.tick += 1; }
+    pub(super) fn step(&mut self) { self.arena.step_vehicles_and_dynamics(DT); self.tick += 1; }
     fn observe(&mut self) -> Readback { serde_json::from_value(self.arena.vehicle_destruction_debug(CAR).unwrap()).unwrap() }
 }
 
@@ -425,7 +438,7 @@ impl<'a> Checks<'a> {
     }
 }
 
-fn bond_label(geometry: &PreparedGeometry, layout: &FractureLayout, index: u32) -> String {
+pub(super) fn bond_label(geometry: &PreparedGeometry, layout: &FractureLayout, index: u32) -> String {
     let [a, b] = layout.bond_chunks[index as usize];
     format!("{} - {}", geometry.parts[a as usize].id, geometry.parts[b as usize].id)
 }

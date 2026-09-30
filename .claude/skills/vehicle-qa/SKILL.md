@@ -76,6 +76,47 @@ scripts/perf/gpu-run.sh garage-destruction-test env VIBE_VEHICLE_BUILD_FIXTURES=
 (with `PHYSX_ROOT=../PhysX/out/install/garage-multihull CARGO_TARGET_DIR=target/garage-vehicles`). Environment switches
 are the A/B: run the same test with and without one and compare.
 
+## 2b. Behaviour spec: the vehicle lab (`server/src/physx_runtime/vehicle_lab.rs`)
+
+For "breaks too easily / not easily enough" reports. `scenarios()` is the
+spec: ground (flat slab or the garage course) + obstacles (wall, kerb, loose
+blocks) + a way of driving (park, straight, laps, into the first obstacle) +
+events (the city cannonball), each with what must hold afterwards (`Intact`,
+`KeepsWheels`, `Breaks`) and a one-line why. Add the player's report as a
+scenario; do not edit expectations to make a run pass.
+
+```bash
+scripts/perf/gpu-run.sh lab env VIBE_VEHICLE_BUILD_FIXTURES=$PWD/target/vehicle-build-fixtures.json \
+  CUMETAL_CACHE_DIR=$PWD/target/cumetal-cache-vehicles [VIBE_LAB_CARS=monster,buggy] [VIBE_LAB_SCENARIOS=wall,course-12] \
+  [VIBE_LAB_REPORT_ONLY=1] cargo test --release -p web-fps-server --features native-destruction --bin web-fps-server vehicle_lab -- --ignored --nocapture --test-threads=1
+```
+
+Per run: top/impact speed, bonds broken, parts off, wheels lost, the share of
+ticks whose stress solve converged, peak deceleration (g) and peak Vehicle2
+wheel load (x static corner weight). Per broken bond, an **audit**: its
+tension/compression/shear the tick before as fractions of fatal, its
+utilisation over the five ticks before, whether that solve converged, what
+the car touched, its deceleration and wheel loads, classified
+`unconverged` / `impact` / `wheel-load` / `unexplained`. A bond at 0% of fatal
+the tick before, broken by an unconverged solve, is a spurious verdict, not a
+weak part. Everything, tick by tick, lands in `target/vehicle-lab/report.json`.
+
+## 2c. Real-world grounding: `node scripts/vehicle-reality.mjs`
+
+`client/src/vehicles/reality.mjs` holds each model's real class (mass, wheel
+and tyre mass, top speed, acceleration), shared ranges (ride frequency, grip,
+braking) and the joint materials against real materials. Anything outside its
+range is a finding unless listed in `concessions` with its reason; the report
+says how far out each value is. Tune inside the ranges; a value that must
+leave one becomes a concession someone can weigh, not a magic number.
+
+Part mass comes from `client/src/vehicles/dune/construction.mjs`: solid
+volume x density, except parts modelled as the solid envelope of something
+hollow or thin (tyres, castings, tanks, body skins), massed by wall or sheet
+thickness. Rebuild fixtures after changing it
+(`cd client && node scripts/verify-vehicle-builds.mjs ../.cache/vehicle-assets ../target/vehicle-build-fixtures.json`;
+bump the recipe tag in prepare-asset.mjs so cached assets rebuild).
+
 ## 3. The player's own tape
 
 A session tape (`debug-reports/session-*/client.vltape`) starts after the

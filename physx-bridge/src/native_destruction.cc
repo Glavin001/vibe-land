@@ -272,9 +272,15 @@ void NativeDestruction::State::append_bonds(std::uint32_t structure_id, std::uin
                             s.nodes[base + b.node1].position)
                                .magnitude();
     const float modulus = settings.materials[b.material].elastic_modulus;
+    // Diagnostic (vehicle lab): VIBE_TEST_BOND_WEIGHT=modulus|area|length|all
+    // flattens that term of the stiffness weight, to tell a conditioning
+    // problem from anything else. Flattening all four left a monster truck's
+    // road-load solve exactly as unconverged (0/1200 ticks, 2026-09-30).
+    static const std::string flat=std::getenv("VIBE_TEST_BOND_WEIGHT")?std::getenv("VIBE_TEST_BOND_WEIGHT"):"";
+    const bool fm=flat=="modulus"||flat=="all",fa=flat=="area"||flat=="all",fl=flat=="length"||flat=="all";
     const float weight =
-        std::sqrt((modulus > 0.0f ? modulus / kReferenceModulusPa : 1.0f) *
-                  std::max(b.area, 1e-4f) / std::max(distance, 0.05f));
+        std::sqrt((fm ? 1.0f : modulus > 0.0f ? modulus / kReferenceModulusPa : 1.0f) *
+                  (fa ? 1e-3f : std::max(b.area, 1e-4f)) / (fl ? 0.3f : std::max(distance, 0.05f)));
     log_weight += std::log(weight);
 
     PxDestructionStressBond bond{};
@@ -718,6 +724,8 @@ FfiVehicleDebug NativeDestruction::vehicle_debug(const physx::native::NativeVehi
     if(const PxRigidDynamic *dynamic=actor->is<PxRigidDynamic>()) row.sleeping=dynamic->isSleeping();
     out.actors.push_back(row);
   }
+  for(std::uint32_t w=0;w<4;++w) if(binding->loads[w].submitted)
+    out.wheel_loads.push_back(FfiVehicleWheelLoad{w,native_ffi(binding->loads[w].suspension),native_ffi(binding->loads[w].tire),native_ffi(binding->loads[w].couple)});
 #else
   PX_UNUSED(vehicle);
 #endif
@@ -829,8 +837,9 @@ void NativeDestruction::submit_vehicle_loads(float dt) {
 #if PX_DESTRUCTION_SCENE_VERSION >= 22
   State &s=*state_;if(!s.configured || s.vehicles.empty())return;
   std::fill(s.loads.begin(),s.loads.end(),PxDestructionChunkLoad{});
-  for(const auto &binding:s.vehicles) {
+  for(auto &binding:s.vehicles) {
     auto *actor=binding.vehicle->actor();const auto command=binding.vehicle->stepLoads();
+    for(auto &load:binding.loads) load=State::VehicleBinding::WheelLoad{};
     native_require(command.available,"Vehicle2 has no native command observer");
     const auto com=actor->getGlobalPose()*actor->getCMassLocalPose();
     const PxMat33 rotation(com.q);
@@ -853,8 +862,10 @@ void NativeDestruction::submit_vehicle_loads(float dt) {
       const PxU32 chunk=binding.wheels[w][0];const auto &wheel=command.wheels[w];
       const PxVec3 impulse=wheel.suspensionImpulse+wheel.tireImpulse;
       const PxVec3 center=actor->getGlobalPose().transform(s.nodes[chunk].position);
+      const PxVec3 couple=inertia*wheel.angularVelocityChange-(center-com.p).cross(impulse);
       s.loads[chunk].impulse+=impulse;
-      s.loads[chunk].angularImpulse+=inertia*wheel.angularVelocityChange-(center-com.p).cross(impulse);
+      s.loads[chunk].angularImpulse+=couple;
+      binding.loads[w]={wheel.suspensionImpulse/dt,wheel.tireImpulse/dt,couple/dt,true};
     }
   }
   native_require(s.stage().setChunkLoads(s.loads.data(),PxU32(s.loads.size())),"native vehicle command submission rejected");

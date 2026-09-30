@@ -2096,12 +2096,23 @@ mod ffi {
         shapes: u32,
     }
 
+    /// The Vehicle2 command a wheel chunk carried into the last stress solve,
+    /// as forces (impulse / dt): suspension, tyre, and the couple from the
+    /// tyre's contact patch lying below the chunk.
+    struct FfiVehicleWheelLoad {
+        wheel: u32,
+        suspension: FfiVec3,
+        tire: FfiVec3,
+        couple: FfiVec3,
+    }
+
     struct FfiVehicleDebug {
         wheel_mask: u32,
         drive_mask: u32,
         engine_connected: bool,
         hulls: Vec<FfiVehicleHullDebug>,
         actors: Vec<FfiVehicleActorDebug>,
+        wheel_loads: Vec<FfiVehicleWheelLoad>,
     }
 
     struct FfiVehicleDesc {

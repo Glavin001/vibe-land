@@ -161,6 +161,9 @@ impl GarageDestruction {
             "linearVelocity": v3!(a.linear_velocity), "angularVelocity": v3!(a.angular_velocity),
             "sleeping": a.sleeping, "kinematic": a.kinematic, "gravityDisabled": a.gravity_disabled, "shapes": a.shapes,
         })).collect();
+        let wheel_loads: Vec<_> = vehicle.wheel_loads.iter().map(|w| json!({
+            "wheel": w.wheel, "suspension": v3!(w.suspension), "tire": v3!(w.tire), "couple": v3!(w.couple),
+        })).collect();
         let bonds: Vec<_> = if self.configured {
             world.native_bond_stress_rows(self.structure).unwrap_or_default().iter().map(|b| json!({
                 "index": b.bond_index, "a": b.node0, "b": b.node1, "area": b.area,
@@ -181,7 +184,7 @@ impl GarageDestruction {
         let events: Vec<_> = self.events.iter().rev().map(|(step, text)| json!({"step": step, "text": text})).collect();
         Ok(json!({
             "configured": self.configured, "steps": self.steps, "rejectedSteps": self.rejected_steps,
-            "brokenBonds": self.broken_bonds,
+            "brokenBonds": self.broken_bonds, "wheelLoads": wheel_loads,
             "lastStatus": self.last_status.map(|(error, converged, iterations)| json!({"error": error, "converged": converged, "iterations": iterations})),
             "vehicle": {"wheelMask": vehicle.wheel_mask, "driveMask": vehicle.drive_mask, "engineConnected": vehicle.engine_connected},
             "vehicle2": vehicle2, "hulls": hulls, "actors": actors, "bonds": bonds, "events": events,
@@ -217,7 +220,8 @@ pub fn after_step(cars: &mut [GarageDestruction], world: &mut bridge::World) {
         // tick from ~140 to 97 ms.
         let max_iterations = std::env::var("VIBE_GARAGE_STRESS_ITERATIONS").ok().and_then(|v| v.parse().ok()).unwrap_or(64);
         let flag = |name: &str, default: bool| std::env::var(name).map_or(default, |v| v == "1");
-        match world.native_configure(bridge::NativeConfig { max_iterations, tolerance: 1e-5,
+        let tolerance = std::env::var("VIBE_GARAGE_STRESS_TOLERANCE").ok().and_then(|v| v.parse().ok()).unwrap_or(1e-5);
+        match world.native_configure(bridge::NativeConfig { max_iterations, tolerance,
             warm_start: true, damage_rate: 2., bend_gain_max: 3., fibre_bending: true,
             // A car split into ~50 bodies holds ~24k contact pairs; growing
             // the graph mid-impact waited 78 ms on the GPU (measured). Meteor

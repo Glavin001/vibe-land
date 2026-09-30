@@ -2,6 +2,7 @@ import * as T from 'three';
 import { buildVehicleBody } from './vehicle-body.mjs';
 import { vehicleById, vehicleFields, vehicleLift, mechanicalParameters, tireWidthScale } from './vehicle-catalog.mjs';
 import { cornerHardpoints } from './vehicle-rig.mjs';
+import { materialVolume } from './construction.mjs';
 
 export const defaults = { wheelbase: 2.62, track: 1.88, tireRadius: .395, cageHeight: 1.78, tubeRadius: .026, seed: 17 };
 export const materials = {
@@ -68,7 +69,7 @@ export function buildBuggy(wasm, input={}, progress=(phase="",percent=0)=>{}, au
   const volume=solid.volume(), mesh=solid.getMesh(), pos=new Float32Array(mesh.numVert*3);
   for(let i=0;i<mesh.numVert;i++)for(let k=0;k<3;k++)pos[i*3+k]=mesh.vertProperties[i*mesh.numProp+k];
   const box=solid.boundingBox(), center=box.min.map((x,i)=>(x+box.max[i])/2);
-  parts.push({id,name,system,material:mat,motion:meta,functionality,position:pos,indices:new Uint32Array(mesh.triVerts),bounds:box,center,volume,mass:volume*materials[mat].density});if(preview){solid.delete();original?.delete()}else{solids.push(solid);originals.push(original)}joints.push(...contacts);return id;
+  parts.push({id,name,system,material:mat,motion:meta,functionality,position:pos,indices:new Uint32Array(mesh.triVerts),bounds:box,center,volume,mass:materialVolume(name,volume,solid.surfaceArea())*materials[mat].density});if(preview){solid.delete();original?.delete()}else{solids.push(solid);originals.push(original)}joints.push(...contacts);return id;
  };
  const b=(name,a,z,mat='frame',rad=tr,system='Frame',hollow=true,functionality=null)=>add(name,system,mat,beam(a,z,rad,hollow),binding?{...binding,endpoints:[a,z],radius:rad}:null,functionality);
  const box=(name,size,c,mat='dark',system='Cabin',rot,functionality=null)=>add(name,system,mat,cube(size,c,rot,mat==='seat'?.035:0),binding,functionality);
