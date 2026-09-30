@@ -86,13 +86,18 @@ pub async fn prepare(builds: &[String]) -> Arc<Fleet> {
     FLEET.get_or_init(|| Arc::new(Fleet { cars })).clone()
 }
 
+/// Where slot `index` parks its car, (x, z) in metres.
+pub fn slot_position(index: usize) -> (f32, f32) {
+    let ring = crate::city::spawn_ring_radius_m();
+    let (rx, rz, dx, dz) = SLOTS[index % SLOTS.len()];
+    (rx * ring + dx, rz * ring + dz)
+}
+
 /// Park and register every fleet car. Must run before the city opens (or
 /// reopens after a reset): the stage configures once, with every structure.
 pub fn spawn(arena: &mut PhysicsArena, fleet: &Fleet) {
-    let ring = crate::city::spawn_ring_radius_m();
     for (index, (id, build, asset)) in fleet.cars.iter().enumerate() {
-        let (rx, rz, dx, dz) = SLOTS[index % SLOTS.len()];
-        let (x, z) = (rx * ring + dx, rz * ring + dz);
+        let (x, z) = slot_position(index);
         // +z forward rotated about y to face downtown.
         let yaw = (-x).atan2(-z);
         let rotation = [0.0, (yaw * 0.5).sin(), 0.0, (yaw * 0.5).cos()];

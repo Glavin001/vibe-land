@@ -131,6 +131,7 @@ struct Checks<'a> {
     flat_ground: bool,
     streamed_cache: Vec<(u16, [f32; 3], [f32; 4])>,
     sunk_ticks: u32,
+    deep_ticks: u32,
     /// Each part's centre at the previous sample, with the tick.
     part_centers: HashMap<u32, (u32, Vector3<f32>)>,
     part_speeds: HashMap<u32, f32>,
@@ -146,7 +147,7 @@ impl<'a> Checks<'a> {
         let posed = geometry.parts.iter().enumerate().filter(|(_, p)|
             matches!(Binding::from_motion(p.motion.as_ref()), Ok(Binding::Corner(_, Motion::Wheel)))).map(|(i, _)| i as u32).collect();
         Self { geometry, layout, posed, violations: BTreeMap::new(), warnings: BTreeMap::new(), locals: HashMap::new(), tracks: BTreeMap::new(),
-            broken: BTreeSet::new(), last_break: None, max_loose_energy: 0., last: None, carrier_com: None, wheel_mask_mismatch: [0; 4], free_flight_ticks: 0, flat_ground: true, streamed_cache: Vec::new(), sunk_ticks: 0, part_centers: HashMap::new(), part_speeds: HashMap::new(), trace: Vec::new(), tracing: false, terrain: None }
+            broken: BTreeSet::new(), last_break: None, max_loose_energy: 0., last: None, carrier_com: None, wheel_mask_mismatch: [0; 4], free_flight_ticks: 0, flat_ground: true, streamed_cache: Vec::new(), sunk_ticks: 0, deep_ticks: 0, part_centers: HashMap::new(), part_speeds: HashMap::new(), trace: Vec::new(), tracing: false, terrain: None }
     }
     fn warn(&mut self, kind: &str, detail: String) {
         let entry = self.warnings.entry(kind.to_owned()).or_insert((0, detail));
@@ -348,18 +349,23 @@ impl<'a> Checks<'a> {
             let sunk = d.hulls.iter().filter(|h| !h.terrain_excluded)
                 .filter_map(|h| hull_points(self.geometry, h).map(|p| p.y - self.ground(p.x, p.z)).reduce(f32::min).filter(|&y| y < -0.05).map(|y| (h.part, y)))
                 .fold(None::<(u32, f32)>, |a, b| if a.is_none_or(|a| b.1 < a.1) { Some(b) } else { a });
-            // More than 15 cm is a failure. 5-15 cm is the known residual of a
-            // thin hull on the car body (a 2.5 cm axle) slammed into a
-            // heightfield: measured to 10.3 cm, settling at 6.6 cm (reported).
+            // Staying more than 15 cm deep is a failure. 5-15 cm is the known
+            // residual of a thin hull on the car body (a 2.5 cm axle) slammed
+            // into a heightfield: measured to 10.3 cm, settling at 6.6 cm
+            // (reported). A shot can drive a hull deeper for a moment (a wheel
+            // to 39 cm in "progressive"), and it climbs out no faster than the
+            // car's depenetration cap: 0.5 m/s, ~30 ticks from 39 cm to 15 cm
+            // (native_destruction.cc vehicle_depenetration_velocity). So deep
+            // means deep for 45 ticks; a piece through the ground stays deep.
             match sunk {
                 Some((part, y)) => {
                     self.sunk_ticks += 1;
-                    if self.sunk_ticks > 10 {
-                        if y < -0.15 { self.fail("hull sunk into the ground", format!("{} at {y:.3} m", self.name(part))); }
-                        else { self.warn("hull slightly sunk into the ground", format!("{} at {y:.3} m", self.name(part))); }
-                    }
+                    self.deep_ticks = if y < -0.15 { self.deep_ticks + 1 } else { 0 };
+                    if std::env::var_os("VIBE_SUNK_TRACE").is_some() { eprintln!("sunk t{tick} {} {y:.3}", self.name(part)); }
+                    if self.deep_ticks > 45 { self.fail("hull sunk into the ground", format!("{} at {y:.3} m", self.name(part))); }
+                    else if self.sunk_ticks > 10 && y >= -0.15 { self.warn("hull slightly sunk into the ground", format!("{} at {y:.3} m", self.name(part))); }
                 }
-                None => self.sunk_ticks = 0,
+                None => { self.sunk_ticks = 0; self.deep_ticks = 0; }
             }
         }
         for w in 0..4 {

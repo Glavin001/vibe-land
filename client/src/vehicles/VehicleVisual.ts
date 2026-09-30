@@ -99,19 +99,24 @@ export class VehicleVisual {
    * position of each part's instance), in a stable order. Read by the opt-in
    * vehicle trace to catch parts flickering between two places.
    */
-  drawnLooseParts(max = 16): { id: string; position: [number, number, number]; rotation: [number, number, number, number] }[] {
+  drawnLooseParts(max = 16): { id: string; position: [number, number, number]; center: [number, number, number]; rotation: [number, number, number, number] }[] {
     const wanted = new Set([...this.detachedIds].sort().slice(0, max));
     if (!wanted.size) return [];
-    const out: { id: string; position: [number, number, number]; rotation: [number, number, number, number] }[] = [];
-    const m = new THREE.Matrix4(), v = new THREE.Vector3(), q = new THREE.Quaternion(), scale = new THREE.Vector3();
+    const out: { id: string; position: [number, number, number]; center: [number, number, number]; rotation: [number, number, number, number] }[] = [];
+    const m = new THREE.Matrix4(), v = new THREE.Vector3(), q = new THREE.Quaternion(), scale = new THREE.Vector3(), c = new THREE.Vector3();
     for (const mesh of (this.assembly as unknown as { meshes: THREE.InstancedMesh[] }).meshes) {
       mesh.updateWorldMatrix(true, false);
+      // A part's origin can sit far from its geometry (parts are authored in
+      // the car's frame), so a spinning part's origin swings where the part
+      // itself does not: `center` is where the geometry is drawn.
+      if (!mesh.geometry.boundingSphere) mesh.geometry.computeBoundingSphere();
       const parts = mesh.userData.parts as { id: string }[];
       for (let index = 0; index < parts.length; index++) {
         if (!wanted.has(parts[index].id)) continue;
         mesh.getMatrixAt(index, m);
         m.premultiply(mesh.matrixWorld).decompose(v, q, scale);
-        out.push({ id: parts[index].id, position: [v.x, v.y, v.z], rotation: [q.x, q.y, q.z, q.w] });
+        c.copy(mesh.geometry.boundingSphere!.center).applyMatrix4(m);
+        out.push({ id: parts[index].id, position: [v.x, v.y, v.z], center: [c.x, c.y, c.z], rotation: [q.x, q.y, q.z, q.w] });
       }
     }
     return out.sort((a, b) => a.id.localeCompare(b.id));

@@ -32,7 +32,22 @@ Reports land in `target/vehicle-qa/<scenario>/report.json` with the rocking
 parts, where they were and the nearest ball.
 
 Position checks alone miss the 2026-09-29 phantom: pieces rocked between two
-orientations with steady positions.
+orientations with steady positions. `drawnFlicker` follows each part's drawn
+geometry centre, not its origin: parts are authored in the car's frame, so a
+part spinning at PhysX's 100 rad/s limit swings its origin a metre where the
+part itself barely moves.
+
+**Server or renderer?** The report also has `receivedSpin`: the same rocking
+count over what the client *received* (`vehicleRig` detached poses). Received
+rocking equal to drawn rocking puts the fault in the server's physics; drawn
+rocking with a quiet received stream puts it in the client.
+
+**Rebuild the server.** The `garage-vehicle-server` launch entry runs
+`--no-build`; after a bridge or server change, `cargo build --release -p
+web-fps-server --features native-destruction --bin web-fps-server` (with the
+PHYSX_ROOT/CARGO_TARGET_DIR below) before restarting it, or the live run tests
+old code. `strings target/garage-vehicles/release/web-fps-server | grep <env>`
+confirms a new switch is in.
 
 ## 2. Physics only, deterministic, seconds: GPU tests
 
@@ -46,7 +61,12 @@ lock (stop the server first):
 | `garage_car_drives_through_wreck` | driving through a meteor-shattered car |
 | `garage_car_crashes_into_car`, `garage_cars_in_one_scene_break_independently` | multi-car scenes |
 | `vehicle_hulls_do_not_interpenetrate_at_rest` | authoring: hull overlap (no GPU) |
-| `garage_vehicle_destruction_is_rigid_body_correct` | the correctness suite (`scripts/perf/garage-destruction-test.sh`) |
+| `garage_vehicle_destruction_is_rigid_body_correct` | the correctness suite (`scripts/perf/garage-destruction-test.sh`); `VIBE_SUNK_TRACE=1` prints the deepest sunk hull per tick |
+| `city_fleet_tests::city_cannonballed_buggy_pieces_do_not_rock`, `city_wreck_pieces_do_not_rock` | the car inside the real city stage (production arena, city world, city step), cannonballed or meteored; `VIBE_CITY_FLEET_VARIANT=n` another wreck, `VIBE_CITY_TRACE_PART=<part> VIBE_CITY_TRACE_FROM/TICKS` one piece's body tick by tick; reports rocking pieces, A-B-A jumps, rejected steps and step times |
+
+The city matters: pieces wedge against buildings the garage does not have.
+One wreck is one sample: judge a physics change over several variants (the
+2026-09-30 depenetration fix was chosen over 5 variants x 2 cars).
 
 ```bash
 scripts/perf/gpu-run.sh garage-destruction-test env VIBE_VEHICLE_BUILD_FIXTURES=$PWD/target/vehicle-build-fixtures.json \

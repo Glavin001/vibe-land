@@ -4,13 +4,71 @@
 // 0 monster truck (63, 8), 1 desert runner (-63, -8), 2 derby sedan (8, 63),
 // 3 circuit special (-8, -63), 4 buggy (63, -8); each faces downtown.
 //
-// Steps: {resetCity}, {joinBeside: car, offset: [dx,0,dz]}, {aimAt: car},
-// {fire: {count, intervalMs, reaim: car}}, {meteor: car}, {enter: car},
+// Steps: {resetCity}, {joinBeside: car, offset: [dx,0,dz]}, {joinAt: [x,y,z]},
+// {aimAt: car}, {lookAtPoint: [x,y,z]}, {fire: {count, intervalMs, reaim: car, at: [x,y,z]}}, {meteor: car}, {enter: car},
 // {driveTo: {car, to: car | [x,y,z], speed, maxMs, arrive}}, {wait: ms}.
 // Checks: {car, drawnFlicker: {max}}, {car, carFlicker: {max}},
 // {car, spinFlicker: {max}} (loose parts turning A -> B -> A three or more
 // times: rocking, drawn in two places), {car, partsOff: {min, max}}, {car, wheelsOn: true}.
 export const scenarios = {
+  'demo-destruction': {
+    description: 'Demo video: cannonball the buggy apart, then drop the meteor on the monster truck beside it; nothing may flicker or teleport',
+    shotMode: 'cannonball',
+    cars: [0, 4],
+    steps: [
+      { resetCity: true },
+      { joinAt: [84, 1, 0] },
+      { lookAtPoint: [63, 0.8, -8] },
+      { wait: 2500 },
+      { fire: { count: 3, intervalMs: 2500, at: [63, 0.8, -8] }, label: 'buggy shot' },
+      { wait: 4000 },
+      { lookAtPoint: [63, 0.8, 8] },
+      { wait: 1500 },
+      { meteor: 0 },
+      { wait: 9000 },
+      { lookAtPoint: [63, 0.3, 0] },
+      { wait: 4000 },
+    ],
+    checks: [
+      { car: 4, partsOff: { min: 20 } },
+      { car: 0, partsOff: { min: 50 } },
+      { car: 4, drawnFlicker: { max: 0 } },
+      { car: 4, spinFlicker: { max: 0 } },
+      { car: 0, drawnFlicker: { max: 0 } },
+      { car: 0, spinFlicker: { max: 0 } },
+      { car: 0, carFlicker: { max: 0 } },
+      { car: 4, carFlicker: { max: 0 } },
+    ],
+  },
+  'demo-closeup': {
+    description: 'Demo video, closer camera: the same cannonballs on the buggy and meteor on the monster truck, from ~13 m',
+    shotMode: 'cannonball',
+    cars: [0, 4],
+    steps: [
+      { resetCity: true },
+      { joinAt: [74, 1, 0] },
+      { lookAtPoint: [63, 0.6, -8] },
+      { wait: 2500 },
+      { fire: { count: 3, intervalMs: 2500, at: [63, 0.6, -8] }, label: 'buggy shot' },
+      { wait: 4000 },
+      { lookAtPoint: [63, 0.6, 8] },
+      { wait: 1500 },
+      { meteor: 0 },
+      { wait: 7000 },
+      { lookAtPoint: [60, 0.3, 0] },
+      { wait: 4000 },
+    ],
+    checks: [
+      { car: 4, partsOff: { min: 20 } },
+      { car: 0, partsOff: { min: 50 } },
+      { car: 4, drawnFlicker: { max: 0 } },
+      { car: 4, spinFlicker: { max: 0 } },
+      { car: 0, drawnFlicker: { max: 0 } },
+      { car: 0, spinFlicker: { max: 0 } },
+      { car: 0, carFlicker: { max: 0 } },
+      { car: 4, carFlicker: { max: 0 } },
+    ],
+  },
   'cannonball-wreck': {
     description: 'Report 2026-09-29: shoot a car with cannonballs several times; loose parts must not be drawn in two places',
     shotMode: 'cannonball',

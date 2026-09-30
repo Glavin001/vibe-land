@@ -2586,12 +2586,12 @@ fn stage_status_summary(_world: &bridge::World) -> String {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::sync::{Mutex, MutexGuard, OnceLock};
 
     use super::*;
 
-    pub(super) fn gpu_test_guard() -> MutexGuard<'static, ()> {
+    pub(crate) fn gpu_test_guard() -> MutexGuard<'static, ()> {
         static GPU_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         GPU_TEST_LOCK
             .get_or_init(|| Mutex::new(()))

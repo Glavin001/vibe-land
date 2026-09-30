@@ -2,6 +2,7 @@ mod vehicle_assets;
 mod garage;
 mod garage_bombardment;
 mod city_fleet;
+mod city_fleet_tests;
 mod vehicle_tuning;
 mod grass_layout;
 mod app_config;

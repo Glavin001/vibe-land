@@ -84,6 +84,24 @@ static float native_depenetration_velocity() {
   static const float value = native_env_f32("VIBE_CITY_NATIVE_DEPEN_VELOCITY", 0.0f);
   return value;
 }
+/// A destructible car's depenetration cap (m/s), which its pieces inherit: a
+/// fragment takes the smaller of its source body's cap and the stage's
+/// fragmentMaxDepenetrationVelocity. A thin piece wedged between the ground
+/// and something immovable (a building's base it slid into at 20 m/s, the
+/// wreck) cannot be pushed out; at the stage's 2 m/s each push only rolled it
+/// about its long axis, where its inertia is tiny, and it flipped between two
+/// orientations every tick for as long as the match ran. city_fleet_tests,
+/// ten wrecks: rocking in 7 at 2 m/s, 4 at 1, 1 at 0.5 (for 4 s), 0 at 0.25.
+/// The floor is the heightfield: a piece a shot drives under it climbs out
+/// no faster than this, and at 0.25 m/s one fell through the garage terrain
+/// (garage_vehicle_destruction_is_rigid_body_correct, "progressive on
+/// terrain"); at 0.5 a wheel driven 39 cm in is out in 0.6 s.
+/// VIBE_VEHICLE_MAX_DEPENETRATION_VELOCITY overrides it; 0 leaves the car's
+/// PhysX default.
+static float vehicle_depenetration_velocity() {
+  static const float value = native_env_f32("VIBE_VEHICLE_MAX_DEPENETRATION_VELOCITY", 0.5f);
+  return value;
+}
 static float native_sleep_threshold() {
   static const float value = native_env_f32("VIBE_CITY_NATIVE_SLEEP_THRESHOLD", 0.0f);
   return value;
@@ -561,6 +579,7 @@ void NativeDestruction::register_vehicle(physx::native::NativeVehicle &vehicle,
   PxQuat axes;const PxVec3 moments=PxMassProperties::getMassSpaceInertia(aggregate.inertiaTensor,axes);
   actor->setMass(aggregate.mass);actor->setMassSpaceInertiaTensor(moments);
   actor->setCMassLocalPose(PxTransform(aggregate.centerOfMass,axes));
+  if(vehicle_depenetration_velocity()>0.0f) actor->setMaxDepenetrationVelocity(vehicle_depenetration_velocity());
   const PxU32 material=s.append_materials(structure_id,settings),cluster=PxU32(s.clusters.size());
   s.next_serial[structure_id]=1;
   if(!s.round_mask) {

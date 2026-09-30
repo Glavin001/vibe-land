@@ -9,6 +9,8 @@
 // (/city-vehicle-debug). A scenario ends in checks that pass or fail:
 //
 //   drawnFlicker  loose parts drawn flipping A -> B -> A between frames
+//                 (the part's drawn geometry centre, not its origin)
+//   spinFlicker   loose parts rocking between two orientations
 //   carFlicker    the car body drawn flipping A -> B -> A
 //   partsOff      at least / at most N parts off a car
 //   wheelsOn      a car keeps its wheels (server: wheel parts on the carrier)
@@ -73,20 +75,40 @@ await page.addInitScript((mode) => {
   globalThis.__VIBE_VEHICLE_TRACE__ = [];
 }, scenario.shotMode ?? 'rifle');
 
-// Per car handle, only what changed: the car's drawn pose, and each loose
-// part's drawn position and orientation. Parts at rest cost nothing.
+// Flip detection online, per car handle: each series keeps only its last two
+// distinct samples, so memory is O(parts) however long the run. A flip is
+// A -> B -> A among distinct samples: out = |A-B| over `min`, back = |A-C|
+// under 30% of it.
+function tracker(measure, min) {
+  return { a: null, b: null, count: 0, worst: 0, example: null, measure, min,
+    push(sample) {
+      if (this.b && this.measure(this.b.v, sample.v) < 1e-4) return; // unchanged
+      if (this.a && this.b) {
+        const out = this.measure(this.a.v, this.b.v), back = this.measure(this.a.v, sample.v);
+        if (out > this.min && back < out * 0.3) {
+          this.count++; this.first ??= sample.i; this.last = sample.i;
+          if (out > this.worst) { this.worst = out; this.example = [this.a, this.b, sample].map((x) => ({ frame: x.i, rigTick: x.rigTick, v: x.v.map((n) => +n.toFixed(3)) })); }
+        }
+      }
+      this.a = this.b; this.b = sample;
+    } };
+}
 const tracks = {};
-const bodyTimeline = []; // dynamic bodies (balls, meteors) as drawn, per drain
+const bodyTimeline = []; // dynamic bodies (balls, meteors) as drawn, per drain; kept short
 let frameCount = 0;
 function accumulate(f) {
   const i = frameCount++;
-  const t = (tracks[f.id] ??= { frames: 0, maxLoose: 0, car: [], parts: {}, spins: {} });
-  t.frames++; t.maxLoose = Math.max(t.maxLoose, f.loose.length);
-  if (!t.car.length || dist(t.car.at(-1).p, f.position) > 1e-4) t.car.push({ i, rigTick: f.rigTick, p: f.position });
+  const t = (tracks[f.id] ??= { frames: 0, maxLoose: 0, car: tracker(dist, 0.1), parts: {}, spins: {}, received: {}, where: {} });
+  t.frames++;
+  t.car.push({ i, rigTick: f.rigTick, v: f.position });
   for (const [id, p, q] of f.loose) {
-    const s = (t.parts[id] ??= []); if (!s.length || dist(s.at(-1).p, p) > 1e-4) s.push({ i, rigTick: f.rigTick, p });
-    const r = (t.spins[id] ??= []); if (q && (!r.length || angle(r.at(-1).q, q) > 0.05)) r.push({ i, rigTick: f.rigTick, q });
+    (t.parts[id] ??= tracker(dist, 0.2)).push({ i, rigTick: f.rigTick, v: p });
+    if (q) (t.spins[id] ??= tracker(angle, 10)).push({ i, rigTick: f.rigTick, v: q });
+    t.where[id] = p;
   }
+  // What the client RECEIVED for each detached group (server truth on the
+  // wire), so a flip can be placed on the server or in the renderer.
+  for (const [part, q] of f.received ?? []) (t.received[part] ??= tracker(angle, 10)).push({ i, rigTick: f.rigTick, v: q });
 }
 let watchHandles = null; // handles of the scenario's cars, once known
 async function drain() {
@@ -94,15 +116,24 @@ async function drain() {
     // Capped batches, rounded in the page: 60 fps x ~1000 loose parts is too
     // much to hand across in one string.
     const batch = await page.evaluate((watch) => {
-      const all = globalThis.__VIBE_VEHICLE_TRACE__ ?? [];
+      const all = globalThis.__VIBE_VEHICLE_TRACE_DONE__ ?? globalThis.__VIBE_VEHICLE_TRACE__ ?? [];
       const take = all.splice(0, 240);
       const r = (v, d) => v.map((x) => Math.round(x * d) / d);
+      // Only what changed since the last sample crosses over: the trackers
+      // skip unchanged samples anyway, and ~2000 resting parts a frame would
+      // otherwise outrun the drain (and the page's 20000-entry trace cap
+      // then drops frames).
+      const last = (globalThis.__VIBE_QA_LAST__ ??= new Map());
+      const changed = (key, v) => { const k = v.join(','); if (last.get(key) === k) return false; last.set(key, k); return true; };
       const world = window.__VIBE_E2E__?.drawnWorld?.();
       const bodies = (world?.bodies ?? []).map((b) => ({ id: b.id, p: r(b.position, 100) }));
       return { bodies, rest: all.length, frames: take.filter((x) => x.kind === 'frame').map((x) => ({ t: x.t, id: x.id, rigTick: x.rigTick, position: r(x.position, 1e4), detached: x.detached,
-        loose: (!watch || watch.includes(x.id)) ? (x.drawnLoose ?? []).map((p) => [p.id, r(p.position, 1e4), p.rotation ? r(p.rotation, 1e5) : null]) : [] })) };
+        loose: (!watch || watch.includes(x.id)) ? (x.drawnLoose ?? []).map((p) => [p.id, r(p.center ?? p.position, 1e4), p.rotation ? r(p.rotation, 1e5) : null])
+          .filter(([id, p, q]) => changed(`${x.id}/${id}`, q ? [...p, ...q] : p)) : [],
+        received: (!watch || watch.includes(x.id)) ? (x.rigDetached ?? []).filter((d) => d.rotation).map((d) => [d.part, r(d.rotation, 1e5)])
+          .filter(([part, q]) => changed(`${x.id}#${part}`, q)) : [] })) };
     }, watchHandles);
-    if (batch.bodies.length) bodyTimeline.push({ frame: frameCount, bodies: batch.bodies });
+    if (batch.bodies.length) { bodyTimeline.push({ frame: frameCount, bodies: batch.bodies }); if (bodyTimeline.length > 400) bodyTimeline.shift(); }
     for (const f of batch.frames) accumulate(f);
     if (batch.rest === 0) break;
   }
@@ -133,6 +164,8 @@ async function join(at) {
     await page.keyboard.press('F9');
     await panel.waitFor({ state: 'hidden', timeout: 2000 }).catch(() => {});
   }
+  // So does the controls overlay; minimise it.
+  await page.getByRole('button', { name: 'Minimize controls overlay' }).click({ timeout: 2000 }).catch(() => {});
   const s = await snap();
   note(`joined as player ${s.playerId} at ${s.position.map((v) => v.toFixed(1))}`);
 }
@@ -176,14 +209,20 @@ try {
       const [x, , z] = st.position;
       const off = step.offset ?? [0, 0, -12];
       await join([x + off[0], 1, z + off[2]]);
+    } else if (step.joinAt) {
+      await join(step.joinAt);
+    } else if (step.lookAtPoint) {
+      await drive('lookAt', ...step.lookAtPoint);
+      await sleep(200);
     } else if (step.aimAt !== undefined) {
       const st = await carState(step.aimAt);
       await drive('lookAt', st.position[0], st.position[1] + (step.up ?? 0.5), st.position[2]);
       await sleep(200);
     } else if (step.fire) {
-      const { count = 1, intervalMs = 600, reaim } = step.fire;
+      const { count = 1, intervalMs = 600, reaim, at } = step.fire;
       for (let i = 0; i < count; i++) {
         if (reaim !== undefined) { const st = await carState(reaim); await drive('lookAt', st.position[0], st.position[1] + 0.5, st.position[2]); }
+        if (at) await drive('lookAt', ...at);
         await drive('fire', { holdMs: 60 });
         await sleep(intervalMs);
       }
@@ -211,6 +250,9 @@ try {
   }
   await sleep(scenario.settleMs ?? 1500);
 } finally {
+  // Stop the page recording before the last drain: a page that traces faster
+  // than it is drained (two wrecks, ~2000 loose parts a frame) never empties.
+  await page.evaluate(() => { globalThis.__VIBE_VEHICLE_TRACE_DONE__ = globalThis.__VIBE_VEHICLE_TRACE__ ?? []; globalThis.__VIBE_VEHICLE_TRACE__ = undefined; }).catch(() => {});
   draining = false;
   await drainer;
   await drain().catch(() => {});
@@ -224,44 +266,27 @@ if (video) {
 }
 
 // ---- analysis ----
-/** A -> B -> A among distinct drawn positions: the part is shown in two places. */
-function flips(series, min = 0.2) {
-  let count = 0, worst = 0, example = null;
-  for (let k = 1; k + 1 < series.length; k++) {
-    const out = dist(series[k - 1].p, series[k].p), back = dist(series[k - 1].p, series[k + 1].p);
-    if (out > min && back < out * 0.3) { count++; if (out > worst) { worst = out; example = series.slice(k - 1, k + 2).map((s) => ({ frame: s.i, rigTick: s.rigTick, p: s.p.map((v) => +v.toFixed(2)) })); } }
-  }
-  return { count, worst: +worst.toFixed(2), example };
-}
 const analysis = {};
 for (const [handle, t] of Object.entries(tracks)) {
   let partFlips = 0, flipParts = 0, worst = 0, example = null;
-  for (const [id, s] of Object.entries(t.parts)) { const r = flips(s); if (r.count) { partFlips += r.count; flipParts++; if (r.worst > worst) { worst = r.worst; example = { part: id, ...r.example }; } } }
-  // Turning back and forth between two orientations: drawn in two places.
+  for (const [id, tr] of Object.entries(t.parts)) if (tr.count) { partFlips += tr.count; flipParts++; if (tr.worst > worst) { worst = tr.worst; example = { part: id, samples: tr.example }; } }
   // A part that flips three or more times is rocking between two
   // orientations (what a player sees as a phantom); one flip is a fast
   // tumble caught between frames.
   let spinFlips = 0, spinParts = 0, spinWorst = 0, spinExample = null, rocking = 0, rockingFlips = 0;
   const rockingDetail = [];
-  for (const [id, r] of Object.entries(t.spins)) {
-    let n = 0;
-    for (let k = 1; k + 1 < r.length; k++) {
-      const out = angle(r[k - 1].q, r[k].q), back = angle(r[k - 1].q, r[k + 1].q);
-      if (out > 10 && back < out * 0.3) { n++; if (out > spinWorst) { spinWorst = out; spinExample = { part: id, frames: [r[k - 1].i, r[k].i, r[k + 1].i], rigTicks: [r[k - 1].rigTick, r[k].rigTick, r[k + 1].rigTick], degrees: [+out.toFixed(1), +back.toFixed(1)] }; } }
-    }
-    if (n) { spinFlips += n; spinParts++; }
-    if (n >= 3) {
-      rocking++; rockingFlips += n;
-      // Where it rocked, and the nearest loose body (a ball) at that frame.
-      const at = r.find((x, k) => k > 0 && angle(r[k - 1].q, x.q) > 10);
-      const pos = t.parts[id]?.find((x) => x.i >= (at?.i ?? 0))?.p ?? t.parts[id]?.at(-1)?.p;
-      const near = bodyTimeline.filter((b) => b.frame <= (at?.i ?? 0)).at(-1);
-      const nearest = pos && near ? near.bodies.map((b) => ({ id: b.id, m: +dist(b.p, pos).toFixed(2) })).sort((a, b) => a.m - b.m)[0] : null;
-      rockingDetail.push({ part: id, flips: n, rigTicks: [r[0].rigTick, r.at(-1).rigTick], position: pos, nearestBody: nearest });
-    }
+  for (const [id, tr] of Object.entries(t.spins)) {
+    if (!tr.count) continue;
+    spinFlips += tr.count; spinParts++;
+    if (tr.worst > spinWorst) { spinWorst = tr.worst; spinExample = { part: id, samples: tr.example }; }
+    if (tr.count >= 3) { rocking++; rockingFlips += tr.count; rockingDetail.push({ part: id, flips: tr.count, worstDegrees: +tr.worst.toFixed(1), frames: [tr.first, tr.last], position: t.where[id] }); }
   }
-  analysis[handle] = { frames: t.frames, maxLooseDrawn: t.maxLoose, car: flips(t.car, 0.1),
-    loose: { parts: Object.keys(t.parts).length, flips: partFlips, flipParts, worst, example },
+  const received = Object.entries(t.received).filter(([, tr]) => tr.count >= 3)
+    .map(([part, tr]) => ({ part: +part, flips: tr.count, worstDegrees: +tr.worst.toFixed(1), frames: [tr.first, tr.last] })).sort((a, b) => b.flips - a.flips);
+  analysis[handle] = { frames: t.frames, maxLooseDrawn: Object.keys(t.parts).length,
+    receivedSpin: { groups: Object.keys(t.received).length, rockingGroups: received.length, rockingFlips: received.reduce((n, r) => n + r.flips, 0), rocking: received.slice(0, 30) },
+    car: { count: t.car.count, worst: +t.car.worst.toFixed(2), example: t.car.example },
+    loose: { parts: Object.keys(t.parts).length, flips: partFlips, flipParts, worst: +worst.toFixed(2), example },
     spin: { flips: spinFlips, parts: spinParts, rockingParts: rocking, rockingFlips, rocking: rockingDetail, worstDegrees: +spinWorst.toFixed(1), example: spinExample } };
 }
 
