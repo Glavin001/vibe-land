@@ -99,19 +99,19 @@ export class VehicleVisual {
    * position of each part's instance), in a stable order. Read by the opt-in
    * vehicle trace to catch parts flickering between two places.
    */
-  drawnLooseParts(max = 16): { id: string; position: [number, number, number] }[] {
+  drawnLooseParts(max = 16): { id: string; position: [number, number, number]; rotation: [number, number, number, number] }[] {
     const wanted = new Set([...this.detachedIds].sort().slice(0, max));
     if (!wanted.size) return [];
-    const out: { id: string; position: [number, number, number] }[] = [];
-    const m = new THREE.Matrix4(), v = new THREE.Vector3();
+    const out: { id: string; position: [number, number, number]; rotation: [number, number, number, number] }[] = [];
+    const m = new THREE.Matrix4(), v = new THREE.Vector3(), q = new THREE.Quaternion(), scale = new THREE.Vector3();
     for (const mesh of (this.assembly as unknown as { meshes: THREE.InstancedMesh[] }).meshes) {
       mesh.updateWorldMatrix(true, false);
       const parts = mesh.userData.parts as { id: string }[];
       for (let index = 0; index < parts.length; index++) {
         if (!wanted.has(parts[index].id)) continue;
         mesh.getMatrixAt(index, m);
-        v.setFromMatrixPosition(m.premultiply(mesh.matrixWorld));
-        out.push({ id: parts[index].id, position: [v.x, v.y, v.z] });
+        m.premultiply(mesh.matrixWorld).decompose(v, q, scale);
+        out.push({ id: parts[index].id, position: [v.x, v.y, v.z], rotation: [q.x, q.y, q.z, q.w] });
       }
     }
     return out.sort((a, b) => a.id.localeCompare(b.id));

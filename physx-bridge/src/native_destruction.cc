@@ -743,8 +743,15 @@ void NativeDestruction::restore_detached_hull_filters() {
         static const bool downward=native_env_f32("VIBE_VEHICLE_LOOSE_OFFSET_TOTAL_SPEED",0.0f)==0.0f;
         const PxVec3 v=body->getLinearVelocity();
         const float linear=downward?PxMax(0.0f,-v.y):v.magnitude();
-        // A piece that is not spinning sweeps nothing; skip its bounds.
-        const float spin=body->getAngularVelocity().magnitude();
+        // Downward speed only. With spin in the reach (what the piece's
+        // extent sweeps as it turns) the offset fed back on a piece rocking
+        // on the ground: a big speculative contact reversed its spin, which
+        // kept the offset big, and it flipped between two orientations every
+        // tick -- drawn in two places at once (derby body-0958 x30 at 26 deg,
+        // garage_loose_pieces_do_not_flip_flop; the 2026-09-29 city report).
+        // VIBE_VEHICLE_LOOSE_OFFSET_SPIN=1 restores the old reach.
+        static const bool spin_term=native_env_f32("VIBE_VEHICLE_LOOSE_OFFSET_SPIN",0.0f)!=0.0f;
+        const float spin=spin_term?body->getAngularVelocity().magnitude():0.0f;
         const float reach=linear+(spin>0.0f?spin*owner->getWorldBounds().getExtents().magnitude():0.0f);
         static const float cap=native_env_f32("VIBE_VEHICLE_LOOSE_CONTACT_OFFSET_MAX",0.5f);
         offset=PxClamp(reach*(1.25f/60.0f),offset,PxMax(offset,cap));

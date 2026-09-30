@@ -35,6 +35,9 @@ import { FrameClock } from '../scene/FrameClock';
 import { RenderGovernor, sceneCanvasProps } from '../scene/RenderGovernor';
 import { CityEnvironment, resolveFogColor } from '../scene/CityEnvironment';
 import { CityGrass } from '../scene/CityGrass';
+/** ?grass=0: no grass. Its wind sway reads as flicker to a pixel comparison
+ * of consecutive frames (e2e/frame-flicker.mjs). */
+const NO_GRASS = typeof location !== 'undefined' && new URLSearchParams(location.search).get('grass') === '0';
 import { WorldTerrain } from '../scene/WorldTerrain';
 import { CityChunksLayer } from '../scene/CityChunksLayer';
 import { DustLayer } from '../vfx/DustLayer';
@@ -682,14 +685,14 @@ export function CityReplayPage() {
         />
         {/* The city's flat world, as /city draws it: the Demo World's hills would
             bury the towers and cost a terrain the game never pays for. */}
-        <WorldTerrain world={CITY_WORLD_DOCUMENT} grassCover />
+        <WorldTerrain world={CITY_WORLD_DOCUMENT} grassCover={!NO_GRASS} />
         <CityChunksLayer getCityClient={() => playerRef.current?.client ?? null} />
-        <CityGrass
+        {!NO_GRASS && <CityGrass
           getCityClient={() => playerRef.current?.client ?? null}
           getActors={() => playerRef.current?.world?.client ?? null}
           windStrengthMps={fog.windStrengthMps}
           windDirectionDeg={fog.windDirectionDeg}
-        />
+        />}
         <ReplayNetLayers playerRef={playerRef} />
         {/* The meteors on the tape clock: the streamed bodies when the tape
             has the game stream, the launch arcs on a city-only tape. */}

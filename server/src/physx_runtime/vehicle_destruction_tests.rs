@@ -998,3 +998,136 @@ fn garage_car_drives_through_wreck() {
             end.z, after.len() - before.len());
     }
 }
+
+/// Orientation flips of loose pieces after a car is shot apart, measured on
+/// the stream the server sends (vehicle_detached_parts, per tick): a piece
+/// turned A -> B -> A over consecutive ticks by more than 10 degrees is drawn
+/// in two places at once (the 2026-09-29 report). The city's cannonball
+/// (10.65 t steel, 60 m/s, city_ball_*) hits the car four times from 12 m.
+/// A part flipping three or more times is rocking (what a player sees); one
+/// flip is a fast tumble. VIBE_SPIN_FLIPS_MAX (rocking parts; default 0) fails.
+#[test]
+#[ignore = "requires local GPU, coherent ABI 22 SDK and VIBE_VEHICLE_BUILD_FIXTURES"]
+fn garage_loose_pieces_do_not_flip_flop() {
+    let _guard = gpu_test_guard();
+    let max: Option<usize> = Some(std::env::var("VIBE_SPIN_FLIPS_MAX").ok().and_then(|v| v.parse().ok()).unwrap_or(0));
+    let angle = |a: [f32; 4], b: [f32; 4]| 2. * (a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3]).abs().min(1.).acos().to_degrees();
+    let mut failures = Vec::new();
+    for (model, geometry) in fixtures() {
+        let mut scene = Scene::new(&geometry, false);
+        for _ in 0..60 { scene.step(); }
+        let (radius, mass, speed) = (crate::city::city_ball_radius_m(), crate::city::city_ball_mass_kg(), crate::city::city_ball_speed_ms());
+        let mut series: HashMap<u16, Vec<(u32, [f32; 4])>> = HashMap::new();
+        // VIBE_SPIN_SHOTS (default 4) shots from around the car, then a long rest
+        // (VIBE_SPIN_REST_TICKS, default 360): rocking persists, tumbling ends.
+        let shots: u32 = std::env::var("VIBE_SPIN_SHOTS").ok().and_then(|v| v.parse().ok()).unwrap_or(4);
+        let rest: u32 = std::env::var("VIBE_SPIN_REST_TICKS").ok().and_then(|v| v.parse().ok()).unwrap_or(360);
+        for shot in 0..shots {
+            let car = scene.arena.current_vehicle_snapshots()[0].pose.position;
+            let target = Vector3::new(car.x, car.y + 0.3, car.z);
+            let side = [Vector3::new(12., 0.4, 0.), Vector3::new(0., 0.4, 12.), Vector3::new(-12., 0.4, 0.), Vector3::new(0., 0.4, -12.), Vector3::new(8., 6., 8.)][shot as usize % 5];
+            let origin = target + side;
+            let t = 12. / speed;
+            scene.arena.launch_ball_from_muzzle(origin, (target - origin) / t + Vector3::new(0., 0.5 * G * t, 0.), radius, mass, 600).expect("ball");
+            for _ in 0..if shot + 1 < shots { 90 } else { rest } {
+                scene.step();
+                // VIBE_SPIN_TRACE=<part id>: that part's body, tick by tick, for 90 ticks
+                // from VIBE_SPIN_TRACE_FROM.
+                if let Some(watch) = std::env::var("VIBE_SPIN_TRACE").ok().and_then(|id| geometry.parts.iter().position(|p| p.id == id)) {
+                    let from: u32 = std::env::var("VIBE_SPIN_TRACE_FROM").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
+                    if (from..from + 90).contains(&scene.tick) {
+                        let d = scene.arena.vehicle_destruction_debug(CAR).unwrap();
+                        let hull = d["hulls"].as_array().unwrap().iter().find(|h| h["part"] == watch as u64).cloned().unwrap_or_default();
+                        let actor = d["actors"].as_array().unwrap().iter().find(|a| a["actor"] == hull["actor"]).cloned().unwrap_or_default();
+                        let mates = d["hulls"].as_array().unwrap().iter().filter(|h| h["actor"] == hull["actor"]).count();
+                        let f = |v: &serde_json::Value| v.as_array().map(|a| a.iter().map(|x| format!("{:.3}", x.as_f64().unwrap_or(0.))).collect::<Vec<_>>().join(",")).unwrap_or_default();
+                        eprintln!("trace t{} actor {} hulls {mates} mass {:.2} sleep {} pos [{}] rot [{}] v [{}] w [{}]", scene.tick, hull["actor"], actor["mass"].as_f64().unwrap_or(0.),
+                            actor["sleeping"], f(&hull["position"]), f(&hull["rotation"]), f(&actor["linearVelocity"]), f(&actor["angularVelocity"]));
+                    }
+                }
+                for (part, q) in scene.arena.vehicle_detached_parts(CAR).into_iter()
+                    .map(|p| (p.part_index as u16, [p.rotation.x, p.rotation.y, p.rotation.z, p.rotation.w])) {
+                    let s = series.entry(part).or_default();
+                    if s.last().is_none_or(|&(_, last)| angle(last, q) > 0.05) { s.push((scene.tick, q)); }
+                }
+            }
+        }
+        let mut flips = 0; let mut worst = (0f32, 0u16, 0u32); let mut by_part: Vec<(u16, usize)> = Vec::new();
+        let mut spans: HashMap<u16, (u32, u32)> = HashMap::new();
+        for (&part, s) in &series {
+            let mut n = 0;
+            for k in 1..s.len().saturating_sub(1) {
+                let (out, back) = (angle(s[k - 1].1, s[k].1), angle(s[k - 1].1, s[k + 1].1));
+                if out > 10. && back < out * 0.3 {
+                    n += 1; if out > worst.0 { worst = (out, part, s[k].0); }
+                    let e = spans.entry(part).or_insert((s[k].0, s[k].0)); e.1 = s[k].0;
+                }
+            }
+            if n > 0 { flips += n; by_part.push((part, n)); }
+        }
+        for &(p, n) in by_part.iter().filter(|&&(_, n)| n >= 3) {
+            eprintln!("spin {model}: rocking {} x{n} between ticks {:?}", geometry.parts[p as usize].id, spans[&p]);
+        }
+        by_part.sort_by(|a, b| b.1.cmp(&a.1));
+        let named: Vec<String> = by_part.iter().take(6).map(|&(p, n)| format!("{} x{n}", geometry.parts[p as usize].id)).collect();
+        eprintln!("spin {model}: {} loose parts, {flips} orientation flips on {} parts, worst {:.0} deg ({} at tick {}); most: {named:?}",
+            series.len(), by_part.len(), worst.0, geometry.parts.get(worst.1 as usize).map_or("-", |p| p.id.as_str()), worst.2);
+        // Three or more flips on one part is rocking; one is a tumble between ticks.
+        let rocking = by_part.iter().filter(|&&(_, n)| n >= 3).count();
+        eprintln!("spin {model}: {rocking} rocking part(s)");
+        if max.is_some_and(|m| rocking > m) { failures.push(format!("{model}: {rocking} rocking parts ({flips} flips)")); }
+    }
+    assert!(failures.is_empty(), "loose pieces flip-flop: {failures:?}");
+}
+
+/// Authoring check: collision hulls of different parts that interpenetrate at
+/// the rest pose. Bonded, the overlap is invisible; once two such parts come
+/// off as separate bodies they start inside each other, and the solver's
+/// capped push-out can rock them between two orientations every tick (the
+/// hood support / fender bracket pair of the trophy chassis, seen live).
+/// Prints the deepest overlaps per model; VIBE_HULL_OVERLAP_MAX_M fails.
+#[test]
+#[ignore = "requires VIBE_VEHICLE_BUILD_FIXTURES"]
+fn vehicle_hulls_do_not_interpenetrate_at_rest() {
+    use rapier3d::parry::{query, shape::ConvexPolyhedron, math::{Isometry, Point}};
+    let limit: Option<f32> = std::env::var("VIBE_HULL_OVERLAP_MAX_M").ok().and_then(|v| v.parse().ok());
+    let mut failures = Vec::new();
+    for (model, geometry) in fixtures() {
+        // Every hull in the car's actor frame, with its part and bounds.
+        let mut hulls: Vec<(usize, ConvexPolyhedron, [f32; 3], [f32; 3])> = Vec::new();
+        for (i, part) in geometry.parts.iter().enumerate() {
+            for shape in &part.shapes {
+                let points: Vec<Point<f32>> = shape.vertices.iter().map(|v| Point::new(
+                    (part.position[0] + shape.position[0] + v[0]) as f32, (part.position[1] + shape.position[1] + v[1]) as f32,
+                    (part.position[2] + shape.position[2] + v[2]) as f32)).collect();
+                let Some(hull) = ConvexPolyhedron::from_convex_hull(&points) else { continue };
+                let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
+                for p in &points { for k in 0..3 { lo[k] = lo[k].min(p[k]); hi[k] = hi[k].max(p[k]); } }
+                hulls.push((i, hull, lo, hi));
+            }
+        }
+        let id = Isometry::identity();
+        let mut overlaps: Vec<(f32, usize, usize)> = Vec::new();
+        let (mut tested, mut closest) = (0usize, f32::MAX);
+        for a in 0..hulls.len() {
+            for b in a + 1..hulls.len() {
+                let (pa, ha, la, ua) = &hulls[a];
+                let (pb, hb, lb, ub) = &hulls[b];
+                if pa == pb || (0..3).any(|k| ua[k] < lb[k] || ub[k] < la[k]) { continue; }
+                tested += 1;
+                if let Ok(Some(c)) = query::contact(&id, ha, &id, hb, 0.0) {
+                    closest = closest.min(c.dist);
+                    if c.dist < -0.002 { overlaps.push((-c.dist, *pa, *pb)); }
+                }
+            }
+        }
+        overlaps.sort_by(|a, b| b.0.total_cmp(&a.0));
+        let deepest = overlaps.first().map_or(0., |o| o.0);
+        let over5 = overlaps.iter().filter(|o| o.0 > 0.005).count();
+        let names: Vec<String> = overlaps.iter().take(8).map(|&(d, a, b)| format!("{} / {} {:.1} cm", geometry.parts[a].id, geometry.parts[b].id, d * 100.)).collect();
+        eprintln!("overlap {model}: {} hulls, {tested} pairs with touching bounds, closest {:.4} m", hulls.len(), closest);
+        eprintln!("overlap {model}: {} hull pairs interpenetrate > 2 mm ({over5} > 5 mm), deepest {:.1} cm\n  {names:?}", overlaps.len(), deepest * 100.);
+        if limit.is_some_and(|l| deepest > l) { failures.push(format!("{model}: {:.1} cm", deepest * 100.)); }
+    }
+    assert!(failures.is_empty(), "hulls interpenetrate at rest: {failures:?}");
+}
