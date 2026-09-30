@@ -1214,7 +1214,8 @@ impl PhysxPhysicsArena {
             if self.tolerate_rejected_steps {
                 report_rejected_step(&self.world, "end_step", error);
                 // Same rule as the unsplit path: no readbacks from a step that
-                // did not complete.
+                // did not complete -- except the players (see there).
+                self.refresh_players_after_rejected_step();
                 return (
                     self.last_vehicle_control_ms,
                     self.pending_begin_ms + started.elapsed().as_secs_f32() * 1000.0,
@@ -1228,6 +1229,17 @@ impl PhysxPhysicsArena {
             self.pending_begin_ms + started.elapsed().as_secs_f32() * 1000.0;
         self.pending_begin_ms = 0.0;
         (self.last_vehicle_control_ms, ms)
+    }
+
+    /// Player state read from the controllers alone: position, velocity,
+    /// grounded and a support raycast, the same queries the controllers make
+    /// when they move. Nothing here reads the rejected step's contacts or
+    /// body poses.
+    #[cfg(feature = "native-destruction")]
+    fn refresh_players_after_rejected_step(&mut self) {
+        let before_players = std::time::Instant::now();
+        self.refresh_players();
+        self.last_refresh_players_ms = before_players.elapsed().as_secs_f32() * 1000.0;
     }
 
     pub fn step_vehicles_and_dynamics(&mut self, _dt: f32) -> (f32, f32) {
@@ -1248,6 +1260,13 @@ impl PhysxPhysicsArena {
                 // body poses from it is reading half-written state, and the
                 // caches from the last accepted step are the only coherent
                 // answer available. Returning here keeps them.
+                //
+                // Players are the exception. Their controllers moved this tick
+                // (PxController::move runs before the step and does not depend
+                // on it), and skipping their refresh left every player's
+                // authoritative position at the last accepted step: on a stage
+                // that rejected every step, nobody could walk.
+                self.refresh_players_after_rejected_step();
                 return (
                     self.last_vehicle_control_ms,
                     started.elapsed().as_secs_f32() * 1000.0,
