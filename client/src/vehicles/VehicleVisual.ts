@@ -94,6 +94,28 @@ export class VehicleVisual {
     this.detachedIds = loose;
     this.assembly.setDetached(matrices);
   }
+  /**
+   * Diagnostics: where the first `max` loose parts are DRAWN (world
+   * position of each part's instance), in a stable order. Read by the opt-in
+   * vehicle trace to catch parts flickering between two places.
+   */
+  drawnLooseParts(max = 16): { id: string; position: [number, number, number] }[] {
+    const wanted = new Set([...this.detachedIds].sort().slice(0, max));
+    if (!wanted.size) return [];
+    const out: { id: string; position: [number, number, number] }[] = [];
+    const m = new THREE.Matrix4(), v = new THREE.Vector3();
+    for (const mesh of (this.assembly as unknown as { meshes: THREE.InstancedMesh[] }).meshes) {
+      mesh.updateWorldMatrix(true, false);
+      const parts = mesh.userData.parts as { id: string }[];
+      for (let index = 0; index < parts.length; index++) {
+        if (!wanted.has(parts[index].id)) continue;
+        mesh.getMatrixAt(index, m);
+        v.setFromMatrixPosition(m.premultiply(mesh.matrixWorld));
+        out.push({ id: parts[index].id, position: [v.x, v.y, v.z] });
+      }
+    }
+    return out.sort((a, b) => a.id.localeCompare(b.id));
+  }
   setWheelState(wheels: {travelM: number; steeringRad: number; rotationRad: number; grounded: boolean}[]): void {
     if (wheels.length !== 4) return;
     const pose = { chassis: { position: [0,0,0], rotation: [0,0,0,1] },

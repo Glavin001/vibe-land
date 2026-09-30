@@ -566,7 +566,8 @@ export class VehiclesRenderer {
         const trace = (globalThis as { __VIBE_VEHICLE_TRACE__?: unknown[] }).__VIBE_VEHICLE_TRACE__;
         if (Array.isArray(trace) && trace.length < 20000) trace.push({ kind: 'frame', t: performance.now(), id,
           position: [vPos[0], vPos[1], vPos[2]], rigTick: vs.customRig?.serverTick ?? null, detached: vs.customRig?.detached?.length ?? 0,
-          fractureGroups: custom.hasFractureGroups() });
+          fractureGroups: custom.hasFractureGroups(), drawnLoose: custom.drawnLooseParts(4096),
+          rigDetached: vs.customRig?.detached?.slice(0, 64).map(d => ({ part: d.part, position: d.position })) ?? [] });
       }
       else updateVehicleWheelVisuals(vehicleMeshGroup, vs, placed.localDebug, vPos, vQuat, frameDelta);
       onPlaced?.(id, vs, vehicleMeshGroup, placed);

@@ -886,3 +886,115 @@ fn garage_car_crashes_into_car() {
     assert!(end.z - start.z > 0.5, "the parked car was shoved by the impact ({:.2} m)", end.z - start.z);
     assert!(min_gap > 1.0, "the cars passed into each other (centres {min_gap:.2} m apart)");
 }
+
+/// Driving over rubble: concrete blocks (0.5 x 0.3 x 0.5 m, 2400 kg/m^3,
+/// ~180 kg, what a city building sheds) scattered across both wheel tracks,
+/// driven over at up to 10 m/s. A car should bounce over debris, not shed
+/// its wheels. Prints what broke, per model (VIBE_DESTRUCTION_MODELS).
+#[test]
+#[ignore = "requires local GPU, coherent ABI 22 SDK and VIBE_VEHICLE_BUILD_FIXTURES"]
+fn garage_car_drives_over_debris() {
+    let _guard = gpu_test_guard();
+    let mut results = Vec::new();
+    for (model, geometry) in fixtures() {
+        let layout = geometry.validate_vehicle2_fracture_layout().unwrap();
+        let mut scene = Scene::new(&geometry, false);
+        scene.arena.set_spawn_areas(vec![vibe_land_shared::world_document::SpawnArea { id: 1, position: [2.5, 1.5, 3.0], radius: 0.1 }]);
+        // VIBE_DEBRIS_HALF="x,y,z" (m), VIBE_DEBRIS_DENSITY (kg/m^3), VIBE_DEBRIS_SPEED (m/s).
+        let env = |k: &str, d: &str| std::env::var(k).unwrap_or(d.into());
+        let h: Vec<f32> = env("VIBE_DEBRIS_HALF", "0.25,0.15,0.25").split(',').map(|v| v.parse().unwrap()).collect();
+        let half = [h[0], h[1], h[2]];
+        let mass = 8. * half[0] * half[1] * half[2] * env("VIBE_DEBRIS_DENSITY", "2400").parse::<f32>().unwrap();
+        let target: f32 = env("VIBE_DEBRIS_SPEED", "10").parse().unwrap();
+        for (i, (x, z)) in [(-0.9f32, 14.), (0.9, 16.), (0.0, 18.5), (-1.0, 21.), (1.1, 22.), (-0.4, 25.), (0.6, 27.)].into_iter().enumerate() {
+            let id = 9000 + i as u32;
+            scene.arena.world.add_dynamic_box(bridge::DynamicBoxDesc {
+                entity_id: super::NS_DYNAMIC | id, user_id: id,
+                pose: bridge::Pose { position: bridge::Vec3::new(x, half[1] + 0.01, z), rotation: bridge::Quat { x: 0., y: (0.3 * i as f32).sin(), z: 0., w: (0.3 * i as f32).cos() } },
+                half_extents: bridge::Vec3::new(half[0], half[1], half[2]), mass,
+                collision_group: super::GROUP_DYNAMIC, collision_mask: super::ALL_GROUPS,
+            }).unwrap();
+        }
+        scene.arena.spawn_player(42);
+        for _ in 0..40 { scene.step(); }
+        scene.arena.enter_vehicle(42, CAR);
+        assert_eq!(scene.arena.player_vehicle_id(42), Some(CAR), "{model}: driving");
+        let mut broke: Vec<(u32, u32, f32)> = Vec::new();
+        let (mut seen, mut top) = (BTreeSet::new(), 0f32);
+        for _ in 0..300u32 {
+            let car = scene.arena.current_vehicle_snapshots()[0];
+            let speed = (car.linear_velocity.x.powi(2) + car.linear_velocity.z.powi(2)).sqrt();
+            top = top.max(speed);
+            let mut input = InputCmd::default();
+            input.move_y = if speed < target { 100 } else { 0 };
+            scene.arena.simulate_player_tick(42, &input, DT);
+            scene.step();
+            let d = scene.observe();
+            for b in d.bonds.iter().filter(|b| b.broken) {
+                if seen.insert(b.index) { broke.push((scene.tick, b.index, car.pose.position.z)); }
+            }
+        }
+        let end = scene.arena.current_vehicle_snapshots()[0].pose.position;
+        let wheels_lost: Vec<String> = layout.wheel_chunks.iter().enumerate()
+            .filter(|(_, chunks)| broke.iter().any(|&(_, b, _)| layout.bond_chunks[b as usize].iter().any(|c| chunks.contains(c))))
+            .map(|(w, _)| format!("wheel {w}")).collect();
+        let first: Vec<String> = broke.iter().take(8).map(|&(t, b, z)| format!("t{t} z{z:.1} {}", bond_label(&geometry, &layout, b))).collect();
+        eprintln!("debris {model} ({:.2} m tall, {mass:.0} kg): top {top:.1} m/s, reached z {:.1}, {} bond(s) broke, wheel bonds hit: {:?}\n  first: {first:?}", half[1] * 2., end.z, broke.len(), wheels_lost);
+        results.push(json!({"model": model, "topSpeed": top, "endZ": end.z, "broken": broke.len(), "wheelBondsBroken": wheels_lost, "first": first}));
+    }
+    std::fs::write(concat!(env!("CARGO_MANIFEST_DIR"), "/../target/debris-drive-report.json"), serde_json::to_vec_pretty(&results).unwrap()).unwrap();
+}
+
+/// Driving through a wreck: a second car is shattered by the city's meteor,
+/// its pieces settle, then the first car drives through them at up to
+/// VIBE_DEBRIS_SPEED (default 8 m/s). Loose car pieces are what a player
+/// drives over in the city after a fight. Prints what the driven car broke.
+#[test]
+#[ignore = "requires local GPU, coherent ABI 22 SDK and VIBE_VEHICLE_BUILD_FIXTURES"]
+fn garage_car_drives_through_wreck() {
+    let _guard = gpu_test_guard();
+    std::env::set_var("VIBE_GARAGE_VEHICLE_DESTRUCTION", "1");
+    std::env::set_var("PX_DESTRUCTION_ALLOW_UNCONVERGED", "1");
+    let target: f32 = std::env::var("VIBE_DEBRIS_SPEED").ok().and_then(|v| v.parse().ok()).unwrap_or(8.);
+    for (model, geometry) in fixtures() {
+        let layout = geometry.validate_vehicle2_fracture_layout().unwrap();
+        let mut arena = PhysxPhysicsArena::new(MoveConfig::default()).unwrap();
+        WorldDocumentArena::add_static_cuboid(&mut arena, Vector3::new(0., -0.5, 0.), [0., 0., 0., 1.], Vector3::new(100., 0.5, 100.), 1);
+        let (driven, wreck) = (CAR, CAR + 1);
+        for (id, z) in [(driven, 3.), (wreck, 24.)] {
+            arena.spawn_vehicle_asset(id, 0, Vector3::new(0., geometry.origin_height as f32 + 0.15, z), [0., 0., 0., 1.], Some(&geometry)).unwrap();
+            arena.enable_vehicle_destruction(id, &geometry).unwrap();
+        }
+        arena.reserve_ball_pool(8);
+        arena.set_spawn_areas(vec![vibe_land_shared::world_document::SpawnArea { id: 1, position: [2.5, 1.5, 3.0], radius: 0.1 }]);
+        arena.spawn_player(42);
+        for _ in 0..60 { arena.step_vehicles_and_dynamics(DT); }
+        let tuning = crate::meteor::MeteorTuning::from_env();
+        let launch = crate::meteor::plan(glam::Vec3::new(0., 0.5, 24.), glam::Vec3::new(0., -G, 0.), &tuning, &mut crate::meteor::Rng::new(3));
+        arena.launch_meteor(Vector3::new(launch.start.x, launch.start.y, launch.start.z),
+            Vector3::new(launch.velocity.x, launch.velocity.y, launch.velocity.z), tuning.radius_m, tuning.mass_kg, (launch.flight_time_s * 60.) as u32 + 30);
+        for _ in 0..((launch.flight_time_s * 60.) as u32 + 300) { arena.step_vehicles_and_dynamics(DT); }
+        let loose = arena.vehicle_detached_parts(wreck).len();
+        let broken = |arena: &mut PhysxPhysicsArena, id: u32| arena.vehicle_destruction_debug(id).unwrap()["bonds"].as_array().unwrap().iter()
+            .filter(|b| b["broken"] == true).map(|b| b["index"].as_u64().unwrap() as u32).collect::<BTreeSet<u32>>();
+        let before = broken(&mut arena, driven);
+        arena.enter_vehicle(42, driven);
+        assert_eq!(arena.player_vehicle_id(42), Some(driven), "{model}: driving");
+        let (mut top, mut first_break) = (0f32, None);
+        for tick in 0..420u32 {
+            let car = arena.current_vehicle_snapshots().into_iter().find(|s| s.user_id == driven).unwrap();
+            let speed = (car.linear_velocity.x.powi(2) + car.linear_velocity.z.powi(2)).sqrt();
+            top = top.max(speed);
+            let mut input = InputCmd::default();
+            input.move_y = if speed < target { 100 } else { 0 };
+            arena.simulate_player_tick(42, &input, DT);
+            arena.step_vehicles_and_dynamics(DT);
+            if first_break.is_none() && broken(&mut arena, driven).len() > before.len() { first_break = Some((tick, car.pose.position.z, speed)); }
+        }
+        let after = broken(&mut arena, driven);
+        let end = arena.current_vehicle_snapshots().into_iter().find(|s| s.user_id == driven).unwrap().pose.position;
+        let new: Vec<String> = after.difference(&before).take(8).map(|&b| bond_label(&geometry, &layout, b)).collect();
+        eprintln!("wreck {model}: wreck has {loose} loose parts; driven car top {top:.1} m/s, reached z {:.1}, broke {} bond(s), first at {first_break:?} (tick, z, speed)\n  {new:?}",
+            end.z, after.len() - before.len());
+    }
+}
