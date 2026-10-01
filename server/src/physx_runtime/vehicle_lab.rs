@@ -155,8 +155,20 @@ fn ground_y(ground: Ground, x: f32, z: f32, course: &vibe_land_shared::world_doc
     match ground { Ground::Flat => 0., Ground::Course => course.sample_heightfield_surface_at_world_position(x, z) }
 }
 
-fn run(geometry: &PreparedGeometry, layout: &FractureLayout, s: &Scenario) -> Value {
+/// Stress-problem capture (diagnostic SDK only, see equation_capture):
+/// VIBE_LAB_CAPTURE_DIR and VIBE_LAB_CAPTURE_SOLVES ("first:last" solve
+/// ordinals of each run; a solve is one stress pass, about one per tick).
+fn lab_capture(prefix: &str) -> (super::equation_capture::EquationCapture, Option<std::path::PathBuf>) {
+    let dir = std::env::var_os("VIBE_LAB_CAPTURE_DIR").map(std::path::PathBuf::from);
+    let solves = std::env::var("VIBE_LAB_CAPTURE_SOLVES").unwrap_or_else(|_| "0:0".into());
+    (super::equation_capture::EquationCapture::new(dir.clone(), prefix, &solves), dir)
+}
+
+fn run(geometry: &PreparedGeometry, layout: &FractureLayout, s: &Scenario, car: &str) -> Value {
     let course = crate::demo_world::garage_test_world();
+    let prefix = format!("{}-{car}", s.name);
+    let (_capture, capture_dir) = lab_capture(&prefix);
+    let mut node_map_written = false;
     let mut scene = Scene::new_at(geometry, matches!(s.ground, Ground::Course), s.lift);
     if matches!(s.ground, Ground::Flat) {
         scene.arena.set_spawn_areas(vec![vibe_land_shared::world_document::SpawnArea { id: 1, position: [2.5, 1.5, 3.0], radius: 0.1 }]);
@@ -255,6 +267,14 @@ fn run(geometry: &PreparedGeometry, layout: &FractureLayout, s: &Scenario) -> Va
             report_on = scene.arena.world.native_set_stress_solve_report(lab_report_passes()).unwrap_or(false); None };
         if let Some(r) = &solve_report {
             tally.ingest(r, |_| true);
+            if let (Some(dir), false) = (&capture_dir, node_map_written) {
+                super::equation_capture::EquationCapture::write_node_map(dir, &prefix, r, |structure, node| {
+                    // The car is the garage stage's only destructible structure.
+                    geometry.parts.get(node as usize)
+                        .map_or(format!("structure {structure} node {node}"), |p| format!("{} ({})", p.id, p.name))
+                });
+                node_map_written = true;
+            }
             for c in r.chunks.iter().filter(|c| (c.node as usize) < geometry.parts.len()) {
                 let m = geometry.parts[c.node as usize].mass as f32;
                 let f = |v: &vibe_land_physx_bridge::FfiVec3| (v.x * v.x + v.y * v.y + v.z * v.z).sqrt() * m;
@@ -405,7 +425,7 @@ fn vehicle_lab() {
     for (car, geometry) in fixtures() {
         let layout = geometry.validate_vehicle2_fracture_layout().unwrap();
         for s in &chosen {
-            let r = run(&geometry, &layout, s);
+            let r = run(&geometry, &layout, s, &car);
             for v in r["violations"].as_array().unwrap() { failures.push(format!("{car} {}: {}", s.name, v.as_str().unwrap())); }
             eprintln!("{car:<8} {:<11} {:>5.1} m/s  {:>4} bonds {:>3} parts {} wheels  conv {:>4.0}%  peak {:>4.1} g  wheel {:>4.1}x  {}",
                 s.name, r["topSpeed"].as_f64().unwrap(), r["bondsBroken"], r["partsOff"], r["wheelsLost"], r["converged"].as_f64().unwrap() * 100.,

@@ -7,36 +7,7 @@ use serde_json::json;
 const STRUCTURE: u32 = 200;
 const MODELS: [&str; 6] = ["buggy", "trophy", "rally", "monster", "derby", "sprint"];
 
-/// Optional native equation recording is process-global and write-once. Keep
-/// scenarios separate and restore the caller's environment when a scene ends,
-/// including on assertion failure. Callers hold the shared GPU test lock.
-struct EquationCapture(Vec<(&'static str, Option<std::ffi::OsString>)>);
-impl EquationCapture {
-    fn for_scene(model: &str, scenario: &str) -> Self {
-        let Some(directory) = std::env::var_os("VIBE_VEHICLE_CAPTURE_DIR") else {
-            return Self(Vec::new());
-        };
-        let directory = std::path::PathBuf::from(directory);
-        std::fs::create_dir_all(&directory).unwrap();
-        let prefix = format!("{scenario}-{model}");
-        let values = [
-            ("PHYSX_COMPONENT_WORK_OUTPUT", directory.join(format!("{prefix}.components.jsonl")).into_os_string()),
-            ("PHYSX_STRESS_PROBLEM_PREFIX", directory.join(prefix).into_os_string()),
-            ("PHYSX_STRESS_PROBLEM_SOLVES", "0:200".into()),
-        ];
-        let saved = values.iter().map(|(key, _)| (*key, std::env::var_os(key))).collect();
-        for (key, value) in values { std::env::set_var(key, value); }
-        Self(saved)
-    }
-}
-impl Drop for EquationCapture {
-    fn drop(&mut self) {
-        for (key, value) in self.0.drain(..) {
-            if let Some(value) = value { std::env::set_var(key, value); }
-            else { std::env::remove_var(key); }
-        }
-    }
-}
+use super::equation_capture::EquationCapture;
 
 #[test]
 fn equation_capture_separates_scenarios_and_restores_environment_on_failure() {

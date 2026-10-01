@@ -3440,6 +3440,9 @@ pub(crate) fn rig_from_snapshot(snapshot: &bridge::VehicleSnapshot, neutral_joun
 #[cfg(feature = "native-destruction")]
 mod garage_destruction;
 #[cfg(all(test, feature = "native-destruction"))]
+#[path = "physx_runtime/equation_capture.rs"]
+pub(crate) mod equation_capture;
+#[cfg(all(test, feature = "native-destruction"))]
 #[path = "physx_runtime/vehicle_fracture_tests.rs"]
 mod vehicle_fracture_tests;
 #[cfg(all(test, feature = "native-destruction"))]
