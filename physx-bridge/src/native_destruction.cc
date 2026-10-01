@@ -290,16 +290,15 @@ void NativeDestruction::State::append_bonds(std::uint32_t structure_id, std::uin
     static const bool contact_length_other = native_env_f32("VIBE_BOND_CONTACT_LENGTH", 0.0f) != 0.0f;
     const bool contact_length = vehicle ? contact_length_vehicle : contact_length_other;
     const float length = contact_length ? std::max(distance, std::sqrt(std::max(b.area, 1e-4f))) : distance;
-    // Stiffness exponent: weight^p compresses the spread of bond stiffness
-    // (1 physical, 0 every bond equal). A concession for vehicles, whose
-    // stiffness spread (1e6-4.5e7, buildings ~40) kept their solves from
-    // converging in float at 64 iterations; at 0.5 the monster truck's rough-
-    // course solves went from ~2% to 88% converged, the rest ~2 iterations
-    // short, and load sharing between redundant paths moved 23-30% (median),
-    // 80-98% (p90) against a converged physical reference (vehicle lab and
-    // compare-bond-loads.py, 2026-10-01). Vehicles: 0.5
-    // (VIBE_VEHICLE_BOND_STIFFNESS_EXPONENT); others: 1 (VIBE_BOND_STIFFNESS_EXPONENT).
-    static const float exponent_vehicle = native_env_f32("VIBE_VEHICLE_BOND_STIFFNESS_EXPONENT", 0.5f);
+    // Stiffness exponent (A/B): weight^p compresses the spread of bond
+    // stiffness (1 physical, 0 every bond equal). Measured on the fleet,
+    // 2026-10-01 (vehicle lab, compare-bond-loads.py): at 0.5 a car's rough-
+    // course solves converge at 64 iterations (~2% -> 88%), but load sharing
+    // moves 23-30% (median), 80-98% (p90), and an impact breaks bonds 2-3 m
+    // from the ball first (garage_vehicle_destruction_is_rigid_body_correct).
+    // Too dear: vehicles stay physical (1); VIBE_VEHICLE_BOND_STIFFNESS_EXPONENT
+    // and VIBE_BOND_STIFFNESS_EXPONENT (other structures) remain for A/B.
+    static const float exponent_vehicle = native_env_f32("VIBE_VEHICLE_BOND_STIFFNESS_EXPONENT", 1.0f);
     static const float exponent_other = native_env_f32("VIBE_BOND_STIFFNESS_EXPONENT", 1.0f);
     const float exponent = vehicle ? exponent_vehicle : exponent_other;
     const float weight = std::pow(

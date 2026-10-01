@@ -196,6 +196,7 @@ fn run(geometry: &PreparedGeometry, layout: &FractureLayout, s: &Scenario) -> Va
     let mut last_v: Option<Vector3<f32>> = None;
     let (mut top, mut impact, mut converged, mut peak_decel, mut peak_wheel, mut peak_u) = (0f32, 0f32, 0u32, 0f32, 0f32, 0f64);
     let mut contact_tick = None;
+    let mut step_ms: Vec<f32> = Vec::new();
     let mut tally = crate::structure_qualification::SolveTally::default();
     // Peak stress input by source (N) and the part that took it; ticks a
     // wheel sat at the end of its travel (the suspension limit constraint).
@@ -234,7 +235,9 @@ fn run(geometry: &PreparedGeometry, layout: &FractureLayout, s: &Scenario) -> Va
             }
         }
         if driving { scene.arena.simulate_player_tick(42, &input, DT); }
+        let t0 = std::time::Instant::now();
         scene.step();
+        step_ms.push(t0.elapsed().as_secs_f32() * 1e3);
         if contact_tick.is_some_and(|t| tick > t + 180) { break; }
         let after_car = scene.arena.current_vehicle_snapshots()[0];
         // A wheel off the ground reports infinite jounce; only a finite one at
@@ -366,11 +369,15 @@ fn run(geometry: &PreparedGeometry, layout: &FractureLayout, s: &Scenario) -> Va
         }
     }
     let steps = samples.len().max(1) as u32;
+    let mut sorted_ms = step_ms.clone();
+    sorted_ms.sort_by(f32::total_cmp);
+    let step_summary = json!({"median": sorted_ms.get(sorted_ms.len() / 2), "p95": sorted_ms.get(sorted_ms.len() * 95 / 100), "max": sorted_ms.last()});
     json!({
         "scenario": s.name, "why": s.why, "expect": s.expect.iter().map(|e| format!("{e:?}")).collect::<Vec<_>>(), "topSpeed": top, "impactSpeed": impact,
         "bondsBroken": broken.len(), "partsOff": off.len(), "wheelsLost": wheels_lost,
         "converged": converged as f32 / steps as f32, "peakDecelG": peak_decel, "peakWheelLoadXStatic": peak_wheel / static_corner,
         "peakUtilisation": peak_u, "violations": violations,
+        "stepMs": step_summary,
         "peakConstraintN": peak_constraint.0, "peakConstraintAt": peak_constraint.1, "peakContactN": peak_contact.0, "peakContactAt": peak_contact.1,
         "bottomedTicks": bottomed, "suspensionTravel": travel,
         "audits": audits.iter().map(|a| json!({"tick": a.tick, "bond": a.bond, "area": a.area,
@@ -404,7 +411,8 @@ fn vehicle_lab() {
                 s.name, r["topSpeed"].as_f64().unwrap(), r["bondsBroken"], r["partsOff"], r["wheelsLost"], r["converged"].as_f64().unwrap() * 100.,
                 r["peakDecelG"].as_f64().unwrap(), r["peakWheelLoadXStatic"].as_f64().unwrap(),
                 if r["violations"].as_array().unwrap().is_empty() { "ok".to_string() } else { format!("FAIL {}", r["violations"][0].as_str().unwrap()) });
-            eprintln!("{:>22} solve: {}", "", r["solve"]["verdict"].as_str().unwrap_or("-"));
+            eprintln!("{:>22} solve: {} | step {:.1} ms median, {:.1} p95, {:.1} max", "", r["solve"]["verdict"].as_str().unwrap_or("-"),
+                r["stepMs"]["median"].as_f64().unwrap_or(0.), r["stepMs"]["p95"].as_f64().unwrap_or(0.), r["stepMs"]["max"].as_f64().unwrap_or(0.));
             eprintln!("{:>22} peak loads: constraint {:.0} kN ({}), contact {:.0} kN ({}); a wheel at the end of its {:.2} m travel on {} tick(s)", "",
                 r["peakConstraintN"].as_f64().unwrap_or(0.) / 1e3, r["peakConstraintAt"].as_str().unwrap_or("-"), r["peakContactN"].as_f64().unwrap_or(0.) / 1e3,
                 r["peakContactAt"].as_str().unwrap_or("-"), r["suspensionTravel"].as_f64().unwrap_or(0.), r["bottomedTicks"]);

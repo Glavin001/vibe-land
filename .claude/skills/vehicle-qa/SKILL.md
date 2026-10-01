@@ -101,6 +101,22 @@ the car touched, its deceleration and wheel loads, classified
 the tick before, broken by an unconverged solve, is a spurious verdict, not a
 weak part. Everything, tick by tick, lands in `target/vehicle-lab/report.json`.
 
+### What the lab found (2026-10-01) and what changed
+
+- **Spurious breaks were unconverged and diverged solves.** At 64 iterations a
+  car's solve was cut off mid-transient: residual up to 2e5x tolerance, worse
+  than its warm start. Causes, by what-if: chunks under 1 kg on stiff steel
+  bonds (now merged, `client/src/vehicles/chunk-merge.mjs`) and a 1e6-4.5e7
+  bond-stiffness spread (vehicle structures now use contact length and
+  exponent 0.5 -- a measured concession, see the bridge's append_bonds).
+- **Real breaks on rough ground were the rigid suspension limit.** The audit
+  showed 1.5 MN constraint loads on the wheel chunk (PhysX's own corner
+  constraint force agrees): Vehicle2 removes over-compression in one step.
+  Garage builds now carry a compliant bump stop (PxNativeVehicle
+  bumpStopStiffness, 10x spring) and springs sized for 30% sag.
+- **Remaining rough-course damage** at 18+ m/s is body panels taking terrain
+  contact in one step (contact loads in MN): the same rigid-contact class.
+
 ## 2c. Real-world grounding: `node scripts/vehicle-reality.mjs`
 
 `client/src/vehicles/reality.mjs` holds each model's real class (mass, wheel
