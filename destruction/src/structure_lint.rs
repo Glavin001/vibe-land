@@ -99,17 +99,29 @@ pub struct LintOptions {
     pub mass_ratio_warning: f32,
     /// Warn when a sole attachment cannot carry this many g of what hangs from it.
     pub sole_attachment_g_warning: f32,
+    /// The bridge's contact-length stiffness (length >= sqrt(area)): on for
+    /// vehicle structures (VIBE_VEHICLE_BOND_CONTACT_LENGTH, default on), off
+    /// for the city (VIBE_BOND_CONTACT_LENGTH, default off). Must match what
+    /// append_bonds gives the stage, or the spread reported is not the one solved.
+    pub contact_length: bool,
 }
 
 impl Default for LintOptions {
-    fn default() -> Self { Self { mass_ratio_warning: 100., sole_attachment_g_warning: 10. } }
+    fn default() -> Self { Self { mass_ratio_warning: 100., sole_attachment_g_warning: 10., contact_length: false } }
+}
+
+impl LintOptions {
+    /// What the bridge uses for vehicle structures.
+    pub fn vehicle() -> Self { Self { contact_length: true, ..Self::default() } }
 }
 
 fn dist(a: [f32; 3], b: [f32; 3]) -> f32 { ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt() }
 
-/// The stiffness weight append_bonds gives a bond (before normalisation).
-pub fn stiffness_weight(nodes: &[LintNode], b: &LintBond) -> f32 {
-    let length = dist(nodes[b.a].position, nodes[b.b].position).max(MIN_WEIGHT_LENGTH_M);
+/// The stiffness weight append_bonds gives a bond (before normalisation),
+/// with the bridge's contact length when `contact_length`.
+pub fn stiffness_weight(nodes: &[LintNode], b: &LintBond, contact_length: bool) -> f32 {
+    let centres = dist(nodes[b.a].position, nodes[b.b].position);
+    let length = if contact_length { centres.max(b.area.max(SOLVER_MIN_BOND_AREA_M2).sqrt()) } else { centres }.max(MIN_WEIGHT_LENGTH_M);
     let modulus = if b.modulus > 0. { b.modulus / REFERENCE_MODULUS_PA } else { 1. };
     (modulus * b.area.max(SOLVER_MIN_BOND_AREA_M2) / length).sqrt()
 }
@@ -183,7 +195,7 @@ pub fn lint(nodes: &[LintNode], bonds: &[LintBond], options: &LintOptions) -> Li
     }
 
     // 2. Stiffness spread (what the solver's weights make of modulus, area, length).
-    let weights: Vec<f32> = bonds.iter().map(|b| stiffness_weight(nodes, b)).collect();
+    let weights: Vec<f32> = bonds.iter().map(|b| stiffness_weight(nodes, b, options.contact_length)).collect();
     if let (Some(lo), Some(hi)) = (weights.iter().cloned().reduce(f32::min), weights.iter().cloned().reduce(f32::max)) {
         stats.stiffness_spread = (hi / lo).powi(2);
     }

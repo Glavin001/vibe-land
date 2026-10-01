@@ -31,7 +31,7 @@ pub fn lint_inputs(geometry: &PreparedGeometry) -> (Vec<LintNode>, Vec<LintBond>
 
 pub fn lint_vehicle(geometry: &PreparedGeometry) -> LintReport {
     let (nodes, bonds) = lint_inputs(geometry);
-    lint(&nodes, &bonds, &LintOptions::default())
+    lint(&nodes, &bonds, &LintOptions::vehicle())
 }
 
 #[cfg(test)]
