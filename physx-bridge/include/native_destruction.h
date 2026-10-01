@@ -153,7 +153,7 @@ public:
   /// next tick.
   rust::Slice<const FfiChunkBodySnapshot> chunk_body_snapshots() const;
   rust::Vec<FfiBondStressRow> bond_stress_rows(std::uint32_t structure_id) const;
-  bool set_stress_solve_report(bool enabled);
+  bool set_stress_solve_report(std::uint32_t passes);
   FfiStressSolveReport stress_solve_report();
   FfiDestructionStats stats() const;
 

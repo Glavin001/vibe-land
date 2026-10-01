@@ -81,7 +81,7 @@ use crate::bridge_authoring::{
 /// stress topology update fails with error bit 64 and never recovers. On that
 /// scene 16 starts and 32 and 64 do not, which is an engine defect rather than
 /// a tuning rule, so re-measure rather than reasoning from this number.
-fn stress_iterations() -> u32 {
+pub fn stress_iterations() -> u32 {
     env_u32("VIBE_CITY_NATIVE_STRESS_ITERATIONS", 16)
 }
 

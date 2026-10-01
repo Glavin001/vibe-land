@@ -1599,9 +1599,11 @@ impl World {
 
     /// Diagnostics: record a stress solve report on every later step (false
     /// when the SDK has none, before configure, or off the native path).
+    /// `passes`: bit p records correction pass p (bit 0: the trial solve that
+    /// decides what breaks); u32::MAX every pass (the last one is read); 0 off.
     #[cfg(feature = "native-destruction")]
-    pub fn native_set_stress_solve_report(&mut self, enabled: bool) -> Result<bool, BridgeError> {
-        self.inner.pin_mut().native_set_stress_solve_report(enabled).map_err(operation_error)
+    pub fn native_set_stress_solve_report(&mut self, passes: u32) -> Result<bool, BridgeError> {
+        self.inner.pin_mut().native_set_stress_solve_report(passes).map_err(operation_error)
     }
 
     /// The last step's stress solve report: why each component stopped, and
@@ -1942,7 +1944,7 @@ fn operation_error(error: cxx::Exception) -> BridgeError {
 
 #[cfg(feature = "gpu")]
 /// The stress solve report types (World::native_stress_solve_report), named by diagnostics.
-pub use ffi::{FfiStressChunkResidual, FfiStressComponentReport, FfiStressSolveReport};
+pub use ffi::{FfiStressChunkResidual, FfiStressComponentReport, FfiStressSolveReport, FfiVec3};
 
 #[cxx::bridge(namespace = "vibe_land::physx_bridge")]
 mod ffi {
@@ -2147,8 +2149,18 @@ mod ffi {
         structure_id: u32,
         /// The node (building) or part (vehicle) index within its structure.
         node: u32,
+        /// u32::MAX: in no stress component (static, or isolated).
         component: u32,
         residual2: f32,
+        /// The chunk's stress input (the accelerations the solve consumed)
+        /// by source: prepared loads (gravity, rotation, chunk loads such as
+        /// Vehicle2 wheel commands), constraint loads, contact loads.
+        prepared_linear: FfiVec3,
+        prepared_angular: FfiVec3,
+        constraint_linear: FfiVec3,
+        constraint_angular: FfiVec3,
+        contact_linear: FfiVec3,
+        contact_angular: FfiVec3,
     }
 
     struct FfiStressSolveReport {
@@ -2802,7 +2814,7 @@ mod ffi {
             poses: &[FfiVehiclePartPose], exclude_mask: u32) -> Result<u32>;
         fn native_detached_vehicle_parts(self: Pin<&mut World>, entity_id: u32) -> Result<Vec<FfiVehiclePartPose>>;
         fn native_vehicle_debug(self: Pin<&mut World>, entity_id: u32) -> Result<FfiVehicleDebug>;
-        fn native_set_stress_solve_report(self: Pin<&mut World>, enabled: bool) -> Result<bool>;
+        fn native_set_stress_solve_report(self: Pin<&mut World>, passes: u32) -> Result<bool>;
         fn native_stress_solve_report(self: Pin<&mut World>) -> Result<FfiStressSolveReport>;
         fn native_create_destructible(
             self: Pin<&mut World>,

@@ -26,9 +26,17 @@ mod tally {
 
     pub fn reason_name(reason: u32) -> &'static str {
         match reason {
-            1 => "converged", 2 => "iteration-cap", 3 => "stagnated", 4 => "degenerate", 5 => "failed",
+            1 => "converged", 2 => "iteration-cap", 3 => "stagnated", 4 => "degenerate", 5 => "failed", 9 => "diverged",
             6 => "settled", 7 => "not-ready", 8 => "large-component", _ => "unreported",
         }
+    }
+
+    /// The stop reason, except that a solve whose final residual is ten times
+    /// worse than where it started is "diverged" (9) whatever stopped it: its
+    /// forces are worse than the warm start it began from.
+    pub fn effective_reason(c: &vibe_land_physx_bridge::FfiStressComponentReport) -> u32 {
+        let start = c.history.first().copied().unwrap_or(f32::NAN);
+        if c.reason != 1 && start.is_finite() && c.final2 > 100. * start { 9 } else { c.reason }
     }
 
     /// Iterations beyond `iterations` the residual's own recent rate needs to
@@ -65,19 +73,20 @@ mod tally {
             let mut owner: HashMap<u32, u32> = HashMap::new();
             let mut members: HashMap<u32, Vec<(u32, u32, f32)>> = HashMap::new();
             for c in &report.chunks {
-                if !keep(c.structure_id) { continue; }
+                if !keep(c.structure_id) || c.component == u32::MAX { continue; }
                 owner.insert(c.component, c.structure_id);
                 members.entry(c.component).or_default().push((c.structure_id, c.node, c.residual2));
             }
             for c in &report.components {
                 if !owner.contains_key(&c.component) { continue; }
-                let reason = reason_name(c.reason);
+                let reason = reason_name(effective_reason(c));
                 self.solves += 1;
                 *self.reasons.entry(reason).or_default() += 1;
                 self.max_iterations = self.max_iterations.max(c.iterations);
                 if !matches!(c.reason, 1 | 6) {
+                    let reason_code = effective_reason(c);
                     if c.tolerance2 > 0. && c.final2.is_finite() { self.excess.push((c.final2 / c.tolerance2).sqrt()); }
-                    if c.reason == 2 { if let Some(e) = extra_iterations(&c.history, c.final2, c.tolerance2) { self.extra.push(e); } }
+                    if reason_code == 2 { if let Some(e) = extra_iterations(&c.history, c.final2, c.tolerance2) { self.extra.push(e); } }
                     let chunks = &members[&c.component];
                     let total: f64 = chunks.iter().map(|m| m.2 as f64).sum();
                     if total > 0. { for m in chunks { *self.hot.entry((m.0, m.1)).or_default() += m.2 as f64 / total; } }
@@ -101,9 +110,11 @@ mod tally {
             if self.solves == 0 { return "no solve observed".into(); }
             if bad == 0 { return format!("converges ({} solves, at most {} iterations)", self.solves, self.max_iterations); }
             let stalled = self.reasons.get("stagnated").copied().unwrap_or(0) + self.reasons.get("degenerate").copied().unwrap_or(0) + self.reasons.get("failed").copied().unwrap_or(0);
+            let diverged = self.reasons.get("diverged").copied().unwrap_or(0);
             let capped = self.reasons.get("iteration-cap").copied().unwrap_or(0);
             let share = |n: u32| 100. * n as f32 / self.solves as f32;
             let mut parts = vec![format!("{bad} of {} solves unconverged ({:.0}%), median residual {:.1}x tolerance", self.solves, share(bad), Self::median(&self.excess))];
+            if diverged > 0 { parts.push(format!("{diverged} diverged ({:.0}%): ended >10x worse than they started; their forces are not to be trusted", share(diverged))); }
             if stalled > 0 { parts.push(format!("{stalled} stalled ({:.0}%): more iterations will not help; fix the structure or its loads", share(stalled))); }
             if capped > 0 {
                 let mut e = self.extra.clone(); e.sort_by(f64::total_cmp);
@@ -148,6 +159,80 @@ mod tally {
 
 #[cfg(test)]
 mod tests {
+    /// Every city structure on the real city stage, at the city's own
+    /// iteration cap (VIBE_CITY_NATIVE_STRESS_ITERATIONS, default 16) and
+    /// tolerance: gravity at rest, then the city cannonball into one building
+    /// (VIBE_QUALIFY_TARGET, default structure 0). Prints each structure's
+    /// solve verdict and the chunks that hold any unresolved residual.
+    #[cfg(feature = "native-destruction")]
+    #[test]
+    #[ignore = "requires local GPU and the native-destruction SDK"]
+    fn city_structures_qualify() {
+        use super::SolveTally;
+        use nalgebra::Vector3;
+        use std::collections::BTreeMap;
+        let _guard = crate::physx_runtime::tests::gpu_test_guard();
+        std::env::set_var("PX_DESTRUCTION_ALLOW_UNCONVERGED", "1");
+        let env = |k: &str, d: u32| std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d);
+        let (rest, after, target) = (env("VIBE_QUALIFY_REST_TICKS", 180), env("VIBE_QUALIFY_IMPACT_TICKS", 240), env("VIBE_QUALIFY_TARGET", 0));
+        let mut arena = crate::movement::PhysicsArena::new(vibe_netcode::movement::MoveConfig::default(),
+            vibe_netcode::physics_backend::PhysicsBackendKind::PhysxGpu).expect("production arena");
+        crate::demo_world::seed_world_for_match(&mut arena, "city-default").expect("city world");
+        let mut city = crate::city::CityRuntime::open(60, arena.physx_world_mut()).expect("city opens");
+        let (_, manifest, _) = crate::city::manifest_asset().expect("city scene asset");
+        let ids: Vec<u32> = manifest.structures.iter().map(|s| s.structure_id).collect();
+        let gravity = vibe_netcode::movement::default_world_gravity();
+        let dt = 1.0 / 60.0;
+        let mut tick = 0u32;
+        let mut on = false;
+        let mut run = |arena: &mut crate::movement::PhysicsArena, city: &mut crate::city::CityRuntime, tick: &mut u32, n: u32| {
+            let mut tallies: BTreeMap<u32, SolveTally> = ids.iter().map(|i| (*i, SolveTally::default())).collect();
+            for _ in 0..n {
+                arena.step_vehicles_and_dynamics(dt);
+                let _ = city.step(*tick, dt, gravity, arena.physx_world_mut());
+                *tick += 1;
+                let world = arena.physx_world_mut().unwrap();
+                if !on { on = world.native_set_stress_solve_report(1).unwrap_or(false); continue; }
+                if let Ok(r) = world.native_stress_solve_report() {
+                    for (id, t) in tallies.iter_mut() { t.ingest(&r, |s| s == *id); }
+                }
+            }
+            tallies
+        };
+        let idle = run(&mut arena, &mut city, &mut tick, rest);
+        let s = &manifest.structures[target as usize];
+        let aim = Vector3::new(s.world_position[0], 3.0, s.world_position[2]);
+        let origin = aim + Vector3::new(20., 0.5, 0.);
+        let speed = crate::city::city_ball_speed_ms();
+        let t = 20. / speed;
+        arena.launch_ball_from_muzzle(origin, (aim - origin) / t + Vector3::new(0., 0.5 * 9.81 * t, 0.),
+            crate::city::city_ball_radius_m(), crate::city::city_ball_mass_kg(), 600).expect("ball");
+        let impact = run(&mut arena, &mut city, &mut tick, after);
+        let name = |s: u32, n: u32| {
+            let structure = manifest.structures.iter().find(|x| x.structure_id == s);
+            let y = structure.and_then(|x| x.chunks.get(n as usize)).map_or(f32::NAN, |c| c.centroid[1]);
+            format!("{s}#{n} (y {y:.1} m)")
+        };
+        let (mut idle_ok, mut impact_ok) = (0, 0);
+        let mut json = Vec::new();
+        for id in &ids {
+            let (a, b) = (&idle[id], &impact[id]);
+            idle_ok += (a.unconverged() == 0) as usize; impact_ok += (b.unconverged() == 0) as usize;
+            eprintln!("structure {id:>3}: at rest: {}\n               after impact on {target}: {}", a.verdict(), b.verdict());
+            for (label, t) in [("rest", a), ("impact", b)] {
+                if t.unconverged() > 0 {
+                    eprintln!("               residual held ({label}) by: {}", t.hot_chunks(4).iter().map(|((s, n), share)| format!("{} {:.0}%", name(*s, *n), share / t.unconverged() as f64 * 100.)).collect::<Vec<_>>().join(", "));
+                }
+            }
+            json.push(serde_json::json!({"structure": id, "rest": a.to_json(name), "impact": b.to_json(name)}));
+        }
+        eprintln!("{idle_ok} of {} structures converge at rest, {impact_ok} after the impact (iterations {}, tolerance {:e})",
+            ids.len(), vibe_land_destruction::native_runtime::stress_iterations(), vibe_land_destruction::native_runtime::stress_tolerance());
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../target/structure-qualification");
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(format!("{dir}/city.json"), serde_json::to_vec_pretty(&json).unwrap()).unwrap();
+    }
+
     /// The authoring lint over every structure of the city scene the server loads.
     #[test]
     #[ignore = "reads the city scene asset"]

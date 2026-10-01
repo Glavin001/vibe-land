@@ -129,7 +129,27 @@ struct Audit {
     /// The native solve report of the component the bond belonged to on the
     /// breaking step: stop reason, iterations, residual over tolerance.
     solve: String,
+    /// Both chunks' stress input on the breaking step, as forces by source.
+    loads: String,
+    /// Remaining bonded area as a fraction of authored, and the first tick it
+    /// took damage: a bond eroded over many ticks fails on an ordinary one.
+    remaining: Vec<f64>,
+    damaged_since: Option<u32>,
 }
+
+/// A chunk's stress input on the last step as forces by source (N): mass x
+/// the linear accelerations the solve consumed -- prepared (gravity, rotation,
+/// chunk loads such as Vehicle2 wheel commands), constraint, contact.
+fn source_forces(report: &vibe_land_physx_bridge::FfiStressSolveReport, node: u32, mass: f32) -> Option<[f32; 3]> {
+    let c = report.chunks.iter().find(|c| c.node == node)?;
+    let m = |v: &vibe_land_physx_bridge::FfiVec3| (v.x * v.x + v.y * v.y + v.z * v.z).sqrt() * mass;
+    Some([m(&c.prepared_linear), m(&c.constraint_linear), m(&c.contact_linear)])
+}
+
+/// Which solves of a step the lab records: VIBE_LAB_REPORT_PASSES (bit mask;
+/// default 1, the trial solve that decides what breaks -- on a fracturing
+/// step the corrected re-solve after the split would hide it).
+fn lab_report_passes() -> u32 { std::env::var("VIBE_LAB_REPORT_PASSES").ok().and_then(|v| v.parse().ok()).unwrap_or(1) }
 
 fn ground_y(ground: Ground, x: f32, z: f32, course: &vibe_land_shared::world_document::WorldDocument) -> f32 {
     match ground { Ground::Flat => 0., Ground::Course => course.sample_heightfield_surface_at_world_position(x, z) }
@@ -171,10 +191,17 @@ fn run(geometry: &PreparedGeometry, layout: &FractureLayout, s: &Scenario) -> Va
     let mut before: HashMap<u64, (f64, f64, f64)> = HashMap::new();
     let mut history: HashMap<u64, std::collections::VecDeque<f64>> = HashMap::new();
     let mut prev_hulls = Value::Null;
+    let mut remaining: HashMap<u64, std::collections::VecDeque<f64>> = HashMap::new();
+    let mut damaged_since: HashMap<u64, u32> = HashMap::new();
     let mut last_v: Option<Vector3<f32>> = None;
     let (mut top, mut impact, mut converged, mut peak_decel, mut peak_wheel, mut peak_u) = (0f32, 0f32, 0u32, 0f32, 0f32, 0f64);
     let mut contact_tick = None;
     let mut tally = crate::structure_qualification::SolveTally::default();
+    // Peak stress input by source (N) and the part that took it; ticks a
+    // wheel sat at the end of its travel (the suspension limit constraint).
+    let (mut peak_constraint, mut peak_contact) = ((0f32, String::new()), (0f32, String::new()));
+    let mut bottomed = 0u32;
+    let travel = geometry.suspension_travel as f32;
     let mut report_on = false;
     for tick in 0..s.ticks {
         let car = scene.arena.current_vehicle_snapshots()[0];
@@ -207,16 +234,25 @@ fn run(geometry: &PreparedGeometry, layout: &FractureLayout, s: &Scenario) -> Va
         if driving { scene.arena.simulate_player_tick(42, &input, DT); }
         scene.step();
         if contact_tick.is_some_and(|t| tick > t + 180) { break; }
-        let after = scene.arena.current_vehicle_snapshots()[0].linear_velocity;
+        let after_car = scene.arena.current_vehicle_snapshots()[0];
+        if after_car.wheel_jounce.iter().any(|j| *j >= travel - 0.005) { bottomed += 1; }
+        let after = after_car.linear_velocity;
         let decel_g = last_v.map_or(0., |_| (Vector3::new(after.x, after.y, after.z) - v).norm() / DT / 9.81);
         last_v = Some(v);
         let raw = scene.arena.vehicle_destruction_debug(CAR).unwrap();
         // The native solve report (PxDestructionScene v23): on once the stage
         // is configured, then every step's report folded in.
         let solve_report = if report_on { scene.arena.world.native_stress_solve_report().ok() } else {
-            report_on = scene.arena.world.native_set_stress_solve_report(true).unwrap_or(false); None };
+            report_on = scene.arena.world.native_set_stress_solve_report(lab_report_passes()).unwrap_or(false); None };
         if let Some(r) = &solve_report {
             tally.ingest(r, |_| true);
+            for c in r.chunks.iter().filter(|c| (c.node as usize) < geometry.parts.len()) {
+                let m = geometry.parts[c.node as usize].mass as f32;
+                let f = |v: &vibe_land_physx_bridge::FfiVec3| (v.x * v.x + v.y * v.y + v.z * v.z).sqrt() * m;
+                let (k, t) = (f(&c.constraint_linear), f(&c.contact_linear));
+                if k > peak_constraint.0 { peak_constraint = (k, format!("t{} {}", tick + 1, geometry.parts[c.node as usize].id)); }
+                if t > peak_contact.0 { peak_contact = (t, format!("t{} {}", tick + 1, geometry.parts[c.node as usize].id)); }
+            }
             if std::env::var_os("VIBE_LAB_REPORT_TRACE").is_some() && tick % 60 == 0 {
                 eprintln!("report t{tick}: {} components {:?}, {} chunks", r.components.len(),
                     r.components.iter().take(4).map(|c| (c.component, c.chunk_count, c.reason, c.iterations, c.final2, c.tolerance2)).collect::<Vec<_>>(), r.chunks.len());
@@ -263,12 +299,17 @@ fn run(geometry: &PreparedGeometry, layout: &FractureLayout, s: &Scenario) -> Va
                     // The breaking step's component: either end of the bond (a part
                     // that broke off alone has no stress component left).
                     let solve = solve_report.as_ref().and_then(|r| {
-                        let component = r.chunks.iter().find(|c| c.node == ca || c.node == cb)?.component;
+                        let component = r.chunks.iter().find(|c| (c.node == ca || c.node == cb) && c.component != u32::MAX)?.component;
                         let c = r.components.iter().find(|c| c.component == component)?;
-                        Some(format!("{} after {} iterations, residual {:.1}x tolerance (best {:.1}x at {})", crate::structure_qualification::reason_name(c.reason),
+                        Some(format!("{} after {} iterations, residual {:.1}x tolerance (best {:.1}x at {})", crate::structure_qualification::reason_name(crate::structure_qualification::effective_reason(c)),
                             c.iterations, (c.final2 / c.tolerance2).sqrt(), (c.best2 / c.tolerance2).sqrt(), c.best_iteration))
                     }).unwrap_or_else(|| "no solve report".into());
-                    audits.push(Audit { solve, tick: tick + 1, bond: bond_label(geometry, layout, index as u32), area: bond.area,
+                    let loads = solve_report.as_ref().map(|r| [ca, cb].iter().filter_map(|&n| {
+                        let f = source_forces(r, n, geometry.parts[n as usize].mass as f32)?;
+                        Some(format!("{}: wheel/gravity/rotation {:.1} kN, constraint {:.1} kN, contact {:.1} kN", geometry.parts[n as usize].id, f[0] / 1e3, f[1] / 1e3, f[2] / 1e3))
+                    }).collect::<Vec<_>>().join("; ")).unwrap_or_default();
+                    audits.push(Audit { remaining: remaining.get(&index).map(|h| h.iter().copied().collect()).unwrap_or_default(),
+                        damaged_since: damaged_since.get(&index).copied(), loads, solve, tick: tick + 1, bond: bond_label(geometry, layout, index as u32), area: bond.area,
                         before: [t / st.tension_fatal, c / st.compression_fatal, sh / st.shear_fatal],
                         utilisation: history.get(&index).map(|h| h.iter().copied().collect()).unwrap_or_default(),
                         converged: ok, iterations: status["iterations"].as_u64().unwrap_or(0), decel_g, wheel_load_x_static: wheel_x, touching, causes });
@@ -280,6 +321,11 @@ fn run(geometry: &PreparedGeometry, layout: &FractureLayout, s: &Scenario) -> Va
                 let h = history.entry(index).or_default();
                 h.push_back((u * 1000.).round() / 1000.);
                 if h.len() > 5 { h.pop_front(); }
+                let left = b["remainingArea"].as_f64().unwrap_or(0.) / geometry.bonds[index as usize].area.max(1e-12);
+                if left < 0.9999 { damaged_since.entry(index).or_insert(tick + 1); }
+                let r = remaining.entry(index).or_default();
+                r.push_back((left * 1000.).round() / 1000.);
+                if r.len() > 5 { r.pop_front(); }
             }
         }
         peak_u = peak_u.max(tick_u);
@@ -306,10 +352,13 @@ fn run(geometry: &PreparedGeometry, layout: &FractureLayout, s: &Scenario) -> Va
         "bondsBroken": broken.len(), "partsOff": off.len(), "wheelsLost": wheels_lost,
         "converged": converged as f32 / steps as f32, "peakDecelG": peak_decel, "peakWheelLoadXStatic": peak_wheel / static_corner,
         "peakUtilisation": peak_u, "violations": violations,
+        "peakConstraintN": peak_constraint.0, "peakConstraintAt": peak_constraint.1, "peakContactN": peak_contact.0, "peakContactAt": peak_contact.1,
+        "bottomedTicks": bottomed, "suspensionTravel": travel,
         "audits": audits.iter().map(|a| json!({"tick": a.tick, "bond": a.bond, "area": a.area,
             "beforeFractionOfFatal": {"tension": a.before[0], "compression": a.before[1], "shear": a.before[2]}, "utilisationBefore": a.utilisation,
             "converged": a.converged, "iterations": a.iterations, "decelG": a.decel_g, "wheelLoadXStatic": a.wheel_load_x_static,
-            "touching": a.touching, "causes": a.causes, "solve": a.solve})).collect::<Vec<_>>(),
+            "touching": a.touching, "causes": a.causes, "solve": a.solve, "loads": a.loads,
+            "remainingBefore": a.remaining, "damagedSince": a.damaged_since})).collect::<Vec<_>>(),
         "solve": tally.to_json(|_, node| format!("{} ({})", geometry.parts[node as usize].id, geometry.parts[node as usize].name)),
         "samplesColumns": ["tick", "speed", "converged", "iterations", "decelG", "wheelLoadXStatic", "peakUtilisation", "peakBond"],
         "samples": samples,
@@ -336,6 +385,9 @@ fn vehicle_lab() {
                 r["peakDecelG"].as_f64().unwrap(), r["peakWheelLoadXStatic"].as_f64().unwrap(),
                 if r["violations"].as_array().unwrap().is_empty() { "ok".to_string() } else { format!("FAIL {}", r["violations"][0].as_str().unwrap()) });
             eprintln!("{:>22} solve: {}", "", r["solve"]["verdict"].as_str().unwrap_or("-"));
+            eprintln!("{:>22} peak loads: constraint {:.0} kN ({}), contact {:.0} kN ({}); a wheel at the end of its {:.2} m travel on {} tick(s)", "",
+                r["peakConstraintN"].as_f64().unwrap_or(0.) / 1e3, r["peakConstraintAt"].as_str().unwrap_or("-"), r["peakContactN"].as_f64().unwrap_or(0.) / 1e3,
+                r["peakContactAt"].as_str().unwrap_or("-"), r["suspensionTravel"].as_f64().unwrap_or(0.), r["bottomedTicks"]);
             if let Some(h) = r["solve"]["hotChunks"].as_array().filter(|h| !h.is_empty()) {
                 eprintln!("{:>22} residual held by: {}", "", h.iter().take(4).map(|c| format!("{} {:.0}%", c["chunk"].as_str().unwrap(), c["share"].as_f64().unwrap() * 100.)).collect::<Vec<_>>().join(", "));
             }
@@ -347,6 +399,8 @@ fn vehicle_lab() {
                     a["causes"].as_array().unwrap().iter().map(|c| c.as_str().unwrap()).collect::<Vec<_>>().join("+"), a["decelG"].as_f64().unwrap(), a["wheelLoadXStatic"].as_f64().unwrap(),
                     a["touching"].as_array().unwrap().iter().take(4).map(|c| c.as_str().unwrap()).collect::<Vec<_>>());
                 eprintln!("{:>22} breaking solve: {}", "", a["solve"].as_str().unwrap_or("-"));
+                eprintln!("{:>22} loads on that step: {}", "", a["loads"].as_str().unwrap_or("-"));
+                eprintln!("{:>22} remaining area before: {} (damaged since tick {})", "", a["remainingBefore"], a["damagedSince"]);
             }
             report.push(json!({"car": car, "mass": geometry.mass, "run": r}));
         }

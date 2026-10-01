@@ -4050,7 +4050,7 @@ public:
   rust::Vec<FfiBondStressRow> native_bond_stress_rows(std::uint32_t structure_id) const {
     return native().bond_stress_rows(structure_id);
   }
-  bool native_set_stress_solve_report(bool enabled) { return native().set_stress_solve_report(enabled); }
+  bool native_set_stress_solve_report(std::uint32_t passes) { return native().set_stress_solve_report(passes); }
   FfiStressSolveReport native_stress_solve_report() { return native().stress_solve_report(); }
   FfiDestructionStats native_stats() const {
     FfiDestructionStats stats = native().stats();
@@ -4542,8 +4542,8 @@ rust::Vec<FfiVehiclePartPose> World::native_detached_vehicle_parts(std::uint32_t
   return impl_->native_detached_vehicle_parts(entity_id);
 }
 
-bool World::native_set_stress_solve_report(bool enabled) {
-  return impl_->native_set_stress_solve_report(enabled);
+bool World::native_set_stress_solve_report(std::uint32_t passes) {
+  return impl_->native_set_stress_solve_report(passes);
 }
 FfiStressSolveReport World::native_stress_solve_report() {
   return impl_->native_stress_solve_report();

@@ -903,13 +903,13 @@ bool NativeDestruction::validate_mappings() const {
 }
 
 
-bool NativeDestruction::set_stress_solve_report(bool enabled) {
+bool NativeDestruction::set_stress_solve_report(std::uint32_t passes) {
 #if defined(VIBE_PHYSX_HAS_STRESS_SOLVE_REPORT)
   State &s = *state_;
   if (!s.configured) return false;
-  return s.stage().setStressSolveReport(enabled);
+  return s.stage().setStressSolveReport(passes);
 #else
-  (void)enabled;
+  (void)passes;
   return false;
 #endif
 }
@@ -925,8 +925,9 @@ FfiStressSolveReport NativeDestruction::stress_solve_report() {
   std::vector<PxDestructionStressComponentReport> components(n);
   std::vector<PxReal> residual(n);
   std::vector<PxU32> component(n);
+  std::vector<PxDestructionVectorPair> inputs(3 * std::size_t(n));
   PxU32 count = 0;
-  native_require(s.stage().getStressSolveReport(components.data(), n, count, residual.data(), component.data(), n),
+  native_require(s.stage().getStressSolveReport(components.data(), n, count, residual.data(), component.data(), n, inputs.data()),
                  "stress solve report unavailable (enable it after configure; read between steps)");
   for (PxU32 i = 0; i < count && i < n; ++i) {
     const auto &c = components[i];
@@ -936,8 +937,12 @@ FfiStressSolveReport NativeDestruction::stress_solve_report() {
     out.components.push_back(std::move(row));
   }
   for (PxU32 i = 0; i < n && i < s.chunks.size(); ++i) {
-    if (component[i] == PX_INVALID_U32) continue;
-    out.chunks.push_back(FfiStressChunkResidual{s.chunks[i].structure, s.chunks[i].authored, component[i], residual[i]});
+    // Every chunk, including ones in no component (static, or a part that
+    // broke off alone): their loads still say what the step did to them.
+    const auto &a = inputs[i], &b = inputs[n + i], &c = inputs[2 * std::size_t(n) + i];
+    out.chunks.push_back(FfiStressChunkResidual{s.chunks[i].structure, s.chunks[i].authored, component[i], residual[i],
+        native_ffi(a.linear), native_ffi(a.angular), native_ffi(b.linear - a.linear), native_ffi(b.angular - a.angular),
+        native_ffi(c.linear - b.linear), native_ffi(c.angular - b.angular)});
   }
 #endif
   return out;

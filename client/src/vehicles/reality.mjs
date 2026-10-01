@@ -13,17 +13,17 @@ import { jointMaterials } from './strength-profile.mjs';
 /** Per model class: the real vehicle each build stands for. Ranges are
  * [low, high]; `note` is where the range comes from. */
 export const classes = {
-  buggy:   { real: 'Two-seat sand rail', massKg: [700, 1300], wheelKg: [15, 40], topSpeed: [25, 45], accel: [3, 7],
+  buggy:   { real: 'Two-seat sand rail', massKg: [700, 1300], wheelKg: [15, 40], topSpeed: [25, 45], accel: [3, 7], travelM: [0.40, 0.65], travelNote: 'sand rails 16-26 in of wheel travel',
     note: 'VW/LS-powered sand rails 700-1300 kg; 30-33 in paddle/knobby tyre on aluminium wheel 15-40 kg; 0-100 km/h 4-9 s' },
-  trophy:  { real: 'Trophy truck (Baja)', massKg: [2700, 3300], wheelKg: [55, 95], topSpeed: [40, 60], accel: [3, 7],
+  trophy:  { real: 'Trophy truck (Baja)', massKg: [2700, 3300], wheelKg: [55, 95], topSpeed: [40, 60], accel: [3, 7], travelM: [0.60, 0.90], travelNote: 'trophy trucks 24-36 in',
     note: 'Class TT ~2700-3200 kg; 39-40 in tyre ~50 kg plus beadlock wheel; 0-100 km/h 4-9 s' },
-  rally:   { real: 'Rally2 hatchback', massKg: [1230, 1450], wheelKg: [15, 25], topSpeed: [45, 55], accel: [5, 8],
+  rally:   { real: 'Rally2 hatchback', massKg: [1230, 1450], wheelKg: [15, 25], topSpeed: [45, 55], accel: [5, 8], travelM: [0.20, 0.30], travelNote: 'Rally2 gravel 200-300 mm',
     note: 'Rally2 minimum 1230 kg; gravel wheel and tyre 15-25 kg; 0-100 km/h 3.5-5.5 s' },
-  monster: { real: 'Monster Jam truck', massKg: [4500, 5500], wheelKg: [280, 360], topSpeed: [25, 32], accel: [3, 8],
+  monster: { real: 'Monster Jam truck', massKg: [4500, 5500], wheelKg: [280, 360], topSpeed: [25, 32], accel: [3, 8], travelM: [0.60, 0.80], travelNote: 'Monster Jam 26-30 in',
     note: 'Monster Jam ~5400 kg; 66 in BKT tyre ~290 kg plus wheel; tops ~30 m/s' },
-  derby:   { real: 'Stripped full-size sedan (demolition derby)', massKg: [1500, 2000], wheelKg: [15, 25], topSpeed: [40, 55], accel: [2.5, 5],
+  derby:   { real: 'Stripped full-size sedan (demolition derby)', massKg: [1500, 2000], wheelKg: [15, 25], topSpeed: [40, 55], accel: [2.5, 5], travelM: [0.15, 0.25], travelNote: 'road sedan 6-10 in',
     note: 'body-on-frame sedans 1600-2000 kg stripped; steel wheel and tyre 15-25 kg' },
-  sprint:  { real: '410 winged sprint car', massKg: [600, 700], wheelKg: [10, 25], topSpeed: [55, 70], accel: [7, 11],
+  sprint:  { real: '410 winged sprint car', massKg: [600, 700], wheelKg: [10, 25], topSpeed: [55, 70], accel: [7, 11], travelM: [0.08, 0.16], travelNote: 'sprint car torsion bars 3-6 in',
     note: 'minimum ~650 kg with driver; 0-100 km/h under 3 s' },
 };
 
@@ -32,6 +32,7 @@ export const common = {
   rideHz:  { range: [0.9, 2.5], note: 'sprung natural frequency: road cars 1-1.5 Hz, race and off-road up to ~2.5 Hz' },
   grip:    { range: [0.6, 1.3], note: 'tyre-road friction: road tyres 0.7-1.0 on dry asphalt, dirt 0.5-0.8, racing slicks up to ~1.3' },
   brakeG:  { range: [0.5, 1.3], note: 'deceleration the brake torque can command, in g (grip-limited in reality)' },
+  sagFraction: { range: [0.2, 0.45], note: 'static sag as a share of wheel travel: off-road 25-35%, road and race 20-40%; more leaves too little bump travel and the car bottoms out on its limit' },
 };
 
 /** Joint limits (strength-profile.mjs) against the materials they stand for.
@@ -77,6 +78,8 @@ export function auditBuild(id, model, metadata, driving) {
     row('rideHz', Math.sqrt(driving.springStiffness / corner) / (2 * Math.PI), common.rideHz.range, common.rideHz.note, id),
     row('grip', driving.tyreFriction, common.grip.range, common.grip.note, id),
     row('brakeG', 4 * driving.brakeTorque / tireRadius / metadata.mass / 9.81, common.brakeG.range, common.brakeG.note, id),
+    row('travelM', metadata.suspensionTravel, c.travelM, c.travelNote, id),
+    row('sagFraction', corner * 9.81 / driving.springStiffness / metadata.suspensionTravel, common.sagFraction.range, common.sagFraction.note, id),
   ];
 }
 
