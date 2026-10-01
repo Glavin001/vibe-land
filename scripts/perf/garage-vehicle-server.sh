@@ -16,6 +16,9 @@
 # PX_DESTRUCTION_ALLOW_UNCONVERGED=1: unconverged stress steps are published
 # instead of rejected (fracture verdicts may be spurious). Double precision is
 # emulated on Apple GPUs (~0.5 s/tick) and is not usable for play.
+# VIBE_NATIVE_STRESS_FORCE_TOLERANCE (default 1e-3 here): force convergence,
+# PxDestructionStressDesc::forceTolerance (destruction/src/native_runtime.rs);
+# 0 = the residual test alone.
 # The client is `npm run dev`.
 set -euo pipefail
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
@@ -37,5 +40,6 @@ exec scripts/perf/gpu-run.sh garage-vehicles env \
   VIBE_PHYSICS_BACKEND=physx_gpu VIBE_GARAGE_VEHICLE_DESTRUCTION=1 RUST_LOG=${RUST_LOG:-info} \
   VIBE_GARAGE_BALL_MASS=${VIBE_GARAGE_BALL_MASS:-} PX_DESTRUCTION_ALLOW_UNCONVERGED=${PX_DESTRUCTION_ALLOW_UNCONVERGED:-1} \
   VIBE_CITY_DESTRUCTIBLE_VEHICLES=${VIBE_CITY_DESTRUCTIBLE_VEHICLES:-1} \
+  VIBE_NATIVE_STRESS_FORCE_TOLERANCE=${VIBE_NATIVE_STRESS_FORCE_TOLERANCE:-0.001} \
   CUMETAL_CACHE_DIR="$ROOT/target/cumetal-cache-vehicles" \
   "$CARGO_TARGET_DIR/release/web-fps-server" > "$LOG" 2>&1
