@@ -97,13 +97,24 @@ wheel load (x static corner weight). Per broken bond, an **audit**: its
 tension/compression/shear the tick before as fractions of fatal, its
 utilisation over the five ticks before, whether that solve converged, what
 the car touched, its deceleration and wheel loads, classified
-`unconverged` / `impact` / `wheel-load` / `unexplained`. A bond at 0% of fatal
-the tick before, broken by an unconverged solve, is a spurious verdict, not a
-weak part. Everything, tick by tick, lands in `target/vehicle-lab/report.json`.
+`unconverged` / `impact` / `wheel-load` / `unexplained`. "Unconverged" is the
+native residual test's word; whether that solve's forces were actually wrong is
+the stress oracle's question (`stress-convergence` skill: capture the window,
+`uv run scripts/stress/oracle.py <dir> --fixtures ... --select breaks`), which
+compares the breaking solve's verdicts with the converged truth. Every run also
+asserts that no PhysX step was lost (`lost` in the run line); run under the
+production policy with `VIBE_LAB_REJECT_UNCONVERGED=1`. Everything, tick by
+tick, lands in `target/vehicle-lab/report.json`.
 
 ### What the lab found (2026-10-01) and what changed
 
-- **Spurious breaks were unconverged and diverged solves.** At 64 iterations a
+- **Correction (oracle, later the same day): the remaining course-18 breaks are
+  real loads.** The breaking solves, 400-3000x over the residual tolerance,
+  had bond forces within ~1e-3 of converged and exactly the converged verdicts.
+  The residual test over-weights stiff modes; force convergence
+  (`VIBE_NATIVE_STRESS_FORCE_TOLERANCE=1e-3`) reads them as converged: fleet
+  49% -> 98% of solves, same breaks, step median 9.0 -> 6.2 ms.
+- **Earlier reading: spurious breaks were unconverged and diverged solves.** At 64 iterations a
   car's solve was cut off mid-transient: residual up to 2e5x tolerance, worse
   than its warm start. Causes, by what-if: chunks under 1 kg on stiff steel
   bonds (now merged, `client/src/vehicles/chunk-merge.mjs`) and a 1e6-4.5e7
