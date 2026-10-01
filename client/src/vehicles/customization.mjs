@@ -40,6 +40,9 @@ export function normalizeDriving(value) {
   return {...result, drivetrain:value.drivetrain};
 }
 
+/** Static sag as a share of wheel travel: off-road 25-35%, road and race 20-40%. */
+export const STATIC_SAG_FRACTION = 0.3;
+
 /** Limits drive force to 80% of the driven axle(s)' static friction budget.
  * Springs retain positive droop/compression inside the authored linkage range.
  * This is an initial setup, not a guarantee against rollover or wheelspin. */
@@ -49,7 +52,12 @@ export function drivingSetup(configuration, geometry, mass) {
   const drivenWheels = tune.drivetrain === 'awd' ? 4 : 2;
   const acceleration = Math.min(tune.acceleration, .8 * tune.grip * 9.81 * drivenWheels / 4);
   const cornerMass = mass / 4;
-  const springStiffness = cornerMass * 9.81 / geometry.neutralJounce * tune.springRate;
+  // Springs sized for STATIC_SAG_FRACTION of the wheel travel, as real
+  // suspensions are set up (reality.mjs sagFraction). Sizing them to rest at
+  // the rig's mid-travel neutral left every symmetric linkage at 50% sag: the
+  // monster truck sat 0.25 m into its 0.5 m and hit the travel limit on every
+  // landing, a 1.6 MN constraint load on the wheel (vehicle lab, 2026-10-01).
+  const springStiffness = cornerMass * 9.81 / (STATIC_SAG_FRACTION * geometry.suspensionTravel) * tune.springRate;
   const damping = 2 * Math.sqrt(springStiffness * cornerMass) * tune.dampingRatio;
   return {
     acceleration, driveTorque: mass * acceleration * configuration.dimensions.tireRadius / drivenWheels,

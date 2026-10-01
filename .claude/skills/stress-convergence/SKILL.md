@@ -20,6 +20,50 @@ authored data before the solver.
 - **Lock.** The GPU lock is held by whoever owns it, including the play server.
   A queued test prints nothing while it waits.
 
+## The tools (structure qualification)
+
+Measure, do not guess. In order:
+
+1. **Lint** (no GPU): `cargo test -p web-fps-server --bin web-fps-server lint_city_structures`
+   and `VIBE_VEHICLE_BUILD_FIXTURES=... lint_vehicle_builds` (`-- --ignored --nocapture`).
+   `destruction/src/structure_lint.rs` runs the checklist below on the graph the
+   stage gets: slivers, stiffness spread, mass contrast across a bond,
+   unrealizable inertia, floating/disconnected parts, sole attachments rated in
+   g of what hangs from them, bonds across moving rig joints. City buildings:
+   spread ~40, mass ratio ~14. Fleet cars (2026-10-01): spread 1e6-4.5e7, ratio
+   500+.
+2. **Solve report** (GPU, PxDestructionScene v23): `World::native_set_stress_solve_report(passes)`
+   then `native_stress_solve_report()` each step. Per component: why the solve
+   stopped (converged / iteration cap / stagnated / degenerate / failed), the
+   residual at iteration 0 and every power of two, and each chunk's share of
+   what is left; per chunk, its stress input by source (prepared loads,
+   constraints, contacts). `passes` bit 0 is the trial solve that decides what
+   breaks (the corrected re-solve after a split would hide it).
+   `server/src/structure_qualification.rs` `SolveTally` turns a run of reports
+   into one verdict: converges / cut off at the cap (extra iterations
+   extrapolated from the component's own history) / stalled (no iteration
+   count helps) / diverged (ended >10x worse than it started -- its forces are
+   garbage), plus the chunks holding the residual.
+3. **Load cases**: `city_structures_qualify` (every city building at the city's
+   cap, at rest and after a cannonball) and the vehicle lab
+   (`physx_runtime/vehicle_lab.rs`: airborne, park, cruise, rough course, kerb,
+   debris, walls, cannonball). Airborne vs park separates the structure from
+   the loads injected on the ground.
+4. **What-ifs before authoring changes**: `VIBE_TEST_MASS_FLOOR` (kg),
+   `VIBE_TEST_BOND_WEIGHT=modulus|area|length|all`, `VIBE_BOND_CONTACT_LENGTH`,
+   `VIBE_BOND_STIFFNESS_EXPONENT`, `VIBE_BOND_STIFFNESS_CLAMP`,
+   `VIBE_GARAGE_STRESS_ITERATIONS/TOLERANCE`. A what-if that converges says which
+   property to fix; it is not the fix. Use `${=cfg}` for multi-variable
+   configs in zsh loops.
+5. **Price every concession**: `VIBE_LAB_REPORT_NAME=` two runs (a converged
+   reference at a high cap, the candidate) and
+   `scripts/perf/compare-bond-loads.py ref.json cand.json` reports how far
+   each load-bearing bond's stress moved.
+
+Verify any "needs N more iterations" by running at that cap: the monster's
+rough-course solves extrapolated to ~100 more at 64, then at 1024 stalled at
+2.5x tolerance -- a floor, not a budget.
+
 ## Authoring checks, cheapest first
 
 1. **Interface area distribution.** Tabulate the bond areas. The bridge floors stiffness at

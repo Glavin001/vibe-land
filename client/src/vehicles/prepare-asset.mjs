@@ -14,6 +14,7 @@ import { requireConnectedAssembly, STRENGTH_PROFILE_VERSION, SOLVER_MIN_BOND_ARE
 import { meshMassProperties, massPropertiesToActor, combineMassProperties } from './mass-properties.mjs';
 import { encodeModel } from './dune/model-codec.mjs';
 import { requireChunkMotion } from './dune/pose-deltas.mjs';
+import { mergeLightChunks, MIN_CHUNK_KG } from './chunk-merge.mjs';
 
 let submittedConfiguration;
 async function main() {
@@ -23,7 +24,7 @@ const request = JSON.parse(Buffer.concat(input).toString('utf8'));
 submittedConfiguration = request.configuration;
 const configuration = normalizeConfiguration(request.configuration);
 const root = resolve(process.argv[2]);
-const geometryHash = createHash('sha256').update(JSON.stringify({recipe:'vehicle-physics-interface-12',strength:STRENGTH_PROFILE_VERSION,geometry:geometryKey(configuration)})).digest('hex');
+const geometryHash = createHash('sha256').update(JSON.stringify({recipe:'vehicle-physics-interface-13',strength:STRENGTH_PROFILE_VERSION,geometry:geometryKey(configuration)})).digest('hex');
 const directory = join(root, geometryHash);
 let metadata;
 try { metadata = JSON.parse(await readFile(join(directory, 'metadata.json'), 'utf8')); }
@@ -62,6 +63,11 @@ catch (error) {
  bonds.splice(0, bonds.length, ...bonds.filter(b => !excluded.includes(b)));
  excludedContacts.push(...excluded.map(b => ({ a: b.visualA, b: b.visualB, reason: 'sub-solver-area-graze' })));
  if (mounts.size) process.stderr.write(`minimum mounts (geometry barely meets its mount): ${[...mounts].map(b => `${b.visualA}/${b.visualB}`).join(', ')}\n`);
+ // Stress chunks lighter than MIN_CHUNK_KG join their best-bonded same-motion
+ // neighbour (chunk-merge.mjs: light chunks on stiff bonds stall the solve).
+ const chunkMass = part => (part.visualIds ?? [part.id]).reduce((n, id) => n + visuals.get(id).mass, 0);
+ const chunkMerges = mergeLightChunks(bundle.parts, bonds, chunkMass, MIN_CHUNK_KG);
+ if (chunkMerges.unmerged.length) process.stderr.write(`chunks under ${MIN_CHUNK_KG} kg with no same-motion neighbour: ${chunkMerges.unmerged.map(u => `${u.name} ${u.kg.toFixed(2)} kg`).join(', ')}\n`);
  const massProperties = new Map(visual.parts.map(part => [part.id,
    massPropertiesToActor(meshMassProperties(part.position, part.indices, part.mass), geometry.originHeight)]));
  for (const part of bundle.parts) requireChunkMotion(part, part.visualIds.map(id => visuals.get(id).motion));
@@ -92,6 +98,7 @@ catch (error) {
    jointTopology: 'rig-anchored-joints-3',
    excludedContacts: excludedContacts.map(({a,b,reason})=>({a,b,reason})),
    shapeCount: parts.reduce((n,p)=>n+p.shapes.length,0), bondCount: bonds.length, contactCount: surfaces.length,
+   minChunkKg: MIN_CHUNK_KG, mergedChunks: chunkMerges.merged, unmergedLightChunks: chunkMerges.unmerged,
    strengthProfileVersion: STRENGTH_PROFILE_VERSION, strengthQualification: 'pending-native-tests',
    mass: parts.reduce((n,p)=>n+p.mass,0), bounds,
    massProperties: combineMassProperties(parts.map(p=>p.massProperties)),

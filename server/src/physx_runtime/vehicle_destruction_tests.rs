@@ -93,6 +93,30 @@ pub(super) fn fixtures() -> Vec<(String, PreparedGeometry)> {
             let d = geometry.driving.as_mut().unwrap();
             d.drive_torque *= k as f32; d.brake_torque *= k as f32; d.spring_stiffness *= k as f32; d.damping *= k as f32;
         }
+        // VIBE_TEST_MASS_FLOOR=kg (what-if, conditioning): every part lighter
+        // than this gets this mass, inertia scaled with it.
+        if let Some(floor) = std::env::var("VIBE_TEST_MASS_FLOOR").ok().and_then(|v| v.parse::<f64>().ok()) {
+            for part in &mut geometry.parts {
+                if part.mass >= floor { continue; }
+                let k = floor / part.mass;
+                part.mass = floor; part.mass_properties.mass *= k;
+                for row in &mut part.mass_properties.inertia { for x in row { *x *= k; } }
+            }
+            // The assembly must equal the sum of its parts (validate_fracture_layout).
+            let total: f64 = geometry.parts.iter().map(|p| p.mass).sum();
+            let center = geometry.parts.iter().fold(nalgebra::Vector3::zeros(), |c, p| c + nalgebra::Vector3::from(p.mass_properties.center) * p.mass) / total;
+            let mut inertia = nalgebra::Matrix3::<f64>::zeros();
+            for p in &geometry.parts {
+                let i = p.mass_properties.inertia;
+                let o = nalgebra::Vector3::from(p.mass_properties.center) - center;
+                inertia += nalgebra::Matrix3::new(i[0][0], i[0][1], i[0][2], i[1][0], i[1][1], i[1][2], i[2][0], i[2][1], i[2][2])
+                    + (nalgebra::Matrix3::identity() * o.norm_squared() - o * o.transpose()) * p.mass;
+            }
+            geometry.mass = total as f32;
+            geometry.mass_properties.mass = total;
+            geometry.mass_properties.center = [center.x, center.y, center.z];
+            for r in 0..3 { for c in 0..3 { geometry.mass_properties.inertia[r][c] = inertia[(r, c)]; } }
+        }
         (f["name"].as_str().unwrap().to_owned(), geometry)
     }).collect()
 }

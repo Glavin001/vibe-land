@@ -333,6 +333,10 @@ fn run(geometry: &PreparedGeometry, layout: &FractureLayout, s: &Scenario) -> Va
         samples.push(json!([tick + 1, (speed * 100.).round() / 100., ok, status["iterations"], (decel_g * 100.).round() / 100., (wheel / static_corner * 100.).round() / 100., (tick_u * 1000.).round() / 1000., tick_bond]));
     }
     let raw = scene.arena.vehicle_destruction_debug(CAR).unwrap();
+    // The last step's per-bond stress, for comparing two configurations under
+    // identical loads (scripts/perf/compare-bond-loads.py).
+    let bond_loads: Vec<Value> = raw["bonds"].as_array().unwrap().iter().filter(|b| !b["broken"].as_bool().unwrap_or(false))
+        .map(|b| json!([b["index"], b["utilisation"], b["tension"], b["compression"], b["shear"]])).collect();
     let hulls: Vec<Hull> = serde_json::from_value(raw["hulls"].clone()).unwrap();
     let mut off: Vec<u32> = hulls.iter().filter(|h| h.actor != 0).map(|h| h.part).collect();
     off.sort(); off.dedup();
@@ -360,6 +364,7 @@ fn run(geometry: &PreparedGeometry, layout: &FractureLayout, s: &Scenario) -> Va
             "touching": a.touching, "causes": a.causes, "solve": a.solve, "loads": a.loads,
             "remainingBefore": a.remaining, "damagedSince": a.damaged_since})).collect::<Vec<_>>(),
         "solve": tally.to_json(|_, node| format!("{} ({})", geometry.parts[node as usize].id, geometry.parts[node as usize].name)),
+        "bondLoadsColumns": ["index", "utilisation", "tension", "compression", "shear"], "bondLoads": bond_loads,
         "samplesColumns": ["tick", "speed", "converged", "iterations", "decelG", "wheelLoadXStatic", "peakUtilisation", "peakBond"],
         "samples": samples,
     })
@@ -407,7 +412,8 @@ fn vehicle_lab() {
     }
     let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../target/vehicle-lab");
     std::fs::create_dir_all(dir).unwrap();
-    std::fs::write(format!("{dir}/report.json"), serde_json::to_vec(&report).unwrap()).unwrap();
+    let name = std::env::var("VIBE_LAB_REPORT_NAME").unwrap_or("report".into());
+    std::fs::write(format!("{dir}/{name}.json"), serde_json::to_vec(&report).unwrap()).unwrap();
     eprintln!("\n{} of {} runs held their expectations; report {dir}/report.json", report.len() - failures.len(), report.len());
     if std::env::var_os("VIBE_LAB_REPORT_ONLY").is_none() { assert!(failures.is_empty(), "vehicle lab expectations failed:\n{}", failures.join("\n")); }
 }

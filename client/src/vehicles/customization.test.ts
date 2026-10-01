@@ -1,3 +1,4 @@
+import {STATIC_SAG_FRACTION} from './customization.mjs';
 import {describe, expect, it} from 'vitest';
 import {defaultConfiguration, normalizeConfiguration, geometryKey, resolveDrivingSetup, resolveVehicleGeometry, serializeConfiguration, drivingFields} from './configuration.mjs';
 import {garageBuilds} from './builds.mjs';
@@ -39,6 +40,8 @@ describe('personalized Vehicle2 builds',()=>{
       const restCompression=600*9.81/d.springStiffness;
       expect(restCompression).toBeGreaterThan(0);
       expect(restCompression).toBeLessThan(g.suspensionTravel);
+      // Rests at STATIC_SAG_FRACTION of its travel (springRate scales it).
+      expect(restCompression*c.driving.springRate/g.suspensionTravel).toBeCloseTo(STATIC_SAG_FRACTION);
       expect(d.maxSteerRadians).toBeLessThanOrEqual(g.maxSteerRadians);
     }
   });

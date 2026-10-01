@@ -278,9 +278,19 @@ void NativeDestruction::State::append_bonds(std::uint32_t structure_id, std::uin
     // road-load solve exactly as unconverged (0/1200 ticks, 2026-09-30).
     static const std::string flat=std::getenv("VIBE_TEST_BOND_WEIGHT")?std::getenv("VIBE_TEST_BOND_WEIGHT"):"";
     const bool fm=flat=="modulus"||flat=="all",fa=flat=="area"||flat=="all",fl=flat=="length"||flat=="all";
-    const float weight =
+    // VIBE_BOND_CONTACT_LENGTH=1 (A/B): the bond's length is at least the
+    // patch's own size, sqrt(area). A flat elastic contact's stiffness goes as
+    // E*sqrt(A) whatever the chunks' centres of mass do; two overlapping parts
+    // (a panel on its brace, 2 cm between centres) otherwise read as a bond
+    // hundreds of times stiffer than its neighbours.
+    static const bool contact_length = native_env_f32("VIBE_BOND_CONTACT_LENGTH", 0.0f) != 0.0f;
+    const float length = contact_length ? std::max(distance, std::sqrt(std::max(b.area, 1e-4f))) : distance;
+    // VIBE_BOND_STIFFNESS_EXPONENT=p (A/B, default 1): weight^p compresses the
+    // spread of bond stiffness (1 physical, 0 every bond equal).
+    static const float exponent = native_env_f32("VIBE_BOND_STIFFNESS_EXPONENT", 1.0f);
+    const float weight = std::pow(
         std::sqrt((fm ? 1.0f : modulus > 0.0f ? modulus / kReferenceModulusPa : 1.0f) *
-                  (fa ? 1e-3f : std::max(b.area, 1e-4f)) / (fl ? 0.3f : std::max(distance, 0.05f)));
+                  (fa ? 1e-3f : std::max(b.area, 1e-4f)) / (fl ? 0.3f : std::max(length, 0.05f))), exponent);
     log_weight += std::log(weight);
 
     PxDestructionStressBond bond{};
@@ -300,8 +310,12 @@ void NativeDestruction::State::append_bonds(std::uint32_t structure_id, std::uin
   if (!bonds.empty()) {
     const float mean =
         std::exp(static_cast<float>(log_weight / static_cast<double>(bonds.size())));
+    // VIBE_BOND_STIFFNESS_CLAMP=C (A/B): normalised weights held within
+    // [1/C, C] of the structure's geometric mean -- only the outliers move.
+    static const float clamp = native_env_f32("VIBE_BOND_STIFFNESS_CLAMP", 0.0f);
     for (std::size_t i = bond_base; i < s.bonds.size(); ++i) {
       s.bonds[i].complianceScale /= mean;
+      if (clamp > 1.0f) s.bonds[i].complianceScale = std::clamp(s.bonds[i].complianceScale, 1.0f / clamp, clamp);
     }
   }
 }
