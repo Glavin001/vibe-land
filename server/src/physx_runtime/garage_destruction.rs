@@ -36,6 +36,10 @@ pub struct GarageDestruction {
     configured: bool,
     pub broken_bonds: usize,
     pub rejected_steps: usize,
+    /// Native ticks that failed outright: the stage could not complete the
+    /// step (PhysX: "this simulation step is incomplete"), e.g. an unconverged
+    /// solve under the reject policy.
+    pub failed_steps: usize,
     detached_count: usize,
     steps: u64,
     /// Authored bond indices broken so far (from fracture events; the stress
@@ -63,7 +67,7 @@ impl GarageDestruction {
             bridge::DestructibleSettings { materials: asset.materials, ..Default::default() })
             .map_err(|e| e.to_string())?;
         Ok(Self { entity, structure, external: false, rig, wheel_parts, origin_height: geometry.origin_height,
-            neutral_jounce: geometry.neutral_jounce, configured: false, broken_bonds: 0, rejected_steps: 0, detached_count: 0,
+            neutral_jounce: geometry.neutral_jounce, configured: false, broken_bonds: 0, rejected_steps: 0, failed_steps: 0, detached_count: 0,
             steps: 0, broken: Default::default(), last_status: None, events: VecDeque::new() })
     }
 
@@ -183,7 +187,7 @@ impl GarageDestruction {
         }));
         let events: Vec<_> = self.events.iter().rev().map(|(step, text)| json!({"step": step, "text": text})).collect();
         Ok(json!({
-            "configured": self.configured, "steps": self.steps, "rejectedSteps": self.rejected_steps,
+            "configured": self.configured, "steps": self.steps, "rejectedSteps": self.rejected_steps, "failedSteps": self.failed_steps,
             "brokenBonds": self.broken_bonds, "wheelLoads": wheel_loads,
             "lastStatus": self.last_status.map(|(error, converged, iterations)| json!({"error": error, "converged": converged, "iterations": iterations})),
             "vehicle": {"wheelMask": vehicle.wheel_mask, "driveMask": vehicle.drive_mask, "engineConnected": vehicle.engine_connected},
@@ -226,6 +230,7 @@ pub fn after_step(cars: &mut [GarageDestruction], world: &mut bridge::World) {
         let tolerance = std::env::var("VIBE_GARAGE_STRESS_TOLERANCE").ok().and_then(|v| v.parse().ok())
             .unwrap_or_else(vibe_land_destruction::native_runtime::stress_tolerance);
         match world.native_configure(bridge::NativeConfig { max_iterations, tolerance,
+            force_tolerance: vibe_land_destruction::native_runtime::stress_force_tolerance(),
             warm_start: true, damage_rate: 2., bend_gain_max: 3., fibre_bending: true,
             // A car split into ~50 bodies holds ~24k contact pairs; growing
             // the graph mid-impact waited 78 ms on the GPU (measured). Meteor
@@ -257,7 +262,11 @@ pub fn after_step(cars: &mut [GarageDestruction], world: &mut bridge::World) {
             }
         }
         Ok(_) => {}
-        Err(error) => { tracing::error!(%error, "garage vehicle native tick failed"); return; }
+        Err(error) => {
+            for car in cars.iter_mut() { car.failed_steps += 1; }
+            if cars[0].failed_steps % 60 == 1 { tracing::error!(%error, failed = cars[0].failed_steps, "garage vehicle native tick failed"); }
+            return;
+        }
     }
     if let Ok(broken) = world.native_take_broken_bonds() {
         for car in cars.iter_mut() {

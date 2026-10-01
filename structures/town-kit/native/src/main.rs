@@ -104,7 +104,7 @@ fn run(pack:&Value, meta:&Value, mode:&str, report:&mut Value, rec:&mut Recorder
  if unsafe{town_kit_contact_settings(world.scene_ptr()?,position,velocity,contact_offset,&mut contact)}==0{return Err("contact settings unavailable".into());}
  report["contactSolver"]=json!({"requested":requested,"actors":contact.actors,"positionIterations":[contact.position_min,contact.position_max],"velocityIterations":[contact.velocity_min,contact.velocity_max],"configuredBeforeFirstStep":position>0||contact_offset>0.,"shapes":contact.shapes,"contactOffsetMetres":[contact.contact_min,contact.contact_max],"restOffsetsChanged":false,"sleepSettingsChanged":false});
  world.step()?;
- let native_config=|iterations| NativeConfig {max_iterations:iterations,tolerance:stress_tolerance(),warm_start:true,damage_rate:2.,bend_gain_max:3.,fibre_bending:true,reserved_contact_pairs:(nodes.len()*6).max(4096) as u32,preserve_unchanged_contact_pairs:flag("TOWN_KIT_PRESERVE_CONTACTS"),gpu_island_repair:flag("TOWN_KIT_GPU_ISLAND_REPAIR"),verdict_sample_ticks:1};
+ let native_config=|iterations| NativeConfig {max_iterations:iterations,tolerance:stress_tolerance(),force_tolerance:0.,warm_start:true,damage_rate:2.,bend_gain_max:3.,fibre_bending:true,reserved_contact_pairs:(nodes.len()*6).max(4096) as u32,preserve_unchanged_contact_pairs:flag("TOWN_KIT_PRESERVE_CONTACTS"),gpu_island_repair:flag("TOWN_KIT_GPU_ISLAND_REPAIR"),verdict_sample_ticks:1};
  world.native_configure(native_config(std::env::var("TOWN_KIT_ITERATIONS").ok().and_then(|x|x.parse().ok()).unwrap_or(16)))?;
  if std::env::var_os("TOWN_KIT_WARM_IN").is_some() || std::env::var_os("TOWN_KIT_WARM_OUT").is_some() {
   let path=world.native_warm_runtime_path()?;

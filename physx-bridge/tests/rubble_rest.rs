@@ -224,6 +224,7 @@ fn run(fixture: &Fixture, ticks: u32) -> Outcome {
         .native_configure(NativeConfig {
             max_iterations: 16,
             tolerance: 1.0e-3,
+            force_tolerance: 0.0,
             warm_start: true,
             damage_rate: 2.0,
             bend_gain_max: 3.0,

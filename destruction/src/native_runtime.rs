@@ -108,6 +108,24 @@ pub fn stress_tolerance() -> f32 {
         .unwrap_or(1.0e-3)
 }
 
+/// Force convergence (PxDestructionStressDesc::forceTolerance): a component
+/// also converges when its last preconditioned step moved the bond forces by
+/// at most this fraction of their size. The residual test alone weights every
+/// force error by the stiffest bonds: a car's solve with forces within 1e-3 of
+/// converged reads 400-3000x over tolerance and is cut off at the cap (and
+/// rejected unless PX_DESTRUCTION_ALLOW_UNCONVERGED). Measured with
+/// scripts/stress/oracle.py on 881 captured car solves, 1e-3 leaves at most
+/// 0.4% force error; the fleet lab at 1e-3: 49% -> 98% of solves converged,
+/// identical breaks and load sharing, step median 9.0 -> 6.2 ms. Opt-in
+/// (VIBE_NATIVE_STRESS_FORCE_TOLERANCE, default 0 = residual test only).
+pub fn stress_force_tolerance() -> f32 {
+    std::env::var("VIBE_NATIVE_STRESS_FORCE_TOLERANCE")
+        .ok()
+        .and_then(|v| v.parse::<f32>().ok())
+        .filter(|v| *v >= 0.0 && v.is_finite())
+        .unwrap_or(0.0)
+}
+
 /// Contact-pair storage touched up front.
 ///
 /// Sized from the scene rather than fixed: the first impact on a city that has
@@ -545,6 +563,7 @@ impl NativeCityDestruction {
             .native_configure(NativeConfig {
                 max_iterations: stress_iterations(),
                 tolerance: stress_tolerance(),
+                force_tolerance: stress_force_tolerance(),
                 warm_start: true,
                 damage_rate: 2.0,
                 bend_gain_max: 3.0,

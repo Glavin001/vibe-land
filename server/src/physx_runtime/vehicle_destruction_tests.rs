@@ -126,9 +126,12 @@ impl Scene {
     pub(super) fn new(geometry: &PreparedGeometry, garage_world: bool) -> Self { Self::new_at(geometry, garage_world, 0.) }
     /// `lift`: metres above the resting spawn height (the lab's airborne case).
     pub(super) fn new_at(geometry: &PreparedGeometry, garage_world: bool, lift: f32) -> Self {
-        // The garage's own switches: all hulls installed, unconverged steps published.
+        // The garage's own switches: all hulls installed, unconverged steps
+        // published -- unless VIBE_LAB_REJECT_UNCONVERGED asks for the
+        // production policy (PhysX 6938aa7d: an unconverged step is rejected).
         std::env::set_var("VIBE_GARAGE_VEHICLE_DESTRUCTION", "1");
-        std::env::set_var("PX_DESTRUCTION_ALLOW_UNCONVERGED", "1");
+        if std::env::var_os("VIBE_LAB_REJECT_UNCONVERGED").is_some() { std::env::remove_var("PX_DESTRUCTION_ALLOW_UNCONVERGED"); }
+        else { std::env::set_var("PX_DESTRUCTION_ALLOW_UNCONVERGED", "1"); }
         let mut arena = PhysxPhysicsArena::new(MoveConfig::default()).unwrap();
         if garage_world {
             let world = crate::demo_world::garage_test_world();

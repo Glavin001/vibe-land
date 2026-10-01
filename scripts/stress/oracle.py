@@ -135,6 +135,8 @@ class System:
         self.B = sp.coo_matrix((values, (rows, cols)), shape=(6 * len(members), 6 * len(selected))).tocsr()
         self.A = (self.B @ self.B.T).toarray()
         self.members, self.selected, self.local, self.anchored = members, selected, local, anchored
+        # (first node, second node, colScale) per selected bond, global node ids
+        self.bonds_of = [(int(bonds[i]['first']), int(bonds[i]['second']), float(bonds[i]['scale'])) for i in selected]
         self.identity = identity
         self.n = len(members)
         self.rhs = nodes['rhs'][members].astype(np.float64).ravel()
@@ -328,11 +330,20 @@ def spectrum(system, Q, names):
         share /= share.sum()
         order = np.argsort(-share)[:top]
         return [dict(chunk=names(int(system.members[i])), share=round(float(share[i]), 3)) for i in order]
+
+    def strained(vec, top=4):
+        # The bonds a mode deforms: each bond's share of the mode's energy
+        # ||(B^T v)_j||^2. A slow mode's bonds are what holds it softly.
+        energy = ((system.B.T @ (C @ vec)).reshape(-1, 6) ** 2).sum(axis=1)
+        energy /= max(energy.sum(), 1e-300)
+        order = np.argsort(-energy)[:top]
+        b = system.bonds_of
+        return [dict(bond=f"{names(int(b[k][0]))} - {names(int(b[k][1]))}", share=round(float(energy[k]), 3), scale=round(float(b[k][2]), 4)) for k in order]
     # slowest modes under the polynomial (what PCG actually fights)
     pv_w, pv_v = la.eig(Pr @ Ar)
     order = np.argsort(np.real(pv_w))
     slow = [dict(eigenvalue=float(np.real(pv_w[k])), relative=float(np.real(pv_w[k]) / pw[-1]),
-                 chunks=where(np.real(pv_v[:, k]))) for k in order[:6]]
+                 chunks=where(np.real(pv_v[:, k])), bonds=strained(np.real(pv_v[:, k]))) for k in order[:6]]
     raw_slow = [dict(eigenvalue=float(w[k]), relative=float(w[k] / lam_max), chunks=where(v[:, k])) for k in range(6)]
     out = dict(kappa_raw=lam_max / lam_min, kappa_jacobi=float(jw[-1] / jw[0]), kappa_polynomial=float(pw[-1] / pw[0]),
                poly_range=[float(pw[0]), float(pw[-1])], lambda_max=lam_max, lambda_min=lam_min,
@@ -731,6 +742,7 @@ def main():
             print('  ' + summary_line(r))
             for mode in r['spectrum']['slowest_polynomial'][:3]:
                 print(f"     slow mode {mode['relative']:.2e} of the top: " + ', '.join(f"{c['chunk']} {c['share']:.0%}" for c in mode['chunks']))
+                print("        deforms: " + '; '.join(f"{b['bond']} {b['share']:.0%} (w {b['scale']})" for b in mode['bonds']))
             if 'rigid_energy_relative_to_lambda_max' in r and r['rigid_energy_relative_to_lambda_max']:
                 print('     rigid-mode energy / lambda_max: ' + ' '.join(f'{e:.1e}' for e in r['rigid_energy_relative_to_lambda_max']))
             if 'decisions' in r:

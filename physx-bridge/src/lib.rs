@@ -484,6 +484,9 @@ pub struct WorldStats {
     /// scene will never simulate again however many times it is reset. See
     /// LoggingErrorCallback.
     pub gpu_context_lost: bool,
+    /// Process-wide count of PhysX steps the native destruction stage could
+    /// not complete (e.g. an unconverged stress solve under the reject policy).
+    pub incomplete_steps: u32,
 }
 
 /// The last completed step's phases and counts, for per-tick telemetry.
@@ -2333,6 +2336,9 @@ mod ffi {
         completed_steps: u64,
         gpu_warning_count: u32,
         gpu_context_lost: bool,
+        /// Process-wide count of PhysX steps the native destruction stage
+        /// could not complete ("this simulation step is incomplete").
+        incomplete_steps: u32,
     }
 
     struct FfiContactEvent {
@@ -2432,6 +2438,10 @@ mod ffi {
         /// converge rather than publishing one.
         max_iterations: u32,
         tolerance: f32,
+        /// Force convergence (PxDestructionStressDesc::forceTolerance, v24):
+        /// a component also converges when its last step moved the bond
+        /// forces by at most this fraction of their size. 0 = residual only.
+        force_tolerance: f32,
         warm_start: bool,
         damage_rate: f32,
         bend_gain_max: f32,
@@ -3203,6 +3213,7 @@ impl From<ffi::FfiWorldStats> for WorldStats {
             completed_steps: value.completed_steps,
             gpu_warning_count: value.gpu_warning_count,
             gpu_context_lost: value.gpu_context_lost,
+            incomplete_steps: value.incomplete_steps,
         }
     }
 }
@@ -3316,6 +3327,7 @@ impl From<ffi::FfiChunkMigrationEvent> for ChunkMigrationEvent {
 pub struct NativeConfig {
     pub max_iterations: u32,
     pub tolerance: f32,
+    pub force_tolerance: f32,
     pub warm_start: bool,
     pub damage_rate: f32,
     pub bend_gain_max: f32,
@@ -3332,6 +3344,7 @@ impl From<NativeConfig> for ffi::FfiNativeConfig {
         Self {
             max_iterations: v.max_iterations,
             tolerance: v.tolerance,
+            force_tolerance: v.force_tolerance,
             warm_start: v.warm_start,
             damage_rate: v.damage_rate,
             bend_gain_max: v.bend_gain_max,

@@ -946,6 +946,12 @@ FfiNativeConfigured NativeDestruction::configure(const FfiNativeConfig &config) 
 #endif
   desc.maxIterations = config.max_iterations;
   desc.tolerance = config.tolerance;
+#if defined(VIBE_PHYSX_HAS_FORCE_TOLERANCE)
+  desc.forceTolerance = config.force_tolerance;
+#else
+  native_require(config.force_tolerance == 0.0f,
+                 "force_tolerance needs a PhysX SDK with PxDestructionStressDesc::forceTolerance (v24)");
+#endif
   desc.warmStart = config.warm_start;
   desc.damageRate = config.damage_rate;
   desc.bendGainMax = config.bend_gain_max;

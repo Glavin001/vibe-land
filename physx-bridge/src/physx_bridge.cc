@@ -553,6 +553,12 @@ public:
       // response is a new process and the wrong one is to keep serving a world
       // that will never move again. A live match spent 11,876 consecutive ticks
       // in exactly that state.
+      // The native destruction stage could not finish a step (for example an
+      // unconverged stress solve under PhysX's reject policy): the whole
+      // scene's step is lost, not only its destruction.
+      if (text.find("simulation step is incomplete") != std::string::npos) {
+        incomplete_steps_.fetch_add(1, std::memory_order_relaxed);
+      }
       if (text.find("previous CUDA errors") != std::string::npos ||
           text.find("Simulation cannot continue") != std::string::npos ||
           text.find("failed to allocate GPU memory") != std::string::npos) {
@@ -569,8 +575,13 @@ public:
     return context_lost_.load(std::memory_order_relaxed);
   }
 
+  std::uint32_t incomplete_steps() const {
+    return incomplete_steps_.load(std::memory_order_relaxed);
+  }
+
 private:
   std::atomic<std::uint32_t> warning_count_{0};
+  std::atomic<std::uint32_t> incomplete_steps_{0};
   std::atomic<bool> context_lost_{false};
 };
 
@@ -734,6 +745,8 @@ public:
   }
 
   bool context_lost() const { return error_callback_.context_lost(); }
+
+  std::uint32_t incomplete_steps() const { return error_callback_.incomplete_steps(); }
 
 private:
   void teardown() noexcept {
@@ -3317,6 +3330,7 @@ public:
     out.completed_steps = completed_steps_;
     out.gpu_warning_count = runtime_->warning_count();
     out.gpu_context_lost = runtime_->context_lost();
+    out.incomplete_steps = runtime_->incomplete_steps();
     return out;
   }
 

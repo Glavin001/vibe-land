@@ -82,7 +82,7 @@ fn prepare(geometry: &PreparedGeometry) -> AuthoredScene {
         bridge::DestructibleSettings {materials: asset.materials, ..Default::default()}).unwrap();
     world.step().unwrap(); // Allocate native contact identities before registration.
     let configured = world.native_configure(bridge::NativeConfig {
-        max_iterations: 2048, tolerance: 1e-5, warm_start: true, damage_rate: 2.,
+        max_iterations: 2048, tolerance: 1e-5, force_tolerance: 0., warm_start: true, damage_rate: 2.,
         bend_gain_max: 3., fibre_bending: true, reserved_contact_pairs: 4096,
         preserve_unchanged_contact_pairs: false, gpu_island_repair: true,
         verdict_sample_ticks: 1,
@@ -322,7 +322,7 @@ fn authored_vehicle_wheel_colliders_follow_suspension() {
             world.native_register_vehicle(desc.entity_id, STRUCTURE, &asset.parts, &asset.bonds,
                 bridge::DestructibleSettings { materials: asset.materials.clone(), ..Default::default() }).unwrap();
             world.step().unwrap();
-            world.native_configure(bridge::NativeConfig { max_iterations: 2048, tolerance: 1e-5, warm_start: true,
+            world.native_configure(bridge::NativeConfig { max_iterations: 2048, tolerance: 1e-5, force_tolerance: 0., warm_start: true,
                 damage_rate: 2., bend_gain_max: 3., fibre_bending: true, reserved_contact_pairs: 4096,
                 preserve_unchanged_contact_pairs: false, gpu_island_repair: true, verdict_sample_ticks: 1 }).unwrap();
             // Only terrain: projectiles, props and debris must still hit wheels.

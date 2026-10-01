@@ -191,6 +191,7 @@ fn setup_scene(wheel_strength: f32, engine_x: f32, axle: bool, free_fall: bool) 
         .native_configure(NativeConfig {
             max_iterations: 2048,
             tolerance: 1e-5,
+            force_tolerance: 0.0,
             warm_start: true,
             damage_rate: 2.,
             bend_gain_max: 3.,

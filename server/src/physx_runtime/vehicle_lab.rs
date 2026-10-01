@@ -170,6 +170,10 @@ fn run(geometry: &PreparedGeometry, layout: &FractureLayout, s: &Scenario, car: 
     let (_capture, capture_dir) = lab_capture(&prefix);
     let mut node_map_written = false;
     let mut scene = Scene::new_at(geometry, matches!(s.ground, Ground::Course), s.lift);
+    // PhysX steps the destruction stage could not complete (the bridge's
+    // process-wide counter, read through this run's world).
+    let incomplete = |scene: &Scene| scene.arena.world.stats().map_or(0, |s| s.incomplete_steps);
+    let incomplete_before = incomplete(&scene);
     if matches!(s.ground, Ground::Flat) {
         scene.arena.set_spawn_areas(vec![vibe_land_shared::world_document::SpawnArea { id: 1, position: [2.5, 1.5, 3.0], radius: 0.1 }]);
     }
@@ -207,6 +211,7 @@ fn run(geometry: &PreparedGeometry, layout: &FractureLayout, s: &Scenario, car: 
     let mut damaged_since: HashMap<u64, u32> = HashMap::new();
     let mut last_v: Option<Vector3<f32>> = None;
     let (mut top, mut impact, mut converged, mut peak_decel, mut peak_wheel, mut peak_u) = (0f32, 0f32, 0u32, 0f32, 0f32, 0f64);
+    let (mut rejected, mut error_bits) = (0u32, 0u32);
     let mut contact_tick = None;
     let mut step_ms: Vec<f32> = Vec::new();
     let mut tally = crate::structure_qualification::SolveTally::default();
@@ -299,6 +304,10 @@ fn run(geometry: &PreparedGeometry, layout: &FractureLayout, s: &Scenario, car: 
         let status = &raw["lastStatus"];
         let ok = status["converged"].as_bool() == Some(true);
         if ok { converged += 1; }
+        // Steps the stage did not publish (native error, e.g. 4096: an
+        // unconverged step under the reject policy), and which error bits.
+        rejected = (raw["rejectedSteps"].as_u64().unwrap_or(0) + raw["failedSteps"].as_u64().unwrap_or(0)) as u32;
+        error_bits |= status["error"].as_u64().unwrap_or(0) as u32;
         let wheel = raw["wheelLoads"].as_array().unwrap().iter().map(|w| {
             let m = |k: &str| w[k].as_array().unwrap().iter().map(|x| x.as_f64().unwrap().powi(2)).sum::<f64>().sqrt() as f32;
             m("suspension") + m("tire")
@@ -388,6 +397,11 @@ fn run(geometry: &PreparedGeometry, layout: &FractureLayout, s: &Scenario, car: 
             _ => {}
         }
     }
+    // Invariant of every run: the destruction stage completes every PhysX
+    // step. A lost step is a lost tick of the whole scene (under the reject
+    // policy an unconverged solve does this).
+    let lost = incomplete(&scene) - incomplete_before;
+    if lost > 0 { violations.push(format!("{lost} PhysX steps lost: the destruction stage could not complete them")); }
     let steps = samples.len().max(1) as u32;
     let mut sorted_ms = step_ms.clone();
     sorted_ms.sort_by(f32::total_cmp);
@@ -395,7 +409,9 @@ fn run(geometry: &PreparedGeometry, layout: &FractureLayout, s: &Scenario, car: 
     json!({
         "scenario": s.name, "why": s.why, "expect": s.expect.iter().map(|e| format!("{e:?}")).collect::<Vec<_>>(), "topSpeed": top, "impactSpeed": impact,
         "bondsBroken": broken.len(), "partsOff": off.len(), "wheelsLost": wheels_lost,
-        "converged": converged as f32 / steps as f32, "peakDecelG": peak_decel, "peakWheelLoadXStatic": peak_wheel / static_corner,
+        "converged": converged as f32 / steps as f32, "rejectedTicks": rejected, "errorBits": error_bits,
+        "incompleteSteps": lost,
+        "policy": if std::env::var_os("VIBE_LAB_REJECT_UNCONVERGED").is_some() { "reject-unconverged" } else { "allow-unconverged" }, "peakDecelG": peak_decel, "peakWheelLoadXStatic": peak_wheel / static_corner,
         "peakUtilisation": peak_u, "violations": violations,
         "stepMs": step_summary,
         "peakConstraintN": peak_constraint.0, "peakConstraintAt": peak_constraint.1, "peakContactN": peak_contact.0, "peakContactAt": peak_contact.1,
@@ -427,8 +443,8 @@ fn vehicle_lab() {
         for s in &chosen {
             let r = run(&geometry, &layout, s, &car);
             for v in r["violations"].as_array().unwrap() { failures.push(format!("{car} {}: {}", s.name, v.as_str().unwrap())); }
-            eprintln!("{car:<8} {:<11} {:>5.1} m/s  {:>4} bonds {:>3} parts {} wheels  conv {:>4.0}%  peak {:>4.1} g  wheel {:>4.1}x  {}",
-                s.name, r["topSpeed"].as_f64().unwrap(), r["bondsBroken"], r["partsOff"], r["wheelsLost"], r["converged"].as_f64().unwrap() * 100.,
+            eprintln!("{car:<8} {:<11} {:>5.1} m/s  {:>4} bonds {:>3} parts {} wheels  conv {:>4.0}%  lost {:>4}  peak {:>4.1} g  wheel {:>4.1}x  {}",
+                s.name, r["topSpeed"].as_f64().unwrap(), r["bondsBroken"], r["partsOff"], r["wheelsLost"], r["converged"].as_f64().unwrap() * 100., r["incompleteSteps"],
                 r["peakDecelG"].as_f64().unwrap(), r["peakWheelLoadXStatic"].as_f64().unwrap(),
                 if r["violations"].as_array().unwrap().is_empty() { "ok".to_string() } else { format!("FAIL {}", r["violations"][0].as_str().unwrap()) });
             eprintln!("{:>22} solve: {} | step {:.1} ms median, {:.1} p95, {:.1} max", "", r["solve"]["verdict"].as_str().unwrap_or("-"),

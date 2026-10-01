@@ -303,6 +303,7 @@ fn run_with(preserve_unchanged_contact_pairs: bool, cars: bool, player: bool, dr
         .native_configure(NativeConfig {
             max_iterations: 2048,
             tolerance: 1.0e-5,
+            force_tolerance: 0.0,
             warm_start: true,
             damage_rate: 2.0,
             bend_gain_max: 3.0,
