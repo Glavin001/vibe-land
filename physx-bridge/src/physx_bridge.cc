@@ -4050,6 +4050,8 @@ public:
   rust::Vec<FfiBondStressRow> native_bond_stress_rows(std::uint32_t structure_id) const {
     return native().bond_stress_rows(structure_id);
   }
+  bool native_set_stress_solve_report(bool enabled) { return native().set_stress_solve_report(enabled); }
+  FfiStressSolveReport native_stress_solve_report() { return native().stress_solve_report(); }
   FfiDestructionStats native_stats() const {
     FfiDestructionStats stats = native().stats();
     // The destruction stage runs inside PxScene::simulate(), so every span the
@@ -4540,6 +4542,12 @@ rust::Vec<FfiVehiclePartPose> World::native_detached_vehicle_parts(std::uint32_t
   return impl_->native_detached_vehicle_parts(entity_id);
 }
 
+bool World::native_set_stress_solve_report(bool enabled) {
+  return impl_->native_set_stress_solve_report(enabled);
+}
+FfiStressSolveReport World::native_stress_solve_report() {
+  return impl_->native_stress_solve_report();
+}
 FfiVehicleDebug World::native_vehicle_debug(std::uint32_t entity_id) {
   return impl_->native_vehicle_debug(entity_id);
 }

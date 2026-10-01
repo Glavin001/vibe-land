@@ -902,4 +902,45 @@ bool NativeDestruction::validate_mappings() const {
   return seen == s.chunks.size();
 }
 
+
+bool NativeDestruction::set_stress_solve_report(bool enabled) {
+#if defined(VIBE_PHYSX_HAS_STRESS_SOLVE_REPORT)
+  State &s = *state_;
+  if (!s.configured) return false;
+  return s.stage().setStressSolveReport(enabled);
+#else
+  (void)enabled;
+  return false;
+#endif
+}
+
+// Stage chunk i is s.nodes[i] / s.chunks[i] (configure passes s.nodes as the
+// chunk array), so a chunk's structure and authored node come from s.chunks.
+FfiStressSolveReport NativeDestruction::stress_solve_report() {
+  FfiStressSolveReport out{};
+#if defined(VIBE_PHYSX_HAS_STRESS_SOLVE_REPORT)
+  State &s = *state_;
+  if (!s.configured) return out;
+  const PxU32 n = static_cast<PxU32>(s.nodes.size());
+  std::vector<PxDestructionStressComponentReport> components(n);
+  std::vector<PxReal> residual(n);
+  std::vector<PxU32> component(n);
+  PxU32 count = 0;
+  native_require(s.stage().getStressSolveReport(components.data(), n, count, residual.data(), component.data(), n),
+                 "stress solve report unavailable (enable it after configure; read between steps)");
+  for (PxU32 i = 0; i < count && i < n; ++i) {
+    const auto &c = components[i];
+    FfiStressComponentReport row{c.component, c.chunkCount, c.anchored != 0, c.reason, c.iterations,
+                                 c.bestIteration, c.tolerance2, c.best2, c.final2, {}};
+    for (float h : c.history) row.history.push_back(h);
+    out.components.push_back(std::move(row));
+  }
+  for (PxU32 i = 0; i < n && i < s.chunks.size(); ++i) {
+    if (component[i] == PX_INVALID_U32) continue;
+    out.chunks.push_back(FfiStressChunkResidual{s.chunks[i].structure, s.chunks[i].authored, component[i], residual[i]});
+  }
+#endif
+  return out;
+}
+
 } // namespace vibe_land::physx_bridge

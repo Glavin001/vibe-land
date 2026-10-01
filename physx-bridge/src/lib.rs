@@ -1597,6 +1597,20 @@ impl World {
         self.inner.pin_mut().native_vehicle_debug(entity_id).map_err(operation_error)
     }
 
+    /// Diagnostics: record a stress solve report on every later step (false
+    /// when the SDK has none, before configure, or off the native path).
+    #[cfg(feature = "native-destruction")]
+    pub fn native_set_stress_solve_report(&mut self, enabled: bool) -> Result<bool, BridgeError> {
+        self.inner.pin_mut().native_set_stress_solve_report(enabled).map_err(operation_error)
+    }
+
+    /// The last step's stress solve report: why each component stopped, and
+    /// each chunk's share of the remaining residual. Read between steps.
+    #[cfg(feature = "native-destruction")]
+    pub fn native_stress_solve_report(&mut self) -> Result<ffi::FfiStressSolveReport, BridgeError> {
+        self.inner.pin_mut().native_stress_solve_report().map_err(operation_error)
+    }
+
     /// Hand the authored asset to the stage. The scene must already have
     /// completed one step, which is what gives chunks their GPU identities.
     #[cfg(feature = "native-destruction")]
@@ -1927,6 +1941,9 @@ fn operation_error(error: cxx::Exception) -> BridgeError {
 }
 
 #[cfg(feature = "gpu")]
+/// The stress solve report types (World::native_stress_solve_report), named by diagnostics.
+pub use ffi::{FfiStressChunkResidual, FfiStressComponentReport, FfiStressSolveReport};
+
 #[cxx::bridge(namespace = "vibe_land::physx_bridge")]
 mod ffi {
     struct FfiVec3 {
@@ -2104,6 +2121,39 @@ mod ffi {
         suspension: FfiVec3,
         tire: FfiVec3,
         couple: FfiVec3,
+    }
+
+    /// One stress component's last native solve (stress solve report).
+    struct FfiStressComponentReport {
+        /// Minimum dynamic chunk index (stage-wide) of the component.
+        component: u32,
+        chunk_count: u32,
+        anchored: bool,
+        /// PxDestructionStressStopReason: 1 converged, 2 iteration cap,
+        /// 3 stagnated, 4 degenerate, 5 failed, 6 settled, 7 not ready,
+        /// 8 large-component path (no record), 0 unreported.
+        reason: u32,
+        iterations: u32,
+        best_iteration: u32,
+        tolerance2: f32,
+        best2: f32,
+        final2: f32,
+        /// Residual^2 at iteration 0 and 2^k (k = 0..14); NaN where not reached.
+        history: Vec<f32>,
+    }
+
+    /// One chunk's share of its component's final residual.
+    struct FfiStressChunkResidual {
+        structure_id: u32,
+        /// The node (building) or part (vehicle) index within its structure.
+        node: u32,
+        component: u32,
+        residual2: f32,
+    }
+
+    struct FfiStressSolveReport {
+        components: Vec<FfiStressComponentReport>,
+        chunks: Vec<FfiStressChunkResidual>,
     }
 
     struct FfiVehicleDebug {
@@ -2752,6 +2802,8 @@ mod ffi {
             poses: &[FfiVehiclePartPose], exclude_mask: u32) -> Result<u32>;
         fn native_detached_vehicle_parts(self: Pin<&mut World>, entity_id: u32) -> Result<Vec<FfiVehiclePartPose>>;
         fn native_vehicle_debug(self: Pin<&mut World>, entity_id: u32) -> Result<FfiVehicleDebug>;
+        fn native_set_stress_solve_report(self: Pin<&mut World>, enabled: bool) -> Result<bool>;
+        fn native_stress_solve_report(self: Pin<&mut World>) -> Result<FfiStressSolveReport>;
         fn native_create_destructible(
             self: Pin<&mut World>,
             structure_id: u32,

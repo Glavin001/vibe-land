@@ -76,6 +76,8 @@ pub enum Expect {
 
 pub struct Scenario {
     pub name: &'static str,
+    /// Metres above the resting spawn (0: on its wheels).
+    pub lift: f32,
     pub why: &'static str,
     pub ground: Ground,
     pub obstacles: &'static [Obstacle],
@@ -91,20 +93,21 @@ pub struct Scenario {
 pub fn scenarios() -> Vec<Scenario> {
     use Expect::*;
     vec![
-        Scenario { name: "park", why: "a parked car carries only its own weight", ground: Ground::Flat, obstacles: &[], drive: Drive::Park, events: &[], ticks: 300, expect: &[Intact] },
-        Scenario { name: "cruise-20", why: "straight and level at 72 km/h", ground: Ground::Flat, obstacles: &[], drive: Drive::Straight { speed: 20. }, events: &[], ticks: 300, expect: &[Intact] },
-        Scenario { name: "course-12", why: "hills, banks and washboard at 43 km/h", ground: Ground::Course, obstacles: &[], drive: Drive::Laps { speed: 12. }, events: &[], ticks: 1200, expect: &[Intact] },
-        Scenario { name: "course-18", why: "the course at 65 km/h", ground: Ground::Course, obstacles: &[], drive: Drive::Laps { speed: 18. }, events: &[], ticks: 1200, expect: &[Intact] },
-        Scenario { name: "course-25", why: "the course flat out (90 km/h): may dent, keeps its wheels", ground: Ground::Course, obstacles: &[], drive: Drive::Laps { speed: 25. }, events: &[], ticks: 1200, expect: &[KeepsWheels] },
-        Scenario { name: "kerb-10", why: "a 12 cm kerb at 36 km/h", ground: Ground::Flat, obstacles: &[Obstacle::Kerb { z: 40., height: 0.12 }], drive: Drive::Straight { speed: 10. }, events: &[], ticks: 360, expect: &[Intact] },
-        Scenario { name: "debris-10", why: "12 cm rubble under the wheels at 36 km/h", ground: Ground::Flat,
+        Scenario { lift: 60., name: "airborne", why: "free fall, no ground: only gravity loads the car (the load-balance control for park)", ground: Ground::Flat, obstacles: &[], drive: Drive::Park, events: &[], ticks: 150, expect: &[Intact] },
+        Scenario { lift: 0., name: "park", why: "a parked car carries only its own weight", ground: Ground::Flat, obstacles: &[], drive: Drive::Park, events: &[], ticks: 300, expect: &[Intact] },
+        Scenario { lift: 0., name: "cruise-20", why: "straight and level at 72 km/h", ground: Ground::Flat, obstacles: &[], drive: Drive::Straight { speed: 20. }, events: &[], ticks: 300, expect: &[Intact] },
+        Scenario { lift: 0., name: "course-12", why: "hills, banks and washboard at 43 km/h", ground: Ground::Course, obstacles: &[], drive: Drive::Laps { speed: 12. }, events: &[], ticks: 1200, expect: &[Intact] },
+        Scenario { lift: 0., name: "course-18", why: "the course at 65 km/h", ground: Ground::Course, obstacles: &[], drive: Drive::Laps { speed: 18. }, events: &[], ticks: 1200, expect: &[Intact] },
+        Scenario { lift: 0., name: "course-25", why: "the course flat out (90 km/h): may dent, keeps its wheels", ground: Ground::Course, obstacles: &[], drive: Drive::Laps { speed: 25. }, events: &[], ticks: 1200, expect: &[KeepsWheels] },
+        Scenario { lift: 0., name: "kerb-10", why: "a 12 cm kerb at 36 km/h", ground: Ground::Flat, obstacles: &[Obstacle::Kerb { z: 40., height: 0.12 }], drive: Drive::Straight { speed: 10. }, events: &[], ticks: 360, expect: &[Intact] },
+        Scenario { lift: 0., name: "debris-10", why: "12 cm rubble under the wheels at 36 km/h", ground: Ground::Flat,
             obstacles: &[Obstacle::Block { x: -0.9, z: 25., half: [0.2, 0.06, 0.2] }, Obstacle::Block { x: 0.9, z: 30., half: [0.2, 0.06, 0.2] }, Obstacle::Block { x: 0., z: 35., half: [0.25, 0.06, 0.2] }],
             drive: Drive::Straight { speed: 10. }, events: &[], ticks: 360, expect: &[Intact] },
-        Scenario { name: "wall-4", why: "a light knock into a wall (14 km/h)", ground: Ground::Flat, obstacles: &[Obstacle::Wall { z: 60. }], drive: Drive::Into { speed: 4. }, events: &[], ticks: 900, expect: &[Intact] },
-        Scenario { name: "wall-8", why: "a firm knock (29 km/h): may dent, keeps its wheels", ground: Ground::Flat, obstacles: &[Obstacle::Wall { z: 60. }], drive: Drive::Into { speed: 8. }, events: &[], ticks: 900, expect: &[KeepsWheels] },
-        Scenario { name: "wall-12", why: "43 km/h into a wall: measured, no expectation yet", ground: Ground::Flat, obstacles: &[Obstacle::Wall { z: 60. }], drive: Drive::Into { speed: 12. }, events: &[], ticks: 900, expect: &[] },
-        Scenario { name: "wall-20", why: "a fast impact (72 km/h) breaks the car", ground: Ground::Flat, obstacles: &[Obstacle::Wall { z: 60. }], drive: Drive::Into { speed: 20. }, events: &[], ticks: 900, expect: &[Breaks] },
-        Scenario { name: "cannonball", why: "the city cannonball breaks the car", ground: Ground::Flat, obstacles: &[], drive: Drive::Park, events: &[Event::Cannonball { tick: 60 }], ticks: 300, expect: &[Breaks] },
+        Scenario { lift: 0., name: "wall-4", why: "a light knock into a wall (14 km/h)", ground: Ground::Flat, obstacles: &[Obstacle::Wall { z: 60. }], drive: Drive::Into { speed: 4. }, events: &[], ticks: 900, expect: &[Intact] },
+        Scenario { lift: 0., name: "wall-8", why: "a firm knock (29 km/h): may dent, keeps its wheels", ground: Ground::Flat, obstacles: &[Obstacle::Wall { z: 60. }], drive: Drive::Into { speed: 8. }, events: &[], ticks: 900, expect: &[KeepsWheels] },
+        Scenario { lift: 0., name: "wall-12", why: "43 km/h into a wall: measured, no expectation yet", ground: Ground::Flat, obstacles: &[Obstacle::Wall { z: 60. }], drive: Drive::Into { speed: 12. }, events: &[], ticks: 900, expect: &[] },
+        Scenario { lift: 0., name: "wall-20", why: "a fast impact (72 km/h) breaks the car", ground: Ground::Flat, obstacles: &[Obstacle::Wall { z: 60. }], drive: Drive::Into { speed: 20. }, events: &[], ticks: 900, expect: &[Breaks] },
+        Scenario { lift: 0., name: "cannonball", why: "the city cannonball breaks the car", ground: Ground::Flat, obstacles: &[], drive: Drive::Park, events: &[Event::Cannonball { tick: 60 }], ticks: 300, expect: &[Breaks] },
     ]
 }
 
@@ -123,6 +126,9 @@ struct Audit {
     wheel_load_x_static: f32,
     touching: Vec<String>,
     causes: Vec<&'static str>,
+    /// The native solve report of the component the bond belonged to on the
+    /// breaking step: stop reason, iterations, residual over tolerance.
+    solve: String,
 }
 
 fn ground_y(ground: Ground, x: f32, z: f32, course: &vibe_land_shared::world_document::WorldDocument) -> f32 {
@@ -131,7 +137,7 @@ fn ground_y(ground: Ground, x: f32, z: f32, course: &vibe_land_shared::world_doc
 
 fn run(geometry: &PreparedGeometry, layout: &FractureLayout, s: &Scenario) -> Value {
     let course = crate::demo_world::garage_test_world();
-    let mut scene = Scene::new(geometry, matches!(s.ground, Ground::Course));
+    let mut scene = Scene::new_at(geometry, matches!(s.ground, Ground::Course), s.lift);
     if matches!(s.ground, Ground::Flat) {
         scene.arena.set_spawn_areas(vec![vibe_land_shared::world_document::SpawnArea { id: 1, position: [2.5, 1.5, 3.0], radius: 0.1 }]);
     }
@@ -168,6 +174,8 @@ fn run(geometry: &PreparedGeometry, layout: &FractureLayout, s: &Scenario) -> Va
     let mut last_v: Option<Vector3<f32>> = None;
     let (mut top, mut impact, mut converged, mut peak_decel, mut peak_wheel, mut peak_u) = (0f32, 0f32, 0u32, 0f32, 0f32, 0f64);
     let mut contact_tick = None;
+    let mut tally = crate::structure_qualification::SolveTally::default();
+    let mut report_on = false;
     for tick in 0..s.ticks {
         let car = scene.arena.current_vehicle_snapshots()[0];
         let v = Vector3::new(car.linear_velocity.x, car.linear_velocity.y, car.linear_velocity.z);
@@ -203,6 +211,17 @@ fn run(geometry: &PreparedGeometry, layout: &FractureLayout, s: &Scenario) -> Va
         let decel_g = last_v.map_or(0., |_| (Vector3::new(after.x, after.y, after.z) - v).norm() / DT / 9.81);
         last_v = Some(v);
         let raw = scene.arena.vehicle_destruction_debug(CAR).unwrap();
+        // The native solve report (PxDestructionScene v23): on once the stage
+        // is configured, then every step's report folded in.
+        let solve_report = if report_on { scene.arena.world.native_stress_solve_report().ok() } else {
+            report_on = scene.arena.world.native_set_stress_solve_report(true).unwrap_or(false); None };
+        if let Some(r) = &solve_report {
+            tally.ingest(r, |_| true);
+            if std::env::var_os("VIBE_LAB_REPORT_TRACE").is_some() && tick % 60 == 0 {
+                eprintln!("report t{tick}: {} components {:?}, {} chunks", r.components.len(),
+                    r.components.iter().take(4).map(|c| (c.component, c.chunk_count, c.reason, c.iterations, c.final2, c.tolerance2)).collect::<Vec<_>>(), r.chunks.len());
+            }
+        }
         let status = &raw["lastStatus"];
         let ok = status["converged"].as_bool() == Some(true);
         if ok { converged += 1; }
@@ -241,7 +260,15 @@ fn run(geometry: &PreparedGeometry, layout: &FractureLayout, s: &Scenario) -> Va
                     if decel_g > 2. || !touching.is_empty() { causes.push("impact"); }
                     if wheel_x > 3. { causes.push("wheel-load"); }
                     if causes.is_empty() { causes.push("unexplained"); }
-                    audits.push(Audit { tick: tick + 1, bond: bond_label(geometry, layout, index as u32), area: bond.area,
+                    // The breaking step's component: either end of the bond (a part
+                    // that broke off alone has no stress component left).
+                    let solve = solve_report.as_ref().and_then(|r| {
+                        let component = r.chunks.iter().find(|c| c.node == ca || c.node == cb)?.component;
+                        let c = r.components.iter().find(|c| c.component == component)?;
+                        Some(format!("{} after {} iterations, residual {:.1}x tolerance (best {:.1}x at {})", crate::structure_qualification::reason_name(c.reason),
+                            c.iterations, (c.final2 / c.tolerance2).sqrt(), (c.best2 / c.tolerance2).sqrt(), c.best_iteration))
+                    }).unwrap_or_else(|| "no solve report".into());
+                    audits.push(Audit { solve, tick: tick + 1, bond: bond_label(geometry, layout, index as u32), area: bond.area,
                         before: [t / st.tension_fatal, c / st.compression_fatal, sh / st.shear_fatal],
                         utilisation: history.get(&index).map(|h| h.iter().copied().collect()).unwrap_or_default(),
                         converged: ok, iterations: status["iterations"].as_u64().unwrap_or(0), decel_g, wheel_load_x_static: wheel_x, touching, causes });
@@ -282,7 +309,8 @@ fn run(geometry: &PreparedGeometry, layout: &FractureLayout, s: &Scenario) -> Va
         "audits": audits.iter().map(|a| json!({"tick": a.tick, "bond": a.bond, "area": a.area,
             "beforeFractionOfFatal": {"tension": a.before[0], "compression": a.before[1], "shear": a.before[2]}, "utilisationBefore": a.utilisation,
             "converged": a.converged, "iterations": a.iterations, "decelG": a.decel_g, "wheelLoadXStatic": a.wheel_load_x_static,
-            "touching": a.touching, "causes": a.causes})).collect::<Vec<_>>(),
+            "touching": a.touching, "causes": a.causes, "solve": a.solve})).collect::<Vec<_>>(),
+        "solve": tally.to_json(|_, node| format!("{} ({})", geometry.parts[node as usize].id, geometry.parts[node as usize].name)),
         "samplesColumns": ["tick", "speed", "converged", "iterations", "decelG", "wheelLoadXStatic", "peakUtilisation", "peakBond"],
         "samples": samples,
     })
@@ -307,6 +335,10 @@ fn vehicle_lab() {
                 s.name, r["topSpeed"].as_f64().unwrap(), r["bondsBroken"], r["partsOff"], r["wheelsLost"], r["converged"].as_f64().unwrap() * 100.,
                 r["peakDecelG"].as_f64().unwrap(), r["peakWheelLoadXStatic"].as_f64().unwrap(),
                 if r["violations"].as_array().unwrap().is_empty() { "ok".to_string() } else { format!("FAIL {}", r["violations"][0].as_str().unwrap()) });
+            eprintln!("{:>22} solve: {}", "", r["solve"]["verdict"].as_str().unwrap_or("-"));
+            if let Some(h) = r["solve"]["hotChunks"].as_array().filter(|h| !h.is_empty()) {
+                eprintln!("{:>22} residual held by: {}", "", h.iter().take(4).map(|c| format!("{} {:.0}%", c["chunk"].as_str().unwrap(), c["share"].as_f64().unwrap() * 100.)).collect::<Vec<_>>().join(", "));
+            }
             if let Some(a) = r["audits"].as_array().unwrap().first() {
                 let f = &a["beforeFractionOfFatal"];
                 eprintln!("{:>22} first break t{} {} ({:.4} m²): tick before at {:.0}% tension, {:.0}% compression, {:.0}% shear of fatal (utilisation {}); {}; {:.1} g; wheels {:.1}x static; touching {:?}",
@@ -314,6 +346,7 @@ fn vehicle_lab() {
                     a["utilisationBefore"],
                     a["causes"].as_array().unwrap().iter().map(|c| c.as_str().unwrap()).collect::<Vec<_>>().join("+"), a["decelG"].as_f64().unwrap(), a["wheelLoadXStatic"].as_f64().unwrap(),
                     a["touching"].as_array().unwrap().iter().take(4).map(|c| c.as_str().unwrap()).collect::<Vec<_>>());
+                eprintln!("{:>22} breaking solve: {}", "", a["solve"].as_str().unwrap_or("-"));
             }
             report.push(json!({"car": car, "mass": geometry.mass, "run": r}));
         }

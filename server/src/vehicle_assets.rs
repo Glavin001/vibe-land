@@ -12,6 +12,7 @@ use std::{path::PathBuf, process::Stdio, sync::OnceLock};
 use tokio::{io::AsyncWriteExt, process::Command, sync::Semaphore};
 
 mod fracture;
+pub mod lint;
 pub mod rig;
 pub use fracture::{AssetBond, AssetFunction, AssetMassProperties, FractureLayout};
 
@@ -277,6 +278,9 @@ pub struct AssetBounds {
 #[serde(rename_all = "camelCase")]
 pub struct AssetPart {
     pub id: String,
+    /// The recipe's part name ("Front left hub"); diagnostics only.
+    #[serde(default)]
+    pub name: String,
     pub visual_ids: Vec<String>,
     pub mass: f64,
     pub volume: f64,

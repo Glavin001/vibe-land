@@ -99,7 +99,9 @@ pub(super) fn fixtures() -> Vec<(String, PreparedGeometry)> {
 
 pub(super) struct Scene { pub(super) arena: PhysxPhysicsArena, pub(super) tick: u32 }
 impl Scene {
-    pub(super) fn new(geometry: &PreparedGeometry, garage_world: bool) -> Self {
+    pub(super) fn new(geometry: &PreparedGeometry, garage_world: bool) -> Self { Self::new_at(geometry, garage_world, 0.) }
+    /// `lift`: metres above the resting spawn height (the lab's airborne case).
+    pub(super) fn new_at(geometry: &PreparedGeometry, garage_world: bool, lift: f32) -> Self {
         // The garage's own switches: all hulls installed, unconverged steps published.
         std::env::set_var("VIBE_GARAGE_VEHICLE_DESTRUCTION", "1");
         std::env::set_var("PX_DESTRUCTION_ALLOW_UNCONVERGED", "1");
@@ -111,7 +113,7 @@ impl Scene {
         } else {
             WorldDocumentArena::add_static_cuboid(&mut arena, Vector3::new(0., -0.5, 0.), [0., 0., 0., 1.], Vector3::new(100., 0.5, 100.), 1);
         }
-        arena.spawn_vehicle_asset(CAR, 0, Vector3::new(0., geometry.origin_height as f32 + 0.15, 3.), [0., 0., 0., 1.], Some(geometry)).unwrap();
+        arena.spawn_vehicle_asset(CAR, 0, Vector3::new(0., geometry.origin_height as f32 + 0.15 + lift, 3.), [0., 0., 0., 1.], Some(geometry)).unwrap();
         arena.enable_vehicle_destruction(CAR, geometry).unwrap();
         arena.reserve_ball_pool(8);
         Self { arena, tick: 0 }

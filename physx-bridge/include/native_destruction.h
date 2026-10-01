@@ -20,6 +20,7 @@ struct FfiVec3;
 struct FfiVehicleFracturePart;
 struct FfiVehiclePartPose;
 struct FfiVehicleDebug;
+struct FfiStressSolveReport;
 struct FfiPose;
 struct FfiDestructibleSettings;
 struct FfiChunkNodeDesc;
@@ -152,6 +153,8 @@ public:
   /// next tick.
   rust::Slice<const FfiChunkBodySnapshot> chunk_body_snapshots() const;
   rust::Vec<FfiBondStressRow> bond_stress_rows(std::uint32_t structure_id) const;
+  bool set_stress_solve_report(bool enabled);
+  FfiStressSolveReport stress_solve_report();
   FfiDestructionStats stats() const;
 
   /// Whole-world GPU/CPU ownership audit. Reads arrays that normal publication

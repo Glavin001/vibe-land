@@ -40,6 +40,7 @@ pub mod scene_warm;
 pub mod scheduler;
 pub mod send_audit;
 pub mod settle;
+pub mod structure_lint;
 pub mod synthetic;
 pub mod topology;
 pub mod types;

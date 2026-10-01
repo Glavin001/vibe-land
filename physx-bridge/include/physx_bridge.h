@@ -21,6 +21,7 @@ struct FfiVehicleDesc;
 struct FfiVehiclePartShape;
 struct FfiVehiclePartPose;
 struct FfiVehicleDebug;
+struct FfiStressSolveReport;
 struct FfiVehicleFracturePart;
 struct FfiVehicleCommands;
 struct FfiVehicleTuning;
@@ -153,6 +154,8 @@ public:
       rust::Slice<const FfiVehiclePartPose> poses, std::uint32_t exclude_mask);
   rust::Vec<FfiVehiclePartPose> native_detached_vehicle_parts(std::uint32_t entity_id);
   FfiVehicleDebug native_vehicle_debug(std::uint32_t entity_id);
+  bool native_set_stress_solve_report(bool enabled);
+  FfiStressSolveReport native_stress_solve_report();
   void native_create_destructible(std::uint32_t structure_id,
                                   const FfiPose &pose,
                                   rust::Slice<const FfiChunkNodeDesc> nodes,

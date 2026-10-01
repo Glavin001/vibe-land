@@ -541,7 +541,7 @@ pub fn spawn_ring_radius_m() -> f32 {
 /// The pack is calibrated against its own material band (the high-rise pack
 /// reports safety factors of ~2.7 to ~39 under self-weight), so reading them
 /// beats hardcoding a guess in the server.
-fn scene_stress_materials() -> Vec<vibe_land_destruction::scene_pack::StressLimits> {
+pub(crate) fn scene_stress_materials() -> Vec<vibe_land_destruction::scene_pack::StressLimits> {
     static MATERIALS: OnceLock<Vec<vibe_land_destruction::scene_pack::StressLimits>> =
         OnceLock::new();
     MATERIALS
