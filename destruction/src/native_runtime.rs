@@ -82,7 +82,13 @@ use crate::bridge_authoring::{
 /// scene 16 starts and 32 and 64 do not, which is an engine defect rather than
 /// a tuning rule, so re-measure rather than reasoning from this number.
 pub fn stress_iterations() -> u32 {
-    env_u32("VIBE_CITY_NATIVE_STRESS_ITERATIONS", 16)
+    // Destructible fleet cars (VIBE_CITY_DESTRUCTIBLE_VEHICLES, server
+    // city_fleet) solve inside this stage. City buildings converge at rest in
+    // under 10 iterations and ~4 past 16 after a cannonball; the cars need
+    // ~64 even with their authoring fixed (structure qualification and the
+    // vehicle lab, 2026-10-01). Owner: 64 acceptable, 16 ideal.
+    let fleet = std::env::var("VIBE_CITY_DESTRUCTIBLE_VEHICLES").is_ok_and(|v| !v.is_empty() && v != "0");
+    env_u32("VIBE_CITY_NATIVE_STRESS_ITERATIONS", if fleet { 64 } else { 16 })
 }
 
 /// The SDK's own default. It used to be 1e-5, and that number is why an idle

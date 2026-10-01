@@ -65,6 +65,8 @@ fn setup_scene(wheel_strength: f32, engine_x: f32, axle: bool, free_fall: bool) 
             front_lateral_stiffness: 45000.,
             rear_lateral_stiffness: 45000.,
             longitudinal_stiffness: 18000.,
+            bump_stop_stiffness: 0.0,
+            bump_stop_damping: 0.0,
             com_offset_y: 0.,
             angular_damping: 0.05,
             max_steer_radians: 0.5,

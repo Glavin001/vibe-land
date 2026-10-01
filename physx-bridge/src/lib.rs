@@ -279,6 +279,10 @@ pub struct VehicleDesc {
     pub front_lateral_stiffness: f32,
     pub rear_lateral_stiffness: f32,
     pub longitudinal_stiffness: f32,
+    /// Bump stop at the end of compression: a push-only spring (N/m) and its
+    /// damping (N s/m) in place of Vehicle2's rigid suspension limit. 0: rigid.
+    pub bump_stop_stiffness: f32,
+    pub bump_stop_damping: f32,
     /// Centre of mass below (negative) or above the actor origin, along the
     /// chassis up axis. The wheel hard points stay where they are.
     pub com_offset_y: f32,
@@ -2123,6 +2127,9 @@ mod ffi {
         suspension: FfiVec3,
         tire: FfiVec3,
         couple: FfiVec3,
+        /// The corner constraint's solved force (PxConstraint::getForce, N),
+        /// independent of what the stage routes onto the wheel chunk.
+        constraint_force: FfiVec3,
     }
 
     /// One stress component's last native solve (stress solve report).
@@ -2197,6 +2204,8 @@ mod ffi {
         front_lateral_stiffness: f32,
         rear_lateral_stiffness: f32,
         longitudinal_stiffness: f32,
+        bump_stop_stiffness: f32,
+        bump_stop_damping: f32,
         com_offset_y: f32,
         angular_damping: f32,
         max_steer_radians: f32,
@@ -3020,6 +3029,8 @@ impl_ffi_from!(
         front_lateral_stiffness,
         rear_lateral_stiffness,
         longitudinal_stiffness,
+        bump_stop_stiffness,
+        bump_stop_damping,
         com_offset_y,
         angular_damping,
         max_steer_radians,

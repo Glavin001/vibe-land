@@ -214,6 +214,8 @@ fn city_car(entity_id: u32, pose: Pose) -> VehicleDesc {
         front_lateral_stiffness: 28.0 * rest_load,
         rear_lateral_stiffness: 32.0 * rest_load,
         longitudinal_stiffness: 12.0 * rest_load,
+        bump_stop_stiffness: 0.0,
+        bump_stop_damping: 0.0,
         com_offset_y: -0.2,
         angular_damping: 0.5,
         max_steer_radians: 0.5,

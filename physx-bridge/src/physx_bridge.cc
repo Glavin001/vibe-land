@@ -2444,6 +2444,12 @@ public:
     car.frontSprungMass = car.rearSprungMass = 0.25f * desc.mass;
     car.frontStiffness = car.rearStiffness = desc.suspension_stiffness;
     car.frontDamping = car.rearDamping = desc.suspension_damping;
+#if defined(PX_NATIVE_VEHICLE_BUMP_STOP_VERSION)
+    car.bumpStopStiffness = desc.bump_stop_stiffness;
+    car.bumpStopDamping = desc.bump_stop_damping;
+#else
+    require(desc.bump_stop_stiffness == 0.0f, "a vehicle bump stop needs an SDK with PX_NATIVE_VEHICLE_BUMP_STOP_VERSION");
+#endif
     car.tyreFriction = desc.tyre_friction;
     // Zero keeps the SDK's reference-car stiffness.
     if (desc.front_lateral_stiffness > 0.0f) car.frontLateralStiffness = desc.front_lateral_stiffness;

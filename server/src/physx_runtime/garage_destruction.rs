@@ -162,7 +162,7 @@ impl GarageDestruction {
             "sleeping": a.sleeping, "kinematic": a.kinematic, "gravityDisabled": a.gravity_disabled, "shapes": a.shapes,
         })).collect();
         let wheel_loads: Vec<_> = vehicle.wheel_loads.iter().map(|w| json!({
-            "wheel": w.wheel, "suspension": v3!(w.suspension), "tire": v3!(w.tire), "couple": v3!(w.couple),
+            "wheel": w.wheel, "suspension": v3!(w.suspension), "tire": v3!(w.tire), "couple": v3!(w.couple), "constraintForce": v3!(w.constraint_force),
         })).collect();
         let bonds: Vec<_> = if self.configured {
             world.native_bond_stress_rows(self.structure).unwrap_or_default().iter().map(|b| json!({

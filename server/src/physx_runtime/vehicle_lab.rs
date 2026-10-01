@@ -201,6 +201,8 @@ fn run(geometry: &PreparedGeometry, layout: &FractureLayout, s: &Scenario) -> Va
     // wheel sat at the end of its travel (the suspension limit constraint).
     let (mut peak_constraint, mut peak_contact) = ((0f32, String::new()), (0f32, String::new()));
     let mut bottomed = 0u32;
+    let mut last_jounce = [0f32; 4];
+    let mut before_jounce = [0f32; 4];
     let travel = geometry.suspension_travel as f32;
     let mut report_on = false;
     for tick in 0..s.ticks {
@@ -235,7 +237,11 @@ fn run(geometry: &PreparedGeometry, layout: &FractureLayout, s: &Scenario) -> Va
         scene.step();
         if contact_tick.is_some_and(|t| tick > t + 180) { break; }
         let after_car = scene.arena.current_vehicle_snapshots()[0];
-        if after_car.wheel_jounce.iter().any(|j| *j >= travel - 0.005) { bottomed += 1; }
+        // A wheel off the ground reports infinite jounce; only a finite one at
+        // the end of its travel is bottomed out.
+        if after_car.wheel_jounce.iter().any(|j| j.is_finite() && *j >= travel - 0.005) { bottomed += 1; }
+        before_jounce = last_jounce;
+        last_jounce = after_car.wheel_jounce;
         let after = after_car.linear_velocity;
         let decel_g = last_v.map_or(0., |_| (Vector3::new(after.x, after.y, after.z) - v).norm() / DT / 9.81);
         last_v = Some(v);
@@ -250,7 +256,16 @@ fn run(geometry: &PreparedGeometry, layout: &FractureLayout, s: &Scenario) -> Va
                 let m = geometry.parts[c.node as usize].mass as f32;
                 let f = |v: &vibe_land_physx_bridge::FfiVec3| (v.x * v.x + v.y * v.y + v.z * v.z).sqrt() * m;
                 let (k, t) = (f(&c.constraint_linear), f(&c.contact_linear));
-                if k > peak_constraint.0 { peak_constraint = (k, format!("t{} {}", tick + 1, geometry.parts[c.node as usize].id)); }
+                if k > peak_constraint.0 {
+                    let fmt = |js: &[f32; 4]| js.iter().map(|j| if j.is_finite() { format!("{:.2}", j) } else { "air".into() }).collect::<Vec<_>>().join(" ");
+                    // The corner constraints' own solved forces this step (PhysX), to
+                    // compare with what the stage routed onto the chunk.
+                    let own: Vec<String> = raw["wheelLoads"].as_array().unwrap().iter().map(|w| {
+                        let f = w["constraintForce"].as_array().map(|v| v.iter().map(|x| x.as_f64().unwrap().powi(2)).sum::<f64>().sqrt()).unwrap_or(0.);
+                        format!("w{} {:.0} kN", w["wheel"], f / 1e3)
+                    }).collect();
+                    peak_constraint = (k, format!("t{} {}, wheel jounce [{}] -> [{}] of {:.2} m; PhysX corner constraint forces: {}", tick + 1, geometry.parts[c.node as usize].id, fmt(&before_jounce), fmt(&last_jounce), travel, own.join(", ")));
+                }
                 if t > peak_contact.0 { peak_contact = (t, format!("t{} {}", tick + 1, geometry.parts[c.node as usize].id)); }
             }
             if std::env::var_os("VIBE_LAB_REPORT_TRACE").is_some() && tick % 60 == 0 {

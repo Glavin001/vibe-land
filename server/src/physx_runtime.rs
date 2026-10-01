@@ -152,6 +152,21 @@ const PHYSX_TYRE_FRICTION: f32 = 1.4;
 const PHYSX_FRONT_LATERAL_STIFFNESS_PER_N: f32 = 28.0;
 const PHYSX_REAR_LATERAL_STIFFNESS_PER_N: f32 = 32.0;
 const PHYSX_LONGITUDINAL_STIFFNESS_PER_N: f32 = 12.0;
+
+/// A garage build's bump stop: VIBE_VEHICLE_BUMP_STOP_RATIO (default 10) x the
+/// main spring, damped at VIBE_VEHICLE_BUMP_STOP_DAMPING (default 1) x critical
+/// for a corner's sprung mass. Real jounce bumpers engage at several times the
+/// spring rate and stiffen progressively; one linear stage at 10x stops a
+/// 700 kg corner landing at 5 m/s in ~90 kN where Vehicle2's rigid limit
+/// removed the whole excess in one step -- 1.55 MN on a monster truck's wheel
+/// on the garage course (vehicle lab, 2026-10-01). Ratio 0: the rigid limit.
+fn vehicle_bump_stop(spring_stiffness: f32, corner_mass: f32) -> (f32, f32) {
+    let env = |k: &str, d: f32| std::env::var(k).ok().and_then(|v| v.parse::<f32>().ok()).filter(|v| v.is_finite() && *v >= 0.).unwrap_or(d);
+    let (ratio, zeta) = (env("VIBE_VEHICLE_BUMP_STOP_RATIO", 10.), env("VIBE_VEHICLE_BUMP_STOP_DAMPING", 1.));
+    if ratio <= 0. { return (0., 0.); }
+    let k = ratio * spring_stiffness;
+    (k, 2. * zeta * (k * corner_mass).sqrt())
+}
 /// Centre of mass 20 cm below the chassis centre, 15 cm above the axles.
 const PHYSX_COM_OFFSET_Y_M: f32 = -0.2;
 /// Rapier parity; settles the yaw after a swerve.
@@ -454,6 +469,10 @@ impl PhysxPhysicsArena {
                 front_lateral_stiffness: PHYSX_FRONT_LATERAL_STIFFNESS_PER_N * rest_load,
                 rear_lateral_stiffness: PHYSX_REAR_LATERAL_STIFFNESS_PER_N * rest_load,
                 longitudinal_stiffness: PHYSX_LONGITUDINAL_STIFFNESS_PER_N * rest_load,
+                // Garage builds get a bump stop (vehicle_bump_stop); stock cars keep
+                // Vehicle2's rigid suspension limit.
+                bump_stop_stiffness: prepared.map_or(0.0, |_| vehicle_bump_stop(tune.map(|t| t.spring_stiffness).unwrap_or(stiffness), sprung).0),
+                bump_stop_damping: prepared.map_or(0.0, |_| vehicle_bump_stop(tune.map(|t| t.spring_stiffness).unwrap_or(stiffness), sprung).1),
                 com_offset_y: PHYSX_COM_OFFSET_Y_M,
                 angular_damping: PHYSX_ANGULAR_DAMPING,
                 max_steer_radians: tune.map(|t| t.max_steer_radians).unwrap_or_else(|| prepared.map(|p| p.max_steer_radians).unwrap_or(VEHICLE_MAX_STEER_RAD)),

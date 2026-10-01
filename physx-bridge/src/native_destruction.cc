@@ -256,7 +256,7 @@ std::uint32_t NativeDestruction::State::append_materials(std::uint32_t structure
 }
 
 void NativeDestruction::State::append_bonds(std::uint32_t structure_id, std::uint32_t base,
-    rust::Slice<const FfiChunkBondDesc> bonds, const FfiDestructibleSettings &settings) {
+    rust::Slice<const FfiChunkBondDesc> bonds, const FfiDestructibleSettings &settings, bool vehicle) {
   State &s = *this;
   const PxU32 material_base = s.material_base.at(structure_id);
   const std::size_t bond_base = s.bonds.size();
@@ -278,16 +278,30 @@ void NativeDestruction::State::append_bonds(std::uint32_t structure_id, std::uin
     // road-load solve exactly as unconverged (0/1200 ticks, 2026-09-30).
     static const std::string flat=std::getenv("VIBE_TEST_BOND_WEIGHT")?std::getenv("VIBE_TEST_BOND_WEIGHT"):"";
     const bool fm=flat=="modulus"||flat=="all",fa=flat=="area"||flat=="all",fl=flat=="length"||flat=="all";
-    // VIBE_BOND_CONTACT_LENGTH=1 (A/B): the bond's length is at least the
-    // patch's own size, sqrt(area). A flat elastic contact's stiffness goes as
-    // E*sqrt(A) whatever the chunks' centres of mass do; two overlapping parts
-    // (a panel on its brace, 2 cm between centres) otherwise read as a bond
-    // hundreds of times stiffer than its neighbours.
-    static const bool contact_length = native_env_f32("VIBE_BOND_CONTACT_LENGTH", 0.0f) != 0.0f;
+    // Contact length: the bond's length is at least the patch's own size,
+    // sqrt(area). A flat elastic contact's stiffness goes as E*sqrt(A) whatever
+    // the chunks' centres of mass do; two overlapping parts (a panel on its
+    // brace, 2 cm between centres) otherwise read as a bond hundreds of times
+    // stiffer than its neighbours. Moved load sharing by 1% median, 4% p90 on
+    // two fleet cars (compare-bond-loads.py, 2026-10-01). Vehicles: on
+    // (VIBE_VEHICLE_BOND_CONTACT_LENGTH=0 off); other structures:
+    // VIBE_BOND_CONTACT_LENGTH=1.
+    static const bool contact_length_vehicle = native_env_f32("VIBE_VEHICLE_BOND_CONTACT_LENGTH", 1.0f) != 0.0f;
+    static const bool contact_length_other = native_env_f32("VIBE_BOND_CONTACT_LENGTH", 0.0f) != 0.0f;
+    const bool contact_length = vehicle ? contact_length_vehicle : contact_length_other;
     const float length = contact_length ? std::max(distance, std::sqrt(std::max(b.area, 1e-4f))) : distance;
-    // VIBE_BOND_STIFFNESS_EXPONENT=p (A/B, default 1): weight^p compresses the
-    // spread of bond stiffness (1 physical, 0 every bond equal).
-    static const float exponent = native_env_f32("VIBE_BOND_STIFFNESS_EXPONENT", 1.0f);
+    // Stiffness exponent: weight^p compresses the spread of bond stiffness
+    // (1 physical, 0 every bond equal). A concession for vehicles, whose
+    // stiffness spread (1e6-4.5e7, buildings ~40) kept their solves from
+    // converging in float at 64 iterations; at 0.5 the monster truck's rough-
+    // course solves went from ~2% to 88% converged, the rest ~2 iterations
+    // short, and load sharing between redundant paths moved 23-30% (median),
+    // 80-98% (p90) against a converged physical reference (vehicle lab and
+    // compare-bond-loads.py, 2026-10-01). Vehicles: 0.5
+    // (VIBE_VEHICLE_BOND_STIFFNESS_EXPONENT); others: 1 (VIBE_BOND_STIFFNESS_EXPONENT).
+    static const float exponent_vehicle = native_env_f32("VIBE_VEHICLE_BOND_STIFFNESS_EXPONENT", 0.5f);
+    static const float exponent_other = native_env_f32("VIBE_BOND_STIFFNESS_EXPONENT", 1.0f);
+    const float exponent = vehicle ? exponent_vehicle : exponent_other;
     const float weight = std::pow(
         std::sqrt((fm ? 1.0f : modulus > 0.0f ? modulus / kReferenceModulusPa : 1.0f) *
                   (fa ? 1e-3f : std::max(b.area, 1e-4f)) / (fl ? 0.3f : std::max(length, 0.05f))), exponent);
@@ -534,7 +548,7 @@ void NativeDestruction::create_destructible(
                  structure_id, cpu_hulls, hulls);
   }
 
-  s.append_bonds(structure_id, base, bonds, settings);
+  s.append_bonds(structure_id, base, bonds, settings, false);
 }
 
 void NativeDestruction::register_vehicle(physx::native::NativeVehicle &vehicle,
@@ -625,7 +639,7 @@ void NativeDestruction::register_vehicle(physx::native::NativeVehicle &vehicle,
       if(h) s.extra_shapes.push_back({shape,binding.base+i});
     }
   }
-  s.append_bonds(structure_id,binding.base,bonds,settings);
+  s.append_bonds(structure_id,binding.base,bonds,settings,true);
   for (PxU32 w=0;w<4;++w) {
     auto *constraint=vehicle.wheelConstraint(w);native_require(constraint,"vehicle has no corner constraint");
     s.constraints.push_back({constraint,binding.wheels[w][0],true,PxVec3(0),true,binding.base});
@@ -738,8 +752,11 @@ FfiVehicleDebug NativeDestruction::vehicle_debug(const physx::native::NativeVehi
     if(const PxRigidDynamic *dynamic=actor->is<PxRigidDynamic>()) row.sleeping=dynamic->isSleeping();
     out.actors.push_back(row);
   }
-  for(std::uint32_t w=0;w<4;++w) if(binding->loads[w].submitted)
-    out.wheel_loads.push_back(FfiVehicleWheelLoad{w,native_ffi(binding->loads[w].suspension),native_ffi(binding->loads[w].tire),native_ffi(binding->loads[w].couple)});
+  for(std::uint32_t w=0;w<4;++w) if(binding->loads[w].submitted) {
+    PxVec3 force(0),torque(0);
+    if(PxConstraint *c=vehicle.wheelConstraint(w)) c->getForce(force,torque);
+    out.wheel_loads.push_back(FfiVehicleWheelLoad{w,native_ffi(binding->loads[w].suspension),native_ffi(binding->loads[w].tire),native_ffi(binding->loads[w].couple),native_ffi(force)});
+  }
 #else
   PX_UNUSED(vehicle);
 #endif

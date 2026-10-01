@@ -151,7 +151,7 @@ struct NativeDestruction::State {
 #endif
   std::uint32_t append_materials(std::uint32_t structure, const FfiDestructibleSettings &settings);
   void append_bonds(std::uint32_t structure, std::uint32_t base,
-      rust::Slice<const FfiChunkBondDesc> bonds, const FfiDestructibleSettings &settings);
+      rust::Slice<const FfiChunkBondDesc> bonds, const FfiDestructibleSettings &settings, bool vehicle);
 
   std::vector<Chunk> chunks;
   std::vector<physx::PxRigidDynamic *> parents;
