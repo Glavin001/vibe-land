@@ -413,6 +413,7 @@ fn vehicle_lab() {
                 if r["violations"].as_array().unwrap().is_empty() { "ok".to_string() } else { format!("FAIL {}", r["violations"][0].as_str().unwrap()) });
             eprintln!("{:>22} solve: {} | step {:.1} ms median, {:.1} p95, {:.1} max", "", r["solve"]["verdict"].as_str().unwrap_or("-"),
                 r["stepMs"]["median"].as_f64().unwrap_or(0.), r["stepMs"]["p95"].as_f64().unwrap_or(0.), r["stepMs"]["max"].as_f64().unwrap_or(0.));
+            eprintln!("{:>22} solve shape: {}", "", r["solve"]["shape"].as_str().unwrap_or("-"));
             eprintln!("{:>22} peak loads: constraint {:.0} kN ({}), contact {:.0} kN ({}); a wheel at the end of its {:.2} m travel on {} tick(s)", "",
                 r["peakConstraintN"].as_f64().unwrap_or(0.) / 1e3, r["peakConstraintAt"].as_str().unwrap_or("-"), r["peakContactN"].as_f64().unwrap_or(0.) / 1e3,
                 r["peakContactAt"].as_str().unwrap_or("-"), r["suspensionTravel"].as_f64().unwrap_or(0.), r["bottomedTicks"]);

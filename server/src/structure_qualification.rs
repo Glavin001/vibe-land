@@ -65,6 +65,13 @@ mod tally {
         /// A few unconverged component records, verbatim.
         pub examples: Vec<serde_json::Value>,
         pub max_iterations: u32,
+        /// history[1] / history[0] of every solve that iterated: how much the
+        /// first step changed the residual (> 1: it made it worse).
+        pub first_step: Vec<f32>,
+        /// Unconverged solves that ended worse than their warm start.
+        pub regressed: u32,
+        /// Iterations of every converged solve that iterated.
+        pub converged_iterations: Vec<u32>,
     }
 
     impl SolveTally {
@@ -83,6 +90,10 @@ mod tally {
                 self.solves += 1;
                 *self.reasons.entry(reason).or_default() += 1;
                 self.max_iterations = self.max_iterations.max(c.iterations);
+                let (h0, h1) = (c.history[0], c.history[1]);
+                if c.iterations > 0 && h0 > 0. && h1.is_finite() { self.first_step.push((h1 / h0).sqrt()); }
+                if c.reason == 1 && c.iterations > 0 { self.converged_iterations.push(c.iterations); }
+                if !matches!(c.reason, 1 | 6) && h0 > 0. && c.final2 > h0 { self.regressed += 1; }
                 if !matches!(c.reason, 1 | 6) {
                     let reason_code = effective_reason(c);
                     if c.tolerance2 > 0. && c.final2.is_finite() { self.excess.push((c.final2 / c.tolerance2).sqrt()); }
@@ -125,6 +136,21 @@ mod tally {
             parts.join("; ")
         }
 
+        fn quantile<T: Copy + PartialOrd>(v: &[T], q: f64) -> Option<T> {
+            let mut s = v.to_vec(); s.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            s.get(((s.len() as f64 - 1.) * q).round() as usize).copied()
+        }
+
+        /// How the solves behaved, independent of the verdict: the first
+        /// step's effect on the residual, regressions below the warm start, and
+        /// how many iterations the converged ones took.
+        pub fn shape(&self) -> String {
+            let q = |v: &[f32], p| Self::quantile(v, p).unwrap_or(f32::NAN);
+            let i = |p| Self::quantile(&self.converged_iterations, p).map_or("-".into(), |v| v.to_string());
+            format!("first step x{:.2} residual (median; p90 x{:.1}); {} of {} unconverged ended worse than their warm start; converged in {} iterations (median; p90 {})",
+                q(&self.first_step, 0.5), q(&self.first_step, 0.9), self.regressed, self.unconverged(), i(0.5), i(0.9))
+        }
+
         /// The chunks that hold most of the unresolved residual, by summed share.
         pub fn hot_chunks(&self, n: usize) -> Vec<((u32, u32), f64)> {
             let mut v: Vec<_> = self.hot.iter().map(|(k, s)| (*k, *s)).collect();
@@ -135,7 +161,10 @@ mod tally {
 
         pub fn to_json(&self, name: impl Fn(u32, u32) -> String) -> serde_json::Value {
             serde_json::json!({"solves": self.solves, "reasons": self.reasons, "verdict": self.verdict(),
-                "maxIterations": self.max_iterations, "medianExcess": Self::median(&self.excess),
+                "maxIterations": self.max_iterations, "medianExcess": Self::median(&self.excess), "shape": self.shape(),
+                "firstStepMedian": Self::quantile(&self.first_step, 0.5), "firstStepP90": Self::quantile(&self.first_step, 0.9),
+                "regressed": self.regressed, "convergedIterationsMedian": Self::quantile(&self.converged_iterations, 0.5),
+                "convergedIterationsP90": Self::quantile(&self.converged_iterations, 0.9),
                 "hotChunks": self.hot_chunks(10).iter().map(|((s, n), share)| serde_json::json!({"chunk": name(*s, *n), "share": share / self.unconverged().max(1) as f64})).collect::<Vec<_>>(),
                 "examples": self.examples})
         }
@@ -218,7 +247,7 @@ mod tests {
         for id in &ids {
             let (a, b) = (&idle[id], &impact[id]);
             idle_ok += (a.unconverged() == 0) as usize; impact_ok += (b.unconverged() == 0) as usize;
-            eprintln!("structure {id:>3}: at rest: {}\n               after impact on {target}: {}", a.verdict(), b.verdict());
+            eprintln!("structure {id:>3}: at rest: {}\n               after impact on {target}: {}\n               {}", a.verdict(), b.verdict(), b.shape());
             for (label, t) in [("rest", a), ("impact", b)] {
                 if t.unconverged() > 0 {
                     eprintln!("               residual held ({label}) by: {}", t.hot_chunks(4).iter().map(|((s, n), share)| format!("{} {:.0}%", name(*s, *n), share / t.unconverged() as f64 * 100.)).collect::<Vec<_>>().join(", "));
