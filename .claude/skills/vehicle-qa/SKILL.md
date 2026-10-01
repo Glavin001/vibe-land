@@ -107,8 +107,12 @@ weak part. Everything, tick by tick, lands in `target/vehicle-lab/report.json`.
   car's solve was cut off mid-transient: residual up to 2e5x tolerance, worse
   than its warm start. Causes, by what-if: chunks under 1 kg on stiff steel
   bonds (now merged, `client/src/vehicles/chunk-merge.mjs`) and a 1e6-4.5e7
-  bond-stiffness spread (vehicle structures now use contact length and
-  exponent 0.5 -- a measured concession, see the bridge's append_bonds).
+  bond-stiffness spread (vehicle structures now use contact length, which is
+  grounded). Compressing the spread further (exponent 0.5) converged at 64
+  but moved load sharing 23-30% median and broke bonds 2-3 m from the ball
+  first, so it was rejected: weights stay physical (exponent 1). At 64
+  iterations the rough course still cuts most solves off (10.4 ms/step); 128
+  converges ~81% at 16.4 ms median / 22 ms p95.
 - **Real breaks on rough ground were the rigid suspension limit.** The audit
   showed 1.5 MN constraint loads on the wheel chunk (PhysX's own corner
   constraint force agrees): Vehicle2 removes over-compression in one step.
