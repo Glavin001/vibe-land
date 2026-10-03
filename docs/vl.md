@@ -46,6 +46,10 @@ Rules learned on the way:
 - **The profiler changes the timing.** Explain with `VIBE_PHYSX_PROFILE=1`,
   and quote numbers from unprofiled runs.
 - **On Metal, `cuda.*` zones are host time.** Use `vl perf gpu` for GPU time.
+- **A run without the stage is not a measurement.** If the server rejects the
+  destruction configuration, the city runs with no destruction and every tick
+  is cheap. A scenario fails when no tick carries a stage record, and quotes
+  the server's error. Set `"expect": {"stage_live": false}` to run without it.
 
 ## Reproduction
 

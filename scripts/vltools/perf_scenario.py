@@ -5,7 +5,7 @@ A scenario (scenarios/perf/<name>.json):
   {"name": "...", "why": "...",
    "env": {"VAR": "value", ...},             # server env on top of stack.DEFAULT_ENV
    "steps": [{"idle": 20},                    # seconds of nothing
-             {"meteors": 8, "every_s": 2},    # meteors at the first N buildings
+             {"meteors": 8, "every_s": 2},    # meteors at the first N buildings (cycling)
              {"events": [{"offset": 0, "event": {...}}, ...],   # recorded city events
               "tail_ticks": 600},             # replayed at their tick offsets (vl repro)
              {"idle": 20}],
@@ -25,6 +25,7 @@ dumps (debug-reports/spike-*), logs, meta.json (fingerprint) and explain.json
 from __future__ import annotations
 
 import json
+import re
 import os
 import subprocess
 import sys
@@ -112,7 +113,9 @@ def run_steps(api, match, steps, puller, run_dir=None):
             if buildings is None:
                 b = json.loads(urllib.request.urlopen(f"{api}/city-buildings", timeout=10).read())
                 buildings = b if isinstance(b, list) else b.get("buildings", [])
-            for target in [x["centre"] for x in buildings[: step["meteors"]]]:
+            # More meteors than buildings cycle through them again: a second
+            # strike on a felled building still makes debris.
+            for target in [buildings[i % len(buildings)]["centre"] for i in range(step["meteors"])] if buildings else []:
                 post_json(f"{api}/city-meteor/{match}", {"targets": [target]})
                 time.sleep(step.get("every_s", 2))
             kind = f"meteors {step['meteors']}"
@@ -132,6 +135,26 @@ def anomalies_in(rep_dir: Path):
         except (OSError, KeyError, ValueError):
             out.append((d.name.rsplit("-", 1)[-1], None))
     return out
+
+
+STAGE_FAILURES = ("destructible city unavailable", "configuration was rejected", "native destruction")
+
+
+def stage_missing(rep_dir: Path):
+    """Why the native destruction stage did not run in a repetition, or None.
+
+    A rejected stage configuration leaves a city with no destruction, whose
+    ticks are cheap: measured as a scenario, it reads as a large speedup. The
+    limit-0 correction trial on 2026-10-03 did exactly that. Scenarios that
+    mean to run without the stage set "expect": {"stage_live": false}."""
+    ticks = perf_explain.load([Path(rep_dir) / "ticks.jsonl"])
+    if any(t.get("stage") for t in ticks):
+        return None
+    log = Path(rep_dir) / "server.log"
+    lines = log.read_text(errors="replace").splitlines() if log.exists() else []
+    lines = [re.sub(r"\x1b\[[0-9;]*m", "", l) for l in lines]
+    cause = next((l.strip() for l in lines if any(n in l for n in STAGE_FAILURES) and ("ERROR" in l or "WARN" in l)), None)
+    return f"no tick carried a destruction stage record ({cause or 'no stage error in server.log'})"
 
 
 def check_expect(expect, rep_dir: Path):
@@ -242,6 +265,10 @@ def run(args):
             code = subprocess.call(cmd)
             if code != 0 or not (rep_dir / "ticks.jsonl").exists():
                 raise SystemExit(f"scenario run failed (rep {rep}, exit {code}); see {rep_dir}")
+            if (scenario.get("expect") or {}).get("stage_live", True):
+                missing = stage_missing(rep_dir)
+                if missing:
+                    raise SystemExit(f"rep {rep} ran without the destruction stage: {missing}; see {rep_dir / 'server.log'}")
             rep_dirs.append(rep_dir)
     finally:
         stack.kill_tree(vite)

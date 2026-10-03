@@ -1,0 +1,6 @@
+{
+  "name": "city-mass-bodies",
+  "why": "Sustained mass destruction: 40 meteors half a second apart across the city (cycling through its buildings), then 20 s of aftermath. Holds the world above 1,000 awake bodies for many seconds instead of the brief peak city-mass-meteors reaches; the target is every tick under 16.7 ms throughout.",
+  "env": {"VIBE_PHYSX_PROFILE": "0"},
+  "steps": [{"idle": 10}, {"meteors": 40, "every_s": 0.5}, {"idle": 20}]
+}

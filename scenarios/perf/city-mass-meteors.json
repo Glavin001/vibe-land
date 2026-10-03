@@ -1,0 +1,6 @@
+{
+  "name": "city-mass-meteors",
+  "why": "Mass destruction across the whole city: 16 meteors at 16 buildings one second apart, then 30 s of aftermath. Drives the world past 1,000 awake bodies; the target is a real-time server (every tick under 16.7 ms) through impact and aftermath.",
+  "env": {"VIBE_PHYSX_PROFILE": "0"},
+  "steps": [{"idle": 10}, {"meteors": 16, "every_s": 1}, {"idle": 30}]
+}
