@@ -24,7 +24,7 @@ import time
 import urllib.request
 from pathlib import Path
 
-from . import perf_explain, stack
+from . import perf_explain, perf_stats, stack
 
 
 class TickPuller(threading.Thread):
@@ -134,21 +134,35 @@ def run(args):
         k, _, v = kv.partition("=")
         env[k] = v
     meta = {"kind": "scenario", "scenario": scenario, "label": label, "fingerprint": stack.fingerprint(binary, env),
-            "started": time.strftime("%Y-%m-%dT%H:%M:%S")}
+            "reps": args.reps, "started": time.strftime("%Y-%m-%dT%H:%M:%S")}
     (run_dir / "meta.json").write_text(json.dumps(meta, indent=1))
     vite = stack.start_vite(run_dir, args.client_port, args.http_port)
+    rep_dirs = []
     try:
-        cmd = [str(stack.GPU_RUN), f"vl-{label}", sys.executable, str(stack.ROOT / "scripts/vl"), "perf", "_locked",
-               "--scenario", str(scenario_path), "--run-dir", str(run_dir), "--binary", str(binary),
-               "--http-port", str(args.http_port), "--wt-port", str(args.wt_port), "--client-port", str(args.client_port),
-               "--match", args.match, "--warmup", str(args.warmup)]
-        for kv in args.env or []:
-            cmd += ["--env", kv]
-        code = subprocess.call(cmd)
+        for rep in range(args.reps):
+            rep_dir = run_dir / f"rep-{rep}" if args.reps > 1 else run_dir
+            rep_dir.mkdir(parents=True, exist_ok=True)
+            cmd = [str(stack.GPU_RUN), f"vl-{label}", sys.executable, str(stack.ROOT / "scripts/vl"), "perf", "_locked",
+                   "--scenario", str(scenario_path), "--run-dir", str(rep_dir), "--binary", str(binary),
+                   "--http-port", str(args.http_port), "--wt-port", str(args.wt_port), "--client-port", str(args.client_port),
+                   "--match", args.match, "--warmup", str(args.warmup)]
+            for kv in args.env or []:
+                cmd += ["--env", kv]
+            code = subprocess.call(cmd)
+            if code != 0 or not (rep_dir / "ticks.jsonl").exists():
+                raise SystemExit(f"scenario run failed (rep {rep}, exit {code}); see {rep_dir}")
+            rep_dirs.append(rep_dir)
     finally:
         stack.kill_tree(vite)
-    if code != 0 or not (run_dir / "ticks.jsonl").exists():
-        raise SystemExit(f"scenario run failed (exit {code}); see {run_dir}")
+    summaries = [perf_stats.summarise_rep(d) for d in rep_dirs]
+    aggregate = perf_stats.aggregate(summaries)
+    (run_dir / "summary.json").write_text(json.dumps({"label": label, "reps": [str(d) for d in rep_dirs],
+                                                      "per_rep": summaries, "aggregate": aggregate}, indent=1, default=float))
+    print(f"==== {label}: {len(rep_dirs)} repetition(s), per step (mean [min .. max] over repetitions)")
+    perf_stats.print_aggregate(aggregate)
+    if args.reps > 1:
+        print(f"\nrun: {run_dir}  (explain a repetition: vl perf explain {rep_dirs[0]})")
+        return
     marks = json.loads((run_dir / "steps.json").read_text())
     explain = {"all": perf_explain.run([run_dir / "ticks.jsonl"], as_json=False)}
     ticks = perf_explain.load([run_dir / "ticks.jsonl"])

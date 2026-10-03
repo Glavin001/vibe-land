@@ -21,6 +21,13 @@
       Run a declared scenario (scenarios/perf/<name>.json) on a private stack
       (vite, server and a headless player on their own ports, the server under
       the GPU lock), record every tick, explain the run and each step.
+      --reps N runs it N times on fresh servers and aggregates per step
+      (summary.json); the physics is not reproducible, so compare repetitions.
+
+  vl perf compare <runA> <runB>
+      Two scenario runs (with --reps), step by step: B - A for every summary
+      metric with a 90% bootstrap interval over repetitions; * marks the
+      differences whose interval excludes zero.
 
   vl perf diff <A ticks/dir> <B ticks/dir>
       What changed between two runs (or steps): the median tick, the phases
@@ -87,6 +94,11 @@ def perf_locked(args):
     perf_scenario.locked(args)
 
 
+def perf_compare(args):
+    from vltools import perf_stats
+    perf_stats.compare(Path(args.a), Path(args.b))
+
+
 def perf_diff(args):
     from vltools import perf_explain
     perf_explain.diff(perf_explain.load([args.a]), perf_explain.load([args.b]), "A", "B")
@@ -131,11 +143,16 @@ def main():
         c.add_argument("--warmup", type=float, default=10, help="seconds after joining before the first step")
         c.add_argument("--binary")
         if name == "scenario":
+            c.add_argument("--reps", type=int, default=1)
             c.add_argument("--label")
             c.add_argument("--out")
         else:
             c.add_argument("--run-dir", required=True)
         c.set_defaults(func=func)
+    c = perf.add_parser("compare")
+    c.add_argument("a")
+    c.add_argument("b")
+    c.set_defaults(func=perf_compare)
     d = perf.add_parser("diff")
     d.add_argument("a")
     d.add_argument("b")
