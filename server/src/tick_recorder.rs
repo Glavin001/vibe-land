@@ -114,11 +114,15 @@ impl TickRecorder {
     }
 }
 
-/// Write a dump into `root/spike-<unix>-<match>-tick<N>/` off the tick thread.
-pub(crate) fn write_dump(root: std::path::PathBuf, match_id: String, meta: serde_json::Value, dump: SpikeDump) {
+/// Where a dump goes: `root/spike-<unix>-<match>-tick<N>/`.
+pub(crate) fn dump_dir(root: &std::path::Path, match_id: &str, spike_tick: u32) -> std::path::PathBuf {
+    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    root.join(format!("spike-{stamp}-{match_id}-tick{spike_tick}"))
+}
+
+/// Write a dump into `dir` off the tick thread.
+pub(crate) fn write_dump(dir: std::path::PathBuf, match_id: String, meta: serde_json::Value, dump: SpikeDump) {
     std::thread::spawn(move || {
-        let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
-        let dir = root.join(format!("spike-{stamp}-{match_id}-tick{}", dump.spike_tick));
         let mut lines = String::new();
         for tick in &dump.ticks {
             match serde_json::to_string(tick) {

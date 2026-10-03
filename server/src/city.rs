@@ -1099,6 +1099,9 @@ pub fn open_capture_at(spec: &CaptureSpec, dir: &std::path::Path) -> std::io::Re
     )
 }
 
+/// Flight-recorder events kept (`CityRuntime::capture_event`).
+const RECENT_EVENTS_CAP: usize = 20_000;
+
 pub struct CityRuntime {
     /// Queued demolition targets, released a few per tick by
     /// `drain_demolition` so a building fails progressively rather than being
@@ -1117,6 +1120,9 @@ pub struct CityRuntime {
     /// encoder input so the stream can be replayed offline against exactly
     /// what happened here.
     capture: Option<NetlabCapture>,
+    /// Events for the flight recorder (`capture_event`), at most
+    /// `RECENT_EVENTS_CAP`, kept across city resets.
+    recent_events: std::collections::VecDeque<(u32, serde_json::Value)>,
     sim_hz: u32,
     /// Top of the scene's lowest static surface, which the backend measures
     /// bodies going through the ground against. Kept here because a reset
@@ -1201,6 +1207,7 @@ impl CityRuntime {
         Self {
             live: None,
             capture,
+            recent_events: std::collections::VecDeque::new(),
             pending_demolition: Vec::new(),
             demolition_centre: [0.0, 0.0],
             demolition_heading_deg: 0.0,
@@ -1655,9 +1662,21 @@ impl CityRuntime {
     }
 
     pub fn capture_event(&mut self, sim_tick: u32, value: serde_json::Value) {
+        // The flight recorder's copy (scripts/vl repro replays it): every
+        // event since the server started, bounded, whether or not a tape runs.
+        self.recent_events.push_back((sim_tick, value.clone()));
+        while self.recent_events.len() > RECENT_EVENTS_CAP {
+            self.recent_events.pop_front();
+        }
         if let Some(capture) = self.capture.as_mut() {
             capture.push_event(sim_tick, value);
         }
+    }
+
+    /// The flight recorder's events (joins, shots, meteors, demolitions,
+    /// resets), oldest first.
+    pub fn recent_events(&self) -> Vec<(u32, serde_json::Value)> {
+        self.recent_events.iter().cloned().collect()
     }
 
     pub fn capture_stats(&mut self, stats: &TickStats) {

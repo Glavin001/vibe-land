@@ -31,6 +31,8 @@ mod send_log;
 mod session_capture;
 mod session_match;
 mod tick_recorder;
+mod flight_recorder;
+mod invariants;
 mod snapshot_builder;
 mod voxel_world;
 
@@ -1108,6 +1110,8 @@ struct PlayerConnection {
 enum MatchEvent {
     /// The tick flight recorder's recent records, oldest first.
     RecentTicks { reply: tokio::sync::oneshot::Sender<Vec<session_capture::TickTiming>> },
+    /// Write the flight recorder's repro bundle into `dir` (a debug report's folder).
+    ReproBundle { dir: PathBuf, reason: String },
     GarageDebug { car: u32, reply: tokio::sync::oneshot::Sender<Result<serde_json::Value, (StatusCode, String)>> },
     GarageBombardment { request: garage_bombardment::Request, reply: tokio::sync::oneshot::Sender<Result<garage_bombardment::Status, (StatusCode, String)>> },
     TuneGarageVehicle {
@@ -1135,6 +1139,7 @@ impl MatchEvent {
     fn kind(&self) -> &'static str {
         match self {
             MatchEvent::RecentTicks { .. } => "recent_ticks",
+            MatchEvent::ReproBundle { .. } => "repro_bundle",
             MatchEvent::GarageDebug { .. } => "garage_debug",
             MatchEvent::GarageBombardment { .. } => "garage_bombardment",
             MatchEvent::TuneGarageVehicle { .. } => "tune_garage_vehicle",
@@ -1313,6 +1318,10 @@ struct MatchState {
     /// `VIBE_FLIGHT_RECORDER=0`, and the clock its records are stamped from.
     tick_recorder: Option<tick_recorder::TickRecorder>,
     tick_recorder_epoch: Option<Instant>,
+    /// Inputs and poses for reproduction (`flight_recorder`).
+    flight: flight_recorder::FlightRecorder,
+    /// Faults watched every tick (`invariants`), when the recorder runs.
+    invariants: Option<invariants::Invariants>,
 }
 
 #[tokio::main]
@@ -2256,6 +2265,11 @@ async fn debug_report_handler(
             format!("report write failed: {error}"),
         )
             .into_response();
+    }
+    // The flight recorder's repro bundle beside it (best effort: a report
+    // never fails because the match could not add its recording).
+    if let Some(handle) = find_match(&state, &match_id).await {
+        let _ = handle.tx.send(MatchEvent::ReproBundle { dir: dir.clone(), reason: "debug report".into() });
     }
     info!(%match_id, folder, bytes = body.len(), "debug report stored");
     (StatusCode::OK, Json(serde_json::json!({ "folder": folder }))).into_response()
@@ -3571,6 +3585,8 @@ async fn run_match_loop(
         session_capture: None,
         tick_recorder: tick_recorder::enabled().then(tick_recorder::TickRecorder::from_env),
         tick_recorder_epoch: tick_recorder::enabled().then(Instant::now),
+        flight: flight_recorder::FlightRecorder::default(),
+        invariants: tick_recorder::enabled().then(invariants::Invariants::from_env),
         session_max_us: session_match::session_max_us(),
         next_player_handle: 1,
         reusable_player_handles: VecDeque::new(),
@@ -3904,6 +3920,11 @@ impl MatchState {
             MatchEvent::RecentTicks { reply } => {
                 let ticks = self.tick_recorder.as_ref().map(|r| r.recent().cloned().collect()).unwrap_or_default();
                 let _ = reply.send(ticks);
+            }
+            MatchEvent::ReproBundle { dir, reason } => {
+                if self.tick_recorder.is_some() {
+                    flight_recorder::write_bundle(dir, self.repro_bundle("report", &reason));
+                }
             }
             MatchEvent::GarageDebug {car,reply} => {
                 if !reply.is_closed() {
@@ -4468,6 +4489,14 @@ impl MatchState {
                 applied.push(InputCmd::default());
             }
             input_frames_applied += applied.len() as f32;
+            if self.tick_recorder.is_some() {
+                for frame in &applied {
+                    self.flight.push_input(flight_recorder::InputRecord {
+                        tick: self.server_tick, player: player_id, seq: frame.seq, buttons: frame.buttons,
+                        move_x: frame.move_x, move_y: frame.move_y, yaw: frame.yaw, pitch: frame.pitch, in_vehicle,
+                    });
+                }
+            }
             // Each frame is simulated in order, with its own dt, and the
             // energy drain and previous-input/on-ground pair are re-read
             // between frames — the drain is per frame of movement, not per
@@ -5005,18 +5034,17 @@ impl MatchState {
             // into the scene and then it is the scene's problem: what it hits
             // and what that breaks is decided by PhysX solving its contacts,
             // which is exactly how the engine's own demos deliver a shot.
-            if city.capturing() {
-                city.capture_event(
-                    self.server_tick,
-                    serde_json::json!({
-                        "kind": "shot",
-                        "weapon": weapon,
-                        "shooter": shooter,
-                        "origin": origin.to_array(),
-                        "direction": direction.to_array(),
-                    }),
-                );
-            }
+            // Always recorded: the flight recorder replays shots (vl repro).
+            city.capture_event(
+                self.server_tick,
+                serde_json::json!({
+                    "kind": "shot",
+                    "weapon": weapon,
+                    "shooter": shooter,
+                    "origin": origin.to_array(),
+                    "direction": direction.to_array(),
+                }),
+            );
             if weapon == WEAPON_CANNONBALL {
                 let launched = self.arena.launch_ball(
                     nalgebra::Vector3::new(origin.x, origin.y, origin.z),
@@ -5509,6 +5537,7 @@ impl MatchState {
             }
             match reset {
                 Ok(()) => {
+                    city.capture_event(self.server_tick, serde_json::json!({"kind": "reset"}));
                     // The client ledger still describes the demolished city and
                     // no incremental topology event can say "start over", so
                     // every client needs a fresh bootstrap.

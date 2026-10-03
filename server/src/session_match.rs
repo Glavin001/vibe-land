@@ -384,15 +384,84 @@ impl MatchState {
         let mut timing = self.build_tick_timing(&costs, sc::micros_since(epoch), sc::unix_us());
         timing.abs_end_s = Some(sc::abs_now_s());
         timing.capture_ms = started.elapsed().as_secs_f32() * 1000.0;
+        let stage_error = timing.stage.as_ref().map_or(0, |s| s.error);
         let Some(recorder) = self.tick_recorder.as_mut() else { return };
-        if let Some(dump) = recorder.push(timing) {
+        let dump = recorder.push(timing);
+        self.check_invariants(stage_error);
+        if self.server_tick % crate::flight_recorder::POSE_EVERY_TICKS == 0 {
+            let ids: Vec<u32> = self.players.keys().copied().collect();
+            for player in ids {
+                if let Some((position, velocity, yaw, pitch, hp, _flags)) = self.arena.snapshot_player(player) {
+                    self.flight.push_pose(crate::flight_recorder::PoseRecord {
+                        tick: self.server_tick, player, position, velocity, yaw, pitch, hp,
+                        in_vehicle: self.arena.is_player_in_vehicle(player),
+                    });
+                }
+            }
+        }
+        if let Some(dump) = dump {
             let meta = serde_json::json!({
                 "kind": "spike",
                 "fingerprint": crate::server_fingerprint(),
                 "server_build": crate::server_build_stamp(),
                 "players": self.players.len(),
             });
-            crate::tick_recorder::write_dump(crate::debug_reports_root(), self.id.clone(), meta, dump);
+            let dir = crate::tick_recorder::dump_dir(&crate::debug_reports_root(), &self.id, dump.spike_tick);
+            crate::flight_recorder::write_bundle(dir.clone(), self.repro_bundle("spike", &format!("tick {} over {} ms", dump.spike_tick, dump.threshold_ms)));
+            crate::tick_recorder::write_dump(dir, self.id.clone(), meta, dump);
+        }
+    }
+
+    /// Watch the faults the stage counts; log and dump any that happened.
+    fn check_invariants(&mut self, stage_error: u32) {
+        #[cfg(feature = "native-destruction")]
+        let anomalies = {
+            let spans: Vec<(String, f64)> = self.city.as_ref().and_then(|city| city.native_tick_view())
+                .map(|(_, _, spans)| spans.iter().map(|s| (s.name.clone(), s.value)).collect()).unwrap_or_default();
+            let Some(invariants) = self.invariants.as_mut() else { return };
+            invariants.check(stage_error, spans.iter().map(|(n, v)| (n.as_str(), *v)))
+        };
+        #[cfg(not(feature = "native-destruction"))]
+        let anomalies = {
+            let Some(invariants) = self.invariants.as_mut() else { return };
+            invariants.check(stage_error, std::iter::empty())
+        };
+        for anomaly in anomalies {
+            warn!(match_id = %self.id, tick = self.server_tick, kind = %anomaly.kind, detail = %anomaly.detail, "anomaly: {}", anomaly.why);
+            let dump = self.invariants.as_mut().is_some_and(|inv| inv.should_dump(&anomaly.kind));
+            if dump {
+                let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+                let dir = crate::debug_reports_root().join(format!("anomaly-{stamp}-{}-tick{}-{}", self.id, self.server_tick, anomaly.kind));
+                let mut bundle = self.repro_bundle("anomaly", anomaly.why);
+                bundle.meta["anomaly"] = json!({"kind": anomaly.kind, "why": anomaly.why, "detail": anomaly.detail, "tick": self.server_tick});
+                crate::flight_recorder::write_bundle(dir, bundle);
+            }
+        }
+    }
+
+    /// The flight recorder's reproduction bundle: events since the server
+    /// started (city), the last minute's inputs and poses, the recent ticks.
+    pub(crate) fn repro_bundle(&self, kind: &str, reason: &str) -> crate::flight_recorder::ReproBundle {
+        let events = self.city.as_ref().map(|city| city.recent_events()).unwrap_or_default();
+        let ticks = self.tick_recorder.as_ref().map(|r| r.recent().cloned().collect()).unwrap_or_default();
+        let env: std::collections::BTreeMap<String, String> =
+            std::env::vars().filter(|(k, _)| k.starts_with("VIBE_") || k.starts_with("PX_") || k.starts_with("BLAST_")).collect();
+        crate::flight_recorder::ReproBundle {
+            meta: serde_json::json!({
+                "version": crate::flight_recorder::REPRO_VERSION,
+                "kind": kind,
+                "reason": reason,
+                "match_id": self.id,
+                "server_tick": self.server_tick,
+                "players": self.players.keys().collect::<Vec<_>>(),
+                "fingerprint": crate::server_fingerprint(),
+                "server_build": crate::server_build_stamp(),
+                "env": env,
+            }),
+            events,
+            inputs: self.flight.inputs(),
+            poses: self.flight.poses(),
+            ticks,
         }
     }
 
