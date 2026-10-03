@@ -15,13 +15,30 @@ if (!origin || !api) {
   process.exit(2);
 }
 const seconds = Number(secondsArg);
-const browser = await chromium.launch({ headless: true,
+// Playwright closes the browser on SIGTERM by default; this script's own
+// handler must run first to file the final report.
+const browser = await chromium.launch({ headless: true, handleSIGTERM: false, handleSIGINT: false,
   args: ['--no-sandbox', '--ignore-certificate-errors', '--enable-unsafe-swiftshader', '--use-gl=swiftshader', '--disable-dev-shm-usage'] });
-const stop = async (code) => { await browser.close().catch(() => {}); process.exit(code); };
+let page;
+let joined = false;
+// End every run with the client's own debug report (client.json: flicker
+// rings, hotspot, frame profile) so a reproduction can compare what the
+// client drew; the server adds its repro bundle beside it.
+const stop = async (code) => {
+  if (joined && page) {
+    const folder = await Promise.race([
+      page.evaluate((m) => window.__VIBE_E2E__.sendReport?.(m), MATCH).catch((e) => `report failed: ${e}`),
+      new Promise((r) => setTimeout(() => r('report timed out'), 8000)),
+    ]);
+    console.log(`final report ${folder}`);
+  }
+  await browser.close().catch(() => {});
+  process.exit(code);
+};
 process.on('SIGTERM', () => stop(0));
 process.on('SIGINT', () => stop(0));
 try {
-  const page = await browser.newPage({ ignoreHTTPSErrors: true, viewport: { width: 640, height: 360 } });
+  page = await browser.newPage({ ignoreHTTPSErrors: true, viewport: { width: 640, height: 360 } });
   page.on('pageerror', (e) => console.error(`pageerror: ${String(e).slice(0, 300)}`));
   await page.addInitScript(() => {
     for (const [k, v] of Object.entries({ tier: 'fast', shadows: '0', ao: '0', cityTextures: 'off', skyIbl: '0', skyDome: '0', dprCap: '1' }))
@@ -36,6 +53,7 @@ try {
   }, null, { timeout: 120_000 });
   const id = await page.evaluate(() => window.__VIBE_E2E__.snapshot().playerId);
   console.log(`joined ${id}`);
+  joined = true;
   if (seconds > 0) {
     await new Promise((r) => setTimeout(r, seconds * 1000));
     await stop(0);

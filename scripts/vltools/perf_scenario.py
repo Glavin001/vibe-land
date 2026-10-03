@@ -143,6 +143,17 @@ def check_expect(expect, rep_dir: Path):
             violations.append(f"anomaly {kind}")
     if expect.get("no_anomaly_any") and kinds:
         violations.append("anomalies " + ", ".join(sorted(set(kinds))))
+    absent = expect.get("client_symptoms_absent")
+    if absent:
+        from . import triage
+        reports = sorted((Path(rep_dir) / "debug-reports").glob("report-*"), key=lambda p: p.stat().st_mtime)
+        if not reports:
+            violations.append("no client report to check (the headless player did not file one)")
+        else:
+            found = set(triage.report_signature(reports[-1]))
+            hit = [s for s in absent if s in found]
+            if hit:
+                violations.append("client " + ", ".join(hit))
     window = expect.get("max_tick_ms_window")
     log_path = Path(rep_dir) / "replay-log.json"
     if window and log_path.exists() and (Path(rep_dir) / "ticks.jsonl").exists():
@@ -191,7 +202,7 @@ def locked(args):
             print("the server died during the run", file=sys.stderr)
             code = 5
     finally:
-        stack.kill_tree(player)
+        stack.kill_tree(player, leader_first=True)
         stack.kill_tree(server)
     sys.exit(code)
 

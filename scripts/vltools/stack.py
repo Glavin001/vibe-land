@@ -44,9 +44,18 @@ def answers(url):
         return False
 
 
-def kill_tree(proc):
+def kill_tree(proc, leader_first=False):
+    """Stop a process and everything it started. leader_first: signal only the
+    leader and let it shut its children down (the headless player files its
+    final report through its browser), then clean up the group."""
     if proc is None or proc.poll() is not None:
         return
+    if leader_first:
+        try:
+            proc.send_signal(signal.SIGTERM)
+            proc.wait(timeout=20)
+        except Exception:  # noqa: BLE001
+            pass
     try:
         os.killpg(proc.pid, signal.SIGTERM)
         proc.wait(timeout=20)

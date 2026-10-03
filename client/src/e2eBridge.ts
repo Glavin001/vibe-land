@@ -41,6 +41,7 @@ let dustBurstSerial = 1;
 import { setCapturePose } from './scene/captureCamera';
 import { cityTapeRecorder, saveCityTape } from './city/cityTape';
 import { uploadTape } from './city/hotspotWatch';
+import { sendDebugReport } from './city/debugReport';
 import { startPairedTape, stopPairedTape, uploadPairedTape } from './city/sessionPairing';
 import {
   formatPerfSweepMobile,
@@ -527,6 +528,10 @@ export interface VibeE2EBridge {
 
   /** The phone-screen summary of a report, as an array of lines. */
   formatPerfSweepMobile(report: unknown): string[];
+  /** File a debug report exactly as the SEND REPORT button does (client.json
+   *  beside the server's repro bundle); resolves to the server's folder.
+   *  Automated reproductions end every run with one (scripts/vl repro). */
+  sendReport(matchId: string): Promise<string>;
 
   /**
    * Every render setting the sweep can touch.
@@ -826,6 +831,7 @@ const bridge: VibeE2EBridge = {
     };
   },
   formatPerfSweepMobile: (report: unknown) => formatPerfSweepMobile(report as PerfSweepReport),
+  sendReport: (matchId: string) => sendDebugReport(matchId),
   renderSettings: () => ({
     tier: qualityTier(),
     ao: ambientOcclusionPreferred(),

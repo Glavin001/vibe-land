@@ -56,6 +56,10 @@
       the reproduction rate; --emit-test writes scenarios/repro/NAME.json, a
       test that fails while the bug is present.
 
+  vl triage [debug-reports] [--json]
+      Every report, spike and anomaly dump grouped by symptom, largest group
+      first, with whether it can be replayed and the vl repro command.
+
 Every command exits non-zero on failure. See docs/vl.md.
 """
 import argparse
@@ -153,6 +157,11 @@ def repro(args):
     repro_mod.run(args)
 
 
+def triage(args):
+    from vltools import triage as triage_mod
+    triage_mod.run(args.root, as_json=args.json)
+
+
 def perf_spikes(args):
     root = Path(args.root)
     dumps = sorted(root.glob("spike-*"), key=lambda p: p.stat().st_mtime, reverse=True)
@@ -243,6 +252,10 @@ def main():
     rp.add_argument("--wt-port", type=int, default=4312)
     rp.add_argument("--client-port", type=int, default=3313)
     rp.set_defaults(func=repro)
+    tr = sub.add_parser("triage")
+    tr.add_argument("root", nargs="?", default="debug-reports")
+    tr.add_argument("--json", action="store_true")
+    tr.set_defaults(func=triage)
     args = p.parse_args()
     args.func(args)
 
