@@ -69,6 +69,12 @@ fn city_wreck(model: &str, slot: usize, attack: Attack) {
     std::env::set_var("VIBE_GARAGE_VEHICLE_DESTRUCTION", "1");
     std::env::set_var("VIBE_CITY_DESTRUCTIBLE_VEHICLES", "1");
     std::env::set_var("PX_DESTRUCTION_ALLOW_UNCONVERGED", "1");
+    // What the city server ships (scripts/perf/garage-vehicle-server.sh): the
+    // incremental motion forest and cluster mass properties. Set either to 0 for
+    // the full rebuilds.
+    for flag in ["BLAST_STRESS_INCREMENTAL_MOTION", "PX_DESTRUCTION_INCREMENTAL_TOPOLOGY"] {
+        if std::env::var_os(flag).is_none() { std::env::set_var(flag, "1"); }
+    }
     let rest: u32 = std::env::var("VIBE_CITY_FLEET_REST_TICKS").ok().and_then(|v| v.parse().ok()).unwrap_or(900);
     // VIBE_CITY_FLEET_VARIANT=n: another wreck of the same kind (meteor seed
     // 11+n; shots from 1.5 m further along per n), since one pile of debris is

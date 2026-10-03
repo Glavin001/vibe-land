@@ -19,6 +19,10 @@
 # VIBE_NATIVE_STRESS_FORCE_TOLERANCE (default 1e-3 here): force convergence,
 # PxDestructionStressDesc::forceTolerance (destruction/src/native_runtime.rs);
 # 0 = the residual test alone.
+# BLAST_STRESS_INCREMENTAL_MOTION=1, PX_DESTRUCTION_INCREMENTAL_TOPOLOGY=1 (PhysX
+# opt-ins, default 1 here): a fracture rebuilds the stress motion forest and the
+# cluster mass properties of the touched components only. On the city's
+# meteor correction ticks, -6 ms median and -12 ms p90 (Metal, 2026-10-03).
 # The client is `npm run dev`.
 set -euo pipefail
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
@@ -41,5 +45,7 @@ exec scripts/perf/gpu-run.sh garage-vehicles env \
   VIBE_GARAGE_BALL_MASS=${VIBE_GARAGE_BALL_MASS:-} PX_DESTRUCTION_ALLOW_UNCONVERGED=${PX_DESTRUCTION_ALLOW_UNCONVERGED:-1} \
   VIBE_CITY_DESTRUCTIBLE_VEHICLES=${VIBE_CITY_DESTRUCTIBLE_VEHICLES:-1} \
   VIBE_NATIVE_STRESS_FORCE_TOLERANCE=${VIBE_NATIVE_STRESS_FORCE_TOLERANCE:-0.001} \
+  BLAST_STRESS_INCREMENTAL_MOTION=${BLAST_STRESS_INCREMENTAL_MOTION:-1} \
+  PX_DESTRUCTION_INCREMENTAL_TOPOLOGY=${PX_DESTRUCTION_INCREMENTAL_TOPOLOGY:-1} \
   CUMETAL_CACHE_DIR="$ROOT/target/cumetal-cache-vehicles" \
   "$CARGO_TARGET_DIR/release/web-fps-server" > "$LOG" 2>&1
