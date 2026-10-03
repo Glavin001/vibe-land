@@ -5,6 +5,14 @@ description: Reproduce a player's report about destructible vehicles (flicker, p
 
 # Vehicle QA: reproduce, then fix
 
+**First: `scripts/vl triage` then `scripts/vl repro <dump> --reps 3`
+(docs/vl.md).** Every report a player sends now carries a repro bundle (the
+city events since start, the last minute's inputs and poses, the ticks, the
+server's settings); `vl repro` replays it on a fresh server N times, reports
+the reproduction rate, and `--emit-test` turns it into a test that fails while
+the bug is present. Use the layers below when the bug needs a scripted car
+scenario, frame-level pixels or the physics alone.
+
 A report is not understood until a test reproduces it. Pick the fastest layer
 that shows it, keep the slower ones as confirmation.
 

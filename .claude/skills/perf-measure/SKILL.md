@@ -5,6 +5,16 @@ description: Measure server tick performance without fooling yourself. The bench
 
 # Measuring server performance
 
+**Start with `scripts/vl perf` (docs/vl.md), on Mac and Linux.** It needs no
+manual steps: a declared scenario on a private stack (`vl perf scenario X
+--reps 3`), every tick recorded by the server's flight recorder, spikes
+explained (`vl perf explain`: the phases that grew, the counts and events with
+them, a cost model), A/B with intervals that refuse noise (`vl perf compare`),
+real GPU time on Metal (`vl perf gpu`), budgets and history (`vl perf suite`,
+`vl perf history`). Every server also dumps the ticks around any tick over
+33 ms to `debug-reports/spike-*` on its own. The tools below remain for the
+Linux trace matrix and for the measurement traps, which still apply.
+
 `bench.sh`, `profile.sh`, `record-city-trace` and `city_bench.rs` build the
 Blast `cuda-stress` path, so they run on Linux/NVIDIA only. On a Mac, read
 [On a Mac](#on-a-mac) first; the traps below still apply.

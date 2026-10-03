@@ -5,6 +5,12 @@ description: Patterns for debugging a system you cannot single-step — measurin
 
 # Debugging discipline
 
+The tooling for these rules is `scripts/vl` (docs/vl.md): reproductions are a
+rate over fresh-server repetitions (`vl repro`), comparisons are intervals over
+repetitions that refuse same-build noise and flag diverged physics regimes
+(`vl perf compare`), and a cost is attributed down to the GPU kernel before
+anyone theorises (`vl perf explain`, `vl perf gpu`).
+
 Every rule here cost something to learn. The example after each one is the
 occasion, kept short — the rule is the point, not the anecdote.
 
