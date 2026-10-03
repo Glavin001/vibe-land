@@ -1,6 +1,32 @@
 {
   "name": "city-stock-meteors-noprof",
   "why": "city-stock-meteors without the engine profiler: the numbers to quote (the profiler changes timing).",
-  "env": {"VIBE_PHYSX_PROFILE": "0", "VIBE_CITY_DESTRUCTIBLE_VEHICLES": "0"},
-  "steps": [{"idle": 20}, {"meteors": 8, "every_s": 2}, {"idle": 20}]
+  "env": {
+    "VIBE_PHYSX_PROFILE": "0",
+    "VIBE_CITY_DESTRUCTIBLE_VEHICLES": "0"
+  },
+  "steps": [
+    {
+      "idle": 20
+    },
+    {
+      "meteors": 8,
+      "every_s": 2
+    },
+    {
+      "idle": 20
+    }
+  ],
+  "budgets": {
+    "0:idle 20s": {
+      "median_ms": 2.5
+    },
+    "1:meteors 8": {
+      "median_ms": 11.0,
+      "over_budget_pct": 10.0
+    },
+    "2:idle 20s": {
+      "median_ms": 11.0
+    }
+  }
 }

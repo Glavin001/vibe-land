@@ -1,6 +1,31 @@
 {
   "name": "city-fleet-meteors-noprof",
   "why": "city-fleet-meteors without the engine profiler: the numbers to quote (the profiler changes timing).",
-  "env": {"VIBE_PHYSX_PROFILE": "0"},
-  "steps": [{"idle": 20}, {"meteors": 8, "every_s": 2}, {"idle": 20}]
+  "env": {
+    "VIBE_PHYSX_PROFILE": "0"
+  },
+  "steps": [
+    {
+      "idle": 20
+    },
+    {
+      "meteors": 8,
+      "every_s": 2
+    },
+    {
+      "idle": 20
+    }
+  ],
+  "budgets": {
+    "0:idle 20s": {
+      "median_ms": 7.0
+    },
+    "1:meteors 8": {
+      "median_ms": 14.0,
+      "over_budget_pct": 30.0
+    },
+    "2:idle 20s": {
+      "median_ms": 14.0
+    }
+  }
 }

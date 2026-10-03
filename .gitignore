@@ -24,6 +24,7 @@ control-plane/.dev.vars
 # Benchmark baselines are machine-specific; regenerate with scripts/bench-campaign.py
 bench-results/*
 !bench-results/guardrails.json
+!bench-results/history.jsonl
 
 client/tools/profiles/
 destruction/assets/scenes/fractured-downtown-pool*.json

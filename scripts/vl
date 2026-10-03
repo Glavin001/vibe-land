@@ -24,6 +24,14 @@
       --reps N runs it N times on fresh servers and aggregates per step
       (summary.json); the physics is not reproducible, so compare repetitions.
 
+  vl perf suite [suite] [--reps N] [--only a,b]
+      Run the declared suite (scenarios/perf/suite.json), check each
+      scenario's budgets, append results to bench-results/history.jsonl
+      (keyed by both repos' revisions); exit 1 on any budget failure.
+
+  vl perf history <scenario> [--step S] [--metric M]
+      The scenario's results over time, commit by commit.
+
   vl perf compare <runA> <runB>
       Two scenario runs (with --reps), step by step: B - A for every summary
       metric with a 90% bootstrap interval over repetitions; * marks the
@@ -100,6 +108,16 @@ def perf_locked(args):
     perf_scenario.locked(args)
 
 
+def perf_suite(args):
+    from vltools import perf_suite
+    perf_suite.suite(args)
+
+
+def perf_history(args):
+    from vltools import perf_suite
+    perf_suite.history(args)
+
+
 def perf_compare(args):
     from vltools import perf_stats
     perf_stats.compare(Path(args.a), Path(args.b))
@@ -170,6 +188,20 @@ def main():
         else:
             c.add_argument("--run-dir", required=True)
         c.set_defaults(func=func)
+    su = perf.add_parser("suite")
+    su.add_argument("suite", nargs="?", default="suite")
+    su.add_argument("--reps", type=int)
+    su.add_argument("--only")
+    su.add_argument("--binary")
+    su.add_argument("--http-port", type=int, default=4311)
+    su.add_argument("--wt-port", type=int, default=4312)
+    su.add_argument("--client-port", type=int, default=3313)
+    su.set_defaults(func=perf_suite)
+    hi = perf.add_parser("history")
+    hi.add_argument("scenario")
+    hi.add_argument("--step")
+    hi.add_argument("--metric", default="median_ms")
+    hi.set_defaults(func=perf_history)
     c = perf.add_parser("compare")
     c.add_argument("a")
     c.add_argument("b")
