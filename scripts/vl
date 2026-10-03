@@ -50,6 +50,12 @@
   vl perf spikes [debug-reports]
       List the spike dumps a server wrote, newest first.
 
+  vl repro <dump-dir> [--reps N] [--emit-test NAME] [--max-gap-s S]
+      Reproduce a debug report, spike dump or anomaly dump from its repro
+      bundle (docs/repro-bundle.md) on a fresh private stack, N times; print
+      the reproduction rate; --emit-test writes scenarios/repro/NAME.json, a
+      test that fails while the bug is present.
+
 Every command exits non-zero on failure. See docs/vl.md.
 """
 import argparse
@@ -142,6 +148,11 @@ def perf_gpu(args):
         commit_trace.run(args.log, args.ticks, top=args.top)
 
 
+def repro(args):
+    from vltools import repro as repro_mod
+    repro_mod.run(args)
+
+
 def perf_spikes(args):
     root = Path(args.root)
     dumps = sorted(root.glob("spike-*"), key=lambda p: p.stat().st_mtime, reverse=True)
@@ -219,6 +230,19 @@ def main():
     s = perf.add_parser("spikes")
     s.add_argument("root", nargs="?", default="debug-reports")
     s.set_defaults(func=perf_spikes)
+    rp = sub.add_parser("repro")
+    rp.add_argument("dump")
+    rp.add_argument("--reps", type=int, default=3)
+    rp.add_argument("--emit-test")
+    rp.add_argument("--max-gap-s", type=float, default=20)
+    rp.add_argument("--env", action="append")
+    rp.add_argument("--out")
+    rp.add_argument("--warmup", type=float, default=10)
+    rp.add_argument("--binary")
+    rp.add_argument("--http-port", type=int, default=4311)
+    rp.add_argument("--wt-port", type=int, default=4312)
+    rp.add_argument("--client-port", type=int, default=3313)
+    rp.set_defaults(func=repro)
     args = p.parse_args()
     args.func(args)
 

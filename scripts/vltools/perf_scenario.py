@@ -6,7 +6,16 @@ A scenario (scenarios/perf/<name>.json):
    "env": {"VAR": "value", ...},             # server env on top of stack.DEFAULT_ENV
    "steps": [{"idle": 20},                    # seconds of nothing
              {"meteors": 8, "every_s": 2},    # meteors at the first N buildings
-             {"idle": 20}]}
+             {"events": [{"offset": 0, "event": {...}}, ...],   # recorded city events
+              "tail_ticks": 600},             # replayed at their tick offsets (vl repro)
+             {"idle": 20}],
+   "expect": {"no_anomaly": ["stage_error"],  # invariants a passing run keeps
+              "max_tick_ms": 100,
+              "min_pass_rate": 1.0}}          # share of repetitions that must pass
+
+Expectations make a scenario a test: `vl perf scenario` exits 1 when fewer than
+min_pass_rate of the repetitions keep them. `vl repro --emit-test` writes
+scenarios whose expectations the reported bug violates.
 
 The run directory gets ticks.jsonl (every tick, from the server's flight
 recorder), steps.json (each step's tick range), the server's automatic spike
@@ -62,12 +71,41 @@ def post_json(url, body):
     return urllib.request.urlopen(req, timeout=5).read().decode()
 
 
-def run_steps(api, match, steps, puller):
+def current_tick(api, match):
+    return int(urllib.request.urlopen(f"{api}/match-stats/{match}/tick", timeout=5).read())
+
+
+def replay_events(api, match, items, tail_ticks, log):
+    """Apply recorded events at their tick offsets from now, timed by the
+    server's own tick (a loaded server runs behind wall time)."""
+    base = current_tick(api, match)
+    log.append({"base": base})
+    for item in sorted(items, key=lambda i: i["offset"]):
+        due = base + item["offset"]
+        while current_tick(api, match) < due:
+            time.sleep(0.02)
+        try:
+            reply = post_json(f"{api}/match-stats/{match}/replay-event", item["event"])
+        except Exception as error:  # noqa: BLE001 - record and continue
+            reply = f"failed: {error}"
+        log.append({"due": due, "applied": current_tick(api, match), "kind": item["event"].get("kind"), "reply": reply})
+    end = base + max([i["offset"] for i in items] or [0]) + tail_ticks
+    while current_tick(api, match) < end:
+        time.sleep(0.2)
+
+
+def run_steps(api, match, steps, puller, run_dir=None):
     marks = []
     buildings = None
     for step in steps:
         start = puller.last_tick()
-        if "idle" in step:
+        if "events" in step:
+            log = []
+            replay_events(api, match, step["events"], step.get("tail_ticks", 600), log)
+            if run_dir is not None:
+                (Path(run_dir) / "replay-log.json").write_text(json.dumps(log, indent=1))
+            kind = f"events {len(step['events'])}"
+        elif "idle" in step:
             time.sleep(step["idle"])
             kind = f"idle {step['idle']}s"
         elif "meteors" in step:
@@ -82,6 +120,46 @@ def run_steps(api, match, steps, puller):
             raise SystemExit(f"unknown step {step}")
         marks.append({"step": kind, "from_tick": start, "to_tick": puller.last_tick()})
     return marks
+
+
+def anomalies_in(rep_dir: Path):
+    """Anomaly dumps the server wrote during a repetition: [(kind, tick)]."""
+    out = []
+    for d in sorted((Path(rep_dir) / "debug-reports").glob("anomaly-*")):
+        try:
+            meta = json.loads((d / "repro" / "meta.json").read_text())
+            out.append((meta["anomaly"]["kind"], meta["anomaly"]["tick"]))
+        except (OSError, KeyError, ValueError):
+            out.append((d.name.rsplit("-", 1)[-1], None))
+    return out
+
+
+def check_expect(expect, rep_dir: Path):
+    """The expectations a repetition violated (empty: it passed)."""
+    violations = []
+    kinds = [k for k, _ in anomalies_in(rep_dir)]
+    for kind in expect.get("no_anomaly", []):
+        if kind in kinds:
+            violations.append(f"anomaly {kind}")
+    if expect.get("no_anomaly_any") and kinds:
+        violations.append("anomalies " + ", ".join(sorted(set(kinds))))
+    window = expect.get("max_tick_ms_window")
+    log_path = Path(rep_dir) / "replay-log.json"
+    if window and log_path.exists() and (Path(rep_dir) / "ticks.jsonl").exists():
+        base = next((x["base"] for x in json.loads(log_path.read_text()) if "base" in x), None)
+        if base is not None:
+            lo, hi = base + window["from_offset"], base + window["to_offset"]
+            ticks = [t for t in perf_explain.load([Path(rep_dir) / "ticks.jsonl"]) if lo <= t["tick"] <= hi]
+            worst = max((t.get("total_ms") or 0 for t in ticks), default=0)
+            if worst > window["ms"]:
+                violations.append(f"worst tick {worst:.1f} ms > {window['ms']} within offsets {window['from_offset']}..{window['to_offset']}")
+    limit = expect.get("max_tick_ms")
+    if limit is not None and (Path(rep_dir) / "ticks.jsonl").exists():
+        ticks = perf_explain.load([Path(rep_dir) / "ticks.jsonl"])
+        worst = max((t.get("total_ms") or 0 for t in ticks), default=0)
+        if worst > limit:
+            violations.append(f"worst tick {worst:.1f} ms > {limit}")
+    return violations
 
 
 def locked(args):
@@ -102,7 +180,7 @@ def locked(args):
         puller = TickPuller(api, args.match)
         puller.start()
         time.sleep(args.warmup)
-        marks = run_steps(api, args.match, scenario["steps"], puller)
+        marks = run_steps(api, args.match, scenario["steps"], puller, run_dir)
         puller.stop_event.set()
         puller.pull()
         time.sleep(1)
@@ -162,6 +240,19 @@ def run(args):
                                                       "per_rep": summaries, "aggregate": aggregate}, indent=1, default=float))
     print(f"==== {label}: {len(rep_dirs)} repetition(s), per step (mean [min .. max] over repetitions)")
     perf_stats.print_aggregate(aggregate)
+    expect = scenario.get("expect")
+    if expect:
+        verdicts = [check_expect(expect, d) for d in rep_dirs]
+        passed = sum(1 for v in verdicts if not v)
+        rate = passed / len(verdicts)
+        (run_dir / "expect.json").write_text(json.dumps({"expect": expect, "violations": verdicts, "pass_rate": rate}, indent=1))
+        print(f"\nexpectations {expect}: {passed}/{len(verdicts)} repetitions pass")
+        for d, v in zip(rep_dirs, verdicts):
+            if v:
+                print(f"  {d.name}: " + "; ".join(v))
+        if rate < expect.get("min_pass_rate", 1.0):
+            print(f"FAIL: pass rate {rate:.2f} < {expect.get('min_pass_rate', 1.0)}")
+            sys.exit(1)
     if args.reps > 1:
         print(f"\nrun: {run_dir}  (explain a repetition: vl perf explain {rep_dirs[0]})")
         return

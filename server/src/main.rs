@@ -1112,6 +1112,10 @@ enum MatchEvent {
     RecentTicks { reply: tokio::sync::oneshot::Sender<Vec<session_capture::TickTiming>> },
     /// Write the flight recorder's repro bundle into `dir` (a debug report's folder).
     ReproBundle { dir: PathBuf, reason: String },
+    /// The match's current server tick (cheap; `vl repro` schedules by it).
+    CurrentTick { reply: tokio::sync::oneshot::Sender<u32> },
+    /// Re-apply a recorded city event (`vl repro`): meteor, shot, demolish, reset.
+    ReplayEvent { event: serde_json::Value, reply: tokio::sync::oneshot::Sender<Result<String, String>> },
     GarageDebug { car: u32, reply: tokio::sync::oneshot::Sender<Result<serde_json::Value, (StatusCode, String)>> },
     GarageBombardment { request: garage_bombardment::Request, reply: tokio::sync::oneshot::Sender<Result<garage_bombardment::Status, (StatusCode, String)>> },
     TuneGarageVehicle {
@@ -1140,6 +1144,8 @@ impl MatchEvent {
         match self {
             MatchEvent::RecentTicks { .. } => "recent_ticks",
             MatchEvent::ReproBundle { .. } => "repro_bundle",
+            MatchEvent::ReplayEvent { .. } => "replay_event",
+            MatchEvent::CurrentTick { .. } => "current_tick",
             MatchEvent::GarageDebug { .. } => "garage_debug",
             MatchEvent::GarageBombardment { .. } => "garage_bombardment",
             MatchEvent::TuneGarageVehicle { .. } => "tune_garage_vehicle",
@@ -1232,6 +1238,9 @@ struct MatchState {
     history: LagCompHistory,
     players: HashMap<u32, PlayerRuntime>,
     queued_shots: Vec<QueuedShot>,
+    /// Shots replayed by `vl repro` (weapon, origin, direction, shooter),
+    /// routed into the city with the players' own.
+    replay_shots: Vec<(glam::Vec3, glam::Vec3, u8, u32)>,
     queued_melees: Vec<QueuedMelee>,
     server_tick: u32,
     stats_tx: Arc<tokio::sync::watch::Sender<GlobalStatsSnapshot>>,
@@ -1581,6 +1590,8 @@ async fn main() -> Result<()> {
         .route("/city-meteor/:match_id", post(city_meteor_handler))
         .route("/city-vehicle-debug/:match_id", get(city_vehicle_debug_handler))
         .route("/match-stats/:match_id/ticks", get(recent_ticks_handler))
+        .route("/match-stats/:match_id/replay-event", post(replay_event_handler))
+        .route("/match-stats/:match_id/tick", get(current_tick_handler))
         .route("/city-capture-stop/:match_id", post(city_capture_stop_handler))
         .route("/city-buildings", get(city_buildings_handler))
         .route("/ws/stats", get(ws_stats_handler))
@@ -2791,6 +2802,35 @@ async fn recent_ticks_handler(
     Ok(out)
 }
 
+/// The match's current server tick, as plain text.
+async fn current_tick_handler(
+    State(state): State<SharedAppState>, Path(match_id): Path<String>,
+) -> Result<String, (StatusCode, String)> {
+    let handle = find_match(&state, &match_id).await.ok_or((StatusCode::NOT_FOUND, "unknown match".into()))?;
+    let (reply, response) = tokio::sync::oneshot::channel();
+    handle.tx.send(MatchEvent::CurrentTick { reply })
+        .map_err(|_| (StatusCode::SERVICE_UNAVAILABLE, "The match has ended.".into()))?;
+    let tick = tokio::time::timeout(Duration::from_secs(3), response).await
+        .map_err(|_| (StatusCode::GATEWAY_TIMEOUT, "timed out".into()))?
+        .map_err(|_| (StatusCode::SERVICE_UNAVAILABLE, "The match has ended.".into()))?;
+    Ok(tick.to_string())
+}
+
+/// Re-apply one recorded city event from a repro bundle (`scripts/vl repro`).
+/// Debug tooling: same trust level as /city-meteor and /city-demolish.
+async fn replay_event_handler(
+    State(state): State<SharedAppState>, Path(match_id): Path<String>, Json(event): Json<serde_json::Value>,
+) -> Result<String, (StatusCode, String)> {
+    let handle = find_match(&state, &match_id).await.ok_or((StatusCode::NOT_FOUND, "unknown match".into()))?;
+    let (reply, response) = tokio::sync::oneshot::channel();
+    handle.tx.send(MatchEvent::ReplayEvent { event, reply })
+        .map_err(|_| (StatusCode::SERVICE_UNAVAILABLE, "The match has ended.".into()))?;
+    tokio::time::timeout(Duration::from_secs(3), response).await
+        .map_err(|_| (StatusCode::GATEWAY_TIMEOUT, "Replay timed out.".into()))?
+        .map_err(|_| (StatusCode::SERVICE_UNAVAILABLE, "The match has ended.".into()))?
+        .map_err(|e| (StatusCode::BAD_REQUEST, e))
+}
+
 async fn city_meteor_handler(
     Path(match_id): Path<String>,
     State(state): State<SharedAppState>,
@@ -3551,6 +3591,7 @@ async fn run_match_loop(
         contact_audio: contact_audio::ContactAudioReducer::default(),
         players: HashMap::new(),
         queued_shots: Vec::new(),
+        replay_shots: Vec::new(),
         queued_melees: Vec::new(),
         server_tick: 0,
         stats_tx,
@@ -3920,6 +3961,12 @@ impl MatchState {
             MatchEvent::RecentTicks { reply } => {
                 let ticks = self.tick_recorder.as_ref().map(|r| r.recent().cloned().collect()).unwrap_or_default();
                 let _ = reply.send(ticks);
+            }
+            MatchEvent::CurrentTick { reply } => {
+                let _ = reply.send(self.server_tick);
+            }
+            MatchEvent::ReplayEvent { event, reply } => {
+                let _ = reply.send(self.replay_event(&event));
             }
             MatchEvent::ReproBundle { dir, reason } => {
                 if self.tick_recorder.is_some() {
@@ -4993,7 +5040,7 @@ impl MatchState {
         if self.city.is_none() {
             return;
         }
-        let shots: Vec<(glam::Vec3, glam::Vec3, u8, u32)> = self
+        let mut shots: Vec<(glam::Vec3, glam::Vec3, u8, u32)> = self
             .queued_shots
             .iter()
             .filter_map(|queued| {
@@ -5013,6 +5060,7 @@ impl MatchState {
                 ))
             })
             .collect();
+        shots.extend(std::mem::take(&mut self.replay_shots));
         let shot_count = shots.len();
         let mut city = self.city.take().expect("checked above");
         let broken_before = city.stats().broken_bonds;
@@ -5107,6 +5155,56 @@ impl MatchState {
         self.launch_meteor_at_point(glam::Vec3::from_array(target), shooter)
     }
 
+    /// Re-apply one recorded city event the way the original was applied:
+    /// a meteor on its recorded arc, a shot from its recorded origin, a
+    /// demolition with its recorded shape, a reset. Used by `vl repro`.
+    fn replay_event(&mut self, event: &serde_json::Value) -> Result<String, String> {
+        let v3 = |key: &str| -> Result<glam::Vec3, String> {
+            let a = event[key].as_array().ok_or(format!("{key} missing"))?;
+            let f = |i: usize| a.get(i).and_then(|x| x.as_f64()).map(|x| x as f32).ok_or(format!("{key} malformed"));
+            Ok(glam::Vec3::new(f(0)?, f(1)?, f(2)?))
+        };
+        match event["kind"].as_str().unwrap_or("") {
+            "meteor" => {
+                let mut tuning = meteor::MeteorTuning::from_env();
+                if let Some(r) = event["radius_m"].as_f64() { tuning.radius_m = r as f32; }
+                if let Some(m) = event["mass_kg"].as_f64() { tuning.mass_kg = m as f32; }
+                let launch = meteor::MeteorLaunch { start: v3("start")?, velocity: v3("velocity")?,
+                    flight_time_s: event["flight_s"].as_f64().unwrap_or(0.0) as f32 };
+                let started = Instant::now();
+                let launched = self.launch_planned_meteor(launch, v3("target")?, tuning, 0);
+                self.tick_meteor_launch_ms += started.elapsed().as_secs_f32() * 1000.0;
+                let launched = launched.ok_or("no meteor left the sky")?;
+                self.tick_meteors_launched += 1;
+                if let Some(city) = self.city.as_mut() { city.capture_event(self.server_tick, launched); }
+                Ok("meteor launched".into())
+            }
+            "shot" => {
+                let weapon = event["weapon"].as_u64().ok_or("weapon missing")? as u8;
+                self.replay_shots.push((v3("origin")?, v3("direction")?, weapon, 0));
+                Ok("shot queued".into())
+            }
+            "demolish" => {
+                let centre = event["centre"].as_array().ok_or("centre missing")?;
+                let at = |i: usize| centre.get(i).and_then(|x| x.as_f64()).unwrap_or(0.0) as f32;
+                let num = |k: &str, d: f64| event[k].as_f64().unwrap_or(d);
+                let request = DemolishRequest {
+                    x: at(0), z: at(1), tallest: false, radius_m: num("radius_m", 6.0) as f32, below_y: num("below_y", 3.0) as f32,
+                    rounds: num("rounds", 400.0) as usize, wedge_deg: num("wedge_deg", 0.0) as f32, heading_deg: num("heading_deg", 0.0) as f32,
+                    jitter: num("jitter", 0.0) as f32, per_tick: num("per_tick", 4.0) as usize,
+                };
+                self.demolish_requests.write().expect("demolish requests poisoned").insert(self.id.clone(), request);
+                Ok("demolition queued".into())
+            }
+            "reset" => {
+                self.reset_requests.write().expect("reset requests poisoned").insert(self.id.clone());
+                Ok("reset queued".into())
+            }
+            "join" => Ok("join: nothing to replay".into()),
+            other => Err(format!("cannot replay a {other:?} event")),
+        }
+    }
+
     /// Launch a meteor onto an exact world point. Returns the capture event
     /// describing the launch, or `None` if no rock left the sky.
     fn launch_meteor_at_point(
@@ -5152,6 +5250,22 @@ impl MatchState {
         };
         let tuning = meteor::MeteorTuning::from_env();
         let launch = meteor::plan(target, gravity, &tuning, &mut self.meteor_rng);
+        self.launch_planned_meteor(launch, target, tuning, shooter)
+    }
+
+    /// Launch a meteor on a given arc (a planned one, or a recorded one being
+    /// replayed by `vl repro`). Returns the capture event.
+    fn launch_planned_meteor(
+        &mut self,
+        launch: meteor::MeteorLaunch,
+        target: glam::Vec3,
+        tuning: meteor::MeteorTuning,
+        shooter: u32,
+    ) -> Option<serde_json::Value> {
+        let gravity = {
+            let g = vibe_netcode::movement::default_world_gravity();
+            glam::Vec3::new(g[0], g[1], g[2])
+        };
         let Some(body_id) = self.arena.launch_meteor(
             nalgebra::Vector3::new(launch.start.x, launch.start.y, launch.start.z),
             nalgebra::Vector3::new(launch.velocity.x, launch.velocity.y, launch.velocity.z),
