@@ -30,6 +30,7 @@ mod protocol;
 mod send_log;
 mod session_capture;
 mod session_match;
+mod tick_recorder;
 mod snapshot_builder;
 mod voxel_world;
 
@@ -1105,6 +1106,8 @@ struct PlayerConnection {
 }
 
 enum MatchEvent {
+    /// The tick flight recorder's recent records, oldest first.
+    RecentTicks { reply: tokio::sync::oneshot::Sender<Vec<session_capture::TickTiming>> },
     GarageDebug { car: u32, reply: tokio::sync::oneshot::Sender<Result<serde_json::Value, (StatusCode, String)>> },
     GarageBombardment { request: garage_bombardment::Request, reply: tokio::sync::oneshot::Sender<Result<garage_bombardment::Status, (StatusCode, String)>> },
     TuneGarageVehicle {
@@ -1131,6 +1134,7 @@ enum MatchEvent {
 impl MatchEvent {
     fn kind(&self) -> &'static str {
         match self {
+            MatchEvent::RecentTicks { .. } => "recent_ticks",
             MatchEvent::GarageDebug { .. } => "garage_debug",
             MatchEvent::GarageBombardment { .. } => "garage_bombardment",
             MatchEvent::TuneGarageVehicle { .. } => "tune_garage_vehicle",
@@ -1305,6 +1309,10 @@ struct MatchState {
     /// The running paired session capture, if any; see `session_match`.
     session_capture: Option<session_capture::ActiveCapture>,
     session_max_us: u64,
+    /// The tick flight recorder (`tick_recorder`), on unless
+    /// `VIBE_FLIGHT_RECORDER=0`, and the clock its records are stamped from.
+    tick_recorder: Option<tick_recorder::TickRecorder>,
+    tick_recorder_epoch: Option<Instant>,
 }
 
 #[tokio::main]
@@ -1563,6 +1571,7 @@ async fn main() -> Result<()> {
         .route("/city-demolish/:match_id", post(city_demolish_handler))
         .route("/city-meteor/:match_id", post(city_meteor_handler))
         .route("/city-vehicle-debug/:match_id", get(city_vehicle_debug_handler))
+        .route("/match-stats/:match_id/ticks", get(recent_ticks_handler))
         .route("/city-capture-stop/:match_id", post(city_capture_stop_handler))
         .route("/city-buildings", get(city_buildings_handler))
         .route("/ws/stats", get(ws_stats_handler))
@@ -2591,6 +2600,16 @@ async fn match_body_states_handler(
 /// next tick, so this returns "accepted", not "done".
 /// When this binary was built, from its own file mtime -- no build script or
 /// codegen needed, and it cannot drift from the artefact actually running.
+/// What this server is: build, both repos' revisions and the physics env
+/// (captured once).
+fn server_fingerprint() -> vibe_land_destruction::fingerprint::Fingerprint {
+    static FINGERPRINT: std::sync::OnceLock<vibe_land_destruction::fingerprint::Fingerprint> =
+        std::sync::OnceLock::new();
+    FINGERPRINT
+        .get_or_init(|| vibe_land_destruction::fingerprint::capture_with_build(cfg!(feature = "cuda-stress")))
+        .clone()
+}
+
 fn server_build_stamp() -> String {
     static STAMP: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     STAMP
@@ -2736,6 +2755,26 @@ async fn city_vehicle_debug_handler(
     tokio::time::timeout(Duration::from_secs(3),response).await
         .map_err(|_|(StatusCode::GATEWAY_TIMEOUT,"Debug readback timed out.".into()))?
         .map_err(|_|(StatusCode::SERVICE_UNAVAILABLE,"The city has ended.".into()))?.map(Json)
+}
+
+/// The tick flight recorder's recent records (`tick_recorder`), one JSON
+/// object per line in the session-capture format, oldest first: what
+/// `scripts/vl perf explain` reads for a live server's steady state.
+async fn recent_ticks_handler(
+    State(state): State<SharedAppState>, Path(match_id): Path<String>,
+) -> Result<String, (StatusCode, String)> {
+    let handle = find_match(&state, &match_id).await.ok_or((StatusCode::NOT_FOUND, "unknown match".into()))?;
+    let (reply, response) = tokio::sync::oneshot::channel();
+    handle.tx.send(MatchEvent::RecentTicks { reply })
+        .map_err(|_| (StatusCode::SERVICE_UNAVAILABLE, "The match has ended.".into()))?;
+    let ticks = tokio::time::timeout(Duration::from_secs(3), response).await
+        .map_err(|_| (StatusCode::GATEWAY_TIMEOUT, "Tick readback timed out.".into()))?
+        .map_err(|_| (StatusCode::SERVICE_UNAVAILABLE, "The match has ended.".into()))?;
+    let mut out = String::new();
+    for tick in ticks {
+        if let Ok(line) = serde_json::to_string(&tick) { out.push_str(&line); out.push('\n'); }
+    }
+    Ok(out)
 }
 
 async fn city_meteor_handler(
@@ -3530,6 +3569,8 @@ async fn run_match_loop(
         tick_meteors_launched: 0,
         tick_meteor_launch_ms: 0.0,
         session_capture: None,
+        tick_recorder: tick_recorder::enabled().then(tick_recorder::TickRecorder::from_env),
+        tick_recorder_epoch: tick_recorder::enabled().then(Instant::now),
         session_max_us: session_match::session_max_us(),
         next_player_handle: 1,
         reusable_player_handles: VecDeque::new(),
@@ -3860,6 +3901,10 @@ impl MatchState {
 
     fn handle_event(&mut self, event: MatchEvent) {
         match event {
+            MatchEvent::RecentTicks { reply } => {
+                let ticks = self.tick_recorder.as_ref().map(|r| r.recent().cloned().collect()).unwrap_or_default();
+                let _ = reply.send(ticks);
+            }
             MatchEvent::GarageDebug {car,reply} => {
                 if !reply.is_closed() {
                     let result=if self.garage.as_ref().is_some_and(|session|!session.closing()) || self.fleet.is_some() {
@@ -4790,7 +4835,7 @@ impl MatchState {
         while self.tick_ring.len() > TICK_RING_CAP {
             self.tick_ring.pop_front();
         }
-        self.record_session_tick(session_match::TickCosts {
+        let costs = session_match::TickCosts {
             total_ms,
             city_ms: city_total_ms,
             publish_ms: publish_tick_ms,
@@ -4801,7 +4846,9 @@ impl MatchState {
             meteors_launched: self.tick_meteors_launched,
             meteor_launch_ms: self.tick_meteor_launch_ms,
             overlap_ms: self.last_observer_flush_ms,
-        });
+        };
+        self.record_session_tick(costs);
+        self.record_flight_tick(costs);
     }
 
     /// Re-bootstrap clients whose ledger we know is holed.
@@ -5828,19 +5875,11 @@ impl MatchState {
             .as_mut()
             .map(|city| city.tick_window.phases.drain())
             .unwrap_or_default();
-        static FINGERPRINT: std::sync::OnceLock<vibe_land_destruction::fingerprint::Fingerprint> =
-            std::sync::OnceLock::new();
         let match_stats = MatchStatsSnapshot {
             id: self.id.clone(),
             spans,
             tick_ring: Vec::new(),
-            fingerprint: Some(
-                FINGERPRINT
-                    .get_or_init(|| vibe_land_destruction::fingerprint::capture_with_build(
-                        cfg!(feature = "cuda-stress"),
-                    ))
-                    .clone(),
-            ),
+            fingerprint: Some(server_fingerprint()),
             scenario_tag: self.id.clone(),
             server_build: server_build_stamp(),
             server_started: server_started_stamp(),

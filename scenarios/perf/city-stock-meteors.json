@@ -1,0 +1,6 @@
+{
+  "name": "city-stock-meteors",
+  "why": "The city with stock (non-destructible) cars, the control for city-fleet-meteors: idle cost, then 8 meteors at the first 8 buildings (2 s apart), then the aftermath. Profiled so the stage's zones are recorded.",
+  "env": {"VIBE_PHYSX_PROFILE": "1", "VIBE_CITY_DESTRUCTIBLE_VEHICLES": "0"},
+  "steps": [{"idle": 20}, {"meteors": 8, "every_s": 2}, {"idle": 20}]
+}

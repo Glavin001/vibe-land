@@ -1,0 +1,151 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.10"
+# dependencies = ["numpy>=1.26"]
+# ///
+"""vl: one entry point for autonomous reproduction, debugging and performance work.
+
+  vl perf explain <ticks.jsonl | dir ...> [--threshold MS] [--top N] [--json]
+      Why the costly ticks cost what they cost: per spike, the phases that grew
+      against its neighbours and the counts and events that grew with them; what
+      a steady tick is made of; a cost model per phase; the priority list.
+      Reads spike dumps (debug-reports/spike-*, written automatically by every
+      server when a tick exceeds VIBE_SPIKE_DUMP_MS) and session captures.
+
+  vl perf record --out DIR [--seconds S] [--url URL] [--match ID]
+      Pull a live server's tick flight recorder (GET /match-stats/:id/ticks,
+      the last ~10 s) every few seconds into DIR/ticks.jsonl, continuous and
+      de-duplicated, for S seconds; then `vl perf explain DIR`.
+
+  vl perf scenario <name | file.json> [--env K=V ...] [--label L] [--out DIR]
+      Run a declared scenario (scenarios/perf/<name>.json) on a private stack
+      (vite, server and a headless player on their own ports, the server under
+      the GPU lock), record every tick, explain the run and each step.
+
+  vl perf diff <A ticks/dir> <B ticks/dir>
+      What changed between two runs (or steps): the median tick, the phases
+      whose medians moved most, and the counts that moved with them.
+
+  vl perf spikes [debug-reports]
+      List the spike dumps a server wrote, newest first.
+
+Every command exits non-zero on failure. See docs/vl.md.
+"""
+import argparse
+import json
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+
+def perf_explain(args):
+    from vltools import perf_explain
+    perf_explain.run(args.paths, threshold=args.threshold, top=args.top, as_json=args.json)
+
+
+def perf_record(args):
+    import time
+    import urllib.request
+    out = Path(args.out)
+    out.mkdir(parents=True, exist_ok=True)
+    seen, rows = set(), []
+    deadline = time.time() + args.seconds
+    while True:
+        url = f"{args.url}/match-stats/{args.match}/ticks"
+        try:
+            body = urllib.request.urlopen(url, timeout=5).read().decode()
+        except Exception as error:  # noqa: BLE001 - report and keep trying
+            print(f"vl perf record: {url}: {error}", file=sys.stderr)
+            body = ""
+        for line in body.splitlines():
+            if line.strip():
+                t = json.loads(line)
+                if t["tick"] not in seen:
+                    seen.add(t["tick"])
+                    rows.append(t)
+        if time.time() >= deadline:
+            break
+        time.sleep(min(4.0, max(0.0, deadline - time.time())))
+    rows.sort(key=lambda t: t["tick"])
+    gaps = sum(1 for a, b in zip(rows, rows[1:]) if b["tick"] - a["tick"] > 1)
+    (out / "ticks.jsonl").write_text("".join(json.dumps(t) + "\n" for t in rows))
+    (out / "meta.json").write_text(json.dumps({"kind": "record", "url": args.url, "match_id": args.match,
+                                               "seconds": args.seconds, "ticks": len(rows), "gaps": gaps}, indent=1))
+    print(f"{len(rows)} ticks ({gaps} gaps) -> {out / 'ticks.jsonl'}")
+    if not rows:
+        sys.exit(1)
+
+
+def perf_scenario(args):
+    from vltools import perf_scenario
+    perf_scenario.run(args)
+
+
+def perf_locked(args):
+    from vltools import perf_scenario
+    perf_scenario.locked(args)
+
+
+def perf_diff(args):
+    from vltools import perf_explain
+    perf_explain.diff(perf_explain.load([args.a]), perf_explain.load([args.b]), "A", "B")
+
+
+def perf_spikes(args):
+    root = Path(args.root)
+    dumps = sorted(root.glob("spike-*"), key=lambda p: p.stat().st_mtime, reverse=True)
+    for d in dumps:
+        meta = json.loads((d / "meta.json").read_text()) if (d / "meta.json").exists() else {}
+        spikes = meta.get("spikes", [])
+        worst = max((s[1] for s in spikes), default=0)
+        print(f"{d}  spikes {len(spikes)}  worst {worst:.1f} ms  ticks {meta.get('ticks', '?')}")
+    if not dumps:
+        print(f"no spike dumps under {root}")
+
+
+def main():
+    p = argparse.ArgumentParser(prog="vl", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = p.add_subparsers(dest="area", required=True)
+    perf = sub.add_parser("perf").add_subparsers(dest="cmd", required=True)
+    e = perf.add_parser("explain")
+    e.add_argument("paths", nargs="+")
+    e.add_argument("--threshold", type=float, help="spike threshold, ms (default max(33, 2x median))")
+    e.add_argument("--top", type=int, default=10)
+    e.add_argument("--json", action="store_true")
+    e.set_defaults(func=perf_explain)
+    r = perf.add_parser("record")
+    r.add_argument("--out", required=True)
+    r.add_argument("--seconds", type=float, default=30)
+    r.add_argument("--url", default="http://127.0.0.1:4001")
+    r.add_argument("--match", default="city-default")
+    r.set_defaults(func=perf_record)
+    for name, func in (("scenario", perf_scenario), ("_locked", perf_locked)):
+        c = perf.add_parser(name)
+        c.add_argument("scenario")  if name == "scenario" else c.add_argument("--scenario", required=True)
+        c.add_argument("--env", action="append", help="server env override K=V (repeatable)")
+        c.add_argument("--match", default="city-default")
+        c.add_argument("--http-port", type=int, default=4311)
+        c.add_argument("--wt-port", type=int, default=4312)
+        c.add_argument("--client-port", type=int, default=3313)
+        c.add_argument("--warmup", type=float, default=10, help="seconds after joining before the first step")
+        c.add_argument("--binary")
+        if name == "scenario":
+            c.add_argument("--label")
+            c.add_argument("--out")
+        else:
+            c.add_argument("--run-dir", required=True)
+        c.set_defaults(func=func)
+    d = perf.add_parser("diff")
+    d.add_argument("a")
+    d.add_argument("b")
+    d.set_defaults(func=perf_diff)
+    s = perf.add_parser("spikes")
+    s.add_argument("root", nargs="?", default="debug-reports")
+    s.set_defaults(func=perf_spikes)
+    args = p.parse_args()
+    args.func(args)
+
+
+if __name__ == "__main__":
+    main()

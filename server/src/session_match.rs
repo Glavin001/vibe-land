@@ -44,6 +44,7 @@ pub(crate) fn session_max_us() -> u64 {
 }
 
 /// The tick's own measurements, for the timing record.
+#[derive(Clone, Copy)]
 pub(crate) struct TickCosts {
     pub total_ms: f32,
     pub city_ms: f32,
@@ -368,6 +369,35 @@ impl MatchState {
         let mono_us = sc::micros_since(capture.epoch);
         let unix_us = sc::unix_us();
         let truth = self.collect_world_truth(mono_us, unix_us);
+        let mut timing = self.build_tick_timing(&costs, mono_us, unix_us);
+        let capture = self.session_capture.as_mut().expect("checked above");
+        let selections = std::mem::take(&mut capture.selections);
+        timing.capture_ms = started.elapsed().as_secs_f32() * 1000.0;
+        capture.ticks.push(TickBundle { truth, timing, selections });
+    }
+
+    /// The flight recorder's copy of this tick (`tick_recorder`), and the
+    /// spike dump it asks for, if any.
+    pub(crate) fn record_flight_tick(&mut self, costs: TickCosts) {
+        let Some(epoch) = self.tick_recorder_epoch else { return };
+        let started = Instant::now();
+        let mut timing = self.build_tick_timing(&costs, sc::micros_since(epoch), sc::unix_us());
+        timing.capture_ms = started.elapsed().as_secs_f32() * 1000.0;
+        let Some(recorder) = self.tick_recorder.as_mut() else { return };
+        if let Some(dump) = recorder.push(timing) {
+            let meta = serde_json::json!({
+                "kind": "spike",
+                "fingerprint": crate::server_fingerprint(),
+                "server_build": crate::server_build_stamp(),
+                "players": self.players.len(),
+            });
+            crate::tick_recorder::write_dump(crate::debug_reports_root(), self.id.clone(), meta, dump);
+        }
+    }
+
+    /// One tick's timing record: the brackets the match measured, the PhysX
+    /// step's phases and the destruction stage's counts and zones.
+    fn build_tick_timing(&self, costs: &TickCosts, mono_us: u64, unix_us: u64) -> TickTiming {
         let awake = self.city.as_ref().map_or(0, |city| city.stats().awake_chunk_bodies as u32);
         let mut timing = TickTiming {
             tick: self.server_tick,
@@ -395,10 +425,7 @@ impl MatchState {
         let phases_started = Instant::now();
         self.collect_step_phases(&mut timing, costs.overlap_ms);
         timing.phases_us = phases_started.elapsed().as_secs_f32() * 1e6;
-        let capture = self.session_capture.as_mut().expect("checked above");
-        let selections = std::mem::take(&mut capture.selections);
-        timing.capture_ms = started.elapsed().as_secs_f32() * 1000.0;
-        capture.ticks.push(TickBundle { truth, timing, selections });
+        timing
     }
 
     /// The PhysX step's phases and the destruction stage's tick, read from
