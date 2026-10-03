@@ -130,6 +130,8 @@ def run(args):
     if not binary.exists():
         raise SystemExit(f"no server binary at {binary}; build it (scripts/perf/garage-vehicle-server.sh builds one)")
     env = dict(scenario.get("env", {}))
+    if getattr(args, "gpu_trace", False):
+        args.env = (args.env or []) + ["CUMETAL_TRACE_COMMITS=1"]
     for kv in args.env or []:
         k, _, v = kv.partition("=")
         env[k] = v

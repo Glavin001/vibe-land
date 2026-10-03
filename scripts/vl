@@ -33,6 +33,12 @@
       What changed between two runs (or steps): the median tick, the phases
       whose medians moved most, and the counts that moved with them.
 
+  vl perf gpu <run-dir> | --log server.log --ticks ticks.jsonl
+      Real GPU time per tick on Metal from CuMetal's commit trace (run the
+      scenario with --gpu-trace, i.e. CUMETAL_TRACE_COMMITS=1): GPU busy vs
+      the CPU's wait, command buffers and dispatches per tick, GPU time by
+      kernel, per step.
+
   vl perf spikes [debug-reports]
       List the spike dumps a server wrote, newest first.
 
@@ -104,6 +110,20 @@ def perf_diff(args):
     perf_explain.diff(perf_explain.load([args.a]), perf_explain.load([args.b]), "A", "B")
 
 
+def perf_gpu(args):
+    from vltools import commit_trace
+    if args.run_dir:
+        d = Path(args.run_dir)
+        log = (d / "server.log").read_text(errors="replace")
+        if "CUMETAL_PROVENANCE event=kernel_launch" in log:
+            n = sum(1 for line in (d / "ticks.jsonl").read_text().splitlines() if line.strip())
+            commit_trace.kernels_exact(d / "server.log", n, top=args.top)
+        if "CUMETAL_COMMIT" in log:
+            commit_trace.run(d / "server.log", d / "ticks.jsonl", d / "steps.json", top=args.top)
+    else:
+        commit_trace.run(args.log, args.ticks, top=args.top)
+
+
 def perf_spikes(args):
     root = Path(args.root)
     dumps = sorted(root.glob("spike-*"), key=lambda p: p.stat().st_mtime, reverse=True)
@@ -143,6 +163,7 @@ def main():
         c.add_argument("--warmup", type=float, default=10, help="seconds after joining before the first step")
         c.add_argument("--binary")
         if name == "scenario":
+            c.add_argument("--gpu-trace", action="store_true", help="CUMETAL_TRACE_COMMITS=1 (Metal GPU time; adds overhead)")
             c.add_argument("--reps", type=int, default=1)
             c.add_argument("--label")
             c.add_argument("--out")
@@ -153,6 +174,12 @@ def main():
     c.add_argument("a")
     c.add_argument("b")
     c.set_defaults(func=perf_compare)
+    g = perf.add_parser("gpu")
+    g.add_argument("run_dir", nargs="?")
+    g.add_argument("--log")
+    g.add_argument("--ticks")
+    g.add_argument("--top", type=int, default=15)
+    g.set_defaults(func=perf_gpu)
     d = perf.add_parser("diff")
     d.add_argument("a")
     d.add_argument("b")

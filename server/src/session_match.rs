@@ -382,6 +382,7 @@ impl MatchState {
         let Some(epoch) = self.tick_recorder_epoch else { return };
         let started = Instant::now();
         let mut timing = self.build_tick_timing(&costs, sc::micros_since(epoch), sc::unix_us());
+        timing.abs_end_s = Some(sc::abs_now_s());
         timing.capture_ms = started.elapsed().as_secs_f32() * 1000.0;
         let Some(recorder) = self.tick_recorder.as_mut() else { return };
         if let Some(dump) = recorder.push(timing) {

@@ -367,6 +367,38 @@ pub struct TickTiming {
     /// thread, microseconds. Included in `capture_ms`.
     #[serde(default)]
     pub phases_us: f32,
+    /// When the tick's record was taken (its end), on the host clock GPU
+    /// traces use: `mach_absolute_time` seconds on macOS (CuMetal's
+    /// CUMETAL_TRACE_COMMITS gpu_start_s/gpu_end_s), CLOCK_MONOTONIC seconds
+    /// elsewhere. The tick spans [abs_end_s - total_ms/1000, abs_end_s].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub abs_end_s: Option<f64>,
+}
+
+/// The host clock GPU traces are stamped with, seconds (see
+/// `TickTiming::abs_end_s`).
+pub fn abs_now_s() -> f64 {
+    #[cfg(target_os = "macos")]
+    {
+        static SCALE: std::sync::OnceLock<f64> = std::sync::OnceLock::new();
+        let scale = *SCALE.get_or_init(|| {
+            let mut info = libc::mach_timebase_info { numer: 0, denom: 0 };
+            // SAFETY: mach_timebase_info writes the struct it is given.
+            unsafe { libc::mach_timebase_info(&mut info) };
+            info.numer as f64 / info.denom.max(1) as f64 * 1e-9
+        });
+        // SAFETY: no preconditions.
+        #[allow(deprecated)]
+        let ticks = unsafe { libc::mach_absolute_time() };
+        ticks as f64 * scale
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+        // SAFETY: clock_gettime writes the timespec it is given.
+        unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts) };
+        ts.tv_sec as f64 + ts.tv_nsec as f64 * 1e-9
+    }
 }
 
 /// `TickTiming::timing_version` of records this server writes.
