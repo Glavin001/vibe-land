@@ -39,6 +39,9 @@ It costs about 1 µs a tick.
 | `vl perf suite [--reps N]` | `scenarios/perf/suite.json`: runs the scenarios, checks budgets, appends to `bench-results/history.jsonl`. |
 | `vl perf history <scenario>` | The trend, commit by commit. |
 | `vl perf record --out D` / `vl perf spikes` | Pull a live server's ring; list the spike dumps. |
+| `vl perf syncs <run>` | Host waits on the GPU per tick, by reason, for correction, fracture and other ticks. Needs a run with `--env CUMETAL_TRACE_SYNC=1`. Every wait is a CPU-GPU round trip: about 0.15 ms of wake-up on Metal, on top of the GPU work it waits for. |
+| `vl perf scenario ... --sample STEP` / `vl perf stacks <file> [thread]` | macOS: sample the server's CPU stacks (`/usr/bin/sample`, 1 ms) during one step, then rank functions on a thread by inclusive samples. Tells CPU work from waiting. |
+| `VIBE_STRESS_SOLVE_REPORT=1` (env) | Adds `stage.stress_solve` to every tick record: components settled and solved, how they stopped, and the eight heaviest by nodes × iterations. Diagnostic: it reads back every tick. |
 
 Rules learned on the way:
 - **Never trust one run.** One fleet run's aftermath took 46 stress iterations
@@ -46,6 +49,12 @@ Rules learned on the way:
 - **The profiler changes the timing.** Explain with `VIBE_PHYSX_PROFILE=1`,
   and quote numbers from unprofiled runs.
 - **On Metal, `cuda.*` zones are host time.** Use `vl perf gpu` for GPU time.
+- **On Metal, check the GPU clock first.** A 60 Hz server idles the GPU
+  between ticks, and Apple's GPU then runs every kernel at a reduced clock.
+  The bridge keeps one threadgroup busy (`CUMETAL_GPU_KEEPALIVE_BUSY=1`). A
+  kernel benchmark must be paced like the server (PhysX
+  `gpu_component_solve_bench`, `BENCH_PERIOD_MS=16.7`) or run with the
+  keep-alive, with its variants interleaved.
 - **A run without the stage is not a measurement.** If the server rejects the
   destruction configuration, the city runs with no destruction and every tick
   is cheap. A scenario fails when no tick carries a stage record, and quotes

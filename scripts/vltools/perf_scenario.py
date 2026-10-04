@@ -95,11 +95,30 @@ def replay_events(api, match, items, tail_ticks, log):
         time.sleep(0.2)
 
 
-def run_steps(api, match, steps, puller, run_dir=None):
+def step_seconds(step):
+    """How long a step runs, for sampling it."""
+    if "idle" in step:
+        return step["idle"]
+    if "meteors" in step:
+        return step["meteors"] * step.get("every_s", 2)
+    if "events" in step:
+        return (step["events"][-1]["offset"] if step["events"] else 0) / 60 + step.get("tail_ticks", 600) / 60
+    return 10
+
+
+def run_steps(api, match, steps, puller, run_dir=None, sample=None):
+    """sample: (step index, server pid) -- sample the server's CPU stacks with
+    macOS /usr/bin/sample while that step runs (sample-step-N.txt)."""
     marks = []
     buildings = None
-    for step in steps:
+    for index, step in enumerate(steps):
         start = puller.last_tick()
+        sampler = None
+        if sample and sample[0] == index and run_dir is not None:
+            seconds = max(1, int(step_seconds(step)))
+            sampler = subprocess.Popen(["/usr/bin/sample", str(sample[1]), str(seconds), "1", "-mayDie",
+                                        "-file", str(Path(run_dir) / f"sample-step-{index}.txt")],
+                                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         if "events" in step:
             log = []
             replay_events(api, match, step["events"], step.get("tail_ticks", 600), log)
@@ -121,6 +140,8 @@ def run_steps(api, match, steps, puller, run_dir=None):
             kind = f"meteors {step['meteors']}"
         else:
             raise SystemExit(f"unknown step {step}")
+        if sampler is not None:
+            sampler.wait()
         marks.append({"step": kind, "from_tick": start, "to_tick": puller.last_tick()})
     return marks
 
@@ -214,7 +235,8 @@ def locked(args):
         puller = TickPuller(api, args.match)
         puller.start()
         time.sleep(args.warmup)
-        marks = run_steps(api, args.match, scenario["steps"], puller, run_dir)
+        sample = (args.sample, server.pid) if getattr(args, "sample", None) is not None else None
+        marks = run_steps(api, args.match, scenario["steps"], puller, run_dir, sample)
         puller.stop_event.set()
         puller.pull()
         time.sleep(1)
@@ -262,6 +284,8 @@ def run(args):
                    "--match", args.match, "--warmup", str(args.warmup)]
             for kv in args.env or []:
                 cmd += ["--env", kv]
+            if getattr(args, "sample", None) is not None:
+                cmd += ["--sample", str(args.sample)]
             code = subprocess.call(cmd)
             if code != 0 or not (rep_dir / "ticks.jsonl").exists():
                 raise SystemExit(f"scenario run failed (rep {rep}, exit {code}); see {rep_dir}")

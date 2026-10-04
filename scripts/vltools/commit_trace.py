@@ -170,3 +170,56 @@ def kernels_exact(log: Path, ticks: int, top=20):
         print(f"  {v['ms'] / max(ticks, 1):8.3f} ms/tick  {v['launches'] / max(ticks, 1):6.2f} launches/tick  "
               f"{v['ms'] / max(v['launches'], 1):8.3f} ms/launch  {threads:>10,.0f} threads  {name[:90]}")
     return {name: {"ms_per_tick": v["ms"] / max(ticks, 1), "launches": v["launches"]} for name, v in rows[:top]}
+
+
+SYNC = re.compile(r"CUMETAL_SYNC reason=(\S+) stream=\S+ start_s=([\d.]+) wait_us=([\d.]+)")
+
+
+def syncs(run_dir):
+    """`vl perf syncs <run>`: host waits on the GPU per tick, from a run with
+    --env CUMETAL_TRACE_SYNC=1 (one line per wait that blocked: stream or event
+    synchronization, the pinned-kernel drain, synchronous copies). Every wait
+    is a CPU-GPU round trip, ~0.15 ms of wake-up latency on Metal on top of the
+    GPU work it waits for; a tick's wall time is GPU work plus these gaps."""
+    import bisect
+    from . import perf_explain
+    run_dir = Path(run_dir)
+    waits = []
+    for line in (run_dir / "server.log").read_text(errors="replace").splitlines():
+        m = SYNC.search(line)
+        if m:
+            waits.append((float(m.group(2)), m.group(1), float(m.group(3))))
+    if not waits:
+        print(f"no CUMETAL_SYNC lines in {run_dir}/server.log (run with --env CUMETAL_TRACE_SYNC=1)")
+        return {}
+    waits.sort()
+    starts = [w[0] for w in waits]
+    ticks = [t for t in perf_explain.load([run_dir / "ticks.jsonl"]) if t.get("abs_end_s")]
+    classes = {
+        "correction": lambda t: (t.get("stage") or {}).get("corrections"),
+        "fracture": lambda t: (t.get("stage") or {}).get("bonds_broken") and not (t.get("stage") or {}).get("corrections"),
+        "other": lambda t: not (t.get("stage") or {}).get("bonds_broken"),
+    }
+    out = {}
+    for name, pick in classes.items():
+        rows = [t for t in ticks if pick(t)]
+        if not rows:
+            continue
+        counts, blocked, reasons, reason_ms = [], [], defaultdict(int), defaultdict(float)
+        for t in rows:
+            end = t["abs_end_s"]
+            begin = end - (t.get("total_ms") or 0) / 1e3
+            inside = waits[bisect.bisect_left(starts, begin):bisect.bisect_right(starts, end)]
+            counts.append(len(inside))
+            blocked.append(sum(w[2] for w in inside) / 1e3)
+            for _, reason, us in inside:
+                reasons[reason] += 1
+                reason_ms[reason] += us / 1e3
+        out[name] = {"ticks": len(rows), "waits_p50": st.median(counts), "blocked_ms_p50": st.median(blocked),
+                     "wall_ms_p50": st.median(t.get("total_ms") or 0 for t in rows),
+                     "by_reason": {r: {"per_tick": reasons[r] / len(rows), "ms_per_tick": reason_ms[r] / len(rows)} for r in reasons}}
+        print(f"{name}: {len(rows)} ticks, {out[name]['waits_p50']:g} host waits a tick (median), blocked "
+              f"{out[name]['blocked_ms_p50']:.2f} ms of {out[name]['wall_ms_p50']:.1f} ms")
+        for r in sorted(reasons, key=lambda r: -reason_ms[r]):
+            print(f"    {reasons[r] / len(rows):6.1f}/tick {reason_ms[r] / len(rows):6.2f} ms  {r}")
+    return out

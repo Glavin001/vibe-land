@@ -200,6 +200,9 @@ def main():
         c.add_argument("--client-port", type=int, default=3313)
         c.add_argument("--warmup", type=float, default=10, help="seconds after joining before the first step")
         c.add_argument("--binary")
+        c.add_argument("--sample", type=int, metavar="STEP",
+                       help="macOS: sample the server's CPU stacks (/usr/bin/sample, 1 ms) during step STEP (0-based); "
+                            "writes sample-step-STEP.txt in the run directory")
         if name == "scenario":
             c.add_argument("--gpu-trace", action="store_true", help="CUMETAL_TRACE_COMMITS=1 (Metal GPU time; adds overhead)")
             c.add_argument("--reps", type=int, default=1)
@@ -208,6 +211,14 @@ def main():
         else:
             c.add_argument("--run-dir", required=True)
         c.set_defaults(func=func)
+    sy = perf.add_parser("syncs", help="Metal: host GPU waits per tick (run with --env CUMETAL_TRACE_SYNC=1)")
+    sy.add_argument("run")
+    sy.set_defaults(func=lambda args: __import__("vltools.commit_trace", fromlist=["syncs"]).syncs(args.run))
+    st = perf.add_parser("stacks", help="macOS: functions by inclusive samples in a --sample call graph")
+    st.add_argument("file")
+    st.add_argument("thread", nargs="?", default="match-")
+    st.add_argument("top", nargs="?", type=int, default=45)
+    st.set_defaults(func=lambda args: sys.exit(__import__("vltools.sample_tree", fromlist=["main"]).main([args.file, args.thread, str(args.top)])))
     su = perf.add_parser("suite")
     su.add_argument("suite", nargs="?", default="suite")
     su.add_argument("--reps", type=int)
