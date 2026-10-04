@@ -11,6 +11,24 @@
       "port": 3003
     },
     {
+      "name": "client-webgpu",
+      "runtimeExecutable": "bash",
+      "runtimeArgs": [
+        "-c",
+        "cd client && exec npx vite --mode webgpu --port 3013 --strictPort"
+      ],
+      "port": 3013
+    },
+    {
+      "name": "client-webgl-ab",
+      "runtimeExecutable": "bash",
+      "runtimeArgs": [
+        "-c",
+        "cd client && exec npx vite --port 3014 --strictPort"
+      ],
+      "port": 3014
+    },
+    {
       "name": "garage-vehicle-server",
       "runtimeExecutable": "bash",
       "runtimeArgs": [

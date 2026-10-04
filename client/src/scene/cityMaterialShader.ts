@@ -634,6 +634,9 @@ export function applyCityTriplanar(
   detail: 'full' | 'albedo' | 'off' = 'full',
   hero = true,
 ): void {
+  // The WebGPU path draws the city untextured for now: onBeforeCompile does
+  // not exist there, and the triplanar port to TSL is later work.
+  if (__WEBGPU__) return;
   if (detail === 'off') {
     // Nothing injected at all: the point of `off` is to not SAMPLE, so the
     // material has to compile without the taps rather than multiply them away.
@@ -881,6 +884,8 @@ export function applyGroundTextures(
   heroRequested: boolean,
   grassCover = false,
 ): void {
+  // Untextured ground on the WebGPU path, like the city (applyCityTriplanar).
+  if (__WEBGPU__) return;
   // Like the city: the hero stack's detail-aware and normal work needs the
   // surface array, so the albedo tier keeps the plain path.
   const hero = heroRequested && surface;

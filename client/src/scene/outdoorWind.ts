@@ -10,6 +10,8 @@ export function animateOutdoorMaterial(
   height: number,
   foliage: boolean,
 ) {
+  // No wind on the WebGPU path yet: it is a GLSL vertex patch.
+  if (__WEBGPU__) return;
   material.customProgramCacheKey = () => `outdoor-wind-v2-${foliage}-${height.toFixed(6)}`;
   material.onBeforeCompile = shader => {
     shader.uniforms.outdoorTime = clock;

@@ -36,6 +36,7 @@ import {
   FLOATS_PER_CHUNK,
   INITIAL_BODY_CAPACITY,
 } from '../city/cityPoseStore';
+import { slotNodeMaterial } from './citySlotNodes';
 
 export { CHUNK_HIDE_Y_M };
 
@@ -301,9 +302,12 @@ export class CitySlotMesh extends THREE.Mesh {
     poses: CityGpuPoses,
     slots: number[],
   ) {
-    super(geometry, material);
+    super(geometry, __WEBGPU__ ? slotNodeMaterial(material, poses) : material);
     this.poses = poses;
     this.slots = slots;
+    // WebGPU: the node material above composes the pose; there are no
+    // shadows there yet, so no depth material either.
+    if (__WEBGPU__) return;
     injectSlotTransform(material, poses);
     // The shadow pass uses its own depth material and knows nothing about
     // the attribute; without this every moving chunk would shadow from its

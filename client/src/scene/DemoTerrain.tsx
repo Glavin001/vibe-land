@@ -69,6 +69,8 @@ export function DemoTerrain() {
       metalness: 0.02,
       dithering: true,
     });
+    // The slope shade is a GLSL patch; not on the simple WebGPU path.
+    if (__WEBGPU__) return material;
 
     material.onBeforeCompile = (shader) => {
       shader.fragmentShader = shader.fragmentShader.replace(

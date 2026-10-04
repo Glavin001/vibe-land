@@ -9,6 +9,7 @@ import { GameWorld } from './GameWorld';
 import type { InputFamilyMode, InputSample } from '../input/types';
 import type { WorldDocument } from '../world/worldDocument';
 import type { WeatherPreset } from '../graphics/weatherPresets';
+import { CustomMaterialGuard } from '../graphics/webgpu/CustomMaterialGuard';
 
 type GameSceneProps = {
   matchId?: string;
@@ -101,8 +102,9 @@ export function GameScene({
     >
       <RenderGovernor />
       <FrameClock />
+      {__WEBGPU__ && import.meta.env.DEV && <CustomMaterialGuard />}
       <Suspense fallback={null}>
-        {showRenderStats && (
+        {showRenderStats && !__WEBGPU__ && (
           <StatsGl
             parent={renderStatsParent}
             trackGPU

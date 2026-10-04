@@ -3,6 +3,7 @@ import { App } from '../App';
 import { parseWorldDocument, type WorldDocument } from '../world/worldDocument';
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Canvas } from '@react-three/fiber';
+import { withRenderBackend } from '../graphics/webgpu/rendererBackend';
 import { Grid, OrbitControls } from '@react-three/drei';
 import { VehicleVisual } from '../vehicles/VehicleVisual';
 import { defaultConfiguration, normalizeConfiguration, serializeConfiguration, vehicleFields, vehicles, resolveVehicleGeometry, type VehicleConfiguration } from '../vehicles/configuration.mjs';
@@ -172,13 +173,16 @@ function GarageWorkshop() {
       </section>
     </aside>
     <section className="garage-viewport" aria-label={`${preset.kind} preview`}><div className="garage-model-title"><span>{preset.code} / CUSTOM BUILD</span><h2>{preset.kind}</h2><p>{preset.description}</p><div className="garage-build-badges"><span>{configuration.driving.drivetrain.toUpperCase()}</span><span>{Math.round(configuration.driving.topSpeed*3.6)} km/h setup</span><span>{configuration.appearance.paint} finish</span></div></div>
-      <Canvas shadows camera={{position:configuration.model==='semi'?[8,5,-10]:[5,3,-6],fov:42}} dpr={[1,1.5]}>
+      <Canvas {...withRenderBackend({shadows:true})} camera={{position:configuration.model==='semi'?[8,5,-10]:[5,3,-6],fov:42}} dpr={[1,1.5]}>
         <color attach="background" args={['#e9ece6']}/><hemisphereLight args={['#ffffff','#83948c',2]}/><ambientLight intensity={.5}/>
         <directionalLight position={[5,8,-4]} intensity={3} castShadow shadow-mapSize={[2048,2048]} shadow-camera-left={-8} shadow-camera-right={8} shadow-camera-top={8} shadow-camera-bottom={-8} shadow-normalBias={.03}/>
         <directionalLight position={[-5,3,5]} intensity={1.8}/>
         <Model configuration={configuration} explosion={explosion} explosionGroups={validation.explosionGroups} wireframe={wireframe} travel={travel} steer={steer} onParts={setParts}/>
         <mesh rotation={[-Math.PI/2,0,0]} position={[0,-.01,0]} receiveShadow><planeGeometry args={[200,200]}/><meshStandardMaterial color="#e9ece6" roughness={1}/></mesh>
-        <Grid position={[0,0,0]} args={[100,100]} cellSize={.5} sectionSize={2} cellColor="#c9d0c8" sectionColor="#b4c0b5" fadeDistance={22} infiniteGrid/>
+        {/* drei's Grid is a GLSL shader; the WebGPU path draws a plain grid. */}
+        {__WEBGPU__
+          ? <gridHelper args={[44,88,'#b4c0b5','#c9d0c8']} position={[0,.002,0]}/>
+          : <Grid position={[0,0,0]} args={[100,100]} cellSize={.5} sectionSize={2} cellColor="#c9d0c8" sectionColor="#b4c0b5" fadeDistance={22} infiniteGrid/>}
         <OrbitControls makeDefault target={[0,1,configuration.model==='semi'?1.5:0]} minDistance={2} maxDistance={22} maxPolarAngle={Math.PI*.49}/>
       </Canvas>
       <footer><span><i/> LIVE CONFIGURATION</span><span>Drag to orbit · Scroll to zoom</span></footer>

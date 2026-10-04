@@ -91,7 +91,7 @@ export function CityEnvironment({
         pixel in the scene more expensive. The shadow light stays -- shadows
         have their own toggle.
       */}
-      {fogEnabled && weatherOn && (
+      {fogEnabled && weatherOn && !__WEBGPU__ && (
         <WeatherParticles
           weather={weather}
           windStrengthMps={windStrengthMps}
@@ -112,15 +112,19 @@ export function CityEnvironment({
         skylight, so the remaining ambient is only a floor that keeps deep
         interiors from going to pure black.
       */}
-      <SkyEnvironment
-        fogColor={resolvedFogColor}
-        showDome={skyDomeOn}
-        bindEnvironment={skyIblOn}
-        intensity={qualityIsPretty ? 1 : 0.85}
-      />
+      {/* The sky dome and IBL are custom shaders; the WebGPU path keeps the
+          background colour, fog and the lights below. */}
+      {!__WEBGPU__ && (
+        <SkyEnvironment
+          fogColor={resolvedFogColor}
+          showDome={skyDomeOn}
+          bindEnvironment={skyIblOn}
+          intensity={qualityIsPretty ? 1 : 0.85}
+        />
+      )}
       <SunLight
         fogColor={resolvedFogColor}
-        castShadow={shadowsOn}
+        castShadow={shadowsOn && !__WEBGPU__}
         shadowHalfExtent={qualityIsPretty ? 48 : 60}
         shadowMapSize={shadowMapTexels ?? (qualityIsPretty ? 2048 : 1024)}
       />
@@ -143,7 +147,7 @@ export function CityEnvironment({
       <hemisphereLight
         args={[skyLightGradient.zenith, skyLightGradient.ground, qualityIsPretty ? 0.25 : 1.15]}
       />
-      {framePipelineOn && <FramePipeline ao={ambientOcclusionOn} />}
+      {framePipelineOn && !__WEBGPU__ && <FramePipeline ao={ambientOcclusionOn} />}
     </>
   );
 }

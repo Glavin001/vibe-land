@@ -2973,7 +2973,8 @@ export function GameWorld({
 
       {/* Destructible city chunks (instanced; only active in city-* matches) */}
       <CityChunksLayer getCityClient={() => runtimeRef.current?.getCityClient?.() ?? null} />
-      <CityGrass
+      {/* Grass, meteor fire and dust are custom shaders: not on the simple WebGPU path yet. */}
+      {!__WEBGPU__ && <CityGrass
         getSharedLayoutUrl={isTownKitPage() ? undefined : () => runtimeRef.current?.grassLayoutUrl ?? null}
         getCityClient={() => runtimeRef.current?.getCityClient?.() ?? null}
         getInteractionPosition={() => {
@@ -2983,12 +2984,12 @@ export function GameWorld({
         getActors={() => runtimeRef.current ?? null}
         windStrengthMps={windStrengthMps}
         windDirectionDeg={windDirectionDeg}
-      />
+      />}
       {/* Destruction dust, fed by the city client's fracture stream */}
-      <MeteorLayer getRuntime={() => runtimeRef.current ?? null} />
+      {!__WEBGPU__ && <MeteorLayer getRuntime={() => runtimeRef.current ?? null} />}
       <GameAudioLayer getRuntime={() => runtimeRef.current ?? null} getCityClient={() => runtimeRef.current?.getCityClient?.() ?? null} />
 
-      <DustLayer
+      {!__WEBGPU__ && <DustLayer
         getCityClient={() => runtimeRef.current?.getCityClient?.() ?? null}
         getDynamicBodies={() => runtimeRef.current?.state?.dynamicBodies.values() ?? null}
         mode={dustMode}
@@ -2996,7 +2997,7 @@ export function GameWorld({
         fogColor={resolvedFogColor}
         windStrengthMps={windStrengthMps}
         windDirectionDeg={windDirectionDeg}
-      />
+      />}
 
       {/* Battery group */}
       <group ref={batteryGroupRef} />

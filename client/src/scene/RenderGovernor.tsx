@@ -27,6 +27,7 @@ import {
   setGovernorMsaaCap,
   setGovernorSampleScale,
 } from '../app/renderQuality';
+import { withRenderBackend } from '../graphics/webgpu/rendererBackend';
 import { frameRateCapFps, useFrameRateCap } from './frameRateCap';
 import { framePipelineMounted, setFramePipelineResolutionScale } from '../graphics/framePipelineStages';
 import { canvasDprChanges, resolutionPlan } from './dynamicResolution';
@@ -39,7 +40,7 @@ import { canvasDprChanges, resolutionPlan } from './dynamicResolution';
  * handles dpr live.
  */
 export function sceneCanvasProps() {
-  return {
+  return withRenderBackend({
     shadows: true,
     // `?maxFps=N` only (off by default): the cap's own loop advances R3F.
     frameloop: (frameRateCapFps() === null ? 'always' : 'never') as 'always' | 'never',
@@ -47,7 +48,7 @@ export function sceneCanvasProps() {
     flat: flatToneMapping(),
     gl: { antialias: antialiasEnabled(), powerPreference: 'high-performance' as const },
     camera: { fov: 75, near: 0.1, far: 200, position: [0, 5, 10] as [number, number, number] },
-  };
+  });
 }
 
 /**

@@ -17,6 +17,19 @@ export default defineConfig(({ mode }) => {
     ? { cert: fs.readFileSync(certPath), key: fs.readFileSync(keyPath) }
     : undefined;
 
+  // Renderer backend, fixed at build time. `vite --mode webgpu` (npm run
+  // dev:webgpu) builds the simple three/webgpu path the native app draws
+  // with; every other mode is the WebGL client, unchanged. The webgpu build
+  // draws with its own three (`three-webgpu`, the release mystralnative is
+  // tested against): bare `three` goes to a shim over its three/webgpu that
+  // adds the few WebGL-only names drei imports, and the subpaths follow it.
+  const threeWebgpuAliases = [
+    { find: /^three$/, replacement: path.resolve(process.cwd(), 'src/graphics/webgpu/three.ts') },
+    { find: /^three\/(webgpu|tsl)$/, replacement: 'three-webgpu/$1' },
+    { find: /^three\/(examples|addons)\/(.*)$/, replacement: 'three-webgpu/$1/$2' },
+  ];
+  const webgpu = mode === 'webgpu' || env.VITE_RENDER_BACKEND === 'webgpu';
+
   return {
     plugins: [
       tailwindcss(),
@@ -48,6 +61,10 @@ export default defineConfig(({ mode }) => {
       },
     ],
     envDir: '../',
+    resolve: webgpu ? { alias: threeWebgpuAliases } : undefined,
+    // Its own dependency pre-bundle: the aliases change what deps resolve
+    // to, and a shared cache would hand the WebGL dev server webgpu bundles.
+    cacheDir: webgpu ? 'node_modules/.vite-webgpu' : undefined,
     server: {
       // The playable review range should not reconnect while other work in
       // this checkout saves files. Opt back in when developing its client.
@@ -102,6 +119,9 @@ export default defineConfig(({ mode }) => {
       },
     },
     define: {
+      // True only in the webgpu build; WebGL-only code sits behind it so the
+      // WebGL bundle drops the WebGPU path entirely.
+      __WEBGPU__: JSON.stringify(webgpu),
       // Absolute path to the authored ScenePacks, for the /structure viewer.
       // `server.fs.allow: ['..']` above already lets vite serve them through
       // /@fs, so the viewer reads them in place instead of duplicating several
