@@ -694,6 +694,22 @@ class SharedPhysxRuntime final {
 public:
   SharedPhysxRuntime() {
     try {
+#if defined(__APPLE__)
+      // First, before PxCreatePhysics: CuMetal reads these once, when it
+      // initializes, and creating the SDK can already initialize it. Set after
+      // PxCreatePhysics they were read too late and never took effect
+      // (measured: the city's idle tick was the same with and without).
+      // CuMetal: keep the GPU out of its low-power state between 60 Hz ticks,
+      // which otherwise costs each tick about a millisecond of wake-up. Only
+      // while work is being submitted; the environment still overrides it.
+      setenv("CUMETAL_GPU_KEEPALIVE_US", "250", 0);
+      // And at its clock: the heartbeat keeps the GPU awake, but a server
+      // busy a few milliseconds a frame still runs every kernel at a reduced
+      // clock. One threadgroup of continuous work holds it up (idle tick 5.4
+      // -> 3.1 ms, meteor correction ticks 32 -> 18 ms on M3 Max). It replaces
+      // the heartbeat; CUMETAL_GPU_KEEPALIVE_BUSY=0 restores heartbeat only.
+      setenv("CUMETAL_GPU_KEEPALIVE_BUSY", "1", 0);
+#endif
       foundation_ =
           PxCreateFoundation(PX_PHYSICS_VERSION, allocator_, error_callback_);
       require(foundation_ != nullptr, "PxCreateFoundation failed");
@@ -706,12 +722,6 @@ public:
                                  PxTolerancesScale(), false, nullptr);
       require(physics_ != nullptr, "PxCreatePhysics failed");
 
-#if defined(__APPLE__)
-      // CuMetal: keep the GPU out of its low-power state between 60 Hz ticks,
-      // which otherwise costs each tick about a millisecond of wake-up. Only
-      // while work is being submitted; the environment still overrides it.
-      setenv("CUMETAL_GPU_KEEPALIVE_US", "250", 0);
-#endif
       PxCudaContextManagerDesc cuda_desc;
       cuda_context_ = PxCreateCudaContextManager(*foundation_, cuda_desc,
                                                  PxGetProfilerCallback());

@@ -102,6 +102,17 @@ already sets it. Between 60 Hz ticks the GPU otherwise drops into a
 low-power state and each tick pays about a millisecond to wake it.
 `CUMETAL_GPU_KEEPALIVE_US=0` turns it off.
 
+**GPU clock.** The heartbeat keeps the GPU awake, not at its clock: Apple's
+GPU performance controller judges utilization, and a server busy for a few
+milliseconds of each 16.7 ms frame runs every kernel at a reduced clock (a
+paced stress solve took 2.3x as long as the same solves back to back). The
+bridge therefore also sets `CUMETAL_GPU_KEEPALIVE_BUSY=1` (CuMetal
+`perf/realtime-destruction`): one threadgroup of continuous work on a private
+queue while the process submits work, in place of the heartbeat. On the city
+with the destructible fleet (M3 Max) the idle tick fell from 5.4 to 3.1 ms and
+meteor correction ticks from 32 to 18 ms median. It costs one GPU core and
+power while the server runs; `CUMETAL_GPU_KEEPALIVE_BUSY=0` turns it off.
+
 What runs on Metal, and is tested there: the default `--features
 native-destruction` tests, with `--test-threads=1` (`feature_coverage`,
 `gpu_smoke`, `ground_contact`, `native_gameplay`, `reset_controller_cache`,
