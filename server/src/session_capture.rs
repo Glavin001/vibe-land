@@ -513,6 +513,10 @@ pub struct StressSolveSummary {
     /// one with the most nodes x iterations.
     pub largest: [u32; 3],
     pub heaviest: [u32; 3],
+    /// [nodes, iterations, best iteration, reason, final2/tolerance2 x 1000]
+    /// of the eight solved components with the most nodes x iterations.
+    #[serde(default)]
+    pub top: Vec<[u32; 5]>,
 }
 
 /// The stage's phase times from the engine profiler, grouped. CPU zones are

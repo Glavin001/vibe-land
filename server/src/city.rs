@@ -3042,8 +3042,12 @@ fn read_stress_summary(
                 s.max_iterations = s.max_iterations.max(c.iterations);
                 if c.chunk_count > s.largest[0] { s.largest = [c.chunk_count, c.iterations, c.reason]; }
                 if work > heaviest { heaviest = work; s.heaviest = [c.chunk_count, c.iterations, c.reason]; }
+                let excess = if c.tolerance2 > 0.0 && c.final2.is_finite() { (c.final2 / c.tolerance2 * 1000.0).min(u32::MAX as f32) as u32 } else { u32::MAX };
+                s.top.push([c.chunk_count, c.iterations, c.best_iteration, c.reason, excess]);
             }
         }
     }
+    s.top.sort_by_key(|t| std::cmp::Reverse(t[0] as u64 * t[1].max(1) as u64));
+    s.top.truncate(8);
     Some(s)
 }
