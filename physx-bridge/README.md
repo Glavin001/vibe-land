@@ -113,6 +113,13 @@ with the destructible fleet (M3 Max) the idle tick fell from 5.4 to 3.1 ms and
 meteor correction ticks from 32 to 18 ms median. It costs one GPU core and
 power while the server runs; `CUMETAL_GPU_KEEPALIVE_BUSY=0` turns it off.
 
+**Pinned-kernel drains.** CuMetal waits for all earlier GPU work before each
+kernel that writes mapped host memory, for hosts that poll that memory without
+synchronizing. The PhysX fork synchronizes before every such read, so the
+bridge sets `CUMETAL_DRAIN_BEFORE_PINNED_KERNELS=0`: nine fewer round trips on
+a meteor correction tick (19.8 -> 16.8 ms median, together with the balanced
+stress operator). `=1` restores the drains.
+
 What runs on Metal, and is tested there: the default `--features
 native-destruction` tests, with `--test-threads=1` (`feature_coverage`,
 `gpu_smoke`, `ground_contact`, `native_gameplay`, `reset_controller_cache`,

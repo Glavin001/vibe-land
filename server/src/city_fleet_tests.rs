@@ -72,7 +72,7 @@ fn city_wreck(model: &str, slot: usize, attack: Attack) {
     // What the city server ships (scripts/perf/garage-vehicle-server.sh): the
     // incremental motion forest and cluster mass properties. Set either to 0 for
     // the full rebuilds.
-    for flag in ["BLAST_STRESS_INCREMENTAL_MOTION", "PX_DESTRUCTION_INCREMENTAL_TOPOLOGY"] {
+    for flag in ["BLAST_STRESS_INCREMENTAL_MOTION", "PX_DESTRUCTION_INCREMENTAL_TOPOLOGY", "BLAST_STRESS_BALANCED_OPERATOR"] {
         if std::env::var_os(flag).is_none() { std::env::set_var(flag, "1"); }
     }
     let rest: u32 = std::env::var("VIBE_CITY_FLEET_REST_TICKS").ok().and_then(|v| v.parse().ok()).unwrap_or(900);

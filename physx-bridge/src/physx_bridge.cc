@@ -709,6 +709,14 @@ public:
       // -> 3.1 ms, meteor correction ticks 32 -> 18 ms on M3 Max). It replaces
       // the heartbeat; CUMETAL_GPU_KEEPALIVE_BUSY=0 restores heartbeat only.
       setenv("CUMETAL_GPU_KEEPALIVE_BUSY", "1", 0);
+      // CuMetal drains the stream (a host wait for all earlier GPU work)
+      // before each kernel that writes mapped host memory, in case the host
+      // polls it without synchronizing. The PhysX fork synchronizes before
+      // every such read (narrowphase lost/found pairs: fetchNarrowPhaseResults;
+      // bounds/transform merge: the same stream's sync; solver DMA back:
+      // syncDmaBack), so the drains were extra round trips: nine on a meteor
+      // correction tick. Off: correction ticks 19.8 -> 16.8 ms median.
+      setenv("CUMETAL_DRAIN_BEFORE_PINNED_KERNELS", "0", 0);
 #endif
       foundation_ =
           PxCreateFoundation(PX_PHYSICS_VERSION, allocator_, error_callback_);

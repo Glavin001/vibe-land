@@ -23,6 +23,9 @@
 # opt-ins, default 1 here): a fracture rebuilds the stress motion forest and the
 # cluster mass properties of the touched components only. On the city's
 # meteor correction ticks, -6 ms median and -12 ms p90 (Metal, 2026-10-03).
+# BLAST_STRESS_BALANCED_OPERATOR=1: the component stress solve splits each
+# operator pass by bonds, not nodes, so a car's 40-bond hub no longer sets the
+# pace (a car's iteration 82 -> 49 us).
 # The client is `npm run dev`.
 set -euo pipefail
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
@@ -47,5 +50,6 @@ exec scripts/perf/gpu-run.sh garage-vehicles env \
   VIBE_NATIVE_STRESS_FORCE_TOLERANCE=${VIBE_NATIVE_STRESS_FORCE_TOLERANCE:-0.001} \
   BLAST_STRESS_INCREMENTAL_MOTION=${BLAST_STRESS_INCREMENTAL_MOTION:-1} \
   PX_DESTRUCTION_INCREMENTAL_TOPOLOGY=${PX_DESTRUCTION_INCREMENTAL_TOPOLOGY:-1} \
+  BLAST_STRESS_BALANCED_OPERATOR=${BLAST_STRESS_BALANCED_OPERATOR:-1} \
   CUMETAL_CACHE_DIR="$ROOT/target/cumetal-cache-vehicles" \
   "$CARGO_TARGET_DIR/release/web-fps-server" > "$LOG" 2>&1
