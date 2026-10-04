@@ -5,6 +5,7 @@ members = [
     "physx-bridge",
     "shared",
     "server",
+    "sim-native",
     "research/destruction-codec",
 ]
 resolver = "2"

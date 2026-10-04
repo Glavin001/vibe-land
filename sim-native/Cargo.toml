@@ -1,0 +1,20 @@
+[package]
+name = "vibe-sim-native"
+version = "0.1.0"
+edition = "2021"
+description = "vibe-land's simulation as a mystralnative native module (single-player, in-process)"
+publish = false
+
+[lib]
+name = "vibe_sim"
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = []
+# Step a PhysX world, linked like the Mac server build (native-destruction,
+# CuMetal on macOS). Without it the probe
+# scene runs a CPU stand-in so the module plumbing can be tested anywhere.
+physx = ["dep:vibe-land-physx-bridge", "vibe-land-physx-bridge/native-destruction"]
+
+[dependencies]
+vibe-land-physx-bridge = { path = "../physx-bridge", optional = true }
