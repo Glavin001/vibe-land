@@ -1129,6 +1129,10 @@ pub struct CityRuntime {
     /// replaces the backend and the new one must be told again.
     ground_y: Option<f32>,
     backend: CityBackend,
+    /// `VIBE_STRESS_SOLVE_REPORT`: the pass mask, whether the stage accepted
+    /// it, and the last tick's summary.
+    stress_report: Option<(u32, bool)>,
+    stress_summary: Option<crate::session_capture::StressSolveSummary>,
     encoder: ChunkStreamEncoder,
     pub manifest: Arc<DestructionManifest>,
     send_interval_ticks: u32,
@@ -1218,6 +1222,8 @@ impl CityRuntime {
             sim_hz,
             ground_y: None,
             backend,
+            stress_report: None,
+            stress_summary: None,
             encoder,
             manifest,
             send_interval_ticks: config.send_interval_ticks,
@@ -2010,6 +2016,7 @@ impl CityRuntime {
                 let post_step_started = std::time::Instant::now();
                 let post_step_result = backend.post_step(world, dt);
                 let post_step_ms = post_step_started.elapsed().as_secs_f32() * 1000.0;
+                self.stress_summary = read_stress_summary(&mut self.stress_report, world);
                 match post_step_result {
                     Ok(output) => {
                         // Timed, as the Physx arm's ingest is: this was the
@@ -2560,6 +2567,11 @@ impl CityRuntime {
     /// what the server committed from it, and the tick's spans (engine zones
     /// included when `VIBE_PHYSX_PROFILE` is on). None on other backends.
     #[cfg(feature = "native-destruction")]
+    /// This tick's stress solve summary, when `VIBE_STRESS_SOLVE_REPORT` is set.
+    pub fn stress_solve_summary(&self) -> Option<&crate::session_capture::StressSolveSummary> {
+        self.stress_summary.as_ref()
+    }
+
     pub fn native_tick_view(
         &self,
     ) -> Option<(
@@ -2995,4 +3007,43 @@ mod tests {
         );
         assert!(city.live.is_none(), "v2 must not gain a v3 encoder");
     }
+}
+
+/// The stage's per-component stress solve report, summarised for the tick
+/// record (`VIBE_STRESS_SOLVE_REPORT`, see `StressSolveSummary`). Enables the
+/// report on the first tick the stage accepts it.
+#[cfg(feature = "native-destruction")]
+fn read_stress_summary(
+    state: &mut Option<(u32, bool)>,
+    world: &mut vibe_land_physx_bridge::World,
+) -> Option<crate::session_capture::StressSolveSummary> {
+    if state.is_none() {
+        let raw = std::env::var("VIBE_STRESS_SOLVE_REPORT").ok().filter(|v| !v.is_empty() && v != "0")?;
+        *state = Some((raw.parse().unwrap_or(1), false));
+    }
+    let (mask, on) = state.as_mut()?;
+    if !*on {
+        *on = world.native_set_stress_solve_report(*mask).unwrap_or(false);
+        return None;
+    }
+    let report = world.native_stress_solve_report().ok()?;
+    let mut s = crate::session_capture::StressSolveSummary::default();
+    let mut heaviest = 0u64;
+    for c in &report.components {
+        s.components += 1;
+        match c.reason {
+            6 => s.settled += 1,
+            8 => { s.cooperative += 1; s.cooperative_nodes = s.cooperative_nodes.max(c.chunk_count); }
+            _ => {
+                s.solved += 1;
+                match c.reason { 1 => s.converged += 1, 2 => s.capped += 1, _ => s.other_stop += 1 }
+                let work = c.chunk_count as u64 * c.iterations as u64;
+                s.node_iterations += work;
+                s.max_iterations = s.max_iterations.max(c.iterations);
+                if c.chunk_count > s.largest[0] { s.largest = [c.chunk_count, c.iterations, c.reason]; }
+                if work > heaviest { heaviest = work; s.heaviest = [c.chunk_count, c.iterations, c.reason]; }
+            }
+        }
+    }
+    Some(s)
 }

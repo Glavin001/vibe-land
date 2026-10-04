@@ -541,6 +541,7 @@ impl MatchState {
                 chunks_migrated: counts.chunks_migrated,
                 observe_ms,
                 zones: sc::StageZones::from_spans(named()),
+                stress_solve: self.city.as_ref().and_then(|city| city.stress_solve_summary().cloned()),
             });
             timing.engine_zones = sc::engine_zones(named());
         }

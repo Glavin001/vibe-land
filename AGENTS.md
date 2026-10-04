@@ -14,6 +14,18 @@ Check the authored graph before touching the solver. Read
 The product runs in float (FP32). Double precision, extra iterations or a looser
 tolerance are diagnostics, never fixes.
 
+## Destruction performance: never trade away fracture re-simulation
+
+When a fracture splits a body, the native stage must apply it and re-simulate
+the step (the internal correction pass, `internalCorrectionLimit >= 1`). That is
+on by default and stays on. Do not propose or implement "apply the split at end
+of tick without re-solving", correction limit 0, or anything that defers or
+skips the corrected solve to save time. Make the correction pass fast instead.
+
+The stress iteration cap with the destructible fleet is 64 per tick, and the
+owner accepts it. Do not lower it to save time; make the 64 iterations fast.
+Unconverged solves continue next tick (`PX_DESTRUCTION_ALLOW_UNCONVERGED=1`).
+
 ## Cursor Cloud specific instructions
 
 ### Overview

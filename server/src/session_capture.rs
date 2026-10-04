@@ -479,6 +479,40 @@ pub struct StagePhases {
     pub observe_ms: f32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub zones: Option<StageZones>,
+    /// Per-component stress solve summary (`VIBE_STRESS_SOLVE_REPORT`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stress_solve: Option<StressSolveSummary>,
+}
+
+/// One tick's stress solve, component by component, from the stage's solve
+/// report. Diagnostic: the report is a readback every tick, so quote timings
+/// from runs without it. `VIBE_STRESS_SOLVE_REPORT=<pass mask>` turns it on
+/// (bit p: correction pass p; 1 = the trial solve, the default when set to a
+/// non-number); the last recorded pass of the tick is the one summarised.
+///
+/// The component solve gives each component one threadgroup, so a tick's
+/// solve time follows its largest solved component's nodes x iterations, not
+/// the total: `largest` and `heaviest` say which component that was.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct StressSolveSummary {
+    pub components: u32,
+    /// Skipped: settled and unchanged since a verified solve.
+    pub settled: u32,
+    /// Solved by the per-component kernel, and how they stopped.
+    pub solved: u32,
+    pub converged: u32,
+    pub capped: u32,
+    pub other_stop: u32,
+    /// Too large for the component kernel: the cooperative solve.
+    pub cooperative: u32,
+    pub cooperative_nodes: u32,
+    /// Sum of nodes x iterations over solved components.
+    pub node_iterations: u64,
+    pub max_iterations: u32,
+    /// [nodes, iterations, reason] of the largest solved component, and of the
+    /// one with the most nodes x iterations.
+    pub largest: [u32; 3],
+    pub heaviest: [u32; 3],
 }
 
 /// The stage's phase times from the engine profiler, grouped. CPU zones are
