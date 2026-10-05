@@ -105,6 +105,9 @@ async function run() {
   const byHeight = [...structures].sort((a, b) => b.top - a.top);
 
   const enter = (name) => { phase = name; phaseStarted = performance.now(); };
+  // Play starts when the game's shader warmup is done (scene/ShaderWarmup.tsx);
+  // every build after it counts as late.
+  await waitFor('the shader warmup', () => e2e.shaderBuilds().playing, 60_000);
   enter('idle');
   await sleep(4000);
 
@@ -156,6 +159,16 @@ async function run() {
       + `  |  sim TPS min ${Number.isFinite(tpsMin) ? tpsMin.toFixed(0) : '-'}  tick avg<=${max('tickAvg').toFixed(1)} max ${max('tickMax').toFixed(1)} ms  physx<=${max('physx').toFixed(1)} ms  awake<=${max('awake')}  bonds ${max('bonds')}`);
   }
   for (const f of longFrames) log(`long frame ${f.ms.toFixed(0)} ms in "${f.phase}", ${f.into.toFixed(0)} ms into it`);
+  // Shader builds during play: each is a first-sight hitch.
+  const lateShaders = e2e.shaderBuilds().late;
+  log(`late shader builds: ${lateShaders.length}, ${lateShaders.reduce((sum, b) => sum + b.ms, 0).toFixed(0)} ms in total`);
+  const grouped = new Map();
+  for (const b of lateShaders) {
+    const key = `${b.kind} ${b.object} / ${b.material}`;
+    const g = grouped.get(key) ?? { n: 0, ms: 0 };
+    g.n += 1; g.ms += b.ms; grouped.set(key, g);
+  }
+  for (const [key, g] of [...grouped].sort((a, b) => b[1].ms - a[1].ms).slice(0, 15)) log(`  ${String(g.n).padStart(3)}x ${g.ms.toFixed(0).padStart(5)} ms  ${key}`);
   // GPU objects created after boot, and the slow ones: a compile mid-play is a stall.
   const late = slowCreates.filter((c) => c.phase !== 'boot' && c.phase !== 'warmup');
   log(`GPU creations after boot: ${late.length}; total ${late.reduce((sum, c) => sum + c.ms, 0).toFixed(0)} ms`);

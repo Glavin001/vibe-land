@@ -113,6 +113,7 @@ import { CityChunksLayer } from './CityChunksLayer';
 import { remoteVehicleDrawPose } from './netEntityPoses';
 import { DustLayer } from '../vfx/DustLayer';
 import { MeteorLayer } from '../vfx/MeteorLayer';
+import { ShaderWarmup } from './ShaderWarmup';
 import { GameAudioLayer } from '../audio/GameAudioLayer';
 import { destructionAudio } from '../audio/engine';
 import { soundFromShot } from '../audio/gameEvents';
@@ -2979,6 +2980,7 @@ export function GameWorld({
 
       {/* Destructible city chunks (instanced; only active in city-* matches) */}
       <CityChunksLayer getCityClient={() => runtimeRef.current?.getCityClient?.() ?? null} />
+      <ShaderWarmup getCityClient={() => runtimeRef.current?.getCityClient?.() ?? null} />
       <CityGrass
         getSharedLayoutUrl={isTownKitPage() ? undefined : () => runtimeRef.current?.grassLayoutUrl ?? null}
         getCityClient={() => runtimeRef.current?.getCityClient?.() ?? null}

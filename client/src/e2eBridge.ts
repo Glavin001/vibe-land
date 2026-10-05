@@ -40,6 +40,7 @@ import { pushDebugDustSource } from './vfx/dustDebug';
 let dustBurstSerial = 1;
 import { setCapturePose } from './scene/captureCamera';
 import { getMatchStats } from './app/connectPhase';
+import { markShaderWarmupDone, shaderBuilds } from './graphics/webgpu/shaderBuildMonitor';
 import { cityTapeRecorder, saveCityTape } from './city/cityTape';
 import { uploadTape } from './city/hotspotWatch';
 import { sendDebugReport } from './city/debugReport';
@@ -517,6 +518,10 @@ export interface VibeE2EBridge {
   }>;
   /** The match's latest stats packet (server tick, tick timings, physics step), as the HUD reads it. */
   matchStats(): unknown;
+  /** First-time shader builds on the WebGPU path; `late` ones happened during play. */
+  shaderBuilds(): ReturnType<typeof shaderBuilds>;
+  /** Count every shader build from now on as late (a test that skips the loading screen). */
+  markShaderWarmupDone(): void;
   cityStructures(): Array<{
     structureId: number;
     position: [number, number, number];
@@ -776,6 +781,8 @@ const bridge: VibeE2EBridge = {
     });
   },
   matchStats: () => getMatchStats(),
+  shaderBuilds: () => shaderBuilds(),
+  markShaderWarmupDone: () => markShaderWarmupDone(),
   cityStructures: () => refs.cityStructures,
   dustBurst: (next) => {
     const normal = next.normal ?? [0, 1, 0];

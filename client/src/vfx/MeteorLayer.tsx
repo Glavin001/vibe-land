@@ -15,6 +15,7 @@ import { renderStats } from '../city/renderStats';
 import { registerPipelineStage } from '../graphics/framePipelineStages';
 import type { DynamicBodySample } from '../net/interpolation';
 import type { DynamicBodyStateMeters } from '../net/protocol';
+import { registerShaderWarmup } from '../scene/ShaderWarmup';
 import { MeteorFireStage, type MeteorFireInstance } from './MeteorFireStage';
 import { meteorFlights, recordMeteorDrawn, type MeteorFlight } from './meteorFlights';
 import { METEOR_TICK_US, placeMeteorInFrame } from './meteorPlacement';
@@ -259,6 +260,14 @@ export function MeteorLayer({ getRuntime, getNowMs }: MeteorLayerProps) {
 
   return <group ref={groupRef} name="meteors" />;
 }
+
+// The rock (and on WebGL its embers), as a meteor first drawn would be.
+registerShaderWarmup('meteor', () => {
+  const rock = new THREE.Mesh(buildMeteorGeometry(42, 24), buildMeteorMaterial().material);
+  rock.castShadow = true;
+  rock.receiveShadow = true;
+  return EMBERS_DRAWN ? [rock, buildMeteorEmbers().points] : [rock];
+});
 
 function spawn(flight: MeteorFlight, geometry: THREE.BufferGeometry, nowMs: number): LiveMeteor {
   const { material, uniforms } = buildMeteorMaterial();

@@ -54,6 +54,7 @@ import { CalibrationOverlay } from './calibration/CalibrationOverlay';
 import { FirstRunPrompt } from './calibration/FirstRunPrompt';
 import { CALIBRATION_WORLD_DOCUMENT } from './calibration/calibrationWorld';
 import { CITY_WORLD_DOCUMENT } from './world/cityWorld';
+import { useShaderWarmupPhase } from './scene/ShaderWarmup';
 import { CityStatsOverlay } from './city/CityStatsOverlay';
 import { CityFlightControls } from './city/CityFlightControls';
 import {
@@ -903,9 +904,31 @@ export function App({
   // practice mode so the player doesn't see it flash when the calibration
   // wizard opens or closes (which triggers a brief disconnect + reconnect).
   const clickToJoinVisible = !connected && !(practiceMode && hasEverConnectedRef.current);
+  // The city plays once every shader it can show is built (scene/ShaderWarmup.tsx).
+  const shaderWarmup = useShaderWarmupPhase();
 
   return (
     <div style={{ width: '100%', height: '100%', position: 'relative' }}>
+      {cityWorld && connected && !clickToJoinVisible && shaderWarmup !== 'done' && (
+        <div
+          data-testid="loading-overlay"
+          role="status"
+          style={{
+            position: 'absolute',
+            inset: 0,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 9,
+            background: '#10161d',
+          }}
+        >
+          <div style={{ textAlign: 'center' }}>
+            <h1 style={{ fontSize: 48, marginBottom: 16, fontWeight: 700 }}>vibe-land</h1>
+            <p style={{ fontSize: 18, opacity: 0.7 }}>Loading the city and preparing graphics...</p>
+          </div>
+        </div>
+      )}
       {clickToJoinVisible && (
         <div
           data-testid="join-overlay"

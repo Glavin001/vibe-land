@@ -12,6 +12,8 @@ import { registerCanopyNodeMaterial } from '../../scene/grass/FoliageCanopy';
 import { canopyNodeMaterial } from '../../scene/grass/canopyNodes';
 import { registerDustSpriteNodeMaterial } from '../../vfx/DustSprites';
 import { dustSpriteNodeMaterial } from '../../vfx/dustSpriteNodes';
+import { setPartBatchFactory } from '../../vehicles/dune/live-geometry.mjs';
+import { createPartBatch } from '../../vehicles/partBatchNodes';
 import { skyNodeMaterial } from './skyNodes';
 
 registerSlotNodeMaterial(slotNodeMaterial);
@@ -20,3 +22,4 @@ registerGroundNodeMaterial(groundNodeMaterial);
 registerGrassNodeMaterials(grassNodeMaterials);
 registerCanopyNodeMaterial(canopyNodeMaterial);
 registerDustSpriteNodeMaterial(dustSpriteNodeMaterial);
+setPartBatchFactory(createPartBatch);

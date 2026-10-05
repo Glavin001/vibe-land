@@ -12,6 +12,7 @@
 import * as THREE from 'three';
 import type { RootState } from '@react-three/fiber';
 
+import { monitorShaderBuilds } from './shaderBuildMonitor';
 import { fixArrayTextureGrad } from './textureGradFix';
 
 type Frameloop = 'always' | 'demand' | 'never';
@@ -79,6 +80,7 @@ export function createWebGPURenderer(
   renderer.init = async () => {
     const ready = await init();
     fixArrayTextureGrad(renderer as unknown as Parameters<typeof fixArrayTextureGrad>[0]);
+    monitorShaderBuilds(renderer as unknown as Parameters<typeof monitorShaderBuilds>[0]);
     return ready;
   };
   return renderer;

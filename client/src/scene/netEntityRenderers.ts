@@ -1,4 +1,6 @@
 import { VehicleVisual } from '../vehicles/VehicleVisual';
+import { defaultConfiguration, vehicles as vehicleModels } from '../vehicles/configuration.mjs';
+import { registerShaderWarmup } from './ShaderWarmup';
 import { debugState } from '../vehicles/destructionDebug';
 import { resolveMultiplayerBackend } from '../app/runtimeConfig';
 // The networked world's entities as the game draws them: players (animated
@@ -299,6 +301,37 @@ export class RemotePlayersRenderer {
 
 const BALL_COLORS = [0xff4444, 0x44ff44, 0x4444ff, 0xffff44, 0xff44ff, 0x44ffff, 0xff8800, 0x8800ff];
 
+/** The mesh a streamed dynamic body is drawn with (shape 1 a ball, else a box). */
+function dynamicBodyMesh(id: number, shapeType: number, halfExtents: ArrayLike<number>): THREE.Mesh {
+  let geom: THREE.BufferGeometry;
+  let mat: THREE.MeshStandardMaterial;
+  if (shapeType === 1) {
+    geom = new THREE.SphereGeometry(halfExtents[0], 16, 12);
+    mat = new THREE.MeshStandardMaterial({
+      color: BALL_COLORS[id % BALL_COLORS.length],
+      roughness: 0.4,
+      metalness: 0.1,
+    });
+  } else {
+    geom = new THREE.BoxGeometry(halfExtents[0] * 2, halfExtents[1] * 2, halfExtents[2] * 2);
+    mat = new THREE.MeshStandardMaterial({
+      color: 0xcc6622,
+      roughness: 0.6,
+      metalness: 0.2,
+    });
+  }
+  const mesh = new THREE.Mesh(geom, mat);
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
+  return mesh;
+}
+
+registerShaderWarmup('player debug helper', () => [createPlayerDebugHelper(0xffffff)]);
+registerShaderWarmup('dynamic bodies', () => [dynamicBodyMesh(0, 1, [0.3, 0.3, 0.3]), dynamicBodyMesh(0, 2, [0.3, 0.3, 0.3])]);
+// One car per model: every part material and geometry layout a fleet car can draw.
+registerShaderWarmup('vehicles', () => vehicleModels.map((model: { id: Parameters<typeof defaultConfiguration>[0] }) =>
+  new VehicleVisual(defaultConfiguration(model.id), true).group));
+
 /** Dynamic bodies: a sphere or box per streamed body, at its rendered pose. */
 export class DynamicBodiesRenderer {
   readonly meshes = new Map<number, THREE.Mesh>();
@@ -316,31 +349,7 @@ export class DynamicBodiesRenderer {
       activeBodies.add(id);
       let mesh = this.meshes.get(id);
       if (!mesh) {
-        let geom: THREE.BufferGeometry;
-        let mat: THREE.MeshStandardMaterial;
-        if (renderBody.shapeType === 1) {
-          const radius = renderBody.halfExtents[0];
-          geom = new THREE.SphereGeometry(radius, 16, 12);
-          mat = new THREE.MeshStandardMaterial({
-            color: BALL_COLORS[id % BALL_COLORS.length],
-            roughness: 0.4,
-            metalness: 0.1,
-          });
-        } else {
-          geom = new THREE.BoxGeometry(
-            renderBody.halfExtents[0] * 2,
-            renderBody.halfExtents[1] * 2,
-            renderBody.halfExtents[2] * 2,
-          );
-          mat = new THREE.MeshStandardMaterial({
-            color: 0xcc6622,
-            roughness: 0.6,
-            metalness: 0.2,
-          });
-        }
-        mesh = new THREE.Mesh(geom, mat);
-        mesh.castShadow = true;
-        mesh.receiveShadow = true;
+        mesh = dynamicBodyMesh(id, renderBody.shapeType, renderBody.halfExtents);
         mesh.position.set(renderBody.position[0], renderBody.position[1], renderBody.position[2]);
         mesh.quaternion.set(
           renderBody.quaternion[0],

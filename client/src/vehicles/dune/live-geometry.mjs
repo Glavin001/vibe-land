@@ -142,6 +142,12 @@ export class LiveGeometry {
   dispose() { for (const g of this.templates.values()) g.dispose(); this.templates.clear(); }
 }
 
+/** How a batch of repeated parts is drawn: an InstancedMesh, unless the
+ * renderer registers something else (the WebGPU path draws shader-shareable
+ * batches; vehicles/partBatchNodes.ts). */
+let createBatch = (geometry, material, count) => new T.InstancedMesh(geometry, material, count);
+export function setPartBatchFactory(factory) { createBatch = factory; }
+
 /** Group repeated geometry into GPU instances. A resize changes matrices in the
  * existing buffers; each instance still maps to a stable, selectable part ID. */
 export class LiveAssembly {
@@ -158,7 +164,7 @@ export class LiveAssembly {
       let mesh = this.batches.get(key);
       if (!mesh || mesh.instanceMatrix.count < parts.length) {
         if(mesh){this.group.remove(mesh);mesh.dispose();}
-        mesh = new T.InstancedMesh(parts[0].geometry, this.materials[parts[0].material], parts.length);
+        mesh = createBatch(parts[0].geometry, this.materials[parts[0].material], parts.length);
         mesh.instanceMatrix.setUsage(T.DynamicDrawUsage); mesh.castShadow = mesh.receiveShadow = true;
         // Bounds move continuously, so skip expensive per-frame aggregate bounds.
         mesh.frustumCulled = false; this.batches.set(key, mesh); this.group.add(mesh);

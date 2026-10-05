@@ -5,7 +5,9 @@
 // Computed from the city's own structure list (the e2e bridge's
 // cityStructures()) and the fleet's parking spots, so a new scene pack moves
 // the poses with it. Each is { name, position, lookAt } for the bridge's
-// setCapturePose, which parks the camera only.
+// setCapturePose, which parks the camera only. `dropPlayerAt`: move the
+// player there first (city camera drop), for subjects that stream by
+// interest (vehicles).
 
 /** The capture is drawable: city streamed, concrete textures uploaded. */
 export function lookReady(e2e) {
@@ -29,8 +31,10 @@ export function lookPoses(structures) {
     { name: 'facade', position: fromTallest(34, 1.7), lookAt: [tallest.position[0], tallest.top * 0.5, tallest.position[2]] },
     // The same wall up close: texture detail, tiling, normals.
     { name: 'closeup', position: fromTallest(12, 1.7), lookAt: [tallest.position[0], 3, tallest.position[2]] },
-    // The monster truck's parking spot (city_fleet.rs DEFAULT_FLEET): a car, ground and grass.
-    { name: 'car', position: [71, 2.2, 15], lookAt: [63, 0.8, 8] },
+    // The monster truck's parking spot (city_fleet.rs DEFAULT_FLEET): a car,
+    // ground and grass. The player is dropped beside the fleet first, so the
+    // cars are within its interest and stream in.
+    { name: 'car', position: [71, 2.2, 15], lookAt: [63, 0.8, 8], dropPlayerAt: [73, 1, 0] },
     // From outside the ring at eye height: horizon, sky, terrain.
     { name: 'skyline', position: [centre[0] - 95, 1.7, centre[2] - 30], lookAt: [centre[0], 9, centre[2]] },
   ];

@@ -12,6 +12,7 @@ import { chromium } from 'playwright';
 import { mkdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { lookPoses } from './helpers/lookPoses.mjs';
+import { joinDropPose } from './helpers/vehicleQaCore.mjs';
 
 const arg = (name, fallback) => {
   const i = process.argv.indexOf(`--${name}`);
@@ -58,6 +59,10 @@ await page.waitForTimeout(2000);
 
 const structures = await page.evaluate(() => window.__VIBE_E2E__.cityStructures());
 for (const pose of lookPoses(structures)) {
+  if (pose.dropPlayerAt) {
+    await page.evaluate((drop) => window.__VIBE_E2E__.dropAt(drop), joinDropPose(pose.dropPlayerAt));
+    await page.waitForTimeout(4000);
+  }
   await page.evaluate((p) => window.__VIBE_E2E__.setCapturePose({ position: p.position, lookAt: p.lookAt }), pose);
   await page.waitForTimeout(1500);
   const file = `${out}/${pose.name}.png`;

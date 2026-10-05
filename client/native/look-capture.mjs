@@ -3,6 +3,7 @@
 // to LOOK_OUT/<pose>.png (mystral's __mystralSaveScreenshot). The web side
 // is e2e/look-capture.mjs with the same poses.
 import { lookPoses, lookReady } from '../e2e/helpers/lookPoses.mjs';
+import { joinDropPose } from '../e2e/helpers/vehicleQaCore.mjs';
 
 /* global LOOK_OUT */
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -43,6 +44,10 @@ async function run() {
   globalThis.__VIBE_NATIVE_HUD__.visible = false;
   await sleep(2000);
   for (const pose of lookPoses(e2e.cityStructures())) {
+    if (pose.dropPlayerAt) {
+      e2e.dropAt(joinDropPose(pose.dropPlayerAt));
+      await sleep(4000);
+    }
     e2e.setCapturePose({ position: pose.position, lookAt: pose.lookAt });
     await sleep(1500);
     const file = `${LOOK_OUT}/${pose.name}.png`;

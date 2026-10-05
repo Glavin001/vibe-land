@@ -26,6 +26,7 @@ import {
 } from './dustParcelStore';
 import type { DustLighting } from './DustVolumeRenderer';
 import { lookTuning, subscribeLookTuning } from '../graphics/lookTuning';
+import { registerShaderWarmup } from '../scene/ShaderWarmup';
 
 const MAX_SPRITES = 512;
 const LAYERS_PER_PARCEL = 2;
@@ -187,30 +188,42 @@ function spriteMaterial(): { material: THREE.Material; uniforms: DustSpriteUnifo
   return sharedMaterial;
 }
 
+/** The sprite geometry: one plane, instanced, with the per-sprite attributes. */
+function spriteGeometry(capacity: number) {
+  const plane = new THREE.PlaneGeometry(1, 1);
+  const geometry = new THREE.InstancedBufferGeometry();
+  geometry.setIndex(plane.getIndex());
+  geometry.setAttribute('position', plane.getAttribute('position'));
+  const make = (itemSize: number) => {
+    const attr = new THREE.InstancedBufferAttribute(new Float32Array(capacity * itemSize), itemSize);
+    attr.setUsage(THREE.DynamicDrawUsage);
+    return attr;
+  };
+  const attrs = { center: make(3), size: make(2), params: make(4), tint: make(1) };
+  geometry.setAttribute('aCenter', attrs.center);
+  geometry.setAttribute('aSize', attrs.size);
+  geometry.setAttribute('aParams', attrs.params);
+  geometry.setAttribute('aTint', attrs.tint);
+  geometry.instanceCount = 0;
+  geometry.boundingSphere = new THREE.Sphere(new THREE.Vector3(), Infinity);
+  return { geometry, attrs };
+}
+
+// One faint sprite, so the material is built before the first dust.
+registerShaderWarmup('dust sprites', () => {
+  const { geometry, attrs } = spriteGeometry(1);
+  attrs.size.array.set([1, 1]);
+  attrs.params.array.set([1, 0, 1, 0]);
+  geometry.instanceCount = 1;
+  return [new THREE.Mesh(geometry, spriteMaterial().material)];
+});
+
 export function DustSprites({ store, lighting, wind }: DustSpritesProps) {
   const meshRef = useRef<THREE.Mesh>(null);
   const evals = useMemo(() => newDustEval(), []);
   const order = useMemo(() => ({ slots: new Int32Array(store.capacity), dist: new Float32Array(store.capacity) }), [store]);
 
-  const { geometry, attrs } = useMemo(() => {
-    const plane = new THREE.PlaneGeometry(1, 1);
-    const geometry = new THREE.InstancedBufferGeometry();
-    geometry.setIndex(plane.getIndex());
-    geometry.setAttribute('position', plane.getAttribute('position'));
-    const make = (itemSize: number) => {
-      const attr = new THREE.InstancedBufferAttribute(new Float32Array(MAX_SPRITES * itemSize), itemSize);
-      attr.setUsage(THREE.DynamicDrawUsage);
-      return attr;
-    };
-    const attrs = { center: make(3), size: make(2), params: make(4), tint: make(1) };
-    geometry.setAttribute('aCenter', attrs.center);
-    geometry.setAttribute('aSize', attrs.size);
-    geometry.setAttribute('aParams', attrs.params);
-    geometry.setAttribute('aTint', attrs.tint);
-    geometry.instanceCount = 0;
-    geometry.boundingSphere = new THREE.Sphere(new THREE.Vector3(), Infinity);
-    return { geometry, attrs };
-  }, []);
+  const { geometry, attrs } = useMemo(() => spriteGeometry(MAX_SPRITES), []);
 
   const { material, uniforms: u } = useMemo(() => spriteMaterial(), []);
 
