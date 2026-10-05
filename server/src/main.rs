@@ -112,8 +112,13 @@ const NEARBY_PLAYER_RADIUS_M: f32 = 12.0;
 const CANNONBALL_POOL: usize = 48;
 /// How many meteors a match reserves ids and client metadata for. A ring, like
 /// the cannonball's: the ninth launch retires the first. Eight is more than
-/// anyone can watch fall at once.
-const METEOR_POOL: usize = 8;
+/// anyone can watch fall at once. `VIBE_METEOR_POOL` (8-256) raises it for
+/// barrages: a meteor flies ~2.7 s, so launches closer than flight/pool apart
+/// retire meteors before they land (scripts/vltools/perf_scenario.py refuses
+/// such a step).
+fn meteor_pool() -> usize {
+    std::env::var("VIBE_METEOR_POOL").ok().and_then(|v| v.parse::<usize>().ok()).map_or(8, |n| n.clamp(8, 256))
+}
 const ROLLING_METRIC_SAMPLES: usize = 180;
 /// Per-player queue depth for each delivery lane. Datagrams cannot occupy
 /// reliable slots or wait behind a blocked reliable write. Exhausting reliable
@@ -1333,8 +1338,11 @@ struct MatchState {
     invariants: Option<invariants::Invariants>,
 }
 
+/// The game server process (src/main.rs is a thin wrapper). The server is a
+/// library so the native app can also run a match in-process
+/// (`local_session`, used by sim-native).
 #[tokio::main]
-async fn main() -> Result<()> {
+pub async fn main() -> Result<()> {
     load_repo_env();
 
     // `from_default_env()` with RUST_LOG unset builds an EMPTY filter, which
@@ -3510,7 +3518,7 @@ async fn run_match_loop(
         // radius: the metadata is per id, so a meteor through a cannonball's
         // id would be drawn at cannonball size.
         let meteor_radius = meteor::MeteorTuning::from_env().radius_m;
-        for id in arena.reserve_meteor_pool(METEOR_POOL) {
+        for id in arena.reserve_meteor_pool(meteor_pool()) {
             dynamic_body_handles.insert(
                 id,
                 DynamicBodyMetaRuntime {

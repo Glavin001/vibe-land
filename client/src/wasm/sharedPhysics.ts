@@ -1,4 +1,5 @@
 import init, {
+  initSync,
   WasmSimWorld as RawWasmSimWorld,
   WasmClockSync,
   WasmLocalSession as RawWasmLocalSession,
@@ -17,6 +18,7 @@ import {
   getSharedVehicleTypeByKey,
   hydrateSharedVehicleDefinitions,
 } from './sharedVehicleDefinitions';
+import { nativeFileBytes } from '../platform/nativeFiles';
 
 let initialized = false;
 let initPromise: Promise<void> | null = null;
@@ -281,7 +283,8 @@ export async function initSharedPhysics(): Promise<void> {
   if (initialized) return;
   if (!initPromise) {
     initPromise = (async () => {
-      await init();
+      if (__NATIVE__) initSync({ module: await nativeFileBytes('vibe_land_shared_bg.wasm') });
+      else await init();
       provideWasmClockSync(WasmClockSync);
       sharedPlayerNavigationProfile = readSharedPlayerNavigationProfileFromWasm();
       hydrateSharedVehicleDefinitions(wasmVehicleDefinitionsJson());

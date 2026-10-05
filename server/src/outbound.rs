@@ -106,6 +106,18 @@ pub(crate) fn channel_with_tap(capacity: usize, tap: Option<Tap>) -> (Sender, Re
     )
 }
 
+impl Receiver {
+    /// The next reliable packet, if one is queued (in-process sessions poll).
+    pub(crate) fn try_recv_reliable(&mut self) -> Option<Outgoing> {
+        self.reliable.try_recv().ok()
+    }
+
+    /// The next datagram, if one is queued (in-process sessions poll).
+    pub(crate) fn try_recv_datagram(&mut self) -> Option<Outgoing> {
+        self.datagrams.try_recv().ok()
+    }
+}
+
 impl Sender {
     pub(crate) fn capacity(&self) -> usize {
         if *self.failed.borrow() || self.reliable.is_closed() {

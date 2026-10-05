@@ -92,6 +92,39 @@ impl Js {
         unsafe { (self.api.object)(self.env) }
     }
 
+    pub fn array(self, length: usize) -> Value {
+        unsafe { (self.api.array)(self.env, length) }
+    }
+
+    pub fn set_index(self, array: Value, index: u32, value: Value) {
+        unsafe { (self.api.set_index)(self.env, array, index, value) };
+    }
+
+    /// A copy of `bytes` as a fresh ArrayBuffer.
+    pub fn array_buffer(self, bytes: &[u8]) -> Value {
+        unsafe { (self.api.array_buffer_copy)(self.env, bytes.as_ptr().cast(), bytes.len()) }
+    }
+
+    /// The bytes of an ArrayBuffer or typed array argument (borrowed for the
+    /// duration of the call).
+    pub fn bytes<'a>(self, value: Value) -> Option<&'a [u8]> {
+        let mut len = 0usize;
+        let data = unsafe { (self.api.buffer_data)(self.env, value, &mut len) };
+        if data.is_null() {
+            return if len == 0 { Some(&[]) } else { None };
+        }
+        Some(unsafe { std::slice::from_raw_parts(data as *const u8, len) })
+    }
+
+    pub fn string_arg(self, args: &[Value], index: usize) -> Option<String> {
+        let value = *args.get(index)?;
+        let len = unsafe { (self.api.to_string)(self.env, value, std::ptr::null_mut(), 0) };
+        let mut buffer = vec![0u8; len + 1];
+        unsafe { (self.api.to_string)(self.env, value, buffer.as_mut_ptr().cast(), buffer.len()) };
+        buffer.truncate(len);
+        String::from_utf8(buffer).ok()
+    }
+
     pub fn to_number(self, value: Value) -> f64 {
         unsafe { (self.api.to_number)(self.env, value) }
     }

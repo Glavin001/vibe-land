@@ -28,10 +28,22 @@ export default defineConfig(({ mode }) => {
     { find: /^three\/(webgpu|tsl)$/, replacement: 'three-webgpu/$1' },
     { find: /^three\/(examples|addons)\/(.*)$/, replacement: 'three-webgpu/$1/$2' },
   ];
-  const webgpu = mode === 'webgpu' || env.VITE_RENDER_BACKEND === 'webgpu';
+  // `vite build --mode native` is the native macOS app's bundle: the webgpu
+  // build plus the native shell (src/native), as one ES module for
+  // mystralnative (see scripts/native-mac.sh).
+  const native = mode === 'native';
+  const webgpu = native || mode === 'webgpu' || env.VITE_RENDER_BACKEND === 'webgpu';
 
   return {
     plugins: [
+      // mystralnative has no import.meta; asset URLs resolve against the
+      // bundle's directory through file://.
+      ...(native ? [{
+        name: 'native-import-meta',
+        renderChunk(code: string) {
+          return code.replace(/import\.meta\.url/g, '"file://./"');
+        },
+      }] : []),
       tailwindcss(),
       react(),
       {
@@ -124,7 +136,20 @@ export default defineConfig(({ mode }) => {
         },
       },
     },
+    ...(native ? {
+      build: {
+        outDir: 'dist-native',
+        emptyOutDir: true,
+        target: 'es2022',
+        lib: { entry: path.resolve(process.cwd(), 'src/native/main.tsx'), formats: ['es' as const], fileName: () => 'game.js' },
+        rollupOptions: { output: { inlineDynamicImports: true } },
+      },
+    } : {}),
     define: {
+      // The native shell (src/native) only.
+      __NATIVE__: JSON.stringify(native),
+      ...(native ? { __VIBE_SIM_LIB__: JSON.stringify(process.env.VIBE_SIM_LIB || 'libvibe_sim.dylib') } : {}),
+      ...(native ? { 'process.env.NODE_ENV': JSON.stringify('production') } : {}),
       // True only in the webgpu build; WebGL-only code sits behind it so the
       // WebGL bundle drops the WebGPU path entirely.
       __WEBGPU__: JSON.stringify(webgpu),

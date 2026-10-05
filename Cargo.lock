@@ -3120,6 +3120,7 @@ name = "vibe-sim-native"
 version = "0.1.0"
 dependencies = [
  "vibe-land-physx-bridge",
+ "web-fps-server",
 ]
 
 [[package]]

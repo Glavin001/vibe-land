@@ -11,6 +11,7 @@ import {
   type GameRuntimeCallbacks,
   type GameRuntimeClient,
 } from './gameRuntime';
+import { inProcessSessionConfig } from '../net/inProcessClient';
 
 export function useGameRuntime(
   mode: GameMode,
@@ -97,12 +98,16 @@ export function useGameRuntime(
         return new LocalGameRuntime(callbacks, worldJson);
       }
       if (!controlPlane) {
+        // Native single-player: the match runs in this process, and its
+        // session config comes with it (no HTTP origin to fetch from).
+        const inProcess = inProcessSessionConfig();
         return new MultiplayerGameRuntime(
           callbacks,
           multiplayerBackend,
           multiplayerMatchId,
           predictionWorldJson,
           localRenderSmoothingEnabled,
+          inProcess ? { sessionConfig: inProcess } : undefined,
         );
       }
 

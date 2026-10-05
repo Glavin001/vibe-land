@@ -67,6 +67,12 @@ wtransport = { version = "0.7", features = ["self-signed", "quinn"] }
 # `ServiceExt::oneshot`, to drive a Router in tests. Already in the tree via axum.
 tower = { version = "0.5", features = ["util"] }
 
+# The server binary. src/main.rs is the library's body (included by
+# src/lib.rs), so the binary has its own small entry point.
+[[bin]]
+name = "web-fps-server"
+path = "src/server_bin.rs"
+
 # Offline trace recorder for the destruction codec. Needs the real GPU sim, so
 # it only builds with the destruction feature rather than breaking a CI build
 # that has no PhysX.

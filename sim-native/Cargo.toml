@@ -15,6 +15,10 @@ default = []
 # CuMetal on macOS). Without it the probe
 # scene runs a CPU stand-in so the module plumbing can be tested anywhere.
 physx = ["dep:vibe-land-physx-bridge", "vibe-land-physx-bridge/native-destruction"]
+# The city server's match loop in-process (server/src/local_session.rs), built
+# like the Mac server (native destruction on CuMetal): single-player /city.
+city = ["physx", "dep:web-fps-server", "web-fps-server/native-destruction"]
 
 [dependencies]
 vibe-land-physx-bridge = { path = "../physx-bridge", optional = true }
+web-fps-server = { path = "../server", optional = true }

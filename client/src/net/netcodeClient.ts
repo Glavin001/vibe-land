@@ -13,6 +13,7 @@ import {
 } from './bodyLead';
 import { NetDebugTelemetry, type LocalShotTelemetry } from './debugTelemetry';
 import { WebTransportGameClient, type SessionConfigResponse } from './webTransportClient';
+import { InProcessGameClient, inProcessLink } from './inProcessClient';
 import type { RawPacketListener } from './inbound';
 import { setTransportNote } from '../app/connectPhase';
 import {
@@ -340,7 +341,8 @@ export class NetcodeClient {
   private readonly debugTelemetry = new NetDebugTelemetry();
 
   private socket: GameSocket | null = null;
-  private wtClient: WebTransportGameClient | null = null;
+  /** The session: WebTransport, or the native app's in-process match (same API). */
+  private wtClient: WebTransportGameClient | InProcessGameClient | null = null;
 
   // Netlab in-process impairment (null unless ?netlab=1&impair=<profile>).
   private inboundImpairment: PacketImpairment<{
@@ -391,6 +393,7 @@ export class NetcodeClient {
 
   /** Human-readable active transport. */
   get transport(): string {
+    if (this.wtClient instanceof InProcessGameClient) return 'in-process';
     if (this.wtClient) return 'webtransport';
     if (this.socket) return 'websocket';
     return 'connecting';
@@ -500,6 +503,21 @@ export class NetcodeClient {
     options: { sessionConfig?: SessionConfigResponse } = {},
   ): Promise<void> {
     this.closedByClient = false;
+    // Native single-player: the match is in this process; no network at all.
+    const link = inProcessLink();
+    if (link) {
+      this.wtClient = await InProcessGameClient.connect(link, {
+        matchId,
+        onReliablePacket: (packet) => this.deliverNetworkPacket(packet as ServerPacket, 'wt-reliable'),
+        onDatagramPacket: (packet) => this.deliverNetworkPacket(packet as ServerPacket, 'wt-datagram'),
+        onCityPacket: (bytes) => this.deliverCityPacket(bytes),
+        onRawPacket: this.config.onRawPacket,
+        onClose: (reason) => { this.notifyDisconnect(describeDisconnectReason('webtransport', reason)); },
+      });
+      setTransportNote(null);
+      console.info('[netcode] ✓ connected to the in-process match');
+      return;
+    }
     const hasWebTransport = browserSupportsWebTransport();
     // Default DENY: only the build-time opt-in reaches the WebSocket path.
     const allowWs = websocketTransportEnabled();

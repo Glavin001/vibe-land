@@ -7,10 +7,13 @@
 //!
 //! Exports (API version 1 of the runtime's native module interface):
 //!   backend                 'physx' or 'cpu'
+//!   startCity(matchId)      (feature `city`) single-player /city, see city.rs
 //!   createProbe(boxes)      starts the probe scene (see probe.rs) and returns
 //!                           { buffer, slotWords, headerWords, wordsPerBody,
 //!                             acquire(): slot index, stop(): error string | undefined }
 
+#[cfg(feature = "city")]
+pub mod city;
 pub mod frame;
 pub mod mystral;
 pub mod probe;
@@ -37,6 +40,8 @@ pub unsafe extern "C" fn mystral_module_init(api: *const Api, env: Env, exports:
 
     js.set(exports, "backend", js.string(BACKEND));
     js.set(exports, "createProbe", js.function("createProbe", create_probe));
+    #[cfg(feature = "city")]
+    js.set(exports, "startCity", js.function("startCity", city::start_city));
     0
 }
 
