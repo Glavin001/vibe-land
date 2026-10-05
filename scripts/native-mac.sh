@@ -88,7 +88,7 @@ case "$SCENE" in
     export VIBE_CITY_SCENE="$pack.json" VIBE_CITY_VISUALS="$pack.visuals.json" \
       VIBE_CITY_GRID=1 VIBE_CITY_VARIED_HEIGHTS=0 \
       VIBE_CITY_DESTRUCTIBLE_VEHICLES="${VIBE_CITY_DESTRUCTIBLE_VEHICLES:-monster,desert,derby,circuit,buggy,trophy}" \
-      VIBE_CITY_FLEET_SLOTS="-122,7;-122,-7;-112,7;-112,-7;96,98;-48,72" \
+      VIBE_CITY_FLEET_SLOTS="${VIBE_CITY_FLEET_SLOTS:--122,7;-122,-7;-112,7;-112,-7;96,98;-48,72}" \
       VIBE_CITY_SPAWN_X=-135 VIBE_CITY_SPAWN_Z=0 \
       VIBE_CITY_NATIVE_STRESS_ITERATIONS="${VIBE_CITY_NATIVE_STRESS_ITERATIONS:-16}" \
       VITE_TOWN_KIT_SCENE=vibe-showcase ;;
@@ -240,6 +240,19 @@ input() {
   echo "native input check passed (log: $log)"
 }
 
+# Cars drive on every surface (client/native/drive-check.mjs): one car each on
+# open ground, Bayline's road paving and the garage floor (--scene showcase).
+drive() {
+  [ "$SCENE" = showcase ] || { echo "drive needs --scene showcase" >&2; exit 2; }
+  iife
+  "$ROOT/client/node_modules/.bin/esbuild" "$ROOT/client/native/drive-check.mjs" --bundle --format=esm \
+    --platform=browser --target=es2022 --log-level=warning --outfile="$BUNDLE_DIR/drive-check.js"
+  local log="$ROOT/target/native-drive.log"
+  (launch drive-check.js "$@") 2>&1 | tee "$log" | grep --line-buffered '\[drive' || true
+  grep -q '\[drive\] VERDICT PASS' "$log" || { echo "native drive check FAILED (log: $log)" >&2; exit 1; }
+  echo "native drive check passed (log: $log)"
+}
+
 # The scene from above and from the player (client/native/scene-shot.mjs).
 shots() {
   iife
@@ -322,6 +335,11 @@ case "${1:-run}" in
   input) shift || true; runtime; sim; bundle; input "$@" ;;
   trace-writes) shift || true; runtime; sim; bundle; trace_writes "$@" ;;
   shots) shift || true; runtime; sim; bundle; shots "$@" ;;
+  drive) shift || true
+    # One car per surface, in drive-check.mjs's SURFACES order.
+    export VIBE_CITY_DESTRUCTIBLE_VEHICLES=monster,desert,derby \
+      VIBE_CITY_FLEET_SLOTS="-112,7;-30,-2.5;105,-8"
+    runtime; sim; bundle; drive "$@" ;;
   look) shift || true; runtime; sim; bundle; look "$@" ;;
   perf) shift || true; runtime; sim; bundle; perf "$@" ;;
   *) echo "usage: $0 [build|run|runtime|sim|bundle] [mystral run args]" >&2; exit 2 ;;

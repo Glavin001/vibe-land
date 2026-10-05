@@ -72,9 +72,15 @@ impl GarageDestruction {
     }
 
     /// Pose wheel and hub hulls from the last completed step's wheels. Hulls of
-    /// a wheel Vehicle2 drives are excluded from terrain (its road query
-    /// stands on it); a corner whose wheel is gone (state -1) sits at neutral
-    /// and collides with terrain like any other part.
+    /// a wheel Vehicle2 drives are excluded from everything its road query
+    /// stands on (`ROAD_GROUPS`); a corner whose wheel is gone (state -1) sits
+    /// at neutral and collides like any other part.
+    ///
+    /// Excluding only the static ground left the hulls of a driven wheel
+    /// scraping any other road: a town's paving chunks, a roof, rubble. The
+    /// car stood on its wheel hulls there and could not move (2026-10-05,
+    /// Bayline's roads; scripts/native-mac.sh drive --scene showcase).
+    /// `VIBE_WHEEL_HULLS_EXCLUDE_STATIC_ONLY=1` restores that, for the A/B.
     pub fn pose_wheels(&self, world: &mut bridge::World, wheels: Option<[[f32; 4]; 4]>) {
         let Some(wheels) = wheels else { return };
         let inputs: [[f32; 4]; 4] = std::array::from_fn(|i| [wheels[i][0], wheels[i][1], wheels[i][2], 0.]);
@@ -90,7 +96,13 @@ impl GarageDestruction {
                 position: bridge::Vec3::new(m[(0, 3)] as f32, m[(1, 3)] as f32, m[(2, 3)] as f32),
                 rotation: bridge::Quat { x: r.i as f32, y: r.j as f32, z: r.k as f32, w: r.w as f32 } }
         };
-        for (on_road, exclude) in [(true, super::GROUP_STATIC), (false, 0)] {
+        static STATIC_ONLY: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let road = if *STATIC_ONLY.get_or_init(|| std::env::var("VIBE_WHEEL_HULLS_EXCLUDE_STATIC_ONLY").as_deref() == Ok("1")) {
+            super::GROUP_STATIC
+        } else {
+            super::ROAD_GROUPS
+        };
+        for (on_road, exclude) in [(true, road), (false, 0)] {
             let poses: Vec<_> = self.wheel_parts.iter().filter(|&&(corner, _)| driven[corner] == on_road)
                 .map(|&(corner, part)| pose(corner, part)).collect();
             if poses.is_empty() { continue; }

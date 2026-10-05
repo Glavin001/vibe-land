@@ -34,6 +34,10 @@ const GROUP_PLAYER: u32 = 1 << 2;
 const GROUP_VEHICLE: u32 = 1 << 3;
 const GROUP_BATTERY: u32 = 1 << 4;
 const GROUP_CHUNK: u32 = 1 << 5;
+/// What a car's wheels stand on: Vehicle2's road sweeps hit these groups, and
+/// the hulls of a wheel it drives are excluded from them (garage_destruction
+/// `pose_wheels`) -- ground, terrain, a structure's floors and roofs, rubble.
+const ROAD_GROUPS: u32 = GROUP_STATIC | GROUP_DYNAMIC | GROUP_CHUNK;
 pub const ALL_GROUPS: u32 =
     GROUP_STATIC | GROUP_DYNAMIC | GROUP_PLAYER | GROUP_VEHICLE | GROUP_BATTERY | GROUP_CHUNK;
 
@@ -484,7 +488,7 @@ impl PhysxPhysicsArena {
                 rear_wheel_drive: tune.is_some_and(|t| t.rear_wheel_drive),
                 // Sweeps ride a cylinder over rubble; raycasts fall between chunks.
                 sweep_road_queries: true,
-                road_mask: GROUP_STATIC | GROUP_DYNAMIC | GROUP_CHUNK,
+                road_mask: ROAD_GROUPS,
                 collision_group: GROUP_VEHICLE,
                 collision_mask: ALL_GROUPS,
         }
