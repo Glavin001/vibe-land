@@ -32,7 +32,8 @@ async function run() {
   log(`simulation reached tick 120 ${((Date.now() - startedMs) / 1000).toFixed(1)} s after the warmup`);
   const t0 = tick();
   await sleep(3000);
-  log(`tick rate ${((tick() - t0) / 3).toFixed(1)} per second`);
+  const stats = e2e.matchStats() ?? {};
+  log(`tick rate ${((tick() - t0) / 3).toFixed(1)} per second, tick avg ${stats.timings?.total_ms?.avg?.toFixed?.(1)} ms, physx ${stats.physics_last_step_ms?.toFixed?.(1)} ms`);
   const structures = e2e.cityStructures();
   const snap = e2e.snapshot();
   log(`${scene}: ${structures.length} structures, ${snap.city.chunksTotal} chunks, player at ${snap.position.map((v) => v.toFixed(1)).join(', ')}`);
@@ -57,6 +58,21 @@ async function run() {
   e2e.setCapturePose({ position: [p[0], p[1] + 1.6, p[2]], lookAt: [nearest.position[0], Math.min(nearest.top ?? 4, 6) / 2, nearest.position[2]] });
   await sleep(1500);
   log(`player view: ${__mystralSaveScreenshot(`../../target/native-scene/${scene}-player.png`) ? 'saved' : 'FAILED'}`);
+  // A scene's own landmarks (structures/showcase/build-showcase.mjs).
+  const VIEWPOINTS = {
+    showcase: [
+      ['wide', [-20, 95, 175], [-10, 0, 10]],
+      ['spawn-kicker', [-140, 3, 10], [-85, 1, -2]],
+      ['garage-ramp', [55, 14, 120], [105, 8, 20]],
+      ['villa-hill', [-40, 14, 115], [-100, 8, 72]],
+    ],
+  };
+  for (const [name, position, lookAt] of VIEWPOINTS[scene] ?? []) {
+    e2e.setCapturePose({ position, lookAt });
+    await sleep(1500);
+    log(`${name}: ${__mystralSaveScreenshot(`../../target/native-scene/${scene}-${name}.png`) ? 'saved' : 'FAILED'}`);
+  }
+
   // The nearest car, from the side.
   const car = [...(snap.vehicles ?? [])].sort((a, b) => Math.hypot(a.position[0] - p[0], a.position[2] - p[2]) - Math.hypot(b.position[0] - p[0], b.position[2] - p[2]))[0];
   if (car) {

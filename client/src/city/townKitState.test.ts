@@ -3,6 +3,8 @@ import {usesTownKitScene} from './townKitState';
 
 it('loads the furnished town details and controls on its city deployment',()=>{
  for(const path of ['/city','/city/'])expect(usesTownKitScene(path,'bayline-town-with-gardens-and-market')).toBe(true);
+ // The showcase (structures/showcase) carries Bayline's sidecar.
+ expect(usesTownKitScene('/city','vibe-showcase')).toBe(true);
 });
 it('keeps ordinary city deployments and other pages independent',()=>{
  expect(usesTownKitScene('/city')).toBe(false);

@@ -21,6 +21,9 @@
 #                   432 Park, the parking garage, Villa Savoye, two houses)
 #   bayline         Bayline Town with Gardens & Market (structures/town-kit,
 #                   as `npm run play:bayline-gardens` runs it on the web)
+#   showcase        Bayline Heights (structures/showcase): the town, a parking
+#                   garage with a roof ramp, Villa Savoye on a hill, a jump
+#                   kicker, and six destructible cars
 #
 # MYSTRAL_ROOT: the mystralnative checkout (default ../mystralnative), built
 # from its `vibe-land` integration branch. Extra `run` args go to `mystral run`
@@ -69,7 +72,27 @@ case "$SCENE" in
       VIBE_CITY_FREEZE=0 VIBE_CITY_NATIVE_SETTLE_TICKS=0 VIBE_CITY_NATIVE_SETTLE_FREEZE=0 \
       VIBE_CITY_NATIVE_STRESS_TOLERANCE=0.001 VIBE_CITY_NATIVE_STRESS_ITERATIONS=16 \
       VITE_TOWN_KIT_SCENE=bayline-town-with-gardens-and-market ;;
-  *) echo "unknown --scene $SCENE (city, skyline, bayline)" >&2; exit 2 ;;
+  showcase)
+    town="$ROOT/structures/town-kit/out/bayline-town-with-gardens-and-market"
+    pack="$ROOT/structures/showcase/out/vibe-showcase"
+    [ -f "$town.json" ] || {
+      echo "Bayline Town is not built: (cd structures/town-kit && npm run build:bayline-gardens)" >&2; exit 1; }
+    [ -f "$pack.json" ] && [ "$pack.json" -nt "$ROOT/structures/showcase/build-showcase.mjs" ] \
+      && [ "$pack.json" -nt "$town.json" ] || node "$ROOT/structures/showcase/build-showcase.mjs"
+    # The default city's settling (rubble comes to rest), the cars at the
+    # spawn line and the foot of each ramp, the spawn west of the kicker.
+    # Stress iterations: Bayline was qualified at 16 and sheds ~1,600 bonds by
+    # itself at the fleet's 64 (2026-10-05, scene shots); 16 here is an
+    # owner-approved exception for this scene until Bayline requalifies at 64.
+    # VIBE_CITY_NATIVE_STRESS_ITERATIONS overrides it.
+    export VIBE_CITY_SCENE="$pack.json" VIBE_CITY_VISUALS="$pack.visuals.json" \
+      VIBE_CITY_GRID=1 VIBE_CITY_VARIED_HEIGHTS=0 \
+      VIBE_CITY_DESTRUCTIBLE_VEHICLES="${VIBE_CITY_DESTRUCTIBLE_VEHICLES:-monster,desert,derby,circuit,buggy,trophy}" \
+      VIBE_CITY_FLEET_SLOTS="-122,7;-122,-7;-112,7;-112,-7;96,98;-48,72" \
+      VIBE_CITY_SPAWN_X=-135 VIBE_CITY_SPAWN_Z=0 \
+      VIBE_CITY_NATIVE_STRESS_ITERATIONS="${VIBE_CITY_NATIVE_STRESS_ITERATIONS:-16}" \
+      VITE_TOWN_KIT_SCENE=vibe-showcase ;;
+  *) echo "unknown --scene $SCENE (city, skyline, bayline, showcase)" >&2; exit 2 ;;
 esac
 [ "$SCENE" = city ] || echo "scene: $SCENE (${VIBE_CITY_SCENE})"
 
