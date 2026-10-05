@@ -1,0 +1,1 @@
+{"name":"audit-intact-g12","why":"Ceiling/scaling audit: an intact 12 x 12 grid of ten-storey towers (~148608 chunks), idle only. How the idle tick and memory scale with the total chunk count.","env":{"VIBE_PHYSX_PROFILE":"0","VIBE_CITY_SCENE":"high-rise-10f-local.json","VIBE_CITY_GRID":"12","VIBE_CITY_VARIED_HEIGHTS":"0","VIBE_METEOR_POOL":"32"},"steps":[{"idle":30}]}

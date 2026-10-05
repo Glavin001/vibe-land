@@ -1,0 +1,1 @@
+{"name":"audit-pile-g7","why":"Ceiling audit: as audit-pile-g5 on the 7x7 grid (196 meteors).","env":{"VIBE_PHYSX_PROFILE":"0","VIBE_CITY_SCENE":"high-rise-10f-local.json","VIBE_CITY_GRID":"7","VIBE_CITY_VARIED_HEIGHTS":"0","VIBE_METEOR_POOL":"64","VIBE_AUDIT_SLEEP_ALL_AFTER_TICK":"3700"},"steps":[{"idle":10},{"meteors":196,"every_s":0.15},{"idle":40},{"idle":30},{"idle":40}]}
