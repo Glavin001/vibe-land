@@ -26,6 +26,19 @@ The stress iteration cap with the destructible fleet is 64 per tick, and the
 owner accepts it. Do not lower it to save time; make the 64 iterations fast.
 Unconverged solves continue next tick (`PX_DESTRUCTION_ALLOW_UNCONVERGED=1`).
 
+## Native macOS app (single-player /city)
+
+`scripts/native-mac.sh` builds and runs it: three.js WebGPU (`vite build
+--mode native`, client/src/native) on mystralnative (V8 + Dawn on Metal,
+`MYSTRAL_ROOT`, default `../mystralnative`, branch `vibe-land`), with the city
+server's match loop in-process (`sim-native`, `server/src/local_session.rs`).
+`run` plays it, `smoke` is the automated check (load, shoot, expect broken
+bonds), `debug` prints module-evaluation errors (mystral shows none), and `app`
+packages `target/native-app/out/vibe-land.app`. The WebGL web client is
+unchanged: WebGPU code sits behind `__WEBGPU__`, and the webgpu builds use their
+own three (`three-webgpu`). The mystralnative fork takes only generic,
+upstreamable changes, one feature branch each.
+
 ## Cursor Cloud specific instructions
 
 ### Overview
