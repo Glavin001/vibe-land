@@ -1,0 +1,6 @@
+{
+  "name": "city-10f-mass",
+  "why": "Tens of thousands of chunks: a 5x5 grid of full-height 10-storey towers (high-rise-10f-local, ~25,800 building chunks), hit by 50 meteors 0.3 s apart (two per tower), then 40 s of aftermath. Measures the server with 10k+ active bodies.",
+  "env": {"VIBE_PHYSX_PROFILE": "0", "VIBE_CITY_SCENE": "high-rise-10f-local.json", "VIBE_CITY_GRID": "5", "VIBE_CITY_VARIED_HEIGHTS": "0"},
+  "steps": [{"idle": 10}, {"meteors": 50, "every_s": 0.3}, {"idle": 40}]
+}
