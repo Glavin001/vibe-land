@@ -30,7 +30,6 @@ import {
   normalViewGeometry,
   positionView,
   pow,
-  reference,
   smoothstep,
   sqrt,
   struct,
@@ -40,6 +39,8 @@ import {
   vec3,
   vec4,
 } from 'three/tsl';
+
+import { liveUniform } from '../graphics/webgpu/liveUniform';
 
 import { clamp as clampNode, exp2 as exp2Node, mix as mixNode } from 'three/tsl';
 import { layerMean, layerRotation, macroField, samplePlane } from './cityHeroNodes';
@@ -75,9 +76,9 @@ export function cityTriplanarNodes(
   const surface = config.pbr && config.detail === 'full';
   const textures = cityTextures();
   const metres = uniformArray(Array.from(CITY_TEX_METRES), 'float');
-  const texScale = reference('value', 'float', tuning.cityTexScale);
-  const tone = reference('value', 'color', tuning.cityTone);
-  const normalScale = reference('value', 'float', tuning.cityNormalScale);
+  const texScale = liveUniform(tuning.cityTexScale, 'float');
+  const tone = liveUniform(tuning.cityTone, 'color');
+  const normalScale = liveUniform(tuning.cityNormalScale, 'float');
 
   // Rest-space position and layer code: per vertex on a slot mesh (the
   // anchor carries the absolute rest position; see VERTEX_PARS).
@@ -176,7 +177,7 @@ function heroPlanes(p: {
   restPos: Node; dx: Node; dy: Node; blend: Node; wallIndex: Node; floorIndex: Node;
   wallM: Node; floorM: Node; uvX: Node; uvY: Node; uvZ: Node; normalScale: Node;
 }): Node {
-  const tuningRef = (name: keyof typeof tuning): Node => reference('value', 'float', tuning[name]);
+  const tuningRef = (name: keyof typeof tuning): Node => liveUniform(tuning[name], 'float');
   return (Fn(() => {
     // Derivatives first, outside every branch: TSL emits an expression where
     // it is first used, and dpdx/dpdy inside a per-plane branch are

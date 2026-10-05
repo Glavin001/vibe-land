@@ -23,6 +23,7 @@ export function CityGrass({ getCityClient, getInteractionPosition, getActors, ge
   const scene = useThree(state => state.scene);
   const state = useRef<{ field: GrassField; manifest: CityManifest; contacts: GrassBodyContacts; client: CityClient } | null>(null);
   const shared = useRef<{ url: string | null; sync: GrassLayoutSync | null } | null>(null);
+  const failed = useRef<CityClient | null>(null);
   const disabled = typeof location !== 'undefined' && new URLSearchParams(location.search).get('grass') === 'off';
   const sharedRequested = !!getSharedLayoutUrl;
   useEffect(() => {
@@ -61,7 +62,17 @@ export function CityGrass({ getCityClient, getInteractionPosition, getActors, ge
     }
     if (!manifest || !client) return;
     if (!state.current) {
-      const field = new GrassField(quality, grassExclusionsFromManifest(manifest));
+      if (failed.current === client) return;
+      let field: GrassField;
+      try {
+        field = new GrassField(quality, grassExclusionsFromManifest(manifest));
+      } catch (error) {
+        // Once per city, not every frame: a field that cannot be built would
+        // otherwise throw in every frame's update and stall the frame loop.
+        failed.current = client;
+        console.error('[grass] field could not be built; grass is off for this city', error);
+        return;
+      }
       scene.add(field.group);
       state.current = { field, manifest, client, contacts: new GrassBodyContacts(client) };
     }

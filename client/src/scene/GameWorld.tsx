@@ -2979,8 +2979,7 @@ export function GameWorld({
 
       {/* Destructible city chunks (instanced; only active in city-* matches) */}
       <CityChunksLayer getCityClient={() => runtimeRef.current?.getCityClient?.() ?? null} />
-      {/* Grass, meteor fire and dust are custom shaders: not on the simple WebGPU path yet. */}
-      {!__WEBGPU__ && <CityGrass
+      <CityGrass
         getSharedLayoutUrl={isTownKitPage() ? undefined : () => runtimeRef.current?.grassLayoutUrl ?? null}
         getCityClient={() => runtimeRef.current?.getCityClient?.() ?? null}
         getInteractionPosition={() => {
@@ -2990,7 +2989,7 @@ export function GameWorld({
         getActors={() => runtimeRef.current ?? null}
         windStrengthMps={windStrengthMps}
         windDirectionDeg={windDirectionDeg}
-      />}
+      />
       {/* Destruction dust, fed by the city client's fracture stream */}
       <MeteorLayer getRuntime={() => runtimeRef.current ?? null} />
       <GameAudioLayer getRuntime={() => runtimeRef.current ?? null} getCityClient={() => runtimeRef.current?.getCityClient?.() ?? null} />

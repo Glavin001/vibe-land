@@ -26,7 +26,6 @@ import {
   normalize,
   positionGeometry,
   positionView,
-  reference,
   smoothstep,
   sqrt,
   struct,
@@ -36,6 +35,8 @@ import {
   vec3,
   vec4,
 } from 'three/tsl';
+
+import { liveUniform } from '../graphics/webgpu/liveUniform';
 import { MeshStandardNodeMaterial } from 'three/webgpu';
 
 import { layerMean, macroField, samplePlane } from './cityHeroNodes';
@@ -47,7 +48,7 @@ import { cityGrassPaint } from './grass/GrassPaint';
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Node = any;
 
-const t = (name: keyof typeof tuning): Node => reference('value', 'float', tuning[name]);
+const t = (name: keyof typeof tuning): Node => liveUniform(tuning[name], 'float');
 const GroundOut = struct({ albedo: 'vec3', rough: 'float', ao: 'float', nxy: 'vec2' }, 'GroundOut');
 
 /** The textured terrain material for the WebGPU path (cf. applyGroundTextures). */
@@ -64,11 +65,11 @@ export function groundNodeMaterial(source: THREE.Material, config: GroundTexture
   const ga = GROUND_LAYER_START;
   const gb = GROUND_LAYER_START + (GROUND_LAYER_COUNT > 1 ? 1 : 0);
   const metres = uniformArray(Array.from(CITY_TEX_METRES), 'float');
-  const texScale = reference('value', 'float', tuning.cityTexScale);
-  const tone = reference('value', 'color', tuning.cityTone);
-  const normalScale = reference('value', 'float', tuning.cityNormalScale);
-  const dirtStart = reference('value', 'float', groundShaderUniforms.groundDirtStart);
-  const dirtEnd = reference('value', 'float', groundShaderUniforms.groundDirtEnd);
+  const texScale = liveUniform(tuning.cityTexScale, 'float');
+  const tone = liveUniform(tuning.cityTone, 'color');
+  const normalScale = liveUniform(tuning.cityNormalScale, 'float');
+  const dirtStart = liveUniform(groundShaderUniforms.groundDirtStart, 'float');
+  const dirtEnd = liveUniform(groundShaderUniforms.groundDirtEnd, 'float');
   const weights: Node = attribute('materialWeights', 'vec4');
   // Terrain tile positions ARE world coordinates (GROUND_VERTEX_BODY).
   const pos: Node = (positionGeometry as Node).xz;

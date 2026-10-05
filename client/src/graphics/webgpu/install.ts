@@ -6,8 +6,14 @@ import { registerGroundNodeMaterial } from '../../scene/cityMaterialShader';
 import { registerSlotNodeMaterial } from '../../scene/citySlotMesh';
 import { slotNodeMaterial } from '../../scene/citySlotNodes';
 import { groundNodeMaterial } from '../../scene/groundNodes';
+import { registerGrassNodeMaterials } from '../../scene/grass/grassMaterial';
+import { grassNodeMaterials } from '../../scene/grass/grassNodes';
+import { registerCanopyNodeMaterial } from '../../scene/grass/FoliageCanopy';
+import { canopyNodeMaterial } from '../../scene/grass/canopyNodes';
 import { skyNodeMaterial } from './skyNodes';
 
 registerSlotNodeMaterial(slotNodeMaterial);
 registerSkyNodeMaterial(skyNodeMaterial);
 registerGroundNodeMaterial(groundNodeMaterial);
+registerGrassNodeMaterials(grassNodeMaterials);
+registerCanopyNodeMaterial(canopyNodeMaterial);

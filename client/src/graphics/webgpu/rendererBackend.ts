@@ -49,7 +49,9 @@ export function withRenderBackend<P extends CanvasProps>(props: P): P {
     onCreated: (state: RootState) => {
       void (state.gl as unknown as WebGPURendererLike).init().then(() => {
         rendererReady = true;
-        state.set({ frameloop });
+        // setFrameloop, not set(): it also restarts the clock, which R3F
+        // stopped for 'never' (state.clock.elapsedTime would stay 0).
+        state.setFrameloop(frameloop);
         if (frameloop !== 'never') state.invalidate();
         (globalThis as { __rendererBackend?: string }).__rendererBackend = 'webgpu';
         props.onCreated?.(state);

@@ -167,9 +167,24 @@ vGrassColor = mix(vGrassColor, vec3(0.34, 0.22, 0.08), dryness*smoothstep(0.6, 1
 if (seedHead) vGrassColor = mix(vGrassColor, vec3(0.52, 0.36, 0.12), species > 1.5 ? 0.65 : 0.8);
 `;
 
-export function createGrassMaterial(quality: GrassQuality, interaction: GrassInteraction) {
+/**
+ * The WebGPU path's blade materials (grass/grassNodes.ts, TSL), driven by
+ * the same uniforms object. Registered by the webgpu build's
+ * `@render-backend/install`, so this module never imports three/webgpu.
+ */
+type GrassNodeMaterialsFactory = (
+  uniforms: ReturnType<typeof grassUniforms>,
+  interaction: GrassInteraction,
+) => { material: THREE.Material; materials: THREE.Material[]; denseMaterial: THREE.Material };
+let grassNodeMaterials: GrassNodeMaterialsFactory | null = null;
+
+export function registerGrassNodeMaterials(factory: GrassNodeMaterialsFactory): void {
+  grassNodeMaterials = factory;
+}
+
+function grassUniforms(quality: GrassQuality, interaction: GrassInteraction) {
   const p = GRASS_PROFILES[quality];
-  const uniforms = {
+  return {
     grassTime: { value: 0 },
     grassWind: { value: new THREE.Vector2(5.65, 5.65) },
     grassCanopyHandoff: { value: new THREE.Vector2(...FOLIAGE_HANDOFF[quality]) },
@@ -184,6 +199,20 @@ export function createGrassMaterial(quality: GrassQuality, interaction: GrassInt
     grassImpulses: { value: interaction.impulses }, grassImpulseCount: { value: 0 },
     ...foliageLightUniforms(),
   };
+}
+
+export function createGrassMaterial(quality: GrassQuality, interaction: GrassInteraction) {
+  const uniforms = grassUniforms(quality, interaction);
+  if (__WEBGPU__) {
+    if (!grassNodeMaterials) throw new Error('WebGPU grass materials not registered (@render-backend/install)');
+    const nodes = grassNodeMaterials(uniforms, interaction);
+    return {
+      material: nodes.material as THREE.MeshStandardMaterial,
+      materials: nodes.materials as THREE.MeshStandardMaterial[],
+      denseMaterial: nodes.denseMaterial as THREE.MeshStandardMaterial,
+      uniforms,
+    };
+  }
   const material = new THREE.MeshStandardMaterial({
     color: 0xffffff, ...FOLIAGE_SURFACE,
   });

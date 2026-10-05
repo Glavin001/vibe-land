@@ -7,6 +7,23 @@ import { createFoliageAtlas } from './foliageAtlas';
 import { FOLIAGE_HANDOFF, hasFoliageCanopy } from './foliageLod';
 import type { GrassExclusion, GrassQuality } from './grassPlacement';
 
+/**
+ * The WebGPU path's canopy material (grass/canopyNodes.ts, TSL). Registered by
+ * the webgpu build's `@render-backend/install`, so this module never imports
+ * three/webgpu.
+ */
+type CanopyNodeMaterialFactory = (inputs: {
+  atlas: THREE.Texture;
+  uniforms: FoliageCanopy['uniforms'];
+  contactBlend: { value: number };
+  interaction: GrassInteraction;
+}) => THREE.Material;
+let canopyNodeMaterial: CanopyNodeMaterialFactory | null = null;
+
+export function registerCanopyNodeMaterial(factory: CanopyNodeMaterialFactory): void {
+  canopyNodeMaterial = factory;
+}
+
 /** Coarse clumps for authored tall stands across the whole 512 m world.
  * 32 m batches, at most 1 clump/m² and 8 triangles/clump. No distance cutoff.
  * Three vertical cutouts retain side silhouettes; one overhead cutout retains
@@ -44,6 +61,10 @@ export class FoliageCanopy {
     this.template.setAttribute('uv',new THREE.Float32BufferAttribute(uvs,2));
     this.template.setIndex(indices);
     this.uniforms = {foliageTime:{value:0},foliageWind:{value:new THREE.Vector2()},foliageHandoff:{value:new THREE.Vector2(...FOLIAGE_HANDOFF[quality])},...foliageLightUniforms()};
+    if (__WEBGPU__) {
+      if (!canopyNodeMaterial) throw new Error('WebGPU canopy material not registered (@render-backend/install)');
+      this.material = canopyNodeMaterial({ atlas: this.atlas, uniforms: this.uniforms, contactBlend: this.contactBlend, interaction }) as THREE.MeshStandardMaterial;
+    } else {
     this.material = new THREE.MeshStandardMaterial({map:this.atlas,alphaTest:0.3,...FOLIAGE_SURFACE});
     this.material.forceSinglePass=true;
     this.material.onBeforeCompile = shader => {
@@ -123,6 +144,7 @@ export class FoliageCanopy {
         `);
     };
     this.material.customProgramCacheKey=()=> 'foliage-canopy-v2-lit';
+    }
     const enqueue=(minX:number,minZ:number,maxX:number,maxZ:number)=>{
       for(let z=Math.max(-8,Math.floor(minZ/32));z<=Math.min(7,Math.floor(maxZ/32));z++)
         for(let x=Math.max(-8,Math.floor(minX/32));x<=Math.min(7,Math.floor(maxX/32));x++) this.pending.add(`${x},${z}`);

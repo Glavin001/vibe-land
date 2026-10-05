@@ -23,7 +23,6 @@ import {
   inverseSqrt,
   max,
   mix,
-  reference,
   sin,
   step,
   struct,
@@ -34,6 +33,8 @@ import {
   vec4,
 } from 'three/tsl';
 
+import { liveUniform } from '../graphics/webgpu/liveUniform';
+
 import { cityShaderUniforms as tuning } from './cityMaterialShader';
 import { CITY_TEX_MEANS, CITY_TEX_ROTATION, cityMacroNoise, cityTextures } from './cityTextures';
 
@@ -41,7 +42,7 @@ import { CITY_TEX_MEANS, CITY_TEX_ROTATION, cityMacroNoise, cityTextures } from 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Node = any;
 
-const t = (name: keyof typeof tuning): Node => reference('value', 'float', tuning[name]);
+const t = (name: keyof typeof tuning): Node => liveUniform(tuning[name], 'float');
 
 /** One projection plane's hero sample. */
 const PlaneSample = struct({ albedo: 'vec3', nxy: 'vec2', rough: 'float', ao: 'float' }, 'CityPlaneSample');

@@ -158,7 +158,9 @@ export class GrassField {
       const mergeBlades = canopy && species === 0 && members.length > GRASS_PATCH_SIZE ** 2 * 32;
       const whole = members.length === data.count;
       const roots = whole ? data.roots : new Float32Array(members.length*4), shapes = whole ? data.shapes : new Uint16Array(members.length*4);
-      const colors = whole ? data.colors : new Uint8Array(members.length*3), traits = whole ? data.traits : new Uint8Array(members.length*4);
+      // Tint packed 4 bytes per plant: WebGPU vertex strides must be multiples
+      // of 4 (the shaders read 3 components either way).
+      const colors = new Uint8Array(members.length*4), traits = whole ? data.traits : new Uint8Array(members.length*4);
       for (let j = 0; !whole && j < members.length; j++) {
         const i = members[j];
         // No temporary typed-array views per plant: a mixed patch can otherwise
@@ -169,13 +171,16 @@ export class GrassField {
           traits[j*4+k] = data.traits[i*4+k];
         }
         shapes[j*4+3] = Math.floor(j/members.length*65535);
-        for (let k = 0; k < 3; k++) colors[j*3+k] = data.colors[i*3+k];
+      }
+      for (let j = 0; j < members.length; j++) {
+        const i = whole ? j : members[j];
+        for (let k = 0; k < 3; k++) colors[j*4+k] = data.colors[i*3+k];
       }
       const geometry = new THREE.InstancedBufferGeometry(), template = this.templates[species].geometry;
       attachFoliageTemplate(geometry, template);
       geometry.setAttribute('grassRoot', new THREE.InstancedBufferAttribute(roots, 4));
       geometry.setAttribute('grassShape', new THREE.InstancedBufferAttribute(shapes, 4, true));
-      geometry.setAttribute('grassTint', new THREE.InstancedBufferAttribute(colors, 3, true));
+      geometry.setAttribute('grassTint', new THREE.InstancedBufferAttribute(colors, 4, true));
       geometry.setAttribute('grassTraits', new THREE.InstancedBufferAttribute(traits, 4, true));
       geometry.setAttribute('grassBirth', new THREE.InstancedBufferAttribute(new Float32Array([previous ? time-1 : time, Number(mergeBlades)]), 2, false, members.length));
       geometry.instanceCount = members.length;
