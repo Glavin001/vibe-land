@@ -1,6 +1,6 @@
 // Files the native app ships beside its bundle (scripts/native-mac.sh copies
-// them into the bundle's directory). mystralnative resolves file:// against
-// the running script.
+// them in). mystralnative resolves file:// against the working directory:
+// the bundle's directory in development, Contents/Resources in the .app.
 //
 // WebAssembly modules are instantiated synchronously there (initSync with
 // these bytes): its V8 never resolves an async WebAssembly.instantiate.

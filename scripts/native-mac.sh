@@ -7,6 +7,7 @@
 #   scripts/native-mac.sh run [args]   # build, then run under the GPU lock
 #   scripts/native-mac.sh debug [args]  # run with module-evaluation errors printed
 #   scripts/native-mac.sh smoke         # automated: load the city, shoot, expect fractures
+#   scripts/native-mac.sh app           # build target/native-app/out/vibe-land.app
 #   scripts/native-mac.sh runtime|sim|bundle
 #
 # MYSTRAL_ROOT: the mystralnative checkout (default ../mystralnative), built
@@ -20,6 +21,8 @@ SIM_TARGET="$ROOT/target/native-physx"
 SIM_LIB="$SIM_TARGET/release/libvibe_sim.dylib"
 BUNDLE_DIR="$ROOT/client/dist-native"
 MYSTRAL="$MYSTRAL_ROOT/build/mystral"
+PHYSX_LIB_DIR="${PHYSX_LIB_DIR:-$(cd "$ROOT/.." && pwd)/PhysX/out/install/macos-cumetal/release/lib}"
+APP_STAGE="$ROOT/target/native-app"
 
 runtime() {
   [ -d "$MYSTRAL_ROOT" ] || { echo "no mystralnative checkout at $MYSTRAL_ROOT (set MYSTRAL_ROOT)" >&2; exit 1; }
@@ -82,6 +85,59 @@ smoke() {
   echo "native smoke passed (log: $log)"
 }
 
+# Copy a dylib into the app's Frameworks staging dir with nothing pointing
+# outside the app: Homebrew dependencies are copied too and loaded via @rpath,
+# and absolute rpaths (the build machine's PhysX install) are removed.
+stage_dylib() {
+  local src="$1" dest_dir="$2"
+  local name; name="$(basename "$src")"
+  local dest="$dest_dir/$name"
+  [ -f "$dest" ] && return 0
+  cp "$src" "$dest"; chmod u+w "$dest"
+  install_name_tool -id "@rpath/$name" "$dest" 2>/dev/null
+  local dep
+  for dep in $(otool -L "$dest" | tail -n +2 | awk '{print $1}' | grep -E '^/(opt|usr/local)/' || true); do
+    stage_dylib "$dep" "$dest_dir"
+    install_name_tool -change "$dep" "@rpath/$(basename "$dep")" "$dest" 2>/dev/null
+  done
+  local rpath
+  for rpath in $(otool -l "$dest" | awk '/LC_RPATH/{getline; getline; print $2}' | grep '^/' || true); do
+    install_name_tool -delete_rpath "$rpath" "$dest" 2>/dev/null
+  done
+}
+
+app() {
+  rm -rf "$APP_STAGE"
+  mkdir -p "$APP_STAGE/game" "$APP_STAGE/scenes" "$APP_STAGE/frameworks"
+  # A bundle that loads libvibe_sim by name, from Contents/Frameworks.
+  (cd "$ROOT/client" && VIBE_SKIP_SCENE_PACKS=1 VIBE_SIM_LIB=libvibe_sim.dylib \
+    npx vite build --mode native --outDir "$APP_STAGE/game")
+  # mystral resolves file:// against the working directory, which the app's
+  # launcher sets to Contents/Resources: these go at its root.
+  local native_files=(vibe_land_shared_bg.wasm destruction_codec_bg.wasm city-packet-v3.dict)
+  cp "$ROOT/client/src/wasm/pkg/vibe_land_shared_bg.wasm" \
+     "$ROOT/client/src/wasm/debris-pkg/destruction_codec_bg.wasm" \
+     "$ROOT/client/src/city/city-packet-v3.dict" \
+     "$APP_STAGE/"
+  # The city's scene (sim-native points VIBE_DESTRUCTION_ASSET_DIR here).
+  cp "$ROOT/destruction/assets/scenes/${VIBE_CITY_SCENE:-high-rise-3f-local.json}" "$APP_STAGE/scenes/"
+  # The sim and its GPU stack, self-contained.
+  stage_dylib "$SIM_LIB" "$APP_STAGE/frameworks"
+  for lib in "$PHYSX_LIB_DIR"/*.dylib; do stage_dylib "$lib" "$APP_STAGE/frameworks"; done
+  # CuMetal's prebuilt pipelines: data, so Resources (signing allows only
+  # code in Frameworks); sim-native points CUMETAL_PIPELINE_ARCHIVE_PATH here.
+  cp -R "$PHYSX_LIB_DIR/cumetal-pipeline-archive" "$APP_STAGE/"
+  local frameworks=()
+  for item in "$APP_STAGE/frameworks"/*; do frameworks+=(--frameworks "$item"); done
+  local resources=(--resources game --resources scenes --resources cumetal-pipeline-archive)
+  for item in "${native_files[@]}"; do resources+=(--resources "$item"); done
+  (cd "$APP_STAGE" && bash "$MYSTRAL_ROOT/scripts/package-app.sh" \
+    --binary "$MYSTRAL" --name "vibe-land" --bundle-id land.vibe.native \
+    --script game/game.js "${resources[@]}" \
+    "${frameworks[@]}" --output "$APP_STAGE/out")
+  echo "app: $APP_STAGE/out/vibe-land.app"
+}
+
 case "${1:-run}" in
   runtime) runtime ;;
   sim) sim ;;
@@ -90,5 +146,6 @@ case "${1:-run}" in
   run) shift || true; runtime; sim; bundle; run "$@" ;;
   debug) shift || true; debug "$@" ;;
   smoke) shift || true; runtime; sim; bundle; smoke "$@" ;;
+  app) runtime; sim; app ;;
   *) echo "usage: $0 [build|run|runtime|sim|bundle] [mystral run args]" >&2; exit 2 ;;
 esac

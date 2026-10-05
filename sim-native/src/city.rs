@@ -17,6 +17,7 @@ use crate::mystral::{Js, Value};
 /// cannot start (no PhysX, no city assets).
 pub fn start_city(js: Js, args: &[Value]) -> Value {
     let match_id = js.string_arg(args, 0).unwrap_or_else(|| "city-default".to_owned());
+    apply_app_defaults();
     let session = match LocalSession::start(&match_id) {
         Ok(session) => Rc::new(RefCell::new(session)),
         Err(error) => return js.throw(&format!("startCity({match_id}): {error:#}")),
@@ -57,4 +58,31 @@ pub fn start_city(js: Js, args: &[Value]) -> Value {
         js.undefined()
     }));
     handle
+}
+
+/// The settings the play server gets from its launch environment
+/// (scripts/perf/play-server.sh), for when the app is launched from Finder
+/// with none. Anything already set wins, so a terminal launch can override.
+fn apply_app_defaults() {
+    if std::env::var_os("VIBE_PHYSICS_BACKEND").is_none() {
+        std::env::set_var("VIBE_PHYSICS_BACKEND", "physx_gpu");
+    }
+    // A packaged app ships the city's scene and CuMetal's prebuilt Metal
+    // pipelines in Contents/Resources (Contents/MacOS/mystral -> ../Resources).
+    // The pipeline archive cannot sit beside libcumetal in Frameworks, where
+    // CuMetal would look by default: code signing allows only code there.
+    let resources = std::env::current_exe()
+        .ok()
+        .and_then(|exe| Some(exe.parent()?.parent()?.join("Resources")));
+    let bundled = |name: &str| resources.as_ref().map(|dir| dir.join(name)).filter(|dir| dir.is_dir());
+    if std::env::var_os("VIBE_DESTRUCTION_ASSET_DIR").is_none() {
+        if let Some(scenes) = bundled("scenes") {
+            std::env::set_var("VIBE_DESTRUCTION_ASSET_DIR", scenes);
+        }
+    }
+    if std::env::var_os("CUMETAL_PIPELINE_ARCHIVE_PATH").is_none() {
+        if let Some(archive) = bundled("cumetal-pipeline-archive") {
+            std::env::set_var("CUMETAL_PIPELINE_ARCHIVE_PATH", archive);
+        }
+    }
 }
