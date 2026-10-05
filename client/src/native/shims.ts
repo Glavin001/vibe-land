@@ -156,6 +156,35 @@ g.MessageChannel ??= class {
   }
 };
 
+// fetch() of the game server's HTTP routes (vehicle assets, city visuals,
+// the city manifest), answered in-process by the sim module when single-
+// player registered a link that can (net/inProcessClient.ts). Everything
+// else goes to mystral's fetch.
+const IN_PROCESS_ROUTES = ['/vehicle-assets/', '/city-manifest/', '/city-visuals/'];
+const nativeFetch: typeof fetch = g.fetch.bind(g);
+g.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+  const raw = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+  const path = raw.replace(/^[a-z]+:\/\/[^/]*/i, '');
+  const link = (await import('../net/inProcessClient')).inProcessLink();
+  if (link?.request && IN_PROCESS_ROUTES.some((route) => path.startsWith(route))) {
+    const answer = link.request(path.split('?')[0]);
+    let body = new Uint8Array(answer.body);
+    if (answer.contentEncoding === 'gzip') body = (await import('fflate')).gunzipSync(body);
+    const text = () => new TextDecoder().decode(body);
+    return {
+      ok: answer.status >= 200 && answer.status < 300,
+      status: answer.status,
+      statusText: '',
+      url: raw,
+      headers: { get: (name: string) => (name.toLowerCase() === 'content-type' ? answer.contentType : null) },
+      arrayBuffer: async () => body.buffer.slice(body.byteOffset, body.byteOffset + body.byteLength),
+      text: async () => text(),
+      json: async () => JSON.parse(text()),
+    } as unknown as Response;
+  }
+  return nativeFetch(input as RequestInfo, init);
+};
+
 g.queueMicrotask ??= (fn: () => void) => Promise.resolve().then(fn);
 
 g.performance ??= { now: () => Date.now() };

@@ -36,7 +36,16 @@ export interface InProcessLink {
   readonly sessionConfigJson: string;
   send(packet: Uint8Array): void;
   drain(): Array<boolean | ArrayBuffer>;
+  /** A GET for the server's stateless HTTP routes, answered in-process. */
+  request?(path: string): InProcessResponse;
   close(): void;
+}
+
+export interface InProcessResponse {
+  status: number;
+  contentType: string;
+  contentEncoding?: string;
+  body: ArrayBuffer;
 }
 
 let activeLink: InProcessLink | null = null;

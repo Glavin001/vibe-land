@@ -18,11 +18,15 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 MYSTRAL_ROOT="${MYSTRAL_ROOT:-$(cd "$ROOT/.." && pwd)/mystralnative}"
-SIM_TARGET="$ROOT/target/native-physx"
+# The PhysX SDK the sim links: the garage's (vehicle bump stops and drive
+# masks, which the destructible city fleet needs), as
+# scripts/perf/garage-vehicle-server.sh builds against.
+export PHYSX_ROOT="${PHYSX_ROOT:-$(cd "$ROOT/.." && pwd)/PhysX/out/install/garage-multihull}"
+SIM_TARGET="$ROOT/target/native-sim"
 SIM_LIB="$SIM_TARGET/release/libvibe_sim.dylib"
 BUNDLE_DIR="$ROOT/client/dist-native"
 MYSTRAL="$MYSTRAL_ROOT/build/mystral"
-PHYSX_LIB_DIR="${PHYSX_LIB_DIR:-$(cd "$ROOT/.." && pwd)/PhysX/out/install/macos-cumetal/release/lib}"
+PHYSX_LIB_DIR="${PHYSX_LIB_DIR:-$PHYSX_ROOT/lib}"
 APP_STAGE="$ROOT/target/native-app"
 
 runtime() {
@@ -57,7 +61,7 @@ launch() {
   # (scripts/perf/play-server.sh), under the machine's GPU lock.
   exec "$ROOT/scripts/perf/gpu-run.sh" native-city env \
     VIBE_PHYSICS_BACKEND=physx_gpu RUST_LOG="${RUST_LOG:-info}" \
-    CUMETAL_CACHE_DIR="$ROOT/target/cumetal-cache" \
+    CUMETAL_CACHE_DIR="$ROOT/target/cumetal-cache-vehicles" \
     VIBE_DESTRUCTION_ASSET_DIR="$ROOT/destruction/assets/scenes" \
     "$MYSTRAL" run "$entry" --title "vibe-land" --width 1600 --height 900 "$@"
 }

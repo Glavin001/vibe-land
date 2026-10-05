@@ -13,8 +13,10 @@ use web_fps_server::local_session::LocalSession;
 use crate::mystral::{Js, Value};
 
 /// `startCity(matchId = 'city-default')` -> `{ sessionConfigJson, send(bytes),
-/// drain(): [reliable, ArrayBuffer, ...], close() }`; throws if the match
-/// cannot start (no PhysX, no city assets).
+/// drain(): [reliable, ArrayBuffer, ...], request(path), close() }`; throws if
+/// the match cannot start (no PhysX, no city assets). `request(path)` answers
+/// a GET for the server's stateless routes (vehicle assets, city manifest and
+/// visuals) as `{ status, contentType, contentEncoding, body: ArrayBuffer }`.
 pub fn start_city(js: Js, args: &[Value]) -> Value {
     let match_id = js.string_arg(args, 0).unwrap_or_else(|| "city-default".to_owned());
     apply_app_defaults();
@@ -53,6 +55,27 @@ pub fn start_city(js: Js, args: &[Value]) -> Value {
             }
         }));
     }
+    {
+        let session = session.clone();
+        js.set(handle, "request", js.function("request", move |js, args| {
+            let Some(path) = js.string_arg(args, 0) else {
+                return js.throw("request(path) needs a path");
+            };
+            match session.borrow().request(&path) {
+                Ok(response) => {
+                    let out = js.object();
+                    js.set(out, "status", js.number(response.status as f64));
+                    js.set(out, "contentType", js.string(&response.content_type));
+                    if let Some(encoding) = &response.content_encoding {
+                        js.set(out, "contentEncoding", js.string(encoding));
+                    }
+                    js.set(out, "body", js.array_buffer(&response.body));
+                    out
+                }
+                Err(error) => js.throw(&format!("request({path}): {error:#}")),
+            }
+        }));
+    }
     js.set(handle, "close", js.function("close", move |js, _| {
         session.borrow_mut().close();
         js.undefined()
@@ -66,6 +89,23 @@ pub fn start_city(js: Js, args: &[Value]) -> Value {
 fn apply_app_defaults() {
     if std::env::var_os("VIBE_PHYSICS_BACKEND").is_none() {
         std::env::set_var("VIBE_PHYSICS_BACKEND", "physx_gpu");
+    }
+    // The destructible garage cars, which replace the city's two stock cars:
+    // opt-in on the server, the native app's default, with the settings the
+    // server that fields them runs with (scripts/perf/garage-vehicle-server.sh;
+    // see its header for what each does).
+    for (name, value) in [
+        ("VIBE_CITY_DESTRUCTIBLE_VEHICLES", "1"),
+        ("VIBE_GARAGE_VEHICLE_DESTRUCTION", "1"),
+        ("PX_DESTRUCTION_ALLOW_UNCONVERGED", "1"),
+        ("VIBE_NATIVE_STRESS_FORCE_TOLERANCE", "0.001"),
+        ("BLAST_STRESS_INCREMENTAL_MOTION", "1"),
+        ("PX_DESTRUCTION_INCREMENTAL_TOPOLOGY", "1"),
+        ("BLAST_STRESS_BALANCED_OPERATOR", "1"),
+    ] {
+        if std::env::var_os(name).is_none() {
+            std::env::set_var(name, value);
+        }
     }
     // A packaged app ships the city's scene and CuMetal's prebuilt Metal
     // pipelines in Contents/Resources (Contents/MacOS/mystral -> ../Resources).

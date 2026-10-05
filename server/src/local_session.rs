@@ -18,7 +18,9 @@ use std::{
 };
 
 use anyhow::{Context, Result};
+use axum::{routing::get, Router};
 use futures_util::FutureExt;
+use tower::ServiceExt;
 use tokio::sync::mpsc;
 use tracing::{error, info, warn};
 
@@ -45,6 +47,26 @@ pub struct LocalSession {
     outbound: outbound::Receiver,
     session_config_json: String,
     closed: bool,
+    /// Runs `request`'s handlers (they are async; the caller is not).
+    http: tokio::runtime::Runtime,
+}
+
+/// What `request` answers.
+pub struct LocalResponse {
+    pub status: u16,
+    pub content_type: String,
+    pub content_encoding: Option<String>,
+    pub body: Vec<u8>,
+}
+
+/// The server's HTTP routes a client fetches during play that need no server
+/// state, with the server's own handlers: vehicle assets (custom cars'
+/// metadata), the city manifest and the city's outdoor visuals.
+fn local_router() -> Router {
+    Router::new()
+        .route("/vehicle-assets/:hash/:file", get(crate::vehicle_assets::asset))
+        .route("/city-manifest/:hash", get(crate::city_manifest_handler))
+        .route("/city-visuals/:hash", get(crate::city_visuals_handler))
 }
 
 /// Process-wide setup the server binary does in `main` before any match:
@@ -113,6 +135,24 @@ impl LocalSession {
             outbound: out_rx,
             session_config_json,
             closed: false,
+            http: tokio::runtime::Builder::new_current_thread().enable_all().build()?,
+        })
+    }
+
+    /// A GET for one of the server's stateless routes (`local_router`),
+    /// answered in-process. Unknown paths answer 404.
+    pub fn request(&self, path: &str) -> Result<LocalResponse> {
+        let request = axum::http::Request::get(path).body(axum::body::Body::empty())?;
+        self.http.block_on(async {
+            let Ok(response) = local_router().oneshot(request).await;
+            let header = |name: axum::http::header::HeaderName| {
+                response.headers().get(name).and_then(|value| value.to_str().ok()).map(str::to_owned)
+            };
+            let status = response.status().as_u16();
+            let content_type = header(axum::http::header::CONTENT_TYPE).unwrap_or_default();
+            let content_encoding = header(axum::http::header::CONTENT_ENCODING);
+            let body = axum::body::to_bytes(response.into_body(), usize::MAX).await?.to_vec();
+            Ok(LocalResponse { status, content_type, content_encoding, body })
         })
     }
 
