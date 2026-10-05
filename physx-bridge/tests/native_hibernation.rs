@@ -735,6 +735,41 @@ fn turning_it_off_or_clearing_leaves_nothing_frozen() {
 #[test]
 fn fracture_debris_hibernates_and_a_second_shot_thaws_it() {
     let mut w = world(-9.81);
+    shot_wall(&mut w);
+    w.native_set_hibernation(on()).expect("config");
+    steps(&mut w, 30);
+    fire_low_and_high(&mut w, 3.5);
+    let mut broken = 0;
+    for _ in 0..(8 * WINDOW) {
+        step(&mut w);
+        broken += w.native_take_broken_bonds().expect("drain").len();
+    }
+    let settled = w.native_hibernation_stats().expect("stats");
+    let fragments = rows(&w).iter().filter(|r| !r.kinematic).count();
+    println!("broken {broken}, fragments {fragments}; {settled:?}");
+    assert!(broken > 0 && fragments > 1, "the shot made no debris");
+    assert!(settled.frozen as usize * 10 >= fragments * 8, "rubble did not hibernate: {} of {fragments}", settled.frozen);
+    assert!(w.native_validate_mappings().expect("audit"));
+
+    // Shoot the rubble low down, where it lies.
+    fire_low_and_high(&mut w, 0.6);
+    for _ in 0..90 {
+        step(&mut w);
+    }
+    let after = w.native_hibernation_stats().expect("stats");
+    println!("after the second shot: {after:?}");
+    assert!(after.thaw_approach + after.thaw_support > settled.thaw_approach + settled.thaw_support,
+        "the second shot thawed nothing");
+    assert!(after.frozen > 0, "one shot thawed the whole pile");
+    assert!(w.native_validate_mappings().expect("audit"));
+    for r in rows(&w) {
+        assert!(r.position.iter().all(|c| c.is_finite()) && r.position[1] > -1.0, "{r:?}");
+    }
+}
+
+/// A 6 x 6 wall of cubes anchored to the ground, bonds weak enough for a
+/// round to break it.
+fn shot_wall(w: &mut World) {
     let (columns, rows_) = (6u32, 6u32);
     let mut nodes = Vec::new();
     let mut bonds = Vec::new();
@@ -768,47 +803,75 @@ fn fracture_debris_hibernates_and_a_second_shot_thaws_it() {
             }
         }
     }
-    install(&mut w, &nodes, &bonds, 30_000.0);
-    w.native_set_hibernation(on()).expect("config");
-    steps(&mut w, 30);
-    let shot = |w: &mut World, y: f32| {
-        w.native_fire_round(RoundDesc {
-            position: Vec3::new(0.0, y, 1.5),
-            direction: Vec3::new(0.0, 0.0, -1.0),
-            momentum_ns: 4.0e5,
-            radius: 0.4,
-            speed: 20.0,
-            ttl_ticks: 20,
-        })
-        .expect("fire");
-    };
-    shot(&mut w, 3.5);
-    let mut broken = 0;
-    for _ in 0..(8 * WINDOW) {
-        step(&mut w);
-        broken += w.native_take_broken_bonds().expect("drain").len();
-    }
-    let settled = w.native_hibernation_stats().expect("stats");
-    let fragments = rows(&w).iter().filter(|r| !r.kinematic).count();
-    println!("broken {broken}, fragments {fragments}; {settled:?}");
-    assert!(broken > 0 && fragments > 1, "the shot made no debris");
-    assert!(settled.frozen as usize * 10 >= fragments * 8, "rubble did not hibernate: {} of {fragments}", settled.frozen);
-    assert!(w.native_validate_mappings().expect("audit"));
+    install(w, &nodes, &bonds, 30_000.0);
+}
 
-    // Shoot the rubble low down, where it lies.
-    shot(&mut w, 0.6);
-    for _ in 0..90 {
-        step(&mut w);
-    }
-    let after = w.native_hibernation_stats().expect("stats");
-    println!("after the second shot: {after:?}");
-    assert!(after.thaw_approach + after.thaw_support > settled.thaw_approach + settled.thaw_support,
-        "the second shot thawed nothing");
-    assert!(after.frozen > 0, "one shot thawed the whole pile");
-    assert!(w.native_validate_mappings().expect("audit"));
-    for r in rows(&w) {
-        assert!(r.position.iter().all(|c| c.is_finite()) && r.position[1] > -1.0, "{r:?}");
-    }
+fn fire_low_and_high(w: &mut World, y: f32) {
+    w.native_fire_round(RoundDesc {
+        position: Vec3::new(0.0, y, 1.5),
+        direction: Vec3::new(0.0, 0.0, -1.0),
+        momentum_ns: 4.0e5,
+        radius: 0.4,
+        speed: 20.0,
+        ttl_ticks: 20,
+    })
+    .expect("fire");
+}
+
+/// The fragments the stage creates by fracture are the city's debris. Their
+/// mass reaches the host by a different road from an authored actor's, so the
+/// round trip is checked on one too: shoot a wall, pick the fragment lying
+/// furthest out (asleep, on its own), freeze and thaw it, let it sleep again,
+/// and strike it with a box. It must move exactly as the same fragment does
+/// struck in the same run with no freeze -- which it can only do with its own
+/// mass and inertia back.
+#[test]
+fn a_round_trip_of_a_fracture_fragment_restores_its_mass() {
+    let run = |round_trip: bool| {
+        let mut w = world(-9.81);
+        shot_wall(&mut w);
+        steps(&mut w, 30);
+        fire_low_and_high(&mut w, 3.5);
+        steps(&mut w, 6 * WINDOW);
+        let target = rows(&w)
+            .into_iter()
+            .filter(|r| !r.kinematic && r.sleeping && r.position[1] < 1.0)
+            .max_by(|a, b| {
+                let d = |r: &Row| r.position[0].powi(2) + r.position[2].powi(2);
+                d(a).partial_cmp(&d(b)).unwrap()
+            })
+            .expect("a resting fragment");
+        if round_trip {
+            assert_eq!(w.native_set_entities_hibernated(&[target.entity], true).expect("freeze"), 1);
+            step(&mut w);
+            assert_eq!(w.native_set_entities_hibernated(&[target.entity], false).expect("thaw"), 1);
+        } else {
+            step(&mut w);
+        }
+        steps(&mut w, 2 * WINDOW);
+        assert!(row(&w, target.entity).sleeping, "the fragment did not sleep again");
+        // An 800 kg box at 5 m/s, along the line from the wall to the fragment.
+        let p = row(&w, target.entity).position;
+        let out = {
+            let l = (p[0] * p[0] + p[2] * p[2]).sqrt();
+            [p[0] / l, p[2] / l]
+        };
+        add_box(&mut w, Vec3::new(p[0] - out[0] * 2.0, p[1] + 0.1, p[2] - out[1] * 2.0), 0.3, 800.0);
+        w.apply_impulse(BOX, Vec3::new(out[0] * 4000.0, 0.0, out[1] * 4000.0)).expect("push");
+        steps(&mut w, 120);
+        let r = row(&w, target.entity);
+        assert!(distance(r.position, p) > 0.2, "the box missed the fragment: {p:?} -> {:?}", r.position);
+        (target.entity, r.position, r.rotation, box_state(&w).0)
+    };
+    let (e0, p0, q0, b0) = run(false);
+    let (e1, p1, q1, b1) = run(true);
+    assert_eq!(e0, e1, "the arms picked different fragments");
+    let turned = 2.0 * (q0.iter().zip(&q1).map(|(a, b)| a * b).sum::<f32>().abs().min(1.0)).acos().to_degrees();
+    println!("fragment {e0:#x}: moved to {p1:?} vs control {p0:?} (gap {:.5} m, {turned:.3} deg); box gap {:.5} m",
+        distance(p0, p1), distance(b0, b1));
+    assert!(distance(p0, p1) < 0.005, "the round-tripped fragment moved differently");
+    assert!(turned < 0.5, "the round-tripped fragment turned differently");
+    assert!(distance(b0, b1) < 0.005, "the box moved differently");
 }
 
 #[test]
