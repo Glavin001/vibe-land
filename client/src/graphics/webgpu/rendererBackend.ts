@@ -63,7 +63,7 @@ export function withRenderBackend<P extends CanvasProps>(props: P): P {
 
 export function createWebGPURenderer(
   canvas: HTMLCanvasElement,
-  options: { antialias?: boolean; powerPreference?: string } = {},
+  options: { antialias?: boolean; powerPreference?: string; trackTimestamp?: boolean } = {},
 ): WebGPURendererLike {
   // `three` is three/webgpu in this build; the WebGL typings lack the class.
   const WebGPURenderer = (THREE as unknown as {
@@ -73,6 +73,8 @@ export function createWebGPURenderer(
     canvas,
     antialias: options.antialias ?? true,
     powerPreference: options.powerPreference ?? 'high-performance',
+    // GPU timestamp queries, where the device has them: renderer.resolveTimestampsAsync.
+    trackTimestamp: options.trackTimestamp ?? false,
   });
   // The backend is final only after init (it may fall back to WebGL2).
   fixArrayTextureGrad(renderer as unknown as Parameters<typeof fixArrayTextureGrad>[0]);

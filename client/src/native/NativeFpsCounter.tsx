@@ -5,10 +5,12 @@
 // display's (16.7 ms at 60 Hz) whatever the work, so it says nothing about
 // cost; the work does. mystral waits for the display inside the render (the
 // surface texture acquire and the present on submit), so those two calls are
-// timed and taken out. The GPU's own time is not shown: waiting on
-// queue.onSubmittedWorkDone() includes the wait for the display under vsync
-// (it read 16.0 ms capped, 3.6 ms uncapped) and costs frames; it needs WebGPU
-// timestamp queries, which mystral does not have yet. Then the simulation's tick
+// timed and taken out. The GPU's time is the renderer's timestamp queries
+// (three's trackTimestamp: each pass timed on the GPU, summed per frame).
+// Reading them back blocks in mystral until the GPU is done, so they are read
+// every TIMESTAMP_EVERY frames at the START of a frame, when the previous
+// frame's GPU work has normally finished; waiting on the GPU after a frame's
+// submit instead cost missed frames (~8% vs ~2% in heavy destruction). Then the simulation's tick
 // rate and tick cost from the match stats the server sends once a second
 // (in-process here, so the server's numbers are this machine's). Text is rasterised on a small 2D canvas (mystral's Skia), read
 // back with getImageData into a DataTexture twice a second, and shown on a
@@ -36,6 +38,8 @@ const HEIGHT = 80;
 const UPDATE_MS = 500;
 /** Ticks per second over this much wall time (stats arrive once a second). */
 const TPS_WINDOW_MS = 3000;
+/** Frames between GPU timestamp readbacks. */
+const TIMESTAMP_EVERY = 30;
 /** On-screen height of the panel, as a fraction of the view height. */
 const SCREEN_HEIGHT = 0.07;
 const MARGIN = 0.015;
@@ -88,10 +92,25 @@ export function NativeFpsCounter() {
   const counter = useRef({ frames: 0, since: performance.now(), worstMs: 0, last: performance.now() });
   // The frame's work: from before its callbacks to after its render.
   const work = useRef({ started: 0, waitMs: 0, totalMs: 0, worstMs: 0, frames: 0 });
+  // The GPU time of the latest frame read back (null before the first, or without timestamp queries).
+  const gpu = useRef<{ countdown: number; ms: number | null }>({ countdown: TIMESTAMP_EVERY, ms: null });
   const gl = useThree((state) => state.gl);
   useEffect(() => {
     const restore = timeDisplayWaits(gl, (ms) => { work.current.waitMs += ms; });
-    const before = addEffect(() => { work.current.started = performance.now(); work.current.waitMs = 0; });
+    const resolveTimestamps = (gl as { resolveTimestampsAsync?: (type?: string) => Promise<number | undefined> }).resolveTimestampsAsync?.bind(gl);
+    const tracking = (gl as { backend?: { trackTimestamp?: boolean } }).backend?.trackTimestamp === true;
+    const before = addEffect(() => {
+      // Before this frame's work: the GPU timestamps of the frames before it.
+      const g = gpu.current;
+      if (tracking && resolveTimestamps && --g.countdown <= 0) {
+        g.countdown = TIMESTAMP_EVERY;
+        void resolveTimestamps('render').then((ms) => {
+          if (typeof ms === 'number' && ms > 0) g.ms = ms;
+        }).catch(() => {});
+      }
+      work.current.started = performance.now();
+      work.current.waitMs = 0;
+    });
     const after = addAfterEffect(() => {
       const w = work.current;
       if (w.started === 0) return;
@@ -109,7 +128,7 @@ export function NativeFpsCounter() {
   const rate = (value: number, good: number, ok: number) =>
     value >= good ? '#7CFC8A' : value >= ok ? '#FFD166' : '#FF6B6B';
 
-  const draw = (fps: number, workMs: number, workWorstMs: number) => {
+  const draw = (fps: number, workMs: number, workWorstMs: number, gpuMs: number | null) => {
     ctx.clearRect(0, 0, WIDTH, HEIGHT);
     ctx.fillStyle = 'rgba(0, 0, 0, 0.55)';
     ctx.fillRect(0, 0, WIDTH, HEIGHT);
@@ -120,11 +139,19 @@ export function NativeFpsCounter() {
     ctx.fillText(`${fps.toFixed(0).padStart(3)} FPS`, 10, 32);
     ctx.font = '17px Menlo, monospace';
     ctx.fillStyle = '#d0d4d8';
-    // The frame's CPU work, and the frame rate it would allow without vsync
-    // (the CPU's share only: the GPU is not timed, see above).
-    ctx.fillText(`cpu ${workMs.toFixed(1)} ms per frame  max ${workWorstMs.toFixed(1)}`, 160, 22);
+    // The frame's CPU work and GPU work. They overlap (the GPU draws one
+    // frame while the CPU prepares the next), so without vsync the frame rate
+    // is bound by the slower of the two.
+    const boundMs = Math.max(workMs, gpuMs ?? 0);
+    ctx.fillText(
+      `cpu ${workMs.toFixed(1)} ms (max ${workWorstMs.toFixed(1)})  gpu ${gpuMs === null ? '--' : `${gpuMs.toFixed(1)} ms`}`,
+      160, 22,
+    );
     ctx.fillStyle = '#9fb3c8';
-    ctx.fillText(`~${(1000 / Math.max(0.1, workMs)).toFixed(0)} FPS uncapped (cpu; gpu not timed)`, 160, 42);
+    ctx.fillText(
+      `~${(1000 / Math.max(0.1, boundMs)).toFixed(0)} FPS uncapped (${gpuMs === null ? 'cpu only' : gpuMs > workMs ? 'gpu-bound' : 'cpu-bound'})`,
+      160, 42,
+    );
 
     // Simulation: ticks per second (from the server tick counter, over the
     // last TPS_WINDOW_MS) and the tick's cost (server timing, mean / p95).
@@ -172,7 +199,7 @@ export function NativeFpsCounter() {
     c.last = now;
     if (now - c.since >= UPDATE_MS) {
       const w = work.current;
-      draw((c.frames * 1000) / (now - c.since), w.totalMs / Math.max(1, w.frames), w.worstMs);
+      draw((c.frames * 1000) / (now - c.since), w.totalMs / Math.max(1, w.frames), w.worstMs, gpu.current.ms);
       w.totalMs = 0;
       w.worstMs = 0;
       w.frames = 0;

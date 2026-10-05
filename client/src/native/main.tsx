@@ -49,7 +49,7 @@ async function main(): Promise<void> {
 
   const width = canvas.width || 1280;
   const height = canvas.height || 720;
-  const renderer = createWebGPURenderer(canvas, { antialias: true });
+  const renderer = createWebGPURenderer(canvas, { antialias: true, trackTimestamp: true });
   await renderer.init();
   (globalThis as { __rendererBackend?: string }).__rendererBackend = 'webgpu';
 
