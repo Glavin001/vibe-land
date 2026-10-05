@@ -76,8 +76,12 @@ export function slotNodeMaterial(source: THREE.Material, poses: CityGpuPoses): T
     side: base.side,
   });
 
+  // Integer texel fetches: no UV transform (texture() without a uv turns
+  // the texture's matrix on, and load() keeps it).
   const chunks = texture(poses.chunkTexture);
   const bodies = texture(poses.bodyTexture);
+  chunks.updateMatrix = false;
+  bodies.updateMatrix = false;
   poses.onBodyTextureReplaced((next) => {
     bodies.value = next;
   });
@@ -86,7 +90,7 @@ export function slotNodeMaterial(source: THREE.Material, poses: CityGpuPoses): T
   const tint = varyingProperty('vec3', 'vCityTint');
 
   const texel = (tex: Node, index: Node): Node => {
-    const size = textureSize(tex, int(0)).x;
+    const size = int(textureSize(tex, int(0)).x);
     return tex.load(ivec2(index.mod(size), index.div(size)));
   };
 

@@ -29,6 +29,15 @@
       "port": 3014
     },
     {
+      "name": "city-play-server",
+      "runtimeExecutable": "bash",
+      "runtimeArgs": [
+        "-c",
+        "exec scripts/perf/play-server.sh --no-build"
+      ],
+      "port": 4001
+    },
+    {
       "name": "garage-vehicle-server",
       "runtimeExecutable": "bash",
       "runtimeArgs": [
