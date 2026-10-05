@@ -12,7 +12,15 @@
 #   scripts/native-mac.sh look          # camera poses saved to target/look/native/*.png
 #   scripts/native-mac.sh perf          # frame and sim timings through heavy destruction
 #   scripts/native-mac.sh app           # build target/native-app/out/vibe-land.app
+#   scripts/native-mac.sh shots         # the scene from above and from the player, target/native-scene/
 #   scripts/native-mac.sh runtime|sim|bundle
+#
+# --scene NAME (any subcommand) picks the city:
+#   city            the default destructible city (high-rise-3f-local)
+#   skyline         the buildings that stand on their own (skyline-stable:
+#                   432 Park, the parking garage, Villa Savoye, two houses)
+#   bayline         Bayline Town with Gardens & Market (structures/town-kit,
+#                   as `npm run play:bayline-gardens` runs it on the web)
 #
 # MYSTRAL_ROOT: the mystralnative checkout (default ../mystralnative), built
 # from its `vibe-land` integration branch. Extra `run` args go to `mystral run`
@@ -31,6 +39,39 @@ BUNDLE_DIR="$ROOT/client/dist-native"
 MYSTRAL="$MYSTRAL_ROOT/build/mystral"
 PHYSX_LIB_DIR="${PHYSX_LIB_DIR:-$PHYSX_ROOT/lib}"
 APP_STAGE="$ROOT/target/native-app"
+
+# --scene NAME, anywhere in the arguments: the scene's server settings (read
+# by the in-process city server, as by the real one) and the client's scene
+# preset (read when the bundle is built).
+SCENE=city
+args=()
+while [ $# -gt 0 ]; do
+  if [ "$1" = "--scene" ] && [ $# -gt 1 ]; then SCENE="$2"; shift 2; else args+=("$1"); shift; fi
+done
+set -- "${args[@]+"${args[@]}"}"
+case "$SCENE" in
+  city) ;;
+  skyline)
+    export VIBE_CITY_SCENE=skyline-stable.json VIBE_CITY_GRID=1 ;;
+  bayline)
+    # structures/town-kit/scripts/playground.mjs --gardens-market, the scene's
+    # qualified settings (src/playground-config.mjs) and its heavy cannon --
+    # plus the destructible car fleet the native app fields in every city,
+    # parked around the town's edge (server/src/city_fleet.rs).
+    town="$ROOT/structures/town-kit/out/bayline-town-with-gardens-and-market"
+    [ -f "$town.json" ] && [ -f "$town.visuals.json" ] || {
+      echo "Bayline Town is not built: (cd structures/town-kit && npm run build:bayline-gardens)" >&2; exit 1; }
+    export VIBE_CITY_SCENE="$town.json" VIBE_CITY_VISUALS="$town.visuals.json" \
+      VIBE_CITY_GRID=1 VIBE_CITY_VARIED_HEIGHTS=0 VIBE_CITY_DESTRUCTIBLE_VEHICLES="${VIBE_CITY_DESTRUCTIBLE_VEHICLES:-1}" \
+      VIBE_CITY_FLEET_SLOTS="-56,2.5;56,-2.5;2.5,56;-2.5,-56;-66,-2.5" \
+      VIBE_CITY_SPAWN_X=-45 VIBE_CITY_SPAWN_Z=0 \
+      VIBE_CITY_BALL_MASS_KG=2000 VIBE_CITY_BALL_SPEED_MS=35 VIBE_CITY_BALL_TTL_TICKS=900 \
+      VIBE_CITY_FREEZE=0 VIBE_CITY_NATIVE_SETTLE_TICKS=0 VIBE_CITY_NATIVE_SETTLE_FREEZE=0 \
+      VIBE_CITY_NATIVE_STRESS_TOLERANCE=0.001 VIBE_CITY_NATIVE_STRESS_ITERATIONS=16 \
+      VITE_TOWN_KIT_SCENE=bayline-town-with-gardens-and-market ;;
+  *) echo "unknown --scene $SCENE (city, skyline, bayline)" >&2; exit 2 ;;
+esac
+[ "$SCENE" = city ] || echo "scene: $SCENE (${VIBE_CITY_SCENE})"
 
 runtime() {
   [ -d "$MYSTRAL_ROOT" ] || { echo "no mystralnative checkout at $MYSTRAL_ROOT (set MYSTRAL_ROOT)" >&2; exit 1; }
@@ -128,7 +169,9 @@ app() {
      "$ROOT/client/src/city/city-packet-v3.dict" \
      "$APP_STAGE/"
   # The city's scene (sim-native points VIBE_DESTRUCTION_ASSET_DIR here).
-  cp "$ROOT/destruction/assets/scenes/${VIBE_CITY_SCENE:-high-rise-3f-local.json}" "$APP_STAGE/scenes/"
+  local scene="${VIBE_CITY_SCENE:-high-rise-3f-local.json}"
+  case "$scene" in /*) ;; *) scene="$ROOT/destruction/assets/scenes/$scene" ;; esac
+  cp "$scene" "$APP_STAGE/scenes/"
   # The sim and its GPU stack, self-contained.
   stage_dylib "$SIM_LIB" "$APP_STAGE/frameworks"
   for lib in "$PHYSX_LIB_DIR"/*.dylib; do stage_dylib "$lib" "$APP_STAGE/frameworks"; done
@@ -172,6 +215,16 @@ input() {
   (launch input-check.js "$@") 2>&1 | tee "$log" | grep --line-buffered '\[input' || true
   grep -q '\[input\] VERDICT PASS' "$log" || { echo "native input check FAILED (log: $log)" >&2; exit 1; }
   echo "native input check passed (log: $log)"
+}
+
+# The scene from above and from the player (client/native/scene-shot.mjs).
+shots() {
+  iife
+  "$ROOT/client/node_modules/.bin/esbuild" "$ROOT/client/native/scene-shot.mjs" --bundle --format=esm \
+    --platform=browser --target=es2022 --log-level=warning \
+    --define:SCENE_NAME="\"$SCENE\"" --outfile="$BUNDLE_DIR/scene-shot.js"
+  mkdir -p "$ROOT/target/native-scene"
+  (launch scene-shot.js "$@") 2>&1 | tee "$ROOT/target/native-scene/$SCENE.log" | grep --line-buffered '\[scene' || true
 }
 
 # Which buffers Dawn rejects as unaligned writes (client/native/writebuffer-trace.mjs).
@@ -245,6 +298,7 @@ case "${1:-run}" in
   qa) shift || true; runtime; sim; bundle; qa "$@" ;;
   input) shift || true; runtime; sim; bundle; input "$@" ;;
   trace-writes) shift || true; runtime; sim; bundle; trace_writes "$@" ;;
+  shots) shift || true; runtime; sim; bundle; shots "$@" ;;
   look) shift || true; runtime; sim; bundle; look "$@" ;;
   perf) shift || true; runtime; sim; bundle; perf "$@" ;;
   *) echo "usage: $0 [build|run|runtime|sim|bundle] [mystral run args]" >&2; exit 2 ;;

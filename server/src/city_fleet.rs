@@ -86,11 +86,38 @@ pub async fn prepare(builds: &[String]) -> Arc<Fleet> {
     FLEET.get_or_init(|| Arc::new(Fleet { cars })).clone()
 }
 
-/// Where slot `index` parks its car, (x, z) in metres.
+/// Where slot `index` parks its car, (x, z) in metres: the scene's own
+/// spots when `VIBE_CITY_FLEET_SLOTS` names them, else the ring's.
 pub fn slot_position(index: usize) -> (f32, f32) {
+    if let Some(slots) = configured_slots() {
+        if !slots.is_empty() {
+            return slots[index % slots.len()];
+        }
+    }
     let ring = crate::city::spawn_ring_radius_m();
     let (rx, rz, dx, dz) = SLOTS[index % SLOTS.len()];
     (rx * ring + dx, rz * ring + dz)
+}
+
+/// `VIBE_CITY_FLEET_SLOTS="x,z;x,z;..."`: parking spots (metres) for a scene
+/// whose ring spots land on its props -- a town's roads, say. A car parked
+/// inside a structure breaks it the moment it spawns.
+fn configured_slots() -> Option<&'static Vec<(f32, f32)>> {
+    static SLOTS_FROM_ENV: OnceLock<Option<Vec<(f32, f32)>>> = OnceLock::new();
+    SLOTS_FROM_ENV
+        .get_or_init(|| std::env::var("VIBE_CITY_FLEET_SLOTS").ok().map(|value| parse_slots(&value)))
+        .as_ref()
+}
+
+fn parse_slots(value: &str) -> Vec<(f32, f32)> {
+    value
+        .split(';')
+        .filter_map(|pair| {
+            let (x, z) = pair.split_once(',')?;
+            let (x, z) = (x.trim().parse::<f32>().ok()?, z.trim().parse::<f32>().ok()?);
+            (x.is_finite() && z.is_finite()).then_some((x, z))
+        })
+        .collect()
 }
 
 /// Park and register every fleet car. Must run before the city opens (or
@@ -121,5 +148,16 @@ pub fn remove(arena: &mut PhysicsArena, fleet: &Fleet) {
         if let Err(error) = arena.remove_prepared_vehicle(*id) {
             tracing::warn!(id, %error, "city fleet car could not be removed");
         }
+    }
+}
+
+#[cfg(test)]
+mod slot_tests {
+    use super::parse_slots;
+
+    #[test]
+    fn parses_parking_spots_and_skips_bad_ones() {
+        assert_eq!(parse_slots("-56,-2.5; 56,2.5;x,1;3"), vec![(-56.0, -2.5), (56.0, 2.5)]);
+        assert!(parse_slots("").is_empty());
     }
 }
