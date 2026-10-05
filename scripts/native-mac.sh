@@ -162,6 +162,18 @@ qa() {
   echo "native QA passed (log: $log)"
 }
 
+# Real keyboard and mouse input (client/native/input-check.mjs): events
+# injected through mystral's own dispatcher, not the scripted drive bridge.
+input() {
+  iife
+  "$ROOT/client/node_modules/.bin/esbuild" "$ROOT/client/native/input-check.mjs" --bundle --format=esm \
+    --platform=browser --target=es2022 --log-level=warning --outfile="$BUNDLE_DIR/input-check.js"
+  local log="$ROOT/target/native-input.log"
+  (launch input-check.js "$@") 2>&1 | tee "$log" | grep --line-buffered '\[input' || true
+  grep -q '\[input\] VERDICT PASS' "$log" || { echo "native input check FAILED (log: $log)" >&2; exit 1; }
+  echo "native input check passed (log: $log)"
+}
+
 # The native side of the look comparison: the e2e/helpers/lookPoses.mjs
 # camera poses, saved to target/look/native/<pose>.png (the web side is
 # client/e2e/look-capture.mjs; client/e2e/look-sheet.mjs lays them out).
@@ -223,6 +235,7 @@ case "${1:-run}" in
   app) runtime; sim; app ;;
   record) shift || true; runtime; sim; bundle; record "$@" ;;
   qa) shift || true; runtime; sim; bundle; qa "$@" ;;
+  input) shift || true; runtime; sim; bundle; input "$@" ;;
   look) shift || true; runtime; sim; bundle; look "$@" ;;
   perf) shift || true; runtime; sim; bundle; perf "$@" ;;
   *) echo "usage: $0 [build|run|runtime|sim|bundle] [mystral run args]" >&2; exit 2 ;;

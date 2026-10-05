@@ -84,6 +84,35 @@ function emitBatch(kind:'impact'|'flyby',frame:number,count=12) {
   engine.update(now);
 }
 
+describe('a runtime without the Web Audio the mix needs',()=>{
+  // mystralnative (the native app): gain nodes and buffer sources, no filters,
+  // mergers or listener. The first key press started the engine, the graph
+  // failed to build, and setListener then threw on every frame -- taking the
+  // rest of the frame (the player's input and camera) with it.
+  it('stays silent instead of throwing every frame',async()=>{
+    class Minimal {
+      static all:Minimal[]=[];
+      state='running';currentTime=0;sampleRate=48000;destination={};closed=false;
+      constructor(){Minimal.all.push(this);}
+      createGain(){return {gain:{value:1,setValueAtTime(){},setTargetAtTime(){}},connect(){},disconnect(){}};}
+      createBufferSource(){return {connect(){},start(){},stop(){}};}
+      async resume(){}
+      async close(){this.closed=true;}
+    }
+    vi.stubGlobal('AudioContext',Minimal);
+    const {DestructionAudio}=await import('./engine');
+    const minimal=new DestructionAudio();
+    await minimal.start();
+    expect(minimal.context).toBeNull();
+    expect(()=>minimal.setListener([1,2,3],[0,0,-1],[0,1,0])).not.toThrow();
+    expect(()=>minimal.update(performance.now())).not.toThrow();
+    await minimal.start();
+    expect(Minimal.all).toHaveLength(1);
+    expect(Minimal.all[0].closed).toBe(true);
+    minimal.stop();
+  });
+});
+
 describe('audio renderer resource lifecycle',()=>{
   it('centers a future flyby at its presentation timestamp without adding another approach delay',async()=>{
     await engine.start();const clock=vi.spyOn(performance,'now').mockReturnValue(1000);

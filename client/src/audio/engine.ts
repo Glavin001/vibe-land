@@ -30,6 +30,17 @@ const BANK = new Map<string,AudioBuffer>();
 let bankLoading:Promise<void>|null=null;
 let bankTotal=0;
 const bankFailures:string[]=[];
+/** The Web Audio the engine's graph is built from. A runtime short of it --
+ * mystralnative (the native app) has gain nodes and buffer sources only --
+ * plays no destruction audio, rather than keep half a graph whose listener
+ * update then throws on every frame (and with it the rest of that frame). */
+const GRAPH_NODES=['createGain','createBiquadFilter','createChannelMerger','createChannelSplitter','createConvolver',
+  'createWaveShaper','createOscillator','createBufferSource','createBuffer'] as const;
+export function supportsAudioGraph(ctx:BaseAudioContext):boolean{
+  const l=(ctx as {listener?:Partial<AudioListener>}).listener;
+  return GRAPH_NODES.every(name=>typeof (ctx as unknown as Record<string,unknown>)[name]==='function')
+    &&!!l&&!!l.positionX&&!!l.forwardX&&!!l.upX;
+}
 function mono(ctx:BaseAudioContext):GainNode {const n=ctx.createGain();n.channelCount=1;n.channelCountMode='explicit';return n;}
 function discrete(ctx:BaseAudioContext,channels:number):GainNode {const n=ctx.createGain();n.channelCount=channels;n.channelCountMode='explicit';n.channelInterpretation='discrete';return n;}
 function impulse(ctx:BaseAudioContext):AudioBuffer {
@@ -66,6 +77,8 @@ export class DestructionAudio {
   private roomRevision=0;
   private previewReflections:boolean|null=null;
   context:AudioContext|null=null;
+  /** The runtime cannot build the graph (supportsAudioGraph): stay silent. */
+  private unsupported=false;
   private master:GainNode|null=null;
   private output:AudioNode|null=null;
   private world:GainNode|null=null;
@@ -97,7 +110,16 @@ export class DestructionAudio {
   constructor(){subscribeAudioSettings(()=>this.applySettings());}
 
   async start():Promise<void>{
-    if(!this.context){this.context=new AudioContext({latencyHint:'interactive',sampleRate:48000});this.options=new PaletteBank(this.context);}
+    if(this.unsupported)return;
+    if(!this.context){
+      const context=new AudioContext({latencyHint:'interactive',sampleRate:48000});
+      if(!supportsAudioGraph(context)){
+        this.unsupported=true;this.stats.state='Unavailable: this runtime\'s Web Audio lacks the nodes the mix needs';
+        void Promise.resolve().then(()=>context.close?.()).catch(()=>{});
+        return;
+      }
+      this.context=context;this.options=new PaletteBank(this.context);
+    }
     // Resume on the gesture's stack, before fetching assets or worklet code.
     const resumed=this.context.resume();
     if(this.startPromise){await resumed;await this.startPromise;await this.warmPalette();return;}
