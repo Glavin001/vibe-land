@@ -22,6 +22,8 @@
 //!     -p vibe-land-physx-bridge --features native-destruction \
 //!     --test native_hibernation -- --test-threads=1
 
+mod support;
+
 use vibe_land_physx_bridge::{
     ChunkBondDesc, ChunkNodeDesc, DestructibleSettings, DynamicBoxDesc, HibernationConfig,
     NativeConfig, Pose, Quat, RoundDesc, StaticBoxDesc, StressMaterialDesc, Vec3, World,
@@ -886,4 +888,54 @@ fn the_wire_sees_a_freeze_as_a_settle_and_a_thaw_as_a_wake() {
     assert_eq!(chunk(&w, 1).0, at);
     let r = row(&w, entity);
     assert!(r.sleeping && r.flags == 0, "{r:?}");
+}
+
+/// Debris hibernation on the rubble neighbourhoods of rubble_rest.rs (rest
+/// sleep is off in this process, so nothing else stops them): the
+/// rocking body never sleeps natively, so it must be frozen through the awake
+/// rest test (no net drift over three windows, inside a 5 cm envelope).
+/// Against the same neighbourhood run without hibernation:
+/// - every body is asleep or frozen within twelve seconds;
+/// - no body ends further from where the bench left it than it does without
+///   hibernation, plus the rest envelope (5 cm): freezing moves nothing, it
+///   only stops motion, and a body rocking in a limit cycle stops somewhere
+///   inside that envelope -- the same contract as rest sleep, which ends the
+///   slab fixture at the identical 4.2 cm;
+/// - freezing does not cycle: a body still settling may thaw a frozen
+///   neighbour, but no body freezes more than twice, and once everything is
+///   at rest nothing thaws.
+#[test]
+fn rubble_neighbourhoods_hibernate() {
+    assert_ne!(
+        std::env::var("VIBE_CITY_NATIVE_REST_SLEEP").as_deref(),
+        Ok("1"),
+        "run without rest sleep: this tests hibernation alone"
+    );
+    let mut failures = Vec::new();
+    use support::rubble::{fixtures, load, report, run_with};
+    for name in fixtures() {
+        let fixture = load(name);
+        let baseline = run_with(&fixture, 900, false);
+        let outcome = run_with(&fixture, 900, true);
+        report(name, &outcome);
+        let h = outcome.hibernation;
+        eprintln!("RUBBLE_HIBERNATE {name} baseline moved {:.4} m, asleep at {:?}; hibernated moved {:.4} m; {h:?}",
+            baseline.max_moved_m, baseline.all_asleep_tick, outcome.max_moved_m);
+        match outcome.all_asleep_tick {
+            Some(tick) if tick <= 720 => {}
+            other => failures.push(format!("{name}: at rest at {other:?} (limit tick 720), {} awake at 15 s", outcome.awake_at_end)),
+        }
+        if outcome.max_moved_m > baseline.max_moved_m + 0.05 {
+            failures.push(format!("{name}: a body ended {:.3} m from the bench, {:.3} m without hibernation",
+                outcome.max_moved_m, baseline.max_moved_m));
+        }
+        let bodies = fixture.bodies.len() as u64;
+        if h.froze_total > 2 * bodies {
+            failures.push(format!("{name}: {} freezes for {bodies} bodies: {h:?}", h.froze_total));
+        }
+        if h.thawed_last_step != 0 || outcome.keeper_path_m > 1e-6 {
+            failures.push(format!("{name}: still thawing or moving at the end: {h:?}, keeper path {:.4}", outcome.keeper_path_m));
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
