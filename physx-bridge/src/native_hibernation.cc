@@ -309,6 +309,26 @@ void NativeDestruction::State::hibernate_resting(
       frozen[i] = api.setFragmentsHibernated(&actors[i], 1, true) ? 1 : 0;
     }
   }
+  if (hibernation_trace() && !rest_drift_mm.empty()) {
+    const auto pct = [](std::vector<float> v, float q) {
+      std::sort(v.begin(), v.end());
+      return v[std::min(v.size() - 1, static_cast<std::size_t>(q * v.size()))];
+    };
+    std::size_t drift_fail = 0, envelope_fail = 0, turn_fail = 0;
+    for (std::size_t i = 0; i < rest_drift_mm.size(); ++i) {
+      drift_fail += rest_drift_mm[i] >= kRestDriftM * 1000.0f;
+      envelope_fail += rest_envelope_mm[i] >= kRestEnvelopeM * 1000.0f;
+      turn_fail += rest_turn_deg[i] >= kRestEnvelopeRad * 57.2957795f;
+    }
+    std::fprintf(stderr,
+                 "[hibernate] tick %llu rest windows %zu: drift mm p50 %.2f p90 %.2f (fail %zu), envelope mm p50 %.1f p90 %.1f (fail %zu), turn deg p50 %.2f (fail %zu)\n",
+                 static_cast<unsigned long long>(tick_index), rest_drift_mm.size(), pct(rest_drift_mm, 0.5f),
+                 pct(rest_drift_mm, 0.9f), drift_fail, pct(rest_envelope_mm, 0.5f), pct(rest_envelope_mm, 0.9f),
+                 envelope_fail, pct(rest_turn_deg, 0.5f), turn_fail);
+    rest_drift_mm.clear();
+    rest_envelope_mm.clear();
+    rest_turn_deg.clear();
+  }
   if (hibernation_trace()) {
     std::size_t n = 0;
     for (auto f : frozen) n += f;

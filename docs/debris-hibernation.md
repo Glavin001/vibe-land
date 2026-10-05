@@ -115,6 +115,48 @@ identical results on the v24 and v25 SDKs. Their failing tests fail the same
 way on both: the convergence-rejection test fails under
 `ALLOW_UNCONVERGED=1`, and the axle/driving tests fail.
 
+## City-scale result: it does not pay yet (2026-10-05)
+
+`scenarios/perf/audit/hibernate-g5.json` is the 5×5 ten-storey city felled by
+50 meteors. Medians over the last 30 s of a settled ~22k-body pile, on the same
+binary, with exclusive GPU:
+
+| Arm | Tick | Awake bodies |
+|---|---|---|
+| Production (GPU island repair on) | 18.7 ms | 21,975 |
+| Island repair off | 17.9 ms | 21,669 |
+| Hibernation on (implies repair off) | 21.7 ms | 20,186 |
+
+Only ~1,800 bodies (8%) are frozen at any time, with ~300 freezing and
+thawing every pass. That costs 3.8 ms against repair off:
+
+- about 2 ms in the pre-step thaw scan, which visits all ~20k awake bodies;
+- about 1.5 ms more in the PhysX step, from the churn.
+
+**Why so few freeze.** The pile is not at rest; it creeps. The rest-test
+trace (`VIBE_CITY_NATIVE_HIBERNATE_TRACE=1`), about 75 s after the collapse,
+per 2 s window:
+
+| Measure | Median | p90 | Failing |
+|---|---|---|---|
+| Drift of a body's mean position | 10–12 mm | 70–95 mm | ~15,000 of 20,000 bodies |
+| Envelope inside a window | 6 mm | 60–95 mm | |
+| Rotation | 0.25° | | |
+
+So most of the pile is sliding slowly (about 5 mm/s typical, 35–45 mm/s at the
+90th percentile) rather than rocking in place. Hibernation cannot freeze what
+keeps moving.
+
+What would have to change before it pays:
+
+1. The pile has to settle. Find why a 22k-body heap creeps forever. Likely
+   candidates: under-converged friction in a 200k-contact island at 4/1
+   iterations, depenetration, stabilization. This also decides whether native
+   sleep could ever work on piles.
+2. The pre-step thaw scan must cost O(awake bodies near frozen ones), not
+   O(awake).
+3. The bottom-up and no-structure rules limit coverage until resting loads exist.
+
 ## Limits and known gaps
 
 - **Sleeping bodies stop loading structures. This predates hibernation.** The
@@ -131,5 +173,5 @@ way on both: the convergence-rejection test fails under
 - **A struck body thaws a step or two before contact.** It is then awake when
   hit, unlike a sleeping body woken by the hit. The difference is PhysX's own
   awake-vs-asleep variance (see the large-impact case above).
-- **Not yet measured at city scale.** The ceiling and scaling audit
-  (`scripts/perf/ceiling-audit.sh`) is pending GPU time.
+- **GPU island repair.** Hibernation needs it off (PhysX refuses otherwise), and
+  island repair off is a small saving on this scene anyway (18.7 to 17.9 ms).

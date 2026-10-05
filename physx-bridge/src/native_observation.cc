@@ -613,6 +613,12 @@ void NativeDestruction::State::close_rest_windows(
       r.quat_means[0] = quat;
       r.windows += 1;
       const float envelope = (r.hi - r.lo).magnitude();
+      if (hibernation_trace() && r.windows >= 3) {
+        rest_drift_mm.push_back(1000.0f * PxMax((r.means[0] - r.means[1]).magnitude(),
+                                                (r.means[0] - r.means[2]).magnitude()));
+        rest_envelope_mm.push_back(1000.0f * envelope);
+        rest_turn_deg.push_back(r.turn * 57.2957795f);
+      }
       r.resting = r.windows >= 3 &&
                   (r.means[0] - r.means[1]).magnitude() < kRestDriftM &&
                   (r.means[0] - r.means[2]).magnitude() < kRestDriftM &&

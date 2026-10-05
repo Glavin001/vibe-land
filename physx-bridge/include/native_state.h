@@ -135,6 +135,7 @@ struct NativeHibernation {
 /// The server's default: VIBE_CITY_NATIVE_HIBERNATE=1 opts in;
 /// VIBE_CITY_NATIVE_HIBERNATE_WAKE_DV overrides `wake_dv`.
 NativeHibernation native_hibernation_default();
+bool hibernation_trace();
 
 /// World AABBs of frozen bodies on a uniform grid, so a mover asks only the
 /// cells it overlaps. Entries are body keys; a stale key (the body thawed or
@@ -290,6 +291,9 @@ struct NativeDestruction::State {
 
   // --- debris hibernation (native_hibernation.cc) ---------------------------
   NativeHibernation hibernation;
+  /// Diagnostic (VIBE_CITY_NATIVE_HIBERNATE_TRACE): per closed rest window,
+  /// the drift between window means and the envelope inside the window.
+  std::vector<float> rest_drift_mm, rest_envelope_mm, rest_turn_deg;
   /// Whether the stage was configured with GPU island repair, which rules
   /// hibernation out (see configure).
   bool gpu_island_repair = false;
