@@ -4,8 +4,14 @@
 // mystral provides, with a WebGPURenderer. Built by vite.native.config.ts.
 import './shims';
 import '../graphics/webgpu/install';
+// The read-only test bridge (window.__VIBE_E2E__) and the scripted controls
+// (window.__VIBE_DRIVE__), as on the web: client/native/city-smoke.js drives
+// the native app through them.
+import '../e2eBridge';
+import '../agentDrive';
 
-import { createRoot, events } from '@react-three/fiber';
+import { createRoot, events, extend } from '@react-three/fiber';
+import * as THREE from 'three';
 
 import { createWebGPURenderer } from '../graphics/webgpu/rendererBackend';
 import { setInProcessLink, type InProcessLink } from '../net/inProcessClient';
@@ -34,6 +40,9 @@ async function main(): Promise<void> {
   await renderer.init();
   (globalThis as { __rendererBackend?: string }).__rendererBackend = 'webgpu';
 
+  // R3F's <Canvas> registers three's classes for JSX (<mesh>, <group>, ...);
+  // a bare root has to do it itself.
+  extend(THREE as unknown as Parameters<typeof extend>[0]);
   const root = createRoot(canvas);
   root.configure({
     gl: renderer,

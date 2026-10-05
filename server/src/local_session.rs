@@ -121,13 +121,19 @@ impl LocalSession {
         &self.session_config_json
     }
 
-    /// One client packet, decoded exactly as a WebTransport datagram.
+    /// One client packet, decoded as a WebTransport datagram -- or, for the
+    /// kinds only the full client decoder knows (the city manifest request the
+    /// client sends when it cannot fetch `/city-manifest`, which in-process is
+    /// always), as the WebSocket path decodes it.
     pub fn send(&self, bytes: &[u8]) -> Result<()> {
         if self.closed {
             anyhow::bail!("session closed");
         }
-        let datagram = protocol::decode_client_datagram(bytes)?;
-        let packet = protocol::client_datagram_to_packet(datagram);
+        let packet = match protocol::decode_client_datagram(bytes) {
+            Ok(datagram) => protocol::client_datagram_to_packet(datagram),
+            Err(datagram_error) => protocol::decode_client_packet(bytes)
+                .map_err(|_| datagram_error)?,
+        };
         self.events
             .send(MatchEvent::Packet { player_id: LOCAL_PLAYER_ID, packet })
             .map_err(|_| anyhow::anyhow!("match loop has exited"))

@@ -75,6 +75,66 @@ doc.querySelector ??= () => null;
 doc.querySelectorAll ??= () => [];
 doc.getElementById ??= (id: string) => (id === 'canvas' ? g.canvas : null);
 
+// mystral's createElement returns bare objects for anything but a canvas.
+// Libraries probe and touch elements at import time (react-dom's feature
+// tests, drei, stats panels), so give every element the inert DOM surface
+// they expect. Nothing is laid out or drawn; the native HUD is Canvas2D.
+const inertElementMethods: Record<string, (...args: any[]) => unknown> = {
+  setAttribute() {},
+  getAttribute: () => null,
+  removeAttribute() {},
+  hasAttribute: () => false,
+  appendChild: (child: unknown) => child,
+  removeChild: (child: unknown) => child,
+  insertBefore: (child: unknown) => child,
+  replaceChild: (child: unknown) => child,
+  addEventListener() {},
+  removeEventListener() {},
+  dispatchEvent: () => false,
+  getBoundingClientRect: () => ({ x: 0, y: 0, top: 0, left: 0, right: 0, bottom: 0, width: 0, height: 0 }),
+  focus() {},
+  blur() {},
+  remove() {},
+  querySelector: () => null,
+  querySelectorAll: () => [],
+};
+function inertElement<T extends Record<string, any>>(element: T, tagName: string): T {
+  if (!element || typeof element !== 'object') return element;
+  for (const [name, fn] of Object.entries(inertElementMethods)) {
+    if (typeof element[name] !== 'function') (element as Record<string, unknown>)[name] = fn;
+  }
+  const props = element as Record<string, any>;
+  props.style ??= {};
+  props.classList ??= { add() {}, remove() {}, toggle: () => false, contains: () => false };
+  props.childNodes ??= [];
+  props.children ??= [];
+  props.dataset ??= {};
+  props.tagName ??= tagName.toUpperCase();
+  props.nodeName ??= tagName.toUpperCase();
+  props.nodeType ??= 1;
+  props.ownerDocument ??= doc;
+  return element;
+}
+const nativeCreateElement = typeof doc.createElement === 'function' ? doc.createElement.bind(doc) : null;
+doc.createElement = (tagName: string, ...rest: unknown[]) =>
+  inertElement(nativeCreateElement ? nativeCreateElement(tagName, ...rest) ?? {} : {}, tagName);
+doc.createElementNS ??= (_ns: string, tagName: string) => doc.createElement(tagName);
+doc.createTextNode ??= (text: string) => ({ nodeType: 3, textContent: text });
+doc.documentElement ??= inertElement({}, 'html');
+inertElement(doc.documentElement, 'html');
+if (doc.body) inertElement(doc.body, 'body');
+if (doc.head) inertElement(doc.head, 'head');
+if (g.canvas) inertElement(g.canvas, 'canvas');
+
+// DOM classes code tests against with instanceof (focus checks, drei).
+// Nothing in mystral is an instance of them, which is the right answer.
+for (const name of [
+  'Node', 'Element', 'HTMLElement', 'HTMLDivElement', 'HTMLInputElement', 'HTMLTextAreaElement',
+  'HTMLSelectElement', 'HTMLButtonElement', 'HTMLImageElement', 'HTMLVideoElement', 'SVGElement',
+]) {
+  g[name] ??= class {};
+}
+
 // React's scheduler prefers MessageChannel; a timer-backed one is enough.
 g.MessageChannel ??= class {
   port1: { onmessage: Listener | null; postMessage: (data: unknown) => void; close: () => void };

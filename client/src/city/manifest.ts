@@ -10,6 +10,8 @@
 // was built against, and the two formats are told apart by four magic bytes.
 
 import { decodeBinaryManifest, looksBinary } from './manifestBinary';
+import { gunzipSync } from 'fflate';
+import { sha256 } from '../platform/sha256';
 
 export interface ChunkGeometryCuboid {
   // Server serde emits camelCase enum tags ("cuboid"); accept both.
@@ -283,7 +285,10 @@ export function resolveShapeLibrary(manifest: CityManifest): void {
 }
 
 async function sha256Hex(bytes: ArrayBuffer): Promise<string> {
-  const digest = await crypto.subtle.digest('SHA-256', bytes);
+  // mystralnative has no WebCrypto; the same digest in JS there.
+  const digest = globalThis.crypto?.subtle
+    ? await crypto.subtle.digest('SHA-256', bytes)
+    : sha256(new Uint8Array(bytes));
   return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, '0')).join('');
 }
 
@@ -310,6 +315,14 @@ export async function decodeCityManifestPayload(
   gzipped: Uint8Array,
   expectedHashHex: string,
 ): Promise<LoadedCityManifest> {
+  if (__NATIVE__) {
+    // mystralnative has no DecompressionStream; inflate synchronously.
+    const inflated = gunzipSync(gzipped);
+    return parseCityManifest(
+      inflated.buffer.slice(inflated.byteOffset, inflated.byteOffset + inflated.byteLength) as ArrayBuffer,
+      expectedHashHex,
+    );
+  }
   const Decompression = (globalThis as { DecompressionStream?: typeof DecompressionStream })
     .DecompressionStream;
   if (!Decompression) {

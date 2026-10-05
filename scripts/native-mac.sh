@@ -5,6 +5,8 @@
 #
 #   scripts/native-mac.sh build        # runtime + sim + bundle
 #   scripts/native-mac.sh run [args]   # build, then run under the GPU lock
+#   scripts/native-mac.sh debug [args]  # run with module-evaluation errors printed
+#   scripts/native-mac.sh smoke         # automated: load the city, shoot, expect fractures
 #   scripts/native-mac.sh runtime|sim|bundle
 #
 # MYSTRAL_ROOT: the mystralnative checkout (default ../mystralnative), built
@@ -44,7 +46,8 @@ bundle() {
   echo "bundle: $BUNDLE_DIR/game.js (sim: $SIM_LIB)"
 }
 
-run() {
+launch() {
+  local entry="$1"; shift
   cd "$BUNDLE_DIR"
   # The same environment the play server runs the city with
   # (scripts/perf/play-server.sh), under the machine's GPU lock.
@@ -52,7 +55,31 @@ run() {
     VIBE_PHYSICS_BACKEND=physx_gpu RUST_LOG="${RUST_LOG:-info}" \
     CUMETAL_CACHE_DIR="$ROOT/target/cumetal-cache" \
     VIBE_DESTRUCTION_ASSET_DIR="$ROOT/destruction/assets/scenes" \
-    "$MYSTRAL" run game.js --title "vibe-land" --width 1600 --height 900 "$@"
+    "$MYSTRAL" run "$entry" --title "vibe-land" --width 1600 --height 900 "$@"
+}
+
+run() { launch game.js "$@"; }
+
+iife() {
+  "$ROOT/client/node_modules/.bin/esbuild" "$BUNDLE_DIR/game.js" --format=iife \
+    --outfile="$BUNDLE_DIR/game-iife.js" --log-level=warning
+}
+
+debug() {
+  iife
+  cp "$ROOT/client/native/debug-entry.js" "$BUNDLE_DIR/"
+  launch debug-entry.js "$@"
+}
+
+smoke() {
+  iife
+  cp "$ROOT/client/native/city-smoke.js" "$BUNDLE_DIR/"
+  # Judged by the test's own verdict line: mystral can exit 137 at shutdown
+  # on macOS (its audio teardown) whatever the script asked for.
+  local log="$ROOT/target/native-smoke.log"
+  (launch city-smoke.js --headless "$@") 2>&1 | tee "$log" | grep --line-buffered '\[smoke\]' || true
+  grep -q '\[smoke\] PASS' "$log" || { echo "native smoke FAILED (log: $log)" >&2; exit 1; }
+  echo "native smoke passed (log: $log)"
 }
 
 case "${1:-run}" in
@@ -61,5 +88,7 @@ case "${1:-run}" in
   bundle) bundle ;;
   build) runtime; sim; bundle ;;
   run) shift || true; runtime; sim; bundle; run "$@" ;;
+  debug) shift || true; debug "$@" ;;
+  smoke) shift || true; runtime; sim; bundle; smoke "$@" ;;
   *) echo "usage: $0 [build|run|runtime|sim|bundle] [mystral run args]" >&2; exit 2 ;;
 esac
