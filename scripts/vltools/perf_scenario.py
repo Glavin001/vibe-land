@@ -106,6 +106,21 @@ def step_seconds(step):
     return 10
 
 
+METEOR_FLIGHT_S = 3.3  # longest meteor flight logged (flight_s), with margin
+
+
+def check_meteor_spacing(step, env=None):
+    """The server keeps VIBE_METEOR_POOL meteor bodies (default 8) in a ring:
+    launching faster than one per flight/pool seconds retires meteors before
+    they land, and the barrage silently does a fraction of its damage (a
+    196-meteor step at 0.15 s spacing broke as much as 8 meteors)."""
+    pool = int((env or {}).get("VIBE_METEOR_POOL") or os.environ.get("VL_METEOR_POOL", "8"))
+    every = step.get("every_s", 2)
+    if every * pool < METEOR_FLIGHT_S:
+        raise SystemExit(f"meteor step every {every} s with a pool of {pool}: meteors would be retired in flight; "
+                         f"set env VIBE_METEOR_POOL >= {int(METEOR_FLIGHT_S / every) + 1} or slow the step")
+
+
 def run_steps(api, match, steps, puller, run_dir=None, sample=None):
     """sample: (step index, server pid) -- sample the server's CPU stacks with
     macOS /usr/bin/sample while that step runs (sample-step-N.txt)."""
@@ -129,6 +144,7 @@ def run_steps(api, match, steps, puller, run_dir=None, sample=None):
             time.sleep(step["idle"])
             kind = f"idle {step['idle']}s"
         elif "meteors" in step:
+            check_meteor_spacing(step)
             if buildings is None:
                 b = json.loads(urllib.request.urlopen(f"{api}/city-buildings", timeout=10).read())
                 buildings = b if isinstance(b, list) else b.get("buildings", [])
@@ -235,6 +251,7 @@ def locked(args):
         puller = TickPuller(api, args.match)
         puller.start()
         time.sleep(args.warmup)
+        os.environ["VL_METEOR_POOL"] = str(dict(stack.DEFAULT_ENV, **env).get("VIBE_METEOR_POOL", "8"))
         sample = (args.sample, server.pid) if getattr(args, "sample", None) is not None else None
         marks = run_steps(api, args.match, scenario["steps"], puller, run_dir, sample)
         puller.stop_event.set()
@@ -269,6 +286,9 @@ def run(args):
     for kv in args.env or []:
         k, _, v = kv.partition("=")
         env[k] = v
+    for step in scenario.get("steps", []):
+        if "meteors" in step:
+            check_meteor_spacing(step, dict(stack.DEFAULT_ENV, **env))
     meta = {"kind": "scenario", "scenario": scenario, "label": label, "fingerprint": stack.fingerprint(binary, env),
             "reps": args.reps, "started": time.strftime("%Y-%m-%dT%H:%M:%S")}
     (run_dir / "meta.json").write_text(json.dumps(meta, indent=1))

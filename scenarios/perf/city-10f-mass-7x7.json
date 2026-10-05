@@ -1,0 +1,23 @@
+{
+ "name": "city-10f-mass-7x7",
+ "why": "As city-10f-mass on a 7x7 grid (49 ten-storey towers, 51,684 chunks): 196 meteors 0.15 s apart (four per tower), 60 s aftermath; aims at 20k+ active bodies.",
+ "env": {
+  "VIBE_PHYSX_PROFILE": "0",
+  "VIBE_CITY_SCENE": "high-rise-10f-local.json",
+  "VIBE_CITY_GRID": "7",
+  "VIBE_CITY_VARIED_HEIGHTS": "0",
+  "VIBE_METEOR_POOL": "64"
+ },
+ "steps": [
+  {
+   "idle": 10
+  },
+  {
+   "meteors": 196,
+   "every_s": 0.15
+  },
+  {
+   "idle": 60
+  }
+ ]
+}
