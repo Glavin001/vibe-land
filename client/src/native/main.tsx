@@ -70,7 +70,9 @@ async function main(): Promise<void> {
     frameloop: 'always',
     camera: scene.camera,
   });
-  root.render(<NativeCity matchId={MATCH_ID} />);
+  const store = root.render(<NativeCity matchId={MATCH_ID} />);
+  // For diagnostic scripts (client/native/*.mjs): the scene, renderer and camera.
+  (globalThis as { __VIBE_NATIVE_STORE__?: typeof store }).__VIBE_NATIVE_STORE__ = store;
 
   window.addEventListener('resize', () => {
     root.configure({ size: { width: canvas.width, height: canvas.height, top: 0, left: 0 } });

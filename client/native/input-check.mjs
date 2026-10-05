@@ -7,6 +7,9 @@
 //   click     a left click on the canvas (captures the pointer)
 //   look      mouse movement turns the camera
 //   move      holding W walks the player
+//   escape    Escape releases the pointer, held Escape (key repeat) too, and
+//             leaving with Cmd+Tab does not capture it again
+//   recapture after Escape, a click captures the pointer again
 //
 // Prints one PASS/FAIL line per check and a VERDICT.
 
@@ -25,9 +28,9 @@ async function waitFor(what, predicate, timeoutMs = 120_000) {
 
 const noop = () => {};
 /** As mystral's dispatchKeyboardEvent: document, window, then canvas. */
-function key(type, code, keyName) {
+function key(type, code, keyName, modifiers = {}) {
   const event = { type, key: keyName, code, keyCode: keyName.toUpperCase().charCodeAt(0), repeat: false,
-    ctrlKey: false, shiftKey: false, altKey: false, metaKey: false, preventDefault: noop, stopPropagation: noop };
+    ctrlKey: false, shiftKey: false, altKey: false, metaKey: false, ...modifiers, preventDefault: noop, stopPropagation: noop };
   for (const target of ['document', 'window', 'canvas']) __mystralDispatchEvent(target, type, event);
 }
 /** As mystral's dispatchMouseEvent. */
@@ -83,6 +86,45 @@ async function run() {
   const to = e2e.snapshot().position;
   const moved = Math.hypot(to[0] - from[0], to[2] - from[2]);
   record('move', moved > 2, `${moved.toFixed(2)} m holding W for 2 s (from ${from.map((v) => v.toFixed(1))} to ${to.map((v) => v.toFixed(1))})`);
+
+  // escape: release, a held Escape's repeats, then Cmd+Tab to leave the app.
+  const isLocked = () => globalThis.document?.pointerLockElement != null;
+  // Who takes or releases the pointer around Escape (diagnostics on failure).
+  const calls = [];
+  const lockTarget = globalThis.canvas;
+  const request = lockTarget.requestPointerLock;
+  lockTarget.requestPointerLock = function (...args) { calls.push(`request\n${new Error().stack?.split('\n').slice(2, 5).join('\n')}`); return request.apply(this, args); };
+  const exit = document.exitPointerLock;
+  document.exitPointerLock = function (...args) { calls.push('exit'); return exit.apply(this, args); };
+  key('keydown', 'Escape', 'Escape');
+  for (let i = 0; i < 3; i += 1) key('keydown', 'Escape', 'Escape', { repeat: true });
+  key('keyup', 'Escape', 'Escape');
+  await sleep(100);
+  const afterEscape = isLocked();
+  key('keydown', 'MetaLeft', 'Meta', { metaKey: true });
+  key('keydown', 'Tab', 'Tab', { metaKey: true });
+  key('keyup', 'Tab', 'Tab', { metaKey: true });
+  key('keyup', 'MetaLeft', 'Meta');
+  await sleep(100);
+  const afterCmdTab = isLocked();
+  record('escape', !afterEscape && !afterCmdTab, `pointer captured after Escape: ${afterEscape}, after Cmd+Tab: ${afterCmdTab}`);
+  if (afterEscape || afterCmdTab) log(`pointer calls: ${calls.join(' | ') || 'none'}`);
+  lockTarget.requestPointerLock = request;
+  document.exitPointerLock = exit;
+
+  // recapture: a click on the window takes the pointer back.
+  mouse('mousedown', { buttons: 1 });
+  mouse('pointerdown', { buttons: 1 });
+  mouse('mouseup');
+  mouse('pointerup');
+  await sleep(100);
+  record('recapture', isLocked(), `pointer captured after a click: ${isLocked()}`);
+
+  // A frame for the eye: the HUD (crosshair, FPS panel) as the player sees it.
+  if (typeof __mystralSaveScreenshot === 'function') {
+    await sleep(600);
+    log(`screenshot ${__mystralSaveScreenshot('../../target/native-input.png') ? 'saved' : 'failed'}: target/native-input.png`);
+  }
 
   const passed = results.filter(Boolean).length;
   log(`${passed}/${results.length} checks passed`);

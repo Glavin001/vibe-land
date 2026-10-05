@@ -11,6 +11,7 @@ import { CITY_WORLD_DOCUMENT } from '../world/cityWorld';
 import { NativeCrosshair } from './NativeCrosshair';
 import { NativeFpsCounter } from './NativeFpsCounter';
 import { NativeLoadingScreen } from './NativeLoadingScreen';
+import { NativeOverlay } from './NativeOverlay';
 
 const inputBindings = loadInputBindings();
 
@@ -18,9 +19,11 @@ export function NativeCity({ matchId = 'city-default' }: { matchId?: string }) {
   return (
     <>
       <FrameClock />
-      <NativeCrosshair />
-      <NativeFpsCounter />
-      <NativeLoadingScreen />
+      <NativeOverlay>
+        <NativeCrosshair />
+        <NativeFpsCounter />
+        <NativeLoadingScreen />
+      </NativeOverlay>
       <Suspense fallback={null}>
         <GameWorld
           mode="multiplayer"

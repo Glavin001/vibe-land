@@ -22,8 +22,16 @@ export function usePointerLockEngagement({ enabled, getCanvas }: Options): void 
 
     const onGesture = (event: Event): void => {
       if (isInputControl(event.target)) return;
-      if (event instanceof KeyboardEvent && (event.code === 'Escape' || event.repeat)) return;
-      if (event instanceof PointerEvent && event.pointerType === 'touch') return;
+      // Read the fields, not instanceof: the native app's runtime delivers
+      // plain event objects, so instanceof never matched there and every key
+      // -- a held Escape's repeats, the Cmd of Cmd+Tab -- took the pointer back.
+      if (event.type === 'keydown') {
+        const key = event as KeyboardEvent;
+        // Escape releases the pointer; a held key repeats; Cmd or Alt starts
+        // a system shortcut (Cmd+Tab to leave), not play.
+        if (key.code === 'Escape' || key.repeat || key.metaKey || key.altKey || key.key === 'Meta' || key.key === 'Alt') return;
+      }
+      if ((event as PointerEvent).pointerType === 'touch') return;
       const canvas = getCanvas();
       if (canvas) tryLock(canvas);
     };

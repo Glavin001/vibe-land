@@ -3,12 +3,13 @@
 // rate and tick cost from the match stats the server sends once a second
 // (in-process here, so the server's numbers are this machine's). Text is rasterised on a small 2D canvas (mystral's Skia), read
 // back with getImageData into a DataTexture twice a second, and shown on a
-// quad kept in front of the camera, over everything.
+// quad in the screen-space overlay (NativeOverlay).
 
-import { useFrame, useThree } from '@react-three/fiber';
+import { useFrame } from '@react-three/fiber';
 import { useEffect, useMemo, useRef } from 'react';
-import { nativeHud } from './nativeHud';
 import * as THREE from 'three';
+
+import { useOverlaySize } from './NativeOverlay';
 
 import { getMatchStats } from '../app/connectPhase';
 
@@ -21,14 +22,12 @@ type SimStats = {
 const WIDTH = 512;
 const HEIGHT = 80;
 const UPDATE_MS = 500;
-const DISTANCE = 0.5;
 /** On-screen height of the panel, as a fraction of the view height. */
 const SCREEN_HEIGHT = 0.07;
 const MARGIN = 0.015;
 
 export function NativeFpsCounter() {
-  const group = useRef<THREE.Group>(null);
-  const size = useThree((state) => state.size);
+  const size = useOverlaySize();
   const { canvas, ctx, texture } = useMemo(() => {
     const canvas = document.createElement('canvas') as HTMLCanvasElement;
     canvas.width = WIDTH;
@@ -96,7 +95,7 @@ export function NativeFpsCounter() {
     texture.needsUpdate = true;
   };
 
-  useFrame(({ camera }) => {
+  useFrame(() => {
     const now = performance.now();
     const c = counter.current;
     c.frames += 1;
@@ -108,28 +107,15 @@ export function NativeFpsCounter() {
       c.worstMs = 0;
       c.since = now;
     }
-
-    // Top-left corner of the view, DISTANCE in front of the camera.
-    const node = group.current;
-    if (!node) return;
-    node.visible = nativeHud.visible;
-    const perspective = camera as THREE.PerspectiveCamera;
-    const halfHeight = DISTANCE * Math.tan(THREE.MathUtils.degToRad(perspective.fov ?? 75) / 2);
-    const halfWidth = halfHeight * (size.width / Math.max(1, size.height));
-    const height = 2 * halfHeight * SCREEN_HEIGHT;
-    const width = height * (WIDTH / HEIGHT);
-    const margin = 2 * halfHeight * MARGIN;
-    node.position.copy(camera.position);
-    node.quaternion.copy(camera.quaternion);
-    node.translateZ(-DISTANCE);
-    node.translateX(-halfWidth + margin + width / 2);
-    node.translateY(halfHeight - margin - height / 2);
-    node.scale.set(width, height, 1);
   });
 
+  // The view's top-left corner, in overlay pixels (origin at the centre).
+  const height = size.height * SCREEN_HEIGHT;
+  const width = height * (WIDTH / HEIGHT);
+  const margin = size.height * MARGIN;
   void canvas;
   return (
-    <group ref={group}>
+    <group position={[-size.width / 2 + margin + width / 2, size.height / 2 - margin - height / 2, 0]} scale={[width, height, 1]}>
       <mesh renderOrder={1001} frustumCulled={false}>
         <planeGeometry args={[1, 1]} />
         <meshBasicMaterial map={texture} transparent depthTest={false} depthWrite={false} fog={false} toneMapped={false} />

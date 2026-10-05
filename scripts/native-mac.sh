@@ -174,6 +174,14 @@ input() {
   echo "native input check passed (log: $log)"
 }
 
+# Which buffers Dawn rejects as unaligned writes (client/native/writebuffer-trace.mjs).
+trace_writes() {
+  iife
+  "$ROOT/client/node_modules/.bin/esbuild" "$ROOT/client/native/writebuffer-trace.mjs" --bundle --format=esm \
+    --platform=browser --target=es2022 --log-level=warning --outfile="$BUNDLE_DIR/writebuffer-trace.js"
+  (launch writebuffer-trace.js --headless "$@") 2>&1 | tee "$ROOT/target/native-writes.log" | grep --line-buffered '\[trace' || true
+}
+
 # The native side of the look comparison: the e2e/helpers/lookPoses.mjs
 # camera poses, saved to target/look/native/<pose>.png (the web side is
 # client/e2e/look-capture.mjs; client/e2e/look-sheet.mjs lays them out).
@@ -236,6 +244,7 @@ case "${1:-run}" in
   record) shift || true; runtime; sim; bundle; record "$@" ;;
   qa) shift || true; runtime; sim; bundle; qa "$@" ;;
   input) shift || true; runtime; sim; bundle; input "$@" ;;
+  trace-writes) shift || true; runtime; sim; bundle; trace_writes "$@" ;;
   look) shift || true; runtime; sim; bundle; look "$@" ;;
   perf) shift || true; runtime; sim; bundle; perf "$@" ;;
   *) echo "usage: $0 [build|run|runtime|sim|bundle] [mystral run args]" >&2; exit 2 ;;

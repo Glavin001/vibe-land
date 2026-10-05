@@ -1,23 +1,22 @@
-// The native app's loading screen (it has no DOM): a full-view panel over the
-// scene until the shader warmup is done (scene/ShaderWarmup.tsx), so the
+// The native app's loading screen (it has no DOM): a full-view panel in the
+// screen-space overlay (NativeOverlay) until the shader warmup is done
+// (scene/ShaderWarmup.tsx), so the
 // city streaming in and the warmup's compiles happen behind it rather than as
 // hitches in play. The scene keeps rendering underneath: that rendering is
 // what builds the shaders.
 
-import { useFrame, useThree } from '@react-three/fiber';
-import { useEffect, useMemo, useRef } from 'react';
+import { useEffect, useMemo } from 'react';
 import * as THREE from 'three';
 
 import { useShaderWarmupPhase } from '../scene/ShaderWarmup';
+import { useOverlaySize } from './NativeOverlay';
 
 const WIDTH = 1024;
 const HEIGHT = 512;
-const DISTANCE = 0.4;
 
 export function NativeLoadingScreen() {
   const phase = useShaderWarmupPhase();
-  const group = useRef<THREE.Group>(null);
-  const size = useThree((state) => state.size);
+  const size = useOverlaySize();
   const texture = useMemo(() => {
     const canvas = document.createElement('canvas') as HTMLCanvasElement;
     canvas.width = WIDTH;
@@ -43,23 +42,9 @@ export function NativeLoadingScreen() {
   }, []);
   useEffect(() => () => texture.dispose(), [texture]);
 
-  useFrame(({ camera }) => {
-    const node = group.current;
-    if (!node) return;
-    node.visible = phase !== 'done';
-    if (!node.visible) return;
-    // Cover the whole view, the text's aspect kept by cropping the backdrop.
-    const perspective = camera as THREE.PerspectiveCamera;
-    const halfHeight = DISTANCE * Math.tan(THREE.MathUtils.degToRad(perspective.fov ?? 75) / 2);
-    const halfWidth = halfHeight * (size.width / Math.max(1, size.height));
-    node.position.copy(camera.position);
-    node.quaternion.copy(camera.quaternion);
-    node.translateZ(-DISTANCE);
-    node.scale.set(Math.max(2 * halfWidth, 4 * halfHeight), 2 * halfHeight, 1);
-  });
-
   return (
-    <group ref={group}>
+    // Covers the whole view; the text's aspect is kept by cropping the backdrop.
+    <group visible={phase !== 'done'} scale={[Math.max(size.width, 2 * size.height), size.height, 1]}>
       <mesh renderOrder={2000} frustumCulled={false}>
         <planeGeometry args={[1, 1]} />
         <meshBasicMaterial map={texture} depthTest={false} depthWrite={false} fog={false} toneMapped={false} />
