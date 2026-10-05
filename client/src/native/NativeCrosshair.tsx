@@ -6,6 +6,8 @@ import { useFrame } from '@react-three/fiber';
 import { useRef } from 'react';
 import type * as THREE from 'three';
 
+import { nativeHud } from './nativeHud';
+
 const DISTANCE = 0.5;
 const ARM = 0.008;
 const THICKNESS = 0.0012;
@@ -15,6 +17,7 @@ export function NativeCrosshair() {
   useFrame(({ camera }) => {
     const node = group.current;
     if (!node) return;
+    node.visible = nativeHud.visible;
     node.position.copy(camera.position);
     node.quaternion.copy(camera.quaternion);
     node.translateZ(-DISTANCE);

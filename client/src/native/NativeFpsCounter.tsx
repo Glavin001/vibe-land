@@ -7,6 +7,7 @@
 
 import { useFrame, useThree } from '@react-three/fiber';
 import { useEffect, useMemo, useRef } from 'react';
+import { nativeHud } from './nativeHud';
 import * as THREE from 'three';
 
 import { getMatchStats } from '../app/connectPhase';
@@ -111,6 +112,7 @@ export function NativeFpsCounter() {
     // Top-left corner of the view, DISTANCE in front of the camera.
     const node = group.current;
     if (!node) return;
+    node.visible = nativeHud.visible;
     const perspective = camera as THREE.PerspectiveCamera;
     const halfHeight = DISTANCE * Math.tan(THREE.MathUtils.degToRad(perspective.fov ?? 75) / 2);
     const halfWidth = halfHeight * (size.width / Math.max(1, size.height));

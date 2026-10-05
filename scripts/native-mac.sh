@@ -9,6 +9,7 @@
 #   scripts/native-mac.sh smoke         # automated: load the city, shoot, expect fractures
 #   scripts/native-mac.sh record [secs] # scripted playthrough recorded to target/native-video/*.mp4
 #   scripts/native-mac.sh qa [scenarios] # destruction QA: city-play-qa's checks + vehicle-qa's scenarios
+#   scripts/native-mac.sh look          # camera poses saved to target/look/native/*.png
 #   scripts/native-mac.sh app           # build target/native-app/out/vibe-land.app
 #   scripts/native-mac.sh runtime|sim|bundle
 #
@@ -116,7 +117,7 @@ app() {
   rm -rf "$APP_STAGE"
   mkdir -p "$APP_STAGE/game" "$APP_STAGE/scenes" "$APP_STAGE/frameworks"
   # A bundle that loads libvibe_sim by name, from Contents/Frameworks.
-  (cd "$ROOT/client" && VIBE_SKIP_SCENE_PACKS=1 VIBE_SIM_LIB=libvibe_sim.dylib \
+  (cd "$ROOT/client" && VIBE_SKIP_SCENE_PACKS=1 VIBE_SIM_LIB=libvibe_sim.dylib VIBE_NATIVE_ASSET_ROOT=game/ \
     npx vite build --mode native --outDir "$APP_STAGE/game")
   # mystral resolves file:// against the working directory, which the app's
   # launcher sets to Contents/Resources: these go at its root.
@@ -160,6 +161,19 @@ qa() {
   echo "native QA passed (log: $log)"
 }
 
+# The native side of the look comparison: the e2e/helpers/lookPoses.mjs
+# camera poses, saved to target/look/native/<pose>.png (the web side is
+# client/e2e/look-capture.mjs; client/e2e/look-sheet.mjs lays them out).
+look() {
+  iife
+  local out="$ROOT/target/look/native"
+  mkdir -p "$out"
+  "$ROOT/client/node_modules/.bin/esbuild" "$ROOT/client/native/look-capture.mjs" --bundle --format=esm \
+    --platform=browser --target=es2022 --log-level=warning \
+    --define:LOOK_OUT="\"$out\"" --outfile="$BUNDLE_DIR/look-capture.js"
+  (launch look-capture.js --headless "$@") 2>&1 | tee "$ROOT/target/look/native.log" | grep --line-buffered '\[look' || true
+}
+
 # A scripted playthrough (client/native/city-demo.mjs) recorded from the
 # app's window with ScreenCaptureKit: real time, hardware H.264, in a visible
 # window (macOS asks once for Screen Recording permission). RECORD_GPU=1
@@ -197,5 +211,6 @@ case "${1:-run}" in
   app) runtime; sim; app ;;
   record) shift || true; runtime; sim; bundle; record "$@" ;;
   qa) shift || true; runtime; sim; bundle; qa "$@" ;;
+  look) shift || true; runtime; sim; bundle; look "$@" ;;
   *) echo "usage: $0 [build|run|runtime|sim|bundle] [mystral run args]" >&2; exit 2 ;;
 esac

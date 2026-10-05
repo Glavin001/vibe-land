@@ -148,7 +148,12 @@ export default defineConfig(({ mode }) => {
     define: {
       // The native shell (src/native) only.
       __NATIVE__: JSON.stringify(native),
-      ...(native ? { __VIBE_SIM_LIB__: JSON.stringify(process.env.VIBE_SIM_LIB || 'libvibe_sim.dylib') } : {}),
+      ...(native ? {
+        __VIBE_SIM_LIB__: JSON.stringify(process.env.VIBE_SIM_LIB || 'libvibe_sim.dylib'),
+        // Where the bundle's public/ files sit relative to the working
+        // directory: the bundle itself in development, game/ in the .app.
+        __NATIVE_ASSET_ROOT__: JSON.stringify(process.env.VIBE_NATIVE_ASSET_ROOT || ''),
+      } : {}),
       ...(native ? { 'process.env.NODE_ENV': JSON.stringify('production') } : {}),
       // True only in the webgpu build; WebGL-only code sits behind it so the
       // WebGL bundle drops the WebGPU path entirely.

@@ -158,8 +158,11 @@ g.MessageChannel ??= class {
 
 // fetch() of the game server's HTTP routes (vehicle assets, city visuals,
 // the city manifest), answered in-process by the sim module when single-
-// player registered a link that can (net/inProcessClient.ts). Everything
-// else goes to mystral's fetch.
+// player registered a link that can (net/inProcessClient.ts). Other root-
+// relative URLs are the site's static files (public/: textures, models,
+// audio), which the bundle carries: mystral reads them from disk. Everything
+// else goes to mystral's fetch as given.
+declare const __NATIVE_ASSET_ROOT__: string;
 const IN_PROCESS_ROUTES = ['/vehicle-assets/', '/city-manifest/', '/city-visuals/'];
 const nativeFetch: typeof fetch = g.fetch.bind(g);
 g.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -181,6 +184,9 @@ g.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
       text: async () => text(),
       json: async () => JSON.parse(text()),
     } as unknown as Response;
+  }
+  if (typeof input === 'string' && /^\/[^/]/.test(input)) {
+    return nativeFetch(`file://./${__NATIVE_ASSET_ROOT__}${input.slice(1).split(/[?#]/)[0]}`, init);
   }
   return nativeFetch(input as RequestInfo, init);
 };
