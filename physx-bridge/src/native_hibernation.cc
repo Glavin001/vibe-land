@@ -13,6 +13,10 @@
 // - Nothing moves when it freezes. A body freezes at its current pose, and only
 //   once it is at rest: engine-asleep, or through three rest windows with no
 //   net drift inside a small envelope (the rest-sleep test).
+// - No load is lost. A frozen body cannot pass its weight on, so it freezes
+//   only resting on static ground or on bodies already frozen (bottom up),
+//   and never while touching an anchored structure: rubble on a floor stays
+//   simulated and keeps loading the floor.
 // - Frozen debris still collides. Dynamic bodies meet it as an immovable body.
 // - It thaws BEFORE the step in which something would move it, so momentum is
 //   exchanged with a dynamic body, never bounced off a wall:
@@ -36,9 +40,11 @@
 
 #include "native_state.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cstdlib>
 #include <set>
+#include <unordered_set>
 
 namespace vibe_land::physx_bridge {
 
@@ -140,6 +146,53 @@ bool NativeDestruction::State::is_vehicle_chunk(std::uint32_t chunk) const {
   return false;
 }
 
+bool NativeDestruction::State::rests_on_frozen_ground(
+    const NativeBody &body, const std::unordered_set<const PxRigidActor *> &frozen_now) const {
+  // A frozen body is immovable and weightless to everything around it: it
+  // can carry load but cannot pass its own weight on. So it may only freeze
+  // where that loses nothing -- resting on static ground or on bodies already
+  // frozen -- and never touching an anchored structure, whose stress solve
+  // would stop feeling it (rubble on a floor must keep loading the floor).
+  const PxBounds3 own = body.actor->getWorldBounds();
+  PxBounds3 probe = own;
+  probe.fattenFast(kRestContactMarginM);
+  constexpr PxU32 kMaxTouches = 64;
+  PxOverlapHit hits[kMaxTouches];
+  PxOverlapBuffer buffer(hits, kMaxTouches);
+  const PxQueryFilterData filter(PxQueryFlag::eSTATIC | PxQueryFlag::eDYNAMIC | PxQueryFlag::eNO_BLOCK);
+  scene.overlap(PxBoxGeometry(probe.getExtents()), PxTransform(probe.getCenter()), buffer, filter);
+  if (buffer.getNbTouches() >= kMaxTouches) {
+    return false; // too crowded to be sure; stay dynamic
+  }
+  for (PxU32 i = 0; i < buffer.getNbTouches(); ++i) {
+    const PxOverlapHit &hit = buffer.getTouch(i);
+    if (hit.actor == body.actor || hit.actor->is<PxRigidStatic>() != nullptr) {
+      continue;
+    }
+    const PxRigidDynamic *other = hit.actor->is<PxRigidDynamic>();
+    if (other == nullptr) {
+      return false;
+    }
+    const bool frozen = other->getRigidBodyFlags().isSet(PxRigidBodyFlag::eKINEMATIC)
+                            ? fragment_hibernated(*other)
+                            : frozen_now.count(other) != 0;
+    if (frozen) {
+      continue;
+    }
+    if (other->getRigidBodyFlags().isSet(PxRigidBodyFlag::eKINEMATIC)) {
+      return false; // an anchored structure, in any direction
+    }
+    // A dynamic body it rests on must be frozen first; one beside or above it
+    // does not hold it up.
+    const PxBounds3 under = PxShapeExt::getWorldBounds(*hit.shape, *hit.actor);
+    const Touch meet = touch(own, own, under);
+    if (meet.normal.y < 0.0f && meet.strikes) {
+      return false;
+    }
+  }
+  return true;
+}
+
 bool NativeDestruction::State::hibernation_eligible(const NativeBody &body) const {
   return hibernation.enabled && !body.frozen && body.serial != 0 &&
          !body.chunks.empty() && !is_vehicle_chunk(body.chunks.front()) &&
@@ -175,8 +228,7 @@ void NativeDestruction::State::hibernate_resting(
     return;
   }
 #if PX_DESTRUCTION_SCENE_VERSION >= 25
-  std::vector<Key> keys;
-  std::vector<PxRigidDynamic *> actors;
+  std::vector<std::pair<float, Key>> candidates;
   for (auto &entry : bodies) {
     NativeBody &body = entry.second;
     if (body.freeze_cooldown != 0) {
@@ -192,7 +244,22 @@ void NativeDestruction::State::hibernate_resting(
     if (!at_rest) {
       continue;
     }
-    keys.push_back(entry.first);
+    candidates.emplace_back(body.actor->getWorldBounds().minimum.y, entry.first);
+  }
+  // Bottom up, so a body resting on one that freezes in this same pass may
+  // freeze after it.
+  std::sort(candidates.begin(), candidates.end(),
+            [](const auto &a, const auto &b) { return a.first < b.first; });
+  std::vector<Key> keys;
+  std::vector<PxRigidDynamic *> actors;
+  std::unordered_set<const PxRigidActor *> frozen_now;
+  for (const auto &candidate : candidates) {
+    NativeBody &body = bodies.at(candidate.second);
+    if (!rests_on_frozen_ground(body, frozen_now)) {
+      continue;
+    }
+    frozen_now.insert(body.actor);
+    keys.push_back(candidate.second);
     actors.push_back(body.actor);
   }
   if (actors.empty()) {

@@ -1147,3 +1147,119 @@ fn trace_box_into_frozen_pile() {
         }
     }
 }
+
+/// A table: two two-cube legs anchored to the ground and a four-cube top,
+/// bonded and strong, as structure 0; rubble cubes as structure 1, two on
+/// the table top and one on the ground beside it. Returns the world after
+/// settling, and the rubble's node indices (on top: 0, 1; beside: 2).
+fn table_with_rubble(hibernate: bool) -> World {
+    table_with(hibernate, true)
+}
+
+fn table_with(hibernate: bool, rubble_on_top: bool) -> World {
+    let mut w = world(-9.81);
+    let mut nodes = Vec::new();
+    for (i, (x, y)) in [(-1.5f32, 0.5f32), (-1.5, 1.5), (1.5, 0.5), (1.5, 1.5)].iter().enumerate() {
+        let mut node = cube(i as u32, Vec3::new(*x, *y, 0.0));
+        if *y < 1.0 {
+            node.mass = 0.0; // anchored
+        }
+        nodes.push(node);
+    }
+    for (j, x) in [-1.5f32, -0.5, 0.5, 1.5].iter().enumerate() {
+        nodes.push(cube(4 + j as u32, Vec3::new(*x, 2.5, 0.0)));
+    }
+    let bond = |i: u32, a: u32, b: u32, c: Vec3, n: Vec3| ChunkBondDesc {
+        bond_index: i, node0: a, node1: b, centroid: c, normal: n, area: 0.92, material: 0,
+    };
+    let up = Vec3::new(0.0, 1.0, 0.0);
+    let side = Vec3::new(1.0, 0.0, 0.0);
+    let bonds = vec![
+        bond(0, 0, 1, Vec3::new(-1.5, 1.0, 0.0), up),
+        bond(1, 2, 3, Vec3::new(1.5, 1.0, 0.0), up),
+        bond(2, 1, 4, Vec3::new(-1.5, 2.0, 0.0), up),
+        bond(3, 3, 7, Vec3::new(1.5, 2.0, 0.0), up),
+        bond(4, 4, 5, Vec3::new(-1.0, 2.5, 0.0), side),
+        bond(5, 5, 6, Vec3::new(0.0, 2.5, 0.0), side),
+        bond(6, 6, 7, Vec3::new(1.0, 2.5, 0.0), side),
+    ];
+    w.native_attach().expect("attach");
+    let strong = {
+        let mut s = settings(1.0e9);
+        s.materials[0].compression_elastic = 1.0e10;
+        s.materials[0].compression_fatal = 2.0e10;
+        s
+    };
+    let at = Pose { position: Vec3::new(0.0, 0.0, 0.0), rotation: Quat::IDENTITY };
+    w.native_create_destructible(0, at, &nodes, &bonds, strong, GROUP_CHUNK, ALL).expect("table");
+    // Without rubble on top, the same two cubes lie on the ground far away.
+    let top_y = if rubble_on_top { 3.48 } else { 0.5 };
+    let top_z = if rubble_on_top { 0.0 } else { 8.0 };
+    let rubble = [cube(0, Vec3::new(-0.5, top_y, top_z)), cube(1, Vec3::new(0.5, top_y, top_z)), cube(2, Vec3::new(4.0, 0.5, 0.0))];
+    w.native_create_destructible(1, at, &rubble, &[], settings(30_000.0), GROUP_CHUNK, ALL).expect("rubble");
+    w.step().expect("identity step");
+    w.native_configure(native_config(11)).expect("configure");
+    w.native_set_hibernation(if hibernate { on() } else { off() }).expect("config");
+    steps(&mut w, 60 + 4 * WINDOW);
+    w
+}
+
+#[test]
+fn rubble_on_a_structure_stays_simulated_and_keeps_loading_it() {
+    let control = table_with_rubble(false);
+    let w = table_with_rubble(true);
+    let rubble_entity = |w: &World, n: u32| w.native_chunk_aim(1, n).expect("aim").entity_id;
+    let frozen = frozen(&w);
+    println!("frozen {frozen:?}; {:?}", w.native_hibernation_stats().expect("stats"));
+    assert!(frozen.contains(&rubble_entity(&w, 2)), "the cube on the ground did not freeze");
+    for n in [0, 1] {
+        assert!(!frozen.contains(&rubble_entity(&w, n)), "rubble on the table froze");
+    }
+    // The table carries the same load with hibernation as without it. (Whether
+    // that load includes sleeping rubble is a separate, pre-existing matter:
+    // sleeping_rubble_still_loads_the_structure_under_it.)
+    let stress = |w: &World| -> Vec<f32> {
+        w.native_bond_stress_rows(0)
+            .expect("rows")
+            .iter()
+            .map(|r| r.stress_normal.abs() + r.stress_bend.abs() + r.shear.abs())
+            .collect()
+    };
+    let (a, b) = (stress(&control), stress(&w));
+    for i in 0..a.len() {
+        println!("bond {i}: {:.1} Pa unfrozen, {:.1} Pa hibernated", a[i], b[i]);
+        assert!((a[i] - b[i]).abs() <= 0.01 * a[i].max(1.0), "bond {i}: {} vs {}", a[i], b[i]);
+    }
+}
+
+/// Known gap, independent of hibernation: the stage takes loads only from
+/// solved contacts, and a sleeping body's contacts are not solved. Two cubes
+/// on a table double the slab's middle-bond stress (8.4 kPa self-weight ->
+/// 16.7 kPa) while they are awake, and the moment they fall asleep (by tick
+/// 30) the table stops feeling them. Rubble piling up on a floor can therefore
+/// never bring it down once it settles. This asserts the intended behaviour
+/// and fails until the stage keeps resting loads.
+#[test]
+#[ignore = "known gap: sleeping bodies stop loading the structure they rest on"]
+fn sleeping_rubble_still_loads_the_structure_under_it() {
+    let loaded = table_with(false, true);
+    let bare = table_with(false, false);
+    assert!(rows(&loaded).iter().all(|r| r.sleeping || r.kinematic), "the rubble is not asleep yet");
+    let middle = |w: &World| {
+        let r = w.native_bond_stress_rows(0).expect("rows")[5];
+        r.stress_normal.abs() + r.stress_bend.abs() + r.shear.abs()
+    };
+    let (with, without) = (middle(&loaded), middle(&bare));
+    println!("slab middle bond: {with:.1} Pa with sleeping rubble on it, {without:.1} Pa without");
+    assert!(with > 1.5 * without, "the table no longer feels the sleeping rubble on it");
+}
+
+/// Rubble stacked on rubble on the ground freezes bottom up in one pass.
+#[test]
+fn a_stack_on_the_ground_freezes_bottom_up() {
+    let mut w = world(-9.81);
+    rubble(&mut w, 1, 1, 3);
+    w.native_set_hibernation(on()).expect("config");
+    steps(&mut w, 60 + 3 * WINDOW);
+    assert_eq!(frozen(&w).len(), 3, "{:?}", w.native_hibernation_stats().expect("stats"));
+}

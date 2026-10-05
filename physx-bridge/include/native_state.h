@@ -16,6 +16,7 @@
 #include <map>
 #include <set>
 #include <unordered_map>
+#include <unordered_set>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -367,6 +368,10 @@ struct NativeDestruction::State {
   std::uint32_t thaw(const std::vector<std::pair<std::uint32_t, std::uint64_t>> &keys,
                      std::uint64_t &cause);
   bool hibernation_eligible(const NativeBody &body) const;
+  /// Whether `body` rests only on static ground and frozen bodies (those in
+  /// `frozen_now` count as frozen) and touches no anchored structure.
+  bool rests_on_frozen_ground(const NativeBody &body,
+                              const std::unordered_set<const physx::PxRigidActor *> &frozen_now) const;
   /// Whether the stage holds this actor hibernated (false before SDK v25).
   bool fragment_hibernated(const physx::PxRigidDynamic &actor) const;
   /// Drop a body's frozen bookkeeping because its record is going away;
