@@ -35,6 +35,7 @@ import {
   PKT_CITY_TOPO_HASH,
 } from './wire';
 import type { DebrisDecoder } from './debrisWasm';
+import type { CityPoseFeed, FeedPose } from './cityPoseFeed';
 import {
   PKT_CITY_BASELINE,
   PKT_CITY_BOOTSTRAP,
@@ -200,6 +201,16 @@ export interface CityClientStats {
   /// are 6 and 0; on a jittery one the first must exceed the second or debris
   /// is sampled from a span that has not arrived.
   sampleDelayTicks: number;
+  /** Body poses presented from the in-process pose feed (cumulative), render
+   *  frames it could not cover, and its lag behind the newest tick. */
+  feedPresented: number;
+  feedMisses: number;
+  feedLagTicks: number;
+  /** Pose-feed diagnostics: why a frame's bodies were not drawn (cumulative), its newest tick, and resets. */
+  feedUnknown: number;
+  feedSettled: number;
+  feedNewestTick: number;
+  feedClears: number;
   /** The send interval the stream showed (ticks), which sizes the v2 playout delay. */
   streamIntervalTicks: number;
   arrivalLatenessTicks: number;
@@ -234,6 +245,8 @@ interface BodyStreamState {
   lastPresentedSpeed?: number;
   /** The track's velocity at the last presented sample, m/s (wire v2). */
   lastPresentedVelocity?: Vec3;
+  /** This body's own copy of a pose-feed velocity (the feed's sample is reused). */
+  feedVelocity?: Vec3;
 }
 
 /**
@@ -659,6 +672,23 @@ const ADAPTIVE_PLAYOUT_BUFFER = (() => {
 
 export class CityClient {
   readonly topology: CityTopology;
+  /**
+   * Every-tick body poses from memory, when the server runs in this process
+   * (the native app's single-player; cityPoseFeed.ts). Null over a network.
+   */
+  private poseFeed: CityPoseFeed | null = null;
+  private readonly feedPose: FeedPose = { position: [0, 0, 0], rotation: [0, 0, 0, 1], linearVelocity: [0, 0, 0] };
+  /** Body poses presented from the pose feed (cumulative). */
+  feedPresented = 0;
+  /** Frames the feed had nothing at the applied topology for (the stream drew them). */
+  feedMisses = 0;
+  /** Ticks between the newest published and the one drawn: 0 unless a tick's topology is still in the packet pump. */
+  feedLagTicks = 0;
+  feedUnknown = 0;
+  feedSettled = 0;
+  feedClears = 0;
+  /** The tick the feed last drew, -1 before it drew one (see presentedTick). */
+  private feedTick = -1;
   private readonly bodies: Map<number, BodyStreamState> = new Map();
   /**
    * Bodies whose next sample might move something -- the per-frame walk.
@@ -3039,11 +3069,84 @@ export class CityClient {
     return live;
   }
 
+  /** Present bodies from in-memory poses (see `poseFeed`). */
+  setPoseFeed(feed: CityPoseFeed | null): void {
+    this.poseFeed = feed;
+  }
+
+  /**
+   * Present every awake body exactly as the server simulated it at the newest
+   * tick whose topology this client holds (cityPoseFeed.ts): no playout
+   * delay, no interpolation, no quantisation, no distance stride. Topology is
+   * applied up to the newest tick first, so a fracture's membership and the
+   * poses simulated with it land in the same frame. False when no frame
+   * matches the applied topology (the stream presents this frame instead).
+   */
+  private presentFromFeed(nowMs: number, live: Set<number>): boolean {
+    const feed = this.poseFeed;
+    const newest = feed ? feed.latestTick() : -1;
+    if (!feed || newest < 0) return false;
+    this.drainPendingTopology(newest, nowMs);
+    const frame = feed.newestAt(this.topology.lastSeq());
+    if (!frame) {
+      this.feedMisses += 1;
+      return false;
+    }
+    this.feedLagTicks = newest - frame.tick;
+    this.feedTick = frame.tick;
+    this.lastSampleTick = Math.max(this.lastSampleTick, frame.tick);
+    const pose = this.feedPose;
+    // Bodies asleep on the server are not in the frame; each keeps the last
+    // pose drawn, its final one, until topology settles or wakes it.
+    for (const key of feed.entities(frame)) {
+      const body = this.topology.body(key);
+      if (!body) {
+        this.feedUnknown += 1;
+        continue;
+      }
+      if (body.settled) {
+        this.feedSettled += 1;
+        continue;
+      }
+      feed.sample(frame, key, pose);
+      this.feedPresented += 1;
+      const state = this.bodies.get(key);
+      if (state) {
+        this.presentPose(key, state, pose, live);
+      } else {
+        this.topology.updateBodyPose(key, pose.position, pose.rotation, 'presented');
+        live.add(key);
+      }
+    }
+    this.presentationIdle = live.size === 0;
+    return true;
+  }
+
+  /** The pose feed's newest tick advances the clock as a datagram's would. */
+  private pollPoseFeed(): void {
+    const feed = this.poseFeed;
+    if (!feed) return;
+    feed.poll();
+    const newest = feed.latestTick();
+    // Ticks restart after a reset: the stream's re-anchor follows, so drop
+    // frames from the old world once the stream is clearly past them.
+    if (newest >= 0 && newest + 600 < this.latestSimTick) {
+      feed.clear();
+      this.feedTick = -1;
+      this.feedClears += 1;
+    }
+    else if (newest > this.latestSimTick && this.latestSimTickAtMs !== 0) this.observeSimTick(newest);
+  }
+
   private samplePresentationInto(
     nowMs: number,
     due?: (key: number, lastPosition: Vec3 | null) => boolean,
   ): Set<number> {
     const live = new Set<number>();
+    this.pollPoseFeed();
+    if (this.poseFeed && this.presentFromFeed(nowMs, live)) {
+      return live;
+    }
     if (this.latestSimTickAtMs === 0) {
       // No pose stream has arrived, so there is no clock to hold topology
       // against -- but the holding still has to end, or a city that never
@@ -3160,61 +3263,81 @@ export class CityClient {
         // so the epsilon comparison below would `continue` anyway -- skip it.
         continue;
       }
-      const previous = state.lastPresented;
-      if (
-        previous
-        && Math.abs(previous.position[0] - presented.position[0]) < PRESENTATION_EPSILON_M
-        && Math.abs(previous.position[1] - presented.position[1]) < PRESENTATION_EPSILON_M
-        && Math.abs(previous.position[2] - presented.position[2]) < PRESENTATION_EPSILON_M
-        && Math.abs(previous.rotation[0] - presented.rotation[0]) < PRESENTATION_EPSILON_M
-        && Math.abs(previous.rotation[1] - presented.rotation[1]) < PRESENTATION_EPSILON_M
-        && Math.abs(previous.rotation[2] - presented.rotation[2]) < PRESENTATION_EPSILON_M
-        && Math.abs(previous.rotation[3] - presented.rotation[3]) < PRESENTATION_EPSILON_M
-      ) {
-        continue;
-      }
-      // Written in place. This used to build an object and two arrays per moved
-      // body per frame; during a collapse that is thousands of allocations a
-      // frame, and the resulting GC is exactly the kind of periodic stall that
-      // shows up as a dropped frame rather than as a higher average. Nothing
-      // holds a reference to `lastPresented` -- it is only compared, field by
-      // field, a few lines above -- so mutating it is safe.
-      if (previous) {
-        previous.position[0] = presented.position[0];
-        previous.position[1] = presented.position[1];
-        previous.position[2] = presented.position[2];
-        previous.rotation[0] = presented.rotation[0];
-        previous.rotation[1] = presented.rotation[1];
-        previous.rotation[2] = presented.rotation[2];
-        previous.rotation[3] = presented.rotation[3];
-        state.lastPresentedSpeed = Math.hypot(
-          presented.linearVelocity[0],
-          presented.linearVelocity[1],
-          presented.linearVelocity[2],
-        );
-        state.lastPresentedVelocity = presented.linearVelocity;
-      } else {
-        state.lastPresentedSpeed = Math.hypot(
-          presented.linearVelocity[0],
-          presented.linearVelocity[1],
-          presented.linearVelocity[2],
-        );
-        state.lastPresentedVelocity = presented.linearVelocity;
-        state.lastPresented = {
-          position: [presented.position[0], presented.position[1], presented.position[2]],
-          rotation: [
-            presented.rotation[0],
-            presented.rotation[1],
-            presented.rotation[2],
-            presented.rotation[3],
-          ],
-        };
-      }
-      this.topology.updateBodyPose(key, presented.position, presented.rotation, 'presented');
-      live.add(key);
+      this.presentPose(key, state, presented, live);
     }
     this.presentationIdle = this.kinetic.size === 0;
     return live;
+  }
+
+  /** Hand one body's pose to the ledger and the render layer, unless it did not move. */
+  private presentPose(
+    key: number,
+    state: BodyStreamState,
+    presented: { position: Vec3; rotation: Quat; linearVelocity: Vec3 },
+    live: Set<number>,
+  ): void {
+    const previous = state.lastPresented;
+    if (
+      previous
+      && Math.abs(previous.position[0] - presented.position[0]) < PRESENTATION_EPSILON_M
+      && Math.abs(previous.position[1] - presented.position[1]) < PRESENTATION_EPSILON_M
+      && Math.abs(previous.position[2] - presented.position[2]) < PRESENTATION_EPSILON_M
+      && Math.abs(previous.rotation[0] - presented.rotation[0]) < PRESENTATION_EPSILON_M
+      && Math.abs(previous.rotation[1] - presented.rotation[1]) < PRESENTATION_EPSILON_M
+      && Math.abs(previous.rotation[2] - presented.rotation[2]) < PRESENTATION_EPSILON_M
+      && Math.abs(previous.rotation[3] - presented.rotation[3]) < PRESENTATION_EPSILON_M
+    ) {
+      return;
+    }
+    // Written in place. This used to build an object and two arrays per moved
+    // body per frame; during a collapse that is thousands of allocations a
+    // frame, and the resulting GC is exactly the kind of periodic stall that
+    // shows up as a dropped frame rather than as a higher average. Nothing
+    // holds a reference to `lastPresented` -- it is only compared, field by
+    // field, a few lines above -- so mutating it is safe.
+    if (previous) {
+      previous.position[0] = presented.position[0];
+      previous.position[1] = presented.position[1];
+      previous.position[2] = presented.position[2];
+      previous.rotation[0] = presented.rotation[0];
+      previous.rotation[1] = presented.rotation[1];
+      previous.rotation[2] = presented.rotation[2];
+      previous.rotation[3] = presented.rotation[3];
+      state.lastPresentedSpeed = Math.hypot(
+        presented.linearVelocity[0],
+        presented.linearVelocity[1],
+        presented.linearVelocity[2],
+      );
+      state.lastPresentedVelocity = this.ownVelocity(state, presented.linearVelocity);
+    } else {
+      state.lastPresentedSpeed = Math.hypot(
+        presented.linearVelocity[0],
+        presented.linearVelocity[1],
+        presented.linearVelocity[2],
+      );
+      state.lastPresentedVelocity = this.ownVelocity(state, presented.linearVelocity);
+      state.lastPresented = {
+        position: [presented.position[0], presented.position[1], presented.position[2]],
+        rotation: [
+          presented.rotation[0],
+          presented.rotation[1],
+          presented.rotation[2],
+          presented.rotation[3],
+        ],
+      };
+    }
+    this.topology.updateBodyPose(key, presented.position, presented.rotation, 'presented');
+    live.add(key);
+  }
+
+  /** A track's velocity as is; the pose feed's, which is reused, copied. */
+  private ownVelocity(state: BodyStreamState, velocity: Vec3): Vec3 {
+    if (velocity !== this.feedPose.linearVelocity) return velocity;
+    const own = (state.feedVelocity ??= [0, 0, 0]);
+    own[0] = velocity[0];
+    own[1] = velocity[1];
+    own[2] = velocity[2];
+    return own;
   }
 
   /**
@@ -3233,6 +3356,7 @@ export class CityClient {
    * that does not exist yet.
    */
   presentedTick(): number {
+    if (this.feedTick >= 0) return this.feedTick;
     return this.renderClockTick < 0
       ? Number.POSITIVE_INFINITY
       : this.renderClockTick - this.sampleDelaySmooth;
@@ -3359,6 +3483,13 @@ export class CityClient {
       bytesReceived: this.bytesReceived,
       bytesPerSecond: windowSeconds > 0.25 ? windowBytes / windowSeconds : 0,
       sampleDelayTicks: this.sampleDelaySmooth,
+      feedPresented: this.feedPresented,
+      feedMisses: this.feedMisses,
+      feedLagTicks: this.feedLagTicks,
+      feedUnknown: this.feedUnknown,
+      feedSettled: this.feedSettled,
+      feedNewestTick: this.poseFeed ? this.poseFeed.latestTick() : -1,
+      feedClears: this.feedClears,
       streamIntervalTicks: this.streamIntervalTicks,
       arrivalLatenessTicks: this.arrivalLateness,
       arrivalLatenessPeakTicks: this.arrivalLatenessPeak,

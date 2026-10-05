@@ -774,6 +774,12 @@ impl EncoderCheckpoint {
 }
 
 impl ChunkStreamEncoder {
+    /// The sequence of the last topology message this encoder emitted; a
+    /// client that has applied it holds the bodies of every pose up to here.
+    pub fn topo_seq(&self) -> u32 {
+        self.topo_seq
+    }
+
     pub fn new(manifest: &DestructionManifest, config: EncoderConfig) -> Self {
         let structure_chunks = manifest
             .structures

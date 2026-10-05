@@ -24,6 +24,7 @@ mod match_stats_frame;
 mod meteor;
 mod movement;
 mod outbound;
+mod pose_feed;
 #[cfg(feature = "physx-gpu")]
 mod physx_runtime;
 mod protocol;
@@ -3557,6 +3558,8 @@ async fn run_match_loop(
                 // the session config, so every client that joins has already
                 // agreed to this layout.
                 runtime.set_wire_version(city::city_wire_version(&match_id));
+                // An in-process client (the native app) reads poses from memory.
+                runtime.set_pose_feed(pose_feed::lookup(&match_id));
                 // Where the ground is, so bodies that go through it are logged
                 // and retired at a floor under it instead of falling to the
                 // 1 km world bound.

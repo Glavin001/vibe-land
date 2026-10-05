@@ -9,6 +9,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { CityClient } from './cityClient';
+import { CityPoseFeed } from './cityPoseFeed';
 import { advanceCityPoses, CityPoseStore, initCityPoses, newCityPoseFrameState } from './cityPoseStore';
 import type { LoadedCityManifest, CityManifest } from './manifest';
 import { bodyKey } from './topology';
@@ -1289,5 +1290,65 @@ describe('CityClient repair behind topology copies', () => {
     expect(client.topology.lastSeq()).toBe(1);
     expect(client.topology.body(bodyKey(0, 1))?.chunkSlots.length).toBe(1);
     expect(client.stats().repairsBehindCopies).toBe(1);
+  });
+});
+
+/** Pose-feed frames packed as server/src/pose_feed.rs packs them. */
+function feedFrames(frames: Array<{ tick: number; topoSeq: number; bodies: Array<[number, Vec3]> }>): ArrayBuffer {
+  const words: number[] = [];
+  const bits = new Uint32Array(new Float32Array([0]).buffer);
+  const f32 = new Float32Array(bits.buffer);
+  const word = (value: number) => {
+    f32[0] = value;
+    return bits[0];
+  };
+  for (const frame of frames) {
+    words.push(frame.tick, frame.topoSeq, frame.bodies.length);
+    for (const [entity, position] of frame.bodies) {
+      words.push(entity, ...position.map(word), ...IDENTITY.map(word), ...ZERO.map(word));
+    }
+  }
+  return new Uint32Array(words).buffer;
+}
+
+describe('CityClient in-process pose feed', () => {
+  it('draws every awake body at the newest tick exactly as simulated, with no playout delay', () => {
+    const { client } = makeClient();
+    bootstrap(client);
+    promote(client, 1, 1, [2, 3], [0, 2.5, 0]);
+    const key = bodyKey(0, 1);
+    const queue = [feedFrames([
+      { tick: 10, topoSeq: 1, bodies: [[key, [0, 2.5, 0]]] },
+      { tick: 11, topoSeq: 1, bodies: [[key, [0.25, 2.375, 0]]] },
+    ])];
+    client.setPoseFeed(new CityPoseFeed({ poses: () => queue.shift() ?? new ArrayBuffer(0) }));
+    const live = client.samplePresentation(performance.now());
+    expect(live.has(key)).toBe(true);
+    expect(client.topology.body(key)!.position).toEqual([0.25, 2.375, 0]);
+    expect(client.presentedTick()).toBe(11);
+  });
+
+  it('draws the tick before while the newest tick\'s fracture is still in the packet pump', () => {
+    const { client } = makeClient();
+    bootstrap(client);
+    promote(client, 1, 1, [2, 3], [0, 2.5, 0]);
+    const key = bodyKey(0, 1);
+    const fresh = bodyKey(0, 2);
+    const queue = [feedFrames([
+      { tick: 11, topoSeq: 1, bodies: [[key, [0.25, 2.375, 0]]] },
+      // Tick 12 fractured node 1 off (seq 2): its centre of mass is new.
+      { tick: 12, topoSeq: 2, bodies: [[key, [0.5, 2.25, 0]], [fresh, [0, 1.5, 0.125]]] },
+    ])];
+    client.setPoseFeed(new CityPoseFeed({ poses: () => queue.shift() ?? new ArrayBuffer(0) }));
+    client.samplePresentation(performance.now());
+    expect(client.presentedTick()).toBe(11);
+    expect(client.topology.body(key)!.position).toEqual([0.25, 2.375, 0]);
+
+    // The fracture's topology arrives; the next frame draws tick 12 with it.
+    promote(client, 2, 2, [1], [0, 1.5, 0], 12);
+    client.samplePresentation(performance.now());
+    expect(client.presentedTick()).toBe(12);
+    expect(client.topology.body(key)!.position).toEqual([0.5, 2.25, 0]);
+    expect(client.topology.body(fresh)!.position).toEqual([0, 1.5, 0.125]);
   });
 });

@@ -19,6 +19,8 @@ use crate::mystral::{Js, Value};
 /// visuals) as `{ status, contentType, contentEncoding, body: ArrayBuffer }`.
 /// `meteor(x, y, z)`, `reset()` and `vehicleDebug(car)` (a JSON string) are the
 /// server's /city-meteor, /city-reset and /city-vehicle-debug, for QA.
+/// `poses(sinceTick)` is the city's every-tick body poses as an ArrayBuffer of
+/// u32 words (server/src/pose_feed.rs; empty with VIBE_LOCAL_POSE_FEED=0).
 pub fn start_city(js: Js, args: &[Value]) -> Value {
     let match_id = js.string_arg(args, 0).unwrap_or_else(|| "city-default".to_owned());
     apply_app_defaults();
@@ -76,6 +78,15 @@ pub fn start_city(js: Js, args: &[Value]) -> Value {
                 }
                 Err(error) => js.throw(&format!("request({path}): {error:#}")),
             }
+        }));
+    }
+    {
+        let session = session.clone();
+        js.set(handle, "poses", js.function("poses", move |js, args| {
+            let since = js.arg_number(args, 0, 0.0).max(0.0) as u32;
+            let words = session.borrow().poses_since(since);
+            let bytes: Vec<u8> = words.iter().flat_map(|word| word.to_le_bytes()).collect();
+            js.array_buffer(&bytes)
         }));
     }
     // The HTTP server's debug routes, in-process: /city-meteor, /city-reset,

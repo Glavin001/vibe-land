@@ -997,6 +997,7 @@ fn feed_encoder(
     encoder: &mut ChunkStreamEncoder,
     live: &mut Option<V3Live>,
     manifest: &DestructionManifest,
+    pose_feed: Option<&crate::pose_feed::PoseFeed>,
     sim_tick: u32,
     snapshots: &[BodySnapshotInput],
     output: &DestructionTickOutput,
@@ -1017,6 +1018,11 @@ fn feed_encoder(
     }
     if let Some(live) = live.as_mut() {
         live.ingest(manifest, sim_tick, snapshots, output);
+    }
+    // An in-process client reads every pose from memory (pose_feed.rs), with
+    // the topology sequence this tick's ingest reached.
+    if let Some(feed) = pose_feed {
+        feed.publish(sim_tick, encoder.topo_seq(), snapshots);
     }
 }
 
@@ -1103,6 +1109,8 @@ pub fn open_capture_at(spec: &CaptureSpec, dir: &std::path::Path) -> std::io::Re
 const RECENT_EVENTS_CAP: usize = 20_000;
 
 pub struct CityRuntime {
+    /// Set when an in-process client reads poses from memory (pose_feed.rs).
+    pose_feed: Option<Arc<crate::pose_feed::PoseFeed>>,
     /// Queued demolition targets, released a few per tick by
     /// `drain_demolition` so a building fails progressively rather than being
     /// cut cleanly in two.
@@ -1161,6 +1169,11 @@ pub struct CityRuntime {
 }
 
 impl CityRuntime {
+    /// Publish every tick's poses for an in-process client (pose_feed.rs).
+    pub fn set_pose_feed(&mut self, feed: Option<Arc<crate::pose_feed::PoseFeed>>) {
+        self.pose_feed = feed;
+    }
+
     fn from_parts(backend: CityBackend, manifest: Arc<DestructionManifest>, sim_hz: u32) -> Self {
         let mut config = EncoderConfig::validated(sim_hz);
         let (send_interval_ticks, ceiling_bytes) =
@@ -1209,6 +1222,7 @@ impl CityRuntime {
             .collect();
         let capture = open_capture(&manifest, sim_hz, backend_name_of(&backend));
         Self {
+            pose_feed: None,
             live: None,
             capture,
             recent_events: std::collections::VecDeque::new(),
@@ -1601,6 +1615,9 @@ impl CityRuntime {
         // Likewise the ground: a rebuilt backend starts without one, and would
         // stream bodies through the floor to the 1 km bound again.
         rebuilt.set_ground_reference(self.ground_y);
+        // And the in-process pose feed: without it the native app's
+        // single-player stops drawing debris from memory after a reset.
+        rebuilt.set_pose_feed(self.pose_feed.take());
         for client in clients {
             rebuilt.add_client(client);
         }
@@ -2029,6 +2046,7 @@ impl CityRuntime {
                             &mut self.encoder,
                             &mut self.live,
                             &self.manifest,
+                            self.pose_feed.as_deref(),
                             sim_tick,
                             snapshots,
                             &output,
@@ -2072,6 +2090,7 @@ impl CityRuntime {
                     &mut self.encoder,
                     &mut self.live,
                     &self.manifest,
+                    self.pose_feed.as_deref(),
                     sim_tick,
                     &snapshots,
                     &output,
@@ -2087,6 +2106,7 @@ impl CityRuntime {
                         &mut self.encoder,
                         &mut self.live,
                         &self.manifest,
+                        self.pose_feed.as_deref(),
                         sim_tick,
                         &snapshots,
                         &output,
@@ -2133,6 +2153,7 @@ impl CityRuntime {
                                     &mut self.encoder,
                                     &mut self.live,
                                     &self.manifest,
+                                    self.pose_feed.as_deref(),
                                     sim_tick,
                                     snapshots,
                                     &output,
@@ -2297,6 +2318,7 @@ impl CityRuntime {
                         &mut self.encoder,
                         &mut self.live,
                         &self.manifest,
+                        self.pose_feed.as_deref(),
                         sim_tick,
                         snapshots,
                         &output,
@@ -2994,6 +3016,22 @@ mod tests {
             city.live.is_some(),
             "reset dropped the v3 live encoder, so no debris span can ever be sent"
         );
+    }
+
+    /// The native app's single-player draws debris from the pose feed; a
+    /// reset that dropped it left every later fracture on the stream, and the
+    /// client's frames stopped at the reset tick (seen in the native perf run).
+    #[test]
+    fn reset_keeps_the_pose_feed_publishing() {
+        let mut city = CityRuntime::synthetic(60).expect("synthetic city");
+        let feed = std::sync::Arc::new(crate::pose_feed::PoseFeed::default());
+        city.set_pose_feed(Some(feed.clone()));
+        city.step(1, 1.0 / 60.0, [0.0, -9.81, 0.0], None);
+        assert!(!feed.since(0).is_empty(), "the feed publishes each tick");
+
+        city.reset(60, None).expect("synthetic reset");
+        city.step(2, 1.0 / 60.0, [0.0, -9.81, 0.0], None);
+        assert!(!feed.since(1).is_empty(), "reset dropped the pose feed");
     }
 
     #[test]

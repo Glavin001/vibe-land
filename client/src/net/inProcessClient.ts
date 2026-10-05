@@ -42,6 +42,8 @@ export interface InProcessLink {
   meteor?(x: number, y: number, z: number): void;
   reset?(): void;
   vehicleDebug?(car: number): string;
+  /** The city's every-tick body poses since a tick (city/cityPoseFeed.ts). */
+  poses?(sinceTick: number): ArrayBuffer;
   close(): void;
 }
 

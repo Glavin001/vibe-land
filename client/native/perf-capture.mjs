@@ -100,6 +100,16 @@ async function run() {
       decodeMs: e2e.frameProfile()?.decodeMs ?? 0,
       cityFrameMs: e2e.frameProfile()?.cityFrameMs ?? 0,
       delayTicks: city.sampleDelayTicks ?? 0,
+      // Body poses the renderer got: from the in-process feed (every awake
+      // body, every tick) or stream records (budgeted), cumulative.
+      feed: city.feedPresented ?? 0,
+      feedMisses: city.feedMisses ?? 0,
+      feedLag: city.feedLagTicks ?? 0,
+      feedDiag: `newest ${city.feedNewestTick} stream tick ${s.server_tick} unknown ${city.feedUnknown} settled ${city.feedSettled} clears ${city.feedClears} misses ${city.feedMisses} presented ${city.feedPresented}`,
+      // The netcode's delay for players/vehicles and dynamic bodies (cannonballs).
+      entityDelayMs: e2e.snapshot()?.debugStats?.interpolationDelayMs ?? 0,
+      bodyDelayMs: e2e.snapshot()?.debugStats?.dynamicBodyInterpolationDelayMs ?? 0,
+      records: city.recordsApplied ?? 0,
     });
   }, 100);
 
@@ -159,11 +169,14 @@ async function run() {
       }
     }
     const max = (key) => Math.max(0, ...st.map((s) => s[key] ?? 0));
+    const rate = (key) => (st.length > 1 ? ((st.at(-1)[key] - st[0][key]) * 1000) / Math.max(1, st.at(-1).at - st[0].at) : 0).toFixed(0);
     const slow = ms.filter((v) => v > 20).length;
     log(`${name.padEnd(16)} frames ${String(ms.length).padStart(4)}  render ms median ${quantile(ms, 0.5).toFixed(1)} p95 ${quantile(ms, 0.95).toFixed(1)} p99 ${quantile(ms, 0.99).toFixed(1)} worst ${quantile(ms, 1).toFixed(1)}  >20ms ${slow} (${((slow / Math.max(1, ms.length)) * 100).toFixed(1)}%)`
-      + `  |  client decode avg ${(st.reduce((a, b) => a + (b.decodeMs ?? 0), 0) / Math.max(1, st.length)).toFixed(2)} max ${max('decodeMs').toFixed(1)} ms, city layer avg ${(st.reduce((a, b) => a + (b.cityFrameMs ?? 0), 0) / Math.max(1, st.length)).toFixed(2)} ms, playout delay ${max('delayTicks')} ticks`
+      + `  |  client decode avg ${(st.reduce((a, b) => a + (b.decodeMs ?? 0), 0) / Math.max(1, st.length)).toFixed(2)} max ${max('decodeMs').toFixed(1)} ms, city layer avg ${(st.reduce((a, b) => a + (b.cityFrameMs ?? 0), 0) / Math.max(1, st.length)).toFixed(2)} ms, stream playout delay ${max('delayTicks')} ticks`
+      + `, poses/s from feed ${rate('feed')} vs stream records ${rate('records')}, feed lag<=${max('feedLag')} ticks, feed misses ${rate('feedMisses')}/s, entity delay<=${max('entityDelayMs').toFixed(0)} ms, dynamic body delay<=${max('bodyDelayMs').toFixed(0)} ms`
       + `  |  sim TPS min ${Number.isFinite(tpsMin) ? tpsMin.toFixed(0) : '-'}  tick avg<=${max('tickAvg').toFixed(1)} max ${max('tickMax').toFixed(1)} ms  physx<=${max('physx').toFixed(1)} ms  awake<=${max('awake')}  bonds ${max('bonds')}`);
   }
+  for (const name of [...new Set(stats.map((s) => s.phase))]) log(`feed ${name}: ${stats.filter((s) => s.phase === name).at(-1)?.feedDiag}`);
   for (const f of longFrames) log(`long frame ${f.ms.toFixed(0)} ms in "${f.phase}", ${f.into.toFixed(0)} ms into it`);
   // Shader builds during play: each is a first-sight hitch.
   const lateShaders = e2e.shaderBuilds().late;

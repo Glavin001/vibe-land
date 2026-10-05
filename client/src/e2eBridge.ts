@@ -140,6 +140,7 @@ export interface GameE2ESnapshot {
     reliableSnapshotsReceived: number;
     lastSnapshotGapMs: number;
     interpolationDelayMs: number;
+    dynamicBodyInterpolationDelayMs: number;
     jitterMs: number;
     snapshotGapP95Ms: number;
     snapshotGapMaxMs: number;
@@ -210,6 +211,15 @@ export interface CityE2EStats {
    * pose-jump counters below then record.
    */
   sampleDelayTicks: number;
+  /** Poses presented from the native pose feed and frames it missed (cumulative), its lag in ticks, and stream records applied. */
+  feedPresented: number;
+  feedMisses: number;
+  feedLagTicks: number;
+  feedUnknown: number;
+  feedSettled: number;
+  feedNewestTick: number;
+  feedClears: number;
+  recordsApplied: number;
   arrivalLatenessTicks: number;
   arrivalLatenessPeakTicks: number;
   manifestHash: string;
@@ -713,6 +723,7 @@ function buildSnapshot(): GameE2ESnapshot {
       reliableSnapshotsReceived: s.reliableSnapshotsReceived,
       lastSnapshotGapMs: s.lastSnapshotGapMs,
       interpolationDelayMs: s.interpolationDelayMs,
+      dynamicBodyInterpolationDelayMs: s.dynamicBodyInterpolationDelayMs,
       jitterMs: s.jitterMs,
       snapshotGapP95Ms: s.snapshotGapP95Ms,
       snapshotGapMaxMs: s.snapshotGapMaxMs,

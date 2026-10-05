@@ -55,6 +55,10 @@ pub struct LocalSession {
     queues: RequestQueues,
     outbound: outbound::Receiver,
     session_config_json: String,
+    /// The city's every-tick body poses, read from memory (pose_feed.rs);
+    /// `None` when `VIBE_LOCAL_POSE_FEED=0` (the pose stream alone, as over
+    /// a network) or for a match without a city.
+    pose_feed: Option<Arc<crate::pose_feed::PoseFeed>>,
     closed: bool,
     /// Runs `request`'s handlers (they are async; the caller is not).
     http: tokio::runtime::Runtime,
@@ -120,6 +124,10 @@ impl LocalSession {
         );
 
         let queues = RequestQueues::default();
+        // Registered before the match starts: the city runtime looks it up
+        // when it opens.
+        let pose_feed = (city::is_city_match(match_id) && local_pose_feed_enabled())
+            .then(|| crate::pose_feed::register(match_id));
         spawn_local_match(match_id.to_owned(), rx, physics, telemetry, queues.clone());
 
         // Registered as WebTransport: the client speaks WebTransport bytes, and
@@ -145,6 +153,7 @@ impl LocalSession {
             queues,
             outbound: out_rx,
             session_config_json,
+            pose_feed,
             closed: false,
             http: tokio::runtime::Builder::new_current_thread().enable_all().build()?,
         })
@@ -199,6 +208,12 @@ impl LocalSession {
         })
     }
 
+    /// The city body poses of every tick after `since` (pose_feed.rs's
+    /// packing); empty without a feed.
+    pub fn poses_since(&self, since: u32) -> Vec<u32> {
+        self.pose_feed.as_ref().map(|feed| feed.since(since)).unwrap_or_default()
+    }
+
     /// What `/session-config` would answer for this match.
     pub fn session_config_json(&self) -> &str {
         &self.session_config_json
@@ -245,6 +260,9 @@ impl LocalSession {
             return;
         }
         self.closed = true;
+        if self.pose_feed.take().is_some() {
+            crate::pose_feed::unregister(&self.match_id);
+        }
         let _ = self.events.send(MatchEvent::Disconnect { player_id: LOCAL_PLAYER_ID });
         info!(match_id = %self.match_id, "in-process session closed");
     }
@@ -254,6 +272,12 @@ impl Drop for LocalSession {
     fn drop(&mut self) {
         self.close();
     }
+}
+
+/// `VIBE_LOCAL_POSE_FEED=0` turns the in-memory pose feed off, leaving the
+/// client on the network pose stream (to compare the two).
+fn local_pose_feed_enabled() -> bool {
+    !matches!(std::env::var("VIBE_LOCAL_POSE_FEED").as_deref(), Ok("0" | "false" | "off"))
 }
 
 fn session_config(match_id: &str, physics: &PhysicsRuntimeConfig) -> SessionConfig {

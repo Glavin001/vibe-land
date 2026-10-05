@@ -8,6 +8,8 @@ import { initSharedPhysics, WasmSimWorld, type WasmDebugRenderBuffers, type Wasm
 import { LocalPracticeClient, type PracticeBotHost } from '../net/localPracticeClient';
 import { NetDebugTelemetry } from '../net/debugTelemetry';
 import { NetcodeClient, type RemotePlayer } from '../net/netcodeClient';
+import { inProcessLink } from '../net/inProcessClient';
+import { CityPoseFeed } from '../city/cityPoseFeed';
 import {
   PlayerInterpolator,
   ServerClockEstimator,
@@ -1150,6 +1152,13 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
         console.info('[city] wire v3: debris wasm decoder ready');
       }
       const cityClient = new CityClient(manifest, (bytes) => client.sendCityResync(bytes), v3);
+      // In the native app's single-player the server is in this process: body
+      // poses come from memory every tick instead of the budgeted stream.
+      const link = inProcessLink();
+      if (link?.poses && !v3) {
+        cityClient.setPoseFeed(new CityPoseFeed({ poses: (since) => link.poses!(since) }));
+        console.info('[city] body poses from the in-process pose feed');
+      }
       this.cityClient = cityClient;
       cityTapeRecorder.describe(
         { matchId: this.matchId, manifestHash: manifest.hashHex, wireVersion, simHz: 60 },
