@@ -398,6 +398,20 @@ static bool native_rest_sleep() {
   return enabled;
 }
 
+/// Audit only: the cost ceiling for frozen debris. From this native tick on,
+/// every awake body passes the rest test, so each cluster of touching debris
+/// is put to sleep at the next window boundary whatever it is doing. An idle
+/// city then costs what it would with every settled body frozen. It stops
+/// bodies mid-motion, so it is a measurement, never a play setting.
+/// VIBE_AUDIT_SLEEP_ALL_AFTER_TICK=N; 0 or unset = off.
+static std::uint64_t native_audit_sleep_all_tick() {
+  static const std::uint64_t tick = [] {
+    const char *raw = std::getenv("VIBE_AUDIT_SLEEP_ALL_AFTER_TICK");
+    return raw != nullptr ? std::strtoull(raw, nullptr, 10) : 0ull;
+  }();
+  return tick;
+}
+
 static float rest_angle(const PxQuat &a, const PxQuat &b) {
   const float dot = std::min(1.0f, std::fabs(a.dot(b)));
   return 2.0f * std::acos(dot);
@@ -555,7 +569,8 @@ void NativeDestruction::State::refresh_snapshots() {
     body.has_snapshot = true;
     snapshots.push_back(snap);
   }
-  if (native_rest_sleep() && tick_index % kRestWindowTicks == 0) {
+  if ((native_rest_sleep() || native_audit_sleep_all_tick() != 0) &&
+      tick_index % kRestWindowTicks == 0) {
     sleep_resting_islands(awake);
   }
 }
@@ -591,6 +606,10 @@ void NativeDestruction::State::sleep_resting_islands(
     if (r.cooldown != 0) {
       r.cooldown -= 1;
       r.resting = false;
+    }
+    const std::uint64_t audit = native_audit_sleep_all_tick();
+    if (audit != 0 && tick_index >= audit) {
+      r.resting = true;
     }
     r.sum = PxVec3(0.0f);
     r.quat_sum = PxVec4(0.0f);
