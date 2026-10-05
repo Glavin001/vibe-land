@@ -7,6 +7,7 @@
 #   scripts/native-mac.sh run [args]   # build, then run under the GPU lock
 #   scripts/native-mac.sh debug [args]  # run with module-evaluation errors printed
 #   scripts/native-mac.sh smoke         # automated: load the city, shoot, expect fractures
+#   scripts/native-mac.sh record [secs] # scripted playthrough recorded to target/native-video/*.mp4
 #   scripts/native-mac.sh app           # build target/native-app/out/vibe-land.app
 #   scripts/native-mac.sh runtime|sim|bundle
 #
@@ -138,6 +139,31 @@ app() {
   echo "app: $APP_STAGE/out/vibe-land.app"
 }
 
+# A scripted playthrough (client/native/city-demo.js) recorded from the
+# app's window with ScreenCaptureKit: real time, hardware H.264, in a visible
+# window (macOS asks once for Screen Recording permission). RECORD_GPU=1
+# records headless through GPU readback instead, paced to real time
+# (--video-realtime); its WebP encoder is slow at high resolutions.
+record() {
+  local seconds="${1:-60}"; shift || true
+  iife
+  cp "$ROOT/client/native/city-demo.js" "$BUNDLE_DIR/"
+  mkdir -p "$ROOT/target/native-video"
+  local out="$ROOT/target/native-video/city-$(date +%Y%m%d-%H%M%S).mp4"
+  local capture
+  if [ "${RECORD_GPU:-0}" = 1 ]; then
+    capture=(--headless --gpu-capture --video-realtime --video-fps 30 --end-frame $((30 * seconds)))
+  else
+    # Frames bound the length only; the window's loop runs at ~60 fps here.
+    capture=(--native-capture --end-frame $((60 * seconds)))
+  fi
+  (launch city-demo.js --width 1600 --height 900 --video "$out" "${capture[@]}" "$@") 2>&1 \
+    | tee "$ROOT/target/native-video/record.log" \
+    | grep --line-buffered -E '\[demo|\[Video\] (Using|Recording|Captured [0-9]|Dropped|Recording complete)|FAILED|Error' || true
+  [ -f "$out" ] || { echo "no video written (log: target/native-video/record.log)" >&2; exit 1; }
+  echo "video: $out"
+}
+
 case "${1:-run}" in
   runtime) runtime ;;
   sim) sim ;;
@@ -147,5 +173,6 @@ case "${1:-run}" in
   debug) shift || true; debug "$@" ;;
   smoke) shift || true; runtime; sim; bundle; smoke "$@" ;;
   app) runtime; sim; app ;;
+  record) shift || true; runtime; sim; bundle; record "$@" ;;
   *) echo "usage: $0 [build|run|runtime|sim|bundle] [mystral run args]" >&2; exit 2 ;;
 esac
