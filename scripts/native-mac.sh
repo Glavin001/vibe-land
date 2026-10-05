@@ -10,6 +10,7 @@
 #   scripts/native-mac.sh record [secs] # scripted playthrough recorded to target/native-video/*.mp4
 #   scripts/native-mac.sh qa [scenarios] # destruction QA: city-play-qa's checks + vehicle-qa's scenarios
 #   scripts/native-mac.sh look          # camera poses saved to target/look/native/*.png
+#   scripts/native-mac.sh perf          # frame and sim timings through heavy destruction
 #   scripts/native-mac.sh app           # build target/native-app/out/vibe-land.app
 #   scripts/native-mac.sh runtime|sim|bundle
 #
@@ -174,6 +175,17 @@ look() {
   (launch look-capture.js --headless "$@") 2>&1 | tee "$ROOT/target/look/native.log" | grep --line-buffered '\[look' || true
 }
 
+# Performance through heavy destruction (client/native/perf-capture.mjs):
+# per-phase render frame times and sim tick rate/time, in a visible window so
+# frames are paced by the display as when playing. Extra args go to mystral.
+perf() {
+  iife
+  "$ROOT/client/node_modules/.bin/esbuild" "$ROOT/client/native/perf-capture.mjs" --bundle --format=esm \
+    --platform=browser --target=es2022 --log-level=warning --outfile="$BUNDLE_DIR/perf-capture.js"
+  mkdir -p "$ROOT/target/native-perf"
+  (launch perf-capture.js "$@") 2>&1 | tee "$ROOT/target/native-perf/perf.log" | grep --line-buffered '\[perf' || true
+}
+
 # A scripted playthrough (client/native/city-demo.mjs) recorded from the
 # app's window with ScreenCaptureKit: real time, hardware H.264, in a visible
 # window (macOS asks once for Screen Recording permission). RECORD_GPU=1
@@ -212,5 +224,6 @@ case "${1:-run}" in
   record) shift || true; runtime; sim; bundle; record "$@" ;;
   qa) shift || true; runtime; sim; bundle; qa "$@" ;;
   look) shift || true; runtime; sim; bundle; look "$@" ;;
+  perf) shift || true; runtime; sim; bundle; perf "$@" ;;
   *) echo "usage: $0 [build|run|runtime|sim|bundle] [mystral run args]" >&2; exit 2 ;;
 esac

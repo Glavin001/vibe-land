@@ -39,6 +39,7 @@ import { pushDebugDustSource } from './vfx/dustDebug';
 
 let dustBurstSerial = 1;
 import { setCapturePose } from './scene/captureCamera';
+import { getMatchStats } from './app/connectPhase';
 import { cityTapeRecorder, saveCityTape } from './city/cityTape';
 import { uploadTape } from './city/hotspotWatch';
 import { sendDebugReport } from './city/debugReport';
@@ -514,6 +515,8 @@ export interface VibeE2EBridge {
     rendered: [number, number, number] | null;
     interpDelayMs: number;
   }>;
+  /** The match's latest stats packet (server tick, tick timings, physics step), as the HUD reads it. */
+  matchStats(): unknown;
   cityStructures(): Array<{
     structureId: number;
     position: [number, number, number];
@@ -772,6 +775,7 @@ const bridge: VibeE2EBridge = {
       };
     });
   },
+  matchStats: () => getMatchStats(),
   cityStructures: () => refs.cityStructures,
   dustBurst: (next) => {
     const normal = next.normal ?? [0, 1, 0];
