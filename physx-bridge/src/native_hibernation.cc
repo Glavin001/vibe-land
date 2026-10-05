@@ -308,10 +308,15 @@ void NativeDestruction::thaw_for_movers(const std::vector<HibernationMover> &ext
     if (actor.getRigidBodyFlags().isSet(PxRigidBodyFlag::eKINEMATIC) || actor.isSleeping()) {
       continue;
     }
+    // Cheap tests first: most awake debris is too slow to thaw anything, and
+    // bounds and mass are only worth reading for a body that could.
     const NativeBody::RestTrack &r = body.rest;
     const bool pushing = r.samples != 0 && (r.hi - r.lo).magnitude() > kRestEnvelopeM;
-    queue.push_back({actor.getWorldBounds(), actor.getLinearVelocity(), actor.getMass(), false,
-                     pushing});
+    const PxVec3 velocity = actor.getLinearVelocity();
+    if (!pushing && velocity.magnitude() <= s.hibernation.wake_dv) {
+      continue;
+    }
+    queue.push_back({actor.getWorldBounds(), velocity, actor.getMass(), false, pushing});
   }
   for (const NativeRound &round : s.rounds) {
     if (round.actor != nullptr) {
