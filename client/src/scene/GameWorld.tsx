@@ -2994,7 +2994,7 @@ export function GameWorld({
       <MeteorLayer getRuntime={() => runtimeRef.current ?? null} />
       <GameAudioLayer getRuntime={() => runtimeRef.current ?? null} getCityClient={() => runtimeRef.current?.getCityClient?.() ?? null} />
 
-      {!__WEBGPU__ && <DustLayer
+      <DustLayer
         getCityClient={() => runtimeRef.current?.getCityClient?.() ?? null}
         getDynamicBodies={() => runtimeRef.current?.state?.dynamicBodies.values() ?? null}
         mode={dustMode}
@@ -3002,7 +3002,7 @@ export function GameWorld({
         fogColor={resolvedFogColor}
         windStrengthMps={windStrengthMps}
         windDirectionDeg={windDirectionDeg}
-      />}
+      />
 
       {/* Battery group */}
       <group ref={batteryGroupRef} />

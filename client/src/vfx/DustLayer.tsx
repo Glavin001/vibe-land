@@ -92,8 +92,10 @@ export function DustLayer({
   // The volumetric renderer bakes a 3D texture; a GL that cannot render to
   // one says so after the first layer, and the layer falls back to sprites.
   const [volumeFailed, setVolumeFailed] = useState(false);
-  const highp = gl.capabilities.precision === 'highp';
-  const volumetric = mode === 'volumetric' && highp && !volumeFailed;
+  const highp = gl.capabilities?.precision === 'highp';
+  // The volumetric pass is a WebGL frame-pipeline stage, not yet ported to
+  // the WebGPU path: there the dust draws as sprites.
+  const volumetric = !__WEBGPU__ && mode === 'volumetric' && highp && !volumeFailed;
 
   const lighting = useMemo<DustLighting>(() => {
     const dir = sunDirection(sunElevationDeg, sunAzimuthDeg);

@@ -126,31 +126,56 @@ const RIGHT = new THREE.Vector3();
 const UP = new THREE.Vector3();
 const SUN_VIEW = new THREE.Vector3();
 
+/** The sprites' inputs, read by the GLSL material and by the WebGPU path's. */
+export type DustSpriteUniforms = ReturnType<typeof newSpriteUniforms>;
+
+function newSpriteUniforms() {
+  return {
+    uRight: { value: new THREE.Vector3(1, 0, 0) },
+    uUp: { value: new THREE.Vector3(0, 1, 0) },
+    uSunDirView: { value: new THREE.Vector3(0, 1, 0) },
+    uSunColor: { value: new THREE.Color() },
+    uSkyColor: { value: new THREE.Color() },
+    uGroundColor: { value: new THREE.Color() },
+    uAlbedo: { value: [
+      new THREE.Color(0xb3afa8).convertSRGBToLinear(),
+      new THREE.Color(0x8f7250).convertSRGBToLinear(),
+      new THREE.Color(0x66686c).convertSRGBToLinear(),
+    ] },
+    uFogColor: { value: new THREE.Color() },
+    uFogDensity: { value: 0 },
+  };
+}
+
+/**
+ * The WebGPU path's sprite material (vfx/dustSpriteNodes.ts, TSL). Registered
+ * by the webgpu build's `@render-backend/install`, so this module never
+ * imports three/webgpu.
+ */
+let spriteNodeMaterial: ((uniforms: DustSpriteUniforms) => THREE.Material) | null = null;
+
+export function registerDustSpriteNodeMaterial(factory: (uniforms: DustSpriteUniforms) => THREE.Material): void {
+  spriteNodeMaterial = factory;
+}
+
 /**
  * One sprite material for the page, never disposed. The layer mounts and
  * unmounts with the render governor's sprite rung, and a material disposed on
  * unmount releases its program: every return to sprites recompiled it, a
  * 20-80 ms first-draw stall in the middle of the storm that caused the rung.
  */
-let sharedMaterial: THREE.ShaderMaterial | null = null;
+let sharedMaterial: { material: THREE.Material; uniforms: DustSpriteUniforms } | null = null;
 
-function spriteMaterial(): THREE.ShaderMaterial {
-  sharedMaterial ??= new THREE.ShaderMaterial({
-    uniforms: {
-      uRight: { value: new THREE.Vector3(1, 0, 0) },
-      uUp: { value: new THREE.Vector3(0, 1, 0) },
-      uSunDirView: { value: new THREE.Vector3(0, 1, 0) },
-      uSunColor: { value: new THREE.Color() },
-      uSkyColor: { value: new THREE.Color() },
-      uGroundColor: { value: new THREE.Color() },
-      uAlbedo: { value: [
-        new THREE.Color(0xb3afa8).convertSRGBToLinear(),
-        new THREE.Color(0x8f7250).convertSRGBToLinear(),
-        new THREE.Color(0x66686c).convertSRGBToLinear(),
-      ] },
-      uFogColor: { value: new THREE.Color() },
-      uFogDensity: { value: 0 },
-    },
+function spriteMaterial(): { material: THREE.Material; uniforms: DustSpriteUniforms } {
+  if (sharedMaterial) return sharedMaterial;
+  const uniforms = newSpriteUniforms();
+  if (__WEBGPU__) {
+    if (!spriteNodeMaterial) throw new Error('WebGPU dust sprite material not registered (@render-backend/install)');
+    sharedMaterial = { material: spriteNodeMaterial(uniforms), uniforms };
+    return sharedMaterial;
+  }
+  sharedMaterial = { uniforms, material: new THREE.ShaderMaterial({
+    uniforms,
     vertexShader: VERTEX,
     fragmentShader: FRAGMENT,
     transparent: true,
@@ -158,7 +183,7 @@ function spriteMaterial(): THREE.ShaderMaterial {
     depthWrite: false,
     blending: THREE.NormalBlending,
     premultipliedAlpha: true,
-  });
+  }) };
   return sharedMaterial;
 }
 
@@ -187,18 +212,17 @@ export function DustSprites({ store, lighting, wind }: DustSpritesProps) {
     return { geometry, attrs };
   }, []);
 
-  const material = useMemo(() => spriteMaterial(), []);
+  const { material, uniforms: u } = useMemo(() => spriteMaterial(), []);
 
   useEffect(() => () => {
     geometry.dispose();
   }, [geometry]);
 
   useEffect(() => {
-    const u = material.uniforms;
-    (u.uSunColor.value as THREE.Color).copy(lighting.sunColor);
-    (u.uSkyColor.value as THREE.Color).copy(lighting.skyColor);
-    (u.uGroundColor.value as THREE.Color).copy(lighting.groundColor);
-  }, [material, lighting]);
+    u.uSunColor.value.copy(lighting.sunColor);
+    u.uSkyColor.value.copy(lighting.skyColor);
+    u.uGroundColor.value.copy(lighting.groundColor);
+  }, [u, lighting]);
 
   const tuningRef = useRef(lookTuning());
   useEffect(() => subscribeLookTuning((next) => { tuningRef.current = next; }), []);
@@ -285,13 +309,12 @@ export function DustSprites({ store, lighting, wind }: DustSpritesProps) {
       attr.addUpdateRange(0, n * attr.itemSize);
       attr.needsUpdate = true;
     }
-    const u = material.uniforms;
     camera.matrixWorld.extractBasis(RIGHT, UP, SUN_VIEW);
-    (u.uRight.value as THREE.Vector3).copy(RIGHT);
-    (u.uUp.value as THREE.Vector3).copy(UP);
+    u.uRight.value.copy(RIGHT);
+    u.uUp.value.copy(UP);
     SUN_VIEW.copy(lighting.sunDir).transformDirection(camera.matrixWorldInverse);
-    (u.uSunDirView.value as THREE.Vector3).copy(SUN_VIEW);
-    if (fog && 'color' in fog) (u.uFogColor.value as THREE.Color).copy(fog.color);
+    u.uSunDirView.value.copy(SUN_VIEW);
+    if (fog && 'color' in fog) u.uFogColor.value.copy(fog.color);
     u.uFogDensity.value = fogDensity;
     renderStats.dustDrawn = n;
     renderStats.dustDrawnHalf = 0;
