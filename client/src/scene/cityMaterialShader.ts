@@ -741,10 +741,30 @@ export function applyCityTriplanar(
  * is neither), so worn patches have to come from the macro field. Threshold
  * and width are smoothstep edges over that field.
  */
-const groundUniforms = {
+export const groundShaderUniforms = {
   groundDirtStart: { value: 0.56 },
   groundDirtEnd: { value: 0.72 },
 };
+const groundUniforms = groundShaderUniforms;
+
+/** How the terrain is textured, for the WebGPU path's node material. */
+export interface GroundTexturesConfig {
+  surface: boolean;
+  hero: boolean;
+  grassCover: boolean;
+}
+
+/**
+ * The WebGPU path's ground material (scene/groundNodes.ts, TSL). Registered
+ * by the webgpu build's `@render-backend/install`, so this module never
+ * imports three/webgpu.
+ */
+type GroundNodeMaterialFactory = (source: THREE.Material, config: GroundTexturesConfig) => THREE.Material;
+let groundNodeMaterial: GroundNodeMaterialFactory | null = null;
+
+export function registerGroundNodeMaterial(factory: GroundNodeMaterialFactory): void {
+  groundNodeMaterial = factory;
+}
 
 export function setGroundTuning(next: { dirtStart?: number; dirtEnd?: number }): void {
   if (typeof next.dirtStart === 'number') groundUniforms.groundDirtStart.value = next.dirtStart;
@@ -888,7 +908,9 @@ reflectedLight.indirectDiffuse *= groundOcclusion;
 `;
 
 /**
- * Attach the grass/dirt injection to the terrain material.
+ * Attach the grass/dirt injection to the terrain material, and return the
+ * material to draw with: `material` itself on WebGL, the node material the
+ * WebGPU path builds from it (scene/groundNodes.ts) there.
  *
  * Same factory discipline as the city: never reachable via Material.clone().
  * The slope-shade the terrain always had is preserved by the caller's own
@@ -899,9 +921,11 @@ export function applyGroundTextures(
   surface: boolean,
   heroRequested: boolean,
   grassCover = false,
-): void {
-  // Untextured ground on the WebGPU path, like the city (applyCityTriplanar).
-  if (__WEBGPU__) return;
+): THREE.Material {
+  if (__WEBGPU__) {
+    if (!groundNodeMaterial) throw new Error('WebGPU ground material not registered (@render-backend/install)');
+    return groundNodeMaterial(material, { surface, hero: heroRequested, grassCover });
+  }
   // Like the city: the hero stack's detail-aware and normal work needs the
   // surface array, so the albedo tier keeps the plain path.
   const hero = heroRequested && surface;
@@ -972,4 +996,5 @@ export function applyGroundTextures(
   };
   material.customProgramCacheKey = () =>
     `ground-${surface ? 'pbr' : 'albedo'}-${hero ? 'hero' : 'plain'}-${grassCover ? 'canopy' : 'bare'}-v3`;
+  return material;
 }

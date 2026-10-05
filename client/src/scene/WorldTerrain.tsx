@@ -223,7 +223,7 @@ function buildTerrainMaterial(
   materials: TerrainMaterial[],
   variant: string = terrainVariant(),
   grassCover = false,
-): THREE.MeshStandardMaterial {
+): THREE.Material {
   const avgRoughness = materials.length > 0
     ? materials.reduce((sum, m) => sum + m.roughness, 0) / materials.length
     : 0.95;
@@ -232,8 +232,7 @@ function buildTerrainMaterial(
     : 0.02;
 
   const [detail, hero] = variant.split(':');
-  // The WebGPU path draws the untextured fallback (painted vertex colours).
-  const textured = detail !== 'off' && !__WEBGPU__;
+  const textured = detail !== 'off';
   const mat = new THREE.MeshStandardMaterial({
     // With real ground textures the splat palette would double-tint them; the
     // untextured fallback keeps the painted vertex colours it always had.
@@ -244,8 +243,11 @@ function buildTerrainMaterial(
     metalness: textured ? 0 : avgMetalness,
     dithering: true,
   });
-  // The slope shade is a GLSL patch; not on the simple WebGPU path.
-  if (__WEBGPU__) return mat;
+  // WebGPU: the ground's node material (no slope shade: it is a GLSL patch,
+  // and zero on the flat city ground).
+  if (__WEBGPU__) {
+    return textured ? applyGroundTextures(mat, detail === 'full' && variant.endsWith('pbr'), hero === 'hero', grassCover) : mat;
+  }
 
   mat.onBeforeCompile = (shader) => {
     shader.fragmentShader = shader.fragmentShader.replace(
