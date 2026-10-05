@@ -27,6 +27,13 @@ fn setup_with_engine_offset(wheel_strength: f32, engine_x: f32) -> World {
     setup_scene(wheel_strength, engine_x, false, false)
 }
 fn setup_scene(wheel_strength: f32, engine_x: f32, axle: bool, free_fall: bool) -> World {
+    setup_scene_with_rubble(wheel_strength, engine_x, axle, free_fall, &[])
+}
+/// Rubble cubes (centres; 0.3 m half extent, 60 kg each), authored as one
+/// unbonded native structure beside the car before the stage is configured.
+const RUBBLE: u32 = 201;
+fn setup_scene_with_rubble(wheel_strength: f32, engine_x: f32, axle: bool, free_fall: bool,
+    rubble: &[Vec3]) -> World {
     let mut world = World::new(WorldConfig::default()).expect("required real GPU world");
     if !free_fall { world
         .add_static_box(StaticBoxDesc {
@@ -186,6 +193,19 @@ fn setup_scene(wheel_strength: f32, engine_x: f32, axle: bool, free_fall: bool) 
             },
         )
         .unwrap();
+    if !rubble.is_empty() {
+        let nodes: Vec<ChunkNodeDesc> = rubble.iter().enumerate().map(|(i, c)| ChunkNodeDesc {
+            node_index: i as u32,
+            centroid: *c,
+            mass: 60.,
+            volume: 0.216,
+            geom_kind: 0,
+            half_extents: v(0.3, 0.3, 0.3),
+            convex_points: Vec::new(),
+        }).collect();
+        world.native_create_destructible(RUBBLE, Pose { position: v(0., 0., 0.), rotation: Quat::IDENTITY },
+            &nodes, &[], DestructibleSettings::default(), 1 << 5, u32::MAX).unwrap();
+    }
     world.step().unwrap();
     let configured = world
         .native_configure(NativeConfig {
@@ -202,7 +222,7 @@ fn setup_scene(wheel_strength: f32, engine_x: f32, axle: bool, free_fall: bool) 
             verdict_sample_ticks: 1,
         })
         .unwrap();
-    assert_eq!(configured.chunks as usize, positions.len());
+    assert_eq!(configured.chunks as usize, positions.len() + rubble.len());
     assert_eq!(configured.bonds as usize, positions.len()-1);
     world
 }
@@ -419,4 +439,71 @@ fn exercise_impact(wheel_strength: f32, expect_fracture: bool) {
     );
     world.native_clear().unwrap();
     world.remove_actor(CAR).unwrap();
+}
+
+fn hibernation(enabled: bool) -> HibernationConfig {
+    HibernationConfig { enabled, wake_dv: 0.31 }
+}
+
+/// Park for `park` ticks, then drive at a third throttle for `drive` ticks.
+/// Returns the car's final position.
+fn park_then_drive(world: &mut World, park: u32, drive: u32) -> Vec3 {
+    for tick in 0..park + drive {
+        world
+            .drive_vehicle(CAR, VehicleCommands { throttle: if tick >= park { 0.35 } else { 0. }, ..Default::default() })
+            .unwrap();
+        world.step().unwrap();
+        assert_eq!(world.native_tick().unwrap().error, 0);
+    }
+    world.vehicle_snapshots().unwrap()[0].pose.position
+}
+
+/// A destructible car parked through many rest windows with hibernation on is
+/// never frozen -- its own bodies are excluded -- and drives exactly as far as
+/// it does without hibernation.
+#[test]
+#[ignore = "requires isolated coherent PhysX ABI 22 GPU SDK, destruction scene v25"]
+fn native_parked_car_never_hibernates_and_still_drives() {
+    let mut control = setup(1e9);
+    let driven = park_then_drive(&mut control, 720, 120);
+    let mut world = setup(1e9);
+    world.native_set_hibernation(hibernation(true)).unwrap();
+    let parked = park_then_drive(&mut world, 720, 0);
+    assert!(world.native_frozen_entities().unwrap().is_empty(), "a parked car froze");
+    let end = park_then_drive(&mut world, 0, 120);
+    println!("parked at {parked:?}; drove to {end:?} (control {driven:?})");
+    assert!(world.native_frozen_entities().unwrap().is_empty());
+    assert!((end.z - parked.z) > 0.3, "the car did not drive after parking");
+    assert!((end.z - driven.z).abs() < 0.01, "drove to {end:?}, control {driven:?}");
+}
+
+/// A car driven slowly into a row of frozen rubble cubes pushes them aside as
+/// it would unfrozen ones: the rubble thaws ahead of the bumper and the car
+/// and the cubes end where they do against an asleep row.
+#[test]
+#[ignore = "requires isolated coherent PhysX ABI 22 GPU SDK, destruction scene v25"]
+fn native_car_driven_into_frozen_rubble_pushes_it() {
+    let row: Vec<Vec3> = (-2..=2).map(|i| v(i as f32 * 0.65, 0.3, 4.0)).collect();
+    let run = |hibernate: bool| {
+        let mut world = setup_scene_with_rubble(1e9, 0., false, false, &row);
+        world.native_set_hibernation(hibernation(hibernate)).unwrap();
+        let car = park_then_drive(&mut world, 480, 240);
+        let cubes: Vec<Vec3> = (0..row.len() as u32)
+            .map(|n| { let a = world.native_chunk_aim(RUBBLE, n).unwrap(); a.center })
+            .collect();
+        let stats = world.native_hibernation_stats().unwrap();
+        (car, cubes, stats)
+    };
+    let (car0, cubes0, _) = run(false);
+    let (car1, cubes1, stats) = run(true);
+    println!("car {car1:?} vs control {car0:?}; {stats:?}");
+    let moved = cubes0.iter().zip(&row).filter(|(c, r)| ((c.x - r.x).powi(2) + (c.z - r.z).powi(2)).sqrt() > 0.05).count();
+    assert!(car0.z > 3.0 && moved > 0, "the control car never reached the rubble: {car0:?}");
+    assert!(stats.froze_total >= row.len() as u64, "the rubble never froze: {stats:?}");
+    assert!(stats.thaw_approach >= 1, "the car reached the rubble without thawing it: {stats:?}");
+    let gap = |a: Vec3, b: Vec3| ((a.x - b.x).powi(2) + (a.y - b.y).powi(2) + (a.z - b.z).powi(2)).sqrt();
+    assert!(gap(car1, car0) < 0.05, "car ended at {car1:?}, control {car0:?}");
+    for (a, b) in cubes1.iter().zip(&cubes0) {
+        assert!(gap(*a, *b) < 0.10, "a cube ended at {a:?}, control {b:?}");
+    }
 }
