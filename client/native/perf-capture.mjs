@@ -95,6 +95,11 @@ async function run() {
       physx: s.physics_last_step_ms,
       awake: city.chunksAwake ?? 0,
       bonds: city.brokenBonds ?? 0,
+      // The client's share of the stream: packet decode and the city layer's
+      // per-frame pose work, and how far behind the server it renders.
+      decodeMs: e2e.frameProfile()?.decodeMs ?? 0,
+      cityFrameMs: e2e.frameProfile()?.cityFrameMs ?? 0,
+      delayTicks: city.sampleDelayTicks ?? 0,
     });
   }, 100);
 
@@ -156,6 +161,7 @@ async function run() {
     const max = (key) => Math.max(0, ...st.map((s) => s[key] ?? 0));
     const slow = ms.filter((v) => v > 20).length;
     log(`${name.padEnd(16)} frames ${String(ms.length).padStart(4)}  render ms median ${quantile(ms, 0.5).toFixed(1)} p95 ${quantile(ms, 0.95).toFixed(1)} p99 ${quantile(ms, 0.99).toFixed(1)} worst ${quantile(ms, 1).toFixed(1)}  >20ms ${slow} (${((slow / Math.max(1, ms.length)) * 100).toFixed(1)}%)`
+      + `  |  client decode avg ${(st.reduce((a, b) => a + (b.decodeMs ?? 0), 0) / Math.max(1, st.length)).toFixed(2)} max ${max('decodeMs').toFixed(1)} ms, city layer avg ${(st.reduce((a, b) => a + (b.cityFrameMs ?? 0), 0) / Math.max(1, st.length)).toFixed(2)} ms, playout delay ${max('delayTicks')} ticks`
       + `  |  sim TPS min ${Number.isFinite(tpsMin) ? tpsMin.toFixed(0) : '-'}  tick avg<=${max('tickAvg').toFixed(1)} max ${max('tickMax').toFixed(1)} ms  physx<=${max('physx').toFixed(1)} ms  awake<=${max('awake')}  bonds ${max('bonds')}`);
   }
   for (const f of longFrames) log(`long frame ${f.ms.toFixed(0)} ms in "${f.phase}", ${f.into.toFixed(0)} ms into it`);
