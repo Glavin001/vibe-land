@@ -15,6 +15,7 @@ import * as THREE from 'three';
 
 import { createWebGPURenderer } from '../graphics/webgpu/rendererBackend';
 import { createPointerCaptureRequest } from '../input/pointerMode';
+import { sceneCanvasProps } from '../scene/RenderGovernor';
 import { setInProcessLink, type InProcessLink } from '../net/inProcessClient';
 import { nativeHud } from './nativeHud';
 import { NativeCity } from './NativeCity';
@@ -56,14 +57,18 @@ async function main(): Promise<void> {
   // a bare root has to do it itself.
   extend(THREE as unknown as Parameters<typeof extend>[0]);
   const root = createRoot(canvas);
+  // The web game's scene settings (shadows, tone mapping, camera); the
+  // renderer, size and frame loop are the native shell's own.
+  const scene = sceneCanvasProps();
   root.configure({
     gl: renderer,
     events,
     size: { width, height, top: 0, left: 0 },
     dpr: 1,
-    shadows: false,
+    shadows: scene.shadows,
+    flat: scene.flat,
     frameloop: 'always',
-    camera: { fov: 75, near: 0.1, far: 200, position: [0, 5, 10] },
+    camera: scene.camera,
   });
   root.render(<NativeCity matchId={MATCH_ID} />);
 

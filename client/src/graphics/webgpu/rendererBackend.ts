@@ -6,8 +6,8 @@
 // its first frame, so the Canvas starts with `frameloop: 'never'` and gets
 // its real frameloop back once init resolves.
 //
-// v1 of the WebGPU path is deliberately simple: no shadows, no custom
-// shaders (see the __WEBGPU__ gates at each one).
+// Custom shaders on the WebGPU path are TSL ports (see the __WEBGPU__ gates
+// at each one).
 
 import * as THREE from 'three';
 import type { RootState } from '@react-three/fiber';
@@ -44,7 +44,6 @@ export function withRenderBackend<P extends CanvasProps>(props: P): P {
   const frameloop = props.frameloop ?? 'always';
   return {
     ...props,
-    shadows: false,
     frameloop: rendererReady ? frameloop : 'never',
     gl: (canvas: HTMLCanvasElement) => createWebGPURenderer(canvas, options),
     onCreated: (state: RootState) => {

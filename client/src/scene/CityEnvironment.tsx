@@ -120,7 +120,7 @@ export function CityEnvironment({
       />
       <SunLight
         fogColor={resolvedFogColor}
-        castShadow={shadowsOn && !__WEBGPU__}
+        castShadow={shadowsOn}
         shadowHalfExtent={qualityIsPretty ? 48 : 60}
         shadowMapSize={shadowMapTexels ?? (qualityIsPretty ? 2048 : 1024)}
       />
