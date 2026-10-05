@@ -124,7 +124,15 @@ doc.documentElement ??= inertElement({}, 'html');
 inertElement(doc.documentElement, 'html');
 if (doc.body) inertElement(doc.body, 'body');
 if (doc.head) inertElement(doc.head, 'head');
-if (g.canvas) inertElement(g.canvas, 'canvas');
+if (g.canvas) {
+  inertElement(g.canvas, 'canvas');
+  // The canvas is the whole window: it contains every event target and holds
+  // focus whenever the window does (input/keyboardMouse.ts checks both).
+  g.canvas.contains = () => true;
+  g.canvas.focus = () => { doc.activeElement = g.canvas; };
+  g.canvas.blur = () => {};
+  doc.activeElement = g.canvas;
+}
 
 // DOM classes code tests against with instanceof (focus checks, drei).
 // Nothing in mystral is an instance of them, which is the right answer.

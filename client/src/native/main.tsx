@@ -14,6 +14,7 @@ import { createRoot, events, extend } from '@react-three/fiber';
 import * as THREE from 'three';
 
 import { createWebGPURenderer } from '../graphics/webgpu/rendererBackend';
+import { setPointerMode } from '../input/pointerMode';
 import { setInProcessLink, type InProcessLink } from '../net/inProcessClient';
 import { NativeCity } from './NativeCity';
 
@@ -33,6 +34,9 @@ async function main(): Promise<void> {
   const sim = __mystralLoadNativeModule(__VIBE_SIM_LIB__);
   console.log(`[native] sim module loaded (${sim.backend}); starting ${MATCH_ID}`);
   setInProcessLink(sim.startCity(MATCH_ID));
+  // No pointer lock in mystral yet: look by dragging with a mouse button held
+  // (input/keyboardMouse.ts), as embedded browsers without capture do.
+  setPointerMode('drag');
 
   const width = canvas.width || 1280;
   const height = canvas.height || 720;

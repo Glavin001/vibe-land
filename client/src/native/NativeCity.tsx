@@ -8,6 +8,7 @@ import { loadInputBindings } from '../input/bindings';
 import { FrameClock } from '../scene/FrameClock';
 import { GameWorld } from '../scene/GameWorld';
 import { CITY_WORLD_DOCUMENT } from '../world/cityWorld';
+import { NativeCrosshair } from './NativeCrosshair';
 
 const inputBindings = loadInputBindings();
 
@@ -15,6 +16,7 @@ export function NativeCity({ matchId = 'city-default' }: { matchId?: string }) {
   return (
     <>
       <FrameClock />
+      <NativeCrosshair />
       <Suspense fallback={null}>
         <GameWorld
           mode="multiplayer"
