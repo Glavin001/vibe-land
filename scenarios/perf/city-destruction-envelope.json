@@ -1,0 +1,6 @@
+{
+  "name": "city-destruction-envelope",
+  "why": "Destruction performance across regimes on one city: intact idle; a heavy barrage (40 meteors half a second apart); 60 s of post-destruction settling with the city full of debris; then a heavier barrage on the wreckage (80 meteors a quarter second apart) and 30 s of aftermath. Each step is reported separately.",
+  "env": {"VIBE_PHYSX_PROFILE": "0"},
+  "steps": [{"idle": 10}, {"meteors": 40, "every_s": 0.5}, {"idle": 60}, {"meteors": 80, "every_s": 0.25}, {"idle": 30}]
+}
