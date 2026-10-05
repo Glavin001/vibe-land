@@ -218,7 +218,8 @@ pub fn run_with(fixture: &Fixture, ticks: u32, hibernate: bool) -> Outcome {
             fibre_bending: true,
             reserved_contact_pairs: chunks * 3 / 2,
             preserve_unchanged_contact_pairs: true,
-            gpu_island_repair: true,
+            // Hibernation needs host-maintained islands (no GPU island repair).
+            gpu_island_repair: !hibernate,
             verdict_sample_ticks: 60,
         })
         .expect("configure stage");

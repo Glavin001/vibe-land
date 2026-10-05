@@ -106,7 +106,9 @@ fn native_config(chunks: u32) -> NativeConfig {
         fibre_bending: true,
         reserved_contact_pairs: chunks * 6 + 64,
         preserve_unchanged_contact_pairs: true,
-        gpu_island_repair: true,
+        // Hibernation needs host-maintained islands; every arm here, frozen
+        // or control, runs the same configuration.
+        gpu_island_repair: false,
         verdict_sample_ticks: 1,
     }
 }
@@ -1277,4 +1279,233 @@ fn a_stack_on_the_ground_freezes_bottom_up() {
     w.native_set_hibernation(on()).expect("config");
     steps(&mut w, 60 + 3 * WINDOW);
     assert_eq!(frozen(&w).len(), 3, "{:?}", w.native_hibernation_stats().expect("stats"));
+}
+
+/// Freezing and thawing the same bodies between two steps, and on
+/// consecutive steps, must leave PhysX's island bookkeeping sound. (A city
+/// run crashed in IslandSim::mergeIslandsInternal during island generation.)
+#[test]
+fn freezing_and_thawing_back_to_back_keeps_islands_sound() {
+    let mut w = world(-9.81);
+    let nodes = rubble(&mut w, 4, 4, 3);
+    steps(&mut w, 60);
+    let entities: Vec<u32> = (0..nodes.len() as u32).map(|n| chunk(&w, n).1).collect();
+    for round in 0..40 {
+        // Half the rounds: freeze and thaw between the same two steps.
+        let froze = w.native_set_entities_hibernated(&entities, true).expect("freeze");
+        if round % 2 == 0 {
+            let thawed = w.native_set_entities_hibernated(&entities, false).expect("thaw");
+            assert_eq!(thawed, froze);
+            step(&mut w);
+        } else {
+            step(&mut w);
+            assert_eq!(w.native_set_entities_hibernated(&entities, false).expect("thaw"), froze);
+            step(&mut w);
+        }
+    }
+    steps(&mut w, 60);
+    assert!(w.native_validate_mappings().expect("audit"));
+}
+
+/// Many frozen multi-chunk fragments fracturing under fire: every split
+/// thaws its fragment inside the stage's correction pass, mid-step.
+#[test]
+fn a_volley_into_frozen_debris_keeps_islands_sound() {
+    let mut w = world(-9.81);
+    shot_wall(&mut w);
+    steps(&mut w, 30);
+    // A light first shot so most of the wall falls as multi-chunk pieces.
+    w.native_fire_round(RoundDesc {
+        position: Vec3::new(0.0, 4.5, 1.5),
+        direction: Vec3::new(0.0, 0.0, -1.0),
+        momentum_ns: 1.5e5,
+        radius: 0.4,
+        speed: 20.0,
+        ttl_ticks: 20,
+    })
+    .expect("fire");
+    steps(&mut w, 4 * WINDOW);
+    let fragments: Vec<u32> = rows(&w).iter().filter(|r| !r.kinematic).map(|r| r.entity).collect();
+    let froze = w.native_set_entities_hibernated(&fragments, true).expect("freeze");
+    println!("froze {froze} of {} fragments", fragments.len());
+    for volley in 0..30u32 {
+        let x = (volley % 6) as f32 - 2.5;
+        let y = 0.5 + (volley % 4) as f32;
+        w.native_fire_round(RoundDesc {
+            position: Vec3::new(x, y, 3.0),
+            direction: Vec3::new(0.0, -0.1, -1.0),
+            momentum_ns: 4.0e5,
+            radius: 0.4,
+            speed: 25.0,
+            ttl_ticks: 30,
+        })
+        .expect("fire");
+        steps(&mut w, 6);
+        // Refreeze whatever is free again, so frozen bodies keep meeting fractures.
+        let free: Vec<u32> = rows(&w).iter().filter(|r| !r.kinematic).map(|r| r.entity).collect();
+        w.native_set_entities_hibernated(&free, true).expect("refreeze");
+    }
+    let stats = w.native_hibernation_stats().expect("stats");
+    println!("{stats:?}");
+    steps(&mut w, 120);
+    assert!(w.native_validate_mappings().expect("audit"));
+}
+
+/// The same, on bodies that are awake and colliding: a block of cubes dropped
+/// into a heap, frozen and thawed in alternating subsets every step while it
+/// is still tumbling (the city freezes awake rocking debris in a live island).
+#[test]
+fn freezing_and_thawing_awake_colliding_bodies_keeps_islands_sound() {
+    let mut w = world(-9.81);
+    let mut nodes = Vec::new();
+    for layer in 0..6u32 {
+        for row in 0..4u32 {
+            for column in 0..4u32 {
+                let n = nodes.len() as u32;
+                let jitter = ((n * 37) % 11) as f32 * 0.02;
+                nodes.push(cube(n, Vec3::new(column as f32 * 1.02 - 1.5 + jitter, 1.0 + layer as f32 * 1.1, row as f32 * 1.02 - 1.5)));
+            }
+        }
+    }
+    install(&mut w, &nodes, &[], 30_000.0);
+    let entities: Vec<u32> = (0..nodes.len() as u32).map(|n| chunk(&w, n).1).collect();
+    for t in 0..240u32 {
+        let pick: Vec<u32> = entities.iter().copied().enumerate()
+            .filter(|(i, _)| (*i as u32 + t) % 3 == 0).map(|(_, e)| e).collect();
+        if t % 2 == 0 {
+            w.native_set_entities_hibernated(&pick, true).expect("freeze");
+        } else {
+            w.native_set_entities_hibernated(&entities, false).expect("thaw");
+        }
+        step(&mut w);
+    }
+    w.native_set_entities_hibernated(&entities, false).expect("thaw");
+    steps(&mut w, 120);
+    assert!(w.native_validate_mappings().expect("audit"));
+}
+
+/// What the city run did before it crashed: awake bodies in a live island are
+/// frozen, and some of them are thawed again before the next step.
+#[test]
+fn freezing_then_thawing_awake_bodies_before_the_next_step_keeps_islands_sound() {
+    let mut w = world(-9.81);
+    let mut nodes = Vec::new();
+    for layer in 0..6u32 {
+        for row in 0..4u32 {
+            for column in 0..4u32 {
+                let n = nodes.len() as u32;
+                let jitter = ((n * 37) % 11) as f32 * 0.02;
+                nodes.push(cube(n, Vec3::new(column as f32 * 1.02 - 1.5 + jitter, 1.0 + layer as f32 * 1.1, row as f32 * 1.02 - 1.5)));
+            }
+        }
+    }
+    install(&mut w, &nodes, &[], 30_000.0);
+    let entities: Vec<u32> = (0..nodes.len() as u32).map(|n| chunk(&w, n).1).collect();
+    for t in 0..240u32 {
+        let pick: Vec<u32> = entities.iter().copied().enumerate()
+            .filter(|(i, _)| (*i as u32 + t) % 3 == 0).map(|(_, e)| e).collect();
+        w.native_set_entities_hibernated(&pick, true).expect("freeze");
+        let some: Vec<u32> = pick.iter().copied().step_by(2).collect();
+        w.native_set_entities_hibernated(&some, false).expect("thaw some at once");
+        step(&mut w);
+        w.native_set_entities_hibernated(&entities, false).expect("thaw the rest");
+    }
+    steps(&mut w, 120);
+    assert!(w.native_validate_mappings().expect("audit"));
+}
+
+/// Freeze/thaw of awake debris while the stage is fracturing and correcting
+/// every tick, as in the city's aftermath. `mode`: 0 freeze a subset and thaw
+/// part of it before the step, thaw the rest after; 1 freeze before the step,
+/// thaw everything after it; 2 freeze and thaw everything before the step
+/// (no step ever sees a frozen body); 3 freeze once and let fractures alone
+/// thaw (no explicit thaws).
+fn collapse_with_hibernation(mode: u32) -> u32 {
+    let mut w = world(-9.81);
+    shot_wall(&mut w);
+    steps(&mut w, 10);
+    for k in 0..6u32 {
+        w.native_fire_round(RoundDesc {
+            position: Vec3::new(k as f32 - 2.5, 3.5, 1.5),
+            direction: Vec3::new(0.0, 0.0, -1.0),
+            momentum_ns: 4.0e5,
+            radius: 0.4,
+            speed: 20.0,
+            ttl_ticks: 20,
+        })
+        .expect("fire");
+    }
+    let mut corrections = 0;
+    for t in 0..300u32 {
+        let free: Vec<u32> = rows(&w).iter().filter(|r| !r.kinematic).map(|r| r.entity).collect();
+        let mut pick: Vec<u32> = free.iter().copied().enumerate().filter(|(i, _)| (*i as u32 + t) % 2 == 0).map(|(_, e)| e).collect();
+        if mode == 4 && t < 60 { pick.clear(); }
+        if mode == 5 {
+            let asleep: Vec<u32> = rows(&w).iter().filter(|r| !r.kinematic && r.sleeping).map(|r| r.entity).collect();
+            pick.retain(|e| asleep.contains(e));
+        }
+        match mode {
+            0 => {
+                w.native_set_entities_hibernated(&pick, true).expect("freeze");
+                let some: Vec<u32> = pick.iter().copied().step_by(3).collect();
+                w.native_set_entities_hibernated(&some, false).expect("thaw some");
+            }
+            1 | 4 | 5 => { w.native_set_entities_hibernated(&pick, true).expect("freeze"); }
+            2 => {
+                w.native_set_entities_hibernated(&pick, true).expect("freeze");
+                w.native_set_entities_hibernated(&pick, false).expect("thaw");
+            }
+            _ => { if t % 30 == 0 { w.native_set_entities_hibernated(&free, true).expect("freeze"); } }
+        }
+        w.step().expect("step");
+        let status = w.native_tick().expect("observe");
+        assert_eq!(status.error, 0);
+        corrections += status.correction_passes;
+        if std::env::var_os("TRACE_COLLAPSE").is_some() {
+            let h = w.native_hibernation_stats().expect("stats");
+            eprintln!("t{t} corrections {} broken {} frozen {} topology-thaws {}", status.correction_passes, status.broken_bonds, h.frozen, h.thaw_topology);
+        }
+        if mode <= 1 || mode >= 4 {
+            w.native_set_entities_hibernated(&free, false).expect("thaw the rest");
+        }
+    }
+    steps(&mut w, 120);
+    assert!(w.native_validate_mappings().expect("audit"));
+    corrections
+}
+
+#[test]
+fn collapse_freeze_thaw_mixed() { println!("corrections {}", collapse_with_hibernation(0)); }
+#[test]
+fn collapse_freeze_then_thaw_after_step() { println!("corrections {}", collapse_with_hibernation(1)); }
+#[test]
+fn collapse_freeze_and_thaw_before_step() { println!("corrections {}", collapse_with_hibernation(2)); }
+#[test]
+fn collapse_freeze_thaw_after_a_second() { println!("corrections {}", collapse_with_hibernation(4)); }
+#[test]
+fn collapse_freeze_thaw_only_asleep() { println!("corrections {}", collapse_with_hibernation(5)); }
+#[test]
+fn collapse_fractures_thaw_frozen() { println!("corrections {}", collapse_with_hibernation(3)); }
+
+/// Hibernation and GPU island repair are exclusive: on a stage configured with
+/// repair, turning hibernation on is refused with an explanation, and nothing
+/// freezes.
+#[test]
+fn hibernation_is_refused_under_gpu_island_repair() {
+    let mut w = world(-9.81);
+    let nodes = [cube(0, Vec3::new(0.0, 0.5, 0.0)), cube(1, Vec3::new(2.0, 0.5, 0.0))];
+    w.native_attach().expect("attach");
+    let at = Pose { position: Vec3::new(0.0, 0.0, 0.0), rotation: Quat::IDENTITY };
+    w.native_create_destructible(0, at, &nodes, &[], settings(30_000.0), GROUP_CHUNK, ALL).expect("author");
+    w.step().expect("identity step");
+    let mut config = native_config(2);
+    config.gpu_island_repair = true;
+    w.native_configure(config).expect("configure");
+    let error = w.native_set_hibernation(on()).expect_err("hibernation accepted under island repair");
+    println!("refused: {error:?}");
+    assert!(format!("{error:?}").contains("island repair"));
+    steps(&mut w, 60);
+    let entity = chunk(&w, 0).1;
+    assert!(w.native_set_entities_hibernated(&[entity], true).is_err());
+    assert!(frozen(&w).is_empty());
 }

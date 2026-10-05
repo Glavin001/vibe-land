@@ -974,7 +974,16 @@ FfiNativeConfigured NativeDestruction::configure(const FfiNativeConfig &config) 
   // unexplained spike at the moment of first contact and nowhere else.
   desc.reservedContactPairs = config.reserved_contact_pairs;
 #endif
-  desc.gpuIslandRepair = config.gpu_island_repair;
+  // Debris hibernation switches bodies kinematic, which needs host-maintained
+  // island membership: PhysX refuses it under GPU island repair. Hibernation
+  // on means island repair off (its cost is measured in the hibernation
+  // runs; see docs/debris-hibernation.md).
+  // VIBE_CITY_NATIVE_GPU_ISLAND_REPAIR=0 turns repair off on its own, so a
+  // measurement can tell its cost from hibernation's effect.
+  const char *repair_env = std::getenv("VIBE_CITY_NATIVE_GPU_ISLAND_REPAIR");
+  const bool repair_allowed = repair_env == nullptr || repair_env[0] != '0';
+  desc.gpuIslandRepair = config.gpu_island_repair && repair_allowed && !s.hibernation.enabled;
+  s.gpu_island_repair = desc.gpuIslandRepair;
 #if defined(VIBE_PHYSX_HAS_FRAGMENT_GRAVITY)
   // Vehicle2 carriers are weightless (Vehicle2 integrates their gravity) and
   // fragments inherit their source's settings on the GPU, so without this a

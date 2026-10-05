@@ -290,6 +290,9 @@ struct NativeDestruction::State {
 
   // --- debris hibernation (native_hibernation.cc) ---------------------------
   NativeHibernation hibernation;
+  /// Whether the stage was configured with GPU island repair, which rules
+  /// hibernation out (see configure).
+  bool gpu_island_repair = false;
   FrozenIndex frozen_index;
   /// Bodies awake after the last refresh, for the pre-step thaw test.
   std::vector<std::pair<std::uint32_t, std::uint64_t>> awake_keys;

@@ -27,13 +27,13 @@ fn setup_with_engine_offset(wheel_strength: f32, engine_x: f32) -> World {
     setup_scene(wheel_strength, engine_x, false, false)
 }
 fn setup_scene(wheel_strength: f32, engine_x: f32, axle: bool, free_fall: bool) -> World {
-    setup_scene_with_rubble(wheel_strength, engine_x, axle, free_fall, &[])
+    setup_scene_with_rubble(wheel_strength, engine_x, axle, free_fall, &[], true)
 }
 /// Rubble cubes (centres; 0.3 m half extent, 60 kg each), authored as one
 /// unbonded native structure beside the car before the stage is configured.
 const RUBBLE: u32 = 201;
 fn setup_scene_with_rubble(wheel_strength: f32, engine_x: f32, axle: bool, free_fall: bool,
-    rubble: &[Vec3]) -> World {
+    rubble: &[Vec3], island_repair: bool) -> World {
     let mut world = World::new(WorldConfig::default()).expect("required real GPU world");
     if !free_fall { world
         .add_static_box(StaticBoxDesc {
@@ -218,7 +218,7 @@ fn setup_scene_with_rubble(wheel_strength: f32, engine_x: f32, axle: bool, free_
             fibre_bending: true,
             reserved_contact_pairs: 64,
             preserve_unchanged_contact_pairs: false,
-            gpu_island_repair: true,
+            gpu_island_repair: island_repair,
             verdict_sample_ticks: 1,
         })
         .unwrap();
@@ -464,9 +464,10 @@ fn park_then_drive(world: &mut World, park: u32, drive: u32) -> Vec3 {
 #[test]
 #[ignore = "requires isolated coherent PhysX ABI 22 GPU SDK, destruction scene v25"]
 fn native_parked_car_never_hibernates_and_still_drives() {
-    let mut control = setup(1e9);
+    // Hibernation needs the stage without GPU island repair; both arms match.
+    let mut control = setup_scene_with_rubble(1e9, 0., false, false, &[], false);
     let driven = park_then_drive(&mut control, 720, 120);
-    let mut world = setup(1e9);
+    let mut world = setup_scene_with_rubble(1e9, 0., false, false, &[], false);
     world.native_set_hibernation(hibernation(true)).unwrap();
     let parked = park_then_drive(&mut world, 720, 0);
     assert!(world.native_frozen_entities().unwrap().is_empty(), "a parked car froze");
@@ -485,7 +486,7 @@ fn native_parked_car_never_hibernates_and_still_drives() {
 fn native_car_driven_into_frozen_rubble_pushes_it() {
     let row: Vec<Vec3> = (-2..=2).map(|i| v(i as f32 * 0.65, 0.3, 4.0)).collect();
     let run = |hibernate: bool| {
-        let mut world = setup_scene_with_rubble(1e9, 0., false, false, &row);
+        let mut world = setup_scene_with_rubble(1e9, 0., false, false, &row, false);
         world.native_set_hibernation(hibernation(hibernate)).unwrap();
         let car = park_then_drive(&mut world, 480, 240);
         let cubes: Vec<Vec3> = (0..row.len() as u32)

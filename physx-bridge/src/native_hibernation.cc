@@ -42,6 +42,9 @@
 
 #include <algorithm>
 #include <chrono>
+#include <csignal>
+#include <cstdio>
+#include <execinfo.h>
 #include <cstdlib>
 #include <set>
 #include <unordered_set>
@@ -115,7 +118,34 @@ bool supported_by_sdk() {
 
 } // namespace
 
+/// VIBE_CITY_NATIVE_HIBERNATE_TRACE=1: one stderr line per freeze pass and
+/// per thaw batch, for diagnosing a live run.
+bool hibernation_trace() {
+  static const bool on = [] {
+    const char *raw = std::getenv("VIBE_CITY_NATIVE_HIBERNATE_TRACE");
+    return raw != nullptr && raw[0] == '1';
+  }();
+  return on;
+}
+
+namespace {
+/// VIBE_CRASH_BACKTRACE=1 (diagnostic): print the faulting stack on SIGBUS or
+/// SIGSEGV, then die of the same signal. For crashes the OS stops reporting.
+void crash_backtrace(int signal) {
+  void *frames[64];
+  const int n = backtrace(frames, 64);
+  std::fprintf(stderr, "[crash] signal %d, stack:\n", signal);
+  backtrace_symbols_fd(frames, n, 2);
+  std::signal(signal, SIG_DFL);
+  std::raise(signal);
+}
+} // namespace
+
 NativeHibernation native_hibernation_default() {
+  if (const char *raw = std::getenv("VIBE_CRASH_BACKTRACE"); raw != nullptr && raw[0] == '1') {
+    std::signal(SIGBUS, crash_backtrace);
+    std::signal(SIGSEGV, crash_backtrace);
+  }
   NativeHibernation h;
   const char *on = std::getenv("VIBE_CITY_NATIVE_HIBERNATE");
   h.enabled = on != nullptr && on[0] == '1' && supported_by_sdk();
@@ -210,6 +240,10 @@ void NativeDestruction::State::forget_frozen(const Key &key, NativeBody &body,
   frozen_bodies -= 1;
   if (by_stage) {
     thaw_topology += 1;
+    if (hibernation_trace()) {
+      std::fprintf(stderr, "[hibernate] tick %llu topology took frozen serial %u (frozen now %u)\n",
+                   static_cast<unsigned long long>(tick_index), body.serial, frozen_bodies);
+    }
   }
 }
 
@@ -275,6 +309,12 @@ void NativeDestruction::State::hibernate_resting(
       frozen[i] = api.setFragmentsHibernated(&actors[i], 1, true) ? 1 : 0;
     }
   }
+  if (hibernation_trace()) {
+    std::size_t n = 0;
+    for (auto f : frozen) n += f;
+    std::fprintf(stderr, "[hibernate] tick %llu freeze pass: %zu candidates, %zu froze, %zu awake, frozen before %u\n",
+                 static_cast<unsigned long long>(tick_index), candidates.size(), n, awake.size(), frozen_bodies);
+  }
   for (std::size_t i = 0; i < keys.size(); ++i) {
     if (!frozen[i]) {
       continue;
@@ -333,6 +373,11 @@ std::uint32_t NativeDestruction::State::thaw(const std::vector<Key> &keys,
   }
   cause += count;
   thawed_last_step += count;
+  if (hibernation_trace() && count != 0) {
+    std::fprintf(stderr, "[hibernate] tick %llu thawed %u (cause total %llu, frozen now %u)\n",
+                 static_cast<unsigned long long>(tick_index), count,
+                 static_cast<unsigned long long>(cause), frozen_bodies);
+  }
   return count;
 #else
   (void)keys;
@@ -506,6 +551,10 @@ void NativeDestruction::set_hibernation(const FfiHibernationConfig &config) {
                  "hibernation wake_dv must be finite and non-negative");
   native_require(!config.enabled || supported_by_sdk(),
                  "debris hibernation needs PhysX destruction scene v25");
+  native_require(!config.enabled || !s.configured || !s.gpu_island_repair,
+                 "debris hibernation needs the stage configured without GPU island repair "
+                 "(enable hibernation before native_configure, or configure with "
+                 "gpu_island_repair off)");
   if (!config.enabled && s.frozen_bodies != 0) {
     std::vector<Key> keys;
     for (const auto &entry : s.bodies) {
@@ -550,6 +599,8 @@ std::uint32_t NativeDestruction::set_entities_hibernated(
   State &s = *state_;
   native_require(supported_by_sdk(), "debris hibernation needs PhysX destruction scene v25");
   native_require(s.configured, "hibernation needs a configured stage");
+  native_require(!hibernated || !s.gpu_island_repair,
+                 "hibernation needs the stage configured without GPU island repair");
   const std::set<std::uint32_t> wanted(entities.begin(), entities.end());
   std::vector<Key> keys;
   for (const auto &entry : s.bodies) {
