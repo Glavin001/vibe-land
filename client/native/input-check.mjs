@@ -10,6 +10,8 @@
 //   escape    Escape releases the pointer, held Escape (key repeat) too, and
 //             leaving with Cmd+Tab does not capture it again
 //   recapture after Escape, a click captures the pointer again
+//   weapon    2 picks the cannon, the scroll wheel steps to the meteor and
+//             back, 1 picks the rifle
 //
 // Prints one PASS/FAIL line per check and a VERDICT.
 
@@ -32,6 +34,12 @@ function key(type, code, keyName, modifiers = {}) {
   const event = { type, key: keyName, code, keyCode: keyName.toUpperCase().charCodeAt(0), repeat: false,
     ctrlKey: false, shiftKey: false, altKey: false, metaKey: false, ...modifiers, preventDefault: noop, stopPropagation: noop };
   for (const target of ['document', 'window', 'canvas']) __mystralDispatchEvent(target, type, event);
+}
+/** As mystral's dispatchWheelEvent: one notch is 120 px. */
+function wheel(deltaY) {
+  const event = { type: 'wheel', deltaX: 0, deltaY, deltaZ: 0, deltaMode: 0, clientX: 800, clientY: 450,
+    ctrlKey: false, shiftKey: false, altKey: false, metaKey: false, preventDefault: noop, stopPropagation: noop };
+  for (const target of ['document', 'window', 'canvas']) __mystralDispatchEvent(target, 'wheel', event);
 }
 /** As mystral's dispatchMouseEvent. */
 function mouse(type, { button = 0, buttons = 0, movementX = 0, movementY = 0, x = 800, y = 450 } = {}) {
@@ -120,7 +128,19 @@ async function run() {
   await sleep(100);
   record('recapture', isLocked(), `pointer captured after a click: ${isLocked()}`);
 
-  // A frame for the eye: the HUD (crosshair, FPS panel) as the player sees it.
+  // weapon: keys pick, the wheel steps (down = next), as in Call of Duty.
+  const seen = [];
+  const press = async (code, name) => { key('keydown', code, name); await sleep(80); key('keyup', code, name); await sleep(120); seen.push(e2e.shotMode()); };
+  const scroll = async (deltaY) => { wheel(deltaY); await sleep(220); seen.push(e2e.shotMode()); };
+  await press('Digit2', '2');
+  await scroll(120);
+  await scroll(-120);
+  await press('Digit1', '1');
+  await press('Digit3', '3');
+  const want = ['cannonball', 'meteor', 'cannonball', 'rifle', 'meteor'];
+  record('weapon', seen.join(',') === want.join(','), `2, wheel down, wheel up, 1, 3 -> ${seen.join(', ')} (want ${want.join(', ')})`);
+
+  // A frame for the eye: the HUD (crosshair, FPS panel, weapon) as the player sees it.
   if (typeof __mystralSaveScreenshot === 'function') {
     await sleep(600);
     log(`screenshot ${__mystralSaveScreenshot('../../target/native-input.png') ? 'saved' : 'failed'}: target/native-input.png`);

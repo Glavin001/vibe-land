@@ -23,6 +23,8 @@ export function hasMeaningfulInput(snapshot: ActionSnapshot | null): boolean {
     || snapshot.materialSlot1Pressed
     || snapshot.materialSlot2Pressed
     || snapshot.meleePressed
+    || snapshot.weaponSwitch !== 0
+    || snapshot.weaponSlot !== 0
   );
 }
 

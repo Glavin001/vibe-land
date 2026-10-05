@@ -12,6 +12,7 @@ import { NativeCrosshair } from './NativeCrosshair';
 import { NativeFpsCounter } from './NativeFpsCounter';
 import { NativeLoadingScreen } from './NativeLoadingScreen';
 import { NativeOverlay } from './NativeOverlay';
+import { NativeWeaponHud } from './NativeWeaponHud';
 
 const inputBindings = loadInputBindings();
 
@@ -22,6 +23,7 @@ export function NativeCity({ matchId = 'city-default' }: { matchId?: string }) {
       <NativeOverlay>
         <NativeCrosshair />
         <NativeFpsCounter />
+        <NativeWeaponHud />
         <NativeLoadingScreen />
       </NativeOverlay>
       <Suspense fallback={null}>

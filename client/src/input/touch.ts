@@ -165,6 +165,8 @@ export class TouchInputSource {
       materialSlot1Pressed: context === 'onFoot' && this.materialSlot1Pressed,
       materialSlot2Pressed: context === 'onFoot' && this.materialSlot2Pressed,
       meleePressed: false,
+      weaponSwitch: 0,
+      weaponSlot: 0,
     };
 
     // Edge-triggered flags auto-clear after each sample (matches keyboardMouse.ts:125-129).

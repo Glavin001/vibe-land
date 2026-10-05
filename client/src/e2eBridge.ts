@@ -15,7 +15,7 @@ import type { DebugStats } from './ui/DebugOverlay';
 import { DEFAULT_STATS } from './ui/DebugOverlay';
 import { renderStats } from './city/renderStats';
 import { acquireCityDiagnostics } from './city/cityDiagnostics';
-import { setCannonballEnabled, setShotMode, type ShotMode } from './city/shotMode';
+import { setCannonballEnabled, setShotMode, shotMode, type ShotMode } from './city/shotMode';
 import { currentMeteorFlights, meteorDrawn } from './vfx/meteorFlights';
 import {
   ambientOcclusionPreferred,
@@ -473,6 +473,8 @@ export interface VibeE2EBridge {
   setCannonball(on: boolean): void;
   /** Choose any of the three shots by name; `setCannonball` covers two of them. */
   setShotMode(mode: ShotMode): void;
+  /** The current weapon (the player switches with 1-3, the scroll wheel or gamepad Y). */
+  shotMode(): ShotMode;
   /**
    * Put the player at a pose in the city through the city camera drop, the
    * command the garage's "open city beside your vehicle" arrival sends (the
@@ -770,6 +772,7 @@ const bridge: VibeE2EBridge = {
   /// the overlay.
   setCannonball: (on: boolean) => setCannonballEnabled(on),
   setShotMode: (mode: ShotMode) => setShotMode(mode),
+  shotMode: () => shotMode(),
   dropAt: (pose) => { pendingDrop = pose; },
   setCapturePose: (next) => setCapturePose(next),
   meteors: () => {

@@ -176,6 +176,8 @@ export function sampleAgentDrive(
     materialSlot1Pressed: false,
     materialSlot2Pressed: false,
     meleePressed: false,
+    weaponSwitch: 0,
+    weaponSlot: 0,
   };
 }
 

@@ -27,6 +27,10 @@ export type ActionSnapshot = {
   materialSlot1Pressed: boolean;
   materialSlot2Pressed: boolean;
   meleePressed: boolean;
+  /** Weapon switch this frame: +1 next, -1 previous, 0 none (scroll wheel, gamepad Y). */
+  weaponSwitch: number;
+  /** Weapon picked directly this frame, 1-based (number keys); 0 none. */
+  weaponSlot: number;
 };
 
 export type InputSample = {
@@ -53,4 +57,6 @@ export type ResolvedGameInput = SemanticInputState & {
   materialSlot1Pressed: boolean;
   materialSlot2Pressed: boolean;
   meleePressed: boolean;
+  weaponSwitch: number;
+  weaponSlot: number;
 };

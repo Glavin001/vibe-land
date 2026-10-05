@@ -84,6 +84,29 @@ export function nextShotMode(current: ShotMode): ShotMode {
   return SHOT_MODES[(index + 1) % SHOT_MODES.length];
 }
 
+/** The mode `step` places along the cycle from `current` (wrapping): +1 next, -1 previous. */
+export function cycleShotMode(current: ShotMode, step: number): ShotMode {
+  const count = SHOT_MODES.length;
+  const index = SHOT_MODES.indexOf(current);
+  return SHOT_MODES[(((index + Math.sign(step)) % count) + count) % count];
+}
+
+/** What the HUD calls each weapon. */
+export const SHOT_MODE_LABELS: Record<ShotMode, string> = {
+  rifle: 'Rifle',
+  cannonball: 'Cannon',
+  meteor: 'Meteor strike',
+};
+
+/**
+ * Apply a frame's weapon input (input/types.ts): a slot picks a weapon
+ * directly (1 = rifle, 2 = cannon, 3 = meteor), a switch steps through them.
+ */
+export function applyWeaponInput(slot: number, step: number): void {
+  if (slot >= 1 && slot <= SHOT_MODES.length) setShotMode(SHOT_MODES[slot - 1]);
+  else if (step !== 0) setShotMode(cycleShotMode(mode, step));
+}
+
 /** True when the next shot should be a thrown ball rather than a hitscan. */
 export function cannonballEnabled(): boolean {
   return mode === 'cannonball';

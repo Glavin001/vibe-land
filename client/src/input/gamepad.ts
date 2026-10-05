@@ -135,6 +135,8 @@ export class GamepadInputSource {
       materialSlot1Pressed: context === 'onFoot' && buttonJustPressed(gamepad, previous, gamepadBindings.materialSlot1Button),
       materialSlot2Pressed: context === 'onFoot' && buttonJustPressed(gamepad, previous, gamepadBindings.materialSlot2Button),
       meleePressed: context === 'onFoot' && buttonJustPressed(gamepad, previous, gamepadBindings.meleeButton),
+      weaponSwitch: context === 'onFoot' && buttonJustPressed(gamepad, previous, gamepadBindings.switchWeaponButton) ? 1 : 0,
+      weaponSlot: 0,
     };
 
     this.previous = {

@@ -73,6 +73,7 @@ import {
 import { getSharedPlayerNavigationProfileAsync } from './wasm/sharedPhysics';
 import { PracticeBotsPanel } from './ui/PracticeBotsPanel';
 import { updateE2EBridgeAppState } from './e2eBridge';
+import { WeaponHud } from './ui/WeaponHud';
 import {
   MAX_FOG_INTENSITY,
   MIN_FOG_INTENSITY,
@@ -1048,6 +1049,7 @@ export function App({
           />
         </div>
       )}
+      {connected && !aerialMode && <WeaponHud />}
       {connected && scopeActive && !aerialMode && (
         <div
           data-testid="scope-overlay"

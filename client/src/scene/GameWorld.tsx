@@ -22,7 +22,7 @@ import { useGameRuntime } from '../runtime/useGameRuntime';
 import type { GameRuntimeClient } from '../runtime/gameRuntime';
 import { setE2EDrawnWorldSource, sendE2EDropRequest, updateE2EBridgeFrameState } from '../e2eBridge';
 import { addDebugE2eMs } from '../city/renderStats';
-import { shotMode, shotWeapon } from '../city/shotMode';
+import { applyWeaponInput, shotMode, shotWeapon } from '../city/shotMode';
 import { isRecording, recordFrame } from '../netlab/recorder';
 import { isAgentDriveActive, sampleAgentDrive } from '../agentDrive';
 import { DEFAULT_STATS } from '../ui/DebugOverlay';
@@ -939,6 +939,8 @@ function resolvedInputFromBotIntent(
     materialSlot1Pressed: false,
     materialSlot2Pressed: false,
     meleePressed: false,
+    weaponSwitch: 0,
+    weaponSlot: 0,
   };
 }
 
@@ -962,6 +964,8 @@ function makeIdleResolvedInput(
     materialSlot1Pressed: false,
     materialSlot2Pressed: false,
     meleePressed: false,
+    weaponSwitch: 0,
+    weaponSlot: 0,
   };
 }
 
@@ -2226,6 +2230,11 @@ export function GameWorld({
           clientDynamicInterpMs: dynamicLagMsForShot,
           dir: fireDir,
         });
+      }
+
+      // Weapon switching (number keys pick, scroll wheel / gamepad Y step).
+      if (resolvedInput.weaponSlot !== 0 || resolvedInput.weaponSwitch !== 0) {
+        applyWeaponInput(resolvedInput.weaponSlot, resolvedInput.weaponSwitch);
       }
 
       if (

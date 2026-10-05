@@ -3,6 +3,11 @@ import { getInputSettings } from './inputSettingsStore';
 import type { ActionSnapshot, InputContext } from './types';
 import { getPointerMode, isInputControl } from './pointerMode';
 
+/** Scroll travel per weapon step (a notch is about 100-120 px). */
+const WHEEL_STEP_PX = 50;
+/** The shortest gap between two wheel steps, so one flick is one switch. */
+const WHEEL_STEP_COOLDOWN_MS = 150;
+
 export class KeyboardMouseInputSource {
   private readonly keys = new Set<string>();
   private readonly mouseButtons = new Set<number>();
@@ -13,6 +18,10 @@ export class KeyboardMouseInputSource {
   private canvas: HTMLElement | null = null;
   private drag: { x: number; y: number; travel: number; moved: boolean } | null = null;
   private readonly clicks = new Set<number>();
+  /** Weapon steps from the scroll wheel since the last sample (+ next, - previous). */
+  private wheelSteps = 0;
+  private wheelTravel = 0;
+  private lastWheelStepMs = -Infinity;
 
   get hasPointerControl(): boolean {
     return getPointerMode() === 'drag' && this.canvas !== null
@@ -41,6 +50,24 @@ export class KeyboardMouseInputSource {
     this.pointerDeltaY = 0;
     this.drag = null;
     this.clicks.clear();
+  };
+
+  /**
+   * The scroll wheel switches weapon, as in Call of Duty: down is next, up
+   * previous. Only while the pointer is captured (or the canvas has it), so a
+   * page still scrolls. A trackpad sends many small deltas: one step per
+   * WHEEL_STEP_PX of travel, at most one per WHEEL_STEP_COOLDOWN_MS.
+   */
+  private readonly onWheel = (event: WheelEvent) => {
+    if (document.pointerLockElement === null && !this.hasPointerControl) return;
+    const scale = event.deltaMode === 1 ? 40 : event.deltaMode === 2 ? 800 : 1;
+    this.wheelTravel += event.deltaY * scale;
+    const now = performance.now();
+    if (Math.abs(this.wheelTravel) < WHEEL_STEP_PX || now - this.lastWheelStepMs < WHEEL_STEP_COOLDOWN_MS) return;
+    this.wheelSteps += Math.sign(this.wheelTravel);
+    this.wheelTravel = 0;
+    this.lastWheelStepMs = now;
+    this.activityId += 1;
   };
 
   private readonly onMouseMove = (event: MouseEvent) => {
@@ -99,6 +126,7 @@ export class KeyboardMouseInputSource {
     window.addEventListener('keyup', this.onKeyUp);
     window.addEventListener('blur', this.onBlur);
     document.addEventListener('mousemove', this.onMouseMove);
+    document.addEventListener('wheel', this.onWheel, { passive: true });
     document.addEventListener('mousedown', this.onMouseDown);
     document.addEventListener('mouseup', this.onMouseUp);
     document.addEventListener('contextmenu', this.onContextMenu);
@@ -110,6 +138,7 @@ export class KeyboardMouseInputSource {
     window.removeEventListener('keyup', this.onKeyUp);
     window.removeEventListener('blur', this.onBlur);
     document.removeEventListener('mousemove', this.onMouseMove);
+    document.removeEventListener('wheel', this.onWheel);
     document.removeEventListener('mousedown', this.onMouseDown);
     document.removeEventListener('mouseup', this.onMouseUp);
     document.removeEventListener('contextmenu', this.onContextMenu);
@@ -169,10 +198,16 @@ export class KeyboardMouseInputSource {
       materialSlot1Pressed: context === 'onFoot' && this.justPressedKeys.has(keyboard.materialSlot1),
       materialSlot2Pressed: context === 'onFoot' && this.justPressedKeys.has(keyboard.materialSlot2),
       meleePressed: context === 'onFoot' && this.justPressedKeys.has(keyboard.melee),
+      weaponSwitch: context === 'onFoot' ? Math.sign(this.wheelSteps) : 0,
+      weaponSlot: context !== 'onFoot' ? 0
+        : this.justPressedKeys.has(keyboard.weaponSlot1) ? 1
+          : this.justPressedKeys.has(keyboard.weaponSlot2) ? 2
+            : this.justPressedKeys.has(keyboard.weaponSlot3) ? 3 : 0,
     };
 
     this.justPressedKeys.clear();
     this.clicks.clear();
+    this.wheelSteps = 0;
 
     return snapshot;
   }
