@@ -16,8 +16,8 @@
 // - Frozen debris still collides. Dynamic bodies meet it as an immovable body.
 // - It thaws BEFORE the step in which something would move it, so momentum is
 //   exchanged with a dynamic body, never bounced off a wall:
-//   * approach: a mover whose swept bounds reach it would deliver, across a
-//     shared face, a velocity v.n * m / (m + M) above `wake_dv` -- the
+//   * approach: a mover whose swept bounds reach it would deliver, along the
+//     contact normal, a velocity v.n * m / (m + M) above `wake_dv` -- the
 //     speed below which a body sliding to a stop on friction moves less than
 //     about a centimetre. The struck body then counts as a mover carrying that
 //     velocity, so a hit passing through a packed pile within one step thaws
@@ -54,21 +54,26 @@ constexpr std::uint32_t kThawCooldownWindows = 2;
 /// so a thaw lands at least one step before contact.
 constexpr float kSweepSteps = 2.0f;
 constexpr float kMoverMarginM = 0.05f;
-/// Two bounds meet across a face when they overlap by at least this much on
-/// both axes across the contact normal. Less is an edge or a corner graze,
-/// which carries neither momentum nor weight to speak of.
+/// A body rests on another when their bounds overlap by at least this much on
+/// both horizontal axes. Less is an edge or a corner graze, which carries no
+/// weight to speak of.
 constexpr float kMinFaceM = 0.05f;
 
-/// How two bodies meet, from their bounds: the contact normal is the axis
-/// along which the bounds are most separated (the separating axis), pointing
-/// from `mover` to `other`; `face` says they share a face across it rather
-/// than an edge or a corner. The line of centres is not used: in a packed
-/// pile it points diagonally at a neighbour that only touches an edge.
+/// How a mover meets a frozen body, from their bounds. The contact normal is
+/// the axis along which the mover's current bounds are most separated from
+/// the frozen body's (the separating axis), pointing from the mover to it;
+/// the line of centres is not used, since in a packed pile it points
+/// diagonally at a neighbour that only touches an edge. `strikes`: over its
+/// swept path the mover overlaps the frozen body on both other axes, however
+/// little -- an edge hit is still a hit. `rests_on_it`: the frozen body is
+/// above the mover across a real face (at least kMinFaceM on both horizontal
+/// axes of the current bounds).
 struct Touch {
   PxVec3 normal{0.0f};
-  bool face = false;
+  bool strikes = false;
+  bool rests_on_it = false;
 };
-Touch touch(const PxBounds3 &mover, const PxBounds3 &other) {
+Touch touch(const PxBounds3 &mover, const PxBounds3 &swept, const PxBounds3 &other) {
   int axis = 1;
   float widest = -PX_MAX_F32;
   for (int i = 0; i < 3; ++i) {
@@ -78,15 +83,19 @@ Touch touch(const PxBounds3 &mover, const PxBounds3 &other) {
       axis = i;
     }
   }
+  const auto overlap = [&](const PxBounds3 &a, int j) {
+    return PxMin(other.maximum[j], a.maximum[j]) - PxMax(other.minimum[j], a.minimum[j]);
+  };
   Touch t;
   t.normal[axis] = other.getCenter()[axis] >= mover.getCenter()[axis] ? 1.0f : -1.0f;
-  t.face = true;
+  t.strikes = true;
   for (int j = 0; j < 3; ++j) {
-    if (j != axis && PxMin(other.maximum[j], mover.maximum[j]) -
-                             PxMax(other.minimum[j], mover.minimum[j]) < kMinFaceM) {
-      t.face = false;
+    if (j != axis && overlap(swept, j) <= 0.0f) {
+      t.strikes = false;
     }
   }
+  t.rests_on_it = axis == 1 && t.normal.y > 0.0f && overlap(mover, 0) >= kMinFaceM &&
+                  overlap(mover, 2) >= kMinFaceM;
   return t;
 }
 
@@ -349,8 +358,8 @@ void NativeDestruction::thaw_for_movers(const std::vector<HibernationMover> &ext
         }
         // Velocity delivered across the contact face: v.n * m / (m + M). A
         // kinematic actor reports the mass it had before it froze.
-        const Touch meet = touch(mover.bounds, frozen.frozen_bounds);
-        const float closing = meet.face ? PxMax(0.0f, mover.velocity.dot(meet.normal)) : 0.0f;
+        const Touch meet = touch(mover.bounds, swept, frozen.frozen_bounds);
+        const float closing = meet.strikes ? PxMax(0.0f, mover.velocity.dot(meet.normal)) : 0.0f;
         const float frozen_mass = frozen.actor->getMass();
         const float share =
             mover.mass > 0.0f ? mover.mass / (mover.mass + frozen_mass) : 1.0f;
@@ -359,7 +368,7 @@ void NativeDestruction::thaw_for_movers(const std::vector<HibernationMover> &ext
         if (delivered > wake) {
           approach.insert(key);
           queue.push_back({frozen.frozen_bounds, meet.normal * delivered, frozen_mass, false, false});
-        } else if (contact && meet.face && meet.normal.y > 0.5f && speed > wake) {
+        } else if (contact && meet.rests_on_it && speed > wake) {
           // It rests on a body that is moving: its support is going, whatever
           // the direction of the motion. "On" means across the mover's top
           // face, not merely touching it.

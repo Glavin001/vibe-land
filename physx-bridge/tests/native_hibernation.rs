@@ -517,6 +517,49 @@ fn an_impact_thaws_locally_within_physx_sleep_variance_and_freezes_again() {
     assert!(w.native_validate_mappings().expect("audit"));
 }
 
+/// A 100 kg box thrown at 3 m/s so it clips the top edge of a pile's outer
+/// cube -- the hit a face-only contact test misses, turning frozen rubble into
+/// a wall. Returns the box's final position and every chunk's centre.
+fn throw_at_edge(pile: Pile) -> (Vec<[f32; 3]>, [f32; 3], World) {
+    let mut w = world(-9.81);
+    let nodes = rubble(&mut w, 4, 4, 2);
+    w.native_set_hibernation(if pile == Pile::Hibernated { on() } else { off() }).expect("config");
+    steps(&mut w, 60 + 3 * WINDOW);
+    if pile == Pile::Hibernated {
+        assert_eq!(w.native_hibernation_stats().expect("stats").frozen as usize, nodes.len());
+    }
+    if pile == Pile::Awake {
+        let all: Vec<u32> = (0..nodes.len() as u32).collect();
+        assert_eq!(freeze_nodes(&mut w, &all).len(), nodes.len());
+    }
+    add_box(&mut w, Vec3::new(-3.5, 2.5, 0.0), 0.3, 100.0);
+    w.apply_impulse(BOX, Vec3::new(300.0, 0.0, 0.0)).expect("push");
+    for t in 0..180 {
+        if pile == Pile::Awake && t == 18 {
+            let every: Vec<u32> = (0..nodes.len() as u32).map(|n| chunk(&w, n).1).collect();
+            w.native_set_entities_hibernated(&every, false).expect("thaw");
+        }
+        step(&mut w);
+    }
+    let chunks = (0..nodes.len() as u32).map(|n| chunk(&w, n).0).collect();
+    (chunks, box_state(&w).0, w)
+}
+
+#[test]
+fn a_box_clipping_a_frozen_edge_does_what_it_does_to_an_unfrozen_one() {
+    let (c0, b0, _) = throw_at_edge(Pile::Asleep);
+    let (ca, ba, _) = throw_at_edge(Pile::Awake);
+    let (ch, bh, w) = throw_at_edge(Pile::Hibernated);
+    let asleep = (c0, b0);
+    let awake = outcome_gap(&asleep, &(ca, ba));
+    let hibernated = outcome_gap(&asleep, &(ch, bh));
+    let stats = w.native_hibernation_stats().expect("stats");
+    println!("box asleep {b0:?} hibernated {bh:?}; gaps (box, worst chunk): awake {awake:?} hibernated {hibernated:?}; {stats:?}");
+    assert!(stats.thaw_approach >= 1, "the box reached the pile without thawing it");
+    assert!(hibernated.0 <= awake.0.max(0.02), "box {hibernated:?} vs awake {awake:?}");
+    assert!(hibernated.1 <= awake.1.max(0.02), "chunks {hibernated:?} vs awake {awake:?}");
+}
+
 /// Zero gravity: a row of four touching cubes struck end-on by an 800 kg box
 /// at 6 m/s. Returns each cube's x velocity afterwards and the stats.
 fn strike_row(freeze: bool) -> (Vec<f32>, vibe_land_physx_bridge::HibernationStats) {
@@ -938,4 +981,106 @@ fn rubble_neighbourhoods_hibernate() {
         }
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+fn span(world: &World, name: &str) -> f64 {
+    world.native_stats().expect("stats");
+    world.take_destruction_spans().into_iter().find(|s| s.name == name).map_or(0.0, |s| s.value)
+}
+
+/// Mean wall time of `n` steps (step + observe), in ms.
+fn timed_steps(world: &mut World, n: u32) -> f64 {
+    let started = std::time::Instant::now();
+    steps(world, n);
+    started.elapsed().as_secs_f64() * 1000.0 / n as f64
+}
+
+#[test]
+#[ignore = "diagnostic: what the hibernation passes cost (timings are noisy on a shared GPU)"]
+fn cost_of_hibernation_passes() {
+    let side = 20u32;
+    // Control: the same pile asleep, hibernation off.
+    let mut control = world(-9.81);
+    rubble(&mut control, side, side, 2);
+    steps(&mut control, 2 * WINDOW);
+    let asleep_ms = timed_steps(&mut control, 240);
+    drop(control);
+
+    let mut w = world(-9.81);
+    let nodes = rubble(&mut w, side, side, 2);
+    w.native_set_hibernation(on()).expect("config");
+    // Step to the first window boundary after the pile sleeps, and read the
+    // freeze pass that froze it.
+    steps(&mut w, 60);
+    let mut freeze_ms = 0.0;
+    for _ in 0..2 * WINDOW {
+        step(&mut w);
+        let frozen_now = w.native_hibernation_stats().expect("stats").frozen;
+        if frozen_now as usize == nodes.len() && freeze_ms == 0.0 {
+            freeze_ms = span(&w, "native_hibernate_freeze_ms");
+        }
+    }
+    let stats = w.native_hibernation_stats().expect("stats");
+    assert_eq!(stats.frozen as usize, nodes.len());
+    let frozen_ms = timed_steps(&mut w, 240);
+
+    // Ten boxes rolling across the top of the frozen pile at 3 m/s.
+    for i in 0..10u32 {
+        w.add_dynamic_box(DynamicBoxDesc {
+            entity_id: 0x2100_0000 + i,
+            user_id: 0,
+            pose: Pose { position: Vec3::new(-11.0, 2.5, i as f32 * 2.0 - 9.0), rotation: Quat::IDENTITY },
+            half_extents: Vec3::new(0.3, 0.3, 0.3),
+            mass: 100.0,
+            collision_group: GROUP_DYNAMIC,
+            collision_mask: ALL,
+        })
+        .expect("box");
+        w.apply_impulse(0x2100_0000 + i, Vec3::new(300.0, 0.0, 0.0)).expect("push");
+    }
+    step(&mut w);
+    for b in w.body_snapshots().expect("bodies").into_iter().filter(|b| b.entity_id >= 0x2100_0000).take(2) {
+        println!("after one step: box {:#x} v ({:.2},{:.2},{:.2}) sleeping {}", b.entity_id, b.linear_velocity.x,
+            b.linear_velocity.y, b.linear_velocity.z, b.sleeping);
+    }
+    let (mut thaw_sum, mut thaw_max) = (0.0f64, 0.0f64);
+    let started = std::time::Instant::now();
+    for _ in 0..240 {
+        step(&mut w);
+        let t = span(&w, "native_hibernate_thaw_ms");
+        thaw_sum += t;
+        thaw_max = thaw_max.max(t);
+    }
+    let rolling_ms = started.elapsed().as_secs_f64() * 1000.0 / 240.0;
+    let after = w.native_hibernation_stats().expect("stats");
+    println!("pile of {} bodies", nodes.len());
+    println!("freeze pass that froze all of them: {freeze_ms:.3} ms");
+    println!("idle step: asleep {asleep_ms:.3} ms, frozen {frozen_ms:.3} ms");
+    println!("ten boxes rolling over it: step {rolling_ms:.3} ms, thaw test mean {:.4} ms max {thaw_max:.4} ms",
+        thaw_sum / 240.0);
+    println!("{after:?}");
+    for b in w.body_snapshots().expect("bodies").into_iter().filter(|b| b.entity_id >= 0x2100_0000) {
+        println!("box {:#x} at ({:.2},{:.2},{:.2}) v ({:.2},{:.2},{:.2})", b.entity_id, b.pose.position.x, b.pose.position.y,
+            b.pose.position.z, b.linear_velocity.x, b.linear_velocity.y, b.linear_velocity.z);
+    }
+}
+
+#[test]
+#[ignore = "diagnostic: a box rolled into a frozen pile, tick by tick"]
+fn trace_box_into_frozen_pile() {
+    let mut w = world(-9.81);
+    let nodes = rubble(&mut w, 4, 4, 2);
+    w.native_set_hibernation(on()).expect("config");
+    steps(&mut w, 60 + 3 * WINDOW);
+    assert_eq!(w.native_hibernation_stats().expect("stats").frozen as usize, nodes.len());
+    add_box(&mut w, Vec3::new(-3.5, 2.5, 0.0), 0.3, 100.0);
+    w.apply_impulse(BOX, Vec3::new(300.0, 0.0, 0.0)).expect("push");
+    for t in 0..60 {
+        step(&mut w);
+        let (p, v) = box_state(&w);
+        let h = w.native_hibernation_stats().expect("stats");
+        if t % 3 == 0 || h.thawed_last_step > 0 {
+            println!("t{t}: box ({:.2},{:.2},{:.2}) v ({:.2},{:.2},{:.2}) frozen {} thawed {}", p[0], p[1], p[2], v[0], v[1], v[2], h.frozen, h.thawed_last_step);
+        }
+    }
 }
