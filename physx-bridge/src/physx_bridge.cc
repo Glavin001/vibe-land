@@ -2661,6 +2661,11 @@ public:
     require(finite(center.x) && finite(center.y) && finite(center.z) &&
                 finite(radius) && radius >= 0.0f,
             "wake query must be finite with a non-negative radius");
+#ifdef VIBE_LAND_NATIVE_DESTRUCTION
+    // Frozen debris cannot be woken, only thawed; a shot or blast about to act
+    // here must find dynamic bodies.
+    if (native_) native_->thaw_near(center, radius);
+#endif
     const PxVec3 query_center = to_px(center);
     const float radius_squared = radius * radius;
     std::uint32_t woken = 0;
@@ -2818,6 +2823,7 @@ public:
     step_start_ = std::chrono::steady_clock::now();
 #ifdef VIBE_LAND_NATIVE_DESTRUCTION
     if (native_) native_->prepare_vehicles();
+    if (native_ && native_->has_frozen_debris()) thaw_frozen_debris();
 #endif
     // The vehicle model runs on the CPU against last step's scene and writes
     // this step's accelerations before the scene integrates them. Idle input
@@ -4046,6 +4052,40 @@ public:
                                  collision_group, collision_mask);
   }
 
+  /// Hibernation's pre-step pass: everything this world owns that moves
+  /// (meteors, props, vehicle chassis) is a potential mover; the native layer
+  /// adds its own fragments and rounds. Nothing to do while nothing is frozen.
+  void thaw_frozen_debris() {
+    std::vector<NativeDestruction::HibernationMover> movers;
+    for (auto &entry : records_) {
+      const Record &record = entry.second;
+      if (record.controller != nullptr || record.actor == nullptr ||
+          (record.kind != RecordKind::DynamicBox &&
+           record.kind != RecordKind::DynamicSphere &&
+           record.kind != RecordKind::VehicleChassis)) {
+        continue;
+      }
+      PxRigidDynamic *dynamic = record.actor->is<PxRigidDynamic>();
+      if (dynamic == nullptr ||
+          dynamic->getRigidBodyFlags().isSet(PxRigidBodyFlag::eKINEMATIC) ||
+          dynamic->isSleeping()) {
+        continue;
+      }
+      const PxBounds3 bounds = dynamic->getWorldBounds();
+      const PxVec3 velocity = dynamic->getLinearVelocity();
+      NativeDestruction::HibernationMover mover{};
+      for (int i = 0; i < 3; ++i) {
+        mover.min[i] = bounds.minimum[i];
+        mover.max[i] = bounds.maximum[i];
+        mover.velocity[i] = velocity[i];
+      }
+      mover.mass = dynamic->getMass();
+      mover.always = record.kind == RecordKind::VehicleChassis;
+      movers.push_back(mover);
+    }
+    native_->thaw_for_movers(movers, kFixedTimestep);
+  }
+
   FfiNativeConfigured native_configure(const FfiNativeConfig &config) {
     require(!step_in_flight_, "native_configure must run outside a step");
     return native().configure(config);
@@ -4117,6 +4157,21 @@ public:
     return stats;
   }
   bool native_validate_mappings() const { return native().validate_mappings(); }
+  void native_set_hibernation(const FfiHibernationConfig &config) {
+    require(!step_in_flight_, "hibernation must be configured outside a step");
+    native().set_hibernation(config);
+  }
+  FfiHibernationStats native_hibernation_stats() const {
+    return native().hibernation_stats();
+  }
+  rust::Vec<std::uint32_t> native_frozen_entities() const {
+    return native().frozen_entities();
+  }
+  std::uint32_t native_set_entities_hibernated(rust::Slice<const std::uint32_t> entities,
+                                               bool hibernated) {
+    require(!step_in_flight_, "hibernation must change outside a step");
+    return native().set_entities_hibernated(entities, hibernated);
+  }
   void native_clear() {
     require(!step_in_flight_, "native_clear must run outside a step");
     if (native_ != nullptr) {
@@ -4662,6 +4717,23 @@ FfiDestructionStats World::native_stats() const { return impl_->native_stats(); 
 
 bool World::native_validate_mappings() const {
   return impl_->native_validate_mappings();
+}
+
+void World::native_set_hibernation(const FfiHibernationConfig &config) {
+  impl_->native_set_hibernation(config);
+}
+
+FfiHibernationStats World::native_hibernation_stats() const {
+  return impl_->native_hibernation_stats();
+}
+
+rust::Vec<std::uint32_t> World::native_frozen_entities() const {
+  return impl_->native_frozen_entities();
+}
+
+std::uint32_t World::native_set_entities_hibernated(
+    rust::Slice<const std::uint32_t> entities, bool hibernated) {
+  return impl_->native_set_entities_hibernated(entities, hibernated);
 }
 
 void World::native_clear() { impl_->native_clear(); }

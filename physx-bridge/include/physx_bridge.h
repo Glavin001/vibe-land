@@ -38,6 +38,8 @@ struct FfiDestructibleSettings;
 struct FfiChunkNodeDesc;
 struct FfiChunkBondDesc;
 struct FfiBrokenBondEvent;
+struct FfiHibernationConfig;
+struct FfiHibernationStats;
 struct FfiChunkMigrationEvent;
 struct FfiIslandBodyEvent;
 struct FfiChunkBodySnapshot;
@@ -181,6 +183,11 @@ public:
   rust::Vec<FfiBondStressRow> native_bond_stress_rows(std::uint32_t structure_id) const;
   FfiDestructionStats native_stats() const;
   bool native_validate_mappings() const;
+  void native_set_hibernation(const FfiHibernationConfig &config);
+  FfiHibernationStats native_hibernation_stats() const;
+  rust::Vec<std::uint32_t> native_frozen_entities() const;
+  std::uint32_t native_set_entities_hibernated(rust::Slice<const std::uint32_t> entities,
+                                               bool hibernated);
   void native_clear();
   /// True once a CUDA fault has made this process's context unusable. Cheap:
   /// one relaxed atomic load, so it can be checked every tick.

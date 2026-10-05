@@ -146,8 +146,13 @@ void NativeDestruction::State::apply_changed_chunks(
     PxRigidActor *owner = chunks[group.second.front()].shape->getActor();
     PxRigidDynamic *actor = owner != nullptr ? owner->is<PxRigidDynamic>() : nullptr;
     native_require(actor != nullptr, "committed chunk has no native body");
+    // A topology change thaws every hibernated fragment it names, so a
+    // kinematic body here is an anchored remnant; the hibernation test only
+    // guards against reading a frozen fragment as one.
+    const bool hibernated = fragment_hibernated(*actor);
     const bool supported =
-        actor->getRigidBodyFlags().isSet(PxRigidBodyFlag::eKINEMATIC);
+        actor->getRigidBodyFlags().isSet(PxRigidBodyFlag::eKINEMATIC) &&
+        !hibernated;
     const std::uint32_t structure = chunks[group.second.front()].structure;
 
     auto old = bodies.find(key);
@@ -218,6 +223,12 @@ void NativeDestruction::State::apply_changed_chunks(
     body.serial = serial;
     body.chunks = std::move(group.second);
     body.sleeping = old == bodies.end() ? false : old->second.sleeping;
+    if (hibernated) {
+      body.frozen = true;
+      body.frozen_bounds = actor->getWorldBounds();
+      frozen_index.insert(key, body.frozen_bounds);
+      frozen_bodies += 1;
+    }
     next.emplace(key, std::move(body));
   }
 
@@ -227,6 +238,7 @@ void NativeDestruction::State::apply_changed_chunks(
   for (const Key &key : affected) {
     const auto old = bodies.find(key);
     native_require(old != bodies.end(), "missing old committed group");
+    forget_frozen(key, old->second, true);
     if (old->second.serial != 0 && next.count(key) == 0) {
       FfiIslandBodyEvent event{};
       event.structure_id = old->second.structure;
@@ -241,6 +253,7 @@ void NativeDestruction::State::apply_changed_chunks(
     // A rebuild describes every chunk, so anything not in it is gone.
     for (auto it = bodies.begin(); it != bodies.end();) {
       if (next.count(it->first) == 0) {
+        forget_frozen(it->first, it->second, true);
         if (it->second.serial != 0) {
           FfiIslandBodyEvent event{};
           event.structure_id = it->second.structure;
@@ -382,13 +395,8 @@ static std::uint32_t native_settle_ticks() {
 /// forever. Off by default until a long live session has run with it (an
 /// earlier, speed-based sleep of stage-owned bodies killed a live server
 /// after four minutes); VIBE_CITY_NATIVE_REST_SLEEP=1 turns it on.
-constexpr std::uint32_t kRestWindowTicks = 120;
-constexpr float kRestDriftM = 0.003f;
-constexpr float kRestDriftRad = 0.3f * 3.14159265f / 180.0f;
-constexpr float kRestEnvelopeM = 0.05f;
-constexpr float kRestEnvelopeRad = 10.0f * 3.14159265f / 180.0f;
-/// Bounds this far apart count as touching: PhysX's default contact offset.
-constexpr float kRestContactMarginM = 0.02f;
+// kRestWindowTicks, kRestDriftM/Rad, kRestEnvelopeM/Rad and
+// kRestContactMarginM live in native_state.h: hibernation uses the same test.
 
 static bool native_rest_sleep() {
   static const bool enabled = [] {
@@ -443,6 +451,7 @@ void NativeDestruction::State::refresh_snapshots() {
   snapshots.clear();
   snapshots.reserve(bodies.size());
   std::vector<std::pair<NativeBody *, std::size_t>> awake;
+  awake_keys.clear();
   const float floor_m = native_debris_floor_m();
   const float quiet_speed = native_settle_speed();
   const std::uint32_t quiet_limit = native_settle_ticks();
@@ -464,7 +473,9 @@ void NativeDestruction::State::refresh_snapshots() {
         rest_reset(body.rest);
       }
       FfiChunkBodySnapshot &snap = body.last_snapshot;
-      snap.kinematic = kinematic;
+      // A hibernated body is kinematic to PhysX and a settled dynamic body to
+      // everyone else: never the anchored remnant a kinematic row means.
+      snap.kinematic = kinematic && !body.frozen;
       snap.node_count = static_cast<std::uint32_t>(body.chunks.size());
       snap.flags = 0;
       snapshots.push_back(snap);
@@ -546,6 +557,7 @@ void NativeDestruction::State::refresh_snapshots() {
     } else {
       rest_sample(body.rest, pose.transform(actor.getCMassLocalPose().p), pose.q);
       awake.emplace_back(&body, snapshots.size());
+      awake_keys.push_back(entry.first);
     }
     FfiChunkBodySnapshot snap{};
     snap.entity_id = NativeDestruction::entity_id(body.structure, body.serial);
@@ -558,7 +570,7 @@ void NativeDestruction::State::refresh_snapshots() {
     snap.linear_velocity = native_ffi(linear);
     snap.angular_velocity = native_ffi(angular);
     snap.sleeping = sleeping;
-    snap.kinematic = kinematic;
+    snap.kinematic = kinematic && !body.frozen;
     snap.node_count = static_cast<std::uint32_t>(body.chunks.size());
     snap.flags = 0;
     if (sleeping != body.sleeping) {
@@ -569,13 +581,18 @@ void NativeDestruction::State::refresh_snapshots() {
     body.has_snapshot = true;
     snapshots.push_back(snap);
   }
-  if ((native_rest_sleep() || native_audit_sleep_all_tick() != 0) &&
-      tick_index % kRestWindowTicks == 0) {
-    sleep_resting_islands(awake);
+  if (tick_index % kRestWindowTicks == 0) {
+    if (hibernation.enabled) {
+      // Hibernation supersedes rest sleep: it freezes the same bodies, one at
+      // a time instead of whole clusters, and contact cannot undo it.
+      hibernate_resting(awake);
+    } else if (native_rest_sleep() || native_audit_sleep_all_tick() != 0) {
+      sleep_resting_islands(awake);
+    }
   }
 }
 
-void NativeDestruction::State::sleep_resting_islands(
+void NativeDestruction::State::close_rest_windows(
     std::vector<std::pair<NativeBody *, std::size_t>> &awake) {
   // Close the window for every awake body and decide which are at rest.
   for (auto &entry : awake) {
@@ -618,6 +635,11 @@ void NativeDestruction::State::sleep_resting_islands(
     r.turn = 0.0f;
     r.samples = 0;
   }
+}
+
+void NativeDestruction::State::sleep_resting_islands(
+    std::vector<std::pair<NativeBody *, std::size_t>> &awake) {
+  close_rest_windows(awake);
 
   // Clusters of awake bodies whose bounds touch: a superset of each contact
   // island, since an awake island's members are all awake (PhysX wakes
@@ -840,6 +862,19 @@ FfiDestructionStats NativeDestruction::stats() const {
   span("native_rest_slept_clusters", static_cast<double>(s.rest_slept_clusters), 2);
   span("native_rest_held_clusters", static_cast<double>(s.rest_held_clusters), 2);
   span("native_rest_rewakes", static_cast<double>(s.rest_rewakes), 2);
+  if (s.hibernation.enabled || s.hibernate_froze != 0) {
+    // Plain counts (kind 2): the frozen level, then running totals.
+    span("native_hibernate_frozen", static_cast<double>(s.frozen_bodies), 2);
+    span("native_hibernate_froze", static_cast<double>(s.hibernate_froze), 2);
+    span("native_hibernate_thaw_approach", static_cast<double>(s.thaw_approach), 2);
+    span("native_hibernate_thaw_support", static_cast<double>(s.thaw_support), 2);
+    span("native_hibernate_thaw_push", static_cast<double>(s.thaw_push), 2);
+    span("native_hibernate_thaw_query", static_cast<double>(s.thaw_query), 2);
+    span("native_hibernate_thaw_topology", static_cast<double>(s.thaw_topology), 2);
+    span("native_hibernate_thawed_step", static_cast<double>(s.thawed_last_step), 2);
+    span("native_hibernate_freeze_ms", s.hibernate_ms, 0);
+    span("native_hibernate_thaw_ms", s.thaw_ms, 0);
+  }
   span("native_migrations_total", static_cast<double>(s.migration_total), 2);
   span("native_resettled_wakes", static_cast<double>(s.resettled_wakes), 2);
   span("native_splits", static_cast<double>(s.splits), 2);

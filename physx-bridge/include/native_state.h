@@ -11,8 +11,11 @@
 #include "cuda.h"
 
 #include <cstdint>
+#include <algorithm>
+#include <cmath>
 #include <map>
 #include <set>
+#include <unordered_map>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -95,6 +98,78 @@ struct NativeBody {
     /// Tick it was last rest-slept, to tell an immediate re-wake.
     std::uint64_t slept_tick = 0;
   } rest;
+  /// Hibernated by `State::hibernate_resting`: the stage holds it frozen in
+  /// place as a kinematic body. It is published as a settled dynamic body,
+  /// never as an anchored remnant. `frozen_bounds` is its world AABB, which
+  /// cannot change while frozen and is what the frozen index files it under.
+  bool frozen = false;
+  physx::PxBounds3 frozen_bounds = physx::PxBounds3::empty();
+  /// Rest windows left before a thawed body may freeze again.
+  std::uint32_t freeze_cooldown = 0;
+};
+
+/// The rest test shared by rest sleep and hibernation (see
+/// `State::close_rest_windows`): a body is at rest after three windows whose
+/// means agree within the drift limits and whose motion stayed inside the
+/// envelope.
+constexpr std::uint32_t kRestWindowTicks = 120;
+constexpr float kRestDriftM = 0.003f;
+constexpr float kRestDriftRad = 0.3f * 3.14159265f / 180.0f;
+constexpr float kRestEnvelopeM = 0.05f;
+constexpr float kRestEnvelopeRad = 10.0f * 3.14159265f / 180.0f;
+/// Bounds this far apart count as touching: PhysX's default contact offset.
+constexpr float kRestContactMarginM = 0.02f;
+
+/// Debris hibernation settings (VIBE_CITY_NATIVE_HIBERNATE; see
+/// native_hibernation.cc). Off by default.
+struct NativeHibernation {
+  bool enabled = false;
+  /// Thaw a frozen body when the velocity a mover would give it,
+  /// v * m / (m + M), exceeds this (m/s). Below it, the frozen body sliding to
+  /// a stop on friction would move less than about a centimetre:
+  /// d = dv^2 / (2 mu g), and sqrt(2 * 0.5 * 9.81 * 0.01) = 0.31 m/s.
+  float wake_dv = 0.31f;
+};
+
+/// The server's default: VIBE_CITY_NATIVE_HIBERNATE=1 opts in;
+/// VIBE_CITY_NATIVE_HIBERNATE_WAKE_DV overrides `wake_dv`.
+NativeHibernation native_hibernation_default();
+
+/// World AABBs of frozen bodies on a uniform grid, so a mover asks only the
+/// cells it overlaps. Entries are body keys; a stale key (the body thawed or
+/// was rebuilt) is skipped and dropped by the reader that finds it.
+struct FrozenIndex {
+  using Key = std::pair<std::uint32_t, std::uint64_t>;
+  static constexpr float kCell = 2.0f;
+  std::unordered_map<std::uint64_t, std::vector<Key>> cells;
+  static std::int32_t cell_of(float v) {
+    return static_cast<std::int32_t>(std::floor(v / kCell));
+  }
+  static std::uint64_t pack(std::int32_t x, std::int32_t y, std::int32_t z) {
+    const auto u = [](std::int32_t v) {
+      return static_cast<std::uint64_t>(static_cast<std::uint32_t>(v) & 0x1fffffu);
+    };
+    return (u(x) << 42) | (u(y) << 21) | u(z);
+  }
+  template <typename F> static void each_cell(const physx::PxBounds3 &b, F &&f) {
+    for (std::int32_t x = cell_of(b.minimum.x); x <= cell_of(b.maximum.x); ++x)
+      for (std::int32_t y = cell_of(b.minimum.y); y <= cell_of(b.maximum.y); ++y)
+        for (std::int32_t z = cell_of(b.minimum.z); z <= cell_of(b.maximum.z); ++z)
+          f(pack(x, y, z));
+  }
+  void insert(const Key &key, const physx::PxBounds3 &b) {
+    each_cell(b, [&](std::uint64_t c) { cells[c].push_back(key); });
+  }
+  void remove(const Key &key, const physx::PxBounds3 &b) {
+    each_cell(b, [&](std::uint64_t c) {
+      auto it = cells.find(c);
+      if (it == cells.end()) return;
+      auto &v = it->second;
+      v.erase(std::remove(v.begin(), v.end(), key), v.end());
+      if (v.empty()) cells.erase(it);
+    });
+  }
+  void clear() { cells.clear(); }
 };
 
 /// A shot in flight. Owned here rather than by `World`, because every body in
@@ -212,6 +287,32 @@ struct NativeDestruction::State {
   std::uint64_t rest_held_clusters = 0;
   std::uint64_t rest_rewakes = 0;
 
+  // --- debris hibernation (native_hibernation.cc) ---------------------------
+  NativeHibernation hibernation;
+  FrozenIndex frozen_index;
+  /// Bodies awake after the last refresh, for the pre-step thaw test.
+  std::vector<std::pair<std::uint32_t, std::uint64_t>> awake_keys;
+  std::uint32_t frozen_bodies = 0;
+  std::uint64_t hibernate_froze = 0;
+  /// Thaws by cause: a mover about to hit it (directly or along a chain), a
+  /// moving body it rests on, a slow body pushing it, a query (shot, blast)
+  /// near it, the stage changing its cluster, an explicit request.
+  std::uint64_t thaw_approach = 0;
+  std::uint64_t thaw_support = 0;
+  std::uint64_t thaw_push = 0;
+  std::uint64_t thaw_query = 0;
+  std::uint64_t thaw_topology = 0;
+  std::uint64_t thaw_request = 0;
+  std::uint32_t thawed_last_step = 0;
+  std::uint32_t thawed_max_step = 0;
+  /// Wall time of the last freeze pass (a rest-window boundary) and of this
+  /// step's pre-step thaw test.
+  double hibernate_ms = 0.0;
+  double thaw_ms = 0.0;
+  /// Chunk index ranges that belong to destructible vehicles. A vehicle's
+  /// bodies are never hibernated: a parked car must still drive.
+  std::vector<std::pair<std::uint32_t, std::uint32_t>> vehicle_chunk_ranges;
+
   // --- sampled bond utilisation -------------------------------------------
   /// Per-bond verdicts are a whole-graph device read, so they are sampled on a
   /// cadence rather than every tick. The age is published beside the value:
@@ -254,7 +355,25 @@ struct NativeDestruction::State {
   /// body with its row in `snapshots`.
   void sleep_resting_islands(
       std::vector<std::pair<NativeBody *, std::size_t>> &awake);
+  /// Close the current rest window of every awake body and set its
+  /// `rest.resting` verdict.
+  void close_rest_windows(std::vector<std::pair<NativeBody *, std::size_t>> &awake);
   void sample_bond_verdicts(const physx::PxDestructionDeviceView &view);
+  // Debris hibernation (native_hibernation.cc).
+  /// At a rest-window boundary: close the windows of awake bodies, then
+  /// freeze every eligible body at rest (engine-asleep or rest-tested).
+  void hibernate_resting(std::vector<std::pair<NativeBody *, std::size_t>> &awake);
+  /// Thaw the frozen bodies in `keys` through the stage. Returns how many.
+  std::uint32_t thaw(const std::vector<std::pair<std::uint32_t, std::uint64_t>> &keys,
+                     std::uint64_t &cause);
+  bool hibernation_eligible(const NativeBody &body) const;
+  /// Whether the stage holds this actor hibernated (false before SDK v25).
+  bool fragment_hibernated(const physx::PxRigidDynamic &actor) const;
+  /// Drop a body's frozen bookkeeping because its record is going away;
+  /// `by_stage` counts it as a topology thaw.
+  void forget_frozen(const std::pair<std::uint32_t, std::uint64_t> &key, NativeBody &body,
+                     bool by_stage);
+  bool is_vehicle_chunk(std::uint32_t chunk) const;
   void expire_rounds();
   void release_rounds();
 };

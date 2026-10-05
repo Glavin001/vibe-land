@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <vector>
 
 namespace physx {
 class PxFilterData;
@@ -37,6 +38,8 @@ struct FfiNativeStatus;
 struct FfiRoundDesc;
 struct FfiChunkAim;
 struct FfiChunkRayHit;
+struct FfiHibernationConfig;
+struct FfiHibernationStats;
 
 /// Shape filter word3 bit marking a chunk owned by the native destruction
 /// stage.
@@ -156,6 +159,34 @@ public:
   bool set_stress_solve_report(std::uint32_t passes);
   FfiStressSolveReport stress_solve_report();
   FfiDestructionStats stats() const;
+
+  // --- debris hibernation (native_hibernation.cc) ---------------------------
+  /// A body that may disturb frozen debris this step, other than the stage's
+  /// own fragments and rounds (which the stage knows): its world AABB, its
+  /// velocity and its mass. `always` thaws whatever it is about to touch
+  /// regardless of speed: a vehicle being driven against rubble.
+  struct HibernationMover {
+    float min[3], max[3], velocity[3];
+    float mass;
+    bool always;
+  };
+  /// Opt in or out at runtime; the server's default comes from
+  /// VIBE_CITY_NATIVE_HIBERNATE. Turning it off thaws every frozen body.
+  void set_hibernation(const FfiHibernationConfig &config);
+  FfiHibernationStats hibernation_stats() const;
+  /// Entity ids of the bodies currently frozen.
+  rust::Vec<std::uint32_t> frozen_entities() const;
+  /// Freeze (or thaw) the named bodies now, bypassing the rest test: for tests
+  /// and tools. Returns how many changed; ineligible ids are skipped.
+  std::uint32_t set_entities_hibernated(rust::Slice<const std::uint32_t> entities,
+                                        bool hibernated);
+  /// Whether anything is frozen, so the world can skip gathering movers.
+  bool has_frozen_debris() const;
+  /// Before simulate: thaw the frozen debris that this step's movers, the
+  /// stage's own awake fragments and its rounds are about to disturb.
+  void thaw_for_movers(const std::vector<HibernationMover> &movers, float dt);
+  /// Thaw frozen debris inside a sphere, before a shot or blast acts there.
+  std::uint32_t thaw_near(const FfiVec3 &center, float radius);
 
   /// Whole-world GPU/CPU ownership audit. Reads arrays that normal publication
   /// never touches, so it belongs in tests and explicit gates, never in a

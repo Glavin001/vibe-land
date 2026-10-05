@@ -1775,6 +1775,44 @@ impl World {
         self.inner.native_validate_mappings().map_err(operation_error)
     }
 
+    /// Opt debris hibernation in or out (see `FfiHibernationConfig`).
+    /// Turning it off thaws every frozen body.
+    #[cfg(feature = "native-destruction")]
+    pub fn native_set_hibernation(
+        &mut self,
+        config: HibernationConfig,
+    ) -> Result<(), BridgeError> {
+        self.inner
+            .pin_mut()
+            .native_set_hibernation(&config)
+            .map_err(operation_error)
+    }
+
+    #[cfg(feature = "native-destruction")]
+    pub fn native_hibernation_stats(&self) -> Result<HibernationStats, BridgeError> {
+        self.inner.native_hibernation_stats().map_err(operation_error)
+    }
+
+    /// Entity ids of the bodies frozen right now.
+    #[cfg(feature = "native-destruction")]
+    pub fn native_frozen_entities(&self) -> Result<Vec<u32>, BridgeError> {
+        self.inner.native_frozen_entities().map_err(operation_error)
+    }
+
+    /// Freeze or thaw the named bodies now, bypassing the rest test (tests and
+    /// tools). Returns how many changed state.
+    #[cfg(feature = "native-destruction")]
+    pub fn native_set_entities_hibernated(
+        &mut self,
+        entities: &[u32],
+        hibernated: bool,
+    ) -> Result<u32, BridgeError> {
+        self.inner
+            .pin_mut()
+            .native_set_entities_hibernated(entities, hibernated)
+            .map_err(operation_error)
+    }
+
     #[cfg(feature = "native-destruction")]
     pub fn native_clear(&mut self) -> Result<(), BridgeError> {
         self.inner.pin_mut().native_clear().map_err(operation_error)
@@ -1952,6 +1990,7 @@ fn operation_error(error: cxx::Exception) -> BridgeError {
 #[cfg(feature = "gpu")]
 /// The stress solve report types (World::native_stress_solve_report), named by diagnostics.
 pub use ffi::{FfiStressChunkResidual, FfiStressComponentReport, FfiStressSolveReport, FfiVec3};
+pub use ffi::{FfiHibernationConfig as HibernationConfig, FfiHibernationStats as HibernationStats};
 
 #[cxx::bridge(namespace = "vibe_land::physx_bridge")]
 mod ffi {
@@ -2539,6 +2578,36 @@ mod ffi {
         ttl_ticks: u32,
     }
 
+    /// Debris hibernation (VIBE_CITY_NATIVE_HIBERNATE): settled stage
+    /// fragments frozen in place as kinematic bodies, thawed locally when
+    /// something is about to disturb them.
+    #[derive(Clone, Copy, Debug, Default, PartialEq)]
+    struct FfiHibernationConfig {
+        enabled: bool,
+        /// Thaw when the velocity a mover would give a frozen body exceeds
+        /// this (m/s); 0.31 by default (see native_state.h).
+        wake_dv: f32,
+    }
+
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    struct FfiHibernationStats {
+        /// Bodies frozen right now.
+        frozen: u32,
+        froze_total: u64,
+        /// Thaws by cause: something about to hit it (directly or along a
+        /// chain of predicted contacts), a moving body it rests on, a slow
+        /// body pushing it, a shot/blast query near it, the stage changing its
+        /// cluster, an explicit request.
+        thaw_approach: u64,
+        thaw_support: u64,
+        thaw_push: u64,
+        thaw_query: u64,
+        thaw_topology: u64,
+        thaw_request: u64,
+        thawed_last_step: u32,
+        thawed_max_step: u32,
+    }
+
     struct FfiChunkBodySnapshot {
         entity_id: u32,
         structure_id: u32,
@@ -2869,6 +2938,14 @@ mod ffi {
         ) -> Result<Vec<FfiBondStressRow>>;
         fn native_stats(self: &World) -> Result<FfiDestructionStats>;
         fn native_validate_mappings(self: &World) -> Result<bool>;
+        fn native_set_hibernation(self: Pin<&mut World>, config: &FfiHibernationConfig) -> Result<()>;
+        fn native_hibernation_stats(self: &World) -> Result<FfiHibernationStats>;
+        fn native_frozen_entities(self: &World) -> Result<Vec<u32>>;
+        fn native_set_entities_hibernated(
+            self: Pin<&mut World>,
+            entities: &[u32],
+            hibernated: bool,
+        ) -> Result<u32>;
         fn native_clear(self: Pin<&mut World>) -> Result<()>;
         fn gpu_context_lost(self: &World) -> bool;
         fn native_configured(self: &World) -> Result<bool>;

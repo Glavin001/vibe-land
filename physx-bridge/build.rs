@@ -10,7 +10,7 @@ include!("physx_sdk_location.rs");
 /// together with the SDK; a silent bump would change struct layouts under our
 /// device reads, so the build fails loudly instead.
 #[cfg(feature = "native-destruction")]
-const NATIVE_DESTRUCTION_SCENE_VERSIONS: [&str; 7] = [
+const NATIVE_DESTRUCTION_SCENE_VERSIONS: [&str; 8] = [
     "#define PX_DESTRUCTION_SCENE_VERSION 15",
     "#define PX_DESTRUCTION_SCENE_VERSION 16",
     // v17 changes no layout: `internalCorrectionLimit` stops being a boolean
@@ -26,6 +26,9 @@ const NATIVE_DESTRUCTION_SCENE_VERSIONS: [&str; 7] = [
     // v24 adds PxDestructionStressDesc::forceTolerance (force convergence,
     // default 0 = the residual test alone).
     "#define PX_DESTRUCTION_SCENE_VERSION 24",
+    // v25 adds debris hibernation (setFragmentsHibernated /
+    // isFragmentHibernated); no layout changes.
+    "#define PX_DESTRUCTION_SCENE_VERSION 25",
 ];
 
 #[cfg(feature = "destruction")]
@@ -358,7 +361,7 @@ fn add_native_destruction(
                 NATIVE_DESTRUCTION_SCENE_VERSIONS
             )
         });
-    let version = [15, 16, 17, 18, 22, 23, 24][version];
+    let version = [15, 16, 17, 18, 22, 23, 24, 25][version];
     build.define("VIBE_PHYSX_DESTRUCTION_SCENE_VERSION", version.to_string().as_str());
     println!("cargo:rustc-env=VIBE_PHYSX_DESTRUCTION_SCENE_VERSION={version}");
     // From v17 the stage loops its correction: configureStress takes any
@@ -399,12 +402,14 @@ fn add_native_destruction(
     println!("cargo:rerun-if-changed={}", runtime.display());
     println!("cargo:rerun-if-changed=src/native_destruction.cc");
     println!("cargo:rerun-if-changed=src/native_observation.cc");
+    println!("cargo:rerun-if-changed=src/native_hibernation.cc");
     println!("cargo:rerun-if-changed=include/native_destruction.h");
     println!("cargo:rerun-if-changed=include/native_state.h");
 
     build
         .file("src/native_destruction.cc")
         .file("src/native_observation.cc")
+        .file("src/native_hibernation.cc")
         .define("VIBE_LAND_NATIVE_DESTRUCTION", None);
     // cuda.h for CUevent and the synchronous device reads of the committed view:
     // CuMetal's clean-room headers ship in the macOS SDK package.

@@ -172,6 +172,7 @@ NativeDestruction::NativeDestruction(PxPhysics &physics, PxScene &scene,
   native_require(scene.getDestructionScene() != nullptr,
                  "this PhysX build has no GPU destruction stage; check that "
                  "the physx-2 SDK is the one linked");
+  state_->hibernation = native_hibernation_default();
 }
 
 NativeDestruction::~NativeDestruction() {
@@ -228,7 +229,10 @@ void NativeDestruction::clear() {
   PxPhysics &physics = s.physics;
   PxScene &scene = s.scene;
   PxMaterial &material = s.material;
+  // A setting, not city state: a rebuilt city hibernates as the old one did.
+  const NativeHibernation hibernation = s.hibernation;
   state_.reset(new State(physics, scene, material));
+  state_->hibernation = hibernation;
   native_require(released,
                  "cannot clear the active native destruction topology");
 }
@@ -569,6 +573,7 @@ void NativeDestruction::register_vehicle(physx::native::NativeVehicle &vehicle,
   }
   State::VehicleBinding binding{};binding.vehicle=&vehicle;
   binding.base=PxU32(s.nodes.size());binding.count=PxU32(parts.size());
+  s.vehicle_chunk_ranges.emplace_back(binding.base,binding.base+binding.count);
   std::vector<PxMassProperties> physical;
   std::vector<PxTransform> transforms(parts.size(), PxTransform(PxIdentity));
   for (PxU32 i=0; i<parts.size(); ++i) {
