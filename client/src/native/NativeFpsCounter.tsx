@@ -1,11 +1,20 @@
 // Performance, drawn in the scene's top-left corner (the native app has no
-// DOM): render frames per second and frame times, and the simulation's tick
+// DOM): render frames per second, the frame interval, and the frame's work --
+// the time from the start of a frame's callbacks to the end of its render,
+// less the time spent waiting on the display. At vsync the interval is the
+// display's (16.7 ms at 60 Hz) whatever the work, so it says nothing about
+// cost; the work does. mystral waits for the display inside the render (the
+// surface texture acquire and the present on submit), so those two calls are
+// timed and taken out. The GPU's own time is not shown: waiting on
+// queue.onSubmittedWorkDone() includes the wait for the display under vsync
+// (it read 16.0 ms capped, 3.6 ms uncapped) and costs frames; it needs WebGPU
+// timestamp queries, which mystral does not have yet. Then the simulation's tick
 // rate and tick cost from the match stats the server sends once a second
 // (in-process here, so the server's numbers are this machine's). Text is rasterised on a small 2D canvas (mystral's Skia), read
 // back with getImageData into a DataTexture twice a second, and shown on a
 // quad in the screen-space overlay (NativeOverlay).
 
-import { useFrame } from '@react-three/fiber';
+import { addAfterEffect, addEffect, useFrame, useThree } from '@react-three/fiber';
 import { useEffect, useMemo, useRef } from 'react';
 import * as THREE from 'three';
 
@@ -16,15 +25,50 @@ import { getMatchStats } from '../app/connectPhase';
 type SimStats = {
   server_tick?: number;
   physics_last_step_ms?: number;
+  /** Of the PhysX step, the time spent waiting for the GPU (which rendering shares). */
+  physics_gpu_wait_ms?: number;
+  city?: { awake_bodies?: number } | null;
   timings?: { total_ms?: { avg?: number; p95?: number; max?: number } };
 };
 
-const WIDTH = 512;
+const WIDTH = 820;
 const HEIGHT = 80;
 const UPDATE_MS = 500;
+/** Ticks per second over this much wall time (stats arrive once a second). */
+const TPS_WINDOW_MS = 3000;
 /** On-screen height of the panel, as a fraction of the view height. */
 const SCREEN_HEIGHT = 0.07;
 const MARGIN = 0.015;
+
+type Backend = {
+  context?: { getCurrentTexture: () => unknown };
+  device?: { queue: { submit: (buffers: unknown[]) => void } };
+};
+
+/**
+ * Report the time spent in the two calls where mystral waits for the display
+ * (the surface acquire, and submit, which presents); returns the restore.
+ */
+function timeDisplayWaits(renderer: unknown, report: (ms: number) => void): () => void {
+  const backend = (renderer as { backend?: Backend }).backend;
+  const context = backend?.context;
+  const queue = backend?.device?.queue;
+  if (!context || !queue) return () => {};
+  const acquire = context.getCurrentTexture;
+  const submit = queue.submit;
+  context.getCurrentTexture = function (this: unknown) {
+    const started = performance.now();
+    try { return acquire.call(this); } finally { report(performance.now() - started); }
+  };
+  queue.submit = function (this: unknown, buffers: unknown[]) {
+    const started = performance.now();
+    try { return submit.call(this, buffers); } finally { report(performance.now() - started); }
+  };
+  return () => {
+    context.getCurrentTexture = acquire;
+    queue.submit = submit;
+  };
+}
 
 export function NativeFpsCounter() {
   const size = useOverlaySize();
@@ -42,12 +86,30 @@ export function NativeFpsCounter() {
   useEffect(() => () => texture.dispose(), [texture]);
 
   const counter = useRef({ frames: 0, since: performance.now(), worstMs: 0, last: performance.now() });
-  const sim = useRef<{ tick: number; at: number; hz: number | null }>({ tick: -1, at: 0, hz: null });
+  // The frame's work: from before its callbacks to after its render.
+  const work = useRef({ started: 0, waitMs: 0, totalMs: 0, worstMs: 0, frames: 0 });
+  const gl = useThree((state) => state.gl);
+  useEffect(() => {
+    const restore = timeDisplayWaits(gl, (ms) => { work.current.waitMs += ms; });
+    const before = addEffect(() => { work.current.started = performance.now(); work.current.waitMs = 0; });
+    const after = addAfterEffect(() => {
+      const w = work.current;
+      if (w.started === 0) return;
+      const ms = performance.now() - w.started - w.waitMs;
+      w.totalMs += ms;
+      w.worstMs = Math.max(w.worstMs, ms);
+      w.frames += 1;
+    });
+    return () => { before(); after(); restore(); };
+  }, [gl]);
+  // Each stats packet's tick and the frame it arrived in: ticks per second
+  // over TPS_WINDOW_MS, to within a frame's timing at each end.
+  const arrivals = useRef<Array<{ tick: number; at: number }>>([]);
 
   const rate = (value: number, good: number, ok: number) =>
     value >= good ? '#7CFC8A' : value >= ok ? '#FFD166' : '#FF6B6B';
 
-  const draw = (fps: number, frameMs: number, worstMs: number) => {
+  const draw = (fps: number, workMs: number, workWorstMs: number) => {
     ctx.clearRect(0, 0, WIDTH, HEIGHT);
     ctx.fillStyle = 'rgba(0, 0, 0, 0.55)';
     ctx.fillRect(0, 0, WIDTH, HEIGHT);
@@ -58,20 +120,19 @@ export function NativeFpsCounter() {
     ctx.fillText(`${fps.toFixed(0).padStart(3)} FPS`, 10, 32);
     ctx.font = '17px Menlo, monospace';
     ctx.fillStyle = '#d0d4d8';
-    ctx.fillText(`render ${frameMs.toFixed(1)} ms  max ${worstMs.toFixed(1)}`, 160, 30);
+    // The frame's CPU work, and the frame rate it would allow without vsync
+    // (the CPU's share only: the GPU is not timed, see above).
+    ctx.fillText(`cpu ${workMs.toFixed(1)} ms per frame  max ${workWorstMs.toFixed(1)}`, 160, 22);
+    ctx.fillStyle = '#9fb3c8';
+    ctx.fillText(`~${(1000 / Math.max(0.1, workMs)).toFixed(0)} FPS uncapped (cpu; gpu not timed)`, 160, 42);
 
-    // Simulation: ticks per second (from the server tick counter) and the
-    // tick's cost (server timing, mean / p95 over its last second).
+    // Simulation: ticks per second (from the server tick counter, over the
+    // last TPS_WINDOW_MS) and the tick's cost (server timing, mean / p95).
     const stats = getMatchStats() as SimStats | null;
-    const now = performance.now();
-    if (stats?.server_tick !== undefined && stats.server_tick !== sim.current.tick) {
-      if (sim.current.tick >= 0 && now > sim.current.at) {
-        sim.current.hz = ((stats.server_tick - sim.current.tick) * 1000) / (now - sim.current.at);
-      }
-      sim.current.tick = stats.server_tick;
-      sim.current.at = now;
-    }
-    const hz = sim.current.hz;
+    const seen = arrivals.current;
+    const first = seen[0];
+    const last = seen[seen.length - 1];
+    const hz = first && last && last.at - first.at >= 900 ? ((last.tick - first.tick) * 1000) / (last.at - first.at) : null;
     const tick = stats?.timings?.total_ms;
     ctx.font = '26px Menlo, monospace';
     ctx.fillStyle = hz === null ? '#d0d4d8' : rate(hz, 57, 45);
@@ -81,6 +142,7 @@ export function NativeFpsCounter() {
     ctx.fillText(
       tick?.avg !== undefined
         ? `sim ${tick.avg.toFixed(1)} ms  p95 ${(tick.p95 ?? 0).toFixed(1)}  physx ${(stats?.physics_last_step_ms ?? 0).toFixed(1)}`
+          + ` (gpu wait ${(stats?.physics_gpu_wait_ms ?? 0).toFixed(1)})  ${stats?.city?.awake_bodies ?? 0} awake`
         : 'sim waiting for stats',
       160,
       66,
@@ -97,12 +159,23 @@ export function NativeFpsCounter() {
 
   useFrame(() => {
     const now = performance.now();
+    const latest = (getMatchStats() as SimStats | null)?.server_tick;
+    const seen = arrivals.current;
+    if (latest !== undefined && latest !== seen[seen.length - 1]?.tick) {
+      if (seen.length && latest < seen[seen.length - 1].tick) seen.length = 0;
+      seen.push({ tick: latest, at: now });
+      while (seen.length > 2 && now - seen[1].at >= TPS_WINDOW_MS) seen.shift();
+    }
     const c = counter.current;
     c.frames += 1;
     c.worstMs = Math.max(c.worstMs, now - c.last);
     c.last = now;
     if (now - c.since >= UPDATE_MS) {
-      draw((c.frames * 1000) / (now - c.since), (now - c.since) / c.frames, c.worstMs);
+      const w = work.current;
+      draw((c.frames * 1000) / (now - c.since), w.totalMs / Math.max(1, w.frames), w.worstMs);
+      w.totalMs = 0;
+      w.worstMs = 0;
+      w.frames = 0;
       c.frames = 0;
       c.worstMs = 0;
       c.since = now;
