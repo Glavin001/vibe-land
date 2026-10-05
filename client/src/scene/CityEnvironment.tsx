@@ -112,16 +112,12 @@ export function CityEnvironment({
         skylight, so the remaining ambient is only a floor that keeps deep
         interiors from going to pure black.
       */}
-      {/* The sky dome and IBL are custom shaders; the WebGPU path keeps the
-          background colour, fog and the lights below. */}
-      {!__WEBGPU__ && (
-        <SkyEnvironment
-          fogColor={resolvedFogColor}
-          showDome={skyDomeOn}
-          bindEnvironment={skyIblOn}
-          intensity={qualityIsPretty ? 1 : 0.85}
-        />
-      )}
+      <SkyEnvironment
+        fogColor={resolvedFogColor}
+        showDome={skyDomeOn}
+        bindEnvironment={skyIblOn}
+        intensity={qualityIsPretty ? 1 : 0.85}
+      />
       <SunLight
         fogColor={resolvedFogColor}
         castShadow={shadowsOn && !__WEBGPU__}

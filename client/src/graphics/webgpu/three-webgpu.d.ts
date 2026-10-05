@@ -25,3 +25,4 @@ declare module 'three-webgpu/src/renderers/WebGLRenderer.js' {
 declare module 'three-webgpu/src/renderers/webgl/WebGLUtils.js' {
   export { WebGLUtils } from 'three';
 }
+

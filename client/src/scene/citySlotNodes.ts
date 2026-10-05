@@ -34,6 +34,8 @@ import {
 import { MeshStandardNodeMaterial } from 'three/webgpu';
 
 import { CHUNK_HIDE_Y_M } from '../city/cityPoseStore';
+import type { CityTriplanarConfig } from './cityMaterialShader';
+import { cityTriplanarNodes, restToViewThrough } from './cityMaterialNodes';
 import type { CityGpuPoses } from './citySlotMesh';
 
 // TSL nodes are loosely typed in @types/three 0.170; keep this file honest
@@ -53,8 +55,8 @@ const quatRotate = (q: Node, v: Node): Node =>
 const nodeMaterials = new WeakMap<THREE.Material, THREE.Material>();
 
 /**
- * The node material a slot mesh draws with on WebGPU: plain colour (no
- * triplanar textures yet), placed by its chunk's composed pose, tinted by
+ * The node material a slot mesh draws with on WebGPU: the triplanar
+ * concrete (cityMaterialNodes.ts), placed by its chunk's composed pose, tinted by
  * its body (settled rubble is dimmer; the debug palette colours by body).
  * One per source material, shared across cells like the WebGL path.
  */
@@ -64,11 +66,13 @@ export function slotNodeMaterial(source: THREE.Material, poses: CityGpuPoses): T
 
   const base = source as THREE.MeshStandardMaterial;
   const transparent = base.transparent && base.opacity < 1;
+  const triplanar = source.userData.cityTriplanar as CityTriplanarConfig | undefined;
+  const textured = !transparent && !!triplanar && triplanar.detail !== 'off';
   const material = new MeshStandardNodeMaterial({
-    // The WebGL concrete is white and takes its albedo from the texture
-    // array; untextured, it needs a colour of its own.
-    color: transparent ? base.color : new THREE.Color(0xb9b3a8),
-    roughness: transparent ? base.roughness : 0.92,
+    // The concrete is white and takes its albedo from the texture array
+    // (cityMaterialNodes.ts); untextured, it needs a colour of its own.
+    color: transparent ? base.color : textured ? new THREE.Color(0xffffff) : new THREE.Color(0xb9b3a8),
+    roughness: transparent ? base.roughness : textured ? 1 : 0.92,
     metalness: 0,
     transparent,
     opacity: transparent ? base.opacity : 1,
@@ -88,6 +92,8 @@ export function slotNodeMaterial(source: THREE.Material, poses: CityGpuPoses): T
   const hideY = uniform(CHUNK_HIDE_Y_M);
   const bodyColours = uniform(poses.bodyColoursUniform.value);
   const tint = varyingProperty('vec3', 'vCityTint');
+  // The chunk's rest-to-world rotation, for the triplanar's normals.
+  const pose = varyingProperty('vec4', 'vCityQuat');
 
   const texel = (tex: Node, index: Node): Node => {
     const size = int(textureSize(tex, int(0)).x);
@@ -108,9 +114,17 @@ export function slotNodeMaterial(source: THREE.Material, poses: CityGpuPoses): T
       select(bodyColours.greaterThan(0.5), texel(bodies, body.mul(4).add(2)).rgb.mul(body0.w), vec3(body0.w)),
     );
     normalLocal.assign(quatRotate(q, normalGeometry));
+    pose.assign(q);
     return quatRotate(q, positionGeometry).mul(visible).add(p);
   })();
   material.colorNode = materialColor.mul(tint);
+  if (textured && triplanar) {
+    const nodes = cityTriplanarNodes(triplanar, restToViewThrough(pose, quatRotate));
+    material.colorNode = materialColor.mul(tint).mul(nodes.albedo);
+    if (nodes.normal) material.normalNode = nodes.normal;
+    if (nodes.roughness) material.roughnessNode = nodes.roughness;
+    if (nodes.occlusion) material.aoNode = nodes.occlusion;
+  }
 
   // Keep the debug palette switch live: the uniform follows the WebGL one.
   bodyColours.onFrameUpdate(() => poses.bodyColoursUniform.value);

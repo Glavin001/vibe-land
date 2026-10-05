@@ -12,6 +12,8 @@
 import * as THREE from 'three';
 import type { RootState } from '@react-three/fiber';
 
+import { fixArrayTextureGrad } from './textureGradFix';
+
 type Frameloop = 'always' | 'demand' | 'never';
 
 type CanvasProps = {
@@ -22,6 +24,15 @@ type CanvasProps = {
 };
 
 type WebGPURendererLike = THREE.WebGLRenderer & { init: () => Promise<unknown> };
+
+/**
+ * Whether a WebGPURenderer has finished init(). R3F re-applies Canvas props
+ * on every render of the page, so the props must stop saying 'never' once
+ * the renderer is live, or the first re-render (joining, a HUD update)
+ * stops the frame loop for good. (A later Canvas then starts its loop before
+ * its own init; three skips render() until its backend is ready.)
+ */
+let rendererReady = false;
 
 /** Canvas props for the current build's renderer. Identity in the WebGL build. */
 export function withRenderBackend<P extends CanvasProps>(props: P): P {
@@ -34,10 +45,11 @@ export function withRenderBackend<P extends CanvasProps>(props: P): P {
   return {
     ...props,
     shadows: false,
-    frameloop: 'never',
+    frameloop: rendererReady ? frameloop : 'never',
     gl: (canvas: HTMLCanvasElement) => createWebGPURenderer(canvas, options),
     onCreated: (state: RootState) => {
       void (state.gl as unknown as WebGPURendererLike).init().then(() => {
+        rendererReady = true;
         state.set({ frameloop });
         if (frameloop !== 'never') state.invalidate();
         (globalThis as { __rendererBackend?: string }).__rendererBackend = 'webgpu';
@@ -55,9 +67,18 @@ export function createWebGPURenderer(
   const WebGPURenderer = (THREE as unknown as {
     WebGPURenderer: new (parameters: Record<string, unknown>) => WebGPURendererLike;
   }).WebGPURenderer;
-  return new WebGPURenderer({
+  const renderer = new WebGPURenderer({
     canvas,
     antialias: options.antialias ?? true,
     powerPreference: options.powerPreference ?? 'high-performance',
   });
+  // The backend is final only after init (it may fall back to WebGL2).
+  fixArrayTextureGrad(renderer as unknown as Parameters<typeof fixArrayTextureGrad>[0]);
+  const init = renderer.init.bind(renderer);
+  renderer.init = async () => {
+    const ready = await init();
+    fixArrayTextureGrad(renderer as unknown as Parameters<typeof fixArrayTextureGrad>[0]);
+    return ready;
+  };
+  return renderer;
 }

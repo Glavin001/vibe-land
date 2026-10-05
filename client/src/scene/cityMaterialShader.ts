@@ -76,7 +76,7 @@ import {
  * blend only shows up as a smeared band along every edge. High enough to keep
  * faces crisp, low enough that a shard's slanted cut face still cross-fades.
  */
-const BLEND_SHARPNESS = 6.0;
+export const BLEND_SHARPNESS = 6.0;
 
 /**
  * Weight below which a projection is skipped outright.
@@ -87,7 +87,7 @@ const BLEND_SHARPNESS = 6.0;
  * hero stack: it triples the per-plane taps, and this confines "per-plane" to
  * the one plane a flat face actually uses.
  */
-const PLANE_CUTOFF = 0.02;
+export const PLANE_CUTOFF = 0.02;
 
 /**
  * Live tuning handles, shared by every material this module builds.
@@ -97,7 +97,7 @@ const PLANE_CUTOFF = 0.02;
  * retunes the whole city without a recompile. Exposed on `window` because
  * picking these is a look-at-it decision, not a computable one.
  */
-const uniforms = {
+export const cityShaderUniforms = {
   cityAlbedo: { value: null as THREE.DataArrayTexture | null },
   citySurface: { value: null as THREE.DataArrayTexture | null },
   cityMacroTex: { value: null as THREE.DataTexture | null },
@@ -149,6 +149,19 @@ const uniforms = {
   cityMacroMid: { value: 0.42 },
   cityMacroSmall: { value: 0.2 },
 };
+
+const uniforms = cityShaderUniforms;
+
+/**
+ * How a city material is textured, recorded on it for the WebGPU path, whose
+ * slot node material (scene/citySlotNodes.ts) builds the same triplanar in
+ * TSL (scene/cityMaterialNodes.ts) from these and the same tuning objects.
+ */
+export interface CityTriplanarConfig {
+  pbr: boolean;
+  detail: 'full' | 'albedo' | 'off';
+  hero: boolean;
+}
 
 export function setCityTextureTuning(next: {
   scale?: number;
@@ -634,9 +647,12 @@ export function applyCityTriplanar(
   detail: 'full' | 'albedo' | 'off' = 'full',
   hero = true,
 ): void {
-  // The WebGPU path draws the city untextured for now: onBeforeCompile does
-  // not exist there, and the triplanar port to TSL is later work.
-  if (__WEBGPU__) return;
+  // WebGPU has no onBeforeCompile: record the config for the TSL triplanar.
+  if (__WEBGPU__) {
+    const config: CityTriplanarConfig = { pbr, detail, hero };
+    material.userData.cityTriplanar = config;
+    return;
+  }
   if (detail === 'off') {
     // Nothing injected at all: the point of `off` is to not SAMPLE, so the
     // material has to compile without the taps rather than multiply them away.

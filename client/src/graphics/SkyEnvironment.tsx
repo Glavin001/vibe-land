@@ -22,6 +22,56 @@ import { lookTuning, subscribeLookTuning } from './lookTuning';
 
 import { DEFAULT_SUN_AZIMUTH_DEG, DEFAULT_SUN_ELEVATION_DEG, skyGradient, sunDirection } from './sunSky';
 
+/**
+ * The sky's shape: one description, read by the GLSL dome below and by the
+ * WebGPU path's TSL dome (graphics/webgpu/skyNodes.ts), so the two draw the
+ * same sky.
+ */
+export const SKY_SHAPE = {
+  /** Horizon-to-zenith ramp exponent; below 1 keeps the horizon band tight. */
+  horizonPow: 0.55,
+  /** Below the horizon the sky fades to ground bounce by this view-ray y. */
+  groundFadeY: -0.18,
+  discPow: 1400,
+  discGain: 26,
+  glowPow: 9,
+  glowGain: 0.16,
+} as const;
+
+/**
+ * The sky's live inputs (linear colours, sun direction): one set of objects
+ * that every sky material reads, so updating them updates the dome on either
+ * renderer.
+ */
+export interface SkyInputs {
+  sunDir: THREE.Vector3;
+  zenith: THREE.Color;
+  horizon: THREE.Color;
+  ground: THREE.Color;
+  sunColor: THREE.Color;
+}
+
+/**
+ * The WebGPU path's sky material (graphics/webgpu/skyNodes.ts, TSL).
+ * Registered by the webgpu build's `@render-backend/install`, so this module
+ * never imports three/webgpu. `sunDisc` 0 drops the disc (the environment
+ * bake); `linear` skips tone mapping (the bake integrates raw radiance).
+ */
+export type SkyNodeMaterialFactory = (inputs: SkyInputs, options: { sunDisc: number; linear: boolean }) => THREE.Material;
+let skyNodeMaterial: SkyNodeMaterialFactory | null = null;
+
+export function registerSkyNodeMaterial(factory: SkyNodeMaterialFactory): void {
+  skyNodeMaterial = factory;
+}
+
+function webgpuSkyMaterial(inputs: SkyInputs, options: { sunDisc: number; linear: boolean }): THREE.Material {
+  if (!skyNodeMaterial) throw new Error('WebGPU sky material not registered (@render-backend/install)');
+  return skyNodeMaterial(inputs, options);
+}
+
+/** A GLSL float literal ("0.55", "1400.0"). */
+const glsl = (value: number) => (Number.isInteger(value) ? value.toFixed(1) : String(value));
+
 // `vDir` is the view ray, derived from where the camera actually is rather than
 // from where the dome is. The distinction is the whole reason this is not
 // `normalize(position)`: an object-space direction is the correct view ray only
@@ -82,14 +132,14 @@ const FRAGMENT_SHADER = /* glsl */ `
     // brightest part of the sky halfway up, which reads as an overcast dome
     // rather than a horizon.
     float up = clamp(d.y, 0.0, 1.0);
-    vec3 col = mix(uHorizon, uZenith, pow(up, 0.55));
+    vec3 col = mix(uHorizon, uZenith, pow(up, ${glsl(SKY_SHAPE.horizonPow)}));
     // Below the horizon fades to ground bounce rather than cutting hard: the
     // PMREM bake integrates this hemisphere into the downward-facing fill.
-    col = mix(col, uGround, smoothstep(0.0, -0.18, d.y));
+    col = mix(col, uGround, smoothstep(0.0, ${glsl(SKY_SHAPE.groundFadeY)}, d.y));
 
     float s = max(dot(d, uSunDir), 0.0);
-    col += uSunColor * pow(s, 1400.0) * 26.0 * uSunDisc; // disc
-    col += uSunColor * pow(s, 9.0) * 0.16;               // forward-scatter glow
+    col += uSunColor * pow(s, ${glsl(SKY_SHAPE.discPow)}) * ${glsl(SKY_SHAPE.discGain)} * uSunDisc; // disc
+    col += uSunColor * pow(s, ${glsl(SKY_SHAPE.glowPow)}) * ${glsl(SKY_SHAPE.glowGain)};               // forward-scatter glow
     gl_FragColor = vec4(col, 1.0);
     #ifndef SKY_LINEAR_OUTPUT
       #include <tonemapping_fragment>
@@ -134,8 +184,16 @@ export function SkyEnvironment({
   const gl = useThree((state) => state.gl);
   const scene = useThree((state) => state.scene);
 
+  const inputs = useMemo<SkyInputs>(() => ({
+    sunDir: new THREE.Vector3(0, 1, 0),
+    zenith: new THREE.Color(),
+    horizon: new THREE.Color(),
+    ground: new THREE.Color(),
+    sunColor: new THREE.Color(),
+  }), []);
+
   const material = useMemo(
-    () =>
+    () => __WEBGPU__ ? webgpuSkyMaterial(inputs, { sunDisc: 1, linear: false }) :
       new THREE.ShaderMaterial({
         side: THREE.BackSide,
         depthWrite: false,
@@ -146,17 +204,17 @@ export function SkyEnvironment({
         depthTest: false,
         fog: false,
         uniforms: {
-          uSunDir: { value: new THREE.Vector3(0, 1, 0) },
-          uZenith: { value: new THREE.Color() },
-          uHorizon: { value: new THREE.Color() },
-          uGround: { value: new THREE.Color() },
-          uSunColor: { value: new THREE.Color() },
+          uSunDir: { value: inputs.sunDir },
+          uZenith: { value: inputs.zenith },
+          uHorizon: { value: inputs.horizon },
+          uGround: { value: inputs.ground },
+          uSunColor: { value: inputs.sunColor },
           uSunDisc: { value: 1 },
         },
         vertexShader: VERTEX_SHADER,
         fragmentShader: FRAGMENT_SHADER,
       }),
-    [],
+    [inputs],
   );
 
   // Radius is pure coverage headroom: how far the camera may get ahead of the
@@ -182,12 +240,12 @@ export function SkyEnvironment({
   const gradient = useMemo(() => skyGradient(fogColor, sunElevationDeg), [fogColor, sunElevationDeg]);
   useEffect(() => {
     const dir = sunDirection(sunElevationDeg, sunAzimuthDeg);
-    material.uniforms.uSunDir.value.set(dir.x, dir.y, dir.z);
-    material.uniforms.uZenith.value.set(gradient.zenith).convertSRGBToLinear();
-    material.uniforms.uHorizon.value.set(gradient.horizon).convertSRGBToLinear();
-    material.uniforms.uGround.value.set(gradient.ground).convertSRGBToLinear();
-    material.uniforms.uSunColor.value.set(gradient.sunColor).convertSRGBToLinear();
-  }, [material, gradient, sunElevationDeg, sunAzimuthDeg]);
+    inputs.sunDir.set(dir.x, dir.y, dir.z);
+    inputs.zenith.set(gradient.zenith).convertSRGBToLinear();
+    inputs.horizon.set(gradient.horizon).convertSRGBToLinear();
+    inputs.ground.set(gradient.ground).convertSRGBToLinear();
+    inputs.sunColor.set(gradient.sunColor).convertSRGBToLinear();
+  }, [inputs, gradient, sunElevationDeg, sunAzimuthDeg]);
 
   // Bake the environment map. Runs only when the sky itself changes (weather,
   // sun angle) -- never per frame.
@@ -203,9 +261,15 @@ export function SkyEnvironment({
     // already carries the sun, so the bake keeps only sky and glow.
     // clone() deep-copies the uniforms, so the bake gets its own copy of the
     // current sky values and the dome keeps its sun disc.
-    const bakeMaterial = material.clone();
-    bakeMaterial.uniforms.uSunDisc.value = 0;
-    bakeMaterial.defines = { SKY_LINEAR_OUTPUT: '' };
+    let bakeMaterial: THREE.Material;
+    if (__WEBGPU__) {
+      bakeMaterial = webgpuSkyMaterial(inputs, { sunDisc: 0, linear: true });
+    } else {
+      const glslBake = (material as THREE.ShaderMaterial).clone();
+      glslBake.uniforms.uSunDisc.value = 0;
+      glslBake.defines = { SKY_LINEAR_OUTPUT: '' };
+      bakeMaterial = glslBake;
+    }
     bakeMaterial.depthTest = true;
     const bakeGeometry = new THREE.SphereGeometry(100, 32, 16);
     bakeScene.add(new THREE.Mesh(bakeGeometry, bakeMaterial));
@@ -221,7 +285,7 @@ export function SkyEnvironment({
       bakeGeometry.dispose();
       bakeMaterial.dispose();
     };
-  }, [gl, scene, material, gradient, intensity, bindEnvironment]);
+  }, [gl, scene, material, inputs, gradient, intensity, bindEnvironment]);
 
   useEffect(() => {
     const apply = () => {
