@@ -748,7 +748,22 @@ fn fracture_debris_hibernates_and_a_second_shot_thaws_it() {
     let fragments = rows(&w).iter().filter(|r| !r.kinematic).count();
     println!("broken {broken}, fragments {fragments}; {settled:?}");
     assert!(broken > 0 && fragments > 1, "the shot made no debris");
-    assert!(settled.frozen as usize * 10 >= fragments * 8, "rubble did not hibernate: {} of {fragments}", settled.frozen);
+    // Debris on the ground freezes; debris standing on the wall's anchored
+    // bottom row (a building's foundation), or stacked on such debris, does
+    // not -- it would stop loading the structure.
+    let frozen_now = frozen(&w);
+    let on_ground = |r: &Row| r.position[1] < 1.0;
+    let on_stump = |r: &Row| r.position[1] > 1.0 && r.position[0].abs() < 3.0 && r.position[2].abs() < 0.6;
+    let fragment_rows: Vec<Row> = rows(&w).into_iter().filter(|r| !r.kinematic).collect();
+    for r in &fragment_rows {
+        if on_ground(r) {
+            assert!(frozen_now.contains(&r.entity), "debris on the ground did not freeze: {r:?}");
+        }
+        if on_stump(r) {
+            assert!(!frozen_now.contains(&r.entity), "debris standing on the structure froze: {r:?}");
+        }
+    }
+    assert!(fragment_rows.iter().filter(|r| on_ground(r)).count() >= 10, "too little debris reached the ground");
     assert!(w.native_validate_mappings().expect("audit"));
 
     // Shoot the rubble low down, where it lies.
