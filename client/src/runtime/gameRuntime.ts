@@ -1517,7 +1517,9 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
         const renderTimeUs = client.getLocalPlayerRenderTimeUs();
         const sample = client.interpolator.sample(client.playerId, renderTimeUs);
         if (sample) {
-          if (THIN_PRESENTATION_PREDICTION_ENABLED) {
+          // In-process (native single-player) the authoritative pose is a
+          // tick old at most: draw it as simulated, not a prediction ahead of it.
+          if (THIN_PRESENTATION_PREDICTION_ENABLED && !client.presentsImmediately) {
             this.thinPredictor.observeAuthoritative(
               {
                 position: sample.position,
@@ -2281,7 +2283,10 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
     if (this.thinAuthoritative) {
       const vehicleId = this.client?.getLocalDrivenVehicleId();
       if (vehicleId == null || !this.client) return null;
-      const predicted=this.thinVehiclePredictor.vehicleId===vehicleId?this.thinVehiclePredictor.pose(this.authoritativeInputBundler.remainderSec()):null;
+      // In-process the driven car is drawn exactly as simulated at the newest
+      // snapshot; over a network its proxy prediction masks the round trip.
+      const predicted=this.thinVehiclePredictor.vehicleId===vehicleId&&!this.client.presentsImmediately
+        ?this.thinVehiclePredictor.pose(this.authoritativeInputBundler.remainderSec()):null;
       if(predicted){this.thinVehiclePredictor.presented(performance.now());return predicted;}
       // Before the first owning snapshot, use bounded collision-aware extrapolation.
       const renderTimeUs = this.client.getDynamicBodyRenderTimeUs();

@@ -1174,6 +1174,12 @@ impl CityRuntime {
         self.pose_feed = feed;
     }
 
+    /// Whether an in-process client reads every pose from memory: its
+    /// stream then carries topology copies only, no pose records.
+    pub fn has_pose_feed(&self) -> bool {
+        self.pose_feed.is_some()
+    }
+
     fn from_parts(backend: CityBackend, manifest: Arc<DestructionManifest>, sim_hz: u32) -> Self {
         let mut config = EncoderConfig::validated(sim_hz);
         let (send_interval_ticks, ceiling_bytes) =

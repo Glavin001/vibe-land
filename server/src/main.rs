@@ -5414,16 +5414,18 @@ impl MatchState {
                 && city.wire_version() != vibe_land_destruction::wire::CITY_WIRE_V3;
             if send_due && v2_pose_stream {
                 let encode_started = std::time::Instant::now();
-                let shared = city.encode_shared(staged_tick);
+                // In-process single-player reads every pose from memory
+                // (pose_feed.rs): its stream is topology copies only.
+                let shared = (!city.has_pose_feed()).then(|| city.encode_shared(staged_tick));
                 let shared_ms = encode_started.elapsed().as_secs_f32() * 1000.0;
                 let datagrams_started = std::time::Instant::now();
-                let has_records = !shared.records.is_empty();
+                let records = shared.as_ref().filter(|shared| !shared.records.is_empty());
                 for (player_id, camera) in cameras {
                     let Some(packets) = self.city_datagrams_for(
                         &mut city,
                         player_id,
                         camera,
-                        has_records.then_some(&shared),
+                        records,
                         staged_tick,
                     ) else {
                         continue;
@@ -5798,16 +5800,18 @@ impl MatchState {
             // PER CLIENT doing interest tests -- so this scales with bodies
             // times players, and nothing reported it.
             let encode_started = std::time::Instant::now();
-            let shared = city.encode_shared(self.server_tick);
+            // In-process single-player reads every pose from memory
+            // (pose_feed.rs): its stream is topology copies only.
+            let shared = (!city.has_pose_feed()).then(|| city.encode_shared(self.server_tick));
             let shared_ms = encode_started.elapsed().as_secs_f32() * 1000.0;
             let datagrams_started = std::time::Instant::now();
-            let has_records = !shared.records.is_empty();
+            let records = shared.as_ref().filter(|shared| !shared.records.is_empty());
             for (player_id, camera) in cameras {
                 let Some(packets) = self.city_datagrams_for(
                     &mut city,
                     player_id,
                     camera,
-                    has_records.then_some(&shared),
+                    records,
                     self.server_tick,
                 ) else {
                     continue;

@@ -184,6 +184,15 @@ export class NetcodeClient {
    */
   private readonly localPlayerRenderClock = new RenderClock();
   private baselineInterpolationDelayMs = 100;
+  /**
+   * Native single-player: the match runs in this process, so there is no
+   * network to buffer against. Every entity is drawn at the newest snapshot
+   * exactly as the server sent it -- no interpolation delay, no lead past it.
+   * Multiplayer keeps the buffered render clocks. Set by connectWithFallback.
+   */
+  private immediatePresentation = false;
+  /** The newest snapshot's server time, us (the immediate render time). */
+  private newestSnapshotServerUs = -Infinity;
   private minRemoteInterpolationDelayMs = 0;
   latestServerTick = 0;
   rttMs = 0;
@@ -208,11 +217,13 @@ export class NetcodeClient {
 
   /** The player/vehicle interpolation delay in use, ms of server time. */
   get interpolationDelayMs(): number {
+    if (this.immediatePresentation) return 0;
     return this.playerRenderClock.delayMs;
   }
 
   /** The dynamic-body interpolation delay in use, ms of server time. */
   get dynamicBodyInterpolationDelayMs(): number {
+    if (this.immediatePresentation) return 0;
     return this.dynamicBodyRenderClock.delayMs;
   }
 
@@ -506,6 +517,7 @@ export class NetcodeClient {
     // Native single-player: the match is in this process; no network at all.
     const link = inProcessLink();
     if (link) {
+      this.immediatePresentation = true;
       this.wtClient = await InProcessGameClient.connect(link, {
         matchId,
         onReliablePacket: (packet) => this.deliverNetworkPacket(packet as ServerPacket, 'wt-reliable'),
@@ -750,6 +762,7 @@ export class NetcodeClient {
     const arrivedUs = this.nowMs() * 1000;
     this.serverClock.observe(packet.serverTimeUs, arrivedUs, packet.serverWallUs);
     this.adoptAdaptiveDelays(arrivedUs, packet.serverTimeUs);
+    this.newestSnapshotServerUs = Math.max(this.newestSnapshotServerUs, packet.serverTimeUs);
     this.debugTelemetry.observeAcceptedSnapshot(
       source,
       packet.serverTick,
@@ -1416,6 +1429,7 @@ export class NetcodeClient {
         const arrivedUs = this.nowMs() * 1000;
         this.serverClock.observe(packet.serverTimeUs, arrivedUs);
         this.adoptAdaptiveDelays(arrivedUs, packet.serverTimeUs);
+        this.newestSnapshotServerUs = Math.max(this.newestSnapshotServerUs, packet.serverTimeUs);
         this.debugTelemetry.observeAcceptedSnapshot(
           source,
           packet.serverTick,
@@ -1577,6 +1591,7 @@ export class NetcodeClient {
    * player delay. Never goes backwards.
    */
   getRenderTimeUs(localTimeUs = this.nowMs() * 1000): number {
+    if (this.immediateRenderTime()) return this.newestSnapshotServerUs;
     return this.playerRenderClock.renderTimeUs(
       this.serverClock.serverNowUs(localTimeUs),
       localTimeUs,
@@ -1624,7 +1639,7 @@ export class NetcodeClient {
    * render time.
    */
   dynamicBodyDrawTimeUs(id: number, renderUs: number): number {
-    if (!this.bodyLeadConfig.enabled) return renderUs;
+    if (!this.bodyLeadConfig.enabled || this.immediatePresentation) return renderUs;
     let track = this.bodyLeads.get(id);
     if (!track) {
       track = new BodyLeadTrack();
@@ -1646,7 +1661,7 @@ export class NetcodeClient {
 
   /** The lead a free-falling body is drawn at now, us (0 with the lead off). */
   getDynamicBodyLeadHorizonUs(): number {
-    return this.bodyLeadConfig.enabled ? this.bodyLeadHorizon.horizonUs() : 0;
+    return this.bodyLeadConfig.enabled && !this.immediatePresentation ? this.bodyLeadHorizon.horizonUs() : 0;
   }
 
   /** The body lead's settings (Netlab records them). */
@@ -1695,6 +1710,7 @@ export class NetcodeClient {
    * mode): one snapshot interval behind server time. Never goes backwards.
    */
   getLocalPlayerRenderTimeUs(localTimeUs = this.nowMs() * 1000): number {
+    if (this.immediateRenderTime()) return this.newestSnapshotServerUs;
     return this.localPlayerRenderClock.renderTimeUs(
       this.serverClock.serverNowUs(localTimeUs),
       localTimeUs,
@@ -1706,6 +1722,7 @@ export class NetcodeClient {
    * rate-aware server time minus the dynamic-body delay. Never goes backwards.
    */
   getDynamicBodyRenderTimeUs(localTimeUs = this.nowMs() * 1000): number {
+    if (this.immediateRenderTime()) return this.newestSnapshotServerUs;
     return this.dynamicBodyRenderClock.renderTimeUs(
       this.serverClock.serverNowUs(localTimeUs),
       localTimeUs,
@@ -1811,9 +1828,25 @@ export class NetcodeClient {
     return this.debugTelemetry.snapshot();
   }
 
+  /** Whether render times are the newest snapshot's (immediatePresentation, once one arrived). */
+  private immediateRenderTime(): boolean {
+    return this.immediatePresentation && this.newestSnapshotServerUs !== -Infinity;
+  }
+
+  /** Whether every entity is drawn at the newest snapshot (native single-player). */
+  get presentsImmediately(): boolean {
+    return this.immediatePresentation;
+  }
+
+  /** Draw every entity at the newest snapshot (see immediatePresentation); tests and tools. */
+  setImmediatePresentation(on: boolean): void {
+    this.immediatePresentation = on;
+  }
+
   /** Reset all state (for reconnection). */
   reset(): void {
     this.playerId = 0;
+    this.newestSnapshotServerUs = -Infinity;
     this.latestServerTick = 0;
     this.baselineInterpolationDelayMs = 100;
     this.playerRenderClock.setTargetDelayMs(this.baselineInterpolationDelayMs);

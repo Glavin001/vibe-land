@@ -1328,6 +1328,31 @@ describe('CityClient in-process pose feed', () => {
     expect(client.presentedTick()).toBe(11);
   });
 
+  it('settles a body it drew falling, with no stream records, without asking for a repair', () => {
+    const { client } = makeClient();
+    bootstrap(client);
+    promote(client, 1, 1, [2, 3], [0, 2.5, 0], 10);
+    const key = bodyKey(0, 1);
+    // In-process the stream carries no poses: only the feed says where it went.
+    const frames = [];
+    for (let tick = 11; tick <= 20; tick += 1) frames.push({ tick, topoSeq: 1, bodies: [[key, [0, 2.5, (tick - 10) * 1.25]]] as Array<[number, Vec3]> });
+    const queue = [feedFrames(frames)];
+    client.setPoseFeed(new CityPoseFeed({ poses: () => queue.shift() ?? new ArrayBuffer(0) }));
+    client.samplePresentation(performance.now());
+    expect(client.topology.body(key)!.position[2]).toBe(12.5);
+    // Settles 12.5 m from its promotion pose, inside the fresh window.
+    client.topology.apply({
+      topoSeq: 2,
+      simTick: 21,
+      batches: [],
+      settled: [{ structureId: 0, islandId: 1, position: [0, 2.5, 12.5], rotation: IDENTITY }],
+      wakes: [],
+    } as unknown as TopologyMessage);
+    expect(client.topology.settleFrameRejects).toBe(0);
+    expect(client.topology.resyncStructures.size).toBe(0);
+    expect(client.topology.body(key)!.settled).toBe(true);
+  });
+
   it('draws the tick before while the newest tick\'s fracture is still in the packet pump', () => {
     const { client } = makeClient();
     bootstrap(client);

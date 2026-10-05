@@ -66,5 +66,14 @@ export async function runNativeScenario(scenario, { e2e, drive, session, note, s
     globalThis.__VIBE_VEHICLE_TRACE__ = undefined;
   }
   const final = await Promise.all((scenario.cars ?? [0, 1, 2, 3, 4]).map(carState));
-  return evaluateChecks(scenario, final, analyzer.analyze());
+  const analysis = analyzer.analyze();
+  const checks = evaluateChecks(scenario, final, analysis);
+  // A rocking part: was it rocking in what the client received (the server's
+  // simulation) or only in what it drew (presentation)?
+  for (const [handle, a] of Object.entries(analysis)) {
+    if (a?.spin?.rockingParts > 0) {
+      note(`car ${handle} spin: drawn ${JSON.stringify(a.spin.rocking.slice(0, 4))}; received ${a.receivedSpin.rockingGroups} rocking groups, ${a.receivedSpin.rockingFlips} flips ${JSON.stringify(a.receivedSpin.rocking.slice(0, 4))}`);
+    }
+  }
+  return checks;
 }

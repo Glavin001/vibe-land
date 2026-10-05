@@ -1378,3 +1378,50 @@ describe('NetcodeClient predictive snapshot bodies (bodyLead.ts)', () => {
     expect(client.getDynamicBodyLeadHorizonUs()).toBe(0);
   });
 });
+
+describe('NetcodeClient immediate presentation (native single-player)', () => {
+  /** A cannonball at 30 m/s for 20 ticks, drawn after each snapshot. */
+  function drawnPositions(immediate: boolean): number[] {
+    let nowMs = 0;
+    const client = new NetcodeClient({ nowMs: () => nowMs });
+    client.setImmediatePresentation(immediate);
+    client.handlePacket(makeWelcome(1));
+    client.handlePacket(makeDynamicBodyMeta([{ handle: 7, bodyId: 7001 }]));
+    const drawn: number[] = [];
+    for (let tick = 1; tick <= 20; tick += 1) {
+      nowMs = tick * (1000 / 60);
+      client.handlePacket(makeSnapshotV2({
+        serverTick: tick,
+        sphereStates: [{ handle: 7, offset: [tick * 0.5, 2, 0], velocity: [30, 0, 0] }],
+      }));
+      drawn[tick] = client.getInterpolatedDynamicBodyState(7001)?.position[0] ?? Number.NaN;
+    }
+    return drawn;
+  }
+
+  it('draws a body exactly at the newest snapshot, with no delay and no lead', () => {
+    const drawn = drawnPositions(true);
+    for (let tick = 2; tick <= 20; tick += 1) expect(drawn[tick]).toBeCloseTo(tick * 0.5, 3);
+  });
+
+  it('is off by default: multiplayer draws behind the newest snapshot', () => {
+    const drawn = drawnPositions(false);
+    expect(drawn[20]).toBeLessThan(20 * 0.5 - 0.25);
+  });
+
+  it('reports no interpolation delay and puts every render clock at the newest snapshot', () => {
+    let nowMs = 0;
+    const client = new NetcodeClient({ nowMs: () => nowMs });
+    client.setImmediatePresentation(true);
+    client.handlePacket(makeWelcome(1));
+    nowMs = 50;
+    const snapshot = makeSnapshotV2({ serverTick: 3 });
+    client.handlePacket(snapshot);
+    nowMs = 70;
+    expect(client.interpolationDelayMs).toBe(0);
+    expect(client.dynamicBodyInterpolationDelayMs).toBe(0);
+    expect(client.getRenderTimeUs()).toBe(snapshot.serverTimeUs);
+    expect(client.getDynamicBodyRenderTimeUs()).toBe(snapshot.serverTimeUs);
+    expect(client.getLocalPlayerRenderTimeUs()).toBe(snapshot.serverTimeUs);
+  });
+});

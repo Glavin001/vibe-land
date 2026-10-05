@@ -256,6 +256,11 @@ interface BodyStreamState {
  */
 const PRESENTATION_EPSILON_M = 1e-4;
 
+/** Below this a pose-feed body counts as at rest for settle checks (m/s). */
+const FEED_REST_SPEED_MPS = 0.05;
+/** Feed-drawn bodies whose velocity is kept; past it the map starts over. */
+const FEED_MOTION_KEPT = 8192;
+
 /**
  * Minimum spacing between resync requests.
  *
@@ -687,6 +692,8 @@ export class CityClient {
   feedUnknown = 0;
   feedSettled = 0;
   feedClears = 0;
+  /** The velocity a feed-drawn body without stream state was last drawn with. */
+  private readonly feedMotion = new Map<number, { velocity: Vec3; speed: number }>();
   /** The tick the feed last drew, -1 before it drew one (see presentedTick). */
   private feedTick = -1;
   private readonly bodies: Map<number, BodyStreamState> = new Map();
@@ -1661,12 +1668,12 @@ export class CityClient {
    * own motion cannot account for it, and the body's own motion is known here.
    */
   bodyPresentedSpeed(key: number): number {
-    return this.bodies.get(key)?.lastPresentedSpeed ?? 0;
+    return this.bodies.get(key)?.lastPresentedSpeed ?? this.feedMotion.get(key)?.speed ?? 0;
   }
 
   /** The track's velocity at the last presented sample, or null (wire v3 has none). */
   bodyPresentedVelocity(key: number): Vec3 | null {
-    return this.bodies.get(key)?.lastPresentedVelocity ?? null;
+    return this.bodies.get(key)?.lastPresentedVelocity ?? this.feedMotion.get(key)?.velocity ?? null;
   }
 
   /** Bodies the last sample presented. Read-only; replaced every frame. */
@@ -3110,10 +3117,26 @@ export class CityClient {
       }
       feed.sample(frame, key, pose);
       this.feedPresented += 1;
+      const v = pose.linearVelocity;
+      const speed = Math.hypot(v[0], v[1], v[2]);
+      // What the server has told this client about the body: a settle is
+      // judged against it (CityTopology.settleVerdict). The stream's records
+      // used to be the only source; in-process they carry no poses.
+      this.topology.noteStreamedPose(key, frame.tick, pose.position[0], pose.position[1], pose.position[2], speed > FEED_REST_SPEED_MPS);
       const state = this.bodies.get(key);
       if (state) {
         this.presentPose(key, state, pose, live);
       } else {
+        let motion = this.feedMotion.get(key);
+        if (!motion) {
+          if (this.feedMotion.size >= FEED_MOTION_KEPT) this.feedMotion.clear();
+          motion = { velocity: [0, 0, 0], speed: 0 };
+          this.feedMotion.set(key, motion);
+        }
+        motion.velocity[0] = v[0];
+        motion.velocity[1] = v[1];
+        motion.velocity[2] = v[2];
+        motion.speed = speed;
         this.topology.updateBodyPose(key, pose.position, pose.rotation, 'presented');
         live.add(key);
       }
@@ -3135,7 +3158,7 @@ export class CityClient {
       this.feedTick = -1;
       this.feedClears += 1;
     }
-    else if (newest > this.latestSimTick && this.latestSimTickAtMs !== 0) this.observeSimTick(newest);
+    else if (newest > this.latestSimTick) this.observeSimTick(newest);
   }
 
   private samplePresentationInto(
