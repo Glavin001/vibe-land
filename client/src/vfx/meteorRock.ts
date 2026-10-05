@@ -122,6 +122,14 @@ export function buildMeteorMaterial(): { material: THREE.MeshStandardMaterial; u
     uRough: { value: 0.85 },
     uSeed: { value: 42 },
   };
+  if (__WEBGPU__) {
+    // The simple WebGPU path (no GLSL patch): dark basalt with an even glow,
+    // which follows uGlow through emissiveIntensity (MeteorLayer sets it).
+    const plain = new THREE.MeshStandardMaterial({
+      color: 0x2b2420, roughness: 0.9, metalness: 0.1, emissive: 0xff4a10, emissiveIntensity: uniforms.uGlow.value,
+    });
+    return { material: plain, uniforms };
+  }
   const material = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.95, metalness: 0.22 });
   material.onBeforeCompile = (shader) => {
     Object.assign(shader.uniforms, uniforms);

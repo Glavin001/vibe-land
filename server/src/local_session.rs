@@ -41,9 +41,18 @@ const LOCAL_PLAYER_ID: u32 = 1;
 const LOCAL_OUTBOUND_QUEUE_CAPACITY: usize = PLAYER_OUTBOUND_QUEUE_CAPACITY * 64;
 
 /// A running in-process match with its one connected player.
+/// The match's request queues the HTTP server's debug routes write into
+/// (`/city-meteor`, `/city-reset`): `run_match_loop` reads them each tick.
+#[derive(Clone, Default)]
+struct RequestQueues {
+    meteors: Arc<StdRwLock<HashMap<String, Vec<[f32; 3]>>>>,
+    resets: Arc<StdRwLock<HashSet<String>>>,
+}
+
 pub struct LocalSession {
     match_id: String,
     events: mpsc::UnboundedSender<MatchEvent>,
+    queues: RequestQueues,
     outbound: outbound::Receiver,
     session_config_json: String,
     closed: bool,
@@ -110,7 +119,8 @@ impl LocalSession {
             Some(send_log::Tap::new(LOCAL_PLAYER_ID, false, telemetry.send_hub.clone())),
         );
 
-        spawn_local_match(match_id.to_owned(), rx, physics, telemetry);
+        let queues = RequestQueues::default();
+        spawn_local_match(match_id.to_owned(), rx, physics, telemetry, queues.clone());
 
         // Registered as WebTransport: the client speaks WebTransport bytes, and
         // every server path keyed on the transport (lane choice, datagram
@@ -132,10 +142,43 @@ impl LocalSession {
         Ok(Self {
             match_id: match_id.to_owned(),
             events,
+            queues,
             outbound: out_rx,
             session_config_json,
             closed: false,
             http: tokio::runtime::Builder::new_current_thread().enable_all().build()?,
+        })
+    }
+
+    /// Drop the city's meteor on each target, as `POST /city-meteor` does.
+    pub fn meteor(&self, targets: &[[f32; 3]]) {
+        self.queues
+            .meteors
+            .write()
+            .expect("meteor requests poisoned")
+            .entry(self.match_id.clone())
+            .or_default()
+            .extend_from_slice(targets);
+    }
+
+    /// Rebuild the city, as `POST /city-reset` does.
+    pub fn reset(&self) {
+        self.queues.resets.write().expect("reset requests poisoned").insert(self.match_id.clone());
+    }
+
+    /// A fleet car's server-side state, as `GET /city-vehicle-debug?car=` answers
+    /// it (`car` is the fleet index: id = city_fleet::FIRST_ID + car).
+    pub fn vehicle_debug(&self, car: u32) -> Result<serde_json::Value> {
+        let (reply, response) = tokio::sync::oneshot::channel();
+        self.events
+            .send(MatchEvent::GarageDebug { car: crate::city_fleet::FIRST_ID + car, reply })
+            .map_err(|_| anyhow::anyhow!("match loop has exited"))?;
+        self.http.block_on(async {
+            tokio::time::timeout(std::time::Duration::from_secs(3), response)
+                .await
+                .context("vehicle debug readback timed out")?
+                .context("match loop has exited")?
+                .map_err(|(status, message)| anyhow::anyhow!("{status}: {message}"))
         })
     }
 
@@ -243,6 +286,7 @@ fn spawn_local_match(
     rx: mpsc::UnboundedReceiver<MatchEvent>,
     physics: PhysicsRuntimeConfig,
     telemetry: Arc<MatchIoTelemetry>,
+    queues: RequestQueues,
 ) {
     let strict_snapshot_datagrams = std::env::var("WT_STRICT_SNAPSHOT_DATAGRAMS")
         .ok()
@@ -269,9 +313,9 @@ fn spawn_local_match(
                     telemetry,
                     Arc::new(StdRwLock::new(HashMap::new())),
                     Arc::new(StdRwLock::new(HashMap::new())),
-                    Arc::new(StdRwLock::new(HashSet::new())),
+                    queues.resets,
                     Arc::new(StdRwLock::new(HashMap::new())),
-                    Arc::new(StdRwLock::new(HashMap::new())),
+                    queues.meteors,
                     Arc::new(StdRwLock::new(HashSet::new())),
                 ))
                 .catch_unwind()

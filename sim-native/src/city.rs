@@ -17,6 +17,8 @@ use crate::mystral::{Js, Value};
 /// the match cannot start (no PhysX, no city assets). `request(path)` answers
 /// a GET for the server's stateless routes (vehicle assets, city manifest and
 /// visuals) as `{ status, contentType, contentEncoding, body: ArrayBuffer }`.
+/// `meteor(x, y, z)`, `reset()` and `vehicleDebug(car)` (a JSON string) are the
+/// server's /city-meteor, /city-reset and /city-vehicle-debug, for QA.
 pub fn start_city(js: Js, args: &[Value]) -> Value {
     let match_id = js.string_arg(args, 0).unwrap_or_else(|| "city-default".to_owned());
     apply_app_defaults();
@@ -73,6 +75,36 @@ pub fn start_city(js: Js, args: &[Value]) -> Value {
                     out
                 }
                 Err(error) => js.throw(&format!("request({path}): {error:#}")),
+            }
+        }));
+    }
+    // The HTTP server's debug routes, in-process: /city-meteor, /city-reset,
+    // /city-vehicle-debug (QA scripts drive these; see client/native/city-qa.js).
+    {
+        let session = session.clone();
+        js.set(handle, "meteor", js.function("meteor", move |js, args| {
+            let target = [0, 1, 2].map(|i| js.arg_number(args, i, f64::NAN) as f32);
+            if target.iter().any(|v| !v.is_finite()) {
+                return js.throw("meteor(x, y, z) needs a world point");
+            }
+            session.borrow().meteor(&[target]);
+            js.undefined()
+        }));
+    }
+    {
+        let session = session.clone();
+        js.set(handle, "reset", js.function("reset", move |js, _| {
+            session.borrow().reset();
+            js.undefined()
+        }));
+    }
+    {
+        let session = session.clone();
+        js.set(handle, "vehicleDebug", js.function("vehicleDebug", move |js, args| {
+            let car = js.arg_number(args, 0, 0.0).max(0.0) as u32;
+            match session.borrow().vehicle_debug(car) {
+                Ok(value) => js.string(&value.to_string()),
+                Err(error) => js.throw(&format!("vehicleDebug({car}): {error:#}")),
             }
         }));
     }

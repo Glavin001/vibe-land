@@ -171,6 +171,21 @@ export interface E2EDrawnWorld {
 
 let drawnWorldSource: (() => Omit<E2EDrawnWorld, 'meteors' | 'tapeMs'>) | null = null;
 
+export interface E2EDropPose {
+  position: [number, number, number];
+  yaw: number;
+  pitch: number;
+}
+let pendingDrop: E2EDropPose | null = null;
+
+/** GameWorld hands a pending `dropAt` to `send`; it stays pending until sent. */
+export function sendE2EDropRequest(send: (pose: E2EDropPose) => boolean): E2EDropPose | null {
+  const pose = pendingDrop;
+  if (!pose || !send(pose)) return null;
+  pendingDrop = null;
+  return pose;
+}
+
 /** GameWorld registers what its renderers drew; null on unmount. */
 export function setE2EDrawnWorldSource(source: (() => Omit<E2EDrawnWorld, 'meteors' | 'tapeMs'>) | null): void {
   drawnWorldSource = source;
@@ -446,6 +461,13 @@ export interface VibeE2EBridge {
   setCannonball(on: boolean): void;
   /** Choose any of the three shots by name; `setCannonball` covers two of them. */
   setShotMode(mode: ShotMode): void;
+  /**
+   * Put the player at a pose in the city through the city camera drop, the
+   * command the garage's "open city beside your vehicle" arrival sends (the
+   * server validates the placement). Lets a driver join a car anywhere in
+   * the city without re-loading the page with `?garagePosition`.
+   */
+  dropAt(pose: E2EDropPose): void;
   /**
    * Spawn destruction dust directly, bypassing the wire: a burst of the
    * given magnitude at a world point. Lets the renderer be exercised and
@@ -729,6 +751,7 @@ const bridge: VibeE2EBridge = {
   /// the overlay.
   setCannonball: (on: boolean) => setCannonballEnabled(on),
   setShotMode: (mode: ShotMode) => setShotMode(mode),
+  dropAt: (pose) => { pendingDrop = pose; },
   setCapturePose: (next) => setCapturePose(next),
   meteors: () => {
     const now = performance.now();

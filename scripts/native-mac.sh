@@ -8,6 +8,7 @@
 #   scripts/native-mac.sh debug [args]  # run with module-evaluation errors printed
 #   scripts/native-mac.sh smoke         # automated: load the city, shoot, expect fractures
 #   scripts/native-mac.sh record [secs] # scripted playthrough recorded to target/native-video/*.mp4
+#   scripts/native-mac.sh qa [scenarios] # destruction QA: city-play-qa's checks + vehicle-qa's scenarios
 #   scripts/native-mac.sh app           # build target/native-app/out/vibe-land.app
 #   scripts/native-mac.sh runtime|sim|bundle
 #
@@ -143,15 +144,32 @@ app() {
   echo "app: $APP_STAGE/out/vibe-land.app"
 }
 
-# A scripted playthrough (client/native/city-demo.js) recorded from the
+# Destruction QA in the app (client/native/city-qa.mjs): city-play-qa's walk
+# and meteor checks and vehicle-qa's scenarios, through vehicle-qa's own
+# engine. QA scenarios: a comma list (city-play, cannonball-wreck, ...);
+# empty runs them all. Judged by the runner's verdict line.
+qa() {
+  local wanted="${1:-}"; shift || true
+  iife
+  "$ROOT/client/node_modules/.bin/esbuild" "$ROOT/client/native/city-qa.mjs" --bundle --format=esm \
+    --platform=browser --target=es2022 --log-level=warning \
+    --define:QA_SCENARIOS="\"$wanted\"" --outfile="$BUNDLE_DIR/city-qa.js"
+  local log="$ROOT/target/native-qa.log"
+  (launch city-qa.js --headless "$@") 2>&1 | tee "$log" | grep --line-buffered '\[qa' || true
+  grep -q '\[qa\] VERDICT PASS' "$log" || { echo "native QA FAILED (log: $log)" >&2; exit 1; }
+  echo "native QA passed (log: $log)"
+}
+
+# A scripted playthrough (client/native/city-demo.mjs) recorded from the
 # app's window with ScreenCaptureKit: real time, hardware H.264, in a visible
 # window (macOS asks once for Screen Recording permission). RECORD_GPU=1
 # records headless through GPU readback instead, paced to real time
 # (--video-realtime); its WebP encoder is slow at high resolutions.
 record() {
-  local seconds="${1:-60}"; shift || true
+  local seconds="${1:-120}"; shift || true
   iife
-  cp "$ROOT/client/native/city-demo.js" "$BUNDLE_DIR/"
+  "$ROOT/client/node_modules/.bin/esbuild" "$ROOT/client/native/city-demo.mjs" --bundle --format=esm \
+    --platform=browser --target=es2022 --log-level=warning --outfile="$BUNDLE_DIR/city-demo.js"
   mkdir -p "$ROOT/target/native-video"
   local out="$ROOT/target/native-video/city-$(date +%Y%m%d-%H%M%S).mp4"
   local capture
@@ -178,5 +196,6 @@ case "${1:-run}" in
   smoke) shift || true; runtime; sim; bundle; smoke "$@" ;;
   app) runtime; sim; app ;;
   record) shift || true; runtime; sim; bundle; record "$@" ;;
+  qa) shift || true; runtime; sim; bundle; qa "$@" ;;
   *) echo "usage: $0 [build|run|runtime|sim|bundle] [mystral run args]" >&2; exit 2 ;;
 esac

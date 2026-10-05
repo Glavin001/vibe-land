@@ -20,7 +20,7 @@ import type { CrosshairAimState } from './aimTargeting';
 import type { RemotePlayer } from '../net/netcodeClient';
 import { useGameRuntime } from '../runtime/useGameRuntime';
 import type { GameRuntimeClient } from '../runtime/gameRuntime';
-import { setE2EDrawnWorldSource, updateE2EBridgeFrameState } from '../e2eBridge';
+import { setE2EDrawnWorldSource, sendE2EDropRequest, updateE2EBridgeFrameState } from '../e2eBridge';
 import { addDebugE2eMs } from '../city/renderStats';
 import { shotMode, shotWeapon } from '../city/shotMode';
 import { isRecording, recordFrame } from '../netlab/recorder';
@@ -1844,6 +1844,12 @@ export function GameWorld({
         pendingAerialDropRef.current = { pose, sentAt: now };
       }
     }
+    const e2eDrop = client.isInVehicle() ? null : sendE2EDropRequest((pose) => client.sendCityCameraDrop(pose));
+    if (e2eDrop) {
+      yawRef.current = e2eDrop.yaw;
+      pitchRef.current = e2eDrop.pitch;
+      pendingAerialDropRef.current = { pose: e2eDrop, sentAt: now };
+    }
     if (lastAerialDropRequestRef.current !== aerialDropRequest) {
       lastAerialDropRequestRef.current = aerialDropRequest;
       const pose = aerialPoseRef.current;
@@ -2986,7 +2992,7 @@ export function GameWorld({
         windDirectionDeg={windDirectionDeg}
       />}
       {/* Destruction dust, fed by the city client's fracture stream */}
-      {!__WEBGPU__ && <MeteorLayer getRuntime={() => runtimeRef.current ?? null} />}
+      <MeteorLayer getRuntime={() => runtimeRef.current ?? null} />
       <GameAudioLayer getRuntime={() => runtimeRef.current ?? null} getCityClient={() => runtimeRef.current?.getCityClient?.() ?? null} />
 
       {!__WEBGPU__ && <DustLayer

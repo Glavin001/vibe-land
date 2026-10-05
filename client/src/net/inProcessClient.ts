@@ -38,6 +38,10 @@ export interface InProcessLink {
   drain(): Array<boolean | ArrayBuffer>;
   /** A GET for the server's stateless HTTP routes, answered in-process. */
   request?(path: string): InProcessResponse;
+  /** The server's /city-meteor, /city-reset and /city-vehicle-debug (QA). */
+  meteor?(x: number, y: number, z: number): void;
+  reset?(): void;
+  vehicleDebug?(car: number): string;
   close(): void;
 }
 

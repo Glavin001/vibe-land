@@ -33,7 +33,10 @@ async function main(): Promise<void> {
   // game connects to it in memory (net/inProcessClient.ts).
   const sim = __mystralLoadNativeModule(__VIBE_SIM_LIB__);
   console.log(`[native] sim module loaded (${sim.backend}); starting ${MATCH_ID}`);
-  setInProcessLink(sim.startCity(MATCH_ID));
+  const session = sim.startCity(MATCH_ID);
+  setInProcessLink(session);
+  // For QA scripts (client/native/city-qa.js): the match's debug routes.
+  (globalThis as { __VIBE_NATIVE_SESSION__?: InProcessLink }).__VIBE_NATIVE_SESSION__ = session;
   // Mouse look as in the browser: a click captures the pointer (mystral's
   // Pointer Lock, SDL relative mouse mode), Escape releases it. Without it
   // (an older runtime) the capture request falls back to drag-to-look.

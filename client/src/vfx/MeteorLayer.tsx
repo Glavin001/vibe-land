@@ -67,6 +67,13 @@ const LIGHT_POOL = 2;
 
 const TICK_US = METEOR_TICK_US;
 
+/**
+ * The embers are GLSL points; WebGPU has no point size, so the simple WebGPU
+ * path draws the rock, its glow and its light without them (as it does
+ * without the fire volume, a frame-pipeline stage).
+ */
+const EMBERS_DRAWN = !__WEBGPU__;
+
 interface LiveMeteor {
   flight: MeteorFlight;
   group: THREE.Group;
@@ -201,6 +208,8 @@ export function MeteorLayer({ getRuntime, getNowMs }: MeteorLayerProps) {
       meteor.intensity += (target - meteor.intensity) * Math.min(1, step * 6);
       meteor.surface.uTime.value += step;
       meteor.surface.uGlow.value = 0.25 + 0.55 * meteor.intensity;
+      // Read by the plain WebGPU rock; the GLSL rock sets its own emission.
+      meteor.material.emissiveIntensity = meteor.surface.uGlow.value;
 
       // Flames point against the motion, lifted by buoyancy.
       scratchDir.set(-velocity[0], -velocity[1], -velocity[2]).add(BUOYANCY);
@@ -211,7 +220,7 @@ export function MeteorLayer({ getRuntime, getNowMs }: MeteorLayerProps) {
       layoutEmbers(meteor.embers, scratchAxis, meteor.surface.uTime.value, stage.trail, stage.turbulence);
       meteor.embers.material.uniforms.uTime.value = meteor.surface.uTime.value;
       meteor.embers.material.uniforms.uAmount.value = 0.65 * meteor.intensity;
-      meteor.embers.points.visible = meteor.intensity > 0.02;
+      meteor.embers.points.visible = EMBERS_DRAWN && meteor.intensity > 0.02;
 
       meteor.fire.center.copy(meteor.group.position);
       meteor.fire.direction.copy(scratchDir);
