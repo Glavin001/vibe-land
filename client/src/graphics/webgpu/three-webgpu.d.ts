@@ -7,3 +7,21 @@ declare module 'three-webgpu/webgpu' {
 declare module 'three-webgpu/tsl' {
   export * from 'three/tsl';
 }
+declare module 'three-webgpu/src/renderers/shaders/ShaderChunk.js' {
+  export { ShaderChunk } from 'three';
+}
+declare module 'three-webgpu/src/renderers/shaders/ShaderLib.js' {
+  export { ShaderLib } from 'three';
+}
+declare module 'three-webgpu/src/renderers/shaders/UniformsLib.js' {
+  export { UniformsLib } from 'three';
+}
+declare module 'three-webgpu/src/renderers/shaders/UniformsUtils.js' {
+  export { UniformsUtils } from 'three';
+}
+declare module 'three-webgpu/src/renderers/WebGLRenderer.js' {
+  export { WebGLRenderer } from 'three';
+}
+declare module 'three-webgpu/src/renderers/webgl/WebGLUtils.js' {
+  export { WebGLUtils } from 'three';
+}

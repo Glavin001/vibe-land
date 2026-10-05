@@ -61,7 +61,13 @@ export default defineConfig(({ mode }) => {
       },
     ],
     envDir: '../',
-    resolve: webgpu ? { alias: threeWebgpuAliases } : undefined,
+    resolve: {
+      alias: [
+        // Per-build implementations (graphics/webgl or graphics/webgpu).
+        { find: /^@render-backend\/(.*)$/, replacement: path.resolve(process.cwd(), `src/graphics/${webgpu ? 'webgpu' : 'webgl'}/$1`) },
+        ...(webgpu ? threeWebgpuAliases : []),
+      ],
+    },
     // Its own dependency pre-bundle: the aliases change what deps resolve
     // to, and a shared cache would hand the WebGL dev server webgpu bundles.
     cacheDir: webgpu ? 'node_modules/.vite-webgpu' : undefined,
@@ -137,7 +143,11 @@ export default defineConfig(({ mode }) => {
       ),
     },
     optimizeDeps: {
-      exclude: ['vibe-land-shared'],
+      // three stays raw ESM in the webgpu build. Pre-bundling inlines a copy
+      // of three.core.js per chunk, and inside three-webgpu `from 'three'`
+      // self-references its own classic build instead of going through the
+      // alias -- either way, two copies of every class.
+      exclude: ['vibe-land-shared', ...(webgpu ? ['three', 'three-webgpu', 'three/webgpu', 'three/tsl'] : [])],
     },
     test: {
       // Unit tests inside src/ plus the netlab analyzer (Node-only, so it

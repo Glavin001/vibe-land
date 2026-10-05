@@ -1,5 +1,7 @@
 import { lazy, Suspense } from 'react';
 import './index.css';
+// Per-build renderer setup: empty in the WebGL client (see vite.config.ts).
+import '@render-backend/install';
 import { createRoot } from 'react-dom/client';
 import { App } from './App';
 import { resolveAppRoute } from './app/routes';

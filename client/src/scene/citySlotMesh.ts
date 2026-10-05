@@ -36,9 +36,25 @@ import {
   FLOATS_PER_CHUNK,
   INITIAL_BODY_CAPACITY,
 } from '../city/cityPoseStore';
-import { slotNodeMaterial } from './citySlotNodes';
 
 export { CHUNK_HIDE_Y_M };
+
+/**
+ * The WebGPU path's slot material (scene/citySlotNodes.ts, TSL). Registered
+ * by the webgpu build's `@render-backend/install`, so this module never
+ * imports three/webgpu.
+ */
+type SlotNodeMaterialFactory = (source: THREE.Material, poses: CityGpuPoses) => THREE.Material;
+let slotNodeMaterial: SlotNodeMaterialFactory | null = null;
+
+export function registerSlotNodeMaterial(factory: SlotNodeMaterialFactory): void {
+  slotNodeMaterial = factory;
+}
+
+function webgpuSlotMaterial(source: THREE.Material, poses: CityGpuPoses): THREE.Material {
+  if (!slotNodeMaterial) throw new Error('WebGPU slot material not registered (@render-backend/install)');
+  return slotNodeMaterial(source, poses);
+}
 
 export type CityRenderable = { kind: 'slots'; mesh: CitySlotMesh };
 
@@ -302,7 +318,7 @@ export class CitySlotMesh extends THREE.Mesh {
     poses: CityGpuPoses,
     slots: number[],
   ) {
-    super(geometry, __WEBGPU__ ? slotNodeMaterial(material, poses) : material);
+    super(geometry, __WEBGPU__ ? webgpuSlotMaterial(material, poses) : material);
     this.poses = poses;
     this.slots = slots;
     // WebGPU: the node material above composes the pose; there are no
