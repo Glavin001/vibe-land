@@ -18,6 +18,23 @@ async function waitFor(what, predicate, timeoutMs = 120_000) {
   throw new Error(`timed out waiting for ${what}`);
 }
 
+/** Frame intervals over `ms`: what each pose costs to draw. */
+function frameTimes(ms) {
+  return new Promise((resolve) => {
+    const gaps = [];
+    let last = performance.now();
+    const until = last + ms;
+    const tick = (now) => {
+      gaps.push(now - last);
+      last = now;
+      if (now < until) { requestAnimationFrame(tick); return; }
+      gaps.sort((a, b) => a - b);
+      resolve({ median: gaps[gaps.length >> 1], p95: gaps[Math.floor(gaps.length * 0.95)] });
+    };
+    requestAnimationFrame(tick);
+  });
+}
+
 async function run() {
   const source = await (await fetch('file://./game-iife.js')).text();
   (0, eval)(source);
@@ -29,7 +46,9 @@ async function run() {
     e2e.setCapturePose({ position: pose.position, lookAt: pose.lookAt });
     await sleep(1500);
     const file = `${LOOK_OUT}/${pose.name}.png`;
-    log(`${pose.name}: ${__mystralSaveScreenshot(file) ? file : 'FAILED'}`);
+    const saved = __mystralSaveScreenshot(file);
+    const frames = await frameTimes(2000);
+    log(`${pose.name}: ${saved ? file : 'FAILED'}  frame ms median ${frames.median.toFixed(1)} p95 ${frames.p95.toFixed(1)}`);
   }
   log('done');
   setTimeout(() => process.exit(0), 200);
