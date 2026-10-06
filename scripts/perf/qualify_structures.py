@@ -1,0 +1,162 @@
+#!/usr/bin/env python3
+"""Does each structure in a scene converge at rest? One at a time, a few seconds each.
+
+    scripts/perf/qualify_structures.py [--ticks 300] [--max-unconverged 10] PACK|SCENE ...
+
+A scene pack is split into its structures by node group -- `building@juniper-house`
+and its furniture `sink-4@juniper-house` are one structure, `juniper-house`;
+ungrouped nodes (streets, footings) are `ground`; a pack without groups is one
+structure -- and each is qualified alone (structure_qualification.rs
+`city_structures_qualify`) for `--ticks` server ticks at rest, under the native
+app's stress settings. A structure whose stress solve does not converge keeps
+the GPU solving it every idle tick (the stage skips only converged ones), so the
+share of unconverged solves is the verdict: PASS at or under --max-unconverged
+percent.
+
+SCENE is a file in destruction/assets/scenes (e.g. `parking-garage`); PACK is a
+path. Structures with no anchor (free-standing props) are listed and skipped:
+there is nothing to stress-solve at rest. Takes the GPU lock per structure.
+
+Measured 2026-10-05 (5 s each): the default city building converges in <= 2
+iterations; Bayline's houses ~10%, the parking garage and Villa Savoye 28%.
+"""
+
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+import tempfile
+
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+SCENES = os.path.join(ROOT, 'destruction', 'assets', 'scenes')
+TARGET = os.path.join(ROOT, 'target', 'qualify-structures')
+PHYSX_ROOT = os.environ.get('PHYSX_ROOT', os.path.join(os.path.dirname(ROOT), 'PhysX', 'out', 'install', 'garage-multihull'))
+# The native app's stress settings (sim-native/src/city.rs apply_app_defaults).
+APP_ENV = {
+    'VIBE_NATIVE_STRESS_FORCE_TOLERANCE': '0.001',
+    'BLAST_STRESS_INCREMENTAL_MOTION': '1',
+    'PX_DESTRUCTION_INCREMENTAL_TOPOLOGY': '1',
+    'BLAST_STRESS_BALANCED_OPERATOR': '1',
+}
+
+
+def structure_of(group):
+    """`building@juniper-house` -> `juniper-house`; ungrouped -> `ground`."""
+    return group.split('@', 1)[1] if '@' in group else 'ground'
+
+
+def split(pack_path, out_dir):
+    """Write one pack per structure; returns [(name, path, anchors, nodes, label)]."""
+    pack = json.load(open(pack_path))
+    s = pack['scenario']
+    groups = s.get('nodeGroups') or ['ground'] * len(s['nodes'])
+    names = sorted({structure_of(g) for g in groups})
+    stem = os.path.splitext(os.path.basename(pack_path))[0]
+    if len(names) == 1:
+        anchors = sum(1 for n in s['nodes'] if n['mass'] == 0)
+        return [(stem, pack_path, anchors, len(s['nodes']), stem)]
+    out = []
+    for name in names:
+        keep = [i for i, g in enumerate(groups) if structure_of(g) == name]
+        remap = {old: new for new, old in enumerate(keep)}
+        part = json.loads(json.dumps({k: v for k, v in pack.items() if k != 'scenario'}))
+        part['scenario'] = {}
+        for key, value in s.items():
+            if isinstance(value, list) and len(value) == len(s['nodes']):
+                part['scenario'][key] = [value[i] for i in keep]
+            elif key == 'bonds':
+                part['scenario'][key] = [dict(b, node0=remap[b['node0']], node1=remap[b['node1']])
+                                         for b in value if b['node0'] in remap and b['node1'] in remap]
+            else:
+                part['scenario'][key] = value
+        nodes = part['scenario']['nodes']
+        if not any(n['mass'] > 0 for n in nodes):
+            continue  # static only: nothing to solve
+        path = os.path.join(out_dir, f'{stem}--{name}.json')
+        json.dump(part, open(path, 'w'))
+        kinds = sorted({g.split('@')[0].rstrip('-0123456789') for g in part['scenario']['nodeGroups']})
+        label = kinds[0] if name.startswith('gardens-market') or name.startswith('prop') else name
+        out.append((name, path, sum(1 for n in nodes if n['mass'] == 0), len(nodes), label))
+    return out
+
+
+def build():
+    """The test binary holding city_structures_qualify, built against the app's SDK."""
+    env = dict(os.environ, PHYSX_ROOT=PHYSX_ROOT, CARGO_TARGET_DIR=TARGET)
+    result = subprocess.run(
+        ['cargo', 'test', '-p', 'web-fps-server', '--release', '--features', 'native-destruction',
+         '--no-run', '--message-format=json'],
+        cwd=ROOT, env=env, capture_output=True, text=True)
+    if result.returncode != 0:
+        sys.stderr.write(result.stderr[-4000:])
+        sys.exit('build failed')
+    for line in result.stdout.splitlines():
+        try:
+            message = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        exe = message.get('executable')
+        if exe and os.path.basename(exe).startswith('web_fps_server-'):
+            listed = subprocess.run([exe, '--list', '--ignored'], capture_output=True, text=True).stdout
+            if 'city_structures_qualify' in listed:
+                return exe
+    sys.exit('no test binary with city_structures_qualify')
+
+
+def qualify(binary, pack_path, ticks):
+    env = dict(os.environ, **APP_ENV,
+               VIBE_CITY_SCENE=pack_path, VIBE_CITY_GRID='1', VIBE_CITY_VARIED_HEIGHTS='0',
+               VIBE_QUALIFY_REST_TICKS=str(ticks), VIBE_QUALIFY_IMPACT_TICKS='0',
+               VIBE_DESTRUCTION_ASSET_DIR=SCENES,
+               CUMETAL_CACHE_DIR=os.path.join(ROOT, 'target', 'cumetal-cache-vehicles'))
+    result = subprocess.run(
+        [os.path.join(ROOT, 'scripts', 'perf', 'gpu-run.sh'), 'qualify-structures', binary,
+         'city_structures_qualify', '--ignored', '--nocapture', '--test-threads=1'],
+        cwd=os.path.join(ROOT, 'server'), env=env, capture_output=True, text=True)
+    text = result.stdout + result.stderr
+    rest = re.search(r'at rest: (.*)', text)
+    if rest is None:
+        return None, 'no verdict (see a run by hand)'
+    line = rest.group(1)
+    if line.startswith('converges'):
+        return 0.0, line
+    m = re.match(r'(\d+) of (\d+) solves unconverged', line)
+    return (100.0 * int(m.group(1)) / int(m.group(2)) if m else None), line
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument('packs', nargs='+')
+    parser.add_argument('--ticks', type=int, default=300, help='server ticks at rest per structure (300 = 5 s)')
+    parser.add_argument('--max-unconverged', type=float, default=10.0, help='PASS at or under this percent')
+    parser.add_argument('--json', help='also write the results here')
+    args = parser.parse_args()
+
+    binary = build()
+    results = []
+    with tempfile.TemporaryDirectory(prefix='qualify-structures-') as tmp:
+        for spec in args.packs:
+            path = spec if os.path.exists(spec) else os.path.join(SCENES, spec if spec.endswith('.json') else spec + '.json')
+            for name, part, anchors, nodes, label in split(path, tmp):
+                if anchors == 0:
+                    results.append({'pack': spec, 'structure': name, 'label': label, 'nodes': nodes,
+                                    'verdict': 'FREE', 'unconverged_pct': None, 'detail': 'no anchor: a free body, nothing to solve at rest'})
+                else:
+                    pct, detail = qualify(binary, part, args.ticks)
+                    verdict = 'ERROR' if pct is None else ('PASS' if pct <= args.max_unconverged else 'FAIL')
+                    results.append({'pack': spec, 'structure': name, 'label': label, 'nodes': nodes,
+                                    'verdict': verdict, 'unconverged_pct': pct, 'detail': detail})
+                r = results[-1]
+                pct = '-' if r['unconverged_pct'] is None else f"{r['unconverged_pct']:.1f}%"
+                print(f"{r['verdict']:5} {pct:>6}  {r['structure'][:28]:28} {r['label'][:16]:16} {r['nodes']:6} chunks  {r['detail'][:90]}", flush=True)
+    if args.json:
+        json.dump(results, open(args.json, 'w'), indent=1)
+    failed = [r for r in results if r['verdict'] in ('FAIL', 'ERROR')]
+    print(f"{len(results) - len(failed)} of {len(results)} structures pass (<= {args.max_unconverged}% unconverged over {args.ticks} ticks)")
+    sys.exit(1 if failed else 0)
+
+
+if __name__ == '__main__':
+    main()
