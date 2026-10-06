@@ -512,7 +512,12 @@ fn run(r: &Run, meta: &Value) -> Value {
         let mut quiet = 0;
         for _ in 0..600 {
             if quiet >= 30 { break; }
-            step(&mut arena, &mut city, &mut tick, Some(&InputCmd::default()));
+            // On the handbrake: with the throttle up a car coasts on undiminished
+            // (Vehicle2 here has no rolling resistance or drag: a monster truck
+            // thrown at 31 m/s rolled on at 31 m/s for 10 s).
+            let mut hold = InputCmd::default();
+            hold.buttons |= BTN_JUMP;
+            step(&mut arena, &mut city, &mut tick, Some(&hold));
             let s = car_state(&mut arena, id);
             quiet = if (s.v.x * s.v.x + s.v.z * s.v.z).sqrt() < 0.5 { quiet + 1 } else { 0 };
         }
@@ -548,6 +553,8 @@ fn run(r: &Run, meta: &Value) -> Value {
             .map(|h| geometry.parts[h["part"].as_u64().unwrap() as usize].name.clone()).collect();
         names.sort(); names.dedup(); names
     }).unwrap_or_default();
+    let drive_state = arena.vehicle_destruction_debug(id).map(|d| json!({"wheelMask": d["vehicle"]["wheelMask"], "driveMask": d["vehicle"]["driveMask"],
+        "engineConnected": d["vehicle"]["engineConnected"], "wheelsOnRoad": d["vehicle2"]["wheelsOnRoad"]})).unwrap_or(Value::Null);
     // Every body of the car at the end: [actor, mass, gravity disabled, asleep, position].
     let actors_end = arena.vehicle_destruction_debug(id).map(|d| json!(d["actors"].as_array().into_iter().flatten()
         .map(|a| json!([a["actor"], a["mass"], a["gravityDisabled"], a["sleeping"], a["position"]])).collect::<Vec<_>>())).unwrap_or(Value::Null);
@@ -572,6 +579,7 @@ fn run(r: &Run, meta: &Value) -> Value {
     out["bodyMass"] = json!(damage.body_mass);
     out["wheelLoadsEndKN"] = json!(damage.last_wheels);
     out["actorsEnd"] = actors_end;
+    out["driveState"] = drive_state;
     out["carrierParts"] = if carrier_parts.len() <= 40 { json!(carrier_parts) } else { json!(carrier_parts.len()) };
     out["converged"] = json!(if solves > 0 { converged as f32 / solves as f32 } else { 0. });
     out["stepMs"] = json!({"median": sorted.get(sorted.len() / 2), "p95": sorted.get(sorted.len() * 95 / 100), "max": sorted.last()});

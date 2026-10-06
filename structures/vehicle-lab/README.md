@@ -94,6 +94,15 @@ or its front end still drives on what it has.
   leaves the monster truck 13 cm lower for good. Trial `knock-mirror-driving`
   fails until it is fixed (physx/source/gpudestruction/src/PxgDestructionMotionState.cuh,
   `nativeCandidateState`: enable gravity only when `id != candidate.sourceBody`).
+- **A car coasts on undiminished.** With the throttle up, Vehicle2 here has
+  no rolling resistance or drag: a monster truck thrown to 31 m/s by the
+  cannonball rolled on at 31 m/s for 10 s. The drive-away waits for the car to
+  stop on the handbrake.
+- **Half a car will not drive.** After the wall, the cars that keep their rear
+  axle (wheel and drive masks 12, engine connected) creep 0.3-1 m in 4.5 s: two
+  wheels carry half the AWD drive torque (customization.mjs splits it over four)
+  against the nose dragging on the ground (~0.75 x half its weight). The derby
+  and the circuit car (RWD: full torque on the rear) drive away.
 - **Tried and rejected** for the wall: corner bonds x2-x3.4 (the wheels go with
   the front end, not at their mounts), the monster's real mass (x1.6) with and
   without sections to match, and wheel hulls inset so tyres meet walls and

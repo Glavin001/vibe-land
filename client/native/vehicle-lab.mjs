@@ -173,7 +173,9 @@ function trialShot(trial, index, meta, ground) {
       positions.set(index, s.p);
       const t = k * 0.1;
       if (awayStart == null) {
+        // On the handbrake (Vehicle2 here coasts on undiminished).
         ctx.drive.move({ forward: 0, strafe: 0 });
+        ctx.drive.jump(150);
         quietSince = speedOf(s) < 0.5 ? quietSince ?? t : null;
         if ((quietSince != null && t - quietSince >= 0.5) || t >= 5) { awayStart = t; awayFrom = s.p; }
         return;
