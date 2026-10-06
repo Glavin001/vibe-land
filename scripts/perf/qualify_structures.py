@@ -10,8 +10,13 @@ structure -- and each is qualified alone (structure_qualification.rs
 `city_structures_qualify`) for `--ticks` server ticks at rest, under the native
 app's stress settings. A structure whose stress solve does not converge keeps
 the GPU solving it every idle tick (the stage skips only converged ones), so the
-share of unconverged solves is one test, PASS at or under --max-unconverged
-percent. The other is that it stands: a structure can converge and fall down
+unconverged share is one test, PASS at or under --max-unconverged percent.
+It is per tick, not per solve: unconverged solves over the ticks at rest, so
+one component that never converges is 100% however many converged fences and
+chairs (each its own component, each solved every tick) sit beside it -- the
+per-solve share hid exactly that (a bare bungalow 99%, fenced 35%, furnished
+12%). It is what the GPU repeats every idle tick: 100% is one component
+re-solved every tick. The other is that it stands: a structure can converge and fall down
 (Bayline's billboard), so bonds broken at rest must stay at or under
 --max-broken percent of its bonds (0.5%, the authored-structure gate in
 authored_structures_sim.rs).
@@ -20,8 +25,9 @@ SCENE is a file in destruction/assets/scenes (e.g. `parking-garage`); PACK is a
 path. Structures with no anchor (free-standing props) are listed and skipped:
 there is nothing to stress-solve at rest. Takes the GPU lock per structure.
 
-Measured 2026-10-05 (5 s each): the default city building converges in <= 2
-iterations; Bayline's houses ~10%, the parking garage and Villa Savoye 28%.
+Measured 2026-10-05 (5 s each, per tick): the default city building
+converges in <= 2 iterations; Bayline's porch houses ~110% (their house never
+converges), the town-kit bungalow 99%, the skyline houses 0.7-2.3%.
 """
 
 import argparse
@@ -109,6 +115,7 @@ def build():
 
 
 def qualify(binary, pack_path, ticks, solver_env='app'):
+    """(unconverged % per tick, broken %, awake bodies, detail)."""
     env = dict(os.environ, **(APP_ENV if solver_env == 'app' else {}),
                VIBE_CITY_SCENE=pack_path, VIBE_CITY_GRID='1', VIBE_CITY_VARIED_HEIGHTS='0',
                VIBE_QUALIFY_REST_TICKS=str(ticks), VIBE_QUALIFY_IMPACT_TICKS='0',
@@ -129,7 +136,8 @@ def qualify(binary, pack_path, ticks, solver_env='app'):
     if line.startswith('converges'):
         return 0.0, broken, awake, line
     m = re.match(r'(\d+) of (\d+) solves unconverged', line)
-    return (100.0 * int(m.group(1)) / int(m.group(2)) if m else None), broken, awake, line
+    # The first tick at rest is the settling solve, not one at rest.
+    return (100.0 * int(m.group(1)) / max(1, ticks - 1) if m else None), broken, awake, line
 
 
 def main():

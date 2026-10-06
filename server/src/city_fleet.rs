@@ -33,7 +33,9 @@ pub fn requested() -> Option<Vec<String>> {
     if value.is_empty() || value == "0" { return None; }
     let builds: Vec<String> = if value == "1" { DEFAULT_FLEET.iter().map(|s| s.to_string()).collect() }
         else { value.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect() };
-    (!builds.is_empty()).then(|| builds.into_iter().take(SLOTS.len()).collect())
+    // A scene that names its parking spots may field one car per spot.
+    let capacity = configured_slots().map_or(0, Vec::len).max(SLOTS.len());
+    (!builds.is_empty()).then(|| builds.into_iter().take(capacity).collect())
 }
 
 pub struct Fleet {
@@ -91,7 +93,8 @@ pub async fn prepare(builds: &[String]) -> Arc<Fleet> {
 pub fn slot_position(index: usize) -> (f32, f32) {
     if let Some(slots) = configured_slots() {
         if !slots.is_empty() {
-            return slots[index % slots.len()];
+            let (x, z, _) = slots[index % slots.len()];
+            return (x, z);
         }
     }
     let ring = crate::city::spawn_ring_radius_m();
@@ -99,23 +102,38 @@ pub fn slot_position(index: usize) -> (f32, f32) {
     (rx * ring + dx, rz * ring + dz)
 }
 
-/// `VIBE_CITY_FLEET_SLOTS="x,z;x,z;..."`: parking spots (metres) for a scene
-/// whose ring spots land on its props -- a town's roads, say. A car parked
-/// inside a structure breaks it the moment it spawns.
-fn configured_slots() -> Option<&'static Vec<(f32, f32)>> {
-    static SLOTS_FROM_ENV: OnceLock<Option<Vec<(f32, f32)>>> = OnceLock::new();
+/// Which way slot `index` parks its car, radians about y from +z (towards
+/// +x): the scene's own heading for the spot, else facing downtown.
+pub fn slot_heading(index: usize) -> f32 {
+    let (x, z) = slot_position(index);
+    configured_slots()
+        .filter(|slots| !slots.is_empty())
+        .and_then(|slots| slots[index % slots.len()].2)
+        .map_or_else(|| (-x).atan2(-z), f32::to_radians)
+}
+
+/// `VIBE_CITY_FLEET_SLOTS="x,z;x,z,heading;..."`: parking spots (metres) for
+/// a scene whose ring spots land on its props -- a town's roads, say -- and
+/// optionally the heading in degrees (0 faces +z, 90 faces +x), to park a car
+/// in a driveway. A car parked inside a structure breaks it the moment it
+/// spawns.
+fn configured_slots() -> Option<&'static Vec<(f32, f32, Option<f32>)>> {
+    static SLOTS_FROM_ENV: OnceLock<Option<Vec<(f32, f32, Option<f32>)>>> = OnceLock::new();
     SLOTS_FROM_ENV
         .get_or_init(|| std::env::var("VIBE_CITY_FLEET_SLOTS").ok().map(|value| parse_slots(&value)))
         .as_ref()
 }
 
-fn parse_slots(value: &str) -> Vec<(f32, f32)> {
+fn parse_slots(value: &str) -> Vec<(f32, f32, Option<f32>)> {
     value
         .split(';')
-        .filter_map(|pair| {
-            let (x, z) = pair.split_once(',')?;
-            let (x, z) = (x.trim().parse::<f32>().ok()?, z.trim().parse::<f32>().ok()?);
-            (x.is_finite() && z.is_finite()).then_some((x, z))
+        .filter_map(|slot| {
+            let fields: Vec<f32> = slot.split(',').map(|f| f.trim().parse::<f32>()).collect::<Result<_, _>>().ok()?;
+            match fields[..] {
+                [x, z] if x.is_finite() && z.is_finite() => Some((x, z, None)),
+                [x, z, heading] if x.is_finite() && z.is_finite() && heading.is_finite() => Some((x, z, Some(heading))),
+                _ => None,
+            }
         })
         .collect()
 }
@@ -125,8 +143,8 @@ fn parse_slots(value: &str) -> Vec<(f32, f32)> {
 pub fn spawn(arena: &mut PhysicsArena, fleet: &Fleet) {
     for (index, (id, build, asset)) in fleet.cars.iter().enumerate() {
         let (x, z) = slot_position(index);
-        // +z forward rotated about y to face downtown.
-        let yaw = (-x).atan2(-z);
+        // +z forward rotated about y: the slot's heading, else facing downtown.
+        let yaw = slot_heading(index);
         let rotation = [0.0, (yaw * 0.5).sin(), 0.0, (yaw * 0.5).cos()];
         let position = nalgebra::Vector3::new(x, asset.geometry.origin_height as f32 + 0.15, z);
         if let Err(error) = arena.spawn_prepared_vehicle_at(*id, 0, position, rotation, &asset.geometry) {
@@ -157,7 +175,8 @@ mod slot_tests {
 
     #[test]
     fn parses_parking_spots_and_skips_bad_ones() {
-        assert_eq!(parse_slots("-56,-2.5; 56,2.5;x,1;3"), vec![(-56.0, -2.5), (56.0, 2.5)]);
+        assert_eq!(parse_slots("-56,-2.5; 56,2.5;x,1;3"), vec![(-56.0, -2.5, None), (56.0, 2.5, None)]);
+        assert_eq!(parse_slots("10,20,90;1,2,x;1,2,3,4"), vec![(10.0, 20.0, Some(90.0))]);
         assert!(parse_slots("").is_empty());
     }
 }

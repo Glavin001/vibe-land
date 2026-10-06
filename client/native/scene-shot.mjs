@@ -41,6 +41,9 @@ async function run() {
   // Nothing has been shot: any broken bond is the scene breaking by itself
   // (or something spawned inside it).
   log(`broken bonds ${snap.city.brokenBonds}, awake chunks ${snap.city.chunksAwake}`);
+  // Town-kit scenes: the details layer (tree leaves, stall canopies).
+  const townKit = e2e.townKit?.();
+  if (townKit && (townKit.ready || townKit.error)) log(`town-kit details: ${townKit.ready ? `${townKit.attachments} attachments` : `FAILED ${townKit.error}`}`);
 
   // Overview: above the structures' centre, back by their spread.
   const xs = structures.map((s) => s.position[0]);
@@ -67,11 +70,29 @@ async function run() {
       ['highrise', [30, 18, -70], [0, 15, -110]],
       ['hill-house', [-60, 14, 110], [-105, 8, 75]],
     ],
+    // structures/vibe-town/build-town.mjs
+    town: [
+      ['wide', [-20, 38, -105], [-10, 0, -5]],
+      ['main-street', [-146, 2.5, 0], [0, 2, 0]],
+      ['elm-park', [-40, 28, -95], [-75, 0, -20]],
+      ['driveway', [-99, 3.5, 4], [-109, 1, 13]],
+      ['bus-station', [20, 4, 6], [20, 1.5, -9]],
+      ['market-square', [27, 10, 6], [27, 1, 24]],
+      ['towers', [60, 22, -45], [112, 14, -14]],
+      ['car-park', [111, 9, 42], [111, 1, 63]],
+    ],
+  };
+  /** Main-thread CPU per frame over a second at the current pose (frame start to end of render). */
+  const cpuFrame = async () => {
+    const samples = [];
+    for (let i = 0; i < 40; i += 1) { samples.push(e2e.frameProfile().cpuFrameMs); await sleep(25); }
+    samples.sort((a, b) => a - b);
+    return `cpu/frame median ${samples[20].toFixed(1)} ms, p90 ${samples[36].toFixed(1)} ms, ${e2e.frameProfile().drawCalls} draws`;
   };
   for (const [name, position, lookAt] of VIEWPOINTS[scene] ?? []) {
     e2e.setCapturePose({ position, lookAt });
     await sleep(1500);
-    log(`${name}: ${__mystralSaveScreenshot(`../../target/native-scene/${scene}-${name}.png`) ? 'saved' : 'FAILED'}`);
+    log(`${name}: ${__mystralSaveScreenshot(`../../target/native-scene/${scene}-${name}.png`) ? 'saved' : 'FAILED'}; ${await cpuFrame()}`);
   }
 
   // The nearest car, from the side.

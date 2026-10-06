@@ -26,6 +26,10 @@
 #                   ten-storey high-rise, houses east and on a hill, a jump
 #                   kicker and six destructible cars -- every structure one
 #                   that converges and stands at rest (scripts/perf/qualify_structures.py)
+#   town            Vibe Town (structures/vibe-town): Elm Park's 42 houses with
+#                   cars in the driveways, the Market Quarter's shops, towers,
+#                   cinema, library, bus station and market square -- every
+#                   structure qualified, everything above ground destructible
 #
 # MYSTRAL_ROOT: the mystralnative checkout (default ../mystralnative), built
 # from its `vibe-land` integration branch. Extra `run` args go to `mystral run`
@@ -98,7 +102,24 @@ case "$SCENE" in
       VIBE_CITY_SPAWN_X=-135 VIBE_CITY_SPAWN_Z=0 \
       VIBE_CITY_NATIVE_STRESS_ITERATIONS="${VIBE_CITY_NATIVE_STRESS_ITERATIONS:-16}" \
       VITE_TOWN_KIT_SCENE=vibe-showcase ;;
-  *) echo "unknown --scene $SCENE (city, skyline, bayline, showcase)" >&2; exit 2 ;;
+  town)
+    pack="$ROOT/structures/vibe-town/out/vibe-town"
+    stale=0
+    for source in "$ROOT"/structures/vibe-town/*.mjs; do [ "$pack.json" -nt "$source" ] || stale=1; done
+    [ -f "$pack.json" ] && [ "$stale" = 0 ] || node "$ROOT/structures/vibe-town/build-town.mjs"
+    # Ten cars: eight in Elm Park's driveways, two in the Market Quarter's car
+    # park (the builder's .slots, with headings). The spawn is Main Street's
+    # west end. Stress iterations: 16, as every structure here was qualified
+    # at (scripts/perf/qualify_structures.py) -- the showcase's owner-approved
+    # exception; VIBE_CITY_NATIVE_STRESS_ITERATIONS overrides it.
+    export VIBE_CITY_SCENE="$pack.json" VIBE_CITY_VISUALS="$pack.visuals.json" \
+      VIBE_CITY_GRID=1 VIBE_CITY_VARIED_HEIGHTS=0 \
+      VIBE_CITY_DESTRUCTIBLE_VEHICLES="${VIBE_CITY_DESTRUCTIBLE_VEHICLES:-derby,trophy,desert,circuit,derby,trophy,buggy,desert,monster,circuit}" \
+      VIBE_CITY_FLEET_SLOTS="${VIBE_CITY_FLEET_SLOTS:-$(cat "$pack.slots")}" \
+      VIBE_CITY_SPAWN_X=-146 VIBE_CITY_SPAWN_Z=0 \
+      VIBE_CITY_NATIVE_STRESS_ITERATIONS="${VIBE_CITY_NATIVE_STRESS_ITERATIONS:-16}" \
+      VITE_TOWN_KIT_SCENE=vibe-town ;;
+  *) echo "unknown --scene $SCENE (city, skyline, bayline, showcase, town)" >&2; exit 2 ;;
 esac
 [ "$SCENE" = city ] || echo "scene: $SCENE (${VIBE_CITY_SCENE})"
 
