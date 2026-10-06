@@ -4,7 +4,7 @@ export const PALETTES={sage:'#698477',blue:'#667f91',ochre:'#b99b73',cream:'#d3c
 export function materials(palette='sage') {
  if(!PALETTES[palette]) throw Error(`Unknown palette ${palette}`);
  const mat=(name,source,color,textureKey,density,extra={})=>({...structuredClone(base.find(m=>m.name===source)),name,color,textureKey,density,...extra});
- return [
+ const table = [
   mat('structure-timber','wood-frame','#986d43','aged-timber',600),
   mat('painted-siding','wood-frame',PALETTES[palette],'white-concrete',600),
   mat('ivory-trim','wood-frame','#e7dec8',null,600),
@@ -26,5 +26,50 @@ export function materials(palette='sage') {
   mat('cladding-fastener','wood-frame','#e7dec8',null,600,{compressionElastic:3e6,compressionFatal:6e6,tensionElastic:1e5,tensionFatal:2e5,shearElastic:2.5e5,shearFatal:5e5,elasticModulus:5e8}),
   mat('insulated-appliance-panel','wood-frame','#e6e4d4',null,280,{compressionElastic:8e6,compressionFatal:16e6,tensionElastic:5e5,tensionFatal:1e6,shearElastic:1e6,shearFatal:2e6,elasticModulus:1e9,roughness:.25,metalness:.15}),
  ];
+ table.push(mortarMaterial(table[4]));
+ return table;
 }
-export const M={frame:0,siding:1,trim:2,plaster:3,brick:4,footing:5,glass:6,roof:7,dark:8,oak:9,ceramic:10,metal:11,fabric:12,bedding:13,glassJoint:14,wall:15,joint:16,furnitureJoint:17,fastener:18,appliance:19};
+export const M={frame:0,siding:1,trim:2,plaster:3,brick:4,footing:5,glass:6,roof:7,dark:8,oak:9,ceramic:10,metal:11,fabric:12,bedding:13,glassJoint:14,wall:15,joint:16,furnitureJoint:17,fastener:18,appliance:19,mortar:20};
+
+/**
+ * Masonry fails at its joints, not through its bricks: Eurocode 6 puts the
+ * flexural tensile strength of brick masonry at 0.1-0.7 MPa and the initial
+ * shear strength at 0.1-0.3 MPa plus friction under load, where the `brick`
+ * material carries the brick unit's own 4.4 / 8.8 MPa. So a bond between two
+ * masonry pieces, or masonry bedded on concrete or a footing, is a mortar
+ * joint and gets these limits (the `mortar-joint` material). The bricks keep
+ * their strength, and timber, trim and glass fixed to masonry keep the joint
+ * they had: those are fixings, not mortar (made mortar-weak, a grocery's trim
+ * hung on 7 cm2 slivers broke at rest). At the brick's own strength a monster
+ * truck at 78 km/h into a house broke 10 bonds and freed nothing, so no
+ * corrected solve ran and it stopped dead (2026-10-06, the vehicle lab).
+ * VIBE_BRICK_JOINTS=unit builds with the brick's strength in its joints.
+ */
+export const MORTAR_JOINT = { tensionElastic: 0.2e6, tensionFatal: 0.6e6, shearElastic: 0.33e6, shearFatal: 1.0e6 };
+export const mortarJointsEnabled = () => (globalThis.process?.env?.VIBE_BRICK_JOINTS ?? 'mortar') !== 'unit';
+/** Masonry by name: a concrete facade with a brick texture is still concrete. */
+export const isMasonry = (name) => /^brick(-|$)/.test(name) || /masonry/.test(name) && !/connection|seam/.test(name);
+/** What masonry is bedded on (its bed joint is mortar too). */
+export const isBed = (name) => /concrete|footing|slab/.test(name);
+/** The mortar-joint material, from a brick material. */
+export const mortarMaterial = (brick) => ({ ...structuredClone(brick), name: 'mortar-joint', ...(mortarJointsEnabled() ? MORTAR_JOINT : {}) });
+/**
+ * A pack's masonry bonds as mortar joints (in place): the pack gains a
+ * `mortar-joint` material and every bond between two masonry nodes, or
+ * masonry and its bed, uses it. Returns how many bonds changed.
+ */
+export function mortarJoints(pack) {
+  if (!mortarJointsEnabled()) return 0;
+  const table = pack.defaults.solver.materials, s = pack.scenario;
+  const brick = table.find((m) => isMasonry(m.name));
+  if (!brick) return 0;
+  const names = s.nodeMaterials ?? s.nodes.map((n) => table[n.m ?? 0].name);
+  let index = table.findIndex((m) => m.name === 'mortar-joint');
+  if (index < 0) { index = table.length; table.push(mortarMaterial(brick)); }
+  let changed = 0;
+  for (const b of s.bonds) {
+    const x = names[b.node0], y = names[b.node1];
+    if ((isMasonry(x) && (isMasonry(y) || isBed(y))) || (isMasonry(y) && isBed(x))) { b.m = index; changed += 1; }
+  }
+  return changed;
+}

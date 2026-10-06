@@ -33,6 +33,7 @@ import { createHash } from 'node:crypto';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { mortarJoints } from '../town-kit/src/materials.mjs';
 
 const repo = fileURLToPath(new URL('../../', import.meta.url));
 const OUT = path.join(repo, 'structures/showcase/out');
@@ -162,6 +163,7 @@ function build() {
     if ([...EXCLUDE].some((part) => group.includes(part))) continue;
     const pack = read(path.join(SCENES, file));
     const table = pack.defaults.solver.materials;
+    mortarJoints(pack); // masonry joints at mortar strength (town-kit materials.mjs)
     if (!table) throw new Error(`${file} has no material table to merge`);
     const names = table.map((m) => m.name).join(',');
     if (!tables.has(names)) {

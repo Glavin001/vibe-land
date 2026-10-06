@@ -27,7 +27,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { composeScene, Builder } from '../town-kit/src/geometry.mjs';
-import { M } from '../town-kit/src/materials.mjs';
+import { M, mortarJoints } from '../town-kit/src/materials.mjs';
 import { LANES, PADS, START_Z, LANE_LENGTH, DEBRIS, TRIALS, slotOf } from './trials.mjs';
 import { assertStrikesClear } from '../../client/native/film/shots.mjs';
 
@@ -144,16 +144,7 @@ function skyline(file) {
   s.nodeGroups ??= Array(n).fill('building');
   s.nodePieces ??= s.nodes.map((_, i) => i);
   s.nodeMaterials ??= s.nodes.map((node) => pack.defaults.solver.materials[node.m ?? 0].name);
-  // What-if (VIBE_LAB_MORTAR=1): brick joints as strong as their mortar, not
-  // the brick. Masonry fails at the joint: flexural tension 0.1-0.7 MPa and
-  // initial shear 0.1-0.3 MPa plus friction (Eurocode 6), against the brick
-  // unit's 4.4 / 8.8 MPa the material table gives every brick bond.
-  if (process.env.VIBE_LAB_MORTAR === '1') {
-    for (const m of pack.defaults.solver.materials) if (m.name === 'brick') {
-      Object.assign(m, { name: 'brick-mortar', tensionFatal: 0.6e6, tensionElastic: 0.2e6, shearFatal: 1.0e6, shearElastic: 0.33e6 });
-    }
-    s.nodeMaterials = s.nodeMaterials.map((n) => (n === 'brick' ? 'brick-mortar' : n));
-  }
+  mortarJoints(pack);
   return { pack };
 }
 

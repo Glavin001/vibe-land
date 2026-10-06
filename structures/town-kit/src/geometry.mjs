@@ -56,6 +56,8 @@ export class Builder {
    if(s.nodePieces[i]!==s.nodePieces[j]&&[M.frame,M.siding,M.trim,M.dark,M.oak,M.fabric,M.bedding,M.wall].includes(A.m)&&[M.frame,M.siding,M.trim,M.dark,M.oak,M.fabric,M.bedding,M.wall].includes(B.m))mat=M.joint;
    if(mat===M.joint&&this.group.startsWith('prop-')&&!/fence|gate/.test(this.group))mat=M.furnitureJoint;
    if(s.nodeTypes[i]==='siding'||s.nodeTypes[j]==='siding'||s.nodeTypes[i]==='dentil'||s.nodeTypes[j]==='dentil')mat=M.fastener;
+   // Masonry on masonry, or bedded on a footing: a mortar joint (materials.mjs MORTAR_JOINT).
+   if((A.m===M.brick&&(B.m===M.brick||B.m===M.footing))||(B.m===M.brick&&A.m===M.footing))mat=M.mortar;
    if((A.m===M.glass)!==(B.m===M.glass))mat=M.glassJoint;
    s.bonds.push({node0:i,node1:j,centroid:v(contact.centroid),normal:v(normal),area:round(contact.area),m:mat});
   }

@@ -175,6 +175,21 @@ export const TRIALS = [
   { id: 'knock-mirror-driving', at: 'lane/flat', start: -100, drive: { kind: 'cruise', speed: 15 }, seconds: 6, goal: -20,
     attack: { kind: 'debris', at: 2.0, mass: 150, radius: 0.25, speed: 25, from: 90, aimPart: 'Door mirror' },
     why: 'losing a mirror at 54 km/h does not lower the car' },
+  // Shots at the house (lane/house: front wall z 20.1, back wall 27.9, x 56):
+  // the game's cannonball (10.65 t at 60 m/s) and meteor (110 t at 140 m/s)
+  // square into the front wall, a window's width off its middle. The car
+  // parks out of the way, on the rest pad.
+  { id: 'cannonball-house', at: 'pad/rest', drive: { kind: 'park' }, seconds: 4,
+    attack: { kind: 'shot', projectile: 'cannonball', at: 0.5, target: [54, 1.4, 20.1], from: 180, slope: 0.02, distance: 30 },
+    why: 'a cannonball through a house: in at the front, on through it' },
+  // As heavy and as fast as the monster truck flat out (VIBE_CITY_BALL_MASS_KG
+  // / _SPEED_MS set by the run): a plain body where the truck is a Vehicle2 carrier.
+  { id: 'truck-ball-house', at: 'pad/rest', drive: { kind: 'park' }, seconds: 4,
+    attack: { kind: 'shot', projectile: 'cannonball', at: 0.5, target: [56, 1.2, 20.1], from: 180, slope: 0.0, distance: 12 },
+    why: 'what the truck would do to the house if it were a plain rigid body' },
+  { id: 'meteor-house', at: 'pad/rest', drive: { kind: 'park' }, seconds: 5,
+    attack: { kind: 'shot', projectile: 'meteor', at: 0.5, target: [56, 2.0, 20.1], from: 180, slope: 0.3, distance: 140 },
+    why: 'a meteor through a house: it goes through, and the house comes down' },
   { id: 'cannonball', at: 'pad/cannonball', drive: { kind: 'park' }, seconds: 6, attack: { kind: 'cannonball', at: 1 }, driveAway: { seconds: 3 },
     why: "the city cannonball into the parked car's side at body height: partly destroyed, still drivable" },
   { id: 'meteor', at: 'pad/meteor', drive: { kind: 'park' }, seconds: 8, attack: { kind: 'meteor', at: 1 },

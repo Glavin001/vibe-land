@@ -120,6 +120,10 @@ def qualify(binary, pack_path, ticks, solver_env='app'):
                VIBE_CITY_SCENE=pack_path, VIBE_CITY_GRID='1', VIBE_CITY_VARIED_HEIGHTS='0',
                VIBE_QUALIFY_REST_TICKS=str(ticks), VIBE_QUALIFY_IMPACT_TICKS='0',
                VIBE_DESTRUCTION_ASSET_DIR=SCENES,
+               # Alone: the city world otherwise parks two stock cars on its
+               # spawn ring, at (+-r, +-8) -- inside Vibe Town's cafe-143 and
+               # mailbox-69, which then failed only where those cars stood.
+               VIBE_CITY_VEHICLES='0',
                CUMETAL_CACHE_DIR=os.path.join(ROOT, 'target', 'cumetal-cache-vehicles'))
     result = subprocess.run(
         [os.path.join(ROOT, 'scripts', 'perf', 'gpu-run.sh'), 'qualify-structures', binary,

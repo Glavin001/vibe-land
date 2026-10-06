@@ -32,7 +32,7 @@ import {
   composeScene,
 } from '../town-kit/src/index.mjs';
 import { Builder } from '../town-kit/src/geometry.mjs';
-import { M } from '../town-kit/src/materials.mjs';
+import { M, mortarJoints } from '../town-kit/src/materials.mjs';
 import { composeVisuals } from '../town-kit/src/outdoor-visuals.mjs';
 import { dressTownProp } from '../town-kit/src/town-dressing-visuals.mjs';
 import { strengthen } from './strengthen.mjs';
@@ -130,6 +130,7 @@ function skyline(file) {
   s.nodeGroups ??= Array(n).fill('building');
   s.nodePieces ??= s.nodes.map((_, i) => i);
   s.nodeMaterials ??= s.nodes.map((node) => pack.defaults.solver.materials[node.m ?? 0].name);
+  mortarJoints(pack);
   return { pack };
 }
 /**

@@ -324,6 +324,10 @@ fn run(r: &Run, meta: &Value) -> Value {
     let mut drift_done = false;
     // Attack.
     let (mut projectile, mut closest) = (None::<u32>, f32::INFINITY);
+    // A shot at the scene (attack `shot`): its aim point and direction, and
+    // how far past the aim point it got along that direction (the wall face).
+    let mut shot: Option<(Vector3<f32>, Vector3<f32>)> = None;
+    let (mut shot_past, mut shot_speed_end) = (f32::NEG_INFINITY, 0f32);
     let mut trace = Vec::new();
     let tracing = std::env::var_os("VIBE_TESTBED_TRACE").is_some();
     let heading_of = |f: Vector3<f32>| f.x.atan2(f.z);
@@ -447,6 +451,28 @@ fn run(r: &Run, meta: &Value) -> Value {
         if let (Some(a), Some(at)) = (attack.filter(|a| !matches!(a["kind"].as_str(), Some("strikes" | "timeline" | "near"))), attack_tick) {
             if k == at {
                 match a["kind"].as_str().unwrap() {
+                    "shot" => {
+                        // The game's cannonball or meteor at a point in the scene
+                        // (`target`), from compass bearing `from` (degrees, 0 = +z)
+                        // `distance` m out and `slope` m up per metre out.
+                        let f = |k: &str| a[k].as_f64().unwrap_or(0.) as f32;
+                        let t: Vec<f32> = a["target"].as_array().unwrap().iter().map(|v| v.as_f64().unwrap() as f32).collect();
+                        let target = Vector3::new(t[0], t[1], t[2]);
+                        let bearing = f("from").to_radians();
+                        let out = Vector3::new(bearing.sin(), f("slope"), bearing.cos());
+                        let origin = target + out * f("distance");
+                        let meteor = a["projectile"] == "meteor";
+                        let speed = if meteor { 140. } else { crate::city::city_ball_speed_ms() };
+                        let tt = (origin - target).norm() / speed;
+                        let velocity = (target - origin) / tt + Vector3::new(0., 0.5 * 9.81 * tt, 0.);
+                        projectile = if meteor {
+                            let tuning = crate::meteor::MeteorTuning::from_env();
+                            arena.launch_meteor(origin, velocity, tuning.radius_m, tuning.mass_kg, tuning.ttl_ticks)
+                        } else {
+                            arena.launch_ball_from_muzzle(origin, velocity, crate::city::city_ball_radius_m(), crate::city::city_ball_mass_kg(), 600)
+                        };
+                        shot = Some((target, Vector3::new(-bearing.sin(), 0., -bearing.cos())));
+                    }
                     "cannonball" => {
                         // From 12 m to the car's right, at the chassis' height.
                         let (radius, mass, ball_speed) = (crate::city::city_ball_radius_m(), crate::city::city_ball_mass_kg(), crate::city::city_ball_speed_ms());
@@ -492,7 +518,9 @@ fn run(r: &Run, meta: &Value) -> Value {
         prev_v = Some(after.v);
         if let Some(pid) = projectile {
             if let Some(b) = arena.snapshot_dynamic_bodies().into_iter().find(|b| b.0 == pid) {
-                closest = closest.min((Vector3::new(b.1[0], b.1[1], b.1[2]) - after.p).norm());
+                let p = Vector3::new(b.1[0], b.1[1], b.1[2]);
+                closest = closest.min((p - after.p).norm());
+                if let Some((target, dir)) = shot { shot_past = shot_past.max((p - target).dot(&dir)); }
             }
         }
         if k % SAMPLE_EVERY == 0 || auditing() { read_damage(&mut arena, id, tick, &mut damage, geometry, accel_g); }
@@ -546,6 +574,10 @@ fn run(r: &Run, meta: &Value) -> Value {
         drive_away = json!({"metres": net, "path": path, "seconds": (reverse + forward) as f32 * DT, "settled": quiet >= 30});
     }
     let scene_after = scene_broken(&mut arena, r.scene);
+    let scene_broken_pairs: Vec<[u32; 2]> = if std::env::var_os("VIBE_TESTBED_SCENE_BONDS").is_some() {
+        arena.physx_world_mut().expect("physx").native_bond_stress_rows(0).unwrap_or_default().into_iter()
+            .filter(|r| r.remaining_area <= 0.0 || r.broken).map(|r| [r.node0, r.node1]).collect()
+    } else { Vec::new() };
     let scene_damage: BTreeMap<String, i64> = scene_after.iter().map(|(k, v)| (k.clone(), *v as i64 - *scene_before.get(k).unwrap_or(&0) as i64)).collect();
     let wheels_lost = (0..4).filter(|w| damage.wheel_mask & (1 << w) == 0).count();
     let mut first: Vec<(u32, u32)> = damage.broken.iter().map(|(b, t)| (*t, *b)).collect();
@@ -580,7 +612,8 @@ fn run(r: &Run, meta: &Value) -> Value {
         "rideHeightStart": ride_start, "underbody": underbody(geometry, ride_start), "rideHeightEnd": ride_end, "minUpY": min_up, "airborneSeconds": airborne as f32 * DT,
         "drift": if kind == "drift" { json!({"entrySpeed": drift_entry_speed, "peakYawRate": peak_yaw, "peakSlipDeg": peak_slip,
             "headingChangeDeg": drift_heading, "exitSpeed": drift_end_speed, "speedKept": if drift_entry_speed > 0. { drift_end_speed / drift_entry_speed } else { 0. }}) } else { Value::Null },
-        "attack": attack.map(|a| json!({"kind": a["kind"], "closest": closest, "endInCarFrame": projectile_end})),
+        "attack": attack.map(|a| json!({"kind": a["kind"], "closest": closest, "endInCarFrame": projectile_end,
+            "pastTarget": if shot.is_some() && shot_past.is_finite() { json!(shot_past) } else { Value::Null }})),
         "driveAway": drive_away, "sceneBroken": scene_damage,
     });
     out["audits"] = json!(damage.audits);
@@ -590,6 +623,8 @@ fn run(r: &Run, meta: &Value) -> Value {
     out["driveState"] = drive_state;
     out["carrierParts"] = if carrier_parts.len() <= 40 { json!(carrier_parts) } else { json!(carrier_parts.len()) };
     out["converged"] = json!(if solves > 0 { converged as f32 / solves as f32 } else { 0. });
+    // VIBE_TESTBED_SCENE_BONDS=1: the scene's broken bonds at the end, as node pairs.
+    if std::env::var_os("VIBE_TESTBED_SCENE_BONDS").is_some() { out["sceneBrokenPairs"] = json!(scene_broken_pairs); }
     out["stepMs"] = json!({"median": sorted.get(sorted.len() / 2), "p95": sorted.get(sorted.len() * 95 / 100), "max": sorted.last()});
     out["trace"] = json!(trace);
     out
