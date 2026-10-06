@@ -4,18 +4,19 @@
 //   node structures/showcase/build-showcase.mjs
 //   -> structures/showcase/out/vibe-showcase.json (+ .visuals.json)
 //
-// Every structure here passes scripts/perf/qualify_structures.py (its stress
-// solve converges at rest in all but <= ~10% of solves over 5 s). One that
-// does not keeps the GPU re-solving it every idle tick -- the stage skips only
-// converged structures -- which is what made the first showcase idle at
-// ~12 ms (2026-10-05).
+// Every structure here passes scripts/perf/qualify_structures.py at the
+// scene's 16 stress iterations: its solve converges at rest in all but ~10% of
+// solves over 5 s, and it stands (<= 0.5% of its bonds broken). One that does
+// not converge keeps the GPU re-solving it every idle tick -- the stage skips
+// only converged structures -- which is what made the first showcase idle at
+// ~12 ms (2026-10-05); one that does not stand falls down at every start.
 //
 // Bayline Town with Gardens & Market (structures/town-kit, built with
 // `npm run build:bayline-gardens`) sits at the origin, minus TOWN_EXCLUDE;
 // its visuals sidecar (trees, attached details) names nodes by index, so its
 // attachments are remapped and those on removed nodes dropped. After it:
 //
-//   Algedra tower         east: seven storeys with curved balconies
+//   two houses            east: one storey and two storeys
 //   fractured high-rise   north: ten storeys of Voronoi concrete, to topple
 //   two-storey house      south-west, on a plateau with a ramp up its east side
 //   jump kicker           on the west approach, launching cars into the town
@@ -40,26 +41,51 @@ const TOWN = path.join(repo, 'structures/town-kit/out/bayline-town-with-gardens-
 const SCENES = path.join(repo, 'destruction/assets/scenes');
 
 const read = (file) => JSON.parse(readFileSync(file, 'utf8'));
-/** SHOWCASE_EXCLUDE=algedra,highrise,house,terrain leaves parts out, to measure what each costs. */
+/**
+ * SHOWCASE_EXCLUDE=highrise,juniper-house,terrain leaves parts out, to measure
+ * what each costs: a part of an authored building's group, a Bayline structure
+ * by name, or `terrain`.
+ */
 const EXCLUDE = new Set((process.env.SHOWCASE_EXCLUDE ?? '').split(',').map((s) => s.trim()).filter(Boolean));
 const round = (n) => Math.round(n * 1e5) / 1e5;
 
 /**
- * Bayline structures left out (qualify_structures.py, 5 s at rest): the
- * foundry workshop does not converge (19% of solves); the roadside billboard
- * (gardens-market-45) converges but falls down by itself (~280 bonds).
+ * Bayline structures left out (qualify_structures.py, 5 s at rest, 16
+ * iterations): the foundry workshop does not converge (19% of solves); these
+ * props converge but fall apart by themselves (share of bonds broken) -- the
+ * five trees (79-87%), the scaffold (70%), the bus shelter (40%), the two
+ * market stalls (17%) and the billboard. Together they were the ~280 bonds the
+ * town broke at every start.
  */
-const TOWN_EXCLUDE = ['foundry-workshop', 'gardens-market-45'];
+const TOWN_EXCLUDE = [
+  'foundry-workshop',
+  'gardens-market-3', 'gardens-market-19', 'gardens-market-30', 'gardens-market-35', 'gardens-market-47', // trees
+  'gardens-market-38', // scaffold
+  'gardens-market-21', // bus shelter
+  'gardens-market-8', 'gardens-market-9', // market stalls
+  'gardens-market-45', // billboard
+  // Just over the line: 10.0-10.2% of solves unconverged, residuals ~430,000x
+  // tolerance, 0.24% of bonds broken; together 5.5 ms of idle PhysX and ~60
+  // bonds broken at every start (scene shots, 2026-10-05). Their plots get
+  // qualified houses (BUILDINGS).
+  'amber-house', 'juniper-house', 'willow-house',
+];
 
 /**
  * Authored buildings appended after the town: [pack file, offset, group], each
- * with its measured unconverged share at rest. Replaced the parking garage
- * and Villa Savoye (28% each).
+ * with its measured unconverged share at rest (all break nothing). Replaced the
+ * parking garage and Villa Savoye (28% unconverged each) and the Algedra tower
+ * (18% of its bonds broken at rest).
  */
 const BUILDINGS = [
-  ['algedra-tower.json', [115, 0, 0], 'building@algedra-tower'],               // 2.1%
+  ['house-1story.json', [110, 0, -12], 'building@east-bungalow'],              // 0.7%
+  ['house-2story.json', [110, 0, 18], 'building@east-house'],                  // 2.3%
   ['fractured-highrise-10f.json', [0, 0, -110], 'building@fractured-highrise'], // 5.7%
   ['house-2story.json', [-105, 6, 75], 'building@hill-house'],                  // 2.3%
+  // On the plots of Bayline's three family houses (TOWN_EXCLUDE).
+  ['house-2story.json', [33, 0, -16.5], 'building@amber-house'],               // 2.3%
+  ['house-1story.json', [-14, 0, -17], 'building@willow-house'],               // 0.7%
+  ['house-2story.json', [-33, 0, 16.7], 'building@juniper-house'],             // 2.3%
 ];
 
 /**
@@ -113,7 +139,7 @@ function build() {
   const visuals = read(`${TOWN}.visuals.json`);
   if (visuals.nodeCount !== town.scenario.nodes.length) throw new Error('the town and its visuals disagree on the node count');
   const structureOf = (group) => (group.includes('@') ? group.split('@')[1] : 'ground');
-  const keep = town.scenario.nodeGroups.map((g, i) => (TOWN_EXCLUDE.includes(structureOf(g)) ? -1 : i)).filter((i) => i >= 0);
+  const keep = town.scenario.nodeGroups.map((g, i) => (TOWN_EXCLUDE.includes(structureOf(g)) || EXCLUDE.has(structureOf(g)) ? -1 : i)).filter((i) => i >= 0);
   const remap = new Map(keep.map((old, i) => [old, i]));
   const s = Object.fromEntries(Object.entries(town.scenario).map(([key, value]) => [key,
     key === 'bonds'
@@ -207,8 +233,10 @@ function build() {
     physicsSha256: sha,
     nodeCount: out.nodes.length,
     title: 'Vibe Land Showcase - Bayline Heights',
-    description: 'Bayline Town, the Algedra tower, a ten-storey high-rise, a house on a hill, and a jump',
+    description: 'Bayline Town, a ten-storey high-rise, houses on the east road and on a hill, and a jump',
   }));
+  // What this pack leaves out, so the launcher rebuilds when that changes.
+  writeFileSync(path.join(OUT, `${KEY}.exclude`), process.env.SHOWCASE_EXCLUDE ?? '');
   console.log(`${KEY}: ${out.nodes.length} nodes, ${out.bonds.length} bonds, ${materials.length} materials -> ${path.relative(repo, OUT)}`);
 }
 

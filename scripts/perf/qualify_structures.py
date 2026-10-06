@@ -108,8 +108,8 @@ def build():
     sys.exit('no test binary with city_structures_qualify')
 
 
-def qualify(binary, pack_path, ticks):
-    env = dict(os.environ, **APP_ENV,
+def qualify(binary, pack_path, ticks, solver_env='app'):
+    env = dict(os.environ, **(APP_ENV if solver_env == 'app' else {}),
                VIBE_CITY_SCENE=pack_path, VIBE_CITY_GRID='1', VIBE_CITY_VARIED_HEIGHTS='0',
                VIBE_QUALIFY_REST_TICKS=str(ticks), VIBE_QUALIFY_IMPACT_TICKS='0',
                VIBE_DESTRUCTION_ASSET_DIR=SCENES,
@@ -138,6 +138,9 @@ def main():
     parser.add_argument('--ticks', type=int, default=300, help='server ticks at rest per structure (300 = 5 s)')
     parser.add_argument('--max-unconverged', type=float, default=10.0, help='PASS at or under this percent')
     parser.add_argument('--max-broken', type=float, default=0.5, help='PASS at or under this percent of bonds broken at rest')
+    parser.add_argument('--solver-env', choices=['app', 'default'], default='app',
+                        help="the native app's stress settings (default), or the solver's own defaults")
+    parser.add_argument('--only', help='comma list: qualify only these structures of a split pack')
     parser.add_argument('--json', help='also write the results here')
     args = parser.parse_args()
 
@@ -146,13 +149,16 @@ def main():
     with tempfile.TemporaryDirectory(prefix='qualify-structures-') as tmp:
         for spec in args.packs:
             path = spec if os.path.exists(spec) else os.path.join(SCENES, spec if spec.endswith('.json') else spec + '.json')
+            only = set(args.only.split(',')) if args.only else None
             for name, part, anchors, nodes, label in split(path, tmp):
+                if only and name not in only:
+                    continue
                 if anchors == 0:
                     results.append({'pack': spec, 'structure': name, 'label': label, 'nodes': nodes,
                                     'verdict': 'FREE', 'unconverged_pct': None, 'broken_pct': None, 'awake_bodies': None,
                                     'detail': 'no anchor: a free body, nothing to solve at rest'})
                 else:
-                    pct, broken, awake, detail = qualify(binary, part, args.ticks)
+                    pct, broken, awake, detail = qualify(binary, part, args.ticks, args.solver_env)
                     if pct is None or broken is None:
                         verdict = 'ERROR'
                     elif pct > args.max_unconverged:

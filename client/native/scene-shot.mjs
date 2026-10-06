@@ -63,8 +63,9 @@ async function run() {
     showcase: [
       ['wide', [-20, 95, 175], [-10, 0, 10]],
       ['spawn-kicker', [-140, 3, 10], [-85, 1, -2]],
-      ['garage-ramp', [55, 14, 120], [105, 8, 20]],
-      ['villa-hill', [-40, 14, 115], [-100, 8, 72]],
+      ['east-houses', [80, 10, 30], [110, 3, 3]],
+      ['highrise', [30, 18, -70], [0, 15, -110]],
+      ['hill-house', [-60, 14, 110], [-105, 8, 75]],
     ],
   };
   for (const [name, position, lookAt] of VIEWPOINTS[scene] ?? []) {

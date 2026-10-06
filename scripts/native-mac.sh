@@ -22,10 +22,10 @@
 #                   432 Park, the parking garage, Villa Savoye, two houses)
 #   bayline         Bayline Town with Gardens & Market (structures/town-kit,
 #                   as `npm run play:bayline-gardens` runs it on the web)
-#   showcase        Bayline Heights (structures/showcase): the town, the Algedra
-#                   tower, a ten-storey high-rise, a house on a hill, a jump
+#   showcase        Bayline Heights (structures/showcase): the town, a
+#                   ten-storey high-rise, houses east and on a hill, a jump
 #                   kicker and six destructible cars -- every structure one
-#                   that converges at rest (scripts/perf/qualify_structures.py)
+#                   that converges and stands at rest (scripts/perf/qualify_structures.py)
 #
 # MYSTRAL_ROOT: the mystralnative checkout (default ../mystralnative), built
 # from its `vibe-land` integration branch. Extra `run` args go to `mystral run`
@@ -79,8 +79,12 @@ case "$SCENE" in
     pack="$ROOT/structures/showcase/out/vibe-showcase"
     [ -f "$town.json" ] || {
       echo "Bayline Town is not built: (cd structures/town-kit && npm run build:bayline-gardens)" >&2; exit 1; }
+    # Rebuilt when stale or built with another SHOWCASE_EXCLUDE (parts left
+    # out, to measure what each costs).
     [ -f "$pack.json" ] && [ "$pack.json" -nt "$ROOT/structures/showcase/build-showcase.mjs" ] \
-      && [ "$pack.json" -nt "$town.json" ] || node "$ROOT/structures/showcase/build-showcase.mjs"
+      && [ "$pack.json" -nt "$town.json" ] \
+      && [ "$(cat "$pack.exclude" 2>/dev/null || echo '?')" = "${SHOWCASE_EXCLUDE:-}" ] \
+      || node "$ROOT/structures/showcase/build-showcase.mjs"
     # The default city's settling (rubble comes to rest), the cars at the
     # spawn line and the foot of each ramp, the spawn west of the kicker.
     # Stress iterations: Bayline was qualified at 16 and sheds ~1,600 bonds by
@@ -243,7 +247,7 @@ input() {
 }
 
 # Cars drive on every surface (client/native/drive-check.mjs): one car each on
-# open ground, Bayline's road paving and the garage floor (--scene showcase).
+# open ground, Bayline's road paving and up the jump kicker (--scene showcase).
 drive() {
   [ "$SCENE" = showcase ] || { echo "drive needs --scene showcase" >&2; exit 2; }
   iife
@@ -349,7 +353,7 @@ case "${1:-run}" in
   drive) shift || true
     # One car per surface, in drive-check.mjs's SURFACES order.
     export VIBE_CITY_DESTRUCTIBLE_VEHICLES=monster,desert,derby \
-      VIBE_CITY_FLEET_SLOTS="-112,7;-30,-2.5;105,-8"
+      VIBE_CITY_FLEET_SLOTS="-112,7;-30,-2.5;-104,0"
     runtime; sim; bundle; drive "$@" ;;
   look) shift || true; runtime; sim; bundle; look "$@" ;;
   perf) shift || true; runtime; sim; bundle; perf "$@" ;;

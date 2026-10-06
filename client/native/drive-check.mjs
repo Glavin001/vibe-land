@@ -1,5 +1,5 @@
 // Cars drive on whatever they stand on (scripts/native-mac.sh drive --scene
-// showcase): ground, static terrain, a structure's paving or floors, rubble.
+// showcase): ground, a structure's paving, static terrain (a ramp).
 // A report (2026-10-05): fleet cars that drove on the open ground stopped
 // dead on Bayline's roads, which are destructible paving chunks.
 //
@@ -22,7 +22,7 @@ async function waitFor(what, predicate, timeoutMs = 120_000) {
 }
 
 /** Fleet slot order: must match VIBE_CITY_FLEET_SLOTS in native-mac.sh drive. */
-const SURFACES = ['open ground', 'Bayline road paving', 'parking garage floor'];
+const SURFACES = ['open ground', 'Bayline road paving', 'up the jump kicker (static terrain)'];
 const MIN_METRES = 15;
 
 async function run() {
