@@ -132,7 +132,17 @@ fn read_damage(arena: &mut crate::movement::PhysicsArena, id: u32, tick: u32, da
         }
         Value::Object(out)
     };
+    // The chunks taking the most contact load on this step (kN), for the audit.
+    let contacts = |r: &vibe_land_physx_bridge::FfiStressSolveReport| -> Value {
+        let mut rows: Vec<(f32, String)> = r.chunks.iter().filter(|c| c.structure_id == structure && (c.node as usize) < geometry.parts.len()).map(|c| {
+            let v = &c.contact_linear;
+            ((v.x * v.x + v.y * v.y + v.z * v.z).sqrt() * geometry.parts[c.node as usize].mass as f32 / 1e3, geometry.parts[c.node as usize].name.clone())
+        }).filter(|r| r.0 > 1.).collect();
+        rows.sort_by(|a, b| b.0.total_cmp(&a.0));
+        json!(rows.iter().take(6).map(|(f, n)| format!("{n} {f:.0}")).collect::<Vec<_>>())
+    };
     let Ok(d) = arena.vehicle_destruction_debug(id) else { return };
+    let mut contacts_logged = false;
     for b in d["bonds"].as_array().into_iter().flatten() {
         let index = b["index"].as_u64().unwrap() as u32;
         let gone = b["remainingArea"].as_f64().is_some_and(|a| a <= 0.0) || b["verdictBroken"].as_bool() == Some(true);
@@ -144,7 +154,8 @@ fn read_damage(arena: &mut crate::movement::PhysicsArena, id: u32, tick: u32, da
                 damage.audits.push(json!({"tick": tick, "bond": index, "parts": bond_parts(geometry, index).0, "area": geometry.bonds[index as usize].area,
                     "beforeFractionOfFatal": [r(before[0] / st.tension_fatal), r(before[1] / st.compression_fatal), r(before[2] / st.shear_fatal)],
                     "utilisationBefore": r(before[3]), "wheelLoadsBeforeKN": damage.last_wheels, "accelG": accel_g,
-                    "loadsKN": loads(&geometry.bonds[index as usize].a, &geometry.bonds[index as usize].b)}));
+                    "loadsKN": loads(&geometry.bonds[index as usize].a, &geometry.bonds[index as usize].b),
+                    "contactsKN": if contacts_logged { Value::Null } else { contacts_logged = true; report.as_ref().map_or(Value::Null, contacts) }}));
             }
             damage.broken.entry(index).or_insert(tick);
         } else {
@@ -569,10 +580,22 @@ fn what_if(geometry: &crate::vehicle_assets::PreparedGeometry) -> crate::vehicle
     let scale = |s: &mut crate::vehicle_assets::AssetBondStrength, k: f64| {
         for v in [&mut s.compression_elastic, &mut s.compression_fatal, &mut s.tension_elastic, &mut s.tension_fatal, &mut s.shear_elastic, &mut s.shear_fatal] { *v *= k; }
     };
+    // VIBE_TESTBED_MASS_SCALE=k: every part's mass and inertia, and the driving
+    // setup derived from mass (customization.mjs drivingSetup), scaled together.
+    if let Some(k) = env("VIBE_TESTBED_MASS_SCALE") {
+        for part in &mut g.parts {
+            part.mass *= k; part.mass_properties.mass *= k;
+            for row in &mut part.mass_properties.inertia { for x in row { *x *= k; } }
+        }
+        g.mass *= k as f32; g.mass_properties.mass *= k;
+        for row in &mut g.mass_properties.inertia { for x in row { *x *= k; } }
+        if let Some(d) = g.driving.as_mut() { d.drive_torque *= k as f32; d.brake_torque *= k as f32; d.spring_stiffness *= k as f32; d.damping *= k as f32; }
+    }
     for (bond, (ra, rb)) in g.bonds.iter_mut().zip(roles) {
         let roles = [ra.as_deref(), rb.as_deref()];
         if let Some(k) = env("VIBE_TESTBED_SCALE_WHEEL_MOUNT") { if roles.contains(&Some("wheel")) && roles.contains(&Some("hub")) { scale(&mut bond.strength, k); } }
         if let Some(k) = env("VIBE_TESTBED_SCALE_CORNER") { if roles.iter().any(|r| r.is_some()) { scale(&mut bond.strength, k); } }
+        if let Some(k) = env("VIBE_TESTBED_SCALE_ALL") { scale(&mut bond.strength, k); }
     }
     g
 }
@@ -597,7 +620,10 @@ fn vehicle_testbed() {
     let mut runs = Vec::new();
     for (_, build, asset) in &fleet.cars {
         let geometry = what_if(&asset.geometry);
-        for trial in &trials {
+        // VIBE_TESTBED_REPEAT=n: each trial n times (GPU physics is not
+        // bit-reproducible: one run of a crash is one sample).
+        let repeat: usize = std::env::var("VIBE_TESTBED_REPEAT").ok().and_then(|v| v.parse().ok()).unwrap_or(1).max(1);
+        for trial in trials.iter().flat_map(|t| std::iter::repeat(t).take(repeat)) {
             let started = std::time::Instant::now();
             let result = run(&Run { car: build, trial, geometry: &geometry, scene: &scene }, &meta);
             eprintln!("{build:<8} {:<11} {:>5.1} m/s top  z {:>6.1}  goal {:>5}  stall {:>4.1}s  {:>3} bonds ({} corner) {:>3} parts {} wheels lost  ride {:.2}->{:.2}  scene {:?}  {:.0} s",
