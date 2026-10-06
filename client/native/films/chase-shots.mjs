@@ -11,12 +11,15 @@ import { hold, track, strike, strikeNear, enter, drive, card, slowmo } from '../
 /**
  * The driving: full throttle, then weaving from 3 s in (steer +1 turns it
  * north, toward the north-side houses, about half a second after the
- * input), and a last drift north from 5.2 s that puts it a few metres from
- * those houses when the last meteor arrives, so the hit drives it into one.
- * Hit out in the south lane, it was wrecked where it stood, 12 m short of
- * any house; a swerve from 6.3 s had not begun by the hit (2026-10-06).
+ * input), then from 5.2 s steered (10 times a second, from where it is) to
+ * HOUSE_LINE_Z, a few metres off the north houses, where the last meteor
+ * catches it and drives it into one. Hit out in the south lane, it was
+ * wrecked where it stood, 12 m short of any house; an open-loop drift north
+ * left it anywhere from 2.6 to 8 m short across takes (2026-10-06).
  */
-const WEAVE = [[3.0, 0.45], [3.55, -0.5], [4.1, 0.5], [4.65, -0.45], [5.2, 0.4], [5.75, 0.25], [6.5, 0]];
+const WEAVE = [[3.0, 0.45], [3.55, -0.5], [4.1, 0.5], [4.65, -0.45], [5.2, 0]];
+/** Where the last stretch steers it (z, a few metres off the north houses' fronts at ~58.3). */
+const HOUSE_LINE_Z = 55;
 
 /**
  * The truck's measured path on that driving and those strikes
@@ -63,7 +66,20 @@ export function chaseShots(place, { title, trace = false, final = true } = {}) {
   // Weaving: each steer held until the next (drive() lifts the pedal at its
   // end, and the next one presses it again in the same frame).
   const weave = WEAVE.slice(0, -1).map(([t, steer], k) => [t, drive({ forward: 1, strafe: steer, seconds: WEAVE[k + 1][0] - t })]);
-  const coast = [WEAVE.at(-1)[0], drive({ forward: 1, seconds: 4 })];
+  const truck = (ctx) => { const id = ctx.e2e.snapshot()?.drivenVehicleId; return id != null ? ctx.vehicles.get(id) : null; };
+  const state = { hitAt: null };
+  // To the house line: steer by how far off it the truck is and how fast it
+  // is closing (its response lags the wheel by ~0.5 s), until the hit.
+  const steering = [WEAVE.at(-1)[0], {
+    label: `steer to z ${HOUSE_LINE_Z}`,
+    steps: Array.from({ length: 30 }, (_, k) => [k * 0.1, (ctx) => {
+      const v = truck(ctx);
+      if (!v || state.hitAt != null) { ctx.drive.move({ forward: 1 }); return; }
+      // Gain 0.12 reached only 53.2 by the hit; 0.25 gets there by ~6.3 s.
+      const steer = Math.max(-0.7, Math.min(0.7, 0.25 * (HOUSE_LINE_Z - v.position[2]) - 0.35 * v.velocity[2]));
+      ctx.drive.move({ forward: 1, strafe: steer });
+    }]),
+  }];
   // Near misses: North Street's houses, each hit in the wall facing the
   // street, half way up, as the truck is 10 m past it -- by
   // a rock that comes in low (slope 0.25: 19 degrees at impact) over the far
@@ -96,27 +112,39 @@ export function chaseShots(place, { title, trace = false, final = true } = {}) {
   // truck will be by then (its speed and acceleration). Aimed 2.74 s out from
   // the measured RUN, the weave had carried it 4 m from the mark; 1 s out,
   // a truck slowed by a near miss's debris was only grazed.
-  const hit = 6.8;
-  const last = !final ? [] : [
-    [hit, strikeNear(car, { height: 0.9, from: 180, flight: 0.5, slope: 0.35, flash: true })],
-    [hit - 0.2, slowmo(2.2, 0.5)],
-  ];
+  // Fired when the truck reaches FIRE_X along the street (6.9 s at the
+  // latest), so that 0.5 s later it is beside the house at x -17 -- in front
+  // of the hit camera; the slow motion follows the moment. Fired on reaching
+  // the house line instead, it waited out to 7 s and landed at the crossing,
+  // past the house.
+  const hit = 6.8, flight = 0.5, FIRE_X = -31;
+  const finalStrike = strikeNear(car, { height: 0.9, from: 180, flight, slope: 0.35, flash: true });
+  const last = !final ? [] : [[6.2, {
+    label: 'the last meteor, when the truck is at FIRE_X',
+    steps: Array.from({ length: 17 }, (_, k) => [k * 0.05, (ctx) => {
+      const v = truck(ctx);
+      if (state.hitAt != null || !v || (v.position[0] < FIRE_X && 6.2 + k * 0.05 < 6.9)) return;
+      state.hitAt = ctx.t;
+      ctx.log(`the last meteor: truck at ${v.position.map((c) => c.toFixed(1)).join(', ')}`);
+      finalStrike.steps[0][1](ctx);
+      ctx.edit({ type: 'slowmo', rate: 0.5, from: ctx.t + flight - 0.2, to: ctx.t + flight + 2.0 });
+    }]),
+  }]];
   const traceCues = trace ? Array.from({ length: 90 }, (_, k) => [k * 0.1, (ctx) => {
     const id = ctx.e2e.snapshot()?.drivenVehicleId, v = id != null ? ctx.vehicles.get(id) : null;
     if (v) ctx.log(`truck ${JSON.stringify({ t: +(k * 0.1).toFixed(1), x: +v.position[0].toFixed(2), y: +v.position[1].toFixed(2), z: +v.position[2].toFixed(2), speed: +Math.hypot(v.velocity[0], v.velocity[2]).toFixed(1) })}`);
   }]) : [];
   const chase = track(car, [-13, 4.6, 0.6], hit - 0.55, {
     name: 'the-chase', lookOffset: [9, 1.2, 0], lag: 0.3,
-    cues: [...weave, coast, ...strikes, ...last, ...traceCues],
+    cues: [...weave, steering, ...strikes, ...last, ...traceCues],
   });
-  // The hit, from across the street: a cut to the south side's front
-  // gardens, level with where the truck will be hit, looking north at it --
-  // the truck crosses the frame, the meteor comes in over the camera, and the
-  // truck is driven away from it into the house. Placed from where the truck
-  // really is as the shot starts (a track released at once: fixed there,
-  // turning to follow it); placed from RUN, a truck slowed by debris was hit
-  // 10 m short, out of frame. Looking along the street instead, the near
-  // houses hid it (2026-10-06).
-  const theHit = track(car, [13, 4.5, -12], 3.2, { name: 'the-hit', lookOffset: [0, 1.5, 3], lag: 0.12, release: 0 });
+  // The hit, from the road ahead: a cut to 22 m in front of the truck, in
+  // the south lane, 3.5 m up, looking back at it -- the truck coming on, the
+  // meteor in from the left (south), the truck driven to the right (north)
+  // into the house. Placed from where the truck really is as the shot starts
+  // (a track released at once: fixed there, turning to follow it); placed
+  // from RUN, a truck slowed by debris was hit 10 m short, out of frame. From
+  // the south side's gardens, a front-garden tree hid it (2026-10-06).
+  const theHit = track(car, [22, 3.5, -5], 3.2, { name: 'the-hit', lookOffset: [0, 1.5, 2], lag: 0.12, release: 0 });
   return [getIn, chase, theHit];
 }
