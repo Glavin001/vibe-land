@@ -47,6 +47,69 @@
 #include <utility>
 #include <vector>
 
+namespace {
+// What a swept wheel may stand on. A wheel rolls onto the top of a step or
+// over its edge while the edge is below its axle: the sweep's hit normal then
+// points up, by (r - h) / r at an edge of height h (0.4 for the monster
+// truck's 0.83 m wheel on a 50 cm step), and 1 on a top face. A wheel pressed
+// against a wall -- swept from its rest pose into the face, or already
+// overlapping it -- hits with a horizontal normal: that is not road. Taken as
+// road, Vehicle2 put the car's suspension and tyre forces against the face,
+// on the car alone: a monster truck flat out into a house stopped dead in a
+// tick at its front wall (141 g at 2.8 t and at 5 t), the house barely
+// loaded; raycast wheels drove 9.3 m in (2026-10-06, the vehicle lab). The
+// tyre's own collision hull meets the wall instead, and the wall feels it.
+// Off by default while the house stop is explained (rejecting wall-face hits,
+// and loose bricks steeper than 0.75, did not let the swept truck through,
+// 2026-10-06): VIBE_VEHICLE_ROAD_MIN_NORMAL_Y=0.3 rejects hits steeper than
+// that (~72 degrees from level), VIBE_VEHICLE_ROAD_MIN_LOOSE_NORMAL_Y the same
+// for loose (dynamic) bodies; VIBE_VEHICLE_ROAD_LOG=1 logs every road hit.
+class WheelRoadFilter final : public physx::PxQueryFilterCallback {
+public:
+  static WheelRoadFilter &instance() {
+    static WheelRoadFilter filter;
+    return filter;
+  }
+  bool enabled() const { return min_normal_y_ >= 0.0f || min_loose_normal_y_ >= 0.0f || log_; }
+  // An overlap at the start of the sweep reports its normal against the
+  // sweep (straight up) unless MTD is asked for: with it, a wall the wheel
+  // already presses into reports the way out of it (sideways), rubble under
+  // the wheel the way up.
+  physx::PxQueryHitType::Enum preFilter(const physx::PxFilterData &, const physx::PxShape *, const physx::PxRigidActor *,
+                                        physx::PxHitFlags &flags) override {
+    flags |= physx::PxHitFlag::eMTD;
+    return physx::PxQueryHitType::eBLOCK;
+  }
+  physx::PxQueryHitType::Enum postFilter(const physx::PxFilterData &, const physx::PxQueryHit &hit, const physx::PxShape *shape,
+                                         const physx::PxRigidActor *actor) override {
+    const auto &located = static_cast<const physx::PxLocationHit &>(hit);
+    const auto *dynamic = actor ? actor->is<physx::PxRigidDynamic>() : nullptr;
+    const bool loose = dynamic && !(dynamic->getRigidBodyFlags() & physx::PxRigidBodyFlag::eKINEMATIC);
+    const bool reject = (located.flags & physx::PxHitFlag::eNORMAL) && located.normal.y < (loose ? min_loose_normal_y_ : min_normal_y_);
+    // VIBE_VEHICLE_ROAD_LOG=1: every road hit -- normal, distance, overlap, and the body it is on.
+    if (log_) {
+      const auto *body = actor ? actor->is<physx::PxRigidBody>() : nullptr;
+      const char *kind = !body ? "static" : (body->getRigidBodyFlags() & physx::PxRigidBodyFlag::eKINEMATIC) ? "kinematic" : "dynamic";
+      std::fprintf(stderr, "[road] n %.2f %.2f %.2f d %.3f overlap %d pos %.2f %.2f %.2f %s mass %.0f group %u%s\n",
+                   located.normal.x, located.normal.y, located.normal.z, located.distance, int(located.hadInitialOverlap()),
+                   located.position.x, located.position.y, located.position.z, kind, body ? body->getMass() : 0.0f,
+                   shape ? shape->getQueryFilterData().word0 : 0u, reject ? " REJECT" : "");
+    }
+    return reject ? physx::PxQueryHitType::eNONE : physx::PxQueryHitType::eBLOCK;
+  }
+
+private:
+  WheelRoadFilter() {
+    if (const char *raw = std::getenv("VIBE_VEHICLE_ROAD_MIN_NORMAL_Y")) min_normal_y_ = std::strtof(raw, nullptr);
+    if (const char *raw = std::getenv("VIBE_VEHICLE_ROAD_MIN_LOOSE_NORMAL_Y")) min_loose_normal_y_ = std::strtof(raw, nullptr);
+    log_ = std::getenv("VIBE_VEHICLE_ROAD_LOG") != nullptr;
+  }
+  float min_normal_y_ = -1.0f;
+  float min_loose_normal_y_ = -1.0f;
+  bool log_ = false;
+};
+}  // namespace
+
 namespace vibe_land::physx_bridge {
 namespace {
 
@@ -2499,6 +2562,11 @@ public:
     // this scene keeps the group in word0 (configure_shape).
     car.roadQueryFlags = PxQueryFlags(PxQueryFlag::eSTATIC | PxQueryFlag::eDYNAMIC);
     car.roadQueryFilterData = PxFilterData(desc.road_mask, 0, 0, 0);
+    // A wall face is not road (WheelRoadFilter).
+    if (WheelRoadFilter::instance().enabled()) {
+      car.roadQueryFlags |= PxQueryFlag::ePREFILTER | PxQueryFlag::ePOSTFILTER;
+      car.roadQueryFilterCallback = &WheelRoadFilter::instance();
+    }
     car.keepConstraints = true;
     PxCookingParams cooking(runtime_->physics().getTolerancesScale());
     cooking.buildGPUData = true;

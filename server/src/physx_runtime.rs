@@ -549,7 +549,9 @@ impl PhysxPhysicsArena {
                 front_wheel_drive: tune.is_some_and(|t| t.front_wheel_drive),
                 rear_wheel_drive: tune.is_some_and(|t| t.rear_wheel_drive),
                 // Sweeps ride a cylinder over rubble; raycasts fall between chunks.
-                sweep_road_queries: true,
+                // VIBE_VEHICLE_ROAD_SWEEPS=0: raycast wheels (a what-if: a swept
+                // wheel can find a wall face ahead of it as road).
+                sweep_road_queries: std::env::var("VIBE_VEHICLE_ROAD_SWEEPS").map_or(true, |v| v != "0"),
                 road_mask: ROAD_GROUPS,
                 collision_group: GROUP_VEHICLE,
                 collision_mask: ALL_GROUPS,
