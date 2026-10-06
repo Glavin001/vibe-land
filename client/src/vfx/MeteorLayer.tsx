@@ -2,10 +2,11 @@
 //
 // Each launch the server announced gets a burning rock: the cratered basalt
 // from meteorRock with its embers and a light, and a fire volume drawn by
-// MeteorFireStage through the frame pipeline. Where it is drawn -- on the arc
-// the launch packet described until a streamed snapshot shows contact, then
-// from the streamed body -- is decided by `placeMeteor` (meteorPlacement.ts),
-// which the tape tools call too.
+// MeteorFireStage through the frame pipeline (on WebGPU, which has no frame
+// pipeline, by a mesh of slices in the scene: vfx/meteorNodes.ts). Where it
+// is drawn -- on the arc the launch packet described until a streamed
+// snapshot shows contact, then from the streamed body -- is decided by
+// `placeMeteor` (meteorPlacement.ts), which the tape tools call too.
 
 import { useFrame } from '@react-three/fiber';
 import { useEffect, useMemo, useRef } from 'react';
@@ -16,10 +17,18 @@ import { registerPipelineStage } from '../graphics/framePipelineStages';
 import type { DynamicBodySample } from '../net/interpolation';
 import type { DynamicBodyStateMeters } from '../net/protocol';
 import { registerShaderWarmup } from '../scene/ShaderWarmup';
-import { MeteorFireStage, type MeteorFireInstance } from './MeteorFireStage';
+import {
+  MAX_FIRE_METEORS,
+  MeteorFireStage,
+  meteorFireEnvelope,
+  meteorFireNodes,
+  type MeteorFireInstance,
+} from './MeteorFireStage';
 import { meteorFlights, recordMeteorDrawn, type MeteorFlight } from './meteorFlights';
 import { METEOR_TICK_US, placeMeteorInFrame } from './meteorPlacement';
 import {
+  METEOR_ROCK_MATERIAL_SHARED,
+  bindMeteorSurface,
   buildMeteorEmbers,
   buildMeteorGeometry,
   buildMeteorMaterial,
@@ -68,13 +77,6 @@ const LIGHT_POOL = 2;
 
 const TICK_US = METEOR_TICK_US;
 
-/**
- * The embers are GLSL points; WebGPU has no point size, so the simple WebGPU
- * path draws the rock, its glow and its light without them (as it does
- * without the fire volume, a frame-pipeline stage).
- */
-const EMBERS_DRAWN = !__WEBGPU__;
-
 interface LiveMeteor {
   flight: MeteorFlight;
   group: THREE.Group;
@@ -88,6 +90,8 @@ interface LiveMeteor {
   lastBurningMs: number;
   intensity: number;
   fire: MeteorFireInstance;
+  /** WebGPU: the fire's slices, in the layer (world) frame; null on WebGL (the stage draws it). */
+  fireMesh: THREE.Mesh | null;
   distanceSq: number;
 }
 
@@ -161,6 +165,7 @@ export function MeteorLayer({ getRuntime, getNowMs }: MeteorLayerProps) {
         if (meteor) retire(meteor);
         meteor = spawn(flight, geometry, nowMs);
         group.add(meteor.group);
+        if (meteor.fireMesh) group.add(meteor.fireMesh);
         meteors.set(flight.bodyId, meteor);
       }
 
@@ -209,8 +214,6 @@ export function MeteorLayer({ getRuntime, getNowMs }: MeteorLayerProps) {
       meteor.intensity += (target - meteor.intensity) * Math.min(1, step * 6);
       meteor.surface.uTime.value += step;
       meteor.surface.uGlow.value = 0.25 + 0.55 * meteor.intensity;
-      // Read by the plain WebGPU rock; the GLSL rock sets its own emission.
-      meteor.material.emissiveIntensity = meteor.surface.uGlow.value;
 
       // Flames point against the motion, lifted by buoyancy.
       scratchDir.set(-velocity[0], -velocity[1], -velocity[2]).add(BUOYANCY);
@@ -219,9 +222,9 @@ export function MeteorLayer({ getRuntime, getNowMs }: MeteorLayerProps) {
       // The embers live in the group's frame; the direction goes with them.
       scratchAxis.copy(scratchDir).applyQuaternion(scratchInverse.copy(meteor.group.quaternion).invert());
       layoutEmbers(meteor.embers, scratchAxis, meteor.surface.uTime.value, stage.trail, stage.turbulence);
-      meteor.embers.material.uniforms.uTime.value = meteor.surface.uTime.value;
-      meteor.embers.material.uniforms.uAmount.value = 0.65 * meteor.intensity;
-      meteor.embers.points.visible = EMBERS_DRAWN && meteor.intensity > 0.02;
+      meteor.embers.uniforms.uTime.value = meteor.surface.uTime.value;
+      meteor.embers.uniforms.uAmount.value = 0.65 * meteor.intensity;
+      meteor.embers.object.visible = meteor.intensity > 0.02;
 
       meteor.fire.center.copy(meteor.group.position);
       meteor.fire.direction.copy(scratchDir);
@@ -243,6 +246,23 @@ export function MeteorLayer({ getRuntime, getNowMs }: MeteorLayerProps) {
       .filter((meteor) => meteor.group.visible && meteor.intensity > 0.01)
       .sort((a, b) => a.distanceSq - b.distanceSq);
     stage.setInstances(visible.map((meteor) => meteor.fire));
+    if (__WEBGPU__) {
+      // The stage's fire, in the scene: the same nearest few, the same clock
+      // and settings (the stage's own clock never runs here).
+      const shared = meteorFireNodes().uniforms;
+      shared.uTime.value += step;
+      shared.uTurbulence.value = stage.turbulence;
+      shared.uTrail.value = stage.trail;
+      for (const meteor of meteors.values()) {
+        if (meteor.fireMesh) meteor.fireMesh.visible = false;
+      }
+      for (let i = 0; i < Math.min(visible.length, MAX_FIRE_METEORS); i += 1) {
+        const mesh = visible[i].fireMesh;
+        if (!mesh) continue;
+        mesh.scale.setScalar(meteorFireEnvelope(visible[i].fire, stage.trail, mesh.position));
+        mesh.visible = true;
+      }
+    }
     lights.forEach((light, index) => {
       const meteor = visible[index];
       if (!meteor) {
@@ -261,18 +281,22 @@ export function MeteorLayer({ getRuntime, getNowMs }: MeteorLayerProps) {
   return <group ref={groupRef} name="meteors" />;
 }
 
-// The rock (and on WebGL its embers), as a meteor first drawn would be.
+// The rock, its embers and (on WebGPU, where it is a mesh) its fire, as a
+// meteor first drawn would be.
 registerShaderWarmup('meteor', () => {
   const rock = new THREE.Mesh(buildMeteorGeometry(42, 24), buildMeteorMaterial().material);
   rock.castShadow = true;
   rock.receiveShadow = true;
-  return EMBERS_DRAWN ? [rock, buildMeteorEmbers().points] : [rock];
+  if (!__WEBGPU__) return [rock, buildMeteorEmbers().object];
+  const fire = meteorFireNodes();
+  return [rock, buildMeteorEmbers().object, new THREE.Mesh(fire.geometry, fire.material)];
 });
 
 function spawn(flight: MeteorFlight, geometry: THREE.BufferGeometry, nowMs: number): LiveMeteor {
   const { material, uniforms } = buildMeteorMaterial();
   uniforms.uSeed.value = 42 + flight.seed * 7.3;
   const rock = new THREE.Mesh(geometry, material);
+  bindMeteorSurface(rock, uniforms);
   rock.castShadow = true;
   rock.receiveShadow = true;
   // The lab's rock sits in the group with its own slight lean; the tumble
@@ -282,7 +306,7 @@ function spawn(flight: MeteorFlight, geometry: THREE.BufferGeometry, nowMs: numb
   const group = new THREE.Group();
   group.scale.setScalar(flight.radiusM);
   group.add(rock);
-  group.add(embers.points);
+  group.add(embers.object);
   group.visible = false;
   const fire: MeteorFireInstance = {
     center: new THREE.Vector3(),
@@ -293,6 +317,15 @@ function spawn(flight: MeteorFlight, geometry: THREE.BufferGeometry, nowMs: numb
     seed: 42 + flight.seed * 7.3,
     intensity: 0,
   };
+  let fireMesh: THREE.Mesh | null = null;
+  if (__WEBGPU__) {
+    const parts = meteorFireNodes();
+    fireMesh = new THREE.Mesh(parts.geometry, parts.material);
+    fireMesh.userData.meteorFire = fire;
+    fireMesh.castShadow = false;
+    fireMesh.receiveShadow = false;
+    fireMesh.visible = false;
+  }
   return {
     flight,
     group,
@@ -304,12 +337,15 @@ function spawn(flight: MeteorFlight, geometry: THREE.BufferGeometry, nowMs: numb
     lastBurningMs: nowMs,
     intensity: 0,
     fire,
+    fireMesh,
     distanceSq: Infinity,
   };
 }
 
 function retire(meteor: LiveMeteor): void {
   meteor.group.removeFromParent();
-  meteor.material.dispose();
+  meteor.fireMesh?.removeFromParent();
+  // On WebGPU every rock shares one material (meteorRock.ts).
+  if (!METEOR_ROCK_MATERIAL_SHARED) meteor.material.dispose();
   meteor.embers.dispose();
 }

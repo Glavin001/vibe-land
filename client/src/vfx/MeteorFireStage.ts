@@ -35,6 +35,54 @@ export interface MeteorFireInstance {
   intensity: number;
 }
 
+/**
+ * The WebGPU path's fire (vfx/meteorNodes.ts): the same field, drawn in the
+ * scene on camera-facing slices through the envelope `marchMeteor` marches,
+ * rather than as a pass (WebGPU has no frame pipeline). 48 slices across the
+ * envelope sample about as finely as the stage's 56 steps along a chord of it.
+ */
+export const FIRE_SLICES = 48;
+
+/** What every meteor's fire shares (the stage's own on WebGL). */
+export interface MeteorFireUniforms {
+  uTime: { value: number };
+  uTurbulence: { value: number };
+  uTrail: { value: number };
+}
+
+/**
+ * One material and slice geometry for every meteor's fire on WebGPU; each
+ * mesh carries its MeteorFireInstance in `userData.meteorFire`. Registered by
+ * the webgpu build's `@render-backend/install`.
+ */
+type MeteorFireNodesFactory = (shared: MeteorFireUniforms) => { material: THREE.Material; geometry: THREE.BufferGeometry };
+let fireNodes: MeteorFireNodesFactory | null = null;
+let sharedFire: { material: THREE.Material; geometry: THREE.BufferGeometry; uniforms: MeteorFireUniforms } | null = null;
+
+export function registerMeteorFireNodes(factory: MeteorFireNodesFactory): void {
+  fireNodes = factory;
+}
+
+/** The page's one fire material (never disposed: that would release its shader), its slices and its shared values. */
+export function meteorFireNodes(): { material: THREE.Material; geometry: THREE.BufferGeometry; uniforms: MeteorFireUniforms } {
+  if (sharedFire) return sharedFire;
+  if (!fireNodes) throw new Error('WebGPU meteor fire not registered (@render-backend/install)');
+  const uniforms: MeteorFireUniforms = { uTime: { value: 0 }, uTurbulence: { value: 0.65 }, uTrail: { value: 3.2 } };
+  sharedFire = { ...fireNodes(uniforms), uniforms };
+  return sharedFire;
+}
+
+/**
+ * The sphere `marchMeteor` marches for a meteor (its `sphereHit`), in
+ * metres: the centre into `centre`, the radius returned. Nothing outside it
+ * burns.
+ */
+export function meteorFireEnvelope(fire: MeteorFireInstance, trail: number, centre: THREE.Vector3): number {
+  const trailR = trail * (0.72 + Math.min(fire.airSpeed, 50) * 0.022);
+  centre.copy(fire.direction).multiplyScalar(trailR * 0.35 * fire.radiusM).add(fire.center);
+  return (1.8 + trailR * 0.55) * fire.radiusM;
+}
+
 const VOLUME_FRAGMENT = /* glsl */ `
 precision highp float;
 varying vec2 vUv;

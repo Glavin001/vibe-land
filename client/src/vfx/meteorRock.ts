@@ -110,6 +110,49 @@ export interface MeteorSurfaceUniforms {
   uSeed: { value: number };
 }
 
+export interface MeteorEmberUniforms {
+  uTime: { value: number };
+  uAmount: { value: number };
+  uScale: { value: number };
+  uSize: { value: number };
+}
+
+/**
+ * The WebGPU path's meteor (vfx/meteorNodes.ts, TSL). Registered by the
+ * webgpu build's `@render-backend/install`, so this module never imports
+ * three/webgpu.
+ */
+export interface MeteorNodeFactories {
+  /** The rock's surface: one material for every rock (bindMeteorSurface). */
+  rock(): THREE.Material;
+  /** One meteor's embers over the given per-ember arrays. */
+  embers(positions: Float32Array, randoms: Float32Array, uniforms: MeteorEmberUniforms): {
+    object: THREE.Object3D;
+    positions: THREE.BufferAttribute;
+    randoms: THREE.BufferAttribute;
+    dispose(): void;
+  };
+}
+
+let meteorNodes: MeteorNodeFactories | null = null;
+/** Never disposed: every rock shares it, and disposing it releases its shader. */
+let sharedRockNodeMaterial: THREE.Material | null = null;
+
+export function registerMeteorNodeMaterials(factories: MeteorNodeFactories): void {
+  meteorNodes = factories;
+}
+
+/** Whether rocks share one material that must not be disposed (the WebGPU path). */
+export const METEOR_ROCK_MATERIAL_SHARED = __WEBGPU__;
+
+/**
+ * Give a rock mesh its meteor's surface values. The GLSL material holds them
+ * itself; the shared TSL one reads them per mesh from here.
+ */
+export function bindMeteorSurface(rock: THREE.Object3D, uniforms: MeteorSurfaceUniforms): void {
+  rock.userData.meteorSurface = uniforms;
+}
+
 /**
  * Basalt with a warped cellular fissure network that glows. Standard PBR
  * underneath, so the sun and the sky light it like anything else in the
@@ -123,14 +166,11 @@ export function buildMeteorMaterial(): { material: THREE.MeshStandardMaterial; u
     uSeed: { value: 42 },
   };
   if (__WEBGPU__) {
-    // The simple WebGPU path (no GLSL patch): dark basalt with an even glow,
-    // which follows uGlow through emissiveIntensity (MeteorLayer sets it). An
-    // ember, not a lamp: at full orange the glow swamped the lighting and a
-    // rock read as a flat orange blob (films, 2026-10-06).
-    const plain = new THREE.MeshStandardMaterial({
-      color: 0x2b2420, roughness: 0.9, metalness: 0.1, emissive: 0x7a2006, emissiveIntensity: uniforms.uGlow.value,
-    });
-    return { material: plain, uniforms };
+    // TSL (meteorNodes.ts): one material for every rock, which reads these
+    // values from the mesh (`userData.meteorSurface`, bindMeteorSurface).
+    if (!meteorNodes) throw new Error('WebGPU meteor materials not registered (@render-backend/install)');
+    sharedRockNodeMaterial ??= meteorNodes.rock();
+    return { material: sharedRockNodeMaterial as THREE.MeshStandardMaterial, uniforms };
   }
   const material = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.95, metalness: 0.22 });
   material.onBeforeCompile = (shader) => {
@@ -200,8 +240,12 @@ diffuseColor.rgb = basalt * (1.0 - cracks * 0.78);`,
 }
 
 export interface MeteorEmbers {
-  points: THREE.Points;
-  material: THREE.ShaderMaterial;
+  /** What the meteor's group draws: GLSL points, or on WebGPU instanced quads. */
+  object: THREE.Object3D;
+  /** Each ember's position in the rock's frame (layoutEmbers) and its random. */
+  positions: THREE.BufferAttribute;
+  randoms: THREE.BufferAttribute;
+  uniforms: MeteorEmberUniforms;
   /** Per-particle randoms, four per ember. */
   data: Float32Array;
   dispose(): void;
@@ -220,6 +264,13 @@ export function buildMeteorEmbers(): MeteorEmbers {
   for (let i = 0; i < EMBER_COUNT; i += 1) {
     for (let j = 0; j < 4; j += 1) data[i * 4 + j] = hash(i, j, 17);
     randoms[i] = hash(i, 9, 5);
+  }
+  if (__WEBGPU__) {
+    if (!meteorNodes) throw new Error('WebGPU meteor materials not registered (@render-backend/install)');
+    const uniforms: MeteorEmberUniforms = {
+      uTime: { value: 0 }, uAmount: { value: 0.65 }, uScale: { value: 600 }, uSize: { value: 1 },
+    };
+    return { ...meteorNodes.embers(positions, randoms, uniforms), uniforms, data };
   }
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
@@ -260,8 +311,10 @@ void main() {
   const points = new THREE.Points(geometry, material);
   points.frustumCulled = false;
   return {
-    points,
-    material,
+    object: points,
+    positions: geometry.attributes.position as THREE.BufferAttribute,
+    randoms: geometry.attributes.aRandom as THREE.BufferAttribute,
+    uniforms: material.uniforms as unknown as MeteorEmberUniforms,
     data,
     dispose() {
       geometry.dispose();
@@ -280,8 +333,8 @@ const emberUp = new THREE.Vector3(0, 0, 1);
  * the rock's local frame, which the group scales.
  */
 export function layoutEmbers(embers: MeteorEmbers, dir: THREE.Vector3, time: number, trail: number, turbulence: number): void {
-  const attr = embers.points.geometry.attributes.position as THREE.BufferAttribute;
-  const randoms = embers.points.geometry.attributes.aRandom as THREE.BufferAttribute;
+  const attr = embers.positions;
+  const randoms = embers.randoms;
   emberA.crossVectors(dir, Math.abs(dir.z) > 0.9 ? emberB.set(1, 0, 0) : emberUp).normalize();
   emberB.crossVectors(dir, emberA);
   const data = embers.data;
