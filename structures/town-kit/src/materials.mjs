@@ -200,12 +200,6 @@ export const CONNECTIONS = {
   // Gable-end studs at 600 mm, end-nailed to the side wall's top plate and to
   // the verge rafter above them (2 nails each end): 2 nails per 0.6 x 0.09 m.
   'gable-stud': { per: 'area', ...toe(2), shear: 2 * NAIL.lateral * 0.67, compression: BEARING.compression, slip: 2 * SLIP.nail, perArea: 0.054 },
-  // Wall sheathing (structural bracing) to studs and plates: 2.8 x 50 mm
-  // nails at 150 mm on panel edges and 300 mm in the field (AS 1684.2
-  // Table 8.18 bracing; NZS 3604; APA panel nailing), ~one per 0.2 m of a
-  // 45 mm face. Per nail, EN 1995-1-1 8.3.1.3 panel-to-timber, 11 mm OSB:
-  // ~0.6 kN lateral; pull-through of the head ~0.35 kN; K_ser 0.65 kN/mm.
-  'sheathing-nail': { per: 'area', tension: 350 / 0.009, shear: 600 / 0.009, compression: BEARING.compression, slip: 654e3 / 0.009 },
   // Face-nailed laps: top plates lapped at corners and intersections
   // (R602.3(1) "2-16d face nails"), built-up and junction studs, ceiling joists
   // lapped over the centre wall (3 face nails), header ends to king studs.
@@ -275,13 +269,6 @@ export const GYPSUM = { density: 700, elasticModulus: 2e9, ...limits({ compressi
  * would be a sliver hull (PhysX GPU hulls fail past extent/radius 100).
  */
 export const ROOF_TILE_LAYER = { density: 920 };
-
-/**
- * OSB/3 wall sheathing, 11 mm (EN 300; EN 12369-1: mean density 550-650,
- * E 4.93 GPa in bending, f_t 9.4, f_c 15.4, panel shear f_v 6.8 MPa): the
- * bracing that makes a stud wall a shear panel on its anchors.
- */
-export const OSB = { density: 600, elasticModulus: 4.93e9, ...limits({ compression: 15.4e6, tension: 9.4e6, shear: 6.8e6 }), residualAreaFraction: 0 };
 
 /** Painted timber weatherboards (18 mm boards lapped to a 25 mm layer, ~11 kg/m^2). */
 export const WEATHERBOARD = { density: 450 };
