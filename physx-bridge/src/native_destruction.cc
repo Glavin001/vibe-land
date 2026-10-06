@@ -960,6 +960,16 @@ FfiNativeConfigured NativeDestruction::configure(const FfiNativeConfig &config) 
   // stage in its diagnostic mode, where any membership-changing verdict is
   // rejected -- that is, a city that can never actually break.
   desc.internalCorrectionLimit = correction_limit();
+#if PX_DESTRUCTION_SCENE_VERSION >= 22 && !defined(VIBE_PHYSX_HAS_CHUNK_LOADS_CORRECTION_LOOP)
+  // Destructible vehicles submit per-chunk commands (enableChunkLoads). SDKs
+  // without PX_DESTRUCTION_CHUNK_LOADS_CORRECTION_LOOP apportion them on the
+  // first corrected pass only and refuse any deeper loop in configureStress;
+  // say so here instead of failing configuration without a reason.
+  native_require(s.vehicles.empty() || desc.internalCorrectionLimit <= 1,
+                 "VIBE_CITY_NATIVE_CORRECTION_LIMIT above 1 with destructible vehicles needs a "
+                 "PhysX SDK with PX_DESTRUCTION_CHUNK_LOADS_CORRECTION_LOOP (PhysX branch "
+                 "feat/chunk-loads-correction-loop); use 1 or rebuild the SDK");
+#endif
   desc.preserveUnchangedContactPairs = config.preserve_unchanged_contact_pairs;
   std::fprintf(stderr, "[destruction] native internalCorrectionLimit=%u\n",
                unsigned(desc.internalCorrectionLimit));

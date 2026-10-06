@@ -377,6 +377,12 @@ fn add_native_destruction(
         ("fragmentGravity", "VIBE_PHYSX_HAS_FRAGMENT_GRAVITY"),
         ("getStressSolveReport", "VIBE_PHYSX_HAS_STRESS_SOLVE_REPORT"),
         ("forceTolerance", "VIBE_PHYSX_HAS_FORCE_TOLERANCE"),
+        // Chunk loads (destructible vehicles) re-apportioned on every corrected
+        // pass, so VIBE_CITY_NATIVE_CORRECTION_LIMIT > 1 works with vehicles.
+        (
+            "PX_DESTRUCTION_CHUNK_LOADS_CORRECTION_LOOP",
+            "VIBE_PHYSX_HAS_CHUNK_LOADS_CORRECTION_LOOP",
+        ),
     ] {
         if text.contains(field) {
             build.define(define, None);
