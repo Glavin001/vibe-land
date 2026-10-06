@@ -3372,8 +3372,38 @@ public:
       out.active_dynamic_bodies = statistics.nbActiveDynamicBodies;
       out.bp_new_pairs = statistics.nbNewPairs;
       out.bp_lost_pairs = statistics.nbLostPairs;
+      dump_awake_actors_once(statistics);
     }
     return out;
+  }
+
+  /// Diagnostics: VIBE_PHYSX_DUMP_AWAKE=<step> prints, once at that completed
+  /// step, every awake non-kinematic rigid dynamic (where, how many shapes,
+  /// its userData) -- for an idle scene whose active-body count stays up
+  /// with nothing to show for it.
+  void dump_awake_actors_once(const PxSimulationStatistics &statistics) const {
+    static const long at = [] { const char *v = std::getenv("VIBE_PHYSX_DUMP_AWAKE"); return v ? std::strtol(v, nullptr, 10) : -1L; }();
+    static bool done = false;
+    if (done || at < 0 || static_cast<long>(completed_steps_) < at) return;
+    done = true;
+    const PxU32 count = scene_->getNbActors(PxActorTypeFlag::eRIGID_DYNAMIC);
+    std::vector<PxActor *> actors(count);
+    scene_->getActors(PxActorTypeFlag::eRIGID_DYNAMIC, actors.data(), count);
+    PxU32 awake = 0, kinematic = 0, kinematic_awake = 0;
+    for (PxActor *a : actors) {
+      auto *body = static_cast<PxRigidDynamic *>(a);
+      const bool kin = body->getRigidBodyFlags() & PxRigidBodyFlag::eKINEMATIC;
+      if (kin) { ++kinematic; if (!body->isSleeping()) ++kinematic_awake; continue; }
+      if (body->isSleeping()) continue;
+      ++awake;
+      const PxTransform pose = body->getGlobalPose();
+      const PxVec3 v = body->getLinearVelocity(), w = body->getAngularVelocity();
+      std::fprintf(stderr, "AWAKE actor %p shapes %u mass %.1f at (%.2f, %.2f, %.2f) v %.3f w %.3f user %p name %s\n",
+          static_cast<void *>(body), body->getNbShapes(), body->getMass(), pose.p.x, pose.p.y, pose.p.z,
+          v.magnitude(), w.magnitude(), body->userData, body->getName() ? body->getName() : "-");
+    }
+    std::fprintf(stderr, "AWAKE summary: %u rigid dynamics, %u awake non-kinematic, %u kinematic (%u awake), stats nbActiveDynamicBodies %u nbActiveKinematicBodies %u\n",
+        count, awake, kinematic, kinematic_awake, statistics.nbActiveDynamicBodies, statistics.nbActiveKinematicBodies);
   }
 
   rust::Vec<FfiContactEvent> take_contact_events() {
