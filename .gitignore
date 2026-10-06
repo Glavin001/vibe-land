@@ -56,3 +56,14 @@ __pycache__/
 
 # Durable authored grass layouts (deployment data, not generated blades)
 .data/grass/
+
+# Generated run output: evidence for the written reports, not source. The
+# reports (*.md) stay; regenerate the data with the tool each report names.
+moq/bench/results/
+docs/reports/**/*.log
+docs/reports/**/*.json
+docs/reports/**/*.jsonl
+docs/reports/**/*.gz
+docs/reports/**/*.csv
+structures/town-kit/repros/**/results.json
+*.pyc

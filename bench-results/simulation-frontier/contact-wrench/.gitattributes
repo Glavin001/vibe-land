@@ -1,2 +1,0 @@
-# Preserve captured tool output exactly, including its whitespace.
-*.log -whitespace

@@ -1,8 +1,0 @@
-{
-  "sameGateErrors": true,
-  "sameFrameSummaries": true,
-  "errors": [
-    "nominal/buggy: missing or invalid broken bonds",
-    "nominal/sprint: missing or invalid broken bonds"
-  ]
-}

@@ -1,2 +1,0 @@
-# Keep captured output byte-for-byte, including tool whitespace.
-*.log -whitespace

@@ -1,3 +1,0 @@
-# Exact unified-diff evidence contains a space on blank context lines.
-# Preserve those bytes and their recorded SHA-256 hashes.
-*.patch -whitespace
