@@ -399,9 +399,14 @@ record() {
 #   FILM_PREVIEW=1  no video: a still from the middle of each shot, and a sheet of them
 #   FILM_POSTER   the poster frame's time in seconds (default 40% in)
 #   FILM_REBUILD=1  rebuild the bundle even when its inputs are unchanged
+#   FILM_CUT_FPS  the final cut's frame rate (default 30)
 # Writes target/native-video/NAME-<stamp>.mp4, -share.mp4 (under 25 MB),
 # -sheet.jpg (ten frames), -poster.jpg and .log; a preview, NAME-<stamp>-preview/
-# and -preview.jpg.
+# and -preview.jpg. When the log holds an edit list (`edit {json}` lines from
+# the film's cues: titles, cards, slow motion, flashes, fades, letterbox),
+# scripts/film/post.py cuts the recording to NAME-<stamp>-final.mp4 and the
+# share copy, sheet and poster come from that; the raw .mp4 stays. By hand:
+#   python3 scripts/film/post.py VIDEO LOG [--out FINAL] [--fps 30] [--verbose]
 film() {
   local name="${1:-}"; shift || true
   [ -n "$name" ] || { echo "usage: $0 film NAME [--scene S] [mystral args]" >&2; exit 2; }
@@ -463,23 +468,31 @@ film() {
       -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p -movflags +faststart "$out" && rm -f "$raw"
   fi
   [ -f "$out" ] || { echo "film: no video written (log: $log)" >&2; exit 1; }
-  local seconds; seconds=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$out")
+  # Post-production: the edit list, if the film logged one, cut to -final.mp4.
+  local cut="$out"
+  if grep -qE '(^|[] ])edit \{' "$log"; then
+    python3 "$ROOT/scripts/film/post.py" "$out" "$log" --out "$base-final.mp4" --fps "${FILM_CUT_FPS:-30}" \
+      || { echo "film: post-production FAILED (log: $log)" >&2; exit 1; }
+    cut="$base-final.mp4"
+  fi
+  local seconds; seconds=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$cut")
   # Under 25 MB to share: as it is when it fits, else re-encoded to fit.
   local limit=25000000 kbps
-  if [ "$(stat -f %z "$out")" -le "$limit" ]; then
-    cp "$out" "$base-share.mp4"
+  if [ "$(stat -f %z "$cut")" -le "$limit" ]; then
+    cp "$cut" "$base-share.mp4"
   else
     kbps=$(python3 -c "print(int(23.0 * 8000 / $seconds))")
     for _ in 1 2 3; do
-      ffmpeg -v error -y -i "$out" -c:v libx264 -preset slow -b:v "${kbps}k" -maxrate "$((kbps * 3 / 2))k" \
+      ffmpeg -v error -y -i "$cut" -c:v libx264 -preset slow -b:v "${kbps}k" -maxrate "$((kbps * 3 / 2))k" \
         -bufsize "$((kbps * 2))k" -pix_fmt yuv420p -movflags +faststart -an "$base-share.mp4"
       [ "$(stat -f %z "$base-share.mp4")" -le "$limit" ] && break
       kbps=$((kbps * 4 / 5))
     done
   fi
-  ffmpeg -v error -y -i "$out" -vf "fps=10/$seconds,scale=384:-2,tile=5x2:padding=4:margin=4" -frames:v 1 -q:v 3 "$base-sheet.jpg"
-  ffmpeg -v error -y -ss "${FILM_POSTER:-$(python3 -c "print($seconds * 0.4)")}" -i "$out" -frames:v 1 -q:v 2 "$base-poster.jpg"
-  echo "film: $out ($(python3 -c "print(round($seconds, 1))") s); share $base-share.mp4 ($(( $(stat -f %z "$base-share.mp4") / 1000000 )) MB), sheet $base-sheet.jpg, poster $base-poster.jpg"
+  ffmpeg -v error -y -i "$cut" -vf "fps=10/$seconds,scale=384:-2,tile=5x2:padding=4:margin=4" -frames:v 1 -q:v 3 "$base-sheet.jpg"
+  ffmpeg -v error -y -ss "${FILM_POSTER:-$(python3 -c "print($seconds * 0.4)")}" -i "$cut" -frames:v 1 -q:v 2 "$base-poster.jpg"
+  [ "$cut" = "$out" ] || echo "film: raw recording $out"
+  echo "film: $cut ($(python3 -c "print(round($seconds, 1))") s); share $base-share.mp4 ($(( $(stat -f %z "$base-share.mp4") / 1000000 )) MB), sheet $base-sheet.jpg, poster $base-poster.jpg"
 }
 
 # The bundle, unless nothing it is built from changed since the last film
