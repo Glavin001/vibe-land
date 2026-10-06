@@ -48,3 +48,53 @@ height, wheel loads).
 | cannonball, meteor | the city's cannonball into its side, the city's meteor on it | the weapons |
 | drift | 1.2 s of full lock and handbrake from 15 m/s | the handbrake feel |
 | town-chase (`--scene town`) | the trailer's chase replayed headless | the report itself |
+
+## The criteria, in priority order
+
+`criteria.mjs` holds them with the reason for each threshold; in short:
+
+1. **It stands.** Parked 10 s: no bond breaks.
+2. **It drives.** It reaches 90% of its tune's top speed (Vehicle2's drive
+   torque fades to zero at it); it clears every obstacle its own geometry says
+   it can -- a step up to 0.7x its tyre radius and under its belly, a ramp
+   under its approach angle and its traction and power limits, rubble if its
+   belly clears the tallest piece, the 1 m pile if tyre radius + clearance
+   reach over it -- without stalling, losing a wheel or breaking a corner bond.
+   The monster truck must clear all of them.
+3. **Near misses and debris cost bodywork, not wheels.** Meteors that miss, a
+   roof graze, 700 kg of house thrown at it, a mirror knocked off: all four
+   wheels kept, ride height within 10 cm (a clean run: 2 cm; the chase: 13-55
+   cm), at most a 2% dent unless the rock touched it.
+4. **It can hurt things.** Floored from 50 m (a Vibe Town street): the wall
+   and the car both break; it keeps an axle and drives away. The monster truck
+   goes through the wall.
+5. **The weapons mean something.** A cannonball leaves it damaged but still a
+   car (an axle, and it drives away); a meteor wrecks it (half its parts or
+   30% of its bonds).
+6. **The handbrake turn feels as it does today** (yaw rate within 15%, slip
+   25%, heading 15 deg of the 2026-10-06 reference).
+
+Damage priority, by design: glass and trim, then panels, then cage and frame,
+then the suspension, the wheels last. The car is the piece with its rear frame
+crossmember (the chassis anchor Vehicle2 drives), so a car that loses its cab
+or its front end still drives on what it has.
+
+## What the test bed found (2026-10-06)
+
+- **Wheel mounts were the weakest link.** Rated as a generic steel joint
+  (300 MPa), a wheel came off whenever the car was jolted: a roof graze put
+  666 kN on a 665 kN mount (the wheel's inertia as the body was spun, plus the
+  suspension limit). Now lug studs, class 10.9 (1040 MPa).
+- **The car went with its seats.** The chassis anchor (what Vehicle2 keeps
+  driving) was the seat crossmember; a cannonball sheared the floor and seats
+  off and the car became a 103 kg seat module. Now the rear frame crossmember.
+- **Losing any part doubles the car's weight on its springs** (open, in
+  PhysX): the correction pass re-installs the Vehicle2 carrier with PhysX
+  gravity on, on top of Vehicle2's own. A 5 kg mirror knocked off at 54 km/h
+  leaves the monster truck 13 cm lower for good. Trial `knock-mirror-driving`
+  fails until it is fixed (physx/source/gpudestruction/src/PxgDestructionMotionState.cuh,
+  `nativeCandidateState`: enable gravity only when `id != candidate.sourceBody`).
+- **Tried and rejected** for the wall: corner bonds x2-x3.4 (the wheels go with
+  the front end, not at their mounts), the monster's real mass (x1.6) with and
+  without sections to match, and wheel hulls inset so tyres meet walls and
+  debris (it stalled on rubble and lost every wheel at the wall).
