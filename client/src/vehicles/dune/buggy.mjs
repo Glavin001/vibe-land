@@ -86,7 +86,7 @@ export function buildBuggy(wasm, input={}, progress=(phase="",percent=0)=>{}, au
   b(`${label} hood rail`,A,E);b(`${label} front bumper upright`,A,[s*.43,.91,f-.3]);
 
  }
- for(const [z,height,width,label] of [[f-.26,floor+.06,.43,'Front chassis'],[f+.43,floor,w,'Pedal bulkhead'],[-.1,floor,w,'Seat front'],[.58,floor,w,'Seat rear'],[.72,1.02,w,'Harness bar'],[.72,roof,.54,'Rear roof'],[-.23,roof,.54,'Front roof'],[r+.35,floor+.11,.5,'Rear chassis'],[r+.22,1.2,.5,'Engine upper'],[f-.3,.91,.43,'Front bumper']]) b(`${label} crossmember`,[-width,height,z],[width,height,z],'frame',tr,'Frame',true,label==='Seat rear'?'chassis':null);
+ for(const [z,height,width,label] of [[f-.26,floor+.06,.43,'Front chassis'],[f+.43,floor,w,'Pedal bulkhead'],[-.1,floor,w,'Seat front'],[.58,floor,w,'Seat rear'],[.72,1.02,w,'Harness bar'],[.72,roof,.54,'Rear roof'],[-.23,roof,.54,'Front roof'],[r+.35,floor+.11,.5,'Rear chassis'],[r+.22,1.2,.5,'Engine upper'],[f-.3,.91,.43,'Front bumper']]) b(`${label} crossmember`,[-width,height,z],[width,height,z],'frame',tr,'Frame',true,label==='Rear chassis'?'chassis':null);
  b('Roof diagonal',[-.54,roof,-.23],[.54,roof,.72]);
  b('Rear firewall diagonal',[-w,floor,.58],[w,1.02,.72]);
  b('Rear bumper',[-.57,.71,r+.46],[.57,.71,r+.46]);

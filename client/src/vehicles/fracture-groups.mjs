@@ -38,6 +38,11 @@ export function vehicleFractureGroups(collision) {
   if (!parts.some(p => p.functionality === 'engine')) throw Error('Missing engine collider');
   // Native fracture retains chunk zero on the controller's original actor.
   // Pick the authored central chassis anchor, never a wheel or the heavy engine.
+  // The anchor is the rear frame crossmember the engine and rear suspension
+  // mount on (dune/buggy.mjs): anchored on the seat crossmember, a cannonball
+  // that sheared the cabin floor off took the car with it -- Vehicle2 drove a
+  // 103 kg seat module while the frame and all four wheels lay beside it
+  // (vehicle test bed, 2026-10-06; on the frame, the frame drove away).
   parts.splice(parts.indexOf(chassis[0]), 1);
   parts.unshift(chassis[0]);
   const remap = bonds => bonds.flatMap(bond => {

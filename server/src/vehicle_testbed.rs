@@ -519,6 +519,12 @@ fn run(r: &Run, meta: &Value) -> Value {
     drop(step);
     let mut sorted = step_ms.clone();
     sorted.sort_by(f32::total_cmp);
+    // The parts still on the carrier (actor 0: what Vehicle2 drives), when few.
+    let carrier_parts: Vec<String> = arena.vehicle_destruction_debug(id).map(|d| {
+        let mut names: Vec<String> = d["hulls"].as_array().into_iter().flatten().filter(|h| h["actor"] == 0 && h["ordinal"] == 0)
+            .map(|h| geometry.parts[h["part"].as_u64().unwrap() as usize].name.clone()).collect();
+        names.sort(); names.dedup(); names
+    }).unwrap_or_default();
     // Every body of the car at the end: [actor, mass, gravity disabled, asleep, position].
     let actors_end = arena.vehicle_destruction_debug(id).map(|d| json!(d["actors"].as_array().into_iter().flatten()
         .map(|a| json!([a["actor"], a["mass"], a["gravityDisabled"], a["sleeping"], a["position"]])).collect::<Vec<_>>())).unwrap_or(Value::Null);
@@ -543,6 +549,7 @@ fn run(r: &Run, meta: &Value) -> Value {
     out["bodyMass"] = json!(damage.body_mass);
     out["wheelLoadsEndKN"] = json!(damage.last_wheels);
     out["actorsEnd"] = actors_end;
+    out["carrierParts"] = if carrier_parts.len() <= 40 { json!(carrier_parts) } else { json!(carrier_parts.len()) };
     out["converged"] = json!(if solves > 0 { converged as f32 / solves as f32 } else { 0. });
     out["stepMs"] = json!({"median": sorted.get(sorted.len() / 2), "p95": sorted.get(sorted.len() * 95 / 100), "max": sorted.last()});
     out["trace"] = json!(trace);
