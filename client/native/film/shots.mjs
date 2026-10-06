@@ -220,7 +220,7 @@ function strikePoint(at, ctx, height) {
 /** The game's meteor slope: 240 m up for every 300 m out. */
 export const METEOR_SLOPE = 0.8;
 
-function launchMeteor(ctx, target, from, flight = METEOR_FLIGHT_S, slope = METEOR_SLOPE) {
+export function launchMeteor(ctx, target, from, flight = METEOR_FLIGHT_S, slope = METEOR_SLOPE) {
   if (from == null) { ctx.session.meteor(target[0], target[1], target[2]); return; }
   // From `flight` seconds away at 140 m/s, `slope` m up for every metre out
   // (the game's 0.8 by default): shorter, a late shot that leaves a moving

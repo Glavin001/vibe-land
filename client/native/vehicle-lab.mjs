@@ -11,7 +11,7 @@
 //
 /* global VEHICLE_LAB_TRIALS, VEHICLE_LAB_BUILD */
 import { boot } from './film/film.mjs';
-import { track, enter } from './film/shots.mjs';
+import { track, enter, launchMeteor } from './film/shots.mjs';
 import { placeResolver } from './film/places.mjs';
 
 const TRIALS = typeof VEHICLE_LAB_TRIALS === 'string' ? VEHICLE_LAB_TRIALS.split(',') : [];
@@ -171,7 +171,17 @@ function trialShot(trial, index, meta, ground) {
     cues.push([lead + a.at - 0.2, (ctx) => { if (target) ctx.drive.lookAt(...target); }]);
     cues.push([lead + a.at, (ctx) => ctx.drive.fire({ holdMs: 60 })]);
   } else if (a?.kind === 'meteor') {
-    cues.push([lead + a.at, (ctx) => { const s = readCar(ctx, index); if (s) ctx.session.meteor(s.p[0], s.p[1], s.p[2]); }]);
+    // The game's meteor (140 m/s), on an arc the camera sees: in from the
+    // car's right front, low, crossing the frame for its last 1.2 s; the hit
+    // at half speed. From the game's own launch point it came in from behind
+    // the camera, and the hit was half a second of a far-off flash.
+    const flight = 1.2;
+    cues.push([lead + a.at, (ctx) => {
+      const s = readCar(ctx, index);
+      if (!s) return;
+      launchMeteor(ctx, [s.p[0], s.p[1], s.p[2]], 60, flight, 0.45);
+      ctx.edit({ type: 'slowmo', rate: 0.5, from: ctx.t + flight - 0.4, to: ctx.t + flight + 2.4 });
+    }]);
   } else if (a?.kind === 'strikes') {
     // Launched when the car will be at carZ after the flight (shots.mjs launchMeteor's arc).
     for (let k = 0; k * 0.05 <= seconds; k += 1) cues.push([lead + k * 0.05, (ctx) => {
@@ -238,7 +248,8 @@ function trialShot(trial, index, meta, ground) {
   // was a speck on the horizon behind the camera's shoulder.
   const follow = () => lastPosition(index, meta, trial);
   const hit = a && ['meteor', 'cannonball'].includes(a.kind);
-  return track(follow, hit ? [-13, 7, -17] : [-5, 3.2, -9], lead + seconds + tail + 0.4, { name: trial.id, lookOffset: [0, 1, hit ? 2 : 4], lag: 0.3, cues,
+  const offset = a?.kind === 'meteor' ? [-10, 4.5, -12] : hit ? [-13, 7, -17] : [-5, 3.2, -9];
+  return track(follow, offset, lead + seconds + tail + 0.4, { name: trial.id, lookOffset: [0, 1, hit ? 2 : 4], lag: 0.3, cues,
     ...(hit ? { release: lead + a.at } : {}) });
 }
 
