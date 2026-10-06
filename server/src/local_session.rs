@@ -191,6 +191,44 @@ impl LocalSession {
         })
     }
 
+    /// The match's current server tick.
+    pub fn current_tick(&self) -> Result<u32> {
+        let (reply, response) = tokio::sync::oneshot::channel();
+        self.events
+            .send(MatchEvent::CurrentTick { reply })
+            .map_err(|_| anyhow::anyhow!("match loop has exited"))?;
+        response.blocking_recv().context("match loop has exited")
+    }
+
+    /// Lockstep on or off (the native app's film mode). On: the match stops
+    /// ticking in real time and advances only by `step`. Off: it ticks at
+    /// 60 Hz in real time again from now. Waits until the match has taken
+    /// it, so no real-time tick follows `set_lockstep(true)`; returns the
+    /// server tick at that moment.
+    pub fn set_lockstep(&self, enabled: bool) -> Result<u32> {
+        let (reply, response) = tokio::sync::oneshot::channel();
+        self.events
+            .send(MatchEvent::Lockstep { enabled, reply })
+            .map_err(|_| anyhow::anyhow!("match loop has exited"))?;
+        response.blocking_recv().context("match loop has exited")
+    }
+
+    /// In lockstep, advance the match exactly `ticks` ticks after every
+    /// packet sent before this call, and wait for them: returns the server
+    /// tick reached. The ticks are the match's own (`tick()`, fracture
+    /// re-simulation and all), only paced by the caller instead of a timer.
+    /// Outside lockstep it advances nothing and returns the current tick.
+    pub fn step(&self, ticks: u32) -> Result<u32> {
+        if self.closed {
+            anyhow::bail!("session closed");
+        }
+        let (reply, response) = tokio::sync::oneshot::channel();
+        self.events
+            .send(MatchEvent::Step { ticks, reply })
+            .map_err(|_| anyhow::anyhow!("match loop has exited"))?;
+        response.blocking_recv().context("match loop has exited")
+    }
+
     /// A GET for one of the server's stateless routes (`local_router`),
     /// answered in-process. Unknown paths answer 404.
     pub fn request(&self, path: &str) -> Result<LocalResponse> {
@@ -355,4 +393,79 @@ fn spawn_local_match(
             });
         })
         .expect("match simulation thread should start");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    /// Film mode's sim half: in lockstep the match does not tick on its own,
+    /// each `step(n)` advances exactly n ticks, and leaving lockstep returns
+    /// it to 60 Hz real time.
+    #[test]
+    fn lockstep_advances_exactly_the_ticks_stepped() {
+        // The demo world on Rapier: no GPU, no city assets.
+        std::env::set_var("VIBE_PHYSICS_BACKEND", "rapier");
+        let mut session = LocalSession::start("lockstep-test").expect("in-process match starts");
+        let mut drain = |session: &mut LocalSession| session.drain(|_, _| {}).expect("player stays connected");
+
+        // Real time first: the match ticks by itself, at the rate this build
+        // manages (60 Hz in release; a debug build's Rapier may be slower).
+        let rate = |session: &mut LocalSession| {
+            let (tick, since) = (session.current_tick().unwrap(), Instant::now());
+            std::thread::sleep(Duration::from_millis(600));
+            drain(session);
+            (session.current_tick().unwrap() - tick) as f64 / since.elapsed().as_secs_f64()
+        };
+        let real_time_rate = rate(&mut session);
+        assert!(real_time_rate > 5.0, "the match should tick in real time ({real_time_rate:.1}/s)");
+
+        // Lockstep: nothing moves without a step...
+        let base = session.set_lockstep(true).unwrap();
+        std::thread::sleep(Duration::from_millis(300));
+        assert_eq!(session.current_tick().unwrap(), base, "a lockstepped match must not tick by itself");
+
+        // ...and each frame of a 30 fps film advances exactly two ticks,
+        // however long the frame took on the wall clock.
+        let mut stepping = Duration::ZERO;
+        for frame in 1..=120u32 {
+            if frame % 40 == 0 {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            let step_started = Instant::now();
+            let reached = session.step(2).unwrap();
+            if frame > 100 {
+                stepping += step_started.elapsed();
+            }
+            assert_eq!(reached, base + 2 * frame, "frame {frame}");
+            drain(&mut session);
+        }
+        assert_eq!(session.current_tick().unwrap(), base + 240);
+        // Other step sizes are exact too (60 fps films step one).
+        assert_eq!(session.step(1).unwrap(), base + 241);
+        assert_eq!(session.step(0).unwrap(), base + 241);
+
+        // Back to real time: 60 Hz again (or as fast as this build's ticks
+        // allow -- a debug build's cannot keep up), with no burst for the
+        // time spent in lockstep.
+        let resumed = session.set_lockstep(false).unwrap();
+        assert_eq!(resumed, base + 241);
+        let tick_s = stepping.as_secs_f64() / 40.0;
+        let sustainable = (1.0 / tick_s).min(60.0);
+        let after = rate(&mut session);
+        eprintln!(
+            "real time: {real_time_rate:.1} ticks/s before lockstep, {after:.1} after \
+             ({:.2} ms a tick, {sustainable:.1}/s sustainable)",
+            tick_s * 1000.0
+        );
+        assert!(
+            after > sustainable * 0.6 && after < 63.0,
+            "{after:.1} ticks/s after lockstep, expected ~{sustainable:.1}"
+        );
+        // Outside lockstep a step is a no-op.
+        let now = session.current_tick().unwrap();
+        assert!(session.step(5).unwrap() < now + 5);
+        session.close();
+    }
 }

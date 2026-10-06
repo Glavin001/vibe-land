@@ -44,6 +44,14 @@ export interface InProcessLink {
   vehicleDebug?(car: number): string;
   /** The city's every-tick body poses since a tick (city/cityPoseFeed.ts). */
   poses?(sinceTick: number): ArrayBuffer;
+  /**
+   * Film mode (native/film.ts): `setLockstep(true)` stops the match ticking
+   * in real time, `step(n)` advances exactly n ticks (blocking), each returns
+   * the server tick; `currentTick()` reads it.
+   */
+  setLockstep?(enabled: boolean): number;
+  step?(ticks: number): number;
+  currentTick?(): number;
   close(): void;
 }
 
@@ -68,6 +76,18 @@ export function inProcessLink(): InProcessLink | null {
 /** The in-process session's config, so the runtime needs no /session-config fetch. */
 export function inProcessSessionConfig(): SessionConfigResponse | null {
   return activeLink ? (JSON.parse(activeLink.sessionConfigJson) as SessionConfigResponse) : null;
+}
+
+/** Connected clients, for `pumpInProcessClients`. */
+const liveClients = new Set<InProcessGameClient>();
+
+/**
+ * Route every packet the match has queued, now, rather than at the next pump
+ * tick: film mode (native/film.ts) steps the match and then draws the result
+ * in the same frame.
+ */
+export function pumpInProcessClients(): void {
+  for (const client of liveClients) client.pumpNow();
 }
 
 const WELCOME_TIMEOUT_MS = 30_000;
@@ -97,6 +117,7 @@ export class InProcessGameClient {
   static async connect(link: InProcessLink, options: WebTransportGameClientOptions): Promise<InProcessGameClient> {
     const client = new InProcessGameClient(link, options);
     client.pump = setInterval(() => client.drain(), PUMP_INTERVAL_MS);
+    liveClients.add(client);
     client.drain();
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
@@ -116,6 +137,10 @@ export class InProcessGameClient {
       clearTimeout(timer);
     }
     return client;
+  }
+
+  pumpNow(): void {
+    this.drain();
   }
 
   private drain(): void {
@@ -206,6 +231,7 @@ export class InProcessGameClient {
   close(reason = 'client closed'): void {
     if (this.closed) return;
     this.closed = true;
+    liveClients.delete(this);
     if (this.pump !== null) clearInterval(this.pump);
     this.pump = null;
     // A client-initiated close is not a disconnect (as with WebTransport).

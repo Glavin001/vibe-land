@@ -1143,6 +1143,14 @@ enum MatchEvent {
     },
     /// Start or stop a paired session capture (HTTP, see `session_*_handler`).
     Session(session_match::SessionCommand),
+    /// Lockstep (the native app's film mode, local_session.rs): while on, the
+    /// loop's 60 Hz interval does not tick the match; only `Step` does.
+    /// Replies with the server tick at which it took effect.
+    Lockstep { enabled: bool, reply: tokio::sync::oneshot::Sender<u32> },
+    /// Advance a lockstepped match exactly `ticks` ticks, now, in order after
+    /// every event queued before it. Replies with the server tick reached
+    /// (unchanged when the match is not in lockstep).
+    Step { ticks: u32, reply: tokio::sync::oneshot::Sender<u32> },
 }
 
 impl MatchEvent {
@@ -1160,6 +1168,8 @@ impl MatchEvent {
             MatchEvent::Disconnect { .. } => "disconnect",
             MatchEvent::Packet { .. } => "packet",
             MatchEvent::Session(_) => "session",
+            MatchEvent::Lockstep { .. } => "lockstep",
+            MatchEvent::Step { .. } => "step",
         }
     }
 }
@@ -1314,6 +1324,10 @@ struct MatchState {
     /// Unspent 60 Hz input frames owed by the passage of real time. Carries
     /// the fraction a rounded budget would discard.
     input_credit: f32,
+    /// Lockstep (`MatchEvent::Lockstep`): ticks run only on `Step`, and each
+    /// is one tick of simulated time for the input budget, whatever the wall
+    /// clock did between them.
+    lockstep: bool,
     /// Observer pipeline (VIBE_CITY_OBSERVER_PIPELINE=1): tick N's deferred
     /// city observer bundle, flushed inside tick N+1's GPU wait. None when
     /// the flag is off, on non-city matches, and on staging-error ticks.
@@ -3630,6 +3644,7 @@ async fn run_match_loop(
         last_publish_ms: 0.0,
         last_tick_instant: None,
         input_credit: 1.0,
+        lockstep: false,
         staged_city: None,
         last_observer_flush_ms: 0.0,
         tick_meteors_launched: 0,
@@ -3669,7 +3684,8 @@ async fn run_match_loop(
     let (mut events_ms, mut events, mut worst_event) = (0.0f32, 0u32, (0.0f32, ""));
     loop {
         tokio::select! {
-            _ = tick.tick() => {
+            // In lockstep only `MatchEvent::Step` ticks the match.
+            _ = tick.tick(), if !state.lockstep => {
                 if state.garage.is_some() {
                     if state.garage.as_ref().is_some_and(|session|session.closing()) {break;}
                     if !state.players.is_empty() {garage_last_occupied = Instant::now();}
@@ -3689,7 +3705,14 @@ async fn run_match_loop(
             Some(event) = rx.recv() => {
                 let kind = event.kind();
                 let started = Instant::now();
+                let was_lockstep = state.lockstep;
                 state.handle_event(event);
+                if was_lockstep && !state.lockstep {
+                    // Back to real time from now, not a burst for the span
+                    // spent in lockstep.
+                    tick.reset();
+                    last_tick_start = None;
+                }
                 let ms = started.elapsed().as_secs_f32() * 1000.0;
                 events_ms += ms;
                 events += 1;
@@ -3974,6 +3997,24 @@ impl MatchState {
                 let _ = reply.send(ticks);
             }
             MatchEvent::CurrentTick { reply } => {
+                let _ = reply.send(self.server_tick);
+            }
+            MatchEvent::Lockstep { enabled, reply } => {
+                if self.lockstep != enabled {
+                    self.lockstep = enabled;
+                    // The wall-clock input budget restarts either way: a
+                    // lockstep span is not real time the player owes.
+                    self.last_tick_instant = None;
+                    info!(match_id = %self.id, tick = self.server_tick, enabled, "match lockstep");
+                }
+                let _ = reply.send(self.server_tick);
+            }
+            MatchEvent::Step { ticks, reply } => {
+                if self.lockstep {
+                    for _ in 0..ticks {
+                        self.tick();
+                    }
+                }
                 let _ = reply.send(self.server_tick);
             }
             MatchEvent::ReplayEvent { event, reply } => {
@@ -4454,9 +4495,13 @@ impl MatchState {
         //
         // Credit is capped so a long stall cannot bank unbounded movement and
         // then spend it in one tick.
-        let elapsed_since_last_tick = self
-            .last_tick_instant
-            .map(|previous| tick_started.saturating_duration_since(previous).as_secs_f32());
+        let elapsed_since_last_tick = if self.lockstep {
+            // Simulated time, not wall time: a lockstepped tick is one tick.
+            Some(dt)
+        } else {
+            self.last_tick_instant
+                .map(|previous| tick_started.saturating_duration_since(previous).as_secs_f32())
+        };
         self.last_tick_instant = Some(tick_started);
         let (input_budget, remaining_credit) =
             spend_input_credit(self.input_credit, elapsed_since_last_tick, dt);

@@ -2591,15 +2591,15 @@ impl CityRuntime {
         }
     }
 
-    /// The native stage's last tick without copying anything: its status,
-    /// what the server committed from it, and the tick's spans (engine zones
-    /// included when `VIBE_PHYSX_PROFILE` is on). None on other backends.
-    #[cfg(feature = "native-destruction")]
     /// This tick's stress solve summary, when `VIBE_STRESS_SOLVE_REPORT` is set.
     pub fn stress_solve_summary(&self) -> Option<&crate::session_capture::StressSolveSummary> {
         self.stress_summary.as_ref()
     }
 
+    /// The native stage's last tick without copying anything: its status,
+    /// what the server committed from it, and the tick's spans (engine zones
+    /// included when `VIBE_PHYSX_PROFILE` is on). None on other backends.
+    #[cfg(feature = "native-destruction")]
     pub fn native_tick_view(
         &self,
     ) -> Option<(

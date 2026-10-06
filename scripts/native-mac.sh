@@ -14,6 +14,7 @@
 #   scripts/native-mac.sh app           # build target/native-app/out/vibe-land.app
 #   scripts/native-mac.sh shots         # the scene from above and from the player, target/native-scene/
 #   scripts/native-mac.sh structures    # does each structure of the scene converge at rest
+#   scripts/native-mac.sh film-check    # film mode: exact ticks and clock per frame, then real time
 #   scripts/native-mac.sh runtime|sim|bundle
 #
 # --scene NAME (any subcommand) picks the city:
@@ -280,6 +281,18 @@ drive() {
   echo "native drive check passed (log: $log)"
 }
 
+# Film mode (client/native/film-check.mjs): frame-locked offline rendering --
+# exact sim ticks and clock steps per film frame, and real time after.
+film_check() {
+  iife
+  "$ROOT/client/node_modules/.bin/esbuild" "$ROOT/client/native/film-check.mjs" --bundle --format=esm \
+    --platform=browser --target=es2022 --log-level=warning --outfile="$BUNDLE_DIR/film-check.js"
+  local log="$ROOT/target/native-film-check.log"
+  (launch film-check.js --headless "$@") 2>&1 | tee "$log" | grep --line-buffered -E '\[film|Shutting down|Caught signal' || true
+  grep -q '\[film-check\] VERDICT PASS' "$log" || { echo "native film check FAILED (log: $log)" >&2; exit 1; }
+  echo "native film check passed (log: $log)"
+}
+
 # Does each structure of the scene converge at rest (scripts/perf/qualify_structures.py)?
 # A structure that does not keeps the GPU re-solving it every idle tick.
 structures() {
@@ -384,6 +397,7 @@ case "${1:-run}" in
   record) shift || true; runtime; sim; bundle; record "$@" ;;
   qa) shift || true; runtime; sim; bundle; qa "$@" ;;
   input) shift || true; runtime; sim; bundle; input "$@" ;;
+  film-check) shift || true; runtime; sim; bundle; film_check "$@" ;;
   trace-writes) shift || true; runtime; sim; bundle; trace_writes "$@" ;;
   shots) shift || true; runtime; sim; bundle; shots "$@" ;;
   structures) shift || true; structures "$@" ;;

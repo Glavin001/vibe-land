@@ -21,6 +21,10 @@ use crate::mystral::{Js, Value};
 /// server's /city-meteor, /city-reset and /city-vehicle-debug, for QA.
 /// `poses(sinceTick)` is the city's every-tick body poses as an ArrayBuffer of
 /// u32 words (server/src/pose_feed.rs; empty with VIBE_LOCAL_POSE_FEED=0).
+/// Film mode: `setLockstep(on)` stops (or resumes) the match's real-time
+/// ticking and returns the server tick; `step(n)` then advances exactly n
+/// ticks, blocking until they are done, and returns the tick reached;
+/// `currentTick()` reads it.
 pub fn start_city(js: Js, args: &[Value]) -> Value {
     let match_id = js.string_arg(args, 0).unwrap_or_else(|| "city-default".to_owned());
     apply_app_defaults();
@@ -116,6 +120,37 @@ pub fn start_city(js: Js, args: &[Value]) -> Value {
             match session.borrow().vehicle_debug(car) {
                 Ok(value) => js.string(&value.to_string()),
                 Err(error) => js.throw(&format!("vehicleDebug({car}): {error:#}")),
+            }
+        }));
+    }
+    // Film mode (client/src/native/film.ts): the match ticks only when the
+    // renderer steps it, a fixed number of ticks per rendered frame.
+    {
+        let session = session.clone();
+        js.set(handle, "currentTick", js.function("currentTick", move |js, _| {
+            match session.borrow().current_tick() {
+                Ok(tick) => js.number(tick as f64),
+                Err(error) => js.throw(&format!("currentTick: {error:#}")),
+            }
+        }));
+    }
+    {
+        let session = session.clone();
+        js.set(handle, "setLockstep", js.function("setLockstep", move |js, args| {
+            let enabled = args.first().is_some_and(|&value| js.to_bool(value));
+            match session.borrow().set_lockstep(enabled) {
+                Ok(tick) => js.number(tick as f64),
+                Err(error) => js.throw(&format!("setLockstep: {error:#}")),
+            }
+        }));
+    }
+    {
+        let session = session.clone();
+        js.set(handle, "step", js.function("step", move |js, args| {
+            let ticks = js.arg_number(args, 0, 1.0).clamp(0.0, 600.0) as u32;
+            match session.borrow().step(ticks) {
+                Ok(tick) => js.number(tick as f64),
+                Err(error) => js.throw(&format!("step: {error:#}")),
             }
         }));
     }

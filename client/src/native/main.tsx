@@ -17,6 +17,7 @@ import { createWebGPURenderer } from '../graphics/webgpu/rendererBackend';
 import { createPointerCaptureRequest } from '../input/pointerMode';
 import { sceneCanvasProps } from '../scene/RenderGovernor';
 import { setInProcessLink, type InProcessLink } from '../net/inProcessClient';
+import { installFilmApi } from './film';
 import { nativeHud } from './nativeHud';
 import { NativeCity } from './NativeCity';
 
@@ -41,6 +42,8 @@ async function main(): Promise<void> {
   // routes, and the HUD toggle.
   (globalThis as { __VIBE_NATIVE_SESSION__?: InProcessLink }).__VIBE_NATIVE_SESSION__ = session;
   (globalThis as { __VIBE_NATIVE_HUD__?: typeof nativeHud }).__VIBE_NATIVE_HUD__ = nativeHud;
+  // Film mode (native/film.ts), off until a film script enables it.
+  installFilmApi();
   // Mouse look as in the browser: a click captures the pointer (mystral's
   // Pointer Lock, SDL relative mouse mode), Escape releases it. Without it
   // (an older runtime) the capture request falls back to drag-to-look.

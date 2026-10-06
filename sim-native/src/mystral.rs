@@ -125,6 +125,10 @@ impl Js {
         String::from_utf8(buffer).ok()
     }
 
+    pub fn to_bool(self, value: Value) -> bool {
+        unsafe { (self.api.to_bool)(self.env, value) != 0 }
+    }
+
     pub fn to_number(self, value: Value) -> f64 {
         unsafe { (self.api.to_number)(self.env, value) }
     }
