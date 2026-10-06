@@ -141,6 +141,9 @@ export default defineConfig(({ mode }) => {
         outDir: 'dist-native',
         emptyOutDir: true,
         target: 'es2022',
+        // VIBE_NATIVE_PROFILE=1 (scripts/native-mac.sh profile): keep the
+        // names, so a CPU profile reads as the source does.
+        minify: process.env.VIBE_NATIVE_PROFILE === '1' ? false : undefined,
         lib: { entry: path.resolve(process.cwd(), 'src/native/main.tsx'), formats: ['es' as const], fileName: () => 'game.js' },
         rollupOptions: { output: { inlineDynamicImports: true } },
       },

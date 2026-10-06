@@ -290,7 +290,8 @@ look() {
 perf() {
   iife
   "$ROOT/client/node_modules/.bin/esbuild" "$ROOT/client/native/perf-capture.mjs" --bundle --format=esm \
-    --platform=browser --target=es2022 --log-level=warning --outfile="$BUNDLE_DIR/perf-capture.js"
+    --platform=browser --target=es2022 --log-level=warning --define:PERF_PROFILE="\"${PERF_PROFILE:-}\"" \
+    --outfile="$BUNDLE_DIR/perf-capture.js"
   mkdir -p "$ROOT/target/native-perf"
   (launch perf-capture.js "$@") 2>&1 | tee "$ROOT/target/native-perf/perf.log" | grep --line-buffered '\[perf' || true
 }
@@ -342,5 +343,10 @@ case "${1:-run}" in
     runtime; sim; bundle; drive "$@" ;;
   look) shift || true; runtime; sim; bundle; look "$@" ;;
   perf) shift || true; runtime; sim; bundle; perf "$@" ;;
+  # perf with a V8 CPU profile of each phase, on an unminified bundle:
+  # target/native-perf/<phase>.cpuprofile, summarised by
+  # scripts/perf/cpuprofile-summary.mjs (or open one in Chrome DevTools).
+  profile) shift || true; runtime; sim; VIBE_NATIVE_PROFILE=1 bundle; PERF_PROFILE=1 perf "$@"
+    for f in "$ROOT"/target/native-perf/*.cpuprofile; do node "$ROOT/scripts/perf/cpuprofile-summary.mjs" "$f"; done ;;
   *) echo "usage: $0 [build|run|runtime|sim|bundle] [mystral run args]" >&2; exit 2 ;;
 esac

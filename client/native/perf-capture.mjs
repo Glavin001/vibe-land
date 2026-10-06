@@ -13,6 +13,7 @@
 // i.e. a missed 60 Hz frame), the sim's ticks per second (worst 1 s window),
 // its tick time (worst reported avg and max) and PhysX step, and the peak
 // awake chunks / broken bonds.
+/* global PERF_PROFILE, __mystralCpuProfileStart, __mystralCpuProfileStop */
 import { joinDropPose } from '../e2e/helpers/vehicleQaCore.mjs';
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -119,7 +120,18 @@ async function run() {
   const carAt = (car) => JSON.parse(session.vehicleDebug(car)).snapshot?.position ?? [63, 0.8, car === 0 ? 8 : -8];
   const byHeight = [...structures].sort((a, b) => b.top - a.top);
 
-  const enter = (name) => { phase = name; phaseStarted = performance.now(); };
+  // scripts/native-mac.sh profile: a V8 CPU profile per phase,
+  // target/native-perf/<phase>.cpuprofile (mystral's __mystralCpuProfileStart).
+  const profiling = PERF_PROFILE === '1' && typeof __mystralCpuProfileStart === 'function';
+  const profilePath = (name) => `../../target/native-perf/${name.replace(/ /g, '-')}.cpuprofile`;
+  const enter = (name) => {
+    if (profiling) {
+      if (phase !== 'warmup') log(`profile ${phase}: ${__mystralCpuProfileStop(profilePath(phase)) ? profilePath(phase) : 'FAILED'}`);
+      __mystralCpuProfileStart(250);
+    }
+    phase = name;
+    phaseStarted = performance.now();
+  };
   // Play starts when the game's shader warmup is done (scene/ShaderWarmup.tsx);
   // every build after it counts as late.
   await waitFor('the shader warmup', () => e2e.shaderBuilds().playing, 60_000);
@@ -194,6 +206,7 @@ async function run() {
   for (const c of late.filter((c) => c.ms > 20).sort((a, b) => b.ms - a.ms).slice(0, 12)) {
     log(`  ${c.phase.padEnd(16)} ${c.name} ${c.ms.toFixed(0)} ms ${c.label}`);
   }
+  if (profiling) log(`profile ${phase}: ${__mystralCpuProfileStop(profilePath(phase)) ? profilePath(phase) : 'FAILED'}`);
   log('done');
   setTimeout(() => process.exit(0), 300);
 }
