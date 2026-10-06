@@ -99,9 +99,13 @@ export async function boot({ scene = DEFAULT_SCENE, fps = DEFAULT_FPS, preview =
    */
   function startRecording() {
     if (typeof __mystralRecordStart === 'function') {
+      // The hardware encoder by name skips the recorder's probe; 'auto' if it is missing.
       const clock = filmMode ? 'frame' : 'wall';
-      recording = __mystralRecordStart(OUT, { fps, clock });
-      log(recording ? `recording ${OUT} (${clock} clock, ${fps} fps)` : 'FAILED to start recording');
+      recording = __mystralRecordStart(OUT, { fps, clock, encoder: 'h264_videotoolbox' })
+        || __mystralRecordStart(OUT, { fps, clock, encoder: 'auto' });
+      const stats = __mystralRecordStats?.() ?? {};
+      log(recording ? `recording ${OUT} (${clock} clock, ${fps} fps, ${stats.width}x${stats.height}, ${stats.encoder})`
+        : `FAILED to start recording: ${stats.error ?? 'no reason given'}`);
     } else if (SEQUENCE && filmMode) {
       sequence = OUT.replace(/\.mp4$/, '-frames');
       log(`no recorder (__mystralRecordStart): each frame to ${sequence}/`);
@@ -111,11 +115,11 @@ export async function boot({ scene = DEFAULT_SCENE, fps = DEFAULT_FPS, preview =
   function stopRecording() {
     sequence = null;
     if (!recording) return;
-    const stats = typeof __mystralRecordStats === 'function' ? __mystralRecordStats() : null;
     const stopped = __mystralRecordStop();
     recording = false;
-    if (stats) log(`recorded ${stats.frames} frames (${stats.seconds?.toFixed?.(1)} s), ${stats.dropped} dropped, ${stats.duplicated} duplicated, ${stats.encoder}`);
-    log(stopped ? `video: ${OUT}` : 'FAILED to finish the video');
+    const stats = __mystralRecordStats?.();
+    if (stats) log(`recorded ${stats.frames} frames (${stats.seconds?.toFixed?.(1)} s) of ${stats.presented} presented, ${stats.dropped} dropped, ${stats.duplicated} duplicated, ${stats.encoder}; capture ${stats.captureMs?.toFixed?.(2)} ms, wait ${stats.waitMs?.toFixed?.(2)} ms`);
+    log(stopped ? `video: ${OUT}` : `FAILED to finish the video: ${stats?.error ?? 'no reason given'}`);
   }
 
   /** Stop recording, hand the clock back and exit. */
